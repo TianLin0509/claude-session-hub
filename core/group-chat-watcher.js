@@ -16,6 +16,12 @@ const os = require('os');
 const path = require('path');
 const { detectHostShellTakeover } = require('./host-shell-detector.js');
 const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
+const { stripAnsi } = require('./ansi-utils.js');
+const {
+  RUNTIME_RUNNING,
+  advanceRunningAnimationCandidate,
+  classifyTerminalRuntime,
+} = require('./terminal-runtime-state.js');
 
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
@@ -88,30 +94,170 @@ function noteSubmittedPrompt(sid, kind, actualPrompt) {
   catch (e) { console.warn(`[group-chat] transcriptTap.notePrompt failed for ${kind}(${String(sid).slice(0, 8)}):`, e && e.message); }
 }
 
-function observeCodexTurnStart(sid, kind) {
-  if (!isCodexCliKind(kind)) return null;
+function observeAgentTurnStart(sessionManager, sid, kind) {
+  if (!isCodexCliKind(kind) && !isClaudeFamily(kind)) return null;
   const tap = _deps && _deps.transcriptTap;
-  if (!tap || typeof tap.on !== 'function' || typeof tap.removeListener !== 'function') return null;
+  const canObserveSession = sessionManager
+    && typeof sessionManager.on === 'function'
+    && typeof sessionManager.removeListener === 'function';
+  const canObserveTap = isCodexCliKind(kind)
+    && tap && typeof tap.on === 'function' && typeof tap.removeListener === 'function';
+  if (!canObserveSession && !canObserveTap) return null;
+  const baselineSeq = typeof sessionManager.getAgentTurnStartSeq === 'function'
+    ? sessionManager.getAgentTurnStartSeq(sid)
+    : 0;
   let started = false;
+  let acknowledgement = null;
   let resolveStarted = null;
   const startedPromise = new Promise((resolve) => { resolveStarted = resolve; });
-  const listener = (event = {}) => {
-    if (event.hubSessionId !== sid) return;
+  const settle = (event, source) => {
+    if (started) return;
     started = true;
-    resolveStarted(true);
+    acknowledgement = {
+      source: event.signalSource || source,
+      observedAt: Number(event.observedAt || event.startedAt) || Date.now(),
+      turnId: event.turnId || null,
+    };
+    resolveStarted(acknowledgement);
   };
-  tap.on('turn-started', listener);
+  const sessionListener = (event = {}) => {
+    if (event.sessionId !== sid) return;
+    if (Number(event.seq) && Number(event.seq) <= baselineSeq) return;
+    settle(event, 'agent-turn-started');
+  };
+  const tapListener = (event = {}) => {
+    if (event.hubSessionId !== sid) return;
+    settle(event, 'task_started');
+  };
+  if (canObserveSession) sessionManager.on('agent-turn-started', sessionListener);
+  if (canObserveTap) tap.on('turn-started', tapListener);
   return {
     get started() { return started; },
+    get acknowledgement() { return acknowledgement; },
     async wait(timeoutMs) {
-      if (started) return true;
+      if (started) return acknowledgement;
       return Promise.race([
         startedPromise,
-        new Promise(resolve => setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0))),
+        new Promise(resolve => setTimeout(() => resolve(null), Math.max(0, Number(timeoutMs) || 0))),
       ]);
     },
-    dispose() { tap.removeListener('turn-started', listener); },
+    dispose() {
+      if (canObserveSession) sessionManager.removeListener('agent-turn-started', sessionListener);
+      if (canObserveTap) tap.removeListener('turn-started', tapListener);
+    },
   };
+}
+
+function probeStrongPtyWorkStart(sessionManager, sid, kind, probeState) {
+  if (!sessionManager || typeof sessionManager.getSessionBuffer !== 'function') return null;
+  const raw = String(sessionManager.getSessionBuffer(sid) || '');
+  const baselineLength = Math.max(0, Number(probeState.baselineLength) || 0);
+  // Prefer bytes produced after this send. Ring truncation/reset falls back to
+  // the available buffer rather than silently disabling the probe.
+  const current = raw.length >= baselineLength ? raw.slice(baselineLength) : raw;
+  const clean = stripAnsi(current).replace(/\r/g, '\n');
+  const runtime = classifyTerminalRuntime(kind, clean.split(/\n/));
+  probeState.lastRingRuntime = runtime;
+  probeState.lastRingTail = clean.slice(-1200);
+  const advanced = advanceRunningAnimationCandidate(probeState.ringCandidate, runtime, Date.now());
+  probeState.ringCandidate = advanced.candidate;
+  if (!advanced.confirmed || runtime.state !== RUNTIME_RUNNING) return null;
+  return {
+    source: `pty-${runtime.reason || 'strong-running'}`,
+    observedAt: Date.now(),
+    turnId: null,
+    evidence: runtime.evidence || null,
+  };
+}
+
+function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
+  if (!sessionManager || typeof sessionManager.on !== 'function' || typeof sessionManager.removeListener !== 'function') return null;
+  let Terminal;
+  try { ({ Terminal } = require('@xterm/headless')); } catch { return null; }
+  let terminal;
+  try {
+    terminal = new Terminal({
+      cols: 120,
+      rows: 30,
+      scrollback: 2000,
+      allowProposedApi: true,
+      ...(process.platform === 'win32' ? {
+        windowsPty: { backend: 'conpty', buildNumber: parseInt(os.release().split('.').pop(), 10) || 0 },
+      } : {}),
+    });
+  } catch { return null; }
+  let queue = Promise.resolve();
+  let disposed = false;
+  let writeErrorLogged = false;
+  const enqueue = (data) => {
+    if (disposed || !data) return;
+    queue = queue.then(() => new Promise(resolve => terminal.write(String(data), resolve))).catch(error => {
+      if (!writeErrorLogged) {
+        writeErrorLogged = true;
+        console.warn('[group-chat] live PTY runtime probe write failed:', error && error.message);
+      }
+    });
+  };
+  const listener = (event = {}) => {
+    if (event.sessionId === sid) enqueue(event.data);
+  };
+  sessionManager.on('output', listener);
+  enqueue(sessionManager.getSessionBuffer(sid) || '');
+  return {
+    async probe(probeState) {
+      if (disposed) return null;
+      await queue;
+      const buffer = terminal.buffer && terminal.buffer.active;
+      if (!buffer) return null;
+      const lines = [];
+      const start = Math.max(0, Number(buffer.viewportY) || 0);
+      for (let y = start; y < Math.min(buffer.length, start + terminal.rows); y += 1) {
+        const line = buffer.getLine(y);
+        if (line) lines.push(line.translateToString(true));
+      }
+      const runtime = classifyTerminalRuntime(kind, lines);
+      probeState.lastLiveRuntime = runtime;
+      probeState.lastLiveLines = lines.slice(-12);
+      const advanced = advanceRunningAnimationCandidate(probeState.liveCandidate, runtime, Date.now());
+      probeState.liveCandidate = advanced.candidate;
+      if (!advanced.confirmed || runtime.state !== RUNTIME_RUNNING) return null;
+      return {
+        source: `pty-${runtime.reason || 'strong-running'}`,
+        observedAt: Date.now(),
+        turnId: null,
+        evidence: runtime.evidence || null,
+      };
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      sessionManager.removeListener('output', listener);
+      try { terminal.dispose(); } catch {}
+    },
+  };
+}
+
+// 最近一次探针是否已经把屏幕读成「正在跑」。这里刻意不要求动画确认帧：
+//   waitForAgentWorkStart 只在 confirmed 时才返回，而「未确认但确实在跑」正是
+//   最不该补回车的状态。用作补 Enter 的否决条件，而不是开工的肯定证据。
+function looksAlreadyRunning(probeState) {
+  if (!probeState) return false;
+  return (probeState.lastLiveRuntime && probeState.lastLiveRuntime.state === RUNTIME_RUNNING)
+    || (probeState.lastRingRuntime && probeState.lastRingRuntime.state === RUNTIME_RUNNING);
+}
+
+async function waitForAgentWorkStart(observer, sessionManager, sid, kind, timeoutMs, probeState, livePtyObserver) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() < deadline) {
+    if (observer && observer.started) return observer.acknowledgement;
+    const pty = (livePtyObserver && await livePtyObserver.probe(probeState))
+      || probeStrongPtyWorkStart(sessionManager, sid, kind, probeState);
+    if (pty) return pty;
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
+  }
+  if (observer && observer.started) return observer.acknowledgement;
+  return (livePtyObserver && await livePtyObserver.probe(probeState))
+    || probeStrongPtyWorkStart(sessionManager, sid, kind, probeState);
 }
 
 async function clearCodexInputLine(sessionManager, sid, kind) {
@@ -175,7 +321,7 @@ async function sendToPty(sid, prompt, kind) {
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
-  const ENTER_RETRY_TRIES = 3;          // 零 echo 兜底：分多次发 \r 提升提交成功率
+  const ENTER_RETRY_TRIES = 3;          // legacy 非协议路径的有界提交兜底
   const ENTER_RETRY_GAP_MS = 150;       // 兜底 \r 之间间隔
   const POST_ENTER_VERIFY_MS = 500;     // 提交后再观察一次活性，确认没卡
   // bug A 修复（2026-05-03 道雪）：turn 间 race condition
@@ -212,74 +358,101 @@ async function sendToPty(sid, prompt, kind) {
   //     未提交"(Bug B) + "中文走 .md 文件中转嵌入"(Bug C：BP 直接发中文，不再经 writePromptToSession)。
   //   gemini 协议仍不识别（marker 被吃但 \r 不提交），保留旧主路径。
   if (isClaudeFamily(kind) || isCodexCliKind(kind)) {
-    const turnStart = observeCodexTurnStart(sid, kind);
+    // Capture the provider lifecycle cursor before typing.  Claude
+    // UserPromptSubmit and Codex task_started are the same authoritative
+    // "agent really began work" signal that drives ordinary-session status.
+    const turnStart = observeAgentTurnStart(sessionManager, sid, kind);
+    const livePtyObserver = createLivePtyRuntimeObserver(sessionManager, sid, kind);
     try {
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
+    const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
     sessionManager.writeToSession(sid, BP_START + prompt + BP_END);
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
     //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
-    await new Promise(r => setTimeout(r, 500));
-    for (let i = 0; i < ENTER_RETRY_TRIES; i += 1) {
-      sessionManager.writeToSession(sid, '\r');
-      if (i < ENTER_RETRY_TRIES - 1) {
-        await new Promise(r => setTimeout(r, ENTER_RETRY_GAP_MS));
-      }
-    }
+    const pasteSettleMs = Math.max(0, Number(_deps && _deps.bracketedPasteSettleMs));
+    await new Promise(r => setTimeout(r, Number.isFinite(pasteSettleMs) && pasteSettleMs > 0 ? pasteSettleMs : 500));
+    // One Enter first.  Extra Enters are conditional on the absence of a
+    // semantic work-start acknowledgement, rather than being fired blindly.
+    // This mirrors the normal-session runtime truth and avoids accidental
+    // empty submissions after a prompt already started.
+    sessionManager.writeToSession(sid, '\r');
+    let enterAttempts = 1;
 
     // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
     //   慢启动场景误判 stuck（实测：\r 后 claude TUI 渲染 user message + 启 streaming
     //   延迟在 200-1500ms 间，500ms 单点窗口边缘 case 失败率高 → 卡片显示"输入卡顿"
     //   但实际 25s 内已输出 750 字）。改成轮询窗口：activity 一变就早 break，
     //   仅真 stuck 时跑满 1500ms 才标。正常情况 dispatch 净延迟仍 < 1s。
-    const VERIFY_MAX_MS = 1500;
-    const VERIFY_POLL_MS = 50;
-    const verifyT0 = Date.now();
-    let activityChanged = false;
-    while (Date.now() - verifyT0 < VERIFY_MAX_MS) {
-      await new Promise(r => setTimeout(r, VERIFY_POLL_MS));
-      if (sessionManager.getGroupChatLastActivity(sid) !== beforeWrite) {
-        activityChanged = true;
-        break;
-      }
-    }
     let sendStatus = 'ok';
-    if (!activityChanged) {
-      // 极少：1500ms 内仍零 echo。不走 _autoRecoverSend（它基于 prompt+\r 模式与
-      //   1A 协议不兼容），直接标 stuck 让 paste-trapped-detector + UI [📤 发送] 接管。
-      console.warn(`[group-chat] 1A bracketed-paste verify failed for ${kind}(${sid.slice(0,8)}) after ${VERIFY_MAX_MS}ms; marking stuck`);
-      sendStatus = 'stuck';
-    }
-
+    let acknowledgement = null;
+    let probeState = null;
     if (turnStart) {
-      const firstAckMs = Math.max(20, Number(_deps && _deps.codexTurnStartAckMs || 1800));
-      const recoveryAckMs = Math.max(20, Number(_deps && _deps.codexTurnStartRecoveryMs || 4000));
-      let acknowledged = await turnStart.wait(firstAckMs);
-      let recoveredByLateEnter = false;
+      // Large bracketed pastes need time to leave the TUI input state.
+      // 实测（20260831，Codex CLI 0.151.0，222 行 / 14,061 字）：从提交到 task_started
+      //   稳定落在 4708-4847ms。窗口若取 4000ms，这条"有条件"的补 Enter 就变成每次必发，
+      //   3 次试验里还多打出过一个 Codex turn。取 9s 留约 2 倍余量：宁可晚 5 秒报 stuck，
+      //   也不要在 agent 已经开工后再补一次回车。
+      const firstAckMs = Math.max(20, Number(_deps && (_deps.agentTurnStartAckMs || _deps.codexTurnStartAckMs) || 9000));
+      const recoveryAckMs = Math.max(20, Number(_deps && (_deps.agentTurnStartRecoveryMs || _deps.codexTurnStartRecoveryMs) || 6000));
+      const configuredRetryMax = Number(_deps && _deps.agentTurnStartRetryMax);
+      const retryMax = Number.isFinite(configuredRetryMax)
+        ? Math.max(0, Math.min(2, configuredRetryMax))
+        : 1;
+      probeState = { baselineLength: beforeBufferLength, liveCandidate: null, ringCandidate: null };
+      acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, firstAckMs, probeState, livePtyObserver);
+      let recoveryAttempts = 0;
       // PTY activity alone is not proof of submission: Codex redraws the input
       // box while a `[Pasted Content …]` block is still waiting for Enter. A
-      // transcript task_started event is the semantic acknowledgement. If it
-      // is absent, send a *late isolated* Enter after paste mode has certainly
-      // closed, then wait for the acknowledgement before reporting success.
-      for (let attempt = 0; !acknowledged && attempt < 2; attempt += 1) {
-        console.warn(`[group-chat] Codex prompt has PTY activity but no task_started for ${sid.slice(0, 8)}; sending late Enter recovery ${attempt + 1}/2`);
+      // provider lifecycle event is the semantic acknowledgement. If absent,
+      // send a late isolated Enter only then, exactly as the user would.
+      for (let attempt = 0; !acknowledgement && attempt < retryMax; attempt += 1) {
+        // 正向证据优先：屏幕上已经在跑（哪怕动画还没攒够确认帧），就绝不再补回车——
+        //   那一下会落进一个已经开工的 TUI，轻则空提交，重则再起一个 turn。只延长等待。
+        if (looksAlreadyRunning(probeState)) {
+          console.warn(`[group-chat] ${kind} work-start unconfirmed for ${sid.slice(0, 8)} but the screen already reads running; extending the wait instead of pressing Enter`);
+          acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
+          continue;
+        }
+        recoveryAttempts += 1;
+        enterAttempts += 1;
+        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}; sending late Enter recovery ${attempt + 1}/${retryMax}`);
         sessionManager.writeToSession(sid, '\r');
-        acknowledged = await turnStart.wait(recoveryAckMs);
-        if (acknowledged) recoveredByLateEnter = true;
+        acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
       }
-      if (!acknowledged) {
-        console.warn(`[group-chat] Codex prompt submission not acknowledged for ${sid.slice(0, 8)} after late Enter recovery`);
+      if (!acknowledgement) {
+        console.warn(`[group-chat] ${kind} prompt submission not acknowledged for ${sid.slice(0, 8)} after late Enter recovery`);
         sendStatus = 'stuck';
-      } else if (recoveredByLateEnter || sendStatus === 'stuck') {
+      } else if (recoveryAttempts > 0) {
         sendStatus = 'auto_recovered';
       }
+    } else {
+      // Compatibility fallback for lightweight test/mocked managers without a
+      // lifecycle event bus.  A repaint is weaker evidence, but still better
+      // than reporting success after total silence.
+      await new Promise(r => setTimeout(r, 1500));
+      if (sessionManager.getGroupChatLastActivity(sid) === beforeWrite) sendStatus = 'stuck';
     }
-    return { ok: true, sendStatus };
+    return {
+      ok: true,
+      sendStatus,
+      acknowledgementSource: acknowledgement && acknowledgement.source || null,
+      enterAttempts,
+      ...(_deps && _deps.enableSendDiagnostics ? {
+        probeDiagnostics: {
+          lastLiveRuntime: probeState && probeState.lastLiveRuntime || null,
+          lastLiveLines: probeState && probeState.lastLiveLines || null,
+          lastRingRuntime: probeState && probeState.lastRingRuntime || null,
+          lastRingTail: probeState && probeState.lastRingTail || null,
+        },
+      } : {}),
+    };
     } finally {
       // PTY writes and transcript readers are external boundaries. Any throw
       // along the path must still release the semantic acknowledgement hook.
       if (turnStart) turnStart.dispose();
+      if (livePtyObserver) livePtyObserver.dispose();
     }
   }
   // ===========================================================================

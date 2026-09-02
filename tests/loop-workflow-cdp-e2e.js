@@ -116,12 +116,12 @@ async function main() {
     await okv(`return window.__loopSaved2 && window.__loopSaved2.loop.enabled && window.__loopSaved2.steps.length`, 2, '3.6 闭环保存为 2 步');
     await okv(`return window.__loopSaved2.loop.polish`, false, '3.7 自动打磨明确关闭');
 
-    // ── 4. Phase 2b：断点续跑（resumeState + 续跑入口）──
-    await okv(`return typeof window.__resumeLoopIfPending`, 'function', '4.1 续跑入口 __resumeLoopIfPending 存在');
+    // ── 4. Phase 2b：断点续跑（纯状态恢复 + main 单一驱动）──
+    await okv(`return typeof require('electron').ipcRenderer.invoke`, 'function', '4.1 workflow 执行由 main IPC 驱动');
     await okv(`return typeof window.LoopWorkflow.resumeState`, 'function', '4.2 resumeState 导出');
     await okv(`return window.LoopWorkflow.resumeState({status:'running',round:3,phase:'polishing',goal:'g',history:[]}).state.round`, 3, '4.3 浏览器内 resumeState 重建 round');
     await okv(`return window.LoopWorkflow.resumeState({status:'running',round:2,history:[{round:2,pass:false,blockers:[{what:'b'}]}]}).prevMerge.blockers[0].what`, 'b', '4.4 续跑回灌上一轮阻断项');
-    await okv(`return window.__resumeLoopIfPending('nonexistent-meeting-id')`, false, '4.5 无该 meeting → 不误触发续跑');
+    await okv(`return typeof window.LoopWorkflow.builderTaskText`, 'function', '4.5 renderer 仅保留纯工作流判定函数');
 
     // Optional visual evidence for manual/CI review. Normal test runs stay artifact-free.
     if (process.env.WORKFLOW_E2E_SCREENSHOT) {

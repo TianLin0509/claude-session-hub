@@ -1419,6 +1419,18 @@ class SessionManager extends EventEmitter {
       lastOutputSeq: 0,
       groupChatReady: false,
       groupChatLastActivity: 0,
+      // Monotonic PTY output counter for group-chat transport watchdogs.
+      // `groupChatLastActivity` is a timestamp and must not be used as a byte
+      // delta (a long-standing mismatch that made a continuously repainting
+      // Codex input box look "active" forever while the prompt was still
+      // waiting for Enter).
+      groupChatOutputBytes: 0,
+      // Main-process semantic lifecycle cursor shared by ordinary-session
+      // status and group-chat submit acknowledgement.  PTY repaint is not
+      // enough to prove that an agent actually started a turn.
+      agentTurnStartSeq: 0,
+      agentTurnStartedAt: 0,
+      agentTurnStartSource: null,
       startedAt: now,
       lastInputAt: 0,
       lastOutputAt: 0,
@@ -1461,6 +1473,7 @@ class SessionManager extends EventEmitter {
       // never mutate the replacement session's rewriter or terminal state.
       if (!entry || entry.pty !== ptyProcess) return;
       entry.groupChatLastActivity = Date.now();
+      entry.groupChatOutputBytes += Buffer.byteLength(String(data || ''), 'utf8');
       entry.lastOutputAt = entry.groupChatLastActivity;
       if (entry.terminalOutputFlushTimer) {
         clearTimeout(entry.terminalOutputFlushTimer);
@@ -2333,6 +2346,41 @@ class SessionManager extends EventEmitter {
   getGroupChatLastActivity(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? (s.groupChatLastActivity || 0) : 0;
+  }
+
+  // Monotonic PTY bytes received for a session.  Unlike the last-activity
+  // timestamp this can safely answer "did the screen only repaint a little, or
+  // did real streaming output arrive?" across watchdog samples.
+  getGroupChatOutputBytes(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? (s.groupChatOutputBytes || 0) : 0;
+  }
+
+  getAgentTurnStartSeq(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? (s.agentTurnStartSeq || 0) : 0;
+  }
+
+  // Record an authoritative provider lifecycle signal in the main process.
+  // Claude UserPromptSubmit and Codex task_started both flow through here, so
+  // group-chat delivery can use the same semantic truth as ordinary-session
+  // runtime status instead of guessing from terminal bytes.
+  noteAgentTurnStarted(sessionId, event = {}) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return null;
+    const observedAt = Number(event.observedAt || event.startedAt) || Date.now();
+    s.agentTurnStartSeq = (s.agentTurnStartSeq || 0) + 1;
+    s.agentTurnStartedAt = observedAt;
+    s.agentTurnStartSource = event.signalSource || event.source || 'provider_lifecycle';
+    const payload = {
+      sessionId,
+      seq: s.agentTurnStartSeq,
+      observedAt,
+      signalSource: s.agentTurnStartSource,
+      turnId: event.turnId || null,
+    };
+    this.emit('agent-turn-started', payload);
+    return payload;
   }
 
   // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。

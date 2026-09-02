@@ -105,7 +105,7 @@ async function main() {
     rec('配置循环(UI): ' + cfgRes);
     if (cfgRes !== 'CONFIGURED') { rec('配置失败'); flush('FAIL_CONFIG_' + cfgRes); cleanup(); process.exit(2); }
 
-    // 填输入框 + 点发送（真实 UI 路径 → doSend → runLoopWorkflow）
+    // 填输入框 + 点发送（真实 UI 路径 → doSend → main workflow engine）
     const goal = `在目录 ${WS}（已存在的空目录，本次测试专用）里：创建 add.js 导出 function add(a,b){return a+b}；再创建 add.test.js 用 node assert 验证 add(2,3)===5 并 console.log('OK')。只在该目录操作，别碰其它目录。`;
     const sent = await ev(`var box=document.getElementById('mr-input-box');if(!box)return 'NO_BOX';box.innerText=${JSON.stringify(goal)};box.dispatchEvent(new Event('input',{bubbles:true}));
       var btn=document.getElementById('mr-send-btn')||document.querySelector('[data-action="send"]')||Array.from(document.querySelectorAll('button')).find(b=>/发送|send/i.test(b.title||b.textContent||''));

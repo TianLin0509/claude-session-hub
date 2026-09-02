@@ -43,13 +43,28 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /kimi-code\/k3/);
 });
 
-test('default group slots use Claude, Codex, and DeepSeek strongest defaults', () => {
+test('group defaults to Claude + Codex and keeps DeepSeek as the optional third provider', () => {
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.claude, 'claude-opus-5[1m]');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-5.6-sol');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
+  assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
+  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek'\]/);
+});
+
+test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {
+  // 「默认 Claude + Codex」说的是起手配置，不是上限。用户明确要求：
+  //   同一种 AI 可以多开（两个 Claude 跑不同模型/角色），人数也不封顶。
+  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\[_groupSlots\.length % GROUP_MEMBER_KINDS\.length\]/,
+    'once every provider is present the add button must cycle instead of giving up');
+  assert.match(MODAL_JS, /addBtn\.disabled\s*=\s*false/,
+    'the add-member button must never disable itself on a member count');
+  assert.doesNotMatch(MODAL_JS, /addBtn\.disabled\s*=\s*!nextKind/,
+    'no per-kind uniqueness gate on the add-member button');
+  assert.doesNotMatch(MODAL_JS, /成员已齐全/,
+    'the modal must not tell the user the roster is full');
 });
 
 test('new DeepSeek sessions accept Codex Pro and Flash while old Claude sessions keep 1M aliases', () => {
@@ -161,7 +176,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session provider-specific payload rules');
   assert.match(MODAL_JS, /WorkspaceController\.loadCodexTuningCatalog/,
     'Codex effort and Fast options must come from its model catalog');
-  assert.match(MODAL_JS, /Codex 选 None 时不会注入群聊或投研 MCP/);
+  assert.match(MODAL_JS, /默认保留 Claude \+ Codex/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
 });

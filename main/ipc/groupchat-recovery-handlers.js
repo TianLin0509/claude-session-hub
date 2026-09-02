@@ -4,10 +4,12 @@ const { isCodexCliKind } = require('../../core/ai-kinds.js');
 
 function registerGroupchatRecoveryIpc(ipcMain, deps) {
   const {
+    dispatchGroupChatTurn,
     getHubDataDir,
     getActiveWatchers,
     groupchat,
     groupChatWatcher,
+    isWorkflowRunning = () => false,
     logger = console,
     meetingManager,
     sendToRenderer,
@@ -197,22 +199,32 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
   });
 
-  ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid } = {}) => {
+  ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid, turnNum: requestedTurnNum } = {}) => {
     if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
     const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-    // 无条件重发「最新轮用户原始问题」：不依赖会被清空的 _activePrompts，
-    //   整轮结束 / idle 也能发（用户要"点了就发最新轮的问题"，2026-06-19）。
-    //   最新轮号 = state.currentTurn（完成后仍保留），原话存在 messages 的 u{n}。
-    const turnNum = orch.state.currentTurn;
+    const parsedTurnNum = Number(requestedTurnNum);
+    const turnNum = Number.isInteger(parsedTurnNum) && parsedTurnNum > 0
+      ? parsedTurnNum
+      : orch.state.currentTurn;
     if (!turnNum) {
       return { ok: false, reason: 'no_turn_yet' };
     }
     const userMsg = (orch.state.messages || []).find(
       m => m && m.id === `u${turnNum}` && m.role === 'user'
     );
-    const promptText = userMsg && userMsg.content;
+    // Prefer the exact durable prompt prepared by the dispatcher (system
+    // instructions + incremental context + optional hero).  A historical
+    // settled message also carries sourcePrompt.  Raw user text is only the
+    // final legacy fallback; resending it alone silently changes semantics.
+    const activePrompt = typeof orch.getActivePrompt === 'function'
+      ? orch.getActivePrompt(turnNum, sid)
+      : null;
+    const assistantMsg = (orch.state.messages || []).find(
+      m => m && m.role === 'assistant' && Number(m.turnNum) === Number(turnNum) && m.sid === sid
+    );
+    const promptText = activePrompt?.prompt || assistantMsg?.sourcePrompt || (userMsg && userMsg.content);
     if (!promptText) {
       return { ok: false, reason: 'no_user_input' };
     }
@@ -223,7 +235,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         sid,
         kind,
         prompt: promptText,
-        promptHeader: '',
+        promptHeader: String(promptText).split(/\r?\n/).find(line => line.trim())?.slice(0, 160) || '',
         timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
       });
     } catch (err) {
@@ -240,12 +252,54 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     return { ok: true };
   });
 
-  ipcMain.handle('groupchat-resend-participant', async () => {
-    return {
-      ok: false,
-      reason: 'unsupported',
-      detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions',
-    };
+  ipcMain.handle('groupchat-resend-participant', async (_e, { meetingId, sid, turnNum: requestedTurnNum } = {}) => {
+    if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
+    if (typeof dispatchGroupChatTurn !== 'function') return { ok: false, reason: 'retry_unavailable' };
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    if (isWorkflowRunning(meetingId)) return { ok: false, reason: 'workflow_running' };
+    const activeWatcher = getActiveWatchers().get(sid);
+    if (activeWatcher && !activeWatcher.isSettled()) return { ok: false, reason: 'participant_still_running' };
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    if (orch.state.currentMode && orch.state.currentMode !== 'idle') {
+      return { ok: false, reason: 'turn_still_running' };
+    }
+    const parsedTurnNum = Number(requestedTurnNum);
+    const turnNum = Number.isInteger(parsedTurnNum) && parsedTurnNum > 0
+      ? parsedTurnNum
+      : orch.state.currentTurn;
+    const userMsg = (orch.state.messages || []).find(
+      m => m && m.role === 'user' && Number(m.turnNum) === Number(turnNum)
+    );
+    if (!userMsg || !String(userMsg.content || '').trim()) return { ok: false, reason: 'no_user_input' };
+    const memberIndex = Array.isArray(meeting.subSessions) ? meeting.subSessions.indexOf(sid) : -1;
+    if (memberIndex < 0) return { ok: false, reason: 'participant_not_in_meeting' };
+    try {
+      const result = await dispatchGroupChatTurn(meetingId, {
+        userInput: userMsg.content,
+        targetMemberIds: [`m${memberIndex + 1}`],
+        reuseTurnNum: turnNum,
+        appendUserMessage: false,
+        dispatchMode: 'retry',
+        turnTimeoutMs: 10 * 60 * 1000,
+      });
+      const participantResult = result && Array.isArray(result.results)
+        ? result.results.find(item => item && item.sid === sid)
+        : null;
+      const success = !!(result && result.status === 'completed'
+        && participantResult
+        && ['completed', 'manual_extracted'].includes(participantResult.status)
+        && String(participantResult.text || '').trim());
+      return {
+        ok: success,
+        result,
+        participant: participantResult,
+        ...(success ? {} : { reason: participantResult?.reason || participantResult?.status || result?.reason || result?.status || 'retry_failed' }),
+      };
+    } catch (err) {
+      logger.error('[groupchat-resend-participant] threw:', err);
+      return { ok: false, reason: 'exception', detail: err && err.message };
+    }
   });
 }
 

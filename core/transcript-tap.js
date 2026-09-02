@@ -175,7 +175,7 @@ class ClaudeTap extends EventEmitter {
     if (sincePromptTs && turnEndMs && turnEndMs < sincePromptTs - 5000) return null;
     const text = typeof last.text === 'string' ? last.text.trim() : '';
     if (!text) return null;
-    return { text, source: 'manual_claude_transcript' };
+    return { text, source: 'manual_claude_transcript', completedAt: turnEndMs || null };
   }
 
   getStreamingText(hubSessionId) {

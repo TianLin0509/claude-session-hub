@@ -10,9 +10,9 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_DIR = path.join(HUB_ROOT, 'artifacts');
+const ARTIFACT_DIR = path.join(HUB_ROOT, 'output', 'playwright', 'groupchat-unified');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
-const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `meeting-room-renderer-smoke-${STAMP}.png`);
+const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-unified-smoke-codex1-${STAMP}.png`);
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -84,15 +84,11 @@ function cleanupDataDir(dataDir) {
     await waitForEval(client, 'window.MeetingRoom && window.MeetingRoom.debugRenderGroupChatState && document.getElementById("meeting-room-panel")', 'MeetingRoom E2E API');
 
     const setup = await client.eval(`(async () => {
-      localStorage.setItem('mr-group-chat-view-mode', 'card');
-      localStorage.setItem('mr-card-view-mode', 'tab');
-      document.body.classList.add('mr-card-tab-mode');
-
-      const sids = ['e2e-claude', 'e2e-gemini', 'e2e-codex'];
+      const sids = ['e2e-claude', 'e2e-deepseek', 'e2e-codex'];
       const now = Date.now();
       const fakeSessions = [
         { id: sids[0], kind: 'claude', title: 'Claude E2E', status: 'active', model: 'sonnet', contextPercent: 12, createdAt: now, lastMessageTime: now },
-        { id: sids[1], kind: 'gemini', title: 'Gemini E2E', status: 'active', model: 'pro', contextPercent: 18, createdAt: now, lastMessageTime: now },
+        { id: sids[1], kind: 'deepseek', title: 'DeepSeek E2E', status: 'active', model: 'pro', contextPercent: 18, createdAt: now, lastMessageTime: now },
         { id: sids[2], kind: 'codex', title: 'Codex E2E', status: 'active', model: 'gpt-5', contextPercent: 9, createdAt: now, lastMessageTime: now },
       ];
       if (typeof sessions === 'undefined' || !(sessions instanceof Map)) {
@@ -135,30 +131,41 @@ function cleanupDataDir(dataDir) {
           startedAt: Date.now() - 1200,
           endedAt: Date.now(),
         }],
+        messages: [
+          { id: 'u1', turnNum: 1, role: 'user', content: 'E2E delegated renderer smoke question', createdAt: now },
+          { id: 'a1-m1', turnNum: 1, role: 'assistant', sid: sids[0], speaker: 'Claude E2E', content: 'Claude card rendered from injected E2E state.', status: 'completed', createdAt: now + 1 },
+          { id: 'a1-m2', turnNum: 1, role: 'assistant', sid: sids[1], speaker: 'DeepSeek E2E', content: 'DeepSeek card rendered from injected E2E state.', status: 'completed', createdAt: now + 2 },
+          { id: 'a1-m3', turnNum: 1, role: 'assistant', sid: sids[2], speaker: 'Codex E2E', content: 'Codex card rendered from injected E2E state.', status: 'completed', createdAt: now + 3 },
+        ],
+        aiStats: {},
       };
+      window.__meetingRoomSmokeState = state;
+      const ipc = require('electron').ipcRenderer;
+      if (!window.__meetingRoomSmokeRealInvoke) {
+        window.__meetingRoomSmokeRealInvoke = ipc.invoke.bind(ipc);
+        ipc.invoke = (channel, args) => channel === 'groupchat:get-state' && args?.meetingId === meeting.id
+          ? Promise.resolve(window.__meetingRoomSmokeState)
+          : window.__meetingRoomSmokeRealInvoke(channel, args);
+      }
       const result = window.MeetingRoom.debugRenderGroupChatState(meeting.id, state);
       await new Promise((resolve) => setTimeout(resolve, 100));
       return {
         debugOk: !!(result && result.ok),
         panelVisible: getComputedStyle(document.getElementById('meeting-room-panel')).display !== 'none',
-        cards: Array.from(document.querySelectorAll('.mr-ft[data-ft-sid]')).map((el) => ({
-          sid: el.getAttribute('data-ft-sid'),
-          active: el.classList.contains('active'),
-          preview: el.querySelector('.mr-ft-preview')?.innerText || '',
-          text: (el.innerText || '').slice(0, 180),
+        messages: Array.from(document.querySelectorAll('.mr-gc-msg')).map((el) => ({
+          id: el.getAttribute('data-gc-msg-id'),
+          text: (el.innerText || '').slice(0, 220),
         })),
-        tabs: Array.from(document.querySelectorAll('[data-gc-card-tab-sid]')).map((el) => ({
-          sid: el.getAttribute('data-gc-card-tab-sid'),
-          active: el.classList.contains('active'),
-        })),
-        userQuestionText: document.querySelector('.mr-gc-userq-text')?.textContent || '',
+        legacyCards: document.querySelectorAll('.mr-ft[data-ft-sid]').length,
+        legacyViewButtons: document.querySelectorAll('#mr-btn-group-' + 'card-view,#mr-btn-group-' + 'chat-view').length,
+        retryActions: document.querySelectorAll('[data-gc-retry-answer]').length,
+        userResendActions: document.querySelectorAll('[data-gc-resend-turn]').length,
         panelText: (document.getElementById('mr-gc-panel')?.innerText || '').slice(0, 500),
         newUi: {
           turnLane: !!document.querySelector('.mr-turn-lane'),
           nextActions: Array.from(document.querySelectorAll('[data-gc-next-action]')).map(btn => btn.getAttribute('data-gc-next-action')),
           nextActionsBar: (document.querySelector('.mr-next-actions')?.innerText || '').replace(/\s+/g, ' ').trim(),
-          cardRoster: document.querySelectorAll('.mr-card-roster-member').length,
-          latestRound: (document.querySelector('.mr-latest-round-head')?.innerText || ''),
+          memberRows: document.querySelectorAll('.mr-gc-member-row').length,
           mobileWorkbench: !!document.querySelector('.mr-mobile-workbench'),
           battlePanel: (document.getElementById('mr-input-preflight')?.innerText || ''),
           headerSecondary: !!document.querySelector('.mr-header-secondary-actions'),
@@ -168,62 +175,43 @@ function cleanupDataDir(dataDir) {
 
     assert.strictEqual(setup.debugOk, true, 'debugRenderGroupChatState must succeed');
     assert.strictEqual(setup.panelVisible, true, 'meeting room panel must be visible');
-    assert.strictEqual(setup.cards.length, 3, 'card view must render three AI cards');
-    assert.strictEqual(setup.tabs.length, 3, 'tab mode must render three card tabs');
-    assert.ok(setup.userQuestionText.includes('E2E delegated renderer smoke question'), 'user question banner must render injected turn');
-    assert.ok(setup.cards.some((card) => card.sid === 'e2e-codex' && /Codex card rendered/.test(card.preview)), 'Codex card text must render');
+    assert.strictEqual(setup.legacyCards, 0, 'legacy parallel AI cards must stay removed from group rooms');
+    assert.strictEqual(setup.legacyViewButtons, 0, 'group header must expose one unified view');
+    assert.strictEqual(setup.messages.length, 4, 'unified view must render one user card plus three AI cards');
+    assert.ok(setup.messages.some((message) => /Codex card rendered/.test(message.text)), 'Codex card text must render');
+    assert.strictEqual(setup.retryActions, 3, 'each settled AI card must expose retry/re-answer');
+    assert.strictEqual(setup.userResendActions, 1, 'user card must expose resend/edit recovery');
     assert.strictEqual(setup.newUi.turnLane, true, 'turn progress lane must render in real renderer');
     // 2026-07-20 产品决策：五个低频 next-action 按钮已从 bar 摘除，仅保留轮次结束 label；
     // handler 分支保留备用，由 unit-meeting-input-composer-contract.test.js 锁定。
     assert.deepStrictEqual(setup.newUi.nextActions, [], 'low-frequency next-action buttons stay removed');
     assert.ok(/已结束/.test(setup.newUi.nextActionsBar), 'next action bar must still render the round-finished label');
-    assert.strictEqual(setup.newUi.cardRoster, 3, 'card roster must render all members');
-    assert.ok(/最新轮回答/.test(setup.newUi.latestRound), 'latest-round priority region must render');
+    assert.strictEqual(setup.newUi.memberRows, 3, 'unified member rail must render all members');
     assert.strictEqual(setup.newUi.mobileWorkbench, true, 'mobile workbench must be present for responsive view');
-    assert.ok(/作战面板/.test(setup.newUi.battlePanel), 'input battle panel must render');
+    assert.ok(/发送给|目标/.test(setup.newUi.battlePanel), 'input battle panel must render target context');
     assert.strictEqual(setup.newUi.headerSecondary, true, 'header secondary action group must render');
 
     const actionFlow = await client.eval(`(async () => {
-      const quote = document.querySelector('.mr-ft.active [data-gc-action="quote"]');
-      if (!quote) throw new Error('active card quote button missing');
-      quote.click();
+      const edit = document.querySelector('[data-gc-edit-turn="u1"]');
+      if (!edit) throw new Error('user edit-resend action missing');
+      edit.click();
       await new Promise((resolve) => setTimeout(resolve, 120));
+      const input = document.getElementById('mr-input-box');
+      const membersBefore = document.querySelectorAll('.mr-gc-member-row').length;
+      const retryLabels = [...document.querySelectorAll('[data-gc-retry-answer]')].map(button => button.textContent.trim());
+      document.getElementById('mr-btn-group-members')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 180));
       return {
-        quoteChip: document.querySelector('.mr-gc-quote-chip')?.innerText || '',
-        preflightText: document.getElementById('mr-input-preflight')?.innerText || '',
+        inputText: input?.innerText || '',
+        membersBefore,
+        sideCollapsed: !!document.querySelector('.mr-gc-shell.side-collapsed'),
+        retryLabels,
       };
     })()`);
-    assert.ok(/Claude/.test(actionFlow.quoteChip), 'quote button must add focused card to quote chips');
-    assert.ok(/引用\s*1/.test(actionFlow.preflightText.replace(/\n/g, ' ')), 'preflight panel must reflect quote count');
-
-    const tabClick = await client.eval(`(async () => {
-      const third = document.querySelector('[data-gc-card-tab-sid="e2e-codex"]');
-      if (!third) throw new Error('codex tab missing');
-      third.click();
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const meeting = window.MeetingRoom.getMeetingData('e2e-meeting-room-smoke');
-      return {
-        focusedSub: meeting && meeting.focusedSub,
-        activeTabSid: document.querySelector('.mr-card-view-tab.active')?.getAttribute('data-gc-card-tab-sid') || null,
-        activeCardSid: document.querySelector('.mr-ft.active')?.getAttribute('data-ft-sid') || null,
-      };
-    })()`);
-
-    assert.strictEqual(tabClick.focusedSub, 'e2e-codex', 'delegated tab click must update focusedSub');
-    assert.strictEqual(tabClick.activeTabSid, 'e2e-codex', 'delegated tab click must update active tab');
-    assert.strictEqual(tabClick.activeCardSid, 'e2e-codex', 'delegated tab click must update active card');
-
-    const timeline = await client.eval(`(async () => {
-      const expand = document.querySelector('.mr-ft.active .mr-ft-expand');
-      if (!expand) throw new Error('active card expand button missing');
-      expand.click();
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      const overlay = document.getElementById('mr-gc-timeline-overlay');
-      const visible = !!overlay && getComputedStyle(overlay).display !== 'none';
-      overlay?.querySelector('[data-gc-tl-close]')?.click();
-      return { visible };
-    })()`);
-    assert.strictEqual(timeline.visible, true, 'delegated expand click must open the timeline overlay');
+    assert.ok(actionFlow.inputText.includes('E2E delegated renderer smoke question'), 'edit-resend must restore the user question to the composer');
+    assert.strictEqual(actionFlow.membersBefore, 3, 'member rail starts with all members');
+    assert.strictEqual(actionFlow.sideCollapsed, false, 'header member control must expand the default-collapsed unified member rail');
+    assert.deepStrictEqual(actionFlow.retryLabels, ['重答', '重答', '重答'], 'settled AI cards expose re-answer actions');
 
     const screenshot = await client.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(SCREENSHOT_PATH, Buffer.from(screenshot.data, 'base64'));
@@ -235,8 +223,8 @@ function cleanupDataDir(dataDir) {
       port,
       screenshot: SCREENSHOT_PATH,
       screenshotBytes: shotSize,
-      focusedSub: tabClick.focusedSub,
-      cards: setup.cards.map((card) => card.sid),
+      messages: setup.messages.map((message) => message.id),
+      retryLabels: actionFlow.retryLabels,
     }, null, 2));
   } catch (err) {
     if (hub && typeof hub.log === 'function') {

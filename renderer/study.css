@@ -1,0 +1,129 @@
+/* renderer/study.css — 学习 Tab 面板（Mock B：左课程 / 右双 Agent）
+ *
+ * 全部用 Hub 的语义 token（--surface-* / --fg-* / --border-* / --brand），
+ * 这样跟随用户选的主题走，不自带配色。
+ * 注意：**不要定义 --accent**。base.css 第 86 行写明仓库里有 48 处
+ * `var(--accent, <蓝/靛>)` 在拿「没定义」当回退，定义了会污染群聊和工作流弹窗。
+ */
+
+#study-panel {
+  display: none;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  background: var(--surface-canvas);
+  color: var(--fg-default);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* ── 顶部条 ── */
+.study-head {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+.study-head .st-title { font-size: 15px; font-weight: 600; color: var(--fg-strong); }
+.study-head .st-sub { font-size: 12px; color: var(--fg-muted); }
+.study-head .st-spacer { flex: 1; }
+
+.study-pill {
+  font-size: 11px; padding: 3px 10px; border-radius: var(--radius-pill);
+  background: var(--surface-sunken); color: var(--fg-muted);
+  border: 1px solid var(--border-subtle); white-space: nowrap;
+}
+.study-pill.run { background: var(--brand); color: var(--fg-inverse); border-color: transparent; }
+.study-pill.ok { color: var(--status-success); border-color: var(--status-success); }
+.study-pill.bad { color: var(--status-danger); border-color: var(--status-danger); }
+
+.study-btn {
+  font: inherit; font-size: 12px; padding: 6px 13px; cursor: pointer;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-mid);
+  background: var(--surface-card); color: var(--fg-default);
+}
+.study-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.study-btn:disabled { opacity: .45; cursor: not-allowed; }
+.study-btn.primary { background: var(--brand); color: var(--fg-inverse); border-color: transparent; }
+
+.study-select {
+  font: inherit; font-size: 12px; padding: 5px 9px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-mid);
+  background: var(--surface-card); color: var(--fg-default); max-width: 240px;
+}
+
+/* ── 主体：左课程 / 右 Agent ── */
+.study-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 1fr);
+  min-height: 0;
+}
+@media (max-width: 1100px) {
+  .study-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0,1.2fr) minmax(0,1fr); }
+}
+
+.study-lesson { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface-canvas); }
+/* 课程是完整 HTML 文档（自带 style + base64 图），必须用 iframe 隔离，
+   直接注进面板会让两边的 CSS 互相污染。srcdoc + 零网络请求，离线可开。 */
+.study-lesson iframe { flex: 1; width: 100%; border: 0; background: #fff; min-height: 0; }
+.study-empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--fg-muted); font-size: 13px; text-align: center; padding: 40px;
+}
+.study-empty .big { font-size: 15px; color: var(--fg-default); }
+
+/* ── 右栏 ── */
+.study-agents {
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0; min-width: 0;
+}
+@media (max-width: 1100px) { .study-agents { border-left: 0; border-top: 1px solid var(--border-subtle); } }
+
+.study-tabs { display: flex; gap: 6px; padding: 10px 12px 0; }
+.study-tab {
+  flex: 1; text-align: center; cursor: pointer; user-select: none;
+  padding: 8px 10px; border-radius: var(--radius-md) var(--radius-md) 0 0;
+  border: 1px solid var(--border-subtle); border-bottom: 0;
+  background: var(--surface-sunken); color: var(--fg-muted); font-size: 12.5px;
+}
+.study-tab.on { background: var(--surface-card); color: var(--fg-strong); font-weight: 600; }
+.study-tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--fg-faint); }
+.study-tab .dot.alive { background: var(--status-success); }
+.study-tab .dot.busy { background: var(--status-warning); }
+
+.study-agent-meta {
+  padding: 10px 14px; border-top: 1px solid var(--border-subtle);
+  background: var(--surface-card); font-size: 12px; color: var(--fg-muted);
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.study-agent-meta b { color: var(--fg-default); font-weight: 600; }
+
+.study-output {
+  overflow-y: auto; padding: 12px 14px; background: var(--surface-card);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+  color: var(--fg-default); white-space: pre-wrap; word-break: break-word; min-height: 0;
+}
+.study-output .hint { color: var(--fg-faint); font-family: var(--font-sans); }
+
+.study-ask { padding: 10px 12px 12px; background: var(--surface-card); border-top: 1px solid var(--border-subtle); }
+.study-ask textarea {
+  width: 100%; resize: vertical; min-height: 58px; max-height: 180px;
+  font: inherit; font-size: 13px; padding: 9px 11px; box-sizing: border-box;
+  border-radius: var(--radius-md); border: 1px solid var(--border-mid);
+  background: var(--surface-sunken); color: var(--fg-default);
+}
+.study-ask textarea:focus { outline: none; border-color: var(--brand); }
+.study-ask .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.study-ask .row .grow { flex: 1; font-size: 11.5px; color: var(--fg-muted); }
+
+/* ── 棒次进度 ── */
+.study-stages { display: flex; gap: 6px; align-items: center; }
+.study-stage {
+  font-size: 11px; padding: 3px 9px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle); color: var(--fg-muted); white-space: nowrap;
+}
+.study-stage.running { border-color: var(--brand); color: var(--brand); }
+.study-stage.done { border-color: var(--status-success); color: var(--status-success); }
+.study-stage.failed { border-color: var(--status-danger); color: var(--status-danger); }

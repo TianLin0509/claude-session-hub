@@ -25,4 +25,10 @@ assert.ok(css.includes('body.mr-card-tab-mode .mr-ft-bottom'), 'tab mode gives p
 assert.ok(css.includes('body.mr-card-tab-mode .mr-gc-timetravel-banner'), 'tab mode hides time-travel banner');
 assert.ok(css.includes('body.mr-card-tab-mode .mr-gc-userq'), 'tab mode hides question banner');
 
+assert.ok(!js.includes(['_GROUP', '_VIEW_MODE_KEY'].join('')), 'group chat no longer persists a second legacy view mode');
+assert.ok(!js.includes('id="mr-btn-group-' + 'card-view"') && !js.includes('id="mr-btn-group-' + 'chat-view"'), 'group header exposes one unified conversation-card surface');
+assert.ok(js.includes('if (meeting.groupChat) {\n      return _renderGroupChatView'), 'all group rooms render the unified conversation-card surface');
+assert.ok(js.includes('data-gc-resend-turn') && js.includes('data-gc-edit-turn'), 'group user cards inherit resend and edit-resend actions');
+assert.ok(js.includes('data-gc-retry-answer') && js.includes('data-gc-escape="resend-prompt"'), 'group assistant cards expose retry and stuck-input recovery');
+
 console.log('meeting-room card view mode contract ok');

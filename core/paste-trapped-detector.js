@@ -18,7 +18,7 @@
 //
 // API（被动 tick）：
 //   detector.start(sid, dispatchTs)
-//   const r = detector.tick(sid, buf, currentActivity)  // 'stuck' | 'ok' | 'unknown'
+//   const r = detector.tick(sid, buf, currentOutputBytes)  // 'stuck' | 'ok' | 'unknown'
 //   detector.stop(sid)
 //
 // 调用方（main.js dispatch 路径）每 3s 跑一次 tick，看到 'stuck' 后决定
@@ -35,7 +35,10 @@ const TIME_GATE_MS = 3000;
 const MIN_MARKER_OBSERVATIONS = 2;
 const MIN_OBSERVATION_DURATION_MS = 3000;
 const MAX_ACTIVITY_DELTA = 200;
-const TAIL_SCAN_BYTES = 1024;
+// A full-screen Codex repaint can append more than one kilobyte while leaving
+// the same collapsed marker visible. Scan a bounded screen-sized tail so the
+// marker survives until the confirming observation.
+const TAIL_SCAN_BYTES = 8192;
 
 const _entries = new Map();
 
@@ -60,7 +63,7 @@ function _extractMarker(buf) {
 //   'unknown'  尚未确诊（时间门未到 / marker 刚出现 / 计数未满）
 //   'ok'       未看到 marker（normal streaming or already submitted）
 //   'stuck'    三层条件全满足，输入框卡 paste 模式
-function tick(sid, buf, currentActivity) {
+function tick(sid, buf, currentOutputBytes) {
   const e = _entries.get(sid);
   if (!e) return 'unknown';
   const now = Date.now();
@@ -84,7 +87,7 @@ function tick(sid, buf, currentActivity) {
     // 第 1 次看到 / N 变了（说明用户/dispatch 又往里贴了内容）→ 重置基线
     e.markerNum = marker.num;
     e.markerSeenCount = 1;
-    e.markerSnapshotActivity = (typeof currentActivity === 'number') ? currentActivity : 0;
+    e.markerSnapshotActivity = (typeof currentOutputBytes === 'number') ? currentOutputBytes : 0;
     e.markerFirstSeenTs = now;
     return 'unknown';
   }
@@ -94,8 +97,8 @@ function tick(sid, buf, currentActivity) {
 
   // 层 3：所有条件满足 → 确诊 stuck
   const obsDuration = now - e.markerFirstSeenTs;
-  const activityDelta = (typeof currentActivity === 'number')
-    ? currentActivity - (e.markerSnapshotActivity || 0)
+  const activityDelta = (typeof currentOutputBytes === 'number')
+    ? currentOutputBytes - (e.markerSnapshotActivity || 0)
     : 0;
   if (
     e.markerSeenCount >= MIN_MARKER_OBSERVATIONS &&

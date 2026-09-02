@@ -425,7 +425,7 @@ test('watcher settle re-reads currentTurn after extraction (preemption race guar
   assert.deepStrictEqual(patchCalls, [[5, 's1', 'manual_extracted']]);
 });
 
-test('resend prompt sends latest-turn user input regardless of state', async () => {
+test('resend prompt prefers the exact durable dispatcher prompt', async () => {
   const ipc = createFakeIpc();
   const calls = [];
   const orch = {
@@ -437,6 +437,10 @@ test('resend prompt sends latest-turn user input regardless of state', async () 
         { id: 'u1', role: 'user', content: 'old turn' },
         { id: 'u2', role: 'user', content: 'prompt text' },
       ],
+    },
+    getActivePrompt(turnNum, sid) {
+      calls.push(['getActivePrompt', turnNum, sid]);
+      return { prompt: 'full system + delta prompt' };
     },
   };
   registerGroupchatRecoveryIpc(ipc, {
@@ -476,12 +480,13 @@ test('resend prompt sends latest-turn user input regardless of state', async () 
   assert.deepStrictEqual(calls, [
     ['getMeeting', 'm1'],
     ['getOrchestrator', 'C:\\hub', 'm1'],
+    ['getActivePrompt', 2, 's1'],
     ['getSession', 's1'],
     ['resendCurrentPrompt', {
       sid: 's1',
       kind: 'claude',
-      prompt: 'prompt text',
-      promptHeader: '',
+      prompt: 'full system + delta prompt',
+      promptHeader: 'full system + delta prompt',
       timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
     }],
   ]);
@@ -547,22 +552,43 @@ test('skip participant validates sid and active watcher', async () => {
   assert.deepStrictEqual(calls, [['skip', 's1']]);
 });
 
-test('resend participant keeps existing unsupported response', async () => {
+test('resend participant retries one settled member through the dispatcher', async () => {
   const ipc = createFakeIpc();
+  const calls = [];
   registerGroupchatRecoveryIpc(ipc, {
+    dispatchGroupChatTurn: async (meetingId, args) => {
+      calls.push([meetingId, args]);
+      return { status: 'completed', turnNum: 2, results: [{ sid: 's1', status: 'completed', text: 'new answer' }] };
+    },
     getActiveWatchers: () => new Map(),
     getHubDataDir: () => 'C:\\hub',
-    groupchat: {},
+    groupchat: {
+      getOrchestrator: () => ({
+        state: {
+          currentTurn: 2,
+          currentMode: 'idle',
+          messages: [{ id: 'u2', role: 'user', turnNum: 2, content: 'retry this' }],
+        },
+      }),
+    },
     groupChatWatcher: {},
-    meetingManager: {},
+    meetingManager: { getMeeting: () => ({ id: 'm1', groupChat: true, subSessions: ['s1'] }) },
     sessionManager: {},
   });
 
-  const result = await ipc.handlers.get('groupchat-resend-participant')();
-
-  assert.deepStrictEqual(result, {
-    ok: false,
-    reason: 'unsupported',
-    detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions',
+  const result = await ipc.handlers.get('groupchat-resend-participant')(null, {
+    meetingId: 'm1',
+    sid: 's1',
+    turnNum: 2,
   });
+
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(calls, [['m1', {
+    userInput: 'retry this',
+    targetMemberIds: ['m1'],
+    reuseTurnNum: 2,
+    appendUserMessage: false,
+    dispatchMode: 'retry',
+    turnTimeoutMs: 10 * 60 * 1000,
+  }]]);
 });

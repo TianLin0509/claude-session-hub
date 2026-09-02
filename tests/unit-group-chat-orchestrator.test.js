@@ -491,5 +491,48 @@ test('completeTurn keeps earlier statusReason when a repeated errored result has
   assert.strictEqual(msg.statusReason, 'auth_required', '迟到的无 reason errored 不抹掉已有失败原因');
 });
 
+test('exact in-flight prompts and send receipts are durable until turn settlement', () => {
+  const { meetingId, orch } = fresh();
+  const { turnNum } = orch.beginTurn('long user question');
+  const exactPrompt = 'SYSTEM RULES\n\n## 用户\nlong user question\n\nHERO';
+  orch.recordTurnPrompt(turnNum, 's-codex', exactPrompt, {
+    workflowRun: { runId: 'serial-run-1', kind: 'serial', stepIndex: 0, attempt: 1, targetMemberIds: ['m2'] },
+  });
+  orch.setSendStatus(turnNum, 's-codex', 'enter_retry', { acknowledgementSource: 'task_started' });
+  const active = orch.getActivePrompt(turnNum, 's-codex');
+  assert.strictEqual(active.prompt, exactPrompt);
+  const diskBefore = JSON.parse(fs.readFileSync(groupchat.groupChatStatePath(tmp, meetingId), 'utf8'));
+  assert.strictEqual(diskBefore.schemaVersion, 3);
+  assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].prompt, exactPrompt);
+  assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].status, 'enter_retry');
+  assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].workflowRun.runId, 'serial-run-1');
+
+  orch.completeTurn(turnNum, 'long user question', [
+    { sid: 's-codex', status: 'completed', text: 'answer' },
+  ], { 's-codex': members[1] }, {}, {
+    dispatchMode: 'serial',
+    workflowRun: { runId: 'serial-run-1', kind: 'serial', stepIndex: 0, attempt: 1, targetMemberIds: ['m2'] },
+  });
+  const settled = orch.getState();
+  assert.strictEqual(settled.pendingPrompts[String(turnNum)], undefined, 'settled turn clears transient prompt receipt');
+  assert.strictEqual(settled.messages.find(m => m.sid === 's-codex').sourcePrompt, exactPrompt, 'assistant card keeps the exact prompt for audit/retry');
+  assert.strictEqual(settled.turns[0].meta.workflowSteps[0].runId, 'serial-run-1');
+  assert.strictEqual(settled.turns[0].meta.workflowSteps[0].results[0].textLength, 6);
+  const leftovers = fs.readdirSync(path.dirname(groupchat.groupChatStatePath(tmp, meetingId)))
+    .filter(name => name.includes(meetingId) && name.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], 'atomic state writes leave no temp files');
+});
+
+test('reusing an interrupted turn clears the stale restart badge without duplicating the user message', () => {
+  const { orch } = fresh();
+  const first = orch.beginTurn('resume me');
+  const user = orch.state.messages.find(message => message.id === `u${first.turnNum}`);
+  user.interruptedNote = true;
+  const resumed = orch.beginTurn('internal step prompt', { turnNum: first.turnNum, appendUserMessage: false });
+  assert.strictEqual(resumed.didAppendUserMessage, false);
+  assert.strictEqual(orch.state.messages.filter(message => message.role === 'user').length, 1);
+  assert.strictEqual(user.interruptedNote, undefined);
+});
+
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 process.exit(failed ? 1 : 0);

@@ -10,11 +10,13 @@ const readyDetectorPath = path.join(root, 'core', 'group-chat-cli-ready-detector
 const watcherPath = path.join(root, 'core', 'turn-completion-watcher.js');
 const groupWatcherPath = path.join(root, 'core', 'group-chat-watcher.js');
 const mainPath = path.join(root, 'main.js');
+const sessionManagerPath = path.join(root, 'core', 'session-manager.js');
 const dispatcherSrc = fs.readFileSync(dispatcherPath, 'utf8');
 const readyDetectorSrc = fs.readFileSync(readyDetectorPath, 'utf8');
 const watcherSrc = fs.readFileSync(watcherPath, 'utf8');
 const groupWatcherSrc = fs.readFileSync(groupWatcherPath, 'utf8');
 const mainSrc = fs.readFileSync(mainPath, 'utf8');
+const sessionManagerSrc = fs.readFileSync(sessionManagerPath, 'utf8');
 const { _parseGroupTargets } = require(dispatcherPath);
 
 const members = [
@@ -115,8 +117,32 @@ assert.ok(/writeSubmitFallbackSignals/.test(groupWatcherSrc) &&
 assert.ok(/if\s*\(isCodexCliKind\(kind\)\)\s*\{[\s\S]*await writeSubmitFallbackSignals\(sessionManager,\s*sid,\s*kind,\s*ENTER_RETRY_TRIES,\s*ENTER_RETRY_GAP_MS\)/.test(groupWatcherSrc),
   'Codex first-send path should rotate CR/LF/CRLF submit signals even when prompt echo is observed');
 
-assert.ok(/if\s*\(isClaudeFamily\(kind\)\s*\|\|\s*isCodexCliKind\(kind\)\)\s*\{[\s\S]*for\s*\(let i = 0; i < ENTER_RETRY_TRIES; i \+= 1\)[\s\S]*sessionManager\.writeToSession\(sid,\s*'\\r'\)/.test(groupWatcherSrc),
-  'Claude-family bracketed-paste path should send repeated Enter signals so a swallowed first Enter does not wait for hard timeout');
+assert.ok(/observeAgentTurnStart\(sessionManager,\s*sid,\s*kind\)/.test(groupWatcherSrc) &&
+  /sessionManager\.writeToSession\(sid,\s*'\\r'\);[\s\S]*for\s*\(let attempt = 0; !acknowledgement/.test(groupWatcherSrc) &&
+  /agent work-start acknowledgement/.test(groupWatcherSrc),
+  'Claude/Codex bracketed-paste path should retry Enter only while the shared provider lifecycle says the agent has not started');
+assert.ok(/createLivePtyRuntimeObserver\(sessionManager, sid, kind\)/.test(groupWatcherSrc) &&
+  /advanceRunningAnimationCandidate/.test(groupWatcherSrc) &&
+  /classifyTerminalRuntime/.test(groupWatcherSrc),
+  'late transcript binding must be bridged by the same strong two-frame PTY runtime classifier as ordinary Sessions');
+
+assert.ok(/getGroupChatOutputBytes\(sid\)/.test(dispatcherSrc),
+  'paste-trapped detection must use monotonic PTY bytes rather than a last-output timestamp');
+assert.ok(/groupChatOutputBytes\s*\+=\s*Buffer\.byteLength/.test(sessionManagerSrc) &&
+  /noteAgentTurnStarted\(sessionId/.test(sessionManagerSrc) &&
+  /emit\('agent-turn-started'/.test(sessionManagerSrc),
+  'SessionManager must expose monotonic output and semantic work-start truth to group delivery');
+assert.ok(/sessionManager\.noteAgentTurnStarted\(ev\.hubSessionId/.test(mainSrc) &&
+  /sessionManager\.noteAgentTurnStarted\(parsed\.sessionId/.test(mainSrc),
+  'Codex task_started and Claude UserPromptSubmit must feed the same main-process lifecycle cursor');
+assert.ok(/const sendFailures = \[\]/.test(dispatcherSrc) &&
+  /immediateFailures\s*=\s*absentMembers\.concat\(sendFailures\)/.test(dispatcherSrc) &&
+  /concat\(absentMembers, sendFailures\)/.test(dispatcherSrc),
+  'a target whose CLI send throws or is not ready must settle as an explicit errored participant instead of disappearing');
+assert.ok(/sendToRenderer\('groupchat-send-ack'/.test(dispatcherSrc) &&
+  /acknowledgementSource: sendResult/.test(dispatcherSrc) &&
+  /enterAttempts: Number\(sendResult/.test(dispatcherSrc),
+  'real diagnostics must expose semantic submit acknowledgement and bounded Enter attempt count');
 
 assert.ok(/CODEX_PROMPT_SUBMIT_VERIFY_MS\s*=\s*25\s*\*\s*1000/.test(dispatcherSrc) &&
   /CODEX_TRANSCRIPT_BIND_GRACE_MS\s*=\s*90\s*\*\s*1000/.test(dispatcherSrc) &&

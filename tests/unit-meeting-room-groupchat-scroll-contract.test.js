@@ -15,8 +15,8 @@ assert.match(
 
 assert.match(
   SRC,
-  /forceGroupChatBottom\s*=\s*\(forceMeetingBottom\s*\|\|\s*!!opts\.forceGroupChatBottom\)[\s\S]{0,100}!!meeting\.groupChat\s*&&\s*_getGroupViewMode\(\)\s*===\s*['"]chat['"]/,
-  'chat-stream force-bottom must accept explicit meeting navigation while remaining scoped to chat view'
+  /forceGroupChatBottom\s*=\s*\(forceMeetingBottom\s*\|\|\s*!!opts\.forceGroupChatBottom\)[\s\S]{0,100}&&\s*!!meeting\.groupChat/,
+  'unified group surface force-bottom must accept explicit meeting navigation'
 );
 
 assert.match(

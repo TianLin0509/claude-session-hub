@@ -518,6 +518,15 @@ transcriptTap.on('turn-started', (ev) => {
   completionNotifier.noteTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
+    sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
+      startedAt: ev.startedAt,
+      signalSource: ev.signalSource || 'task_started',
+      turnId: ev.turnId || null,
+    });
+  } catch (error) {
+    console.warn('[codex task] main-process lifecycle note failed:', error && error.message);
+  }
+  try {
     sendToRenderer('turn-started-event', {
       hubSessionId: ev.hubSessionId,
       transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
@@ -1043,6 +1052,7 @@ function sendToRenderer(channel, data) {
 let groupChatDispatcher = null;
 let sessionAutoSuspendScheduler = null;
 let agentLeagueBridge = null;
+let studyBridge = null;
 const meetingTerminalActivitySentAt = new Map();
 const terminalOutputBatcher = new TerminalOutputBatcher({
   emit: ({ sessionId, data, seq }) => {
@@ -1216,14 +1226,18 @@ groupChatDispatcher = createGroupChatDispatcher({
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
   interruptGroupChatTurn: groupChatDispatcher.interruptMeetingTurn,
-  stopLoop: (meetingId) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId) : false),
+  stopLoop: (meetingId, options) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
 });
 
 // Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
 try {
   global.__loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
     getDispatcher: () => groupChatDispatcher,
+    getOrchestrator: (meetingId) => groupchat.getOrchestrator(getHubDataDir(), meetingId),
     meetingManager, sessionManager, sendToRenderer,
+    // resumeSession is initialized later in this module; the closure is only
+    // invoked after startup, when the provider-native resume handler exists.
+    resumeSession: (meta) => resumeSession(meta),
     writeReport: (html) => {
       try {
         const fsx = require('fs'), pathx = require('path'), osx = require('os');
@@ -1246,6 +1260,7 @@ sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
     groupChatDispatcher,
     loopEngine: global.__loopEngine,
     meetingManager,
+    studyBridge,
   }),
   logger: console,
 });
@@ -1325,6 +1340,20 @@ if (process.env.CLAUDE_HUB_E2E === '1') {
   });
 }
 
+// 学习 Tab：Claude（主笔）与 Codex（审阅兼插画）两个常驻实体 Session，
+// 由主进程按三棒串行工作流驱动。Claude 不去调用 Codex——两者都是普通 Hub Session。
+try {
+  studyBridge = require('./main/ipc/study-handlers.js').registerStudyIpc(ipcMain, {
+    getHubDataDir,
+    registerSessionForTap,
+    sendToRenderer,
+    sessionManager,
+    transcriptTap,
+  });
+} catch (e) {
+  console.warn('[study] 学习 Tab 初始化失败：', e && e.message);
+}
+
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
   groupchat,
@@ -1332,10 +1361,12 @@ registerGroupchatQueryIpc(ipcMain, {
 });
 
 registerGroupchatRecoveryIpc(ipcMain, {
+  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
   getHubDataDir,
   getActiveWatchers: groupChatDispatcher.getActiveWatchers,
   groupchat,
   groupChatWatcher: groupChatDispatcher.getGroupChatWatcher(),
+  isWorkflowRunning: (meetingId) => !!(global.__loopEngine && global.__loopEngine.isRunning(meetingId)),
   meetingManager,
   sendToRenderer,
   sessionManager,
@@ -1778,13 +1809,23 @@ const hookServer = http.createServer((req, res) => {
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }
-        if (event === 'prompt' && latestUserMessage) {
-          maybeAutoTitleSessionFromPrompt({
-            hubSessionId: parsed.sessionId,
-            text: latestUserMessage,
-            submittedAt: eventAt,
-            signalSource: 'hook_prompt',
-          });
+        if (event === 'prompt') {
+          try {
+            sessionManager.noteAgentTurnStarted(parsed.sessionId, {
+              startedAt: eventAt,
+              signalSource: 'claude-user-prompt-submit',
+            });
+          } catch (error) {
+            console.warn('[claude prompt] main-process lifecycle note failed:', error && error.message);
+          }
+          if (latestUserMessage) {
+            maybeAutoTitleSessionFromPrompt({
+              hubSessionId: parsed.sessionId,
+              text: latestUserMessage,
+              submittedAt: eventAt,
+              signalSource: 'hook_prompt',
+            });
+          }
         }
         sendToRenderer('hook-event', {
           event,

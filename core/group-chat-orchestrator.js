@@ -7,7 +7,30 @@ const { KIND_LABELS } = require('./ai-kinds.js');
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
+const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const ATOMIC_RENAME_RETRIES = 80;
+const ATOMIC_RENAME_DELAY_MS = 15;
+const _renameSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function atomicWriteUtf8(filePath, text) {
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  try {
+    fs.writeFileSync(tmp, text, 'utf8');
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fs.renameSync(tmp, filePath);
+        break;
+      } catch (error) {
+        if (!error || !TRANSIENT_RENAME_CODES.has(error.code) || attempt >= ATOMIC_RENAME_RETRIES) throw error;
+        Atomics.wait(_renameSleepCell, 0, 0, ATOMIC_RENAME_DELAY_MS);
+      }
+    }
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
 
 function arenaPromptsDir(hubDataDir) {
   return path.join(hubDataDir, 'arena-prompts');
@@ -104,6 +127,10 @@ class GroupChatOrchestrator {
       currentMode: 'idle',
       messages: [],
       lastDeliveredIdx: {},
+      // Exact prompts prepared for the current in-flight turn.  Keeping this
+      // durable makes a post-crash/manual resend faithful to the original
+      // system+delta+hero prompt instead of degrading to the raw user line.
+      pendingPrompts: {},
       turns: [],
       aiStats: {},
     };
@@ -131,6 +158,7 @@ class GroupChatOrchestrator {
           meetingId: this.meetingId,
           messages: Array.isArray(raw.messages) ? raw.messages : [],
           lastDeliveredIdx: raw.lastDeliveredIdx && typeof raw.lastDeliveredIdx === 'object' ? raw.lastDeliveredIdx : {},
+          pendingPrompts: raw.pendingPrompts && typeof raw.pendingPrompts === 'object' ? raw.pendingPrompts : {},
         };
         // 2026-07-20 道雪 [修#9]：崩溃/重启后的悬空轮标记——用户消息所在轮没有任何
         //   turn 记录时，给该消息打"已被重启打断"标记（此前问题孤悬、无任何提示）。
@@ -161,8 +189,7 @@ class GroupChatOrchestrator {
 
   _saveState() {
     const fp = this._stateFilePath();
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify(this.state, null, 2), 'utf-8');
+    atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
   }
 
   getState() {
@@ -189,6 +216,7 @@ class GroupChatOrchestrator {
       });
       didAppendUserMessage = true;
     }
+    if (!appendUserMessage && msg && msg.interruptedNote) delete msg.interruptedNote;
     this._saveState();
     return { turnNum: n, userMessage: msg, didAppendUserMessage };
   }
@@ -203,6 +231,7 @@ class GroupChatOrchestrator {
     this.state.currentTurn = Math.max(0, ...this.state.turns.map(t => t.n || 0));
     this.state.currentMode = 'idle';
     delete this._activePrompts[turnNum];
+    delete this.state.pendingPrompts[String(turnNum)];
     this._saveState();
   }
 
@@ -216,19 +245,62 @@ class GroupChatOrchestrator {
     return message;
   }
 
-  recordTurnPrompt(turnNum, sid, prompt) {
+  recordTurnPrompt(turnNum, sid, prompt, details = {}) {
     if (!this._activePrompts[turnNum]) this._activePrompts[turnNum] = {};
     this._activePrompts[turnNum][sid] = prompt || '';
+    const key = String(turnNum);
+    if (!this.state.pendingPrompts || typeof this.state.pendingPrompts !== 'object') this.state.pendingPrompts = {};
+    if (!this.state.pendingPrompts[key] || typeof this.state.pendingPrompts[key] !== 'object') this.state.pendingPrompts[key] = {};
+    const previous = this.state.pendingPrompts[key][sid] || {};
+    this.state.pendingPrompts[key][sid] = {
+      prompt: prompt || '',
+      status: 'prepared',
+      attempts: Number(previous.attempts) || 0,
+      updatedAt: Date.now(),
+      ...(details.workflowRun && details.workflowRun.runId ? {
+        workflowRun: {
+          runId: String(details.workflowRun.runId),
+          kind: String(details.workflowRun.kind || 'serial'),
+          stepIndex: Math.max(0, Number(details.workflowRun.stepIndex) || 0),
+          attempt: Math.max(1, Number(details.workflowRun.attempt) || 1),
+          targetMemberIds: Array.isArray(details.workflowRun.targetMemberIds)
+            ? details.workflowRun.targetMemberIds.map(String)
+            : [],
+        },
+      } : {}),
+    };
+    this._saveState();
   }
 
-  getActivePrompt(turnNum) {
-    const promptBy = this._activePrompts[turnNum];
-    return promptBy ? { promptBy } : null;
+  getActivePrompt(turnNum, sid = null) {
+    const key = String(turnNum);
+    const volatile = this._activePrompts[turnNum] || {};
+    const durable = this.state.pendingPrompts && this.state.pendingPrompts[key] || {};
+    const promptBy = {};
+    for (const [memberSid, entry] of Object.entries(durable)) {
+      promptBy[memberSid] = entry && typeof entry === 'object' ? (entry.prompt || '') : String(entry || '');
+    }
+    Object.assign(promptBy, volatile);
+    if (sid) return promptBy[sid] ? { prompt: promptBy[sid], status: durable[sid] || null } : null;
+    return Object.keys(promptBy).length ? { promptBy } : null;
   }
 
-  setSendStatus(_turnNum, _sid, _status) {
-    // Group chat keeps transient send state in renderer partials; this method
-    // preserves the shared watcher recovery contract.
+  setSendStatus(turnNum, sid, status, details = {}) {
+    const key = String(turnNum);
+    const bySid = this.state.pendingPrompts && this.state.pendingPrompts[key];
+    if (!bySid || !bySid[sid]) return false;
+    const entry = bySid[sid];
+    entry.status = status || entry.status || 'unknown';
+    entry.updatedAt = Date.now();
+    if (/retry|sent|submitted|recovered/i.test(String(status || ''))) {
+      entry.attempts = (Number(entry.attempts) || 0) + 1;
+    }
+    if (details && typeof details === 'object') {
+      if (details.acknowledgementSource) entry.acknowledgementSource = String(details.acknowledgementSource);
+      if (details.reason) entry.reason = String(details.reason);
+    }
+    this._saveState();
+    return true;
   }
 
   buildDelta(selfSid, userInput, opts = {}) {
@@ -286,7 +358,12 @@ class GroupChatOrchestrator {
       const member = memberBySid[sid] || {};
       // [查看本轮 prompt] 该 AI 本轮实际收到的完整 prompt（dispatcher 已 recordTurnPrompt 存入 _activePrompts，
       //   本循环结束前不会被 delete），随消息持久化，供前端气泡「📥 查看 prompt」弹窗复盘/优化。
-      const _srcPrompt = (this._activePrompts[turnNum] && this._activePrompts[turnNum][sid]) || '';
+      const _durablePrompt = this.state.pendingPrompts
+        && this.state.pendingPrompts[String(turnNum)]
+        && this.state.pendingPrompts[String(turnNum)][sid];
+      const _srcPrompt = (this._activePrompts[turnNum] && this._activePrompts[turnNum][sid])
+        || (_durablePrompt && _durablePrompt.prompt)
+        || '';
       // 2026-06-21 道雪：与 patchTurnResult 对齐——仅确有新文本时写正文；
       //   errored/超时返回空文本时保留已有答案，防重发/串行工作流抹掉已生成内容。
       // 2026-07-12 道雪收紧：completed 空文本（process_exit_clean 兜底 settle）同样
@@ -374,8 +451,34 @@ class GroupChatOrchestrator {
       turn.meta = turn.meta && typeof turn.meta === 'object' ? turn.meta : {};
       if (opts.dispatchMode) turn.meta.dispatchMode = opts.dispatchMode;
     }
+    if (opts.workflowRun && typeof opts.workflowRun === 'object' && opts.workflowRun.runId) {
+      turn.meta = turn.meta && typeof turn.meta === 'object' ? turn.meta : {};
+      const steps = Array.isArray(turn.meta.workflowSteps) ? turn.meta.workflowSteps : [];
+      const entry = {
+        runId: String(opts.workflowRun.runId),
+        kind: String(opts.workflowRun.kind || 'serial'),
+        stepIndex: Math.max(0, Number(opts.workflowRun.stepIndex) || 0),
+        attempt: Math.max(1, Number(opts.workflowRun.attempt) || 1),
+        targetMemberIds: Array.isArray(opts.workflowRun.targetMemberIds)
+          ? opts.workflowRun.targetMemberIds.map(String)
+          : [],
+        completedAt: Date.now(),
+        results: (results || []).map(result => ({
+          sid: result && result.sid || null,
+          status: result && result.status || 'unknown',
+          textLength: result && result.text ? String(result.text).length : 0,
+        })),
+      };
+      const existingIndex = steps.findIndex(item => item
+        && item.runId === entry.runId
+        && Number(item.stepIndex) === entry.stepIndex);
+      if (existingIndex >= 0) steps[existingIndex] = entry;
+      else steps.push(entry);
+      turn.meta.workflowSteps = steps.slice(-100);
+    }
     this.state.currentMode = 'idle';
     delete this._activePrompts[turnNum];
+    delete this.state.pendingPrompts[String(turnNum)];
     const lastIdx = this.state.messages.length - 1;
     for (const r of results) {
       this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
@@ -430,6 +533,7 @@ class GroupChatOrchestrator {
     if (!turnNum || this.state.currentTurn !== turnNum) return;
     this.state.currentMode = 'idle';
     delete this._activePrompts[turnNum];
+    delete this.state.pendingPrompts[String(turnNum)];
     this._saveState();
   }
 

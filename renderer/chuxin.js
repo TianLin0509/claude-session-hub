@@ -844,6 +844,8 @@
       // 反向切换由 selectSession / selectMeeting 调 __chuxinHide，本函数不替它们恢复 tp）
       if (tp) tp.style.display = 'none';
       if (mrp) mrp.style.display = 'none';
+      // 2026-09-01：学习面板是主区第四视图，同样要互斥，否则两块会叠在一起
+      if (window.__studyHide) window.__studyHide();
       refreshStatus();
     }
   }

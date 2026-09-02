@@ -204,9 +204,12 @@ t('HTML 转义防注入', () => {
 // ───────────────── resumeState（Phase 2b 断点续跑）─────────────────
 section('resumeState');
 t('从持久化重建 round/phase/goal/池', () => {
-  const r = LW.resumeState({ status: 'running', phase: 'polishing', round: 3, consecutiveGreen: 1, suggestionPool: [{ idea: 'x' }], history: [{ round: 1, pass: true }], goal: '实现登录' });
+  const r = LW.resumeState({ status: 'running', phase: 'polishing', round: 3, consecutiveGreen: 1, suggestionPool: [{ idea: 'x' }], history: [{ round: 1, pass: true }], goal: '实现登录', runId: 'loop-1', currentTurnNum: 9, stepAttempt: 1 });
   assert(r.state.round === 3 && r.state.phase === 'polishing' && r.state.goal === '实现登录');
   assert(r.state.suggestionPool.length === 1);
+  assert.strictEqual(r.state.runId, 'loop-1');
+  assert.strictEqual(r.state.currentTurnNum, 9);
+  assert.strictEqual(r.state.stepAttempt, 1);
 });
 t('上一轮未过 → prevMerge 回灌其阻断项', () => {
   const r = LW.resumeState({ status: 'running', round: 2, history: [{ round: 2, pass: false, blockers: [{ what: '登录500' }] }], goal: 'g' });

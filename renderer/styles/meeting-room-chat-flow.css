@@ -8,7 +8,9 @@
   --mr-gc-muted: var(--text-secondary, var(--fg-muted));
   --mr-gc-muted-2: var(--text-muted, var(--border-strong));
   --mr-gc-accent: var(--accent-blue, var(--link));
-  --mr-gc-user: var(--accent-green, #238636);
+  /* Match the latest ordinary Session card surface: blue user bubble, shared
+     content typography, neutral assistant cards. */
+  --mr-gc-user: var(--accent-blue, #0a84ff);
   --mr-gc-ai-bubble: var(--bg-secondary, var(--surface-raised));
   --mr-gc-panel-shadow: rgba(var(--rgb-scrim), 0.22);
   display: grid;
@@ -99,7 +101,7 @@
   justify-content: flex-end;
 }
 .mr-gc-msg-body {
-  max-width: min(760px, 78%);
+  max-width: min(960px, 86%);
   min-width: 0;
 }
 .mr-gc-msg.mine .mr-gc-msg-body {
@@ -226,6 +228,48 @@
   color: var(--mark-green);
   opacity: 1;
 }
+.mr-gc-turn-action,
+.mr-gc-retry-btn {
+  margin-top: 5px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: 1px solid var(--mr-gc-border);
+  border-radius: var(--radius-sm);
+  background: var(--mr-gc-surface-2);
+  color: var(--mr-gc-muted);
+  cursor: pointer;
+  font: 600 11px/22px inherit;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity .15s ease, transform .15s ease, background .15s ease, border-color .15s ease, color .15s ease;
+}
+.mr-gc-turn-action { width: 24px; padding: 0; font-size: 12px; }
+.mr-gc-retry-btn { padding: 0 8px; }
+.mr-gc-msg:hover .mr-gc-turn-action,
+.mr-gc-msg:focus-within .mr-gc-turn-action,
+.mr-gc-msg:hover .mr-gc-retry-btn,
+.mr-gc-msg:focus-within .mr-gc-retry-btn,
+.mr-gc-retry-btn.is-submit,
+.mr-gc-retry-btn.is-failure {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.mr-gc-turn-action:hover,
+.mr-gc-retry-btn:hover {
+  background: rgba(var(--rgb-info), 0.12);
+  border-color: rgba(var(--rgb-info), 0.5);
+  color: var(--mr-gc-text);
+}
+.mr-gc-retry-btn.is-submit,
+.mr-gc-msg.send-stuck .mr-gc-bubble {
+  border-color: rgba(var(--rgb-danger), 0.72);
+}
+.mr-gc-retry-btn.is-failure { color: var(--mark-red); }
+.mr-gc-retry-btn.ok { color: var(--mark-green); border-color: rgba(var(--rgb-success), 0.58); }
+.mr-gc-turn-action:disabled,
+.mr-gc-retry-btn:disabled { cursor: default; opacity: .58; }
 .mr-gc-avatar {
   width: 36px;
   height: 36px;
@@ -263,8 +307,8 @@
 }
 .mr-gc-avatar-user {
   background: var(--mr-gc-user);
-  color: var(--fg-strong);
-  border-color: rgba(var(--rgb-success), 0.46);
+  color: var(--fg-inverse);
+  border-color: rgba(var(--rgb-info), 0.46);
 }
 .mr-gc-bubble {
   position: relative;
@@ -275,7 +319,7 @@
   color: var(--mr-gc-text);
   border: 1px solid var(--mr-gc-border);
   box-shadow: 0 1px 1px var(--mr-gc-panel-shadow);
-  line-height: 1.5;
+  line-height: 1.74;
   word-break: break-word;
 }
 /* 2026-06-28 道雪 [改进1]：长回答折叠——超阈值默认折叠 + 渐变遮罩 + 展开按钮 */
@@ -453,16 +497,17 @@
 }
 .mr-gc-msg.mine .mr-gc-bubble {
   background: var(--mr-gc-user);
-  color: var(--fg-strong);
-  border-color: rgba(var(--rgb-success), 0.48);
+  color: var(--fg-inverse);
+  border-color: rgba(var(--rgb-info), 0.48);
 }
 .mr-gc-msg.mine .mr-gc-bubble::after {
   right: -6px;
   border-left: 6px solid var(--mr-gc-user);
 }
 .mr-gc-md {
-  font-size: 13px;
-  line-height: 1.5;
+  font-family: var(--card-content-font-family, "Segoe UI", "Microsoft YaHei UI", sans-serif);
+  font-size: var(--card-content-font-size, 15px);
+  line-height: 1.74;
   color: inherit;
   overflow-wrap: anywhere;
 }
