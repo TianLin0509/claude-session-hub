@@ -457,12 +457,16 @@
   background-repeat: no-repeat;
   flex-shrink: 0;
 }
-.logo-claude    { background-image: url('assets/ai-logos/claude.svg'); }
-.logo-gemini    { background-image: url('assets/ai-logos/gemini.svg'); }
-.logo-codex     { background-image: url('assets/ai-logos/codex.svg'); }
-.logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
-.logo-kimi      { background-image: url('assets/ai-logos/kimi.svg'); }
-.logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
+/* 路径必须是 ../assets：本文件 2026-08 从 renderer/styles.css 拆到 renderer/styles/ 之后，
+   @import 进来的 url() 仍按"被导入文件自身位置"解析，'assets/…' 指向了不存在的
+   renderer/styles/assets/，六个 logo 从那时起一直是空白（mini-jump 用 <img src> 走
+   index.html 相对路径，所以只有 CSS 背景这一路挂了，不容易发现）。 */
+.logo-claude    { background-image: url('../assets/ai-logos/claude.svg'); }
+.logo-gemini    { background-image: url('../assets/ai-logos/gemini.svg'); }
+.logo-codex     { background-image: url('../assets/ai-logos/codex.svg'); }
+.logo-deepseek  { background-image: url('../assets/ai-logos/deepseek.svg'); }
+.logo-kimi      { background-image: url('../assets/ai-logos/kimi.svg'); }
+.logo-powershell{ background-image: url('../assets/ai-logos/powershell.svg'); }
 
 /* === Sidebar tree (meeting + child sub-sessions) === */
 /* The expand-arrow toggles whether a meeting's sub-sessions are listed below
