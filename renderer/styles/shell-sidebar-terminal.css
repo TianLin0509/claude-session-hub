@@ -1612,6 +1612,11 @@
 .child-title .sl-un { color: var(--mark-red); font-weight: 700; font-size: 10px; margin-left: 4px; }
 .session-item.slim.dormant .sl-title { color: var(--text-muted); }
 .sl-model { font-size: 9.5px; color: var(--text-secondary); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+/* 2026-09-01 · 侧栏瘦身：时间左侧的模型字串换成品牌小图标。
+   原来 "Opus 5" / "gpt-5.6-sol" 要占 40-70px，现在 13px 固定宽，省下的全部还给标题；
+   哪家 CLI 靠品牌色一眼分辨（Claude 橙 / Codex 绿 / DeepSeek 蓝 / Gemini 蓝 / Kimi 黄），
+   具体型号进 tooltip。.ai-logo 自带 margin-right: 8px，这里必须清掉，否则和时间列打架。 */
+.sl-kind { width: 13px; height: 13px; margin-right: 0; justify-self: center; }
 .sl-ctx { font-size: 10px; font-weight: 700; font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
 .sl-ctx.ok { color: var(--accent-green); }
 .sl-ctx.warn { color: var(--accent-orange); }
@@ -1764,23 +1769,31 @@
 /* --- 清除旧竖线与卡片底（高 specificity 覆盖旧规则） --- */
 .session-item.slim { border: none; background: transparent; box-shadow: none; }
 .session-item.slim.meeting { border-left-color: transparent; }
+/* 2026-09-01：行尾不再印"休眠 ·"两个字，休眠与否全靠这块灰底 + 灰状态点判断，
+   所以底色和描边比原来（.065 / .10）加重一档，保证一眼能扫出来。 */
 .session-item.slim.dormant {
-  background: rgba(var(--rgb-neutral), .065);
+  background: rgba(var(--rgb-neutral), .09);
   border-left-color: transparent;
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-neutral), .10);
+  box-shadow: inset 0 0 0 1px rgba(var(--rgb-neutral), .17);
 }
 .session-item.slim.dormant.need-unread { background: rgba(var(--rgb-info), .08); }
-.session-item.slim.dormant:hover { background: rgba(var(--rgb-neutral), .105); }
+.session-item.slim.dormant:hover { background: rgba(var(--rgb-neutral), .14); }
 .session-item.slim.dormant .sl-title { color: var(--fg-default); font-weight: 560; }
 .session-item.slim.dormant .sl-model,
 .session-item.slim.dormant .sl-time { color: var(--mark-slate); }
-.session-item.slim .sl-time.dormant-time { color: var(--fg-default); font-weight: 650; }
+/* 休眠行的 logo 保留原色（否则占多数的休眠行反而认不出是哪家），只压一档亮度。 */
+.session-item.slim.dormant .sl-kind { opacity: .74; }
+/* 可唤醒（休眠）行的时间与标题同一档：都是 --fg-default / 560。
+   这两个字段是一条信息——"这个会话睡在什么时候，等你点它醒过来"——所以要么一起亮
+   要么一起暗，一亮一暗会让整行读起来是断的。数值必须跟上面 .dormant .sl-title 保持同步。 */
+.session-item.slim .sl-time.dormant-time { color: var(--fg-default); font-weight: 560; }
 .session-item.slim.resuming {
   background: rgba(var(--rgb-info), .11);
   box-shadow: inset 2px 0 0 rgba(var(--rgb-info), .78);
 }
+/* "唤醒中…"同理：时间列此刻承载的是进度而不是时刻，和标题一起亮。 */
 .session-item.slim.resuming .sl-time,
-.session-item.slim.resuming .sl-title { color: var(--accent-blue); }
+.session-item.slim.resuming .sl-title { color: var(--accent-blue); font-weight: 560; }
 .session-item.slim.disconnected {
   background: rgba(248, 113, 113, .075);
   box-shadow: inset 2px 0 0 rgba(248, 113, 113, .70);

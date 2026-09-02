@@ -669,7 +669,17 @@ async function main() {
         disconnectedTime: disconnected.querySelector('.sl-time')?.textContent || '',
         dormantClass: dormant.classList.contains('dormant'),
         dormantTime: dormantTime?.textContent || '',
+        dormantKindClass: dormant.querySelector('.sl-kind')?.className || '',
+        dormantKindImage: (() => {
+          const logo = dormant.querySelector('.sl-kind');
+          return logo ? getComputedStyle(logo).backgroundImage : '';
+        })(),
+        dormantModelText: dormant.querySelector('.sl-model')?.textContent ?? null,
+        disconnectedKindClass: disconnected.querySelector('.sl-kind')?.className || '',
         dormantTitleColor: dormantTitle ? getComputedStyle(dormantTitle).color : '',
+        dormantTitleWeight: dormantTitle ? getComputedStyle(dormantTitle).fontWeight : '',
+        dormantTimeColor: dormantTime ? getComputedStyle(dormantTime).color : '',
+        dormantTimeWeight: dormantTime ? getComputedStyle(dormantTime).fontWeight : '',
         expectedDormantTitleColor:(() => {
           const probe = document.createElement('span');
           probe.style.color = 'var(--fg-default)';
@@ -685,8 +695,25 @@ async function main() {
     assert.equal(result.sidebarStates.disconnectedState, 'failed');
     assert.match(result.sidebarStates.disconnectedTime, /^断连 · /);
     assert.equal(result.sidebarStates.dormantClass, true);
-    assert.match(result.sidebarStates.dormantTime, /^休眠 · /);
+    // 2026-09-01：行尾不再印"休眠 ·"，休眠只靠 .dormant 底色 + 灰状态点表达。
+    //   这里反过来断言前缀已消失，避免有人"顺手"把文字加回去。
+    assert.ok(!/休眠/.test(result.sidebarStates.dormantTime),
+      '休眠行的时间列不应再带"休眠 ·"前缀：' + result.sidebarStates.dormantTime);
+    // 模型字串换成品牌 logo：claude 会话必须挂 .logo-claude，codex 会话挂 .logo-codex。
+    assert.match(result.sidebarStates.dormantKindClass, /logo-claude/);
+    assert.match(result.sidebarStates.disconnectedKindClass, /logo-codex/);
+    assert.equal(result.sidebarStates.dormantModelText, null, '模型文字列应已被 logo 取代');
+    // 回归护栏：card-view.css 从 renderer/ 拆到 renderer/styles/ 时，url('assets/…')
+    //   被解析成 renderer/styles/assets/ 导致六个 logo 全白。断言解析后的绝对 URL
+    //   落在 renderer/assets/ 下，路径再挪一次也能立刻发现。
+    assert.match(result.sidebarStates.dormantKindImage, //renderer/assets/ai-logos/claude.svg/,
+      'logo 背景图应解析到 renderer/assets/ai-logos：' + result.sidebarStates.dormantKindImage);
     assert.equal(result.sidebarStates.dormantTitleColor, result.sidebarStates.expectedDormantTitleColor);
+    // 可唤醒行的"时刻"和"标题"是一条信息，必须同一档高亮；一亮一暗整行会读成断的。
+    assert.equal(result.sidebarStates.dormantTimeColor, result.sidebarStates.dormantTitleColor,
+      '休眠行时间列应与标题同色');
+    assert.equal(result.sidebarStates.dormantTimeWeight, result.sidebarStates.dormantTitleWeight,
+      '休眠行时间列应与标题同字重');
     assert.notEqual(result.sidebarStates.dormantBackground, 'rgba(0, 0, 0, 0)');
     await screenshot(client, SIDEBAR_STATES_SHOT);
     result.screenshots.sidebarStates = SIDEBAR_STATES_SHOT;

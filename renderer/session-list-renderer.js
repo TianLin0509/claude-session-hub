@@ -6,6 +6,7 @@ const {
   sessionHasCompletedUnread,
 } = require('../core/session-attention-state.js');
 const { hasStreamDisconnectIssue } = require('../core/stream-disconnect.js');
+const { KIND_LABELS } = require('../core/ai-kinds.js');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -204,13 +205,33 @@ function _ensureTimeGroupStyle() {
   (doc.head || doc.documentElement).appendChild(st);
 }
 
+// kind → 基础 logo key。assets/ai-logos 只有 5 家 AI + powershell 六个 svg，
+// 所以 *-resume 和 deepseek-legacy* 必须先归一，否则恢复出来的老会话是空图标。
+//   - 'powershell' 不是 AI kind 但侧边栏需展示 logo，在 ALL_AI_KINDS 之外单独保留。
+function _logoKind(kind) {
+  const k = String(kind || '').replace(/-resume$/, '');
+  if (k.startsWith('deepseek')) return 'deepseek'; // deepseek-legacy 复用 DS 图标
+  if (k === 'powershell' || isAiKind(k)) return k;
+  return '';
+}
+
 // AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
 // classes already defined in styles.css for the toolbar dropdown.
-//   - 'powershell' 不是 AI kind 但侧边栏需展示 logo，在 ALL_AI_KINDS 之外单独保留。
 function _aiLogoHtml(kind) {
-  let k = String(kind || '').replace(/-resume$/, '');
-  if (k !== 'powershell' && !isAiKind(k)) return '';
-  return `<span class="ai-logo logo-${k}" aria-hidden="true"></span>`;
+  const k = _logoKind(kind);
+  return k ? `<span class="ai-logo logo-${k}" aria-hidden="true"></span>` : '';
+}
+
+// 2026-09-01 · 侧栏瘦身：时间左边的「Opus 5 / gpt-5.6-sol」字串换成一枚品牌小图标。
+//   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
+//   （sl-title 的 titleTip 里本来就有完整 displayName，这里再给一份就近的）。
+//   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
+function _sessionKindHtml(kind, modelTxt) {
+  const k = _logoKind(kind);
+  if (!k) return `<span class="sl-model">${escapeHtml(modelTxt || '')}</span>`;
+  const label = KIND_LABELS[k] || k;
+  const tip = modelTxt ? `${label} · ${modelTxt}` : label;
+  return `<span class="sl-kind ai-logo logo-${k}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(tip)}"></span>`;
 }
 
 // --- 2026-07-19 道雪 · 方案4(ctx 圆环)：15px SVG，圆环弧=ctx 占用，圆心点=会话状态 ---
@@ -734,8 +755,8 @@ function _sessionWarningText(session) {
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
-      <span class="sl-model">${escapeHtml(modelTxt)}</span>
-      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestActivityTime(s))}`}</span>
+      ${_sessionKindHtml(s.kind, modelTxt)}
+      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : ''}${formatTime(latestActivityTime(s))}`}</span>
     `;
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     renderTarget.appendChild(div);
