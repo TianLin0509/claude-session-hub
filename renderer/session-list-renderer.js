@@ -59,6 +59,27 @@ const SESSION_FAMILY_TABS = [
 ];
 const SESSION_FAMILY_KEYS = SESSION_FAMILY_TABS.map(tab => tab.key);
 
+// --- Agent 自建会话的分组收纳 ---------------------------------------------
+// 学习教练、投研联赛选手这类会话是**机器创建**的：数量随功能增加而膨胀，而且
+// 用户平时不需要在列表里逐个看到它们（要用时点开一个就够）。混在人工会话里
+// 会把「最近」那一段挤没，侧栏就失去了可读性。
+//
+// 按 purpose 分组，加新的 Agent 系统时只在这张表里加一行，不改渲染逻辑。
+// 注意 chuxin-research 不在这里：它在下面的基础过滤里本来就被完全排除，
+// 属于「永远不进侧栏」，而不是「可收可展」。
+const AGENT_SESSION_GROUPS = [
+  { key: 'study', label: '学习', purposes: ['study-companion'] },
+  { key: 'league', label: '投研', purposes: ['agent-league', 'agent-league-virtual'] },
+];
+const AGENT_GROUP_KEYS = AGENT_SESSION_GROUPS.map(g => g.key);
+const AGENT_PURPOSE_TO_GROUP = new Map();
+for (const g of AGENT_SESSION_GROUPS) {
+  for (const p of g.purposes) AGENT_PURPOSE_TO_GROUP.set(p, g.key);
+}
+function agentGroupOf(session) {
+  return AGENT_PURPOSE_TO_GROUP.get(String(session && session.purpose || '')) || '';
+}
+
 function familyOfKind(kind) {
   const base = String(kind || '').replace(/-resume$/, '');
   if (base === 'claude') return 'claude';
@@ -189,6 +210,71 @@ function renderFamilyTabs(counts) {
       if (btn) setFamilyFilter(btn.dataset.family);
     });
   }
+}
+// --- Agent 会话分组开关（多选，落盘）---------------------------------------
+// 与上面的家族页签刻意做成不同的交互：家族是**单选**（我现在只想看 Claude），
+// 这里是**多选**（把哪几类机器会话放出来）。两行紧挨着，所以视觉上也要能一眼
+// 区分——胶囊 + 小方框 + 左侧「AGENT」标签，避免误当成第二排页签去点。
+//
+// 默认全部关闭：不这样就拿不到「简洁」这个收益。为了不让人以为会话丢了，
+// 芯片上的条数常驻显示，关着也能看到「学习 2」。
+const _agentGroupFilter = {
+  on: (() => {
+    try {
+      const raw = JSON.parse(storage.getItem('hubSessionAgentGroups') || '[]');
+      return new Set(Array.isArray(raw) ? raw.filter(k => AGENT_GROUP_KEYS.includes(k)) : []);
+    } catch { return new Set(); }
+  })(),
+};
+let _agentGroupsBound = false;
+function toggleAgentGroup(key) {
+  if (!AGENT_GROUP_KEYS.includes(key)) return;
+  if (_agentGroupFilter.on.has(key)) _agentGroupFilter.on.delete(key);
+  else _agentGroupFilter.on.add(key);
+  try { storage.setItem('hubSessionAgentGroups', JSON.stringify([..._agentGroupFilter.on])); } catch {}
+  renderSessionList();
+}
+function renderAgentGroupRow(counts) {
+  const el = doc.getElementById('session-agent-groups');
+  if (!el) return;
+  const present = AGENT_SESSION_GROUPS.filter(g => (counts[g.key] || 0) > 0);
+  // 一个 Agent 会话都没有时整行不出现——没有可收纳的东西就别占一行。
+  if (!present.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = '<span class="sag-label">AGENT</span>' + present.map(g => {
+    const on = _agentGroupFilter.on.has(g.key);
+    return `<button type="button" class="sag-chip${on ? ' on' : ''}" data-agent-group="${g.key}"`
+      + ` aria-pressed="${on ? 'true' : 'false'}"`
+      + ` title="${on ? '点击收起' : '点击展开'} ${escapeHtml(g.label)} 的 ${counts[g.key]} 个 Agent 会话">`
+      + `<span class="sag-box"></span>${escapeHtml(g.label)}`
+      + `<span class="sag-count">${counts[g.key]}</span></button>`;
+  }).join('');
+  if (!_agentGroupsBound) {
+    _agentGroupsBound = true;
+    el.addEventListener('click', (event) => {
+      const btn = event.target && typeof event.target.closest === 'function'
+        ? event.target.closest('[data-agent-group]') : null;
+      if (btn) toggleAgentGroup(btn.dataset.agentGroup);
+    });
+  }
+}
+function _ensureAgentGroupStyle() {
+  if (doc.getElementById('hub-sag-style')) return;
+  const st = doc.createElement('style');
+  st.id = 'hub-sag-style';
+  st.textContent = [
+    '#session-agent-groups{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 12px 8px;}',
+    '#session-agent-groups .sag-label{font-size:10px;letter-spacing:.08em;color:var(--fg-faint,#484f58);margin-right:2px;}',
+    '.sag-chip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11.5px;cursor:pointer;',
+    '  padding:3px 9px;border-radius:999px;border:1px solid var(--border-mid,#30363d);',
+    '  background:transparent;color:var(--fg-muted,#8b949e);}',
+    '.sag-chip:hover{border-color:var(--brand,#0a84ff);}',
+    '.sag-chip .sag-box{width:10px;height:10px;border-radius:3px;border:1px solid currentColor;flex:0 0 auto;}',
+    '.sag-chip.on{border-color:var(--brand,#0a84ff);color:var(--brand,#0a84ff);}',
+    '.sag-chip.on .sag-box{background:var(--brand,#0a84ff);border-color:var(--brand,#0a84ff);}',
+    '.sag-chip .sag-count{font-size:10px;opacity:.75;}',
+  ].join('');
+  doc.head.appendChild(st);
 }
 function _ensureTimeGroupStyle() {
   if (doc.getElementById('hub-stg-style')) return;
@@ -530,9 +616,24 @@ function _sessionWarningText(session) {
     }
   }
   renderFamilyTabs(familyCounts);
+
+  // Agent 会话分组：计数在过滤之前算，芯片上的数字始终是该组真实总数，
+  // 这样收起来之后你仍然看得到「学习 2」，而不是以为会话没了。
+  _ensureAgentGroupStyle();
+  const agentCounts = {};
+  for (const s of everything) {
+    const g = agentGroupOf(s);
+    if (g) agentCounts[g] = (agentCounts[g] || 0) + 1;
+  }
+  renderAgentGroupRow(agentCounts);
+
+  const afterAgentGroups = everything.filter(s => {
+    const g = agentGroupOf(s);
+    return !g || _agentGroupFilter.on.has(g);
+  });
   const visible = _familyFilter.key === 'all'
-    ? everything
-    : everything.filter(s => sessionFamilies(s, sessionMap).has(_familyFilter.key));
+    ? afterAgentGroups
+    : afterAgentGroups.filter(s => sessionFamilies(s, sessionMap).has(_familyFilter.key));
 
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list

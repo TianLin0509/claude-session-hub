@@ -488,6 +488,25 @@ function registerStudyIpc(ipcMain, deps = {}) {
 
   /* ─────────────────────── 对外读接口 ─────────────────────── */
 
+  /** 从成品 HTML 的 <h1> 取标题，取不到就退回文件名——面板要显示人话，不是 L2.html。 */
+  function lessonTitle(file) {
+    try {
+      const head = fs.readFileSync(file, 'utf8').slice(0, 60000);
+      const m = head.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
+      if (!m) return '';
+      return m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    } catch { return ''; }
+  }
+
+  /** 数 review.md 里的意见条数：约定每条是一个 `## N. 标题` 二级标题。 */
+  function reviewCount(file) {
+    try {
+      if (!fs.existsSync(file)) return 0;
+      const txt = fs.readFileSync(file, 'utf8');
+      return (txt.match(/^##\s+\d+\./gm) || []).length;
+    } catch { return 0; }
+  }
+
   function lessonFiles() {
     const daysDir = path.join(studyRoot(), 'days');
     if (!fs.existsSync(daysDir)) return [];
@@ -497,13 +516,54 @@ function registerStudyIpc(ipcMain, deps = {}) {
       .map((f) => {
         const m = f.match(/^(\d{4}-\d{2}-\d{2})-(L\d+)\.html$/);
         const full = path.join(daysDir, f);
+        const review = m ? path.join(daysDir, `${m[1]}-${m[2]}-review.md`) : '';
         return {
           file: f, path: full,
           date: m ? m[1] : '', lessonId: m ? m[2] : '',
+          title: lessonTitle(full),
           size: fs.statSync(full).size,
-          reviewPath: m ? path.join(daysDir, `${m[1]}-${m[2]}-review.md`) : '',
+          reviewPath: review,
+          reviewCount: review ? reviewCount(review) : 0,
         };
       });
+  }
+
+  /**
+   * 术语掌握状态。数据源是 terms-state.json（定稿那一棒写），不是 LEARNER.md——
+   * 后者是给人读的散文，面板解析不了。
+   *
+   * 关键口径：**「出过题」不等于「已掌握」**。答题结果目前靠人工把卡片底部的
+   * 汇总复制给教练，没回流之前 correct 一律是 0。面板必须如实分开显示这两个数，
+   * 不能拿出题数冒充掌握数（这是 LEARNER.md 里已经写死的纪律）。
+   */
+  function termsState() {
+    const file = path.join(studyRoot(), 'terms-state.json');
+    const bankFile = path.join(studyRoot(), 'TERMS.json');
+    let total = 0;
+    try { total = JSON.parse(fs.readFileSync(bankFile, 'utf8')).count || 0; } catch { total = 0; }
+    const empty = { total, asked: 0, mastered: 0, wrong: 0, pendingReport: 0, hasData: false };
+    try {
+      if (!fs.existsSync(file)) return empty;
+      const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const terms = (j && j.terms) || {};
+      let asked = 0; let mastered = 0; let wrong = 0;
+      for (const k of Object.keys(terms)) {
+        const t = terms[k] || {};
+        if (Number(t.asked) > 0) asked += 1;
+        if (Number(t.correct) > 0) mastered += 1;
+        if (Number(t.wrong) > 0) wrong += 1;
+      }
+      // reportedLessons 记的是「哪几课的答题结果已经回流」，用来算待回流份数。
+      const reported = Array.isArray(j.reportedLessons) ? j.reportedLessons.length : 0;
+      return { total, asked, mastered, wrong, reportedLessons: reported, hasData: true, updatedAt: j.updatedAt || '' };
+    } catch { return empty; }
+  }
+
+  function countLines(file, re) {
+    try {
+      if (!fs.existsSync(file)) return 0;
+      return (fs.readFileSync(file, 'utf8').match(re) || []).length;
+    } catch { return 0; }
   }
 
   function publicState() {
@@ -519,9 +579,13 @@ function registerStudyIpc(ipcMain, deps = {}) {
         title: live ? live.title : '',
       };
     });
+    const lessons = lessonFiles();
+    const root = studyRoot();
+    const plan = planLessonIds();
+    const terms = termsState();
     return {
       ok: true,
-      studyRoot: studyRoot(),
+      studyRoot: root,
       schedule: s.schedule,
       agents,
       running,
@@ -529,7 +593,15 @@ function registerStudyIpc(ipcMain, deps = {}) {
       todayDate: todayDate(),
       nextLessonId: nextLessonId(),
       runs: store.listRuns(20),
-      lessons: lessonFiles(),
+      lessons,
+      planTotal: plan.length,
+      terms,
+      reviewTotal: lessons.reduce((n, L) => n + (L.reviewCount || 0), 0),
+      // 「待回流」= 已出的课里还没拿到答题结果的份数。答题结果靠人工复制转发，
+      // 所以这个数字只会因为你把结果发给教练而下降——它就是提醒你去做这件事的。
+      pendingReports: Math.max(0, lessons.length - (terms.reportedLessons || 0)),
+      insightsCount: countLines(path.join(root, 'INSIGHTS.md'), /^###\s+\d{4}-\d{2}-\d{2}\s+·/gm),
+      decisionsCount: countLines(path.join(root, 'DECISIONS.md'), /^###\s+\d{4}-\d{2}-\d{2}\s+·/gm),
     };
   }
 

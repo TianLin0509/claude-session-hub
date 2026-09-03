@@ -141,6 +141,9 @@
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
       <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
+      <!-- Agent 自建会话（学习教练 / 投研联赛）的收纳开关，多选，默认收起。
+           由 session-list-renderer.js 按实际存在的分组动态渲染，没有则整行隐藏。 -->
+      <div id="session-agent-groups" aria-label="展开或收起 Agent 会话" style="display:none"></div>
       <div class="session-list" id="session-list"></div>
       <!-- 侧栏底部实时状态：活跃 PTY/AI 会话数 + 整机 CPU/内存占用 -->
       <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>

@@ -6251,6 +6251,9 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   completionNotificationToggle.refreshTarget();
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
+  // 2026-09-02：session-created 会直接亮出终端面板，但此前只隐藏了群聊面板。
+  // 主区是 flex 容器，学习面板若还开着就会和终端并排各占一半。
+  if (window.__studyHide) window.__studyHide();
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   paintSidebarActiveTarget({ sessionId: session.id });
@@ -7189,6 +7192,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           activeSessionId = sessionId;
           currentView = 'card';
           _cardHistoryHydratedSid = sessionId;
+          if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
           terminalPanelEl.style.display = '';
           terminalPanelEl.classList.remove('home-active');
           emptyStateEl.style.display = 'none';

@@ -3,31 +3,33 @@
  * 学习面板（study-panel）—— Hub 第四主区视图，与 terminal-panel /
  * meeting-room-panel / chuxin-panel 平级。
  *
- * 布局按用户选定的 Mock B：左侧当日学习卡，右侧两个常驻 Agent 可切换。
+ * 2026-09-02 改版：从「材料阅读器 + Agent 对话」改成**学习现状全景仪表盘**。
  *
- * 右侧的两个 Agent 是**真实的 Hub Session**（Claude 主笔 / Codex 审阅兼插画），
- * 不是这里造的假对话框：状态、输出都读真会话，提问经 study:ask 走 sendToPty
- * 硬化路径（它才处理了 Codex 非 ASCII prompt 落文件、paste 与 Enter 分两次写
- * 这两个历史坑）。"打开完整 PTY" 直接把主区切到那个会话。
+ * 为什么删掉那两块（都是实测结论，不是精简取舍）：
+ *
+ *   1) 对话栏做不好。Claude Code / Codex 都是全屏 alt-screen 程序，PTY 环形缓冲里
+ *      存的是光标定位指令，剥掉 ANSI 之后是错位重复的碎片——实测面板里显示成了
+ *      连续八行「Checking for updates…337.2k tokens」。真会话视图用 xterm 重放
+ *      这些指令才正确。两个教练本来就在左侧会话列表里，点开就是完整界面。
+ *
+ *   2) 阅读器是重复造轮子。学习卡是自包含 HTML，Hub 已有的预览面板
+ *      （window.openPreviewPanel）自带查找、大纲、外开、文件监听，比塞进 iframe 强。
+ *
+ * 所以这里只回答三个问题：今天出了没有 / 我走到哪了 / 有什么等着我做。
+ * 材料和教练都只给**跳转入口**，不在这里复刻。
  */
 (function () {
   const { ipcRenderer } = require('electron');
 
-  const ROLE_TITLE = { author: 'Claude · 主笔', reviewer: 'Codex · 审阅与插画' };
   const STAGE_LABEL = { draft: '初稿', review: '审阅配图', finalize: '定稿' };
-  const OUTPUT_TAIL = 6000;   // 右栏只回显尾部，整段 PTY 缓冲可能几百 KB
+  const ROLE_TITLE = { author: '主笔 · Claude', reviewer: '审阅与插画 · Codex' };
+  const RECENT_LIMIT = 6;
 
   let root = null;
   let refreshTimer = null;
-  const state = {
-    opened: false,
-    activeRole: 'author',
-    lessons: [],
-    currentLessonPath: '',
-    lastState: null,
-  };
+  const state = { opened: false, last: null };
 
-  /* ─────────────── 骨架 ─────────────── */
+  /* ─────────────── 工具 ─────────────── */
 
   function el(tag, cls, text) {
     const n = document.createElement(tag);
@@ -35,6 +37,27 @@
     if (text != null) n.textContent = text;
     return n;
   }
+  function fmtKB(bytes) {
+    const kb = Number(bytes || 0) / 1024;
+    return kb >= 1024 ? (kb / 1024).toFixed(1) + 'MB' : Math.round(kb) + 'KB';
+  }
+  function durationText(run) {
+    if (!run || !run.startedAt || !run.finishedAt) return '';
+    const ms = new Date(run.finishedAt) - new Date(run.startedAt);
+    if (!(ms > 0)) return '';
+    const min = Math.round(ms / 60000);
+    return min >= 60 ? `${Math.floor(min / 60)} 小时 ${min % 60} 分` : `${min} 分钟`;
+  }
+  function hhmm(iso) {
+    if (!iso) return '';
+    try {
+      return new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+      }).format(new Date(iso));
+    } catch { return ''; }
+  }
+
+  /* ─────────────── 骨架 ─────────────── */
 
   function buildSkeleton() {
     root = document.getElementById('study-panel');
@@ -42,104 +65,64 @@
     root.dataset.built = '1';
     root.innerHTML = '';
 
-    // 顶部
     const head = el('div', 'study-head');
-    const titleWrap = el('div');
-    titleWrap.appendChild(el('div', 'st-title', '学习'));
-    const sub = el('div', 'st-sub', '');
-    sub.id = 'study-sub';
-    titleWrap.appendChild(sub);
-    head.appendChild(titleWrap);
-
-    const sel = el('select', 'study-select');
-    sel.id = 'study-lesson-select';
-    sel.addEventListener('change', () => openLesson(sel.value));
-    head.appendChild(sel);
-
-    const stages = el('div', 'study-stages');
-    stages.id = 'study-stages';
-    head.appendChild(stages);
-
+    const tw = el('div');
+    tw.appendChild(el('div', 'st-title', '学习'));
+    const sub = el('div', 'st-sub', ''); sub.id = 'study-sub';
+    tw.appendChild(sub);
+    head.appendChild(tw);
     head.appendChild(el('div', 'st-spacer'));
 
-    const status = el('span', 'study-pill', '—');
-    status.id = 'study-status';
+    const status = el('span', 'study-pill', '—'); status.id = 'study-status';
     head.appendChild(status);
+
+    const openCoach = el('button', 'study-btn', '打开教练会话');
+    openCoach.id = 'study-open-coach';
+    openCoach.addEventListener('click', () => openAgent('author'));
+    head.appendChild(openCoach);
 
     const runBtn = el('button', 'study-btn primary', '立即生成');
     runBtn.id = 'study-run';
     runBtn.addEventListener('click', runNow);
     head.appendChild(runBtn);
-
     root.appendChild(head);
 
-    // 主体
     const body = el('div', 'study-body');
+    const tiles = el('div', 'study-tiles'); tiles.id = 'study-tiles';
+    body.appendChild(tiles);
 
-    const lessonCol = el('div', 'study-lesson');
-    lessonCol.id = 'study-lesson-col';
-    body.appendChild(lessonCol);
+    const cols = el('div', 'study-cols');
+    const left = el('div', 'study-panel-box');
+    left.appendChild(el('h5', null, '最近课程'));
+    const list = el('div', 'study-lessons'); list.id = 'study-lessons';
+    left.appendChild(list);
+    cols.appendChild(left);
 
-    const agents = el('div', 'study-agents');
-    const tabs = el('div', 'study-tabs');
-    for (const role of ['author', 'reviewer']) {
-      const t = el('div', 'study-tab' + (role === state.activeRole ? ' on' : ''));
-      t.dataset.role = role;
-      const dot = el('span', 'dot');
-      t.appendChild(dot);
-      t.appendChild(document.createTextNode(ROLE_TITLE[role]));
-      t.addEventListener('click', () => setActiveRole(role));
-      tabs.appendChild(t);
-    }
-    agents.appendChild(tabs);
+    const right = el('div');
+    const todayBox = el('div', 'study-panel-box'); todayBox.id = 'study-today';
+    right.appendChild(todayBox);
+    const coachBox = el('div', 'study-panel-box'); coachBox.id = 'study-coaches';
+    right.appendChild(coachBox);
+    cols.appendChild(right);
 
-    const meta = el('div', 'study-agent-meta');
-    meta.id = 'study-agent-meta';
-    agents.appendChild(meta);
-
-    const out = el('div', 'study-output');
-    out.id = 'study-output';
-    agents.appendChild(out);
-
-    const ask = el('div', 'study-ask');
-    const ta = el('textarea');
-    ta.id = 'study-ask-input';
-    ta.placeholder = '问点什么…（Ctrl+Enter 发送）';
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendAsk(); }
-    });
-    ask.appendChild(ta);
-    const row = el('div', 'row');
-    const hint = el('div', 'grow', '');
-    hint.id = 'study-ask-hint';
-    row.appendChild(hint);
-    const ptyBtn = el('button', 'study-btn', '打开完整 PTY');
-    ptyBtn.id = 'study-open-pty';
-    ptyBtn.addEventListener('click', openPty);
-    row.appendChild(ptyBtn);
-    const sendBtn = el('button', 'study-btn primary', '发送');
-    sendBtn.id = 'study-send';
-    sendBtn.addEventListener('click', sendAsk);
-    row.appendChild(sendBtn);
-    ask.appendChild(row);
-    agents.appendChild(ask);
-
-    body.appendChild(agents);
+    body.appendChild(cols);
     root.appendChild(body);
   }
 
-  /* ─────────────── 数据 ─────────────── */
+  /* ─────────────── 渲染 ─────────────── */
 
   async function refresh() {
     if (!state.opened) return;
     let s;
     try { s = await ipcRenderer.invoke('study:state'); }
-    catch (e) { setStatus('bad', '读取状态失败'); return; }
+    catch { setStatus('bad', '读取状态失败'); return; }
     if (!s || !s.ok) { setStatus('bad', '状态不可用'); return; }
-    state.lastState = s;
+    state.last = s;
     renderHead(s);
-    renderLessonList(s);
-    renderAgent(s);
+    renderTiles(s);
+    renderLessons(s);
+    renderToday(s);
+    renderCoaches(s);
   }
 
   function setStatus(kind, text) {
@@ -149,218 +132,199 @@
     n.textContent = text;
   }
 
+  function todayRun(s) {
+    return (s.runs || []).find((r) => r.date === s.todayDate) || null;
+  }
+
   function renderHead(s) {
     const sub = document.getElementById('study-sub');
     if (sub) {
       const done = s.lessons.length;
-      sub.textContent = `${s.todayDate} · 已出 ${done} 课` + (s.nextLessonId ? ` · 下一课 ${s.nextLessonId}` : ' · 全部完成');
+      const total = s.planTotal || 20;
+      sub.textContent = `${s.todayDate} · 已完成 ${done} / ${total}`
+        + (s.nextLessonId ? ` · 下一课 ${s.nextLessonId}` : ' · 课表已全部完成');
     }
-
-    const run = s.runs && s.runs.find((r) => r.date === s.todayDate);
-    if (s.running && s.currentRun) {
-      setStatus('run', `生成中 · ${STAGE_LABEL[s.currentRun.stage] || s.currentRun.stage}`);
-    } else if (run && run.status === 'done') setStatus('ok', '今日已完成');
+    const run = todayRun(s);
+    if (s.running && s.currentRun) setStatus('run', `生成中 · ${STAGE_LABEL[s.currentRun.stage] || s.currentRun.stage}`);
+    else if (run && run.status === 'done') setStatus('ok', '今日已完成');
     else if (run && run.status === 'failed') setStatus('bad', '生成失败');
-    else setStatus('', s.schedule.enabled ? `待生成 · ${String(s.schedule.hour).padStart(2, '0')}:${String(s.schedule.minute).padStart(2, '0')} 自动` : '自动生成已关');
+    else setStatus('', s.schedule.enabled
+      ? `待生成 · ${String(s.schedule.hour).padStart(2, '0')}:${String(s.schedule.minute).padStart(2, '0')} 自动`
+      : '自动生成已关');
 
-    const stagesEl = document.getElementById('study-stages');
-    if (stagesEl) {
-      stagesEl.innerHTML = '';
-      const stages = (run && run.stages) || {};
-      for (const key of ['draft', 'review', 'finalize']) {
-        const st = stages[key];
-        const chip = el('span', 'study-stage' + (st ? ' ' + st.status : ''), STAGE_LABEL[key]);
-        if (st && st.error) chip.title = st.error;
-        stagesEl.appendChild(chip);
-      }
-    }
-
-    const runBtn = document.getElementById('study-run');
-    if (runBtn) {
-      runBtn.disabled = !!s.running || !s.nextLessonId;
-      runBtn.textContent = s.running ? '生成中…' : '立即生成';
+    const btn = document.getElementById('study-run');
+    if (btn) {
+      btn.disabled = !!s.running || !s.nextLessonId;
+      btn.textContent = s.running ? '生成中…' : '立即生成';
     }
   }
 
-  function renderLessonList(s) {
-    state.lessons = s.lessons || [];
-    const sel = document.getElementById('study-lesson-select');
-    if (!sel) return;
-    const prev = state.currentLessonPath || (state.lessons[0] && state.lessons[0].path) || '';
-    sel.innerHTML = '';
-    if (!state.lessons.length) {
-      const o = el('option', null, '（还没有学习卡）');
-      o.value = '';
-      sel.appendChild(o);
-      showEmpty(s);
+  function tile(k, v, unit, d, alert) {
+    const t = el('div', 'study-tile' + (alert ? ' alert' : ''));
+    t.appendChild(el('div', 'k', k));
+    const vv = el('div', 'v');
+    vv.appendChild(document.createTextNode(String(v)));
+    if (unit) { const sm = el('small', null, ' ' + unit); vv.appendChild(sm); }
+    t.appendChild(vv);
+    if (d) t.appendChild(el('div', 'd', d));
+    return t;
+  }
+
+  function renderTiles(s) {
+    const box = document.getElementById('study-tiles');
+    if (!box) return;
+    box.innerHTML = '';
+    const total = s.planTotal || 20;
+    const done = s.lessons.length;
+
+    const p = tile('课程进度', done, '/ ' + total, '');
+    const bar = el('div', 'study-bar');
+    const fill = el('i'); fill.className = 'ok';
+    fill.style.width = Math.min(100, Math.round(done / Math.max(1, total) * 100)) + '%';
+    bar.appendChild(fill); p.appendChild(bar);
+    box.appendChild(p);
+
+    // 术语：出题数与掌握数分开显示。没有答题回流时掌握数就是 0，
+    // 不把「出过题」冒充成「已掌握」——这是 LEARNER.md 里写死的纪律。
+    const t = s.terms || {};
+    box.appendChild(tile(
+      t.hasData && t.mastered > 0 ? '术语 · 已掌握' : '术语 · 已出题',
+      t.hasData && t.mastered > 0 ? t.mastered : (t.asked || 0),
+      '/ ' + (t.total || 166),
+      t.hasData
+        ? (t.mastered > 0 ? `出过题 ${t.asked} 个 · 答错过 ${t.wrong} 个` : `掌握度待答题结果回流`)
+        : '尚无 terms-state.json'
+    ));
+
+    box.appendChild(tile('待回流答题', s.pendingReports || 0, '份',
+      (s.pendingReports || 0) > 0 ? '复制卡片底部结果发给教练' : '已全部回流',
+      (s.pendingReports || 0) > 0));
+
+    box.appendChild(tile('审阅意见累计', s.reviewTotal || 0, '条',
+      `沉淀 ${s.insightsCount || 0} 条 · 判断 ${s.decisionsCount || 0} 条`));
+  }
+
+  function renderLessons(s) {
+    const box = document.getElementById('study-lessons');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!s.lessons.length) {
+      const e = el('div', 'study-empty-inline');
+      e.appendChild(el('div', null, '还没有生成过学习卡。'));
+      e.appendChild(el('div', null, s.nextLessonId
+        ? `下一课 ${s.nextLessonId}。点右上角「立即生成」，或等自动生成。`
+        : '课表已全部完成。'));
+      box.appendChild(e);
       return;
     }
-    for (const L of state.lessons) {
-      const o = el('option', null, `${L.lessonId} · ${L.date}`);
-      o.value = L.path;
-      sel.appendChild(o);
+    for (const L of s.lessons.slice(0, RECENT_LIMIT)) {
+      const row = el('div', 'study-lrow');
+      row.appendChild(el('span', 'no', L.lessonId || '—'));
+      const ti = el('span', 'ti', L.title || L.file);
+      ti.title = L.title || L.file;
+      row.appendChild(ti);
+      row.appendChild(el('span', 'mt', `${L.date} · 审阅 ${L.reviewCount || 0} · ${fmtKB(L.size)}`));
+      const open = el('button', 'study-btn small', '打开');
+      open.addEventListener('click', () => openLesson(L.path));
+      row.appendChild(open);
+      box.appendChild(row);
     }
-    const target = state.lessons.some((L) => L.path === prev) ? prev : state.lessons[0].path;
-    sel.value = target;
-    if (target !== state.currentLessonPath) openLesson(target);
+    if (s.nextLessonId) {
+      const row = el('div', 'study-lrow future');
+      row.appendChild(el('span', 'no', s.nextLessonId));
+      row.appendChild(el('span', 'ti', '待生成'));
+      row.appendChild(el('span', 'mt', s.schedule.enabled ? '自动生成' : '自动已关'));
+      box.appendChild(row);
+    }
   }
 
-  function showEmpty(s) {
-    const col = document.getElementById('study-lesson-col');
-    if (!col) return;
-    col.innerHTML = '';
-    const box = el('div', 'study-empty');
-    box.appendChild(el('div', 'big', '还没有生成过学习卡'));
-    box.appendChild(el('div', null, s && s.nextLessonId
-      ? `下一课是 ${s.nextLessonId}。点右上角「立即生成」，或等 ${String(s.schedule.hour).padStart(2, '0')}:${String(s.schedule.minute).padStart(2, '0')} 自动生成。`
-      : '课表已全部完成。'));
-    box.appendChild(el('div', null, '生成分三棒：Claude 写初稿 → Codex 审阅并配图 → Claude 定稿。'));
-    col.appendChild(box);
-    state.currentLessonPath = '';
+  function renderToday(s) {
+    const box = document.getElementById('study-today');
+    if (!box) return;
+    box.innerHTML = '';
+    box.appendChild(el('h5', null, '今日运行'));
+    const run = todayRun(s);
+    if (!run) {
+      box.appendChild(el('div', 'study-dim', '今天还没有运行记录。'));
+      return;
+    }
+    const chips = el('div', 'study-stagerow');
+    for (const k of ['draft', 'review', 'finalize']) {
+      const st = (run.stages || {})[k];
+      const c = el('span', 'study-stage' + (st ? ' ' + st.status : ''), STAGE_LABEL[k]);
+      if (st && st.error) c.title = st.error;
+      chips.appendChild(c);
+    }
+    box.appendChild(chips);
+
+    const meta = [];
+    if (run.startedAt) meta.push(hhmm(run.startedAt) + (run.finishedAt ? ' → ' + hhmm(run.finishedAt) : ''));
+    const dur = durationText(run);
+    if (dur) meta.push(dur);
+    if (run.trigger) meta.push(run.trigger === 'scheduler' ? '自动触发' : '手动触发');
+    box.appendChild(el('div', 'study-dim', meta.join(' · ') || '—'));
+
+    if (run.status === 'failed') {
+      const bad = [];
+      for (const [k, v] of Object.entries(run.stages || {})) {
+        if (v && v.status === 'failed' && v.error) bad.push(`${STAGE_LABEL[k] || k}：${v.error}`);
+      }
+      if (bad.length) {
+        const b = el('div', 'study-fail', bad.join('\n'));
+        box.appendChild(b);
+      }
+    }
   }
 
-  async function openLesson(p) {
+  function renderCoaches(s) {
+    const box = document.getElementById('study-coaches');
+    if (!box) return;
+    box.innerHTML = '';
+    box.appendChild(el('h5', null, '两位教练'));
+    const busyRole = s.running && s.currentRun && s.currentRun.stage
+      ? (s.currentRun.stage === 'review' ? 'reviewer' : 'author') : '';
+    for (const a of s.agents || []) {
+      const r = el('div', 'study-ag');
+      const dot = el('span', 'dot');
+      if (busyRole === a.role) dot.classList.add('busy');
+      else if (a.alive) dot.classList.add('alive');
+      r.appendChild(dot);
+      r.appendChild(el('span', 'nm', ROLE_TITLE[a.role] || a.label));
+      const st = busyRole === a.role ? '工作中'
+        : a.alive ? '在线' : (a.sessionId ? '休眠' : '未创建');
+      r.appendChild(el('span', 'stt', st));
+      const go = el('button', 'study-btn small ghost', '打开 →');
+      go.addEventListener('click', () => openAgent(a.role));
+      r.appendChild(go);
+      box.appendChild(r);
+    }
+    box.appendChild(el('div', 'study-dim', '休眠的会话在提问或到点生成时会自动唤醒。'));
+  }
+
+  /* ─────────────── 动作 ─────────────── */
+
+  // 材料一律交给 Hub 已有的预览面板：它自带查找、大纲、外开与文件监听，
+  // 比在这里塞一个 iframe 强，也避免两套阅读体验分叉。
+  function openLesson(p) {
     if (!p) return;
-    const col = document.getElementById('study-lesson-col');
-    if (!col) return;
-    let res;
-    try { res = await ipcRenderer.invoke('study:read-lesson', { path: p }); }
-    catch (e) { res = { ok: false, message: e && e.message }; }
-    col.innerHTML = '';
-    if (!res || !res.ok) {
-      const box = el('div', 'study-empty');
-      box.appendChild(el('div', 'big', '打不开这张学习卡'));
-      box.appendChild(el('div', null, (res && (res.message || res.error)) || '未知原因'));
-      col.appendChild(box);
-      return;
-    }
-    // 课程是自包含文档（内联 CSS/SVG + base64 图，零网络请求），
-    // 用 srcdoc 隔离渲染，避免和面板样式互相污染。
-    const frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-same-origin allow-scripts');
-    frame.srcdoc = res.html;
-    col.appendChild(frame);
-    state.currentLessonPath = p;
-  }
-
-  /* ─────────────── 右栏 Agent ─────────────── */
-
-  function setActiveRole(role) {
-    state.activeRole = role;
-    document.querySelectorAll('#study-panel .study-tab').forEach((t) => {
-      t.classList.toggle('on', t.dataset.role === role);
-    });
-    if (state.lastState) renderAgent(state.lastState);
-  }
-
-  function activeAgent(s) {
-    return (s.agents || []).find((a) => a.role === state.activeRole) || null;
-  }
-
-  async function renderAgent(s) {
-    // tab 上的状态点
-    document.querySelectorAll('#study-panel .study-tab').forEach((t) => {
-      const a = (s.agents || []).find((x) => x.role === t.dataset.role);
-      const dot = t.querySelector('.dot');
-      if (!dot) return;
-      const busy = s.running && s.currentRun && busyRoleOf(s) === t.dataset.role;
-      dot.className = 'dot' + (busy ? ' busy' : (a && a.alive ? ' alive' : ''));
-      t.title = a ? `${a.label} · ${a.status}` : '';
-    });
-
-    const a = activeAgent(s);
-    const meta = document.getElementById('study-agent-meta');
-    if (meta) {
-      meta.innerHTML = '';
-      if (!a) { meta.appendChild(el('span', null, '—')); }
-      else {
-        const statusText = a.alive ? '在线' : (a.sessionId ? '休眠（提问会自动唤醒）' : '未创建（提问会自动创建）');
-        meta.appendChild(el('b', null, a.label));
-        meta.appendChild(el('span', null, statusText));
-        if (a.sessionId) meta.appendChild(el('span', null, `#${String(a.sessionId).slice(0, 8)}`));
-      }
-    }
-
-    const busy = s.running && busyRoleOf(s) === state.activeRole;
-    const hint = document.getElementById('study-ask-hint');
-    if (hint) {
-      hint.textContent = busy
-        ? `正在跑「${STAGE_LABEL[s.currentRun.stage] || s.currentRun.stage}」，这一棒结束后再提问`
-        : 'Ctrl+Enter 发送';
-    }
-    const sendBtn = document.getElementById('study-send');
-    if (sendBtn) sendBtn.disabled = !!busy;
-
-    renderOutput(a);
-  }
-
-  function busyRoleOf(s) {
-    if (!s.running || !s.currentRun || !s.currentRun.stage) return '';
-    return s.currentRun.stage === 'review' ? 'reviewer' : 'author';
-  }
-
-  async function renderOutput(agent) {
-    const out = document.getElementById('study-output');
-    if (!out) return;
-    if (!agent || !agent.sessionId) {
-      out.innerHTML = '';
-      out.appendChild(el('div', 'hint', '这个 Agent 还没有会话。发一条提问会自动创建，或等第一次自动生成时创建。'));
-      return;
-    }
-    // 走 study:agent-output（主进程读 ringBuffer 并去 ANSI）。
-    // 不用 get-session-buffer-snapshot：那条路径在没挂终端时返回空串，
-    // 表现为输出区永远空白——2026-09-01 实测确认，同一会话 raw 有 12292 字符、snapshot 是 0。
-    let buf = '';
-    try {
-      const res = await ipcRenderer.invoke('study:agent-output', { role: state.activeRole });
-      buf = (res && res.ok && res.text) || '';
-    } catch { buf = ''; }
-    if (!buf.trim()) {
-      out.innerHTML = '';
-      out.appendChild(el('div', 'hint', '会话还没有输出（可能处于休眠）。'));
-      return;
-    }
-    const nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-    out.textContent = buf.length > OUTPUT_TAIL ? buf.slice(-OUTPUT_TAIL) : buf;
-    if (nearBottom) out.scrollTop = out.scrollHeight;
-  }
-
-  async function sendAsk() {
-    const ta = document.getElementById('study-ask-input');
-    if (!ta) return;
-    const text = ta.value.trim();
-    if (!text) return;
-    const btn = document.getElementById('study-send');
-    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
-    let r;
-    try { r = await ipcRenderer.invoke('study:ask', { role: state.activeRole, text }); }
-    catch (e) { r = { ok: false, message: e && e.message }; }
-    if (btn) { btn.disabled = false; btn.textContent = '发送'; }
-    const hint = document.getElementById('study-ask-hint');
-    if (r && r.ok) {
-      ta.value = '';
-      if (hint) hint.textContent = '已发送，等待回复…';
-      setTimeout(refresh, 1200);
-    } else if (hint) {
-      hint.textContent = (r && (r.message || r.error)) || '发送失败';
+    if (typeof window.openPreviewPanel === 'function') {
+      window.openPreviewPanel(p, { preview: true });
+      setPanelVisible(false);
     }
   }
 
-  async function openPty() {
-    const s = state.lastState;
-    const a = s && activeAgent(s);
-    if (!a) return;
-    let sessionId = a.sessionId;
-    if (!sessionId) {
+  async function openAgent(role) {
+    let sid = '';
+    const a = (state.last && (state.last.agents || []).find((x) => x.role === role)) || null;
+    if (a && a.sessionId) sid = a.sessionId;
+    if (!sid) {
       try {
-        const r = await ipcRenderer.invoke('study:ensure-session', { role: state.activeRole });
-        if (r && r.ok) sessionId = r.sessionId;
-      } catch { /* 下面统一处理 */ }
+        const r = await ipcRenderer.invoke('study:ensure-session', { role });
+        if (r && r.ok) sid = r.sessionId;
+      } catch { /* 下面统一兜底 */ }
     }
-    if (!sessionId) return;
-    // 交给 renderer.js 的会话选择逻辑，它会把主区切回终端并隐藏本面板
-    if (typeof window.selectSession === 'function') window.selectSession(sessionId);
-    else if (typeof window.__hubSelectSession === 'function') window.__hubSelectSession(sessionId);
+    if (!sid) return;
+    if (typeof window.selectSession === 'function') window.selectSession(sid);
     else setPanelVisible(false);
   }
 
@@ -395,12 +359,11 @@
     }
     if (visible) {
       if (homeButton) { homeButton.classList.remove('active'); homeButton.removeAttribute('aria-current'); }
-      // 与投研面板互斥：主区同一时刻只显示一个视图
       if (window.__chuxinHide) window.__chuxinHide();
       if (tp) tp.style.display = 'none';
       if (mrp) mrp.style.display = 'none';
       refresh();
-      if (!refreshTimer) refreshTimer = setInterval(refresh, 4000);
+      if (!refreshTimer) refreshTimer = setInterval(refresh, 5000);
     } else if (refreshTimer) {
       clearInterval(refreshTimer);
       refreshTimer = null;
@@ -416,7 +379,6 @@
     });
   }
 
-  // 编排器推的事件：立刻刷新，不等 4 秒轮询
   ipcRenderer.on('study-event', () => { if (state.opened) refresh(); });
 
   function init() { buildSkeleton(); bindEntry(); }
