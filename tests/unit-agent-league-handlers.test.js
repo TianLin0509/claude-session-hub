@@ -83,6 +83,7 @@ function makeHarness(root, fakeHttp, extraDeps = {}) {
   const sentPrompts = [];
   const bridge = registerAgentLeagueIpc(ipc, {
     store, sessionManager, transcriptTap, getHookPort: () => 0, httpJson: fakeHttp,
+    schedulerElectionEnabled: false,
     waitCliReady: async () => true,
     sendToPty: async (sessionId, prompt) => { sentPrompts.push({ sessionId, prompt }); return true; },
     ...extraDeps,
@@ -131,6 +132,57 @@ test('provider catalog covers ordinary Hub CLIs and validates exact models', () 
   assert.equal(validateProvider('codex-cli', 'gpt-5.6-sol').ok, true);
   assert.equal(validateProvider('codex-cli', 'made-up').ok, false);
   assert.match(slugifyAgentId('Wave Rider'), /^wave-rider$/);
+});
+
+test('all automatic and manual league phases stay read-only on a non-preferred Hub', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-preferred-hub-'));
+  const hubDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-preferred-hub-data-'));
+  const now = Date.now();
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp(), {
+      autoStartScheduler: false,
+      schedulerSafety: { allowed: true, reason: 'test' },
+      schedulerElectionEnabled: true,
+      runtimeOwnerPid: 1200,
+      hubVersion: '1.6.46',
+      electionNow: () => now,
+      getHubDataDir: () => hubDataDir,
+      readHubInstances: () => ({
+        instances: [
+          { pid: 1200, appVersion: '1.6.46', lastBeatAt: now },
+          { pid: 2200, appVersion: '1.6.46', lastBeatAt: now },
+          { pid: 9999, appVersion: '1.6.31', lastBeatAt: now },
+        ],
+      }),
+    });
+
+    const decision = await harness.bridge.runDay({ force: true, decisionDate: '2026-08-27' });
+    const open = await harness.bridge.executeOpen({ force: true, decisionDate: '2026-08-27' });
+    const close = await harness.bridge.recordClose({ force: true, decisionDate: '2026-08-27' });
+    const weekly = await harness.bridge.runWeekly({ force: true, saturdayDate: '2026-08-29' });
+    const automatic = await harness.bridge.schedulerTick(new Date('2026-08-27T00:30:00.000Z'));
+    for (const result of [decision, open, close, weekly]) {
+      assert.equal(result.ok, false);
+      assert.equal(result.error, 'not-preferred-hub');
+      assert.equal(result.preferred.pid, 2200);
+      assert.equal(result.preferred.version, '1.6.46');
+    }
+    assert.equal(automatic.ok, true);
+    assert.equal(automatic.skipped, 'standby-hub');
+    assert.equal(harness.sentPrompts.length, 0);
+    assert.equal(harness.store.currentRunLease(), null);
+
+    const listed = harness.ipc.handlers.get('agent-league:list')(null, {});
+    assert.equal(listed.schedulerRuntime.election.role, 'standby');
+    assert.equal(listed.schedulerRuntime.election.preferred.pid, 2200);
+    const health = await harness.bridge.healthCheck({});
+    assert.match(health.checks.find(row => row.id === 'scheduler-owner').message, /PID 2200/);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(hubDataDir, { recursive: true, force: true });
+  }
 });
 
 test('resume options preserve provider-native identities', () => {

@@ -1,5 +1,7 @@
 # Agent League 高可用运行与接班手册
 
+> 2026-09-03 / v1.6.47：多 Hub 共享同一生产数据目录时，联赛只允许最高 SemVer、同版本最大 PID 的活实例运行；其余实例只读候补。选主复用 10 秒进程心跳，SQLite schema v2 以持久触发器阻止旧 Hub 绕过。
+
 > 2026-09-02 / v1.6.36：新增全 Agent CLI 并行预热，并为 Codex 旧原生会话恢复增加超时后 fresh session 接管；详见“CLI 预热与失效恢复”。
 
 ## 结论
@@ -31,6 +33,18 @@ v1.6.29 将联赛从“单个 Hub 内存队列 + 两分钟文件锁”升级为�
 $env:RUN_REAL_AGENT_LEAGUE_E2E='1'
 node tests/e2e-agent-league-two-codex-real.js
 ```
+
+## 多 Hub 版本 / PID 选主
+
+- 候选范围是共享同一 `CLAUDE_HUB_DATA_DIR` 的活 Hub。生命周期心跳每 10 秒覆盖写入一个小 JSON；新版本直接在心跳中携带 `appVersion`，对旧版本则从对应生命周期 journal 的 `process-start` 记录回读版本。
+- 候选心跳必须新鲜且版本可解析。按 SemVer 从高到低排序；版本相同按 PID 从大到小排序。前台窗口、启动先后和谁先 tick 都不再影响结果。
+- 自动盘前、开盘、收盘、周度沉淀以及手动补跑共用同一 gate。候补 Hub 在构建快照或启动 CLI 前即返回 `not-preferred-hub`。
+- 选主结果写入 SQLite `league_scheduler_preferences`。`league_leaders` 的 INSERT/UPDATE trigger 会拒绝版本/PID 不匹配的租约，所以已经启动、完全不认识新 gate 的旧 Hub 也无法写入。
+- runtime schema 升到 v2，并用 trigger 拒绝 schema 版本倒退。旧 Hub 若在 v2 数据库上重新启动，其事务运行库会显式初始化失败，不能静默退回旧调度语义。
+- 更高优先级 Hub 在已有阶段运行期间出现时，不打断正在执行的 provider turn；当前 owner 保持到 phase lease 安全释放，下一阶段再由新主控接手。崩溃接班仍沿用 epoch、attempt_id 和 durable checkpoint fencing。
+- 联赛页空闲时也显示“本机是调度主控”或“本机只读候补”；健康检查列出首选版本与 PID。
+
+选主只决定哪个 Hub 可以编排联赛。投资内容仍由该 Hub 创建/恢复的 Claude、Codex 等 CLI 子进程生成，其他 Hub 只读取共享 SQLite 与 Markdown 结果。
 
 ## 成熟系统经验如何落地
 
@@ -95,6 +109,8 @@ pending/draft
 - `关窗后台守护`：开启自动赛程时，关闭窗口只隐藏到托盘；托盘可重新打开或明确退出。
 
 ## 一次性升级要求
+
+升级到 v1.6.47 时无需为了选主机制强制结束所有旧 Hub，但必须先启动至少一个 v1.6.47 实例，让它完成 SQLite schema v2 与持久门禁安装。若此时已有旧版本正在执行阶段任务，旧 owner 会先完成当前 phase；释放后由 v1.6.47 接管。旧版本此后重新启动会因 schema downgrade 被显式禁用联赛事务运行时，普通会话功能不受影响。
 
 旧版本的开盘/收盘没有完整 fencing。第一次切换 v1.6.29 时必须：
 

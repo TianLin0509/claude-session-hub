@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { compareHubPriority, parseHubVersion } = require('./hub-instance-registry.js');
 
 let DatabaseSync = null;
 try {
@@ -12,7 +13,7 @@ try {
   // explicit instead of silently degrading to a non-transactional JSON file.
 }
 
-const RUNTIME_SCHEMA_VERSION = 1;
+const RUNTIME_SCHEMA_VERSION = 2;
 const DEFAULT_LEADER_TTL_MS = 20_000;
 const DEFAULT_TASK_TTL_MS = 45_000;
 
@@ -95,6 +96,16 @@ class AgentLeagueRuntimeStore {
         heartbeat_at INTEGER NOT NULL DEFAULT 0,
         acquired_at INTEGER NOT NULL DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS league_scheduler_preferences (
+        league_id TEXT PRIMARY KEY,
+        preferred_pid INTEGER NOT NULL,
+        preferred_version TEXT NOT NULL,
+        preferred_hub TEXT,
+        reason TEXT,
+        selected_at INTEGER NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        valid_until INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS league_runs (
         run_key TEXT PRIMARY KEY,
         league_id TEXT NOT NULL,
@@ -170,6 +181,43 @@ class AgentLeagueRuntimeStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS league_events_run_seq ON league_events(run_key, seq);
+      CREATE TRIGGER IF NOT EXISTS runtime_meta_reject_schema_downgrade
+      BEFORE UPDATE OF value ON runtime_meta
+      WHEN OLD.key = 'schema_version'
+        AND CAST(NEW.value AS INTEGER) < CAST(OLD.value AS INTEGER)
+      BEGIN
+        SELECT RAISE(ABORT, 'agent-league-runtime-schema-downgrade');
+      END;
+      CREATE TRIGGER IF NOT EXISTS league_leaders_require_preferred_insert
+      BEFORE INSERT ON league_leaders
+      WHEN NEW.lease_token IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM league_scheduler_preferences preferred
+          WHERE preferred.league_id = NEW.league_id
+            AND preferred.valid_until > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+            AND (
+              preferred.preferred_pid <> COALESCE(NEW.owner_pid, 0)
+              OR preferred.preferred_version <> COALESCE(NEW.owner_version, '')
+            )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent-league-non-preferred-hub');
+      END;
+      CREATE TRIGGER IF NOT EXISTS league_leaders_require_preferred_update
+      BEFORE UPDATE ON league_leaders
+      WHEN NEW.lease_token IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM league_scheduler_preferences preferred
+          WHERE preferred.league_id = NEW.league_id
+            AND preferred.valid_until > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+            AND (
+              preferred.preferred_pid <> COALESCE(NEW.owner_pid, 0)
+              OR preferred.preferred_version <> COALESCE(NEW.owner_version, '')
+            )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'agent-league-non-preferred-hub');
+      END;
     `);
     const effectColumns = new Set(this.db.prepare('PRAGMA table_info(league_effects)').all().map((row) => row.name));
     if (!effectColumns.has('status')) this.db.exec("ALTER TABLE league_effects ADD COLUMN status TEXT NOT NULL DEFAULT 'applied'");
@@ -216,12 +264,159 @@ class AgentLeagueRuntimeStore {
     return this._publicLeader(this._leaderRow(), nowMs);
   }
 
+  _schedulerPreferenceRow() {
+    return this.db.prepare('SELECT * FROM league_scheduler_preferences WHERE league_id = ?').get(this.leagueId) || null;
+  }
+
+  _publicSchedulerPreference(row, nowMs = this.now()) {
+    if (!row) return null;
+    return {
+      leagueId: row.league_id,
+      preferredPid: Number(row.preferred_pid || 0),
+      preferredVersion: String(row.preferred_version || ''),
+      preferredHub: String(row.preferred_hub || ''),
+      reason: String(row.reason || ''),
+      selectedAt: Number(row.selected_at || 0),
+      heartbeatAt: Number(row.heartbeat_at || 0),
+      validUntil: Number(row.valid_until || 0),
+      active: Number(row.valid_until || 0) > Number(nowMs),
+    };
+  }
+
+  schedulerPreference(nowMs = this.now()) {
+    return this._publicSchedulerPreference(this._schedulerPreferenceRow(), nowMs);
+  }
+
+  publishSchedulerPreference(candidate = {}, options = {}) {
+    const nowMs = Number(options.nowMs == null ? this.now() : options.nowMs);
+    const ttlMs = positiveMs(options.ttlMs, DEFAULT_LEADER_TTL_MS * 4);
+    const pid = Number(candidate.pid || candidate.preferredPid || 0);
+    const appVersion = String(candidate.appVersion || candidate.preferredVersion || '').trim();
+    if (!Number.isInteger(pid) || pid <= 0 || !parseHubVersion(appVersion)) {
+      throw runtimeError('invalid-scheduler-preference', '联赛调度主控必须包含有效版本号与 PID');
+    }
+
+    return this._transaction(() => {
+      const leaderRow = this._leaderRow();
+      const activeLeader = leaderRow && leaderRow.lease_token && Number(leaderRow.lease_until || 0) > nowMs
+        ? leaderRow
+        : null;
+      let selected = {
+        pid,
+        appVersion,
+        preferredHub: String(candidate.preferredHub || candidate.ownerHub || ''),
+        reason: String(options.reason || candidate.reason || 'version-pid-election'),
+      };
+      let deferred = false;
+
+      // A newly opened, higher-priority Hub must not cut off a provider turn in
+      // flight. Keep the active phase owner eligible until it releases its
+      // fenced lease; the next refresh then promotes the preferred candidate.
+      if (activeLeader && (
+        Number(activeLeader.owner_pid || 0) !== selected.pid
+        || String(activeLeader.owner_version || '') !== selected.appVersion
+      )) {
+        selected = {
+          pid: Number(activeLeader.owner_pid || 0),
+          appVersion: String(activeLeader.owner_version || ''),
+          preferredHub: String(activeLeader.owner_hub || ''),
+          reason: 'active-phase-safe-handoff',
+        };
+        deferred = true;
+      }
+
+      const existing = this._schedulerPreferenceRow();
+      const existingActive = existing && Number(existing.valid_until || 0) > nowMs;
+      if (!deferred && existingActive) {
+        const priority = compareHubPriority(
+          { pid: Number(existing.preferred_pid || 0), appVersion: String(existing.preferred_version || '') },
+          { pid: selected.pid, appVersion: selected.appVersion },
+        );
+        // A single torn/missed heartbeat must not demote a still-valid higher
+        // preference. Higher candidates can take over immediately; lower ones
+        // wait for the old preference TTL to expire.
+        if (priority > 0) {
+          return {
+            updated: false,
+            deferred: false,
+            keptHigherPreference: true,
+            preference: this._publicSchedulerPreference(existing, nowMs),
+            activeLeader: this._publicLeader(activeLeader, nowMs),
+          };
+        }
+      }
+
+      this.db.prepare(`
+        INSERT INTO league_scheduler_preferences(
+          league_id, preferred_pid, preferred_version, preferred_hub,
+          reason, selected_at, heartbeat_at, valid_until
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(league_id) DO UPDATE SET
+          preferred_pid=excluded.preferred_pid,
+          preferred_version=excluded.preferred_version,
+          preferred_hub=excluded.preferred_hub,
+          reason=excluded.reason,
+          selected_at=CASE
+            WHEN league_scheduler_preferences.preferred_pid=excluded.preferred_pid
+              AND league_scheduler_preferences.preferred_version=excluded.preferred_version
+            THEN league_scheduler_preferences.selected_at
+            ELSE excluded.selected_at
+          END,
+          heartbeat_at=excluded.heartbeat_at,
+          valid_until=excluded.valid_until
+      `).run(
+        this.leagueId,
+        selected.pid,
+        selected.appVersion,
+        selected.preferredHub,
+        selected.reason,
+        nowMs,
+        nowMs,
+        nowMs + ttlMs,
+      );
+      return {
+        updated: true,
+        deferred,
+        keptHigherPreference: false,
+        preference: this.schedulerPreference(nowMs),
+        activeLeader: this._publicLeader(activeLeader, nowMs),
+      };
+    });
+  }
+
+  expireSchedulerPreference(candidate = {}, options = {}) {
+    const nowMs = Number(options.nowMs == null ? this.now() : options.nowMs);
+    const result = this.db.prepare(`
+      UPDATE league_scheduler_preferences
+      SET valid_until=0, heartbeat_at=?
+      WHERE league_id=? AND preferred_pid=? AND preferred_version=?
+    `).run(
+      nowMs,
+      this.leagueId,
+      Number(candidate.pid || candidate.preferredPid || 0),
+      String(candidate.appVersion || candidate.preferredVersion || ''),
+    );
+    return Number(result.changes || 0) > 0;
+  }
+
   claimLeadership(owner = {}, options = {}) {
     const nowMs = Number(options.nowMs == null ? this.now() : options.nowMs);
     const ttlMs = positiveMs(options.ttlMs, DEFAULT_LEADER_TTL_MS);
     const ownerId = String(owner.ownerId || `${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
     const token = crypto.randomBytes(18).toString('hex');
     return this._transaction(() => {
+      const preference = this._schedulerPreferenceRow();
+      if (preference && Number(preference.valid_until || 0) > nowMs && (
+        Number(preference.preferred_pid || 0) !== Number(owner.ownerPid || process.pid)
+        || String(preference.preferred_version || '') !== String(owner.ownerVersion || '')
+      )) {
+        return {
+          ok: false,
+          reason: 'not-preferred-hub',
+          preferred: this._publicSchedulerPreference(preference, nowMs),
+          leader: this._publicLeader(this._leaderRow(), nowMs),
+        };
+      }
       const previous = this._leaderRow();
       if (previous && previous.lease_token && Number(previous.lease_until || 0) > nowMs) {
         return { ok: false, reason: 'busy', leader: this._publicLeader(previous, nowMs) };
