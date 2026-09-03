@@ -18,6 +18,7 @@
 .fi-bridge-toolbar {
   display: flex;
   align-items: center;
+  gap: 6px;
   min-height: 26px;
   padding: 0 1px;
 }
@@ -43,6 +44,28 @@
   outline: none;
 }
 .fi-bridge-pull:disabled { cursor: wait; opacity: .58; }
+
+.fi-bridge-fork {
+  min-height: 24px;
+  padding: 3px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.fi-bridge-fork:hover,
+.fi-bridge-fork:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  outline: none;
+}
 
 /* Keep the CLI terminal geometry independent from the external composer.
    The collapsed bar keeps a stable flex footprint; multiline drafts and task

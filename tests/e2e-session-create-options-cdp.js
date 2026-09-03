@@ -308,14 +308,8 @@ setInterval(() => {}, 1000);
     assert.equal(audited.mcpDisabled, true);
     assert.match(audited.commandSha256, /^[0-9a-f]{64}$/);
     assert.equal(Object.prototype.hasOwnProperty.call(audited, 'command'), false);
-    const contextUi = await client.eval(`(() => {
-      const el = document.querySelector('.metric-context-window');
-      return el ? { text: el.textContent, title: el.title } : null;
-    })()`);
-    assert.ok(contextUi, '活动 Codex 顶栏必须显示运行时有效窗口');
-    assert.match(contextUi.text, /828\.4K/);
-    assert.match(contextUi.title, /运行时有效窗口：828,400/);
-    assert.match(contextUi.title, /启动请求：1,000,000/);
+    const contextUi = await client.eval(`document.querySelector('.metric-context-window')`);
+    assert.equal(contextUi, null, '活动 Codex 顶栏不再显示 ctx 窗口数字');
 
     // ---- 3. tuningOpts 真正送出去的字段 ----
     const payloads = await client.eval(`(async () => {

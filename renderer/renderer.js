@@ -69,6 +69,7 @@ const { createProcessReclaimCard } = require('./process-reclaim-card.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
+const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
@@ -177,6 +178,7 @@ let activeSessionId = null;
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
+let fileManagerPanel = null;
 // 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
 // proxy 仍保留配置值，egress 由 main 进程强制分别经代理/直连探测。
 let hubProxyInfo = null;
@@ -691,6 +693,11 @@ const modelUi = createModelUiController({
   terminalPanelEl,
   getActiveSessionId: () => activeSessionId,
   escapeHtml,
+  refreshModelCatalog: (kind, session) => window.WorkspaceController.loadModelCatalog(kind, {
+    codexProfile: session && session.codexProfile,
+  }),
+  getTerminalScreenText: sessionId => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
+  isSessionBusy: session => sessionRuntimeIsActive(session),
 });
 const attachModelPickerHandler = modelUi.attachModelPickerHandler;
 const updateActiveModelBadge = modelUi.updateActiveModelBadge;
@@ -1531,28 +1538,26 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const headerActions = document.createElement('div');
   headerActions.className = 'terminal-header-actions';
 
-  const canForkSession = supportsForkSession(session);
-  let forkBtn = null;
-  if (canForkSession) {
-    forkBtn = document.createElement('button');
-    forkBtn.className = 'btn-zoom btn-fork-session';
-    forkBtn.textContent = '分支';
-    forkBtn.title = '创建继承当前上下文的独立会话 (Ctrl+Shift+B)';
-    forkBtn.setAttribute('aria-label', '创建当前会话分支');
-    forkBtn.addEventListener('click', () => {
-      void keyboardShortcuts.forkSession(sessionId);
-    });
-  }
+  const filesBtn = document.createElement('button');
+  filesBtn.className = 'btn-zoom btn-header-tool btn-file-manager-toggle';
+  filesBtn.dataset.root = session.cwd || '';
+  filesBtn.disabled = !session.cwd;
+  filesBtn.setAttribute('aria-pressed', String(!!(fileManagerPanel && fileManagerPanel.isOpenFor(session.cwd))));
+  filesBtn.setAttribute('aria-label', '打开当前工作目录的文件管理');
+  filesBtn.title = session.cwd ? `文件管理 · ${session.cwd}` : '当前会话没有工作目录';
+  filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg><span>文件</span>';
+  filesBtn.addEventListener('click', () => {
+    if (fileManagerPanel) void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel });
+  });
 
-  const memoBtn = document.createElement('button');
-  memoBtn.className = 'btn-zoom btn-memo-toggle';
-  memoBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>';
-  memoBtn.title = 'Toggle memo panel';
-  if (memoPanel.isOpen()) memoBtn.classList.add('active');
-  memoBtn.addEventListener('click', () => memoPanel.toggle());
+  const memoryBtn = document.createElement('button');
+  memoryBtn.className = 'btn-zoom btn-memory-toggle';
+  memoryBtn.dataset.action = 'open-memory';
+  memoryBtn.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>';
+  memoryBtn.title = '打开记忆系统';
+  memoryBtn.setAttribute('aria-label', '打开记忆系统');
 
-  if (forkBtn) headerActions.appendChild(forkBtn);
-  headerActions.append(memoBtn, overflowWrap, closeBtn);
+  headerActions.append(filesBtn, memoryBtn, overflowWrap, closeBtn);
 
   titleRow.append(titleSection, headerActions);
 
@@ -1563,6 +1568,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   termContainer.addEventListener('click', () => cached.terminal.focus());
 
   mountTarget.append(header, termContainer);
+  if (!embedded && fileManagerPanel) {
+    void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel });
+  }
   if (!embedded) emptyStateEl.style.display = 'none';
 
   if (!termContainer.contains(cached.container)) {
@@ -2445,6 +2453,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
     if (!local) continue;
     a.classList.add('rt-file-link');
     a.setAttribute('data-path', local.openPath);
+    if (cwd) a.setAttribute('data-cwd', cwd);
     a.setAttribute('href', '#');
     a.title = local.openPath === local.displayPath
       ? local.openPath
@@ -2480,6 +2489,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
       const a = document.createElement('a');
       a.className = 'rt-file-link';
       a.setAttribute('data-path', c.openPath);
+      if (cwd) a.setAttribute('data-cwd', cwd);
       a.title = c.openPath;
       a.textContent = text.slice(c.start, c.end + 1);
       frag.appendChild(a);
@@ -2500,7 +2510,8 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   e.stopPropagation();
   const path = a.dataset.path;
-  if (path) openPathInHub(path, { cwd: getSessionCwd(activeSessionId), requireExistsForRel: false });
+  const ownerCwd = a.dataset.cwd || getSessionCwd(activeSessionId);
+  if (path) openPathInHub(path, { cwd: ownerCwd, requireExistsForRel: false });
 }, true);
 
 // === Spec 1 v0.9.0 · D5 操作按钮 click ===
@@ -3191,6 +3202,20 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
   });
   bridgeToolbar.appendChild(bridgePullBtn);
+  const toolbarSession = sessions.get(sessionId);
+  if (toolbarSession && supportsForkSession(toolbarSession)) {
+    const branchBtn = document.createElement('button');
+    branchBtn.type = 'button';
+    branchBtn.className = 'fi-bridge-fork';
+    branchBtn.textContent = '分支';
+    branchBtn.title = '创建继承当前上下文的独立会话 (Ctrl+Shift+B)';
+    branchBtn.setAttribute('aria-label', '创建当前会话分支');
+    branchBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void keyboardShortcuts.forkSession(sessionId);
+    });
+    bridgeToolbar.appendChild(branchBtn);
+  }
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
   const ctxChip = document.createElement('span');
@@ -4165,8 +4190,8 @@ const pastSessionModals = createPastSessionModals({
 const { openResumeModal, openSearchModal } = pastSessionModals;
 // One ordinary click opens HTTP(S), file:// and local paths through the same
 // Hub provider used by card view. Relative paths are resolved against the
-// owning session cwd; previewable targets stay inside Hub and other files or
-// directories route to the OS shell.
+// owning session cwd. Previewable files and directories stay inside Hub;
+// unsupported file formats continue to use their system application.
 //
 async function openPathInHub(filePath, opts = {}) {
   const fail = (message, target, detail) => {
@@ -4191,11 +4216,28 @@ async function openPathInHub(filePath, opts = {}) {
   const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
   if (!fullPath) return fail('路径不存在或无法解析', raw);
   if (_isDirectoryPath(fullPath)) {
-    let err;
-    try { err = await ipcRenderer.invoke('open-path', fullPath); }
-    catch (error) { return fail('文件夹打开失败', fullPath, String(error && error.message || error)); }
-    if (err) return fail('文件夹打开失败', fullPath, err);
-    return { ok: true, path: fullPath, type: 'external' };
+    const manager = fileManagerPanel || window.FileManagerPanel;
+    if (!manager || typeof manager.openDirectory !== 'function') {
+      return fail('文件管理尚未就绪', fullPath);
+    }
+    const activeContext = typeof getActiveFileManagerContext === 'function'
+      ? getActiveFileManagerContext()
+      : null;
+    const requestedRoot = cwd || (activeContext && activeContext.cwd) || fullPath;
+    const context = {
+      cwd: requestedRoot,
+      label: opts.workspaceLabel
+        || (activeContext && normalizeSearchHitPath(activeContext.cwd) === normalizeSearchHitPath(requestedRoot)
+          ? activeContext.label
+          : ''),
+    };
+    let opened;
+    try { opened = await manager.openDirectory(fullPath, context); }
+    catch (error) { return fail('文件管理打开失败', fullPath, String(error && error.message || error)); }
+    if (!opened || opened.ok !== true) {
+      return fail('文件管理打开失败', fullPath, opened && opened.error);
+    }
+    return { ok: true, path: fullPath, root: opened.root || fullPath, type: 'file-manager' };
   }
   if (PREVIEW_PATH_RE.test(fullPath)) {
     await openPreviewPanel(fullPath, previewOptions);
@@ -4304,6 +4346,34 @@ const {
 // P0.6+: 暴露给 meeting-room.js 的"📖 记忆"按钮使用
 window.openPreviewPanel = openPreviewPanel;
 window.openPreviewQuickOpen = openPreviewQuickOpen;
+
+function getActiveFileManagerContext() {
+  if (activeSessionId) {
+    const session = sessions.get(activeSessionId);
+    return session ? { cwd: session.cwd || '', label: session.workspaceLabel || '' } : null;
+  }
+  const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
+  if (!meeting) return null;
+  return {
+    cwd: meeting.workspace || getActivePreviewCwd() || '',
+    label: meeting.workspaceLabel || '',
+  };
+}
+
+fileManagerPanel = createFileManagerPanel({
+  document,
+  window,
+  ipcRenderer,
+  getActiveContext: getActiveFileManagerContext,
+  openPathInHub: (filePath, openOptions = {}) => openPathInHub(filePath, {
+    cwd: getActivePreviewCwd(),
+    requireExistsForRel: false,
+    ...openOptions,
+  }),
+  onLayoutChange: refitActiveTerminalFromPreview,
+});
+fileManagerPanel.init();
+window.FileManagerPanel = fileManagerPanel;
 
 // main.js 的最后一道导航保护：若某个未接线/第三方生成的 file:// 链接试图替换 Hub
 // 主页面，main 会阻止整页导航并把本地路径送回这里，仍按统一规则打开预览面板。
@@ -5024,6 +5094,7 @@ const accountUsageController = createAccountUsageController({
   ipcRenderer,
   sessions,
   escapeHtml,
+  isMemoOpen: () => memoPanel.isOpen(),
 });
 const renderAccountUsage = accountUsageController.render;
 function getWorkbenchWorkspaceHints() {
@@ -5112,8 +5183,8 @@ const processReclaimCard = createProcessReclaimCard({
   onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
   openPath: filePath => ipcRenderer.invoke('show-in-folder', filePath),
 });
-// 记忆系统面板：用量 ticker 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
-// 因为 ticker 每次 render 都重建 innerHTML）。
+// 记忆系统面板：会话 header 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
+// 因为 session / meeting header 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
   document,
   ipcRenderer,
@@ -5137,6 +5208,7 @@ if (typeof window !== 'undefined') window.pctClass = pctClass;
 ipcRenderer.on('status-event', (_e, payload) => {
   const session = sessions.get(payload.sessionId);
   if (session) {
+    let persistModel = false;
     if (Object.prototype.hasOwnProperty.call(payload, 'contextPct')) session.contextPct = payload.contextPct;
     if (Object.prototype.hasOwnProperty.call(payload, 'contextUsed')) session.contextUsed = payload.contextUsed;
     if (Object.prototype.hasOwnProperty.call(payload, 'contextMax')) session.contextMax = payload.contextMax;
@@ -5165,7 +5237,9 @@ ipcRenderer.on('status-event', (_e, payload) => {
           ? /^deepseek-v4-(?:pro|flash)$/i.test(String(payload.model.id))
           : true;
       if (allowed) {
+        const previousModelId = session.currentModel && session.currentModel.id;
         session.currentModel = payload.model;
+        persistModel = previousModelId !== payload.model.id;
         if (payload.sessionId === activeSessionId) updateActiveModelBadge();
       }
     }
@@ -5186,6 +5260,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
     if (typeof MeetingRoom !== 'undefined' && MeetingRoom.refreshSessionMetrics) {
       MeetingRoom.refreshSessionMetrics(payload.sessionId);
     }
+    if (persistModel) schedulePersist();
   }
   accountUsageController.recordStatusUsage(payload);
   scheduleSessionListRender();
@@ -5207,20 +5282,6 @@ function formatDuration(ms) {
   return `${h}h${m % 60 ? (m % 60) + 'm' : ''}`;
 }
 
-function formatContextWindowTokens(value) {
-  const tokens = Number(value);
-  if (!Number.isFinite(tokens) || tokens <= 0) return '';
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}M`;
-  }
-  if (tokens >= 1_000) {
-    const thousands = tokens / 1_000;
-    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1).replace(/\.0$/, '')}K`;
-  }
-  return String(Math.round(tokens));
-}
-
 // Render the per-session metrics row (cwd · api time · lines diff). Called on
 // session switch + every status-event for the active session.
 function renderMetricsRow(el, session) {
@@ -5228,46 +5289,33 @@ function renderMetricsRow(el, session) {
   el.innerHTML = '';
   const frags = [];
   if (session.cwd) {
-    const a = document.createElement('span');
+    const a = document.createElement('button');
+    a.type = 'button';
     a.className = 'metric-cwd';
-    a.textContent = '\uD83D\uDCC1 ' + (session.workspaceLabel ? `${session.workspaceLabel} · ` : '') + session.cwd;
-    const copyCwd = () => {
-      try { clipboard.writeText(session.cwd); } catch {}
+    a.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/></svg>';
+    const label = document.createElement('span');
+    label.textContent = (session.workspaceLabel ? `${session.workspaceLabel} · ` : '') + session.cwd;
+    a.appendChild(label);
+    const openCwd = () => {
+      void openPathInHub(session.cwd, { cwd: session.cwd, requireExistsForRel: false });
     };
-    const idleTitle = 'Click to copy · ' + session.cwd;
+    const idleTitle = '在文件管理中打开 · ' + session.cwd;
     // 归档提示挂在 header 这条路径上，与 AI 群聊 header 的 workspace chip 同一套
     // 实现（WorkspaceController.attachArchiveHint）：有归档建议时显示琥珀色轻标记，
-    // 点击打开归档框；没有建议就还是原来的「点击复制路径」。
+    // 点击打开归档框；没有建议就直接在 Hub 文件管理中打开工作目录。
     // 之前这套只在群聊侧存在，独立会话的建议进了没人读的 Map，用户永远看不到提示。
     const attached = !!(window.WorkspaceController
       && typeof window.WorkspaceController.attachArchiveHint === 'function'
       && window.WorkspaceController.attachArchiveHint(a, 'session', session.id, {
         hintTitle: '这个任务还在临时区 · 点击归档到正式项目目录',
         idleTitle,
-        onFallback: copyCwd,
+        onFallback: openCwd,
       }));
     if (!attached) {
       a.title = idleTitle;
-      a.addEventListener('click', copyCwd);
+      a.addEventListener('click', openCwd);
     }
     frags.push(a);
-  }
-  const contextRequested = typeof session.contextMax === 'number' ? session.contextMax : null;
-  const contextEffective = typeof session.contextEffectiveMax === 'number' ? session.contextEffectiveMax : null;
-  const isCodexContext = /^codex(?:-resume)?$/.test(String(session.kind || '')) || contextEffective !== null;
-  if (isCodexContext && (contextRequested !== null || contextEffective !== null)) {
-    const context = document.createElement('span');
-    context.className = 'metric-context-window';
-    if (contextEffective !== null) {
-      context.textContent = `ctx ${formatContextWindowTokens(contextEffective)}`;
-      context.title = `Codex 运行时有效窗口：${contextEffective.toLocaleString()} tokens`
-        + (contextRequested !== null ? `；Hub 启动请求：${contextRequested.toLocaleString()} tokens` : '')
-        + '。实际值来自 token_count.model_context_window，不会覆盖下次启动请求。';
-    } else {
-      context.textContent = `ctx 请求 ${formatContextWindowTokens(contextRequested)}`;
-      context.title = `Hub 已请求 ${contextRequested.toLocaleString()} tokens；尚未收到 Codex 运行时有效窗口回报。`;
-    }
-    frags.push(context);
   }
   if (typeof session.apiMs === 'number' && session.apiMs > 0) {
     const s = document.createElement('span');
@@ -5985,6 +6033,7 @@ const shellController = createShellController({
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
+  if (fileManagerPanel) fileManagerPanel.close();
   shellController.escapeToHome();
   setShellNavActive('home');
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
@@ -6306,6 +6355,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
@@ -6354,6 +6404,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
@@ -6391,6 +6442,12 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.effort) local.effort = session.effort;
+  let persistModel = false;
+  if (session.currentModel && session.currentModel.id) {
+    const previousModelId = local.currentModel && local.currentModel.id;
+    local.currentModel = { ...session.currentModel };
+    persistModel = previousModelId !== local.currentModel.id;
+  }
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (session.branchSourceSessionId !== undefined) local.branchSourceSessionId = session.branchSourceSessionId;
@@ -6431,9 +6488,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     const activeTitle = terminalPanelEl.querySelector('.terminal-title');
     if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
     updateActiveMetricsRow();
+    if (persistModel) updateActiveModelBadge();
     completionNotificationToggle.refreshTarget();
   }
-  if (persistRuntimeContext) schedulePersist();
+  if (persistRuntimeContext || persistModel) schedulePersist();
   scheduleSessionListRender();
 });
 
@@ -6959,6 +7017,7 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
   }
   if (activeMeetingId === meetingId) {
     activeMeetingId = null;
+    if (fileManagerPanel) fileManagerPanel.close();
     if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
     if (emptyStateEl) emptyStateEl.style.display = '';
     if (terminalPanelEl) terminalPanelEl.classList.add('home-active');

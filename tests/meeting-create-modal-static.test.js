@@ -174,8 +174,8 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session dynamic tuning definitions');
   assert.match(MODAL_JS, /WorkspaceController\.buildSessionTuningOpts/,
     'group modal must reuse new-session provider-specific payload rules');
-  assert.match(MODAL_JS, /WorkspaceController\.loadCodexTuningCatalog/,
-    'Codex effort and Fast options must come from its model catalog');
+  assert.match(MODAL_JS, /WorkspaceController\.loadPrimaryModelCatalogs/,
+    'Claude and Codex options must refresh from their current CLI catalogs');
   assert.match(MODAL_JS, /默认保留 Claude \+ Codex/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);

@@ -115,7 +115,6 @@ function createRecentTurnCopyController(options = {}) {
   let root = null;
   let countSelect = null;
   let copyButton = null;
-  let totalLabel = null;
   let resetTimer = null;
   let renderedMax = 0;
   let cardObserver = null;
@@ -178,10 +177,6 @@ function createRecentTurnCopyController(options = {}) {
     // 所以对话变长之后会自动回到用户原本要的轮数。
     countSelect.value = String(Math.min(desiredCount, max));
 
-    if (totalLabel) {
-      totalLabel.textContent = total > 0 ? `/ 共 ${total} 轮` : '/ 暂无完整轮次';
-      totalLabel.hidden = false;
-    }
     if (countSelect) countSelect.disabled = total === 0;
     return total;
   }
@@ -251,7 +246,6 @@ function createRecentTurnCopyController(options = {}) {
     root = doc.getElementById('recent-turn-copy');
     countSelect = doc.getElementById('recent-turn-copy-count');
     copyButton = doc.getElementById('recent-turn-copy-button');
-    totalLabel = doc.getElementById('recent-turn-copy-total');
     if (!root || !countSelect || !copyButton) return false;
     copyButton.dataset.defaultLabel = copyButton.textContent || '复制对话';
     // 记住的偏好只写进 desiredCount，不直接写下拉框 —— 此刻卡片多半还没挂载，

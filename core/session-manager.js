@@ -1245,7 +1245,7 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isClaude) {
-      // 默认走 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）；
+      // 默认走 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 5 1M）；
       // AI 群聊 Modal 选 sonnet-4.5 等时透传 opts.model。
       const mid = opts.model || DEFAULT_MODEL_BY_KIND.claude;
       currentModel = { id: mid, displayName: mid };

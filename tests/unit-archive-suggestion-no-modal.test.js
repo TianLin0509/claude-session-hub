@@ -60,8 +60,8 @@ test('归档提示由 attachArchiveHint 统一提供，群聊与独立会话都�
   assert.ok(start > 0, '找不到 workspace chip 绑定');
   const block = ROOM_SRC.slice(start, start + 1400);
   assert.ok(block.includes("attachArchiveHint(workspaceChip, 'meeting'"), '群聊 chip 必须走共用实现');
-  // 没有建议时必须保留原来的复制路径行为
-  assert.ok(block.includes('clipboard.writeText'), '无建议时应保持原「点击复制路径」行为');
+  // 没有建议时按当前产品约定直接打开工作目录。
+  assert.ok(block.includes('openPathInHub'), '无建议时应打开工作目录');
 
   const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.ok(RENDERER_SRC.includes("attachArchiveHint(a, 'session', session.id"),

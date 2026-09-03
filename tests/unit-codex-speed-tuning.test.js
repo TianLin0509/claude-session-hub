@@ -195,7 +195,8 @@ test('弹窗用的快照一次性给齐所有 codex 模型 + 全局 service_tier
   try {
     const snap = buildCodexTuningSnapshot(['gpt-5.6-sol', 'gpt-5.5'], { configDir: h.home });
     assert.equal(snap.catalogLoaded, true);
-    assert.deepEqual(Object.keys(snap.byModel).sort(), ['gpt-5.5', 'gpt-5.6-sol']);
+    assert.deepEqual(Object.keys(snap.byModel).sort(), ['gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol']);
+    assert.deepEqual(snap.models.map(model => model.id), ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4-mini']);
     assert.equal(snap.byModel['gpt-5.6-sol'].efforts.includes('ultra'), true);
     assert.equal(snap.effortDescriptions.ultra, '最大推理 + 自动任务分派');
   } finally { h.cleanup(); }

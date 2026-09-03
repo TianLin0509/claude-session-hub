@@ -63,6 +63,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .mr-header-title {
@@ -113,6 +115,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .mr-header-primary-actions,
@@ -120,6 +123,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .mr-header-secondary-actions {
@@ -134,6 +138,11 @@
 }
 
 .mr-header-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
   padding: 4px 10px;
   border: 1px solid var(--border, var(--border-mid));
   border-radius: var(--radius-xs);

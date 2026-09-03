@@ -176,7 +176,7 @@
   font-size: 12.5px;
 }
 
-/* 用量 ticker 上的「记忆」按钮，与 qt-refresh 同族 */
+/* 用量 ticker 上的「备忘录」按钮，与 qt-refresh 同族 */
 .qt-memory {
   background: transparent;
   border: 1px solid var(--border-color, #3a3a3a);

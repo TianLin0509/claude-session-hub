@@ -93,6 +93,8 @@ async function main() {
   assert.ok(accountEl.innerHTML.includes('5m'), 'Codex freshness must use observedAt instead of cache write time');
   assert.ok(!accountEl.innerHTML.includes('acc-packy-row'));
   assert.ok(accountEl.innerHTML.includes('data-action="refresh-usage"'));
+  assert.ok(accountEl.innerHTML.includes('data-action="open-memo"'), 'ticker 应显示备忘录入口');
+  assert.ok(!accountEl.innerHTML.includes('data-action="open-memory"'), '记忆入口已移动到会话 header');
   assert.ok(
     accountEl.innerHTML.includes('current@example.com'),
     'codex 账号标签必须出现在 segment tooltip（让用户看出监控的是哪个 codex 账号）',

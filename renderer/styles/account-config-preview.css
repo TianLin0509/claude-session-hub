@@ -263,12 +263,17 @@
 }
 .terminal-model-badge.clickable { cursor: pointer; user-select: none; }
 .terminal-model-badge.clickable:hover { transform: scale(1.06); filter: brightness(1.15); }
+.terminal-model-badge.switching { cursor: wait; opacity: .82; animation: model-switch-pulse 1s ease-in-out infinite; }
+@keyframes model-switch-pulse { 50% { filter: brightness(1.28); } }
 
 /* Model picker dropdown — absolute-positioned, anchored under the badge */
 .model-picker-menu {
   position: fixed;
   z-index: 10000;
-  min-width: 240px;
+  min-width: 360px;
+  max-width: min(560px, calc(100vw - 24px));
+  max-height: min(620px, calc(100vh - 24px));
+  overflow-y: auto;
   background: var(--session-waiting);
   border: 1px solid var(--border-mid);
   border-radius: var(--radius-sm);
@@ -300,6 +305,14 @@
   background: rgba(251, 191, 36, 0.08);
   border-radius: var(--radius-xs);
   line-height: 1.4;
+}
+.model-picker-note[data-state="pending"] { color: var(--status-info); border: 1px solid rgba(var(--rgb-info), .24); }
+.model-picker-note[data-state="success"] { color: var(--status-success); border: 1px solid rgba(var(--rgb-success), .28); }
+.model-picker-note[data-state="error"] { color: var(--status-danger); border: 1px solid rgba(var(--rgb-danger), .32); }
+.model-picker-note[data-state="warning"] { color: var(--status-warning); }
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-model-badge.switching { animation: none; }
 }
 .model-picker-empty {
   padding: 8px 10px;

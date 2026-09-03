@@ -23,10 +23,10 @@ async function main() {
   let fails = 0;
   const ok = (cond, msg) => { results.push((cond ? '  ok   ' : ' FAIL ') + msg); if (!cond) fails++; };
 
-  // 静态契约：用量 ticker 渲染里有「记忆」按钮（account-usage-controller.js）。
-  const controllerSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'account-usage-controller.js'), 'utf8');
-  ok(controllerSrc.includes('data-action="open-memory"'), '0.1 ticker render 含 open-memory 按钮');
-  ok(controllerSrc.includes('qt-memory'), '0.2 ticker 按钮带 qt-memory 样式类');
+  // 静态契约：记忆入口已从用量 ticker 移到会话 header，仍走同一委托链路。
+  const rendererSrc = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  ok(rendererSrc.includes("memoryBtn.dataset.action = 'open-memory'"), '0.1 会话 header 含 open-memory 按钮');
+  ok(rendererSrc.includes('btn-memory-toggle'), '0.2 header 按钮带记忆入口样式类');
 
   // 双保险：home 指到隔离目录（防 memory 孤岛采集扫真实 home、蒸馏写真实三件套），
   // 并清空 DEEPSEEK_API_KEY（env 优先级高于 config.json，父进程的 key 会漏进隔离实例）。

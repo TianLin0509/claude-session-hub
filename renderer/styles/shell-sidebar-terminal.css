@@ -781,15 +781,43 @@
 .terminal-metrics-row .metric-cwd {
   cursor: pointer;
   color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  font: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 480px;
 }
 
+.terminal-metrics-row .metric-cwd > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-metrics-row .metric-cwd > svg {
+  flex: 0 0 auto;
+  color: var(--mark-amber-soft);
+}
+
 .terminal-metrics-row .metric-cwd:hover {
   color: var(--text-primary);
-  text-decoration: underline;
+  border-color: var(--border);
+  background: var(--bg-tertiary);
+  text-decoration: none;
+}
+
+.terminal-metrics-row .metric-cwd:focus-visible {
+  outline: 2px solid rgba(var(--rgb-info), .72);
+  outline-offset: 1px;
 }
 
 /* 归档提示态。视觉与 AI 群聊 header 的 .mr-workspace-chip.has-archive-hint 保持一致

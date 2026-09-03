@@ -10,8 +10,17 @@ const {
   supportsForkSession,
   supportsRecoverableSession,
 } = require('../../core/session-capabilities.js');
+const {
+  isClaudeModelSelection,
+  isCodexConversationModelId,
+} = require('../../core/model-options.js');
+const {
+  captureClaudeModelPreference,
+  restoreClaudeModelPreference,
+} = require('../../core/claude-model-preference-guard.js');
 
 const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_MODEL_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 function isSafeNativeSessionId(value) {
   return typeof value === 'string' && NATIVE_SESSION_ID_RE.test(value);
@@ -30,6 +39,7 @@ function registerSessionIpc(ipcMain, deps) {
   } = deps;
 
   const lastResizeBySid = new Map();
+  const claudeModelPreferenceGuards = new Map();
 
   ipcMain.handle('create-session', (_e, arg) => {
     // Back-compat: legacy callers pass just a kind string; newer callers pass { kind, opts }.
@@ -201,6 +211,107 @@ function registerSessionIpc(ipcMain, deps) {
   ipcMain.on('focus-session', (_e, { sessionId }) => {
     sessionManager.setFocusedSession(sessionId);
     sessionManager.markRead(sessionId);
+  });
+
+  ipcMain.handle('prepare-session-model-switch', async (_event, payload = {}) => {
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    const targetModel = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+    const session = sessionId ? sessionManager.getSession(sessionId) : null;
+    const kind = String(session && session.kind || '').replace(/-resume$/, '').toLowerCase();
+    if (!session || kind !== 'claude' || !isClaudeModelSelection(targetModel)) {
+      return { ok: false, error: 'invalid-claude-switch', message: '无法为当前会话准备 Claude 模型切换' };
+    }
+    try {
+      if (claudeModelPreferenceGuards.has(sessionId)) {
+        await restoreClaudePreferenceGuard(sessionId, { waitForWrite: false });
+      }
+      const snapshot = captureClaudeModelPreference(targetModel);
+      const timer = setTimeout(() => {
+        void restoreClaudePreferenceGuard(sessionId).then(restored => {
+          if (restored && restored.status === 'restore-failed') {
+            console.warn('[model-switch] timed Claude default restoration failed:', restored.error);
+          }
+        });
+      }, 20_000);
+      timer.unref?.();
+      claudeModelPreferenceGuards.set(sessionId, { snapshot, timer });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: 'preference-snapshot-failed', message: `无法保护 Claude 默认模型：${error.message}` };
+    }
+  });
+
+  async function restoreClaudePreferenceGuard(sessionId, options = {}) {
+    const entry = claudeModelPreferenceGuards.get(sessionId);
+    if (!entry) return { restored: false, status: 'missing-snapshot' };
+    if (entry.timer) clearTimeout(entry.timer);
+    const waitForWrite = options.waitForWrite !== false;
+    const deadline = Date.now() + (waitForWrite ? 2500 : 0);
+    while (true) {
+      let result;
+      try { result = restoreClaudeModelPreference(entry.snapshot); }
+      catch (error) {
+        claudeModelPreferenceGuards.delete(sessionId);
+        return { restored: false, status: 'restore-failed', error: error.message };
+      }
+      if (result.restored || result.status !== 'changed-externally') {
+        claudeModelPreferenceGuards.delete(sessionId);
+        return result;
+      }
+      const original = entry.snapshot.hadModel ? entry.snapshot.previousModel : undefined;
+      if (result.currentModel !== original) {
+        claudeModelPreferenceGuards.delete(sessionId);
+        return result;
+      }
+      if (!waitForWrite || Date.now() >= deadline) {
+        claudeModelPreferenceGuards.delete(sessionId);
+        return { restored: true, status: 'unchanged' };
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  ipcMain.handle('cancel-session-model-switch', async (_event, payload = {}) => {
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    return { ok: true, preference: await restoreClaudePreferenceGuard(sessionId, { waitForWrite: false }) };
+  });
+
+  // Renderer calls this only after the provider-owned TUI confirms the switch.
+  // Keeping metadata confirmation separate from terminal-input prevents a
+  // failed picker interaction from making Hub claim a model that never became active.
+  ipcMain.handle('confirm-session-model-switch', async (_event, payload = {}) => {
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+    const session = sessionId ? sessionManager.getSession(sessionId) : null;
+    if (!session) return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    const kind = String(session.kind || '').replace(/-resume$/, '').toLowerCase();
+    const valid = kind === 'codex'
+      ? isCodexConversationModelId(modelId)
+      : kind === 'claude'
+        ? isClaudeModelSelection(modelId)
+        : false;
+    if (!valid) return { ok: false, error: 'invalid-model', message: '该模型不属于当前 CLI 的会话模型目录' };
+
+    const displayName = String(payload.displayName || modelId)
+      .replace(/[\0\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 120) || modelId;
+    const fields = { currentModel: { id: modelId, displayName } };
+    const effort = String(payload.effort || '').toLowerCase();
+    if (kind === 'codex' && CODEX_MODEL_EFFORTS.has(effort)) fields.effort = effort;
+    const updated = sessionManager.updateSessionMeta(sessionId, fields);
+    if (!updated) {
+      if (kind === 'claude') await restoreClaudePreferenceGuard(sessionId);
+      return { ok: false, error: 'update-failed', message: '模型已切换，但 Hub 元数据更新失败' };
+    }
+    sendToRenderer('session-updated', { session: updated });
+    const preference = kind === 'claude' ? await restoreClaudePreferenceGuard(sessionId) : null;
+    return {
+      ok: true,
+      model: fields.currentModel,
+      effort: fields.effort || updated.effort || null,
+      ...(preference ? { preference } : {}),
+    };
   });
 
   // Sidebar placement lives in renderer state for dormant cards, but a live

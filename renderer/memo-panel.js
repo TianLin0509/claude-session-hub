@@ -102,11 +102,27 @@ function createMemoPanel(deps) {
     const panel = document.getElementById('memo-panel');
     if (!panel) return;
     const open = panel.style.display === 'none';
+    if (open) {
+      const EventCtor = document.defaultView && document.defaultView.CustomEvent;
+      if (typeof EventCtor === 'function') {
+        document.dispatchEvent(new EventCtor('hub-side-panel-opening', { detail: { panel: 'memo' } }));
+      }
+    }
     panel.style.display = open ? 'flex' : 'none';
     localStorage.setItem(MEMO_OPEN_KEY, String(open));
     syncToggleButtons(open);
     if (open) renderList();
     refitActiveTerminal();
+  }
+
+  function close() {
+    const panel = document.getElementById('memo-panel');
+    if (!panel || panel.style.display === 'none') return false;
+    panel.style.display = 'none';
+    localStorage.setItem(MEMO_OPEN_KEY, 'false');
+    syncToggleButtons(false);
+    refitActiveTerminal();
+    return true;
   }
 
   function init() {
@@ -115,6 +131,13 @@ function createMemoPanel(deps) {
     const clearBtn = document.getElementById('memo-clear-btn');
     const listEl = document.getElementById('memo-list');
     if (!addBtn || !input || !clearBtn || !listEl) return;
+
+    document.addEventListener('click', e => {
+      if (e.target.closest && e.target.closest('[data-action="open-memo"]')) toggle();
+    });
+    document.addEventListener('hub-side-panel-opening', e => {
+      if (e && e.detail && e.detail.panel !== 'memo') close();
+    });
 
     input.addEventListener('keydown', e => e.stopPropagation());
     input.addEventListener('keypress', e => e.stopPropagation());
@@ -167,6 +190,7 @@ function createMemoPanel(deps) {
   return {
     addItem,
     clearAll,
+    close,
     deleteItem,
     init,
     isOpen,

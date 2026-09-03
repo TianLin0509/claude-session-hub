@@ -210,12 +210,13 @@ test('daily branch button can target the session shown in the header', async () 
   }]]);
 });
 
-test('terminal header exposes a one-click branch button through the shared provider capability', () => {
+test('composer toolbar exposes a one-click branch button through the shared provider capability', () => {
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
-  assert.match(rendererSource, /forkBtn\.className = 'btn-zoom btn-fork-session'/);
-  assert.match(rendererSource, /forkBtn\.textContent = '分支'/);
-  assert.match(rendererSource, /forkBtn\.addEventListener\('click', \(\) => \{\s*void keyboardShortcuts\.forkSession\(sessionId\);\s*\}\)/);
-  assert.match(rendererSource, /const canForkSession = supportsForkSession\(session\)/);
+  assert.match(rendererSource, /branchBtn\.className = 'fi-bridge-fork'/);
+  assert.match(rendererSource, /branchBtn\.textContent = '分支'/);
+  assert.match(rendererSource, /keyboardShortcuts\.forkSession\(sessionId\)/);
+  assert.match(rendererSource, /toolbarSession && supportsForkSession\(toolbarSession\)/);
+  assert.match(rendererSource, /bridgeToolbar\.appendChild\(branchBtn\)/);
 });
 
 test('DeepSeek on the Codex runtime reaches the same fork IPC as Codex', async () => {

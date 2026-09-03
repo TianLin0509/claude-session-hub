@@ -3,11 +3,9 @@
 (function () {
 const { ipcRenderer } = require('electron');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
-const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
+const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND, modelOptionsFor } = require('../core/model-options.js');
 
-const MODELS_BY_KIND = Object.fromEntries(
-  Object.entries(MODEL_OPTIONS_BY_KIND).map(([kind, opts]) => [kind, opts.map(o => o.id)])
-);
+const MODEL_KINDS = new Set(Object.keys(MODEL_OPTIONS_BY_KIND));
 
 const DEFAULT_SLOTS = [
   { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
@@ -131,7 +129,7 @@ function _aiLogo(kind) {
 }
 
 function _modelOptions(kind, selected) {
-  const opts = MODEL_OPTIONS_BY_KIND[kind] || [];
+  const opts = modelOptionsFor(kind);
   return opts.map((option, i) =>
     `<option value="${_escapeHtml(option.id)}"${option.id === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(option.label || option.id)}</option>`
   ).join('');
@@ -144,7 +142,7 @@ function _selectOptions(entries, selected) {
 }
 
 function _normalizeSlotSpec(spec = {}) {
-  const kind = MODELS_BY_KIND[spec.kind] ? spec.kind : 'claude';
+  const kind = MODEL_KINDS.has(spec.kind) ? spec.kind : 'claude';
   const tuning = window.WorkspaceController.resolveSessionTuning(kind, spec.model, spec);
   return {
     kind,
@@ -192,7 +190,7 @@ function _applyTemplate(templateId, opts = {}) {
 function _slotHtml(i, spec, isGroup) {
   const def = _normalizeSlotSpec(spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0]);
   const tuning = window.WorkspaceController.resolveSessionTuning(def.kind, def.model, def);
-  const providerKinds = isGroup ? GROUP_MEMBER_KINDS : Object.keys(MODELS_BY_KIND);
+  const providerKinds = isGroup ? GROUP_MEMBER_KINDS : Array.from(MODEL_KINDS);
   const aiOptions = providerKinds.map(k =>
     `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
   ).join('');
@@ -427,7 +425,7 @@ async function _onCreate() {
   try {
     // 即使用户在模型目录异步返回前立刻点创建，也要先用真实目录重新归一化。
     // 否则 gpt-5.5 可能把 fallback 里的 max 带进 CLI（该模型真实只支持到 xhigh）。
-    await window.WorkspaceController.loadCodexTuningCatalog();
+    await window.WorkspaceController.loadPrimaryModelCatalogs();
     _syncGroupSlotsFromDom({ strict: true });
     _renderSlots();
     // 读取 DOM 也必须在 try 内。历史状态或第三方样式脚本一旦留下残缺 slot / 未选
@@ -544,7 +542,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   _modalEl.style.display = 'flex';
   // 单会话与群聊共用 codex-cli 的模型目录。目录异步返回后保留用户已选值重绘，
   // 让 gpt-5.6 的 ultra / Fast 与旧模型的较短枚举始终准确。
-  void window.WorkspaceController.loadCodexTuningCatalog().then(() => {
+  void window.WorkspaceController.loadPrimaryModelCatalogs().then(() => {
     if (!_modalEl || _modalEl.style.display === 'none') return;
     _syncGroupSlotsFromDom();
     _renderSlots();

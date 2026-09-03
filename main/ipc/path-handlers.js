@@ -6,6 +6,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { shell } = require('electron');
 const { searchPreviewPaths } = require('../../core/preview-path-search.js');
+const { listWorkspaceDirectory } = require('../../core/file-manager-directory.js');
 
 const COMPANY_DROP_TIMEOUT_MS = 15 * 60 * 1000;
 const COMPANY_DROP_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -146,6 +147,7 @@ function runCompanyDrop(filePath, {
 function registerPathIpc(ipcMain, deps = {}) {
   const syncRunner = deps.runCompanyDrop || runCompanyDrop;
   const previewPathSearcher = deps.searchPreviewPaths || searchPreviewPaths;
+  const directoryLister = deps.listWorkspaceDirectory || listWorkspaceDirectory;
   const companyDropInFlight = new Set();
   ipcMain.handle('open-path', async (_e, filePath) => {
     if (typeof filePath !== 'string' || !filePath.trim()) return 'empty path';
@@ -187,6 +189,26 @@ function registerPathIpc(ipcMain, deps = {}) {
         truncated: false,
         indexedCount: 0,
         error: String(error && error.message || error),
+      };
+    }
+  });
+
+  ipcMain.handle('file-manager:list-directory', async (_e, payload) => {
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, error: 'invalid payload', code: 'invalid_payload', entries: [] };
+    }
+    try {
+      return await directoryLister({
+        root: typeof payload.root === 'string' ? payload.root : '',
+        directory: typeof payload.directory === 'string' ? payload.directory : '',
+        limit: payload.limit,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: String(error && error.message || error),
+        code: 'read_failed',
+        entries: [],
       };
     }
   });

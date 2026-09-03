@@ -1066,6 +1066,21 @@ function sendToRenderer(channel, data) {
   }
 }
 
+function syncSessionRuntimeModel(sessionId, model) {
+  if (!sessionId || !model || typeof model.id !== 'string' || !model.id.trim()) return false;
+  const session = sessionManager.getSession(sessionId);
+  if (!session) return false;
+  const currentId = session.currentModel && session.currentModel.id;
+  if (currentId === model.id) return false;
+  sessionManager.updateSessionMeta(sessionId, {
+    currentModel: {
+      id: model.id.trim(),
+      displayName: String(model.displayName || model.id).trim().slice(0, 120),
+    },
+  });
+  return true;
+}
+
 let groupChatDispatcher = null;
 let sessionAutoSuspendScheduler = null;
 let agentLeagueBridge = null;
@@ -1210,6 +1225,7 @@ registerMeetingIpc(ipcMain, {
   getHubDataDir,
   getImmersiveByMeeting: () => _immersiveByMeeting,
   getLastPersistedSessions: () => lastPersistedSessions,
+  getHubConfig,
   groupchat,
   meetingManager,
   scenes,
@@ -1863,6 +1879,7 @@ const hookServer = http.createServer((req, res) => {
         });
       } else {
         const filtered = claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);
+        syncSessionRuntimeModel(parsed.sessionId, parsed.model);
         sendToRenderer('status-event', {
           sessionId: parsed.sessionId,
           contextPct: parsed.contextPct,
@@ -2251,7 +2268,10 @@ async function scanAgentSessions(opts = {}) {
     if (parsed.contextPct != null) payload.contextPct = parsed.contextPct;
     if (parsed.contextUsed != null) payload.contextUsed = parsed.contextUsed;
     if (parsed.contextMax != null) payload.contextMax = parsed.contextMax;
-    if (parsed.model) payload.model = parsed.model;
+    if (parsed.model) {
+      syncSessionRuntimeModel(s.id, parsed.model);
+      payload.model = parsed.model;
+    }
     sendToRenderer('status-event', payload);
   }
   // Expire stale CLI quota entries (no fresh CLI data for >10 min).

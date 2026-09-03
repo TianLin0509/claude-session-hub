@@ -3,7 +3,11 @@
 (function () {
   const { ipcRenderer } = require('electron');
   const path = require('path');
-  const { modelOptionsFor, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
+  const {
+    modelOptionsFor,
+    DEFAULT_MODEL_BY_KIND,
+    setRuntimeModelOptions,
+  } = require('../core/model-options.js');
   const { defaultCodexContextWindow } = require('../core/codex-context-window.js');
 
   const KIND_LABELS = {
@@ -54,6 +58,9 @@
     ultra: '最大推理 + 自动任务分派',
   };
   let codexTuningCatalog = null;
+  let claudeModelCatalog = null;
+  let codexCatalogInFlight = null;
+  let claudeCatalogInFlight = null;
   // 2026-08-29 起三家统一默认 none：一个 MCP 都不加载，要用哪个当场选。
   // 起因是 superran 这个 MCP 每个进程恒定提交 2.66 GB（实占只有 20–30 MB），
   // Claude 原来默认 full，13 个会话就吃掉 34.6 GB 提交内存。
@@ -569,7 +576,7 @@
   // 是为了让「只改一边」在结构上不再可能。
   //
   // 行为：有建议 → 加 has-archive-hint + 换 title，点击打开归档框；
-  //       没建议 → 保持调用方原来的行为（两处都是「点击复制路径」）。
+  //       没建议 → 保持调用方当前行为（两处都是「打开工作目录」）。
   // 调用方每次重渲染都会重建元素，所以这里直接 addEventListener 不会重复绑定。
   function attachArchiveHint(el, scope, id, options = {}) {
     if (!el || !id) return false;
@@ -841,6 +848,18 @@
       if (showCodexTier && !codexModelTuning(selectedModel).fromCache) {
         lines.push('未读到 codex 模型目录（~/.codex/models_cache.json），思考强度用的是保守兜底档位。');
       }
+      if (selectedKind === 'codex' && codexTuningCatalog && codexTuningCatalog.refreshError) {
+        lines.push('Codex 在线目录刷新失败，当前显示最近一次 CLI 本地缓存；下次打开会自动重试。');
+      } else if (selectedKind === 'codex' && codexTuningCatalog) {
+        lines.push(codexTuningCatalog.source === 'codex-app-server'
+          ? '模型目录来自当前 Codex 账号的实时 model/list；打开界面时自动刷新。'
+          : '模型目录来自 Codex CLI 本地缓存；打开界面时自动重读。');
+      }
+      if (selectedKind === 'claude' && claudeModelCatalog && claudeModelCatalog.catalogLoaded) {
+        lines.push('额外模型来自当前 Claude Code 账号缓存；最新别名由 CLI 在切换时解析。');
+      } else if (selectedKind === 'claude' && claudeModelCatalog && claudeModelCatalog.refreshError) {
+        lines.push('Claude 账号模型缓存读取失败，当前显示内置兼容目录；下次打开会自动重试。');
+      }
       if (showMcp && selectedMcpProfile !== 'full') lines.push('非 Full 档只在本次启动生效，不会改写你的全局 MCP 配置。');
       if (selectedKind === 'codex' && selectedMcpProfile === 'none') lines.push('None 会同时阻止 workspace、群聊通信与投研 MCP 注入。');
       if (selectedKind === 'codex' && defaultCodexContextWindow(selectedModel)) {
@@ -999,8 +1018,8 @@
     const selected = menuEl.querySelector(`.new-session-option[data-kind="${selectedKind}"]`);
     if (selected) selected.focus();
     void loadRecent().then(paint);
-    // Codex 档位目录：拿到后重绘一次，把兜底档位换成该模型的真实档位。
-    void loadCodexTuningCatalog().then(paint);
+    // 每次打开都向当前 CLI 目录服务取一次（main 有短 TTL），不把模型表冻结到 Hub 启动时。
+    void loadModelCatalog(selectedKind).then(paint);
   }
 
   // 记住每个 kind 上次调过的档位：在 Claude / Codex 之间来回切时不用重选。
@@ -1022,15 +1041,69 @@
     selectedCodexTier = (saved && saved.codexSpeedTier) || defaultCodexSpeedFor(kind, selectedModel);
   }
 
-  // Codex 的档位目录来自 codex-cli 自己的缓存，开弹窗时拉一次就够。
-  // 失败静默：renderer 侧有静态兜底，不能让弹窗打不开。
-  async function loadCodexTuningCatalog() {
-    if (codexTuningCatalog) return codexTuningCatalog;
-    try {
-      const result = await ipcRenderer.invoke('codex:tuning-catalog');
-      if (result && result.ok) codexTuningCatalog = result;
-    } catch {}
-    return codexTuningCatalog;
+  // Main 优先调用 codex app-server model/list；失败再读 models_cache.json。
+  // renderer 不做永久缓存，main 的短 TTL 既避免频繁拉进程，又能在 CLI 更新目录后自动刷新。
+  async function loadCodexTuningCatalog(options = {}) {
+    if (codexCatalogInFlight) return codexCatalogInFlight;
+    codexCatalogInFlight = (async () => {
+      try {
+        const result = await ipcRenderer.invoke('codex:tuning-catalog', {
+          force: options.force === true,
+          codexProfile: options.codexProfile || undefined,
+        });
+        if (result && result.ok) {
+          codexTuningCatalog = result;
+          if (Array.isArray(result.models) && result.models.length) {
+            setRuntimeModelOptions('codex', result.models);
+          }
+        }
+      } catch (error) {
+        codexTuningCatalog = {
+          ok: false,
+          refreshError: error && error.message ? error.message : String(error),
+          source: 'static-fallback',
+        };
+      }
+      return codexTuningCatalog;
+    })().finally(() => { codexCatalogInFlight = null; });
+    return codexCatalogInFlight;
+  }
+
+  async function loadClaudeModelCatalog() {
+    if (claudeCatalogInFlight) return claudeCatalogInFlight;
+    claudeCatalogInFlight = (async () => {
+      try {
+        const result = await ipcRenderer.invoke('claude:model-catalog');
+        if (result && result.ok) {
+          claudeModelCatalog = result;
+          if (Array.isArray(result.models) && result.models.length) {
+            setRuntimeModelOptions('claude', result.models);
+          }
+        }
+      } catch (error) {
+        claudeModelCatalog = {
+          ok: false,
+          refreshError: error && error.message ? error.message : String(error),
+          source: 'static-fallback',
+        };
+      }
+      return claudeModelCatalog;
+    })().finally(() => { claudeCatalogInFlight = null; });
+    return claudeCatalogInFlight;
+  }
+
+  function loadModelCatalog(kind, options = {}) {
+    const base = String(kind || '').replace(/-resume$/, '');
+    if (base === 'codex') return loadCodexTuningCatalog(options);
+    if (base === 'claude') return loadClaudeModelCatalog(options);
+    return Promise.resolve(null);
+  }
+
+  function loadPrimaryModelCatalogs(options = {}) {
+    return Promise.all([
+      loadClaudeModelCatalog(options),
+      loadCodexTuningCatalog(options),
+    ]);
   }
 
   // Only send what the selected CLI understands: model for kinds with a model
@@ -1061,7 +1134,7 @@
     try {
       // 与群聊成员同一条准确性门：提交前等真实 Codex 模型目录并重新归一化，
       // 避免快速点击把 fallback 中该模型不支持的 effort 送进 PTY。
-      await loadCodexTuningCatalog();
+      await loadModelCatalog(selectedKind);
       paintTuning();
       if (workspaceMode === 'scratch') workspace = await createScratch('未命名任务');
       else if (workspaceMode === 'default') workspace = await createDefaultWorkspace('未命名任务');
@@ -1089,6 +1162,7 @@
         applyTuningMemory(selectedKind);
         setError('');
         paint();
+        void loadModelCatalog(selectedKind).then(paint);
       });
     });
     menuEl.querySelectorAll('.session-workspace-choice').forEach(button => {
@@ -1182,7 +1256,11 @@
     // 群聊成员配置必须与新建 Session 共用动态 Codex 模型目录和默认值。
     resolveSessionTuning,
     buildSessionTuningOpts,
+    codexModelTuning,
+    loadClaudeModelCatalog,
     loadCodexTuningCatalog,
+    loadModelCatalog,
+    loadPrimaryModelCatalogs,
     workspaceTierLabel,
   };
 

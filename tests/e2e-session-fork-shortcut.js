@@ -165,7 +165,7 @@ async function main() {
 
     console.log('[step] click Claude branch button');
     result.claudeButton = await client.eval(`(() => {
-      const button = document.querySelector('.btn-fork-session');
+      const button = document.querySelector('.fi-bridge-fork');
       if (!button) return { found: false };
       const rect = button.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
@@ -194,9 +194,11 @@ async function main() {
     const claudeBranch = await waitFor('Claude branch session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const all = await ipcRenderer.invoke('get-sessions');
-      return all.find(session => session.id !== ${JSON.stringify(claudeSource.id)} && session.title === '分支: Claude E2E Source') || null;
+      return all.find(session => session.id !== ${JSON.stringify(claudeSource.id)}
+        && session.branchSourceSessionId === ${JSON.stringify(claudeSource.id)}) || null;
     })()`));
     assert.notEqual(claudeBranch.id, claudeSource.id);
+    assert.equal(claudeBranch.title, '分支1: Claude E2E Source');
     assert.equal(claudeBranch.autoTitleGenerated, true, 'meaningful Claude parent title should stay stable');
     assert.equal(claudeBranch.userRenamed, undefined, 'Hub-generated branch title is not a manual rename');
     console.log('[step] wait Claude CLI invocation');
@@ -239,7 +241,7 @@ async function main() {
 
     console.log('[step] click Codex branch button');
     result.codexButton = await client.eval(`(() => {
-      const button = document.querySelector('.btn-fork-session');
+      const button = document.querySelector('.fi-bridge-fork');
       if (!button) return { found: false };
       const rect = button.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
@@ -268,9 +270,11 @@ async function main() {
     const codexBranch = await waitFor('Codex branch session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const all = await ipcRenderer.invoke('get-sessions');
-      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)} && session.title === '分支: Codex E2E Visible Source') || null;
+      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)}
+        && session.branchSourceSessionId === ${JSON.stringify(codexSource.id)}) || null;
     })()`));
     assert.notEqual(codexBranch.id, codexSource.id);
+    assert.equal(codexBranch.title, '分支1: Codex E2E Visible Source');
     assert.equal(codexBranch.autoTitleGenerated, true, 'meaningful Codex parent title should stay stable');
     assert.equal(codexBranch.userRenamed, undefined, 'Hub-generated branch title is not a manual rename');
     console.log('[step] wait Codex CLI invocation');
@@ -294,7 +298,7 @@ async function main() {
         sidebarTitles: Array.from(document.querySelectorAll('.session-title')).map(el => el.textContent.trim())
       };
     })()`));
-    assert.equal(result.ui.title, '分支: Codex E2E Visible Source');
+    assert.equal(result.ui.title, '分支1: Codex E2E Visible Source');
 
     const invocations = readInvocations();
     const claudeForkInvocation = invocations.find(entry => entry.provider === 'claude' && entry.args.includes('--fork-session'));

@@ -1,11 +1,14 @@
 'use strict';
 
 const path = require('path');
+const os = require('os');
 const { normalizeKey } = require('../../core/workspace-service.js');
 const { migrateTranscriptsForCwdChange } = require('../../core/claude-transcript-locator.js');
 const { migrateKimiSession } = require('../../core/kimi-session-migrator.js');
 const { migrateCodexSession } = require('../../core/codex-session-migrator.js');
 const { buildSessionResumeMeta } = require('../../core/session-capabilities.js');
+const { buildClaudeModelSnapshot } = require('../../core/claude-model-catalog.js');
+const { createCodexModelCatalogService } = require('../codex-model-catalog-service.js');
 
 // Claude CLI 的 --resume 按 cwd 分桶查找 transcript。DeepSeek 仅有迁移前、
 // 携带 ccSessionId 的旧会话走这套；当前 DeepSeek 与 Codex 一样改写 rollout cwd。
@@ -18,6 +21,19 @@ const { buildSessionResumeMeta } = require('../../core/session-capabilities.js')
 // codex 现在走 migrateCodexSession（改写 rollout 里记的 cwd），见下方归档流程。
 function baseKind(kind) {
   return String(kind || '').replace(/-resume$/, '');
+}
+
+function configuredCodexHome(config = {}, requestedId = null) {
+  if (process.env.CODEX_HOME) return process.env.CODEX_HOME;
+  const profiles = Array.isArray(config.codexSubscriptionProfiles) ? config.codexSubscriptionProfiles : [];
+  const selectedId = String(requestedId || config.codexSubscriptionProfile || 'default');
+  const selected = profiles.find(profile => profile && String(profile.id) === selectedId)
+    || profiles.find(profile => profile && String(profile.id) === 'default');
+  const raw = String(selected && selected.home || '').trim();
+  if (!raw) return undefined;
+  if (raw === '~') return os.homedir();
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) return path.join(os.homedir(), raw.slice(2));
+  return path.resolve(raw);
 }
 
 function isLegacyClaudeTranscriptSession(session) {
@@ -42,6 +58,8 @@ function registerWorkspaceIpc(ipcMain, deps) {
     workspaceMigrationSessionIds = new Set(),
     workspaceService,
     getLastPersistedSessions = () => [],
+    getHubConfig = () => ({}),
+    codexModelCatalogService = createCodexModelCatalogService(),
   } = deps;
 
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -195,15 +213,19 @@ function registerWorkspaceIpc(ipcMain, deps) {
   // 下发的（gpt-5.6-sol 有 ultra，5.5 只到 xhigh），写死一份必然给某些模型多出
   // 或少掉档位。数据来自 codex-cli 自己缓存的 ~/.codex/models_cache.json。
   // 顺带回一个用户全局配的 service_tier，好让"跟随全局"那一档显示成"（当前：fast）"。
-  ipcMain.handle('codex:tuning-catalog', () => {
+  ipcMain.handle('codex:tuning-catalog', async (_event, request = {}) => {
     try {
-      const { buildCodexTuningSnapshot } = require('../../core/codex-model-catalog.js');
       const { readCodexConfiguredServiceTier } = require('../../core/codex-speed-tier.js');
-      const { MODEL_OPTIONS_BY_KIND } = require('../../core/model-options.js');
-      const slugs = (MODEL_OPTIONS_BY_KIND.codex || []).map(option => option.id);
+      const config = getHubConfig() || {};
+      const snapshot = await codexModelCatalogService.getCatalog({
+        force: request && request.force === true,
+        home: configuredCodexHome(config, request && request.codexProfile),
+        proxy: config.proxy || undefined,
+        offline: process.env.CLAUDE_HUB_E2E === '1'
+          && process.env.HUB_MODEL_CATALOG_LIVE_E2E !== '1',
+      });
       return {
-        ok: true,
-        ...buildCodexTuningSnapshot(slugs),
+        ...snapshot,
         configuredServiceTier: readCodexConfiguredServiceTier(),
       };
     } catch (error) {
@@ -211,6 +233,15 @@ function registerWorkspaceIpc(ipcMain, deps) {
       return { ok: false, error: error && error.message ? error.message : String(error) };
     }
   });
+
+  // Claude Code refreshes account-specific extra model choices in .claude.json.
+  // Reading it on demand makes newly granted models (for example Fable 5.1)
+  // appear without a Hub release or restart. Stable CLI aliases remain the
+  // fallback when no account cache is available.
+  ipcMain.handle('claude:model-catalog', () => buildClaudeModelSnapshot({
+    configDir: process.env.CLAUDE_CONFIG_DIR || undefined,
+    homeDir: process.env.CLAUDE_HUB_HOME_DIR || undefined,
+  }));
 
   ipcMain.handle('workspace:create-scratch', (_event, opts = {}) => {
     const workspace = workspaceService.createScratchWorkspace({ ...opts, select: false });

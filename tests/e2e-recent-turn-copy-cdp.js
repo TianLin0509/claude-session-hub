@@ -123,8 +123,8 @@ async function main() {
         createdAt: Date.now(),
         lastMessageTime: Date.now(),
       });
-      applyViewMode('card');
       await window.__hubE2E.selectSession(sid, { forceScrollBottom: true });
+      applyViewMode('card');
       const overlay = document.getElementById('msg-overlay');
       for (let i = 0; i < 80 && overlay.querySelectorAll(':scope > .turn-card').length < 9; i += 1) await wait(100);
 
@@ -148,10 +148,9 @@ async function main() {
       const one = window.__recentCopiedText;
 
       // 轮数上限不再是写死的 3：这 9 张卡是 4 个完整轮次，下拉里就该有 4 项，
-      // 最后一项标「全部」，旁边显示「/ 共 4 轮」。
+      // 最后一项标「全部」；不再额外重复显示「/ 共 4 轮」。
       const optionValues = Array.from(select.options).map(o => o.value);
       const lastOptionText = select.options[select.options.length - 1].textContent;
-      const totalText = (document.getElementById('recent-turn-copy-total') || {}).textContent || '';
 
       window.__recentCopiedText = '';
       select.value = String(optionValues[optionValues.length - 1]);
@@ -183,7 +182,6 @@ async function main() {
         one,
         optionValues,
         lastOptionText,
-        totalText,
         all,
         allButtonText,
       };
@@ -208,7 +206,8 @@ async function main() {
     assert.deepEqual(result.copy.optionValues, ['1', '2', '3', '4'],
       `轮数上限应等于当前完整轮数，实际 ${JSON.stringify(result.copy.optionValues)}`);
     assert.match(result.copy.lastOptionText, /4 轮 · 全部/, '最后一项要标出"全部"');
-    assert.match(result.copy.totalText, /共 4 轮/, 'UI 上要显示当前最多能复制多少轮');
+    assert.equal(await client.eval(`document.getElementById('recent-turn-copy-total')`), null,
+      '不再显示冗余的“/ 共 4 轮”');
     assert.match(result.copy.allButtonText, /已复制 4 轮/);
     assert.equal((result.copy.all.match(/===== 第 \d+ 轮 =====/g) || []).length, 4);
     // 第 1 轮以前拿不到（上限 3），现在必须在里面；结尾没回答的第五轮仍不算。

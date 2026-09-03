@@ -305,7 +305,6 @@
     height: 25px;
     min-height: 25px;
   }
-  .terminal-panel.card-view-active .recent-turn-copy-total { display: none; }
   .terminal-panel.card-view-active .recent-turn-copy-label,
   .terminal-panel.card-view-active .recent-turn-copy select,
   .terminal-panel.card-view-active .recent-turn-copy button {
@@ -417,16 +416,6 @@
   color: var(--text-primary);
 }
 .recent-turn-copy select:disabled { cursor: default; opacity: .55; }
-/* 「/ 共 N 轮」：把可选上限直接摆出来，不用点开下拉去数。 */
-.recent-turn-copy-total {
-  display: inline-flex;
-  align-items: center;
-  padding-right: 6px;
-  color: var(--text-secondary);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.recent-turn-copy-total:empty { display: none; }
 .recent-turn-copy button {
   padding: 0 8px;
   border-left: 1px solid var(--border);

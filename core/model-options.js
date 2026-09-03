@@ -4,14 +4,18 @@
 //
 // Model picker options used by the renderer config modal.
 //
-// `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；codex /
-// deepseek / gemini PTY 实测不识别 inline `/model`（spec §3.1）——必须 kill + respawn with --model，
-// 本期未实现，picker 端给明确提示而不是默默无效切换。
+// Claude accepts `/model <id>\r`. Codex uses a two-step interactive `/model`
+// picker (model, then effort), so it is switchable in-session but is not an
+// inline-argument command. Keep those strategies distinct: sending
+// `/model gpt-5.5` to Codex 0.151 is an ordinary model prompt, not a switch.
 
 const MODEL_OPTIONS_BY_KIND = {
   claude: [
     { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
+    { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M context)' },
+    { id: 'claude-fable-5-1',     label: 'Fable 5.1' },
     { id: 'claude-opus-5',       label: 'Opus 5' },
+    { id: 'claude-sonnet-5',     label: 'Sonnet 5' },
     { id: 'claude-fable-5',      label: 'Fable 5' },
     { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M context)' },
     { id: 'claude-opus-4-8',     label: 'Opus 4.8' },
@@ -22,6 +26,13 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'claude-sonnet-4-6',   label: 'Sonnet 4.6' },
     { id: 'claude-sonnet-4-5',   label: 'Sonnet 4.5' },
     { id: 'claude-haiku-4-5',    label: 'Haiku 4.5' },
+    // Claude Code owns these aliases and resolves them to the latest model the
+    // signed-in account can use. They are the non-stale escape hatch when a new
+    // minor model ships before Hub's exact-ID fallback table is updated.
+    { id: 'fable',               label: 'Fable · 最新可用版本' },
+    { id: 'opus',                label: 'Opus · 最新可用版本' },
+    { id: 'sonnet',              label: 'Sonnet · 最新可用版本' },
+    { id: 'haiku',               label: 'Haiku · 最新可用版本' },
   ],
   gemini: [
     { id: 'gemini-3-pro-preview', label: 'Gemini 3.1 Pro' },
@@ -42,6 +53,46 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'kimi-code/k3', label: 'Kimi K3' },
   ],
 };
+
+// Renderer-side catalogs can be refreshed from each CLI's own account cache.
+// Main/session-manager processes keep the static table; they validate model IDs
+// independently and receive the selected ID explicitly from renderer IPC.
+const RUNTIME_MODEL_OPTIONS_BY_KIND = new Map();
+
+function normalizeRuntimeModelOption(option) {
+  if (!option || typeof option !== 'object') return null;
+  const id = String(option.id || '').trim();
+  if (!id || id.length > 160 || /[\0\r\n]/.test(id)) return null;
+  const label = String(option.label || option.displayName || id).replace(/[\0\r\n]+/g, ' ').trim().slice(0, 120) || id;
+  const description = String(option.description || '').replace(/[\0\r\n]+/g, ' ').trim().slice(0, 280);
+  return {
+    ...option,
+    id,
+    label,
+    ...(description ? { description } : {}),
+  };
+}
+
+function setRuntimeModelOptions(kind, options) {
+  const base = String(kind || '').replace(/-resume$/, '');
+  if (!base) return [];
+  const normalized = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(options) ? options : []) {
+    const option = normalizeRuntimeModelOption(raw);
+    if (!option || seen.has(option.id.toLowerCase())) continue;
+    seen.add(option.id.toLowerCase());
+    normalized.push(option);
+  }
+  if (normalized.length) RUNTIME_MODEL_OPTIONS_BY_KIND.set(base, normalized);
+  else RUNTIME_MODEL_OPTIONS_BY_KIND.delete(base);
+  return normalized.map(option => ({ ...option }));
+}
+
+function clearRuntimeModelOptions(kind) {
+  const base = String(kind || '').replace(/-resume$/, '');
+  return RUNTIME_MODEL_OPTIONS_BY_KIND.delete(base);
+}
 
 const DEFAULT_MODEL_BY_KIND = {
   claude: 'claude-opus-5[1m]',
@@ -107,18 +158,30 @@ function deepseekDisplayName(modelId) {
 function modelOptionsFor(kind) {
   if (!kind) return [];
   const base = String(kind).replace(/-resume$/, '');
-  return MODEL_OPTIONS_BY_KIND[base] || [];
+  return RUNTIME_MODEL_OPTIONS_BY_KIND.get(base) || MODEL_OPTIONS_BY_KIND[base] || [];
 }
 
-// 只有 Claude CLI 支持 inline `/model <id>\r`；DeepSeek 已迁移到 Codex。
-const INLINE_SWITCH_BASE_KINDS = new Set([
-  'claude',
-]);
+const MODEL_SWITCH_STRATEGY_BY_KIND = Object.freeze({
+  claude: 'claude-inline',
+  codex: 'codex-picker',
+});
+
+function modelSwitchStrategy(kind) {
+  const base = String(kind || '').replace(/-resume$/, '');
+  return MODEL_SWITCH_STRATEGY_BY_KIND[base] || null;
+}
 
 function canSwitchInline(kind) {
-  if (!kind) return false;
-  const base = String(kind).replace(/-resume$/, '');
-  return INLINE_SWITCH_BASE_KINDS.has(base);
+  return modelSwitchStrategy(kind) === 'claude-inline';
+}
+
+function canSwitchInSession(kind) {
+  return !!modelSwitchStrategy(kind);
+}
+
+function isClaudeModelSelection(modelId) {
+  const value = String(modelId || '').trim();
+  return /^(?:(?:claude-[a-z0-9][a-z0-9-]*|fable|opus|sonnet|haiku)(?:\[1m\])?)$/i.test(value);
 }
 
 module.exports = {
@@ -126,10 +189,16 @@ module.exports = {
   MODEL_OPTIONS_BY_KIND,
   DEFAULT_MODEL_BY_KIND,
   CODEX_NON_CONVERSATION_MODEL_RE,
+  MODEL_SWITCH_STRATEGY_BY_KIND,
+  canSwitchInSession,
+  clearRuntimeModelOptions,
   modelOptionsFor,
+  modelSwitchStrategy,
   isCodexConversationModelId,
+  isClaudeModelSelection,
   normalizeCodexSessionModel,
   canSwitchInline,
+  setRuntimeModelOptions,
   normalizeDeepSeekModel,
   normalizeLegacyDeepSeekClaudeModel,
   legacyDeepSeekClaudeDisplayName,

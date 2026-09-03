@@ -19,6 +19,7 @@
   <link rel="stylesheet" href="styles/home-workbench.css">
   <link rel="stylesheet" href="launch-center.css">
   <link rel="stylesheet" href="memory-panel.css">
+  <link rel="stylesheet" href="file-manager-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
@@ -321,7 +322,6 @@
         <select id="recent-turn-copy-count" aria-label="复制最近对话轮数">
           <option value="1">1 轮</option>
         </select>
-        <span class="recent-turn-copy-total" id="recent-turn-copy-total"></span>
         <button type="button" id="recent-turn-copy-button">复制对话</button>
       </div>
       <!-- 视图切换按钮 -->
@@ -440,6 +440,31 @@
         <div class="preview-quick-open-foot"><span id="preview-quick-open-mode-hint">↑↓ 选择 · Enter 临时预览 · Tab 上 Ctrl+Enter 固定</span><span>本地索引，不上传文件内容</span></div>
       </section>
     </div>
+    <aside class="file-manager-panel" id="file-manager-panel" style="display:none" aria-label="文件管理" aria-hidden="true">
+      <header class="file-manager-header">
+        <div class="file-manager-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.8A1.8 1.8 0 0 1 4.8 5h4l1.7 1.8h8.7A1.8 1.8 0 0 1 21 8.6v8.6a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2Z"/></svg>
+          <span>文件管理</span>
+        </div>
+        <div class="file-manager-actions">
+          <button class="file-manager-icon-button" id="file-manager-refresh" type="button" title="刷新文件树" aria-label="刷新文件树"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+          <button class="file-manager-icon-button" id="file-manager-open-external" type="button" title="在资源管理器中打开" aria-label="在资源管理器中打开"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="m14 12 4 3-4 3"/></svg></button>
+          <button class="file-manager-icon-button" id="file-manager-close" type="button" title="关闭文件管理" aria-label="关闭文件管理"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+        </div>
+      </header>
+      <button class="file-manager-root" id="file-manager-root" type="button" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.8A1.8 1.8 0 0 1 4.8 5h4l1.7 1.8h8.7A1.8 1.8 0 0 1 21 8.6v8.6a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2Z"/></svg>
+        <span class="file-manager-root-copy"><strong id="file-manager-root-name">未选择目录</strong><small id="file-manager-root-path">当前会话没有工作目录</small></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></svg>
+      </button>
+      <label class="file-manager-filter-wrap" for="file-manager-filter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="file-manager-filter" id="file-manager-filter" type="search" autocomplete="off" spellcheck="false" placeholder="筛选已加载的文件…" aria-label="筛选已加载的文件">
+      </label>
+      <div class="file-manager-status" id="file-manager-status" role="status" aria-live="polite"></div>
+      <div class="file-manager-tree" id="file-manager-tree" role="tree" aria-label="当前工作目录文件"></div>
+      <footer class="file-manager-footer">文件夹单击展开 · 可预览文件留在 Hub · 其他文件系统打开</footer>
+    </aside>
     <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->
     <div class="memo-panel" id="memo-panel" style="display:none">
       <div class="memo-header">

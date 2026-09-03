@@ -590,19 +590,21 @@ if (typeof document !== 'undefined') (function () {
     window.__mrRenderMarkdown = _renderMarkdown;
   }
 
-  // 卡片优化（2026-05-03 道雪）：路径链接 click 全局委托。
+  // 卡片优化（2026-05-03 道雪）：路径链接 click 使用 document 级委托，但严格
+  //   限定在 #meeting-room-panel，避免和普通 session 的委托重复消费同一次点击。
   //   meeting-room.js IIFE 内 setup 一次（IIFE 只运行一次，幂等）。捕获阶段
   //   先于 marked HTML 内任何 a 元素的默认行为，让 .rt-file-link 路由到 hub
   //   内置 preview 面板（renderer.js 全局函数 openPreviewPanel）。
   document.addEventListener('click', (e) => {
     const a = e.target && e.target.closest && e.target.closest('a.rt-file-link');
     if (!a) return;
+    if (!a.closest('#meeting-room-panel')) return;
     const path = a.getAttribute('data-path');
     if (!path) return;
     e.preventDefault();
     e.stopPropagation();
     if (typeof window !== 'undefined' && typeof window.openPathInHub === 'function') {
-      window.openPathInHub(path, { cwd: _activeMeetingCwd(), requireExistsForRel: false });
+      window.openPathInHub(path, { cwd: a.dataset.cwd || _activeMeetingCwd(), requireExistsForRel: false });
     } else if (typeof openPreviewPanel === 'function') {
       openPreviewPanel(path);
     } else if (typeof window !== 'undefined' && typeof window.openPreviewPanel === 'function') {
@@ -5251,16 +5253,17 @@ if (typeof document !== 'undefined') (function () {
       <div class="mr-header-left">
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
         <span class="mr-header-meta" id="mr-header-meta"></span>
-        ${meeting.workspace ? `<button type="button" class="mr-workspace-chip" id="mr-workspace-chip" title="点击复制 · ${escapeHtml(meeting.workspace)}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/></svg><span>${meeting.workspaceLabel ? `${escapeHtml(meeting.workspaceLabel)} · ` : ''}${escapeHtml(meeting.workspace)}</span></button>` : ''}
+        ${meeting.workspace ? `<button type="button" class="mr-workspace-chip" id="mr-workspace-chip" title="在文件管理中打开 · ${escapeHtml(meeting.workspace)}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/></svg><span>${meeting.workspaceLabel ? `${escapeHtml(meeting.workspaceLabel)} · ` : ''}${escapeHtml(meeting.workspace)}</span></button>` : ''}
       </div>
       <!-- 2026-06-28 道雪：删 header 进度条（与标题旁 meta 的"已N轮·本轮N/M"文字信息重叠），保留 meta。_updateHeaderProgress 的 progEl 分支会因元素缺失自动跳过。 -->
       <div class="mr-header-right">
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
         <div class="mr-header-primary-actions">${gcMembersBtnHtml}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
-          ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md">📖 记忆</button>` : ''}
+          ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>注入记忆</button>` : ''}
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
-          <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
+          ${meeting.workspace ? `<button class="btn-zoom btn-file-manager-toggle" id="mr-btn-files" title="打开当前工作目录的文件管理" aria-label="打开当前工作目录的文件管理" aria-pressed="false"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg></button>` : ''}
+          <button class="btn-zoom btn-memory-toggle" id="mr-btn-memory-system" data-action="open-memory" title="打开记忆系统" aria-label="打开记忆系统"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg></button>
           <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
           <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
           <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
@@ -5272,20 +5275,23 @@ if (typeof document !== 'undefined') (function () {
     const workspaceChip = document.getElementById('mr-workspace-chip');
     if (workspaceChip) {
       // 归档提示挂在这个 chip 上，而不是自动弹全局模态（2026-07-29 用户要求）：
-      // 有待归档建议时 chip 显示一个轻标记，点击才打开归档框；没有建议时保持
-      // 原来的「点击复制路径」行为。用户不点就不打扰。
+      // 有待归档建议时 chip 显示一个轻标记，点击才打开归档框；没有建议时
+      // 直接在 Hub 文件管理中打开工作目录。用户不点就不打扰。
       // 2026-07-29 P1-2：同一套交互独立会话 header 也要有，已抽到
       // WorkspaceController.attachArchiveHint，两处共用，杜绝「只改一边」。
       const wc = window.WorkspaceController;
-      const copyWorkspace = () => {
-        try { if (navigator.clipboard) navigator.clipboard.writeText(meeting.workspace || ''); } catch {}
+      const openWorkspace = () => {
+        if (typeof window.openPathInHub === 'function') {
+          void window.openPathInHub(meeting.workspace, { cwd: meeting.workspace, requireExistsForRel: false });
+        }
       };
       const attached = !!(wc && typeof wc.attachArchiveHint === 'function'
         && wc.attachArchiveHint(workspaceChip, 'meeting', meeting.id, {
           hintTitle: '这个任务还在临时区 · 点击归档到正式项目目录',
-          onFallback: copyWorkspace,
+          idleTitle: `在文件管理中打开 · ${meeting.workspace}`,
+          onFallback: openWorkspace,
         }));
-      if (!attached) workspaceChip.addEventListener('click', copyWorkspace);
+      if (!attached) workspaceChip.addEventListener('click', openWorkspace);
     }
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     const parallelBtn = document.getElementById('mr-btn-view-parallel');
@@ -5305,6 +5311,18 @@ if (typeof document !== 'undefined') (function () {
       renderHeader(meeting);
     });
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    const filesBtn = document.getElementById('mr-btn-files');
+    if (filesBtn && window.FileManagerPanel) {
+      filesBtn.dataset.root = meeting.workspace || '';
+      filesBtn.classList.toggle('active', window.FileManagerPanel.isOpenFor(meeting.workspace));
+      filesBtn.setAttribute('aria-pressed', String(window.FileManagerPanel.isOpenFor(meeting.workspace)));
+      filesBtn.addEventListener('click', () => {
+        void window.FileManagerPanel.toggle({ cwd: meeting.workspace, label: meeting.workspaceLabel });
+      });
+      if (window.FileManagerPanel.isOpen()) {
+        void window.FileManagerPanel.syncContext({ cwd: meeting.workspace, label: meeting.workspaceLabel });
+      }
+    }
     // 2026-06-05 联邦记忆下线：📖 记忆按钮直接预览 Claude 主 MEMORY.md
     const memoryBtn = document.getElementById('mr-btn-memory-preview');
     if (memoryBtn) {
@@ -5318,7 +5336,6 @@ if (typeof document !== 'undefined') (function () {
     }
     // 注：顶部 scene toggle（群聊/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
-    document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
     document.getElementById('mr-btn-close').addEventListener('click', async () => {

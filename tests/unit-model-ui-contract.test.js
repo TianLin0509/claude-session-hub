@@ -68,6 +68,8 @@ async function main() {
     terminalPanelEl,
     getActiveSessionId: () => 's1',
     escapeHtml: (s) => String(s).replace(/[&<>]/g, ''),
+    getTerminalScreenText: () => '/model claude-opus-5[1m]\nModel changed to opus\n❯',
+    sleep: async () => {},
     setTimeoutFn: (fn) => fn(),
   });
 
@@ -77,13 +79,14 @@ async function main() {
   assert.ok(badge._classes.has('clickable'));
 
   badge._listeners.click[0]({ stopPropagation() {} });
+  await new Promise(resolve => setImmediate(resolve));
   const menu = document.body.children[0];
   assert.ok(menu.children.length > 0, 'model picker should render options');
   const clickable = menu.children.find(child => child.dataset && child.dataset.modelId);
   assert.ok(clickable, 'expected at least one model option');
   clickable._listeners.click[0]({ stopPropagation() {} });
   assert.strictEqual(sent[0].channel, 'terminal-input');
-  assert.ok(sent[0].payload.data.startsWith('/model '));
+  assert.ok(sent[0].payload.data.includes('/model '));
 
   console.log('unit-model-ui-contract OK');
 }

@@ -26,6 +26,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { isCodexConversationModelId } = require('./model-options.js');
 
 // 缓存缺失时的兜底：这五档在实测的每个模型上都合法（ultra 例外，故意不放）。
 const FALLBACK_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -48,19 +49,75 @@ function codexHomeOrDefault(configDir) {
 }
 
 function readModelsCache(configDir, fsModule = fs) {
+  return readModelsCacheSnapshot(configDir, fsModule).models;
+}
+
+function readModelsCacheSnapshot(configDir, fsModule = fs) {
+  const cachePath = path.join(codexHomeOrDefault(configDir), 'models_cache.json');
   try {
-    const raw = fsModule.readFileSync(path.join(codexHomeOrDefault(configDir), 'models_cache.json'), 'utf8');
+    const raw = fsModule.readFileSync(cachePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed && parsed.models) ? parsed.models : [];
-  } catch {
-    return [];
+    let mtimeMs = 0;
+    try { mtimeMs = Number(fsModule.statSync(cachePath).mtimeMs) || 0; } catch (_) {}
+    return {
+      models: Array.isArray(parsed && parsed.models) ? parsed.models : [],
+      cachePath,
+      mtimeMs,
+    };
+  } catch (error) {
+    return {
+      models: [],
+      cachePath,
+      mtimeMs: 0,
+      error: error && error.message ? error.message : String(error),
+    };
   }
+}
+
+function codexModelSlug(model) {
+  return String(model && (model.slug || model.id || model.model) || '').trim();
 }
 
 function findModel(models, slug) {
   const wanted = String(slug || '').trim().toLowerCase();
   if (!wanted) return null;
-  return models.find(m => String(m && m.slug || '').toLowerCase() === wanted) || null;
+  return models.find(m => codexModelSlug(m).toLowerCase() === wanted) || null;
+}
+
+function mergeCatalogModels(primary, fallback) {
+  const result = [];
+  const fallbackById = new Map((fallback || []).map(model => [codexModelSlug(model).toLowerCase(), model]));
+  const seen = new Set();
+  for (const model of [...(primary || []), ...(fallback || [])]) {
+    const id = codexModelSlug(model);
+    const key = id.toLowerCase();
+    if (!id || seen.has(key)) continue;
+    seen.add(key);
+    const cached = fallbackById.get(key) || {};
+    result.push({ ...cached, ...model, slug: id });
+  }
+  return result;
+}
+
+function buildCodexModelOptions(models) {
+  return (Array.isArray(models) ? models : [])
+    .map((model, index) => ({ model, index, id: codexModelSlug(model) }))
+    .filter(entry => entry.id && isCodexConversationModelId(entry.id)
+      && entry.model.hidden !== true
+      && String(entry.model.visibility || 'list').toLowerCase() !== 'hide')
+    .sort((a, b) => {
+      const ap = Number(a.model.priority);
+      const bp = Number(b.model.priority);
+      if (Number.isFinite(ap) && Number.isFinite(bp) && ap !== bp) return ap - bp;
+      return a.index - b.index;
+    })
+    .map(({ model, id }) => ({
+      id,
+      label: String(model.displayName || model.display_name || id),
+      description: String(model.description || ''),
+      source: model.displayName || model.id ? 'codex-app-server' : 'codex-models-cache',
+      isDefault: model.isDefault === true,
+    }));
 }
 
 function positiveInteger(value) {
@@ -96,11 +153,20 @@ function describeCodexModelTuning(slug, { configDir, fsModule = fs, models = nul
       fromCache: false,
     };
   }
-  const efforts = (Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [])
-    .map(item => String(item && item.effort || '').trim().toLowerCase())
+  const effortEntries = Array.isArray(model.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+    : (Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : []);
+  const efforts = effortEntries
+    .map(item => String(item && (item.reasoningEffort || item.effort) || '').trim().toLowerCase())
     .filter(Boolean);
-  const speedTiers = (Array.isArray(model.additional_speed_tiers) ? model.additional_speed_tiers : [])
-    .map(item => String(item || '').trim().toLowerCase());
+  const speedEntries = Array.isArray(model.additionalSpeedTiers)
+    ? model.additionalSpeedTiers
+    : (Array.isArray(model.additional_speed_tiers) ? model.additional_speed_tiers : []);
+  const serviceEntries = Array.isArray(model.serviceTiers) ? model.serviceTiers : [];
+  const speedTiers = [
+    ...speedEntries.map(item => String(item || '').trim().toLowerCase()),
+    ...serviceEntries.map(item => String(item && (item.id || item.name) || '').trim().toLowerCase()),
+  ];
   const contextWindow = positiveInteger(model.context_window);
   const maxContextWindow = positiveInteger(model.max_context_window) || contextWindow;
   const effectiveContextWindowPercent = effectiveWindowPercent(model.effective_context_window_percent);
@@ -109,7 +175,7 @@ function describeCodexModelTuning(slug, { configDir, fsModule = fs, models = nul
     : maxContextWindow;
   return {
     efforts: efforts.length ? efforts : [...FALLBACK_REASONING_EFFORTS],
-    defaultEffort: String(model.default_reasoning_level || FALLBACK_DEFAULT_EFFORT).toLowerCase(),
+    defaultEffort: String(model.defaultReasoningEffort || model.default_reasoning_level || FALLBACK_DEFAULT_EFFORT).toLowerCase(),
     supportsFast: speedTiers.includes('fast'),
     contextWindow,
     maxContextWindow,
@@ -130,13 +196,28 @@ function isEffortSupported(slug, effort, options = {}) {
  * 给新建会话弹窗用的一次性快照：所有 Codex 模型各自的档位 + fast 支持情况，
  * 外加用户全局配的 service_tier（只为显示"跟随全局（当前：fast）"）。
  */
-function buildCodexTuningSnapshot(slugs, { configDir, fsModule = fs } = {}) {
-  const models = readModelsCache(configDir, fsModule);
+function buildCodexTuningSnapshot(slugs, { configDir, fsModule = fs, models: liveModels = null } = {}) {
+  const cache = readModelsCacheSnapshot(configDir, fsModule);
+  const models = mergeCatalogModels(Array.isArray(liveModels) ? liveModels : [], cache.models);
+  const modelOptions = buildCodexModelOptions(Array.isArray(liveModels) && liveModels.length ? liveModels : cache.models);
   const byModel = {};
-  for (const slug of Array.isArray(slugs) ? slugs : []) {
+  const requested = new Set([
+    ...(Array.isArray(slugs) ? slugs : []),
+    ...modelOptions.map(option => option.id),
+  ]);
+  for (const slug of requested) {
     byModel[slug] = describeCodexModelTuning(slug, { configDir, fsModule, models });
   }
-  return { byModel, effortDescriptions: { ...EFFORT_DESCRIPTIONS }, catalogLoaded: models.length > 0 };
+  return {
+    byModel,
+    models: modelOptions,
+    effortDescriptions: { ...EFFORT_DESCRIPTIONS },
+    catalogLoaded: models.length > 0,
+    source: Array.isArray(liveModels) && liveModels.length ? 'codex-app-server' : 'codex-models-cache',
+    catalogMtimeMs: cache.mtimeMs,
+    cachePath: cache.cachePath,
+    ...(cache.error ? { cacheError: cache.error } : {}),
+  };
 }
 
 module.exports = {
@@ -144,8 +225,12 @@ module.exports = {
   FALLBACK_DEFAULT_EFFORT,
   FALLBACK_REASONING_EFFORTS,
   HUB_DEFAULT_REASONING_EFFORT,
+  buildCodexModelOptions,
   buildCodexTuningSnapshot,
+  codexModelSlug,
   describeCodexModelTuning,
   isEffortSupported,
+  mergeCatalogModels,
   readModelsCache,
+  readModelsCacheSnapshot,
 };

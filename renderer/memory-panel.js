@@ -2,7 +2,7 @@
 const { formatBeijingDateTime } = require('../core/beijing-time.js');
 // renderer/memory-panel.js
 //
-// 记忆系统面板：从用量 ticker 的「记忆」按钮打开。
+// 记忆系统面板：从会话顶栏的「记忆」按钮打开。
 // 四个页签：总览（各 CLI 记忆/规则文件现状）、梦境记录（沉淀行为可回溯）、
 // 当前会话（本 session 实际读到的规则链与 memory 桶）、设置（consolidation 段）。
 // 文件预览复用现有 read-file / show-in-folder IPC，本面板不新增文件读取通道。
@@ -69,8 +69,8 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
   }
 
   // 这两个监听必须在工厂调用时就挂上，不能等 buildOverlay——
-  // 用量 ticker 每次 render 都重建 innerHTML，「记忆」按钮的监听只能走文档级委托；
-  // 若放进 buildOverlay 则首次 open 前委托不存在，按钮永远是死的（2026-08-01 E2E 实测）。
+  // 会话/群聊 header 每次 render 都重建 innerHTML，「记忆」按钮的监听只能走文档级委托；
+  // 若放进 buildOverlay 则首次 open 前委托不存在，按钮永远是死的。
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && overlay && overlay.style.display !== 'none') close();
   });
