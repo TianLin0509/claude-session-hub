@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, shell, Menu, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, screen, shell, Menu, Tray } = require('electron');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const fs = require('fs');
@@ -84,6 +84,7 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
+const { createDesktopNotificationController } = require('./main/desktop-notification-controller.js');
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
 const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
@@ -398,6 +399,7 @@ let claudeHookWatchdog = null;
 let windowsShellWatchdog = null;
 
 let mainWindow;
+let desktopNotificationController = null;
 let agentLeagueTray = null;
 let explicitHubQuitRequested = false;
 const sessionManager = new SessionManager();
@@ -931,6 +933,21 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  if (!desktopNotificationController) {
+    desktopNotificationController = createDesktopNotificationController({
+      BrowserWindow,
+      screen,
+      ipcMain,
+      htmlPath: path.join(__dirname, 'renderer', 'desktop-notification.html'),
+      preloadPath: path.join(__dirname, 'renderer', 'desktop-notification-preload.js'),
+      getMainWindow: () => mainWindow,
+      focusPrimaryWindow,
+      sendToRenderer,
+      canShow: () => !keepIsolatedE2EWindowHidden()
+        || process.env.CLAUDE_HUB_E2E_SHOW_NOTIFICATION === '1',
+      logger: console,
+    });
+  }
   // index.html 的 <title>AI 群聊 Hub</title> 在页面加载完成后会触发 page-title-updated 覆盖
   // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
   mainWindow.on('page-title-updated', (e) => { e.preventDefault(); });
@@ -2583,6 +2600,8 @@ async function runFinalShutdownCleanup() {
     try { action(); }
     catch (error) { errors.push({ label, message: error && error.message ? error.message : String(error) }); }
   };
+  capture('desktop-notification', () => desktopNotificationController?.dispose());
+  desktopNotificationController = null;
   capture('completion-notifier', () => completionNotifier.dispose());
   capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
   capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());

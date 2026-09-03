@@ -72,6 +72,8 @@ const { createMemoryPanel } = require('./memory-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
+const { createClipboardController } = require('./clipboard-controller.js');
+const { createSessionReadyNotifier } = require('./session-ready-notifier.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const {
@@ -185,6 +187,8 @@ let _deepseekAutoTitleEnabled = false;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
+const clipboardController = createClipboardController({ document, window, clipboard });
+clipboardController.init();
 // xterms are created lazily, then live for exactly as long as their live Hub
 // sessions. Switching sessions must not dispose a still-running CLI: doing so
 // turns ordinary navigation into a snapshot-replay path and can lose the
@@ -816,7 +820,12 @@ const sessionListRenderer = createSessionListRenderer({
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
+const sessionReadyNotifier = createSessionReadyNotifier({
+  ipcRenderer,
+  getSessions: () => sessions,
+});
 function renderSessionSurfacesNow() {
+  sessionReadyNotifier.scan();
   renderSessionListNow();
   if (homeWorkbench) homeWorkbench.render();
 }
@@ -828,6 +837,12 @@ function renderSessionList() {
 function scheduleSessionListRender() {
   sidebarRenderCoalescer.schedule();
 }
+
+ipcRenderer.on('desktop-notification:open-session', (_event, payload = {}) => {
+  const sessionId = String(payload.sessionId || '');
+  if (!sessionId || !sessions.has(sessionId)) return;
+  void selectSession(sessionId, { forceScrollBottom: true });
+});
 
 async function refreshSystemResourceUsage(force = false) {
   try {
@@ -1289,7 +1304,7 @@ function getOrCreateTerminal(sessionId) {
     // Ctrl+Shift+C — always copy selection (VSCode/Windows Terminal style)
     if (e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       if (terminal.hasSelection()) {
-        clipboard.writeText(terminal.getSelection());
+        void clipboardController.copyText(terminal.getSelection(), { source: 'terminal' });
         e.preventDefault();
         return false;
       }
@@ -1298,7 +1313,7 @@ function getOrCreateTerminal(sessionId) {
     // Ctrl+C — copy if there's a selection, else pass through as SIGINT
     if (!e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       if (terminal.hasSelection()) {
-        clipboard.writeText(terminal.getSelection());
+        void clipboardController.copyText(terminal.getSelection(), { source: 'terminal' });
         e.preventDefault();
         return false;
       }
@@ -4274,6 +4289,7 @@ const previewPanel = createPreviewPanelController({
     ...openOptions,
   }),
   refitActiveTerminal: refitActiveTerminalFromPreview,
+  onCopyFeedback: feedback => clipboardController.showFeedback(feedback),
 });
 const {
   openPreviewPanel,
@@ -5851,6 +5867,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   setFontSize,
   closeSession: closeSessionAsSleep,
   createWorkspaceSession: (kind) => launchCenter.open('session', { kind }),
+  copyText: text => clipboardController.copyText(text, { source: 'terminal-shortcut' }),
 });
 keyboardShortcuts.init();
 // --- Context menus ---
@@ -6741,6 +6758,9 @@ window.resumeDormantSession = resumeDormantSession;
   }
 
   traceRendererStartup('renderSessionList start');
+  // Existing unread sessions belong to a previous app lifetime. Prime them as
+  // the baseline so boot never replays a wall of stale desktop notifications.
+  sessionReadyNotifier.prime();
   renderSessionList();
   if (homeWorkbench) homeWorkbench.render();
   refreshSystemResourceUsage();
@@ -7060,6 +7080,14 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       state: key => previewPanel.getPreviewState(key),
       watchStats: () => previewPanel.getFileWatchStats(),
       findState: () => previewPanel.getPreviewFindState(),
+    },
+    clipboard: {
+      copyText: text => clipboardController.copyText(text, { source: 'e2e' }),
+      feedbackText: () => document.getElementById('hub-copy-feedback')?.innerText || '',
+    },
+    desktopNotifications: {
+      state: () => sessionReadyNotifier.getState(),
+      scan: () => sessionReadyNotifier.scan(),
     },
     cardLiveRefresh: {
       noteOutput: sessionId => noteCardTerminalOutput(sessionId),

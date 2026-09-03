@@ -4,6 +4,81 @@
   box-sizing: border-box;
 }
 
+/* Selection copy is a global action spanning cards, editors and previews.
+   This verified status pill is intentionally above every Hub surface. */
+.hub-copy-feedback {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 200000;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 150px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 9px 13px 9px 10px;
+  border: 1px solid rgba(var(--rgb-success), .42);
+  border-radius: var(--radius-lg);
+  background: rgba(var(--rgb-canvas), .96);
+  box-shadow: var(--shadow-lg);
+  color: var(--fg-strong);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 10px) scale(.98);
+  transition: opacity .16s ease, transform .16s ease;
+}
+
+.hub-copy-feedback.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.hub-copy-feedback[data-state="error"] {
+  border-color: rgba(var(--rgb-danger), .54);
+}
+
+.hub-copy-feedback-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 27px;
+  width: 27px;
+  height: 27px;
+  border-radius: 9px;
+  background: var(--status-success-tint);
+  color: var(--status-success);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.hub-copy-feedback[data-state="error"] .hub-copy-feedback-icon {
+  background: var(--status-danger-tint);
+  color: var(--status-danger);
+}
+
+.hub-copy-feedback-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.hub-copy-feedback-copy strong {
+  font-size: 11.5px;
+  line-height: 1.25;
+}
+
+.hub-copy-feedback-copy small {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 9.5px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-copy-feedback { transition: none; }
+}
+
 /* =========================================================================
    2026-08-26 · 主题 token 层
    =========================================================================

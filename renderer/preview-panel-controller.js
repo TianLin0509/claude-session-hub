@@ -77,6 +77,7 @@ function createPreviewPanelController({
   getActiveCwd,
   openPath,
   refitActiveTerminal,
+  onCopyFeedback,
 }) {
   const previewPanelEl = document.getElementById('preview-panel');
   const previewTitleEl = document.getElementById('preview-title');
@@ -515,6 +516,12 @@ function createPreviewPanelController({
     );
     webview.addEventListener('ipc-message', (event) => {
       if (!isCurrentWebview()) return;
+      if (event.channel === 'preview-copy-feedback') {
+        const feedback = event.args && event.args[0] || {};
+        if (typeof onCopyFeedback === 'function') onCopyFeedback(feedback);
+        else showPreviewNotice(feedback.message || (feedback.ok ? '已复制' : '复制失败'), feedback.ok ? 'success' : 'error');
+        return;
+      }
       if (event.channel !== 'preview-shortcut') return;
       const action = event.args && event.args[0];
       if (action === 'find') previewFind.open();

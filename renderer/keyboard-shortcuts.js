@@ -18,6 +18,7 @@ function createKeyboardShortcuts({
   setFontSize,
   closeSession,
   createWorkspaceSession,
+  copyText,
 }) {
   const createSession = kind => typeof createWorkspaceSession === 'function'
     ? createWorkspaceSession(kind)
@@ -208,7 +209,8 @@ function createKeyboardShortcuts({
       const sel = cached && cached.terminal.getSelection();
       if (sel) {
         e.preventDefault();
-        clipboard.writeText(sel);
+        if (typeof copyText === 'function') void copyText(sel);
+        else clipboard.writeText(sel);
       }
       return;
     }

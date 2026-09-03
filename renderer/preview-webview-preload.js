@@ -1,6 +1,16 @@
 'use strict';
 
-const { ipcRenderer } = require('electron');
+const { clipboard, ipcRenderer } = require('electron');
+const { createClipboardController } = require('./clipboard-controller.js');
+
+const clipboardController = createClipboardController({
+  document,
+  window,
+  clipboard,
+  renderFeedback: false,
+  onFeedback: feedback => ipcRenderer.sendToHost('preview-copy-feedback', feedback),
+});
+clipboardController.init();
 
 window.addEventListener('keydown', (event) => {
   if (!event.isTrusted) return;
