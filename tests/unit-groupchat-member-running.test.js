@@ -173,6 +173,23 @@ test('群聊成员失败会聚合到父项异常分区', () => {
   assert.match(html, /sl-state error[^>]*>异常/);
 });
 
+test('只有运行异常而没有运行中时，普通会话仍显示「最近」分区标题', () => {
+  const fixture = groupChat(['idle', 'error', 'idle']);
+  fixture.sessions.get('sid-codex').lastError = 'stream disconnected';
+  fixture.sessions.set('recent-session', {
+    id: 'recent-session',
+    kind: 'claude',
+    title: '普通最近会话',
+    status: 'idle',
+    createdAt: Date.now(),
+    lastMessageTime: Date.now(),
+  });
+  const html = render(fixture);
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '⚠ 运行异常');
+  assert.strictEqual(sectionOf(html, '普通最近会话'), '最近',
+    '运行异常本身也是特殊分区，后续普通项目必须重新用「最近」标题分隔');
+});
+
 test('折叠群聊会聚合显示成员的 cwd / memory 告警', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
   sessions.get('sid-claude').memoryLinkWarning = '错链：没有指向规范库';

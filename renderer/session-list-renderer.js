@@ -805,7 +805,7 @@ function _sessionWarningText(session) {
   if (failed.length) { appendSecHeader('⚠ 运行异常', failed.length, 'sec-respond'); for (const s of failed) appendItem(s); }
   if (completed.length) { appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed'); for (const s of completed) appendItem(s); }
   if (rest.length) {
-    if (respond.length || running.length || completed.length) appendSecHeader('最近', rest.length);
+    if (respond.length || running.length || failed.length || completed.length) appendSecHeader('最近', rest.length);
     for (const s of rest) appendItem(s);
   }
   function appendTimeGroup(key, label, items) {
