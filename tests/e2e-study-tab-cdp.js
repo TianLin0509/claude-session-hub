@@ -197,10 +197,30 @@ async function main() {
       chip.click();
       const titles = Array.from(document.querySelectorAll('#session-list')).map(n => n.textContent).join(' ');
       const again = document.querySelector('.sag-chip[data-agent-group="study"]');
-      return { on: again.classList.contains('on'), studyVisible: /学习 · 主笔/.test(titles) };
+      const gh = document.querySelector('#session-list .session-sec-header.sec-agent-group');
+      // 组头之后、下一个组头之前的条目 = 这一组的成员
+      let members = 0;
+      if (gh) {
+        let n = gh.nextElementSibling;
+        while (n && !n.classList.contains('session-sec-header')
+                 && !n.classList.contains('session-time-group-header')) {
+          if (n.dataset && n.dataset.sessionId) members += 1;
+          n = n.nextElementSibling;
+        }
+      }
+      return {
+        on: again.classList.contains('on'),
+        studyVisible: /学习 · 主笔/.test(titles),
+        groupHeader: gh ? gh.textContent.replace(/\s+/g, '') : '',
+        members,
+      };
     })()`);
     check('勾选后学习会话显示出来', afterToggle && afterToggle.on === true && afterToggle.studyVisible === true,
       JSON.stringify(afterToggle));
+    check('学习会话作为独立分组出现（有组头）', /学习2/.test(afterToggle.groupHeader || ''),
+      `组头文本：${afterToggle && afterToggle.groupHeader}`);
+    check('组内两个会话都在组头下面', afterToggle && afterToggle.members === 2,
+      `实际 ${afterToggle && afterToggle.members} 个`);
 
     const persisted = await page.eval(`localStorage.getItem('hubSessionAgentGroups')`);
     check('开关状态落盘（重开 Hub 保持）', /study/.test(String(persisted || '')), `实际 ${persisted}`);

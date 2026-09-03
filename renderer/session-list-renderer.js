@@ -273,6 +273,11 @@ function _ensureAgentGroupStyle() {
     '.sag-chip.on{border-color:var(--brand,#0a84ff);color:var(--brand,#0a84ff);}',
     '.sag-chip.on .sag-box{background:var(--brand,#0a84ff);border-color:var(--brand,#0a84ff);}',
     '.sag-chip .sag-count{font-size:10px;opacity:.75;}',
+    // Agent 分组的组头：与「运行中」「已完成未读」同一套 session-sec-header，
+    // 只加一条左侧色条把它标成「这是你自己勾出来的分组」，不另造一种视觉语言。
+    // 有成员告警时 sec-respond 会覆盖颜色，这里不跟它抢。
+    '.session-sec-header.sec-agent-group{border-left:2px solid var(--brand,#0a84ff);padding-left:10px;}',
+    '.session-sec-header.sec-agent-group:not(.sec-respond){color:var(--brand,#0a84ff);}',
   ].join('');
   doc.head.appendChild(st);
 }
@@ -869,8 +874,20 @@ function _sessionWarningText(session) {
   //     运行中   = RuntimeTruth starting/running（原生事件 + PTY 强校验 + 兜底）
   //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
   //     最近     = 24h 内其余（含 active、休眠、空闲）
-  const bottomed = visible.filter(isPinnedToBottom);
-  const normallyPlaced = visible.filter(s => !isPinnedToBottom(s));
+  // 勾选出来的 Agent 会话不参与下面的时间/状态分区，而是各自成组单独列出——
+  // 混进「最近」里按时间排，等于又找不着了，失去了勾它出来的意义。
+  const agentBuckets = new Map();
+  const normalVisible = [];
+  for (const s of visible) {
+    const g = agentGroupOf(s);
+    if (g && _agentGroupFilter.on.has(g)) {
+      if (!agentBuckets.has(g)) agentBuckets.set(g, []);
+      agentBuckets.get(g).push(s);
+    } else normalVisible.push(s);
+  }
+
+  const bottomed = normalVisible.filter(isPinnedToBottom);
+  const normallyPlaced = normalVisible.filter(s => !isPinnedToBottom(s));
   const { recent, mid, old } = partitionSessionsByAge(normallyPlaced, Date.now());
   const activeSid = getActiveSessionId();
   const activeMid = getActiveMeetingId();
@@ -905,8 +922,22 @@ function _sessionWarningText(session) {
   if (running.length) { appendSecHeader('运行中', running.length); for (const s of running) appendItem(s); }
   if (failed.length) { appendSecHeader('⚠ 运行异常', failed.length, 'sec-respond'); for (const s of failed) appendItem(s); }
   if (completed.length) { appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed'); for (const s of completed) appendItem(s); }
+  // Agent 分组：芯片勾上就整组展开列出，不再套一层折叠——芯片本身就是那个开关，
+  // 再要点一次箭头才看得到，等于把「一目了然」又收回去了。
+  // 组内有成员在等输入或跑挂了就复用告警样式，避免它被当成一堆静态条目略过。
+  for (const g of AGENT_SESSION_GROUPS) {
+    const items = agentBuckets.get(g.key);
+    if (!items || !items.length) continue;
+    const alerting = items.some(s => needsRespond(s)
+      || (!s._isMeeting && (getSessionRuntimeTruth(s).state === RUNTIME_FAILED || hasStreamDisconnectIssue(s))));
+    appendSecHeader(g.label, items.length, 'sec-agent-group' + (alerting ? ' sec-respond' : ''));
+    for (const s of items) appendItem(s);
+  }
+
   if (rest.length) {
-    if (respond.length || running.length || failed.length || completed.length) appendSecHeader('最近', rest.length);
+    if (respond.length || running.length || failed.length || completed.length || agentBuckets.size) {
+      appendSecHeader('最近', rest.length);
+    }
     for (const s of rest) appendItem(s);
   }
   function appendTimeGroup(key, label, items) {
