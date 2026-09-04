@@ -66,6 +66,23 @@
 - 隔离验证梦境/记忆功能必须同时设 `CLAUDE_HUB_HOME_DIR`（否则 memory 孤岛采集扫真实 home、写真实三件套）并清空 `DEEPSEEK_API_KEY`（env 优先于 config.json，父进程的 key 会漏进隔离实例）。
 - 测试：`node tests\unit-dream-consolidation.test.js`、`node tests\e2e-memory-panel-cdp.js`。
 
+## 改 Hub 一律先开 worktree，合主干要用户点头（2026-09-04）
+
+- 用户规矩：**不再区分生产分支和主分支（本来也只有 `master` 一条线，没有 production/release 分支）；
+  agent 改 Hub 优先在工作树上操作，等用户同意后再合入主干。**
+- 真正的风险不在分支在目录：**生产 Hub 跑的就是 `C:\Users\lintian\claude-session-hub` 这个工作目录本身**。
+  在这里改代码 = 直接改生产，哪怕没 commit，下次重启就生效。
+- 默认动作：`git worktree add C:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支>`，
+  再 `cmd /c mklink /J <worktree>\node_modules <主目录>\node_modules`。席位标识必须带（`-codex1` / `-claude1`）。
+- **worktree 里禁止 `npm install` / `npm ci` / `npm run dist`**：node_modules 是 junction，
+  装包会写坏生产依赖。要动依赖先问用户，并改用自带副本的 worktree。
+- **不得自行 merge 进 master**，也不得直接在主工作目录 commit 功能改动。
+  做完在 worktree 里提交 → 报告改了什么、测了什么 → 用户同意后再合。
+- 例外：纯文档；用户在当前请求里明说"直接在主干改"；紧急修复（事后说明）。
+- 清理 worktree 走 node_modules 那节的 `cmd /c rmdir` 三步，严禁 `git worktree remove --force`。
+- 主目录 `git status` 出现别人的未提交改动时：先查清归属，**不要 `git add -A` 扫进自己的提交，
+  也不要 `git checkout --` 冲掉**（2026-09-03 主目录曾同时躺着三拨人的在途改动）。
+
 ## 版本号（2026-08-29）
 
 - 用户规矩：**所有对 Hub 的改动，完成后在同一提交里同步升版本号**（默认 patch 位；纯文档/纯测试可不动）。

@@ -191,6 +191,53 @@ C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\t
 - 同日清理 pytest 垃圾：`AppData\Local\Temp\pytest-of-lintian\pytest-NNN\hub-e2e\node_modules\electron\dist\electron.exe` 因每次是新路径 → 35+ 条防火墙 Allow 规则累积 + 约 3GB 磁盘占用
 - 老测试 fixture `npm install --prefer-offline` 每次 120 秒 + 742MB；junction 后 <1 秒 + 0 字节
 
+## 铁律：主工作目录就是生产，agent 一律先在 worktree 改，合入主干要用户点头
+
+用户 2026-09-04 定的规矩：**「后续不再区分生产分支和主分支，生产分支就是主分支；
+agent 改 AI HUB 时优先在工作树上操作，等我同意后再合入主干」**。
+
+**先说清楚一件常被误解的事**：这个仓库**从来就只有 `master` 一条线**，没有
+production / prod / release 分支。所以"生产分支 = 主分支"不是要做的改造，它本来就成立。
+
+**真正的风险不在分支，在目录**：生产 Hub 跑的就是 `C:\Users\lintian\claude-session-hub`
+这个工作目录本身（桌面快捷方式指向它，`main-bootstrap.js` 不装单实例锁）。
+在这里直接改代码 = 直接改生产 —— 哪怕改到一半、哪怕还没 commit，
+**下一次重启 Hub 就生效**。这才是"老是容易改错地方"的根源。
+
+规则：
+
+1. **默认在 worktree 里改，不在主工作目录改。**
+   ```powershell
+   git worktree add C:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支名>
+   cmd /c mklink /J C:\AIWork\<...>\node_modules C:\Users\lintian\claude-session-hub\node_modules
+   ```
+   席位标识（`-claude1` / `-codex1`）必须带上：多 agent 并发时这是唯一能区分谁改了什么的信号。
+
+2. **worktree 里绝对不许 `npm install` / `npm ci` / `npm run dist`。**
+   node_modules 是 junction，指向主目录那一份；在里面装包会直接写坏生产依赖。
+   需要改依赖 → 停下来问用户。
+   （与前面第 6 条"每个 worktree 有独立 node_modules"的关系：那条针对**要动依赖**的
+   打包/依赖实验 worktree，此时必须自带副本；本条针对**只改源码**的日常开发 worktree，
+   junction 复用即可，代价是绝不能在里面碰 npm。判据是"这次会不会动 node_modules"。）
+
+3. **合入 master 必须用户明确同意。** agent 不得自行 `git merge` 进主干，
+   也不得直接在主工作目录 commit 功能改动。做完在 worktree 里提交，
+   然后**报告改了什么、测了什么，等用户点头**再合。
+
+4. **例外，无需逐次确认**：纯文档改动；用户在当前请求里明说"直接在主干改"的小修；
+   以及紧急修复（但事后要说明）。
+
+5. **合入后清理 worktree 走既有铁律**（`cmd /c rmdir` 摘 junction → 轮询确认 →
+   `rd /s /q` → `git worktree prune`），严禁 `git worktree remove --force`。
+
+6. **主工作目录的干净度是有意义的信号**：`git status` 在主目录出现未提交的功能改动，
+   基本可以判定是有人违反了本条。发现时先查清是谁的在途工作，**不要顺手 `git add -A`
+   扫进自己的提交**，也不要 `git checkout --` 冲掉。
+
+**为什么值得单列一条**：2026-09-03 那次统一合并里，主工作目录同时躺着三拨人的未提交改动
+（提交可靠性修复、research MCP 情绪周期、agent 联赛理念），彼此看不见。
+靠人工逐个文件甄别才没有互相覆盖 —— 这种甄别不该每次都做一遍。
+
 ## 铁律：每次改动 Hub，同一提交里升版本号
 
 用户 2026-08-29 定的规矩：**「以后所有对 AI HUB 的改动，完成后都要同步改动 AI HUB 的版本号」**。
