@@ -33,6 +33,10 @@ const {
   selectPreferredHub,
 } = require('../../core/hub-instance-registry.js');
 const {
+  describeWriters: describeCodexWriters,
+  findCodexThreadWriters,
+} = require('../../core/codex-thread-writer.js');
+const {
   PHILOSOPHY_TEMPLATES,
   getPhilosophy,
 } = require('../../core/agent-league-philosophies.js');
@@ -746,6 +750,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     // short probes and does not slow the normal ready-fast path.
     : [10000, 18000, 32000, 60000];
   const pendingByHubSession = new Map();
+  // codexSid（小写）→ 占用者描述。每轮赛程开跑前刷新一次，见 refreshOccupiedCodexThreads。
+  const occupiedCodexThreads = new Map();
   const publicRow = (row) => publicAgent(row, sessionManager, { pendingSessionIds: new Set(pendingByHubSession.keys()) });
   let currentRun = null;
   let schedulerTimer = null;
@@ -868,7 +874,42 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       // 而是从未产生过历史。复用同一 Hub ID fresh start，绝不进入通用 picker。
       return createNativeSession(row, null);
     }
+    // Codex 的 thread 只允许一个活写者。别的进程（多半是另一个后台 Hub 留下的
+    // 旧会话）还攥着这个 sid 时，`codex resume <sid>` 必然被拒，TUI 起不到就绪，
+    // 只能等满 120 秒就绪预算判技术弃权 —— 每天一次，白烧一整轮。
+    // 已经知道占用就别去撞：直接 fresh 启动。联赛的阶段检查点在 SQLite 和
+    // markdown 里，不在 Codex thread 里，所以这是文档写明的接班路径，不是降级。
+    const blockedSid = resume && resume.codexSid && occupiedCodexThreads.has(String(resume.codexSid).toLowerCase())
+      ? String(resume.codexSid)
+      : '';
+    if (blockedSid) {
+      console.warn(`[agent-league] codex thread ${blockedSid} 已被 ${occupiedCodexThreads.get(blockedSid.toLowerCase())} 占用；`
+        + `${agentId} 改用 fresh 会话，不再等 resume 超时`);
+      emit('agent-thread-conflict', { agentId, codexSid: blockedSid, holder: occupiedCodexThreads.get(blockedSid.toLowerCase()) });
+      return createNativeSession(row, null);
+    }
     return createNativeSession(row, resume);
+  }
+
+  // 一次赛程只探一次：命令行枚举有固定开销，而一轮里 sid 不会变。
+  // 探不出来就留空集合 —— 等价于今天的行为，绝不因为探测失败而放弃 resume。
+  async function refreshOccupiedCodexThreads(agentIds = []) {
+    occupiedCodexThreads.clear();
+    const sids = [];
+    for (const agentId of agentIds) {
+      const row = store.getAgent(agentId);
+      const resume = row ? resumeOptions(row) : null;
+      if (resume && resume.codexSid) sids.push(String(resume.codexSid));
+    }
+    if (!sids.length) return occupiedCodexThreads;
+    try {
+      const probe = typeof deps.findCodexThreadWriters === 'function' ? deps.findCodexThreadWriters : findCodexThreadWriters;
+      const writers = await probe(sids, { logger: console });
+      for (const [sid, rows] of writers) occupiedCodexThreads.set(sid, describeCodexWriters(rows));
+    } catch (error) {
+      console.warn('[agent-league] codex thread writer 探测失败，按未占用处理：', error && error.message);
+    }
+    return occupiedCodexThreads;
   }
 
   async function waitForAgentCliReady(sessionId, row, stage, options = {}) {
@@ -1847,6 +1888,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     // Start every CLI shell immediately while model turns remain bounded by
     // maxConcurrency. Slow Claude turns can no longer postpone Codex cold
     // startup until the end of the 08:30-09:15 decision window.
+    await refreshOccupiedCodexThreads(currentRun.queue);
     prewarmAgentSessions(currentRun.queue);
     pumpQueue();
     return { ok: true, run: runPublicState(), snapshot, decisionDate, scheduledFrom };
@@ -2298,6 +2340,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     };
     const schedule = store.getSchedule();
     store.saveSchedule({ ...schedule, lastWeeklyDate: saturdayDate, lastWeeklyRunId: runId, lastWeeklyStatus: 'running' });
+    await refreshOccupiedCodexThreads(currentRun.queue);
     prewarmAgentSessions(currentRun.queue);
     pumpQueue();
     return { ok: true, run: runPublicState() };
