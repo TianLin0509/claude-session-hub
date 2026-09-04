@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const { normalizeToolActivity } = require('../core/turn-presentation.js');
 
 function test(name, fn) {
   return Promise.resolve(fn())
@@ -74,12 +75,12 @@ function loadHelpers() {
   const renderSrc = extractFunctionSource(src, '_renderPreviewBlocks');
   const formatSrc = extractFunctionSource(src, '_formatToolUseBlock');
   // 用 new Function 包裹，参数是 mock 依赖；返回两个 helper
-  const factory = new Function('escapeHtml', '_renderMarkdown', `
+  const factory = new Function('escapeHtml', '_renderMarkdown', 'normalizeToolActivity', `
     ${formatSrc}
     ${renderSrc}
     return { _renderPreviewBlocks: _renderPreviewBlocks, _formatToolUseBlock: _formatToolUseBlock };
   `);
-  return factory(escapeHtml, _renderMarkdown);
+  return factory(escapeHtml, _renderMarkdown, normalizeToolActivity);
 }
 
 async function main() {
@@ -107,7 +108,7 @@ async function main() {
 
   await test('_renderPreviewBlocks([{type:tool_use,WebSearch}]) 含 <span class="mr-ft-tool">', () => {
     const html = _renderPreviewBlocks([{ type: 'tool_use', name: 'WebSearch', input: { query: 'foo bar' } }]);
-    assert.ok(html.includes('<span class="mr-ft-tool">'), 'expected mr-ft-tool span, got: ' + html);
+    assert.ok(html.includes('<span class="mr-ft-tool activity-running">'), 'expected running mr-ft-tool span, got: ' + html);
     assert.ok(html.includes('搜索'), 'search emoji label present');
     assert.ok(html.includes('foo bar'), 'query text present');
   });
@@ -167,7 +168,7 @@ async function main() {
     assert.ok(/q1[^0-9]/.test(html), 'q1 should remain');
     assert.ok(/q8[^0-9]/.test(html), 'q8 (last) should remain');
     // 计数应为 8
-    const matches = html.match(/<span class="mr-ft-tool">/g) || [];
+    const matches = html.match(/<span class="mr-ft-tool activity-/g) || [];
     assert.strictEqual(matches.length, 8, `expected 8 tool spans, got ${matches.length}`);
   });
 

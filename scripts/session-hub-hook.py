@@ -17,6 +17,13 @@ Reads CC's JSON payload from stdin to extract:
 """
 import os, sys, json, urllib.request
 
+def truncate_utf8(value, max_bytes):
+    text = str(value)
+    encoded = text.encode('utf-8')
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max(0, max_bytes - 3)].decode('utf-8', 'ignore') + '…'
+
 sid = os.environ.get('CLAUDE_HUB_SESSION_ID', '')
 if not sid:
     sys.exit(0)
@@ -31,6 +38,13 @@ transcript_path = None
 prompt = None
 tool_name = None
 tool_input = None
+tool_result = None
+tool_call_id = None
+turn_id = None
+agent_id = None
+agent_type = None
+task_id = None
+task_subject = None
 hook_event_name = None
 background_tasks = []
 session_crons = []
@@ -54,6 +68,13 @@ try:
         prompt = payload.get('prompt')
         tool_name = payload.get('tool_name')
         tool_input = payload.get('tool_input')
+        tool_result = payload.get('tool_response') or payload.get('tool_output')
+        tool_call_id = payload.get('tool_use_id') or payload.get('tool_call_id')
+        turn_id = payload.get('turn_id')
+        agent_id = payload.get('agent_id')
+        agent_type = payload.get('agent_type') or payload.get('agent_name')
+        task_id = payload.get('task_id') or payload.get('id')
+        task_subject = payload.get('subject') or payload.get('description')
         hook_event_name = payload.get('hook_event_name')
         background_tasks = payload.get('background_tasks') or []
         session_crons = payload.get('session_crons') or []
@@ -117,7 +138,31 @@ try:
             body['title'] = str(notification_title)[:300]
         if tool_name:
             body['toolName'] = str(tool_name)[:160]
-    data = json.dumps(body).encode()
+        if tool_call_id:
+            body['toolCallId'] = str(tool_call_id)[:180]
+        if turn_id:
+            body['turnId'] = str(turn_id)[:180]
+        if event in ('tool-start', 'tool-complete', 'tool-failed') and tool_input is not None:
+            try:
+                encoded_input = json.dumps(tool_input, ensure_ascii=False)
+                body['toolInput'] = tool_input if len(encoded_input.encode('utf-8')) <= 3000 else truncate_utf8(encoded_input, 3000)
+            except Exception:
+                body['toolInput'] = truncate_utf8(tool_input, 3000)
+        if event in ('tool-complete', 'tool-failed') and tool_result is not None:
+            try:
+                encoded_result = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
+                body['toolResult'] = truncate_utf8(encoded_result, 6000)
+            except Exception:
+                body['toolResult'] = truncate_utf8(tool_result, 6000)
+        if agent_id:
+            body['agentId'] = str(agent_id)[:180]
+        if agent_type:
+            body['agentType'] = str(agent_type)[:160]
+        if task_id:
+            body['taskId'] = str(task_id)[:180]
+        if task_subject:
+            body['taskSubject'] = str(task_subject)[:500]
+    data = json.dumps(body, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(url, data, {'Content-Type': 'application/json'})
     urllib.request.urlopen(req, timeout=3).read()
 except Exception:

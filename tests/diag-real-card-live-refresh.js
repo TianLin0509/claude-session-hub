@@ -61,6 +61,7 @@ async function readCardState(client, sessionId) {
     const id = ${JSON.stringify(sessionId)};
     const session = sessions.get(id);
     const assistantCards = Array.from(document.querySelectorAll('#msg-overlay > .turn-card:not(.user)'));
+    const latestCard = assistantCards[assistantCards.length - 1] || null;
     const text = assistantCards.map(card => card.querySelector('.turn-body')?.textContent || '').join('\\n');
     const reload = window._cardReloadState && window._cardReloadState.get(id);
     return {
@@ -71,6 +72,11 @@ async function readCardState(client, sessionId) {
       codexSid:session?.codexSid || null,
       assistantCount:assistantCards.length,
       assistantText:text,
+      rootPatchCount:Number(latestCard?.dataset.patchCount || 0),
+      identityMarker:latestCard?.__realCardIdentity || null,
+      activityCount:latestCard?.querySelectorAll('.turn-activity-item').length || 0,
+      activityStatuses:Array.from(latestCard?.querySelectorAll('.turn-activity-status') || []).map(item => item.dataset.activityStatus),
+      runtimeDetail:document.querySelector('.terminal-header .terminal-status-detail')?.textContent || '',
       stageVisible:text.includes(${JSON.stringify(STAGE_MARKER)}),
       finalVisible:text.includes(${JSON.stringify(FINAL_MARKER)}),
       reload:reload ? {
@@ -163,8 +169,17 @@ async function main() {
 
     result.stage = await waitFor('assistant stage marker without reselecting session', async () => {
       const state = await readCardState(client, created.id);
-      return state.stageVisible ? { ...state, observedAt: Date.now() } : null;
+      return state.stageVisible
+        && state.activityStatuses.includes('running')
+        && /Start-Sleep/i.test(state.runtimeDetail)
+        ? { ...state, observedAt: Date.now() }
+        : null;
     }, 60000);
+    await client.eval(`(() => {
+      const cards = document.querySelectorAll('#msg-overlay > .turn-card:not(.user)');
+      const card = cards[cards.length - 1];
+      if (card) card.__realCardIdentity = 'real-codex-card-preserved';
+    })()`);
     await capture(client, STAGE_SCREENSHOT);
 
     result.final = await waitFor('assistant final marker without reselecting session', async () => {
@@ -179,6 +194,12 @@ async function main() {
     assert.equal(result.final.finalVisible, true);
     assert.equal(result.stage.assistantCount, 1, 'streaming stage must not duplicate assistant cards');
     assert.equal(result.final.assistantCount, 1, 'final replacement must keep one assistant card');
+    assert.equal(result.stage.activityCount, 1, 'running command must appear in the activity rail');
+    assert.ok(result.stage.activityStatuses.includes('running'), JSON.stringify(result.stage));
+    assert.match(result.stage.runtimeDetail, /Start-Sleep/i, 'status truth must show the active command');
+    assert.equal(result.final.identityMarker, 'real-codex-card-preserved', 'the real streaming card root must survive finalization');
+    assert.ok(result.final.rootPatchCount >= 1, JSON.stringify(result.final));
+    assert.ok(result.final.activityStatuses.includes('completed'), JSON.stringify(result.final));
     result.success = true;
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify(result, null, 2));

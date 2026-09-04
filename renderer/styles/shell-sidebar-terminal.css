@@ -904,7 +904,9 @@
   min-height: 22px;
   box-sizing: border-box;
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(300px, 32vw);
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
@@ -917,6 +919,7 @@
   font-variant-numeric: tabular-nums;
   line-height: 1;
   white-space: nowrap;
+  overflow: hidden;
   transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
@@ -939,6 +942,17 @@
   font-weight: 600;
 }
 .terminal-status-meta[hidden] { display: none; }
+.terminal-status-detail {
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-left: 5px;
+  border-left: 1px solid currentColor;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: .86;
+  font-size: 9.5px;
+}
+.terminal-status-detail[hidden] { display: none; }
 
 .terminal-status.running {
   border-color: rgba(var(--rgb-success), .42);
@@ -1008,6 +1022,7 @@
   .terminal-title { max-width: 120px; }
   .terminal-status { padding-inline: 6px; }
   .terminal-status-meta { display: none; }
+  .terminal-status-detail { max-width: min(28vw, 180px); }
   .terminal-model-badge {
     min-width: 0;
     max-width: 88px;
@@ -1023,6 +1038,10 @@
     border-left: 0;
   }
   .terminal-metrics-row.inline > :not(.metric-cwd) { display: none; }
+}
+
+@media (max-width: 680px) {
+  .terminal-status-detail { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

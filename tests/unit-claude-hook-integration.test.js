@@ -31,6 +31,9 @@ test('repairs missing Hub hooks without deleting unrelated user hooks', () => {
       hooks: {
         Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'python user-guard.py' }] }],
         UserPromptSubmit: [],
+        PreToolUse: [{ matcher: '', hooks: [{
+          type: 'command', command: 'python existing/session-hub-hook.py tool-start', timeout: 5,
+        }] }],
       },
       customKey: { keep: true },
     }, null, 2), 'utf8');
@@ -45,11 +48,24 @@ test('repairs missing Hub hooks without deleting unrelated user hooks', () => {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.equal(settings.customKey.keep, true);
     assert.equal(settings.hooks.Stop[0].hooks[0].command, 'python user-guard.py');
-    for (const eventName of ['Stop', 'StopFailure', 'UserPromptSubmit', 'PermissionRequest', 'Notification']) {
+    for (const eventName of [
+      'Stop', 'StopFailure', 'UserPromptSubmit', 'PermissionRequest', 'Notification',
+      'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
+      'SubagentStart', 'SubagentStop', 'TaskCreated', 'TaskCompleted',
+    ]) {
       assert.equal(hasManagedHook(settings, eventName), true, `${eventName} hook should be installed`);
     }
     assert.match(settings.hooks.Notification[0].matcher, /agent_needs_input/);
     assert.match(settings.hooks.Notification[0].matcher, /agent_completed/);
+    for (const eventName of [
+      'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
+      'SubagentStart', 'SubagentStop', 'TaskCreated', 'TaskCompleted',
+    ]) {
+      const handler = settings.hooks[eventName]
+        .flatMap(group => group.hooks || [])
+        .find(hook => String(hook.command || '').includes('session-hub-hook'));
+      assert.equal(handler.async, true, `${eventName} observer must not block Claude execution`);
+    }
 
     const second = ensureClaudeHookIntegration(h);
     assert.equal(second.settingsUpdated, false);

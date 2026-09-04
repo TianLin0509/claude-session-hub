@@ -185,6 +185,66 @@ async function main() {
     await rmDir(dir);
   });
 
+  await test('prompt 时预绑定 transcript：不重放旧回答，缺 Stop hook 也由 stop_reason 收口', async () => {
+    const tap = new TranscriptTap();
+    const sid = 'test-claude-' + Date.now() + '-early-watch';
+    const { dir, jsonlPath } = await tmpJsonl();
+    const oldAnswer = JSON.stringify({
+      type: 'assistant',
+      message: { stop_reason: 'end_turn', content: [{ type: 'text', text: '旧回答不得重放' }] },
+    });
+    await fs.promises.appendFile(jsonlPath, oldAnswer + '\n');
+    const completed = [];
+    tap.on('turn-complete', event => completed.push(event));
+    tap.registerSession(sid, 'claude', { cwd: dir });
+
+    await tap.watchClaudeTranscript(sid, jsonlPath);
+    await wait(400);
+    assert.strictEqual(completed.length, 0, 'watch from EOF must not replay the previous turn');
+
+    const newAnswer = JSON.stringify({
+      type: 'assistant',
+      message: { stop_reason: 'end_turn', content: [{ type: 'text', text: '新回答由 transcript 终态收口' }] },
+    });
+    await fs.promises.appendFile(jsonlPath, newAnswer + '\n');
+    await wait(1200);
+
+    assert.strictEqual(completed.length, 1, 'terminal stop_reason should complete without notifyClaudeStop');
+    assert.strictEqual(completed[0].hubSessionId, sid);
+    assert.match(completed[0].text, /新回答由 transcript 终态收口/);
+    assert.strictEqual(completed[0].signalSource, 'stop_reason_terminal');
+
+    tap.unregisterSession(sid);
+    await rmDir(dir);
+  });
+
+  await test('主 transcript 合法换绑时关闭旧 tail，只从新路径收口', async () => {
+    const tap = new TranscriptTap();
+    const sid = 'test-claude-' + Date.now() + '-rebind';
+    const first = await tmpJsonl();
+    const second = await tmpJsonl();
+    const completed = [];
+    tap.on('turn-complete', event => completed.push(event));
+    tap.registerSession(sid, 'claude', { cwd: first.dir });
+    await tap.watchClaudeTranscript(sid, first.jsonlPath);
+    await tap.watchClaudeTranscript(sid, second.jsonlPath);
+
+    const line = text => JSON.stringify({
+      type: 'assistant',
+      message: { stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+    }) + '\n';
+    await fs.promises.appendFile(first.jsonlPath, line('旧路径不得再触发'));
+    await fs.promises.appendFile(second.jsonlPath, line('新路径完成'));
+    await wait(1200);
+
+    assert.strictEqual(completed.length, 1);
+    assert.match(completed[0].text, /新路径完成/);
+    assert.doesNotMatch(completed[0].text, /旧路径/);
+    tap.unregisterSession(sid);
+    await rmDir(first.dir);
+    await rmDir(second.dir);
+  });
+
   console.log('All passed.');
 }
 

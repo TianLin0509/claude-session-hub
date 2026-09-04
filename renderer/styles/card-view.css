@@ -861,6 +861,138 @@
 .tc-row-name { color: var(--tool-call-name); font-weight: 600; flex-shrink: 0; }
 .tc-row-cmd { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* 2026-09-03 · ROI #4: the old post-hoc tool cluster now doubles as a live,
+   compact activity rail. Existing tc-* selectors remain for compatibility. */
+.turn-activity-rail { width: min(100%, 920px); }
+.turn-activity-rail[open] {
+  border-color: color-mix(in srgb, var(--tool-call-border) 55%, var(--mark-green));
+}
+.turn-activity-title { color: var(--fg-default); font-weight: 700; }
+.turn-activity-breakdown { margin-left: 7px; color: var(--text-muted); font-size: 10.5px; }
+.turn-activity-item { position: relative; min-height: 27px; }
+.turn-activity-kind {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: var(--radius-pill);
+  background: var(--mark-slate);
+}
+.turn-activity-kind.kind-execute { background: var(--mark-blue); }
+.turn-activity-kind.kind-edit,
+.turn-activity-kind.kind-move { background: var(--mark-amber); }
+.turn-activity-kind.kind-delete { background: var(--mark-red); }
+.turn-activity-kind.kind-read,
+.turn-activity-kind.kind-search,
+.turn-activity-kind.kind-fetch { background: var(--mark-green); }
+.turn-activity-row-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.turn-activity-duration { color: var(--text-muted); font-size: 9.5px; }
+.turn-activity-status {
+  min-width: 34px;
+  padding: 1px 5px;
+  border: 1px solid rgba(var(--rgb-neutral), .3);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font: 650 9px/1.4 "Segoe UI", "Microsoft YaHei", sans-serif;
+  text-align: center;
+}
+.turn-activity-status.running,
+.turn-activity-status.pending { color: var(--mark-amber-soft); border-color: rgba(var(--rgb-warning), .42); }
+.turn-activity-status.completed { color: var(--mark-green); border-color: rgba(var(--rgb-success), .38); }
+.turn-activity-status.failed { color: var(--mark-red); border-color: rgba(var(--rgb-danger), .42); }
+.turn-activity-status.cancelled { color: var(--mark-slate); }
+
+/* ROI #3: deterministic delivery capsule. No model call is involved; all
+   fields come from tool events, command outcomes and verified local paths. */
+.turn-delivery-summary {
+  width: min(100%, 920px);
+  margin: 8px 0 0;
+  border: 1px solid rgba(var(--rgb-info), .28);
+  border-radius: var(--radius-sm);
+  background: rgba(56, 139, 253, .055);
+  color: var(--text-secondary);
+}
+.turn-delivery-summary > summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.turn-delivery-summary > summary::-webkit-details-marker { display: none; }
+.turn-delivery-summary > summary::before { content: '▸'; color: var(--mark-blue); }
+.turn-delivery-summary[open] > summary::before { content: '▾'; }
+.turn-delivery-summary > summary > span:first-of-type { color: var(--fg-default); font-weight: 720; }
+.turn-delivery-summary > summary small { color: var(--text-muted); font-size: 10.5px; }
+.turn-delivery-no-ai {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid rgba(var(--rgb-success), .3);
+  border-radius: var(--radius-pill);
+  color: var(--mark-green);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.turn-delivery-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+.turn-delivery-body section {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(var(--rgb-neutral), .2);
+  border-radius: var(--radius-xs);
+  background: rgba(var(--rgb-scrim), .2);
+}
+.turn-delivery-body section > strong { display: block; margin-bottom: 5px; color: var(--text-secondary); font-size: 10.5px; }
+.turn-delivery-body ul { margin: 0; padding: 0; list-style: none; }
+.turn-delivery-body li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 15px minmax(0,1fr) auto;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+  color: var(--text-secondary);
+  font: 10.5px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.turn-delivery-body li > span:nth-child(2),
+.turn-delivery-body li > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-delivery-body li > em { color: var(--text-muted); font-style: normal; font-size: 9.5px; white-space: nowrap; }
+.turn-delivery-icon { color: var(--mark-blue); text-align: center; }
+.turn-delivery-check.status-failed .turn-delivery-icon,
+.turn-delivery-check.status-failed > em { color: var(--mark-red); }
+.turn-delivery-check.status-completed .turn-delivery-icon,
+.turn-delivery-check.status-completed > em { color: var(--mark-green); }
+.turn-delivery-check.status-running .turn-delivery-icon,
+.turn-delivery-check.status-running > em,
+.turn-delivery-check.status-pending .turn-delivery-icon,
+.turn-delivery-check.status-pending > em { color: var(--mark-amber-soft); }
+.turn-delivery-check.status-unknown .turn-delivery-icon,
+.turn-delivery-check.status-unknown > em,
+.turn-delivery-check.status-cancelled .turn-delivery-icon,
+.turn-delivery-check.status-cancelled > em { color: var(--text-muted); }
+.turn-delivery-file a.rt-file-link,
+.turn-delivery-artifact a.rt-file-link { color: var(--link); text-decoration: none; }
+.turn-delivery-file a.rt-file-link:hover,
+.turn-delivery-artifact a.rt-file-link:hover { text-decoration: underline; }
+
+@media (max-width: 680px) {
+  .turn-activity-breakdown { display: none; }
+  .turn-delivery-no-ai { display: none; }
+  .turn-delivery-body { grid-template-columns: 1fr; }
+}
+
 /* Spec 3 · W9: 工具 stdout 折叠（与 PTY 视图对齐） */
 .tc-row-with-result {
   display: block;
@@ -1315,6 +1447,7 @@
   /* 1.58 × 1.10 ≈ 1.74：长回答更容易逐行阅读，同时仍低于松散文档排版。 */
   font-size: var(--card-content-font-size, 15px); line-height: 1.74;
 }
+.msg-overlay .turn-body.turn-body-empty { display: none; }
 .msg-overlay .turn-body ul,
 .msg-overlay .turn-body ol {
   /* marked 的 marker 默认画在 list-item 外侧；显式留出内部缩进，避免圆点
@@ -1354,12 +1487,14 @@
 
 /* 气泡下方附属：工具簇 + 徽章 + thinking */
 .msg-overlay .turn-content > .tc-cluster,
+.msg-overlay .turn-content > .turn-delivery-summary,
 .msg-overlay .turn-content > .turn-meta-pills,
 .msg-overlay .turn-content > .turn-thinking {
   align-self: flex-start; max-width: 90%;
 }
 .msg-overlay .turn-card.user .turn-content > .turn-meta-pills { align-self: flex-end; }
 .msg-overlay .turn-content > .tc-cluster { margin: 5px 0 0; }
+.msg-overlay .turn-content > .turn-delivery-summary { margin: 7px 0 0; }
 .msg-overlay .turn-content > .turn-meta-pills { margin: 5px 3px 0; }
 .msg-overlay .turn-content > .turn-thinking { margin: 4px 0 0; }
 

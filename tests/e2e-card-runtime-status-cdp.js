@@ -89,6 +89,9 @@ async function readStatus(client) {
       state: root?.dataset.runtimeState || null,
       label: root?.querySelector('.terminal-status-label')?.textContent || '',
       meta: root?.querySelector('.terminal-status-meta')?.textContent || '',
+      detail: root?.querySelector('.terminal-status-detail')?.textContent || '',
+      detailVisible: !!root?.querySelector('.terminal-status-detail')
+        && !root.querySelector('.terminal-status-detail').hidden,
       title: root?.title || '',
       ariaLabel: root?.getAttribute('aria-label') || '',
       inlineLabel: inline?.dataset.label || '',
@@ -269,6 +272,8 @@ async function main() {
     assert.equal(result.running.cardMode, true);
     assert.equal(result.running.inlineVisible, true);
     assert.match(result.running.title, /esc to interrupt/);
+    assert.equal(result.running.detailVisible, true);
+    assert.match(result.running.detail, /esc to interrupt/i);
     assert.equal(result.running.ariaLabel, 'Codex 工作中');
     assert.equal(result.running.sidebarState, 'running');
     assert.equal(result.running.sidebarSource, 'pty-codex-interrupt-footer');
@@ -490,6 +495,37 @@ async function main() {
     assert.equal(result.claudeRunning.sidebarConfidence, 'strong');
     await screenshot(client, CLAUDE_RUNNING_SHOT);
 
+    result.claudeSubagentBinding = await client.eval(`(() => {
+      const id = 'claude-runtime-truth-e2e';
+      const before = sessions.get(id);
+      const expected = { ccSessionId: before.ccSessionId, cwd: before.cwd };
+      ipcRenderer.emit('hook-event', {}, {
+        event: 'tool-start', eventAt: Date.now(), sessionId: id,
+        claudeSessionId: 'claude-native-runtime-e2e',
+        cwd: 'C:\\\\wrong-child-cwd', agentId: 'child-agent-1', agentType: 'Explore',
+        toolName: 'Read', toolCallId: 'child-tool-1', toolInput: { file_path: 'child.txt' }
+      });
+      const after = sessions.get(id);
+      const acceptedSubagentCount = after.liveToolActivities?.length || 0;
+      ipcRenderer.emit('hook-event', {}, {
+        event: 'tool-start', eventAt: Date.now() + 1, sessionId: id,
+        claudeSessionId: 'foreign-native-session', cwd: 'C:\\\\foreign-cwd',
+        toolName: 'Bash', toolCallId: 'foreign-tool', toolInput: { command: 'foreign' }
+      });
+      return {
+        expected,
+        actual: { ccSessionId: after.ccSessionId, cwd: after.cwd },
+        acceptedSubagentCount,
+        countAfterForeign: after.liveToolActivities?.length || 0,
+      };
+    })()`);
+    assert.deepEqual(result.claudeSubagentBinding.actual, result.claudeSubagentBinding.expected,
+      'subagent hooks must not rebind the parent Claude transcript identity');
+    assert.equal(result.claudeSubagentBinding.acceptedSubagentCount, 1,
+      'a correctly attributed subagent activity should remain visible');
+    assert.equal(result.claudeSubagentBinding.countAfterForeign, 1,
+      'a foreign native Claude session must not inject activity');
+
     await client.eval(`ipcRenderer.emit('hook-event', {}, {
       event: 'permission-request', eventAt: Date.now(),
       sessionId: 'claude-runtime-truth-e2e', toolName: 'PowerShell'
@@ -532,6 +568,34 @@ async function main() {
     });
     assert.equal(result.claudeCompleted.sidebarSource, 'claude-stop');
     assert.equal(result.claudeCompleted.inlineVisible, false);
+
+    await client.eval(`(() => {
+      const id = 'claude-runtime-truth-e2e';
+      const promptAt = Date.now();
+      ipcRenderer.emit('hook-event', {}, {
+        event: 'prompt', eventAt: promptAt, sessionId: id,
+        latestUserMessage: '验证 Claude transcript 独立收口'
+      });
+      onReplyCompleteFromTranscriptEvent({
+        hubSessionId: id, kind: 'claude', turnId: 'claude-transcript-turn',
+        completedAt: promptAt + 10, text: 'Claude transcript terminal answer'
+      });
+    })()`);
+    result.claudeTranscriptCompleted = await waitFor('Claude transcript completion truth', async () => {
+      const state = await readStatus(client);
+      return state.state === 'completed' && state.sidebarState === 'completed'
+        && state.sidebarSource === 'claude-transcript-complete' ? state : null;
+    });
+    assert.equal(result.claudeTranscriptCompleted.sidebarSource, 'claude-transcript-complete');
+
+    await client.eval(`ipcRenderer.emit('hook-event', {}, {
+      event: 'tool-start', eventAt: Date.now() + 20,
+      sessionId: 'claude-runtime-truth-e2e', toolName: 'LateTool', toolCallId: 'late-after-stop'
+    })`);
+    result.claudeLateToolIgnored = await readStatus(client);
+    assert.equal(result.claudeLateToolIgnored.state, 'completed',
+      'a late tool-start from the closed turn must not resurrect Claude');
+    assert.equal(result.claudeLateToolIgnored.sidebarSource, 'claude-transcript-complete');
 
     await client.eval(`(() => {
       const id = 'claude-runtime-truth-e2e';
@@ -700,13 +764,13 @@ async function main() {
     assert.ok(!/休眠/.test(result.sidebarStates.dormantTime),
       '休眠行的时间列不应再带"休眠 ·"前缀：' + result.sidebarStates.dormantTime);
     // 模型字串换成品牌 logo：claude 会话必须挂 .logo-claude，codex 会话挂 .logo-codex。
-    assert.match(result.sidebarStates.dormantKindClass, /logo-claude/);
-    assert.match(result.sidebarStates.disconnectedKindClass, /logo-codex/);
+    assert.match(result.sidebarStates.dormantKindClass, /\blogo-claude\b/);
+    assert.match(result.sidebarStates.disconnectedKindClass, /\blogo-codex\b/);
     assert.equal(result.sidebarStates.dormantModelText, null, '模型文字列应已被 logo 取代');
     // 回归护栏：card-view.css 从 renderer/ 拆到 renderer/styles/ 时，url('assets/…')
     //   被解析成 renderer/styles/assets/ 导致六个 logo 全白。断言解析后的绝对 URL
     //   落在 renderer/assets/ 下，路径再挪一次也能立刻发现。
-    assert.match(result.sidebarStates.dormantKindImage, //renderer/assets/ai-logos/claude.svg/,
+    assert.match(result.sidebarStates.dormantKindImage, /\/renderer\/assets\/ai-logos\/claude\.svg/,
       'logo 背景图应解析到 renderer/assets/ai-logos：' + result.sidebarStates.dormantKindImage);
     assert.equal(result.sidebarStates.dormantTitleColor, result.sidebarStates.expectedDormantTitleColor);
     // 可唤醒行的"时刻"和"标题"是一条信息，必须同一档高亮；一亮一暗整行会读成断的。

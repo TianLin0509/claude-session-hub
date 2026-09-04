@@ -115,8 +115,11 @@ async function inspectCards(client, sid, kind, transcriptPath) {
       createdAt: Date.now(),
       lastMessageTime: Date.now(),
     });
-    applyViewMode('card');
     await api.selectSession(sid, { forceScrollBottom: true });
+    // Session selection restores that session's saved view mode. Select first,
+    // then explicitly enter card mode so this test exercises card rendering
+    // instead of accidentally waiting on an empty PTY overlay.
+    applyViewMode('card');
     const overlay = document.getElementById('msg-overlay');
     for (let attempt = 0; attempt < 60 && overlay.querySelectorAll(':scope > .turn-card').length < 2; attempt += 1) {
       await wait(100);
@@ -160,7 +163,6 @@ async function simulateDormantResumeRebind(client) {
       createdAt: Date.now(),
       lastMessageTime: Date.now(),
     });
-    applyViewMode('card');
     require('electron').ipcRenderer.emit('session-created', {}, { session: {
       id: sid,
       kind: 'kimi-resume',
@@ -172,6 +174,7 @@ async function simulateDormantResumeRebind(client) {
       createdAt: Date.now(),
       lastMessageTime: Date.now(),
     } });
+    applyViewMode('card');
     for (let attempt = 0; attempt < 60 && document.querySelectorAll('#msg-overlay > .turn-card').length < 2; attempt += 1) {
       await wait(100);
     }

@@ -18,9 +18,16 @@ test('Claude official lifecycle hooks reach the renderer with bounded evidence',
   for (const eventName of ['StopFailure', 'PermissionRequest', 'Notification']) {
     assert.match(hookIntegration, new RegExp(`\\['${eventName}'`), `${eventName} must be managed`);
   }
-  for (const field of ['backgroundTasks', 'sessionCrons', 'errorDetails', 'notificationType', 'toolName']) {
+  for (const field of ['backgroundTasks', 'sessionCrons', 'errorDetails', 'notificationType', 'toolName', 'agentId']) {
     assert.match(main, new RegExp(`${field}:`), `main hook bridge must forward ${field}`);
   }
+  assert.match(main, /const isSubagentContext = !!parsed\.agentId/);
+  assert.match(main, /ignored foreign \$\{event\}/,
+    'main hook server must reject inherited-env events from another native Claude session');
+  assert.match(main, /initialTranscriptBucketMismatch[\s\S]{0,500}projectSlug\(hookTargetSession\.cwd\)/,
+    'an unbound session must reject a first hook from another Claude project bucket');
+  assert.match(main, /!isSubagentContext && \(parsed\.claudeSessionId \|\| parsed\.transcriptPath\)/,
+    'subagent hooks must never replace the parent transcript binding');
   assert.match(renderer, /event === 'stop-failure'\)[\s\S]{0,160}onClaudeStopFailure/);
   assert.match(renderer, /event === 'permission-request'\)[\s\S]{0,180}onClaudeNeedsInput/);
   assert.match(renderer, /event === 'notification'\)[\s\S]{0,180}onClaudeNotification/);
@@ -32,6 +39,8 @@ test('Claude official lifecycle hooks reach the renderer with bounded evidence',
 test('Codex, Claude and PTY producers all publish RuntimeTruth observations', () => {
   assert.match(renderer, /claude-user-prompt-submit/);
   assert.match(renderer, /claude-stop/);
+  assert.match(renderer, /source: 'claude-transcript-complete'/,
+    'Claude transcript terminal events must independently close runtime state');
   assert.match(renderer, /-turn-complete/);
   assert.match(renderer, /codex-turn-aborted/);
   assert.match(renderer, /pty-byte-burst/);

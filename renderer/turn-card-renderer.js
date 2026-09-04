@@ -6,6 +6,10 @@ const {
   guardMarkdownMath,
   restoreMarkdownMath,
 } = require('./markdown-math-guard.js');
+const {
+  buildTurnPresentation,
+  normalizeToolActivity,
+} = require('../core/turn-presentation.js');
 
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
@@ -26,7 +30,35 @@ function createTurnCardRenderer(options = {}) {
   const escapeHtml = options.escapeHtml;
   const wrapPathLinksInElement = options.wrapPathLinksInElement;
   const getActiveSessionId = typeof options.getActiveSessionId === 'function' ? options.getActiveSessionId : () => null;
+  const getSessionContext = typeof options.getSessionContext === 'function' ? options.getSessionContext : () => null;
+  const onTurnPresentation = typeof options.onTurnPresentation === 'function' ? options.onTurnPresentation : null;
   const updateStreamingIndicator = typeof options.updateStreamingIndicator === 'function' ? options.updateStreamingIndicator : null;
+
+  function prepareTurnForRender(sessionId, turn, opts = {}) {
+    if (!turn || turn.role !== 'assistant') return turn;
+    const session = opts.session || getSessionContext(sessionId) || null;
+    let toolCalls = Array.isArray(turn.toolCalls) ? turn.toolCalls : [];
+    const live = session && Array.isArray(session.liveToolActivities) ? session.liveToolActivities : [];
+    if (live.length && session.livePresentationCardId === turn.id) {
+      const merged = new Map();
+      for (const tool of toolCalls.concat(live)) {
+        const key = String(tool && (tool.id || tool.toolCallId || tool.callId) || `tool-${merged.size}`);
+        merged.set(key, { ...(merged.get(key) || {}), ...tool });
+      }
+      toolCalls = Array.from(merged.values());
+    }
+    const presentationTurn = toolCalls === turn.toolCalls ? turn : { ...turn, toolCalls };
+    const presentation = buildTurnPresentation(presentationTurn, {
+      cwd: session && session.cwd || opts.cwd || null,
+    });
+    return { ...presentationTurn, presentation };
+  }
+
+  function publishTurnPresentation(sessionId, turn) {
+    if (!onTurnPresentation || !turn || turn.role !== 'assistant') return;
+    try { onTurnPresentation(sessionId, turn.presentation || null, turn); }
+    catch (error) { console.warn('[turn-card] onTurnPresentation failed:', error && error.message); }
+  }
 
   function renderMarkdownPreservingLocalPaths(text) {
     const mathGuard = guardMarkdownMath(normalizeMarkdownPathBreaks(text));
@@ -65,23 +97,34 @@ function _toolCmdFromInput(input) {
 // >2KB 默认折叠（CSS max-height + 渐变遮罩，点"展开全部"放开）。
 // 超大异常防御：>50KB 硬截断（防 MCP 返回 几百 KB 把 DOM 撑爆）。
 const _TOOL_RESULT_HARD_LIMIT = 50000;
-function _renderToolRow(tc) {
-  const name = escapeHtml((tc && tc.name) || '?');
-  const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
-  const head = `<span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}`;
-  const hasResult = tc && typeof tc.result === 'string' && tc.result.length > 0;
-  if (!hasResult) {
-    return `<div class="tc-row">${head}</div>`;
-  }
-  const isErr = tc.isError === true;
-  const rawLen = tc.result.length;
+function _activityStatusHtml(activity) {
+  const labels = {
+    pending: '等待', running: '进行中', completed: '完成', failed: '失败', cancelled: '取消',
+  };
+  const status = labels[activity.status] ? activity.status : 'pending';
+  return `<span class="turn-activity-status ${status}" data-activity-status="${status}">${labels[status]}</span>`;
+}
+
+function _renderToolRow(tc, index = 0) {
+  const activity = tc && tc.title ? tc : normalizeToolActivity(tc || {}, index);
+  const name = escapeHtml(activity.name || '?');
+  const cmd = escapeHtml(activity.detail || _toolCmdFromInput(activity.input));
+  const duration = activity.durationMs !== null && activity.durationMs !== undefined && Number.isFinite(Number(activity.durationMs))
+    ? `<span class="turn-activity-duration">${escapeHtml(_fmtDuration(Number(activity.durationMs)))}</span>`
+    : '';
+  const head = `<span class="turn-activity-kind kind-${escapeHtml(activity.kind || 'other')}" aria-hidden="true"></span><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}<span class="turn-activity-row-meta">${duration}${_activityStatusHtml(activity)}</span>`;
+  const hasResult = typeof activity.result === 'string' && activity.result.length > 0;
+  const activityAttrs = ` data-activity-id="${escapeHtml(activity.id || `activity-${index}`)}" data-activity-kind="${escapeHtml(activity.kind || 'other')}"`;
+  if (!hasResult) return `<div class="tc-row turn-activity-item"${activityAttrs}>${head}</div>`;
+  const isErr = activity.status === 'failed' || activity.isError === true;
+  const rawLen = activity.result.length;
   const truncated = rawLen > _TOOL_RESULT_HARD_LIMIT;
   const body = truncated
-    ? tc.result.slice(0, _TOOL_RESULT_HARD_LIMIT) + '\n\n…(超长截断，剩余 ' + (rawLen - _TOOL_RESULT_HARD_LIMIT) + ' 字符；点复制可拿到截断后的内容)'
-    : tc.result;
+    ? activity.result.slice(0, _TOOL_RESULT_HARD_LIMIT) + '\n\n…(超长截断，剩余 ' + (rawLen - _TOOL_RESULT_HARD_LIMIT) + ' 字符；点复制可拿到截断后的内容)'
+    : activity.result;
   const sizeText = rawLen >= 1024 ? (rawLen / 1024).toFixed(1) + ' KB' : rawLen + ' B';
   const errBadge = isErr ? '<span class="tc-row-errbadge">✗ 错误</span>' : '';
-  return `<details class="tc-row tc-row-with-result${isErr ? ' tc-row-err' : ''}" data-tool-result-len="${rawLen}">
+  return `<details class="tc-row tc-row-with-result turn-activity-item${isErr ? ' tc-row-err' : ''}" data-tool-result-len="${rawLen}"${activityAttrs}>
     <summary class="tc-row-head">${head}${errBadge}<span class="tc-row-actions"><button class="tc-row-preview-btn" data-action="tc-toggle-preview" type="button" title="预览工具返回">👁 预览</button></span></summary>
     <div class="tc-result-wrap">
       <div class="tc-result-toolbar">
@@ -95,53 +138,219 @@ function _renderToolRow(tc) {
 
 function renderToolCluster(turnId, toolCalls) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
-  const total = toolCalls.length;
-  // Spec 3 · W1：单 tool 时简化 summary 为 `▸ Bash command-snippet`
-  // 不再写"1 个工具调用 · X"（D3 数据：5196 个 entry 中 55% 是 1-tool，原措辞冗余且填屏）
-  if (total === 1) {
-    const tc = toolCalls[0] || {};
-    const name = escapeHtml(tc.name || '?');
-    const cmd = escapeHtml(_toolCmdFromInput(tc.input));
-    return `<details class="tc-cluster tc-cluster-single" data-turn="${escapeHtml(turnId)}">
-      <summary class="tc-cluster-head"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</summary>
-      <div class="tc-cluster-list">${_renderToolRow(tc)}</div>
-    </details>`;
-  }
+  const activities = toolCalls.map((tool, index) => normalizeToolActivity(tool, index));
   const counts = {};
-  for (const tc of toolCalls) {
-    const name = (tc && tc.name) || '?';
-    counts[name] = (counts[name] || 0) + 1;
-  }
-  const breakdown = Object.entries(counts)
-    .map(([n, c]) => c > 1 ? `${n} × ${c}` : n)
-    .join(' + ');
-  const items = toolCalls.map(_renderToolRow).join('');
-  return `<details class="tc-cluster" data-turn="${escapeHtml(turnId)}">
-    <summary class="tc-cluster-head">${total} 个工具调用 · ${escapeHtml(breakdown)}</summary>
+  for (const activity of activities) counts[activity.status] = (counts[activity.status] || 0) + 1;
+  const breakdown = [
+    counts.running ? `${counts.running} 进行中` : '',
+    counts.pending ? `${counts.pending} 等待` : '',
+    counts.completed ? `${counts.completed} 完成` : '',
+    counts.failed ? `${counts.failed} 失败` : '',
+    counts.cancelled ? `${counts.cancelled} 取消` : '',
+  ].filter(Boolean).join(' · ');
+  const items = activities.map(_renderToolRow).join('');
+  const hasLive = !!(counts.running || counts.pending);
+  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}"${hasLive ? ' open' : ''}>
+    <summary class="tc-cluster-head"><span class="turn-activity-title">活动 ${activities.length}</span><span class="turn-activity-breakdown">${escapeHtml(breakdown)}</span></summary>
     <div class="tc-cluster-list">${items}</div>
   </details>`;
 }
 
+function _deliveryStatusLabel(status) {
+  return { completed: '通过', failed: '失败', running: '运行中', pending: '待确认', cancelled: '已取消', unknown: '已运行 · 未判定' }[status] || '待确认';
+}
+
+function _deliveryStatusIcon(status) {
+  return { completed: '✓', failed: '×', running: '↻', pending: '·', cancelled: '—', unknown: '?' }[status] || '?';
+}
+
+function renderDeliverySummary(delivery) {
+  if (!delivery || !delivery.hasContent) return '';
+  const files = Array.isArray(delivery.changedFiles) ? delivery.changedFiles : [];
+  const checks = Array.isArray(delivery.checks) ? delivery.checks : [];
+  const artifacts = Array.isArray(delivery.artifacts) ? delivery.artifacts : [];
+  const metrics = [];
+  if (files.length) metrics.push(`${files.length} 个变更文件`);
+  if (checks.length) metrics.push(`${checks.length} 项验证`);
+  if (artifacts.length) metrics.push(`${artifacts.length} 个产物`);
+  const fileItems = files.map(item => `<li class="turn-delivery-file"><span class="turn-delivery-icon">Δ</span><a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">${escapeHtml(item.path)}</a></li>`).join('');
+  const checkItems = checks.map(item => `<li class="turn-delivery-check status-${escapeHtml(item.status)}"><span class="turn-delivery-icon">${escapeHtml(_deliveryStatusIcon(item.status))}</span><span>${escapeHtml(item.command)}</span><em>${escapeHtml(_deliveryStatusLabel(item.status))}${item.exitCode !== null ? ` · exit ${escapeHtml(item.exitCode)}` : ''}</em></li>`).join('');
+  const artifactItems = artifacts.map(item => `<li class="turn-delivery-artifact"><span class="turn-delivery-icon">↗</span><a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">${escapeHtml(item.name || item.path)}</a><em>${escapeHtml(item.kind || '')}</em></li>`).join('');
+  return `<details class="turn-delivery-summary" data-summary-source="${escapeHtml(delivery.source || 'deterministic')}" open>
+    <summary><span>交付结果</span><small>${escapeHtml(metrics.join(' · '))}</small><span class="turn-delivery-no-ai">零额外 AI 调用</span></summary>
+    <div class="turn-delivery-body">
+      ${files.length ? `<section><strong>变更</strong><ul>${fileItems}</ul></section>` : ''}
+      ${checks.length ? `<section><strong>验证</strong><ul>${checkItems}</ul></section>` : ''}
+      ${artifacts.length ? `<section><strong>产物</strong><ul>${artifactItems}</ul></section>` : ''}
+    </div>
+  </details>`;
+}
+
+function _disclosureKey(element, index) {
+  if (!element) return `details:${index}`;
+  if (element.dataset && element.dataset.activityId) return `activity:${element.dataset.activityId}`;
+  if (element.classList && element.classList.contains('turn-thinking')) return 'thinking';
+  if (element.classList && element.classList.contains('turn-delivery-summary')) return 'delivery';
+  if (element.classList && element.classList.contains('tc-cluster')) return `cluster:${element.dataset.turn || ''}`;
+  return `details:${index}:${element.className || ''}`;
+}
+
+function _captureCardUiState(card) {
+  const disclosures = new Map();
+  Array.from(card.querySelectorAll('details')).forEach((element, index) => {
+    disclosures.set(_disclosureKey(element, index), !!element.open);
+  });
+  const selectionApi = typeof win.getSelection === 'function' ? win.getSelection() : null;
+  let selection = null;
+  try {
+    if (selectionApi && selectionApi.rangeCount > 0) {
+      const range = selectionApi.getRangeAt(0);
+      const body = card.querySelector('.turn-body');
+      if (body && body.contains(range.commonAncestorContainer)) {
+        const beforeStart = doc.createRange();
+        beforeStart.selectNodeContents(body);
+        beforeStart.setEnd(range.startContainer, range.startOffset);
+        const beforeEnd = doc.createRange();
+        beforeEnd.selectNodeContents(body);
+        beforeEnd.setEnd(range.endContainer, range.endOffset);
+        selection = {
+          start: beforeStart.toString().length,
+          end: beforeEnd.toString().length,
+          text: selectionApi.toString(),
+        };
+      }
+    }
+  } catch {}
+  const parent = card.parentElement;
+  return {
+    disclosures,
+    selection,
+    parent,
+    parentScrollTop: parent ? parent.scrollTop : 0,
+    parentBottomGap: parent ? Math.max(0, parent.scrollHeight - parent.scrollTop - parent.clientHeight) : 0,
+  };
+}
+
+function _restoreCardSelection(card, snapshot) {
+  if (!snapshot || !snapshot.selection || typeof doc.createTreeWalker !== 'function') return false;
+  const body = card.querySelector('.turn-body');
+  const selectionApi = typeof win.getSelection === 'function' ? win.getSelection() : null;
+  if (!body || !selectionApi) return false;
+  const wantedStart = snapshot.selection.start;
+  const wantedEnd = snapshot.selection.end;
+  let cursor = 0;
+  let startNode = null;
+  let endNode = null;
+  let startOffset = 0;
+  let endOffset = 0;
+  try {
+    const showText = win.NodeFilter ? win.NodeFilter.SHOW_TEXT : 4;
+    const walker = doc.createTreeWalker(body, showText);
+    let node;
+    while ((node = walker.nextNode())) {
+      const length = node.textContent.length;
+      if (!startNode && wantedStart <= cursor + length) {
+        startNode = node;
+        startOffset = Math.max(0, Math.min(length, wantedStart - cursor));
+      }
+      if (!endNode && wantedEnd <= cursor + length) {
+        endNode = node;
+        endOffset = Math.max(0, Math.min(length, wantedEnd - cursor));
+        break;
+      }
+      cursor += length;
+    }
+    if (!startNode) return false;
+    if (!endNode) { endNode = startNode; endOffset = startOffset; }
+    const range = doc.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    selectionApi.removeAllRanges();
+    selectionApi.addRange(range);
+    return selectionApi.toString() === body.textContent.slice(wantedStart, wantedEnd);
+  } catch {}
+  return false;
+}
+
+function _restoreCardUiState(card, snapshot) {
+  if (!snapshot) return;
+  Array.from(card.querySelectorAll('details')).forEach((element, index) => {
+    const key = _disclosureKey(element, index);
+    if (snapshot.disclosures.has(key)) element.open = snapshot.disclosures.get(key);
+  });
+  const selectionRestored = _restoreCardSelection(card, snapshot);
+  if (snapshot.selection) {
+    const raf = typeof win.requestAnimationFrame === 'function'
+      ? win.requestAnimationFrame.bind(win)
+      : (callback) => setTimeout(callback, 0);
+    const restoreIfStillOurs = () => {
+      if (!card.isConnected) return;
+      const current = typeof win.getSelection === 'function' ? win.getSelection().toString() : '';
+      // Never clobber a new user selection made after the patch. Re-apply only
+      // when a later renderer/layout pass cleared the selection we restored.
+      if (!current || current === snapshot.selection.text) _restoreCardSelection(card, snapshot);
+    };
+    raf(() => {
+      restoreIfStillOurs();
+      raf(restoreIfStillOurs);
+    });
+  }
+  const parent = snapshot.parent;
+  if (parent && card.parentElement === parent) {
+    if (snapshot.parentBottomGap < 50) parent.scrollTop = parent.scrollHeight;
+    else parent.scrollTop = snapshot.parentScrollTop;
+  }
+  return selectionRestored;
+}
+
+function _postProcessTurnCard(card, sessionId) {
+  if (!card) return;
+  if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(card);
+  if (typeof postProcessToolResults === 'function') postProcessToolResults(card);
+  const bodyEl = card.querySelector('.turn-body');
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId });
+  postProcessCardMath(card);
+  if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(card);
+}
+
+function patchTurnCardInPlace(existing, newCard, sessionId) {
+  if (!existing || !newCard || typeof existing.replaceChildren !== 'function') return null;
+  const snapshot = _captureCardUiState(existing);
+  const priorSessionId = existing.dataset.sessionId || String(sessionId || '');
+  const patchCount = Number(existing.dataset.patchCount || 0) + 1;
+  for (const attribute of Array.from(existing.attributes || [])) {
+    if (attribute.name !== 'data-session-id') existing.removeAttribute(attribute.name);
+  }
+  for (const attribute of Array.from(newCard.attributes || [])) {
+    existing.setAttribute(attribute.name, attribute.value);
+  }
+  existing.dataset.sessionId = priorSessionId;
+  existing.dataset.patchCount = String(patchCount);
+  existing.dataset.renderMode = 'in-place';
+  existing.replaceChildren(...Array.from(newCard.childNodes));
+  _postProcessTurnCard(existing, sessionId);
+  const selectionRestored = _restoreCardUiState(existing, snapshot);
+  if (!win.__cardRenderMetrics) win.__cardRenderMetrics = { inPlacePatches: 0, rootReplacements: 0 };
+  win.__cardRenderMetrics.inPlacePatches += 1;
+  win.__cardRenderMetrics.lastSelection = {
+    captured: snapshot.selection,
+    restored: selectionRestored,
+    text: typeof win.getSelection === 'function' ? win.getSelection().toString() : '',
+  };
+  return existing;
+}
+
 function rerenderTurn(turnId) {
-  // 重渲染整张 turn 卡片 + 调 postProcessCardCodeBlocks 保留代码块交互
   const card = doc.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
   if (!card || !win._sessionTurns) return;
-  const turn = win._sessionTurns.get(turnId);
+  const turn = prepareTurnForRender(card.dataset.sessionId || getActiveSessionId(), win._sessionTurns.get(turnId));
   if (!turn) return;
   const tmp = doc.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
   const newCard = tmp.firstElementChild;
   if (newCard) {
-    if (typeof postProcessCardCodeBlocks === 'function') {
-      postProcessCardCodeBlocks(newCard);
-    }
-    if (typeof postProcessToolResults === 'function') postProcessToolResults(newCard);
-    const bodyEl = newCard.querySelector('.turn-body');
-    if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: card.dataset.sessionId });
-    card.replaceWith(newCard);
-    postProcessCardMath(newCard);
-    // Spec 3 长文本折叠：必须在 DOM 内调（replaceWith 之后），否则 scrollHeight=0
-    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
+    patchTurnCardInPlace(card, newCard, card.dataset.sessionId || getActiveSessionId());
+    publishTurnPresentation(card.dataset.sessionId || getActiveSessionId(), turn);
   }
 }
 
@@ -165,7 +374,7 @@ function aiLetterFallback(kind) {
 }
 
 // === Spec 3 · W7 头部 metadata pills ===
-// 给卡片头加 4 个信息 pill：🔧 工具数 / ⇡in/⇣out token / 📊 ctx% / ⏱ 耗时（user 卡片仅 📝 字数）
+// 工具数已经进入活动轨；这里只保留 token / context / duration（user 卡片仅字数）。
 // model context window 用模糊匹配（实际 model id 多变如 "claude-opus-4-7[1m]"），匹配不到默认 200k。
 function _modelCtxWindow(model) {
   if (!model) return 200000;
@@ -196,8 +405,8 @@ function _renderMetaPills(turn) {
     return `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
   }
   const pills = [];
-  const toolN = (turn.toolCalls && turn.toolCalls.length) || 0;
-  if (toolN > 0) pills.push(`<span class="pill pill-tool">🔧 ${toolN} 工具</span>`);
+  // Activity count moved into the richer lifecycle rail. Keeping the legacy
+  // tool pill would repeat the same number immediately below the rail.
   if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
     pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
   }
@@ -235,8 +444,10 @@ function renderTurnCard(turn) {
   }
 
   const body = renderMarkdownPreservingLocalPaths(turn.text);
-  // Spec 3 方案 E：工具簇折叠（之前每 tool 单独大块 → 信息密度极低）
-  const toolHtml = renderToolCluster(turn.id || '', turn.toolCalls);
+  const presentation = turn.presentation || buildTurnPresentation(turn);
+  // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
+  const toolHtml = renderToolCluster(turn.id || '', presentation.activities);
+  const deliveryHtml = !isUser ? renderDeliverySummary(presentation.delivery) : '';
 
   // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
   // S1 parser exposes turn.thinking as multi-block joined string (or null).
@@ -257,7 +468,7 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
@@ -275,7 +486,8 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body">${body}</div>
+      <div class="turn-body${turn.text ? '' : ' turn-body-empty'}">${body}</div>
+      ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}
     </div>
@@ -519,17 +731,13 @@ doc.addEventListener('click', (e) => {
 });
 
 function mountTurnCard(container, turn) {
+  turn = prepareTurnForRender(getActiveSessionId(), turn);
   const tmp = doc.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
   const cardEl = tmp.firstElementChild;
-  postProcessCardCodeBlocks(cardEl);
-  postProcessToolResults(cardEl);
-  // 路径识别 (T7 风险条款: 卡片内 .md / URL 必须可点击触发预览)
-  const bodyEl = cardEl.querySelector('.turn-body');
-  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: getActiveSessionId() });
   container.appendChild(cardEl);
-  postProcessCardMath(cardEl);
-  postProcessLongTextFold(cardEl);
+  _postProcessTurnCard(cardEl, getActiveSessionId());
+  publishTurnPresentation(getActiveSessionId(), turn);
   return cardEl;
 }
 win._mountTurnCard = mountTurnCard;
@@ -661,6 +869,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     console.warn('[mountSessionTurnCard] invalid turn (missing id/role):', turn);
     return null;
   }
+  turn = prepareTurnForRender(sessionId, turn, opts);
   // 2. resolve container
   const container = opts.container || doc.getElementById('msg-overlay');
   if (!container) {
@@ -707,11 +916,11 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     });
   }
 
-  // dedup with in-place replace：同 turnId 已在 DOM 时，不是 skip 而是替换。
+  // dedup with in-place patch：同 turnId 已在 DOM 时，不是 skip，而是在同一根节点内更新。
   // 原因：W5 后一个 logical turn 包含多个 raw entries，streaming 新 entry 合并进来时
   // turn.id 不变（取首条 entry uuid）但内容已变（toolCalls 多了 / text 长了 / tsEnd 变 /
   // mergedCount 增加）。skip 会让用户看不到新工具调用；replace 让卡片 in-place 更新。
-  // 副作用：替换瞬间该卡片如有 hover 操作菜单会闪一下，可接受。
+  // 这样展开态、选区、滚动意图与绑定在根节点上的 UI 状态都能保留。
   const existing = container.querySelector(`.turn-card[data-turn-id="${cssEscape(turn.id)}"]`);
   if (existing) {
     const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
@@ -721,6 +930,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     if (prevSig === nextSig) {
       win._sessionTurns.set(turn.id, turnForRender2);
       _turnRenderSigs.set(turn.id, nextSig);
+      publishTurnPresentation(sessionId, turnForRender2);
       if (typeof updateStreamingIndicator === 'function') updateStreamingIndicator(sessionId);
       return existing;
     }
@@ -734,17 +944,12 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
       return null;
     }
     if (!newCard) return null;
-    newCard.dataset.sessionId = String(sessionId || '');
-    existing.replaceWith(newCard);
-    if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(newCard);
-    if (typeof postProcessToolResults === 'function') postProcessToolResults(newCard);
-    const bodyEl2 = newCard.querySelector('.turn-body');
-    if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
-    postProcessCardMath(newCard);
-    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
+    const patchedCard = patchTurnCardInPlace(existing, newCard, sessionId);
+    if (!patchedCard) return null;
     win._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
     _turnRenderSigs.set(turn.id, nextSig);
-    return newCard;
+    publishTurnPresentation(sessionId, turnForRender2);
+    return patchedCard;
   }
 
   // 3. merge kind through to renderTurnCard without mutating caller's turn
@@ -783,29 +988,15 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     container.appendChild(cardEl);
   }
 
-  // 6. post-process code blocks (Prism + Copy + folding)
-  if (typeof postProcessCardCodeBlocks === 'function') {
-    postProcessCardCodeBlocks(cardEl);
-  }
-  // 6b. Spec 4 · 工具返回预览（JSON 高亮 + 长内容折叠 + 复制按钮事件）
-  if (typeof postProcessToolResults === 'function') {
-    postProcessToolResults(cardEl);
-  }
-  // 7. path link recognition (scoped to .turn-body to avoid touching meta/actions)
-  const bodyEl = cardEl.querySelector('.turn-body');
-  if (bodyEl && typeof wrapPathLinksInElement === 'function') {
-    wrapPathLinksInElement(bodyEl, { sessionId });
-  }
-  postProcessCardMath(cardEl);
-  // 7b. Spec 3 · 长文本默认折叠（必须在 DOM 插入后调，否则 scrollHeight=0）
-  if (typeof postProcessLongTextFold === 'function') {
-    postProcessLongTextFold(cardEl);
-  }
+  // 6-7. Shared post processing. Keeping this in one function ensures new
+  // cards and in-place streaming patches receive identical behavior.
+  _postProcessTurnCard(cardEl, sessionId);
 
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
   win._sessionTurns.set(turn.id, turnForRender);
   _turnRenderSigs.set(turn.id, turnRenderSignature(turnForRender));
+  publishTurnPresentation(sessionId, turnForRender);
 
   // 9. autoScroll — 2026-05-06 道雪 scroll-respect-user:仅当用户原本在底部时才滚
   //   (向上翻历史时不打断,避免被新 turn 拍回底部)

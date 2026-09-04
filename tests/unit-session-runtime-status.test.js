@@ -39,6 +39,19 @@ test('Codex running state exposes a visible elapsed clock and PTY evidence', () 
   assert.match(result.title, /esc to interrupt/);
 });
 
+test('active structured tool detail is visible instead of hiding in the title tooltip', () => {
+  const now = Date.now();
+  const result = deriveSessionRuntimeStatus({
+    kind: 'codex',
+    status: 'running',
+    runStartedAt: now - 2500,
+    currentCardActivity: { label: '执行 · CommandExecution：npm test', status: 'running' },
+  }, { now });
+  assert.equal(result.state, 'running');
+  assert.equal(result.visibleDetail, '执行 · CommandExecution：npm test');
+  assert.match(result.title, /npm test/);
+});
+
 test('waiting for input wins over a stale running flag', () => {
   const result = deriveSessionRuntimeStatus({
     kind: 'codex',

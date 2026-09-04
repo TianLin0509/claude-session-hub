@@ -14,8 +14,11 @@ const {
 const { isSyntheticUserEntry, isSyntheticUserText, displayUserText } = require('./synthetic-user-filter.js');
 const {
   codexAgentMessageEventFromRecord,
+  codexToolActivityEventFromRecord,
   codexUserMessageEventFromRecord,
+  normalizeCodexItemType,
 } = require('./transcript-payload-utils.js');
+const { activityDetail, activityKind } = require('./turn-presentation.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -333,6 +336,7 @@ function parseCodexRolloutEntries(entries) {
         finalText: '',
         durationMs: null,
         agentMessages: [],
+        toolCalls: [],
       };
     }
     return pendingAssistant;
@@ -341,7 +345,14 @@ function parseCodexRolloutEntries(entries) {
   const flushAssistant = () => {
     if (!pendingAssistant) return;
     const text = (pendingAssistant.finalText || pendingAssistant.agentMessages.join('\n\n') || '').trim();
-    if (text) {
+    if (text || pendingAssistant.toolCalls.length) {
+      if (pendingAssistant.finalText) {
+        pendingAssistant.toolCalls = pendingAssistant.toolCalls.map(tool => (
+          tool.status === 'running' || tool.status === 'pending'
+            ? { ...tool, status: 'completed', inferred: true }
+            : tool
+        ));
+      }
       turns.push({
         id: pendingAssistant.id || `codex-assistant-${turns.length}`,
         role: 'assistant',
@@ -350,13 +361,67 @@ function parseCodexRolloutEntries(entries) {
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
         stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
         durationMs: pendingAssistant.durationMs || undefined,
+        toolCalls: pendingAssistant.toolCalls,
         source: pendingAssistant.finalText ? 'codex_rollout' : 'codex_rollout_streaming',
       });
     }
     pendingAssistant = null;
   };
 
+  const upsertTool = (pending, event) => {
+    if (!pending || !event) return;
+    const eventDetail = activityDetail(event.name, event.input);
+    let index = pending.toolCalls.findIndex(tool => (
+      (event.callId && (tool.callId === event.callId || tool.id === event.callId))
+      || (event.id && tool.id === event.id)
+    ));
+    if (index < 0 && event.status !== 'running') {
+      const sameKindCandidates = [];
+      for (let i = pending.toolCalls.length - 1; i >= 0; i--) {
+        const candidate = pending.toolCalls[i];
+        if (!['running', 'pending'].includes(candidate.status)) continue;
+        const candidateDetail = activityDetail(candidate.name, candidate.input);
+        if ((eventDetail && candidateDetail === eventDetail)
+            || (!eventDetail && normalizeCodexItemType(candidate.name) === normalizeCodexItemType(event.name))) {
+          index = i;
+          break;
+        }
+        if (activityKind(candidate.name, candidate.input) === activityKind(event.name, event.input)) {
+          sameKindCandidates.push(i);
+        }
+      }
+      // Unified exec records use different ids/names for the request and the
+      // eventual CommandExecution item. When exactly one same-kind call is in
+      // flight, it is the only safe correlation candidate.
+      if (index < 0 && sameKindCandidates.length === 1) index = sameKindCandidates[0];
+    }
+    if (index >= 0) {
+      const previous = pending.toolCalls[index];
+      pending.toolCalls[index] = {
+        ...previous,
+        ...event,
+        id: previous.id || event.id,
+        callId: previous.callId || event.callId || null,
+        name: event.name && event.name !== 'Tool' ? event.name : previous.name,
+        input: event.input && (typeof event.input !== 'object' || Object.keys(event.input).length)
+          ? event.input
+          : previous.input,
+      };
+      return;
+    }
+    pending.toolCalls.push(event);
+  };
+
   entries.forEach(({ obj, index }, entryIndex) => {
+    const toolEvent = codexToolActivityEventFromRecord(obj, index);
+    if (toolEvent) {
+      const pending = ensurePendingAssistant();
+      pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
+      pending.ts = pending.ts || toolEvent.startedAt || toMs(obj.timestamp);
+      pending.tsEnd = toolEvent.completedAt || toMs(obj.timestamp) || pending.tsEnd;
+      upsertTool(pending, toolEvent);
+      return;
+    }
     if (obj.type === 'event_msg') {
       const payload = obj.payload || {};
       const eventType = payload.type;
@@ -457,6 +522,7 @@ function scanSemanticEntries(jsonlPath, opts = {}) {
     entries.push({ obj, index });
   }, {
     profile: 'turns',
+    maxPrefixBytes: 256 * 1024,
     startOffset: opts.startOffset || 0,
     startLineIndex: opts.startLineIndex || 0,
   });

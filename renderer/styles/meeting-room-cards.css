@@ -863,3 +863,44 @@ body.mr-card-compare-on .mr-ft.compare-selected:hover {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+/* Shared activity semantics with ordinary session cards. Group cards keep the
+   compact chip layout but no longer hide whether a tool is running or done. */
+.mr-ft-tool {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 3px 7px;
+  border: 1px solid rgba(var(--rgb-info), .26);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  background: rgba(var(--rgb-info), .07);
+  font: 600 10.5px/1.35 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.mr-ft-tool > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mr-ft-tool > em { color: var(--mark-amber-soft); font: 650 9px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif; white-space: nowrap; }
+.mr-ft-tool.activity-completed > em { color: var(--mark-green); }
+.mr-ft-tool.activity-failed > em { color: var(--mark-red); }
+
+.mr-ft-delivery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(var(--rgb-info), .2);
+  font-size: 10.5px;
+}
+.mr-ft-delivery strong { color: var(--text-secondary); }
+.mr-ft-delivery a.rt-file-link {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--link);
+  text-decoration: none;
+}
+.mr-ft-delivery a.rt-file-link:hover { text-decoration: underline; }

@@ -86,7 +86,12 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   } else if (state === RUNTIME_STARTING || state === RUNTIME_RUNNING) {
     const startedAt = Number(truth.startedAt) || legacyRunningStartedAt(session);
     if (startedAt > 0 && now >= startedAt) meta = formatRuntimeDuration(now - startedAt);
-    detail = String(truth.evidence || session && session._ptyRuntimeEvidence || '').trim();
+    detail = String(
+      session && session.currentCardActivity && session.currentCardActivity.label
+      || truth.evidence
+      || session && session._ptyRuntimeEvidence
+      || '',
+    ).trim();
   } else if (state === RUNTIME_COMPLETED) {
     const completedAt = Number(truth.completedAt) || Number(session && session.lastCompletedAt) || 0;
     meta = formatCompletionAge(completedAt, now);
@@ -99,6 +104,9 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   }
 
   const visibleText = meta ? `${label} · ${meta}` : label;
+  const visibleDetail = [RUNTIME_STARTING, RUNTIME_RUNNING, RUNTIME_WAITING, RUNTIME_FAILED, RUNTIME_UNKNOWN].includes(state)
+    ? detail.replace(/\s+/g, ' ').slice(0, 180)
+    : '';
   const ariaLabel = `${provider} ${label}`;
   const titleParts = [ariaLabel];
   if (meta) titleParts.push(meta);
@@ -115,6 +123,7 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     label,
     meta,
     detail,
+    visibleDetail,
     provider,
     source: truth.source,
     confidence: truth.confidence,

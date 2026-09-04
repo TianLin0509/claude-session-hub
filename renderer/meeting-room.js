@@ -10,6 +10,7 @@ if (typeof document !== 'undefined') (function () {
   const { extractVisibleCardText } = require('./visible-card-text.js');
   const { formatBeijingClock } = require('../core/beijing-time.js');
   const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
+  const { buildTurnPresentation, normalizeToolActivity } = require('../core/turn-presentation.js');
   const {
     guardMarkdownLocalPaths,
     restoreMarkdownLocalPaths,
@@ -665,13 +666,36 @@ if (typeof document !== 'undefined') (function () {
         html.push(`<div class="mr-ft-think">${escapeHtml(raw)}</div>`);
       } else if (block.type === 'tool_use') {
         const summary = _formatToolUseBlock(block);
-        html.push(`<span class="mr-ft-tool">${escapeHtml(summary)}</span>`);
+        const activity = normalizeToolActivity({
+          id: block.id || block.tool_use_id,
+          name: block.name,
+          input: block.input,
+          status: block.status || 'running',
+        });
+        const statusLabel = activity.status === 'failed' ? '失败'
+          : activity.status === 'completed' ? '完成'
+            : activity.status === 'pending' ? '等待' : '进行中';
+        html.push(`<span class="mr-ft-tool activity-${escapeHtml(activity.status)}"><span>${escapeHtml(summary)}</span><em>${statusLabel}</em></span>`);
       } else if (block.type === 'text') {
         const raw = String(block.text || '');
         html.push(`<div class="mr-ft-md">${_renderMarkdown(raw)}</div>`);
       }
     }
     return html.join('');
+  }
+
+  function _renderGroupDelivery(text, cwd) {
+    if (!text) return '';
+    const presentation = buildTurnPresentation({
+      role: 'assistant',
+      text,
+      stopReason: 'end_turn',
+      toolCalls: [],
+    }, { cwd });
+    const artifacts = presentation.delivery.artifacts || [];
+    if (!artifacts.length) return '';
+    const items = artifacts.map(item => `<a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">↗ ${escapeHtml(item.name)}</a>`).join('');
+    return `<div class="mr-ft-delivery" data-summary-source="deterministic"><strong>交付产物</strong>${items}</div>`;
   }
 
   // 注：顶部 scene toggle（群聊/投研）的 _renderModeToggle/_bindModeToggle 已删除
@@ -1368,7 +1392,10 @@ if (typeof document !== 'undefined') (function () {
       } else {
         inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }], sub.sid);
       }
-      bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
+      const deliveryHtml = (status === 'completed' || status === 'manual_extracted')
+        ? _renderGroupDelivery(textFromPartial || textFromHistory || '', s && s.cwd)
+        : '';
+      bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}${deliveryHtml}</div>`;
     } else {
       bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
     }

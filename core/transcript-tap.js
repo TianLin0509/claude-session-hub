@@ -10,7 +10,7 @@
 //   Gemini:  ~/.gemini/tmp/<dir>/chats/session-*.jsonl    行 type:"gemini" 带 tokens 字段
 //
 // 完成信号：
-//   Claude:  Stop hook 触发（main.js /api/hook/stop 路由调 notifyClaudeStop）
+//   Claude:  transcript stop_reason 主路径 + Stop hook 快路径
 //   Codex:   legacy task_complete or 0.147 AgentMessage(final_answer)
 //   Gemini:  JSONL 新增 type:"gemini" 行且 tokens.total != null（非流式中间态）
 //
@@ -52,18 +52,18 @@ const { KimiTap } = require('./kimi-transcript-tap.js');
 // - onLine 回调异常会记录并丢弃该行，单行失败不影响后续 tail
 
 // ---------------------------------------------------------------------------
-// ClaudeTap — Stop hook 驱动，直接读 transcript JSONL 尾部找 last assistant
+// ClaudeTap — prompt 时预绑定 transcript，Stop hook 与 stop_reason 双通道收口
 // ---------------------------------------------------------------------------
-// Claude Code 的 transcript 由 CC CLI 自己写入，Hub 通过 Stop hook 拿到路径。
-// 相比 Codex/Gemini 不需要 fs.watch——hook 触发即代表 agent loop 完整结束，
-// 此时尾部 assistant 条目必已 flush。
+// Claude Code 的 transcript 由 CC CLI 自己写入；每个 hook 都携带路径。Hub 在
+// UserPromptSubmit 时从 EOF 开始监听，终态 stop_reason 可独立闭环；Stop hook 到达时
+// 仍会直接读取末轮作为低延迟快路径。
 
 // Card optimization Task 1（2026-05-01）— ClaudeTap 升级流式 tail：
 //   旧实现：只在 Stop hook 触发时一次性读 transcript 末尾的 last assistant；renderer 看不到 thinking/tool_use。
-//   新实现：notifyStop 首次拿到 transcriptPath 后，启动 JsonlTail；
+//   新实现：prompt hook 首次拿到 transcriptPath 后，启动 JsonlTail；
 //          后续每条新 assistant message_id 块（thinking / text / tool_use）累积到 _streamingBuf；
 //          getStreamingText / clearStreamingBuf 暴露给上层（main.js groupChatWatcher.extractStreamingText 优先使用）。
-//   降级：notifyStop 永不被调用 → _streamingBuf 永远空 → main.js 走 PTY 兜底（既有体验，不回归）。
+//   降级：路径不可用时 main.js 仍走 PTY 观察兜底（既有体验，不回归）。
 //
 // 2026-05-02 根治升级（Bug "DeepSeek/GLM 卡片不更新"）：
 //   旧链路：Stop hook 触发 → notifyStop → emit 'turn-complete' → watcher settle
@@ -191,7 +191,7 @@ class ClaudeTap extends EventEmitter {
 
   // 由 main.js 的 /api/hook/stop 路由调用。transcriptPath 是 CC 原生给的
   // ~/.claude/projects/<slug>/<ccSessionId>.jsonl。
-  async notifyStop(hubSessionId, transcriptPath) {
+  async notifyStop(hubSessionId, transcriptPath, options = {}) {
     if (!transcriptPath || !hubSessionId) return;
     if (!this._bound.has(hubSessionId)) {
       this._bound.set(hubSessionId, {
@@ -203,6 +203,15 @@ class ClaudeTap extends EventEmitter {
     }
     const entry = this._bound.get(hubSessionId);
     const boundPathChanged = entry.transcriptPath !== transcriptPath;
+    if (boundPathChanged && entry._tail) {
+      // A legitimate resume can move to a new transcript. Never leave a tail
+      // watching path A while terminal detection reads path B.
+      try { entry._tail.close(); } catch {}
+      entry._tail = null;
+      entry._streamingBuf = [];
+      this._cancelIdleEmit(hubSessionId);
+      this._cancelStopReasonEmit(hubSessionId);
+    }
     entry.transcriptPath = transcriptPath;
 
     // Claude 过去只在 turn-complete 里带回文本，从不 emit session-bound —— 于是
@@ -287,6 +296,12 @@ class ClaudeTap extends EventEmitter {
       await entry._tail.start();
     }
 
+    // UserPromptSubmit/tool hooks can bind the authoritative transcript before
+    // the answer starts. That lets stop_reason close the card even when Claude
+    // Code drops or delays its Stop hook. Watching must not parse the existing
+    // tail, otherwise a previous answer would be emitted as the new turn.
+    if (options.watchOnly) return;
+
     // Stop hook 触发 → 取消 idle timer + stop_reason timer，走快路径直接读 transcript 末尾立即 emit
     // 2026-05-14 道雪：用合并版读，避免群聊丢失 [1] plan 段（多 entry 合并 bug 修复）
     this._cancelIdleEmit(hubSessionId);
@@ -304,6 +319,10 @@ class ClaudeTap extends EventEmitter {
         usage: entry.lastUsage || null,
       });
     }
+  }
+
+  async watchTranscript(hubSessionId, transcriptPath) {
+    return this.notifyStop(hubSessionId, transcriptPath, { watchOnly: true });
   }
 
   // 内部：每条新 assistant 行调用一次，重置 idle timer。
@@ -1828,6 +1847,11 @@ class TranscriptTap extends EventEmitter {
   async notifyClaudeStop(hubSessionId, transcriptPath) {
     try { await this._claude.notifyStop(hubSessionId, transcriptPath); }
     catch (e) { console.warn('[transcript-tap] notifyClaudeStop failed:', e.message); }
+  }
+
+  async watchClaudeTranscript(hubSessionId, transcriptPath) {
+    try { await this._claude.watchTranscript(hubSessionId, transcriptPath); }
+    catch (e) { console.warn('[transcript-tap] watchClaudeTranscript failed:', e.message); }
   }
 
   // 2026-05-04 codex equiv extract-failure debug —— TranscriptTap 转发 CodexTap 调试快照

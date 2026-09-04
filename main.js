@@ -143,6 +143,7 @@ const {
   claudeProjectRoots,
   findTranscriptByCCSessionId,
   healPersistedCwds,
+  projectSlug,
 } = require('./core/claude-transcript-locator.js');
 const {
   DEFAULT_CODEX_SESSIONS_ROOT,
@@ -1817,10 +1818,36 @@ const hookServer = http.createServer((req, res) => {
     if (parsed.token !== HOOK_TOKEN) {
       res.writeHead(403); res.end('{}'); return;
     }
-    if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
+    const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
+    if (parsed.sessionId && hookTargetSession) {
       if (isHook) {
         const event = req.url.slice('/api/hook/'.length);
         const eventAt = Date.now();
+        const boundClaudeSessionId = String(hookTargetSession.ccSessionId || '');
+        const incomingClaudeSessionId = String(parsed.claudeSessionId || '');
+        let initialCwdMismatch = false;
+        let initialTranscriptBucketMismatch = false;
+        if (!boundClaudeSessionId && parsed.cwd && hookTargetSession.cwd) {
+          try {
+            initialCwdMismatch = path.resolve(parsed.cwd).toLowerCase()
+              !== path.resolve(hookTargetSession.cwd).toLowerCase();
+          } catch {}
+        }
+        if (!boundClaudeSessionId && parsed.transcriptPath && hookTargetSession.cwd) {
+          try {
+            initialTranscriptBucketMismatch = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
+              !== projectSlug(hookTargetSession.cwd).toLowerCase();
+          } catch {}
+        }
+        if ((boundClaudeSessionId && incomingClaudeSessionId
+              && boundClaudeSessionId !== incomingClaudeSessionId)
+            || initialCwdMismatch || initialTranscriptBucketMismatch) {
+          // Descendant/parallel Claude processes inherit environment variables.
+          // A mismatched native session or first-hook cwd is not evidence for
+          // this Hub session, even when it inherited the correct local token.
+          console.warn(`[claude hook] ignored foreign ${event} for ${parsed.sessionId.slice(0, 8)}`);
+          res.writeHead(202); res.end('{"ignored":"foreign-session"}'); return;
+        }
         // Prefer the UserPromptSubmit payload's `prompt` field when present —
         // it's the just-submitted text and doesn't depend on CC having flushed
         // the new transcript entry to disk. For Stop events (no `prompt` in
@@ -1837,15 +1864,22 @@ const hookServer = http.createServer((req, res) => {
         // — UserPromptSubmit fires before the assistant has responded, so the
         // transcript tail's last-assistant entry would be the previous turn
         // and immediately trigger a stale update.
-        if (parsed.claudeSessionId || parsed.transcriptPath) {
+        const isSubagentContext = !!parsed.agentId;
+        if (!isSubagentContext && (parsed.claudeSessionId || parsed.transcriptPath)) {
           updateSessionTranscriptBinding(parsed.sessionId, {
             ccSessionId: parsed.claudeSessionId,
             transcriptPath: parsed.transcriptPath,
             cwd: parsed.cwd,
           });
         }
-        if (event === 'stop' && parsed.transcriptPath) {
-          transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
+        // Bind the JSONL tail at prompt/tool time rather than waiting for Stop.
+        // Claude's terminal stop_reason can then close the turn independently
+        // when the Stop hook is delayed or missing.
+        if (!isSubagentContext && event !== 'stop' && parsed.transcriptPath) {
+          void transcriptTap.watchClaudeTranscript(parsed.sessionId, parsed.transcriptPath);
+        }
+        if (!isSubagentContext && event === 'stop' && parsed.transcriptPath) {
+          void transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath);
         }
         if (event === 'prompt') {
           try {
@@ -1881,6 +1915,14 @@ const hookServer = http.createServer((req, res) => {
           message: parsed.message || null,
           title: parsed.title || null,
           toolName: parsed.toolName || null,
+          toolCallId: parsed.toolCallId || null,
+          turnId: parsed.turnId || null,
+          toolInput: parsed.toolInput ?? null,
+          toolResult: parsed.toolResult ?? null,
+          agentId: parsed.agentId || null,
+          agentType: parsed.agentType || null,
+          taskId: parsed.taskId || null,
+          taskSubject: parsed.taskSubject || null,
         });
       } else {
         const filtered = claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);

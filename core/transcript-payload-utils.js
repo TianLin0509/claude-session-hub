@@ -63,6 +63,100 @@ function normalizeCodexItemType(value) {
   return String(value || '').replace(/[_-]/g, '').toLowerCase();
 }
 
+function boundedToolText(value, max = 50000) {
+  const text = codexTextFromContent(value);
+  return text.length > max ? `${text.slice(0, max)}\n\n…(截断 ${text.length - max} 字符)` : text;
+}
+
+function codexCommandText(command) {
+  if (Array.isArray(command)) return command.map(part => String(part)).join(' ');
+  return typeof command === 'string' ? command : '';
+}
+
+function codexDurationMs(value) {
+  if (value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))) return Number(value);
+  if (!value || typeof value !== 'object') return null;
+  const seconds = Number(value.secs ?? value.seconds);
+  const nanos = Number(value.nanos ?? value.nanoseconds);
+  if (!Number.isFinite(seconds) && !Number.isFinite(nanos)) return null;
+  return Math.max(0, (Number.isFinite(seconds) ? seconds * 1000 : 0) + (Number.isFinite(nanos) ? nanos / 1e6 : 0));
+}
+
+function codexToolActivityEventFromRecord(record, fallbackIndex = 0) {
+  if (!record || typeof record !== 'object' || !record.payload) return null;
+  const payload = record.payload;
+  const at = timestampToMs(record.timestamp) || null;
+  const stableFallback = `${at || 'undated'}-${Number(fallbackIndex) || 0}`;
+
+  if (record.type === 'response_item') {
+    const type = normalizeCodexItemType(payload.type);
+    if (type === 'customtoolcall' || type === 'functioncall' || type === 'dynamictoolcall') {
+      return {
+        id: String(payload.call_id || payload.id || `codex-tool-${stableFallback}`),
+        callId: payload.call_id ? String(payload.call_id) : null,
+        name: String(payload.name || payload.tool || payload.type || 'Tool'),
+        input: payload.input ?? payload.arguments ?? payload.raw_input ?? {},
+        status: 'running',
+        startedAt: at,
+        turnId: codexTurnIdFromPayload(payload),
+        source: 'codex_response_item_tool_start',
+      };
+    }
+    if (type === 'customtoolcalloutput' || type === 'functioncalloutput') {
+      return {
+        id: String(payload.call_id || payload.id || `codex-tool-output-${stableFallback}`),
+        callId: payload.call_id ? String(payload.call_id) : null,
+        name: String(payload.name || payload.tool || 'Tool'),
+        status: payload.is_error === true ? 'failed' : 'completed',
+        result: boundedToolText(payload.output ?? payload.result ?? payload.content),
+        isError: payload.is_error === true,
+        completedAt: at,
+        turnId: codexTurnIdFromPayload(payload),
+        source: 'codex_response_item_tool_output',
+      };
+    }
+    return null;
+  }
+
+  if (record.type !== 'event_msg') return null;
+  if (!['item_started', 'item_completed'].includes(payload.type) || !payload.item) return null;
+  const item = payload.item;
+  const itemType = normalizeCodexItemType(item.type);
+  if (!/(commandexecution|filechange|mcptoolcall|websearch|websearchcall|dynamictoolcall)/.test(itemType)) return null;
+  const completed = payload.type === 'item_completed'
+    || ['completed', 'failed', 'cancelled', 'canceled'].includes(String(item.status || '').toLowerCase());
+  const command = codexCommandText(item.command);
+  let input = item.input ?? item.arguments ?? item.raw_input ?? {};
+  if (command) input = { ...(input && typeof input === 'object' && !Array.isArray(input) ? input : {}), command, cwd: item.cwd || null };
+  if (item.changes && typeof item.changes === 'object') {
+    input = { ...(input && typeof input === 'object' ? input : {}), changes: item.changes };
+  }
+  const exitCode = Number.isFinite(Number(item.exit_code ?? item.exitCode)) ? Number(item.exit_code ?? item.exitCode) : null;
+  const isError = item.is_error === true || String(item.status || '').toLowerCase() === 'failed' || (exitCode !== null && exitCode !== 0);
+  const result = boundedToolText(item.aggregated_output ?? item.formatted_output ?? item.stdout ?? item.output ?? item.result ?? item.stderr);
+  const name = itemType === 'commandexecution'
+    ? 'CommandExecution'
+    : itemType === 'filechange'
+      ? 'FileChange'
+      : String(item.name || item.tool || item.type || 'Tool');
+  return {
+    id: String(item.id || payload.tool_call_id || payload.call_id || `codex-tool-${stableFallback}`),
+    callId: payload.call_id ? String(payload.call_id) : null,
+    name,
+    input,
+    status: isError ? 'failed' : (completed ? 'completed' : 'running'),
+    ...(completed ? { result } : {}),
+    isError,
+    exitCode,
+    durationMs: codexDurationMs(item.duration ?? payload.duration_ms),
+    startedAt: numericTimestampToMs(payload.started_at_ms) || numericTimestampToMs(payload.started_at) || null,
+    completedAt: numericTimestampToMs(payload.completed_at_ms) || numericTimestampToMs(payload.completed_at) || (completed ? at : null),
+    locations: Array.isArray(item.locations) ? item.locations : [],
+    turnId: codexTurnIdFromPayload(payload) || codexTurnIdFromPayload(item),
+    source: `codex_${payload.type}_${itemType}`,
+  };
+}
+
 /**
  * Normalize the authoritative Codex user-submit records across CLI versions.
  *
@@ -213,5 +307,7 @@ module.exports = {
   codexUserMessageEventFromRecord,
   codexAgentMessageEventFromRecord,
   codexTaskErrorEventFromRecord,
+  codexToolActivityEventFromRecord,
+  normalizeCodexItemType,
   timestampToMs,
 };

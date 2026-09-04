@@ -5,6 +5,7 @@ const { JsonlByteScanner } = require('./jsonl-byte-scanner.js');
 
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_PREFIX_BYTES = 64 * 1024;
+const MAX_CARD_ACTIVITY_LINE_BYTES = 256 * 1024;
 
 const TURN_EVENT_TYPES = new Set([
   'user_message',
@@ -51,6 +52,31 @@ function isTurnItemType(value) {
   return normalized === 'usermessage' || normalized === 'agentmessage';
 }
 
+function isCardActivityItemType(value) {
+  const normalized = normalizeType(value);
+  if (!normalized || isTurnItemType(normalized)) return false;
+  return normalized === 'customtoolcall'
+    || normalized === 'customtoolcalloutput'
+    || normalized === 'functioncall'
+    || normalized === 'functioncalloutput'
+    || normalized === 'commandexecution'
+    || normalized === 'filechange'
+    || normalized === 'mcptoolcall'
+    || normalized === 'websearch'
+    || normalized === 'websearchcall'
+    || normalized === 'dynamictoolcall';
+}
+
+function boundedActivityDecision(context = {}, prefixExhausted = false) {
+  const bytes = Math.max(Number(context.lineBytes) || 0, Number(context.prefixBytes) || 0);
+  if (bytes > MAX_CARD_ACTIVITY_LINE_BYTES) return false;
+  if (prefixExhausted) return true;
+  // Do not commit to retaining the row from its small envelope alone: command
+  // stdout/tool output can make one JSONL record arbitrarily large. Hold only
+  // a bounded prefix and keep the row iff it closes within the cap.
+  return null;
+}
+
 function isSearchableToolCallType(value) {
   const normalized = normalizeType(value);
   if (!normalized || !/(tool|function|command|mcp|file|patch)/.test(normalized)) return false;
@@ -82,7 +108,11 @@ function codexLineFilter(prefix, context = {}, profile = 'turns') {
     if (!payloadType) return prefixExhausted ? false : null;
     if (payloadType === 'item_completed') {
       if (!envelope.itemType) return prefixExhausted ? false : null;
-      return isTurnItemType(envelope.itemType);
+      if (isTurnItemType(envelope.itemType)) return true;
+      if (profile === 'turns' && isCardActivityItemType(envelope.itemType)) {
+        return boundedActivityDecision(context, prefixExhausted);
+      }
+      return false;
     }
     if (profile === 'user') {
       return payloadType === 'user_message' || payloadType === 'thread_goal_updated';
@@ -96,6 +126,9 @@ function codexLineFilter(prefix, context = {}, profile = 'turns') {
   if (recordType === 'response_item') {
     if (profile === 'live' || profile === 'user') return false;
     if (String(envelope.role || '').toLowerCase() === 'user') return true;
+    if (profile === 'turns' && isCardActivityItemType(envelope.payloadType || envelope.itemType)) {
+      return boundedActivityDecision(context, prefixExhausted);
+    }
     if (profile === 'search') {
       const toolType = envelope.itemType || envelope.payloadType;
       if (toolType) return isSearchableToolCallType(toolType);
@@ -161,9 +194,11 @@ function readCodexSemanticRecordsSync(filePath, opts = {}) {
 module.exports = {
   DEFAULT_CHUNK_BYTES,
   DEFAULT_PREFIX_BYTES,
+  MAX_CARD_ACTIVITY_LINE_BYTES,
   codexLineFilter,
   createCodexLineFilter,
   inspectCodexEnvelope,
+  isCardActivityItemType,
   isSearchableToolCallType,
   readCodexSemanticRecordsSync,
   streamCodexJsonlRecordsSync,

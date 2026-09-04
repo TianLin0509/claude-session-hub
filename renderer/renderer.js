@@ -77,6 +77,7 @@ const { createClipboardController } = require('./clipboard-controller.js');
 const { createSessionReadyNotifier } = require('./session-ready-notifier.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
+const { isTurnComplete, normalizeToolActivity } = require('../core/turn-presentation.js');
 const {
   advanceRunningAnimationCandidate,
   classifyTerminalRuntime,
@@ -1775,6 +1776,52 @@ const terminalMinimapFactory = createTerminalMinimapFactory({
 });
 const { mountMinimap, mountPromptNavButtons } = terminalMinimapFactory;
 const { createTurnCardRenderer } = require('./turn-card-renderer.js');
+function syncTurnPresentationToSession(sessionId, presentation, turn) {
+  const session = sessions.get(sessionId);
+  if (!session || !presentation || !turn || turn.role !== 'assistant') return;
+  const current = presentation.currentActivity;
+  const activities = Array.isArray(presentation.activities) ? presentation.activities : [];
+  const lastActivity = activities.length ? activities[activities.length - 1] : null;
+  let adoptedLiveActivities = false;
+  if (!session.livePresentationCardId && Array.isArray(session.liveToolActivities) && session.liveToolActivities.length
+      && sessionRuntimeIsActive(session)
+      && !(presentation.delivery && presentation.delivery.complete)) {
+    session.livePresentationCardId = turn.id || null;
+    adoptedLiveActivities = !!session.livePresentationCardId;
+  }
+  if (current) {
+    session.currentCardActivity = {
+      turnId: turn.id || null,
+      activityId: current.id || null,
+      status: current.status,
+      label: [current.title, current.detail].filter(Boolean).join('：'),
+      observedAt: Date.now(),
+    };
+  } else if (presentation.delivery && presentation.delivery.complete) {
+    const runtimeActive = sessionRuntimeIsActive(session);
+    const ownsLivePresentation = !!turn.id && session.livePresentationCardId === turn.id;
+    // A full-history refresh also visits old completed turns. Do not let one of
+    // those cards erase the in-flight activity that belongs to the new turn.
+    if (!runtimeActive || ownsLivePresentation) {
+      if (!session.currentCardActivity || !session.currentCardActivity.turnId
+          || session.currentCardActivity.turnId === turn.id) session.currentCardActivity = null;
+      session.liveToolActivities = [];
+      session.livePresentationCardId = null;
+    }
+  } else if (sessionRuntimeIsActive(session) && lastActivity) {
+    session.currentCardActivity = {
+      turnId: turn.id || null,
+      activityId: lastActivity.id || null,
+      status: lastActivity.status,
+      label: `刚完成：${[lastActivity.title, lastActivity.detail].filter(Boolean).join('：')}`,
+      observedAt: Date.now(),
+    };
+  }
+  if (sessionId !== activeSessionId) return;
+  const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  if (target) paintTerminalRuntimeStatus(target, session);
+  if (adoptedLiveActivities) queueMicrotask(() => rerenderTurn(turn.id));
+}
 const turnCardRenderer = createTurnCardRenderer({
   document,
   window,
@@ -1787,11 +1834,14 @@ const turnCardRenderer = createTurnCardRenderer({
   escapeHtml,
   wrapPathLinksInElement: (rootEl, opts) => wrapPathLinksInElement(rootEl, opts),
   getActiveSessionId: () => activeSessionId,
+  getSessionContext: (sessionId) => sessions.get(sessionId) || null,
+  onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
 });
 const {
   renderTurnCard,
+  rerenderTurn,
   mountTurnCard,
   mountOptimisticUserCard,
   turnRenderSignature,
@@ -2067,6 +2117,21 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   // 6a. error AND no turns → friendly placeholder (don't silent fail)
   if (turns.length === 0 && ipcError) {
+    const transcriptPending = /(?:ENOENT|transcript (?:not found|尚未)|rollout (?:not found|尚未))/i.test(String(ipcError))
+      && session && sessionRuntimeIsActive(session);
+    if (transcriptPending) {
+      // A newly-created Claude/Codex session can publish its transcript path
+      // before the first JSONL file is physically created. That is a normal
+      // startup state, not a user-actionable history failure. Terminal output
+      // and finite settle retries will refresh this projection once the file
+      // exists; never expose the temporary absolute path as a scary error.
+      if (!incremental && concurrentFullCards.length === 0) {
+        showPlaceholder(`${isCodexKind(kind) ? 'Codex' : 'Claude'} 正在准备首个结构化内容…`);
+      } else if (!incremental) {
+        removeLoadingPlaceholder();
+      }
+      return { mounted: concurrentFullCards.length, error: null, pending: true };
+    }
     // Spec 3 · W11：transcript not found 通常是 session 创建后从未发过消息（无 ccSessionId 写入）。
     // 不是 bug，是 expected。文案明示让 user 不再误以为"卡片视图坏了"。
     let txt;
@@ -2329,6 +2394,7 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
     completedAt,
     meetingId,
     kind,
+    durationMs,
   } = payload || {};
 
   onReplyCompleteFromTranscriptEvent(payload);
@@ -2420,7 +2486,16 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       role: 'assistant',
       text: text || '',
       ts: completedAt || Date.now(),
+      tsEnd: completedAt || Date.now(),
       kind,
+      stopReason: isCodexKind(kind) ? 'task_complete' : 'end_turn',
+      durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : undefined,
+      toolCalls: (() => {
+        const active = sessions.get(hubSessionId);
+        return active && Array.isArray(active.liveToolActivities)
+          ? active.liveToolActivities.slice(-24)
+          : [];
+      })(),
     };
     // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
     if (window._sessionTurns && window._sessionTurns.has(fallbackTurn.id)) {
@@ -3504,7 +3579,8 @@ function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
   let dot = element.querySelector('.terminal-status-dot');
   let label = element.querySelector('.terminal-status-label');
   let meta = element.querySelector('.terminal-status-meta');
-  if (!dot || !label || !meta) {
+  let detail = element.querySelector('.terminal-status-detail');
+  if (!dot || !label || !meta || !detail) {
     element.replaceChildren();
     dot = document.createElement('span');
     dot.className = 'terminal-status-dot';
@@ -3514,7 +3590,10 @@ function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
     meta = document.createElement('span');
     meta.className = 'terminal-status-meta';
     meta.setAttribute('aria-hidden', 'true');
-    element.append(dot, label, meta);
+    detail = document.createElement('span');
+    detail.className = 'terminal-status-detail';
+    detail.setAttribute('aria-hidden', 'true');
+    element.append(dot, label, meta, detail);
   }
 
   const nextClassName = `terminal-status ${runtime.state}`;
@@ -3528,6 +3607,8 @@ function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
   if (label.textContent !== runtime.label) label.textContent = runtime.label;
   if (meta.textContent !== runtime.meta) meta.textContent = runtime.meta;
   meta.hidden = !runtime.meta;
+  if (detail.textContent !== runtime.visibleDetail) detail.textContent = runtime.visibleDetail;
+  detail.hidden = !runtime.visibleDetail;
   return runtime;
 }
 
@@ -5409,6 +5490,118 @@ window.addEventListener('workspace-archive-suggestion', (event) => {
   updateActiveMetricsRow();
 });
 
+function _latestAssistantCardForSession(sessionId) {
+  const cards = Array.from(document.querySelectorAll(
+    `#msg-overlay > .turn-card[data-session-id="${CSS.escape(String(sessionId || ''))}"]:not(.user)`,
+  )).filter(card => {
+    const turn = window._sessionTurns && window._sessionTurns.get(card.dataset.turnId);
+    return turn && !isTurnComplete(turn);
+  });
+  return cards.length ? cards[cards.length - 1] : null;
+}
+
+function _upsertLiveHookActivity(session, payload) {
+  if (!session || !payload) return null;
+  const event = String(payload.event || '');
+  const isTool = event === 'tool-start' || event === 'tool-complete' || event === 'tool-failed';
+  const isSubagent = event === 'subagent-start' || event === 'subagent-stop';
+  const isTask = event === 'task-start' || event === 'task-complete';
+  if (!isTool && !isSubagent && !isTask) return null;
+  const status = event.endsWith('-failed') ? 'failed'
+    : event.endsWith('-complete') || event.endsWith('-stop') ? 'completed'
+      : 'running';
+  const id = String(
+    payload.toolCallId
+    || payload.agentId
+    || payload.taskId
+    || `${event}:${payload.toolName || payload.agentType || payload.taskSubject || Date.now()}`,
+  );
+  const name = isSubagent
+    ? `Subagent${payload.agentType ? ` · ${payload.agentType}` : ''}`
+    : isTask
+      ? 'Task'
+      : (payload.toolName || 'Tool');
+  const input = isSubagent || isTask
+    ? { description: payload.taskSubject || payload.agentType || name }
+    : (payload.toolInput ?? {});
+  const activity = {
+    id,
+    callId: payload.toolCallId || null,
+    name,
+    input,
+    status,
+    ...(status === 'running' ? { startedAt: Number(payload.eventAt) || Date.now() } : {
+      completedAt: Number(payload.eventAt) || Date.now(),
+      result: String(payload.toolResult || payload.errorDetails || payload.error || ''),
+      isError: status === 'failed',
+    }),
+    turnId: payload.turnId || null,
+    source: `claude-hook-${event}`,
+  };
+  if (!Array.isArray(session.liveToolActivities)) session.liveToolActivities = [];
+  let index = session.liveToolActivities.findIndex(item => item && item.id === id);
+  if (index < 0 && status !== 'running') {
+    for (let i = session.liveToolActivities.length - 1; i >= 0; i--) {
+      const candidate = session.liveToolActivities[i];
+      if (candidate && candidate.status === 'running' && candidate.name === name) { index = i; break; }
+    }
+  }
+  if (index >= 0) {
+    const previous = session.liveToolActivities[index];
+    if (status === 'running' && ['completed', 'failed', 'cancelled'].includes(previous.status)) {
+      // Async observer hooks may finish out of order. Once the matching call is
+      // terminal, a delayed start record can enrich nothing and must not regress it.
+      return normalizeToolActivity(previous);
+    }
+    const hasFreshInput = typeof activity.input === 'string'
+      ? activity.input.trim().length > 0
+      : activity.input && typeof activity.input === 'object' && Object.keys(activity.input).length > 0;
+    const inferredDuration = status !== 'running' && previous.startedAt && activity.completedAt
+      ? Math.max(0, activity.completedAt - previous.startedAt)
+      : null;
+    session.liveToolActivities[index] = {
+      ...previous,
+      ...activity,
+      id: previous.id || activity.id,
+      input: hasFreshInput ? activity.input : previous.input,
+      durationMs: activity.durationMs ?? previous.durationMs ?? inferredDuration,
+    };
+  } else {
+    session.liveToolActivities.push(activity);
+    session.liveToolActivities = session.liveToolActivities.slice(-24);
+  }
+
+  const card = _latestAssistantCardForSession(session.id);
+  if (card && card.dataset.turnId) {
+    session.livePresentationCardId = card.dataset.turnId;
+    rerenderTurn(card.dataset.turnId);
+  }
+  const stored = session.liveToolActivities[index >= 0 ? index : session.liveToolActivities.length - 1];
+  const normalized = normalizeToolActivity(stored);
+  if (status === 'running') {
+    session.currentCardActivity = {
+      turnId: payload.turnId || null,
+      activityId: normalized.id,
+      status: normalized.status,
+      label: [normalized.title, normalized.detail].filter(Boolean).join('：'),
+      observedAt: Number(payload.eventAt) || Date.now(),
+    };
+  } else {
+    const stillRunning = [...session.liveToolActivities].reverse().find(item => item && item.status === 'running');
+    const next = stillRunning ? normalizeToolActivity(stillRunning) : normalized;
+    session.currentCardActivity = {
+      turnId: payload.turnId || null,
+      activityId: next.id,
+      status: next.status,
+      label: stillRunning
+        ? [next.title, next.detail].filter(Boolean).join('：')
+        : `刚完成：${[next.title, next.detail].filter(Boolean).join('：')}`,
+      observedAt: Number(payload.eventAt) || Date.now(),
+    };
+  }
+  return normalized;
+}
+
 // Claude Code hooks drive the session state.
 // - 'prompt' (UserPromptSubmit): fires the moment user presses Enter.
 //   Immediately flag the session as running — faster & more precise than
@@ -5431,11 +5624,32 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     message,
     title,
     toolName,
+    toolCallId,
+    turnId,
+    toolInput,
+    toolResult,
+    agentId,
+    agentType,
+    taskId,
+    taskSubject,
   } = payload;
   const s = sessions.get(sessionId);
+  let hookIdentityConflict = false;
+  if (s) {
+    const boundClaudeSessionId = String(s.ccSessionId || '');
+    const incomingClaudeSessionId = String(claudeSessionId || '');
+    let initialCwdMismatch = false;
+    if (!boundClaudeSessionId && cwd && s.cwd) {
+      try { initialCwdMismatch = path.resolve(cwd).toLowerCase() !== path.resolve(s.cwd).toLowerCase(); }
+      catch {}
+    }
+    hookIdentityConflict = (boundClaudeSessionId && incomingClaudeSessionId
+      && boundClaudeSessionId !== incomingClaudeSessionId) || initialCwdMismatch;
+  }
+  if (hookIdentityConflict) return;
   if (s) {
     // Persist CC session id + cwd the first time we learn them so resumes work.
-    if (claudeSessionId && s.ccSessionId !== claudeSessionId) {
+    if (!agentId && claudeSessionId && s.ccSessionId !== claudeSessionId) {
       s.ccSessionId = claudeSessionId;
       const collapsed = collapseDormantNativeDuplicates(sessions);
       if (collapsed.length) scheduleSessionListRender();
@@ -5445,14 +5659,14 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     // user `cd` mutate the saved value, which then breaks `claude --resume` on
     // next launch — CC stores transcripts under a project slug derived from
     // the cwd at CREATE time, so resume must spawn in that same cwd.
-    if (cwd && !s.cwd) {
+    if (!agentId && cwd && !s.cwd) {
       s.cwd = cwd;
       schedulePersist();
     }
     // Authoritative preview: CC's own transcript JSONL. Wins over any regex
     // extraction from the xterm buffer — no more "assistant content misread
     // as user question" false positives.
-    if (latestUserMessage) {
+    if (!agentId && latestUserMessage) {
       const preview = buildPreviewFromUserMessage(latestUserMessage);
       if (preview && preview !== s.lastOutputPreview) {
         s.lastOutputPreview = preview;
@@ -5488,6 +5702,32 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     const cached = terminalCache.get(sessionId);
     if (cached && cached._minimap) cached._minimap.invalidate();
   }
+  else if (['tool-start', 'tool-complete', 'tool-failed', 'subagent-start', 'subagent-stop', 'task-start', 'task-complete'].includes(event)) {
+    const truthBeforeActivity = s ? getSessionRuntimeTruth(s) : null;
+    const isLateStartAfterTerminal = event.endsWith('-start')
+      && truthBeforeActivity
+      && [RUNTIME_COMPLETED, RUNTIME_FAILED].includes(truthBeforeActivity.state)
+      && !sessionRuntimeIsActive(s);
+    // Hook subprocesses can finish out of order. A late PreToolUse/SubagentStart
+    // from the closed turn must not resurrect an already completed/failed card;
+    // the next real turn is armed by UserPromptSubmit before its tools run.
+    const activity = isLateStartAfterTerminal ? null : _upsertLiveHookActivity(s, {
+      event, eventAt, toolName, toolCallId, turnId, toolInput, toolResult,
+      error, errorDetails, agentId, agentType, taskId, taskSubject,
+    });
+    if (activity && event.endsWith('-start') && activity.status === 'running') {
+      observeSessionRuntime(s, {
+        state: RUNTIME_RUNNING,
+        source: `claude-${event}`,
+        confidence: CONFIDENCE_AUTHORITATIVE,
+        observedAt: eventAt,
+        turnId,
+        evidence: [activity.title, activity.detail].filter(Boolean).join('：'),
+      });
+    }
+    updateFloatingBarState();
+    scheduleSessionListRender();
+  }
   else if (event === 'prompt') onPromptSubmittedFromHook(sessionId, eventAt);
   else if (event === 'stop-failure') onClaudeStopFailure(sessionId, eventAt, {
     error,
@@ -5510,6 +5750,9 @@ function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   if (!session) return;
   const transition = applyPromptSubmitted(session, { submittedAt });
   if (!transition.applied) return;
+  session.currentCardActivity = null;
+  session.liveToolActivities = [];
+  session.livePresentationCardId = null;
   clearSessionConnectionIssue(session, { render: false });
   armPtyBurstFallback(sessionId, transition.at);
   // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
@@ -5557,11 +5800,12 @@ function clearSessionWaitingState(sessionId, options = {}) {
 function onReplyCompleteFromTranscriptEvent(payload) {
   const { hubSessionId, text, completedAt, meetingId, kind, turnId } = payload || {};
   if (!hubSessionId) return;
-  if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
+  const isClaudeTranscriptRuntime = isClaudeRuntimeSession(session);
+  if (!isTranscriptCliKind(kind) && !isClaudeTranscriptRuntime) return;
   const backgroundActive = isKimiCliKind(session.kind) && hasKimiBackgroundWork(session);
   if (isKimiCliKind(session.kind) && !backgroundActive) {
     clearKimiBackgroundFinishTimer(hubSessionId);
@@ -5570,6 +5814,43 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const preview = buildReplyReadyPreview(text, `${cardWorkingLabel(session)} 回复完成，等你继续`);
   const sig = `${turnId || ''}:${completedAt || ''}:${preview}`;
   if (session._lastTranscriptReadySig === sig) return;
+  if (isClaudeTranscriptRuntime) {
+    // Claude normally closes attention/unread through Stop. The authoritative
+    // terminal transcript is an independent runtime fallback: it must close a
+    // stuck "running" state without replaying applyReplyCompleted and double
+    // counting unread when Stop arrives as well.
+    const at = normalizeEventTime(completedAt, Date.now());
+    const startedAt = Number(session.runStartedAt) || Number(session.lastRunStartedAt) || 0;
+    if (startedAt > 0 && at >= startedAt) {
+      session.lastRunStartedAt = startedAt;
+      session.lastRunDurationMs = at - startedAt;
+    }
+    session.runStartedAt = null;
+    session._agentWorking = null;
+    session._runSource = null;
+    disarmPtyBurstFallback(session, at);
+    clearSessionConnectionIssue(session, { render: false });
+    session._lastTranscriptReadySig = sig;
+    session.lastMessageTime = at;
+    session.lastCompletedAt = Math.max(Number(session.lastCompletedAt) || 0, at);
+    session.lastOutputPreview = preview;
+    recordSessionArtifacts(session, text || preview, at);
+    observeSessionRuntime(session, {
+      state: RUNTIME_COMPLETED,
+      source: 'claude-transcript-complete',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: at,
+      completedAt: at,
+      startedAt: session.lastRunStartedAt || 0,
+      turnId,
+      evidence: preview,
+    });
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
+    updateFloatingBarState();
+    scheduleSessionListRender();
+    schedulePersist();
+    return;
+  }
   const isActive = hubSessionId === activeSessionId;
   const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
   const seenByUser = isActive && focusOk;
@@ -5637,6 +5918,9 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
 
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
   if (!transition.applied) return;
+  session.currentCardActivity = null;
+  session.liveToolActivities = [];
+  session.livePresentationCardId = null;
   clearSessionConnectionIssue(session, { render: false });
   armPtyBurstFallback(hubSessionId, transition.at);
   session.lastError = null;

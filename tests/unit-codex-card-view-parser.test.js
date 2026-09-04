@@ -5,6 +5,7 @@ const path = require('path');
 
 const {
   parseCodexRolloutToTurns,
+  parseCodexRolloutText,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
 } = require('../core/codex-transcript-parser');
@@ -250,6 +251,35 @@ async function main() {
     assert.deepStrictEqual(final147.map(t => t.text), [goalObjective, '0.147 最终回答']);
     assert.equal(final147[1].stopReason, 'task_complete');
     assert.equal(final147[1].durationMs, 500);
+
+    const activityTurnId = '019fffff-0000-7000-8000-000000000001';
+    const activityTurns = parseCodexRolloutText([
+      JSON.stringify({ timestamp: '2026-09-03T10:00:00.000Z', type: 'event_msg', payload: { type: 'task_started', turn_id: activityTurnId } }),
+      JSON.stringify({ timestamp: '2026-09-03T10:00:00.100Z', type: 'response_item', payload: {
+        type: 'custom_tool_call', id: 'tool-start-1', call_id: 'call-1', name: 'exec',
+        input: 'const r = await tools.exec_command({"cmd":"npm test","shell":"powershell"});',
+        internal_chat_message_metadata_passthrough: { turn_id: activityTurnId },
+      } }),
+      JSON.stringify({ timestamp: '2026-09-03T10:00:01.000Z', type: 'event_msg', payload: {
+        type: 'item_completed', turn_id: activityTurnId,
+        started_at_ms: Date.parse('2026-09-03T10:00:00.200Z'),
+        completed_at_ms: Date.parse('2026-09-03T10:00:01.000Z'),
+        item: {
+          type: 'CommandExecution', id: 'command-1', command: ['powershell.exe', '-Command', 'npm test'],
+          cwd: 'file:///C:/repo', status: 'completed', stdout: '12 tests passed', stderr: '', exit_code: 0,
+        },
+      } }),
+      JSON.stringify({ timestamp: '2026-09-03T10:00:02.000Z', type: 'event_msg', payload: {
+        type: 'item_completed', turn_id: activityTurnId,
+        item: { type: 'AgentMessage', id: 'answer-1', phase: 'final_answer', content: [{ type: 'Text', text: 'done' }] },
+      } }),
+    ].join('\n'));
+    assert.equal(activityTurns.length, 1);
+    assert.equal(activityTurns[0].text, 'done');
+    assert.equal(activityTurns[0].toolCalls.length, 1, 'start and completion records must merge into one activity');
+    assert.equal(activityTurns[0].toolCalls[0].status, 'completed');
+    assert.equal(activityTurns[0].toolCalls[0].exitCode, 0);
+    assert.match(activityTurns[0].toolCalls[0].result, /12 tests passed/);
   } finally {
     if (fr147) await fr147.cleanup().catch(() => {});
     await fr.cleanup().catch(() => {});

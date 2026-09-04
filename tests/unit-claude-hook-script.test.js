@@ -106,3 +106,40 @@ test('Claude failure, permission and notification hooks forward only runtime evi
   assert.equal(notification.body.title, 'Input needed');
   assert.equal(notification.body.message, 'Choose an option');
 });
+
+test('Claude tool hooks forward bounded activity identity, input and result', async () => {
+  const started = await runHook('tool-start', {
+    hook_event_name: 'PreToolUse',
+    session_id: 'claude-native-1',
+    turn_id: 'turn-activity-1',
+    tool_use_id: 'tool-activity-1',
+    tool_name: 'PowerShell',
+    tool_input: { command: 'npm test' },
+  });
+  assert.equal(started.body.turnId, 'turn-activity-1');
+  assert.equal(started.body.toolCallId, 'tool-activity-1');
+  assert.deepEqual(started.body.toolInput, { command: 'npm test' });
+
+  const completed = await runHook('tool-complete', {
+    hook_event_name: 'PostToolUse',
+    session_id: 'claude-native-1',
+    turn_id: 'turn-activity-1',
+    tool_use_id: 'tool-activity-1',
+    tool_name: 'PowerShell',
+    tool_input: { command: 'npm test' },
+    tool_response: { stdout: '12 tests passed', exit_code: 0 },
+  });
+  assert.equal(completed.body.toolCallId, 'tool-activity-1');
+  assert.match(completed.body.toolResult, /12 tests passed/);
+
+  const unicodeHeavy = await runHook('tool-complete', {
+    hook_event_name: 'PostToolUse',
+    session_id: 'claude-native-1',
+    tool_use_id: 'tool-unicode-heavy',
+    tool_name: 'PowerShell',
+    tool_input: { command: '中'.repeat(5000) },
+    tool_response: { stdout: '完'.repeat(5000), exit_code: 0 },
+  });
+  assert.ok(Buffer.byteLength(JSON.stringify(unicodeHeavy.body), 'utf8') < 16384,
+    'bounded hook evidence must stay below the Hub HTTP body limit in UTF-8 bytes');
+});

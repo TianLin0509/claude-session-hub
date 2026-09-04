@@ -54,20 +54,40 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     ['StopFailure', `python "${hookPyPath}" stop-failure`],
     ['UserPromptSubmit', `python "${hookPyPath}" prompt`],
     ['PermissionRequest', `python "${hookPyPath}" permission-request`],
+    ['PreToolUse', `python "${hookPyPath}" tool-start`, '', true],
+    ['PostToolUse', `python "${hookPyPath}" tool-complete`, '', true],
+    ['PostToolUseFailure', `python "${hookPyPath}" tool-failed`, '', true],
+    ['SubagentStart', `python "${hookPyPath}" subagent-start`, '', true],
+    ['SubagentStop', `python "${hookPyPath}" subagent-stop`, '', true],
+    ['TaskCreated', `python "${hookPyPath}" task-start`, '', true],
+    ['TaskCompleted', `python "${hookPyPath}" task-complete`, '', true],
     ['Notification', `python "${hookPyPath}" notification`,
       'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'],
   ];
-  for (const [eventName, command, matcher = ''] of managed) {
+  for (const [eventName, command, matcher = '', asyncHook = false] of managed) {
     if (!Array.isArray(settings.hooks[eventName])) {
       settings.hooks[eventName] = [];
       changed = true;
     }
-    if (!hasManagedHook(settings, eventName, matcher)) {
+    const existingGroup = settings.hooks[eventName].find(entry =>
+      String(entry && entry.matcher || '') === String(matcher)
+      && Array.isArray(entry && entry.hooks)
+      && entry.hooks.some(hook => String(hook && hook.command || '').includes(MANAGED_HOOK_MARKER))
+    );
+    if (!existingGroup) {
       settings.hooks[eventName].push({
         matcher,
-        hooks: [{ type: 'command', command, timeout: 5 }],
+        hooks: [{ type: 'command', command, timeout: 5, ...(asyncHook ? { async: true } : {}) }],
       });
       changed = true;
+    } else if (asyncHook) {
+      const existingHandler = existingGroup.hooks.find(hook =>
+        String(hook && hook.command || '').includes(MANAGED_HOOK_MARKER)
+      );
+      if (existingHandler && existingHandler.async !== true) {
+        existingHandler.async = true;
+        changed = true;
+      }
     }
   }
 
