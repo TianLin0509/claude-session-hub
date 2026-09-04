@@ -67,3 +67,19 @@ timeoutMs = clamp(60s, 30min, stepConfigs[i].timeoutMs || 10min)
 - `renderer/workflow-templates.js`：两个预设 + 联动配置
 - `tests/unit-workflow-templates.test.js`：预设数 5 → 7，新增 3 条断言
 - 版本 1.6.53 → 1.6.54
+
+
+## v1.6.56 补：真实 Hub E2E
+
+`tests/ran-workflow-cdp-e2e.js`：起一个隔离 Hub（独立 data dir + 9356 端口，
+与 loop e2e 的 9355 错开可并行），连 CDP 在**真实 renderer** 里验证 18 项：
+
+预设存在与最小成员数、联动出的 steps/prompt/loop、两步落到不同成员、
+超时穿过归一化后引擎 clamp 出 25/25 分钟（不是默认 10）、
+四行 RESULT 契约的 PASS/FAIL/不合规三种解析、以及真实打开配置弹窗后
+能看到「RAN 收口」按钮。
+
+**不覆盖真实多 AI 循环** —— 那需要登录态 + 半小时，而且会在真仓库产生改动，
+不适合放进自动化测试。那部分只能靠第一次手动跑一个绿档小任务验证。
+
+用法：`node tests/ran-workflow-cdp-e2e.js`
