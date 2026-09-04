@@ -17,6 +17,17 @@ test('closing a Hub with automatic league keepalive hides the window instead of 
   assert.match(mainSource, /tray-explicit-quit/);
 });
 
+test('window-close keepalive asks the scheduler election instead of only reading shared schedule flags', () => {
+  // enabled / keepAliveOnClose 都是全机共享状态，每个 Hub 关窗都会得到同一个 yes。
+  // 只看它们两个就是「关一次窗多一个隐身 Hub」的直接成因，必须再问一次选举。
+  assert.match(mainSource, /decideLeagueKeepalive/);
+  assert.match(mainSource, /refreshSchedulerElection\('window-close-keepalive'/);
+  const decideIndex = mainSource.indexOf('const decision = decideLeagueKeepalive({');
+  const electionIndex = mainSource.indexOf("refreshSchedulerElection('window-close-keepalive'");
+  assert(electionIndex > 0 && decideIndex > electionIndex, '选举必须先于判据求值');
+  assert.match(mainSource, /window-close keepalive=\$\{decision\.keep\} reason=\$\{decision\.reason\}/);
+});
+
 test('the background preference is explicit in schedule IPC and Agent League UI', () => {
   assert.match(handlerSource, /keepAliveOnClose:[\s\S]*previous\.keepAliveOnClose !== false/);
   assert.match(rendererSource, /data-action="toggle-background"/);

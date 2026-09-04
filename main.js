@@ -37,6 +37,7 @@ const {
   resolveHubLaunchExePath,
 } = require('./core/hub-exe-branding.js');
 const { isPackagedHubRuntime } = require('./core/electron-runtime-mode.js');
+const { decideLeagueKeepalive } = require('./core/league-keepalive-policy.js');
 const { acquireLockAsync, releaseLockAsync } = require('./core/file-lock.js');
 const {
   ensureClaudeHookIntegration,
@@ -844,12 +845,37 @@ function focusPrimaryWindow() {
 module.exports.focusPrimaryWindow = focusPrimaryWindow;
 
 function shouldKeepAgentLeagueInBackground() {
-  if (explicitHubQuitRequested || process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND === '1') return false;
   if (!agentLeagueBridge || !agentLeagueBridge.store) return false;
   try {
     const schedule = agentLeagueBridge.store.getSchedule();
     const activeRun = typeof agentLeagueBridge.getRunState === 'function' ? agentLeagueBridge.getRunState() : null;
-    return schedule.keepAliveOnClose !== false && (schedule.enabled === true || !!activeRun);
+    // 选举只在需要它裁决时才刷新：前面几条判据（显式退出 / 守护关掉 / 赛程没开）
+    // 都不需要问别的 Hub，没必要为一次关窗多打一次 SQLite。
+    let election = null;
+    const needsElection = !explicitHubQuitRequested
+      && process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND !== '1'
+      && schedule.keepAliveOnClose !== false
+      && !activeRun
+      && schedule.enabled === true;
+    if (needsElection && typeof agentLeagueBridge.refreshSchedulerElection === 'function') {
+      try {
+        election = agentLeagueBridge.refreshSchedulerElection('window-close-keepalive', { force: true });
+      } catch (error) {
+        // 选举拿不到就让 policy 走「判不了则留守」的兜底分支。
+        console.warn('[agent-league] keepalive election refresh failed:', error && error.message);
+      }
+    }
+    const decision = decideLeagueKeepalive({
+      explicitQuitRequested: explicitHubQuitRequested,
+      disabledByEnv: process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND === '1',
+      schedule,
+      activeRun,
+      election,
+      selfPid: process.pid,
+    });
+    console.log(`[agent-league] window-close keepalive=${decision.keep} reason=${decision.reason}`
+      + `${decision.preferredPid ? ` preferredPid=${decision.preferredPid}` : ''} pid=${process.pid}`);
+    return decision.keep;
   } catch (error) {
     console.warn('[agent-league] failed to evaluate background keepalive:', error && error.message);
     return false;
