@@ -66,9 +66,31 @@ assert.ok(
   'Codex optimistic submit indicator must self-expire if rollout user_message never confirms work',
 );
 
+// 2026-09-04：原断言用「函数头到 applyReplyCompleted 之间不超过 1400 字符」当代理，
+// 057c6e6 在中间插了一条 Claude 专用早退分支（Claude 的收尾走 Stop，转录只是兜底，
+// 再跑一遍 reducer 会把未读记两次），距离涨到 2617 就红了 —— 但 Codex 那条路径其实
+// 一直在走 reducer，不变量没破。距离本来就不是不变量，改成盯函数体本身。
+const replyCompleteBody = (() => {
+  const start = rendererSrc.indexOf('function onReplyCompleteFromTranscriptEvent(');
+  assert.ok(start >= 0, 'onReplyCompleteFromTranscriptEvent must exist');
+  const next = rendererSrc.indexOf('\nfunction ', start + 1);
+  return rendererSrc.slice(start, next > 0 ? next : rendererSrc.length);
+})();
 assert.ok(
-  /function\s+onReplyCompleteFromTranscriptEvent\s*\([\s\S]{0,1400}applyReplyCompleted\(session/.test(rendererSrc),
+  /applyReplyCompleted\(session,/.test(replyCompleteBody)
+  && /if \(!transition\.applied\) return;/.test(replyCompleteBody),
   'Codex task_complete must pass through the ordered session-state reducer',
+);
+// 唯一允许绕过 reducer 的是那条 Claude 分支，而且必须显式按运行时收口。
+// 谁把它改成无条件早退，这里就会红 —— 那才是真的把 Codex 的收尾也吞掉了。
+assert.ok(
+  /if \(isClaudeTranscriptRuntime\) \{/.test(replyCompleteBody),
+  'the only reducer bypass must stay gated on the Claude transcript runtime',
+);
+assert.ok(
+  replyCompleteBody.indexOf('if (isClaudeTranscriptRuntime) {')
+    < replyCompleteBody.indexOf('applyReplyCompleted(session,'),
+  'the Claude bypass must return before the reducer, not after it',
 );
 assert.ok(
   rendererSrc.includes('sessionNeedsUserInput') && rendererSrc.includes('sessionHasCompletedUnread'),
