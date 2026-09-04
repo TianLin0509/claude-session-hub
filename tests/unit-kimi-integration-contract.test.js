@@ -80,7 +80,17 @@ assert.match(keyboardShortcuts, /ipcRenderer\.invoke\('create-session', kind\)/,
   'createWorkspaceSession 缺失时仍须有 IPC 兜底');
 
 const modal = read('renderer/meeting-create-modal.js');
-assert.match(modal, /Object\.entries\(MODEL_OPTIONS_BY_KIND\)/);
+// 这里守的是「建会议的模型下拉必须从共享目录派生，不能自己抄一份」——
+// 抄一份的直接后果就是新增 Kimi 后建会议时选不到它。
+// 2026-09-04：3cfce1e 把 Object.entries(MODEL_OPTIONS_BY_KIND) 换成了同一个模块的
+// modelOptionsFor(kind)，来源没变、还更收敛，但原来盯死写法的断言就红了。
+// 改成盯来源：必须 require 共享目录，且用它的某个访问器展开。
+assert.match(modal, /require\(['"]\.\.\/core\/model-options\.js['"]\)/,
+  '建会议弹窗必须从 core/model-options.js 取模型，不能自带一份清单');
+assert.match(modal, /Object\.entries\(MODEL_OPTIONS_BY_KIND\)|modelOptionsFor\(/,
+  '模型下拉必须由共享目录展开');
+assert.doesNotMatch(modal, /['"]kimi-code\/k3['"]/,
+  '模型 id 不得硬编码进弹窗，否则共享目录改了这里不会跟着改');
 assert.match(read('main/ipc/meeting-create-handlers.js'), /createSession\(kind, sessionOpts\)/);
 
 const main = read('main.js');

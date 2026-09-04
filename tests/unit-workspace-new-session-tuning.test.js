@@ -245,7 +245,15 @@ test('renderer persists and restores per-session speed and MCP tuning', () => {
   assert.match(RENDERER_SRC, /contextEffectiveMax: typeof meta\.contextEffectiveMax === 'number'/);
   assert.doesNotMatch(RENDERER_SRC, /defaultCodexSpeedFor\(kind\)(?!\s*\{)/,
     'all default speed decisions must include the selected model capability');
-  assert.match(RENDERER_SRC, /Codex 运行时有效窗口/);
+  // 这条守的是上下文 chip 的悬浮说明必须把两个数分开讲：运行时实际给的窗口，
+  // 和 Hub 启动时请求的窗口。两者会不一致，混成一个数就看不出模型降了档。
+  // 2026-09-04：ce73d83 重排信息架构时把文案里的 "Codex " 前缀去掉了（这个 chip
+  // 现在对所有 CLI 都显示，带 Codex 反而是错的），盯死旧文案的断言因此变红。
+  // 改成盯这两个数必须同时在场，不再盯前缀。
+  assert.match(RENDERER_SRC, /运行时有效窗口 \$\{s\.contextEffectiveMax/,
+    '上下文提示必须给出运行时实际有效窗口');
+  assert.match(RENDERER_SRC, /Hub 启动请求 \$\{s\.contextMax/,
+    '上下文提示必须同时给出 Hub 启动时请求的窗口，好让降档一眼可见');
 });
 
 test('the modal opens as flex so the body can scroll and the footer stays reachable', () => {
