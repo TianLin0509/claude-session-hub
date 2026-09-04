@@ -83,3 +83,37 @@ timeoutMs = clamp(60s, 30min, stepConfigs[i].timeoutMs || 10min)
 不适合放进自动化测试。那部分只能靠第一次手动跑一个绿档小任务验证。
 
 用法：`node tests/ran-workflow-cdp-e2e.js`
+
+
+## v1.6.57：真实多 AI 循环已实测跑通
+
+`tests/ran-loop-real-e2e.js`：隔离 Hub（9357 端口 + 独立 data dir）真起
+Claude + Codex 两个 CLI 会话，工作目录指向一次性沙箱（一个故意写错的 `add()`），
+配同构的两步循环跑到底。**刻意不用 RAN 预设本身** —— 那两个会改真仓库并合并 PR。
+
+实测结果（2026-09-04）：
+
+```json
+"status": "done", "round": 1, "consecutiveGreen": 1,
+"history": [{ "round": 1, "pass": true, "blockers": [] }]
+```
+
+沙箱 `python test_calc.py` 由红转绿。整条链路成立：派活 → Claude 真改代码 →
+Codex 真跑测试给裁决 → `parseVerdict` 认出 RESULT → gate 推进 → 达标结束。
+
+**一轮耗时约 17.5 分钟**（含两个 CLI 冷启动），任务本身只是把减号改成加号。
+据此推断真实任务一轮 20–30 分钟，跑满 3 轮 1–1.5 小时 ——
+收口两步各配 25 分钟超时有这个数支撑，不是拍脑袋。
+
+### 两个踩过的坑（都在测试脚本里，不是功能）
+
+1. 用 `groupchat:get-state` 取成员 —— 那个 API 返回聊天记录状态，不是成员列表。
+   `memberId` 其实是**位置约定**：`sidOf()` 把 `m1` 解析成 `subSessions[0]`。
+2. 从 `st.status` 取循环状态 —— 实际在 `st.loopState.status`。
+   取到空串导致明明 `done` 了还一直轮询到超预算，把通过报成了失败。
+
+### 已知限制
+
+这支测试会额外起一个 Hub + 两个 CLI 会话，**吃内存**。
+本机可用内存偏低时（实测剩 2.6 GB / 31.8 GB）会被系统杀掉。
+跑之前先看一眼内存，或先关掉几个不用的会话。
