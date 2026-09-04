@@ -150,6 +150,7 @@
         [
           {
             name: '实现并打包',
+            timeoutMs: 30 * 60 * 1000,   // 红档实现最费时，给引擎允许的上限
             prompt: [
               '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
               '任务就是本群聊里我上一条消息说的那件事；没说清就先问我一句。',
@@ -169,6 +170,7 @@
         [
           {
             name: '按内网意见修改',
+            timeoutMs: 25 * 60 * 1000,
             prompt: [
               '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
               '内网审核意见在 docs\\inbox\\，文件名带任务 ID。逐条处理后更新 PR，',
@@ -178,6 +180,7 @@
           },
           {
             name: '审 PR 并合并',
+            timeoutMs: 25 * 60 * 1000,   // 它要真跑测试：pytest 3 分钟 + 脚本式测试 2 分钟起
             prompt: [
               '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\MERGER.md 展开工作。',
               '按它的三条硬闸和必查项审这个 PR。你和上一步不是同一个会话，独立性成立。',
@@ -241,10 +244,16 @@
       const item = Array.isArray(stepConfigs) && stepConfigs[index] && typeof stepConfigs[index] === 'object'
         ? stepConfigs[index]
         : {};
-      return {
+      const out = {
         name: typeof item.name === 'string' ? item.name : '',
         prompt: typeof item.prompt === 'string' ? item.prompt : '',
       };
+      // timeoutMs 是可选的按步超时。loop-engine 会读它（缺省 10 分钟，钳位 1–30 分钟），
+      // 但这里以前只保留 name/prompt，模板填的值在归一化时被吃掉，引擎永远读到 undefined。
+      // 只在是有限正数时保留，避免把 NaN/字符串塞进去让引擎的 clamp 退回默认值。
+      const t = Number(item.timeoutMs);
+      if (Number.isFinite(t) && t > 0) out.timeoutMs = t;
+      return out;
     });
   }
 

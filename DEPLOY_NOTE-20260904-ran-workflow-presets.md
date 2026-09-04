@@ -37,11 +37,30 @@ SuperRAN 的流程被内网评审天然切成两半：内网那一趟约 20 分�
    不想要就把第二步 prompt 里「PASS 就由你执行合并」改成「PASS 就给出合并口令等我确认」——
    模板从不锁表单，随时可改。
 
-## 未验证
+## v1.6.55 补：按步超时，以及一条断掉的链
 
-**步骤超时够不够没有实测。** dispatcher 的硬超时是 5 分钟，活跃时可延长
-（`HARD_TIMEOUT_ACTIVE_MAX_EXTRA_MS` 8 分钟）。红档实现动辄 30 分钟以上，
-第一次跑请拿绿档小任务试，确认长任务不会被判超时。
+先更正一个误判：`5 + 8 = 13 分钟`**不是全局上限**。
+`disableHardTimeout: !(Number(turnTimeoutMs) > 0)` —— 普通群聊根本不启用硬超时，
+那套只在编排器传了 `turnTimeoutMs` 时才生效，防的是 paste-trapped 死等，不是限制干活时长。
+
+真正管工作流的是 loop-engine：
+
+```js
+timeoutMs = clamp(60s, 30min, stepConfigs[i].timeoutMs || 10min)
+```
+
+**但这条链是断的**：`normalizeStepConfigs()` 只保留 `name` 和 `prompt`，
+模板填的 `timeoutMs` 在归一化时被吃掉，引擎永远读到默认的 10 分钟。
+
+本次修好并配上：
+
+| 步骤 | timeoutMs |
+|---|---|
+| RAN 实现 | 30 分钟（引擎允许的上限） |
+| RAN 收口 · 改 | 25 分钟 |
+| RAN 收口 · 审 | 25 分钟（它要真跑测试，pytest 3 分钟起） |
+
+非法值（NaN / 负数 / 0）不写进结果，免得污染引擎的 clamp。两条测试守着。
 
 ## 涉及文件
 

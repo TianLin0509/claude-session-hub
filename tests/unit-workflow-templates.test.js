@@ -46,6 +46,27 @@ test('RAN 收口是改↔审的两步循环，审的那步读 MERGER.md 并给 R
   assert(c.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
 });
 
+test('RAN 预设带按步超时，且能穿过归一化（引擎才读得到）', () => {
+  // loop-engine: Math.max(60_000, Math.min(30*60_000, stepConfigs[i].timeoutMs || 10*60_000))
+  // normalizeStepConfigs 以前只留 name/prompt，模板填的 timeoutMs 会被吃掉，引擎永远读到默认值。
+  const impl = WT.createTemplateConfig('ran-implement', members);
+  assert.strictEqual(impl.stepConfigs[0].timeoutMs, 30 * 60 * 1000);
+  const conv = WT.createTemplateConfig('ran-converge', members);
+  assert(conv.stepConfigs.every(s => s.timeoutMs === 25 * 60 * 1000));
+
+  for (const c of [impl, conv]) {
+    const norm = WT.normalizeStepConfigs(c.steps, c.stepConfigs);
+    assert(norm.every((s, i) => s.timeoutMs === c.stepConfigs[i].timeoutMs),
+      'timeoutMs 必须在归一化后保留');
+  }
+});
+
+test('非法 timeoutMs 不写进归一化结果，避免污染引擎的 clamp', () => {
+  const bad = WT.normalizeStepConfigs([['m1'], ['m1'], ['m1']],
+    [{ timeoutMs: 'abc' }, { timeoutMs: -5 }, { timeoutMs: 0 }]);
+  assert(bad.every(s => !('timeoutMs' in s)));
+});
+
 test('RAN 预设只指向合同文件，不在 Hub 里复制流程规则', () => {
   for (const id of ['ran-implement', 'ran-converge']) {
     const c = WT.createTemplateConfig(id, members);
