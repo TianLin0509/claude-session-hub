@@ -19,7 +19,7 @@ const root = path.resolve(__dirname, '..');
 const watcher = require(path.join(root, 'core', 'group-chat-watcher.js'));
 const { createLoopEngine } = require(path.join(root, 'main', 'groupchat', 'loop-engine.js'));
 
-function watcherHarness({ screenReadsRunning }) {
+function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false }) {
   const transcriptTap = new EventEmitter();
   let enters = 0;
   class SM extends EventEmitter {
@@ -33,11 +33,15 @@ function watcherHarness({ screenReadsRunning }) {
     getSessionBuffer() { return this.buf; }
     writeToSession(sid, data) {
       if (data === '\r') enters += 1;
-      // 关键：永远不发语义确认事件，只靠屏幕内容区分两种情形。
-      this.buf += screenReadsRunning
+      // 关键：永远不发语义确认事件，只靠屏幕内容区分几种情形。
+      let frame = screenReadsRunning
         ? '\n• Working (3s • esc to interrupt)\n'
         : '\n› Ask Codex to do anything\n';
-      this.emit('output', { sessionId: sid, data: this.buf.slice(-80) });
+      // 「上一轮还在收尾，但本轮的粘贴还挂在输入框里没提交」——
+      //   屏幕同时读成 running 且末尾挂着折叠标记。
+      if (pasteStuckInInputBox) frame += '› [Pasted Content 10377 chars]\n';
+      this.buf += frame;
+      this.emit('output', { sessionId: sid, data: frame });
     }
   }
   const sessionManager = new SM();
@@ -57,6 +61,25 @@ test('a screen that already reads running never gets a redundant Enter', async (
   assert.strictEqual(state.enters, 1,
     'pressing Enter into an already-working TUI can submit a second turn');
   assert.strictEqual(result.enterAttempts, 1);
+  // 2026-09-03：屏幕跑过 + 输入框空 = 已提交，不能报 stuck。
+  //   实测现场：新建 Codex 会话第一轮，rollout 未绑定所以 task_started 迟到，
+  //   答案又短到 running footer 撑不满确认帧 —— 屏幕上答案都打出来了却报 stuck，
+  //   生产里就是给一次完全正常的发送弹「⚠ 消息可能没提交」。
+  assert.notStrictEqual(result.sendStatus, 'stuck',
+    '输入框已经空了、屏幕也跑过，就不该告诉用户消息没提交');
+});
+
+// 2026-09-03 真机压测抓到的反例：Codex 普通会话连发，第 2 条 220 行的 prompt 以
+//   `› [Pasted Content 10377 chars]` 卡在输入框，而屏幕因为上一轮还在收尾被读成 running。
+//   旧逻辑把 looksAlreadyRunning 的 continue 和补回车放在同一个 retryMax 预算里，
+//   结果那次 continue 直接耗尽预算 —— 补发回车一次都没发就报了 stuck，用户干等 5 分钟。
+//   「屏幕在跑」不足以证明**这一次**的粘贴提交了；输入框里还挂着折叠标记就是没提交的铁证。
+test('a running screen does NOT excuse a paste still sitting in the input box', async () => {
+  const state = watcherHarness({ screenReadsRunning: true, pasteStuckInInputBox: true });
+  const result = await watcher.sendToPty('s', 'x'.repeat(500), 'codex');
+  assert.strictEqual(state.enters, 2,
+    '输入框里还有没提交的折叠粘贴时，必须补一次隔离回车，不能被 running 读数挡掉');
+  assert.strictEqual(result.enterAttempts, 2);
 });
 
 test('a genuinely idle input box still gets exactly one bounded recovery Enter', async () => {

@@ -88,6 +88,41 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
 - **Codex 思考强度按模型取**（`core/codex-model-catalog.js`）：gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh。写死一份必然给某些模型多出或少掉档位。
 - **`service_tier` 只提供实测有效值**（`core/codex-speed-tier.js`）：`inherit`(不覆盖) / `fast` / `flex`。**没有"关闭"这一档** —— 二进制里只匹配 `fast|flex|priority`，模型目录的 `default_service_tier` 是 null，即"不 fast"的表示是**键不存在**；而 `-c` 只能覆盖不能删键（TOML 没有 null）。想长期关掉改全局 config.toml，那才是 Codex 给的机制。别为了凑一个"关"字去猜字面量。
 
+## 铁律：往 CLI 输入框发 prompt，只走闭环，永远不许盲发回车
+
+**从 2026-04-30 到 06-18 至少返工过 6 次的同一个 bug**：内容进了 CLI 输入框，折叠成
+`[Pasted text +N lines]` / `[[Pasted Content N chars]]`，**就是不提交**，也没有任何提示，
+用户干等几十秒。每次都被当成"再多发几个 \r / 再多等 200ms"的调参问题，于是每次都复发。
+
+**根因不是延时不够，是延时这个思路本身错了。** node-pty 在 Windows 上是
+`this._agent.inSocket.write(data)`（named pipe 上的 `net.Socket`，有内部队列、异步排空）。
+几十 KB 的 payload 写下去之后再 `write('\r')`，这个 `\r` 被追加进同一条队列，很可能与
+`BP_END` 一起落进 CLI 的**同一个 stdin chunk**，被 Ink 当粘贴尾巴丢掉。
+**任何固定毫秒数都必然在某个 payload 体积上失效** —— 这就是"越长越容易卡"。
+
+规则：
+
+1. **禁止任何形式的 `setTimeout(..., '\r')` 盲发**，也禁止 `text + '\r'` 合并成一次 write。
+   曾经踩过的四处：浮动输入框（700/900/1100ms 三连发）、卡片重发（零延迟合并写）、
+   会议普通模式（sizeDelay 封顶 500ms）、群聊快路径（写死 500ms）。
+2. **一律走 `session:send-prompt`**（`main/ipc/prompt-submit-handlers.js`）
+   或直接 `groupChatWatcher.sendToPty`。裸 `terminal-input` IPC 只用于真·按键
+   （ESC / Ctrl+C / 方向键）和宿主 shell 的短命令。
+3. 闭环的四个必要环节，缺一不可：**分块投喂**（socket 队列不积压）→
+   **体积自适应 settle + 等折叠标记这个正向信号**（`core/pty-prompt-submit.js`）→
+   **等语义确认**（Claude `UserPromptSubmit` / Codex `task_started`，两者都汇到
+   `sessionManager` 的 `agent-turn-started`）→ **缺确认才补一次有界回车**。
+4. **失败必须可见。** 确认拿不到就如实报 `stuck`，前端亮「补发」按钮
+   （`.fi-stuck`）。可以偶尔失败，不能失败得无声无息 —— 静默卡死才是用户真正的损失。
+5. 补发路径自己也必须走闭环。它是这个 bug 的恢复路径，再踩一次同一个坑毫无意义。
+6. 分块切片**不许劈开 UTF-16 代理对**，否则 emoji 会被切成两段无效 UTF-8。
+7. 契约测试 `tests\unit-prompt-submit-ui-contract.test.js` 用源码 grep 守住以上各条，
+   改动前先读它。
+
+**顺带的教训**：`core/paste-trapped-detector.js` 的折叠标记正则曾经漏掉现版 Claude 的
+`[Pasted text #1 +120 lines]`（多了粘贴槽位号），**等于群聊的 paste 巡检对 Claude 一直是瞎的，
+而没人发现**。加 CLI 输出的模式匹配时，必须拿真实样本核对，别照着记忆里的格式写。
+
 ## 铁律：并行测试 Hub 实例（多 MCP / E2E 测试）
 
 **Hub 原生支持 `CLAUDE_HUB_DATA_DIR` env var 实现运行时状态隔离。所有并行测试必须走这条路径，不得 copy 整个 node_modules 或忽略状态隔离——历史上那种做法已经造成 35+ 条防火墙规则污染 + 数 GB 磁盘垃圾 + 测试互相干扰。**

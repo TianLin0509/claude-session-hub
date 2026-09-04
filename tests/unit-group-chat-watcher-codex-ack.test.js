@@ -191,8 +191,13 @@ test('long-prompt submit watchdog survives 80 mixed first/second-Enter acknowled
   for (let i = 0; i < 80; i += 1) {
     const sid = `stress-${i}`;
     assert.equal(enters.get(sid), i % 2 === 0 ? 1 : 2, sid);
-    const pasteWrite = writes.get(sid).find(data => data.includes(prompt));
-    assert.ok(pasteWrite && pasteWrite.startsWith('\x1b[200~') && pasteWrite.endsWith('\x1b[201~'), `full bracketed prompt missing for ${sid}`);
+    // 长 payload 现在是分块投喂的（core/pty-prompt-submit.js），所以不能再指望
+    //   "某一次 write 里含完整 prompt"。改成把提交信号以外的写入重组回来校验：
+    //   既确认分块无损，也确认 BP 帧头尾完整、prompt 一字不差。
+    const pasted = writes.get(sid).filter(data => !['\r', '\n', '\r\n', '\x15'].includes(data)).join('');
+    assert.ok(pasted.startsWith('\x1b[200~') && pasted.endsWith('\x1b[201~'), `bracketed paste frame broken for ${sid}`);
+    assert.equal(pasted.slice('\x1b[200~'.length, -'\x1b[201~'.length), prompt, `chunked prompt not byte-identical for ${sid}`);
+    assert.ok(writes.get(sid).length > 2, `long prompt should be chunked for ${sid}`);
   }
   assert.equal(sessionManager.listenerCount('agent-turn-started'), 0);
   assert.equal(sessionManager.listenerCount('output'), 0);

@@ -2602,7 +2602,11 @@ document.addEventListener('click', (e) => {
     const sid = getCardSessionId(card);
     if (sid && typeof ipcRenderer !== 'undefined') {
       armPtyBurstFallback(sid);
-      ipcRenderer.send('terminal-input', { sessionId: sid, data: promptText + '\r' });
+      // 2026-09-03：这里原本是 `promptText + '\r'` 一次写完 —— 连 bracketed paste
+      //   和延迟都没有，重发一条稍长的历史消息几乎必然被 TUI 当粘贴吞掉换行。
+      //   与浮动输入框走同一条闭环。
+      ipcRenderer.invoke('session:send-prompt', { sessionId: sid, text: promptText })
+        .catch(err => console.warn('[card-resend] send-prompt failed:', err && err.message));
     }
     const orig = btn.textContent;
     btn.textContent = '↺';
@@ -3105,6 +3109,64 @@ function measureFloatingBarVisualHeight(bar) {
   return Math.ceil(Math.max(0, bottom - top));
 }
 
+// 「消息没提交」必须看得见（2026-09-03）。
+//   闭环发送已经把静默卡死的概率压到很低，但只要还有残余概率，就不能让它无声无息 ——
+//   用户上一次的体验就是"以为发出去了，几十秒后才发现 AI 根本没动"。
+//   这里不自动重发：能否安全重发取决于原文还在不在 CLI 输入框里，
+//   那个判断在主进程的 resendCurrentPrompt 里做（含指纹比对），点按钮才触发。
+function clearFloatingInputStuck(bar) {
+  if (!bar) return;
+  const existing = bar.querySelector('.fi-stuck');
+  if (existing) existing.remove();
+}
+
+function markFloatingInputStuck(bar, sessionId) {
+  if (!bar || bar.querySelector('.fi-stuck')) return;
+  const stack = bar.querySelector('.fi-content-stack') || bar;
+  const row = document.createElement('div');
+  row.className = 'fi-stuck';
+
+  const label = document.createElement('span');
+  label.className = 'fi-stuck-label';
+  label.textContent = '⚠ 消息可能没提交，还停在 CLI 输入框';
+
+  const resendBtn = document.createElement('button');
+  resendBtn.type = 'button';
+  resendBtn.className = 'fi-stuck-resend';
+  resendBtn.textContent = '补发';
+  resendBtn.title = '重新提交上一条消息（原文还在输入框时只补回车，否则整条重写）';
+  resendBtn.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    resendBtn.disabled = true;
+    resendBtn.textContent = '补发中…';
+    try {
+      const result = await ipcRenderer.invoke('session:resend-prompt', { sessionId });
+      if (result && result.ok) {
+        clearFloatingInputStuck(bar);
+        return;
+      }
+      label.textContent = `⚠ 补发未确认（${(result && (result.reason || result.error)) || 'unknown'}），可在终端里手按回车`;
+    } catch (err) {
+      label.textContent = `⚠ 补发失败：${err && err.message}`;
+    }
+    resendBtn.disabled = false;
+    resendBtn.textContent = '重试';
+  });
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'fi-stuck-dismiss';
+  dismissBtn.textContent = '忽略';
+  dismissBtn.title = '关掉这条提示（不影响会话）';
+  dismissBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    clearFloatingInputStuck(bar);
+  });
+
+  row.append(label, resendBtn, dismissBtn);
+  stack.insertBefore(row, stack.firstChild);
+}
+
 function lockFloatingInputBarGeometry(bar) {
   if (!bar) return 0;
   const height = Math.ceil(bar.getBoundingClientRect().height || bar.offsetHeight || 0);
@@ -3267,11 +3329,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // paste-sensitive TUI（claude/gemini/codex 等 9 家 AI CLI）会把紧贴到达的字符
   //   当成 paste 事件 — 紧贴的 \r 被当作 paste 内容吞掉，消息卡在输入框不提交
   //   （2026-05-10 用户反馈：按 Enter 后内容进了 shell 输入框但不发送）。
-  //   修复参考 group-chat-watcher.js 1A fast-path：claude 家族用 BP marker 显式
-  //   标记 paste 结束 + 500ms 间隔后单独发 \r；gemini/codex 不识别 BP，靠静默期
-  //   触发 paste-detect 完成（≥400ms）；普通 shell 无 paste-detect，保持原行为。
-  const BP_START = '\x1b[200~';
-  const BP_END = '\x1b[201~';
+  //   bracketed paste 的写入、settle 与提交确认现在全在主进程
+  //   （main/ipc/prompt-submit-handlers.js → core/group-chat-watcher.sendToPty），
+  //   与群聊派发同一条实现；渲染进程只负责清 UI 和展示"没提交"这件事。
 
   function sendInput() {
     const userText = readContenteditablePlainText(inputBox);
@@ -3309,24 +3369,22 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       }
     }
 
-    if (isClaudeRuntimeSession(session)) {
-      ipcRenderer.send('terminal-input', { sessionId, data: BP_START + text + BP_END });
-      // belt-and-suspenders（2026-05-11 用户反馈：BP+500ms+1×\r 仍偶发"消息进输入框但没提交"）：
-      //   BP_END 后 Ink paste-detect 仍有 debounce 窗口，紧贴的 \r 被并入 paste 内容吞掉。
-      //   多发 \r：首个被吞 → 后续落到正常 prompt 触发提交；多余 \r 落空输入框被 CLI 忽略，
-      //   无副作用。首个 \r delay 拉到 700ms 让 paste 窗口尽量先关，再 200ms × 2 兜底。
-      //   参考 core/group-chat-watcher.js zero-echo 兜底策略（已工程验证）。
-      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 700);
-      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 900);
-      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 1100);
-    } else if (kind && isPasteSensitive(kind)) {
-      ipcRenderer.send('terminal-input', { sessionId, data: text });
-      // 同 belt-and-suspenders 思路（gemini/codex 不识别 BP marker，但 paste-detect 同病）。
-      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 500);
-      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 700);
-    } else {
-      ipcRenderer.send('terminal-input', { sessionId, data: text + '\r' });
-    }
+    // 2026-09-03：这里以前是开环的 —— 写完 paste 就按 700/900/1100ms 盲发三次 \r，
+    //   发完不管。长 prompt 时 node-pty 的 inSocket 队列还没排空，三个 \r 全被并进
+    //   BP_END 那一块当粘贴尾巴吃掉，内容折叠成 [Pasted text +N lines] 躺在输入框里，
+    //   没人再按回车、也没有任何提示。现在整条交给主进程闭环：
+    //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
+    //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
+    clearFloatingInputStuck(bar);
+    ipcRenderer.invoke('session:send-prompt', { sessionId, text }).then((result) => {
+      if (result && result.ok && result.sendStatus !== 'stuck') return;
+      const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
+      console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
+      markFloatingInputStuck(bar, sessionId);
+    }).catch((err) => {
+      console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
+      markFloatingInputStuck(bar, sessionId);
+    });
   }
 
   inputBox.addEventListener('keydown', (e) => {

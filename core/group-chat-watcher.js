@@ -27,8 +27,15 @@ const {
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
 //   Claude family 与当前 Codex 都支持；DeepSeek 迁移到 Codex 后也走 Codex 分支。
-const BP_START = '\x1b[200~';
-const BP_END = '\x1b[201~';
+//   marker 常量与分块/settle 原语都在 core/pty-prompt-submit.js，普通会话走同一套。
+//   本文件不再直接拼 BP 帧（writeBracketedPaste 负责），所以只引原语不引常量。
+const {
+  computeSettleMs,
+  writeBracketedPaste,
+  waitForPasteSettled,
+  snapshotPasteMarker,
+  pasteStillInInputBox,
+} = require('./pty-prompt-submit.js');
 
 let _deps = null;
 
@@ -315,8 +322,12 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 // **关键约束（历史 bug 重现于 2026-04-30）**：Claude/Gemini/Codex 三家都是 TUI alt-screen 程序，
 //   把紧贴到达的字符当"粘贴"事件 → 粘贴里的 '\r' 被当文本换行符而不是 Enter 提交。
 //   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
-async function sendToPty(sid, prompt, kind) {
+// options.requireReady=false：跳过冷启动 waitCliReady（2026-09-03）。
+//   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
+//   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
+async function sendToPty(sid, prompt, kind, options = {}) {
   const { sessionManager } = _deps;
+  const requireReady = options.requireReady !== false;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
@@ -333,8 +344,8 @@ async function sendToPty(sid, prompt, kind) {
   const PRE_PROMPT_QUIET_MS = 1500;     // 至少 1.5s PTY 无新字符
   const PRE_PROMPT_MAX_WAIT_MS = 8000;  // 上限：避免持续 spinner 死等
 
-  // 冷启动：仅首次或 ready 被重置后
-  if (!sessionManager.getGroupChatReady(sid)) {
+  // 冷启动：仅首次或 ready 被重置后（requireReady=false 的调用方整段跳过）
+  if (requireReady && !sessionManager.getGroupChatReady(sid)) {
     const ready = await waitCliReady(sid, kind, 60000);
     // CLI 完全没启动 → prompt 都没写，可以正当放弃
     if (!ready) {
@@ -367,12 +378,29 @@ async function sendToPty(sid, prompt, kind) {
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
-    sessionManager.writeToSession(sid, BP_START + prompt + BP_END);
+    // 分块投喂（2026-09-03）：单次 write 几十 KB 会把 node-pty 的 inSocket 队列灌满，
+    //   随后那个 \r 被追加进同一条队列，很可能与 BP_END 落进 CLI 的同一个 stdin chunk
+    //   被当粘贴尾巴吃掉。分片写让队列在最后一片写完时接近空，\r 才可能独立成块。
+    const baselineMarker = snapshotPasteMarker(sessionManager, sid);
+    await writeBracketedPaste(sessionManager, sid, prompt, {
+      chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
+      gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
+    });
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
-    // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
-    //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
-    const pasteSettleMs = Math.max(0, Number(_deps && _deps.bracketedPasteSettleMs));
-    await new Promise(r => setTimeout(r, Number.isFinite(pasteSettleMs) && pasteSettleMs > 0 ? pasteSettleMs : 500));
+    // BP_END 紧贴 \r 时 Ink 把 \r 当 paste 尾巴忽略，所以必须隔开再发。
+    //   隔多久以前写死 500ms —— 短 prompt 够用，长 prompt 必然还在消化窗口内，
+    //   于是"输入越长越容易卡输入框"。改成两条：
+    //     1) settle 上限随体积走（computeSettleMs）
+    //     2) 屏幕上出现新的折叠标记就提前收工（正向信号，不再干等）
+    //   bracketedPasteSettleMs 显式配置时仍按固定值走，保留测试与应急旁路。
+    const configuredSettleMs = Number(_deps && _deps.bracketedPasteSettleMs);
+    const pasteSettleMs = Number.isFinite(configuredSettleMs) && configuredSettleMs > 0
+      ? configuredSettleMs
+      : computeSettleMs(String(prompt || '').length, {
+        minMs: Number(_deps && _deps.bracketedPasteSettleMinMs) || undefined,
+        maxMs: Number(_deps && _deps.bracketedPasteSettleMaxMs) || undefined,
+      });
+    await waitForPasteSettled({ sessionManager, sid, settleMs: pasteSettleMs, baselineMarker });
     // One Enter first.  Extra Enters are conditional on the absence of a
     // semantic work-start acknowledgement, rather than being fired blindly.
     // This mirrors the normal-session runtime truth and avoids accidental
@@ -407,19 +435,55 @@ async function sendToPty(sid, prompt, kind) {
       // box while a `[Pasted Content …]` block is still waiting for Enter. A
       // provider lifecycle event is the semantic acknowledgement. If absent,
       // send a late isolated Enter only then, exactly as the user would.
-      for (let attempt = 0; !acknowledgement && attempt < retryMax; attempt += 1) {
-        // 正向证据优先：屏幕上已经在跑（哪怕动画还没攒够确认帧），就绝不再补回车——
-        //   那一下会落进一个已经开工的 TUI，轻则空提交，重则再起一个 turn。只延长等待。
-        if (looksAlreadyRunning(probeState)) {
-          console.warn(`[group-chat] ${kind} work-start unconfirmed for ${sid.slice(0, 8)} but the screen already reads running; extending the wait instead of pressing Enter`);
+      // 「屏幕在跑」到底该不该补回车，取决于**输入框里还有没有没提交的粘贴内容**
+      //   （2026-09-03，实测逼出来的）。
+      //   旧写法只看 looksAlreadyRunning：命中就 continue，而 retryMax=1 时那个 continue
+      //   直接把 attempt 推到上限、循环结束 —— **补发回车一次都没发**却报了 stuck。
+      //   实测现场（Codex 普通会话 220 行）正是如此：上一轮答案还在收尾，屏幕被读成"在跑"，
+      //   于是 220 行 prompt 以 `› [Pasted Content 10377 chars]` 永远留在输入框里，
+      //   enterAttempts 停在 1，用户干等。
+      //
+      //   两种情形都真实存在，区分它们的不是预算而是正向证据：
+      //     - 屏幕末尾还挂着折叠标记 → 这次粘贴**没提交**，补回车是唯一救援，必须发；
+      //     - 屏幕在跑且输入框是空的 → prompt 已经进去了，确认只是慢，补回车才会多起一轮
+      //       （那正是 unit-groupchat-redundant-enter-guard 锁住的实测教训）。
+      //   注意只看可见屏幕末尾行：ring buffer 是只增历史，提交成功后标记依然留在里面。
+      const maxRunningExtends = Math.max(0, Number(_deps && _deps.agentTurnStartRunningExtends) || 2);
+      let runningExtends = 0;
+      // 记下「看到屏幕在跑、且输入框里没有未提交的折叠粘贴」这个观察，
+      //   循环结束后用它把"确认迟到"和"真的卡住"分开。
+      let observedRunningWithClearInput = false;
+      for (let attempt = 0; !acknowledgement && attempt < retryMax;) {
+        const pasteStillPending = pasteStillInInputBox(probeState);
+        if (!pasteStillPending && looksAlreadyRunning(probeState)) {
+          observedRunningWithClearInput = true;
+          if (runningExtends >= maxRunningExtends) {
+            console.warn(`[group-chat] ${kind} work-start still unconfirmed for ${sid.slice(0, 8)}, but the input box is clear and the screen reads running; not pressing Enter`);
+            break;
+          }
+          runningExtends += 1;
+          console.warn(`[group-chat] ${kind} work-start unconfirmed for ${sid.slice(0, 8)} but the screen already reads running; extending the wait ${runningExtends}/${maxRunningExtends} instead of pressing Enter`);
           acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
           continue;
         }
+        attempt += 1;
         recoveryAttempts += 1;
         enterAttempts += 1;
-        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}; sending late Enter recovery ${attempt + 1}/${retryMax}`);
+        console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}${pasteStillPending ? ' and a collapsed paste is still sitting in the input box' : ''}; sending late Enter recovery ${attempt}/${retryMax}`);
         sessionManager.writeToSession(sid, '\r');
         acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
+      }
+      // 「屏幕跑过 + 输入框是空的」本身就是提交成功的证据（2026-09-03）。
+      //   实测现场：新建 Codex 会话的**第一轮**，rollout 还没绑定所以 task_started 迟到，
+      //   而答案又短到 running footer 没撑够确认帧 —— 于是没有任何 lifecycle 确认。
+      //   但屏幕上答案已经打出来了、输入框空着。此时报 stuck 是自相矛盾的：
+      //   stuck 的含义是「prompt 还躺在输入框里没提交」，而我们明明观察到它离开了输入框。
+      //   照报不误的话，用户会在一次完全正常的发送上看到「⚠ 消息可能没提交」。
+      //   注意这只在**从未按过补发回车**的路径上成立；真正卡住的那条路输入框里有折叠标记，
+      //   走的是上面补回车的分支，拿不到确认仍然如实报 stuck。
+      if (!acknowledgement && observedRunningWithClearInput) {
+        console.warn(`[group-chat] ${kind} prompt has no lifecycle acknowledgement for ${sid.slice(0, 8)}, but the screen ran with a clear input box; treating it as submitted`);
+        acknowledgement = { source: 'pty-running-input-clear', observedAt: Date.now(), turnId: null };
       }
       if (!acknowledgement) {
         console.warn(`[group-chat] ${kind} prompt submission not acknowledged for ${sid.slice(0, 8)} after late Enter recovery`);
@@ -646,9 +710,24 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) 
   } else {
     mode = 'rewrite_full';
     await clearCodexInputLine(sessionManager, sid, kind);
-    const actualPrompt = await writePromptToSession(sessionManager, sid, prompt, kind);
-    noteSubmittedPrompt(sid, kind, actualPrompt);
-    await new Promise(r => setTimeout(r, rewriteSettleMs));
+    if (isClaudeFamily(kind) || isCodexCliKind(kind)) {
+      // 2026-09-03：这条以前走 writePromptToSession —— 对 Claude 就是"裸写整段 +
+      //   150ms + \r"，正是本次要修掉的那套开环时序。补发是这个 bug 的**恢复路径**，
+      //   它自己再踩一次同一个坑就毫无意义，所以改走与主路径同一套分块 + 自适应 settle。
+      const baselineMarker = snapshotPasteMarker(sessionManager, sid);
+      await writeBracketedPaste(sessionManager, sid, prompt);
+      noteSubmittedPrompt(sid, kind, prompt);
+      await waitForPasteSettled({
+        sessionManager,
+        sid,
+        settleMs: computeSettleMs(String(prompt || '').length),
+        baselineMarker,
+      });
+    } else {
+      const actualPrompt = await writePromptToSession(sessionManager, sid, prompt, kind);
+      noteSubmittedPrompt(sid, kind, actualPrompt);
+      await new Promise(r => setTimeout(r, rewriteSettleMs));
+    }
     await writeSubmitFallbackSignals(sessionManager, sid, kind, submitTries, (timing && timing.ENTER_RETRY_GAP_MS) || 150);
   }
   await new Promise(r => setTimeout(r, isCodexCliKind(kind) ? 1500 : ((timing && timing.POST_ENTER_VERIFY_MS) || 500)));

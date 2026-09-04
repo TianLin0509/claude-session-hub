@@ -26,10 +26,15 @@
 
 // 三家 paste marker 通配。覆盖：
 //   "[[Pasted Content 4834 chars]]"  codex
-//   "[Pasted text +120 lines]"       claude code TUI
+//   "[Pasted text +120 lines]"       claude code TUI（旧版）
+//   "[Pasted text #1 +120 lines]"    claude code TUI（现版，带粘贴序号）
 //   "[Pasted +N lines]" / 类似       gemini（实测时按需扩）
 //   "[paste N lines]"                Codex 低大小写 / 简写形态
-const PASTE_MARKER_REGEX = /\[+(?:Pasted|paste)(?:\s+Content)?(?:\s+text)?\s*\+?(\d+)\s*(?:chars|lines)\]+/i;
+// `#N` 是粘贴槽位序号，不是体积。捕获组 1 必须落在体积数字上 —— tick() 靠它判断
+//   "还是同一条 marker"，取成槽位号会让每次新粘贴都看起来体积没变。
+//   2026-09-03：补 `(?:#\d+)?` 之前本正则整条漏掉现版 Claude 格式，
+//   等于 paste 巡检对 Claude 会话一直不生效。
+const PASTE_MARKER_REGEX = /\[+(?:Pasted|paste)(?:\s+Content)?(?:\s+text)?\s*(?:#\d+)?\s*\+?(\d+)\s*(?:chars|lines)\]+/i;
 
 const TIME_GATE_MS = 3000;
 const MIN_MARKER_OBSERVATIONS = 2;
