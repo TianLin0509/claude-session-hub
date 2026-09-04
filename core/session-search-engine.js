@@ -76,7 +76,7 @@ class SessionSearchEngine {
       kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
       geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
-      refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
+      refreshTtlMs: Number(options.refreshTtlMs) || 60_000,
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
       maxSourceChars: Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS),
@@ -238,8 +238,17 @@ class SessionSearchEngine {
     if (!force && this.statusValue.ready && Date.now() - this.lastRefreshAt < this.options.refreshTtlMs) {
       return { ...this.statusValue };
     }
+    // 已经有可用索引时，这一趟本质是「增量体检」：绝大多数来源的 signature 没变，
+    //   会被原样复用，用户的检索能力一秒都没缺失。此时**不要**先把状态翻成
+    //   refreshing —— 前端一看见 refreshing 就显示「正在建立本地索引 · 0/N」并禁用按钮。
+    //   TTL 只有 10s，于是用户每次打开搜索面板都撞见这句话，得出「每次打开都要索引半天」
+    //   的结论，而实际上索引是持久化且增量的，真正要重建的往往是 0 个来源。
+    //   真有活要干时，下面统计出待解析数量再翻状态，那时候的进度条才是诚实的。
+    const silentRescan = !force && this.statusValue.ready === true;
     this.refreshPromise = (async () => {
-      this._emit({ phase: 'discovering', refreshing: true, lastError: null, sourceErrors: [] });
+      this._emit(silentRescan
+        ? { phase: 'rescanning', lastError: null, sourceErrors: [] }
+        : { phase: 'discovering', refreshing: true, lastError: null, sourceErrors: [] });
       const collected = collectSourceDescriptors(this._dynamicOptions(snapshot), snapshot);
       const descriptors = [...(collected.descriptors || [])]
         .sort((left, right) => Number(right && right.mtime || 0) - Number(left && left.mtime || 0))
@@ -256,7 +265,23 @@ class SessionSearchEngine {
       let staleSources = diagnostics.length;
       let indexedChars = 0;
       let completed = 0;
-      this._emit({ totalSources: descriptors.length, indexedSources: 0 });
+      // 先数清楚这一趟到底有多少来源真的要重新解析（signature 变了或之前失败过）。
+      //   进度条按「要干的活」算，而不是按「扫过的目录数」算 —— 后者永远是 4000+，
+      //   看上去像在从零重建，实际上可能一个都不用动。
+      const pendingSources = descriptors.reduce((count, descriptor) => {
+        const previous = sourceStates.get(descriptor.key) || null;
+        const reusable = !force && previous && previous.signature === descriptor.signature
+          && !(descriptor.type === 'codex' && previous.stale);
+        return reusable ? count : count + 1;
+      }, 0);
+      const announceProgress = !(silentRescan && pendingSources === 0);
+      const progressTotal = announceProgress && silentRescan ? pendingSources : descriptors.length;
+      if (!announceProgress) {
+        // 纯体检：没有任何来源需要重解析。全程不打扰用户，状态保持 ready。
+        this._emit({ phase: 'ready', totalSources: descriptors.length, indexedSources: descriptors.length });
+      } else {
+        this._emit({ refreshing: true, totalSources: progressTotal, indexedSources: 0 });
+      }
 
       for (const descriptor of descriptors) {
         const previous = sourceStates.get(descriptor.key) || null;
@@ -299,9 +324,11 @@ class SessionSearchEngine {
         // 以前 4 个才让一次：子进程是单线程的，一次搜索/状态请求最坏要等 4 个来源
         // 解析完，而大 Codex rollout 单个就要几百毫秒 —— 这就是重建索引时弹窗
         // 「卡顿」的直接原因。让出一次的成本是一个宏任务，2400 个来源可以忽略。
-        if (completed % 4 === 0 || completed === descriptors.length) {
+        // 静默体检（没有任何来源要重解析）时一个进度都不推：推了前端就会画进度条，
+        // 又变回「看起来在重建索引」。有真活干时照常推。
+        if (announceProgress && (completed % 4 === 0 || completed === descriptors.length)) {
           this._emit({
-            phase: 'indexing', totalSources: descriptors.length, indexedSources: completed,
+            phase: 'indexing', totalSources: progressTotal, indexedSources: completed,
             parsedSources, reusedSources, staleSources, sourceErrors: diagnostics.slice(0, 8),
           });
         }
