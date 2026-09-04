@@ -36,6 +36,19 @@
 - 普通 session 输出链路应保持单写入：PTY data -> main -> renderer -> xterm。看到“重复回答”时，先排查 TUI 整屏重绘、resize/reflow、terminal reopen，而不是直接认定模型重复输出。
 - 终端 resize 相关改动要特别谨慎；`ResizeObserver`、sidebar collapse、preview splitter、zoom、show terminal 都可能触发重绘。
 
+## 往 CLI 输入框发 prompt（2026-09-03）
+
+- **禁止盲发回车**：任何 `setTimeout(..., '\r')` 或 `text + '\r'` 合并单写都不许再出现。
+  node-pty 在 Windows 上写的是有内部队列的 named pipe socket，长 payload 没排空时那个 `\r`
+  会与 `BP_END` 落进同一个 stdin chunk 被 TUI 当粘贴尾巴吃掉 —— 固定毫秒数必然在某个体积上失效。
+- 发 prompt 一律走 `session:send-prompt`（`main\ipc\prompt-submit-handlers.js`）或
+  `groupChatWatcher.sendToPty`。裸 `terminal-input` 只留给真·按键和宿主 shell 短命令。
+- 闭环四环节缺一不可：分块投喂 → 体积自适应 settle + 等折叠标记 → 等语义确认
+  （`agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认要如实报 `stuck` 并在 UI 上亮出来。
+- 契约测试 `tests\unit-prompt-submit-ui-contract.test.js` 守住以上各条，改动前先读。
+- 加 CLI 输出的模式匹配时必须拿真实样本核对：折叠标记正则曾漏掉现版 Claude 的
+  `[Pasted text #1 +120 lines]`，导致 paste 巡检对 Claude 长期失效而无人察觉。
+
 ## 验证要求
 
 - 语法级改动至少跑对应 `node --check` 或项目已有单测。

@@ -22,7 +22,9 @@ if (typeof document !== 'undefined') (function () {
     listHeroes: _listHeroes,
     normalizeHeroAssignments: _normalizeHeroAssignments,
   } = require('../core/hero-prompts.js');
-  const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
+  // isPasteSensitive 不再在本文件用：paste 敏感性的判断已经下沉到主进程的
+  //   session:send-prompt 闭环里（main/ipc/prompt-submit-handlers.js）。
+  const { kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
           slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
   const {
@@ -6224,20 +6226,21 @@ if (typeof document !== 'undefined') (function () {
     }
 
     // --- Normal mode: Phase C send to each target ---
+    // 2026-09-03：这里原本是「裸写 payload + 400~900ms 后盲发一个 \r」。
+    //   sizeDelay 封顶 500ms，意味着 5KB 和 50KB 的 payload 等的时间一样长 ——
+    //   会议成员越多、上下文越长，\r 越容易还在 node-pty 的写队列里就被并进
+    //   paste 块吞掉，消息卡在 CLI 输入框不提交。改走与浮动输入框、群聊派发
+    //   同一条闭环（分块投喂 + 自适应 settle + 语义确认 + 有界补回车）。
+    //   各会话之间仍并行，闭环内部按会话串行。
     for (const sessionId of validTargets) {
       const payload = (contextBySid[sessionId] || '') + text;
-      ipcRenderer.send('terminal-input', { sessionId, data: payload });
-      const session = sessions ? sessions.get(sessionId) : null;
-      // 2026-05-02 修复：旧版本仅 codex 用 400ms 延迟，其他 200ms。但 Claude/Gemini/
-      //   DeepSeek/GLM 同样是 TUI alt-screen + paste-detect 程序，200ms 太短可能让 \r
-      //   落进 paste 缓冲被吞 → 字符进了 CLI 输入框但 Enter 没提交 → 用户血泪反馈
-      //   "卡输入框需手按 Enter"。统一所有 paste-sensitive CLI 都用 400ms 兜底，
-      //   powershell 等普通 shell 仍 200ms。
-      const baseDelay = session && isPasteSensitive(session.kind) ? 400 : 200;
-      const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
-      setTimeout(() => {
-        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-      }, baseDelay + sizeDelay);
+      ipcRenderer.invoke('session:send-prompt', { sessionId, text: payload })
+        .then((result) => {
+          if (result && result.ok && result.sendStatus !== 'stuck') return;
+          console.warn(`[meeting-room] prompt not acknowledged for ${String(sessionId).slice(0, 8)}:`,
+            (result && (result.error || result.sendStatus)) || 'unknown');
+        })
+        .catch(err => console.warn('[meeting-room] send-prompt failed:', err && err.message));
     }
 
     meeting.lastMessageTime = Date.now();
