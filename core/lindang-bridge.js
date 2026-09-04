@@ -239,9 +239,14 @@ async function fetchSentiment(symbol, depth = 'medium', only_subject_stock = fal
   return await _runResearchMcp('stock-sentiment', [symbol, ..._depthArg(depth), ...extraArgs]);
 }
 
-async function fetchScan(scanType, depth = 'medium') {
+async function fetchScan(scanType, depth = 'medium', opts = {}) {
   if (!scanType) return { ok: false, op: 'stock-scan', error: 'scan_type 必填' };
-  return await _runResearchMcp('stock-scan', [scanType, ..._depthArg(depth)]);
+  // date/source 目前只有 emotion-cycle 用；research-mcp 的 run_scanner 会按形参过滤，
+  // 传给其它 scan_type 也不会报错，但这里仍只在有值时才追加，保持命令行干净。
+  const extra = [];
+  if (opts.date) extra.push('--date', String(opts.date));
+  if (opts.source) extra.push('--source', String(opts.source));
+  return await _runResearchMcp('stock-scan', [scanType, ..._depthArg(depth), ...extra]);
 }
 
 // K 线历史相似走势检索（STUMPY Matrix Profile）

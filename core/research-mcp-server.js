@@ -72,6 +72,7 @@ const MARKET_MODE_SCHEMA = {
 };
 
 const SCAN_TYPES = {
+  scan_emotion_cycle: 'emotion-cycle',
   scan_market_breadth: 'market-breadth',
   scan_sector_flow: 'sector-flow',
   scan_northbound: 'northbound',
@@ -265,6 +266,7 @@ const TOOLS = [
       required: ['symbol'],
     },
   },
+  scanTool('scan_emotion_cycle', '【市场情绪】当日涨停/炸板/跌停/昨日涨停四池，算出炸板率、最高板与连板梯队、昨日涨停指数与昨日连板指数（即「后排亏钱效应」），并给出涨停板块分布与首封时间最早的个股。\n\n[何时调] 判断短线情绪周期位置（冰点/修复/高潮/退潮）、找连板龙头、看昨日涨停股今天是否被砸——调本工具。\n\n[守界] 只返回计数与分位，**不合成情绪分、不判断是否冰点、不给买卖建议**。是否共振由你自己判断。\n\n[必须知道] 涨停池只保留约 15 个交易日；更早的日期会静默返回 0 行。本工具已把这种情况判为 `data_status=unavailable_out_of_window` 并返回空 pools，**绝不报 0**——看到 pools 为空是「取不到」，不是「零涨停」，不要读成极端冰点。\n\n[配套] 上涨家数请另调 scan_market_breadth（其 summary.up 即全市场上涨家数）。'),
   scanTool('scan_market_breadth', '【市场发现】扫描 A 股赚钱效应、涨跌分布、成交额 Top、涨跌幅 Top。'),
   scanTool('scan_sector_flow', '【市场发现】扫描行业/概念资金流排名，用于找主线和板块热度。'),
   scanTool('scan_northbound', '【市场发现】扫描北向持股/排行候选，用于外资线索。'),
