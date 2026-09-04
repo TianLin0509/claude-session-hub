@@ -77,6 +77,11 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* 2026-09-04：侧栏固定 280px 且 overflow:hidden，这排按钮实测需要 387px，
+     加 RAN 之前「学习」就已经压线、⚙ 已被裁到框外。改成允许换行，
+     少一个都不会丢。放不下才换行，宽度够时外观不变。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 /* ===== 4 按钮 · GitHub Primer 风格(v0.8.4) ===== */

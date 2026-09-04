@@ -23,12 +23,32 @@ SuperRAN 仓库的 `scripts/superran_tasks.py` 产出的任务泳道看板。
 带 `--no-open` 是刻意的：数据在 iframe 里看，不要再弹一个外部浏览器。
 iframe 的 src 带时间戳，否则重跑之后看到的还是缓存里的旧页面。
 
+## v1.6.53 补：按钮原本被裁掉了，看不见
+
+v1.6.52 加了按钮但**在界面上看不到**。Playwright 实测量出根因：
+`.session-sidebar` 固定 280px 且 `overflow:hidden`，`.sidebar-header` 是不换行的 flex，
+这排东西实际需要 **387px**——
+
+| 元素 | 右边界 |
+|---|---|
+| 启动 | 82 |
+| 主页 | 148 |
+| 投研 | 215 |
+| 学习 | 281 ← 已压线（可见区 279） |
+| RAN | 349 ← 框外 |
+| ⚙ 选项 | 387 ← 框外 |
+
+**加 RAN 之前就已经溢出了**，「学习」压线、⚙ 已经被裁。
+`.sidebar-header` 加 `flex-wrap: wrap` + `row-gap: 6px`，实测 scrollWidth 279 = 可见宽，
+不再溢出。放不下才换行，宽度够时外观不变。
+
 ## 涉及文件
 
 - 新增 `renderer/ran.js`
 - `renderer/index.html`：按钮、`#ran-panel`、脚本引入
 - `renderer/renderer.js`（5 处）、`chuxin.js`、`study.js`：面板互斥
-- 版本 1.6.51 → 1.6.52（package.json + package-lock.json 两处）
+- `renderer/styles/shell-sidebar-terminal.css`：`.sidebar-header` 允许换行
+- 版本 1.6.51 → 1.6.53（package.json + package-lock.json 两处）
 
 ## 依赖
 
