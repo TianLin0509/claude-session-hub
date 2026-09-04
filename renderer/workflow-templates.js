@@ -24,6 +24,10 @@
     { id: 'task-feature-delivery', name: '功能', desc: '范围与验收、实现、验证串行交付', minMembers: 2 },
     { id: 'task-root-cause-fix', name: '修 Bug', desc: '并行诊断、最小修复、独立回归', minMembers: 2 },
     { id: 'task-research-decision', name: '调研', desc: '支持证据、反证、缺失信息、决策', minMembers: 2 },
+    // SuperRAN 专用。流程被内网评审天然切成两半，所以给两个预设，同一个群聊切着用：
+    // 先「RAN 实现」跑完停下 → 人去内网走一趟 → 再换「RAN 收口」自动迭代到 PASS。
+    { id: 'ran-implement', name: 'RAN 实现', desc: 'SuperRAN 任务：实现并打审核包，停下等内网', minMembers: 1 },
+    { id: 'ran-converge', name: 'RAN 收口', desc: 'SuperRAN 任务：按内网意见改 ↔ 审 PR，PASS 即合并', minMembers: 2 },
   ];
 
   const TEMPLATES = [
@@ -134,6 +138,55 @@
           { name: '缺失信息', prompt: '识别当前结论仍依赖的未知信息、不可比项和验证缺口，给出最低成本的补证动作；不要重复支持或反对意见。' },
           { name: '决策收口', prompt: '综合支持证据、反证和缺失信息，比较收益、成本、风险与可逆性。给出唯一推荐、成立条件、待查问题和下一步动作。' },
         ],
+      );
+    }
+
+    // ── SuperRAN ───────────────────────────────────────────────────────────
+    // prompt 只指向仓库里的合同文件，不在这里复制规则 —— 改流程只改那几个 .md，
+    // 不用回来动 Hub。合同本身在 C:\Vibe\Wireless\SuperRAN\.agents\。
+    if (templateId === 'ran-implement') {
+      return config(
+        [one(ids, 0)],
+        [
+          {
+            name: '实现并打包',
+            prompt: [
+              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
+              '任务就是本群聊里我上一条消息说的那件事；没说清就先问我一句。',
+              '按合同走：建任务拿 ID、建自己的 worktree、实现、按 TESTING.md 跑测试、出 HTML 报告。',
+              '判为红档的还要打审核包，并 log 一步「送内网」。',
+              '最后单独列清楚三样东西，不要埋在长文里：任务 ID、报告绝对路径、审核包绝对路径。',
+              '打完包就停 —— 下一步是我把包送内网，不要继续往下做。',
+            ].join('\n'),
+          },
+        ],
+      );
+    }
+
+    if (templateId === 'ran-converge') {
+      return config(
+        [one(ids, 0), one(ids, 1)],
+        [
+          {
+            name: '按内网意见修改',
+            prompt: [
+              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
+              '内网审核意见在 docs\\inbox\\，文件名带任务 ID。逐条处理后更新 PR，',
+              '并在 PR 正文附意见对照表；不采纳的必须写理由，不许悄悄跳过。',
+              '若收到上一轮合并 Agent 的阻断项，只修阻断项，不要顺手扩新需求。',
+            ].join('\n'),
+          },
+          {
+            name: '审 PR 并合并',
+            prompt: [
+              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\MERGER.md 展开工作。',
+              '按它的三条硬闸和必查项审这个 PR。你和上一步不是同一个会话，独立性成立。',
+              '按合同：PASS 就由你执行合并；REVISE / BLOCKED 一律不合，把阻断项写清楚。',
+              REVIEW_RESULT_CONTRACT,
+            ].join('\n'),
+          },
+        ],
+        { enabled: true, maxRounds: 3 },
       );
     }
 

@@ -21,9 +21,38 @@ test('内置 4 个语义模板', () => {
   assert.strictEqual(WT.TEMPLATES.length, 4);
 });
 
-test('串行工作流提供 5 个任务预设按钮', () => {
-  assert.strictEqual(WT.TASK_PRESETS.length, 5);
-  assert.deepStrictEqual(WT.TASK_PRESETS.map(item => item.name), ['续跑', '审查', '功能', '修 Bug', '调研']);
+test('串行工作流提供 7 个任务预设按钮', () => {
+  assert.strictEqual(WT.TASK_PRESETS.length, 7);
+  assert.deepStrictEqual(WT.TASK_PRESETS.map(item => item.name),
+    ['续跑', '审查', '功能', '修 Bug', '调研', 'RAN 实现', 'RAN 收口']);
+});
+
+test('RAN 实现是单步，跑完就停等内网', () => {
+  const c = WT.createTemplateConfig('ran-implement', members);
+  assert(c && c.steps.length === 1 && c.stepConfigs.length === 1);
+  assert(c.loop.enabled === false);
+  assert(c.stepConfigs[0].prompt.includes('AUTHOR.md'));
+  assert(/停/.test(c.stepConfigs[0].prompt));
+});
+
+test('RAN 收口是改↔审的两步循环，审的那步读 MERGER.md 并给 RESULT', () => {
+  const c = WT.createTemplateConfig('ran-converge', members);
+  assert(c && c.steps.length === 2);
+  assert.deepStrictEqual(c.steps[0], ['m1']);
+  assert.deepStrictEqual(c.steps[1], ['m2']);       // 两步必须落到不同成员，否则自审自合
+  assert(c.loop.enabled === true && c.loop.maxRounds === 3);
+  assert(c.stepConfigs[0].prompt.includes('AUTHOR.md'));
+  assert(c.stepConfigs[1].prompt.includes('MERGER.md'));
+  assert(c.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
+});
+
+test('RAN 预设只指向合同文件，不在 Hub 里复制流程规则', () => {
+  for (const id of ['ran-implement', 'ran-converge']) {
+    const c = WT.createTemplateConfig(id, members);
+    for (const sc of c.stepConfigs) {
+      assert(sc.prompt.includes('.agents'), id + ' 的 prompt 应指向 .agents 合同');
+    }
+  }
 });
 
 test('根因修复预设联动为诊断、修复、回归三步', () => {
