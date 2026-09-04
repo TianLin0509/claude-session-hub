@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { DatabaseSync } = require('node:sqlite');
 const { AgentLeagueRuntimeStore } = require('../core/agent-league-runtime-store.js');
 
 function withStores(work) {
@@ -19,6 +20,45 @@ function withStores(work) {
   }
 }
 
+test('runtime schema v1 upgrades in place to v2 without losing the existing leader row', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-runtime-migrate-'));
+  const runtimeDir = path.join(root, '.runtime');
+  const dbPath = path.join(runtimeDir, 'agent-league.db');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE runtime_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO runtime_meta(key, value) VALUES('schema_version', '1');
+    CREATE TABLE league_leaders (
+      league_id TEXT PRIMARY KEY,
+      owner_id TEXT,
+      owner_pid INTEGER,
+      owner_hub TEXT,
+      owner_version TEXT,
+      lease_token TEXT,
+      epoch INTEGER NOT NULL DEFAULT 0,
+      lease_until INTEGER NOT NULL DEFAULT 0,
+      heartbeat_at INTEGER NOT NULL DEFAULT 0,
+      acquired_at INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO league_leaders(
+      league_id, owner_id, owner_pid, owner_hub, owner_version,
+      lease_token, epoch, lease_until, heartbeat_at, acquired_at
+    ) VALUES('league-migrate', NULL, NULL, NULL, NULL, NULL, 6, 0, 123, 100);
+  `);
+  legacy.close();
+
+  const upgraded = new AgentLeagueRuntimeStore({ root, dbPath, leagueId: 'league-migrate' });
+  try {
+    assert.equal(upgraded.db.prepare("SELECT value FROM runtime_meta WHERE key='schema_version'").get().value, '2');
+    assert.equal(upgraded.currentLeader().epoch, 6);
+    assert.equal(upgraded.quickCheck().ok, true);
+  } finally {
+    upgraded.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('transactional leader election increments epoch and fences a stale owner', () => withStores(({ first, second }) => {
   const acquired = first.claimLeadership({ ownerId: 'hub-a', ownerPid: 101, ownerHub: 'data-a', ownerVersion: '1.7.0' }, { nowMs: 1_000, ttlMs: 100 });
   assert.equal(acquired.ok, true);
@@ -32,6 +72,88 @@ test('transactional leader election increments epoch and fences a stale owner', 
   assert.equal(second.assertLeadership(takeover.lease, { nowMs: 1_162 }), true);
   assert.equal(first.releaseLeadership(acquired.lease, { nowMs: 1_163 }), false);
   assert.equal(second.releaseLeadership(takeover.lease, { nowMs: 1_164 }), true);
+}));
+
+test('preferred Hub version and PID gate both current and legacy leader claims', () => withStores(({ first, second }) => {
+  const now = Date.now();
+  const published = first.publishSchedulerPreference({
+    pid: 2200,
+    appVersion: '1.6.46',
+    preferredHub: 'hub-data',
+  }, { nowMs: now, ttlMs: 60_000 });
+  assert.equal(published.preference.preferredPid, 2200);
+  assert.equal(published.preference.preferredVersion, '1.6.46');
+
+  const older = first.claimLeadership({
+    ownerId: 'old-hub', ownerPid: 9816, ownerVersion: '1.6.31', ownerHub: 'hub-data',
+  }, { nowMs: now + 1, ttlMs: 20_000 });
+  assert.equal(older.ok, false);
+  assert.equal(older.reason, 'not-preferred-hub');
+  assert.equal(older.preferred.preferredPid, 2200);
+
+  assert.throws(() => first.db.prepare(`
+    INSERT INTO league_leaders(
+      league_id, owner_id, owner_pid, owner_hub, owner_version,
+      lease_token, epoch, lease_until, heartbeat_at, acquired_at
+    ) VALUES(?, 'legacy-first', 9999, 'hub-data', '1.6.31', 'legacy-first-token', 1, ?, ?, ?)
+  `).run(first.leagueId, now + 30_000, now + 1, now + 1), /agent-league-non-preferred-hub/);
+
+  const preferred = second.claimLeadership({
+    ownerId: 'new-hub', ownerPid: 2200, ownerVersion: '1.6.46', ownerHub: 'hub-data',
+  }, { nowMs: now + 2, ttlMs: 20_000 });
+  assert.equal(preferred.ok, true);
+
+  assert.throws(() => first.db.prepare(`
+    UPDATE league_leaders
+    SET owner_id='legacy-hub', owner_pid=9999, owner_version='1.6.31',
+        lease_token='legacy-token', lease_until=?, heartbeat_at=?
+    WHERE league_id=?
+  `).run(now + 30_000, now + 3, first.leagueId), /agent-league-non-preferred-hub/);
+  assert.throws(
+    () => first.db.prepare(`
+      INSERT INTO runtime_meta(key, value) VALUES('schema_version', '1')
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(),
+    /agent-league-runtime-schema-downgrade/,
+  );
+}));
+
+test('a higher-priority Hub waits for the active phase boundary before takeover', () => withStores(({ first, second }) => {
+  const now = Date.now();
+  first.publishSchedulerPreference({ pid: 100, appVersion: '1.6.45' }, { nowMs: now, ttlMs: 60_000 });
+  const active = first.claimLeadership({
+    ownerId: 'active-hub', ownerPid: 100, ownerVersion: '1.6.45',
+  }, { nowMs: now + 1, ttlMs: 20_000 });
+  assert.equal(active.ok, true);
+
+  const deferred = second.publishSchedulerPreference({
+    pid: 200, appVersion: '1.6.46',
+  }, { nowMs: now + 2, ttlMs: 60_000 });
+  assert.equal(deferred.deferred, true);
+  assert.equal(deferred.preference.preferredPid, 100);
+  assert.equal(first.renewLeadership(active.lease, { nowMs: now + 3, ttlMs: 20_000 }), true);
+  assert.equal(first.releaseLeadership(active.lease, { nowMs: now + 4 }), true);
+
+  const promoted = second.publishSchedulerPreference({
+    pid: 200, appVersion: '1.6.46',
+  }, { nowMs: now + 5, ttlMs: 60_000 });
+  assert.equal(promoted.deferred, false);
+  assert.equal(promoted.preference.preferredPid, 200);
+  assert.equal(first.claimLeadership({
+    ownerId: 'old-again', ownerPid: 100, ownerVersion: '1.6.45',
+  }, { nowMs: now + 6 }).reason, 'not-preferred-hub');
+  assert.equal(second.claimLeadership({
+    ownerId: 'new-active', ownerPid: 200, ownerVersion: '1.6.46',
+  }, { nowMs: now + 7 }).ok, true);
+}));
+
+test('an expired higher preference permits the best remaining Hub to take over', () => withStores(({ first }) => {
+  const now = Date.now();
+  first.publishSchedulerPreference({ pid: 900, appVersion: '1.6.46' }, { nowMs: now, ttlMs: 10 });
+  const fallback = first.publishSchedulerPreference({ pid: 800, appVersion: '1.6.45' }, { nowMs: now + 11, ttlMs: 60_000 });
+  assert.equal(fallback.updated, true);
+  assert.equal(fallback.preference.preferredPid, 800);
+  assert.equal(fallback.preference.preferredVersion, '1.6.45');
 }));
 
 test('run identity is deterministic and refuses the same key with different frozen inputs', () => withStores(({ first }) => {

@@ -43,7 +43,7 @@ test('leaderboard keeps eight compact rows and opens real Session card or PTY vi
   assert.match(ui, /全体盘前决策/);
   assert.match(ui, /查看决策进度/);
   assert.match(ui, /if \(state\.run\)[\s\S]*jumpToActionPty\(\{ run: state\.run \}\)/);
-  assert.match(ui, /runButton\.disabled = !state\.run/);
+  assert.match(ui, /runButton\.disabled = .*state\.run/);
   assert.match(ui, /leagueChannel\('ensure-session'\)[\s\S]*bridge\.open\(ensured\.session\.id, view, ensured\.session\)/);
   assert.match(ui, /盘前决策已统一启动/);
   assert.match(ui, /jumpToActionPty/);
@@ -73,7 +73,10 @@ test('Agent League sessions remain ordinary visible sidebar sessions', () => {
 
 test('league UI exposes durable owner progress, health diagnostics and background keepalive', () => {
   const script = fs.readFileSync(path.join(root, 'renderer', 'agent-league.js'), 'utf8');
-  assert.match(script, /Runner PID/);
+  assert.match(script, /Runner v/);
+  assert.match(script, /本机是调度主控/);
+  assert.match(script, /本机只读候补/);
+  assert.match(script, /由主控 PID/);
   assert.match(script, /data-action="health-check"/);
   assert.match(script, /data-role="health-checks"/);
   assert.match(script, /data-action="toggle-background"/);

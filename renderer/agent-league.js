@@ -346,6 +346,7 @@ function createAgentLeaguePanel(options = {}) {
     const idle = state.agents.filter((agent) => agent.session && agent.session.live && agent.session.status === 'idle').length;
     const sleeping = state.agents.filter((agent) => !agent.session || !agent.session.live).length;
     const durable = durableRuntime();
+    const election = durable.schedulerElection || {};
     const durableRun = durable.activeRun || null;
     const durableTasks = durableRun && Array.isArray(durableRun.tasks) ? durableRun.tasks : [];
     const durableDone = durableTasks.filter((task) => ['completed', 'technical-forfeit'].includes(task.status)).length;
@@ -354,11 +355,18 @@ function createAgentLeaguePanel(options = {}) {
       : !durable.available
         ? `事务运行库不可用${durable.error ? ` · ${escapeHtml(durable.error)}` : ''}`
         : durable.leader && durable.leader.active
-          ? `Runner PID ${Number(durable.leader.ownerPid || 0)} · epoch ${Number(durable.leader.epoch || 0)}${durableRun ? ` · ${durableDone}/${durableTasks.length} 终态` : ''}`
-          : `事务运行库就绪 · ${active} 活跃 · ${sleeping} 休眠`;
+          ? `Runner v${escapeHtml(durable.leader.ownerVersion || '?')} · PID ${Number(durable.leader.ownerPid || 0)} · epoch ${Number(durable.leader.epoch || 0)}${durableRun ? ` · ${durableDone}/${durableTasks.length} 终态` : ''}`
+          : election.enabled && election.preferenceActive && election.preferred
+            ? election.isPreferred
+              ? `本机是调度主控 · v${escapeHtml(election.preferred.version || '?')} · PID ${Number(election.preferred.pid || 0)}`
+              : `本机只读候补 · 主控 v${escapeHtml(election.preferred.version || '?')} · PID ${Number(election.preferred.pid || 0)}`
+            : `事务运行库就绪 · ${active} 活跃 · ${sleeping} 休眠`;
     const runtimeSummaryEl = root.querySelector('[data-role="runtime-summary"]');
     runtimeSummaryEl.classList.toggle('error', !isVirtual && durable.available === false);
-    runtimeSummaryEl.classList.toggle('remote', !!(durable.leader && durable.leader.active && !durable.ownerIsThisHub));
+    runtimeSummaryEl.classList.toggle('remote', !!(
+      (durable.leader && durable.leader.active && !durable.ownerIsThisHub)
+      || (election.enabled && election.preferenceActive && !election.isPreferred)
+    ));
     runtimeSummaryEl.innerHTML = `<i></i>${runtimeSummary}`;
     root.querySelector('[data-role="league-eyebrow"]').textContent = isVirtual
       ? 'AGENT LEAGUE · VIRTUAL LIVE DEBUG · ISOLATED'
@@ -386,24 +394,32 @@ function createAgentLeaguePanel(options = {}) {
     background.textContent = state.schedule.keepAliveOnClose === false ? '关窗即退出' : '关窗后台守护';
     const runButton = root.querySelector('[data-action="run-day"]');
     const remoteRun = !isVirtual && !state.run && durableRun && durable.leader && durable.leader.active;
+    const standby = !isVirtual && election.enabled && election.preferenceActive && !election.isPreferred;
     const runningCount = state.run
       ? (state.run.active || []).length + (state.run.queue || []).length
       : remoteRun ? durableTasks.filter((task) => !['completed', 'technical-forfeit'].includes(task.status)).length : 0;
-    runButton.disabled = !state.run && isVirtual && virtual.phase !== 'pre-market';
+    runButton.disabled = (!state.run && isVirtual && virtual.phase !== 'pre-market') || (standby && !remoteRun);
     runButton.innerHTML = state.run
       ? `${icon('terminal')}${state.run.mode === 'weekly' ? '查看沉淀进度' : `查看决策进度${runningCount ? `（${runningCount}）` : ''}`}`
       : remoteRun
         ? `${icon('refresh')}其他 Hub 运行中${runningCount ? `（${runningCount}）` : ''}`
-      : `${icon('play')}${isVirtual ? '全体虚拟盘前决策' : '全体盘前决策'}`;
+        : standby
+          ? `${icon('lock')}由主控 PID ${Number(election.preferred && election.preferred.pid || 0)} 执行`
+          : `${icon('play')}${isVirtual ? '全体虚拟盘前决策' : '全体盘前决策'}`;
     runButton.title = state.run
       ? '全部符合条件的 Agent 已在运行或排队；选择排行榜中的 Agent 后点击这里查看它的 PTY。'
       : remoteRun
         ? `运行权属于 PID ${Number(durable.leader.ownerPid || 0)}；点击刷新共享检查点，不会在本 Hub 重复启动。`
-        : '一次启动所有尚未完成当日决策的 Agent。';
+        : standby
+          ? `本 Hub 是只读候补；联赛只允许 v${escapeHtml(election.preferred && election.preferred.version || '?')} PID ${Number(election.preferred && election.preferred.pid || 0)} 启动。`
+          : '一次启动所有尚未完成当日决策的 Agent。';
     for (const action of ['execute-open', 'record-close', 'run-weekly']) {
       const button = root.querySelector(`[data-action="${action}"]`);
       if (!button) continue;
-      if (!isVirtual) button.disabled = !!state.run || !!remoteRun;
+      if (!isVirtual) {
+        button.disabled = !!state.run || !!remoteRun || standby;
+        if (standby) button.title = `本 Hub 是只读候补；由 PID ${Number(election.preferred && election.preferred.pid || 0)} 执行。`;
+      }
       else if (action === 'execute-open') button.disabled = !!state.run || virtual.phase !== 'decision-ready';
       else if (action === 'record-close') button.disabled = !!state.run || virtual.phase !== 'intraday';
       else button.disabled = !!state.run || virtual.phase !== 'closed';

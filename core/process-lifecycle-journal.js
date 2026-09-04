@@ -50,6 +50,9 @@ function installProcessLifecycleJournal(options = {}) {
   const heartbeatMs = Number.isFinite(configuredHeartbeatMs)
     ? Math.max(1000, configuredHeartbeatMs)
     : DEFAULT_HEARTBEAT_MS;
+  const appVersion = (() => {
+    try { return app && typeof app.getVersion === 'function' ? app.getVersion() : null; } catch { return null; }
+  })();
   const paths = resolveLifecyclePaths({ ...options, processRef });
   const listeners = [];
   const windowIds = new Set();
@@ -108,6 +111,7 @@ function installProcessLifecycleJournal(options = {}) {
       epochMs,
       pid: Number(processRef.pid) || 0,
       ppid: Number(processRef.ppid) || 0,
+      appVersion,
       event: eventName,
       phase: state.phase,
       cleanExit: state.cleanExit,
@@ -174,9 +178,6 @@ function installProcessLifecycleJournal(options = {}) {
     on(window, 'session-end', () => record('window-session-end', { windowId, webContentsId }, 'session-end'));
   }
 
-  const appVersion = (() => {
-    try { return app && typeof app.getVersion === 'function' ? app.getVersion() : null; } catch { return null; }
-  })();
   const cwd = (() => {
     try { return typeof processRef.cwd === 'function' ? processRef.cwd() : null; } catch { return null; }
   })();

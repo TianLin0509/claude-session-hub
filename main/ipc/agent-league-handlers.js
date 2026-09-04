@@ -28,6 +28,11 @@ const {
 const { AgentLeagueVirtualDebug } = require('../../core/agent-league-virtual-debug.js');
 const { evaluateAgentLeagueSchedulerSafety } = require('../../core/agent-league-scheduler-safety.js');
 const {
+  DEFAULT_SCHEDULER_HEARTBEAT_MAX_AGE_MS,
+  readHubInstances,
+  selectPreferredHub,
+} = require('../../core/hub-instance-registry.js');
+const {
   PHILOSOPHY_TEMPLATES,
   getPhilosophy,
 } = require('../../core/agent-league-philosophies.js');
@@ -48,6 +53,8 @@ const RUNTIME_LEADER_TTL_MS = 20 * 1000;
 const RUNTIME_LEADER_HEARTBEAT_MS = 5 * 1000;
 const RUNTIME_TASK_TTL_MS = 30 * 1000;
 const RUNTIME_TASK_HEARTBEAT_MS = 8 * 1000;
+const SCHEDULER_PREFERENCE_TTL_MS = 90 * 1000;
+const SCHEDULER_ELECTION_CACHE_MS = 2 * 1000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const PROVIDERS = Object.freeze({
   'codex-cli': { kind: 'codex', label: 'Codex', mark: 'CX' },
@@ -719,7 +726,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       console.error('[agent-league] durable runtime unavailable:', runtimeInitError);
     }
   }
-  const runtimeOwnerId = String(deps.runtimeOwnerId || `${environment}:${process.pid}:${crypto.randomBytes(8).toString('hex')}`);
+  const runtimeOwnerPid = Math.max(1, Number(deps.runtimeOwnerPid || process.pid) || process.pid);
+  const runtimeOwnerId = String(deps.runtimeOwnerId || `${environment}:${runtimeOwnerPid}:${crypto.randomBytes(8).toString('hex')}`);
   const runtimeOwnerVersion = String(deps.hubVersion || (() => {
     try { return require('../../package.json').version; } catch { return ''; }
   })());
@@ -746,6 +754,25 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const schedulerSafety = deps.schedulerSafety || {
     allowed: autoStartScheduler,
     reason: autoStartScheduler ? 'runtime-enabled' : 'runtime-disabled',
+  };
+  const schedulerElectionEnabled = environment === 'live'
+    && deps.schedulerElectionEnabled !== false
+    && schedulerSafety.allowed !== false;
+  const readSchedulerInstances = typeof deps.readHubInstances === 'function' ? deps.readHubInstances : readHubInstances;
+  const choosePreferredHub = typeof deps.selectPreferredHub === 'function' ? deps.selectPreferredHub : selectPreferredHub;
+  const electionNow = typeof deps.electionNow === 'function' ? deps.electionNow : () => Date.now();
+  let schedulerElectionLastRefreshAt = 0;
+  let schedulerElectionState = {
+    enabled: schedulerElectionEnabled,
+    available: !schedulerElectionEnabled,
+    role: schedulerElectionEnabled ? 'unknown' : 'disabled',
+    isPreferred: !schedulerElectionEnabled,
+    preferred: null,
+    observedPreferred: null,
+    candidates: [],
+    excludedCount: 0,
+    observedAt: 0,
+    error: '',
   };
   const initialSchedule = store.getSchedule();
   const initialRuntimeLeader = runtimeStore ? runtimeStore.currentLeader() : null;
@@ -982,11 +1009,142 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return Math.max(1, Math.ceil(windows.reduce((sum, value) => sum + value, 0) / 1000));
   }
 
+  function publicSchedulerCandidate(row) {
+    if (!row) return null;
+    return {
+      pid: Number(row.pid || row.preferredPid || 0),
+      version: String(row.appVersion || row.preferredVersion || ''),
+      beatAgeMs: Number.isFinite(Number(row.beatAgeMs)) ? Number(row.beatAgeMs) : null,
+    };
+  }
+
+  function currentSchedulerElectionState() {
+    if (!schedulerElectionEnabled || !runtimeStore) return { ...schedulerElectionState };
+    const preference = runtimeStore.schedulerPreference(electionNow());
+    const preferred = publicSchedulerCandidate(preference);
+    const isPreferred = !!preference && preference.active
+      && preference.preferredPid === runtimeOwnerPid
+      && preference.preferredVersion === runtimeOwnerVersion;
+    return {
+      ...schedulerElectionState,
+      preferred,
+      preferenceActive: !!(preference && preference.active),
+      isPreferred,
+      role: preference && preference.active ? (isPreferred ? 'preferred' : 'standby') : 'unknown',
+    };
+  }
+
+  function refreshSchedulerElection(reason = 'refresh', options = {}) {
+    if (!schedulerElectionEnabled) return { ...schedulerElectionState };
+    const observedAt = electionNow();
+    if (!options.force && schedulerElectionLastRefreshAt
+        && observedAt - schedulerElectionLastRefreshAt < SCHEDULER_ELECTION_CACHE_MS) {
+      return currentSchedulerElectionState();
+    }
+    schedulerElectionLastRefreshAt = observedAt;
+    if (!runtimeStore) {
+      schedulerElectionState = {
+        ...schedulerElectionState,
+        available: false,
+        role: 'blocked',
+        isPreferred: false,
+        observedAt,
+        error: runtimeInitError || 'durable runtime unavailable',
+      };
+      return { ...schedulerElectionState };
+    }
+
+    try {
+      const heartbeatMaxAgeMs = Number(deps.schedulerHeartbeatMaxAgeMs) || DEFAULT_SCHEDULER_HEARTBEAT_MAX_AGE_MS;
+      const registry = readSchedulerInstances({
+        dataDir: getHubDataDir(),
+        minLastBeatAt: observedAt - heartbeatMaxAgeMs,
+      }) || {};
+      const instances = Array.isArray(registry) ? registry : (registry.instances || []);
+      const selected = choosePreferredHub(instances, {
+        now: observedAt,
+        maxHeartbeatAgeMs: heartbeatMaxAgeMs,
+        self: {
+          pid: runtimeOwnerPid,
+          appVersion: runtimeOwnerVersion,
+          lastBeatAt: observedAt,
+          phase: 'running',
+          cleanExit: false,
+        },
+      });
+      if (!selected || !selected.preferred) throw new Error('没有可用的 Hub 调度候选');
+      const publication = runtimeStore.publishSchedulerPreference({
+        pid: selected.preferred.pid,
+        appVersion: selected.preferred.appVersion,
+        preferredHub: String(getHubDataDir() || ''),
+      }, {
+        nowMs: observedAt,
+        ttlMs: Number(deps.schedulerPreferenceTtlMs) || SCHEDULER_PREFERENCE_TTL_MS,
+        reason,
+      });
+      const preference = publication.preference;
+      const isPreferred = !!preference && preference.active
+        && preference.preferredPid === runtimeOwnerPid
+        && preference.preferredVersion === runtimeOwnerVersion;
+      schedulerElectionState = {
+        enabled: true,
+        available: true,
+        role: isPreferred ? 'preferred' : 'standby',
+        isPreferred,
+        preferenceActive: !!(preference && preference.active),
+        preferred: publicSchedulerCandidate(preference),
+        observedPreferred: publicSchedulerCandidate(selected.preferred),
+        candidates: (selected.candidates || []).map(publicSchedulerCandidate),
+        excludedCount: (selected.excluded || []).length,
+        observedAt,
+        deferred: publication.deferred === true,
+        keptHigherPreference: publication.keptHigherPreference === true,
+        error: '',
+      };
+      return { ...schedulerElectionState };
+    } catch (error) {
+      schedulerElectionState = {
+        ...schedulerElectionState,
+        available: false,
+        role: 'blocked',
+        isPreferred: false,
+        observedAt,
+        error: String(error && error.message || error),
+      };
+      return { ...schedulerElectionState };
+    }
+  }
+
+  function requirePreferredScheduler(action = '执行联赛阶段', options = {}) {
+    if (!schedulerElectionEnabled) return { ok: true, election: currentSchedulerElectionState() };
+    const election = refreshSchedulerElection(action, options);
+    if (!election.available) {
+      return {
+        ok: false,
+        error: 'scheduler-election-unavailable',
+        message: `无法确认唯一调度主控，已拒绝${action}：${election.error || '选主状态不可用'}`,
+        election,
+      };
+    }
+    if (election.isPreferred) return { ok: true, election };
+    const preferred = election.preferred || {};
+    return {
+      ok: false,
+      error: 'not-preferred-hub',
+      notPreferred: true,
+      message: `当前 Hub v${runtimeOwnerVersion} PID ${runtimeOwnerPid} 为候补；联赛只允许 v${preferred.version || '?'} PID ${preferred.pid || 0} ${action}`,
+      preferred,
+      election,
+    };
+  }
+
   function promptWasSubmitted(result) {
     return !!result && result.ok !== false && result.sendStatus !== 'stuck';
   }
 
   function claimPhaseLease(phase, date) {
+    const gate = requirePreferredScheduler(`执行 ${phase} 阶段`);
+    if (!gate.ok) return gate;
     const runId = `${phase}-${String(date || '').replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
     const claim = store.claimRunLease({
       ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || getHubDataDir() || 'default'),
@@ -1001,7 +1159,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     try {
       durableClaim = runtimeStore ? runtimeStore.claimLeadership({
         ownerId: runtimeOwnerId,
-        ownerPid: process.pid,
+        ownerPid: runtimeOwnerPid,
         ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || getHubDataDir() || 'default'),
         ownerVersion: runtimeOwnerVersion,
       }, { ttlMs: RUNTIME_LEADER_TTL_MS }) : null;
@@ -1011,6 +1169,17 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     }
     if (durableClaim && !durableClaim.ok) {
       store.releaseRunLease(claim.token);
+      if (durableClaim.reason === 'not-preferred-hub') {
+        const preferred = publicSchedulerCandidate(durableClaim.preferred);
+        return {
+          ok: false,
+          notPreferred: true,
+          error: 'not-preferred-hub',
+          message: `联赛运行权属于 v${preferred && preferred.version || '?'} PID ${preferred && preferred.pid || 0}`,
+          preferred,
+          election: currentSchedulerElectionState(),
+        };
+      }
       return { ok: false, runId, lease: durableClaim.leader, durableBusy: true };
     }
     const legacyTimer = setInterval(() => {
@@ -1068,11 +1237,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (!lease.ok) {
       return {
         ok: false,
-        error: lease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'phase-busy-elsewhere',
-        message: lease.runtimeUnavailable
+        error: lease.notPreferred ? 'not-preferred-hub' : lease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'phase-busy-elsewhere',
+        message: lease.notPreferred
+          ? lease.message
+          : lease.runtimeUnavailable
           ? `联赛事务运行库不可用，已拒绝非事务降级：${lease.message}`
           : `同一联赛正在另一 Hub 执行阶段任务：${lease.lease && (lease.lease.runId || lease.lease.ownerId) || 'unknown'}`,
         lease: lease.lease || null,
+        preferred: lease.preferred || null,
       };
     }
     try {
@@ -1131,7 +1303,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       durable: currentRun.phaseLease && currentRun.phaseLease.durableLease ? {
         runKey: currentRun.runtimeRunKey || '',
         ownerId: currentRun.phaseLease.durableLease.ownerId,
-        ownerPid: process.pid,
+        ownerPid: runtimeOwnerPid,
         epoch: currentRun.phaseLease.durableLease.epoch,
         tasks: durableTasks,
       } : null,
@@ -1493,6 +1665,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   async function runDay(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: '上一轮联赛仍在运行', run: runPublicState() };
+    const schedulerGate = requirePreferredScheduler('运行盘前决策', { force: true });
+    if (!schedulerGate.ok) return schedulerGate;
     let rows = store.listAgents();
     if (!rows.length) return { ok: false, error: 'no-agents', message: '请先创建至少一个 Agent' };
     // 单 Agent 补跑必须显式校验 id，调用方写错时绝不退化成“跑全部”。
@@ -1587,11 +1761,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (!phaseLease.ok) {
       return {
         ok: false,
-        error: phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere',
-        message: phaseLease.runtimeUnavailable
+        error: phaseLease.notPreferred ? 'not-preferred-hub' : phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere',
+        message: phaseLease.notPreferred
+          ? phaseLease.message
+          : phaseLease.runtimeUnavailable
           ? `联赛事务运行库不可用，已拒绝非事务降级：${phaseLease.message}`
           : '同一联赛正在另一 Hub 中运行',
         lease: phaseLease.lease || null,
+        preferred: phaseLease.preferred || null,
       };
     }
     try {
@@ -1677,6 +1854,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   async function executeOpen(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: 'Agent 决策/沉淀仍在运行' };
+    const schedulerGate = requirePreferredScheduler('执行开盘记账', { force: true });
+    if (!schedulerGate.ok) return schedulerGate;
     const clock = chinaClock(input.now || new Date());
     const decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
     const trading = tradingDayStatus(decisionDate);
@@ -1889,6 +2068,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   async function recordClose(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: 'Agent 决策/沉淀仍在运行' };
+    const schedulerGate = requirePreferredScheduler('执行收盘记账', { force: true });
+    if (!schedulerGate.ok) return schedulerGate;
     const clock = chinaClock(input.now || new Date());
     const decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
     const trading = tradingDayStatus(decisionDate);
@@ -2006,6 +2187,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   async function runWeekly(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: '上一轮联赛仍在运行', run: runPublicState() };
+    const schedulerGate = requirePreferredScheduler('运行周度沉淀', { force: true });
+    if (!schedulerGate.ok) return schedulerGate;
     const saturdayDate = String(input.saturdayDate || defaultDecisionDate() || chinaClock(input.now || new Date()).date).slice(0, 10);
     const clock = chinaClock(new Date(`${saturdayDate}T04:00:00.000Z`));
     if (enforceMarketClock && !input.force && clock.weekday !== 'Sat') {
@@ -2048,7 +2231,13 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       || `weekly-${saturdayDate.replace(/-/g, '')}-${sha256(weeklyRecords).slice(0, 8)}`;
     const phaseLease = claimPhaseLease('weekly', saturdayDate);
     if (!phaseLease.ok) {
-      return { ok: false, error: phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere', message: phaseLease.message || '同一联赛正在另一 Hub 中运行', lease: phaseLease.lease };
+      return {
+        ok: false,
+        error: phaseLease.notPreferred ? 'not-preferred-hub' : phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere',
+        message: phaseLease.message || '同一联赛正在另一 Hub 中运行',
+        lease: phaseLease.lease,
+        preferred: phaseLease.preferred || null,
+      };
     }
     let queue = [...new Set([
       ...runnable.map((row) => row.agent.id),
@@ -2115,6 +2304,13 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   }
 
   async function schedulerTick(now = new Date()) {
+    const schedulerGate = requirePreferredScheduler('运行自动赛程', { force: true });
+    if (!schedulerGate.ok) {
+      if (schedulerGate.notPreferred) {
+        return { ok: true, skipped: 'standby-hub', preferred: schedulerGate.preferred, election: schedulerGate.election };
+      }
+      return schedulerGate;
+    }
     const schedule = store.getSchedule();
     if (!schedule.enabled || currentRun) return { ok: true, skipped: 'disabled-or-running' };
     const clock = chinaClock(now);
@@ -2171,6 +2367,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   function startScheduler() {
     if (!autoStartScheduler || drainingForHandoff || (environment === 'live' && !runtimeStore)) return null;
     if (schedulerTimer) return schedulerTimer;
+    refreshSchedulerElection('scheduler-start', { force: true });
     schedulerTimer = setInterval(() => {
       schedulerTick().then((result) => {
         if (result && result.ok === false) console.warn('[agent-league] scheduler tick failed:', result.message || result.error);
@@ -2208,6 +2405,10 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     for (const lease of [...activePhaseLeases.values()]) releasePhaseLease(lease);
     activePhaseLeases.clear();
     currentRun = null;
+    if (schedulerElectionEnabled && runtimeStore) {
+      try { runtimeStore.expireSchedulerPreference({ pid: runtimeOwnerPid, appVersion: runtimeOwnerVersion }); }
+      catch (error) { console.warn('[agent-league] scheduler preference retirement failed:', error && error.message); }
+    }
     if (ownsRuntimeStore && runtimeStore) {
       runtimeStore.close();
       runtimeStore = null;
@@ -2229,7 +2430,17 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   }
 
   function durableRuntimeState() {
-    if (!runtimeStore) return { available: false, error: runtimeInitError, ownerId: runtimeOwnerId, draining: drainingForHandoff, leader: null, activeRun: null };
+    if (!runtimeStore) return {
+      available: false,
+      error: runtimeInitError,
+      ownerId: runtimeOwnerId,
+      ownerPid: runtimeOwnerPid,
+      ownerVersion: runtimeOwnerVersion,
+      draining: drainingForHandoff,
+      leader: null,
+      activeRun: null,
+      schedulerElection: currentSchedulerElectionState(),
+    };
     const leader = runtimeStore.currentLeader();
     const activeRun = runtimeStore.listRuns({ statuses: ['running'], limit: 1 })[0] || null;
     const latestDecisionRun = runtimeStore.listRuns({ limit: 20 }).find((run) => run.phase === 'decision') || null;
@@ -2247,11 +2458,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       available: true,
       error: '',
       ownerId: runtimeOwnerId,
+      ownerPid: runtimeOwnerPid,
+      ownerVersion: runtimeOwnerVersion,
       ownerIsThisHub: !!leader && leader.active && leader.ownerId === runtimeOwnerId,
       draining: drainingForHandoff,
       leader,
       activeRun: withTasks(activeRun),
       latestDecisionRun: withTasks(latestDecisionRun),
+      schedulerElection: currentSchedulerElectionState(),
     };
   }
 
@@ -2388,6 +2602,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const checkedAt = new Date().toISOString();
     const checks = [];
     const add = (id, label, status, message, detail = null) => checks.push({ id, label, status, message, detail });
+    if (schedulerElectionEnabled) refreshSchedulerElection('health-check', { force: true });
     const schedule = store.getSchedule();
     try {
       fs.accessSync(store.root, fs.constants.R_OK | fs.constants.W_OK);
@@ -2407,6 +2622,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
         add('leadership', '接班租约', 'pass', `PID ${durable.leader.ownerPid} · epoch ${durable.leader.epoch}`, durable.activeRun && durable.activeRun.runKey || 'idle-phase');
       } else {
         add('leadership', '接班租约', 'pass', '当前空闲，无需持有写租约');
+      }
+      const election = currentSchedulerElectionState();
+      if (election.enabled && (!election.available || !election.preferenceActive)) {
+        add('scheduler-owner', '调度主控', 'fail', `无法确认唯一主控：${election.error || '选主记录未就绪'}`);
+      } else if (election.enabled && election.isPreferred) {
+        add('scheduler-owner', '调度主控', 'pass', `本机 v${runtimeOwnerVersion} PID ${runtimeOwnerPid} 为首选执行 Hub`);
+      } else if (election.enabled) {
+        add('scheduler-owner', '调度主控', 'pass', `本机只读候补；由 v${election.preferred && election.preferred.version || '?'} PID ${election.preferred && election.preferred.pid || 0} 执行`);
       }
     }
     if (!schedule.enabled) add('scheduler', '自动赛程', 'warn', '未启用；只能手动运行');
@@ -2547,10 +2770,11 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       schedule,
       dashboard: buildLeagueDashboard(agents, schedule, durable),
       schedulerRuntime: {
-      started: !!schedulerTimer,
-      safety: schedulerSafety,
-      activePhaseLeases: [...activePhaseLeases.values()].map((row) => ({ phase: row.phase, runId: row.runId })),
+        started: !!schedulerTimer,
+        safety: schedulerSafety,
+        activePhaseLeases: [...activePhaseLeases.values()].map((row) => ({ phase: row.phase, runId: row.runId })),
         durable,
+        election: durable.schedulerElection,
       },
       run: runPublicState(),
       root: store.root,
@@ -2923,6 +3147,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     store,
     runtimeStore,
     runtimeOwnerId,
+    runtimeOwnerPid,
+    runtimeOwnerVersion,
     pendingByHubSession,
     providerCatalog,
     ensureAgentSession,
@@ -2930,6 +3156,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     isAuthorizedResearchScope,
     listPublic,
     healthCheck,
+    getSchedulerElectionState: currentSchedulerElectionState,
+    refreshSchedulerElection,
     getRunState: runPublicState,
     runDay,
     executeOpen,

@@ -17,6 +17,63 @@ const os = require('os');
 
 const HEARTBEAT_SUFFIX = '.heartbeat.json';
 const HEARTBEAT_PREFIX = 'process-lifecycle-';
+const DEFAULT_SCHEDULER_HEARTBEAT_MAX_AGE_MS = 35_000;
+
+function parseHubVersion(value) {
+  const raw = String(value || '').trim().replace(/^v/i, '');
+  const match = raw.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+  return {
+    raw,
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: String(match[4] || ''),
+  };
+}
+
+function comparePrerelease(left, right) {
+  if (!left && !right) return 0;
+  if (!left) return 1;
+  if (!right) return -1;
+  const a = left.split('.');
+  const b = right.split('.');
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    if (a[index] == null) return -1;
+    if (b[index] == null) return 1;
+    const aNumeric = /^\d+$/.test(a[index]);
+    const bNumeric = /^\d+$/.test(b[index]);
+    if (aNumeric && bNumeric) {
+      const diff = Number(a[index]) - Number(b[index]);
+      if (diff) return diff;
+      continue;
+    }
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    const diff = a[index].localeCompare(b[index]);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+function compareHubVersions(left, right) {
+  const a = parseHubVersion(left);
+  const b = parseHubVersion(right);
+  if (!a && !b) return String(left || '').localeCompare(String(right || ''));
+  if (!a) return -1;
+  if (!b) return 1;
+  for (const key of ['major', 'minor', 'patch']) {
+    const diff = a[key] - b[key];
+    if (diff) return diff;
+  }
+  return comparePrerelease(a.prerelease, b.prerelease);
+}
+
+function compareHubPriority(left, right) {
+  const versionDiff = compareHubVersions(left && left.appVersion, right && right.appVersion);
+  if (versionDiff) return versionDiff;
+  return Number(left && left.pid || 0) - Number(right && right.pid || 0);
+}
 
 function resolveDataDir(options = {}) {
   const env = (options.env || process.env) || {};
@@ -48,6 +105,7 @@ function parseHeartbeatFile(fsRef, filePath) {
   return {
     pid,
     ppid: Number(data.ppid) || 0,
+    appVersion: String(data.appVersion || ''),
     lastBeatAt: epochMs,
     lastBeatIso: String(data.ts || ''),
     event: String(data.event || ''),
@@ -62,10 +120,26 @@ function parseHeartbeatFile(fsRef, filePath) {
   };
 }
 
+function readLifecycleVersion(fsRef, heartbeatPath) {
+  const journalPath = heartbeatPath.slice(0, -HEARTBEAT_SUFFIX.length) + '.jsonl';
+  let raw;
+  try { raw = fsRef.readFileSync(journalPath, 'utf8'); }
+  catch { return ''; }
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      if (row && row.appVersion) return String(row.appVersion);
+    } catch {}
+  }
+  return '';
+}
+
 function readHubInstances(options = {}) {
   const fsRef = options.fsRef || fs;
   const dataDir = resolveDataDir(options);
   const diagnosticsDir = path.join(dataDir, 'diagnostics');
+  const minLastBeatAt = Math.max(0, Number(options.minLastBeatAt) || 0);
 
   let entries;
   try {
@@ -77,12 +151,61 @@ function readHubInstances(options = {}) {
   const instances = [];
   for (const entry of entries) {
     if (!entry.startsWith(HEARTBEAT_PREFIX) || !entry.endsWith(HEARTBEAT_SUFFIX)) continue;
-    const record = parseHeartbeatFile(fsRef, path.join(diagnosticsDir, entry));
-    if (record) instances.push(record);
+    const heartbeatPath = path.join(diagnosticsDir, entry);
+    const record = parseHeartbeatFile(fsRef, heartbeatPath);
+    if (record) {
+      if (minLastBeatAt && record.lastBeatAt < minLastBeatAt) continue;
+      // v1.6.45 and earlier only wrote appVersion into the append-only
+      // lifecycle journal. Keep those already-running Hubs electable while new
+      // versions put the same field directly in the cheap heartbeat file.
+      if (!record.appVersion) record.appVersion = readLifecycleVersion(fsRef, heartbeatPath);
+      instances.push(record);
+    }
   }
 
   instances.sort((a, b) => b.lastBeatAt - a.lastBeatAt);
   return { dataDir, diagnosticsDir, instances };
+}
+
+function selectPreferredHub(records, options = {}) {
+  // Scheduler eligibility is deliberately stricter than process reclamation:
+  // a stale heartbeat is enough to stop assigning *new* work, but never enough
+  // for classifyInstances() to declare a process dead or safe to terminate.
+  const now = Number(options.now) || Date.now();
+  const maxHeartbeatAgeMs = Math.max(1, Number(options.maxHeartbeatAgeMs) || DEFAULT_SCHEDULER_HEARTBEAT_MAX_AGE_MS);
+  const byPid = new Map();
+  for (const source of [...(records || []), ...(options.self ? [options.self] : [])]) {
+    const pid = Number(source && source.pid);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    const record = {
+      ...source,
+      pid,
+      appVersion: String(source && source.appVersion || ''),
+      lastBeatAt: Number(source && source.lastBeatAt) || 0,
+    };
+    const previous = byPid.get(pid);
+    if (!previous || record.lastBeatAt >= previous.lastBeatAt) byPid.set(pid, record);
+  }
+
+  const candidates = [];
+  const excluded = [];
+  for (const record of byPid.values()) {
+    const beatAgeMs = record.lastBeatAt > 0 ? Math.max(0, now - record.lastBeatAt) : Number.POSITIVE_INFINITY;
+    const retiring = record.selfReportedQuit || /(?:before-quit|will-quit|quit|disposed|process-exit)/i.test(String(record.phase || record.event || ''));
+    const reason = record.cleanExit || retiring
+      ? 'exited'
+      : !parseHubVersion(record.appVersion)
+        ? 'version-unknown'
+        : beatAgeMs > maxHeartbeatAgeMs
+          ? 'heartbeat-stale'
+          : '';
+    const item = { ...record, beatAgeMs };
+    if (reason) excluded.push({ ...item, exclusionReason: reason });
+    else candidates.push(item);
+  }
+  candidates.sort((left, right) => compareHubPriority(right, left));
+  excluded.sort((left, right) => Number(right.lastBeatAt || 0) - Number(left.lastBeatAt || 0));
+  return { preferred: candidates[0] || null, candidates, excluded, observedAt: now, maxHeartbeatAgeMs };
 }
 
 // 把心跳记录和「现在真正在跑的进程」对上号。
@@ -129,10 +252,16 @@ function classifyInstances(records, options = {}) {
 }
 
 module.exports = {
+  DEFAULT_SCHEDULER_HEARTBEAT_MAX_AGE_MS,
   HEARTBEAT_PREFIX,
   HEARTBEAT_SUFFIX,
   classifyInstances,
+  compareHubPriority,
+  compareHubVersions,
   parseHeartbeatFile,
+  parseHubVersion,
   readHubInstances,
+  readLifecycleVersion,
   resolveDataDir,
+  selectPreferredHub,
 };

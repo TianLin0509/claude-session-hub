@@ -113,6 +113,7 @@ test('records app, window, renderer and clean-exit lifecycle without environment
 
   const heartbeat = JSON.parse(fs.readFileSync(journal.paths.heartbeatPath, 'utf8'));
   assert.equal(heartbeat.cleanExit, true);
+  assert.equal(heartbeat.appVersion, '1.6.10');
   assert.equal(intervalCleared, true);
   assert.equal(journal.paths.journalPath, path.join(dataDir, 'diagnostics', 'process-lifecycle-1234.jsonl'));
 });
