@@ -124,11 +124,14 @@ function createClipboardController({
     return normalizeClipboardText(clipboard.readText()) === normalizeClipboardText(expected);
   }
 
+  // options.silent：只写不弹浮层。给自带反馈的调用方用（如「复制对话」按钮，
+  //   它把结果显示在按钮上），避免同一次复制弹两处提示。
   async function copyText(value, options = {}) {
     const text = String(value == null ? '' : value);
+    const report = options.silent ? (payload => payload) : showFeedback;
     if (!text) return { ok: false, reason: 'empty', attempts: 0, length: 0 };
     if (!clipboard || typeof clipboard.writeText !== 'function') {
-      return showFeedback({ ok: false, reason: 'clipboard-unavailable', attempts: 1, length: countCharacters(text), source: options.source });
+      return report({ ok: false, reason: 'clipboard-unavailable', attempts: 1, length: countCharacters(text), source: options.source });
     }
 
     let lastError = null;
@@ -145,7 +148,7 @@ function createClipboardController({
             length: countCharacters(text),
             source: options.source || 'selection',
           };
-          showFeedback(result);
+          report(result);
           return result;
         }
         lastError = new Error('clipboard verification mismatch');
@@ -154,7 +157,7 @@ function createClipboardController({
       }
     }
 
-    return showFeedback({
+    return report({
       ok: false,
       reason: lastError && lastError.message ? lastError.message : 'clipboard-write-failed',
       attempts,

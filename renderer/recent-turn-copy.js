@@ -111,6 +111,17 @@ function createRecentTurnCopyController(options = {}) {
     ? options.extractVisibleCardText
     : (root) => String((root && (root.innerText || root.textContent)) || '').trim();
   const storageKey = options.storageKey || 'hub-card-copy-round-count';
+  // 单一剪贴板写入方。renderer 注入 clipboardController.copyText（Electron 原生 +
+  //   写后读回校验）；未注入时退回 navigator.clipboard，仅为让本模块可独立使用。
+  const writeClipboardText = typeof options.copyText === 'function'
+    ? (text) => options.copyText(text, { source: 'recent-turn-copy', silent: true })
+    : async (text) => {
+      if (!nav.clipboard || typeof nav.clipboard.writeText !== 'function') {
+        throw new Error('clipboard unavailable');
+      }
+      await Promise.resolve(nav.clipboard.writeText(text));
+      return { ok: true, source: 'navigator-fallback' };
+    };
 
   let root = null;
   let countSelect = null;
@@ -216,10 +227,18 @@ function createRecentTurnCopyController(options = {}) {
       return result;
     }
     try {
-      if (!nav.clipboard || typeof nav.clipboard.writeText !== 'function') {
-        throw new Error('clipboard unavailable');
+      // 2026-09-04：这里以前直接调 navigator.clipboard.writeText，而 Ctrl+C 走的是
+      //   Electron 原生 clipboard.writeText —— 全 app 出现了两个剪贴板写入方。
+      //   navigator.clipboard 是渲染进程（Chromium）自己的异步剪贴板，写完之后
+      //   Chromium 仍认为自己持有剪贴板；随后主进程侧的原生写入不会让它作废，
+      //   于是「点完复制对话 → 再 Ctrl+C 复制一小段 → Ctrl+V 粘出来还是那段对话」：
+      //   浮层报的是原生剪贴板（确实已更新），而浮动输入框的原生粘贴拿的是 Chromium 旧缓存。
+      //   修法是收敛成单一写入方：走注入的 copyText（renderer 传 clipboardController
+      //   的实现，带写后读回校验 + 有界重试）。
+      const outcome = await writeClipboardText(result.text);
+      if (outcome && outcome.ok === false) {
+        throw new Error(outcome.reason || 'clipboard-write-failed');
       }
-      await Promise.resolve(nav.clipboard.writeText(result.text));
       showFeedback(`已复制 ${result.copiedRounds} 轮`, 'copied');
       return result;
     } catch (error) {

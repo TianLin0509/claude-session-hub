@@ -1853,6 +1853,10 @@ const recentTurnCopyController = createRecentTurnCopyController({
   document,
   window,
   navigator,
+  // 剪贴板只允许一个写入方：和 Ctrl+C 共用 Electron 原生路径（写后读回校验 +
+  //   有界重试）。混用 navigator.clipboard 会让 Chromium 持有剪贴板，导致粘贴
+  //   拿到的是它的旧缓存而不是刚写进去的内容。silent 是因为按钮自带反馈。
+  copyText: (text, options) => clipboardController.copyText(text, options),
   storage: localStorage,
   getActiveSessionId: () => activeSessionId,
   getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),

@@ -103,15 +103,14 @@ async function main() {
 
     result.copy = await client.eval(`(async () => {
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
-      window.__recentCopiedText = '';
-      try {
-        Object.defineProperty(navigator.clipboard, 'writeText', {
-          configurable: true,
-          value: async text => { window.__recentCopiedText = String(text || ''); },
-        });
-      } catch {
-        navigator.clipboard.writeText = async text => { window.__recentCopiedText = String(text || ''); };
-      }
+      // 2026-09-04：「复制对话」不再走 navigator.clipboard —— 全 app 收敛成
+      //   Electron 原生这一个写入方（混用会让 Chromium 持有剪贴板，粘贴拿到旧缓存）。
+      //   所以这里直接校验真实剪贴板，比 stub 更接近用户实际路径。
+      //   测试会覆盖机器剪贴板，结束时还原用户原本的内容。
+      const { clipboard: __clip } = require('electron');
+      window.__clipboardBackup = __clip.readText();
+      window.__readCopied = () => __clip.readText();
+      __clip.writeText('');
 
       const sid = 'recent-turn-copy-session';
       window.__hubE2E.addFakeSession({
@@ -134,31 +133,31 @@ async function main() {
       select.value = '3';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__recentCopiedText; i += 1) await wait(50);
+      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
       await wait(50);
-      const three = window.__recentCopiedText;
+      const three = window.__readCopied();
       const threeButtonText = button.textContent;
       const rect = toolbar.getBoundingClientRect();
 
-      window.__recentCopiedText = '';
+      __clip.writeText('');
       select.value = '1';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__recentCopiedText; i += 1) await wait(50);
-      const one = window.__recentCopiedText;
+      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
+      const one = window.__readCopied();
 
       // 轮数上限不再是写死的 3：这 9 张卡是 4 个完整轮次，下拉里就该有 4 项，
       // 最后一项标「全部」；不再额外重复显示「/ 共 4 轮」。
       const optionValues = Array.from(select.options).map(o => o.value);
       const lastOptionText = select.options[select.options.length - 1].textContent;
 
-      window.__recentCopiedText = '';
+      __clip.writeText('');
       select.value = String(optionValues[optionValues.length - 1]);
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__recentCopiedText; i += 1) await wait(50);
+      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
       await wait(50);
-      const all = window.__recentCopiedText;
+      const all = window.__readCopied();
       const allButtonText = button.textContent;
 
       applyViewMode('pty');
@@ -166,9 +165,12 @@ async function main() {
       applyViewMode('card');
       select.value = '3';
       select.dispatchEvent(new Event('change', { bubbles: true }));
-      window.__recentCopiedText = '';
+      __clip.writeText('');
       button.click();
       await wait(80);
+
+      // 还原用户原本的剪贴板：这台机器上跑测试时用户很可能正在用它。
+      try { __clip.writeText(window.__clipboardBackup || ''); } catch {}
 
       return {
         cardCount: overlay.querySelectorAll(':scope > .turn-card').length,
