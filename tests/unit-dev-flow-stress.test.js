@@ -258,21 +258,65 @@ test('C2 · 停止会真的打断正在跑的那一轮，不是只改个标记',
   assert.strictEqual(interrupted, null, '没在跑就不该去打断别人的轮次');
 });
 
-test('C3 · 主目录有别人未提交的改动时，合并被拒且不碰那些文件', async () => {
-  const dir = makeRepo('dirty-guard');
-  makeBranch(dir, 'mine', 'mine.txt', 'my work\n');
-  // 模拟「另一个 agent 正在改，还没提交」
-  fs.writeFileSync(path.join(dir, 'someone-else-wip.txt'), 'work in progress\n', 'utf-8');
-  sh('git add someone-else-wip.txt', dir);
+test('C3 · 未提交改动和本次合并有重叠时拒绝，且一个字都不动', async () => {
+  const dir = makeRepo('dirty-overlap');
+  // 分支改 value.txt，同时主目录里 value.txt 也有人改到一半 —— 真会被踩到
+  makeBranch(dir, 'mine', 'value.txt', 'good\nfrom branch\n');
   fs.writeFileSync(path.join(dir, 'value.txt'), 'good\n// 别人改到一半\n', 'utf-8');
 
   const r = merge(dir, 'mine');
-  assert.strictEqual(r.code, 2, '工作区脏时必须拒绝，实得 code=' + r.code + '\n' + r.out);
-  assert(/未提交的改动/.test(r.out), '要说清楚为什么被拒');
-  assert(fs.existsSync(path.join(dir, 'someone-else-wip.txt')), '别人的新文件必须还在');
+  assert.strictEqual(r.code, 2, '重叠时必须拒绝，实得 code=' + r.code + '\n' + r.out);
+  assert(/会碰到你未提交的这些文件/.test(r.out), '要说清是「会被覆盖」而不是笼统的脏：\n' + r.out);
   assert(/别人改到一半/.test(fs.readFileSync(path.join(dir, 'value.txt'), 'utf-8')),
-    '别人的未提交修改必须原样保留，不能被 checkout 冲掉');
+    '别人的未提交修改必须原样保留');
   assert.strictEqual(sh('git rev-parse --abbrev-ref HEAD', dir), 'main', '被拒时不该切走分支');
+});
+
+test('C4 · 无关的未提交改动不该瘫痪整个闸门（否则一份陈年半成品就锁死所有合并）', async () => {
+  // 实测踩到：生产主目录躺了两个一天多没提交的文件，于是所有合并都跑不了。
+  // 「一脏就拒」听着安全，代价是闸门永久瘫痪 —— 这条守住放宽后的判据。
+  const dir = makeRepo('dirty-unrelated');
+  // 照生产里的真实形态造：**已跟踪文件的未暂存修改**（git status 显示 " M path"）。
+  // 不用「已 git add 的新文件」—— 那种 git 自己就会拒绝合并，是 git 的约束不是闸门的。
+  fs.writeFileSync(path.join(dir, 'colleague.txt'), 'base\n', 'utf-8');
+  sh('git add colleague.txt', dir);
+  execSync('git commit -q -m "colleague base"', {
+    cwd: dir, env: Object.assign({}, process.env, { HUB_ALLOW_MAIN_COMMIT: '1' }), stdio: 'pipe' });
+  makeBranch(dir, 'mine', 'mine.txt', 'my work\n');
+  fs.writeFileSync(path.join(dir, 'colleague.txt'), 'base\nWIP\n', 'utf-8');
+
+  const r = merge(dir, 'mine');
+  assert.strictEqual(r.code, 0, '无关的脏不该挡住合并：\n' + r.out);
+  assert(/与本次合并无关/.test(r.out), '要明说保留了哪些无关改动');
+  assert(/WIP/.test(fs.readFileSync(path.join(dir, 'colleague.txt'), 'utf-8')),
+    '别人的未提交修改必须原样保留');
+  assert(fs.existsSync(path.join(dir, 'mine.txt')), '合并产物应该落地');
+});
+
+test('C5 · 有别人在途改动时合并失败，回滚不能连他的活一起抹掉', async () => {
+  // 这是放宽 C4 判据的**前提**：老回滚用 git reset --hard，会把别人未提交的改动一起清掉。
+  // 没有这条保证，C4 的放宽就是在拿别人的工作冒险。
+  const dir = makeRepo('rollback-safety');
+  makeBranch(dir, 'bad', 'value.txt', 'broken\n');   // 会让测试变红
+  const marker = 'DO_NOT_LOSE_THIS_WORK';
+  fs.writeFileSync(path.join(dir, 'colleague.txt'), marker + '\n', 'utf-8');
+  sh('git add colleague.txt', dir);
+  sh('git commit -q -m "colleague file base" --no-verify', dir);
+  // 提交后再改一次，制造「已跟踪文件的未提交修改」—— reset --hard 正是会抹掉这种
+  fs.writeFileSync(path.join(dir, 'colleague.txt'), marker + '\nWIP line\n', 'utf-8');
+
+  const before = sh('git rev-parse main', dir);
+  const r = merge(dir, 'bad');
+  assert.strictEqual(r.code, 1, '测试红了必须失败：\n' + r.out);
+  assert.strictEqual(sh('git rev-parse main', dir), before, '主干必须回到原位');
+
+  const kept = fs.readFileSync(path.join(dir, 'colleague.txt'), 'utf-8');
+  assert(kept.includes('WIP line'),
+    '回滚把别人的未提交改动抹掉了 —— 这正是最贵的那种事故。实际内容：' + JSON.stringify(kept));
+  assert(/保留了 1 个无关的未提交改动/.test(r.out), '要明确报告保留了什么');
+  // 主干上的业务文件必须真的被还原（不能只退 HEAD 留下合并后的内容）
+  assert.strictEqual(fs.readFileSync(path.join(dir, 'value.txt'), 'utf-8').trim(), 'good',
+    '本次合并涉及的文件必须还原到合并前');
 });
 
 (async () => {
