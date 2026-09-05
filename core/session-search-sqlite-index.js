@@ -25,6 +25,9 @@ const DOC_FETCH_CHUNK = 900;
 // 短词（<3 字，trigram 索引不到）默认只扫这三档。tool 占 87% 的行、205MB 正文，
 // 而两个字在工具入参 JSON 里命中的基本都是噪声。
 const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
+// IN (...) 的绑定参数分批大小。SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER 是 32766，
+// 留足余量给同一条语句里的 term / scope / since / limit。
+const SESSION_KEY_CHUNK = 400;
 // 打分阶段最多把多少字符的 normalized_text 拉进 JS。常见词（`***`、`not`、`hub`）
 // 一次能命中两万条，不设上界就跟着语料线性膨胀（实测 164MB / 2.9 秒）。
 const SCORING_TEXT_BUDGET = 24 * 1024 * 1024;
@@ -485,6 +488,49 @@ class SqliteSessionSearchIndex {
   }
 
   /**
+   * 在指定的 session 集合内重新取某个词的候选（2026-09-04）。
+   *
+   * 只给「多词 AND 里被截断的词」用：驱动词已经给出完整的会话候选空间，
+   * 这里把被截断的词限制在那个空间内重查，避免它的 6000 行窗口落在别处。
+   * `docs(session_key, ordinal)` 上有索引，所以这一步是索引扫而不是全表扫。
+   *
+   * 绑定参数按 SQLITE_MAX_VARIABLE_NUMBER 分批：一次塞几千个 key 会直接报错。
+   */
+  _matchedDocsForTermInSessions(term, scopes, since, sessionKeys) {
+    if (!Array.isArray(sessionKeys) || sessionKeys.length === 0) return null;
+    const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const hasSince = since !== null && since !== undefined;
+    const limit = this.maxQueryDocs;
+    const rows = [];
+    let truncated = false;
+
+    for (let offset = 0; offset < sessionKeys.length; offset += SESSION_KEY_CHUNK) {
+      const remaining = limit - rows.length;
+      if (remaining <= 0) { truncated = true; break; }
+      const slice = sessionKeys.slice(offset, offset + SESSION_KEY_CHUNK);
+      const cacheKey = `insessions|${slice.length}|${scopeList ? scopeList.length : 0}|${hasSince ? 't' : 'f'}`;
+      let statement = this.matchStatementCache.get(cacheKey);
+      if (!statement) {
+        statement = this.db.prepare(
+          'SELECT d.id AS id, d.session_key AS session_key, d.scope AS scope, d.timestamp AS timestamp '
+          + `FROM docs d WHERE d.session_key IN (${slice.map(() => '?').join(',')}) `
+          + 'AND instr(d.normalized_text, ?) > 0'
+          + (scopeList ? ` AND d.scope IN (${scopeList.map(() => '?').join(',')})` : '')
+          + (hasSince ? ' AND d.timestamp >= ?' : '')
+          + ' LIMIT ?',
+        );
+        this.matchStatementCache.set(cacheKey, statement);
+      }
+      const got = statement.all(
+        ...slice, term, ...(scopeList || []), ...(hasSince ? [since] : []), remaining + 1,
+      );
+      if (got.length > remaining) { truncated = true; got.length = remaining; }
+      rows.push(...got);
+    }
+    return { rows, truncated };
+  }
+
+  /**
    * 打分阶段按 id 批量取命中行 —— **不取 text**。
    *
    * 2026-08-28 生产规模压测：搜 `***` 一次要把 19925 条命中行的正文拉进 JS，
@@ -621,6 +667,45 @@ class SqliteSessionSearchIndex {
         ...(shortTermNarrowed ? { narrowedScopes: SHORT_TERM_SCOPES } : {}),
       };
     }
+    // 多词 AND 的候选补全（2026-09-04）。
+    //
+    // 每个词各自 `LIMIT maxQueryDocs` 且 SQL 里**没有 ORDER BY**，拿到的是 rowid 顺序
+    // ——≈最早入库的那一批。随后的 AND 是在**截断后**的集合上求交，而常见词的候选窗口
+    // 彼此几乎不重叠，于是大量确实同时含有全部词的会话被静默丢掉。
+    // 上面那句「按会话最近活动倒序，让被截掉的是最老的会话」救不回来：那个排序发生在
+    // 截断**之后**，排的是已经幸存的候选。
+    //
+    // 实测（真实索引 4048 会话 / 366k 行，查「ai 圆桌 v」，scope=title/user/assistant）：
+    //   词「ai」  命中 2088 会话 → 截断后只剩 1131
+    //   词「v」   命中 2708 会话 → 截断后只剩 1040
+    //   词「圆桌」命中  243 会话 → 未截断
+    //   AND 真值 170 个会话，旧算法只给出 121 —— 静默丢 29%，UI 一个字都不提。
+    //
+    // 修法是标准的最小选择度驱动：挑一个**没被截断**的词（它的命中集合是完整的），
+    // 用它的 session 集合去约束被截断的词，只在这些 session 内重新取候选
+    // （docs 上有 idx_docs_session，这一步走索引）。
+    // 只要有一个词未被截断，结果就是精确的；全部被截断时保持旧行为，
+    // 并由 queryGuardHit → truncated 如实上报。
+    if (terms.length > 1 && termMatches.some(match => match && match.truncated)) {
+      const complete = termMatches
+        .map((match, index) => ({ match, index }))
+        .filter(item => item.match && !item.match.truncated && item.match.rows.length > 0)
+        .sort((left, right) => left.match.rows.length - right.match.rows.length);
+      const driver = complete[0];
+      if (driver) {
+        const driverKeys = [...new Set(driver.match.rows.map(row => row.session_key))];
+        for (let index = 0; index < termMatches.length; index += 1) {
+          const match = termMatches[index];
+          if (!match || !match.truncated) continue;
+          const short = String(terms[index]).length < 3;
+          const rescoped = this._matchedDocsForTermInSessions(
+            terms[index], short ? shortTermScopes : scopeList, since, driverKeys,
+          );
+          if (rescoped) termMatches[index] = rescoped;
+        }
+      }
+    }
+
     // 按 session 归并命中行。SQL 侧的覆盖只是预筛（trigram 可能有假阳性），
     // 最终仍由下面打分循环里的 includes 复核。
     const bySession = new Map();

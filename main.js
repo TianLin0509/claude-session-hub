@@ -175,7 +175,7 @@ const sessionSearchService = new SessionSearchService({
   kimiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_KIMI_ROOTS', [path.join(os.homedir(), '.kimi-code', 'sessions')]),
   geminiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_GEMINI_ROOTS', [path.join(os.homedir(), '.gemini', 'tmp')]),
   meetingDir: path.join(getHubDataDir(), 'meetings'),
-  refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 10_000,
+  refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 60_000,
   // Production warms the persistent index after the latency-sensitive boot
   // path. Isolated Hubs stay opt-in so an unrelated E2E can never scan the
   // user's real native transcript roots merely because it launched the app.

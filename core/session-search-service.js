@@ -26,7 +26,7 @@ class SessionSearchService {
       kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
       geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
-      refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
+      refreshTtlMs: Number(options.refreshTtlMs) || 60_000,
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
       maxSourceChars: Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS),
