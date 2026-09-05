@@ -319,6 +319,45 @@ test('C5 · 有别人在途改动时合并失败，回滚不能连他的活一�
     '本次合并涉及的文件必须还原到合并前');
 });
 
+test('C6 · 脚本跑到一半被杀，主干提交历史不能已经前进', async () => {
+  // 实测踩到：把输出管道给 head 触发 SIGPIPE，脚本死在「已合并、还没跑完测试」之间，
+  // 主干就停在**未经验证的合并**上，而且没有任何提示。
+  // 修法是先 --no-commit 合、测过了才 commit —— 于是测试期间主干历史根本没动过。
+  const dir = makeRepo('crash-safe');
+  makeBranch(dir, 'slow', 'slow.txt', 'x\n');
+  // 把测试命令换成一个会跑很久的，好让我们在中途下手
+  const cfgPath = path.join(dir, '.agents', 'project.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+  cfg.test = ['python -c "import time; time.sleep(30)"'];
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf-8');
+  execSync('git add -A && git commit -q -m "slow test"', {
+    cwd: dir, env: Object.assign({}, process.env, { HUB_ALLOW_MAIN_COMMIT: '1' }), stdio: 'pipe' });
+
+  const before = sh('git rev-parse main', dir);
+  const child = spawn('python', [path.join(dir, 'scripts', 'merge_task.py'), 'slow'],
+    { cwd: dir, env: Object.assign({}, process.env, { PYTHONIOENCODING: 'utf-8' }) });
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', () => {});
+
+  // 等它合完、进入跑测试阶段，然后拦腰杀掉
+  await new Promise(r => setTimeout(r, 6000));
+  try { execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: 'ignore' }); } catch (e) {}
+  await new Promise(r => setTimeout(r, 1500));
+
+  const after = sh('git rev-parse main', dir);
+  assert.strictEqual(after, before,
+    '被杀之后主干提交历史前进了 —— 等于把「没验过的合并」留在了主干上');
+
+  // 工作区可能停在 MERGING，这是 git 自己认得的状态，一条命令就能清
+  const merging = fs.existsSync(path.join(dir, '.git', 'MERGE_HEAD'));
+  if (merging) {
+    execSync('git merge --abort', { cwd: dir, stdio: 'pipe' });
+  }
+  assert.strictEqual(sh('git rev-parse main', dir), before, '清理后主干仍在原位');
+  assert.strictEqual(spawnSync('python', ['scripts/check.py'], { cwd: dir }).status, 0,
+    '清理后仓库仍可用');
+});
+
 (async () => {
   for (const { name, fn } of queue) {
     await fn();

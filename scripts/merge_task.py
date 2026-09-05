@@ -184,19 +184,25 @@ def main():
     merged_sha = None
 
     def rollback():
-        """把主干退回 original。
+        """撤销本次合并，回到 original。
 
-        有别人的在途改动时**不能用 `git reset --hard`** —— 它会连那些改动一起抹掉。
-        改成按路径回滚：HEAD 退回去，只还原本次合并涉及的文件，别人动过的一个不碰。
+        因为合并用的是 --no-commit，绝大多数情况下工作区处于 MERGING 状态，
+        `git merge --abort` 就能干净收场 —— 而且它本身就会尽量保留与合并无关的本地改动，
+        比按路径手动还原更稳。上面的重叠检查保证了无关改动确实能被重建。
+
+        只有极少数情况 HEAD 已经前进（比如中断发生在 commit 之后），才需要退 HEAD。
+        那时也**不能用 `git reset --hard`** —— 它会连别人的在途改动一起抹掉。
         """
         run(["git", "merge", "--abort"], check=False)
-        if unrelated_dirty:
-            run(["git", "reset", "--soft", original], env=bypass, check=False)
-            if merge_paths:
-                run(["git", "checkout", original, "--", *merge_paths], env=bypass, check=False)
-            run(["git", "reset"], env=bypass, check=False)   # 清索引，别把还原动作留成暂存
-        else:
-            run(["git", "reset", "--hard", original], env=bypass, check=False)
+        head = run(["git", "rev-parse", "HEAD"], check=False).stdout.strip()
+        if head and head != original:
+            if unrelated_dirty:
+                run(["git", "reset", "--soft", original], env=bypass, check=False)
+                if merge_paths:
+                    run(["git", "checkout", original, "--", *merge_paths], env=bypass, check=False)
+                run(["git", "reset"], env=bypass, check=False)   # 清索引，别把还原留成暂存
+            else:
+                run(["git", "reset", "--hard", original], env=bypass, check=False)
 
     try:
         git("checkout", trunk, env=bypass)
@@ -210,10 +216,28 @@ def main():
                     git("merge", "--ff-only", f"origin/{trunk}", env=bypass)
                     original = git("rev-parse", trunk)
 
-        say(f"② 合并 {branch}")
-        git("merge", "--no-ff", "--no-edit", branch, env=bypass)
-        merged_sha = git("rev-parse", "HEAD")
-        say(f"   合成 {merged_sha[:12]}")
+        # ② 先合进工作区但**不提交** —— 崩溃安全的关键。
+        #
+        #    老写法是先 `git merge` 生成提交、再跑测试、失败才回滚。
+        #    问题是这中间有个几十秒的窗口：脚本一旦被杀（Ctrl+C、SIGPIPE、
+        #    终端关掉、机器 OOM），主干就停在「已合但没验」的状态，
+        #    而且没人知道。实测踩到过 —— 把输出管道给 head 就触发了 SIGPIPE。
+        #
+        #    改成 --no-commit 之后：测试期间主干的提交历史根本没动过，
+        #    工作区处于 git 自己认得的 MERGING 状态，被杀了也一眼看得出、
+        #    一条 `git merge --abort` 就能清干净。
+        # 已经合过的分支：--no-commit 下 git 只会说 "Already up to date"，
+        # 不产生待提交内容，后面的 commit 就会报个莫名其妙的错。
+        # 用户重跑一次合并是很正常的事，得给句人话。
+        if run(["git", "merge-base", "--is-ancestor", branch, trunk], check=False).returncode == 0:
+            say(f"② {branch} 已经在 {trunk} 里了，无需重复合并")
+            say()
+            say(f"✓ 已是最新：{trunk} @ {original[:12]}")
+            return 0
+
+        say(f"② 合并 {branch}（先不提交，测过了再落）")
+        git("merge", "--no-ff", "--no-commit", branch, env=bypass)
+        say("   已合进工作区，主干提交历史暂未改变")
 
         # ⑤ 亲自跑测试 —— 不采信任何 Agent 的说法
         if not tests:
@@ -229,12 +253,17 @@ def main():
 
         if args.dry_run:
             say()
-            say("④ --dry-run，回滚不真合")
+            say("④ --dry-run，撤销不真合")
             rollback()
             say(f"   已回到 {original[:12]}")
             say()
             say("结论：验证通过，可以合。")
             return 0
+
+        # ⑥ 测试过了才真正落成提交
+        git("commit", "--no-edit", env=bypass)
+        merged_sha = git("rev-parse", "HEAD")
+        say(f"   已提交 {merged_sha[:12]}")
 
     except Exception as ex:
         say()
