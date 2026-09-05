@@ -2,6 +2,7 @@
 
 (function () {
 const { ipcRenderer } = require('electron');
+const { checkDevWorkspace } = require('./dev-workspace-guard.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
 const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND, modelOptionsFor } = require('../core/model-options.js');
 
@@ -403,7 +404,22 @@ function _bindEvents() {
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
     radio.addEventListener('change', () => {
       const hint = _modalEl.querySelector('#mcm-scene-hint');
-      if (radio.checked && hint) {
+      if (!radio.checked) return;
+      // 开发场景必须开在项目根：预设 prompt 读的是「本仓库的 .agents/AUTHOR.md」，
+      // 落在默认工作根（平铺目录，不是仓库）就一定读不到，而 AI 不会自己 cd 过去。
+      // 默认那一档在这里是错的，替用户切掉，而不是等它在第一步失败。
+      if (radio.value === 'dev' && _meetingWorkspaceMode !== 'existing') {
+        _meetingWorkspaceMode = 'existing';
+        _paintWorkspace();
+      }
+      if (!hint) return;
+      if (radio.value === 'dev') {
+        // 这块 UI 原本一直是空的。开发场景恰好需要解释一句：工作目录档位是被自动切的。
+        hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
+          + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
+          + '项目没整理过的话，先用 project-prep skill 跑一次。';
+        hint.style.display = '';
+      } else {
         hint.style.display = 'none';
       }
     });
@@ -447,6 +463,12 @@ async function _onCreate() {
     const title = titleInput ? titleInput.value.trim() : '';
 
     const workspace = await _syncWorkspace();
+    if (scene === 'dev') {
+      // 挡在建群这一刻。落错目录的代价是几分钟后才看得出来的一次空转，
+      // 而这里只要一行判断。见 renderer/dev-workspace-guard.js 的注释。
+      const verdict = checkDevWorkspace(workspace && workspace.path);
+      if (!verdict.ok) throw new Error(verdict.message);
+    }
     createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,

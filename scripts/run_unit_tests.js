@@ -74,8 +74,12 @@ function runOne(file) {
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { out += d; });
 
-    // 单个测试卡死不能拖垮整场
-    const killer = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, 60_000);
+    // 单个测试卡死不能拖垮整场。
+    // 为什么是 180 秒而不是 60：unit-dev-flow-stress 单跑要 56 秒（12 个真 git 场景），
+    // 机器上同时有别的活时就会越过 60 秒被误杀，表现为「退出码 null」的假失败——
+    // 而它恰好是守合并闸门的那个文件，闸门自己抖是最糟的一种抖。
+    // 真卡死的仍然拦得住，只是晚两分钟。
+    const killer = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, 180_000);
 
     p.on('close', (code) => {
       clearTimeout(killer);

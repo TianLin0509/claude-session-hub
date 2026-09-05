@@ -8,7 +8,9 @@
  */
 const assert = require('assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(REPO, p), 'utf-8');
@@ -115,9 +117,31 @@ test('闸门齐备：两个钩子 + 合并脚本都在', () => {
   // 钩子必须是 LF，否则 Windows 上 #!/bin/sh\r 会让它静默失效
   const attrs = read('.gitattributes');
   assert(/\.githooks\/\*\s+text\s+eol=lf/.test(attrs), '.gitattributes 必须强制钩子用 LF');
+  // 这里不比对变量名（实现换过一次，从 $trunk 换成兜底名单 + 配置的并集），
+  // 直接拿真实的钩子跑一遍：给它一个非常规主干名，它必须挡住。
+  // 断言实现细节的写法上次就是这么误报的——钩子行为没坏，只是变量改了名。
   const prePush = read('.githooks/pre-push');
-  assert(/project\.json/.test(prePush) && /\$trunk/.test(prePush),
-    'pre-push 必须拦 project.json 声明的主干，不能只硬编码几个常见分支名');
+  assert(/project\.json/.test(prePush), 'pre-push 必须读 .agents/project.json');
+
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'prepush-contract-'));
+  try {
+    fs.mkdirSync(path.join(sandbox, '.agents'));
+    fs.writeFileSync(path.join(sandbox, '.agents', 'project.json'),
+      JSON.stringify({ trunk: 'release-x', protectedBranches: ['ship-it'] }), 'utf-8');
+    const hook = path.join(REPO, '.githooks', 'pre-push');
+    const push = (branch) => spawnSync('sh', [hook, 'origin', 'url'], {
+      cwd: sandbox,
+      input: `refs/heads/${branch} aaa refs/heads/${branch} bbb\n`,
+      encoding: 'utf-8',
+    }).status;
+
+    assert.strictEqual(push('release-x'), 1, '配置声明的主干必须挡住');
+    assert.strictEqual(push('ship-it'), 1, 'protectedBranches 里的也必须挡住');
+    assert.strictEqual(push('master'), 1, '兜底名单必须仍然生效（配置读不到时的最后一道）');
+    assert.strictEqual(push('feat/whatever'), 0, '特性分支必须放行，否则没人能干活');
+  } finally {
+    try { require('child_process').execSync(`cmd /c rmdir /S /Q "${sandbox}"`, { stdio: 'ignore' }); } catch (e) {}
+  }
 });
 
 test('全量运行器隔离父 Hub 环境，开发群聊内自测不能被隔离实例变量污染', () => {
