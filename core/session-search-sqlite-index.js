@@ -6,7 +6,9 @@ const { DatabaseSync } = require('node:sqlite');
 const {
   MAX_QUERY_LENGTH,
   SCOPE_WEIGHTS,
+  cjkAuxTokens,
   createSnippet,
+  isCjkAuxTerm,
   normalizeSearchText,
   queryTerms,
   sinceTimestamp,
@@ -25,6 +27,9 @@ const DOC_FETCH_CHUNK = 900;
 // 短词（<3 字，trigram 索引不到）默认只扫这三档。tool 占 87% 的行、205MB 正文，
 // 而两个字在工具入参 JSON 里命中的基本都是噪声。
 const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
+// IN (...) 的绑定参数分批大小。SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER 是 32766，
+// 留足余量给同一条语句里的 term / scope / since / limit。
+const SESSION_KEY_CHUNK = 400;
 // 打分阶段最多把多少字符的 normalized_text 拉进 JS。常见词（`***`、`not`、`hub`）
 // 一次能命中两万条，不设上界就跟着语料线性膨胀（实测 164MB / 2.9 秒）。
 const SCORING_TEXT_BUDGET = 24 * 1024 * 1024;
@@ -255,12 +260,48 @@ class SqliteSessionSearchIndex {
       END;
       PRAGMA user_version=${SCHEMA_VERSION};
     `);
+    this._ensureCjkAuxSchema();
+  }
+
+  /**
+   * CJK 短词辅助索引（2026-09-05）。
+   *
+   * FTS5 的 trigram 分词器至少要 3 个字符才走索引，中文最常用的 1~2 字词全部退化成
+   * 顺序扫描（真实索引实测「圆桌」837ms vs 四字词 12ms）。这里另建一张 unicode61 的
+   * FTS 表，只喂 CJK 的一元+二元词元，让 1~2 字中文查询变成精确词元查找。
+   *
+   * **刻意不升 SCHEMA_VERSION**：`_ensureSchema` 见到版本不符会 DROP 所有表，
+   * 那意味着把 3GB 索引整个重建一遍。辅助索引是纯增量能力，缺了只是慢，
+   * 不该拿全量重建去换。所以这里用幂等 DDL 就地补，老库平滑升级。
+   *
+   * 用 contentless（`content=''` + `contentless_delete=1`）：词元原文对检索毫无用处，
+   * 存一份要多花 121MB（实测占辅助索引总体积的 63%）。contentless_delete 让
+   * `DELETE FROM docs_cjk WHERE rowid=?` 不需要原文即可删，正好配合下面的删除触发器。
+   * 需要 SQLite 3.43+，本机 3.51.2。
+   *
+   * 只覆盖 title/user/assistant 三档：它们只占 13% 的正文（33.8M 字符，
+   * tool 独占 220M），而短词检索本来就默认只搜这三档，范围完全对齐。
+   */
+  _ensureCjkAuxSchema() {
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS docs_cjk USING fts5(
+        tokens,
+        content='',
+        contentless_delete=1,
+        tokenize='unicode61 remove_diacritics 0'
+      );
+      CREATE TRIGGER IF NOT EXISTS docs_cjk_ad AFTER DELETE ON docs BEGIN
+        DELETE FROM docs_cjk WHERE rowid = old.id;
+      END;
+    `);
   }
 
   _prepare() {
     this.selectSourceStates = this.db.prepare('SELECT key, signature, stale FROM sources');
     this.markSourceStaleStatement = this.db.prepare('UPDATE sources SET signature = ?, stale = 1 WHERE key = ?');
     this.deleteSource = this.db.prepare('DELETE FROM sources WHERE key = ?');
+    this.deleteCjkAux = this.db.prepare('DELETE FROM docs_cjk WHERE rowid = ?');
+    this.insertCjkAux = this.db.prepare('INSERT INTO docs_cjk(rowid, tokens) VALUES (?, ?)');
     this.insertSource = this.db.prepare('INSERT INTO sources(key, signature, stale, searchable, updated_at) VALUES (?, ?, ?, ?, ?)');
     this.insertSession = this.db.prepare(`INSERT INTO sessions(
       key, source_key, provider, native_family, kind, title, cwd, project_label, model, updated_at,
@@ -372,6 +413,7 @@ class SqliteSessionSearchIndex {
           if (Number(inserted.changes) > 0) {
             documentCount += 1;
             textChars += text.length;
+            this._writeCjkAux(Number(inserted.lastInsertRowid), doc.scope || 'assistant', text);
           }
         };
         const insertedSyntheticTitle = !!session.title;
@@ -445,6 +487,100 @@ class SqliteSessionSearchIndex {
   }
 
   /** 取一个词条命中的 doc id（不取正文）。scopes 为 null 表示不限 scope。 */
+
+  /**
+   * 把一条 doc 的 CJK 词元写进辅助索引。只覆盖短词默认搜索的三档；
+   * tool 独占 87% 的行、220M 字符，而两个字在工具入参 JSON 里命中的基本是噪声，
+   * 为它建索引是拿几倍体积换噪声。
+   * 先删后插保证幂等：回填与实时写入可能覆盖同一个 rowid。
+   */
+  _writeCjkAux(rowid, scope, text) {
+    if (!Number.isInteger(rowid) || rowid <= 0) return false;
+    if (!SHORT_TERM_SCOPES.includes(scope)) return false;
+    const tokens = cjkAuxTokens(text);
+    if (!tokens) return false;
+    this.deleteCjkAux.run(rowid);
+    this.insertCjkAux.run(rowid, tokens);
+    return true;
+  }
+
+  /**
+   * 回填历史 doc 的 CJK 辅助索引（2026-09-05）。
+   *
+   * 设计成「可续跑 + 有时间预算」：子进程是单线程的，一次性回填 10 万行会把搜索
+   * 卡住几十秒。每次只花 budgetMs，游标存进 meta，下次接着跑。
+   * 回填**没跑完之前查询一律不用辅助索引** —— 用了就会漏（假阴性比慢严重得多）。
+   *
+   * 返回 { done, processed, cursor }。
+   */
+  backfillCjkAux({ budgetMs = 400, batchSize = 500 } = {}) {
+    if (this.getMeta('cjkAuxReady', '') === '1') return { done: true, processed: 0, cursor: null };
+    const startedAt = Date.now();
+    let cursor = Number(this.getMeta('cjkAuxCursor', 0)) || 0;
+    let processed = 0;
+    const scopePlaceholders = SHORT_TERM_SCOPES.map(() => '?').join(',');
+    const select = this.db.prepare(
+      `SELECT id, scope, text FROM docs WHERE id > ? AND scope IN (${scopePlaceholders}) ORDER BY id LIMIT ?`,
+    );
+    for (;;) {
+      const rows = select.all(cursor, ...SHORT_TERM_SCOPES, batchSize);
+      if (!rows.length) {
+        this.setMeta('cjkAuxReady', '1');
+        this.setMeta('cjkAuxCursor', String(cursor));
+        this.statsCache = null;
+        return { done: true, processed, cursor };
+      }
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const row of rows) {
+          this._writeCjkAux(Number(row.id), row.scope, row.text || '');
+          cursor = Number(row.id);
+          processed += 1;
+        }
+        this.setMeta('cjkAuxCursor', String(cursor));
+        this.db.exec('COMMIT');
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw error;
+      }
+      if (Date.now() - startedAt >= budgetMs) break;
+    }
+    this.statsCache = null;
+    return { done: false, processed, cursor };
+  }
+
+  cjkAuxReady() {
+    return this.getMeta('cjkAuxReady', '') === '1';
+  }
+
+  /**
+   * 用 CJK 辅助索引取候选。仅在回填完成后调用 —— 否则会漏。
+   * 与 trigram 分支一样，scope/时间只放进投影由 JS 过滤：
+   * 放进 WHERE 会让查询规划器改用 idx_docs_scope_time 驱动，LIMIT 失去短路能力。
+   */
+  _matchedDocsForCjkTerm(term, scopes, since, limit) {
+    const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const hasSince = since !== null && since !== undefined;
+    const cacheKey = 'cjkaux';
+    let statement = this.matchStatementCache.get(cacheKey);
+    if (!statement) {
+      statement = this.db.prepare(
+        'SELECT d.id AS id, d.session_key AS session_key, d.scope AS scope, d.timestamp AS timestamp '
+        + 'FROM docs_cjk JOIN docs d ON d.id = docs_cjk.rowid '
+        + 'WHERE docs_cjk MATCH ? LIMIT ?',
+      );
+      this.matchStatementCache.set(cacheKey, statement);
+    }
+    let rows = statement.all(quoteFtsTerm(term), limit + 1);
+    const truncated = rows.length > limit;
+    if (scopeList || hasSince) {
+      const allowed = scopeList ? new Set(scopeList) : null;
+      rows = rows.filter(row => (!allowed || allowed.has(row.scope))
+        && (!hasSince || Number(row.timestamp) >= since));
+    }
+    return { rows: rows.slice(0, limit), truncated };
+  }
+
   _matchedDocsForTerm(term, scopes, since) {
     const limit = this.maxQueryDocs;
     const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
@@ -452,6 +588,11 @@ class SqliteSessionSearchIndex {
     let rows = null;
     let truncated = false;
     let ftsRejected = false;
+    // 1~2 字的纯中文词：trigram 索引不到，但辅助索引能精确命中。
+    // 回填没完成时绝不走这条路 —— 索引不全会漏，假阴性比慢严重得多。
+    if (isCjkAuxTerm(term) && this.cjkAuxReady()) {
+      return this._matchedDocsForCjkTerm(term, scopeList, since, limit);
+    }
     if (String(term).length >= 3) {
       try {
         rows = this._matchStatement({ useFts: true, scopes: scopeList, hasSince })
@@ -482,6 +623,49 @@ class SqliteSessionSearchIndex {
       truncated = rows.length > limit;
     }
     return { rows: rows.slice(0, limit), truncated };
+  }
+
+  /**
+   * 在指定的 session 集合内重新取某个词的候选（2026-09-04）。
+   *
+   * 只给「多词 AND 里被截断的词」用：驱动词已经给出完整的会话候选空间，
+   * 这里把被截断的词限制在那个空间内重查，避免它的 6000 行窗口落在别处。
+   * `docs(session_key, ordinal)` 上有索引，所以这一步是索引扫而不是全表扫。
+   *
+   * 绑定参数按 SQLITE_MAX_VARIABLE_NUMBER 分批：一次塞几千个 key 会直接报错。
+   */
+  _matchedDocsForTermInSessions(term, scopes, since, sessionKeys) {
+    if (!Array.isArray(sessionKeys) || sessionKeys.length === 0) return null;
+    const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const hasSince = since !== null && since !== undefined;
+    const limit = this.maxQueryDocs;
+    const rows = [];
+    let truncated = false;
+
+    for (let offset = 0; offset < sessionKeys.length; offset += SESSION_KEY_CHUNK) {
+      const remaining = limit - rows.length;
+      if (remaining <= 0) { truncated = true; break; }
+      const slice = sessionKeys.slice(offset, offset + SESSION_KEY_CHUNK);
+      const cacheKey = `insessions|${slice.length}|${scopeList ? scopeList.length : 0}|${hasSince ? 't' : 'f'}`;
+      let statement = this.matchStatementCache.get(cacheKey);
+      if (!statement) {
+        statement = this.db.prepare(
+          'SELECT d.id AS id, d.session_key AS session_key, d.scope AS scope, d.timestamp AS timestamp '
+          + `FROM docs d WHERE d.session_key IN (${slice.map(() => '?').join(',')}) `
+          + 'AND instr(d.normalized_text, ?) > 0'
+          + (scopeList ? ` AND d.scope IN (${scopeList.map(() => '?').join(',')})` : '')
+          + (hasSince ? ' AND d.timestamp >= ?' : '')
+          + ' LIMIT ?',
+        );
+        this.matchStatementCache.set(cacheKey, statement);
+      }
+      const got = statement.all(
+        ...slice, term, ...(scopeList || []), ...(hasSince ? [since] : []), remaining + 1,
+      );
+      if (got.length > remaining) { truncated = true; got.length = remaining; }
+      rows.push(...got);
+    }
+    return { rows, truncated };
   }
 
   /**
@@ -621,6 +805,45 @@ class SqliteSessionSearchIndex {
         ...(shortTermNarrowed ? { narrowedScopes: SHORT_TERM_SCOPES } : {}),
       };
     }
+    // 多词 AND 的候选补全（2026-09-04）。
+    //
+    // 每个词各自 `LIMIT maxQueryDocs` 且 SQL 里**没有 ORDER BY**，拿到的是 rowid 顺序
+    // ——≈最早入库的那一批。随后的 AND 是在**截断后**的集合上求交，而常见词的候选窗口
+    // 彼此几乎不重叠，于是大量确实同时含有全部词的会话被静默丢掉。
+    // 上面那句「按会话最近活动倒序，让被截掉的是最老的会话」救不回来：那个排序发生在
+    // 截断**之后**，排的是已经幸存的候选。
+    //
+    // 实测（真实索引 4048 会话 / 366k 行，查「ai 圆桌 v」，scope=title/user/assistant）：
+    //   词「ai」  命中 2088 会话 → 截断后只剩 1131
+    //   词「v」   命中 2708 会话 → 截断后只剩 1040
+    //   词「圆桌」命中  243 会话 → 未截断
+    //   AND 真值 170 个会话，旧算法只给出 121 —— 静默丢 29%，UI 一个字都不提。
+    //
+    // 修法是标准的最小选择度驱动：挑一个**没被截断**的词（它的命中集合是完整的），
+    // 用它的 session 集合去约束被截断的词，只在这些 session 内重新取候选
+    // （docs 上有 idx_docs_session，这一步走索引）。
+    // 只要有一个词未被截断，结果就是精确的；全部被截断时保持旧行为，
+    // 并由 queryGuardHit → truncated 如实上报。
+    if (terms.length > 1 && termMatches.some(match => match && match.truncated)) {
+      const complete = termMatches
+        .map((match, index) => ({ match, index }))
+        .filter(item => item.match && !item.match.truncated && item.match.rows.length > 0)
+        .sort((left, right) => left.match.rows.length - right.match.rows.length);
+      const driver = complete[0];
+      if (driver) {
+        const driverKeys = [...new Set(driver.match.rows.map(row => row.session_key))];
+        for (let index = 0; index < termMatches.length; index += 1) {
+          const match = termMatches[index];
+          if (!match || !match.truncated) continue;
+          const short = String(terms[index]).length < 3;
+          const rescoped = this._matchedDocsForTermInSessions(
+            terms[index], short ? shortTermScopes : scopeList, since, driverKeys,
+          );
+          if (rescoped) termMatches[index] = rescoped;
+        }
+      }
+    }
+
     // 按 session 归并命中行。SQL 侧的覆盖只是预筛（trigram 可能有假阳性），
     // 最终仍由下面打分循环里的 includes 复核。
     const bySession = new Map();
