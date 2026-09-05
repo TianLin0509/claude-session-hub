@@ -96,13 +96,37 @@ test('正常路径：测试过了才真合进主干', () => {
   assert(/撤回：git revert/.test(r.out), '应给出撤回办法');
 });
 
-test('工作区不干净时拒绝，不冲掉别人的活', () => {
+test('与本次改动无关的未提交文件不挡路，且原样保留', () => {
+  // 2026-09-05 起改成精确判据：一刀切「一脏就拒」会让一份陈年半成品
+  // 把闸门永久锁死（生产上真发生过）。只有会被覆盖的才拦。
   fs.writeFileSync(path.join(SANDBOX, 'someone-else.txt'), 'wip\n', 'utf-8');
   const r = runMerge(['good-branch'], SANDBOX);
-  assert.strictEqual(r.code, 2, '应拒绝');
-  assert(/未提交的改动/.test(r.out), '应说明原因：\n' + r.out);
-  assert(fs.existsSync(path.join(SANDBOX, 'someone-else.txt')), '别人的文件必须还在');
+  assert.strictEqual(r.code, 0, '无关的脏不该挡住合并：\n' + r.out);
+  assert(/与本次合并无关/.test(r.out), '要明说保留了哪些无关改动：\n' + r.out);
+  assert.strictEqual(fs.readFileSync(path.join(SANDBOX, 'someone-else.txt'), 'utf-8'), 'wip\n',
+    '别人的文件必须一字不差还在');
   fs.unlinkSync(path.join(SANDBOX, 'someone-else.txt'));
+});
+
+test('会被本次合并覆盖的未提交改动，必须拦下来', () => {
+  // 必须用一个**尚未合入**的分支：已合入的分支相对主干改动集为空，
+  // 判成「无关」是对的（上一条 good-branch 到这时已经合进去了）。
+  sh('git checkout -q main', SANDBOX);
+  sh('git checkout -q -b overlap-branch main', SANDBOX);
+  fs.writeFileSync(path.join(SANDBOX, 'shared-file.txt'), '分支版本\n', 'utf-8');
+  sh('git add -A', SANDBOX);
+  execSync('git commit -q -m "branch touches shared-file"', {
+    cwd: SANDBOX, env: Object.assign({}, process.env, { HUB_ALLOW_MAIN_COMMIT: '1' }), stdio: 'pipe' });
+  sh('git checkout -q main', SANDBOX);
+
+  // 同一个文件在主目录也被改到一半 —— 真会被踩到
+  fs.writeFileSync(path.join(SANDBOX, 'shared-file.txt'), '我改到一半的内容\n', 'utf-8');
+  const r = runMerge(['overlap-branch'], SANDBOX);
+  assert.strictEqual(r.code, 2, '重叠必须拒绝：\n' + r.out);
+  assert(/会碰到你未提交的这些文件/.test(r.out), '要说清是「会被覆盖」而非笼统的脏：\n' + r.out);
+  assert.strictEqual(fs.readFileSync(path.join(SANDBOX, 'shared-file.txt'), 'utf-8'), '我改到一半的内容\n',
+    '被拒时不能动它一个字');
+  fs.unlinkSync(path.join(SANDBOX, 'shared-file.txt'));
 });
 
 test('分支不存在时明确报错，不是静默成功', () => {
