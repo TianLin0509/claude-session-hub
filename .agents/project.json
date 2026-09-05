@@ -4,7 +4,7 @@
   "name": "AI HUB",
   "trunk": "master",
 
-  "$comment_test": "合并脚本亲自跑这些，不采信 Agent 的说法。退出码非 0 就不合。337 个单测约 17 秒。",
+  "$comment_test": "合并脚本亲自跑这些，不采信 Agent 的说法。退出码非 0 就不合。运行器自动发现并执行全部 unit-*.test.js。",
   "test": [
     "node scripts/run_unit_tests.js"
   ],

@@ -35,13 +35,17 @@ cmd /c mklink /J C:\AIWork\<同上>\node_modules C:\Users\lintian\claude-session
 node scripts/run_unit_tests.js
 ```
 
-337 个单测，约 17 秒。**必须真跑，真看结果。** 合并位会再跑一遍，你报的结果对不上会被当场发现。
+运行器会自动发现并执行全部 `unit-*.test.js`。**必须真跑，真看结果。** 合并位会再跑一遍，你报的结果对不上会被当场发现。
 
 改了 UI 就起隔离实例看一眼，不要凭想象：
 
-```bash
-CLAUDE_HUB_DATA_DIR=C:\Users\lintian\AppData\Local\Temp\hub-check \
-  ./node_modules/electron/dist/electron.exe . --remote-debugging-port=9360
+```powershell
+$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$portProbe.Start()
+$hubCdpPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
+$portProbe.Stop()
+$env:CLAUDE_HUB_DATA_DIR = Join-Path $env:TEMP "hub-check-$PID-$hubCdpPort"
+& '.\node_modules\electron\dist\electron.exe' . "--remote-debugging-port=$hubCdpPort"
 ```
 
 **绝不碰生产 Hub 进程。**
