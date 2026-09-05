@@ -462,6 +462,7 @@ async function _onCreate() {
       workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
+    _applyDefaultDevWorkflow(meeting, scene, slots);
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -476,6 +477,34 @@ async function _onCreate() {
     createBtn.disabled = false;
     createBtn.removeAttribute('aria-busy');
     createBtn.textContent = '创建群聊';
+  }
+}
+
+// 开发场景默认就配好「工作位 ↔ 合并位」循环，用户不用再点一次工作流配置。
+//
+// 为什么放在建群这一刻：发送按钮已经会看 serialWorkflow.loop.enabled 决定跑循环还是
+// 普通提问（meeting-room.js 的 doSend 三岔路）。所以只要建群时把它写好，用户后面
+// 就只剩「打一句话 + 回车」这一个动作 —— 零配置界面。
+//
+// 想随便问一句而不跑流程？关掉工作流开关即可，走的还是原来那条普通群聊路径。
+// memberId 是位置约定：loop-engine 的 sidOf() 把 m1 解析成 subSessions[0]。
+function _applyDefaultDevWorkflow(meeting, scene, slots) {
+  if (scene !== 'dev') return;
+  const WT = window.WorkflowTemplates;
+  if (!WT || typeof WT.createTemplateConfig !== 'function') return;
+  if (!Array.isArray(slots) || slots.length < 2) return;   // 单人没法自审自合，不配
+  try {
+    const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
+    const config = WT.createTemplateConfig('dev-task', members);
+    if (!config) return;
+    config.templateId = 'dev-task';
+    ipcRenderer.send('update-meeting', {
+      meetingId: meeting.id,
+      fields: { serialWorkflow: config },
+    });
+  } catch (error) {
+    // 配不上不该挡住建群 —— 用户还能手动点工作流配置补上
+    console.warn('[meeting-create] 默认开发工作流写入失败:', error && error.message);
   }
 }
 

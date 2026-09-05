@@ -24,10 +24,10 @@
     { id: 'task-feature-delivery', name: '功能', desc: '范围与验收、实现、验证串行交付', minMembers: 2 },
     { id: 'task-root-cause-fix', name: '修 Bug', desc: '并行诊断、最小修复、独立回归', minMembers: 2 },
     { id: 'task-research-decision', name: '调研', desc: '支持证据、反证、缺失信息、决策', minMembers: 2 },
-    // SuperRAN 专用。流程被内网评审天然切成两半，所以给两个预设，同一个群聊切着用：
-    // 先「RAN 实现」跑完停下 → 人去内网走一趟 → 再换「RAN 收口」自动迭代到 PASS。
-    { id: 'ran-implement', name: 'RAN 实现', desc: 'SuperRAN 任务：实现并打审核包，停下等内网', minMembers: 1 },
-    { id: 'ran-converge', name: 'RAN 收口', desc: 'SuperRAN 任务：按内网意见改 ↔ 审 PR，PASS 即合并', minMembers: 2 },
+    // 开发场景的默认工作流。**通用**：prompt 里不出现任何项目名或绝对路径，
+    // 全部走仓库内相对路径 —— 群聊的工作目录就是项目根，所以 .agents/AUTHOR.md 对任何项目都成立。
+    // 项目差异沉淀在各自仓库的 .agents/ 里，改流程只改那几个 .md，不用回来动 Hub。
+    { id: 'dev-task', name: '开发任务', desc: '工作位实现 ↔ 合并位审，PASS 即合并', minMembers: 2, recommended: true },
   ];
 
   const TEMPLATES = [
@@ -141,50 +141,35 @@
       );
     }
 
-    // ── SuperRAN ───────────────────────────────────────────────────────────
-    // prompt 只指向仓库里的合同文件，不在这里复制规则 —— 改流程只改那几个 .md，
-    // 不用回来动 Hub。合同本身在 C:\Vibe\Wireless\SuperRAN\.agents\。
-    if (templateId === 'ran-implement') {
-      return config(
-        [one(ids, 0)],
-        [
-          {
-            name: '实现并打包',
-            timeoutMs: 30 * 60 * 1000,   // 红档实现最费时，给引擎允许的上限
-            prompt: [
-              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
-              '任务就是本群聊里我上一条消息说的那件事；没说清就先问我一句。',
-              '按合同走：建任务拿 ID、建自己的 worktree、实现、按 TESTING.md 跑测试、出 HTML 报告。',
-              '判为红档的还要打审核包，并 log 一步「送内网」。',
-              '最后单独列清楚三样东西，不要埋在长文里：任务 ID、报告绝对路径、审核包绝对路径。',
-              '打完包就停 —— 下一步是我把包送内网，不要继续往下做。',
-            ].join('\n'),
-          },
-        ],
-      );
-    }
-
-    if (templateId === 'ran-converge') {
+    // ── 开发场景默认工作流 ──────────────────────────────────────────────────
+    // prompt 只指向仓库内的相对路径，不在这里复制规则，也不写死任何项目。
+    // 群聊的工作目录 = 项目根，所以 .agents/AUTHOR.md 对每个整理过的项目都成立。
+    // 想改流程就改那个项目的 .md，不用回来动 Hub。
+    // 项目还没整理过（没有 .agents/）时，agent 会读不到合同 —— 那说明该先跑
+    // project-prep skill 把项目整理成规范形态。
+    if (templateId === 'dev-task') {
       return config(
         [one(ids, 0), one(ids, 1)],
         [
           {
-            name: '按内网意见修改',
-            timeoutMs: 25 * 60 * 1000,
+            name: '工作位实现',
+            timeoutMs: 30 * 60 * 1000,   // 实现最费时，给引擎允许的上限
             prompt: [
-              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\AUTHOR.md 展开工作。',
-              '内网审核意见在 docs\\inbox\\，文件名带任务 ID。逐条处理后更新 PR，',
-              '并在 PR 正文附意见对照表；不采纳的必须写理由，不许悄悄跳过。',
-              '若收到上一轮合并 Agent 的阻断项，只修阻断项，不要顺手扩新需求。',
+              '读本仓库的 .agents/AUTHOR.md，按它工作。',
+              '任务就是本群聊里我上一条消息说的那件事；没说清就先问我一句，不要猜。',
+              '若收到上一轮合并位的 BLOCKERS，只修 BLOCKERS 里列的东西，不要顺手扩需求。',
+              '最后按合同输出 PROGRESS / VERIFIED / RISK / REPORT 四行人话，不要贴代码。',
             ].join('\n'),
           },
           {
-            name: '审 PR 并合并',
-            timeoutMs: 25 * 60 * 1000,   // 它要真跑测试：pytest 3 分钟 + 脚本式测试 2 分钟起
+            name: '合并位审查',
+            timeoutMs: 25 * 60 * 1000,   // 它要真跑测试，不能只留给模型思考的时间
             prompt: [
-              '请根据 C:\\Vibe\\Wireless\\SuperRAN\\.agents\\MERGER.md 展开工作。',
-              '按它的三条硬闸和必查项审这个 PR。你和上一步不是同一个会话，独立性成立。',
-              '按合同：PASS 就由你执行合并；REVISE / BLOCKED 一律不合，把阻断项写清楚。',
+              '读本仓库的 .agents/MERGER.md，按它工作。',
+              '你和上一步不是同一个会话，独立性成立 —— 但如果这个分支其实是你写的，直接说出来。',
+              '重点：先确认主干有没有被别的任务推进过，动过就要求先 rebase 再重测。',
+              '必须亲自跑验证（合同里的 --dry-run），不采信工作位报的任何结果。',
+              'PASS 才由你执行合并，FAIL 一律不合。',
               REVIEW_RESULT_CONTRACT,
             ].join('\n'),
           },
