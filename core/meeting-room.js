@@ -170,6 +170,28 @@ class MeetingRoomManager {
     }));
   }
 
+  // Compact, read-only records for the development workbench. Do not copy the
+  // full chat timeline into every snapshot, or let an unrelated damaged field
+  // make all tasks disappear. Each workflow clone has its own error boundary.
+  getDevWorkbenchRecord(id) {
+    const m = this.meetings.get(id);
+    if (!m || typeof m !== 'object') return null;
+    let serialWorkflow = null, metadataError = '';
+    try { serialWorkflow = cloneSerialWorkflow(m.serialWorkflow); }
+    catch (error) { metadataError = '流程配置无法读取：' + error.message; }
+    if (!Array.isArray(m.subSessions)) metadataError ||= '成员记录格式异常，请进入群聊检查';
+    return {
+      id, title: m.title, scene: m.scene, groupChat: !!m.groupChat,
+      workspace: m.workspace, workspaceLabel: m.workspaceLabel,
+      subSessions: Array.isArray(m.subSessions) ? m.subSessions.slice() : [],
+      serialWorkflow, metadataError,
+    };
+  }
+
+  getDevWorkbenchRecords() {
+    return Array.from(this.meetings.keys(), id => this.getDevWorkbenchRecord(id)).filter(Boolean);
+  }
+
   // Search indexing needs meeting metadata but must not clone every timeline
   // onto Electron's main thread for each query. The worker reads authoritative
   // timeline files itself; this compact snapshot only overlays live titles,

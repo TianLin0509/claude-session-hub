@@ -1,237 +1,130 @@
-/* 开发看板 —— Hub 第五主区视图，与 terminal / mr / chuxin / study 平级互斥。
- *
- * 一个群聊 = 一个任务，所以「看板的一行」就是「一个开发群聊」。
- * 数据全部来自 Hub 自己的会议列表，**不扫任何仓库、不读任何 Agent 写的台账文件**。
- *
- * 为什么这么设计：Agent 会忘记更新台账，但群聊和循环状态是客观存在的。
- * 能推导的绝不申报 —— 推导出来的东西不会撒谎。
- *
- * 文件名和 window.__ranHide 这些内部标识沿用历史命名（8 处调用点引用它们），
- * 面向用户的一切已改成通用说法。见 renderer/dev-progress.js 的数据层。
- */
+/* AI 开发群聊工作台。保留 __ran* 导航入口。
+ * 只呈现群聊写入时生成的摘要与执行状态：无轮询、逐任务 get-state、
+ * 终端提取、仓库扫描或额外 AI 请求。人工操作由原群聊引擎处理。 */
 (function () {
   'use strict';
-
   const { ipcRenderer } = require('electron');
-
-  const state = { opened: false, loading: false };
-  let root = null;
-  let listEl = null;
-  let statusEl = null;
-  let timer = null;
-
-  const TONE_COLOR = {
-    ok: 'var(--ok,#34c759)',
-    run: 'var(--accent,#0071e3)',
-    warn: 'var(--warn,#ff9f0a)',
-    bad: 'var(--bad,#ff3b30)',
-    idle: 'var(--soft,#8e8e93)',
-  };
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g,
-      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const PAGE_SIZE = 40;
+  const state = { opened:false, loading:false, request:0, epoch:null, sequence:-1,
+    rows:new Map(), receipts:new Map(), pending:new Set(), expanded:new Set(),
+    filter:'all', search:'', project:'', page:0, buffered:[], error:'', updatedAt:0 };
+  let root, listEl, renderTimer, dialogResolve, focusBeforeDialog;
+  const colors={ok:'var(--status-success)',run:'var(--status-info)',warn:'var(--status-warning)',bad:'var(--status-danger)',idle:'var(--fg-muted)'};
+  const esc=value=>String(value==null?'':value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const text=(value,max=4096)=>typeof value==='string'?value.slice(0,max):'';
+  const button=(action,label,extra='')=>`<button type="button" data-devb-action="${action}" ${extra}>${label}</button>`;
+  const sourceText=source=>source?`${text(source.speaker,100)||'Agent'} · 群聊第 ${Number(source.turnNum)||0} 轮`+(source.at?' · '+new Date(source.at).toLocaleString('zh-CN',{hour12:false}):''):'';
+  const bucket=row=>row.stage?.tone==='bad'||row.stage?.tone==='warn'?'attention':row.stage?.tone==='run'?'running':row.stage?.tone==='ok'?'passed':'idle';
+  function buildSkeleton(){
+    if(root)return true;root=document.getElementById('ran-panel');if(!root)return false;
+    root.innerHTML=`<header class="devb-head"><div><h2>开发群聊工作台</h2><p class="devb-subtitle">一个开发群聊对应一个任务。进展随群聊汇报同步，操作回到同一条流程。</p></div><div class="devb-head-actions">${button('reload','重新载入','id="devb-refresh"')}${button('create','新建开发群聊','class="devb-primary"')}</div></header>
+      <div class="devb-toolbar"><div class="devb-filters" aria-label="按任务状态筛选">${[['all','全部'],['attention','需要处理'],['running','正在推进'],['passed','已通过'],['idle','未开始 / 已停止']].map(([key,label])=>button('filter',label,`class="devb-filter" data-filter="${key}" aria-pressed="${key==='all'}"`)).join('')}</div><input id="devb-search" type="search" aria-label="搜索开发群聊" placeholder="搜索任务或进展"><select id="devb-project" aria-label="按项目筛选"><option value="">所有项目</option></select></div>
+      <div class="devb-summary"><span id="devb-status" aria-live="polite">准备载入…</span><span id="devb-sync">群聊汇报自动推送</span></div><div id="devb-banner" role="status"></div><div id="devb-list"><div class="devb-grid"></div><div class="devb-empty"></div><div class="devb-pager"></div></div>
+      <dialog class="devb-dialog" id="devb-confirm" aria-labelledby="devb-confirm-title"><h3 id="devb-confirm-title"></h3><p id="devb-confirm-body"></p><div class="devb-head-actions">${button('cancel-confirm','取消')}${button('confirm','确认操作','class="devb-primary"')}</div></dialog>`;
+    listEl=root.querySelector('#devb-list');
+    root.addEventListener('click',event=>{const target=event.target.closest('[data-devb-action]');if(!target||target.disabled)return;void handleAction(target).catch(error=>{state.error=error.message||String(error);scheduleRender();});});
+    root.querySelector('#devb-search').addEventListener('input',event=>{state.search=event.target.value;state.page=0;scheduleRender();});
+    root.querySelector('#devb-project').addEventListener('change',event=>{state.project=event.target.value;state.page=0;scheduleRender();});
+    root.addEventListener('toggle',event=>{if(!event.target.isConnected||!event.target.matches('details[data-detail-key]'))return;const id=event.target.dataset.detailKey;if(event.target.open)state.expanded.add(id);else state.expanded.delete(id);},true);
+    root.querySelector('#devb-confirm').addEventListener('cancel',event=>{event.preventDefault();settleConfirm(false);});return true;
   }
-
-  function buildSkeleton() {
-    if (root) return;
-    root = document.getElementById('ran-panel');
-    if (!root) return;
-    root.style.cssText = 'display:none;flex-direction:column;flex:1;min-width:0;overflow:hidden';
-    root.innerHTML = [
-      '<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;',
-      'border-bottom:1px solid var(--border,#d2d2d7);flex:none">',
-      '<b style="font-size:13.5px">开发看板</b>',
-      '<span id="devb-status" style="font-size:12px;opacity:.6"></span>',
-      '<span style="flex:1"></span>',
-      '<button id="devb-refresh" class="btn-small" style="font-size:12px;padding:4px 12px;cursor:pointer">刷新</button>',
-      '</div>',
-      '<div id="devb-list" style="flex:1;overflow:auto;padding:14px 16px"></div>',
-    ].join('');
-    listEl = root.querySelector('#devb-list');
-    statusEl = root.querySelector('#devb-status');
-    const btn = root.querySelector('#devb-refresh');
-    if (btn) btn.addEventListener('click', () => refresh());
+  function receipt(id,message,error=false){state.receipts.set(id,{message,error});scheduleRender();}
+  function rowHtml(row){
+    const id=row.id,stage=row.stage||{},card=row.card||{},review=row.review||{},tone=colors[stage.tone]||colors.idle;
+    const pending=state.pending.has(id),disabled=pending?'disabled':'',current=state.receipts.get(id),actions=row.actions||{};
+    const round=Number(stage.round)>0?` · 第 ${Number(stage.round)} / ${Number(stage.maxRounds)||3} 轮`:'';
+    return `<article class="devb-row" data-mid="${esc(id)}" style="--devb-tone:${tone}"><div class="devb-row-header"><h3>${esc(text(row.title,240)||'未命名开发群聊')}</h3><span class="devb-stage">${esc(text(stage.label,100)||'状态待确认')}</span></div><div class="devb-project">${esc(text(row.project,240)||text(row.workspace,2048)||'群聊未绑定项目')}${esc(round)}</div>
+      ${row.goal?`<details class="devb-details" data-detail-key="${esc(id)}-goal" ${state.expanded.has(id+'-goal')?'open':''}><summary>本次任务目标</summary><div class="devb-goal">${esc(row.goal)}</div></details>`:''}
+      <p class="devb-progress">${esc(row.progress||(row.loading?'正在载入已有群聊汇报…':'尚未收到进展汇报。Agent 按合同写出更新后会在这里显示。'))}</p><div class="devb-source">${esc(sourceText(row.progressSource)||'进展来源：本开发群聊')} ${row.receivedAt?' · 已同步':row.progress?' · 已保存的汇报':''}</div>
+      ${row.feedError?`<div class="devb-warning">汇报载入失败：${esc(row.feedError)}。可重新载入或进入原群聊。</div>`:''}${row.lastError?`<div class="devb-warning">流程提示：${esc(row.lastError)}</div>`:''}${row.blockers?`<div class="devb-warning">最近审核要求修订：${esc(row.blockers)}</div>`:''}${card.risk?`<div class="devb-warning">工作席报告的风险：${esc(card.risk)}</div>`:''}
+      <details class="devb-details" data-detail-key="${esc(id)}" ${state.expanded.has(id)?'open':''}><summary>汇报与审核记录</summary><dl><dt>实现</dt><dd>${esc(card.progress||'尚无最终交接汇报')}</dd><dt>自测</dt><dd>${esc(card.verified||'尚无自测汇报')}</dd><dt>审核</dt><dd>${esc(review.decision==='pass'?'最近一次审核报告 PASS':review.decision==='fail'?'最近一次审核报告 FAIL':'尚无审核裁决')}</dd><dt>验证</dt><dd>${esc(review.verified||'尚无独立验证汇报')}</dd>${review.next?`<dt>下一步</dt><dd>${esc(review.next)}</dd>`:''}</dl><p class="devb-source">${esc(sourceText(row.review||row.card))}。这里呈现席位汇报，不替代实际使用验收。${row.truncated?'长汇报已节选，完整内容请查看群聊原文。':''}</p></details>
+      <div class="devb-actions">${button('open','进入群聊','class="devb-primary"')}${row.report?button('report','查看报告'):''}${actions.stop?button('stop','停止流程',disabled):''}${actions.resume?button('resume','恢复中断流程',disabled):''}${actions.takeover?button('takeover','手动接管',disabled):''}${actions.restore?button('restore','恢复自动设置',disabled):''}</div>
+      ${pending?'<div class="devb-receipt" role="status">操作处理中；其他任务和群聊入口仍可使用。</div>':''}${current?`<div class="devb-receipt ${current.error?'error':''}" role="status">${esc(current.message)}</div>`:''}</article>`;
   }
-
-  function rowHtml(row) {
-    const color = TONE_COLOR[row.stage.tone] || TONE_COLOR.idle;
-    const roundTxt = row.stage.round > 0
-      ? `第 ${row.stage.round} / ${row.stage.maxRounds} 轮` : '';
-    const bits = [];
-    if (row.workspace) bits.push(esc(row.workspace));
-    if (roundTxt) bits.push(roundTxt);
-    if (row.idle) bits.push(esc(row.idle));
-
-    // 人话层：Agent 申报的四行，有什么显示什么；没有就不占地方，
-    // 不显示「暂无」这种废话（之前只渲染了 progress，验证/风险/报告全被丢掉了）。
-    const line = row.progress
-      ? `<div style="font-size:13px;opacity:.85;margin-top:5px">${esc(row.progress)}</div>` : '';
-    const verified = row.verified
-      ? `<div style="font-size:12.5px;margin-top:3px;opacity:.6">验了：${esc(row.verified)}</div>` : '';
-    const risk = row.risk
-      ? `<div style="font-size:12.5px;margin-top:3px;color:${TONE_COLOR.warn}">风险：${esc(row.risk)}</div>` : '';
-    const blocked = row.blockers
-      ? `<div style="font-size:12.5px;margin-top:4px;color:${TONE_COLOR.warn}">打回：${esc(row.blockers)}</div>` : '';
-    // 报告是维护者真正会点开看的东西 —— 之前解析出来却从没显示，等于白写。
-    const report = row.report
-      ? `<div style="margin-top:5px"><span class="devb-report" data-report="${esc(row.report)}"`
-        + ` style="font-size:12.5px;color:${TONE_COLOR.run};cursor:pointer">看报告 →</span></div>` : '';
-
-    return [
-      `<div class="devb-row" data-mid="${esc(row.id)}" style="border:1px solid var(--border,#d2d2d7);`,
-      `border-left:3px solid ${color};border-radius:10px;padding:12px 15px;margin-bottom:9px;cursor:pointer">`,
-      '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">',
-      `<b style="font-size:14px">${esc(row.title)}</b>`,
-      `<span style="font-size:12px;color:${color};font-weight:600">${esc(row.stage.label)}</span>`,
-      `<span style="flex:1"></span>`,
-      `<span style="font-size:12px;opacity:.55">${bits.join(' · ')}</span>`,
-      '</div>', line, verified, risk, blocked, report, '</div>',
-    ].join('');
+  function scheduleRender(){if(renderTimer||!state.opened)return;renderTimer=setTimeout(()=>{renderTimer=null;render();},80);}
+  function render(){
+    if(!root||!state.opened)return;
+    try{
+      const rows=[...state.rows.values()],counts={all:rows.length,attention:0,running:0,passed:0,idle:0};rows.forEach(row=>counts[bucket(row)]++);
+      const labels={all:'全部',attention:'需要处理',running:'正在推进',passed:'已通过',idle:'未开始 / 已停止'};
+      root.querySelectorAll('[data-filter]').forEach(el=>{el.textContent=labels[el.dataset.filter]+' '+counts[el.dataset.filter];el.setAttribute('aria-pressed',String(state.filter===el.dataset.filter));});
+      const projects=[...new Set(rows.map(row=>row.project||row.workspace).filter(Boolean))].sort(),projectEl=root.querySelector('#devb-project');
+      const options='<option value="">所有项目</option>'+projects.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
+      if(projectEl.innerHTML!==options){projectEl.innerHTML=options;projectEl.value=state.project;}
+      const needle=state.search.trim().toLocaleLowerCase();
+      const filtered=rows.filter(row=>(state.filter==='all'||bucket(row)===state.filter)&&(!state.project||(row.project||row.workspace)===state.project)&&(!needle||[row.title,row.project,row.workspace,row.progress].join(' ').toLocaleLowerCase().includes(needle))).sort((a,b)=>({attention:0,running:1,idle:2,passed:3}[bucket(a)]-{attention:0,running:1,idle:2,passed:3}[bucket(b)])||a.id.localeCompare(b.id));
+      const pages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));state.page=Math.min(state.page,pages-1);
+      const visible=filtered.slice(state.page*PAGE_SIZE,(state.page+1)*PAGE_SIZE),grid=listEl.querySelector('.devb-grid'),keep=new Set(visible.map(row=>row.id));
+      const focus=document.activeElement,focusId=focus?.closest('.devb-row')?.dataset.mid,focusAction=focus?.dataset.devbAction;
+      for(const el of [...grid.children])if(!keep.has(el.dataset.mid))el.remove();
+      visible.forEach((row,index)=>{
+        let html;try{html=rowHtml(row);}catch(error){html=`<article class="devb-row" data-mid="${esc(row.id)}"><h3>此任务暂时无法显示</h3><p class="devb-warning">${esc(error.message)}</p>${button('open','进入原群聊')}</article>`;}
+        let el=[...grid.children].find(node=>node.dataset.mid===row.id);
+        if(!el||el._devbHtml!==html){const template=document.createElement('template');template.innerHTML=html;const fresh=template.content.firstElementChild;fresh._devbHtml=html;if(el)el.replaceWith(fresh);el=fresh;}
+        if(grid.children[index]!==el)grid.insertBefore(el,grid.children[index]||null);
+      });
+      if(focusId&&focusAction&&!focus.isConnected){const card=[...grid.children].find(el=>el.dataset.mid===focusId),next=card&&[...card.querySelectorAll('[data-devb-action]')].find(el=>el.dataset.devbAction===focusAction);if(next&&!next.disabled)next.focus({preventScroll:true});}
+      const empty=listEl.querySelector('.devb-empty');empty.hidden=visible.length>0;empty.innerHTML=rows.length?'没有符合当前筛选条件的任务。':'<h3>从一个开发群聊开始</h3><p>新建群聊时选择“开发”场景，绑定项目并布置任务。<br>已有群聊的进展、审核与恢复入口会集中显示在这里。</p>';
+      listEl.querySelector('.devb-pager').innerHTML=pages>1?button('previous','上一页',state.page===0?'disabled':'')+`<span>第 ${state.page+1} / ${pages} 页 · 每页最多 ${PAGE_SIZE} 项</span>`+button('next','下一页',state.page===pages-1?'disabled':''):'';
+      root.querySelector('#devb-status').textContent=`${rows.length} 个开发群聊 · ${counts.attention} 个需要处理 · ${counts.running} 个正在推进`+(state.loading?' · 载入中…':'');
+      root.querySelector('#devb-sync').textContent=state.updatedAt?'最近收到更新 '+new Date(state.updatedAt).toLocaleTimeString('zh-CN',{hour12:false}):'群聊汇报自动推送';root.querySelector('#devb-banner').textContent=state.error;
+    }catch(error){root.querySelector('#devb-banner').textContent='工作台显示异常，原群聊仍保留。请重新载入：'+(error.message||error);}
   }
-
-  /**
-   * 取每个任务最近的几条发言，用来抠人话卡。
-   *
-   * 看板上「现在第几步、第几轮、闲置多久」是推导出来的，永远准；
-   * 「这一步干了什么」只能读 Agent 申报的四行 —— 那就得看群聊记录。
-   * 拿不到也不影响：推导那半边照常显示，人话那行不出现而已（不显示「暂无」占位）。
-   *
-   * 只取尾部若干条：卡片是每步结束时写的，不需要翻全量记录。
-   */
-  async function fetchLatestMessages(meetings) {
-    const out = {};
-    await Promise.all((meetings || []).map(async (m) => {
-      if (!m || !m.id) return;
-      try {
-        const st = await ipcRenderer.invoke('groupchat:get-state', { meetingId: m.id });
-        const DP = window.DevProgress;
-        out[m.id] = DP && typeof DP.messagesFromGroupState === 'function'
-          ? DP.messagesFromGroupState(st, 14) : [];
-      } catch (e) {
-        // 拿不到就算了，推导那部分不受影响
-      }
-    }));
-    return out;
+  function bounded(promise,ms,message){let timeout;return Promise.race([promise,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error(message)),ms);})]).finally(()=>clearTimeout(timeout));}
+  function acceptRows(rows){if(!Array.isArray(rows))throw new Error('任务摘要列表格式无效');for(const row of rows){if(!row||typeof row.id!=='string'||!/^[a-zA-Z0-9_-]{1,255}$/.test(row.id))continue;state.rows.set(row.id,row);}}
+  function applyChange(payload){
+    if(!payload||typeof payload.epoch!=='string'||!Number.isFinite(payload.sequence))return;
+    if(payload.epoch!==state.epoch){state.error='工作台服务已重建，请重新载入以接收最新状态。';scheduleRender();return;}
+    if(payload.sequence<=state.sequence)return;if(payload.sequence>state.sequence+1)state.error='部分推送未收到，当前显示已知状态；请重新载入。';
+    acceptRows(payload.rows);for(const id of Array.isArray(payload.removed)?payload.removed:[]){state.rows.delete(id);state.receipts.delete(id);state.expanded.delete(id);}
+    state.sequence=payload.sequence;state.updatedAt=Date.now();scheduleRender();
   }
-
-  async function refresh() {
-    if (!listEl || state.loading) return;
-    state.loading = true;
-    if (statusEl) statusEl.textContent = '读取中…';
-    try {
-      const DP = window.DevProgress;
-      const meetings = (await ipcRenderer.invoke('get-meetings')) || [];
-      const devs = DP ? meetings.filter(DP.isDevMeeting) : [];
-
-      if (!devs.length) {
-        listEl.innerHTML = [
-          '<div style="opacity:.62;font-size:14px;line-height:2;padding:20px 4px">',
-          '还没有开发任务。<br><br>',
-          '新建一个群聊，<b>场景选「开发」</b>，工作目录选你要改的项目，',
-          '然后直接在输入框打一句人话说要干什么、回车即可 —— 工作流已经默认配好，不用另外配置。<br><br>',
-          '<span style="font-size:13px">一个群聊对应一个任务；有多个需求就开多个群聊并行。</span>',
-          '</div>',
-        ].join('');
-      } else {
-        // 在跑的排前面，其次是要你处理的，已完成沉底
-        const order = { run: 0, bad: 1, warn: 2, idle: 3, ok: 4 };
-        const msgsById = await fetchLatestMessages(devs);
-        const rows = devs.map(m => DP.boardRow(m, msgsById[m.id] || []))
-          .sort((a, b) => (order[a.stage.tone] ?? 9) - (order[b.stage.tone] ?? 9));
-        listEl.innerHTML = rows.map(rowHtml).join('');
-        // 「看报告」要先绑，并且必须 stopPropagation —— 否则点它会连带触发整行跳转，
-        // 用户以为点开报告，结果被扔进群聊。
-        listEl.querySelectorAll('.devb-report').forEach((el) => {
-          el.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            const p = el.getAttribute('data-report');
-            if (!p) return;
-            try {
-              require('electron').shell.openPath(p).then((err) => {
-                if (err) { el.textContent = '打不开：' + err; el.style.color = TONE_COLOR.bad; }
-              });
-            } catch (e) {
-              el.textContent = '打不开：' + ((e && e.message) || e);
-              el.style.color = TONE_COLOR.bad;
-            }
-          });
-        });
-        listEl.querySelectorAll('.devb-row').forEach((el) => {
-          el.addEventListener('click', () => {
-            const id = el.getAttribute('data-mid');
-            if (!id) return;
-            setPanelVisible(false);
-            const sel = window.selectMeeting || (typeof selectMeeting === 'function' ? selectMeeting : null);
-            if (sel) sel(id);
-          });
-        });
-      }
-      if (statusEl) {
-        const running = devs.filter(m => {
-          const s = window.DevProgress.deriveStage(m);
-          return s.tone === 'run';
-        }).length;
-        statusEl.textContent = devs.length
-          ? `${devs.length} 个任务，${running} 个在跑` : '';
-      }
-    } catch (e) {
-      if (statusEl) statusEl.textContent = '读取失败：' + ((e && e.message) || e);
-    } finally {
-      state.loading = false;
+  async function reload(){
+    if(!buildSkeleton())return;const request=++state.request;state.loading=true;state.buffered=[];state.error='';render();
+    try{
+      const payload=await bounded(ipcRenderer.invoke('dev-workbench:get-snapshot',{retryErrors:true}),5000,'摘要载入超时；已显示的任务保留，可重新载入或进入群聊。');
+      if(request!==state.request)return;if(!payload||payload.ok!==true)throw new Error(payload?.reason||'工作台服务返回无效结果');if(!Array.isArray(payload.rows))throw new Error('任务列表格式无效');
+      state.rows.clear();acceptRows(payload.rows);state.epoch=payload.epoch;state.sequence=payload.sequence;for(const delta of state.buffered)if(delta.epoch===state.epoch)applyChange(delta);state.updatedAt=Date.now();
+    }catch(error){if(request===state.request)state.error=error.message||String(error);}finally{if(request===state.request){state.loading=false;state.buffered=[];render();}}
+  }
+  function confirmOperation(title,body){settleConfirm(false);focusBeforeDialog=document.activeElement;const dialog=root.querySelector('#devb-confirm');root.querySelector('#devb-confirm-title').textContent=title;root.querySelector('#devb-confirm-body').textContent=body;return new Promise(resolve=>{dialogResolve=resolve;dialog.showModal();});}
+  function settleConfirm(value){const dialog=root?.querySelector('#devb-confirm');if(dialog?.open)dialog.close();const resolve=dialogResolve;dialogResolve=null;if(resolve)resolve(value);if(focusBeforeDialog?.isConnected)focusBeforeDialog.focus({preventScroll:true});}
+  async function handleAction(target){
+    const action=target.dataset.devbAction;
+    if(action==='confirm'||action==='cancel-confirm'){settleConfirm(action==='confirm');return;}
+    if(action==='reload'){await reload();return;}
+    if(action==='create'){if(typeof window.openMeetingCreateModal!=='function')throw new Error('创建群聊入口暂不可用，请从启动中心打开。');window.openMeetingCreateModal('dev');return;}
+    if(action==='filter'){state.filter=target.dataset.filter;state.page=0;render();return;}
+    if(action==='previous'||action==='next'){state.page+=action==='next'?1:-1;render();listEl.scrollTop=0;return;}
+    const id=target.closest('.devb-row')?.dataset.mid,row=state.rows.get(id);if(!row)return;
+    if(action==='open'){try{const select=window.selectMeeting||(typeof selectMeeting==='function'?selectMeeting:null);if(!select)throw new Error('群聊入口尚未就绪');await bounded(Promise.resolve(select(id)),5000,'打开群聊超时，请重新载入后重试');}catch(error){setPanelVisible(true,false);receipt(id,error.message,true);}return;}
+    if(action==='report'){
+      try{
+        if(typeof window.openPathInHub!=='function')throw new Error('报告预览尚未就绪');
+        let reportPath=row.report;
+        if(!/^https?:\/\//i.test(reportPath)){
+          const path=require('node:path');reportPath=path.resolve(row.workspace||'.',reportPath);
+          // Explicit user action only. The preview API can acknowledge a missing
+          // HTML path before its webview fails, so verify this one chosen file.
+          const stat=await bounded(require('node:fs').promises.stat(reportPath),3000,'报告文件检查超时');
+          if(!stat.isFile())throw new Error('报告路径不是文件');
+        }
+        const result=await bounded(Promise.resolve(window.openPathInHub(reportPath,{cwd:row.workspace,requireExistsForRel:true,throwOnError:true})),5000,'报告打开超时，任务流程不受影响');
+        if(result?.ok===false)throw new Error(result.error||'报告无法打开');
+      }catch(error){receipt(id,'报告打不开：'+error.message,true);}return;
     }
+    if(state.pending.has(id))return;
+    const descriptions={stop:['停止这条任务的自动流程？','停止当前轮并阻止后续自动派发。已有群聊、工作树和成果均保留。'],resume:['恢复这条中断的开发任务？','使用原目标与已保存的步骤记录继续。不会重置返工额度，也不会跳过独立审核。'],takeover:['改为手动处理这条任务？','先停止自动流程，再关闭这条群聊的自动派发。你可以在原群聊检查、补充要求或调整成员；之后可以恢复原设置。'],restore:['恢复原来的自动流程设置？','恢复此群聊接管前的设置。本次仅恢复设置，不会自动发送新任务。']};
+    if(!descriptions[action]||!row.actions?.[action])return;if(!await confirmOperation(descriptions[action][0],row.title+'\n\n'+descriptions[action][1]))return;
+    state.pending.add(id);render();
+    try{const result=await bounded(ipcRenderer.invoke('dev-workbench:action',{meetingId:id,action,controlToken:row.controlToken}),6500,'操作响应超时，结果尚未确认；请重新载入或进入群聊核对，避免重复提交。');if(!result||result.ok!==true)throw new Error(result?.reason||'操作未成功，请进入群聊处理');receipt(id,result.message||'操作请求已接收，请查看更新后的任务状态');}catch(error){receipt(id,error.message,true);}finally{state.pending.delete(id);scheduleRender();}
   }
-
-  function setPanelVisible(visible) {
-    buildSkeleton();
-    if (!root) return;
-    state.opened = visible;
-
-    const tp = document.getElementById('terminal-panel');
-    const mrp = document.getElementById('meeting-room-panel');
-    const homeButton = document.getElementById('btn-home');
-    const navButton = document.getElementById('btn-ran');
-
-    root.style.display = visible ? 'flex' : 'none';
-    if (navButton) {
-      navButton.classList.toggle('active', visible);
-      if (visible) navButton.setAttribute('aria-current', 'page');
-      else navButton.removeAttribute('aria-current');
-    }
-    if (visible) {
-      if (homeButton) {
-        homeButton.classList.remove('active');
-        homeButton.removeAttribute('aria-current');
-      }
-      if (window.__chuxinHide) window.__chuxinHide();
-      if (window.__studyHide) window.__studyHide();
-      if (tp) tp.style.display = 'none';
-      if (mrp) mrp.style.display = 'none';
-      refresh();
-      // 任务在后台跑，看板开着的时候自动跟进度
-      if (timer) clearInterval(timer);
-      timer = setInterval(() => { if (state.opened) refresh(); }, 15000);
-    } else if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
+  function setPanelVisible(visible,load=true){
+    if(!buildSkeleton())return;state.opened=visible;root.style.display=visible?'flex':'none';const nav=document.getElementById('btn-ran');nav?.classList.toggle('active',visible);if(nav){if(visible)nav.setAttribute('aria-current','page');else nav.removeAttribute('aria-current');}
+    if(visible){const home=document.getElementById('btn-home');home?.classList.remove('active');home?.removeAttribute('aria-current');window.__chuxinHide?.();window.__studyHide?.();for(const id of ['terminal-panel','meeting-room-panel']){const el=document.getElementById(id);if(el)el.style.display='none';}render();if(load)void reload();}else{settleConfirm(false);if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}}
   }
-
-  window.__ranHide = function () { if (state.opened) setPanelVisible(false); };
-  window.__ranShow = function () { setPanelVisible(true); };
-  window.__devBoardHide = window.__ranHide;
-  window.__devBoardShow = window.__ranShow;
-
-  function bindEntry() {
-    document.querySelectorAll('#btn-ran, [data-ran-entry]').forEach((b) => {
-      b.addEventListener('click', () => setPanelVisible(true));
-    });
-  }
-
-  function init() { buildSkeleton(); bindEntry(); }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  ipcRenderer.on('dev-workbench:changed',(_event,payload)=>{try{if(state.loading||!state.epoch){if(state.buffered.length<1000)state.buffered.push(payload);else state.error='更新积压，请重新载入最新摘要。';}else applyChange(payload);}catch(error){state.error='收到异常摘要，其他任务保留：'+error.message;scheduleRender();}});
+  window.__ranHide=()=>{if(state.opened)setPanelVisible(false);};window.__ranShow=()=>setPanelVisible(true);window.__devBoardHide=window.__ranHide;window.__devBoardShow=window.__ranShow;
+  function init(){buildSkeleton();document.querySelectorAll('#btn-ran,[data-ran-entry]').forEach(button=>button.addEventListener('click',()=>setPanelVisible(true)));}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();

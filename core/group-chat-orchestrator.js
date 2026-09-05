@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { KIND_LABELS } = require('./ai-kinds.js');
+const devWorkbenchFeed = require('./dev-workbench-feed');
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
@@ -189,11 +190,34 @@ class GroupChatOrchestrator {
 
   _saveState() {
     const fp = this._stateFilePath();
+    // This is a projection of already-authored messages, never a new AI request.
+    // Keep it in the same durable write as the source before announcing it.
+    const summary = devWorkbenchFeed.summarizeGroupState(this.state);
+    this.state.devWorkbench = summary;
     atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
+    devWorkbenchFeed.publishSaved(this.hubDataDir, this.meetingId, summary);
   }
 
   getState() {
     return _clone(this.state);
+  }
+
+  // Informational, source-authored progress. Never touches turn results,
+  // completion receipts or workflow gates. Fence against old/dormant sessions.
+  recordProgressUpdate(sid, text, at, speaker) {
+    const turnNum = Number(this.state.currentTurn) || 0;
+    const pending = this.state.pendingPrompts?.[String(turnNum)]?.[sid];
+    const user = this.state.messages.find(message => message && message.id === `u${turnNum}`);
+    if (!pending || !turnNum || !text || !Number.isFinite(at) || (user && at < user.createdAt)) return false;
+    const id = `p${turnNum}-${sid}`;
+    const previous = this.state.messages.find(message => message && message.id === id);
+    const content = 'UPDATE: ' + text;
+    if (previous && (previous.content === content || at < previous.updatedAt)) return false;
+    if (previous) Object.assign(previous, { content, updatedAt: at });
+    else this._appendMessage({ id, role: 'assistant', sid, speaker, turnNum, content,
+      status: 'progress_update', createdAt: at, updatedAt: at });
+    this._saveState();
+    return true;
   }
 
   beginTurn(userInput, opts = {}) {

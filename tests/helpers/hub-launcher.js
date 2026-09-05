@@ -244,6 +244,7 @@ async function launchIsolatedHub({
   executablePath = ELECTRON_EXE,
   allowExternalState = false,
   windowMode = 'visible',
+  entryPath = HUB_ROOT,
 } = {}) {
   if (!dataDir) throw new Error('dataDir required');
   if (!port) throw new Error('port required');
@@ -259,7 +260,7 @@ async function launchIsolatedHub({
   // 偶发无法写 DevToolsActivePort，表现为 CDP 已监听但 renderer 永远不响应。
   fs.mkdirSync(path.join(env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'), { recursive: true });
 
-  const args = [HUB_ROOT, `--remote-debugging-port=${port}`];
+  const args = [entryPath, `--remote-debugging-port=${port}`];
   // 关键：spawn 立即拿 PID，detached:false 让 child 跟随 parent 退出
   const child = spawn(executablePath, args, {
     env,

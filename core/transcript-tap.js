@@ -17,6 +17,7 @@
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
 
 const { EventEmitter } = require('events');
+const { processUpdate: devProcessUpdate } = require('./dev-workbench-feed');
 const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
 const fs = require('fs');
 const path = require('path');
@@ -231,6 +232,8 @@ class ClaudeTap extends EventEmitter {
         if (obj?.type !== 'assistant' || !obj.message?.content) return;
         const content = obj.message.content;
         if (!Array.isArray(content)) return;
+        const progressText = devProcessUpdate(content.filter(block => block && block.type === 'text').map(block => block.text || '').join('\n'));
+        if (progressText) this.emit('progress-update', { hubSessionId, text: progressText, at: timestampToMs(obj.timestamp) || Date.now() });
         // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给卡片视图。
         //   transcript 每行 assistant message 都带这两个字段（CC CLI 包装 anthropic API 响应原样落盘）。
         //   model 形如 "claude-opus-4-7" / "claude-sonnet-4-5"；usage 含 input/output/cache_read/cache_creation。
@@ -1381,6 +1384,10 @@ class CodexTap extends EventEmitter {
       }
 
       const completedAgent = codexAgentMessageEventFromRecord(obj);
+      if (completedAgent && completedAgent.completedAt >= entry._liveBoundaryAt) {
+        const progressText = devProcessUpdate(completedAgent.text);
+        if (progressText) this.emit('progress-update', { hubSessionId, text: progressText, at: completedAgent.completedAt });
+      }
       if (completedAgent && completedAgent.completed) {
         // JsonlTail hydrates an existing rollout suffix when a dormant Codex
         // session resumes. A historical task_complete/final_answer is history,
@@ -1878,6 +1885,7 @@ class TranscriptTap extends EventEmitter {
     this._kimi = new KimiTap({ parserService: opts.parserService });
     for (const b of [this._claude, this._codex, this._gemini, this._kimi]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
+      b.on('progress-update', (ev) => this.emit('progress-update', ev));
       b.on('turn-started', (ev) => this.emit('turn-started', ev));
       b.on('turn-aborted', (ev) => this.emit('turn-aborted', ev));
       b.on('turn-error', (ev) => this.emit('turn-error', ev));
