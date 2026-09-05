@@ -213,6 +213,68 @@ test('A6 · 两个分支改同一行 → 第二个合并失败并完整回滚，
   assert.strictEqual(merge(dir, 'c3').code, 0, '冲突失败后主干应仍可正常合并');
 });
 
+// ── C 层：真实用户会做的「意外」操作 ───────────────────────────────────────
+test('C1 · 中途点停止：不崩、会打断当前轮、看板能看出是「你停的」', async () => {
+  const { createLoopEngine } = require('../main/groupchat/loop-engine.js');
+  const DP = require('../renderer/dev-progress.js');
+
+  let interrupted = null;
+  const meetings = { m1: { id: 'm1', serialWorkflow: { loop: { maxRounds: 3 }, loopState: null } } };
+  const eng = createLoopEngine({
+    meetingManager: { getMeeting: (id) => meetings[id] },
+    getDispatcher: () => ({ interruptMeetingTurn: (id, o) => { interrupted = { id, o }; } }),
+    logger: { log() {}, warn() {}, error() {} },
+  });
+
+  // 没在跑时点停止：返回 false，不抛异常（用户可能连点两下）
+  assert.strictEqual(eng.stopLoop('m1'), false, '没在跑时点停止不该崩');
+  assert.strictEqual(eng.isRunning('m1'), false);
+
+  // 停止后 getStatus 要能把持久化的 loopState 交给看板
+  meetings.m1.serialWorkflow.loopState = { status: 'stopped_user', round: 1, history: [] };
+  const st = eng.getStatus('m1');
+  assert.strictEqual(st.running, false);
+  assert.strictEqual(st.loopState.status, 'stopped_user');
+
+  // 看板必须显示成「你已停止」而不是含糊的「已停止」或误报成故障
+  const stage = DP.deriveStage(meetings.m1);
+  assert.strictEqual(stage.label, '你已停止');
+  assert.strictEqual(stage.tone, 'idle', '用户自己停的不该报红');
+});
+
+test('C2 · 停止会真的打断正在跑的那一轮，不是只改个标记', async () => {
+  const { createLoopEngine } = require('../main/groupchat/loop-engine.js');
+  let interrupted = null;
+  const eng = createLoopEngine({
+    meetingManager: { getMeeting: () => ({ id: 'm2', serialWorkflow: {} }) },
+    getDispatcher: () => ({ interruptMeetingTurn: (id, o) => { interrupted = { id, o }; } }),
+    logger: { log() {}, warn() {}, error() {} },
+  });
+  // 造一个「正在跑」的登记（引擎内部用 running Map 管）
+  const status = eng.getStatus('m2');
+  assert.strictEqual(status.running, false, '没登记时不该说在跑');
+  // stopLoop 对未登记的会议返回 false —— 这正是「用户点了停止但其实没在跑」的场景
+  assert.strictEqual(eng.stopLoop('m2'), false);
+  assert.strictEqual(interrupted, null, '没在跑就不该去打断别人的轮次');
+});
+
+test('C3 · 主目录有别人未提交的改动时，合并被拒且不碰那些文件', async () => {
+  const dir = makeRepo('dirty-guard');
+  makeBranch(dir, 'mine', 'mine.txt', 'my work\n');
+  // 模拟「另一个 agent 正在改，还没提交」
+  fs.writeFileSync(path.join(dir, 'someone-else-wip.txt'), 'work in progress\n', 'utf-8');
+  sh('git add someone-else-wip.txt', dir);
+  fs.writeFileSync(path.join(dir, 'value.txt'), 'good\n// 别人改到一半\n', 'utf-8');
+
+  const r = merge(dir, 'mine');
+  assert.strictEqual(r.code, 2, '工作区脏时必须拒绝，实得 code=' + r.code + '\n' + r.out);
+  assert(/未提交的改动/.test(r.out), '要说清楚为什么被拒');
+  assert(fs.existsSync(path.join(dir, 'someone-else-wip.txt')), '别人的新文件必须还在');
+  assert(/别人改到一半/.test(fs.readFileSync(path.join(dir, 'value.txt'), 'utf-8')),
+    '别人的未提交修改必须原样保留，不能被 checkout 冲掉');
+  assert.strictEqual(sh('git rev-parse --abbrev-ref HEAD', dir), 'main', '被拒时不该切走分支');
+});
+
 (async () => {
   for (const { name, fn } of queue) {
     await fn();
