@@ -100,6 +100,36 @@ test('上一轮刚开始跑时不抢闸（避免并发扫描互相踩）', async
   tap._stopWatcher();
 });
 
+test('心跳停了就重启扫描器（定时器句柄还在也照样重启）', async () => {
+  // 实测撞到：pending=2 但扫描循环已经不跑了 —— 定时器句柄还在，
+  // 所以老的 `if (this._pollTimer) return;` 直接放行，新会话永远等不到绑定。
+  // 根因没锁死，但这类「静默停摆」不该靠找出每一条成因来防。
+  const tap = new CodexTap({ pollIntervalMs: 50 });
+  tap._candidateDirs = () => [];
+  tap._pending.set('s9', { cwd: 'C:\\x', spawnTime: Date.now(), allowMtimeFallback: false, requirePromptMatch: false });
+
+  // 伪造「句柄还在，但上次扫描是很久以前」
+  tap._pollTimer = setInterval(() => {}, 100000);
+  tap._lastScanAt = Date.now() - 10 * 60 * 1000;
+  const before = tap._pollTimer;
+
+  tap._ensureWatcherAlive();
+  assert.notStrictEqual(tap._pollTimer, before, '心跳过期时必须换一个新的定时器');
+  assert(tap._lastScanAt > Date.now() - 5000, '重启后应立刻扫一次，心跳要刷新');
+  tap._stopWatcher();
+});
+
+test('心跳正常时不折腾（别每次调用都重建定时器）', async () => {
+  const tap = new CodexTap({ pollIntervalMs: 50000 });
+  tap._candidateDirs = () => [];
+  tap._pending.set('s10', { cwd: 'C:\\x', spawnTime: Date.now(), allowMtimeFallback: false, requirePromptMatch: false });
+  tap._ensureWatcherAlive();
+  const t1 = tap._pollTimer;
+  tap._ensureWatcherAlive();
+  assert.strictEqual(tap._pollTimer, t1, '心跳新鲜时不该重建');
+  tap._stopWatcher();
+});
+
 test('没有待绑会话时不做无谓扫描', async () => {
   const tap = new CodexTap({ pollIntervalMs: 100000 });
   let ran = false;
