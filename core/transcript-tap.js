@@ -592,6 +592,8 @@ const CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 // 两者都必须有界 —— 无界的那个版本实测会让绑定机制整体静默停摆。
 const TRY_BIND_TIMEOUT_MS = 15_000;
 const SCAN_STUCK_RESET_MS = 45_000;
+// 看门狗巡检间隔。只比时间戳，开销可忽略；比扫描间隔慢一个量级即可。
+const WATCHDOG_INTERVAL_MS = 15_000;
 
 function withTimeout(promise, ms) {
   let timer = null;
@@ -651,6 +653,7 @@ class CodexTap extends EventEmitter {
       expectedPromptAt: null,
     });
     this._ensureWatcherAlive();
+    this._ensureWatchdog();
     if (transcriptPath) {
       // A persisted rollout path is only a fast path. It can go stale after a
       // profile switch/archive, or (in old Hub state) point at a subagent file.
@@ -849,6 +852,33 @@ class CodexTap extends EventEmitter {
    * 而上次扫描已经是好几个周期之前，就无条件重启。
    * 任何碰到 tap 的入口（注册会话、记录 prompt）都顺手调一下，代价可以忽略。
    */
+  /**
+   * 独立看门狗：只看时间戳、不做任何 I/O，所以不可能被卡住的扫描拖累。
+   *
+   * 为什么还要多一个定时器：实测发现扫描循环会在**循环工作流启动那一刻**
+   * 整个停掉（日志里 `[loop-engine] start` 之后再没有一条 codex-tap 输出），
+   * 而 pending 仍是 2。上一版把心跳检查挂在 registerSession / notePrompt 上，
+   * 但 agent 干活期间根本不会再触发这两个入口 —— 死了也没人发现。
+   *
+   * 两个独立定时器同时哑掉的概率，远低于一个。
+   */
+  _ensureWatchdog() {
+    if (this._watchdogTimer) return;
+    this._watchdogTimer = setInterval(() => {
+      try {
+        if (this._pending.size === 0) {
+          clearInterval(this._watchdogTimer);
+          this._watchdogTimer = null;
+          return;
+        }
+        this._ensureWatcherAlive();
+      } catch (e) {
+        console.warn('[codex-tap] watchdog error:', e && e.message);
+      }
+    }, WATCHDOG_INTERVAL_MS);
+    this._watchdogTimer.unref?.();
+  }
+
   _ensureWatcherAlive() {
     if (this._pending.size === 0) return;
     const stale = Date.now() - (this._lastScanAt || 0) > Math.max(5000, this._pollIntervalMs * 5);
@@ -872,6 +902,10 @@ class CodexTap extends EventEmitter {
   _stopWatcher() {
     try { clearInterval(this._pollTimer); } catch {}
     this._pollTimer = null;
+    // 看门狗也一起收 —— 没有会话在等绑定时它没有存在意义，
+    // 留着只会在每次巡检时白跑一遍。下次 registerSession 会重新起。
+    try { clearInterval(this._watchdogTimer); } catch {}
+    this._watchdogTimer = null;
   }
 
   _candidateDirs() {

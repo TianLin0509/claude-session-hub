@@ -130,6 +130,27 @@ test('心跳正常时不折腾（别每次调用都重建定时器）', async ()
   tap._stopWatcher();
 });
 
+test('看门狗会自己把停掉的扫描器救回来（不靠外部事件触发）', async () => {
+  // 实测：扫描循环在「循环工作流启动」那一刻整个停掉，而 pending 仍是 2。
+  // 上一版把心跳检查挂在 registerSession / notePrompt 上，但 agent 干活期间
+  // 根本不会再触发这两个入口 —— 死了也没人发现。所以必须有个独立定时器自己巡。
+  const tap = new CodexTap({ pollIntervalMs: 20 });
+  tap._candidateDirs = () => [];
+  tap._pending.set('w1', { cwd: 'C:\\x', spawnTime: Date.now(), allowMtimeFallback: false, requirePromptMatch: false });
+  tap._ensureWatchdog();
+  assert(tap._watchdogTimer, '看门狗应该起来了');
+
+  // 模拟「扫描器悄悄死了」：句柄还在，但心跳很旧
+  const dead = tap._pollTimer;
+  tap._lastScanAt = Date.now() - 10 * 60 * 1000;
+
+  // 手动触发一次巡检（等真定时器要 15 秒，测试不等）
+  tap._ensureWatcherAlive();
+  assert.notStrictEqual(tap._pollTimer, dead, '看门狗必须把扫描器换成新的');
+  tap._stopWatcher();
+  assert.strictEqual(tap._watchdogTimer, null, '停表时看门狗也要收掉，别留着空跑');
+});
+
 test('没有待绑会话时不做无谓扫描', async () => {
   const tap = new CodexTap({ pollIntervalMs: 100000 });
   let ran = false;
