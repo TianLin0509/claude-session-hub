@@ -345,15 +345,15 @@ async function main() {
     assert.equal(result.meeting.scene, 'research');
     assert.deepEqual(result.meeting.slotSpecs, [
       {
-        index: 0, kind: 'claude', model: configuredMembers[0].model,
+        index: 0, kind: 'claude', memberId: 'm1', model: configuredMembers[0].model,
         effort: 'high', mcpProfile: 'lean', fastMode: false,
       },
       {
-        index: 1, kind: 'codex', model: configuredMembers[1].model,
+        index: 1, kind: 'codex', memberId: 'm2', model: configuredMembers[1].model,
         effort: 'max', mcpProfile: 'none', codexSpeedTier: 'fast', contextMax: 1_000_000,
       },
       {
-        index: 2, kind: 'deepseek', model: configuredMembers[2].model,
+        index: 2, kind: 'deepseek', memberId: 'm3', model: configuredMembers[2].model,
         effort: 'medium', mcpProfile: 'wireless', codexSpeedTier: 'flex',
       },
     ]);

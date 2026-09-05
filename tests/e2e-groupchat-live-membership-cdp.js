@@ -89,16 +89,18 @@ async function run() {
     await addPowerShellMember(cdp, meetingId, "document.querySelector('[data-gc-add-member]').click()", 2);
     await addPowerShellMember(cdp, meetingId, "document.querySelector('[data-gc-add-member]').click()", 3);
 
-    const afterAdd = await cdp.eval("(() => { const meeting = window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + "); return { subSessions: meeting.subSessions.slice(), participants: meeting.participants.slice(), rows: document.querySelectorAll('.mr-gc-member-row').length }; })()");
+    const afterAdd = await cdp.eval("(() => { const meeting = window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + "); return { subSessions: meeting.subSessions.slice(), participants: meeting.participants.slice(), memberIds: (meeting.slotSpecs || []).map(s => s && s.memberId), rows: document.querySelectorAll('.mr-gc-member-row').length }; })()");
     assert.strictEqual(afterAdd.rows, 3);
     assert.deepStrictEqual(afterAdd.participants, [0, 1, 2], 'new member should be selected for the next turn');
+    assert.deepStrictEqual(afterAdd.memberIds, ['m1', 'm2', 'm3'], 'new members receive durable ids');
 
     await cdp.eval("window.confirm = () => true; document.querySelectorAll('[data-gc-member-remove-sid]')[1].click()");
     await waitFor(cdp, "window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + ").subSessions.length === 2", 30000);
     await waitFor(cdp, "document.querySelectorAll('.mr-gc-member-row').length === 2", 10000);
-    const afterRemove = await cdp.eval("(() => { const meeting = window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + "); return { subSessions: meeting.subSessions.slice(), participants: meeting.participants.slice(), rows: document.querySelectorAll('.mr-gc-member-row').length }; })()");
+    const afterRemove = await cdp.eval("(() => { const meeting = window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + "); return { subSessions: meeting.subSessions.slice(), participants: meeting.participants.slice(), memberIds: (meeting.slotSpecs || []).map(s => s && s.memberId), rows: document.querySelectorAll('.mr-gc-member-row').length }; })()");
     assert.strictEqual(afterRemove.rows, 2);
     assert.deepStrictEqual(afterRemove.participants, [0, 1], 'participant indexes should be reindexed after removal');
+    assert.deepStrictEqual(afterRemove.memberIds, ['m1', 'm3'], 'removing the middle member must not rename m3 to m2');
 
     const secondMeeting = await cdp.eval("(async () => { const ipc = require('electron').ipcRenderer; return await ipc.invoke('create-meeting', { title: '隔离群聊 B', scene: 'general' }); })()");
     assert.ok(secondMeeting && secondMeeting.id);

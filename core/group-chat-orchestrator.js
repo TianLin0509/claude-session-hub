@@ -3,11 +3,30 @@
 const fs = require('fs');
 const path = require('path');
 const { KIND_LABELS } = require('./ai-kinds.js');
+const {
+  ATTEMPT_ABSENT,
+  ATTEMPT_ACCEPTED,
+  ATTEMPT_AWAITING_BINDING,
+  ATTEMPT_COMPLETED,
+  ATTEMPT_FAILED,
+  ATTEMPT_INTERRUPTED,
+  ATTEMPT_PREPARED,
+  ATTEMPT_RECOVERING,
+  ATTEMPT_RUNNING,
+  ATTEMPT_SUBMITTING,
+  ATTEMPT_SUPERSEDED,
+  createAttemptId,
+  createRunId,
+  isTerminalAttemptStatus,
+  promptFingerprint,
+} = require('./groupchat-attempt-protocol.js');
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
 
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
+const MAX_ATTEMPT_HISTORY = 300;
+const MAX_ATTEMPT_EVENTS = 500;
 const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
 const ATOMIC_RENAME_RETRIES = 80;
 const ATOMIC_RENAME_DELAY_MS = 15;
@@ -125,8 +144,15 @@ class GroupChatOrchestrator {
       meetingId,
       currentTurn: 0,
       currentMode: 'idle',
+      revision: 0,
+      activeRun: null,
       messages: [],
+      nextMessageSeq: 1,
       lastDeliveredIdx: {},
+      lastDeliveredSeq: {},
+      memberIdsBySid: {},
+      attempts: {},
+      attemptEvents: [],
       // Exact prompts prepared for the current in-flight turn.  Keeping this
       // durable makes a post-crash/manual resend faithful to the original
       // system+delta+hero prompt instead of degrading to the raw user line.
@@ -155,15 +181,36 @@ class GroupChatOrchestrator {
           turns: [],
           aiStats: {},
           ...rest,
+          schemaVersion: STATE_VERSION,
           meetingId: this.meetingId,
           messages: Array.isArray(raw.messages) ? raw.messages : [],
           lastDeliveredIdx: raw.lastDeliveredIdx && typeof raw.lastDeliveredIdx === 'object' ? raw.lastDeliveredIdx : {},
+          lastDeliveredSeq: raw.lastDeliveredSeq && typeof raw.lastDeliveredSeq === 'object' ? raw.lastDeliveredSeq : {},
+          memberIdsBySid: raw.memberIdsBySid && typeof raw.memberIdsBySid === 'object' ? raw.memberIdsBySid : {},
+          attempts: raw.attempts && typeof raw.attempts === 'object' ? raw.attempts : {},
+          attemptEvents: Array.isArray(raw.attemptEvents) ? raw.attemptEvents.slice(-MAX_ATTEMPT_EVENTS) : [],
+          revision: Math.max(0, Number(raw.revision) || 0),
+          activeRun: raw.activeRun && typeof raw.activeRun === 'object' ? raw.activeRun : null,
           pendingPrompts: raw.pendingPrompts && typeof raw.pendingPrompts === 'object' ? raw.pendingPrompts : {},
         };
+        let nextMessageSeq = 1;
+        for (const message of this.state.messages) {
+          if (!message || typeof message !== 'object') continue;
+          if (!Number.isInteger(message.seq) || message.seq <= 0) message.seq = nextMessageSeq;
+          nextMessageSeq = Math.max(nextMessageSeq, message.seq + 1);
+        }
+        this.state.nextMessageSeq = Math.max(nextMessageSeq, Number(raw.nextMessageSeq) || 1);
+        // Stable delivery cursors survive message array insertion/removal.
+        for (const [sid, indexValue] of Object.entries(this.state.lastDeliveredIdx || {})) {
+          if (Number.isInteger(this.state.lastDeliveredSeq[sid])) continue;
+          const message = this.state.messages[Number(indexValue)];
+          this.state.lastDeliveredSeq[sid] = message && Number.isInteger(message.seq) ? message.seq : 0;
+        }
         // 2026-07-20 道雪 [修#9]：崩溃/重启后的悬空轮标记——用户消息所在轮没有任何
         //   turn 记录时，给该消息打"已被重启打断"标记（此前问题孤悬、无任何提示）。
         const turnNums = new Set((this.state.turns || []).map(t => t && t.n));
-        let touched = false;
+        let touched = this.state.schemaVersion !== Number(raw.schemaVersion)
+          || !raw.lastDeliveredSeq || !raw.memberIdsBySid || !raw.attempts;
         let hasInterruptedTurn = false;
         for (const m of this.state.messages) {
           if (m && m.role === 'user' && Number(m.turnNum) > 0 && !turnNums.has(Number(m.turnNum))) {
@@ -180,16 +227,166 @@ class GroupChatOrchestrator {
           this.state.currentMode = 'idle';
           touched = true;
         }
-        if (touched) this._saveState();
+        // A fresh Hub process has no live watcher. Keep exact receipts in a
+        // recoverable state; the dispatcher will reconcile them against the
+        // provider transcript after sessions are restored.
+        for (const attempt of Object.values(this.state.attempts || {})) {
+          if (!attempt || isTerminalAttemptStatus(attempt.status)) continue;
+          attempt.status = ATTEMPT_RECOVERING;
+          attempt.recoveryReason = 'hub_restart';
+          attempt.updatedAt = Date.now();
+          touched = true;
+        }
+        if (this.state.activeRun && !isTerminalAttemptStatus(this.state.activeRun.status)) {
+          this.state.activeRun.status = ATTEMPT_RECOVERING;
+          this.state.activeRun.updatedAt = Date.now();
+          touched = true;
+        }
+        if (touched) this._saveState('state_migrated', { fromSchemaVersion: Number(raw.schemaVersion) || 0 });
       }
     } catch (e) {
       console.warn(`[groupchat] load state failed for ${this.meetingId}:`, e.message);
     }
   }
 
-  _saveState() {
+  _appendAttemptEvent(type, details = {}) {
+    if (!type) return;
+    const safe = {};
+    for (const key of ['attemptId', 'runId', 'turnNum', 'sid', 'memberId', 'status', 'source', 'reason', 'providerTurnId']) {
+      if (details[key] != null && details[key] !== '') safe[key] = details[key];
+    }
+    if (!safe.reason && details.lastRejectedReason) safe.reason = details.lastRejectedReason;
+    if (details.failure && typeof details.failure === 'object') {
+      safe.failure = {
+        code: details.failure.code || 'provider_error',
+        category: details.failure.category || 'provider',
+        retryable: details.failure.retryable === true,
+        autoRetry: details.failure.autoRetry === true,
+        action: details.failure.action || null,
+      };
+    }
+    this.state.attemptEvents = Array.isArray(this.state.attemptEvents) ? this.state.attemptEvents : [];
+    this.state.attemptEvents.push({ revision: this.state.revision, type: String(type), at: Date.now(), ...safe });
+    if (this.state.attemptEvents.length > MAX_ATTEMPT_EVENTS) {
+      this.state.attemptEvents = this.state.attemptEvents.slice(-MAX_ATTEMPT_EVENTS);
+    }
+  }
+
+  _bumpRevision(eventType = null, details = {}) {
+    this.state.revision = Math.max(0, Number(this.state.revision) || 0) + 1;
+    if (eventType) this._appendAttemptEvent(eventType, details);
+    return this.state.revision;
+  }
+
+  _pruneAttemptHistory() {
+    const attempts = this.state.attempts && typeof this.state.attempts === 'object' ? this.state.attempts : {};
+    const rows = Object.values(attempts).filter(Boolean);
+    if (rows.length <= MAX_ATTEMPT_HISTORY) return;
+    rows.sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
+    const keep = new Set(rows.slice(0, MAX_ATTEMPT_HISTORY).map(row => row.attemptId));
+    for (const [attemptId, attempt] of Object.entries(attempts)) {
+      if (!keep.has(attemptId) && attempt && isTerminalAttemptStatus(attempt.status)) delete attempts[attemptId];
+    }
+  }
+
+  _saveState(eventType = null, details = {}) {
+    this._bumpRevision(eventType, details);
+    this._pruneAttemptHistory();
     const fp = this._stateFilePath();
     atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
+    return this.state.revision;
+  }
+
+  // Renderer events may need a strictly increasing revision without forcing a
+  // disk write for every 1.5s streaming heartbeat. The next durable save
+  // persists the in-memory counter; a process restart also restarts Renderer.
+  reserveRevision(eventType = null, details = {}) {
+    return this._bumpRevision(eventType, details);
+  }
+
+  ensureMemberIdentity(sid, suggestedMemberId = null, details = {}) {
+    const key = String(sid || '');
+    if (!key) return null;
+    if (!this.state.memberIdsBySid || typeof this.state.memberIdsBySid !== 'object') this.state.memberIdsBySid = {};
+    if (this.state.memberIdsBySid[key]) return this.state.memberIdsBySid[key];
+    const used = new Set(Object.values(this.state.memberIdsBySid).map(String));
+    let memberId = String(suggestedMemberId || '').trim();
+    if (!memberId || used.has(memberId)) {
+      let next = 1;
+      while (used.has(`m${next}`)) next += 1;
+      memberId = `m${next}`;
+    }
+    this.state.memberIdsBySid[key] = memberId;
+    this._saveState('member_identity_created', { sid: key, memberId, source: details.source || 'orchestrator' });
+    return memberId;
+  }
+
+  getAttempt(attemptId) {
+    const attempt = this.state.attempts && this.state.attempts[String(attemptId || '')];
+    return attempt ? _clone(attempt) : null;
+  }
+
+  listRecoverableAttempts(filter = {}) {
+    return Object.values(this.state.attempts || {})
+      .filter(attempt => attempt && !isTerminalAttemptStatus(attempt.status))
+      .filter(attempt => filter.recoveryOnly !== true || attempt.recoveryReason === 'hub_restart')
+      .filter(attempt => !filter.sid || attempt.sid === filter.sid)
+      .filter(attempt => !filter.runId || attempt.runId === filter.runId)
+      .map(_clone);
+  }
+
+  updateAttempt(attemptId, patch = {}, eventType = 'attempt_updated', options = {}) {
+    const key = String(attemptId || '');
+    const attempt = this.state.attempts && this.state.attempts[key];
+    if (!attempt) return null;
+    if (isTerminalAttemptStatus(attempt.status) && patch.status && patch.status !== attempt.status
+        && options.allowTerminalPatch !== true) return _clone(attempt);
+    const next = { ...patch };
+    delete next.prompt;
+    delete next.promptText;
+    Object.assign(attempt, next, { updatedAt: Number(patch.updatedAt) || Date.now() });
+    if (patch.providerTurnId) attempt.providerTurnId = String(patch.providerTurnId);
+    if (patch.failure && typeof patch.failure === 'object') attempt.failure = _clone(patch.failure);
+    const details = { ...attempt, failure: attempt.failure };
+    if (options.persist === false) this._bumpRevision(eventType, details);
+    else this._saveState(eventType, details);
+    return _clone(attempt);
+  }
+
+  settleAttempt(attemptId, result = {}, options = {}) {
+    const statusMap = {
+      completed: ATTEMPT_COMPLETED,
+      manual_extracted: ATTEMPT_COMPLETED,
+      errored: ATTEMPT_FAILED,
+      failed: ATTEMPT_FAILED,
+      interrupted: ATTEMPT_INTERRUPTED,
+      superseded: ATTEMPT_SUPERSEDED,
+      absent: ATTEMPT_ABSENT,
+    };
+    return this.updateAttempt(attemptId, {
+      status: statusMap[result.status] || result.status || ATTEMPT_FAILED,
+      completedAt: Number(result.completedAt) || Date.now(),
+      signalSource: result.signalSource || null,
+      providerTurnId: result.providerTurnId || null,
+      finality: result.finality || null,
+      resultTextLength: String(result.text || '').length,
+      reason: result.reason || null,
+      failure: result.failure || null,
+    }, 'attempt_settled', options);
+  }
+
+  completeInternalRun(runId, results = []) {
+    for (const result of results) {
+      if (result && result.attemptId) this.settleAttempt(result.attemptId, result, { persist: false });
+    }
+    const pending = this.state.pendingPrompts && this.state.pendingPrompts['0'];
+    if (pending) {
+      for (const [sid, entry] of Object.entries(pending)) {
+        if (!runId || (entry && entry.runId === runId)) delete pending[sid];
+      }
+      if (Object.keys(pending).length === 0) delete this.state.pendingPrompts['0'];
+    }
+    this._saveState('internal_run_completed', { runId, turnNum: 0, status: ATTEMPT_COMPLETED });
   }
 
   getState() {
@@ -202,8 +399,17 @@ class GroupChatOrchestrator {
       ? requestedTurnNum
       : (this.state.currentTurn || 0) + 1;
     const appendUserMessage = opts.appendUserMessage !== false;
+    const runId = String(opts.runId || createRunId(this.meetingId, n));
     this.state.currentTurn = Math.max(this.state.currentTurn || 0, n);
     this.state.currentMode = 'group';
+    this.state.activeRun = {
+      runId,
+      turnNum: n,
+      status: ATTEMPT_PREPARED,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      dispatchMode: opts.dispatchMode || 'group',
+    };
     let msg = this.state.messages.find(m => m.id === `u${n}` && m.role === 'user') || null;
     let didAppendUserMessage = false;
     if (appendUserMessage && !msg) {
@@ -213,15 +419,17 @@ class GroupChatOrchestrator {
         role: 'user',
         speaker: '你',
         content: userInput || '',
+        runId,
       });
       didAppendUserMessage = true;
     }
     if (!appendUserMessage && msg && msg.interruptedNote) delete msg.interruptedNote;
-    this._saveState();
-    return { turnNum: n, userMessage: msg, didAppendUserMessage };
+    if (msg && !msg.runId) msg.runId = runId;
+    this._saveState('run_started', { runId, turnNum: n, status: ATTEMPT_PREPARED });
+    return { turnNum: n, runId, userMessage: msg, didAppendUserMessage, revision: this.state.revision };
   }
 
-  rollbackTurn(turnNum) {
+  rollbackTurn(turnNum, runId = null) {
     this.state.messages = this.state.messages.filter(m => m.turnNum !== turnNum);
     this.state.turns = this.state.turns.filter(t => t.n !== turnNum);
     const lastIdx = this.state.messages.length - 1;
@@ -229,17 +437,23 @@ class GroupChatOrchestrator {
       if (this.state.lastDeliveredIdx[sid] > lastIdx) this.state.lastDeliveredIdx[sid] = lastIdx;
     }
     this.state.currentTurn = Math.max(0, ...this.state.turns.map(t => t.n || 0));
-    this.state.currentMode = 'idle';
-    delete this._activePrompts[turnNum];
-    delete this.state.pendingPrompts[String(turnNum)];
-    this._saveState();
+    const activeRunMatches = !runId || !this.state.activeRun || this.state.activeRun.runId === runId;
+    if (activeRunMatches) {
+      this.state.currentMode = 'idle';
+      this.state.activeRun = null;
+      delete this._activePrompts[turnNum];
+    }
+    this._clearPendingPromptsForRun(turnNum, runId);
+    this._saveState('run_rolled_back', { runId, turnNum, status: ATTEMPT_SUPERSEDED });
   }
 
   _appendMessage(msg) {
     const message = {
       createdAt: Date.now(),
+      seq: Math.max(1, Number(this.state.nextMessageSeq) || 1),
       ...msg,
     };
+    this.state.nextMessageSeq = message.seq + 1;
     message.anchor = rawMessageAnchor(this.meetingId, message.id);
     this.state.messages.push(message);
     return message;
@@ -252,11 +466,30 @@ class GroupChatOrchestrator {
     if (!this.state.pendingPrompts || typeof this.state.pendingPrompts !== 'object') this.state.pendingPrompts = {};
     if (!this.state.pendingPrompts[key] || typeof this.state.pendingPrompts[key] !== 'object') this.state.pendingPrompts[key] = {};
     const previous = this.state.pendingPrompts[key][sid] || {};
+    const runId = String(details.runId || (this.state.activeRun && this.state.activeRun.runId) || createRunId(this.meetingId, turnNum));
+    const memberId = this.ensureMemberIdentity(sid, details.memberId, { source: 'turn_prompt' });
+    const attemptId = String(details.attemptId || createAttemptId(runId, memberId || sid));
+    const createdAt = Number(details.createdAt) || Date.now();
+    for (const oldAttempt of Object.values(this.state.attempts || {})) {
+      if (!oldAttempt || isTerminalAttemptStatus(oldAttempt.status)) continue;
+      if (oldAttempt.sid !== sid || Number(oldAttempt.turnNum) !== Number(turnNum) || oldAttempt.runId === runId) continue;
+      oldAttempt.status = ATTEMPT_SUPERSEDED;
+      oldAttempt.reason = 'new_attempt_for_same_member_turn';
+      oldAttempt.completedAt = createdAt;
+      oldAttempt.updatedAt = createdAt;
+      this._bumpRevision('attempt_superseded', oldAttempt);
+    }
     this.state.pendingPrompts[key][sid] = {
       prompt: prompt || '',
       status: 'prepared',
       attempts: Number(previous.attempts) || 0,
-      updatedAt: Date.now(),
+      updatedAt: createdAt,
+      runId,
+      attemptId,
+      memberId,
+      kind: details.kind || previous.kind || null,
+      promptHash: promptFingerprint(prompt),
+      dispatchAt: Number(details.dispatchAt) || createdAt,
       ...(details.workflowRun && details.workflowRun.runId ? {
         workflowRun: {
           runId: String(details.workflowRun.runId),
@@ -269,7 +502,25 @@ class GroupChatOrchestrator {
         },
       } : {}),
     };
-    this._saveState();
+    if (!this.state.attempts || typeof this.state.attempts !== 'object') this.state.attempts = {};
+    this.state.attempts[attemptId] = {
+      attemptId,
+      runId,
+      turnNum: Number(turnNum) || 0,
+      sid,
+      memberId,
+      kind: details.kind || null,
+      mode: details.mode || 'group',
+      status: ATTEMPT_PREPARED,
+      promptHash: promptFingerprint(prompt),
+      dispatchAt: Number(details.dispatchAt) || createdAt,
+      createdAt,
+      updatedAt: createdAt,
+      deliveryAttempt: 0,
+      ...(details.workflowRun && details.workflowRun.runId ? { workflowRun: _clone(details.workflowRun) } : {}),
+    };
+    this._saveState('attempt_created', this.state.attempts[attemptId]);
+    return _clone(this.state.pendingPrompts[key][sid]);
   }
 
   getActivePrompt(turnNum, sid = null) {
@@ -285,6 +536,20 @@ class GroupChatOrchestrator {
     return Object.keys(promptBy).length ? { promptBy } : null;
   }
 
+  _clearPendingPromptsForRun(turnNum, runId = null) {
+    const key = String(turnNum);
+    const pending = this.state.pendingPrompts && this.state.pendingPrompts[key];
+    if (!pending) return;
+    if (!runId) {
+      delete this.state.pendingPrompts[key];
+      return;
+    }
+    for (const [sid, entry] of Object.entries(pending)) {
+      if (entry && entry.runId === runId) delete pending[sid];
+    }
+    if (Object.keys(pending).length === 0) delete this.state.pendingPrompts[key];
+  }
+
   setSendStatus(turnNum, sid, status, details = {}) {
     const key = String(turnNum);
     const bySid = this.state.pendingPrompts && this.state.pendingPrompts[key];
@@ -298,24 +563,46 @@ class GroupChatOrchestrator {
     if (details && typeof details === 'object') {
       if (details.acknowledgementSource) entry.acknowledgementSource = String(details.acknowledgementSource);
       if (details.reason) entry.reason = String(details.reason);
+      if (details.providerTurnId) entry.providerTurnId = String(details.providerTurnId);
+      if (details.attemptId) entry.attemptId = String(details.attemptId);
     }
-    this._saveState();
+    const attemptId = String(details.attemptId || entry.attemptId || '');
+    const phase = /send_failed|exception/i.test(String(status || '')) ? ATTEMPT_FAILED
+      : /stuck|unknown|awaiting_binding/i.test(String(status || '')) ? ATTEMPT_AWAITING_BINDING
+        : /submitted|recovered|\bok\b/i.test(String(status || '')) ? ATTEMPT_ACCEPTED
+          : /sending|submitting/i.test(String(status || '')) ? ATTEMPT_SUBMITTING
+            : null;
+    if (attemptId && this.state.attempts[attemptId]) {
+      const attempt = this.state.attempts[attemptId];
+      if (phase) attempt.status = phase;
+      attempt.deliveryAttempt = Math.max(Number(attempt.deliveryAttempt) || 0, Number(entry.attempts) || 0);
+      attempt.acknowledgementSource = entry.acknowledgementSource || null;
+      attempt.providerTurnId = entry.providerTurnId || attempt.providerTurnId || null;
+      attempt.reason = entry.reason || null;
+      attempt.acceptedAt = phase === ATTEMPT_ACCEPTED ? Date.now() : (attempt.acceptedAt || null);
+      attempt.updatedAt = Date.now();
+    }
+    this._saveState('attempt_send_status', attemptId && this.state.attempts[attemptId]
+      ? this.state.attempts[attemptId]
+      : { attemptId, turnNum, sid, status, reason: details.reason });
     return true;
   }
 
   buildDelta(selfSid, userInput, opts = {}) {
     const lastIdx = this.state.lastDeliveredIdx[selfSid] ?? -1;
+    const legacyMessage = this.state.messages[lastIdx];
+    const lastSeq = Number.isInteger(this.state.lastDeliveredSeq[selfSid])
+      ? this.state.lastDeliveredSeq[selfSid]
+      : (legacyMessage && Number.isInteger(legacyMessage.seq) ? legacyMessage.seq : 0);
     const currentUserMessageAppended = opts.currentUserMessageAppended !== false;
     // [全量注入] 投委会幕间传 includeCommitteeMid:true——把中间幕发言全文注入下一幕，让每个委员看到
     //   队友调研全文（群聊式，dispatchInternalPrompt 用）。自由聊默认 false：中间幕不灌回、只带 outcome
     //   （末轮辩论+收敛），省 token 不灌爆上下文（点6）。
     const includeCommitteeMid = opts.includeCommitteeMid === true;
-    const cutoff = currentUserMessageAppended
-      ? Math.max(0, this.state.messages.length - 1)
-      : this.state.messages.length;
     const newMsgs = this.state.messages
-      .slice(lastIdx + 1, cutoff)
+      .filter((message, index) => (Number(message && message.seq) || (index + 1)) > lastSeq)
       .filter(m => m.role !== 'user' && m.sid !== selfSid && m.content && (includeCommitteeMid || !(m.committeeAct && !m.committeeOutcome)));
+    void currentUserMessageAppended; // kept in the public contract for callers on old state files
     const parts = [];
     if (newMsgs.length > 0) {
       parts.push('## 新增发言\n' + newMsgs.map(m => `${m.speaker}：${m.content}`).join('\n\n'));
@@ -339,6 +626,10 @@ class GroupChatOrchestrator {
     const byStatus = isExistingTurn && turn.byStatus && typeof turn.byStatus === 'object' ? turn.byStatus : {};
     const thinkSecBy = isExistingTurn && turn.thinkSecBy && typeof turn.thinkSecBy === 'object' ? turn.thinkSecBy : {};
     const tokensBy = isExistingTurn && turn.tokensBy && typeof turn.tokensBy === 'object' ? turn.tokensBy : {};
+    const attemptIdBy = isExistingTurn && turn.attemptIdBy && typeof turn.attemptIdBy === 'object' ? turn.attemptIdBy : {};
+    const providerTurnIdBy = isExistingTurn && turn.providerTurnIdBy && typeof turn.providerTurnIdBy === 'object' ? turn.providerTurnIdBy : {};
+    const failureBy = isExistingTurn && turn.failureBy && typeof turn.failureBy === 'object' ? turn.failureBy : {};
+    const runId = String(opts.runId || (this.state.activeRun && this.state.activeRun.runId) || (turn && turn.runId) || '');
     // 一位 AI 先完成、其他成员仍在跑时，patchTurnResult 会先把可用结果写进 messages。
     // 完整 turn 尚未建立时从这些持久消息恢复合并基线，避免最后一个成员结算时把
     // 先到结果（尤其手动同步救回的结果）覆盖或清空。
@@ -373,29 +664,54 @@ class GroupChatOrchestrator {
       // trim 判空与渲染层口径一致（多方审查加固）：纯空白文本视为无内容，不覆盖已有答案。
       const _writeContent = !!(r.text && String(r.text).trim().length);
       const _prevStatus = byStatus[sid];
+      const _existingMsg = this.state.messages.find(m => m && m.role === 'assistant'
+        && Number(m.turnNum) === Number(turnNum) && m.sid === sid);
       const _hasManualResult = _prevStatus === 'manual_extracted'
         && !!(by[sid] && String(by[sid]).trim().length);
       const _incomingIsManual = _rStatus === 'manual_extracted';
+      const _sameAttempt = !_existingMsg || !_existingMsg.attemptId || !r.attemptId
+        || String(_existingMsg.attemptId) === String(r.attemptId);
+      const _hasCompletedResult = _prevStatus === 'completed'
+        && !!(by[sid] && String(by[sid]).trim().length)
+        && _sameAttempt
+        && _existingMsg && _existingMsg.finality === 'provider_final';
+      const _preserveExistingFinal = _hasCompletedResult && _rStatus === 'errored';
       // 用户主动同步得到的完整文本优先于随后迟到的自动/退出信号；再次手动同步仍可更新。
-      const _acceptIncomingContent = _writeContent && (!_hasManualResult || _incomingIsManual);
+      const _acceptIncomingContent = _writeContent
+        && (!_hasManualResult || _incomingIsManual)
+        && !_preserveExistingFinal;
       by[sid] = _acceptIncomingContent ? r.text : (by[sid] || '');
       // 状态守卫：本轮已被手动同步（manual_extracted）且新结果没带更有效文本时，
       //   保留 manual_extracted——对齐 waitTurnComplete.onTurnPatched 的同名守卫，
       //   防止"手动救回的答案"在整轮 settle 时又被标回 errored。
-      byStatus[sid] = (_hasManualResult && !_incomingIsManual) ? 'manual_extracted' : _rStatus;
+      byStatus[sid] = (_hasManualResult && !_incomingIsManual)
+        ? 'manual_extracted'
+        : (_preserveExistingFinal ? 'completed' : _rStatus);
+      if (r.attemptId) attemptIdBy[sid] = String(r.attemptId);
+      if (r.providerTurnId) providerTurnIdBy[sid] = String(r.providerTurnId);
+      if (!_preserveExistingFinal && r.failure && typeof r.failure === 'object') failureBy[sid] = _clone(r.failure);
+      else if (byStatus[sid] !== 'errored') delete failureBy[sid];
       // 空结果（重发失败/干净退出兜底）不把已有 thinkSec/tokens 统计清零（多方审查加固）。
       thinkSecBy[sid] = statsBySid[sid]?.thinkSec || r.thinkSec || thinkSecBy[sid] || 0;
       tokensBy[sid] = statsBySid[sid]?.tokens || (r.tokens && r.tokens.total) || tokensBy[sid] || 0;
       const messageId = `a${turnNum}-${member.memberId || sid.slice(0, 8)}`;
-      const _failReason = (byStatus[sid] === 'errored' && r.reason) ? String(r.reason) : null;
-      let msg = this.state.messages.find(m => m && m.role === 'assistant'
-        && (m.id === messageId || (Number(m.turnNum) === Number(turnNum) && m.sid === sid)));
+      const _failReason = byStatus[sid] === 'errored' && ((r.failure && r.failure.code) || r.reason)
+        ? String((r.failure && r.failure.code) || r.reason)
+        : null;
+      let msg = _existingMsg || this.state.messages.find(m => m && m.role === 'assistant' && m.id === messageId);
       if (msg) {
         msg.sid = sid;
         msg.memberId = member.memberId || sid;
         msg.speaker = _memberLabel(member);
         msg.content = by[sid] || '';
         msg.status = byStatus[sid];
+        if (runId) msg.runId = runId;
+        if (attemptIdBy[sid]) msg.attemptId = attemptIdBy[sid];
+        if (providerTurnIdBy[sid]) msg.providerTurnId = providerTurnIdBy[sid];
+        if (failureBy[sid]) msg.failure = _clone(failureBy[sid]);
+        else delete msg.failure;
+        if (_acceptIncomingContent && r.finality) msg.finality = r.finality;
+        if (_acceptIncomingContent && r.signalSource) msg.signalSource = r.signalSource;
         msg.updatedAt = Date.now();
         if (_srcPrompt) msg.sourcePrompt = _srcPrompt;
         // 迟到的无 reason errored 不抹掉已持久化的失败原因；非 errored 终态才清除。
@@ -411,6 +727,12 @@ class GroupChatOrchestrator {
           speaker: _memberLabel(member),
           content: by[sid] || '',
           status: byStatus[sid],
+          ...(runId ? { runId } : {}),
+          ...(attemptIdBy[sid] ? { attemptId: attemptIdBy[sid] } : {}),
+          ...(providerTurnIdBy[sid] ? { providerTurnId: providerTurnIdBy[sid] } : {}),
+          ...(failureBy[sid] ? { failure: _clone(failureBy[sid]) } : {}),
+          ...(r.finality ? { finality: r.finality } : {}),
+          ...(r.signalSource ? { signalSource: r.signalSource } : {}),
           sourcePrompt: _srcPrompt,
           ...(_failReason ? { statusReason: _failReason } : {}),
         });
@@ -418,9 +740,15 @@ class GroupChatOrchestrator {
       aiMessages.push(msg);
 
       const prev = this.state.aiStats[sid] || { totalThinkSec: 0, totalTokens: 0, turns: 0 };
-      prev.totalThinkSec += thinkSecBy[sid] || 0;
-      prev.totalTokens += tokensBy[sid] || 0;
-      prev.turns += 1;
+      const metricKey = String(r.attemptId || `legacy:${turnNum}:${sid}`);
+      const counted = new Set(Array.isArray(prev.countedAttemptIds) ? prev.countedAttemptIds : []);
+      if (!counted.has(metricKey)) {
+        prev.totalThinkSec += thinkSecBy[sid] || 0;
+        prev.totalTokens += tokensBy[sid] || 0;
+        prev.turns += 1;
+        counted.add(metricKey);
+        prev.countedAttemptIds = [...counted].slice(-200);
+      }
       prev.kind = member.kind || prev.kind;
       prev.model = member.model || prev.model;
       this.state.aiStats[sid] = prev;
@@ -429,12 +757,16 @@ class GroupChatOrchestrator {
     if (!turn) {
       turn = {
         n: turnNum,
+        ...(runId ? { runId } : {}),
         mode: 'group',
         userInput: userInput || '',
         by,
         byStatus,
         thinkSecBy,
         tokensBy,
+        attemptIdBy,
+        providerTurnIdBy,
+        failureBy,
         timestamp: Date.now(),
         meta: {
           dispatchMode: opts.dispatchMode || 'group',
@@ -447,6 +779,10 @@ class GroupChatOrchestrator {
       turn.byStatus = byStatus;
       turn.thinkSecBy = thinkSecBy;
       turn.tokensBy = tokensBy;
+      turn.attemptIdBy = attemptIdBy;
+      turn.providerTurnIdBy = providerTurnIdBy;
+      turn.failureBy = failureBy;
+      if (runId) turn.runId = runId;
       turn.lastUpdatedAt = Date.now();
       turn.meta = turn.meta && typeof turn.meta === 'object' ? turn.meta : {};
       if (opts.dispatchMode) turn.meta.dispatchMode = opts.dispatchMode;
@@ -476,14 +812,39 @@ class GroupChatOrchestrator {
       else steps.push(entry);
       turn.meta.workflowSteps = steps.slice(-100);
     }
-    this.state.currentMode = 'idle';
-    delete this._activePrompts[turnNum];
-    delete this.state.pendingPrompts[String(turnNum)];
+    for (const result of results) {
+      if (result && result.attemptId) this.settleAttempt(result.attemptId, result, { persist: false });
+    }
+    const runStatus = results.some(result => result && result.status === 'interrupted')
+      ? ATTEMPT_INTERRUPTED
+      : results.some(result => result && result.status === 'superseded')
+        ? ATTEMPT_SUPERSEDED
+        : (results.length > 0 && results.every(result => result && ['errored', 'failed', 'absent'].includes(result.status)))
+          ? ATTEMPT_FAILED
+          : ATTEMPT_COMPLETED;
+    const activeRunMatches = !this.state.activeRun || !runId || this.state.activeRun.runId === runId;
+    if (activeRunMatches) {
+      this.state.currentMode = 'idle';
+      if (this.state.activeRun) {
+        this.state.activeRun.status = runStatus;
+        this.state.activeRun.hasFailures = results.some(result => result && ['errored', 'failed'].includes(result.status));
+        this.state.activeRun.completedAt = Date.now();
+        this.state.activeRun.updatedAt = Date.now();
+      }
+    }
+    if (activeRunMatches) delete this._activePrompts[turnNum];
+    this._clearPendingPromptsForRun(turnNum, runId);
     const lastIdx = this.state.messages.length - 1;
     for (const r of results) {
       this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
+      const deliveredMessage = Number.isInteger(r.deliveredSeq)
+        ? null
+        : this.state.messages[Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx];
+      this.state.lastDeliveredSeq[r.sid] = Number.isInteger(r.deliveredSeq)
+        ? r.deliveredSeq
+        : (deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0);
     }
-    this._saveState();
+    this._saveState('run_completed', { runId, turnNum, status: runStatus });
     return turn;
   }
 
@@ -495,8 +856,14 @@ class GroupChatOrchestrator {
     for (const r of results || []) {
       if (!r || !r.sid) continue;
       this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
+      const deliveredMessage = Number.isInteger(r.deliveredSeq)
+        ? null
+        : this.state.messages[Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx];
+      this.state.lastDeliveredSeq[r.sid] = Number.isInteger(r.deliveredSeq)
+        ? r.deliveredSeq
+        : (deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0);
     }
-    this._saveState();
+    this._saveState('silent_delivery_advanced');
   }
 
   // 投委会发言落进群聊 messages（带 committeeAct 幕次 meta）——每个 AI 发言以气泡卡片承载在群聊主
@@ -529,12 +896,14 @@ class GroupChatOrchestrator {
   // 兼容旧入口（点6）：末轮+主席发言，标 outcome。新代码走 appendCommitteeSpeeches。
   appendCommitteeOutcome(items) { return this.appendCommitteeSpeeches(items, { outcome: true }); }
 
-  clearTurnInProgress(turnNum) {
+  clearTurnInProgress(turnNum, runId = null) {
     if (!turnNum || this.state.currentTurn !== turnNum) return;
+    if (runId && this.state.activeRun && this.state.activeRun.runId !== runId) return;
     this.state.currentMode = 'idle';
+    if (!runId || (this.state.activeRun && this.state.activeRun.runId === runId)) this.state.activeRun = null;
     delete this._activePrompts[turnNum];
-    delete this.state.pendingPrompts[String(turnNum)];
-    this._saveState();
+    this._clearPendingPromptsForRun(turnNum, runId);
+    this._saveState('run_cleared', { runId, turnNum });
   }
 
   patchTurnResult(turnNum, sid, {
@@ -546,6 +915,13 @@ class GroupChatOrchestrator {
     speaker,
     sourcePrompt,
     statusReason,
+    attemptId,
+    runId,
+    providerTurnId,
+    failure,
+    signalSource,
+    finality,
+    completedAt,
   } = {}) {
     const turn = this.state.turns.find(t => t.n === turnNum);
     const userMsg = this.state.messages.find(m => m && m.role === 'user' && Number(m.turnNum) === Number(turnNum));
@@ -558,6 +934,9 @@ class GroupChatOrchestrator {
     const byStatus = pending ? {} : (turn.byStatus = turn.byStatus || {});
     const thinkSecBy = pending ? {} : (turn.thinkSecBy = turn.thinkSecBy || {});
     const tokensBy = pending ? {} : (turn.tokensBy = turn.tokensBy || {});
+    const attemptIdBy = pending ? {} : (turn.attemptIdBy = turn.attemptIdBy || {});
+    const providerTurnIdBy = pending ? {} : (turn.providerTurnIdBy = turn.providerTurnIdBy || {});
+    const failureBy = pending ? {} : (turn.failureBy = turn.failureBy || {});
     let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum) && m.role === 'assistant' && m.sid === sid);
     if (pending && msg) {
       if (msg.content && String(msg.content).trim()) by[sid] = msg.content;
@@ -579,6 +958,10 @@ class GroupChatOrchestrator {
       ? 'manual_extracted'
       : _incomingStatus;
     byStatus[sid] = _finalStatus;
+    if (attemptId) attemptIdBy[sid] = String(attemptId);
+    if (providerTurnId) providerTurnIdBy[sid] = String(providerTurnId);
+    if (failure && typeof failure === 'object') failureBy[sid] = _clone(failure);
+    else if (_finalStatus !== 'errored') delete failureBy[sid];
     if (typeof thinkSec === 'number') thinkSecBy[sid] = thinkSec;
     if (tokens && typeof tokens.total === 'number') tokensBy[sid] = tokens.total;
     const patchedAt = Date.now();
@@ -595,6 +978,12 @@ class GroupChatOrchestrator {
         speaker: speaker || 'AI',
         content: by[sid] || '',
         status: _finalStatus,
+        ...(runId ? { runId } : {}),
+        ...(attemptId ? { attemptId: String(attemptId) } : {}),
+        ...(providerTurnId ? { providerTurnId: String(providerTurnId) } : {}),
+        ...(failure ? { failure: _clone(failure) } : {}),
+        ...(finality ? { finality } : {}),
+        ...(signalSource ? { signalSource } : {}),
         ...(sourcePrompt ? { sourcePrompt } : {}),
       });
     } else {
@@ -603,14 +992,37 @@ class GroupChatOrchestrator {
       if (memberId) msg.memberId = memberId;
       if (speaker) msg.speaker = speaker;
       if (sourcePrompt && !msg.sourcePrompt) msg.sourcePrompt = sourcePrompt;
+      if (runId) msg.runId = runId;
+      if (attemptId) msg.attemptId = String(attemptId);
+      if (providerTurnId) msg.providerTurnId = String(providerTurnId);
+      if (failure) msg.failure = _clone(failure);
+      else if (_finalStatus !== 'errored') delete msg.failure;
+      if (_acceptIncomingContent && finality) msg.finality = finality;
+      if (_acceptIncomingContent && signalSource) msg.signalSource = signalSource;
     }
     msg.patchedAt = patchedAt;
     if (typeof thinkSec === 'number') msg.thinkSec = thinkSec;
     if (tokens && typeof tokens.total === 'number') msg.tokens = tokens.total;
-    if (_finalStatus === 'errored' && statusReason) msg.statusReason = String(statusReason);
+    if (_finalStatus === 'errored' && (failure || statusReason)) msg.statusReason = String((failure && failure.code) || statusReason);
     else if (_acceptIncomingContent) delete msg.statusReason;
 
-    this._saveState();
+    if (attemptId) {
+      this.settleAttempt(attemptId, {
+        status: _finalStatus,
+        text,
+        providerTurnId,
+        failure,
+        reason: (failure && failure.code) || statusReason,
+        signalSource,
+        finality,
+        completedAt,
+      }, { persist: false, allowTerminalPatch: _incomingIsManual || finality === 'provider_final' });
+    }
+
+    this._saveState('attempt_result_persisted', {
+      attemptId, runId, turnNum, sid, memberId, status: _finalStatus,
+      providerTurnId, failure, source: signalSource,
+    });
     if (turn) return _clone(turn);
     return _clone({
       n: turnNum,
@@ -620,6 +1032,9 @@ class GroupChatOrchestrator {
       byStatus,
       thinkSecBy,
       tokensBy,
+      attemptIdBy,
+      providerTurnIdBy,
+      failureBy,
       lastPatchedAt: patchedAt,
     });
   }
@@ -659,5 +1074,11 @@ module.exports = {
   cleanup,
   rawMessageAnchor,
   buildSystemPromptText,
-  _private: { buildSystemPromptText, RESEARCH_SCENE_PROMPT, COMMITTEE_DISCIPLINE },
+  _private: {
+    buildSystemPromptText,
+    RESEARCH_SCENE_PROMPT,
+    COMMITTEE_DISCIPLINE,
+    GroupChatOrchestrator,
+    resetCache: () => _cache.clear(),
+  },
 };

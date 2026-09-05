@@ -94,7 +94,7 @@ async function writePromptToSession(sessionManager, sid, prompt, kind) {
 }
 
 function noteSubmittedPrompt(sid, kind, actualPrompt) {
-  if (!isCodexCliKind(kind)) return;
+  if (!isCodexCliKind(kind) && !isClaudeFamily(kind)) return;
   const tap = _deps && _deps.transcriptTap;
   if (!tap || typeof tap.notePrompt !== 'function') return;
   try { tap.notePrompt(sid, kind, actualPrompt); }
@@ -502,6 +502,8 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       ok: true,
       sendStatus,
       acknowledgementSource: acknowledgement && acknowledgement.source || null,
+      acknowledgementObservedAt: acknowledgement && acknowledgement.observedAt || null,
+      acknowledgementTurnId: acknowledgement && acknowledgement.turnId || null,
       enterAttempts,
       ...(_deps && _deps.enableSendDiagnostics ? {
         probeDiagnostics: {
@@ -690,7 +692,29 @@ async function _autoRecoverSend({ sid, kind, prompt, echoSeen, timing }) {
 // echoSeen 上下文（dispatch 已经结束很久了），所以用 ring-buffer 末尾 grep prompt
 // 第一行（promptHeader 指纹）来判定输入框是否还含 prompt。
 // 返回 { ok, mode, reason? }，mode ∈ 'enter_only' | 'rewrite_full'。
-async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) {
+function inspectPromptSubmissionState({ sid, kind, promptHeader }) {
+  const { sessionManager } = _deps;
+  kind = resolveRuntimeKind(sessionManager, sid, kind);
+  const buf = String(sessionManager.getSessionBuffer(sid) || '');
+  const tail = buf.slice(-2048);
+  const visible = stripAnsi(tail).replace(/\r/g, '\n');
+  const lines = visible.split('\n').slice(-80);
+  const collapsedPaste = /\[(?:Pasted (?:Content|text)[^\]]*)\]/i.test(lines.slice(-12).join('\n'));
+  const headerVisible = !!(promptHeader && lines.slice(-12).join('\n').includes(promptHeader));
+  if (headerVisible) return { state: 'input_pending', evidence: 'prompt_header_visible' };
+  // Ring history is append-only: a collapsed marker can remain after a prompt
+  // was successfully submitted. Treat it as diagnostic evidence only; the
+  // live paste-trapped monitor owns bounded Enter recovery for that marker.
+  if (collapsedPaste) return { state: 'possible_input_pending', evidence: 'collapsed_paste_marker' };
+  const runtime = classifyTerminalRuntime(kind, lines);
+  if (runtime.state === RUNTIME_RUNNING) {
+    return { state: 'running_clear', evidence: runtime.reason || 'provider_running' };
+  }
+  if (runtime.state === 'idle') return { state: 'input_clear_idle', evidence: runtime.reason || 'provider_idle' };
+  return { state: 'unknown', evidence: runtime.reason || 'ambiguous_screen' };
+}
+
+async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true }) {
   const { sessionManager } = _deps;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };
@@ -708,6 +732,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) 
     mode = 'enter_only';
     await writeSubmitFallbackSignals(sessionManager, sid, kind, submitTries, (timing && timing.ENTER_RETRY_GAP_MS) || 150);
   } else {
+    if (!allowRewrite) return { ok: false, mode: 'none', reason: 'rewrite_not_authorized' };
     mode = 'rewrite_full';
     await clearCodexInputLine(sessionManager, sid, kind);
     if (isClaudeFamily(kind) || isCodexCliKind(kind)) {
@@ -759,5 +784,6 @@ module.exports = {
   checkHostShellTakeover,
   _private: { writePromptToSession, writeSubmitSignal, clearCodexInputLine },
   _autoRecoverSend,           // 新增（测试 + 同模块调用）
+  inspectPromptSubmissionState,
   resendCurrentPrompt,         // 新增（main.js IPC handler 调用）
 };

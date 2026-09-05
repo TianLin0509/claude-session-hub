@@ -30,7 +30,7 @@ assert.ok(
 assert.ok(
   rendererSrc.includes('const _isSettledStatus = _isGcSettledStatus(status);') &&
   rendererSrc.includes('const isPending = !!opts.pending && !_isSettledStatus;') &&
-  /const statusText = sendStuck \? '输入未提交'\s*\n\s*: status === 'errored' \? '发送失败'\s*\n\s*: isPending \? '正在发言'/.test(rendererSrc),
+  /const statusText = sendStuck \? '输入未提交'[\s\S]{0,600}: status === 'errored' \? failureStatusText[\s\S]{0,320}: isPending \? '正在发言'/.test(rendererSrc),
   'statusText 必须先区分输入未提交，再判 errored / pending，且 settle 态统一排除 pending',
 );
 
@@ -88,8 +88,9 @@ assert.ok(
 // 8. 失败原因链路：dispatcher partial-update 透传 reason → renderer 缓存 → 占位文案解释
 assert.ok(dispatcherSrc.includes('reason: partial.reason'), 'dispatcher partial-update 必须带失败原因');
 assert.ok(
-  /groupchat-partial-update', \(_event, \{ meetingId, turnNum, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason \}\)/.test(rendererSrc) &&
-  rendererSrc.includes('reason: reason || undefined'),
+  /groupchat-partial-update', \(_event, payload = \{\}\)/.test(rendererSrc) &&
+  /const \{ meetingId, turnNum, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason, failure/.test(rendererSrc) &&
+  rendererSrc.includes('reason: reason || undefined') && rendererSrc.includes('failure: failure || undefined'),
   'renderer 必须接收并缓存 partial 的失败原因',
 );
 assert.ok(

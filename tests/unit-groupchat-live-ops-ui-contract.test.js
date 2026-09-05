@@ -94,9 +94,9 @@ assert.ok(/sessionManager\.writeToSession\(sid, INTERRUPT_KEY\)/.test(dispatcher
 assert.ok(/const meetingInterruptSeq = new Map\(\)/.test(dispatcherSrc)
   && /interruptedSinceStart\(\)/.test(dispatcherSrc),
   '必须有中断代际，关掉「sendToPty 期间点停止」的竞态窗口（否则又是永久思考中）');
-assert.ok(/orch\.clearTurnInProgress\(turnNum\)/.test(dispatcherSrc),
+assert.ok(/orch\.clearTurnInProgress\(turnNum, runId\)/.test(dispatcherSrc),
   '没有 watcher 可停时也要把 orchestrator 收回 idle（兜底收敛）');
-assert.ok(/return \{ status: 'completed', turnNum, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted \};/.test(dispatcherSrc),
+assert.ok(/return \{ status: 'completed', turnNum, runId, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted \};/.test(dispatcherSrc),
   'dispatchGroupChatTurn 返回值必须带 superseded / interrupted，供工作流判定用户接管');
 assert.ok(/interruptMeetingTurn,/.test(dispatcherSrc), 'dispatcher 必须导出 interruptMeetingTurn');
 

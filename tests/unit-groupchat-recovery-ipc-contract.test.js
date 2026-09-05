@@ -112,7 +112,7 @@ test('manual extract patches settled groupchat turn and emits update', async () 
   });
   assert.deepStrictEqual(calls, [
     ['getOrchestrator', 'C:\\hub', 'm1'],
-    ['patchTurnResult', 2, 's1', { text: 'manual text', status: 'manual_extracted' }],
+    ['patchTurnResult', 2, 's1', { text: 'manual text', status: 'manual_extracted', signalSource: 'manual' }],
   ]);
   assert.deepStrictEqual(emitted, [['groupchat-turn-patched', {
     meetingId: 'm1',
@@ -212,7 +212,7 @@ test('old-turn resync must not hijack the in-flight watcher and derives window f
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.mode, 'patch_groupchat_turn', '旧轮同步必须 patch，不得 settle 当前 watcher');
   assert.deepStrictEqual(watcherCalls, [], '飞行中的第 6 轮 watcher 不能被旧轮文本结算');
-  assert.deepStrictEqual(patchCalls, [[5, 's1', { text: 'turn5 recovered', status: 'manual_extracted' }]]);
+  assert.deepStrictEqual(patchCalls, [[5, 's1', { text: 'turn5 recovered', status: 'manual_extracted', signalSource: 'manual' }]]);
   // 窗口来自 orchestrator：since=u5.createdAt(5000)，until=u6.createdAt(9000)，
   // renderer 传的 sincePromptTs=999999（当前轮）被无视
   assert.deepStrictEqual(extractArgs, [['s1', 5000, { untilTs: 9000 }]]);
@@ -342,6 +342,7 @@ test('manual extract recovers an in-flight turn when user message exists but fin
     status: 'manual_extracted',
     memberId: 'm1',
     speaker: 'Codex 1',
+    signalSource: 'manual',
   }]]);
   assert.strictEqual(emitted[0][0], 'groupchat-turn-patched');
 });

@@ -116,6 +116,7 @@ class ClaudeTap extends EventEmitter {
         _idleTimer: null,
         _stopReasonTimer: null,  // R3: stop_reason 终态防抖 timer
         _pendingEmitText: null,
+        currentTurnId: null,
       });
     }
     const entry = this._bound.get(hubSessionId);
@@ -145,6 +146,19 @@ class ClaudeTap extends EventEmitter {
   getLastAssistantText(hubSessionId) {
     const e = this._bound.get(hubSessionId);
     return e?.lastText || null;
+  }
+
+  notePrompt(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry) return;
+    // A new Hub dispatch is a real local turn boundary even when the Claude
+    // UserPromptSubmit hook is missing. Never let the previous hook turn id be
+    // reused by a later stop_reason event.
+    entry.currentTurnId = null;
+    entry.promptNotedAt = Date.now();
+    entry.lastText = null;
+    this._cancelIdleEmit(hubSessionId);
+    this._cancelStopReasonEmit(hubSessionId);
   }
 
   // 2026-05-02 Bug 修复：扩展手动提取支持 Claude/DeepSeek/GLM。
@@ -199,9 +213,17 @@ class ClaudeTap extends EventEmitter {
         lastModel: null, lastUsage: null,    // T13
         _streamingBuf: [], _tail: null,
         _idleTimer: null, _stopReasonTimer: null, _pendingEmitText: null,
+        currentTurnId: null,
       });
     }
     const entry = this._bound.get(hubSessionId);
+    if (options.newTurn === true) {
+      entry.currentTurnId = options.turnId ? String(options.turnId) : null;
+      entry.lastText = null;
+      this._cancelIdleEmit(hubSessionId);
+      this._cancelStopReasonEmit(hubSessionId);
+    }
+    else if (options.turnId) entry.currentTurnId = String(options.turnId);
     const boundPathChanged = entry.transcriptPath !== transcriptPath;
     if (boundPathChanged && entry._tail) {
       // A legitimate resume can move to a new transcript. Never leave a tail
@@ -317,12 +339,30 @@ class ClaudeTap extends EventEmitter {
         // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
         modelId: entry.lastModel || null,
         usage: entry.lastUsage || null,
+        turnId: options.turnId || entry.currentTurnId || null,
       });
     }
   }
 
-  async watchTranscript(hubSessionId, transcriptPath) {
-    return this.notifyStop(hubSessionId, transcriptPath, { watchOnly: true });
+  notifyError(hubSessionId, error = {}) {
+    if (!hubSessionId) return false;
+    this._cancelIdleEmit(hubSessionId);
+    this._cancelStopReasonEmit(hubSessionId);
+    const message = String(error.message || error.error || error.reason || 'Claude turn failed').trim();
+    this.emit('turn-error', {
+      hubSessionId,
+      message,
+      reason: message,
+      errorInfo: error.errorDetails || error.details || null,
+      completedAt: Number(error.completedAt) || Date.now(),
+      turnId: error.turnId || null,
+      signalSource: error.signalSource || 'stop_failure',
+    });
+    return true;
+  }
+
+  async watchTranscript(hubSessionId, transcriptPath, options = {}) {
+    return this.notifyStop(hubSessionId, transcriptPath, { ...options, watchOnly: true });
   }
 
   // 内部：每条新 assistant 行调用一次，重置 idle timer。
@@ -355,6 +395,7 @@ class ClaudeTap extends EventEmitter {
           // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
           modelId: entry.lastModel || null,
           usage: entry.lastUsage || null,
+          turnId: entry.currentTurnId || null,
         });
       } catch (e) {
         console.warn('[claude-tap] idle-emit read failed:', e.message);
@@ -397,6 +438,7 @@ class ClaudeTap extends EventEmitter {
           // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
           modelId: entry.lastModel || null,
           usage: entry.lastUsage || null,
+          turnId: entry.currentTurnId || null,
         });
       } catch (e) {
         console.warn('[claude-tap] stop_reason emit read failed:', e.message);
@@ -850,6 +892,11 @@ class CodexTap extends EventEmitter {
       text: latest.text.trim(),
       extractMode: isFinal ? 'final_answer' : 'partial_commentary',
       source: isFinal ? 'manual_codex_rollout' : 'manual_codex_rollout_streaming',
+      completedAt: Number(latest.tsEnd || latest.ts) || null,
+      // The semantic parser currently omits provider turn ids. The live tap
+      // tracks task_started on the bound top-level rollout, which is the exact
+      // identity used by the completion watcher for the active attempt.
+      turnId: entry._currentTurnId || null,
     };
   }
 
@@ -2023,13 +2070,21 @@ class TranscriptTap extends EventEmitter {
     this._gemini.clearLastTokens(hubSessionId);
   }
 
-  async notifyClaudeStop(hubSessionId, transcriptPath) {
-    try { await this._claude.notifyStop(hubSessionId, transcriptPath); }
+  async notifyClaudeStop(hubSessionId, transcriptPath, options = {}) {
+    try { await this._claude.notifyStop(hubSessionId, transcriptPath, options); }
     catch (e) { console.warn('[transcript-tap] notifyClaudeStop failed:', e.message); }
   }
 
-  async watchClaudeTranscript(hubSessionId, transcriptPath) {
-    try { await this._claude.watchTranscript(hubSessionId, transcriptPath); }
+  notifyClaudeError(hubSessionId, error = {}) {
+    try { return this._claude.notifyError(hubSessionId, error); }
+    catch (e) {
+      console.warn('[transcript-tap] notifyClaudeError failed:', e.message);
+      return false;
+    }
+  }
+
+  async watchClaudeTranscript(hubSessionId, transcriptPath, options = {}) {
+    try { await this._claude.watchTranscript(hubSessionId, transcriptPath, options); }
     catch (e) { console.warn('[transcript-tap] watchClaudeTranscript failed:', e.message); }
   }
 

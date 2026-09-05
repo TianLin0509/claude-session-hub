@@ -20,6 +20,7 @@ const {
   GC_WORKING_FRESH_MS,
   isGroupChatMemberRunning,
 } = require('../core/groupchat-running-state.js');
+const { acceptGroupChatEvent } = require('./groupchat-event-revision.js');
 const applyHubCardDisplaySettings = (config) => applyCardDisplaySettings(document, config);
 applyHubCardDisplaySettings();
 ipcRenderer.invoke('get-hub-config-raw')
@@ -7211,6 +7212,11 @@ for (const ch of ['session-created', 'session-closed', 'session-suspended', 'ses
 // --- Meeting Room IPC events ---
 const _groupChatWorkingExpiryTimers = new Map();
 
+function _acceptSidebarGroupChatEvent(payload, options = {}) {
+  const decision = acceptGroupChatEvent(payload || {}, { consumer: 'sidebar', ...options });
+  return decision.accepted;
+}
+
 function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeOptions = {}) {
   if (!session) return false;
   const sid = String(session.id || '');
@@ -7223,7 +7229,7 @@ function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeO
     session.gcWorking = false;
     session._gcWorkingLastTs = null;
     const truth = getSessionRuntimeTruth(session, { now });
-    if (String(truth.source || '').startsWith('groupchat-')) {
+    if (String(truth.source || '').startsWith('groupchat-') && truth.state !== RUNTIME_FAILED) {
       observeSessionRuntime(session, {
         state: RUNTIME_COMPLETED,
         source: 'groupchat-watcher-complete',
@@ -7293,7 +7299,9 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
 
 // 调度器在 prompt 真正发出后立刻公布本轮目标。先据此点亮目标成员，避免等到
 // 第一段 streaming 心跳才显示运行中；没被点名的成员同时清掉上一轮残留。
-ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, turnNum, sids }) => {
+ipcRenderer.on('groupchat-turn-targets', (_event, payload = {}) => {
+  if (!_acceptSidebarGroupChatEvent(payload, { allowRunReplacement: true })) return;
+  const { meetingId, turnNum, sids } = payload;
   if (!meetingId || !Array.isArray(sids)) return;
   const meeting = meetings[meetingId];
   const targetSids = new Set(sids.map(String));
@@ -7309,11 +7317,39 @@ ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, turnNum, sids }) 
   if (dirty) scheduleSessionListRender();
 });
 
+ipcRenderer.on('groupchat-attempt-changed', (_event, payload = {}) => {
+  if (!_acceptSidebarGroupChatEvent(payload, {
+    allowRunReplacement: payload.status === 'prepared' || payload.status === 'submitting',
+  })) return;
+  const { sid, status, providerTurnId, turnNum, failure, updatedAt } = payload;
+  if (!sid) return;
+  const session = sessions.get(sid);
+  if (!session) return;
+  const active = ['prepared', 'submitting', 'accepted', 'running', 'awaiting_binding', 'awaiting_final_text', 'recovering'].includes(status);
+  const changed = _setGroupChatMemberWorking(session, active, Number(updatedAt) || Date.now(), {
+    turnId: providerTurnId || (turnNum != null ? String(turnNum) : null),
+  });
+  if (status === 'failed' && failure) {
+    observeSessionRuntime(session, {
+      state: RUNTIME_FAILED,
+      source: `groupchat-${failure.code || 'provider-error'}`,
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: Number(updatedAt) || Date.now(),
+      turnId: providerTurnId || null,
+      reason: failure.code || 'provider_error',
+      evidence: failure.summary || failure.detail || null,
+    });
+  }
+  if (changed || status === 'failed') scheduleSessionListRender();
+});
+
 // 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
 //   partial-update IPC 在终态（completed/manual_extracted）触发；turnNum 与上次记录不同时清空 Set 重新计数；
 //   active meeting 不累加（用户正看着，不打扰）。selectMeeting 时 clear（在 selectMeeting 函数内）。
 //   meeting-room.js 也监听 partial-update 但职责是渲染抽屉/卡片内容，与本侧栏聚合器互不干扰。
-ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, status }) => {
+ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
+  if (!_acceptSidebarGroupChatEvent(payload)) return;
+  const { meetingId, turnNum, sid, status } = payload;
   if (!meetingId || !sid) return;
   // 2026-07-21 道雪 [修状态灯]：群聊成员的"运行中"权威信号取 dispatcher 的 watcher
   //   生命周期（streaming=未结算，终态=已结算），不依赖子会话自己的 hook/transcript
@@ -7339,7 +7375,9 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
 // 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 触发侧栏排序刷新（最新答完的 AI 群聊靠前）。
 //   2026-05-31 道雪：旧版在这里 unreadCount++ 作"轮粒度未读"，已被 partial-update 聚合的"本轮已答 AI 数"取代。
 //   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
-ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, turnNum, completedAt }) => {
+ipcRenderer.on('groupchat-turn-complete', (_event, payload = {}) => {
+  if (!_acceptSidebarGroupChatEvent(payload)) return;
+  const { meetingId, turnNum, completedAt } = payload;
   if (!meetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;

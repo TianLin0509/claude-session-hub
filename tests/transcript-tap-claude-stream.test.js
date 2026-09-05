@@ -218,6 +218,33 @@ async function main() {
     await rmDir(dir);
   });
 
+  await test('连续两轮相同最终文本不会被跨轮去重吞掉', async () => {
+    const tap = new TranscriptTap();
+    const sid = 'test-claude-' + Date.now() + '-same-final';
+    const { dir, jsonlPath } = await tmpJsonl();
+    const completed = [];
+    tap.on('turn-complete', event => completed.push(event));
+    tap.registerSession(sid, 'claude', { cwd: dir });
+    await tap.watchClaudeTranscript(sid, jsonlPath, { newTurn: true, turnId: 'turn-1' });
+    const answer = text => JSON.stringify({
+      type: 'assistant',
+      message: { stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+    }) + '\n';
+    await fs.promises.appendFile(jsonlPath, answer('完全相同的最终答案'));
+    await wait(700);
+    assert.strictEqual(completed.length, 1);
+
+    tap.notePrompt(sid, 'claude', '第二问');
+    const user = JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '第二问' }] } }) + '\n';
+    await fs.promises.appendFile(jsonlPath, user + answer('完全相同的最终答案'));
+    await wait(700);
+    assert.strictEqual(completed.length, 2, 'text equality may dedupe duplicate signals within one turn, never two turns');
+    assert.strictEqual(completed[1].text, '完全相同的最终答案');
+
+    tap.unregisterSession(sid);
+    await rmDir(dir);
+  });
+
   await test('主 transcript 合法换绑时关闭旧 tail，只从新路径收口', async () => {
     const tap = new TranscriptTap();
     const sid = 'test-claude-' + Date.now() + '-rebind';

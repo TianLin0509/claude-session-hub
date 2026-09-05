@@ -21,7 +21,7 @@ assert.ok(/extractMode\s*===\s*['"]final_answer['"]/.test(dispatcherSrc),
   'auto extract must only settle on final_answer, not partial commentary');
 
 assert.ok(/signalSource\s*=\s*isCodexFinal[\s\S]{0,160}codex_auto_extract_final_answer[\s\S]{0,160}claude_auto_extract_final_answer/.test(dispatcherSrc) &&
-  /watcher\.completeFromTranscript\(extracted\.text,\s*signalSource\)/.test(dispatcherSrc),
+  /watcher\.completeFromTranscript\(extracted\.text,\s*signalSource,\s*\{/.test(dispatcherSrc),
   'auto extract should settle Claude/Codex with distinct authoritative signal sources');
 
 // sincePromptTs 比真实提交时刻早 1s（容忍 CLI 写 rollout 的时钟偏差）。拿它当归属判据
@@ -38,7 +38,7 @@ assert.ok(!/Number\(extracted\.completedAt\)\s*>=\s*sincePromptTs/.test(dispatch
 assert.ok(/if \(codexAutoExtractTimer\) clearInterval\(codexAutoExtractTimer\)/.test(dispatcherSrc),
   'auto extract timer must be cleared when the watcher settles');
 
-assert.ok(/completeFromTranscript\(text,\s*signalSource\s*=\s*['"]auto_extract['"]\)/.test(watcherSrc),
+assert.ok(/completeFromTranscript\(text,\s*signalSource\s*=\s*['"]auto_extract['"],\s*details\s*=\s*\{\}\)/.test(watcherSrc),
   'turn-completion watcher must expose completeFromTranscript');
 
 assert.ok(/status:\s*['"]completed['"][\s\S]{0,160}signalSource[\s\S]{0,160}completedAt:\s*Date\.now\(\)/.test(watcherSrc),

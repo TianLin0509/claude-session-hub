@@ -38,8 +38,13 @@ function createLoopEngine(deps) {
   }
 
   function sidOf(meeting, memberId) {
-    const idx = parseInt(String(memberId).slice(1), 10);
-    return (idx > 0 && Array.isArray(meeting.subSessions)) ? (meeting.subSessions[idx - 1] || null) : null;
+    const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
+    let index = specs.findIndex((spec, i) => String(spec && spec.memberId || `m${i + 1}`) === String(memberId));
+    if (index < 0) {
+      const legacy = /^m(\d+)$/.exec(String(memberId || ''));
+      index = legacy ? Number(legacy[1]) - 1 : -1;
+    }
+    return (index >= 0 && Array.isArray(meeting.subSessions)) ? (meeting.subSessions[index] || null) : null;
   }
   function labelOf(meeting, memberId) {
     const sid = sidOf(meeting, memberId);

@@ -166,13 +166,25 @@ async function main() {
       }
       const expired = snapshot();
 
-      // 留一张用户可见的运行态截图作为 GUI 证据。
-      ipc.emit('groupchat-turn-targets', {}, { meetingId, turnNum: 3, sids: [sids[0]] });
+      // Canonical member failure must survive the later whole-turn completion;
+      // otherwise the old cleanup path turns a quota/network error green.
+      ipc.emit('groupchat-turn-targets', {}, { meetingId, turnNum: 3, runId: 'run-failed', revision: 100, sids: [sids[0]] });
+      ipc.emit('groupchat-attempt-changed', {}, {
+        meetingId, turnNum: 3, runId: 'run-failed', revision: 101,
+        attemptId: 'attempt-failed', sid: sids[0], status: 'failed', updatedAt: Date.now(),
+        failure: { code: 'quota_exceeded', summary: '额度已用尽', retryable: true, autoRetry: false },
+      });
+      ipc.emit('groupchat-turn-complete', {}, { meetingId, turnNum: 3, runId: 'run-failed', revision: 102, results: [] });
+      await wait(220);
+      const failedAfterTurnComplete = snapshot();
+
+      // 留一张用户可见的下一轮运行态截图作为 GUI 证据。
+      ipc.emit('groupchat-turn-targets', {}, { meetingId, turnNum: 4, runId: 'run-next', revision: 103, sids: [sids[0]] });
       await wait(220);
       return {
         initial, targeted, heartbeat, completed,
         ptyFirst, ptySecond, ptyRunning, ptyCompleted,
-        beforeExpiry, expired, final: snapshot(),
+        beforeExpiry, expired, failedAfterTurnComplete, final: snapshot(),
       };
     })()`);
 
@@ -198,6 +210,9 @@ async function main() {
     assert.doesNotMatch(result.ptyCompleted.codexClass, /mini-st-thinking/);
     assert.equal(result.expired.stateText, '', JSON.stringify(result.expired));
     assert.doesNotMatch(result.expired.claudeClass, /mini-st-thinking/);
+    assert.equal(result.failedAfterTurnComplete.stateText, '异常', JSON.stringify(result.failedAfterTurnComplete));
+    assert.match(result.failedAfterTurnComplete.claudeClass, /mini-st-error/,
+      'whole-turn completion must not erase a member-scoped quota failure');
 
     const shot = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(SCREENSHOT, Buffer.from(shot.data, 'base64'));

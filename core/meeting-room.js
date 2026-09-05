@@ -21,6 +21,28 @@ function cloneSerialWorkflow(workflow) {
   return JSON.parse(JSON.stringify(workflow));
 }
 
+function ensureStableSlotSpecs(slotSpecs, subSessions) {
+  const count = Array.isArray(subSessions) ? subSessions.length : 0;
+  const specs = Array.isArray(slotSpecs) ? slotSpecs.map(spec => ({ ...(spec || {}) })) : [];
+  const used = new Set();
+  let nextMemberNumber = Math.max(0, ...specs.map(spec => {
+    const match = /^m(\d+)$/.exec(String(spec && spec.memberId || ''));
+    return match ? Number(match[1]) : 0;
+  })) + 1;
+  for (let index = 0; index < count; index += 1) {
+    if (!specs[index]) specs[index] = {};
+    let memberId = typeof specs[index].memberId === 'string' ? specs[index].memberId.trim() : '';
+    if (!memberId || used.has(memberId)) {
+      while (used.has(`m${nextMemberNumber}`)) nextMemberNumber += 1;
+      memberId = `m${nextMemberNumber}`;
+      nextMemberNumber += 1;
+    }
+    specs[index].memberId = memberId;
+    used.add(memberId);
+  }
+  return specs;
+}
+
 class MeetingRoomManager {
   constructor() {
     this.meetings = new Map();
@@ -67,7 +89,7 @@ class MeetingRoomManager {
       // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
       //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
       //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
-      slotSpecs: Array.isArray(opts.slotSpecs) ? opts.slotSpecs.slice() : null,
+      slotSpecs: Array.isArray(opts.slotSpecs) ? ensureStableSlotSpecs(opts.slotSpecs, opts.slotSpecs) : null,
       mode: 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: Array.isArray(opts.participants) ? opts.participants.slice() : [0, 1, 2],
@@ -301,6 +323,7 @@ class MeetingRoomManager {
     //   meetings 数组也带上修正后的 scene —— 否则 boot 时 save 用原始 bootMeetings 会把
     //   修正前的 'general' 写回 state.json，下次重启又重复迁移、永不收敛。
     meetingData.scene = scene;
+    meetingData.slotSpecs = ensureStableSlotSpecs(meetingData.slotSpecs, meetingData.subSessions || []);
     const restoredTitle = meetingData.title || '会议室';
     const restoredUserRenamed = !!meetingData.userRenamed;
     const restoredAutoTitleGenerated = !!meetingData.autoTitleGenerated;
@@ -336,7 +359,7 @@ class MeetingRoomManager {
       completionNotificationEnabled: meetingData.completionNotificationEnabled === true,
       // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；
       //   老 meeting 没有此字段时为 null，渲染逻辑会按 subSessions 顺序兜底分配 slot。
-      slotSpecs: Array.isArray(meetingData.slotSpecs) ? meetingData.slotSpecs.slice() : null,
+      slotSpecs: meetingData.slotSpecs.slice(),
       // 2026-05-05 道雪：BUG fix —— 旧版兜底 'pilot' 导致 free 模式 AI 群聊重启后被错误改成主驾。
       //   主驾入口已废弃，所有未识别 mode 一律 fallback 'free'。同时强制把老 meeting 的 mode='pilot'
       mode: 'free',
@@ -474,6 +497,7 @@ function isSlotParticipatingThisTurn(meeting, slotIndex) {
 
 module.exports = {
   MeetingRoomManager,
+  ensureStableSlotSpecs,
   isGroupChatCapableMeeting,
   isSlotParticipatingThisTurn,
   MEETING_MODES,

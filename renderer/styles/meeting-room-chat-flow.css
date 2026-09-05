@@ -434,7 +434,8 @@
 .mr-gc-msg.mr-gc-search-dim { opacity: 0.25; }
 
 /* [查看本轮 prompt] 气泡 hover 按钮（复用 copy-btn 视觉）+ 弹窗 */
-.mr-gc-prompt-btn {
+.mr-gc-prompt-btn,
+.mr-gc-attempt-btn {
   width: 24px; height: 24px; flex: 0 0 24px; margin-top: 5px;
   border: 1px solid var(--mr-gc-border); border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2); color: var(--mr-gc-muted);
@@ -443,9 +444,13 @@
   opacity: 0; pointer-events: none; transform: translateY(-2px);
   transition: opacity .15s ease, transform .15s ease, background .15s ease, border-color .15s ease, color .15s ease;
 }
+.mr-gc-attempt-btn { width: auto; min-width: 36px; padding: 0 6px; font-size: 11px; }
 .mr-gc-msg:hover .mr-gc-prompt-btn,
-.mr-gc-msg:focus-within .mr-gc-prompt-btn { opacity: 1; pointer-events: auto; transform: translateY(0); }
-.mr-gc-prompt-btn:hover { background: rgba(var(--rgb-info), 0.10); border-color: rgba(var(--rgb-info), 0.46); color: var(--mr-gc-text); }
+.mr-gc-msg:focus-within .mr-gc-prompt-btn,
+.mr-gc-msg:hover .mr-gc-attempt-btn,
+.mr-gc-msg:focus-within .mr-gc-attempt-btn { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.mr-gc-prompt-btn:hover,
+.mr-gc-attempt-btn:hover { background: rgba(var(--rgb-info), 0.10); border-color: rgba(var(--rgb-info), 0.46); color: var(--mr-gc-text); }
 
 .mr-gc-prompt-modal-overlay {
   position: fixed; inset: 0; z-index: 9999;
