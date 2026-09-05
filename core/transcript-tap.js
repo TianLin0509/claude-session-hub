@@ -650,7 +650,7 @@ class CodexTap extends EventEmitter {
       expectedPrompt: null,
       expectedPromptAt: null,
     });
-    this._ensureWatcher();
+    this._ensureWatcherAlive();
     if (transcriptPath) {
       // A persisted rollout path is only a fast path. It can go stale after a
       // profile switch/archive, or (in old Hub state) point at a subagent file.
@@ -693,7 +693,9 @@ class CodexTap extends EventEmitter {
     if (!entry) return;
     entry.expectedPrompt = normalizePromptForCompare(prompt);
     entry.expectedPromptAt = Date.now();
-    this._ensureWatcher();
+    // 每次派 prompt 都顺手体检一次心跳 —— 这是最靠近「新会话要开始输出了」的时刻，
+    // 也是最需要扫描器活着的时刻。
+    this._ensureWatcherAlive();
   }
 
   unregisterSession(hubSessionId) {
@@ -835,6 +837,31 @@ class CodexTap extends EventEmitter {
     };
   }
 
+  /**
+   * 确认扫描心跳还在跳；停了就重启。
+   *
+   * 为什么不能只靠 `_ensureWatcher` 的 `if (this._pollTimer) return;`：
+   * 实测出现过「pending=2 但扫描循环已经不跑了」—— 定时器句柄还在（所以
+   * _ensureWatcher 直接 return），但实际上再没扫过一次，新会话的 rollout
+   * 永远等不到绑定。根因没锁死，但这类「静默停摆」不该靠找出每一条成因来防。
+   *
+   * 所以改成看**心跳时间**而不是看句柄有没有：只要还有会话在等绑定，
+   * 而上次扫描已经是好几个周期之前，就无条件重启。
+   * 任何碰到 tap 的入口（注册会话、记录 prompt）都顺手调一下，代价可以忽略。
+   */
+  _ensureWatcherAlive() {
+    if (this._pending.size === 0) return;
+    const stale = Date.now() - (this._lastScanAt || 0) > Math.max(5000, this._pollIntervalMs * 5);
+    if (this._pollTimer && !stale) return;
+    if (this._pollTimer) {
+      console.warn('[codex-tap] scan heartbeat stale, restarting watcher'
+        + ` (pending=${this._pending.size}, lastScan=${this._lastScanAt ? new Date(this._lastScanAt).toISOString() : 'never'})`);
+      try { clearInterval(this._pollTimer); } catch (e) {}
+      this._pollTimer = null;
+    }
+    this._ensureWatcher();
+  }
+
   _ensureWatcher() {
     if (this._pollTimer) return;
     this._scanOnce().catch((e) => console.warn('[codex-tap] scan error:', e.message));
@@ -884,6 +911,7 @@ class CodexTap extends EventEmitter {
     }
     this._scanning = true;
     this._scanStartedAt = Date.now();
+    this._lastScanAt = Date.now();      // 心跳：给 _ensureWatcherAlive 判断循环还活着
     try {
       for (const dir of this._candidateDirs()) {
         let files;
