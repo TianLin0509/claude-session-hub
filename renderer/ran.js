@@ -63,11 +63,20 @@
     if (roundTxt) bits.push(roundTxt);
     if (row.idle) bits.push(esc(row.idle));
 
-    // 人话层：Agent 申报的那句话；没有就不占地方，不显示「暂无」这种废话
+    // 人话层：Agent 申报的四行，有什么显示什么；没有就不占地方，
+    // 不显示「暂无」这种废话（之前只渲染了 progress，验证/风险/报告全被丢掉了）。
     const line = row.progress
-      ? `<div style="font-size:13px;opacity:.8;margin-top:5px">${esc(row.progress)}</div>` : '';
+      ? `<div style="font-size:13px;opacity:.85;margin-top:5px">${esc(row.progress)}</div>` : '';
+    const verified = row.verified
+      ? `<div style="font-size:12.5px;margin-top:3px;opacity:.6">验了：${esc(row.verified)}</div>` : '';
+    const risk = row.risk
+      ? `<div style="font-size:12.5px;margin-top:3px;color:${TONE_COLOR.warn}">风险：${esc(row.risk)}</div>` : '';
     const blocked = row.blockers
       ? `<div style="font-size:12.5px;margin-top:4px;color:${TONE_COLOR.warn}">打回：${esc(row.blockers)}</div>` : '';
+    // 报告是维护者真正会点开看的东西 —— 之前解析出来却从没显示，等于白写。
+    const report = row.report
+      ? `<div style="margin-top:5px"><span class="devb-report" data-report="${esc(row.report)}"`
+        + ` style="font-size:12.5px;color:${TONE_COLOR.run};cursor:pointer">看报告 →</span></div>` : '';
 
     return [
       `<div class="devb-row" data-mid="${esc(row.id)}" style="border:1px solid var(--border,#d2d2d7);`,
@@ -77,7 +86,7 @@
       `<span style="font-size:12px;color:${color};font-weight:600">${esc(row.stage.label)}</span>`,
       `<span style="flex:1"></span>`,
       `<span style="font-size:12px;opacity:.55">${bits.join(' · ')}</span>`,
-      '</div>', line, blocked, '</div>',
+      '</div>', line, verified, risk, blocked, report, '</div>',
     ].join('');
   }
 
@@ -131,6 +140,23 @@
         const rows = devs.map(m => DP.boardRow(m, msgsById[m.id] || []))
           .sort((a, b) => (order[a.stage.tone] ?? 9) - (order[b.stage.tone] ?? 9));
         listEl.innerHTML = rows.map(rowHtml).join('');
+        // 「看报告」要先绑，并且必须 stopPropagation —— 否则点它会连带触发整行跳转，
+        // 用户以为点开报告，结果被扔进群聊。
+        listEl.querySelectorAll('.devb-report').forEach((el) => {
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const p = el.getAttribute('data-report');
+            if (!p) return;
+            try {
+              require('electron').shell.openPath(p).then((err) => {
+                if (err) { el.textContent = '打不开：' + err; el.style.color = TONE_COLOR.bad; }
+              });
+            } catch (e) {
+              el.textContent = '打不开：' + ((e && e.message) || e);
+              el.style.color = TONE_COLOR.bad;
+            }
+          });
+        });
         listEl.querySelectorAll('.devb-row').forEach((el) => {
           el.addEventListener('click', () => {
             const id = el.getAttribute('data-mid');

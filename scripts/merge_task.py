@@ -132,25 +132,71 @@ def main():
         say("  原因：worktree 里的测试可能解析到主仓库的代码，结果不可信。")
         sys.exit(2)
 
-    # ② 主目录必须干净 —— 别人的未提交改动不能被 checkout 冲掉
-    dirty = git("status", "--porcelain")
-    if dirty:
-        say("✗ 主工作目录有未提交的改动，先处理掉再合：")
-        for ln in dirty.splitlines()[:10]:
-            say(f"    {ln}")
-        say("  （这些可能是别人的活，本脚本不会替你决定怎么处理。）")
-        sys.exit(2)
-
-    # ③ 分支必须存在
+    # ③ 分支必须存在（要先确认，下面算改动集要用它）
     if run(["git", "rev-parse", "--verify", branch], check=False).returncode != 0:
         say(f"✗ 分支不存在：{branch}")
         sys.exit(2)
+
+    # ② 别人的未提交改动：只拦真会被踩到的，不搞一刀切
+    #
+    #    老版本是「工作区一脏就拒绝」。听起来安全，实际后果是：
+    #    任何人在主目录留一份忘了提交的半成品，整个合并闸门就**永久瘫痪**
+    #    （实测真发生了：两个文件躺了一天多，所有合并都跑不了）。
+    #
+    #    但也不能简单放宽 —— 失败回滚原本用 `git reset --hard`，
+    #    那会连别人的在途改动一起抹掉。放宽判据必须同时把回滚改成按路径回滚。
+    # 注意：这里不能用 git()，它会对整段输出 strip，把第一行开头的空格吃掉
+    #（未暂存修改是 " M path"，被 strip 成 "M path" 后按列取路径会错位成 "ath"）。
+    # 这个 bug 让重叠检测整个失效过一次，测试才抓到。
+    dirty_raw = run(["git", "status", "--porcelain"]).stdout
+    dirty_paths = set()
+    for ln in dirty_raw.splitlines():
+        if len(ln) < 4:
+            continue
+        p = ln[3:].strip().strip('"')
+        if " -> " in p:              # 重命名取目标路径
+            p = p.split(" -> ", 1)[1].strip().strip('"')
+        if p:
+            dirty_paths.add(p)
+
+    merge_paths = [p for p in git("diff", "--name-only", f"{trunk}...{branch}").splitlines() if p]
+    overlap = sorted(dirty_paths & set(merge_paths))
+
+    if overlap:
+        say("✗ 本次合并会碰到你未提交的这些文件，先处理掉再合：")
+        for p in overlap[:10]:
+            say(f"    {p}")
+        say("  （合下去会覆盖你还没保存的工作，本脚本不替你决定怎么处理。）")
+        sys.exit(2)
+
+    unrelated_dirty = sorted(dirty_paths - set(merge_paths))
+    if unrelated_dirty:
+        say(f"⚠ 主目录还有 {len(unrelated_dirty)} 个与本次合并无关的未提交改动：")
+        for p in unrelated_dirty[:5]:
+            say(f"    {p}")
+        say("  它们不在本次改动范围内，会原样保留（回滚也只回滚本次涉及的文件）。")
+        say()
 
     original = git("rev-parse", trunk)
     say(f"① 记下回滚点：{trunk} = {original[:12]}")
 
     bypass = {"HUB_ALLOW_MAIN_COMMIT": "1", "HUB_ALLOW_TRUNK_PUSH": "1"}
     merged_sha = None
+
+    def rollback():
+        """把主干退回 original。
+
+        有别人的在途改动时**不能用 `git reset --hard`** —— 它会连那些改动一起抹掉。
+        改成按路径回滚：HEAD 退回去，只还原本次合并涉及的文件，别人动过的一个不碰。
+        """
+        run(["git", "merge", "--abort"], check=False)
+        if unrelated_dirty:
+            run(["git", "reset", "--soft", original], env=bypass, check=False)
+            if merge_paths:
+                run(["git", "checkout", original, "--", *merge_paths], env=bypass, check=False)
+            run(["git", "reset"], env=bypass, check=False)   # 清索引，别把还原动作留成暂存
+        else:
+            run(["git", "reset", "--hard", original], env=bypass, check=False)
 
     try:
         git("checkout", trunk, env=bypass)
@@ -184,7 +230,7 @@ def main():
         if args.dry_run:
             say()
             say("④ --dry-run，回滚不真合")
-            git("reset", "--hard", original, env=bypass)
+            rollback()
             say(f"   已回到 {original[:12]}")
             say()
             say("结论：验证通过，可以合。")
@@ -195,9 +241,11 @@ def main():
         say(f"✗ {ex}")
         say()
         say(f"回滚 {trunk} → {original[:12]}")
-        run(["git", "merge", "--abort"], check=False)
-        run(["git", "reset", "--hard", original], env=bypass, check=False)
-        say("已回滚，主干没有被污染。")
+        rollback()
+        if unrelated_dirty:
+            say(f"已回滚（按路径，保留了 {len(unrelated_dirty)} 个无关的未提交改动）。")
+        else:
+            say("已回滚，主干没有被污染。")
         say()
         say("这个分支还在，改完再跑一次本脚本即可。")
         return 1
