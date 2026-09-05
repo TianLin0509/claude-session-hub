@@ -412,7 +412,16 @@ function _bindEvents() {
         _meetingWorkspaceMode = 'existing';
         _paintWorkspace();
       }
-      if (hint) hint.style.display = 'none';
+      if (!hint) return;
+      if (radio.value === 'dev') {
+        // 这块 UI 原本一直是空的。开发场景恰好需要解释一句：工作目录档位是被自动切的。
+        hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
+          + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
+          + '项目没整理过的话，先用 project-prep skill 跑一次。';
+        hint.style.display = '';
+      } else {
+        hint.style.display = 'none';
+      }
     });
   });
   _modalEl.addEventListener('click', (e) => {

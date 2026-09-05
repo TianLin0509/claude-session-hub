@@ -114,6 +114,10 @@ test('选「开发」场景时把 workspace 默认档切成「选择已有路径
   assert(/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
     '选中 dev 时要检查当前档位');
   assert(/_meetingWorkspaceMode = 'existing'/.test(modal), '要切到 existing');
+  // 悄悄替用户改档位而不说一声，下次他会以为是自己选的。那块提示 DOM 本来就在，一直空着。
+  assert(/hint\.textContent = '开发场景要开在项目根上/.test(modal),
+    '切档位的同时要在界面上说明为什么');
+  assert(/project-prep/.test(modal), '提示里要点名该跑哪个 skill');
 });
 
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
