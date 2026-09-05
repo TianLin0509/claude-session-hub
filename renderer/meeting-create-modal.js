@@ -132,6 +132,26 @@ function _renderSceneChoices(activeId = 'general') {
   `).join('');
 }
 
+// 场景说明只认 _currentMode，不认「刚才点了哪个 radio」。
+// 2026-09-05 合并位打回的那个泄漏就出在这里：说明原来画在 radio 的 change 里，
+// 而重开弹窗走的是 _applyScene —— 场景已经回到通用、工作目录也回到默认，
+// 屏幕上却还留着「开发场景…已切到选择已有路径」。凡是能被重开路径绕过的
+// UI 状态，就必须挂在负责重置状态的那个函数上。
+function _paintSceneHint() {
+  const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
+  if (!hint) return;
+  if (_currentMode === 'dev') {
+    // 开发场景需要解释一句：工作目录档位是被自动切的，不说明用户下次会以为是自己选的。
+    hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
+      + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
+      + '项目没整理过的话，先用 project-prep skill 跑一次。';
+    hint.style.display = '';
+  } else {
+    hint.textContent = '';
+    hint.style.display = 'none';
+  }
+}
+
 // 只改场景，不动成员名单。删掉模板卡之后成员起手一律是「Claude 工作位 + Codex 合并位」，
 // 换场景不该把用户已经调好的模型/档位冲掉。
 function _applyScene(sceneId, opts = {}) {
@@ -153,6 +173,7 @@ function _applyScene(sceneId, opts = {}) {
     const input = el.querySelector('input[name="mcm-scene"]');
     el.classList.toggle('selected', !!input && input.value === _currentMode);
   });
+  _paintSceneHint();
 }
 
 function _slotHtml(i, spec, isGroup) {
@@ -361,6 +382,7 @@ function _bindEvents() {
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
+      // 场景高亮、房名提示、场景说明都归 _applyScene 管，这里不重复画。
       _applyScene(radio.value);
       // 开发场景必须开在项目根：预设 prompt 读的是「本仓库的 .agents/AUTHOR.md」，
       // 落在默认工作根（平铺目录，不是仓库）就一定读不到，而 AI 不会自己 cd 过去。
@@ -368,17 +390,6 @@ function _bindEvents() {
       if (radio.value === 'dev' && _meetingWorkspaceMode !== 'existing') {
         _meetingWorkspaceMode = 'existing';
         _paintWorkspace();
-      }
-      const hint = _modalEl.querySelector('#mcm-scene-hint');
-      if (!hint) return;
-      if (radio.value === 'dev') {
-        // 开发场景需要解释一句：工作目录档位是被自动切的，不说明用户下次会以为是自己选的。
-        hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
-          + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
-          + '项目没整理过的话，先用 project-prep skill 跑一次。';
-        hint.style.display = '';
-      } else {
-        hint.style.display = 'none';
       }
     });
   });
@@ -510,10 +521,10 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   } else {
     _isGroupChat = true;
   }
-  const requestedScene = SCENES.some(scene => scene.id === options.scene)
-    ? options.scene
-    : 'general';
-  _currentMode = requestedScene;
+  // 弹窗一律从「通用」开：工作目录档位在下面被重置成 default，
+  // 若允许直接开在 dev，就又会出现「场景=开发但目录=默认」的不一致。
+  // 需要开在别的场景时，要连同工作目录一起处理，不是加个参数就行。
+  _currentMode = 'general';
   _ensureModal();
   const embeddedHost = options.embedded === true && options.host && typeof options.host.appendChild === 'function'
     ? options.host
@@ -531,7 +542,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
   };
   _clearError();
-  _applyScene(requestedScene, { clearTitle: true, resetSlots: true });
+  _applyScene('general', { clearTitle: true, resetSlots: true });
   _meetingWorkspaceMode = 'default';
   _meetingWorkspace = null;
   _paintWorkspace();

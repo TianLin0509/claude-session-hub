@@ -105,7 +105,7 @@ test('scene picker replaces the duplicate template row and sits above member tun
   }
   assert.ok(!MODAL_CSS.includes('.mcm-template'), 'template card CSS must be removed too');
   assert.match(MODAL_JS, /function\s+_applyScene/);
-  assert.match(MODAL_JS, /_applyScene\(requestedScene,\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
+  assert.match(MODAL_JS, /_applyScene\('general',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
   // 场景仍然是 create-meeting 的 mode 来源，radio 的 name 不能改。
   assert.match(MODAL_JS, /input\[name="mcm-scene"\]:checked/);
   const sceneAt = MODAL_JS.indexOf('id="mcm-scene-row"');
@@ -115,6 +115,34 @@ test('scene picker replaces the duplicate template row and sits above member tun
   // 场景不再重排成员：换场景把用户调好的模型/档位冲掉是纯粹的损失。
   assert.ok(!MODAL_JS.includes('_groupSlots = _cloneSlots(tpl.slots)'));
   assert.match(MODAL_CSS, /\.mcm-scene-choice\s*\{/);
+});
+
+test('scene hint is painted from scene state, not from the radio change event', () => {
+  // 2026-09-05 合并位打回：说明文字原来画在 radio 的 change 里，而重开弹窗走的是
+  // _applyScene —— 场景已回到通用、工作目录已回到默认，屏幕上却还留着
+  // 「开发场景…已切到选择已有路径」。凡是能被重开路径绕过的 UI 状态，
+  // 都必须挂在负责重置状态的那个函数上。真实回归覆盖在 e2e-launch-center-cdp。
+  assert.match(MODAL_JS, /function\s+_paintSceneHint\(\)/,
+    '场景说明必须有一个只认 _currentMode 的渲染函数');
+  assert.match(MODAL_JS, /if \(_currentMode === 'dev'\)/,
+    '说明的显隐必须由场景状态决定');
+  const applySceneAt = MODAL_JS.indexOf('function _applyScene');
+  const applySceneEnd = MODAL_JS.indexOf('\nfunction ', applySceneAt + 1);
+  const applySceneBody = MODAL_JS.slice(applySceneAt, applySceneEnd);
+  assert.match(applySceneBody, /_paintSceneHint\(\)/,
+    '_applyScene 必须负责刷新场景说明，否则重开弹窗时说明不会复位');
+  // 说明只能有一个写入点：再出现第二处赋值，两条路径迟早又会不同步。
+  const writes = MODAL_JS.match(/hint\.textContent\s*=/g) || [];
+  assert.strictEqual(writes.length, 2,
+    `场景说明只应有「写入 dev 文案」与「清空」两处赋值，实得 ${writes.length}`);
+  const changeHandlerAt = MODAL_JS.indexOf("input[name=\"mcm-scene\"]');");
+  const changeHandlerBody = MODAL_JS.slice(changeHandlerAt, changeHandlerAt + 700);
+  assert.doesNotMatch(changeHandlerBody, /hint\.textContent/,
+    'radio change 处理器不许再自己画说明');
+  // 弹窗一律从通用开：允许直接开在 dev 会再造一条「场景=开发但目录=默认」的矛盾路径。
+  assert.match(MODAL_JS, /_applyScene\('general',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
+  assert.doesNotMatch(MODAL_JS, /options\.scene/,
+    '没有配套处理工作目录之前，不许通过参数直接开在别的场景');
 });
 
 test('member fields put the caption and its control on one line', () => {
@@ -232,4 +260,4 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /classList\.toggle\(['"]mcm-embedded['"]/);
 });
 
-console.log('All passed.');
+console.log(process.exitCode ? 'FAILED — 见上面的 FAIL 行' : 'All passed.');
