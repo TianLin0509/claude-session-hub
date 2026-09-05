@@ -75,8 +75,27 @@
     reviewing: { label: '合并位审查中', tone: 'run' },
     rework: { label: '打回重改', tone: 'warn' },
     passed: { label: '已通过', tone: 'ok' },
-    stopped: { label: '已停止', tone: 'idle' },
+    // 「停了」有四种完全不同的原因，维护者不看代码，只能靠这一行分辨。
+    // 以前全都显示成「已停止」，等于什么都没说。
+    stoppedUser: { label: '你已停止', tone: 'idle' },
     exhausted: { label: '返工用尽，等你决定', tone: 'bad' },
+    timeout: { label: '超时停止', tone: 'bad' },
+    stuck: { label: '卡住了，没进展', tone: 'bad' },
+    paused: { label: '出错暂停，等你处理', tone: 'bad' },
+    noReviewer: { label: '评审席位不可用（额度/登录），换个人再跑', tone: 'bad' },
+    stopped: { label: '已停止', tone: 'idle' },   // 兜底：认不出的新状态
+  };
+
+  // 引擎会写出的终态 → 看板说法。加了新状态却忘了在这里登记时，
+  // unit-dev-progress 的守门测试会红，而不是悄悄显示成「已停止」。
+  const STATUS_TO_STAGE = {
+    done: 'passed',
+    paused: 'paused',
+    stopped_user: 'stoppedUser',
+    stopped_max: 'exhausted',
+    stopped_deadline: 'timeout',
+    stopped_stuck: 'stuck',
+    reviewer_unavailable: 'noReviewer',
   };
 
   /**
@@ -104,9 +123,10 @@
     else if (running) {
       const reviewing = ls.currentStep === 'reviewer' || Number(ls.stepIndex) === 1;
       key = reviewing ? 'reviewing' : 'working';
-    }
-    else if (status && status !== 'done') {
-      key = (round >= maxRounds) ? 'exhausted' : 'stopped';
+    } else if (status) {
+      // 按引擎给的真实原因分辨；认不出的新状态回落到「已停止」而不是猜成「返工用尽」
+      key = STATUS_TO_STAGE[status]
+        || (round >= maxRounds ? 'exhausted' : 'stopped');
     } else if (round > 0) key = 'rework';
 
     return {
@@ -202,5 +222,6 @@
     boardRow,
     isDevMeeting,
     STAGE,
+    STATUS_TO_STAGE,
   };
 }));

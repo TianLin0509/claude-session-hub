@@ -51,6 +51,92 @@ function createLoopEngine(deps) {
     return r ? (r.text || '') : '';
   }
 
+  // ── 评审裁决的取文本路径（2026-09-05 修）────────────────────────────────────
+  //
+  // 症状：合并位明明跑完了全套验证、也给了 RESULT: PASS，引擎却当它「没给裁决」，
+  //       保守判 fail、白烧一轮；连烧三轮报 stopped_max。代码其实已经正确合入了。
+  //
+  // 根因：ClaudeTap 有 idle timer —— 转录静默一段时间就主动 emit turn-complete。
+  //       评审说完「现在开始验证」就去跑测试 / git 了，转录随之静默，计时器提前触发，
+  //       watcher 拿当时那段开场白结算并 resolve。真正的完整回答稍后才通过
+  //       patch-after-settle 补进转录（5 分钟窗口），**而引擎早已用短文本判完了**。
+  //       更糟的是引擎以为评审结束、把下一步派给了工作位，于是工作位收到
+  //       「评审没给裁决」这种它根本修不了的阻断项。
+  //
+  // 修法：不动 idle timer（它是为「首轮卡住不出卡」兜底的，动它会伤别的链路）。
+  //       改在真正需要裁决的这一层等：结算文本与已持久化转录取更长的那个，
+  //       解析不出裁决时就继续等——**只要文本还在长就一直等**（说明 agent 还在干活），
+  //       连续 QUIET 毫秒不长才认定它是真没给裁决，另设硬上限兜底。
+  // 等待预算可由 deps 注入 —— 生产用安全的默认值，单测注入毫秒级避免每轮空转。
+  // （不注入的话，mock 出来的 agent 永远不会补文本，每一步都要白等满静默期。）
+  const _w = (deps && deps.stepTextWait) || {};
+  const VERDICT_QUIET_MS = Number(_w.verdictQuietMs) > 0 ? Number(_w.verdictQuietMs) : 60_000;
+  const VERDICT_WAIT_CAP_MS = Number(_w.verdictCapMs) > 0 ? Number(_w.verdictCapMs) : 8 * 60_000;
+  // 工作位的预算小一个量级：PROGRESS 缺了不影响流程正确性，不值得每轮白等一分钟。
+  const BUILDER_QUIET_MS = Number(_w.builderQuietMs) > 0 ? Number(_w.builderQuietMs) : 10_000;
+  const BUILDER_WAIT_CAP_MS = Number(_w.builderCapMs) > 0 ? Number(_w.builderCapMs) : 4 * 60_000;
+
+  function persistedTurnText(meetingId, turnNum, sid) {
+    if (typeof getOrchestrator !== 'function' || !turnNum || !sid) return '';
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      const state = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState()
+        : orchestrator && orchestrator.state;
+      const turn = ((state && state.turns) || []).find(t => t && Number(t.n) === Number(turnNum));
+      return (turn && turn.by && turn.by[sid]) || '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  /** 取这一步「最完整」的文本：结算文本 vs 转录里已补丁的文本，谁长用谁。 */
+  function bestTextSoFar(meetingId, turnNum, sid, settledText) {
+    const settled = settledText || '';
+    const persisted = persistedTurnText(meetingId, turnNum, sid);
+    return persisted.length > settled.length ? persisted : settled;
+  }
+
+  /**
+   * 等这一步真的「说完」。
+   * isDone(text) 给出「已经拿到想要的东西」的判据，拿到就立刻走，不空等；
+   * 拿不到就看文本还长不长 —— 还在长说明 agent 还在干活，继续等。
+   */
+  async function awaitStepText(meetingId, turnNum, sid, settledText, isDone, opts = {}) {
+    const quietMs = Number(opts.quietMs) > 0 ? Number(opts.quietMs) : VERDICT_QUIET_MS;
+    const capMs = Number(opts.capMs) > 0 ? Number(opts.capMs) : VERDICT_WAIT_CAP_MS;
+    const tick = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : 3000;
+    const isAborted = typeof opts.isAborted === 'function' ? opts.isAborted : () => false;
+    const done = typeof isDone === 'function' ? isDone : () => true;
+
+    let best = bestTextSoFar(meetingId, turnNum, sid, settledText);
+    if (done(best)) return best;
+
+    let lastLen = best.length;
+    let lastGrowthAt = Date.now();
+    const deadline = Date.now() + capMs;
+
+    while (Date.now() < deadline && !isAborted()) {
+      await sleep(tick);
+      const now = bestTextSoFar(meetingId, turnNum, sid, settledText);
+      if (now.length > lastLen) {
+        best = now; lastLen = now.length; lastGrowthAt = Date.now();
+      }
+      if (done(best)) return best;                         // 拿到就走，不空等
+      if (Date.now() - lastGrowthAt >= quietMs) break;      // 真的不再输出了
+    }
+    return best;
+  }
+
+  // 评审：等到能解析出 RESULT 裁决
+  const hasVerdict = (t) => !!LC.parseVerdict(t);
+  // 工作位：等到它按合同交出 PROGRESS 那一行。
+  // 不等的话，引擎会在工作位还在改文件时就把审查派出去 —— 评审看到的是半成品分支。
+  const hasProgressCard = (t) => /(?:^|\n)\s*PROGRESS\s*[:：]/i.test(String(t || ''));
+
+  const awaitVerdictText = (meetingId, turnNum, sid, settledText, opts) =>
+    awaitStepText(meetingId, turnNum, sid, settledText, hasVerdict, opts);
+
   // Dormant members must resume through the same provider-native path as a
   // normal Session.  Recreating with only {id,title} silently lost cwd/model/
   // tuning/MCP and was a major source of workflow-only failures.
@@ -550,6 +636,18 @@ function createLoopEngine(deps) {
         state.currentTurnNum = turnNum;
         state.stepAttempt = 0;
 
+        // 工作位这一步也可能被 idle timer 提前结算（它跑测试时转录同样是静默的）。
+        // 不等它把 PROGRESS 交出来就派审查，评审看到的会是还在改的半成品分支。
+        //
+        // 但这里的等待预算比评审那边小一个量级，理由是两边的性质不同：
+        //   评审的裁决是闸门必需品，拿不到就没法判 —— 值得等满。
+        //   工作位的 PROGRESS 只是给人看的汇报，缺了不影响流程正确性 ——
+        //   万一它就是没按合同输出，不该让每一轮都白等一分钟。
+        // 10 秒足以跨过一次工具调用造成的静默，这才是这个等待真正要解决的问题。
+        await awaitStepText(meetingId, turnNum, sidOf(meeting, builderId),
+          textFrom(bRes.results, sidOf(meeting, builderId)), hasProgressCard,
+          { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
+
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
         state.currentStep = 'reviewer'; state.lastError = null;
         if (!persistOrPause()) break;
@@ -606,7 +704,36 @@ function createLoopEngine(deps) {
           break;
         }
 
-        const reviews = reviewerIds.map((rid) => { const sid = sidOf(meeting, rid); return { from: labelOf(meeting, rid), verdict: LC.parseVerdict(textFrom(rRes.results, sid)), raw: textFrom(rRes.results, sid) }; });
+        // 结算文本可能是 idle timer 提前触发时抓到的开场白（见上方 awaitVerdictText 注释）。
+        // 判裁决前先等文本真的不再增长，避免把「还在验证」误读成「没给裁决」。
+        const verdictTurnNum = rRes.turnNum || turnNum;
+        const reviews = [];
+        for (const rid of reviewerIds) {
+          const sid = sidOf(meeting, rid);
+          const raw = await awaitVerdictText(meetingId, verdictTurnNum, sid, textFrom(rRes.results, sid), {
+            isAborted: () => !!entry.abort,
+          });
+          reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
+        }
+        // 评审席位根本没能力干活（额度用尽 / 被限流 / 掉登录），不是「答了但没给裁决」。
+        // 这两者对用户的意义完全不同：前者换个人就好，后者才是任务本身的问题。
+        // 不区分的话，引擎会把它当 fail 再派工作位重做 —— 而工作位每轮都只能回答
+        // 「阻断项是评审没出裁决，我改不了」，白烧满 3 轮，最后报「返工用尽」，
+        // 维护者看到的却是「任务太难」。实测就是这么烧掉两轮的。
+        const unavailable = reviews.filter(r => !r.verdict && LC.looksUnavailable(r.raw));
+        if (unavailable.length === reviews.length && reviews.length > 0) {
+          state.status = 'reviewer_unavailable';
+          state.currentStep = null;
+          state.lastError = {
+            stage: 'reviewer', reason: 'reviewer_unavailable',
+            detail: (unavailable[0].raw || '').slice(0, 200), at: Date.now(),
+          };
+          logger.log('[loop-engine] reviewer unavailable, stopping instead of burning rounds: '
+            + (unavailable[0].raw || '').slice(0, 120));
+          persistOrPause();
+          break;
+        }
+
         const merge = LC.mergeVerdicts(reviews); prevMerge = merge;
         LC.advanceLoopState(state, merge, config, Date.now());
         state.currentStep = null; state.currentTurnNum = null; state.stepAttempt = 0; state.lastError = null;
@@ -690,7 +817,13 @@ function createLoopEngine(deps) {
     } catch (e) { logger.log('[loop-engine] resumePending err: ' + (e && e.message)); }
   }
 
-  return { getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateSerial };
+  return {
+    getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateSerial,
+    // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
+    // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
+    __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,
+              persistedTurnText, bestTextSoFar, VERDICT_QUIET_MS, VERDICT_WAIT_CAP_MS },
+  };
 }
 
 module.exports = { createLoopEngine };

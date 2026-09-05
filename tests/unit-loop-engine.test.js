@@ -23,6 +23,9 @@ function mk(opts) {
   const turnCalls = [];
   let reportHtml = null;
   const deps = {
+    // 单测注入毫秒级等待预算：mock 出来的 agent 不会补文本，
+    // 用生产默认值的话每一步都要白等满静默期（实测让本文件从秒级涨到 1 分 53 秒）。
+    stepTextWait: { verdictQuietMs: 20, verdictCapMs: 200, builderQuietMs: 20, builderCapMs: 200 },
     getDispatcher: () => ({
       dispatchGroupChatTurn: async (mid, args) => {
         turnCalls.push(args);
@@ -84,6 +87,9 @@ function mkSerial(opts = {}) {
     },
   };
   const deps = {
+    // 单测注入毫秒级等待预算：mock 出来的 agent 不会补文本，
+    // 用生产默认值的话每一步都要白等满静默期（实测让本文件从秒级涨到 1 分 53 秒）。
+    stepTextWait: { verdictQuietMs: 20, verdictCapMs: 200, builderQuietMs: 20, builderCapMs: 200 },
     getDispatcher: () => dispatcher,
     getOrchestrator: () => ({
       getState: () => typeof opts.orchestratorState === 'function'

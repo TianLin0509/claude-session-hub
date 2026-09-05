@@ -153,6 +153,79 @@ test('只认开发场景的群聊', () => {
   assert.strictEqual(DP.isDevMeeting(null), false);
 });
 
+// ── C 层：真实用户会遇到的「停了」，必须分得清是哪一种 ────────────────────
+test('四种停止原因显示成四种不同说法（以前全叫「已停止」，等于什么都没说）', () => {
+  const mk = (status, round) => DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status, round: round || 0 } },
+  });
+  assert.strictEqual(mk('stopped_user').label, '你已停止');
+  assert.strictEqual(mk('stopped_max', 3).label, '返工用尽，等你决定');
+  assert.strictEqual(mk('stopped_deadline').label, '超时停止');
+  assert.strictEqual(mk('stopped_stuck').label, '卡住了，没进展');
+  assert.strictEqual(mk('paused').label, '出错暂停，等你处理');
+  assert.strictEqual(mk('done').label, '已通过');
+  // 四种「坏」状态都得是刺眼的色调，不能混在普通灰色里被忽略
+  for (const s of ['stopped_max', 'stopped_deadline', 'stopped_stuck', 'paused']) {
+    assert.strictEqual(mk(s, 3).tone, 'bad', s + ' 应该显眼');
+  }
+  // 用户自己停的不算故障，不该报红
+  assert.strictEqual(mk('stopped_user').tone, 'idle');
+});
+
+test('引擎源码里出现的每个 status，看板都必须认识（新增状态忘登记就会红）', () => {
+  // 这条守的是「悄悄退化」：以后有人给引擎加了新终态却没在看板登记，
+  // 用户看到的会是含糊的「已停止」而不是真实原因。让测试先红，别让用户去猜。
+  const fs2 = require('fs');
+  const path2 = require('path');
+  const REPO2 = path2.resolve(__dirname, '..');
+  const srcs = [
+    fs2.readFileSync(path2.join(REPO2, 'main/groupchat/loop-engine.js'), 'utf-8'),
+    fs2.readFileSync(path2.join(REPO2, 'renderer/loop-workflow.js'), 'utf-8'),
+  ].join('\n');
+
+  // 只认「写进循环状态」的那些：state.status = '...'（引擎）与 status: '...'（loop-workflow
+  // 构造 loopState 的地方）。dispatch 结果自己的 status（completed/errored 等）不在此列。
+  const found = new Set();
+  for (const m of srcs.matchAll(/state\.status\s*=\s*'([a-z_]+)'/g)) found.add(m[1]);
+  for (const m of srcs.matchAll(/\bstatus:\s*'(done|running|stopped_[a-z_]+|paused)'/g)) found.add(m[1]);
+  // running 由 deriveStage 单独处理（映射到工作位/合并位两种进行中）
+  found.delete('running');
+  assert(found.size >= 5, '应该抠到多个终态，实得 ' + [...found].join(','));
+
+  const known = new Set(Object.keys(DP.STATUS_TO_STAGE));
+  const missing = [...found].filter(s => !known.has(s));
+  assert.deepStrictEqual(missing, [],
+    '引擎会写这些 status 但看板没登记，用户会看到含糊的「已停止」：' + missing.join(', '));
+
+  // 反向：登记表里每个目标 stage 都得真实存在且有说法
+  for (const [status, key] of Object.entries(DP.STATUS_TO_STAGE)) {
+    assert(DP.STAGE[key], status + ' 指向了不存在的 stage: ' + key);
+    assert(DP.STAGE[key].label && DP.STAGE[key].label.length > 1, key + ' 缺少可读的 label');
+  }
+});
+
+test('认不出的新状态回落到「已停止」，不冒充「返工用尽」', () => {
+  const s = DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status: 'some_future_status', round: 1 } },
+  });
+  assert.strictEqual(s.key, 'stopped', '未知状态不该被猜成别的具体原因');
+  assert(s.label);
+});
+
+test('席位不可用有专属说法，不跟「返工用尽」混为一谈', () => {
+  const s = DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status: 'reviewer_unavailable', round: 1 } },
+  });
+  assert.strictEqual(s.key, 'noReviewer');
+  assert(/额度|登录/.test(s.label), '要说清是额度还是登录问题，别只说「失败」：' + s.label);
+  assert.strictEqual(s.tone, 'bad');
+  // 和「返工用尽」必须是两种不同说法 —— 前者换个人就好，后者是任务本身的问题
+  const exhausted = DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status: 'stopped_max', round: 3 } },
+  });
+  assert.notStrictEqual(s.label, exhausted.label);
+});
+
 test('闲置时长能算出来', () => {
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 5 * 60000 }), '5 分钟前');
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 3 * 3600000 }), '3 小时前');

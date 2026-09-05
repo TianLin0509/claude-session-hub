@@ -588,6 +588,24 @@ async function readLastAssistantMessageFromClaudeTranscript(transcriptPath) {
 
 const CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 
+// 扫描自愈参数：单个 rollout 的绑定尝试最多占用多久，以及整轮扫描卡多久算「焊死」。
+// 两者都必须有界 —— 无界的那个版本实测会让绑定机制整体静默停摆。
+const TRY_BIND_TIMEOUT_MS = 15_000;
+const SCAN_STUCK_RESET_MS = 45_000;
+
+function withTimeout(promise, ms) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => { if (timer) clearTimeout(timer); }),
+    new Promise((_, reject) => {
+      // 刻意不 unref：被包住的那个 promise 如果永远不 resolve，它自己是不保活事件循环的，
+      // 定时器再 unref 掉，超时就永远不会触发 —— 这个保护会变成摆设（实测踩到过）。
+      // 计时器在 promise 落定时立即清除，所以最坏也只多留 ms 毫秒。
+      timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 class CodexTap extends EventEmitter {
   /**
    * @param {object} [opts]
@@ -646,7 +664,7 @@ class CodexTap extends EventEmitter {
         }
         if (bound) {
           this._pending.delete(hubSessionId);
-          this._seen.add(transcriptPath);
+          this._markSeen(transcriptPath, 'bound_by_transcript_path');
           return;
         }
         if (!codexSid) return;
@@ -853,8 +871,19 @@ class CodexTap extends EventEmitter {
 
   async _scanOnce() {
     if (this._pending.size === 0) return;
-    if (this._scanning) return; // skip if previous scan is still running
+    // `_scanning` 是个只进不出的闸：一次扫描里任何一个 await 挂住，
+    // 后续每一轮都会在这里直接 return，**整个绑定机制从此静默失效**，
+    // 而 pending 里的会话会永远等下去（用户看到的就是「Codex 答了，Hub 一直转」）。
+    // 实测见过：扫描跑了 32 轮后停住，17 秒后新会话的 rollout 出生，再没人看它一眼。
+    // 所以这里不能只看布尔量，还要看它卡了多久 —— 超时就强行放行并留证。
+    if (this._scanning) {
+      const stuckMs = Date.now() - (this._scanStartedAt || 0);
+      if (stuckMs < SCAN_STUCK_RESET_MS) return;
+      console.warn(`[codex-tap] scan stuck for ${Math.round(stuckMs / 1000)}s, force-resetting`
+        + ` (pending=${this._pending.size}) —— 上一轮扫描没能结束，绑定已停摆，强制重来`);
+    }
     this._scanning = true;
+    this._scanStartedAt = Date.now();
     try {
       for (const dir of this._candidateDirs()) {
         let files;
@@ -863,11 +892,19 @@ class CodexTap extends EventEmitter {
           if (!fname.startsWith('rollout-') || !fname.endsWith('.jsonl')) continue;
           const full = path.join(dir, fname);
           if (this._seen.has(full)) continue;
-          await this._tryBind(full);
+          // 单个文件卡住不能拖垮整轮扫描 —— 这正是上面那个闸被焊死的成因。
+          try {
+            await withTimeout(this._tryBind(full), TRY_BIND_TIMEOUT_MS);
+          } catch (e) {
+            if (process.env.CODEX_TAP_DEBUG) {
+              console.warn(`[codex-tap][bind-timeout] ${fname} :: ${e && e.message}`);
+            }
+          }
         }
       }
     } finally {
       this._scanning = false;
+      this._scanStartedAt = 0;
     }
   }
 
@@ -878,7 +915,7 @@ class CodexTap extends EventEmitter {
     const bound = await this._bindRolloutToHubSession(hubSessionId, rolloutPath, codexSid);
     if (!bound) return false;
     this._pending.delete(hubSessionId);
-    this._seen.add(rolloutPath);
+    this._markSeen(rolloutPath, 'bound_by_codex_sid');
     return true;
   }
 
@@ -914,17 +951,52 @@ class CodexTap extends EventEmitter {
     return best;
   }
 
+  /**
+   * 绑定被拒时留一行取证日志。
+   *
+   * 为什么必须有：`_tryBind` 原先在每条拒绝路径上都是静默 return，
+   * 于是「Codex 明明答了、Hub 却一直转」这个既有问题只能靠猜
+   * （见 docs/bug-report/20260903-codex-groupchat-first-turn-not-bound.md，
+   * 那份取证把七种怀疑逐个排除后，结论就是"缺拒因日志，查不下去"）。
+   * 绑不上的代价很实在：dispatcher 判定没送到 → 整条 prompt 重发 →
+   * 白烧一轮 token，而那一轮的答案 Hub 仍然收不走，循环就此挂住。
+   *
+   * 只在 CODEX_TAP_DEBUG=1 时输出，避免正常运行刷屏。
+   */
+  /**
+   * 把 rollout 加进「永久跳过」名单。
+   *
+   * 这是最危险的一步：`_scanOnce` 里 `if (this._seen.has(full)) continue;`
+   * 是无条件的，进了名单的文件在本进程生命周期内**再也不会被检查**。
+   * 如果一个刚出生的 rollout 在会话注册之前被扫到并拉黑，那个会话就永远绑不上 ——
+   * 表现就是「Codex 明明答了、Hub 一直转」。所以每次拉黑都要留证。
+   */
+  _markSeen(rolloutPath, why) {
+    this._seen.add(rolloutPath);
+    if (!process.env.CODEX_TAP_DEBUG) return;
+    const tail = String(rolloutPath).split(/[\/]/).pop();
+    console.warn(`[codex-tap][seen-add] ${why} :: ${tail} :: pending=${this._pending.size}`);
+  }
+
+  _bindReject(rolloutPath, reason, detail) {
+    if (!process.env.CODEX_TAP_DEBUG) return;
+    const tail = String(rolloutPath).split(/[\\/]/).pop();
+    console.warn(`[codex-tap][bind-reject] ${reason} :: ${tail}`
+      + (detail ? ` :: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''));
+  }
+
   async _tryBind(rolloutPath) {
     // readCodexRolloutMeta reads only a bounded first-line prefix. A malformed
     // file can therefore never turn binding into an unbounded string load.
     const meta = readCodexRolloutMeta(rolloutPath);
-    if (!meta) return; // file still flushing; retry next scan
+    if (!meta) { this._bindReject(rolloutPath, 'no_meta（首行还没 flush 完，下次扫描重试）'); return; }
 
     // Hub sessions own top-level Codex TUI threads. Codex subagents write
     // sibling rollout files in the same cwd and often within the same second;
     // accepting one here permanently cross-wires card history and PTY state.
     if (!isCodexTopLevelRolloutMeta(meta)) {
-      this._seen.add(rolloutPath);
+      this._bindReject(rolloutPath, 'subagent（不是顶层线程，永久跳过）');
+      this._markSeen(rolloutPath, 'subagent');
       return;
     }
 
@@ -942,8 +1014,12 @@ class CodexTap extends EventEmitter {
     const candidates = [];
     let normalizedUserMessages = null;
     let sawMatchingPendingCwd = false;
+    const rejects = [];
     for (const [hubSessionId, entry] of this._pending) {
-      if (entry.cwd !== metaCwd) continue;
+      if (entry.cwd !== metaCwd) {
+        rejects.push({ sid: hubSessionId.slice(0, 8), why: 'cwd_mismatch', want: metaCwd, got: entry.cwd });
+        continue;
+      }
       sawMatchingPendingCwd = true;
       let delta = null;
       if (effectiveTs != null) {
@@ -959,14 +1035,28 @@ class CodexTap extends EventEmitter {
       if (delta == null && effectiveTs == null && candidates.length === 0) {
         delta = 0;
       }
-      if (delta == null) continue;
+      if (delta == null) {
+        // 最常见的一种：rollout 比会话注册早太多（codex 一起来就写文件，
+        // Hub 要等 PTY 就绪才注册）。机器一忙这个间隔就会超过 -10s 下界。
+        rejects.push({ sid: hubSessionId.slice(0, 8), why: 'out_of_time_window',
+          deltaSec: effectiveTs != null ? ((effectiveTs - entry.spawnTime) / 1000).toFixed(1) : 'n/a',
+          window: '[-10s, +300s]' });
+        continue;
+      }
       if (entry.requirePromptMatch) {
-        if (!entry.expectedPrompt) continue;
+        if (!entry.expectedPrompt) {
+          rejects.push({ sid: hubSessionId.slice(0, 8), why: 'no_expected_prompt' });
+          continue;
+        }
         if (normalizedUserMessages === null) {
           normalizedUserMessages = (await this._readUserMessageEvents(rolloutPath))
             .map(ev => normalizePromptForCompare(ev.text));
         }
-        if (!normalizedUserMessages.some(msg => codexPromptMatchesExpected(msg, entry.expectedPrompt))) continue;
+        if (!normalizedUserMessages.some(msg => codexPromptMatchesExpected(msg, entry.expectedPrompt))) {
+          rejects.push({ sid: hubSessionId.slice(0, 8), why: 'prompt_fingerprint_mismatch',
+            userMsgs: normalizedUserMessages.length });
+          continue;
+        }
       }
       candidates.push({ hubSessionId, entry, delta });
     }
@@ -992,6 +1082,8 @@ class CodexTap extends EventEmitter {
       }
     }
     if (!best) {
+      this._bindReject(rolloutPath, 'no_candidate（本轮没选出会话）',
+        { pending: this._pending.size, sawMatchingPendingCwd, rejects: rejects.slice(0, 4) });
       if (sawMatchingPendingCwd) {
         // Do not mark same-cwd old rollout files as permanently seen while a
         // pending Codex session exists. A resumed CLI may append to one of
@@ -999,11 +1091,11 @@ class CodexTap extends EventEmitter {
         return;
       }
       // Rollout outside any pending window — mark seen to skip on future scans.
-      this._seen.add(rolloutPath);
+      this._markSeen(rolloutPath, 'no_matching_pending_cwd');
       return;
     }
 
-    this._seen.add(rolloutPath);
+    this._markSeen(rolloutPath, 'bound_ok');
     this._pending.delete(best.hubSessionId);
     await this._bindRolloutToHubSession(best.hubSessionId, rolloutPath);
   }
@@ -1015,7 +1107,7 @@ class CodexTap extends EventEmitter {
     const liveBoundaryAt = Number(pending && pending.spawnTime) || Date.now();
     const meta = readCodexRolloutMeta(rolloutPath);
     if (!isCodexTopLevelRolloutMeta(meta)) {
-      this._seen.add(rolloutPath);
+      this._markSeen(rolloutPath, 'subagent_on_bind');
       return false;
     }
     // The SID is the resume authority. A valid top-level rollout belonging to
