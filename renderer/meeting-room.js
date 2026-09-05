@@ -875,6 +875,24 @@ if (typeof document !== 'undefined') (function () {
       },
     ],
     dev: [
+      // 前两顶是流水线角色，和 dev-task 工作流的两步一一对应。
+      // 后面那些是讨论型角色，用于不跑流程、只想让几个 AI 议一议的时候。
+      {
+        id: 'worker',
+        icon: '🛠️',
+        label: '工作位',
+        short: '工作',
+        duty: '读本仓库 .agents/AUTHOR.md 按它工作：开自己的 worktree、实现、自测、说人话。只做当前这一个任务，不顺手改别的。',
+        format: 'PROGRESS / VERIFIED / RISK / REPORT',
+      },
+      {
+        id: 'merger',
+        icon: '⚖️',
+        label: '合并位',
+        short: '合并',
+        duty: '读本仓库 .agents/MERGER.md 按它工作：先确认主干有没有被别人推进过，亲自跑验证，PASS 才合。不审自己写的分支。',
+        format: 'RESULT / BLOCKERS / VERIFIED / NEXT',
+      },
       {
         id: 'requirements',
         icon: '🧭',

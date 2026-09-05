@@ -1,0 +1,28 @@
+{
+  "$comment": "项目专属配置。AI HUB 的群聊底座是通用的，对项目一无所知——所有项目差异都读这个文件。新项目接入只要放一份这个文件，不用改 Hub。",
+
+  "name": "AI HUB",
+  "trunk": "master",
+
+  "$comment_test": "合并脚本亲自跑这些，不采信 Agent 的说法。退出码非 0 就不合。运行器自动发现并执行全部 unit-*.test.js。",
+  "test": [
+    "node scripts/run_unit_tests.js"
+  ],
+
+  "$comment_afterMerge": "合并成功后跑。项目专属产物在这里出（例如 SuperRAN 在这一步打给内网的 zip）。AI HUB 没有这种产物，留空。占位符：{branch} {sha}",
+  "afterMerge": [],
+
+  "contracts": {
+    "author": ".agents/AUTHOR.md",
+    "merger": ".agents/MERGER.md"
+  },
+
+  "worktreeRoot": "C:/AIWork",
+
+  "$comment_notes": "worktree 里禁止 npm install/ci/dist——node_modules 是指向生产依赖的 junction，装包会写坏它。",
+  "notes": [
+    "worktree 的 node_modules 用 junction 复用主目录，禁止在 worktree 里装包",
+    "改了 Hub 功能必须同一提交里升版本号，3 处同步，unit-hub-version-sync.test.js 守着",
+    "不碰生产 Hub 进程，验证一律用隔离数据目录 + 独立 CDP 端口"
+  ]
+}

@@ -1,2 +1,7 @@
 # PTY 原始字节夹具：含 ESC/CR 控制字符，任何行尾转换都会让它不再等于真实终端输出
 tests/fixtures/*.txt -text -diff
+
+# git 钩子必须是 LF。Windows 上 core.autocrlf 会把它们转成 CRLF，
+# 于是 `#!/bin/sh\r` 变成坏解释器，钩子静默失效 —— 而钩子静默失效
+# 恰恰是最危险的失败方式（你以为装了闸门，其实门框是空的）。
+.githooks/* text eol=lf

@@ -1,0 +1,45 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# 拒绝在「主工作目录」提交。
+#
+# 为什么：C:\Users\lintian\claude-session-hub 就是生产 Hub 跑的那个目录，
+#         在这里改代码等于直接改生产，哪怕不 commit，下次重启也生效。
+#         多个 agent 同时在这里动手 = 互相覆盖（本仓库 30 天 142 次提交，
+#         此前一直没有任何闸门）。
+#
+# 怎么办：去开自己的 worktree，一个任务一个：
+#           git worktree add C:/AIWork/<日期>-<任务>-<席位> -b <分支名> master
+#           cmd /c mklink /J C:\AIWork\<同上>\node_modules C:\Users\lintian\claude-session-hub\node_modules
+#         注意：worktree 里禁止 npm install / ci / dist（junction 指向生产依赖）。
+#
+# 放行：HUB_ALLOW_MAIN_COMMIT=1 —— 只给合并脚本和紧急修复用。
+#       例外（按仓库 CLAUDE.md）：纯文档、用户明说直接改主干、紧急修复。
+# ─────────────────────────────────────────────────────────────────────────────
+
+[ "$HUB_ALLOW_MAIN_COMMIT" = "1" ] && exit 0
+
+main_wt=$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')
+this_wt=$(git rev-parse --show-toplevel 2>/dev/null)
+
+[ -z "$main_wt" ] || [ -z "$this_wt" ] && exit 0
+
+norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr '\\' '/'; }
+
+if [ "$(norm "$main_wt")" = "$(norm "$this_wt")" ]; then
+  echo "" >&2
+  echo "  ✗ 这里是主工作目录，不能直接提交。" >&2
+  echo "" >&2
+  echo "    $this_wt 就是生产 Hub 运行的目录。" >&2
+  echo "    在这里提交等于直接改生产，也是多 agent 互相覆盖的主要来源。" >&2
+  echo "" >&2
+  echo "  请开一个属于本任务的 worktree：" >&2
+  echo "" >&2
+  echo "    git worktree add C:/AIWork/<日期>-<任务>-<席位> -b <分支名> master" >&2
+  echo "" >&2
+  echo "  然后把改动挪过去再提交。" >&2
+  echo "  （合并脚本走 HUB_ALLOW_MAIN_COMMIT=1 放行，不受此限制。）" >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0

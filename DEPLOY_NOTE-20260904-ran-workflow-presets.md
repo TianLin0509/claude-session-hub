@@ -1,5 +1,12 @@
 # 2026-09-04 · v1.6.54 · 串行工作流加两个 RAN 预设
 
+> **已被取代（2026-09-05, v1.6.62）**：`ran-implement` / `ran-converge` 两个预设已合并成
+> 单个通用的 `dev-task`「开发任务」。内网评审不再是流程里的一个阶段，而是两个独立任务
+> 之间的空隙 —— 系统不需要知道内网这回事。
+> 配套的 `tests/ran-workflow-cdp-e2e.js` 已删除，由 `tests/dev-scene-cdp-e2e.js` 取代。
+> 见 `DEPLOY_NOTE-20260905-dev-scene.md`。
+
+
 ## 为什么是两个不是一个
 
 SuperRAN 的流程被内网评审天然切成两半：内网那一趟约 20 分钟且必须人工操作，

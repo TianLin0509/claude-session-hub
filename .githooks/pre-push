@@ -1,0 +1,45 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# 拒绝直接推送主干分支。
+#
+# 为什么：防覆盖靠两件事 —— ① 各干各的（worktree 隔离）② 一次只落一个（单一入口）。
+#         pre-commit 管①，这个钩子管②。
+#         因为所有 worktree 共用同一个 .git，这一个钩子对全部 worktree 同时生效，
+#         这正是本地闸门能成立、不必依赖 GitHub 分支保护的原因。
+#
+# 谁能推：只有合并脚本（scripts/merge_task.py），它带 HUB_ALLOW_TRUNK_PUSH=1。
+#         合并脚本会先 rebase、亲自跑一遍测试，通过了才合。
+#
+# 推特性分支不受影响，随便推。
+# ─────────────────────────────────────────────────────────────────────────────
+
+[ "$HUB_ALLOW_TRUNK_PUSH" = "1" ] && exit 0
+
+blocked=""
+trunk=$(python -c "import json; print(json.load(open('.agents/project.json', encoding='utf-8')).get('trunk') or 'master')" 2>/dev/null)
+[ -n "$trunk" ] || trunk="master"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$remote_ref" ] && continue
+  case "$remote_ref" in
+    refs/heads/"$trunk")
+      blocked="${blocked}${remote_ref#refs/heads/} "
+      ;;
+  esac
+done
+
+if [ -n "$blocked" ]; then
+  echo "" >&2
+  echo "  ✗ 不能直接推主干：$blocked" >&2
+  echo "" >&2
+  echo "    主干只有一个入口 —— 合并脚本。它会先 rebase、亲自跑测试，过了才合。" >&2
+  echo "    agent 自己推主干，等于绕开了唯一那道验证。" >&2
+  echo "" >&2
+  echo "  正确做法：把你的分支推上去，交给合并位审：" >&2
+  echo "" >&2
+  echo "    git push -u origin \$(git branch --show-current)" >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0

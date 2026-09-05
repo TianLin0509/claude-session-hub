@@ -459,6 +459,10 @@ function createLoopEngine(deps) {
       const stepConfigs = Array.isArray(wf.stepConfigs) ? wf.stepConfigs : [];
       const builderRolePrompt = (stepConfigs[0] && stepConfigs[0].prompt) || '';
       const reviewerRolePrompt = (stepConfigs[1] && stepConfigs[1].prompt) || '';
+      const builderTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
+        Number(stepConfigs[0] && stepConfigs[0].timeoutMs) || 10 * 60_000));
+      const reviewerTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
+        Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 5 * 60_000));
 
       const dispatcher = getDispatcher();
       const progress = (extra) => {
@@ -505,7 +509,7 @@ function createLoopEngine(deps) {
                 reuseTurnNum: state.currentTurnNum || null,
                 appendUserMessage: !state.currentTurnNum,
                 dispatchMode: 'serial',
-                turnTimeoutMs: 10 * 60 * 1000,
+                turnTimeoutMs: builderTimeoutMs,
                 allowActiveExtend: false,
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
@@ -568,7 +572,7 @@ function createLoopEngine(deps) {
                 reuseTurnNum: turnNum,
                 appendUserMessage: false,
                 dispatchMode: 'serial',
-                turnTimeoutMs: 5 * 60 * 1000,
+                turnTimeoutMs: reviewerTimeoutMs,
                 allowActiveExtend: false,
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },

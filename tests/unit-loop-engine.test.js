@@ -173,6 +173,20 @@ async function main() {
     assert(/重点验证边界输入/.test(m.turnCalls[1].userInput));
   });
 
+  await t('循环步骤使用模板配置的独立超时，不截断长实现与全量审查', async () => {
+    const m = mk({
+      stepConfigs: [
+        { prompt: '实现', timeoutMs: 30 * 60 * 1000 },
+        { prompt: '审查', timeoutMs: 25 * 60 * 1000 },
+      ],
+    });
+    const eng = createLoopEngine(m.deps);
+    const st = await eng.runLoop('mtg', 'g', null);
+    assert.strictEqual(st.status, 'done');
+    assert.strictEqual(m.turnCalls[0].turnTimeoutMs, 30 * 60 * 1000);
+    assert.strictEqual(m.turnCalls[1].turnTimeoutMs, 25 * 60 * 1000);
+  });
+
   await t('步骤超时/失败进入 paused，不能残留 running', async () => {
     const m = mk({ dispatch: async () => ({ status: 'timeout', reason: 'builder_timeout' }) });
     const eng = createLoopEngine(m.deps);

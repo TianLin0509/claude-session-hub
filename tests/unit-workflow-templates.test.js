@@ -21,44 +21,46 @@ test('内置 4 个语义模板', () => {
   assert.strictEqual(WT.TEMPLATES.length, 4);
 });
 
-test('串行工作流提供 7 个任务预设按钮', () => {
-  assert.strictEqual(WT.TASK_PRESETS.length, 7);
+test('串行工作流提供 6 个任务预设按钮', () => {
+  assert.strictEqual(WT.TASK_PRESETS.length, 6);
   assert.deepStrictEqual(WT.TASK_PRESETS.map(item => item.name),
-    ['续跑', '审查', '功能', '修 Bug', '调研', 'RAN 实现', 'RAN 收口']);
+    ['续跑', '审查', '功能', '修 Bug', '调研', '开发任务']);
 });
 
-test('RAN 实现是单步，跑完就停等内网', () => {
-  const c = WT.createTemplateConfig('ran-implement', members);
-  assert(c && c.steps.length === 1 && c.stepConfigs.length === 1);
-  assert(c.loop.enabled === false);
-  assert(c.stepConfigs[0].prompt.includes('AUTHOR.md'));
-  assert(/停/.test(c.stepConfigs[0].prompt));
-});
-
-test('RAN 收口是改↔审的两步循环，审的那步读 MERGER.md 并给 RESULT', () => {
-  const c = WT.createTemplateConfig('ran-converge', members);
-  assert(c && c.steps.length === 2);
+test('开发任务是工作位↔合并位的两步循环，两步必须落到不同成员', () => {
+  const c = WT.createTemplateConfig('dev-task', members);
+  assert(c && c.steps.length === 2 && c.stepConfigs.length === 2);
   assert.deepStrictEqual(c.steps[0], ['m1']);
-  assert.deepStrictEqual(c.steps[1], ['m2']);       // 两步必须落到不同成员，否则自审自合
+  assert.deepStrictEqual(c.steps[1], ['m2']);       // 落到同一个成员就成了自审自合
   assert(c.loop.enabled === true && c.loop.maxRounds === 3);
-  assert(c.stepConfigs[0].prompt.includes('AUTHOR.md'));
-  assert(c.stepConfigs[1].prompt.includes('MERGER.md'));
+  assert(c.stepConfigs[0].prompt.includes('.agents/AUTHOR.md'));
+  assert(c.stepConfigs[1].prompt.includes('.agents/MERGER.md'));
   assert(c.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
+  assert(!/动过就要求先 rebase/.test(c.stepConfigs[1].prompt), '主干前进不能无条件制造 rebase 返工');
+  assert(/冲突或集成测试失败/.test(c.stepConfigs[1].prompt), '只有真实集成失败才要求工作位修复');
 });
 
-test('RAN 预设带按步超时，且能穿过归一化（引擎才读得到）', () => {
+test('开发预设必须通用：prompt 里不出现项目名或绝对路径', () => {
+  // 这是「Hub 底座通用、项目差异沉淀在项目自己仓库里」的守门测试。
+  // 一旦有人往 prompt 里写死 C:\... 或某个项目名，这条会红。
+  const c = WT.createTemplateConfig('dev-task', members);
+  for (const sc of c.stepConfigs) {
+    assert(!/[A-Za-z]:\\/.test(sc.prompt), '不许出现 Windows 绝对路径：' + sc.prompt);
+    assert(!/SuperRAN|superran/.test(sc.prompt), '不许写死项目名：' + sc.prompt);
+    assert(sc.prompt.includes('.agents/'), '必须指向仓库内相对路径的合同');
+  }
+});
+
+test('开发预设带按步超时，且能穿过归一化（引擎才读得到）', () => {
   // loop-engine: Math.max(60_000, Math.min(30*60_000, stepConfigs[i].timeoutMs || 10*60_000))
   // normalizeStepConfigs 以前只留 name/prompt，模板填的 timeoutMs 会被吃掉，引擎永远读到默认值。
-  const impl = WT.createTemplateConfig('ran-implement', members);
-  assert.strictEqual(impl.stepConfigs[0].timeoutMs, 30 * 60 * 1000);
-  const conv = WT.createTemplateConfig('ran-converge', members);
-  assert(conv.stepConfigs.every(s => s.timeoutMs === 25 * 60 * 1000));
+  const c = WT.createTemplateConfig('dev-task', members);
+  assert.strictEqual(c.stepConfigs[0].timeoutMs, 30 * 60 * 1000);
+  assert.strictEqual(c.stepConfigs[1].timeoutMs, 25 * 60 * 1000);
 
-  for (const c of [impl, conv]) {
-    const norm = WT.normalizeStepConfigs(c.steps, c.stepConfigs);
-    assert(norm.every((s, i) => s.timeoutMs === c.stepConfigs[i].timeoutMs),
-      'timeoutMs 必须在归一化后保留');
-  }
+  const norm = WT.normalizeStepConfigs(c.steps, c.stepConfigs);
+  assert(norm.every((s, i) => s.timeoutMs === c.stepConfigs[i].timeoutMs),
+    'timeoutMs 必须在归一化后保留');
 });
 
 test('非法 timeoutMs 不写进归一化结果，避免污染引擎的 clamp', () => {
@@ -67,13 +69,14 @@ test('非法 timeoutMs 不写进归一化结果，避免污染引擎的 clamp', 
   assert(bad.every(s => !('timeoutMs' in s)));
 });
 
-test('RAN 预设只指向合同文件，不在 Hub 里复制流程规则', () => {
-  for (const id of ['ran-implement', 'ran-converge']) {
-    const c = WT.createTemplateConfig(id, members);
-    for (const sc of c.stepConfigs) {
-      assert(sc.prompt.includes('.agents'), id + ' 的 prompt 应指向 .agents 合同');
-    }
+test('开发预设只指向合同文件，不在 Hub 里复制流程规则', () => {
+  const c = WT.createTemplateConfig('dev-task', members);
+  for (const sc of c.stepConfigs) {
+    assert(sc.prompt.includes('.agents'), 'dev-task 的 prompt 应指向 .agents 合同');
   }
+  // prompt 里不该出现具体的流程规则，否则改流程就得回来改 Hub
+  assert(!/worktree add|git push|pytest/.test(c.stepConfigs.map(s => s.prompt).join('\n')),
+    '具体命令应留在合同 .md 里，不要复制进 Hub');
 });
 
 test('根因修复预设联动为诊断、修复、回归三步', () => {
