@@ -75,6 +75,34 @@ test('合同文件真实存在，且与预设指向一致', () => {
   assert(Array.isArray(cfg.test) && cfg.test.length, 'project.json 必须配测试命令，否则闸门是空的');
 });
 
+test('合同里写的四行格式，引擎的解析器真的认（skill ↔ 工作流 ↔ 引擎三方对齐）', () => {
+  // 这是整条链最容易悄悄断掉的地方：
+  //   project-prep skill 教 agent 写什么格式 → 合同 .md 里规定什么格式
+  //   → 合并位真的输出什么 → loop-engine 的 parseVerdict 认不认。
+  // 任何一环措辞漂移，引擎就判不出 PASS，循环会一直空转到轮次上限。
+  // 所以这里直接把合同里的格式抠出来，喂给真正的解析器。
+  const LW = require('../renderer/loop-workflow.js');
+  const merger = read('.agents/MERGER.md');
+
+  // 合同必须写明这四个标签
+  for (const label of ['RESULT:', 'BLOCKERS:', 'VERIFIED:', 'NEXT:']) {
+    assert(merger.includes(label), 'MERGER.md 缺标签 ' + label);
+  }
+
+  // 按合同格式造一份真实输出，解析器必须认出来
+  const passSample = 'RESULT: PASS\nBLOCKERS: 无\nVERIFIED: 跑了 337 个单测全过\nNEXT: 无';
+  const failSample = 'RESULT: FAIL\nBLOCKERS: 边界情况没测\nVERIFIED: 单测有 1 条红\nNEXT: 补测试';
+  assert.strictEqual(LW.parseVerdict(passSample).decision, 'pass', 'PASS 必须被认出，否则循环停不下来');
+  assert.strictEqual(LW.parseVerdict(failSample).decision, 'fail', 'FAIL 必须被认出，否则不会回炉');
+  assert.strictEqual(LW.parseVerdict('我觉得可以合并了'), null, '不按格式就不该瞎猜');
+
+  // 工作位那四行标签也要和合同一致
+  const author = read('.agents/AUTHOR.md');
+  for (const label of ['PROGRESS:', 'VERIFIED:', 'RISK:', 'REPORT:']) {
+    assert(author.includes(label), 'AUTHOR.md 缺标签 ' + label);
+  }
+});
+
 test('闸门齐备：两个钩子 + 合并脚本都在', () => {
   for (const f of ['.githooks/pre-commit', '.githooks/pre-push', 'scripts/merge_task.py']) {
     assert(fs.existsSync(path.join(REPO, f)), '缺文件：' + f);
