@@ -122,6 +122,30 @@ const FAST = { quietMs: 900, capMs: 6000, tickMs: 60 };
     assert.strictEqual(eng.__test.persistedTurnText('m', TURN, ''), '');
   });
 
+  // ── 工作位那一侧：同一个 idle timer 也会提前结算它 ──────────────────────
+  await test('工作位也等：不等它交出 PROGRESS 就派审查，评审看到的是半成品分支', async () => {
+    const BUILDER_PREAMBLE = '我先看一下 calc.py 的现状，然后跑一次测试复现。';
+    const BUILDER_FULL = BUILDER_PREAMBLE + '\n\n'
+      + 'PROGRESS: 给 median 补上空列表检查，改成抛 ValueError\n'
+      + 'VERIFIED: 新增 1 条会红的测试，修复后 7 项全过\nRISK: 无\nREPORT: 无';
+    const eng = fakeEngine([{ at: 0, text: BUILDER_PREAMBLE }, { at: 600, text: BUILDER_FULL }]);
+    const out = await eng.__test.awaitStepText('m', TURN, SID, BUILDER_PREAMBLE,
+      eng.__test.hasProgressCard, FAST);
+    assert(/PROGRESS:/.test(out), '必须等到 PROGRESS 才算这一步说完');
+  });
+
+  await test('两个判据各管各的：有 PROGRESS 不等于有裁决，反之亦然', async () => {
+    const eng = fakeEngine([{ at: 0, text: '' }]);
+    const { hasProgressCard, hasVerdict } = eng.__test;
+    assert.strictEqual(hasProgressCard('PROGRESS: 干完了'), true);
+    assert.strictEqual(hasVerdict('PROGRESS: 干完了'), false, '工作位的卡不能被当成裁决');
+    assert.strictEqual(hasVerdict('RESULT: PASS'), true);
+    assert.strictEqual(hasProgressCard('RESULT: PASS'), false, '裁决不能被当成工作位的卡');
+    assert.strictEqual(hasProgressCard('PROGRESS：全角冒号也认'), true);
+    assert.strictEqual(hasProgressCard(''), false);
+    assert.strictEqual(hasProgressCard(null), false);
+  });
+
   console.log('\n──────────────');
   console.log('通过 ' + pass + ' / 失败 0');
 })().catch((e) => { console.error('失败：' + (e && e.stack || e)); process.exit(1); });

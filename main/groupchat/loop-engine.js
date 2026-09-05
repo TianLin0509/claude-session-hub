@@ -91,14 +91,20 @@ function createLoopEngine(deps) {
     return persisted.length > settled.length ? persisted : settled;
   }
 
-  async function awaitVerdictText(meetingId, turnNum, sid, settledText, opts = {}) {
+  /**
+   * 等这一步真的「说完」。
+   * isDone(text) 给出「已经拿到想要的东西」的判据，拿到就立刻走，不空等；
+   * 拿不到就看文本还长不长 —— 还在长说明 agent 还在干活，继续等。
+   */
+  async function awaitStepText(meetingId, turnNum, sid, settledText, isDone, opts = {}) {
     const quietMs = Number(opts.quietMs) > 0 ? Number(opts.quietMs) : VERDICT_QUIET_MS;
     const capMs = Number(opts.capMs) > 0 ? Number(opts.capMs) : VERDICT_WAIT_CAP_MS;
     const tick = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : 3000;
     const isAborted = typeof opts.isAborted === 'function' ? opts.isAborted : () => false;
+    const done = typeof isDone === 'function' ? isDone : () => true;
 
     let best = bestTextSoFar(meetingId, turnNum, sid, settledText);
-    if (LC.parseVerdict(best)) return best;
+    if (done(best)) return best;
 
     let lastLen = best.length;
     let lastGrowthAt = Date.now();
@@ -110,11 +116,20 @@ function createLoopEngine(deps) {
       if (now.length > lastLen) {
         best = now; lastLen = now.length; lastGrowthAt = Date.now();
       }
-      if (LC.parseVerdict(best)) return best;              // 拿到裁决立刻走，不空等
-      if (Date.now() - lastGrowthAt >= quietMs) break;     // 真的不再输出了
+      if (done(best)) return best;                         // 拿到就走，不空等
+      if (Date.now() - lastGrowthAt >= quietMs) break;      // 真的不再输出了
     }
     return best;
   }
+
+  // 评审：等到能解析出 RESULT 裁决
+  const hasVerdict = (t) => !!LC.parseVerdict(t);
+  // 工作位：等到它按合同交出 PROGRESS 那一行。
+  // 不等的话，引擎会在工作位还在改文件时就把审查派出去 —— 评审看到的是半成品分支。
+  const hasProgressCard = (t) => /(?:^|\n)\s*PROGRESS\s*[:：]/i.test(String(t || ''));
+
+  const awaitVerdictText = (meetingId, turnNum, sid, settledText, opts) =>
+    awaitStepText(meetingId, turnNum, sid, settledText, hasVerdict, opts);
 
   // Dormant members must resume through the same provider-native path as a
   // normal Session.  Recreating with only {id,title} silently lost cwd/model/
@@ -615,6 +630,13 @@ function createLoopEngine(deps) {
         state.currentTurnNum = turnNum;
         state.stepAttempt = 0;
 
+        // 工作位这一步也可能被 idle timer 提前结算（它跑测试时转录同样是静默的）。
+        // 不等它把 PROGRESS 交出来就派审查，评审看到的会是还在改的半成品分支。
+        // 判据拿到就立刻走，所以正常情况下这里几乎不产生额外等待。
+        await awaitStepText(meetingId, turnNum, sidOf(meeting, builderId),
+          textFrom(bRes.results, sidOf(meeting, builderId)), hasProgressCard,
+          { isAborted: () => !!entry.abort });
+
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
         state.currentStep = 'reviewer'; state.lastError = null;
         if (!persistOrPause()) break;
@@ -769,7 +791,8 @@ function createLoopEngine(deps) {
     getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateSerial,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
-    __test: { awaitVerdictText, persistedTurnText, bestTextSoFar, VERDICT_QUIET_MS, VERDICT_WAIT_CAP_MS },
+    __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,
+              persistedTurnText, bestTextSoFar, VERDICT_QUIET_MS, VERDICT_WAIT_CAP_MS },
   };
 }
 
