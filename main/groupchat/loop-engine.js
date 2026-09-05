@@ -67,8 +67,14 @@ function createLoopEngine(deps) {
   //       改在真正需要裁决的这一层等：结算文本与已持久化转录取更长的那个，
   //       解析不出裁决时就继续等——**只要文本还在长就一直等**（说明 agent 还在干活），
   //       连续 QUIET 毫秒不长才认定它是真没给裁决，另设硬上限兜底。
-  const VERDICT_QUIET_MS = 60_000;          // 文本连续这么久不增长 = 真的说完了
-  const VERDICT_WAIT_CAP_MS = 8 * 60_000;   // 硬上限，避免评审卡死时无限等
+  // 等待预算可由 deps 注入 —— 生产用安全的默认值，单测注入毫秒级避免每轮空转。
+  // （不注入的话，mock 出来的 agent 永远不会补文本，每一步都要白等满静默期。）
+  const _w = (deps && deps.stepTextWait) || {};
+  const VERDICT_QUIET_MS = Number(_w.verdictQuietMs) > 0 ? Number(_w.verdictQuietMs) : 60_000;
+  const VERDICT_WAIT_CAP_MS = Number(_w.verdictCapMs) > 0 ? Number(_w.verdictCapMs) : 8 * 60_000;
+  // 工作位的预算小一个量级：PROGRESS 缺了不影响流程正确性，不值得每轮白等一分钟。
+  const BUILDER_QUIET_MS = Number(_w.builderQuietMs) > 0 ? Number(_w.builderQuietMs) : 10_000;
+  const BUILDER_WAIT_CAP_MS = Number(_w.builderCapMs) > 0 ? Number(_w.builderCapMs) : 4 * 60_000;
 
   function persistedTurnText(meetingId, turnNum, sid) {
     if (typeof getOrchestrator !== 'function' || !turnNum || !sid) return '';
@@ -632,10 +638,15 @@ function createLoopEngine(deps) {
 
         // 工作位这一步也可能被 idle timer 提前结算（它跑测试时转录同样是静默的）。
         // 不等它把 PROGRESS 交出来就派审查，评审看到的会是还在改的半成品分支。
-        // 判据拿到就立刻走，所以正常情况下这里几乎不产生额外等待。
+        //
+        // 但这里的等待预算比评审那边小一个量级，理由是两边的性质不同：
+        //   评审的裁决是闸门必需品，拿不到就没法判 —— 值得等满。
+        //   工作位的 PROGRESS 只是给人看的汇报，缺了不影响流程正确性 ——
+        //   万一它就是没按合同输出，不该让每一轮都白等一分钟。
+        // 10 秒足以跨过一次工具调用造成的静默，这才是这个等待真正要解决的问题。
         await awaitStepText(meetingId, turnNum, sidOf(meeting, builderId),
           textFrom(bRes.results, sidOf(meeting, builderId)), hasProgressCard,
-          { isAborted: () => !!entry.abort });
+          { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
 
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
         state.currentStep = 'reviewer'; state.lastError = null;
