@@ -725,8 +725,21 @@ class CodexTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.rolloutPath || null;
   }
 
-  async _readUserMessageEvents(rolloutPath) {
-    if (this._parserService) {
+  /**
+   * 读 rollout 里的用户消息。
+   *
+   * opts.raw = true 时**跳过语义解析服务**，只用本地原样解析。
+   *
+   * 为什么必须能跳过：解析服务会把群聊外壳（「## 规则 / ## 输出 / ## 用户」和结尾的
+   * 「请发言。」）剥掉，只留内层任务文本 —— 用于展示是对的，用于**绑定就是灾难**。
+   * 实测同一个 rollout：本地解析读出 647 字符（与实际发出的 prompt 逐字相同），
+   * 解析服务读出 406 字符。而 notePrompt 记的是 647，
+   * 于是指纹永远对不上，**每一个 codex 群聊会话都必然绑不上**。
+   * 这正是「codex 答完了、Hub 一直转」的真正根因（也解释了为什么离线重放能绑上 ——
+   * 离线走的是本地解析这条路）。
+   */
+  async _readUserMessageEvents(rolloutPath, opts = {}) {
+    if (!opts.raw && this._parserService) {
       try {
         const { turns } = await this._parserService.parse('codex', rolloutPath, { fromTail: false });
         return (turns || []).filter(turn => turn && turn.role === 'user').map(turn => ({
@@ -1111,8 +1124,15 @@ class CodexTap extends EventEmitter {
           continue;
         }
         if (normalizedUserMessages === null) {
-          normalizedUserMessages = (await this._readUserMessageEvents(rolloutPath))
-            .map(ev => normalizePromptForCompare(ev.text));
+          // 绑定要的是「和发出去的那条逐字相同」，所以必须包含原样解析的结果。
+          // 两种都收进来取并集：语义解析的留着兼容旧格式，原样解析的保证保真。
+          const [semantic, raw] = await Promise.all([
+            this._readUserMessageEvents(rolloutPath),
+            this._readUserMessageEvents(rolloutPath, { raw: true }),
+          ]);
+          normalizedUserMessages = [...semantic, ...raw]
+            .map(ev => normalizePromptForCompare(ev.text))
+            .filter(Boolean);
         }
         if (!normalizedUserMessages.some(msg => codexPromptMatchesExpected(msg, entry.expectedPrompt))) {
           rejects.push({ sid: hubSessionId.slice(0, 8), why: 'prompt_fingerprint_mismatch',
@@ -1128,8 +1148,13 @@ class CodexTap extends EventEmitter {
     } else if (candidates.length > 1) {
       const promptCandidates = candidates.filter(c => c.entry.expectedPrompt);
       if (promptCandidates.length === 0) return;
-      const userMessages = normalizedUserMessages
-        || (await this._readUserMessageEvents(rolloutPath)).map(ev => normalizePromptForCompare(ev.text));
+      const userMessages = normalizedUserMessages || await (async () => {
+        const [semantic, raw] = await Promise.all([
+          this._readUserMessageEvents(rolloutPath),
+          this._readUserMessageEvents(rolloutPath, { raw: true }),
+        ]);
+        return [...semantic, ...raw].map(ev => normalizePromptForCompare(ev.text)).filter(Boolean);
+      })();
       if (userMessages.length === 0) return;
       const matched = promptCandidates.filter(c =>
         userMessages.some(msg => codexPromptMatchesExpected(msg, c.entry.expectedPrompt))
