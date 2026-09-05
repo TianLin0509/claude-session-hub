@@ -81,6 +81,33 @@
     ].join('');
   }
 
+  /**
+   * 取每个任务最近的几条发言，用来抠人话卡。
+   *
+   * 看板上「现在第几步、第几轮、闲置多久」是推导出来的，永远准；
+   * 「这一步干了什么」只能读 Agent 申报的四行 —— 那就得看群聊记录。
+   * 拿不到也不影响：推导那半边照常显示，人话那行不出现而已（不显示「暂无」占位）。
+   *
+   * 只取尾部若干条：卡片是每步结束时写的，不需要翻全量记录。
+   */
+  async function fetchLatestMessages(meetings) {
+    const out = {};
+    await Promise.all((meetings || []).map(async (m) => {
+      if (!m || !m.id) return;
+      try {
+        const st = await ipcRenderer.invoke('groupchat:get-state', { meetingId: m.id });
+        const turns = (st && (st.turns || st.messages || st.timeline)) || [];
+        if (!Array.isArray(turns)) return;
+        out[m.id] = turns.slice(-14).map(t => ({
+          text: String((t && (t.text || t.content)) || ''),
+        }));
+      } catch (e) {
+        // 拿不到就算了，推导那部分不受影响
+      }
+    }));
+    return out;
+  }
+
   async function refresh() {
     if (!listEl || state.loading) return;
     state.loading = true;
@@ -102,7 +129,8 @@
       } else {
         // 在跑的排前面，其次是要你处理的，已完成沉底
         const order = { run: 0, bad: 1, warn: 2, idle: 3, ok: 4 };
-        const rows = devs.map(m => DP.boardRow(m, []))
+        const msgsById = await fetchLatestMessages(devs);
+        const rows = devs.map(m => DP.boardRow(m, msgsById[m.id] || []))
           .sort((a, b) => (order[a.stage.tone] ?? 9) - (order[b.stage.tone] ?? 9));
         listEl.innerHTML = rows.map(rowHtml).join('');
         listEl.querySelectorAll('.devb-row').forEach((el) => {
