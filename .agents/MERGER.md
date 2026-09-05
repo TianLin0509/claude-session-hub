@@ -26,7 +26,9 @@ git log --oneline master..origin/master        # 主干比我们多了什么
 git log --oneline origin/master..<分支>        # 这个分支带来什么
 ```
 
-**主干动过，就必须让工作位先 rebase 再重跑测试。** 拿着过期的测试结果判 PASS，等于没审。
+**主干动过，不等于自动打回。** 你必须基于最新主干执行下面的 `--dry-run`，不能拿工作位
+基于旧主干的测试结果判 PASS。只有出现合并冲突或集成测试失败，才把具体证据写进
+`BLOCKERS`，让工作位 rebase 后处理；能干净合入且集成测试全过，就不制造一次无效返工。
 
 ## 二、读改动
 
@@ -59,7 +61,8 @@ python scripts/merge_task.py <分支> --dry-run
 
 ## 四、判定
 
-群里最后原样输出这四行，一个字都别改格式（引擎靠正则认它）：
+群里最后原样输出这四行，一个字都别改格式（引擎靠正则认它）。无论 FAIL，还是 PASS
+后已经完成合并，最终协议都不切换：
 
 ```
 RESULT: PASS 或 FAIL
@@ -71,7 +74,9 @@ NEXT: 无，或下一步建议
 - `VERIFIED` 里写你**真跑过**的东西。没跑就别写。
 - 判 FAIL 时 `BLOCKERS` 必须具体到"改哪里、为什么不行"，让工作位能直接动手。
 
-## 五、PASS 之后才合
+## 五、PASS 之后才合，并在最终四行里交接
+
+先在心里根据 `--dry-run` 和代码审查作出判定；若是 PASS，在发最终消息**之前**执行：
 
 ```bash
 python scripts/merge_task.py <分支>
@@ -79,14 +84,18 @@ python scripts/merge_task.py <分支>
 
 脚本会再跑一遍完整流程并真正合入。它自己带主干推送权限，你不需要也不应该手动 `git push origin master`——那会被 pre-push 挡住。
 
-合完把结果写成人话：
+实际合并也可能因为主干刚被推进、测试新失败或另一个合并正在运行而失败。此时最终必须
+改判 FAIL，并把真实原因放进 `BLOCKERS`。成功后仍输出上节同一套四行，例如：
 
 ```
-PROGRESS: 一句话说清这次合进去了什么
-VERIFIED: 实际跑了什么、什么结果
-RISK: 有什么要注意的；没有写「无」
-REPORT: HTML 报告绝对路径；没有写「无」
+RESULT: PASS
+BLOCKERS: 无
+VERIFIED: dry-run 与正式合并各自实际跑过的验证及结果
+NEXT: 已合并的分支和提交号
 ```
+
+不要改成工作位的 `PROGRESS / RISK / REPORT` 协议；那会让循环引擎无法识别 PASS，已经
+合进主干的任务反而被错误回炉。
 
 ## 六、连着三轮还不过
 

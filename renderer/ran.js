@@ -96,11 +96,9 @@
       if (!m || !m.id) return;
       try {
         const st = await ipcRenderer.invoke('groupchat:get-state', { meetingId: m.id });
-        const turns = (st && (st.turns || st.messages || st.timeline)) || [];
-        if (!Array.isArray(turns)) return;
-        out[m.id] = turns.slice(-14).map(t => ({
-          text: String((t && (t.text || t.content)) || ''),
-        }));
+        const DP = window.DevProgress;
+        out[m.id] = DP && typeof DP.messagesFromGroupState === 'function'
+          ? DP.messagesFromGroupState(st, 14) : [];
       } catch (e) {
         // 拿不到就算了，推导那部分不受影响
       }

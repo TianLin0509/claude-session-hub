@@ -68,6 +68,20 @@ test('跑第 0 步 = 工作位实现中；第 1 步 = 合并位审查中', () =>
   assert.strictEqual(r.key, 'reviewing');
 });
 
+test('按 loop-engine 真实持久化字段识别运行态与当前步骤', () => {
+  const w = DP.deriveStage({
+    serialWorkflow: { loopState: { status: 'running', currentStep: 'builder', round: 0 } },
+  });
+  assert.strictEqual(w.key, 'working');
+  assert.strictEqual(w.running, true);
+
+  const r = DP.deriveStage({
+    serialWorkflow: { loopState: { status: 'running', currentStep: 'reviewer', round: 0 } },
+  });
+  assert.strictEqual(r.key, 'reviewing');
+  assert.strictEqual(r.running, true);
+});
+
 test('status=done 或有过 PASS = 已通过', () => {
   assert.strictEqual(DP.deriveStage({ serialWorkflow: { loopState: { status: 'done' } } }).key, 'passed');
   assert.strictEqual(
@@ -115,6 +129,21 @@ test('取最新的卡，不是最早的', () => {
     { text: 'PROGRESS: 第二版' },
   ]);
   assert.strictEqual(card.progress, '第二版');
+});
+
+test('从 groupchat 真实 messages 结构提取 AI 人话卡，不把用户原文当成进度', () => {
+  const messages = DP.messagesFromGroupState({
+    turns: [{ n: 1, by: { s1: '旧兼容数据' } }],
+    messages: [
+      { role: 'user', content: '请最后输出 PROGRESS: 这不是完成申报' },
+      { role: 'assistant', content: 'PROGRESS: 已修复状态推导\nVERIFIED: 16 条通过' },
+      { role: 'assistant', content: 'RESULT: PASS\nBLOCKERS: 无\nVERIFIED: 全量通过\nNEXT: 无' },
+    ],
+  });
+  assert.deepStrictEqual(messages, [
+    { text: 'PROGRESS: 已修复状态推导\nVERIFIED: 16 条通过' },
+    { text: 'RESULT: PASS\nBLOCKERS: 无\nVERIFIED: 全量通过\nNEXT: 无' },
+  ]);
 });
 
 test('只认开发场景的群聊', () => {

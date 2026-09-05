@@ -32,6 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 REPO = Path(__file__).resolve().parent.parent
 CONFIG = REPO / ".agents" / "project.json"
+_MERGE_LOCK_HANDLE = None
 
 
 def say(msg=""):
@@ -55,6 +56,33 @@ def run(cmd, cwd=None, env=None, check=True, capture=True):
 
 def git(*args, **kw):
     return run(["git", *args], **kw).stdout.strip()
+
+
+def acquire_merge_lock():
+    """同一仓库一次只允许一个合并进程触碰主工作区。进程退出时 OS 自动释放锁。"""
+    global _MERGE_LOCK_HANDLE
+    common = Path(git("rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = (REPO / common).resolve()
+    lock_path = common / "hub-merge-task.lock"
+    handle = open(lock_path, "a+b")
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _MERGE_LOCK_HANDLE = handle
+    return True
 
 
 def load_config():
@@ -89,6 +117,11 @@ def main():
 
     say(f"── {name} · 合并 {branch} → {trunk} ──")
     say()
+
+    if not acquire_merge_lock():
+        say("✗ 另一个合并任务正在运行，本次没有触碰主工作区。")
+        say("  等前一个结束后再重试；不要并行启动两个合并位。")
+        return 2
 
     # ① 必须在主工作目录 —— 否则 SuperRAN 的测试证据是假的
     here, main_wt = REPO.resolve(), main_worktree().resolve()

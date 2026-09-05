@@ -88,8 +88,12 @@
   function deriveStage(meeting) {
     const wf = (meeting && meeting.serialWorkflow) || {};
     const ls = wf.loopState || {};
-    const running = !!(ls.running || wf.serialRunState && wf.serialRunState.running);
     const status = String(ls.status || '');
+    // loop-engine 的持久化真值是 status/currentStep；running/stepIndex 只兼容旧状态与
+    // renderer 的瞬时进度对象。只看后两者会把真实运行中的循环误报成「已停止」。
+    const running = status === 'running'
+      || !!ls.running
+      || !!(wf.serialRunState && wf.serialRunState.running);
     const round = Number(ls.round) || 0;
     const maxRounds = Number(wf.loop && wf.loop.maxRounds) || 3;
     const history = Array.isArray(ls.history) ? ls.history : [];
@@ -97,7 +101,10 @@
 
     let key = 'idle';
     if (status === 'done' || passes > 0) key = 'passed';
-    else if (running) key = (Number(ls.stepIndex) === 1) ? 'reviewing' : 'working';
+    else if (running) {
+      const reviewing = ls.currentStep === 'reviewer' || Number(ls.stepIndex) === 1;
+      key = reviewing ? 'reviewing' : 'working';
+    }
     else if (status && status !== 'done') {
       key = (round >= maxRounds) ? 'exhausted' : 'stopped';
     } else if (round > 0) key = 'rework';
@@ -125,6 +132,29 @@
       if (card && review) break;
     }
     return { card, review };
+  }
+
+  /** 把 groupchat:get-state 的真实结构收敛成 latestCards 所需的文本列表。 */
+  function messagesFromGroupState(state, limit) {
+    const source = state && typeof state === 'object' ? state : {};
+    let texts = [];
+    if (Array.isArray(source.messages)) {
+      texts = source.messages
+        .filter(m => m && m.role === 'assistant')
+        .map(m => String(m.content || m.text || ''))
+        .filter(Boolean);
+    }
+    // 兼容只持久化 turns.by 的旧记录；by 中只含 AI 回答，不会误吃用户 prompt。
+    if (!texts.length && Array.isArray(source.turns)) {
+      for (const turn of source.turns) {
+        for (const value of Object.values(turn && turn.by || {})) {
+          const text = String(value || '');
+          if (text) texts.push(text);
+        }
+      }
+    }
+    const n = Math.max(1, Math.min(100, Number(limit) || 14));
+    return texts.slice(-n).map(text => ({ text }));
   }
 
   /** 距今多久 —— 卡住的 Agent 不会主动说自己卡住了，所以这个必须推导。 */
@@ -167,6 +197,7 @@
     parseReviewCard,
     deriveStage,
     latestCards,
+    messagesFromGroupState,
     idleFor,
     boardRow,
     isDevMeeting,

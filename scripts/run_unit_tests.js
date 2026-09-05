@@ -44,6 +44,11 @@ if (!files.length) {
   process.exit(2);
 }
 
+// 工作位通常由隔离 Hub 启动，会继承它的 CLAUDE_HUB_DATA_DIR。原样传给单测会让
+// 测试把自己创建的临时账本误判成「隔离 Hub 访问外部正式库」。每次总跑建立唯一父目录，
+// 同时作为系统临时目录和 Hub 数据目录，既不碰生产数据，也让安全边界保持真实。
+const SUITE_TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-unit-run-'));
+
 const t0 = Date.now();
 console.log(`单元测试：${files.length} 个文件，并发 ${jobs}`);
 
@@ -53,9 +58,16 @@ let idx = 0;
 
 function runOne(file) {
   return new Promise((resolve) => {
+    const childEnv = Object.assign({}, process.env, {
+      NODE_ENV: 'test',
+      TEMP: SUITE_TEMP,
+      TMP: SUITE_TEMP,
+      CLAUDE_HUB_DATA_DIR: SUITE_TEMP,
+    });
+    delete childEnv.CHUXIN_AGENT_LEAGUE_ALLOW_EXTERNAL_SCHEDULER;
     const p = spawn(process.execPath, [path.join(TESTS, file)], {
       cwd: REPO,
-      env: Object.assign({}, process.env, { NODE_ENV: 'test' }),
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -93,12 +105,41 @@ async function worker() {
   }
 }
 
+function containsReparsePoint(root) {
+  const pending = [root];
+  while (pending.length) {
+    const dir = pending.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) return true;
+      if (entry.isDirectory()) pending.push(full);
+    }
+  }
+  return false;
+}
+
+function cleanupSuiteTemp() {
+  try {
+    const tempBase = fs.realpathSync.native(os.tmpdir());
+    const target = fs.realpathSync.native(SUITE_TEMP);
+    const relative = path.relative(tempBase, target);
+    const safe = relative && !relative.startsWith('..') && !path.isAbsolute(relative)
+      && path.basename(target).startsWith('hub-unit-run-');
+    if (!safe) throw new Error('临时目录边界校验失败：' + target);
+    if (containsReparsePoint(target)) throw new Error('临时目录含 reparse point，拒绝递归清理：' + target);
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 });
+  } catch (error) {
+    console.warn('单测临时目录未自动清理：' + (error && error.message || error));
+  }
+}
+
 Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker)).then(() => {
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   console.log('\n');
   console.log('─'.repeat(50));
   if (!failures.length) {
     console.log(`全部通过：${files.length} 个文件，用时 ${secs}s`);
+    cleanupSuiteTemp();
     process.exit(0);
   }
   console.log(`失败 ${failures.length} / ${files.length}，用时 ${secs}s\n`);
@@ -107,5 +148,6 @@ Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker)).then((
     for (const ln of f.out.split('\n')) console.log(`      ${ln}`);
     console.log('');
   }
+  cleanupSuiteTemp();
   process.exit(1);
 });

@@ -101,6 +101,11 @@ test('合同里写的四行格式，引擎的解析器真的认（skill ↔ 工�
   for (const label of ['PROGRESS:', 'VERIFIED:', 'RISK:', 'REPORT:']) {
     assert(author.includes(label), 'AUTHOR.md 缺标签 ' + label);
   }
+
+  assert(!/合完把结果写成人话[\s\S]{0,300}PROGRESS:/.test(merger),
+    '合并位完成后不能切到工作位协议，否则引擎认不出 PASS');
+  assert(/成功后仍输出上节同一套四行/.test(merger),
+    '合并位必须明确在正式合并后仍输出 RESULT 四行');
 });
 
 test('闸门齐备：两个钩子 + 合并脚本都在', () => {
@@ -110,6 +115,17 @@ test('闸门齐备：两个钩子 + 合并脚本都在', () => {
   // 钩子必须是 LF，否则 Windows 上 #!/bin/sh\r 会让它静默失效
   const attrs = read('.gitattributes');
   assert(/\.githooks\/\*\s+text\s+eol=lf/.test(attrs), '.gitattributes 必须强制钩子用 LF');
+  const prePush = read('.githooks/pre-push');
+  assert(/project\.json/.test(prePush) && /\$trunk/.test(prePush),
+    'pre-push 必须拦 project.json 声明的主干，不能只硬编码几个常见分支名');
+});
+
+test('全量运行器隔离父 Hub 环境，开发群聊内自测不能被隔离实例变量污染', () => {
+  const runner = read('scripts/run_unit_tests.js');
+  assert(/CLAUDE_HUB_DATA_DIR\s*:\s*SUITE_TEMP/.test(runner),
+    '子测试必须覆盖父进程的 CLAUDE_HUB_DATA_DIR');
+  assert(/TEMP\s*:\s*SUITE_TEMP/.test(runner) && /TMP\s*:\s*SUITE_TEMP/.test(runner),
+    'os.tmpdir() 产物必须落在同一个隔离根内，安全策略才能判定为 contained');
 });
 
 console.log('\n──────────────');

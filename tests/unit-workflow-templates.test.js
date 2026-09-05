@@ -36,6 +36,8 @@ test('开发任务是工作位↔合并位的两步循环，两步必须落到�
   assert(c.stepConfigs[0].prompt.includes('.agents/AUTHOR.md'));
   assert(c.stepConfigs[1].prompt.includes('.agents/MERGER.md'));
   assert(c.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
+  assert(!/动过就要求先 rebase/.test(c.stepConfigs[1].prompt), '主干前进不能无条件制造 rebase 返工');
+  assert(/冲突或集成测试失败/.test(c.stepConfigs[1].prompt), '只有真实集成失败才要求工作位修复');
 });
 
 test('开发预设必须通用：prompt 里不出现项目名或绝对路径', () => {
