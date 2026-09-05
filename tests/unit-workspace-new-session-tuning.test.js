@@ -200,11 +200,12 @@ test('only flags the selected CLI understands are sent', () => {
     /if \(tuning\.showMcp\) opts\.mcpProfile = tuning\.mcpProfile/,
     'Claude and Codex both receive an explicit MCP profile, including Codex none',
   );
-  // 只在显式关掉时才传 fastMode，不传 = 沿用 session-manager 的"默认开"。
+  // fastMode 只有"关"需要写字段（session-manager 全链路按 === false 判断）。
+  // 2026-09-05 默认改成关之后，这条常态会写出 false，语义不变。
   assert.match(
     CONTROLLER_SRC,
     /if \(tuning\.showFast && tuning\.fastMode === false\) opts\.fastMode = false/,
-    'fastMode must only be sent when the user explicitly turns it off',
+    'fastMode must only be sent when it is off',
   );
   // 默认档位不能漂。2026-08-29 起三家统一 None：用户要求「只有我提到的时候才
   // 加载 superRAN」，而 superran 每个进程恒定提交 2.66 GB，默认加载是内存杀手。
@@ -213,15 +214,64 @@ test('only flags the selected CLI understands are sent', () => {
     /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none' \}/,
     '三家默认都必须是 None（不加载任何 MCP）',
   );
+  // 2026-09-05：用户要求 Claude / Codex 两家的 fast 默认都关掉。
+  // Codex 这一侧就是 service_tier=standard（显式关 Fast），不是 inherit ——
+  // inherit 会跟着 ~/.codex/config.toml 走，那份配置里可能还开着 priority。
   assert.match(
     CONTROLLER_SRC,
-    /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'fast', deepseek: 'inherit' \}/,
-    'Codex 默认必须显式 Fast，且不能改变 DeepSeek 的继承语义',
+    /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'standard', deepseek: 'inherit' \}/,
+    'Codex 默认必须显式关 Fast，且不能改变 DeepSeek 的继承语义',
   );
   assert.match(
     CONTROLLER_SRC,
     /if \(typeof tuning\.contextMax === 'number'\) opts\.contextMax = tuning\.contextMax/,
     'Sol 的 1M context 必须真正进入创建参数',
+  );
+  // 2026-09-05：Claude / Codex 默认思考强度从 max 降到 high。DeepSeek 没被点名，
+  // 必须继续落在通用 DEFAULT_EFFORT('max')，所以这里同时守"没有 deepseek 键"。
+  assert.match(
+    CONTROLLER_SRC,
+    /const DEFAULT_EFFORT_BY_KIND = \{ claude: 'high', codex: 'high' \}/,
+    'Claude 与 Codex 的默认思考强度必须是 high',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /const DEFAULT_EFFORT = 'max';/,
+    '未点名的 kind 仍回落到通用默认 max',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /function defaultEffortFor\(kind\) \{ return DEFAULT_EFFORT_BY_KIND\[kind\] \|\| DEFAULT_EFFORT; \}/,
+    '默认强度必须按 kind 取，不能再有裸 DEFAULT_EFFORT 分支',
+  );
+  assert.doesNotMatch(
+    CONTROLLER_SRC,
+    /selectedEffort = \(saved && saved\.effort\) \|\| DEFAULT_EFFORT;/,
+    '记忆回放也要走按 kind 的默认，否则切到 Claude 会拿回 max',
+  );
+  // 2026-09-05：Claude Fast 默认关。它更快出字，但交互式会话可能不落 transcript
+  // （2026-06-11 实测），当默认值弊大于利。
+  assert.match(
+    CONTROLLER_SRC,
+    /const DEFAULT_FAST_MODE = false;/,
+    'Claude Fast 默认必须关闭',
+  );
+  // 下拉里的「默认」二字必须跟着真正的默认走。改了默认却留着旧标注，用户看到的
+  // 是「选中 high，但 max 那行写着默认」——比不标注更糟。
+  assert.match(CONTROLLER_SRC, /\['high', 'high · 默认'\]/, 'Claude 强度下拉必须把默认标在 high');
+  assert.doesNotMatch(CONTROLLER_SRC, /'max · 默认/, 'max 不再是默认，不能继续标默认');
+  assert.match(CONTROLLER_SRC, /\['standard', 'Standard · 默认，显式关闭 Fast'\]/,
+    'Codex 速度通道必须把默认标在 Standard');
+  assert.doesNotMatch(CONTROLLER_SRC, /'Fast · 默认/, 'Fast 不再是默认，不能继续标默认');
+  assert.match(
+    CONTROLLER_SRC,
+    /fastMode: typeof selection\.fastMode === 'boolean' \? selection\.fastMode : DEFAULT_FAST_MODE/,
+    '群聊成员卡片的 fast 初值必须来自同一个常量',
+  );
+  assert.doesNotMatch(
+    CONTROLLER_SRC,
+    /let selectedFastMode = true;/,
+    '单会话弹窗不能再把 fast 初值写死成开',
   );
   assert.match(
     CONTROLLER_SRC,

@@ -37,6 +37,7 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /claude-fable-5/);
   assert.match(modelIds, /claude-opus-4-8\[1m\]/);
   assert.match(modelIds, /gemini-2.5-flash/);
+  assert.match(modelIds, /gpt-6-astra/);
   assert.match(modelIds, /gpt-5.6-sol/);
   assert.match(modelIds, /deepseek-v4-flash/);
   assert.match(modelIds, /deepseek-v4-pro/);
@@ -45,7 +46,11 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
 
 test('group defaults to Claude + Codex and keeps DeepSeek as the optional third provider', () => {
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.claude, 'claude-opus-5[1m]');
-  assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-5.6-sol');
+  // 2026-09-05：Codex 默认从 gpt-5.6-sol 提到 GPT-6。gpt-6-astra 是本机 codex-cli
+  // 目录里唯一的 GPT-6 条目，静态表里必须同时有它，否则离线时默认值选不中。
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-6-astra');
+  assert.ok(MODEL_OPTIONS_BY_KIND.codex.some(option => option.id === DEFAULT_MODEL_BY_KIND.codex),
+    'Codex 默认模型必须出现在静态候选表里');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
@@ -87,16 +92,45 @@ test('deleted modal presets and decorative assets stay removed', () => {
   assert.match(MODAL_JS, /replace\(\/-resume\$\/, ''\)/);
 });
 
-test('group chat modal exposes task templates before member tuning', () => {
-  assert.match(MODAL_JS, /GROUP_TEMPLATES/);
-  for (const label of ['通用会诊', '代码/方案评审', '投研圆桌', '决策交接']) {
-    assert.ok(MODAL_JS.includes(label), `template label missing: ${label}`);
+test('scene picker replaces the duplicate template row and sits above member tuning', () => {
+  // 2026-09-05：模板卡（通用会诊 / 代码方案评审 / 投研圆桌 / 决策交接）和底部的
+  // 场景单选是同一件事的两种说法，两处并存会出现"选了投研圆桌但场景还是通用"。
+  // 删模板、把场景搬到成员配置之上。
+  assert.match(MODAL_JS, /const SCENES = \[/);
+  for (const label of ['通用', '投研', '开发']) {
+    assert.ok(MODAL_JS.includes(`label: '${label}'`), `scene label missing: ${label}`);
   }
-  assert.match(MODAL_JS, /data-mcm-template/);
-  assert.match(MODAL_JS, /function\s+_applyTemplate/);
-  assert.match(MODAL_JS, /_applyTemplate\(requestedTemplate,\s*\{\s*clearTitle:\s*true\s*\}\)/);
-  assert.match(MODAL_CSS, /\.mcm-template-grid\s*\{/);
-  assert.match(MODAL_CSS, /\.mcm-template\.selected\s*\{/);
+  for (const gone of ['GROUP_TEMPLATES', '_applyTemplate', 'data-mcm-template', '通用会诊', '代码/方案评审', '投研圆桌', '决策交接']) {
+    assert.ok(!MODAL_JS.includes(gone), `deleted template artifact still present: ${gone}`);
+  }
+  assert.ok(!MODAL_CSS.includes('.mcm-template'), 'template card CSS must be removed too');
+  assert.match(MODAL_JS, /function\s+_applyScene/);
+  assert.match(MODAL_JS, /_applyScene\(requestedScene,\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
+  // 场景仍然是 create-meeting 的 mode 来源，radio 的 name 不能改。
+  assert.match(MODAL_JS, /input\[name="mcm-scene"\]:checked/);
+  const sceneAt = MODAL_JS.indexOf('id="mcm-scene-row"');
+  const memberAt = MODAL_JS.indexOf('class="mcm-member-caption"');
+  assert.ok(sceneAt > 0 && memberAt > 0 && sceneAt < memberAt,
+    'scene row must render above the member configuration block');
+  // 场景不再重排成员：换场景把用户调好的模型/档位冲掉是纯粹的损失。
+  assert.ok(!MODAL_JS.includes('_groupSlots = _cloneSlots(tpl.slots)'));
+  assert.match(MODAL_CSS, /\.mcm-scene-choice\s*\{/);
+});
+
+test('member fields put the caption and its control on one line', () => {
+  // 2026-09-05：原来 label 竖排，"AI / Claude"、"模型 / Opus 5" 各占两行，
+  // 一张成员卡 12 行。横排后卡片高度接近腰斩。
+  assert.match(MODAL_JS, /<span class="mcm-slot-field-name">AI<\/span><select class="mcm-ai-select">/);
+  assert.match(MODAL_JS, /<span class="mcm-slot-field-name">模型<\/span><select class="mcm-model-select">/);
+  for (const caption of ['思考强度', 'MCP 加载', '快速模式', '速度通道']) {
+    assert.ok(MODAL_JS.includes(`<span class="mcm-slot-field-name">${caption}</span>`),
+      `tuning caption not wrapped for the one-line layout: ${caption}`);
+  }
+  const labelRule = MODAL_CSS.slice(MODAL_CSS.indexOf('.mcm-slot label {'));
+  assert.match(labelRule.slice(0, 220), /flex-direction:\s*row/,
+    'member field labels must lay out horizontally');
+  assert.match(MODAL_CSS, /\.mcm-slot-field-name\s*\{[^}]*flex:\s*0 0/,
+    'caption column must be fixed-width so the two member cards stay aligned');
 });
 
 test('window.openMeetingCreateModal and closeMeetingCreateModal are exported', () => {

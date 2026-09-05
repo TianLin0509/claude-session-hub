@@ -243,6 +243,21 @@ async function main() {
         && slots[1].querySelector('.mcm-codex-tier-select')
         && slots[2].querySelector('.mcm-codex-tier-select');
     })()`), 8000);
+    // 2026-09-05：Codex 成员的出厂默认改成 GPT-6 / high / Standard。先把默认拍下来断言，
+    // 再显式切回 Sol-Max-Fast —— 那条路径带着 Hub 独有的 1M context 请求，不能因为
+    // 默认模型换代就失去覆盖。
+    const codexDefaults = await client.eval(`(() => {
+      const slot = document.querySelectorAll('#meeting-create-modal .mcm-slot')[1];
+      return {
+        kind: slot.getAttribute('data-kind'),
+        model: slot.querySelector('.mcm-model-select').value,
+        effort: slot.querySelector('.mcm-effort-select').value,
+        codexSpeedTier: slot.querySelector('.mcm-codex-tier-select').value,
+      };
+    })()`);
+    assert.deepEqual(codexDefaults,
+      { kind: 'codex', model: 'gpt-6-astra', effort: 'high', codexSpeedTier: 'standard' });
+
     const configuredMembers = await client.eval(`(() => {
       const setValue = (el, value) => {
         if (!el || !Array.from(el.options || []).some(option => option.value === value)) {
@@ -258,17 +273,21 @@ async function main() {
       fast.checked = false;
       fast.dispatchEvent(new Event('change', { bubbles: true }));
 
-      // Codex 成员故意保持所有默认值：本 E2E 直接验证 Sol-Max / 1M /
-      // None / Fast 从真实群聊 UI 一路进入 PTY 启动参数。
+      // Codex 成员显式选 Sol-Max-Fast：本 E2E 验证 Sol-Max / 1M / None / Fast
+      // 从真实群聊 UI 一路进入 PTY 启动参数。切模型会重绘这张卡，引用必须重新取。
+      setValue(slots[1].querySelector('.mcm-model-select'), 'gpt-5.6-sol');
+      const respun = Array.from(document.querySelectorAll('#meeting-create-modal .mcm-slot'));
+      setValue(respun[1].querySelector('.mcm-effort-select'), 'max');
+      setValue(respun[1].querySelector('.mcm-codex-tier-select'), 'fast');
 
-      setValue(slots[2].querySelector('.mcm-effort-select'), 'medium');
-      setValue(slots[2].querySelector('.mcm-mcp-select'), 'wireless');
-      setValue(slots[2].querySelector('.mcm-codex-tier-select'), 'flex');
+      setValue(respun[2].querySelector('.mcm-effort-select'), 'medium');
+      setValue(respun[2].querySelector('.mcm-mcp-select'), 'wireless');
+      setValue(respun[2].querySelector('.mcm-codex-tier-select'), 'flex');
       const research = document.querySelector('#meeting-create-modal input[name="mcm-scene"][value="research"]');
       research.checked = true;
       research.dispatchEvent(new Event('change', { bubbles: true }));
 
-      return slots.map(slot => ({
+      return Array.from(document.querySelectorAll('#meeting-create-modal .mcm-slot')).map(slot => ({
         kind: slot.querySelector('.mcm-ai-select').value,
         model: slot.querySelector('.mcm-model-select').value,
         effort: slot.querySelector('.mcm-effort-select')?.value || null,
@@ -285,7 +304,7 @@ async function main() {
       codexSpeedTier: member.codexSpeedTier,
     })), [
       { kind: 'claude', effort: 'high', mcpProfile: 'lean', fastMode: false, codexSpeedTier: null },
-      { kind: 'codex', effort: 'max', mcpProfile: 'none', fastMode: null, codexSpeedTier: 'fast' },
+      { kind: 'codex', effort: 'max', mcpProfile: 'none', fastMode: null, codexSpeedTier: 'fast' },  // 显式选回 Sol 档
       { kind: 'deepseek', effort: 'medium', mcpProfile: 'wireless', fastMode: null, codexSpeedTier: 'flex' },
     ]);
 

@@ -177,7 +177,7 @@ async function main() {
 
     await clickPoint(client, '[data-launch-intent="group"]');
     await waitFor('embedded group configuration', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 2`));
-    await clickPoint(client, '[data-mcm-template="review"]');
+    await clickPoint(client, '[data-mcm-scene="dev"]');
     result.groupIntent = await client.eval(`(() => ({
       intent: window.LaunchCenter.getActiveIntent(),
       panelVisible: !document.getElementById('launch-center-group-panel').hidden,
@@ -185,13 +185,13 @@ async function main() {
       embedded: document.getElementById('meeting-create-modal')?.classList.contains('mcm-embedded'),
       embeddedRole: document.querySelector('#meeting-create-modal .mcm-dialog')?.getAttribute('role'),
       members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
-      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+      devSceneSelected: document.querySelector('[data-mcm-scene="dev"]')?.classList.contains('selected'),
       devScene: document.querySelector('input[name="mcm-scene"][value="dev"]')?.checked,
       launchCenterVisible: getComputedStyle(document.getElementById('new-session-menu')).display === 'flex',
     }))()`);
     assert.deepEqual(result.groupIntent, {
       intent: 'group', panelVisible: true, sessionHidden: true,
-      embedded: true, embeddedRole: 'group', members: 2, reviewSelected: true, devScene: true, launchCenterVisible: true,
+      embedded: true, embeddedRole: 'group', members: 2, devSceneSelected: true, devScene: true, launchCenterVisible: true,
     });
     await client.eval(`document.getElementById('mcm-title-input').value = '保留这份成员配置'`);
     await screenshot(client, GROUP_SCREENSHOT_PATH);
@@ -212,9 +212,9 @@ async function main() {
     result.groupPreserved = await client.eval(`(() => ({
       title: document.getElementById('mcm-title-input')?.value,
       members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
-      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+      devSceneSelected: document.querySelector('[data-mcm-scene="dev"]')?.classList.contains('selected'),
     }))()`);
-    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 2, reviewSelected: true });
+    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 2, devSceneSelected: true });
     await clickPoint(client, '[data-launch-intent="resume"]');
 
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });

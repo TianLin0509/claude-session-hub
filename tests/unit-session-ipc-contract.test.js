@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const { registerSessionIpc } = require('../main/ipc/session-handlers.js');
+const { DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 
 function createFakeIpc() {
   return {
@@ -292,7 +293,8 @@ test('fork-session rejects a tool-only image model inherited from polluted PTY t
   const result = ipc.handlers.get('fork-session')(null, 'codex-image-polluted');
   assert.strictEqual(result.ok, true);
   const opts = sessionManager.calls.find(call => call[0] === 'createSession')[2];
-  assert.strictEqual(opts.model, 'gpt-5.6-sol');
+  // 守的是"回落到 Hub 当前默认"，不是守某个具体 id。
+  assert.strictEqual(opts.model, DEFAULT_MODEL_BY_KIND.codex);
   assert.notStrictEqual(opts.model, 'gpt-image-gen2');
 });
 
