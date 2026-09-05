@@ -86,6 +86,35 @@
   // ===================== verdict 解析 =====================
   // 从评审回答文本里提取 <<<VERDICT>>> ... <<<END>>> 之间的 JSON。
   // 解析失败返回 null（上层按"保守 fail"处理）。
+  /**
+   * 这一步的 AI 根本没能力干活（额度用尽 / 被限流 / 会话失效），而不是「答了但没给裁决」。
+   *
+   * 实测踩到：合并位整轮只回了一句
+   *   "You've hit your session limit · resets 6am (America/Los_Angeles)"
+   * 引擎当它「没给裁决」保守判 fail，于是又派工作位重做两轮 ——
+   * 工作位每轮都正确回答「阻断项是评审没出裁决，我改不了」，白烧两轮 token，
+   * 最后报「返工用尽」。维护者看到的是「任务太难做不完」，真实原因却是换个人就好。
+   *
+   * 判据要窄：只认明确的额度/限流/鉴权失败，别把正文里讨论限流的技术回答误伤。
+   * 所以要求文本很短（真出这种事时 CLI 只吐这一句）且整体匹配。
+   */
+  const UNAVAILABLE_PATTERNS = [
+    /you'?ve hit your (session|usage) limit/i,
+    /(usage|rate) limit (reached|exceeded)/i,
+    /quota (exceeded|exhausted)/i,
+    /insufficient (quota|credit)/i,
+    /(额度|配额)(已)?(用尽|耗尽|不足)/,
+    /请求过于频繁|触发限流/,
+    /(401|403).*(unauthorized|forbidden)/i,
+    /please (run )?\/login|not (logged in|authenticated)/i,
+  ];
+
+  function looksUnavailable(text) {
+    const s = String(text == null ? '' : text).trim();
+    if (!s || s.length > 400) return false;   // 长回答里提到限流不算
+    return UNAVAILABLE_PATTERNS.some(re => re.test(s));
+  }
+
   function parseVerdict(text) {
     if (!text || typeof text !== 'string') return null;
     const m = text.match(/<<<VERDICT>>>([\s\S]*?)<<<END>>>/);
@@ -305,7 +334,7 @@
   }
 
   return {
-    PROMPTS, parseVerdict, mergeVerdicts, advanceLoopState,
+    PROMPTS, parseVerdict, looksUnavailable, mergeVerdicts, advanceLoopState,
     defaultConfig, newLoopState, resumeState, builderTaskText, blockerSig, buildReportHtml,
   };
 });

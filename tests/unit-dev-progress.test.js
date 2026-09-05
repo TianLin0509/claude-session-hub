@@ -212,6 +212,20 @@ test('认不出的新状态回落到「已停止」，不冒充「返工用尽�
   assert(s.label);
 });
 
+test('席位不可用有专属说法，不跟「返工用尽」混为一谈', () => {
+  const s = DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status: 'reviewer_unavailable', round: 1 } },
+  });
+  assert.strictEqual(s.key, 'noReviewer');
+  assert(/额度|登录/.test(s.label), '要说清是额度还是登录问题，别只说「失败」：' + s.label);
+  assert.strictEqual(s.tone, 'bad');
+  // 和「返工用尽」必须是两种不同说法 —— 前者换个人就好，后者是任务本身的问题
+  const exhausted = DP.deriveStage({
+    serialWorkflow: { loop: { maxRounds: 3 }, loopState: { status: 'stopped_max', round: 3 } },
+  });
+  assert.notStrictEqual(s.label, exhausted.label);
+});
+
 test('闲置时长能算出来', () => {
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 5 * 60000 }), '5 分钟前');
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 3 * 3600000 }), '3 小时前');

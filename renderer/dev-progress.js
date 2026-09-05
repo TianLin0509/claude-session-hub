@@ -82,6 +82,7 @@
     timeout: { label: '超时停止', tone: 'bad' },
     stuck: { label: '卡住了，没进展', tone: 'bad' },
     paused: { label: '出错暂停，等你处理', tone: 'bad' },
+    noReviewer: { label: '评审席位不可用（额度/登录），换个人再跑', tone: 'bad' },
     stopped: { label: '已停止', tone: 'idle' },   // 兜底：认不出的新状态
   };
 
@@ -94,6 +95,7 @@
     stopped_max: 'exhausted',
     stopped_deadline: 'timeout',
     stopped_stuck: 'stuck',
+    reviewer_unavailable: 'noReviewer',
   };
 
   /**

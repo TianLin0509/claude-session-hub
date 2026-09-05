@@ -715,6 +715,25 @@ function createLoopEngine(deps) {
           });
           reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
         }
+        // 评审席位根本没能力干活（额度用尽 / 被限流 / 掉登录），不是「答了但没给裁决」。
+        // 这两者对用户的意义完全不同：前者换个人就好，后者才是任务本身的问题。
+        // 不区分的话，引擎会把它当 fail 再派工作位重做 —— 而工作位每轮都只能回答
+        // 「阻断项是评审没出裁决，我改不了」，白烧满 3 轮，最后报「返工用尽」，
+        // 维护者看到的却是「任务太难」。实测就是这么烧掉两轮的。
+        const unavailable = reviews.filter(r => !r.verdict && LC.looksUnavailable(r.raw));
+        if (unavailable.length === reviews.length && reviews.length > 0) {
+          state.status = 'reviewer_unavailable';
+          state.currentStep = null;
+          state.lastError = {
+            stage: 'reviewer', reason: 'reviewer_unavailable',
+            detail: (unavailable[0].raw || '').slice(0, 200), at: Date.now(),
+          };
+          logger.log('[loop-engine] reviewer unavailable, stopping instead of burning rounds: '
+            + (unavailable[0].raw || '').slice(0, 120));
+          persistOrPause();
+          break;
+        }
+
         const merge = LC.mergeVerdicts(reviews); prevMerge = merge;
         LC.advanceLoopState(state, merge, config, Date.now());
         state.currentStep = null; state.currentTurnNum = null; state.stepAttempt = 0; state.lastError = null;
