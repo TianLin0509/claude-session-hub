@@ -77,6 +77,7 @@ class SessionSearchEngine {
       geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 60_000,
+      cjkAuxBudgetMs: Math.max(50, Number(options.cjkAuxBudgetMs) || 600),
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
       maxSourceChars: Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS),
@@ -347,6 +348,18 @@ class SessionSearchEngine {
         activeKeys.add(source.key);
       }
       this.index.pruneSources(activeKeys);
+      // CJK 短词辅助索引的回填（2026-09-05）：每轮 refresh 后推进一段。
+      //   刻意不一次性跑完 —— 子进程是单线程的，10 万行一口气回填会把搜索卡住几十秒。
+      //   给固定预算、游标存库，下一轮接着跑；跑完置位后 1~2 字中文查询才切到索引。
+      try {
+        const step = this.index.backfillCjkAux({ budgetMs: this.options.cjkAuxBudgetMs });
+        if (step && step.processed) {
+          this._emit({ cjkAuxReady: this.index.cjkAuxReady(), cjkAuxCursor: step.cursor });
+        }
+      } catch (error) {
+        // 辅助索引是纯加速能力，失败只是回到顺序扫描，绝不该让 refresh 整体失败
+        console.warn('[session-search] CJK aux backfill failed:', error && error.message);
+      }
       this.lastRefreshAt = Date.now();
       this.index.setMeta('lastRefreshAt', this.lastRefreshAt);
       // 刚重写过大量页，缓存被冲掉了，重新预热短词档

@@ -543,6 +543,49 @@ class SessionSearchIndex {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// CJK 短词辅助索引的分词（2026-09-05）
+//
+// FTS5 的 trigram 分词器**至少要 3 个字符才能走索引**。中文最常用的检索单位恰好是
+// 两个字（「圆桌」「索引」「会话」），于是它们全部退化成顺序扫描 —— 真实索引实测
+// 「圆桌」837ms，而四字词走 FTS 只要 12ms，差 70 倍。
+// 实测也确认 trigram 不支持前缀查询（`MATCH '"圆桌"*'` 返回 0），这条路走不通。
+//
+// 所以另建一张 unicode61 的辅助表，只喂 CJK 的**一元 + 二元**词元：
+//   「信息熵」→ 信 息 熵 信息 息熵
+// 这样 1 字查询命中一元、2 字查询命中二元，都是精确词元查找。
+// 3 字及以上继续走 trigram，不重复建索引。
+//
+// 只做 CJK，**不做短拉丁词**：拉丁是子串语义（查 `ai` 要能命中 `openai`），
+// 用词元匹配会产生假阴性 —— 那比慢更糟。短拉丁词继续走顺序扫描。
+const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const CJK_CHAR_RE = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u;
+
+function cjkAuxTokens(value) {
+  const text = normalizeSearchText(value);
+  if (!text) return '';
+  const tokens = new Set();
+  for (const run of text.match(CJK_RUN_RE) || []) {
+    const chars = [...run];
+    for (let i = 0; i < chars.length; i += 1) {
+      tokens.add(chars[i]);
+      if (i + 1 < chars.length) tokens.add(chars[i] + chars[i + 1]);
+    }
+  }
+  return tokens.size ? [...tokens].join(' ') : '';
+}
+
+// 这个词能不能交给 CJK 辅助索引回答：只有 1~2 个字符、且全是 CJK 的词才行。
+// 3 字以上 trigram 已经很快；含拉丁的短词有子串语义，词元匹配会漏。
+function isCjkAuxTerm(term) {
+  const chars = [...String(term || '')];
+  if (chars.length < 1 || chars.length > 2) return false;
+  // 刻意用独立的非 global 正则：global 正则带 lastIndex 状态，
+  // 复用 CJK_RUN_RE 做 test 会因为上一次匹配的位置而时对时错。
+  return chars.every(ch => CJK_CHAR_RE.test(ch));
+}
+
 module.exports = {
   MAX_DOCUMENT_TEXT_CHARS,
   MAX_KEYS_PER_DOCUMENT,
@@ -556,6 +599,8 @@ module.exports = {
   createSnippet,
   indexKeysForTerm,
   indexKeysForText,
+  cjkAuxTokens,
+  isCjkAuxTerm,
   normalizeSearchText,
   queryTerms,
   sinceTimestamp,

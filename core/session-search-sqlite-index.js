@@ -6,7 +6,9 @@ const { DatabaseSync } = require('node:sqlite');
 const {
   MAX_QUERY_LENGTH,
   SCOPE_WEIGHTS,
+  cjkAuxTokens,
   createSnippet,
+  isCjkAuxTerm,
   normalizeSearchText,
   queryTerms,
   sinceTimestamp,
@@ -258,12 +260,48 @@ class SqliteSessionSearchIndex {
       END;
       PRAGMA user_version=${SCHEMA_VERSION};
     `);
+    this._ensureCjkAuxSchema();
+  }
+
+  /**
+   * CJK 短词辅助索引（2026-09-05）。
+   *
+   * FTS5 的 trigram 分词器至少要 3 个字符才走索引，中文最常用的 1~2 字词全部退化成
+   * 顺序扫描（真实索引实测「圆桌」837ms vs 四字词 12ms）。这里另建一张 unicode61 的
+   * FTS 表，只喂 CJK 的一元+二元词元，让 1~2 字中文查询变成精确词元查找。
+   *
+   * **刻意不升 SCHEMA_VERSION**：`_ensureSchema` 见到版本不符会 DROP 所有表，
+   * 那意味着把 3GB 索引整个重建一遍。辅助索引是纯增量能力，缺了只是慢，
+   * 不该拿全量重建去换。所以这里用幂等 DDL 就地补，老库平滑升级。
+   *
+   * 用 contentless（`content=''` + `contentless_delete=1`）：词元原文对检索毫无用处，
+   * 存一份要多花 121MB（实测占辅助索引总体积的 63%）。contentless_delete 让
+   * `DELETE FROM docs_cjk WHERE rowid=?` 不需要原文即可删，正好配合下面的删除触发器。
+   * 需要 SQLite 3.43+，本机 3.51.2。
+   *
+   * 只覆盖 title/user/assistant 三档：它们只占 13% 的正文（33.8M 字符，
+   * tool 独占 220M），而短词检索本来就默认只搜这三档，范围完全对齐。
+   */
+  _ensureCjkAuxSchema() {
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS docs_cjk USING fts5(
+        tokens,
+        content='',
+        contentless_delete=1,
+        tokenize='unicode61 remove_diacritics 0'
+      );
+      CREATE TRIGGER IF NOT EXISTS docs_cjk_ad AFTER DELETE ON docs BEGIN
+        DELETE FROM docs_cjk WHERE rowid = old.id;
+      END;
+    `);
   }
 
   _prepare() {
     this.selectSourceStates = this.db.prepare('SELECT key, signature, stale FROM sources');
     this.markSourceStaleStatement = this.db.prepare('UPDATE sources SET signature = ?, stale = 1 WHERE key = ?');
     this.deleteSource = this.db.prepare('DELETE FROM sources WHERE key = ?');
+    this.deleteCjkAux = this.db.prepare('DELETE FROM docs_cjk WHERE rowid = ?');
+    this.insertCjkAux = this.db.prepare('INSERT INTO docs_cjk(rowid, tokens) VALUES (?, ?)');
     this.insertSource = this.db.prepare('INSERT INTO sources(key, signature, stale, searchable, updated_at) VALUES (?, ?, ?, ?, ?)');
     this.insertSession = this.db.prepare(`INSERT INTO sessions(
       key, source_key, provider, native_family, kind, title, cwd, project_label, model, updated_at,
@@ -375,6 +413,7 @@ class SqliteSessionSearchIndex {
           if (Number(inserted.changes) > 0) {
             documentCount += 1;
             textChars += text.length;
+            this._writeCjkAux(Number(inserted.lastInsertRowid), doc.scope || 'assistant', text);
           }
         };
         const insertedSyntheticTitle = !!session.title;
@@ -448,6 +487,100 @@ class SqliteSessionSearchIndex {
   }
 
   /** 取一个词条命中的 doc id（不取正文）。scopes 为 null 表示不限 scope。 */
+
+  /**
+   * 把一条 doc 的 CJK 词元写进辅助索引。只覆盖短词默认搜索的三档；
+   * tool 独占 87% 的行、220M 字符，而两个字在工具入参 JSON 里命中的基本是噪声，
+   * 为它建索引是拿几倍体积换噪声。
+   * 先删后插保证幂等：回填与实时写入可能覆盖同一个 rowid。
+   */
+  _writeCjkAux(rowid, scope, text) {
+    if (!Number.isInteger(rowid) || rowid <= 0) return false;
+    if (!SHORT_TERM_SCOPES.includes(scope)) return false;
+    const tokens = cjkAuxTokens(text);
+    if (!tokens) return false;
+    this.deleteCjkAux.run(rowid);
+    this.insertCjkAux.run(rowid, tokens);
+    return true;
+  }
+
+  /**
+   * 回填历史 doc 的 CJK 辅助索引（2026-09-05）。
+   *
+   * 设计成「可续跑 + 有时间预算」：子进程是单线程的，一次性回填 10 万行会把搜索
+   * 卡住几十秒。每次只花 budgetMs，游标存进 meta，下次接着跑。
+   * 回填**没跑完之前查询一律不用辅助索引** —— 用了就会漏（假阴性比慢严重得多）。
+   *
+   * 返回 { done, processed, cursor }。
+   */
+  backfillCjkAux({ budgetMs = 400, batchSize = 500 } = {}) {
+    if (this.getMeta('cjkAuxReady', '') === '1') return { done: true, processed: 0, cursor: null };
+    const startedAt = Date.now();
+    let cursor = Number(this.getMeta('cjkAuxCursor', 0)) || 0;
+    let processed = 0;
+    const scopePlaceholders = SHORT_TERM_SCOPES.map(() => '?').join(',');
+    const select = this.db.prepare(
+      `SELECT id, scope, text FROM docs WHERE id > ? AND scope IN (${scopePlaceholders}) ORDER BY id LIMIT ?`,
+    );
+    for (;;) {
+      const rows = select.all(cursor, ...SHORT_TERM_SCOPES, batchSize);
+      if (!rows.length) {
+        this.setMeta('cjkAuxReady', '1');
+        this.setMeta('cjkAuxCursor', String(cursor));
+        this.statsCache = null;
+        return { done: true, processed, cursor };
+      }
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const row of rows) {
+          this._writeCjkAux(Number(row.id), row.scope, row.text || '');
+          cursor = Number(row.id);
+          processed += 1;
+        }
+        this.setMeta('cjkAuxCursor', String(cursor));
+        this.db.exec('COMMIT');
+      } catch (error) {
+        try { this.db.exec('ROLLBACK'); } catch {}
+        throw error;
+      }
+      if (Date.now() - startedAt >= budgetMs) break;
+    }
+    this.statsCache = null;
+    return { done: false, processed, cursor };
+  }
+
+  cjkAuxReady() {
+    return this.getMeta('cjkAuxReady', '') === '1';
+  }
+
+  /**
+   * 用 CJK 辅助索引取候选。仅在回填完成后调用 —— 否则会漏。
+   * 与 trigram 分支一样，scope/时间只放进投影由 JS 过滤：
+   * 放进 WHERE 会让查询规划器改用 idx_docs_scope_time 驱动，LIMIT 失去短路能力。
+   */
+  _matchedDocsForCjkTerm(term, scopes, since, limit) {
+    const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const hasSince = since !== null && since !== undefined;
+    const cacheKey = 'cjkaux';
+    let statement = this.matchStatementCache.get(cacheKey);
+    if (!statement) {
+      statement = this.db.prepare(
+        'SELECT d.id AS id, d.session_key AS session_key, d.scope AS scope, d.timestamp AS timestamp '
+        + 'FROM docs_cjk JOIN docs d ON d.id = docs_cjk.rowid '
+        + 'WHERE docs_cjk MATCH ? LIMIT ?',
+      );
+      this.matchStatementCache.set(cacheKey, statement);
+    }
+    let rows = statement.all(quoteFtsTerm(term), limit + 1);
+    const truncated = rows.length > limit;
+    if (scopeList || hasSince) {
+      const allowed = scopeList ? new Set(scopeList) : null;
+      rows = rows.filter(row => (!allowed || allowed.has(row.scope))
+        && (!hasSince || Number(row.timestamp) >= since));
+    }
+    return { rows: rows.slice(0, limit), truncated };
+  }
+
   _matchedDocsForTerm(term, scopes, since) {
     const limit = this.maxQueryDocs;
     const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
@@ -455,6 +588,11 @@ class SqliteSessionSearchIndex {
     let rows = null;
     let truncated = false;
     let ftsRejected = false;
+    // 1~2 字的纯中文词：trigram 索引不到，但辅助索引能精确命中。
+    // 回填没完成时绝不走这条路 —— 索引不全会漏，假阴性比慢严重得多。
+    if (isCjkAuxTerm(term) && this.cjkAuxReady()) {
+      return this._matchedDocsForCjkTerm(term, scopeList, since, limit);
+    }
     if (String(term).length >= 3) {
       try {
         rows = this._matchStatement({ useFts: true, scopes: scopeList, hasSince })
