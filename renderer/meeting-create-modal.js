@@ -18,51 +18,14 @@ const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek'];
 // member rather than a cost/latency-bearing default in every room.
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.slice(0, 2).map(x => ({ ...x }));
 const SLOT_NAMES = ['一号位', '二号位', '三号位'];
-const GROUP_TEMPLATES = [
-  {
-    id: 'general',
-    label: '通用会诊',
-    desc: '分析与反证双路协作',
-    scene: 'general',
-    placeholder: '例如：帮我拆解这个问题，给出可执行方案',
-    slots: [
-      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-    ],
-  },
-  {
-    id: 'review',
-    label: '代码/方案评审',
-    desc: '实现与独立审查双路协作',
-    scene: 'dev',
-    placeholder: '例如：审查这段实现的风险和遗漏',
-    slots: [
-      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-    ],
-  },
-  {
-    id: 'research',
-    label: '投研圆桌',
-    desc: '主论据与反方风控双路研判',
-    scene: 'research',
-    placeholder: '例如：分析这只股票后续走势和操作计划',
-    slots: [
-      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-    ],
-  },
-  {
-    id: 'decision',
-    label: '决策交接',
-    desc: '方案与取舍双路收敛',
-    scene: 'general',
-    placeholder: '例如：把多方案讨论收敛成决策建议',
-    slots: [
-      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-    ],
-  },
+// 场景是这一页唯一的任务分类维度。
+// 2026-09-05：原来在成员配置上方还有一排四张任务模板卡，每张卡实际只做两件事 ——
+// 选一个场景 + 换一句房名 placeholder，和这里的三个场景完全重叠。两处并存必然出现
+// 「模板卡选了投研，底下场景还停在通用」这种自相矛盾状态，故删卡、只留场景。
+const SCENES = [
+  { id: 'general',  label: '通用', placeholder: '例如：帮我拆解这个问题，给出可执行方案' },
+  { id: 'research', label: '投研', placeholder: '例如：分析这只股票后续走势和操作计划' },
+  { id: 'dev',      label: '开发', placeholder: '例如：实现这个需求，并让另一位独立审查' },
 ];
 
 let _modalEl = null;
@@ -160,32 +123,57 @@ function _cloneSlots(slots) {
   return (slots || DEFAULT_GROUP_MEMBERS).map(x => _normalizeSlotSpec(x));
 }
 
-function _renderTemplateButtons(activeId = 'general') {
-  return GROUP_TEMPLATES.map(tpl => `
-    <button type="button" class="mcm-template${tpl.id === activeId ? ' selected' : ''}" data-mcm-template="${_escapeHtml(tpl.id)}">
-      <span class="mcm-template-title">${_escapeHtml(tpl.label)}</span>
-      <span class="mcm-template-desc">${_escapeHtml(tpl.desc)}</span>
-    </button>
+function _renderSceneChoices(activeId = 'general') {
+  return SCENES.map(scene => `
+    <label class="mcm-scene-choice${scene.id === activeId ? ' selected' : ''}" data-mcm-scene="${_escapeHtml(scene.id)}">
+      <input type="radio" name="mcm-scene" value="${_escapeHtml(scene.id)}"${scene.id === activeId ? ' checked' : ''}>
+      ${_escapeHtml(scene.label)}
+    </label>
   `).join('');
 }
 
-function _applyTemplate(templateId, opts = {}) {
-  const tpl = GROUP_TEMPLATES.find(t => t.id === templateId) || GROUP_TEMPLATES[0];
-  _currentMode = tpl.scene || 'general';
-  _groupSlots = _cloneSlots(tpl.slots);
-  _renderSlots();
+// 场景说明只认 _currentMode，不认「刚才点了哪个 radio」。
+// 2026-09-05 合并位打回的那个泄漏就出在这里：说明原来画在 radio 的 change 里，
+// 而重开弹窗走的是 _applyScene —— 场景已经回到通用、工作目录也回到默认，
+// 屏幕上却还留着「开发场景…已切到选择已有路径」。凡是能被重开路径绕过的
+// UI 状态，就必须挂在负责重置状态的那个函数上。
+function _paintSceneHint() {
+  const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
+  if (!hint) return;
+  if (_currentMode === 'dev') {
+    // 开发场景需要解释一句：工作目录档位是被自动切的，不说明用户下次会以为是自己选的。
+    hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
+      + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
+      + '项目没整理过的话，先用 project-prep skill 跑一次。';
+    hint.style.display = '';
+  } else {
+    hint.textContent = '';
+    hint.style.display = 'none';
+  }
+}
+
+// 只改场景，不动成员名单。删掉模板卡之后成员起手一律是「Claude 工作位 + Codex 合并位」，
+// 换场景不该把用户已经调好的模型/档位冲掉。
+function _applyScene(sceneId, opts = {}) {
+  const scene = SCENES.find(s => s.id === sceneId) || SCENES[0];
+  _currentMode = scene.id;
+  if (opts.resetSlots) {
+    _groupSlots = _cloneSlots(DEFAULT_GROUP_MEMBERS);
+    _renderSlots();
+  }
   const titleInput = _modalEl && _modalEl.querySelector('#mcm-title-input');
   if (titleInput) {
     if (opts.clearTitle) titleInput.value = '';
-    titleInput.placeholder = tpl.placeholder || '留空则自动编号：AI 群聊 #N';
+    titleInput.placeholder = scene.placeholder || '留空则自动编号：AI 群聊 #N';
   }
-  const sceneRadio = _modalEl && _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
+  if (!_modalEl) return;
+  const sceneRadio = _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
   if (sceneRadio) sceneRadio.checked = true;
-  if (_modalEl) {
-    _modalEl.querySelectorAll('[data-mcm-template]').forEach(btn => {
-      btn.classList.toggle('selected', btn.getAttribute('data-mcm-template') === tpl.id);
-    });
-  }
+  _modalEl.querySelectorAll('.mcm-scene-choice').forEach(el => {
+    const input = el.querySelector('input[name="mcm-scene"]');
+    el.classList.toggle('selected', !!input && input.value === _currentMode);
+  });
+  _paintSceneHint();
 }
 
 function _slotHtml(i, spec, isGroup) {
@@ -202,20 +190,20 @@ function _slotHtml(i, spec, isGroup) {
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
   const effortField = tuning.showEffort ? `
-      <label class="mcm-tuning-field">思考强度
+      <label class="mcm-tuning-field"><span class="mcm-slot-field-name">思考强度</span>
         <select class="mcm-effort-select">${_selectOptions(tuning.effortOptions, tuning.effort)}</select>
       </label>` : '';
   const mcpField = tuning.showMcp ? `
-      <label class="mcm-tuning-field">MCP 加载
+      <label class="mcm-tuning-field"><span class="mcm-slot-field-name">MCP 加载</span>
         <select class="mcm-mcp-select">${_selectOptions(tuning.mcpOptions, tuning.mcpProfile)}</select>
       </label>` : '';
   const fastField = tuning.showFast ? `
       <label class="mcm-tuning-field mcm-fast-field">
-        <span>快速模式</span>
+        <span class="mcm-slot-field-name">快速模式</span>
         <span class="mcm-check"><input class="mcm-fast-checkbox" type="checkbox"${tuning.fastMode ? ' checked' : ''}> 启用 Claude Fast</span>
       </label>` : '';
   const codexTierField = tuning.showCodexTier ? `
-      <label class="mcm-tuning-field">速度通道
+      <label class="mcm-tuning-field"><span class="mcm-slot-field-name">速度通道</span>
         <select class="mcm-codex-tier-select">${_selectOptions(tuning.codexTierOptions, tuning.codexSpeedTier)}</select>
       </label>` : '';
   return `
@@ -226,8 +214,8 @@ function _slotHtml(i, spec, isGroup) {
         <div><div class="mcm-slot-label">${_escapeHtml(label)}</div><strong>${_escapeHtml(avatarAlt)}</strong></div>
       </div>
       <div class="mcm-slot-fields">
-        <label>AI <select class="mcm-ai-select">${aiOptions}</select></label>
-        <label>模型 <select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
+        <label><span class="mcm-slot-field-name">AI</span><select class="mcm-ai-select">${aiOptions}</select></label>
+        <label><span class="mcm-slot-field-name">模型</span><select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
         ${effortField}
         ${mcpField}
         ${fastField}
@@ -342,22 +330,17 @@ function _ensureModal() {
           </div>
           <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
         </div>
-        <div class="mcm-template-grid" id="mcm-template-grid">
-          ${_renderTemplateButtons('general')}
+        <div class="mcm-scene" id="mcm-scene-row">
+          <span class="mcm-scene-caption">场景</span>
+          ${_renderSceneChoices('general')}
         </div>
+        <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
           <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
-        <div class="mcm-scene">
-          场景:
-          <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
-          <label><input type="radio" name="mcm-scene" value="research"> 投研</label>
-          <label><input type="radio" name="mcm-scene" value="dev"> 开发</label>
-        </div>
-        <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin-top:6px; line-height:1.6;"></div>
       </div>
       <div class="mcm-footer">
         <button class="mcm-cancel">取消</button>
@@ -376,11 +359,6 @@ function _bindEvents() {
   _modalEl.querySelector('.mcm-create').addEventListener('click', (event) => {
     event.preventDefault();
     void _onCreate();
-  });
-  _modalEl.querySelector('#mcm-template-grid').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-mcm-template]');
-    if (!btn) return;
-    _applyTemplate(btn.getAttribute('data-mcm-template'));
   });
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
@@ -403,24 +381,15 @@ function _bindEvents() {
   });
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
     radio.addEventListener('change', () => {
-      const hint = _modalEl.querySelector('#mcm-scene-hint');
       if (!radio.checked) return;
+      // 场景高亮、房名提示、场景说明都归 _applyScene 管，这里不重复画。
+      _applyScene(radio.value);
       // 开发场景必须开在项目根：预设 prompt 读的是「本仓库的 .agents/AUTHOR.md」，
       // 落在默认工作根（平铺目录，不是仓库）就一定读不到，而 AI 不会自己 cd 过去。
       // 默认那一档在这里是错的，替用户切掉，而不是等它在第一步失败。
       if (radio.value === 'dev' && _meetingWorkspaceMode !== 'existing') {
         _meetingWorkspaceMode = 'existing';
         _paintWorkspace();
-      }
-      if (!hint) return;
-      if (radio.value === 'dev') {
-        // 这块 UI 原本一直是空的。开发场景恰好需要解释一句：工作目录档位是被自动切的。
-        hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
-          + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
-          + '项目没整理过的话，先用 project-prep skill 跑一次。';
-        hint.style.display = '';
-      } else {
-        hint.style.display = 'none';
       }
     });
   });
@@ -552,9 +521,9 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   } else {
     _isGroupChat = true;
   }
-  const requestedTemplate = GROUP_TEMPLATES.some(template => template.id === options.templateId)
-    ? options.templateId
-    : 'general';
+  // 弹窗一律从「通用」开：工作目录档位在下面被重置成 default，
+  // 若允许直接开在 dev，就又会出现「场景=开发但目录=默认」的不一致。
+  // 需要开在别的场景时，要连同工作目录一起处理，不是加个参数就行。
   _currentMode = 'general';
   _ensureModal();
   const embeddedHost = options.embedded === true && options.host && typeof options.host.appendChild === 'function'
@@ -573,7 +542,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
   };
   _clearError();
-  _applyTemplate(requestedTemplate, { clearTitle: true });
+  _applyScene('general', { clearTitle: true, resetSlots: true });
   _meetingWorkspaceMode = 'default';
   _meetingWorkspace = null;
   _paintWorkspace();

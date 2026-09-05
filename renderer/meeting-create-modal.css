@@ -83,49 +83,42 @@
   opacity: 0.6;
 }
 
-.mcm-template-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
-  margin: 0 0 14px;
-}
-
-.mcm-template {
-  min-height: 66px;
+/* 场景行（2026-09-05 从弹窗底部上移到成员配置之上，同时接掉原模板卡栅格）。 */
+.mcm-scene {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  padding: 10px 11px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.mcm-scene-caption {
+  color: var(--text-dim, var(--fg-muted));
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.mcm-scene-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
   border: 1px solid var(--border, var(--border-mid));
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: rgba(var(--rgb-overlay), 0.025);
   color: var(--text, var(--fg-strong));
+  font-size: 13px;
   cursor: pointer;
-  font-family: inherit;
-  text-align: left;
 }
-
-.mcm-template:hover {
+.mcm-scene-choice:hover {
   border-color: rgba(var(--rgb-info), 0.48);
   background: rgba(var(--rgb-info), 0.08);
 }
-
-.mcm-template.selected {
+.mcm-scene-choice.selected {
   border-color: rgba(var(--rgb-info), 0.72);
   background: rgba(var(--rgb-info), 0.13);
 }
-
-.mcm-template-title {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.mcm-template-desc {
-  color: var(--text-dim, var(--fg-muted));
-  font-size: 11.5px;
-  line-height: 1.35;
+.mcm-scene-choice input {
+  margin: 0;
+  accent-color: var(--accent, var(--link));
 }
 
 .mcm-slots {
@@ -149,33 +142,33 @@
   background: var(--bg-card-2, #1c232c);
   border: 1px solid var(--border, var(--border-mid));
   border-radius: var(--radius-md);
-  padding: 14px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   align-items: stretch;
 }
 .mcm-slot-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 52px;
+  min-height: 40px;
 }
 .mcm-slot-head strong {
   display: block;
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--text, var(--fg-strong));
   font-size: 13px;
 }
 .mcm-slot-fields {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 6px;
   width: 100%;
 }
 .mcm-group-member .mcm-avatar {
   background: #fff;
-  padding: 8px;
+  padding: 6px;
   object-fit: contain;
 }
 .mcm-remove-member {
@@ -213,8 +206,8 @@
   background: rgba(var(--rgb-info), 0.08);
 }
 .mcm-avatar {
-  width: 44px;
-  height: 44px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   display: block;
 }
@@ -224,20 +217,30 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+/* 2026-09-05：选项名与候选框改成同一行。原来 label 竖排，一个成员卡就占掉
+   6 行标题 + 6 行控件；横排后卡片高度接近腰斩，两位成员能一屏看全。
+   标题列定宽，保证两张卡的下拉框左边缘对齐。 */
 .mcm-slot label {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-dim, var(--fg-muted));
   width: 100%;
 }
+.mcm-slot-field-name {
+  flex: 0 0 62px;
+  line-height: 1.25;
+}
 .mcm-slot select {
+  flex: 1 1 auto;
+  min-width: 0;
   background: var(--bg, var(--surface-canvas));
   color: var(--text, var(--fg-strong));
   border: 1px solid var(--border, var(--border-mid));
   border-radius: var(--radius-xs);
-  padding: 6px 8px;
+  padding: 5px 8px;
   font-size: 13px;
   width: 100%;
   font-family: inherit;
@@ -248,7 +251,7 @@
   outline-offset: 1px;
 }
 .mcm-tuning-field {
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px solid var(--border-soft, var(--border-subtle));
 }
 .mcm-check {
@@ -259,21 +262,12 @@
   color: var(--text, var(--fg-strong));
   font-size: 12px;
 }
+.mcm-fast-field .mcm-check { flex: 1 1 auto; }
 .mcm-fast-checkbox {
   width: 15px;
   height: 15px;
   margin: 0;
   accent-color: var(--accent, var(--link));
-}
-
-.mcm-scene {
-  font-size: 13px;
-  color: var(--text, var(--fg-strong));
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft, var(--border-subtle));
 }
 
 .mcm-workspace-block { display: flex; flex-direction: column; gap: 7px; }
@@ -338,30 +332,6 @@
 .mcm-workspace-button:hover { background: rgba(89, 211, 149, 0.11); }
 .mcm-workspace-choice:focus-visible,
 .mcm-workspace-button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-.mcm-scene label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-.mcm-scene-hint {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--border-soft, var(--border-mid));
-  color: var(--text-muted, var(--fg-muted));
-  font-size: 10px;
-  cursor: help;
-  user-select: none;
-}
-.mcm-scene-hint:hover {
-  background: var(--accent, var(--link));
-  color: var(--fg-inverse);
-}
-
 .mcm-footer {
   display: flex;
   gap: 8px;

@@ -177,7 +177,7 @@ async function main() {
 
     await clickPoint(client, '[data-launch-intent="group"]');
     await waitFor('embedded group configuration', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 2`));
-    await clickPoint(client, '[data-mcm-template="review"]');
+    await clickPoint(client, '[data-mcm-scene="dev"]');
     result.groupIntent = await client.eval(`(() => ({
       intent: window.LaunchCenter.getActiveIntent(),
       panelVisible: !document.getElementById('launch-center-group-panel').hidden,
@@ -185,13 +185,13 @@ async function main() {
       embedded: document.getElementById('meeting-create-modal')?.classList.contains('mcm-embedded'),
       embeddedRole: document.querySelector('#meeting-create-modal .mcm-dialog')?.getAttribute('role'),
       members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
-      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+      devSceneSelected: document.querySelector('[data-mcm-scene="dev"]')?.classList.contains('selected'),
       devScene: document.querySelector('input[name="mcm-scene"][value="dev"]')?.checked,
       launchCenterVisible: getComputedStyle(document.getElementById('new-session-menu')).display === 'flex',
     }))()`);
     assert.deepEqual(result.groupIntent, {
       intent: 'group', panelVisible: true, sessionHidden: true,
-      embedded: true, embeddedRole: 'group', members: 2, reviewSelected: true, devScene: true, launchCenterVisible: true,
+      embedded: true, embeddedRole: 'group', members: 2, devSceneSelected: true, devScene: true, launchCenterVisible: true,
     });
     await client.eval(`document.getElementById('mcm-title-input').value = '保留这份成员配置'`);
     await screenshot(client, GROUP_SCREENSHOT_PATH);
@@ -212,9 +212,9 @@ async function main() {
     result.groupPreserved = await client.eval(`(() => ({
       title: document.getElementById('mcm-title-input')?.value,
       members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
-      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+      devSceneSelected: document.querySelector('[data-mcm-scene="dev"]')?.classList.contains('selected'),
     }))()`);
-    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 2, reviewSelected: true });
+    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 2, devSceneSelected: true });
     await clickPoint(client, '[data-launch-intent="resume"]');
 
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
@@ -228,6 +228,30 @@ async function main() {
     })()`));
     assert.equal(result.escape.expanded, 'false');
     assert.equal(result.escape.focus, 'btn-new');
+
+    // 回归：开发场景 → 关掉启动中心 → 重开，场景/工作目录都会回到默认，
+    // 那条「已切到选择已有路径」的说明必须跟着消失。留着它就会出现
+    // 「场景=通用、目录=默认，但屏幕上写着开发场景已切目录」的自相矛盾。
+    await clickPoint(client, '#btn-new');
+    await clickPoint(client, '[data-launch-intent="group"]');
+    await waitFor('group panel reopened', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 2`));
+    result.sceneReset = await client.eval(`(() => {
+      const hint = document.getElementById('mcm-scene-hint');
+      return {
+        scene: document.querySelector('input[name="mcm-scene"]:checked')?.value,
+        devSceneSelected: document.querySelector('[data-mcm-scene="dev"]')?.classList.contains('selected'),
+        workspaceMode: document.querySelector('#meeting-create-modal .mcm-workspace-choice.selected')?.dataset.mcmWorkspaceMode,
+        hintShown: !!(hint && getComputedStyle(hint).display !== 'none'),
+        hintText: hint ? hint.textContent.trim() : null,
+      };
+    })()`);
+    assert.deepEqual(result.sceneReset, {
+      scene: 'general', devSceneSelected: false, workspaceMode: 'default',
+      hintShown: false, hintText: '',
+    }, '重开后场景说明必须跟着场景一起复位');
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
+    await waitFor('launch center closed again', () => client.eval(`document.getElementById('new-session-menu').style.display === 'none'`));
 
     await clickPoint(client, '#btn-research');
     result.research = await waitFor('research panel', () => client.eval(`(() => {

@@ -35,14 +35,20 @@
   // 这个开关只表示 Claude Code 的 fastMode；Codex 的 fast 是另一套
   // service_tier 机制，由下面独立的速度通道控件承载。
   const FAST_KINDS = new Set(['claude']);
+  // 2026-09-05：Claude Fast 默认关闭。它更快出字，但交互式会话可能不落 transcript
+  // （2026-06-11 实测），当默认值弊大于利；要用的人自己勾。
+  const DEFAULT_FAST_MODE = false;
   // Codex 也有 fast —— 是 service_tier（priority 通道，1.5× 速度、用量更高），
   // 跟 Claude 的 fastMode 完全两套机制，所以两个 kind 走两个不同控件。
   const CODEX_TIER_KINDS = new Set(['codex', 'deepseek']);
   const DEFAULT_EFFORT = 'max';
+  // 2026-09-05：Claude / Codex 两家默认降到 high。max 在日常任务上只是更慢更贵，
+  // 需要时用户仍可在弹窗里手动往上调。DeepSeek 未被点名，保持原来的 max。
+  const DEFAULT_EFFORT_BY_KIND = { claude: 'high', codex: 'high' };
   const CLAUDE_EFFORT_OPTIONS = [
-    ['max', 'max · 默认，最强'],
+    ['max', 'max · 最强'],
     ['xhigh', 'xhigh'],
-    ['high', 'high'],
+    ['high', 'high · 默认'],
     ['medium', 'medium · 省额度'],
     ['low', 'low · 最省'],
   ];
@@ -81,7 +87,9 @@
     ],
   };
   const DEFAULT_MCP_BY_KIND = { claude: 'none', codex: 'none', deepseek: 'none' };
-  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'fast', deepseek: 'inherit' };
+  // 2026-09-05：Codex 的 fast（service_tier=priority）默认关掉 —— 用户要的是
+  // 深思而不是抢通道，1.5× 速度换来的用量代价在长任务上不划算。
+  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'standard', deepseek: 'inherit' };
   const EFFORT_LABEL_BY_KIND = {
     claude: '思考强度 (--effort)',
     codex: '思考强度 (reasoning effort)',
@@ -98,12 +106,13 @@
   };
 
   function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
+  function defaultEffortFor(kind) { return DEFAULT_EFFORT_BY_KIND[kind] || DEFAULT_EFFORT; }
   function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
   function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'none'; }
   function defaultCodexSpeedFor(kind, modelId) {
     const configuredDefault = DEFAULT_CODEX_SPEED_BY_KIND[kind] || 'inherit';
-    // Fast 只能作为支持该通道的 Codex 模型默认值；模型目录明确说不支持时，
-    // 回到 Standard，不能为了统一默认而送一个模型不提供的档位。
+    // 2026-09-05 起配置默认就是 standard，这条分支只在有人把默认调回 fast 时才生效：
+    // 模型目录明确说不支持该通道时回到 Standard，不能为了统一默认而送一个模型不提供的档位。
     if (configuredDefault === 'fast' && modelId && !codexModelTuning(modelId).supportsFast) return 'standard';
     return configuredDefault;
   }
@@ -134,10 +143,10 @@
     const configured = (codexTuningCatalog && codexTuningCatalog.configuredServiceTier) || '';
     const inheritLabel = configured ? `跟随全局配置（当前：${configured}）` : '跟随全局配置';
     const options = [
-      ['standard', 'Standard · 显式关闭 Fast'],
+      ['standard', 'Standard · 默认，显式关闭 Fast'],
       ['inherit', inheritLabel],
     ];
-    if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · 默认，priority 通道，1.5× 速度']);
+    if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · priority 通道，1.5× 速度']);
     options.push(['flex', 'Flex · 更慢更省']);
     return options;
   }
@@ -152,9 +161,10 @@
         ? DEFAULT_MODEL_BY_KIND[kind]
         : (modelOptions[0] ? modelOptions[0].id : ''));
     const effortOptions = EFFORT_KINDS.has(kind) ? effortOptionsFor(kind, model) : [];
-    const fallbackEffort = effortOptions.some(([value]) => value === DEFAULT_EFFORT)
-      ? DEFAULT_EFFORT
-      : (effortOptions[0] ? effortOptions[0][0] : DEFAULT_EFFORT);
+    const kindDefaultEffort = defaultEffortFor(kind);
+    const fallbackEffort = effortOptions.some(([value]) => value === kindDefaultEffort)
+      ? kindDefaultEffort
+      : (effortOptions[0] ? effortOptions[0][0] : kindDefaultEffort);
     const effort = effortOptions.some(([value]) => value === selection.effort)
       ? selection.effort
       : fallbackEffort;
@@ -178,7 +188,7 @@
       mcpProfile,
       mcpOptions,
       showFast: FAST_KINDS.has(kind),
-      fastMode: typeof selection.fastMode === 'boolean' ? selection.fastMode : true,
+      fastMode: typeof selection.fastMode === 'boolean' ? selection.fastMode : DEFAULT_FAST_MODE,
       showCodexTier: CODEX_TIER_KINDS.has(kind),
       codexSpeedTier,
       codexTierOptions,
@@ -192,7 +202,8 @@
     if (tuning.modelOptions.length > 0 && tuning.model) opts.model = tuning.model;
     if (tuning.showEffort && tuning.effort) opts.effort = tuning.effort;
     if (tuning.showMcp) opts.mcpProfile = tuning.mcpProfile;
-    // 与单会话保持一致：默认开不写字段，只有用户显式关掉才覆盖。
+    // 只有"关"需要写字段：session-manager 全链路按 fastMode === false 判断，
+    // 开着就是省略。2026-09-05 默认改成关之后这条会常态写出 false，是预期行为。
     if (tuning.showFast && tuning.fastMode === false) opts.fastMode = false;
     // inherit = 不覆盖 ~/.codex/config.toml。
     if (tuning.showCodexTier && tuning.codexSpeedTier !== 'inherit') {
@@ -212,9 +223,9 @@
   let existingWorkspace = null;
   let submitting = false;
   let selectedModel = '';
-  let selectedEffort = DEFAULT_EFFORT;
+  let selectedEffort = defaultEffortFor('claude');
   let selectedMcpProfile = 'lean';
-  let selectedFastMode = true;
+  let selectedFastMode = DEFAULT_FAST_MODE;
   let selectedCodexTier = 'inherit';
   let recentItems = [];
   let recommendedItems = [];
@@ -808,9 +819,10 @@
       // 切 kind / 切模型之后旧档位可能不在新枚举里（gpt-5.6-sol 的 ultra → 5.5 没有），
       // 回落而不是把非法值送进命令行。回落到该模型支持的最高档，不硬套 max。
       if (!effortOptions.some(([value]) => value === selectedEffort)) {
-        selectedEffort = effortOptions.some(([value]) => value === DEFAULT_EFFORT)
-          ? DEFAULT_EFFORT
-          : (effortOptions[0] ? effortOptions[0][0] : DEFAULT_EFFORT);
+        const kindDefaultEffort = defaultEffortFor(selectedKind);
+        selectedEffort = effortOptions.some(([value]) => value === kindDefaultEffort)
+          ? kindDefaultEffort
+          : (effortOptions[0] ? effortOptions[0][0] : kindDefaultEffort);
       }
       if (effortSelect) effortSelect.value = selectedEffort;
     }
@@ -1035,9 +1047,9 @@
 
   function applyTuningMemory(kind) {
     const saved = tuningMemory.get(kind);
-    selectedEffort = (saved && saved.effort) || DEFAULT_EFFORT;
+    selectedEffort = (saved && saved.effort) || defaultEffortFor(kind);
     selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
-    selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : true;
+    selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : DEFAULT_FAST_MODE;
     selectedCodexTier = (saved && saved.codexSpeedTier) || defaultCodexSpeedFor(kind, selectedModel);
   }
 

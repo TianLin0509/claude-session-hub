@@ -10,6 +10,7 @@ const {
   supportsForkSession,
   supportsRecoverableSession,
 } = require('../core/session-capabilities.js');
+const { DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 
 const currentDeepSeek = {
   id: 'ds-new', kind: 'deepseek', codexSid: 'codex-native',
@@ -44,7 +45,9 @@ assert.equal(supportsRecoverableSession({ kind: 'powershell' }), false);
 assert.equal(supportsRecoverableSession({ kind: 'codex', purpose: 'chuxin-research' }), true,
   'provider capability stays resumable; user-facing lifecycle policy protects Chuxin separately');
 assert.equal(supportsForkSession({ kind: 'codex', purpose: 'chuxin-research' }), false);
-assert.equal(sessionModelId({ kind: 'codex', currentModel: { id: 'gpt-image-gen2' } }), 'gpt-5.6-sol');
+// 工具型模型（图像等）不是会话模型，必须回落到 Hub 当前的 Codex 默认，
+// 而不是某个写死的 id —— 默认模型会随 CLI 目录升级往前走。
+assert.equal(sessionModelId({ kind: 'codex', currentModel: { id: 'gpt-image-gen2' } }), DEFAULT_MODEL_BY_KIND.codex);
 assert.equal(sessionModelId({ kind: 'codex', currentModel: { id: 'gpt-5.6-terra' } }), 'gpt-5.6-terra');
 
 const resumeMeta = buildSessionResumeMeta({
