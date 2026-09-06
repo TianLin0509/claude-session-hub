@@ -4983,8 +4983,13 @@ if (typeof document !== 'undefined') (function () {
     const loopSt = _loopStateByMeeting[current.id]
       || (current.serialWorkflow && current.serialWorkflow.loopState)
       || null;
+    // 讨论阶段不露「已暂停 · 继续」：它恢复的是旧目标，会绕过「开工」那一步的任务说明确认
+    // （2026-09-06 合并位在隔离实例复现）。主进程 loop:resume 同样拦，这里只是不给入口。
+    const discussingNow = DevDiscuss.isDiscussing(current);
     if (loopSt && loopSt.status === 'running') {
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-workflow-stop="1" title="循环工作流运行中（第 ${escapeHtml(String(loopSt.round || 1))} 轮 · ${escapeHtml(loopSt.phase || loopSt.stage || '进行中')}），点击停止"><span>循环</span><strong>R${escapeHtml(String(loopSt.round || 1))}·${escapeHtml(loopSt.phase || loopSt.stage || '进行中')} ⏹</strong></span>`);
+    } else if (loopSt && loopSt.status === 'paused' && discussingNow) {
+      chips.push(_renderInputChip('闭环', '旧循环已暂停 · 讨论中不可恢复，请「开工」', ''));
     } else if (loopSt && loopSt.status === 'paused') {
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-loop-resume="1" title="${escapeHtml((loopSt.error && loopSt.error.reason) || (loopSt.lastError && loopSt.lastError.reason) || '步骤失败，循环已暂停')}；点击从持久检查点继续"><span>闭环</span><strong>已暂停 · 继续</strong></span>`);
     }
@@ -4998,7 +5003,7 @@ if (typeof document !== 'undefined') (function () {
       const currentStep = Number.isFinite(rawStepIndex) ? rawStepIndex + 1 : 1;
       const totalSteps = Number(serialSt.totalSteps) || workflowSteps || 1;
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-workflow-stop="1" title="串行工作流正在第 ${currentStep}/${totalSteps} 步，点击停止"><span>串行</span><strong>${currentStep}/${totalSteps} ⏹</strong></span>`);
-    } else if (serialSt && serialSt.status === 'paused') {
+    } else if (serialSt && serialSt.status === 'paused' && !discussingNow) {
       const reason = serialSt.error && serialSt.error.reason || serialSt.lastError && serialSt.lastError.reason || '步骤失败';
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-serial-resume="1" title="${escapeHtml(reason)}；点击从持久检查点继续"><span>串行</span><strong>已暂停 · 继续</strong></span>`);
     }

@@ -66,6 +66,17 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
     '切阶段必须同步写回主进程，再启动循环');
 });
 
+test('讨论阶段堵死「恢复旧循环」的三条路（2026-09-06 合并位复现的绕过）', () => {
+  // 旧循环暂停 → 回到讨论 → 点「已暂停 · 继续」→ 后端照跑旧目标，绕过了「开工」的任务说明确认。
+  // 前端不露入口只是礼貌，引擎和 IPC 才是闸门；三层各守一条。
+  assert(/loopSt\.status === 'paused' && discussingNow/.test(room), '前端：讨论阶段不渲染循环恢复入口');
+  assert(/serialSt\.status === 'paused' && !discussingNow/.test(room), '前端：串行恢复入口同样不露');
+  const engine = read('main/groupchat/loop-engine.js');
+  assert(/if \(discussPhaseBlock\(meeting\)\)/.test(engine.slice(engine.indexOf('async function runLoop'))), '引擎：runLoop 入口按阶段拒绝');
+  assert(/validateResume/.test(read('main/ipc/loop-handlers.js')), 'IPC：loop:resume 先问引擎阶段校验');
+  assert(/devPhase === 'discuss'\) return \{ ok: false/.test(read('main/groupchat/dev-workbench.js')), '工作台：恢复动作按阶段拒绝');
+});
+
 test('单人群聊不写默认工作流（一个人没法自审自合）', () => {
   assert(/slots\.length < 2/.test(modal), '必须有成员数下限判断');
 });

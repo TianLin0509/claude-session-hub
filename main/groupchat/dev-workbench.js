@@ -71,7 +71,9 @@ function createDevWorkbench(deps) {
       : progressSource === update ? update.text : card.progress;
     const failedReview = review && review.decision === 'fail' ? review : null;
     const reportSource = review && review.report && (!card || !card.report || review.index >= card.index) ? review : card;
+    // 讨论阶段不给「恢复」：恢复的是旧目标，会绕过「开工」那一步的任务说明确认（2026-09-06 合并位复现）。
     const resumeCandidate = !live.running && !live.unavailable && !sw.devWorkbenchManual && sw.loop && sw.loop.enabled
+      && sw.devPhase !== 'discuss'
       && ['paused', 'running', 'stopped_user', 'reviewer_unavailable'].includes(ls.status) && !!ls.goal
       && !(ls.deadlineTs && Date.now() >= ls.deadlineTs);
     const missingMember = resumeCandidate ? memberProblem(m) : '';
@@ -251,6 +253,8 @@ function createDevWorkbench(deps) {
         return { ok: true, message: '原自动流程设置已恢复；尚未派发任务。可继续中断流程，或回群聊布置新要求。' };
       }
       if (name === 'resume') {
+        // 讨论阶段恢复的是旧目标，会绕过「开工」的任务说明确认；引擎也拦，这里给人话原因
+        if (m.serialWorkflow.devPhase === 'discuss') return { ok: false, reason: '讨论阶段不能恢复旧循环；回群聊点「开工」确认任务说明后再进入实现' };
         const validation = loopEngine.validateLoop(id);
         if (!validation.ok) return { ok: false, reason: validation.reason };
         const ls = m.serialWorkflow.loopState;

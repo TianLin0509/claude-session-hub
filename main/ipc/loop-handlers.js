@@ -41,6 +41,9 @@ function registerLoopIpc(ipcMain, deps) {
       if (!persisted || !['running', 'paused'].includes(persisted.status)) {
         return { ok: false, reason: 'no_resumable_loop_run' };
       }
+      // 开发群聊讨论阶段不许恢复旧循环（会绕过「开工」的任务说明确认）；引擎内部也拦，这里让前端拿到明确原因
+      const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
+      if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
       loopEngine.runLoop(args.meetingId, null, { ...persisted, status: 'running', stepAttempt: 0, lastError: null }, { heroIdBySid: args.heroIdBySid || {} })
         .catch(err => logger.error('[loop:resume] background run failed:', err));
       return { ok: true };
