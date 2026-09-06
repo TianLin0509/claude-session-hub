@@ -330,6 +330,51 @@
 }
 
 .mcm-workspace-button:hover { background: rgba(89, 211, 149, 0.11); }
+
+/* 项目库下拉：挂在「选择已有路径」那一行下面，列已整理项目（中文名 + 路径 + 活跃时间） */
+.mcm-project-library {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(89, 211, 149, .28);
+  border-radius: var(--radius-sm);
+  background: rgba(89, 211, 149, .04);
+}
+.mcm-project-library[hidden] { display: none; }
+.mcm-project-library-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name when" "path when";
+  column-gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.mcm-project-library-item:hover { border-color: rgba(var(--rgb-info), .45); background: rgba(56, 139, 253, .06); }
+.mcm-project-library-item.selected { border-color: rgba(89, 211, 149, .55); background: rgba(89, 211, 149, .08); }
+.mcm-project-library-item:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.mcm-project-library-item strong { grid-area: name; font-size: 12px; }
+.mcm-project-library-item small {
+  grid-area: path;
+  overflow: hidden;
+  color: var(--text-dim, var(--fg-muted));
+  font: 10px Consolas, "SFMono-Regular", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcm-project-library-item span { grid-area: when; color: var(--text-dim, var(--fg-muted)); font-size: 10px; white-space: nowrap; }
+.mcm-project-library-empty { padding: 8px 10px; color: var(--text-dim, var(--fg-muted)); font-size: 11px; line-height: 1.6; }
 .mcm-workspace-choice:focus-visible,
 .mcm-workspace-button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .mcm-footer {

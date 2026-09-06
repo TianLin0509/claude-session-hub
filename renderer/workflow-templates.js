@@ -79,7 +79,36 @@
     return TASK_PRESETS.concat(TEMPLATES).find(t => t.id === templateId) || null;
   }
 
-  function createTemplateConfig(templateId, members) {
+  // 开发场景开在工作根（默认工作目录）时，prompt 前面加一段「先定位项目根」。
+  // 项目库是建群那一刻从 Hub 拿到的快照：已整理项目的中文名 → 绝对路径，按活跃时间排序。
+  // 绝对路径只在这里**运行时**拼进去，Hub 源码里仍然一个项目名、一条路径都没有
+  // （unit-dev-scene-contract 守着不带 opts 的那条）。
+  function buildProjectLocatorPrompt(projects) {
+    const list = (Array.isArray(projects) ? projects : [])
+      .filter(p => p && typeof p.path === 'string' && p.path.trim())
+      .map(p => `- ${String(p.name || '').trim() || p.path} → ${p.path.trim()}`);
+    const lines = [
+      '【先定位项目根】当前工作目录是工作根，不是任何项目的根。先根据我的任务判断它属于哪个项目，',
+      '从下面的项目库里选出项目根并切换过去，之后「本仓库」一律指它，所有相对路径都以它为准。',
+    ];
+    if (list.length) {
+      lines.push('项目库（按最近活跃排序）：');
+      lines.push(...list);
+    } else {
+      lines.push('项目库目前是空的：在工作根下找含 .agents/project.json 的 git 仓库根（不要选 .git 是文件的 worktree）。');
+    }
+    lines.push('判断不了属于哪个项目就先问我一句，不要猜，也不要在工作根下乱翻。');
+    return lines.join('\n');
+  }
+
+  function _withProjectLocator(stepConfigs, opts) {
+    const ws = opts && opts.workspace;
+    if (!ws || !ws.atWorkRoot) return stepConfigs;
+    const locator = buildProjectLocatorPrompt(ws.projects);
+    return stepConfigs.map(step => ({ ...step, prompt: `${locator}\n\n${step.prompt}` }));
+  }
+
+  function createTemplateConfig(templateId, members, opts = {}) {
     const ids = memberIds(members);
     const template = getTemplateMeta(templateId);
     if (!template || ids.length < template.minMembers) return null;
@@ -150,7 +179,7 @@
     if (templateId === 'dev-task') {
       return config(
         [one(ids, 0), one(ids, 1)],
-        [
+        _withProjectLocator([
           {
             name: '工作位实现',
             timeoutMs: 30 * 60 * 1000,   // 实现最费时，给引擎允许的上限
@@ -173,7 +202,7 @@
               REVIEW_RESULT_CONTRACT,
             ].join('\n'),
           },
-        ],
+        ], opts),
         { enabled: true, maxRounds: 3 },
       );
     }
@@ -265,6 +294,7 @@
     TEMPLATES,
     getTemplateMeta,
     createTemplateConfig,
+    buildProjectLocatorPrompt,
     normalizeStepConfigs,
     buildSerialStepPrompt,
   };

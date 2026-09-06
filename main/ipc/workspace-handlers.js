@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { normalizeKey } = require('../../core/workspace-service.js');
@@ -208,6 +209,49 @@ function registerWorkspaceIpc(ipcMain, deps) {
   }
 
   ipcMain.handle('workspace:list', () => workspaceService.listWorkspaces(activePaths()));
+
+  // 项目库：Hub 见过的目录里，已被 project-prep 整理成可开并行群聊的项目，按活跃时间排序。
+  // 候选 = 工作区注册表 + 所有会话 cwd + 所有会议 workspace + 工作根的一级子目录；
+  // 每路都带自己的活跃时间，core 里取最大值并去重。绝不递归扫盘。
+  ipcMain.handle('workspace:prepared-projects', () => {
+    const { listPreparedProjects } = require('../../core/prepared-project-library.js');
+    const candidates = [];
+    try {
+      for (const item of workspaceService.listWorkspaces(activePaths()).items || []) {
+        if (item && item.path) candidates.push({ path: item.path, activeAt: Number(item.lastUsedAt) || 0 });
+      }
+    } catch (error) {
+      console.warn('[workspace] prepared-projects: registry unavailable:', error && error.message);
+    }
+    for (const session of sessionManager.getAllSessions()) {
+      if (!session || !session.cwd) continue;
+      candidates.push({
+        path: session.cwd,
+        activeAt: Math.max(Number(session.lastInputAt) || 0, Number(session.lastOutputAt) || 0,
+          Number(session.lastMessageTime) || 0, Number(session.createdAt) || 0),
+      });
+    }
+    if (meetingManager && typeof meetingManager.getAllMeetings === 'function') {
+      for (const meeting of meetingManager.getAllMeetings()) {
+        if (!meeting || !meeting.workspace) continue;
+        candidates.push({
+          path: meeting.workspace,
+          activeAt: Math.max(Number(meeting.updatedAt) || 0, Number(meeting.createdAt) || 0),
+        });
+      }
+    }
+    try {
+      const root = workspaceService.getWorkspaceRoot();
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.name.startsWith('_') && !entry.name.startsWith('.')) {
+          candidates.push({ path: path.join(root, entry.name), activeAt: 0 });
+        }
+      }
+    } catch (error) {
+      console.warn('[workspace] prepared-projects: root scan skipped:', error && error.message);
+    }
+    return { items: listPreparedProjects(candidates) };
+  });
 
   // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型
   // 下发的（gpt-5.6-sol 有 ultra，5.5 只到 xhigh），写死一份必然给某些模型多出

@@ -37,6 +37,11 @@ let _meetingWorkspace = null;
 // 群聊与单会话同一个默认档：工作根（2026-08-31 平铺决策）。
 // 群聊尤其需要——180 场会议 100% 共用 cwd，本来就是「多个 AI 同一个目录」的场景。
 let _meetingWorkspaceMode = 'default';
+// 项目库：已被 project-prep 整理过的项目（中文名 → 路径，按活跃时间排序）。
+// 建群那一刻从主进程取快照；「选择已有路径」的下拉和开发场景的 prompt 都用它。
+let _projectLibrary = [];
+let _projectLibraryLoading = null;
+let _projectLibraryOpen = false;
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
 
@@ -52,11 +57,106 @@ function _paintWorkspace(workspace) {
   }
   const existingRow = _modalEl.querySelector('#mcm-workspace-existing');
   if (existingRow) existingRow.hidden = _meetingWorkspaceMode !== 'existing';
+  if (_meetingWorkspaceMode !== 'existing') _projectLibraryOpen = false;
   _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
     const selected = button.getAttribute('data-mcm-workspace-mode') === _meetingWorkspaceMode;
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-checked', selected ? 'true' : 'false');
   });
+  _renderProjectLibrary();
+}
+
+// ── 项目库下拉 ──────────────────────────────────────────────────────────────
+// 用户的原话：「AI HUB 就应该作为一个选项，我点击就行，不需要我自己输入路径去找」。
+// 数据源是主进程的 workspace:prepared-projects（core/prepared-project-library.js）。
+async function _loadProjectLibrary(force = false) {
+  if (_projectLibraryLoading) return _projectLibraryLoading;
+  if (_projectLibrary.length && !force) return _projectLibrary;
+  _projectLibraryLoading = (async () => {
+    try {
+      const result = await ipcRenderer.invoke('workspace:prepared-projects');
+      _projectLibrary = ((result && result.items) || []).filter(item => item && item.path);
+    } catch (error) {
+      console.warn('[meeting-create] 项目库读取失败:', error && error.message);
+      _projectLibrary = [];
+    } finally {
+      _projectLibraryLoading = null;
+    }
+    _renderProjectLibrary();
+    return _projectLibrary;
+  })();
+  return _projectLibraryLoading;
+}
+
+function _pathKey(value) {
+  return String(value || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
+}
+
+function _relativeActiveLabel(activeAt) {
+  const at = Number(activeAt) || 0;
+  if (!at) return '';
+  const diff = Date.now() - at;
+  if (diff < 60 * 60 * 1000) return '刚刚活跃';
+  if (diff < 24 * 60 * 60 * 1000) return `${Math.max(1, Math.round(diff / 3600000))} 小时前`;
+  return `${Math.max(1, Math.round(diff / 86400000))} 天前`;
+}
+
+function _renderProjectLibrary() {
+  if (!_modalEl) return;
+  const listEl = _modalEl.querySelector('#mcm-project-library');
+  const toggle = _modalEl.querySelector('#mcm-project-library-button');
+  if (!listEl || !toggle) return;
+  const open = _projectLibraryOpen && _meetingWorkspaceMode === 'existing';
+  listEl.hidden = !open;
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.textContent = `项目库 ${open ? '▴' : '▾'}`;
+  if (!open) return;
+  if (_projectLibraryLoading && !_projectLibrary.length) {
+    listEl.innerHTML = '<div class="mcm-project-library-empty">正在读取项目库…</div>';
+    return;
+  }
+  if (!_projectLibrary.length) {
+    listEl.innerHTML = '<div class="mcm-project-library-empty">还没有整理过的项目。'
+      + '在项目目录开一个普通会话，说「用 project-prep skill 整理这个仓库」，整理一次即可。</div>';
+    return;
+  }
+  const currentKey = _meetingWorkspace && _meetingWorkspace.path ? _pathKey(_meetingWorkspace.path) : '';
+  listEl.innerHTML = _projectLibrary.map(item => {
+    const selected = !!currentKey && _pathKey(item.path) === currentKey;
+    const when = _relativeActiveLabel(item.activeAt);
+    return `<button type="button" class="mcm-project-library-item${selected ? ' selected' : ''}" role="option"`
+      + ` aria-selected="${selected ? 'true' : 'false'}" data-mcm-project-path="${_escapeHtml(item.path)}" title="${_escapeHtml(item.path)}">`
+      + `<strong>${_escapeHtml(item.name || item.path)}</strong>`
+      + `<small>${_escapeHtml(window.WorkspaceController.compactPath(item.path, 56))}</small>`
+      + (when ? `<span>${_escapeHtml(when)}</span>` : '')
+      + '</button>';
+  }).join('');
+  listEl.querySelectorAll('[data-mcm-project-path]').forEach(button => {
+    button.addEventListener('click', () => {
+      const target = _projectLibrary.find(item => item.path === button.dataset.mcmProjectPath);
+      if (!target) return;
+      void _selectLibraryProject(target).catch(err => _showError(`选择项目失败：${err && err.message ? err.message : String(err)}`));
+    });
+  });
+}
+
+async function _selectLibraryProject(item) {
+  // workspace:select 让主进程把这条路径登记进工作区注册表并回 tier/label，
+  // 与「选择文件夹…」走的是同一条归一化路径，后面的建群逻辑不用区分来源。
+  const workspace = await ipcRenderer.invoke('workspace:select', item.path);
+  if (!workspace || !workspace.path) throw new Error('主进程没有返回工作区');
+  _meetingWorkspaceMode = 'existing';
+  _meetingWorkspace = { ...workspace, label: workspace.label || item.name };
+  _projectLibraryOpen = false;
+  _clearError();
+  _paintWorkspace(_meetingWorkspace);
+  return _meetingWorkspace;
+}
+
+function _toggleProjectLibrary(open) {
+  _projectLibraryOpen = typeof open === 'boolean' ? open : !_projectLibraryOpen;
+  if (_projectLibraryOpen) void _loadProjectLibrary();
+  _renderProjectLibrary();
 }
 
 async function _syncWorkspace() {
@@ -141,9 +241,10 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    // 开发场景需要解释一句：工作目录档位是被自动切的，不说明用户下次会以为是自己选的。
-    hint.textContent = '开发场景要开在项目根上：预设 prompt 读的是这个仓库里的 '
-      + '.agents/AUTHOR.md，所以工作目录已切到「选择已有路径」，请挑到项目根。'
+    // 开发场景两条路都通：留在默认工作目录，AI 按任务从项目库里自己定位项目根；
+    // 或者点「选择已有路径」→「项目库」一键选定。说清楚，用户才知道不必去找路径。
+    hint.textContent = '开发场景要开在项目根上：留在「默认工作目录」也行，AI 会根据你的任务从项目库里'
+      + '自己找到项目根；想指定项目，点「选择已有路径」→「项目库」一键选。'
       + '项目没整理过的话，先用 project-prep skill 跑一次。';
     hint.style.display = '';
   } else {
@@ -328,7 +429,8 @@ function _ensureModal() {
             <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="scratch" role="radio" aria-checked="false"><strong>临时目录</strong><small>随机新建一次性目录，全员共用</small></button>
             <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>可选项目、领域或外部目录</small></button>
           </div>
-          <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
+          <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-project-library-button" aria-haspopup="listbox" aria-expanded="false" aria-controls="mcm-project-library" title="已整理过的项目，按最近活跃排序，点一下即选">项目库 ▾</button><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
+          <div class="mcm-project-library" id="mcm-project-library" role="listbox" aria-label="项目库" hidden></div>
         </div>
         <div class="mcm-scene" id="mcm-scene-row">
           <span class="mcm-scene-caption">场景</span>
@@ -371,12 +473,28 @@ function _bindEvents() {
       const requested = button.getAttribute('data-mcm-workspace-mode');
       _meetingWorkspaceMode = requested === 'existing' || requested === 'scratch' ? requested : 'default';
       _paintWorkspace();
+      // 切到「选择已有路径」还没选过目录时，先展开项目库让用户点选；
+      // 只有项目库确实是空的才回落到系统文件夹对话框（老行为）。
       if (_meetingWorkspaceMode === 'existing' && !_meetingWorkspace) {
-        void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
+        _toggleProjectLibrary(true);
+        void _loadProjectLibrary().then(items => {
+          if (_meetingWorkspaceMode !== 'existing' || _meetingWorkspace) return;
+          if (!items.length) {
+            _projectLibraryOpen = false;
+            _renderProjectLibrary();
+            return _chooseMeetingExistingWorkspace();
+          }
+          return undefined;
+        }).catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
       }
     });
   });
+  _modalEl.querySelector('#mcm-project-library-button').addEventListener('click', () => {
+    _toggleProjectLibrary();
+  });
   _modalEl.querySelector('#mcm-workspace-button').addEventListener('click', () => {
+    _projectLibraryOpen = false;
+    _renderProjectLibrary();
     void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
   });
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
@@ -384,13 +502,10 @@ function _bindEvents() {
       if (!radio.checked) return;
       // 场景高亮、房名提示、场景说明都归 _applyScene 管，这里不重复画。
       _applyScene(radio.value);
-      // 开发场景必须开在项目根：预设 prompt 读的是「本仓库的 .agents/AUTHOR.md」，
-      // 落在默认工作根（平铺目录，不是仓库）就一定读不到，而 AI 不会自己 cd 过去。
-      // 默认那一档在这里是错的，替用户切掉，而不是等它在第一步失败。
-      if (radio.value === 'dev' && _meetingWorkspaceMode !== 'existing') {
-        _meetingWorkspaceMode = 'existing';
-        _paintWorkspace();
-      }
+      // 开发场景不再替用户把档位切到「选择已有路径」（2026-09-06 用户明确不想每次找路径）。
+      // 留在默认工作根时，建群会把项目库写进 prompt，AI 按任务自己定位项目根；
+      // 这里只预热项目库，让用户一点「选择已有路径」就能看到列表。
+      if (radio.value === 'dev') void _loadProjectLibrary();
     });
   });
   _modalEl.addEventListener('click', (e) => {
@@ -432,11 +547,18 @@ async function _onCreate() {
     const title = titleInput ? titleInput.value.trim() : '';
 
     const workspace = await _syncWorkspace();
+    // 开发场景开在平铺工作根上：放行，但 prompt 里要带项目库让 AI 自己定位项目根。
+    const atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!(workspace && workspace.flat);
+    let devProjects = [];
     if (scene === 'dev') {
       // 挡在建群这一刻。落错目录的代价是几分钟后才看得出来的一次空转，
       // 而这里只要一行判断。见 renderer/dev-workspace-guard.js 的注释。
-      const verdict = checkDevWorkspace(workspace && workspace.path);
+      const verdict = checkDevWorkspace(workspace && workspace.path, { workRoot: atWorkRoot ? workspace.path : '' });
       if (!verdict.ok) throw new Error(verdict.message);
+      if (atWorkRoot) {
+        createBtn.textContent = '正在读取项目库...';
+        devProjects = await _loadProjectLibrary(true);
+      }
     }
     createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
@@ -453,7 +575,7 @@ async function _onCreate() {
       workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
-    _applyDefaultDevWorkflow(meeting, scene, slots);
+    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects });
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -479,14 +601,22 @@ async function _onCreate() {
 //
 // 想随便问一句而不跑流程？关掉工作流开关即可，走的还是原来那条普通群聊路径。
 // memberId 是位置约定：loop-engine 的 sidOf() 把 m1 解析成 subSessions[0]。
-function _applyDefaultDevWorkflow(meeting, scene, slots) {
+//
+// 开在工作根（默认工作目录）时，workspaceHint 带上项目库快照，预设 prompt 前面会多一段
+// 「先按任务定位项目根」—— 这是「允许选默认目录」的代价，由 prompt 而不是用户承担。
+function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return;
   const WT = window.WorkflowTemplates;
   if (!WT || typeof WT.createTemplateConfig !== 'function') return;
   if (!Array.isArray(slots) || slots.length < 2) return;   // 单人没法自审自合，不配
   try {
     const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
-    const config = WT.createTemplateConfig('dev-task', members);
+    const config = WT.createTemplateConfig('dev-task', members, {
+      workspace: {
+        atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
+        projects: (workspaceHint && workspaceHint.projects) || [],
+      },
+    });
     if (!config) return;
     config.templateId = 'dev-task';
     ipcRenderer.send('update-meeting', {
@@ -545,7 +675,10 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   _applyScene('general', { clearTitle: true, resetSlots: true });
   _meetingWorkspaceMode = 'default';
   _meetingWorkspace = null;
+  _projectLibraryOpen = false;
   _paintWorkspace();
+  // 项目库每次开弹窗都重新拉：别的终端刚 commit 过的项目要排到前面来。
+  void _loadProjectLibrary(true);
 
   const modeLabel = _modalEl.querySelector('#mcm-mode-label');
   modeLabel.textContent = 'AI 群聊';
