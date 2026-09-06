@@ -59,6 +59,17 @@ async function main(){
     check(await ev(`document.activeElement.closest('.devb-row')?.dataset.mid===${JSON.stringify(ids[0])}&&document.activeElement.dataset.devbAction==='details'`),'Live row replacement preserves keyboard focus on the same task');
     await click('#devb-updates');
     check(await ev(`document.querySelector('.devb-row').dataset.mid===${JSON.stringify(ids[0])}&&document.querySelector('#devb-updates').hidden`),'Applying updates orders by real latest activity and clears the notice');
+    // 人话通道（2026-09-06）：方案 / 提问 / 交付说明必须真的出现在工作台上，
+    // 而不是停在群聊原文里 —— 那正是维护者说「完全没看到」的那一段。
+    await ev(`require('electron').ipcRenderer.invoke('fixture:dev-publish',${JSON.stringify({id:ids[3],text:'PLAN: 打算先改解析器，再接工作台\n取舍是不动四行协议，循环引擎那边一个字都不改。\nUPDATE: 解析器改完了，正在接工作台\nASK: 手机推送要不要现在做？做的话多半天。'})})`);
+    await waitFor(`document.querySelector(${JSON.stringify(row(ids[3]))})?.textContent.includes('需要你拍板')`,'ASK lifts the task into 需要我');
+    check(await ev(`document.querySelector(${JSON.stringify(row(ids[3]))}).textContent.includes('手机推送要不要现在做')`),'A question addressed to the maintainer is surfaced on the task row itself');
+    await click(row(ids[3])+' [data-devb-action="details"]');
+    check(await ev(`(()=>{const t=document.querySelector(${JSON.stringify(row(ids[3]))}).textContent;return t.includes('任务纪事')&&t.includes('打算先改解析器')&&t.includes('解析器改完了')})()`),'Task chronicle shows the plan and each progress note in reading order');
+    await ev(`document.querySelector(${JSON.stringify(row(ids[3]))}).scrollIntoView({block:'start'});true`);await _waitMs(200);
+    await screenshot('plain-language-dark');
+    await click(row(ids[3])+' [data-devb-action="details"]');
+    await click('#devb-updates');   // 把上面这条新进展也归位，后续断言仍看真实活跃顺序
     await click(row(ids[0])+' [data-devb-action="details"]');
     const comfortableHeight=await ev(`document.querySelector('.devb-row-main').getBoundingClientRect().height`);
     await click('#devb-density');
