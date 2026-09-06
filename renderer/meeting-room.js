@@ -4660,6 +4660,14 @@ if (typeof document !== 'undefined') (function () {
   //   H1 修复：补 activeMeetingId 守卫。
   //   M2 修复（最小化方案）：先 await refreshGroupChatPanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
+  ipcRenderer.on('dev-workbench:progress', (_e, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const meeting = meetingData[payload.meetingId];
+    if (meeting && payload.meetingId === activeMeetingId && meeting.scene === 'dev') {
+      refreshGroupChatPanel(meeting).catch(error => console.warn('[dev-workbench] group progress refresh failed:', error.message));
+    }
+  });
+
   ipcRenderer.on('groupchat-turn-patched', async (_e, payload = {}) => {
     if (!_acceptGcPush(payload)) return;
     const { meetingId, turnNum, sid, charCount } = payload;

@@ -19,7 +19,9 @@ const {
   createRunId,
   isTerminalAttemptStatus,
   promptFingerprint,
+  attemptEventMatches,
 } = require('./groupchat-attempt-protocol.js');
+const devWorkbenchFeed = require('./dev-workbench-feed');
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
@@ -293,7 +295,12 @@ class GroupChatOrchestrator {
     this._bumpRevision(eventType, details);
     this._pruneAttemptHistory();
     const fp = this._stateFilePath();
+    // This is a projection of already-authored messages, never a new AI request.
+    // Keep it in the same durable write as the source before announcing it.
+    const summary = devWorkbenchFeed.summarizeGroupState(this.state);
+    this.state.devWorkbench = summary;
     atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
+    devWorkbenchFeed.publishSaved(this.hubDataDir, this.meetingId, summary);
     return this.state.revision;
   }
 
@@ -391,6 +398,31 @@ class GroupChatOrchestrator {
 
   getState() {
     return _clone(this.state);
+  }
+
+  // Informational, source-authored progress. Never touches turn results,
+  // completion receipts or workflow gates. Fence against old/dormant sessions.
+  recordProgressUpdate(sid, text, at, speaker, event = {}) {
+    const turnNum = Number(this.state.currentTurn) || 0;
+    const pending = this.state.pendingPrompts?.[String(turnNum)]?.[sid];
+    const user = this.state.messages.find(message => message && message.id === `u${turnNum}`);
+    if (!pending || !turnNum || !text || !Number.isFinite(at) || (user && at < user.createdAt)) return false;
+    const attempt = pending.attemptId && this.state.attempts?.[pending.attemptId];
+    if (pending.runId && this.state.activeRun?.runId && pending.runId !== this.state.activeRun.runId) return false;
+    if (pending.attemptId && (!attempt || isTerminalAttemptStatus(attempt.status))) return false;
+    if (attempt && (at < Math.max(attempt.dispatchAt || 0, attempt.acceptedAt || 0, attempt.startedAt || 0)
+        || !attemptEventMatches(attempt, { ...event, sid, observedAt: at }).ok)) return false;
+    const id = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
+    const previous = this.state.messages.find(message => message && message.id === id);
+    const content = 'UPDATE: ' + text;
+    if (previous && (previous.content === content || at < previous.updatedAt)) return false;
+    if (previous) Object.assign(previous, { content, updatedAt: at });
+    else this._appendMessage({ id, role: 'assistant', sid, speaker, turnNum, content,
+      runId: pending.runId || null, attemptId: pending.attemptId || null, memberId: pending.memberId || null,
+      providerTurnId: attempt?.providerTurnId || event.turnId || null,
+      status: 'progress_update', createdAt: at, updatedAt: at });
+    this._saveState('progress_reported', { runId: pending.runId, attemptId: pending.attemptId, sid, turnNum });
+    return true;
   }
 
   beginTurn(userInput, opts = {}) {
