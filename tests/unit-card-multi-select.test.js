@@ -92,6 +92,7 @@ function createHarness({ sessionId = 'S1', cards = [] } = {}) {
   };
   const docListeners = new Map();
   const doc = {
+    activeElement: null,
     getElementById: id => byId[id] || null,
     addEventListener(type, fn, capture) { docListeners.set(`${type}:${!!capture}`, fn); },
     removeEventListener(type, _fn, capture) { docListeners.delete(`${type}:${!!capture}`); },
@@ -114,7 +115,10 @@ function createHarness({ sessionId = 'S1', cards = [] } = {}) {
   return {
     bar, cards, controller, copied, copyBtn, countEl, exitBtn, overlay, selectAllBtn,
     clickOverlay(card) { listeners.get('click:true')({ target: card, preventDefault() {}, stopPropagation() {} }); },
-    pressEscape() { docListeners.get('keydown:true')({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); },
+    pressEscape(extra = {}) {
+      docListeners.get('keydown:true')({ key: 'Escape', preventDefault() {}, stopPropagation() {}, ...extra });
+    },
+    setActiveElement(el) { doc.activeElement = el; },
     setSession(next) { currentSession = next; },
   };
 }
@@ -208,6 +212,57 @@ test('一键复制按卡片顺序拼文本；未选中时给出可见反馈而�
   const empty = await h.controller.copySelected();
   assert.equal(empty.copiedCount, 0);
   assert.equal(h.copyBtn.textContent, '未选中内容');
+});
+
+test('历史重载的空窗期不许把勾选静默清空', async () => {
+  // loadSessionHistoryToOverlay 的非增量路径：先同步 innerHTML=''，再 await 一次
+  // 真 IPC + 读盘解析，中间几百毫秒 overlay 里一张卡都没有。这条路径会被
+  // session-meta-updated / Codex 历史重试 / turn-complete backfill 被动触发 ——
+  // 老实现在那一帧就把整个 selected 剪没了，用户勾的 2 条无声消失。
+  const saved = [
+    createCard({ turnId: 't1', sessionId: 'S1', role: 'user', text: '问题一', time: '10:00' }),
+    createCard({ turnId: 't2', sessionId: 'S1', role: 'assistant', text: '回答一', time: '10:01' }),
+  ];
+  const cards = saved.slice();
+  const h = createHarness({ cards });
+  h.controller.init();
+  h.controller.setVisible(true);
+  h.controller.enter('t1');
+  h.controller.toggle('t2');
+  assert.equal(h.countEl.textContent, '已选 2 条');
+
+  cards.length = 0;            // innerHTML = ''
+  h.controller.syncDom();      // 空窗期里被 MutationObserver 叫醒
+  assert.equal(h.countEl.textContent, '已选 0 条', '空窗期计数如实归零');
+  assert.equal(h.copyBtn.disabled, true, '空窗期不许复制出半截内容');
+
+  saved.forEach(card => { card.simulateInPlacePatch(); cards.push(card); });  // 卡片带着同样的 turnId 挂回来
+  h.controller.syncDom();
+  assert.equal(h.countEl.textContent, '已选 2 条', '卡片回来后勾选必须自动亮回来');
+  assert.equal(saved[0].classList.contains('multi-selected'), true);
+  assert.equal(saved[1].classList.contains('multi-selected'), true);
+  const result = await h.controller.copySelected();
+  assert.equal(result.copiedCount, 2);
+});
+
+test('Esc 要给输入法候选窗和已处理过的按键让路', () => {
+  const cards = [createCard({ turnId: 't1', sessionId: 'S1', role: 'user', text: '问题一' })];
+  const h = createHarness({ cards });
+  h.controller.init();
+  h.controller.setVisible(true);
+
+  h.controller.enter('t1');
+  h.pressEscape({ isComposing: true });
+  assert.equal(h.controller.isActive(), true, '输入法候选窗里的 Esc 是取消候选，不是退出多选');
+
+  h.pressEscape({ defaultPrevented: true });
+  assert.equal(h.controller.isActive(), true, '更上层已经处理过就不再抢');
+
+  // 反过来：不能按「焦点在输入框」让路。卡片视图下焦点默认就在浮动输入框里，
+  // 那样 Esc 在最常见的情形下直接失灵。
+  h.setActiveElement({ tagName: 'TEXTAREA' });
+  h.pressEscape();
+  assert.equal(h.controller.isActive(), false, '焦点在输入框时 Esc 仍然必须能退出多选');
 });
 
 test('乐观 user 卡片（还没进 _sessionTurns）不能被静默丢掉', async () => {

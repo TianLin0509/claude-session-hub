@@ -1879,7 +1879,11 @@ const cardMultiSelectController = createCardMultiSelectController({
   getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),
   extractVisibleCardText,
 });
-cardMultiSelectController.init();
+// init 失败（index.html 漂移、操作条节点没了）必须出声：否则圆圈画得出来、
+// 点了没反应，用户只会觉得"卡了"。
+if (!cardMultiSelectController.init()) {
+  console.warn('[card-multi-select] 操作条节点缺失，多选功能未接线');
+}
 const chatgptBridgeController = createChatgptBridgeController({
   document,
   window,

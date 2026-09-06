@@ -132,12 +132,14 @@ function createCardMultiSelectController(options = {}) {
     resetTimer = setTimeout(restoreCopyButton, 1800);
   }
 
-  function updateBar(totalCards) {
+  // 操作条上的数字必须等于「点复制会拿到几条」，所以它数的是**当前真在 DOM 里**
+  // 的勾选卡片，而不是 selected 集合的大小。两者在历史重载的空窗期会短暂不一致。
+  function updateBar(totalCards, presentSelected) {
     if (bar) bar.hidden = !active;
-    if (countEl) countEl.textContent = `已选 ${selected.size} 条`;
-    if (copyBtn) copyBtn.disabled = selected.size === 0;
+    if (countEl) countEl.textContent = `已选 ${presentSelected} 条`;
+    if (copyBtn) copyBtn.disabled = presentSelected === 0;
     if (selectAllBtn) {
-      const allChecked = totalCards > 0 && selected.size >= totalCards;
+      const allChecked = totalCards > 0 && presentSelected >= totalCards;
       selectAllBtn.textContent = allChecked ? '取消全选' : '全选';
       selectAllBtn.dataset.mode = allChecked ? 'clear' : 'all';
       selectAllBtn.disabled = totalCards === 0;
@@ -146,7 +148,14 @@ function createCardMultiSelectController(options = {}) {
 
   /**
    * DOM 只是勾选状态的投影：卡片重渲染会抹掉 class，这里按 turnId 集合重贴。
-   * 同时把「卡片已经不在了」的选中项剪掉（切会话 / 重新加载历史）。
+   *
+   * 这里**不能**按「turnId 现在不在 DOM 里」就把它从 selected 里删掉。
+   * loadSessionHistoryToOverlay 的非增量路径是先同步 innerHTML='' 再 await 一次
+   * 真 IPC + 读盘解析，中间有几百毫秒 overlay 里一张卡都没有；而这条路径会被
+   * session-meta-updated、Codex 历史重试、turn-complete backfill 被动触发。
+   * 老写法在那一帧就把整个勾选集合清空了 —— 用户勾了 5 条正要点复制，勾勾自己
+   * 全没了，还没有任何提示。所以 selected 只由「用户点击」和「退出多选」改动，
+   * 卡片暂时不在 DOM 里只是不计数、不复制，回来了自动重新亮起。
    */
   function syncDom() {
     syncScheduled = false;
@@ -159,11 +168,11 @@ function createCardMultiSelectController(options = {}) {
     }
     if (root.classList) root.classList.toggle('multi-select-active', active);
     const cards = cardsInOrder();
-    const present = new Set();
+    let presentSelected = 0;
     for (const card of cards) {
       const turnId = String(card.dataset.turnId || '');
-      present.add(turnId);
       const checked = active && selected.has(turnId);
+      if (checked) presentSelected += 1;
       if (card.classList) card.classList.toggle('multi-selected', checked);
       if (active) {
         // aria-checked 必须配一个能接受它的 role，否则读屏软件直接忽略。
@@ -174,10 +183,7 @@ function createCardMultiSelectController(options = {}) {
         card.removeAttribute('aria-checked');
       }
     }
-    for (const turnId of Array.from(selected)) {
-      if (!present.has(turnId)) selected.delete(turnId);
-    }
-    updateBar(cards.length);
+    updateBar(cards.length, presentSelected);
   }
 
   function scheduleSync() {
@@ -235,7 +241,7 @@ function createCardMultiSelectController(options = {}) {
       card.removeAttribute('role');
       card.removeAttribute('aria-checked');
     }
-    updateBar(0);
+    updateBar(0, 0);
     return true;
   }
 
@@ -294,8 +300,17 @@ function createCardMultiSelectController(options = {}) {
     toggle(card.dataset.turnId);
   }
 
+  // Esc 是全 app 最挤的一个键。这里挂的是 document 捕获阶段，抢在所有人前面，
+  // 所以必须主动让路，否则多选态下第一下 Esc 会去关一个用户根本看不见的东西：
+  //   - isComposing：中文输入法候选窗里的 Esc 是取消候选，不是退出多选
+  //     （clipboard-controller.js 的 handleKeydown 第一行就是这个判断，沿用惯例）；
+  //   - 已经被别人 preventDefault 过：说明更上层已经处理了这一下。
+  // 不按「焦点在输入框」让路：卡片视图下焦点默认就落在浮动输入框里，那样等于
+  // Esc 在最常见的情形下直接失灵（实测被 CDP 验收当场抓到）。多选是用户刚进入的
+  // 模态状态，此时 Esc 归它管才符合直觉。
   function onKeyDown(event) {
     if (!active || !event || event.key !== 'Escape') return;
+    if (event.isComposing || event.defaultPrevented) return;
     if (typeof event.preventDefault === 'function') event.preventDefault();
     if (typeof event.stopPropagation === 'function') event.stopPropagation();
     exit();
@@ -325,7 +340,7 @@ function createCardMultiSelectController(options = {}) {
     const root = overlay();
     if (root) root.addEventListener('click', onOverlayClickCapture, true);
     doc.addEventListener('keydown', onKeyDown, true);
-    updateBar(0);
+    updateBar(0, 0);
     return true;
   }
 
