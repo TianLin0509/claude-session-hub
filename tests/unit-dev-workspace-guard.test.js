@@ -40,13 +40,32 @@ test('整理过的仓库放行', () => {
   assert.strictEqual(v.reason, 'ready');
 });
 
-test('默认工作根这种「存在但不是仓库」的目录被挡住', () => {
-  // 这就是用户问的那一种：C:\AIWork 真实存在，只是它不是任何项目。
+test('「存在但不是仓库」的目录，没告诉闸门它是工作根时仍然挡住', () => {
+  // 临时目录、随便选的文件夹都走这条：既不是项目，也没有项目库语义。
   const v = checkDevWorkspace(PLAIN);
   assert.strictEqual(v.ok, false);
   assert.strictEqual(v.reason, 'not-a-repo');
   assert(v.message.includes('git 仓库'), '要说清楚为什么不行');
+  assert(v.message.includes('项目库'), '要告诉用户有一键选项目的路');
   assert(v.message.includes('通用'), '要给出「只想随便问一句」的出路，别把人堵死');
+});
+
+test('2026-09-06：平铺工作根本身放行，reason 标成 work-root 让建群路径去拼项目库', () => {
+  // 用户的原话：「允许用户选择默认路径（AIwork），但是后续给 AI 的提示词里要加上，
+  // 让 AI 自己根据用户提问找到对应的项目路径」。放行的代价由 prompt 承担，不由闸门承担。
+  const v = checkDevWorkspace(PLAIN, { workRoot: PLAIN });
+  assert.strictEqual(v.ok, true);
+  assert.strictEqual(v.reason, 'work-root');
+  // 路径写法差异不能让它误判：尾随分隔符、正反斜杠、大小写
+  assert.strictEqual(checkDevWorkspace(PLAIN + path.sep, { workRoot: PLAIN }).reason, 'work-root');
+  assert.strictEqual(checkDevWorkspace(PLAIN.replace(/\\/g, '/'), { workRoot: PLAIN }).reason, 'work-root');
+  assert.strictEqual(checkDevWorkspace(PLAIN.toUpperCase(), { workRoot: PLAIN }).reason, 'work-root');
+  // 给了工作根但选的是别的非仓库目录：照挡
+  const other = path.join(ROOT, 'other-plain');
+  fs.mkdirSync(other, { recursive: true });
+  assert.strictEqual(checkDevWorkspace(other, { workRoot: PLAIN }).reason, 'not-a-repo');
+  // 给了工作根、选的是整理过的项目：正常放行，reason 仍是 ready（不是 work-root）
+  assert.strictEqual(checkDevWorkspace(REPO_OK, { workRoot: PLAIN }).reason, 'ready');
 });
 
 test('是仓库但没整理过 —— 报错要直接给出下一步命令', () => {
@@ -109,15 +128,38 @@ test('建群时 dev 场景确实调用了闸门，且在 create-meeting 之前',
     '不通过必须抛出，让用户看到那段说明');
 });
 
-test('选「开发」场景时把 workspace 默认档切成「选择已有路径」', () => {
-  // 默认档是平铺工作根，对开发场景一定是错的。不替用户切，等于明知会错还放着。
-  assert(/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
-    '选中 dev 时要检查当前档位');
-  assert(/_meetingWorkspaceMode = 'existing'/.test(modal), '要切到 existing');
-  // 悄悄替用户改档位而不说一声，下次他会以为是自己选的。那块提示 DOM 本来就在，一直空着。
-  assert(/hint\.textContent = '开发场景要开在项目根上/.test(modal),
-    '切档位的同时要在界面上说明为什么');
+test('选「开发」场景不再替用户切档位；说明文字要把两条路都讲清', () => {
+  // 2026-09-06 用户明确：不想每次找项目路径。默认档留给 AI 自己定位（见 work-root 用例），
+  // 想指定项目就走「选择已有路径 → 项目库」一键选。
+  assert(!/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
+    '不许再在选中 dev 时强制切到 existing');
+  assert(/hint\.textContent = '开发场景要开在项目根上/.test(modal), '说明文字仍然要有');
+  const hintAt = modal.indexOf("hint.textContent = '开发场景要开在项目根上");
+  const hintBody = modal.slice(hintAt, hintAt + 400);
+  assert(/默认工作目录/.test(hintBody) && /项目库/.test(hintBody),
+    '说明要同时提到「默认工作目录也行」和「项目库一键选」');
   assert(/project-prep/.test(modal), '提示里要点名该跑哪个 skill');
+});
+
+test('「选择已有路径」那一行有项目库下拉：点开列已整理项目，点一项即选中', () => {
+  // 用户的原话：「AI HUB 就应该作为一个选项，我点击就行，不需要我自己输入路径去找」
+  assert(/id="mcm-project-library-button"/.test(modal), '要有「项目库」按钮');
+  assert(/id="mcm-project-library"/.test(modal) && /role="listbox"/.test(modal), '要有下拉列表容器');
+  assert(/invoke\('workspace:prepared-projects'\)/.test(modal), '数据要从主进程的项目库接口来');
+  assert(/data-mcm-project-path/.test(modal), '每一项要带路径');
+  assert(/invoke\('workspace:select', item\.path\)/.test(modal),
+    '点选后要走 workspace:select 归一化，和「选择文件夹…」同一条路');
+  // 切到 existing 且没选过目录：先展开项目库，而不是直接弹系统对话框
+  const switchAt = modal.indexOf("_meetingWorkspaceMode === 'existing' && !_meetingWorkspace");
+  const switchBody = modal.slice(switchAt, switchAt + 600);
+  assert(/_toggleProjectLibrary\(true\)/.test(switchBody), '切档后先展开项目库');
+  assert(/if \(!items\.length\)/.test(switchBody) && /_chooseMeetingExistingWorkspace\(\)/.test(switchBody),
+    '项目库为空才回落到系统对话框');
+  // 主进程接口真的注册了，且不递归扫盘
+  const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'workspace-handlers.js'), 'utf-8');
+  assert(/ipcMain\.handle\('workspace:prepared-projects'/.test(handlers), '主进程要注册 workspace:prepared-projects');
+  assert(/prepared-project-library\.js/.test(handlers), '要用 core 里的项目库模块，不在 IPC 里重写判据');
+  assert(!/readdirSync\([^)]*recursive/.test(handlers), '不许递归扫盘');
 });
 
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}

@@ -25,8 +25,8 @@ const modal = read('renderer/meeting-create-modal.js');
 const room = read('renderer/meeting-room.js');
 
 test('开发场景建群时自动写入默认工作流（否则「零配置」不成立）', () => {
-  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots\)/.test(modal),
-    'create-meeting 之后必须调用 _applyDefaultDevWorkflow');
+  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
+    'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照」传进去');
   assert(/function _applyDefaultDevWorkflow/.test(modal), '该函数必须存在');
   assert(/scene !== 'dev'/.test(modal), '只对 dev 场景生效');
   assert(/createTemplateConfig\('dev-task'/.test(modal), '默认工作流必须是 dev-task');
@@ -64,6 +64,50 @@ test('底座通用：预设里不许出现项目名或绝对路径', () => {
   assert(!/SuperRAN|superran|claude-session-hub/i.test(all), '不许写死项目名');
   assert(/\.agents\/AUTHOR\.md/.test(all) && /\.agents\/MERGER\.md/.test(all),
     '必须用仓库内相对路径指向合同');
+});
+
+test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定位项目根（2026-09-06 允许选默认目录的代价）', () => {
+  // 用户不想每次找项目路径，于是默认工作目录也能开开发场景。代价必须由 prompt 承担：
+  // 没有这段，agent 落在 C:\AIWork 上会「读不到 .agents/AUTHOR.md → 乱翻或乱选仓库」。
+  const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
+  const projects = [
+    { name: 'AI HUB', path: 'C:\\some\\where\\hub' },
+    { name: 'SuperRAN', path: 'C:\\some\\where\\ran' },
+  ];
+  const c = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: true, projects } });
+  for (const [i, step] of c.stepConfigs.entries()) {
+    assert(step.prompt.startsWith('【先定位项目根】'), `第 ${i + 1} 步必须以定位说明开头，放后面会被合同指令盖过`);
+    assert(step.prompt.includes('AI HUB → C:\\some\\where\\hub'), `第 ${i + 1} 步要列出中文名 → 路径`);
+    assert(step.prompt.includes('SuperRAN → C:\\some\\where\\ran'));
+    assert(/不要猜/.test(step.prompt), '判断不了要问，不许猜');
+  }
+  // 顺序必须保留：项目库本身按活跃时间排好，prompt 不许重排
+  const p = c.stepConfigs[0].prompt;
+  assert(p.indexOf('AI HUB') < p.indexOf('SuperRAN'));
+  // 合同指向仍然在，不是替换而是前置
+  assert(/\.agents\/AUTHOR\.md/.test(c.stepConfigs[0].prompt));
+  assert(/\.agents\/MERGER\.md/.test(c.stepConfigs[1].prompt));
+
+  // 项目库空的时候也要给出可执行的找法，而不是一句「自己找」
+  const empty = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: true, projects: [] } });
+  assert(/\.agents\/project\.json/.test(empty.stepConfigs[0].prompt), '空库时要说清判据');
+
+  // 不在工作根（选了项目根）时，一个字都不多：agent 已经站在项目里了
+  const onRepo = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: false, projects } });
+  assert(!/先定位项目根/.test(onRepo.stepConfigs[0].prompt));
+  assert(!/some\\where/.test(onRepo.stepConfigs[0].prompt));
+});
+
+test('建群弹窗：开发场景不再强制切到「选择已有路径」，但开在工作根必须先拿项目库', () => {
+  assert(!/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
+    '选中 dev 时不许再替用户把档位切走');
+  assert(/const atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!\(workspace && workspace\.flat\)/.test(modal),
+    '只有「默认档 + 平铺工作根」才算开在工作根');
+  assert(/checkDevWorkspace\(workspace && workspace\.path, \{ workRoot: atWorkRoot \? workspace\.path : '' \}\)/.test(modal),
+    '闸门要拿到工作根路径才知道该放行');
+  const iLoad = modal.indexOf('devProjects = await _loadProjectLibrary(true)');
+  const iCreate = modal.indexOf("invoke('create-meeting'");
+  assert(iLoad > 0 && iCreate > 0 && iLoad < iCreate, '项目库必须在建群前拉到，否则 prompt 里是空的');
 });
 
 test('合同文件真实存在，且与预设指向一致', () => {
