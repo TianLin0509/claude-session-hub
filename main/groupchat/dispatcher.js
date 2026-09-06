@@ -576,8 +576,14 @@ function createGroupChatDispatcher(deps) {
           const isCodexFinal = isCodexBaseKind(waitKind)
             && extracted?.extractMode === 'final_answer';
           const claudeAnswerFloor = Math.max(promptSubmittedAt, agentTurnStartedAt);
+          // 2026-09-06：必须要求 extractMode === 'final_answer'（= transcript 里
+          //   stop_reason 已是终态）。此前只校验「时间比本轮 prompt 新」，于是 Claude
+          //   刚写完「我先读 X 再改 Y」这种开场白（stop_reason='tool_use'）就被结算成
+          //   最终答案 —— 串行工作流因此在 Claude 还没干活时就放行了下一步。
+          //   时间下界只能证明「这段文字属于本轮」，永远证明不了「本轮已经结束」。
           const isClaudeFinal = isClaudeFamily(waitKind)
             && extracted?.source === 'manual_claude_transcript'
+            && extracted.extractMode === 'final_answer'
             && Number(extracted.completedAt) >= claudeAnswerFloor;
           if ((isCodexFinal || isClaudeFinal) && extracted.text) {
             const signalSource = isCodexFinal
@@ -1563,8 +1569,11 @@ function createGroupChatDispatcher(deps) {
           const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
           const extracted = await transcriptTap.extractLatestTurn(receipt.sid, floor);
           const codexFinal = isCodexBaseKind(receipt.kind) && extracted && extracted.extractMode === 'final_answer';
+          // 与上面 auto-extract 同一条判据：恢复路径同样不能把未完成的开场白
+          //   写成本轮最终答案（重启后它还会顺带 completeTurn 整轮）。
           const claudeFinal = isClaudeFamily(receipt.kind) && extracted
             && extracted.source === 'manual_claude_transcript'
+            && extracted.extractMode === 'final_answer'
             && (!floor || Number(extracted.completedAt) >= floor);
           const providerTurnMatches = !receipt.providerTurnId || !extracted || !extracted.turnId
             || String(receipt.providerTurnId) === String(extracted.turnId);

@@ -233,7 +233,7 @@ function _mergeConsecutiveAssistantTurns(turns) {
       acc.mergedCount += 1;
     }
     // 终止于非 tool_use stop_reason（一轮真完成）
-    if (t.stopReason && t.stopReason !== 'tool_use') {
+    if (isClaudeTurnStopReasonTerminal(t.stopReason)) {
       flush();
     }
   }
@@ -327,6 +327,25 @@ function applyTurnLimit(turns, limit, fromTail) {
 // (and loses its earlier text/tools) than a full parse.  The tail is safe when
 // it starts at a real user boundary, or when the incomplete leading turn is
 // outside the requested slice and will be discarded.
+/**
+ * 这一轮 Claude 是否真的结束了 —— 唯一判据是 stop_reason。
+ *
+ * 'tool_use' = 还要接着干（正文往往只是「我先读 X，再改 Y」这种开场白）；
+ * null/undefined = 还在流式写入，尚未 finalize。
+ * 只有 end_turn / max_tokens / refusal / stop_sequence 这类终态才算答完。
+ *
+ * 上面 _mergeConsecutiveAssistantTurns 的合并规则就是靠它切轮的，所以合并后
+ * turn 的 stopReason 一定是最后一条 entry 的值 —— 拿它判终态是自洽的。
+ *
+ * 2026-09-06：抽成导出函数，是因为群聊的自动提取曾经**完全不看 stop_reason**，
+ * 只要 transcript 末尾有比本轮 prompt 新的文本就当最终答案。实测把
+ * stop_reason='tool_use' 的开场白当成了 Claude 的最终回答，串行工作流因此提前
+ * 放行下一步。判据必须只有一处，不能让调用方各自再猜一遍。
+ */
+function isClaudeTurnStopReasonTerminal(stopReason) {
+  return typeof stopReason === 'string' && stopReason !== '' && stopReason !== 'tool_use';
+}
+
 function isTailTurnSliceComplete(turns, limit) {
   if (!Array.isArray(turns) || turns.length < limit) return false;
   if (turns.length > limit) return true;
@@ -359,6 +378,7 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
 
 module.exports = {
   parseClaudeTranscriptToTurns,
+  isClaudeTurnStopReasonTerminal,
   parseAssistantContent,
   isToolResultEntry,
   extractToolResults,
