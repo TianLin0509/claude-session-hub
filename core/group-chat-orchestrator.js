@@ -19,7 +19,16 @@ const {
   createRunId,
   isTerminalAttemptStatus,
   promptFingerprint,
+  attemptEventMatches,
 } = require('./groupchat-attempt-protocol.js');
+const devWorkbenchFeed = require('./dev-workbench-feed');
+
+// 过程汇报（recordProgressUpdate 写入的 `UPDATE: …`）也是一条 assistant 消息，
+//   role / turnNum / sid 与正式答复完全一样，而且落盘更早。凡是按「本轮 + 本席位」
+//   找答复的地方都必须先把它排掉，否则它会顶替正式答复：跑空时被当成答案存档，
+//   有答复时被就地改写、丢掉 a{n}-{memberId} 身份。
+const PROGRESS_UPDATE_STATUS = 'progress_update';
+const isProgressUpdateMessage = message => !!message && message.status === PROGRESS_UPDATE_STATUS;
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
@@ -293,7 +302,12 @@ class GroupChatOrchestrator {
     this._bumpRevision(eventType, details);
     this._pruneAttemptHistory();
     const fp = this._stateFilePath();
+    // This is a projection of already-authored messages, never a new AI request.
+    // Keep it in the same durable write as the source before announcing it.
+    const summary = devWorkbenchFeed.summarizeGroupState(this.state);
+    this.state.devWorkbench = summary;
     atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
+    devWorkbenchFeed.publishSaved(this.hubDataDir, this.meetingId, summary);
     return this.state.revision;
   }
 
@@ -391,6 +405,31 @@ class GroupChatOrchestrator {
 
   getState() {
     return _clone(this.state);
+  }
+
+  // Informational, source-authored progress. Never touches turn results,
+  // completion receipts or workflow gates. Fence against old/dormant sessions.
+  recordProgressUpdate(sid, text, at, speaker, event = {}) {
+    const turnNum = Number(this.state.currentTurn) || 0;
+    const pending = this.state.pendingPrompts?.[String(turnNum)]?.[sid];
+    const user = this.state.messages.find(message => message && message.id === `u${turnNum}`);
+    if (!pending || !turnNum || !text || !Number.isFinite(at) || (user && at < user.createdAt)) return false;
+    const attempt = pending.attemptId && this.state.attempts?.[pending.attemptId];
+    if (pending.runId && this.state.activeRun?.runId && pending.runId !== this.state.activeRun.runId) return false;
+    if (pending.attemptId && (!attempt || isTerminalAttemptStatus(attempt.status))) return false;
+    if (attempt && (at < Math.max(attempt.dispatchAt || 0, attempt.acceptedAt || 0, attempt.startedAt || 0)
+        || !attemptEventMatches(attempt, { ...event, sid, observedAt: at }).ok)) return false;
+    const id = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
+    const previous = this.state.messages.find(message => message && message.id === id);
+    const content = 'UPDATE: ' + text;
+    if (previous && (previous.content === content || at < previous.updatedAt)) return false;
+    if (previous) Object.assign(previous, { content, updatedAt: at });
+    else this._appendMessage({ id, role: 'assistant', sid, speaker, turnNum, content,
+      runId: pending.runId || null, attemptId: pending.attemptId || null, memberId: pending.memberId || null,
+      providerTurnId: attempt?.providerTurnId || event.turnId || null,
+      status: PROGRESS_UPDATE_STATUS, createdAt: at, updatedAt: at });
+    this._saveState('progress_reported', { runId: pending.runId, attemptId: pending.attemptId, sid, turnNum });
+    return true;
   }
 
   beginTurn(userInput, opts = {}) {
@@ -636,6 +675,9 @@ class GroupChatOrchestrator {
     if (!isExistingTurn) {
       for (const m of this.state.messages) {
         if (!m || m.role !== 'assistant' || Number(m.turnNum) !== Number(turnNum) || !m.sid) continue;
+        // 过程汇报只是半路进展，不是答案：拿它当合并基线会把「本轮跑空」记成
+        //   by[sid] = 'UPDATE: …'，这一轮的答复就被一句中途汇报顶掉了。
+        if (isProgressUpdateMessage(m)) continue;
         if (m.content && String(m.content).trim()) by[m.sid] = m.content;
         if (m.status) byStatus[m.sid] = m.status;
         if (typeof m.thinkSec === 'number') thinkSecBy[m.sid] = m.thinkSec;
@@ -665,7 +707,7 @@ class GroupChatOrchestrator {
       const _writeContent = !!(r.text && String(r.text).trim().length);
       const _prevStatus = byStatus[sid];
       const _existingMsg = this.state.messages.find(m => m && m.role === 'assistant'
-        && Number(m.turnNum) === Number(turnNum) && m.sid === sid);
+        && Number(m.turnNum) === Number(turnNum) && m.sid === sid && !isProgressUpdateMessage(m));
       const _hasManualResult = _prevStatus === 'manual_extracted'
         && !!(by[sid] && String(by[sid]).trim().length);
       const _incomingIsManual = _rStatus === 'manual_extracted';
@@ -937,7 +979,8 @@ class GroupChatOrchestrator {
     const attemptIdBy = pending ? {} : (turn.attemptIdBy = turn.attemptIdBy || {});
     const providerTurnIdBy = pending ? {} : (turn.providerTurnIdBy = turn.providerTurnIdBy || {});
     const failureBy = pending ? {} : (turn.failureBy = turn.failureBy || {});
-    let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum) && m.role === 'assistant' && m.sid === sid);
+    let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum)
+      && m.role === 'assistant' && m.sid === sid && !isProgressUpdateMessage(m));
     if (pending && msg) {
       if (msg.content && String(msg.content).trim()) by[sid] = msg.content;
       if (msg.status) byStatus[sid] = msg.status;

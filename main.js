@@ -1109,7 +1109,12 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
+var devWorkbench;
 function sendToRenderer(channel, data) {
+  if (devWorkbench) {
+    try { devWorkbench.handleEvent(channel, data); }
+    catch (error) { console.warn('[dev-workbench] event failed:', error.message); }
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, data);
   }
@@ -1342,6 +1347,26 @@ try {
   });
   require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
+
+try {
+  devWorkbench = require('./main/groupchat/dev-workbench.js').createDevWorkbench({
+    meetingManager, sessionManager, loopEngine: global.__loopEngine, getHubDataDir, sendToRenderer, logger: console,
+  });
+  devWorkbench.registerIpc(ipcMain);
+} catch (error) { console.error('[dev-workbench] initialization failed:', error.message); }
+
+transcriptTap.on('progress-update', event => {
+  try {
+    const session = event && sessionManager.getSession(event.hubSessionId);
+    const meeting = session && session.meetingId && meetingManager.getMeeting(session.meetingId);
+    if (!meeting || !meeting.groupChat || meeting.scene !== 'dev') return;
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meeting.id);
+    if (orch.recordProgressUpdate(session.id, event.text, event.at, session.title || session.kind, event)) {
+      sendToRenderer('dev-workbench:progress', { meetingId: meeting.id, revision: orch.state.revision,
+        runId: orch.state.activeRun?.runId, turnNum: orch.state.currentTurn });
+    }
+  } catch (error) { console.warn('[dev-workbench] progress message could not be saved:', error.message); }
+});
 
 sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
   sessionManager,
@@ -2744,6 +2769,7 @@ async function runFinalShutdownCleanup() {
   capture('windows-shell-watchdog', () => windowsShellWatchdog?.stop());
   windowsShellWatchdog = null;
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
+  capture('dev-workbench', () => devWorkbench?.dispose());
   clearTimeout(sessionSearchPrewarmTimer);
   const workerResults = await Promise.allSettled([
     transcriptParserService.close(),

@@ -119,7 +119,7 @@
     const passes = history.filter(h => h && h.pass).length;
 
     let key = 'idle';
-    if (status === 'done' || passes > 0) key = 'passed';
+    if (status === 'done' || (!status && !running && passes > 0)) key = 'passed';
     else if (running) {
       const reviewing = ls.currentStep === 'reviewer' || Number(ls.stepIndex) === 1;
       key = reviewing ? 'reviewing' : 'working';

@@ -1,0 +1,20 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {getOrchestrator}=require('../core/group-chat-orchestrator');
+const {createDevWorkbench}=require('../main/groupchat/dev-workbench');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-workbench-foundation-'));
+const orch=getOrchestrator(root,'identity');
+const {turnNum,runId}=orch.beginTurn('任务');
+const receipt=orch.recordTurnPrompt(turnNum,'codex-seat','任务全文',{runId,memberId:'m8',kind:'codex',createdAt:Date.now()-1000});
+orch.updateAttempt(receipt.attemptId,{status:'running',providerTurnId:'provider-current',startedAt:Date.now()-500});
+assert.equal(orch.recordProgressUpdate('codex-seat','迟到的旧尝试',Date.now(),'工作席',{turnId:'provider-old'}),false,'Old provider turn cannot overwrite current progress');
+assert.equal(orch.recordProgressUpdate('codex-seat','本轮最新进展',Date.now(),'工作席',{turnId:'provider-current'}),true);
+const progress=orch.state.messages.find(m=>m.status==='progress_update');
+assert.equal(progress.runId,runId);assert.equal(progress.attemptId,receipt.attemptId);assert.equal(progress.memberId,'m8');
+assert.equal(orch.state.devWorkbench.revision,orch.state.revision,'Projection keeps the authoritative revision');
+orch.settleAttempt(receipt.attemptId,{status:'completed'});
+assert.equal(orch.recordProgressUpdate('codex-seat','已结束尝试的尾巴',Date.now(),'工作席',{turnId:'provider-current'}),false);
+const meeting={id:'stable',groupChat:true,scene:'dev',subSessions:['seat-b','seat-a'],slotSpecs:[{memberId:'m8'},{memberId:'m2'}],serialWorkflow:{enabled:true,steps:[['m8'],['m2']],loop:{enabled:true},loopState:{status:'paused',goal:'保留稳定成员'}}};
+const board=createDevWorkbench({meetingManager:{getAllMeetings:()=>[meeting],getMeeting:()=>meeting},loopEngine:{getStatus:()=>({running:false})},getHubDataDir:()=>root,sendToRenderer(){},readSummary:async()=>({missing:true})});
+try{assert.equal(board.snapshot().rows[0].actions.resume,true,'Removed/reordered members retain their stable identities');}finally{board.dispose();}
+console.log('workbench foundation: PASS');
