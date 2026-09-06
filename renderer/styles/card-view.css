@@ -1526,3 +1526,103 @@
 
 /* header：视图切换高亮去紫换蓝 */
 .view-toggle-btn.active { background: var(--link); color: var(--fg-inverse); }
+
+/* === 卡片多选（微信式「多选 → 逐条转发」） ===
+   进入多选后：每张卡片前面长出一个小圆圈（用 ::before 而不是插真节点，
+   因为 patchTurnCardInPlace 会把卡片子节点整体换掉，插进去的节点活不过一次重渲染）；
+   卡片本身变成一个大点击区，原来的操作按钮让位，文字也不再可选中。 */
+/* 操作条浮在卡片层底部中间，会盖住最后一张卡 —— 也就盖住它的勾选圆圈。
+   多选态下给卡片层补一段底部留白，保证最后一条也点得到。 */
+.msg-overlay.multi-select-active { padding-bottom: 56px; }
+.msg-overlay.multi-select-active .turn-card {
+  cursor: pointer;
+  user-select: none;
+}
+.msg-overlay.multi-select-active .turn-card::before {
+  content: '✓';
+  flex: none;
+  align-self: flex-start;
+  width: 18px;
+  height: 18px;
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+/* 用户气泡整行是 row-reverse（头像在右），伪元素默认排在最右边 —— 那不是「卡片前面」。
+   order:1 让它在 row-reverse 里排到最后，也就是视觉最左，和 AI 卡片的圆圈对齐成一列。 */
+.msg-overlay.multi-select-active .turn-card.user::before { order: 1; }
+.msg-overlay.multi-select-active .turn-card:hover::before {
+  border-color: var(--ui-purple-2);
+}
+.msg-overlay.multi-select-active .turn-card.multi-selected::before {
+  border-color: var(--ui-purple-2);
+  background: var(--ui-purple-2);
+  color: var(--fg-inverse);
+}
+.msg-overlay.multi-select-active .turn-card.multi-selected {
+  background: rgba(var(--rgb-brand), 0.12);
+}
+/* 多选态下的卡片操作按钮必须收起：它们的点击已经被多选拦截，留着只会骗人。 */
+.msg-overlay.multi-select-active .turn-actions { display: none; }
+
+.card-multi-select-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--fi-bar-h, 60px) + var(--card-session-status-h, 0px) + 14px);
+  z-index: 110;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: rgba(var(--rgb-canvas), .98);
+  box-shadow: var(--shadow-md);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.card-multi-select-bar[hidden] { display: none !important; }
+.card-multi-select-bar .cms-count {
+  padding-left: 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.card-multi-select-bar .cms-btn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.card-multi-select-bar .cms-btn:hover:not(:disabled) {
+  border-color: var(--ui-purple-2);
+  color: var(--ui-purple-3);
+}
+.card-multi-select-bar .cms-btn:disabled { opacity: .45; cursor: default; }
+.card-multi-select-bar .cms-primary {
+  border-color: var(--ui-purple-2);
+  background: rgba(var(--rgb-brand), 0.16);
+  color: var(--ui-purple-3);
+  font-weight: 700;
+}
+.card-multi-select-bar .cms-primary.copied { border-color: var(--ui-purple-1); }
+.card-multi-select-bar .cms-primary.copy-empty { opacity: .7; }
+.card-multi-select-bar .cms-primary.copy-error {
+  border-color: rgb(var(--rgb-danger));
+  color: rgb(var(--rgb-danger));
+}

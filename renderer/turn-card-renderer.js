@@ -477,6 +477,7 @@ function renderTurnCard(turn) {
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
           <button class="ta-btn" data-action="copy" title="复制">📋</button>
+          <button class="ta-btn ta-multi" data-action="multi-select" title="多选：勾选多条消息，一次性按微信「逐条转发」的样式复制">多选</button>
           ${isUser
             ? `<button class="ta-btn" data-action="resend" title="重发">↻</button>
                <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>
