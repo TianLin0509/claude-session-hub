@@ -12,14 +12,25 @@
  * 或者随便挑一个仓库动手。三种都不是你要的，而且都要等好几分钟才看得出来。
  *
  * 所以在建群那一刻就挡住，比让它在第一步失败便宜得多。
+ *
+ * 2026-09-06 放开一条口子：**工作根本身**（默认工作目录）允许开发场景。
+ * 用户不想每次都去找项目路径。代价由预设 prompt 承担：建群时会把项目库
+ * （已整理项目的中文名 → 路径）写进两步的 prompt，让 AI 按任务描述自己定位到项目根。
+ * 其它非仓库目录（临时目录、随便选的文件夹）仍然挡住 —— 那里既不是项目也没有项目库语义。
  */
 
 const fs = require('fs');
 const path = require('path');
 
+function _sameDir(a, b) {
+  const norm = p => String(p || '').replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase();
+  return !!a && !!b && norm(a) === norm(b);
+}
+
 /**
  * @param {string} dir 用户选的工作目录
- * @param {{fs?: object}} [deps] 注入用，测试传假 fs
+ * @param {{fs?: object, workRoot?: string}} [deps] 注入用，测试传假 fs；
+ *        workRoot = 平铺工作根路径，dir 等于它时放行（reason: 'work-root'），由 prompt 里的项目库接手定位
  * @returns {{ok: boolean, reason: string, message: string}}
  */
 function checkDevWorkspace(dir, deps = {}) {
@@ -30,8 +41,12 @@ function checkDevWorkspace(dir, deps = {}) {
     return {
       ok: false,
       reason: 'no-path',
-      message: '开发场景必须选一个项目目录。请点「选择已有路径」挑到项目根。',
+      message: '开发场景必须选一个项目目录。请点「选择已有路径」挑到项目根，或用「项目库」一键选。',
     };
+  }
+
+  if (deps.workRoot && _sameDir(d, deps.workRoot)) {
+    return { ok: true, reason: 'work-root', message: '' };
   }
 
   let stat = null;
@@ -59,6 +74,7 @@ function checkDevWorkspace(dir, deps = {}) {
       message: [
         `${d} 不是一个 git 仓库。`,
         '开发场景要在项目根上开：工作位要建分支、合并位要合主干，都需要仓库。',
+        '想让 AI 自己找项目，选「默认工作目录」；想指定项目，点「选择已有路径」→「项目库」。',
         '如果你本来就想随便问一句，把场景切回「通用」即可。',
       ].join('\n'),
     };
