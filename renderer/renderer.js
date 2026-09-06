@@ -673,6 +673,7 @@ function preserveAndClearTerminalPanel() {
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
+    document.getElementById('card-multi-select-bar'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
   preserved.forEach(el => terminalPanelEl.appendChild(el));
@@ -972,6 +973,7 @@ async function selectMeeting(meetingId, opts = {}) {
   activeSessionId = null;
   suspendInactiveTerminalRenderers(null);
   if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
+  if (typeof cardMultiSelectController !== 'undefined') cardMultiSelectController.setVisible(false);
   activeMeetingId = meetingId;
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   // Stop background meeting PTY redraws at the main-process boundary. The room
@@ -1865,6 +1867,19 @@ const recentTurnCopyController = createRecentTurnCopyController({
   extractVisibleCardText,
 });
 recentTurnCopyController.init();
+const { createCardMultiSelectController } = require('./card-multi-select.js');
+// 微信式多选：卡片头部「多选」按钮进入，逐条勾选后一次性复制。
+// 剪贴板走同一个写入方（clipboardController），不碰 navigator.clipboard。
+const cardMultiSelectController = createCardMultiSelectController({
+  document,
+  window,
+  navigator,
+  copyText: (text, options) => clipboardController.copyText(text, options),
+  getActiveSessionId: () => activeSessionId,
+  getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),
+  extractVisibleCardText,
+});
+cardMultiSelectController.init();
 const chatgptBridgeController = createChatgptBridgeController({
   document,
   window,
@@ -2640,6 +2655,12 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  if (action === 'multi-select') {
+    // 微信式多选：以点中的这张卡片为起点进入，随后整片卡片区的点击都变成勾选。
+    cardMultiSelectController.enter(card.dataset.turnId);
+    return;
+  }
+
   if (action === 'sync-chatgpt') {
     const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
     const original = btn.textContent;
@@ -3059,6 +3080,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   cardQuestionNavigator.refresh();
   recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
+  cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
     if (!b.dataset.view) return;
     b.classList.toggle('active', b.dataset.view === mode);
@@ -3992,6 +4014,7 @@ async function selectSession(id, opts = {}) {
   applyViewMode(targetView, { remember: false, skipPreviousCardCapture: switching });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
+  cardMultiSelectController.setVisible(currentView === 'card' && !!activeSessionId);
   paintSidebarActiveTarget({ sessionId: id });
 
   // Dormant session: clicking wakes it via resume-session IPC. Don't render
@@ -6712,6 +6735,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
     if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
+    cardMultiSelectController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';
@@ -6761,6 +6785,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
+    cardMultiSelectController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';

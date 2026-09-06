@@ -328,6 +328,15 @@
         </select>
         <button type="button" id="recent-turn-copy-button">复制对话</button>
       </div>
+      <!-- 卡片多选操作条：由卡片头部的「多选」按钮唤起，微信式勾选后一次性复制。
+           和 #recent-turn-copy 一样必须列进 preserveAndClearTerminalPanel，
+           否则关掉一个会话后整条被 innerHTML='' 抹掉，再也回不来。 -->
+      <div class="card-multi-select-bar" id="card-multi-select-bar" role="toolbar" aria-label="卡片多选" hidden>
+        <span class="cms-count" id="card-multi-select-count">已选 0 条</span>
+        <button type="button" class="cms-btn" id="card-multi-select-all">全选</button>
+        <button type="button" class="cms-btn cms-primary" id="card-multi-select-copy" disabled>一键复制</button>
+        <button type="button" class="cms-btn cms-exit" id="card-multi-select-exit" title="退出多选（Esc）">退出多选</button>
+      </div>
       <!-- 视图切换按钮 -->
       <div class="view-toggle">
         <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">卡片</button>

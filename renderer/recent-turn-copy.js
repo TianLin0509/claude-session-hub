@@ -327,5 +327,6 @@ module.exports = {
   collectCompleteConversationRounds,
   createRecentTurnCopyController,
   formatRecentConversation,
+  normalizeCopiedText,
   normalizeRoundCount,
 };
