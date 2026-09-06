@@ -21,7 +21,7 @@ const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
+const { parseClaudeTranscriptToTurns, isClaudeTurnStopReasonTerminal } = require('./claude-transcript-parser');
 const {
   codexRolloutMetaMatchesSid,
   isCodexTopLevelRolloutMeta,
@@ -189,7 +189,18 @@ class ClaudeTap extends EventEmitter {
     if (sincePromptTs && turnEndMs && turnEndMs < sincePromptTs - 5000) return null;
     const text = typeof last.text === 'string' ? last.text.trim() : '';
     if (!text) return null;
-    return { text, source: 'manual_claude_transcript', completedAt: turnEndMs || null };
+    // 2026-09-06：带上终态证据。手动「一键提取/同步」是用户主动要"现在有什么给我什么"，
+    //   拿到 partial_commentary 也照样用；但自动路径（群聊 auto-extract / 重启恢复）
+    //   必须只认 final_answer —— 否则 stop_reason='tool_use' 的开场白会被当成最终答案。
+    //   词汇与 CodexTap.extractLatestCodexTurn 对齐，调用方两家共用一套判据。
+    const isFinal = isClaudeTurnStopReasonTerminal(last.stopReason);
+    return {
+      text,
+      source: 'manual_claude_transcript',
+      completedAt: turnEndMs || null,
+      stopReason: last.stopReason || null,
+      extractMode: isFinal ? 'final_answer' : 'partial_commentary',
+    };
   }
 
   getStreamingText(hubSessionId) {
