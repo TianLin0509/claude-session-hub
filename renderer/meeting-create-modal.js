@@ -42,6 +42,9 @@ let _meetingWorkspaceMode = 'default';
 let _projectLibrary = [];
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
+// 开发场景的起手方式：任务已明确就直接开工（现在的行为）；任务还没想清楚就先讨论。
+// 「先讨论」不是第三个场景：同一个群、同一组会话，只是先走普通群聊路径，点「开工」再进循环。
+let _devStart = 'build';
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
 
@@ -251,6 +254,20 @@ function _paintSceneHint() {
     hint.textContent = '';
     hint.style.display = 'none';
   }
+  _paintDevStart();
+}
+
+// 起手方式那一排只在开发场景出现；和场景说明一样挂在 _applyScene 这条重置路径上，
+// 换回通用场景时必须跟着消失，否则会留下「场景=通用却在问开不开工」的残影。
+function _paintDevStart() {
+  const row = _modalEl && _modalEl.querySelector('#mcm-dev-start-row');
+  if (!row) return;
+  row.hidden = _currentMode !== 'dev';
+  row.querySelectorAll('[data-mcm-dev-start]').forEach(button => {
+    const selected = button.getAttribute('data-mcm-dev-start') === _devStart;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-checked', selected ? 'true' : 'false');
+  });
 }
 
 // 只改场景，不动成员名单。删掉模板卡之后成员起手一律是「Claude 工作位 + Codex 合并位」，
@@ -437,6 +454,13 @@ function _ensureModal() {
           ${_renderSceneChoices('general')}
         </div>
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
+        <div class="mcm-workspace-block mcm-dev-start" id="mcm-dev-start-row" hidden>
+          <span class="mcm-workspace-caption">起手</span>
+          <div class="mcm-workspace-choices" role="radiogroup" aria-label="开发场景起手方式">
+            <button type="button" class="mcm-workspace-choice selected" data-mcm-dev-start="build" role="radio" aria-checked="true"><strong>任务已明确，直接开工</strong><small>发第一句话就进入「工作位实现 ↔ 合并位审查」</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="discuss" role="radio" aria-checked="false"><strong>先讨论，再开工</strong><small>两位先议方案、不改代码；点「开工」再进入实现</small></button>
+          </div>
+        </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
           <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
@@ -508,6 +532,13 @@ function _bindEvents() {
       if (radio.value === 'dev') void _loadProjectLibrary();
     });
   });
+  _modalEl.querySelectorAll('[data-mcm-dev-start]').forEach(button => {
+    button.addEventListener('click', () => {
+      const requested = button.getAttribute('data-mcm-dev-start');
+      _devStart = requested === 'discuss' ? 'discuss' : 'build';
+      _paintDevStart();
+    });
+  });
   _modalEl.addEventListener('click', (e) => {
     if (!_presentation.embedded && e.target === _modalEl) closeMeetingCreateModal();
   });
@@ -575,7 +606,7 @@ async function _onCreate() {
       workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
-    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects });
+    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects, devPhase: _devStart });
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -604,6 +635,9 @@ async function _onCreate() {
 //
 // 开在工作根（默认工作目录）时，workspaceHint 带上项目库快照，预设 prompt 前面会多一段
 // 「先按任务定位项目根」—— 这是「允许选默认目录」的代价，由 prompt 而不是用户承担。
+//
+// devPhase 是起手方式：'discuss' 时循环配置照样写好，只是 devPhase 让发送先走普通群聊；
+// 用户在群里点「开工」把它翻成 'build'，之后和「直接开工」完全一样。
 function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return;
   const WT = window.WorkflowTemplates;
@@ -616,6 +650,7 @@ function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
         atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
         projects: (workspaceHint && workspaceHint.projects) || [],
       },
+      devPhase: workspaceHint && workspaceHint.devPhase === 'discuss' ? 'discuss' : 'build',
     });
     if (!config) return;
     config.templateId = 'dev-task';
@@ -672,6 +707,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
   };
   _clearError();
+  _devStart = 'build';
   _applyScene('general', { clearTitle: true, resetSlots: true });
   _meetingWorkspaceMode = 'default';
   _meetingWorkspace = null;

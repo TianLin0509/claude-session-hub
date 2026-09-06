@@ -21,6 +21,7 @@ assert.equal(Model.flowSteps(paused).find(s=>s.state==='current').label,'审核'
 assert.equal(Model.flowSteps({...paused,review:{decision:'pass'}})[3].state,'pending','An old PASS cannot advance the current workflow');
 assert.equal(Model.flowSteps({...paused,stage:{key:'passed'}})[3].state,'current');
 assert(!Model.flowSteps({...paused,stage:{key:'chatting'},flow:{status:'done'}}).some(s=>s.state==='current'),'Fresh manual chat does not inherit an old completed position');
+assert.equal(Model.flowSteps({...paused,goal:'旧目标',stage:{key:'discussing'},flow:{currentStep:'reviewer',status:'done',phase:'discuss'}}).find(s=>s.state==='current').label,'目标','Discussion stays on the goal step even with a stale goal and step');
 assert.equal(rows[0].id,'old','Sorting never mutates the incoming projection');
 const prior=Model.sortRows(rows).map(r=>r.id);
 const updated=rows.map(r=>r.id==='new'?{...r,activityAt:5000}:r);

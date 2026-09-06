@@ -120,6 +120,25 @@ function mkSerial(opts = {}) {
 async function main() {
   console.log('loop-engine');
 
+  await t('开发群聊讨论阶段：循环既不能起也不能恢复（绕过「开工」确认的口子必须堵在引擎）', async () => {
+    const m = mk();
+    const paused = { runId: 'old-run', goal: '旧目标', status: 'paused', round: 1, currentStep: 'reviewer', history: [] };
+    const discussMeeting = () => ({ id: 'mtg', scene: 'dev', groupChat: true, subSessions: ['sB', 'sR'],
+      serialWorkflow: { steps: [['m1'], ['m2']], loop: { enabled: true, maxRounds: 2 }, devPhase: 'discuss', loopState: paused } });
+    m.deps.meetingManager.getMeeting = discussMeeting;
+    const eng = createLoopEngine(m.deps);
+    assert.strictEqual(eng.validateLoop('mtg').reason, 'dev_discuss_phase', 'loop:start 应被拒');
+    assert.strictEqual(eng.validateResume('mtg').reason, 'dev_discuss_phase', 'loop:resume 应被拒');
+    const st = await eng.runLoop('mtg', null, { ...paused, status: 'running' });
+    assert.strictEqual(st, null, '直接调 runLoop 恢复也不该跑');
+    assert.strictEqual(m.turnCalls.length, 0, '不许派发任何 prompt');
+    assert.strictEqual(eng.isRunning('mtg'), false);
+    // 翻成开工阶段后同一条路必须通：保证拦的是阶段，不是别的
+    m.deps.meetingManager.getMeeting = () => ({ ...discussMeeting(), serialWorkflow: { ...discussMeeting().serialWorkflow, devPhase: 'build' } });
+    assert.strictEqual(eng.validateLoop('mtg').ok, true);
+    assert.strictEqual(eng.validateResume('mtg').ok, true);
+  });
+
   await t('一轮 pass → done（驱动+解析+gate+持久化+晨报）', async () => {
     const m = mk();
     const eng = createLoopEngine(m.deps);

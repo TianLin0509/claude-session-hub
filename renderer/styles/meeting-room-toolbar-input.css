@@ -580,6 +580,13 @@
   border-color: var(--accent, var(--mark-indigo));
 }
 
+/* 开发群聊「开工」弹窗：复用展开编辑的壳，只多一行说明。 */
+.mr-dev-kickoff-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary, var(--fg-muted));
+}
+
 .mr-input-editor-actions {
   display: flex;
   justify-content: flex-end;

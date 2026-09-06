@@ -177,7 +177,7 @@
     // 项目还没整理过（没有 .agents/）时，agent 会读不到合同 —— 那说明该先跑
     // project-prep skill 把项目整理成规范形态。
     if (templateId === 'dev-task') {
-      return config(
+      const devConfig = config(
         [one(ids, 0), one(ids, 1)],
         _withProjectLocator([
           {
@@ -207,6 +207,14 @@
         ], opts),
         { enabled: true, maxRounds: 3 },
       );
+      // 「先讨论再开工」：阶段字段和工作流住在一起（meeting-store 只持久化 serialWorkflow 整体）。
+      // 讨论阶段发送走普通群聊路径，循环配置原样留着，用户点「开工」只翻这一个字段。
+      // 开在工作根时把定位说明单独存一份 —— 讨论阶段读合同也得先知道仓库在哪，
+      // 而它原本只拼在两步 prompt 里，普通群聊路径拿不到。
+      const ws = opts && opts.workspace;
+      devConfig.devPhase = opts && opts.devPhase === 'discuss' ? 'discuss' : 'build';
+      if (ws && ws.atWorkRoot) devConfig.projectLocator = buildProjectLocatorPrompt(ws.projects);
+      return devConfig;
     }
 
     if (templateId === 'review-plan-build-finalize') {

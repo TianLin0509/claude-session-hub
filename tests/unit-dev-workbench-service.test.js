@@ -66,6 +66,10 @@ async function main(){
   try{
     s.meetings.get('missing').subSessions=[];
     check(!s.row('missing').actions.resume&&s.row('missing').lastError.includes('席位缺失'),'Missing members explain why resume is unavailable');
+    s.meetings.get('rejected').serialWorkflow.devPhase='discuss';
+    check(!s.row('rejected').actions.resume&&s.row('rejected').stage.key==='discussing','Discussion phase hides resume and shows the discussing stage');
+    check(!(await s.act('rejected','resume')).ok&&s.runCalls.length===0,'Discussion phase cannot resume the old goal through the board');
+    s.meetings.get('rejected').serialWorkflow.devPhase='build';
     check((await s.act('missing','takeover')).ok,'Missing members cannot block manual takeover');
     s.engine.runLoop=()=>Promise.reject(new Error('fixture engine rejected before starting'));
     check(!(await s.act('rejected','resume')).ok,'An immediately rejected resume does not claim to have started');

@@ -34,9 +34,29 @@ if (!fs.existsSync(TESTS)) {
   process.exit(2);
 }
 
+// 单个测试卡死不能拖垮整场，但预算必须对得上真实耗时，否则闸门会自己抖。
+//
+// 2026-09-06：unit-dev-flow-stress 在正式合并闸门里跑到 A4 被 180 秒 SIGKILL，
+//   报出来只是「退出码 null」，合并位只能猜是不是新代码把它卡死了。实测：它在
+//   master 上单跑就要 101～138 秒（A2 一个用例就占 51 秒 —— 20 次真合并，每次都要
+//   起 python 解释器加一串 git 进程）。180 秒对它连 1.4 倍余量都不到，而它还要和
+//   另外 15 个 node 进程抢 CPU，超时是迟早的事。
+//   注意：慢的原因是它真的在跑 20 次合并，不是它有 bug —— 它恰好是守合并闸门的那个
+//   文件，不能为了让闸门变绿去砍它的覆盖，只能把预算调到符合事实。
+const DEFAULT_TIMEOUT_MS = 180_000;
+const FILE_TIMEOUT_MS = {
+  // 真 git + 真 python 子进程，数量级和别的单测不在一个层次
+  'unit-dev-flow-stress.test.js': 600_000,
+};
+const timeoutFor = file => FILE_TIMEOUT_MS[file] || DEFAULT_TIMEOUT_MS;
+
+// 超时表里的重量级文件排到队首：让它们和几十个轻量测试重叠着跑，而不是排在末尾把整场拖长
+//（实测全量从 140～174 秒降到 117 秒）。预算本身见上面的 FILE_TIMEOUT_MS。
+const isHeavy = f => Object.prototype.hasOwnProperty.call(FILE_TIMEOUT_MS, f);
 let files = fs.readdirSync(TESTS)
   .filter(f => /^unit-.*\.test\.js$/.test(f))
-  .sort();
+  .sort()
+  .sort((a, b) => Number(isHeavy(b)) - Number(isHeavy(a)));
 if (filters.length) files = files.filter(f => filters.some(k => f.includes(k)));
 
 if (!files.length) {
@@ -55,22 +75,6 @@ console.log(`单元测试：${files.length} 个文件，并发 ${jobs}`);
 const failures = [];
 let done = 0;
 let idx = 0;
-
-// 单个测试卡死不能拖垮整场，但预算必须对得上真实耗时，否则闸门会自己抖。
-//
-// 2026-09-06：unit-dev-flow-stress 在正式合并闸门里跑到 A4 被 180 秒 SIGKILL，
-//   报出来只是「退出码 null」，合并位只能猜是不是新代码把它卡死了。实测：它在
-//   master 上单跑就要 101～138 秒（A2 一个用例就占 51 秒 —— 20 次真合并，每次都要
-//   起 python 解释器加一串 git 进程）。180 秒对它连 1.4 倍余量都不到，而它还要和
-//   另外 15 个 node 进程抢 CPU，超时是迟早的事。
-//   注意：慢的原因是它真的在跑 20 次合并，不是它有 bug —— 它恰好是守合并闸门的那个
-//   文件，不能为了让闸门变绿去砍它的覆盖，只能把预算调到符合事实。
-const DEFAULT_TIMEOUT_MS = 180_000;
-const FILE_TIMEOUT_MS = {
-  // 真 git + 真 python 子进程，数量级和别的单测不在一个层次
-  'unit-dev-flow-stress.test.js': 600_000,
-};
-const timeoutFor = file => FILE_TIMEOUT_MS[file] || DEFAULT_TIMEOUT_MS;
 
 function runOne(file) {
   return new Promise((resolve) => {

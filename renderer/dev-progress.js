@@ -71,6 +71,9 @@
 
   const STAGE = {
     idle: { label: '未开始', tone: 'idle' },
+    // 「先讨论再开工」：群里在议需求，循环还没启动。和「未开始」分开，
+    // 否则看板会把一场正在进行的需求讨论显示成「没人管」。
+    discussing: { label: '讨论中，未开工', tone: 'idle' },
     working: { label: '工作位实现中', tone: 'run' },
     reviewing: { label: '合并位审查中', tone: 'run' },
     rework: { label: '打回重改', tone: 'warn' },
@@ -128,6 +131,9 @@
       key = STATUS_TO_STAGE[status]
         || (round >= maxRounds ? 'exhausted' : 'stopped');
     } else if (round > 0) key = 'rework';
+    // 讨论阶段是用户的明确选择：只要循环没在跑，就按「讨论中」显示，
+    // 哪怕上一轮循环已经 PASS 过（用户可能是回到讨论阶段准备下一件事）。
+    if (!running && wf.devPhase === 'discuss') key = 'discussing';
 
     return {
       key,

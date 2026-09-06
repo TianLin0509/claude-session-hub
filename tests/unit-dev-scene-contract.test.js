@@ -25,8 +25,8 @@ const modal = read('renderer/meeting-create-modal.js');
 const room = read('renderer/meeting-room.js');
 
 test('开发场景建群时自动写入默认工作流（否则「零配置」不成立）', () => {
-  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
-    'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照」传进去');
+  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects, devPhase: _devStart \}\)/.test(modal),
+    'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
   assert(/function _applyDefaultDevWorkflow/.test(modal), '该函数必须存在');
   assert(/scene !== 'dev'/.test(modal), '只对 dev 场景生效');
   assert(/createTemplateConfig\('dev-task'/.test(modal), '默认工作流必须是 dev-task');
@@ -38,6 +38,43 @@ test('发送按钮仍按 serialWorkflow 三岔路分发（默认工作流才有�
   assert(/serialWorkflow\.loop && m\.serialWorkflow\.loop\.enabled/.test(room),
     '发送路径必须仍然检查 loop.enabled');
   assert(/loop:start/.test(room), '循环分支必须走 loop:start');
+});
+
+test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原样保留（2026-09-06）', () => {
+  // 用户的痛点：有些任务本身就要先讨论。做法不是第三个场景，而是同一个群两个阶段。
+  // 讨论阶段的判断必须在循环分支之前，否则「先讨论」选了也是一发就开跑。
+  const iDiscuss = room.indexOf('if (DevDiscuss.isDiscussing(m)) {');
+  const iLoop = room.indexOf('m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&', iDiscuss);
+  assert(iDiscuss > 0 && iLoop > iDiscuss, '讨论阶段判断必须排在循环分支前面');
+  assert(/data-mcm-dev-start="discuss"/.test(modal) && /data-mcm-dev-start="build"/.test(modal), '建群弹窗要有两种起手方式');
+  assert(/_devStart = 'build';/.test(modal), '重开弹窗必须重置为直接开工，否则上次选的「先讨论」会残留');
+  const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
+  const discuss = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss' });
+  assert.strictEqual(discuss.devPhase, 'discuss');
+  assert.strictEqual(discuss.loop.enabled, true, '讨论阶段不许关循环开关：开工只翻阶段字段，配置一个字不动');
+  const build = WT.createTemplateConfig('dev-task', members, {});
+  assert.strictEqual(build.devPhase, 'build', '不选就是现在的行为');
+  // 开在工作根时讨论阶段同样要能定位项目根：定位说明得单独存一份，普通群聊路径才拿得到
+  const atRoot = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss', workspace: { atWorkRoot: true, projects: [{ name: 'X', path: 'C:\\repo\\x' }] } });
+  assert(/先定位项目根/.test(atRoot.projectLocator) && atRoot.projectLocator.includes('X → C:\\repo\\x'));
+  assert(!build.projectLocator, '不在工作根就不带');
+  // 主进程逐轮追加讨论块（和英雄块同一位置），不能塞 systemPrompt——那只发一次
+  const dispatcher = read('main/groupchat/dispatcher.js');
+  assert(/DevDiscuss\.appendDiscussBlock\(/.test(dispatcher) && /DevDiscuss\.discussBlockFor\(meeting, member\.memberId\)/.test(dispatcher),
+    'dispatcher 普通群聊路径必须逐轮追加讨论块');
+  assert(/update-meeting-sync/.test(room.slice(room.indexOf('async function _setDevPhase'), room.indexOf('async function _openDevKickoffDialog'))),
+    '切阶段必须同步写回主进程，再启动循环');
+});
+
+test('讨论阶段堵死「恢复旧循环」的三条路（2026-09-06 合并位复现的绕过）', () => {
+  // 旧循环暂停 → 回到讨论 → 点「已暂停 · 继续」→ 后端照跑旧目标，绕过了「开工」的任务说明确认。
+  // 前端不露入口只是礼貌，引擎和 IPC 才是闸门；三层各守一条。
+  assert(/loopSt\.status === 'paused' && discussingNow/.test(room), '前端：讨论阶段不渲染循环恢复入口');
+  assert(/serialSt\.status === 'paused' && !discussingNow/.test(room), '前端：串行恢复入口同样不露');
+  const engine = read('main/groupchat/loop-engine.js');
+  assert(/if \(discussPhaseBlock\(meeting\)\)/.test(engine.slice(engine.indexOf('async function runLoop'))), '引擎：runLoop 入口按阶段拒绝');
+  assert(/validateResume/.test(read('main/ipc/loop-handlers.js')), 'IPC：loop:resume 先问引擎阶段校验');
+  assert(/devPhase === 'discuss'\) return \{ ok: false/.test(read('main/groupchat/dev-workbench.js')), '工作台：恢复动作按阶段拒绝');
 });
 
 test('单人群聊不写默认工作流（一个人没法自审自合）', () => {

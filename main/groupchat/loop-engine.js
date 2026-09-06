@@ -220,9 +220,27 @@ function createLoopEngine(deps) {
     return { ok: true, meeting, workflow, steps };
   }
 
+  // 开发群聊「讨论阶段」：循环既不能新起也不能恢复。恢复的是旧目标，会绕过「开工」那一步的
+  // 任务说明确认（2026-09-06 合并位在隔离实例复现：旧循环暂停 → 回到讨论 → 点继续 → 后端照跑）。
+  // 前端不露入口只是礼貌，这里才是闸门：loop:start / loop:resume / 工作台恢复三条路都经过 runLoop。
+  function discussPhaseBlock(meeting) {
+    const wf = meeting && meeting.serialWorkflow;
+    return meeting && meeting.scene === 'dev' && wf && wf.devPhase === 'discuss'
+      ? { ok: false, reason: 'dev_discuss_phase' }
+      : null;
+  }
+
+  function validateResume(meetingId) {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting) return { ok: false, reason: 'group_chat_not_found' };
+    return discussPhaseBlock(meeting) || { ok: true };
+  }
+
   function validateLoop(meetingId) {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    const blocked = discussPhaseBlock(meeting);
+    if (blocked) return blocked;
     const workflow = meeting.serialWorkflow || {};
     const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
     const builderId = (steps[0] || [])[0];
@@ -524,6 +542,7 @@ function createLoopEngine(deps) {
     try {
       const meeting = meetingManager.getMeeting(meetingId);
       if (!meeting) { logger.log('[loop-engine] meeting not found ' + meetingId); return null; }
+      if (discussPhaseBlock(meeting)) { logger.log('[loop-engine] refuse to run: dev group is in discuss phase ' + meetingId); return null; }
       const wf = meeting.serialWorkflow || {};
       const steps = Array.isArray(wf.steps) ? wf.steps : [];
       const builderId = (steps[0] || [])[0];
@@ -823,7 +842,7 @@ function createLoopEngine(deps) {
   }
 
   return {
-    getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateSerial,
+    getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateResume, validateSerial,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
     __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,
