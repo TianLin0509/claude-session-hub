@@ -1,8 +1,25 @@
 'use strict';
 // Materialized at the group-chat write boundary. UPDATE is informational;
 // PROGRESS / RESULT retain their existing final-handoff meanings.
+//
+// 2026-09-06 「人话通道」：维护者不看代码，他要的是三段人话 ——
+//   开工前打算怎么做（PLAN）、干到哪了（UPDATE，可累积）、交付时的说明（NOTES），
+//   外加一条「需要他拍板」的问题（ASK）。
+// 这四个标签允许多行正文；原来的四行机器协议（PROGRESS/VERIFIED/RISK/REPORT 和
+// RESULT/BLOCKERS/VERIFIED/NEXT）保持单行不变 —— 循环引擎靠它们判 PASS，
+// 一旦让它们吃掉后续段落，「四行之外再写三五句展开」就会被算进字段里。
 const listeners = new Set();
 const EMPTY = /^(无|none|n\/a|-|—|null)$/i;
+const TAG = /^\s{0,3}(UPDATE|PROGRESS|VERIFIED|RISK|REPORT|RESULT|BLOCKERS|NEXT|PLAN|ASK|NOTES)\s*[:：]\s*(.*)$/i;
+// 允许带正文段落的标签。别往里加机器协议标签，理由见上。
+const MULTILINE_TAGS = new Set(['PLAN', 'ASK', 'NOTES', 'UPDATE']);
+// 纪事条数与单条长度的上限。这份摘要会随每次落盘写进 state 并推给渲染层，
+// 不设上限的话，一个话多的 agent 能把它撑到几十兆；全文永远在群聊原文里。
+const MAX_TIMELINE = 24;
+const MAX_TIMELINE_TEXT = 1000;
+// 老群聊可能攒了几千条消息。倒着扫，够用就停：纪事满员且两张终稿卡都拿到就收工，
+// 再加一道硬上限兜底，免得每次落盘都把整部历史重新解析一遍。
+const MAX_SCAN = 500;
 function clean(value, max = 4096) {
   if (typeof value !== 'string') return '';
   const text = value.trim();
@@ -10,14 +27,28 @@ function clean(value, max = 4096) {
 }
 function fields(text) {
   if (typeof text !== 'string') return {};
-  const out = {}; let fence = null;
+  const out = {}; let fence = null; let open = null; let blanks = 0;
   for (const line of text.split('\n')) {
     const marker = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (marker) { if (!fence) fence = marker[1][0]; else if (fence === marker[1][0]) fence = null; continue; }
-    if (fence || /^\s*>/.test(line)) continue;
-    const match = /^\s{0,3}(UPDATE|PROGRESS|VERIFIED|RISK|REPORT|RESULT|BLOCKERS|NEXT)\s*[:：]\s*(.*)$/i.exec(line);
-    if (match) out[match[1].toUpperCase()] = match[2].trim();
+    if (marker) { open = null; if (!fence) fence = marker[1][0]; else if (fence === marker[1][0]) fence = null; continue; }
+    if (fence) continue;
+    if (/^\s*>/.test(line)) { open = null; continue; }
+    const match = TAG.exec(line);
+    if (match) {
+      const key = match[1].toUpperCase();
+      out[key] = match[2].trim();
+      open = MULTILINE_TAGS.has(key) ? key : null;
+      blanks = 0;
+      continue;
+    }
+    if (!open) continue;
+    // 空行照收（段落要靠它分段），但连着两行空就当这段说完了 ——
+    // 否则一段 UPDATE 会把它后面整篇不相干的正文都吃进去。
+    if (!line.trim()) { if (++blanks >= 2) open = null; else out[open] += '\n'; continue; }
+    blanks = 0;
+    out[open] = (out[open] ? out[open] + '\n' : '') + line.trim();
   }
+  for (const key of Object.keys(out)) out[key] = out[key].trim();
   return out;
 }
 function source(message, index) {
@@ -32,7 +63,7 @@ function source(message, index) {
 }
 function summarizeGroupState(state) {
   const data = state && typeof state === 'object' ? state : {};
-  const summary = { schemaVersion: 2, revision: Number(data.revision) || 0, card: null, review: null, update: null, currentTurn: Number(data.currentTurn) || 0, truncated: false };
+  const summary = { schemaVersion: 3, revision: Number(data.revision) || 0, card: null, review: null, update: null, plan: null, ask: null, timeline: [], currentTurn: Number(data.currentTurn) || 0, truncated: false };
   const run = data.activeRun;
   if (run && typeof run === 'object') summary.execution = {
     runId: clean(run.runId, 256), status: clean(run.status, 80), turnNum: Number(run.turnNum) || 0,
@@ -48,23 +79,47 @@ function summarizeGroupState(state) {
     messages = data.turns.flatMap(turn => Object.entries(turn && turn.by || {}).map(([sid, text]) =>
       ({ role: 'assistant', content: text, sid, turnNum: turn.n, createdAt: turn.ts })));
   }
-  for (let i = messages.length - 1; i >= 0; i--) {
+  const timeline = [];
+  let scanned = 0;
+  for (let i = messages.length - 1; i >= 0 && scanned < MAX_SCAN; i--) {
     const message = messages[i];
     if (!message || message.role !== 'assistant') continue;
+    scanned++;
     if (message.status === 'progress_update' && message.attemptId && data.attempts?.[message.attemptId]?.status === 'superseded') continue;
     const f = fields(message.content || message.text);
     const meta = source(message, i);
     if (!summary.card && clean(f.PROGRESS)) summary.card = {
       ...meta, progress: clean(f.PROGRESS), verified: clean(f.VERIFIED), risk: clean(f.RISK), report: clean(f.REPORT, 8192),
+      notes: clean(f.NOTES),
     };
     if (!summary.review && /^(PASS|FAIL)\b/i.test(f.RESULT || '')) summary.review = {
       ...meta, decision: /^PASS\b/i.test(f.RESULT) ? 'pass' : 'fail',
       blockers: clean(f.BLOCKERS), verified: clean(f.VERIFIED), next: clean(f.NEXT), report: clean(f.REPORT, 8192),
+      notes: clean(f.NOTES),
     };
     if (!summary.update && clean(f.UPDATE)) summary.update = { ...meta, text: clean(f.UPDATE) };
+    if (!summary.plan && clean(f.PLAN)) summary.plan = { ...meta, text: clean(f.PLAN) };
+    // ASK 只认最新一条：上一条提问要么已经被回答，要么已经被这条取代。
+    if (!summary.ask && clean(f.ASK)) summary.ask = { ...meta, text: clean(f.ASK) };
+    // 纪事：一条消息可能同时带方案和进展，各自成一条，按消息顺序倒着收、最后翻正。
+    if (timeline.length < MAX_TIMELINE) {
+      for (const [kind, text] of [
+        ['review', clean(f.RESULT) && ((/^PASS\b/i.test(f.RESULT) ? '审核通过' : '审核要求修订') + (clean(f.NOTES) ? '\n' + clean(f.NOTES) : clean(f.BLOCKERS) ? '\n' + clean(f.BLOCKERS) : ''))],
+        ['handoff', clean(f.PROGRESS) && (clean(f.PROGRESS) + (clean(f.NOTES) ? '\n' + clean(f.NOTES) : ''))],
+        ['ask', clean(f.ASK)],
+        ['update', clean(f.UPDATE)],
+        ['plan', clean(f.PLAN)],
+      ]) {
+        // 只带渲染纪事真正要用的几个字段：runId/attemptId 那些执行细节留在原摘要里，
+        // 24 条各背一份会让这份要落盘的摘要凭空胖一大截。
+        if (text) timeline.push({ kind, text: text.slice(0, MAX_TIMELINE_TEXT),
+          speaker: meta.speaker, turnNum: meta.turnNum, at: meta.at, messageId: meta.messageId });
+      }
+    }
     if (Object.entries(f).some(([key, value]) => value.length > (key === 'REPORT' ? 8192 : 4096))) summary.truncated = true;
-    if (summary.card && summary.review && summary.update) break;
+    if (timeline.length >= MAX_TIMELINE && summary.card && summary.review) break;
   }
+  summary.timeline = timeline.slice(0, MAX_TIMELINE).reverse();
   return summary;
 }
 function publishSaved(hubDataDir, meetingId, summary) {
@@ -75,4 +130,4 @@ function publishSaved(hubDataDir, meetingId, summary) {
 }
 function subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
 function processUpdate(text) { return clean(fields(text).UPDATE); }
-module.exports = { summarizeGroupState, publishSaved, subscribe, clean, processUpdate };
+module.exports = { summarizeGroupState, publishSaved, subscribe, clean, processUpdate, fields, MAX_TIMELINE };

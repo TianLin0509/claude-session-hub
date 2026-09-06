@@ -28,6 +28,8 @@ const devWorkbenchFeed = require('./dev-workbench-feed');
 //   找答复的地方都必须先把它排掉，否则它会顶替正式答复：跑空时被当成答案存档，
 //   有答复时被就地改写、丢掉 a{n}-{memberId} 身份。
 const PROGRESS_UPDATE_STATUS = 'progress_update';
+// 同一轮同一席位最多留这么多条过程汇报；再多就原地改写最后一条。
+const MAX_PROGRESS_UPDATES_PER_STEP = 40;
 const isProgressUpdateMessage = message => !!message && message.status === PROGRESS_UPDATE_STATUS;
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
@@ -419,12 +421,21 @@ class GroupChatOrchestrator {
     if (pending.attemptId && (!attempt || isTerminalAttemptStatus(attempt.status))) return false;
     if (attempt && (at < Math.max(attempt.dispatchAt || 0, attempt.acceptedAt || 0, attempt.startedAt || 0)
         || !attemptEventMatches(attempt, { ...event, sid, observedAt: at }).ok)) return false;
-    const id = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
-    const previous = this.state.messages.find(message => message && message.id === id);
+    // 过程汇报是**追加**，不是覆盖。
+    // 老写法每轮每席位只留一条、新的原地改写旧的：agent 中途写了五次进展，
+    // 维护者在群里只看得到最后一次 —— 整个过程等于没记。工作台要的「当前一句」
+    // 由读取端取最新一条来满足，那是投影问题，不该靠丢历史来实现。
+    const base = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
+    const mine = this.state.messages.filter(message => isProgressUpdateMessage(message)
+      && (message.id === base || String(message.id || '').startsWith(base + '.')));
+    const previous = mine[mine.length - 1];
     const content = 'UPDATE: ' + text;
     if (previous && (previous.content === content || at < previous.updatedAt)) return false;
-    if (previous) Object.assign(previous, { content, updatedAt: at });
-    else this._appendMessage({ id, role: 'assistant', sid, speaker, turnNum, content,
+    // 上限只防失控、不防话多：到顶之后退回原地改写最后一条，
+    // 这份 state 每次都要整份落盘，不能让一个刷屏的席位把它撑爆。
+    if (previous && mine.length >= MAX_PROGRESS_UPDATES_PER_STEP) Object.assign(previous, { content, updatedAt: at });
+    else this._appendMessage({ id: mine.length ? `${base}.${mine.length + 1}` : base,
+      role: 'assistant', sid, speaker, turnNum, content,
       runId: pending.runId || null, attemptId: pending.attemptId || null, memberId: pending.memberId || null,
       providerTurnId: attempt?.providerTurnId || event.turnId || null,
       status: PROGRESS_UPDATE_STATUS, createdAt: at, updatedAt: at });
