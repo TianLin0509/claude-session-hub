@@ -6,6 +6,14 @@
   "test": [
     "node scripts/run_unit_tests.js"
   ],
+  "$comment_version": "版本号由合并脚本在合并那一刻抬，分支不要碰 —— 这三行是所有并行分支都要改的同三行，谁都无法预知自己是第几个合进去的。versionFiles 还用于回滚还原和「会不会踩到未提交改动」的判断。项目不需要版本号就把这两项留空。",
+  "versionFiles": [
+    "package.json",
+    "package-lock.json"
+  ],
+  "versionBump": [
+    "node scripts/bump-version.js"
+  ],
   "$comment_afterMerge": "合并成功后跑。项目专属产物在这里出（例如 SuperRAN 在这一步打给内网的 zip）。AI HUB 没有这种产物，留空。占位符：{branch} {sha}",
   "afterMerge": [],
   "contracts": {
@@ -16,7 +24,7 @@
   "$comment_notes": "worktree 里禁止 npm install/ci/dist——node_modules 是指向生产依赖的 junction，装包会写坏它。",
   "notes": [
     "worktree 的 node_modules 用 junction 复用主目录，禁止在 worktree 里装包",
-    "改了 Hub 功能必须同一提交里升版本号，3 处同步，unit-hub-version-sync.test.js 守着",
+    "版本号别在分支里改：合并脚本会自动抬 3 处，unit-hub-version-sync.test.js 守一致性",
     "不碰生产 Hub 进程，验证一律用隔离数据目录 + 独立 CDP 端口"
   ],
   "protectedBranches": [],

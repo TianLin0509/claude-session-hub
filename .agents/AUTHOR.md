@@ -50,11 +50,13 @@ $env:CLAUDE_HUB_DATA_DIR = Join-Path $env:TEMP "hub-check-$PID-$hubCdpPort"
 
 **绝不碰生产 Hub 进程。**
 
-## 五、改了 Hub 功能就升版本号
+## 五、不要碰版本号
 
-同一个提交里把版本号 +1，**3 处必须一致**：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。
+`package.json` 和 `package-lock.json` 里的 `version`，**分支一行都不要改**。合并脚本会在合并那一刻自动把 3 处一起抬。
 
-纯文档、纯测试改动可以不升。`unit-hub-version-sync.test.js` 守这条，不一致单测会红。
+原因：那三行是所有并行分支都要改的同三行，而「我是第几个合进去的」这个信息只有合并那一刻才存在。以前让分支自己抬，两个群聊同时开工必然撞车 —— 要么数值和主干重复被打回，要么 `package.json` / `package-lock.json` 直接合并冲突。合并是排队的，所以这件事挪给了合并脚本。
+
+要改主/次版本号（`1.6.x` → `1.7.0` 这种）是人的决定，告诉维护者，不要自己动。
 
 ## 六、汇报：说人话
 
