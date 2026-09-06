@@ -63,7 +63,7 @@ function source(message, index) {
 }
 function summarizeGroupState(state) {
   const data = state && typeof state === 'object' ? state : {};
-  const summary = { schemaVersion: 3, revision: Number(data.revision) || 0, card: null, review: null, update: null, plan: null, ask: null, timeline: [], currentTurn: Number(data.currentTurn) || 0, truncated: false };
+  const summary = { schemaVersion: 3, revision: Number(data.revision) || 0, card: null, review: null, update: null, plan: null, ask: null, timeline: [], lastUserAt: 0, lastUserIndex: -1, currentTurn: Number(data.currentTurn) || 0, truncated: false };
   const run = data.activeRun;
   if (run && typeof run === 'object') summary.execution = {
     runId: clean(run.runId, 256), status: clean(run.status, 80), turnNum: Number(run.turnNum) || 0,
@@ -78,6 +78,16 @@ function summarizeGroupState(state) {
   if (!messages.length && Array.isArray(data.turns)) {
     messages = data.turns.flatMap(turn => Object.entries(turn && turn.by || {}).map(([sid, text]) =>
       ({ role: 'assistant', content: text, sid, turnNum: turn.n, createdAt: turn.ts })));
+  }
+  // 最后一条用户发言的位置：agent 的 ASK 只要排在它后面，就算还没被回应，
+  // 工作台据此把这条任务顶进「需要我」。没有它的话，一条老提问会永远挂在那里。
+  // 比的是消息顺序而不是时间戳：同一毫秒内落下的两条消息用时间戳分不出先后。
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].role === 'user') {
+      summary.lastUserIndex = i;
+      summary.lastUserAt = Number(messages[i].createdAt) || 0;
+      break;
+    }
   }
   const timeline = [];
   let scanned = 0;

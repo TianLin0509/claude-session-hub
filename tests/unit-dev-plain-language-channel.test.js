@@ -145,4 +145,85 @@ test('C3 · 合同、工作流预设、解析器三方对齐（谁漂移谁红�
   assert.ok(/下限/.test(author) && /下限/.test(merger), '合同要给字数下限而不是上限，这是这次改动的重点');
 });
 
+// ── 工作台一侧：需要我 / 任务纪事 / 项目名 ──────────────────────────────────
+const { createDevWorkbench } = require('../main/groupchat/dev-workbench');
+const Model = require('../renderer/dev-workbench-model');
+
+function board(meetingId, workspace) {
+  const meeting = { id: meetingId, title: '任务 ' + meetingId, scene: 'dev', groupChat: true, workspace,
+    workspaceLabel: '好的，收到任务。我先阅读仓库的 `.agents/AUTHO',
+    subSessions: ['s1', 's2'],
+    serialWorkflow: { enabled: true, steps: [['m1'], ['m2']], loop: { enabled: true, maxRounds: 3 },
+      loopState: { runId: 'run-' + meetingId, goal: '实现人话通道', status: 'paused', round: 1, currentStep: 'builder', history: [] } } };
+  const instance = createDevWorkbench({
+    meetingManager: { getMeeting: id => id === meetingId ? meeting : null, getAllMeetings: () => [meeting], updateMeeting: () => meeting },
+    loopEngine: { getStatus: () => ({ running: false }), isRunning: () => false },
+    getHubDataDir: () => root, sendToRenderer() {}, logger: { warn() {} }, readSummary: async () => ({ missing: true }),
+  });
+  return { instance, row: () => instance.snapshot().rows.find(r => r.id === meetingId) };
+}
+
+test('D1 · Agent 提问会把任务顶进「需要我」，维护者回话之后自动落下', () => {
+  const id = 'gc-ask';
+  const orch = groupchat.getOrchestrator(root, id);
+  const now = Date.now();
+  orch.state.messages = [
+    { id: 'u1', role: 'user', speaker: '你', turnNum: 1, createdAt: now },
+    { id: 'a1-m1', role: 'assistant', speaker: 'Claude 1', turnNum: 1, createdAt: now + 10,
+      content: 'ASK: 手机推送要不要现在做？\n做的话多半天，不做也不挡别的。' },
+  ];
+  const { instance, row } = board(id, root);
+  try {
+    orch._saveState();   // 摘要是落盘那一刻推给订阅者的，工作台必须先在场
+    instance.flush();
+    let r = row();
+    assert.equal(r.attention && r.attention.kind, 'ask', '提问没有被顶进「需要我」');
+    assert.ok(r.attention.text.includes('手机推送'));
+    assert.equal(r.ask, r.attention.text);
+
+    // 维护者在群里回了一句 —— 这条提问就不该继续挂着
+    orch.state.messages.push({ id: 'u2', role: 'user', speaker: '你', turnNum: 2, createdAt: now + 20 });
+    orch._saveState(); instance.flush();
+    r = row();
+    assert.ok(!r.attention || r.attention.kind !== 'ask', '维护者回话后旧提问仍挂在「需要我」上');
+    assert.equal(r.ask, '');
+  } finally { instance.dispose(); }
+});
+
+test('D2 · 任务纪事随行下发；项目名读 project.json，读不到退回目录名', () => {
+  const id = 'gc-chronicle';
+  const orch = groupchat.getOrchestrator(root, id);
+  const now = Date.now();
+  orch.state.messages = [
+    { id: 'p1-s1', role: 'assistant', speaker: 'Claude 1', turnNum: 1, createdAt: now, content: 'PLAN: 先改解析器\n再接工作台。' },
+    { id: 'p1-s1.2', role: 'assistant', speaker: 'Claude 1', turnNum: 1, createdAt: now + 1, content: 'UPDATE: 解析器改完了' },
+  ];
+
+  // 没有 .agents/project.json：项目名留空，渲染层按目录名兜底
+  const bare = fs.mkdtempSync(path.join(root, 'bare-'));
+  let b = board(id, bare);
+  try {
+    orch._saveState();
+    b.instance.flush();
+    const r = b.row();
+    assert.equal(r.project, '', '拿不到 project.json 时不该硬塞一个名字');
+    assert.equal(Model.projectName(r), path.basename(bare), '渲染层要退回工作目录名');
+    assert.ok(r.plan.includes('先改解析器'));
+    assert.deepEqual(r.chronicle.map(e => e.kind), ['plan', 'update']);
+  } finally { b.instance.dispose(); }
+
+  // 有 project.json：用它的 name，而不是被自动标题污染的 workspaceLabel
+  const named = fs.mkdtempSync(path.join(root, 'named-'));
+  fs.mkdirSync(path.join(named, '.agents'));
+  fs.writeFileSync(path.join(named, '.agents', 'project.json'), JSON.stringify({ name: 'AI HUB', trunk: 'master' }), 'utf8');
+  b = board(id, named);
+  try {
+    orch._saveState();
+    b.instance.flush();
+    const r = b.row();
+    assert.equal(r.project, 'AI HUB', '项目卡标题仍不是项目名');
+    assert.ok(!r.project.includes('收到任务'), 'workspaceLabel 会被自动标题写成 AI 的第一句回复，不能再用它');
+  } finally { b.instance.dispose(); }
+});
+
 console.log('\n通过 ' + pass + ' / 失败 0');

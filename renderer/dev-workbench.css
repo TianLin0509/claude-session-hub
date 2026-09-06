@@ -108,6 +108,32 @@
 .devb-details dt { color:var(--devb-muted); }
 .devb-details dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .devb-details>button { margin-top:12px; }
+
+/* 「需要我」—— 维护者每天只想扫这一行。只在真的需要他出手时出现。 */
+.devb-attention { display:flex; gap:8px; align-items:baseline; margin:0 10px 10px; padding:8px 10px; border-radius:6px; font-size:12px; line-height:1.7;
+  background:color-mix(in srgb, var(--status-warning) 12%, transparent); border-left:3px solid var(--status-warning); }
+.devb-attention strong { flex:none; color:var(--status-warning); font-weight:600; }
+.devb-attention span { min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.devb-attention-ask { background:color-mix(in srgb, var(--devb-accent) 14%, transparent); border-left-color:var(--devb-accent); }
+.devb-attention-ask strong { color:var(--devb-accent); }
+.devb-attention-stage, .devb-attention-error, .devb-attention-blockers { border-left-color:var(--status-danger); }
+.devb-attention-stage strong, .devb-attention-error strong, .devb-attention-blockers strong { color:var(--status-danger); }
+
+/* 方案 / 任务纪事 / 交付说明 —— 详情里的三段人话 */
+.devb-plan, .devb-notes, .devb-chronicle-block { margin-top:16px; max-width:960px; }
+.devb-plan>strong, .devb-notes>strong, .devb-chronicle-block>strong { display:block; color:var(--devb-muted); font-weight:600; margin-bottom:6px; }
+.devb-plan p, .devb-notes p { margin:0 0 6px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.devb-notes em { color:var(--devb-muted); font-style:normal; }
+.devb-chronicle { list-style:none; margin:0; padding:0 0 0 14px; border-left:1px solid var(--devb-line); display:flex; flex-direction:column; gap:12px; }
+.devb-chronicle li { position:relative; }
+.devb-chronicle li:before { content:''; position:absolute; left:-18px; top:7px; width:7px; height:7px; border-radius:50%; background:var(--devb-muted); }
+.devb-chronicle li.k-plan:before, .devb-chronicle li.k-ask:before { background:var(--devb-accent); }
+.devb-chronicle li.k-review:before { background:var(--status-info); }
+.devb-chronicle li.k-handoff:before { background:var(--status-success); }
+.devb-chron-head { display:flex; gap:8px; align-items:baseline; font-size:11px; color:var(--devb-muted); }
+.devb-chron-kind { color:var(--devb-fg); font-weight:600; }
+.devb-chronicle p { margin:2px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.devb-chronicle-empty { margin:0; color:var(--devb-muted); }
 .devb-project-row { min-width:0; border-bottom:1px solid var(--devb-line); padding-bottom:12px; }
 .devb-project-header { display:flex; align-items:center; gap:22px; padding:22px 10px 18px; }
 .devb-project-header>div:first-child { flex:1; min-width:0; }

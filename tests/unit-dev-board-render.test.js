@@ -15,6 +15,15 @@ assert(source.includes('报告打不开'),'Preview errors must remain visible pe
 assert(!source.includes("invoke('groupchat:get-state'"),'Dashboard must not fetch per-group transcripts');
 assert(!source.includes('setInterval('),'Dashboard must not poll');
 assert(source.includes("ipcRenderer.on('dev-workbench:changed'"),'Dashboard subscribes to published summaries');
+// 人话通道（2026-09-06）：需要维护者出手的事必须自己占一行，方案/纪事/交付说明进详情。
+// 阻断项在没有 attention 的行上仍要可见 —— 少一层兜底，证据就会静默消失。
+const attentive=render({...row,attention:{kind:'ask',label:'需要你拍板',text:'手机推送要不要现在做？'},
+  plan:'先改解析器，再接工作台',card:{...row.card,notes:'没做手机推送，那一项独立'},
+  chronicle:[{kind:'plan',text:'先改解析器，再接工作台',speaker:'Claude 1',at:Date.now()},
+             {kind:'update',text:'解析器改完了',speaker:'Claude 1',at:Date.now()}]});
+for(const expected of ['需要你拍板','手机推送要不要现在做？','任务纪事','先改解析器','解析器改完了','没做手机推送'])
+  assert(attentive.includes(expected),'人话通道内容必须可见：'+expected);
+assert(!render({...row,attention:null}).includes('devb-attention'),'没有需要处理的事就不占位');
 const escaped=render({...row,title:'<img src=x onerror=boom()>',progress:'<script>boom()</script>'});
 assert(!escaped.includes('<script>'));assert(escaped.includes('&lt;img'));
 const missing=render({id:'task-2',stage:{},actions:{}});
