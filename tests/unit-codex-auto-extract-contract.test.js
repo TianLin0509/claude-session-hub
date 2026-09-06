@@ -17,8 +17,16 @@ assert.ok(/isCodexBaseKind\(waitKind\)\s*\|\|\s*isClaudeFamily\(waitKind\)/.test
 assert.ok(/transcriptTap\.extractLatestTurn\(sid,\s*sincePromptTs\)/.test(dispatcherSrc),
   'auto extract must reuse the same transcript extraction path as manual extract');
 
-assert.ok(/extractMode\s*===\s*['"]final_answer['"]/.test(dispatcherSrc),
-  'auto extract must only settle on final_answer, not partial commentary');
+// 2026-09-06 事故：这条断言以前只要源码里出现过一次 final_answer 就通过，而那一次是
+//   Codex 分支。Claude 分支当时只校验时间下界，于是 stop_reason='tool_use' 的开场白被
+//   当成最终答案结算（实测 53 字，串行工作流据此放行了下一步）。
+//   三处必须分别断言，一处满足不能替另一处背书。
+assert.ok(/isCodexFinal = isCodexBaseKind[\s\S]{0,200}?extractMode === 'final_answer'/.test(dispatcherSrc),
+  'Codex auto extract must require extractMode=final_answer');
+assert.ok(/isClaudeFinal = isClaudeFamily[\s\S]{0,400}?extractMode === 'final_answer'/.test(dispatcherSrc),
+  'Claude auto extract must require extractMode=final_answer — 时间下界只能证明「属于本轮」，证明不了「本轮已结束」');
+assert.ok(/claudeFinal = isClaudeFamily[\s\S]{0,400}?extractMode === 'final_answer'/.test(dispatcherSrc),
+  '重启恢复路径的 Claude 判据必须与实时 auto extract 一致，否则重启后同样把开场白写成最终答案');
 
 assert.ok(/signalSource\s*=\s*isCodexFinal[\s\S]{0,160}codex_auto_extract_final_answer[\s\S]{0,160}claude_auto_extract_final_answer/.test(dispatcherSrc) &&
   /watcher\.completeFromTranscript\(extracted\.text,\s*signalSource,\s*\{/.test(dispatcherSrc),

@@ -20,7 +20,7 @@ const { createGroupChatDispatcher } = require(path.join(root, 'main', 'groupchat
 const STALE_TEXT = '【上一步的旧答案】不应出现在下一步';
 const FRESH_TEXT = '【本轮的新答案】';
 
-function harness({ completedAtOffsetMs }) {
+function harness({ completedAtOffsetMs, extractMode = 'final_answer' }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-stale-guard-'));
   const meetingId = 'm-stale-guard';
   const meeting = { id: meetingId, groupChat: true, subSessions: ['s1'], groupMode: 'deliberation' };
@@ -33,10 +33,14 @@ function harness({ completedAtOffsetMs }) {
     getStreamingText() { return ''; }
     async hasCodexUserMessageSince() { return false; }
     async extractLatestTurn() {
+      // 真实 ClaudeTap.extractLatestTurn 一定带 extractMode：final_answer 表示
+      //   transcript 里 stop_reason 已是终态；partial_commentary 表示 Claude 还在干活。
       return {
         text: completedAtOffsetMs < 0 ? STALE_TEXT : FRESH_TEXT,
         source: 'manual_claude_transcript',
         completedAt: baseTs + completedAtOffsetMs,
+        stopReason: extractMode === 'final_answer' ? 'end_turn' : 'tool_use',
+        extractMode,
       };
     }
   }
@@ -110,4 +114,29 @@ test('a Claude turn that finished after submit is still adopted through the auto
   assert.strictEqual(participant.status, 'completed');
   assert.ok(String(participant.text || '').includes(FRESH_TEXT),
     'the auto-extract fallback must still settle a genuinely new answer');
+});
+
+// 2026-09-06 事故复现（开发场景串行工作流 Claude → Codex）：
+//   Claude 只写了「我先读 X 和两张截图，弄清合同与现状，再在 worktree 里改。」就被判
+//   「已答」，工作流立刻放行 Codex。那条 entry 的 stop_reason 是 'tool_use'，Claude 根本
+//   还没干活。时间上它确实属于本轮，所以上面那条时间下界守卫拦不住它 ——
+//   必须由终态判据来拦。
+test('a fresh-but-unfinished Claude preamble must not settle the turn', async () => {
+  const { dispatcher, meetingId } = harness({
+    completedAtOffsetMs: 3_000,          // 时间上属于本轮，下界守卫放行
+    extractMode: 'partial_commentary',   // 但 stop_reason='tool_use'，还没答完
+  });
+  const result = await dispatcher.dispatchGroupChatTurn(meetingId, {
+    userInput: '第 1 步：实现目标并完成最小相关验证',
+    targetMemberIds: ['m1'],
+    appendUserMessage: true,
+    dispatchMode: 'serial',
+    turnTimeoutMs: 9000,
+    allowActiveExtend: false,
+  });
+  const participant = (result.results || [])[0] || {};
+  assert.notStrictEqual(participant.status, 'completed',
+    '未完成的开场白被结算成 completed —— 串行工作流会据此放行下一步');
+  assert.ok(!String(participant.text || '').includes(FRESH_TEXT),
+    'auto-extract 不得把 partial_commentary 写成本轮最终答案');
 });
