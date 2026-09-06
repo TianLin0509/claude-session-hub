@@ -64,8 +64,13 @@ function promptFingerprint(prompt) {
 
 function normalizeProviderFamily(kind) {
   const value = String(kind || '').trim().toLowerCase();
-  if (value === 'claude' || value === 'claude-resume' || value === 'glm' || value === 'deepseek-legacy') return 'claude';
-  if (value === 'codex' || value === 'codex-resume' || value === 'deepseek') return 'codex';
+  // Resume kinds are persisted verbatim on the session (kind='deepseek-resume'
+  // etc.). Missing one here silently drops the whole attempt gate back to the
+  // permissive legacy path for that member, so keep both variants listed.
+  if (value === 'claude' || value === 'claude-resume' || value === 'glm'
+      || value === 'deepseek-legacy' || value === 'deepseek-legacy-resume') return 'claude';
+  if (value === 'codex' || value === 'codex-resume'
+      || value === 'deepseek' || value === 'deepseek-resume') return 'codex';
   if (value === 'kimi' || value === 'kimi-resume') return 'kimi';
   if (value === 'gemini' || value === 'gemini-resume') return 'gemini';
   return value || 'unknown';
