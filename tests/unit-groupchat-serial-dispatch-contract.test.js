@@ -17,7 +17,7 @@ assert.match(source, /orch\.beginTurn\(userInput \|\| '', \{[\s\S]*turnNum:[\s\S
   'dispatcher must reuse the visible turn and suppress duplicate user messages');
 assert.match(source, /currentUserMessageAppended: begin\.didAppendUserMessage/,
   'delta construction must know whether this step appended the user message');
-assert.match(source, /if \(isReusedTurn\) orch\.clearTurnInProgress\(turnNum\)/,
+assert.match(source, /if \(isReusedTurn\) orch\.clearTurnInProgress\(turnNum, runId\)/,
   'a failed reused step must not roll back the prior successful step');
 assert.match(source, /dispatchMode: dispatchMode \|\| 'group'/,
   'serial dispatch metadata must reach turn completion');

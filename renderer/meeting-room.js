@@ -12,6 +12,11 @@ if (typeof document !== 'undefined') (function () {
   const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
   const { buildTurnPresentation, normalizeToolActivity } = require('../core/turn-presentation.js');
   const {
+    acceptGroupChatEvent,
+    noteGroupChatSnapshot,
+    resetGroupChatRevision,
+  } = require('./groupchat-event-revision.js');
+  const {
     guardMarkdownLocalPaths,
     restoreMarkdownLocalPaths,
   } = require('./markdown-local-path-guard.js');
@@ -756,6 +761,7 @@ if (typeof document !== 'undefined') (function () {
       const sid = meeting.subSessions[i];
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       if (!s) continue;
+      const spec = Array.isArray(meeting.slotSpecs) ? (meeting.slotSpecs[i] || {}) : {};
       const slotId = slotIndexToId(i);
       const kindLabel = getKindLabel(s.kind);
       slots[i] = {
@@ -763,11 +769,16 @@ if (typeof document !== 'undefined') (function () {
         kind: s.kind,
         slotId,
         slotIndex: i,
+        memberId: spec.memberId || `m${i + 1}`,
         label: meeting.groupChat ? (s.title || `${kindLabel} ${i + 1}`) : (slotId ? getSlotPromptName(slotId) : (s.title || s.kind || `Slot ${i + 1}`)),
         displayLabel: meeting.groupChat ? (s.title || `${kindLabel} ${i + 1}`) : (slotId ? getSlotDisplayLabel(slotId) : (s.title || s.kind || `Slot ${i + 1}`)),
       };
     }
     return slots;
+  }
+
+  function _memberIdForSlot(slot) {
+    return slot && slot.memberId ? String(slot.memberId) : `m${Number(slot && slot.slotIndex || 0) + 1}`;
   }
   // ai-kinds.js is the single source of truth for supported AI labels.
   const _KIND_LABELS = KIND_LABELS;
@@ -974,7 +985,7 @@ if (typeof document !== 'undefined') (function () {
   function _memberMentionLabel(slot) {
     if (!slot) return 'AI';
     const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
-    return `m${slot.slotIndex + 1}（${label}）`;
+    return `${_memberIdForSlot(slot)}（${label}）`;
   }
 
   function _renderDutyHatPanel(meeting, slots) {
@@ -1307,6 +1318,12 @@ if (typeof document !== 'undefined') (function () {
         status = 'soft_alert';
         preview = partial.text || '';
         anyThinking = true;
+      } else if (partial.status === 'awaiting_binding'
+          || partial.status === 'awaiting_final_text'
+          || partial.status === 'recovering') {
+        status = partial.status;
+        preview = partial.text || '';
+        anyThinking = true;
       } else {
         status = partial.status === 'timeout' ? 'timeout' : 'completed';
         preview = partial.text || '';
@@ -1366,6 +1383,9 @@ if (typeof document !== 'undefined') (function () {
       absent: '本轮缺席',
       superseded: '已被新问题覆盖',
       soft_alert: '等待中…',
+      awaiting_binding: '已开工 · 等待绑定记录',
+      awaiting_final_text: '已结束 · 正在收取答案',
+      recovering: '正在恢复本轮',
       send_stuck: '⚠ 输入卡顿，请点 📤 发送',
       errored: '错误',
       interrupted: '已中断',
@@ -1745,6 +1765,9 @@ if (typeof document !== 'undefined') (function () {
       errored: '错误',
       timeout: '超时',
       soft_alert: '等待中',
+      awaiting_binding: '等待绑定记录',
+      awaiting_final_text: '正在收取答案',
+      recovering: '恢复中',
       send_stuck: '输入卡住',
       interrupted: '已中断',
       transport_lost: '连接断开',
@@ -1788,7 +1811,8 @@ if (typeof document !== 'undefined') (function () {
 
   function _turnStatusBucket(status) {
     if (status === 'completed' || status === 'manual_extracted') return 'done';
-    if (status === 'thinking' || status === 'streaming' || status === 'soft_alert' || status === 'queued') return 'running';
+    if (status === 'thinking' || status === 'streaming' || status === 'soft_alert' || status === 'queued'
+        || status === 'awaiting_binding' || status === 'awaiting_final_text' || status === 'recovering') return 'running';
     if (status === 'errored' || status === 'timeout' || status === 'send_stuck' || status === 'transport_lost') return 'warn';
     if (status === 'off' || status === 'absent' || status === 'superseded' || status === 'interrupted') return 'muted';
     return 'idle';
@@ -1813,7 +1837,7 @@ if (typeof document !== 'undefined') (function () {
         <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
         <span class="mr-turn-lane-main">
           <span class="mr-turn-lane-name">${escapeHtml(label)}</span>
-          <span class="mr-turn-lane-meta">@m${slot.slotIndex + 1} · ${escapeHtml(st.label)}</span>
+          <span class="mr-turn-lane-meta">@${escapeHtml(_memberIdForSlot(slot))} · ${escapeHtml(st.label)}</span>
         </span>
         ${actionHtml}
       </div>`;
@@ -1870,7 +1894,7 @@ if (typeof document !== 'undefined') (function () {
         <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
         <span class="mr-card-roster-main">
           <span class="mr-card-roster-name">${escapeHtml(label)}</span>
-          <span class="mr-card-roster-meta">@m${slot.slotIndex + 1}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
+          <span class="mr-card-roster-meta">@${escapeHtml(_memberIdForSlot(slot))}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
         </span>
         <span class="mr-card-roster-side">
           <span class="mr-card-roster-status is-${_turnStatusBucket(st.status)}">${escapeHtml(st.label)}</span>
@@ -2224,8 +2248,19 @@ if (typeof document !== 'undefined') (function () {
   //   原因来源：turn-completion-watcher 的 markErrored/markProcessExit（经
   //   orchestrator statusReason 持久化 / partial-update reason 实时透传）。
   function _gcFailReasonLabel(reason) {
-    const r = String(reason || '').trim();
+    const failure = reason && typeof reason === 'object' ? reason : null;
+    const r = String((failure && failure.code) || reason || '').trim();
     if (!r) return '';
+    if (r === 'quota_exceeded') return '额度已用尽；其他成员回答已保留，额度恢复或切换账号后可只重试本家';
+    if (r === 'rate_limited') return '请求触发限流；请等待后只重试本家，Hub 不会自动重复发送';
+    if (r === 'network_interrupted') return '网络连接中断；已保留现有输出，网络恢复后可只重试本家';
+    if (r === 'provider_unavailable') return '服务暂时不可用；稍后可只重试本家';
+    if (r === 'context_limit') return '上下文过长；精简上下文后可只重试本家';
+    if (r === 'runtime_exited') return 'Agent 运行载体已退出；可重新拉起后只重试本家';
+    if (r === 'response_timeout') return '等待回答超时；请先查看运行证据，再只重试本家';
+    if (r === 'provider_error') return 'Agent 本轮异常结束；请查看运行证据后再重试';
+    if (r === 'awaiting_session_resume') return '等待该成员会话唤醒后继续收取结果';
+    if (r === 'transcript_binding_pending') return 'Agent 已开工，正在等待 transcript/rollout 绑定';
     if (r === 'auth_required') return '检测到登录失效横幅，可能需要 /login';
     if (/cli_self_exit/i.test(r)) return 'CLI 自行退出，PTY 回到宿主 shell';
     if (/pty exit/i.test(r)) return 'CLI 进程退出';
@@ -2258,8 +2293,19 @@ if (typeof document !== 'undefined') (function () {
     //   不依赖调用方各自清 pending flag（多方审查加固）。
     const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
+    const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
+    const failureStatusText = failureCode === 'quota_exceeded' ? '额度中断'
+      : failureCode === 'rate_limited' ? '限流中断'
+        : failureCode === 'network_interrupted' ? '网络中断'
+          : failureCode === 'auth_required' ? '登录失效'
+            : failureCode === 'response_timeout' ? '等待超时'
+              : failureCode === 'runtime_exited' ? '运行退出'
+                : '本轮失败';
     const statusText = sendStuck ? '输入未提交'
-      : status === 'errored' ? '发送失败'
+      : status === 'errored' ? failureStatusText
+      : status === 'awaiting_binding' ? '已开工 · 等绑定'
+      : status === 'awaiting_final_text' ? '已结束 · 收取中'
+      : status === 'recovering' ? '恢复中'
       : isPending ? '正在发言'
       : status === 'superseded' ? '被新提问覆盖'
       : status === 'interrupted' ? '已被你停止'
@@ -2281,9 +2327,16 @@ if (typeof document !== 'undefined') (function () {
     if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      body = '<span class="mr-gc-waiting">思考中...</span>';
+      const waitingText = status === 'awaiting_binding'
+        ? 'Agent 已开始工作，正在等待 transcript/rollout 完成绑定；不会自动重复发送 Prompt。'
+        : status === 'awaiting_final_text'
+          ? '已收到结束信号，正在从 transcript 收取同一轮最终答案。'
+          : status === 'recovering'
+            ? 'Hub 正在按本轮凭证恢复，不会重复发送 Prompt。'
+            : '思考中...';
+      body = `<span class="mr-gc-waiting">${escapeHtml(waitingText)}</span>`;
     } else if (!isUser && !hasContent) {
-      const reasonTxt = _gcFailReasonLabel(message.statusReason);
+      const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason);
       const ph = status === 'errored'
         ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或点「原文」核对。`
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
@@ -2305,6 +2358,9 @@ if (typeof document !== 'undefined') (function () {
     // [查看本轮 prompt] 通用群聊功能：仅 AI 气泡 + 有存档 prompt 时显示，点开弹窗看该 AI 实际收到的 prompt。
     const promptAction = (!isUser && message.sourcePrompt)
       ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt" aria-label="查看本轮 prompt">📥</button>`
+      : '';
+    const attemptAction = (!isUser && message.attemptId)
+      ? `<button type="button" class="mr-gc-attempt-btn" data-gc-attempt-details="${escapeHtml(message.attemptId)}" title="查看本轮运行证据与状态变化">状态</button>`
       : '';
     // 2026-06-28 道雪：每张 AI 气泡 hover 显示「重新提取」(↻) —— 本轮回答提取错/截断时，
     //   手动从该 AI 的 shell/transcript 重新同步。复用 data-gc-sync-answer 处理器
@@ -2337,7 +2393,7 @@ if (typeof document !== 'undefined') (function () {
           <div class="mr-gc-bubble-row">
             ${isUser ? userTurnActions + copyAction : ''}
             <div class="mr-gc-bubble">${body}${isPending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
-            ${!isUser ? copyAction + promptAction + resyncAction + retryParticipantAction + submitAgainAction : ''}
+            ${!isUser ? copyAction + promptAction + attemptAction + resyncAction + retryParticipantAction + submitAgainAction : ''}
           </div>
           ${anchor}
         </div>
@@ -2385,6 +2441,8 @@ if (typeof document !== 'undefined') (function () {
         status,
         sendStatus: partial && partial.sendStatus ? partial.sendStatus : '',
         statusReason: partial && partial.reason ? partial.reason : '',
+        failure: partial && partial.failure ? partial.failure : null,
+        attemptId: partial && partial.attemptId ? partial.attemptId : null,
       }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status, sendStatus: partial && partial.sendStatus }));
     }
     return parts.join('');
@@ -2486,7 +2544,7 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-gc-member-logo" aria-hidden="true"><img src="${_groupLogoSrc(slot.kind)}" alt="" /></span>
             <span class="mr-gc-member-main">
               <span class="mr-gc-member-name">${escapeHtml(label)}</span>
-              <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
+              <span class="mr-gc-member-meta">@${escapeHtml(_memberIdForSlot(slot))}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
             </span>
             <span class="mr-gc-member-side">
               <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
@@ -2658,10 +2716,32 @@ if (typeof document !== 'undefined') (function () {
     }
     if (!state) return { state: null, ok: false };
     const prev = _gcPanelState[meeting.id];
+    const revisionDecision = noteGroupChatSnapshot(meeting.id, state, { consumer: 'meeting-room' });
+    if (!revisionDecision.accepted && revisionDecision.reason !== 'run_mismatch' && prev) {
+      return { state: prev, ok: true, stale: true };
+    }
     const optimistic = _gcOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
       // IPC 飞行期间 + server 还没 begin → 显示乐观态
       state.currentMode = optimistic.mode;
+    }
+    const recoverableAttempts = Object.values(state.attempts || {})
+      .filter(attempt => attempt && Number(attempt.turnNum) === Number(state.currentTurn)
+        && !['completed', 'failed', 'interrupted', 'superseded', 'absent'].includes(attempt.status));
+    if (recoverableAttempts.length) {
+      if (!state.currentMode || state.currentMode === 'idle') state.currentMode = 'recovering';
+      state._partialBy = state._partialBy || {};
+      for (const attempt of recoverableAttempts) {
+        const previousAttempt = state._partialBy[attempt.sid] || {};
+        state._partialBy[attempt.sid] = {
+          ...previousAttempt,
+          status: attempt.status || 'recovering',
+          attemptId: attempt.attemptId,
+          providerTurnId: attempt.providerTurnId || null,
+          reason: attempt.reason || attempt.recoveryReason || null,
+          failure: attempt.failure || null,
+        };
+      }
     }
     // partialBy 合并：本轮还在跑（server currentMode 非 idle）才保留 prev._partialBy 增量；
     //   server 已 idle（本轮已 settle 持久化）→ 丢 prev 残留，让 lastTurn 路径接管渲染。
@@ -2669,7 +2749,7 @@ if (typeof document !== 'undefined') (function () {
     //   非 active 期间 partial 仍会同步进 cache，但切回时如果 server 已 idle，自然不读残留。
     const serverIdle = !state.currentMode || state.currentMode === 'idle';
     if (prev && prev._partialBy && !serverIdle) {
-      state._partialBy = prev._partialBy;
+      state._partialBy = { ...prev._partialBy, ...(state._partialBy || {}) };
     }
     _gcPanelState[meeting.id] = state;
     return { state, ok: true };
@@ -3152,8 +3232,43 @@ if (typeof document !== 'undefined') (function () {
     _showGcPromptModal(prompt, msg);
   }
 
+  async function _handleGcAttemptDetails(btn, meeting) {
+    const attemptId = btn.getAttribute('data-gc-attempt-details');
+    await _syncGroupChatCacheFromServer(meeting);
+    const state = meeting && _gcPanelState[meeting.id];
+    const attempt = state && state.attempts && state.attempts[attemptId];
+    const events = state && Array.isArray(state.attemptEvents)
+      ? state.attemptEvents.filter(event => event && event.attemptId === attemptId).slice(-40)
+      : [];
+    const lines = ['## 本轮运行凭证'];
+    if (attempt) {
+      lines.push(
+        `- 状态：${attempt.status || 'unknown'}`,
+        `- Attempt：${attempt.attemptId || attemptId}`,
+        `- Run：${attempt.runId || '—'}`,
+        `- 群聊轮次：${attempt.turnNum || '—'}`,
+        `- Provider Turn：${attempt.providerTurnId || '尚未绑定'}`,
+        `- 提交依据：${attempt.acknowledgementSource || '尚未确认'}`,
+        `- 当前原因：${_gcFailReasonLabel(attempt.failure || attempt.reason || attempt.recoveryReason) || '—'}`,
+      );
+    } else {
+      lines.push('- 这是旧消息，尚无结构化 attempt 记录。');
+    }
+    lines.push('', '## 最近状态变化');
+    if (!events.length) lines.push('- 暂无事件记录');
+    for (const event of events) {
+      const at = event.at ? _formatGroupChatTime(event.at) : '';
+      const detail = [event.status, event.reason, event.source, event.providerTurnId].filter(Boolean).join(' · ');
+      lines.push(`- ${at || '—'} · ${event.type || 'event'}${detail ? ` · ${detail}` : ''}`);
+    }
+    _showGcPromptModal(lines.join('\n'), { speaker: '运行证据' }, {
+      title: '本轮运行证据',
+      footer: '只记录状态、时间、来源与哈希等元数据，不复制思考过程或完整 Prompt',
+    });
+  }
+
   // 自建 DOM overlay（非浏览器原生 dialog，符合禁用 alert/confirm 铁律）。点遮罩 / ✕ / Esc 关闭。
-  function _showGcPromptModal(prompt, msg) {
+  function _showGcPromptModal(prompt, msg, options = {}) {
     const existing = document.querySelector('.mr-gc-prompt-modal-overlay');
     if (existing) { try { existing.remove(); } catch {} }
     const overlay = document.createElement('div');
@@ -3168,14 +3283,14 @@ if (typeof document !== 'undefined') (function () {
     overlay.innerHTML = `
       <div class="mr-gc-prompt-modal" role="dialog" aria-modal="true">
         <div class="mr-gc-prompt-modal-head">
-          <span class="mr-gc-prompt-modal-title">📥 ${who} 本轮收到的 prompt</span>
+          <span class="mr-gc-prompt-modal-title">${options.title ? escapeHtml(options.title) : `📥 ${who} 本轮收到的 prompt`}</span>
           ${actLbl}
           <span class="mr-gc-prompt-modal-spacer"></span>
           <button type="button" class="mr-gc-prompt-modal-copy" title="复制 prompt 原文">复制</button>
           <button type="button" class="mr-gc-prompt-modal-close" title="关闭 (Esc)" aria-label="关闭">✕</button>
         </div>
         <div class="mr-gc-prompt-modal-body">${bodyHtml}</div>
-        <div class="mr-gc-prompt-modal-foot">${prompt ? prompt.length + ' 字 · 该 AI 实际收到的完整输入（首轮含角色设定，之后仅增量）' : ''}</div>
+        <div class="mr-gc-prompt-modal-foot">${options.footer ? escapeHtml(options.footer) : (prompt ? prompt.length + ' 字 · 该 AI 实际收到的完整输入（首轮含角色设定，之后仅增量）' : '')}</div>
       </div>`;
     document.body.appendChild(overlay);
     const onKey = (e) => { if (e.key === 'Escape') close(); };
@@ -3586,6 +3701,14 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
 
+    const attemptDetailsBtn = _closestInPanel(ev.target, '[data-gc-attempt-details]', panel);
+    if (attemptDetailsBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      await _handleGcAttemptDetails(attemptDetailsBtn, meeting);
+      return;
+    }
+
     const resendTurnBtn = _closestInPanel(ev.target, '[data-gc-resend-turn]', panel);
     if (resendTurnBtn) {
       ev.preventDefault();
@@ -3978,6 +4101,18 @@ if (typeof document !== 'undefined') (function () {
   // 本轮/本步真正被 dispatch 的 sid 集合（串行工作流每步只发子集）。渲染 thinking 时用它过滤；
   // 未设置时 fallback 到 meeting.participants（普通群聊全员），保持原行为。
   const _gcActiveSids = {}; // { [meetingId]: Set<sid> }
+  const _gcAttemptIdsBySid = {}; // { [meetingId]: { [sid]: attemptId } }
+
+  function _acceptGcPush(payload, options = {}) {
+    if (!payload || !payload.meetingId) return false;
+    const decision = acceptGroupChatEvent(payload, { consumer: 'meeting-room', ...options });
+    if (!decision.accepted) {
+      console.debug('[groupchat] ignored stale push', payload.meetingId, decision.reason,
+        payload.turnNum, payload.revision);
+      return false;
+    }
+    return true;
+  }
 
   function triggerGroupChat(meeting, opts = {}) {
     const mid = meeting.id;
@@ -4049,8 +4184,8 @@ if (typeof document !== 'undefined') (function () {
       if (!s) continue;
       const kind = s.kind || 'claude';
       const title = s.title || (typeof _KIND_LABELS !== 'undefined' && _KIND_LABELS[kind]) || kind || `AI ${i + 1}`;
-      // memberId 必须与后端 dispatcher.groupMembersForMeeting 的 `m${idx+1}` 对齐（idx = subSessions 原始下标）
-      out.push({ memberId: `m${i + 1}`, kind, title });
+      const spec = Array.isArray(meeting.slotSpecs) ? (meeting.slotSpecs[i] || {}) : {};
+      out.push({ memberId: spec.memberId || `m${i + 1}`, kind, title });
     }
     return out;
   }
@@ -4058,7 +4193,8 @@ if (typeof document !== 'undefined') (function () {
   async function _ensureWorkflowMembersReady(meeting, targetMemberIds) {
     const ids = Array.isArray(targetMemberIds) ? targetMemberIds : [];
     const wakeTasks = ids.map(async (memberId) => {
-      const index = parseInt(String(memberId).slice(1), 10) - 1;
+      const specs = Array.isArray(meeting.slotSpecs) ? meeting.slotSpecs : [];
+      const index = specs.findIndex((spec, i) => String(spec && spec.memberId || `m${i + 1}`) === String(memberId));
       const sid = Number.isInteger(index) && index >= 0 ? (meeting.subSessions || [])[index] : null;
       if (!sid) throw new Error(`工作流成员 ${memberId} 不存在`);
       const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
@@ -4142,7 +4278,9 @@ if (typeof document !== 'undefined') (function () {
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
   //   之前的 `meetingId === activeMeetingId` 守卫导致非 active AI 群聊 _partialBy 残留，
   //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
-  ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, turnNum, superseded }) => {
+  ipcRenderer.on('groupchat-turn-complete', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, turnNum, superseded } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 抢占式连发（2026-06-24 道雪）：被新一轮抢占结算的「旧轮」完成通知 —— 新轮已在
@@ -4156,6 +4294,7 @@ if (typeof document !== 'undefined') (function () {
     // === Phase 1: cache 清理（所有 meeting 都做）===
     delete _gcOptimisticTurn[meetingId];
     delete _gcActiveSids[meetingId];
+    delete _gcAttemptIdsBySid[meetingId];
     // 2026-05-05 道雪：本轮已 settle,state.turns[N].userInput 接管,清掉进行中缓存。
     _discardPendingUserMessage(meetingId, { throughTurn: turnNum });
     const cached = _gcPanelState[meetingId];
@@ -4175,12 +4314,15 @@ if (typeof document !== 'undefined') (function () {
   //   真正的状态收敛仍由随后的 groupchat-turn-complete 完成（interrupted 结算会让
   //   dispatcher 的 allSettled 立即 resolve）；这里只做「没有 watcher 可停」的兜底：
   //   后端已把 orchestrator 收回 idle，前端也要同步清乐观思考态，否则卡片会一直转。
-  ipcRenderer.on('groupchat-turn-interrupted', (_event, { meetingId, stopped, pendingDispatch }) => {
+  ipcRenderer.on('groupchat-turn-interrupted', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, stopped, pendingDispatch } = payload;
     if (!meetingId) return;
     if (Array.isArray(stopped) && stopped.length > 0) return; // 走正常 turn-complete 收敛
     if (pendingDispatch) return; // 有轮正卡在发送中，它自己会以 interrupted 收敛，别抢着清
     delete _gcOptimisticTurn[meetingId];
     delete _gcActiveSids[meetingId];
+    delete _gcAttemptIdsBySid[meetingId];
     const cached = _gcPanelState[meetingId];
     if (cached) {
       cached._partialBy = null;
@@ -4205,6 +4347,10 @@ if (typeof document !== 'undefined') (function () {
     if (prev.status !== next.status) return false;
     if (prev.cleanBufLen !== next.cleanBufLen) return false;
     if (prev.sendStatus !== next.sendStatus) return false;
+    if (prev.attemptId !== next.attemptId) return false;
+    if (prev.providerTurnId !== next.providerTurnId) return false;
+    if (prev.reason !== next.reason) return false;
+    if ((prev.failure && prev.failure.code) !== (next.failure && next.failure.code)) return false;
     const pt = prev.tokens && prev.tokens.total;
     const nt = next.tokens && next.tokens.total;
     if (pt !== nt) return false;
@@ -4229,16 +4375,69 @@ if (typeof document !== 'undefined') (function () {
   //   DOM 操作仅 active 时执行。
   // 2026-07-21 道雪 [修思考中口径]：后端实际发送目标 → 覆盖乐观猜测的 _gcActiveSids，
   //   思考中气泡/进度分母立即与真实发言一致（_expectedParticipantSids 优先读 _gcActiveSids）。
-  ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, sids }) => {
+  ipcRenderer.on('groupchat-turn-targets', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload, { allowRunReplacement: true })) return;
+    const { meetingId, sids, attemptIdsBySid } = payload;
     if (!meetingId || !Array.isArray(sids)) return;
     _gcActiveSids[meetingId] = new Set(sids);
+    _gcAttemptIdsBySid[meetingId] = attemptIdsBySid && typeof attemptIdsBySid === 'object'
+      ? { ...attemptIdsBySid }
+      : {};
     if (meetingId === activeMeetingId) {
       const m0 = meetingData[meetingId] || (typeof meetings !== 'undefined' && meetings[meetingId]);
       if (m0) refreshGroupChatPanel(m0);
     }
   });
 
-  ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason }) => {
+  // Canonical lifecycle projection shared with the sidebar. Content still
+  // arrives through partial-update, but only this attempt-scoped event decides
+  // whether a member is running, reconciling, completed, or failed.
+  ipcRenderer.on('groupchat-attempt-changed', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload, {
+      allowRunReplacement: payload.status === 'prepared' || payload.status === 'submitting',
+    })) return;
+    const { meetingId, turnNum, sid, attemptId, status, failure, reason, providerTurnId } = payload;
+    const meeting = meetingData[meetingId];
+    if (!_isPanelCapableMeeting(meeting) || !sid) return;
+    const uiStatus = {
+      prepared: 'thinking',
+      submitting: 'thinking',
+      accepted: 'streaming',
+      running: 'streaming',
+      awaiting_binding: 'awaiting_binding',
+      awaiting_final_text: 'awaiting_final_text',
+      recovering: 'recovering',
+      completed: 'completed',
+      failed: 'errored',
+      interrupted: 'interrupted',
+      superseded: 'superseded',
+      absent: 'absent',
+    }[status] || status || 'thinking';
+    const cached = _gcPanelState[meetingId] || (_gcPanelState[meetingId] = {
+      currentMode: 'group', currentTurn: Number(turnNum) || 0,
+      messages: [], turns: [], aiStats: {}, _partialBy: {},
+    });
+    if (Number(turnNum) > Number(cached.currentTurn || 0)) cached.currentTurn = Number(turnNum);
+    if (!cached._partialBy) cached._partialBy = {};
+    const previous = cached._partialBy[sid] || {};
+    cached._partialBy[sid] = {
+      ...previous,
+      status: uiStatus,
+      attemptId: attemptId || previous.attemptId,
+      providerTurnId: providerTurnId || previous.providerTurnId,
+      reason: (failure && failure.code) || reason || previous.reason,
+      failure: failure || previous.failure,
+    };
+    if (!_gcAttemptIdsBySid[meetingId]) _gcAttemptIdsBySid[meetingId] = {};
+    if (attemptId) _gcAttemptIdsBySid[meetingId][sid] = attemptId;
+    if (meetingId !== activeMeetingId) return;
+    _renderActivePanelFromCache(meeting);
+    renderToolbar(meeting);
+  });
+
+  ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, turnNum, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason, failure, attemptId, providerTurnId } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
@@ -4267,6 +4466,9 @@ if (typeof document !== 'undefined') (function () {
       cleanBufLen: typeof cleanBufLen === 'number' ? cleanBufLen : undefined,
       // errored settle 带失败原因，占位文案用它解释"为什么失败"（2026-07-12）
       reason: reason || undefined,
+      failure: failure || undefined,
+      attemptId: attemptId || undefined,
+      providerTurnId: providerTurnId || undefined,
     };
     const prev = cached._partialBy[sid];
     // T2（2026-05-04 道雪）：先把 sendStatus 从 prev 抄到 next，再做 diff —— 否则 stuck 心跳每次都误判变化，短路失效。
@@ -4375,7 +4577,9 @@ if (typeof document !== 'undefined') (function () {
   // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
   // 提示用户"还在等"，提供"一键提取/跳过/继续等"操作。永不阻塞按钮（按钮 disabled
   // 由 _allParticipantsSettled 决定，与本 banner 无关）。
-  ipcRenderer.on('groupchat-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
+  ipcRenderer.on('groupchat-soft-alert', (_event, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, sid, label, level, mode, turnNum } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
 
@@ -4425,7 +4629,9 @@ if (typeof document !== 'undefined') (function () {
   // T6（2026-05-03）：send-stuck 事件 → 数据驱动写 _partialBy[sid].sendStatus='stuck'，
   //   再 refreshGroupChatPanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
   //   H1 修复：补 activeMeetingId 守卫，与其他 groupchat-* 监听器保持一致。
-  ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
+  ipcRenderer.on('groupchat-send-stuck', (_e, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, sid } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
 
@@ -4454,7 +4660,9 @@ if (typeof document !== 'undefined') (function () {
   //   H1 修复：补 activeMeetingId 守卫。
   //   M2 修复（最小化方案）：先 await refreshGroupChatPanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
-  ipcRenderer.on('groupchat-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
+  ipcRenderer.on('groupchat-turn-patched', async (_e, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const { meetingId, turnNum, sid, charCount } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步（拉 server state 拿到 patch 后的 lastTurn.by）对所有 meeting 都做，
@@ -5207,7 +5415,7 @@ if (typeof document !== 'undefined') (function () {
     const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
     const ctxText = ctxLeft == null ? 'Ctx --' : `Ctx ${ctxLeft}%余`;
     const ctxTitle = ctxLeft == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文剩余 ${ctxLeft}%`;
-    const memberLabel = `@m${slot.slotIndex + 1}${compact ? ` · ${compact}` : ''}`;
+    const memberLabel = `@${_memberIdForSlot(slot)}${compact ? ` · ${compact}` : ''}`;
     let changed = false;
 
     const rows = panel.querySelectorAll(`[data-gc-member-idx="${slot.slotIndex}"]`);
@@ -5777,9 +5985,11 @@ if (typeof document !== 'undefined') (function () {
       const kindLabel = k ? (_KIND_LABELS[k] || k) : '';
       const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       const title = session ? (session.title || kindLabel || `AI ${i + 1}`) : (kindLabel || `AI ${i + 1}`);
+      const spec = Array.isArray(meeting.slotSpecs) ? (meeting.slotSpecs[i] || {}) : {};
+      const memberId = spec.memberId || `m${i + 1}`;
       items.push({
-        value: isGroupChat ? `@m${i + 1}` : `@slot${i + 1}`,
-        label: isGroupChat ? `m${i + 1} · ${title}` : `Slot ${i + 1}${kindLabel ? ' · ' + kindLabel : ''}`,
+        value: isGroupChat ? `@${memberId}` : `@slot${i + 1}`,
+        label: isGroupChat ? `${memberId} · ${title}` : `Slot ${i + 1}${kindLabel ? ' · ' + kindLabel : ''}`,
         hint: isGroupChat ? 'group target' : 'private ask',
         sid,
         kind: k,
@@ -6497,6 +6707,10 @@ if (typeof module !== 'undefined' && module.exports) {
       if (prev.status !== next.status) return false;
       if (prev.cleanBufLen !== next.cleanBufLen) return false;
       if (prev.sendStatus !== next.sendStatus) return false;
+      if (prev.attemptId !== next.attemptId) return false;
+      if (prev.providerTurnId !== next.providerTurnId) return false;
+      if (prev.reason !== next.reason) return false;
+      if ((prev.failure && prev.failure.code) !== (next.failure && next.failure.code)) return false;
       const pt = prev.tokens && prev.tokens.total;
       const nt = next.tokens && next.tokens.total;
       if (pt !== nt) return false;

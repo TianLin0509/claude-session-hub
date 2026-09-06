@@ -18,12 +18,13 @@ function reindexParticipantsAfterRemoval(participants, removedIndex) {
     .map(index => index > removedIndex ? index - 1 : index);
 }
 
-function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
+function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex, stableRemovedMemberId = null) {
   if (!serialWorkflow || typeof serialWorkflow !== 'object' || !Array.isArray(serialWorkflow.steps)) {
     return serialWorkflow || null;
   }
-  const removedMemberId = 'm' + (removedIndex + 1);
+  const removedMemberId = stableRemovedMemberId || ('m' + (removedIndex + 1));
   const remapMemberId = (memberId) => {
+    if (stableRemovedMemberId) return memberId === removedMemberId ? null : memberId;
     const match = /^m(\d+)$/.exec(String(memberId || ''));
     if (!match) return memberId;
     const oneBased = Number(match[1]);
@@ -224,8 +225,11 @@ function registerMeetingIpc(ipcMain, deps) {
       meetingManager.setSlotSpecs(meetingId, slotSpecs);
     }
     if (meeting.serialWorkflow && typeof meeting.serialWorkflow === 'object') {
+      const removedMemberId = meeting.slotSpecs && meeting.slotSpecs[removedIndex]
+        ? meeting.slotSpecs[removedIndex].memberId
+        : null;
       meetingManager.updateMeeting(meetingId, {
-        serialWorkflow: reindexSerialWorkflowAfterRemoval(meeting.serialWorkflow, removedIndex),
+        serialWorkflow: reindexSerialWorkflowAfterRemoval(meeting.serialWorkflow, removedIndex, removedMemberId),
       });
     }
 

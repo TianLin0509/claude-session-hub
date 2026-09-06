@@ -141,16 +141,30 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
             ? turns.find(t => t && t.n === requestedTurn)
             : turns[turns.length - 1];
           if (targetTurn) {
+            const attemptId = targetTurn.attemptIdBy && targetTurn.attemptIdBy[sid];
+            const providerTurnId = targetTurn.providerTurnIdBy && targetTurn.providerTurnIdBy[sid];
             const patched = orch.patchTurnResult(targetTurn.n, sid, {
               text: extracted.text,
               status: 'manual_extracted',
+              ...(attemptId ? { attemptId } : {}),
+              ...(targetTurn.runId ? { runId: targetTurn.runId } : {}),
+              ...(providerTurnId ? { providerTurnId } : {}),
+              signalSource: 'manual',
             });
             if (patched) {
+              const revision = typeof orch.reserveRevision === 'function'
+                ? orch.reserveRevision('manual_result_published', {
+                    attemptId, runId: targetTurn.runId, turnNum: targetTurn.n, sid, status: 'manual_extracted',
+                  })
+                : null;
               sendToRenderer('groupchat-turn-patched', {
                 meetingId,
                 turnNum: targetTurn.n,
+                ...(targetTurn.runId ? { runId: targetTurn.runId } : {}),
+                ...(attemptId ? { attemptId } : {}),
                 sid,
                 charCount: (extracted.text || '').length,
+                ...(revision ? { revision } : {}),
               });
               return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
             }
@@ -165,18 +179,42 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
             const memberIndex = meeting && Array.isArray(meeting.subSessions)
               ? meeting.subSessions.indexOf(sid)
               : -1;
+            const memberSpec = memberIndex >= 0 && Array.isArray(meeting.slotSpecs)
+              ? meeting.slotSpecs[memberIndex]
+              : null;
+            const pendingReceipt = orch.state.pendingPrompts
+              && orch.state.pendingPrompts[String(recoverTurnNum)]
+              && orch.state.pendingPrompts[String(recoverTurnNum)][sid];
             const patched = orch.patchTurnResult(recoverTurnNum, sid, {
               text: extracted.text,
               status: 'manual_extracted',
-              memberId: memberIndex >= 0 ? `m${memberIndex + 1}` : undefined,
+              memberId: memberIndex >= 0 ? ((memberSpec && memberSpec.memberId) || `m${memberIndex + 1}`) : undefined,
               speaker: session?.title || session?.kind || 'AI',
+              ...(pendingReceipt && pendingReceipt.attemptId ? { attemptId: pendingReceipt.attemptId } : {}),
+              ...(pendingReceipt && pendingReceipt.runId ? { runId: pendingReceipt.runId } : {}),
+              ...(extracted.turnId || (pendingReceipt && pendingReceipt.providerTurnId)
+                ? { providerTurnId: extracted.turnId || pendingReceipt.providerTurnId }
+                : {}),
+              signalSource: 'manual',
             });
             if (patched) {
+              const revision = typeof orch.reserveRevision === 'function'
+                ? orch.reserveRevision('manual_result_published', {
+                    attemptId: pendingReceipt && pendingReceipt.attemptId,
+                    runId: pendingReceipt && pendingReceipt.runId,
+                    turnNum: recoverTurnNum,
+                    sid,
+                    status: 'manual_extracted',
+                  })
+                : null;
               sendToRenderer('groupchat-turn-patched', {
                 meetingId,
                 turnNum: recoverTurnNum,
+                ...(pendingReceipt && pendingReceipt.runId ? { runId: pendingReceipt.runId } : {}),
+                ...(pendingReceipt && pendingReceipt.attemptId ? { attemptId: pendingReceipt.attemptId } : {}),
                 sid,
                 charCount: (extracted.text || '').length,
+                ...(revision ? { revision } : {}),
               });
               return { ok: true, text: extracted.text, source: extracted.source, mode: 'recover_inflight_turn', extractMode: extracted.extractMode || null };
             }
@@ -274,10 +312,12 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     if (!userMsg || !String(userMsg.content || '').trim()) return { ok: false, reason: 'no_user_input' };
     const memberIndex = Array.isArray(meeting.subSessions) ? meeting.subSessions.indexOf(sid) : -1;
     if (memberIndex < 0) return { ok: false, reason: 'participant_not_in_meeting' };
+    const memberSpec = Array.isArray(meeting.slotSpecs) ? meeting.slotSpecs[memberIndex] : null;
+    const memberId = (memberSpec && memberSpec.memberId) || `m${memberIndex + 1}`;
     try {
       const result = await dispatchGroupChatTurn(meetingId, {
         userInput: userMsg.content,
-        targetMemberIds: [`m${memberIndex + 1}`],
+        targetMemberIds: [memberId],
         reuseTurnNum: turnNum,
         appendUserMessage: false,
         dispatchMode: 'retry',

@@ -139,7 +139,7 @@ assert.ok(/const sendFailures = \[\]/.test(dispatcherSrc) &&
   /immediateFailures\s*=\s*absentMembers\.concat\(sendFailures\)/.test(dispatcherSrc) &&
   /concat\(absentMembers, sendFailures\)/.test(dispatcherSrc),
   'a target whose CLI send throws or is not ready must settle as an explicit errored participant instead of disappearing');
-assert.ok(/sendToRenderer\('groupchat-send-ack'/.test(dispatcherSrc) &&
+assert.ok(/emitGroupChat\('groupchat-send-ack'/.test(dispatcherSrc) &&
   /acknowledgementSource: sendResult/.test(dispatcherSrc) &&
   /enterAttempts: Number\(sendResult/.test(dispatcherSrc),
   'real diagnostics must expose semantic submit acknowledgement and bounded Enter attempt count');
@@ -178,7 +178,7 @@ const internalDispatchSrc = dispatcherSrc.slice(
   dispatcherSrc.indexOf('async function dispatchInternalPrompt'),
   dispatcherSrc.indexOf('async function dispatchGroupChatTurn')
 );
-assert.ok(/dispatchInternalPrompt\(meetingId,\s*meeting,\s*targetMembers,\s*userInput,\s*turnTimeoutMs\)/.test(dispatcherSrc) &&
+assert.ok(/dispatchInternalPrompt\(meetingId,\s*meeting,\s*targetMembers,\s*userInput,\s*turnTimeoutMs,\s*workflowRun\s*=\s*null\)/.test(dispatcherSrc) &&
   /if\s*\(silent\)\s*\{[\s\S]*return await dispatchInternalPrompt/.test(dispatcherSrc) &&
   /allowActiveExtend:\s*false/.test(dispatcherSrc) &&
   /allowActiveExtend/.test(dispatcherSrc) &&

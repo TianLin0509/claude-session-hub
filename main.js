@@ -695,6 +695,17 @@ transcriptTap.on('session-bound', (ev) => {
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     }
   } catch {}
+  // A recovered group-chat attempt may have resumed before its rollout was
+  // bound. Binding is the strongest moment to retry collection: never resend
+  // the prompt, just reconcile the persisted final answer for this sid.
+  const recoveryTimer = setTimeout(() => {
+    if (groupChatDispatcher && typeof groupChatDispatcher.recoverSession === 'function') {
+      groupChatDispatcher.recoverSession(ev.hubSessionId).catch((error) => {
+        console.warn('[groupchat] transcript-bound recovery failed:', error && error.message);
+      });
+    }
+  }, 0);
+  recoveryTimer.unref?.();
   // Find the session in lastPersistedSessions and merge new fields.
   const idx = lastPersistedSessions.findIndex(s => s.hubId === ev.hubSessionId);
   if (idx < 0) {
@@ -1018,6 +1029,16 @@ function createWindow() {
         catch (e) { console.warn('[loop] boot resume failed:', e && e.message); }
       }, 8000);
     }
+    if (!global.__groupChatRecoveryScanned) {
+      global.__groupChatRecoveryScanned = true;
+      setTimeout(() => {
+        Promise.resolve(groupChatDispatcher && groupChatDispatcher.recoverPendingAttempts())
+          .then((summary) => {
+            if (summary && summary.checked) console.log('[groupchat] boot attempt recovery:', summary);
+          })
+          .catch((error) => console.warn('[groupchat] boot attempt recovery failed:', error && error.message));
+      }, 2000);
+    }
   });
   setTimeout(showMainWindow, 4000);
 
@@ -1190,6 +1211,14 @@ function registerSessionForTap(session) {
       allowMtimeFallback: !!session.codexAllowMtimeFallback,
       requirePromptMatch: !!session.meetingId,
     });
+    if (session.meetingId && groupChatDispatcher && typeof groupChatDispatcher.recoverSession === 'function') {
+      const timer = setTimeout(() => {
+        groupChatDispatcher.recoverSession(session.id).catch((error) => {
+          console.warn('[groupchat] resumed-session recovery failed:', error && error.message);
+        });
+      }, 1200);
+      timer.unref?.();
+    }
   }
   catch (e) {
     // silent-failure-hunter L2（2026-05-04 道雪）：注册失败 → watcher 收不到 turn-complete L1
@@ -1902,16 +1931,29 @@ const hookServer = http.createServer((req, res) => {
         // Claude's terminal stop_reason can then close the turn independently
         // when the Stop hook is delayed or missing.
         if (!isSubagentContext && event !== 'stop' && parsed.transcriptPath) {
-          void transcriptTap.watchClaudeTranscript(parsed.sessionId, parsed.transcriptPath);
+          void transcriptTap.watchClaudeTranscript(parsed.sessionId, parsed.transcriptPath, {
+            turnId: parsed.turnId || null,
+            newTurn: event === 'prompt',
+          });
         }
         if (!isSubagentContext && event === 'stop' && parsed.transcriptPath) {
-          void transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath);
+          void transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath, { turnId: parsed.turnId || null });
+        }
+        if (!isSubagentContext && event === 'stop-failure') {
+          transcriptTap.notifyClaudeError(parsed.sessionId, {
+            message: parsed.error || parsed.message || 'Claude StopFailure',
+            errorDetails: parsed.errorDetails || null,
+            turnId: parsed.turnId || null,
+            completedAt: eventAt,
+            signalSource: 'stop_failure',
+          });
         }
         if (event === 'prompt') {
           try {
             sessionManager.noteAgentTurnStarted(parsed.sessionId, {
               startedAt: eventAt,
               signalSource: 'claude-user-prompt-submit',
+              turnId: parsed.turnId || null,
             });
           } catch (error) {
             console.warn('[claude prompt] main-process lifecycle note failed:', error && error.message);

@@ -502,7 +502,7 @@ test('exact in-flight prompts and send receipts are durable until turn settlemen
   const active = orch.getActivePrompt(turnNum, 's-codex');
   assert.strictEqual(active.prompt, exactPrompt);
   const diskBefore = JSON.parse(fs.readFileSync(groupchat.groupChatStatePath(tmp, meetingId), 'utf8'));
-  assert.strictEqual(diskBefore.schemaVersion, 3);
+  assert.strictEqual(diskBefore.schemaVersion, 4);
   assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].prompt, exactPrompt);
   assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].status, 'enter_retry');
   assert.strictEqual(diskBefore.pendingPrompts[String(turnNum)]['s-codex'].workflowRun.runId, 'serial-run-1');

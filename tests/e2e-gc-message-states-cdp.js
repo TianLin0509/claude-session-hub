@@ -112,6 +112,7 @@ function cleanupDataDir(dataDir) {
         groupChat: true,
         groupMode: 'fanout',
         subSessions: sids,
+        slotSpecs: [{ kind: 'claude', memberId: 'm1' }, { kind: 'gemini', memberId: 'm2' }, { kind: 'codex', memberId: 'm3' }],
         participants: [0, 1, 2],
         focusedSub: sids[0],
         createdAt: now, updatedAt: now, lastMessageTime: now,
@@ -127,6 +128,7 @@ function cleanupDataDir(dataDir) {
         currentTurn: 7,
         messages: [
           { id: 'u5', turnNum: 5, role: 'user', speaker: '你', content: '新改动打包更新到 GitHub 了吗？', createdAt: now - 60000, anchor: 'raw://group/e2e-gc-states/msg/u5' },
+          { id: 'a5-m1', turnNum: 5, role: 'assistant', sid: sids[0], memberId: 'm1', speaker: 'Claude E2E', content: '', status: 'errored', statusReason: 'quota_exceeded', failure: { code: 'quota_exceeded', retryable: true, autoRetry: false }, attemptId: 'attempt-quota', createdAt: now - 56000, anchor: 'raw://group/e2e-gc-states/msg/a5-m1' },
           { id: 'a5-m3', turnNum: 5, role: 'assistant', sid: sids[2], speaker: 'Codex 2', content: '', status: 'errored', statusReason: 'auth_required', createdAt: now - 55000, anchor: 'raw://group/e2e-gc-states/msg/a5-m3' },
           { id: 'u6', turnNum: 6, role: 'user', speaker: '你', content: '还等什么，执行', createdAt: now - 30000, anchor: 'raw://group/e2e-gc-states/msg/u6' },
           { id: 'a6-m1', turnNum: 6, role: 'assistant', sid: sids[0], speaker: 'Claude E2E', content: '已完成推送，release v1.6.2 已发布。', status: 'completed', createdAt: now - 25000, anchor: 'raw://group/e2e-gc-states/msg/a6-m1' },
@@ -160,12 +162,14 @@ function cleanupDataDir(dataDir) {
           hasCursor: !!el.querySelector('.mr-ft-cursor'),
           hasWordChip: !!el.querySelector('.mr-gc-wordcount'),
           hasSubmitAgain: !!el.querySelector('[data-gc-escape="resend-prompt"]'),
+          hasAttemptBtn: !!el.querySelector('[data-gc-attempt-details]'),
           pendingClass: el.classList.contains('pending'),
         };
       };
       return {
         renderOk: !!(render && render.ok),
         erroredTurn5: info('a5-m3'),
+        quotaTurn5: info('a5-m1'),
         completedWithText: info('a6-m1'),
         superseded: info('a6-m2'),
         completedEmpty: info('a6-m3'),
@@ -181,11 +185,16 @@ function cleanupDataDir(dataDir) {
     // 1. 持久化 errored 空消息
     const e5 = result.erroredTurn5;
     assert.ok(e5, 'errored message must render');
-    assert.ok(e5.text.includes('发送失败'), 'errored 消息必须显示「发送失败」');
+    assert.ok(e5.text.includes('登录失效'), 'auth errored 消息必须显示「登录失效」');
     assert.ok(!e5.text.includes('正在发言'), 'errored 消息不得显示「正在发言」');
     assert.ok(e5.hasPlaceholder, 'errored 空消息必须渲染占位文案（不再是空气泡）');
     assert.ok(e5.text.includes('登录失效'), '占位文案必须解释失败原因（auth_required → 登录失效）');
     assert.ok(e5.hasSyncBtn, 'errored 消息必须保留「同步」逃生入口');
+
+    const quota = result.quotaTurn5;
+    assert.ok(quota && quota.text.includes('额度已用尽'), '额度失败必须显示可行动原因');
+    assert.ok(quota.text.includes('重试'), '额度失败必须保留只重试本家的入口');
+    assert.ok(quota.hasAttemptBtn, '新协议消息必须能查看本轮运行证据');
 
     // 2. superseded
     const sup = result.superseded;
@@ -202,7 +211,7 @@ function cleanupDataDir(dataDir) {
     // 4. pending errored partial
     const pe = result.pendingErrored;
     assert.ok(pe, 'pending errored bubble must render');
-    assert.ok(pe.text.includes('发送失败'), 'pending errored 必须显示「发送失败」');
+    assert.ok(pe.text.includes('本轮失败'), 'pending errored 必须显示明确失败状态');
     assert.ok(!pe.text.includes('正在发言'), 'pending errored 不得显示「正在发言」（旧矛盾态）');
     assert.ok(!pe.hasCursor, 'pending errored 不得渲染闪烁光标');
     assert.ok(pe.hasPlaceholder && pe.text.includes('CLI 进程退出'), 'pending errored 占位必须带失败原因标签');

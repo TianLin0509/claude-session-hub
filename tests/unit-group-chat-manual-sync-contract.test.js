@@ -21,7 +21,7 @@ assert.ok(
 
 const groupWaitIdx = dispatcherSrc.indexOf("mode: 'group', turnNum");
 assert.ok(
-  groupWaitIdx > 0 && dispatcherSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: !(Number(turnTimeoutMs) > 0),'),
+  groupWaitIdx > 0 && dispatcherSrc.slice(groupWaitIdx, groupWaitIdx + 800).includes('disableHardTimeout: !(Number(turnTimeoutMs) > 0),'),
   'group chat waits must opt out of the transitional 5-minute hard timeout for normal (non-workflow) sends',
 );
 

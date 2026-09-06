@@ -114,7 +114,7 @@ test('前端：幕次分隔条可点击折叠（toggle + _gcCollapsedActs + 隐�
 
 // ── CSS 契约 ──
 test('CSS：查看按钮默认隐藏 + hover 显示；弹窗 overlay 有样式；分隔条可点击', () => {
-  assert.ok(/\.mr-gc-prompt-btn\s*\{[\s\S]*?opacity:\s*0/.test(css), '查看按钮默认隐藏');
+  assert.ok(/\.mr-gc-prompt-btn\s*,[\s\S]{0,80}\.mr-gc-attempt-btn\s*\{[\s\S]*?opacity:\s*0/.test(css), '查看按钮默认隐藏');
   assert.ok(/\.mr-gc-msg:hover\s+\.mr-gc-prompt-btn/.test(css), 'hover 显示查看按钮');
   assert.ok(css.includes('.mr-gc-prompt-modal-overlay'), '弹窗 overlay 有样式');
   assert.ok(/\.mr-gc-act-sep\s*\{[\s\S]*?cursor:\s*pointer/.test(committeeCss), '分隔条可点击 cursor');

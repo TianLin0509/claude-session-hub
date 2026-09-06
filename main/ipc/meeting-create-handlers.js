@@ -17,6 +17,9 @@ function sanitizeMeetingSlot(slot = {}, fallbackIndex = null) {
     index: typeof slot.index === 'number' ? slot.index : fallbackIndex,
     kind,
   };
+  const memberId = typeof slot.memberId === 'string' ? slot.memberId.trim() : '';
+  if (/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(memberId)) safe.memberId = memberId;
+  else if (Number.isInteger(fallbackIndex) && fallbackIndex >= 0) safe.memberId = `m${fallbackIndex + 1}`;
   if (typeof slot.model === 'string' && slot.model.trim()) safe.model = slot.model.trim();
 
   const effort = typeof slot.effort === 'string' ? slot.effort.trim().toLowerCase() : '';
@@ -48,8 +51,20 @@ function sanitizeMeetingSlot(slot = {}, fallbackIndex = null) {
 
 function sessionOptionsForMeetingSlot(slot, cwd) {
   const safe = sanitizeMeetingSlot(slot);
-  const { index: _index, kind: _kind, ...sessionOpts } = safe;
+  const { index: _index, kind: _kind, memberId: _memberId, ...sessionOpts } = safe;
   return { ...sessionOpts, cwd };
+}
+
+function nextMeetingMemberId(slotSpecs) {
+  const used = new Set((Array.isArray(slotSpecs) ? slotSpecs : [])
+    .map(slot => slot && String(slot.memberId || ''))
+    .filter(Boolean));
+  let next = Math.max(0, ...[...used].map(value => {
+    const match = /^m(\d+)$/.exec(value);
+    return match ? Number(match[1]) : 0;
+  })) + 1;
+  while (used.has(`m${next}`)) next += 1;
+  return `m${next}`;
 }
 
 function createMeetingSubAdder(deps) {
@@ -207,6 +222,7 @@ function createMeetingSubAdder(deps) {
           ? session.currentModel.id
           : session.currentModel;
         slotSpecs[addedIndex] = sanitizeMeetingSlot({
+          memberId: opts.memberId || nextMeetingMemberId(slotSpecs),
           kind,
           model: opts.model || currentModel || null,
           effort: opts.effort,
@@ -313,4 +329,5 @@ module.exports = {
   registerMeetingCreateIpc,
   sanitizeMeetingSlot,
   sessionOptionsForMeetingSlot,
+  nextMeetingMemberId,
 };

@@ -23,6 +23,7 @@
 
 const DEFAULT_T1_MS = 90000;
 const DEFAULT_T2_MS = 180000;
+const { createGroupChatProviderAdapter } = require('./groupchat-provider-adapter.js');
 
 const PATCH_WINDOW_MS = 300_000;  // 5 分钟（spec 2026-05-03）
 
@@ -39,6 +40,11 @@ function createTurnCompletionWatcher(opts) {
     onProcessExit = null, // eslint-disable-line no-unused-vars
     onTurnPatched = null,                   // 新增（2026-05-03）
     patchWindowMs = PATCH_WINDOW_MS,        // 新增（测试可注入更短的窗口）
+    attempt = null,
+    kind = null,
+    onAttemptEvent = () => {},
+    onEventRejected = () => {},
+    onAwaitingFinalText = () => {},
   } = opts || {};
 
   if (!transcriptTap) throw new Error('createTurnCompletionWatcher: transcriptTap required');
@@ -50,6 +56,8 @@ function createTurnCompletionWatcher(opts) {
   let t2Timer = null;
   let onTurnComplete = null;
   let onTurnError = null;
+  let onTurnAborted = null;
+  const providerAdapter = createGroupChatProviderAdapter(kind || (attempt && attempt.kind));
 
   // patch-after-settle 状态（2026-05-03）
   let patchListener = null;
@@ -62,6 +70,7 @@ function createTurnCompletionWatcher(opts) {
     if (t2Timer) { clearTimeout(t2Timer); t2Timer = null; }
     if (onTurnComplete) { transcriptTap.removeListener('turn-complete', onTurnComplete); onTurnComplete = null; }
     if (onTurnError) { transcriptTap.removeListener('turn-error', onTurnError); onTurnError = null; }
+    if (onTurnAborted) { transcriptTap.removeListener('turn-aborted', onTurnAborted); onTurnAborted = null; }
   };
 
   const _cleanupPatch = () => {
@@ -71,6 +80,11 @@ function createTurnCompletionWatcher(opts) {
 
   const settle = (result) => {
     if (settled) return;
+    if (attempt) {
+      result.attemptId = result.attemptId || attempt.attemptId || null;
+      result.runId = result.runId || attempt.runId || null;
+      result.providerTurnId = result.providerTurnId || attempt.providerTurnId || null;
+    }
     settled = true;
     cleanup();
     settledText = result.text || '';
@@ -80,10 +94,22 @@ function createTurnCompletionWatcher(opts) {
     //   - signalSource 白名单加 'task_complete'（codex L1 信号），原 'stop_reason_terminal' /
     //     'stop_hook' 仍保留（claude 信号源）
     const PATCHABLE_STATUSES = new Set(['completed', 'manual_extracted']);
-    const PATCHABLE_SIGNAL_SOURCES = new Set(['stop_reason_terminal', 'stop_hook', 'task_complete']);
-    if (PATCHABLE_STATUSES.has(result.status) && onTurnPatched && !patchCancelled) {
+    const retryableFailureCanRecover = result.status === 'errored'
+      && result.failure && result.failure.retryable === true;
+    const PATCHABLE_SIGNAL_SOURCES = new Set([
+      'stop_reason_terminal', 'stop_hook', 'idle_timer_terminal',
+      'task_complete', 'item_completed_agent_message_final_answer',
+      'claude_auto_extract_final_answer', 'codex_auto_extract_final_answer',
+    ]);
+    if ((PATCHABLE_STATUSES.has(result.status) || retryableFailureCanRecover) && onTurnPatched && !patchCancelled) {
       patchListener = (evt) => {
         if (evt.hubSessionId !== hubSessionId) return;
+        const decision = providerAdapter.completion(attempt, evt);
+        if (!decision.accepted) {
+          try { onEventRejected({ type: 'patch', reason: decision.reason, event: evt, attempt }); }
+          catch (error) { console.warn('[watcher] onEventRejected(patch) threw:', error && error.message); }
+          return;
+        }
         if (!PATCHABLE_SIGNAL_SOURCES.has(evt.signalSource)) return;
         if (!evt.text || evt.text === settledText) return;
         // 2026-07-20 道雪 [修#1]：手动提取可能抓到上一轮旧答案（提取方曾无时间窗），
@@ -93,7 +119,18 @@ function createTurnCompletionWatcher(opts) {
         if (result.status !== 'manual_extracted' && evt.text.length <= settledText.length) return;
         try {
           // patch 后状态统一标 'completed'：partial 是过渡，final 才是真完成
-          onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' });
+          onTurnPatched({
+            sid: hubSessionId,
+            label,
+            text: decision.text,
+            status: decision.status,
+            attemptId: attempt && attempt.attemptId,
+            runId: attempt && attempt.runId,
+            providerTurnId: decision.identity && decision.identity.providerTurnId,
+            failure: decision.failure || null,
+            signalSource: evt.signalSource,
+            finality: 'provider_final',
+          });
           settledText = evt.text;  // 仅成功后更新基线（spec 防 silent failure）
         } catch (e) {
           console.warn('[watcher] onTurnPatched threw:', e && e.message);
@@ -106,6 +143,8 @@ function createTurnCompletionWatcher(opts) {
       if (patchWindowTimer.unref) patchWindowTimer.unref();
     }
     if (resolveFn) resolveFn(result);
+    try { onAttemptEvent({ type: 'settled', result, attempt }); }
+    catch (error) { console.warn('[watcher] onAttemptEvent(settled) threw:', error && error.message); }
   };
 
   return {
@@ -126,32 +165,82 @@ function createTurnCompletionWatcher(opts) {
 
       return new Promise((resolve) => {
         resolveFn = resolve;
+        try { onAttemptEvent({ type: 'waiting', attempt }); }
+        catch (error) { console.warn('[watcher] onAttemptEvent(waiting) threw:', error && error.message); }
 
         onTurnComplete = (evt) => {
           if (evt.hubSessionId !== hubSessionId) return;
+          const decision = providerAdapter.completion(attempt, evt);
+          if (!decision.accepted) {
+            if (decision.awaitingFinalText) {
+              try { onAwaitingFinalText({ event: evt, attempt, reason: decision.reason }); }
+              catch (error) { console.warn('[watcher] onAwaitingFinalText threw:', error && error.message); }
+            }
+            try { onEventRejected({ type: 'completion', reason: decision.reason, event: evt, attempt }); }
+            catch (error) { console.warn('[watcher] onEventRejected(completion) threw:', error && error.message); }
+            return;
+          }
+          if (attempt && decision.identity && decision.identity.providerTurnId && !attempt.providerTurnId) {
+            attempt.providerTurnId = decision.identity.providerTurnId;
+          }
           settle({
             sid: hubSessionId,
             label,
-            status: 'completed',
-            text: evt.text || '',
+            status: decision.status,
+            text: decision.text,
+            reason: decision.reason || null,
+            failure: decision.failure || null,
             signalSource: evt.signalSource || 'unknown',
             completedAt: evt.completedAt || Date.now(),
+            providerTurnId: decision.identity && decision.identity.providerTurnId,
+            finality: 'provider_final',
           });
         };
 
         onTurnError = (evt) => {
           if (evt.hubSessionId !== hubSessionId) return;
+          const decision = providerAdapter.error(attempt, evt);
+          if (!decision.accepted) {
+            try { onEventRejected({ type: 'error', reason: decision.reason, event: evt, attempt }); }
+            catch (error) { console.warn('[watcher] onEventRejected(error) threw:', error && error.message); }
+            return;
+          }
           settle({
             sid: hubSessionId,
             label,
-            status: 'errored',
-            text: '',
-            reason: evt.reason || 'unknown',
+            status: decision.status,
+            text: decision.text,
+            reason: attempt ? decision.reason : (evt.reason || evt.message || 'unknown'),
+            failure: decision.failure,
+            signalSource: evt.signalSource || 'provider_error',
+            completedAt: evt.completedAt || Date.now(),
+            providerTurnId: decision.identity && decision.identity.providerTurnId,
+          });
+        };
+
+        onTurnAborted = (evt) => {
+          if (evt.hubSessionId !== hubSessionId) return;
+          const decision = providerAdapter.aborted(attempt, evt);
+          if (!decision.accepted) {
+            try { onEventRejected({ type: 'aborted', reason: decision.reason, event: evt, attempt }); }
+            catch (error) { console.warn('[watcher] onEventRejected(aborted) threw:', error && error.message); }
+            return;
+          }
+          settle({
+            sid: hubSessionId,
+            label,
+            status: decision.status,
+            text: decision.text,
+            reason: decision.reason,
+            signalSource: evt.signalSource || 'turn_aborted',
+            completedAt: evt.abortedAt || Date.now(),
+            providerTurnId: decision.identity && decision.identity.providerTurnId,
           });
         };
 
         transcriptTap.on('turn-complete', onTurnComplete);
         transcriptTap.on('turn-error', onTurnError);
+        transcriptTap.on('turn-aborted', onTurnAborted);
 
         // 软提醒计时器：触发后**不 settle**，仅通知调用方"这家还在等"。
         t1Timer = setTimeout(() => {
@@ -183,15 +272,38 @@ function createTurnCompletionWatcher(opts) {
      * Automatic transcript fallback for providers whose completion event may be
      * missed even though the final answer is already persisted.
      */
-    completeFromTranscript(text, signalSource = 'auto_extract') {
+    completeFromTranscript(text, signalSource = 'auto_extract', details = {}) {
+      const event = {
+        hubSessionId,
+        text: text || '',
+        signalSource,
+        completedAt: details.completedAt || Date.now(),
+        turnId: details.turnId || details.providerTurnId || null,
+        attemptId: details.attemptId || null,
+      };
+      const decision = providerAdapter.completion(attempt, event);
+      if (!decision.accepted) {
+        if (decision.awaitingFinalText) {
+          try { onAwaitingFinalText({ event, attempt, reason: decision.reason }); }
+          catch (error) { console.warn('[watcher] onAwaitingFinalText(auto_extract) threw:', error && error.message); }
+        }
+        try { onEventRejected({ type: 'auto_extract', reason: decision.reason, event, attempt }); }
+        catch (error) { console.warn('[watcher] onEventRejected(auto_extract) threw:', error && error.message); }
+        return false;
+      }
       settle({
         sid: hubSessionId,
         label,
-        status: 'completed',
-        text: text || '',
+        status: decision.status,
+        text: decision.text,
+        reason: decision.reason || null,
+        failure: decision.failure || null,
         signalSource,
-        completedAt: Date.now(),
+        completedAt: event.completedAt,
+        providerTurnId: decision.identity && decision.identity.providerTurnId,
+        finality: 'provider_final',
       });
+      return true;
     },
 
     /**
@@ -253,7 +365,7 @@ function createTurnCompletionWatcher(opts) {
     markProcessExit(exitInfo) {
       const { code, signal } = exitInfo || {};
       if (settled) return;
-      if (code === 0 && !signal) {
+      if (code === 0 && !signal && !attempt) {
         settle({
           sid: hubSessionId,
           label,
@@ -263,27 +375,62 @@ function createTurnCompletionWatcher(opts) {
           completedAt: Date.now(),
         });
       } else {
+        const decision = providerAdapter.error(attempt, {
+          hubSessionId,
+          reason: `pty exit code=${code} signal=${signal || 'none'}`,
+          signalSource: 'process_exit',
+        });
         settle({
           sid: hubSessionId,
           label,
           status: 'errored',
           text: '',
-          reason: `pty exit code=${code} signal=${signal || 'none'}`,
+          reason: attempt ? (decision.reason || 'runtime_exited') : `pty exit code=${code} signal=${signal || 'none'}`,
+          failure: decision.failure || null,
+          signalSource: 'process_exit',
+          completedAt: Date.now(),
         });
       }
     },
 
     markErrored(reason = 'unknown') {
+      const decision = providerAdapter.error(attempt, { hubSessionId, reason, signalSource: 'explicit_error' });
       settle({
         sid: hubSessionId,
         label,
         status: 'errored',
         text: '',
-        reason,
+        reason: attempt ? (decision.reason || reason) : reason,
+        failure: decision.failure || null,
+        signalSource: 'explicit_error',
+        completedAt: Date.now(),
+      });
+    },
+
+    markTimedOut(reason = 'response_timeout') {
+      const decision = providerAdapter.error(attempt, { hubSessionId, reason, signalSource: 'hard_timeout' });
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'errored',
+        text: '',
+        reason: attempt ? (decision.reason || reason) : reason,
+        failure: decision.failure || null,
+        signalSource: 'hard_timeout',
+        completedAt: Date.now(),
       });
     },
 
     isSettled() { return settled; },
+
+    getAttemptIdentity() {
+      return attempt ? {
+        attemptId: attempt.attemptId || null,
+        runId: attempt.runId || null,
+        providerTurnId: attempt.providerTurnId || null,
+        sid: hubSessionId,
+      } : null;
+    },
 
     cancelPatch() {
       patchCancelled = true;

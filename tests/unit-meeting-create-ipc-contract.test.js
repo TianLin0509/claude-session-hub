@@ -147,6 +147,7 @@ test('slot tuning sanitizer only allows fields understood by that provider', () 
   }, 1), {
     index: 1,
     kind: 'codex',
+    memberId: 'm2',
     effort: 'ultra',
     mcpProfile: 'wireless',
     codexSpeedTier: 'flex',
@@ -161,6 +162,7 @@ test('slot tuning sanitizer only allows fields understood by that provider', () 
   }, 3), {
     index: 3,
     kind: 'codex',
+    memberId: 'm4',
     model: 'gpt-5.6-sol',
     effort: 'max',
     mcpProfile: 'none',
@@ -191,7 +193,7 @@ test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP con
   assert.strictEqual(result.session.opts.mcpConfigFile, 'C:\\hub\\mcp.json');
   assert.strictEqual(result.session.opts.noInheritCursor, true);
   assert.deepStrictEqual(result.meeting.participants, [0]);
-  assert.deepStrictEqual(result.meeting.slotSpecs, [{ kind: 'claude', model: 'opus' }]);
+  assert.deepStrictEqual(result.meeting.slotSpecs, [{ kind: 'claude', memberId: 'm1', model: 'opus' }]);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'writeResearchMcpConfig'), [
     ['writeResearchMcpConfig', 'C:\\hub', 'm1', 4567, 'token', 'claude', { enableChuxin: true }],
   ]);
@@ -315,6 +317,7 @@ test('create-meeting with slots emits final meeting once and persists slot specs
     {
       index: 0,
       kind: 'claude',
+      memberId: 'm1',
       model: 'opus',
       effort: 'high',
       mcpProfile: 'browser',
@@ -323,6 +326,7 @@ test('create-meeting with slots emits final meeting once and persists slot specs
     {
       index: 1,
       kind: 'codex',
+      memberId: 'm2',
       model: 'gpt-5.5',
       effort: 'xhigh',
       mcpProfile: 'wireless',

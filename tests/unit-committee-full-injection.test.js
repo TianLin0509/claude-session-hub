@@ -79,7 +79,7 @@ test('buildFirstDelta 首次带 systemPrompt + 透传 includeCommitteeMid', () =
 // ── dispatcher 静态契约：dispatchInternalPrompt 三件套 ──
 test('dispatcher：dispatchInternalPrompt 记 deliveredIdx + 传 includeCommitteeMid + results 带出', () => {
   const d = fs.readFileSync(path.join(root, 'main', 'groupchat', 'dispatcher.js'), 'utf8');
-  const seg = d.slice(d.indexOf('async function dispatchInternalPrompt'), d.indexOf('async function dispatchInternalPrompt') + 3200);
+  const seg = d.slice(d.indexOf('async function dispatchInternalPrompt'), d.indexOf('async function dispatchGroupChatTurn'));
   assert.ok(/const deliveredIdx = _orch\.state\.messages\.length - 1/.test(seg), '记录本幕发言前位置 deliveredIdx');
   assert.ok(/includeCommitteeMid: true/.test(seg), 'buildFirstDelta 传 includeCommitteeMid:true');
   assert.ok(/deliveredIdx: _deliveredIdx/.test(seg), 'results 带出 deliveredIdx 供 markDeliveredSilent');

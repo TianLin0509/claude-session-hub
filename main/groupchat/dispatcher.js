@@ -6,6 +6,15 @@ const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
+const {
+  ATTEMPT_AWAITING_BINDING,
+  ATTEMPT_AWAITING_FINAL_TEXT,
+  ATTEMPT_RUNNING,
+  classifyProviderFailure,
+  createRunId,
+  isTerminalAttemptStatus,
+  promptFingerprint,
+} = require('../../core/groupchat-attempt-protocol.js');
 
 const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000;
 const PASTE_TRAPPED_TICK_MS = 3000;
@@ -82,6 +91,7 @@ function createGroupChatDispatcher(deps) {
   const groupChatTurnQueue = new Map();
   const patchListenersBySid = new Map();
   const activeWatchers = new Map();
+  const activeWatchersByAttempt = new Map();
   const pasteTrappedMonitors = new Map();
   // 抢占式连发（2026-06-24 道雪）：每个 meeting 的派发序号，单调递增。runGroupChatTurn
   //   完成时比对，若已有更新的轮号 → 自己是被抢占的旧轮，给前端的 turn-complete 带 superseded。
@@ -95,6 +105,7 @@ function createGroupChatDispatcher(deps) {
   //   「有轮正卡在 sendToPty、watcher 还没建」——后者不能提前把 orchestrator 收回
   //   idle（那一轮马上会自己以 interrupted 收敛），否则 UI 会先闪一下待命再跳回。
   const meetingInFlightTurns = new Map();
+  const recoveryBySid = new Map();
 
   function warn(...args) {
     if (logger && typeof logger.warn === 'function') logger.warn(...args);
@@ -102,6 +113,60 @@ function createGroupChatDispatcher(deps) {
 
   function log(...args) {
     if (logger && typeof logger.log === 'function') logger.log(...args);
+  }
+
+  function orchestratorFor(meetingId) {
+    return groupchat.getOrchestrator(getHubDataDir(), meetingId);
+  }
+
+  function emitGroupChat(channel, payload = {}, options = {}) {
+    const meetingId = payload.meetingId;
+    let revision = Number(payload.revision) || null;
+    if (!revision && meetingId) {
+      try {
+        const orch = orchestratorFor(meetingId);
+        revision = orch.reserveRevision(options.eventType || null, options.details || payload);
+      } catch (error) {
+        warn(`[groupchat] reserve revision failed for ${channel}:`, error && error.message);
+      }
+    }
+    const event = revision ? { ...payload, revision } : payload;
+    sendToRenderer(channel, event);
+    return event;
+  }
+
+  function publishAttempt(meetingId, orch, attempt, extra = {}) {
+    if (!meetingId || !attempt) return null;
+    const revision = orch.reserveRevision('attempt_published', {
+      attemptId: attempt.attemptId,
+      runId: attempt.runId,
+      turnNum: attempt.turnNum,
+      sid: attempt.sid,
+      memberId: attempt.memberId,
+      status: attempt.status,
+      reason: attempt.reason,
+      providerTurnId: attempt.providerTurnId,
+      failure: attempt.failure,
+    });
+    const event = {
+      meetingId,
+      turnNum: attempt.turnNum,
+      runId: attempt.runId,
+      attemptId: attempt.attemptId,
+      memberId: attempt.memberId,
+      sid: attempt.sid,
+      kind: attempt.kind,
+      status: attempt.status,
+      providerTurnId: attempt.providerTurnId || null,
+      acknowledgementSource: attempt.acknowledgementSource || null,
+      reason: attempt.reason || null,
+      failure: attempt.failure || null,
+      updatedAt: attempt.updatedAt || Date.now(),
+      revision,
+      ...extra,
+    };
+    sendToRenderer('groupchat-attempt-changed', event);
+    return event;
   }
 
   function notifyGroupChatComplete(event, meeting) {
@@ -142,8 +207,14 @@ function createGroupChatDispatcher(deps) {
   }
 
   function promptHeaderForRetry(prompt) {
-    const line = String(prompt || '').split(/\r?\n/).find(x => String(x || '').trim());
-    return line ? line.slice(0, 160) : '';
+    const lines = String(prompt || '').split(/\r?\n/).map(line => line.trim());
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (lines[index] !== '## 用户') continue;
+      const userLine = lines.slice(index + 1).find(line => line && line !== '请发言。');
+      if (userLine) return userLine.slice(0, 160);
+    }
+    const distinctive = lines.find(line => line.length >= 12 && !/^#{1,6}\s/.test(line) && line !== '请发言。');
+    return distinctive ? distinctive.slice(0, 160) : '';
   }
 
   function runtimeKindForSession(sid, fallbackKind) {
@@ -155,17 +226,32 @@ function createGroupChatDispatcher(deps) {
     return !!(session && (session.transcriptPath || session.codexSid));
   }
 
-  function startPasteTrappedMonitor(sid, kind, meetingId) {
-    if (pasteTrappedMonitors.has(sid)) return;
+  function startPasteTrappedMonitor(sid, kind, meetingId, context = {}) {
+    const existingMonitor = pasteTrappedMonitors.get(sid);
+    if (existingMonitor && existingMonitor.attemptId === context.attemptId) return;
+    if (existingMonitor) stopPasteTrappedMonitor(sid);
     pasteTrappedDetector.start(sid, Date.now());
     const runtimeKind = runtimeKindForSession(sid, kind);
     const startedAt = Date.now();
-    const monitor = { intervalId: null, enterRetries: 0 };
+    const monitor = {
+      intervalId: null,
+      enterRetries: 0,
+      attemptId: context.attemptId || null,
+      runId: context.runId || null,
+      turnNum: Number(context.turnNum) || null,
+    };
     const intervalId = setInterval(() => {
       try {
         if (Date.now() - startedAt >= PASTE_TRAPPED_HARD_TIMEOUT_MS) {
           stopPasteTrappedMonitor(sid);
           return;
+        }
+        if (monitor.attemptId) {
+          const current = orchestratorFor(meetingId).getAttempt(monitor.attemptId);
+          if (!current || ['completed', 'failed', 'interrupted', 'superseded', 'absent'].includes(current.status)) {
+            stopPasteTrappedMonitor(sid);
+            return;
+          }
         }
         const buf = sessionManager.getSessionBuffer(sid) || '';
         // The detector needs a monotonic byte counter.  Passing the legacy
@@ -185,8 +271,8 @@ function createGroupChatDispatcher(deps) {
               const meeting = meetingManager.getMeeting(meetingId);
               if (meeting && meeting.groupChat) {
                 const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-                const turnNum = orch && orch.state && orch.state.currentTurn;
-                if (turnNum) orch.setSendStatus(turnNum, sid, 'enter_retry');
+                const turnNum = monitor.turnNum || (orch && orch.state && orch.state.currentTurn);
+                if (turnNum) orch.setSendStatus(turnNum, sid, 'enter_retry', { attemptId: monitor.attemptId });
               }
             } catch (e) {
               warn('[paste-trapped] codex retry Enter threw:', e && e.message);
@@ -199,11 +285,14 @@ function createGroupChatDispatcher(deps) {
             const meeting = meetingManager.getMeeting(meetingId);
             if (meeting && meeting.groupChat) {
               const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-              const turnNum = orch && orch.state && orch.state.currentTurn;
-              if (turnNum) orch.setSendStatus(turnNum, sid, 'stuck');
+              const turnNum = monitor.turnNum || (orch && orch.state && orch.state.currentTurn);
+              if (turnNum) orch.setSendStatus(turnNum, sid, 'stuck', { attemptId: monitor.attemptId });
             }
           } catch (e) { warn('[paste-trapped] setSendStatus threw:', e && e.message); }
-          sendToRenderer('groupchat-send-stuck', { meetingId, sid, kind });
+          emitGroupChat('groupchat-send-stuck', {
+            meetingId, turnNum: monitor.turnNum, runId: monitor.runId,
+            attemptId: monitor.attemptId, sid, kind,
+          });
           stopPasteTrappedMonitor(sid);
         } else if (r === 'ok') {
           stopPasteTrappedMonitor(sid);
@@ -226,6 +315,8 @@ function createGroupChatDispatcher(deps) {
     const startTs = Date.now();
     const waitSession = sessionManager.getSession(sid);
     const waitKind = waitSession?.transcriptKind || opts.kind || waitSession?.kind || 'unknown';
+    const orch = meetingId ? orchestratorFor(meetingId) : null;
+    const attempt = opts.attempt || (orch && opts.attemptId ? orch.getAttempt(opts.attemptId) : null);
     const promptSubmitSinceTs = Math.max(0, Number(opts.promptSubmitSinceTs) || (startTs - 1000));
     let codexPromptSubmitted = false;
     let codexPromptSubmittedAt = 0;
@@ -236,27 +327,58 @@ function createGroupChatDispatcher(deps) {
       transcriptTap,
       hubSessionId: sid,
       label,
+      kind: waitKind,
+      attempt,
       onSoftAlert: (level) => {
         try {
           if (!silent) {
-            sendToRenderer('groupchat-soft-alert', {
-              meetingId, turnNum, mode, sid, label, level,
+            emitGroupChat('groupchat-soft-alert', {
+              meetingId, turnNum, runId: opts.runId, attemptId: opts.attemptId,
+              mode, sid, label, level,
             });
           }
         } catch (error) {
           warn('[group-chat] soft alert delivery failed:', error && error.message);
         }
       },
-      onTurnPatched: ({ sid: patchedSid, text, status }) => {
+      onEventRejected: ({ type, reason, event }) => {
+        if (!orch || !opts.attemptId) return;
+        try {
+          orch.updateAttempt(opts.attemptId, {
+            lastRejectedEvent: type,
+            lastRejectedReason: reason,
+            lastRejectedAt: Date.now(),
+            lastRejectedProviderTurnId: event && event.turnId || null,
+          }, 'attempt_event_rejected');
+        } catch (error) {
+          warn('[group-chat] persist rejected lifecycle event failed:', error && error.message);
+        }
+      },
+      onAwaitingFinalText: ({ reason }) => {
+        if (!orch || !opts.attemptId) return;
+        try {
+          const next = orch.updateAttempt(opts.attemptId, {
+            status: ATTEMPT_AWAITING_FINAL_TEXT,
+            reason: reason || 'terminal_without_final_text',
+          }, 'attempt_awaiting_final_text');
+          if (!silent) publishAttempt(meetingId, orch, next);
+        } catch (error) {
+          warn('[group-chat] persist awaiting-final-text failed:', error && error.message);
+        }
+      },
+      onTurnPatched: ({ sid: patchedSid, text, status, attemptId, runId, providerTurnId, failure, signalSource, finality }) => {
         try {
           if (silent) return;
-          const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
           const turn = orch.state.turns.find(t => t.n === turnNum);
           const currentStatus = turn?.byStatus?.[patchedSid];
           const finalStatus = (currentStatus === 'manual_extracted') ? 'manual_extracted' : status;
-          orch.patchTurnResult(turnNum, patchedSid, { text, status: finalStatus });
-          sendToRenderer('groupchat-turn-patched', {
-            meetingId, turnNum, sid: patchedSid, charCount: (text || '').length,
+          orch.patchTurnResult(turnNum, patchedSid, {
+            text, status: finalStatus, attemptId, runId, providerTurnId,
+            failure, signalSource, finality,
+          });
+          if (attemptId) publishAttempt(meetingId, orch, orch.getAttempt(attemptId), { patched: true });
+          emitGroupChat('groupchat-turn-patched', {
+            meetingId, turnNum, runId, attemptId, sid: patchedSid, charCount: (text || '').length,
           });
         } catch (e) {
           warn('[patch] onTurnPatched threw:', e && e.message);
@@ -264,6 +386,7 @@ function createGroupChatDispatcher(deps) {
       },
     });
     activeWatchers.set(sid, watcher);
+    if (opts.attemptId) activeWatchersByAttempt.set(opts.attemptId, watcher);
     registerPatchListener(sid, watcher);
 
     let streamTimer = null;
@@ -354,7 +477,7 @@ function createGroupChatDispatcher(deps) {
             return;
           }
           warn(`[group-chat] transitional hard timeout (${Math.round(elapsed / 60000)}min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
-          watcher.skip();
+          watcher.markTimedOut('response_timeout');
         }, delayMs);
         hardTimeout.unref?.();
       };
@@ -407,11 +530,30 @@ function createGroupChatDispatcher(deps) {
       // 更强的下界：拿到本轮的语义开工信号后，只认此刻之后完成的 turn。
       //   hook 未部署时该值保持 0，自动退回 promptSubmittedAt 下界。
       let agentTurnStartedAt = 0;
-      if (isClaudeFamily(waitKind) && sessionManager && typeof sessionManager.on === 'function') {
+      if (sessionManager && typeof sessionManager.on === 'function') {
         onAgentTurnStartedForExtract = (ev) => {
           if (!ev || ev.sessionId !== sid || agentTurnStartedAt) return;
           const at = Number(ev.observedAt) || Date.now();
-          if (at >= sincePromptTs) agentTurnStartedAt = at;
+          if (at >= sincePromptTs) {
+            agentTurnStartedAt = at;
+            if (attempt) {
+              attempt.startedAt = at;
+              if (ev.turnId) attempt.providerTurnId = String(ev.turnId);
+            }
+            if (orch && opts.attemptId) {
+              try {
+                const next = orch.updateAttempt(opts.attemptId, {
+                  status: ATTEMPT_RUNNING,
+                  startedAt: at,
+                  providerTurnId: ev.turnId || null,
+                  signalSource: ev.signalSource || 'provider_turn_started',
+                }, 'attempt_started');
+                if (!silent) publishAttempt(meetingId, orch, next);
+              } catch (error) {
+                warn('[group-chat] persist provider start failed:', error && error.message);
+              }
+            }
+          }
         };
         try { sessionManager.on('agent-turn-started', onAgentTurnStartedForExtract); }
         catch (error) {
@@ -442,7 +584,11 @@ function createGroupChatDispatcher(deps) {
               ? 'codex_auto_extract_final_answer'
               : 'claude_auto_extract_final_answer';
             log(`[group-chat] ${waitKind} auto-extract final answer for ${label}(${sid.slice(0, 8)}) ${extracted.text.length} chars`);
-            watcher.completeFromTranscript(extracted.text, signalSource);
+            watcher.completeFromTranscript(extracted.text, signalSource, {
+              completedAt: extracted.completedAt || Date.now(),
+              turnId: extracted.turnId || extracted.providerTurnId || (attempt && attempt.providerTurnId) || null,
+              attemptId: opts.attemptId || null,
+            });
           }
         } catch (e) {
           warn('[group-chat] codex auto-extract failed:', e && e.message);
@@ -456,9 +602,25 @@ function createGroupChatDispatcher(deps) {
         onCodexPromptSubmitted = (ev) => {
           if (!ev || ev.hubSessionId !== sid) return;
           const submittedAt = Number(ev.submittedAt) || Date.now();
-          if (submittedAt >= sincePromptTs) {
+          const promptMatches = !opts.prompt || !ev.text
+            || promptFingerprint(ev.text) === promptFingerprint(opts.prompt);
+          if (submittedAt >= sincePromptTs && promptMatches) {
             codexPromptSubmitted = true;
             codexPromptSubmittedAt = submittedAt;
+            if (attempt && ev.turnId) attempt.providerTurnId = String(ev.turnId);
+            if (orch && opts.attemptId) {
+              try {
+                const next = orch.updateAttempt(opts.attemptId, {
+                  status: ATTEMPT_RUNNING,
+                  acceptedAt: submittedAt,
+                  providerTurnId: ev.turnId || null,
+                  signalSource: ev.signalSource || 'prompt_submitted',
+                }, 'attempt_prompt_observed');
+                if (!silent) publishAttempt(meetingId, orch, next);
+              } catch (error) {
+                warn('[group-chat] persist prompt observation failed:', error && error.message);
+              }
+            }
           }
         };
         try { transcriptTap.on('prompt-submitted', onCodexPromptSubmitted); }
@@ -479,6 +641,19 @@ function createGroupChatDispatcher(deps) {
               return;
             }
           }
+          // Missing transcript evidence is not proof that the prompt was never
+          // submitted. A semantic/strong-screen acknowledgement or a later
+          // provider start forbids automatic full-prompt replay.
+          if (opts.submissionAcknowledged || agentTurnStartedAt) {
+            if (orch && opts.attemptId) {
+              const next = orch.updateAttempt(opts.attemptId, {
+                status: boundNow ? ATTEMPT_RUNNING : ATTEMPT_AWAITING_BINDING,
+                reason: boundNow ? null : 'transcript_binding_pending',
+              }, 'attempt_resend_suppressed');
+              if (!silent) publishAttempt(meetingId, orch, next, { resendSuppressed: true });
+            }
+            return;
+          }
           if (boundNow && transcriptTap && typeof transcriptTap.hasCodexUserMessageSince === 'function') {
             try {
               codexPromptSubmitted = await transcriptTap.hasCodexUserMessageSince(sid, sincePromptTs);
@@ -489,6 +664,22 @@ function createGroupChatDispatcher(deps) {
             }
           }
           if (codexPromptSubmitRetries >= CODEX_PROMPT_SUBMIT_RETRY_MAX) return;
+          const submissionState = typeof groupChatWatcher.inspectPromptSubmissionState === 'function'
+            ? groupChatWatcher.inspectPromptSubmissionState({
+                sid, kind: waitKind, promptHeader: promptHeaderForRetry(opts.prompt),
+              })
+            : { state: 'unknown' };
+          if (submissionState.state !== 'input_pending') {
+            if (orch && opts.attemptId) {
+              const next = orch.updateAttempt(opts.attemptId, {
+                status: boundNow ? ATTEMPT_RUNNING : ATTEMPT_AWAITING_BINDING,
+                reason: `submission_unconfirmed_${submissionState.state}`,
+              }, 'attempt_resend_suppressed');
+              if (!silent) publishAttempt(meetingId, orch, next, { resendSuppressed: true });
+            }
+            warn(`[group-chat] codex submit remains unconfirmed for ${label}(${sid.slice(0, 8)}), but screen evidence is ${submissionState.state}; refusing automatic full-prompt replay`);
+            return;
+          }
           codexPromptSubmitRetries += 1;
           const reason = boundNow ? 'prompt submit not observed' : 'transcript not bound';
           const retryElapsedMs = Date.now() - startTs;
@@ -499,6 +690,7 @@ function createGroupChatDispatcher(deps) {
               kind: waitKind,
               prompt: opts.prompt,
               promptHeader: promptHeaderForRetry(opts.prompt),
+              allowRewrite: false,
             });
             try {
               const meeting = meetingManager.getMeeting(meetingId);
@@ -529,8 +721,12 @@ function createGroupChatDispatcher(deps) {
         catch (error) { warn('[group-chat] auto-extract turn-start listener cleanup failed:', error && error.message); }
       }
       if (streamTimer) clearInterval(streamTimer);
-      activeWatchers.delete(sid);
-      stopPasteTrappedMonitor(sid);
+      if (activeWatchers.get(sid) === watcher) activeWatchers.delete(sid);
+      if (opts.attemptId && activeWatchersByAttempt.get(opts.attemptId) === watcher) {
+        activeWatchersByAttempt.delete(opts.attemptId);
+      }
+      const pasteMonitor = pasteTrappedMonitors.get(sid);
+      if (!pasteMonitor || !opts.attemptId || pasteMonitor.attemptId === opts.attemptId) stopPasteTrappedMonitor(sid);
     };
 
     return watcher.wait().then(result => {
@@ -549,7 +745,6 @@ function createGroupChatDispatcher(deps) {
       // 这样后续成员卡住、Hub 崩溃/重启或用户立即点“同步”时，已得到的答案都不会丢。
       if (!silent && meetingId && turnNum) {
         try {
-          const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
           orch.patchTurnResult(turnNum, sid, {
             text: result.text,
             status: result.status,
@@ -559,7 +754,16 @@ function createGroupChatDispatcher(deps) {
             speaker: opts.speaker || label,
             sourcePrompt: opts.prompt,
             statusReason: result.reason,
+            attemptId: opts.attemptId,
+            runId: opts.runId,
+            providerTurnId: result.providerTurnId || (attempt && attempt.providerTurnId) || null,
+            failure: result.failure || null,
+            signalSource: result.signalSource,
+            finality: result.finality,
+            completedAt: result.completedAt,
           });
+          const settledAttempt = opts.attemptId ? orch.getAttempt(opts.attemptId) : null;
+          if (!silent && settledAttempt) publishAttempt(meetingId, orch, settledAttempt);
         } catch (e) {
           // 持久化失败不能反向卡死 watcher/整轮；最终 completeTurn 仍有一次落盘机会。
           warn('[group-chat] persist settled participant failed:', e && e.message);
@@ -586,6 +790,7 @@ function createGroupChatDispatcher(deps) {
       kindCounts[s.kind] = (kindCounts[s.kind] || 0) + 1;
     }
     const seenKind = {};
+    const orch = meeting && meeting.id ? orchestratorFor(meeting.id) : null;
     return subSids.map((sid, idx) => {
       const s = sessionManager.getSession(sid);
       if (!s || s.status === 'dormant') return null;
@@ -595,7 +800,9 @@ function createGroupChatDispatcher(deps) {
       const kindLabel = kindLabels[kind] || kind || 'AI';
       const dupSuffix = kindCounts[kind] > 1 ? String(seenKind[kind]) : '';
       const displayName = s.title || `${kindLabel}${dupSuffix ? ' ' + dupSuffix : ''}`;
-      const memberId = `m${idx + 1}`;
+      const memberId = orch
+        ? orch.ensureMemberIdentity(sid, spec.memberId || `m${idx + 1}`, { source: spec.memberId ? 'slot_spec' : 'legacy_slot' })
+        : (spec.memberId || `m${idx + 1}`);
       const model = (s.currentModel && s.currentModel.id) || spec.model || null;
       const aliases = [
         memberId,
@@ -617,16 +824,19 @@ function createGroupChatDispatcher(deps) {
     }).filter(Boolean);
   }
 
-  async function dispatchInternalPrompt(meetingId, meeting, targetMembers, userInput, turnTimeoutMs) {
+  async function dispatchInternalPrompt(meetingId, meeting, targetMembers, userInput, turnTimeoutMs, workflowRun = null) {
     for (const member of targetMembers) {
       try { transcriptTap.clearStreamingBuf(member.sid); }
       catch (error) { warn('[groupchat] internal clearStreamingBuf failed:', error && error.message); }
       cancelPatchListenersForSid(member.sid);
     }
     const _orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    const runId = createRunId(meetingId, 0);
     // [全量注入] 记录本幕发言前的位置——markDeliveredSilent 用它把各委员「已读位置」停在本幕发言前，
     //   使下一幕 buildDelta 能带上本幕全部委员发言（群聊式全量注入，复用自由群聊 deliveredIdx 机制）。
     const deliveredIdx = _orch.state.messages.length - 1;
+    const deliveredMessage = _orch.state.messages[deliveredIdx];
+    const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
     const targets = targetMembers.map(member => {
       const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
         kind: member.kind,
@@ -637,26 +847,69 @@ function createGroupChatDispatcher(deps) {
         label: member.displayName,
         member,
         deliveredIdx,
+        deliveredSeq,
+        runId,
         // 点2：首次带 systemPrompt(整套规则)、之后只发增量。[全量注入] includeCommitteeMid:true —— 把
         //   上一幕委员发言全文注入本幕，每个 AI 看到队友调研全文（点评看建库、辩论看点评），不再瞎猜。
         prompt: _orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, { currentUserMessageAppended: false, includeCommitteeMid: true }),
       };
     });
+    for (const target of targets) {
+      const receipt = _orch.recordTurnPrompt(0, target.sid, target.prompt, {
+        runId,
+        workflowRun,
+        memberId: target.member && target.member.memberId,
+        kind: target.kind,
+        mode: 'internal',
+      });
+      target.attemptId = receipt && receipt.attemptId;
+      target.attempt = target.attemptId ? _orch.getAttempt(target.attemptId) : null;
+    }
     const sentTargets = [];
+    const sendFailures = [];
     await Promise.all(targets.map(async (t) => {
       try {
         const sendStartedAt = Date.now();
+        if (t.attemptId) _orch.updateAttempt(t.attemptId, { status: 'submitting', dispatchAt: sendStartedAt }, 'attempt_submitting');
         const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
         if (sendResult && sendResult.ok) {
           t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
           t.promptSubmittedAt = sendStartedAt;
+          t.submissionAcknowledged = !!sendResult.acknowledgementSource;
+          t.providerTurnId = sendResult.acknowledgementTurnId || null;
+          _orch.setSendStatus(0, t.sid, sendResult.sendStatus || 'submitted', {
+            acknowledgementSource: sendResult.acknowledgementSource,
+            providerTurnId: sendResult.acknowledgementTurnId,
+            attemptId: t.attemptId,
+          });
+          t.attempt = t.attemptId ? _orch.getAttempt(t.attemptId) : t.attempt;
           sentTargets.push(t);
+        } else {
+          const failure = classifyProviderFailure({ reason: sendResult && sendResult.reason || 'cli_not_ready', force: true });
+          const result = {
+            sid: t.sid, label: t.label, status: 'errored', text: '',
+            reason: failure.code, failure, runId, attemptId: t.attemptId,
+            deliveredIdx: t.deliveredIdx, deliveredSeq: t.deliveredSeq,
+          };
+          if (t.attemptId) _orch.settleAttempt(t.attemptId, result);
+          sendFailures.push(result);
         }
       } catch (e) {
+        const failure = classifyProviderFailure({ reason: e && e.message || 'send_exception', force: true });
+        const result = {
+          sid: t.sid, label: t.label, status: 'errored', text: '',
+          reason: failure.code, failure, runId, attemptId: t.attemptId,
+          deliveredIdx: t.deliveredIdx, deliveredSeq: t.deliveredSeq,
+        };
+        if (t.attemptId) _orch.settleAttempt(t.attemptId, result);
+        sendFailures.push(result);
         warn(`[groupchat] internal sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
       }
     }));
-    if (sentTargets.length === 0) return { status: 'no_sent', turnNum: null };
+    if (sentTargets.length === 0) {
+      _orch.completeInternalRun(runId, sendFailures);
+      return { status: 'completed', turnNum: null, results: sendFailures, meta: { dispatchMode: 'internal' } };
+    }
     const settled = await Promise.allSettled(sentTargets.map(t =>
       waitTurnComplete(t.sid, t.label, {
         meetingId,
@@ -666,6 +919,11 @@ function createGroupChatDispatcher(deps) {
         prompt: t.prompt,
         promptSubmitSinceTs: t.promptSubmitSinceTs,
         promptSubmittedAt: t.promptSubmittedAt,
+        runId,
+        attemptId: t.attemptId,
+        attempt: t.attempt,
+        providerTurnId: t.providerTurnId,
+        submissionAcknowledged: t.submissionAcknowledged,
         disableHardTimeout: !(Number(turnTimeoutMs) > 0),
         hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
         silent: true,
@@ -678,11 +936,12 @@ function createGroupChatDispatcher(deps) {
       // [全量注入] 带出 deliveredIdx → markDeliveredSilent 把「已读位置」停在本幕发言前，下一幕看得到本幕发言。
       const _deliveredIdx = sentTargets[i] && sentTargets[i].deliveredIdx;
       return s.status === 'fulfilled'
-        ? { ...s.value, sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx }
-        : { sid: sentTargets[i].sid, label: sentTargets[i].label, status: 'errored', text: '', reason: s.reason?.message || 'Promise rejected', sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx };
-    });
+        ? { ...s.value, sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx, deliveredSeq: sentTargets[i] && sentTargets[i].deliveredSeq }
+        : { sid: sentTargets[i].sid, label: sentTargets[i].label, status: 'errored', text: '', reason: s.reason?.message || 'Promise rejected', sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx, deliveredSeq: sentTargets[i] && sentTargets[i].deliveredSeq, runId, attemptId: sentTargets[i] && sentTargets[i].attemptId };
+    }).concat(sendFailures);
     // 点2：标记这些委员已收过 systemPrompt → 下一幕 buildFirstDelta 走增量、不再重发整套规则。
     try { _orch.markDeliveredSilent(results); } catch (e) { warn('[committee] markDeliveredSilent threw:', e && e.message); }
+    try { _orch.completeInternalRun(runId, results); } catch (e) { warn('[committee] completeInternalRun threw:', e && e.message); }
     return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'internal' } };
   }
 
@@ -725,6 +984,7 @@ function createGroupChatDispatcher(deps) {
 
     const sids = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
     const stopped = [];
+    const stoppedAttemptIds = [];
     for (const sid of sids) {
       const watcher = activeWatchers.get(sid);
       if (!watcher || watcher.isSettled()) continue;
@@ -738,8 +998,10 @@ function createGroupChatDispatcher(deps) {
         warn('[groupchat] interrupt extractStreamingText threw:', e && e.message);
       }
       try {
+        const identity = watcher.getAttemptIdentity && watcher.getAttemptIdentity();
         watcher.interrupt(partialText, reason);
         stopped.push(sid);
+        if (identity && identity.attemptId) stoppedAttemptIds.push(identity.attemptId);
       } catch (e) {
         warn('[groupchat] interrupt watcher threw:', e && e.message);
       }
@@ -757,7 +1019,7 @@ function createGroupChatDispatcher(deps) {
       // 兜底收敛：既没有在跑 watcher、也没有在飞的派发（Hub 重启残留 / 状态悬空）时，
       //   仍把 orchestrator 的进行中轮收回 idle，绝不留"永久思考中"。
       if (stopped.length === 0 && !pendingDispatch && orch.state.currentMode !== 'idle' && turnNum) {
-        orch.clearTurnInProgress(turnNum);
+        orch.clearTurnInProgress(turnNum, orch.state.activeRun && orch.state.activeRun.runId);
       }
     } catch (e) {
       warn('[groupchat] interrupt orchestrator sync threw:', e && e.message);
@@ -765,13 +1027,21 @@ function createGroupChatDispatcher(deps) {
 
     log(`[groupchat] user interrupted meeting ${meetingId}: settled ${stopped.length} in-flight AI(s), ESC sent to ${signaled.length}, pendingDispatch=${pendingDispatch}`);
     try {
-      sendToRenderer('groupchat-turn-interrupted', {
-        meetingId, turnNum, stopped, signaled, reason, pendingDispatch,
+      const orch = orchestratorFor(meetingId);
+      emitGroupChat('groupchat-turn-interrupted', {
+        meetingId,
+        turnNum,
+        runId: orch.state.activeRun && orch.state.activeRun.runId || null,
+        stopped,
+        stoppedAttemptIds,
+        signaled,
+        reason,
+        pendingDispatch,
       });
     } catch (e) {
       warn('[groupchat] interrupt sendToRenderer threw:', e && e.message);
     }
-    return { ok: true, stopped, signaled, turnNum, pendingDispatch };
+    return { ok: true, stopped, stoppedAttemptIds, signaled, turnNum, pendingDispatch };
   }
 
   // 没有 watcher 但 PTY 可能仍在跑（send 与 wait 之间被叫停）：对本 meeting 里
@@ -894,7 +1164,7 @@ function createGroupChatDispatcher(deps) {
         return { status: 'error', reason: '请先勾选至少一位 AI 成员，或用 @ 指定成员', turnNum: null };
       }
       if (silent) {
-        return await dispatchInternalPrompt(meetingId, meeting, targetMembers, userInput || '', turnTimeoutMs);
+        return await dispatchInternalPrompt(meetingId, meeting, targetMembers, userInput || '', turnTimeoutMs, workflowRun);
       }
       if (!silent) maybeAutoTitleMeetingFromPrompt(meetingId, userInput || '');
 
@@ -910,9 +1180,12 @@ function createGroupChatDispatcher(deps) {
       const begin = orch.beginTurn(userInput || '', {
         turnNum: isReusedTurn ? requestedTurnNum : undefined,
         appendUserMessage: appendUserMessage !== false,
+        dispatchMode: dispatchMode || 'group',
       });
-      const { turnNum } = begin;
+      const { turnNum, runId } = begin;
       const deliveredIdx = orch.state.messages.length - 1;
+      const deliveredMessage = orch.state.messages[deliveredIdx];
+      const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
       const targets = targetMembers.map(member => {
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
@@ -928,6 +1201,8 @@ function createGroupChatDispatcher(deps) {
           label: member.displayName,
           member,
           deliveredIdx,
+          deliveredSeq,
+          runId,
           heroId: normalizedHeroIdBySid[member.sid] || null,
           // 英雄块每轮都追加在最终 Prompt 末尾；不能塞进 systemPromptText，后者只在
           // 该 sid 首次进入群聊时发送，无法满足“下一轮一次性注入”。
@@ -937,7 +1212,19 @@ function createGroupChatDispatcher(deps) {
 
       for (const t of targets) {
         cancelPatchListenersForSid(t.sid);
-        try { orch.recordTurnPrompt(turnNum, t.sid, t.prompt, { workflowRun }); }
+        try {
+          const receipt = orch.recordTurnPrompt(turnNum, t.sid, t.prompt, {
+            workflowRun,
+            runId,
+            memberId: t.member && t.member.memberId,
+            kind: t.kind,
+            mode: 'group',
+            dispatchAt: turnStartedAt,
+          });
+          t.attemptId = receipt && receipt.attemptId;
+          t.attempt = t.attemptId ? orch.getAttempt(t.attemptId) : null;
+          if (t.attempt && !silent) publishAttempt(meetingId, orch, t.attempt);
+        }
         catch (e) { warn('[groupchat] recordTurnPrompt threw:', e && e.message); }
       }
 
@@ -946,26 +1233,39 @@ function createGroupChatDispatcher(deps) {
       await Promise.all(targets.map(async (t) => {
         try {
           const sendStartedAt = Date.now();
+          if (t.attemptId) {
+            const submitting = orch.updateAttempt(t.attemptId, {
+              status: 'submitting',
+              dispatchAt: sendStartedAt,
+            }, 'attempt_submitting');
+            t.attempt = submitting;
+            if (!silent) publishAttempt(meetingId, orch, submitting);
+          }
           const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
           try {
             orch.setSendStatus(turnNum, t.sid, sendStatus || (ok ? 'submitted' : 'send_failed'), {
               acknowledgementSource: sendResult && sendResult.acknowledgementSource,
+              providerTurnId: sendResult && sendResult.acknowledgementTurnId,
+              attemptId: t.attemptId,
             });
           } catch (e) {
             warn('[groupchat] persist send receipt failed:', e && e.message);
           }
           if (!silent && ok) {
             try {
-              sendToRenderer('groupchat-send-ack', {
+              emitGroupChat('groupchat-send-ack', {
                 meetingId,
                 turnNum,
+                runId,
+                attemptId: t.attemptId,
                 sid: t.sid,
                 kind: t.kind,
                 sendStatus: sendStatus || 'ok',
                 acknowledgementSource: sendResult && sendResult.acknowledgementSource || null,
                 enterAttempts: Number(sendResult && sendResult.enterAttempts) || null,
+                providerTurnId: sendResult && sendResult.acknowledgementTurnId || null,
                 ...(sendResult && sendResult.probeDiagnostics ? { probeDiagnostics: sendResult.probeDiagnostics } : {}),
               });
             } catch (e) { warn('[groupchat] send ack telemetry failed:', e && e.message); }
@@ -975,18 +1275,26 @@ function createGroupChatDispatcher(deps) {
           // provider (including Codex); the marker monitor may continue trying
           // in the background, and a later streaming heartbeat clears the UI.
           if (!silent && sendStatus === 'stuck') {
-            sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
+            emitGroupChat('groupchat-send-stuck', {
+              meetingId, turnNum, runId, attemptId: t.attemptId, sid: t.sid, kind: t.kind,
+            });
           }
           if (ok) {
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
             t.promptSubmittedAt = sendStartedAt;
+            t.submissionAcknowledged = !!(sendResult && sendResult.acknowledgementSource);
+            t.providerTurnId = sendResult && sendResult.acknowledgementTurnId || null;
+            t.attempt = t.attemptId ? orch.getAttempt(t.attemptId) : t.attempt;
+            if (t.attempt && !silent) publishAttempt(meetingId, orch, t.attempt);
             sentTargets.push(t);
             const submitAcknowledged = !!(sendResult && sendResult.acknowledgementSource);
             // A semantic or strong-current-screen acknowledgement proves the
             // paste was submitted. Continuing to scan historical paste markers
             // after that produced false `send-stuck` banners during real work.
             if (!silent && (!submitAcknowledged || sendStatus === 'stuck')) {
-              startPasteTrappedMonitor(t.sid, t.kind, meetingId);
+              startPasteTrappedMonitor(t.sid, t.kind, meetingId, {
+                turnNum, runId, attemptId: t.attemptId,
+              });
             }
           } else {
             const failed = {
@@ -996,13 +1304,23 @@ function createGroupChatDispatcher(deps) {
               text: '',
               reason: sendResult && sendResult.reason || 'cli_not_ready',
               deliveredIdx: t.deliveredIdx,
+              deliveredSeq: t.deliveredSeq,
+              runId,
+              attemptId: t.attemptId,
+              failure: classifyProviderFailure({
+                reason: sendResult && sendResult.reason || 'cli_not_ready', force: true,
+              }),
               sourcePrompt: t.prompt,
             };
             sendFailures.push(failed);
-            if (!silent) sendToRenderer('groupchat-partial-update', { meetingId, turnNum, mode: 'group', ...failed });
+            if (t.attemptId) {
+              orch.settleAttempt(t.attemptId, failed);
+              if (!silent) publishAttempt(meetingId, orch, orch.getAttempt(t.attemptId));
+            }
+            if (!silent) emitGroupChat('groupchat-partial-update', { meetingId, turnNum, runId, attemptId: t.attemptId, mode: 'group', ...failed });
           }
         } catch (e) {
-          try { orch.setSendStatus(turnNum, t.sid, 'send_exception', { reason: e && e.message }); }
+          try { orch.setSendStatus(turnNum, t.sid, 'send_exception', { reason: e && e.message, attemptId: t.attemptId }); }
           catch (receiptError) { warn('[groupchat] persist send exception receipt failed:', receiptError && receiptError.message); }
           const failed = {
             sid: t.sid,
@@ -1011,10 +1329,18 @@ function createGroupChatDispatcher(deps) {
             text: '',
             reason: e && e.message || 'send_exception',
             deliveredIdx: t.deliveredIdx,
+            deliveredSeq: t.deliveredSeq,
+            runId,
+            attemptId: t.attemptId,
+            failure: classifyProviderFailure({ reason: e && e.message || 'send_exception', force: true }),
             sourcePrompt: t.prompt,
           };
           sendFailures.push(failed);
-          if (!silent) sendToRenderer('groupchat-partial-update', { meetingId, turnNum, mode: 'group', ...failed });
+          if (t.attemptId) {
+            orch.settleAttempt(t.attemptId, failed);
+            if (!silent) publishAttempt(meetingId, orch, orch.getAttempt(t.attemptId));
+          }
+          if (!silent) emitGroupChat('groupchat-partial-update', { meetingId, turnNum, runId, attemptId: t.attemptId, mode: 'group', ...failed });
           warn(`[groupchat] turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
         }
       }));
@@ -1029,12 +1355,14 @@ function createGroupChatDispatcher(deps) {
           const turnRecord0 = orch.completeTurn(turnNum, userInput || '', immediateFailures, memberBySid0, {}, {
             dispatchMode: dispatchMode || 'group',
             workflowRun,
+            runId,
           });
           const meta0 = (turnRecord0 && turnRecord0.meta) || { dispatchMode: 'group' };
-          sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: immediateFailures, meta: meta0, superseded: false, completedAt: Date.now() });
+          emitGroupChat('groupchat-turn-complete', { meetingId, turnNum, runId, mode: 'group', results: immediateFailures, meta: meta0, superseded: false, completedAt: Date.now() });
           notifyGroupChatComplete({
             meetingId,
             turnNum,
+            runId,
             results: immediateFailures,
             meta: meta0,
             durationMs: Date.now() - turnStartedAt,
@@ -1043,8 +1371,8 @@ function createGroupChatDispatcher(deps) {
           }, meeting);
           return { status: 'completed', turnNum, results: immediateFailures, meta: meta0 };
         }
-        if (isReusedTurn) orch.clearTurnInProgress(turnNum);
-        else orch.rollbackTurn(turnNum);
+        if (isReusedTurn) orch.clearTurnInProgress(turnNum, runId);
+        else orch.rollbackTurn(turnNum, runId);
         return { status: 'no_sent', turnNum };
       }
 
@@ -1053,7 +1381,13 @@ function createGroupChatDispatcher(deps) {
       //   @ 点名/部分勾选时没收到提问的 AI 也显示"思考中"。
       if (!silent) {
         try {
-          sendToRenderer('groupchat-turn-targets', { meetingId, turnNum, sids: sentTargets.map(t => t.sid) });
+          emitGroupChat('groupchat-turn-targets', {
+            meetingId,
+            turnNum,
+            runId,
+            sids: sentTargets.map(t => t.sid),
+            attemptIdsBySid: Object.fromEntries(sentTargets.map(t => [t.sid, t.attemptId || null])),
+          });
         } catch (error) {
           warn('[groupchat] turn target delivery failed:', error && error.message);
         }
@@ -1067,6 +1401,11 @@ function createGroupChatDispatcher(deps) {
         waitTurnComplete(t.sid, t.label, {
           meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
           promptSubmittedAt: t.promptSubmittedAt,
+          runId,
+          attemptId: t.attemptId,
+          attempt: t.attempt,
+          providerTurnId: t.providerTurnId,
+          submissionAcknowledged: t.submissionAcknowledged,
           memberId: t.member && t.member.memberId,
           speaker: t.label,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),
@@ -1078,8 +1417,8 @@ function createGroupChatDispatcher(deps) {
             //   partialBy，推过去会让被抢占的卡片闪一下「已被覆盖」再跳回思考中。旧轮的
             //   superseded 已随 turn-complete 持久化进 state.turns，历史回看可见。
             if (partial.status === 'superseded') return;
-            sendToRenderer('groupchat-partial-update', {
-              meetingId, turnNum, mode: 'group',
+            emitGroupChat('groupchat-partial-update', {
+              meetingId, turnNum, runId, attemptId: t.attemptId, mode: 'group',
               sid: partial.sid, label: partial.label,
               status: partial.status,
               text: partial.text,
@@ -1089,6 +1428,8 @@ function createGroupChatDispatcher(deps) {
               cleanBufLen: partial.cleanBufLen,
               // errored settle 也走 onPartial：带上失败原因，让气泡占位文案能解释"为什么失败"
               reason: partial.reason,
+              failure: partial.failure || null,
+              providerTurnId: partial.providerTurnId || t.providerTurnId || null,
             });
           },
         })
@@ -1118,11 +1459,15 @@ function createGroupChatDispatcher(deps) {
       }).map((r, i) => ({
         ...r,
         deliveredIdx: sentTargets[i] && sentTargets[i].deliveredIdx,
+        deliveredSeq: sentTargets[i] && sentTargets[i].deliveredSeq,
+        runId: r.runId || runId,
+        attemptId: r.attemptId || (sentTargets[i] && sentTargets[i].attemptId),
+        providerTurnId: r.providerTurnId || (sentTargets[i] && sentTargets[i].providerTurnId) || null,
       })).concat(absentMembers, sendFailures);
       const memberBySid = {};
       for (const m of members) memberBySid[m.sid] = m;
       if (silent) {
-        orch.rollbackTurn(turnNum);
+        orch.rollbackTurn(turnNum, runId);
         // 标记已投递：后续幕 buildFirstDelta 走增量，不再每幕重发完整 systemPrompt（含战法规则）。点2。
         try { orch.markDeliveredSilent(results); } catch (e) { warn('[group-chat] markDeliveredSilent threw:', e && e.message); }
         return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'silent' } };
@@ -1130,6 +1475,7 @@ function createGroupChatDispatcher(deps) {
       const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid, {}, {
         dispatchMode: dispatchMode || 'group',
         workflowRun,
+        runId,
       });
       const meta = turnRecord.meta || { dispatchMode: 'group' };
       // 被抢占判定：完成时若 meeting 的最新派发序号已超过自己 → 用户已发更新的轮，
@@ -1139,17 +1485,18 @@ function createGroupChatDispatcher(deps) {
       //   这个返回值决定「不要继续往下一步跑」——否则下一步会拿着空结果继续编排。
       const wasInterrupted = interruptedSinceStart()
         || results.some(r => r && r.status === 'interrupted');
-      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted, completedAt: Date.now() });
+      emitGroupChat('groupchat-turn-complete', { meetingId, turnNum, runId, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted, completedAt: Date.now() });
       notifyGroupChatComplete({
         meetingId,
         turnNum,
+        runId,
         results,
         meta,
         durationMs: Date.now() - turnStartedAt,
         superseded: wasSuperseded,
         interrupted: wasInterrupted,
       }, meeting);
-      return { status: 'completed', turnNum, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted };
+      return { status: 'completed', turnNum, runId, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted };
     } finally {
       if (!silent) {
         const left = (meetingInFlightTurns.get(inFlightKey) || 1) - 1;
@@ -1157,6 +1504,174 @@ function createGroupChatDispatcher(deps) {
         else meetingInFlightTurns.delete(inFlightKey);
       }
     }
+  }
+
+  function resultFromPersistedAttempt(orch, attempt) {
+    const message = (orch.state.messages || []).find(item => item
+      && item.role === 'assistant'
+      && item.attemptId === attempt.attemptId);
+    const status = attempt.status === 'completed' ? 'completed'
+      : attempt.status === 'failed' ? 'errored'
+        : attempt.status;
+    return {
+      sid: attempt.sid,
+      status,
+      text: message && message.content || '',
+      reason: attempt.reason || null,
+      failure: attempt.failure || null,
+      attemptId: attempt.attemptId,
+      runId: attempt.runId,
+      providerTurnId: attempt.providerTurnId || null,
+      completedAt: attempt.completedAt || Date.now(),
+    };
+  }
+
+  async function recoverPendingAttempts(options = {}) {
+    const meetings = options.meetingId
+      ? [meetingManager.getMeeting(options.meetingId)].filter(Boolean)
+      : ((meetingManager.getAllMeetings && meetingManager.getAllMeetings()) || []);
+    const summary = { checked: 0, recovered: 0, pending: 0, finalizedRuns: 0, errors: [] };
+    for (const meeting of meetings) {
+      if (!meeting || !meeting.groupChat) continue;
+      const orch = orchestratorFor(meeting.id);
+      const recoverable = orch.listRecoverableAttempts({ sid: options.sid || null, recoveryOnly: true });
+      const touchedRuns = new Set();
+      const restartRunId = orch.state.activeRun && orch.state.activeRun.status === 'recovering'
+        ? orch.state.activeRun.runId
+        : null;
+      for (const attempt of Object.values(orch.state.attempts || {})) {
+        if (!attempt || !attempt.runId || !Number(attempt.turnNum)) continue;
+        if (options.sid && attempt.sid !== options.sid) continue;
+        if (attempt.recoveryReason !== 'hub_restart' && attempt.runId !== restartRunId) continue;
+        const alreadyFinalized = (orch.state.turns || []).some(turn => turn && turn.runId === attempt.runId);
+        if (!alreadyFinalized) touchedRuns.add(attempt.runId);
+      }
+      for (const receipt of recoverable) {
+        summary.checked += 1;
+        touchedRuns.add(receipt.runId);
+        const liveSession = sessionManager.getSession(receipt.sid);
+        if (!liveSession) {
+          const waiting = orch.updateAttempt(receipt.attemptId, {
+            status: 'recovering',
+            reason: 'awaiting_session_resume',
+          }, 'attempt_recovery_waiting');
+          publishAttempt(meeting.id, orch, waiting, { recovery: true });
+          summary.pending += 1;
+          continue;
+        }
+        try {
+          const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
+          const extracted = await transcriptTap.extractLatestTurn(receipt.sid, floor);
+          const codexFinal = isCodexBaseKind(receipt.kind) && extracted && extracted.extractMode === 'final_answer';
+          const claudeFinal = isClaudeFamily(receipt.kind) && extracted
+            && extracted.source === 'manual_claude_transcript'
+            && (!floor || Number(extracted.completedAt) >= floor);
+          const providerTurnMatches = !receipt.providerTurnId || !extracted || !extracted.turnId
+            || String(receipt.providerTurnId) === String(extracted.turnId);
+          if (extracted && extracted.text && (codexFinal || claudeFinal) && providerTurnMatches) {
+            const member = groupMembersForMeeting(meeting).find(item => item.sid === receipt.sid) || {};
+            orch.patchTurnResult(receipt.turnNum, receipt.sid, {
+              text: extracted.text,
+              status: 'completed',
+              memberId: receipt.memberId || member.memberId,
+              speaker: member.displayName || liveSession.title || liveSession.kind || 'AI',
+              attemptId: receipt.attemptId,
+              runId: receipt.runId,
+              providerTurnId: extracted.turnId || receipt.providerTurnId || null,
+              signalSource: isCodexBaseKind(receipt.kind)
+                ? 'codex_auto_extract_final_answer'
+                : 'claude_auto_extract_final_answer',
+              finality: 'provider_final',
+              completedAt: extracted.completedAt || Date.now(),
+            });
+            const recovered = orch.getAttempt(receipt.attemptId);
+            publishAttempt(meeting.id, orch, recovered, { recovery: true });
+            summary.recovered += 1;
+          } else {
+            const waiting = orch.updateAttempt(receipt.attemptId, {
+              status: extracted && extracted.extractMode === 'partial_commentary'
+                ? ATTEMPT_RUNNING
+                : ATTEMPT_AWAITING_BINDING,
+              reason: extracted && extracted.extractMode || 'final_not_persisted_yet',
+            }, 'attempt_recovery_pending');
+            publishAttempt(meeting.id, orch, waiting, { recovery: true });
+            summary.pending += 1;
+          }
+        } catch (error) {
+          summary.errors.push({ meetingId: meeting.id, attemptId: receipt.attemptId, message: error && error.message });
+          const waiting = orch.updateAttempt(receipt.attemptId, {
+            status: ATTEMPT_AWAITING_BINDING,
+            reason: 'recovery_read_failed',
+          }, 'attempt_recovery_failed');
+          publishAttempt(meeting.id, orch, waiting, { recovery: true });
+          summary.pending += 1;
+        }
+      }
+
+      for (const runId of touchedRuns) {
+        const attempts = Object.values(orch.state.attempts || {}).filter(item => item && item.runId === runId);
+        if (!attempts.length || attempts.some(item => !isTerminalAttemptStatus(item.status))) continue;
+        const turnNum = Number(attempts[0].turnNum) || 0;
+        if (!turnNum || (orch.state.turns || []).some(turn => turn && turn.runId === runId)) continue;
+        const userMessage = (orch.state.messages || []).find(item => item && item.role === 'user' && Number(item.turnNum) === turnNum);
+        const members = groupMembersForMeeting(meeting);
+        const memberBySid = Object.fromEntries(members.map(member => [member.sid, member]));
+        const results = attempts.map(attempt => resultFromPersistedAttempt(orch, attempt));
+        orch.completeTurn(turnNum, userMessage && userMessage.content || '', results, memberBySid, {}, {
+          dispatchMode: 'recovery', runId,
+        });
+        emitGroupChat('groupchat-turn-complete', {
+          meetingId: meeting.id,
+          turnNum,
+          runId,
+          mode: 'group',
+          results,
+          meta: { dispatchMode: 'recovery' },
+          superseded: false,
+          interrupted: results.some(item => item.status === 'interrupted'),
+          completedAt: Date.now(),
+          recovered: true,
+        });
+        summary.finalizedRuns += 1;
+      }
+    }
+    return summary;
+  }
+
+  async function runRecoveryForSession(sessionId) {
+    const session = sessionManager.getSession(sessionId);
+    if (!session || !session.meetingId) return { checked: 0, recovered: 0, pending: 0, finalizedRuns: 0, errors: [] };
+    const delays = [0, 1000, 2000, 4000, 8000, 16000];
+    let aggregate = { checked: 0, recovered: 0, pending: 0, finalizedRuns: 0, errors: [] };
+    for (const delayMs of delays) {
+      if (delayMs) {
+        await new Promise(resolve => {
+          const timer = setTimeout(resolve, delayMs);
+          timer.unref?.();
+        });
+      }
+      const current = await recoverPendingAttempts({ meetingId: session.meetingId, sid: sessionId });
+      aggregate = {
+        checked: aggregate.checked + current.checked,
+        recovered: aggregate.recovered + current.recovered,
+        pending: current.pending,
+        finalizedRuns: aggregate.finalizedRuns + current.finalizedRuns,
+        errors: aggregate.errors.concat(current.errors || []),
+      };
+      if (current.pending === 0) break;
+    }
+    return aggregate;
+  }
+
+  function recoverSession(sessionId) {
+    const key = String(sessionId || '');
+    if (!key) return Promise.resolve({ checked: 0, recovered: 0, pending: 0, finalizedRuns: 0, errors: [] });
+    if (recoveryBySid.has(key)) return recoveryBySid.get(key);
+    const task = runRecoveryForSession(key).finally(() => {
+      if (recoveryBySid.get(key) === task) recoveryBySid.delete(key);
+    });
+    recoveryBySid.set(key, task);
+    return task;
   }
 
   function markProcessExitForSession(sessionId, exitInfo) {
@@ -1177,8 +1692,11 @@ function createGroupChatDispatcher(deps) {
     interruptMeetingTurn,
     groupMembersForMeeting,
     getActiveWatchers: () => activeWatchers,
+    getActiveWatchersByAttempt: () => activeWatchersByAttempt,
     getGroupChatWatcher: () => groupChatWatcher,
     markProcessExitForSession,
+    recoverPendingAttempts,
+    recoverSession,
   };
 }
 
