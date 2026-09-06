@@ -63,6 +63,17 @@ function forgetViewMode(set, sessionId) {
   return !!(set && sessionId && set.delete(sessionId));
 }
 
+/**
+ * 点开一个会话时该用哪个视图。
+ *
+ * 2026-09-06：「已完成未读」的会话点进去默认走卡片视图 —— 这时你要看的是刚写完的那段
+ * 答复，PTY 里得自己往回滚。只影响这一次打开，不写进记忆（调用方传 remember:false），
+ * 所以你手动切回 PTY 之后，读完未读再点开还是你自己选的那个视图。
+ */
+function selectionViewModeFor(set, sessionId, { completedUnread = false } = {}) {
+  return completedUnread ? CARD : viewModeFor(set, sessionId);
+}
+
 module.exports = {
   CARD,
   PTY,
@@ -72,6 +83,7 @@ module.exports = {
   normalizeViewMode,
   readCardViewSessions,
   rememberViewMode,
+  selectionViewModeFor,
   viewModeFor,
   writeCardViewSessions,
 };

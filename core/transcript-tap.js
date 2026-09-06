@@ -22,7 +22,11 @@ const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseClaudeTranscriptToTurns, isClaudeTurnStopReasonTerminal } = require('./claude-transcript-parser');
+const {
+  parseClaudeTranscriptToTurns,
+  isClaudeTurnStopReasonTerminal,
+  claudeAssistantContentHasAnswerText,
+} = require('./claude-transcript-parser');
 const {
   codexRolloutMetaMatchesSid,
   isCodexTopLevelRolloutMeta,
@@ -315,8 +319,13 @@ class ClaudeTap extends EventEmitter {
         //   "tool_use" 表明还要等 tool_result + 后续 assistant message，不 emit。
         //   null 表示流式中间态（未 finalize），不 emit。
         //   90s idle timer 仅作 transcript 完全卡死的最终兜底，不再是主路径。
+        //   2026-09-06：终态还要求这条 entry 自己带正文。实测 Claude Code 会把交错思考
+        //   单独写成一条 assistant entry（只有 thinking 块、thinking 文本还是空串），
+        //   stop_reason 已经是 end_turn，而真正的答复 23 秒后才落盘 —— 只看 stop_reason
+        //   会把上一句「我先读取一下这个文件」当成最终答复提前送出去。
         const stopReason = obj.message.stop_reason;
-        const isTerminal = stopReason === 'end_turn' || stopReason === 'max_tokens' || stopReason === 'refusal';
+        const isTerminal = (stopReason === 'end_turn' || stopReason === 'max_tokens' || stopReason === 'refusal')
+          && claudeAssistantContentHasAnswerText(content);
         if (isTerminal) {
           this._scheduleStopReasonEmit(hubSessionId);
         } else {
@@ -440,7 +449,11 @@ class ClaudeTap extends EventEmitter {
       if (!entry.transcriptPath) return;
       try {
         // 2026-05-14 道雪：用合并版（多 entry 合并 bug 修复）
-        const text = await readLastAssistantTurnMergedTextFromClaudeTranscript(entry.transcriptPath);
+        // 2026-09-06：改用带终态过滤的读取 —— 与 idle 兜底同一套判据。防抖这 200ms 里
+        //   Claude 可能又写了一条 stop_reason='tool_use'，此时本轮并没有结束，
+        //   不带过滤的读取会把中间正文当成最终答复送出去。
+        const result = await readLastTerminalAssistantTextFromClaudeTranscript(entry.transcriptPath);
+        const text = result && result.text;
         if (!text || !text.trim()) return;
         if (text === entry.lastText) return; // 已 emit 过相同内容（如 Stop hook 抢先）
         entry.lastText = text;
