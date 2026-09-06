@@ -160,6 +160,41 @@ test('断连行仍保留"断连 · "前缀', () => {
   }
 });
 
+// ---------------- 用例 7：运行中的普通会话，行上要带 running 标记（logo 呼吸靠它） ----------------
+// 2026-09-06：群聊行早就有「黄点脉冲」表示有人在干活，普通会话只有一个 4.4px 的绿点。
+//   用户要求普通会话的 logo 也做呼吸效果，动画挂在 .session-item.slim.running .sl-kind 上，
+//   所以这一行的 running class 是唯一的开关，别在重构里顺手删掉。
+test('运行中的普通会话带 running class，等待/空闲/休眠都不带', () => {
+  const running = renderRows(oneSession({ id: 'run1', kind: 'claude', status: 'running' }));
+  assert.ok(running.rows.some(r => /\brunning\b/.test(String(r.className || ''))),
+    '运行中的行要带 running class，logo 呼吸动画靠它');
+
+  const idle = renderRows(oneSession({ id: 'idle1', kind: 'claude', status: 'idle' }));
+  assert.ok(!idle.rows.some(r => /\brunning\b/.test(String(r.className || ''))),
+    '空闲行不该闪');
+
+  const waiting = renderRows(oneSession({
+    id: 'wait1', kind: 'claude', status: 'running',
+    attentionState: 'needs-input', needsUserInput: true,
+  }));
+  assert.ok(!waiting.rows.some(r => /\brunning\b/.test(String(r.className || ''))),
+    '等你输入不是在干活，不该闪');
+
+  const dormant = renderRows(oneSession({ id: 'dorm1', kind: 'claude', status: 'dormant' }));
+  assert.ok(!dormant.rows.some(r => /\brunning\b/.test(String(r.className || ''))),
+    '休眠行不该闪');
+});
+
+// ---------------- 用例 8：呼吸动画本体必须在样式表里 ----------------
+test('侧栏样式表里有 .running .sl-kind 的呼吸动画', () => {
+  const fs = require('fs');
+  const css = fs.readFileSync(
+    path.join(__dirname, '..', 'renderer', 'styles', 'shell-sidebar-terminal.css'), 'utf8');
+  assert.ok(/\.session-item\.slim\.running \.sl-kind\s*\{[^}]*animation:\s*sl-logo-breathe/.test(css),
+    'logo 呼吸动画应挂在运行中的普通会话行上');
+  assert.ok(/@keyframes sl-logo-breathe/.test(css), '关键帧本体不能少');
+});
+
 if (failed) {
   console.error(`\n${failed} 个用例失败`);
   process.exit(1);

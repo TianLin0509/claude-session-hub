@@ -835,8 +835,12 @@ function _sessionWarningText(session) {
     else if (runtimeTruth.state === RUNTIME_STARTING) dotCls = 'start';
     else if (runtimeTruth.state === RUNTIME_RUNNING) dotCls = 'run';
     else if (runtimeTruth.state === RUNTIME_UNKNOWN) dotCls = 'unknown';
+    // 2026-09-06：运行中的普通会话，logo 跟着呼吸（CSS 在 .session-item.slim.running .sl-kind）。
+    //   口径直接复用上面的状态点：只有点是 run/start 时才算运行中，等待/断连/未读都不闪。
+    const showRunning = dotCls === 'run' || dotCls === 'start';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
+      + (showRunning ? ' running' : '')
       + (isResumePending ? ' resuming' : '')
       + (isDisconnected ? ' disconnected' : '');
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;

@@ -206,7 +206,10 @@ function _mergeConsecutiveAssistantTurns(turns) {
         ts: t.ts,
         tsEnd: t.ts,
         model: t.model,
-        stopReason: t.stopReason,
+        // 同上：无正文的终态 entry 只是过程标记，不能作为这一轮的终态依据。
+        stopReason: isClaudeTurnStopReasonTerminal(t.stopReason) && !claudeEntryEndsAssistantTurn(t)
+          ? undefined
+          : t.stopReason,
         thinking: t.thinking ? [t.thinking] : [],
         toolCalls: Array.isArray(t.toolCalls) ? [...t.toolCalls] : [],
         usage: t.usage
@@ -219,7 +222,11 @@ function _mergeConsecutiveAssistantTurns(turns) {
       if (t.thinking) acc.thinking.push(t.thinking);
       if (Array.isArray(t.toolCalls) && t.toolCalls.length) acc.toolCalls.push(...t.toolCalls);
       acc.tsEnd = t.ts;
-      acc.stopReason = t.stopReason || acc.stopReason;
+      // 无正文的终态 entry（交错思考的收尾块）不能把这一轮的 stopReason 改成终态，
+      // 否则所有靠 stopReason 判完成的读取方都会以为答复已经写完。
+      if (t.stopReason && (!isClaudeTurnStopReasonTerminal(t.stopReason) || claudeEntryEndsAssistantTurn(t))) {
+        acc.stopReason = t.stopReason;
+      }
       if (t.model) acc.model = t.model;
       if (t.usage) {
         // 多方审查 P0 (Gemini 找到)：Claude API 每次 call 的 input_tokens 是 prompt size，
@@ -232,8 +239,8 @@ function _mergeConsecutiveAssistantTurns(turns) {
       }
       acc.mergedCount += 1;
     }
-    // 终止于非 tool_use stop_reason（一轮真完成）
-    if (isClaudeTurnStopReasonTerminal(t.stopReason)) {
+    // 终止于「带正文的终态 entry」（一轮真完成）
+    if (claudeEntryEndsAssistantTurn(t)) {
       flush();
     }
   }
@@ -346,6 +353,38 @@ function isClaudeTurnStopReasonTerminal(stopReason) {
   return typeof stopReason === 'string' && stopReason !== '' && stopReason !== 'tool_use';
 }
 
+/**
+ * 这条 assistant content 里有没有「给用户看的正文」。
+ *
+ * thinking 与 tool_use 都不算：它们是过程，不是答复。
+ */
+function claudeAssistantContentHasAnswerText(content) {
+  if (typeof content === 'string') return content.trim() !== '';
+  if (!Array.isArray(content)) return false;
+  return content.some(block => block
+    && block.type === 'text'
+    && typeof block.text === 'string'
+    && block.text.trim() !== '');
+}
+
+/**
+ * 这条 entry 是不是「本轮到此为止」。
+ *
+ * 只看 stop_reason 不够。2026-09-06 在真实 transcript 里实测到：Claude Code 会把
+ * 一段交错思考单独落成一条 assistant entry —— content 只有一个 thinking 块（signature
+ * 有值、thinking 文本是空串），stop_reason 却已经是 'end_turn'，而真正的答复在 23 秒
+ * 之后才写进来。只认 stop_reason 的话，这条 entry 会把本轮判成已完成，把之前那句
+ * 「我先读取一下这个文件」当成最终答复送出去。
+ *
+ * 判据补一条：终态 entry 必须自己带正文。没有正文的终态 entry 是过程标记，本轮继续。
+ */
+function claudeEntryEndsAssistantTurn(turn) {
+  return !!turn
+    && isClaudeTurnStopReasonTerminal(turn.stopReason)
+    && typeof turn.text === 'string'
+    && turn.text.trim() !== '';
+}
+
 function isTailTurnSliceComplete(turns, limit) {
   if (!Array.isArray(turns) || turns.length < limit) return false;
   if (turns.length > limit) return true;
@@ -379,6 +418,8 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
 module.exports = {
   parseClaudeTranscriptToTurns,
   isClaudeTurnStopReasonTerminal,
+  claudeAssistantContentHasAnswerText,
+  claudeEntryEndsAssistantTurn,
   parseAssistantContent,
   isToolResultEntry,
   extractToolResults,

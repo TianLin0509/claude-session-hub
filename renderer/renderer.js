@@ -63,6 +63,7 @@ const {
   forgetViewMode,
   readCardViewSessions,
   rememberViewMode,
+  selectionViewModeFor,
   viewModeFor,
   writeCardViewSessions,
 } = require('../core/session-view-mode.js');
@@ -2772,6 +2773,16 @@ const _cardOverlayFollowBottomBySession = new Map();
 // 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
 const cardViewSessions = readCardViewSessions(localStorage);
 const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
+// 「已完成未读」的会话点开默认进卡片视图。休眠会话点开会先清未读再走 session-created
+// 重新定视图，所以这里把这一次的判断结果留一份，让唤醒后的那次 applyViewMode 也认它。
+const _completedUnreadCardViews = new Set();
+function selectionViewModeForSession(sessionId, session) {
+  const completedUnread = !!session && sessionHasCompletedUnread(session);
+  // 只有休眠会话会在唤醒后再定一次视图，别的会话记下来就没人来取了。
+  if (completedUnread && session && session.status === 'dormant') _completedUnreadCardViews.add(sessionId);
+  else _completedUnreadCardViews.delete(sessionId);
+  return selectionViewModeFor(cardViewSessions, sessionId, { completedUnread });
+}
 function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
 }
@@ -4012,7 +4023,7 @@ async function selectSession(id, opts = {}) {
     || !!(isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   // 视图按会话记忆：先算出这个会话该用哪个视图，再决定要不要把焦点给终端
   // （卡片视图下抢终端焦点是错的）。
-  const targetView = viewModeForSession(id);
+  const targetView = selectionViewModeForSession(id, session);
   const shouldFocusTerminal = switching || targetView === 'pty';
   activeSessionId = id;
   applyViewMode(targetView, { remember: false, skipPreviousCardCapture: switching });
@@ -6642,7 +6653,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (requestedView) _chuxinRequestedSessionViews.delete(session.id);
   // New ordinary sessions default to PTY. Dormant resumes use this session's
   // remembered view unless a shortcut explicitly requested one.
-  applyViewMode(requestedView || (wasDormant ? viewModeForSession(session.id) : 'pty'), { remember: false });
+  const unreadWantedCard = _completedUnreadCardViews.delete(session.id);
+  applyViewMode(
+    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : 'pty')),
+    { remember: false },
+  );
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),
   });

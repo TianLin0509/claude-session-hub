@@ -56,6 +56,22 @@ const failures = [];
 let done = 0;
 let idx = 0;
 
+// 单个测试卡死不能拖垮整场，但预算必须对得上真实耗时，否则闸门会自己抖。
+//
+// 2026-09-06：unit-dev-flow-stress 在正式合并闸门里跑到 A4 被 180 秒 SIGKILL，
+//   报出来只是「退出码 null」，合并位只能猜是不是新代码把它卡死了。实测：它在
+//   master 上单跑就要 101～138 秒（A2 一个用例就占 51 秒 —— 20 次真合并，每次都要
+//   起 python 解释器加一串 git 进程）。180 秒对它连 1.4 倍余量都不到，而它还要和
+//   另外 15 个 node 进程抢 CPU，超时是迟早的事。
+//   注意：慢的原因是它真的在跑 20 次合并，不是它有 bug —— 它恰好是守合并闸门的那个
+//   文件，不能为了让闸门变绿去砍它的覆盖，只能把预算调到符合事实。
+const DEFAULT_TIMEOUT_MS = 180_000;
+const FILE_TIMEOUT_MS = {
+  // 真 git + 真 python 子进程，数量级和别的单测不在一个层次
+  'unit-dev-flow-stress.test.js': 600_000,
+};
+const timeoutFor = file => FILE_TIMEOUT_MS[file] || DEFAULT_TIMEOUT_MS;
+
 function runOne(file) {
   return new Promise((resolve) => {
     const childEnv = Object.assign({}, process.env, {
@@ -74,18 +90,30 @@ function runOne(file) {
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { out += d; });
 
-    // 单个测试卡死不能拖垮整场。
-    // 为什么是 180 秒而不是 60：unit-dev-flow-stress 单跑要 56 秒（12 个真 git 场景），
-    // 机器上同时有别的活时就会越过 60 秒被误杀，表现为「退出码 null」的假失败——
-    // 而它恰好是守合并闸门的那个文件，闸门自己抖是最糟的一种抖。
-    // 真卡死的仍然拦得住，只是晚两分钟。
-    const killer = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, 180_000);
+    // 预算见上面的 FILE_TIMEOUT_MS。超时要能被认出来：被 SIGKILL 的进程 code 是 null，
+    // 光看「退出码 null」分不清是卡死、是崩了、还是预算不够，只能靠猜。
+    const budgetMs = timeoutFor(file);
+    const startedAt = Date.now();
+    let timedOut = false;
+    const killer = setTimeout(() => {
+      timedOut = true;
+      try { p.kill('SIGKILL'); } catch (e) {}
+    }, budgetMs);
 
     p.on('close', (code) => {
       clearTimeout(killer);
       done++;
       if (code !== 0) {
-        failures.push({ file, code, out: out.trim().split('\n').slice(-12).join('\n') });
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const tail = out.trim().split('\n').slice(-12).join('\n');
+        failures.push(timedOut
+          ? {
+            file,
+            code,
+            out: `【超时】跑了 ${elapsed}s 仍未结束，超过 ${(budgetMs / 1000).toFixed(0)}s 预算被强杀。`
+              + `\n（不一定是卡死：机器忙的时候这个文件本来就慢，先看下面最后的输出停在哪个用例）\n${tail}`,
+          }
+          : { file, code, out: tail });
         process.stdout.write('x');
       } else {
         process.stdout.write('.');

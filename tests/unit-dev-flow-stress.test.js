@@ -360,9 +360,10 @@ test('C6 · 脚本跑到一半被杀，主干提交历史不能已经前进', as
 
 (async () => {
   for (const { name, fn } of queue) {
+    const _t0 = Date.now();
     await fn();
     pass++;
-    console.log('  ✓ ' + name);
+    console.log('  ✓ [' + ((Date.now() - _t0) / 1000).toFixed(1) + 's] ' + name);
   }
   try { execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
   console.log('\n──────────────');
