@@ -17,6 +17,7 @@
  *   B3 版本号文件里有真冲突（不只是版本行）→ 仍然照旧报冲突，不许糊弄过去
  *   B4 项目没配 versionBump → 一个字节都不动（SuperRAN 这类项目的行为不变）
  *   B5 定点替换不许误伤同名同值的依赖条目
+ *   B7 --dry-run（合并位每次先跑的那条）抬完版本后必须完整回滚
  */
 const assert = require('assert');
 const { execSync, spawnSync } = require('child_process');
@@ -180,6 +181,20 @@ test('B5 · 定点替换不许误伤版本号恰好相同的依赖条目', () =>
     const [added, removed] = line.split('\t');
     assert(Number(added) <= 2 && Number(removed) <= 2, '改动行数异常，可能整份重写了：' + line);
   }
+});
+
+test('B7 · --dry-run 抬完版本跑完测试后必须完整回滚（合并位每次都先跑它）', () => {
+  const dir = makeRepo('dryrun');
+  makeBranch(dir, 'feat/a', 'a.txt');
+  const r = merge(dir, 'feat/a', ['--dry-run']);
+  assert.strictEqual(r.code, 0, r.out);
+  assert(/抬版本号/.test(r.out), 'dry-run 也要抬版本，否则验的不是将要合进去的那份代码');
+  assert.strictEqual(versionOf(dir), '1.0.0', 'dry-run 结束必须把版本号还原');
+  assert.strictEqual(sh('git status --porcelain', dir), '', 'dry-run 不许留下未提交的版本号改动');
+  assert.strictEqual(sh('git rev-list --count main', dir), '1', 'dry-run 不许推进主干');
+  // 紧接着真合，仍然从主干的值开始抬
+  assert.strictEqual(merge(dir, 'feat/a').code, 0);
+  assert.strictEqual(versionOf(dir), '1.0.1');
 });
 
 test('B6 · 版本号不是纯数字三段式时明确报错，不猜', () => {
