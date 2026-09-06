@@ -27,7 +27,7 @@ function createDevWorkbench(deps) {
     return crypto.createHash('sha256').update(JSON.stringify([
       m.id, m.subSessions, m.slotSpecs, sw.enabled, sw.loop, sw.steps, sw.stepConfigs,
       ls.runId, ls.status, ls.currentStep, ls.round, ls.goal, ls.deadlineTs, !!live.running,
-      sw.devWorkbenchManual || null,
+      sw.devWorkbenchManual || null, sw.devPhase || null,
       execution?.runId, execution?.attempts?.map(a => [a.attemptId, a.status]),
     ])).digest('hex').slice(0, 24);
   }
@@ -60,7 +60,7 @@ function createDevWorkbench(deps) {
     const activeAttempts = (Array.isArray(execution?.attempts) ? execution.attempts : []).filter(a => !['completed', 'failed', 'interrupted', 'superseded', 'absent'].includes(a.status));
     if (!live.running && !live.unavailable && activeAttempts.length && !m.metadataError) {
       const recovering = !!saved.hydrated || activeAttempts.some(a => a.status === 'recovering');
-      stage = { ...stage, key: recovering ? 'recovering' : 'chatting', label: recovering ? '群聊尝试待恢复' : sw.devWorkbenchManual ? '手动处理 · 群聊进行中' : '群聊进行中', tone: recovering ? 'bad' : 'run', running: !recovering };
+      stage = { ...stage, key: recovering ? 'recovering' : 'chatting', label: recovering ? '群聊尝试待恢复' : sw.devWorkbenchManual ? '手动处理 · 群聊进行中' : sw.devPhase === 'discuss' ? '讨论进行中' : '群聊进行中', tone: recovering ? 'bad' : 'run', running: !recovering };
     }
     if (!live.running && !live.unavailable && !activeAttempts.length && execution?.hasFailures && stage.key === 'passed') {
       stage = { ...stage, key: 'chatFailed', label: '最近群聊执行失败', tone: 'bad', running: false };
@@ -83,7 +83,8 @@ function createDevWorkbench(deps) {
       activityAt: Math.max(...[m.createdAt, m.lastMessageTime, m.lastCompletedAt, ls.updatedAt, ls.startedAt, ls.finishedAt, execution?.updatedAt, card?.at, review?.at, update?.at,
         ...(Array.isArray(execution?.attempts) ? execution.attempts.map(a => a.updatedAt) : [])].map(t => Number(t) || 0)),
       execution, flow: { currentStep: ls.currentStep || '', configured: !!sw.loop?.enabled || !!sw.devWorkbenchManual,
-        status: ls.status || '', manual: !!sw.devWorkbenchManual, round: Number(ls.round) || 0, maxRounds: Number(sw.loop?.maxRounds) || 3 },
+        status: ls.status || '', manual: !!sw.devWorkbenchManual, round: Number(ls.round) || 0, maxRounds: Number(sw.loop?.maxRounds) || 3,
+        phase: sw.devPhase === 'discuss' ? 'discuss' : 'build' },
       progress,
       card: card || null, review: review || null, progressSource: progressSource || null,
       blockers: failedReview ? failedReview.blockers : '', report: reportSource && reportSource.report || '',

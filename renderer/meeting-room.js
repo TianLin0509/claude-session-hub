@@ -28,6 +28,8 @@ if (typeof document !== 'undefined') (function () {
     listHeroes: _listHeroes,
     normalizeHeroAssignments: _normalizeHeroAssignments,
   } = require('../core/hero-prompts.js');
+  // 开发群聊「先讨论再开工」的阶段判断与收敛文本，和主进程 dispatcher 共用同一份。
+  const DevDiscuss = require('../core/dev-discuss.js');
   // isPasteSensitive 不再在本文件用：paste 敏感性的判断已经下沉到主进程的
   //   session:send-prompt 闭环里（main/ipc/prompt-submit-handlers.js）。
   const { kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
@@ -4932,7 +4934,14 @@ if (typeof document !== 'undefined') (function () {
         ? '未选择成员，发送前需要至少勾选 1 位'
         : `发送给 ${selectedNames.join(' / ')}${selected > selectedNames.length ? ` 等 ${selected} 位` : ''}`;
       if (dormantSlotsN > 0) panelDetail += `· ${dormantSlotsN} 位休眠不计入`;
-      if (current.serialWorkflow && current.serialWorkflow.enabled && workflowSteps > 0) {
+      if (DevDiscuss.isDiscussing(current)) {
+        // 「先讨论再开工」：循环配置在，但现在只是普通群聊。两个入口都放在这一行：
+        // 「收敛」让工作位把讨论写成任务说明；「开工」把它交给循环。
+        chips.push(_renderInputChip('阶段', '讨论中 · 不改代码', 'warn'));
+        chips.push(`<span class="mr-input-preflight-chip accent clickable" data-dev-converge="1" title="让工作位把到目前为止的讨论收敛成一份任务说明（目标 / 非目标 / 验收标准 / 风险与回退），合并位补充"><span>讨论</span><strong>收敛</strong></span>`);
+        chips.push(`<span class="mr-input-preflight-chip saved clickable" data-dev-kickoff="1" title="确认任务说明后进入「工作位实现 ↔ 合并位审查」循环"><span>开工</span><strong>▶ 进入实现</strong></span>`);
+        panelDetail += ' · 讨论阶段，发送走普通群聊';
+      } else if (current.serialWorkflow && current.serialWorkflow.enabled && workflowSteps > 0) {
         const workflowApi = window.WorkflowTemplates;
         const presetMeta = workflowApi && typeof workflowApi.getTemplateMeta === 'function'
           ? workflowApi.getTemplateMeta(current.serialWorkflow.templateId)
@@ -4940,6 +4949,13 @@ if (typeof document !== 'undefined') (function () {
         const workflowLabel = presetMeta ? presetMeta.name : '工作流';
         chips.push(_renderInputChip('发送', `${workflowLabel} · ${workflowSteps} 步`, 'accent'));
         panelDetail += ` · ${workflowLabel}串行工作流 ${workflowSteps} 步`;
+        // 开发群聊开工后仍可退回讨论：需求在实现中露出坑、或返工用尽要重新收敛时用。
+        // 循环运行中不给这个入口，先停再切，避免阶段字段和引擎状态打架。
+        const loopStNow = _loopStateByMeeting[current.id]
+          || (current.serialWorkflow && current.serialWorkflow.loopState) || null;
+        if (current.scene === 'dev' && current.groupChat && !(loopStNow && loopStNow.status === 'running')) {
+          chips.push(`<span class="mr-input-preflight-chip clickable" data-dev-discuss="1" title="回到讨论阶段：之后发送走普通群聊、两位不改代码，直到你再次点「开工」"><span>阶段</span><strong>回到讨论</strong></span>`);
+        }
       } else {
         chips.push(_renderInputChip('目标', `${selected}/${total || selected || 0}`, selected === 0 ? 'warn' : ''));
       }
@@ -5010,6 +5026,24 @@ if (typeof document !== 'undefined') (function () {
       const result = await ipcRenderer.invoke('loop:resume', { meetingId: current.id });
       if (!result || !result.ok) _showGcEscapeNotice(`循环工作流继续失败：${result && result.reason || 'unknown'}`, 'error');
     });
+    const convergeChip = row.querySelector('[data-dev-converge]');
+    if (convergeChip) convergeChip.addEventListener('click', () => {
+      const m = meetingData[current.id];
+      if (!m || !DevDiscuss.isDiscussing(m)) return;
+      _dispatchMeetingInputImpl(m, DevDiscuss.CONVERGE_REQUEST, {});
+      _pushPromptHistory(m.id, DevDiscuss.CONVERGE_REQUEST);
+      _updateInputPreflight(m);
+    });
+    const kickoffChip = row.querySelector('[data-dev-kickoff]');
+    if (kickoffChip) kickoffChip.addEventListener('click', () => { void _openDevKickoffDialog(meetingData[current.id]); });
+    const backToDiscussChip = row.querySelector('[data-dev-discuss]');
+    if (backToDiscussChip) backToDiscussChip.addEventListener('click', async () => {
+      const m = meetingData[current.id];
+      if (!m) return;
+      if (_isGroupTurnRunning(m)) { _showGcEscapeNotice('本轮还有成员在回答，等它结束或先停止再切换阶段', 'error'); return; }
+      const ok = await _setDevPhase(m, DevDiscuss.PHASE_DISCUSS);
+      if (ok) _showGcEscapeNotice('已回到讨论阶段：之后发送走普通群聊，两位不改代码', 'info');
+    });
     const stopTurnChip = row.querySelector('[data-gc-stop-turn]');
     if (stopTurnChip) stopTurnChip.addEventListener('click', () => {
       void _handleGcStopTurn(current);
@@ -5075,6 +5109,92 @@ if (typeof document !== 'undefined') (function () {
       document.addEventListener('mousedown', _handlePromptHistoryOutside);
       document.addEventListener('keydown', _handlePromptHistoryKeydown);
     }, 0);
+  }
+
+  // ── 开发群聊 · 讨论 ⇄ 开工 ────────────────────────────────────────────────
+  // 由 setupInput 赋值：发送三岔路的实现。「开工」弹窗和「收敛」按钮借它发文本，
+  // 保证和用户按回车走的是同一条路（包括循环启动失败时把问题恢复到输入框）。
+  let _dispatchMeetingInputImpl = null;
+
+  // 阶段字段住在 serialWorkflow 里（meeting-store 只持久化它整体）。用同步 IPC 写，
+  // 写成功再启动循环：否则 loop:start 可能读到旧阶段。
+  async function _setDevPhase(meeting, phase) {
+    const m = meetingData[meeting.id] || meeting;
+    if (!m || !m.serialWorkflow) { _showGcEscapeNotice('这个群还没有开发工作流配置，先点工作流按钮配一下', 'error'); return false; }
+    const next = { ...m.serialWorkflow, devPhase: phase === DevDiscuss.PHASE_DISCUSS ? DevDiscuss.PHASE_DISCUSS : DevDiscuss.PHASE_BUILD };
+    try {
+      const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: m.id, fields: { serialWorkflow: next } });
+      if (!ok) throw new Error('主进程未接受更新');
+    } catch (e) {
+      _showGcEscapeNotice('切换阶段失败：' + (e && e.message ? e.message : String(e)), 'error');
+      return false;
+    }
+    m.serialWorkflow = next;
+    if (typeof window.schedulePersist === 'function') window.schedulePersist();
+    _updateWorkflowBtnState(m);
+    setupInput(m);
+    _updateInputPreflight(m);
+    return true;
+  }
+
+  // 「开工」：把讨论收敛出的任务说明确认一遍，再以它为「上一条消息」启动循环。
+  // 预填取群里最近一份「## 任务说明」（工作位按「收敛」要求写的）；没有就留空让用户自己写。
+  // 这样工作位合同里「任务是维护者上一条消息说的那件事」一个字不用改。
+  async function _openDevKickoffDialog(meeting) {
+    const current = meeting || meetingData[activeMeetingId];
+    if (!current || !DevDiscuss.isDiscussing(current)) return;
+    if (_isGroupTurnRunning(current)) { _showGcEscapeNotice('本轮还有成员在回答，等讨论这一轮结束再开工', 'error'); return; }
+    let prefill = '';
+    try {
+      const state = await ipcRenderer.invoke('groupchat:get-state', { meetingId: current.id });
+      prefill = DevDiscuss.latestTaskSpec(state && Array.isArray(state.messages) ? state.messages : []);
+    } catch (e) { console.warn('[dev-kickoff] read group state failed:', e && e.message); }
+    const existing = document.getElementById('mr-dev-kickoff-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'mr-dev-kickoff-overlay';
+    overlay.className = 'mr-input-editor-overlay';
+    overlay.innerHTML = `
+      <div class="mr-input-editor" role="dialog" aria-modal="true" aria-label="开工：确认任务说明">
+        <div class="mr-input-editor-head">
+          <strong>开工 · 确认任务说明</strong>
+          <span id="mr-dev-kickoff-count">0 字</span>
+        </div>
+        <div class="mr-dev-kickoff-hint">${prefill
+          ? '下面是群里最近一份任务说明，可以直接改。确认后它会作为你的一条消息发出，工作位据此开工，合并位据此审查。'
+          : '群里还没有「## 任务说明」。可以先点「收敛」让工作位写一份，或者直接在这里写清楚：目标 / 非目标 / 验收标准 / 风险与回退。'}</div>
+        <textarea id="mr-dev-kickoff-textarea" class="mr-input-editor-textarea" spellcheck="false" placeholder="## 任务说明&#10;目标：&#10;非目标：&#10;验收标准：&#10;风险与回退："></textarea>
+        <div class="mr-input-editor-actions">
+          <button type="button" class="mr-input-editor-btn" data-action="cancel">取消</button>
+          <button type="button" class="mr-input-editor-btn send" data-action="kickoff">开工 ▶</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const textarea = overlay.querySelector('#mr-dev-kickoff-textarea');
+    const countEl = overlay.querySelector('#mr-dev-kickoff-count');
+    const updateCount = () => { if (countEl) countEl.textContent = `${textarea.value.length} 字`; };
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKeydown); };
+    const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
+    textarea.value = prefill;
+    updateCount();
+    textarea.addEventListener('input', updateCount);
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', close);
+    overlay.querySelector('[data-action="kickoff"]').addEventListener('click', async () => {
+      const spec = textarea.value.trim();
+      if (!spec) { _showGcEscapeNotice('任务说明是空的：没有它，工作位不知道该做什么', 'error'); textarea.focus(); return; }
+      const m = meetingData[current.id];
+      if (!m || typeof _dispatchMeetingInputImpl !== 'function') return;
+      const ok = await _setDevPhase(m, DevDiscuss.PHASE_BUILD);
+      if (!ok) return;
+      close();
+      _dispatchMeetingInputImpl(m, spec, {});
+      _pushPromptHistory(m.id, spec);
+      _updateInputPreflight(m);
+    });
+    overlay.addEventListener('mousedown', (ev) => { if (ev.target === overlay) close(); });
+    document.addEventListener('keydown', onKeydown);
+    setTimeout(() => textarea.focus(), 0);
   }
 
   function _openLongInputEditor(meeting) {
@@ -6233,6 +6353,9 @@ if (typeof document !== 'undefined') (function () {
         ? 'AI 群聊：请勾选成员，或用 @成员名 / @m1 / @all 指定发言人'
         : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
     }
+    if (DevDiscuss.isDiscussing(meeting)) {
+      inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
+    }
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');
@@ -6336,8 +6459,25 @@ if (typeof document !== 'undefined') (function () {
           ? `${quoteSection}\n\n用户问题: ${userText}`
           : `${quoteSection}\n\n(请就以上引用展开评论或继续讨论)`;
       }
+      _dispatchMeetingInput(m, finalText, heroIdBySid);
+      // 一次性语义：点击发送后立即清空；普通群聊若主进程拒绝本轮，
+      // triggerGroupChat.restoreFailedSend 会把同一份快照恢复回来。
+      if (Object.keys(heroIdBySid).length) _clearHeroAssignments(m);
+      _pushPromptHistory(m.id, userText || finalText);
+      if (box) box.textContent = '';
+      _clearInputDraft(m.id);
+      _clearQuoteChips();
+      _updateInputPreflight(m);
+    };
+
+    // 发送三岔路。抽成独立函数是为了让「开工」弹窗能带着任务说明走完全相同的一条路，
+    // 而不是往输入框里塞文本再模拟点击。
+    // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
+    function _dispatchMeetingInput(m, finalText, heroIdBySid) {
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
-      if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
+      if (DevDiscuss.isDiscussing(m)) {
+        handleMeetingSend(finalText, m, { heroIdBySid });
+      } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         const pendingLoopQuestion = _rememberPendingUserMessage(m, finalText);
         const restoreLoopStartFailure = (reason) => {
@@ -6369,15 +6509,8 @@ if (typeof document !== 'undefined') (function () {
       } else {
         handleMeetingSend(finalText, m, { heroIdBySid });
       }
-      // 一次性语义：点击发送后立即清空；普通群聊若主进程拒绝本轮，
-      // triggerGroupChat.restoreFailedSend 会把同一份快照恢复回来。
-      if (Object.keys(heroIdBySid).length) _clearHeroAssignments(m);
-      _pushPromptHistory(m.id, userText || finalText);
-      if (box) box.textContent = '';
-      _clearInputDraft(m.id);
-      _clearQuoteChips();
-      _updateInputPreflight(m);
-    };
+    }
+    _dispatchMeetingInputImpl = _dispatchMeetingInput;
 
     sendBtn.addEventListener('click', doSend);
 

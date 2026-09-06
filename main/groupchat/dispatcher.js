@@ -5,6 +5,7 @@ const { createTurnCompletionWatcher } = require('../../core/turn-completion-watc
 const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
+const DevDiscuss = require('../../core/dev-discuss.js');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
 const {
   ATTEMPT_AWAITING_BINDING,
@@ -1198,9 +1199,14 @@ function createGroupChatDispatcher(deps) {
           // 产物写进本群聊的 workspace，而不是 home 下的公共 artifacts 目录。
           workspace: meeting.workspace || null,
         });
-        const basePrompt = orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
-          currentUserMessageAppended: begin.didAppendUserMessage,
-        });
+        // 开发群聊「讨论阶段」块和英雄块一样逐轮追加（阶段可来回切，systemPrompt 只发一次）。
+        // 放在英雄块之前：英雄块自称最高优先级，讨论块管的是"这一轮不许改代码"，两者不冲突。
+        const basePrompt = DevDiscuss.appendDiscussBlock(
+          orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
+            currentUserMessageAppended: begin.didAppendUserMessage,
+          }),
+          DevDiscuss.discussBlockFor(meeting, member.memberId),
+        );
         return {
           sid: member.sid,
           kind: member.kind,

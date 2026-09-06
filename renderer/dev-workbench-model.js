@@ -44,6 +44,8 @@ function flowSteps(row) {
   const hasGoal = !!row.goal;
   let active = done ? 3 : flow.currentStep === 'reviewer' ? 2 : hasGoal ? 1 : 0;
   if (['chatting', 'recovering', 'manual', 'chatFailed'].includes(key) && flow.status === 'done') active = -1;
+  // 讨论阶段永远停在「目标」这一格：旧一轮留下的 goal 不代表当前这件事已经布置下去。
+  if (key === 'discussing' || flow.phase === 'discuss') active = 0;
   return ['目标', '实现', '审核', '通过'].map((label, index) => ({ label, state: index === active ? 'current' : active >= 0 && index < active ? 'complete' : 'pending' }));
 }
 module.exports = { isHistory, projectKey, projectName, sortRows, readingOrder, groupProjects, flowSteps };

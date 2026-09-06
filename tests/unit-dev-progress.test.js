@@ -226,6 +226,19 @@ test('席位不可用有专属说法，不跟「返工用尽」混为一谈', ()
   assert.notStrictEqual(s.label, exhausted.label);
 });
 
+test('讨论阶段：循环没跑就显示「讨论中」，哪怕上一轮已经 PASS 过', () => {
+  const fresh = DP.deriveStage({ serialWorkflow: { devPhase: 'discuss', loop: { enabled: true, maxRounds: 3 } } });
+  assert.strictEqual(fresh.key, 'discussing');
+  assert(/讨论/.test(fresh.label), '维护者要能一眼看出这是在议需求，不是没人管：' + fresh.label);
+  const afterPass = DP.deriveStage({ serialWorkflow: { devPhase: 'discuss', loop: { maxRounds: 3 }, loopState: { status: 'done', round: 1, history: [{ pass: true }] } } });
+  assert.strictEqual(afterPass.key, 'discussing', '回到讨论阶段是用户的明确选择，优先于旧的终态');
+  // 循环真在跑时阶段字段不该盖过引擎真值（开工后阶段已翻成 build，这里防的是脏数据）
+  const running = DP.deriveStage({ serialWorkflow: { devPhase: 'discuss', loop: { maxRounds: 3 }, loopState: { status: 'running', currentStep: 'builder' } } });
+  assert.strictEqual(running.key, 'working');
+  const build = DP.deriveStage({ serialWorkflow: { devPhase: 'build', loop: { maxRounds: 3 } } });
+  assert.strictEqual(build.key, 'idle', '直接开工的群和以前一样');
+});
+
 test('闲置时长能算出来', () => {
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 5 * 60000 }), '5 分钟前');
   assert.strictEqual(DP.idleFor({ lastActiveTs: Date.now() - 3 * 3600000 }), '3 小时前');
