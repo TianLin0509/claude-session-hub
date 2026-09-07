@@ -11,9 +11,12 @@
  *   node scripts/run_unit_tests.js workflow     # 只跑文件名含 workflow 的
  *   node scripts/run_unit_tests.js --jobs 8     # 调并发
  *   node scripts/run_unit_tests.js --no-lock    # 不与别的总入口互斥（不推荐）
- *   node scripts/run_unit_tests.js --strict     # 首次失败即失败，不做串行复测
+ *   node scripts/run_unit_tests.js --strict     # 连诊断复测都不跑，首次失败直接判失败
+ *   node scripts/run_unit_tests.js --lenient    # 复测通过就放行（需维护者明确采纳）
  *
  * 约定：子进程退出码非 0 即失败。测试文件自己 print 什么不管。
+ * **默认口径：任何文件在正式跑里失败过，就是失败。** 串行复测只产出诊断信息，
+ * 不改变结论 —— 复测通过只能说明失败不稳定，不能说明它是负载造成的。
  */
 const { spawn, spawnSync } = require('child_process');
 const net = require('net');
@@ -27,12 +30,19 @@ const TESTS = path.join(REPO, 'tests');
 const argv = process.argv.slice(2);
 let jobs = Math.max(2, Math.min(16, os.cpus().length));
 let useLock = process.env.HUB_UNIT_NO_LOCK !== '1';
-let strict = process.env.HUB_UNIT_STRICT === '1';
+// 首次失败是否阻断闸门。**默认阻断** —— 串行复测只是诊断证据，不是放行理由：
+// 复测通过只能证明这次失败不稳定，不能证明它是负载造成的（2026-09-06 合并位的阻断项）。
+// 要不要「复测通过就放行」是维护者的规则决定，没拍板之前不由脚本替他决定，
+// 所以放宽走显式开关：--lenient 或 HUB_UNIT_LENIENT=1。
+let lenient = process.env.HUB_UNIT_LENIENT === '1';
+// 连诊断复测都不想跑（省时间）时用它。
+let skipRetest = process.env.HUB_UNIT_STRICT === '1';
 const filters = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--jobs') { jobs = Math.max(1, parseInt(argv[++i], 10) || jobs); }
   else if (argv[i] === '--no-lock') { useLock = false; }
-  else if (argv[i] === '--strict') { strict = true; }
+  else if (argv[i] === '--strict') { skipRetest = true; }
+  else if (argv[i] === '--lenient') { lenient = true; }
   else if (!argv[i].startsWith('--')) { filters.push(argv[i]); }
 }
 
@@ -376,20 +386,21 @@ async function main() {
     process.exit(0);
   }
 
-  // 串行复测：一个一个单独跑，没有任何争抢。还失败就是真失败。
+  // 串行复测：一个一个单独跑，没有任何争抢。
+  // **它是诊断，不是放行理由** —— 复测通过只能说明这次失败不稳定，不能说明它是负载造成的。
   console.log(`并行阶段失败 ${failures.length} / ${files.length}，${timing}（SHA ${sha}）\n`);
   for (const f of failures) printFailure(f);
 
-  if (strict) {
-    console.log('（--strict：不做串行复测，首次失败即判失败）');
+  if (skipRetest) {
+    console.log('（--strict：连诊断复测也不跑，直接判失败）');
     cleanupSuiteTemp();
     lock.release();
     process.exit(1);
   }
 
-  console.log(`── 串行复测这 ${failures.length} 个文件（单独跑，无并发争抢）──`);
+  console.log(`── 串行复测这 ${failures.length} 个文件（诊断用，单独跑、无并发争抢）──`);
   const stillFailing = [];
-  const loadRelated = [];
+  const unstable = [];
   for (const f of failures) {
     process.stdout.write(`  ${f.file} … `);
     const retryStartedAt = Date.now();
@@ -400,16 +411,17 @@ async function main() {
       stillFailing.push(record);
     } else {
       console.log(`通过（${(retryElapsedMs / 1000).toFixed(1)}s）`);
-      loadRelated.push(Object.assign({}, f, { retryElapsedMs }));
+      unstable.push(Object.assign({}, f, { retryElapsedMs }));
     }
   }
   console.log('');
 
-  recordLoadRelated(loadRelated, sha);
-  if (loadRelated.length) {
-    console.log(`⚠ 下面 ${loadRelated.length} 个文件属于「负载相关失败，根因待查」——`
-      + '首次失败证据已经留档到 tests/.load-related-failures.json，单跑通过不等于它没有 bug：');
-    for (const f of loadRelated) {
+  recordLoadRelated(unstable, sha);
+  if (unstable.length) {
+    console.log(`⚠ 下面 ${unstable.length} 个文件「首次失败、单跑通过」——`
+      + '首次失败证据已留档到 tests/.load-related-failures.json。'
+      + '这只说明失败不稳定，**既不能证明是负载造成的，也不能证明它没有 bug**，根因待查：');
+    for (const f of unstable) {
       console.log(`    ${f.file}：首次 ${f.timedOut ? '超时' : '失败'}（${(f.elapsedMs / 1000).toFixed(1)}s）→ 复测 ${(f.retryElapsedMs / 1000).toFixed(1)}s 通过`);
     }
     console.log('');
@@ -424,8 +436,16 @@ async function main() {
     for (const f of stillFailing) printFailure(f);
     process.exit(1);
   }
-  console.log(`结论：并行阶段的失败全部在串行复测中通过，判为负载相关，本次放行。`);
-  console.log('（想让首次失败就拦住闸门：加 --strict 或设 HUB_UNIT_STRICT=1）');
+
+  // 走到这里 = 全部首次失败都在复测中通过。默认仍然判失败：闸门要不要因为
+  // 「复测通过」而放行，是维护者的规则决定，脚本不替他做主。
+  if (!lenient) {
+    console.log(`判失败：${unstable.length} 个文件在正式跑里失败过。复测通过只是诊断信息，不是放行理由。`);
+    console.log('（维护者若决定「复测通过即放行」，用 --lenient 或 HUB_UNIT_LENIENT=1 打开）');
+    process.exit(1);
+  }
+  console.log(`--lenient：${unstable.length} 个首次失败均在串行复测中通过，按维护者设定放行。`);
+  console.log('注意：首次失败证据仍已留档，根因待查。');
   process.exit(0);
 }
 

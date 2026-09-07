@@ -96,12 +96,16 @@ test('两个总入口实例互斥排队，排队与执行分开计时', async ()
   assert.ok(waited >= 2, `B 的排队时长应当覆盖 A 的执行（实际 ${waited}s）`);
 });
 
-test('首次失败但串行复测通过 → 判为负载相关，放行并留档首次证据', () => {
+// 2026-09-06 合并位阻断项：复测通过只能证明失败不稳定，不能证明是负载造成的。
+// 「复测通过就放行」是维护者的规则决定，脚本不许替他决定 → 默认仍然判失败。
+test('首次失败即使复测通过，默认仍判失败；复测只产出诊断证据', () => {
   const root = makeFakeRepo({ 'unit-flaky.test.js': FLAKY_FIXTURE, 'unit-ok.test.js': PASS_FIXTURE });
   const { code, out } = runRunner(root);
-  assert.equal(code, 0, '串行复测通过就不该拦住闸门：' + out);
-  assert.match(out, /串行复测/);
-  assert.match(out, /负载相关失败，根因待查/, '必须明说这不等于"没有 bug"');
+  assert.equal(code, 1, '默认口径：在正式跑里失败过就是失败：' + out);
+  assert.match(out, /串行复测/, '诊断复测仍然要跑');
+  assert.match(out, /既不能证明是负载造成的/, '不许把"复测通过"说成"负载造成的"');
+  assert.match(out, /复测通过只是诊断信息，不是放行理由/);
+  assert.match(out, /--lenient/, '要告诉维护者放宽的开关在哪');
 
   const logFile = path.join(root, 'tests', '.load-related-failures.json');
   assert.ok(fs.existsSync(logFile), '首次失败证据必须留档');
@@ -111,6 +115,14 @@ test('首次失败但串行复测通过 → 判为负载相关，放行并留档
   assert.ok(entry.firstOutputTail.includes('first run fails under load'), '要留住首次失败的输出');
   assert.ok(Number(entry.firstElapsedMs) >= 0 && Number(entry.retryElapsedMs) >= 0, '两次耗时都要记');
   assert.ok(log[log.length - 1].sha, '要记下运行时的 SHA');
+});
+
+test('--lenient：维护者明确采纳后，复测通过才放行', () => {
+  const root = makeFakeRepo({ 'unit-flaky.test.js': FLAKY_FIXTURE });
+  const { code, out } = runRunner(root, ['--lenient']);
+  assert.equal(code, 0, '维护者明确打开时才放行：' + out);
+  assert.match(out, /按维护者设定放行/);
+  assert.match(out, /首次失败证据仍已留档，根因待查/, '放行也不能把根因待查这件事抹掉');
 });
 
 test('串行复测仍失败 → 真失败，退出码 1', () => {
