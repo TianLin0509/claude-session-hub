@@ -37,6 +37,9 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     meetingId, orch, meeting, session, sid, text, sourceLabel = null, extractMode = null,
     providerTurnIdHint = null, requestedTurn = null, readCurrentTurn = () => null,
     origin = 'extract',
+    // 这一步的派发回执（R2-2）：串行所有步骤复用一个可见轮次，turn.attemptIdBy 只留得住
+    //   最后一次，用它会把新答案结算到旧尝试上 —— 气泡更新了、流程却仍停着。
+    stepAttemptId = null,
   }) {
     const adoptedStatus = origin === 'paste' ? 'manual_paste' : 'manual_extracted';
     const adoptedSignal = origin === 'paste' ? 'manual_paste' : 'manual';
@@ -53,6 +56,19 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     // watcher 已经结算过就不能再喊它：manualExtract 对已结算的 watcher 是空操作，
     //   而我们却会返回 ok —— 那就是「报告成功但什么都没写」。落到下面的 patch 路径去。
     const watcherUsable = !!(watcher && (typeof watcher.isSettled !== 'function' || !watcher.isSettled()));
+    // 身份复核（R2-3）：三步共用同一个 turnNum，所以「currentTurn 没变」根本挡不住
+    //   「流程已经走到下一步」。带了这一步的 attemptId 就必须对上 —— 否则一次迟到的
+    //   同步读取会把旧步骤的正文结算进新步骤的 watcher。
+    const watcherIdentity = (watcherUsable && typeof watcher.getAttemptIdentity === 'function')
+      ? watcher.getAttemptIdentity()
+      : null;
+    const watcherMatchesStep = !stepAttemptId
+      || !watcherIdentity
+      || !watcherIdentity.attemptId
+      || String(watcherIdentity.attemptId) === String(stepAttemptId);
+    if (!watcherMatchesStep) {
+      return { ok: false, reason: 'step_advanced', detail: WSR.describeAdoptionRejection('step_advanced'), keepText: true };
+    }
     if (watcherUsable && watcherOwnsRequestedTurn) {
       watcher.manualExtract(text, origin);
       return { ok: true, text: text, source: sourceLabel, mode: 'watcher_settle', extractMode: extractMode || null };
@@ -66,7 +82,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
             ? turns.find(t => t && t.n === requestedTurn)
             : turns[turns.length - 1];
           if (targetTurn) {
-            const attemptId = targetTurn.attemptIdBy && targetTurn.attemptIdBy[sid];
+            const attemptId = stepAttemptId
+              || (targetTurn.attemptIdBy && targetTurn.attemptIdBy[sid]);
             const providerTurnId = targetTurn.providerTurnIdBy && targetTurn.providerTurnIdBy[sid];
             const patched = orch.patchTurnResult(targetTurn.n, sid, {
               text: text,
@@ -115,7 +132,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
               status: adoptedStatus,
               memberId: memberIndex >= 0 ? ((memberSpec && memberSpec.memberId) || `m${memberIndex + 1}`) : undefined,
               speaker: session?.title || session?.kind || 'AI',
-              ...(pendingReceipt && pendingReceipt.attemptId ? { attemptId: pendingReceipt.attemptId } : {}),
+              ...(stepAttemptId || (pendingReceipt && pendingReceipt.attemptId)
+                ? { attemptId: stepAttemptId || pendingReceipt.attemptId } : {}),
               ...(pendingReceipt && pendingReceipt.runId ? { runId: pendingReceipt.runId } : {}),
               ...(providerTurnIdHint || (pendingReceipt && pendingReceipt.providerTurnId)
                 ? { providerTurnId: providerTurnIdHint || pendingReceipt.providerTurnId }
@@ -164,7 +182,10 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
   // 「重提 / 同步回答」的提取链。抽成具名函数是为了让 workflow:sync-step 能直接复用，
   //   而不是在两处各写一份提取逻辑 —— 那正是「三种来源各走各的路」的老毛病。
-  async function runManualExtract({ meetingId, sid, sincePromptTs, turnNum, requireFinal = false } = {}) {
+  async function runManualExtract({
+    meetingId, sid, sincePromptTs, turnNum, requireFinal = false,
+    stepAttemptId = null, revalidate = null,
+  } = {}) {
     if (!sid) return { ok: false, reason: 'missing_sid' };
 
     const session = sessionManager.getSession(sid);
@@ -280,8 +301,25 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       };
     }
 
+    // 读转录是异步的：等它返回的这段时间里，流程可能已经推进到下一步（R2-3）。
+    //   三步共用同一个可见轮次，所以「currentTurn 没变」证明不了任何事，必须按
+    //   run / step / attempt 的身份再核一次，不对就把正文交回给用户，绝不结算新步骤。
+    if (typeof revalidate === 'function') {
+      const recheck = revalidate();
+      if (!recheck || !recheck.ok) {
+        return {
+          ok: false,
+          reason: (recheck && recheck.reason) || 'step_advanced',
+          detail: WSR.describeAdoptionRejection((recheck && recheck.reason) || 'step_advanced'),
+          textLength: String(extracted.text || '').length,
+          keepText: true,
+        };
+      }
+    }
+
     const adopted = adoptStepResult({
       meetingId, orch, meeting, session, sid,
+      stepAttemptId,
       text: extracted.text,
       sourceLabel: extracted.source,
       extractMode: extracted.extractMode || null,
@@ -466,8 +504,28 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       for (const member of before.members) {
         if (member.hasResult || !member.sid) continue;
         try {
+          // 同步请求开始那一刻的身份，写之前拿最新状态再核一次。
+          const startedToken = {
+            meetingId, sid: member.sid,
+            runId: before.runId, turnNum: before.turnNum, stepIndex: before.stepIndex,
+          };
           const outcome = await runManualExtract({
             meetingId, sid: member.sid, turnNum: before.turnNum, requireFinal: true,
+            stepAttemptId: member.attemptId || null,
+            revalidate: () => {
+              const now = describeWorkflowStep(meetingId);
+              if (!now || !now.ok || !now.active) return { ok: false, reason: 'step_advanced' };
+              const nowMember = (now.members || []).find(item => item && item.sid === member.sid) || null;
+              return WSR.validateAdoptionToken(startedToken, {
+                meetingId,
+                sid: member.sid,
+                runId: now.runId,
+                turnNum: now.turnNum,
+                stepIndex: now.stepIndex,
+                stopped: now.status === 'stopped_user' || (now.decision && now.decision.action === 'blocked'),
+                alreadyAdopted: !!(nowMember && nowMember.hasResult),
+              });
+            },
           });
           tried.push({
             sid: member.sid, label: member.label,
@@ -569,6 +627,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         requestedTurn: context.turnNum,
         readCurrentTurn,
         origin: 'paste',
+        stepAttemptId: member && member.attemptId,
       });
       if (!adopted || !adopted.ok) return { ...(adopted || { ok: false, reason: 'adopt_failed' }), keepText: true };
 

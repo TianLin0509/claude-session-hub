@@ -48,6 +48,28 @@ function createStepContextReader(deps) {
     return null;
   }
 
+  /**
+   * 这一步、这一位的**派发回执**：attemptId 从哪来。
+   * 串行工作流所有步骤复用同一个可见轮次，`turn.attemptIdBy[sid]` 只留得住**最后一次**，
+   * 所以第二步（甚至同一位成员的第二次出场）不能用它 —— 那会把新答案结算到旧尝试上，
+   * 于是「气泡更新了、流程还停着」（2026-09-07 合并位 R2-2）。
+   * 顺序：先看这一步自己的 pendingPrompts 回执，再看尝试台账里带 workflowRun 的那条。
+   */
+  function stepReceiptFor(orchState, { runId, stepIndex, turnNum, sid }) {
+    if (!orchState || !sid) return null;
+    const matches = wr => !!(wr && String(wr.runId) === String(runId) && Number(wr.stepIndex) === Number(stepIndex));
+    const pendingByTurn = (orchState.pendingPrompts && orchState.pendingPrompts[String(turnNum)]) || null;
+    const receipt = pendingByTurn && pendingByTurn[sid];
+    if (receipt && matches(receipt.workflowRun)) {
+      return { attemptId: receipt.attemptId || null, runId: receipt.runId || runId, providerTurnId: receipt.providerTurnId || null };
+    }
+    const attempt = WSR.stepAttemptFor(orchState.attempts, { runId, stepIndex, sid });
+    if (attempt) {
+      return { attemptId: attempt.attemptId || null, runId: attempt.runId || runId, providerTurnId: attempt.providerTurnId || null };
+    }
+    return null;
+  }
+
   function describeWorkflowStep(meetingId) {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
@@ -118,6 +140,7 @@ function createStepContextReader(deps) {
       const sid = sidOf(memberId);
       const session = sid ? sessionManager.getSession(sid) : null;
       const item = bySid.get(sid) || { status: null, textLength: 0 };
+      const receipt = sid ? stepReceiptFor(orchState, { runId, stepIndex, turnNum, sid }) : null;
       return {
         memberId,
         sid,
@@ -125,6 +148,9 @@ function createStepContextReader(deps) {
         hasResult: !!sid && !missing.has(sid),
         status: item.status || null,
         textLength: item.textLength || 0,
+        // 写回答案时要用的身份 —— 属于**这一步**，不是这个 sid 最后一次出现的那个。
+        attemptId: (receipt && receipt.attemptId) || null,
+        providerTurnId: (receipt && receipt.providerTurnId) || null,
       };
     });
 

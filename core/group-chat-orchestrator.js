@@ -828,13 +828,24 @@ class GroupChatOrchestrator {
       const _prevStatus = byStatus[sid];
       const _existingMsg = this.state.messages.find(m => m && m.role === 'assistant'
         && Number(m.turnNum) === Number(turnNum) && m.sid === sid && !isProgressUpdateMessage(m));
-      // 人工来源有两种：从转录同步回来（manual_extracted）和用户直接粘贴（manual_paste）。
-      //   两者都是「人已经确认过」的结果，都不该被随后迟到的自动/退出信号顶掉。
-      const _hasManualResult = MANUAL_RESULT_STATUSES.has(_prevStatus)
-        && !!(by[sid] && String(by[sid]).trim().length);
-      const _incomingIsManual = MANUAL_RESULT_STATUSES.has(_rStatus);
       const _sameAttempt = !_existingMsg || !_existingMsg.attemptId || !r.attemptId
         || String(_existingMsg.attemptId) === String(r.attemptId);
+      // 人工来源有两种：从转录同步回来（manual_extracted）和用户直接粘贴（manual_paste）。
+      //   两者都是「人已经确认过」的结果，不该被随后迟到的自动/退出信号顶掉 ——
+      //   但这个保护**只在同一次尝试内**成立（2026-09-07 合并位 R2-1）。
+      //   串行工作流所有步骤复用同一个可见轮次，A1 → A2 → A1 时第三步是**新的尝试**：
+      //   把第一步人工粘贴的正文一路护到底，第三步真写出来的修订就被压住了，
+      //   存档里留下的是旧正文而台账已经换了 attemptId —— 比重问一遍更糟，是静默丢结果。
+      // 只有「能证明是同一次尝试」才保护。两边都没有身份 = 老数据，维持旧行为；
+      //   而「存着的人工正文没有身份、进来的结果却带着新 attemptId」这种不对称情形，
+      //   恰恰说明来的是另一次尝试 —— 再护下去就是把第三步真写出来的修订静默丢掉。
+      const _manualSameAttempt = (!r.attemptId && !(_existingMsg && _existingMsg.attemptId))
+        || (!!r.attemptId && !!(_existingMsg && _existingMsg.attemptId)
+          && String(_existingMsg.attemptId) === String(r.attemptId));
+      const _hasManualResult = MANUAL_RESULT_STATUSES.has(_prevStatus)
+        && !!(by[sid] && String(by[sid]).trim().length)
+        && _manualSameAttempt;
+      const _incomingIsManual = MANUAL_RESULT_STATUSES.has(_rStatus);
       const _hasCompletedResult = _prevStatus === 'completed'
         && !!(by[sid] && String(by[sid]).trim().length)
         && _sameAttempt
@@ -1113,8 +1124,13 @@ class GroupChatOrchestrator {
     // 任意终态只要带非空文本就先保住正文；errored + partial text 也比丢结果更有价值。
     const _writeContent = !!(text && String(text).trim().length);
     const _prevPatchStatus = byStatus[sid];
+    // 与 completeTurn 同一口径（R2-1）：人工答案的保护绑在同一次尝试上。
+    //   换了 attemptId 就是换了步骤/尝试，新结果必须能写进来。
+    const _samePatchAttempt = (!attemptId && !attemptIdBy[sid])
+      || (!!attemptId && !!attemptIdBy[sid] && String(attemptIdBy[sid]) === String(attemptId));
     const _hasManualResult = MANUAL_RESULT_STATUSES.has(_prevPatchStatus)
-      && !!(by[sid] && String(by[sid]).trim().length);
+      && !!(by[sid] && String(by[sid]).trim().length)
+      && _samePatchAttempt;
     const _incomingStatus = status || 'completed';
     const _incomingIsManual = MANUAL_RESULT_STATUSES.has(_incomingStatus);
     const _acceptIncomingContent = _writeContent && (!_hasManualResult || _incomingIsManual);

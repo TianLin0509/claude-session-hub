@@ -151,7 +151,22 @@ function setup({ extract = null } = {}) {
     logger: silentLogger(),
   });
 
-  return { ipc, orch, turnNum, runId, meetingId, meeting, dispatchedMemberIds, loopEngine, dataDir };
+  // 生产里每次派发都先经 recordTurnPrompt 落一份回执（带 workflowRun 与 attemptId），
+  //   台账的步骤身份就是从这儿来的。夹具照做，别手写 attempts 字面量。
+  function recordStep(sid, stepIndex, text) {
+    const workflowRun = {
+      runId, kind: 'serial', stepIndex,
+      attempt: 1, targetMemberIds: [sid === 's1' ? 'm1' : 'm2'],
+    };
+    const receipt = orch.recordTurnPrompt(turnNum, sid, 'PROMPT STEP ' + stepIndex, { workflowRun });
+    if (text !== undefined) {
+      orch.completeTurn(turnNum, '', [{ sid, attemptId: receipt.attemptId, status: 'completed', text }],
+        { s1: 'm1', s2: 'm2' }, {}, { runId, workflowRun });
+    }
+    return receipt;
+  }
+
+  return { ipc, orch, turnNum, runId, meetingId, meeting, dispatchedMemberIds, loopEngine, dataDir, recordStep };
 }
 
 // 引擎是后台跑的：等它把这一轮走完。
@@ -340,6 +355,110 @@ async function main() {
       '采用之后要观察持久状态，确认流程真的往前走了');
     assert.ok(!/advanced: !!resumed\.ok/.test(handlers),
       'resumed.ok 只说明引擎被叫起来了，不代表这一步推进了');
+  });
+
+
+  // ───────── 合并位第二轮 BLOCKERS 的回归（R2-1 / R2-2 / R2-3）─────────
+
+  await t('R2-1 · 人工答案只在同一次尝试内受保护，后续步骤的修订不许被压住', async () => {
+    const env = setup();
+    const first = env.recordStep('s1', 0);                      // 第 1 步的派发回执
+    const ctx = await env.ipc.invoke('workflow:step-context', { meetingId: env.meetingId });
+    await env.ipc.invoke('groupchat-adopt-pasted-result', {
+      meetingId: env.meetingId, sid: 's1', text: 'ORIGINAL MANUALLY PASTED IMPLEMENTATION',
+      token: { meetingId: env.meetingId, sid: 's1', runId: ctx.runId, turnNum: ctx.turnNum, stepIndex: ctx.stepIndex },
+    });
+    await settle(env.loopEngine, env.meetingId);
+    // 第 3 步（同一位成员、新的一次尝试）交出修订稿
+    const third = env.recordStep('s1', 2, 'NEW REVISED IMPLEMENTATION');
+    const turn = env.orch.state.turns.find(x => x.n === env.turnNum);
+    assert.notStrictEqual(String(first.attemptId), String(third.attemptId), '两次尝试必须是不同身份');
+    assert.strictEqual(turn.by.s1, 'NEW REVISED IMPLEMENTATION',
+      '人工正文只该护住它自己那一次尝试；护过头会把后续步骤真写出来的修订静默丢掉');
+    assert.strictEqual(turn.byStatus.s1, 'completed');
+  });
+
+  await t('R2-1 · 同一次尝试内，迟到的失败信号仍然顶不掉人工正文', async () => {
+    const env = setup();
+    const receipt = env.recordStep('s1', 0);
+    const ctx = await env.ipc.invoke('workflow:step-context', { meetingId: env.meetingId });
+    await env.ipc.invoke('groupchat-adopt-pasted-result', {
+      meetingId: env.meetingId, sid: 's1', text: '人工采用的正文',
+      token: { meetingId: env.meetingId, sid: 's1', runId: ctx.runId, turnNum: ctx.turnNum, stepIndex: ctx.stepIndex },
+    });
+    await settle(env.loopEngine, env.meetingId);
+    // 同一个 attemptId 的迟到失败信号
+    env.orch.completeTurn(env.turnNum, '',
+      [{ sid: 's1', attemptId: receipt.attemptId, status: 'errored', text: '', reason: 'pty exit' }],
+      { s1: 'm1' }, {}, { runId: env.runId });
+    const turn = env.orch.state.turns.find(x => x.n === env.turnNum);
+    assert.strictEqual(turn.by.s1, '人工采用的正文', '同一次尝试内的保护不能被这次修改削掉');
+    assert.strictEqual(turn.byStatus.s1, 'manual_paste');
+  });
+
+  await t('R2-2 · 第二步粘贴要结算它自己的 attempt，不是这个成员最后一次出现的那个', async () => {
+    const env = setup();
+    env.recordStep('s1', 0, 'FIRST STEP FINISHED');
+    const second = env.recordStep('s2', 1);                     // 已派发、尚未结算
+    Object.assign(env.meeting.serialWorkflow.serialRunState, {
+      currentStepIndex: 1, nextStepIndex: 1, status: 'paused', attemptsByStep: { 0: 1, 1: 1 },
+    });
+    const ctx = await env.ipc.invoke('workflow:step-context', { meetingId: env.meetingId });
+    assert.strictEqual(ctx.stepIndex, 1);
+    assert.strictEqual((ctx.members[0] || {}).attemptId, second.attemptId,
+      '步骤上下文要给出**这一步**的派发回执，写回答案时才不会认错尝试');
+    const res = await env.ipc.invoke('groupchat-adopt-pasted-result', {
+      meetingId: env.meetingId, sid: 's2', text: 'SECOND STEP PASTED FINAL',
+      token: { meetingId: env.meetingId, sid: 's2', runId: ctx.runId, turnNum: ctx.turnNum, stepIndex: ctx.stepIndex },
+    });
+    await settle(env.loopEngine, env.meetingId);
+    assert.strictEqual(res.ok, true);
+    const attempt = env.orch.getAttempt ? env.orch.getAttempt(second.attemptId) : null;
+    // 台账的生命周期状态统一是 completed，来源记在 signalSource 上（settleAttempt 的既有口径）。
+    assert.ok(attempt && attempt.status === 'completed' && Number(attempt.resultTextLength) > 0,
+      '这一步自己的 attempt 必须被结算，否则就是「气泡好了、流程没动」：' + JSON.stringify(attempt));
+    assert.strictEqual(attempt.signalSource, 'manual_paste', '来源要如实留痕');
+    assert.strictEqual(env.meeting.serialWorkflow.serialRunState.status, 'done',
+      '采用之后流程要真的跑完，不能只更新气泡');
+  });
+
+  await t('R2-3 · 同步读取跨越 await 后步骤已推进：拒绝采用，不写进新步骤', async () => {
+    let resolveExtract;
+    const pending = new Promise(r => { resolveExtract = r; });
+    const env = setup({ extract: pending });
+    env.recordStep('s1', 0);
+    const before = env.orch.state.turns.find(x => x.n === env.turnNum);
+    const textBefore = (before && before.by && before.by.s1) || '';
+
+    const syncPromise = env.ipc.invoke('workflow:sync-step', { meetingId: env.meetingId });
+    // 读转录期间，流程走到了第 3 步（同一位成员、同一个可见轮次）
+    await new Promise(r => setTimeout(r, 20));
+    env.meeting.serialWorkflow.steps = [['m1'], ['m2'], ['m1']];
+    env.meeting.serialWorkflow.stepConfigs.push({ name: 'step-3', prompt: 'role-3' });
+    env.recordStep('s1', 2);
+    Object.assign(env.meeting.serialWorkflow.serialRunState, {
+      currentStepIndex: 2, nextStepIndex: 2, attemptsByStep: { 0: 1, 1: 1, 2: 1 },
+    });
+    // 第 1 步的 final 文本这才迟到
+    resolveExtract({ text: 'STALE STEP ZERO FINAL', source: 'manual_claude_transcript', extractMode: 'final_answer' });
+
+    const res = await syncPromise;
+    await settle(env.loopEngine, env.meetingId, 300);
+    const tried = (res.tried || [])[0];
+    assert.ok(tried && !tried.ok, '迟到的旧步骤文本不许被采用：' + JSON.stringify(res));
+    assert.strictEqual(tried.reason, 'step_advanced');
+    const after = env.orch.state.turns.find(x => x.n === env.turnNum);
+    assert.notStrictEqual((after && after.by && after.by.s1) || '', 'STALE STEP ZERO FINAL',
+      '旧步骤的正文绝不能写进新步骤');
+    assert.strictEqual((after && after.by && after.by.s1) || '', textBefore, '不该有任何写入');
+  });
+
+  await t('R2-3 · watcher 也要对身份：attemptId 不是这一步的就不结算它', () => {
+    const fs2 = require('fs');
+    const handlers = fs2.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'groupchat-recovery-handlers.js'), 'utf8');
+    assert.ok(/watcherMatchesStep/.test(handlers),
+      '三步共用一个 turnNum，「currentTurn 没变」挡不住「步骤已推进」，必须比对 attemptId');
+    assert.ok(/getAttemptIdentity/.test(handlers), '身份要从 watcher 自己那儿拿');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
