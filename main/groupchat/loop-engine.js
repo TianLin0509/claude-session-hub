@@ -571,8 +571,11 @@ function createLoopEngine(deps) {
       const reviewerRolePrompt = (stepConfigs[1] && stepConfigs[1].prompt) || '';
       const builderTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
         Number(stepConfigs[0] && stepConfigs[0].timeoutMs) || 10 * 60_000));
+      // 回落值必须够跑两遍全量单测：合同要求评审 dry-run 一次、正式合并再一次，
+      // 本机闲机一遍就 117 秒，机器忙时更长，还可能先在单测总入口的排队锁上等。
+      // 老的 5 分钟连一遍都不够，缺配的群聊必然被误判成「评审没给裁决」。
       const reviewerTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
-        Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 5 * 60_000));
+        Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 25 * 60_000));
 
       const dispatcher = getDispatcher();
       const progress = (extra) => {
@@ -620,7 +623,10 @@ function createLoopEngine(deps) {
                 appendUserMessage: !state.currentTurnNum,
                 dispatchMode: 'serial',
                 turnTimeoutMs: builderTimeoutMs,
-                allowActiveExtend: false,
+                // PTY 还在输出 = agent 还在干活（多半正在跑测试或等排队锁）。
+                // 到点强杀会把「在验证」误判成「没给结果」。延期由 dispatcher 封顶
+                //（最近 150 秒内有输出才延，总共最多 +8 分钟），不会拖成永久等待。
+                allowActiveExtend: true,
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
               });
@@ -695,7 +701,8 @@ function createLoopEngine(deps) {
                 appendUserMessage: false,
                 dispatchMode: 'serial',
                 turnTimeoutMs: reviewerTimeoutMs,
-                allowActiveExtend: false,
+                // 同上：评审跑两遍全量时转录会长时间只有工具输出，不能按死墙钟砍。
+                allowActiveExtend: true,
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
               });
