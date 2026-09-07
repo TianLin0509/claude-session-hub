@@ -86,6 +86,9 @@
     stuck: { label: '卡住了，没进展', tone: 'bad' },
     paused: { label: '出错暂停，等你处理', tone: 'bad' },
     noReviewer: { label: '评审席位不可用（额度/登录），换个人再跑', tone: 'bad' },
+    // 自愈中：循环没死也没在跑，正等着重试。必须和「出错暂停」分开显示 ——
+    // 否则维护者会以为要人去点恢复，而其实 Hub 自己会接着跑。
+    selfHealing: { label: '等待自愈中', tone: 'warn' },
     stopped: { label: '已停止', tone: 'idle' },   // 兜底：认不出的新状态
   };
 
@@ -135,7 +138,13 @@
     // 哪怕上一轮循环已经 PASS 过（用户可能是回到讨论阶段准备下一件事）。
     if (!running && wf.devPhase === 'discuss') key = 'discussing';
 
-    return {
+    // 自愈进行中优先于一切「停了」的说法：循环没死，Hub 自己会接着跑，
+    // 显示成「出错暂停，等你处理」会让维护者白跑一趟去点恢复。
+    const rec = ls.recovering && typeof ls.recovering === 'object' ? ls.recovering : null;
+    const recoveringNow = !!(rec && (!rec.until || Number(rec.until) > Date.now()));
+    if (recoveringNow && key !== 'passed') key = 'selfHealing';
+
+    const out = {
       key,
       label: STAGE[key].label,
       tone: STAGE[key].tone,
@@ -144,6 +153,13 @@
       passes,
       running,
     };
+    if (key === 'selfHealing') {
+      out.recovering = { step: rec.step || '', why: rec.why || '', until: Number(rec.until) || null, attempt: Number(rec.attempt) || 1 };
+      const mins = out.recovering.until ? Math.max(1, Math.round((out.recovering.until - Date.now()) / 60000)) : 0;
+      out.label = `等待自愈中${out.recovering.step ? '（' + out.recovering.step + '）' : ''}`
+        + (mins ? ` · 约 ${mins} 分钟后重试` : '');
+    }
+    return out;
   }
 
   /** 从群聊消息里挑出最新的人话卡和最新的判定，给看板一行用。 */

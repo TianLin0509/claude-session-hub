@@ -54,7 +54,9 @@ function createDevWorkbench(deps) {
     if (live.unavailable) stage = { ...stage, key: 'unavailable', label: '执行状态暂不可用', tone: 'bad', running: false };
     else if (sw.devWorkbenchManual && !live.running) stage = { ...stage, key: 'manual', label: '手动处理', tone: 'idle', running: false };
     else if (!live.running && ls.status === 'running') stage = { ...stage, key: 'interrupted', label: '运行已中断，可恢复', tone: 'bad', running: false };
-    else if (live.running && stage.tone !== 'run') stage = { ...stage, key: 'settling', label: '正在结束当前流程', tone: 'run', running: true };
+    // 自愈中的循环仍在跑（runLoop 没返回），但它不是「正在结束」——把它盖成 settling
+    // 会让维护者以为快完了，其实是在等重试。这一态由 deriveStage 直接给，别覆盖。
+    else if (live.running && stage.tone !== 'run' && stage.key !== 'selfHealing') stage = { ...stage, key: 'settling', label: '正在结束当前流程', tone: 'run', running: true };
     if (m.metadataError && !live.running) stage = { ...stage, key: 'damaged', label: '任务信息需要检查', tone: 'bad', running: false };
     const execution = summary.execution || null;
     const activeAttempts = (Array.isArray(execution?.attempts) ? execution.attempts : []).filter(a => !['completed', 'failed', 'interrupted', 'superseded', 'absent'].includes(a.status));

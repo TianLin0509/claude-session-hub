@@ -15,6 +15,7 @@
  *   logger
  */
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
+const RECOVERY = require('../../core/loop-recovery.js');
 const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -198,6 +199,9 @@ function createLoopEngine(deps) {
             currentTurnNum: state.currentTurnNum || null,
             stepAttempt: Number(state.stepAttempt) || 0,
             lastError: state.lastError || null,
+            // 自愈进行中的可见状态：工作台据此显示「等待自愈」和大致的重试时刻。
+            // 落盘是为了 Hub 重启后倒计时还在，而不是从头再等一遍。
+            recovering: state.recovering || null,
           },
         }),
       });
@@ -354,6 +358,171 @@ function createLoopEngine(deps) {
       : [];
     return results.length >= targetCount && results.slice(0, targetCount).every(result =>
       result && (!result.status || ['completed', 'manual_extracted'].includes(result.status)) && Number(result.textLength) > 0);
+  }
+
+  // ── 循环自愈（2026-09-06）────────────────────────────────────────────────
+  //
+  // 以前一步失败就地暂停，等人点「恢复」。可实际最常见的情况是：网络抖一下、额度到顶，
+  // agent 自己过一会儿就好了，答案甚至后来补进了转录 —— Hub 却已经不看了。
+  //
+  // 自愈分两条腿，边界完全不同：
+  //   读迟到答案没有副作用；**采用它并推进流程有副作用**，所以身份必须逐项对上。
+  //   重发 prompt 副作用更大，所以还要额外满足：非语义失败、用户没接管、次数与时限没到顶。
+  // 判断逻辑全在 core/loop-recovery.js（纯函数，可逐条测），这里只负责取数和执行。
+  const recoveryLimits = RECOVERY.limitsWith(deps && deps.recoveryLimits);
+  const RECOVERY_TICK_MS = Number(deps && deps.recoveryTickMs) > 0
+    ? Number(deps.recoveryTickMs)
+    : recoveryLimits.harvestTickMs;
+
+  function systemNote(meetingId, turnNum, text, kind) {
+    if (!turnNum || !text || typeof getOrchestrator !== 'function') return;
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      if (orchestrator && typeof orchestrator.appendSystemNote === 'function') {
+        orchestrator.appendSystemNote(turnNum, text, { kind: kind || 'info' });
+      }
+    } catch (error) {
+      logError('[loop-engine] system note failed:', error);
+    }
+  }
+
+  // 同一步可能被记过多条证据（第 1 次传输尝试、第 2 次…）。取尝试号最大的那条，
+  // 否则「第 1 次的旧证据」会把第 2 次的成功挡在 stale_attempt 上。
+  function latestStepEvidence(meetingId, runIdValue, stepIndex) {
+    if (typeof getOrchestrator !== 'function') return null;
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      const state = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState() : orchestrator && orchestrator.state;
+      let best = null;
+      for (const turn of (state && state.turns) || []) {
+        const entries = turn && turn.meta && Array.isArray(turn.meta.workflowSteps) ? turn.meta.workflowSteps : [];
+        for (const entry of entries) {
+          if (!entry || entry.runId !== runIdValue || Number(entry.stepIndex) !== Number(stepIndex)) continue;
+          if (!best || (Number(entry.attempt) || 0) >= (Number(best.entry.attempt) || 0)) {
+            best = { entry, turnNum: turn.n, turn };
+          }
+        }
+      }
+      return best;
+    } catch (error) {
+      logError('[loop-engine] failed to inspect late step evidence:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 只读地看看这一步的答案是不是后来自己补上来了。
+   * 两条来源：① 落盘的步骤证据（带 run/step/attempt 身份）；② 该轮该会话的转录文本。
+   * ② 没有 attempt 信息，所以只靠 run 内的 turnNum + sid 定身份，并且必须满足这一步
+   * 自己的完成判据（评审要有裁决、工作位要有 PROGRESS）——文本在但没说完不算数。
+   */
+  function harvestLateAnswer({ meetingId, meeting, state, stepIndex, targetMemberIds, turnNum, attempt, isDone, userStopped }) {
+    if (userStopped) return null;
+    const evidence = latestStepEvidence(meetingId, state.runId, stepIndex);
+    if (evidence && evidenceIsSuccessful(evidence, targetMemberIds.length)) {
+      const text = targetMemberIds
+        .map(id => (evidence.turn && evidence.turn.by && evidence.turn.by[sidOf(meeting, id)]) || '')
+        .join('\n');
+      const verdict = RECOVERY.canAdoptLateAnswer({
+        evidence,
+        expect: { runId: state.runId, stepIndex, turnNum: turnNum || evidence.turnNum, attempt, userStopped },
+        text,
+        isDone,
+      });
+      if (verdict.ok) return dispatchResultFromEvidence(meeting, targetMemberIds, evidence);
+    }
+    if (!turnNum) return null;
+    const texts = targetMemberIds.map(id => {
+      const sid = sidOf(meeting, id);
+      return { id, sid, text: persistedTurnText(meetingId, turnNum, sid) };
+    });
+    const allAdoptable = texts.length > 0 && texts.every(item => item.sid && RECOVERY.canAdoptLateAnswer({
+      evidence: null,
+      expect: { runId: state.runId, stepIndex, turnNum, userStopped },
+      text: item.text,
+      isDone,
+    }).ok);
+    if (!allAdoptable) return null;
+    return {
+      status: 'completed',
+      turnNum,
+      results: texts.map(item => ({ sid: item.sid, status: 'manual_extracted', text: item.text, recovered: true })),
+      recovered: true,
+    };
+  }
+
+  /**
+   * 一步失败之后的自愈：先只读回收，回收不到再按计划等待，等满了才允许重发一次。
+   * 返回 { adopted, dispatchResult } / { retry: true } / { stop: true, why }
+   */
+  async function attemptStepRecovery(ctx) {
+    const { meetingId, meeting, state, entry, stepIndex, targetMemberIds, turnNum,
+      reason, rawText, isDone, stepLabel, recovery, config, progress } = ctx;
+    const pauseClass = RECOVERY.classifyPause({ reason, rawText, userStopped: !!entry.abort });
+    const harvestArgs = {
+      meetingId, meeting, state, stepIndex, targetMemberIds, turnNum,
+      attempt: Number(state.stepAttempt) || 0, isDone,
+    };
+
+    const tryHarvest = () => harvestLateAnswer(Object.assign({}, harvestArgs, { userStopped: !!entry.abort }));
+
+    const first = tryHarvest();
+    if (first) {
+      systemNote(meetingId, turnNum, `${stepLabel}：迟到的回答已回收，继续往下跑（没有重发指令）`, 'info');
+      progress({ stage: 'recovered-late', step: stepLabel });
+      return { adopted: true, dispatchResult: first };
+    }
+
+    const plan = RECOVERY.planRecovery({
+      pauseClass,
+      attempts: recovery.attempts,
+      startedAt: recovery.startedAt,
+      now: Date.now(),
+      deadlineTs: config.stop.deadlineTs,
+      rawText,
+      limits: recoveryLimits,
+      userStopped: !!entry.abort,
+    });
+    const line = RECOVERY.describePlan(plan, { attempt: recovery.attempts, stepLabel });
+    if (plan.action === 'stop') {
+      if (line) systemNote(meetingId, turnNum, line, 'warn');
+      logger.log('[loop-engine] recovery stop: ' + plan.why + ' (' + reason + ')');
+      state.recovering = null;
+      if (typeof ctx.persistState === 'function') ctx.persistState();
+      return { stop: true, why: plan.why };
+    }
+    if (line) systemNote(meetingId, turnNum, line, 'warn');
+    progress({ stage: 'recovering', step: stepLabel, attempt: recovery.attempts + 1, until: plan.until || null, why: plan.why });
+    logger.log('[loop-engine] recovering: ' + plan.why + ' wait=' + Math.round((plan.waitMs || 0) / 1000) + 's');
+    // 落盘自愈状态：Hub 重启后工作台的倒计时还在，而不是从头再等一遍。
+    // 落不下去就别自愈：状态写不进磁盘时继续等下去，重启后没人知道它在等什么。
+    state.recovering = { step: stepLabel, why: plan.why, until: plan.until || null, attempt: recovery.attempts + 1 };
+    if (typeof ctx.persistState === 'function' && ctx.persistState() === false) {
+      state.recovering = null;
+      return { stop: true, why: 'workflow_state_persist_failed' };
+    }
+
+    // 等待期间继续只读巡检：agent 自己好了就立刻接上，不必等满这一轮退避。
+    const until = Date.now() + Math.max(0, Number(plan.waitMs) || 0);
+    while (Date.now() < until) {
+      if (entry.abort) return { stop: true, why: 'user_stopped' };
+      await sleep(Math.max(50, Math.min(RECOVERY_TICK_MS, until - Date.now())));
+      if (entry.abort) return { stop: true, why: 'user_stopped' };
+      const late = tryHarvest();
+      if (late) {
+        systemNote(meetingId, turnNum, `${stepLabel}：等待期间回收到迟到的回答，继续往下跑`, 'info');
+        progress({ stage: 'recovered-late', step: stepLabel });
+        state.recovering = null;
+        if (typeof ctx.persistState === 'function') ctx.persistState();
+        return { adopted: true, dispatchResult: late };
+      }
+    }
+    state.recovering = null;
+    if (typeof ctx.persistState === 'function') ctx.persistState();
+    if (entry.abort) return { stop: true, why: 'user_stopped' };
+    recovery.attempts += 1;
+    return { retry: true };
   }
 
   function dispatchResultFromEvidence(meeting, targetMemberIds, evidence) {
@@ -610,10 +779,32 @@ function createLoopEngine(deps) {
           state.currentTurnNum = bRes.turnNum;
           progress({ stage: 'builder-recovered', round: state.round + 1 });
         } else {
+          const builderRecovery = { attempts: 0, startedAt: Date.now() };
+          // 外层是自愈循环：两次快速传输重试都失败后，先只读回收迟到答案，
+          // 回收不到再按退避计划决定要不要重发。判据见 core/loop-recovery.js。
+          for (;;) {
+          // 尝试号必须跨自愈轮次单调递增：否则第 2 个自愈轮次又从 1 开始，落盘的步骤证据
+          // 会出现两条 attempt=1，「旧尝试迟到不能覆盖新尝试」这条判据就失效了。
+          const builderAttemptBase = builderRecovery.attempts * 2;
           if (!state.currentTurnNum) state.currentTurnNum = pendingStepTurn(meetingId, state.runId, builderStepIndex) || null;
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
+            if (entry.abort) break;              // 用户已停止：任何情况下都不再发 prompt
             if (!persistOrPause()) break;
+            // 重发之前先只读看一眼：答案可能只是迟到了。这条红线对快速重试同样成立 ——
+            // 「它其实在干活，我们又发了一遍」比卡住更糟。
+            if (transportAttempt > 1) {
+              const late = harvestLateAnswer({
+                meetingId, meeting, state, stepIndex: builderStepIndex, targetMemberIds: [builderId],
+                turnNum: state.currentTurnNum || null, attempt: builderAttemptBase + transportAttempt - 1,
+                isDone: hasProgressCard, userStopped: !!entry.abort,
+              });
+              if (late) {
+                bRes = late;
+                systemNote(meetingId, state.currentTurnNum, '工作位实现：重发前发现回答其实已经到了，直接采用', 'info');
+                break;
+              }
+            }
             try {
               await ensureMemberReady(meeting, builderId);
               bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
@@ -628,7 +819,7 @@ function createLoopEngine(deps) {
                 //（最近 150 秒内有输出才延，总共最多 +8 分钟），不会拖成永久等待。
                 allowActiveExtend: true,
                 heroIdBySid: runOptions.heroIdBySid || {},
-                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
+                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: builderAttemptBase + transportAttempt, targetMemberIds: [builderId] },
               });
               if (bRes && bRes.turnNum) state.currentTurnNum = bRes.turnNum;
               const checked = validateStepResult(meeting, [builderId], bRes);
@@ -644,6 +835,28 @@ function createLoopEngine(deps) {
               progress({ stage: 'builder-retry', round: state.round + 1, attempt: transportAttempt, error: state.lastError });
               await sleep(500);
             }
+          }
+          const quickChecked = validateStepResult(meeting, [builderId], bRes);
+          if (quickChecked.ok || quickChecked.takenOver || entry.abort) break;
+          const recovered = await attemptStepRecovery({
+            meetingId, meeting, state, entry, config, progress, persistState: persistOrPause,
+            stepIndex: builderStepIndex, targetMemberIds: [builderId],
+            turnNum: state.currentTurnNum || null,
+            reason: quickChecked.reason,
+            rawText: state.currentTurnNum ? persistedTurnText(meetingId, state.currentTurnNum, sidOf(meeting, builderId)) : '',
+            isDone: hasProgressCard,
+            stepLabel: '工作位实现',
+            recovery: builderRecovery,
+          });
+          if (recovered.adopted) {
+            bRes = recovered.dispatchResult;
+            if (bRes && bRes.turnNum) state.currentTurnNum = bRes.turnNum;
+            state.lastError = null;
+            break;
+          }
+          if (recovered.retry) { state.stepAttempt = 0; continue; }
+          state.lastError = state.lastError || { stage: 'builder', reason: recovered.why || quickChecked.reason, at: Date.now() };
+          break;
           }
         }
         const builderChecked = validateStepResult(meeting, [builderId], bRes);
@@ -683,15 +896,33 @@ function createLoopEngine(deps) {
         if (!persistOrPause()) break;
         progress({ stage: 'reviewer', round: state.round + 1 });
         let rRes = null;
+        // 评审这一步的自愈状态跨「传输失败」和「额度不可用」两条路径共用同一份预算：
+        // 两者都是「换个时间再来」，不该各自独立地各续 K 次。
+        const reviewerRecovery = { attempts: 0, startedAt: Date.now() };
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
         if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
           rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
         } else {
+          for (;;) {
+          // 同 builder：尝试号跨自愈轮次单调递增，「旧尝试不能覆盖新尝试」才判得准。
+          const reviewerAttemptBase = reviewerRecovery.attempts * 2;
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
+            if (entry.abort) break;              // 同 builder：用户停止后不再发 prompt
             if (!persistOrPause()) break;
+            if (transportAttempt > 1) {
+              const late = harvestLateAnswer({
+                meetingId, meeting, state, stepIndex: reviewerStepIndex, targetMemberIds: reviewerIds,
+                turnNum, attempt: reviewerAttemptBase + transportAttempt - 1, isDone: hasVerdict, userStopped: !!entry.abort,
+              });
+              if (late) {
+                rRes = late;
+                systemNote(meetingId, turnNum, '合并位审查：重发前发现裁决其实已经到了，直接采用', 'info');
+                break;
+              }
+            }
             try {
               for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
@@ -704,7 +935,7 @@ function createLoopEngine(deps) {
                 // 同上：评审跑两遍全量时转录会长时间只有工具输出，不能按死墙钟砍。
                 allowActiveExtend: true,
                 heroIdBySid: runOptions.heroIdBySid || {},
-                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
+                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: reviewerAttemptBase + transportAttempt, targetMemberIds: reviewerIds },
               });
               const checked = validateStepResult(meeting, reviewerIds, rRes);
               if (checked.takenOver) break;
@@ -719,6 +950,22 @@ function createLoopEngine(deps) {
               progress({ stage: 'reviewer-retry', round: state.round + 1, attempt: transportAttempt, error: state.lastError });
               await sleep(500);
             }
+          }
+          const quickChecked = validateStepResult(meeting, reviewerIds, rRes);
+          if (quickChecked.ok || quickChecked.takenOver || entry.abort) break;
+          const recovered = await attemptStepRecovery({
+            meetingId, meeting, state, entry, config, progress, persistState: persistOrPause,
+            stepIndex: reviewerStepIndex, targetMemberIds: reviewerIds, turnNum,
+            reason: quickChecked.reason,
+            rawText: persistedTurnText(meetingId, turnNum, sidOf(meeting, reviewerIds[0])),
+            isDone: hasVerdict,
+            stepLabel: '合并位审查',
+            recovery: reviewerRecovery,
+          });
+          if (recovered.adopted) { rRes = recovered.dispatchResult; state.lastError = null; break; }
+          if (recovered.retry) { state.stepAttempt = 0; continue; }
+          state.lastError = state.lastError || { stage: 'reviewer', reason: recovered.why || quickChecked.reason, at: Date.now() };
+          break;
           }
         }
         const reviewerChecked = validateStepResult(meeting, reviewerIds, rRes);
@@ -735,24 +982,71 @@ function createLoopEngine(deps) {
           break;
         }
 
+        // 额度/限流恢复后的单次重发。走的仍是原来的派发路径，只是尝试号往后排，
+        // 让证据、卡片和状态都能分清这是第几次。
+        const redispatchReviewer = async () => {
+          try {
+            for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+            const res = await dispatcher.dispatchGroupChatTurn(meetingId, {
+              userInput: reviewerPrompt,
+              targetMemberIds: reviewerIds,
+              reuseTurnNum: turnNum,
+              appendUserMessage: false,
+              dispatchMode: 'serial',
+              turnTimeoutMs: reviewerTimeoutMs,
+              allowActiveExtend: true,
+              heroIdBySid: runOptions.heroIdBySid || {},
+              workflowRun: {
+                runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex,
+                // 与传输重试同一套递增规则（每个自愈轮次占 2 个号），号不会撞
+                attempt: reviewerRecovery.attempts * 2 + 2, targetMemberIds: reviewerIds,
+              },
+            });
+            return validateStepResult(meeting, reviewerIds, res).ok ? res : null;
+          } catch (e) {
+            logError('[loop-engine] reviewer re-dispatch failed:', e);
+            return null;
+          }
+        };
+
         // 结算文本可能是 idle timer 提前触发时抓到的开场白（见上方 awaitVerdictText 注释）。
         // 判裁决前先等文本真的不再增长，避免把「还在验证」误读成「没给裁决」。
-        const verdictTurnNum = rRes.turnNum || turnNum;
-        const reviews = [];
-        for (const rid of reviewerIds) {
-          const sid = sidOf(meeting, rid);
-          const raw = await awaitVerdictText(meetingId, verdictTurnNum, sid, textFrom(rRes.results, sid), {
-            isAborted: () => !!entry.abort,
+        let reviews = [];
+        let reviewerGaveUp = false;
+        for (;;) {
+          const verdictTurnNum = rRes.turnNum || turnNum;
+          reviews = [];
+          for (const rid of reviewerIds) {
+            const sid = sidOf(meeting, rid);
+            const raw = await awaitVerdictText(meetingId, verdictTurnNum, sid, textFrom(rRes.results, sid), {
+              isAborted: () => !!entry.abort,
+            });
+            reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
+          }
+          // 评审席位根本没能力干活（额度用尽 / 被限流 / 掉登录），不是「答了但没给裁决」。
+          // 这两者对用户的意义完全不同：前者换个时间就好，后者才是任务本身的问题。
+          // 不区分的话，引擎会把它当 fail 再派工作位重做 —— 而工作位每轮都只能回答
+          // 「阻断项是评审没出裁决，我改不了」，白烧满 3 轮，最后报「返工用尽」，
+          // 维护者看到的却是「任务太难」。实测就是这么烧掉两轮的。
+          const unavailable = reviews.filter(r => !r.verdict && LC.looksUnavailable(r.raw));
+          if (!(unavailable.length === reviews.length && reviews.length > 0)) break;
+
+          // 以前到这里就停下等人。现在先按额度横幅里的重置时刻（算得准才用，算不准走
+          // 有界退避，绝不猜）安排一次自动续跑；期间持续只读回收迟到的裁决。
+          const decision = await attemptStepRecovery({
+            meetingId, meeting, state, entry, config, progress, persistState: persistOrPause,
+            stepIndex: reviewerStepIndex, targetMemberIds: reviewerIds, turnNum,
+            reason: 'reviewer_unavailable',
+            rawText: unavailable[0].raw || '',
+            isDone: hasVerdict,
+            stepLabel: '合并位审查',
+            recovery: reviewerRecovery,
           });
-          reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
-        }
-        // 评审席位根本没能力干活（额度用尽 / 被限流 / 掉登录），不是「答了但没给裁决」。
-        // 这两者对用户的意义完全不同：前者换个人就好，后者才是任务本身的问题。
-        // 不区分的话，引擎会把它当 fail 再派工作位重做 —— 而工作位每轮都只能回答
-        // 「阻断项是评审没出裁决，我改不了」，白烧满 3 轮，最后报「返工用尽」，
-        // 维护者看到的却是「任务太难」。实测就是这么烧掉两轮的。
-        const unavailable = reviews.filter(r => !r.verdict && LC.looksUnavailable(r.raw));
-        if (unavailable.length === reviews.length && reviews.length > 0) {
+          if (decision.adopted) { rRes = decision.dispatchResult; continue; }
+          if (decision.retry) {
+            const again = await redispatchReviewer();
+            if (again) { rRes = again; continue; }
+          }
           state.status = 'reviewer_unavailable';
           state.currentStep = null;
           state.lastError = {
@@ -762,8 +1056,10 @@ function createLoopEngine(deps) {
           logger.log('[loop-engine] reviewer unavailable, stopping instead of burning rounds: '
             + (unavailable[0].raw || '').slice(0, 120));
           persistOrPause();
+          reviewerGaveUp = true;
           break;
         }
+        if (reviewerGaveUp) break;
 
         const merge = LC.mergeVerdicts(reviews); prevMerge = merge;
         LC.advanceLoopState(state, merge, config, Date.now());

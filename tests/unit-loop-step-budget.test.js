@@ -32,8 +32,11 @@ test('循环派发允许有界的活跃延期，不再一刀切关掉', () => {
   const dispatches = src.match(/dispatchGroupChatTurn\(meetingId,\s*\{[\s\S]*?\}\)/g) || [];
   // 只管开发群聊这条循环（kind: 'loop'）。通用串行工作流 kind: 'serial' 是另一条链路，
   // 同样写死了 allowActiveExtend: false —— 已记给维护者，不在本任务里顺手改。
-  const loopDispatches = dispatches.filter(d => /kind:\s*'loop'/.test(d) && /allowActiveExtend/.test(d));
-  assert.equal(loopDispatches.length, 2, '工作位与评审两步都应当显式表态 allowActiveExtend');
+  const loopSites = dispatches.filter(d => /kind:\s*'loop'/.test(d));
+  // 工作位、评审首发，以及额度恢复后的评审重发 —— 每一个都要表态
+  assert.ok(loopSites.length >= 3, `循环的派发点应当都被覆盖到（找到 ${loopSites.length} 个）`);
+  const loopDispatches = loopSites.filter(d => /allowActiveExtend/.test(d));
+  assert.equal(loopDispatches.length, loopSites.length, '循环的每个派发点都必须显式表态 allowActiveExtend');
   for (const d of loopDispatches) {
     assert.match(d, /allowActiveExtend:\s*true/,
       'PTY 还在输出就说明 agent 还在干活（多半正在跑测试），这时到点强杀会把「在验证」'
