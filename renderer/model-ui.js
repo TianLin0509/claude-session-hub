@@ -57,37 +57,80 @@ function pickerRows(screen) {
   return rows;
 }
 
-function parseCodexModelPicker(screen) {
-  if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
-  const entries = pickerRows(screen).map(row => {
-    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
-    return match ? { ...row, value: match[1] } : null;
-  }).filter(Boolean);
-  if (!entries.length) return null;
-  return { entries, highlighted: entries.find(entry => entry.highlighted) || entries[0] };
-}
-
 function reasoningLabelToEffort(label) {
-  const value = String(label || '').replace(/\s*\(default\).*/i, '').trim().toLowerCase();
+  // 面板会在当前项后面挂 (current)，在默认项后面挂 (default)。
+  // 2026-09-07 实测二级面板的行长这样：「Max (current)  For difficult problems…」，
+  // 不把 (current) 摘掉就一个档位都认不出来。
+  const value = String(label || '')
+    .replace(/\s*\((?:default|current)\)/ig, ' ')
+    .trim()
+    .toLowerCase();
   if (value.startsWith('extra high') || value === 'xhigh') return 'xhigh';
   if (value.startsWith('ultra')) return 'ultra';
-  if (value.startsWith('maximum') || value === 'max') return 'max';
+  if (value.startsWith('maximum') || value.startsWith('max')) return 'max';
   if (value.startsWith('high')) return 'high';
   if (value.startsWith('medium')) return 'medium';
   if (value.startsWith('low')) return 'low';
   return '';
 }
 
+// 光标在**哪一行**，只能从原始行里读，不能从"能认出档位的那些行"里读。
+// 2026-09-07 血泪：Codex 的推理面板第 5 行是「More reasoning… (current)」——
+// 它不是档位而是二级菜单入口，被过滤掉之后 highlighted 回落到第 1 行 Low，
+// 于是方向键从错误的起点开始数。当前档位是 max（Hub 新建 Codex 会话的默认值）
+// 时必踩：点 high 实际选成 medium，然后确认超时。
+function pickerCursor(rows) {
+  return rows.find(row => row.highlighted) || rows[0] || null;
+}
+
+function parseCodexModelPicker(screen) {
+  if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
+  const rows = pickerRows(screen);
+  const entries = rows.map(row => {
+    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
+    return match ? { ...row, value: match[1] } : null;
+  }).filter(Boolean);
+  if (!entries.length) return null;
+  return {
+    entries,
+    rows,
+    cursor: pickerCursor(rows),
+    highlighted: entries.find(entry => entry.highlighted) || entries[0],
+  };
+}
+
+// 一级面板：Low / Medium / High / Extra high +（可能有的）「More reasoning…」二级入口。
+// max 与 ultra **不在这一页上**，它们在二级菜单里面。
 function parseCodexReasoningPicker(screen, modelId = '') {
   const text = String(screen || '');
   if (!/Select Reasoning Level/i.test(text)) return null;
   if (modelId && !text.toLowerCase().includes(String(modelId).toLowerCase())) return null;
-  const entries = pickerRows(text).map(row => {
+  const rows = pickerRows(text);
+  const entries = rows.map(row => {
     const value = reasoningLabelToEffort(row.text);
     return value ? { ...row, value } : null;
   }).filter(Boolean);
   if (!entries.length) return null;
-  return { entries, highlighted: entries.find(entry => entry.highlighted) || entries[0] };
+  return {
+    entries,
+    rows,
+    cursor: pickerCursor(rows),
+    advancedRow: rows.find(row => /more\s+reasoning/i.test(row.text)) || null,
+    highlighted: entries.find(entry => entry.highlighted) || entries[0],
+  };
+}
+
+// 二级面板（「Advanced Reasoning ⚠ Consumes usage limits faster」）：Max / Ultra。
+function parseCodexAdvancedReasoningPicker(screen) {
+  const text = String(screen || '');
+  if (!/Advanced Reasoning/i.test(text)) return null;
+  const rows = pickerRows(text);
+  const entries = rows.map(row => {
+    const value = reasoningLabelToEffort(row.text);
+    return value ? { ...row, value } : null;
+  }).filter(Boolean);
+  if (!entries.length) return null;
+  return { entries, rows, cursor: pickerCursor(rows) };
 }
 
 function pickerNavigationInput(fromNumber, toNumber) {
@@ -361,21 +404,58 @@ function createModelUiController({
       screen => parseCodexReasoningPicker(screen, option.id),
       '等待 Codex 推理档位面板',
     );
-    const requestedEffort = effortOverride || session.effort;
-    const effort = compatibleEffort(requestedEffort, effortStep.value.entries, effortStep.value.highlighted);
-    // 换模型时档位允许回落（新模型未必认识旧档）；但用户明确点了某一档时不能静默换成别的。
-    if (effortOverride && effort !== effortOverride) {
-      writeTerminal(sessionId, '');
-      throw new Error(`该模型的原生面板没有 ${effortOverride} 这一档`);
+    // ── 档位这一步 ─────────────────────────────────────────────────────
+    // 两件事在这里同时成立：
+    //   1. 方向键必须从**面板真正的光标行**开始数（picker.cursor），不是从
+    //      "第一个能认出档位的行"开始 —— 后者在当前档位是 max 时必然错位；
+    //   2. max / ultra 不在一级面板上，要先进「More reasoning…」二级菜单。
+    const picker = effortStep.value;
+    const requestedEffort = String(effortOverride || session.effort || '').trim().toLowerCase();
+    const directMatch = picker.entries.find(entry => entry.value === requestedEffort);
+    let chosenEffort = null;
+
+    if (!directMatch && requestedEffort && picker.advancedRow) {
+      writeTerminal(sessionId, pickerNavigationInput(picker.cursor.number, picker.advancedRow.number) + '\r');
+      const advancedStep = await waitForScreen(
+        sessionId,
+        screen => parseCodexAdvancedReasoningPicker(screen),
+        '等待 Codex 高级推理面板',
+      );
+      const advanced = advancedStep.value;
+      const advancedTarget = advanced.entries.find(entry => entry.value === requestedEffort);
+      if (advancedTarget) {
+        writeTerminal(sessionId, pickerNavigationInput(advanced.cursor.number, advancedTarget.number) + '\r');
+        chosenEffort = advancedTarget.value;
+      } else {
+        // 二级菜单里也没有：退回一级面板（面板自己写着 esc to go back），
+        // 换模型时允许回落到最接近的档，用户明确点档时则如实报错。
+        writeTerminal(sessionId, '\x1b');
+        const backStep = await waitForScreen(
+          sessionId,
+          screen => parseCodexReasoningPicker(screen, option.id),
+          '等待退回 Codex 推理档位面板',
+        );
+        Object.assign(picker, backStep.value);
+      }
     }
-    const effortTarget = effortStep.value.entries.find(entry => entry.value === effort) || effortStep.value.highlighted;
-    writeTerminal(sessionId, pickerNavigationInput(effortStep.value.highlighted.number, effortTarget.number) + '\r');
+
+    if (!chosenEffort) {
+      const effort = compatibleEffort(requestedEffort, picker.entries, picker.highlighted);
+      if (effortOverride && effort !== effortOverride) {
+        writeTerminal(sessionId, '\x1b');
+        throw new Error(`该模型的原生面板没有 ${effortOverride} 这一档`);
+      }
+      const effortTarget = picker.entries.find(entry => entry.value === effort) || picker.highlighted;
+      writeTerminal(sessionId, pickerNavigationInput(picker.cursor.number, effortTarget.number) + '\r');
+      chosenEffort = effortTarget.value;
+    }
+
     await waitForScreen(sessionId, screen => {
       const escaped = option.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`Model changed to\\s+${escaped}\\s+${effortTarget.value}`, 'i').test(screen)
-        && screen.toLowerCase().includes(`${option.id.toLowerCase()} ${effortTarget.value}`);
+      return new RegExp(`Model changed to\\s+${escaped}\\s+${chosenEffort}`, 'i').test(screen)
+        && screen.toLowerCase().includes(`${option.id.toLowerCase()} ${chosenEffort}`);
     }, '确认 Codex 模型切换');
-    return { modelId: option.id, displayName: option.label, effort: effortTarget.value };
+    return { modelId: option.id, displayName: option.label, effort: chosenEffort };
   }
 
   async function switchClaudeModel(sessionId, session, option) {
@@ -616,6 +696,7 @@ module.exports = {
   modelClass,
   modelSelectionMatches,
   modelShort,
+  parseCodexAdvancedReasoningPicker,
   parseCodexModelPicker,
   parseCodexReasoningPicker,
   pickerNavigationInput,

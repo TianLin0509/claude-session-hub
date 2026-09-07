@@ -87,16 +87,16 @@
         "mode": "plain-shell",
         "kind": "powershell"
       },
-      "ms": 15,
+      "ms": 18,
       "composer": {
         "present": true,
-        "state": "working",
-        "text": "PowerShell 正在工作 · 1s",
-        "detail": "· powershell PTY output burst",
+        "state": "ready",
+        "text": "已就绪",
+        "detail": "",
         "action": null,
         "quickReplies": [],
-        "stopVisible": true,
-        "sendHidden": true,
+        "stopVisible": false,
+        "sendHidden": false,
         "ctxLevel": null,
         "ctxPct": null
       }
@@ -110,14 +110,14 @@
         "enterAttempts": 1,
         "acknowledgementSource": "task_started"
       },
-      "ms": 1027
+      "ms": 1152
     }
   },
   "real": {
     "ptyKill": {
-      "hubPid": 4032,
+      "hubPid": 30176,
       "candidates": [
-        31176
+        12892
       ],
       "afterKill": {
         "sessionStillKnown": false,
@@ -127,7 +127,7 @@
         "emptyStateVisible": true
       }
     },
-    "codexSessionId": "43de4eb9-ff68-4927-a26b-2d418d3afbd5",
+    "codexSessionId": "6eef4665-c291-451d-a621-d8a6f1e9d956",
     "working": {
       "present": true,
       "state": "working",
@@ -152,15 +152,9 @@
       "ctxLevel": "ok",
       "ctxPct": "0%"
     },
-    "modelSwitch": {
-      "before": "gpt-6-astra",
-      "target": "gpt-5.6-sol",
-      "after": "gpt-5.6-sol",
-      "chipLabel": "gpt-5.6-sol",
-      "effort": "low"
-    },
     "effortSwitch": {
-      "before": "low",
+      "before": "",
+      "beforeLabel": "max",
       "offered": [
         "low",
         "medium",
@@ -169,9 +163,31 @@
         "max",
         "ultra"
       ],
-      "target": "medium",
-      "after": "medium",
-      "chipLabel": "medium"
+      "target": "high",
+      "after": "high",
+      "chipLabel": "high"
+    },
+    "effortSwitchAdvanced": {
+      "before": "high",
+      "beforeLabel": "high",
+      "offered": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "target": "max",
+      "after": "max",
+      "chipLabel": "max"
+    },
+    "modelSwitch": {
+      "before": "gpt-6-astra",
+      "target": "gpt-5.6-sol",
+      "after": "gpt-5.6-sol",
+      "chipLabel": "GPT-5.6-Sol",
+      "effort": "max"
     },
     "waiting": {
       "present": true,

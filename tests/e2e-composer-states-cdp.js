@@ -148,7 +148,15 @@ async function descendantPids(rootPid) {
   let hub = null;
   let client = null;
   try {
-    hub = await launchIsolatedHub({ dataDir, port, label: 'frost-t1-composer' });
+    // 评审实测（2026-09-07）：学习模块的根目录是独立的 AGENT_STUDY_DIR，
+    // 只设 CLAUDE_HUB_DATA_DIR 拦不住它，定时计划会在测试实例里自己开会话并切走当前会话，
+    // 把一次真实验证搞成无效证据。指向临时空目录。
+    const studyDir = path.join(dataDir, 'isolated-study');
+    fs.mkdirSync(studyDir, { recursive: true });
+    hub = await launchIsolatedHub({
+      dataDir, port, label: 'frost-t1-composer',
+      extraEnv: { AGENT_STUDY_DIR: studyDir },
+    });
     client = await connectFirstPage(
       hub,
       target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''),
@@ -332,6 +340,61 @@ async function descendantPids(rootPid) {
       assert.equal(report.real.ready.state, 'ready');
       assert.equal(report.real.ready.action, '查看上一轮 ↑');
 
+      // ── 改思考档（真实）──
+      // 必须在**初始模型 + 默认档位（Hub 给新 Codex 会话的默认是 max）**上测。
+      // 2026-09-07 评审正是在这个初始状态下复现出“点 high 实际选成 medium”的；
+      // 上一轮我先换模型、档位被带成 low，恰好绕开了这个 bug。顺序不得再倒回去。
+      await _waitMs(2500);
+      async function switchEffortFromChip(wanted) {
+        return client.eval(`(async () => {
+          const sid = ${JSON.stringify(sid)};
+          const wanted = ${JSON.stringify(wanted)};
+          const before = String(sessions.get(sid).effort || '');
+          const chip = document.querySelector('.composer-thinking');
+          if (!chip || chip.hidden) return { before, error: 'thinking chip not rendered' };
+          // 用户看到的档位是 chip 上的文字（Hub 内部字段可能还没回填，
+          // 而 CLI 启动参数里已经是 max）—— 断言要按用户看到的来。
+          const beforeLabel = String(chip.querySelector('.composer-chip-label').textContent || '').trim();
+          chip.click();
+          await new Promise(r => setTimeout(r, 900));
+          const menu = document.querySelector('.effort-picker-menu');
+          if (!menu) return { before, error: 'effort picker did not open' };
+          const offered = [...menu.querySelectorAll('.model-picker-item')].map(e => e.dataset.effort);
+          const target = wanted || offered.find(e => e && e !== before);
+          if (!target || target === before) { document.body.click(); return { before, beforeLabel, offered, error: 'no usable target effort' }; }
+          const item = menu.querySelector('.model-picker-item[data-effort="' + target + '"]');
+          if (!item) { document.body.click(); return { before, beforeLabel, offered, target, error: 'target effort not offered' }; }
+          item.click();
+          for (let i = 0; i < 200; i += 1) {
+            await new Promise(r => setTimeout(r, 250));
+            const now = String(sessions.get(sid).effort || '');
+            if (now && now !== before) {
+              const label = document.querySelector('.composer-thinking .composer-chip-label').textContent;
+              document.body.click();
+              return { before, beforeLabel, offered, target, after: now, chipLabel: label };
+            }
+          }
+          document.body.click();
+          return { before, beforeLabel, offered, target, error: 'effort switch not confirmed in 50s' };
+        })()`);
+      }
+
+      // ① 默认 max → high：一级面板上的目标，但光标在“More reasoning…”那一行。
+      report.real.effortSwitch = await switchEffortFromChip('high');
+      assert.ok(report.real.effortSwitch.after,
+        `思考档没能真的改掉：${JSON.stringify(report.real.effortSwitch)}`);
+      assert.equal(report.real.effortSwitch.beforeLabel, 'max',
+        `这一步必须从默认的 max 开始测，否则绕开了评审复现的那个 bug：${JSON.stringify(report.real.effortSwitch)}`);
+      assert.equal(report.real.effortSwitch.after, 'high',
+        `点 high 就必须是 high：${JSON.stringify(report.real.effortSwitch)}`);
+
+      // ② high → max：目标藏在“More reasoning…”二级菜单里。
+      report.real.effortSwitchAdvanced = await switchEffortFromChip('max');
+      assert.equal(report.real.effortSwitchAdvanced.after, 'max',
+        `二级菜单里的 max 没能选中：${JSON.stringify(report.real.effortSwitchAdvanced)}`);
+      report.screenshots.effortSwitched = await shootComposer(client, 'T1-composer-effort-switched.png');
+    saveReport(report);
+
       // ── 换模型（真实，走 Codex 原生面板）──
       report.real.modelSwitch = await client.eval(`(async () => {
         const sid = ${JSON.stringify(sid)};
@@ -358,40 +421,6 @@ async function descendantPids(rootPid) {
         return { before, target, error: 'model switch not confirmed in 40s' };
       })()`);
       assert.ok(report.real.modelSwitch.after, `模型切换没成功：${JSON.stringify(report.real.modelSwitch)}`);
-
-      // ── 改思考档（真实）：点思考档 chip 必须开出档位面板并真的改掉档位 ──
-      await _waitMs(2500);
-      report.real.effortSwitch = await client.eval(`(async () => {
-        const sid = ${JSON.stringify(sid)};
-        const before = String(sessions.get(sid).effort || '');
-        const chip = document.querySelector('.composer-thinking');
-        if (!chip || chip.hidden) return { before, error: 'thinking chip not rendered' };
-        chip.click();
-        await new Promise(r => setTimeout(r, 900));
-        const menu = document.querySelector('.effort-picker-menu');
-        if (!menu) return { before, error: 'effort picker did not open' };
-        const offered = [...menu.querySelectorAll('.model-picker-item')].map(e => e.dataset.effort);
-        const target = offered.find(e => e && e !== before);
-        if (!target) { document.body.click(); return { before, offered, error: 'no alternative effort offered' }; }
-        menu.querySelector('.model-picker-item[data-effort="' + target + '"]').click();
-        for (let i = 0; i < 160; i += 1) {
-          await new Promise(r => setTimeout(r, 250));
-          const now = String(sessions.get(sid).effort || '');
-          if (now && now !== before) {
-            const label = document.querySelector('.composer-thinking .composer-chip-label').textContent;
-            document.body.click();
-            return { before, offered, target, after: now, chipLabel: label };
-          }
-        }
-        document.body.click();
-        return { before, offered, target, error: 'effort switch not confirmed in 40s' };
-      })()`);
-      assert.ok(report.real.effortSwitch.after,
-        `思考档没能真的改掉：${JSON.stringify(report.real.effortSwitch)}`);
-      assert.equal(report.real.effortSwitch.after, report.real.effortSwitch.target,
-        '用户点了哪一档就必须是哪一档');
-      report.screenshots.effortSwitched = await shootComposer(client, 'T1-composer-effort-switched.png');
-    saveReport(report);
 
       // ── 等你回答（真实）：让 Codex 真的问一句 ──
       await sendFromComposer(sid, '不要做任何事，不要用任何工具。直接输出下面这一行然后停下等我回答：你选择 A 还是 B？');
