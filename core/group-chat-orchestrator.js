@@ -503,6 +503,9 @@ class GroupChatOrchestrator {
     let msg = this.state.messages.find(m => m.id === `u${n}` && m.role === 'user') || null;
     let didAppendUserMessage = false;
     if (appendUserMessage && !msg) {
+      // clientMessageId：渲染层那条本地 pending 气泡的身份。带上它，前端才能确认
+      // 「服务端接手的正是我刚发的这一条」，而不是内容碰巧一样的另一条历史消息。
+      const clientMessageId = typeof opts.clientMessageId === 'string' ? opts.clientMessageId.trim() : '';
       msg = this._appendMessage({
         id: `u${n}`,
         turnNum: n,
@@ -511,6 +514,7 @@ class GroupChatOrchestrator {
         content: userInput || '',
         runId,
         ...normalizeDispatchMeta(opts.dispatch),
+        ...(clientMessageId ? { clientMessageId } : {}),
       });
       didAppendUserMessage = true;
     }

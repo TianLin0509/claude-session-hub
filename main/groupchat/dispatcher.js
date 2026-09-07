@@ -1115,6 +1115,7 @@ function createGroupChatDispatcher(deps) {
     reuseTurnNum,
     dispatchMode,
     workflowRun,
+    clientMessageId,
     _dispatchSeq,
   } = {}) {
     const turnStartedAt = Date.now();
@@ -1202,6 +1203,10 @@ function createGroupChatDispatcher(deps) {
         appendUserMessage: appendUserMessage !== false,
         dispatchMode: dispatchMode || 'group',
         dispatch: dispatchMeta,
+        // 渲染层本地气泡的身份，原样带进权威 user 消息；内部编排（循环/串行）不带。
+        // 与上面的 dispatch 元数据互不相干：一个回答「这次派发是谁的第几步」，
+        // 一个回答「服务端接手的是不是用户刚按下的那一条」，两者都要留在消息上。
+        clientMessageId,
       });
       const { turnNum, runId } = begin;
       if (dispatchMeta && !begin.didAppendUserMessage) {

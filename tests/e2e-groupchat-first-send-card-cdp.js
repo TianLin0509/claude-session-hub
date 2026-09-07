@@ -24,6 +24,9 @@ const ROOT = path.resolve(__dirname, '..');
 const ELECTRON = path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 const SLOW_HISTORY_MS = 2500;
 const CARD_DEADLINE_MS = 600; // 按下发送到看见自己那张卡的上限
+// 探针发送的原话。历史里会被种进一条**一秒前、一模一样**的老提问 ——
+// 这是评审第四次打回的场景：按内容 + 时间窗认领时，老的那条会把新卡片吃掉。
+const PROBE_TEXT = '首次打开就发的这条问题';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -61,12 +64,28 @@ function buildFixtureState() {
       .map(s => ({ ...s, unreadCount: 0, attentionState: null, needsUserInput: false, replyReady: false }));
     if (sessions.length < 2) continue;
     const room = { ...meeting, serialWorkflow: null, pinned: true, status: 'dormant' };
+    // 种一条「一秒前、与探针原话一模一样」的老提问。它没有 clientMessageId，
+    // 所以按身份认领时管不着本次发送；按内容 + 时间窗认领时会把新卡片吃掉。
+    const latestTurn = userMessages.reduce((max, m) => Math.max(max, Number(m.turnNum) || 0), 0);
+    const maxSeq = (orchestrator.messages || [])
+      .reduce((max, m) => Math.max(max, Number(m && m.seq) || 0), 0);
+    const decoy = {
+      id: 'u-decoy-recent',
+      turnNum: latestTurn,
+      role: 'user',
+      speaker: '你',
+      content: PROBE_TEXT,
+      createdAt: Date.now() - 1000,
+      seq: maxSeq + 1,
+    };
+    orchestrator.messages = [...(orchestrator.messages || []), decoy];
+    orchestrator.nextMessageSeq = decoy.seq + 1;
     return {
       state: { version: parsed.version, cleanShutdown: true, sessions, meetings: [room] },
       meetingId: room.id,
       orchestrator,
-      historyUserMessages: userMessages.length,
-      latestHistoryTurn: userMessages.reduce((max, m) => Math.max(max, Number(m.turnNum) || 0), 0),
+      historyUserMessages: userMessages.length + 1,
+      latestHistoryTurn: latestTurn,
     };
   }
   return null;
@@ -143,7 +162,7 @@ const PROBE = `(async () => {
     '.mr-gc-messages .mr-gc-msg[data-gc-msg-id^="pending-user-"]').length;
   const before = countBubbles();
   const startedAt = performance.now();
-  window.MeetingRoom.debugSendGroupChat(meetingId, '首次打开就发的这条问题');
+  window.MeetingRoom.debugSendGroupChat(meetingId, __PROBE_TEXT__);
   let firstSeenMs = null;
   const samples = [];
   for (let i = 0; i < 40; i += 1) {
@@ -182,7 +201,7 @@ async function main() {
   fs.writeFileSync(path.join(dataDir, 'arena-prompts', fixture.meetingId + '-groupchat.json'),
     JSON.stringify(fixture.orchestrator), 'utf8');
   console.log('fixture: 房间 ' + fixture.meetingId + ' 带 ' + fixture.historyUserMessages
-    + ' 条历史提问，最新一条在第 ' + fixture.latestHistoryTurn + ' 轮');
+    + ' 条历史提问（含一条一秒前的同文诱饵），最新一条在第 ' + fixture.latestHistoryTurn + ' 轮');
 
   const env = {
     ...process.env,
@@ -211,6 +230,7 @@ async function main() {
 
     const report = await cdp.eval(PROBE
       .replaceAll('__MEETING_ID__', JSON.stringify(fixture.meetingId))
+      .replaceAll('__PROBE_TEXT__', JSON.stringify(PROBE_TEXT))
       .replaceAll('__SLOW_MS__', String(SLOW_HISTORY_MS)));
 
     console.log('slow-history probe:', JSON.stringify(report));
@@ -226,9 +246,9 @@ async function main() {
       '慢历史回来之后真历史没有渲染出来，本地种子状态把服务端状态挡住了：'
       + JSON.stringify(report.afterHistory));
     assert.ok(report.afterHistory.userBubbles >= 1,
-      '慢历史回来之后用户刚发的那条气泡消失了（老提问把它认领掉了）：'
-      + JSON.stringify(report.afterHistory));
-    console.log('群聊首次发送即时出卡 + 置底 + 老历史不吃掉新卡片：通过（历史被拖慢 '
+      '慢历史回来之后用户刚发的那条气泡消失了（历史里的老提问把它认领掉了；'
+      + '本次历史含一条一秒前的同文诱饵）：' + JSON.stringify(report.afterHistory));
+    console.log('群聊首次发送即时出卡 + 置底 + 老历史（含一秒前同文）不吃掉新卡片：通过（历史被拖慢 '
       + SLOW_HISTORY_MS + 'ms，气泡 ' + report.firstSeenMs + 'ms 出现；历史返回后仍在，'
       + '真历史 ' + report.afterHistory.historyMsgs + ' 条已渲染）');
   } finally {

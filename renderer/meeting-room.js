@@ -4199,6 +4199,10 @@ if (typeof document !== 'undefined') (function () {
       meetingId: meeting.id,
       userInput: opts.userInput || '',
       heroIdBySid: opts.heroIdBySid || {},
+      // 本次发送的身份。服务端把它写进权威 user 消息，渲染层据此撤掉本地那条 pending
+      // 气泡 —— 内容和时间都认不出「是不是同一条」，只有这个 id 能（见
+      // core/groupchat-pending-claim.js 顶部两次被推翻的判据）。
+      clientMessageId: opts.pendingClientId || '',
     }).then((result) => {
       console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
       if (result && result.status === 'completed') clearOptimistic();
