@@ -29,6 +29,33 @@ const FAST = {
   },
 };
 
+/**
+ * 照真实 orchestrator 建尝试台账：每派发一次记一条，最后一条为终态、之前的标 superseded。
+ * 台账是「上一次派发收场没有」和「这段转录文本归属明不明确」的唯一证据来源 ——
+ * 不给台账，引擎会按「无法确认」拒绝重发、也拒绝采用文本（这正是它该有的行为）。
+ */
+function ledgerOf(calls) {
+  const out = {};
+  for (const memberId of ['m1', 'm2']) {
+    const sid = memberId === 'm1' ? 'sB' : 'sR';
+    const mine = calls.filter(c => c.targetMemberIds[0] === memberId);
+    mine.forEach((c, i) => {
+      const attempt = Number(c.workflowRun && c.workflowRun.attempt) || i + 1;
+      out[`a-${sid}-${attempt}`] = {
+        attemptId: `a-${sid}-${attempt}`, sid, turnNum: 1,
+        status: i === mine.length - 1 ? 'completed' : 'superseded',
+        workflowRun: {
+          runId: c.workflowRun && c.workflowRun.runId,
+          kind: 'loop',
+          stepIndex: c.workflowRun && c.workflowRun.stepIndex,
+          attempt,
+        },
+      };
+    });
+  }
+  return out;
+}
+
 function harness({ dispatch, turnText = () => '', stepEntries = () => [] }) {
   const wf = {
     steps: [['m1'], ['m2']],
@@ -42,6 +69,7 @@ function harness({ dispatch, turnText = () => '', stepEntries = () => [] }) {
     getState: () => ({
       turns: [{ n: 1, by: turnText(calls), meta: { workflowSteps: stepEntries(calls) } }],
       pendingPrompts: {},
+      attempts: ledgerOf(calls),
     }),
     appendSystemNote: (turnNum, text, meta) => { notes.push({ turnNum, text, kind: meta && meta.kind }); return { id: 'n' + notes.length }; },
   };

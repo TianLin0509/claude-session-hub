@@ -16,6 +16,7 @@
  */
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
 const RECOVERY = require('../../core/loop-recovery.js');
+const GUARD = require('../../core/redispatch-guard.js');
 const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -386,6 +387,72 @@ function createLoopEngine(deps) {
     }
   }
 
+  /** orchestrator 的尝试台账。拿不到就返回 null —— 「读不到」和「读到空的」必须分开。 */
+  function attemptLedger(meetingId) {
+    if (typeof getOrchestrator !== 'function') return null;
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      const state = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState() : orchestrator && orchestrator.state;
+      const attempts = state && state.attempts;
+      return attempts && typeof attempts === 'object' ? attempts : null;
+    } catch (error) {
+      logError('[loop-engine] failed to read attempt ledger:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 转录文本**自己不带尝试号**，所以只有在「这一步这个席位只派发过一次」的时候，
+   * 才能确定这段文本出自哪一次派发。一旦派发过两次以上，同一段文本可能来自任何一次
+   * —— 那就是身份不足，按合并位的要求一律不采用。
+   *
+   * 合并位复现的正是这个：评审尝试 2 失败，尝试 1 的旧 PASS 随后出现，被当成了本次结果。
+   * 「取尝试号最大的那条」解决不了它 —— 台账记的是「派发过几次」，不是「这段文本是谁写的」。
+   *
+   * 返回唯一那次派发的尝试号；派发过多次、或台账读不到、或压根没有记录，都返回 null。
+   */
+  function soleAttemptFor(meetingId, runIdValue, stepIndex, sid, turnNum) {
+    const attempts = attemptLedger(meetingId);
+    if (!attempts) return null;
+    const seen = new Set();
+    for (const record of Object.values(attempts)) {
+      const wf = record && record.workflowRun;
+      if (!record || record.sid !== sid || Number(record.turnNum) !== Number(turnNum)) continue;
+      if (!wf || wf.runId !== runIdValue || Number(wf.stepIndex) !== Number(stepIndex)) continue;
+      seen.add(Math.max(1, Number(wf.attempt) || 1));
+    }
+    if (seen.size !== 1) return null;    // 0 条 = 没证据；≥2 条 = 归属不明
+    return [...seen][0];
+  }
+
+  /**
+   * 发送之前的状态证据 + 重发互斥。判据全在 core/redispatch-guard.js（纯函数）。
+   * 台账读不到时返回 ok:false / cannot_confirm_idle —— 拿不到证据就不放行。
+   */
+  function redispatchVerdict(meetingId, meeting, targetMemberIds, turnNum) {
+    // 压根没有轮次 = dispatcher 在 beginTurn 之前就退出了（群聊不存在、没勾选成员…），
+    // prompt 从没到过 CLI，也就没有「上一次任务」可言。这不是「无法确认」，
+    // 是确定地知道没有东西在跑，照常重试。
+    if (!turnNum) return { ok: true, why: 'no_turn_created' };
+    const attempts = attemptLedger(meetingId);
+    const seats = targetMemberIds.map(id => {
+      const sid = sidOf(meeting, id);
+      const session = sid && sessionManager ? sessionManager.getSession(sid) : null;
+      let buffer = '';
+      try {
+        buffer = sid && sessionManager && typeof sessionManager.getSessionBuffer === 'function'
+          ? (sessionManager.getSessionBuffer(sid) || '') : '';
+      } catch (error) { buffer = ''; }
+      return {
+        sid, turnNum, attempts, buffer,
+        kind: (session && (session.transcriptKind || session.kind)) || '',
+        ledgerKnown: !!attempts,
+      };
+    });
+    return GUARD.canRedispatchStep(seats);
+  }
+
   // 同一步可能被记过多条证据（第 1 次传输尝试、第 2 次…）。取尝试号最大的那条，
   // 否则「第 1 次的旧证据」会把第 2 次的成功挡在 stale_attempt 上。
   function latestStepEvidence(meetingId, runIdValue, stepIndex) {
@@ -432,17 +499,28 @@ function createLoopEngine(deps) {
       });
       if (verdict.ok) return dispatchResultFromEvidence(meeting, targetMemberIds, evidence);
     }
+    // 带身份的证据存在却没通过校验（典型：旧尝试的 PASS）——**到此为止，不许回落**。
+    // 老写法在这里用 evidence:null 再回收一次同轮文本，等于把刚刚拒掉的那份旧裁决
+    // 从后门放了进来：合并位实测「评审尝试 2 失败、尝试 1 的旧 PASS 随后出现，
+    // 最终状态竟是 done」，就是这条回落路径造成的。
+    if (evidence) return null;
     if (!turnNum) return null;
+    // 转录文本本身不带尝试号，所以必须去尝试台账里把它绑到一次具体的派发上。
+    // 绑不上就是「身份不足」，一律不采用 —— 宁可停下等人，也不能拿一份来历不明的
+    // 文本推进流程。
     const texts = targetMemberIds.map(id => {
       const sid = sidOf(meeting, id);
-      return { id, sid, text: persistedTurnText(meetingId, turnNum, sid) };
+      return { id, sid, text: persistedTurnText(meetingId, turnNum, sid), attempt: soleAttemptFor(meetingId, state.runId, stepIndex, sid, turnNum) };
     });
-    const allAdoptable = texts.length > 0 && texts.every(item => item.sid && RECOVERY.canAdoptLateAnswer({
-      evidence: null,
-      expect: { runId: state.runId, stepIndex, turnNum, userStopped },
-      text: item.text,
-      isDone,
-    }).ok);
+    const allAdoptable = texts.length > 0 && texts.every(item => item.sid
+      && item.attempt !== null
+      && RECOVERY.canAdoptLateAnswer({
+        // 用台账里的尝试号伪造一份身份，让「旧尝试不能覆盖新尝试」这条判据照样生效
+        evidence: { entry: { runId: state.runId, stepIndex, attempt: item.attempt }, turnNum },
+        expect: { runId: state.runId, stepIndex, turnNum, attempt, userStopped },
+        text: item.text,
+        isDone,
+      }).ok);
     if (!allAdoptable) return null;
     return {
       status: 'completed',
@@ -780,6 +858,9 @@ function createLoopEngine(deps) {
           progress({ stage: 'builder-recovered', round: state.round + 1 });
         } else {
           const builderRecovery = { attempts: 0, startedAt: Date.now() };
+          // 「这一步已经派发过了」——注意它不能用 transportAttempt 代替：自愈重试会把
+          // transportAttempt 重置回 1，那一轮就绕过了重发前的证据检查（实测漏过）。
+          let builderDispatched = false;
           // 外层是自愈循环：两次快速传输重试都失败后，先只读回收迟到答案，
           // 回收不到再按退避计划决定要不要重发。判据见 core/loop-recovery.js。
           for (;;) {
@@ -793,7 +874,7 @@ function createLoopEngine(deps) {
             if (!persistOrPause()) break;
             // 重发之前先只读看一眼：答案可能只是迟到了。这条红线对快速重试同样成立 ——
             // 「它其实在干活，我们又发了一遍」比卡住更糟。
-            if (transportAttempt > 1) {
+            if (builderDispatched) {
               const late = harvestLateAnswer({
                 meetingId, meeting, state, stepIndex: builderStepIndex, targetMemberIds: [builderId],
                 turnNum: state.currentTurnNum || null, attempt: builderAttemptBase + transportAttempt - 1,
@@ -804,9 +885,19 @@ function createLoopEngine(deps) {
                 systemNote(meetingId, state.currentTurnNum, '工作位实现：重发前发现回答其实已经到了，直接采用', 'info');
                 break;
               }
+              // 回收不到才谈重发 —— 但重发之前必须拿到「上一次派发已收场」的正向证据。
+              // 拿不到就继续观察，绝不在旧任务还可能在跑的时候又发一遍。
+              const gate = redispatchVerdict(meetingId, meeting, [builderId], state.currentTurnNum);
+              if (!gate.ok) {
+                state.lastError = { stage: 'builder', reason: gate.why, attempt: transportAttempt, at: Date.now() };
+                logger.log('[loop-engine] builder redispatch blocked: ' + gate.why);
+                systemNote(meetingId, state.currentTurnNum, '工作位实现：' + GUARD.describeBlock(gate), 'warn');
+                break;
+              }
             }
             try {
               await ensureMemberReady(meeting, builderId);
+              builderDispatched = true;
               bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: builderPrompt,
                 targetMemberIds: [builderId],
@@ -899,6 +990,8 @@ function createLoopEngine(deps) {
         // 评审这一步的自愈状态跨「传输失败」和「额度不可用」两条路径共用同一份预算：
         // 两者都是「换个时间再来」，不该各自独立地各续 K 次。
         const reviewerRecovery = { attempts: 0, startedAt: Date.now() };
+        // 同 builder：自愈重试会把 transportAttempt 重置回 1，不能拿它当「派发过没有」。
+        let reviewerDispatched = false;
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
         if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
@@ -912,7 +1005,7 @@ function createLoopEngine(deps) {
             state.stepAttempt = transportAttempt;
             if (entry.abort) break;              // 同 builder：用户停止后不再发 prompt
             if (!persistOrPause()) break;
-            if (transportAttempt > 1) {
+            if (reviewerDispatched) {
               const late = harvestLateAnswer({
                 meetingId, meeting, state, stepIndex: reviewerStepIndex, targetMemberIds: reviewerIds,
                 turnNum, attempt: reviewerAttemptBase + transportAttempt - 1, isDone: hasVerdict, userStopped: !!entry.abort,
@@ -922,9 +1015,18 @@ function createLoopEngine(deps) {
                 systemNote(meetingId, turnNum, '合并位审查：重发前发现裁决其实已经到了，直接采用', 'info');
                 break;
               }
+              // 同 builder：重发之前要有「上一次派发已收场」的正向证据。
+              const gate = redispatchVerdict(meetingId, meeting, reviewerIds, turnNum);
+              if (!gate.ok) {
+                state.lastError = { stage: 'reviewer', reason: gate.why, attempt: transportAttempt, at: Date.now() };
+                logger.log('[loop-engine] reviewer redispatch blocked: ' + gate.why);
+                systemNote(meetingId, turnNum, '合并位审查：' + GUARD.describeBlock(gate), 'warn');
+                break;
+              }
             }
             try {
               for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+              reviewerDispatched = true;
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
                 targetMemberIds: reviewerIds,
@@ -985,6 +1087,13 @@ function createLoopEngine(deps) {
         // 额度/限流恢复后的单次重发。走的仍是原来的派发路径，只是尝试号往后排，
         // 让证据、卡片和状态都能分清这是第几次。
         const redispatchReviewer = async () => {
+          // 额度恢复后的重发同样要过状态证据这一关：额度回来了不等于上一次任务已收场。
+          const gate = redispatchVerdict(meetingId, meeting, reviewerIds, turnNum);
+          if (!gate.ok) {
+            logger.log('[loop-engine] reviewer quota re-dispatch blocked: ' + gate.why);
+            systemNote(meetingId, turnNum, '合并位审查：' + GUARD.describeBlock(gate), 'warn');
+            return null;
+          }
           try {
             for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
             const res = await dispatcher.dispatchGroupChatTurn(meetingId, {
