@@ -210,9 +210,11 @@ function registerWorkspaceIpc(ipcMain, deps) {
 
   ipcMain.handle('workspace:list', () => workspaceService.listWorkspaces(activePaths()));
 
-  // 项目库：Hub 见过的目录里，已被 project-prep 整理成可开并行群聊的项目，按活跃时间排序。
-  // 候选 = 工作区注册表 + 所有会话 cwd + 所有会议 workspace + 工作根的一级子目录；
-  // 每路都带自己的活跃时间，core 里取最大值并去重。绝不递归扫盘。
+  // 项目库：已被 project-prep 整理成可开并行群聊的项目，按活跃时间排序。
+  // 候选 = 工作区注册表 + 所有会话 cwd + 所有会议 workspace + 工作根的一级子目录，
+  // 再由 core 补一路「候选的父目录各读一层」——**刚整理好、Hub 还没用过的项目靠这一路才看得见**
+  // （否则必须先在它上面开一次会话登记进注册表，用户遇到的就是「第一次识别不到」）。
+  // 每路都带自己的活跃时间，core 里取最大值并去重。全程只读一层，绝不递归扫盘。
   ipcMain.handle('workspace:prepared-projects', () => {
     const { listPreparedProjects } = require('../../core/prepared-project-library.js');
     const candidates = [];
@@ -242,6 +244,9 @@ function registerWorkspaceIpc(ipcMain, deps) {
     }
     try {
       const root = workspaceService.getWorkspaceRoot();
+      // 工作根自己也要进候选：它不是项目（会被 core 过滤掉），但同级扫描是按**候选的父目录**
+      // 展开的，不放进来的话工作根的上一层永远扫不到 —— 而用户的项目大多就并排放在那一层。
+      candidates.push({ path: root, activeAt: 0 });
       for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
         if (entry.isDirectory() && !entry.name.startsWith('_') && !entry.name.startsWith('.')) {
           candidates.push({ path: path.join(root, entry.name), activeAt: 0 });
@@ -250,7 +255,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
     } catch (error) {
       console.warn('[workspace] prepared-projects: root scan skipped:', error && error.message);
     }
-    return { items: listPreparedProjects(candidates) };
+    return { items: listPreparedProjects(candidates, {}, { siblingScan: true }) };
   });
 
   // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型

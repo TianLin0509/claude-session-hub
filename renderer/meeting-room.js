@@ -966,6 +966,24 @@ if (typeof document !== 'undefined') (function () {
   };
   const _dutyHatAssignmentsByMeeting = {};
 
+  // 临时职责帽默认折叠。八行下拉占掉群成员栏一多半高度，而它是「偶尔用一次」的功能：
+  // 展开着的代价是每次开群聊都得从它下面翻过去才看得到成员和上下文。
+  // 和群成员栏同一套写法：localStorage 记住用户的显式选择，没记录就当折叠。
+  const _DUTY_HATS_STATE_KEY = 'mr-duty-hats-state';
+  function _getDutyHatsCollapsed() {
+    try {
+      const state = typeof localStorage !== 'undefined' ? localStorage.getItem(_DUTY_HATS_STATE_KEY) : null;
+      return state !== 'expanded';
+    } catch { return true; }
+  }
+  function _setDutyHatsCollapsed(collapsed) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_DUTY_HATS_STATE_KEY, collapsed ? 'collapsed' : 'expanded');
+      }
+    } catch {}
+  }
+
   function _getDutyHatScene(meeting) {
     const scene = meeting && typeof meeting.scene === 'string' ? meeting.scene : 'general';
     return _DUTY_HATS_BY_SCENE[scene] ? scene : 'general';
@@ -1024,18 +1042,24 @@ if (typeof document !== 'undefined') (function () {
         </label>
       `;
     }).join('');
-    return `
-      <section class="mr-duty-hats" aria-label="临时职责帽">
-        <div class="mr-duty-hats-head">
-          <span>临时职责帽</span>
-          <span class="mr-duty-hats-count">${assignedCount}/${dutyHats.length}</span>
-        </div>
+    // 折叠时整块正文都不渲染（不是 display:none）——用户要的是「不要出现」，
+    // 留在 DOM 里的八个 select 仍然会被 Tab 键走到。
+    const collapsed = _getDutyHatsCollapsed();
+    const body = collapsed ? '' : `
         <div class="mr-duty-hat-list">${rows}</div>
         <div class="mr-duty-hat-actions">
           <button type="button" class="mr-duty-hat-action primary" data-duty-hat-insert="1" ${assignedCount ? '' : 'disabled'}>更新分工</button>
           <button type="button" class="mr-duty-hat-action" data-duty-hat-clear="1" ${assignedCount ? '' : 'disabled'}>清空</button>
         </div>
-        <div class="mr-duty-hat-hint">选择后自动同步到输入框，发送前可编辑。</div>
+        <div class="mr-duty-hat-hint">选择后自动同步到输入框，发送前可编辑。</div>`;
+    return `
+      <section class="mr-duty-hats ${collapsed ? 'collapsed' : ''}" aria-label="临时职责帽">
+        <button type="button" class="mr-duty-hats-head" data-duty-hats-toggle="1"
+                aria-expanded="${collapsed ? 'false' : 'true'}" title="${collapsed ? '展开临时职责帽' : '收起临时职责帽'}">
+          <span class="mr-duty-hats-caret" aria-hidden="true">${collapsed ? '▸' : '▾'}</span>
+          <span class="mr-duty-hats-title">临时职责帽</span>
+          <span class="mr-duty-hats-count">${assignedCount}/${dutyHats.length}</span>
+        </button>${body}
       </section>
     `;
   }
@@ -3793,6 +3817,13 @@ if (typeof document !== 'undefined') (function () {
     if (memberBtn) {
       ev.stopPropagation();
       await _handleGcMemberToggle(memberBtn, meeting);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-duty-hats-toggle]', panel)) {
+      ev.stopPropagation();
+      _setDutyHatsCollapsed(!_getDutyHatsCollapsed());
+      refreshGroupChatPanel(meetingData[meeting.id] || meeting);
       return;
     }
 

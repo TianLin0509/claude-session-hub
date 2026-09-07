@@ -42,9 +42,16 @@ let _meetingWorkspaceMode = 'default';
 let _projectLibrary = [];
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
-// 开发场景的起手方式：任务已明确就直接开工（现在的行为）；任务还没想清楚就先讨论。
-// 「先讨论」不是第三个场景：同一个群、同一组会话，只是先走普通群聊路径，点「开工」再进循环。
+// 开发场景的起手方式，三选一：
+//   build   —— 任务已明确，直接开工（原行为，两位：工作位 + 合并位）
+//   discuss —— 先讨论再开工。不是第三个场景：同一个群、同一组会话，只是先走普通群聊路径，
+//              点「开工」再进循环。
+//   simple  —— 极简：只留一个 Codex，同一个会话既当工作位也当合并位。给「改一行文案」
+//              这种小到不值得占两个席位、也不值得做一次上下文交接的需求用。
 let _devStart = 'build';
+const DEV_STARTS = ['build', 'discuss', 'simple'];
+// 极简起手的成员名单：一个 Codex。Codex 是日常主力，且这条路径本来就是省 token 的。
+const SIMPLE_DEV_MEMBERS = [{ kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex }];
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
 
@@ -270,6 +277,26 @@ function _paintDevStart() {
   });
 }
 
+// 起手方式换挡。极简和另外两挡的成员数不一样（1 vs 2），所以这里顺带换成员名单——
+// 否则用户选了「极简」底下还摆着两个人，建群出来的群聊和他选的那句话对不上。
+// 只在真的换挡时动名单，重复点同一挡不会把用户刚调好的模型/档位冲掉。
+function _setDevStart(next) {
+  const requested = DEV_STARTS.includes(next) ? next : 'build';
+  if (requested === _devStart) { _paintDevStart(); return; }
+  const wasSimple = _devStart === 'simple';
+  _devStart = requested;
+  if (requested === 'simple') {
+    _groupSlots = _cloneSlots(SIMPLE_DEV_MEMBERS);
+    _renderSlots();
+  } else if (wasSimple) {
+    // 从极简切回来要把默认双席位还回去，否则会留下「选了直接开工却只有一个人」的残影，
+    // 而单人在非极简模式下根本不会被写默认工作流（见 _applyDefaultDevWorkflow）。
+    _groupSlots = _cloneSlots(DEFAULT_GROUP_MEMBERS);
+    _renderSlots();
+  }
+  _paintDevStart();
+}
+
 // 只改场景，不动成员名单。删掉模板卡之后成员起手一律是「Claude 工作位 + Codex 合并位」，
 // 换场景不该把用户已经调好的模型/档位冲掉。
 function _applyScene(sceneId, opts = {}) {
@@ -284,6 +311,9 @@ function _applyScene(sceneId, opts = {}) {
     if (opts.clearTitle) titleInput.value = '';
     titleInput.placeholder = scene.placeholder || '留空则自动编号：AI 群聊 #N';
   }
+  // 起手方式只在开发场景成立。离开 dev 还留着「极简」的话，成员名单会一直是单个 Codex，
+  // 而那一排选项已经被藏起来，用户根本看不到是谁把人减掉的。
+  if (_currentMode !== 'dev' && _devStart === 'simple') _setDevStart('build');
   if (!_modalEl) return;
   const sceneRadio = _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
   if (sceneRadio) sceneRadio.checked = true;
@@ -459,6 +489,7 @@ function _ensureModal() {
           <div class="mcm-workspace-choices" role="radiogroup" aria-label="开发场景起手方式">
             <button type="button" class="mcm-workspace-choice selected" data-mcm-dev-start="build" role="radio" aria-checked="true"><strong>任务已明确，直接开工</strong><small>发第一句话就进入「工作位实现 ↔ 合并位审查」</small></button>
             <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="discuss" role="radio" aria-checked="false"><strong>先讨论，再开工</strong><small>两位先议方案、不改代码；点「开工」再进入实现</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="simple" role="radio" aria-checked="false"><strong>极简：一个 Codex 自己改自己合</strong><small>只留一位成员，同一会话既当工作位也当合并位；小改动用</small></button>
           </div>
         </div>
         <div class="mcm-member-caption">
@@ -534,9 +565,8 @@ function _bindEvents() {
   });
   _modalEl.querySelectorAll('[data-mcm-dev-start]').forEach(button => {
     button.addEventListener('click', () => {
-      const requested = button.getAttribute('data-mcm-dev-start');
-      _devStart = requested === 'discuss' ? 'discuss' : 'build';
-      _paintDevStart();
+      _syncGroupSlotsFromDom();
+      _setDevStart(button.getAttribute('data-mcm-dev-start'));
     });
   });
   _modalEl.addEventListener('click', (e) => {
@@ -642,10 +672,15 @@ function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return;
   const WT = window.WorkflowTemplates;
   if (!WT || typeof WT.createTemplateConfig !== 'function') return;
-  if (!Array.isArray(slots) || slots.length < 2) return;   // 单人没法自审自合，不配
+  if (!Array.isArray(slots) || !slots.length) return;
+  const simple = !!(workspaceHint && workspaceHint.devPhase === 'simple');
+  // 单人默认不配工作流（一个人没法自审自合）；只有用户在起手那一排**明确选了极简**，
+  // 才认这个取舍，走单席位的 dev-task-solo。
+  if (!simple && slots.length < 2) return;
   try {
     const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
-    const config = WT.createTemplateConfig('dev-task', members, {
+    const templateId = simple ? 'dev-task-solo' : 'dev-task';
+    const config = WT.createTemplateConfig(templateId, members, {
       workspace: {
         atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
         projects: (workspaceHint && workspaceHint.projects) || [],
@@ -653,7 +688,7 @@ function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
       devPhase: workspaceHint && workspaceHint.devPhase === 'discuss' ? 'discuss' : 'build',
     });
     if (!config) return;
-    config.templateId = 'dev-task';
+    config.templateId = templateId;
     ipcRenderer.send('update-meeting', {
       meetingId: meeting.id,
       fields: { serialWorkflow: config },

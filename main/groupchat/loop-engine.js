@@ -681,6 +681,15 @@ function createLoopEngine(deps) {
           { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
 
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
+        // 【同席位必须另起一轮】评审这一步平时复用工作位那一轮（同一轮里两批不同成员，
+        // 各占各的格子）。但「极简」是同一个人先实现再自审 —— 一轮里每位成员只有一格
+        // （orchestrator 的 by[sid]），复用就等于让评审的回答顶掉刚落盘的实现报告：
+        // 群聊里那条 PROGRESS/VERIFIED 消失，工作台的交付卡也跟着没了，而流程还显示成功。
+        // 判据是身份不是模板：只要评审名单里出现工作位自己，就换成新的一轮。
+        const reviewerReusesBuilderTurn = !reviewerIds.includes(builderId);
+        // 传输重试要落回同一轮：第一次尝试已经开了一轮，第二次再开一轮只会在群聊里
+        // 多出一条空壳。拿到真实轮号后就钉住它。
+        let reviewerTurnNum = reviewerReusesBuilderTurn ? turnNum : null;
         state.currentStep = 'reviewer'; state.lastError = null;
         if (!persistOrPause()) break;
         progress({ stage: 'reviewer', round: state.round + 1 });
@@ -699,7 +708,7 @@ function createLoopEngine(deps) {
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
                 targetMemberIds: reviewerIds,
-                reuseTurnNum: turnNum,
+                reuseTurnNum: reviewerTurnNum,
                 appendUserMessage: false,
                 dispatchMode: 'serial',
                 turnTimeoutMs: reviewerTimeoutMs,
@@ -708,6 +717,7 @@ function createLoopEngine(deps) {
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
               });
+              if (rRes && rRes.turnNum) reviewerTurnNum = rRes.turnNum;
               const checked = validateStepResult(meeting, reviewerIds, rRes);
               if (checked.takenOver) break;
               if (checked.ok) break;

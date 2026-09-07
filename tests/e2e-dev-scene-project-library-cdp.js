@@ -7,6 +7,9 @@
  *   - prepared-乙：整理过、但 git 活动时间更早
  *   - linked-worktree：.git 是文件的 worktree，必须不出现在项目库
  *   - raw-repo：没整理过的仓库，必须不出现
+ * 工作根**外面**（工作根的同级）另放一个：
+ *   - never-used：整理过，但这个隔离 Hub 从没在它上面开过任何会话——2026-09-07 之前
+ *     它第一次一定看不见（候选目录全都来自「Hub 已经见过的路径」），同级扫描就是为它加的。
  * 然后在真实 DOM 上：选开发场景（档位必须留在默认）→ 点「选择已有路径」（项目库自动展开）
  * → 点第一项（路径回显、库收起）。
  *
@@ -108,6 +111,10 @@ async function main() {
   seedProject(YI, { name: '测试项目乙', trunk: 'main' }, { gitTime: new Date(2021, 0, 1) });
   seedProject(path.join(WORKSPACE_ROOT, 'linked-worktree'), { name: '测试项目甲' }, { linked: true });
   seedProject(path.join(WORKSPACE_ROOT, 'raw-repo'), null);
+  // 工作根外面、和工作根同级：模拟「刚被 project-prep 整理好，Hub 还没用过」的项目。
+  // 活跃时间压到 2022，让排序稳定为 甲(现在) → 从未用过(2022) → 乙(2021)。
+  seedProject(path.join(TEMP_ROOT, 'never-used'), { name: '从未用过的项目', trunk: 'master' },
+    { gitTime: new Date(2022, 0, 1) });
 
   const port = await reservePort();
   let hub = null;
@@ -141,7 +148,8 @@ async function main() {
     // 0. 主进程接口本身：只列整理过的主工作树，甲（刚建）排在乙（2021）前面
     result.ipc = await client.eval(`(async () => await require('electron').ipcRenderer.invoke('workspace:prepared-projects'))()`);
     const names = result.ipc.items.map(i => i.name);
-    assert.deepEqual(names, ['测试项目甲', '测试项目乙'], `项目库应只含两个整理过的项目且按活跃排序，实得 ${JSON.stringify(names)}`);
+    assert.deepEqual(names, ['测试项目甲', '从未用过的项目', '测试项目乙'],
+      `项目库应含三个整理过的项目且按活跃排序，实得 ${JSON.stringify(names)}`);
     assert.ok(!result.ipc.items.some(i => /linked-worktree|raw-repo/.test(i.path)), 'worktree / 未整理仓库不能混入');
 
     // 1. 打开群聊建群面板
@@ -179,7 +187,8 @@ async function main() {
       };
     })()`));
     assert.equal(result.libraryOpen.expanded, 'true');
-    assert.deepEqual(result.libraryOpen.items.map(i => i.name), ['测试项目甲', '测试项目乙']);
+    assert.deepEqual(result.libraryOpen.items.map(i => i.name), ['测试项目甲', '从未用过的项目', '测试项目乙'],
+      '下拉里必须包含那个从没用过的项目——这就是「第一次识别不到」的回归点');
     assert.equal(result.libraryOpen.pathText, '尚未选择', '展开列表本身不应改变选择');
     await screenshot(client, SHOT_OPEN);
 

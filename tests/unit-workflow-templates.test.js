@@ -21,10 +21,10 @@ test('内置 4 个语义模板', () => {
   assert.strictEqual(WT.TEMPLATES.length, 4);
 });
 
-test('串行工作流提供 6 个任务预设按钮', () => {
-  assert.strictEqual(WT.TASK_PRESETS.length, 6);
+test('串行工作流提供 7 个任务预设按钮', () => {
+  assert.strictEqual(WT.TASK_PRESETS.length, 7);
   assert.deepStrictEqual(WT.TASK_PRESETS.map(item => item.name),
-    ['续跑', '审查', '功能', '修 Bug', '调研', '开发任务']);
+    ['续跑', '审查', '功能', '修 Bug', '调研', '开发任务', '开发任务 · 极简']);
 });
 
 test('开发任务是工作位↔合并位的两步循环，两步必须落到不同成员', () => {
