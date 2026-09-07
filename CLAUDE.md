@@ -238,15 +238,23 @@ production / prod / release 分支。所以"生产分支 = 主分支"不是要�
 （提交可靠性修复、research MCP 情绪周期、agent 联赛理念），彼此看不见。
 靠人工逐个文件甄别才没有互相覆盖 —— 这种甄别不该每次都做一遍。
 
-## 铁律：每次改动 Hub，同一提交里升版本号
+## 铁律：每次改动 Hub 都要升版本号，但**由合并脚本抬，不由分支抬**
 
 用户 2026-08-29 定的规矩：**「以后所有对 AI HUB 的改动，完成后都要同步改动 AI HUB 的版本号」**。
+2026-09-06 调整了执行方式：**版本号由 `scripts/merge_task.py` 在合并那一刻自动抬**，分支一行都不要改。
+原因是那三行是所有并行分支都要改的同三行 —— 两个开发群聊同时开工，第二个合进来的必然遇到
+「数值和主干重复」或「package.json/package-lock.json 合并冲突」二选一，而每次打回都是一整轮
+实现 + 一整轮全量单测的代价（实测一周内主干上留下 3 条纯粹为此存在的提交）。
+合并是排队的（脚本自带锁），所以这件事挪到那里，冲突就不可能再发生。
 
 **为什么这条重要**：Hub 是源码模式跑的（`node_modules\electron\dist\AIGroupChatHub.exe "C:\Users\lintian\claude-session-hub"`），而且 `main-bootstrap.js` 明确不装单实例锁 —— 桌面上会长期同时存在多个实例，每个持有它启动那一刻的代码。窗口标题是 `AI 群聊 Hub：PID <pid> v<version>`（`main.js` 的 `_hubTitle` 动态读 `package.json`），**版本号是唯一能一眼分辨"这个窗口跑的是不是我刚改的代码"的信号**。不升版本，重启后就无法确认改动是否生效。
 
 规则：
-1. 任何进 master 的 Hub 功能/修复提交，都在**同一个提交**里把版本号 +1（默认动 patch 位；破坏性改动才动 minor）。纯文档、纯测试改动可以不动。
-2. 版本号有 **3 处**必须同步：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。`node tests\unit-hub-version-sync.test.js` 守这个一致性。
+1. **分支/worktree 里不要改版本号。** `scripts/merge_task.py` 会在合并成功、跑测试之前执行
+   `node scripts/bump-version.js` 把 patch 位 +1，落进那个合并提交里。哪几个文件、跑什么命令，
+   都读 `.agents/project.json` 的 `versionFiles` / `versionBump`，Hub 之外的项目留空即可关掉。
+   要动 minor/major 是人的决定：`node scripts/bump-version.js --set 1.7.0`，且要用户点头。
+2. 版本号有 **3 处**必须同步：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。`node tests\unit-hub-version-sync.test.js` 守这个一致性（现在守的是自动抬升的结果）。
 3. **不要**去改 `tests\unit-hub-exe-branding.test.js` 和 `tests\unit-process-lifecycle-journal.test.js` 里出现的版本字面量 —— 那些是自洽的 fixture 输入和 `app.getVersion` mock，跟生产版本号无关，跟着改反而制造假耦合。
 4. 升版本会让品牌 stamp 失配，下次启动重新生成 `AIGroupChatHub.exe`。这条路径**已经**处理了"副本正被运行中的 Hub 占用"：`core\hub-exe-branding.js` 先把旧副本 rename 成 `.stale-*` 腾位再替换（Windows 允许 rename 正在执行的映像，但不允许 delete），失败也只是回落 electron.exe 图标。**不需要为了升版本去关生产实例。**
 5. 验证：重启后看窗口标题里的 `v<version>` 是否等于 `package.json` 里的值。

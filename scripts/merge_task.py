@@ -22,6 +22,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -102,6 +103,78 @@ def main_worktree():
     return Path(line.replace("worktree ", "", 1).strip())
 
 
+# ── 版本号：由合并那一刻抬，不由分支抬 ──────────────────────────────────────
+#
+# 版本号那几行是**所有并行分支都要改的同几行**。两个群聊同时基于同一个主干开工，
+# 第二个合进来的必然遇到「数值和主干撞了」或「文本冲突」二选一 —— 而分支自己
+# 无从知道它会是第几个合进去的，那个信息只有合并那一刻才存在。
+# 合并是串行的（上面那把锁保证），所以挪到这里，这个冲突就不可能再发生。
+#
+# 项目没配 versionBump 就整段不生效，行为和以前一模一样。
+VERSION_LINE = re.compile(r'^[+-]\s*"version"\s*:\s*"[^"]*"\s*,?\s*$')
+
+
+def conflicted_paths():
+    out = run(["git", "diff", "--name-only", "--diff-filter=U"], check=False).stdout
+    return [p.strip() for p in out.splitlines() if p.strip()]
+
+
+def only_version_lines(base, branch, path):
+    """分支对这个文件的改动是不是只有版本号那几行。
+
+    不看合并结果，看分支相对分叉点改了什么 —— 只碰版本号的分支，
+    它那份改动本来就要被这里的自动抬升覆盖掉，丢掉它不损失任何信息。
+
+    判据故意收得很紧：只要有一行不是 `"version": "…"`，就整个不化解、照旧报冲突。
+    留下的唯一缝隙是「分支只改了某个依赖的 version 行、别的一行没改」——
+    这种改动会被当成项目版本号丢掉。实际上 npm 改依赖版本必然同时改
+    resolved/integrity，所以这条缝在真实 lockfile 上关着；手写 lock 才可能踩到。
+    """
+    diff = run(["git", "diff", base, branch, "--", path], check=False)
+    if diff.returncode != 0:
+        return False
+    changed = False
+    for line in (diff.stdout or "").splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith(("+", "-")):
+            if not VERSION_LINE.match(line):
+                return False
+            changed = True
+    return changed
+
+
+def resolve_version_conflicts(trunk, branch, version_files):
+    """只自动化解「双方都只动了版本号」这一种冲突，别的一律照旧报冲突。
+
+    取主干那一份（--ours），因为紧接着就会基于主干的值重新抬一次。
+    """
+    if not version_files:
+        return False, []
+    stuck = conflicted_paths()
+    if not stuck:
+        return False, []
+    base = run(["git", "merge-base", trunk, branch], check=False).stdout.strip()
+    if not base:
+        return False, stuck
+    unresolved = [p for p in stuck if p not in set(version_files) or not only_version_lines(base, branch, p)]
+    if unresolved:
+        return False, stuck
+    for p in stuck:
+        run(["git", "checkout", "--ours", "--", p], check=False)
+        run(["git", "add", "--", p], check=False)
+    return not conflicted_paths(), stuck
+
+
+def bump_version(commands, version_files, bypass):
+    for cmd in commands:
+        r = run(cmd, check=False, capture=False)
+        if r.returncode != 0:
+            raise RuntimeError(f"抬版本号失败（退出码 {r.returncode}）：{cmd}")
+    if version_files:
+        run(["git", "add", "--", *version_files], env=bypass, check=False)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("branch", help="要合并的任务分支")
@@ -113,6 +186,8 @@ def main():
     name = cfg.get("name") or REPO.name
     tests = cfg.get("test") or []
     after = cfg.get("afterMerge") or []
+    version_bump = [c for c in (cfg.get("versionBump") or []) if isinstance(c, str) and c.strip()]
+    version_files = [p for p in (cfg.get("versionFiles") or []) if isinstance(p, str) and p.strip()]
     branch = args.branch
 
     say(f"── {name} · 合并 {branch} → {trunk} ──")
@@ -160,7 +235,10 @@ def main():
             dirty_paths.add(p)
 
     merge_paths = [p for p in git("diff", "--name-only", f"{trunk}...{branch}").splitlines() if p]
-    overlap = sorted(dirty_paths & set(merge_paths))
+    # 版本号文件即使不在本次改动集里也会被自动抬升写到，所以它们一样要参与
+    # 「会不会踩到别人未提交的改动」和「失败要还原哪些文件」这两件事。
+    touched_paths = merge_paths + [p for p in version_files if version_bump and p not in merge_paths]
+    overlap = sorted(dirty_paths & set(touched_paths))
 
     if overlap:
         say("✗ 本次合并会碰到你未提交的这些文件，先处理掉再合：")
@@ -169,7 +247,7 @@ def main():
         say("  （合下去会覆盖你还没保存的工作，本脚本不替你决定怎么处理。）")
         sys.exit(2)
 
-    unrelated_dirty = sorted(dirty_paths - set(merge_paths))
+    unrelated_dirty = sorted(dirty_paths - set(touched_paths))
     if unrelated_dirty:
         say(f"⚠ 主目录还有 {len(unrelated_dirty)} 个与本次合并无关的未提交改动：")
         for p in unrelated_dirty[:5]:
@@ -198,8 +276,8 @@ def main():
         if head and head != original:
             if unrelated_dirty:
                 run(["git", "reset", "--soft", original], env=bypass, check=False)
-                if merge_paths:
-                    run(["git", "checkout", original, "--", *merge_paths], env=bypass, check=False)
+                if touched_paths:
+                    run(["git", "checkout", original, "--", *touched_paths], env=bypass, check=False)
                 run(["git", "reset"], env=bypass, check=False)   # 清索引，别把还原留成暂存
             else:
                 run(["git", "reset", "--hard", original], env=bypass, check=False)
@@ -236,14 +314,25 @@ def main():
             return 0
 
         say(f"② 合并 {branch}（先不提交，测过了再落）")
-        git("merge", "--no-ff", "--no-commit", branch, env=bypass)
+        merged = run(["git", "merge", "--no-ff", "--no-commit", branch], env=bypass, check=False)
+        if merged.returncode != 0:
+            healed, stuck = resolve_version_conflicts(trunk, branch, version_files if version_bump else [])
+            if not healed:
+                detail = "、".join(stuck) if stuck else ((merged.stdout or "") + (merged.stderr or "")).strip()[:400]
+                raise RuntimeError(f"合并有冲突，需要工作位基于最新主干 rebase 后处理：{detail}")
+            say(f"   只有版本号撞了（{'、'.join(stuck)}），已按主干化解 —— 下一步会重新抬")
         say("   已合进工作区，主干提交历史暂未改变")
+
+        # ③ 抬版本号 —— 放在测试之前，让版本一致性单测也守着这一步的结果
+        if version_bump:
+            say("③ 抬版本号（合并是串行的，所以这件事由脚本做，分支不用碰）")
+            bump_version(version_bump, version_files, bypass)
 
         # ⑤ 亲自跑测试 —— 不采信任何 Agent 的说法
         if not tests:
-            say("③ 项目没配测试命令，跳过（建议补上）")
+            say("④ 项目没配测试命令，跳过（建议补上）")
         else:
-            say(f"③ 跑测试（{len(tests)} 条）")
+            say(f"④ 跑测试（{len(tests)} 条）")
             for i, t in enumerate(tests, 1):
                 say(f"   [{i}/{len(tests)}] {t}")
                 r = run(t, check=False, capture=False)
@@ -253,7 +342,7 @@ def main():
 
         if args.dry_run:
             say()
-            say("④ --dry-run，撤销不真合")
+            say("⑤ --dry-run，撤销不真合")
             rollback()
             say(f"   已回到 {original[:12]}")
             say()
@@ -280,7 +369,7 @@ def main():
         return 1
 
     # ⑥ 推远端（有就推，没有也不算失败 —— 远端只是备份，不是关卡）
-    say("④ 推远端")
+    say("⑤ 推远端")
     if run(["git", "remote", "get-url", "origin"], check=False).returncode == 0:
         r = run(["git", "push", "origin", trunk], env=bypass, check=False)
         say("   已推送" if r.returncode == 0 else f"   推送失败（本地已合，不影响）：{(r.stderr or '').strip()[:200]}")
@@ -289,7 +378,7 @@ def main():
 
     # ⑦ 合并后动作 —— 项目专属的东西全在这里，脚本本身不知道是什么
     if after:
-        say(f"⑤ 合并后动作（{len(after)} 条）")
+        say(f"⑥ 合并后动作（{len(after)} 条）")
         for a in after:
             cmd = a.replace("{branch}", branch).replace("{sha}", merged_sha or "")
             say(f"   {cmd}")

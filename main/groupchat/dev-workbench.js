@@ -1,9 +1,28 @@
 'use strict';
+const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { Worker } = require('node:worker_threads');
 const Feed = require('../../core/dev-workbench-feed');
 const DP = require('../../renderer/dev-progress');
+
+// 项目卡的标题读项目自己的 .agents/project.json。
+// 以前用的是 meeting.workspaceLabel —— 那个字段会被自动标题改写成 AI 的第一句回复
+//（实测显示成「好的，收到任务。我先阅读仓库的 `.agents/AUTHO」），一个项目名都看不出来。
+// 这是一次极小的定点读取，不是仓库扫描：只读一个文件、按工作目录缓存、拿不到就退回目录名。
+const PROJECT_NAME_TTL_MS = 60_000;
+const projectNameCache = new Map();
+function projectNameOf(workspace, clean) {
+  const dir = typeof workspace === 'string' ? workspace.trim() : '';
+  if (!dir) return '';
+  const cached = projectNameCache.get(dir);
+  if (cached && Date.now() - cached.at < PROJECT_NAME_TTL_MS) return cached.name;
+  let name = '';
+  try { name = clean(JSON.parse(fs.readFileSync(path.join(dir, '.agents', 'project.json'), 'utf8')).name, 120); }
+  catch { name = ''; }   // 没整理过的项目、路径不在了、JSON 坏了 —— 一律退回目录名，不报错
+  projectNameCache.set(dir, { name, at: Date.now() });
+  return name;
+}
 
 function createDevWorkbench(deps) {
   const { meetingManager, loopEngine, getHubDataDir, sendToRenderer, logger = console } = deps;
@@ -78,9 +97,20 @@ function createDevWorkbench(deps) {
       && !(ls.deadlineTs && Date.now() >= ls.deadlineTs);
     const missingMember = resumeCandidate ? memberProblem(m) : '';
     const canResume = resumeCandidate && !missingMember && stage.key !== 'chatting';
+    const lastError = missingMember || Feed.clean(ls.lastError && (ls.lastError.reason || ls.lastError.message), 1000)
+      || Feed.clean(execution?.attempts?.find(a => a.failure?.summary)?.failure?.summary, 1000);
+    // 「需要我」—— 维护者每天只想扫这一行就知道要不要进群聊。
+    // 以前这条筛选只看阶段色调，于是「工作位实现中 + 一条合并冲突提示」被算成不需要处理，
+    // 屏幕上明明是红字，计数却是 0。现在只要行里有红/橙的东西，它就该被数进来。
+    const pendingAsk = summary.ask && Number(summary.ask.index) > Number(summary.lastUserIndex ?? -1) ? summary.ask : null;
+    const attention = pendingAsk ? { kind: 'ask', label: '需要你拍板', text: pendingAsk.text }
+      : stage.tone === 'bad' ? { kind: 'stage', label: '需要你处理', text: lastError || stage.label }
+        : lastError ? { kind: 'error', label: '需要你处理', text: lastError }
+          : failedReview && failedReview.blockers ? { kind: 'blockers', label: '审核打回', text: failedReview.blockers }
+            : stage.tone === 'warn' ? { kind: 'stage', label: '需要你留意', text: stage.label } : null;
     return {
       id: m.id, title: Feed.clean(m.title, 240) || '未命名开发群聊', workspace: Feed.clean(m.workspace, 2048),
-      project: Feed.clean(m.workspaceLabel, 240), goal: Feed.clean(ls.goal, 4096), stage,
+      project: projectNameOf(m.workspace, Feed.clean), goal: Feed.clean(ls.goal, 4096), stage,
       createdAt: Number(m.createdAt) || 0, pinned: !!m.pinned, bottomed: !!m.bottomed && !m.pinned,
       activityAt: Math.max(...[m.createdAt, m.lastMessageTime, m.lastCompletedAt, ls.updatedAt, ls.startedAt, ls.finishedAt, execution?.updatedAt, card?.at, review?.at, update?.at,
         ...(Array.isArray(execution?.attempts) ? execution.attempts.map(a => a.updatedAt) : [])].map(t => Number(t) || 0)),
@@ -89,9 +119,11 @@ function createDevWorkbench(deps) {
         phase: sw.devPhase === 'discuss' ? 'discuss' : 'build' },
       progress,
       card: card || null, review: review || null, progressSource: progressSource || null,
+      // 人话通道：方案、待拍板的问题、按时间排开的任务纪事。全部由群聊消息派生，不新增存储。
+      plan: summary.plan ? summary.plan.text : '', ask: pendingAsk ? pendingAsk.text : '',
+      chronicle: Array.isArray(summary.timeline) ? summary.timeline : [], attention,
       blockers: failedReview ? failedReview.blockers : '', report: reportSource && reportSource.report || '',
-      lastError: missingMember || Feed.clean(ls.lastError && (ls.lastError.reason || ls.lastError.message), 1000)
-        || Feed.clean(execution?.attempts?.find(a => a.failure?.summary)?.failure?.summary, 1000),
+      lastError,
       receivedAt: saved.receivedAt || 0, feedError: m.metadataError || saved.error || '', loading: !summaries.has(m.id),
       truncated: !!summary.truncated, controlToken: token(m, live, execution),
       actions: { stop: !!live.running || ls.status === 'running', resume: !!canResume,

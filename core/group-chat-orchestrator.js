@@ -28,6 +28,8 @@ const devWorkbenchFeed = require('./dev-workbench-feed');
 //   找答复的地方都必须先把它排掉，否则它会顶替正式答复：跑空时被当成答案存档，
 //   有答复时被就地改写、丢掉 a{n}-{memberId} 身份。
 const PROGRESS_UPDATE_STATUS = 'progress_update';
+// 同一轮同一席位最多留这么多条过程汇报；再多就原地改写最后一条。
+const MAX_PROGRESS_UPDATES_PER_STEP = 40;
 const isProgressUpdateMessage = message => !!message && message.status === PROGRESS_UPDATE_STATUS;
 
 // 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
@@ -419,12 +421,35 @@ class GroupChatOrchestrator {
     if (pending.attemptId && (!attempt || isTerminalAttemptStatus(attempt.status))) return false;
     if (attempt && (at < Math.max(attempt.dispatchAt || 0, attempt.acceptedAt || 0, attempt.startedAt || 0)
         || !attemptEventMatches(attempt, { ...event, sid, observedAt: at }).ok)) return false;
-    const id = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
-    const previous = this.state.messages.find(message => message && message.id === id);
-    const content = 'UPDATE: ' + text;
-    if (previous && (previous.content === content || at < previous.updatedAt)) return false;
-    if (previous) Object.assign(previous, { content, updatedAt: at });
-    else this._appendMessage({ id, role: 'assistant', sid, speaker, turnNum, content,
+    // 过程汇报是**追加**，不是覆盖。
+    // 老写法每轮每席位只留一条、新的原地改写旧的：agent 中途写了五次进展，
+    // 维护者在群里只看得到最后一次 —— 整个过程等于没记。工作台要的「当前一句」
+    // 由读取端取最新一条来满足，那是投影问题，不该靠丢历史来实现。
+    const base = `p${turnNum}-${sid}` + (pending.attemptId ? `-${pending.attemptId}` : '');
+    const mine = this.state.messages.filter(message => isProgressUpdateMessage(message)
+      && (message.id === base || String(message.id || '').startsWith(base + '.')));
+    const previous = mine[mine.length - 1];
+    // 实时通道现在也送 PLAN / ASK，不再只有 UPDATE。标签由采集端给，认不出就退回 UPDATE。
+    const requested = String(event.tag || '').toUpperCase();
+    const tag = devWorkbenchFeed.LIVE_TAGS.includes(requested) ? requested : 'UPDATE';
+    const content = tag + ': ' + text;
+    // 去重要分清两件事，只看正文会把它们混成一件：
+    //   ① **事件重放**——同一条 transcript 记录被重新读到（尾随重连、一条消息里
+    //      PLAN 和 UPDATE 各发一次事件后整行重读）。它的来源时刻和已落盘的那条一样。
+    //   ② **同文新消息**——agent 真的又说了一遍同样的话：跑测试 → 有一条红在修 →
+    //      再跑一遍。第三条是真进展，丢了工作台就停在「在修」不动。
+    // 判据因此是「正文相同**且**来源时刻相同」，不是「正文相同」。
+    // 上一版只比正文，把 ② 也当成重放拒收了（合并位实测复现）。
+    const sourceAt = message => Number(message.createdAt) === at || Number(message.updatedAt) === at;
+    if (mine.some(message => message.content === content && sourceAt(message))) return false;
+    // 连着重复的同一句仍然只留一条：没有时间戳的来源（回落到 Date.now()）靠这条兜底。
+    if (previous && previous.content === content) return false;
+    if (previous && at < previous.updatedAt) return false;
+    // 上限只防失控、不防话多：到顶之后退回原地改写最后一条，
+    // 这份 state 每次都要整份落盘，不能让一个刷屏的席位把它撑爆。
+    if (previous && mine.length >= MAX_PROGRESS_UPDATES_PER_STEP) Object.assign(previous, { content, updatedAt: at });
+    else this._appendMessage({ id: mine.length ? `${base}.${mine.length + 1}` : base,
+      role: 'assistant', sid, speaker, turnNum, content,
       runId: pending.runId || null, attemptId: pending.attemptId || null, memberId: pending.memberId || null,
       providerTurnId: attempt?.providerTurnId || event.turnId || null,
       status: PROGRESS_UPDATE_STATUS, createdAt: at, updatedAt: at });
