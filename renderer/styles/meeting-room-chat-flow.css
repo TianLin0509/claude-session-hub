@@ -939,3 +939,33 @@
 
 /* 2026-07-20 道雪 [修#9]：悬空用户消息的"已被重启打断"标记 */
 .mr-gc-interrupted-note { color: var(--mr-gc-muted, var(--fg-muted)); font-size: 10px; }
+
+/* 2026-09-06：派发卡片（发给工作位 / 发给合并位）+ 循环自愈的系统提示行。
+   角标解决「一轮里两张我的卡片分不清谁是谁」；折叠解决「每轮重复的角色抬头很吵」——
+   折的只是显示，实际下发给 AI 的 prompt 一个字都没改。 */
+.mr-gc-to-badge {
+  display: inline-block; font-size: 10.5px; font-weight: 600;
+  color: var(--link); background: rgba(var(--rgb-info), 0.13);
+  padding: 1px 7px; border-radius: var(--radius-md);
+}
+.mr-gc-to-badge.is-retry { color: var(--fg-muted); background: var(--surface-overlay); }
+.mr-gc-dispatch-head { margin-bottom: 6px; }
+.mr-gc-dispatch-head > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--fg-muted);
+  list-style: none; display: flex; gap: 8px; align-items: center;
+}
+.mr-gc-dispatch-head > summary::-webkit-details-marker { display: none; }
+.mr-gc-dispatch-head > summary::before { content: '▸'; font-size: 10px; }
+.mr-gc-dispatch-head[open] > summary::before { content: '▾'; }
+.mr-gc-dispatch-hint { font-size: 10px; opacity: 0.75; }
+.mr-gc-dispatch-head > .mr-gc-md { margin-top: 6px; opacity: 0.85; }
+
+.mr-gc-sysnote {
+  display: flex; gap: 10px; align-items: baseline; justify-content: center;
+  margin: 6px auto; padding: 3px 12px; max-width: 88%;
+  font-size: 11.5px; color: var(--fg-muted);
+  border: 1px dashed var(--border-subtle, var(--surface-overlay));
+  border-radius: var(--radius-md); background: transparent;
+}
+.mr-gc-sysnote-time { font-size: 10px; opacity: 0.7; }
+.mr-gc-sysnote-warn { color: var(--warning, #ff9f0a); border-color: currentColor; }

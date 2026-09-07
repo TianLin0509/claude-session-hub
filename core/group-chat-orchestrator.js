@@ -85,6 +85,32 @@ function _clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
+/**
+ * 把一次派发的身份收成可存档的最小形状：谁、第几步、第几次尝试、属于哪个 run。
+ * 没有 stepIndex 就不算一次「有身份的派发」（普通群聊发言就是这种），返回空对象，
+ * 消息形状与老版本逐字一致 —— 老状态文件、老渲染路径都不受影响。
+ */
+function normalizeDispatchMeta(dispatch) {
+  if (!dispatch || typeof dispatch !== 'object') return {};
+  const stepIndex = Number(dispatch.stepIndex);
+  if (!Number.isInteger(stepIndex) || stepIndex < 0) return {};
+  const labels = (Array.isArray(dispatch.toLabels) ? dispatch.toLabels : [])
+    .map(x => String(x || '').trim()).filter(Boolean).slice(0, 8);
+  const memberIds = (Array.isArray(dispatch.toMemberIds) ? dispatch.toMemberIds : [])
+    .map(x => String(x || '').trim()).filter(Boolean).slice(0, 8);
+  return {
+    dispatch: {
+      kind: String(dispatch.kind || 'workflow'),
+      stepIndex,
+      attempt: Number(dispatch.attempt) > 0 ? Number(dispatch.attempt) : 1,
+      runId: dispatch.runId ? String(dispatch.runId) : null,
+      role: dispatch.role ? String(dispatch.role) : '',
+    },
+    toMemberIds: memberIds,
+    toLabels: labels,
+  };
+}
+
 function _memberLabel(member) {
   if (!member) return 'AI';
   return member.displayName || member.alias || KIND_LABELS[member.kind] || member.kind || member.memberId || 'AI';
@@ -484,6 +510,7 @@ class GroupChatOrchestrator {
         speaker: '你',
         content: userInput || '',
         runId,
+        ...normalizeDispatchMeta(opts.dispatch),
       });
       didAppendUserMessage = true;
     }
@@ -491,6 +518,64 @@ class GroupChatOrchestrator {
     if (msg && !msg.runId) msg.runId = runId;
     this._saveState('run_started', { runId, turnNum: n, status: ATTEMPT_PREPARED });
     return { turnNum: n, runId, userMessage: msg, didAppendUserMessage, revision: this.state.revision };
+  }
+
+  /**
+   * 复用同一轮、但发给另一批成员的那次派发，也要在群聊里留一张卡片。
+   *
+   * 为什么必须单独有这个方法：一轮只有一条 `u{n}` 用户消息，被第一步（工作位）占了；
+   * 评审那一步走 appendUserMessage:false 复用同一轮，于是**它收到的指令从来没进过消息流**，
+   * 群聊窗口里自然什么都看不到（2026-09-06 维护者报的正是这个）。
+   *
+   * 身份而不是轮次决定去重：id 里带 stepIndex，所以
+   *   - 工作位卡片（u{n}）和评审卡片（u{n}-d{step}）是两张，不共用身份；
+   *   - 同一步的第 2 次传输重试拿到同一个 id，不会再造一张卡。
+   * 角色仍是 user —— buildDelta 明确过滤 role==='user'，这保证新卡片不会被灌进
+   * 任何成员的上下文，纯属 UI 与存档层的可追溯性。
+   */
+  appendDispatchMessage(turnNum, content, dispatch = {}) {
+    const n = Number(turnNum);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    const meta = normalizeDispatchMeta(dispatch);
+    if (!meta.dispatch) return null;
+    const id = `u${n}-d${meta.dispatch.stepIndex}`;
+    const existing = this.state.messages.find(m => m && m.id === id) || null;
+    if (existing) return existing;
+    const message = this._appendMessage({
+      id,
+      turnNum: n,
+      role: 'user',
+      speaker: '你',
+      content: String(content || ''),
+      runId: meta.dispatch.runId || (this.state.activeRun && this.state.activeRun.runId) || null,
+      ...meta,
+    });
+    this._saveState('dispatch_card_appended', {
+      runId: message.runId, turnNum: n, stepIndex: meta.dispatch.stepIndex,
+    });
+    return message;
+  }
+
+  /** 循环自愈等后台动作留给人看的一行系统提示。role 仍是 user，同样不进任何成员的上下文。 */
+  appendSystemNote(turnNum, text, meta = {}) {
+    const n = Number(turnNum);
+    const body = String(text || '').trim();
+    if (!Number.isInteger(n) || n <= 0 || !body) return null;
+    const sameText = this.state.messages.find(m => m && m.systemNote && m.turnNum === n && m.content === body);
+    if (sameText) return sameText;
+    const seq = this.state.messages.filter(m => m && m.systemNote && m.turnNum === n).length + 1;
+    const message = this._appendMessage({
+      id: `sys${n}-${seq}`,
+      turnNum: n,
+      role: 'user',
+      speaker: '系统',
+      content: body,
+      systemNote: true,
+      noteKind: String(meta.kind || 'info'),
+      runId: meta.runId || (this.state.activeRun && this.state.activeRun.runId) || null,
+    });
+    this._saveState('system_note_appended', { runId: message.runId, turnNum: n, kind: message.noteKind });
+    return message;
   }
 
   rollbackTurn(turnNum, runId = null) {
@@ -1142,8 +1227,10 @@ module.exports = {
   cleanup,
   rawMessageAnchor,
   buildSystemPromptText,
+  normalizeDispatchMeta,
   _private: {
     buildSystemPromptText,
+    normalizeDispatchMeta,
     RESEARCH_SCENE_PROMPT,
     COMMITTEE_DISCIPLINE,
     GroupChatOrchestrator,
