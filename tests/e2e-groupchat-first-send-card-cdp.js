@@ -38,23 +38,38 @@ function freePort() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// 从生产 state.json 里借一个真实群聊房间当 fixture：只读取，不写回。
+// 从生产数据里借一个**带真实历史**的群聊房间当 fixture：只读取，不写回。
+// 必须带历史 —— 「老提问把新卡片挤掉」这个 bug 只有在历史里真有旧 user 消息时才现形。
 // 剥掉 serialWorkflow，避免隔离实例开机自动续跑循环去拉起真 CLI。
 function buildFixtureState() {
-  const source = path.join(os.homedir(), '.claude-session-hub', 'state.json');
-  if (!fs.existsSync(source)) return null;
+  const home = path.join(os.homedir(), '.claude-session-hub');
+  const source = path.join(home, 'state.json');
+  const promptsDir = path.join(home, 'arena-prompts');
+  if (!fs.existsSync(source) || !fs.existsSync(promptsDir)) return null;
   const parsed = JSON.parse(fs.readFileSync(source, 'utf8'));
-  const meeting = (parsed.meetings || []).find(m => m && m.scene && (m.subSessions || []).length >= 2);
-  if (!meeting) return null;
-  const memberIds = new Set(meeting.subSessions || []);
-  const sessions = (parsed.sessions || [])
-    .filter(s => s && memberIds.has(s.hubId))
-    .map(s => ({ ...s, unreadCount: 0, attentionState: null, needsUserInput: false, replyReady: false }));
-  const room = { ...meeting, serialWorkflow: null, pinned: true, status: 'dormant' };
-  return {
-    state: { version: parsed.version, cleanShutdown: true, sessions, meetings: [room] },
-    meetingId: room.id,
-  };
+  for (const meeting of parsed.meetings || []) {
+    if (!meeting || !meeting.scene || (meeting.subSessions || []).length < 2) continue;
+    const promptsFile = path.join(promptsDir, meeting.id + '-groupchat.json');
+    if (!fs.existsSync(promptsFile)) continue;
+    let orchestrator;
+    try { orchestrator = JSON.parse(fs.readFileSync(promptsFile, 'utf8')); } catch { continue; }
+    const userMessages = (orchestrator.messages || []).filter(m => m && m.role === 'user');
+    if (userMessages.length < 1) continue;
+    const memberIds = new Set(meeting.subSessions || []);
+    const sessions = (parsed.sessions || [])
+      .filter(s => s && memberIds.has(s.hubId))
+      .map(s => ({ ...s, unreadCount: 0, attentionState: null, needsUserInput: false, replyReady: false }));
+    if (sessions.length < 2) continue;
+    const room = { ...meeting, serialWorkflow: null, pinned: true, status: 'dormant' };
+    return {
+      state: { version: parsed.version, cleanShutdown: true, sessions, meetings: [room] },
+      meetingId: room.id,
+      orchestrator,
+      historyUserMessages: userMessages.length,
+      latestHistoryTurn: userMessages.reduce((max, m) => Math.max(max, Number(m.turnNum) || 0), 0),
+    };
+  }
+  return null;
 }
 
 class Cdp {
@@ -143,17 +158,13 @@ const PROBE = `(async () => {
   const bottomGap = scroller
     ? Math.max(0, scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight)
     : null;
-  // 下半程：等慢历史真的回来，确认服务端状态接住了这一帧 ——
-  // 本地那份种子状态是 currentMode='idle'，只有服务端状态（带乐观态 group）
-  // 才会渲染出 AI 的"正在发言"气泡。以此证明种子没有把真状态挡住。
+  // 下半程：等慢历史真的回来。两件事都要成立 ——
+  //   (1) 真历史渲染出来了（种子那份空历史没把服务端状态挡住）；
+  //   (2) 用户刚发的那条本地气泡**还在**（老提问不得把它认领掉）。
   await new Promise(r => setTimeout(r, __SLOW_MS__ + 900 - (performance.now() - startedAt)));
-  const afterHistory = {
-    userBubbles: countBubbles(),
-    aiPending: document.querySelectorAll(
-      '.mr-gc-messages .mr-gc-msg.mr-gc-pending, .mr-gc-messages .mr-gc-msg[data-gc-msg-id^="pending-"]').length
-      - countBubbles(),
-    totalMsgs: document.querySelectorAll('.mr-gc-messages .mr-gc-msg').length,
-  };
+  const totalMsgs = document.querySelectorAll('.mr-gc-messages .mr-gc-msg').length;
+  const userBubbles = countBubbles();
+  const afterHistory = { userBubbles, totalMsgs, historyMsgs: totalMsgs - userBubbles };
   return { before, firstSeenMs, samples, bottomGap, afterHistory };
 })()`;
 
@@ -167,6 +178,11 @@ async function main() {
   const dataDir = path.join(os.tmpdir(), 'hub-gc-firstsend-' + process.pid + '-' + port);
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'state.json'), JSON.stringify(fixture.state), 'utf8');
+  fs.mkdirSync(path.join(dataDir, 'arena-prompts'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'arena-prompts', fixture.meetingId + '-groupchat.json'),
+    JSON.stringify(fixture.orchestrator), 'utf8');
+  console.log('fixture: 房间 ' + fixture.meetingId + ' 带 ' + fixture.historyUserMessages
+    + ' 条历史提问，最新一条在第 ' + fixture.latestHistoryTurn + ' 轮');
 
   const env = {
     ...process.env,
@@ -206,13 +222,15 @@ async function main() {
       '气泡卡 ' + report.firstSeenMs + 'ms 才出现，超过 ' + CARD_DEADLINE_MS + 'ms 的即时出卡上限');
     assert.ok(report.bottomGap !== null && report.bottomGap <= 48,
       '发出消息后没有滚到底，离底部还有 ' + report.bottomGap + 'px');
+    assert.ok(report.afterHistory.historyMsgs >= fixture.historyUserMessages,
+      '慢历史回来之后真历史没有渲染出来，本地种子状态把服务端状态挡住了：'
+      + JSON.stringify(report.afterHistory));
     assert.ok(report.afterHistory.userBubbles >= 1,
-      '慢历史回来之后用户那条气泡不见了：' + JSON.stringify(report.afterHistory));
-    assert.ok(report.afterHistory.aiPending >= 1,
-      '慢历史回来之后服务端状态没有接管（没出现 AI 正在发言的气泡），'
-      + '本地种子状态可能把真状态挡住了：' + JSON.stringify(report.afterHistory));
-    console.log('群聊首次发送即时出卡 + 置底：通过（历史被拖慢 ' + SLOW_HISTORY_MS
-      + 'ms，气泡 ' + report.firstSeenMs + 'ms 出现）');
+      '慢历史回来之后用户刚发的那条气泡消失了（老提问把它认领掉了）：'
+      + JSON.stringify(report.afterHistory));
+    console.log('群聊首次发送即时出卡 + 置底 + 老历史不吃掉新卡片：通过（历史被拖慢 '
+      + SLOW_HISTORY_MS + 'ms，气泡 ' + report.firstSeenMs + 'ms 出现；历史返回后仍在，'
+      + '真历史 ' + report.afterHistory.historyMsgs + ' 条已渲染）');
   } finally {
     if (cdp) cdp.close();
     try { hub.kill(); } catch { /* 已退出 */ }

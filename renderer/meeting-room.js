@@ -8,6 +8,7 @@ if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { extractVisibleCardText } = require('./visible-card-text.js');
+  const { unclaimedPendingUserMessages } = require('../core/groupchat-pending-claim.js');
   const { formatBeijingClock } = require('../core/beijing-time.js');
   const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
   const { buildTurnPresentation, normalizeToolActivity } = require('../core/turn-presentation.js');
@@ -2495,19 +2496,21 @@ if (typeof document !== 'undefined') (function () {
     const mode = state.currentMode || 'idle';
     const sideCollapsed = _getGroupSideCollapsed();
     const renderMessages = messages.slice();
-    for (const pendingUser of _pendingUserMessages(meeting.id)) {
-      const pendingConfirmed = messages.some(message =>
-        message && message.role === 'user' && Number(message.turnNum) > pendingUser.afterTurn
-      );
-      if (!pendingConfirmed) {
-        renderMessages.push({
-          id: 'pending-user-' + pendingUser.clientId,
-          role: 'user',
-          turnNum: pendingUser.afterTurn + 1,
-          content: pendingUser.content,
-          createdAt: pendingUser.createdAt,
-        });
-      }
+    // 本地那条 pending 提问什么时候可以撤掉：等服务端把**同一条**消息写进权威历史。
+    //
+    // 2026-09-07：这里原来的判据是「历史里存在轮号大于 pendingUser.afterTurn 的 user 消息」。
+    //   首次打开房间时还没有面板缓存，afterTurn 只能算成 0，于是昨天第 7 轮的老提问一被
+    //   读回来就满足「7 > 0」，把用户刚发出、还没落盘的那条卡片凭空抹掉（评审实测）。
+    //   轮号是顺序，不是身份，用它认领必然张冠李戴。改为按身份认领：内容一致 + 时间不早于发送那一刻。
+    //   认领判据与去重都在 core/groupchat-pending-claim.js 里（那边能单测）。
+    for (const pendingUser of unclaimedPendingUserMessages(messages, _pendingUserMessages(meeting.id))) {
+      renderMessages.push({
+        id: 'pending-user-' + pendingUser.clientId,
+        role: 'user',
+        turnNum: pendingUser.afterTurn + 1,
+        content: pendingUser.content,
+        createdAt: pendingUser.createdAt,
+      });
     }
     // 2026-06-28 道雪 [改进R2-2]：轮次分隔线——相邻消息 turnNum 变化时插「第 N 轮」分隔，长对话结构清晰。
     let _lastTurnSep = null;
