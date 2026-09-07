@@ -254,4 +254,188 @@ test('忙碌标记只当否决票，且只看 buffer 末尾', () => {
   assert.equal(GUARD.looksBusy(stale, 'claude'), false, '历史里出现过不代表现在在忙');
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 第二轮 BLOCKERS（2026-09-06）：测试台账与生产状态不一致，导致上面三条修得不彻底。
+//   ③ 硬超时结算出来的是 status:'failed' + signalSource:'hard_timeout' ——
+//      台账**已经是终态**，但那只是 Hub 不等了，CLI 那边可能还在跑。
+//   ④ Dispatched 标志是函数内局部变量，Hub 重启后一律 false，恢复入口直接绕过守门。
+//   ⑤ completeTurn 失败时同样会写 workflowSteps，一刀切拒绝会把正常的单次回收堵死。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 生产里硬超时留下的真实形状
+const hardTimeoutAttempt = (sid, stepIndex, attempt, runId) => ({
+  [`a-${sid}-${attempt}`]: {
+    attemptId: `a-${sid}-${attempt}`, sid, turnNum: 1,
+    status: 'failed', signalSource: 'hard_timeout', reason: 'response_timeout',
+    workflowRun: { runId, kind: 'loop', stepIndex, attempt },
+  },
+});
+
+test('③ 硬超时的台账是终态，但不授权重发（Hub 停止等待 ≠ CLI 结束）', async () => {
+  let runIdSeen = null;
+  const h = harness({
+    dispatch: async (args) => {
+      runIdSeen = args.workflowRun.runId;
+      return { status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'errored', text: '' }] };
+    },
+    // 台账已是终态 failed，但信号源是 hard_timeout；会话仍 running、没有忙碌标记
+    attempts: () => (runIdSeen ? hardTimeoutAttempt('sB', 0, 1, runIdSeen) : {}),
+    buffers: () => ({ sB: '看起来很安静的一屏' }),
+  });
+  const engine = createLoopEngine(h.deps);
+  const state = await engine.runLoop('mtg', '目标');
+
+  assert.equal(builderCalls(h.calls).length, 1,
+    'failed/hard_timeout 只说明 Hub 不等了，不能拿它当「CLI 已结束」去授权重发');
+  assert.notEqual(state.status, 'done');
+});
+
+test('③b CLI 自己确认结束（进程退出）才放行重发', async () => {
+  let runIdSeen = null;
+  const h = harness({
+    dispatch: async (args, calls) => {
+      runIdSeen = args.workflowRun.runId;
+      if (args.targetMemberIds[0] === 'm1') {
+        return builderCalls(calls).length === 1
+          ? { status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'errored', text: '' }] }
+          : { status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'completed', text: 'PROGRESS: 第二次成了' }] };
+      }
+      return { status: 'completed', turnNum: 1, results: [{ sid: 'sR', status: 'completed', text: PASS }] };
+    },
+    attempts: () => (runIdSeen ? {
+      'a-exit': { attemptId: 'a-exit', sid: 'sB', turnNum: 1,
+        status: 'failed', signalSource: 'process_exit_clean', reason: 'cli_self_exit',
+        workflowRun: { runId: runIdSeen, kind: 'loop', stepIndex: 0, attempt: 1 } },
+    } : {}),
+  });
+  const engine = createLoopEngine(h.deps);
+  const state = await engine.runLoop('mtg', '目标');
+  assert.equal(builderCalls(h.calls).length, 2, 'CLI 确认结束了就该正常重试');
+  assert.equal(state.status, 'done');
+});
+
+test('④ 重启恢复不能绕过守门：已派发要从持久化证据认出来', async () => {
+  // 模拟 Hub 重启后从持久化状态续跑：loopState 里 stepAttempt 已是 1，
+  // 台账里尝试 1 仍挂着 running。局部变量此刻一律是 false，只信它就会直接发尝试 2。
+  const persisted = {
+    runId: 'loop-resumed', goal: '目标', status: 'running', phase: 'reaching',
+    round: 0, consecutiveGreen: 0, suggestionPool: [], history: [],
+    currentStep: 'builder', currentTurnNum: 1, stepAttempt: 1, attempt: 1,
+  };
+  const h = harness({
+    dispatch: async () => ({ status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'errored', text: '' }] }),
+    attempts: () => ({
+      'a-live': { attemptId: 'a-live', sid: 'sB', turnNum: 1, status: 'running',
+        workflowRun: { runId: 'loop-resumed', kind: 'loop', stepIndex: 0, attempt: 1 } },
+    }),
+  });
+  const engine = createLoopEngine(h.deps);
+  const state = await engine.runLoop('mtg', '目标', persisted);
+
+  assert.equal(builderCalls(h.calls).length, 0,
+    '恢复入口必须先过守门：尝试 1 还挂着 running，绝不能直接把尝试 2 发出去');
+  assert.notEqual(state.status, 'done');
+});
+
+test('④b 重启恢复时若上一次确已收场，照常继续跑', async () => {
+  const persisted = {
+    runId: 'loop-resumed-ok', goal: '目标', status: 'running', phase: 'reaching',
+    round: 0, consecutiveGreen: 0, suggestionPool: [], history: [],
+    currentStep: 'builder', currentTurnNum: 1, stepAttempt: 1, attempt: 1,
+  };
+  const h = harness({
+    dispatch: async (args) => (args.targetMemberIds[0] === 'm1'
+      ? { status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'completed', text: 'PROGRESS: 恢复后做完了' }] }
+      : { status: 'completed', turnNum: 1, results: [{ sid: 'sR', status: 'completed', text: PASS }] }),
+    attempts: () => ({
+      'a-done': { attemptId: 'a-done', sid: 'sB', turnNum: 1, status: 'completed', signalSource: 'stop_hook',
+        workflowRun: { runId: 'loop-resumed-ok', kind: 'loop', stepIndex: 0, attempt: 1 } },
+    }),
+  });
+  const engine = createLoopEngine(h.deps);
+  const state = await engine.runLoop('mtg', '目标', persisted);
+  assert.equal(state.status, 'done', '恢复守门不能把正常续跑也堵死');
+});
+
+test('⑤ 单次派发 + 失败的步骤证据：迟到的答案仍要能安全回收', async () => {
+  // completeTurn 失败时同样会写 workflowSteps（textLength 0），而后来补进转录的
+  // 完整文本不会回头更新这份摘要。一刀切拒绝会把这种正常回收堵死。
+  let runIdSeen = null;
+  let answered = false;
+  const h = harness({
+    dispatch: async (args) => {
+      if (args.targetMemberIds[0] === 'm1') {
+        runIdSeen = args.workflowRun.runId;
+        setTimeout(() => { answered = true; }, 15);
+        return { status: 'completed', turnNum: 1, results: [{ sid: 'sB', status: 'errored', text: '' }] };
+      }
+      return { status: 'completed', turnNum: 1, results: [{ sid: 'sR', status: 'completed', text: PASS }] };
+    },
+    // 真实的失败步骤证据：记录在，但 textLength 为 0
+    workflowSteps: () => (runIdSeen ? [{
+      runId: runIdSeen, kind: 'loop', stepIndex: 0, attempt: 1,
+      results: [{ sid: 'sB', status: 'errored', textLength: 0 }],
+    }] : []),
+    // 转录随后补上了完整答案
+    turnBy: () => (answered ? { sB: 'PROGRESS: 我其实做完了，只是转录慢了一步' } : {}),
+    // 只派发过一次 → 文本归属明确
+    attempts: () => (runIdSeen ? settled('sB', 0, 1, runIdSeen) : {}),
+  });
+  const engine = createLoopEngine(h.deps);
+  const state = await engine.runLoop('mtg', '目标');
+
+  assert.equal(state.status, 'done',
+    '失败的步骤摘要不该挡住迟到回收 —— 它记的是当时那一刻，不会随转录补丁更新');
+  assert.equal(builderCalls(h.calls).length, 1, '而且是回收，不是重发');
+});
+
+// ── 守门判据本身（第二轮）────────────────────────────────────────────────────
+test('判据：Hub 放弃等待 vs CLI 确认结束', () => {
+  const t = (a) => GUARD.attemptConfirmsCliEnded(a);
+  assert.equal(t({ status: 'failed', signalSource: 'hard_timeout' }), false, '硬超时 = Hub 不等了');
+  assert.equal(t({ status: 'failed', reason: 'response_timeout' }), false, '按 reason 也要认出来');
+  assert.equal(t({ status: 'failed', signalSource: 'process_exit_clean' }), true, '进程退出 = 确实结束了');
+  assert.equal(t({ status: 'failed', signalSource: '某个没见过的信号' }), false, '认不出的一律不算确认');
+  assert.equal(t({ status: 'failed' }), false, '没有信号源就是没有证据');
+  assert.equal(t({ status: 'completed', signalSource: 'stop_hook' }), true);
+  assert.equal(t({ status: 'interrupted' }), true, '我们主动打断过，CLI 已停');
+  assert.equal(t({ status: 'absent' }), true, '从没派出去');
+  // 即便 completed，只要信号源说明是 Hub 放弃等待，也不算确认
+  assert.equal(t({ status: 'completed', signalSource: 'hard_timeout' }), false);
+});
+
+test('判据：终态但未确认的尝试会挡住重发', () => {
+  const ledger = { a: { sid: 's', turnNum: 1, status: 'failed', signalSource: 'hard_timeout' } };
+  const verdict = GUARD.canRedispatch({ attempts: ledger, sid: 's', turnNum: 1 });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.why, 'cli_end_unconfirmed');
+  assert.match(GUARD.describeBlock(verdict), /Hub 停止了等待/);
+});
+
+test('判据：只由最后一次派发定夺，早先的 superseded 不参与', () => {
+  // 每次重发都会新增一条 superseded；一并计较的话第二次自动续跑会被自己永久堵死
+  //（unit-loop-self-healing ③ 实测踩到）。而真正危险的情形不会漏：最后一次要是
+  // 硬超时，它自己就是未确认的。
+  const withSuperseded = {
+    a1: { sid: 's', turnNum: 1, status: 'superseded', workflowRun: { attempt: 1 } },
+    a2: { sid: 's', turnNum: 1, status: 'completed', signalSource: 'stop_hook', workflowRun: { attempt: 2 } },
+  };
+  assert.equal(GUARD.canRedispatch({ attempts: withSuperseded, sid: 's', turnNum: 1 }).ok, true);
+  assert.equal(GUARD.latestAttempt(withSuperseded, { sid: 's', turnNum: 1 }).workflowRun.attempt, 2);
+
+  const lastOneTimedOut = {
+    a1: { sid: 's', turnNum: 1, status: 'superseded', workflowRun: { attempt: 1 } },
+    a2: { sid: 's', turnNum: 1, status: 'failed', signalSource: 'hard_timeout', workflowRun: { attempt: 2 } },
+  };
+  assert.equal(GUARD.canRedispatch({ attempts: lastOneTimedOut, sid: 's', turnNum: 1 }).why, 'cli_end_unconfirmed',
+    '最后一次是硬超时就必须挡住 —— 这条不能被「只看最后一次」放过去');
+
+  // 没有 workflowRun.attempt 时按时间戳排
+  const byTime = {
+    a1: { sid: 's', turnNum: 1, status: 'failed', signalSource: 'hard_timeout', updatedAt: 100 },
+    a2: { sid: 's', turnNum: 1, status: 'completed', updatedAt: 200 },
+  };
+  assert.equal(GUARD.canRedispatch({ attempts: byTime, sid: 's', turnNum: 1 }).ok, true);
+});
+
 console.log('unit-loop-recovery-identity OK');

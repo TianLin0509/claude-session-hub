@@ -427,6 +427,24 @@ function createLoopEngine(deps) {
   }
 
   /**
+   * 这一步这个席位**已经派发过没有** —— 必须从持久化证据来答，不能只看本次函数里的局部变量。
+   * Hub 重启后 runLoop 是全新一次调用，局部标志一律是 false；而持久化的 loopState
+   * 里 stepAttempt 已经是 1、台账里的尝试 1 还挂着 running。只信局部变量的话，
+   * 恢复入口会直接把尝试 2 发出去（2026-09-06 合并位复现的正是这条）。
+   */
+  function alreadyDispatchedStep(meetingId, runIdValue, stepIndex, targetMemberIds, meeting, state) {
+    if (Number(state && state.stepAttempt) > 0) return true;   // 持久化的步内尝试计数
+    const attempts = attemptLedger(meetingId);
+    if (!attempts) return false;
+    for (const record of Object.values(attempts)) {
+      const wf = record && record.workflowRun;
+      if (!wf || wf.runId !== runIdValue || Number(wf.stepIndex) !== Number(stepIndex)) continue;
+      if (targetMemberIds.some(id => sidOf(meeting, id) === record.sid)) return true;
+    }
+    return false;
+  }
+
+  /**
    * 发送之前的状态证据 + 重发互斥。判据全在 core/redispatch-guard.js（纯函数）。
    * 台账读不到时返回 ok:false / cannot_confirm_idle —— 拿不到证据就不放行。
    */
@@ -480,9 +498,14 @@ function createLoopEngine(deps) {
 
   /**
    * 只读地看看这一步的答案是不是后来自己补上来了。
-   * 两条来源：① 落盘的步骤证据（带 run/step/attempt 身份）；② 该轮该会话的转录文本。
-   * ② 没有 attempt 信息，所以只靠 run 内的 turnNum + sid 定身份，并且必须满足这一步
-   * 自己的完成判据（评审要有裁决、工作位要有 PROGRESS）——文本在但没说完不算数。
+   *
+   * 两条来源，身份强度不同：
+   *   ① 落盘的步骤证据：自带 run/step/attempt，身份最硬。
+   *      注意 completeTurn 在**失败时也会写**这份摘要，且后来补进转录的完整文本
+   *      不会回头更新它 —— 所以「摘要里文本不完整」不等于「不能回收」，要继续看转录。
+   *   ② 转录文本：自己不带尝试号，靠尝试台账绑到唯一那次派发上（soleAttemptFor）。
+   *      绑不上（派发过多次 / 台账读不到）就是身份不足，一律不采用。
+   * 两条都还要满足这一步自己的完成判据（评审要有裁决、工作位要有 PROGRESS）。
    */
   function harvestLateAnswer({ meetingId, meeting, state, stepIndex, targetMemberIds, turnNum, attempt, isDone, userStopped }) {
     if (userStopped) return null;
@@ -498,12 +521,14 @@ function createLoopEngine(deps) {
         isDone,
       });
       if (verdict.ok) return dispatchResultFromEvidence(meeting, targetMemberIds, evidence);
+      // 被拒的原因分两类，后果完全不同：
+      //   身份不对（run/step/turn/尝试号对不上、用户已停止）→ 到此为止，绝不回落。
+      //   身份没问题、只是这份步骤摘要里的文本还不完整 → 可以继续看转录。
+      // 后者是真实存在的：completeTurn 在**失败时同样会写 workflowSteps**，而随后
+      // 补进转录的完整文本并不会回头更新这份步骤摘要。一刀切拒绝会把「只派发过一次、
+      // 答案其实已经到了」这种正常回收也一起堵死（2026-09-06 合并位复现）。
+      if (!['no_text', 'step_contract_unmet'].includes(verdict.why)) return null;
     }
-    // 带身份的证据存在却没通过校验（典型：旧尝试的 PASS）——**到此为止，不许回落**。
-    // 老写法在这里用 evidence:null 再回收一次同轮文本，等于把刚刚拒掉的那份旧裁决
-    // 从后门放了进来：合并位实测「评审尝试 2 失败、尝试 1 的旧 PASS 随后出现，
-    // 最终状态竟是 done」，就是这条回落路径造成的。
-    if (evidence) return null;
     if (!turnNum) return null;
     // 转录文本本身不带尝试号，所以必须去尝试台账里把它绑到一次具体的派发上。
     // 绑不上就是「身份不足」，一律不采用 —— 宁可停下等人，也不能拿一份来历不明的
@@ -858,9 +883,10 @@ function createLoopEngine(deps) {
           progress({ stage: 'builder-recovered', round: state.round + 1 });
         } else {
           const builderRecovery = { attempts: 0, startedAt: Date.now() };
-          // 「这一步已经派发过了」——注意它不能用 transportAttempt 代替：自愈重试会把
-          // transportAttempt 重置回 1，那一轮就绕过了重发前的证据检查（实测漏过）。
-          let builderDispatched = false;
+          // 「这一步已经派发过了」——两个坑都踩过：① 不能用 transportAttempt 代替，
+          // 自愈重试会把它重置回 1；② 不能只用局部变量，Hub 重启后它一律是 false。
+          // 所以起手就从持久化证据（stepAttempt + 尝试台账）恢复。
+          let builderDispatched = alreadyDispatchedStep(meetingId, state.runId, builderStepIndex, [builderId], meeting, state);
           // 外层是自愈循环：两次快速传输重试都失败后，先只读回收迟到答案，
           // 回收不到再按退避计划决定要不要重发。判据见 core/loop-recovery.js。
           for (;;) {
@@ -990,9 +1016,9 @@ function createLoopEngine(deps) {
         // 评审这一步的自愈状态跨「传输失败」和「额度不可用」两条路径共用同一份预算：
         // 两者都是「换个时间再来」，不该各自独立地各续 K 次。
         const reviewerRecovery = { attempts: 0, startedAt: Date.now() };
-        // 同 builder：自愈重试会把 transportAttempt 重置回 1，不能拿它当「派发过没有」。
-        let reviewerDispatched = false;
         const reviewerStepIndex = state.round * 2 + 1;
+        // 同 builder：既不能用 transportAttempt，也不能只用局部变量（重启后是 false）。
+        let reviewerDispatched = alreadyDispatchedStep(meetingId, state.runId, reviewerStepIndex, reviewerIds, meeting, state);
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
         if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
           rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
