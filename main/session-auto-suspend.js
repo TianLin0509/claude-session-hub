@@ -89,9 +89,19 @@ function createSessionAutoSuspendScheduler(options = {}) {
       now: now(),
       excludePinned: true,
       excludeFocused: true,
-      // 闲置群聊成员也应释放 PTY；真正运行中的 watcher / loop 成员由
-      // excludeSessionIds 单独保护，避免把“属于群聊”和“仍在工作”混为一谈。
-      excludeMeeting: false,
+      // 2026-09-07：会议室成员一律不参与闲置巡检。
+      //
+      // 这里原本是 false，理由是「闲置群聊成员也应释放 PTY，真正在工作的由
+      // excludeSessionIds 单独保护」。那个理由站不住：excludeSessionIds 保护的是
+      // **正在工作的那一个**，而群聊里最典型的形态恰恰是「一号位在跑、二号位在等它
+      // 说完」—— 二号位自己既没有输入也没有输出，watcher 也不挂在它头上，5 小时一到
+      // 就被单独收走。房间缺一个人，整条流程就断在那里，这正是用户反复遇到的现象。
+      //
+      // 试过一版「按房间共享最近活动时间」，同样不够：watcher 长时间不吐字时，
+      // 全房间的活动时间都是旧的，等待的队友照样被收走（复现见
+      // tests/unit-meeting-room-suspend.test.js 里那条 watcher 场景）。
+      // 会议室成员的 PTY 由「循环 pass 后整间休眠」和用户手动休眠回收，不靠闲置巡检。
+      excludeMeeting: true,
       excludeSessionIds: getProtectedSessionIds() || new Set(),
     };
   }

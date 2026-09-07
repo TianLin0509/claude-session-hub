@@ -2003,29 +2003,18 @@ class SessionManager extends EventEmitter {
     }
 
     const now = Number(options.now) || Date.now();
-    const ownActivityAt = Math.max(
+    const lastActivityAt = Math.max(
       Number(session.startedAt) || 0,
       Number(session.lastInputAt) || 0,
       Number(session.lastOutputAt) || 0,
     );
-    // 2026-09-07：会议室成员的闲置时间按**整个房间**算，不按单个会话算。
-    //   用户反馈：群聊里 A 在跑、B 只是在等 A 说完，B 自己没有输入输出，5 小时一到
-    //   就被巡检单独收走 —— 房间缺一个人，整条流程就断在那里。
-    //   房间里任何一个人还在动，就说明这场协作没结束；等全房间都闲够了再一起睡，
-    //   这样既不会中途拆台，废弃的房间也照样能被回收，不用给群聊开永久免死金牌。
-    const meetingId = session.info && session.info.meetingId;
-    const roomActivityAt = meetingId && options.meetingActivityAt instanceof Map
-      ? Math.max(0, Number(options.meetingActivityAt.get(meetingId)) || 0)
-      : 0;
-    const lastActivityAt = Math.max(ownActivityAt, roomActivityAt);
     const minIdleMs = Math.max(0, Number(options.minIdleMs) || 0);
     const idleMs = Math.max(0, now - lastActivityAt);
     if (minIdleMs > 0 && idleMs < minIdleMs) {
-      const heldByRoom = roomActivityAt > ownActivityAt;
       return {
         ok: false,
-        error: heldByRoom ? 'meeting-room-active' : 'recently-active',
-        message: heldByRoom ? '同一会议室里还有成员在活动，整间一起计时' : '会话最近仍有活动，已跳过',
+        error: 'recently-active',
+        message: '会话最近仍有活动，已跳过',
         lastActivityAt,
         idleMs,
         // 还差多久够钟。界面上把「为什么没休眠」说清楚，全靠这个数。
@@ -2036,23 +2025,6 @@ class SessionManager extends EventEmitter {
     return { ok: true, session, now, lastActivityAt, idleMs, remainingMs: 0 };
   }
 
-  // 会议室 → 房间内任一活会话的最近活动时刻。休眠闸门用它把成员的闲置计时拉齐，
-  // 预演与实际执行共用同一份，避免两边算出不同的「还差多久」。
-  _meetingActivityIndex() {
-    const index = new Map();
-    for (const session of this.sessions.values()) {
-      const meetingId = session && session.info && session.info.meetingId;
-      if (!meetingId) continue;
-      const at = Math.max(
-        Number(session.startedAt) || 0,
-        Number(session.lastInputAt) || 0,
-        Number(session.lastOutputAt) || 0,
-      );
-      if (at > (index.get(meetingId) || 0)) index.set(meetingId, at);
-    }
-    return index;
-  }
-
   // 预演：按自动巡检那套参数逐个会话跑一遍闸门，只报结论不动任何 PTY。
   // 这是为了回答「我的 claude 会话到底会不会自动休眠、不会的话卡在哪一关」——
   // 在此之前 suspendIdleSessions 只回一个 skipped 计数，看不出是哪个会话、差多久。
@@ -2060,14 +2032,12 @@ class SessionManager extends EventEmitter {
     const idleMs = Math.max(60 * 1000, Number(options.idleMs) || DEFAULT_IDLE_SUSPEND_MS);
     const now = Number(options.now) || Date.now();
     const items = [];
-    const meetingActivityAt = this._meetingActivityIndex();
     for (const sessionId of [...this.sessions.keys()]) {
       const session = this.sessions.get(sessionId);
       if (!session) continue;
       const verdict = this._evaluateSuspendEligibility(sessionId, {
         now,
         minIdleMs: idleMs,
-        meetingActivityAt,
         excludePinned: options.excludePinned !== false,
         excludeMeeting: options.excludeMeeting === true,
         excludeFocused: options.excludeFocused !== false,
@@ -2149,14 +2119,10 @@ class SessionManager extends EventEmitter {
     const now = Number(options.now) || Date.now();
     const requested = [];
     const skipped = {};
-    // 一次性建好房间活动索引：巡检过程中会杀 PTY 删会话，边删边算会让后面的成员
-    // 看不到前面已被收走的那些，判据在同一轮里就漂了。
-    const meetingActivityAt = this._meetingActivityIndex();
     for (const sessionId of [...this.sessions.keys()]) {
       const result = this.suspendSession(sessionId, {
         now,
         minIdleMs: idleMs,
-        meetingActivityAt,
         excludePinned: options.excludePinned !== false,
         excludeMeeting: options.excludeMeeting !== false,
         excludeFocused: options.excludeFocused !== false,

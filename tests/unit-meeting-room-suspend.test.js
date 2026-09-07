@@ -1,15 +1,23 @@
 'use strict';
 
 // 会议室两条休眠规则（2026-09-07 用户要求）：
-//   1. 房间里只要还有人在动，其他成员就不能被闲置巡检单独收走 —— 群聊里一个 agent
-//      在等队友说完，自己 5 小时没输入输出，以前就是这样被收走的，整条流程断在那里。
-//   2. 开发循环跑到 pass（status='done'）时主动把整间房收掉，不必等巡检。
+//   1. 会议室成员不被闲置巡检自动休眠 —— 群聊里一个 agent 在等队友说完，自己几小时
+//      没有输入输出，以前就是这样被单独收走的，房间缺人，整条流程断在那里。
+//   2. 开发循环跑到 pass（status='done'）时主动把整间房收掉，这才是会议室 PTY 的回收路径。
+//
+// 第 1 条曾经做成「按房间共享最近活动时间」，被评审打回：watcher 长时间不吐字时，
+// 全房间的活动时间都是旧的，等待的队友照样被收走。下面第一条测试就是那个复现场景，
+// 它守着「不能再退回按时间共享」这件事。
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { SessionManager } = require('../core/session-manager.js');
 const { suspendMeetingRoom } = require('../core/meeting-room-suspend.js');
+const {
+  collectProtectedSessionIds,
+  createSessionAutoSuspendScheduler,
+} = require('../main/session-auto-suspend.js');
 
 const HOUR = 60 * 60 * 1000;
 
@@ -25,39 +33,53 @@ function seed(manager, id, info, activityAt) {
   });
 }
 
-test('队友还在动时，干等的会议室成员不被单独休眠', () => {
+// 走真实调度器（不是手搓 options），这样「sweepOptions 里到底传了什么」也被一起守住。
+function idleSweepHarness({ watchers = new Map(), now = Date.now() } = {}) {
   const manager = new SessionManager();
-  const now = Date.now();
-  const idle = now - 9 * HOUR;
+  const silent = now - 9 * HOUR;
+  seed(manager, 'worker', { kind: 'claude', title: '一号位·工作位', ccSessionId: 'cc-1', meetingId: 'room-1' }, silent);
+  seed(manager, 'waiter', { kind: 'codex', title: '二号位·评审位', codexSid: 'sid-1', meetingId: 'room-1' }, silent);
+  seed(manager, 'lonely', { kind: 'codex', title: '独立会话', codexSid: 'sid-2' }, silent);
+  const meeting = { id: 'room-1', groupChat: true, subSessions: ['worker', 'waiter'] };
+  const meetingManager = {
+    getAllMeetings: () => [meeting],
+    getMeeting: id => (id === 'room-1' ? meeting : null),
+  };
+  const scheduler = createSessionAutoSuspendScheduler({
+    sessionManager: manager,
+    getProtectedSessionIds: () => collectProtectedSessionIds({
+      groupChatDispatcher: { getActiveWatchers: () => watchers },
+      meetingManager,
+    }),
+    logger: { log() {}, warn() {} },
+    now: () => now,
+  });
+  return { manager, scheduler };
+}
 
-  // 同一个会议室：waiter 自己 9 小时没动静，busy 队友 10 分钟前还在输出。
-  seed(manager, 'waiter', { kind: 'claude', title: '一号位', ccSessionId: 'cc-1', meetingId: 'room-1' }, idle);
-  seed(manager, 'busy', { kind: 'codex', title: '二号位', codexSid: 'sid-1', meetingId: 'room-1' }, now - 10 * 60 * 1000);
-  // 对照组：不属于任何会议室的独立会话，同样闲置 9 小时 → 照旧该休眠。
-  seed(manager, 'lonely', { kind: 'codex', title: '独立', codexSid: 'sid-2' }, idle);
+test('评审复现场景：一号位 watcher 未结束且 9 小时没吐字，等它的队友也不被收走', () => {
+  // 这正是上一轮被打回的场景。按房间共享「最近活动时间」救不了 waiter：
+  // worker 的 watcher 虽然还活着，但它 9 小时没有输出，房间的活动时间也是旧的。
+  const h = idleSweepHarness({ watchers: new Map([['worker', { isSettled: () => false }]]) });
 
-  const preview = manager.previewIdleSuspend({ idleMs: 5 * HOUR, now });
+  const preview = h.scheduler.preview();
   const byId = new Map(preview.items.map(item => [item.sessionId, item]));
-  assert.equal(byId.get('waiter').eligible, false, '队友在跑时不该收走干等的成员');
-  assert.equal(byId.get('waiter').reason, 'meeting-room-active');
-  assert.equal(byId.get('busy').eligible, false);
+  assert.equal(byId.get('waiter').eligible, false, '干等队友的会议室成员不该被自动休眠');
+  assert.equal(byId.get('waiter').reason, 'meeting-member');
+  assert.equal(byId.get('worker').eligible, false);
   assert.equal(byId.get('lonely').eligible, true, '不在会议室里的会话不受这条规则影响');
 
-  // excludeMeeting:false 是 main/session-auto-suspend.js sweepOptions 的实际取值：
-  // 群聊成员本来就参与巡检，挡住 waiter 的只能是新的房间级计时。
-  const swept = manager.suspendIdleSessions({ idleMs: 5 * HOUR, now, excludeMeeting: false, reason: 'idle-timeout' });
+  const swept = h.scheduler.sweep();
   assert.deepEqual(swept.requested, ['lonely'], '实际执行必须跟预演一致');
 });
 
-test('整间闲够了仍会被一起收走，不给会议室永久免死金牌', () => {
-  const manager = new SessionManager();
-  const now = Date.now();
-  const idle = now - 9 * HOUR;
-  seed(manager, 'a', { kind: 'claude', title: '一号位', ccSessionId: 'cc-1', meetingId: 'room-1' }, idle);
-  seed(manager, 'b', { kind: 'codex', title: '二号位', codexSid: 'sid-1', meetingId: 'room-1' }, idle);
-
-  const swept = manager.suspendIdleSessions({ idleMs: 5 * HOUR, now, excludeMeeting: false, reason: 'idle-timeout' });
-  assert.deepEqual(swept.requested.sort(), ['a', 'b']);
+test('房间里一个 watcher 都没有时，成员同样不被闲置巡检收走', () => {
+  // 会议室成员的 PTY 由「循环 pass 后整间休眠」和手动休眠回收，不靠闲置巡检 ——
+  // 靠巡检就必然要回答「这个成员是不是在等别人」，而那个问题没有可靠答案。
+  const h = idleSweepHarness();
+  const swept = h.scheduler.sweep();
+  assert.deepEqual(swept.requested, ['lonely']);
+  assert.equal(swept.skipped['meeting-member'], 2);
 });
 
 function roomHarness() {
