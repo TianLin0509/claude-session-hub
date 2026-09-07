@@ -133,15 +133,16 @@ test('未知 kind 回落到 .sl-model 文字列', () => {
 });
 
 // ---------------- 用例 5：休眠行不再印"休眠"二字，但 dormant 标记还在 ----------------
-test('休眠会话的时间列不带"休眠 ·"前缀，dormant class 与状态点保留', () => {
+test('休眠会话时间列只显示时间，以月牙替代灰色状态环', () => {
   const { rows, html } = renderRows(oneSession({
     id: 'd1', kind: 'codex', status: 'dormant', suspendReason: 'idle-timeout',
   }));
   const timeCol = /<span class="sl-time[^"]*">([^<]*)<\/span>/.exec(html);
   assert.ok(timeCol, '应渲染 .sl-time 列');
   assert.equal(timeCol[1], '09:30', '时间列只剩时间本身');
-  assert.ok(rows.some(r => String(r.className || '').includes('dormant')), '行仍带 dormant class（底色靠它）');
-  assert.ok(/sl-ring-dot dorm/.test(html), '灰色休眠状态点保留');
+  assert.ok(rows.some(r => String(r.className || '').includes('dormant')), '行仍带 dormant class');
+  assert.ok(/class="sl-moon"/.test(html), '休眠使用月牙标识');
+  assert.ok(!/sl-ring-dot dorm/.test(html), '避免月牙和灰色状态环重复提示');
   assert.ok(/自动休眠/.test(html) && /点击唤醒/.test(html), 'tooltip 仍解释休眠与唤醒');
 });
 

@@ -171,6 +171,11 @@ function toggleTimeGroup(key) {
   _persistExpandedTimeGroups();
   renderSessionList();
 }
+// 休眠独立于时间组，默认展开；当前会话所在组始终可见。
+let dormantGroupCollapsed = (() => {
+  try { return storage.getItem('hubDormantGroupCollapsed') === 'true'; }
+  catch { return false; }
+})();
 // --- 家族筛选页签（全部 / Claude / Codex / 其他），落盘，重开 Hub 保持上次选择 ---
 const _familyFilter = {
   key: (() => {
@@ -328,7 +333,12 @@ function _sessionKindHtml(kind, modelTxt) {
 // --- 2026-07-19 道雪 · 方案4(ctx 圆环)：15px SVG，圆环弧=ctx 占用，圆心点=会话状态 ---
 //   ctxPct 为 null（powershell/群聊父项）时只画空轨道 + 状态圆心；精确 % 进 title tooltip。
 const _RING_C = 37.7; // 2πr (r=6)
+function _moonHtml() {
+  return '<svg class="sl-moon" viewBox="0 0 16 16" role="img" aria-label="休眠"' +
+    '><title>休眠中，点击唤醒</title><path d="M13.5 10.2A6 6 0 0 1 5.8 2.5a6 6 0 1 0 7.7 7.7Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+}
 function _ringHtml(ctxPct, dotCls) {
+  if (dotCls === 'dorm') return _moonHtml();
   const arc = (typeof ctxPct === 'number')
     ? `<circle cx="8" cy="8" r="6" class="sl-ring-arc ${pctClass(ctxPct)}" stroke-dasharray="${(Math.min(100, Math.max(0, ctxPct)) / 100 * _RING_C).toFixed(1)} ${_RING_C}" transform="rotate(-90 8 8)"/>`
     : '';
@@ -668,7 +678,7 @@ function _sessionWarningText(session) {
       // 2026-07-19 道雪 · 方案C：群聊两行卡（行1 状态+标题+时间，行2 成员 mini-jump），
       //   不再渲染 badge pill（等你/休眠进 sl-state，已选数进行2 末尾）。
       const isDormantMeeting = s.status === 'dormant';
-      const hasUnread = !isDormantMeeting && !isActive && (s.unreadAnsweredSize > 0);
+      const hasUnread = !isActive && (s.unreadAnsweredSize > 0);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
       const meetingRuntime = _meetingRuntimeAggregate(s._meeting, sessionMap);
       const anySubRunning = meetingRuntime.running;
@@ -680,12 +690,22 @@ function _sessionWarningText(session) {
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
         + (hasUnread ? ' need-unread' : '');
       div.dataset.meetingId = s.id;
+      if (isDormantMeeting && isGroupChat) {
+        div.tabIndex = 0;
+        div.addEventListener('keydown', event => {
+          if (event.target === div && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            div.click();
+          }
+        });
+      }
       const SLOT_LABELS_M = ['一号位', '二号位', '三号位'];
       const miniSids = isGroupChat ? (s._meeting.subSessions || []) : (s._meeting.subSessions || []).slice(0, 3);
       const memberTotal = (s._meeting.subSessions || []).length;
       const memberSelected = isGroupChat
         ? (Array.isArray(s._meeting.participants) ? s._meeting.participants.length : memberTotal)
         : memberTotal;
+      if (isDormantMeeting) div.title = `${s.title} · 休眠中 · ${memberSelected}/${memberTotal} 已选 · 点击打开群聊`;
       // 群聊子会话默认折叠，若只在普通 session 行画告警，Claude/DeepSeek 成员的
       // memory link 错误在最常用的群聊视图里仍然不可见。父行聚合显示，mini-jump
       // tooltip 再指出具体成员。
@@ -736,28 +756,28 @@ function _sessionWarningText(session) {
       }).join('');
       // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
       let dotCls = 'idle';
-      if (isDormantMeeting) dotCls = 'dorm';
-      else if (anySubWaiting) dotCls = 'wait';
+      if (anySubWaiting) dotCls = 'wait';
       else if (anySubDisconnected) dotCls = 'error';
       else if (anySubRunning) dotCls = 'run';
       else if (anySubFailed) dotCls = 'error';
       else if (hasUnread) dotCls = 'unread';
+      else if (isDormantMeeting) dotCls = 'dorm';
       let stateHtml = '<span></span>';
-      if (isDormantMeeting) stateHtml = '<span class="sl-state dorm" title="休眠中，点击唤醒">休眠</span>';
-      else if (anySubWaiting) stateHtml = '<span class="sl-state wait">等你</span>';
+      if (anySubWaiting) stateHtml = '<span class="sl-state wait">等你</span>';
       else if (anySubDisconnected) stateHtml = '<span class="sl-state error">断连</span>';
       else if (anySubRunning) stateHtml = '<span class="sl-state run">运行中</span>';
       else if (anySubFailed) stateHtml = '<span class="sl-state error">异常</span>';
       else if (hasUnread) {
         stateHtml = `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`;
       }
+      else if (isDormantMeeting) stateHtml = `<span class="sl-state dorm">${_moonHtml()}</span>`;
       div.innerHTML = `
         <div class="sl-line1${canExpand ? ' with-arrow' : ''}">
           ${canExpand ? `<span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>` : ''}
-          ${_ringHtml(null, dotCls)}
+          ${isDormantMeeting && isGroupChat ? '' : _ringHtml(null, dotCls)}
           <span class="sl-title" title="${escapeHtml([s.title, meetingWarning].filter(Boolean).join(' · '))}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${meetingWarning ? `<span class="sl-pin" title="${escapeHtml(meetingWarning)}">⚠</span>` : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
           ${stateHtml}
-          <span class="sl-time">${formatTime(latestActivityTime(s))}</span>
+          <span class="sl-time">${isDormantMeeting && dotCls !== 'dorm' ? _moonHtml() : ''}${formatTime(latestActivityTime(s))}</span>
         </div>
         <div class="session-mini-jumps">${miniJumpsHtml}<span class="sl-members-hint">${memberSelected}/${memberTotal} 已选</span></div>
       `;
@@ -866,7 +886,7 @@ function _sessionWarningText(session) {
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       ${_sessionKindHtml(s.kind, modelTxt)}
-      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : ''}${formatTime(latestActivityTime(s))}`}</span>
+      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDormant && !isResumePending && dotCls !== 'dorm' ? _moonHtml() : ''}${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : ''}${formatTime(latestActivityTime(s))}`}</span>
     `;
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     renderTarget.appendChild(div);
@@ -877,7 +897,7 @@ function _sessionWarningText(session) {
   //     等你响应 = 非 active 且 CLI 明确在等待用户输入
   //     运行中   = RuntimeTruth starting/running（原生事件 + PTY 强校验 + 兜底）
   //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
-  //     最近     = 24h 内其余（含 active、休眠、空闲）
+  //     最近     = 24h 内其余；普通休眠独立成组，未读/异常/唤醒中不被折叠。
   // 勾选出来的 Agent 会话不参与下面的时间/状态分区，而是各自成组单独列出——
   // 混进「最近」里按时间排，等于又找不着了，失去了勾它出来的意义。
   const agentBuckets = new Map();
@@ -892,7 +912,11 @@ function _sessionWarningText(session) {
 
   const bottomed = normalVisible.filter(isPinnedToBottom);
   const normallyPlaced = normalVisible.filter(s => !isPinnedToBottom(s));
-  const { recent, mid, old } = partitionSessionsByAge(normallyPlaced, Date.now());
+  const isDormantItem = s => s._isMeeting ? s.status === 'dormant' : getSessionRuntimeTruth(s).state === RUNTIME_DORMANT;
+  // 先取出所有年龄的休眠，再按关注状态分类。置顶/置底/Agent 分组保留原有归属。
+  const dormantCandidates = normallyPlaced.filter(s => !s.pinned && isDormantItem(s));
+  const dormantIds = new Set(dormantCandidates.map(s => s.id));
+  const { recent, mid, old } = partitionSessionsByAge(normallyPlaced.filter(s => !dormantIds.has(s.id)), Date.now());
   const activeSid = getActiveSessionId();
   const activeMid = getActiveMeetingId();
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
@@ -906,14 +930,16 @@ function _sessionWarningText(session) {
     if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
     return sessionHasCompletedUnread(s);
   }
-  const respond = [], running = [], failed = [], completed = [], rest = [];
-  for (const s of recent) {
+  const respond = [], running = [], failed = [], completed = [], rest = [], dormant = [];
+  for (const s of [...recent, ...dormantCandidates].sort(compareSidebarPlacement)) {
     if (needsRespond(s)) respond.push(s);
+    else if (s._resumePending === true) running.push(s);
     else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : sessionRuntimeIsActive(s)) running.push(s);
     else if (s._isMeeting
       ? _meetingRuntimeAggregate(s._meeting, sessionMap).failed
       : (getSessionRuntimeTruth(s).state === RUNTIME_FAILED || hasStreamDisconnectIssue(s))) failed.push(s);
     else if (isCompletedUnread(s)) completed.push(s);
+    else if (!s.pinned && isDormantItem(s)) dormant.push(s);
     else rest.push(s);
   }
   function appendSecHeader(label, count, cls) {
@@ -939,10 +965,31 @@ function _sessionWarningText(session) {
   }
 
   if (rest.length) {
-    if (respond.length || running.length || failed.length || completed.length || agentBuckets.size) {
+    if (respond.length || running.length || failed.length || completed.length || agentBuckets.size || dormant.length) {
       appendSecHeader('最近', rest.length);
     }
     for (const s of rest) appendItem(s);
+  }
+  if (dormant.length) {
+    const expanded = !dormantGroupCollapsed || dormant.some(isActiveItem);
+    const header = doc.createElement('button');
+    header.type = 'button';
+    header.className = 'session-time-group-header session-dormant-header' + (expanded ? ' expanded' : '');
+    header.dataset.timeGroup = 'dormant';
+    // Native button supplies keyboard activation; the property is reflected by Chromium.
+    header.ariaExpanded = String(expanded);
+    header.innerHTML = `<span class="stg-arrow">▶</span>${_moonHtml()}<span class="stg-label">休眠</span><span class="stg-count">${dormant.length}</span>`;
+    header.addEventListener('click', () => {
+      dormantGroupCollapsed = expanded;
+      try { storage.setItem('hubDormantGroupCollapsed', String(dormantGroupCollapsed)); } catch {}
+      renderSessionList();
+      // Rebuild replaces the button. Keep keyboard focus on its replacement.
+      if (typeof sessionListEl.querySelector === 'function') {
+        sessionListEl.querySelector('.session-dormant-header')?.focus({ preventScroll: true });
+      }
+    });
+    renderTarget.appendChild(header);
+    if (expanded) for (const s of dormant) appendItem(s);
   }
   function appendTimeGroup(key, label, items) {
     if (!items.length) return;
