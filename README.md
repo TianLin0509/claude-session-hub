@@ -83,6 +83,15 @@ claude --version   # 能输出版本号即可
 - **英灵议事（本机投研）**：研究群聊的 `@` 菜单可召唤巴菲特/利弗莫尔镜头；所有模型通过共享 MCP 读取同一规则包与哈希，英灵只提供建议、不执行交易。
 - **隔离工作区**：群聊子会话默认进入独立 workspace，避免污染用户主目录。
 
+## 准备一个可并行开发的项目
+
+使用“开发”场景前，可用独立维护的 [project-prep skill](https://github.com/TianLin0509/project-prep)
+整理业务仓库，生成 Author/Merger 合同、项目配置、Git 钩子和本地合并入口。
+支持 Claude Code 与 Codex，安装 skill 不会安装或启动 Hub。
+
+安装方式、可直接发给 Agent 的 prompt 和群聊接入步骤见
+[project-prep 接入说明](docs/project-prep.md)。推荐使用固定发布版本，源码由独立仓库维护。
+
 ## 常见问题
 
 **Q：启动后页面空白或报 "Cannot find module"**
