@@ -564,5 +564,33 @@ test('beginTurn omits clientMessageId for internal orchestration (loop / serial)
   }
 });
 
+// 合并主干「每次派发留一张卡片」之后的共存检查（2026-09-07）：
+// 派发卡片和系统提示同样是 role='user'，但它们不是用户按下的那一条，
+// 绝不能把渲染层的本地气泡认领掉。两组元数据写在同一条消息上也必须互不覆盖。
+test('dispatch cards and system notes never claim a renderer pending bubble', () => {
+  const { unclaimedPendingUserMessages } = require('../core/groupchat-pending-claim.js');
+  const { orch } = fresh();
+  const begin = orch.beginTurn('工作位这一步', {
+    clientMessageId: 'send-7',
+    dispatch: { kind: 'workflow', stepIndex: 0, attempt: 1, runId: 'run-1', toMemberIds: ['m1'], toLabels: ['工作位'] },
+  });
+  const user = orch.state.messages.find(message => message.id === `u${begin.turnNum}`);
+  assert.strictEqual(user.clientMessageId, 'send-7', '派发元数据不该把身份挤掉');
+  assert.strictEqual(user.dispatch.stepIndex, 0, '身份也不该把派发元数据挤掉');
+
+  orch.appendDispatchMessage(begin.turnNum, '评审这一步', {
+    kind: 'workflow', stepIndex: 1, attempt: 1, runId: 'run-1', toMemberIds: ['m2'], toLabels: ['评审位'],
+  });
+  orch.appendSystemNote(begin.turnNum, '循环自愈了一次');
+  const messages = orch.getState().messages;
+  assert.ok(messages.filter(m => m.role === 'user').length >= 3, '这一轮应当有多条 role=user 的消息');
+  // 别人那次发送的 pending：满屋子 role=user 的消息，一条都不该认领它。
+  const other = { content: '评审这一步', clientId: 'send-other', createdAt: Date.now(), afterTurn: 0 };
+  assert.strictEqual(unclaimedPendingUserMessages(messages, [other]).length, 1);
+  // 本次发送的 pending：只被那条带同一个 id 的权威消息认领。
+  const mine = { content: '工作位这一步', clientId: 'send-7', createdAt: Date.now(), afterTurn: 0 };
+  assert.deepStrictEqual(unclaimedPendingUserMessages(messages, [mine]), []);
+});
+
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 process.exit(failed ? 1 : 0);
