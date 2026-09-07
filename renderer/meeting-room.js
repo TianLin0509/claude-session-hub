@@ -5033,7 +5033,10 @@ if (typeof document !== 'undefined') (function () {
     } else if (loopSt && loopSt.status === 'paused' && discussingNow) {
       chips.push(_renderInputChip('闭环', '旧循环已暂停 · 讨论中不可恢复，请「开工」', ''));
     } else if (loopSt && loopSt.status === 'paused') {
-      chips.push(`<span class="mr-input-preflight-chip warn clickable" data-loop-resume="1" title="${escapeHtml((loopSt.error && loopSt.error.reason) || (loopSt.lastError && loopSt.lastError.reason) || '步骤失败，循环已暂停')}；点击从持久检查点继续"><span>闭环</span><strong>已暂停 · 继续</strong></span>`);
+      // 2026-09-07：不再直读 loopState.status。那是出事那一刻写下的字，答案后来补进来
+      //   也不会变，用户看不出点下去是「推进」还是「把同一个成员再问一遍」。
+      //   现在标签由主进程的 workflow:step-context 从活状态派生，和引擎行为同源。
+      chips.push(_renderStepAdoptionChips(current, '闭环'));
     }
     const serialSt = _workflowStateByMeeting[current.id]
       || (current.serialWorkflow && current.serialWorkflow.serialRunState)
@@ -5045,9 +5048,8 @@ if (typeof document !== 'undefined') (function () {
       const currentStep = Number.isFinite(rawStepIndex) ? rawStepIndex + 1 : 1;
       const totalSteps = Number(serialSt.totalSteps) || workflowSteps || 1;
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-workflow-stop="1" title="串行工作流正在第 ${currentStep}/${totalSteps} 步，点击停止"><span>串行</span><strong>${currentStep}/${totalSteps} ⏹</strong></span>`);
-    } else if (serialSt && serialSt.status === 'paused' && !discussingNow) {
-      const reason = serialSt.error && serialSt.error.reason || serialSt.lastError && serialSt.lastError.reason || '步骤失败';
-      chips.push(`<span class="mr-input-preflight-chip warn clickable" data-serial-resume="1" title="${escapeHtml(reason)}；点击从持久检查点继续"><span>串行</span><strong>已暂停 · 继续</strong></span>`);
+    } else if (serialSt && serialSt.status === 'paused' && !discussingNow && !(loopSt && loopSt.status === 'paused')) {
+      chips.push(_renderStepAdoptionChips(current, '串行'));
     }
     // 2026-06-28 道雪：把"第N轮已结束 + 综合共识/互相挑错/生成交接/引用焦点卡"融入作战面板这一行，
     //   省掉聊天区里独占的一行。仅群聊、idle、非历史时 _renderNextActionBar 才返回非空。
@@ -5063,16 +5065,24 @@ if (typeof document !== 'undefined') (function () {
     row.querySelectorAll('[data-workflow-stop]').forEach(stopChip => stopChip.addEventListener('click', () => {
       ipcRenderer.invoke('workflow:stop', { meetingId: current.id });
     }));
-    const serialResumeChip = row.querySelector('[data-serial-resume]');
-    if (serialResumeChip) serialResumeChip.addEventListener('click', async () => {
-      const result = await ipcRenderer.invoke('serial:resume', { meetingId: current.id });
-      if (!result || !result.ok) _showGcEscapeNotice(`串行工作流继续失败：${result && result.reason || 'unknown'}`, 'error');
+    const stepSyncChip = row.querySelector('[data-step-sync]');
+    if (stepSyncChip) stepSyncChip.addEventListener('click', async () => {
+      // 「同步回答」只找答案，永远不发 prompt。找到就把流程接上，找不到就如实说还在等。
+      stepSyncChip.classList.add('is-busy');
+      try {
+        const result = await ipcRenderer.invoke('workflow:sync-step', { meetingId: current.id });
+        if (!result || !result.ok) {
+          _showGcEscapeNotice(`同步回答失败：${(result && (result.detail || result.reason)) || 'unknown'}`, 'error');
+        } else {
+          _showGcEscapeNotice(result.message || '已同步', result.advanced ? 'info' : 'warn');
+        }
+      } finally {
+        stepSyncChip.classList.remove('is-busy');
+        await _refreshStepContext(current.id, { force: true });
+      }
     });
-    const loopResumeChip = row.querySelector('[data-loop-resume]');
-    if (loopResumeChip) loopResumeChip.addEventListener('click', async () => {
-      const result = await ipcRenderer.invoke('loop:resume', { meetingId: current.id });
-      if (!result || !result.ok) _showGcEscapeNotice(`循环工作流继续失败：${result && result.reason || 'unknown'}`, 'error');
-    });
+    const stepPasteChip = row.querySelector('[data-step-paste]');
+    if (stepPasteChip) stepPasteChip.addEventListener('click', () => { void _openStepPasteDialog(current); });
     const convergeChip = row.querySelector('[data-dev-converge]');
     if (convergeChip) convergeChip.addEventListener('click', () => {
       const m = meetingData[current.id];
@@ -5187,6 +5197,156 @@ if (typeof document !== 'undefined') (function () {
   // 「开工」：把讨论收敛出的任务说明确认一遍，再以它为「上一条消息」启动循环。
   // 预填取群里最近一份「## 任务说明」（工作位按「收敛」要求写的）；没有就留空让用户自己写。
   // 这样工作位合同里「任务是维护者上一条消息说的那件事」一个字不用改。
+  // ── 工作流当前步骤的「现在到底什么情况」缓存（2026-09-07 Claude 1）──────────
+  // 状态栏是同步渲染的，而判据在主进程（它才看得到 orchestrator 的活状态）。
+  // 所以这里存一份短缓存：渲染时先用缓存画，同时异步取一次；只有内容真的变了才重渲，
+  // 避免 render → fetch → render 打转。
+  const _stepContextByMeeting = {};
+  const _stepContextPending = {};
+
+  function _stepContextKey(ctx) {
+    if (!ctx || !ctx.ok || !ctx.active) return 'inactive';
+    return [ctx.kind, ctx.stepIndex, ctx.turnNum, ctx.decision && ctx.decision.action,
+      (ctx.members || []).map(m => (m && m.hasResult ? '1' : '0')).join('')].join('|');
+  }
+
+  async function _refreshStepContext(meetingId, { force = false } = {}) {
+    if (!meetingId || _stepContextPending[meetingId]) return _stepContextByMeeting[meetingId] || null;
+    const cached = _stepContextByMeeting[meetingId];
+    if (!force && cached && (Date.now() - cached._at) < 2000) return cached;
+    _stepContextPending[meetingId] = true;
+    try {
+      const ctx = await ipcRenderer.invoke('workflow:step-context', { meetingId });
+      const next = ctx && typeof ctx === 'object' ? ctx : { ok: false };
+      const prevKey = cached ? cached._key : null;
+      next._at = Date.now();
+      next._key = _stepContextKey(next);
+      _stepContextByMeeting[meetingId] = next;
+      if (next._key !== prevKey && meetingId === activeMeetingId) {
+        const m = meetingData[meetingId];
+        if (m) _updateInputPreflight(m);
+      }
+      return next;
+    } catch (e) {
+      console.warn('[step-context] refresh failed:', e && e.message);
+      return cached || null;
+    } finally {
+      _stepContextPending[meetingId] = false;
+    }
+  }
+
+  // 两个 chip：一个「同步回答」（永不发 prompt），一个「手动提供回答」。
+  // 有副作用的动作不放在这里 —— 想让某个成员重答要走卡片上那个明确写着
+  // 「重新让本成员回答」的入口，按钮名字必须说清后果。
+  function _renderStepAdoptionChips(current, groupLabel) {
+    void _refreshStepContext(current.id);
+    const ctx = _stepContextByMeeting[current.id];
+    const chip = ctx && ctx.ok && ctx.active ? ctx.chip : null;
+    const advance = !!(ctx && ctx.ok && ctx.active && ctx.decision && ctx.decision.action === 'advance');
+    const blocked = !!(ctx && ctx.ok && ctx.active && ctx.decision && ctx.decision.action === 'blocked');
+    const label = (chip && chip.label) || '同步回答';
+    const hint = (chip && chip.hint) || '只会再找一次这一步的回答，不会重发 prompt';
+    const tone = advance ? 'saved' : 'warn';
+    const out = [];
+    if (blocked) {
+      out.push(`<span class="mr-input-preflight-chip" title="${escapeHtml(hint)}"><span>${escapeHtml(groupLabel)}</span><strong>${escapeHtml(label)}</strong></span>`);
+      return out.join('');
+    }
+    out.push(`<span class="mr-input-preflight-chip ${tone} clickable" data-step-sync="1" title="${escapeHtml(hint)}"><span>${escapeHtml(groupLabel)}</span><strong>${escapeHtml(label)}</strong></span>`);
+    if (!advance) {
+      out.push(`<span class="mr-input-preflight-chip accent clickable" data-step-paste="1" title="自动找不到回答时用这个：从 CLI 里复制该成员的正文粘进来，采用后直接接上下一步，原成员不会被再问一遍"><span>粘贴</span><strong>手动提供回答</strong></span>`);
+    }
+    return out.join('');
+  }
+
+  // 手动提供回答：身份（群聊 / 轮次 / 步骤 / 成员）全部由当前步骤带，用户不填也不能改，
+  // 所以不存在「粘到错的席位」。提交时主进程会拿这份 token 再核一次：
+  // 流程已经推进、换了任务、或被停止，就不覆盖也不重启。
+  async function _openStepPasteDialog(meeting) {
+    const current = meeting || meetingData[activeMeetingId];
+    if (!current) return;
+    const ctx = await _refreshStepContext(current.id, { force: true });
+    if (!ctx || !ctx.ok || !ctx.active) {
+      _showGcEscapeNotice('当前没有等待回答的工作流步骤', 'error');
+      return;
+    }
+    if (ctx.decision && ctx.decision.action === 'blocked') {
+      _showGcEscapeNotice(ctx.chip && ctx.chip.hint || '当前不能采用回答', 'error');
+      return;
+    }
+    const candidates = (ctx.members || []).filter(m => m && m.sid && !m.hasResult);
+    if (!candidates.length) {
+      _showGcEscapeNotice('这一步的回答都已经齐了，直接点「继续」即可', 'info');
+      return;
+    }
+    const nextNames = '下一步';
+    const existing = document.getElementById('mr-step-paste-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'mr-step-paste-overlay';
+    overlay.className = 'mr-input-editor-overlay';
+    const options = candidates.map(m =>
+      `<option value="${escapeHtml(m.sid)}">${escapeHtml(m.label)}</option>`).join('');
+    overlay.innerHTML = `
+      <div class="mr-input-editor" role="dialog" aria-modal="true" aria-label="手动提供回答">
+        <div class="mr-input-editor-head">
+          <strong>手动提供回答 · 第 ${Number(ctx.stepIndex) + 1} 步</strong>
+          <span id="mr-step-paste-count">0 字</span>
+        </div>
+        <div class="mr-dev-kickoff-hint">
+          从 CLI 或回答卡片里复制该成员的完整正文粘进来。采用后会作为这一步的回答保存并接上${escapeHtml(nextNames)}，
+          <b>原成员不会被再问一遍</b>。正文会标注「人工粘贴」，不冒充自动完成。
+        </div>
+        <div class="mr-dev-kickoff-hint">
+          归属：${candidates.length > 1
+            ? `<select id="mr-step-paste-member">${options}</select>`
+            : `<b>${escapeHtml(candidates[0].label)}</b>`}
+        </div>
+        <textarea id="mr-step-paste-textarea" class="mr-input-editor-textarea" spellcheck="false" placeholder="在这里粘贴该成员的完整回答正文……"></textarea>
+        <div class="mr-input-editor-actions">
+          <button type="button" class="mr-input-editor-btn" data-action="cancel">取消</button>
+          <button type="button" class="mr-input-editor-btn send" data-action="adopt">采用回答并继续</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const textarea = overlay.querySelector('#mr-step-paste-textarea');
+    const countEl = overlay.querySelector('#mr-step-paste-count');
+    const memberSel = overlay.querySelector('#mr-step-paste-member');
+    const updateCount = () => { if (countEl) countEl.textContent = `${textarea.value.length} 字`; };
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', onKeydown); };
+    const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKeydown);
+    textarea.addEventListener('input', updateCount);
+    setTimeout(() => textarea.focus(), 0);
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', close);
+    overlay.querySelector('[data-action="adopt"]').addEventListener('click', async () => {
+      const body = textarea.value;
+      if (!body.trim()) { _showGcEscapeNotice('正文是空的，没有采用', 'error'); textarea.focus(); return; }
+      const sid = memberSel ? memberSel.value : candidates[0].sid;
+      // 弹窗打开那一刻的身份，提交时由主进程再核一次。
+      const token = {
+        meetingId: current.id,
+        sid,
+        runId: ctx.runId || null,
+        turnNum: ctx.turnNum,
+        stepIndex: ctx.stepIndex,
+      };
+      const result = await ipcRenderer.invoke('groupchat-adopt-pasted-result', {
+        meetingId: current.id, sid, text: body, token,
+      });
+      if (!result || !result.ok) {
+        _showGcEscapeNotice(`未采用：${(result && (result.detail || result.reason)) || 'unknown'}`, 'error');
+        if (!result || !result.keepText) close();   // 正文有价值就留在窗口里让用户处理
+        return;
+      }
+      close();
+      _showGcEscapeNotice(result.message || '已采用你提供的回答', result.advanced ? 'info' : 'warn');
+      await _refreshStepContext(current.id, { force: true });
+    });
+    updateCount();
+  }
+
   async function _openDevKickoffDialog(meeting) {
     const current = meeting || meetingData[activeMeetingId];
     if (!current || !DevDiscuss.isDiscussing(current)) return;

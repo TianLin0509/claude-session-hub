@@ -3,6 +3,8 @@
  * 循环工作流 IPC（Phase 2b 进阶，2026-06-29 道雪）
  * renderer 发起/停止/查询 main 进程驱动的循环。
  */
+const { resumeWorkflowRun } = require('../groupchat/workflow-resume.js');
+
 function registerLoopIpc(ipcMain, deps) {
   const { loopEngine, logger = console } = deps || {};
   if (!ipcMain || !loopEngine) return;
@@ -32,6 +34,8 @@ function registerLoopIpc(ipcMain, deps) {
     catch (err) { return { running: false }; }
   });
 
+  // 恢复统一走 workflow-resume：不清零重试计数、自己不发 prompt。
+  //   派不派发由引擎的活状态闸门决定 —— 已经有可用回答的步骤会被直接推过去。
   ipcMain.handle('loop:resume', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
@@ -41,12 +45,11 @@ function registerLoopIpc(ipcMain, deps) {
       if (!persisted || !['running', 'paused'].includes(persisted.status)) {
         return { ok: false, reason: 'no_resumable_loop_run' };
       }
-      // 开发群聊讨论阶段不许恢复旧循环（会绕过「开工」的任务说明确认）；引擎内部也拦，这里让前端拿到明确原因
+      // 讨论阶段不许恢复旧循环（会绕过「开工」的任务说明确认）。这一层是三道闸门之一，
+      //   共享的 resumeWorkflowRun 里还会再问一次；这里留着是为了给前端精确原因。
       const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
       if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
-      loopEngine.runLoop(args.meetingId, null, { ...persisted, status: 'running', stepAttempt: 0, lastError: null }, { heroIdBySid: args.heroIdBySid || {} })
-        .catch(err => logger.error('[loop:resume] background run failed:', err));
-      return { ok: true };
+      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, heroIdBySid: args.heroIdBySid || {} });
     } catch (err) {
       logger.error('[loop:resume]', err);
       return { ok: false, reason: (err && err.message) || 'internal_error' };
@@ -79,15 +82,11 @@ function registerLoopIpc(ipcMain, deps) {
       if (!persisted || !['running', 'paused'].includes(persisted.status)) {
         return { ok: false, reason: 'no_resumable_serial_run' };
       }
-      const attemptsByStep = { ...(persisted.attemptsByStep || {}) };
-      const resumeIndex = persisted.currentStepIndex !== null && persisted.currentStepIndex !== undefined
-        ? Number(persisted.currentStepIndex)
-        : Number(persisted.nextStepIndex);
-      if (Number.isFinite(resumeIndex)) attemptsByStep[resumeIndex] = 0;
-      const resumable = { ...persisted, status: 'running', attemptsByStep, lastError: null };
-      loopEngine.runSerial(args.meetingId, null, resumable, { heroIdBySid: args.heroIdBySid || {} })
-        .catch(err => logger.error('[serial:resume] background run failed:', err));
-      return { ok: true };
+      // 讨论阶段不许恢复旧循环（会绕过「开工」的任务说明确认）。这一层是三道闸门之一，
+      //   共享的 resumeWorkflowRun 里还会再问一次；这里留着是为了给前端精确原因。
+      const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
+      if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
+      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, heroIdBySid: args.heroIdBySid || {} });
     } catch (err) {
       logger.error('[serial:resume]', err);
       return { ok: false, reason: (err && err.message) || 'internal_error' };

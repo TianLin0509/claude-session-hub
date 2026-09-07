@@ -1482,6 +1482,8 @@ registerGroupchatRecoveryIpc(ipcMain, {
   groupchat,
   groupChatWatcher: groupChatDispatcher.getGroupChatWatcher(),
   isWorkflowRunning: (meetingId) => !!(global.__loopEngine && global.__loopEngine.isRunning(meetingId)),
+  // 「同步回答」和手动粘贴采用之后要能把暂停的流程接上，所以恢复入口要够得着引擎。
+  getLoopEngine: () => global.__loopEngine || null,
   meetingManager,
   sendToRenderer,
   sessionManager,

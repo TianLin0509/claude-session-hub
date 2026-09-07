@@ -18,6 +18,7 @@ const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯
 const { suspendMeetingRoom: suspendMeetingRoomImpl } = require('../../core/meeting-room-suspend.js');
 const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
+const WSR = require('../../core/workflow-step-result.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 开机自动续跑串行工作流的年龄上限：超过这个时长没动静的，只做提示不自动派发。
 const SERIAL_BOOT_RESUME_MAX_IDLE_MS = 6 * 60 * 60 * 1000;
@@ -350,27 +351,68 @@ function createLoopEngine(deps) {
     return { ok: true };
   }
 
-  function evidenceIsSuccessful(evidence, targetCount) {
-    const results = evidence && evidence.entry && Array.isArray(evidence.entry.results)
-      ? evidence.entry.results
-      : [];
-    return results.length >= targetCount && results.slice(0, targetCount).every(result =>
-      result && (!result.status || ['completed', 'manual_extracted'].includes(result.status)) && Number(result.textLength) > 0);
+  // 「这一步有没有可用回答」只认活状态（turn.by / turn.byStatus），不认
+  //   turn.meta.workflowSteps 里那份快照 —— 快照写于结算那一刻，用户后来点「同步回答」
+  //   或手动粘贴补进来的正文不会回头更新它。旧实现的闸门读快照、取正文却读活状态，
+  //   两份证据对不上，于是「气泡里已经有答案」还是被判成「这一步没成功」→ 重新派发，
+  //   同一个 agent 被问第二遍（2026-09-07 维护者实测）。
+  //   快照仍然有用，但只用来**定位**（runId + stepIndex 是身份）；判定一律走这里。
+  function liveStepView(meetingId, turnNum, targetSids) {
+    if (!turnNum || !Array.isArray(targetSids) || !targetSids.length) {
+      return { total: 0, results: [], missingSids: [], complete: false, partial: false };
+    }
+    let orchState = null;
+    try {
+      const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
+      orchState = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState()
+        : orchestrator && orchestrator.state;
+    } catch (error) {
+      logError('[workflow-engine] failed to read live step results:', error);
+    }
+    if (!orchState) return { total: targetSids.length, results: [], missingSids: targetSids.slice(), complete: false, partial: false };
+    const turn = (orchState.turns || []).find(item => item && Number(item.n) === Number(turnNum)) || null;
+    return WSR.inspectStepResults({ turn, messages: orchState.messages, turnNum, targetSids });
   }
 
-  function dispatchResultFromEvidence(meeting, targetMemberIds, evidence) {
-    const turn = evidence && evidence.turn || {};
+  function sidsOf(meeting, memberIds) {
+    return (memberIds || []).map(id => sidOf(meeting, id)).filter(Boolean);
+  }
+
+  // 已经答过的席位不再被问一遍 —— 只把缺口那几位重新派发出去。
+  //   整步重来会让答过的人再答一次，那正是维护者抱怨的事。
+  function missingMemberIdsOf(meeting, memberIds, view) {
+    const missing = new Set((view && view.missingSids) || []);
+    const picked = (memberIds || []).filter(id => missing.has(sidOf(meeting, id)));
+    return picked.length ? picked : (memberIds || []).slice();
+  }
+
+  // 只派发了缺口席位时，dispatchResult 里自然没有另几位的结果。
+  //   下游（评审裁决解析等）要看全量，所以用活状态把已有的那几位补回去。
+  function mergeLiveResults(meeting, memberIds, dispatchResult, turnNum) {
+    const results = Array.isArray(dispatchResult && dispatchResult.results) ? dispatchResult.results.slice() : [];
+    const seen = new Set(results.map(item => item && item.sid));
+    const targetSids = sidsOf(meeting, memberIds);
+    const view = liveStepView(meeting && meeting.id, turnNum, targetSids);
+    for (const item of view.results || []) {
+      if (!item || seen.has(item.sid) || !WSR.resultIsUsable(item)) continue;
+      results.push({ sid: item.sid, status: item.status || 'completed', text: item.text, recovered: true });
+    }
+    return { ...(dispatchResult || {}), results };
+  }
+
+  // 用活状态直接拼出一个「这一步已经成交」的 dispatchResult，下游照常走。
+  //   来源可以是 provider 自动完成、用户点「同步回答」、或用户手动粘贴 —— 三种来源
+  //   在这里已经没有区别，这正是「一个结果入口」想要的效果。
+  function dispatchResultFromLive(meeting, targetMemberIds, turnNum, view) {
+    const bySid = new Map((view && view.results || []).map(item => [item.sid, item]));
     return {
       status: 'completed',
-      turnNum: evidence && evidence.turnNum || null,
+      turnNum: turnNum || null,
       results: targetMemberIds.map(memberId => {
         const sid = sidOf(meeting, memberId);
-        return {
-          sid,
-          status: turn.byStatus && turn.byStatus[sid] || 'completed',
-          text: turn.by && turn.by[sid] || '',
-          recovered: true,
-        };
+        const item = bySid.get(sid) || {};
+        return { sid, status: item.status || 'completed', text: item.text || '', recovered: true };
       }),
       recovered: true,
     };
@@ -433,11 +475,23 @@ function createLoopEngine(deps) {
         // Crash window closure: dispatcher persists this evidence before its
         // Promise resolves. If Hub died after the provider answered but before
         // serialRunState advanced, do not execute the step twice.
+        const targetSids = sidsOf(meeting, targetMemberIds);
         const recovered = stepEvidence(meetingId, state.runId, index);
-        if (recovered && evidenceIsSuccessful(recovered, targetMemberIds.length)) {
-          state.currentTurnNum = state.currentTurnNum || recovered.turnNum || null;
+        // 快照只用来定位轮次；没有快照时退回持久化的 currentTurnNum / 派发回执，
+        //   这样「结算前就崩了、答案后来才补进来」的那一轮同样能被认出来。
+        const evidenceTurnNum = (recovered && recovered.turnNum)
+          || state.currentTurnNum
+          || pendingStepTurn(meetingId, state.runId, index)
+          || null;
+        const stepView = liveStepView(meetingId, evidenceTurnNum, targetSids);
+        if (stepView.complete) {
+          state.currentTurnNum = state.currentTurnNum || evidenceTurnNum || null;
           if (!state.completedSteps.some(item => Number(item.stepIndex) === index)) {
-            state.completedSteps.push({ stepIndex: index, completedAt: recovered.entry.completedAt || Date.now(), recovered: true });
+            state.completedSteps.push({
+              stepIndex: index,
+              completedAt: (recovered && recovered.entry && recovered.entry.completedAt) || Date.now(),
+              recovered: true,
+            });
           }
           state.nextStepIndex = index + 1;
           state.currentStepIndex = null;
@@ -446,9 +500,9 @@ function createLoopEngine(deps) {
           progress({ stage: 'recovered-step', completedStepIndex: index });
           continue;
         }
-        if (!state.currentTurnNum) {
-          state.currentTurnNum = pendingStepTurn(meetingId, state.runId, index) || null;
-        }
+        if (!state.currentTurnNum) state.currentTurnNum = evidenceTurnNum;
+        // 部分席位已经交货时只补缺口，已答的那几位一次都不再被问。
+        const dispatchMemberIds = missingMemberIdsOf(meeting, targetMemberIds, stepView);
 
         const previousAttempts = Number(state.attemptsByStep[index]) || 0;
         if (previousAttempts >= maxAttempts) {
@@ -466,13 +520,13 @@ function createLoopEngine(deps) {
         let dispatchResult = null;
         let failureReason = null;
         try {
-          for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
+          for (const memberId of dispatchMemberIds) await ensureMemberReady(meeting, memberId);
           if (entry.abort) { state.status = 'stopped_user'; break; }
           const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
           const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
             userInput: stepPrompt,
-            targetMemberIds,
+            targetMemberIds: dispatchMemberIds,
             reuseTurnNum: state.currentTurnNum || null,
             appendUserMessage: !state.currentTurnNum,
             dispatchMode: 'serial',
@@ -484,11 +538,12 @@ function createLoopEngine(deps) {
               kind: 'serial',
               stepIndex: index,
               attempt,
-              targetMemberIds,
+              targetMemberIds: dispatchMemberIds,
             },
           });
           if (dispatchResult && dispatchResult.turnNum) state.currentTurnNum = dispatchResult.turnNum;
-          const checked = validateStepResult(meeting, targetMemberIds, dispatchResult);
+          // 只校验这次真的派出去的那几位；没派的那几位刚才已经判过「有可用回答」。
+          const checked = validateStepResult(meeting, dispatchMemberIds, dispatchResult);
           if (checked.takenOver) {
             state.status = 'stopped_user';
             state.lastError = { stage: 'serial', stepIndex: index, reason: checked.reason, at: Date.now() };
@@ -607,12 +662,17 @@ function createLoopEngine(deps) {
         let bRes = null;
         const builderStepIndex = state.round * 2;
         const builderEvidence = stepEvidence(meetingId, state.runId, builderStepIndex);
-        if (builderEvidence && evidenceIsSuccessful(builderEvidence, 1)) {
-          bRes = dispatchResultFromEvidence(meeting, [builderId], builderEvidence);
+        const builderTurnNum = (builderEvidence && builderEvidence.turnNum)
+          || state.currentTurnNum
+          || pendingStepTurn(meetingId, state.runId, builderStepIndex)
+          || null;
+        const builderView = liveStepView(meetingId, builderTurnNum, sidsOf(meeting, [builderId]));
+        if (builderView.complete) {
+          bRes = dispatchResultFromLive(meeting, [builderId], builderTurnNum, builderView);
           state.currentTurnNum = bRes.turnNum;
           progress({ stage: 'builder-recovered', round: state.round + 1 });
         } else {
-          if (!state.currentTurnNum) state.currentTurnNum = pendingStepTurn(meetingId, state.runId, builderStepIndex) || null;
+          if (!state.currentTurnNum) state.currentTurnNum = builderTurnNum;
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
@@ -687,18 +747,22 @@ function createLoopEngine(deps) {
         let rRes = null;
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
-        if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
-          rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
+        const reviewerTurnNum = (reviewerEvidence && reviewerEvidence.turnNum) || turnNum || null;
+        const reviewerView = liveStepView(meetingId, reviewerTurnNum, sidsOf(meeting, reviewerIds));
+        if (reviewerView.complete) {
+          rRes = dispatchResultFromLive(meeting, reviewerIds, reviewerTurnNum, reviewerView);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
         } else {
+          // 已经给过裁决的评审席位不再被问第二遍，只补缺口。
+          const reviewerDispatchIds = missingMemberIdsOf(meeting, reviewerIds, reviewerView);
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
             try {
-              for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+              for (const rid of reviewerDispatchIds) await ensureMemberReady(meeting, rid);
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
-                targetMemberIds: reviewerIds,
+                targetMemberIds: reviewerDispatchIds,
                 reuseTurnNum: turnNum,
                 appendUserMessage: false,
                 dispatchMode: 'serial',
@@ -706,9 +770,14 @@ function createLoopEngine(deps) {
                 // 同上：评审跑两遍全量时转录会长时间只有工具输出，不能按死墙钟砍。
                 allowActiveExtend: true,
                 heroIdBySid: runOptions.heroIdBySid || {},
-                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
+                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerDispatchIds },
               });
-              const checked = validateStepResult(meeting, reviewerIds, rRes);
+              // 只补了缺口时，把先前已成交的那几位从活状态补回结果集，
+              //   否则下游解析裁决会把「没派发」误当成「没给裁决」。
+              if (rRes && reviewerDispatchIds.length < reviewerIds.length) {
+                rRes = mergeLiveResults(meeting, reviewerIds, rRes, rRes.turnNum || reviewerTurnNum);
+              }
+              const checked = validateStepResult(meeting, reviewerDispatchIds, rRes);
               if (checked.takenOver) break;
               if (checked.ok) break;
               state.lastError = { stage: 'reviewer', reason: checked.reason, attempt: transportAttempt, at: Date.now() };

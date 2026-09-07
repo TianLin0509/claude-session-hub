@@ -27,6 +27,10 @@ const devWorkbenchFeed = require('./dev-workbench-feed');
 //   role / turnNum / sid 与正式答复完全一样，而且落盘更早。凡是按「本轮 + 本席位」
 //   找答复的地方都必须先把它排掉，否则它会顶替正式答复：跑空时被当成答案存档，
 //   有答复时被就地改写、丢掉 a{n}-{memberId} 身份。
+// 人已经确认过的结果来源：从转录同步回来的，和用户直接粘贴的。
+//   它们对流程的意义相同（这一席位交货了），也同样不该被随后迟到的失败信号顶掉。
+const MANUAL_RESULT_STATUSES = new Set(['manual_extracted', 'manual_paste']);
+
 const PROGRESS_UPDATE_STATUS = 'progress_update';
 // 同一轮同一席位最多留这么多条过程汇报；再多就原地改写最后一条。
 const MAX_PROGRESS_UPDATES_PER_STEP = 40;
@@ -399,6 +403,8 @@ class GroupChatOrchestrator {
     const statusMap = {
       completed: ATTEMPT_COMPLETED,
       manual_extracted: ATTEMPT_COMPLETED,
+      // 人工粘贴：来源不同，但对流程而言同样是「这一席位交货了」。
+      manual_paste: ATTEMPT_COMPLETED,
       errored: ATTEMPT_FAILED,
       failed: ATTEMPT_FAILED,
       interrupted: ATTEMPT_INTERRUPTED,
@@ -822,9 +828,11 @@ class GroupChatOrchestrator {
       const _prevStatus = byStatus[sid];
       const _existingMsg = this.state.messages.find(m => m && m.role === 'assistant'
         && Number(m.turnNum) === Number(turnNum) && m.sid === sid && !isProgressUpdateMessage(m));
-      const _hasManualResult = _prevStatus === 'manual_extracted'
+      // 人工来源有两种：从转录同步回来（manual_extracted）和用户直接粘贴（manual_paste）。
+      //   两者都是「人已经确认过」的结果，都不该被随后迟到的自动/退出信号顶掉。
+      const _hasManualResult = MANUAL_RESULT_STATUSES.has(_prevStatus)
         && !!(by[sid] && String(by[sid]).trim().length);
-      const _incomingIsManual = _rStatus === 'manual_extracted';
+      const _incomingIsManual = MANUAL_RESULT_STATUSES.has(_rStatus);
       const _sameAttempt = !_existingMsg || !_existingMsg.attemptId || !r.attemptId
         || String(_existingMsg.attemptId) === String(r.attemptId);
       const _hasCompletedResult = _prevStatus === 'completed'
@@ -841,7 +849,7 @@ class GroupChatOrchestrator {
       //   保留 manual_extracted——对齐 waitTurnComplete.onTurnPatched 的同名守卫，
       //   防止"手动救回的答案"在整轮 settle 时又被标回 errored。
       byStatus[sid] = (_hasManualResult && !_incomingIsManual)
-        ? 'manual_extracted'
+        ? _prevStatus
         : (_preserveExistingFinal ? 'completed' : _rStatus);
       if (r.attemptId) attemptIdBy[sid] = String(r.attemptId);
       if (r.providerTurnId) providerTurnIdBy[sid] = String(r.providerTurnId);
@@ -1105,14 +1113,14 @@ class GroupChatOrchestrator {
     // 任意终态只要带非空文本就先保住正文；errored + partial text 也比丢结果更有价值。
     const _writeContent = !!(text && String(text).trim().length);
     const _prevPatchStatus = byStatus[sid];
-    const _hasManualResult = _prevPatchStatus === 'manual_extracted'
+    const _hasManualResult = MANUAL_RESULT_STATUSES.has(_prevPatchStatus)
       && !!(by[sid] && String(by[sid]).trim().length);
     const _incomingStatus = status || 'completed';
-    const _incomingIsManual = _incomingStatus === 'manual_extracted';
+    const _incomingIsManual = MANUAL_RESULT_STATUSES.has(_incomingStatus);
     const _acceptIncomingContent = _writeContent && (!_hasManualResult || _incomingIsManual);
     if (_acceptIncomingContent) by[sid] = text;
     const _finalStatus = (_hasManualResult && !_incomingIsManual)
-      ? 'manual_extracted'
+      ? _prevPatchStatus
       : _incomingStatus;
     byStatus[sid] = _finalStatus;
     if (attemptId) attemptIdBy[sid] = String(attemptId);
