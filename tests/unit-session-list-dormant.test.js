@@ -14,7 +14,7 @@ function element() {
     get innerHTML() { return this.html || ''; },
   };
 }
-function harness({ items = [], meetings = {}, active = null, store = new Map() } = {}) {
+function harness({ items = [], meetings = {}, active = null, store = new Map(), extra = {} } = {}) {
   const list = element();
   const sessions = new Map(items.map(s => [s.id, s]));
   const renderer = createSessionListRenderer({
@@ -25,6 +25,7 @@ function harness({ items = [], meetings = {}, active = null, store = new Map() }
     isAiKind: () => true, modelShort: () => '', modelClass: () => '',
     escapeHtml: v => String(v || ''), formatTime: () => '6 小时前', pctClass: () => 'ok',
     selectSession() {}, selectMeeting() {}, openContextMenu() {},
+    ...extra,
   });
   renderer.renderSessionList();
   const row = id => list.children.find(el => el.dataset.sessionId === id || el.dataset.meetingId === id);
@@ -75,15 +76,45 @@ test('折叠状态保存，重建后仍折叠；当前休眠会话自动展开',
   assert.ok(active.row('sleep'));
 });
 
-test('超过三天的休眠未读、唤醒中和断连不会被休眠折叠藏起来', () => {
+test('超过三天的休眠里唤醒中和断连不被折叠藏起来，陈年未读回休眠区', () => {
   const old = now - 7 * 86400000;
   const h = harness({ items: [dormant('read', { lastMessageTime: old, unreadCount: 2 }),
     dormant('pending', { lastMessageTime: old, _resumePending: true }),
     dormant('failed', { lastMessageTime: old, connectionIssue: { type: 'stream-disconnected', message: 'stream disconnected' } })] });
-  assert.match(h.section('read'), /已完成未读/);
+  // 陈年休眠的 unreadCount 不再冒充「刚答完」：上一版把 88 天前的会话也顶进这个分区，
+  // 用户一打开侧栏是 47 条「已完成未读」，大半来自两三个月前。
+  assert.match(h.section('read'), /休眠/);
+  assert.doesNotMatch(h.section('read'), /已完成未读/);
   assert.match(h.section('pending'), /运行中/);
   assert.match(h.row('pending').innerHTML, /唤醒中/);
   assert.match(h.section('failed'), /运行异常/);
+});
+
+test('24 小时内刚休眠的未读仍进「已完成未读」，陈年的不进', () => {
+  const h = harness({ items: [dormant('fresh', { lastMessageTime: now - 3600000, unreadCount: 1 }),
+    dormant('stale', { lastMessageTime: now - 88 * 86400000, unreadCount: 1 })] });
+  assert.match(h.section('fresh'), /已完成未读/);
+  assert.match(h.section('stale'), /休眠/);
+  const header = h.list.children.find(el => /sec-completed/.test(el.className || ''));
+  assert.match(header.innerHTML, /sec-count">1</);
+});
+
+test('「已完成未读」组头提供一键已读按钮，只有点按钮本身才触发', () => {
+  let calls = 0;
+  const h = harness({ items: [dormant('fresh', { lastMessageTime: now - 3600000, unreadCount: 1 })],
+    extra: { markAllSessionsRead: () => { calls += 1; } } });
+  const header = h.list.children.find(el => /sec-completed/.test(el.className || ''));
+  assert.match(header.innerHTML, /sec-mark-all-read/);
+  header.listeners.click({ target: { className: 'sl-title' }, preventDefault() {}, stopPropagation() {} });
+  assert.equal(calls, 0, '点组头空白处不该触发全部已读');
+  header.listeners.click({ target: { className: 'sec-mark-all-read' }, preventDefault() {}, stopPropagation() {} });
+  assert.equal(calls, 1);
+});
+
+test('没注入回调时不渲染一键已读按钮', () => {
+  const h = harness({ items: [dormant('fresh', { lastMessageTime: now - 3600000, unreadCount: 1 })] });
+  const header = h.list.children.find(el => /sec-completed/.test(el.className || ''));
+  assert.doesNotMatch(header.innerHTML, /sec-mark-all-read/);
 });
 
 test('置顶和置底休眠保留原有位置，家族过滤更新休眠计数', () => {

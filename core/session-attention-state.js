@@ -98,6 +98,18 @@ function clearSessionAttention(session, { clearUnread = false } = {}) {
   return changed;
 }
 
+// 「全部已读」用：只消掉“答完了还没看”这一类未读，不碰 needs-input。
+// CLI 真的卡在等用户输入时，把它标成已读等于替用户撒谎——那条会话仍然需要人去处理。
+function clearSessionCompletedUnread(session) {
+  if (!session || typeof session !== 'object') return false;
+  const hadUnreadCount = Math.max(0, Number(session.unreadCount) || 0) > 0;
+  const wasReplyReady = attentionStateOf(session) === ATTENTION_REPLY_READY;
+  if (!hadUnreadCount && !wasReplyReady) return false;
+  if (wasReplyReady) _applyAttentionState(session, ATTENTION_NONE);
+  session.unreadCount = 0;
+  return true;
+}
+
 function markSessionNeedsUserInput(session, { reason = null, text = null } = {}) {
   if (!session || typeof session !== 'object') return false;
   const previousState = attentionStateOf(session);
@@ -242,6 +254,7 @@ module.exports = {
   applyTurnAborted,
   attentionStateOf,
   clearSessionAttention,
+  clearSessionCompletedUnread,
   markSessionNeedsUserInput,
   normalizeEventTime,
   sessionHasCompletedUnread,

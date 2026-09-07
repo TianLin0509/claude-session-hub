@@ -152,6 +152,24 @@ async function main() {
     assert(m.getReport() && /循环工作流复盘/.test(m.getReport()), '晨报已生成');
   });
 
+  await t('pass 收尾主动休眠整间会议室；没跑通的收尾不动房间', async () => {
+    const suspends = [];
+    const passRun = mk();
+    passRun.deps.suspendMeetingRoom = (mid, ctx) => { suspends.push({ mid, reason: ctx && ctx.reason }); return { ok: true }; };
+    const passed = await createLoopEngine(passRun.deps).runLoop('mtg', 'g', null);
+    assert(passed.status === 'done', 'status=' + passed.status);
+    assert(suspends.length === 1 && suspends[0].mid === 'mtg', '顺利完成后应整间休眠，实际 ' + JSON.stringify(suspends));
+    assert(suspends[0].reason === 'loop-passed', 'reason=' + suspends[0].reason);
+
+    // 没做完的房间要留着让维护者进去看现场，不能顺手收走。
+    const stuckRun = mk({ verdictFor: () => ({ decision: 'fail', blockers: [{ what: 'x' }], verified: ['v'] }) });
+    const stuckSuspends = [];
+    stuckRun.deps.suspendMeetingRoom = (mid) => { stuckSuspends.push(mid); return { ok: true }; };
+    const stuck = await createLoopEngine(stuckRun.deps).runLoop('mtg', 'g', null);
+    assert(stuck.status === 'stopped_max', 'status=' + stuck.status);
+    assert(stuckSuspends.length === 0, 'stopped_max 不该休眠房间');
+  });
+
   await t('第一轮 fail → 回灌 → 第二轮 pass → done(round=2)', async () => {
     // 评审：第一次 fail（turnCalls 含 2 = 第1轮评审），之后 pass
     const m = mk({ verdictFor: (calls) => calls.length <= 2 ? { decision: 'fail', blockers: [{ what: '缺测试' }], verified: ['看了代码'] } : { decision: 'pass', blockers: [], verified: ['ran test'] } });

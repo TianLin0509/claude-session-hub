@@ -5331,10 +5331,18 @@ if (typeof document !== 'undefined') (function () {
     pendingMessages.push(pending);
     _gcPendingUserMessageByMeeting[meeting.id] = pendingMessages;
     if (meeting.id === activeMeetingId) {
-      _renderActivePanelFromCache(meetingData[meeting.id] || meeting, {
+      const painted = _renderActivePanelFromCache(meetingData[meeting.id] || meeting, {
         forceGroupChatBottom: true,
         forceMeetingBottom: true,
       });
+      // 缓存态还没建起来（本房间第一条消息、或刚从休眠唤醒）时上面这条会直接 return false，
+      // 于是"发出去先看到自己那张卡"就落空，要等服务端推完才冒出来。补一次强制置底刷新。
+      if (!painted) {
+        Promise.resolve(refreshGroupChatPanel(meetingData[meeting.id] || meeting, {
+          forceGroupChatBottom: true,
+          forceMeetingBottom: true,
+        })).catch(error => console.warn('[meeting-room] pending user bubble refresh failed:', error && error.message));
+      }
     }
     return pending;
   }

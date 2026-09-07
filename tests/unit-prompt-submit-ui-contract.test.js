@@ -109,6 +109,24 @@ for (const [sample, expected] of [
 assert.ok(!PASTE_MARKER_REGEX.test('Context 100% left · gpt-5.5'),
   '折叠标记正则不得误命中普通状态栏');
 
+// --- 9b. 卡片视图：发出去就要立刻看见自己那张卡 -------------------------------
+// 2026-09-07 用户要求「无论群聊还是普通会话，卡片视图下发出消息第一时间出现卡片并置底」。
+// 这里原来按家族逐个列白名单（claude / codex / kimi），Gemini 被漏在外面——它同样有
+// 卡片视图，发出去却要等 transcript 落盘才冒气泡。判据必须走统一 helper，不许再手抄清单。
+assert.ok(/isClaudeFamily\(kind\) \|\| isTranscriptCliKind\(kind\)/.test(sendInputBody),
+  '乐观用户卡的 kind 判据要用 isClaudeFamily + isTranscriptCliKind，不得再逐家手抄');
+assert.ok(!/isKimiCliKind\(kind\)/.test(sendInputBody),
+  '逐家白名单是这条漏洞的来源，不要再写回去');
+assert.ok(/mountOptimisticUserCard\(sessionId/.test(sendInputBody),
+  '卡片视图必须在发送那一刻挂出乐观用户卡');
+// 群聊那侧：pending 气泡渲染失败时要补一次强制置底刷新，否则第一条消息发出去看不到自己。
+const rememberPending = sliceFn(meetingSrc,
+  '  function _rememberPendingUserMessage(meeting, text) {', '  function _discardPendingUserMessage', '_rememberPendingUserMessage');
+assert.ok(/forceGroupChatBottom: true/.test(rememberPending),
+  '群聊发出消息后必须强制滚到底');
+assert.ok(/refreshGroupChatPanel\(/.test(rememberPending),
+  '缓存态还没建起来时要补一次刷新，否则用户看不到自己刚发的那条');
+
 // --- 10. stuck 提示条的样式必须在 -------------------------------------------
 for (const cls of ['.fi-stuck', '.fi-stuck-label', '.fi-stuck-resend', '.fi-stuck-dismiss']) {
   assert.ok(cssSrc.includes(cls), `stuck 提示条缺样式：${cls}（没样式等于没提示）`);

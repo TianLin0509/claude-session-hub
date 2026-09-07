@@ -213,6 +213,15 @@ function registerSessionIpc(ipcMain, deps) {
     sessionManager.markRead(sessionId);
   });
 
+  // 侧栏「全部已读」。刻意不复用 focus-session：那条会顺带改 focusedSessionId，
+  // 而批量标已读不该把焦点挪到列表里最后一个会话上（焦点还决定谁不被批量休眠）。
+  ipcMain.on('mark-sessions-read', (_e, payload = {}) => {
+    const ids = Array.isArray(payload && payload.sessionIds) ? payload.sessionIds : [];
+    for (const sessionId of ids) {
+      if (typeof sessionId === 'string' && sessionId) sessionManager.markRead(sessionId);
+    }
+  });
+
   ipcMain.handle('prepare-session-model-switch', async (_event, payload = {}) => {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
     const targetModel = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';

@@ -15,6 +15,7 @@
  *   logger
  */
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
+const { suspendMeetingRoom: suspendMeetingRoomImpl } = require('../../core/meeting-room-suspend.js');
 const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -25,6 +26,7 @@ function createLoopEngine(deps) {
   const {
     getDispatcher, getOrchestrator, meetingManager, resumeSession, sessionManager,
     sendToRenderer = () => {}, writeReport = () => null, logger = console,
+    suspendMeetingRoom = suspendMeetingRoomImpl,
   } = deps || {};
   const running = new Map(); // meetingId → { abort, mode, runId, startedAt }
 
@@ -780,6 +782,16 @@ function createLoopEngine(deps) {
       } catch (e) { logger.log('[loop-engine] report err: ' + (e && e.message)); }
       progress({ stage: state.status === 'paused' ? (state.currentStep || 'paused') : 'done', status: state.status, error: state.lastError || null });
       logger.log('[loop-engine] finished ' + meetingId + ' status=' + state.status + ' rounds=' + state.round);
+      // 'done' 是唯一「评审给了 pass、gate 也过了」的收尾状态；stopped_max / stopped_stuck /
+      //   paused / reviewer_unavailable 都是没做完，那些房间要留着让维护者进去看现场。
+      //   顺利完成的房间没人再需要它的 PTY，主动整间收走，别等 5 小时闲置巡检一个个来收。
+      if (state.status === 'done') {
+        try {
+          suspendMeetingRoom(meetingId, {
+            meetingManager, sessionManager, sendToRenderer, logger, reason: 'loop-passed',
+          });
+        } catch (error) { logError('[loop-engine] 整间休眠失败:', error); }
+      }
       return state;
     } catch (error) {
       logError('[loop-engine] unhandled runtime failure:', error);

@@ -125,6 +125,10 @@ function createSessionListRenderer(options = {}) {
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
+  // 「已完成未读」组头上的一键已读。渲染层只负责按钮，真正清状态由 renderer.js 注入。
+  const markAllSessionsRead = typeof options.markAllSessionsRead === 'function'
+    ? options.markAllSessionsRead
+    : null;
   // 2026-07-19 方案C：列表渲染完成后的回调（renderer 用来刷新 ctx chip/中断钮/等你响应浮动条）
   const afterRender = typeof options.afterRender === 'function' ? options.afterRender : null;
   const renderStats = { renders: 0, slowRenders: 0, lastMs: 0, maxMs: 0 };
@@ -917,6 +921,14 @@ function _sessionWarningText(session) {
   const dormantCandidates = normallyPlaced.filter(s => !s.pinned && isDormantItem(s));
   const dormantIds = new Set(dormantCandidates.map(s => s.id));
   const { recent, mid, old } = partitionSessionsByAge(normallyPlaced.filter(s => !dormantIds.has(s.id)), Date.now());
+  // 2026-09-07：休眠会话仍然可以被提升进注意力分区，但「已完成未读」这一档必须
+  //   限定在最近 24 小时。上一版不分年龄一律提升，于是两三个月前休眠、unreadCount
+  //   还留着 1 的老会话全被顶进「已完成未读」——侧栏一打开是 47 条「刚答完」，其中
+  //   大半是 80 多天前的，这个分区就此失去意义。
+  //   「等你响应 / 运行中（含唤醒中）/ 运行异常」不设年龄门槛：那些是此刻的活信号，
+  //   把正在唤醒的会话藏进折叠的休眠区反而会让它凭空消失。
+  const { recent: freshDormant } = partitionSessionsByAge(dormantCandidates, Date.now());
+  const freshDormantIds = new Set(freshDormant.map(s => s.id));
   const activeSid = getActiveSessionId();
   const activeMid = getActiveMeetingId();
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
@@ -927,6 +939,8 @@ function _sessionWarningText(session) {
   }
   function isCompletedUnread(s) {
     if (isActiveItem(s)) return false;
+    // 陈年休眠的未读只在休眠区里用圆点表达，不再冒充「刚答完」。
+    if (isDormantItem(s) && !freshDormantIds.has(s.id)) return false;
     if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
     return sessionHasCompletedUnread(s);
   }
@@ -942,16 +956,32 @@ function _sessionWarningText(session) {
     else if (!s.pinned && isDormantItem(s)) dormant.push(s);
     else rest.push(s);
   }
-  function appendSecHeader(label, count, cls) {
+  function appendSecHeader(label, count, cls, opts = {}) {
     const h = doc.createElement('div');
     h.className = 'session-sec-header' + (cls ? ' ' + cls : '');
-    h.innerHTML = `<span>${escapeHtml(label)}</span><span class="sec-count">${count}</span>`;
+    h.innerHTML = `<span>${escapeHtml(label)}</span><span class="sec-count">${count}</span>`
+      + (opts.markAllRead ? '<button type="button" class="sec-mark-all-read" title="把所有会话和群聊标成已读">全部已读</button>' : '');
+    if (opts.markAllRead && typeof h.addEventListener === 'function') {
+      h.addEventListener('click', (event) => {
+        const target = event && event.target;
+        // 组头本身没有点击语义，只有这个按钮有；用 className 判定即可，不必依赖 closest。
+        const isButton = target && typeof target.className === 'string'
+          && target.className.indexOf('sec-mark-all-read') >= 0;
+        if (!isButton) return;
+        event.preventDefault();
+        event.stopPropagation();
+        markAllSessionsRead();
+      });
+    }
     renderTarget.appendChild(h);
   }
   if (respond.length) { appendSecHeader('⚠ 等你响应', respond.length, 'sec-respond'); for (const s of respond) appendItem(s); }
   if (running.length) { appendSecHeader('运行中', running.length); for (const s of running) appendItem(s); }
   if (failed.length) { appendSecHeader('⚠ 运行异常', failed.length, 'sec-respond'); for (const s of failed) appendItem(s); }
-  if (completed.length) { appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed'); for (const s of completed) appendItem(s); }
+  if (completed.length) {
+    appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed', { markAllRead: !!markAllSessionsRead });
+    for (const s of completed) appendItem(s);
+  }
   // Agent 分组：芯片勾上就整组展开列出，不再套一层折叠——芯片本身就是那个开关，
   // 再要点一次箭头才看得到，等于把「一目了然」又收回去了。
   // 组内有成员在等输入或跑挂了就复用告警样式，避免它被当成一堆静态条目略过。
