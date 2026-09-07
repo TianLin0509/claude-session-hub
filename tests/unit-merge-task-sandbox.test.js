@@ -152,16 +152,32 @@ test('afterMerge 会执行（项目专属产物在这一步出）', () => {
   assert(fs.existsSync(path.join(SANDBOX, 'artifact.txt')), 'afterMerge 应该真的跑了');
 });
 
-function waitForFile(file, timeoutMs = 5000) {
+// 等首个合并跑到「测试阶段」（沙箱的 check.py 一启动就写这个 marker）。
+//
+// 预算为什么是 60 秒而不是 5 秒：这段路要冷启动两次 python（merge_task.py 自己 +
+// 它派出去的 check.py）再加几次 git 调用，耗时完全由机器负载决定 —— 闲机实测
+// 0.8~1.1 秒，但这个文件正是被全量运行器 16 路并发跑的，而合并闸门的 dry-run
+// 又会在同一台机器上再跑一遍全量。5 秒是拿闲机耗时当上限，负载一高就假红，
+// 于是「测试超时」变成合并被打回的理由，而被测行为其实一点问题都没有。
+// 这里要守的断言是「marker 最终出现」，不是「marker 出现得快」，所以放宽预算不丢覆盖。
+//
+// 真正坏掉的情况仍然秒级失败：首个合并进程要是自己先退了，marker 永远不会出现，
+// 与其干等 60 秒，不如立刻带着它的输出报错——那才是能看懂的失败信息。
+function waitForFile(file, doneP, timeoutMs = 60000) {
   const started = Date.now();
+  let childExit = null;
+  if (doneP) doneP.then(result => { childExit = result; }, () => {});
   return new Promise((resolve, reject) => {
     const timer = setInterval(() => {
       if (fs.existsSync(file)) {
         clearInterval(timer);
         resolve();
+      } else if (childExit) {
+        clearInterval(timer);
+        reject(new Error('首个合并没进测试阶段就退出了（code=' + childExit.code + '）：\n' + childExit.out));
       } else if (Date.now() - started > timeoutMs) {
         clearInterval(timer);
-        reject(new Error('等待首个合并进入测试阶段超时'));
+        reject(new Error('等待首个合并进入测试阶段超时（' + timeoutMs + 'ms）'));
       }
     }, 25);
   });
@@ -202,7 +218,7 @@ async function runConcurrencyCase() {
   });
   const firstDone = waitChild(first);
   try {
-    await waitForFile(marker);
+    await waitForFile(marker, firstDone);
     const second = runMerge(['parallel-b', '--dry-run'], SANDBOX);
     const firstResult = await firstDone;
 

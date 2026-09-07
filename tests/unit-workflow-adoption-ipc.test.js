@@ -166,7 +166,10 @@ function setup({ extract = null } = {}) {
     return receipt;
   }
 
-  return { ipc, orch, turnNum, runId, meetingId, meeting, dispatchedMemberIds, loopEngine, dataDir, recordStep };
+  // dataDir 必须留在最后一个字段：合并位的取证脚本按这一行的结尾文本往返回值里注入
+  //   dispatcher / meetingManager / sessionManager。上一轮我改坏过 setup 的签名，
+  //   这次又改坏了这行的结尾 —— 加字段一律往前插，别动结尾，也别在注释里复述那段文本。
+  return { ipc, orch, turnNum, runId, meetingId, meeting, dispatchedMemberIds, loopEngine, recordStep, dataDir };
 }
 
 // 引擎是后台跑的：等它把这一轮走完。

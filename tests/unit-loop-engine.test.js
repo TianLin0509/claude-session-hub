@@ -15,10 +15,13 @@ const V = (o) => '<<<VERDICT>>>' + JSON.stringify(o) + '<<<END>>>';
 function mk(opts) {
   opts = opts || {};
   const baseWf = {
-    steps: [['m1'], ['m2']],
+    // 极简（单席位）用例把两步都派给 m1，成员表也只剩一个 sid —— 这两处必须能一起改，
+    // 否则 sidOf 会把评审解析成不存在的第二位。
+    steps: opts.steps || [['m1'], ['m2']],
     stepConfigs: opts.stepConfigs || [],
     loop: Object.assign({ enabled: true, maxRounds: 2, consecutivePass: 1, polish: false }, opts.loop || {}),
   };
+  const subSessions = opts.subSessions || ['sB', 'sR'];
   let savedLoopState = opts.initLoopState || null;
   const turnCalls = [];
   let reportHtml = null;
@@ -36,7 +39,7 @@ function mk(opts) {
       },
     }),
     meetingManager: {
-      getMeeting: () => ({ id: 'mtg', subSessions: ['sB', 'sR'], serialWorkflow: Object.assign({}, baseWf, savedLoopState ? { loopState: savedLoopState } : {}) }),
+      getMeeting: () => ({ id: 'mtg', subSessions, serialWorkflow: Object.assign({}, baseWf, savedLoopState ? { loopState: savedLoopState } : {}) }),
       updateMeeting: (id, fields) => { if (fields.serialWorkflow && fields.serialWorkflow.loopState) savedLoopState = fields.serialWorkflow.loopState; },
       getAllMeetings: () => [{ id: 'mtg', serialWorkflow: Object.assign({}, baseWf, savedLoopState ? { loopState: savedLoopState } : {}) }],
     },
@@ -150,6 +153,98 @@ async function main() {
     assert(m.turnCalls[1].targetMemberIds[0] === 'm2' && m.turnCalls[1].reuseTurnNum === 1, '第2次=评审复用 turn');
     assert(m.getSaved() && m.getSaved().status === 'done', '已持久化 done');
     assert(m.getReport() && /循环工作流复盘/.test(m.getReport()), '晨报已生成');
+  });
+
+  await t('极简单席位：评审必须另起一轮，不能顶掉自己刚落盘的实现报告（2026-09-07 合并位阻断项）', async () => {
+    // 一轮里每位成员只有一格（orchestrator 的 by[sid]）。同一个 sid 先当工作位再当合并位、
+    // 又复用同一轮的话，评审那份 RESULT 会把实现那份 PROGRESS 直接覆盖：
+    // 群聊里看不到实现报告，工作台的交付卡也一起没了，而流程还显示 done。
+    const m = mk({
+      steps: [['m1'], ['m1']],
+      subSessions: ['sB'],
+      dispatch: async (_mid, args, calls) => ({
+        status: 'completed',
+        turnNum: calls.length === 1 ? 5 : 6,
+        results: [{
+          sid: 'sB',
+          text: calls.length === 1
+            ? 'PROGRESS: 做了 X\nVERIFIED: 跑了单测\nRISK: 无\nREPORT: 无'
+            : V({ decision: 'pass', blockers: [], verified: ['亲自跑了 dry-run'] }),
+        }],
+      }),
+    });
+    const eng = createLoopEngine(m.deps);
+    const st = await eng.runLoop('mtg', '改一句文案', null);
+    assert(st && st.status === 'done', 'status=' + (st && st.status));
+    assert.strictEqual(m.turnCalls.length, 2, '仍然是两步');
+    assert.strictEqual(m.turnCalls[1].reuseTurnNum, null,
+      '同席位时评审不许复用工作位那一轮，否则实现报告会被自己顶掉');
+    assert.strictEqual(m.turnCalls[1].appendUserMessage, false,
+      '新起的这一轮仍然不追加用户消息——指令靠派发卡片进消息流');
+  });
+
+  await t('极简单席位：评审不许把工作位那一轮的实现报告当成自己的裁决取走（2026-09-07 解冲突）', async () => {
+    // 这条锁的是「同席位另起一轮」和「按活状态判这一步有没有答案」两条改动的接缝。
+    //   同席位时工作位和合并位是同一个 sid，工作位那一轮的 by[sid] 装着刚落盘的
+    //   PROGRESS。如果评审这一步的「读结果用哪一轮」兜底回工作位那一轮，
+    //   引擎就会认为评审已经交货，直接把 PROGRESS 当裁决解析 —— 评审那一步根本不跑。
+    //   两席位不受影响：那时两个数本来就相等。
+    const engineSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'main', 'groupchat', 'loop-engine.js'), 'utf8');
+    assert(/const reviewerReadTurnNum = \(reviewerEvidence && reviewerEvidence\.turnNum\) \|\| reviewerDispatchTurnNum;/.test(engineSrc),
+      '读结果的轮号不许兜底成 turnNum：同席位时那是工作位的实现报告');
+    assert(!/reviewerReadTurnNum = [^;]*\|\| turnNum/.test(engineSrc),
+      '一旦加回 || turnNum，同席位就会把实现报告当裁决');
+
+    // 行为面：同席位跑一整轮，评审必须真的被派发（没有被误判成「已经答过」）。
+    const m = mk({
+      steps: [['m1'], ['m1']],
+      subSessions: ['sB'],
+      dispatch: async (_mid, args, calls) => ({
+        status: 'completed',
+        turnNum: calls.length === 1 ? 5 : 6,
+        results: [{
+          sid: 'sB',
+          text: calls.length === 1
+            ? 'PROGRESS: 做了 X\nVERIFIED: 跑了单测\nRISK: 无\nREPORT: 无'
+            : V({ decision: 'pass', blockers: [], verified: ['亲自跑了 dry-run'] }),
+        }],
+      }),
+    });
+    const eng = createLoopEngine(m.deps);
+    const st = await eng.runLoop('mtg', '改一句文案', null);
+    assert(st && st.status === 'done', 'status=' + (st && st.status));
+    assert.strictEqual(m.turnCalls.length, 2,
+      '评审这一步必须真的派发出去，不能因为「同一个 sid 早先答过」就被跳过');
+    assert.strictEqual(m.turnCalls[1].targetMemberIds[0], 'm1');
+  });
+
+  await t('极简单席位：评审传输重试落回自己那一轮，不再多开一轮', async () => {
+    const m = mk({
+      steps: [['m1'], ['m1']],
+      subSessions: ['sB'],
+      dispatch: async (_mid, _args, calls) => {
+        if (calls.length === 1) {
+          return { status: 'completed', turnNum: 5, results: [{ sid: 'sB', status: 'completed', text: 'PROGRESS: 做了 X' }] };
+        }
+        if (calls.length === 2) {   // 评审第 1 次传输失败：开了轮，但没拿到结果
+          return { status: 'completed', turnNum: 6, results: [{ sid: 'sB', status: 'errored', text: '' }] };
+        }
+        return { status: 'completed', turnNum: 6, results: [{ sid: 'sB', status: 'completed', text: V({ decision: 'pass', blockers: [], verified: ['跑了'] }) }] };
+      },
+    });
+    const eng = createLoopEngine(m.deps);
+    await eng.runLoop('mtg', '改一句文案', null);
+    assert.strictEqual(m.turnCalls.length, 3, '应有 1 次实现 + 2 次评审传输');
+    assert.strictEqual(m.turnCalls[1].reuseTurnNum, null, '评审第 1 次另起一轮');
+    assert.strictEqual(m.turnCalls[2].reuseTurnNum, 6, '评审重试落回第 1 次开出来的那一轮');
+  });
+
+  await t('双席位不受影响：评审照旧复用工作位那一轮（同一轮两个人各占各的格子）', async () => {
+    const m = mk();
+    const eng = createLoopEngine(m.deps);
+    await eng.runLoop('mtg', '实现 add 函数', null);
+    assert.strictEqual(m.turnCalls[1].reuseTurnNum, 1, '不同席位时必须仍然复用，派发卡片的老行为不许回退');
   });
 
   await t('pass 收尾主动休眠整间会议室；没跑通的收尾不动房间', async () => {

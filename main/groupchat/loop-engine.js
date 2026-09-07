@@ -772,14 +772,30 @@ function createLoopEngine(deps) {
           { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
 
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
+        // 【同席位必须另起一轮】评审这一步平时复用工作位那一轮（同一轮里两批不同成员，
+        // 各占各的格子）。但「极简」是同一个人先实现再自审 —— 一轮里每位成员只有一格
+        // （orchestrator 的 by[sid]），复用就等于让评审的回答顶掉刚落盘的实现报告：
+        // 群聊里那条 PROGRESS/VERIFIED 消失，工作台的交付卡也跟着没了，而流程还显示成功。
+        // 判据是身份不是模板：只要评审名单里出现工作位自己，就换成新的一轮。
+        const reviewerReusesBuilderTurn = !reviewerIds.includes(builderId);
+        // 传输重试要落回同一轮：第一次尝试已经开了一轮，第二次再开一轮只会在群聊里
+        // 多出一条空壳。拿到真实轮号后就钉住它。
+        // 改名（2026-09-07 解冲突）：这个是「派发到哪一轮」。本分支另有一个
+        //   「从哪一轮读已有结果」，以前两者相同，同席位另起一轮之后就不是一个数了。
+        let reviewerDispatchTurnNum = reviewerReusesBuilderTurn ? turnNum : null;
         state.currentStep = 'reviewer'; state.lastError = null;
         if (!persistOrPause()) break;
         progress({ stage: 'reviewer', round: state.round + 1 });
         let rRes = null;
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
-        const reviewerTurnNum = (reviewerEvidence && reviewerEvidence.turnNum) || turnNum || null;
-        const reviewerView = liveStepView(meetingId, reviewerTurnNum, sidsOf(meeting, reviewerIds), reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
+        // 「从哪一轮读这一步已有的结果」。
+        //   刻意**不**兜底成 turnNum：同席位（极简）时工作位和合并位是同一个 sid，
+        //   而工作位那一轮的 by[sid] 装的是刚落盘的实现报告 —— 退回去读，评审这一步
+        //   就会把工作位的 PROGRESS 当成自己的裁决取走。两席位时
+        //   reviewerDispatchTurnNum 本来就等于 turnNum，行为一个字不变。
+        const reviewerReadTurnNum = (reviewerEvidence && reviewerEvidence.turnNum) || reviewerDispatchTurnNum;
+        const reviewerView = liveStepView(meetingId, reviewerReadTurnNum, sidsOf(meeting, reviewerIds), reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
         if (guardPhase && guardPhase.round === state.round && guardPhase.step === 'reviewer' && !reviewerView.complete) {
           state.status = 'paused';
           state.lastError = { stage: 'reviewer', reason: 'awaiting_result', at: Date.now() };
@@ -787,7 +803,7 @@ function createLoopEngine(deps) {
           break;
         }
         if (reviewerView.complete) {
-          rRes = dispatchResultFromLive(meeting, reviewerIds, reviewerTurnNum, reviewerView);
+          rRes = dispatchResultFromLive(meeting, reviewerIds, reviewerReadTurnNum, reviewerView);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
         } else {
           // 已经给过裁决的评审席位不再被问第二遍，只补缺口。
@@ -799,18 +815,22 @@ function createLoopEngine(deps) {
               for (const rid of reviewerDispatchIds) await ensureMemberReady(meeting, rid);
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
+                // 本分支：已经给过裁决的席位不再被问第二遍，只补缺口。
                 targetMemberIds: reviewerDispatchIds,
-                reuseTurnNum: turnNum,
+                // 主干：同席位评审另起一轮，别顶掉自己刚落盘的实现报告。
+                reuseTurnNum: reviewerDispatchTurnNum,
                 appendUserMessage: false,
                 dispatchMode: 'serial',
                 // 同上：评审跑两遍全量时转录会长时间只有工具输出，本来就不该按墙钟砍。
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerDispatchIds },
               });
-              // 只补了缺口时，把先前已成交的那几位从活状态补回结果集，
+              // 主干：拿到真实轮号就钉住它，传输重试落回同一轮，不多开空壳轮。
+              if (rRes && rRes.turnNum) reviewerDispatchTurnNum = rRes.turnNum;
+              // 本分支：只补了缺口时，把先前已成交的那几位从活状态补回结果集，
               //   否则下游解析裁决会把「没派发」误当成「没给裁决」。
               if (rRes && reviewerDispatchIds.length < reviewerIds.length) {
-                rRes = mergeLiveResults(meeting, reviewerIds, rRes, rRes.turnNum || reviewerTurnNum, reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
+                rRes = mergeLiveResults(meeting, reviewerIds, rRes, rRes.turnNum || reviewerReadTurnNum, reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
               }
               const checked = validateStepResult(meeting, reviewerDispatchIds, rRes);
               if (checked.takenOver) break;
