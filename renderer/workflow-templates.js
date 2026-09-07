@@ -28,6 +28,10 @@
     // 全部走仓库内相对路径 —— 群聊的工作目录就是项目根，所以 .agents/AUTHOR.md 对任何项目都成立。
     // 项目差异沉淀在各自仓库的 .agents/ 里，改流程只改那几个 .md，不用回来动 Hub。
     { id: 'dev-task', name: '开发任务', desc: '工作位实现 ↔ 合并位审，PASS 即合并', minMembers: 2, recommended: true },
+    // 极简：同一个 AI 先当工作位改，再当合并位审自己的改动。针对「小到不值得占两个席位」
+    // 的需求（改一行文案、加一个开关）。代价说清楚：没有独立第三方，评审的独立性不成立，
+    // 换来的是少一半 token 和少一次上下文交接。要不要接受这个代价由用户在建群时选。
+    { id: 'dev-task-solo', name: '开发任务 · 极简', desc: '一个 AI 自己改自己审，PASS 即合并', minMembers: 1 },
   ];
 
   const TEMPLATES = [
@@ -220,6 +224,55 @@
       devConfig.devPhase = opts && opts.devPhase === 'discuss' ? 'discuss' : 'build';
       if (ws && ws.atWorkRoot) devConfig.projectLocator = buildProjectLocatorPrompt(ws.projects);
       return devConfig;
+    }
+
+    // ── 开发场景 · 极简（单席位）───────────────────────────────────────────
+    // 结构和 dev-task 完全一致（两步 + 循环），只是两步派给同一个 memberId：
+    // loop-engine 的 builder = steps[0][0]、reviewer = steps.slice(1)，同一个 id 出现在
+    // 两步里它照跑不误 —— 于是「自己改完自己审」不需要引擎做任何特判。
+    // 独立性的缺失只能靠 prompt 补：明说上一步是你自己写的，不许采信自己的自述。
+    if (templateId === 'dev-task-solo') {
+      const soloId = ids[0];
+      const soloConfig = config(
+        [[soloId], [soloId]],
+        _withProjectLocator([
+          {
+            name: '实现（极简）',
+            timeoutMs: 30 * 60 * 1000,
+            prompt: [
+              '读本仓库的 .agents/AUTHOR.md，按它工作。',
+              '本群只有你一位成员：你既是工作位也是合并位。这一步只做工作位的事——实现并自测，先不要合并。',
+              '任务就是本群聊里我上一条消息说的那件事；没说清就先问我一句，不要猜。',
+              '这是「极简」起手，只适合小改动。如果发现要动公共结构、跨多个模块、或需要新增依赖，先写一条 ASK: 说明规模超预期、建议改用工作位 + 独立合并位两个席位，等我回答，不要硬做。',
+              '若收到上一轮自审的 BLOCKERS，只修 BLOCKERS 里列的东西，不要顺手扩需求。',
+              '开工前先写一段 PLAN: 打算怎么做、动哪几块、有什么取舍，三五句，别列文件清单。',
+              '每到一个可解释的阶段就写一条 UPDATE: 中文进展；这些进展会全部保留在群聊和工作台纪事里。',
+              '最后按合同输出 PROGRESS / VERIFIED / RISK / REPORT 四行人话，不要贴代码；最终交接前不要提前输出这四行。',
+              '四行之后再写一段 NOTES: 给维护者的说明 —— 做了什么、为什么这么做、什么没做、怎么验的。',
+            ].join('\n'),
+          },
+          {
+            name: '自审并合并（极简）',
+            timeoutMs: 25 * 60 * 1000,
+            prompt: [
+              '读本仓库的 .agents/MERGER.md，按它工作。',
+              '这一步没有独立第三方：上一步的改动就是你自己写的。所以把它当别人的代码来验——不采信自己刚才的任何自述，只认此刻真跑出来的结果；只要有一条没亲自跑过，就判 FAIL。',
+              '先确认主干有没有被别的任务推进过，并基于最新主干跑合同里的 dry-run 验证。',
+              'PASS 才由你执行合并，FAIL 一律不合；FAIL 时把阻断项写清楚，下一轮回到实现步骤只修这些。',
+              '开始审查、验证和发现阻断项时，主动写 UPDATE: 中文进展；它不替代最终 RESULT 裁决。',
+              '需要维护者拍板时写 ASK: 问题 + 选项代价 + 你的推荐。',
+              '四行之后再写一段 NOTES: 给维护者的说明 —— 你实际看了什么、跑了什么、为什么这么判；PASS 也要说清放心的理由。有报告可另加 REPORT: 绝对路径。',
+              REVIEW_RESULT_CONTRACT,
+            ].join('\n'),
+          },
+        ], opts),
+        { enabled: true, maxRounds: 3 },
+      );
+      // 极简就是「直接开工」，不提供讨论阶段：要先讨论的需求本身就不属于极简。
+      soloConfig.devPhase = 'build';
+      const soloWs = opts && opts.workspace;
+      if (soloWs && soloWs.atWorkRoot) soloConfig.projectLocator = buildProjectLocatorPrompt(soloWs.projects);
+      return soloConfig;
     }
 
     if (templateId === 'review-plan-build-finalize') {

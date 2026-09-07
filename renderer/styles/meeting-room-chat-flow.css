@@ -785,13 +785,34 @@
   padding-top: 12px;
   border-top: 1px solid var(--mr-gc-border);
 }
+/* 折叠态只剩标题行，上面那条分隔线还在，视觉上仍然是一节。 */
+.mr-duty-hats.collapsed {
+  padding-bottom: 2px;
+}
 .mr-duty-hats-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--mr-gc-text);
   font-size: 12px;
   font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.mr-duty-hats-head:hover {
+  color: var(--mark-blue, var(--mr-gc-text));
+}
+.mr-duty-hats-caret {
+  flex: 0 0 auto;
+  color: var(--mr-gc-muted);
+  font-size: 10px;
+}
+.mr-duty-hats-title {
+  flex: 1 1 auto;
 }
 .mr-duty-hats-count {
   padding: 1px 6px;

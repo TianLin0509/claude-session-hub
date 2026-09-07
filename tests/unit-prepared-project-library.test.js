@@ -98,6 +98,46 @@ test('project.json 坏掉的项目不崩，当作没整理过', () => {
   assert.strictEqual(listPreparedProjects([{ path: broken }]).length, 0);
 });
 
+test('同级扫描：Hub 从没用过的项目也能被认出来（默认关闭，显式开启才扫）', () => {
+  // 用户原话：「现在第一次识别不到，只有用过一次后才能识别到」。
+  // 根因是候选目录全都来自「Hub 已经见过的路径」，刚整理好的项目一条都不在里面。
+  const fresh = path.join(ROOT, 'fresh-repo');       // 刚被 project-prep 整理好，Hub 没见过
+  const hidden = path.join(ROOT, '_scratch-repo');   // 下划线开头：Hub 自己的容器目录
+  const dotted = path.join(ROOT, '.cache-repo');     // 点开头：隐藏目录
+  mkRepo(fresh, { name: '刚整理好的项目', trunk: 'master' });
+  mkRepo(hidden, { name: '容器里的', trunk: 'master' });
+  mkRepo(dotted, { name: '隐藏的', trunk: 'master' });
+
+  // 候选里只有一个普通目录，它自己都不是项目 —— 不开扫描时一条都出不来
+  assert.strictEqual(listPreparedProjects([{ path: PLAIN }]).length, 0, '默认不扫同级，老行为一个字不变');
+
+  const found = listPreparedProjects([{ path: PLAIN }], {}, { siblingScan: true }).map(i => i.path);
+  assert(found.includes(fresh), 'Hub 从没见过的项目，靠同级扫描必须能出现');
+  assert(found.includes(HUB) && found.includes(RAN), '同级的老项目也一并认出来');
+  assert(!found.includes(WT), 'linked worktree 仍然要被挡掉（.git 是文件）');
+  assert(!found.includes(RAW), '没整理过的仓库仍然不算');
+  assert(!found.includes(hidden), '下划线开头的容器目录不扫');
+  assert(!found.includes(dotted), '点开头的隐藏目录不扫');
+});
+
+test('同级扫描只读一层，绝不递归', () => {
+  const deep = path.join(ROOT, 'nested', 'deep-repo');
+  mkRepo(deep, { name: '两层之下', trunk: 'master' });
+  const found = listPreparedProjects([{ path: PLAIN }], {}, { siblingScan: true }).map(i => i.path);
+  assert(!found.includes(deep), '父目录只读一层，孙目录不许被扫进来——否则就是全盘搜索');
+});
+
+test('同级扫描读不动的目录直接跳过，不把整个项目库带崩', () => {
+  const boom = {
+    readdirSync() { throw new Error('EPERM'); },
+    statSync: fs.statSync,
+    readFileSync: fs.readFileSync,
+  };
+  const found = listPreparedProjects([{ path: HUB }], { fs: boom }, { siblingScan: true });
+  assert.strictEqual(found.length, 1, '扫不动就当没扫到，已知候选照常返回');
+  assert.strictEqual(found[0].path, HUB);
+});
+
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
 console.log('\n──────────────');
 console.log('通过 ' + pass + ' / 失败 0');
