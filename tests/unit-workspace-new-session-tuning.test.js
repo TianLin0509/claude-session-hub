@@ -13,6 +13,7 @@ const { WorkspaceService } = require('../core/workspace-service.js');
 const SESSION_MANAGER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
 const CONTROLLER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'workspace-controller.js'), 'utf8');
 const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+const SUMMARY_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-status-summary.js'), 'utf8');
 const INDEX_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
 
 function test(name, fn) {
@@ -300,9 +301,13 @@ test('renderer persists and restores per-session speed and MCP tuning', () => {
   // 2026-09-04：ce73d83 重排信息架构时把文案里的 "Codex " 前缀去掉了（这个 chip
   // 现在对所有 CLI 都显示，带 Codex 反而是错的），盯死旧文案的断言因此变红。
   // 改成盯这两个数必须同时在场，不再盯前缀。
-  assert.match(RENDERER_SRC, /运行时有效窗口 \$\{s\.contextEffectiveMax/,
+  // 2026-09-07 T1：ctx chip 换成了 composer 底栏的预算环，hover 文案由
+  // core/session-status-summary.js 的 composerContextRing 统一生成（以前
+  // updateFloatingBarState 里另算一份）。守的不变量一字未改：那两个数必须
+  // 分开讲，混成一个数就看不出模型降了档。
+  assert.match(SUMMARY_SRC, /运行时有效窗口 \$\{effective\.toLocaleString\(\)\} tokens/,
     '上下文提示必须给出运行时实际有效窗口');
-  assert.match(RENDERER_SRC, /Hub 启动请求 \$\{s\.contextMax/,
+  assert.match(SUMMARY_SRC, /Hub 启动请求 \$\{requested\.toLocaleString\(\)\} tokens/,
     '上下文提示必须同时给出 Hub 启动时请求的窗口，好让降档一眼可见');
 });
 

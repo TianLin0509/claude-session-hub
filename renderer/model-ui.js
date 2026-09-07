@@ -202,9 +202,17 @@ function createModelUiController({
     });
   }
 
+  // 挂载点从头部徽章挪到了 composer 底栏（T1），锚点在窗口底部：
+  // 一律往下开会把整个菜单开到窗外。下方放不下就翻到锚点上方。
   function placeMenu(menu, badgeEl) {
     const rect = badgeEl.getBoundingClientRect();
-    menu.style.top = (rect.bottom + 4) + 'px';
+    const viewportHeight = (menu.ownerDocument && menu.ownerDocument.defaultView
+      && menu.ownerDocument.defaultView.innerHeight) || 0;
+    const menuHeight = menu.getBoundingClientRect().height || 0;
+    const below = rect.bottom + 4;
+    const flipUp = viewportHeight > 0 && menuHeight > 0 && below + menuHeight > viewportHeight
+      && rect.top - 4 - menuHeight >= 0;
+    menu.style.top = (flipUp ? rect.top - 4 - menuHeight : below) + 'px';
     menu.style.left = rect.left + 'px';
   }
 
