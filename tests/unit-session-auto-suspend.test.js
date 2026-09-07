@@ -47,7 +47,7 @@ test('active group-chat watchers and running loop members are protected', () => 
   assert.deepEqual([...protectedIds].sort(), ['builder', 'league-running', 'reviewer', 'watching']);
 });
 
-test('scheduler includes idle meeting members but excludes protected work', () => {
+test('scheduler excludes meeting members and protected work', () => {
   const calls = [];
   let intervalCallback = null;
   let intervalDelay = null;
@@ -81,7 +81,9 @@ test('scheduler includes idle meeting members but excludes protected work', () =
   assert.equal(calls.length, 1);
   assert.equal(calls[0].idleMs, AUTO_SUSPEND_IDLE_MS);
   assert.equal(calls[0].now, 123456);
-  assert.equal(calls[0].excludeMeeting, false);
+  // 2026-09-07：会议室成员不再参与闲置巡检。excludeSessionIds 只保护「正在工作的那一个」，
+  // 保护不到「在等它说完的队友」——房间缺一个人流程就断了。
+  assert.equal(calls[0].excludeMeeting, true);
   assert.equal(calls[0].excludeFocused, true);
   assert.equal(calls[0].excludePinned, true);
   assert.equal(calls[0].excludeSessionIds, protectedIds);

@@ -11,6 +11,7 @@ const {
   applyTurnAborted,
   attentionStateOf,
   clearSessionAttention,
+  clearSessionCompletedUnread,
   markSessionNeedsUserInput,
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
@@ -153,4 +154,25 @@ test('ordered attention reducer records workbench run duration without stale res
   assert.equal(session.lastRunStartedAt, startedAt);
   assert.equal(session.lastRunDurationMs, 60_000);
   assert.equal(session.runStartedAt, null);
+});
+
+
+test('全部已读只清「答完未看」，不动真的在等用户输入的会话', () => {
+  const replyReady = { status: 'idle', unreadCount: 3, attentionState: ATTENTION_REPLY_READY, replyReady: true };
+  assert.equal(clearSessionCompletedUnread(replyReady), true);
+  assert.equal(attentionStateOf(replyReady), ATTENTION_NONE);
+  assert.equal(replyReady.unreadCount, 0);
+  assert.equal(sessionHasCompletedUnread(replyReady), false);
+
+  const asking = { status: 'running', unreadCount: 2 };
+  markSessionNeedsUserInput(asking, { text: '请选择部署环境' });
+  assert.equal(clearSessionCompletedUnread(asking), true);
+  assert.equal(asking.unreadCount, 0);
+  // 「等你响应」是 CLI 真的卡住了，标已读不能把它抹平
+  assert.equal(attentionStateOf(asking), ATTENTION_NEEDS_INPUT);
+  assert.equal(sessionNeedsUserInput(asking), true);
+
+  const clean = { status: 'idle', unreadCount: 0 };
+  assert.equal(clearSessionCompletedUnread(clean), false, '本来就没未读时应报告"没变化"');
+  assert.equal(clearSessionCompletedUnread(null), false);
 });

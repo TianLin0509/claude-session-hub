@@ -101,6 +101,7 @@ const {
   applyReplyCompleted,
   applyTurnAborted,
   clearSessionAttention,
+  clearSessionCompletedUnread,
   markSessionNeedsUserInput,
   normalizeEventTime,
   sessionHasCompletedUnread,
@@ -827,10 +828,43 @@ const sessionListRenderer = createSessionListRenderer({
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
+  markAllSessionsRead: () => markAllSessionsRead(),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
+
+// 「已完成未读」组头上的「全部已读」：一次把所有会话和群聊的"答完了还没看"清掉。
+// 三层都要落，少一层就会复活：
+//   渲染层内存 → 侧栏立刻消失；state.json → 重启后不再回来；
+//   主进程 sessionManager → 活会话的下一次 session-updated 广播不会把 unreadCount 推回来。
+// 刻意不碰 needs-input：CLI 真卡在等用户输入时把它标成已读，等于替用户撒谎。
+function markAllSessionsRead() {
+  const clearedSessionIds = [];
+  for (const session of sessions.values()) {
+    if (session && clearSessionCompletedUnread(session)) clearedSessionIds.push(session.id);
+  }
+  let clearedMeeting = false;
+  for (const meeting of Object.values(meetings || {})) {
+    if (!meeting) continue;
+    if (Math.max(0, Number(meeting.unreadCount) || 0) > 0) {
+      meeting.unreadCount = 0;
+      clearedMeeting = true;
+    }
+    if (meeting.unreadAnswered instanceof Set && meeting.unreadAnswered.size > 0) {
+      meeting.unreadAnswered.clear();
+      clearedMeeting = true;
+    }
+  }
+  if (!clearedSessionIds.length && !clearedMeeting) return { ok: true, cleared: 0 };
+  if (clearedSessionIds.length) {
+    ipcRenderer.send('mark-sessions-read', { sessionIds: clearedSessionIds });
+    schedulePersist();
+  }
+  scheduleSessionListRender();
+  if (homeWorkbench) homeWorkbench.render();
+  return { ok: true, cleared: clearedSessionIds.length };
+}
 const sessionReadyNotifier = createSessionReadyNotifier({
   ipcRenderer,
   getSessions: () => sessions,
@@ -3479,7 +3513,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
     //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
     //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
-    if (currentView === 'card' && kind && (isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind)) && typeof mountOptimisticUserCard === 'function') {
+    // 2026-09-07：这里原来逐家列 claude / codex / kimi，把 Gemini 漏在外面 —— Gemini 同样
+    //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
+    //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
+    const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
+    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text.trim(), kind);
       } catch (err) {

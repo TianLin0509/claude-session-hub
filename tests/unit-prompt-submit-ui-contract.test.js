@@ -109,6 +109,58 @@ for (const [sample, expected] of [
 assert.ok(!PASTE_MARKER_REGEX.test('Context 100% left · gpt-5.5'),
   '折叠标记正则不得误命中普通状态栏');
 
+// --- 9b. 卡片视图：发出去就要立刻看见自己那张卡 -------------------------------
+// 2026-09-07 用户要求「无论群聊还是普通会话，卡片视图下发出消息第一时间出现卡片并置底」。
+// 这里原来按家族逐个列白名单（claude / codex / kimi），Gemini 被漏在外面——它同样有
+// 卡片视图，发出去却要等 transcript 落盘才冒气泡。判据必须走统一 helper，不许再手抄清单。
+assert.ok(/isClaudeFamily\(kind\) \|\| isTranscriptCliKind\(kind\)/.test(sendInputBody),
+  '乐观用户卡的 kind 判据要用 isClaudeFamily + isTranscriptCliKind，不得再逐家手抄');
+assert.ok(!/isKimiCliKind\(kind\)/.test(sendInputBody),
+  '逐家白名单是这条漏洞的来源，不要再写回去');
+assert.ok(/mountOptimisticUserCard\(sessionId/.test(sendInputBody),
+  '卡片视图必须在发送那一刻挂出乐观用户卡');
+// 群聊那侧：没有面板缓存时也必须**同步**画出用户那条，再去补历史。
+// 2026-09-07 评审实测：兜底如果走 refreshGroupChatPanel，它要先 await `groupchat:get-state`，
+// 把历史拖到 2.5s 时用户按下发送、输入框已清空，气泡 2.1s 才出现。真跑的回归在
+// tests/e2e-groupchat-first-send-card-cdp.js，这里守住源码层面的调用顺序。
+const rememberPending = sliceFn(meetingSrc,
+  '  function _rememberPendingUserMessage(meeting, text) {', '  function _discardPendingUserMessage', '_rememberPendingUserMessage');
+assert.ok(/forceGroupChatBottom: true/.test(rememberPending),
+  '群聊发出消息后必须强制滚到底');
+const localPaintAt = rememberPending.indexOf('_paintPendingUserMessageWithoutHistory(');
+const refreshAt = rememberPending.indexOf('refreshGroupChatPanel(');
+assert.ok(localPaintAt >= 0, '没有缓存时必须先本地画一帧，不能只留一个异步刷新');
+assert.ok(refreshAt >= 0, '本地画完仍要去拉真历史');
+assert.ok(localPaintAt < refreshAt,
+  '本地出卡必须排在拉历史前面 —— 反过来就等于又把出卡挂在 groupchat:get-state 上');
+
+const paintWithoutHistory = sliceFn(meetingSrc,
+  '  function _paintPendingUserMessageWithoutHistory(meeting) {', '  function _rememberPendingUserMessage',
+  '_paintPendingUserMessageWithoutHistory');
+assert.ok(!/await |refreshGroupChatPanel\(|groupchat:get-state/.test(paintWithoutHistory),
+  '本地出卡这条路径不得出现任何等待：它存在的全部理由就是不等历史');
+assert.ok(/_renderGcPanelInto\(/.test(paintWithoutHistory),
+  '本地出卡要直接渲染面板，而不是绕回缓存路径');
+assert.ok(/if \(_gcPanelState\[meeting\.id\]\) return false/.test(paintWithoutHistory),
+  '有缓存时必须让位给正常路径，这条兜底只负责"一份缓存都没有"的那一帧');
+assert.ok(!/_gcPanelState\[[^\]]*\]\s*=/.test(paintWithoutHistory),
+  '种子状态不得写进 _gcPanelState —— 写进去会被 stale 分支当成"上一份快照"，真历史反而回不来');
+
+// --- 9c. 本次发送的身份必须一路带到服务端 -------------------------------------
+// 只有它能回答「服务端接手的正是我刚发的这一条吗」。这条链断在任何一环，
+// 撤掉本地气泡的判据就只能退回猜（内容像不像 / 时间近不近），而那两种猜法
+// 都已经各自造成过一次「卡片凭空消失」。
+const triggerGroupChat = sliceFn(meetingSrc,
+  '  function triggerGroupChat(meeting, opts = {}) {', '  // === 串行工作流', 'triggerGroupChat');
+assert.ok(/clientMessageId:\s*opts\.pendingClientId/.test(triggerGroupChat),
+  '渲染层必须把本地 pending 的 clientId 随 groupchat:turn 发给主进程');
+const dispatcherSrc = read('main', 'groupchat', 'dispatcher.js');
+assert.ok(/clientMessageId,/.test(dispatcherSrc),
+  '派发器必须接住 clientMessageId 并透传给 orchestrator');
+const orchestratorSrc = read('core', 'group-chat-orchestrator.js');
+assert.ok(/clientMessageId \? \{ clientMessageId \} : \{\}/.test(orchestratorSrc),
+  'orchestrator 要把 id 写进权威 user 消息，且没有 id 时不留空字段');
+
 // --- 10. stuck 提示条的样式必须在 -------------------------------------------
 for (const cls of ['.fi-stuck', '.fi-stuck-label', '.fi-stuck-resend', '.fi-stuck-dismiss']) {
   assert.ok(cssSrc.includes(cls), `stuck 提示条缺样式：${cls}（没样式等于没提示）`);
