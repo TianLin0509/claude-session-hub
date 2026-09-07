@@ -20,6 +20,13 @@ if (typeof document !== 'undefined') (function () {
     guardMarkdownLocalPaths,
     restoreMarkdownLocalPaths,
   } = require('./markdown-local-path-guard.js');
+  const {
+    splitDispatchPrompt,
+    collapsedTitle: dispatchCollapsedTitle,
+    recipientText: dispatchRecipientText,
+    attemptText: dispatchAttemptText,
+    isDispatchCard,
+  } = require('./dispatch-card.js');
   const { resolveClaudeMemoryIndex: _resolveClaudeMemoryIndex } = require('../core/claude-memory-loader.js');
   const _CLAUDE_MEMORY_INDEX = _resolveClaudeMemoryIndex();
   const {
@@ -2272,6 +2279,15 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
     if (!message) return '';
+    // 系统提示（循环自愈的每一次动作都会留一行）：不是谁的发言，不给气泡也不给重发按钮，
+    // 只在时间线上留一条居中的细线 —— 但必须看得见，静默重试才是真正的损失。
+    if (message.systemNote) {
+      const noteTime = _formatGroupChatTime(message.createdAt);
+      return `<div class="mr-gc-sysnote mr-gc-sysnote-${escapeHtml(message.noteKind || 'info')}" data-gc-msg-id="${escapeHtml(message.id || '')}">`
+        + `<span class="mr-gc-sysnote-text">${escapeHtml(message.content || '')}</span>`
+        + (noteTime ? `<span class="mr-gc-sysnote-time">${escapeHtml(noteTime)}</span>` : '')
+        + '</div>';
+    }
     const isUser = message.role === 'user';
     const slot = isUser ? null : memberBySid[message.sid];
     const slotCls = slot ? ` slot-${(slot.slotIndex || 0) + 1}` : '';
@@ -2346,6 +2362,17 @@ if (typeof document !== 'undefined') (function () {
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
+    } else if (isUser && isDispatchCard(message)) {
+      // 派发卡片：每轮重复的角色抬头默认折叠，本轮真正要看的内容直接展开。
+      // 只折显示，不改一个字的下发内容（prompt 由 loop-workflow 负责，这里碰不到）。
+      const parts = splitDispatchPrompt(contentStr);
+      const headBlock = parts.head
+        ? `<details class="mr-gc-dispatch-head"><summary>${escapeHtml(dispatchCollapsedTitle(parts.head))}`
+          + `<span class="mr-gc-dispatch-hint">每轮重复，点开看全文</span></summary>`
+          + `<div class="mr-gc-md">${_renderMarkdown(parts.head)}</div></details>`
+        : '';
+      const bodyBlock = parts.body ? `<div class="mr-gc-md">${_renderMarkdown(parts.body)}</div>` : '';
+      body = headBlock + bodyBlock;
     } else {
       body = `<div class="mr-gc-md">${_renderMarkdown(contentStr)}</div>`;
     }
@@ -2376,13 +2403,21 @@ if (typeof document !== 'undefined') (function () {
     const retryParticipantAction = (!isUser && message.sid && !message.committeeAct && !isPending && !sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn${status === 'completed' || status === 'manual_extracted' ? '' : ' is-failure'}" data-gc-retry-answer="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="让该成员重新回答本轮问题">${status === 'completed' || status === 'manual_extracted' ? '重答' : '重试'}</button>`
       : '';
-    const userTurnActions = isUser
+    // 派发卡片是流程自己发的，不给「作为新一轮重发/放回输入框」——那两个按钮的语义是
+    // 「把我提的问题再问一遍」，对着评审指令按下去只会凭空多出一轮。
+    const userTurnActions = (isUser && !isDispatchCard(message))
       ? `<button type="button" class="mr-gc-turn-action" data-gc-resend-turn="${anchorId}" title="把这条问题作为新一轮重发">↻</button><button type="button" class="mr-gc-turn-action" data-gc-edit-turn="${anchorId}" title="放回输入框编辑后再发">✏</button>`
       : '';
     // 2026-06-28 道雪 [改进3]：回答字数标签（仅 AI）；[改进5]：AI 名字按 kind 上品牌色（.ai-name-<kind>）
     const kindCls = (!isUser && slot && slot.kind) ? ` ai-name-${slot.kind}` : '';
     const wordChip = (!isUser && message.content) ? `<span class="mr-gc-wordcount">${message.content.length} 字</span>` : '';
-    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
+    // 「发给 X」角标：一轮里可能有两张我的卡片（工作位一张、合并位一张），
+    // 不标收件人就分不清哪张是哪张。
+    const recipient = isUser ? dispatchRecipientText(message) : '';
+    const attemptLabel = isUser ? dispatchAttemptText(message) : '';
+    const recipientBadge = recipient ? `<span class="mr-gc-to-badge">${escapeHtml(recipient)}</span>` : '';
+    const attemptBadge = attemptLabel ? `<span class="mr-gc-to-badge is-retry">${escapeHtml(attemptLabel)}</span>` : '';
+    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串

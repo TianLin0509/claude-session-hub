@@ -1184,12 +1184,32 @@ function createGroupChatDispatcher(deps) {
       const orch = groupchat.getOrchestrator(hubDataDir, meetingId);
       const requestedTurnNum = Number(reuseTurnNum);
       const isReusedTurn = Number.isInteger(requestedTurnNum) && requestedTurnNum > 0;
+      // 每一次逻辑派发都要有一张可追溯的卡片，身份 = run + 步骤 + 尝试 + 收件人。
+      // 工作位那一步走 beginTurn 追加 u{n}；评审那一步复用同一轮，必须单独补一张，
+      // 否则它收到的指令根本不进消息流（群聊窗口里看不到，2026-09-06 维护者报的就是这个）。
+      const dispatchMeta = workflowRun && Number.isInteger(Number(workflowRun.stepIndex))
+        ? {
+            kind: String(workflowRun.kind || 'workflow'),
+            stepIndex: Number(workflowRun.stepIndex),
+            attempt: Number(workflowRun.attempt) || 1,
+            runId: workflowRun.runId || null,
+            toMemberIds: targetMembers.map(m => m.memberId).filter(Boolean),
+            toLabels: targetMembers.map(m => m.displayName).filter(Boolean),
+          }
+        : null;
       const begin = orch.beginTurn(userInput || '', {
         turnNum: isReusedTurn ? requestedTurnNum : undefined,
         appendUserMessage: appendUserMessage !== false,
         dispatchMode: dispatchMode || 'group',
+        dispatch: dispatchMeta,
       });
       const { turnNum, runId } = begin;
+      if (dispatchMeta && !begin.didAppendUserMessage) {
+        try { orch.appendDispatchMessage(turnNum, userInput || '', dispatchMeta); }
+        catch (e) { warn('[groupchat] dispatch card append failed:', e && e.message); }
+      }
+      // deliveredIdx 必须在补卡之后取：它是「这位成员已经看到这里」的游标，
+      // 补卡是 role==='user'（buildDelta 会过滤掉），游标越过它不改变任何人看到的内容。
       const deliveredIdx = orch.state.messages.length - 1;
       const deliveredMessage = orch.state.messages[deliveredIdx];
       const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
