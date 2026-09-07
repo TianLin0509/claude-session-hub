@@ -150,4 +150,37 @@ test('干净跑完会写基线，且基线只取更小的观测值', () => {
   assert.equal(after['unit-ok.test.js'], 5, '已有的更小基线不该被这次更慢的观测覆盖');
 });
 
+test('排队等满上限会降级直跑，并把降级说出来', () => {
+  const root = makeFakeRepo({ 'unit-ok.test.js': PASS_FIXTURE });
+  // 先占住锁，让被测进程一定排不上
+  const net = require('node:net');
+  const lockName = 'hub-unit-gate-degrade-' + process.pid;
+  const holder = net.createServer();
+  holder.listen(process.platform === 'win32'
+    ? '\\\\.\\pipe\\' + lockName
+    : path.join(os.tmpdir(), lockName + '.sock'));
+  try {
+    const { code, out } = runRunner(root, [], {
+      HUB_UNIT_NO_LOCK: '0', HUB_UNIT_SUITE_LOCK_HELD: '',
+      HUB_UNIT_LOCK_NAME: lockName, HUB_UNIT_LOCK_WAIT_MS: '1500',
+    });
+    assert.equal(code, 0, '降级之后仍要把测试跑完，不能卡死：' + out);
+    assert.match(out, /排队已等满/, '降级必须说出来，不能静默');
+    assert.match(out, /降级：未排到执行权/);
+    assert.match(out, /耗时和超时判定都会偏悲观/, '要提醒这一场的计时不可当基线');
+  } finally {
+    holder.close();
+  }
+});
+
+test('等待上限够覆盖几路并发（实测三路排队到 301s，300s 会被踩穿）', () => {
+  const runner = fs.readFileSync(REAL_RUNNER, 'utf8');
+  const m = /HUB_UNIT_LOCK_WAIT_MS\)\s*\|\|\s*([\d_]+)/.exec(runner);
+  assert.ok(m, '找不到排队上限');
+  const ms = Number(m[1].replace(/_/g, ''));
+  assert.ok(ms >= 600_000,
+    `排队上限只有 ${ms / 1000}s：实测三路并发跑全量时，排队分别是 94s / 243s / 301s，`
+    + '第三路刚好踩穿 300s 并降级。上限太小会让降级变成常态，等于这把锁白加。');
+});
+
 console.log('unit-test-runner-gate OK');
