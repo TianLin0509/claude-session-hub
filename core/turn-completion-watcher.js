@@ -258,13 +258,16 @@ function createTurnCompletionWatcher(opts) {
      * 用户在 UI 点"一键提取"——绕过完成检测，直接以传入文本 settle。
      * 文本由调用方先调 transcriptTap.extractLatestGeminiTurn() 拿到。
      */
-    manualExtract(text) {
+    // origin='paste' 时如实结算成 manual_paste：正文是用户自己给的，不是 Hub 从转录读回来的。
+    //   两者对流程的意义相同，但来源必须留痕 —— 事后回看要能分清哪段是人贴进来的。
+    manualExtract(text, origin = 'extract') {
+      const isPaste = origin === 'paste';
       settle({
         sid: hubSessionId,
         label,
-        status: 'manual_extracted',
+        status: isPaste ? 'manual_paste' : 'manual_extracted',
         text: text || '',
-        signalSource: 'manual',
+        signalSource: isPaste ? 'manual_paste' : 'manual',
       });
     },
 

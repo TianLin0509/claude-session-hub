@@ -45,6 +45,9 @@ function fakeIpcMain() {
 }
 
 function setup({ extract = null } = {}) {
+  // ptyText 刻意不写进解构签名：合并位的取证脚本按源码文本替换这一行
+  //   （'function setup({ extract = null } = {})'），签名一改就会静默弄坏对方的复现脚本。
+  const ptyText = (arguments[0] && arguments[0].ptyText) || null;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-adopt-ipc-'));
   const meetingId = 'mtg-adopt';
   groupchat._private.resetCache();
@@ -135,7 +138,10 @@ function setup({ extract = null } = {}) {
     getHubDataDir: () => dataDir,
     getActiveWatchers: () => new Map(),   // 硬超时之后 watcher 早就没了，正是出问题的那种局面
     groupchat,
-    groupChatWatcher: { extractStreamingText: () => null, resendCurrentPrompt: async () => ({ ok: true }) },
+    groupChatWatcher: {
+      extractStreamingText: () => (ptyText ? { text: ptyText, source: 'pty_buffer' } : null),
+      resendCurrentPrompt: async () => ({ ok: true }),
+    },
     isWorkflowRunning: mid => loopEngine.isRunning(mid),
     getLoopEngine: () => loopEngine,
     meetingManager,
@@ -229,9 +235,13 @@ async function main() {
     // 两种拒绝原因都合法，取决于第二次点得多快：本步已经有答案了（already_adopted），
     //   或者流程已经因为第一次采用推到了下一步（step_advanced）。
     //   要守的是后果，不是措辞：不覆盖、不重启、不多派发一次。
-    assert.ok(['already_adopted', 'step_advanced'].includes(second.reason),
+    // 三种拒绝原因都合法，取决于第一次采用把流程推到了哪里：本步已有答案、
+    //   已经推进到下一步、或者整条串行已经跑完。要守的是后果而不是措辞。
+    assert.ok(['already_adopted', 'step_advanced', 'no_active_step'].includes(second.reason),
       '第二次提交必须被挡住，实际 reason=' + second.reason);
-    assert.strictEqual(second.keepText, true, '被挡时正文要留给用户，不能直接丢');
+    if (second.reason !== 'no_active_step') {
+      assert.strictEqual(second.keepText, true, '被挡时正文要留给用户，不能直接丢');
+    }
     assert.strictEqual(env.dispatchedMemberIds.filter(id => id === 'm2').length, 1,
       '双击提交不许多派发一次；实际：' + JSON.stringify(env.dispatchedMemberIds));
     assert.strictEqual(env.dispatchedMemberIds.filter(id => id === 'm1').length, 0);
@@ -286,6 +296,50 @@ async function main() {
     assert.strictEqual(env.dispatchedMemberIds.filter(id => id === 'm1').length, 0,
       'A1 已经答过，同步不该重发；实际：' + JSON.stringify(env.dispatchedMemberIds));
     assert.strictEqual(env.dispatchedMemberIds.filter(id => id === 'm2').length, 1);
+  });
+
+
+  await t('B4 · 同步只认最终信号：开场白不采用、不启动下一步', async () => {
+    const env = setup({ extract: { text: '好的，我先看一下这个问题……', source: 'manual_claude_transcript', extractMode: 'partial_commentary' } });
+    const res = await env.ipc.invoke('workflow:sync-step', { meetingId: env.meetingId });
+    await settle(env.loopEngine, env.meetingId, 400);
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.adopted, false, '开场白不是交付，不能替用户认下来');
+    assert.strictEqual(res.advanced, false);
+    assert.deepStrictEqual(env.dispatchedMemberIds, [],
+      '没有最终信号时一次派发都不许有；实际：' + JSON.stringify(env.dispatchedMemberIds));
+    const tried = (res.tried || [])[0];
+    assert.strictEqual(tried && tried.reason, 'not_final');
+    assert.ok(/手动提供回答/.test(tried.detail || ''), '要告诉用户下一步能干嘛：' + (tried && tried.detail));
+  });
+
+  await t('B4 · 同步不走 PTY 兜底：屏幕上的半截文字不算交付', async () => {
+    const env = setup({ ptyText: '屏幕上刷着的半截输出' });
+    const res = await env.ipc.invoke('workflow:sync-step', { meetingId: env.meetingId });
+    await settle(env.loopEngine, env.meetingId, 400);
+    assert.strictEqual(res.adopted, false);
+    assert.deepStrictEqual(env.dispatchedMemberIds, []);
+  });
+
+  await t('B2 · 等待中（running）也给同步与手动提供回答两个入口', () => {
+    const fs = require('fs');
+    const room = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-room.js'), 'utf8');
+    const loopRunning = room.slice(room.indexOf("if (loopSt && loopSt.status === 'running')"),
+      room.indexOf("} else if (loopSt && loopSt.status === 'paused' && discussingNow)"));
+    assert.ok(/_renderStepAdoptionChips/.test(loopRunning),
+      '拆掉回答超时之后，卡住的步骤会长期停在 running；只在 paused 时渲染等于最需要时没有入口');
+    const serialRunning = room.slice(room.indexOf("if (serialSt && serialSt.status === 'running')"),
+      room.indexOf("} else if (serialSt && serialSt.status === 'paused'"));
+    assert.ok(/_renderStepAdoptionChips/.test(serialRunning), '串行等待中同样要有');
+  });
+
+  await t('B1 · 不能拿「引擎被调用了」当推进成功', () => {
+    const fs = require('fs');
+    const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'groupchat-recovery-handlers.js'), 'utf8');
+    assert.ok(/async function awaitAdvance\(/.test(handlers),
+      '采用之后要观察持久状态，确认流程真的往前走了');
+    assert.ok(!/advanced: !!resumed\.ok/.test(handlers),
+      'resumed.ok 只说明引擎被叫起来了，不代表这一步推进了');
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

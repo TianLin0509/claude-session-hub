@@ -2,8 +2,8 @@
 
 const { isCodexCliKind } = require('../../core/ai-kinds.js');
 const WSR = require('../../core/workflow-step-result.js');
-const DevDiscuss = require('../../core/dev-discuss.js');
 const { resumeWorkflowRun } = require('../groupchat/workflow-resume.js');
+const { createStepContextReader } = require('../groupchat/workflow-step-context.js');
 
 function registerGroupchatRecoveryIpc(ipcMain, deps) {
   const {
@@ -50,8 +50,11 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     const freshCurrentTurn = readCurrentTurn();
     const watcherOwnsRequestedTurn = requestedTurn === null
       || (freshCurrentTurn !== null ? requestedTurn === freshCurrentTurn : !orch);
-    if (watcher && watcherOwnsRequestedTurn) {
-      watcher.manualExtract(text);
+    // watcher 已经结算过就不能再喊它：manualExtract 对已结算的 watcher 是空操作，
+    //   而我们却会返回 ok —— 那就是「报告成功但什么都没写」。落到下面的 patch 路径去。
+    const watcherUsable = !!(watcher && (typeof watcher.isSettled !== 'function' || !watcher.isSettled()));
+    if (watcherUsable && watcherOwnsRequestedTurn) {
+      watcher.manualExtract(text, origin);
       return { ok: true, text: text, source: sourceLabel, mode: 'watcher_settle', extractMode: extractMode || null };
     }
 
@@ -161,7 +164,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
   // 「重提 / 同步回答」的提取链。抽成具名函数是为了让 workflow:sync-step 能直接复用，
   //   而不是在两处各写一份提取逻辑 —— 那正是「三种来源各走各的路」的老毛病。
-  async function runManualExtract({ meetingId, sid, sincePromptTs, turnNum } = {}) {
+  async function runManualExtract({ meetingId, sid, sincePromptTs, turnNum, requireFinal = false } = {}) {
     if (!sid) return { ok: false, reason: 'missing_sid' };
 
     const session = sessionManager.getSession(sid);
@@ -229,7 +232,9 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     }
     if (!extracted || !extracted.text) {
       // PTY/streaming 兜底只对"最新轮"有意义：旧轮内容早已不在流式缓冲里。
-      if (isLatestTurn) {
+      // requireFinal（「同步回答」走的就是这条）：PTY 兜底抓到的是屏幕上的半截文字，
+      //   没有任何「这是最终答案」的信号。自动采用它等于替用户认下一段他没看过的开场白。
+      if (isLatestTurn && !requireFinal) {
         try {
           const fromPty = groupChatWatcher.extractStreamingText(sid, runtimeKind);
           if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
@@ -259,6 +264,19 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         reason: 'no_content',
         extractMode,
         detail,
+      };
+    }
+
+    // 2026-09-07 合并位 B4：同步入口只认最终信号。提取器把开场白标成
+    //   partial_commentary 时照样采用，会把「还在说的话」当成交付，直接启动下一步。
+    if (requireFinal && extracted.extractMode !== 'final_answer') {
+      return {
+        ok: false,
+        reason: 'not_final',
+        extractMode: extracted.extractMode || null,
+        textLength: String(extracted.text || '').length,
+        detail: `读到 ${String(extracted.text || '').length} 字，但还没有「这一轮说完了」的信号`
+          + `（${extracted.extractMode || '未知'}）。继续等，或用「手动提供回答」把你确认过的正文直接给进来。`,
       };
     }
 
@@ -382,110 +400,35 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       return { ok: false, reason: 'exception', detail: err && err.message };
     }
   });
-  // -- 状态栏 / 粘贴弹窗共用的「当前这一步是什么情况」--------------------------
-  // 状态栏那个 chip 以前直读 loopState.status，是出事那一刻写下的字：
-  //   答案后来补进来了，它还写着「已暂停」，用户看不出点下去是推进还是重跑。
-  // 现在标签和引擎行为都从 decideResumeAction 这一个判据派生，不可能再对不上。
-  function describeWorkflowStep(meetingId) {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
-    const workflow = meeting.serialWorkflow || {};
-    const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
-    const loopState = workflow.loopState || null;
-    const serialState = workflow.serialRunState || null;
+  // 步骤上下文改由共享读取器提供（main/groupchat/workflow-step-context.js）：
+  //   状态栏、同步入口、粘贴弹窗、以及旧的 loop:resume / serial:resume 必须用同一个判断，
+  //   否则就会出现合并位实测的那两种分叉 —— UI 说「可继续」引擎却判不合格；
+  //   新入口会等而旧入口照样重问。
+  const { describeWorkflowStep } = createStepContextReader({
+    meetingManager, sessionManager, groupchat, getHubDataDir, isWorkflowRunning, logger,
+  });
 
-    let kind = null; let stepIndex = null; let turnNum = null; let runId = null; let status = null;
-    let targetMemberIds = [];
-    if (loopState && ['running', 'paused', 'stopped_user'].includes(loopState.status)) {
-      kind = 'loop';
-      status = loopState.status;
-      runId = loopState.runId || null;
-      turnNum = Number(loopState.currentTurnNum) || null;
-      const round = Math.max(0, Number(loopState.round) || 0);
-      const reviewerPhase = String(loopState.currentStep || '') === 'reviewer';
-      stepIndex = round * 2 + (reviewerPhase ? 1 : 0);
-      targetMemberIds = (steps[reviewerPhase ? 1 : 0] || []).filter(Boolean);
-    } else if (serialState && ['running', 'paused', 'stopped_user'].includes(serialState.status)) {
-      kind = 'serial';
-      status = serialState.status;
-      runId = serialState.runId || null;
-      turnNum = Number(serialState.currentTurnNum) || null;
-      const raw = serialState.currentStepIndex !== null && serialState.currentStepIndex !== undefined
-        ? Number(serialState.currentStepIndex)
-        : Number(serialState.nextStepIndex);
-      stepIndex = Number.isFinite(raw) ? raw : 0;
-      targetMemberIds = (steps[stepIndex] || []).filter(Boolean);
-    } else {
-      return { ok: true, kind: null, active: false };
-    }
-
-    const specs = Array.isArray(meeting.slotSpecs) ? meeting.slotSpecs : [];
-    const subSessions = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
-    const sidForMember = (memberId) => {
-      let index = specs.findIndex((spec, i) => String((spec && spec.memberId) || ('m' + (i + 1))) === String(memberId));
-      if (index < 0) {
-        const legacy = /^m(\d+)$/.exec(String(memberId || ''));
-        index = legacy ? Number(legacy[1]) - 1 : -1;
+  // 「采用之后流程真的往前走了吗」——不能拿「引擎被调用了」当推进成功（合并位 B1）。
+  //   观察持久状态：步骤指纹变了 / 跑完了 = 真的推进；重新 paused 且有新报错 = 没推进。
+  //   预算内还在跑，说明下一步已经派出去正在等回答，也算推进。
+  async function awaitAdvance(meetingId, before, budgetMs = 4000) {
+    const deadline = Date.now() + budgetMs;
+    let latest = before;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 60));
+      const now = describeWorkflowStep(meetingId);
+      if (!now || !now.ok) return { advanced: false, reason: 'context_unavailable', context: now };
+      latest = now;
+      if (!now.active) return { advanced: true, context: now };            // 整条跑完了
+      if (now.stepKey !== before.stepKey) return { advanced: true, context: now };
+      if (now.status === 'stopped_user') return { advanced: false, reason: 'stopped_user', context: now };
+      if (now.status === 'paused' && Number(now.lastErrorAt || 0) > Number(before.lastErrorAt || 0)) {
+        return { advanced: false, reason: now.lastErrorReason || 'paused_again', context: now };
       }
-      return index >= 0 ? (subSessions[index] || null) : null;
-    };
-
-    let orchState = null;
-    try {
-      const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-      orchState = orch && (typeof orch.getState === 'function' ? orch.getState() : orch.state);
-      if (!turnNum && orchState && Number(orchState.currentTurn) > 0) turnNum = Number(orchState.currentTurn);
-    } catch (err) {
-      logger.warn('[workflow-step-context] orchestrator load failed:', err && err.message);
     }
-    const turn = orchState ? ((orchState.turns || []).find(t => t && Number(t.n) === Number(turnNum)) || null) : null;
-
-    const members = targetMemberIds.map(memberId => {
-      const sid = sidForMember(memberId);
-      const session = sid ? sessionManager.getSession(sid) : null;
-      const result = WSR.liveResultFor({ turn, messages: orchState && orchState.messages, turnNum, sid });
-      return {
-        memberId,
-        sid,
-        label: (session && (session.title || session.kind)) || memberId,
-        hasResult: WSR.resultIsUsable(result),
-        status: result.status,
-        textLength: result.textLength,
-      };
-    });
-
-    const decision = WSR.decideResumeAction({
-      turn,
-      messages: orchState && orchState.messages,
-      turnNum,
-      targetSids: members.map(m => m.sid).filter(Boolean),
-      stopped: status === 'stopped_user',
-      discussing: DevDiscuss.isDiscussing(meeting),
-    });
-    const nextStep = steps[Number(stepIndex) + 1] || [];
-    const nextLabel = nextStep.map(id => {
-      const sid = sidForMember(id);
-      const session = sid ? sessionManager.getSession(sid) : null;
-      return (session && (session.title || session.kind)) || id;
-    }).join(' / ');
-    const chip = WSR.describeResumeAction(decision, {
-      stepLabel: '第 ' + (Number(stepIndex) + 1) + ' 步',
-      nextLabel,
-    });
-
-    return {
-      ok: true,
-      active: true,
-      kind,
-      status,
-      runId,
-      stepIndex,
-      turnNum,
-      members,
-      decision: { action: decision.action, why: decision.why, missingSids: decision.missingSids || [] },
-      chip,
-      running: !!isWorkflowRunning(meetingId),
-    };
+    return latest.status === 'running'
+      ? { advanced: true, context: latest }
+      : { advanced: false, reason: latest.lastErrorReason || 'still_paused', context: latest };
   }
 
   ipcMain.handle('workflow:step-context', async (_e, { meetingId } = {}) => {
@@ -524,7 +467,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         if (member.hasResult || !member.sid) continue;
         try {
           const outcome = await runManualExtract({
-            meetingId, sid: member.sid, turnNum: before.turnNum,
+            meetingId, sid: member.sid, turnNum: before.turnNum, requireFinal: true,
           });
           tried.push({
             sid: member.sid, label: member.label,
@@ -551,19 +494,32 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         message: after.chip.hint,
       };
     }
-    const resumed = engineAlreadyRunning
-      ? { ok: true, alreadyRunning: true }
-      : resumeWorkflowRun(getLoopEngine(), meetingId, { logger });
+    if (engineAlreadyRunning) {
+      // 引擎还在等这一步的回答：采用已经通过 watcher 结算它了，不需要也不该再唤醒一次。
+      return {
+        ok: true, adopted: tried.some(item => item.ok), advanced: true, tried, context: after,
+        message: '已采用本步回答，流程继续（不会再问一遍）',
+      };
+    }
+    const resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger, describeStep: describeWorkflowStep });
+    if (!resumed.ok) {
+      return {
+        ok: true, adopted: tried.some(item => item.ok), advanced: false, tried, context: after,
+        resumeReason: resumed.reason,
+        message: '已采用本步回答，但流程没能自动继续：' + (resumed.reason || 'unknown'),
+      };
+    }
+    const moved = await awaitAdvance(meetingId, after);
     return {
       ok: true,
       adopted: tried.some(item => item.ok),
-      advanced: !!resumed.ok,
+      advanced: moved.advanced,
       tried,
-      context: after,
-      message: resumed.ok
+      context: moved.context || after,
+      ...(moved.advanced ? {} : { resumeReason: moved.reason }),
+      message: moved.advanced
         ? '已采用本步回答，流程继续（不会再问一遍）'
-        : ('已采用本步回答，但流程没能自动继续：' + (resumed.reason || 'unknown')),
-      ...(resumed.ok ? {} : { resumeReason: resumed.reason }),
+        : ('已采用本步回答，但流程没有往下走：' + (moved.reason || 'unknown')),
     };
   });
 
@@ -617,21 +573,39 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       if (!adopted || !adopted.ok) return { ...(adopted || { ok: false, reason: 'adopt_failed' }), keepText: true };
 
       const after = describeWorkflowStep(meetingId);
-      let resumed = { ok: false, reason: 'not_needed' };
-      if (after.ok && after.active && after.decision.action === 'advance' && !after.running) {
-        resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger });
+      const canAdvance = !!(after.ok && after.active && after.decision.action === 'advance');
+      if (!canAdvance) {
+        return {
+          ok: true, adopted: true, mode: adopted.mode, advanced: false, context: after,
+          message: '已保存你提供的回答；本步还有成员没交回答，继续等',
+        };
       }
+      if (after.running) {
+        // 引擎还在等这一步：采用已经通过 watcher 结算它，引擎自己就往下走。
+        return {
+          ok: true, adopted: true, mode: adopted.mode, advanced: true, context: after,
+          message: '已采用你提供的回答，流程继续（原成员不会被再问一遍）',
+        };
+      }
+      const resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger, describeStep: describeWorkflowStep });
+      if (!resumed.ok) {
+        return {
+          ok: true, adopted: true, mode: adopted.mode, advanced: false, context: after,
+          resumeReason: resumed.reason,
+          message: '已保存你提供的回答，但流程没能自动继续：' + (resumed.reason || 'unknown'),
+        };
+      }
+      const moved = await awaitAdvance(meetingId, after);
       return {
         ok: true,
         adopted: true,
         mode: adopted.mode,
-        advanced: !!resumed.ok,
-        context: after,
-        message: resumed.ok
+        advanced: moved.advanced,
+        context: moved.context || after,
+        ...(moved.advanced ? {} : { resumeReason: moved.reason }),
+        message: moved.advanced
           ? '已采用你提供的回答，流程继续（原成员不会被再问一遍）'
-          : ((after.ok && after.active && after.decision.action !== 'advance')
-            ? '已保存你提供的回答；本步还有成员没交回答，继续等'
-            : '已采用你提供的回答'),
+          : ('已保存你提供的回答，但流程没有往下走：' + (moved.reason || 'unknown')),
       };
     } catch (err) {
       logger.error('[groupchat-adopt-pasted-result] threw:', err);

@@ -326,9 +326,12 @@ function createLoopEngine(deps) {
     return null;
   }
 
+  // 2026-09-07 合并位 B1：这里漏了 manual_paste，于是开发闭环里
+  //   builderChecked 把人工粘贴的结果判成失败、停回 paused（reason=manual_paste），
+  //   而恢复入口还向用户报告「已继续」。新旧两处判据必须是同一套白名单。
   function resultIsSuccessful(result) {
     return !!(result
-      && (!result.status || ['completed', 'manual_extracted'].includes(result.status))
+      && WSR.isAdoptedStatus(result.status)
       && String(result.text || '').trim());
   }
 
@@ -357,10 +360,15 @@ function createLoopEngine(deps) {
   //   两份证据对不上，于是「气泡里已经有答案」还是被判成「这一步没成功」→ 重新派发，
   //   同一个 agent 被问第二遍（2026-09-07 维护者实测）。
   //   快照仍然有用，但只用来**定位**（runId + stepIndex 是身份）；判定一律走这里。
-  function liveStepView(meetingId, turnNum, targetSids) {
-    if (!turnNum || !Array.isArray(targetSids) || !targetSids.length) {
-      return { total: 0, results: [], missingSids: [], complete: false, partial: false };
-    }
+  // stepEntry（workflowSteps 里 runId + stepIndex 那一条）是**步骤身份**的来源，必须传。
+  //   2026-09-07 合并位 B3：串行工作流所有步骤复用同一个可见 turn，而 turn.by 只按 sid 存。
+  //   只按 turnNum + sid 判「这位答过了」，A1 → A2 → A1 的第三步就会把第一步的正文
+  //   当成自己的答案直接跳过。判据必须锚在这一步自己的记录上。
+  function liveStepView(meetingId, turnNum, targetSids, evidence, identity = {}) {
+    const empty = { total: 0, results: [], missingSids: [], complete: false, partial: false };
+    if (!Array.isArray(targetSids) || !targetSids.length) return empty;
+    const stepEntry = (evidence && evidence.entry) || null;
+    if (!turnNum) turnNum = evidence && evidence.turnNum;
     let orchState = null;
     try {
       const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
@@ -372,7 +380,11 @@ function createLoopEngine(deps) {
     }
     if (!orchState) return { total: targetSids.length, results: [], missingSids: targetSids.slice(), complete: false, partial: false };
     const turn = (orchState.turns || []).find(item => item && Number(item.n) === Number(turnNum)) || null;
-    return WSR.inspectStepResults({ turn, messages: orchState.messages, turnNum, targetSids });
+    return WSR.inspectStepResults({
+      turn, messages: orchState.messages, turnNum, targetSids, stepEntry,
+      attempts: orchState.attempts, runId: identity.runId, stepIndex: identity.stepIndex,
+      requireStepIdentity: true,
+    });
   }
 
   function sidsOf(meeting, memberIds) {
@@ -389,11 +401,11 @@ function createLoopEngine(deps) {
 
   // 只派发了缺口席位时，dispatchResult 里自然没有另几位的结果。
   //   下游（评审裁决解析等）要看全量，所以用活状态把已有的那几位补回去。
-  function mergeLiveResults(meeting, memberIds, dispatchResult, turnNum) {
+  function mergeLiveResults(meeting, memberIds, dispatchResult, turnNum, evidence, identity) {
     const results = Array.isArray(dispatchResult && dispatchResult.results) ? dispatchResult.results.slice() : [];
     const seen = new Set(results.map(item => item && item.sid));
     const targetSids = sidsOf(meeting, memberIds);
-    const view = liveStepView(meeting && meeting.id, turnNum, targetSids);
+    const view = liveStepView(meeting && meeting.id, turnNum, targetSids, evidence, identity || {});
     for (const item of view.results || []) {
       if (!item || seen.has(item.sid) || !WSR.resultIsUsable(item)) continue;
       results.push({ sid: item.sid, status: item.status || 'completed', text: item.text, recovered: true });
@@ -467,6 +479,9 @@ function createLoopEngine(deps) {
     try {
       persistSerial(meetingId, state);
       progress({ stage: 'start' });
+      const guardStepIndex = runOptions.noRedispatch === true && persistedState
+        ? Number(persistedState.currentStepIndex != null ? persistedState.currentStepIndex : persistedState.nextStepIndex)
+        : null;
       while (state.status === 'running' && state.nextStepIndex < steps.length) {
         if (entry.abort) { state.status = 'stopped_user'; break; }
         const index = state.currentStepIndex != null ? Number(state.currentStepIndex) : Number(state.nextStepIndex);
@@ -483,7 +498,17 @@ function createLoopEngine(deps) {
           || state.currentTurnNum
           || pendingStepTurn(meetingId, state.runId, index)
           || null;
-        const stepView = liveStepView(meetingId, evidenceTurnNum, targetSids);
+        const stepView = liveStepView(meetingId, evidenceTurnNum, targetSids, recovered, { runId: state.runId, stepIndex: index });
+        // 恢复闸门（合并位 B5）：只守「恢复时停在的那一步」。它没有可用回答就明确暂停，
+        //   绝不重发 —— 用户点的是「继续」，不是「重问一遍」。要重问得走那个写着
+        //   「重新让本成员回答」的显式入口。守过一次就放开，后面的步骤照常派发。
+        if (guardStepIndex !== null && Number(index) === Number(guardStepIndex) && !stepView.complete) {
+          state.status = 'paused';
+          state.currentStepIndex = index;
+          state.lastError = { stage: 'serial', stepIndex: index, reason: 'awaiting_result', at: Date.now() };
+          persistSerial(meetingId, state);
+          break;
+        }
         if (stepView.complete) {
           state.currentTurnNum = state.currentTurnNum || evidenceTurnNum || null;
           if (!state.completedSteps.some(item => Number(item.stepIndex) === index)) {
@@ -648,6 +673,11 @@ function createLoopEngine(deps) {
       if (!persistOrPause()) return state;
       progress({ stage: 'start' });
 
+      // 恢复闸门（合并位 B5）：只守恢复时停在的那一相位，守过一次就放开。
+      const guardPhase = (runOptions.noRedispatch === true && resuming && persistedLoopState)
+        ? { round: Math.max(0, Number(persistedLoopState.round) || 0), step: String(persistedLoopState.currentStep || 'builder') }
+        : null;
+
       while (state.status === 'running') {
         if (entry.abort) { state.status = 'stopped_user'; break; }
         if (state.round > config.stop.maxRounds + 2) { state.status = 'stopped_max'; break; } // 本地兜底
@@ -664,7 +694,13 @@ function createLoopEngine(deps) {
           || state.currentTurnNum
           || pendingStepTurn(meetingId, state.runId, builderStepIndex)
           || null;
-        const builderView = liveStepView(meetingId, builderTurnNum, sidsOf(meeting, [builderId]));
+        const builderView = liveStepView(meetingId, builderTurnNum, sidsOf(meeting, [builderId]), builderEvidence, { runId: state.runId, stepIndex: builderStepIndex });
+        if (guardPhase && guardPhase.round === state.round && guardPhase.step === 'builder' && !builderView.complete) {
+          state.status = 'paused';
+          state.lastError = { stage: 'builder', reason: 'awaiting_result', at: Date.now() };
+          persistOrPause();
+          break;
+        }
         if (builderView.complete) {
           bRes = dispatchResultFromLive(meeting, [builderId], builderTurnNum, builderView);
           state.currentTurnNum = bRes.turnNum;
@@ -743,7 +779,13 @@ function createLoopEngine(deps) {
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
         const reviewerTurnNum = (reviewerEvidence && reviewerEvidence.turnNum) || turnNum || null;
-        const reviewerView = liveStepView(meetingId, reviewerTurnNum, sidsOf(meeting, reviewerIds));
+        const reviewerView = liveStepView(meetingId, reviewerTurnNum, sidsOf(meeting, reviewerIds), reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
+        if (guardPhase && guardPhase.round === state.round && guardPhase.step === 'reviewer' && !reviewerView.complete) {
+          state.status = 'paused';
+          state.lastError = { stage: 'reviewer', reason: 'awaiting_result', at: Date.now() };
+          persistOrPause();
+          break;
+        }
         if (reviewerView.complete) {
           rRes = dispatchResultFromLive(meeting, reviewerIds, reviewerTurnNum, reviewerView);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
@@ -768,7 +810,7 @@ function createLoopEngine(deps) {
               // 只补了缺口时，把先前已成交的那几位从活状态补回结果集，
               //   否则下游解析裁决会把「没派发」误当成「没给裁决」。
               if (rRes && reviewerDispatchIds.length < reviewerIds.length) {
-                rRes = mergeLiveResults(meeting, reviewerIds, rRes, rRes.turnNum || reviewerTurnNum);
+                rRes = mergeLiveResults(meeting, reviewerIds, rRes, rRes.turnNum || reviewerTurnNum, reviewerEvidence, { runId: state.runId, stepIndex: reviewerStepIndex });
               }
               const checked = validateStepResult(meeting, reviewerDispatchIds, rRes);
               if (checked.takenOver) break;

@@ -5030,6 +5030,10 @@ if (typeof document !== 'undefined') (function () {
     const discussingNow = DevDiscuss.isDiscussing(current);
     if (loopSt && loopSt.status === 'running') {
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-workflow-stop="1" title="循环工作流运行中（第 ${escapeHtml(String(loopSt.round || 1))} 轮 · ${escapeHtml(loopSt.phase || loopSt.stage || '进行中')}），点击停止"><span>循环</span><strong>R${escapeHtml(String(loopSt.round || 1))}·${escapeHtml(loopSt.phase || loopSt.stage || '进行中')} ⏹</strong></span>`);
+      // 2026-09-07 合并位 B2：等待中也必须给救援入口。拆掉回答超时之后，卡住的步骤
+      //   会长期停在 running 而不是 paused —— 如果只在 paused 时才渲染，用户恰恰在
+      //   最需要的时候看不到「同步回答 / 手动提供回答」，只剩一个「停止」。
+      if (!discussingNow) chips.push(_renderStepAdoptionChips(current, '闭环'));
     } else if (loopSt && loopSt.status === 'paused' && discussingNow) {
       chips.push(_renderInputChip('闭环', '旧循环已暂停 · 讨论中不可恢复，请「开工」', ''));
     } else if (loopSt && loopSt.status === 'paused') {
@@ -5048,6 +5052,8 @@ if (typeof document !== 'undefined') (function () {
       const currentStep = Number.isFinite(rawStepIndex) ? rawStepIndex + 1 : 1;
       const totalSteps = Number(serialSt.totalSteps) || workflowSteps || 1;
       chips.push(`<span class="mr-input-preflight-chip warn clickable" data-workflow-stop="1" title="串行工作流正在第 ${currentStep}/${totalSteps} 步，点击停止"><span>串行</span><strong>${currentStep}/${totalSteps} ⏹</strong></span>`);
+      // 同上（B2）：等待中的串行步骤也要能同步 / 手动提供回答。
+      if (!discussingNow && !(loopSt && loopSt.status === 'running')) chips.push(_renderStepAdoptionChips(current, '串行'));
     } else if (serialSt && serialSt.status === 'paused' && !discussingNow && !(loopSt && loopSt.status === 'paused')) {
       chips.push(_renderStepAdoptionChips(current, '串行'));
     }

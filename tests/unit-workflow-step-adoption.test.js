@@ -147,13 +147,21 @@ async function tokenTests() {
 // ────────── 三、真实循环引擎 + 计数 dispatcher：核心验收「不重复派发」──────────
 
 // 生产真实形状：第 1 步（m1/s1）先失败留下快照，随后被重提补上活状态。
-function stateWithStaleSnapshot({ liveStatus = 'manual_extracted', liveText = 'A1 恢复后补上的完整回答' } = {}) {
+function stateWithStaleSnapshot({
+  liveStatus = 'manual_extracted',
+  liveText = 'A1 恢复后补上的完整回答',
+  settledAt = 1000,
+  // patchTurnResult 每次都会盖 lastPatchedAt / patchedAt。默认让它晚于步骤结算时刻，
+  //   也就是「人是在这一步失败之后才把答案补进来的」——这正是要认的那种情形。
+  patchedAt = 2000,
+} = {}) {
   return {
     turns: [{
       n: 7,
       runId: null,
       by: { s1: liveText },
       byStatus: { s1: liveStatus },
+      lastPatchedAt: patchedAt,
       meta: {
         workflowSteps: [{
           runId: 'RUN-1',
@@ -161,12 +169,16 @@ function stateWithStaleSnapshot({ liveStatus = 'manual_extracted', liveText = 'A
           stepIndex: 0,
           attempt: 1,
           targetMemberIds: ['m1'],
-          completedAt: 1,
+          completedAt: settledAt,
           // ← 结算那一刻拍下的快照，重提不会回头更新它
           results: [{ sid: 's1', status: 'errored', textLength: 0 }],
         }],
       },
     }],
+    messages: [
+      { id: 'u7', role: 'user', turnNum: 7, content: '第 1 步任务' },
+      { id: 'a7-m1', role: 'assistant', turnNum: 7, sid: 's1', status: liveStatus, content: liveText, patchedAt },
+    ],
     pendingPrompts: {},
   };
 }
@@ -260,10 +272,11 @@ async function engineTests() {
         n: 7,
         by: { s1: '已经审完的正文' },
         byStatus: { s1: 'completed' },
+        lastPatchedAt: 2000,
         meta: {
           workflowSteps: [{
             runId: 'RUN-1', kind: 'serial', stepIndex: 0, attempt: 1,
-            targetMemberIds: ['m1', 'm2'], completedAt: 1,
+            targetMemberIds: ['m1', 'm2'], completedAt: 1000,
             results: [
               { sid: 's1', status: 'errored', textLength: 0 },
               { sid: 's2', status: 'errored', textLength: 0 },
@@ -271,6 +284,10 @@ async function engineTests() {
           }],
         },
       }],
+      messages: [
+        { id: 'u7', role: 'user', turnNum: 7, content: 'go' },
+        { id: 'a7-m1', role: 'assistant', turnNum: 7, sid: 's1', status: 'completed', content: '已经审完的正文', patchedAt: 2000 },
+      ],
       pendingPrompts: {},
     };
     const { engine, dispatchedMemberIds } = mkSerialEngine(state, { steps: [['m1', 'm2']] });
@@ -364,12 +381,101 @@ async function contractTests() {
   });
 }
 
+
+// ───────────── 五、合并位第一轮 BLOCKERS 的回归 ─────────────
+
+async function blockerRegressionTests() {
+  // B3：串行工作流所有步骤复用同一个 turn，turn.by 只按 sid 存。
+  //     只按 turnNum + sid 判「这位答过了」，A1 → A2 → A1 的第三步会拿第一步的正文顶。
+  await t('B3 · 这一步没有自己的记录时，绝不能拿别的步骤的答案顶上', () => {
+    const turn = {
+      n: 7,
+      by: { s1: '第 1 步的实现说明' },
+      byStatus: { s1: 'completed' },
+      lastPatchedAt: 2000,
+      meta: {
+        workflowSteps: [{
+          runId: 'RUN-1', stepIndex: 0, targetMemberIds: ['m1'], completedAt: 1000,
+          results: [{ sid: 's1', status: 'completed', textLength: 40 }],
+        }],
+      },
+    };
+    const stepEntryFor = idx => (turn.meta.workflowSteps.find(e => Number(e.stepIndex) === idx) || null);
+
+    // 第 1 步：自己的记录就写着成功 → 成交
+    assert.strictEqual(W.inspectStepResults({
+      turn, turnNum: 7, targetSids: ['s1'], stepEntry: stepEntryFor(0), requireStepIdentity: true,
+    }).complete, true);
+
+    // 第 3 步（同一位成员）：没有自己的记录 → 绝不成交
+    const third = W.inspectStepResults({
+      turn, turnNum: 7, targetSids: ['s1'], stepEntry: stepEntryFor(2), requireStepIdentity: true,
+    });
+    assert.strictEqual(third.complete, false,
+      '第三步从没跑过，不能因为「同一个人早先答过」就跳过它');
+    assert.deepStrictEqual(third.missingSids, ['s1']);
+    assert.strictEqual(third.results[0].why, 'step_never_ran_for_member');
+
+    // 退回不带身份的宽松判据 ⇒ 第三步会被误判成已完成（这就是 B3 的原样）
+    assert.strictEqual(W.inspectStepResults({ turn, turnNum: 7, targetSids: ['s1'] }).complete, true,
+      '这条断言固定住「不带步骤身份就会误判」，改动时能看出差别');
+  });
+
+  await t('B3 · 这一步失败在先、人后来补的答案才算数（比结算时刻新）', () => {
+    const stepEntry = {
+      runId: 'RUN-1', stepIndex: 1, targetMemberIds: ['m1'], completedAt: 5000,
+      results: [{ sid: 's1', status: 'errored', textLength: 0 }],
+    };
+    const older = {
+      n: 7, by: { s1: '这段是更早的步骤留下的' }, byStatus: { s1: 'completed' }, lastPatchedAt: 4000,
+    };
+    const newer = {
+      n: 7, by: { s1: '人后来粘进来的正文' }, byStatus: { s1: 'manual_paste' }, lastPatchedAt: 6000,
+    };
+    assert.strictEqual(W.inspectStepResults({
+      turn: older, turnNum: 7, targetSids: ['s1'], stepEntry, requireStepIdentity: true,
+    }).complete, false, '比这一步结算还早的正文不属于这一步');
+    assert.strictEqual(W.inspectStepResults({
+      turn: newer, turnNum: 7, targetSids: ['s1'], stepEntry, requireStepIdentity: true,
+    }).complete, true, '这一步失败之后才补进来的正文，才是给这一步的');
+  });
+
+  // B5：恢复入口在当前步骤没有回答时，绝不能重发原成员。
+  await t('B5 · 恢复时当前步骤没有回答：明确暂停，一次派发都不许有', async () => {
+    const { engine, dispatchedMemberIds } = mkSerialEngine(
+      stateWithStaleSnapshot({ liveStatus: 'errored', liveText: '' }));
+    const state = await engine.runSerial('serial-mtg', null, { ...RESUMABLE }, { noRedispatch: true });
+    assert.deepStrictEqual(dispatchedMemberIds, [],
+      '「继续」不是「重问一遍」；实际派发：' + JSON.stringify(dispatchedMemberIds));
+    assert.strictEqual(state.status, 'paused');
+    assert.strictEqual(state.lastError && state.lastError.reason, 'awaiting_result');
+  });
+
+  await t('B5 · 恢复闸门只守当前这一步：有答案就照常推进到下一步', async () => {
+    const { engine, dispatchedMemberIds } = mkSerialEngine(stateWithStaleSnapshot());
+    await engine.runSerial('serial-mtg', null, { ...RESUMABLE }, { noRedispatch: true });
+    assert.strictEqual(dispatchedMemberIds.filter(id => id === 'm1').length, 0);
+    assert.strictEqual(dispatchedMemberIds.filter(id => id === 'm2').length, 1,
+      '守的是恢复时停在的那一步，后面的步骤该派发照样派发');
+  });
+
+  await t('B1 · 步骤成功判据认 manual_paste（开发闭环不许再判它失败）', () => {
+    const engine = require('fs').readFileSync(
+      path.join(__dirname, '..', 'main', 'groupchat', 'loop-engine.js'), 'utf8');
+    assert.ok(!/\['completed', 'manual_extracted'\]\.includes\(result\.status\)/.test(engine),
+      'resultIsSuccessful 不能再自带一份短名单 —— 它和新判据必须是同一套白名单');
+    assert.ok(/WSR\.isAdoptedStatus\(result\.status\)/.test(engine),
+      '步骤成功判据要走共享的 isAdoptedStatus');
+  });
+}
+
 async function main() {
   console.log('Running workflow step adoption tests...');
   await pureFunctionTests();
   await tokenTests();
   await engineTests();
   await contractTests();
+  await blockerRegressionTests();
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 }

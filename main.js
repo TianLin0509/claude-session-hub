@@ -1345,7 +1345,11 @@ try {
     },
     logger: console,
   });
-  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
+  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, {
+    loopEngine: global.__loopEngine,
+    // 恢复入口要和「同步回答」用同一个步骤判断，否则旧入口仍会重问原成员。
+    meetingManager, sessionManager, groupchat, getHubDataDir,
+  });
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
 
 try {

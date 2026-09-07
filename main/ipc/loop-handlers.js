@@ -4,10 +4,29 @@
  * renderer 发起/停止/查询 main 进程驱动的循环。
  */
 const { resumeWorkflowRun } = require('../groupchat/workflow-resume.js');
+const { createStepContextReader } = require('../groupchat/workflow-step-context.js');
 
 function registerLoopIpc(ipcMain, deps) {
-  const { loopEngine, logger = console } = deps || {};
+  const {
+    loopEngine, logger = console,
+    meetingManager, sessionManager, groupchat, getHubDataDir,
+  } = deps || {};
   if (!ipcMain || !loopEngine) return;
+
+  // 旧的 loop:resume / serial:resume 必须和新入口用同一个判断（合并位 B5）：
+  //   当前步骤没有回答时，恢复不许把原成员再问一遍。拿不到读取器就退回旧行为，
+  //   但生产一定注入 —— 缺了会在 main.js 的注册里立刻暴露。
+  const stepReader = (meetingManager && sessionManager && groupchat && getHubDataDir)
+    ? createStepContextReader({
+      meetingManager,
+      sessionManager,
+      groupchat,
+      getHubDataDir,
+      isWorkflowRunning: mid => loopEngine.isRunning(mid),
+      logger,
+    })
+    : null;
+  const describeStep = stepReader ? stepReader.describeWorkflowStep : undefined;
 
   // 立即返回 ok，循环在 main 后台跑（通过 'loop:progress' 推进度），不阻塞 renderer
   ipcMain.handle('loop:start', async (_e, args = {}) => {
@@ -49,7 +68,7 @@ function registerLoopIpc(ipcMain, deps) {
       //   共享的 resumeWorkflowRun 里还会再问一次；这里留着是为了给前端精确原因。
       const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
       if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
-      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, heroIdBySid: args.heroIdBySid || {} });
+      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, describeStep, heroIdBySid: args.heroIdBySid || {} });
     } catch (err) {
       logger.error('[loop:resume]', err);
       return { ok: false, reason: (err && err.message) || 'internal_error' };
@@ -86,7 +105,7 @@ function registerLoopIpc(ipcMain, deps) {
       //   共享的 resumeWorkflowRun 里还会再问一次；这里留着是为了给前端精确原因。
       const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
       if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
-      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, heroIdBySid: args.heroIdBySid || {} });
+      return resumeWorkflowRun(loopEngine, args.meetingId, { logger, describeStep, heroIdBySid: args.heroIdBySid || {} });
     } catch (err) {
       logger.error('[serial:resume]', err);
       return { ok: false, reason: (err && err.message) || 'internal_error' };
