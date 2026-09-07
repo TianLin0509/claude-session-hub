@@ -1830,12 +1830,11 @@
 /* --- 清除旧竖线与卡片底（高 specificity 覆盖旧规则） --- */
 .session-item.slim { border: none; background: transparent; box-shadow: none; }
 .session-item.slim.meeting { border-left-color: transparent; }
-/* 2026-09-01：行尾不再印"休眠 ·"两个字，休眠与否全靠这块灰底 + 灰状态点判断，
-   所以底色和描边比原来（.065 / .10）加重一档，保证一眼能扫出来。 */
+/* 休眠以月牙和分区识别，避免大量历史会话形成一排灰框。 */
 .session-item.slim.dormant {
-  background: rgba(var(--rgb-neutral), .09);
+  background: transparent;
   border-left-color: transparent;
-  box-shadow: inset 0 0 0 1px rgba(var(--rgb-neutral), .17);
+  box-shadow: none;
 }
 .session-item.slim.dormant.need-unread { background: rgba(var(--rgb-info), .08); }
 .session-item.slim.dormant:hover { background: rgba(var(--rgb-neutral), .14); }
@@ -1844,10 +1843,8 @@
 .session-item.slim.dormant .sl-time { color: var(--mark-slate); }
 /* 休眠行的 logo 保留原色（否则占多数的休眠行反而认不出是哪家），只压一档亮度。 */
 .session-item.slim.dormant .sl-kind { opacity: .74; }
-/* 可唤醒（休眠）行的时间与标题同一档：都是 --fg-default / 560。
-   这两个字段是一条信息——"这个会话睡在什么时候，等你点它醒过来"——所以要么一起亮
-   要么一起暗，一亮一暗会让整行读起来是断的。数值必须跟上面 .dormant .sl-title 保持同步。 */
-.session-item.slim .sl-time.dormant-time { color: var(--fg-default); font-weight: 560; }
+/* 时间为次级信息，标题保持原有可读性。 */
+.session-item.slim .sl-time.dormant-time { color: var(--text-secondary); font-weight: 400; }
 .session-item.slim.resuming {
   background: rgba(var(--rgb-info), .11);
   box-shadow: inset 2px 0 0 rgba(var(--rgb-info), .78);
@@ -1908,3 +1905,22 @@
 .sl-line1.with-arrow { grid-template-columns: auto 15px minmax(0,1fr) auto auto; }
 /* 群聊无箭头后行2 与标题左对齐 */
 .session-item.slim.meeting.gc .session-mini-jumps { padding-left: 21px; }
+
+/* 休眠群聊：默认单行；悬停、键盘聚焦或选中时展示克制的成员次行。
+   保留原 data-sub-id 入口与 tooltip；百分比/已选数仍可在成员提示中查看。 */
+.sl-moon { width: 14px; height: 14px; flex: none; color: var(--text-secondary); vertical-align: middle; }
+.sl-time .sl-moon { width: 11px; height: 11px; margin-right: 4px; }
+.session-item.slim.meeting.gc.dormant .sl-line1 { grid-template-columns: minmax(0, 1fr) auto auto; }
+.session-item.slim.meeting.gc.dormant .session-mini-jumps { display: none; padding-left: 0; }
+.session-item.slim.meeting.gc.dormant:hover .session-mini-jumps,
+.session-item.slim.meeting.gc.dormant:focus-within .session-mini-jumps,
+.session-item.slim.meeting.gc.dormant.selected .session-mini-jumps {
+  display: flex; flex-wrap: wrap; overflow: visible; gap: 4px 8px; margin-top: 5px;
+}
+.session-item.slim.meeting.gc.dormant .mini-jump-ctx,
+.session-item.slim.meeting.gc.dormant .sl-members-hint,
+.session-item.slim.meeting.gc.dormant .mini-jump-status-dot { display: none; }
+.session-item.slim.meeting.gc.dormant .mini-jump-btn { max-width: 100%; }
+.session-item.slim.meeting.gc.dormant:focus-visible,
+.session-dormant-header:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
+button.session-dormant-header { width: 100%; background: transparent; border: 0; text-align: left; font-family: inherit; }
