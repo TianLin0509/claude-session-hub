@@ -523,15 +523,17 @@ function createLoopEngine(deps) {
           for (const memberId of dispatchMemberIds) await ensureMemberReady(meeting, memberId);
           if (entry.abort) { state.status = 'stopped_user'; break; }
           const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
-          const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
             userInput: stepPrompt,
             targetMemberIds: dispatchMemberIds,
             reuseTurnNum: state.currentTurnNum || null,
             appendUserMessage: !state.currentTurnNum,
             dispatchMode: 'serial',
-            turnTimeoutMs: timeoutMs,
-            allowActiveExtend: false,
+            // 不设死墙钟（2026-09-07）：普通群聊本来就不设，是工作流自己传了超时参数
+            //   才给自己装上。到点强杀产出的是 failed + hard_timeout —— 台账到了终态，
+            //   但那只是 Hub 不等了，CLI 那边很可能还在跑；随后这条假终态又会让恢复入口
+            //   把同一个成员重新问一遍。真死的 CLI 就停在这一步等人处理，逃生入口是
+            //   「同步回答 / 手动提供回答 / 跳过 / 停止」。
             heroIdBySid: runOptions.heroIdBySid || {},
             workflowRun: {
               runId: state.runId,
@@ -626,13 +628,9 @@ function createLoopEngine(deps) {
       const stepConfigs = Array.isArray(wf.stepConfigs) ? wf.stepConfigs : [];
       const builderRolePrompt = (stepConfigs[0] && stepConfigs[0].prompt) || '';
       const reviewerRolePrompt = (stepConfigs[1] && stepConfigs[1].prompt) || '';
-      const builderTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
-        Number(stepConfigs[0] && stepConfigs[0].timeoutMs) || 10 * 60_000));
-      // 回落值必须够跑两遍全量单测：合同要求评审 dry-run 一次、正式合并再一次，
-      // 本机闲机一遍就 117 秒，机器忙时更长，还可能先在单测总入口的排队锁上等。
-      // 老的 5 分钟连一遍都不够，缺配的群聊必然被误判成「评审没给裁决」。
-      const reviewerTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
-        Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 25 * 60_000));
+      // 步骤超时常量已随死墙钟一起去掉（2026-09-07）。它们原本要解决的问题是
+      //   「跑两遍全量单测比墙钟长」—— 那本来就是墙钟自己制造的问题：闲机一遍 117 秒，
+      //   机器忙时更长，还可能先在单测总入口的排队锁上等。不设墙就不用再调这个数。
 
       const dispatcher = getDispatcher();
       const progress = (extra) => {
@@ -684,11 +682,8 @@ function createLoopEngine(deps) {
                 reuseTurnNum: state.currentTurnNum || null,
                 appendUserMessage: !state.currentTurnNum,
                 dispatchMode: 'serial',
-                turnTimeoutMs: builderTimeoutMs,
-                // PTY 还在输出 = agent 还在干活（多半正在跑测试或等排队锁）。
-                // 到点强杀会把「在验证」误判成「没给结果」。延期由 dispatcher 封顶
-                //（最近 150 秒内有输出才延，总共最多 +8 分钟），不会拖成永久等待。
-                allowActiveExtend: true,
+                // 同上：不设死墙钟。原来那套「最近有输出就再延一会儿」的续命判断
+                //   只是给墙打的补丁，墙拆了之后它也没有存在意义了。
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
               });
@@ -766,9 +761,7 @@ function createLoopEngine(deps) {
                 reuseTurnNum: turnNum,
                 appendUserMessage: false,
                 dispatchMode: 'serial',
-                turnTimeoutMs: reviewerTimeoutMs,
-                // 同上：评审跑两遍全量时转录会长时间只有工具输出，不能按死墙钟砍。
-                allowActiveExtend: true,
+                // 同上：评审跑两遍全量时转录会长时间只有工具输出，本来就不该按墙钟砍。
                 heroIdBySid: runOptions.heroIdBySid || {},
                 workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerDispatchIds },
               });

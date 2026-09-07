@@ -336,6 +336,26 @@ async function contractTests() {
     assert.ok(calls >= 2, '重提与粘贴都要走它，实际调用点：' + calls);
   });
 
+  await t('工作流步骤不再给自己装死墙钟（假终态的唯一产地）', () => {
+    const engine = read('main/groupchat/loop-engine.js');
+    assert.ok(!/turnTimeoutMs:/.test(engine),
+      '工作流不许再传 turnTimeoutMs —— 到点强杀产出的 failed + hard_timeout 只是「Hub 不等了」，'
+      + 'CLI 那边很可能还在跑，而这条假终态正是恢复入口重复派发的燃料');
+    assert.ok(!/allowActiveExtend:/.test(engine),
+      '续命判断是给墙钟打的补丁，墙拆了就不该留着');
+    const dispatcher = read('main/groupchat/dispatcher.js');
+    assert.ok(/disableHardTimeout: !\(Number\(turnTimeoutMs\) > 0\)/.test(dispatcher),
+      'dispatcher 保留参数入口（默认不传即不设墙），回退成本才是零');
+  });
+
+  await t('等待中也能同步采用：不能把唯一的救援入口挡在门外', () => {
+    const seg = handlers.slice(handlers.indexOf("'workflow:sync-step'"));
+    assert.ok(!/if \(before\.running\) return \{ ok: false/.test(seg),
+      '拆墙之后「正在跑」多半只是「正在等回答」，一律拒绝等于没有救援入口');
+    assert.ok(/engineAlreadyRunning/.test(seg),
+      '引擎已经在跑时不该再唤醒一次，但采用本身要放行');
+  });
+
   await t('orchestrator 认识 manual_paste（否则台账把它当失败）', () => {
     const orch = read('core/group-chat-orchestrator.js');
     assert.ok(/manual_paste: ATTEMPT_COMPLETED/.test(orch), '状态映射缺 manual_paste');

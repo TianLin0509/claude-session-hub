@@ -361,7 +361,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         reuseTurnNum: turnNum,
         appendUserMessage: false,
         dispatchMode: 'retry',
-        turnTimeoutMs: 10 * 60 * 1000,
+        // 「重新让本成员回答」同样不设死墙钟：到点强杀只会再造一条假终态。
+        //   等不下去时用「停止」，或者「手动提供回答」把 CLI 里的正文直接给进来。
       });
       const participantResult = result && Array.isArray(result.results)
         ? result.results.find(item => item && item.sid === sid)
@@ -509,7 +510,11 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     if (before.decision.action === 'blocked') {
       return { ok: false, reason: before.decision.why, detail: before.chip.hint };
     }
-    if (before.running) return { ok: false, reason: 'workflow_running', detail: '流程正在跑，不用同步' };
+    // 注意：拆掉死墙钟之后，「正在跑」多数时候的真实含义是「正在等这一步的回答」。
+    //   所以这里不能再一律拒绝 —— 那会把用户唯一的救援入口挡在门外。
+    //   等待中采用是安全的：watcher 还活着，adoptStepResult 会用 manualExtract 结算它，
+    //   等在上面的 dispatch Promise 直接 resolve，引擎自己就往下走，无需再唤醒一次。
+    const engineAlreadyRunning = !!before.running;
 
     // 缺口席位逐个再找一次转录。这里复用 groupchat-manual-extract 的整条提取链，
     //   包括它对旧轮、身份和 final_answer 的既有判据 —— 自动侧一个字都没放松。
@@ -546,7 +551,9 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         message: after.chip.hint,
       };
     }
-    const resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger });
+    const resumed = engineAlreadyRunning
+      ? { ok: true, alreadyRunning: true }
+      : resumeWorkflowRun(getLoopEngine(), meetingId, { logger });
     return {
       ok: true,
       adopted: tried.some(item => item.ok),

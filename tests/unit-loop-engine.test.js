@@ -216,7 +216,13 @@ async function main() {
     assert(/重点验证边界输入/.test(m.turnCalls[1].userInput));
   });
 
-  await t('循环步骤使用模板配置的独立超时，不截断长实现与全量审查', async () => {
+  // 2026-09-07 改：循环步骤不再给自己装死墙钟，所以也就不再有"配一个够长的超时"这件事。
+  //   原来这条断言的是「模板配的 30/25 分钟要透传给 dispatcher」——那是在给墙钟调参数。
+  //   墙钟到点产出的是 failed + signalSource:'hard_timeout'：台账到了终态，但那只是
+  //   Hub 不等了，CLI 那边很可能还在跑；随后这条假终态又会让恢复入口把同一个成员
+  //   重新问一遍（维护者实测）。普通群聊本来就不设墙（dispatcher 的
+  //   disableHardTimeout: !(turnTimeoutMs > 0)），现在工作流与它一致。
+  await t('循环步骤不设死墙钟：长实现与全量审查不会被 Hub 单方面砍掉', async () => {
     const m = mk({
       stepConfigs: [
         { prompt: '实现', timeoutMs: 30 * 60 * 1000 },
@@ -226,8 +232,11 @@ async function main() {
     const eng = createLoopEngine(m.deps);
     const st = await eng.runLoop('mtg', 'g', null);
     assert.strictEqual(st.status, 'done');
-    assert.strictEqual(m.turnCalls[0].turnTimeoutMs, 30 * 60 * 1000);
-    assert.strictEqual(m.turnCalls[1].turnTimeoutMs, 25 * 60 * 1000);
+    assert.strictEqual(m.turnCalls[0].turnTimeoutMs, undefined,
+      '传了 turnTimeoutMs 就等于让 dispatcher 装上墙钟；模板里的 timeoutMs 不再有这个作用');
+    assert.strictEqual(m.turnCalls[1].turnTimeoutMs, undefined);
+    assert.strictEqual(m.turnCalls[0].allowActiveExtend, undefined,
+      '续命判断是给墙钟打的补丁，墙拆了就不该留着');
   });
 
   await t('步骤超时/失败进入 paused，不能残留 running', async () => {

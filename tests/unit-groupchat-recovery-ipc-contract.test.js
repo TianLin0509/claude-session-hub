@@ -590,6 +590,5 @@ test('resend participant retries one settled member through the dispatcher', asy
     reuseTurnNum: 2,
     appendUserMessage: false,
     dispatchMode: 'retry',
-    turnTimeoutMs: 10 * 60 * 1000,
   }]]);
 });

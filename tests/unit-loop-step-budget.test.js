@@ -1,16 +1,19 @@
 'use strict';
-// 2026-09-06：循环两步的外层预算，必须扛得住内层要跑两遍全量测试这件事。
+// 循环两步的外层预算：合并位那一步要跑两遍全量测试，Hub 不许把它砍掉。
 //
-// 冲突长这样：合并位那一步的合同要求「dry-run 一次 + 正式合并再一次」，
-// 每次都是全量单测（本机闲机 117 秒，机器忙时更长，还可能在总入口锁前排队）。
-// 而外层给这一步的是一个死墙钟，到点就 markTimedOut('response_timeout') 强制 skip ——
-// 于是一次「正在跑第二遍测试」会被记成「评审没给裁决」，白烧一轮返工。
+// 冲突原本长这样（2026-09-06）：合同要求「dry-run 一次 + 正式合并再一次」，每次都是
+// 全量单测（本机闲机 117 秒，机器忙时更长，还可能在总入口锁前排队）。而外层给这一步的
+// 是一个死墙钟，到点 markTimedOut('response_timeout') 强制 skip —— 一次「正在跑第二遍
+// 测试」被记成「评审没给裁决」，白烧一轮返工。当时的解法是把墙钟调大 + 允许有界延期。
 //
-// 两条锁：
-//   1. 缺配时的回落预算不能是 5 分钟（连一遍全量都不够，更别说两遍）
-//   2. 循环的派发必须允许「PTY 还在输出就有界延期」——这正是 dispatcher 已经实现、
-//      却被循环显式关掉的那条兜底（allowActiveExtend）。延期本身有上限（+8 分钟）
-//      且只在最近 150 秒内有输出时生效，不会把真死的会话拖成永久等待。
+// 2026-09-07 改成了更根本的解法：**工作流不再给自己装墙钟**。
+// 普通群聊本来就不设（dispatcher: `disableHardTimeout: !(turnTimeoutMs > 0)`），
+// 是工作流自己传了 turnTimeoutMs 才装上的。墙钟到点产出的 failed + hard_timeout
+// 是一条假终态 —— 台账终态，但那只是 Hub 不等了，CLI 那边很可能还在跑；随后这条假终态
+// 又会让恢复入口把同一个成员重新问一遍（维护者实测）。
+//
+// 所以这个文件守的东西没变（评审步不许被 Hub 单方面砍掉），只是判据从
+// 「预算够不够大 / 延期开没开」升级成「压根没有墙钟，也就没有可调错的参数」。
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -18,27 +21,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'main', 'groupchat', 'loop-engine.js'), 'utf8');
+const dispatcherSrc = fs.readFileSync(path.join(__dirname, '..', 'main', 'groupchat', 'dispatcher.js'), 'utf8');
 
-test('评审步缺配 timeoutMs 时的回落预算够跑两遍全量', () => {
-  const m = /reviewerTimeoutMs = Math\.max\([\s\S]{0,200}?\|\|\s*([\d_]+)\s*\*\s*60_000\)\)/.exec(src);
-  assert.ok(m, '找不到评审步的预算回落值');
-  const minutes = Number(m[1].replace(/_/g, ''));
-  assert.ok(minutes >= 20,
-    `评审步回落预算只有 ${minutes} 分钟：合同要求它跑两遍全量单测（本机闲机一遍就 117 秒，`
-    + '忙时更长，还可能在总入口锁前排队），至少要 20 分钟');
+test('工作流的每一次派发都不带 turnTimeoutMs（不给自己装墙钟）', () => {
+  const dispatchCount = (src.match(/dispatchGroupChatTurn\(meetingId,\s*\{/g) || []).length;
+  assert.ok(dispatchCount >= 3,
+    `应当能找到串行 / builder / reviewer 三处派发，实际 ${dispatchCount} 处`);
+  // 整个引擎里一处都不许出现：只要有一条派发带上它，dispatcher 就给那一步装上墙钟。
+  assert.doesNotMatch(src, /turnTimeoutMs/,
+    '传 turnTimeoutMs 就等于让 dispatcher 装上死墙钟；到点强杀产出的 failed + hard_timeout '
+    + '只是「Hub 不等了」，CLI 那边很可能还在跑，而这条假终态正是恢复入口重复派发的燃料');
 });
 
-test('循环派发允许有界的活跃延期，不再一刀切关掉', () => {
-  const dispatches = src.match(/dispatchGroupChatTurn\(meetingId,\s*\{[\s\S]*?\}\)/g) || [];
-  // 只管开发群聊这条循环（kind: 'loop'）。通用串行工作流 kind: 'serial' 是另一条链路，
-  // 同样写死了 allowActiveExtend: false —— 已记给维护者，不在本任务里顺手改。
-  const loopDispatches = dispatches.filter(d => /kind:\s*'loop'/.test(d) && /allowActiveExtend/.test(d));
-  assert.equal(loopDispatches.length, 2, '工作位与评审两步都应当显式表态 allowActiveExtend');
-  for (const d of loopDispatches) {
-    assert.match(d, /allowActiveExtend:\s*true/,
-      'PTY 还在输出就说明 agent 还在干活（多半正在跑测试），这时到点强杀会把「在验证」'
-      + '误判成「没给裁决」。延期上限由 dispatcher 封顶，这里必须放开。');
-  }
+test('续命判断随墙钟一起去掉，不留半套机制', () => {
+  assert.doesNotMatch(src, /allowActiveExtend/,
+    'allowActiveExtend 是给墙钟打的补丁（PTY 最近有输出就再延一会儿）；墙拆了它就没有意义，'
+    + '留着只会让人以为还有一层保护');
+  assert.doesNotMatch(src, /reviewerTimeoutMs|builderTimeoutMs/,
+    '不再需要为「够不够跑两遍全量」调参数 —— 这个问题是墙钟自己制造的');
+});
+
+test('dispatcher 保留参数入口：默认不传即不设墙，回退成本为零', () => {
+  assert.match(dispatcherSrc, /disableHardTimeout: !\(Number\(turnTimeoutMs\) > 0\)/,
+    '墙钟必须仍然是「谁传谁装」，这样万一要回退，把参数传回去就行，不用改 dispatcher');
 });
 
 console.log('unit-loop-step-budget OK');
