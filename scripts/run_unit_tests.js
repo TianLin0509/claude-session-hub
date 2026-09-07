@@ -122,7 +122,13 @@ const LOCK_NAME = String(process.env.HUB_UNIT_LOCK_NAME || 'hub-unit-suite-lock'
 const LOCK_ADDRESS = process.platform === 'win32'
   ? '\\\\.\\pipe\\' + LOCK_NAME
   : path.join(os.tmpdir(), LOCK_NAME + '.sock');
-const LOCK_WAIT_MAX_MS = Math.max(0, Number(process.env.HUB_UNIT_LOCK_WAIT_MS) || 300_000);
+// 等待上限怎么定的：外层评审步骤的预算是 25 分钟（开发群聊默认值），而合同要求它跑
+// 两遍全量（dry-run 一次 + 正式合并一次），一遍闲机约 2 分钟。留给排队的预算按
+// 「两遍都排一次队也不撑破外层」倒推，取 10 分钟。
+// 实测（2026-09-06，三路并发跑全量）：排队 94s / 243s / 301s —— 老的 300 秒上限刚好
+// 被第三路踩穿并降级。10 分钟能覆盖到五路左右；再多就该降级，那也是安全的：
+// 降级只是回到本次改动之前的行为，而串行复测那一层仍然兜着假失败。
+const LOCK_WAIT_MAX_MS = Math.max(0, Number(process.env.HUB_UNIT_LOCK_WAIT_MS) || 600_000);
 const LOCK_POLL_MS = 2_000;
 const LOCK_HEARTBEAT_MS = 15_000;
 
