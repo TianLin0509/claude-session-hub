@@ -119,13 +119,32 @@ assert.ok(!/isKimiCliKind\(kind\)/.test(sendInputBody),
   '逐家白名单是这条漏洞的来源，不要再写回去');
 assert.ok(/mountOptimisticUserCard\(sessionId/.test(sendInputBody),
   '卡片视图必须在发送那一刻挂出乐观用户卡');
-// 群聊那侧：pending 气泡渲染失败时要补一次强制置底刷新，否则第一条消息发出去看不到自己。
+// 群聊那侧：没有面板缓存时也必须**同步**画出用户那条，再去补历史。
+// 2026-09-07 评审实测：兜底如果走 refreshGroupChatPanel，它要先 await `groupchat:get-state`，
+// 把历史拖到 2.5s 时用户按下发送、输入框已清空，气泡 2.1s 才出现。真跑的回归在
+// tests/e2e-groupchat-first-send-card-cdp.js，这里守住源码层面的调用顺序。
 const rememberPending = sliceFn(meetingSrc,
   '  function _rememberPendingUserMessage(meeting, text) {', '  function _discardPendingUserMessage', '_rememberPendingUserMessage');
 assert.ok(/forceGroupChatBottom: true/.test(rememberPending),
   '群聊发出消息后必须强制滚到底');
-assert.ok(/refreshGroupChatPanel\(/.test(rememberPending),
-  '缓存态还没建起来时要补一次刷新，否则用户看不到自己刚发的那条');
+const localPaintAt = rememberPending.indexOf('_paintPendingUserMessageWithoutHistory(');
+const refreshAt = rememberPending.indexOf('refreshGroupChatPanel(');
+assert.ok(localPaintAt >= 0, '没有缓存时必须先本地画一帧，不能只留一个异步刷新');
+assert.ok(refreshAt >= 0, '本地画完仍要去拉真历史');
+assert.ok(localPaintAt < refreshAt,
+  '本地出卡必须排在拉历史前面 —— 反过来就等于又把出卡挂在 groupchat:get-state 上');
+
+const paintWithoutHistory = sliceFn(meetingSrc,
+  '  function _paintPendingUserMessageWithoutHistory(meeting) {', '  function _rememberPendingUserMessage',
+  '_paintPendingUserMessageWithoutHistory');
+assert.ok(!/await |refreshGroupChatPanel\(|groupchat:get-state/.test(paintWithoutHistory),
+  '本地出卡这条路径不得出现任何等待：它存在的全部理由就是不等历史');
+assert.ok(/_renderGcPanelInto\(/.test(paintWithoutHistory),
+  '本地出卡要直接渲染面板，而不是绕回缓存路径');
+assert.ok(/if \(_gcPanelState\[meeting\.id\]\) return false/.test(paintWithoutHistory),
+  '有缓存时必须让位给正常路径，这条兜底只负责"一份缓存都没有"的那一帧');
+assert.ok(!/_gcPanelState\[[^\]]*\]\s*=/.test(paintWithoutHistory),
+  '种子状态不得写进 _gcPanelState —— 写进去会被 stale 分支当成"上一份快照"，真历史反而回不来');
 
 // --- 10. stuck 提示条的样式必须在 -------------------------------------------
 for (const cls of ['.fi-stuck', '.fi-stuck-label', '.fi-stuck-resend', '.fi-stuck-dismiss']) {

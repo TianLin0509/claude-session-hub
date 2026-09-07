@@ -5311,6 +5311,34 @@ if (typeof document !== 'undefined') (function () {
     const pending = _gcPendingUserMessageByMeeting[meetingId];
     return Array.isArray(pending) ? pending : [];
   }
+  // 「还没有面板缓存」时用的最小可渲染状态：空历史 + idle。
+  //   刻意**不写进 _gcPanelState** —— 那份缓存是服务端快照的归属地，塞一个空壳进去，
+  //   _syncGroupChatCacheFromServer 的 stale 分支（!accepted && prev）就会把这个空壳
+  //   当成"上一份快照"返回，真历史反而回不来。这里只是画一帧，不是建缓存。
+  function _pendingOnlyPanelState() {
+    return { messages: [], turns: [], summarySegments: [], attempts: {}, currentTurn: 0, currentMode: 'idle' };
+  }
+
+  // 首次打开房间（或历史查询还在飞）时，把用户刚发的那条 pending 提问就地画出来。
+  // 这里绝对不能等 refreshGroupChatPanel：它要先 await `groupchat:get-state`。
+  // 实测把历史拖到 2.5 秒，用户按下发送、输入框已经清空，气泡要 2.1 秒才出现
+  // （见 tests/e2e-groupchat-first-send-card-cdp.js）。
+  function _paintPendingUserMessageWithoutHistory(meeting) {
+    if (!meeting || meeting.id !== activeMeetingId || !_isPanelCapableMeeting(meeting)) return false;
+    // 有缓存就该走正常路径，这条兜底只负责"一份缓存都没有"的那一帧。
+    if (_gcPanelState[meeting.id]) return false;
+    try {
+      return _renderGcPanelInto(_ensureGcPanel(), meeting, _pendingOnlyPanelState(), {
+        scroll: { scrollTop: 0, stickToBottom: true },
+        restoreOpts: { forceBottom: true },
+        forceMeetingBottom: true,
+      });
+    } catch (error) {
+      console.warn('[meeting-room] 本地 pending 气泡渲染失败:', error && error.message);
+      return false;
+    }
+  }
+
   function _rememberPendingUserMessage(meeting, text) {
     const content = String(text || '').trim();
     if (!meeting || !meeting.id || !content) return null;
@@ -5335,9 +5363,11 @@ if (typeof document !== 'undefined') (function () {
         forceGroupChatBottom: true,
         forceMeetingBottom: true,
       });
-      // 缓存态还没建起来（本房间第一条消息、或刚从休眠唤醒）时上面这条会直接 return false，
-      // 于是"发出去先看到自己那张卡"就落空，要等服务端推完才冒出来。补一次强制置底刷新。
+      // 缓存态还没建起来（首次打开房间、刚从休眠唤醒、历史查询还在飞）时上面这条
+      // 直接 return false。此时先本地画一帧，让用户立刻看见自己那条；真历史随后
+      // 由 refreshGroupChatPanel 整体接管——那一步是异步的，不能挡在出卡前面。
       if (!painted) {
+        _paintPendingUserMessageWithoutHistory(meetingData[meeting.id] || meeting);
         Promise.resolve(refreshGroupChatPanel(meetingData[meeting.id] || meeting, {
           forceGroupChatBottom: true,
           forceMeetingBottom: true,
@@ -6870,6 +6900,15 @@ if (typeof document !== 'undefined') (function () {
     updateMeetingData,
   };
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
+    // 走真实 handleMeetingSend，但**不 await** —— e2e 要量的正是「按下发送那一刻
+    // 到看见自己那张气泡」的间隔，await 会把这个间隔藏起来。
+    meetingRoomApi.debugSendGroupChat = function debugSendGroupChat(meetingId, text) {
+      const meeting = meetingData[meetingId];
+      if (!meeting || !_isPanelCapableMeeting(meeting)) return { ok: false, reason: 'meeting_not_found' };
+      Promise.resolve(handleMeetingSend(String(text || ''), meeting))
+        .catch(error => console.warn('[e2e] debugSendGroupChat failed:', error && error.message));
+      return { ok: true };
+    };
     meetingRoomApi.debugRenderGroupChatState = function debugRenderGroupChatState(meetingId, state) {
       const meeting = meetingData[meetingId];
       if (!meeting || !_isPanelCapableMeeting(meeting)) return { ok: false, reason: 'meeting_not_found' };
