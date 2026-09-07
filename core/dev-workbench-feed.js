@@ -20,6 +20,14 @@ const MAX_TIMELINE_TEXT = 1000;
 // 老群聊可能攒了几千条消息。倒着扫，够用就停：纪事满员且两张终稿卡都拿到就收工，
 // 再加一道硬上限兜底，免得每次落盘都把整部历史重新解析一遍。
 const MAX_SCAN = 500;
+// 实时通道认得的三个标签。agent 在一轮**中途**写下的人话只有走这条路才进得了群聊状态：
+// 交付时的 PROGRESS / NOTES 由 completeTurn 落盘，而 PLAN 写在开工前、ASK 可能写在任何时候，
+// 它们从来没有第二条路。2026-09-06 合并位实测：真实 Claude/Codex transcript 里
+// 中途发出的 PLAN 和 ASK 全部丢失，工作台自然显示不出方案和待拍板的问题。
+const LIVE_TAGS = ['PLAN', 'UPDATE', 'ASK'];
+// 带这两个标签的消息是**最终交接**，走 completeTurn 落盘。实时通道必须整条跳过，
+// 否则同一段话会既进过程汇报又进正式答复，纪事里出现两条一模一样的记录。
+const FINAL_TAGS = ['PROGRESS', 'RESULT'];
 function clean(value, max = 4096) {
   if (typeof value !== 'string') return '';
   const text = value.trim();
@@ -139,5 +147,21 @@ function publishSaved(hubDataDir, meetingId, summary) {
   }
 }
 function subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
-function processUpdate(text) { return clean(fields(text).UPDATE); }
-module.exports = { summarizeGroupState, publishSaved, subscribe, clean, processUpdate, fields, MAX_TIMELINE };
+/**
+ * 从一段实时输出里抠出该落进群聊的人话，按它们在原文里出现的顺序返回。
+ * 一条消息里可以同时有 PLAN 和 UPDATE（agent 说完打算就接着报进展），各自成一条。
+ */
+function processLiveTags(text) {
+  const parsed = fields(text);
+  if (FINAL_TAGS.some(tag => clean(parsed[tag]))) return [];
+  // Object 的键按插入顺序排列，而 fields 是逐行扫的 —— 所以这就是原文顺序。
+  return Object.keys(parsed)
+    .filter(tag => LIVE_TAGS.includes(tag))
+    .map(tag => ({ tag, text: clean(parsed[tag]) }))
+    .filter(entry => entry.text);
+}
+function processUpdate(text) {
+  const hit = processLiveTags(text).find(entry => entry.tag === 'UPDATE');
+  return hit ? hit.text : '';
+}
+module.exports = { summarizeGroupState, publishSaved, subscribe, clean, processUpdate, processLiveTags, fields, LIVE_TAGS, MAX_TIMELINE };

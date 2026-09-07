@@ -429,8 +429,14 @@ class GroupChatOrchestrator {
     const mine = this.state.messages.filter(message => isProgressUpdateMessage(message)
       && (message.id === base || String(message.id || '').startsWith(base + '.')));
     const previous = mine[mine.length - 1];
-    const content = 'UPDATE: ' + text;
-    if (previous && (previous.content === content || at < previous.updatedAt)) return false;
+    // 实时通道现在也送 PLAN / ASK，不再只有 UPDATE。标签由采集端给，认不出就退回 UPDATE。
+    const requested = String(event.tag || '').toUpperCase();
+    const tag = devWorkbenchFeed.LIVE_TAGS.includes(requested) ? requested : 'UPDATE';
+    const content = tag + ': ' + text;
+    // 去重看整段历史而不只是最后一条：transcript 尾随读取会把同一行重新喂过来，
+    // 而 PLAN/UPDATE 交替出现时「只比最后一条」挡不住重复。
+    if (mine.some(message => message.content === content)) return false;
+    if (previous && at < previous.updatedAt) return false;
     // 上限只防失控、不防话多：到顶之后退回原地改写最后一条，
     // 这份 state 每次都要整份落盘，不能让一个刷屏的席位把它撑爆。
     if (previous && mine.length >= MAX_PROGRESS_UPDATES_PER_STEP) Object.assign(previous, { content, updatedAt: at });

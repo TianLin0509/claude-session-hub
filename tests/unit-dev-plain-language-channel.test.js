@@ -145,6 +145,35 @@ test('C3 · 合同、工作流预设、解析器三方对齐（谁漂移谁红�
   assert.ok(/下限/.test(author) && /下限/.test(merger), '合同要给字数下限而不是上限，这是这次改动的重点');
 });
 
+test('E1 · 实时通道送来的 PLAN / ASK 要按各自标签落盘，并直接进摘要', () => {
+  // 采集端（transcript-tap）已经把标签认出来了，落盘这一侧不能再把它们统统写成 UPDATE ——
+  // 那样解析回来全是进展，方案和提问依旧显示不出来。
+  const orch = groupchat.getOrchestrator(root, 'gc-live-tags');
+  const { turnNum, runId } = orch.beginTurn('接通实时通道');
+  orch.recordTurnPrompt(turnNum, 's1', '任务全文', { runId, memberId: 'm1', kind: 'claude' });
+  const t0 = Date.now();
+  const say = (tag, text, offset) => orch.recordProgressUpdate('s1', text, t0 + offset, 'Claude 1', { tag });
+  assert.equal(say('PLAN', '打算分两步\n先改解析器，再接工作台。', 1), true);
+  assert.equal(say('UPDATE', '解析器改完了', 2), true);
+  assert.equal(say('ASK', '手机推送要不要现在做？', 3), true);
+  // 认不出的标签退回 UPDATE，而不是把原文丢掉
+  assert.equal(say('WHATEVER', '未知标签也要落下来', 4), true);
+
+  const messages = orch.state.messages.filter(m => m.status === 'progress_update');
+  assert.deepEqual(messages.map(m => m.content.split(':')[0]), ['PLAN', 'UPDATE', 'ASK', 'UPDATE']);
+  assert.equal(messages[0].content, 'PLAN: 打算分两步\n先改解析器，再接工作台。');
+
+  const summary = orch.state.devWorkbench;
+  assert.equal(summary.plan.text, '打算分两步\n先改解析器，再接工作台。', '方案没进摘要，工作台就显示不出来');
+  assert.equal(summary.ask.text, '手机推送要不要现在做？');
+  assert.equal(summary.update.text, '未知标签也要落下来', '任务行仍取最新一条进展');
+  assert.deepEqual(summary.timeline.map(e => e.kind), ['plan', 'update', 'ask', 'update']);
+
+  // transcript 尾随读取会把同一行重新喂过来：整段历史去重，不只比最后一条
+  assert.equal(say('PLAN', '打算分两步\n先改解析器，再接工作台。', 5), false, '重复的方案不该再落一条');
+  assert.equal(say('UPDATE', '解析器改完了', 6), false, '被后来的消息隔开的重复进展同样要挡住');
+});
+
 // ── 工作台一侧：需要我 / 任务纪事 / 项目名 ──────────────────────────────────
 const { createDevWorkbench } = require('../main/groupchat/dev-workbench');
 const Model = require('../renderer/dev-workbench-model');
