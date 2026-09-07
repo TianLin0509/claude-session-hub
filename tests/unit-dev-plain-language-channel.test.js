@@ -169,9 +169,37 @@ test('E1 · 实时通道送来的 PLAN / ASK 要按各自标签落盘，并直�
   assert.equal(summary.update.text, '未知标签也要落下来', '任务行仍取最新一条进展');
   assert.deepEqual(summary.timeline.map(e => e.kind), ['plan', 'update', 'ask', 'update']);
 
-  // transcript 尾随读取会把同一行重新喂过来：整段历史去重，不只比最后一条
-  assert.equal(say('PLAN', '打算分两步\n先改解析器，再接工作台。', 5), false, '重复的方案不该再落一条');
-  assert.equal(say('UPDATE', '解析器改完了', 6), false, '被后来的消息隔开的重复进展同样要挡住');
+  // 同一条 transcript 记录被重新读到（来源时刻一样）算重放，挡掉
+  assert.equal(say('PLAN', '打算分两步\n先改解析器，再接工作台。', 1), false, '同一条来源记录重放不该再落一条');
+});
+
+test('E2 · 同一句话再说一遍是真进展，不是重放 —— 跑测试→修红→再跑测试', () => {
+  // 合并位实测的反例：上一版按「正文相同」去重，把第三条真进展也拒了，
+  // 工作台就永远停在「在修」那一句上，看起来像卡死。
+  const orch = groupchat.getOrchestrator(root, 'gc-repeat-progress');
+  const { turnNum, runId } = orch.beginTurn('区分重放与同文新消息');
+  orch.recordTurnPrompt(turnNum, 's1', '任务全文', { runId, memberId: 'm1', kind: 'claude' });
+  const t0 = Date.now();
+  const say = (text, offset) => orch.recordProgressUpdate('s1', text, t0 + offset, 'Claude 1', { tag: 'UPDATE' });
+
+  assert.equal(say('开始跑单测', 1), true);
+  assert.equal(say('有一条红，正在修', 2), true);
+  assert.equal(say('开始跑单测', 3), true, 'A→B→A 的第三条是真进展，不许当成重放丢掉');
+
+  const updates = orch.state.messages.filter(m => m.status === 'progress_update');
+  assert.equal(updates.length, 3, '三条真进展只剩 ' + updates.length + ' 条');
+  assert.deepEqual(updates.map(m => m.content),
+    ['UPDATE: 开始跑单测', 'UPDATE: 有一条红，正在修', 'UPDATE: 开始跑单测']);
+  assert.equal(orch.state.devWorkbench.update.text, '开始跑单测', '工作台停在旧状态了');
+
+  // 重放判据：正文相同**且**来源时刻相同。三条各重放一遍，一条都不该多出来。
+  assert.equal(say('开始跑单测', 1), false, '第一条的重放');
+  assert.equal(say('有一条红，正在修', 2), false, '中间那条的重放');
+  assert.equal(say('开始跑单测', 3), false, '最后一条的重放');
+  assert.equal(orch.state.messages.filter(m => m.status === 'progress_update').length, 3);
+
+  // 紧挨着的同一句仍然只留一条（来源没有时间戳、回落到 Date.now() 时靠这条兜底）
+  assert.equal(say('开始跑单测', 4), false, '连着说同一句只留一条');
 });
 
 // ── 工作台一侧：需要我 / 任务纪事 / 项目名 ──────────────────────────────────

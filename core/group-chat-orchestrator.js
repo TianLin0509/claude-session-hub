@@ -433,9 +433,17 @@ class GroupChatOrchestrator {
     const requested = String(event.tag || '').toUpperCase();
     const tag = devWorkbenchFeed.LIVE_TAGS.includes(requested) ? requested : 'UPDATE';
     const content = tag + ': ' + text;
-    // 去重看整段历史而不只是最后一条：transcript 尾随读取会把同一行重新喂过来，
-    // 而 PLAN/UPDATE 交替出现时「只比最后一条」挡不住重复。
-    if (mine.some(message => message.content === content)) return false;
+    // 去重要分清两件事，只看正文会把它们混成一件：
+    //   ① **事件重放**——同一条 transcript 记录被重新读到（尾随重连、一条消息里
+    //      PLAN 和 UPDATE 各发一次事件后整行重读）。它的来源时刻和已落盘的那条一样。
+    //   ② **同文新消息**——agent 真的又说了一遍同样的话：跑测试 → 有一条红在修 →
+    //      再跑一遍。第三条是真进展，丢了工作台就停在「在修」不动。
+    // 判据因此是「正文相同**且**来源时刻相同」，不是「正文相同」。
+    // 上一版只比正文，把 ② 也当成重放拒收了（合并位实测复现）。
+    const sourceAt = message => Number(message.createdAt) === at || Number(message.updatedAt) === at;
+    if (mine.some(message => message.content === content && sourceAt(message))) return false;
+    // 连着重复的同一句仍然只留一条：没有时间戳的来源（回落到 Date.now()）靠这条兜底。
+    if (previous && previous.content === content) return false;
     if (previous && at < previous.updatedAt) return false;
     // 上限只防失控、不防话多：到顶之后退回原地改写最后一条，
     // 这份 state 每次都要整份落盘，不能让一个刷屏的席位把它撑爆。
