@@ -14,9 +14,6 @@ const {
   runtimeLabel,
   runtimeSourceLabel,
 } = require('../core/session-runtime-truth.js');
-const { sessionNeedsUserInput } = require('../core/session-attention-state.js');
-const { hasStreamDisconnectIssue } = require('../core/stream-disconnect.js');
-const { normalizeQuestionSummary } = require('./card-question-navigator.js');
 
 function providerLabel(session) {
   const kind = String(session && session.kind || '').replace(/-resume$/i, '').toLowerCase();
@@ -137,160 +134,7 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   };
 }
 
-
-// ── Composer 状态行（T1 冷杉 v2）──────────────────────────────────────────
-// 舞台头部的状态徽章和 composer 状态行说的是同一件事，所以它们共用
-// deriveSessionRuntimeStatus 的**同一个结论**，只是把它折成四档展示态。
-// 复制一份判据 = 两个地方迟早说出互相矛盾的话，这里刻意不那么做。
-
-const COMPOSER_STATUS_READY = 'ready';
-const COMPOSER_STATUS_WORKING = 'working';
-const COMPOSER_STATUS_WAITING = 'waiting';
-const COMPOSER_STATUS_DEAD = 'dead';
-
-// 状态行要的是「38s」这种口语时长，不是头部徽章的 mm:ss 计时器。
-function formatRuntimeSeconds(value) {
-  const totalSeconds = Math.max(0, Math.floor((Number(value) || 0) / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  if (minutes < 60) {
-    const seconds = totalSeconds % 60;
-    return seconds ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
-}
-
-// CLI 把选项摆成编号行时（「1. 是，继续 / 2. 先看 diff」）解析成快捷答复。
-// 解析不出来就返回空数组 —— 宁可不给 chip，也不要造一个用户点了会答错的按钮。
-// 只有一条候选不算选择题，同样不渲染。
-function parseQuickReplyOptions(text, { max = 4, maxLength = 18 } = {}) {
-  const seen = new Set();
-  const options = [];
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    const match = rawLine.match(/^\s*(?:[>›❯▶*-]\s*)?(\d{1,2})\s*[.)、．]\s*(.+?)\s*$/);
-    if (!match) continue;
-    const label = String(match[2])
-      .replace(/\s*\(default\)\s*$/i, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!label || label.length > maxLength) continue;
-    const key = label.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    options.push(label);
-    if (options.length >= max) break;
-  }
-  return options.length >= 2 ? options : [];
-}
-
-// 把编号选项行从问题正文里摘掉，剩下的才是「AI 到底在问什么」。
-function stripQuickReplyLines(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .filter(line => !/^\s*(?:[>›❯▶*-]\s*)?\d{1,2}\s*[.)、．]\s+\S/.test(line))
-    .join('\n')
-    .trim();
-}
-
-function composerStateFor(runtimeState, { needsRespond = false, disconnected = false } = {}) {
-  // 断开优先于一切：休眠会话上残留的 waitingText 不该冒充「在等你回答」，
-  // 那会让用户对着一个收不到消息的会话打字。
-  if (disconnected || runtimeState === RUNTIME_DORMANT || runtimeState === RUNTIME_FAILED) {
-    return COMPOSER_STATUS_DEAD;
-  }
-  if (needsRespond || runtimeState === RUNTIME_WAITING) return COMPOSER_STATUS_WAITING;
-  if (runtimeState === RUNTIME_STARTING || runtimeState === RUNTIME_RUNNING) return COMPOSER_STATUS_WORKING;
-  return COMPOSER_STATUS_READY;
-}
-
-/**
- * Composer 状态行的展示模型。纯函数：同一个 session + now 永远给同一个结果。
- * @returns {{ state: string, text: string, detail: string, quickReplies: string[],
- *   action: { kind: string, label: string }|null, canStop: boolean, runtime: object }}
- */
-function buildComposerStatusModel(session, options = {}) {
-  const now = Number(options.now) || Date.now();
-  const runtime = options.runtime || deriveSessionRuntimeStatus(session, { ...options, now });
-  // 「等你响应」的判据与 respond-pill 完全一致（sessionNeedsUserInput），
-  // 区别只在 pill 会跳过当前会话 —— composer 说的就是当前会话，所以不跳过。
-  const needsRespond = sessionNeedsUserInput(session);
-  const disconnected = hasStreamDisconnectIssue(session);
-  const state = composerStateFor(runtime.state, { needsRespond, disconnected });
-  const provider = runtime.provider || 'AI';
-
-  if (state === COMPOSER_STATUS_WORKING) {
-    const startedAt = Number(session && session.runStartedAt) || legacyRunningStartedAt(session);
-    const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
-    return {
-      state,
-      text: elapsed ? `${provider} 正在工作 · ${elapsed}` : `${provider} 正在工作`,
-      detail: runtime.visibleDetail || '',
-      quickReplies: [],
-      action: null,
-      canStop: true,
-      runtime,
-    };
-  }
-
-  if (state === COMPOSER_STATUS_WAITING) {
-    const raw = String((session && session.waitingText) || runtime.detail || '').trim();
-    const quickReplies = parseQuickReplyOptions(raw);
-    // 选项行属于「快捷答复」那一行，不该再挤进问题摘要里念一遍。
-    const question = quickReplies.length ? stripQuickReplyLines(raw) : raw;
-    const summary = question ? normalizeQuestionSummary(question, 48) : '';
-    return {
-      state,
-      text: summary ? `${provider} 在等你回答：「${summary}」` : `${provider} 在等你回答`,
-      detail: '',
-      quickReplies,
-      action: null,
-      canStop: false,
-      runtime,
-    };
-  }
-
-  if (state === COMPOSER_STATUS_DEAD) {
-    const issue = session && session.connectionIssue;
-    const reason = String(
-      (disconnected && issue && (issue.reason || issue.detail))
-      // 休眠不是故障，它的 detail 是一句操作提示（「点击会话可恢复原生 CLI」），
-      // 拿来当断开原因念出来是答非所问。
-      || (runtime.state === RUNTIME_DORMANT ? '会话已休眠' : '')
-      || runtime.detail
-      || (session && (session.lastError || session.error || session.spawnError)),
-    ).replace(/\s+/g, ' ').trim().slice(0, 60);
-    return {
-      state,
-      text: reason
-        ? `会话已断开（${reason}）· 输入会在重连后发送`
-        : '会话已断开 · 输入会在重连后发送',
-      detail: '',
-      quickReplies: [],
-      action: { kind: 'reconnect', label: '重连' },
-      canStop: false,
-      runtime,
-    };
-  }
-
-  // 就绪：runtime.meta 在 COMPLETED 下就是 formatCompletionAge 的结果（「2 分钟前」）。
-  const age = runtime.state === RUNTIME_COMPLETED ? String(runtime.meta || '').trim() : '';
-  return {
-    state: COMPOSER_STATUS_READY,
-    text: age ? `已就绪 · ${age}完成上一轮` : '已就绪',
-    detail: '',
-    quickReplies: [],
-    action: age ? { kind: 'scroll-latest', label: '查看上一轮 ↑' } : null,
-    canStop: false,
-    runtime,
-  };
-}
-
 module.exports = {
-  COMPOSER_STATUS_DEAD,
-  COMPOSER_STATUS_READY,
-  COMPOSER_STATUS_WAITING,
-  COMPOSER_STATUS_WORKING,
   RUNTIME_STATUS_STARTING: RUNTIME_STARTING,
   RUNTIME_STATUS_RUNNING: RUNTIME_RUNNING,
   RUNTIME_STATUS_WAITING: RUNTIME_WAITING,
@@ -299,12 +143,8 @@ module.exports = {
   RUNTIME_STATUS_FAILED: RUNTIME_FAILED,
   RUNTIME_STATUS_DORMANT: RUNTIME_DORMANT,
   RUNTIME_STATUS_UNKNOWN: RUNTIME_UNKNOWN,
-  buildComposerStatusModel,
-  composerStateFor,
   deriveSessionRuntimeStatus,
   formatCompletionAge,
   formatRuntimeDuration,
-  formatRuntimeSeconds,
-  parseQuickReplyOptions,
   providerLabel,
 };

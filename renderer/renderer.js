@@ -7,6 +7,7 @@ const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexK
 const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
 const {
   buildComposerRailModel,
+  buildComposerStatusModel,
   buildSessionStatusSummary,
 } = require('../core/session-status-summary.js');
 const {
@@ -85,10 +86,7 @@ const { createPreviewPanelController } = require('./preview-panel-controller.js'
 const { createClipboardController } = require('./clipboard-controller.js');
 const { createSessionReadyNotifier } = require('./session-ready-notifier.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
-const {
-  buildComposerStatusModel,
-  deriveSessionRuntimeStatus,
-} = require('./session-runtime-status.js');
+const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const { isTurnComplete, normalizeToolActivity } = require('../core/turn-presentation.js');
 const {
   advanceRunningAnimationCandidate,
@@ -3360,6 +3358,62 @@ function observeTerminalPanelChrome(panel, bar) {
 
 // ── T1 冷杉 v2 · composer 的几个共用小工具 ──────────────────────────────────
 
+// CLI 的输入框以下全是 TUI 装饰（Codex 会在提示符下面再画一行
+// 「<模型> <档位> · Context N% left · <cwd>」，Claude 有快捷键提示），
+// 它们不是 AI 说的话。2026-09-07 实测：Codex 真问出「你选择 A 还是 B？」时，
+// isWaitingForUser 从末尾往回找到的第一句「有意义的话」是那行状态栏，
+// 于是判定 waiting=false —— 检测器本身没错，是喂给它的尾巴里混进了装饰。
+// 这里在**输入框那一行**把尾巴切断，只把它上面的输出交给同一个检测器。
+const COMPOSER_EMPTY_PROMPT_RE = /^[\s│╭─╮╰╯]*[❯›>]\s*$/;
+function tailAboveCliPrompt(lines) {
+  let cut = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] || '';
+    if (PROMPT_PREFIX_RE.test(line) || COMPOSER_EMPTY_PROMPT_RE.test(line)) { cut = i; break; }
+  }
+  return cut < 0 ? lines : lines.slice(0, cut);
+}
+
+// 「等你回答」的第二个证据来源。
+//
+// 会话级的 attention 信号（sessionNeedsUserInput / respond-pill 读的那个）目前
+// **只有 Claude 的回合结束路径会点亮**：onReplyCompleteFromHook 里跑一次
+// isWaitingForUser。Codex 那条 transcript 完成路径不调用它，所以 Codex 真的问了
+// 「你选择 A 还是 B？」时，会话状态只是「已完成未读」，composer 只能说「已就绪」
+// （2026-09-07 评审实测复现）。
+//
+// 修 attention 管线要动 Codex 的回合完成路径，那在本车道的文件边界之外；
+// 这里在 composer 自己这一层，对**当前终端画面**跑同一个现成检测器
+// （terminal-activity-monitor 的 isWaitingForUser，认 y/N 确认、编号选择题、
+// 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
+// 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
+function detectComposerLiveQuestion(session, runtime) {
+  if (!session || !runtime) return null;
+  // 已经被权威信号标成「等你输入」的，用不着再猜。
+  if (sessionNeedsUserInput(session)) return null;
+  // 只在「这一轮已经结束」的状态下探测：跑着的时候屏幕上的问号多半是它自己在思考。
+  if (![RUNTIME_COMPLETED, RUNTIME_IDLE, RUNTIME_UNKNOWN].includes(runtime.state)) return null;
+  if (!isAiRuntimeSession(session)) return null;
+  try {
+    const tail = tailAboveCliPrompt(extractTailLines(session.id, 40));
+    if (!tail.length) return null;
+    const verdict = isWaitingForUser(tail);
+    if (!verdict || !verdict.waiting) return null;
+    return {
+      waiting: true,
+      reason: verdict.reason || null,
+      // Codex 用 • 起句，它不在检测器的 AI 标记集合里，会跟着进摘要。
+      text: String(verdict.text || '').replace(/^[•·‣▪◦]+\s*/, ''),
+      // 只有检测器自己判定是「选择题」时才去解析编号选项；问号结尾那种情况下
+      // 屏幕尾巴上的数字多半是正文，解析出来会变成点了会答错的按钮。
+      screen: verdict.reason === 'choice' ? tail.slice(-12).join('\n') : '',
+    };
+  } catch (error) {
+    console.warn('[composer] live question probe failed:', error && error.message);
+    return null;
+  }
+}
+
 // 「查看上一轮 ↑」：卡片视图滚到最后一张卡，PTY 视图回到终端底部。
 function scrollToLatestTurn(terminal) {
   const overlay = document.getElementById('msg-overlay');
@@ -3607,7 +3661,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   thinkingChip.addEventListener('click', (event) => {
     event.stopPropagation();
     if (thinkingChip.dataset.interactive !== '1') return;
-    void modelUi.showModelPicker(thinkingChip, sessionId);
+    const efforts = composerSupportedEfforts(sessions.get(sessionId));
+    if (!efforts || !efforts.length) return;
+    modelUi.showEffortPicker(thinkingChip, sessionId, { efforts });
   });
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
@@ -3703,9 +3759,14 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
-    const status = buildComposerStatusModel(session, {
+    const runtime = deriveSessionRuntimeStatus(session, {
       now,
       isRunning: isSessionCardWorking(session),
+    });
+    const status = buildComposerStatusModel(session, {
+      now,
+      runtime,
+      liveQuestion: detectComposerLiveQuestion(session, runtime),
     });
     if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
     if (statusText.textContent !== status.text) statusText.textContent = status.text;

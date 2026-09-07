@@ -1,9 +1,10 @@
 'use strict';
 // Composer 状态行的展示模型（T1 冷杉 v2）。
 //
-// 守的是一件很具体的事：状态行说的话必须**只**从 runtime truth + respond-pill 的
-// needsRespond 推出来，且四档互斥。这两个判据在仓库里已经各有一个作者，
-// composer 再抄一份就等于给用户两个会互相矛盾的说法。
+// 守的是一件很具体的事：状态行说的话必须只从「渲染层算出的 runtime 结论」
+// + respond-pill 的 needsRespond + 现有问题检测这三个既有信号推出来，且四档互斥。
+// 这些判据在仓库里已经各有一个作者，composer 再抄一份就等于给用户两个会互相
+// 矛盾的说法。runtime 由调用方传入，正是为了保证它和舞台头部读的是同一个对象。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -17,10 +18,15 @@ const {
   composerStateFor,
   formatRuntimeSeconds,
   parseQuickReplyOptions,
-} = require('../renderer/session-runtime-status.js');
+} = require('../core/session-status-summary.js');
+const { deriveSessionRuntimeStatus } = require('../renderer/session-runtime-status.js');
 
 const NOW = 1757200000000;
-const model = (session, options = {}) => buildComposerStatusModel(session, { now: NOW, ...options });
+
+function model(session, options = {}) {
+  const runtime = deriveSessionRuntimeStatus(session, { now: NOW });
+  return buildComposerStatusModel(session, { now: NOW, runtime, ...options });
+}
 
 test('就绪：报出上一轮完成多久，并给出回看入口', () => {
   const result = model({ kind: 'claude', status: 'idle', lastCompletedAt: NOW - 120_000 });
@@ -72,7 +78,6 @@ test('等你回答：问题摘要来自会话的等待文本，选项另起一�
   assert.equal(result.state, COMPOSER_STATUS_WAITING);
   assert.equal(result.text, 'Codex 在等你回答：「是否要我直接修改 index.html？」');
   assert.deepEqual(result.quickReplies, ['是，继续', '先看 diff', '换个方案']);
-  // 等你回答时不该出现停止键：没有在跑的东西可以停。
   assert.equal(result.canStop, false);
 });
 
@@ -86,6 +91,48 @@ test('等你回答：解析不出选项就不给 chip，宁可不给也不能给
   assert.equal(result.state, COMPOSER_STATUS_WAITING);
   assert.equal(result.text, 'Claude 在等你回答：「要我继续跑完整套单测吗？」');
   assert.deepEqual(result.quickReplies, []);
+});
+
+// 2026-09-07 评审实测：Codex 真的问出「你选择 A 还是 B？」时，会话级 attention
+// 仍是「已完成未读」（那条信号只有 Claude 的回合结束路径会点亮），composer 因此
+// 显示「已就绪」。补上第二个证据来源：当前终端画面上的现有问题检测。
+test('等你回答：会话状态没标记时，当前画面的问题检测也能把它顶成等待态', () => {
+  const session = { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 };
+  const asReady = model(session);
+  assert.equal(asReady.state, COMPOSER_STATUS_READY, '没有问题检测结果时仍是就绪');
+
+  const withQuestion = model(session, {
+    liveQuestion: { waiting: true, reason: 'question', text: '你选择 A 还是 B？' },
+  });
+  assert.equal(withQuestion.state, COMPOSER_STATUS_WAITING);
+  assert.equal(withQuestion.text, 'Codex 在等你回答：「你选择 A 还是 B？」');
+});
+
+test('等你回答：只有检测器判定是选择题时才解析编号选项', () => {
+  const session = { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 };
+  const choice = model(session, {
+    liveQuestion: {
+      waiting: true,
+      reason: 'choice',
+      text: '请选择一个方案',
+      screen: '请选择一个方案\n1. 直接改\n2. 先看 diff',
+    },
+  });
+  assert.deepEqual(choice.quickReplies, ['直接改', '先看 diff']);
+
+  // 问号结尾那种情况下不给 screen，正文里的数字不该变成按钮。
+  const plain = model(session, {
+    liveQuestion: { waiting: true, reason: 'question', text: '要跑 1. 单测 还是别的？' },
+  });
+  assert.deepEqual(plain.quickReplies, []);
+});
+
+test('等你回答：waiting=false 的检测结果不算数', () => {
+  const result = model(
+    { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 },
+    { liveQuestion: { waiting: false, text: '随便什么' } },
+  );
+  assert.equal(result.state, COMPOSER_STATUS_READY);
 });
 
 test('断开：休眠与运行异常都归到同一档，并给出重连动作', () => {
@@ -145,7 +192,6 @@ test('快捷答复解析：只有一条候选不算选择题', () => {
   assert.deepEqual(parseQuickReplyOptions('1. 只有这一个'), []);
   assert.deepEqual(parseQuickReplyOptions('❯ 1. 是\n  2. 否'), ['是', '否']);
   assert.deepEqual(parseQuickReplyOptions('1) Yes\n2) No\n3) Yes'), ['Yes', 'No']);
-  // 长句是正文不是选项，塞进 chip 里会被截断成看不懂的半句话。
   assert.deepEqual(
     parseQuickReplyOptions('1. 是\n2. 这一条特别长长到根本放不进一个二十四像素高的小圆角按钮里'),
     [],
@@ -153,11 +199,18 @@ test('快捷答复解析：只有一条候选不算选择题', () => {
   assert.deepEqual(parseQuickReplyOptions(''), []);
 });
 
-test('状态行与头部徽章共用同一个 runtime 结论，不各算一份', () => {
+test('runtime 是必填输入：不许自己再算一份', () => {
+  assert.throws(
+    () => buildComposerStatusModel({ kind: 'claude', status: 'idle' }, { now: NOW }),
+    /requires the derived runtime status/,
+  );
+});
+
+test('状态行与头部徽章共用同一个 runtime 结论对象', () => {
   const session = { kind: 'claude', status: 'running', _runSource: 'semantic', runStartedAt: NOW - 5_000 };
-  const result = model(session);
-  assert.equal(result.runtime.state, 'running');
+  const runtime = deriveSessionRuntimeStatus(session, { now: NOW });
+  const result = buildComposerStatusModel(session, { now: NOW, runtime });
+  assert.equal(result.runtime, runtime, 'composer 必须原样带回传进来的那个 runtime 对象');
   assert.equal(result.runtime.provider, 'Claude');
-  // runtime.title 就是头部徽章 hover 时那段判断依据，composer 原样复用。
   assert.match(result.runtime.title, /判断依据/);
 });

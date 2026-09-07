@@ -5,6 +5,8 @@ const {
   modelOptionsFor,
   modelSwitchStrategy,
 } = require('../core/model-options.js');
+// 档位说明文案复用 Codex 模型目录那份，不在 UI 层再拄一份。
+const { EFFORT_DESCRIPTIONS } = require('../core/codex-model-catalog.js');
 
 // Map a model id to a CSS family class for badge coloring.
 function modelClass(id) {
@@ -341,7 +343,7 @@ function createModelUiController({
     writeTerminal(sessionId, '\r');
   }
 
-  async function switchCodexModel(sessionId, session, option) {
+  async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
     if (isSessionBusy(session)) throw new Error('当前回答仍在运行，请结束后再切换模型');
     if (!terminalAcceptsModelCommand(getTerminalScreenText(sessionId), 'codex-picker')) {
       throw new Error('Codex 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
@@ -359,7 +361,13 @@ function createModelUiController({
       screen => parseCodexReasoningPicker(screen, option.id),
       '等待 Codex 推理档位面板',
     );
-    const effort = compatibleEffort(session.effort, effortStep.value.entries, effortStep.value.highlighted);
+    const requestedEffort = effortOverride || session.effort;
+    const effort = compatibleEffort(requestedEffort, effortStep.value.entries, effortStep.value.highlighted);
+    // 换模型时档位允许回落（新模型未必认识旧档）；但用户明确点了某一档时不能静默换成别的。
+    if (effortOverride && effort !== effortOverride) {
+      writeTerminal(sessionId, '');
+      throw new Error(`该模型的原生面板没有 ${effortOverride} 这一档`);
+    }
     const effortTarget = effortStep.value.entries.find(entry => entry.value === effort) || effortStep.value.highlighted;
     writeTerminal(sessionId, pickerNavigationInput(effortStep.value.highlighted.number, effortTarget.number) + '\r');
     await waitForScreen(sessionId, screen => {
@@ -479,6 +487,111 @@ function createModelUiController({
     }
   }
   
+  // ── 思考档切换（T1）─────────────────────────────────────────────────
+  // Codex 的档位本来就和模型在同一个原生面板里选（/model → 选模型 → 选 reasoning
+  // level）。所以「只改档位」不需要任何新通路：把模型这一步停在当前模型上，
+  // 只在第二步换档，其余（等回执、写回 Hub 元数据）与换模型完全同一条路径。
+  // Claude 没有会话内改档的机制，这个入口对它不开放（chip 侧已经不可点）。
+  function renderEffortPicker(menu, anchorEl, sessionId, efforts, message = null) {
+    if (!menu || menu._removed) return;
+    const session = sessions.get(sessionId);
+    const current = String(session && session.effort || '').trim().toLowerCase();
+    menu.innerHTML = '';
+    if (message) menuNote(menu, message.text, message.state);
+    const modelLabel = session && session.currentModel
+      ? (session.currentModel.displayName || session.currentModel.id)
+      : '当前模型';
+    if (!message) {
+      menuNote(menu, `${modelLabel} 支持的思考档 · 将打开 Codex 原生面板，`
+        + 'Hub 确认终端回执后再更新档位。');
+    }
+    for (const effort of efforts) {
+      const item = document.createElement('div');
+      item.className = 'model-picker-item';
+      item.dataset.effort = effort;
+      const isCurrent = effort === current;
+      if (isCurrent) item.classList.add('current');
+      if (session && session._modelSwitchPending) item.classList.add('disabled');
+      item.title = EFFORT_DESCRIPTIONS[effort] || effort;
+      item.innerHTML = `<span class="model-picker-check">${isCurrent ? '✓' : ''}</span>`
+        + `<span class="model-picker-label">${escapeHtml(effort)}</span>`
+        + `<span class="model-picker-id">${escapeHtml(EFFORT_DESCRIPTIONS[effort] || '')}</span>`;
+      if (!isCurrent && !(session && session._modelSwitchPending)) {
+        item.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void switchEffort(sessionId, effort, menu, anchorEl);
+        });
+      }
+      menu.appendChild(item);
+    }
+  }
+
+  function showEffortPicker(anchorEl, sessionId, { efforts = [] } = {}) {
+    closeModelPicker();
+    const list = (Array.isArray(efforts) ? efforts : [])
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (!list.length) return null;
+    const menu = document.createElement('div');
+    menu.className = 'model-picker-menu effort-picker-menu';
+    document.body.appendChild(menu);
+    renderEffortPicker(menu, anchorEl, sessionId, list);
+    placeMenu(menu, anchorEl);
+    const onDocClick = (e) => { if (!menu.contains(e.target)) closeModelPicker(); };
+    setTimeoutFn(() => document.addEventListener('click', onDocClick), 0);
+    openModelPicker = { el: menu, badge: anchorEl, onDocClick, kind: 'effort', efforts: list };
+    return menu;
+  }
+
+  async function switchEffort(sessionId, effort, menu, anchorEl) {
+    const session = sessions.get(sessionId);
+    if (!session || session._modelSwitchPending) return null;
+    if (modelSwitchStrategy(session.kind) !== 'codex-picker') return null;
+    const modelId = String(session.currentModel && session.currentModel.id || '').trim();
+    if (!modelId) return null;
+    const option = {
+      id: modelId,
+      label: session.currentModel.displayName || modelId,
+    };
+    const efforts = (openModelPicker && openModelPicker.efforts) || [effort];
+    session._modelSwitchPending = { id: modelId, label: effort };
+    updateActiveModelBadge();
+    renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
+    try {
+      const switched = await switchCodexModel(sessionId, session, option, { effortOverride: effort });
+      const confirmed = await confirmSwitch(sessionId, switched);
+      const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
+      session.currentModel = {
+        id: model.id || switched.modelId,
+        displayName: model.displayName || switched.displayName,
+      };
+      if (switched.effort) session.effort = switched.effort;
+      delete session._modelSwitchPending;
+      updateActiveModelBadge();
+      if (openModelPicker && openModelPicker.el === menu) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, {
+          text: `✓ 思考档已切到 ${session.effort}`,
+          state: 'success',
+        });
+      }
+      await sleep(650);
+      if (openModelPicker && openModelPicker.el === menu) closeModelPicker();
+      return { ok: true, effort: session.effort };
+    } catch (error) {
+      delete session._modelSwitchPending;
+      updateActiveModelBadge();
+      console.warn('[effort-switch] failed:', error && (error.stack || error.message));
+      writeTerminal(sessionId, '\x1b');
+      if (openModelPicker && openModelPicker.el === menu) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, {
+          text: `切换失败：${error && error.message ? error.message : String(error)}`,
+          state: 'error',
+        });
+      }
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+  }
+
   function closeModelPicker() {
     if (!openModelPicker) return;
     document.removeEventListener('click', openModelPicker.onDocClick);
@@ -490,7 +603,9 @@ function createModelUiController({
     attachModelPickerHandler,
     updateActiveModelBadge,
     closeModelPicker,
+    showEffortPicker,
     showModelPicker,
+    switchEffort,
     switchModel,
   };
 }

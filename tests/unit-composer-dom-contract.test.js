@@ -16,6 +16,7 @@ const root = path.join(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const css = readCssWithImports(path.join(root, 'renderer', 'styles.css'));
 const { composerThinkingChip, composerContextRing } = require('../core/session-status-summary.js');
+const modelUiSrc = fs.readFileSync(path.join(root, 'renderer', 'model-ui.js'), 'utf8');
 
 const mountStart = renderer.indexOf('function mountFloatingInput');
 assert.ok(mountStart > 0, '定位不到 mountFloatingInput');
@@ -51,6 +52,49 @@ test('底栏节点顺序固定：附件 · 模型 · 思考档 · 拉取/分支 
 test('模型选择器是接现成的，不是重造一个', () => {
   assert.match(mount, /attachModelPickerHandler\(modelChip, sessionId\)/);
   assert.ok(!/model-picker-menu/.test(mount), 'composer 不得自己再画一个模型选择器');
+});
+
+// 2026-09-07 评审实测：思考档 chip 当时打开的是模型列表，点当前模型就关闭，
+// 等于根本改不了档。档位必须有自己的面板，且走 Codex 原生的 reasoning 步骤。
+test('思考档 chip 打开的是档位面板，不是模型列表', () => {
+  assert.match(mount, /showEffortPicker\(thinkingChip, sessionId, \{ efforts \}\)/);
+  assert.ok(!/showModelPicker\(thinkingChip/.test(mount),
+    '思考档 chip 不得再打开模型列表');
+  assert.match(modelUiSrc, /function showEffortPicker\(anchorEl, sessionId/);
+  assert.match(modelUiSrc, /async function switchEffort\(sessionId, effort/);
+  // 改档必须复用换模型那条原生面板路径，不得新造一条写 PTY 的路。
+  assert.match(modelUiSrc, /switchCodexModel\(sessionId, session, option, \{ effortOverride: effort \}\)/);
+  // 用户点了哪一档就是哪一档：面板里没有就报错，不得静默换成别的。
+  assert.match(modelUiSrc, /if \(effortOverride && effort !== effortOverride\)/);
+});
+
+// 车道 A 的文件边界：renderer/session-runtime-status.js 不在可改清单里。
+// 状态判据的家必须是边界内的 core/session-status-summary.js。
+test('状态判据住在边界内的文件里', () => {
+  const runtimeStatusSrc = fs.readFileSync(
+    path.join(root, 'renderer', 'session-runtime-status.js'), 'utf8');
+  assert.ok(!runtimeStatusSrc.includes('buildComposerStatusModel'),
+    'composer 的状态模型不得写回 renderer/session-runtime-status.js（车道 A 无权改它）');
+  const summarySrc = fs.readFileSync(path.join(root, 'core', 'session-status-summary.js'), 'utf8');
+  assert.match(summarySrc, /function buildComposerStatusModel\(session, options = \{\}\)/);
+  // runtime 必须是传进来的，这才能保证它和舞台头部读的是同一个结论。
+  assert.match(summarySrc, /requires the derived runtime status/);
+});
+
+// 会话级 attention 只有 Claude 会点亮，Codex 提问靠当前画面的现有检测器补上。
+test('等你回答有第二个证据来源，用的是现有检测器', () => {
+  assert.match(renderer, /function detectComposerLiveQuestion\(session, runtime\)/);
+  assert.match(renderer, /isWaitingForUser\(tail\)/);
+  assert.match(renderer, /liveQuestion: detectComposerLiveQuestion\(session, runtime\)/);
+  // 探测只能影响 composer 显示，不得反手改会话的全局 attention 状态 ——
+  // 那会跨进侧栏与 respond-pill 的地盘，不是本卡的事。
+  const probe = renderer.slice(
+    renderer.indexOf('function detectComposerLiveQuestion'),
+    renderer.indexOf('// 「查看上一轮'),
+  );
+  assert.ok(probe.length > 200, '定位不到探测函数');
+  assert.ok(!/markSessionNeedsUserInput|applyReplyCompleted|observeSessionRuntime/.test(probe),
+    '探测不得写会话的全局状态');
 });
 
 test('思考档 chip 在不支持的 CLI 上不渲染', () => {
