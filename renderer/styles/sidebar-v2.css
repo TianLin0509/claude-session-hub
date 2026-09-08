@@ -1,0 +1,33 @@
+/* =========================================================================
+   侧栏 v2（冷杉 B v2）
+   =========================================================================
+   T0 只做头部：场景按钮与选项都搬去 rail 之后，.sidebar-header 从「一排会换行的
+   按钮」变成「启动 + 搜索入口」两行。会话列表的三段化是 T3 的事，不在这里。
+
+   同样不许改 shell-sidebar-terminal.css，所以头部的方向、间距都在这里覆盖；
+   .sidebar-header 的原规则是 (0,1,0)，本文件按源码顺序在它之后，同级即可胜出。
+   ========================================================================= */
+
+.sidebar-header {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 6px;
+  row-gap: 6px;
+  padding: 10px 10px 8px;
+}
+
+/* 启动按钮独占一行 */
+.sidebar-header .new-session-wrapper { width: 100%; }
+.sidebar-header .btn-new-session { width: 100%; height: 32px; justify-content: center; }
+
+/* 搜索入口进了头部，自己的外边距要交回给头部的 gap */
+.sidebar-header .global-search-launcher {
+  margin: 0;
+  min-height: 28px;
+}
+
+/* 冷杉下侧栏是一层自上而下变深的渐变，不是纯色 */
+[data-theme='frost'] .session-sidebar {
+  background: linear-gradient(180deg, #151b24, #10151c);
+}

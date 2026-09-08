@@ -19,6 +19,12 @@ const THEMES = Object.freeze([
     swatch: Object.freeze(['#0d1117', '#161b22', '#8b5cf6']),
   }),
   Object.freeze({
+    id: 'frost',
+    label: '冷杉',
+    hint: '深色 · 蓝色强调 · 悬浮舞台',
+    swatch: Object.freeze(['#0f1319', '#121821', '#6d8dff']),
+  }),
+  Object.freeze({
     id: 'claude',
     label: 'Claude 暖米',
     hint: '米色画布 · 圆角大 · 陶土强调',
@@ -45,7 +51,10 @@ const THEMES = Object.freeze([
 ]);
 
 const THEME_IDS = Object.freeze(THEMES.map(t => t.id));
-const DEFAULT_THEME = 'dark';
+/* 深色皮肤要点名，不能用「不是 dark 就是浅色」反推：冷杉是第二套深色，
+   靠反推会被判成浅色，浅色专属的终端岛内缩、黑色 overlay 会一起错上去。 */
+const DARK_THEME_IDS = Object.freeze(['dark', 'frost']);
+const DEFAULT_THEME = 'frost';
 const THEME_STORAGE_KEY = 'hub.theme';
 const THEME_ATTRIBUTE = 'data-theme';
 
@@ -66,12 +75,13 @@ function nextTheme(value) {
 }
 
 function isLightTheme(value) {
-  return normalizeTheme(value) !== 'dark';
+  return !DARK_THEME_IDS.includes(normalizeTheme(value));
 }
 
 module.exports = {
   THEMES,
   THEME_IDS,
+  DARK_THEME_IDS,
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
   THEME_ATTRIBUTE,

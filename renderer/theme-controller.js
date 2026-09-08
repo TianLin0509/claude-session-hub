@@ -181,36 +181,62 @@ function createThemeController({ document, localStorage, terminalCache, openConf
     renderPicker();
     applyTheme();
 
+    // 冷杉 v2 T0：主题选择器从 options 菜单搬到 rail 的主题按钮弹层。
+    // 宿主节点 id 仍是 options-theme-picker，所以 renderPicker/syncPicker 一行没改；
+    // 这里只多接一个开合。两个弹层共用同一套「点外面 / Esc 关掉」的规则，
+    // 用一张表描述，避免第三个弹层出现时再抄一遍。
     const optionsBtn = document.getElementById('btn-options');
     const optionsMenu = document.getElementById('options-menu');
-    if (!optionsBtn || !optionsMenu) return;
+    const themeBtn = document.getElementById('btn-theme');
+    const themeMenu = document.getElementById('theme-menu');
 
-    optionsBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      optionsMenu.style.display = optionsMenu.style.display === 'none' ? 'block' : 'none';
-    });
+    const popovers = [
+      { btn: optionsBtn, menu: optionsMenu },
+      { btn: themeBtn, menu: themeMenu },
+    ].filter(p => p.btn && p.menu);
+
+    if (!popovers.length) return;
+
+    function closeAll(except) {
+      for (const p of popovers) {
+        if (p === except) continue;
+        p.menu.style.display = 'none';
+        if (typeof p.btn.setAttribute === 'function' && p.btn.getAttribute('aria-expanded') !== null) {
+          p.btn.setAttribute('aria-expanded', 'false');
+        }
+      }
+    }
+
+    for (const p of popovers) {
+      p.btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = p.menu.style.display === 'none';
+        closeAll(p);
+        p.menu.style.display = open ? 'block' : 'none';
+        if (typeof p.btn.setAttribute === 'function' && p.btn.getAttribute('aria-expanded') !== null) {
+          p.btn.setAttribute('aria-expanded', String(open));
+        }
+      });
+
+      p.menu.addEventListener('mousedown', (e) => {
+        if (e.target === p.menu) closeAll(null);
+      });
+    }
 
     document.addEventListener('mousedown', (e) => {
-      if (!optionsBtn.contains(e.target) && !optionsMenu.contains(e.target)) {
-        optionsMenu.style.display = 'none';
-      }
-    });
-
-    optionsMenu.addEventListener('mousedown', (e) => {
-      if (e.target === optionsMenu) optionsMenu.style.display = 'none';
+      const inside = popovers.some(p => p.btn.contains(e.target) || p.menu.contains(e.target));
+      if (!inside) closeAll(null);
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && optionsMenu.style.display !== 'none') {
-        optionsMenu.style.display = 'none';
-      }
+      if (e.key === 'Escape') closeAll(null);
     });
 
     const settingsItem = document.getElementById('options-settings');
     if (settingsItem) {
       settingsItem.addEventListener('click', async (e) => {
         e.stopPropagation();
-        optionsMenu.style.display = 'none';
+        closeAll(null);
         openConfigModal();
       });
     }
