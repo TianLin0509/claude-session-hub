@@ -93,7 +93,7 @@ async function main() {
     await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(created.id)}, { forceScrollBottom:true })`);
     await waitFor('Codex prompt', () => client.eval(`window.__hubE2E.terminalLiveScreenText(${JSON.stringify(created.id)}).includes('Context ')`));
     result.before = await client.eval(`window.__hubE2E.terminalLiveScreenText(${JSON.stringify(created.id)})`);
-    await client.eval(`document.querySelector('.terminal-model-badge').click()`);
+    await client.eval(`document.querySelector('.floating-input-bar .composer-model').click()`);
     await waitFor('Hub model menu', () => client.eval(`document.querySelector('.model-picker-menu [data-model-id="gpt-5.5"]') !== null`));
     result.hubPicker = await client.eval(`(() => ({
       note:document.querySelector('.model-picker-note')?.textContent || '',

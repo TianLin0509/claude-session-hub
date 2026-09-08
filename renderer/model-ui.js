@@ -191,6 +191,7 @@ function createModelUiController({
   now = Date.now,
   switchTimeoutMs = 7000,
   setTimeoutFn = setTimeout,
+  repaintActiveComposer = () => {},
 }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
@@ -199,32 +200,16 @@ function createModelUiController({
   if (typeof getActiveSessionId !== 'function') throw new Error('getActiveSessionId is required');
   if (typeof escapeHtml !== 'function') throw new Error('escapeHtml is required');
 
-  // Refresh just the terminal-header badge for the active session without a full re-render.
-  function updateActiveModelBadge() {
+  // 模型名在界面上只有一个落点了：composer 底栏那个 chip（T1 挪过去，T2 删掉头部
+  // 徽章）。所以这里不再自己造节点，只请 composer 重画一遍 —— 名字、切换中的
+  // 「A → B」、点击打开选择器全都是 composer 那一处画完的，两份 DOM 必然分叉。
+  function updateActiveModelChip() {
     const activeSessionId = getActiveSessionId();
     const session = activeSessionId ? sessions.get(activeSessionId) : null;
     if (!session) return;
-    const titleSection = terminalPanelEl.querySelector('.terminal-title-section');
-    if (!titleSection) return; // header not mounted yet (empty state)
-    let badge = titleSection.querySelector('.terminal-model-badge');
-    if (!session.currentModel) {
-      if (badge) badge.remove();
-      return;
-    }
-    if (!badge) {
-      badge = document.createElement('span');
-      titleSection.appendChild(badge);
-    }
-    badge.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
-    if (session._modelSwitchPending) badge.classList.add('switching');
-    badge.textContent = session._modelSwitchPending
-      ? `${session.currentModel.displayName || modelShort(session.currentModel)} → ${session._modelSwitchPending.label}`
-      : (session.currentModel.displayName || modelShort(session.currentModel));
-    badge.title = session.currentModel.id + ' — click to switch model';
-    // attach after className is set — attach uses classList.add to preserve
-    attachModelPickerHandler(badge, activeSessionId);
+    repaintActiveComposer(session);
   }
-  
+
   // ---- Model picker dropdown ----
   // Claude accepts an inline model argument. Codex 0.151 uses two native
   // keyboard pickers. Both are driven through the real PTY and confirmed from
@@ -505,7 +490,7 @@ function createModelUiController({
     const strategy = modelSwitchStrategy(session.kind);
     if (!strategy) return null;
     session._modelSwitchPending = { id: option.id, label: option.label };
-    updateActiveModelBadge();
+    updateActiveModelChip();
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
     let preferencePrepared = false;
     try {
@@ -527,7 +512,7 @@ function createModelUiController({
       session.currentModel = { id: model.id || switched.modelId, displayName: model.displayName || switched.displayName };
       if (switched.effort) session.effort = switched.effort;
       delete session._modelSwitchPending;
-      updateActiveModelBadge();
+      updateActiveModelChip();
       const preferenceWarning = confirmed.preference && confirmed.preference.restored !== true
         && confirmed.preference.status !== 'missing-snapshot';
       renderModelPicker(menu, badgeEl, sessionId, {
@@ -554,7 +539,7 @@ function createModelUiController({
         }
       }
       delete session._modelSwitchPending;
-      updateActiveModelBadge();
+      updateActiveModelChip();
       console.warn('[model-switch] failed:', error && (error.stack || error.message));
       if (strategy === 'codex-picker') writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
@@ -635,7 +620,7 @@ function createModelUiController({
     };
     const efforts = (openModelPicker && openModelPicker.efforts) || [effort];
     session._modelSwitchPending = { id: modelId, label: effort };
-    updateActiveModelBadge();
+    updateActiveModelChip();
     renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
     try {
       const switched = await switchCodexModel(sessionId, session, option, { effortOverride: effort });
@@ -647,7 +632,7 @@ function createModelUiController({
       };
       if (switched.effort) session.effort = switched.effort;
       delete session._modelSwitchPending;
-      updateActiveModelBadge();
+      updateActiveModelChip();
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
           text: `✓ 思考档已切到 ${session.effort}`,
@@ -659,7 +644,7 @@ function createModelUiController({
       return { ok: true, effort: session.effort };
     } catch (error) {
       delete session._modelSwitchPending;
-      updateActiveModelBadge();
+      updateActiveModelChip();
       console.warn('[effort-switch] failed:', error && (error.stack || error.message));
       writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
@@ -681,7 +666,7 @@ function createModelUiController({
 
   return {
     attachModelPickerHandler,
-    updateActiveModelBadge,
+    updateActiveModelChip,
     closeModelPicker,
     showEffortPicker,
     showModelPicker,

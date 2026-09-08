@@ -151,7 +151,7 @@ async function main() {
       }
       return screen.includes('shift+tab');
     })()`));
-    await client.eval(`document.querySelector('.terminal-model-badge').click()`);
+    await client.eval(`document.querySelector('.floating-input-bar .composer-model').click()`);
     await waitFor('Fable 5.1 model option', () => client.eval(`document.querySelector('.model-picker-menu [data-model-id="claude-fable-5-1[1m]"]') !== null`));
     result.hubPicker = await client.eval(`(() => ({
       note:document.querySelector('.model-picker-note')?.textContent || '',

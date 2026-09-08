@@ -63,9 +63,13 @@ test('归档提示由 attachArchiveHint 统一提供，群聊与独立会话都�
   // 没有建议时按当前产品约定直接打开工作目录。
   assert.ok(block.includes('openPathInHub'), '无建议时应打开工作目录');
 
+  // T2（2026-09-08）：header 的 📁 路径 chip 删了，工作目录并进面包屑第一段，
+  // 归档提示跟着挂到那个 .crumb-workspace 按钮上 —— 线还是同一根，接头换了个位置。
   const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
-  assert.ok(RENDERER_SRC.includes("attachArchiveHint(a, 'session', session.id"),
-    '独立会话 header 的 📁 路径也必须接上同一根线（P1-2 断链点）');
+  assert.ok(RENDERER_SRC.includes("attachArchiveHint(btn, 'session', session.id"),
+    '独立会话头部的面包屑工作区段也必须接上同一根线（P1-2 断链点）');
+  assert.ok(/function paintCrumbWorkspace\(/.test(RENDERER_SRC),
+    '面包屑工作区段要有独立的重画函数，建议到达时才刷得动');
   assert.ok(/workspace-archive-suggestion/.test(RENDERER_SRC),
     'renderer 需要监听建议到达，否则要等下一个 status-event 才点亮');
 });

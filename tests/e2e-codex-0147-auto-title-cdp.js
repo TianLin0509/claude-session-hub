@@ -427,11 +427,12 @@ async function main() {
     result.completed = await waitFor('Codex task completion after rename', () => client.eval(`(() => {
       const session = sessions.get(${JSON.stringify(result.created.id)});
       if (!session || session.status !== 'idle' || session.cardWorkingSource) return null;
-      const header = document.querySelector('.terminal-status');
+      const header = document.querySelector('.terminal-crumb-dot');
       if (!header || header.dataset.runtimeState !== 'completed') return null;
       return {
         status: session.status,
-        headerStatus: header.textContent?.trim() || '',
+        // 状态点没有文字，运行态读它的 title（runtimeLabel · meta）。
+        headerStatus: header.title || '',
       };
     })()`));
 

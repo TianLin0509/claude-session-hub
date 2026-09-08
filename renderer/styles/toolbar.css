@@ -1,0 +1,251 @@
+/* ── T2 冷杉 v2 · 舞台头部（工具栏层）────────────────────────────────────────
+   头部只回答三件事：我在哪（面包屑）、看什么（视图切换）、能做什么（动作）。
+   状态药丸、模型徽章、目录 chip、metrics 行都在 T2 删掉了 —— 模型名归 composer
+   底栏的 chip，工作目录归面包屑第一段，实时量归终端卡右上角的覆盖层。
+
+   本文件只用 base.css 已有的 token，不新增调色板：皮肤切换时头部要跟着走，
+   而 base.css 本轮属于另一条车道，不能改。 */
+
+.terminal-panel {
+  /* 舞台卡的外距。frost 皮肤落地后只需重指这两个变量，不必再动结构。 */
+  --stage-card-inset-top: 10px;
+  --stage-card-inset-right: 12px;
+  --stage-card-radius: 12px;
+  --stage-header-h: 44px;
+}
+
+/* 舞台卡：头部圆上角、终端体圆下角，合起来是一张卡。
+   卡外距必须是 margin，不能是 padding —— 绝对定位元素的包含块是**padding box**，
+   padding 不会把 #msg-overlay / #card-session-status / #card-question-nav 这些
+   浮层推进卡内，只有整块挪位（margin）才能让它们跟着走。 */
+.terminal-panel:not(.home-active) {
+  margin: var(--stage-card-inset-top) var(--stage-card-inset-right) 0 0;
+  border-radius: var(--stage-card-radius) var(--stage-card-radius) 0 0;
+}
+
+/* ── 头部本体：单行 44px ──────────────────────────────────────────────── */
+.terminal-panel:not(.home-active) .terminal-header {
+  position: relative;  /* 视图切换要按头部真正的中线定位 */
+  height: var(--stage-header-h);
+  min-height: var(--stage-header-h);
+  box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--stage-card-radius) var(--stage-card-radius) 0 0;
+}
+
+/* 终端体接着头部往下长，只圆下面两个角。深色岛的 inset 在这里让位给舞台卡：
+   卡里再套一层内缩的岛，边框会变成两层，读起来就不是「一张卡」了。 */
+.terminal-panel:not(.home-active) .terminal-container {
+  margin: 0;
+  border-radius: 0 0 var(--stage-card-radius) var(--stage-card-radius);
+}
+
+/* ── 左：面包屑 ─────────────────────────────────────────────────────── */
+.terminal-crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  /* 视图切换按头部中线绝对定位，所以面包屑必须在够到中线之前就先省略号。
+     60px 是分段控件半宽 + 一点余量：宁可标题截短，也不让两者叠在一起。 */
+  max-width: calc(50% - 60px);
+  overflow: hidden;
+  font-size: 12.5px;
+}
+
+.crumb-workspace {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(220px, 22vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  margin: 0;
+  border-radius: var(--radius-xs, 4px);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.crumb-workspace:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(var(--rgb-info), 0.08);
+}
+.crumb-workspace:disabled { cursor: default; opacity: .6; }
+.crumb-workspace:focus-visible { outline: 1px solid var(--link); outline-offset: 1px; }
+/* 归档提示态。视觉沿用原来挂在 metrics 目录 chip 上的那一套（和群聊的
+   .mr-workspace-chip.has-archive-hint 同一组琥珀色），只是底座换成了面包屑第一段。
+   末尾的小圆点用 radial-gradient 画在 padding 里而不是 ::after —— 否则会被
+   .crumb-workspace 自己的 text-overflow: ellipsis 一起省略掉。
+   刻意保持静态：不闪烁、不动画、不遮挡。 */
+.crumb-workspace.has-archive-hint {
+  padding: 1px 16px 1px 6px;
+  border: 1px solid rgba(var(--rgb-warning), .55);
+  border-radius: var(--radius-sm);
+  background-color: rgba(var(--rgb-warning), .10);
+  background-image: radial-gradient(circle at calc(100% - 8px) 50%, #d29922 0 2.5px, transparent 2.6px);
+  color: var(--text-primary);
+}
+.crumb-workspace.has-archive-hint:hover {
+  border-color: rgba(var(--rgb-warning), .85);
+  background-color: rgba(var(--rgb-warning), .16);
+}
+
+.crumb-sep {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  opacity: .65;
+}
+
+.terminal-panel:not(.home-active) .terminal-title {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: min(320px, 32vw);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.terminal-title.is-readonly { cursor: default; }
+.terminal-title.is-readonly:hover { text-decoration: none; }
+
+/* 状态点：runtime truth 的四色。绿=在跑，琥珀=在等你，红=断了/失败，灰=其它。 */
+.terminal-crumb-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  opacity: .55;
+}
+.terminal-crumb-dot.running,
+.terminal-crumb-dot.starting {
+  background: var(--mark-green, #3fb950);
+  opacity: 1;
+}
+.terminal-crumb-dot.running { animation: crumb-dot-pulse 1.6s ease-in-out infinite; }
+.terminal-crumb-dot.waiting {
+  background: var(--mark-amber, #d29922);
+  opacity: 1;
+}
+.terminal-crumb-dot.failed {
+  background: var(--mark-red, #f85149);
+  opacity: 1;
+}
+@keyframes crumb-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-crumb-dot.running { animation: none; }
+}
+
+/* ── 中：视图切换收进头部中央 ─────────────────────────────────────────
+   节点还是 index.html 里那一个（preserveAndClearTerminalPanel 跨会话保住它），
+   这里只把它从右上角的绝对定位浮层改成头部里的分段控件。 */
+.terminal-panel:not(.home-active) .terminal-header > .view-toggle {
+  /* 「中央」按头部中线算，不是「剩余空间的中点」—— 后者会随标题长度左右漂，
+     用户每次找它都得重新扫一遍。面包屑那边用 max-width 保证不会撞上来。 */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 50%;
+  margin-top: -13px;
+  right: auto;
+  z-index: 2;
+  border-radius: var(--radius-pill);
+  background: rgba(var(--rgb-overlay), 0.05);
+  padding: 2px;
+  gap: 2px;
+}
+.terminal-panel:not(.home-active) .terminal-header > .view-toggle .view-toggle-btn {
+  border-radius: var(--radius-pill);
+  padding: 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 「复制对话」原来靠 right: 414px 挤在那排浮层（视图切换 220 / 通知 312）的左边。
+   那两个浮层进头部之后，这个偏移量指向的是一片空地，而它自己仍然压在 44px 的
+   头部band 里 —— 头部就不再是「只有面包屑 + 视图切换 + 四个动作」了。
+   这里把它挪到头部**下面**的卡片左上角：它本来就是卡片视图的工具，
+   不属于「我在哪 / 看什么 / 能做什么」这三问。 */
+.terminal-panel.card-view-active .recent-turn-copy {
+  top: calc(var(--term-header-h, 44px) + 6px);
+  left: 14px;
+  right: auto;
+}
+
+/* 完成通知浮层：节点留着（开关逻辑仍由 completion-notification-toggle.js 独占），
+   但舞台上不再露面 —— 它变成 ⋯ 菜单里的一项。选择器刻意只匹配「直接挂在
+   terminal-panel 下」的那一个：主页把同一个节点搬进 #home-notification-slot，
+   那里必须照常显示。 */
+.terminal-panel:not(.home-active) > .completion-notification-toggle { display: none; }
+
+/* ── 右：动作区 ─────────────────────────────────────────────────────── */
+.terminal-panel:not(.home-active) .terminal-header-actions {
+  gap: 4px;
+  /* 面包屑被 max-width 卡住之后就不再撑满剩余空间，动作区得自己贴右边缘，
+     否则它会跟在面包屑屁股后面、正好压在居中的视图切换上。 */
+  margin-left: auto;
+}
+.terminal-panel:not(.home-active) .terminal-header-actions .btn-zoom,
+.terminal-panel:not(.home-active) .terminal-header-actions .btn-close-session {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+/* 文件 / 记忆 是「对这个会话做点什么」，⋯ 和 × 是「对这个窗口做点什么」，
+   中间空 8px 把两组分开。 */
+.terminal-panel:not(.home-active) .terminal-header-actions .header-overflow-wrap {
+  margin-left: 8px;
+}
+.header-overflow-menu .ho-notify[data-state="enabled"] .ho-key { color: var(--mark-green, #3fb950); }
+.header-overflow-menu .ho-notify[data-state="unconfigured"] .ho-key,
+.header-overflow-menu .ho-notify[data-state="unavailable"] .ho-key { opacity: .6; }
+
+/* ── 终端卡右上角的实时量覆盖层 ───────────────────────────────────────
+   ctx% · N tok · ⏱ Ns。等宽 + tabular 数字，数字跳动时不会左右晃。
+   z-index 要压过 #msg-overlay(50) 与 #card-session-status(59)，否则卡片视图下
+   它会被整片盖住 —— 而这一层的意义正是「两种视图里都看得见」。 */
+.terminal-metrics {
+  position: absolute;
+  top: calc(var(--term-header-h, 44px) + 6px);
+  right: 10px;
+  z-index: 66;
+  pointer-events: none;
+  font: 500 10px/1.4 "Cascadia Code", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+  color: var(--fg-muted);
+  opacity: .78;
+  white-space: nowrap;
+}
+.terminal-metrics[hidden] { display: none; }
+
+/* 问题导航条从头部下方 10px 起跳，正好和覆盖层重叠。让它再让开一行，
+   两者都在卡片右上角，谁也不该盖住谁。 */
+.terminal-panel.card-view-active .card-question-nav {
+  top: calc(var(--term-header-h, 44px) + 26px);
+}
+
+@media (max-width: 900px) {
+  /* 窄面板：面包屑先让路，视图切换与动作按钮是硬需求。 */
+  .crumb-workspace { max-width: 96px; }
+  .terminal-panel:not(.home-active) .terminal-title { max-width: 40vw; }
+  .terminal-panel:not(.home-active) .terminal-header { padding-left: 10px; }
+  /* card-view.css 在这个断点给卡片视图的 header 加了 42px 顶部内距，给的是
+     原来那排绝对定位浮层（复制对话 / 通知 / 视图切换）让位。浮层进头部之后
+     不需要了，头部必须守住 44px 单行。 */
+  .terminal-panel.card-view-active .terminal-header { padding-top: 0; }
+}
+@media (max-width: 620px) {
+  .terminal-metrics { display: none; }
+}

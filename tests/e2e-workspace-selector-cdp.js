@@ -180,12 +180,14 @@ async function main() {
       const { ipcRenderer } = require('electron');
       const session = (await ipcRenderer.invoke('get-sessions')).find(item => !item.meetingId);
       const header = document.querySelector('.terminal-header');
-      const cwd = document.querySelector('.metric-cwd');
+      const cwd = document.querySelector('.terminal-crumb .crumb-workspace');
       const rows = document.querySelector('.terminal-container .xterm-rows');
       return {
         session,
         headerVisible: !!header && header.getBoundingClientRect().height > 0,
         cwdText: cwd ? cwd.textContent : '',
+        // T2：面包屑第一段只显示工作区标签，完整 cwd 在 tooltip 上（整条面包屑 hover）。
+        crumbCwd: document.querySelector('.terminal-crumb')?.title || '',
         terminalText: rows ? rows.textContent : '',
         bufferText: session ? await ipcRenderer.invoke('debug:get-session-buffer', session.id) : '',
         panelTextLength: document.querySelector('#terminal-panel').textContent.length,
@@ -197,7 +199,8 @@ async function main() {
     assert.notEqual(result.normalSession.session.cwd.toLowerCase(), os.homedir().toLowerCase());
     assert.ok(fs.existsSync(path.join(result.normalSession.session.cwd, '.git')));
     assert.equal(result.normalSession.headerVisible, true);
-    assert.match(result.normalSession.cwdText, /_scratch/i);
+    assert.match(result.normalSession.crumbCwd, /_scratch/i);
+    assert.ok(result.normalSession.cwdText.length > 0, '面包屑必须显示一个工作区标签');
     assert.match(result.normalSession.bufferText, /FAKE_CLI_READY/);
     assert.ok(result.normalSession.panelTextLength > 0, 'new session panel must not be black/empty');
     await screenshot(client, TERMINAL_SCREENSHOT_PATH);
@@ -205,7 +208,7 @@ async function main() {
     const normalScratchPath = result.normalSession.session.cwd;
     await client.eval(`window.WorkspaceController.maybePromptSessionArchive(${JSON.stringify(normalSessionRecord.id)})`);
     result.archiveHint = await waitFor('first-turn archive chip hint', () => client.eval(`(() => {
-      const chip = document.querySelector('.terminal-metrics-row .metric-cwd');
+      const chip = document.querySelector('.terminal-crumb .crumb-workspace');
       const modal = document.querySelector('#workspace-archive-modal');
       return chip && chip.classList.contains('has-archive-hint') ? {
         title: chip.title,
@@ -213,7 +216,7 @@ async function main() {
       } : null;
     })()`), 15000);
     assert.equal(result.archiveHint.modalHidden, true, 'archive suggestion must not interrupt with an automatic modal');
-    await clickPoint(client, await pointFor(client, '.terminal-metrics-row .metric-cwd.has-archive-hint'));
+    await clickPoint(client, await pointFor(client, '.terminal-crumb .crumb-workspace.has-archive-hint'));
     result.archiveModal = await waitFor('first-turn archive modal', () => client.eval(`(() => {
       const modal = document.querySelector('#workspace-archive-modal');
       if (!modal || modal.style.display === 'none') return null;

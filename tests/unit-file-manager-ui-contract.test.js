@@ -43,8 +43,12 @@ assert.match(account, /data-action="open-memo"[\s\S]{0,100}>备忘录<\/button>/
   'memo replaces memory in the global usage ticker');
 assert.match(renderer, /memoryBtn\.dataset\.action = 'open-memory'/,
   'memory moves into the former header memo position');
-assert.match(renderer, /在文件管理中打开/,
+// T2（2026-09-08）：header 的 📁 路径 chip 换成了面包屑第一段，入口函数改叫
+// openSessionFilePanel —— 契约不变，工作目录必须在 Hub 里打开，不复制、不拉资源管理器。
+assert.match(renderer, /function openSessionFilePanel\(session\) \{[\s\S]{0,240}fileManagerPanel\.toggle\(/,
   'the workspace path must open inside Hub instead of copying or launching Explorer');
+assert.match(renderer, /filesBtn\.addEventListener\('click', \(\) => openSessionFilePanel\(session\)\)/,
+  'the 文件 button and the breadcrumb workspace segment must share one entry point');
 const directoryRoute = renderer.slice(
   renderer.indexOf('if (_isDirectoryPath(fullPath))'),
   renderer.indexOf('if (PREVIEW_PATH_RE.test(fullPath))'),

@@ -52,6 +52,8 @@ function sessionContextLeft(session) {
   return Math.max(0, Math.min(100, Math.round(100 - used)));
 }
 
+// 通用会话摘要。群聊的成员行要在一行里说清「谁 · 什么模型 · 什么档」，
+// 那是它唯一能显示模型名的地方，所以这一份保留 model / cwd 不动。
 function buildSessionStatusSummary(session) {
   const model = sessionModelLabel(session);
   const effort = sessionEffortLabel(session);
@@ -69,6 +71,27 @@ function buildSessionStatusSummary(session) {
     cwd,
     compact,
     ariaLabel: [compact, contextLeft == null ? '' : `上下文剩余 ${contextLeft}%`, cwd]
+      .filter(Boolean).join('，'),
+  };
+}
+
+// T2 冷杉 v2 · 舞台状态行专用。模型名归 composer 底栏的 chip，工作目录归头部面包屑，
+// 这里只留「这一轮跑起来会怎样」的实时量：思考档、速度档、上下文余量。
+// 刻意另起一份而不是把字段从上面那份删掉：群聊和舞台是两种读者，共用一个对象
+// 只会让下一次改动在两种读者之间赌一把 —— 舞台要瘦，群聊那一行反而必须带模型名。
+function buildStageStatusSummary(session) {
+  const effort = sessionEffortLabel(session);
+  const speed = sessionSpeedLabel(session);
+  const contextLeft = sessionContextLeft(session);
+  const compact = [effort, speed].filter(Boolean).join(' · ');
+  return {
+    kind: baseKind(session),
+    effort,
+    speed,
+    contextLeft,
+    contextText: contextLeft == null ? '' : `Context ${contextLeft}% left`,
+    compact,
+    ariaLabel: [compact, contextLeft == null ? '' : `上下文剩余 ${contextLeft}%`]
       .filter(Boolean).join('，'),
   };
 }
@@ -345,6 +368,7 @@ module.exports = {
   buildComposerRailModel,
   buildComposerStatusModel,
   buildSessionStatusSummary,
+  buildStageStatusSummary,
   composerContextRing,
   composerModelChip,
   composerStateFor,

@@ -70,9 +70,15 @@ async function readStatus(client) {
       const rect = element.getBoundingClientRect();
       return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
     };
-    const root = document.querySelector('.terminal-header .terminal-status');
+    // T2（2026-09-08）：头部的状态药丸收成一个 6px 状态点，文案与完整判据
+    // 都搬到了 composer 状态行。所以这里从两处读：点给 state/颜色，
+    // composer 状态行给「说了什么」和那条带证据的 tooltip。
+    const root = document.querySelector('.terminal-header .terminal-crumb-dot');
+    const composerStatus = document.querySelector('.floating-input-bar .composer-status');
+    const composerDetail = composerStatus?.querySelector('.composer-status-detail');
+    const dotTitleParts = String(root?.title || '').split(' · ');
     const inline = document.querySelector('#msg-overlay .streaming-indicator');
-    const titleRow = document.querySelector('.terminal-title-row');
+    const headerRow = document.querySelector('.terminal-header');
     const panel = document.getElementById('terminal-panel');
     const overlay = document.getElementById('msg-overlay');
     const footer = document.getElementById('card-session-status');
@@ -87,12 +93,15 @@ async function readStatus(client) {
     const composerRect = composer?.getBoundingClientRect();
     return {
       state: root?.dataset.runtimeState || null,
-      label: root?.querySelector('.terminal-status-label')?.textContent || '',
-      meta: root?.querySelector('.terminal-status-meta')?.textContent || '',
-      detail: root?.querySelector('.terminal-status-detail')?.textContent || '',
-      detailVisible: !!root?.querySelector('.terminal-status-detail')
-        && !root.querySelector('.terminal-status-detail').hidden,
-      title: root?.title || '',
+      label: dotTitleParts[0] || '',
+      meta: dotTitleParts[1] || '',
+      detail: composerDetail?.textContent || '',
+      detailVisible: !!composerDetail && !composerDetail.hidden,
+      // 带判断依据的完整 tooltip 现在挂在 composer 状态行上 —— 那里正对着输入框，
+      // 是用户真会去 hover 的地方；头部的点只留一句 runtimeLabel。
+      title: composerStatus?.title || '',
+      dotTitle: root?.title || '',
+      composerText: composerStatus?.querySelector('.composer-status-text')?.textContent || '',
       ariaLabel: root?.getAttribute('aria-label') || '',
       inlineLabel: inline?.dataset.label || '',
       inlineVisible: !!inline && inline.getBoundingClientRect().width > 0,
@@ -114,8 +123,8 @@ async function readStatus(client) {
         return rect.bottom <= overlayRect.bottom + 1 && rect.bottom >= overlayRect.top;
       })(),
       beijingTimeText:document.querySelector('[data-turn-id="beijing-time-probe"] .turn-meta')?.textContent || '',
-      headerClientWidth: titleRow?.clientWidth || 0,
-      headerScrollWidth: titleRow?.scrollWidth || 0,
+      headerClientWidth: headerRow?.clientWidth || 0,
+      headerScrollWidth: headerRow?.scrollWidth || 0,
       statusVisible: !!statusRect && statusRect.width > 0 && statusRect.height > 0,
       statusInsidePanel: !!statusRect && !!panelRect
         && statusRect.left >= panelRect.left && statusRect.right <= panelRect.right,
@@ -142,11 +151,13 @@ async function readStatus(client) {
       rects: {
         status: rectOf(root),
         title: rectOf(document.querySelector('.terminal-title')),
-        model: rectOf(document.querySelector('.terminal-model-badge')),
+        model: rectOf(document.querySelector('.floating-input-bar .composer-model')),
         recentCopy: rectOf(document.getElementById('recent-turn-copy')),
         notification: rectOf(document.getElementById('completion-notification-toggle')),
         viewToggle: rectOf(document.querySelector('.view-toggle')),
-        titleRow: rectOf(titleRow),
+        header: rectOf(headerRow),
+        crumb: rectOf(document.querySelector('.terminal-crumb')),
+        metrics: rectOf(document.querySelector('.terminal-metrics')),
       },
     };
   })()`);
@@ -279,8 +290,11 @@ async function main() {
     assert.equal(result.running.sidebarSource, 'pty-codex-interrupt-footer');
     assert.equal(result.running.sidebarConfidence, 'strong');
     assert.equal(result.running.footerVisible, true);
-    assert.match(result.running.footerText, /gpt-5\.6-sol·max·fast·Context 92% left/);
-    assert.equal(result.running.footerText.includes(ROOT), true, result.running.footerText);
+    // T2：模型名归 composer 底栏的 chip，工作目录归头部面包屑 —— 这条状态行
+    // 只剩「这一轮跑起来会怎样」的实时量。两者在这里出现就是回归。
+    assert.match(result.running.footerText, /max·fast·Context 92% left/);
+    assert.equal(result.running.footerText.includes('gpt-5.6-sol'), false, result.running.footerText);
+    assert.equal(result.running.footerText.includes(ROOT), false, result.running.footerText);
     assert.match(result.running.footerAria, /上下文剩余 92%/);
     assert.equal(result.running.footerAboveComposer, true);
     assert.equal(result.running.overlayAboveFooter, true);

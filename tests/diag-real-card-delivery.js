@@ -133,8 +133,8 @@ async function readUi(client, sessionId) {
     return {
       activeSessionId,
       sessionStatus:sessions.get(sid)?.status || null,
-      runtimeState:document.querySelector('.terminal-header .terminal-status')?.dataset.runtimeState || null,
-      runtimeDetail:document.querySelector('.terminal-header .terminal-status-detail')?.textContent || '',
+      runtimeState:document.querySelector('.terminal-header .terminal-crumb-dot')?.dataset.runtimeState || null,
+      runtimeDetail:document.querySelector('.floating-input-bar .composer-status-detail')?.textContent || '',
       cardCount:cards.length,
       text:card?.querySelector('.turn-body')?.innerText || '',
       activityCount:card?.querySelectorAll('.turn-activity-item').length || 0,

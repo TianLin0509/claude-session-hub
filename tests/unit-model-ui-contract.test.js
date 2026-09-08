@@ -28,10 +28,7 @@ function makeElement() {
       this.children.push(child);
       return child;
     },
-    querySelector(selector) {
-      if (selector === '.terminal-model-badge') return this.children.find(c => String(c.className).includes('terminal-model-badge')) || null;
-      return null;
-    },
+    querySelector() { return null; },
     contains(node) { return node === this || this.children.includes(node); },
     remove() { this._removed = true; },
     getBoundingClientRect() { return { left: 10, bottom: 20 }; },
@@ -46,13 +43,10 @@ async function main() {
   assert.strictEqual(modelShort({ id: 'gemini-3-pro-preview' }), 'Gemini 3 pro preview');
   assert.strictEqual(modelShort({ id: 'claude-sonnet', displayName: 'Sonnet 4.6 (1M context)' }), 'Sonnet 4.6');
 
-  const titleSection = makeElement();
-  const terminalPanelEl = {
-    querySelector(selector) {
-      if (selector === '.terminal-title-section') return titleSection;
-      return null;
-    },
-  };
+  // T2（2026-09-08）：头部的模型徽章删了。模型名在界面上只剩 composer 底栏那个
+  // chip，所以 controller 不再自己造节点，只负责请 composer 重画一遍。
+  const terminalPanelEl = { querySelector() { return null; } };
+  const composerRepaints = [];
   const sessions = new Map([['s1', { kind: 'claude', currentModel: { id: 'claude-sonnet-4.6', displayName: 'Sonnet 4.6' } }]]);
   const sent = [];
   const document = {
@@ -71,14 +65,19 @@ async function main() {
     getTerminalScreenText: () => '/model claude-opus-5[1m]\nModel changed to opus\n❯',
     sleep: async () => {},
     setTimeoutFn: (fn) => fn(),
+    repaintActiveComposer: (session) => composerRepaints.push(session),
   });
 
-  ui.updateActiveModelBadge();
-  const badge = titleSection.children[0];
-  assert.strictEqual(badge.textContent, 'Sonnet 4.6');
-  assert.ok(badge._classes.has('clickable'));
+  ui.updateActiveModelChip();
+  assert.strictEqual(composerRepaints.length, 1, '模型名变化必须让 composer 重画');
+  assert.strictEqual(composerRepaints[0].currentModel.displayName, 'Sonnet 4.6');
 
-  badge._listeners.click[0]({ stopPropagation() {} });
+  // 选择器仍然由 attachModelPickerHandler 挂在调用方给的节点上（现在是 composer
+  // 的 chip），行为与从前一致：点开菜单 → 选一项 → 走真实 PTY。
+  const chip = makeElement();
+  ui.attachModelPickerHandler(chip, 's1');
+  assert.ok(chip._classes.has('clickable'));
+  chip._listeners.click[0]({ stopPropagation() {} });
   await new Promise(resolve => setImmediate(resolve));
   const menu = document.body.children[0];
   assert.ok(menu.children.length > 0, 'model picker should render options');
