@@ -6,6 +6,7 @@ const {
   isPinnedToBottom,
   latestActivityTime,
   partitionSessionsByAge,
+  partitionSidebarSessions,
 } = require('../renderer/session-list-renderer.js');
 
 const now = 1000000000000;
@@ -125,3 +126,10 @@ test('空/缺省输入安全', () => {
 });
 
 console.log('All session-list time-partition tests passed.');
+
+test('三段今天继承 age < DAY，旧 idle 只在搜索可见，不冒充休眠计数', () => {
+  const p = partitionSidebarSessions([{ id: 'today', lastMessageTime: now - DAY + 1 }, { id: 'older', lastMessageTime: now - DAY }], { now });
+  assert.deepStrictEqual(p.today.map(s => s.id), ['today']);
+  assert.deepStrictEqual(p.older.map(s => s.id), ['older']);
+  assert.strictEqual(p.archiveCount, 0);
+});

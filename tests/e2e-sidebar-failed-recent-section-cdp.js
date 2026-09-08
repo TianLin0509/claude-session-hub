@@ -82,7 +82,7 @@ async function main() {
       window.__hubE2E.addFakeSessions(${JSON.stringify(fixtures)});
       return true;
     })()`);
-    await waitFor(client, `document.querySelectorAll('#session-list > .session-sec-header').length === 2`);
+    await waitFor(client, `document.querySelectorAll('#session-list > .session-sec-header').length === 3`);
 
     result.sections = await client.eval(`(() => {
       const rows = Array.from(document.querySelectorAll('#session-list > *'));
@@ -105,10 +105,10 @@ async function main() {
         rect:{ x:sidebar.x, y:sidebar.y, width:sidebar.width, height:sidebar.height },
       };
     })()`);
-    assert.deepEqual(result.sections.headers, ['⚠ 运行异常', '最近']);
+    assert.deepEqual(result.sections.headers, ['置顶', '活跃', '今天']);
     assert.equal(result.sections.runningHeaders, 0);
-    assert.equal(result.sections.sectionBySession['failed-only-e2e'], '⚠ 运行异常');
-    assert.equal(result.sections.sectionBySession['recent-one-e2e'], '最近');
+    assert.equal(result.sections.sectionBySession['failed-only-e2e'], '活跃');
+    assert.equal(result.sections.sectionBySession['recent-one-e2e'], '今天');
 
     await _waitMs(250);
     const rect = result.sections.rect;

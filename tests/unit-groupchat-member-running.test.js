@@ -108,7 +108,7 @@ function sectionOf(html, needle) {
   const lines = html.split('\n');
   let current = null;
   for (const line of lines) {
-    const m = line.match(/<span>(⚠ 等你响应|运行中|⚠ 运行异常|✓ 已完成未读|最近)<\/span>/);
+    const m = line.match(/<span>(置顶|活跃|今天)<\/span>/);
     if (m) { current = m[1]; continue; }
     if (line.includes(needle)) return current;
   }
@@ -134,7 +134,7 @@ test('成员自己在跑时，它的状态点是运行中（黄色脉冲）而�
 test('群聊里任意一个成员在跑，该群聊就归到侧栏「运行中」分区', () => {
   const { sessions, meetings } = groupChat(['idle', 'running', 'idle']);
   const html = render({ sessions, meetings });
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中',
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃',
     '只要有成员在跑，群聊就该进「运行中」，而不是沉到「最近」');
 });
 
@@ -142,7 +142,7 @@ test('三个成员都空闲时群聊不进运行中', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
   const html = render({ sessions, meetings });
   assert.ok(!/mini-st-thinking/.test(html), '没人在跑就不该有运行中状态点');
-  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中');
+  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
 });
 
 test('群聊父项优先显示等待和运行，不会被部分完成未读覆盖', () => {
@@ -152,25 +152,25 @@ test('群聊父项优先显示等待和运行，不会被部分完成未读覆�
   waitingCase.sessions.get('sid-claude').attentionState = 'needs-input';
   waitingCase.sessions.get('sid-claude').waitingText = 'Allow PowerShell?';
   const waitingHtml = render(waitingCase);
-  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '⚠ 等你响应');
-  assert.match(waitingHtml, /sl-state wait[^>]*>等你/);
+  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '活跃');
+  assert.match(waitingHtml, /sl-dot wait/);
 
   const runningCase = groupChat(['running', 'idle', 'idle'], {
     meeting: { unreadAnswered: new Set(['sid-codex']) },
   });
   const runningHtml = render(runningCase);
-  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '运行中');
-  assert.match(runningHtml, /sl-state run[^>]*>运行中/);
-  assert.doesNotMatch(runningHtml, /sl-state unread[^>]*>已答/);
+  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '活跃');
+  assert.match(runningHtml, /sl-dot run/);
+  assert.doesNotMatch(runningHtml, /sl-dot unread/);
 });
 
 test('群聊成员失败会聚合到父项异常分区', () => {
   const fixture = groupChat(['idle', 'error', 'idle']);
   fixture.sessions.get('sid-codex').lastError = 'rate limited';
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '⚠ 运行异常');
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
   assert.match(html, /mini-st-error/);
-  assert.match(html, /sl-state error[^>]*>异常/);
+  assert.match(html, /sl-dot error/);
 });
 
 test('只有运行异常而没有运行中时，普通会话仍显示「最近」分区标题', () => {
@@ -185,8 +185,8 @@ test('只有运行异常而没有运行中时，普通会话仍显示「最近�
     lastMessageTime: Date.now(),
   });
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '⚠ 运行异常');
-  assert.strictEqual(sectionOf(html, '普通最近会话'), '最近',
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
+  assert.strictEqual(sectionOf(html, '普通最近会话'), '今天',
     '运行异常本身也是特殊分区，后续普通项目必须重新用「最近」标题分隔');
 });
 
@@ -205,7 +205,7 @@ test('成员被 Ctrl+C 打断（自己 idle）时，无时间戳的旧 gcWorking
   });
   const html = render({ sessions, meetings });
   assert.ok(!/mini-st-thinking/.test(html), '会话自己说 idle 就以会话为准');
-  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中');
+  assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
 });
 
 test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊父项', () => {
@@ -216,7 +216,7 @@ test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊
   const html = render({ sessions, meetings });
   assert.strictEqual((html.match(/mini-st-thinking/g) || []).length, 1,
     '只有正在发言的 Claude 应显示黄色脉冲');
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中',
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃',
     '新鲜 watcher 必须让群聊父项归入运行中');
 });
 
@@ -249,7 +249,7 @@ test('成员状态未知（既非 idle 也非 running）时仍尊重 gcWorking',
     },
   };
   const html = render({ sessions, meetings });
-  assert.strictEqual(sectionOf(html, '群聊X'), '运行中',
+  assert.strictEqual(sectionOf(html, '群聊X'), '活跃',
     '会话自身没有明确状态时，群聊调度的 gcWorking 仍是有效信号');
 });
 

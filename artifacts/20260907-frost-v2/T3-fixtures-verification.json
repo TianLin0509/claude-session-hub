@@ -1,0 +1,120 @@
+{
+  "mode": "fixtures",
+  "dataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\hub-t3-sidebar-1788883445949-2072\\data",
+  "checks": [
+    "isolated data directory and runtime meeting inventory verified",
+    "700+ catalogue: all three sections and archive fit without vertical scrolling at 1440x1080",
+    "amber glow and active ordering; Arrow keys and focus retention after rebuild",
+    "physical archive click opens dormant scope with exact catalogue count",
+    "learning and research facet filter actual UI results and persist selection",
+    "Enter opens real PowerShell session via existing renderer navigation",
+    "archive preview opens exact native ID through real resume IPC and PTY (local CLI fixture)",
+    "Today archive action suspends the real fixture PTY and moves it to archive"
+  ],
+  "screenshots": [
+    "T3-sidebar-three-sections.png",
+    "T3-row-states.png",
+    "T3-archive-search.png"
+  ],
+  "ok": true,
+  "pid": 45776,
+  "port": 61998,
+  "runtimeMeetingCount": 0,
+  "layout": {
+    "sessions": 722,
+    "catalogue": 721,
+    "rows": 7,
+    "headers": [
+      "置顶",
+      "活跃",
+      "今天"
+    ],
+    "archiveCount": 714,
+    "expectedArchive": 714,
+    "clientHeight": 930,
+    "scrollHeight": 930,
+    "noScroll": true,
+    "archiveVisible": true,
+    "rowHeights": [
+      27
+    ],
+    "oldFilters": false
+  },
+  "rowStates": {
+    "active": [
+      "waiting",
+      "failed",
+      "running",
+      "unread",
+      "group"
+    ],
+    "waitColor": "rgb(251, 191, 36)",
+    "waitGlow": "rgba(251, 191, 36, 0.14) 0px 0px 0px 3px, rgba(251, 191, 36, 0.35) 0px 0px 8px 0px"
+  },
+  "archive": {
+    "open": true,
+    "query": "",
+    "activeProvider": "all",
+    "activeAgent": "all",
+    "activeScope": "dormant",
+    "resultCount": 714,
+    "activeIndex": 0,
+    "totalSessions": 714,
+    "totalMatches": 714,
+    "previewTitle": "归档历史 0"
+  },
+  "nativeResumeArgs": [
+    "resume",
+    "44444444-4444-4444-8444-444444444444",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--model",
+    "gpt-6-astra",
+    "-c",
+    "model_reasoning_effort=max",
+    "-c",
+    "approval_policy=never",
+    "-c",
+    "sandbox_mode=danger-full-access",
+    "-c",
+    "windows.sandbox=unelevated",
+    "-c",
+    "notice.hide_full_access_warning=true",
+    "-c",
+    "features.fast_mode=true",
+    "-c",
+    "service_tier=fast"
+  ],
+  "hubLog": [
+    "(node:45776) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+    "(Use `electron --trace-warnings ...` to show where the warning was created)",
+    "DevTools listening on ws://127.0.0.1:61998/devtools/browser/86b5285b-c03f-46a0-94d2-f0f12abc3093",
+    "[群聊] hook server bind failed on :3456 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3456",
+    "[群聊] hook server bind failed on :3457 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3457",
+    "[群聊] hook server bind failed on :3458 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3458",
+    "[群聊] hook server bind failed on :3459 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3459",
+    "[群聊] hook server bind failed on :3460 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3460",
+    "[群聊] hook server bind failed on :3461 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3461",
+    "[群聊] hook server listening on 127.0.0.1:3462",
+    "[hub-control] control file written: pid=45776 hookPort=3462 cdpPort=61998",
+    "C:\\Users\\lintian\\claude-session-hub\\node_modules\\node-pty\\lib\\conpty_console_list_agent.js:13",
+    "var consoleProcessList = getConsoleProcessList(shellPid);",
+    "                         ^",
+    "Error: AttachConsole failed",
+    "    at Object.<anonymous> (C:\\Users\\lintian\\claude-session-hub\\node_modules\\node-pty\\lib\\conpty_console_list_agent.js:13:26)",
+    "    at Module._compile (node:internal/modules/cjs/loader:1820:14)",
+    "    at Module._extensions..js (node:internal/modules/cjs/loader:1953:10)",
+    "    at Module.load (node:internal/modules/cjs/loader:1540:32)",
+    "    at Module._load (node:internal/modules/cjs/loader:1342:12)",
+    "    at c._load (node:electron/js2c/node_init:2:18047)",
+    "    at wrapModuleLoad (node:internal/modules/cjs/loader:262:19)",
+    "    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:169:5)",
+    "    at node:internal/main/run_main_module:33:47",
+    "Node.js v24.14.0",
+    "[hub] ensured Codex silent full-access config at C:\\Users\\lintian\\AppData\\Local\\Temp\\hub-t3-sidebar-1788883445949-2072\\codex\\config.toml"
+  ],
+  "exit": {
+    "exitCode": 0,
+    "exitSignal": null,
+    "forced": false
+  }
+}
