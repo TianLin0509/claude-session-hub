@@ -221,7 +221,13 @@
       // 开在工作根时把定位说明单独存一份 —— 讨论阶段读合同也得先知道仓库在哪，
       // 而它原本只拼在两步 prompt 里，普通群聊路径拿不到。
       const ws = opts && opts.workspace;
-      devConfig.devPhase = opts && opts.devPhase === 'discuss' ? 'discuss' : 'build';
+      // 2026-09-08：双席位开发一律从讨论阶段起步，不再有「直接开工」这一挡 ——
+      // 那条路绕过开题，实现位手里只有聊天记录、没有一份自包含可验收的任务书。
+      // 明确传 devPhase:'build' 仍然认（老房间改配置、单测都要用到），只是建群不再走那条。
+      devConfig.devPhase = opts && opts.devPhase === 'build' ? 'build' : 'discuss';
+      // MD 交接：阶段文档由 agent 改名交付，Hub 按文件而不是「回复结束」判定推进。
+      // 只对新建的双席位开发群聊打开；老房间没有这个字段，行为一字不改。
+      devConfig.mdHandoff = true;
       if (ws && ws.atWorkRoot) devConfig.projectLocator = buildProjectLocatorPrompt(ws.projects);
       return devConfig;
     }

@@ -22,6 +22,54 @@ function registerLoopIpc(ipcMain, deps) {
     } catch (err) { logger.error('[loop:start]', err); return { ok: false, reason: (err && err.message) || 'internal_error' }; }
   });
 
+  // 开题：只给指定执笔者派一次任务书，报告改名交付后自动开工。
+  // 双击 / 重复 IPC 由引擎的 running map 挡住 —— 不会出现两个同阶段执行。
+  ipcMain.handle('dev:kickoff', async (_e, args = {}) => {
+    try {
+      if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      if (typeof loopEngine.runKickoff !== 'function') return { ok: false, reason: 'kickoff_unavailable' };
+      if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
+      // 不 await：开题要等 agent 写完报告，可能几分钟到几十分钟，
+      // 阻塞 renderer 会让整个窗口看起来卡死。进度走 loop:progress。
+      loopEngine.runKickoff(args.meetingId, {
+        authorMemberId: args.authorMemberId || null,
+        heroIdBySid: args.heroIdBySid || {},
+      }).catch(err => logger.error('[dev:kickoff] background run failed:', err));
+      return { ok: true };
+    } catch (err) {
+      logger.error('[dev:kickoff]', err);
+      return { ok: false, reason: (err && err.message) || 'internal_error' };
+    }
+  });
+
+  // 「重发本轮」：不重置任务、不重开轮次，只对当前阶段再核对一次现场。
+  // 开题阶段 → 重新派给原执笔者；实现/审查阶段 → 走 loop:resume 那条持久检查点路径。
+  ipcMain.handle('dev:redispatch', async (_e, args = {}) => {
+    try {
+      if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
+      const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
+      const kickoff = status && status.kickoff;
+      if (kickoff && ['running', 'awaiting_report', 'failed'].includes(kickoff.status)) {
+        loopEngine.runKickoff(args.meetingId, { authorMemberId: kickoff.authorMemberId || null })
+          .catch(err => logger.error('[dev:redispatch] kickoff failed:', err));
+        return { ok: true, stage: 'kickoff' };
+      }
+      const persisted = status && status.loopState;
+      if (!persisted || !['running', 'paused'].includes(persisted.status)) {
+        return { ok: false, reason: 'no_resumable_run' };
+      }
+      const phaseCheck = typeof loopEngine.validateResume === 'function' ? loopEngine.validateResume(args.meetingId) : { ok: true };
+      if (!phaseCheck.ok) return { ok: false, reason: phaseCheck.reason };
+      loopEngine.runLoop(args.meetingId, null, { ...persisted, status: 'running', stepAttempt: 0, lastError: null }, {})
+        .catch(err => logger.error('[dev:redispatch] loop failed:', err));
+      return { ok: true, stage: persisted.currentStep || 'loop' };
+    } catch (err) {
+      logger.error('[dev:redispatch]', err);
+      return { ok: false, reason: (err && err.message) || 'internal_error' };
+    }
+  });
+
   ipcMain.handle('loop:stop', async (_e, args = {}) => {
     try { return { ok: loopEngine.stopLoop(args.meetingId, { interrupt: true }) }; }
     catch (err) { return { ok: false, reason: (err && err.message) }; }

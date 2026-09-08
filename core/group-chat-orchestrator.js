@@ -111,6 +111,44 @@ function normalizeDispatchMeta(dispatch) {
   };
 }
 
+// ── 真实用户补充的逐成员账本 ──────────────────────────────────────────────
+// 群聊里 role==='user' 的消息有三种来源：维护者真的打进去的话、循环引擎自己生成的
+// 阶段指令（派工卡片）、以及系统提示。只有第一种才是「需要送到每位成员手里的新要求」。
+// 光看 role 分不出来，所以消息上带一个 origin；旧状态文件里没有这个字段的一律不进账本，
+// 免得升级之后把历史派工指令当成用户的新需求重新灌给 agent。
+const ORIGIN_USER = 'user';
+const ORIGIN_HUB = 'hub';
+const ORIGIN_SYSTEM = 'system';
+// 单条补充进 prompt 的长度上限。超长的整段留在群聊原文里，prompt 里给明确的截断提示，
+// 不静默吃掉后半截（任务书：长内容不能静默截断）。
+const MAX_SUPPLEMENT_CHARS = 8000;
+const MAX_SUPPLEMENT_LEDGER = 500;
+const NEWLINE = String.fromCharCode(10);
+
+function _seqList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    const n = Number(item);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out.sort((a, b) => a - b).slice(-MAX_SUPPLEMENT_LEDGER);
+}
+
+function normalizeSupplementLedger(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const out = { pendingBySid: {}, deliveredBySid: {} };
+  for (const key of ['pendingBySid', 'deliveredBySid']) {
+    const table = source[key] && typeof source[key] === 'object' ? source[key] : {};
+    for (const [sid, seqs] of Object.entries(table)) {
+      if (!sid) continue;
+      const list = _seqList(seqs);
+      if (list.length) out[key][sid] = list;
+    }
+  }
+  return out;
+}
+
 function _memberLabel(member) {
   if (!member) return 'AI';
   return member.displayName || member.alias || KIND_LABELS[member.kind] || member.kind || member.memberId || 'AI';
@@ -194,6 +232,8 @@ class GroupChatOrchestrator {
       // durable makes a post-crash/manual resend faithful to the original
       // system+delta+hero prompt instead of degrading to the raw user line.
       pendingPrompts: {},
+      // 真实用户补充（群聊插话）的逐成员投递账本。见 appendUserSupplement 的注释。
+      userSupplements: { pendingBySid: {}, deliveredBySid: {} },
       turns: [],
       aiStats: {},
     };
@@ -229,6 +269,7 @@ class GroupChatOrchestrator {
           revision: Math.max(0, Number(raw.revision) || 0),
           activeRun: raw.activeRun && typeof raw.activeRun === 'object' ? raw.activeRun : null,
           pendingPrompts: raw.pendingPrompts && typeof raw.pendingPrompts === 'object' ? raw.pendingPrompts : {},
+          userSupplements: normalizeSupplementLedger(raw.userSupplements),
         };
         let nextMessageSeq = 1;
         for (const message of this.state.messages) {
@@ -513,6 +554,10 @@ class GroupChatOrchestrator {
         speaker: '你',
         content: userInput || '',
         runId,
+        // 谁说的这句话。循环/串行引擎派工也存成 role==='user'，靠这个字段才分得开。
+        origin: opts.origin === ORIGIN_USER ? ORIGIN_USER
+          : opts.origin === ORIGIN_HUB ? ORIGIN_HUB
+            : (opts.dispatch || opts.dispatchMode === 'serial') ? ORIGIN_HUB : ORIGIN_USER,
         ...normalizeDispatchMeta(opts.dispatch),
         ...(clientMessageId ? { clientMessageId } : {}),
       });
@@ -551,6 +596,7 @@ class GroupChatOrchestrator {
       role: 'user',
       speaker: '你',
       content: String(content || ''),
+      origin: ORIGIN_HUB,
       runId: meta.dispatch.runId || (this.state.activeRun && this.state.activeRun.runId) || null,
       ...meta,
     });
@@ -558,6 +604,107 @@ class GroupChatOrchestrator {
       runId: message.runId, turnNum: n, stepIndex: meta.dispatch.stepIndex,
     });
     return message;
+  }
+
+  // ── 用户补充（群聊插话）· 逐成员增量投递 ────────────────────────────────
+  //
+  // 为什么要单独一条路：循环运行中在群聊输入框发一句话，renderer 原本走 loop:start，
+  // 主进程以 already_running 拒绝，消息连盘都没落 —— 用户以为说了，其实谁都没收到。
+  // 就算落了盘也没用：buildDelta 明确过滤 role==='user'，待命的那位在它下一次运行时
+  // 照样看不到这句话。
+  //
+  // 所以这里把「说过」和「谁收到了」分开记：消息本身进 messages（原文、身份、顺序都在），
+  // 送达情况按 sid 单独记账。当前执行者即时收到并确认后只清它自己那一格，
+  // 待命者那一格留着，等它下次真的被派工时补进 prompt。
+  //
+  // 刻意不碰 lastDeliveredSeq：那是「assistant 发言读到哪」的游标，
+  // 顺手推进它会让待命成员跳过还没读的队友发言（任务书 C04）。
+
+  /**
+   * 落一条真实用户补充。recipientSids 是「这句话该送到谁手里」——
+   * 由调用方按当前群成员给出；账本不猜成员名单。
+   */
+  appendUserSupplement(text, opts = {}) {
+    const body = String(text == null ? '' : text);
+    if (!body.trim()) return null;
+    const recipients = (Array.isArray(opts.recipientSids) ? opts.recipientSids : [])
+      .map(sid => String(sid || '').trim()).filter(Boolean);
+    const n = Number(opts.turnNum) > 0 ? Number(opts.turnNum) : (this.state.currentTurn || 0);
+    const index = this.state.messages.filter(m => m && m.supplement).length + 1;
+    const message = this._appendMessage({
+      id: `us${index}`,
+      turnNum: n,
+      role: 'user',
+      speaker: '你',
+      content: body,
+      origin: ORIGIN_USER,
+      supplement: true,
+      supplementSource: String(opts.source || 'input-box'),
+      runId: (this.state.activeRun && this.state.activeRun.runId) || null,
+    });
+    if (!this.state.userSupplements) this.state.userSupplements = { pendingBySid: {}, deliveredBySid: {} };
+    const pending = this.state.userSupplements.pendingBySid;
+    for (const sid of recipients) {
+      pending[sid] = _seqList([...(pending[sid] || []), message.seq]);
+    }
+    this._saveState('user_supplement_appended', { turnNum: n, seq: message.seq, recipients: recipients.length });
+    return { message, seq: message.seq, recipients };
+  }
+
+  /** 全部真实用户补充（按顺序）。Hub 自己的阶段指令永远不在里面。 */
+  listUserSupplements() {
+    return this.state.messages
+      .filter(m => m && m.supplement === true && m.origin === ORIGIN_USER)
+      .map(m => ({ seq: m.seq, text: m.content || '', at: m.createdAt || 0, id: m.id }));
+  }
+
+  /** 这位成员还没确认收到的补充，按原顺序。 */
+  pendingUserSupplementsFor(sid) {
+    const key = String(sid || '');
+    if (!key) return [];
+    const ledger = this.state.userSupplements || { pendingBySid: {} };
+    const pending = new Set(ledger.pendingBySid[key] || []);
+    if (!pending.size) return [];
+    return this.listUserSupplements().filter(item => pending.has(item.seq));
+  }
+
+  /**
+   * 确认送达。**只在实际发送返回成功之后调**——发送失败或确认不明时不要调它，
+   * 那种情况要保留待确认，不能提前标已读，也不要盲目重发（任务书 C06）。
+   */
+  markUserSupplementsDelivered(sid, seqs) {
+    const key = String(sid || '');
+    const list = _seqList(seqs);
+    if (!key || !list.length) return [];
+    if (!this.state.userSupplements) this.state.userSupplements = { pendingBySid: {}, deliveredBySid: {} };
+    const ledger = this.state.userSupplements;
+    const pending = new Set(ledger.pendingBySid[key] || []);
+    const moved = list.filter(seq => pending.has(seq));
+    for (const seq of list) pending.delete(seq);
+    if (pending.size) ledger.pendingBySid[key] = _seqList([...pending]);
+    else delete ledger.pendingBySid[key];
+    ledger.deliveredBySid[key] = _seqList([...(ledger.deliveredBySid[key] || []), ...list]);
+    if (moved.length) this._saveState('user_supplement_delivered', { sid: key, count: moved.length });
+    return moved;
+  }
+
+  /**
+   * 拼进这位成员下一次 prompt 的那一段。没有待送达就是空串（不加噪声）。
+   * 原文整段保留：多行、列表、路径、emoji 都是同一条消息，不拆。
+   */
+  buildUserSupplementBlock(sid) {
+    const items = this.pendingUserSupplementsFor(sid);
+    if (!items.length) return '';
+    const lines = ['## 维护者补充（你还没收到过的原话，按发出顺序）'];
+    items.forEach((item, i) => {
+      const truncated = item.text.length > MAX_SUPPLEMENT_CHARS;
+      const text = truncated
+        ? item.text.slice(0, MAX_SUPPLEMENT_CHARS) + NEWLINE + `（本条过长，此处截断；完整原文见群聊消息 ${item.id}）`
+        : item.text;
+      lines.push(`[${i + 1}]`, text);
+    });
+    lines.push('这些是维护者的话，不是新任务书；按当前阶段职责消化，不要因此重置任务或重做已完成的部分。');
+    return lines.join(NEWLINE);
   }
 
   /** 循环自愈等后台动作留给人看的一行系统提示。role 仍是 user，同样不进任何成员的上下文。 */
@@ -574,6 +721,7 @@ class GroupChatOrchestrator {
       role: 'user',
       speaker: '系统',
       content: body,
+      origin: ORIGIN_SYSTEM,
       systemNote: true,
       noteKind: String(meta.kind || 'info'),
       runId: meta.runId || (this.state.activeRun && this.state.activeRun.runId) || null,

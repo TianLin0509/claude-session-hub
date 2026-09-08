@@ -91,6 +91,7 @@ const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handle
 const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
+const { registerGroupchatSupplementIpc } = require('./main/ipc/groupchat-supplement-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 const { registerCommitteeIpc } = require('./main/ipc/committee-handlers.js');
 const { createResumeSessionHandler, registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
@@ -1335,6 +1336,8 @@ try {
   global.__loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
     getDispatcher: () => groupChatDispatcher,
     getOrchestrator: (meetingId) => groupchat.getOrchestrator(getHubDataDir(), meetingId),
+    // 阶段交接文档落在 <Hub 数据目录>/task-docs/<meetingId>/；显式注入，隔离实例才隔得开。
+    getHubDataDir,
     meetingManager, sessionManager, sendToRenderer,
     // resumeSession is initialized later in this module; the closure is only
     // invoked after startup, when the provider-native resume handler exists.
@@ -1492,6 +1495,15 @@ registerGroupchatRecoveryIpc(ipcMain, {
   sendToRenderer,
   sessionManager,
   transcriptTap,
+});
+registerGroupchatSupplementIpc(ipcMain, {
+  getActiveWatchers: groupChatDispatcher.getActiveWatchers,
+  getHubDataDir,
+  groupchat,
+  groupChatWatcher: groupChatDispatcher.getGroupChatWatcher(),
+  meetingManager,
+  sendToRenderer,
+  sessionManager,
 });
 registerCliStatusIpc(ipcMain, {
   cliReadyDetector,

@@ -42,14 +42,17 @@ let _meetingWorkspaceMode = 'default';
 let _projectLibrary = [];
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
-// 开发场景的起手方式，三选一：
-//   build   —— 任务已明确，直接开工（原行为，两位：工作位 + 合并位）
-//   discuss —— 先讨论再开工。不是第三个场景：同一个群、同一组会话，只是先走普通群聊路径，
-//              点「开工」再进循环。
+// 开发场景的起手方式，两选一：
+//   discuss —— 普通双席位（工作位 + 合并位）。建好房先自由讨论，聊清楚了点「开题」
+//              指定一位执笔者写任务书；报告交付后自动开工。
+//              2026-09-08 取消了原来的「任务已明确，直接开工」分岔：那条路绕过开题，
+//              于是实现位手里永远只有聊天记录，没有一份自包含、可验收的任务书。
+//              需求本来就明确时也不必多聊几轮 —— 建好房直接点「开题」就行。
 //   simple  —— 极简：只留一个 Codex，同一个会话既当工作位也当合并位。给「改一行文案」
 //              这种小到不值得占两个席位、也不值得做一次上下文交接的需求用。
-let _devStart = 'build';
-const DEV_STARTS = ['build', 'discuss', 'simple'];
+//              极简保留原流程，不套用双席位的开题链路。
+let _devStart = 'discuss';
+const DEV_STARTS = ['discuss', 'simple'];
 // 极简起手的成员名单：一个 Codex。Codex 是日常主力，且这条路径本来就是省 token 的。
 const SIMPLE_DEV_MEMBERS = [{ kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex }];
 let _creating = false;
@@ -487,8 +490,7 @@ function _ensureModal() {
         <div class="mcm-workspace-block mcm-dev-start" id="mcm-dev-start-row" hidden>
           <span class="mcm-workspace-caption">起手</span>
           <div class="mcm-workspace-choices" role="radiogroup" aria-label="开发场景起手方式">
-            <button type="button" class="mcm-workspace-choice selected" data-mcm-dev-start="build" role="radio" aria-checked="true"><strong>任务已明确，直接开工</strong><small>发第一句话就进入「工作位实现 ↔ 合并位审查」</small></button>
-            <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="discuss" role="radio" aria-checked="false"><strong>先讨论，再开工</strong><small>两位先议方案、不改代码；点「开工」再进入实现</small></button>
+            <button type="button" class="mcm-workspace-choice selected" data-mcm-dev-start="discuss" role="radio" aria-checked="true"><strong>工作位 + 合并位（默认）</strong><small>先聊清楚，点「开题」写任务书；报告交付后自动开工</small></button>
             <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="simple" role="radio" aria-checked="false"><strong>极简：一个 Codex 自己改自己合</strong><small>只留一位成员，同一会话既当工作位也当合并位；小改动用</small></button>
           </div>
         </div>
@@ -666,8 +668,9 @@ async function _onCreate() {
 // 开在工作根（默认工作目录）时，workspaceHint 带上项目库快照，预设 prompt 前面会多一段
 // 「先按任务定位项目根」—— 这是「允许选默认目录」的代价，由 prompt 而不是用户承担。
 //
-// devPhase 是起手方式：'discuss' 时循环配置照样写好，只是 devPhase 让发送先走普通群聊；
-// 用户在群里点「开工」把它翻成 'build'，之后和「直接开工」完全一样。
+// devPhase 是起手方式：双席位一律先落 'discuss'（循环配置照样写好，只是发送先走普通群聊）。
+// 用户在群里点「开题」→ 阶段翻成 'kickoff'，指定执笔者写任务书；
+// 报告改名交付被 Hub 接收后自动翻成 'build' 并开工。极简仍然直接是 'build'。
 function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return;
   const WT = window.WorkflowTemplates;
@@ -685,7 +688,8 @@ function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
         atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
         projects: (workspaceHint && workspaceHint.projects) || [],
       },
-      devPhase: workspaceHint && workspaceHint.devPhase === 'discuss' ? 'discuss' : 'build',
+      // 极简走 dev-task-solo（它自己把 devPhase 钉成 build）；双席位一律从讨论阶段起步。
+      devPhase: simple ? 'build' : 'discuss',
     });
     if (!config) return;
     config.templateId = templateId;

@@ -47,14 +47,21 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
   const iDiscuss = room.indexOf('if (DevDiscuss.isDiscussing(m)) {');
   const iLoop = room.indexOf('m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&', iDiscuss);
   assert(iDiscuss > 0 && iLoop > iDiscuss, '讨论阶段判断必须排在循环分支前面');
-  assert(/data-mcm-dev-start="discuss"/.test(modal) && /data-mcm-dev-start="build"/.test(modal), '建群弹窗要有两种起手方式');
-  assert(/_devStart = 'build';/.test(modal), '重开弹窗必须重置为直接开工，否则上次选的「先讨论」会残留');
+  // 2026-09-08：取消了「任务已明确，直接开工」那一挡 —— 它绕过开题，实现位手里
+  // 只有聊天记录、没有一份自包含可验收的任务书。双席位现在一律从讨论阶段起步，
+  // 需求本来就明确时直接点「开题」即可，不强制多聊几轮。
+  assert(/data-mcm-dev-start="discuss"/.test(modal), '建群弹窗的双席位那一挡还在');
+  assert(!/data-mcm-dev-start="build"/.test(modal), '「直接开工」那一挡必须真的没了，否则还能绕过开题');
+  assert(/_devStart = 'discuss';/.test(modal), '重开弹窗必须重置为双席位讨论起手');
   const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
   const discuss = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss' });
   assert.strictEqual(discuss.devPhase, 'discuss');
   assert.strictEqual(discuss.loop.enabled, true, '讨论阶段不许关循环开关：开工只翻阶段字段，配置一个字不动');
   const build = WT.createTemplateConfig('dev-task', members, {});
-  assert.strictEqual(build.devPhase, 'build', '不选就是现在的行为');
+  assert.strictEqual(build.devPhase, 'discuss', '不传就是讨论起手（取消分岔之后的默认）');
+  assert.strictEqual(build.mdHandoff, true, '新建的双席位开发群聊默认走 MD 改名交接');
+  assert.strictEqual(WT.createTemplateConfig('dev-task', members, { devPhase: 'build' }).devPhase, 'build',
+    '显式传 build 仍然认：老房间改配置和单测都要用');
   // 开在工作根时讨论阶段同样要能定位项目根：定位说明得单独存一份，普通群聊路径才拿得到
   const atRoot = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss', workspace: { atWorkRoot: true, projects: [{ name: 'X', path: 'C:\\repo\\x' }] } });
   assert(/先定位项目根/.test(atRoot.projectLocator) && atRoot.projectLocator.includes('X → C:\\repo\\x'));
@@ -88,8 +95,7 @@ test('极简起手：一位 Codex 既当工作位也当合并位（2026-09-07 �
   // 一次完整的上下文交接 + 一倍 token。极简把这条代价换成「没有独立第三方」，
   // 取舍由用户在建群那一刻选，不由 Hub 替他决定。
   assert(/data-mcm-dev-start="simple"/.test(modal), '建群弹窗要有极简这一挡');
-  assert(/data-mcm-dev-start="build"/.test(modal) && /data-mcm-dev-start="discuss"/.test(modal),
-    '原来两挡不能被挤掉');
+  assert(/data-mcm-dev-start="discuss"/.test(modal), '双席位那一挡不能被挤掉');
   assert(/const SIMPLE_DEV_MEMBERS = \[\{ kind: 'codex'/.test(modal), '极简的默认成员是 Codex');
   assert(/function _setDevStart/.test(modal) && /_groupSlots = _cloneSlots\(SIMPLE_DEV_MEMBERS\)/.test(modal),
     '选极简要把成员名单换成一个人，否则界面和选项自相矛盾');
@@ -102,6 +108,7 @@ test('极简起手：一位 Codex 既当工作位也当合并位（2026-09-07 �
     '两步派给同一个 memberId：loop-engine 的 builder=steps[0][0]、reviewer=steps.slice(1) 照常成立');
   assert.strictEqual(solo.loop.enabled, true, '极简仍然是循环，只是循环里只有一个人');
   assert.strictEqual(solo.devPhase, 'build', '极简没有讨论阶段');
+  assert.notStrictEqual(solo.mdHandoff, true, '极简保留原流程，不套用双席位的 MD 交接链路');
   // 工作流配置弹窗的闭环形状校验：恰好 2 步、第 1 步 1 人、第 2 步 ≥1 人
   assert(solo.steps.length === 2 && solo.steps[0].length === 1 && solo.steps[1].length >= 1,
     '形状必须仍然是配置弹窗认的那种闭环，否则用户一打开配置就被判非法');
