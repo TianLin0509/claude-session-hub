@@ -77,6 +77,25 @@ assert.match(metricsBody, /\$\{tokens\} tok/, '覆盖层要有 token 数');
 assert.match(metricsBody, /formatDuration\(session\.apiMs\)/, '覆盖层要有 API 用时');
 assert.doesNotMatch(metricsBody, /session\.cwd|workspaceLabel/,
   '覆盖层只放实时量，工作目录不许回来');
+// 2026-09-08 评审阻断：contextPct 在会话刚起来时是 null，Number(null) === 0 且
+// Number.isFinite(0) 为真 —— 只写 Number() 会把「还不知道」显示成确定的 ctx 0%，
+// 用户会据此以为上下文还空着。判据必须先确认它真的是个 number。
+assert.doesNotMatch(metricsBody, /Number\(session\.contextPct\)/,
+  'contextPct 不许直接 Number()：null 会被悄悄变成 0');
+assert.match(metricsBody, /typeof session\.contextPct === 'number' \? session\.contextPct : NaN/,
+  '未知的上下文占比必须落到 NaN 分支，从而整段不显示');
+
+// ── 主进程改了工作区标签，面包屑要跟着刷新 ──────────────────────────────
+// 2026-09-08 评审阻断：首轮结束后 main 会把临时区的名字换成正式项目名，经
+// session-updated 推下来。这个标签 T2 之前长在 metrics 的目录 chip 上，由
+// updateActiveMetricsRow 顺带刷新；搬进面包屑之后必须自己刷。
+const sessionUpdatedStart = renderer.indexOf("ipcRenderer.on('session-updated'");
+assert.ok(sessionUpdatedStart > 0, '找不到 session-updated 处理器');
+const sessionUpdatedBody = renderer.slice(sessionUpdatedStart, sessionUpdatedStart + 5200);
+assert.match(sessionUpdatedBody, /local\.workspaceLabel = session\.workspaceLabel/,
+  'session-updated 仍然要接收 workspaceLabel');
+assert.match(sessionUpdatedBody, /updateActiveCrumbWorkspace\(\);/,
+  '收到新的 workspaceLabel 之后必须重画面包屑，否则一直显示旧标签');
 
 // ── 视图切换进头部中央 ─────────────────────────────────────────────────
 assert.match(renderer, /header\.insertBefore\(viewToggle, headerActions\)/,

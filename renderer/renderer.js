@@ -5931,7 +5931,11 @@ function renderMetricsRow(el, session) {
   if (!el || !session) return;
   const parts = [];
   const titleParts = [];
-  const rawPct = Number(session.contextPct);
+  // 会话刚起来、或者 CLI 状态栏还没被读到时，contextPct 是 null（不是 0）。
+  // Number(null) === 0 且 Number.isFinite(0) 为真 —— 只写 Number() 就会把
+  // 「还不知道」显示成一个确定的 ctx 0%。那比不显示更糟：用户会据此以为
+  // 上下文还空着，然后往里灌一个其实塞不下的大 prompt。不知道就别说。
+  const rawPct = typeof session.contextPct === 'number' ? session.contextPct : NaN;
   if (Number.isFinite(rawPct)) {
     const pct = Math.max(0, Math.min(100, Math.round(rawPct)));
     parts.push(`ctx ${pct}%`);
@@ -7432,6 +7436,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     // inline rename (the span is absent while its input is mounted).
     const activeTitle = terminalPanelEl.querySelector('.terminal-title');
     if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
+    // 工作区标签也是 main 会在首轮之后改写的字段（临时区的名字换成正式项目名）。
+    // T2 之前它长在 metrics 的目录 chip 上，靠下面那行 updateActiveMetricsRow 顺带
+    // 刷新；搬进面包屑之后就得自己刷，否则用户会一直看着首轮之前那个旧名字。
+    updateActiveCrumbWorkspace();
     updateActiveMetricsRow();
     if (persistModel) updateActiveModelChip();
     completionNotificationToggle.refreshTarget();

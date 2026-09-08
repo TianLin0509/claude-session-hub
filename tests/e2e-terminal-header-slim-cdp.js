@@ -441,6 +441,52 @@ async function main() {
     assert.equal(result.notifyClick.anyModalOpen, true,
       '未配置飞书时应转发到设置弹窗（与原浮层按钮行为一致）');
 
+    // ── 回归 A：主进程改了 workspaceLabel，面包屑要跟着变 ──────────────
+    // 首轮结束后 main 会给会话起一个真实的工作区标签（原来在临时区叫别的名字），
+    // 通过 session-updated 推下来。T2 之前这个标签长在 metrics 的目录 chip 上，
+    // 由 updateActiveMetricsRow 刷新；搬进面包屑之后必须有人刷新面包屑，
+    // 否则用户看到的一直是首轮之前那个旧名字。
+    await client.eval(`(() => {
+      const { ipcRenderer } = require('electron');
+      ipcRenderer.emit('session-updated', {}, {
+        session: {
+          id: ${JSON.stringify(SESSION_ID)},
+          workspaceLabel: '归档后的正式项目',
+        },
+      });
+      return true;
+    })()`);
+    await _waitMs(400);
+    result.labelRefresh = await client.eval(STAGE_PROBE);
+    assert.equal(result.labelRefresh.crumb.workspaceText, '归档后的正式项目',
+      '主进程更新工作区标签后，面包屑必须跟着刷新');
+
+    // ── 回归 B：上下文未知时不许说 ctx 0% ────────────────────────────
+    // 会话刚起来、或者 CLI 状态栏还没读到占比时，contextPct 是 null。
+    // Number(null) === 0，一不小心就把「不知道」显示成一个确定的零 —— 那是
+    // 比不显示更糟的错误：用户会以为上下文还空着。
+    await client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(SESSION_ID)});
+      session.contextPct = null;
+      session.contextUsed = null;
+      updateActiveMetricsRow();
+      return true;
+    })()`);
+    await _waitMs(250);
+    result.unknownContext = await client.eval(STAGE_PROBE);
+    assert.doesNotMatch(result.unknownContext.metrics.text, /ctx/,
+      '上下文未知时覆盖层不许出现 ctx 字样，实际：' + result.unknownContext.metrics.text);
+    assert.match(result.unknownContext.metrics.text, /^⏱ /,
+      '其它实时量照常显示，实际：' + result.unknownContext.metrics.text);
+    // 把状态还原，后面的用例仍按原来的数据跑。
+    await client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(SESSION_ID)});
+      session.contextPct = 41;
+      session.contextUsed = 128400;
+      updateActiveMetricsRow();
+      return true;
+    })()`);
+
     // ── 验收 12：切会话之后视图切换还在头部里 ────────────────────────
     // 这个节点是 index.html 里静态声明的那一个，showTerminal 每次都要把它从
     // preserveAndClearTerminalPanel 手里接过来重新挂进新头部。历史上 spec 1/2
