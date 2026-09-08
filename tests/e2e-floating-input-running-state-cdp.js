@@ -149,7 +149,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       const input = document.querySelector('.floating-input-box');
       const bar = document.querySelector('.floating-input-bar');
       const stop = document.querySelector('.floating-input-stop');
-      const header = document.querySelector('.terminal-header .terminal-status');
+      const header = document.querySelector('.terminal-header .terminal-crumb-dot');
+        const composer = document.querySelector('.floating-input-bar .composer');
       return {
         inputHeight: input.getBoundingClientRect().height,
         barHeight: bar.getBoundingClientRect().height,
@@ -161,7 +162,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         source: session._runSource || null,
         stopVisible: stop.classList.contains('visible'),
         headerState: header.dataset.runtimeState,
-        headerLabel: header.querySelector('.terminal-status-label')?.textContent || '',
+        composerState: composer?.dataset.state || '',
       };
     })()`);
 
@@ -177,9 +178,9 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         source: suppressed.source,
         stopVisible: suppressed.stopVisible,
         headerState: suppressed.headerState,
-        headerLabel: suppressed.headerLabel,
+        composerState: suppressed.composerState,
       },
-      { status: 'idle', source: null, stopVisible: false, headerState: 'idle', headerLabel: '已就绪' }
+      { status: 'idle', source: null, stopVisible: false, headerState: 'idle', composerState: 'ready' }
     );
 
     // Outside the narrow resize window, retain the existing PTY fallback. It
@@ -201,11 +202,12 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
-        const header = document.querySelector('.terminal-header .terminal-status');
+        const header = document.querySelector('.terminal-header .terminal-crumb-dot');
+        const composer = document.querySelector('.floating-input-bar .composer');
         return session.status === 'running'
           && session._runSource === 'burst'
           && header?.dataset.runtimeState === 'running'
-          && header.querySelector('.terminal-status-label')?.textContent === '工作中';
+          && composer?.dataset.state === 'working';
       })()`,
       'burst state and header render'
     );
@@ -217,8 +219,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         status: session.status,
         source: session._runSource || null,
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
-        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
+        headerState: document.querySelector('.terminal-header .terminal-crumb-dot').dataset.runtimeState,
+        composerState: document.querySelector('.floating-input-bar .composer').dataset.state,
       };
     })()`);
     assert.deepEqual(fallback, {
@@ -226,7 +228,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       source: 'burst',
       stopVisible: false,
       headerState: 'running',
-      headerLabel: '工作中',
+      composerState: 'working',
     });
 
     // Burst fallback is one-shot: after its normal quiet transition it enters
@@ -236,13 +238,14 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
-        const header = document.querySelector('.terminal-header .terminal-status');
+        const header = document.querySelector('.terminal-header .terminal-crumb-dot');
+        const composer = document.querySelector('.floating-input-bar .composer');
         return session.status === 'idle'
           && !session._runSource
           && Number(session._ptyFallbackArmedUntil || 0) === 0
           && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
           && header?.dataset.runtimeState === 'idle'
-          && header.querySelector('.terminal-status-label')?.textContent === '已就绪';
+          && composer?.dataset.state === 'ready';
       })()`,
       'burst quiet transition and cooldown'
     );
@@ -261,13 +264,14 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
-        const header = document.querySelector('.terminal-header .terminal-status');
+        const header = document.querySelector('.terminal-header .terminal-crumb-dot');
+        const composer = document.querySelector('.floating-input-bar .composer');
         return session.status === 'idle'
           && !session._runSource
           && Number(session._ptyFallbackArmedUntil || 0) === 0
           && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
           && header?.dataset.runtimeState === 'idle'
-          && header.querySelector('.terminal-status-label')?.textContent === '已就绪';
+          && composer?.dataset.state === 'ready';
       })()`,
       'idle repaint suppressed during cooldown'
     );
@@ -280,8 +284,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         armedUntil: Number(session._ptyFallbackArmedUntil) || 0,
         cooldownActive: Number(session._ptyBurstCooldownUntil) > Date.now(),
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
-        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
+        headerState: document.querySelector('.terminal-header .terminal-crumb-dot').dataset.runtimeState,
+        composerState: document.querySelector('.floating-input-bar .composer').dataset.state,
       };
     })()`);
     assert.deepEqual(cooled, {
@@ -291,7 +295,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       cooldownActive: true,
       stopVisible: false,
       headerState: 'idle',
-      headerLabel: '已就绪',
+      composerState: 'ready',
     });
 
     // A semantic Codex/card signal is high-confidence work and should still
@@ -302,11 +306,11 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       updateFloatingBarState();
       return {
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
-        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
+        headerState: document.querySelector('.terminal-header .terminal-crumb-dot').dataset.runtimeState,
+        composerState: document.querySelector('.floating-input-bar .composer').dataset.state,
       };
     })()`);
-    assert.deepEqual(semantic, { stopVisible: true, headerState: 'running', headerLabel: '工作中' });
+    assert.deepEqual(semantic, { stopVisible: true, headerState: 'running', composerState: 'working' });
 
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, before, suppressed, fallback, cooled, semantic }, null, 2));
   } catch (error) {

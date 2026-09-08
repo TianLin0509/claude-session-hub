@@ -149,7 +149,7 @@ async function runSession(client, { kind, prompt, marker, opts }) {
       // This diagnostic deliberately requires the live PTY classifier, not
       // merely the provider lifecycle event, so both evidence channels are proven.
       if (session._ptyRuntimeState !== 'running') return null;
-      const status = document.querySelector('.terminal-header .terminal-status');
+      const status = document.querySelector('.terminal-header .terminal-crumb-dot');
       const sidebar = document.querySelector('.session-item[data-session-id="' + CSS.escape(String(session.id)) + '"]');
       if (status?.dataset.runtimeState !== 'running' || sidebar?.dataset.runtimeState !== 'running') return null;
       return {
@@ -159,7 +159,7 @@ async function runSession(client, { kind, prompt, marker, opts }) {
         ptyState: session._ptyRuntimeState || null,
         ptyReason: session._ptyRuntimeReason || null,
         cardState: status?.dataset.runtimeState || null,
-        cardLabel: status?.querySelector('.terminal-status-label')?.textContent || '',
+        cardLabel: document.querySelector('.floating-input-bar .composer-status-text')?.textContent || '',
         sidebarState: sidebar?.dataset.runtimeState || null,
         sidebarSource: sidebar?.dataset.runtimeSource || null,
         runtimeSource: session.runtimeTruth?.source || null,
@@ -207,9 +207,9 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const markerOccurrences = screen.split(marker).length - 1;
     const responseMarkerSeen = markerOccurrences >= 2;
     const blockedOnInput = session && session._ptyRuntimeState === 'waiting';
-    const cardStatus = document.querySelector('.terminal-header .terminal-status');
+    const cardStatus = document.querySelector('.terminal-header .terminal-crumb-dot');
     const cardState = cardStatus?.dataset.runtimeState || null;
-    const cardLabel = cardStatus?.querySelector('.terminal-status-label')?.textContent || '';
+    const cardLabel = document.querySelector('.floating-input-bar .composer-status-text')?.textContent || '';
     const sidebar = document.querySelector('.session-item[data-session-id="' + CSS.escape(String(id)) + '"]');
     if (!session || session.status !== 'idle' || (!responseMarkerSeen && !blockedOnInput)) return null;
     if (responseMarkerSeen && (cardState !== 'completed' || cardLabel !== '已完成')) return null;

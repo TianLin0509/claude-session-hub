@@ -192,7 +192,8 @@ async function main() {
         toolInput: { command: 'npm run build' },
       });
       await wait(50);
-      const runtimeDetail = document.querySelector('.terminal-header .terminal-status-detail');
+      // T2：头部只剩一个状态点，正在跑什么由 composer 状态行的 detail 说。
+      const runtimeDetail = document.querySelector('.floating-input-bar .composer-status-detail');
       const runtimeDetailText = runtimeDetail?.textContent || '';
       require('electron').ipcRenderer.emit('hook-event', {}, {
         event: 'tool-complete', eventAt: Date.now() + 10,

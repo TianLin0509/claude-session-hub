@@ -76,7 +76,7 @@ async function readCardState(client, sessionId) {
       identityMarker:latestCard?.__realCardIdentity || null,
       activityCount:latestCard?.querySelectorAll('.turn-activity-item').length || 0,
       activityStatuses:Array.from(latestCard?.querySelectorAll('.turn-activity-status') || []).map(item => item.dataset.activityStatus),
-      runtimeDetail:document.querySelector('.terminal-header .terminal-status-detail')?.textContent || '',
+      runtimeDetail:document.querySelector('.floating-input-bar .composer-status-detail')?.textContent || '',
       stageVisible:text.includes(${JSON.stringify(STAGE_MARKER)}),
       finalVisible:text.includes(${JSON.stringify(FINAL_MARKER)}),
       reload:reload ? {

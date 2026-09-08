@@ -159,7 +159,8 @@ async function main() {
     result.layout = await client.eval(`(() => {
       const pull = document.querySelector('.fi-bridge-pull');
       const branch = document.querySelector('.fi-bridge-fork');
-      const cwd = document.querySelector('.metric-cwd');
+      // T2：header 的 📁 路径 chip 换成面包屑第一段 .crumb-workspace。
+      const cwd = document.querySelector('.terminal-crumb .crumb-workspace');
       const memory = document.querySelector('.terminal-header [data-action="open-memory"]');
       const files = document.querySelector('.terminal-header .btn-file-manager-toggle');
       const ticker = document.getElementById('quota-ticker');
@@ -186,14 +187,14 @@ async function main() {
     assert.equal(result.layout.branchBesidePull, true);
     assert.equal(result.layout.branchText, '分支');
     assert.equal(result.layout.cwdTag, 'BUTTON');
-    assert.match(result.layout.cwdTitle, /在文件管理中打开/);
+    assert.match(result.layout.cwdTitle, /文件管理 · /);
     assert.match(result.layout.cwdText, /AIWork E2E/);
     assert.equal(result.layout.memoryInHeader, true);
     assert.equal(result.layout.fileButton, true);
     assert.equal(result.layout.tickerHasMemo, true);
     assert.equal(result.layout.tickerHasMemory, false);
 
-    await clickSelector(client, `document.querySelector('.metric-cwd')`);
+    await clickSelector(client, `document.querySelector('.terminal-crumb .crumb-workspace')`);
     await waitFor('workspace path opens file manager', () => client.eval(`document.getElementById('file-manager-panel').style.display === 'flex' && document.getElementById('file-manager-root-path').textContent === ${JSON.stringify(WORK_DIR)}`));
     result.workspacePathClick = await client.eval(`({
       panel: document.getElementById('file-manager-panel').style.display,

@@ -13,7 +13,7 @@ const {
 const {
   buildComposerRailModel,
   buildComposerStatusModel,
-  buildSessionStatusSummary,
+  buildStageStatusSummary,
 } = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
@@ -716,9 +716,12 @@ const modelUi = createModelUiController({
   }),
   getTerminalScreenText: sessionId => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
   isSessionBusy: session => sessionRuntimeIsActive(session),
+  // 头部徽章 T2 删了，模型名只剩 composer 底栏那个 chip。模型切换的每一步
+  // （发起 / 确认 / 超时回滚）都要让它重画一次，否则会停在切换前的名字上。
+  repaintActiveComposer: () => updateFloatingBarState(),
 });
 const attachModelPickerHandler = modelUi.attachModelPickerHandler;
-const updateActiveModelBadge = modelUi.updateActiveModelBadge;
+const updateActiveModelChip = modelUi.updateActiveModelChip;
 
 // Font size — shared across all terminals, persisted
 const FONT_SIZE_KEY = 'claude-hub-font-size';
@@ -1504,35 +1507,40 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const header = document.createElement('div');
   header.className = 'terminal-header';
 
-  const titleRow = document.createElement('div');
-  titleRow.className = 'terminal-title-row';
+  // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
+  // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
+  const crumb = document.createElement('div');
+  crumb.className = 'terminal-crumb';
+  if (session.cwd) crumb.title = session.cwd;
 
-  const titleSection = document.createElement('div');
-  titleSection.className = 'terminal-title-section';
+  const workspaceBtn = document.createElement('button');
+  workspaceBtn.type = 'button';
+  workspaceBtn.className = 'crumb-workspace';
+  paintCrumbWorkspace(workspaceBtn, session);
+
+  const crumbSep = document.createElement('span');
+  crumbSep.className = 'crumb-sep';
+  crumbSep.textContent = '›';
+  crumbSep.setAttribute('aria-hidden', 'true');
 
   const titleSpan = document.createElement('span');
   titleSpan.className = 'terminal-title';
   titleSpan.textContent = session.title;
-  titleSpan.title = session.readOnly ? '只读会话' : 'Click to rename';
+  // title 属性刻意留空：HTML tooltip 会往上找祖先，空着才轮得到 .terminal-crumb
+  // 那条「完整 cwd」。重命名这件事改用 aria-label + hover 虚下划线表达。
+  titleSpan.setAttribute('aria-label', session.readOnly ? '只读会话' : `${session.title} · 点击重命名`);
+  if (session.readOnly) titleSpan.classList.add('is-readonly');
   if (!session.readOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
 
-  const statusSpan = document.createElement('span');
-  statusSpan.className = 'terminal-status';
-  statusSpan.setAttribute('role', 'status');
-  statusSpan.setAttribute('aria-live', 'polite');
-  statusSpan.setAttribute('aria-atomic', 'false');
-  paintTerminalRuntimeStatus(statusSpan, session);
+  // 状态点：runtime truth 的四色（绿 / 琥珀 / 红 / 灰），title 给 runtimeLabel。
+  const statusDot = document.createElement('span');
+  statusDot.className = 'terminal-crumb-dot';
+  statusDot.setAttribute('role', 'status');
+  statusDot.setAttribute('aria-live', 'polite');
+  statusDot.setAttribute('aria-atomic', 'false');
+  paintTerminalRuntimeStatus(statusDot, session);
 
-  titleSection.append(titleSpan, statusSpan);
-
-  if (session.currentModel) {
-    const modelSpan = document.createElement('span');
-    modelSpan.className = 'terminal-model-badge ' + modelClass(session.currentModel.id);
-    modelSpan.textContent = session.currentModel.displayName || modelShort(session.currentModel);
-    modelSpan.title = session.currentModel.id + ' — click to switch model';
-    attachModelPickerHandler(modelSpan, sessionId);
-    titleSection.appendChild(modelSpan);
-  }
+  crumb.append(workspaceBtn, crumbSep, titleSpan, statusDot);
 
   // 2026-07-19 道雪 · 方案C：A−/A+ 低频缩放折叠进 ⋯ 溢出菜单（顶栏 8 控件 → 5 个）
   const overflowWrap = document.createElement('div');
@@ -1553,6 +1561,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     kbd.className = 'ho-key';
     kbd.textContent = key;
     b.append(lbl, kbd);
+    b._hoKey = kbd;
     b.addEventListener('click', (ev) => {
       ev.stopPropagation();
       overflowMenu.style.display = 'none';
@@ -1560,14 +1569,40 @@ function showTerminal(sessionId, opts = { focus: true }) {
     });
     return b;
   };
+  // 完成通知：开关逻辑仍然只有 completion-notification-toggle 一个作者，
+  // 菜单项只镜像它的 data-state 并转发点击；浮层节点本身由 CSS 隐藏。
+  // 复制一份 IPC 判据 = 两处迟早说出互相矛盾的开关状态。
+  const notificationToggleEl = document.getElementById('completion-notification-toggle');
+  const notifyItem = mkOverflowItem('完成通知', '', () => {
+    if (notificationToggleEl) notificationToggleEl.click();
+  });
+  notifyItem.className = 'ho-notify';
+  notifyItem.setAttribute('role', 'menuitemcheckbox');
+  const syncNotifyItem = () => {
+    const state = notificationToggleEl
+      ? String(notificationToggleEl.dataset.state || 'unconfigured')
+      : 'unavailable';
+    notifyItem.dataset.state = state;
+    notifyItem.setAttribute('aria-checked', String(state === 'enabled'));
+    notifyItem._hoKey.textContent = state === 'enabled'
+      ? '开'
+      : (state === 'disabled' ? '关' : (state === 'unavailable' ? '不可用' : '未配'));
+    notifyItem.title = (notificationToggleEl && notificationToggleEl.title) || '';
+  };
+  syncNotifyItem();
   overflowMenu.append(
     mkOverflowItem('放大界面', 'A+', () => applyZoom(currentZoom + 1)),
     mkOverflowItem('缩小界面', 'A−', () => applyZoom(currentZoom - 1)),
     mkOverflowItem('重置缩放', '1:1', () => applyZoom(0)),
+    notifyItem,
   );
   overflowBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    overflowMenu.style.display = overflowMenu.style.display === 'none' ? 'block' : 'none';
+    const opening = overflowMenu.style.display === 'none';
+    // 开菜单那一刻才读开关状态：通知配置随时可能被设置页改掉，
+    // 菜单常年挂在 DOM 上，不重读就会展示一个过期的「开」。
+    if (opening) syncNotifyItem();
+    overflowMenu.style.display = opening ? 'block' : 'none';
   });
   if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
   cached._overflowDocHandler = () => { overflowMenu.style.display = 'none'; };
@@ -1582,11 +1617,12 @@ function showTerminal(sessionId, opts = { focus: true }) {
   closeBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>';
   closeBtn.addEventListener('click', () => { void closeSessionAsSleep(sessionId); });
 
-  // Metrics (cwd + api time) live inline with the title now — single-row header.
-  const metricsRow = document.createElement('div');
-  metricsRow.className = 'terminal-metrics-row inline';
-  renderMetricsRow(metricsRow, session);
-  titleSection.appendChild(metricsRow);
+  // T2：实时量（ctx% · N tok · ⏱）从头部搬到终端卡右上角的 10px 覆盖层。
+  // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
+  // #msg-overlay 会整片盖住终端体 —— 挂进去等于卡片视图下永远看不见。
+  const metricsOverlay = document.createElement('div');
+  metricsOverlay.className = 'terminal-metrics';
+  renderMetricsRow(metricsOverlay, session);
 
   const headerActions = document.createElement('div');
   headerActions.className = 'terminal-header-actions';
@@ -1598,10 +1634,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   filesBtn.setAttribute('aria-pressed', String(!!(fileManagerPanel && fileManagerPanel.isOpenFor(session.cwd))));
   filesBtn.setAttribute('aria-label', '打开当前工作目录的文件管理');
   filesBtn.title = session.cwd ? `文件管理 · ${session.cwd}` : '当前会话没有工作目录';
-  filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg><span>文件</span>';
-  filesBtn.addEventListener('click', () => {
-    if (fileManagerPanel) void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel });
-  });
+  // 图标按钮：文字标签 T2 去掉（面包屑已经把「在哪」说清楚了），只留 28px 图标。
+  filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg>';
+  filesBtn.addEventListener('click', () => openSessionFilePanel(session));
 
   const memoryBtn = document.createElement('button');
   memoryBtn.className = 'btn-zoom btn-memory-toggle';
@@ -1612,15 +1647,19 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   headerActions.append(filesBtn, memoryBtn, overflowWrap, closeBtn);
 
-  titleRow.append(titleSection, headerActions);
-
-  header.append(titleRow);
+  header.append(crumb, headerActions);
 
   const termContainer = document.createElement('div');
   termContainer.className = 'terminal-container';
   termContainer.addEventListener('click', () => cached.terminal.focus());
 
-  mountTarget.append(header, termContainer);
+  mountTarget.append(header, metricsOverlay, termContainer);
+  // 视图切换从右上角浮层收进头部中央。节点仍然是 index.html 里那一个，
+  // preserveAndClearTerminalPanel 跨会话保住它，这里只改它挂在哪。
+  if (!embedded) {
+    const viewToggle = document.querySelector('.view-toggle');
+    if (viewToggle) header.insertBefore(viewToggle, headerActions);
+  }
   if (!embedded && fileManagerPanel) {
     void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel });
   }
@@ -1870,7 +1909,7 @@ function syncTurnPresentationToSession(sessionId, presentation, turn) {
     };
   }
   if (sessionId !== activeSessionId) return;
-  const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
   if (target) paintTerminalRuntimeStatus(target, session);
   if (adoptedLiveActivities) queueMicrotask(() => rerenderTurn(turn.id));
 }
@@ -4057,6 +4096,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   };
 }
 
+// T2：头部的状态药丸收成面包屑末尾的一个 6px 点。文案（工作中 / 在等你回答 /
+// 已断开）由 composer 的状态行负责念——那里正对着输入框，是用户真正在看的地方；
+// 头部只保留「这个会话现在活不活」这一位信息，颜色说完即可。
 function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
   if (!element || !session) return null;
   const runtime = deriveSessionRuntimeStatus(session, {
@@ -4064,39 +4106,14 @@ function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
     isRunning: isSessionCardWorking(session),
   });
 
-  let dot = element.querySelector('.terminal-status-dot');
-  let label = element.querySelector('.terminal-status-label');
-  let meta = element.querySelector('.terminal-status-meta');
-  let detail = element.querySelector('.terminal-status-detail');
-  if (!dot || !label || !meta || !detail) {
-    element.replaceChildren();
-    dot = document.createElement('span');
-    dot.className = 'terminal-status-dot';
-    dot.setAttribute('aria-hidden', 'true');
-    label = document.createElement('span');
-    label.className = 'terminal-status-label';
-    meta = document.createElement('span');
-    meta.className = 'terminal-status-meta';
-    meta.setAttribute('aria-hidden', 'true');
-    detail = document.createElement('span');
-    detail.className = 'terminal-status-detail';
-    detail.setAttribute('aria-hidden', 'true');
-    element.append(dot, label, meta, detail);
-  }
-
-  const nextClassName = `terminal-status ${runtime.state}`;
+  const nextClassName = `terminal-crumb-dot ${runtime.state}`;
   if (element.className !== nextClassName) element.className = nextClassName;
   if (element.dataset.runtimeState !== runtime.state) element.dataset.runtimeState = runtime.state;
   if (element.dataset.provider !== runtime.provider) element.dataset.provider = runtime.provider;
-  if (element.title !== runtime.title) element.title = runtime.title;
+  if (element.title !== runtime.visibleText) element.title = runtime.visibleText;
   if (element.getAttribute('aria-label') !== runtime.ariaLabel) {
     element.setAttribute('aria-label', runtime.ariaLabel);
   }
-  if (label.textContent !== runtime.label) label.textContent = runtime.label;
-  if (meta.textContent !== runtime.meta) meta.textContent = runtime.meta;
-  meta.hidden = !runtime.meta;
-  if (detail.textContent !== runtime.visibleDetail) detail.textContent = runtime.visibleDetail;
-  detail.hidden = !runtime.visibleDetail;
   return runtime;
 }
 
@@ -4112,10 +4129,11 @@ function composerBarForTicker() {
 }
 
 function syncTerminalRuntimeStatusTicker(session) {
-  const statusElement = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  const statusElement = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
   // composer 的状态行有「正在工作 · 38s」和「N 分钟前完成上一轮」两句会自己走的文案，
   // 所以只要输入栏在，秒表就得走 —— 不再只在卡片视图下跳。
-  const shouldTick = !!session && ((currentView === 'card' && !!statusElement) || !!composerBarForTicker());
+  // 面包屑的状态点 T2 起在两个视图里都挂在头部，所以它也不再按视图分叉。
+  const shouldTick = !!session && (!!statusElement || !!composerBarForTicker());
   if (!shouldTick) {
     stopTerminalRuntimeStatusTicker();
     return;
@@ -4127,8 +4145,8 @@ function syncTerminalRuntimeStatusTicker(session) {
       return;
     }
     const active = sessions.get(activeSessionId);
-    const target = currentView === 'card' && terminalPanelEl
-      ? terminalPanelEl.querySelector('.terminal-header .terminal-status')
+    const target = terminalPanelEl
+      ? terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot')
       : null;
     const bar = composerBarForTicker();
     if (!active || (!target && !bar)) {
@@ -4146,9 +4164,9 @@ function syncTerminalRuntimeStatusTicker(session) {
 function updateCardSessionStatus(session) {
   const element = document.getElementById('card-session-status');
   if (!element || !terminalPanelEl) return;
-  const summary = session ? buildSessionStatusSummary(session) : null;
+  const summary = session ? buildStageStatusSummary(session) : null;
   const visible = currentView === 'card' && !!summary
-    && !!(summary.compact || summary.contextText || summary.cwd);
+    && !!(summary.compact || summary.contextText);
   terminalPanelEl.classList.toggle('card-status-visible', visible);
   if (!visible) {
     element.replaceChildren();
@@ -4163,12 +4181,12 @@ function updateCardSessionStatus(session) {
   element.dataset.signature = signature;
   element.dataset.provider = summary.kind;
   element.replaceChildren();
+  // T2：模型名与工作目录从这条状态行撤掉 —— 模型名归 composer 底栏的 chip，
+  // 工作目录归头部面包屑。同一件事在三个地方各说一遍，就是这一版要治的病。
   const parts = [
-    ['model', summary.model],
     ['effort', summary.effort],
     ['speed', summary.speed],
     ['context', summary.contextText],
-    ['cwd', summary.cwd],
   ].filter(([, value]) => value);
   parts.forEach(([key, value], index) => {
     if (index > 0) {
@@ -4180,7 +4198,6 @@ function updateCardSessionStatus(session) {
     const part = document.createElement('span');
     part.className = `card-session-status-part card-session-status-${key}`;
     part.textContent = value;
-    if (key === 'cwd') part.title = value;
     element.appendChild(part);
   });
   element.setAttribute('aria-label', summary.ariaLabel || parts.map(([, value]) => value).join('，'));
@@ -4202,7 +4219,7 @@ function updateFloatingBarState() {
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
-  const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
   if (status) paintTerminalRuntimeStatus(status, s);
   syncTerminalRuntimeStatusTicker(s);
   updateCardSessionStatus(s);
@@ -5856,7 +5873,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
         const previousModelId = session.currentModel && session.currentModel.id;
         session.currentModel = payload.model;
         persistModel = previousModelId !== payload.model.id;
-        if (payload.sessionId === activeSessionId) updateActiveModelBadge();
+        if (payload.sessionId === activeSessionId) updateActiveModelChip();
       }
     }
     // Claude → Hub title sync: only overlay if user hasn't explicitly renamed in Hub.
@@ -5898,73 +5915,112 @@ function formatDuration(ms) {
   return `${h}h${m % 60 ? (m % 60) + 'm' : ''}`;
 }
 
-// Render the per-session metrics row (cwd · api time · lines diff). Called on
-// session switch + every status-event for the active session.
+// "128k" / "4.2k" / "860" — 覆盖层要在 10px 字号里放得下，所以 token 数走紧凑写法。
+function formatTokenCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n < 1000) return String(Math.round(n));
+  const k = n / 1000;
+  return `${k >= 10 ? Math.round(k) : k.toFixed(1)}k`;
+}
+
+// T2：终端卡右上角的实时量覆盖层 —— ctx% · N tok · ⏱ Ns。
+// 工作目录不在这里了（它是面包屑的第一段），模型名也不在（T1 已经进 composer）。
+// 这一层只放「随着这一轮跑动而变的数」，卡片视图与 PTY 视图都显示。
 function renderMetricsRow(el, session) {
   if (!el || !session) return;
-  el.innerHTML = '';
-  const frags = [];
-  if (session.cwd) {
-    const a = document.createElement('button');
-    a.type = 'button';
-    a.className = 'metric-cwd';
-    a.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/></svg>';
-    const label = document.createElement('span');
-    label.textContent = (session.workspaceLabel ? `${session.workspaceLabel} · ` : '') + session.cwd;
-    a.appendChild(label);
-    const openCwd = () => {
-      void openPathInHub(session.cwd, { cwd: session.cwd, requireExistsForRel: false });
-    };
-    const idleTitle = '在文件管理中打开 · ' + session.cwd;
-    // 归档提示挂在 header 这条路径上，与 AI 群聊 header 的 workspace chip 同一套
-    // 实现（WorkspaceController.attachArchiveHint）：有归档建议时显示琥珀色轻标记，
-    // 点击打开归档框；没有建议就直接在 Hub 文件管理中打开工作目录。
-    // 之前这套只在群聊侧存在，独立会话的建议进了没人读的 Map，用户永远看不到提示。
-    const attached = !!(window.WorkspaceController
-      && typeof window.WorkspaceController.attachArchiveHint === 'function'
-      && window.WorkspaceController.attachArchiveHint(a, 'session', session.id, {
-        hintTitle: '这个任务还在临时区 · 点击归档到正式项目目录',
-        idleTitle,
-        onFallback: openCwd,
-      }));
-    if (!attached) {
-      a.title = idleTitle;
-      a.addEventListener('click', openCwd);
-    }
-    frags.push(a);
+  const parts = [];
+  const titleParts = [];
+  const rawPct = Number(session.contextPct);
+  if (Number.isFinite(rawPct)) {
+    const pct = Math.max(0, Math.min(100, Math.round(rawPct)));
+    parts.push(`ctx ${pct}%`);
+    titleParts.push(`上下文已用 ${pct}%`);
+  }
+  const tokens = formatTokenCount(session.contextUsed);
+  if (tokens) {
+    parts.push(`${tokens} tok`);
+    titleParts.push(`约 ${Number(session.contextUsed).toLocaleString()} tokens`);
   }
   if (typeof session.apiMs === 'number' && session.apiMs > 0) {
-    const s = document.createElement('span');
-    s.textContent = '\u23F1 ' + formatDuration(session.apiMs);
-    s.title = 'Total API time (AI actually working)';
-    frags.push(s);
+    parts.push('⏱ ' + formatDuration(session.apiMs));
+    titleParts.push('AI 实际工作总时长');
   }
-  frags.forEach((f, i) => {
-    if (i > 0) {
-      const sep = document.createElement('span');
-      sep.className = 'metric-sep';
-      sep.textContent = '\u00b7';
-      el.appendChild(sep);
-    }
-    el.appendChild(f);
-  });
+  const text = parts.join(' · ');
+  if (el.textContent !== text) el.textContent = text;
+  const title = titleParts.join('，');
+  if (el.title !== title) el.title = title;
+  el.hidden = !text;
 }
 
 function updateActiveMetricsRow() {
   const session = activeSessionId ? sessions.get(activeSessionId) : null;
   if (!session) return;
-  const row = terminalPanelEl.querySelector('.terminal-metrics-row');
+  const row = terminalPanelEl.querySelector('.terminal-metrics');
   if (row) renderMetricsRow(row, session);
 }
 
-// 归档建议到达时立刻重画 header 上的 📁 路径，否则要等下一个 status-event
+// 面包屑的工作区段：标签 + 归档提示 + 点击打开文件面板（与「文件」按钮同一条逻辑）。
+// 归档提示原来挂在 header 的 📁 路径 chip 上，那条 chip T2 删了；不搬过来的话，
+// 独立会话的归档建议又会退回成「进了没人读的 Map」。
+const CRUMB_ARCHIVE_HINT_TITLE = '这个任务还在临时区 · 点击归档到正式项目目录';
+
+function openSessionFilePanel(session) {
+  if (!session || !fileManagerPanel) return;
+  void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel });
+}
+
+function crumbWorkspaceLabel(session) {
+  const explicit = String(session && session.workspaceLabel || '').trim();
+  if (explicit) return explicit;
+  const cwd = String(session && session.cwd || '').trim();
+  if (!cwd) return '未设目录';
+  const tail = cwd.split(/[\\/]/).filter(Boolean).pop();
+  return tail || cwd;
+}
+
+function paintCrumbWorkspace(btn, session) {
+  if (!btn || !session) return;
+  const label = crumbWorkspaceLabel(session);
+  if (btn.textContent !== label) btn.textContent = label;
+  btn.dataset.root = session.cwd || '';
+  btn.disabled = !session.cwd;
+  const idleTitle = session.cwd ? `文件管理 · ${session.cwd}` : '当前会话没有工作目录';
+  const controller = window.WorkspaceController;
+  const hasHint = !!(controller
+    && typeof controller.hasArchiveSuggestion === 'function'
+    && controller.hasArchiveSuggestion('session', session.id));
+  btn.classList.toggle('has-archive-hint', hasHint);
+  btn.title = hasHint ? CRUMB_ARCHIVE_HINT_TITLE : idleTitle;
+  // attachArchiveHint 每次调用都会再挂一个 click 监听，所以只在按钮新建时绑一次，
+  // 之后的重画只更新提示态。按钮随 showTerminal 重建，一个按钮只服务一个会话。
+  if (btn._crumbBound) return;
+  btn._crumbBound = true;
+  const attached = !!(controller
+    && typeof controller.attachArchiveHint === 'function'
+    && controller.attachArchiveHint(btn, 'session', session.id, {
+      hintTitle: CRUMB_ARCHIVE_HINT_TITLE,
+      idleTitle,
+      onFallback: () => openSessionFilePanel(session),
+    }));
+  if (!attached) btn.addEventListener('click', () => openSessionFilePanel(session));
+}
+
+function updateActiveCrumbWorkspace() {
+  const session = activeSessionId ? sessions.get(activeSessionId) : null;
+  if (!session || !terminalPanelEl) return;
+  const btn = terminalPanelEl.querySelector('.terminal-crumb .crumb-workspace');
+  if (btn) paintCrumbWorkspace(btn, session);
+}
+
+// 归档建议到达时立刻重画面包屑的工作区段，否则要等下一个 status-event
 // 才看得见提示态。和 AI 群聊那侧的监听对称（meeting-room.js 只处理 meeting scope）。
-// 只重画，不弹任何东西——是否归档由用户点 chip 决定。
+// 只重画，不弹任何东西——是否归档由用户点它决定。
 window.addEventListener('workspace-archive-suggestion', (event) => {
   const detail = event && event.detail;
   if (!detail || detail.scope !== 'session') return;
   if (!activeSessionId || detail.id !== activeSessionId) return;
-  updateActiveMetricsRow();
+  updateActiveCrumbWorkspace();
 });
 
 function _latestAssistantCardForSession(sessionId) {
@@ -7377,7 +7433,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     const activeTitle = terminalPanelEl.querySelector('.terminal-title');
     if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
     updateActiveMetricsRow();
-    if (persistModel) updateActiveModelBadge();
+    if (persistModel) updateActiveModelChip();
     completionNotificationToggle.refreshTarget();
   }
   if (persistRuntimeContext || persistModel) schedulePersist();

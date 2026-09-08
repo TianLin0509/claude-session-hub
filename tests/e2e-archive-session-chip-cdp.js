@@ -1,7 +1,7 @@
 'use strict';
 // P1-2 / P1-3 真实 E2E（隔离 Hub + CDP）。
 //
-// P1-2：独立会话 header 上的 📁 路径（.metric-cwd）在有归档建议时要点亮提示态，
+// P1-2：独立会话头部面包屑的工作区段（.crumb-workspace，T2 之前是 .metric-cwd）在有归档建议时要点亮提示态，
 //       点击它才打开归档框 —— 以前这套只在 AI 群聊侧存在，独立会话的建议进了
 //       没人读的 Map，用户永远看不到提示。
 // P1-3：归档过程中的降级（codex rollout 搬不动等）过去只 console.warn，桌面图标
@@ -143,12 +143,12 @@ async function main() {
     result.session = { id: session.id, cwd: session.cwd };
 
     await waitFor('header cwd chip', () => client.eval(
-      `!!document.querySelector('.terminal-metrics-row .metric-cwd')`));
+      `!!document.querySelector('.terminal-crumb .crumb-workspace')`));
     await _waitMs(500);
 
     // --- 归档建议到达之前：chip 是普通态 ---
     result.beforeHint = await client.eval(`(() => {
-      const chip = document.querySelector('.terminal-metrics-row .metric-cwd');
+      const chip = document.querySelector('.terminal-crumb .crumb-workspace');
       const modal = document.querySelector('#workspace-archive-modal');
       return {
         text: chip.textContent,
@@ -165,7 +165,7 @@ async function main() {
     await client.eval(`window.WorkspaceController.maybePromptSessionArchive(${JSON.stringify(session.id)})`);
 
     result.hint = await waitFor('archive hint on session header', () => client.eval(`(() => {
-      const chip = document.querySelector('.terminal-metrics-row .metric-cwd');
+      const chip = document.querySelector('.terminal-crumb .crumb-workspace');
       if (!chip || !chip.classList.contains('has-archive-hint')) return null;
       const modal = document.querySelector('#workspace-archive-modal');
       const style = getComputedStyle(chip);
@@ -184,14 +184,14 @@ async function main() {
     await screenshot(client, SHOTS.hint);
 
     // --- 点击 header 上的 📁 路径 → 归档框 ---
-    await clickPoint(client, await pointFor(client, '.terminal-metrics-row .metric-cwd'));
+    await clickPoint(client, await pointFor(client, '.terminal-crumb .crumb-workspace'));
     result.modal = await waitFor('archive modal opened from session chip', () => client.eval(`(() => {
       const modal = document.querySelector('#workspace-archive-modal');
       if (!modal || modal.style.display === 'none') return null;
       return {
         source: modal.querySelector('#workspace-archive-source').title,
         categories: modal.querySelectorAll('.workspace-archive-categories button').length,
-        chipHintCleared: !document.querySelector('.terminal-metrics-row .metric-cwd').classList.contains('has-archive-hint'),
+        chipHintCleared: !document.querySelector('.terminal-crumb .crumb-workspace').classList.contains('has-archive-hint'),
       };
     })()`), 15000);
     assert.equal(result.modal.source, session.cwd, '归档框指的必须是这个会话的临时目录');
