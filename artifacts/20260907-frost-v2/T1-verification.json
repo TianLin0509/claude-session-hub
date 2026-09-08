@@ -5,6 +5,7 @@
     "ready": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-ready.png",
     "effortSwitched": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-effort-switched.png",
     "waiting": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-waiting.png",
+    "deadStreamLoss": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-dead-streamloss.png",
     "dead": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-dead.png"
   },
   "synthetic": {
@@ -51,7 +52,7 @@
     "dead": {
       "present": true,
       "state": "dead",
-      "text": "会话已断开（PTY 退出码 1）· 输入会在重连后发送",
+      "text": "会话已断开（PTY 退出码 1）· 重连后可继续",
       "detail": "",
       "action": "重连",
       "quickReplies": [],
@@ -87,16 +88,16 @@
         "mode": "plain-shell",
         "kind": "powershell"
       },
-      "ms": 18,
+      "ms": 15,
       "composer": {
         "present": true,
-        "state": "ready",
-        "text": "已就绪",
-        "detail": "",
+        "state": "working",
+        "text": "PowerShell 正在工作 · 0s",
+        "detail": "· powershell PTY output burst",
         "action": null,
         "quickReplies": [],
-        "stopVisible": false,
-        "sendHidden": false,
+        "stopVisible": true,
+        "sendHidden": true,
         "ctxLevel": null,
         "ctxPct": null
       }
@@ -110,14 +111,14 @@
         "enterAttempts": 1,
         "acknowledgementSource": "task_started"
       },
-      "ms": 1152
+      "ms": 1154
     }
   },
   "real": {
     "ptyKill": {
-      "hubPid": 30176,
+      "hubPid": 47000,
       "candidates": [
-        12892
+        42844
       ],
       "afterKill": {
         "sessionStillKnown": false,
@@ -127,7 +128,7 @@
         "emptyStateVisible": true
       }
     },
-    "codexSessionId": "6eef4665-c291-451d-a621-d8a6f1e9d956",
+    "codexSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd",
     "working": {
       "present": true,
       "state": "working",
@@ -186,7 +187,7 @@
       "before": "gpt-6-astra",
       "target": "gpt-5.6-sol",
       "after": "gpt-5.6-sol",
-      "chipLabel": "GPT-5.6-Sol",
+      "chipLabel": "gpt-5.6-sol",
       "effort": "max"
     },
     "waiting": {
@@ -201,10 +202,10 @@
       "ctxLevel": "ok",
       "ctxPct": "0%"
     },
-    "dead": {
+    "streamLossDead": {
       "present": true,
       "state": "dead",
-      "text": "会话已断开（API Error: Connection error.）· 输入会在重连后发送",
+      "text": "会话已断开（API Error: Connection error.）· 重连后可继续",
       "detail": "",
       "action": "重连",
       "quickReplies": [],
@@ -212,6 +213,49 @@
       "sendHidden": false,
       "ctxLevel": "ok",
       "ctxPct": "0%"
+    },
+    "codexPtyKill": {
+      "hubPid": 47000,
+      "codexPids": [
+        32308
+      ],
+      "killTarget": 31640,
+      "names": [
+        "electron.exe",
+        "conhost.exe",
+        "powershell.exe",
+        "node.exe",
+        "codex.exe",
+        "python.exe"
+      ],
+      "afterKill": {
+        "sessionStillKnown": true,
+        "status": "dormant",
+        "processLost": {
+          "reason": "CLI 进程退出码 1",
+          "at": 1788828856287
+        },
+        "activeSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd"
+      }
+    },
+    "dead": {
+      "present": true,
+      "state": "dead",
+      "text": "会话已断开（CLI 进程退出码 1）· 重连后可继续",
+      "detail": "",
+      "action": "重连",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "reconnect": {
+      "ok": true,
+      "revivedSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd",
+      "status": "idle",
+      "processLostCleared": true,
+      "activeSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd"
     }
   }
 }

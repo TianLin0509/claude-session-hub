@@ -4,7 +4,12 @@ const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = requi
 const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
-const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
+const {
+  buildSessionResumeMeta,
+  sessionModelId,
+  supportsForkSession,
+  supportsRecoverableSession,
+} = require('../core/session-capabilities.js');
 const {
   buildComposerRailModel,
   buildComposerStatusModel,
@@ -3438,16 +3443,29 @@ function scrollToLatestTurn(terminal) {
 async function reconnectSession(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  // 绝不弹 alert：模态弹窗会把渲染进程整个冻住，连后续的重试都点不了。
+  // 失败信息直接写回状态行，用户就地能看到、也能再点一次。
+  const failed = (message) => {
+    const base = (session._processLost && session._processLost.reason) || 'CLI 进程已退出';
+    session._processLost = { reason: `${base}；重连失败：${message}`, at: Date.now() };
+    if (typeof updateFloatingBarState === 'function') updateFloatingBarState();
+    scheduleSessionListRender();
+  };
   try {
     if (session.status === 'dormant') {
       const resumed = await resumeDormantSession(sessionId, { forceScrollBottom: true });
-      if (!resumed) alert('会话唤醒失败，请稍后重试。');
+      if (!resumed) { failed('会话唤醒没有返回结果'); return; }
+      // 唤醒成功：把“进程丢了”这笔销掉，否则它会随着会话对象一直带着，
+      // 下一次真休眠时输入框会拿一条陈年的退出码当原因念出来。
+      const revived = sessions.get(sessionId);
+      if (revived) delete revived._processLost;
+      if (typeof updateFloatingBarState === 'function') updateFloatingBarState();
       return;
     }
     const result = await ipcRenderer.invoke('restart-session', sessionId);
-    if (result && result.ok === false) alert(result.message || '会话重启失败，请稍后重试。');
+    if (result && result.ok === false) failed(result.message || '会话重启失败');
   } catch (error) {
-    alert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
+    failed(error && error.message ? error.message : String(error));
   }
 }
 
@@ -7179,9 +7197,65 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   window.dispatchEvent(new CustomEvent('hub-session-suspended', { detail: { sessionId, session: local } }));
 });
 
-ipcRenderer.on('session-closed', (_e, { sessionId }) => {
-  dropPreviewContext(`session:${sessionId}`);
+// CLI 进程自己死了（不是用户删 / 重启 / 工作区迁移）。
+//
+// 2026-09-07 评审实测：结束 PTY 后会话和输入框一起消失，界面凭空回到空状态，
+// 用户既看不到“它断了”，也没有任何重连入口。这里不删记录，而是把它落成
+// “可唤醒”：
+//   - 为什么是 dormant 而不是 error：重启那条接口要求主进程那边还留着会话记录，
+//     而 PTY 退出时它已经被删了——只有休眠唤醒那条路只依赖渲染层自己保存的元数据，
+//     能真的把会话拉回来。标成 error 会得到一个按了没反应的“重连”按钮。
+//   - _processLost 单独记一笔“进程是怎么没的”，好让输入框说“CLI 进程退出码 1”
+//     而不是笼统的“会话已休眠”。
+// 不可恢复的 CLI（如宙主 shell）没有可唤醒的东西，仍走原来的删除路径。
+function describePtyExit(exitInfo) {
+  const signal = exitInfo && exitInfo.signal ? String(exitInfo.signal).trim() : '';
+  if (signal) return `CLI 进程被信号 ${signal} 结束`;
+  const code = Number(exitInfo && exitInfo.exitCode);
+  if (Number.isFinite(code)) return `CLI 进程退出码 ${code}`;
+  return 'CLI 进程已退出';
+}
+
+function markSessionProcessLost(sessionId, exitInfo) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  const reason = describePtyExit(exitInfo);
+  const now = Date.now();
+  session.status = 'dormant';
+  session._processLost = { reason, at: now };
+  session.lastError = reason;
+  session._agentWorking = null;
+  session._runSource = null;
+  session.runStartedAt = null;
+  session.cardWorkingSince = null;
+  session.gcWorking = false;
+  session._resumePending = false;
+  clearSessionAttention(session);
+  observeSessionRuntime(session, {
+    state: RUNTIME_DORMANT,
+    source: 'pty-exit-unrequested',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: now,
+    evidence: reason,
+  }, { mirrorLegacy: false });
+  clearRuntimeTruthExpiryTimer(sessionId);
+  clearTerminalActivitySession(sessionId);
+  // 草稿存着（重连后还在输入框里），终端缓存也存着（最后一屏就是现场）。
+  if (activeSessionId === sessionId && typeof updateFloatingBarState === 'function') {
+    updateFloatingBarState();
+  }
+  scheduleSessionListRender();
+  schedulePersist();
+  return true;
+}
+
+ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
   const closing = sessions.get(sessionId);
+  if (!requested && closing && closing.status !== 'dormant' && supportsRecoverableSession(closing)) {
+    markSessionProcessLost(sessionId, exitInfo);
+    return;
+  }
+  dropPreviewContext(`session:${sessionId}`);
   const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
   clearCardLiveRefreshState(sessionId);

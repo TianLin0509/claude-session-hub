@@ -295,8 +295,12 @@ function buildComposerStatusModel(session, options = {}) {
 
   if (state === COMPOSER_STATUS_DEAD) {
     const issue = session && session.connectionIssue;
+    const lost = session && session._processLost;
     const reason = String(
-      (disconnected && issue && (issue.reason || issue.detail))
+      // CLI 进程真的没了是最具体的一条事实，优先念它；否则会被
+      // 笼统的“会话已休眠”盖掉，用户分不清是自己收的还是崩的。
+      (lost && lost.reason)
+      || (disconnected && issue && (issue.reason || issue.detail))
       // 休眠不是故障，它的 detail 是一句操作提示（「点击会话可恢复原生 CLI」），
       // 拿来当断开原因念出来是答非所问。
       || (runtime.state === RUNTIME_DORMANT ? '会话已休眠' : '')
@@ -307,8 +311,8 @@ function buildComposerStatusModel(session, options = {}) {
     return {
       state,
       text: reason
-        ? `会话已断开（${reason}）· 输入会在重连后发送`
-        : '会话已断开 · 输入会在重连后发送',
+        ? `会话已断开（${reason}）· 重连后可继续`
+        : '会话已断开 · 重连后可继续',
       detail: '',
       quickReplies: [],
       action: { kind: 'reconnect', label: '重连' },

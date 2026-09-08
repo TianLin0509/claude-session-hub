@@ -129,10 +129,11 @@ async function descendantPids(rootPid) {
   const queue = [Number(rootPid)];
   const seen = new Set(queue);
   while (queue.length) {
-    for (const child of byParent.get(queue.shift()) || []) {
+    const current = queue.shift();
+    for (const child of byParent.get(current) || []) {
       if (seen.has(child.pid)) continue;
       seen.add(child.pid);
-      out.push(child);
+      out.push({ ...child, parent: current });
       queue.push(child.pid);
     }
   }
@@ -365,7 +366,7 @@ async function descendantPids(rootPid) {
           const item = menu.querySelector('.model-picker-item[data-effort="' + target + '"]');
           if (!item) { document.body.click(); return { before, beforeLabel, offered, target, error: 'target effort not offered' }; }
           item.click();
-          for (let i = 0; i < 200; i += 1) {
+          for (let i = 0; i < 100; i += 1) {
             await new Promise(r => setTimeout(r, 250));
             const now = String(sessions.get(sid).effort || '');
             if (now && now !== before) {
@@ -375,7 +376,7 @@ async function descendantPids(rootPid) {
             }
           }
           document.body.click();
-          return { before, beforeLabel, offered, target, error: 'effort switch not confirmed in 50s' };
+          return { before, beforeLabel, offered, target, error: 'effort switch not confirmed in 25s' };
         })()`);
       }
 
@@ -408,7 +409,7 @@ async function descendantPids(rootPid) {
         const item = document.querySelector('.model-picker-menu .model-picker-item[data-model-id="' + target + '"]');
         if (!item) return { before, target, error: 'target model not listed' };
         item.click();
-        for (let i = 0; i < 160; i += 1) {
+        for (let i = 0; i < 100; i += 1) {
           await new Promise(r => setTimeout(r, 250));
           const now = (sessions.get(sid).currentModel || {}).id || null;
           if (now && now !== before) {
@@ -418,7 +419,7 @@ async function descendantPids(rootPid) {
           }
         }
         document.body.click();
-        return { before, target, error: 'model switch not confirmed in 40s' };
+        return { before, target, error: 'model switch not confirmed in 25s' };
       })()`);
       assert.ok(report.real.modelSwitch.after, `模型切换没成功：${JSON.stringify(report.real.modelSwitch)}`);
 
@@ -447,7 +448,7 @@ async function descendantPids(rootPid) {
           })()`);
           if (state === 'dead') {
             const probe = await composerProbe(client);
-            const shot = await shootComposer(client, 'T1-composer-dead.png');
+            const shot = await shootComposer(client, 'T1-composer-dead-streamloss.png');
             return { probe, shot };
           }
           await _waitMs(120);
@@ -466,12 +467,92 @@ async function descendantPids(rootPid) {
         if (caught) break;
         await waitTurnDone(sid);
       }
-      report.real.dead = caught ? caught.probe : { caught: false };
-      if (caught) report.screenshots.dead = caught.shot;
+      report.real.streamLossDead = caught ? caught.probe : { caught: false };
+      if (caught) report.screenshots.deadStreamLoss = caught.shot;
       saveReport(report);
       assert.ok(caught, '断流没能把 composer 推进断开态（已试两次）');
+      assert.equal(report.real.streamLossDead.state, 'dead');
+      assert.equal(report.real.streamLossDead.action, '重连');
+
+      // ── 断开（任务卡里写的那一条）：真结束这个会话的 PTY 进程 ──
+      // 只在本 Hub 的进程子树里定位，绝不按名字全盘杀。
+      await waitTurnDone(sid);
+      // Hub 是用一个 shell 开 PTY、再在里面跑 codex 的。只杀 codex.exe 的话
+      // 宿主 shell 会回到提示符、PTY 不会退出 —— 那就没复现到要测的事。
+      // 所以从 codex.exe 往上找到它的 shell 宿主，连树结束。
+      const codexDescendants = await descendantPids(hub.pid);
+      const byPid = new Map(codexDescendants.map(p => [p.pid, p]));
+      const codexProc = codexDescendants.filter(p => /^codex(\.exe)?$/i.test(p.name));
+      let killTarget = null;
+      if (codexProc.length === 1) {
+        let walk = byPid.get(codexProc[0].parent);
+        while (walk && !/^(powershell|pwsh)\.exe$/i.test(walk.name)) walk = byPid.get(walk.parent);
+        killTarget = walk ? walk.pid : codexProc[0].pid;
+      }
+      report.real.codexPtyKill = {
+        hubPid: hub.pid,
+        codexPids: codexProc.map(p => p.pid),
+        killTarget,
+        names: [...new Set(codexDescendants.map(p => p.name))],
+      };
+      assert.ok(killTarget, `定位不到这个会话的 PTY 宿主，放弃以免误杀：${JSON.stringify(report.real.codexPtyKill)}`);
+      await execFileAsync('taskkill.exe', ['/PID', String(killTarget), '/T', '/F'], { windowsHide: true });
+      await _waitMs(5000);
+      report.real.dead = await composerProbe(client);
+      report.real.codexPtyKill.afterKill = await client.eval(`(() => {
+        const s = sessions.get(${JSON.stringify(sid)});
+        return {
+          sessionStillKnown: !!s,
+          status: s ? s.status : null,
+          processLost: s ? s._processLost : null,
+          activeSessionId,
+        };
+      })()`);
+      report.screenshots.dead = await shootComposer(client, 'T1-composer-dead.png');
+      saveReport(report);
+      assert.equal(report.real.codexPtyKill.afterKill.sessionStillKnown, true,
+        '进程崩了不应该把会话记录一起抹掉');
+      assert.equal(report.real.dead.present, true, 'PTY 退出后输入框必须还在');
       assert.equal(report.real.dead.state, 'dead');
       assert.equal(report.real.dead.action, '重连');
+      assert.match(report.real.dead.text, /CLI 进程/, '断开原因要说清是进程没了，不能笼统地说休眠');
+
+      // 重连必须真的能把会话拉回来，不能是个按了没反应的按钮。
+      // CDP 单次求值上限 30s，恢复一个 Codex 会话比这久，所以在测试进程侧轮询，
+      // 不把等待塞进页面里的一次 eval。
+      await client.eval(`(() => {
+        const action = document.querySelector('.composer-status-action');
+        if (!action || action.hidden) return false;
+        action.click();
+        return true;
+      })()`);
+      report.real.reconnect = { clicked: true };
+      const reconnectDeadline = Date.now() + 150000;
+      while (Date.now() < reconnectDeadline) {
+        await _waitMs(1000);
+        const revived = await client.eval(`(() => {
+          const live = [...sessions.values()].find(s => String(s.kind || '').indexOf('codex') === 0
+            && s.status !== 'dormant' && terminalCache.get(s.id));
+          if (!live) {
+            const dead = sessions.get(${JSON.stringify(sid)});
+            window.__reconnectDiag = dead
+              ? { status: dead.status, resumePending: dead._resumePending, processLost: dead._processLost }
+              : { missing: true };
+            return null;
+          }
+          return { ok: true, revivedSessionId: live.id, status: live.status,
+            processLostCleared: !live._processLost, activeSessionId };
+        })()`);
+        if (revived) { report.real.reconnect = revived; break; }
+      }
+      saveReport(report);
+      if (!report.real.reconnect.ok) {
+        report.real.reconnectDiag = await client.eval('window.__reconnectDiag || null');
+        saveReport(report);
+      }
+      assert.ok(report.real.reconnect.ok, `重连没能把会话拉回来：${JSON.stringify(report.real.reconnect)} diag=${JSON.stringify(report.real.reconnectDiag)}`);
+      assert.equal(report.real.reconnect.processLostCleared, true,
+        '唤醒成功后“进程丢了”这笔必须销掉');
     }
 
     saveReport(report);

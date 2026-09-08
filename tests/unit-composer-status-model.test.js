@@ -138,12 +138,29 @@ test('等你回答：waiting=false 的检测结果不算数', () => {
 test('断开：休眠与运行异常都归到同一档，并给出重连动作', () => {
   const dormant = model({ kind: 'claude', status: 'dormant' });
   assert.equal(dormant.state, COMPOSER_STATUS_DEAD);
-  assert.equal(dormant.text, '会话已断开（会话已休眠）· 输入会在重连后发送');
+  assert.equal(dormant.text, '会话已断开（会话已休眠）· 重连后可继续');
   assert.deepEqual(dormant.action, { kind: 'reconnect', label: '重连' });
 
   const failed = model({ kind: 'gemini', status: 'error', lastError: 'PTY 退出码 1' });
   assert.equal(failed.state, COMPOSER_STATUS_DEAD);
-  assert.equal(failed.text, '会话已断开（PTY 退出码 1）· 输入会在重连后发送');
+  assert.equal(failed.text, '会话已断开（PTY 退出码 1）· 重连后可继续');
+});
+
+// 2026-09-07 评审实测：真结束 PTY 后会话和输入框一起消失。现在会话会被留下来
+// 并落成可唤醒，进程怎么没的单独记一笔 —— 不能被笼统的“会话已休眠”盖掉。
+test('断开：进程自己死了要报出退出码，不能冒充休眠', () => {
+  const lost = model({
+    kind: 'codex',
+    status: 'dormant',
+    _processLost: { reason: 'CLI 进程退出码 1', at: NOW },
+  });
+  assert.equal(lost.state, COMPOSER_STATUS_DEAD);
+  assert.equal(lost.text, '会话已断开（CLI 进程退出码 1）· 重连后可继续');
+  assert.deepEqual(lost.action, { kind: 'reconnect', label: '重连' });
+
+  // 没有进程丢失标记时仍然是普通休眠的说法
+  const dormant = model({ kind: 'codex', status: 'dormant' });
+  assert.equal(dormant.text, '会话已断开（会话已休眠）· 重连后可继续');
 });
 
 test('断开：断流也算断开，原因用 connectionIssue 的说法', () => {
