@@ -41,9 +41,16 @@ function mk(opts = {}) {
     ...(opts.workflow || {}),
   };
   const turnCalls = [];
+  const blockedRoot = () => {
+    const blocker = path.join(hubDir, 'blocked-root');
+    if (!fs.existsSync(blocker)) fs.writeFileSync(blocker, 'not a directory', 'utf8');
+    return blocker;
+  };
   const deps = {
     stepTextWait: { verdictQuietMs: 10, verdictCapMs: 60, builderQuietMs: 10, builderCapMs: 60, docPollMs: 20, docCapMs: 200 },
-    getHubDataDir: () => hubDir,
+    // 阻断3 用：把「Hub 数据目录」指到一个**文件**上，mkdir 必然失败
+    //（等价于磁盘满 / 无权限 / 路径被占用这一类环境故障）
+    getHubDataDir: () => (opts.failTaskDir ? blockedRoot() : hubDir),
     getDispatcher: () => ({
       dispatchGroupChatTurn: async (_mid, args) => {
         turnCalls.push(args);
@@ -241,6 +248,144 @@ function writeDoc(docsDir, pos, body) {
     assert.deepStrictEqual(h.engine.validateLoop('mtg'), { ok: false, reason: 'dev_kickoff_phase' });
     assert.deepStrictEqual(h.engine.validateResume('mtg'), { ok: false, reason: 'dev_kickoff_phase' });
     assert.strictEqual(await h.engine.runLoop('mtg', '绕过开题', null, {}), null);
+  });
+
+  // ── 2026-09-08 合并位复现的四项阻断（本轮修复对象）────────────────────────
+
+  const CHAT_FAIL = ['RESULT: FAIL', 'BLOCKERS: 我改主意了', 'VERIFIED: 跑过', 'NEXT: 无'].join('\n');
+  const CHAT_PASS = ['RESULT: PASS', 'BLOCKERS: 无', 'VERIFIED: 跑了单测', 'NEXT: 无'].join('\n');
+
+  await t('阻断1 开题期间点了停止 → 迟到的完成文件不触发实现派工', async () => {
+    let engineRef = null;
+    const h = mk({
+      devPhase: 'discuss',
+      onDispatch: (args, docsDir) => {
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') {
+          // 用户在它写完的同一瞬间点了停止：完成文件和停止意图同时到达
+          engineRef.stopLoop('mtg', { interrupt: false });
+          writeDoc(docsDir, 0, KICKOFF_DOC);
+        }
+      },
+    });
+    engineRef = h.engine;
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.notStrictEqual(outcome.autoStart, true, '停止之后不许自动开工');
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff', '停在开题阶段，不翻到实现');
+    assert.strictEqual(h.turnCalls.length, 1, '只有开题那一次派发，不许有第二次');
+  });
+
+  await t('阻断1 停止意图落盘：Hub 重启后开机重扫也不自动开工', async () => {
+    const h = mk({
+      devPhase: 'kickoff',
+      workflow: { kickoff: { status: 'awaiting_report', authorMemberId: 'm1' }, stopRequested: { at: Date.now(), reason: 'user_stop' } },
+    });
+    writeDoc(h.docsDir, 0, KICKOFF_DOC);
+    h.engine.resumePending();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.strictEqual(h.turnCalls.length, 0, '停止之后开机重扫不许派任何人');
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff');
+  });
+
+  await t('阻断1 循环运行中点停止 → 迟到的协作手册不推进到审查', async () => {
+    let engineRef = null;
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') {
+          engineRef.stopLoop('mtg', { interrupt: false });
+          writeDoc(docsDir, 1, BUILD_DOC);
+        }
+      },
+    });
+    engineRef = h.engine;
+    const state = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(state.status, 'stopped_user');
+    assert.strictEqual(h.turnCalls.length, 1, '审查不许被派出去');
+  });
+
+  await t('阻断2 裁决矛盾暂停后点「继续」→ 仍停在待核对，不会变成完成', async () => {
+    const h = mk({
+      chatText: (args) => (String(args.targetMemberIds[0]) === 'm2' ? CHAT_FAIL : '干完了'),
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        else writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    const first = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(first.lastError.reason, 'verdict_conflict');
+    // 用户点「继续」：文档一个字没改，也没有重新审查 —— 矛盾必须还在
+    const resumed = await h.engine.runLoop('mtg', null, { ...first, status: 'running', stepAttempt: 0, lastError: null }, {});
+    assert.strictEqual(resumed.status, 'paused', '继续不能把没解决的矛盾变成完成');
+    assert.strictEqual(resumed.lastError.reason, 'verdict_conflict');
+  });
+
+  await t('阻断2 合并位真的重写了手册 → 按「已接收的被改动」处理，同样不静默放行', async () => {
+    let reviewerDispatches = 0;
+    const h = mk({
+      chatText: (args) => (String(args.targetMemberIds[0]) === 'm2' ? CHAT_FAIL : '干完了'),
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        // 只在第一次审查时交手册；后续再被叫起来它不会重写（模拟「我已经交过了」）
+        else if (++reviewerDispatches === 1) writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    const first = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(first.lastError.reason, 'verdict_conflict');
+    writeDoc(h.docsDir, 2, REVIEW_FAIL);
+    const resumed = await h.engine.runLoop('mtg', null, { ...first, status: 'running', stepAttempt: 0, lastError: null }, {});
+    assert.strictEqual(resumed.status, 'paused');
+    assert.strictEqual(resumed.lastError.reason, 'handoff_changed_after_accept',
+      '换了内容就是「已接收的交付被改动」，仍然是待核对，不能自己变成新裁决');
+  });
+
+  await t('停止不是砖头：用户点「继续」清掉意图后，任务能接着往下走', async () => {
+    let engineRef = null;
+    let stopped = false;
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') {
+          if (!stopped) { stopped = true; engineRef.stopLoop('mtg', { interrupt: false }); }
+          writeDoc(docsDir, 1, BUILD_DOC);
+        } else writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    engineRef = h.engine;
+    const first = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(first.status, 'stopped_user');
+    assert.ok(h.engine.stopIntentOf('mtg'), '停止意图应当留在盘上');
+
+    // 用户点「继续」：IPC 层会先调 clearStopIntent
+    h.engine.clearStopIntent('mtg');
+    assert.strictEqual(h.engine.stopIntentOf('mtg'), null);
+    const resumed = await h.engine.runLoop('mtg', null, { ...first, status: 'running', stepAttempt: 0, lastError: null }, {});
+    assert.strictEqual(resumed.status, 'done', '清掉停止意图之后必须能真的接着跑完');
+    assert.strictEqual(h.turnCalls.length, 2, '工作位那一步已经交付过，不重做；只补派审查');
+  });
+
+  await t('停止保留现场：已接收的交付凭据和阶段文档都还在', async () => {
+    let engineRef = null;
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') {
+          engineRef.stopLoop('mtg', { interrupt: false });
+          writeDoc(docsDir, 1, BUILD_DOC);
+        }
+      },
+    });
+    engineRef = h.engine;
+    await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.ok(fs.existsSync(path.join(h.docsDir, '已完成-阶段1协作手册.md')), '文档不许被清掉');
+    assert.ok(DOCS.acceptedAt(h.getWorkflow().taskDocs, 1), '接收凭据也要留着：停止不等于把交付作废');
+  });
+
+  await t('阻断3 任务目录不可用 → 暂停并说明，不退回聊天判定', async () => {
+    const h = mk({
+      failTaskDir: true,
+      chatText: (args) => (String(args.targetMemberIds[0]) === 'm1' ? 'PROGRESS: 做完了' : CHAT_PASS),
+    });
+    const state = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(state.status, 'paused', '开了 MD 交接就不许静默降级成聊天判定');
+    assert.strictEqual(state.lastError.reason, 'task_dir_unavailable');
+    assert.strictEqual(h.turnCalls.length, 0, '连派工都不该开始');
   });
 
   console.log(`\n通过 ${pass} / 失败 ${fail}`);

@@ -182,7 +182,7 @@ function checkDelivery(kind, content) {
 // 后者由引擎结合「用户有没有喊停」「现场有没有人在跑」再判。
 
 function emptyLedger(dir) {
-  return { schemaVersion: 1, dir: String(dir || ''), accepted: {}, lastCheck: null };
+  return { schemaVersion: 1, dir: String(dir || ''), accepted: {}, conflicts: {}, lastCheck: null };
 }
 
 function normalizeLedger(raw, dir) {
@@ -192,6 +192,7 @@ function normalizeLedger(raw, dir) {
     schemaVersion: 1,
     dir: String(raw.dir || dir || ''),
     accepted: raw.accepted && typeof raw.accepted === 'object' ? { ...raw.accepted } : {},
+    conflicts: raw.conflicts && typeof raw.conflicts === 'object' ? { ...raw.conflicts } : {},
     lastCheck: raw.lastCheck && typeof raw.lastCheck === 'object' ? raw.lastCheck : null,
   };
 }
@@ -246,6 +247,29 @@ function withAccepted(ledger, pos, record) {
   return next;
 }
 
+// ── 未解决的待核对 ──────────────────────────────────────────────────────────
+//
+// 2026-09-08 合并位复现的阻断：手册判 PASS、群聊里说 FAIL，引擎停在待核对；
+// 用户点一下「继续」，因为这一步已经接收过、不再重新派发，聊天文本变成了占位符，
+// 矛盾就这么凭空消失，任务直接变成完成 —— 期间没人改过文档，也没人重新审查过。
+//
+// 所以矛盾必须**连同当时那份手册的指纹**一起记下来：指纹没变就代表这份交付一个字没动，
+// 矛盾自然还在，再点多少次继续都还是待核对。指纹变了则落到「已接收的交付被改动」那条路，
+// 同样是待核对 —— 两条路都不会自己变成新裁决。
+
+function withConflict(ledger, pos, record) {
+  const next = normalizeLedger(ledger, ledger && ledger.dir);
+  next.conflicts[String(pos)] = record;
+  return next;
+}
+
+/** 这一位置上是否还挂着一条针对**当前**这份交付的未解决矛盾。 */
+function unresolvedConflictAt(ledger, pos, fingerprint) {
+  const record = ((ledger && ledger.conflicts) || {})[String(pos)];
+  if (!record || !record.fingerprint) return null;
+  return record.fingerprint === fingerprint ? record : null;
+}
+
 /** 每一步 prompt 末尾那段「你的文档在哪、写完怎么交」。路径一律给绝对路径。 */
 function buildDocBlock(opts = {}) {
   const dir = String(opts.dir || '');
@@ -288,5 +312,6 @@ module.exports = {
   docSpecForPos, posForLoopStep,
   readDelivery, fingerprintOf, parseReviewVerdict, checkDelivery,
   emptyLedger, normalizeLedger, acceptedAt, reconcileDelivery, withAccepted,
+  withConflict, unresolvedConflictAt,
   buildDocBlock,
 };

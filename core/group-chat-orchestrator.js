@@ -119,9 +119,10 @@ function normalizeDispatchMeta(dispatch) {
 const ORIGIN_USER = 'user';
 const ORIGIN_HUB = 'hub';
 const ORIGIN_SYSTEM = 'system';
-// 单条补充进 prompt 的长度上限。超长的整段留在群聊原文里，prompt 里给明确的截断提示，
-// 不静默吃掉后半截（任务书：长内容不能静默截断）。
-const MAX_SUPPLEMENT_CHARS = 8000;
+// 补充**不设长度上限**。2026-09-08 合并位复现：原来在 8000 字处截断后照样把这条标成
+// 「已送达」，于是长补充的后半截被悄悄吃掉，而账本认为它已经送到、不会再补发 ——
+// 等于丢消息。上限本来也不是需求里要的东西（任务书写的是「长内容不能静默截断」），
+// 直接去掉。真正的大 payload 由 sendToPty 的分块投喂链路负责，不该在这里砍。
 const MAX_SUPPLEMENT_LEDGER = 500;
 const NEWLINE = String.fromCharCode(10);
 
@@ -697,11 +698,8 @@ class GroupChatOrchestrator {
     if (!items.length) return '';
     const lines = ['## 维护者补充（你还没收到过的原话，按发出顺序）'];
     items.forEach((item, i) => {
-      const truncated = item.text.length > MAX_SUPPLEMENT_CHARS;
-      const text = truncated
-        ? item.text.slice(0, MAX_SUPPLEMENT_CHARS) + NEWLINE + `（本条过长，此处截断；完整原文见群聊消息 ${item.id}）`
-        : item.text;
-      lines.push(`[${i + 1}]`, text);
+      // 原文整段进去。截断 + 标已送达 = 丢消息，这条路已经踩过一次了。
+      lines.push(`[${i + 1}]`, item.text);
     });
     lines.push('这些是维护者的话，不是新任务书；按当前阶段职责消化，不要因此重置任务或重做已完成的部分。');
     return lines.join(NEWLINE);

@@ -160,6 +160,41 @@ function createLoopEngine(deps) {
   const DOC_POLL_MS = Number(_w.docPollMs) > 0 ? Number(_w.docPollMs) : 4000;
   const DOC_WAIT_CAP_MS = Number(_w.docCapMs) > 0 ? Number(_w.docCapMs) : 5 * 60_000;
 
+  // ── 用户的停止意图（2026-09-08 合并位复现的阻断）──────────────────────────
+  //
+  // 原来「停止」只写在内存里那条 running 记录上（entry.abort）。两个后果：
+  //   1. 迟到的完成文件照样能推进 —— 用户点停止的那一刻，文件可能正好在同一次重读里
+  //      被判成「已接收」，于是开题接收后照常自动开工、循环照常派下一位；
+  //   2. Hub 一重启，abort 就没了，开机重扫又会把它捡起来接着跑。
+  //
+  // 任务书说得很直接：「用户明确『停止』的意图优先，不能被迟到文件或重启覆盖。」
+  // 所以它必须落盘，并且只由**用户自己**的明确动作清掉（点开始 / 继续 / 重发）。
+  // 停止不删除任何成果：已接收的交付凭据、文档、会话全部留着，人回来接着走。
+
+  function stopIntentOf(meetingId) {
+    const workflow = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+    return workflow.stopRequested || null;
+  }
+
+  function writeStopIntent(meetingId, value) {
+    try {
+      const workflow = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+      meetingManager.updateMeeting(meetingId, {
+        serialWorkflow: Object.assign({}, workflow, { stopRequested: value }),
+      });
+      return true;
+    } catch (error) {
+      logError('[loop-engine] 停止意图落盘失败:', error);
+      return false;
+    }
+  }
+
+  /** 用户明确要求继续（loop:start / loop:resume / dev:kickoff / dev:redispatch）时调。 */
+  function clearStopIntent(meetingId) {
+    if (!stopIntentOf(meetingId)) return;
+    writeStopIntent(meetingId, null);
+  }
+
   function hubDataDir() {
     if (typeof deps.getHubDataDir === 'function') return deps.getHubDataDir();
     return require('../../core/data-dir.js').getHubDataDir();
@@ -722,9 +757,31 @@ function createLoopEngine(deps) {
       // MD 交接只对新建的双席位开发群聊启用；老房间和极简单席位一字不改。
       const useDocs = docsEnabled(meeting, reviewerIds);
       let docsDir = null;
+      let docsDirError = null;
       if (useDocs) {
         try { docsDir = taskDirFor(meetingId); }
-        catch (error) { logError('[loop-engine] 任务目录建不出来，本轮回落到原判定:', error); }
+        catch (error) { docsDirError = error; logError('[loop-engine] 任务目录建不出来:', error); }
+      }
+      // 2026-09-08 合并位复现的阻断：这里原来是「建不出来就回落到聊天判定」——
+      // 那是一次静默降级：交接闸门整个关掉，一份 MD 都没有也能把任务判成完成。
+      // 开了 MD 交接就必须靠 MD 交接。目录出问题是环境问题，如实暂停等人处理。
+      if (useDocs && !docsDir) {
+        const stalled = {
+          status: 'paused',
+          currentStep: null,
+          lastError: {
+            stage: 'task-docs', reason: 'task_dir_unavailable',
+            detail: (docsDirError && docsDirError.message) || '', at: Date.now(),
+          },
+        };
+        logger.log('[loop-engine] 任务目录不可用，拒绝退回聊天判定 ' + meetingId);
+        try {
+          state.status = stalled.status;
+          state.lastError = stalled.lastError;
+          persist(meetingId, state, config);
+          sendToRenderer('loop:progress', { meetingId, round: state.round, phase: state.phase, status: state.status, stage: 'paused', error: state.lastError });
+        } catch (error) { logError('[loop-engine] 任务目录故障落盘失败:', error); }
+        return state;
       }
       const docsOn = !!(useDocs && docsDir);
       if (docsOn) {
@@ -747,7 +804,8 @@ function createLoopEngine(deps) {
       progress({ stage: 'start' });
 
       while (state.status === 'running') {
-        if (entry.abort) { state.status = 'stopped_user'; break; }
+        // 停止意图落了盘，所以「运行中点停止」和「上次点了停止之后 Hub 重启」是同一回事。
+        if (entry.abort || stopIntentOf(meetingId)) { state.status = 'stopped_user'; break; }
         if (state.round > config.stop.maxRounds + 2) { state.status = 'stopped_max'; break; } // 本地兜底
 
         const taskInfo = LC.builderTaskText(state, prevMerge, config);
@@ -871,6 +929,16 @@ function createLoopEngine(deps) {
           }
         }
 
+        // 「交付接收成立」和「现在能不能派下一位」是两件事。用户在等文件的这段时间里
+        // 点了停止，迟到的文件不许把审查派出去 —— 交付凭据留着，人回来接着走（任务书 D06）。
+        if (entry.abort || stopIntentOf(meetingId)) {
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          logger.log('[loop-engine] 用户已停止，交付保留但不派下一位 ' + meetingId);
+          persistOrPause();
+          break;
+        }
+
         const reviewerPrompt = withDocBlock(
           LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt }),
           docsOn ? docsDir : null, reviewerPos,
@@ -982,15 +1050,35 @@ function createLoopEngine(deps) {
           const rid = reviewerIds[0];
           const docVerdict = LC.parseVerdict(docRead.content);
           const chatVerdict = LC.parseVerdict(textFrom(rRes.results, sidOf(meeting, rid)));
-          if (chatVerdict && docVerdict && chatVerdict.decision !== docVerdict.decision) {
+          // 2026-09-08 合并位复现的阻断：矛盾原来只在内存里判一次。用户点「继续」时
+          // 这一步已经接收过、不再重新派发，聊天文本变成占位符，矛盾就凭空消失、
+          // 任务直接变成完成 —— 期间没人改过文档，也没人重新审查过。
+          // 所以矛盾要连同**当时那份手册的指纹**一起记进账本：指纹没变就说明这份交付
+          // 一个字没动，矛盾自然还在，再点多少次继续都还是待核对。
+          const freshConflict = (chatVerdict && docVerdict && chatVerdict.decision !== docVerdict.decision)
+            ? {
+                fingerprint: docRead.fingerprint,
+                docDecision: docVerdict.decision, chatDecision: chatVerdict.decision, at: Date.now(),
+              }
+            : null;
+          const priorConflict = DOCS.unresolvedConflictAt(readDocLedger(meetingId, docsDir), reviewerPos, docRead.fingerprint);
+          const conflict = freshConflict || priorConflict;
+          if (conflict) {
+            if (freshConflict) {
+              try { saveDocLedger(meetingId, DOCS.withConflict(readDocLedger(meetingId, docsDir), reviewerPos, freshConflict)); }
+              catch (error) { logError('[loop-engine] 裁决矛盾落盘失败:', error); }
+            }
             state.status = 'paused';
             state.currentStep = 'reviewer';
             state.lastError = {
               stage: 'reviewer', reason: 'verdict_conflict',
-              detail: '合并手册判 ' + docVerdict.decision.toUpperCase() + '，群聊里说的是 ' + chatVerdict.decision.toUpperCase(),
+              detail: '合并手册判 ' + String(conflict.docDecision).toUpperCase()
+                + '，群聊里说的是 ' + String(conflict.chatDecision).toUpperCase()
+                + '；这份手册一个字没改过，需要你来定',
               doc: spec.done || '', dir: docsDir, at: Date.now(),
             };
-            logger.log('[loop-engine] 手册与群聊裁决矛盾，停在待核对');
+            logger.log('[loop-engine] 手册与群聊裁决矛盾，停在待核对'
+              + (freshConflict ? '' : '（这是上次就记下的，文档没有变化）'));
             persistOrPause();
             break;
           }
@@ -1152,6 +1240,14 @@ function createLoopEngine(deps) {
       }
 
       const reportPath = (outcome.record && outcome.record.path) || '';
+      // 报告接收成立，但用户在这期间点了停止 → 只记下交付，不翻阶段、不自动开工。
+      // 迟到的完成文件不能覆盖明确的停止意图（任务书 D06）。
+      if (entry.abort || stopIntentOf(meetingId)) {
+        saveKickoff({ kickoff: { status: 'accepted_stopped', reportPath, acceptedAt: Date.now() } });
+        emit('kickoff-accepted-stopped', { reportPath });
+        logger.log('[loop-engine] 开题报告已接收，但用户已停止，不自动开工 ' + meetingId);
+        return { ok: true, autoStart: false, stopped: true, reportPath };
+      }
       saveKickoff({ devPhase: 'build', kickoff: { status: 'accepted', reportPath, acceptedAt: Date.now() } });
       try {
         const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
@@ -1182,6 +1278,9 @@ function createLoopEngine(deps) {
   }
 
   function stopLoop(meetingId, options = {}) {
+    // 先落盘再谈中断：用户点了停止，这个事实不能因为「当前没有在跑的运行」
+    // 或者随后的进程退出而丢失。
+    writeStopIntent(meetingId, { at: Date.now(), reason: options.reason || 'user_stop' });
     const r = running.get(meetingId);
     if (!r) return false;
     r.abort = true;
@@ -1215,6 +1314,11 @@ function createLoopEngine(deps) {
       for (const mt of all) {
         const sw = mt && mt.serialWorkflow; const ls = sw && sw.loopState;
         const serialState = sw && sw.serialRunState;
+        // 用户上次明确停过 → 开机不许自作主张接着跑。清掉它是用户点「继续/重发」的事。
+        if (sw && sw.stopRequested) {
+          logger.log('[loop-engine] skip boot resume for ' + mt.id + ': user stop intent is on record');
+          continue;
+        }
         // 开题中被打断：**只重新读一次文件**，不重新派开题任务、不发恢复 prompt。
         // 认出已交付就接着自动开工；认不出就留在开题阶段，等维护者点「重发本轮」。
         if (sw && sw.kickoff && ['running', 'awaiting_report'].includes(sw.kickoff.status)
@@ -1246,7 +1350,8 @@ function createLoopEngine(deps) {
   }
 
   return {
-    getStatus, isRunning, resumePending, runKickoff, runLoop, runSerial, stopLoop, validateLoop, validateResume, validateSerial,
+    getStatus, isRunning, resumePending, runKickoff, runLoop, runSerial, stopLoop, clearStopIntent, stopIntentOf,
+    validateLoop, validateResume, validateSerial,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
     __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,

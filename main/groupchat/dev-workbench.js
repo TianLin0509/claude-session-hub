@@ -289,6 +289,9 @@ function createDevWorkbench(deps) {
         if (m.serialWorkflow.devPhase === 'discuss') return { ok: false, reason: '讨论阶段不能恢复旧循环；回群聊点「开工」确认任务说明后再进入实现' };
         const validation = loopEngine.validateLoop(id);
         if (!validation.ok) return { ok: false, reason: validation.reason };
+        // 工作台点「恢复」也是用户明确要求继续 → 清掉落盘的停止意图，否则引擎会立刻又停下。
+        try { if (typeof loopEngine.clearStopIntent === 'function') loopEngine.clearStopIntent(id); }
+        catch (error) { log(error); }
         const ls = m.serialWorkflow.loopState;
         const run = loopEngine.runLoop(id, null, { ...ls, status: 'running', stepAttempt: 0, lastError: null });
         Promise.resolve(run).catch(error => { log(error); changed(id); });

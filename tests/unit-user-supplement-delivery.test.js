@@ -121,4 +121,20 @@ test('任务结束后成员不再运行：消息继续保存，不伪称全员�
   assert.ok(added.seq > 0);
 });
 
+test('阻断4 很长的补充也要整段进 prompt：截断了却记成已送达等于丢消息', () => {
+  const orch = groupchat.getOrchestrator(freshRoot(), 'long');
+  // 维护者贴一大段需求（几万字的任务书片段并不罕见）
+  const head = '开头标记-U12';
+  const tail = '结尾标记-U12';
+  const raw = [head, '中间正文'.repeat(6000), tail].join('|');
+  const added = orch.appendUserSupplement(raw, { recipientSids: ['s1'] });
+  const block = orch.buildUserSupplementBlock('s1');
+  assert(block.includes(head), '开头要在');
+  assert(block.includes(tail), '结尾也必须在 —— 尾巴被吃掉却标成已送达，等于悄悄丢了半条消息');
+  assert(block.includes(raw), '同一条消息的原文整段保留，不拆不截');
+  // 送达确认之后这条就不再自动重发，所以「送出去的必须是全文」是硬条件
+  orch.markUserSupplementsDelivered('s1', [added.seq]);
+  assert.deepStrictEqual(orch.pendingUserSupplementsFor('s1'), []);
+});
+
 console.log(`\n${pass} passed`);

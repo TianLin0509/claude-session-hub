@@ -7,10 +7,18 @@ function registerLoopIpc(ipcMain, deps) {
   const { loopEngine, logger = console } = deps || {};
   if (!ipcMain || !loopEngine) return;
 
+  // 停止意图是落盘的（引擎里 stopRequested），所以只有用户**明确要求继续**才能清掉它。
+  // 下面每个入口都是用户亲手点的：不清的话，停过一次的群聊就再也起不来了。
+  const resumeByUser = (meetingId) => {
+    try { if (typeof loopEngine.clearStopIntent === 'function') loopEngine.clearStopIntent(meetingId); }
+    catch (err) { logger.warn('[loop-ipc] clear stop intent failed:', err && err.message); }
+  };
+
   // 立即返回 ok，循环在 main 后台跑（通过 'loop:progress' 推进度），不阻塞 renderer
   ipcMain.handle('loop:start', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const validation = typeof loopEngine.validateLoop === 'function'
         ? loopEngine.validateLoop(args.meetingId)
@@ -27,6 +35,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('dev:kickoff', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (typeof loopEngine.runKickoff !== 'function') return { ok: false, reason: 'kickoff_unavailable' };
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       // 不 await：开题要等 agent 写完报告，可能几分钟到几十分钟，
@@ -47,6 +56,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('dev:redispatch', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
       const kickoff = status && status.kickoff;
@@ -83,6 +93,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('loop:resume', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
       const persisted = status && status.loopState;
@@ -104,6 +115,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('serial:start', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const validation = typeof loopEngine.validateSerial === 'function'
         ? loopEngine.validateSerial(args.meetingId)
@@ -121,6 +133,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('serial:resume', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
       const persisted = status && status.serialRunState;
