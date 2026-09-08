@@ -1101,8 +1101,14 @@ class GroupChatOrchestrator {
     const turn = this.state.turns.find(t => t.n === turnNum);
     const userMsg = this.state.messages.find(m => m && m.role === 'user' && Number(m.turnNum) === Number(turnNum));
     // turns 只在全员结算后创建；进行中/崩溃中断轮次仍有 u{n}，允许先保存可用结果。
-    // 连用户消息都不存在才是真正的错误 turn，继续拒绝，避免跨轮误写。
-    if (!turn && !userMsg) return null;
+    // 2026-09-07：还有第三种「这一轮确实存在」的证据 —— **派发回执**。
+    //   同席位评审另起的那一轮 appendUserMessage=false，所以既没有 turns 记录、也没有
+    //   u{n} 用户消息，只有 pendingPrompts 里那份回执。以前一律拒绝，用户在 watcher
+    //   已经不在的情况下就没法把评审正文救回来（真实隔离窗口实测到「第 N 轮不在群聊记录中」）。
+    //   回执是派发那一刻落盘的，拿它当存在性证明既真实又不会跨轮误写。
+    const pendingForTurn = (this.state.pendingPrompts && this.state.pendingPrompts[String(turnNum)]) || null;
+    const hasDispatchReceipt = !!(pendingForTurn && pendingForTurn[sid]);
+    if (!turn && !userMsg && !hasDispatchReceipt) return null;
 
     const pending = !turn;
     const by = pending ? {} : (turn.by = turn.by || {});

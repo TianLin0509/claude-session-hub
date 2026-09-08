@@ -49,23 +49,48 @@ function createStepContextReader(deps) {
   }
 
   /**
-   * 这一步、这一位的**派发回执**：attemptId 从哪来。
-   * 串行工作流所有步骤复用同一个可见轮次，`turn.attemptIdBy[sid]` 只留得住**最后一次**，
-   * 所以第二步（甚至同一位成员的第二次出场）不能用它 —— 那会把新答案结算到旧尝试上，
-   * 于是「气泡更新了、流程还停着」（2026-09-07 合并位 R2-2）。
-   * 顺序：先看这一步自己的 pendingPrompts 回执，再看尝试台账里带 workflowRun 的那条。
+   * 这一步、这一位的**派发回执** —— attemptId 和 turnNum **必须一起从这里取**。
+   *
+   * 2026-09-07 合并位 e6e4183 阻断项：只把 attemptId 从回执里取回来，turnNum 却继续
+   * 用 loopState.currentTurnNum，就会把「评审的 attemptId」和「实现的 turnNum」拼进
+   * 同一次写入。同席位（极简）时评审另起一轮，这一拼就是：
+   *   - 正文写回实现那一轮 → 刚落盘的 PROGRESS 被 RESULT 覆盖，工作台交付卡变 null；
+   *   - requestedTurn 与真实当前轮对不上 → 错过活 watcher，评审那一步继续干等；
+   *   - 而 IPC 还报「流程继续」。
+   * 一次写入里 run / step / turn / attempt 四件事必须同源，这就是本函数的全部意义。
+   *
+   * 取值顺序（都带 turnNum 一起回）：
+   *   ① 尝试台账里带 workflowRun 的那条 —— recordTurnPrompt 在派发那一刻写下，
+   *      attemptId 与 turnNum 同一条记录，最可靠，且跨 Hub 重启仍在；
+   *   ② pendingPrompts 回执 —— 按**所有轮次**去找，不能只翻当前轮
+   *      （评审的回执压根不在实现那一轮下面）。
+   * 两者都没有就返回 null：这一步还没派发出去，没有可写入的位置。
    */
-  function stepReceiptFor(orchState, { runId, stepIndex, turnNum, sid }) {
+  function stepReceiptFor(orchState, { runId, stepIndex, sid }) {
     if (!orchState || !sid) return null;
-    const matches = wr => !!(wr && String(wr.runId) === String(runId) && Number(wr.stepIndex) === Number(stepIndex));
-    const pendingByTurn = (orchState.pendingPrompts && orchState.pendingPrompts[String(turnNum)]) || null;
-    const receipt = pendingByTurn && pendingByTurn[sid];
-    if (receipt && matches(receipt.workflowRun)) {
-      return { attemptId: receipt.attemptId || null, runId: receipt.runId || runId, providerTurnId: receipt.providerTurnId || null };
-    }
     const attempt = WSR.stepAttemptFor(orchState.attempts, { runId, stepIndex, sid });
     if (attempt) {
-      return { attemptId: attempt.attemptId || null, runId: attempt.runId || runId, providerTurnId: attempt.providerTurnId || null };
+      return {
+        attemptId: attempt.attemptId || null,
+        runId: attempt.runId || runId,
+        turnNum: Number(attempt.turnNum) || null,
+        providerTurnId: attempt.providerTurnId || null,
+        source: 'attempt_ledger',
+      };
+    }
+    const pending = (orchState.pendingPrompts && typeof orchState.pendingPrompts === 'object')
+      ? orchState.pendingPrompts : {};
+    for (const [turnKey, bySid] of Object.entries(pending)) {
+      const receipt = bySid && bySid[sid];
+      const wr = receipt && receipt.workflowRun;
+      if (!wr || String(wr.runId) !== String(runId) || Number(wr.stepIndex) !== Number(stepIndex)) continue;
+      return {
+        attemptId: receipt.attemptId || null,
+        runId: receipt.runId || runId,
+        turnNum: Number(turnKey) || null,
+        providerTurnId: receipt.providerTurnId || null,
+        source: 'pending_receipt',
+      };
     }
     return null;
   }
@@ -80,12 +105,15 @@ function createStepContextReader(deps) {
 
     let kind = null; let stepIndex = null; let turnNum = null; let runId = null; let status = null;
     let stepKey = null;
+    let fallbackTurnNum = null;
     let targetMemberIds = [];
     if (loopState && ['running', 'paused', 'stopped_user'].includes(loopState.status)) {
       kind = 'loop';
       status = loopState.status;
       runId = loopState.runId || null;
-      turnNum = Number(loopState.currentTurnNum) || null;
+      // 注意：loopState.currentTurnNum 是**实现那一轮**。同席位时评审另起一轮，
+      //   所以它只能当最后兜底，真正的轮号要从这一步自己的回执里取（见下）。
+      fallbackTurnNum = Number(loopState.currentTurnNum) || null;
       const round = Math.max(0, Number(loopState.round) || 0);
       const reviewerPhase = String(loopState.currentStep || '') === 'reviewer';
       stepIndex = round * 2 + (reviewerPhase ? 1 : 0);
@@ -95,7 +123,7 @@ function createStepContextReader(deps) {
       kind = 'serial';
       status = serialState.status;
       runId = serialState.runId || null;
-      turnNum = Number(serialState.currentTurnNum) || null;
+      fallbackTurnNum = Number(serialState.currentTurnNum) || null;
       const raw = serialState.currentStepIndex !== null && serialState.currentStepIndex !== undefined
         ? Number(serialState.currentStepIndex)
         : Number(serialState.nextStepIndex);
@@ -112,16 +140,32 @@ function createStepContextReader(deps) {
     try {
       const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
       orchState = orch && (typeof orch.getState === 'function' ? orch.getState() : orch.state);
-      if (!turnNum && orchState && Number(orchState.currentTurn) > 0) turnNum = Number(orchState.currentTurn);
     } catch (err) {
       logger.warn('[workflow-step-context] orchestrator load failed:', err && err.message);
     }
     const located = findStepEntry(orchState, runId, stepIndex);
     const stepEntry = located ? located.entry : null;
-    if (!turnNum && located) turnNum = located.turnNum;
+
+    // ── 这一步的轮次：只认这一步自己的证据，一件都不跟别的步骤借 ──
+    const targetSids = targetMemberIds.map(sidOf).filter(Boolean);
+    const receiptBySid = new Map();
+    for (const sid of targetSids) {
+      const receipt = stepReceiptFor(orchState, { runId, stepIndex, sid });
+      if (receipt) receiptBySid.set(sid, receipt);
+    }
+    const receiptTurns = [...receiptBySid.values()].map(r => r.turnNum).filter(Boolean);
+    let turnSource = null;
+    if (receiptTurns.length) { turnNum = receiptTurns[0]; turnSource = 'step_receipt'; }
+    else if (located && located.turnNum) { turnNum = located.turnNum; turnSource = 'step_snapshot'; }
+    else if (fallbackTurnNum) { turnNum = fallbackTurnNum; turnSource = 'workflow_state_fallback'; }
+    else if (orchState && Number(orchState.currentTurn) > 0) { turnNum = Number(orchState.currentTurn); turnSource = 'current_turn_fallback'; }
+    // 同一步的成员应当在同一轮里。真出现分歧就不再猜，标出来让采用入口拒绝写入。
+    const turnConsistent = receiptTurns.every(n => Number(n) === Number(turnNum));
+    // 只有从这一步自己的回执/快照解析出来的轮号才允许被写入；兜底来的不算。
+    const turnResolved = (turnSource === 'step_receipt' || turnSource === 'step_snapshot') && turnConsistent;
+
     const turn = orchState ? ((orchState.turns || []).find(t => t && Number(t.n) === Number(turnNum)) || null) : null;
 
-    const targetSids = targetMemberIds.map(sidOf).filter(Boolean);
     const view = WSR.inspectStepResults({
       turn,
       messages: orchState && orchState.messages,
@@ -140,7 +184,7 @@ function createStepContextReader(deps) {
       const sid = sidOf(memberId);
       const session = sid ? sessionManager.getSession(sid) : null;
       const item = bySid.get(sid) || { status: null, textLength: 0 };
-      const receipt = sid ? stepReceiptFor(orchState, { runId, stepIndex, turnNum, sid }) : null;
+      const receipt = sid ? (receiptBySid.get(sid) || null) : null;
       return {
         memberId,
         sid,
@@ -149,7 +193,9 @@ function createStepContextReader(deps) {
         status: item.status || null,
         textLength: item.textLength || 0,
         // 写回答案时要用的身份 —— 属于**这一步**，不是这个 sid 最后一次出现的那个。
+        //   attemptId 与 turnNum 同源，采用入口会再核一次两者一致。
         attemptId: (receipt && receipt.attemptId) || null,
+        attemptTurnNum: (receipt && receipt.turnNum) || null,
         providerTurnId: (receipt && receipt.providerTurnId) || null,
       };
     });
@@ -187,6 +233,10 @@ function createStepContextReader(deps) {
       stepIndex,
       stepKey,
       turnNum,
+      // 这个轮号是不是从这一步自己的证据里解析出来的。false = 只是兜底猜的，
+      //   采用入口据此拒绝写入，绝不把正文写进别的步骤的轮次。
+      turnResolved,
+      turnSource,
       members,
       decision: { action: decision.action, why: decision.why, missingSids: decision.missingSids || [] },
       chip,

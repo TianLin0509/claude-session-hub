@@ -117,7 +117,12 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
           const recoverUserMsg = recoverTurnNum !== null
             ? (orch.state.messages || []).find(m => m && m.role === 'user' && Number(m.turnNum) === Number(recoverTurnNum))
             : null;
-          if (recoverUserMsg) {
+          // 同席位评审另起的那一轮不追加用户消息，所以只有派发回执能证明它存在。
+          //   少了这一条，watcher 不在时就会误报「该轮已被回滚或状态文件损坏」。
+          const recoverReceipt = recoverTurnNum !== null
+            ? ((orch.state.pendingPrompts || {})[String(recoverTurnNum)] || {})[sid] || null
+            : null;
+          if (recoverUserMsg || recoverReceipt) {
             const memberIndex = meeting && Array.isArray(meeting.subSessions)
               ? meeting.subSessions.indexOf(sid)
               : -1;
@@ -446,6 +451,32 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     meetingManager, sessionManager, groupchat, getHubDataDir, isWorkflowRunning, logger,
   });
 
+  /**
+   * 「这一步的轮次和尝试是不是同一份回执给的」——写之前的最后一道闸门。
+   * 解析不出这一步自己的轮号（turnResolved=false）就别写：那说明它还没派发出去，
+   * 任何落点都是猜的，而猜错的代价是覆盖掉别的步骤已经落盘的正文。
+   */
+  function checkStepIdentity(context, member) {
+    if (!context || !context.active) return { ok: false, reason: 'no_active_step' };
+    if (context.turnResolved !== true) {
+      return {
+        ok: false,
+        reason: 'step_turn_unresolved',
+        detail: '这一步还没有属于自己的轮次（可能尚未派发）。先让它发出去，或用「重新让本成员回答」，'
+          + '不能把正文写进别的步骤的轮次。',
+      };
+    }
+    if (member && member.attemptTurnNum && Number(member.attemptTurnNum) !== Number(context.turnNum)) {
+      return {
+        ok: false,
+        reason: 'attempt_turn_mismatch',
+        detail: `这一位的尝试记在第 ${member.attemptTurnNum} 轮，而当前步骤定位到第 ${context.turnNum} 轮，`
+          + '两者对不上，不写入。',
+      };
+    }
+    return { ok: true };
+  }
+
   // 「采用之后流程真的往前走了吗」——不能拿「引擎被调用了」当推进成功（合并位 B1）。
   //   观察持久状态：步骤指纹变了 / 跑完了 = 真的推进；重新 paused 且有新报错 = 没推进。
   //   预算内还在跑，说明下一步已经派出去正在等回答，也算推进。
@@ -503,6 +534,11 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     if (before.decision.action !== 'advance') {
       for (const member of before.members) {
         if (member.hasResult || !member.sid) continue;
+        const guard = checkStepIdentity(before, member);
+        if (!guard.ok) {
+          tried.push({ sid: member.sid, label: member.label, ok: false, reason: guard.reason, detail: guard.detail });
+          continue;
+        }
         try {
           // 同步请求开始那一刻的身份，写之前拿最新状态再核一次。
           const startedToken = {
@@ -530,6 +566,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
           tried.push({
             sid: member.sid, label: member.label,
             ok: !!(outcome && outcome.ok),
+            mode: outcome && (outcome.mode || null),
             reason: outcome && (outcome.reason || null),
             detail: outcome && (outcome.detail || null),
           });
@@ -540,6 +577,13 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     }
 
     const after = describeWorkflowStep(meetingId);
+    const settledWatcher = tried.some(item => item.ok && item.mode === 'watcher_settle');
+    if (settledWatcher) {
+      return {
+        ok: true, adopted: true, advanced: true, tried, context: after,
+        message: '已采用本步回答，流程继续（不会再问一遍）',
+      };
+    }
     if (!after.ok || !after.active) return after;
     if (after.decision.action !== 'advance') {
       return {
@@ -553,10 +597,14 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       };
     }
     if (engineAlreadyRunning) {
-      // 引擎还在等这一步的回答：采用已经通过 watcher 结算它了，不需要也不该再唤醒一次。
+      // 同上：引擎还在等这一步时，只有把它等的那个 watcher 结算掉才算真的接住。
+      const settled = tried.some(item => item.ok && item.mode === 'watcher_settle');
       return {
-        ok: true, adopted: tried.some(item => item.ok), advanced: true, tried, context: after,
-        message: '已采用本步回答，流程继续（不会再问一遍）',
+        ok: true, adopted: tried.some(item => item.ok), advanced: settled, tried, context: after,
+        ...(settled ? {} : { resumeReason: 'engine_still_waiting' }),
+        message: settled
+          ? '已采用本步回答，流程继续（不会再问一遍）'
+          : '已采用本步回答，但这一步的等待还没被接住 —— 流程没有往下走，请再看一眼',
       };
     }
     const resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger, describeStep: describeWorkflowStep });
@@ -598,6 +646,11 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       if (!context.active) return { ok: false, reason: 'no_active_step' };
 
       const member = (context.members || []).find(item => item && item.sid === sid) || null;
+      // 写之前核一次「轮次与尝试同源」（2026-09-07 合并位 e6e4183 阻断项）：
+      //   拿评审的 attemptId 去写实现那一轮，会把刚落盘的实现报告覆盖掉，
+      //   还错过评审自己的活 watcher。宁可拒绝，也不写进别的步骤的轮次。
+      const identityGuard = checkStepIdentity(context, member);
+      if (!identityGuard.ok) return { ...identityGuard, keepText: true };
       const verdict = WSR.validateAdoptionToken(token || {}, {
         meetingId,
         sid,
@@ -632,6 +685,15 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       if (!adopted || !adopted.ok) return { ...(adopted || { ok: false, reason: 'adopt_failed' }), keepText: true };
 
       const after = describeWorkflowStep(meetingId);
+      // 直接结算了引擎正在等的那个 watcher = 已经把答案交到它手上，它自己就会往下走。
+      //   这一条要放在最前面：引擎处理这次结算是异步的，此刻再去读持久状态还没更新，
+      //   按「持久状态是否已完成」判会误报成「还在等」（实测到的竞态）。
+      if (adopted.mode === 'watcher_settle') {
+        return {
+          ok: true, adopted: true, mode: adopted.mode, advanced: true, context: after,
+          message: '已采用你提供的回答，流程继续（原成员不会被再问一遍）',
+        };
+      }
       const canAdvance = !!(after.ok && after.active && after.decision.action === 'advance');
       if (!canAdvance) {
         return {
@@ -640,10 +702,12 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         };
       }
       if (after.running) {
-        // 引擎还在等这一步：采用已经通过 watcher 结算它，引擎自己就往下走。
+        // 走到这儿说明只是把正文 patch 进了台账，而引擎还在等它自己的 watcher ——
+        //   那个 Promise 没被接住，报「流程继续」就是假消息（合并位 e6e4183 指出的误报）。
         return {
-          ok: true, adopted: true, mode: adopted.mode, advanced: true, context: after,
-          message: '已采用你提供的回答，流程继续（原成员不会被再问一遍）',
+          ok: true, adopted: true, mode: adopted.mode, advanced: false, context: after,
+          resumeReason: 'engine_still_waiting',
+          message: '已保存你提供的回答，但这一步的等待还没被接住 —— 流程没有往下走，请再看一眼',
         };
       }
       const resumed = resumeWorkflowRun(getLoopEngine(), meetingId, { logger, describeStep: describeWorkflowStep });
