@@ -22,6 +22,7 @@ const path = require('node:path');
 
 const { connectFirstPage } = require('./helpers/cdp-client.js');
 const { gracefulQuit, launchIsolatedHub, _waitMs } = require('./helpers/hub-launcher.js');
+const { hitTestScreenPoint, hitName } = require('./helpers/native-hit-test.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const RUN_ID = `${Date.now()}-${process.pid}`;
@@ -96,14 +97,30 @@ const TOOLBAR_PROBE = `(() => {
     order: toolbar ? Array.from(toolbar.children).map(c => c.id || c.className) : [],
     drag: {
       toolbar: dragOf(toolbar),
-      // 每个可点元素都必须是 no-drag，否则它连 click 都收不到 —— 表现是
-      // 「点了没反应」，最容易被误判成业务逻辑坏了。
       buttons: toolbar
         ? Array.from(toolbar.querySelectorAll('button')).filter(visible).map(b => ({
             cls: b.className, region: dragOf(b),
           }))
         : [],
       viewToggle: dragOf(toolbar && toolbar.querySelector('.view-toggle')),
+      // 只查 button 是不够的（2026-09-08 评审逮到的洞）：会话标题是个可点击的
+      // <span>，漏在拖动区里之后 Windows 把它判成标题栏，真鼠标点下去是拖窗口，
+      // 重命名永远打不开；而 DOM 的 .click() 不走命中测试，照样能打开重命名，
+      // 所以只用 dispatchEvent 的断言看不见它。
+      // 判据换成「看起来可不可点」：cursor:pointer 的元素，往上找到第一个
+      // 声明了拖动区的祖先，那个祖先必须是 no-drag。
+      clickableInDragRegion: toolbar
+        ? Array.from(toolbar.querySelectorAll('*')).filter(el => {
+            if (!visible(el)) return false;
+            if (getComputedStyle(el).cursor !== 'pointer') return false;
+            for (let node = el; node && node !== toolbar.parentElement; node = node.parentElement) {
+              const region = getComputedStyle(node).webkitAppRegion;
+              if (region === 'no-drag') return false;
+              if (region === 'drag') return true;
+            }
+            return true;
+          }).map(el => el.tagName + '.' + (typeof el.className === 'string' ? el.className : el.id))
+        : [],
     },
     windowControls: {
       width: Math.round((rectOf(controls) || { width: 0 }).width),
@@ -205,6 +222,9 @@ async function main() {
     assert.deepEqual(draggableButtons, [],
       '工具栏里的按钮必须全是 no-drag，否则它连 click 都收不到：' + JSON.stringify(draggableButtons));
     assert.equal(result.home.drag.viewToggle, 'no-drag');
+    assert.deepEqual(result.home.drag.clickableInDragRegion, [],
+      '这些元素看起来可点却落在拖动区里，真鼠标点下去会变成拖窗口：'
+      + JSON.stringify(result.home.drag.clickableInDragRegion));
 
     // ── 验收 4：右端给系统窗口按钮留位 ────────────────────────────────
     // 常量默认 138px；WCO 报得出真值时按真值走（本机实测 136px，随 DPI 和
@@ -251,6 +271,79 @@ async function main() {
     assert.equal(result.session.height, 44);
     assert.equal(result.session.windowControls.clearOfActions, true,
       '动作区不许伸进系统按钮那一段');
+    // 会话标题只在会话视图下才存在，所以这条必须在这里再查一遍 ——
+    // 只在主页查等于永远查不到它。
+    assert.deepEqual(result.session.drag.clickableInDragRegion, [],
+      '会话视图下这些元素看起来可点却落在拖动区里：'
+      + JSON.stringify(result.session.drag.clickableInDragRegion));
+
+    // ── 验收 5b：原生命中测试 ────────────────────────────────────────
+    // 这是本轮评审逮到的洞：CDP 的 element.click() 绕过 Windows 命中测试，
+    // 一个漏标 no-drag 的可点元素在 DOM 测试里表现完全正常，真鼠标点下去
+    // 却是「按住标题栏拖窗口」。所以可点元素必须问 Windows 要答案：
+    // 标题、工作区按钮、动作按钮都得答 HTCLIENT(1)，工具栏空白处答 HTCAPTION(2)。
+    result.nativeHits = {};
+    const probePoints = await client.eval(`(() => {
+      const pick = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      };
+      const toolbar = document.getElementById('app-toolbar').getBoundingClientRect();
+      const crumb = document.getElementById('toolbar-crumb').getBoundingClientRect();
+      const controls = document.getElementById('toolbar-window-controls').getBoundingClientRect();
+      return {
+        // 页面坐标 → 屏幕坐标：window.screenX/Y 是窗口左上角在屏幕上的位置，
+        // 加上页面视口相对窗口的偏移（outerHeight - innerHeight 就是被隐藏的
+        // 标题栏 + 边框；隐藏标题栏之后这个值很小，但不能假设它是 0）。
+        origin: {
+          x: window.screenX + (window.outerWidth - window.innerWidth) / 2,
+          y: window.screenY + (window.outerHeight - window.innerHeight),
+        },
+        title: pick('#toolbar-crumb .terminal-title'),
+        workspace: pick('#toolbar-crumb .crumb-workspace'),
+        closeBtn: pick('#toolbar-actions .btn-close-session'),
+        // 空白处：面包屑右边、居中视图切换左边那一段，它**应该**是可拖的标题栏。
+        blank: (() => {
+          const toggle = document.querySelector('#app-toolbar .view-toggle').getBoundingClientRect();
+          return { x: (crumb.right + toggle.left) / 2, y: toolbar.top + toolbar.height / 2 };
+        })(),
+      };
+    })()`);
+    const hubWindowTitle = result.windowShape && result.windowShape.title;
+    for (const [name, point] of Object.entries(probePoints)) {
+      if (name === 'origin' || !point) continue;
+      const code = hitTestScreenPoint(
+        hubWindowTitle,
+        probePoints.origin.x + point.x,
+        probePoints.origin.y + point.y,
+      );
+      result.nativeHits[name] = { code, name: hitName(code) };
+    }
+    // 拿不到窗口句柄（窗口被隐藏之类）时如实跳过，不假装验过。
+    if (result.nativeHits.title && result.nativeHits.title.code !== null) {
+      assert.equal(result.nativeHits.title.code, 1,
+        '会话标题必须落在客户区（HTCLIENT=1），落进标题栏就点不开重命名了，实际 '
+        + result.nativeHits.title.name);
+      assert.equal(result.nativeHits.workspace.code, 1,
+        '面包屑工作区按钮同上，实际 ' + result.nativeHits.workspace.name);
+      assert.equal(result.nativeHits.closeBtn.code, 1,
+        '关闭会话按钮同上，实际 ' + result.nativeHits.closeBtn.name);
+      assert.equal(result.nativeHits.blank.code, 2,
+        '工具栏空白处必须仍然是可拖的标题栏（HTCAPTION=2），实际 '
+        + result.nativeHits.blank.name);
+    } else {
+      result.nativeHits.skipped = '拿不到窗口句柄，本次没有做原生命中测试';
+    }
+
+    // 原生命中测试要起 PowerShell 子进程，前台焦点会被抢走；窗口一旦被压到
+    // 后台，requestAnimationFrame 就会被节流甚至暂停，而工具栏的重画正是挂在
+    // rAF 上的。这里把窗口拉回前台再往下走 —— 这是测试环境的副作用，
+    // 不是产品缺陷（用户看不见的时候不重画，切回来自然会补上）。
+    await client.send('Page.bringToFront');
+    await _waitMs(300);
 
     // ── 验收 6：切回主页，面包屑与动作区收回去 ────────────────────────
     await client.eval(`(() => { document.getElementById('btn-home').click(); return true; })()`);
@@ -416,6 +509,7 @@ async function main() {
         nativeTitleBar: result.nativeShape.nativeTitleBar,
       },
       title: result.windowShape.title,
+      nativeHits: result.nativeHits,
       screenshots: result.screenshots,
     }, null, 2));
   } catch (error) {

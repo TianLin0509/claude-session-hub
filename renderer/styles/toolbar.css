@@ -41,7 +41,14 @@
 .app-toolbar input,
 .app-toolbar select,
 .app-toolbar .view-toggle,
-.app-toolbar .header-overflow-menu {
+.app-toolbar .header-overflow-menu,
+/* 会话标题是个可点击的 <span>（点它进重命名），不是 button —— 只按标签名列
+   no-drag 就会把它漏在拖动区里，Windows 于是把这块判成标题栏（HTCAPTION=2），
+   真鼠标点下去是「按住标题栏拖窗口」，重命名永远打不开。
+   而 DOM 的 .click() 不走命中测试，照样能把重命名打开，所以这个洞在只用
+   dispatchEvent 的测试里是隐形的（2026-09-08 评审用原生命中测试逮到）。
+   判据不是「它是不是 button」，是「它看起来可不可点」。 */
+.app-toolbar .terminal-title {
   -webkit-app-region: no-drag;
 }
 
