@@ -685,7 +685,6 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('msg-overlay'),
     document.getElementById('card-session-status'),
     document.getElementById('card-question-nav'),
-    document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
     document.getElementById('card-multi-select-bar'),
@@ -1488,30 +1487,65 @@ function getOrCreateTerminal(sessionId) {
   return cached;
 }
 
-function showTerminal(sessionId, opts = { focus: true }) {
-  suspendInactiveTerminalRenderers(sessionId);
+// ── T6 冷杉 v2 · 统一工具栏 ────────────────────────────────────────────────
+// 原生标题栏隐掉之后，#app-toolbar 就是窗口最顶上那 44px：它既是标题栏
+// （可拖动、双击最大化），也是 T2 那条舞台头部的常驻版。舞台从此没有头部，
+// 终端直接顶到卡片顶边。
+//
+// 为什么面包屑要「按屏幕反推」而不是「谁切视图谁通知」：主页 / 投研 / 学习 /
+// 开发 / 群聊的切换分散在 shell-controller、study.js、ran.js、chuxin.js、
+// meeting-room.js 好几处。逐个插一行刷新调用，只要将来有人新增一个视图忘了插，
+// 工具栏就会停在上一个会话上 —— 那种 bug 不会有人报，只会让人觉得界面「有点不对」。
+// 所以这里只认一件事实：现在屏幕上哪块主面板是可见的。
+const toolbarCrumbEl = document.getElementById('toolbar-crumb');
+const toolbarActionsEl = document.getElementById('toolbar-actions');
+const appToolbarEl = document.getElementById('app-toolbar');
 
-  const session = sessions.get(sessionId);
-  if (!session) return;
+// 面板 → 视图名。预览面板之类的附属层不参与，只看主区那几块。
+const APP_TOOLBAR_VIEWS = [
+  { id: 'chuxin-panel', label: '投研' },
+  { id: 'study-panel', label: '学习' },
+  { id: 'ran-panel', label: '开发' },
+  { id: 'meeting-room-panel', label: '群聊' },
+];
 
-  const cached = getOrCreateTerminal(sessionId);
-  const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
-  const embedded = mountTarget !== terminalPanelEl;
-  if (!embedded) terminalPanelEl.classList.remove('home-active');
+function panelIsVisible(el) {
+  if (!el) return false;
+  if (el.hidden) return false;
+  if (el.style && el.style.display === 'none') return false;
+  // study / ran 的骨架是脚本自建的，没内容时就是个空 div —— 空的不算「在看它」。
+  return el.offsetParent !== null || el.getBoundingClientRect().height > 0;
+}
 
-  // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
-  // before innerHTML clear obliterates them; re-attach after.
-  if (embedded) mountTarget.replaceChildren();
-  else preserveAndClearTerminalPanel();
+// 非会话视图：面包屑只写视图名，动作区整块收起来 —— 文件 / 记忆 / ⋯ / 关闭会话
+// 这四个动作全都是对「某一个会话」做的，主页上没有会话可做。
+function paintAppToolbarForView(label) {
+  if (!toolbarCrumbEl || !toolbarActionsEl) return;
+  toolbarCrumbEl.dataset.mode = 'view';
+  toolbarCrumbEl.title = '';
+  toolbarActionsEl.replaceChildren();
+  toolbarActionsEl.hidden = true;
+  const signature = 'view:' + label;
+  if (toolbarCrumbEl.dataset.signature === signature) return;
+  toolbarCrumbEl.dataset.signature = signature;
+  toolbarCrumbEl.replaceChildren();
+  const name = document.createElement('span');
+  name.className = 'crumb-view-name';
+  name.textContent = label;
+  toolbarCrumbEl.appendChild(name);
+}
 
-  const header = document.createElement('div');
-  header.className = 'terminal-header';
-
+// 会话视图。下面这一整段就是 T2 的舞台头部原样搬上来的：面包屑三段 + 状态点、
+// ⋯ 溢出菜单、文件 / 记忆 / ⋯ / 关闭四个动作。改的只是「填进哪两个常驻节点」。
+function paintAppToolbarForSession(sessionId, session, cached) {
+  if (!toolbarCrumbEl || !toolbarActionsEl) return;
+  toolbarCrumbEl.dataset.signature = 'session:' + sessionId;
   // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
   // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
-  const crumb = document.createElement('div');
-  crumb.className = 'terminal-crumb';
-  if (session.cwd) crumb.title = session.cwd;
+  const crumb = toolbarCrumbEl;
+  crumb.replaceChildren();
+  crumb.dataset.mode = 'session';
+  crumb.title = session.cwd || '';
 
   const workspaceBtn = document.createElement('button');
   workspaceBtn.type = 'button';
@@ -1617,15 +1651,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   closeBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>';
   closeBtn.addEventListener('click', () => { void closeSessionAsSleep(sessionId); });
 
-  // T2：实时量（ctx% · N tok · ⏱）从头部搬到终端卡右上角的 10px 覆盖层。
-  // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
-  // #msg-overlay 会整片盖住终端体 —— 挂进去等于卡片视图下永远看不见。
-  const metricsOverlay = document.createElement('div');
-  metricsOverlay.className = 'terminal-metrics';
-  renderMetricsRow(metricsOverlay, session);
-
-  const headerActions = document.createElement('div');
-  headerActions.className = 'terminal-header-actions';
+  const headerActions = toolbarActionsEl;
+  headerActions.replaceChildren();
+  headerActions.hidden = false;
 
   const filesBtn = document.createElement('button');
   filesBtn.className = 'btn-zoom btn-header-tool btn-file-manager-toggle';
@@ -1646,20 +1674,153 @@ function showTerminal(sessionId, opts = { focus: true }) {
   memoryBtn.setAttribute('aria-label', '打开记忆系统');
 
   headerActions.append(filesBtn, memoryBtn, overflowWrap, closeBtn);
+}
 
-  header.append(crumb, headerActions);
+function currentAppToolbarView() {
+  for (const view of APP_TOOLBAR_VIEWS) {
+    if (panelIsVisible(document.getElementById(view.id))) return view.label;
+  }
+  if (terminalPanelEl && terminalPanelEl.classList.contains('home-active')) return '主页';
+  return null;
+}
+
+// 工具栏的唯一入口：先看是不是某个非会话视图，不是才当会话视图画。
+function refreshAppToolbar() {
+  if (!toolbarCrumbEl) return;
+  const viewLabel = currentAppToolbarView();
+  if (viewLabel) { paintAppToolbarForView(viewLabel); return; }
+  const session = activeSessionId ? sessions.get(activeSessionId) : null;
+  const cached = activeSessionId ? terminalCache.get(activeSessionId) : null;
+  // 会话还没建好终端时不硬画一个半成品头部，按主页处理，等 showTerminal 补上。
+  if (!session || !cached) { paintAppToolbarForView('主页'); return; }
+  paintAppToolbarForSession(activeSessionId, session, cached);
+}
+
+let _appToolbarRefreshRaf = null;
+function scheduleAppToolbarRefresh() {
+  if (_appToolbarRefreshRaf) return;
+  _appToolbarRefreshRaf = requestAnimationFrame(() => {
+    _appToolbarRefreshRaf = null;
+    try { refreshAppToolbar(); } catch (error) {
+      console.warn('[app-toolbar] refresh failed:', error && error.message);
+    }
+  });
+}
+
+// 面板的 display / class 一变就重算。合并到一帧里：切视图那一瞬间几块面板会
+// 连着改好几次属性，不合并等于同一帧内重画七八遍。
+if (typeof MutationObserver === 'function') {
+  const _appToolbarObserver = new MutationObserver(scheduleAppToolbarRefresh);
+  for (const el of [terminalPanelEl, ...APP_TOOLBAR_VIEWS.map(v => document.getElementById(v.id))]) {
+    if (el) _appToolbarObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+  }
+}
+
+// 双击工具栏空白处最大化 / 还原 —— 这是原生标题栏的既有行为，隐掉标题栏之后
+// 必须自己补回来，否则用户会觉得「这条栏坏了」。只认空白处：落在按钮、面包屑
+// 或视图切换上的双击是在操作那个控件，不该顺手改变窗口大小。
+if (appToolbarEl) {
+  appToolbarEl.addEventListener('dblclick', (event) => {
+    if (event.target.closest('button, a, input, select, .terminal-crumb, .view-toggle')) return;
+    void ipcRenderer.invoke('hub:toggle-maximize').catch(() => {});
+  });
+}
+
+// 窗口按钮区的底色 / 符号色跟着皮肤走。颜色在这里读**当前皮肤真实算出来的值**
+// 再发给主进程，主进程不另存一份调色板 —— 否则加一套皮肤要改两个地方，
+// 而那两个地方没有任何机制保证它们一致。
+function syncTitleBarOverlayColors() {
+  try {
+    const probe = getComputedStyle(document.documentElement);
+    const pick = (...names) => {
+      for (const name of names) {
+        const value = String(probe.getPropertyValue(name) || '').trim();
+        if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) return value;
+      }
+      return '';
+    };
+    ipcRenderer.send('hub:titlebar-overlay', {
+      color: pick('--surface-raised', '--bg-secondary'),
+      symbolColor: pick('--fg-muted', '--text-secondary'),
+    });
+  } catch (error) {
+    console.warn('[app-toolbar] titlebar overlay sync failed:', error && error.message);
+  }
+}
+
+if (typeof MutationObserver === 'function') {
+  // theme-controller.js 只负责把 data-theme 写到 <html> 上（本轮不能改它），
+  // 所以这里盯那个属性，而不是去它内部挂回调。
+  new MutationObserver(syncTitleBarOverlayColors)
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+}
+
+// 原生标题栏逃生口：渲染进程开着 nodeIntegration，直接读同一个 env 就够了，
+// 不必为一个布尔值再走一趟 IPC。
+if (process && process.env && process.env.CLAUDE_HUB_NATIVE_TITLEBAR === '1') {
+  appContainerEl.classList.add('native-titlebar');
+}
+
+// 最大化状态由主进程给（渲染层自己量不准：窗口比屏幕大出的那一圈在页面坐标里
+// 是看不见的）。补偿量落在 CSS 变量上，量出来不需要补时它就是 0。
+ipcRenderer.on('hub:window-state', (_event, state) => {
+  const maximized = !!(state && state.maximized);
+  appContainerEl.classList.toggle('window-maximized', maximized);
+});
+
+// 系统窗口按钮到底占多宽，Windows 自己最清楚：WCO 报得出就用真值，
+// 用户改过系统缩放或将来按钮数量变了都不用回来改常量。
+// 但只认「像那么回事」的数：CDP 改过设备尺寸时窗口坐标和页面坐标不是一回事，
+// 算出来会是 376 这种离谱值 —— 宁可用回默认的 138px，也不要一条测出来的布局
+// 和用户看到的不是同一个。
+function syncWindowControlsWidth() {
+  const wco = typeof navigator !== 'undefined' ? navigator.windowControlsOverlay : null;
+  if (!wco || !wco.visible || typeof wco.getTitlebarAreaRect !== 'function') return;
+  const rect = wco.getTitlebarAreaRect();
+  const width = Math.round(window.innerWidth - rect.width - rect.x);
+  if (!Number.isFinite(width) || width < 100 || width > 220) return;
+  appContainerEl.style.setProperty('--app-window-controls-w', `${width}px`);
+}
+if (typeof navigator !== 'undefined' && navigator.windowControlsOverlay
+    && typeof navigator.windowControlsOverlay.addEventListener === 'function') {
+  navigator.windowControlsOverlay.addEventListener('geometrychange', syncWindowControlsWidth);
+}
+syncWindowControlsWidth();
+syncTitleBarOverlayColors();
+scheduleAppToolbarRefresh();
+
+function showTerminal(sessionId, opts = { focus: true }) {
+  suspendInactiveTerminalRenderers(sessionId);
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  const cached = getOrCreateTerminal(sessionId);
+  const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
+  const embedded = mountTarget !== terminalPanelEl;
+  if (!embedded) terminalPanelEl.classList.remove('home-active');
+
+  // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
+  // before innerHTML clear obliterates them; re-attach after.
+  if (embedded) mountTarget.replaceChildren();
+  else preserveAndClearTerminalPanel();
+
+  // T6：舞台不再自己画头部 —— 面包屑和四个动作都在窗口顶部那条常驻工具栏上。
+  // 嵌入模式（初心投研把同一套 xterm 挂到别的容器里）没有工具栏可填，跳过。
+  if (!embedded) paintAppToolbarForSession(sessionId, session, cached);
+
+  // 实时量（ctx% · N tok · ⏱）仍然是终端卡右上角的 10px 覆盖层。
+  // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
+  // #msg-overlay 会整片盖住终端体 —— 挂进去等于卡片视图下永远看不见。
+  const metricsOverlay = document.createElement('div');
+  metricsOverlay.className = 'terminal-metrics';
+  renderMetricsRow(metricsOverlay, session);
 
   const termContainer = document.createElement('div');
   termContainer.className = 'terminal-container';
   termContainer.addEventListener('click', () => cached.terminal.focus());
 
-  mountTarget.append(header, metricsOverlay, termContainer);
-  // 视图切换从右上角浮层收进头部中央。节点仍然是 index.html 里那一个，
-  // preserveAndClearTerminalPanel 跨会话保住它，这里只改它挂在哪。
-  if (!embedded) {
-    const viewToggle = document.querySelector('.view-toggle');
-    if (viewToggle) header.insertBefore(viewToggle, headerActions);
-  }
+  mountTarget.append(metricsOverlay, termContainer);
   if (!embedded && fileManagerPanel) {
     void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel });
   }
@@ -1909,7 +2070,7 @@ function syncTurnPresentationToSession(sessionId, presentation, turn) {
     };
   }
   if (sessionId !== activeSessionId) return;
-  const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
+  const target = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
   if (target) paintTerminalRuntimeStatus(target, session);
   if (adoptedLiveActivities) queueMicrotask(() => rerenderTurn(turn.id));
 }
@@ -4129,7 +4290,7 @@ function composerBarForTicker() {
 }
 
 function syncTerminalRuntimeStatusTicker(session) {
-  const statusElement = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
+  const statusElement = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
   // composer 的状态行有「正在工作 · 38s」和「N 分钟前完成上一轮」两句会自己走的文案，
   // 所以只要输入栏在，秒表就得走 —— 不再只在卡片视图下跳。
   // 面包屑的状态点 T2 起在两个视图里都挂在头部，所以它也不再按视图分叉。
@@ -4145,9 +4306,7 @@ function syncTerminalRuntimeStatusTicker(session) {
       return;
     }
     const active = sessions.get(activeSessionId);
-    const target = terminalPanelEl
-      ? terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot')
-      : null;
+    const target = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
     const bar = composerBarForTicker();
     if (!active || (!target && !bar)) {
       stopTerminalRuntimeStatusTicker();
@@ -4219,7 +4378,7 @@ function updateFloatingBarState() {
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
-  const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-crumb-dot');
+  const status = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
   if (status) paintTerminalRuntimeStatus(status, s);
   syncTerminalRuntimeStatusTicker(s);
   updateCardSessionStatus(s);
@@ -5885,7 +6044,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
       session.title = cleanSessionName;
       session.claudeSessionName = cleanSessionName;
       if (payload.sessionId === activeSessionId) {
-        const el = terminalPanelEl.querySelector('.terminal-title');
+        const el = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-title');
         if (el) el.textContent = cleanSessionName;
       }
     }
@@ -6013,7 +6172,7 @@ function paintCrumbWorkspace(btn, session) {
 function updateActiveCrumbWorkspace() {
   const session = activeSessionId ? sessions.get(activeSessionId) : null;
   if (!session || !terminalPanelEl) return;
-  const btn = terminalPanelEl.querySelector('.terminal-crumb .crumb-workspace');
+  const btn = toolbarCrumbEl && toolbarCrumbEl.querySelector('.crumb-workspace');
   if (btn) paintCrumbWorkspace(btn, session);
 }
 
@@ -7434,7 +7593,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     // "Codex 1") until the user switched away and back. Keep both views on the
     // same authoritative session title without disturbing an in-progress
     // inline rename (the span is absent while its input is mounted).
-    const activeTitle = terminalPanelEl.querySelector('.terminal-title');
+    const activeTitle = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-title');
     if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
     // 工作区标签也是 main 会在首轮之后改写的字段（临时区的名字换成正式项目名）。
     // T2 之前它长在 metrics 的目录 chip 上，靠下面那行 updateActiveMetricsRow 顺带

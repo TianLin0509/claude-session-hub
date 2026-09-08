@@ -943,6 +943,76 @@ function ensureAgentLeagueTray() {
   return agentLeagueTray;
 }
 
+// T6：窗口按钮区的底色与符号色。默认值对应 dark 皮肤，换皮肤时由渲染层把
+// **当前皮肤真实算出来的颜色**发过来（见 hub:titlebar-overlay）—— 主进程不再
+// 维护第二份调色板，否则加一套皮肤就得改两个地方，迟早对不上。
+const HUB_TITLE_BAR_OVERLAY_DEFAULT = Object.freeze({
+  color: '#0f1319',
+  symbolColor: '#7f8a9a',
+  height: 44,
+});
+
+// 合法的 #rgb / #rrggbb。渲染层送来的是 getComputedStyle 的结果，
+// 主题里偶尔会是 rgb() 或带 alpha 的写法，setTitleBarOverlay 不认，
+// 认不出就退回默认值 —— 宁可颜色不跟，也不要让整个调用抛异常。
+function normalizeOverlayColor(value, fallback) {
+  const text = String(value || '').trim();
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(text) ? text : fallback;
+}
+
+// 最后一次真正应用成功的 overlay 颜色。E2E 要断言「换皮肤时窗口按钮区跟着变」，
+// 而这件事在页面里看不见（那三个按钮是 Windows 画的，不在 DOM 里）—— 不记一笔
+// 就只能靠截图比色，那既不稳也说不清到底是哪一步没生效。
+let lastAppliedTitleBarOverlay = null;
+
+function applyHubTitleBarOverlay(colors = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  // 原生标题栏模式下没有 overlay 可改，调了会抛。
+  if (mainWindow._hubNativeTitleBar) return null;
+  const next = {
+    color: normalizeOverlayColor(colors.color, HUB_TITLE_BAR_OVERLAY_DEFAULT.color),
+    symbolColor: normalizeOverlayColor(colors.symbolColor, HUB_TITLE_BAR_OVERLAY_DEFAULT.symbolColor),
+    height: HUB_TITLE_BAR_OVERLAY_DEFAULT.height,
+  };
+  try {
+    mainWindow.setTitleBarOverlay(next);
+    lastAppliedTitleBarOverlay = next;
+    return next;
+  } catch (error) {
+    // 非 Windows 平台、或窗口已经在销毁流程里 —— 换个颜色而已，不值得让它冒泡。
+    console.warn('[titlebar] setTitleBarOverlay failed:', error && error.message);
+    return null;
+  }
+}
+
+// 窗口的真实形态。E2E 专用：页面里问不出「我上面有没有一条系统标题栏」，
+// 只有主进程知道。
+ipcMain.handle('debug:window-shape', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  return {
+    title: mainWindow.getTitle(),
+    nativeTitleBar: !!mainWindow._hubNativeTitleBar,
+    maximized: mainWindow.isMaximized(),
+    overlay: lastAppliedTitleBarOverlay,
+  };
+});
+
+ipcMain.on('hub:titlebar-overlay', (_event, colors) => {
+  applyHubTitleBarOverlay(colors || {});
+});
+
+// 双击工具栏空白处最大化 / 还原。原生标题栏本来就有这个行为，隐掉它之后必须
+// 自己补 —— 少了这一下，用户会觉得顶部这条栏「是个假标题栏」。
+ipcMain.handle('hub:toggle-maximize', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  // 返回的是「这次做了哪个动作」，不是做完之后的状态：Windows 上
+  // maximize() 是异步的，紧跟着读 isMaximized() 拿到的还是旧值，
+  // 那个返回值会稳定地骗人。真状态由 maximize / unmaximize 事件推给渲染层。
+  const action = mainWindow.isMaximized() ? 'unmaximize' : 'maximize';
+  mainWindow[action]();
+  return action;
+});
+
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
@@ -957,6 +1027,14 @@ function createWindow() {
   // 2026-05-03 道雪：标题带 PID，方便桌面同时存在多个 Hub 窗口（生产+测试）时
   //   一眼区分哪个对应哪个 PID — 调试时不再需要 Get-Process 反查。
   const _hubTitle = `AI 群聊 Hub：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
+  // T6 冷杉 v2：隐藏原生标题栏，让渲染层那条 44px 工具栏直接顶到窗口顶边。
+  // 三个系统窗口按钮仍由 Windows 自己画（titleBarOverlay），所以最大化 / 还原 /
+  // 关闭的行为、Snap Layouts、右键系统菜单全部保持原生，不需要 Hub 自己复刻一套。
+  //
+  // 逃生口：CLAUDE_HUB_NATIVE_TITLEBAR=1 时整段跳过，回到原生标题栏。
+  // 无边框窗口出问题（远程桌面、某些 Windows 版本、辅助工具）时，用户还有一条
+  // 不改代码就能开回去的路 —— Hub 是每天要用的工具，不能只有一种能开的形态。
+  const nativeTitleBar = process.env.CLAUDE_HUB_NATIVE_TITLEBAR === '1';
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -965,6 +1043,10 @@ function createWindow() {
     icon: winIcon,
     show: false,
     autoHideMenuBar: true,
+    ...(nativeTitleBar ? {} : {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { ...HUB_TITLE_BAR_OVERLAY_DEFAULT },
+    }),
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -972,6 +1054,22 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  mainWindow._hubNativeTitleBar = nativeTitleBar;
+  // 工具栏要知道窗口是不是最大化：Windows 最大化一个隐藏标题栏的窗口时，
+  // 窗口会比屏幕大出一圈边框，顶部那几像素会被切掉。渲染层拿这个状态决定
+  // 要不要补那一圈，而不是靠猜。
+  const emitWindowState = () => {
+    sendToRenderer('hub:window-state', {
+      maximized: !mainWindow.isMaximized ? false : mainWindow.isMaximized(),
+      fullScreen: !mainWindow.isFullScreen ? false : mainWindow.isFullScreen(),
+      nativeTitleBar,
+    });
+  };
+  mainWindow.on('maximize', emitWindowState);
+  mainWindow.on('unmaximize', emitWindowState);
+  mainWindow.on('enter-full-screen', emitWindowState);
+  mainWindow.on('leave-full-screen', emitWindowState);
+  mainWindow.webContents.on('did-finish-load', emitWindowState);
   if (!desktopNotificationController) {
     desktopNotificationController = createDesktopNotificationController({
       BrowserWindow,

@@ -13,6 +13,10 @@
 //
 // 这份测试守住「哪些节点不许再回来」和「面包屑到底由什么组成」。它是源码契约
 // 测试，不起 DOM —— 真实渲染由 e2e-card-runtime-status-cdp.js 那条链路验。
+//
+// 2026-09-08 T6：这条 44px 从舞台内部提到了窗口顶部的 #app-toolbar（原生标题栏
+// 隐掉，它同时充当标题栏）。上面写的三问一条没变，只是宿主换了 —— 所以这份
+// 契约继续守「内容」，节点顺序和拖动标记那部分归 unit-app-toolbar-contract。
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -38,7 +42,8 @@ assert.doesNotMatch(renderer, /terminal-title-row|terminal-title-section/,
   '头部压成单行后不再有 title-row / title-section 两层包裹');
 
 // ── 面包屑的结构 ───────────────────────────────────────────────────────
-assert.match(renderer, /crumb\.className = 'terminal-crumb'/, '面包屑容器必须存在');
+assert.match(renderer, /const crumb = toolbarCrumbEl;/,
+  'T6 起面包屑是工具栏上的常驻节点，不再每次新建');
 assert.match(renderer, /workspaceBtn\.className = 'crumb-workspace'/, '面包屑第一段是工作区按钮');
 assert.match(renderer, /crumbSep\.className = 'crumb-sep'/, '两段之间要有分隔符');
 assert.match(renderer, /titleSpan\.className = 'terminal-title'/, '会话标题保留 .terminal-title');
@@ -54,8 +59,8 @@ assert.match(renderer, /function openSessionFilePanel\(session\)/,
 
 // 整条面包屑 hover 给完整 cwd。标题自己不设 title，靠 HTML tooltip 往祖先找，
 // 否则悬在标题上会被一个更没用的提示挡掉。
-assert.match(renderer, /if \(session\.cwd\) crumb\.title = session\.cwd;/,
-  '整条面包屑 hover 显示完整 cwd');
+assert.match(renderer, /crumb\.title = session\.cwd \|\| '';/,
+  '整条面包屑 hover 显示完整 cwd（常驻节点要能被清空，否则切到没目录的会话还挂着上一个的）');
 
 // ── 状态点只上色，不再铺四个子节点 ──────────────────────────────────────
 const paintStart = renderer.indexOf('function paintTerminalRuntimeStatus(');
@@ -68,8 +73,9 @@ assert.doesNotMatch(paintBody, /createElement/,
 
 // ── 实时量覆盖层 ───────────────────────────────────────────────────────
 assert.match(renderer, /metricsOverlay\.className = 'terminal-metrics'/, '实时量覆盖层必须存在');
-assert.match(renderer, /mountTarget\.append\(header, metricsOverlay, termContainer\)/,
-  '覆盖层挂在面板上而不是终端体里 —— 挂进去卡片视图会被 msg-overlay 整片盖住');
+assert.match(renderer, /mountTarget\.append\(metricsOverlay, termContainer\)/,
+  '覆盖层挂在面板上而不是终端体里 —— 挂进去卡片视图会被 msg-overlay 整片盖住；'
+  + 'T6 之后舞台里只剩这两样，头部已经上移到工具栏');
 const metricsStart = renderer.indexOf('function renderMetricsRow(');
 const metricsBody = renderer.slice(metricsStart, renderer.indexOf('\n}', metricsStart));
 assert.match(metricsBody, /ctx \$\{pct\}%/, '覆盖层要有 ctx%');
@@ -97,11 +103,15 @@ assert.match(sessionUpdatedBody, /local\.workspaceLabel = session\.workspaceLabe
 assert.match(sessionUpdatedBody, /updateActiveCrumbWorkspace\(\);/,
   '收到新的 workspaceLabel 之后必须重画面包屑，否则一直显示旧标签');
 
-// ── 视图切换进头部中央 ─────────────────────────────────────────────────
-assert.match(renderer, /header\.insertBefore\(viewToggle, headerActions\)/,
-  '视图切换收进头部，排在动作区之前 = 视觉上的中央');
-assert.match(renderer, /document\.querySelector\('\.view-toggle'\)/,
-  '仍然复用 index.html 里那一个节点，靠 preserveAndClearTerminalPanel 跨会话保留');
+// ── 视图切换 ───────────────────────────────────────────────────────────
+// T6 之后它是 index.html 里 #app-toolbar 下的静态节点，renderer 不再搬它，
+// 也不该再由 preserveAndClearTerminalPanel 保护 —— 它已经不在舞台里了，
+// 留在名单里反而会被「清舞台」那一步搬回舞台。
+const preserveStart = renderer.indexOf('function preserveAndClearTerminalPanel()');
+assert.ok(preserveStart > 0, '找不到 preserveAndClearTerminalPanel');
+const preserveBody = renderer.slice(preserveStart, renderer.indexOf('\n}', preserveStart));
+assert.doesNotMatch(preserveBody, /view-toggle/,
+  '视图切换已搬出舞台，不该再出现在 preserve 名单里');
 
 // ── ⋯ 菜单收纳缩放与完成通知 ──────────────────────────────────────────
 assert.match(renderer, /mkOverflowItem\('放大界面'/);
@@ -144,6 +154,6 @@ assert.match(summary, /function buildSessionStatusSummary\(session\)[\s\S]{0,400
 // ── 样式表挂上了 ───────────────────────────────────────────────────────
 assert.match(stylesCss, /@import url\('\.\/styles\/toolbar\.css'\);/, 'toolbar.css 必须被引入');
 assert.match(toolbarCss, /--stage-card-radius: 12px;/, '舞台卡 12px 圆角');
-assert.match(toolbarCss, /--stage-header-h: 44px;/, '头部单行 44px');
+assert.match(toolbarCss, /--app-toolbar-h: 44px;/, '工具栏单行 44px');
 
 console.log('terminal header slim contract ok');
