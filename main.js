@@ -1332,13 +1332,27 @@ registerGroupchatTurnIpc(ipcMain, {
 });
 
 // Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
+// 仅测试启用的钩子（任务书 I 层）：隔离数据目录 + 显式 env 两个条件同时成立才加载，
+// 否则一律是 null，生产走的还是真 dispatcher 和真 sessionManager。见模块头注释。
+let __testHooks = null;
+try {
+  __testHooks = require('./main/groupchat/test-dispatch-stub.js').loadTestHooks({
+    isIsolatedHub: require('./core/data-dir.js').isIsolatedHub,
+    getHubDataDir, meetingManager, logger: console,
+  });
+  if (__testHooks) __testHooks.registerIpc(ipcMain);
+} catch (e) { console.warn('[test-hooks] 加载失败（忽略）:', e && e.message); }
+
 try {
   global.__loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
-    getDispatcher: () => groupChatDispatcher,
+    getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    ...(__testHooks && __testHooks.stepTextWait ? { stepTextWait: __testHooks.stepTextWait } : {}),
     getOrchestrator: (meetingId) => groupchat.getOrchestrator(getHubDataDir(), meetingId),
     // 阶段交接文档落在 <Hub 数据目录>/task-docs/<meetingId>/；显式注入，隔离实例才隔得开。
     getHubDataDir,
-    meetingManager, sessionManager, sendToRenderer,
+    meetingManager,
+    sessionManager: __testHooks ? __testHooks.wrapSessionManager(sessionManager) : sessionManager,
+    sendToRenderer,
     // resumeSession is initialized later in this module; the closure is only
     // invoked after startup, when the provider-native resume handler exists.
     resumeSession: (meta) => resumeSession(meta),

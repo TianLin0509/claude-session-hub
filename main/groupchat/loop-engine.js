@@ -243,6 +243,17 @@ function createLoopEngine(deps) {
     return Object.assign({ spec, delivery }, outcome);
   }
 
+  /**
+   * 预扫结果里，哪些是「必须先让人看一眼」而不是「继续派工」的。
+   *
+   * 2026-09-08 合并位提的阻断：已接收的完成文件被人事后改过时，引擎原来先照常派一次工
+   * （真实 CLI 转一整轮），等到闸门那一步才报「待核对」。既白烧一轮，也给 agent 一个
+   * 它根本无从下手的任务。判据在派发之前就已经拿到了，就该在派发之前用。
+   */
+  function needsHumanBeforeDispatch(outcome) {
+    return !!outcome && outcome.status === 'changed_after_accept';
+  }
+
   function deliveryAccepted(outcome) {
     return !!outcome && (outcome.status === 'accepted' || outcome.status === 'duplicate');
   }
@@ -825,6 +836,18 @@ function createLoopEngine(deps) {
         // 派发前先重扫一次预期完成文件：丢事件、Hub 重启后文件其实已经在了，
         // 都靠这一次重读认出来 —— 不要求 agent 再改一次名，也不重复派工（B04 / D02 / D03）。
         const builderPreAccepted = docsOn ? checkDeliveryOnce(meetingId, docsDir, builderPos) : null;
+        if (needsHumanBeforeDispatch(builderPreAccepted)) {
+          const spec = DOCS.docSpecForPos(builderPos) || {};
+          state.status = 'paused';
+          state.currentStep = 'builder';
+          state.lastError = {
+            stage: 'builder', reason: 'handoff_' + builderPreAccepted.status,
+            detail: builderPreAccepted.reason || '', doc: spec.done || '', dir: docsDir, at: Date.now(),
+          };
+          logger.log('[loop-engine] 已接收的协作手册被改动，派发前停在待核对');
+          persistOrPause();
+          break;
+        }
         const builderEvidence = deliveryAccepted(builderPreAccepted)
           ? null : stepEvidence(meetingId, state.runId, builderStepIndex);
         if (deliveryAccepted(builderPreAccepted)) {
@@ -959,6 +982,18 @@ function createLoopEngine(deps) {
         let rRes = null;
         const reviewerStepIndex = state.round * 2 + 1;
         const reviewerPreAccepted = docsOn ? checkDeliveryOnce(meetingId, docsDir, reviewerPos) : null;
+        if (needsHumanBeforeDispatch(reviewerPreAccepted)) {
+          const spec = DOCS.docSpecForPos(reviewerPos) || {};
+          state.status = 'paused';
+          state.currentStep = 'reviewer';
+          state.lastError = {
+            stage: 'reviewer', reason: 'handoff_' + reviewerPreAccepted.status,
+            detail: reviewerPreAccepted.reason || '', doc: spec.done || '', dir: docsDir, at: Date.now(),
+          };
+          logger.log('[loop-engine] 已接收的合并手册被改动，派发前停在待核对');
+          persistOrPause();
+          break;
+        }
         const reviewerEvidence = deliveryAccepted(reviewerPreAccepted)
           ? null : stepEvidence(meetingId, state.runId, reviewerStepIndex);
         if (deliveryAccepted(reviewerPreAccepted)) {
@@ -1200,7 +1235,10 @@ function createLoopEngine(deps) {
       });
     };
     try {
-      const shouldDispatch = options.dispatch !== false;
+      // 派发前先看一眼：报告可能已经在了（丢事件、上次被停住、用户手动放好）。
+      // 已经能接收就别再派一次开题 —— 那等于让它把同一份任务书重写一遍。
+      const preAccepted = checkDeliveryOnce(meetingId, dir, 0);
+      const shouldDispatch = options.dispatch !== false && !deliveryAccepted(preAccepted);
       if (shouldDispatch) {
         saveKickoff({
           devPhase: 'kickoff',
@@ -1224,7 +1262,7 @@ function createLoopEngine(deps) {
       }
 
       // 只重扫时给一次读取的预算就够：开机不为每个开题房间挂五分钟的轮询。
-      const outcome = await awaitDelivery(meetingId, dir, 0, {
+      const outcome = deliveryAccepted(preAccepted) ? preAccepted : await awaitDelivery(meetingId, dir, 0, {
         isAborted: () => !!entry.abort,
         capMs: shouldDispatch ? undefined : 1,
       });

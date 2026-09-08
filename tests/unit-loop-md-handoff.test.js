@@ -337,6 +337,46 @@ function writeDoc(docsDir, pos, body) {
       '换了内容就是「已接收的交付被改动」，仍然是待核对，不能自己变成新裁决');
   });
 
+  await t('阻断 已接收的协作手册被改动 → 派发前就停在待核对，不白烧一次工作位', async () => {
+    let builderDispatches = 0;
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') { builderDispatches += 1; if (builderDispatches === 1) writeDoc(docsDir, 1, BUILD_DOC); }
+      },
+    });
+    const first = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(first.lastError.stage, 'reviewer', '第一轮停在等审查手册');
+    // 有人事后改了已经接收的协作手册
+    writeDoc(h.docsDir, 1, BUILD_DOC + ' —— 后来又被改了一版');
+    h.turnCalls.length = 0;
+    const resumed = await h.engine.runLoop('mtg', null, { ...first, status: 'running', stepAttempt: 0, lastError: null }, {});
+    assert.strictEqual(resumed.status, 'paused');
+    assert.strictEqual(resumed.lastError.reason, 'handoff_changed_after_accept');
+    assert.strictEqual(resumed.lastError.stage, 'builder');
+    assert.strictEqual(h.turnCalls.length, 0,
+      '待核对是给人看的，不该先白派一次真实 CLI 轮次再说「其实停下来了」');
+  });
+
+  await t('阻断 已接收的合并手册被改动 → 同样在派发前停住，不重派审查', async () => {
+    let reviewerDispatches = 0;
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        else if (++reviewerDispatches === 1) writeDoc(docsDir, 2, REVIEW_FAIL);
+      },
+      maxRounds: 1,
+    });
+    const first = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(reviewerDispatches, 1);
+    writeDoc(h.docsDir, 2, REVIEW_FAIL + ' —— 事后又补了两句');
+    h.turnCalls.length = 0;
+    const resumed = await h.engine.runLoop('mtg', null, { ...first, status: 'running', round: 0, stepAttempt: 0, lastError: null, posBase: 1 }, {});
+    assert.strictEqual(resumed.lastError.reason, 'handoff_changed_after_accept');
+    assert.strictEqual(resumed.lastError.stage, 'reviewer');
+    assert.strictEqual(reviewerDispatches, 1, '审查不许被重派');
+    assert.strictEqual(h.turnCalls.length, 0, '一次派发都不该发生');
+  });
+
   await t('停止不是砖头：用户点「继续」清掉意图后，任务能接着往下走', async () => {
     let engineRef = null;
     let stopped = false;
@@ -375,6 +415,34 @@ function writeDoc(docsDir, pos, body) {
     await h.engine.runLoop('mtg', '做点事', null, {});
     assert.ok(fs.existsSync(path.join(h.docsDir, '已完成-阶段1协作手册.md')), '文档不许被清掉');
     assert.ok(DOCS.acceptedAt(h.getWorkflow().taskDocs, 1), '接收凭据也要留着：停止不等于把交付作废');
+  });
+
+  await t('阻断 开题已交付但被停住 → 清掉停止意图后重扫即可开工，不重写任务书', async () => {
+    let engineRef = null;
+    let kickoffDispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      onDispatch: (args, docsDir) => {
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') {
+          kickoffDispatches += 1;
+          engineRef.stopLoop('mtg', { interrupt: false });
+          writeDoc(docsDir, 0, KICKOFF_DOC);
+        } else if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        else writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    engineRef = h.engine;
+    const stoppedOutcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(h.getWorkflow().kickoff.status, 'accepted_stopped');
+    assert.notStrictEqual(stoppedOutcome.autoStart, true);
+
+    // 用户点「重发本轮」：IPC 先清停止意图，再以 dispatch:false 重扫
+    h.engine.clearStopIntent('mtg');
+    const resumed = await h.engine.runKickoff('mtg', { authorMemberId: 'm1', dispatch: false });
+    assert.strictEqual(resumed.ok, true);
+    assert.strictEqual(resumed.autoStart, true, '已接收的报告要能直接接着开工');
+    assert.strictEqual(kickoffDispatches, 1, '不许再派一次开题：任务书已经交过了');
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
   });
 
   await t('阻断3 任务目录不可用 → 暂停并说明，不退回聊天判定', async () => {
