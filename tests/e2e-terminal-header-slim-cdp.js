@@ -71,9 +71,11 @@ async function screenshot(client, target) {
 // 面包屑的 cwd tooltip 是本卡刻意保留的一处，所以按节点分类计数而不是一刀切。
 const STAGE_PROBE = `(() => {
   const panel = document.getElementById('terminal-panel');
-  const header = panel.querySelector('.terminal-header');
-  const crumb = panel.querySelector('.terminal-crumb');
-  const dot = panel.querySelector('.terminal-crumb-dot');
+  // T6（2026-09-08）：这条 44px 从舞台内部提到了窗口顶部的 #app-toolbar。
+  // 内容契约一条没变，探针只是换个地方找同样的东西。
+  const header = document.getElementById('app-toolbar');
+  const crumb = document.getElementById('toolbar-crumb');
+  const dot = crumb && crumb.querySelector('.terminal-crumb-dot');
   const metrics = panel.querySelector('.terminal-metrics');
   const footer = document.getElementById('card-session-status');
   const rectOf = element => {
@@ -94,7 +96,7 @@ const STAGE_PROBE = `(() => {
     return total + (haystack.includes(needle) ? 1 : 0);
   }, 0);
   // 状态行 + 覆盖层 + 头部动作区：这三处不许再出现模型名或目录。
-  const stageNodes = [footer, metrics, panel.querySelector('.terminal-header-actions')];
+  const stageNodes = [footer, metrics, document.getElementById('toolbar-actions')];
   return {
     headerHeight: header ? Math.round(header.getBoundingClientRect().height) : 0,
     headerChildren: header ? Array.from(header.children).map(child => child.className) : [],
@@ -131,36 +133,38 @@ const STAGE_PROBE = `(() => {
     },
     viewToggle: {
       inHeader: !!header?.querySelector(':scope > .view-toggle'),
-      visible: visible(panel.querySelector('.view-toggle')),
-      active: panel.querySelector('.view-toggle-btn.active')?.dataset.view || '',
+      inPanel: !!panel.querySelector('.view-toggle'),
+      visible: visible(header?.querySelector('.view-toggle')),
+      active: document.querySelector('#app-toolbar .view-toggle-btn.active')?.dataset.view || '',
       // 「中央」= 分段控件的中线对齐头部的中线，允许 1px 取整误差。
       centerOffset: (() => {
-        const t = rectOf(panel.querySelector('.view-toggle'));
+        const t = rectOf(header?.querySelector('.view-toggle'));
         const h = rectOf(header);
         return !t || !h ? null : Math.round((t.left + t.right) / 2 - (h.left + h.right) / 2);
       })(),
       overlapsCrumb: (() => {
-        const t = rectOf(panel.querySelector('.view-toggle'));
+        const t = rectOf(header?.querySelector('.view-toggle'));
         const c = rectOf(crumb);
         return !!t && !!c && c.right > t.left;
       })(),
       overlapsActions: (() => {
         const t = rectOf(panel.querySelector('.view-toggle'));
-        const a = rectOf(panel.querySelector('.terminal-header-actions'));
+        const a = rectOf(document.getElementById('toolbar-actions'));
         return !!t && !!a && a.left < t.right;
       })(),
     },
-    // 动作区必须贴着头部右边缘，不能跟在面包屑后面。
+    // 动作区必须贴到右端，不能跟在面包屑后面。T6 之后「右端」= 系统窗口按钮
+    // 留位的左边缘，不是工具栏的右边缘 —— 贴到工具栏右边缘就被三个系统键压住了。
     actionsFlushRight: (() => {
-      const a = rectOf(panel.querySelector('.terminal-header-actions'));
-      const h = rectOf(header);
-      return !!a && !!h && Math.round(h.right - a.right) <= 12;
+      const a = rectOf(document.getElementById('toolbar-actions'));
+      const w = rectOf(document.getElementById('toolbar-window-controls'));
+      return !!a && !!w && Math.round(w.left - a.right) <= 14 && a.right <= w.left + 1;
     })(),
     // 头部 band 里不许再有别的浮层压着（「复制对话」原来就压在这条 band 上）。
     headerBandIntruders: (() => {
       const h = rectOf(header);
       if (!h) return [];
-      return ['recent-turn-copy', 'card-multi-select-bar', 'completion-notification-toggle']
+      return ['recent-turn-copy', 'card-multi-select-bar', 'completion-notification-toggle', 'quota-ticker']
         .map(id => document.getElementById(id))
         .filter(node => {
           if (!node || !visible(node)) return false;
@@ -187,8 +191,9 @@ const STAGE_PROBE = `(() => {
       return {
         marginTop: style.marginTop,
         marginRight: style.marginRight,
-        headerRadius: header ? getComputedStyle(header).borderTopLeftRadius : '',
-        containerRadius: getComputedStyle(panel.querySelector('.terminal-container')).borderBottomLeftRadius,
+        // T6：舞台没有头部了，圆上角的是终端体本身。
+        headerRadius: getComputedStyle(panel.querySelector('.terminal-container')).borderTopLeftRadius,
+        containerRadius: getComputedStyle(panel.querySelector('.terminal-container')).borderTopRightRadius,
         insideHost: !!p && !!h && p.right <= h.right && p.top >= h.top,
       };
     })(),
@@ -294,21 +299,27 @@ async function main() {
     // ── 验收 1：头部只剩面包屑 + 视图切换 + 四个动作 ──────────────────
     assert.deepEqual(result.card.removed, { status: 0, modelBadge: 0, metricCwd: 0, metricsRow: 0 },
       '被删的三个节点不许还在 DOM 里：' + JSON.stringify(result.card.removed));
-    assert.equal(result.card.headerChildren.length, 3,
-      '头部只能有三块：面包屑 / 视图切换 / 动作区，实际 ' + JSON.stringify(result.card.headerChildren));
-    assert.ok(result.card.headerChildren[0].includes('terminal-crumb'));
-    assert.ok(result.card.headerChildren[1].includes('view-toggle'));
-    assert.ok(result.card.headerChildren[2].includes('terminal-header-actions'));
+    // T6：工具栏比 T2 的头部多两块 —— 最左的侧栏开关、最右给系统窗口按钮的留位。
+    assert.equal(result.card.headerChildren.length, 5,
+      '工具栏五块：侧栏开关 / 面包屑 / 视图切换 / 动作区 / 系统按钮留位，实际 '
+      + JSON.stringify(result.card.headerChildren));
+    assert.ok(result.card.headerChildren[0].includes('btn-expand-sidebar'));
+    assert.ok(result.card.headerChildren[1].includes('terminal-crumb'));
+    assert.ok(result.card.headerChildren[2].includes('view-toggle'));
+    assert.ok(result.card.headerChildren[3].includes('terminal-header-actions'));
+    assert.ok(result.card.headerChildren[4].includes('toolbar-window-controls'));
+    assert.equal(result.card.viewToggle.inPanel, false, '视图切换不许在舞台里再留一份');
     assert.equal(result.card.headerHeight, 44, '头部单行 44px，实际 ' + result.card.headerHeight);
     assert.equal(Math.abs(result.card.viewToggle.centerOffset) <= 1, true,
       '视图切换要落在头部中线上，偏移 ' + result.card.viewToggle.centerOffset);
-    assert.equal(result.card.viewToggle.overlapsCrumb, false, '面包屑不许顶到视图切换上');
+    assert.equal(result.card.viewToggle.overlapsCrumb, false,
+      '面包屑不许顶到视图切换上');
     assert.equal(result.card.viewToggle.overlapsActions, false, '动作区不许压在视图切换上');
-    assert.equal(result.card.actionsFlushRight, true, '动作区必须贴头部右边缘');
+    assert.equal(result.card.actionsFlushRight, true, '动作区必须贴到系统窗口按钮留位的左边');
     assert.deepEqual(result.card.headerBandIntruders, [],
       '头部那条 44px band 里不许还有别的浮层：' + JSON.stringify(result.card.headerBandIntruders));
-    // 可见按钮 = 卡片 / PTY 两个切换 + 文件 / 记忆 / ⋯ / × 四个动作 + 面包屑工作区
-    assert.equal(result.card.headerControls.length, 7, JSON.stringify(result.card.headerControls));
+    // 可见按钮 = 侧栏开关 + 面包屑工作区 + 卡片 / PTY 两个切换 + 文件 / 记忆 / ⋯ / × 四个动作
+    assert.equal(result.card.headerControls.length, 8, JSON.stringify(result.card.headerControls));
 
     // ── 验收 2：面包屑结构 ────────────────────────────────────────────
     assert.deepEqual(result.card.crumb.order, ['crumb-workspace', 'crumb-sep', 'terminal-title', 'terminal-crumb-dot']);
@@ -389,7 +400,7 @@ async function main() {
     await client.eval(`document.querySelector('.terminal-header-actions .header-overflow-wrap .btn-zoom').click()`);
     await _waitMs(200);
     result.menu = await client.eval(`(() => {
-      const menu = document.querySelector('.terminal-header .header-overflow-menu');
+      const menu = document.querySelector('#app-toolbar .header-overflow-menu');
       const notify = menu?.querySelector('.ho-notify');
       return {
         open: !!menu && menu.style.display === 'block',
@@ -429,10 +440,10 @@ async function main() {
     // 菜单项走的是同一条路 —— 所以这一步放在最后做，免得弹窗盖住前面的截图。
     await client.eval(`document.querySelector('.terminal-header-actions .header-overflow-wrap .btn-zoom').click()`);
     await _waitMs(200);
-    await client.eval(`document.querySelector('.terminal-header .header-overflow-menu .ho-notify').click()`);
+    await client.eval(`document.querySelector('#app-toolbar .header-overflow-menu .ho-notify').click()`);
     await _waitMs(500);
     result.notifyClick = await client.eval(`(() => ({
-      menuClosed: document.querySelector('.terminal-header .header-overflow-menu')?.style.display === 'none',
+      menuClosed: document.querySelector('#app-toolbar .header-overflow-menu')?.style.display === 'none',
       toggleState: document.getElementById('completion-notification-toggle').dataset.state,
       // 设置弹窗就是 #config-modal，关掉时挂 .hidden。
       anyModalOpen: !document.getElementById('config-modal')?.classList.contains('hidden'),
@@ -513,7 +524,7 @@ async function main() {
     assert.equal(result.switched.crumb.workspaceText, '第二工作区');
     assert.equal(result.switched.crumb.titleText, '第二个会话');
     assert.deepEqual(result.switched.headerBandIntruders, []);
-    assert.equal(result.switched.headerChildren.length, 3);
+    assert.equal(result.switched.headerChildren.length, 5);
 
     // ── 验收 13：回主页不受影响 ─────────────────────────────────────
     // 舞台卡的外距与「隐藏完成通知」两条规则都刻意排除了 .home-active。

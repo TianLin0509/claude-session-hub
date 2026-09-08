@@ -44,12 +44,20 @@ function railInner() {
   return html.slice(start, end);
 }
 
-/** 取出 <div class="session-sidebar" id="session-sidebar"> 到 rail 之后那一段。 */
+/**
+ * 取出 <div class="session-sidebar" id="session-sidebar"> 那一段。
+ *
+ * 结尾锚点用主区 #terminal-panel —— 侧栏和主区是 #app-body 里相邻的两块，
+ * 「侧栏在哪结束」等价于「主区从哪开始」，这是结构本身的事实。
+ * 2026-09-08 之前这里锚的是 btn-expand-sidebar（当时那个折叠箭头就浮在侧栏
+ * 右边），T6 把它搬进了顶部工具栏，锚点当场消失、整条断言无法定位。
+ * 换成主区之后，任何一个控件搬家都不会再把这条测试带塌。
+ */
 function sidebarInner() {
   const start = html.indexOf('<div class="session-sidebar" id="session-sidebar">');
   assert.ok(start >= 0, '缺少 #session-sidebar');
-  const end = html.indexOf('<button class="btn-expand-sidebar"', start);
-  assert.ok(end > start, '找不到 #session-sidebar 的结尾锚点 btn-expand-sidebar');
+  const end = html.indexOf('<div class="terminal-panel', start);
+  assert.ok(end > start, '找不到 #session-sidebar 的结尾锚点：主区 #terminal-panel');
   return html.slice(start, end);
 }
 

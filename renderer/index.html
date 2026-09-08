@@ -35,6 +35,29 @@
 </head>
 <body>
   <div class="app-container" id="app-container">
+    <!-- T6 冷杉 v2 · 统一工具栏。原生标题栏隐掉之后，这条 44px 就是窗口最顶上那一行：
+         它既是标题栏（可拖动、双击最大化），也是 T2 那条舞台头部的常驻版。
+         舞台从此没有自己的头部，终端直接顶到卡片顶边。
+         节点是常驻的，内容按「当前屏幕上是哪个视图」刷新（见 renderer.js 的
+         refreshAppToolbar）—— 会话视图填面包屑和动作区，主页 / 投研 / 学习 /
+         开发 / 群聊只填视图名并把动作区收起来。 -->
+    <header class="app-toolbar" id="app-toolbar">
+      <!-- 侧栏开关：原来是浮在主区左上角的一个箭头，只在折叠态出现；进工具栏后常驻，
+           两个方向都点得动。逻辑仍是 renderer.js 的 toggleSidebar，一字未改。 -->
+      <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
+      <div class="terminal-crumb" id="toolbar-crumb"></div>
+      <!-- 视图切换按钮：T2 把它从右上角浮层收进舞台头部，T6 跟着头部一起上移到工具栏。
+           节点从 #terminal-panel 里搬出来了，所以它不再需要 preserveAndClearTerminalPanel
+           保护 —— 那份名单里也同步删掉了它，否则清舞台时会被搬回舞台里去。 -->
+      <div class="view-toggle">
+        <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">卡片</button>
+        <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">PTY</button>
+      </div>
+      <div class="terminal-header-actions" id="toolbar-actions"></div>
+      <!-- 右端给 Windows 自己画的最小化 / 最大化 / 关闭留位。宽度优先用
+           env(titlebar-area-*)，取不到时回落到 138px 常量。 -->
+      <div class="toolbar-window-controls" id="toolbar-window-controls" aria-hidden="true"></div>
+    </header>
     <!-- 2026-07-19 道雪 · 方案C：全局配额 ticker 常驻顶部（原侧栏 account-usage 面板迁移） -->
     <div id="quota-ticker" class="quota-ticker" style="display:none"></div>
     <div class="app-body" id="app-body">
@@ -188,7 +211,6 @@
         <button class="context-menu-item" data-action="open-external">在外部打开</button>
       </div>
     </div>
-    <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
     <div class="terminal-panel home-active" id="terminal-panel">
       <div class="empty-state home-workbench" id="empty-state">
         <main class="home-workbench-shell" aria-labelledby="home-workbench-title">
@@ -351,11 +373,7 @@
         <button type="button" class="cms-btn cms-primary" id="card-multi-select-copy" disabled>一键复制</button>
         <button type="button" class="cms-btn cms-exit" id="card-multi-select-exit" title="退出多选（Esc）">退出多选</button>
       </div>
-      <!-- 视图切换按钮 -->
-      <div class="view-toggle">
-        <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">卡片</button>
-        <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">PTY</button>
-      </div>
+      <!-- 视图切换按钮 T6 已上移到 #app-toolbar（见文件顶部）。 -->
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
