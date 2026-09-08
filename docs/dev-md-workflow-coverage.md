@@ -39,19 +39,19 @@
 | B06 | I | 接收凭据落盘，与 UI 忙闲无关 | I：「B06/I 交付凭据已持久化」 | 部分 | 凭据落盘已验；「上一位仍在收尾时显示已交付」这一条 UI 呈现未截图验证 |
 | B07 | U+I | 裁决取自手册，聊天回执缺失不阻断 | U：`unit-loop-md-handoff.test.js`「B07」；I：「B07/I …」2 条 | 通过 | 群聊无任何协议字段时仍一轮收口 |
 | B08 | U+I | 缺 RESULT → incomplete；矛盾 → 连指纹落盘；已接收被改 → 待核对 | U：3 条；I：「B08/I …」5 条 | 通过 | 缺 RESULT、矛盾、继续不消解矛盾、待核对期间不派人 |
-| B09 | L | 全链路 + fixture 实际合并 | L：`--stage=full`「B09/L …」6 条 | 见运行记录 | 断言已收紧：必须 RESULT=PASS、master 必须前进、代码与测试都改、合并后 master 上测试真过、实现分支确实被合并 |
-| B10 | I+L | 从已知缺陷交付开始 | L：`--stage=fail-first` | 见运行记录 | fixture 里植入真实缺陷分支，真实审查位必须自己判 FAIL 并写阻断项，下一轮修复后复审 |
+| B09 | L | 全链路 + fixture 实际合并 | L：`--stage=full`「B09/L …」6 条 | 通过（25/25） | 断言已收紧：必须 RESULT=PASS、master 必须前进、代码与测试都改、合并后 master 上测试真过、实现分支确实被合并 |
+| B10 | I+L | 从已知缺陷交付开始 | L：`--stage=fail-first` 6 条 | 通过（19/19） | fixture 里植入真实缺陷分支，真实审查位必须自己判 FAIL 并写阻断项，下一轮修复后复审 |
 | B11 | U+I | `maxRounds` 计数；故障不消耗返工轮次 | U：`unit-loop-engine.test.js`（既有）、`unit-loop-md-handoff.test.js`「FAIL 走下一轮」 | 部分（U 通过，I 未执行） | 三轮上限的确定性计数由单测覆盖；「另插入一次网络/CLI 故障不额外消耗轮次」未在隔离实例上单独重放 |
 
 ## C 用户消息与成员上下文
 
 | ID | 层级 | 实现位置 | 脚本入口 | 结果 | 证据 / 说明 |
 |---|---|---|---|---|---|
-| C01 | L | `main/ipc/groupchat-supplement-handlers.js` | L：「C01/L …」3 条 | 见运行记录 | 本轮修了一处真缺陷：判断「谁在跑」原来只看内存 watcher，prompt 已提交但 watcher 未注册的窗口里插话被静默降级成待送达 |
-| C02 | L | 同上（对审查位运行中发补充） | — | 未执行 | 本轮没有单独为「对审查位插话」建一条用例 |
-| C03 | U+I+L | 逐成员账本 + dispatcher 注入 + 送达确认后才标已读 | U：`unit-user-supplement-delivery.test.js`；L：「C03/L …」2 条（比对真实 prompt 原文） | 见运行记录 | L 层用采集到的**真实 prompt 原文**核对逐人送达与去重，不看 agent 自述 |
+| C01 | L | `main/ipc/groupchat-supplement-handlers.js` | L：「C01/L …」3 条 | 通过 | 本轮修了一处真缺陷：判断「谁在跑」原来只看内存 watcher，prompt 已提交但 watcher 未注册的窗口里插话被静默降级成待送达 |
+| C02 | L | 同上（对审查位运行中发补充） | L：`--stage=fail-first` 时执笔者就是审查位，「C01/L …」即对审查位插话 | 通过 | fail-first 阶段的执笔者就是审查位，那一轮的插话即「对审查位运行中发补充」 |
+| C03 | U+I+L | 逐成员账本 + dispatcher 注入 + 送达确认后才标已读 | U：`unit-user-supplement-delivery.test.js`；L：「C03/L …」2 条（比对真实 prompt 原文） | 通过 | L 层用采集到的**真实 prompt 原文**核对逐人送达与去重，不看 agent 自述 |
 | C04 | U+I | `origin` 标记区分真实用户输入与 Hub 阶段指令 | U：2 条；I：「C04/I …」 | 通过 | Hub 派工不进插话账本；补充带 `origin: 'user'` |
-| C05 | L | 原文不截断 | L：「C05/L …」 | 见运行记录 | 多行 + 中文 + Windows 路径 + emoji + 长正文，原样保存 |
+| C05 | L | 原文不截断 | L：「C05/L …」 | 通过 | 多行 + 中文 + Windows 路径 + emoji + 长正文，原样保存 |
 | C06 | U+I | 发送失败不标已读 | U：1 条；I：「C06/I …」 | 通过 | 失败保留待确认；原文完整 |
 | C07 | L | CLI 私话不广播 | L：「C07/L …」2 条 | 通过 | 私话不进群聊、不推进阶段 |
 | C08 | I | 任务结束后仍保存，不伪称全员已收 | U：1 条；I：「C08/I …」3 条 | 通过 | 含重启后待送达原文仍在 |
@@ -87,9 +87,27 @@
 
 ## 本轮明确未完成
 
-1. **D05 / D08 / C02**：未造对应现场。D08 属任务书允许的环境限制（无法在本机保持「Hub 退出但 CLI 存活」），另两条是本轮时间未及。
+1. **D05 / D08**：未造对应现场。D08 属任务书允许的环境限制（无法在本机保持「Hub 退出但 CLI 存活」）；D05（fixture 已合并但回执缺失）是本轮时间未及。
 2. **E01–E04 的 I / L 层**：功能已实现且有单测，但没有在隔离实例和真实 CLI 上重放。
 3. **A03 / A04 / B03 / B11 / D01 / D03 / D04 的 I 层**：只有单测层证据。
 4. **F01 的 UI 截图**：没有做界面截图证据。
 
 以上一律记为「未执行」，不计入通过。
+
+
+## 本轮实际运行记录（2026-09-08）
+
+| 层 | 命令 | 结果 | 证据目录 |
+|---|---|---|---|
+| U | `node scripts/run_unit_tests.js` | 392 个文件全过 | 终端输出 |
+| I | `node tests/dev-md-handoff-i-e2e.js` | 45 / 45 | 隔离数据目录见运行日志 |
+| L | `node tests/dev-md-handoff-l-e2e.js --stage=full --budget=1200` | 25 / 25 | `evidence/`：开题报告、合并手册、master 测试输出、fixture 图、逐人送达 JSON |
+| L | `node tests/dev-md-handoff-l-e2e.js --stage=fail-first --budget=1200` | 19 / 19 | 同上，另含 `review-1-fail.md`（真实 FAIL）与 `review-2.md`（复审 PASS） |
+
+L 层 full 的真实合并：`b394057 merge: feat/greet-greeting`（`--no-ff` 合进 master），
+合并手册的 VERIFIED 记录了它亲跑测试、变异回放、试合并再 abort、最终生成合并提交。
+
+L 层 fail-first 的真实返工：第一轮 `RESULT: FAIL`，阻断项写明「默认问候语被写死为 'hi'，
+分支上 `node test.js` 输出 `BROKEN default` 退出码 1」；第二轮实现位在同一分支上
+`fix: restore default greeting compatibility`，复审 `RESULT: PASS` 并合并
+（`6eb95d8 merge: feat/greeting-defective`）。
