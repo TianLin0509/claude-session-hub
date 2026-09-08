@@ -7251,7 +7251,10 @@ function markSessionProcessLost(sessionId, exitInfo) {
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
   const closing = sessions.get(sessionId);
-  if (!requested && closing && closing.status !== 'dormant' && supportsRecoverableSession(closing)) {
+  // 只管普通会话：群聊成员会话的生命周期由会议室自己管，把它们一并留下
+  // 会改变群聊的行为，而那是本卡完全无关的地盘。
+  if (!requested && closing && !closing.meetingId
+      && closing.status !== 'dormant' && supportsRecoverableSession(closing)) {
     markSessionProcessLost(sessionId, exitInfo);
     return;
   }

@@ -88,11 +88,11 @@
         "mode": "plain-shell",
         "kind": "powershell"
       },
-      "ms": 15,
+      "ms": 10,
       "composer": {
         "present": true,
         "state": "working",
-        "text": "PowerShell 正在工作 · 0s",
+        "text": "PowerShell 正在工作 · 1s",
         "detail": "· powershell PTY output burst",
         "action": null,
         "quickReplies": [],
@@ -111,14 +111,14 @@
         "enterAttempts": 1,
         "acknowledgementSource": "task_started"
       },
-      "ms": 1154
+      "ms": 1164
     }
   },
   "real": {
     "ptyKill": {
-      "hubPid": 47000,
+      "hubPid": 12824,
       "candidates": [
-        42844
+        44196
       ],
       "afterKill": {
         "sessionStillKnown": false,
@@ -128,7 +128,7 @@
         "emptyStateVisible": true
       }
     },
-    "codexSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd",
+    "codexSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3",
     "working": {
       "present": true,
       "state": "working",
@@ -187,7 +187,7 @@
       "before": "gpt-6-astra",
       "target": "gpt-5.6-sol",
       "after": "gpt-5.6-sol",
-      "chipLabel": "gpt-5.6-sol",
+      "chipLabel": "GPT-5.6-Sol",
       "effort": "max"
     },
     "waiting": {
@@ -215,11 +215,11 @@
       "ctxPct": "0%"
     },
     "codexPtyKill": {
-      "hubPid": 47000,
+      "hubPid": 12824,
       "codexPids": [
-        32308
+        15112
       ],
-      "killTarget": 31640,
+      "killTarget": 46572,
       "names": [
         "electron.exe",
         "conhost.exe",
@@ -233,9 +233,9 @@
         "status": "dormant",
         "processLost": {
           "reason": "CLI 进程退出码 1",
-          "at": 1788828856287
+          "at": 1788847828854
         },
-        "activeSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd"
+        "activeSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3"
       }
     },
     "dead": {
@@ -252,10 +252,10 @@
     },
     "reconnect": {
       "ok": true,
-      "revivedSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd",
+      "revivedSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3",
       "status": "idle",
       "processLostCleared": true,
-      "activeSessionId": "a6980d1f-b8cf-4190-9d71-475d575b00bd"
+      "activeSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3"
     }
   }
 }
