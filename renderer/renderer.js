@@ -4,8 +4,17 @@ const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = requi
 const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
-const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
-const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
+const {
+  buildSessionResumeMeta,
+  sessionModelId,
+  supportsForkSession,
+  supportsRecoverableSession,
+} = require('../core/session-capabilities.js');
+const {
+  buildComposerRailModel,
+  buildComposerStatusModel,
+  buildSessionStatusSummary,
+} = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
   formatBeijingClock,
@@ -68,11 +77,15 @@ const {
   writeCardViewSessions,
 } = require('../core/session-view-mode.js');
 const { createProcessReclaimCard } = require('./process-reclaim-card.js');
-const { createTerminalInputController } = require('./terminal-input-controller.js');
+const {
+  createTerminalInputController,
+  formatPastedFilePaths,
+} = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
+const { describeCodexModelTuning } = require('../core/codex-model-catalog.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createClipboardController } = require('./clipboard-controller.js');
@@ -3348,6 +3361,152 @@ function observeTerminalPanelChrome(panel, bar) {
   return observer;
 }
 
+// ── T1 冷杉 v2 · composer 的几个共用小工具 ──────────────────────────────────
+
+// CLI 的输入框以下全是 TUI 装饰（Codex 会在提示符下面再画一行
+// 「<模型> <档位> · Context N% left · <cwd>」，Claude 有快捷键提示），
+// 它们不是 AI 说的话。2026-09-07 实测：Codex 真问出「你选择 A 还是 B？」时，
+// isWaitingForUser 从末尾往回找到的第一句「有意义的话」是那行状态栏，
+// 于是判定 waiting=false —— 检测器本身没错，是喂给它的尾巴里混进了装饰。
+// 这里在**输入框那一行**把尾巴切断，只把它上面的输出交给同一个检测器。
+const COMPOSER_EMPTY_PROMPT_RE = /^[\s│╭─╮╰╯]*[❯›>]\s*$/;
+function tailAboveCliPrompt(lines) {
+  let cut = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] || '';
+    if (PROMPT_PREFIX_RE.test(line) || COMPOSER_EMPTY_PROMPT_RE.test(line)) { cut = i; break; }
+  }
+  return cut < 0 ? lines : lines.slice(0, cut);
+}
+
+// 「等你回答」的第二个证据来源。
+//
+// 会话级的 attention 信号（sessionNeedsUserInput / respond-pill 读的那个）目前
+// **只有 Claude 的回合结束路径会点亮**：onReplyCompleteFromHook 里跑一次
+// isWaitingForUser。Codex 那条 transcript 完成路径不调用它，所以 Codex 真的问了
+// 「你选择 A 还是 B？」时，会话状态只是「已完成未读」，composer 只能说「已就绪」
+// （2026-09-07 评审实测复现）。
+//
+// 修 attention 管线要动 Codex 的回合完成路径，那在本车道的文件边界之外；
+// 这里在 composer 自己这一层，对**当前终端画面**跑同一个现成检测器
+// （terminal-activity-monitor 的 isWaitingForUser，认 y/N 确认、编号选择题、
+// 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
+// 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
+function detectComposerLiveQuestion(session, runtime) {
+  if (!session || !runtime) return null;
+  // 已经被权威信号标成「等你输入」的，用不着再猜。
+  if (sessionNeedsUserInput(session)) return null;
+  // 只在「这一轮已经结束」的状态下探测：跑着的时候屏幕上的问号多半是它自己在思考。
+  if (![RUNTIME_COMPLETED, RUNTIME_IDLE, RUNTIME_UNKNOWN].includes(runtime.state)) return null;
+  if (!isAiRuntimeSession(session)) return null;
+  try {
+    const tail = tailAboveCliPrompt(extractTailLines(session.id, 40));
+    if (!tail.length) return null;
+    const verdict = isWaitingForUser(tail);
+    if (!verdict || !verdict.waiting) return null;
+    return {
+      waiting: true,
+      reason: verdict.reason || null,
+      // Codex 用 • 起句，它不在检测器的 AI 标记集合里，会跟着进摘要。
+      text: String(verdict.text || '').replace(/^[•·‣▪◦]+\s*/, ''),
+      // 只有检测器自己判定是「选择题」时才去解析编号选项；问号结尾那种情况下
+      // 屏幕尾巴上的数字多半是正文，解析出来会变成点了会答错的按钮。
+      screen: verdict.reason === 'choice' ? tail.slice(-12).join('\n') : '',
+    };
+  } catch (error) {
+    console.warn('[composer] live question probe failed:', error && error.message);
+    return null;
+  }
+}
+
+// 「查看上一轮 ↑」：卡片视图滚到最后一张卡，PTY 视图回到终端底部。
+function scrollToLatestTurn(terminal) {
+  const overlay = document.getElementById('msg-overlay');
+  if (currentView === 'card' && overlay && !overlay.classList.contains('hidden')) {
+    const cards = overlay.querySelectorAll(':scope > .turn-card');
+    const last = cards[cards.length - 1];
+    if (last) {
+      const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      last.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+      return true;
+    }
+  }
+  if (terminal && typeof terminal.scrollToBottom === 'function') {
+    terminal.scrollToBottom();
+    return true;
+  }
+  return false;
+}
+
+// 「重连」：复用右键菜单那条恢复动作，休眠走唤醒、其余走 restart-session。
+// 这里不新造第三条恢复路径 —— 多一条就多一处会和主进程对不上的状态机。
+async function reconnectSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  // 绝不弹 alert：模态弹窗会把渲染进程整个冻住，连后续的重试都点不了。
+  // 失败信息直接写回状态行，用户就地能看到、也能再点一次。
+  const failed = (message) => {
+    const base = (session._processLost && session._processLost.reason) || 'CLI 进程已退出';
+    session._processLost = { reason: `${base}；重连失败：${message}`, at: Date.now() };
+    if (typeof updateFloatingBarState === 'function') updateFloatingBarState();
+    scheduleSessionListRender();
+  };
+  try {
+    if (session.status === 'dormant') {
+      const resumed = await resumeDormantSession(sessionId, { forceScrollBottom: true });
+      if (!resumed) { failed('会话唤醒没有返回结果'); return; }
+      // 唤醒成功：把“进程丢了”这笔销掉，否则它会随着会话对象一直带着，
+      // 下一次真休眠时输入框会拿一条陈年的退出码当原因念出来。
+      const revived = sessions.get(sessionId);
+      if (revived) delete revived._processLost;
+      if (typeof updateFloatingBarState === 'function') updateFloatingBarState();
+      return;
+    }
+    const result = await ipcRenderer.invoke('restart-session', sessionId);
+    if (result && result.ok === false) failed(result.message || '会话重启失败');
+  } catch (error) {
+    failed(error && error.message ? error.message : String(error));
+  }
+}
+
+// Electron 41 起 File.path 被删，拖拽也要走 webUtils.getPathForFile。
+function droppedFilePath(file) {
+  if (!file) return '';
+  if (webUtils && typeof webUtils.getPathForFile === 'function') {
+    try {
+      const resolved = webUtils.getPathForFile(file) || '';
+      if (resolved) return resolved;
+    } catch { /* 落回 file.path */ }
+  }
+  return String(file.path || '');
+}
+
+// 停止键的可见性判据与改版前一字不差：PTY 字节活动是个有用的状态兜底，
+// 但不足以给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
+function composerStopAllowed(session, runtimeTruth) {
+  if (!session) return false;
+  const truth = runtimeTruth || getSessionRuntimeTruth(session);
+  const confidence = truth && truth.confidence;
+  return !isAiRuntimeSession(session)
+    || [CONFIDENCE_AUTHORITATIVE, CONFIDENCE_STRONG, CONFIDENCE_SEMANTIC].includes(confidence);
+}
+
+// 思考档的可选项按**模型**取，不写死一份：codex 的 models_cache.json 里
+// gpt-5.6-sol 到 ultra、gpt-5.5 只到 xhigh。目录几乎不变，按 slug 记一份就够。
+const _codexEffortCache = new Map();
+function composerSupportedEfforts(session) {
+  const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
+  if (kind !== 'codex') return null;
+  const slug = String((session.currentModel && session.currentModel.id) || '').trim();
+  if (!slug) return null;
+  if (_codexEffortCache.has(slug)) return _codexEffortCache.get(slug);
+  let efforts = null;
+  try { efforts = describeCodexModelTuning(slug).efforts || null; }
+  catch (error) { console.warn('[composer] codex effort catalog unavailable:', error && error.message); }
+  _codexEffortCache.set(slug, efforts);
+  return efforts;
+}
+
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
@@ -3431,10 +3590,114 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     bridgeToolbar.appendChild(branchBtn);
   }
 
+  // ── T1 冷杉 v2 · composer 状态行 ─────────────────────────────────────────
+  // 舞台头部的状态徽章和这一行说的是同一件事，所以两者共用
+  // buildComposerStatusModel 的同一个结论（见 session-runtime-status.js）。
+  // 复制一份判据 = 两个地方迟早说出互相矛盾的话。
+  const statusRow = document.createElement('div');
+  statusRow.className = 'composer-status';
+  const statusDot = document.createElement('span');
+  statusDot.className = 'composer-status-dot';
+  statusDot.setAttribute('aria-hidden', 'true');
+  const statusText = document.createElement('span');
+  statusText.className = 'composer-status-text';
+  const statusDetail = document.createElement('span');
+  statusDetail.className = 'composer-status-detail';
+  statusDetail.hidden = true;
+  const statusAction = document.createElement('button');
+  statusAction.type = 'button';
+  statusAction.className = 'composer-status-action';
+  statusAction.hidden = true;
+  statusAction.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const kind = statusAction.dataset.actionKind || '';
+    if (kind === 'scroll-latest') { scrollToLatestTurn(terminal); return; }
+    if (kind === 'reconnect') void reconnectSession(sessionId);
+  });
+  statusRow.append(statusDot, statusText, statusDetail, statusAction);
+
+  // 快捷答复只把文本填进输入框并聚焦，**绝不自动发送** —— 替用户按下发送
+  // 是这个界面最不该做的事：解析错一次就等于替他答错一次。
+  const quickReplyRow = document.createElement('div');
+  quickReplyRow.className = 'composer-quick-replies';
+  quickReplyRow.hidden = true;
+  quickReplyRow.addEventListener('click', (event) => {
+    const chip = event.target && event.target.closest && event.target.closest('.composer-quick-reply');
+    if (!chip) return;
+    event.stopPropagation();
+    replaceContenteditableText(inputBox, chip.dataset.reply || '');
+    placeCaretAtContenteditableEnd(inputBox);
+    saveFloatingInputDraft(sessionId, inputBox);
+    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+    inputBox.focus();
+  });
+
+  // 附件：仓库现有的文件对话框只会选目录（workspace:pick），没有「选文件插入路径」
+  // 这条能力，而本卡不许动 main.js。所以按钮先不显示，只保留 composer 的拖拽落区 ——
+  // 拖进来的文件沿用粘贴文件那条 formatPastedFilePaths，行为与粘贴完全一致。
+  const attachBtn = document.createElement('button');
+  attachBtn.type = 'button';
+  attachBtn.className = 'composer-chip composer-chip-icon composer-attach';
+  attachBtn.title = '添加附件';
+  attachBtn.setAttribute('aria-label', '添加附件');
+  attachBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10.5 18"/></svg>';
+  attachBtn.hidden = true;
+
+  // 模型 chip：不重造选择器，直接把现有的挂载函数接到它上面。
+  // 头部徽章本卡先保留（T2 才删），两处指向同一个 controller。
+  const modelChip = document.createElement('button');
+  modelChip.type = 'button';
+  modelChip.className = 'composer-chip composer-model';
+  modelChip.hidden = true;
+  const modelChipLogo = document.createElement('span');
+  modelChipLogo.className = 'composer-model-logo';
+  modelChipLogo.setAttribute('aria-hidden', 'true');
+  const modelChipLabel = document.createElement('span');
+  modelChipLabel.className = 'composer-chip-label';
+  const modelChipCaret = document.createElement('span');
+  modelChipCaret.className = 'composer-chip-caret';
+  modelChipCaret.setAttribute('aria-hidden', 'true');
+  modelChipCaret.textContent = '▾';
+  modelChip.append(modelChipLogo, modelChipLabel, modelChipCaret);
+  attachModelPickerHandler(modelChip, sessionId);
+
+  // 思考档 chip：只对**实测**支持的 CLI 渲染，判据在 composerThinkingChip。
+  // Codex 的档位和模型在同一个原生面板里选，所以点它复用同一个选择器；
+  // Claude 没有会话内改档的现成通路，就只显示不可点，不新造写 PTY 的路径。
+  const thinkingChip = document.createElement('button');
+  thinkingChip.type = 'button';
+  thinkingChip.className = 'composer-chip composer-thinking';
+  thinkingChip.hidden = true;
+  const thinkingChipLabel = document.createElement('span');
+  thinkingChipLabel.className = 'composer-chip-label';
+  const thinkingChipCaret = document.createElement('span');
+  thinkingChipCaret.className = 'composer-chip-caret';
+  thinkingChipCaret.setAttribute('aria-hidden', 'true');
+  thinkingChipCaret.textContent = '▾';
+  thinkingChip.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>';
+  thinkingChip.append(thinkingChipLabel, thinkingChipCaret);
+  thinkingChip.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (thinkingChip.dataset.interactive !== '1') return;
+    const efforts = composerSupportedEfforts(sessions.get(sessionId));
+    if (!efforts || !efforts.length) return;
+    modelUi.showEffortPicker(thinkingChip, sessionId, { efforts });
+  });
+
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
-  const ctxChip = document.createElement('span');
-  ctxChip.className = 'fi-ctx';
-  ctxChip.style.display = 'none';
+  // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
+  const ctxRing = document.createElement('span');
+  ctxRing.className = 'composer-ctx';
+  ctxRing.hidden = true;
+  const ctxRingHole = document.createElement('i');
+  ctxRingHole.setAttribute('aria-hidden', 'true');
+  ctxRing.appendChild(ctxRingHole);
+
+  const sendHint = document.createElement('span');
+  sendHint.className = 'composer-hint';
+  sendHint.textContent = 'Enter 发送';
+  sendHint.title = 'Enter 或 Ctrl+Enter 发送 · Shift+Enter 换行';
+  sendHint.hidden = true;
 
   const stopBtn = document.createElement('button');
   stopBtn.className = 'floating-input-stop';
@@ -3453,14 +3716,158 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   sendBtn.setAttribute('aria-label', '发送');
   sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z"/></svg>';
 
+  const railSpacer = document.createElement('span');
+  railSpacer.className = 'composer-rail-spacer';
+  const composerRail = document.createElement('div');
+  composerRail.className = 'composer-rail';
+  composerRail.append(
+    attachBtn, modelChip, thinkingChip, bridgeToolbar,
+    railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
+  );
+
   const composerRow = document.createElement('div');
   composerRow.className = 'fi-composer-row';
-  composerRow.append(inputBox, ctxChip, stopBtn, sendBtn);
+  composerRow.append(inputBox);
+
+  const composer = document.createElement('div');
+  composer.className = 'composer';
+  composer.dataset.state = 'ready';
+  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+
+  // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
+  // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
+  const dragCarriesFiles = (event) => {
+    const types = event && event.dataTransfer && event.dataTransfer.types;
+    return !!types && Array.from(types).includes('Files');
+  };
+  composer.addEventListener('dragover', (event) => {
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    composer.classList.add('drop-active');
+  });
+  composer.addEventListener('dragleave', (event) => {
+    if (event.target === composer) composer.classList.remove('drop-active');
+  });
+  composer.addEventListener('drop', (event) => {
+    composer.classList.remove('drop-active');
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    const paths = Array.from(event.dataTransfer.files || [])
+      .map(file => droppedFilePath(file))
+      .filter(Boolean);
+    if (!paths.length) return;
+    const current = readContenteditablePlainText(inputBox);
+    const separator = current.trim() ? (current.endsWith('\n') ? '' : '\n') : '';
+    replaceContenteditableText(inputBox, `${current}${separator}${formatPastedFilePaths(paths)}`);
+    placeCaretAtContenteditableEnd(inputBox);
+    saveFloatingInputDraft(sessionId, inputBox);
+    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+    inputBox.focus();
+  });
+
   const contentStack = document.createElement('div');
   contentStack.className = 'fi-content-stack';
-  contentStack.append(bridgeToolbar, composerRow);
+  contentStack.append(composer);
   bar.append(contentStack);
   bar.classList.add('visible');
+
+  // composer 上所有随会话状态变化的东西都在这里画完一遍：状态行、快捷答复、
+  // 底栏三个 chip、预算环、发送/停止。updateFloatingBarState 与每秒一次的
+  // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
+  function paintComposer(session, now = Date.now()) {
+    if (!session) return;
+    const runtime = deriveSessionRuntimeStatus(session, {
+      now,
+      isRunning: isSessionCardWorking(session),
+    });
+    const status = buildComposerStatusModel(session, {
+      now,
+      runtime,
+      liveQuestion: detectComposerLiveQuestion(session, runtime),
+    });
+    if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
+    if (statusText.textContent !== status.text) statusText.textContent = status.text;
+    const detail = status.detail ? `· ${status.detail}` : '';
+    if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
+    statusDetail.hidden = !detail;
+    if (status.action) {
+      statusAction.hidden = false;
+      if (statusAction.textContent !== status.action.label) statusAction.textContent = status.action.label;
+      statusAction.dataset.actionKind = status.action.kind;
+    } else {
+      statusAction.hidden = true;
+      statusAction.dataset.actionKind = '';
+    }
+    if (statusRow.title !== status.runtime.title) statusRow.title = status.runtime.title;
+
+    const replySignature = status.quickReplies.join('');
+    if (quickReplyRow.dataset.signature !== replySignature) {
+      quickReplyRow.dataset.signature = replySignature;
+      quickReplyRow.replaceChildren();
+      for (const reply of status.quickReplies) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'composer-quick-reply';
+        chip.dataset.reply = reply;
+        chip.textContent = reply;
+        quickReplyRow.appendChild(chip);
+      }
+    }
+    quickReplyRow.hidden = status.quickReplies.length === 0;
+
+    // 停止键沿用既有的中断按钮，判据也沿用既有那条：PTY 字节活动不足以
+    // 给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
+    const canStop = status.canStop && composerStopAllowed(session, status.runtime);
+    stopBtn.classList.toggle('visible', canStop);
+    sendBtn.hidden = canStop;
+
+    const rail = buildComposerRailModel(session, {
+      supportedEfforts: composerSupportedEfforts(session),
+    });
+    modelChip.hidden = !rail.model.visible;
+    if (rail.model.visible) {
+      const label = rail.model.pending
+        ? `${rail.model.label} → ${rail.model.pending}`
+        : rail.model.label;
+      if (modelChipLabel.textContent !== label) modelChipLabel.textContent = label;
+      modelChip.classList.toggle('switching', !!rail.model.pending);
+      modelChip.title = `${rail.model.id || rail.model.label} — 点击切换模型`;
+      const logoClass = `composer-model-logo ${modelClass(rail.model.id)}`.trim();
+      if (modelChipLogo.className !== logoClass) modelChipLogo.className = logoClass;
+      const initial = (rail.model.label || '?').trim().charAt(0).toUpperCase();
+      if (modelChipLogo.textContent !== initial) modelChipLogo.textContent = initial;
+    }
+
+    thinkingChip.hidden = !rail.thinking.visible;
+    if (rail.thinking.visible) {
+      if (thinkingChipLabel.textContent !== rail.thinking.label) {
+        thinkingChipLabel.textContent = rail.thinking.label;
+      }
+      thinkingChip.dataset.interactive = rail.thinking.interactive ? '1' : '0';
+      thinkingChipCaret.hidden = !rail.thinking.interactive;
+      thinkingChip.classList.toggle('is-static', !rail.thinking.interactive);
+      thinkingChip.title = rail.thinking.interactive
+        ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
+        : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
+    }
+
+    ctxRing.hidden = !rail.context.visible;
+    if (rail.context.visible) {
+      ctxRing.dataset.level = rail.context.level;
+      ctxRing.style.setProperty('--composer-ctx-pct', `${rail.context.percent}%`);
+      if (ctxRing.title !== rail.context.title) ctxRing.title = rail.context.title;
+      ctxRing.setAttribute('aria-label', rail.context.ariaLabel);
+    }
+
+    sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
+  }
+  bar._paintComposer = paintComposer;
+  paintComposer(sessions.get(sessionId));
+  inputBox.addEventListener('input', () => {
+    sendHint.hidden = stopBtn.classList.contains('visible')
+      || !readContenteditablePlainText(inputBox).trim();
+  });
 
   const panel = termContainer.closest('.terminal-panel');
   if (panel) panel.appendChild(bar);
@@ -3699,26 +4106,38 @@ function stopTerminalRuntimeStatusTicker() {
   _terminalRuntimeStatusTicker = null;
 }
 
+function composerBarForTicker() {
+  const bar = document.querySelector('.terminal-panel .floating-input-bar');
+  return bar && typeof bar._paintComposer === 'function' ? bar : null;
+}
+
 function syncTerminalRuntimeStatusTicker(session) {
   const statusElement = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
-  const shouldTick = currentView === 'card' && !!session && !!statusElement;
+  // composer 的状态行有「正在工作 · 38s」和「N 分钟前完成上一轮」两句会自己走的文案，
+  // 所以只要输入栏在，秒表就得走 —— 不再只在卡片视图下跳。
+  const shouldTick = !!session && ((currentView === 'card' && !!statusElement) || !!composerBarForTicker());
   if (!shouldTick) {
     stopTerminalRuntimeStatusTicker();
     return;
   }
   if (_terminalRuntimeStatusTicker) return;
   _terminalRuntimeStatusTicker = setInterval(() => {
-    if (currentView !== 'card' || !activeSessionId) {
+    if (!activeSessionId) {
       stopTerminalRuntimeStatusTicker();
       return;
     }
     const active = sessions.get(activeSessionId);
-    const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
-    if (!active || !target) {
+    const target = currentView === 'card' && terminalPanelEl
+      ? terminalPanelEl.querySelector('.terminal-header .terminal-status')
+      : null;
+    const bar = composerBarForTicker();
+    if (!active || (!target && !bar)) {
       stopTerminalRuntimeStatusTicker();
       return;
     }
-    paintTerminalRuntimeStatus(target, active, Date.now());
+    const now = Date.now();
+    if (target) paintTerminalRuntimeStatus(target, active, now);
+    if (bar) bar._paintComposer(active, now);
   }, 1000);
 }
 
@@ -3790,34 +4209,9 @@ function updateFloatingBarState() {
 
   const bar = document.querySelector('.terminal-panel .floating-input-bar');
   if (!bar) return;
-  const chip = bar.querySelector('.fi-ctx');
-  if (chip) {
-    if (typeof s.contextPct === 'number') {
-      chip.style.display = '';
-      chip.textContent = `ctx ${s.contextPct}%`;
-      chip.className = 'fi-ctx ' + pctClass(s.contextPct);
-      const effective = typeof s.contextEffectiveMax === 'number'
-        ? `，运行时有效窗口 ${s.contextEffectiveMax.toLocaleString()} tokens`
-        : '';
-      const requested = typeof s.contextMax === 'number'
-        ? `，Hub 启动请求 ${s.contextMax.toLocaleString()} tokens`
-        : '';
-      chip.title = `当前会话上下文占用 ${s.contextPct}%${effective}${requested}`;
-    } else {
-      chip.style.display = 'none';
-    }
-  }
-  const stop = bar.querySelector('.floating-input-stop');
-  if (stop) {
-    const aiSession = isAiRuntimeSession(s);
-    const runtimeTruth = getSessionRuntimeTruth(s);
-    const activeRuntime = runtimeTruth.state === RUNTIME_STARTING || runtimeTruth.state === RUNTIME_RUNNING;
-    const authoritativeAiWork = [CONFIDENCE_AUTHORITATIVE, CONFIDENCE_STRONG, CONFIDENCE_SEMANTIC]
-      .includes(runtimeTruth.confidence);
-    // PTY byte bursts remain a useful status fallback, but are not strong
-    // enough evidence to expose a destructive Ctrl+C button for an AI session.
-    stop.classList.toggle('visible', activeRuntime && (!aiSession || authoritativeAiWork));
-  }
+  // ctx 环、模型 / 思考档 chip、状态行、发送与停止全部由 composer 自己那一处画完。
+  // 以前这里另算一份 ctx 文案和一份停止键判据，等于同一件事有两个作者。
+  if (typeof bar._paintComposer === 'function') bar._paintComposer(s);
 }
 
 // 2026-07-21 道雪 [修进行中误判]：周期性兜底回收"卡死的进行中"。
@@ -6803,9 +7197,68 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   window.dispatchEvent(new CustomEvent('hub-session-suspended', { detail: { sessionId, session: local } }));
 });
 
-ipcRenderer.on('session-closed', (_e, { sessionId }) => {
-  dropPreviewContext(`session:${sessionId}`);
+// CLI 进程自己死了（不是用户删 / 重启 / 工作区迁移）。
+//
+// 2026-09-07 评审实测：结束 PTY 后会话和输入框一起消失，界面凭空回到空状态，
+// 用户既看不到“它断了”，也没有任何重连入口。这里不删记录，而是把它落成
+// “可唤醒”：
+//   - 为什么是 dormant 而不是 error：重启那条接口要求主进程那边还留着会话记录，
+//     而 PTY 退出时它已经被删了——只有休眠唤醒那条路只依赖渲染层自己保存的元数据，
+//     能真的把会话拉回来。标成 error 会得到一个按了没反应的“重连”按钮。
+//   - _processLost 单独记一笔“进程是怎么没的”，好让输入框说“CLI 进程退出码 1”
+//     而不是笼统的“会话已休眠”。
+// 不可恢复的 CLI（如宙主 shell）没有可唤醒的东西，仍走原来的删除路径。
+function describePtyExit(exitInfo) {
+  const signal = exitInfo && exitInfo.signal ? String(exitInfo.signal).trim() : '';
+  if (signal) return `CLI 进程被信号 ${signal} 结束`;
+  const code = Number(exitInfo && exitInfo.exitCode);
+  if (Number.isFinite(code)) return `CLI 进程退出码 ${code}`;
+  return 'CLI 进程已退出';
+}
+
+function markSessionProcessLost(sessionId, exitInfo) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  const reason = describePtyExit(exitInfo);
+  const now = Date.now();
+  session.status = 'dormant';
+  session._processLost = { reason, at: now };
+  session.lastError = reason;
+  session._agentWorking = null;
+  session._runSource = null;
+  session.runStartedAt = null;
+  session.cardWorkingSince = null;
+  session.gcWorking = false;
+  session._resumePending = false;
+  clearSessionAttention(session);
+  observeSessionRuntime(session, {
+    state: RUNTIME_DORMANT,
+    source: 'pty-exit-unrequested',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: now,
+    evidence: reason,
+  }, { mirrorLegacy: false });
+  clearRuntimeTruthExpiryTimer(sessionId);
+  clearTerminalActivitySession(sessionId);
+  // 草稿存着（重连后还在输入框里），终端缓存也存着（最后一屏就是现场）。
+  if (activeSessionId === sessionId && typeof updateFloatingBarState === 'function') {
+    updateFloatingBarState();
+  }
+  scheduleSessionListRender();
+  schedulePersist();
+  return true;
+}
+
+ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
   const closing = sessions.get(sessionId);
+  // 只管普通会话：群聊成员会话的生命周期由会议室自己管，把它们一并留下
+  // 会改变群聊的行为，而那是本卡完全无关的地盘。
+  if (!requested && closing && !closing.meetingId
+      && closing.status !== 'dormant' && supportsRecoverableSession(closing)) {
+    markSessionProcessLost(sessionId, exitInfo);
+    return;
+  }
+  dropPreviewContext(`session:${sessionId}`);
   const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
   clearCardLiveRefreshState(sessionId);

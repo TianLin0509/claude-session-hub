@@ -5,6 +5,8 @@ const {
   modelOptionsFor,
   modelSwitchStrategy,
 } = require('../core/model-options.js');
+// 档位说明文案复用 Codex 模型目录那份，不在 UI 层再拄一份。
+const { EFFORT_DESCRIPTIONS } = require('../core/codex-model-catalog.js');
 
 // Map a model id to a CSS family class for badge coloring.
 function modelClass(id) {
@@ -55,37 +57,80 @@ function pickerRows(screen) {
   return rows;
 }
 
-function parseCodexModelPicker(screen) {
-  if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
-  const entries = pickerRows(screen).map(row => {
-    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
-    return match ? { ...row, value: match[1] } : null;
-  }).filter(Boolean);
-  if (!entries.length) return null;
-  return { entries, highlighted: entries.find(entry => entry.highlighted) || entries[0] };
-}
-
 function reasoningLabelToEffort(label) {
-  const value = String(label || '').replace(/\s*\(default\).*/i, '').trim().toLowerCase();
+  // 面板会在当前项后面挂 (current)，在默认项后面挂 (default)。
+  // 2026-09-07 实测二级面板的行长这样：「Max (current)  For difficult problems…」，
+  // 不把 (current) 摘掉就一个档位都认不出来。
+  const value = String(label || '')
+    .replace(/\s*\((?:default|current)\)/ig, ' ')
+    .trim()
+    .toLowerCase();
   if (value.startsWith('extra high') || value === 'xhigh') return 'xhigh';
   if (value.startsWith('ultra')) return 'ultra';
-  if (value.startsWith('maximum') || value === 'max') return 'max';
+  if (value.startsWith('maximum') || value.startsWith('max')) return 'max';
   if (value.startsWith('high')) return 'high';
   if (value.startsWith('medium')) return 'medium';
   if (value.startsWith('low')) return 'low';
   return '';
 }
 
+// 光标在**哪一行**，只能从原始行里读，不能从"能认出档位的那些行"里读。
+// 2026-09-07 血泪：Codex 的推理面板第 5 行是「More reasoning… (current)」——
+// 它不是档位而是二级菜单入口，被过滤掉之后 highlighted 回落到第 1 行 Low，
+// 于是方向键从错误的起点开始数。当前档位是 max（Hub 新建 Codex 会话的默认值）
+// 时必踩：点 high 实际选成 medium，然后确认超时。
+function pickerCursor(rows) {
+  return rows.find(row => row.highlighted) || rows[0] || null;
+}
+
+function parseCodexModelPicker(screen) {
+  if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
+  const rows = pickerRows(screen);
+  const entries = rows.map(row => {
+    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
+    return match ? { ...row, value: match[1] } : null;
+  }).filter(Boolean);
+  if (!entries.length) return null;
+  return {
+    entries,
+    rows,
+    cursor: pickerCursor(rows),
+    highlighted: entries.find(entry => entry.highlighted) || entries[0],
+  };
+}
+
+// 一级面板：Low / Medium / High / Extra high +（可能有的）「More reasoning…」二级入口。
+// max 与 ultra **不在这一页上**，它们在二级菜单里面。
 function parseCodexReasoningPicker(screen, modelId = '') {
   const text = String(screen || '');
   if (!/Select Reasoning Level/i.test(text)) return null;
   if (modelId && !text.toLowerCase().includes(String(modelId).toLowerCase())) return null;
-  const entries = pickerRows(text).map(row => {
+  const rows = pickerRows(text);
+  const entries = rows.map(row => {
     const value = reasoningLabelToEffort(row.text);
     return value ? { ...row, value } : null;
   }).filter(Boolean);
   if (!entries.length) return null;
-  return { entries, highlighted: entries.find(entry => entry.highlighted) || entries[0] };
+  return {
+    entries,
+    rows,
+    cursor: pickerCursor(rows),
+    advancedRow: rows.find(row => /more\s+reasoning/i.test(row.text)) || null,
+    highlighted: entries.find(entry => entry.highlighted) || entries[0],
+  };
+}
+
+// 二级面板（「Advanced Reasoning ⚠ Consumes usage limits faster」）：Max / Ultra。
+function parseCodexAdvancedReasoningPicker(screen) {
+  const text = String(screen || '');
+  if (!/Advanced Reasoning/i.test(text)) return null;
+  const rows = pickerRows(text);
+  const entries = rows.map(row => {
+    const value = reasoningLabelToEffort(row.text);
+    return value ? { ...row, value } : null;
+  }).filter(Boolean);
+  if (!entries.length) return null;
+  return { entries, rows, cursor: pickerCursor(rows) };
 }
 
 function pickerNavigationInput(fromNumber, toNumber) {
@@ -202,9 +247,17 @@ function createModelUiController({
     });
   }
 
+  // 挂载点从头部徽章挪到了 composer 底栏（T1），锚点在窗口底部：
+  // 一律往下开会把整个菜单开到窗外。下方放不下就翻到锚点上方。
   function placeMenu(menu, badgeEl) {
     const rect = badgeEl.getBoundingClientRect();
-    menu.style.top = (rect.bottom + 4) + 'px';
+    const viewportHeight = (menu.ownerDocument && menu.ownerDocument.defaultView
+      && menu.ownerDocument.defaultView.innerHeight) || 0;
+    const menuHeight = menu.getBoundingClientRect().height || 0;
+    const below = rect.bottom + 4;
+    const flipUp = viewportHeight > 0 && menuHeight > 0 && below + menuHeight > viewportHeight
+      && rect.top - 4 - menuHeight >= 0;
+    menu.style.top = (flipUp ? rect.top - 4 - menuHeight : below) + 'px';
     menu.style.left = rect.left + 'px';
   }
 
@@ -333,7 +386,7 @@ function createModelUiController({
     writeTerminal(sessionId, '\r');
   }
 
-  async function switchCodexModel(sessionId, session, option) {
+  async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
     if (isSessionBusy(session)) throw new Error('当前回答仍在运行，请结束后再切换模型');
     if (!terminalAcceptsModelCommand(getTerminalScreenText(sessionId), 'codex-picker')) {
       throw new Error('Codex 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
@@ -351,15 +404,58 @@ function createModelUiController({
       screen => parseCodexReasoningPicker(screen, option.id),
       '等待 Codex 推理档位面板',
     );
-    const effort = compatibleEffort(session.effort, effortStep.value.entries, effortStep.value.highlighted);
-    const effortTarget = effortStep.value.entries.find(entry => entry.value === effort) || effortStep.value.highlighted;
-    writeTerminal(sessionId, pickerNavigationInput(effortStep.value.highlighted.number, effortTarget.number) + '\r');
+    // ── 档位这一步 ─────────────────────────────────────────────────────
+    // 两件事在这里同时成立：
+    //   1. 方向键必须从**面板真正的光标行**开始数（picker.cursor），不是从
+    //      "第一个能认出档位的行"开始 —— 后者在当前档位是 max 时必然错位；
+    //   2. max / ultra 不在一级面板上，要先进「More reasoning…」二级菜单。
+    const picker = effortStep.value;
+    const requestedEffort = String(effortOverride || session.effort || '').trim().toLowerCase();
+    const directMatch = picker.entries.find(entry => entry.value === requestedEffort);
+    let chosenEffort = null;
+
+    if (!directMatch && requestedEffort && picker.advancedRow) {
+      writeTerminal(sessionId, pickerNavigationInput(picker.cursor.number, picker.advancedRow.number) + '\r');
+      const advancedStep = await waitForScreen(
+        sessionId,
+        screen => parseCodexAdvancedReasoningPicker(screen),
+        '等待 Codex 高级推理面板',
+      );
+      const advanced = advancedStep.value;
+      const advancedTarget = advanced.entries.find(entry => entry.value === requestedEffort);
+      if (advancedTarget) {
+        writeTerminal(sessionId, pickerNavigationInput(advanced.cursor.number, advancedTarget.number) + '\r');
+        chosenEffort = advancedTarget.value;
+      } else {
+        // 二级菜单里也没有：退回一级面板（面板自己写着 esc to go back），
+        // 换模型时允许回落到最接近的档，用户明确点档时则如实报错。
+        writeTerminal(sessionId, '\x1b');
+        const backStep = await waitForScreen(
+          sessionId,
+          screen => parseCodexReasoningPicker(screen, option.id),
+          '等待退回 Codex 推理档位面板',
+        );
+        Object.assign(picker, backStep.value);
+      }
+    }
+
+    if (!chosenEffort) {
+      const effort = compatibleEffort(requestedEffort, picker.entries, picker.highlighted);
+      if (effortOverride && effort !== effortOverride) {
+        writeTerminal(sessionId, '\x1b');
+        throw new Error(`该模型的原生面板没有 ${effortOverride} 这一档`);
+      }
+      const effortTarget = picker.entries.find(entry => entry.value === effort) || picker.highlighted;
+      writeTerminal(sessionId, pickerNavigationInput(picker.cursor.number, effortTarget.number) + '\r');
+      chosenEffort = effortTarget.value;
+    }
+
     await waitForScreen(sessionId, screen => {
       const escaped = option.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`Model changed to\\s+${escaped}\\s+${effortTarget.value}`, 'i').test(screen)
-        && screen.toLowerCase().includes(`${option.id.toLowerCase()} ${effortTarget.value}`);
+      return new RegExp(`Model changed to\\s+${escaped}\\s+${chosenEffort}`, 'i').test(screen)
+        && screen.toLowerCase().includes(`${option.id.toLowerCase()} ${chosenEffort}`);
     }, '确认 Codex 模型切换');
-    return { modelId: option.id, displayName: option.label, effort: effortTarget.value };
+    return { modelId: option.id, displayName: option.label, effort: chosenEffort };
   }
 
   async function switchClaudeModel(sessionId, session, option) {
@@ -471,6 +567,111 @@ function createModelUiController({
     }
   }
   
+  // ── 思考档切换（T1）─────────────────────────────────────────────────
+  // Codex 的档位本来就和模型在同一个原生面板里选（/model → 选模型 → 选 reasoning
+  // level）。所以「只改档位」不需要任何新通路：把模型这一步停在当前模型上，
+  // 只在第二步换档，其余（等回执、写回 Hub 元数据）与换模型完全同一条路径。
+  // Claude 没有会话内改档的机制，这个入口对它不开放（chip 侧已经不可点）。
+  function renderEffortPicker(menu, anchorEl, sessionId, efforts, message = null) {
+    if (!menu || menu._removed) return;
+    const session = sessions.get(sessionId);
+    const current = String(session && session.effort || '').trim().toLowerCase();
+    menu.innerHTML = '';
+    if (message) menuNote(menu, message.text, message.state);
+    const modelLabel = session && session.currentModel
+      ? (session.currentModel.displayName || session.currentModel.id)
+      : '当前模型';
+    if (!message) {
+      menuNote(menu, `${modelLabel} 支持的思考档 · 将打开 Codex 原生面板，`
+        + 'Hub 确认终端回执后再更新档位。');
+    }
+    for (const effort of efforts) {
+      const item = document.createElement('div');
+      item.className = 'model-picker-item';
+      item.dataset.effort = effort;
+      const isCurrent = effort === current;
+      if (isCurrent) item.classList.add('current');
+      if (session && session._modelSwitchPending) item.classList.add('disabled');
+      item.title = EFFORT_DESCRIPTIONS[effort] || effort;
+      item.innerHTML = `<span class="model-picker-check">${isCurrent ? '✓' : ''}</span>`
+        + `<span class="model-picker-label">${escapeHtml(effort)}</span>`
+        + `<span class="model-picker-id">${escapeHtml(EFFORT_DESCRIPTIONS[effort] || '')}</span>`;
+      if (!isCurrent && !(session && session._modelSwitchPending)) {
+        item.addEventListener('click', (event) => {
+          event.stopPropagation();
+          void switchEffort(sessionId, effort, menu, anchorEl);
+        });
+      }
+      menu.appendChild(item);
+    }
+  }
+
+  function showEffortPicker(anchorEl, sessionId, { efforts = [] } = {}) {
+    closeModelPicker();
+    const list = (Array.isArray(efforts) ? efforts : [])
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (!list.length) return null;
+    const menu = document.createElement('div');
+    menu.className = 'model-picker-menu effort-picker-menu';
+    document.body.appendChild(menu);
+    renderEffortPicker(menu, anchorEl, sessionId, list);
+    placeMenu(menu, anchorEl);
+    const onDocClick = (e) => { if (!menu.contains(e.target)) closeModelPicker(); };
+    setTimeoutFn(() => document.addEventListener('click', onDocClick), 0);
+    openModelPicker = { el: menu, badge: anchorEl, onDocClick, kind: 'effort', efforts: list };
+    return menu;
+  }
+
+  async function switchEffort(sessionId, effort, menu, anchorEl) {
+    const session = sessions.get(sessionId);
+    if (!session || session._modelSwitchPending) return null;
+    if (modelSwitchStrategy(session.kind) !== 'codex-picker') return null;
+    const modelId = String(session.currentModel && session.currentModel.id || '').trim();
+    if (!modelId) return null;
+    const option = {
+      id: modelId,
+      label: session.currentModel.displayName || modelId,
+    };
+    const efforts = (openModelPicker && openModelPicker.efforts) || [effort];
+    session._modelSwitchPending = { id: modelId, label: effort };
+    updateActiveModelBadge();
+    renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
+    try {
+      const switched = await switchCodexModel(sessionId, session, option, { effortOverride: effort });
+      const confirmed = await confirmSwitch(sessionId, switched);
+      const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
+      session.currentModel = {
+        id: model.id || switched.modelId,
+        displayName: model.displayName || switched.displayName,
+      };
+      if (switched.effort) session.effort = switched.effort;
+      delete session._modelSwitchPending;
+      updateActiveModelBadge();
+      if (openModelPicker && openModelPicker.el === menu) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, {
+          text: `✓ 思考档已切到 ${session.effort}`,
+          state: 'success',
+        });
+      }
+      await sleep(650);
+      if (openModelPicker && openModelPicker.el === menu) closeModelPicker();
+      return { ok: true, effort: session.effort };
+    } catch (error) {
+      delete session._modelSwitchPending;
+      updateActiveModelBadge();
+      console.warn('[effort-switch] failed:', error && (error.stack || error.message));
+      writeTerminal(sessionId, '\x1b');
+      if (openModelPicker && openModelPicker.el === menu) {
+        renderEffortPicker(menu, anchorEl, sessionId, efforts, {
+          text: `切换失败：${error && error.message ? error.message : String(error)}`,
+          state: 'error',
+        });
+      }
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+  }
+
   function closeModelPicker() {
     if (!openModelPicker) return;
     document.removeEventListener('click', openModelPicker.onDocClick);
@@ -482,7 +683,9 @@ function createModelUiController({
     attachModelPickerHandler,
     updateActiveModelBadge,
     closeModelPicker,
+    showEffortPicker,
     showModelPicker,
+    switchEffort,
     switchModel,
   };
 }
@@ -493,6 +696,7 @@ module.exports = {
   modelClass,
   modelSelectionMatches,
   modelShort,
+  parseCodexAdvancedReasoningPicker,
   parseCodexModelPicker,
   parseCodexReasoningPicker,
   pickerNavigationInput,

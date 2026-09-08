@@ -1,0 +1,261 @@
+{
+  "screenshots": {
+    "afterPtyKill": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-after-pty-kill.png",
+    "working": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-working.png",
+    "ready": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-ready.png",
+    "effortSwitched": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-effort-switched.png",
+    "waiting": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-waiting.png",
+    "deadStreamLoss": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-dead-streamloss.png",
+    "dead": "C:\\AIWork\\20260907-frost-T1-claude1\\artifacts\\20260907-frost-v2\\T1-composer-dead.png"
+  },
+  "synthetic": {
+    "ready": {
+      "present": true,
+      "state": "ready",
+      "text": "已就绪 · 2 分钟前完成上一轮",
+      "detail": "",
+      "action": "查看上一轮 ↑",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "12%"
+    },
+    "working": {
+      "present": true,
+      "state": "working",
+      "text": "Codex 正在工作 · 38s",
+      "detail": "· 正在读取 renderer.js",
+      "action": null,
+      "quickReplies": [],
+      "stopVisible": true,
+      "sendHidden": true,
+      "ctxLevel": "warn",
+      "ctxPct": "76%"
+    },
+    "waiting": {
+      "present": true,
+      "state": "waiting",
+      "text": "Codex 在等你回答：「是否要我直接修改 index.html？」",
+      "detail": "",
+      "action": null,
+      "quickReplies": [
+        "是，继续",
+        "先看 diff",
+        "换个方案"
+      ],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "danger",
+      "ctxPct": "93%"
+    },
+    "dead": {
+      "present": true,
+      "state": "dead",
+      "text": "会话已断开（PTY 退出码 1）· 重连后可继续",
+      "detail": "",
+      "action": "重连",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "41%"
+    }
+  },
+  "rail": {
+    "order": [
+      "composer-chip",
+      "composer-chip",
+      "fi-bridge-toolbar",
+      "composer-rail-spacer",
+      "composer-ctx",
+      "floating-input-stop",
+      "floating-input-send"
+    ],
+    "model": "GPT-5.6 Sol",
+    "thinking": "xhigh",
+    "thinkingInteractive": "1",
+    "attachHidden": true,
+    "pull": true,
+    "fork": true
+  },
+  "picker": null,
+  "sends": {
+    "shell": {
+      "result": {
+        "ok": true,
+        "sendStatus": "ok",
+        "mode": "plain-shell",
+        "kind": "powershell"
+      },
+      "ms": 10,
+      "composer": {
+        "present": true,
+        "state": "working",
+        "text": "PowerShell 正在工作 · 1s",
+        "detail": "· powershell PTY output burst",
+        "action": null,
+        "quickReplies": [],
+        "stopVisible": true,
+        "sendHidden": true,
+        "ctxLevel": null,
+        "ctxPct": null
+      }
+    },
+    "codex": {
+      "result": {
+        "ok": true,
+        "kind": "codex",
+        "sendStatus": "ok",
+        "mode": "closed-loop",
+        "enterAttempts": 1,
+        "acknowledgementSource": "task_started"
+      },
+      "ms": 1164
+    }
+  },
+  "real": {
+    "ptyKill": {
+      "hubPid": 12824,
+      "candidates": [
+        44196
+      ],
+      "afterKill": {
+        "sessionStillKnown": false,
+        "activeSessionId": null,
+        "composerPresent": false,
+        "composerState": null,
+        "emptyStateVisible": true
+      }
+    },
+    "codexSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3",
+    "working": {
+      "present": true,
+      "state": "working",
+      "text": "Codex 正在工作 · 1s",
+      "detail": "· • Working (0s • esc to interrupt)",
+      "action": null,
+      "quickReplies": [],
+      "stopVisible": true,
+      "sendHidden": true,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "ready": {
+      "present": true,
+      "state": "ready",
+      "text": "已就绪 · 刚刚完成上一轮",
+      "detail": "",
+      "action": "查看上一轮 ↑",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "effortSwitch": {
+      "before": "",
+      "beforeLabel": "max",
+      "offered": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "target": "high",
+      "after": "high",
+      "chipLabel": "high"
+    },
+    "effortSwitchAdvanced": {
+      "before": "high",
+      "beforeLabel": "high",
+      "offered": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+      ],
+      "target": "max",
+      "after": "max",
+      "chipLabel": "max"
+    },
+    "modelSwitch": {
+      "before": "gpt-6-astra",
+      "target": "gpt-5.6-sol",
+      "after": "gpt-5.6-sol",
+      "chipLabel": "GPT-5.6-Sol",
+      "effort": "max"
+    },
+    "waiting": {
+      "present": true,
+      "state": "waiting",
+      "text": "Codex 在等你回答：「你选择 A 还是 B？」",
+      "detail": "",
+      "action": null,
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "streamLossDead": {
+      "present": true,
+      "state": "dead",
+      "text": "会话已断开（API Error: Connection error.）· 重连后可继续",
+      "detail": "",
+      "action": "重连",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "codexPtyKill": {
+      "hubPid": 12824,
+      "codexPids": [
+        15112
+      ],
+      "killTarget": 46572,
+      "names": [
+        "electron.exe",
+        "conhost.exe",
+        "powershell.exe",
+        "node.exe",
+        "codex.exe",
+        "python.exe"
+      ],
+      "afterKill": {
+        "sessionStillKnown": true,
+        "status": "dormant",
+        "processLost": {
+          "reason": "CLI 进程退出码 1",
+          "at": 1788847828854
+        },
+        "activeSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3"
+      }
+    },
+    "dead": {
+      "present": true,
+      "state": "dead",
+      "text": "会话已断开（CLI 进程退出码 1）· 重连后可继续",
+      "detail": "",
+      "action": "重连",
+      "quickReplies": [],
+      "stopVisible": false,
+      "sendHidden": false,
+      "ctxLevel": "ok",
+      "ctxPct": "0%"
+    },
+    "reconnect": {
+      "ok": true,
+      "revivedSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3",
+      "status": "idle",
+      "processLostCleared": true,
+      "activeSessionId": "9f5c3e21-bebe-4647-8ca9-e2e74b1e54a3"
+    }
+  }
+}

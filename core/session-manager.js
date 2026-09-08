@@ -1918,7 +1918,7 @@ class SessionManager extends EventEmitter {
     if (wasSuspended) {
       this.onSessionSuspended(sessionId, meetingId, dormantInfo, exitInfo || null);
     } else {
-      this.onSessionClosed(sessionId, meetingId, exitInfo || null);
+      this.onSessionClosed(sessionId, meetingId, { ...(exitInfo || {}), requested: !!entry.closeRequestedAt });
     }
     return true;
   }
@@ -1928,11 +1928,15 @@ class SessionManager extends EventEmitter {
     if (!session) return;
     // An explicit close wins over an in-flight suspend request.
     session.suspendRequestedAt = 0;
+    // 删除 / 重启 / 工作区迁移都走这里，CLI 自己崩掉不会。没这个标记时，
+    // 渲染层收到的“会话关闭了”在这四种情况下一模一样，只能把崩掉的会话
+    // 当成用户主动删的一起抹掉——用户看到的就是界面凭空回到空状态。
+    session.closeRequestedAt = Date.now();
     for (const t of session.pendingTimers) clearTimeout(t);
     if (!session.pty) {
       if (session.terminalSnapshot) session.terminalSnapshot.dispose();
       this.sessions.delete(sessionId);
-      this.onSessionClosed(sessionId, null, { noPty: true });
+      this.onSessionClosed(sessionId, null, { noPty: true, requested: true });
       return;
     }
     session.pty.kill();

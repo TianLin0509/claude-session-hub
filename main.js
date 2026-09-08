@@ -1175,7 +1175,13 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   try { transcriptTap.unregisterSession(sessionId); } catch {}
   // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
   try { cliReadyDetector.cleanup(sessionId); } catch {}
-  sendToRenderer('session-closed', { sessionId });
+  // 渲染层要靠 requested 分辨“用户删/重启/迁移”和“CLI 自己崩了”；
+  // 后者不该把会话连同输入框一起抹掉，而要留一张断开卡片 + 重连入口。
+  sendToRenderer('session-closed', {
+    sessionId,
+    exitInfo: exitInfo || null,
+    requested: isWorkspaceMigration || !!(exitInfo && exitInfo.requested),
+  });
   if (meetingId && !isWorkspaceMigration) {
     const updated = meetingManager.removeSubSession(meetingId, sessionId);
     if (updated) sendToRenderer('meeting-updated', { meeting: updated });
