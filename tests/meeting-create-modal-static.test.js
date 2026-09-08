@@ -251,7 +251,8 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /groupMode:\s*_isGroupChat\s*\?\s*['"]deliberation['"]/);
   assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*slots\.map/);
   assert.ok(!/id="btn-group-chat"/.test(HTML), 'legacy standalone group-chat header button must stay removed');
-  assert.match(HTML, /id="btn-new"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"/);
+  // 冷杉 v2 T0：场景按钮搬去 #scene-rail（排在侧栏之前），启动按钮留在侧栏头部。
+  assert.match(HTML, /id="scene-rail"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"[\s\S]*?id="btn-new"/);
   assert.match(HTML, /id="btn-new"[^>]*>[\s\S]*?<span class="btn-label">启动<\/span>/);
   assert.match(HTML, /id="launch-center-group-host"/);
   assert.doesNotMatch(HTML, /id="launch-center-configure-group"/);

@@ -38,6 +38,35 @@
     <!-- 2026-07-19 道雪 · 方案C：全局配额 ticker 常驻顶部（原侧栏 account-usage 面板迁移） -->
     <div id="quota-ticker" class="quota-ticker" style="display:none"></div>
     <div class="app-body" id="app-body">
+    <!-- 场景 rail（冷杉 v2 T0）：四个场景按钮是从 .sidebar-header 原样搬过来的节点，
+         id / data-* / 事件接线一律不变；label 由 rail.css 收成 tooltip，可访问名保留。 -->
+    <nav class="scene-rail" id="scene-rail" aria-label="场景">
+      <div class="rail-logo" aria-hidden="true">AI</div>
+      <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5m0 14h16"/><path d="m7 15 4-4 3 2 5-6"/></svg><span class="btn-label">投研</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5A2 2 0 0 1 5 4h5v15H5a2 2 0 0 0-2 2z"/><path d="M21 5.5A2 2 0 0 0 19 4h-5v15h5a2 2 0 0 1 2 2z"/></svg><span class="btn-label">学习</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v12"/><path d="M8.5 21h7"/><path d="M7.8 7.8a6 6 0 0 1 8.4 0"/><path d="M5 5a9.5 9.5 0 0 1 14 0"/><circle cx="12" cy="11" r="1.6"/></svg><span class="btn-label">开发</span></button>
+      <div class="rail-spacer"></div>
+      <!-- 用量环占位，T5 填充 -->
+      <div class="rail-usage" id="rail-usage"></div>
+      <div class="rail-theme-wrapper">
+        <button type="button" class="btn-rail-theme" id="btn-theme" title="主题皮肤" aria-haspopup="true" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+        <div class="theme-menu" id="theme-menu" role="menu" aria-labelledby="btn-theme" style="display:none">
+          <div class="options-section-label">主题</div>
+          <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
+          <div class="options-theme-picker" id="options-theme-picker" role="radiogroup" aria-label="选择主题"></div>
+          <div class="options-theme-note">终端、代码块与工具输出在所有主题下都保持深色</div>
+        </div>
+      </div>
+      <div class="options-wrapper">
+        <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
+        <div class="options-menu" id="options-menu" style="display:none">
+          <div class="options-item" id="options-suspend-idle" title="后台每 5 分钟巡检；连续 5 小时无输入输出则自动休眠">💤 自动休眠 · 5 小时（立即扫描）</div>
+          <div class="options-divider"></div>
+          <div class="options-item" id="options-settings">⚙️ 设置</div>
+        </div>
+      </div>
+    </nav>
     <!-- 等你响应浮动条：主区右下角，任意视图可见 -->
     <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">
@@ -117,29 +146,13 @@
             </div>
           </div>
         </div>
-        <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
-        <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5m0 14h16"/><path d="m7 15 4-4 3 2 5-6"/></svg><span class="btn-label">投研</span></button>
-        <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5A2 2 0 0 1 5 4h5v15H5a2 2 0 0 0-2 2z"/><path d="M21 5.5A2 2 0 0 0 19 4h-5v15h5a2 2 0 0 1 2 2z"/></svg><span class="btn-label">学习</span></button>
-        <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v12"/><path d="M8.5 21h7"/><path d="M7.8 7.8a6 6 0 0 1 8.4 0"/><path d="M5 5a9.5 9.5 0 0 1 14 0"/><circle cx="12" cy="11" r="1.6"/></svg><span class="btn-label">开发</span></button>
-        <div class="options-wrapper">
-          <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
-          <div class="options-menu" id="options-menu" style="display:none">
-            <div class="options-item" id="options-suspend-idle" title="后台每 5 分钟巡检；连续 5 小时无输入输出则自动休眠">💤 自动休眠 · 5 小时（立即扫描）</div>
-            <div class="options-section-label">主题</div>
-            <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
-            <div class="options-theme-picker" id="options-theme-picker" role="radiogroup" aria-label="选择主题"></div>
-            <div class="options-theme-note">终端、代码块与工具输出在所有主题下都保持深色</div>
-            <div class="options-divider"></div>
-            <div class="options-item" id="options-settings">⚙️ 设置</div>
-          </div>
-        </div>
+        <button type="button" class="global-search-launcher" id="btn-global-search" title="昨日之我 · 全局搜索 (Ctrl+Shift+F)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
+          <span>昨日之我</span>
+          <kbd>Ctrl Shift F</kbd>
+        </button>
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
-      <button type="button" class="global-search-launcher" id="btn-global-search" title="昨日之我 · 全局搜索 (Ctrl+Shift+F)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
-        <span>昨日之我</span>
-        <kbd>Ctrl Shift F</kbd>
-      </button>
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
       <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
