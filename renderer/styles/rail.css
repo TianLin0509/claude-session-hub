@@ -1,0 +1,150 @@
+/* =========================================================================
+   场景 rail（冷杉 B v2 · T0）
+   =========================================================================
+   最左侧 52px 的常驻图标条：logo → 四个场景按钮 → 弹性空位 → 用量环占位（T5）
+   → 主题 → 选项。
+
+   四个场景按钮是从 .sidebar-header 原样搬过来的 .btn-shell-nav 节点，所以这里
+   全部用 .scene-rail 前缀去压 launch-center.css 里那套「横排带文字」的形态：
+   launch-center.css 是在 styles.css 之后由独立 <link> 引入的，同 specificity 时
+   它赢；靠 (0,2,0) > (0,1,0) 才稳，别把前缀去掉改成裸类名。
+
+   本车道不许改 shell-sidebar-terminal.css，所以展开按钮的位移、options 菜单的
+   翻边也都在这里覆盖。
+   ========================================================================= */
+
+.scene-rail {
+  flex: none;
+  width: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0;
+  background: var(--surface-sunken);
+  box-shadow: inset -1px 0 0 var(--border-subtle);
+  z-index: 60;
+}
+
+.rail-logo {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  margin-bottom: 8px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, #7c98ff, #5f7fff);
+  color: #fff;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 12px rgba(var(--rgb-brand), 0.35);
+  user-select: none;
+}
+
+.rail-spacer { flex: 1 1 auto; min-height: 6px; }
+
+/* 用量环占位：T5 之前是空的，不该占出一块空白 */
+.rail-usage {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rail-usage:empty { display: none; }
+
+/* ---- 场景按钮：横排带文字 → 34×34 纯图标 ---- */
+.scene-rail .btn-shell-nav,
+.scene-rail .btn-options,
+.scene-rail .btn-rail-theme {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  padding: 0;
+  gap: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font: inherit;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+/* 文案留在 DOM 里（可访问名 + tooltip 的 title 都还在），只是不画出来 */
+.scene-rail .btn-label { display: none; }
+
+.scene-rail .btn-icon { width: 17px; height: 17px; }
+
+.scene-rail .btn-shell-nav:hover,
+.scene-rail .btn-options:hover,
+.scene-rail .btn-rail-theme:hover {
+  background: rgba(var(--rgb-overlay), 0.06);
+  border-color: transparent;
+  color: var(--fg-default);
+}
+
+.scene-rail .btn-shell-nav.active,
+.scene-rail .btn-shell-nav[aria-current='page'] {
+  background: var(--brand-tint);
+  border-color: transparent;
+  color: var(--brand);
+}
+
+.scene-rail .btn-shell-nav:focus-visible,
+.scene-rail .btn-options:focus-visible,
+.scene-rail .btn-rail-theme:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* ---- rail 底部的两个弹层：从按钮右侧、贴着底边弹出 ---- */
+.rail-theme-wrapper { position: relative; flex: none; }
+
+.scene-rail .theme-menu,
+.scene-rail .options-menu {
+  position: absolute;
+  top: auto;
+  right: auto;
+  bottom: 0;
+  left: calc(100% + 8px);
+  margin-top: 0;
+  min-width: 236px;
+  padding: 6px 0;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  animation: rail-popover-in 160ms ease-out;
+}
+
+@keyframes rail-popover-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ---- 折叠态：只折侧栏，rail 永远在 ---- */
+/* 展开按钮原来贴在 app-body 左边 8px，那正好压在 rail 的 logo 上；挪到 rail 右侧。 */
+#app-body > .btn-expand-sidebar {
+  left: 60px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---- 舞台环境光：只在冷杉下出现 ---- */
+[data-theme='frost'] #terminal-panel {
+  background-image: radial-gradient(900px 300px at 20% -10%, rgba(109, 141, 255, .16), transparent 60%);
+  background-repeat: no-repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene-rail .theme-menu,
+  .scene-rail .options-menu { animation: none; }
+  .scene-rail .btn-shell-nav,
+  .scene-rail .btn-options,
+  .scene-rail .btn-rail-theme { transition: none; }
+}

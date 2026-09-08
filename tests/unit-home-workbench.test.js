@@ -92,15 +92,19 @@ test('shell keeps one launcher plus Home and Research navigation while retaining
   const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'home-workbench.css'), 'utf8');
 
   const launchIndex = html.indexOf('id="btn-new"');
+  const railIndex = html.indexOf('id="scene-rail"');
   const homeIndex = html.indexOf('id="btn-home"');
   const topResearchIndex = html.indexOf('id="btn-research"');
   const workbenchIndex = html.indexOf('id="empty-state"');
   const researchIndex = html.indexOf('id="btn-chuxin"');
   assert.ok(launchIndex >= 0, 'single top launcher should exist');
   assert.ok(homeIndex >= 0, 'top home button should exist');
-  assert.ok(launchIndex < homeIndex && homeIndex < topResearchIndex,
-    'top navigation order should be launcher, Home, Research');
-  assert.ok(workbenchIndex > topResearchIndex, 'workbench should live in the main panel');
+  // 冷杉 v2 T0：场景按钮搬去最左侧的 rail，rail 排在侧栏之前，
+  // 所以顺序由「启动 → 主页 → 投研」变成「rail(主页 → 投研) → 侧栏启动」。
+  assert.ok(railIndex >= 0 && railIndex < homeIndex && homeIndex < topResearchIndex,
+    'scene rail should host Home then Research');
+  assert.ok(topResearchIndex < launchIndex, 'rail should come before the sidebar launcher');
+  assert.ok(workbenchIndex > launchIndex, 'workbench should live in the main panel');
   assert.ok(researchIndex > workbenchIndex, 'research entry should live inside the home workbench');
   assert.match(html, /id="btn-home"[^>]*>[\s\S]*?<span class="btn-label">主页<\/span>/);
   assert.match(html, /id="btn-research"[^>]*>[\s\S]*?<span class="btn-label">投研<\/span>/);

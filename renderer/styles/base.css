@@ -591,6 +591,97 @@
   --tool-call-fail: #b3352c;
 }
 
+/* ---------- ⑤ frost「冷杉」·第二套深色（新装默认） ----------
+   为什么只写差值：段②的选择器是 `:root, :root[data-theme='dark']`，其中 `:root`
+   对任何皮肤都成立，所以整套 token 已经有底。这里 (0,2,0) 只覆盖冷杉与 GitHub
+   Dark 真正不同的地方 —— 表面更冷更深、强调色由紫转蓝、圆角放大、CTA 变蓝渐变。
+   段③（四套浅色共享段）选中的是那四个 id，跟这里不相交，不需要排在它后面才成立；
+   放在皮肤区末尾只是为了顺序一致、以后加皮肤照抄位置。 */
+:root[data-theme='frost'] {
+  color-scheme: dark;
+
+  --font-sans: "Inter", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  --radius-sm: 7px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --shadow-md: 0 10px 30px rgba(var(--rgb-shadow), 0.35);
+  --shadow-lg: 0 30px 80px rgba(var(--rgb-shadow), 0.6);
+
+  --surface-canvas: #0f1319;
+  --surface-raised: #121821;
+  --surface-card: #121821;
+  --surface-sunken: #0c0f14;
+  --surface-overlay: #141a24;
+  --surface-hover: rgba(255, 255, 255, 0.05);
+  --surface-active: #141a24;
+
+  --machine-bg: #0a0d12;
+  --machine-border: #1b222c;
+
+  --border-subtle: rgba(255, 255, 255, 0.075);
+  --border-mid: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  --fg-strong: #ffffff;
+  --fg-default: #e8ecf2;
+  --fg-muted: #7f8a9a;
+  --fg-faint: #4d5665;
+
+  --brand: #6d8dff;
+  --brand-hover: #7c98ff;
+  --brand-text: #c9d5ff;
+  --brand-tint: rgba(109, 141, 255, 0.14);
+  --brand-tint-border: rgba(109, 141, 255, 0.35);
+  --brand-glow: rgba(109, 141, 255, 0.5);
+  --link: #8fa8ff;
+  --link-hover: #b0c1ff;
+
+  --status-success: #4ade80;
+  --status-warning: #fbbf24;
+  --status-danger: #fb7185;
+  --status-info: #6d8dff;
+
+  --rgb-brand: 109, 141, 255;
+  --rgb-brand-soft: 156, 176, 255;
+  --rgb-info: 109, 141, 255;
+  --rgb-success: 74, 222, 128;
+  --rgb-warning: 251, 191, 36;
+  --rgb-danger: 251, 113, 133;
+  --rgb-canvas: 15, 19, 25;
+  --rgb-neutral: 127, 138, 154;
+
+  --mark-blue: #6d8dff;
+  --mark-amber: #fbbf24;
+  --mark-amber-soft: #fcd34d;
+  --mark-feature: #fbbf24;
+  --mark-red: #fb7185;
+  --mark-red-strong: #f43f5e;
+  --mark-green: #4ade80;
+  --mark-green-strong: #22c55e;
+  --mark-indigo: #6d8dff;
+  --mark-slate: #7f8a9a;
+
+  /* 冷杉的 CTA 是蓝渐变，不是深色皮肤那颗浅药丸 */
+  --cta-bg: linear-gradient(180deg, #7c98ff, #5f7fff);
+  --cta-fg: #ffffff;
+  --cta-border: rgba(109, 141, 255, 0.55);
+  --cta-bg-hover: linear-gradient(180deg, #8aa3ff, #6d8dff);
+  --cta-bg-active: linear-gradient(180deg, #6d8dff, #5273f0);
+
+  --session-active: rgba(74, 222, 128, 0.1);
+  --session-waiting: rgba(109, 141, 255, 0.12);
+
+  --turn-meta-fg: #7f8a9a;
+  --turn-body-fg: #e8ecf2;
+  --tool-call-border: rgba(255, 255, 255, 0.1);
+  --tool-call-name: #fbbf24;
+  --tool-call-ok: #4ade80;
+  --tool-call-fail: #fb7185;
+}
+
 /* =========================================================================
    旧名别名层 —— 只做转发，不再自带值
    ========================================================================= */

@@ -13,6 +13,7 @@ const {
   THEME_IDS,
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
+  DARK_THEME_IDS,
   normalizeTheme,
   nextTheme,
   getTheme,
@@ -57,9 +58,12 @@ function makeHarness({ stored } = {}) {
   const elements = new Map([
     ['btn-options', makeElement()],
     ['options-menu', makeElement()],
+    ['btn-theme', makeElement()],
+    ['theme-menu', makeElement()],
     ['options-theme-picker', makeElement()],
     ['options-settings', makeElement()],
   ]);
+  elements.get('btn-theme').setAttribute('aria-expanded', 'false');
   const documentElement = makeElement();
   documentElement._displayWrites = [];
   Object.defineProperty(documentElement.style, 'display', {
@@ -92,13 +96,20 @@ function makeHarness({ stored } = {}) {
 
 async function main() {
   // --- 皮肤清单 ---
-  assert.deepStrictEqual(THEME_IDS.slice(), ['dark', 'claude', 'codex', 'hub', 'slate']);
-  assert.strictEqual(DEFAULT_THEME, 'dark');
+  assert.deepStrictEqual(THEME_IDS.slice(), ['dark', 'frost', 'claude', 'codex', 'hub', 'slate']);
+  // 冷杉是新装默认。已存过皮肤的用户读回自己那套，不受这条影响。
+  assert.strictEqual(DEFAULT_THEME, 'frost');
+  assert.ok(THEME_IDS.includes('frost'), '冷杉必须在皮肤清单里');
+  assert.strictEqual(getTheme('frost').label, '冷杉');
+  assert.deepStrictEqual(DARK_THEME_IDS.slice(), ['dark', 'frost']);
   for (const t of THEMES) {
     assert.ok(t.id && t.label && t.hint, 'every theme needs id/label/hint');
     assert.strictEqual(t.swatch.length, 3, t.id + ' 需要 3 个色板方块');
   }
   assert.strictEqual(isLightTheme('dark'), false);
+  // 冷杉是第二套深色：靠「不等于 dark 就是浅色」反推会把它判成浅色，
+  // 浅色专属的终端岛内缩与黑色 overlay 会跟着错上去。
+  assert.strictEqual(isLightTheme('frost'), false);
   assert.strictEqual(isLightTheme('codex'), true);
   assert.strictEqual(getTheme('claude').label, 'Claude 暖米');
   assert.strictEqual(getTheme('banana').id, DEFAULT_THEME);
@@ -127,11 +138,11 @@ async function main() {
   assert.strictEqual(resolveXtermTheme(null), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(XTERM_THEMES.dark.background, '#0d1117');
 
-  // --- 默认：没存过就是深色 ---
+  // --- 默认：没存过就是冷杉 ---
   {
     const h = makeHarness();
-    assert.strictEqual(h.controller.getTheme(), 'dark');
-    assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'dark');
+    assert.strictEqual(h.controller.getTheme(), 'frost');
+    assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'frost');
     assert.strictEqual(h.terminal.options.theme, XTERM_THEMES.dark);
     assert.ok(h.elements.get('options-theme-picker').innerHTML.includes('data-theme-id="codex"'));
   }
@@ -161,12 +172,15 @@ async function main() {
   }
 
   // --- cycleTheme 走完整圈 ---
+  // 起点是 DEFAULT_THEME，不再是清单的第一个，所以期望值要按起点旋转一下。
   {
     const h = makeHarness();
+    const start = THEME_IDS.indexOf(DEFAULT_THEME);
+    const expected = THEME_IDS.slice(start).concat(THEME_IDS.slice(0, start));
     const seen = [h.controller.getTheme()];
     for (let i = 1; i < THEME_IDS.length; i++) seen.push(h.controller.cycleTheme());
-    assert.deepStrictEqual(seen, THEME_IDS.slice());
-    assert.strictEqual(h.controller.cycleTheme(), 'dark');
+    assert.deepStrictEqual(seen, expected);
+    assert.strictEqual(h.controller.cycleTheme(), DEFAULT_THEME, '走完一圈要回到起点');
   }
 
   // --- 运行时换主题必须强制整树重算 ---
@@ -193,6 +207,29 @@ async function main() {
   {
     assert.doesNotThrow(() => forceStyleRecalc(null));
     assert.doesNotThrow(() => forceStyleRecalc({}));
+  }
+
+  // --- rail 上的主题弹层与 options 菜单互斥 ---
+  // 主题选择器从 options 菜单搬到了 rail 的主题按钮下（宿主 id 没变），
+  // 两颗按钮在 rail 上紧挨着，同时张开会叠在一起。
+  {
+    const h = makeHarness();
+    const themeBtn = h.elements.get('btn-theme');
+    const themeMenu = h.elements.get('theme-menu');
+    const optionsBtn = h.elements.get('btn-options');
+    const optionsMenu = h.elements.get('options-menu');
+
+    themeBtn._listeners.click({ stopPropagation() {} });
+    assert.strictEqual(themeMenu.style.display, 'block', '点主题按钮要张开主题弹层');
+    assert.strictEqual(themeBtn.getAttribute('aria-expanded'), 'true');
+
+    optionsBtn._listeners.click({ stopPropagation() {} });
+    assert.strictEqual(optionsMenu.style.display, 'block');
+    assert.strictEqual(themeMenu.style.display, 'none', '张开 options 时主题弹层要收起');
+    assert.strictEqual(themeBtn.getAttribute('aria-expanded'), 'false');
+
+    optionsBtn._listeners.click({ stopPropagation() {} });
+    assert.strictEqual(optionsMenu.style.display, 'none', '再点一次要收起');
   }
 
   // --- 设置入口不受影响 ---
