@@ -20,6 +20,7 @@ const WT = require('../../renderer/workflow-templates.js');
 const DOCS = require('../../core/dev-task-docs.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const LOCATOR = require('../../core/dev-project-locator.js');
+const NEWLINE = String.fromCharCode(10);
 const fsx = require('fs');
 const path = require('path');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
@@ -385,6 +386,9 @@ function createLoopEngine(deps) {
             stepAttempt: Number(state.stepAttempt) || 0,
             // 本次运行的阶段文件起点。续跑必须沿用它，否则会去找别的轮次的文件。
             posBase: Number(state.posBase) > 0 ? Number(state.posBase) : null,
+            // 损坏标记跟着每次落盘走：正常跑的时候它就是 null，
+            // 这样「记录被写坏过」不会永远粘在这个群上。
+            damaged: state.damaged || null,
             lastError: state.lastError || null,
           },
         }),
@@ -771,10 +775,31 @@ function createLoopEngine(deps) {
       config = buildConfig(wf.loop);
 
       let prevMerge = null, goal, resuming = false;
-      const damage = describeLoopStateDamage(persistedLoopState);
+      // 用户明确开新一轮（给了新目标、没有沿用旧检查点）= 人工决定，损坏标记到此为止。
+      const startingFresh = !persistedLoopState && String(userInput || '').trim();
+      if (startingFresh) {
+        const current = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+        if (current.loopState && current.loopState.damaged) {
+          try {
+            meetingManager.updateMeeting(meetingId, {
+              serialWorkflow: Object.assign({}, current, {
+                loopState: Object.assign({}, current.loopState, { damaged: null }),
+              }),
+            });
+          } catch (error) { logError('[loop-engine] 清除损坏标记失败:', error); }
+        }
+      }
+      // 损坏标记是**持久**的：第一次暂停时如果把 round 归零再落盘，第二次点重发
+      // 记录就已经「干净」了，于是照常派工 —— 这正是第四轮合并位复现的那条。
+      // 所以既看这次传进来的记录，也看盘上留着的标记，两者任一命中就拒绝。
+      const persistedDamage = ((meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {}).loopState;
+      const damage = describeLoopStateDamage(persistedLoopState)
+        || (!startingFresh && persistedDamage && persistedDamage.damaged ? persistedDamage.damaged.detail : null);
       if (damage) {
         const damagedState = {
           status: 'paused', round: 0, phase: 'reaching', currentStep: null,
+          // 原始的损坏值不覆盖、不修正，只加一个持久标记 —— 它是给人看的证据。
+          damaged: { detail: damage, at: Date.now() },
           lastError: { stage: 'loop-engine', reason: 'state_record_damaged', detail: damage, at: Date.now() },
         };
         logger.log('[loop-engine] 持久状态不可信，停下来等人处理：' + damage);
@@ -878,7 +903,7 @@ function createLoopEngine(deps) {
           LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt }),
           docsOn ? docsDir : null, builderPos,
           docsOn ? acceptedDocPaths(meetingId, docsDir, builderPos) : [],
-        ), meeting, goal);
+        ), meeting, userTaskTextOf(meetingId, goal));
         state.currentStep = 'builder'; state.attempt = state.round + 1; state.lastError = null;
         if (!persistOrPause()) break;
         progress({ stage: 'builder', round: state.round + 1 });
@@ -1017,7 +1042,7 @@ function createLoopEngine(deps) {
           LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt }),
           docsOn ? docsDir : null, reviewerPos,
           docsOn ? acceptedDocPaths(meetingId, docsDir, reviewerPos) : [],
-        ), meeting, goal);
+        ), meeting, userTaskTextOf(meetingId, goal));
         // 【同席位必须另起一轮】评审这一步平时复用工作位那一轮（同一轮里两批不同成员，
         // 各占各的格子）。但「极简」是同一个人先实现再自审 —— 一轮里每位成员只有一格
         // （orchestrator 的 by[sid]），复用就等于让评审的回答顶掉刚落盘的实现报告：
@@ -1247,6 +1272,26 @@ function createLoopEngine(deps) {
   // 不许全盘扫），以及在开题报告被接收后，把它声明的项目根**绑到这个群**，
   // 让实现位和审查位之后用的是同一个已核实路径。
 
+  /**
+   * 「任务原文」= 维护者自己说过的话。定位要靠它去比对项目库，
+   * 所以不能只拿调用方顺手传的字符串 —— 开题那一步压根没有别的来源。
+   * 只取 origin==='user' 的消息：Hub 自己生成的阶段指令不是任务线索。
+   */
+  function userTaskTextOf(meetingId, fallback) {
+    const parts = [];
+    try {
+      const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
+      const messages = (orchestrator && orchestrator.state && orchestrator.state.messages) || [];
+      for (const message of messages) {
+        if (!message || message.role !== 'user' || message.origin !== 'user') continue;
+        const text = String(message.content || '').trim();
+        if (text) parts.push(text);
+      }
+    } catch (error) { logError('[loop-engine] 读取任务原文失败:', error); }
+    const tail = parts.slice(-5).join(NEWLINE);
+    return [String(fallback || '').trim(), tail].filter(Boolean).join(NEWLINE);
+  }
+
   function locatorBlockFor(meeting, taskText) {
     try {
       const workflow = (meeting && meeting.serialWorkflow) || {};
@@ -1355,7 +1400,7 @@ function createLoopEngine(deps) {
         const prompt = withLocator(withDocBlock(
           DevDiscuss.buildKickoffPrompt({ locator: typeof workflow.projectLocator === 'string' ? workflow.projectLocator : '' }),
           dir, 0, [],
-        ), meeting, options.taskText || '');
+        ), meeting, userTaskTextOf(meetingId, options.taskText));
         // 2026-09-08 合并位在真实 CLI 上撞到的：CLI 还没起来，派发以 cli_not_ready 失败，
         // 而这里原来只 await、从不看结果 —— 于是界面显示「正在等开题报告」，
         // 实际上一个字都没送进 CLI，用户完全看不出区别。
@@ -1381,10 +1426,23 @@ function createLoopEngine(deps) {
           } catch (error) {
             dispatchFailure = (error && error.message) || 'kickoff_dispatch_exception';
           }
-          if (dispatchFailure && transportAttempt < 2 && !entry.abort) {
-            logger.log('[loop-engine] 开题派发失败，重试一次：' + dispatchFailure);
-            await sleep(500);
+          if (!dispatchFailure || transportAttempt >= 2) continue;
+          // 2026-09-08 第四轮合并位复现：重试循环原来只看 entry.abort，于是
+          //   · 用户在第一次失败之后点了停止 —— 落盘的停止意图没人看，照样再派一次；
+          //   · 报告其实已经交了、只是回执丢了 —— 也照样再派一次，让 agent 把同一份
+          //     任务书重写一遍。
+          // 重试之前必须把这两件事都问一遍。
+          if (entry.abort || stopIntentOf(meetingId)) {
+            logger.log('[loop-engine] 用户已停止，开题不再重试派发');
+            break;
           }
+          if (deliveryAccepted(checkDeliveryOnce(meetingId, dir, 0))) {
+            logger.log('[loop-engine] 开题报告其实已经交付，回执丢了也不重派');
+            dispatchFailure = null;
+            break;
+          }
+          logger.log('[loop-engine] 开题派发失败，重试一次：' + dispatchFailure);
+          await sleep(500);
         }
         if (dispatchFailure) {
           // 回执丢了不等于没送到：先看一眼报告是不是其实已经交了（任务书 D04）。
@@ -1419,6 +1477,29 @@ function createLoopEngine(deps) {
       // 报告里声明的项目根通过核实就绑到本群：之后实现位和审查位用的是同一个已核实现场（E01/E04）。
       const bound = bindProjectRootFromReport(meetingId, reportPath);
       if (bound && bound.ok && !bound.unchanged) emit('project-root-bound', { path: bound.path, previous: bound.previous });
+      // 2026-09-08 第四轮阻断：核实失败以前只记一行日志就照常开工 —— 那等于让实现位
+      // 在一个没人核实过的现场动手。现在分两种：
+      //   · 报告声明了项目根但核实不过（目录不在 / 不是仓库 / 是聚合根）→ 停；
+      //   · 报告没声明，而当前工作目录本身也不是有效仓库现场 → 同样停。
+      // 只有「声明并核实通过」或「本来就在有效现场」才允许进实现。
+      if (!bound || !bound.ok) {
+        const currentWorkspace = (meetingManager.getMeeting(meetingId) || {}).workspace || '';
+        const siteOk = !!currentWorkspace && LOCATOR.classifyRepo(currentWorkspace).valid
+          && !LOCATOR.isAggregateRoot(currentWorkspace);
+        // 报告**声明了**项目根却核实不过 → 一律停：它断言了一件假的事，
+        // 这时候退回界面上那个目录继续跑，等于用一个没人核实的现场掩盖掉这个信号。
+        // 报告**没声明** → 才退一步看当前现场本身是否成立。
+        const declaredButBad = bound && bound.reason && bound.reason !== 'not_declared';
+        if (declaredButBad || !siteOk) {
+          const detail = bound && bound.reason === 'not_declared'
+            ? '报告里没有「项目根：<绝对路径>」这一行，当前工作目录也不是有效仓库现场'
+            : `报告声明的项目根没通过核实（${(bound && bound.reason) || '未知'}${bound && bound.path ? '：' + bound.path : ''}）`;
+          saveKickoff({ kickoff: { status: 'project_root_unverified', lastReason: detail, reportPath, updatedAt: Date.now() } });
+          emit('kickoff-project-root-unverified', { detail, reportPath });
+          logger.log('[loop-engine] 项目现场没核实过，不进实现：' + detail);
+          return { ok: false, reason: 'project_root_unverified', detail, reportPath };
+        }
+      }
       // 报告接收成立，但用户在这期间点了停止 → 只记下交付，不翻阶段、不自动开工。
       // 迟到的完成文件不能覆盖明确的停止意图（任务书 D06）。
       if (entry.abort || stopIntentOf(meetingId)) {

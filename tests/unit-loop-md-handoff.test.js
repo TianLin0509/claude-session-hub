@@ -24,6 +24,13 @@ async function t(name, fn) {
 const BUILD_DOC = ['# 阶段1协作手册', 'worktree C:/AIWork/x，分支 feat/y，完整提交 abc1234def。', '实际验证：跑了全量单测 386 通过。', '未完成项：无。'].join('\n');
 const REVIEW_PASS = ['# 阶段1合并手册', '我独立跑了全量单测和 dry-run。', 'RESULT: PASS', 'BLOCKERS: 无', 'VERIFIED: node scripts/run_unit_tests.js 386 通过', 'NEXT: 无'].join('\n');
 const REVIEW_FAIL = ['# 阶段1合并手册', '复现了缺陷。', 'RESULT: FAIL', 'BLOCKERS: 补充没送到待命成员', 'VERIFIED: 隔离实例复现一次', 'NEXT: 修完再审'].join('\n');
+// 一个真的存在、且 .git 在里面的目录：用来验「现场本来就核实得过就不该拦」
+const REPO_FIXTURE = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-fixture-'));
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  return dir;
+})();
+
 const KICKOFF_DOC = ['# 开题报告', '## 目标', '让交接靠文件改名。', '## 非目标', '不做工作流编辑器。', '## 验收标准', '全程可跑通。', '## 风险与回退', '停止新派发即可。'].join('\n');
 
 /** 构造一套 mock，返回引擎 + 任务目录 + 派发记录。 */
@@ -76,8 +83,13 @@ function mk(opts = {}) {
       interruptMeetingTurn: () => {},
     }),
     meetingManager: {
-      getMeeting: () => ({ id: meetingId, groupChat: true, scene: 'dev', subSessions: ['sB', 'sR'], slotSpecs: [{ memberId: 'm1' }, { memberId: 'm2' }], serialWorkflow: workflow }),
-      updateMeeting: (_id, fields) => { if (fields.serialWorkflow) workflow = { ...workflow, ...fields.serialWorkflow }; },
+      // 默认现场是一个真实存在的仓库目录 —— 这才是常态；
+      // 要验「现场核实不过」的用例显式传 workspace: null。
+      getMeeting: () => ({ id: meetingId, groupChat: true, scene: 'dev', workspace: ('workspace' in opts ? opts.workspace : REPO_FIXTURE), subSessions: ['sB', 'sR'], slotSpecs: [{ memberId: 'm1' }, { memberId: 'm2' }], serialWorkflow: workflow }),
+      updateMeeting: (_id, fields) => {
+        if (fields.serialWorkflow) workflow = { ...workflow, ...fields.serialWorkflow };
+        if (Object.prototype.hasOwnProperty.call(fields, 'workspace')) opts.workspace = fields.workspace;
+      },
       getAllMeetings: () => [{ id: meetingId, groupChat: true, scene: 'dev', serialWorkflow: workflow }],
     },
     sessionManager: { getSession: (sid) => ({ id: sid, title: sid, kind: 'codex', status: 'idle' }) },
@@ -513,6 +525,107 @@ function writeDoc(docsDir, pos, body) {
     assert.strictEqual(state.status, 'paused', '开了 MD 交接就不许静默降级成聊天判定');
     assert.strictEqual(state.lastError.reason, 'task_dir_unavailable');
     assert.strictEqual(h.turnCalls.length, 0, '连派工都不该开始');
+  });
+
+  // ── 2026-09-08 第四轮合并位复现的阻断 ────────────────────────────────────
+
+  await t('阻断 开题重试期间用户点了停止 → 不许再派第二次', async () => {
+    let engineRef = null;
+    let dispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => ({ reason: 'cli_not_ready' }),
+      onDispatch: (args) => {
+        if (!(args.workflowRun && args.workflowRun.kind === 'kickoff')) return;
+        dispatches += 1;
+        // 第一次派发失败之后、重试之前，用户点了停止
+        if (dispatches === 1) engineRef.stopLoop('mtg', { interrupt: false });
+      },
+    });
+    engineRef = h.engine;
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(dispatches, 1, '停止之后不许重试派发');
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff', '现场保留');
+  });
+
+  await t('阻断 回执失败但报告其实已经交了 → 不许重试，别让它把任务书重写一遍', async () => {
+    let dispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => ({ reason: 'send_failed' }),
+      onDispatch: (args, docsDir) => {
+        if (!(args.workflowRun && args.workflowRun.kind === 'kickoff')) return;
+        dispatches += 1;
+        // prompt 其实送到了，agent 已经把报告交出来，只是回执丢了
+        if (dispatches === 1) writeDoc(docsDir, 0, KICKOFF_DOC);
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(dispatches, 1, '报告已经在了就不该再派一次，否则它会重写同一份任务书');
+    assert.strictEqual(outcome.ok, true, '按成果算，照常进入实现');
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
+  });
+
+  await t('阻断 状态记录损坏 → 第二次点重发照样拒绝，不是洗一次就放行', async () => {
+    const h = mk({ onDispatch: () => {} });
+    // 只把轮次写坏 —— 合并位的探针就是这么复现的：第一次暂停时把它归零，
+    // 第二次记录已经「干净」了，于是照常派工。
+    const damaged = { status: 'running', round: -3, goal: '原目标', runId: 'loop-x', history: [] };
+    const first = await h.engine.runLoop('mtg', null, damaged, {});
+    assert.strictEqual(first.lastError.reason, 'state_record_damaged');
+    // 第二次：从**落盘后**的记录再来一次，这正是用户点第二下「重发」走的路
+    const persisted = h.getWorkflow().loopState;
+    const second = await h.engine.runLoop('mtg', null, { ...persisted, status: 'running' }, {});
+    assert.strictEqual(second.status, 'paused', '损坏标记必须持续生效');
+    assert.strictEqual(second.lastError.reason, 'state_record_damaged');
+    assert.strictEqual(h.turnCalls.length, 0, '一次派发都不该发生');
+  });
+
+  await t('损坏记录的脱困方式是用户明确开新一轮，不是反复点重发', async () => {
+    const h = mk({
+      onDispatch: (args, docsDir) => {
+        if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        else writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    await h.engine.runLoop('mtg', null, { status: 'running', round: -3, goal: 'x', history: [] }, {});
+    assert.strictEqual(h.getWorkflow().loopState.damaged.detail.includes('round'), true, '损坏细节要留着给人看');
+    // 用户给了新目标 = 明确的人工决定，允许重新开始
+    const fresh = await h.engine.runLoop('mtg', '换个新目标重来', null, {});
+    assert.strictEqual(fresh.status, 'done', '开新一轮不该被旧的损坏标记挡住');
+    assert.strictEqual(h.getWorkflow().loopState.damaged, null, '新一轮开始时清掉损坏标记');
+  });
+
+  await t('阻断 开题报告声明的项目根核实不过 → 不自动开工', async () => {
+    const h = mk({
+      devPhase: 'discuss',
+      onDispatch: (args, docsDir) => {
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') {
+          writeDoc(docsDir, 0, KICKOFF_DOC + '\n项目根：C:\\这个目录根本不存在\\x');
+        }
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(outcome.ok, false, '项目根核实不过就不能进实现 —— 那等于在没核实的现场动手');
+    assert.strictEqual(outcome.reason, 'project_root_unverified');
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff', '停在开题，等它改报告或等人处理');
+    assert.strictEqual(h.getWorkflow().kickoff.status, 'project_root_unverified');
+  });
+
+  await t('开题报告没声明项目根、但当前工作目录本身就是有效仓库 → 照常开工', async () => {
+    const h = mk({
+      devPhase: 'discuss',
+      workspace: REPO_FIXTURE,
+      onDispatch: (args, docsDir) => {
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') writeDoc(docsDir, 0, KICKOFF_DOC);
+        else if (String(args.targetMemberIds[0]) === 'm1') writeDoc(docsDir, 1, BUILD_DOC);
+        else writeDoc(docsDir, 2, REVIEW_PASS);
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(outcome.ok, true, '现场本来就核实得过，就不该拦');
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
   });
 
   console.log(`\n通过 ${pass} / 失败 ${fail}`);

@@ -29,6 +29,12 @@ function isAggregateRoot(dir) {
   return AGGREGATE_ROOTS.some(root => path.resolve(root).toLowerCase() === resolved);
 }
 
+/** 盘符根（C:\）/ 文件系统根。退到这里毫无意义，而且很危险。 */
+function isFilesystemRoot(dir) {
+  const resolved = path.resolve(String(dir || ''));
+  return path.dirname(resolved) === resolved;
+}
+
 function dirExists(dir) {
   try { return !!dir && fs.statSync(dir).isDirectory(); } catch (error) { return false; }
 }
@@ -73,12 +79,13 @@ function resolveLaunchDir(configured, fallbackRoot) {
     if (parent === current) break;
     current = parent;
     chain.push(current);
-    if (dirExists(current) && !isAggregateRoot(current)) {
+    // 退到盘符根或聚合根都不算「找到落脚点」：前者毫无意义且危险，后者本来就禁止在里面翻。
+    if (dirExists(current) && !isAggregateRoot(current) && !isFilesystemRoot(current)) {
       return { dir: current, corrected: true, reason: 'configured_path_missing', requested: wanted };
     }
   }
   const root = String(fallbackRoot || '').trim();
-  if (root && dirExists(root)) {
+  if (root && dirExists(root) && !isFilesystemRoot(root)) {
     return { dir: path.resolve(root), corrected: true, reason: 'configured_path_missing', requested: wanted };
   }
   return { dir: null, corrected: true, reason: 'no_valid_directory', requested: wanted };
@@ -184,6 +191,7 @@ function verifyDeclaredProjectRoot(declared) {
 module.exports = {
   AGGREGATE_ROOTS,
   isAggregateRoot,
+  isFilesystemRoot,
   dirExists,
   classifyRepo,
   resolveLaunchDir,

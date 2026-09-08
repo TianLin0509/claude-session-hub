@@ -63,8 +63,13 @@ function checkDevWorkspace(dir, deps = {}) {
     return { ok: false, reason: 'not-dir', message: `这不是一个目录：${d}` };
   }
 
-  const isGit = _exists(_fs, path.join(d, '.git'));
-  const cfg = path.join(d, '.agents', 'project.json');
+  // 2026-09-08：仓库**子目录**也是合法现场。原来只看 d/.git 在不在，
+  // 于是用户选到 repo/src 会被判成「不是 git 仓库」——但那明明就是那个项目。
+  // 向上找到仓库根，找到就按仓库根走（.git 是文件的 worktree 同样算数）。
+  const repoRoot = _findRepoRoot(_fs, d);
+  const isGit = !!repoRoot;
+  const base = repoRoot || d;
+  const cfg = path.join(base, '.agents', 'project.json');
   const hasCfg = _exists(_fs, cfg);
 
   if (!isGit) {
@@ -97,7 +102,26 @@ function checkDevWorkspace(dir, deps = {}) {
     };
   }
 
-  return { ok: true, reason: 'ready', message: '' };
+  return {
+    ok: true,
+    reason: _sameDir(base, d) ? 'ready' : 'ready-subdir',
+    // 选中的是子目录时把仓库根带出来，调用方应当用它建群 —— 否则合同里那些
+    // 仓库内相对路径（.agents/AUTHOR.md、scripts/merge_task.py）还是找不到。
+    resolvedRoot: base,
+    message: '',
+  };
+}
+
+/** 从 dir 向上找仓库根。`.git` 是文件（git worktree）同样算数。 */
+function _findRepoRoot(_fs, dir) {
+  let current = String(dir || '');
+  for (let depth = 0; depth < 40 && current; depth += 1) {
+    if (_exists(_fs, path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
 }
 
 function _exists(_fs, p) {

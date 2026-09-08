@@ -609,7 +609,7 @@ async function _onCreate() {
     const titleInput = _modalEl.querySelector('#mcm-title-input');
     const title = titleInput ? titleInput.value.trim() : '';
 
-    const workspace = await _syncWorkspace();
+    let workspace = await _syncWorkspace();
     // 开发场景开在平铺工作根上：放行，但 prompt 里要带项目库让 AI 自己定位项目根。
     const atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!(workspace && workspace.flat);
     let devProjects = [];
@@ -618,6 +618,12 @@ async function _onCreate() {
       // 而这里只要一行判断。见 renderer/dev-workspace-guard.js 的注释。
       const verdict = checkDevWorkspace(workspace && workspace.path, { workRoot: atWorkRoot ? workspace.path : '' });
       if (!verdict.ok) throw new Error(verdict.message);
+      // 用户选中的是仓库**子目录**时，闸门会把仓库根算出来。必须按仓库根建群 ——
+      // 合同里那些仓库内相对路径（.agents/AUTHOR.md、scripts/merge_task.py）
+      // 在子目录里是找不到的。
+      if (verdict.reason === 'ready-subdir' && verdict.resolvedRoot) {
+        workspace = { ...workspace, path: verdict.resolvedRoot };
+      }
       if (atWorkRoot) {
         createBtn.textContent = '正在读取项目库...';
         devProjects = await _loadProjectLibrary(true);

@@ -5227,6 +5227,8 @@ if (typeof document !== 'undefined') (function () {
         return `${doc}这次读不出来（${err.detail || '原因未知'}），保留当前阶段等重读`;
       case 'verdict_conflict':
         return err.detail || '合并手册和群聊里的裁决对不上，停下来等你核对';
+      case 'project_root_unverified':
+        return `项目现场没核实过（${err.detail || '细节未知'}）—— 先确认要动的是哪个仓库，再让它开工`;
       case 'state_record_damaged':
         return `这个群聊的流程记录被写坏了（${err.detail || '细节未知'}）—— 停下来等你处理，不按目录里最大的阶段号瞎猜`;
       case 'kickoff_dispatch_failed':

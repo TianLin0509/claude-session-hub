@@ -70,6 +70,15 @@ test('路径存在时一个字都不改', () => {
   assert.strictEqual(path.resolve(resolved.dir), path.resolve(root));
 });
 
+test('E02 找不到像样的落脚点时返回 null，让调用方保持原样 —— 不许退到盘符根', () => {
+  // 退到 C:\ 既没意义又危险；调用方拿到 null 就沿用原配置，行为和以前一致。
+  const fake = L.resolveLaunchDir('Z:' + String.fromCharCode(92) + 'nope' + String.fromCharCode(92) + 'deeper', '');
+  assert.strictEqual(fake.dir, null);
+  assert.strictEqual(fake.reason, 'no_valid_directory');
+  assert.strictEqual(L.isFilesystemRoot('C:' + String.fromCharCode(92)), true);
+  assert.strictEqual(L.isFilesystemRoot('C:' + String.fromCharCode(92) + 'repo'), false);
+});
+
 test('聚合根不能被当成落脚点', () => {
   assert.strictEqual(L.isAggregateRoot('C:\\Users\\lintian'), true);
   assert.strictEqual(L.isAggregateRoot('C:/Vibe'), true);

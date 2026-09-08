@@ -164,4 +164,43 @@ test('「选择已有路径」那一行有项目库下拉：点开列已整理�
 
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
 console.log('\n──────────────');
+test('合法仓库子目录不该被拦：向上找到仓库根，并把它带回给调用方', () => {
+  // 用户选到 repo/src 时，原来只看 repo/src/.git 在不在 → 判成「不是 git 仓库」，
+  // 但那明明就是那个项目（2026-09-08 合并位在真实隔离 IPC 上复现）。
+  const SEP = String.fromCharCode(92);          // Windows 路径分隔符，避免源码里堆转义
+  const ROOT = 'C:' + SEP + 'repo';
+  const at = (...parts) => [ROOT, ...parts].join(SEP);
+  const files = new Set([ROOT, at('.git'), at('.agents', 'project.json'), at('src'), at('src', 'deep')]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => !target.endsWith('project.json') };
+    },
+  };
+  const verdict = checkDevWorkspace(at('src', 'deep'), { fs: fakeFs });
+  assert.strictEqual(verdict.ok, true, '子目录必须放行');
+  assert.strictEqual(verdict.reason, 'ready-subdir');
+  assert.strictEqual(verdict.resolvedRoot, ROOT, '要把仓库根带回去，建群按它走');
+  assert.strictEqual(checkDevWorkspace(ROOT, { fs: fakeFs }).reason, 'ready', '本来就在根上还是 ready');
+});
+
+test('worktree（.git 是文件）同样放行', () => {
+  const SEP = String.fromCharCode(92);
+  const WT = 'C:' + SEP + 'wt';
+  const files = new Set([WT, [WT, '.git'].join(SEP), [WT, '.agents', 'project.json'].join(SEP)]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => target === WT };   // .git 是文件，不是目录
+    },
+  };
+  assert.strictEqual(checkDevWorkspace(WT, { fs: fakeFs }).ok, true);
+});
+
+test('建群时子目录会被换成仓库根', () => {
+  const modal = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-create-modal.js'), 'utf-8');
+  assert(/verdict\.reason === 'ready-subdir' && verdict\.resolvedRoot/.test(modal));
+  assert(/workspace = \{ \.\.\.workspace, path: verdict\.resolvedRoot \}/.test(modal));
+});
+
 console.log('通过 ' + pass + ' / 失败 0');

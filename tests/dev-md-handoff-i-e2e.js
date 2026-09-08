@@ -64,7 +64,7 @@ module.exports = function handle(args, ctx) {
   const key = kind === 'kickoff' ? 'kickoff' : (member === 'm1' ? 'builder' : 'reviewer');
   const step = plan[key] || {};
   const log = plan.__log || [];
-  log.push({ key, member, kind, callIndex: ctx.callIndex });
+  log.push({ key, member, kind, callIndex: ctx.callIndex, prompt: String(args.userInput || '').slice(0, 8000) });
   plan.__log = log;
   try { fs.writeFileSync(PLAN, JSON.stringify(plan, null, 2), 'utf8'); } catch (e) {}
   if (step.writeDoc) {
@@ -100,8 +100,18 @@ const docName = (pos) => {
   return pos % 2 === 1 ? `已完成-阶段${round}协作手册.md` : `已完成-阶段${round}合并手册.md`;
 };
 
+// 群聊的工作现场：一个真实存在的 git 仓库目录。
+// 开发群聊的项目现场必须核实得过，否则引擎会（正确地）停在 project_root_unverified。
+const REPO_DIR = path.join(ROOT, 'fixture-repo');
+const WORKTREE_DIR = path.join(ROOT, 'fixture-worktree');
+const NOT_A_REPO = path.join(ROOT, 'just-a-folder');
+
 async function main() {
   fs.mkdirSync(ROOT, { recursive: true });
+  fs.mkdirSync(path.join(REPO_DIR, '.git'), { recursive: true });
+  fs.mkdirSync(WORKTREE_DIR, { recursive: true });
+  fs.writeFileSync(path.join(WORKTREE_DIR, '.git'), 'gitdir: ' + path.join(REPO_DIR, '.git', 'worktrees', 'x'), 'utf8');
+  fs.mkdirSync(NOT_A_REPO, { recursive: true });
   fs.writeFileSync(SCRIPT_PATH, DISPATCH_SCRIPT, 'utf8');
   writePlan({});
 
@@ -149,7 +159,7 @@ async function main() {
 
     // ── A01 建房 ──
     const created = await invoke('create-meeting', {
-      mode: 'dev', title: `I 层 ${RUN_ID}`, groupChat: true,
+      mode: 'dev', title: `I 层 ${RUN_ID}`, groupChat: true, workspace: REPO_DIR,
       slotSpecs: [{ index: 0, kind: 'codex', memberId: 'm1' }, { index: 1, kind: 'claude', memberId: 'm2' }],
     });
     meetingId = created && created.id;
@@ -347,6 +357,102 @@ async function main() {
       'D07/I 状态记录损坏 → 停下来等人处理，不按最大阶段号盲目继续',
       JSON.stringify({ status: afterDamage.status, err: afterDamage.lastError }));
     ok(dispatchLog().length === 0, 'D07/I 记录不可信时一次派发都不该发生', keys());
+
+    // ── E01–E04 路径定位（另开一个群，不打扰上面的流程）──────────────────
+    const eRoom = await invoke('create-meeting', {
+      mode: 'dev', title: `I 层 E ${RUN_ID}`, groupChat: true, workspace: NOT_A_REPO,
+      slotSpecs: [{ index: 0, kind: 'codex', memberId: 'm1' }, { index: 1, kind: 'claude', memberId: 'm2' }],
+    });
+    const eId = eRoom && eRoom.id;
+    await invoke('test:seed-groupchat-members', { meetingId: eId, count: 2 });
+    const eConfigRaw = await cdp.eval(`JSON.stringify(window.WorkflowTemplates.createTemplateConfig('dev-task',
+      [{memberId:'m1',kind:'codex'},{memberId:'m2',kind:'claude'}], {}))`);
+    const eConfig = JSON.parse(eConfigRaw);
+    // 项目库里放两个同名候选 + 一个能被任务原文唯一命中的
+    eConfig.projectLibrary = [
+      { name: '报告工具', path: path.join(ROOT, 'a', 'report-tool') },
+      { name: '报告工具', path: path.join(ROOT, 'b', 'report-tool') },
+      { name: 'MD 交接 fixture', path: REPO_DIR },
+    ];
+    eConfig.workRoot = true;
+    await invoke('update-meeting-sync', { meetingId: eId, fields: { scene: 'dev', serialWorkflow: eConfig } });
+    const eTaskDir = path.join(DATA_DIR, 'task-docs', eId);
+    const eWf = async () => (((await invoke('get-meetings')) || []).find((m) => m && m.id === eId) || {}).serialWorkflow || {};
+    const eMeeting = async () => ((await invoke('get-meetings')) || []).find((m) => m && m.id === eId) || {};
+    const eWaitIdle = async (timeoutMs = 30000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const st = await invoke('loop:status', { meetingId: eId });
+        if (!st || !st.running) return st;
+        await sleep(200);
+      }
+      return invoke('loop:status', { meetingId: eId });
+    };
+    const eWriteDone = (body) => {
+      fs.mkdirSync(eTaskDir, { recursive: true });
+      fs.writeFileSync(path.join(eTaskDir, docName(0)), body, 'utf8');
+    };
+
+    // E03：多个同名候选 → 派出去的 prompt 里必须要求「只问一个具体问题」。
+    // 先让维护者真的说一句话 —— 定位靠的是**任务原文**去比对项目库，没有原文就无从匹配。
+    await invoke('groupchat:user-supplement', { meetingId: eId, text: '改一下报告工具的导出' });
+    writePlan({ kickoff: { text: '我先看看是哪个项目。' } });
+    await invoke('dev:kickoff', { meetingId: eId, authorMemberId: 'm1' });
+    // 轮询到真的看见那段 prompt 为止 —— 固定 sleep 会把「派发还没发生」误报成「没带那一段」。
+    // prompt 原文由派发桩记进 plan 日志（桩替掉了整个 dispatcher，编排器那边看不到）。
+    let kickoffPrompt = '';
+    for (let i = 0; i < 40 && !kickoffPrompt; i += 1) {
+      kickoffPrompt = (dispatchLog().find((x) => x.key === 'kickoff' && /先核实项目现场/.test(x.prompt || '')) || {}).prompt || '';
+      if (!kickoffPrompt) await sleep(500);
+    }
+    ok(!!kickoffPrompt, 'E03/I 派出去的 prompt 里确实带了「先核实项目现场」那一段');
+    ok(/只问一个具体问题/.test(kickoffPrompt),
+      'E03/I 多个同名候选时要求只问一个具体问题，不许自己挑', kickoffPrompt.slice(0, 80));
+    ok(/不许全盘搜索/.test(kickoffPrompt) && /不许自动 git init/.test(kickoffPrompt),
+      'E03/I 明确禁止满盘扫和自动初始化');
+    ok(/git worktree/.test(kickoffPrompt), 'E04/I 明确说 .git 是文件的 worktree 也算有效现场');
+
+    // E02：报告声明了一个不存在的项目根 → 不许开工，也不许把它绑上去
+    eWriteDone(KICKOFF_DOC + '\n项目根：' + path.join(ROOT, '这个目录根本不存在'));
+    await invoke('dev:redispatch', { meetingId: eId });
+    await eWaitIdle();
+    ok((await eWf()).devPhase === 'kickoff',
+      'E02/I 项目根核实不过 → 停在开题，不在没核实的现场开工', (await eWf()).devPhase);
+    ok((await eWf()).kickoff.status === 'project_root_unverified',
+      'E02/I 状态说得出具体原因', JSON.stringify((await eWf()).kickoff));
+    ok(path.resolve((await eMeeting()).workspace || '') === path.resolve(NOT_A_REPO),
+      'E02/I 没通过核实的路径一律不绑', (await eMeeting()).workspace);
+
+    // E04：另开一个房，报告声明一个 .git 是**文件**的 worktree → 应当认它并绑过去。
+    // （不能在上一个房里改写报告：那份已经被接收，改写会走「已接收的交付被改动」那条待核对路径。）
+    const wRoom = await invoke('create-meeting', {
+      mode: 'dev', title: `I 层 E04 ${RUN_ID}`, groupChat: true, workspace: NOT_A_REPO,
+      slotSpecs: [{ index: 0, kind: 'codex', memberId: 'm1' }, { index: 1, kind: 'claude', memberId: 'm2' }],
+    });
+    const wId = wRoom && wRoom.id;
+    await invoke('test:seed-groupchat-members', { meetingId: wId, count: 2 });
+    await invoke('update-meeting-sync', { meetingId: wId, fields: { scene: 'dev', serialWorkflow: eConfig } });
+    const wTaskDir = path.join(DATA_DIR, 'task-docs', wId);
+    fs.mkdirSync(wTaskDir, { recursive: true });
+    fs.writeFileSync(path.join(wTaskDir, docName(0)), `${KICKOFF_DOC}\n项目根：${WORKTREE_DIR}`, 'utf8');
+    writePlan({ kickoff: { text: '我定位好了。' }, builder: { text: '我先看看。' }, reviewer: { text: '我在审。' } });
+    await invoke('dev:kickoff', { meetingId: wId, authorMemberId: 'm1' });
+    for (let i = 0; i < 60; i += 1) {
+      const st = await invoke('loop:status', { meetingId: wId });
+      if (st && !st.running) break;
+      await sleep(500);
+    }
+    const wMeeting = ((await invoke('get-meetings')) || []).find((m) => m && m.id === wId) || {};
+    const wWf = wMeeting.serialWorkflow || {};
+    ok(path.resolve(wMeeting.workspace || '') === path.resolve(WORKTREE_DIR),
+      'E04/I worktree（.git 是文件）被认成有效现场并绑定', wMeeting.workspace);
+    ok(wWf.devPhase === 'build',
+      'E01/I 核实通过后自主继续进入实现，不要求用户再选一次路径', wWf.devPhase);
+    const wLedger = (wWf.taskDocs || {}).accepted || {};
+    ok(!!wLedger['0'], 'E01/I 开题交付凭据落盘');
+    ok(path.resolve(path.dirname(wLedger['0'].path)) === path.resolve(wTaskDir),
+      'E04/I 交接文档仍在本群任务目录里 —— 项目路径怎么改，Hub 都不会去等旧地址',
+      wLedger['0'].path);
 
     // ── D02 重启：接收凭据、阶段、待送达补充都在 ──
     const before = await wf();
