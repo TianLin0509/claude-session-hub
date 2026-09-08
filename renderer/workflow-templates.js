@@ -229,6 +229,15 @@
       // 只对新建的双席位开发群聊打开；老房间没有这个字段，行为一字不改。
       devConfig.mdHandoff = true;
       if (ws && ws.atWorkRoot) devConfig.projectLocator = buildProjectLocatorPrompt(ws.projects);
+      // 原始项目库快照。projectLocator 是拼好的一段话，主进程没法拿它去做「任务里提到了哪个项目」
+      // 的比对；把结构化的那份也存下来，E01–E03 的定位判断才有依据。
+      if (ws && Array.isArray(ws.projects) && ws.projects.length) {
+        devConfig.projectLibrary = ws.projects
+          .filter(x => x && x.path)
+          .map(x => ({ name: String(x.name || ''), path: String(x.path) }))
+          .slice(0, 40);
+      }
+      devConfig.workRoot = (ws && ws.atWorkRoot) ? true : false;
       return devConfig;
     }
 

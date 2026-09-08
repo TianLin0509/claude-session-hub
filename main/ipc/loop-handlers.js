@@ -20,7 +20,7 @@ function registerLoopIpc(ipcMain, deps) {
   // stopped_max（返工用尽）刻意不在里面：那是流程走完之后交还给人的结果，
   // 要继续得由维护者明确给新目标，不该靠一个「继续」按钮悄悄再来三轮。
   const LOOP_RESUMABLE = ['running', 'paused', 'stopped_user'];
-  const KICKOFF_RESUMABLE = ['running', 'awaiting_report', 'failed', 'accepted_stopped'];
+  const KICKOFF_RESUMABLE = ['running', 'awaiting_report', 'failed', 'dispatch_failed', 'accepted_stopped'];
 
   const resumeByUser = (meetingId) => {
     try { if (typeof loopEngine.clearStopIntent === 'function') loopEngine.clearStopIntent(meetingId); }

@@ -40,9 +40,19 @@ test('插话不开新一轮：主进程不走 dispatchGroupChatTurn', () => {
 });
 
 test('先落盘，再谈投递：顺序不能反', () => {
-  const appendAt = handler.indexOf('appendUserSupplement');
-  const sendAt = handler.indexOf('sendToPty');
+  // 比的是**调用点**的位置，不是字符串首次出现的位置 —— 注释里提到 sendToPty
+  // 不该让这条断言变红（2026-09-08 踩过一次）。
+  const appendAt = handler.indexOf('orch.appendUserSupplement(');
+  const sendAt = handler.indexOf('groupChatWatcher.sendToPty(');
   assert(appendAt > 0 && sendAt > appendAt, '发送失败时消息也必须已经在群聊里留着');
+});
+
+test('「谁在跑」不能只看内存里的活跃 watcher', () => {
+  // 真实 CLI 上复现过：watcher 在 sendToPty 之后才注册，派工刚提交的那个窗口里
+  // 插话会被静默降级成「待送达」，用户以为送到了正在干活的那位。
+  assert(/INJECTABLE_ATTEMPT_STATES/.test(handler), '要按编排器持久记录里的执行状态补判');
+  assert(!/'prepared'|'submitting'/.test(handler.slice(handler.indexOf('INJECTABLE_ATTEMPT_STATES'), handler.indexOf('INJECTABLE_ATTEMPT_STATES') + 200)),
+    'prepared / submitting 不能算可插话 —— 那时候派工的写入可能还在路上，会交错');
 });
 
 test('送达确认之后才标已读；失败走另一条分支，账本原样留着', () => {

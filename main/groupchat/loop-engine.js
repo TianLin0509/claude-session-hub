@@ -19,6 +19,9 @@ const { suspendMeetingRoom: suspendMeetingRoomImpl } = require('../../core/meeti
 const WT = require('../../renderer/workflow-templates.js');
 const DOCS = require('../../core/dev-task-docs.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
+const LOCATOR = require('../../core/dev-project-locator.js');
+const fsx = require('fs');
+const path = require('path');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 开机自动续跑串行工作流的年龄上限：超过这个时长没动静的，只做提示不自动派发。
@@ -417,6 +420,36 @@ function createLoopEngine(deps) {
     return null;
   }
 
+  /**
+   * 续跑前先看一眼这份持久记录本身是不是可信的。
+   *
+   * 2026-09-08 I 层复现：把 loopState.round 写成 -3、posBase 写成 'NaN-ish'，
+   * 引擎照单全收 —— 算出来的阶段位置是负的，预期文件名直接变成 undefined。
+   * 任务书对这种情况写得很直白：「状态记录丢失/损坏：不能按目录里最大的阶段号盲目继续；
+   * 先核对可恢复记录与现场，不明则人工处理。」所以这里只做判断，不做修复：
+   * 记录不可信就停下来让人看，不猜一个「大概是第几轮」接着跑。
+   */
+  function describeLoopStateDamage(persisted) {
+    if (!persisted || typeof persisted !== 'object') return null;
+    const problems = [];
+    const round = persisted.round;
+    if (round !== undefined && round !== null
+      && (!Number.isSafeInteger(Number(round)) || Number(round) < 0)) {
+      problems.push(`round=${JSON.stringify(round)}`);
+    }
+    const posBase = persisted.posBase;
+    if (posBase !== undefined && posBase !== null
+      && (!Number.isSafeInteger(Number(posBase)) || Number(posBase) < 1)) {
+      problems.push(`posBase=${JSON.stringify(posBase)}`);
+    }
+    const attempt = persisted.stepAttempt;
+    if (attempt !== undefined && attempt !== null
+      && (!Number.isSafeInteger(Number(attempt)) || Number(attempt) < 0)) {
+      problems.push(`stepAttempt=${JSON.stringify(attempt)}`);
+    }
+    return problems.length ? problems.join('，') : null;
+  }
+
   function validateResume(meetingId) {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting) return { ok: false, reason: 'group_chat_not_found' };
@@ -738,6 +771,24 @@ function createLoopEngine(deps) {
       config = buildConfig(wf.loop);
 
       let prevMerge = null, goal, resuming = false;
+      const damage = describeLoopStateDamage(persistedLoopState);
+      if (damage) {
+        const damagedState = {
+          status: 'paused', round: 0, phase: 'reaching', currentStep: null,
+          lastError: { stage: 'loop-engine', reason: 'state_record_damaged', detail: damage, at: Date.now() },
+        };
+        logger.log('[loop-engine] 持久状态不可信，停下来等人处理：' + damage);
+        try {
+          meetingManager.updateMeeting(meetingId, {
+            serialWorkflow: Object.assign({}, meeting.serialWorkflow || {}, {
+              loopState: Object.assign({}, persistedLoopState, damagedState),
+            }),
+          });
+        } catch (error) { logError('[loop-engine] 损坏状态落盘失败:', error); }
+        try { sendToRenderer('loop:progress', { meetingId, status: 'paused', stage: 'paused', error: damagedState.lastError }); }
+        catch (error) { logError('[loop-engine] 损坏状态进度推送失败:', error); }
+        return damagedState;
+      }
       if (persistedLoopState && persistedLoopState.status === 'running') {
         const r = LC.resumeState(persistedLoopState); state = r.state; prevMerge = r.prevMerge; goal = state.goal || (userInput || '').trim(); resuming = true;
       } else { goal = (userInput || '').trim(); state = LC.newLoopState(); state.goal = goal; }
@@ -823,11 +874,11 @@ function createLoopEngine(deps) {
         const posBase = Number(state.posBase) > 0 ? Number(state.posBase) : 1;
         const builderPos = posBase + state.round * 2;
         const reviewerPos = builderPos + 1;
-        const builderPrompt = withDocBlock(
+        const builderPrompt = withLocator(withDocBlock(
           LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt }),
           docsOn ? docsDir : null, builderPos,
           docsOn ? acceptedDocPaths(meetingId, docsDir, builderPos) : [],
-        );
+        ), meeting, goal);
         state.currentStep = 'builder'; state.attempt = state.round + 1; state.lastError = null;
         if (!persistOrPause()) break;
         progress({ stage: 'builder', round: state.round + 1 });
@@ -962,11 +1013,11 @@ function createLoopEngine(deps) {
           break;
         }
 
-        const reviewerPrompt = withDocBlock(
+        const reviewerPrompt = withLocator(withDocBlock(
           LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt }),
           docsOn ? docsDir : null, reviewerPos,
           docsOn ? acceptedDocPaths(meetingId, docsDir, reviewerPos) : [],
-        );
+        ), meeting, goal);
         // 【同席位必须另起一轮】评审这一步平时复用工作位那一轮（同一轮里两批不同成员，
         // 各占各的格子）。但「极简」是同一个人先实现再自审 —— 一轮里每位成员只有一格
         // （orchestrator 的 by[sid]），复用就等于让评审的回答顶掉刚落盘的实现报告：
@@ -1188,6 +1239,62 @@ function createLoopEngine(deps) {
     }
   }
 
+  // ── 项目定位（任务书第七节 / E01–E04）────────────────────────────────────
+  //
+  // 界面上那个工作目录不是真相。它可能是默认工作根、可能压根不存在、也可能指着
+  // 另一个同样有效但不相干的仓库。这里做两件事：给每一步的 prompt 附上一段
+  // 「先核实现场」的说明（含唯一确认 / 多候选只问一个问题 / worktree 也算数 /
+  // 不许全盘扫），以及在开题报告被接收后，把它声明的项目根**绑到这个群**，
+  // 让实现位和审查位之后用的是同一个已核实路径。
+
+  function locatorBlockFor(meeting, taskText) {
+    try {
+      const workflow = (meeting && meeting.serialWorkflow) || {};
+      const launch = LOCATOR.resolveLaunchDir(meeting && meeting.workspace, workflow.workRootPath || null);
+      return LOCATOR.buildLocatorBlock({
+        taskText,
+        projects: Array.isArray(workflow.projectLibrary) ? workflow.projectLibrary : [],
+        launch: launch.dir ? launch : { ...launch, dir: (meeting && meeting.workspace) || '' },
+        atWorkRoot: workflow.workRoot === true,
+      });
+    } catch (error) {
+      logError('[loop-engine] 定位说明生成失败:', error);
+      return '';
+    }
+  }
+
+  function withLocator(prompt, meeting, taskText) {
+    const block = locatorBlockFor(meeting, taskText);
+    return block ? `${prompt}\n\n${block}` : prompt;
+  }
+
+  /**
+   * 开题报告里那一行「项目根：<绝对路径>」。核实通过就把群聊的工作现场绑过去。
+   * 核实不过（目录不在 / 是聚合根 / 不是仓库）就**不动**原设置，只记一条原因 ——
+   * 猜错的代价是在错仓库里动手。
+   */
+  function bindProjectRootFromReport(meetingId, reportPath) {
+    try {
+      if (!reportPath || !fsx.existsSync(reportPath)) return null;
+      const declared = LOCATOR.extractDeclaredProjectRoot(fsx.readFileSync(reportPath, 'utf8'));
+      if (!declared) return { ok: false, reason: 'not_declared' };
+      const verified = LOCATOR.verifyDeclaredProjectRoot(declared);
+      if (!verified.ok) {
+        logger.log('[loop-engine] 开题报告声明的项目根没通过核实：' + declared + ' → ' + verified.reason);
+        return verified;
+      }
+      const meeting = meetingManager.getMeeting(meetingId);
+      const current = meeting && meeting.workspace ? String(meeting.workspace) : '';
+      if (path.resolve(current || '') === verified.path) return { ok: true, path: verified.path, unchanged: true };
+      meetingManager.updateMeeting(meetingId, { workspace: verified.path });
+      logger.log('[loop-engine] 项目现场已绑定到已核实路径：' + verified.path);
+      return { ok: true, path: verified.path, previous: current };
+    } catch (error) {
+      logError('[loop-engine] 绑定项目根失败:', error);
+      return { ok: false, reason: (error && error.message) || 'bind_failed' };
+    }
+  }
+
   // ── 开题（步骤位置 0）───────────────────────────────────────────────────
   //
   // 普通开发群聊建好后先自由讨论；维护者点「开题」时指定一位执笔者，
@@ -1245,20 +1352,51 @@ function createLoopEngine(deps) {
           kickoff: { status: 'running', authorMemberId: authorId, runId: entry.runId, startedAt: Date.now() },
         });
         emit('kickoff-dispatch', { authorMemberId: authorId });
-        const prompt = withDocBlock(
+        const prompt = withLocator(withDocBlock(
           DevDiscuss.buildKickoffPrompt({ locator: typeof workflow.projectLocator === 'string' ? workflow.projectLocator : '' }),
           dir, 0, [],
-        );
-        await ensureMemberReady(meeting, authorId);
-        await getDispatcher().dispatchGroupChatTurn(meetingId, {
-          userInput: prompt,
-          targetMemberIds: [authorId],
-          appendUserMessage: true,
-          dispatchMode: 'serial',
-          turnTimeoutMs: 20 * 60_000,
-          allowActiveExtend: true,
-          workflowRun: { runId: entry.runId, kind: 'kickoff', stepIndex: 0, attempt: 1, targetMemberIds: [authorId] },
-        });
+        ), meeting, options.taskText || '');
+        // 2026-09-08 合并位在真实 CLI 上撞到的：CLI 还没起来，派发以 cli_not_ready 失败，
+        // 而这里原来只 await、从不看结果 —— 于是界面显示「正在等开题报告」，
+        // 实际上一个字都没送进 CLI，用户完全看不出区别。
+        // 修法和循环那两步一致：有界传输重试 + 结果校验；仍然失败就明说是派发失败，
+        // 把真实原因带出来，不含混地等。
+        let dispatchFailure = null;
+        for (let transportAttempt = 1; transportAttempt <= 2; transportAttempt += 1) {
+          dispatchFailure = null;
+          try {
+            await ensureMemberReady(meeting, authorId);
+            const dispatched = await getDispatcher().dispatchGroupChatTurn(meetingId, {
+              userInput: prompt,
+              targetMemberIds: [authorId],
+              appendUserMessage: true,
+              dispatchMode: 'serial',
+              turnTimeoutMs: 20 * 60_000,
+              allowActiveExtend: true,
+              workflowRun: { runId: entry.runId, kind: 'kickoff', stepIndex: 0, attempt: transportAttempt, targetMemberIds: [authorId] },
+            });
+            const checked = validateStepResult(meeting, [authorId], dispatched);
+            if (checked.ok || checked.takenOver) break;
+            dispatchFailure = checked.reason || 'kickoff_dispatch_failed';
+          } catch (error) {
+            dispatchFailure = (error && error.message) || 'kickoff_dispatch_exception';
+          }
+          if (dispatchFailure && transportAttempt < 2 && !entry.abort) {
+            logger.log('[loop-engine] 开题派发失败，重试一次：' + dispatchFailure);
+            await sleep(500);
+          }
+        }
+        if (dispatchFailure) {
+          // 回执丢了不等于没送到：先看一眼报告是不是其实已经交了（任务书 D04）。
+          const salvaged = checkDeliveryOnce(meetingId, dir, 0);
+          if (!deliveryAccepted(salvaged)) {
+            saveKickoff({ kickoff: { status: 'dispatch_failed', lastReason: dispatchFailure, updatedAt: Date.now() } });
+            emit('kickoff-dispatch-failed', { reason: dispatchFailure, authorMemberId: authorId });
+            logger.log('[loop-engine] 开题 prompt 没能送进 CLI：' + dispatchFailure);
+            return { ok: false, reason: 'kickoff_dispatch_failed', detail: dispatchFailure, authorMemberId: authorId };
+          }
+          logger.log('[loop-engine] 开题派发回执丢失，但报告已交付，按成果继续');
+        }
       }
 
       // 只重扫时给一次读取的预算就够：开机不为每个开题房间挂五分钟的轮询。
@@ -1278,6 +1416,9 @@ function createLoopEngine(deps) {
       }
 
       const reportPath = (outcome.record && outcome.record.path) || '';
+      // 报告里声明的项目根通过核实就绑到本群：之后实现位和审查位用的是同一个已核实现场（E01/E04）。
+      const bound = bindProjectRootFromReport(meetingId, reportPath);
+      if (bound && bound.ok && !bound.unchanged) emit('project-root-bound', { path: bound.path, previous: bound.previous });
       // 报告接收成立，但用户在这期间点了停止 → 只记下交付，不翻阶段、不自动开工。
       // 迟到的完成文件不能覆盖明确的停止意图（任务书 D06）。
       if (entry.abort || stopIntentOf(meetingId)) {
@@ -1389,6 +1530,7 @@ function createLoopEngine(deps) {
 
   return {
     getStatus, isRunning, resumePending, runKickoff, runLoop, runSerial, stopLoop, clearStopIntent, stopIntentOf,
+    describeLoopStateDamage, bindProjectRootFromReport, locatorBlockFor,
     validateLoop, validateResume, validateSerial,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。

@@ -42,15 +42,43 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
   } = deps || {};
   if (!ipcMain || !groupchat || !meetingManager || !sessionManager) return;
 
-  /** 现在真的在跑的成员。以 dispatcher 的活跃 watcher 为准，它才是「这一刻谁在回答」。 */
-  function runningSidsOf(memberSids) {
+  // 已经把 prompt 送进去、正在等它回答的那几种状态。此时再往同一个 PTY 写一句话是安全的，
+  // 也正是用户要的「插一句给正在干活的那位」。
+  const INJECTABLE_ATTEMPT_STATES = new Set(['accepted', 'running', 'awaiting_binding', 'awaiting_final_text']);
+
+  /**
+   * 现在真的在跑、而且可以安全插话的成员。
+   *
+   * 2026-09-08 真实 CLI 上复现：原来只看 dispatcher 内存里的活跃 watcher，
+   * 而 watcher 是在 sendToPty 之后才注册的 —— 派工刚提交、回答还没开始的那个窗口里，
+   * 插话会被静默降级成「待送达」，用户以为送到了正在干活的那位，其实一个都没送。
+   *
+   * 所以判据改成两处取并集：内存里的活跃 watcher，加上编排器持久记录里
+   * **已经提交、正在等回答**的席位。刻意不含 prepared / submitting ——
+   * 那两档说明派工的写入可能还在路上，这时候插一句会和它交错。
+   */
+  function runningSidsOf(orch, memberSids) {
+    const live = new Set();
     const watchers = typeof getActiveWatchers === 'function' ? getActiveWatchers() : null;
-    if (!watchers || typeof watchers.get !== 'function') return [];
-    return memberSids.filter(sid => {
-      const watcher = watchers.get(sid);
-      if (!watcher) return false;
-      return typeof watcher.isSettled === 'function' ? !watcher.isSettled() : true;
-    });
+    if (watchers && typeof watchers.get === 'function') {
+      for (const sid of memberSids) {
+        const watcher = watchers.get(sid);
+        if (!watcher) continue;
+        if (typeof watcher.isSettled !== 'function' || !watcher.isSettled()) live.add(sid);
+      }
+    }
+    try {
+      const state = orch.state || {};
+      const activeRunId = state.activeRun && state.activeRun.runId;
+      for (const attempt of Object.values(state.attempts || {})) {
+        if (!attempt || !attempt.sid || !memberSids.includes(attempt.sid)) continue;
+        if (activeRunId && attempt.runId && attempt.runId !== activeRunId) continue;
+        if (INJECTABLE_ATTEMPT_STATES.has(String(attempt.status || ''))) live.add(attempt.sid);
+      }
+    } catch (error) {
+      logger.warn('[groupchat-supplement] 读取执行记录失败：', error && error.message);
+    }
+    return memberSids.filter(sid => live.has(sid));
   }
 
   ipcMain.handle('groupchat:user-supplement', async (_event, args = {}) => {
@@ -78,7 +106,7 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
 
     const deliveredNow = [];
     const failures = [];
-    for (const sid of runningSidsOf(memberSids)) {
+    for (const sid of runningSidsOf(orch, memberSids)) {
       const session = sessionManager.getSession(sid);
       const kind = session ? (session.transcriptKind || session.kind) : null;
       if (!kind) { failures.push({ sid, reason: 'no_session' }); continue; }

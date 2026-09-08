@@ -301,15 +301,52 @@ async function main() {
     ok(!!suppMsg && suppMsg.origin === 'user',
       'C04/I 真实用户补充带 origin 标记，和 Hub 的阶段指令分得开');
 
-    // ── D07 双击重发只产生一次执行 ──
-    writePlan({ builder: { text: 'x' }, reviewer: { text: 'y' } });
+    // ── D07 双击重发：必须恰好一次被接受、恰好一次真实派发 ──
+    // 上一版这里放在任务已完成之后，两次都被拒也算通过 —— 那是我写的断言太松，
+    // 等于什么都没测（合并位复现出来的）。现在先把现场做成「确实可接续」，
+    // 再断言接受次数和真实派发次数都恰好是 1，且轮次没有被重置。
+    // 先把现场做成「确实可接续」：开一轮新的、工作位只回话不交手册 → 停在等交付。
+    rmDoc(4);
+    writePlan({ builder: { text: '这一轮我只回一句话，不交手册。' }, reviewer: { text: 'y' } });
+    await invoke('loop:start', { meetingId, userInput: '再开一轮，用来验证双击重发' });
+    await waitIdle(40000);
+    const roundBeforeDouble = (await loopState()).round;
+    writePlan({ builder: { text: '这一轮我只回一句话，不交手册。' }, reviewer: { text: 'y' } });
+    const resumableBefore = await invoke('loop:status', { meetingId });
+    ok(!!(resumableBefore && resumableBefore.loopState
+      && ['paused', 'stopped_user', 'running'].includes(resumableBefore.loopState.status)),
+      'D07/I 双击前现场确实可接续（否则这条用例什么都证明不了）',
+      JSON.stringify(resumableBefore && resumableBefore.loopState && resumableBefore.loopState.status));
     const [d1, d2] = await Promise.all([
       invoke('dev:redispatch', { meetingId }),
       invoke('dev:redispatch', { meetingId }),
     ]);
+    const acceptedCount = [d1, d2].filter((r) => r && r.ok === true).length;
+    ok(acceptedCount === 1, 'D07/I 双击重发恰好一次被接受', JSON.stringify({ d1, d2 }));
     await waitIdle();
-    ok(!(d1 && d1.ok && d2 && d2.ok), 'D07/I 双击重发只有一次被接受',
-      JSON.stringify({ d1, d2 }));
+    ok(dispatchLog().length === 1, 'D07/I 恰好发生一次真实派发，不会创建两个同阶段执行', keys());
+    ok((await loopState()).round === roundBeforeDouble, 'D07/I 轮次没有被重发重置');
+
+    // ── D07 旧步骤的重发请求晚到 → 不按最大文件号猜恢复，也不重开轮次 ──
+    const staleRound = (await loopState()).round;
+    writePlan({ builder: { text: 'x' }, reviewer: { text: 'y' } });
+    const stale = await invoke('loop:resume', { meetingId, staleStepIndex: 0 });
+    await waitIdle();
+    ok((await loopState()).round === staleRound,
+      'D07/I 旧请求晚到不重置轮次', JSON.stringify({ stale, round: (await loopState()).round }));
+
+    // ── D07 状态记录损坏 → 不按目录里最大的阶段号盲目继续 ──
+    const damaged = { ...(await wf()).loopState, posBase: 'NaN-ish', round: -3 };
+    await invoke('update-meeting-sync', { meetingId, fields: { serialWorkflow: { ...(await wf()), loopState: damaged } } });
+    writePlan({ builder: { text: 'x' }, reviewer: { text: 'y' } });
+    await invoke('dev:redispatch', { meetingId });
+    await waitIdle();
+    const afterDamage = await loopState();
+    ok(afterDamage.status === 'paused' && afterDamage.lastError
+      && afterDamage.lastError.reason === 'state_record_damaged',
+      'D07/I 状态记录损坏 → 停下来等人处理，不按最大阶段号盲目继续',
+      JSON.stringify({ status: afterDamage.status, err: afterDamage.lastError }));
+    ok(dispatchLog().length === 0, 'D07/I 记录不可信时一次派发都不该发生', keys());
 
     // ── D02 重启：接收凭据、阶段、待送达补充都在 ──
     const before = await wf();

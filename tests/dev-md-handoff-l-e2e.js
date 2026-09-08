@@ -3,24 +3,26 @@
  * L 层 · 隔离真实 Hub + 真实 Agent CLI（任务书 §10.1 的 L 层）
  * ────────────────────────────────────────────────────────────────────────────
  *
- * 这一层没有任何桩：真 Electron Hub、真 Codex / Claude CLI 进程、真 PTY 提交闭环、
- * 真的由 agent 自己写 MD 并改名、真的由 Hub 读文件判定交付。
- * 代码改动落在一个**临时 fixture git 仓库**里（自带本地 bare remote），
- * 绝不写真实 Hub 仓库、master 或 origin。
+ * 没有任何桩：真 Electron Hub、真 Codex / Claude 进程、真 PTY 提交闭环、
+ * 真的由 agent 自己写 MD 并改名、真的由 Hub 读文件判定交付、真的在 fixture 仓库里合并。
+ * 代码改动只落在临时 fixture git 仓库（自带本地 bare remote），绝不碰真实业务仓库。
  *
  * 阶段（--stage）：
- *   kickoff（默认）—— 建房 → 开题 → 真实 agent 写 开题报告.md 并改名 →
- *                      Hub 接收 → 自动进入实现；期间插一句带唯一标识的话，
- *                      验证它真的被提交进了正在运行的那个 CLI。
- *   full           —— 在 kickoff 之上继续跑到实现位交协作手册、合并位交合并手册并给裁决。
+ *   kickoff    建房 → 开题 → agent 自己写并改名 → Hub 接收 → 自动进入实现
+ *   full       在 kickoff 之上跑到实现、独立审查、**真实合并进 fixture master**、最终 PASS
+ *   fail-first 从一份**已知有缺陷的交付**开始，真实审查位必须自己发现并判 FAIL，
+ *              然后真实实现位在同一现场修复、真实审查位复审通过（任务书 B10）
+ *
+ * 注入时点由**可观察的信号**决定，不用固定 sleep：
+ *   · 先等 cli-ready-status 真的就绪，再派开题；
+ *   · 先观察到真实轮次已经开始（群聊进入运行态且该席位有在途 attempt），再插话。
  *
  * 真实模型要花真实时间，也可能因为额度 / 登录 / 网络失败。**失败就如实报告**，
  * 不降级成桩、不把「没跑到」写成通过。
  *
  * 用法：
- *   node tests/dev-md-handoff-l-e2e.js                 # kickoff 阶段
- *   node tests/dev-md-handoff-l-e2e.js --stage=full    # 完整一轮
- *   node tests/dev-md-handoff-l-e2e.js --budget=900    # 单阶段秒数预算
+ *   node tests/dev-md-handoff-l-e2e.js --stage=full --budget=900
+ *   node tests/dev-md-handoff-l-e2e.js --stage=fail-first --budget=900
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -43,7 +45,16 @@ const ROOT = path.join(os.tmpdir(), 'hub-l-e2e', RUN_ID);
 const DATA_DIR = path.join(ROOT, 'data');
 const FIXTURE = path.join(ROOT, 'fixture-repo');
 const REMOTE = path.join(ROOT, 'fixture-remote.git');
+const EVIDENCE = path.join(ROOT, 'evidence');
 const U12 = `U12-${RUN_ID}`;
+// C05：多行 / 中文 / Windows 路径 / emoji / 较长正文，必须原样送达且不被拆成多条
+const LONG_SUPPLEMENT = [
+  `补充开头 ${U12} ✅`,
+  '- 第一条：中文列表项，带全角标点。',
+  '- 第二条：路径 C:\\Users\\lintian\\claude-session-hub\\artifacts\\x.md 不要转义掉反斜杠。',
+  '正文'.repeat(400),
+  `补充结尾 ${U12} 🚀`,
+].join('\n');
 
 const results = [];
 let failed = 0;
@@ -70,15 +81,16 @@ function freePort() {
 }
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const node = (cwd, ...args) => execFileSync(process.execPath, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 const AUTHOR_MD = [
   '# 工作位合同（fixture 版）',
   '',
   '这是一个用来验证流程的**临时测试仓库**，任务都很小。',
   '',
-  '- 在本仓库直接改即可，不需要建 worktree。',
-  '- 改完跑 `node test.js`，它必须输出 `OK`。',
-  '- 提交信息写人话；不要推送到任何远端，除非任务里明说。',
+  '- 从 master 开一个 `feat/` 分支，改动提交在那个分支上；**不要自己合并进 master**，合并是合并位的事。',
+  '- 改完在你的分支上跑 `node test.js`，它必须输出 `OK`。',
+  '- 不要推送到任何远端。',
   '- 交付时在群里输出 PROGRESS / VERIFIED / RISK / REPORT 四行，然后写一段 NOTES。',
 ].join('\n');
 
@@ -87,11 +99,12 @@ const MERGER_MD = [
   '',
   '这是一个临时测试仓库。你要独立验证工作位的改动。',
   '',
-  '- 亲自跑 `node test.js`，看真实输出，不采信工作位的自述。',
+  '- 亲自 checkout 工作位那个 `feat/` 分支并跑 `node test.js`，看真实输出，不采信工作位的自述。',
+  '- **只有你亲验通过（PASS）才把该分支合并进 master**（`git checkout master && git merge --no-ff <分支>`），FAIL 一律不合。',
   '- 最后严格输出四行：RESULT: PASS 或 FAIL / BLOCKERS / VERIFIED / NEXT。',
 ].join('\n');
 
-function buildFixture() {
+function buildFixture({ withDefect = false } = {}) {
   fs.mkdirSync(FIXTURE, { recursive: true });
   fs.mkdirSync(path.join(FIXTURE, '.agents'), { recursive: true });
   fs.writeFileSync(path.join(FIXTURE, '.agents', 'AUTHOR.md'), AUTHOR_MD, 'utf8');
@@ -101,7 +114,7 @@ function buildFixture() {
   fs.writeFileSync(path.join(FIXTURE, 'greet.js'),
     "'use strict';\nfunction greet(name) { return 'hello ' + name; }\nmodule.exports = { greet };\n", 'utf8');
   fs.writeFileSync(path.join(FIXTURE, 'test.js'),
-    "'use strict';\nconst { greet } = require('./greet.js');\nif (greet('x') !== 'hello x') { console.log('BROKEN'); process.exit(1); }\nconsole.log('OK');\n", 'utf8');
+    "'use strict';\nconst { greet } = require('./greet.js');\nlet bad = 0;\nif (greet('x') !== 'hello x') { console.log('BROKEN default'); bad++; }\nif (bad) process.exit(1);\nconsole.log('OK');\n", 'utf8');
   fs.writeFileSync(path.join(FIXTURE, 'README.md'), '# fixture repo\n\n只用于验证 AI 群聊开发流程。\n', 'utf8');
   git(FIXTURE, 'init', '-q', '-b', 'master');
   git(FIXTURE, 'config', 'user.email', 'fixture@example.invalid');
@@ -112,12 +125,30 @@ function buildFixture() {
   git(ROOT, 'init', '--bare', '-q', REMOTE);
   git(FIXTURE, 'remote', 'add', 'origin', REMOTE);
   git(FIXTURE, 'push', '-q', 'origin', 'master');
-  return git(FIXTURE, 'rev-parse', 'HEAD').trim();
+  const baseSha = git(FIXTURE, 'rev-parse', 'HEAD').trim();
+
+  let defectBranch = null;
+  if (withDefect) {
+    // B10：植入一份**已知有真实缺陷的交付**——分支上的实现会让现有测试挂掉。
+    defectBranch = 'feat/greeting-defective';
+    git(FIXTURE, 'checkout', '-q', '-b', defectBranch);
+    fs.writeFileSync(path.join(FIXTURE, 'greet.js'),
+      "'use strict';\n// 缺陷：默认问候语被写死成 hi，破坏了既有行为\nfunction greet(name, greeting) { return (greeting || 'hi') + ' ' + name; }\nmodule.exports = { greet };\n", 'utf8');
+    git(FIXTURE, 'add', '-A');
+    git(FIXTURE, 'commit', '-q', '-m', 'feat: 支持自定义问候语（含缺陷）');
+    git(FIXTURE, 'checkout', '-q', 'master');
+  }
+  return { baseSha, defectBranch };
+}
+
+function saveEvidence(name, body) {
+  fs.mkdirSync(EVIDENCE, { recursive: true });
+  fs.writeFileSync(path.join(EVIDENCE, name), typeof body === 'string' ? body : JSON.stringify(body, null, 2), 'utf8');
 }
 
 async function main() {
   fs.mkdirSync(ROOT, { recursive: true });
-  const baseSha = buildFixture();
+  const { baseSha, defectBranch } = buildFixture({ withDefect: STAGE === 'fail-first' });
   console.log(`[L] fixture=${FIXTURE} baseSha=${baseSha.slice(0, 10)} stage=${STAGE} budget=${BUDGET_MS / 1000}s`);
 
   let hub = await launchIsolatedHub({
@@ -126,6 +157,8 @@ async function main() {
   console.log(`[L] 隔离 Hub PID=${hub.child.pid} DATA=${DATA_DIR}`);
   let cdp = null;
   let meetingId = null;
+  let promptPoller = null;
+  const promptsBySid = new Map();   // sid → [prompt 原文…]，用来核对逐人送达与去重
 
   const taskDir = () => path.join(DATA_DIR, 'task-docs', meetingId);
   const doneName = (pos) => {
@@ -149,102 +182,229 @@ async function main() {
       const m = (all || []).find((x) => x && x.id === meetingId);
       return (m && m.serialWorkflow) || {};
     };
+    const gcState = async () => invoke('groupchat:get-state', { meetingId });
 
     // ── 建房：真实两席位（Codex 工作位 + Claude 合并位），工作目录就是 fixture ──
     const created = await invoke('create-meeting', {
       mode: 'dev', title: `L 层 ${RUN_ID}`, groupChat: true, workspace: FIXTURE,
-      slots: [
-        { index: 0, kind: 'codex', memberId: 'm1' },
-        { index: 1, kind: 'claude', memberId: 'm2' },
-      ],
+      slots: [{ index: 0, kind: 'codex', memberId: 'm1' }, { index: 1, kind: 'claude', memberId: 'm2' }],
     });
     meetingId = created && created.id;
-    ok(!!meetingId && (created.subSessions || []).length === 2,
-      'L 建出开发群聊并拉起两个真实 CLI 会话',
-      JSON.stringify({ subs: created && (created.subSessions || []).length }));
-    if (!meetingId || (created.subSessions || []).length < 2) throw new Error('真实席位没起来，后面的 L 用例无法进行');
+    const subs = (created && created.subSessions) || [];
+    ok(!!meetingId && subs.length === 2, 'L 建出开发群聊并拉起两个真实 CLI 会话', JSON.stringify({ subs: subs.length }));
+    if (!meetingId || subs.length < 2) throw new Error('真实席位没起来，后面的 L 用例无法进行');
+    const [builderSid, reviewerSid] = subs;
 
     const config = await cdp.eval(`JSON.stringify(window.WorkflowTemplates.createTemplateConfig('dev-task',
       [{memberId:'m1',kind:'codex'},{memberId:'m2',kind:'claude'}], {}))`);
     await invoke('update-meeting-sync', { meetingId, fields: { scene: 'dev', serialWorkflow: JSON.parse(config) } });
     ok((await wf()).devPhase === 'discuss', 'L 新房间落在讨论阶段');
 
-    // 需求：一句话就够，重点是验证流程而不是难度
-    await invoke('meeting-append-user-turn', { meetingId, text: '把 greet 改成支持第二个参数 greeting，默认还是 hello，并补一条测试。' });
-    await invoke('groupchat:user-supplement', { meetingId, text: '需求：把 greet 改成支持第二个参数 greeting，默认还是 hello，并补一条测试。' });
+    // prompt 采集：pendingPrompts 在结算时会被清掉，所以边跑边抓，留作逐人送达/去重的证据
+    promptPoller = setInterval(async () => {
+      try {
+        const st = await gcState();
+        for (const bySid of Object.values((st && st.pendingPrompts) || {})) {
+          for (const [sid, entry] of Object.entries(bySid || {})) {
+            const text = entry && typeof entry === 'object' ? String(entry.prompt || '') : '';
+            if (!text) continue;
+            const list = promptsBySid.get(sid) || [];
+            if (!list.includes(text)) { list.push(text); promptsBySid.set(sid, list); }
+          }
+        }
+      } catch (e) { /* 采集失败不影响主流程 */ }
+    }, 800);
 
-    // ── A02/L 只指定一位执笔者 ──
-    const started = await invoke('dev:kickoff', { meetingId, authorMemberId: 'm1' });
-    ok(started && started.ok, 'A02/L 开题已派给指定执笔者', JSON.stringify(started));
+    // ── 就绪信号驱动：等**这一步要派的那位**真的就绪再派活（不用固定 sleep）──
+    // 只等执笔者：另一位要等它第一次被派工时才会被标成群聊就绪，
+    // 在这里等它是等不到的（第一版就是这么误报的）。
+    const authorSid = STAGE === 'fail-first' ? reviewerSid : builderSid;
+    const readyDeadline = Date.now() + 180000;
+    const readyOf = async (sid) => !!(await invoke('cli-ready-status', sid).catch(() => false));
+    let authorReady = false;
+    while (Date.now() < readyDeadline) {
+      if (await readyOf(authorSid)) { authorReady = true; break; }
+      await sleep(2000);
+    }
+    ok(authorReady, 'L 这一步要派的那位 CLI 在派活前已就绪（可观察信号，不是固定等待）',
+      authorReady ? '' : '180s 内未观察到就绪；派发本身仍会自己等，下面按实际结果判定');
 
-    // ── C01/L 运行中插一句带唯一标识的话，看它是不是真的进了正在跑的那个 CLI ──
-    await sleep(20000);
-    const supp = await invoke('groupchat:user-supplement', { meetingId, text: `顺便记一下这个标识：${U12}` });
+    const goal = STAGE === 'fail-first'
+      ? `分支 ${defectBranch} 上已经有一份实现，但它破坏了既有行为。请按合同独立审查它。`
+      : '把 greet 改成支持第二个参数 greeting，默认仍然是 hello，并补一条覆盖自定义问候语的测试。';
+    await invoke('meeting-append-user-turn', { meetingId, text: goal });
+
+    if (STAGE === 'fail-first') {
+      // 从「已知缺陷交付」开始：手动放好协作手册，让引擎跳过实现位、直接派真实审查位。
+      fs.mkdirSync(taskDir(), { recursive: true });
+      fs.writeFileSync(path.join(taskDir(), doneName(1)), [
+        '# 阶段1协作手册',
+        `分支：${defectBranch}`,
+        '实现：给 greet 加了第二个参数 greeting。',
+        '实际验证：我认为跑过了测试。',
+        '未完成项：无。',
+      ].join('\n'), 'utf8');
+      await invoke('update-meeting-sync', { meetingId, fields: { serialWorkflow: { ...(await wf()), devPhase: 'build' } } });
+      const started = await invoke('loop:start', { meetingId, userInput: goal });
+      ok(started && started.ok, 'B10/L 从已知缺陷交付开始，直接派真实审查位', JSON.stringify(started));
+    } else {
+      const started = await invoke('dev:kickoff', { meetingId, authorMemberId: 'm1' });
+      ok(started && started.ok, 'A02/L 开题已派给指定执笔者', JSON.stringify(started));
+      // 派发失败要看得见（这一条正是上一轮真实 CLI 撞到的 cli_not_ready）
+      await sleep(4000);
+      const kickoffState = (await wf()).kickoff || {};
+      ok(kickoffState.status !== 'dispatch_failed',
+        'L 开题 prompt 真的送进了 CLI（没送进去会明说 dispatch_failed）',
+        JSON.stringify(kickoffState));
+    }
+
+    // ── C01/C05：等真实轮次开始之后再插话，验证运行中接收 ──
+    // 插话时点：等到**prompt 已经提交、正在等它回答**这个可观察状态，而不是等固定秒数。
+    // prepared / submitting 不算 —— 那时候派工的写入可能还在路上。
+    const INJECTABLE = ['accepted', 'running', 'awaiting_binding', 'awaiting_final_text'];
+    const turnDeadline = Date.now() + 240000;
+    let turnRunning = false;
+    while (Date.now() < turnDeadline) {
+      const st = await gcState();
+      const live = Object.values((st && st.attempts) || {}).some(
+        (a) => a && a.sid === authorSid && INJECTABLE.includes(String(a.status || '')));
+      if (live) { turnRunning = true; break; }
+      await sleep(1500);
+    }
+    ok(turnRunning, 'L 观察到执笔者的 prompt 已提交、正在作答（插话时点由此决定，不是固定等 20 秒）');
+    const supp = await invoke('groupchat:user-supplement', { meetingId, text: LONG_SUPPLEMENT });
+    saveEvidence('supplement-result.json', supp);
     ok(supp && supp.ok === true, 'C01/L 运行中插话被接受', JSON.stringify(supp && supp.reason));
     ok(supp && (supp.deliveredNow || []).length >= 1,
       'C01/L 插话真的提交进了正在运行的那位（闭环提交，不是盲发回车）',
       JSON.stringify({ deliveredNow: supp && supp.deliveredNow, pending: supp && supp.pendingSids }));
+    ok(supp && (supp.pendingSids || []).some((sid) => sid !== (supp.deliveredNow || [])[0]),
+      'C01/L 待命的那位没有被唤醒，只记账', JSON.stringify(supp && supp.pendingSids));
 
-    // ── 等真实 agent 写出并改名开题报告 ──
-    const kickoffDeadline = Date.now() + BUDGET_MS;
-    let accepted = false;
-    while (Date.now() < kickoffDeadline) {
-      if (fs.existsSync(path.join(taskDir(), doneName(0)))) { accepted = true; break; }
-      await sleep(5000);
-    }
-    ok(accepted, 'A02/L 真实 agent 自己写出并改名了「已完成-开题报告.md」',
-      accepted ? '' : `超时 ${BUDGET_MS / 1000}s；任务目录 ${taskDir()}`);
+    // ── C07：直接对某个 CLI 私话，Hub 不广播、也不推进阶段 ──
+    const phaseBeforePrivate = (await wf()).devPhase;
+    const privateMark = `PRIVATE-${RUN_ID}`;
+    await invoke('session:send-prompt', { sessionId: reviewerSid, text: `（私话，不用回复）${privateMark}` });
+    await sleep(3000);
+    const stAfterPrivate = await gcState();
+    ok(!((stAfterPrivate && stAfterPrivate.messages) || []).some((m) => String(m && m.content || '').includes(privateMark)),
+      'C07/L CLI 私话不被 Hub 广播进群聊');
+    ok((await wf()).devPhase === phaseBeforePrivate, 'C07/L 私话不推进阶段、不重置任务');
 
-    if (accepted) {
-      const body = fs.readFileSync(path.join(taskDir(), doneName(0)), 'utf8');
-      ok(/目标/.test(body) && /非目标/.test(body) && /验收/.test(body) && /(风险|回退)/.test(body),
-        'A02/L 开题报告含四项', body.slice(0, 120).replace(/\s+/g, ' '));
-      // Hub 侧接收 + 自动开工
-      const acceptDeadline = Date.now() + 120000;
-      let phase = '';
-      while (Date.now() < acceptDeadline) {
-        phase = (await wf()).devPhase;
-        if (phase === 'build') break;
-        await sleep(3000);
+    // ── 等交付 ──
+    const stageDeadline = Date.now() + BUDGET_MS;
+    const waitFile = async (pos) => {
+      while (Date.now() < stageDeadline) {
+        if (fs.existsSync(path.join(taskDir(), doneName(pos)))) return true;
+        await sleep(5000);
       }
-      ok(phase === 'build', 'B02/L Hub 接收交付后自动进入实现，不要第二次确认', phase);
-      const ledger = (await wf()).taskDocs || {};
-      ok(!!(ledger.accepted && ledger.accepted['0']), 'B02/L 接收凭据已落盘');
+      return false;
+    };
+
+    if (STAGE !== 'fail-first') {
+      const gotKickoff = await waitFile(0);
+      ok(gotKickoff, 'A02/L 真实 agent 自己写出并改名了「已完成-开题报告.md」',
+        gotKickoff ? '' : `超时；任务目录 ${taskDir()}`);
+      if (gotKickoff) {
+        const body = fs.readFileSync(path.join(taskDir(), doneName(0)), 'utf8');
+        saveEvidence('kickoff-report.md', body);
+        ok(/目标/.test(body) && /非目标/.test(body) && /验收/.test(body) && /(风险|回退)/.test(body),
+          'A02/L 开题报告含四项');
+        const acceptDeadline = Date.now() + 180000;
+        let phase = '';
+        while (Date.now() < acceptDeadline) {
+          phase = (await wf()).devPhase;
+          if (phase === 'build') break;
+          await sleep(3000);
+        }
+        ok(phase === 'build', 'B02/L Hub 接收后自动进入实现，不要第二次确认', phase);
+        ok(!!(((await wf()).taskDocs || {}).accepted || {})['0'], 'B02/L 接收凭据已落盘');
+      }
     }
 
-    if (STAGE !== 'full') {
-      skip('B09/L 完整实现→审查→fixture 合并', '本次只跑 kickoff 阶段（--stage=full 跑完整一轮）');
-      skip('B10/L 已知缺陷被真实审查判 FAIL 后修复', '同上');
-      skip('C05/L 多行/中文/路径/emoji 长补充在两种 CLI 上的原文完整性', '同上');
-    } else {
-      const buildDeadline = Date.now() + BUDGET_MS * 2;
-      let gotBuild = false; let gotReview = false;
-      while (Date.now() < buildDeadline) {
-        if (!gotBuild && fs.existsSync(path.join(taskDir(), doneName(1)))) gotBuild = true;
-        if (fs.existsSync(path.join(taskDir(), doneName(2)))) { gotReview = true; break; }
-        await sleep(6000);
-      }
+    if (STAGE === 'kickoff') {
+      skip('B09/L 完整实现→审查→fixture 实际合并→PASS', '本次只跑 kickoff 阶段');
+      skip('B10/L 已知缺陷被真实审查判 FAIL 后修复', '用 --stage=fail-first 跑');
+    }
+
+    if (STAGE === 'full') {
+      const gotBuild = await waitFile(1);
       ok(gotBuild, 'B09/L 实现位真的交出了「已完成-阶段1协作手册.md」');
+      const gotReview = await waitFile(2);
       ok(gotReview, 'B09/L 合并位真的交出了「已完成-阶段1合并手册.md」');
+      let verdict = null;
       if (gotReview) {
         const review = fs.readFileSync(path.join(taskDir(), doneName(2)), 'utf8');
-        ok(/(^|\n)\s*RESULT\s*[:：]\s*(PASS|FAIL)/i.test(review), 'B09/L 合并手册里有单独成行的裁决');
+        saveEvidence('review-manual.md', review);
+        const m = /(?:^|\n)\s*RESULT\s*[:：]\s*(PASS|FAIL)\b/i.exec(review);
+        verdict = m ? m[1].toUpperCase() : null;
+        ok(verdict === 'PASS', 'B09/L 完整成功路径要求最终裁决是 PASS（FAIL 不算 B09 通过）', String(verdict));
       }
-      const headNow = git(FIXTURE, 'rev-parse', 'HEAD').trim();
-      ok(headNow !== baseSha || gotBuild, 'B09/L fixture 仓库里出现了真实改动', `${baseSha.slice(0, 8)} → ${headNow.slice(0, 8)}`);
+      // 真实改动 + 真实合并：master 必须前进，且代码与测试都变了，测试在 master 上真能过
+      const headNow = git(FIXTURE, 'rev-parse', 'master').trim();
+      ok(headNow !== baseSha, 'B09/L fixture 的 master 上出现了真实新提交（不是只有手册）',
+        `${baseSha.slice(0, 8)} → ${headNow.slice(0, 8)}`);
+      const changed = headNow === baseSha ? '' : git(FIXTURE, 'diff', '--name-only', `${baseSha}..master`);
+      ok(/greet\.js/.test(changed) && /test\.js/.test(changed),
+        'B09/L 实现与测试都真的改了', JSON.stringify(changed.split(/\r?\n/).filter(Boolean)));
+      let testOut = '';
+      try { git(FIXTURE, 'checkout', '-q', 'master'); testOut = node(FIXTURE, 'test.js'); } catch (e) { testOut = 'FAILED: ' + (e && e.message); }
+      saveEvidence('master-test-output.txt', testOut);
+      ok(/OK/.test(testOut), 'B09/L 合并后的 master 上测试真的通过', testOut.trim().slice(0, 120));
+      const branches = git(FIXTURE, 'branch', '--merged', 'master');
+      ok(/feat\//.test(branches), 'B09/L 实现分支确实被合并进了 master（不是只提交没合并）',
+        branches.replace(/\s+/g, ' ').trim());
+      saveEvidence('fixture-log.txt', git(FIXTURE, 'log', '--oneline', '--graph', '-15'));
     }
 
-    // ── C01/L 插话原文是否真的到了 agent 那边：查该会话的转录 ──
-    const transcriptHit = await cdp.eval(`(async () => {
-      const { ipcRenderer } = require('electron');
-      const all = await ipcRenderer.invoke('groupchat:get-state', { meetingId: ${JSON.stringify(meetingId)} });
-      const msgs = (all && all.messages) || [];
-      return msgs.some(m => m && m.supplement && String(m.content || '').includes(${JSON.stringify(U12)}));
-    })()`);
-    ok(transcriptHit === true, 'C01/L 插话原文完整留在群聊记录里');
+    if (STAGE === 'fail-first') {
+      const gotFirstReview = await waitFile(2);
+      ok(gotFirstReview, 'B10/L 真实审查位对缺陷交付交出了合并手册');
+      let firstVerdict = null;
+      if (gotFirstReview) {
+        const review = fs.readFileSync(path.join(taskDir(), doneName(2)), 'utf8');
+        saveEvidence('review-1-fail.md', review);
+        const m = /(?:^|\n)\s*RESULT\s*[:：]\s*(PASS|FAIL)\b/i.exec(review);
+        firstVerdict = m ? m[1].toUpperCase() : null;
+        ok(firstVerdict === 'FAIL', 'B10/L 真实审查位自己发现了植入的缺陷并判 FAIL（不是假 FAIL 卡片）', String(firstVerdict));
+        ok(/BLOCKERS/i.test(review) && !/BLOCKERS\s*[:：]\s*无/i.test(review),
+          'B10/L 手册里写了具体阻断项');
+      }
+      const gotFix = await waitFile(3);
+      ok(gotFix, 'B10/L 下一轮实现位在同一现场修复并交出了阶段2协作手册');
+      const gotSecondReview = await waitFile(4);
+      ok(gotSecondReview, 'B10/L 修复后再次真实审查');
+      if (gotSecondReview) {
+        const review2 = fs.readFileSync(path.join(taskDir(), doneName(4)), 'utf8');
+        saveEvidence('review-2.md', review2);
+        const m2 = /(?:^|\n)\s*RESULT\s*[:：]\s*(PASS|FAIL)\b/i.exec(review2);
+        ok(!!m2, 'B10/L 复审给出了明确裁决', m2 ? m2[1] : 'none');
+      }
+    }
+
+    // ── C03：逐人送达与去重（用真实 prompt 原文核对，不看 agent 自述）──
+    saveEvidence('prompts-by-sid.json', Object.fromEntries(
+      [...promptsBySid.entries()].map(([sid, list]) => [sid, list.map((p) => ({ len: p.length, hasU12: p.includes(U12) }))]),
+    ));
+    const hits = [...promptsBySid.entries()].map(([sid, list]) => ({
+      sid, hit: list.filter((p) => p.includes(LONG_SUPPLEMENT)).length, any: list.filter((p) => p.includes(U12)).length,
+    }));
+    saveEvidence('supplement-delivery.json', hits);
+    const standbyHit = hits.find((h) => h.sid !== (supp && (supp.deliveredNow || [])[0]));
+    ok(!!standbyHit && standbyHit.hit >= 1,
+      'C03/L 待命那位在它下一次真实 prompt 里拿到了补充原文（逐人送达）', JSON.stringify(hits));
+    ok(!standbyHit || standbyHit.hit === 1,
+      'C03/L 已确认收到之后不再重复注入（同一条只出现一次）', JSON.stringify(hits));
+
+    const st = await gcState();
+    const suppMsg = ((st && st.messages) || []).find((m) => m && m.supplement);
+    ok(!!suppMsg && suppMsg.content === LONG_SUPPLEMENT,
+      'C05/L 多行 / 中文 / 路径 / emoji / 长文本原样保存，没有被截断或拆开',
+      suppMsg ? String((suppMsg.content || '').length) : 'missing');
   } catch (error) {
     ok(false, 'L 层脚本执行中断', (error && error.message) || String(error));
   } finally {
+    if (promptPoller) clearInterval(promptPoller);
     try { if (cdp) await cdp.close(); } catch (e) {}
     try { await gracefulQuit(hub, { allowAlreadyExited: true }); } catch (e) {
       console.warn('[L] 关闭隔离 Hub 时报错：', e && e.message);
@@ -254,12 +414,13 @@ async function main() {
   const passed = results.filter((r) => r.pass === true).length;
   const skipped = results.filter((r) => r.pass === null).length;
   console.log('\n────────────────────────────────');
-  console.log(`L 层：通过 ${passed} / 未通过 ${failed} / 跳过 ${skipped}`);
-  console.log(`fixture=${FIXTURE}  数据目录=${DATA_DIR}`);
+  console.log(`L 层（stage=${STAGE}）：通过 ${passed} / 未通过 ${failed} / 跳过 ${skipped}`);
+  console.log(`fixture=${FIXTURE}\n证据=${EVIDENCE}\n数据目录=${DATA_DIR}`);
   if (failed) {
     console.log('未通过：');
     for (const r of results.filter((x) => x.pass === false)) console.log('  - ' + r.name + (r.detail ? '  → ' + r.detail : ''));
   }
+  saveEvidence('summary.json', { stage: STAGE, passed, failed, skipped, results });
   process.exit(failed ? 1 : 0);
 }
 

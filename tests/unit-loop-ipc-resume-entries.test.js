@@ -93,6 +93,16 @@ function fakeEngine(status = {}) {
     }
   });
 
+  await t('开题 prompt 根本没送进 CLI（dispatch_failed）→ 重发必须能真的再派一次', async () => {
+    const ipc = fakeIpc();
+    const f = fakeEngine({ kickoff: { status: 'dispatch_failed', authorMemberId: 'm1', lastReason: 'cli_not_ready' } });
+    registerLoopIpc(ipc, { loopEngine: f.engine, logger: { error: () => {}, warn: () => {} } });
+    const result = await ipc.invoke('dev:redispatch', { meetingId: 'mtg' });
+    assert.strictEqual(result.ok, true, '派发失败是最需要「重发」的场景，不能被白名单挡在外面');
+    assert.strictEqual(f.calls.kickoff.length, 1);
+    assert.notStrictEqual(f.calls.kickoff[0].opts.dispatch, false, '这次是真的要重新派，不是只重扫');
+  });
+
   await t('确实没有可接续的东西时，仍然如实说 no_resumable_run', async () => {
     const ipc = fakeIpc();
     const f = fakeEngine({});

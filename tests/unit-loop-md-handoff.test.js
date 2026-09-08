@@ -56,6 +56,17 @@ function mk(opts = {}) {
         turnCalls.push(args);
         if (typeof opts.onDispatch === 'function') await opts.onDispatch(args, docsDir, turnCalls.length);
         const isBuilder = String(args.targetMemberIds[0]) === 'm1';
+        // 传输层失败注入：返回 {status:'errored', reason} 就等价于「prompt 没送进 CLI」
+        const forced = typeof opts.dispatchResult === 'function' ? opts.dispatchResult(args, turnCalls.length) : null;
+        if (forced) {
+          // 真 dispatcher 在「prompt 没送进去」时返回的是整体 completed + 单个结果 errored，
+          // 失败原因挂在结果上。注入要贴这个形状，否则测的是一个不存在的失败模式。
+          return {
+            status: 'completed',
+            turnNum: turnCalls.length,
+            results: [{ sid: isBuilder ? 'sB' : 'sR', status: 'errored', text: '', reason: forced.reason }],
+          };
+        }
         return {
           status: 'completed',
           turnNum: turnCalls.length,
@@ -442,6 +453,54 @@ function writeDoc(docsDir, pos, body) {
     assert.strictEqual(resumed.ok, true);
     assert.strictEqual(resumed.autoStart, true, '已接收的报告要能直接接着开工');
     assert.strictEqual(kickoffDispatches, 1, '不许再派一次开题：任务书已经交过了');
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
+  });
+
+  await t('阻断 开题派发失败（CLI 没起来）→ 明说 dispatch_failed，不伪装成「正在等报告」', async () => {
+    let attempts = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => { attempts += 1; return { reason: 'cli_not_ready' }; },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.reason, 'kickoff_dispatch_failed',
+      '一个字都没送到 CLI，就不该显示成「它在写，你等着」');
+    assert.strictEqual(outcome.detail, 'cli_not_ready', '要把真实原因带出来给界面用');
+    assert.strictEqual(h.getWorkflow().kickoff.status, 'dispatch_failed');
+    assert.strictEqual(h.getWorkflow().kickoff.lastReason, 'cli_not_ready');
+    assert.strictEqual(attempts, 2, '和循环一样给两次有界传输重试，别一次不行就放弃');
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff', '阶段和现场都保留，用户点重发即可');
+  });
+
+  await t('开题派发第一次失败、第二次成功 → 照常往下走，不把传输抖动记成失败', async () => {
+    let attempts = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => (attempts === 1 ? { reason: 'cli_not_ready' } : null),
+      onDispatch: (args, docsDir) => {
+        if (!(args.workflowRun && args.workflowRun.kind === 'kickoff')) return;
+        attempts += 1;
+        if (attempts >= 2) writeDoc(docsDir, 0, KICKOFF_DOC);
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(outcome.ok, true);
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
+  });
+
+  await t('派发失败但文件其实已经在了 → 先认交付，不因为回执丢了就重来', async () => {
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => ({ status: 'errored', reason: 'send_failed' }),
+      onDispatch: (args, docsDir) => {
+        // 模拟「prompt 其实送到了，只是回执丢了」：agent 已经把报告交出来
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') writeDoc(docsDir, 0, KICKOFF_DOC);
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(outcome.ok, true, '确认丢失但成果在，就按成果算，不重复派工');
     assert.strictEqual(h.getWorkflow().devPhase, 'build');
   });
 
