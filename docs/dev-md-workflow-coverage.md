@@ -100,8 +100,9 @@
 | 层 | 命令 | 结果 | 证据目录 |
 |---|---|---|---|
 | U | `node scripts/run_unit_tests.js` | 392 个文件全过 | 终端输出 |
-| I | `node tests/dev-md-handoff-i-e2e.js` | 45 / 45 | 隔离数据目录见运行日志 |
-| L | `node tests/dev-md-handoff-l-e2e.js --stage=full --budget=1200` | 25 / 25 | `evidence/`：开题报告、合并手册、master 测试输出、fixture 图、逐人送达 JSON |
+| U | 同上（第五轮修完后重跑） | 392 个文件全过 | 终端输出 |
+| I | `node tests/dev-md-handoff-i-e2e.js` | 56 / 56（含新增的 E01–E04 九条） | 隔离数据目录见运行日志 |
+| L | `node tests/dev-md-handoff-l-e2e.js --stage=full --budget=1200` | 25 / 25（路径闸门加上之后又跑了一遍，仍 25/25） | `evidence/`：开题报告、合并手册、master 测试输出、fixture 图、逐人送达 JSON |
 | L | `node tests/dev-md-handoff-l-e2e.js --stage=fail-first --budget=1200` | 19 / 19 | 同上，另含 `review-1-fail.md`（真实 FAIL）与 `review-2.md`（复审 PASS） |
 
 L 层 full 的真实合并：`b394057 merge: feat/greet-greeting`（`--no-ff` 合进 master），
