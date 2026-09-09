@@ -247,7 +247,14 @@ async function main() {
     const goal = STAGE === 'fail-first'
       ? `分支 ${defectBranch} 上已经有一份实现，但它破坏了既有行为。请按合同独立审查它。`
       : '把 greet 改成支持第二个参数 greeting，默认仍然是 hello，并补一条覆盖自定义问候语的测试。';
+    // 2026-09-08 合并位复现：这里原来只调 meeting-append-user-turn —— 它**只写时间线**，
+    // 不会把需求送进任何 Agent 的上下文。结果开题 Agent 拿到的 prompt 里根本没有需求，
+    // 它只能反问「要实现什么功能」，而脚本却已经把这一步记成成功了。
+    // 需求必须走真正的投递入口（和用户在输入框里发一句话是同一条路）。
     await invoke('meeting-append-user-turn', { meetingId, text: goal });
+    const goalDelivery = await invoke('groupchat:user-supplement', { meetingId, text: goal });
+    ok(goalDelivery && goalDelivery.ok === true,
+      'L 初始需求已进入逐人投递账本（不是只写时间线）', JSON.stringify(goalDelivery));
 
     if (STAGE === 'fail-first') {
       // 从「已知缺陷交付」开始：手动放好协作手册，让引擎跳过实现位、直接派真实审查位。
@@ -269,6 +276,15 @@ async function main() {
       // 2026-09-08 合并位指出这两行会提前误报成功；下面必须看**可观察的执行状态**。
       ok(started && started.ok === true, 'A02/L 开题请求被接受（只是接受，不代表送到了）', JSON.stringify(started));
       const dispatched = await waitDispatched(builderSid);
+      // 光「送到了」还不够：需求本身必须在那份 prompt 里。这正是上一轮漏掉的东西。
+      const goalMark = goal.slice(0, 24);
+      let goalInPrompt = false;
+      for (let i = 0; i < 40 && !goalInPrompt; i += 1) {
+        goalInPrompt = [...promptsBySid.values()].flat().some((text) => text.includes(goalMark));
+        if (!goalInPrompt) await sleep(1000);
+      }
+      ok(goalInPrompt, 'L 初始需求真的出现在派给执笔者的 prompt 里（不是只躺在时间线上）',
+        goalMark);
       const kickoffState = (await wf()).kickoff || {};
       ok(dispatched,
         'A02/L 开题 prompt 真的送进了 CLI（按该席位的执行状态判，不看 IPC 返回值）',
