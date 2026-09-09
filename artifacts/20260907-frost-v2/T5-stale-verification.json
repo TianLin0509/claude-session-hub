@@ -1,0 +1,73 @@
+{
+  "scenario": "stale",
+  "before": {
+    "dataset": {
+      "provider": "codex",
+      "window": "5h",
+      "level": "danger",
+      "freshness": "stale"
+    },
+    "label": "Codex 5h 用量 88% · 数据 5 分钟前（按获选提供商观测时间）；打开账户用量明细",
+    "value": "88%",
+    "diameter": 26,
+    "inner": 19,
+    "font": "7.5px",
+    "color": "rgb(127, 138, 154)",
+    "danger": "#fb7185",
+    "border": "dashed",
+    "background": "none",
+    "snapshot": {
+      "claude": {
+        "usage5h": {
+          "pct": 12,
+          "resetsAt": 1788971449803
+        },
+        "usage7d": {
+          "pct": 14,
+          "resetsAt": 1789486249803
+        },
+        "lastSeen": 1788967549803
+      },
+      "codex": {
+        "usage5h": {
+          "pct": 88,
+          "resetsAt": 1788982249000
+        },
+        "usage7d": {
+          "pct": 28,
+          "resetsAt": 1789486249000
+        },
+        "rolloutPath": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-48248-1788967849802\\codex-e2e-home\\sessions\\2026\\09\\09\\rollout-stale-e2e.jsonl",
+        "observedAt": 1788967549803,
+        "source": "jsonl",
+        "_ts": 1788967549803,
+        "provider": "codex",
+        "backend": "subscription",
+        "profileId": "default",
+        "profileLabel": "E2E account",
+        "accountId": "",
+        "accountEmail": "",
+        "accountName": "",
+        "authSinceMs": 0,
+        "sessionsRoot": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-48248-1788967849802\\codex-e2e-home\\sessions",
+        "scopeKey": "subscription:default:c:\\users\\lintian\\appdata\\local\\temp\\claude-session-hub-usage-e2e-48248-1788967849802\\codex-e2e-home\\sessions",
+        "ts": 1788967549803,
+        "lastSeen": 1788967549803
+      },
+      "gemini": null,
+      "kimi": null,
+      "deepseek": {
+        "totalBalance": 60.6,
+        "currency": "CNY",
+        "observedAt": 1788967849807,
+        "lastSeen": 1788967849807
+      },
+      "refresh": {
+        "inFlight": false,
+        "error": null,
+        "lastManualAt": 0
+      }
+    }
+  },
+  "completed": true
+}

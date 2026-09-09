@@ -1,0 +1,13 @@
+{
+  "changedTrackedFiles": [
+    "renderer/account-usage-controller.js",
+    "renderer/index.html",
+    "renderer/styles/account-config-preview.css",
+    "renderer/styles/rail.css",
+    "tests/e2e-usage-refresh-cdp.js",
+    "tests/unit-account-usage-controller-contract.test.js"
+  ],
+  "allowed": true,
+  "versionUnchanged": true,
+  "baseline": "96b751d1c02181635bb64e5b5cff61707b8d29d1"
+}

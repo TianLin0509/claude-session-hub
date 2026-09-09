@@ -1,0 +1,75 @@
+{
+  "scenario": "ring",
+  "before": {
+    "dataset": {
+      "provider": "codex",
+      "window": "5h",
+      "level": "danger",
+      "freshness": "fresh"
+    },
+    "label": "Codex 5h 用量 88% · 数据 0 分钟前（按获选提供商观测时间）；打开账户用量明细",
+    "value": "88%",
+    "diameter": 26,
+    "inner": 19,
+    "font": "7.5px",
+    "color": "rgb(251, 113, 133)",
+    "danger": "#fb7185",
+    "border": "none",
+    "background": "conic-gradient(rgb(251, 113, 133) 0deg, rgb(251, 113, 133) 88%, rgba(255, 255, 255, 0.075) 88%, rgba(255, 255, 255, 0.075) 100%)",
+    "snapshot": {
+      "claude": {
+        "usage5h": {
+          "pct": 12,
+          "resetsAt": 1788971437276
+        },
+        "usage7d": {
+          "pct": 14,
+          "resetsAt": 1789486237276
+        },
+        "lastSeen": 1788967537276
+      },
+      "codex": {
+        "usage5h": {
+          "pct": 88,
+          "resetsAt": 1788982237000,
+          "label": "5h"
+        },
+        "usage7d": {
+          "pct": 28,
+          "resetsAt": 1789486237000,
+          "label": "7d"
+        },
+        "limitId": "codex",
+        "observedAt": 1788967838385,
+        "source": "app-server",
+        "_ts": 1788967838385,
+        "provider": "codex",
+        "backend": "subscription",
+        "profileId": "default",
+        "profileLabel": "E2E account",
+        "accountId": "",
+        "accountEmail": "",
+        "accountName": "",
+        "authSinceMs": 0,
+        "sessionsRoot": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-48248-1788967837274\\codex-e2e-home\\sessions",
+        "scopeKey": "subscription:default:c:\\users\\lintian\\appdata\\local\\temp\\claude-session-hub-usage-e2e-48248-1788967837274\\codex-e2e-home\\sessions",
+        "ts": 1788967838385,
+        "lastSeen": 1788967838385
+      },
+      "gemini": null,
+      "kimi": null,
+      "deepseek": {
+        "totalBalance": 60.6,
+        "currency": "CNY",
+        "observedAt": 1788967177278,
+        "lastSeen": 1788967177278
+      },
+      "refresh": {
+        "inFlight": false,
+        "error": null,
+        "lastManualAt": 0
+      }
+    }
+  },
+  "completed": true
+}

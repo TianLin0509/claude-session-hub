@@ -1,0 +1,100 @@
+单元测试：403 个文件，并发 16（已取得总入口执行权）
+................................................................................ 80/403
+.........................................................x.........x............ 160/403
+................................................................................ 240/403
+................................................................................ 320/403
+................................................................................ 400/403
+..x
+
+──────────────────────────────────────────────────
+并行阶段失败 3 / 403，排队 0.0s + 执行 104.4s（SHA 96b751d）
+
+  ✗ unit-dev-scene-contract.test.js  (退出码 1，耗时 0.6s / 预算 180s，分类：断言失败)
+          at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+          at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+          at node:internal/main/run_main_module:33:47 {
+        generatedMessage: false,
+        code: 'ERR_ASSERTION',
+        actual: null,
+        expected: 1,
+        operator: 'strictEqual',
+        diff: 'simple'
+      }
+
+      Node.js v24.14.0
+
+  ✗ unit-file-manager-ui-contract.test.js  (退出码 1，耗时 0.3s / 预算 180s，分类：断言失败)
+          '    if (text !== undefined) el.textContent = text;\r\n' +
+          '    parent.appendChild(el);\r\n' +
+          '    return el;\r\n' +
+          '  }\r\n' +
+          '\r\n' +
+          '  fu'... 10910 more characters,
+        expected: /data-action="open-memo"[\s\S]{0,100}>备忘录<\/button>/,
+        operator: 'match',
+        diff: 'simple'
+      }
+
+      Node.js v24.14.0
+
+  ✗ unit-dev-flow-stress.test.js  (退出码 1，耗时 104.4s / 预算 600s，分类：断言失败)
+
+      失败：主目录必须拒绝
+
+      null !== 1
+
+      AssertionError [ERR_ASSERTION]: 主目录必须拒绝
+
+      null !== 1
+
+          at C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\unit-dev-flow-stress.test.js:154:10
+          at C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\unit-dev-flow-stress.test.js:364:11
+          at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+── 串行复测这 3 个文件（诊断用，单独跑、无并发争抢）──
+  unit-dev-scene-contract.test.js … 仍然失败（退出码 1，0.2s）
+  unit-file-manager-ui-contract.test.js … 仍然失败（退出码 1，0.1s）
+  unit-dev-flow-stress.test.js … 仍然失败（退出码 1，60.3s）
+
+真失败 3 / 403（串行复测仍不过）：
+  ✗ unit-dev-scene-contract.test.js  (退出码 1，耗时 0.1s / 预算 180s，分类：断言失败)
+          at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+          at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+          at node:internal/main/run_main_module:33:47 {
+        generatedMessage: false,
+        code: 'ERR_ASSERTION',
+        actual: null,
+        expected: 1,
+        operator: 'strictEqual',
+        diff: 'simple'
+      }
+
+      Node.js v24.14.0
+
+  ✗ unit-file-manager-ui-contract.test.js  (退出码 1，耗时 0.1s / 预算 180s，分类：断言失败)
+          '    if (text !== undefined) el.textContent = text;\r\n' +
+          '    parent.appendChild(el);\r\n' +
+          '    return el;\r\n' +
+          '  }\r\n' +
+          '\r\n' +
+          '  fu'... 10910 more characters,
+        expected: /data-action="open-memo"[\s\S]{0,100}>备忘录<\/button>/,
+        operator: 'match',
+        diff: 'simple'
+      }
+
+      Node.js v24.14.0
+
+  ✗ unit-dev-flow-stress.test.js  (退出码 1，耗时 60.3s / 预算 600s，分类：断言失败)
+
+      失败：主目录必须拒绝
+
+      null !== 1
+
+      AssertionError [ERR_ASSERTION]: 主目录必须拒绝
+
+      null !== 1
+
+          at C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\unit-dev-flow-stress.test.js:154:10
+          at C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\unit-dev-flow-stress.test.js:364:11
+          at process.processTicksAndRejections (node:internal/process/task_queues:104:5)

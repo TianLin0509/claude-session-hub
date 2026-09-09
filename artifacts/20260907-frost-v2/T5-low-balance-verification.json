@@ -1,0 +1,75 @@
+{
+  "scenario": "low-balance",
+  "before": {
+    "dataset": {
+      "provider": "deepseek",
+      "window": "balance",
+      "level": "warn",
+      "freshness": "fresh"
+    },
+    "label": "DeepSeek 余额偏低 · ¥10.00 · 数据 0 分钟前（按获选提供商观测时间）；打开账户用量明细",
+    "value": "!",
+    "diameter": 26,
+    "inner": 19,
+    "font": "7.5px",
+    "color": "rgb(251, 191, 36)",
+    "danger": "#fb7185",
+    "border": "none",
+    "background": "conic-gradient(rgb(251, 191, 36) 0deg, rgb(251, 191, 36) 60%, rgba(255, 255, 255, 0.075) 60%, rgba(255, 255, 255, 0.075) 100%)",
+    "snapshot": {
+      "claude": {
+        "usage5h": {
+          "pct": 12,
+          "resetsAt": 1788971446034
+        },
+        "usage7d": {
+          "pct": 14,
+          "resetsAt": 1789486246034
+        },
+        "lastSeen": 1788967546034
+      },
+      "codex": {
+        "usage5h": {
+          "pct": 24,
+          "resetsAt": 1788982246000,
+          "label": "5h"
+        },
+        "usage7d": {
+          "pct": 28,
+          "resetsAt": 1789486246000,
+          "label": "7d"
+        },
+        "limitId": "codex",
+        "observedAt": 1788967846981,
+        "source": "app-server",
+        "_ts": 1788967846981,
+        "provider": "codex",
+        "backend": "subscription",
+        "profileId": "default",
+        "profileLabel": "E2E account",
+        "accountId": "",
+        "accountEmail": "",
+        "accountName": "",
+        "authSinceMs": 0,
+        "sessionsRoot": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-48248-1788967846033\\codex-e2e-home\\sessions",
+        "scopeKey": "subscription:default:c:\\users\\lintian\\appdata\\local\\temp\\claude-session-hub-usage-e2e-48248-1788967846033\\codex-e2e-home\\sessions",
+        "ts": 1788967846981,
+        "lastSeen": 1788967846981
+      },
+      "gemini": null,
+      "kimi": null,
+      "deepseek": {
+        "totalBalance": 10,
+        "currency": "CNY",
+        "observedAt": 1788967846045,
+        "lastSeen": 1788967846045
+      },
+      "refresh": {
+        "inFlight": false,
+        "error": null,
+        "lastManualAt": 0
+      }
+    }
+  },
+  "completed": true
+}

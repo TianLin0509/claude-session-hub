@@ -1,0 +1,145 @@
+{
+  "ok": true,
+  "workdir": "C:\\AIWork\\20260909-frost-T5-usage-ring-codex1",
+  "cdpPort": 54976,
+  "dataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-49016-1788967380511",
+  "controlledCodexHome": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-49016-1788967380511\\codex-e2e-home",
+  "controlledRollout": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-49016-1788967380511\\codex-e2e-home\\sessions\\2026\\09\\09\\rollout-stale-e2e.jsonl",
+  "before": [
+    {
+      "provider": "claude",
+      "name": "Claude",
+      "text": "Claude\n5h\n101%\n↻1h\n7d\n14%\n↻6d 0h",
+      "title": "Claude · 数据 5 分钟前 · statusline",
+      "values": [
+        "101%",
+        "14%"
+      ]
+    },
+    {
+      "provider": "codex",
+      "name": "Codex·E2E account",
+      "text": "Codex·E2E account\n5h\n—\n7d\n7%\n↻6d 0h",
+      "title": "Codex·E2E account · 数据 0 分钟前 · app-server",
+      "values": [
+        "—",
+        "7%"
+      ]
+    },
+    {
+      "provider": "deepseek",
+      "name": "DeepSeek",
+      "text": "DeepSeek\n余额\n¥60.60",
+      "title": "DeepSeek · 数据 0 分钟前",
+      "values": [
+        "¥60.60"
+      ]
+    }
+  ],
+  "after": {
+    "segments": [
+      {
+        "provider": "claude",
+        "name": "Claude",
+        "text": "Claude\n5h\n101%\n↻1h\n7d\n14%\n↻6d 0h",
+        "title": "Claude · 数据 5 分钟前 · statusline",
+        "values": [
+          "101%",
+          "14%"
+        ]
+      },
+      {
+        "provider": "codex",
+        "name": "Codex·E2E account",
+        "text": "Codex·E2E account\n5h\n—\n7d\n7%\n↻6d 0h",
+        "title": "Codex·E2E account · 数据 0 分钟前 · app-server",
+        "values": [
+          "—",
+          "7%"
+        ]
+      },
+      {
+        "provider": "deepseek",
+        "name": "DeepSeek",
+        "text": "DeepSeek\n余额\n¥60.60",
+        "title": "DeepSeek · 数据 0 分钟前 · 刷新异常：DeepSeek API Key 尚未配置",
+        "values": [
+          "¥60.60"
+        ]
+      }
+    ],
+    "snapshot": {
+      "claude": {
+        "usage5h": {
+          "pct": 101,
+          "resetsAt": 1788970980521
+        },
+        "usage7d": {
+          "pct": 14,
+          "resetsAt": 1789485780521
+        },
+        "lastSeen": 1788967080521
+      },
+      "codex": {
+        "usage5h": null,
+        "usage7d": {
+          "pct": 7,
+          "resetsAt": 1789485780000,
+          "label": "7d"
+        },
+        "limitId": "codex",
+        "observedAt": 1788967382501,
+        "source": "app-server",
+        "_ts": 1788967382501,
+        "provider": "codex",
+        "backend": "subscription",
+        "profileId": "default",
+        "profileLabel": "E2E account",
+        "accountId": "",
+        "accountEmail": "",
+        "accountName": "",
+        "authSinceMs": 0,
+        "sessionsRoot": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-49016-1788967380511\\codex-e2e-home\\sessions",
+        "scopeKey": "subscription:default:c:\\users\\lintian\\appdata\\local\\temp\\claude-session-hub-usage-e2e-49016-1788967380511\\codex-e2e-home\\sessions",
+        "lastSeen": 1788967382501
+      },
+      "gemini": null,
+      "kimi": null,
+      "deepseek": {
+        "totalBalance": 60.6,
+        "currency": "CNY",
+        "observedAt": 1788967380534,
+        "lastSeen": 1788967380534
+      },
+      "refresh": {
+        "inFlight": false,
+        "error": "DeepSeek: DeepSeek API Key 尚未配置",
+        "lastManualAt": 1788967382581
+      }
+    }
+  },
+  "screenshot": "C:\\AIWork\\20260909-frost-T5-usage-ring-codex1\\artifacts\\20260907-frost-v2\\T5-regression-refresh.png",
+  "hubLogTail": [
+    "(node:26008) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+    "(Use `electron --trace-warnings ...` to show where the warning was created)",
+    "DevTools listening on ws://127.0.0.1:54976/devtools/browser/5cc41799-d4a5-4ccf-b8d7-009983a4dbff",
+    "[群聊] hook server bind failed on :3456 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3456",
+    "[群聊] hook server bind failed on :3457 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3457",
+    "[群聊] hook server listening on 127.0.0.1:3458",
+    "[hub-control] control file written: pid=26008 hookPort=3458 cdpPort=54976"
+  ]
+}
+node : AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+At line:2 char:46
++ ... esh-cdp.js; node tests/e2e-usage-refresh-cdp.js > artifacts/20260907- ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (AssertionError ...strictly equal::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+
+true !== false
+
+    at verifyRingScenario (C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:261:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async run (C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:307:7)
+    at async C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:408:114
