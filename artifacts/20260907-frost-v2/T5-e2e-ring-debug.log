@@ -1,0 +1,32 @@
+T5 key diagnostic {
+  events: [
+    {
+      type: 'keydown',
+      key: 'Enter',
+      target: 'rail-usage-button',
+      prevented: false
+    },
+    {
+      type: 'keyup',
+      key: 'Enter',
+      target: 'rail-usage-button',
+      prevented: false
+    }
+  ],
+  focus: 'rail-usage-button',
+  hidden: true
+}
+node : AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+At line:2 char:1
++ node tests/e2e-usage-refresh-cdp.js ring > artifacts/20260907-frost-v ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (AssertionError ...strictly equal::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+
+true !== false
+
+    at verifyRingScenario (C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:263:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async run (C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:311:7)
+    at async C:\AIWork\20260909-frost-T5-usage-ring-codex1\tests\e2e-usage-refresh-cdp.js:412:114

@@ -1,5 +1,33 @@
 'use strict';
 
+const LOW_BALANCE_THRESHOLD = 20;
+const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
+const usageLevel = percent => percent > 85 ? 'danger' : percent >= 60 ? 'warn' : 'muted';
+const validPercent = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+function balanceValue(provider) {
+  const value = (provider && (provider.balance || provider) || {}).totalBalance;
+  if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '') return null;
+  return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function pickTightestWindow(snapshot) {
+  let tightest = null;
+  for (const provider of ['claude', 'codex']) {
+    for (const window of ['5h', '7d']) {
+      const percent = snapshot?.[provider]?.['usage' + window]?.pct;
+      if (validPercent(percent) && (!tightest || percent > tightest.percent)) {
+        tightest = { provider, window, percent, level: usageLevel(percent) };
+      }
+    }
+  }
+  const balance = balanceValue(snapshot?.deepseek);
+  // 60 is a warning rank, never a percentage of money spent.
+  if (balance !== null && balance < LOW_BALANCE_THRESHOLD && (!tightest || tightest.percent < 60)) {
+    tightest = { provider: 'deepseek', window: 'balance', percent: 60, level: 'warn' };
+  }
+  return tightest;
+}
+
 function createAccountUsageController({
   document,
   ipcRenderer,
@@ -22,6 +50,10 @@ function createAccountUsageController({
   let _claudeUsageLastSeen = 0;
   const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0, providerResults: null };
   let _refreshStatusTimer = null;
+  let staleTimer = null;
+  let hoverTimer = null;
+  let ui = null;
+  let popoverPinned = false;
 
   const BURN_HISTORY_MS = 15 * 60 * 1000;
   const globalUsageSamples = []; // [{t, pct, totalUsedTokens}]
@@ -114,7 +146,7 @@ function createAccountUsageController({
 
   function applyUsageCache(cached) {
     if (!cached) cached = {};
-    if (cached.claude && cached.claude.usage5h) {
+    if (cached.claude && (cached.claude.usage5h || cached.claude.usage7d)) {
       accountUsage.usage5h = cached.claude.usage5h;
       accountUsage.usage7d = cached.claude.usage7d;
       _claudeUsageLastSeen = cached.claude.observedAt || cached.claude.ts || _claudeUsageLastSeen;
@@ -144,21 +176,21 @@ function createAccountUsageController({
   }
 
   function formatAge(ts) {
-    if (!ts) return '未刷新';
-    const ms = Math.max(0, nowFn() - ts);
-    const sec = Math.floor(ms / 1000);
-    if (sec < 45) return '刚刚';
-    if (sec < 60) return `${sec}s`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m`;
-    const h = Math.floor(min / 60);
-    if (h < 24) return `${h}h`;
-    return `${Math.floor(h / 24)}d`;
+    if (!Number.isFinite(ts) || ts <= 0) return '数据未刷新';
+    return '数据 ' + Math.floor(Math.max(0, nowFn() - ts) / 60000) + ' 分钟前';
+  }
+
+  function formatBalance(provider) {
+    const total = balanceValue(provider);
+    if (total === null) return '—';
+    const balance = provider?.balance || provider || {};
+    const currency = String(balance.currency || 'CNY').toUpperCase();
+    return (currency === 'CNY' ? '¥' : currency + ' ') + total.toFixed(2);
   }
 
   function usageFreshnessClass(ts) {
-    if (!ts) return 'unknown';
-    return nowFn() - ts > 2 * 60 * 1000 ? 'stale' : 'fresh';
+    if (!Number.isFinite(ts) || ts <= 0) return 'unknown';
+    return nowFn() - ts > 120000 ? 'stale' : 'fresh';
   }
 
   function refreshUsageNow() {
@@ -166,13 +198,14 @@ function createAccountUsageController({
     usageRefreshState.inFlight = true;
     usageRefreshState.error = null;
     render();
-    return Promise.resolve(ipcRenderer.invoke('refresh-usage-now'))
+    return Promise.resolve().then(() => ipcRenderer.invoke('refresh-usage-now'))
       .then((result) => {
         usageRefreshState.providerResults = result && result.providerResults || null;
-        const codexResult = usageRefreshState.providerResults && usageRefreshState.providerResults.codex;
-        if (codexResult && (!codexResult.ok || codexResult.degraded)) {
-          usageRefreshState.error = `Codex: ${codexResult.error || '实时接口不可用，已降级到本地快照'}`;
-        }
+        usageRefreshState.error = ['claude', 'codex', 'deepseek'].flatMap(provider => {
+          const status = usageRefreshState.providerResults?.[provider];
+          return status && (status.ok === false || status.degraded)
+            ? [`${PROVIDER_NAMES[provider]}: ${status.error || '实时接口不可用，已降级到本地快照'}`] : [];
+        }).join('；') || null;
         usageRefreshState.lastManualAt = (result && result.refreshedAt) || nowFn();
         if (_refreshStatusTimer !== null) clearTimeoutFn(_refreshStatusTimer);
         _refreshStatusTimer = setTimeoutFn(() => {
@@ -193,99 +226,204 @@ function createAccountUsageController({
       });
   }
   
-  function render() {
-    // 2026-07-19 道雪 · 方案C：用量面板从侧栏迁移为顶部全局 ticker。
-    // 每个官方返回的窗口都显示「用量% + 重置时间」。某些 Codex Pro
-    // 账户当前只返回 7d bucket；5h 保留占位但不能拿 7d 数据冒充。
-    const el = document.getElementById('quota-ticker');
-    if (!el) return;
-    el.style.display = 'flex';
-  
-    const pctCls = (pct) => pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
-  
-    const renderWindow = (fallbackLabel, usage) => {
-      const label = usage && usage.label ? usage.label : fallbackLabel;
-      const resetTxt = usage && usage.resetsAt ? formatResetIn(usage.resetsAt) : '';
-      const pct = usage && typeof usage.pct === 'number' ? Math.round(usage.pct) : null;
-      const cls = pct == null ? 'dim' : pctCls(pct);
-      const resetTitle = resetTxt ? `距离 ${label} 配额刷新还有 ${resetTxt}` : `${label} 重置时间未知`;
-      // 重置时间未知时不再占位显示「↻—」：一行里少一半噪声。
-      const reset = resetTxt ? `<em title="${escapeHtml(resetTitle)}">↻${escapeHtml(resetTxt)}</em>` : '';
-      return `<span class="qt-win ${cls}" title="${escapeHtml(resetTitle)}"><i>${escapeHtml(label)}</i>`
-        + `<b>${pct == null ? '—' : `${pct}%`}</b>${reset}</span>`;
-    };
 
-    const renderSeg = (name, u5h, u7d, meta = {}) => {
-      const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
-      const visibleName = meta.profileLabel ? `${name}·${meta.profileLabel}` : name;
-      const age = formatAge(meta.lastSeen || 0);
-      const source = meta.source ? ` · ${meta.source}` : '';
-      const accountLabel = meta.accountEmail || '';
-      const refreshError = meta.refreshError ? ` · 刷新异常: ${meta.refreshError}` : '';
-      const tip = `${title} · 数据更新于 ${age}前${source}${accountLabel ? ` · ${accountLabel}` : ''}${refreshError}`;
-      return `<span class="qt-seg" data-provider="${escapeHtml(name.toLowerCase())}" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(visibleName)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
-    };
+  function makeElement(tag, className, parent, text) {
+    const el = document.createElement(tag);
+    el.className = className;
+    if (text !== undefined) el.textContent = text;
+    parent.appendChild(el);
+    return el;
+  }
 
-    // 2026-08-27：ticker 只留三样——Claude 用量、Codex 用量、DeepSeek 余额。
-    // Kimi 段撤掉（数据仍在采，工作台的「四模型用量」里看得到），顶栏是每天都要瞄的
-    // 一行，塞四家反而没有一样看得清。
-    const renderBalance = (name, balance, meta = {}) => {
-      const has = balance && Number.isFinite(Number(balance.totalBalance));
-      const age = formatAge(meta.lastSeen || 0);
-      if (!has) {
-        return `<span class="qt-seg qt-balance" data-provider="deepseek" title="${escapeHtml(name)} 余额未获取 · 数据更新于 ${escapeHtml(age)}前">`
-          + `<span class="qt-name">${escapeHtml(name)}</span><span class="qt-win dim"><b>—</b></span></span>`;
-      }
-      const total = Number(balance.totalBalance);
-      const currency = String(balance.currency || 'CNY').toUpperCase();
-      const symbol = currency === 'CNY' ? '¥' : `${currency} `;
-      const available = balance.available !== false;
-      const cls = !available || total < 10 ? 'danger' : total < 30 ? 'warn' : 'ok';
-      const tip = `${name} 余额 ${symbol}${total.toFixed(2)}`
-        + `${available ? '' : ' · 当前不可用'} · 数据更新于 ${age}前`;
-      return `<span class="qt-seg qt-balance" data-provider="deepseek" title="${escapeHtml(tip)}">`
-        + `<span class="qt-name">${escapeHtml(name)}</span>`
-        + `<span class="qt-win ${cls}"><i>余额</i><b>${escapeHtml(symbol + total.toFixed(2))}</b></span></span>`;
-    };
+  function positionPopover(reanchor = false) {
+    if (!ui || ui.popover.hidden) return;
+    const view = document.defaultView;
+    const anchor = ui.button.getBoundingClientRect();
+    const rect = ui.popover.getBoundingClientRect();
+    ui.popover.style.left = Math.max(8, Math.min(anchor.right + 10, view.innerWidth - rect.width - 8)) + 'px';
+    const previousTop = Number.parseFloat(ui.popover.style.top);
+    const top = reanchor === true || !Number.isFinite(previousTop) ? anchor.bottom - rect.height : previousTop;
+    // Status text can change while hovered. Keep the top edge steady unless it
+    // would overflow the viewport, rather than moving controls under the cursor.
+    ui.popover.style.top = Math.max(8, Math.min(top, view.innerHeight - rect.height - 8)) + 'px';
+  }
 
-    const c = agentUsage.codex || {};
-    const d = agentUsage.deepseek || {};
-    const refreshTitle = usageRefreshState.error
-      ? `刷新账户用量 · 上次失败: ${usageRefreshState.error}`
-      : '刷新 Claude、Codex 用量与 DeepSeek 余额';
-    // freshness 取顶栏在显示的三家里最旧的（保守）：任一过期则整灯变橙。
-    const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex, agentUsageLastSeen.deepseek].filter(Boolean);
-    const oldest = lastSeens.length ? Math.min(...lastSeens) : 0;
-    const freshCls = usageFreshnessClass(oldest);
-    const ageTxt = lastSeens.length ? formatAge(oldest) : '未刷新';
-    el.innerHTML =
-      `<span class="qt-cap">用量</span>` +
-      renderSeg('Claude', accountUsage.usage5h, accountUsage.usage7d, {
-        lastSeen: _claudeUsageLastSeen,
-        source: 'statusline',
-      }) +
-      `<span class="qt-div"></span>` +
-      renderSeg('Codex', c.usage5h, c.usage7d, {
-        ...c,
-        lastSeen: agentUsageLastSeen.codex,
-        refreshError: usageRefreshState.providerResults && usageRefreshState.providerResults.codex
-          && usageRefreshState.providerResults.codex.error,
-      }) +
-      `<span class="qt-div"></span>` +
-      renderBalance('DeepSeek', d.balance || d, { lastSeen: agentUsageLastSeen.deepseek }) +
-      `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取三家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +
-      `<button class="qt-memory btn-memo-toggle${isMemoOpen() ? ' active' : ''}" data-action="open-memo" title="打开备忘录" aria-label="打开备忘录">备忘录</button>` +
-      `<button class="qt-refresh${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="刷新账户用量">${usageRefreshState.inFlight ? '刷新中' : '⟳ 刷新'}</button></span>`;
-  
-    el.querySelectorAll('[data-action="refresh-usage"]').forEach(refreshBtn => {
-      refreshBtn.addEventListener('click', (event) => {
+  function cancelHoverClose() {
+    if (hoverTimer !== null) clearTimeoutFn(hoverTimer);
+    hoverTimer = null;
+  }
+
+  function setPopoverOpen(open, returnFocus = false) {
+    cancelHoverClose();
+    if (!ui) return;
+    const wasHidden = ui.popover.hidden;
+    ui.popover.hidden = !open;
+    ui.button.setAttribute('aria-expanded', String(open));
+    if (!open) popoverPinned = false;
+    if (open) positionPopover(wasHidden);
+    else if (returnFocus) ui.button.focus({ preventScroll: true });
+  }
+
+  function ensureUi() {
+    if (ui) return ui;
+    const root = document.getElementById('rail-usage');
+    if (!root) return null;
+    const button = makeElement('button', 'rail-usage-button', root);
+    button.type = 'button';
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.setAttribute('aria-controls', 'rail-usage-popover');
+    button.setAttribute('aria-expanded', 'false');
+    const ring = makeElement('span', 'rail-usage-ring', button);
+    const value = makeElement('span', 'rail-usage-value', ring);
+    ring.setAttribute('aria-hidden', 'true');
+    const popover = makeElement('section', 'usage-popover', root);
+    popover.id = 'rail-usage-popover';
+    popover.hidden = true;
+    popover.setAttribute('role', 'dialog');
+    popover.setAttribute('aria-label', '账户用量明细');
+    makeElement('strong', 'usage-popover-title', popover, '账户用量');
+    const rows = makeElement('div', 'usage-popover-rows', popover);
+    const footer = makeElement('div', 'usage-popover-footer', popover);
+    const age = makeElement('span', 'usage-age', footer);
+    age.title = '取三家已知观测中最旧的时间；未获取的提供商另标未刷新';
+    const actions = makeElement('div', 'usage-popover-actions', footer);
+    // Created once; the memo markup also retains the existing global-entry contract.
+    actions.innerHTML = '<button type="button" class="usage-refresh" data-action="refresh-usage">刷新</button>'
+      + '<button type="button" class="btn-memo-toggle" data-action="open-memo">备忘录</button>'
+      + '<button type="button" class="usage-home">主页看全貌</button>';
+    const refresh = actions.querySelector('.usage-refresh');
+    const memo = actions.querySelector('.btn-memo-toggle');
+    const home = actions.querySelector('.usage-home');
+    const notice = makeElement('div', 'usage-refresh-notice', popover);
+    notice.setAttribute('role', 'status');
+    ui = { root, button, ring, value, popover, rows, age, refresh, memo, home, notice };
+    const enter = () => { cancelHoverClose(); setPopoverOpen(true); };
+    const leave = () => {
+      cancelHoverClose();
+      if (!popoverPinned) hoverTimer = setTimeoutFn(() => {
+        hoverTimer = null;
+        if (!root.matches(':hover') && !popover.contains(document.activeElement)) setPopoverOpen(false);
+      }, 180);
+    };
+    button.addEventListener('pointerenter', enter);
+    popover.addEventListener('pointerenter', enter);
+    button.addEventListener('pointerleave', leave);
+    popover.addEventListener('pointerleave', leave);
+    button.addEventListener('click', () => {
+      if (popoverPinned) setPopoverOpen(false);
+      else { popoverPinned = true; setPopoverOpen(true); }
+    });
+    root.addEventListener('focusout', event => {
+      if (!root.contains(event.relatedTarget) && !popoverPinned) setPopoverOpen(false);
+    });
+    document.addEventListener('pointerdown', event => {
+      if (!root.contains(event.target)) setPopoverOpen(false);
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !popover.hidden) {
         event.preventDefault();
-        refreshUsageNow().catch(() => {});
+        event.stopPropagation();
+        setPopoverOpen(false, true);
+      }
+    }, true);
+    document.defaultView.addEventListener('resize', positionPopover);
+    // Keep the action nodes stable across usage updates: focus and hover survive.
+    refresh.addEventListener('click', () => {
+      refreshUsageNow().catch(error => {
+        // The command rejects for programmatic callers; the UI displays its failure.
+        notice.textContent = '刷新失败：' + (error?.message || '未知错误');
+        notice.hidden = false;
       });
     });
-
+    home.addEventListener('click', () => {
+      const homeButton = document.getElementById('btn-home');
+      if (!homeButton) {
+        notice.textContent = '主页入口暂不可用';
+        notice.hidden = false;
+        return;
+      }
+      setPopoverOpen(false);
+      homeButton.click();
+      homeButton.focus({ preventScroll: true });
+    });
+    return ui;
   }
-  
+
+  function render() {
+    const ticker = document.getElementById('quota-ticker');
+    if (ticker) ticker.style.display = 'none'; // One-release compatibility node.
+    if (!ensureUi()) return;
+    const snapshot = getSnapshot();
+    const tightest = pickTightestWindow(snapshot);
+    const lastSeen = tightest ? snapshot[tightest.provider]?.lastSeen : 0;
+    const freshness = usageFreshnessClass(lastSeen);
+    const display = tightest ? tightest.window === 'balance' ? '!' : Math.round(tightest.percent) + '%' : '—';
+    const selectedLabel = tightest
+      ? tightest.window === 'balance' ? 'DeepSeek 余额偏低 · ' + formatBalance(snapshot.deepseek)
+        : PROVIDER_NAMES[tightest.provider] + ' ' + tightest.window + ' 用量 ' + tightest.percent + '%'
+      : '用量暂无数据';
+    ui.button.dataset.provider = tightest?.provider || '';
+    ui.button.dataset.window = tightest?.window || '';
+    ui.button.dataset.level = tightest?.level || 'muted';
+    ui.button.dataset.freshness = freshness;
+    ui.button.title = selectedLabel + ' · ' + formatAge(lastSeen) + '（按获选提供商观测时间）';
+    ui.button.setAttribute('aria-label', ui.button.title + '；打开账户用量明细');
+    ui.ring.style.setProperty('--usage-percent', (tightest ? Math.min(100, Math.max(0, tightest.percent)) : 0) + '%');
+    ui.value.textContent = display;
+    if (staleTimer !== null) clearTimeoutFn(staleTimer);
+    staleTimer = null;
+    if (lastSeen && freshness === 'fresh') {
+      staleTimer = setTimeoutFn(() => { staleTimer = null; render(); }, Math.max(1, lastSeen + 120001 - nowFn()));
+    }
+
+    const renderBar = (percent, level) => '<span class="usage-bar-track" aria-hidden="true"><span class="usage-bar-fill ' + level
+      + '" style="width:' + Math.min(100, Math.max(0, percent)) + '%"></span></span>';
+    const renderWindow = (window, usage) => {
+      const pct = validPercent(usage?.pct) ? usage.pct : null;
+      const reset = usage?.resetsAt ? formatResetIn(usage.resetsAt) : '';
+      return '<span class="usage-window ' + (pct === null ? 'muted' : usageLevel(pct)) + '" title="'
+        + escapeHtml(reset ? window + ' 配额重置还有 ' + reset : window + ' 重置时间未知')
+        + '"><i>' + window + '</i><b>' + (pct === null ? '—' : Math.round(pct) + '%') + '</b>'
+        + (reset ? '<em>↻' + escapeHtml(reset) + '</em>' : '') + '</span>';
+    };
+    ui.rows.innerHTML = ['claude', 'codex', 'deepseek'].map(provider => {
+      const data = snapshot[provider] || {};
+      const name = PROVIDER_NAMES[provider] + (data.profileLabel ? '·' + data.profileLabel : '');
+      const providerResult = usageRefreshState.providerResults?.[provider];
+      const tip = name + ' · ' + formatAge(data.lastSeen)
+        + (data.source ? ' · ' + data.source : provider === 'claude' ? ' · statusline' : '')
+        + (data.accountEmail ? ' · ' + data.accountEmail : '')
+        + (providerResult?.error ? ' · 刷新异常：' + providerResult.error : '');
+      let bar, detail;
+      if (provider === 'deepseek') {
+        const balance = balanceValue(data);
+        const low = balance !== null && balance < LOW_BALANCE_THRESHOLD;
+        bar = renderBar(low ? 60 : 0, low ? 'warn' : 'muted');
+        detail = '<span class="usage-window ' + (low ? 'warn' : 'muted') + '"><i>余额</i><b>'
+          + escapeHtml(formatBalance(data)) + '</b></span>';
+        if ((data.balance || data).available === false) detail += '<span class="usage-unavailable">当前不可用</span>';
+      } else {
+        const pick = pickTightestWindow({ [provider]: data });
+        bar = renderBar(pick?.percent || 0, pick?.level || 'muted');
+        detail = renderWindow('5h', data.usage5h) + renderWindow('7d', data.usage7d);
+      }
+      return '<div class="usage-provider-row" data-provider="' + provider + '" title="' + escapeHtml(tip)
+        + '"><span class="usage-provider-name">' + escapeHtml(name) + '</span>' + bar
+        + '<span class="usage-provider-detail">' + detail + '</span>'
+        + (!data.lastSeen ? '<span class="usage-row-age">未刷新</span>' : '') + '</div>';
+    }).join('');
+    const times = ['claude', 'codex', 'deepseek'].map(p => snapshot[p]?.lastSeen).filter(ts => Number.isFinite(ts) && ts > 0);
+    ui.age.textContent = formatAge(times.length ? Math.min(...times) : 0) + (times.length ? '（取三家最旧）' : '');
+    ui.refresh.textContent = usageRefreshState.inFlight ? '刷新中…' : '刷新';
+    // aria-disabled keeps keyboard focus on the same node; refreshUsageNow guards re-entry.
+    ui.refresh.setAttribute('aria-disabled', String(usageRefreshState.inFlight));
+    ui.memo.classList.toggle('active', isMemoOpen());
+    ui.notice.textContent = usageRefreshState.error ? '刷新异常：' + usageRefreshState.error
+      : usageRefreshState.lastManualAt && nowFn() - usageRefreshState.lastManualAt < 60000 ? '刷新请求已完成，数据时间以各提供商观测为准' : '';
+    ui.notice.hidden = !ui.notice.textContent;
+    positionPopover();
+  }
+
   setIntervalFn(render, 60000);
   
   function pctClass(pct) {
@@ -326,4 +464,4 @@ function createAccountUsageController({
   };
 }
 
-module.exports = { createAccountUsageController };
+module.exports = { createAccountUsageController, pickTightestWindow };

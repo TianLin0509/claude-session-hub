@@ -1,0 +1,26 @@
+{
+  "viewport": [
+    1280,
+    900
+  ],
+  "dpr": 1.0000000074505806,
+  "ticker": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "panel": {
+    "x": 332,
+    "y": 54,
+    "width": 936,
+    "height": 846
+  },
+  "terminal": {
+    "x": 332,
+    "y": 54,
+    "width": 936,
+    "height": 710
+  },
+  "display": "none"
+}

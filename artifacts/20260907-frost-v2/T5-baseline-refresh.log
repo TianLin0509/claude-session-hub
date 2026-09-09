@@ -1,0 +1,126 @@
+{
+  "ok": true,
+  "workdir": "C:\\AIWork\\20260909-frost-T5-usage-ring-codex1",
+  "cdpPort": 58829,
+  "dataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-34964-1788966695393",
+  "controlledCodexHome": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-34964-1788966695393\\codex-e2e-home",
+  "controlledRollout": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-34964-1788966695393\\codex-e2e-home\\sessions\\2026\\09\\09\\rollout-stale-e2e.jsonl",
+  "before": [
+    {
+      "provider": "claude",
+      "name": "Claude",
+      "text": "Claude\n5h\n101%\n↻1h\n7d\n14%\n↻6d 0h",
+      "title": "Claude · 数据更新于 5m前 · statusline",
+      "values": [
+        "101%",
+        "14%"
+      ]
+    },
+    {
+      "provider": "codex",
+      "name": "Codex·E2E account",
+      "text": "Codex·E2E account\n5h\n—\n7d\n7%\n↻6d 0h",
+      "title": "Codex · E2E account · 数据更新于 刚刚前 · app-server",
+      "values": [
+        "—",
+        "7%"
+      ]
+    },
+    {
+      "provider": "deepseek",
+      "name": "DeepSeek",
+      "text": "DeepSeek\n—",
+      "title": "DeepSeek 余额未获取 · 数据更新于 未刷新前",
+      "values": [
+        "—"
+      ]
+    }
+  ],
+  "after": {
+    "segments": [
+      {
+        "provider": "claude",
+        "name": "Claude",
+        "text": "Claude\n5h\n101%\n↻1h\n7d\n14%\n↻6d 0h",
+        "title": "Claude · 数据更新于 5m前 · statusline",
+        "values": [
+          "101%",
+          "14%"
+        ]
+      },
+      {
+        "provider": "codex",
+        "name": "Codex·E2E account",
+        "text": "Codex·E2E account\n5h\n—\n7d\n7%\n↻6d 0h",
+        "title": "Codex · E2E account · 数据更新于 刚刚前 · app-server",
+        "values": [
+          "—",
+          "7%"
+        ]
+      },
+      {
+        "provider": "deepseek",
+        "name": "DeepSeek",
+        "text": "DeepSeek\n—",
+        "title": "DeepSeek 余额未获取 · 数据更新于 未刷新前",
+        "values": [
+          "—"
+        ]
+      }
+    ],
+    "snapshot": {
+      "claude": {
+        "usage5h": {
+          "pct": 101,
+          "resetsAt": 1788970295409
+        },
+        "usage7d": {
+          "pct": 14,
+          "resetsAt": 1789485095409
+        },
+        "lastSeen": 1788966395409
+      },
+      "codex": {
+        "usage5h": null,
+        "usage7d": {
+          "pct": 7,
+          "resetsAt": 1789485095000,
+          "label": "7d"
+        },
+        "limitId": "codex",
+        "observedAt": 1788966698565,
+        "source": "app-server",
+        "_ts": 1788966698565,
+        "provider": "codex",
+        "backend": "subscription",
+        "profileId": "default",
+        "profileLabel": "E2E account",
+        "accountId": "",
+        "accountEmail": "",
+        "accountName": "",
+        "authSinceMs": 0,
+        "sessionsRoot": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-usage-e2e-34964-1788966695393\\codex-e2e-home\\sessions",
+        "scopeKey": "subscription:default:c:\\users\\lintian\\appdata\\local\\temp\\claude-session-hub-usage-e2e-34964-1788966695393\\codex-e2e-home\\sessions",
+        "lastSeen": 1788966698565
+      },
+      "gemini": null,
+      "kimi": null,
+      "deepseek": null,
+      "refresh": {
+        "inFlight": false,
+        "error": null,
+        "lastManualAt": 1788966698708
+      }
+    }
+  },
+  "screenshot": "C:\\AIWork\\20260909-frost-T5-usage-ring-codex1\\output\\playwright\\usage-refresh\\usage-refresh-e2e.png",
+  "hubLogTail": [
+    "(node:47964) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+    "(Use `electron --trace-warnings ...` to show where the warning was created)",
+    "DevTools listening on ws://127.0.0.1:58829/devtools/browser/eadd41c3-1d03-423f-abfb-68581a306567",
+    "[群聊] hook server bind failed on :3456 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3456",
+    "[群聊] hook server bind failed on :3457 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3457",
+    "[群聊] hook server listening on 127.0.0.1:3458",
+    "[hub-control] control file written: pid=47964 hookPort=3458 cdpPort=58829"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "baseline": "96b751d1c02181635bb64e5b5cff61707b8d29d1",
+  "branch": "feat/frost-usage-ring-20260909-codex1",
+  "normalizedSourceSha256": {
+    "renderer/account-usage-controller.js": "fddf67b201f4c4772d16d561962c250146db44728735815a025c3f8d78e039b5",
+    "renderer/index.html": "55b58a06909e08d03c294c54d6b3eaa038dbad5c6825734420309f2950a3c122",
+    "renderer/styles/rail.css": "453a08f0977759e3d1a720793e8b6d25cd493048a51d3784ef95bab872646162",
+    "renderer/styles/account-config-preview.css": "e120364a15064e748904bcadbe0d7dab05c90e81ecfb08a2878097e80b0e8fc9",
+    "tests/unit-account-usage-controller-contract.test.js": "69c6ed272ae3ceb994f5dcdb9a75f63e682da63fb5a24165e015833bb700da99",
+    "tests/e2e-usage-refresh-cdp.js": "60166eb6d7db07c9b620f3b05b630039a402cc06a8243aea3a60adf4e426e829"
+  },
+  "unitFiles": 403,
+  "e2eScenarios": 5,
+  "themes": 6,
+  "geometry": {
+    "before": {
+      "viewport": [
+        1280,
+        900
+      ],
+      "dpr": 1.0000000074505806,
+      "ticker": {
+        "x": 0,
+        "y": 44,
+        "width": 1280,
+        "height": 30
+      },
+      "panel": {
+        "x": 332,
+        "y": 84,
+        "width": 936,
+        "height": 816
+      },
+      "terminal": {
+        "x": 332,
+        "y": 84,
+        "width": 936,
+        "height": 680
+      },
+      "display": "flex"
+    },
+    "after": {
+      "viewport": [
+        1280,
+        900
+      ],
+      "dpr": 1.0000000074505806,
+      "ticker": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "panel": {
+        "x": 332,
+        "y": 54,
+        "width": 936,
+        "height": 846
+      },
+      "terminal": {
+        "x": 332,
+        "y": 54,
+        "width": 936,
+        "height": 710
+      },
+      "display": "none"
+    }
+  }
+}
