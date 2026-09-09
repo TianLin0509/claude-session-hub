@@ -104,6 +104,8 @@ function normalizeScopeFilter(value) {
 
 function sinceTimestamp(timeRange, now = Date.now()) {
   const day = 24 * 60 * 60 * 1000;
+  if (timeRange === '24h') return now - day;
+  if (timeRange === '3d') return now - 3 * day;
   if (timeRange === '7d') return now - 7 * day;
   if (timeRange === '30d') return now - 30 * day;
   if (timeRange === '365d') return now - 365 * day;

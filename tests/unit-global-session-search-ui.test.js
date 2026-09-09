@@ -14,6 +14,45 @@ const {
 const ROOT = path.resolve(__dirname, '..');
 const SEARCH_SOURCE = fs.readFileSync(path.join(ROOT, 'renderer', 'global-session-search.js'), 'utf8');
 
+test('project library loads preserve the current selection and reject stale responses',async()=>{
+  const vm=require('node:vm');
+  const {projectPathKey}=require('../core/session-search-projects');
+  function fixture() {
+    const pending=[],events=[];
+    const select={value:'C:/A',replaceChildren(...items){this.options=items;},setAttribute(){},removeAttribute(){}};
+    const context=vm.createContext({projectSelect:select,projectRail:null,projectLibrary:[{name:'A',path:'C:/A'},{name:'B',path:'C:/B'}],
+      projectLoadSequence:0,projectLoadError:'',projectPathKey,projectNote:{textContent:'',hidden:true},document:{createElement:()=>({})},
+      ipcRenderer:{invoke:()=>new Promise((resolve,reject)=>pending.push({resolve,reject}))},isOpen:()=>true,
+      scheduleSearch:()=>events.push('search'),announce:()=>{}});
+    const start=SEARCH_SOURCE.indexOf('  function renderProjectLibrary()'),end=SEARCH_SOURCE.indexOf('  function resultScopeLabel(',start);
+    vm.runInContext(SEARCH_SOURCE.slice(start,end),context);
+    return {context,pending,events,select};
+  }
+  const changed=fixture(),changing=changed.context.loadProjectLibrary();
+  changed.select.value='C:/B';changed.pending[0].resolve({items:[{name:'B',path:'C:/B'}]});await changing;
+  assert.equal(changed.select.value,'C:/B');assert.equal(changed.context.projectNote.hidden,true);
+
+  const stale=fixture(),loading=stale.context.loadProjectLibrary();
+  stale.pending[0].resolve({items:[{name:'B',path:'C:/B'}]});await loading;
+  assert.equal(stale.select.value,'C:/A','removed selection must not silently become all');
+  assert.match(stale.context.projectNote.textContent,/移出/);
+  stale.select.value='C:/B';stale.context.renderProjectLibrary();assert.equal(stale.context.projectNote.hidden,true);
+
+  const racing=fixture(),first=racing.context.loadProjectLibrary(),second=racing.context.loadProjectLibrary();
+  racing.pending[1].resolve({items:[{name:'new',path:'C:/A'}]});await second;
+  racing.pending[0].resolve({items:[{name:'old',path:'C:/A'}]});await first;
+  assert.equal(racing.context.projectLibrary[0].name,'new');assert.equal(racing.events.length,1);
+
+  const failed=fixture(),failure=failed.context.loadProjectLibrary();
+  failed.pending[0].reject(new Error('offline'));await failure;
+  assert.equal(failed.select.value,'C:/A');assert.equal(failed.context.projectLibrary.length,2);
+  assert.match(failed.context.projectNote.textContent,/读取失败/);
+
+  const closed=fixture(),late=closed.context.loadProjectLibrary();closed.context.projectLoadSequence++;
+  closed.pending[0].resolve({items:[]});await late;
+  assert.equal(closed.context.projectLibrary.length,2);assert.equal(closed.events.length,0);
+});
+
 test('an indexed result upgrades a selected provisional title preview',()=>{
   const vm=require('node:vm');let loads=0;
   const old={sessionKey:'s',titleOnly:true,bestMatch:{eventId:null}},updated={...old,indexed:true,bestMatch:{eventId:'answer'}};

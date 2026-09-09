@@ -449,7 +449,7 @@ function listMeetingDescriptors(meetingDir, maps, diagnostics = []) {
       type: 'meeting', key: `meeting:${meetingId}`, filePath, meetingId, meeting,
       fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
     };
-    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(meeting)}:${memberSignature}` + PROJECTION_SUFFIX;
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(meeting)}:${memberSignature}:workspace-v1` + PROJECTION_SUFFIX;
     out.push(descriptor);
   }
   return out;
@@ -941,6 +941,10 @@ function parseMeetingDescriptor(descriptor, maps, options = {}) {
   if (fs.statSync(descriptor.filePath).size > maxReadBytes) throw new Error('source_read_limit');
   const raw = JSON.parse(fs.readFileSync(descriptor.filePath, 'utf8'));
   const meta = { ...raw, ...(descriptor.meeting || {}) };
+  // Older Hub restoration omitted workspace, then overlaid null onto an intact
+  // meeting file. Retain the recorded project when live metadata has none.
+  if (!meta.workspace && raw.workspace) meta.workspace = raw.workspace;
+  if (!meta.workspaceLabel && raw.workspaceLabel && normalizePath(meta.workspace) === normalizePath(raw.workspace)) meta.workspaceLabel = raw.workspaceLabel;
   const timeline = Array.isArray(raw._timeline) ? raw._timeline : [];
   const title = String(meta.title || '未命名群聊');
   const speakers = meetingSpeakerMap(meta, maps);

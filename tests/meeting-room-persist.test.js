@@ -50,7 +50,10 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
 
   // T2.2: loadTimelineLazy populates in-memory
   const mgr2 = new MeetingRoomManager();
-  mgr2.restoreMeeting({ id: m.id, title: 'recover', subSessions: ['sid-A'], layout: 'focus', lastCompletedAt: 2000 });
+  mgr2.restoreMeeting({ id: m.id, title: 'recover', subSessions: ['sid-A'], layout: 'focus', lastCompletedAt: 2000,
+    workspace: TEMP, workspaceLabel: '正式项目' });
+  assert.strictEqual(mgr2.getMeeting(m.id).workspace, TEMP, 'restoration preserves project membership');
+  assert.strictEqual(mgr2.getSearchMetadata()[0].workspaceLabel, '正式项目', 'search uses the restored project');
   assert.strictEqual(mgr2.getMeeting(m.id).lastCompletedAt, 2000, 'restore keeps latest reply time');
   const before = mgr2.getTimeline(m.id);
   assert.strictEqual(before.length, 0, 'restoreMeeting starts empty');
