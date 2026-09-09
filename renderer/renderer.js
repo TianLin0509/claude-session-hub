@@ -3479,6 +3479,25 @@ function measureFloatingBarVisualHeight(bar) {
 //   用户上一次的体验就是"以为发出去了，几十秒后才发现 AI 根本没动"。
 //   这里不自动重发：能否安全重发取决于原文还在不在 CLI 输入框里，
 //   那个判断在主进程的 resendCurrentPrompt 里做（含指纹比对），点按钮才触发。
+const { beginPromptDelivery, applyPromptReceipt } = require('./prompt-delivery-state.js');
+const floatingPromptDeliveries = new Map();
+
+function updateFloatingPromptReceipt(receipt) {
+  if (!receipt?.sessionId) return;
+  const state = floatingPromptDeliveries.get(receipt.sessionId);
+  if (!applyPromptReceipt(state, receipt)) return;
+  for (const bar of document.querySelectorAll('.floating-input-bar')) {
+    if (bar.dataset.sessionId !== receipt.sessionId) continue;
+    if (state.status === 'confirmed') clearFloatingInputStuck(bar);
+    else if (!state.dismissed) {
+      if (state.status === 'content-mismatch') clearFloatingInputStuck(bar);
+      markFloatingInputStuck(bar, receipt.sessionId);
+    }
+  }
+}
+
+ipcRenderer.on('session:prompt-receipt', (_event, receipt) => updateFloatingPromptReceipt(receipt));
+
 function clearFloatingInputStuck(bar) {
   if (!bar) return;
   const existing = bar.querySelector('.fi-stuck');
@@ -3487,31 +3506,49 @@ function clearFloatingInputStuck(bar) {
 
 function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
+  const delivery = floatingPromptDeliveries.get(sessionId);
+  if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
   row.className = 'fi-stuck';
 
   const label = document.createElement('span');
   label.className = 'fi-stuck-label';
-  label.textContent = '⚠ 消息可能没提交，还停在 CLI 输入框';
+  label.textContent = delivery?.status === 'content-mismatch'
+    ? '⚠ 检测到正文相同但换行或空白不同的提交，请核对终端；已停止补发'
+    : delivery?.status === 'failed'
+    ? '⚠ 消息发送失败，请检查终端后重试'
+    : '⚠ 暂未确认消息提交，请查看终端；收到确认后此提示会自动消失';
 
   const resendBtn = document.createElement('button');
   resendBtn.type = 'button';
   resendBtn.className = 'fi-stuck-resend';
   resendBtn.textContent = '补发';
-  resendBtn.title = '重新提交上一条消息（原文还在输入框时只补回车，否则整条重写）';
+  if (delivery?.status === 'content-mismatch') {
+    resendBtn.disabled = true;
+    resendBtn.textContent = '需核对';
+  }
+  resendBtn.title = '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
   resendBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
     resendBtn.disabled = true;
     resendBtn.textContent = '补发中…';
     try {
-      const result = await ipcRenderer.invoke('session:resend-prompt', { sessionId });
+      const result = await ipcRenderer.invoke('session:resend-prompt', {
+        sessionId, clientSubmissionId: delivery?.clientSubmissionId,
+      });
+      // A newer send owns the current bar; an old retry must not touch it.
+      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+      if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (result && result.ok) {
         clearFloatingInputStuck(bar);
         return;
       }
-      label.textContent = `⚠ 补发未确认（${(result && (result.reason || result.error)) || 'unknown'}），可在终端里手按回车`;
+      label.textContent = /^input-state-/.test(result?.reason || '')
+        ? '⚠ 无法确认原文仍在输入框，请查看终端后手动提交'
+        : '⚠ 补发尚未确认，请查看终端；收到确认后此提示会自动消失';
     } catch (err) {
+      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
       label.textContent = `⚠ 补发失败：${err && err.message}`;
     }
     resendBtn.disabled = false;
@@ -3525,6 +3562,7 @@ function markFloatingInputStuck(bar, sessionId) {
   dismissBtn.title = '关掉这条提示（不影响会话）';
   dismissBtn.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (delivery) delivery.dismissed = true;
     clearFloatingInputStuck(bar);
   });
 
@@ -3710,6 +3748,7 @@ function composerSupportedEfforts(session) {
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
+  bar.dataset.sessionId = sessionId;
 
   // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
   // 输入框其余行为一字不变 —— 历史是增强，不该成为新的单点故障。
@@ -4139,13 +4178,23 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
     //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
     clearFloatingInputStuck(bar);
-    ipcRenderer.invoke('session:send-prompt', { sessionId, text }).then((result) => {
+    const clientSubmissionId = require('node:crypto').randomUUID();
+    const delivery = beginPromptDelivery(clientSubmissionId);
+    floatingPromptDeliveries.set(sessionId, delivery);
+    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
+      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+      if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
+      if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
+      updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
+      if (floatingPromptDeliveries.get(sessionId) !== delivery
+          || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
+      updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
     });
   }
@@ -4245,6 +4294,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   bar.addEventListener('click', (e) => e.stopPropagation());
   bar.addEventListener('mousedown', (e) => e.stopPropagation());
+
+  const restoredDelivery = floatingPromptDeliveries.get(sessionId);
+  if (restoredDelivery && ['unconfirmed', 'failed', 'content-mismatch'].includes(restoredDelivery.status)) {
+    markFloatingInputStuck(bar, sessionId);
+  }
 
   return {
     dispose() {
@@ -7470,6 +7524,7 @@ function markSessionProcessLost(sessionId, exitInfo) {
 }
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
+  floatingPromptDeliveries.delete(sessionId);
   const closing = sessions.get(sessionId);
   // 只管普通会话：群聊成员会话的生命周期由会议室自己管，把它们一并留下
   // 会改变群聊的行为，而那是本卡完全无关的地盘。

@@ -256,15 +256,17 @@ function looksAlreadyRunning(probeState) {
 async function waitForAgentWorkStart(observer, sessionManager, sid, kind, timeoutMs, probeState, livePtyObserver) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
   while (Date.now() < deadline) {
-    if (observer && observer.started) return observer.acknowledgement;
+    if (observer && (observer.started || observer.resolved)) return observer.acknowledgement;
     const pty = (livePtyObserver && await livePtyObserver.probe(probeState))
       || probeStrongPtyWorkStart(sessionManager, sid, kind, probeState);
-    if (pty) return pty;
+    if (pty && !observer?.clientSubmissionId) return pty;
     await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
   }
-  if (observer && observer.started) return observer.acknowledgement;
-  return (livePtyObserver && await livePtyObserver.probe(probeState))
+  if (observer && (observer.started || observer.resolved)) return observer.acknowledgement;
+  const pty = (livePtyObserver && await livePtyObserver.probe(probeState))
     || probeStrongPtyWorkStart(sessionManager, sid, kind, probeState);
+  if (observer && (observer.started || observer.resolved)) return observer.acknowledgement;
+  return observer?.clientSubmissionId ? null : pty;
 }
 
 async function clearCodexInputLine(sessionManager, sid, kind) {
@@ -327,6 +329,10 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
   const { sessionManager } = _deps;
+  const alreadySubmitted = () => ({ ok: options.submissionReceipt?.status !== 'content-mismatch',
+    sendStatus: options.submissionReceipt?.status === 'content-mismatch' ? 'content-mismatch' : 'ok', enterAttempts: 0,
+    acknowledgementSource: options.submissionReceipt?.acknowledgement?.source || 'prompt-submitted' });
+  if (options.submissionReceipt?.resolved) return alreadySubmitted();
   const requireReady = options.requireReady !== false;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
@@ -372,10 +378,11 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     // Capture the provider lifecycle cursor before typing.  Claude
     // UserPromptSubmit and Codex task_started are the same authoritative
     // "agent really began work" signal that drives ordinary-session status.
-    const turnStart = observeAgentTurnStart(sessionManager, sid, kind);
+    const turnStart = options.submissionReceipt || observeAgentTurnStart(sessionManager, sid, kind);
     const livePtyObserver = createLivePtyRuntimeObserver(sessionManager, sid, kind);
     try {
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
+    if (options.submissionReceipt?.resolved) return alreadySubmitted();
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
     // 分块投喂（2026-09-03）：单次 write 几十 KB 会把 node-pty 的 inSocket 队列灌满，
@@ -401,6 +408,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         maxMs: Number(_deps && _deps.bracketedPasteSettleMaxMs) || undefined,
       });
     await waitForPasteSettled({ sessionManager, sid, settleMs: pasteSettleMs, baselineMarker });
+    if (options.submissionReceipt?.resolved) return alreadySubmitted();
     // One Enter first.  Extra Enters are conditional on the absence of a
     // semantic work-start acknowledgement, rather than being fired blindly.
     // This mirrors the normal-session runtime truth and avoids accidental
@@ -454,6 +462,10 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       //   循环结束后用它把"确认迟到"和"真的卡住"分开。
       let observedRunningWithClearInput = false;
       for (let attempt = 0; !acknowledgement && attempt < retryMax;) {
+        if (turnStart.started || turnStart.resolved) {
+          acknowledgement = turnStart.acknowledgement;
+          break;
+        }
         const pasteStillPending = pasteStillInInputBox(probeState);
         if (!pasteStillPending && looksAlreadyRunning(probeState)) {
           observedRunningWithClearInput = true;
@@ -481,7 +493,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       //   照报不误的话，用户会在一次完全正常的发送上看到「⚠ 消息可能没提交」。
       //   注意这只在**从未按过补发回车**的路径上成立；真正卡住的那条路输入框里有折叠标记，
       //   走的是上面补回车的分支，拿不到确认仍然如实报 stuck。
-      if (!acknowledgement && observedRunningWithClearInput) {
+      if (!acknowledgement && observedRunningWithClearInput && !options.submissionReceipt) {
         console.warn(`[group-chat] ${kind} prompt has no lifecycle acknowledgement for ${sid.slice(0, 8)}, but the screen ran with a clear input box; treating it as submitted`);
         acknowledgement = { source: 'pty-running-input-clear', observedAt: Date.now(), turnId: null };
       }
@@ -498,8 +510,9 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       await new Promise(r => setTimeout(r, 1500));
       if (sessionManager.getGroupChatLastActivity(sid) === beforeWrite) sendStatus = 'stuck';
     }
+    if (options.submissionReceipt?.status === 'content-mismatch') sendStatus = 'content-mismatch';
     return {
-      ok: true,
+      ok: sendStatus !== 'content-mismatch',
       sendStatus,
       acknowledgementSource: acknowledgement && acknowledgement.source || null,
       acknowledgementObservedAt: acknowledgement && acknowledgement.observedAt || null,
@@ -714,10 +727,43 @@ function inspectPromptSubmissionState({ sid, kind, promptHeader }) {
   return { state: 'unknown', evidence: runtime.reason || 'ambiguous_screen' };
 }
 
-async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true }) {
+async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true, submissionReceipt }) {
   const { sessionManager } = _deps;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };
+  if (submissionReceipt) {
+    if (submissionReceipt.status === 'content-mismatch') return { ok: false, mode: 'none', reason: 'content-mismatch' };
+    if (submissionReceipt.started) return { ok: true, mode: 'already-submitted' };
+    const live = createLivePtyRuntimeObserver(sessionManager, sid, kind);
+    const probe = { baselineLength: 0, liveCandidate: null, ringCandidate: null };
+    try {
+      if (!live) return { ok: false, mode: 'none', reason: 'input-state-unavailable' };
+      await live.probe(probe);
+      if (submissionReceipt.status === 'content-mismatch') return { ok: false, mode: 'none', reason: 'content-mismatch' };
+      if (submissionReceipt.started) return { ok: true, mode: 'already-submitted' };
+      const lines = probe.lastLiveLines || [];
+      const inputAt = lines.findLastIndex(line => /^\s*[›❯>]\s*/.test(line));
+      const inputText = inputAt >= 0 ? lines[inputAt].replace(/^\s*[›❯>]\s*/, '').trim() : '';
+      const tailIsChrome = lines.slice(inputAt + 1).every(line => !line.trim()
+        || /^[\s─━╭╰╯╮│┌└┘┐┤├]+$/.test(line)
+        || /(?:Context \d+%|shift\+tab|\? for shortcuts)/i.test(line));
+      const promptLine = inputAt >= 0 && !/[\r\n]/.test(prompt)
+        && inputText === prompt.trim() && tailIsChrome;
+      // Rewriting an uncertain input can duplicate a submitted message or
+      // append another copy in Claude. Only recover a visible pending input.
+      // A collapsed marker hides the text; matching its size alone cannot
+      // distinguish another draft. Leave ambiguous/multiline input to the user.
+      if (!promptLine) {
+        return { ok: false, mode: 'none', reason: 'input-state-unconfirmed' };
+      }
+      sessionManager.writeToSession(sid, '\r');
+      const ackMs = Math.max(20, Number(_deps.agentTurnStartRecoveryMs) || 6000);
+      await waitForAgentWorkStart(submissionReceipt, sessionManager, sid, kind, ackMs, probe, live);
+      return { ok: submissionReceipt.started, mode: 'enter_only',
+        ...(submissionReceipt.started ? {} : { reason: submissionReceipt.status === 'content-mismatch'
+          ? 'content-mismatch' : 'unconfirmed' }) };
+    } finally { live?.dispose(); }
+  }
   const buf = sessionManager.getSessionBuffer(sid) || '';
   // 仅取最近 ~1024 字符（约一屏 PTY 输出，覆盖 CLI 输入框；
   //   太大会包含上一轮 Claude 回答里复述的 promptHeader → 误判 enter_only 发空 \r）
