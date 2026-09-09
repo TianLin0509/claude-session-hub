@@ -2381,6 +2381,7 @@ class SessionManager extends EventEmitter {
       seq: s.agentTurnStartSeq,
       observedAt,
       signalSource: s.agentTurnStartSource,
+      ...(typeof event.prompt === 'string' ? { prompt: event.prompt } : {}),
       turnId: event.turnId || null,
     };
     this.emit('agent-turn-started', payload);

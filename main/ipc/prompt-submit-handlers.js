@@ -17,8 +17,9 @@
 // 非 paste-sensitive 的会话（powershell 等宿主 shell）保持原来的 text + '\r' 直写：
 //   它们没有 paste-detect，走 sendToPty 只会白白吃掉几秒等待。
 
-const { isPasteSensitive } = require('../../core/ai-kinds.js');
+const { isPasteSensitive, isClaudeFamily, isCodexCliKind } = require('../../core/ai-kinds.js');
 const groupChatWatcher = require('../../core/group-chat-watcher.js');
+const { PromptSubmissionReceipts } = require('../../core/prompt-submission-receipts.js');
 
 // 每个会话串行化。用户连按两下回车时两次 sendToPty 会并发写同一个 PTY，
 //   分块投喂下两条 payload 会交错成一团乱码 —— 这是分块引入的新风险，入口挡掉。
@@ -42,23 +43,47 @@ function firstLine(text) {
   return line ? line.slice(0, 160) : '';
 }
 
+function supportsMessageReceipt(kind, text) {
+  // Native slash commands need not create a user-message record (e.g. /goal
+  // writes a goal update). Keep their existing CLI submission contract.
+  return (isClaudeFamily(kind) || isCodexCliKind(kind)) && !String(text).trimStart().startsWith('/');
+}
+
 function registerPromptSubmitIpc(ipcMain, deps) {
   const {
     sessionManager,
+    transcriptTap,
+    sendToRenderer = () => {},
     logger = console,
   } = deps;
 
   // 「补发」按钮要重放原文，所以记住每个会话最后一次提交的 prompt。
   //   每会话只留最后一条，且只在内存里 —— 不做持久化，prompt 可能含敏感内容。
   const lastPromptBySid = new Map();
+  const latestRequestBySid = new Map();
+  const receipts = new PromptSubmissionReceipts(payload => {
+    try { sendToRenderer('session:prompt-receipt', payload); }
+    catch (error) { logger.warn('[prompt-submit] receipt broadcast failed:', error && error.message); }
+  });
+  const onTranscriptPrompt = event => receipts.observe(event);
+  const onClaudePrompt = event => {
+    if (event?.signalSource !== 'claude-user-prompt-submit') return;
+    receipts.observe({ ...event, text: event.prompt });
+  };
+  transcriptTap?.on('prompt-submitted', onTranscriptPrompt);
+  sessionManager.on?.('agent-turn-started', onClaudePrompt);
 
   // sessionManager 没有 close/exit 事件（只 emit output / session-updated /
   //   agent-turn-started / managed-launch），所以不挂监听，改成每次发送时顺手扫一遍：
   //   getSession 返回 null 的就是已经没了的会话。会话数是几十量级，代价可忽略。
   function pruneClosedSessions() {
     for (const sid of lastPromptBySid.keys()) {
-      if (!sessionManager.getSession(sid)) lastPromptBySid.delete(sid);
+      if (!sessionManager.getSession(sid)) {
+        lastPromptBySid.delete(sid);
+        latestRequestBySid.delete(sid);
+      }
     }
+    receipts.prune(sid => !!sessionManager.getSession(sid));
   }
 
   function resolveKind(sessionId) {
@@ -81,12 +106,20 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     }
 
     pruneClosedSessions();
+    const clientSubmissionId = typeof request.clientSubmissionId === 'string'
+      ? request.clientSubmissionId.slice(0, 160) : '';
+    latestRequestBySid.set(sessionId, clientSubmissionId);
     lastPromptBySid.set(sessionId, text);
     return enqueue(sessionId, async () => {
+      const receipt = clientSubmissionId && supportsMessageReceipt(kind, text)
+        ? receipts.begin(sessionId, clientSubmissionId, text) : null;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
-        const result = await groupChatWatcher.sendToPty(sessionId, text, kind, { requireReady: false });
+        const result = await groupChatWatcher.sendToPty(sessionId, text, kind, {
+          requireReady: false, submissionReceipt: receipt,
+        });
+        if (receipt) receipts.finish(receipt, result || { ok: false });
         if (!result || result === false) {
           return { ok: false, error: 'send-failed', kind };
         }
@@ -101,8 +134,10 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           mode: 'closed-loop',
           enterAttempts: result.enterAttempts || null,
           acknowledgementSource: result.acknowledgementSource || null,
+          ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };
       } catch (error) {
+        if (receipt) receipts.finish(receipt, { ok: false });
         logger.warn('[prompt-submit] send threw:', error && error.message);
         return { ok: false, error: 'send-threw', message: error && error.message, kind };
       }
@@ -121,6 +156,21 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     if (!prompt) return { ok: false, error: 'no-prompt' };
     return enqueue(sessionId, async () => {
       try {
+        if (request.clientSubmissionId && supportsMessageReceipt(kind, prompt)) {
+          const receipt = receipts.get(sessionId);
+          if (!receipt || receipt.clientSubmissionId !== request.clientSubmissionId
+              || latestRequestBySid.get(sessionId) !== request.clientSubmissionId) {
+            return { ok: false, error: 'superseded-submission' };
+          }
+          if (receipt.started) return { ok: true, mode: 'already-submitted', receipt: receipts.snapshot(receipt) };
+          const result = await groupChatWatcher.resendCurrentPrompt({
+            sid: sessionId, prompt, kind, promptHeader: firstLine(prompt), submissionReceipt: receipt,
+          });
+          receipts.finish(receipt, result || { ok: false });
+          return { ok: receipt.started, mode: result?.mode || 'closed-loop',
+            reason: receipt.started ? null : (result?.reason || 'unconfirmed'),
+            receipt: receipts.snapshot(receipt), kind };
+        }
         const result = await groupChatWatcher.resendCurrentPrompt({
           sid: sessionId,
           kind,
@@ -136,6 +186,13 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   });
 
   return {
+    dispose() {
+      transcriptTap?.removeListener('prompt-submitted', onTranscriptPrompt);
+      sessionManager.removeListener?.('agent-turn-started', onClaudePrompt);
+      receipts.prune(() => false);
+      lastPromptBySid.clear();
+      latestRequestBySid.clear();
+    },
     _test: { lastPromptBySid, firstLine, enqueue, pruneClosedSessions },
   };
 }
