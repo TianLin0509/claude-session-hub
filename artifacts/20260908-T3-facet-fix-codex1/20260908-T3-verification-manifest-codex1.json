@@ -1,0 +1,34 @@
+{
+  "baseHead": "d76c610aefe0a0eaa845ef42abdabd725e9ffae4",
+  "scope": "Only the full-text facet truncation blocker; two product files and two regression files.",
+  "continuationInstruction": "继续实现直到合并",
+  "requiredAdditionalProductFile": "core/session-search-sqlite-index.js",
+  "verifiedWorktreeSources": {
+    "core/session-search-sqlite-index.js": "14fa385b3b45b622eac20866acadf6168496252e16449e4773d9cbfc84cb9013",
+    "renderer/global-session-search.js": "9fd0d58e3688e6d4f7aa5f6d92ced59a780f9a857540f9c4b5dfbecf7ed6fda8",
+    "tests/unit-session-search-agent-facet.test.js": "346121136eff67af8986663baa26af5e483f8018004bf8135ba2e98fc8cae487",
+    "tests/e2e-session-search-agent-facet-cdp.js": "125e87f5e7a65cbb38afca97a818c67aa45d35566bcb2ae598c81bfe9514e2e6"
+  },
+  "targeted": {
+    "files": 6,
+    "tests": 45,
+    "passed": 45
+  },
+  "fullUnit": {
+    "files": 389,
+    "passed": 389,
+    "jobs": 4,
+    "queuedSeconds": 178.8,
+    "executionSeconds": 146.5
+  },
+  "e2e": {
+    "command": "node tests/e2e-session-search-agent-facet-cdp.js",
+    "fixtureSessions": 202,
+    "globalBodyMatches": 201,
+    "globalShown": 200,
+    "facetMatches": 1,
+    "titleMatches": 0,
+    "shutdownExitCode": 0
+  },
+  "verificationNote": "Tests ran against these edited working-tree sources while HEAD was d76c610. No proposal loader was used."
+}

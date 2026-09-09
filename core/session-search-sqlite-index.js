@@ -738,6 +738,22 @@ class SqliteSessionSearchIndex {
     return map;
   }
 
+  _sessionKeysForFilter(filter) {
+    if (filter == null) return null;
+    if (typeof filter !== 'object' || Array.isArray(filter)) throw new TypeError('Invalid session filter');
+    const ids = value => {
+      if (value == null) return new Set();
+      if (!Array.isArray(value)) throw new TypeError('Session filter IDs must be arrays');
+      return new Set(value.filter(id => typeof id === 'string' && id.length));
+    };
+    const hubIds = ids(filter.hubSessionIds);
+    const meetingIds = ids(filter.meetingIds);
+    // Live catalogue keys differ from persisted source keys. Resolve by stable IDs.
+    return this.db.prepare('SELECT key, hub_session_id, meeting_id FROM sessions').all()
+      .filter(row => hubIds.has(row.hub_session_id) || meetingIds.has(row.meeting_id))
+      .map(row => row.key);
+  }
+
   search(request = {}) {
     const startedAt = Date.now();
     const rawInput = String(request.query || '');
@@ -769,6 +785,7 @@ class SqliteSessionSearchIndex {
     const since = sinceTimestamp(request.timeRange, startedAt);
     const sort = request.sort === 'recent' ? 'recent' : 'relevance';
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number(request.limit) || DEFAULT_LIMIT));
+    const sessionKeys = this._sessionKeysForFilter(request.sessionFilter);
 
     // 2 字中文词是最常见的检索单位，但 trigram 分词器索引不到它，只能顺序扫 docs。
     // 全表扫 325k 行 / 686MB 实测 ~880ms，而其中 87% 的行、205MB 是 tool 输出
@@ -793,7 +810,13 @@ class SqliteSessionSearchIndex {
     for (const { term, index: termIndex } of termOrder) {
       const short = String(term).length < 3;
       if (short && !scopeList) shortTermNarrowed = true;
-      const match = this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
+      // Facets constrain candidates before either document or result limits apply.
+      // An explicit empty filter must stay empty, never fall back to global search.
+      const scopes = short ? shortTermScopes : scopeList;
+      const match = sessionKeys === null
+        ? this._matchedDocsForTerm(term, scopes, since)
+        : (this._matchedDocsForTermInSessions(term, scopes, since, sessionKeys)
+          || { rows: [], truncated: false });
       termMatches[termIndex] = match;
       if (match.rows.length === 0) { emptyTerm = true; break; }
     }

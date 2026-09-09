@@ -4,6 +4,36 @@ const { recordSearch } = require('../core/search-recent.js');
 const { buildTitleIndex, mergeTitleHits, searchTitles } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 const { beijingParts, formatBeijingDateTime } = require('../core/beijing-time.js');
+const { AGENT_SESSION_GROUPS, agentGroupOf, getSidebarSearchEntries } = require('./session-list-renderer.js');
+
+const FACET_STORAGE_KEY = 'hub.search.facets';
+function loadSearchFacets(storage) {
+  try {
+    const value = JSON.parse(storage.getItem(FACET_STORAGE_KEY) || '{}');
+    return { provider: Object.hasOwn(PROVIDER_META, value.provider) ? value.provider : 'all',
+      agent: AGENT_SESSION_GROUPS.some(g => g.key === value.agent) ? value.agent : 'all' };
+  } catch { return { provider: 'all', agent: 'all' }; }
+}
+function filterSearchEntries(entries, { scope = 'all', agent = 'all', providers = [], project = '', timeRange = 'all', now = Date.now() } = {}) {
+  const days = { '7d': 7, '30d': 30, '365d': 365 }[timeRange];
+  return entries.filter(entry => (scope !== 'dormant' || entry.archived === true)
+    && (scope !== 'pinned' || entry.pinned === true)
+    && (agent === 'all' || (entry.agentGroup || agentGroupOf(entry)) === agent)
+    && (!providers.length || providers.includes(entry.provider))
+    && (!project || String(entry.projectLabel || '').toLowerCase().includes(project.toLowerCase()))
+    && (!days || Number(entry.updatedAt) >= now - days * 86400000));
+}
+
+function filterSearchHits(hits, entries) {
+  const hubIds = new Set(entries.filter(e => e.hubSessionId).map(e => e.hubSessionId));
+  const meetingIds = new Set(entries.filter(e => e.meetingId).map(e => e.meetingId));
+  return hits.filter(hit => hubIds.has(hit.hubSessionId) || meetingIds.has(hit.meetingId));
+}
+
+function catalogueHit(entry) {
+  return { ...entry, sessionKey: entry.key, titleOnly: true, matchCount: 1,
+    bestMatch: { eventId: null, scope: 'title', role: 'title', timestamp: entry.updatedAt, text: entry.title } };
+}
 
 const PROVIDER_META = Object.freeze({
   claude: { label: 'Claude', className: 'provider-claude' },
@@ -165,7 +195,9 @@ function createGlobalSessionSearch(options) {
   const progressDetail = document.getElementById('session-search-progress-detail');
   const liveRegion = document.getElementById('session-search-live');
 
-  let activeProvider = 'all';
+  const savedFacets = loadSearchFacets(window.localStorage);
+  let activeProvider = savedFacets.provider;
+  let activeAgent = savedFacets.agent;
   let activeScope = 'all';
   let results = [];
   let activeIndex = -1;
@@ -181,6 +213,44 @@ function createGlobalSessionSearch(options) {
   let lastTitleHits = [];
   let lastStatus = null;
 
+  const agentRoot = document.createElement('div');
+  agentRoot.id = 'session-search-agent-filters';
+  agentRoot.className = 'session-search-agent-filters';
+  agentRoot.setAttribute('role', 'group');
+  agentRoot.setAttribute('aria-label', '按 Agent 筛选');
+  const agentLabel = document.createElement('span');
+  agentLabel.textContent = 'Agent';
+  agentRoot.appendChild(agentLabel);
+  for (const group of [{ key: 'all', label: '全部' }, ...AGENT_SESSION_GROUPS]) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'session-search-chip';
+    button.dataset.agent = group.key; button.textContent = group.label;
+    agentRoot.appendChild(button);
+  }
+  providerRoot.after(agentRoot);
+  for (const [key, label] of [['dormant', '归档'], ['pinned', '置顶管理']]) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.dataset.scope = key; button.textContent = label;
+    button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', 'false');
+    scopeRoot.appendChild(button);
+  }
+  function persistFacets() {
+    try { window.localStorage.setItem(FACET_STORAGE_KEY, JSON.stringify({ provider: activeProvider, agent: activeAgent })); }
+    catch (error) { console.warn('[session-search] facet preferences were not saved:', error); }
+  }
+  function setAgent(agent) {
+    activeAgent = AGENT_SESSION_GROUPS.some(g => g.key === agent) ? agent : 'all';
+    for (const button of agentRoot.querySelectorAll('[data-agent]')) {
+      const selected = button.dataset.agent === activeAgent;
+      button.classList.toggle('active', selected); button.setAttribute('aria-pressed', String(selected));
+    }
+    persistFacets();
+  }
+  function catalogueFilter(request = searchRequest()) {
+    return filterSearchEntries(titleIndex, { scope: activeScope, agent: activeAgent, ...request });
+  }
+  const browsingCatalogue = () => activeScope === 'dormant' || activeScope === 'pinned' || activeAgent !== 'all';
+
   /** 索引正在重建时给一句人话，别让用户对着转圈猜。 */
   function indexBuildingNote() {
     if (!lastStatus || !lastStatus.refreshing) return '';
@@ -191,9 +261,9 @@ function createGlobalSessionSearch(options) {
 
   /** 打开弹窗时重建一次即时标题索引。682 条 / 10KB，实测亚毫秒。 */
   function refreshTitleIndex() {
-    if (typeof getLocalTitles !== 'function') { titleIndex = []; return; }
     try {
-      titleIndex = buildTitleIndex(getLocalTitles() || []);
+      const live = getSidebarSearchEntries(document);
+      titleIndex = buildTitleIndex(live.length ? live : (typeof getLocalTitles === 'function' ? getLocalTitles() : []) || []);
     } catch {
       titleIndex = [];   // 即时层是加分项，坏掉也不能拖垮全文检索
     }
@@ -202,7 +272,7 @@ function createGlobalSessionSearch(options) {
   function localTitleHits(request) {
     if (!titleIndex.length) return [];
     try {
-      return searchTitles(titleIndex, request.query, {
+      return searchTitles(catalogueFilter(request), request.query, {
         limit: request.limit || 50,
         providers: request.providers,
         since: request.since,
@@ -307,7 +377,7 @@ function createGlobalSessionSearch(options) {
     return {
       query: queryInput.value.trim(),
       providers: activeProvider === 'all' ? [] : [activeProvider],
-      scopes: activeScope === 'all' ? [] : [activeScope],
+      scopes: ['all', 'dormant', 'pinned'].includes(activeScope) ? [] : [activeScope],
       timeRange: timeSelect.value || 'all',
       project: projectSelect.value || '',
       sort: sortSelect.value || 'relevance',
@@ -322,10 +392,11 @@ function createGlobalSessionSearch(options) {
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     }
+    persistFacets();
   }
 
   function setScope(scope) {
-    activeScope = scope || 'all';
+    activeScope = ['all', 'title', 'user', 'assistant', 'tool', 'dormant', 'pinned'].includes(scope) ? scope : 'all';
     for (const button of scopeRoot.querySelectorAll('[data-scope]')) {
       const active = button.dataset.scope === activeScope;
       button.classList.toggle('active', active);
@@ -517,6 +588,16 @@ function createGlobalSessionSearch(options) {
     if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
     const request = searchRequest();
     const trimmed = request.query.normalize('NFKC').trim();
+    if (browsingCatalogue()) refreshTitleIndex();
+    if (!trimmed.length && browsingCatalogue()) {
+      lastTitleHits = [];
+      const entries = catalogueFilter(request).sort((a, b) => b.updatedAt - a.updatedAt);
+      const providers = {};
+      for (const entry of entries) providers[entry.provider] = (providers[entry.provider] || 0) + 1;
+      renderResults({ results: entries.map(catalogueHit), totalSessions: entries.length, totalMatches: entries.length,
+        limit: Math.max(50, entries.length), facets: { providers } });
+      return;
+    }
     if (!trimmed.length) {
       lastTitleHits = [];
       renderInitialState();
@@ -534,7 +615,14 @@ function createGlobalSessionSearch(options) {
     }
     const seq = ++searchSequence;
     try {
-      const response = await ipcRenderer.invoke('search-past-sessions', request);
+      const entries = browsingCatalogue() ? catalogueFilter(request) : null;
+      const sessionFilter = entries && {
+        hubSessionIds: entries.map(entry => entry.hubSessionId).filter(Boolean),
+        meetingIds: entries.map(entry => entry.meetingId).filter(Boolean),
+      };
+      const response = await ipcRenderer.invoke('search-past-sessions', {
+        ...request, ...(sessionFilter ? { sessionFilter } : {}),
+      });
       if (seq !== searchSequence || !isOpen()) return;
       if (response && response.error) throw new Error(response.error);
       renderResults(response || {});
@@ -579,10 +667,22 @@ function createGlobalSessionSearch(options) {
     locate.type = 'button'; locate.className = 'session-search-action primary'; locate.textContent = '定位到命中';
     const open = document.createElement('button');
     open.type = 'button'; open.className = 'session-search-action'; open.textContent = hit.provider === 'meeting' ? '打开群聊' : '打开会话';
+    open.dataset.searchAction = 'open';
     copy.addEventListener('click', () => copyReference(hit, preview, copy));
     locate.addEventListener('click', () => openSelectedHit({ focus: true }));
     open.addEventListener('click', () => openSelectedHit({ focus: false }));
     actions.append(copy, locate, open);
+    if (activeScope === 'pinned' && (hit.hubSessionId || hit.meetingId)) {
+      const manage = document.createElement('button');
+      manage.type = 'button'; manage.className = 'session-search-action'; manage.textContent = '管理置顶';
+      manage.addEventListener('click', event => {
+        close({ restoreFocus: false });
+        document.dispatchEvent(new window.CustomEvent('sidebar:manage-pin', {
+          detail: { id: hit.hubSessionId || hit.meetingId, x: event.clientX, y: event.clientY },
+        }));
+      });
+      actions.appendChild(manage);
+    }
     header.append(heading, actions);
 
     const context = document.createElement('div');
@@ -731,8 +831,16 @@ function createGlobalSessionSearch(options) {
 
   // 2026-08-27：允许带查询词打开——工作台的「常用搜索」点一下要直接搜，
   // 不能只把面板弹出来让人重敲一遍。
-  function open({ query } = {}) {
+  function open({ query, scope } = {}) {
     if (!overlay) return;
+    searchSequence += 1;
+    previewSequence += 1;
+    if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
+    setScope(scope || 'all');
+    if (scope === 'dormant' || scope === 'pinned') {
+      queryInput.value = ''; setProvider('all'); setAgent('all');
+      timeSelect.value = 'all'; projectSelect.value = '';
+    }
     if (typeof query === 'string' && query.trim()) queryInput.value = query.trim();
     returnFocusElement = document.activeElement && typeof document.activeElement.focus === 'function'
       ? document.activeElement
@@ -742,7 +850,7 @@ function createGlobalSessionSearch(options) {
     // 682 条实测亚毫秒，放在同步路径上不影响弹窗打开。
     refreshTitleIndex();
     void refreshStatus({ repeat: true });
-    if (queryInput.value.trim().length >= 1) void performSearch({ immediate: true });
+    if (queryInput.value.trim().length >= 1 || browsingCatalogue()) void performSearch({ immediate: true });
     else renderInitialState();
     window.requestAnimationFrame(() => {
       queryInput.focus();
@@ -787,6 +895,14 @@ function createGlobalSessionSearch(options) {
     setProvider(button.dataset.provider);
     scheduleSearch();
   });
+  agentRoot.addEventListener('click', event => {
+    const button = event.target.closest('[data-agent]');
+    if (!button) return;
+    setAgent(button.dataset.agent); scheduleSearch();
+  });
+  document.addEventListener('sidebar:open-search', event => open(event.detail || {}));
+  setProvider(activeProvider);
+  setAgent(activeAgent);
   scopeRoot.addEventListener('click', (event) => {
     const button = event.target.closest('[data-scope]');
     if (!button) return;
@@ -840,6 +956,7 @@ function createGlobalSessionSearch(options) {
         open: isOpen(),
         query: queryInput.value,
         activeProvider,
+        activeAgent,
         activeScope,
         resultCount: results.length,
         activeIndex,
@@ -854,6 +971,10 @@ function createGlobalSessionSearch(options) {
 }
 
 module.exports = {
+  filterSearchEntries,
+  filterSearchHits,
+  loadSearchFacets,
+  FACET_STORAGE_KEY,
   PROVIDER_META,
   SCOPE_LABELS,
   appendHighlightedText,

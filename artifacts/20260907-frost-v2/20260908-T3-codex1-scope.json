@@ -1,0 +1,11 @@
+{
+  "base": "36119c2fce2df8138f50273fefdd1472ff67ae7e",
+  "productionFiles": [
+    "renderer/global-session-search.js",
+    "renderer/index.html",
+    "renderer/session-list-renderer.js",
+    "renderer/styles/sidebar-v2.css"
+  ],
+  "htmlOutsideSidebarUnchanged": true,
+  "laneAAndVersionUnchanged": true
+}

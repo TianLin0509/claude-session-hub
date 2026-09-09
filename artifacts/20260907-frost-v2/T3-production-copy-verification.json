@@ -1,0 +1,72 @@
+{
+  "mode": "production-copy",
+  "dataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\hub-t3-sidebar-1788883094905-51736\\data",
+  "checks": [
+    "isolated data directory and runtime meeting inventory verified",
+    "700+ catalogue: all three sections and archive fit without vertical scrolling at 1440x1080",
+    "physical archive click opens dormant scope with exact catalogue count"
+  ],
+  "screenshots": [
+    "T3-sidebar-production-copy.png"
+  ],
+  "ok": true,
+  "sourceSha256": "f28f4fbaf4618041a4353cb9ba17436aad301b8dea00f467d3a6b61e0105f0fd",
+  "sourceCounts": {
+    "sessions": 1212,
+    "meetings": 178
+  },
+  "pid": 12892,
+  "port": 50743,
+  "runtimeMeetingCount": 178,
+  "layout": {
+    "sessions": 1212,
+    "catalogue": 803,
+    "rows": 8,
+    "headers": [
+      "置顶",
+      "活跃",
+      "今天"
+    ],
+    "archiveCount": 795,
+    "expectedArchive": 795,
+    "clientHeight": 930,
+    "scrollHeight": 930,
+    "noScroll": true,
+    "archiveVisible": true,
+    "rowHeights": [
+      27
+    ],
+    "oldFilters": false
+  },
+  "archive": {
+    "open": true,
+    "query": "",
+    "activeProvider": "all",
+    "activeAgent": "all",
+    "activeScope": "dormant",
+    "resultCount": 795,
+    "activeIndex": 0,
+    "totalSessions": 795,
+    "totalMatches": 795,
+    "previewTitle": "核查AI桌宠项目版本"
+  },
+  "hubLog": [
+    "[群聊] skip invalid transcript cwd for \"定制化PPT工作流评估\": C:\\Users\\lintian\\ppt-assistant\\oneclick\\runs\\20260613-215147\\candidate-1",
+    "(node:12892) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+    "(Use `electron --trace-warnings ...` to show where the warning was created)",
+    "DevTools listening on ws://127.0.0.1:50743/devtools/browser/5ec6e4bd-de54-42e7-b70a-8f776eeaf2d3",
+    "[群聊] hook server bind failed on :3456 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3456",
+    "[群聊] hook server bind failed on :3457 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3457",
+    "[群聊] hook server bind failed on :3458 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3458",
+    "[群聊] hook server bind failed on :3459 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3459",
+    "[群聊] hook server bind failed on :3460 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3460",
+    "[群聊] hook server bind failed on :3461 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3461",
+    "[群聊] hook server listening on 127.0.0.1:3462",
+    "[hub-control] control file written: pid=12892 hookPort=3462 cdpPort=50743"
+  ],
+  "exit": {
+    "exitCode": 0,
+    "exitSignal": null,
+    "forced": false
+  }
+}

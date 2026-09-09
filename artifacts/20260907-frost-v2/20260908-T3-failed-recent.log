@@ -1,0 +1,32 @@
+{
+  "runId": "1788883367757-49808",
+  "port": 19940,
+  "screenshot": "C:\\AIWork\\20260908-frost-T3-codex1\\output\\playwright\\sidebar-sections\\sidebar-failed-recent-1788883367757-49808.png",
+  "resultPath": "C:\\AIWork\\20260908-frost-T3-codex1\\output\\playwright\\sidebar-sections\\sidebar-failed-recent-1788883367757-49808.json",
+  "sections": {
+    "headers": [
+      "置顶",
+      "活跃",
+      "今天"
+    ],
+    "sectionBySession": {
+      "failed-only-e2e": "活跃",
+      "recent-one-e2e": "今天",
+      "recent-two-e2e": "今天",
+      "recent-three-e2e": "今天"
+    },
+    "runningHeaders": 0,
+    "rect": {
+      "x": 52,
+      "y": 30,
+      "width": 280,
+      "height": 910
+    }
+  },
+  "success": true,
+  "teardown": {
+    "exitCode": 0,
+    "exitSignal": null,
+    "forced": false
+  }
+}

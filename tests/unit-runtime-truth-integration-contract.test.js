@@ -61,5 +61,5 @@ test('sidebar, card header and home workbench consume the shared truth', () => {
 
 test('unknown is retained as an honest state when evidence expires', () => {
   assert.match(renderer, /state: RUNTIME_UNKNOWN,[\s\S]{0,180}observation-expired/);
-  assert.match(sidebar, /runtimeTruth\.state === RUNTIME_UNKNOWN/);
+  assert.match(sidebar, /truth\?\.state === RUNTIME_UNKNOWN/);
 });

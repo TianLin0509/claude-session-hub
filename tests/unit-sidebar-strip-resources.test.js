@@ -59,9 +59,12 @@ const renderer = createSessionListRenderer({
 });
 
 renderer.renderSidebarStrip();
-assert.match(stripEl.innerHTML, /<b>4<\/b> 活跃/);
-assert.match(stripEl.innerHTML, /CPU <b>23%<\/b>/);
-assert.match(stripEl.innerHTML, /· M <b>68%<\/b>/);
+assert.doesNotMatch(stripEl.innerHTML, /活跃|strip-active/);
+assert.equal((stripEl.innerHTML.match(/strip-route-dot/g) || []).length, 2);
+assert.match(stripEl.innerHTML, /title="CPU 23%"/);
+assert.match(stripEl.innerHTML, /width:23%/);
+assert.match(stripEl.innerHTML, /title="内存 68%"/);
+assert.match(stripEl.innerHTML, /width:68%/);
 assert.ok(!stripEl.innerHTML.includes('等你'));
 assert.ok(!stripEl.innerHTML.includes('ctx'));
 assert.ok(!stripEl.innerHTML.includes('%/h'));

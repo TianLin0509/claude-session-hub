@@ -56,7 +56,7 @@ check('renderer 持久化和 dormant 恢复都透传，但 resume 请求不回�
 
 check('侧栏显示 ⚠ 且 tooltip 含记忆告警', () => {
   assert.match(sessionList, /session\.memoryLinkWarning/, '侧栏 helper 必须读这个字段');
-  assert.match(sessionList, /anyWarning \? `<span class="sl-pin"/,
+  assert.match(sessionList, /_warningHtml\(anyWarning\)/,
     '⚠ 图标要同时覆盖 cwd 回落与记忆告警，不能只认 cwd');
 });
 

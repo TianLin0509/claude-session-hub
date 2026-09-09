@@ -1,0 +1,74 @@
+{
+  "dataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\hub-t3-search-facet-JKQHq0\\data",
+  "ok": true,
+  "pid": 12544,
+  "port": 53555,
+  "index": {
+    "phase": "ready",
+    "ready": true,
+    "refreshing": false,
+    "indexedSources": 202,
+    "totalSources": 202,
+    "parsedSources": 202,
+    "reusedSources": 0,
+    "staleSources": 0,
+    "lastRefreshAt": 1788914950979,
+    "lastError": null,
+    "sourceErrors": [],
+    "index": {
+      "sessions": 202,
+      "documents": 404,
+      "terms": 0,
+      "providers": {
+        "claude": 202
+      },
+      "staleSources": 0,
+      "storage": "sqlite-fts5",
+      "recoveredCorruptDatabase": false
+    },
+    "storage": "sqlite-child-process",
+    "cjkAuxReady": true,
+    "cjkAuxCursor": 404,
+    "indexedTextChars": 5945
+  },
+  "globalQuery": {
+    "total": 201,
+    "shown": 200,
+    "targetAbsent": true,
+    "titleHits": 0
+  },
+  "study": {
+    "open": true,
+    "query": "facetbodyneedle",
+    "activeProvider": "all",
+    "activeAgent": "study",
+    "activeScope": "dormant",
+    "resultCount": 1,
+    "activeIndex": 0,
+    "totalSessions": 1,
+    "totalMatches": 1,
+    "previewTitle": "归档学习样本",
+    "snippet": "facetbodyneedle 完整正文命中"
+  },
+  "league": {
+    "open": true,
+    "query": "leaguebodyneedle",
+    "activeProvider": "all",
+    "activeAgent": "league",
+    "activeScope": "dormant",
+    "resultCount": 1,
+    "activeIndex": 0,
+    "totalSessions": 1,
+    "totalMatches": 1,
+    "previewTitle": "归档投研样本"
+  },
+  "persistedFacets": {
+    "provider": "all",
+    "agent": "league"
+  },
+  "shutdown": {
+    "exitCode": 0,
+    "exitSignal": null,
+    "forced": false
+  }
+}

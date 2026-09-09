@@ -133,32 +133,15 @@ test('未知 kind 回落到 .sl-model 文字列', () => {
 });
 
 // ---------------- 用例 5：休眠行不再印"休眠"二字，但 dormant 标记还在 ----------------
-test('休眠会话时间列只显示时间，以月牙替代灰色状态环', () => {
-  const { rows, html } = renderRows(oneSession({
-    id: 'd1', kind: 'codex', status: 'dormant', suspendReason: 'idle-timeout',
-  }));
-  const timeCol = /<span class="sl-time[^"]*">([^<]*)<\/span>/.exec(html);
-  assert.ok(timeCol, '应渲染 .sl-time 列');
-  assert.equal(timeCol[1], '09:30', '时间列只剩时间本身');
-  assert.ok(rows.some(r => String(r.className || '').includes('dormant')), '行仍带 dormant class');
-  assert.ok(/class="sl-moon"/.test(html), '休眠使用月牙标识');
-  assert.ok(!/sl-ring-dot dorm/.test(html), '避免月牙和灰色状态环重复提示');
-  assert.ok(/自动休眠/.test(html) && /点击唤醒/.test(html), 'tooltip 仍解释休眠与唤醒');
+test('休眠会话只贡献归档数，不再绘制休眠行', () => {
+  const { rows, html } = renderRows(oneSession({ id: 'd1', kind: 'codex', status: 'dormant' }));
+  assert.ok(!rows.some(r => r.dataset.sessionId === 'd1'));
+  assert.match(html, /archive-count">1</);
 });
-
-// ---------------- 用例 6：断连仍保留文字前缀（红色 + 文字双保险，未在本次改动范围） ----------------
-test('断连行仍保留"断连 · "前缀', () => {
-  const now = Date.now();
-  const sessions = oneSession({
-    id: 'dc', kind: 'codex', status: 'running',
-    streamDisconnect: { at: now, reason: 'ECONNRESET' },
-  });
-  const { html } = renderRows(sessions);
-  if (/disconnected-time/.test(html)) {
-    assert.ok(/断连 · /.test(html), '断连前缀属于告警语义，本次不动');
-  } else {
-    console.log('    (跳过：mock session 未触发 stream-disconnect 判定)');
-  }
+test('断连使用红色圆点，原因保留在 tooltip', () => {
+  const { html } = renderRows(oneSession({ id: 'dc', kind: 'codex', status: 'idle', connectionIssue: { type: 'stream-disconnected', message: 'ECONNRESET' } }));
+  assert.match(html, /sl-dot error/);
+  assert.match(html, /ECONNRESET/);
 });
 
 // ---------------- 用例 7：运行中的普通会话，行上要带 running 标记（logo 呼吸靠它） ----------------

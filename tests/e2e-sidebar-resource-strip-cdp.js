@@ -49,6 +49,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
       dataDir,
       port,
       label: 'sidebar-resource-strip',
+      windowMode: 'hidden',
       extraEnv: { CLAUDE_HUB_E2E: '1', CLAUDE_HUB_EGRESS_FIXTURE: EGRESS_FIXTURE },
     });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url));
@@ -67,9 +68,8 @@ async function waitFor(client, expression, timeoutMs = 30000) {
 
     await waitFor(client, `(() => {
       const el = document.querySelector('#sidebar-strip');
-      return el?.querySelectorAll('.strip-route-row').length === 2
-        && /2\\s+活跃/.test(el.querySelector('.strip-active')?.innerText || '')
-        && /CPU\\s+\\d+%.*M\\s+\\d+%/.test(el.querySelector('.strip-resource')?.innerText || '');
+      return el?.querySelectorAll('.strip-route-dot').length === 2
+        && [...el.querySelectorAll('.strip-resource')].every(e => /[0-9]+%/.test(e.title));
     })()`);
 
     const beforeClose = await client.eval(`(() => {
@@ -81,13 +81,13 @@ async function waitFor(client, expression, timeoutMs = 30000) {
         display: getComputedStyle(el).display,
       };
     })()`);
-    assert.ok(!/等你|ctx|🔥|%\/h/.test(beforeClose.text), beforeClose.text);
+    assert.ok(!/活跃|等你|ctx|🔥|%\/h/.test(beforeClose.text), beforeClose.text);
     assert.match(beforeClose.foreignTitle, /实测公网 IPv4/);
     assert.match(beforeClose.domesticTitle, /实测公网 IPv4/);
     assert.strictEqual(beforeClose.display, 'flex');
 
-    await client.eval(`require('electron').ipcRenderer.invoke('close-session', ${JSON.stringify(sessionIds.pop())})`);
-    await waitFor(client, `/1\\s+活跃/.test(document.querySelector('#sidebar-strip .strip-active')?.innerText || '')`);
+    // Active count was removed in T3; resource telemetry stays a single line with live PTYs.
+    assert.equal(await client.eval("!!document.querySelector('#sidebar-strip .strip-active')"), false);
 
     const afterClose = await client.eval(`(() => {
       const el = document.querySelector('#sidebar-strip');
@@ -97,6 +97,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
     })()`);
+    assert.ok(afterClose.rect.height <= 32, JSON.stringify(afterClose));
     const shot = await client.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
@@ -121,9 +122,6 @@ async function waitFor(client, expression, timeoutMs = 30000) {
     process.exitCode = 1;
   } finally {
     if (client) {
-      for (const sessionId of sessionIds) {
-        try { await client.eval(`require('electron').ipcRenderer.invoke('close-session', ${JSON.stringify(sessionId)})`); } catch {}
-      }
       try { await client.close(); } catch {}
     }
     if (hub) await gracefulQuit(hub);

@@ -136,10 +136,10 @@ test('idle 只压过过期 watcher，新鲜 watcher 可覆盖 PTY 的短暂空�
 test('侧栏常驻显示国外 VPN 与国产直连的真实出口', () => {
   assert.match(LIST_SRC, /strip-route-foreign/);
   assert.match(LIST_SRC, /strip-route-domestic/);
-  assert.match(LIST_SRC, /strip-route-label\">国外/);
-  assert.match(LIST_SRC, /strip-route-label\">国产/);
-  assert.match(LIST_SRC, /route\.locationLabel/);
-  assert.match(LIST_SRC, /route\.ip/);
+  assert.match(LIST_SRC, /<\/span>国外/);
+  assert.match(LIST_SRC, /<\/span>国产/);
+  assert.match(LIST_SRC, /foreign\.locationLabel/);
+  assert.match(LIST_SRC, /foreign\.ip/);
   assert.match(LIST_SRC, /function _shortProxy/);
   assert.match(RENDERER_SRC, /async function refreshHubProxyInfo/);
   assert.match(RENDERER_SRC, /get-network-egress-status/);

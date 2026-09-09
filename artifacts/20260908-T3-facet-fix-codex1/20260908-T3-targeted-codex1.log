@@ -1,0 +1,64 @@
+✔ highlight rendering keeps transcript HTML inert and marks only matched text (1.2749ms)
+✔ query helpers normalize full-width text and user-facing relative time (0.5273ms)
+✔ index progress model distinguishes determinate, discovery and completed states (0.1578ms)
+✔ search close captures the focus target before clearing shared state (0.223ms)
+✔ renderer contract exposes A-layout filters, local-index status and keyboard entry (1.8099ms)
+(node:38884) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ Agent 定义复用学习与投研，归档和来源与 Agent 取交集 (2.207ms)
+✔ 全文合并排除未知及非归档会话，群聊以 meetingId 精确匹配 (0.5355ms)
+✔ 筛选先于结果上限，学习条目排在 700 条普通记录后仍能找到 (0.4119ms)
+✔ 来源和 Agent 选择可持久化恢复，损坏存储退回全部 (0.401ms)
+✔ 归档浏览仍遵守时间和项目选择 (0.1853ms)
+✔ 真实 SQLite：第 201 条正文命中的归档学习会话仍能通过面板搜索找到 (223.7248ms)
+✔ 会话范围以稳定 ID 匹配群聊，空集合和未知 ID 不扩大搜索 (3.275ms)
+✔ facet 命中超过展示上限时，计数与来源统计基于全部筛选结果 (24.7695ms)
+✔ facet 在正文候选预算之前生效，其他会话不能耗尽目标的查询预算 (40.963ms)
+(node:49364) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 多词 AND：常见词候选被截断时，仍要召回全部同时命中的会话 (230.9329ms)
+✔ 单词查询不受影响，且截断仍如实上报 (186.4241ms)
+✔ 全部词都被截断时不崩，退回旧行为并上报截断 (197.6853ms)
+✔ 已有索引时的增量体检必须全程静默，不得显示「正在建立本地索引」 (68.002ms)
+✔ 真有新内容时仍要显示进度，且分母是待解析数而不是全部来源 (63.2753ms)
+(node:25852) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 分词器：只切 CJK 的一元+二元，拉丁一个都不收 (4.6373ms)
+✔ 辅助索引与顺序扫描结果逐个相同（这是拿速度换正确性的红线） (51.967ms)
+✔ 回填未完成时绝不启用辅助索引（宁可慢也不能漏） (49.3339ms)
+✔ 回填可续跑：分多次调用与一次跑完等价 (91.5477ms)
+✔ 新写入的会话实时进辅助索引，不必等下一轮回填 (38.4929ms)
+✔ 来源被替换后不留孤儿词元（存储卫生，不是正确性） (42.3814ms)
+✔ tool 档不进辅助索引（体积属性：进了就是 7 倍膨胀） (33.4306ms)
+unit-session-search-short-query OK
+(node:45452) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 2 字中文词能搜到（trigram 索引不到，必须有顺序扫描兜底） (48.8774ms)
+✔ 短词默认不扫 tool，并如实告知已收窄；显式选工具页签时照常搜 (43.5133ms)
+✔ scope 下推：标题档不再把整个 session 的正文捞出来再丢掉 (52.3416ms)
+✔ 只加载命中行：海量无关文档不再顶爆 maxQueryDocs 闸门 (47.9608ms)
+✔ 多词 AND 仍然按 session 聚合，且跨文档成立 (34.7165ms)
+✔ getStats 缓存在写入后失效，不会返回过期的 session/doc 计数 (30.7475ms)
+✔ FTS 分支绝不能把 scope 放进 WHERE（放进去实测慢 18000 倍） (30.2722ms)
+✔ FTS 路径 + scope 过滤：JS 侧过滤的结果必须和语义一致 (34.1926ms)
+✔ 时间过滤下推后，超出时间窗的命中不再被算进 matchCount (33.2406ms)
+✔ 单个汉字也要真的去搜（此前是静默不搜，不是没结果） (30.3061ms)
+✔ 渲染层不再拦单字，否则后端放开了也白搭 (0.4468ms)
+✔ 多词查询：任一词零命中就立刻收工，不把剩下的词也扫一遍 (27.593ms)
+✔ 多词都命中时，语义仍然是 AND（惰性求值不能改变结果） (32.4267ms)
+✔ 短词档要能预热，且预热是只读幂等的 (30.7639ms)
+✔ engine 构造与刷新之后都要预热短词档 (1.5252ms)
+(node:50216) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ SQLite trigram index supports CJK, cross-document terms, filters and preview (54.5948ms)
+✔ SQLite index persists sources and prunes stale sessions without in-memory rebuild (67.8644ms)
+✔ a corrupt cache is quarantined and rebuilt instead of permanently breaking search (43.3485ms)
+✔ duplicate transcript event ids keep the first record without discarding the whole source (39.1496ms)
+ℹ tests 45
+ℹ suites 0
+ℹ pass 45
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1115.7149

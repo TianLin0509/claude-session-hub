@@ -35,7 +35,7 @@ assert.match(renderer, /原工作目录已不存在/,
   'interactive dormant wake must show an explicit warning');
 assert.match(sidebar, /session\.cwdFellBackFrom/,
   'sidebar warning helper must still read the original invalid cwd');
-assert.match(sidebar, /anyWarning \? `<span class="sl-pin"/,
+assert.match(sidebar, /_warningHtml\(anyWarning\)/,
   'sidebar must keep a visible warning after the one-time dialog closes');
 assert.match(main, /meetings:\s*Array\.isArray\(bootState\.meetings\)/,
   'boot heal persistence must write a complete snapshot, not an ambiguous partial state');

@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "beforeClose": {
+    "text": "国外 国产 CPU 内存",
+    "foreignTitle": "Claude / Codex 订阅、Gemini：强制经 VPN 代理\n本地代理：127.0.0.1:7890\n实测公网 IPv4：38.246.239.122 (美国·洛杉矶)",
+    "domesticTitle": "Kimi / DeepSeek：清空 HTTP(S)_PROXY 后直连\n实测公网 IPv4：180.158.74.254 (中国·上海)",
+    "display": "flex"
+  },
+  "afterClose": {
+    "text": "国外 国产 CPU 内存",
+    "rect": {
+      "x": 52,
+      "y": 735.3333129882812,
+      "width": 279.1111145019531,
+      "height": 30
+    }
+  },
+  "screenshot": "C:\\AIWork\\20260908-frost-T3-codex1\\output\\playwright\\sidebar-resource-strip-e2e.png",
+  "isolatedDataDir": "C:\\Users\\lintian\\AppData\\Local\\Temp\\claude-session-hub-resource-strip-5936-1788883539356",
+  "isolatedHubPid": 35184,
+  "cdpPort": 50154,
+  "hubLogTail": [
+    "(node:35184) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
+    "(Use `electron --trace-warnings ...` to show where the warning was created)",
+    "DevTools listening on ws://127.0.0.1:50154/devtools/browser/8a033ff6-331e-4775-a28c-062471c28a05",
+    "[群聊] hook server bind failed on :3456 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3456",
+    "[群聊] hook server bind failed on :3457 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3457",
+    "[群聊] hook server bind failed on :3458 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3458",
+    "[群聊] hook server bind failed on :3459 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3459",
+    "[群聊] hook server bind failed on :3460 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3460",
+    "[群聊] hook server bind failed on :3461 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3461",
+    "[群聊] hook server bind failed on :3462 (EADDRINUSE): listen EADDRINUSE: address already in use 127.0.0.1:3462",
+    "[群聊] hook server listening on 127.0.0.1:3463",
+    "[hub-control] control file written: pid=35184 hookPort=3463 cdpPort=50154"
+  ]
+}

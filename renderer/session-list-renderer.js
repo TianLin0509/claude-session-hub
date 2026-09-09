@@ -103,6 +103,54 @@ function sessionFamilies(item, sessionMap) {
   return families;
 }
 
+// Search reads the sidebar's live catalogue, scoped to its document.
+const sidebarSources = new WeakMap();
+function getSidebarSearchEntries(doc) {
+  return sidebarSources.get(doc)?.() || [];
+}
+
+function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null } = {}) {
+  const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
+  const states = new Map();
+  for (const s of [...(items || [])].sort(compareSidebarPlacement)) {
+    const truth = s._isMeeting ? null : getSessionRuntimeTruth(s, { now });
+    const meeting = s._isMeeting ? _meetingRuntimeAggregate(s._meeting, sessionMap, now) : null;
+    const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
+    const selected = s.id === (s._isMeeting ? activeMeetingId : activeSessionId);
+    const fresh = now - latestActivityTime(s, now) < 86400000;
+    const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
+    const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
+    const working = s._resumePending || (meeting ? meeting.running : sessionRuntimeIsActive(s, { now }));
+    const unread = !selected && (!dormant || fresh) && (s._isMeeting ? s.unreadAnsweredSize > 0 : sessionHasCompletedUnread(s));
+    states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
+    if (s.pinned) pinned.push(s);
+    else if (waiting) respond.push(s);
+    else if (error) failed.push(s);
+    else if (working) running.push(s);
+    else if (unread) completed.push(s);
+    else if (dormant) archive.push(s);
+    else if (fresh) today.push(s);
+    else older.push(s);
+  }
+  return { pinned, active: [...respond, ...failed, ...running, ...completed], today, archive, older, archiveCount: archive.length, states };
+}
+
+function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
+  const truths = ((meeting && meeting.subSessions) || [])
+    .map(id => sessionMap.get(id))
+    .filter(Boolean)
+    .map(session => ({ session, truth: getSessionRuntimeTruth(session, { now }) }));
+  return {
+    waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
+    running: meeting && !meeting.groupChat && meeting.status === 'running'
+      || truths.some(item => isGroupChatMemberRunning(item.session, now)),
+    disconnected: truths.some(item => hasStreamDisconnectIssue(item.session)),
+    failed: truths.some(item => item.truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(item.session)),
+    truths,
+  };
+}
+
+
 function createSessionListRenderer(options = {}) {
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
@@ -160,154 +208,6 @@ function toggleMeetingExpand(meetingId) {
   renderSessionList();
 }
 
-// --- 按时间分组折叠状态（24-72h / 72h+ 两组，默认折叠，落盘）---
-//   侧栏过长治理：24h 内保持现状置顶，更久的会话收进可展开的时间组。
-const _expandedTimeGroups = (() => {
-  try { const raw = storage.getItem('hubExpandedTimeGroups'); return new Set(raw ? JSON.parse(raw) : []); }
-  catch { return new Set(); }
-})();
-function _persistExpandedTimeGroups() {
-  try { storage.setItem('hubExpandedTimeGroups', JSON.stringify([..._expandedTimeGroups])); } catch {}
-}
-function toggleTimeGroup(key) {
-  if (_expandedTimeGroups.has(key)) _expandedTimeGroups.delete(key);
-  else _expandedTimeGroups.add(key);
-  _persistExpandedTimeGroups();
-  renderSessionList();
-}
-// 休眠独立于时间组，默认展开；当前会话所在组始终可见。
-let dormantGroupCollapsed = (() => {
-  try { return storage.getItem('hubDormantGroupCollapsed') === 'true'; }
-  catch { return false; }
-})();
-// --- 家族筛选页签（全部 / Claude / Codex / 其他），落盘，重开 Hub 保持上次选择 ---
-const _familyFilter = {
-  key: (() => {
-    try {
-      const raw = storage.getItem('hubSessionFamilyFilter');
-      return SESSION_FAMILY_KEYS.includes(raw) ? raw : 'all';
-    } catch { return 'all'; }
-  })(),
-};
-let _familyTabsBound = false;
-function setFamilyFilter(key) {
-  const next = SESSION_FAMILY_KEYS.includes(key) ? key : 'all';
-  if (next === _familyFilter.key) return;
-  _familyFilter.key = next;
-  try { storage.setItem('hubSessionFamilyFilter', next); } catch {}
-  renderSessionList();
-}
-// 计数在筛选之前算，所以每个页签上的数字始终是该家族的真实总数，而不是当前
-// 视图剩下的条数——否则切走之后就再也看不到别家还有几个会话。
-function renderFamilyTabs(counts) {
-  const tabsEl = doc.getElementById('session-filter-tabs');
-  if (!tabsEl) return;
-  tabsEl.innerHTML = SESSION_FAMILY_TABS.map(tab => {
-    const selected = tab.key === _familyFilter.key;
-    const count = counts[tab.key] || 0;
-    return `<button type="button" class="session-filter-tab${selected ? ' selected' : ''}"`
-      + ` data-family="${tab.key}" role="tab" aria-selected="${selected ? 'true' : 'false'}"`
-      + ` title="${escapeHtml(tab.hint)}">${escapeHtml(tab.label)}`
-      + `<span class="sft-count">${count}</span></button>`;
-  }).join('');
-  if (!_familyTabsBound) {
-    // 委托绑定一次：innerHTML 每次重建按钮，挂在按钮上的监听会随之丢失。
-    _familyTabsBound = true;
-    tabsEl.addEventListener('click', (event) => {
-      const btn = event.target && typeof event.target.closest === 'function'
-        ? event.target.closest('[data-family]') : null;
-      if (btn) setFamilyFilter(btn.dataset.family);
-    });
-  }
-}
-// --- Agent 会话分组开关（多选，落盘）---------------------------------------
-// 与上面的家族页签刻意做成不同的交互：家族是**单选**（我现在只想看 Claude），
-// 这里是**多选**（把哪几类机器会话放出来）。两行紧挨着，所以视觉上也要能一眼
-// 区分——胶囊 + 小方框 + 左侧「AGENT」标签，避免误当成第二排页签去点。
-//
-// 默认全部关闭：不这样就拿不到「简洁」这个收益。为了不让人以为会话丢了，
-// 芯片上的条数常驻显示，关着也能看到「学习 2」。
-const _agentGroupFilter = {
-  on: (() => {
-    try {
-      const raw = JSON.parse(storage.getItem('hubSessionAgentGroups') || '[]');
-      return new Set(Array.isArray(raw) ? raw.filter(k => AGENT_GROUP_KEYS.includes(k)) : []);
-    } catch { return new Set(); }
-  })(),
-};
-let _agentGroupsBound = false;
-function toggleAgentGroup(key) {
-  if (!AGENT_GROUP_KEYS.includes(key)) return;
-  if (_agentGroupFilter.on.has(key)) _agentGroupFilter.on.delete(key);
-  else _agentGroupFilter.on.add(key);
-  try { storage.setItem('hubSessionAgentGroups', JSON.stringify([..._agentGroupFilter.on])); } catch {}
-  renderSessionList();
-}
-function renderAgentGroupRow(counts) {
-  const el = doc.getElementById('session-agent-groups');
-  if (!el) return;
-  const present = AGENT_SESSION_GROUPS.filter(g => (counts[g.key] || 0) > 0);
-  // 一个 Agent 会话都没有时整行不出现——没有可收纳的东西就别占一行。
-  if (!present.length) { el.innerHTML = ''; el.style.display = 'none'; return; }
-  el.style.display = '';
-  el.innerHTML = '<span class="sag-label">AGENT</span>' + present.map(g => {
-    const on = _agentGroupFilter.on.has(g.key);
-    return `<button type="button" class="sag-chip${on ? ' on' : ''}" data-agent-group="${g.key}"`
-      + ` aria-pressed="${on ? 'true' : 'false'}"`
-      + ` title="${on ? '点击收起' : '点击展开'} ${escapeHtml(g.label)} 的 ${counts[g.key]} 个 Agent 会话">`
-      + `<span class="sag-box"></span>${escapeHtml(g.label)}`
-      + `<span class="sag-count">${counts[g.key]}</span></button>`;
-  }).join('');
-  if (!_agentGroupsBound) {
-    _agentGroupsBound = true;
-    el.addEventListener('click', (event) => {
-      const btn = event.target && typeof event.target.closest === 'function'
-        ? event.target.closest('[data-agent-group]') : null;
-      if (btn) toggleAgentGroup(btn.dataset.agentGroup);
-    });
-  }
-}
-function _ensureAgentGroupStyle() {
-  if (doc.getElementById('hub-sag-style')) return;
-  const st = doc.createElement('style');
-  st.id = 'hub-sag-style';
-  st.textContent = [
-    '#session-agent-groups{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 12px 8px;}',
-    '#session-agent-groups .sag-label{font-size:10px;letter-spacing:.08em;color:var(--fg-faint,#484f58);margin-right:2px;}',
-    '.sag-chip{display:inline-flex;align-items:center;gap:5px;font:inherit;font-size:11.5px;cursor:pointer;',
-    '  padding:3px 9px;border-radius:999px;border:1px solid var(--border-mid,#30363d);',
-    '  background:transparent;color:var(--fg-muted,#8b949e);}',
-    '.sag-chip:hover{border-color:var(--brand,#0a84ff);}',
-    '.sag-chip .sag-box{width:10px;height:10px;border-radius:3px;border:1px solid currentColor;flex:0 0 auto;}',
-    '.sag-chip.on{border-color:var(--brand,#0a84ff);color:var(--brand,#0a84ff);}',
-    '.sag-chip.on .sag-box{background:var(--brand,#0a84ff);border-color:var(--brand,#0a84ff);}',
-    '.sag-chip .sag-count{font-size:10px;opacity:.75;}',
-    // Agent 分组的组头：与「运行中」「已完成未读」同一套 session-sec-header，
-    // 只加一条左侧色条把它标成「这是你自己勾出来的分组」，不另造一种视觉语言。
-    // 有成员告警时 sec-respond 会覆盖颜色，这里不跟它抢。
-    '.session-sec-header.sec-agent-group{border-left:2px solid var(--brand,#0a84ff);padding-left:10px;}',
-    '.session-sec-header.sec-agent-group:not(.sec-respond){color:var(--brand,#0a84ff);}',
-  ].join('');
-  doc.head.appendChild(st);
-}
-function _ensureTimeGroupStyle() {
-  if (doc.getElementById('hub-stg-style')) return;
-  const st = doc.createElement('style');
-  st.id = 'hub-stg-style';
-  st.textContent = [
-    '.session-time-group-header{display:flex;align-items:center;gap:6px;padding:8px 12px 5px;margin-top:2px;cursor:pointer;user-select:none;font-size:11.5px;font-weight:600;letter-spacing:.02em;color:#8a8a8e;}',
-    '.session-time-group-header:hover{color:#0a84ff;}',
-    '.session-time-group-header .stg-arrow{display:inline-block;transition:transform .15s;font-size:9px;}',
-    '.session-time-group-header.expanded .stg-arrow{transform:rotate(90deg);}',
-    '.session-time-group-header .stg-label{flex:1;}',
-    '.session-time-group-header .stg-count{background:rgba(128,128,128,.22);border-radius:9px;padding:1px 7px;font-size:10.5px;font-weight:500;}',
-  ].join('\n');
-  (doc.head || doc.documentElement).appendChild(st);
-}
-
-// kind → 基础 logo key。assets/ai-logos 只有 5 家 AI + powershell 六个 svg，
-// 所以 *-resume 和 deepseek-legacy* 必须先归一，否则恢复出来的老会话是空图标。
-//   - 'powershell' 不是 AI kind 但侧边栏需展示 logo，在 ALL_AI_KINDS 之外单独保留。
 function _logoKind(kind) {
   const k = String(kind || '').replace(/-resume$/, '');
   if (k.startsWith('deepseek')) return 'deepseek'; // deepseek-legacy 复用 DS 图标
@@ -334,46 +234,19 @@ function _sessionKindHtml(kind, modelTxt) {
   return `<span class="sl-kind ai-logo logo-${k}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(tip)}"></span>`;
 }
 
-// --- 2026-07-19 道雪 · 方案4(ctx 圆环)：15px SVG，圆环弧=ctx 占用，圆心点=会话状态 ---
-//   ctxPct 为 null（powershell/群聊父项）时只画空轨道 + 状态圆心；精确 % 进 title tooltip。
-const _RING_C = 37.7; // 2πr (r=6)
-function _moonHtml() {
-  return '<svg class="sl-moon" viewBox="0 0 16 16" role="img" aria-label="休眠"' +
-    '><title>休眠中，点击唤醒</title><path d="M13.5 10.2A6 6 0 0 1 5.8 2.5a6 6 0 1 0 7.7 7.7Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+const PIN_SVG = '<svg class="sl-pin" viewBox="0 0 24 24" aria-label="置顶"><path d="m8 3 8 0-1 7 4 4H5l4-4-1-7Zm4 11v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+function _warningHtml(message) {
+  return message ? `<svg class="sl-warning" viewBox="0 0 24 24" role="img" aria-label="${escapeHtml(message)}"><title>${escapeHtml(message)}</title><path d="M12 3 2 21h20L12 3Zm0 6v5m0 3v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` : '';
 }
 function _ringHtml(ctxPct, dotCls) {
-  if (dotCls === 'dorm') return _moonHtml();
-  const arc = (typeof ctxPct === 'number')
-    ? `<circle cx="8" cy="8" r="6" class="sl-ring-arc ${pctClass(ctxPct)}" stroke-dasharray="${(Math.min(100, Math.max(0, ctxPct)) / 100 * _RING_C).toFixed(1)} ${_RING_C}" transform="rotate(-90 8 8)"/>`
-    : '';
-  return `<svg class="sl-ring" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" class="sl-ring-track"/>${arc}<circle cx="8" cy="8" r="2.2" class="sl-ring-dot ${dotCls}"/></svg>`;
+  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '已完成未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
+  return '<span class="sl-dot ' + dotCls + '" role="img" aria-label="' + (labels[dotCls] || '就绪') + '"></span>';
 }
 
-// 2026-07-20 道雪：群聊运行中判定 = 任一成员 agent 在运行。
-//   行1 状态点/状态词与「运行中」分区共用这一个口径。
-// 2026-07-21 道雪 [修状态灯]：运行源 = sub.status==='running'（语义化 running）
-//   或 gcWorking（dispatcher watcher 生命周期）——任一成员任一命中即算群聊运行中。
-// 2026-08-01 [修群聊假空闲]：AI 思考/输出的静默间隙里 PTY/hook 可能短暂 idle，
-//   不能压过 dispatcher 每 1.5 秒送来的 watcher 心跳；但过期 gcWorking 也不能让
-//   Ctrl+C 后继续亮灯。统一用“running 或 8 秒内新鲜 watcher”判断。
 function _subIsRunning(sub) {
   return isGroupChatMemberRunning(sub);
 }
 
-function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
-  const truths = ((meeting && meeting.subSessions) || [])
-    .map(id => sessionMap.get(id))
-    .filter(Boolean)
-    .map(session => ({ session, truth: getSessionRuntimeTruth(session, { now }) }));
-  return {
-    waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
-    running: meeting && !meeting.groupChat && meeting.status === 'running'
-      || truths.some(item => isGroupChatMemberRunning(item.session, now)),
-    disconnected: truths.some(item => hasStreamDisconnectIssue(item.session)),
-    failed: truths.some(item => item.truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(item.session)),
-    truths,
-  };
-}
 
 function _sessionWarningText(session) {
   if (!session) return '';
@@ -412,10 +285,6 @@ function _sessionWarningText(session) {
     const stripEl = doc.getElementById('sidebar-strip');
     if (!stripEl) return;
 
-    // 活跃 = 仍有实时 PTY/AI 进程的会话。休眠历史不占进程，不计入；隐藏的群聊子会话
-    // 和投研 PTY 仍会占资源，因此必须计入。
-    const activeCount = Array.from(sessionMap.values())
-      .filter(session => session && session.status !== 'dormant').length;
     const usage = getResourceUsage() || {};
     const cpuPct = Number.isFinite(usage.cpuPct) ? Math.round(usage.cpuPct) : null;
     const memoryPct = Number.isFinite(usage.memoryPct) ? Math.round(usage.memoryPct) : null;
@@ -427,16 +296,6 @@ function _sessionWarningText(session) {
     const domestic = egress && egress.domestic;
     const alert = egress && egress.alert;
 
-    const routeValue = (route, loadingText) => {
-      if (!egress) return loadingText;
-      if (!route || !route.ok) return escapeHtml(route && route.error || '检测失败');
-      return `${escapeHtml(route.locationLabel || '未知地区')} <i>·</i> ${escapeHtml(route.ip || '--')}`;
-    };
-    const foreignAlertClass = alert ? ` strip-route-${alert.severity === 'critical' ? 'critical' : 'warning'}` : '';
-    const domesticAlertClass = egress && (!domestic || !domestic.ok) ? ' strip-route-warning' : '';
-    const foreignBadge = alert
-      ? `<span class="strip-route-badge">${alert.severity === 'critical' ? '⛔ VPN' : (alert.type === 'vpn_probe_retrying' ? '↻ 复核' : '⚠ 变更')}</span>`
-      : '';
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
       'Claude / Codex 订阅、Gemini：强制经 VPN 代理',
@@ -450,15 +309,12 @@ function _sessionWarningText(session) {
       domestic && domestic.ok ? `实测公网 IPv4：${domestic.ip} (${domestic.locationLabel || '未知地区'})` : `状态：${domestic && domestic.error || '检测中'}`,
     ].join('\n');
 
+    const routeClass = (route, warning) => !egress ? 'pending' : warning || !route?.ok ? 'warning' : 'ok';
+    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
     stripEl.innerHTML =
-      `<div class="strip-route-row strip-route-foreign${foreignAlertClass}" title="${escapeHtml(foreignTitle)}"${ackAttr}>` +
-        `<span class="strip-route-main strip-proxy"><b class="strip-route-label">国外</b><span class="strip-route-value">${routeValue(foreign, '检测中…')}</span></span>` +
-        (foreignBadge || `<span class="strip-compact-metric strip-active"><b>${activeCount}</b> 活跃</span>`) +
-      '</div>' +
-      `<div class="strip-route-row strip-route-domestic${domesticAlertClass}" title="${escapeHtml(domesticTitle)}">` +
-        `<span class="strip-route-main"><b class="strip-route-label">国产</b><span class="strip-route-value">${routeValue(domestic, '检测中…')}</span></span>` +
-        `<span class="strip-compact-metric strip-resource${metricClass(cpuPct)}${metricClass(memoryPct)}">CPU <b>${cpuPct == null ? '--' : cpuPct + '%'}</b> · M <b>${memoryPct == null ? '--' : memoryPct + '%'}</b></span>` +
-      '</div>';
+      `<button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(foreign, alert)}"></span>国外</button>` +
+      `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>国产</span>` +
+      metric('CPU', cpuPct) + metric('内存', memoryPct);
     stripEl.title = '';
     stripEl.style.display = 'flex';
 
@@ -588,15 +444,28 @@ function _sessionWarningText(session) {
     if (!duplicate) activateNavigationIntent(intent);
   });
 
+sessionListEl.addEventListener('keydown', event => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+  const row = event.target?.closest?.('.session-item');
+  if (!row) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const rows = [...sessionListEl.querySelectorAll('.session-item')];
+    const index = rows.indexOf(row);
+    const next = rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))];
+    event.preventDefault(); event.stopPropagation(); next?.focus();
+  } else if (event.key === 'Enter' && event.target === row) {
+    event.preventDefault(); event.stopPropagation();
+    activateNavigationIntent(navigationIntentFromTarget(row));
+  }
+});
+
 // --- Session list rendering ---
 // Sort: pinned sessions first, ordinary/group sessions by latest activity, and
 // explicit bottomed sessions last.  The final render also gives bottomed items
 // their own literal last section so age/status buckets cannot move below them.
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
-  function renderSessionList() {
-    const renderStartedAt = nowMs();
-    const sessionMap = getSessions();
+  function collectSidebarItems(sessionMap = getSessions()) {
     const regularSessions = Array.from(sessionMap.values())
     .filter(s => !s.meetingId && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
 
@@ -628,36 +497,75 @@ function _sessionWarningText(session) {
   // Hide any leftover legacy background PTY sessions from the removed room path.
   const everything = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
 
-  const familyCounts = { all: everything.length, claude: 0, codex: 0, other: 0 };
-  for (const s of everything) {
-    for (const family of sessionFamilies(s, sessionMap)) {
-      familyCounts[family] = (familyCounts[family] || 0) + 1;
+    return everything;
+  }
+  sidebarSources.set(doc, () => {
+    const sessionMap = getSessions();
+    const items = collectSidebarItems(sessionMap);
+    const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    const archived = new Set(parts.archive.map(s => s.id));
+    return items.map(s => ({ ...s,
+      key: (s._isMeeting ? 'live-meeting:' : 'live-session:') + s.id,
+      hubSessionId: s._isMeeting ? null : s.id, meetingId: s._isMeeting ? s.id : null,
+      provider: s._isMeeting ? 'meeting' : String(s.kind || '').replace(/-resume$/, '').replace(/^deepseek.*$/, 'deepseek'),
+      archived: archived.has(s.id), agentGroup: agentGroupOf(s),
+      updatedAt: latestActivityTime(s),
+      cwd: s._isMeeting ? s._meeting.workspace : s.cwd,
+      projectLabel: s._isMeeting ? s._meeting.workspaceLabel : s.workspaceLabel,
+    }));
+  });
+  function openSearch(detail) {
+    if (typeof options.openSearch === 'function') return options.openSearch(detail);
+    doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
+  }
+  doc.addEventListener?.('sidebar:manage-pin', event => {
+    if (!collectSidebarItems().some(item => item.id === event.detail?.id && item.pinned)) return;
+    openContextMenu(event.detail.id, event.detail.x, event.detail.y);
+  });
+  let archivingToday = false;
+  async function archiveToday() {
+    if (archivingToday) return;
+    archivingToday = true;
+    const failures = [];
+    try {
+      const ipc = options.ipcRenderer || require('electron').ipcRenderer;
+      const current = partitionSidebarSessions(collectSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+      for (const item of current.today) {
+        try {
+          const members = item._isMeeting ? (item._meeting.subSessions || []) : [item.id];
+          for (const id of members) {
+            if (getSessions().get(id)?.status === 'dormant') continue;
+            const result = await ipc.invoke('suspend-session', { sessionId: id });
+            if (!result?.ok) throw new Error(result?.message || result?.error || '休眠失败');
+          }
+          if (item._isMeeting) {
+            const updated = await ipc.invoke('update-meeting-sync', { meetingId: item.id, fields: { status: 'dormant' } });
+            if (!updated) throw new Error('群聊归档状态保存失败');
+          }
+        } catch (error) { failures.push((item.title || item.id) + '：' + error.message); }
+      }
+    } catch (error) { failures.push(error.message); }
+    finally { archivingToday = false; renderSessionList(); }
+    if (failures.length) {
+      const message = '部分会话未归档，仍保留原入口：\n' + failures.join('\n');
+      console.warn('[sidebar] archive:', message);
+      if (options.notify) options.notify(message);
+      else doc.defaultView?.alert(message);
     }
   }
-  renderFamilyTabs(familyCounts);
 
-  // Agent 会话分组：计数在过滤之前算，芯片上的数字始终是该组真实总数，
-  // 这样收起来之后你仍然看得到「学习 2」，而不是以为会话没了。
-  _ensureAgentGroupStyle();
-  const agentCounts = {};
-  for (const s of everything) {
-    const g = agentGroupOf(s);
-    if (g) agentCounts[g] = (agentCounts[g] || 0) + 1;
-  }
-  renderAgentGroupRow(agentCounts);
-
-  const afterAgentGroups = everything.filter(s => {
-    const g = agentGroupOf(s);
-    return !g || _agentGroupFilter.on.has(g);
-  });
-  const visible = _familyFilter.key === 'all'
-    ? afterAgentGroups
-    : afterAgentGroups.filter(s => sessionFamilies(s, sessionMap).has(_familyFilter.key));
-
+  function renderSessionList() {
+    const renderStartedAt = nowMs();
+    const sessionMap = getSessions();
+  const visible = collectSidebarItems(sessionMap);
+  const sections = partitionSidebarSessions(visible, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
   const savedScrollTop = sessionListEl.scrollTop;
+  const focused = doc.activeElement;
+  const focusId = focused?.dataset?.sessionId || focused?.dataset?.meetingId;
+  const hadListFocus = focused && sessionListEl.contains?.(focused);
   // Build the entire status reclassification off-DOM, then commit once. A
   // running -> needs-input transition used to clear and repopulate the live
   // sidebar one node at a time, forcing repeated style/layout work and making
@@ -667,7 +575,6 @@ function _sessionWarningText(session) {
     : null;
   const renderTarget = fragment || sessionListEl;
   if (!fragment) sessionListEl.innerHTML = '';
-  _ensureTimeGroupStyle();
 
   // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
   function appendItem(s) {
@@ -694,15 +601,7 @@ function _sessionWarningText(session) {
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
         + (hasUnread ? ' need-unread' : '');
       div.dataset.meetingId = s.id;
-      if (isDormantMeeting && isGroupChat) {
-        div.tabIndex = 0;
-        div.addEventListener('keydown', event => {
-          if (event.target === div && (event.key === 'Enter' || event.key === ' ')) {
-            event.preventDefault();
-            div.click();
-          }
-        });
-      }
+      div.tabIndex = 0;
       const SLOT_LABELS_M = ['一号位', '二号位', '三号位'];
       const miniSids = isGroupChat ? (s._meeting.subSessions || []) : (s._meeting.subSessions || []).slice(0, 3);
       const memberTotal = (s._meeting.subSessions || []).length;
@@ -759,32 +658,19 @@ function _sessionWarningText(session) {
         </span>`;
       }).join('');
       // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
-      let dotCls = 'idle';
-      if (anySubWaiting) dotCls = 'wait';
-      else if (anySubDisconnected) dotCls = 'error';
-      else if (anySubRunning) dotCls = 'run';
-      else if (anySubFailed) dotCls = 'error';
-      else if (hasUnread) dotCls = 'unread';
-      else if (isDormantMeeting) dotCls = 'dorm';
-      let stateHtml = '<span></span>';
-      if (anySubWaiting) stateHtml = '<span class="sl-state wait">等你</span>';
-      else if (anySubDisconnected) stateHtml = '<span class="sl-state error">断连</span>';
-      else if (anySubRunning) stateHtml = '<span class="sl-state run">运行中</span>';
-      else if (anySubFailed) stateHtml = '<span class="sl-state error">异常</span>';
-      else if (hasUnread) {
-        stateHtml = `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`;
-      }
-      else if (isDormantMeeting) stateHtml = `<span class="sl-state dorm">${_moonHtml()}</span>`;
-      div.innerHTML = `
-        <div class="sl-line1${canExpand ? ' with-arrow' : ''}">
-          ${canExpand ? `<span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>` : ''}
-          ${isDormantMeeting && isGroupChat ? '' : _ringHtml(null, dotCls)}
-          <span class="sl-title" title="${escapeHtml([s.title, meetingWarning].filter(Boolean).join(' · '))}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${meetingWarning ? `<span class="sl-pin" title="${escapeHtml(meetingWarning)}">⚠</span>` : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
-          ${stateHtml}
-          <span class="sl-time">${isDormantMeeting && dotCls !== 'dorm' ? _moonHtml() : ''}${formatTime(latestActivityTime(s))}</span>
-        </div>
-        <div class="session-mini-jumps">${miniJumpsHtml}<span class="sl-members-hint">${memberSelected}/${memberTotal} 已选</span></div>
-      `;
+      const dotCls = sections.states.get(s.id) || 'idle';
+      const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => _aiLogoHtml(sessionMap.get(id)?.kind)).join('');
+      const progress = memberTotal ? Math.min(100, s.unreadAnsweredSize / memberTotal * 100) : 0;
+      div.innerHTML = [
+        '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
+        canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
+        _ringHtml(null, dotCls),
+        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, '已答 ' + s.unreadAnsweredSize + '/' + memberTotal].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
+        '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span></div>',
+        '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
+        isGroupChat ? '<span class="sl-group-progress" title="已答 ' + s.unreadAnsweredSize + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
+      ].join('');
       div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
       renderTarget.appendChild(div);
 
@@ -805,6 +691,7 @@ function _sessionWarningText(session) {
             + (childShowUnread ? ' need-unread' : '') + childDormantCls
             + (childResumePending ? ' resuming' : '')
             + (childDisconnected ? ' disconnected' : '');
+          childDiv.tabIndex = 0;
           childDiv.dataset.sessionId = subId;
           childDiv.dataset.runtimeState = childRuntime.state;
           const modelLabel = sub.currentModel
@@ -837,6 +724,7 @@ function _sessionWarningText(session) {
     const isActive = s.id === getActiveSessionId();
     const runtimeTruth = getSessionRuntimeTruth(s, { now: Date.now() });
     const div = doc.createElement('div');
+    div.tabIndex = 0;
     div.dataset.sessionId = s.id;
     div.dataset.runtimeState = runtimeTruth.state;
     div.dataset.runtimeSource = runtimeTruth.source || '';
@@ -849,18 +737,7 @@ function _sessionWarningText(session) {
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
     const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
     // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
-    let dotCls = 'idle';
-    if (isResumePending) dotCls = 'start';
-    else if (showWaiting) dotCls = 'wait';
-    else if (isDisconnected) dotCls = 'error';
-    else if (showUnread) dotCls = 'unread';
-    else if (isDormant) dotCls = 'dorm';
-    else if (runtimeTruth.state === RUNTIME_FAILED) dotCls = 'error';
-    else if (runtimeTruth.state === RUNTIME_STARTING) dotCls = 'start';
-    else if (runtimeTruth.state === RUNTIME_RUNNING) dotCls = 'run';
-    else if (runtimeTruth.state === RUNTIME_UNKNOWN) dotCls = 'unknown';
-    // 2026-09-06：运行中的普通会话，logo 跟着呼吸（CSS 在 .session-item.slim.running .sl-kind）。
-    //   口径直接复用上面的状态点：只有点是 run/start 时才算运行中，等待/断连/未读都不闪。
+    const dotCls = s._resumePending ? 'start' : sections.states.get(s.id) || 'idle';
     const showRunning = dotCls === 'run' || dotCls === 'start';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
@@ -886,168 +763,36 @@ function _sessionWarningText(session) {
         : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
     div.title = isResumePending ? '正在唤醒会话' : runtimeTruthSummary(runtimeTruth);
-    div.innerHTML = `
-      ${_ringHtml(ctxPct, dotCls)}
-      <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
-      ${_sessionKindHtml(s.kind, modelTxt)}
-      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDormant && !isResumePending && dotCls !== 'dorm' ? _moonHtml() : ''}${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : ''}${formatTime(latestActivityTime(s))}`}</span>
-    `;
+    div.innerHTML = _ringHtml(ctxPct, dotCls)
+      + '<span class="sl-title" title="' + escapeHtml(titleTip) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
+      + _sessionKindHtml(s.kind, modelTxt)
+      + '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>';
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     renderTarget.appendChild(div);
   }
 
-  // 分区语义严格拆开：真正需要输入 → 运行中 → 普通完成未读 → 最近。
-  //   分类语义（与状态来源逐项核对过）：
-  //     等你响应 = 非 active 且 CLI 明确在等待用户输入
-  //     运行中   = RuntimeTruth starting/running（原生事件 + PTY 强校验 + 兜底）
-  //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
-  //     最近     = 24h 内其余；普通休眠独立成组，未读/异常/唤醒中不被折叠。
-  // 勾选出来的 Agent 会话不参与下面的时间/状态分区，而是各自成组单独列出——
-  // 混进「最近」里按时间排，等于又找不着了，失去了勾它出来的意义。
-  const agentBuckets = new Map();
-  const normalVisible = [];
-  for (const s of visible) {
-    const g = agentGroupOf(s);
-    if (g && _agentGroupFilter.on.has(g)) {
-      if (!agentBuckets.has(g)) agentBuckets.set(g, []);
-      agentBuckets.get(g).push(s);
-    } else normalVisible.push(s);
-  }
-
-  const bottomed = normalVisible.filter(isPinnedToBottom);
-  const normallyPlaced = normalVisible.filter(s => !isPinnedToBottom(s));
-  const isDormantItem = s => s._isMeeting ? s.status === 'dormant' : getSessionRuntimeTruth(s).state === RUNTIME_DORMANT;
-  // 先取出所有年龄的休眠，再按关注状态分类。置顶/置底/Agent 分组保留原有归属。
-  const dormantCandidates = normallyPlaced.filter(s => !s.pinned && isDormantItem(s));
-  const dormantIds = new Set(dormantCandidates.map(s => s.id));
-  const { recent, mid, old } = partitionSessionsByAge(normallyPlaced.filter(s => !dormantIds.has(s.id)), Date.now());
-  // 2026-09-07：休眠会话仍然可以被提升进注意力分区，但「已完成未读」这一档必须
-  //   限定在最近 24 小时。上一版不分年龄一律提升，于是两三个月前休眠、unreadCount
-  //   还留着 1 的老会话全被顶进「已完成未读」——侧栏一打开是 47 条「刚答完」，其中
-  //   大半是 80 多天前的，这个分区就此失去意义。
-  //   「等你响应 / 运行中（含唤醒中）/ 运行异常」不设年龄门槛：那些是此刻的活信号，
-  //   把正在唤醒的会话藏进折叠的休眠区反而会让它凭空消失。
-  const { recent: freshDormant } = partitionSessionsByAge(dormantCandidates, Date.now());
-  const freshDormantIds = new Set(freshDormant.map(s => s.id));
-  const activeSid = getActiveSessionId();
-  const activeMid = getActiveMeetingId();
-  const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
-  function needsRespond(s) {
-    if (isActiveItem(s)) return false;
-    if (s._isMeeting) return _meetingRuntimeAggregate(s._meeting, sessionMap).waiting;
-    return getSessionRuntimeTruth(s).state === RUNTIME_WAITING;
-  }
-  function isCompletedUnread(s) {
-    if (isActiveItem(s)) return false;
-    // 陈年休眠的未读只在休眠区里用圆点表达，不再冒充「刚答完」。
-    if (isDormantItem(s) && !freshDormantIds.has(s.id)) return false;
-    if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
-    return sessionHasCompletedUnread(s);
-  }
-  const respond = [], running = [], failed = [], completed = [], rest = [], dormant = [];
-  for (const s of [...recent, ...dormantCandidates].sort(compareSidebarPlacement)) {
-    if (needsRespond(s)) respond.push(s);
-    else if (s._resumePending === true) running.push(s);
-    else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : sessionRuntimeIsActive(s)) running.push(s);
-    else if (s._isMeeting
-      ? _meetingRuntimeAggregate(s._meeting, sessionMap).failed
-      : (getSessionRuntimeTruth(s).state === RUNTIME_FAILED || hasStreamDisconnectIssue(s))) failed.push(s);
-    else if (isCompletedUnread(s)) completed.push(s);
-    else if (!s.pinned && isDormantItem(s)) dormant.push(s);
-    else rest.push(s);
-  }
-  function appendSecHeader(label, count, cls, opts = {}) {
+  function appendSecHeader(label, items, cls, action, onAction) {
     const h = doc.createElement('div');
-    h.className = 'session-sec-header' + (cls ? ' ' + cls : '');
-    h.innerHTML = `<span>${escapeHtml(label)}</span><span class="sec-count">${count}</span>`
-      + (opts.markAllRead ? '<button type="button" class="sec-mark-all-read" title="把所有会话和群聊标成已读">全部已读</button>' : '');
-    if (opts.markAllRead && typeof h.addEventListener === 'function') {
-      h.addEventListener('click', (event) => {
-        const target = event && event.target;
-        // 组头本身没有点击语义，只有这个按钮有；用 className 判定即可，不必依赖 closest。
-        const isButton = target && typeof target.className === 'string'
-          && target.className.indexOf('sec-mark-all-read') >= 0;
-        if (!isButton) return;
-        event.preventDefault();
-        event.stopPropagation();
-        markAllSessionsRead();
-      });
-    }
-    renderTarget.appendChild(h);
-  }
-  if (respond.length) { appendSecHeader('⚠ 等你响应', respond.length, 'sec-respond'); for (const s of respond) appendItem(s); }
-  if (running.length) { appendSecHeader('运行中', running.length); for (const s of running) appendItem(s); }
-  if (failed.length) { appendSecHeader('⚠ 运行异常', failed.length, 'sec-respond'); for (const s of failed) appendItem(s); }
-  if (completed.length) {
-    appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed', { markAllRead: !!markAllSessionsRead });
-    for (const s of completed) appendItem(s);
-  }
-  // Agent 分组：芯片勾上就整组展开列出，不再套一层折叠——芯片本身就是那个开关，
-  // 再要点一次箭头才看得到，等于把「一目了然」又收回去了。
-  // 组内有成员在等输入或跑挂了就复用告警样式，避免它被当成一堆静态条目略过。
-  for (const g of AGENT_SESSION_GROUPS) {
-    const items = agentBuckets.get(g.key);
-    if (!items || !items.length) continue;
-    const alerting = items.some(s => needsRespond(s)
-      || (!s._isMeeting && (getSessionRuntimeTruth(s).state === RUNTIME_FAILED || hasStreamDisconnectIssue(s))));
-    appendSecHeader(g.label, items.length, 'sec-agent-group' + (alerting ? ' sec-respond' : ''));
-    for (const s of items) appendItem(s);
-  }
-
-  if (rest.length) {
-    if (respond.length || running.length || failed.length || completed.length || agentBuckets.size || dormant.length) {
-      appendSecHeader('最近', rest.length);
-    }
-    for (const s of rest) appendItem(s);
-  }
-  if (dormant.length) {
-    const expanded = !dormantGroupCollapsed || dormant.some(isActiveItem);
-    const header = doc.createElement('button');
-    header.type = 'button';
-    header.className = 'session-time-group-header session-dormant-header' + (expanded ? ' expanded' : '');
-    header.dataset.timeGroup = 'dormant';
-    // Native button supplies keyboard activation; the property is reflected by Chromium.
-    header.ariaExpanded = String(expanded);
-    header.innerHTML = `<span class="stg-arrow">▶</span>${_moonHtml()}<span class="stg-label">休眠</span><span class="stg-count">${dormant.length}</span>`;
-    header.addEventListener('click', () => {
-      dormantGroupCollapsed = expanded;
-      try { storage.setItem('hubDormantGroupCollapsed', String(dormantGroupCollapsed)); } catch {}
-      renderSessionList();
-      // Rebuild replaces the button. Keep keyboard focus on its replacement.
-      if (typeof sessionListEl.querySelector === 'function') {
-        sessionListEl.querySelector('.session-dormant-header')?.focus({ preventScroll: true });
-      }
+    h.className = 'session-sec-header ' + cls;
+    h.innerHTML = '<span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
+      + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-active' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
+    h.addEventListener('click', event => {
+      if (!event.target?.closest?.('.sec-action') && !/sec-action|sec-mark-all-read/.test(event.target?.className || '')) return;
+      event.preventDefault(); event.stopPropagation();
+      return onAction?.();
     });
-    renderTarget.appendChild(header);
-    if (expanded) for (const s of dormant) appendItem(s);
+    renderTarget.appendChild(h);
+    for (const item of items) appendItem(item);
   }
-  function appendTimeGroup(key, label, items) {
-    if (!items.length) return;
-    // active 所在组自动展开，避免当前会话被折叠藏起；其余按落盘状态（默认折叠）。
-    const expanded = _expandedTimeGroups.has(key) || items.some(isActiveItem);
-    const header = doc.createElement('div');
-    header.className = 'session-time-group-header' + (expanded ? ' expanded' : '');
-    header.dataset.timeGroup = key;
-    header.innerHTML = `<span class="stg-arrow">▶</span><span class="stg-label">${escapeHtml(label)}</span><span class="stg-count">${items.length}</span>`;
-    header.addEventListener('click', () => toggleTimeGroup(key));
-    renderTarget.appendChild(header);
-    if (expanded) for (const s of items) appendItem(s);
-  }
-  appendTimeGroup('mid', '3 天内', mid);
-  appendTimeGroup('old', '更早', old);
-  if (bottomed.length) {
-    appendSecHeader('置底', bottomed.length, 'sec-bottom');
-    for (const s of bottomed) appendItem(s);
-  }
-
-  // 筛掉一个空视图时说清楚是筛选的结果，否则看起来像会话丢了。
-  if (!visible.length && everything.length) {
-    const hint = doc.createElement('div');
-    hint.className = 'session-filter-empty';
-    const label = (SESSION_FAMILY_TABS.find(t => t.key === _familyFilter.key) || {}).label || '';
-    hint.textContent = `没有 ${label} 会话（共 ${everything.length} 个，点「全部」查看）`;
-    renderTarget.appendChild(hint);
-  }
+  appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
+  appendSecHeader('活跃', sections.active, 'sec-active', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
+  appendSecHeader('今天', sections.today, 'sec-today', sections.today.length ? '归档全部' : '', archiveToday);
+  const archive = doc.createElement('button');
+  archive.type = 'button';
+  archive.className = 'session-archive-entry';
+  archive.innerHTML = '<span>归档</span><span class="archive-count">' + sections.archiveCount + '</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+  archive.addEventListener('click', () => openSearch({ scope: 'dormant' }));
+  renderTarget.appendChild(archive);
 
   if (fragment) {
     if (typeof sessionListEl.replaceChildren === 'function') sessionListEl.replaceChildren(fragment);
@@ -1062,6 +807,10 @@ function _sessionWarningText(session) {
   if (afterRender) afterRender();
 
   sessionListEl.scrollTop = savedScrollTop;
+  if (hadListFocus && focusId) {
+    const replacement = [...sessionListEl.querySelectorAll('.session-item')].find(row => (row.dataset.sessionId || row.dataset.meetingId) === focusId);
+    replacement?.focus({ preventScroll: true });
+  }
   const elapsed = Math.max(0, nowMs() - renderStartedAt);
   renderStats.renders += 1;
   renderStats.lastMs = elapsed;
@@ -1096,8 +845,6 @@ sessionListEl.addEventListener('mousedown', (e) => {
   return {
     renderSessionList,
     renderSidebarStrip,
-    setFamilyFilter,
-    getFamilyFilter: () => _familyFilter.key,
     getRenderStats: () => ({ ...renderStats }),
   };
 }
@@ -1112,4 +859,8 @@ module.exports = {
   familyOfKind,
   sessionFamilies,
   SESSION_FAMILY_TABS,
+  AGENT_SESSION_GROUPS,
+  agentGroupOf,
+  partitionSidebarSessions,
+  getSidebarSearchEntries,
 };

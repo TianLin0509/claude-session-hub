@@ -16,7 +16,7 @@ function targetFor(attribute, id) {
   };
 }
 
-function makeHarness() {
+function makeHarness(rows = []) {
   const listeners = new Map();
   const selected = [];
   const meetings = [];
@@ -25,6 +25,7 @@ function makeHarness() {
       if (!listeners.has(type)) listeners.set(type, []);
       listeners.get(type).push(handler);
     },
+    querySelectorAll() { return rows; },
     setPointerCapture() {},
     releasePointerCapture() {},
   };
@@ -173,4 +174,20 @@ test('meeting pointer intent also survives a full sidebar rebuild', () => {
   assert.deepEqual(harness.meetings, [{
     id: 'meeting-a', opts: { forceScrollBottom: true },
   }]);
+});
+
+test('ArrowDown/ArrowUp focus rows without opening; Enter opens the focused ID', () => {
+  const focus = [];
+  const rows = ['a', 'b', 'c'].map(id => {
+    const row = targetFor('data-session-id', id).closest('[data-session-id]');
+    const closest = row.closest.bind(row);
+    row.closest = query => query === '.session-item' ? row : closest(query);
+    row.focus = () => focus.push(id);
+    return row;
+  });
+  const h = makeHarness(rows);
+  const send = (key, row) => h.emit('keydown', { key, target: row, preventDefault() {}, stopPropagation() {} });
+  send('ArrowDown', rows[0]); send('ArrowUp', rows[1]); send('ArrowUp', rows[0]);
+  assert.deepEqual(focus, ['b', 'a', 'a']); assert.equal(h.selected.length, 0);
+  send('Enter', rows[1]); assert.equal(h.selected[0].id, 'b');
 });
