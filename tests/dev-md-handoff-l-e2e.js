@@ -183,6 +183,21 @@ async function main() {
       return (m && m.serialWorkflow) || {};
     };
     const gcState = async () => invoke('groupchat:get-state', { meetingId });
+    // 「prompt 已经提交、正在等它回答」这几种状态才算真的送到了。
+    // prepared / submitting 不算 —— 那时候写入可能还在路上；IPC 的 ok:true 更不算，
+    // 它只表示请求被接受（2026-09-08 合并位指出的误报点）。
+    const INJECTABLE = ['accepted', 'running', 'awaiting_binding', 'awaiting_final_text'];
+    const waitDispatched = async (sid, timeoutMs = 240000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const st = await gcState();
+        const live = Object.values((st && st.attempts) || {}).some(
+          (a) => a && a.sid === sid && INJECTABLE.includes(String(a.status || '')));
+        if (live) return true;
+        await sleep(1500);
+      }
+      return false;
+    };
 
     // ── 建房：真实两席位（Codex 工作位 + Claude 合并位），工作目录就是 fixture ──
     const created = await invoke('create-meeting', {
@@ -246,32 +261,27 @@ async function main() {
       ].join('\n'), 'utf8');
       await invoke('update-meeting-sync', { meetingId, fields: { serialWorkflow: { ...(await wf()), devPhase: 'build' } } });
       const started = await invoke('loop:start', { meetingId, userInput: goal });
-      ok(started && started.ok, 'B10/L 从已知缺陷交付开始，直接派真实审查位', JSON.stringify(started));
+      ok(started && started.ok === true, 'B10/L 请求被接受（只是接受，不代表送到了）', JSON.stringify(started));
+      ok(await waitDispatched(reviewerSid), 'B10/L 审查位真的收到了 prompt（按可观察的执行状态判，不看返回值）');
     } else {
       const started = await invoke('dev:kickoff', { meetingId, authorMemberId: 'm1' });
-      ok(started && started.ok, 'A02/L 开题已派给指定执笔者', JSON.stringify(started));
-      // 派发失败要看得见（这一条正是上一轮真实 CLI 撞到的 cli_not_ready）
-      await sleep(4000);
+      // ok:true 只表示「请求被接受」——它是同步返回的，那一刻什么都还没发出去。
+      // 2026-09-08 合并位指出这两行会提前误报成功；下面必须看**可观察的执行状态**。
+      ok(started && started.ok === true, 'A02/L 开题请求被接受（只是接受，不代表送到了）', JSON.stringify(started));
+      const dispatched = await waitDispatched(builderSid);
       const kickoffState = (await wf()).kickoff || {};
+      ok(dispatched,
+        'A02/L 开题 prompt 真的送进了 CLI（按该席位的执行状态判，不看 IPC 返回值）',
+        JSON.stringify({ kickoff: kickoffState }));
       ok(kickoffState.status !== 'dispatch_failed',
-        'L 开题 prompt 真的送进了 CLI（没送进去会明说 dispatch_failed）',
+        'L 送不进去时会明说 dispatch_failed，而不是含混地等',
         JSON.stringify(kickoffState));
+      if (!dispatched) throw new Error('开题 prompt 没能送进 CLI：' + JSON.stringify(kickoffState));
     }
 
     // ── C01/C05：等真实轮次开始之后再插话，验证运行中接收 ──
-    // 插话时点：等到**prompt 已经提交、正在等它回答**这个可观察状态，而不是等固定秒数。
-    // prepared / submitting 不算 —— 那时候派工的写入可能还在路上。
-    const INJECTABLE = ['accepted', 'running', 'awaiting_binding', 'awaiting_final_text'];
-    const turnDeadline = Date.now() + 240000;
-    let turnRunning = false;
-    while (Date.now() < turnDeadline) {
-      const st = await gcState();
-      const live = Object.values((st && st.attempts) || {}).some(
-        (a) => a && a.sid === authorSid && INJECTABLE.includes(String(a.status || '')));
-      if (live) { turnRunning = true; break; }
-      await sleep(1500);
-    }
-    ok(turnRunning, 'L 观察到执笔者的 prompt 已提交、正在作答（插话时点由此决定，不是固定等 20 秒）');
+    ok(await waitDispatched(authorSid),
+      'L 观察到执笔者的 prompt 已提交、正在作答（插话时点由此决定，不是固定等 20 秒）');
     const supp = await invoke('groupchat:user-supplement', { meetingId, text: LONG_SUPPLEMENT });
     saveEvidence('supplement-result.json', supp);
     ok(supp && supp.ok === true, 'C01/L 运行中插话被接受', JSON.stringify(supp && supp.reason));

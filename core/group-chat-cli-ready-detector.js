@@ -42,6 +42,16 @@ const BLOCKERS = {
   ],
 };
 
+// 可以「过期」的阻断词：它们描述的是**瞬态**——启动中、正在跑，会自己结束。
+// PTY 是追加流、清屏只是控制序列，所以这两句会永远留在 buffer 里；
+// 一旦输入框标记出现在它们之后，就说明那一段已经被新画面盖掉了，不该再算数。
+//
+// 其余阻断词（Kimi 未登录、Codex 的信任弹窗）是**终态**：它们不会自己好，
+// 而且登录页上本来就同时渲染着状态栏 marker —— 用「谁更新」判会直接放行，所以不许过期。
+const STALEABLE_BLOCKERS = {
+  codex: [/Booting MCP server/i, /esc to interrupt/i],
+};
+
 const MIN_BUF_LEN = 500;
 const STABLE_MS = 1500;
 
@@ -68,13 +78,25 @@ function isReady(sessionId, kind, buf) {
   const need = MARKERS[kind];
   if (!need) return true; // 未注册 kind（如 powershell）默认 ready
   buf = buf || '';
-  const tail = buf.slice(-2000);
   const blockers = BLOCKERS[kind] || [];
-  if (blockers.some(re => re.test(tail))) {
+  // 2026-09-08：PTY 是**追加**的字节流，清屏只是一个控制序列 —— 早先那句
+  // `Booting MCP server` / `esc to interrupt` 会一直留在 buffer 里。原来按
+  // 「末尾 2000 字里出现过就拦」判，于是缓冲短一点时 Codex 被永久判成未就绪，
+  // 真实开题连着两次 cli_not_ready（合并位在真实链路上复现）。
+  //
+  // 现在分两类：瞬态阻断词（见 STALEABLE_BLOCKERS）在输入框标记出现之后就算过期；
+  // 终态阻断词（未登录、信任弹窗）一律拦到底。
+  const staleable = STALEABLE_BLOCKERS[kind] || [];
+  const absolute = blockers.filter(re => !staleable.some(x => x.source === re.source));
+  const markerAt = need.length > 0 ? _lastIncludesIndex(buf, need) : -1;
+  const absoluteAt = _lastMatchIndex(buf, absolute);
+  const staleableAt = _lastMatchIndex(buf, staleable);
+  const staleableIsLive = staleableAt >= 0 && !(markerAt > staleableAt);
+  if (absoluteAt >= 0 || staleableIsLive) {
     _stableState.delete(sessionId);
     return false;
   }
-  const markerHit = need.length > 0 && need.some(m => buf.includes(m));
+  const markerHit = markerAt >= 0;
   const noMarker = need.length === 0;
   if (!(markerHit || noMarker)) return false;
   if (buf.length < MIN_BUF_LEN) return false;
@@ -99,6 +121,28 @@ function isReady(sessionId, kind, buf) {
   }
 }
 
+/** 这些正则里，最后一次匹配落在哪个位置；一个都不匹配返回 -1。 */
+function _lastMatchIndex(buf, regexes) {
+  let last = -1;
+  for (const re of regexes) {
+    const scan = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let hit = null;
+    // eslint-disable-next-line no-cond-assign
+    while ((hit = scan.exec(buf)) !== null) {
+      last = Math.max(last, hit.index);
+      if (hit.index === scan.lastIndex) scan.lastIndex += 1;   // 防零宽匹配死循环
+    }
+  }
+  return last;
+}
+
+/** 这些固定字串里，最后一次出现落在哪个位置；一个都没有返回 -1。 */
+function _lastIncludesIndex(buf, needles) {
+  let last = -1;
+  for (const needle of needles) last = Math.max(last, buf.lastIndexOf(needle));
+  return last;
+}
+
 // markReady(sessionId) — 外部强制锁（如 sessionManager.getGroupChatReady 已 true 时）
 function markReady(sessionId) {
   if (sessionId) {
@@ -119,6 +163,7 @@ module.exports = {
   cleanup,
   MARKERS,
   BLOCKERS,
+  STALEABLE_BLOCKERS,
   MIN_BUF_LEN,
   STABLE_MS,
 };

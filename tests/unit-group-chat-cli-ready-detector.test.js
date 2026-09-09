@@ -57,23 +57,45 @@ function sleep(ms) {
     'stable Codex TUI context footer should mark the CLI ready'
   );
 
+  // 2026-09-08：MCP 启动中确实不能发 —— 但判据从「buffer 里出现过启动文本」
+  // 换成了「启动文本是不是最新的信号」。原因是 PTY 是追加流、清屏只是控制序列，
+  // 那句 `Booting MCP server` 会永远留在 buffer 里；合并位在真实链路上撞到
+  // Codex 已经显示输入框、Hub 却永久判未就绪，开题连着两次 cli_not_ready。
+  //
+  // 真正在启动时这条判据照样拦得住：Codex 的启动行带秒数计时（1s / 2s / …），
+  // buffer 每秒都在变，静默门本来就过不去。下面按真实形状写。
   const bootSid = 'codex-booting-mcp';
   ready.cleanup(bootSid);
-  const booting = [
-    'Booting MCP server: playwright (1s - esc to interrupt)',
-    '  gpt-5.6-sol high fast · Context 100% left · ~',
+  const bootingFrame = (sec) => [
+    `Booting MCP server: playwright (${sec}s - esc to interrupt)`,
     'x'.repeat(900),
   ].join('\n');
   assert.strictEqual(
-    ready.isReady(bootSid, 'codex', booting),
+    ready.isReady(bootSid, 'codex', bootingFrame(1)),
     false,
     'Codex TUI should not be ready while MCP booting blocks input submission'
   );
   await sleep(ready.STABLE_MS + 50);
   assert.strictEqual(
-    ready.isReady(bootSid, 'codex', booting),
+    ready.isReady(bootSid, 'codex', bootingFrame(2)),
     false,
-    'stable Codex MCP booting footer should still not mark the CLI ready'
+    '启动行还在滚秒数 → buffer 一直在变，静默门过不去，仍然未就绪'
+  );
+
+  // 启动早就结束、那句话只是留在滚动历史里：输入框标记更新，就该放行。
+  const bootedSid = 'codex-booted-scrollback';
+  ready.cleanup(bootedSid);
+  const booted = [
+    'Booting MCP server: playwright (1s - esc to interrupt)',
+    'x'.repeat(900),
+    '  gpt-5.6-sol high fast · Context 100% left · ~/repo',
+  ].join('\n');
+  assert.strictEqual(ready.isReady(bootedSid, 'codex', booted), false, '首次调用先记录静默基线');
+  await sleep(ready.STABLE_MS + 50);
+  assert.strictEqual(
+    ready.isReady(bootedSid, 'codex', booted),
+    true,
+    '启动文本已经被输入框盖掉、屏幕也稳定了 → 必须判就绪，否则永远发不出去'
   );
 
   const kimiLoginSid = 'kimi-login-required';
