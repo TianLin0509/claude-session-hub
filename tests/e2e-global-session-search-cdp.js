@@ -363,6 +363,8 @@ async function waitSearchState(client, predicate, label) {
 
     const desktop = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(SCREENSHOT, Buffer.from(desktop.data, 'base64'));
+    result.savedWidth=await client.eval(`(() => {document.querySelector('.session-search-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));return Number(localStorage.getItem('hub.search.resultShare'));})()`);
+    assert.equal(result.savedWidth,44);
 
     await client.send('Emulation.setDeviceMetricsOverride', { width: 760, height: 820, deviceScaleFactor: 1, mobile: false });
     await _waitMs(120);
@@ -432,6 +434,16 @@ async function waitSearchState(client, predicate, label) {
       })`);
       return !state.modalOpen && state.terminalIds.includes('hub-claude-search') && state.matchMounted ? state : null;
     }, 20_000);
+
+    const previousErrors=await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS || []`);
+    await client.send('Page.reload');
+    await waitFor('reloaded UI',()=>client.eval(`!!window.__hubE2E?.globalSessionSearch`));
+    await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS=${JSON.stringify(previousErrors)};document.getElementById('btn-global-search').click()`);
+    result.reloadedPreferences=await waitFor('restored split and empty-query ordering',()=>client.eval(`(() => {const s=document.getElementById('session-search-sort');return s.value==='conversationTime' && s.querySelector('[value="relevance"]').disabled ? {share:document.querySelector('.session-search-workspace-panes').style.getPropertyValue('--search-result-share'),sort:s.value,description:s.title}:null;})()`));
+    assert.equal(result.reloadedPreferences.share,'44%');
+    assert.match(result.reloadedPreferences.description,/未输入关键词/);
+    await setSearch(client,COMMON);
+    await waitFor('nonempty relevance ordering restored',()=>client.eval(`document.getElementById('session-search-sort').value==='relevance' && !document.querySelector('#session-search-sort [value="relevance"]').disabled`));
 
     const databasePath = path.join(DATA_DIR, 'cache', 'session-search-v3.sqlite');
     result.cacheExists = fs.existsSync(databasePath);

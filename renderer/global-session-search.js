@@ -230,6 +230,17 @@ function createGlobalSessionSearch(options) {
   sortSelect.after(directionSelect);
   directionSelect.disabled=sortSelect.value==='relevance';
   directionSelect.value=sortSelect.value==='title'?'asc':'desc';
+  let lastQuerySort=sortSelect.value,lastQueryDirection=directionSelect.value,queryWasEmpty=false;
+  function syncSortChoice(query) {
+    const empty=!query;
+    if(empty && !queryWasEmpty) {lastQuerySort=sortSelect.value;lastQueryDirection=directionSelect.value;if(sortSelect.value==='relevance') sortSelect.value='conversationTime';}
+    else if(!empty && queryWasEmpty) {sortSelect.value=lastQuerySort;directionSelect.value=lastQueryDirection;}
+    queryWasEmpty=empty;
+    const relevance=sortSelect.querySelector('option[value="relevance"]');
+    relevance.disabled=empty;relevance.textContent=empty?'相关度（需关键词）':'相关度';
+    sortSelect.title=empty?'未输入关键词，按字段浏览；输入后恢复上次搜索排序。':'';
+    directionSelect.disabled=sortSelect.value==='relevance';
+  }
   const recentList=document.createElement('datalist');recentList.id='session-search-recent';queryInput.setAttribute('list',recentList.id);queryInput.after(recentList);
   const newResults = document.createElement('button');
   newResults.type='button';newResults.className='session-search-new-results';newResults.hidden=true;
@@ -241,12 +252,17 @@ function createGlobalSessionSearch(options) {
   divider.setAttribute('role','separator');divider.setAttribute('aria-label','调整结果与预览宽度');divider.setAttribute('aria-orientation','vertical');
   let resultShare=42;
   const resizeShare=value=>{resultShare=Math.max(30,Math.min(62,value));panes.style.setProperty('--search-result-share',resultShare+'%');divider.setAttribute('aria-valuenow',String(Math.round(resultShare)));};
+  const saveResultShare=()=>{try {window.localStorage.setItem('hub.search.resultShare',String(resultShare));} catch { /* Optional UI preference. */ }};
   divider.setAttribute('aria-valuemin','30');divider.setAttribute('aria-valuemax','62');
-  if(panes) {panes.append(divider);resizeShare(42);}
+  if(panes) {
+    panes.append(divider);
+    let savedShare=42;try {const saved=Number(window.localStorage.getItem('hub.search.resultShare'));if(saved>=30 && saved<=62) savedShare=saved;} catch { /* Optional UI preference. */ }
+    resizeShare(savedShare);
+  }
   divider.addEventListener('pointerdown',event=>{event.preventDefault();divider.setPointerCapture(event.pointerId);});
   divider.addEventListener('pointermove',event=>{if(!divider.hasPointerCapture(event.pointerId)) return;const rect=panes.getBoundingClientRect();resizeShare(100*(event.clientX-rect.left)/rect.width);});
-  divider.addEventListener('pointerup',event=>{if(divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);});
-  divider.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();resizeShare(resultShare+(event.key==='ArrowRight'?2:-2));}});
+  divider.addEventListener('pointerup',event=>{if(divider.hasPointerCapture(event.pointerId)) {divider.releasePointerCapture(event.pointerId);saveResultShare();}});
+  divider.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();resizeShare(resultShare+(event.key==='ArrowRight'?2:-2));saveResultShare();}});
 
   const agentRoot = document.createElement('div');
   agentRoot.id = 'session-search-agent-filters';
@@ -384,6 +400,7 @@ function createGlobalSessionSearch(options) {
 
   function searchRequest() {
     const query = queryInput.value.trim();
+    syncSortChoice(query);
     const days = {'7d':7,'30d':30,'365d':365}[timeSelect.value];
     const now = Date.now();
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -864,7 +881,7 @@ function createGlobalSessionSearch(options) {
     setScope(button.dataset.scope);
     scheduleSearch();
   });
-  for (const select of [timeSelect, projectSelect, sortSelect, timeField].filter(Boolean)) select.addEventListener('change', () => { try { window.localStorage.setItem('hub.search.sort',sortSelect.value); } catch {} scheduleSearch(); });
+  for (const select of [timeSelect, projectSelect, sortSelect, timeField].filter(Boolean)) select.addEventListener('change', () => { if(queryInput.value.trim()) {try { window.localStorage.setItem('hub.search.sort',sortSelect.value); } catch {}} scheduleSearch(); });
   sortSelect.addEventListener('change',()=>{directionSelect.value=sortSelect.value==='title'?'asc':'desc';directionSelect.disabled=sortSelect.value==='relevance';});
   directionSelect.addEventListener('change',()=>scheduleSearch());
   closeButton.addEventListener('click', close);
