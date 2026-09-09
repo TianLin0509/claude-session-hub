@@ -123,26 +123,23 @@ test('C2b · 摘要里能拿到方案、提问和交付说明，且纪事有序'
   assert.ok(s.timeline[2].text.includes('没做手机推送'), '交付说明要跟着交付那条进纪事');
 });
 
-test('C3 · 合同、工作流预设、解析器三方对齐（谁漂移谁红）', () => {
-  const author = read('.agents/AUTHOR.md');
-  const merger = read('.agents/MERGER.md');
+test('C3 · 项目合同精简，旧协议留在旧模板，新流程由 Hub 注入', () => {
+  const author = read('.agents/AUTHOR.md'), merger = read('.agents/MERGER.md');
+  for (const contract of [author, merger]) {
+    assert(!/ASK:|RESULT:|PROGRESS:|NOTES:/.test(contract));
+    assert(contract.includes('project.json'));
+    assert(contract.includes('node scripts/run_unit_tests.js'));
+  }
   const WT = require('../renderer/workflow-templates.js');
-  const prompts = WT.createTemplateConfig('dev-task',
-    [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }]).stepConfigs.map(s => s.prompt);
-
-  for (const label of ['PLAN:', 'UPDATE:', 'ASK:', 'NOTES:']) {
-    assert.ok(author.includes(label), 'AUTHOR.md 缺人话标签 ' + label);
-    assert.ok(prompts[0].includes(label), '工作位 prompt 缺人话标签 ' + label);
-  }
-  for (const label of ['UPDATE:', 'ASK:', 'NOTES:']) {
-    assert.ok(merger.includes(label), 'MERGER.md 缺人话标签 ' + label);
-    assert.ok(prompts[1].includes(label), '合并位 prompt 缺人话标签 ' + label);
-  }
-  // 合同教的每个标签，解析器都必须真认得 —— 否则写了也进不了工作台
-  const sample = 'PLAN: a\nUPDATE: b\nASK: c\nNOTES: d';
-  assert.deepEqual(Feed.fields(sample), { PLAN: 'a', UPDATE: 'b', ASK: 'c', NOTES: 'd' });
-  // 合同必须说明这些标签可以写成段落，否则 agent 照旧只写一行
-  assert.ok(/下限/.test(author) && /下限/.test(merger), '合同要给字数下限而不是上限，这是这次改动的重点');
+  const members = [{memberId:'m1'}, {memberId:'m2'}];
+  const legacy = WT.createTemplateConfig('dev-task', members, {devPhase:'build'});
+  assert(legacy.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
+  assert(legacy.stepConfigs[0].prompt.includes('PROGRESS / VERIFIED / RISK / REPORT'));
+  const F = require('../core/dev-file-workflow');
+  const prompt = F.phasePrompt({}, '/fixture', F.spec('merge', 1));
+  assert(prompt.includes('不使用 ASK'));
+  assert(prompt.includes('需返工-合并手册-轮次1.md'));
+  assert.deepEqual(Feed.fields('PLAN: a\nUPDATE: b\nASK: c\nNOTES: d'), {PLAN:'a', UPDATE:'b', ASK:'c', NOTES:'d'});
 });
 
 test('E1 · 实时通道送来的 PLAN / ASK 要按各自标签落盘，并直接进摘要', () => {

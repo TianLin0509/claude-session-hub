@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { Worker } = require('node:worker_threads');
 const Feed = require('../../core/dev-workbench-feed');
 const DP = require('../../renderer/dev-progress');
+const FileFlow = require('../../core/dev-file-workflow');
 
 // 项目卡的标题读项目自己的 .agents/project.json。
 // 以前用的是 meeting.workspaceLabel —— 那个字段会被自动标题改写成 AI 的第一句回复
@@ -65,6 +66,20 @@ function createDevWorkbench(deps) {
     return '';
   }
   function makeRow(m) {
+    if (FileFlow.enabled(m)) {
+      const file = deps.fileEngine?.status(m.id);
+      const error = file?.error || file?.dispatchError || (!file ? '文件工作流不可用' : '');
+      return { id: m.id, title: Feed.clean(m.title, 240) || '开发群聊', workspace: m.workspace,
+        project: projectNameOf(m.workspace, Feed.clean), createdAt: m.createdAt, activityAt: m.lastMessageTime || m.createdAt,
+        pinned: !!m.pinned, bottomed: !!m.bottomed, goal: '', progress: error || file?.label || '',
+        stage: { key: file?.done ? 'passed' : file?.phase || 'unavailable',
+          label: `${file?.label || '文件状态不可用'}${file?.paused ? ' · 已暂停，输入“继续”接续' : ''}`,
+          tone: error ? 'bad' : file?.done ? 'good' : file?.paused ? 'warn' : file?.running ? 'run' : 'idle', running: !!file?.running },
+        flow: { configured: true, phase: file?.phase, round: file?.round, status: file?.paused ? 'paused' : '', currentStep: file?.phase },
+        attention: error ? { kind: 'error', label: '执行需处理', text: error } : null,
+        ask: '', plan: '', blockers: '', report: '', chronicle: summaries.get(m.id)?.summary?.timeline || [],
+        lastError: error, loading: false, controlToken: JSON.stringify(file), actions: {} };
+    }
     const sw = m.serialWorkflow && typeof m.serialWorkflow === 'object' ? m.serialWorkflow : {};
     const ls = sw.loopState && typeof sw.loopState === 'object' ? sw.loopState : {};
     const live = runtime(m), saved = summaries.get(m.id) || {};
@@ -311,6 +326,6 @@ function createDevWorkbench(deps) {
     ipcMain.handle('dev-workbench:action', (_event, args) => action(args && typeof args === 'object' ? args : {}));
   }
   function dispose() { disposed = true; unsubscribe(); if (timer) clearTimeout(timer); failWorker(new Error('工作台已关闭')); }
-  return { snapshot, action, handleEvent, registerIpc, dispose, ingest, flush, _test: { makeRow, summaries, controls } };
+  return { snapshot, action, handleEvent, registerIpc, dispose, ingest, flush, changed, _test: { makeRow, summaries, controls } };
 }
 module.exports = { createDevWorkbench };

@@ -317,6 +317,17 @@ async function testSerialWorkflowSemantics() {
 async function main() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-live-ops-'));
   try {
+    const h = makeHarness(tmpDir);
+    h.addMeeting('file-stale-chat', ['author', 'merger']);
+    h.deps.sessionManager.getGroupChatReady = () => false;
+    const d = createGroupChatDispatcher(h.deps);
+    const interrupted = d.interruptMeetingTurn('file-stale-chat', { targetSids: ['author', 'foreign-session'] });
+    assert.strictEqual(interrupted.ok, true);
+    assert.deepStrictEqual(interrupted.signaled, ['author'], 'file executor must receive ESC after its chat watcher settled; foreign sessions excluded');
+    assert(h.ptyWrites.some(w => w.sid === 'author' && w.data === INTERRUPT_KEY));
+    assert(!h.ptyWrites.some(w => w.sid === 'merger' || w.sid === 'foreign-session'));
+    h.deps.sessionManager.writeToSession = () => { throw new Error('closed PTY'); };
+    assert.strictEqual(d.interruptMeetingTurn('file-stale-chat', { targetSids: ['author'] }).ok, false, 'failed interrupt must be visible');
     await testAppendWhileRunning(tmpDir);
     await testAppendDuringSendRace(tmpDir);
     await testInterruptWhileRunning(tmpDir);

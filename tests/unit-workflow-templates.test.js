@@ -27,17 +27,19 @@ test('串行工作流提供 7 个任务预设按钮', () => {
     ['续跑', '审查', '功能', '修 Bug', '调研', '开发任务', '开发任务 · 极简']);
 });
 
-test('开发任务是工作位↔合并位的两步循环，两步必须落到不同成员', () => {
+test('新开发任务采用文件工作流，两席位保持独立', () => {
   const c = WT.createTemplateConfig('dev-task', members);
   assert(c && c.steps.length === 2 && c.stepConfigs.length === 2);
   assert.deepStrictEqual(c.steps[0], ['m1']);
   assert.deepStrictEqual(c.steps[1], ['m2']);       // 落到同一个成员就成了自审自合
-  assert(c.loop.enabled === true && c.loop.maxRounds === 3);
+  assert.equal(c.fileFlowVersion, 2);
+  assert.equal(c.loop.enabled, false);
   assert(c.stepConfigs[0].prompt.includes('.agents/AUTHOR.md'));
   assert(c.stepConfigs[1].prompt.includes('.agents/MERGER.md'));
-  assert(c.stepConfigs[1].prompt.includes('RESULT: PASS 或 FAIL'));
+  assert(!c.stepConfigs.some(s => /ASK:|RESULT:/.test(s.prompt)));
   assert(!/动过就要求先 rebase/.test(c.stepConfigs[1].prompt), '主干前进不能无条件制造 rebase 返工');
-  assert(/冲突或集成测试失败/.test(c.stepConfigs[1].prompt), '只有真实集成失败才要求工作位修复');
+  const F = require('../core/dev-file-workflow');
+  assert(/冲突或测试失败/.test(F.phasePrompt({}, '/fixture', F.spec('merge', 1))));
 });
 
 test('开发预设必须通用：prompt 里不出现项目名或绝对路径', () => {
@@ -54,7 +56,7 @@ test('开发预设必须通用：prompt 里不出现项目名或绝对路径', (
 test('开发预设带按步超时，且能穿过归一化（引擎才读得到）', () => {
   // loop-engine: Math.max(60_000, Math.min(30*60_000, stepConfigs[i].timeoutMs || 10*60_000))
   // normalizeStepConfigs 以前只留 name/prompt，模板填的 timeoutMs 会被吃掉，引擎永远读到默认值。
-  const c = WT.createTemplateConfig('dev-task', members);
+  const c = WT.createTemplateConfig('dev-task', members, { devPhase: 'build' });
   assert.strictEqual(c.stepConfigs[0].timeoutMs, 30 * 60 * 1000);
   assert.strictEqual(c.stepConfigs[1].timeoutMs, 25 * 60 * 1000);
 

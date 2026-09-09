@@ -6,6 +6,7 @@ const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
+const DevFile = require('../../core/dev-file-workflow');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
 const {
   ATTEMPT_AWAITING_BINDING,
@@ -1014,7 +1015,12 @@ function createGroupChatDispatcher(deps) {
       }
     }
 
-    const signaled = signalInterruptToPty(stopped.length > 0 ? stopped : sidsStillBusy(sids));
+    // File handoff can precede the old reply's final event. Interrupt the bound executor even
+    // when that late event already settled its chat watcher; membership still limits the target.
+    const explicit = (Array.isArray(opts.targetSids) ? opts.targetSids : []).filter(sid => sids.includes(sid));
+    const signalTargets = explicit.length ? [...new Set([...stopped, ...explicit])]
+      : stopped.length > 0 ? stopped : sidsStillBusy(sids);
+    const signaled = signalInterruptToPty(signalTargets);
 
     // 有轮正卡在 sendToPty（watcher 还没建）时不要抢着收 idle：那一轮马上会在
     //   开等之前读到中断代际并自己以 interrupted 收敛，这里插一脚只会让 UI 闪。
@@ -1048,7 +1054,8 @@ function createGroupChatDispatcher(deps) {
     } catch (e) {
       warn('[groupchat] interrupt sendToRenderer threw:', e && e.message);
     }
-    return { ok: true, stopped, stoppedAttemptIds, signaled, turnNum, pendingDispatch };
+    const failedExplicit = explicit.filter(sid => !signaled.includes(sid));
+    return { ok: !failedExplicit.length, ...(failedExplicit.length ? { reason: '执行席位的中断信号未送达；自动派工已暂停' } : {}), stopped, stoppedAttemptIds, signaled, turnNum, pendingDispatch };
   }
 
   // 没有 watcher 但 PTY 可能仍在跑（send 与 wait 之间被叫停）：对本 meeting 里
@@ -1117,7 +1124,9 @@ function createGroupChatDispatcher(deps) {
     workflowRun,
     clientMessageId,
     _dispatchSeq,
+    shouldDispatch,
   } = {}) {
+    if (shouldDispatch && !shouldDispatch()) return { status: 'error', reason: '文件进度已变化或用户已停止', turnNum: null };
     const turnStartedAt = Date.now();
     // 在飞派发计数（2026-07-29 道雪）：给 interruptMeetingTurn 区分「真没人在跑」
     //   和「有轮正卡在 sendToPty」。silent 内部编排不计入（不属于用户可见轮）。
@@ -1230,7 +1239,9 @@ function createGroupChatDispatcher(deps) {
           orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
             currentUserMessageAppended: begin.didAppendUserMessage,
           }),
-          DevDiscuss.discussBlockFor(meeting, member.memberId),
+          DevFile.enabled(meeting)
+            ? DevFile.common(meeting, DevFile.directory(getHubDataDir(), meeting.id))
+            : DevDiscuss.discussBlockFor(meeting, member.memberId),
         );
         // 这位成员还没确认收到的维护者插话，逐条补进本次 prompt。
         // 只有 sendToPty 真的成功之后才标已读（见下方 markUserSupplementsDelivered），

@@ -17,6 +17,7 @@
     'VERIFIED: 实际执行的验证及结果',
     'NEXT: 无，或下一步建议',
   ].join('\n');
+  const AUTHOR_RESULT_CONTRACT = '最终四行：\nPROGRESS: 完成内容\nVERIFIED: 实际验证命令和结果\nRISK: 残余风险\nREPORT: 报告路径或无';
 
   const TASK_PRESETS = [
     { id: 'task-safe-resume', name: '续跑', desc: '先校准当前状态，再继续未完成项', minMembers: 2, recommended: true },
@@ -195,6 +196,7 @@
               '每到一个可解释的阶段就写一条 UPDATE: 中文进展；这些进展会全部保留在群聊和工作台纪事里，中途多写几条是有意义的。',
               '需要维护者拍板时写 ASK: 问题 + 两个选项的代价 + 你的推荐，工作台会把它顶到「需要我」。',
               '最后按合同输出 PROGRESS / VERIFIED / RISK / REPORT 四行人话，不要贴代码；最终交接前不要提前输出这四行。',
+              AUTHOR_RESULT_CONTRACT,
               '四行之后再写一段 NOTES: 给维护者的说明 —— 做了什么、为什么这么做、什么没做、怎么验的。',
             ].join('\n'),
           },
@@ -228,7 +230,20 @@
       // MD 交接：阶段文档由 agent 改名交付，Hub 按文件而不是「回复结束」判定推进。
       // 只对新建的双席位开发群聊打开；老房间没有这个字段，行为一字不改。
       devConfig.mdHandoff = true;
+      // Explicit legacy build configs remain compatible; new dual rooms use the name-only protocol.
+      if (!(opts && opts.devPhase === 'build')) {
+        devConfig.fileFlowVersion = 2;
+        devConfig.loop = { enabled: false };
+        devConfig.stepConfigs = [
+          { name: '开题与实现', prompt: '项目差异见 .agents/AUTHOR.md；通用阶段提示词由 AI HUB 文件工作流统一注入。' },
+          { name: '独立审查与合并', prompt: '项目差异见 .agents/MERGER.md；通用阶段提示词由 AI HUB 文件工作流统一注入。' },
+        ];
+      }
       if (ws && ws.atWorkRoot) devConfig.projectLocator = buildProjectLocatorPrompt(ws.projects);
+      if (devConfig.fileFlowVersion === 2 && devConfig.projectLocator) {
+        devConfig.projectLocator = devConfig.projectLocator.replace('判断不了属于哪个项目就先问我一句，不要猜，也不要在工作根下乱翻。',
+          '依据任务和项目库核实最匹配的项目，不再例行提问；若仍缺少项目定位线索，保留开题草稿并说明缺少的事实，不随意改动其他项目。');
+      }
       // 原始项目库快照。projectLocator 是拼好的一段话，主进程没法拿它去做「任务里提到了哪个项目」
       // 的比对；把结构化的那份也存下来，E01–E03 的定位判断才有依据。
       if (ws && Array.isArray(ws.projects) && ws.projects.length) {
@@ -263,6 +278,7 @@
               '开工前先写一段 PLAN: 打算怎么做、动哪几块、有什么取舍，三五句，别列文件清单。',
               '每到一个可解释的阶段就写一条 UPDATE: 中文进展；这些进展会全部保留在群聊和工作台纪事里。',
               '最后按合同输出 PROGRESS / VERIFIED / RISK / REPORT 四行人话，不要贴代码；最终交接前不要提前输出这四行。',
+              AUTHOR_RESULT_CONTRACT,
               '四行之后再写一段 NOTES: 给维护者的说明 —— 做了什么、为什么这么做、什么没做、怎么验的。',
             ].join('\n'),
           },

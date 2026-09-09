@@ -44,7 +44,7 @@ test('发送按钮仍按 serialWorkflow 三岔路分发（默认工作流才有�
 test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原样保留（2026-09-06）', () => {
   // 用户的痛点：有些任务本身就要先讨论。做法不是第三个场景，而是同一个群两个阶段。
   // 讨论阶段的判断必须在循环分支之前，否则「先讨论」选了也是一发就开跑。
-  const iDiscuss = room.indexOf('if (DevDiscuss.isDiscussing(m)) {');
+  const iDiscuss = room.indexOf('if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {');
   const iLoop = room.indexOf('m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&', iDiscuss);
   assert(iDiscuss > 0 && iLoop > iDiscuss, '讨论阶段判断必须排在循环分支前面');
   // 2026-09-08：取消了「任务已明确，直接开工」那一挡 —— 它绕过开题，实现位手里
@@ -56,7 +56,8 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
   const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
   const discuss = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss' });
   assert.strictEqual(discuss.devPhase, 'discuss');
-  assert.strictEqual(discuss.loop.enabled, true, '讨论阶段不许关循环开关：开工只翻阶段字段，配置一个字不动');
+  assert.strictEqual(discuss.loop.enabled, false, '新房间不启动旧循环');
+  assert.strictEqual(discuss.fileFlowVersion, 2);
   const build = WT.createTemplateConfig('dev-task', members, {});
   assert.strictEqual(build.devPhase, 'discuss', '不传就是讨论起手（取消分岔之后的默认）');
   assert.strictEqual(build.mdHandoff, true, '新建的双席位开发群聊默认走 MD 改名交接');
@@ -158,7 +159,7 @@ test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定�
     { name: 'AI HUB', path: 'C:\\some\\where\\hub' },
     { name: 'SuperRAN', path: 'C:\\some\\where\\ran' },
   ];
-  const c = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: true, projects } });
+  const c = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: true, projects } });
   for (const [i, step] of c.stepConfigs.entries()) {
     assert(step.prompt.startsWith('【先定位项目根】'), `第 ${i + 1} 步必须以定位说明开头，放后面会被合同指令盖过`);
     assert(step.prompt.includes('AI HUB → C:\\some\\where\\hub'), `第 ${i + 1} 步要列出中文名 → 路径`);
@@ -173,11 +174,11 @@ test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定�
   assert(/\.agents\/MERGER\.md/.test(c.stepConfigs[1].prompt));
 
   // 项目库空的时候也要给出可执行的找法，而不是一句「自己找」
-  const empty = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: true, projects: [] } });
+  const empty = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: true, projects: [] } });
   assert(/\.agents\/project\.json/.test(empty.stepConfigs[0].prompt), '空库时要说清判据');
 
   // 不在工作根（选了项目根）时，一个字都不多：agent 已经站在项目里了
-  const onRepo = WT.createTemplateConfig('dev-task', members, { workspace: { atWorkRoot: false, projects } });
+  const onRepo = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: false, projects } });
   assert(!/先定位项目根/.test(onRepo.stepConfigs[0].prompt));
   assert(!/some\\where/.test(onRepo.stepConfigs[0].prompt));
 });
@@ -216,7 +217,7 @@ test('合同里写的四行格式，引擎的解析器真的认（skill ↔ 工�
   // 任何一环措辞漂移，引擎就判不出 PASS，循环会一直空转到轮次上限。
   // 所以这里直接把合同里的格式抠出来，喂给真正的解析器。
   const LW = require('../renderer/loop-workflow.js');
-  const merger = read('.agents/MERGER.md');
+  const merger = WT.createTemplateConfig('dev-task', [{memberId:'m1'},{memberId:'m2'}], {devPhase:'build'}).stepConfigs[1].prompt;
 
   // 合同必须写明这四个标签
   for (const label of ['RESULT:', 'BLOCKERS:', 'VERIFIED:', 'NEXT:']) {
@@ -231,14 +232,14 @@ test('合同里写的四行格式，引擎的解析器真的认（skill ↔ 工�
   assert.strictEqual(LW.parseVerdict('我觉得可以合并了'), null, '不按格式就不该瞎猜');
 
   // 工作位那四行标签也要和合同一致
-  const author = read('.agents/AUTHOR.md');
+  const author = WT.createTemplateConfig('dev-task', [{memberId:'m1'},{memberId:'m2'}], {devPhase:'build'}).stepConfigs[0].prompt;
   for (const label of ['PROGRESS:', 'VERIFIED:', 'RISK:', 'REPORT:']) {
     assert(author.includes(label), 'AUTHOR.md 缺标签 ' + label);
   }
 
   assert(!/合完把结果写成人话[\s\S]{0,300}PROGRESS:/.test(merger),
     '合并位完成后不能切到工作位协议，否则引擎认不出 PASS');
-  assert(/成功后仍输出上节同一套四行/.test(merger),
+  assert(/RESULT: PASS 或 FAIL/.test(merger),
     '合并位必须明确在正式合并后仍输出 RESULT 四行');
 });
 

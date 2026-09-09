@@ -24,9 +24,11 @@ function registerGroupchatTurnIpc(ipcMain, deps) {
     try {
       if (!args || !args.meetingId) return { ok: false, reason: 'no_meeting_id' };
       let loopStopped = false;
+      let stopError = null;
       if (typeof stopLoop === 'function') {
         try { loopStopped = !!stopLoop(args.meetingId, { interrupt: false }); }
         catch (err) {
+          stopError = err && err.message || '停止派工状态保存失败';
           if (logger && typeof logger.warn === 'function') logger.warn('[groupchat:interrupt] stopLoop threw:', err && err.message);
         }
       }
@@ -34,6 +36,7 @@ function registerGroupchatTurnIpc(ipcMain, deps) {
         return { ok: false, reason: 'interrupt_unavailable', loopStopped };
       }
       const result = interruptGroupChatTurn(args.meetingId, { reason: args.reason || 'user_interrupt' });
+      if (stopError) return { ...result, ok: false, reason: stopError, loopStopped };
       return { ...result, loopStopped };
     } catch (err) {
       logger.error('[groupchat:interrupt] unhandled throw:', err);

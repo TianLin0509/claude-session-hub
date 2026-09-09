@@ -187,7 +187,10 @@ function createResumeSessionHandler(deps) {
     // provider must start fresh under the same Hub id; otherwise Claude can
     // continue an unrelated conversation and Codex/Kimi can open a picker that
     // consumes the automation prompt.
-    const freshUnboundAgentLeague = isAgentLeague && (
+    const managedMeeting = meta.meetingId && meetingManager.getMeeting(meta.meetingId);
+    const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
+      && managedMeeting.subSessions?.includes(meta.hubId);
+    const freshUnboundAgentLeague = (isAgentLeague || isFileFlowMember) && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)

@@ -775,3 +775,19 @@
   border-color: rgba(233, 105, 105, 0.85);
   background: rgba(233, 105, 105, 0.22);
 }
+/* File workflow: one progress strip, one set of controls. */
+.mr-file-flow { width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 3px 0; }
+.mr-file-steps { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary, #9ca3af); }
+.mr-file-steps span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.mr-file-steps b { border: 1px solid currentColor; border-radius: 50%; width: 19px; height: 19px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
+.mr-file-steps .active { color: var(--accent, #74a7ff); font-weight: 600; }
+.mr-file-steps i { font-style: normal; opacity: .4; }
+.mr-file-detail { flex: 1; min-width: 140px; font-size: 12px; color: var(--text-secondary, #9ca3af); }
+.mr-file-detail strong { color: var(--text-primary, #ddd); font-weight: 500; }
+.mr-file-error { color: #f18e85; display: block; }
+.mr-file-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mr-file-actions small { opacity: .7; }
+.mr-file-actions button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid #64748b55; background: transparent; color: inherit; cursor: pointer; }
+.mr-file-actions button[data-file-kickoff] { color: #74a7ff; border-color: #74a7ff66; }
+.mr-file-actions button.stop { color: #f18e85; }
+.mr-file-actions button:disabled { opacity: .5; cursor: wait; }
