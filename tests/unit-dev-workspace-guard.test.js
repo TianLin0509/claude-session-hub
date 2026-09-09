@@ -164,6 +164,42 @@ test('「选择已有路径」那一行有项目库下拉：点开列已整理�
 
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
 console.log('\n──────────────');
+test('阻断 失效目录不该在建房这一刻硬报错：有像样的落脚点就放行并带回它', () => {
+  // 任务书第七节：不存在的 cwd 会让 CLI 在启动前就失败，Hub 应当在**有效目录**
+  // 进入只读定位流程，而不是把用户挡在建房外面（2026-09-08 合并位在真实入口复现）。
+  const SEP = String.fromCharCode(92);
+  // 真实场景：用户选的是某个项目里已经被删掉的子目录 / 过期 worktree 路径。
+  const REPO = 'C:' + SEP + 'projects' + SEP + 'demo';
+  const files = new Set([REPO, [REPO, '.git'].join(SEP), [REPO, '.agents', 'project.json'].join(SEP)]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => !target.endsWith('project.json') };
+    },
+  };
+  const verdict = checkDevWorkspace([REPO, 'ghost', 'deeper'].join(SEP), { fs: fakeFs });
+  assert.strictEqual(verdict.ok, true, '路径所属的项目还在，就不该把用户挡在建房外');
+  assert.strictEqual(verdict.reason, 'ready-fallback');
+  assert.strictEqual(verdict.resolvedRoot, REPO, '要退回它所属的项目根');
+  assert.ok(/不存在/.test(verdict.message), '得让用户看见路径被纠正过');
+});
+
+test('落脚点不属于任何项目时，仍然如实报「目录不存在」', () => {
+  // 退到一个随便什么存在的文件夹并不能解决问题，只是把失败推迟到第一步。
+  const SEP = String.fromCharCode(92);
+  const PLAIN = 'C:' + SEP + 'tmpdir';
+  const files = new Set([PLAIN]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => true };
+    },
+  };
+  assert.strictEqual(checkDevWorkspace([PLAIN, 'ghost'].join(SEP), { fs: fakeFs }).reason, 'not-found');
+  const nothing = { statSync() { throw new Error('ENOENT'); } };
+  assert.strictEqual(checkDevWorkspace(['Z:', 'nope', 'deeper'].join(SEP), { fs: nothing }).reason, 'not-found');
+});
+
 test('合法仓库子目录不该被拦：向上找到仓库根，并把它带回给调用方', () => {
   // 用户选到 repo/src 时，原来只看 repo/src/.git 在不在 → 判成「不是 git 仓库」，
   // 但那明明就是那个项目（2026-09-08 合并位在真实隔离 IPC 上复现）。
@@ -199,7 +235,8 @@ test('worktree（.git 是文件）同样放行', () => {
 
 test('建群时子目录会被换成仓库根', () => {
   const modal = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-create-modal.js'), 'utf-8');
-  assert(/verdict\.reason === 'ready-subdir' && verdict\.resolvedRoot/.test(modal));
+  assert(/verdict\.reason === 'ready-subdir' \|\| verdict\.reason === 'ready-fallback'/.test(modal),
+    '子目录和「路径被纠正过」两种都要按带回来的项目根建群');
   assert(/workspace = \{ \.\.\.workspace, path: verdict\.resolvedRoot \}/.test(modal));
 });
 

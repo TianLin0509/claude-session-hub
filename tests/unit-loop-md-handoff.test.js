@@ -628,6 +628,61 @@ function writeDoc(docsDir, pos, body) {
     assert.strictEqual(h.getWorkflow().devPhase, 'build');
   });
 
+  // ── 2026-09-08 第五轮：等待窗口里到达的停止 / 交付 ────────────────────────
+
+  await t('阻断 停止在 500ms 重试等待窗口内到达 → 仍然不许派第二次', async () => {
+    let engineRef = null;
+    let dispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => ({ reason: 'cli_not_ready' }),
+      onDispatch: (args) => {
+        if (!(args.workflowRun && args.workflowRun.kind === 'kickoff')) return;
+        dispatches += 1;
+        // 第一次失败之后，停止在**等待期间**才到 —— 上一版的检查在 sleep 之前，漏掉这一格
+        if (dispatches === 1) setTimeout(() => engineRef.stopLoop('mtg', { interrupt: false }), 60);
+      },
+    });
+    engineRef = h.engine;
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(dispatches, 1, '等待窗口里点的停止同样算数');
+    assert.strictEqual(outcome.ok, false);
+  });
+
+  await t('阻断 报告在 500ms 重试等待窗口内交付 → 按成果算，不再派第二次', async () => {
+    let dispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      dispatchResult: () => ({ reason: 'send_failed' }),
+      onDispatch: (args, docsDir) => {
+        if (!(args.workflowRun && args.workflowRun.kind === 'kickoff')) return;
+        dispatches += 1;
+        if (dispatches === 1) setTimeout(() => writeDoc(docsDir, 0, KICKOFF_DOC), 60);
+      },
+    });
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(dispatches, 1, '等待期间交上来的报告同样算数，不该让它重写一遍');
+    assert.strictEqual(outcome.ok, true);
+    assert.strictEqual(h.getWorkflow().devPhase, 'build');
+  });
+
+  await t('循环那两步的传输重试同样要在派发紧前一刻认停止', async () => {
+    let engineRef = null;
+    let builderDispatches = 0;
+    const h = mk({
+      dispatchResult: (args) => (String(args.targetMemberIds[0]) === 'm1' ? { reason: 'cli_not_ready' } : null),
+      onDispatch: (args) => {
+        if (String(args.targetMemberIds[0]) !== 'm1') return;
+        builderDispatches += 1;
+        if (builderDispatches === 1) setTimeout(() => engineRef.stopLoop('mtg', { interrupt: false }), 60);
+      },
+    });
+    engineRef = h.engine;
+    const state = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(builderDispatches, 1, '等待窗口里点的停止，循环这边同样不许再派');
+    assert.strictEqual(state.status, 'stopped_user');
+  });
+
   console.log(`\n通过 ${pass} / 失败 ${fail}`);
   process.exit(fail ? 1 : 0);
 })();

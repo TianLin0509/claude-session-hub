@@ -621,8 +621,13 @@ async function _onCreate() {
       // 用户选中的是仓库**子目录**时，闸门会把仓库根算出来。必须按仓库根建群 ——
       // 合同里那些仓库内相对路径（.agents/AUTHOR.md、scripts/merge_task.py）
       // 在子目录里是找不到的。
-      if (verdict.reason === 'ready-subdir' && verdict.resolvedRoot) {
+      if ((verdict.reason === 'ready-subdir' || verdict.reason === 'ready-fallback') && verdict.resolvedRoot) {
         workspace = { ...workspace, path: verdict.resolvedRoot };
+      }
+      // 路径被纠正过（原来那个已经不存在）时告诉用户一声 —— 建房照常继续，
+      // 不要求他回去重新选一次（任务书第七节：唯一确认就自主继续）。
+      if (verdict.reason === 'ready-fallback' && verdict.message) {
+        console.warn('[meeting-create] 工作目录已纠正：' + verdict.message);
       }
       if (atWorkRoot) {
         createBtn.textContent = '正在读取项目库...';

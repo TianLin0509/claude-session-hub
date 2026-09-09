@@ -938,6 +938,8 @@ function createLoopEngine(deps) {
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
+            // 停止可能正好落在上一次重试的等待窗口里 —— 判断要贴着派发这一刻做（第五轮阻断）。
+            if (entry.abort || stopIntentOf(meetingId)) break;
             try {
               await ensureMemberReady(meeting, builderId);
               bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
@@ -969,6 +971,17 @@ function createLoopEngine(deps) {
               await sleep(500);
             }
           }
+        }
+        // 停止是在重试等待窗口里到的：跳出重试后要落成「用户停止」，
+        // 而不是让下面的结果校验把它记成一次「步骤失败」。
+        // 但停止只挡「派下一位」，不挡「接收交付」—— 盘上已经躺着的交付要照常收下，
+        // 否则用户点一次停止就把 agent 已经交出来的东西作废了（任务书 4.1 两段式）。
+        if (entry.abort || stopIntentOf(meetingId)) {
+          if (docsOn) checkDeliveryOnce(meetingId, docsDir, builderPos);
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          persistOrPause();
+          break;
         }
         const builderChecked = validateStepResult(meeting, [builderId], bRes);
         if (!builderChecked.ok && !builderChecked.takenOver) {
@@ -1082,6 +1095,8 @@ function createLoopEngine(deps) {
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
+            // 同上：等待窗口里点的停止同样算数。
+            if (entry.abort || stopIntentOf(meetingId)) break;
             try {
               for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
@@ -1111,6 +1126,13 @@ function createLoopEngine(deps) {
               await sleep(500);
             }
           }
+        }
+        if (entry.abort || stopIntentOf(meetingId)) {
+          if (docsOn) checkDeliveryOnce(meetingId, docsDir, reviewerPos);
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          persistOrPause();
+          break;
         }
         const reviewerChecked = validateStepResult(meeting, reviewerIds, rRes);
         if (!reviewerChecked.ok && !reviewerChecked.takenOver) {
@@ -1407,8 +1429,24 @@ function createLoopEngine(deps) {
         // 修法和循环那两步一致：有界传输重试 + 结果校验；仍然失败就明说是派发失败，
         // 把真实原因带出来，不含混地等。
         let dispatchFailure = null;
+        let dispatchStopped = false;
         for (let transportAttempt = 1; transportAttempt <= 2; transportAttempt += 1) {
           dispatchFailure = null;
+          // 2026-09-08 第五轮：这两个判断原来放在 sleep(500) **之前**，
+          // 于是「停止」或「报告」正好落在那 500ms 等待窗口里就被漏掉，照样派第二次。
+          // 判断必须贴着派发这一刻做 —— 等待期间发生的事同样算数。
+          if (transportAttempt > 1) {
+            if (entry.abort || stopIntentOf(meetingId)) {
+              logger.log('[loop-engine] 用户已停止，开题不再重试派发');
+              dispatchStopped = true;
+              break;
+            }
+            if (deliveryAccepted(checkDeliveryOnce(meetingId, dir, 0))) {
+              logger.log('[loop-engine] 开题报告其实已经交付，回执丢了也不重派');
+              dispatchFailure = null;
+              break;
+            }
+          }
           try {
             await ensureMemberReady(meeting, authorId);
             const dispatched = await getDispatcher().dispatchGroupChatTurn(meetingId, {
@@ -1427,22 +1465,12 @@ function createLoopEngine(deps) {
             dispatchFailure = (error && error.message) || 'kickoff_dispatch_exception';
           }
           if (!dispatchFailure || transportAttempt >= 2) continue;
-          // 2026-09-08 第四轮合并位复现：重试循环原来只看 entry.abort，于是
-          //   · 用户在第一次失败之后点了停止 —— 落盘的停止意图没人看，照样再派一次；
-          //   · 报告其实已经交了、只是回执丢了 —— 也照样再派一次，让 agent 把同一份
-          //     任务书重写一遍。
-          // 重试之前必须把这两件事都问一遍。
-          if (entry.abort || stopIntentOf(meetingId)) {
-            logger.log('[loop-engine] 用户已停止，开题不再重试派发');
-            break;
-          }
-          if (deliveryAccepted(checkDeliveryOnce(meetingId, dir, 0))) {
-            logger.log('[loop-engine] 开题报告其实已经交付，回执丢了也不重派');
-            dispatchFailure = null;
-            break;
-          }
           logger.log('[loop-engine] 开题派发失败，重试一次：' + dispatchFailure);
           await sleep(500);
+        }
+        if (dispatchStopped) {
+          saveKickoff({ kickoff: { status: 'awaiting_report', lastReason: 'user_stop', updatedAt: Date.now() } });
+          return { ok: false, reason: 'stopped_by_user', authorMemberId: authorId };
         }
         if (dispatchFailure) {
           // 回执丢了不等于没送到：先看一眼报告是不是其实已经交了（任务书 D04）。

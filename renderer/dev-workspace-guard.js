@@ -53,6 +53,28 @@ function checkDevWorkspace(dir, deps = {}) {
   try {
     stat = _fs.statSync(d);
   } catch (e) {
+    // 2026-09-08 第五轮：配置的目录不存在时，原来在建房这一刻硬报错把用户挡在外面。
+    // 任务书第七节要的是另一种处理：不存在的 cwd 会让 CLI 在启动前就失败，
+    // 所以 Hub 应当**退到一个确实存在的目录**、在那里进入只读定位流程，
+    // 并把「你配的那个不存在」明确说出来。找不到像样的落脚点才继续硬报错。
+    // 只在这个落脚点**本身就是一个有效项目现场**时才放行。
+    // 退到一个随便什么存在的文件夹并不能解决问题 —— 那只是把失败推迟到第一步，
+    // 而且会造出一个开在非项目目录上的开发房。
+    const ancestor = _nearestExistingAncestor(_fs, d);
+    const fallback = ancestor ? _findRepoRoot(_fs, ancestor) : null;
+    if (fallback) {
+      return {
+        ok: true,
+        reason: 'ready-fallback',
+        resolvedRoot: fallback,
+        requestedPath: d,
+        message: [
+          `你选的目录不存在：${d}`,
+          `已经退到它所属的项目根：${fallback}`,
+          'AI 会在那里先只读核实这是不是本任务要动的项目，确认之前不写任何文件。',
+        ].join(String.fromCharCode(10)),
+      };
+    }
     return {
       ok: false,
       reason: 'not-found',
@@ -110,6 +132,21 @@ function checkDevWorkspace(dir, deps = {}) {
     resolvedRoot: base,
     message: '',
   };
+}
+
+/**
+ * 向上找最近一个确实存在的祖先目录。盘符根不算 —— 退到 `C:\` 既没意义又危险。
+ */
+function _nearestExistingAncestor(_fs, dir) {
+  let current = String(dir || '');
+  for (let depth = 0; depth < 40; depth += 1) {
+    const parent = path.dirname(current);
+    if (!parent || parent === current) return null;   // 走到盘符根就放弃
+    current = parent;
+    if (path.dirname(current) === current) return null;
+    if (_exists(_fs, current)) return current;
+  }
+  return null;
 }
 
 /** 从 dir 向上找仓库根。`.git` 是文件（git worktree）同样算数。 */
