@@ -5033,6 +5033,8 @@ const pastSessionModals = createPastSessionModals({
   getLocalTitles: collectLocalSearchTitles,
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   openSearchHit: (hit, opts) => openGlobalSearchHit(hit, opts),
+  searchCardRenderer: turnCardRenderer,
+  openSearchPath: (filePath, opts) => openPathInHub(filePath, { ...opts, throwOnError: true }),
 });
 const { openResumeModal, openSearchModal } = pastSessionModals;
 // One ordinary click opens HTTP(S), file:// and local paths through the same

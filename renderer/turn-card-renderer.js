@@ -1061,6 +1061,19 @@ doc.addEventListener('click', (e) => {
   }
 
   return {
+    // Search owns a detached read-only view. Never register these historical
+    // cards in _sessionTurns or install resend/regen/company actions.
+    renderReadOnlyCard(turn) {
+      const root = doc.createElement('div');
+      root.innerHTML = renderTurnCard({ ...turn, id: `search-preview-${turn.id || ''}` });
+      root.querySelectorAll('.turn-actions, [data-action]').forEach(node => node.remove());
+      root.querySelectorAll('[data-turn-id]').forEach(node => {
+        node.removeAttribute('data-turn-id');
+        node.dataset.searchReadonly = 'true';
+      });
+      postProcessCardMath(root);
+      return root;
+    },
     renderToolCluster,
     renderTurnCard,
     rerenderTurn,

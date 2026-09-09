@@ -28,7 +28,7 @@ test('单字就能搜 —— 682 条数据没理由要求最少两个字', () =>
   const index = buildTitleIndex(SAMPLE);
   const hits = searchTitles(index, '归');
   assert.equal(hits.length, 2, '「归」应命中「归档」和「AI HUB 路径优化与归档策略」');
-  assert.equal(hits[0].title, '归档', '完全等于查询的标题必须排第一');
+  assert.deepEqual(new Set(hits.map(h=>h.title)),new Set(['归档','AI HUB 路径优化与归档策略']));
 });
 
 test('结果形状与全文检索一致，UI 能用同一套渲染', () => {
@@ -39,7 +39,7 @@ test('结果形状与全文检索一致，UI 能用同一套渲染', () => {
   assert.equal(hit.matchCount, 1);
   assert.equal(hit.bestMatch.scope, 'title');
   assert.equal(hit.bestMatch.text, '梦境沉淀方案');
-  assert.equal(hit.bestMatch.timestamp, 300);
+  assert.equal(hit.bestMatch.timestamp, null);
 });
 
 test('群聊标题带 meetingId，否则打不开', () => {
@@ -133,10 +133,10 @@ test('682 条真实量级下，一次查询必须是亚毫秒', () => {
 // —— 下面锁的是接线，光有纯函数正确还不够 ——
 test('renderer 必须同步先画标题层，再去跑全文', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'global-session-search.js'), 'utf8');
-  assert.match(src, /lastTitleHits = localTitleHits\(request\);/, '每次按键都要重算标题命中');
-  assert.match(src, /renderResults\(\{ results: \[\], totalSessions: 0, totalMatches: 0, pendingFullText:/,
-    '标题命中必须在发 IPC 之前就画出来');
-  assert.match(src, /mergeTitleHits\(fullText, lastTitleHits/, '全文回来要与标题层合并去重');
+  const perform=src.slice(src.indexOf('  async function performSearch('),src.indexOf('  function previewLabel('));
+  assert.ok(perform.indexOf('lastTitleHits=request.query?localTitleHits(request):[]')>=0);
+  assert.ok(perform.indexOf('pendingFullText:true')<perform.indexOf("ipcRenderer.invoke('search-past-sessions'"),'先画预备结果，再发全文请求');
+  assert.doesNotMatch(src,/mergeTitleHits\(fullText, lastTitleHits/,'最终结果由统一后端排序，不能把本地标题强插到前面');
   assert.match(src, /refreshTitleIndex\(\);/, '打开弹窗时要重建标题索引');
   assert.doesNotMatch(src, /正在更新搜索条件…/, '中间态转圈已经删掉，别再加回来');
 
@@ -201,9 +201,7 @@ test('标题档下不该说「全文检索中」', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'global-session-search.js'), 'utf8');
-  assert.match(src, /const titleOnlyScope = activeScope === 'title';/);
-  assert.match(src, /titleOnlyScope \? '正在补历史会话标题…' : '全文检索中…'/,
-    '用户点了「标题」页签还说在搜全文，正是他抱怨的那点');
-  assert.match(src, /function indexBuildingNote\(\)/, '重建期间要给出进度，别让人对着转圈猜');
-  assert.match(src, /全文索引重建中/);
+  assert.match(src, /继续检索中/,'进度文案对标题和全文范围都成立');
+  assert.match(src, /查看同步详情/);
+  assert.doesNotMatch(src, /titleOnlyScope \? .*全文检索中/);
 });

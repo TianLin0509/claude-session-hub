@@ -64,7 +64,7 @@ test('短词默认不扫 tool，并如实告知已收窄；显式选工具页签
 
   const all = index.search({ query: '归档' });
   assert.equal(all.totalSessions, 0, '默认档不该为了两个字去扫 205MB 的工具输出');
-  assert.deepEqual(all.narrowedScopes, ['title', 'user', 'assistant'],
+  assert.deepEqual(all.appliedFilters.scopes, ['assistant', 'title', 'user'],
     '收窄了就必须告诉调用方，否则用户以为「没搜到」= 不存在');
 
   const toolTab = index.search({ query: '归档', scopes: ['tool'] });
@@ -72,7 +72,8 @@ test('短词默认不扫 tool，并如实告知已收窄；显式选工具页签
   assert.equal(toolTab.narrowedScopes, undefined, '显式指定了 scope 就不算收窄');
 
   const long = index.search({ query: '归档输出' });
-  assert.equal(long.totalSessions, 1, '≥3 字走 FTS，不受短词收窄影响');
+  assert.equal(long.totalSessions, 0, '长短词使用相同的默认对话范围');
+  assert.equal(index.search({query:'归档输出',scopes:['title','user','assistant','tool']}).totalSessions,1);
 });
 
 test('scope 下推：标题档不再把整个 session 的正文捞出来再丢掉', (t) => {
@@ -147,22 +148,18 @@ test('getStats 缓存在写入后失效，不会返回过期的 session/doc 计�
   assert.equal(index.getStats().sessions, 1, 'prune 之后也要失效');
 });
 
-test('FTS 分支绝不能把 scope 放进 WHERE（放进去实测慢 18000 倍）', (t) => {
-  const index = freshIndex(t, 'fts-shape');
-  // 真实索引上的实测：powershell + scope IN ('tool')
-  //   WHERE 里  → 298477 ms（规划器改用 idx_docs_scope_time 驱动，LIMIT 失去短路）
-  //   投影里    →     16 ms
-  // 这个性质在几行夹具上复现不出来，只能锁语句形状。
-  const fts = index._matchStatement({ useFts: true, scopes: ['tool'], hasSince: true });
-  const ftsSql = String(fts.sourceSQL || fts.expandedSQL || index._lastMatchSql || '');
-  assert.ok(ftsSql, '拿不到 FTS 语句的 SQL 文本，测试本身失效了');
-  assert.doesNotMatch(ftsSql, /scope\s+IN/i, 'FTS 分支的 WHERE 里出现 scope 过滤 —— 这正是那个 298 秒的查询');
-  assert.doesNotMatch(ftsSql, /timestamp\s*>=/i, 'FTS 分支的 WHERE 里也不该有时间过滤');
-  assert.match(ftsSql, /d\.scope AS scope/i, 'scope 要留在投影里，交给 JS 过滤');
-
-  const instr = index._matchStatement({ useFts: false, scopes: ['tool'], hasSince: true });
-  const instrSql = String(instr.sourceSQL || instr.expandedSQL || '');
-  assert.match(instrSql, /scope\s+IN/i, 'instr 分支相反：scope 必须留在 WHERE，那是它唯一的收窄手段');
+test('FTS 查询计划由倒排索引驱动，同时在候选预算前过滤范围', t => {
+  const index=freshIndex(t,'fts-plan');
+  index.replaceSource(makeSource('s1','codex','title',[{id:'t1',scope:'tool',text:'PLANPROBE'}]));
+  const {QuerySnapshot,normalizeRequest}=require('../core/session-search-query');
+  const snapshot=new QuerySnapshot(index,normalizeRequest({query:'PLANPROBE',scopes:['tool'],timeRange:'7d'}));
+  try {
+    const {statement,args}=snapshot.makeStatement();
+    const plan=snapshot.db.prepare('EXPLAIN QUERY PLAN '+statement.sourceSQL).all(...args,32);
+    const drivers=plan.filter(row=>/SCAN|SEARCH/.test(row.detail));
+    assert.match(drivers[0].detail,/docs_fts VIRTUAL TABLE/,JSON.stringify(plan));
+    assert.equal(index.search({query:'PLANPROBE',scopes:['tool'],timeRange:'7d'}).totalSessions,1);
+  } finally {snapshot.close();}
 });
 
 test('FTS 路径 + scope 过滤：JS 侧过滤的结果必须和语义一致', (t) => {
@@ -172,7 +169,7 @@ test('FTS 路径 + scope 过滤：JS 侧过滤的结果必须和语义一致', (
     { id: 't1', scope: 'tool', text: 'rg SHAPEPROBE C:/somewhere' },
     { id: 'a1', scope: 'assistant', text: '回答里也有 SHAPEPROBE' },
   ]));
-  assert.equal(index.search({ query: 'SHAPEPROBE' }).results[0].matchCount, 3, '不限 scope 时三条都算');
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes:['title','user','assistant','tool'] }).results[0].matchCount, 3, '不限 scope 时三条都算');
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['tool'] }).results[0].matchCount, 1);
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user'] }).results[0].matchCount, 1);
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user', 'assistant'] }).results[0].matchCount, 2);
@@ -217,9 +214,10 @@ test('单个汉字也要真的去搜（此前是静默不搜，不是没结果�
   assert.equal(index.search({ query: '蜃', scopes: ['title'] }).totalSessions, 1, '标题里也有这个字');
   assert.equal(index.search({ query: '蜃', scopes: ['assistant'] }).totalSessions, 0, 'AI 回答里没有');
 
-  // 空查询仍然返回空，别把闸门开过头
-  assert.equal(index.search({ query: '' }).totalSessions, 0);
-  assert.equal(index.search({ query: '   ' }).totalSessions, 0);
+  // 空查询按最近对话浏览，控制字符仍应报错。
+  assert.equal(index.search({ query: '' }).totalSessions, 2);
+  assert.equal(index.search({ query: '   ' }).totalSessions, 2);
+  assert.equal(index.search({ query: '\u0000' }).state, 'error');
 });
 
 test('渲染层不再拦单字，否则后端放开了也白搭', () => {
@@ -237,14 +235,10 @@ test('多词查询：任一词零命中就立刻收工，不把剩下的词也�
   // 模糊浸泡抓到的形态：粘一大段文本进搜索框，被空白切成十几个词，
   // 其中的 1~2 字词每个都是一次顺序扫描，串起来 3.5 秒。多词是 AND，
   // 只要有一个词零命中，整个结果必然为空，后面的词根本不该查。
-  const calls = [];
-  const orig = index._matchedDocsForTerm.bind(index);
-  index._matchedDocsForTerm = (term, scopes, since) => { calls.push(term); return orig(term, scopes, since); };
-
   const res = index.search({ query: 'ZZZABSENTWORD 的 是 在 常见词' });
   assert.equal(res.totalSessions, 0);
-  assert.equal(calls.length, 1, `零命中的长词应当第一个被查并立即收工，实际查了 ${calls.length} 个词: ${JSON.stringify(calls)}`);
-  assert.equal(calls[0], 'zzzabsentword', '最长的词优先查（≥3 字走 FTS，毫秒级）');
+  assert.equal(res.state, 'complete');
+  assert.equal(res.scannedDocuments, 0, '无匹配长词直接完成，不扫描后续短词正文');
 });
 
 test('多词都命中时，语义仍然是 AND（惰性求值不能改变结果）', (t) => {

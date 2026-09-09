@@ -3,6 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { Worker } = require('node:worker_threads');
+const { randomUUID } = require('node:crypto');
 const { SqliteSessionSearchIndex } = require('./session-search-sqlite-index.js');
 const {
   collectSourceDescriptors,
@@ -66,6 +68,12 @@ function clipSource(source, options = {}) {
 
 class SessionSearchEngine {
   constructor(options = {}, emitStatus = () => {}) {
+    this.backgroundWriter = options.backgroundWriter === true;
+    this.writerOptions = { ...options, backgroundWriter: false };
+    this.writer = null;
+    this.writerLeaseToken = options.writerLeaseToken || null;
+    this.writerRequest = null;
+    this.retryState = new Map();
     const databasePath = options.databasePath || sqlitePathForLegacyCache(options.cachePath);
     if (!databasePath) throw new Error('session search databasePath is required');
     this.options = {
@@ -103,6 +111,7 @@ class SessionSearchEngine {
       reusedSources: 0,
       staleSources,
       lastRefreshAt: this.lastRefreshAt,
+      contentUpdatedAt: Number(this.index.getMeta('contentUpdatedAt',0)) || 0,
       lastError: null,
       sourceErrors: [],
       index: stats,
@@ -234,9 +243,45 @@ class SessionSearchEngine {
     return diagnostics;
   }
 
-  async refresh(snapshot = {}, { force = false } = {}) {
+  async _refreshInWorker(snapshot, options) {
     if (this.refreshPromise) return this.refreshPromise;
-    if (!force && this.statusValue.ready && Date.now() - this.lastRefreshAt < this.options.refreshTtlMs) {
+    if (!this.writer) {
+      const leaseToken=randomUUID();
+      this.writerLeaseToken=leaseToken;
+      const writer = new Worker(path.join(__dirname, 'session-search-refresh-worker.js'), {workerData:{...this.writerOptions,writerLeaseToken:leaseToken}});
+      this.writer = writer;
+      writer.on('message', message => {
+        this.index.statsCache = null;
+        if(message.type === 'status') {this.statusValue={...this.statusValue,...message.status};this.emitStatus({...this.statusValue});return;}
+        const pending=this.writerRequest;
+        if(!pending || message.id!==pending.id) return;
+        this.writerRequest=null;
+        if(message.error) pending.reject(new Error(message.error));
+        else {this.lastRefreshAt=message.result.lastRefreshAt||this.lastRefreshAt;this.statusValue={...this.statusValue,...message.result};pending.resolve({...this.statusValue});}
+      });
+      const fail=error=>{
+        if(this.writer!==writer) return;
+        this.writer=null;
+        // A failed thread leaves its parent PID alive. Release only this
+        // thread's token, otherwise the next writer would wait forever.
+        try {this.index.releaseWriterLease(leaseToken);} catch(leaseError) {console.warn('[session-search] failed writer lease cleanup:',leaseError.message);}
+        this._emit({phase:this.statusValue.ready?'ready_with_errors':'error',refreshing:false,lastError:error.message});
+        if(this.writerRequest) {this.writerRequest.reject(error);this.writerRequest=null;}
+      };
+      writer.on('error',fail);
+      writer.on('exit',code=>{if(this.writer===writer) fail(new Error(`后台索引线程退出 (${code})`));});
+    }
+    this.refreshPromise=new Promise((resolve,reject)=>{
+      const id=Date.now()+Math.random();this.writerRequest={id,resolve,reject};
+      this.writer.postMessage({id,type:'refresh',snapshot,options});
+    }).finally(()=>{this.refreshPromise=null;});
+    return this.refreshPromise;
+  }
+
+  async refresh(snapshot = {}, { force = false, immediate = false } = {}) {
+    if(this.backgroundWriter) return this._refreshInWorker(snapshot,{force,immediate});
+    if (this.refreshPromise) return this.refreshPromise;
+    if (!force && !immediate && this.statusValue.ready && Date.now() - this.lastRefreshAt < this.options.refreshTtlMs) {
       return { ...this.statusValue };
     }
     // 已经有可用索引时，这一趟本质是「增量体检」：绝大多数来源的 signature 没变，
@@ -247,6 +292,10 @@ class SessionSearchEngine {
     //   真有活要干时，下面统计出待解析数量再翻状态，那时候的进度条才是诚实的。
     const silentRescan = !force && this.statusValue.ready === true;
     this.refreshPromise = (async () => {
+      const lease=this.index.acquireWriterLease(this.writerLeaseToken || undefined);
+      if(!lease) {this._emit({phase:'waiting_writer',refreshing:false,lastError:null});return {...this.statusValue};}
+      try {
+      const previousStats=this.index.getStats();
       this._emit(silentRescan
         ? { phase: 'rescanning', lastError: null, sourceErrors: [] }
         : { phase: 'discovering', refreshing: true, lastError: null, sourceErrors: [] });
@@ -266,32 +315,36 @@ class SessionSearchEngine {
       let staleSources = diagnostics.length;
       let indexedChars = 0;
       let completed = 0;
+      let processedChanges = 0;
+      const reusable = (descriptor, previous) => {
+        const retry=this.retryState.get(descriptor.key);
+        if(!force && retry?.signature===descriptor.signature && retry.nextAt>Date.now()) return true;
+        return !force && previous && previous.signature===descriptor.signature && !(descriptor.type==='codex' && previous.stale);
+      };
       // 先数清楚这一趟到底有多少来源真的要重新解析（signature 变了或之前失败过）。
       //   进度条按「要干的活」算，而不是按「扫过的目录数」算 —— 后者永远是 4000+，
       //   看上去像在从零重建，实际上可能一个都不用动。
       const pendingSources = descriptors.reduce((count, descriptor) => {
         const previous = sourceStates.get(descriptor.key) || null;
-        const reusable = !force && previous && previous.signature === descriptor.signature
-          && !(descriptor.type === 'codex' && previous.stale);
-        return reusable ? count : count + 1;
+        return reusable(descriptor,previous) ? count : count + 1;
       }, 0);
       const announceProgress = !(silentRescan && pendingSources === 0);
-      const progressTotal = announceProgress && silentRescan ? pendingSources : descriptors.length;
+      const progressTotal = pendingSources;
       if (!announceProgress) {
         // 纯体检：没有任何来源需要重解析。全程不打扰用户，状态保持 ready。
         this._emit({ phase: 'ready', totalSources: descriptors.length, indexedSources: descriptors.length });
       } else {
-        this._emit({ refreshing: true, totalSources: progressTotal, indexedSources: 0 });
+        this._emit({ refreshing: true, totalSources: progressTotal, indexedSources: 0, sourcesDiscovered:descriptors.length, sourcesPending:pendingSources, sourcesProcessed:0 });
       }
 
       for (const descriptor of descriptors) {
         const previous = sourceStates.get(descriptor.key) || null;
-        if (!force && previous && previous.signature === descriptor.signature
-            && !(descriptor.type === 'codex' && previous.stale)) {
+        if (reusable(descriptor,previous)) {
           activeKeys.add(descriptor.key);
           reusedSources += 1;
           if (previous.stale) staleSources += 1;
         } else {
+          processedChanges += 1;
           try {
             const stat = fs.statSync(descriptor.filePath);
             if (descriptor.type !== 'codex' && stat.size > this.options.maxFileBytes) {
@@ -310,6 +363,7 @@ class SessionSearchEngine {
               parsedSources += 1;
               indexedChars += limited.chars;
               if (limited.truncated) staleSources += 1;
+              this.retryState.delete(descriptor.key);
             }
           } catch (error) {
             staleSources += 1;
@@ -318,6 +372,8 @@ class SessionSearchEngine {
             if (previous) this.index.markSourceStale(descriptor.key, retrySignature);
             else this.index.replaceSource(titleOnlySourceFromDescriptor(descriptor, { signature: retrySignature, stale: true }));
             activeKeys.add(descriptor.key);
+            const attempts=(this.retryState.get(descriptor.key)?.attempts||0)+1;
+            this.retryState.set(descriptor.key,{signature:descriptor.signature,attempts,nextAt:Date.now()+Math.min(300000,2000*2**Math.min(attempts,7))});
           }
         }
         completed += 1;
@@ -329,7 +385,8 @@ class SessionSearchEngine {
         // 又变回「看起来在重建索引」。有真活干时照常推。
         if (announceProgress && (completed % 4 === 0 || completed === descriptors.length)) {
           this._emit({
-            phase: 'indexing', totalSources: progressTotal, indexedSources: completed,
+            phase: 'indexing', totalSources: progressTotal, indexedSources: processedChanges,
+            sourcesDiscovered:descriptors.length, sourcesPending:Math.max(0,pendingSources-processedChanges), sourcesProcessed:processedChanges,
             parsedSources, reusedSources, staleSources, sourceErrors: diagnostics.slice(0, 8),
           });
         }
@@ -339,12 +396,20 @@ class SessionSearchEngine {
       // Drop sources outside the current discovery/retention set before adding
       // metadata-only Hub rows, otherwise an about-to-be-pruned transcript can
       // incorrectly suppress its replacement title record.
-      this.index.pruneSources(activeKeys);
+      const persistedPaths=this.index.db.prepare('SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL').all().map(row=>normalizePath(row.transcript_path));
+      const discoveryOptions=this._dynamicOptions(snapshot);
+      const missingRoots=[...discoveryOptions.claudeRoots,...discoveryOptions.codexRoots,...discoveryOptions.kimiRoots,...discoveryOptions.geminiRoots,discoveryOptions.meetingDir]
+        .filter(root=>root && !fs.existsSync(root) && persistedPaths.some(file=>file.startsWith(normalizePath(root).replace(/\/+$/,'')+'/')));
+      if(missingRoots.length) {diagnostics.push(`来源目录暂不可达，保留已有记录：${missingRoots.join(', ')}`);staleSources+=missingRoots.length;}
+      const discoveryComplete=!diagnostics.length && (collected.descriptors||[]).length===descriptors.length;
+      if(discoveryComplete) this.index.pruneSources(activeKeys);
+      else for(const key of sourceStates.keys()) activeKeys.add(key);
       const represented = this.index.getRepresentedIds();
       const currentSignatures = this.index.getSourceSignatures();
+      let metadataChanges=0;
       for (const source of titleOnlySources(collected.maps, represented.hubIds, represented.meetingIds)) {
         const limited = clipSource(source, this.options);
-        if (force || currentSignatures.get(source.key) !== source.signature) this.index.replaceSource(limited.source);
+        if (force || currentSignatures.get(source.key) !== source.signature) {this.index.replaceSource(limited.source);metadataChanges++;}
         activeKeys.add(source.key);
       }
       this.index.pruneSources(activeKeys);
@@ -365,19 +430,23 @@ class SessionSearchEngine {
       // 刚重写过大量页，缓存被冲掉了，重新预热短词档
       setImmediate(() => { try { this.index.prewarmShortTermScopes(); } catch { /* 同上 */ } });
       const stats = this.index.getStats();
+      if(parsedSources || metadataChanges || stats.sessions!==previousStats.sessions || stats.documents!==previousStats.documents) this.index.setMeta('contentUpdatedAt',Date.now());
       staleSources = Math.max(staleSources, Number(stats.staleSources) || 0);
       this._emit({
         phase: staleSources ? 'ready_with_errors' : 'ready',
         ready: true, refreshing: false,
         totalSources: activeKeys.size, indexedSources: activeKeys.size,
         parsedSources, reusedSources, staleSources,
+        sourcesDiscovered:descriptors.length, sourcesPending:0, sourcesProcessed:processedChanges,
         indexedTextChars: indexedChars,
         lastRefreshAt: this.lastRefreshAt,
+        contentUpdatedAt:Number(this.index.getMeta('contentUpdatedAt',0)) || 0,
         lastError: diagnostics[0] || null,
         sourceErrors: diagnostics.slice(0, 8),
         index: stats,
       });
       return { ...this.statusValue };
+      } finally {this.index.releaseWriterLease(lease);}
     })().catch(error => {
       this._emit({ phase: this.statusValue.ready ? 'ready_with_errors' : 'error', refreshing: false, lastError: error.message });
       throw error;
@@ -424,6 +493,20 @@ class SessionSearchEngine {
   }
 
   close() {
+    const writer=this.writer;
+    if(writer) {
+      return Promise.resolve(this.refreshPromise).catch(error => {
+        this._emit({refreshing:false,lastError:error.message});
+      }).then(() => {
+        if(writer.threadId===-1) return;
+        return new Promise((resolve,reject) => {
+        this.writer=null;
+        writer.once('exit',code => code===0?resolve():reject(new Error(`后台索引关闭失败 (${code})`)));
+        writer.once('error',reject);
+        writer.postMessage({type:'close'});
+        });
+      }).finally(() => this.index.close());
+    }
     this.index.close();
   }
 }

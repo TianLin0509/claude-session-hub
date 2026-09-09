@@ -25,7 +25,7 @@ function normalizeSearchText(value) {
 }
 
 function queryTerms(value) {
-  return normalizeSearchText(value).split(/\s+/).filter(Boolean);
+  return [...new Set(normalizeSearchText(value).split(/\s+/).filter(Boolean))];
 }
 
 function indexKeysForTerm(rawTerm) {

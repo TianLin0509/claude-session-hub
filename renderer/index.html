@@ -539,7 +539,7 @@
         <header class="session-search-header">
           <div class="session-search-heading">
             <div>
-              <h2 id="session-search-title">昨日之我 · 全局会话搜索</h2>
+              <h2 id="session-search-title">昨日之我 <small>找回问题，接着往下做</small></h2>
               <button type="button" class="session-search-index-status" id="session-search-index-status" title="点击刷新本地索引">
                 <span class="session-search-status-dot"></span>
                 <span id="session-search-status-text">正在读取本地索引…</span>
@@ -577,20 +577,26 @@
             <div class="session-search-selects">
               <label><span>时间</span><select id="session-search-time"><option value="all">不限</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="365d">最近一年</option></select></label>
               <label><span>项目</span><select id="session-search-project"><option value="">全部</option></select></label>
-              <label><span>排序</span><select id="session-search-sort"><option value="relevance">相关度</option><option value="recent">最近更新</option></select></label>
+              <label><span>时间依据</span><select id="session-search-time-field"><option value="eventTime">消息发生</option><option value="conversationTime">会话活动</option></select></label>
+              <label><span>排序</span><select id="session-search-sort"><option value="relevance">相关度</option><option value="conversationTime">最近对话</option><option value="matchTime">最近命中</option><option value="title">标题 A–Z</option></select></label>
             </div>
           </div>
           <div class="session-search-scope-tabs" id="session-search-scope-tabs" role="tablist" aria-label="搜索范围">
-            <button type="button" class="active" data-scope="all" role="tab" aria-selected="true">全部内容</button>
+            <button type="button" class="active" data-scope="dialogue" role="tab" aria-selected="true">对话内容</button>
+            <button type="button" data-scope="all" role="tab" aria-selected="false">全部内容</button>
             <button type="button" data-scope="title" role="tab" aria-selected="false">标题</button>
             <button type="button" data-scope="user" role="tab" aria-selected="false">我的提问</button>
             <button type="button" data-scope="assistant" role="tab" aria-selected="false">AI 回答</button>
             <button type="button" data-scope="tool" role="tab" aria-selected="false">工具 / 文件</button>
           </div>
+          <div id="session-search-conditions" class="session-search-conditions" aria-live="polite"></div>
+          <div id="session-search-index-details" class="session-search-index-details" hidden></div>
         </header>
         <div class="session-search-content">
+          <nav id="session-search-project-rail" class="session-search-project-rail" aria-label="项目导航"></nav>
+          <div class="session-search-workspace-panes">
           <section class="session-search-results-pane" id="session-search-results-pane" aria-label="搜索结果">
-            <div class="session-search-result-summary" id="session-search-result-summary"><span>输入至少 2 个字符开始搜索</span><span></span></div>
+            <div class="session-search-result-summary" id="session-search-result-summary"><span>正在读取最近对话 · 输入关键词即可搜索</span><span></span></div>
             <div class="session-search-results" id="search-results" role="listbox" aria-label="匹配的会话">
               <div class="session-search-empty">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3a7 7 0 0 0-4.8 12.1L5 19l3.9-2.2A7 7 0 1 0 12 3Z"/><path d="M9 10h6M9 13h4"/></svg>
@@ -607,6 +613,7 @@
             </div>
           </section>
         </div>
+          </div>
         <footer class="session-search-footer">
           <span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 预览　<kbd>Ctrl Enter</kbd> 打开会话</span>
           <span>本地索引 · 不上传会话内容</span>

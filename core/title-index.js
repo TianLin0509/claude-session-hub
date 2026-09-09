@@ -24,6 +24,7 @@ const SUBSTRING_SCORE = 200;
 const TERM_SCORE = 60;
 const TERM_HEAD_BONUS = 30;
 const DEFAULT_LIMIT = 50;
+const { documentRank, compareResults, normalizeSort, rankReason } = require('./session-search-ranking');
 
 function normalizeTitleText(value) {
   return String(value == null ? '' : value)
@@ -34,7 +35,7 @@ function normalizeTitleText(value) {
 }
 
 function titleQueryTerms(value) {
-  return normalizeTitleText(value).split(' ').filter(Boolean);
+  return [...new Set(normalizeTitleText(value).split(' ').filter(Boolean))];
 }
 
 /**
@@ -109,7 +110,7 @@ function searchTitles(index, query, options = {}) {
   }
   hits.sort((left, right) => right.score - left.score || right.updatedAt - left.updatedAt);
 
-  return hits.slice(0, limit).map(({ entry, updatedAt }) => ({
+  return hits.map(({ entry, updatedAt }) => ({
     key: entry.key,
     sessionKey: entry.key,
     hubSessionId: entry.hubSessionId || null,
@@ -120,6 +121,10 @@ function searchTitles(index, query, options = {}) {
     cwd: entry.cwd || null,
     projectLabel: entry.projectLabel || null,
     updatedAt,
+    lastConversationAt: Number(entry.lastConversationAt || entry.lastMessageTime || entry.lastCompletedAt) || null,
+    newestMatchedEventAt: null,
+    rank: documentRank({ scope: 'title', text: entry.title }, normalizedQuery, terms),
+    matchReasons: rankReason(documentRank({ scope: 'title', text: entry.title }, normalizedQuery, terms), true),
     matchCount: 1,
     titleOnly: true,
     bestMatch: {
@@ -127,11 +132,11 @@ function searchTitles(index, query, options = {}) {
       scope: 'title',
       role: 'title',
       speaker: null,
-      timestamp: updatedAt,
+      timestamp: null,
       ordinal: 0,
       text: entry.title,
     },
-  }));
+  })).sort((a,b) => compareResults(a,b,normalizeSort(options.sort,query),options.direction || (options.sort === 'title' ? 'asc' : 'desc'))).slice(0,limit);
 }
 
 /** 两条结果指的是不是同一个会话。全文层与标题层合并时去重用。 */

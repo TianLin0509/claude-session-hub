@@ -24,6 +24,50 @@ function writeClaudeTranscript(filePath) {
   fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + '\n', 'utf8');
 }
 
+test('external saves are indexed automatically, and reopening reuses unchanged sources', {timeout:20000}, async t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-search-watch-'));
+  const claudeRoot=path.join(root,'claude'),databasePath=path.join(root,'search.sqlite');
+  const options={claudeRoots:[claudeRoot],codexRoots:[],databasePath,prewarmEnabled:true,refreshTtlMs:60000};
+  const files=Array.from({length:6},(_,i)=>path.join(claudeRoot,'project',`s${i}.jsonl`));
+  files.forEach(writeClaudeTranscript);
+  let service=new SessionSearchService(options);
+  t.after(async()=>{await service.close();fs.rmSync(root,{recursive:true,force:true});});
+  const snapshot={sessions:[],meetings:[]};
+  await service.refresh(snapshot,{force:true});
+  const progress=[];service._child.on('message',m=>{if(m.type==='status' && m.status.refreshing) progress.push(m.status);});
+  service.startMaintenance(()=>snapshot);
+  const started=Date.now();
+  fs.appendFileSync(files[2],JSON.stringify({type:'assistant',uuid:'watch-added',timestamp:new Date().toISOString(),message:{content:[{type:'text',text:'AUTOMATIC_SAVE_MARKER'}]}})+'\n');
+  let response;
+  do {await new Promise(resolve=>setTimeout(resolve,80));response=await service.search({query:'AUTOMATIC_SAVE_MARKER'},snapshot);} while(!response.totalSessions && Date.now()-started<5000);
+  assert.equal(response.totalSessions,1,'保存后无需刷新按钮或重建调用即可搜索');
+  assert.ok(Date.now()-started<5000);
+  assert.ok(progress.some(s=>s.totalSources===1 && s.indexedSources===1));
+  assert.ok(progress.every(s=>s.indexedSources<=s.totalSources),'进度分子不能把复用来源也加进去');
+  await service.close();service=new SessionSearchService(options);
+  const reopened=await service.refresh(snapshot,{immediate:true});
+  assert.equal(reopened.parsedSources,0);
+  assert.equal(reopened.reusedSources,6);
+  assert.equal((await service.search({query:'AUTOMATIC_SAVE_MARKER'},snapshot)).totalSessions,1);
+});
+
+test('a writer thread failure releases only its lease while the query process stays alive', {timeout:10000}, async t => {
+  const {SessionSearchEngine}=require('../core/session-search-engine');
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-search-writer-fault-'));
+  const meetingDir=path.join(root,'meetings');fs.mkdirSync(meetingDir);
+  const engine=new SessionSearchEngine({databasePath:path.join(root,'search.sqlite'),claudeRoots:[],codexRoots:[],meetingDir,backgroundWriter:true});
+  t.after(async()=>{await engine.close();fs.rmSync(root,{recursive:true,force:true});});
+  await engine.refresh({sessions:[],meetings:[]},{immediate:true});
+  assert.ok(engine.index.acquireWriterLease(engine.writerLeaseToken));
+  const originalPid=process.pid;
+  await engine.writer.terminate();
+  assert.equal(process.pid,originalPid);
+  assert.equal(engine.index.db.prepare('SELECT count(*) AS n FROM search_writer_lease').get().n,0);
+  const recovered=await engine.refresh({sessions:[],meetings:[]},{immediate:true});
+  assert.equal(recovered.phase,'ready');
+  assert.equal(recovered.lastError,null);
+});
+
 class FakeChild extends EventEmitter {
   constructor({ autoRespond = false } = {}) {
     super();

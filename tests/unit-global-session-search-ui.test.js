@@ -14,6 +14,32 @@ const {
 const ROOT = path.resolve(__dirname, '..');
 const SEARCH_SOURCE = fs.readFileSync(path.join(ROOT, 'renderer', 'global-session-search.js'), 'utf8');
 
+test('an indexed result upgrades a selected provisional title preview',()=>{
+  const vm=require('node:vm');let loads=0;
+  const old={sessionKey:'s',titleOnly:true,bestMatch:{eventId:null}},updated={...old,indexed:true,bestMatch:{eventId:'answer'}};
+  const noop=()=>{};
+  const context=vm.createContext({results:[old],activeIndex:0,activePreview:{context:[]},lastResponse:null,
+    updateFacets:noop,lastTitleHits:[],summaryRoot:{firstElementChild:{},lastElementChild:{}},conditions:null,lastRequest:null,
+    queryInput:{value:'word'},window:{localStorage:{}},document:{createDocumentFragment:()=>({append:noop})},
+    resultsRoot:{replaceChildren:noop,querySelector:()=>({classList:{add:noop}})},createResultRow:noop,
+    sameSession:require('../core/title-index').sameSession,announce:noop,loadPreview:()=>{loads++;},selectResult:noop,
+    response:{results:[updated],totalSessions:1,state:'complete'}});
+  const start=SEARCH_SOURCE.indexOf('  function renderResults('),end=SEARCH_SOURCE.indexOf('  function renderSearchError(',start);
+  vm.runInContext(SEARCH_SOURCE.slice(start,end)+'\nrenderResults(response);',context);
+  assert.equal(loads,1,'升级正文后必须自动加载相关问答，不能永久保留纯标题预览');
+});
+
+test('expanding a preview keeps its current page and search filters',async()=>{
+  const vm=require('node:vm'),calls=[],hit={sessionKey:'s',indexed:true,bestMatch:{eventId:'a'}};
+  const context=vm.createContext({previewSequence:0,previewMode:'conversation',previewPage:{},lastRequest:{scopes:['assistant'],time:{field:'eventTime',from:1,to:10}},
+    queryInput:{value:'word'},ipcRenderer:{invoke:async(channel,payload)=>{calls.push(payload);return {context:[]};}},
+    isOpen:()=>true,sameSession:()=>true,results:[hit],activeIndex:0,renderPreview:()=>{},hit});
+  const start=SEARCH_SOURCE.indexOf('  async function loadPreview('),end=SEARCH_SOURCE.indexOf('  async function selectResult(',start);
+  await vm.runInContext(SEARCH_SOURCE.slice(start,end)+"\n(async()=>{await loadPreview(hit,{afterEventId:'a20'});await loadPreview(hit,{expandEventId:'a25'});})()",context);
+  assert.equal(calls[1].afterEventId,'a20');
+  assert.deepEqual(Array.from(calls[1].filters.scopes),['assistant']);
+});
+
 class FakeNode {
   constructor(tagName = null, text = '') {
     this.tagName = tagName;

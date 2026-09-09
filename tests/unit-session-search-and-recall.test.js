@@ -87,7 +87,9 @@ test('多词 AND：常见词候选被截断时，仍要召回全部同时命中�
   assert.equal(commonOnly.truncated, true, '常见词候选必须触发截断，否则用例失效');
 
   // 正题：三词 AND。只有目标会话同时含 alpha + beta + zeta。
-  const combined = index.search({ query: 'alpha beta zeta', limit: 200 });
+  let combined = index.search({ query: 'alpha beta zeta', limit: 200 });
+  for(let i=0;combined.continuationCursor && i<100;i++) combined=index.search({query:'alpha beta zeta',limit:200,cursor:combined.continuationCursor});
+  assert.equal(combined.state,'complete');
   assert.equal(combined.totalSessions, TARGET_SESSIONS,
     `多词 AND 应召回全部 ${TARGET_SESSIONS} 个会话，实际 ${combined.totalSessions}`
     + ' —— 少了就说明常见词的截断窗口把它们挤掉了');

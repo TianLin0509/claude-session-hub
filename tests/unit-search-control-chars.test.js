@@ -80,11 +80,14 @@ test('制表符与换行仍然是分词空白，不能一起剔掉', (t) => {
   assert.equal(index.search({ query: 'ALPHAA\nBETAA' }).totalSessions, 1, '换行同理');
 });
 
-test('FTS 被拒时的兜底扫描必须收窄 scope（否则就是整张 229MB 表）', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-sqlite-index.js'), 'utf8');
-  assert.match(src, /const fallbackScopes = scopeList \|\| \(ftsRejected \? SHORT_TERM_SCOPES : null\);/,
-    'FTS 抛错后退回顺序扫描时，必须限制在短词那三档');
-  assert.match(src, /ftsRejected = true;/, '要记下 FTS 是被拒了还是词太短');
+test('FTS 失败必须报告错误，不能静默扩大扫描或缩小用户范围', t => {
+  const index=freshIndex(t,'fts-error');
+  index.replaceSource(makeSource('fts-source','title',[{scope:'tool',text:'VALIDQUERY'}]));
+  index.db.exec('DROP TABLE docs_fts');
+  const response=index.search({query:'VALIDQUERY',scopes:['tool']});
+  assert.equal(response.state,'error');
+  assert.match(response.error,/docs_fts/);
+  assert.equal(response.total.relation,'lowerBound');
 });
 
 test('正文里夹着 NUL 时不崩（FTS 会在 NUL 处截断，这是已知且不影响真实语料）', (t) => {

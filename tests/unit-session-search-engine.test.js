@@ -10,6 +10,24 @@ const { SessionSearchEngine, clipSource } = require('../core/session-search-engi
 const { collectSourceDescriptors } = require('../core/session-search-sources.js');
 const { FakeCodexRollout } = require('./helpers/fake-codex-rollout.js');
 
+test('a temporarily unavailable meeting root preserves the last searchable transcript',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-search-missing-meeting-'));
+  const meetingDir=path.join(root,'meetings'),offline=path.join(root,'meetings-offline');fs.mkdirSync(meetingDir);
+  fs.writeFileSync(path.join(meetingDir,'m1.json'),JSON.stringify({id:'m1',title:'Meeting',_timeline:[{sid:'user',idx:0,ts:Date.now(),text:'PRESERVED_MEETING_MARKER'}]}));
+  const engine=new SessionSearchEngine({databasePath:path.join(root,'search.sqlite'),claudeRoots:[],codexRoots:[],meetingDir});
+  t.after(()=>{engine.close();fs.rmSync(root,{recursive:true,force:true});});
+  const snapshot={sessions:[],meetings:[{id:'m1',title:'Meeting'}]};
+  await engine.refresh(snapshot,{force:true});
+  assert.equal((await engine.search({query:'PRESERVED_MEETING_MARKER'})).totalSessions,1);
+  assert.ok([meetingDir,offline].every(p=>path.resolve(p).startsWith(fs.realpathSync(root)+path.sep)));
+  fs.renameSync(meetingDir,offline);
+  const missing=await engine.refresh(snapshot,{immediate:true});
+  assert.equal(missing.phase,'ready_with_errors');assert.match(missing.lastError,/暂不可达/);
+  assert.equal((await engine.search({query:'PRESERVED_MEETING_MARKER'})).totalSessions,1);
+  fs.renameSync(offline,meetingDir);
+  assert.equal((await engine.refresh(snapshot,{immediate:true})).lastError,null);
+});
+
 test('storage clipping marks the source stale so the limitation survives restart', () => {
   const limited = clipSource({
     key: 'clip-test', signature: 'sig', searchable: true,
@@ -121,7 +139,7 @@ test('oversized Codex rollouts index complete semantic history while skipping bi
   assert.equal(refreshed.staleSources, 0);
   assert.equal((await engine.search({ query: 'CODEX_EARLY_SEMANTIC_MARKER' })).totalSessions, 1);
   assert.equal((await engine.search({ query: 'CODEX_LATE_SEMANTIC_MARKER' })).totalSessions, 1);
-  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER' })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER', scopes:['tool'] })).totalSessions, 1);
   assert.equal((await engine.search({ query: 'CODEX_BINARY_OUTPUT_MARKER' })).totalSessions, 0);
 });
 

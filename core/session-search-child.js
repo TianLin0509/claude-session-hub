@@ -36,13 +36,13 @@ async function handle(message = {}) {
   }
   if (message.type === 'close') {
     closing = true;
-    if (engine) engine.close();
+    if (engine) await engine.close();
     engine = null;
     return { closed: true };
   }
   if (!engine) throw new Error('session search child is not initialized');
   if (message.type === 'status') return withRuntime(engine.status());
-  if (message.type === 'refresh') return engine.refresh(message.snapshot || {}, { force: message.force === true });
+  if (message.type === 'refresh') return engine.refresh(message.snapshot || {}, { force: message.force === true, immediate: message.immediate === true });
   if (message.type === 'search') return engine.search(message.request || {}, message.snapshot || {});
   if (message.type === 'preview') return engine.preview(message.request || {});
   throw new Error(`Unknown session-search child message: ${message.type}`);

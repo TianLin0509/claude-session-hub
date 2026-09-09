@@ -132,6 +132,8 @@ function createPastSessionModals({
   getLocalTitles = null,
   selectSession,
   openSearchHit,
+  searchCardRenderer = null,
+  openSearchPath = null,
 }) {
   const resumeModalEl = document.getElementById('resume-modal');
   const resumeListEl = document.getElementById('resume-list');
@@ -211,6 +213,8 @@ function createPastSessionModals({
     ipcRenderer,
     clipboard,
     getLocalTitles,
+    cardRenderer: searchCardRenderer,
+    openPath: openSearchPath,
     openHit: typeof openSearchHit === 'function' ? openSearchHit : async () => {},
   });
   const openSearchModal = globalSearch.open;
