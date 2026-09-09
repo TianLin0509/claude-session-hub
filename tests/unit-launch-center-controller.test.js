@@ -57,12 +57,16 @@ class FakeWindow {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(handler);
   }
-  emit(type) { for (const handler of (this.listeners.get(type) || [])) handler({ type }); }
+  emit(type, detail) { for (const handler of (this.listeners.get(type) || [])) handler({ type, detail }); }
 }
 
 function fixture() {
   const menu = new FakeElement();
   const trigger = new FakeElement();
+  const label = new FakeElement();
+  trigger.querySelector = () => label;
+  const more = new FakeElement();
+  const status = new FakeElement();
   const subtitle = new FakeElement();
   const error = new FakeElement();
   error.hidden = true;
@@ -75,6 +79,8 @@ function fixture() {
   const elements = {
     'new-session-menu': menu,
     'btn-new': trigger,
+    'btn-new-more': more,
+    'launch-split-status': status,
     'launch-center-subtitle': subtitle,
     'launch-center-error': error,
     'launch-center-group-error': groupError,
@@ -92,13 +98,184 @@ function fixture() {
       return [];
     },
   };
-  return { document, view, menu, trigger, subtitle, error, groupError, resumeCancel, intents, panels, resumes };
+  return { document, view, menu, trigger, label, more, status, subtitle, error, groupError, resumeCancel, intents, panels, resumes };
 }
 
 test('launch intents normalize to the three supported routes', () => {
   assert.deepEqual(LAUNCH_INTENTS, ['session', 'group', 'resume']);
   assert.equal(normalizeLaunchIntent('group'), 'group');
   assert.equal(normalizeLaunchIntent('unknown'), 'session');
+});
+
+const lastLaunch = () => ({
+  kind: 'codex', model: 'test-model', effort: 'high', mcpProfile: 'none',
+  codexSpeedTier: 'inherit', workspace: { path: 'C:\\AIWork', label: 'AIWork', draft: false }, ts: 123,
+});
+
+function launchFixture(initial = null, overrides = {}) {
+  const ui = fixture();
+  let stored = initial;
+  const calls = { open: [], create: [] };
+  const storage = { getItem: () => stored, setItem: (_key, value) => { stored = value; } };
+  const workspaceController = {
+    loadModelCatalog: async () => ({}),
+    resolveSessionTuning: (_kind, model, selection) => ({
+      ...selection, model, modelOptions: [{ id: model }], showEffort: true, showMcp: true, showFast: false, showCodexTier: true,
+    }),
+    buildSessionTuningOpts: (_kind, model, selection) => ({ model, effort: selection.effort, mcpProfile: selection.mcpProfile }),
+    createSession: async (kind, options) => { calls.create.push({ kind, options }); return { id: 'second' }; },
+  };
+  const controller = createLaunchCenterController({
+    document: ui.document, storage, getWorkspaceController: () => workspaceController,
+    isDirectory: async () => true,
+    openSessionModal: options => { calls.open.push(options); ui.menu.style.display = 'flex'; },
+    closeSessionModal: () => { ui.menu.style.display = 'none'; },
+    ...overrides,
+  });
+  return { ...ui, controller, calls, workspaceController, storage, stored: () => stored, remove: () => { stored = null; } };
+}
+
+test('successful center notification remembers a snapshot; open, cancel, group and resume do not overwrite it', () => {
+  const ui = launchFixture();
+  const record = lastLaunch();
+  ui.view.emit('launch-center:session-created', { sessionId: 'first', launch: record });
+  record.workspace.label = 'changed later';
+  assert.equal(JSON.parse(ui.stored()).workspace.label, 'AIWork');
+  assert.equal(ui.label.textContent, '启动 Codex  AIWork');
+  const stored = ui.stored();
+  ui.controller.open('group'); ui.controller.close(); ui.controller.open('resume'); ui.controller.close();
+  ui.view.emit('launch-center:session-created', { launch: lastLaunch() });
+  assert.equal(ui.stored(), stored);
+});
+
+test('last launch reuses the existing create function without opening center and preserves inherit', async () => {
+  const ui = launchFixture(JSON.stringify(lastLaunch()));
+  const session = await ui.controller.launchLast();
+  assert.equal(session.id, 'second');
+  assert.equal(ui.calls.open.length, 0);
+  assert.deepEqual(ui.calls.create, [{ kind: 'codex', options: { workspace: lastLaunch().workspace, opts: { model: 'test-model', effort: 'high', mcpProfile: 'none' } } }]);
+  assert.equal(JSON.parse(ui.stored()).codexSpeedTier, 'inherit');
+  assert.equal(ui.trigger.disabled, false);
+});
+
+test('no history, removed history and malformed records open center without creating', async () => {
+  for (const value of [null, '{broken', '{}', JSON.stringify({ ...lastLaunch(), kind: 'codex-resume' }), JSON.stringify({ ...lastLaunch(), workspace: { path: 'relative' } })]) {
+    const ui = launchFixture(value);
+    await ui.controller.launchLast();
+    assert.equal(ui.calls.create.length, 0);
+    assert.equal(ui.calls.open.length, 1);
+    assert.equal(ui.label.textContent, '启动');
+  }
+  const ui = launchFixture(JSON.stringify(lastLaunch()));
+  ui.remove();
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create.length, 0);
+  assert.equal(ui.label.textContent, '启动');
+});
+
+test('missing directory falls back with original workspace and preserves history', async () => {
+  const original = JSON.stringify(lastLaunch());
+  const ui = launchFixture(original, { isDirectory: async () => false });
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create.length, 0);
+  assert.deepEqual(ui.calls.open[0].workspace, lastLaunch().workspace);
+  assert.match(ui.status.textContent, /工作区/);
+  assert.equal(ui.stored(), original);
+});
+
+test('unsupported model/effort or missing tuning field falls back without silent substitution', async () => {
+  for (const field of ['model', 'effort', 'mcpProfile', 'codexSpeedTier']) {
+    const ui = launchFixture(JSON.stringify(lastLaunch()));
+    const resolve = ui.workspaceController.resolveSessionTuning;
+    ui.workspaceController.resolveSessionTuning = (...args) => ({ ...resolve(...args), [field]: 'replacement' });
+    await ui.controller.launchLast();
+    assert.equal(ui.calls.create.length, 0, field);
+    assert.match(ui.status.textContent, /配置/);
+  }
+  const incomplete = lastLaunch(); delete incomplete.mcpProfile;
+  const ui = launchFixture(JSON.stringify(incomplete));
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create.length, 0);
+});
+
+test('busy gate covers asynchronous validation and failed creation never overwrites history', async () => {
+  let release;
+  const original = JSON.stringify(lastLaunch());
+  const ui = launchFixture(original, { isDirectory: () => new Promise(resolve => { release = resolve; }) });
+  const pending = ui.controller.launchLast();
+  assert.equal(ui.trigger.disabled, true);
+  await ui.controller.launchLast();
+  ui.workspaceController.createSession = async () => { throw new Error('creation rejected'); };
+  release(true); await pending;
+  assert.equal(ui.calls.open.length, 1);
+  assert.match(ui.status.textContent, /creation rejected/);
+  assert.equal(ui.stored(), original);
+  assert.equal(ui.trigger.disabled, false);
+});
+
+test('storage write failure reports successful creation without retrying or opening center', async () => {
+  const ui = launchFixture(JSON.stringify(lastLaunch()));
+  ui.storage.setItem = () => { throw new Error('quota'); };
+  assert.equal((await ui.controller.launchLast()).id, 'second');
+  assert.equal(ui.calls.create.length, 1);
+  assert.equal(ui.calls.open.length, 0);
+  assert.match(ui.status.textContent, /会话已创建.*记忆未保存/);
+});
+
+test('storage read failure and inaccessible workspace stay recoverable', async () => {
+  const ui = launchFixture();
+  ui.storage.getItem = () => { throw new Error('storage denied'); };
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create.length, 0);
+  assert.equal(ui.calls.open.length, 1);
+  assert.match(ui.status.textContent, /记忆不可用/);
+  const denied = launchFixture(JSON.stringify(lastLaunch()), { isDirectory: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } });
+  await denied.controller.launchLast();
+  assert.match(denied.status.textContent, /访问权限/);
+  assert.equal(denied.calls.create.length, 0);
+});
+
+test('unavailable catalog and empty creation response cannot report success', async () => {
+  const original = JSON.stringify(lastLaunch());
+  const ui = launchFixture(original);
+  ui.workspaceController.loadModelCatalog = async () => ({ ok: false });
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create.length, 0);
+  assert.equal(ui.stored(), original);
+  const empty = launchFixture(original);
+  empty.workspaceController.createSession = async () => null;
+  await empty.controller.launchLast();
+  assert.match(empty.status.textContent, /有效会话/);
+  assert.equal(empty.stored(), original);
+});
+
+test('late fallback prefill cannot overwrite user edits or a reopened center', async () => {
+  const ui = launchFixture(JSON.stringify(lastLaunch()), { isDirectory: async () => false });
+  let resolveCatalog;
+  ui.workspaceController.loadModelCatalog = () => new Promise(resolve => { resolveCatalog = resolve; });
+  const pending = ui.controller.launchLast();
+  await new Promise(resolve => setImmediate(resolve));
+  await ui.menu.emit('pointerdown');
+  // If stale prefill continues, any input lookup would throw here.
+  const get = ui.document.getElementById;
+  ui.document.getElementById = id => {
+    if (id.startsWith('new-session-') && id !== 'new-session-error') throw new Error('stale prefill');
+    return get(id);
+  };
+  resolveCatalog({}); await pending;
+  assert.doesNotMatch(ui.status.textContent, /stale prefill/);
+  assert.equal(ui.trigger.disabled, false);
+});
+
+test('Claude false Fast choice survives success snapshot and direct launch', async () => {
+  const record = { ...lastLaunch(), kind: 'claude', fastMode: false };
+  delete record.codexSpeedTier;
+  const ui = launchFixture(JSON.stringify(record));
+  ui.workspaceController.resolveSessionTuning = (_kind, model, selection) => ({ ...selection, model, modelOptions: [{ id: model }], showEffort: true, showMcp: true, showFast: true, showCodexTier: false });
+  ui.workspaceController.buildSessionTuningOpts = (_kind, model, selection) => ({ model, fastMode: selection.fastMode });
+  await ui.controller.launchLast();
+  assert.equal(ui.calls.create[0].options.opts.fastMode, false);
+  assert.equal(JSON.parse(ui.stored()).fastMode, false);
 });
 
 test('controller embeds group configuration once per open cycle and preserves resume/focus behavior', async () => {

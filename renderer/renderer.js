@@ -4733,7 +4733,8 @@ const launchCenter = createLaunchCenterController({
 window.LaunchCenter = launchCenter;
 
 // --- Unified launch center ---
-btnNew.addEventListener('click', () => launchCenter.toggle());
+btnNew.addEventListener('click', () => { void launchCenter.launchLast(); });
+document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
 
 document.addEventListener('mousedown', (e) => {
   if (!wrapperEl.contains(e.target) && menuEl.style.display !== 'none') launchCenter.close();
