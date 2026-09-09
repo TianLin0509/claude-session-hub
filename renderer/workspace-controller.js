@@ -1150,8 +1150,17 @@
       paintTuning();
       if (workspaceMode === 'scratch') workspace = await createScratch('未命名任务');
       else if (workspaceMode === 'default') workspace = await createDefaultWorkspace('未命名任务');
-      const session = await createSession(selectedKind, { workspace, opts: tuningOpts() });
+      // Snapshot exactly what this create call uses, before awaiting its result.
+      const launchKind = selectedKind;
+      const launchOpts = tuningOpts();
+      const launch = { kind: launchKind, workspace: { ...workspace }, ...launchOpts };
+      if (FAST_KINDS.has(launchKind)) launch.fastMode = selectedFastMode;
+      if (CODEX_TIER_KINDS.has(launchKind)) launch.codexSpeedTier = selectedCodexTier;
+      const session = await createSession(launchKind, { workspace, opts: launchOpts });
       closeNewSessionModal();
+      if (session && session.id) {
+        window.dispatchEvent(new CustomEvent('launch-center:session-created', { detail: { sessionId: session.id, launch } }));
+      }
       return session;
     } catch (error) {
       setError(`创建失败：${error && error.message ? error.message : String(error)}`);

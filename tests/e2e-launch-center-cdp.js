@@ -22,6 +22,12 @@ const GROUP_COMPACT_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-gro
 const GROUP_MOBILE_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-group-375-${RUN_ID}.png`);
 const RESUME_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-resume-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
+const rendererErrors = [];
+const ERROR_CAPTURE = `(() => {
+  window.__launchCenterErrors = [];
+  window.addEventListener('error', event => window.__launchCenterErrors.push(String(event.error || event.message || 'renderer error')));
+  window.addEventListener('unhandledrejection', event => window.__launchCenterErrors.push(String(event.reason || 'unhandled rejection')));
+})()`;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -90,6 +96,183 @@ async function screenshot(client, target) {
   fs.writeFileSync(target, Buffer.from(shot.data, 'base64'));
 }
 
+async function chooseValue(client, selector, value) {
+  assert.equal(await client.eval(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    if (!input || ![...input.options].some(option => option.value === ${JSON.stringify(value)})) return false;
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`), true, `select ${selector} = ${value}`);
+}
+
+async function reloadReady(client) {
+  rendererErrors.push(...await client.eval('window.__launchCenterErrors || []'));
+  const previousOrigin = await client.eval('performance.timeOrigin');
+  await client.send('Page.reload');
+  await waitFor('new renderer document ready', () => client.eval(`Boolean(performance.timeOrigin !== ${previousOrigin} && document.readyState === 'complete' && window.LaunchCenter && window.WorkspaceController)`));
+}
+
+async function verifyLastLaunch(client, result) {
+  console.log('[T4] real launch, memory and fallback');
+  await clickPoint(client, '[data-launch-intent="session"]');
+  await clickPoint(client, '.new-session-option[data-kind="codex"]');
+  await waitFor('Codex tuning catalog', () => client.eval(`document.querySelector('#new-session-model')?.options.length > 0`));
+  await client.eval(`window.WorkspaceController.loadModelCatalog('codex')`);
+  await chooseValue(client, '#new-session-effort', 'high');
+  await chooseValue(client, '#new-session-mcp', 'none');
+  await chooseValue(client, '#new-session-codex-tier', 'standard');
+  const beforeIds = await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.map(s => s.id))`);
+  await clickPoint(client, '#new-session-submit');
+  const first = await waitFor('first real Codex session', () => client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.find(s => s.kind === 'codex' && !${JSON.stringify(beforeIds)}.includes(s.id)) || null)`), 60000);
+  await waitFor('last launch stored', () => client.eval(`localStorage.getItem('hub.launch.last') && document.getElementById('new-session-menu').style.display === 'none'`));
+  const saved = await client.eval(`JSON.parse(localStorage.getItem('hub.launch.last'))`);
+  assert.equal(saved.kind, 'codex');
+  assert.equal(saved.effort, 'high');
+  assert.equal(saved.mcpProfile, 'none');
+  assert.equal(saved.codexSpeedTier, 'standard');
+  assert.equal(saved.workspace.path, first.cwd);
+  assert.equal(first.currentModel.id, saved.model);
+  assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), `启动 Codex  ${saved.workspace.label}`);
+  // Observe the real modal throughout direct launch, without replacing creation/IPC.
+  await client.eval(`(() => {
+    window.__t4ModalOpens = 0;
+    window.addEventListener('launch-center:session-opened', () => { window.__t4ModalOpens += 1; });
+  })()`);
+  await clickPoint(client, '#btn-new');
+  const second = await waitFor('second real Codex session', () => client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.find(s => s.kind === 'codex' && !${JSON.stringify([...beforeIds, first.id])}.includes(s.id)) || null)`), 60000);
+  await waitFor('direct launch settled', () => client.eval(`!document.getElementById('btn-new').disabled`));
+  for (const key of ['kind', 'cwd', 'model', 'effort', 'mcpProfile', 'codexSpeedTier', 'fastMode']) assert.deepEqual(second[key], first[key], key);
+  assert.equal(second.currentModel.id, saved.model);
+  assert.notEqual(first.id, second.id);
+  assert.equal(await client.eval('window.__t4ModalOpens'), 0);
+  const dimensions = await client.eval(`(() => ({ height: document.querySelector('.launch-split').getBoundingClientRect().height, moreWidth: document.getElementById('btn-new-more').getBoundingClientRect().width }))()`);
+  assert.equal(dimensions.height, 32); assert.equal(dimensions.moreWidth, 30);
+  await screenshot(client, path.join(ARTIFACT_DIR, 'T4-launch-split.png'));
+  result.lastLaunch = { first, second, saved, dimensions, modalOpens: 0 };
+
+  await reloadReady(client);
+  await waitFor('remembered launch after reload', () => client.eval(`Boolean(window.LaunchCenter && document.querySelector('#btn-new .btn-label').textContent.startsWith('启动 Codex'))`));
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'n', code: 'KeyN', modifiers: 2 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'n', code: 'KeyN', modifiers: 2 });
+  await waitFor('Ctrl+N still opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
+  await clickPoint(client, '#new-session-close');
+
+  // A removed, test-owned empty directory simulates stale stored workspace safely.
+  const missing = path.join(TEMP_ROOT, 'removed-workspace');
+  fs.mkdirSync(missing);
+  fs.rmdirSync(missing);
+  await client.eval(`localStorage.setItem('hub.launch.last', JSON.stringify({ ...${JSON.stringify(saved)}, workspace: { path: ${JSON.stringify(missing)}, label: '已删除的测试工作区' } }))`);
+  const count = await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.length)`);
+  await clickPoint(client, '#btn-new');
+  await waitFor('missing directory falls back and settles', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex' && !document.getElementById('btn-new').disabled`));
+  result.missingWorkspace = await client.eval(`({ message: document.getElementById('new-session-error').textContent, errorVisible: !document.getElementById('new-session-error').hidden, path: document.getElementById('new-session-path-value').title, model: document.getElementById('new-session-model').value, effort: document.getElementById('new-session-effort').value })`);
+  assert.match(result.missingWorkspace.message, /工作区/);
+  assert.equal(result.missingWorkspace.errorVisible, true);
+  result.missingWorkspace.errorUnobscured = await client.eval(`(() => {
+    const error = document.getElementById('new-session-error');
+    const rect = error.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const footer = document.querySelector('.session-create-footer').getBoundingClientRect();
+    return rect.height > 0 && rect.bottom <= footer.top + 1 && (hit === error || error.contains(hit));
+  })()`);
+  assert.equal(result.missingWorkspace.errorUnobscured, true, 'fallback reason must be visible above the footer');
+  assert.equal(result.missingWorkspace.path, missing);
+  assert.equal(result.missingWorkspace.model, saved.model);
+  assert.equal(result.missingWorkspace.effort, saved.effort);
+  assert.equal(await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.length)`), count);
+  assert.equal(fs.existsSync(missing), false);
+  await screenshot(client, path.join(ARTIFACT_DIR, 'T4-missing-workspace.png'));
+  await clickPoint(client, '#new-session-close');
+  await client.eval(`localStorage.removeItem('hub.launch.last'); window.dispatchEvent(new Event('focus'));`);
+  assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), '启动');
+  await clickPoint(client, '#btn-new');
+  await waitFor('cleared history opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
+  assert.equal(await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.length)`), count);
+  await clickPoint(client, '#new-session-close');
+  await reloadReady(client);
+  await waitFor('cleared history after reload', () => client.eval(`Boolean(window.LaunchCenter && document.querySelector('#btn-new .btn-label').textContent === '启动')`));
+}
+
+async function verifyPersistentMembers(client, result) {
+  console.log('[T4] persistent group members');
+  await clickPoint(client, '#btn-new-more');
+  await waitFor('more button opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
+  await clickPoint(client, '[data-launch-intent="group"]');
+  await waitFor('two member form', () => client.eval(`document.querySelectorAll('.mcm-ai-select').length === 2`));
+  for (let i = 1; i <= 2; i++) await chooseValue(client, `.mcm-slot:nth-child(${i}) .mcm-ai-select`, 'codex');
+  await client.eval(`document.getElementById('mcm-title-input').value = 'T4 两个 Codex 常驻成员'`);
+  await clickPoint(client, '.mcm-create');
+  const meetingId = await waitFor('created group in sidebar', () => client.eval(`[...document.querySelectorAll('#session-list .meeting.gc')].find(row => row.querySelector('.sl-title')?.textContent.includes('T4 两个 Codex'))?.dataset.meetingId || null`), 60000);
+  await clickPoint(client, '#btn-home');
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1100, y: 850 });
+  const selector = `#session-list .meeting.gc[data-meeting-id="${meetingId}"]`;
+  result.members = await client.eval(`(() => {
+    const row = document.querySelector(${JSON.stringify(selector)});
+    const members = row.querySelector('.session-mini-jumps');
+    const rect = row.getBoundingClientRect(); const detailRect = members.getBoundingClientRect();
+    const next = row.nextElementSibling?.getBoundingClientRect();
+    return { id: row.dataset.meetingId, count: members.querySelectorAll('.mini-jump-btn').length,
+      labels: [...members.querySelectorAll('.mini-jump-text')].map(n => n.textContent),
+      hint: members.querySelector('.sl-members-hint').textContent, display: getComputedStyle(members).display,
+      position: getComputedStyle(members).position, hovered: row.matches(':hover'), focused: row.contains(document.activeElement),
+      rowHeight: rect.height, contained: detailRect.bottom <= rect.bottom, noOverlap: !next || rect.bottom <= next.top + 1,
+      firstMember: members.querySelector('.mini-jump-btn').dataset.subId };
+  })()`);
+  assert.deepEqual(result.members.labels, ['codex', 'codex']);
+  assert.equal(result.members.count, 2); assert.equal(result.members.hint, '2/2 已选');
+  assert.equal(result.members.display, 'flex'); assert.equal(result.members.position, 'static');
+  assert.equal(result.members.hovered, false); assert.equal(result.members.focused, false);
+  assert.ok(result.members.rowHeight > 27); assert.ok(result.members.contained); assert.ok(result.members.noOverlap);
+  await screenshot(client, path.join(ARTIFACT_DIR, 'T4-group-members-persistent.png'));
+  await clickPoint(client, `${selector} .mini-jump-btn`);
+  await waitFor('original member session selected', () => client.eval(`document.querySelector(${JSON.stringify(selector + ' .mini-jump-btn')}).classList.contains('active')`));
+  assert.equal(await client.eval(`localStorage.getItem('hub.launch.last')`), null, 'group creation cannot replace ordinary launch memory');
+
+  await clickPoint(client, '#btn-home');
+  for (const theme of ['dark', 'claude', 'codex', 'frost']) {
+    await clickPoint(client, '#btn-theme');
+    await clickPoint(client, `[data-theme-id="${theme}"]`);
+    await clickPoint(client, '#btn-theme');
+    await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1100, y: 850 });
+    assert.equal(await client.eval(`getComputedStyle(document.querySelector(${JSON.stringify(selector + ' .session-mini-jumps')})).display`), 'flex', theme);
+  }
+  result.members.themes = ['dark', 'claude', 'codex', 'frost'];
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'b', code: 'KeyB', modifiers: 2 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'b', code: 'KeyB', modifiers: 2 });
+  await waitFor('sidebar collapsed', () => client.eval(`document.getElementById('session-sidebar').getBoundingClientRect().width === 0 || getComputedStyle(document.getElementById('session-sidebar')).display === 'none'`));
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'b', code: 'KeyB', modifiers: 2 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'b', code: 'KeyB', modifiers: 2 });
+  await waitFor('sidebar expanded', () => client.eval(`document.getElementById('session-sidebar').getBoundingClientRect().width > 100`));
+  assert.equal(await client.eval(`getComputedStyle(document.querySelector(${JSON.stringify(selector + ' .session-mini-jumps')})).display`), 'flex');
+  result.members.collapseRestored = true;
+
+  // Real extra members exercise wrapping without fabricating sidebar DOM.
+  await clickPoint(client, '#btn-new-more');
+  await clickPoint(client, '[data-launch-intent="group"]');
+  for (let i = 0; i < 3; i++) {
+    await client.eval(`document.getElementById('mcm-add-member').scrollIntoView({ block: 'center' })`);
+    await clickPoint(client, '#mcm-add-member');
+  }
+  for (let i = 1; i <= 5; i++) await chooseValue(client, `.mcm-slot:nth-child(${i}) .mcm-ai-select`, 'codex');
+  await client.eval(`document.getElementById('mcm-title-input').value = 'T4 多成员换行与长标题不会遮住下一条会话'`);
+  await clickPoint(client, '.mcm-create');
+  const largerId = await waitFor('five-member group', () => client.eval(`[...document.querySelectorAll('#session-list .meeting.gc')].find(row => row.querySelector('.sl-title')?.textContent.includes('T4 多成员'))?.dataset.meetingId || null`), 60000);
+  await clickPoint(client, '#btn-home');
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1100, y: 850 });
+  result.members.wrapping = await client.eval(`(() => {
+    const row = document.querySelector('[data-meeting-id="${largerId}"]'); const rect = row.getBoundingClientRect();
+    const cells = [...row.querySelectorAll('.mini-jump-cell')];
+    return { count: cells.length, rows: new Set(cells.map(n => Math.round(n.getBoundingClientRect().top))).size,
+      contained: cells.every(n => { const r = n.getBoundingClientRect(); return r.right <= rect.right && r.bottom <= rect.bottom; }),
+      noOverlap: rect.bottom <= row.nextElementSibling.getBoundingClientRect().top + 1 };
+  })()`);
+  assert.equal(result.members.wrapping.count, 5);
+  assert.ok(result.members.wrapping.rows >= 2);
+  assert.ok(result.members.wrapping.contained && result.members.wrapping.noOverlap);
+  await screenshot(client, path.join(ARTIFACT_DIR, 'T4-members-wrap.png'));
+}
+
 async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(HOME_DIR, { recursive: true });
@@ -129,11 +312,8 @@ async function main() {
     await setViewport(client, 1500, 960);
     await waitFor('launch center shell', () => client.eval(`Boolean(window.LaunchCenter && window.WorkspaceController && window.openMeetingCreateModal && window.__chuxinShow)`));
 
-    await client.eval(`(() => {
-      window.__launchCenterErrors = [];
-      window.addEventListener('error', event => window.__launchCenterErrors.push(String(event.error || event.message || 'renderer error')));
-      window.addEventListener('unhandledrejection', event => window.__launchCenterErrors.push(String(event.reason || 'unhandled rejection')));
-    })()`);
+    await client.send('Page.addScriptToEvaluateOnNewDocument', { source: ERROR_CAPTURE });
+    await client.eval(ERROR_CAPTURE);
 
     result.header = await client.eval(`(() => ({
       newLabel: document.querySelector('#btn-new .btn-label')?.textContent,
@@ -334,12 +514,18 @@ async function main() {
     await setViewport(client, 1500, 960);
     await client.eval(`window.LaunchCenter.selectIntent('session', { focus: false })`);
     await screenshot(client, SCREENSHOT_PATH);
-    result.errors = await client.eval('window.__launchCenterErrors || []');
+    await verifyLastLaunch(client, result);
+    await verifyPersistentMembers(client, result);
+    result.errors = [...rendererErrors, ...await client.eval('window.__launchCenterErrors || []')];
     assert.deepEqual(result.errors, []);
     result.success = true;
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify({ ...result, resultPath: RESULT_PATH }, null, 2));
   } catch (error) {
+    if (client) {
+      try { await screenshot(client, path.join(ARTIFACT_DIR, `failure-${RUN_ID}.png`)); }
+      catch (captureError) { console.error('Failure screenshot unavailable:', captureError.message); }
+    }
     if (hub) console.error('[isolated hub log]\n' + hub.log().slice(-100).join('\n'));
     throw error;
   } finally {
