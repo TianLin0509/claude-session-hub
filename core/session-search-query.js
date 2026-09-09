@@ -3,19 +3,18 @@
 const { DatabaseSync } = require('node:sqlite');
 const { randomUUID } = require('node:crypto');
 const { normalize, termsFor, normalizeSort, documentRank, compareRank, compareResults, rankReason, RANK_VERSION } = require('./session-search-ranking');
-const { createSnippet, isCjkAuxTerm } = require('./session-search-index');
+const { createSnippet, isCjkAuxTerm, sinceTimestamp } = require('./session-search-index');
+const { normalizeProjectFilter, matchesProjectFilter } = require('./session-search-projects');
 const DIALOGUE = ['title', 'user', 'assistant'];
 const ALL_SCOPES = [...DIALOGUE, 'tool'];
-const DAY = 86400000;
 const quote = value => '"' + value.replace(/"/g, '""') + '"';
 
 function normalizeRequest(request, now = Date.now()) {
   if (String(request.query || '').length > 512) throw new Error('搜索关键词过长（最多 512 个字符）');
   const query = normalize(String(request.query || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ''));
   if(String(request.query||'').trim() && !query) throw new Error('请输入可搜索的文字，控制字符不能作为关键词');
-  const days = {'7d':7,'30d':30,'365d':365}[request.timeRange];
   const time = request.time || {};
-  const from = time.from != null ? Number(time.from) : days ? now-days*DAY : null;
+  const from = time.from != null ? Number(time.from) : sinceTimestamp(request.timeRange, now);
   const to = time.to != null ? Number(time.to) : from != null ? now : null;
   if ((from != null && !Number.isFinite(from)) || (to != null && !Number.isFinite(to)) || (from != null && to != null && from > to)) throw new Error('时间范围无效');
   const scopes = Array.isArray(request.scopes) && request.scopes.length ? [...new Set(request.scopes)].sort() : DIALOGUE.slice().sort();
@@ -32,7 +31,7 @@ function normalizeRequest(request, now = Date.now()) {
   }
   const sort = query ? normalizeSort(request.sort, query) : normalizeSort(request.sort === 'relevance' ? 'conversationTime' : request.sort);
   return { query, providers:[...new Set(Array.isArray(request.providers)?request.providers:[])].sort(), scopes,
-    project:normalize(request.project), sessionFilter:filter, sort,
+    project:normalize(request.project), projectFilter:normalizeProjectFilter(request.projectFilter), sessionFilter:filter, sort,
     direction: request.direction || (sort==='title'?'asc':'desc'),
     time:{field:time.field === 'conversationTime' ? 'conversationTime':'eventTime',from,to,timeZone:time.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone},
     limit:Math.min(200,Math.max(1,Number(request.limit || request.pageSize)||50)), now };
@@ -68,6 +67,7 @@ class QuerySnapshot {
       this.allowed = new Set([...this.sessions.values()].filter(s=>
         (!request.providers.length || request.providers.includes(s.provider))
         && (!request.project || normalize(`${s.projectLabel||''} ${s.cwd||''}`).includes(request.project))
+        && matchesProjectFilter(s.cwd, request.projectFilter)
         && (!request.sessionFilter || request.sessionFilter.hubSessionIds.includes(s.hubSessionId) || request.sessionFilter.meetingIds.includes(s.meetingId))
         && (!this.timed || field!=='conversationTime' || (s.lastConversationAt && s.lastConversationAt >= (from??0) && s.lastConversationAt <= (to??Number.MAX_SAFE_INTEGER)))
       ).map(s=>s.key));

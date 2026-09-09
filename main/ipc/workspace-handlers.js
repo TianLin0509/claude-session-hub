@@ -215,7 +215,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
   // 再由 core 补一路「候选的父目录各读一层」——**刚整理好、Hub 还没用过的项目靠这一路才看得见**
   // （否则必须先在它上面开一次会话登记进注册表，用户遇到的就是「第一次识别不到」）。
   // 每路都带自己的活跃时间，core 里取最大值并去重。全程只读一层，绝不递归扫盘。
-  ipcMain.handle('workspace:prepared-projects', () => {
+  ipcMain.handle('workspace:prepared-projects', (_event, request = {}) => {
     const { listPreparedProjects } = require('../../core/prepared-project-library.js');
     const candidates = [];
     try {
@@ -255,7 +255,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
     } catch (error) {
       console.warn('[workspace] prepared-projects: root scan skipped:', error && error.message);
     }
-    return { items: listPreparedProjects(candidates, {}, { siblingScan: true }) };
+    return { items: listPreparedProjects(candidates, {}, { siblingScan: true, searchRoots: request?.searchRoots === true }) };
   });
 
   // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型

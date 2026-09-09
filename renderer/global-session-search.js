@@ -3,6 +3,8 @@
 const { recordSearch, readRecent } = require('../core/search-recent.js');
 const { buildTitleIndex, searchTitles, sameSession } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
+const { sinceTimestamp } = require('../core/session-search-index');
+const { projectPathKey, projectFilterFor, projectForCwd, matchesProjectFilter } = require('../core/session-search-projects');
 const { AGENT_SESSION_GROUPS, agentGroupOf, getSidebarSearchEntries } = require('./session-list-renderer.js');
 
 const FACET_STORAGE_KEY = 'hub.search.facets';
@@ -13,14 +15,15 @@ function loadSearchFacets(storage) {
       agent: AGENT_SESSION_GROUPS.some(g => g.key === value.agent) ? value.agent : 'all' };
   } catch { return { provider: 'all', agent: 'all' }; }
 }
-function filterSearchEntries(entries, { scope = 'all', agent = 'all', providers = [], project = '', timeRange = 'all', now = Date.now() } = {}) {
-  const days = { '7d': 7, '30d': 30, '365d': 365 }[timeRange];
+function filterSearchEntries(entries, { scope = 'all', agent = 'all', providers = [], project = '', projectFilter = null, timeRange = 'all', now = Date.now() } = {}) {
+  const since = sinceTimestamp(timeRange, now);
   return entries.filter(entry => (scope !== 'dormant' || entry.archived === true)
     && (scope !== 'pinned' || entry.pinned === true)
     && (agent === 'all' || (entry.agentGroup || agentGroupOf(entry)) === agent)
     && (!providers.length || providers.includes(entry.provider))
     && (!project || String(entry.projectLabel || '').toLowerCase().includes(project.toLowerCase()))
-    && (!days || Number(entry.updatedAt) >= now - days * 86400000));
+    && matchesProjectFilter(entry.cwd, projectFilter)
+    && (since == null || (Number(entry.updatedAt) >= since && Number(entry.updatedAt) <= now)));
 }
 
 function filterSearchHits(hits, entries) {
@@ -222,7 +225,10 @@ function createGlobalSessionSearch(options) {
   let lastRecordedQueryId = null;
   let previewMode = 'overview';
   let previewPage = {};
-  const knownProjects = new Map();
+  let projectLibrary = [];
+  let projectLoadSequence = 0;
+  let projectLoadError = '';
+  const projectNote = document.getElementById('session-search-project-note');
   try { sortSelect.value = window.localStorage.getItem('hub.search.sort') || 'relevance'; } catch { /* Optional UI preference. */ }
   if (!sortSelect.value) sortSelect.value='relevance';
   const directionSelect=document.createElement('select');directionSelect.id='session-search-direction';directionSelect.setAttribute('aria-label','排序方向');
@@ -401,8 +407,8 @@ function createGlobalSessionSearch(options) {
   function searchRequest() {
     const query = queryInput.value.trim();
     syncSortChoice(query);
-    const days = {'7d':7,'30d':30,'365d':365}[timeSelect.value];
     const now = Date.now();
+    const since = sinceTimestamp(timeSelect.value, now);
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     return {
       query,
@@ -410,8 +416,9 @@ function createGlobalSessionSearch(options) {
       scopes: activeScope === 'all' ? ['title','user','assistant','tool']
         : ['dialogue','dormant','pinned'].includes(activeScope) ? ['title','user','assistant'] : [activeScope],
       timeRange: timeSelect.value || 'all',
-      project: projectSelect.value || '',
-      time: {field:timeField?.value || 'eventTime',from:days?now-days*86400000:null,to:days?now:null,timeZone},
+      projectFilter: projectFilterFor(projectLibrary, projectSelect.value),
+      projectName: projectLibrary.find(item => projectPathKey(item.path) === projectPathKey(projectSelect.value))?.name || '',
+      time: {field:timeField?.value || 'eventTime',from:since,to:since == null ? null : now,timeZone},
       sort: !query && sortSelect.value === 'relevance' ? 'conversationTime' : sortSelect.value || 'relevance',
       direction: directionSelect.value,
       limit: 50,
@@ -448,37 +455,60 @@ function createGlobalSessionSearch(options) {
       if (OPTIONAL_PROVIDERS.includes(provider)) button.hidden = count === 0 && activeProvider !== provider;
     }
 
-    const selectedProject = projectSelect.value;
-    const projects = response && response.facets && Array.isArray(response.facets.projects)
-      ? response.facets.projects
-      : [];
+  }
+
+  function renderProjectLibrary() {
+    const currentProject = projectLibrary.find(item => projectPathKey(item.path) === projectPathKey(projectSelect.value));
+    const selected = currentProject?.path || projectSelect.value;
+    const stale = !!selected && !currentProject;
     const createOption = (label, value) => {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      return option;
+      const option = document.createElement('option'); option.value = value; option.textContent = label; return option;
     };
-    const options = [createOption('全部', '')];
-    let selectedStillPresent = !selectedProject;
-    for (const project of projects) {
-      if (!project || !project.label) continue;
-      const option = createOption(`${project.label} (${project.count})`, project.label);
-      if (project.label === selectedProject) selectedStillPresent = true;
-      options.push(option);
+    const options = [createOption('全部会话', ''), ...projectLibrary.map(item => createOption(item.name, item.path))];
+    if (stale) {
+      const stale = createOption('项目已移出项目库，请重新选择', selected); stale.disabled = true; options.push(stale);
     }
-    if (selectedProject && !selectedStillPresent) options.push(createOption(selectedProject, selectedProject));
-    projectSelect.replaceChildren(...options);
-    projectSelect.value = selectedProject;
-    for (const project of projects) if (project?.label) knownProjects.set(project.label, project.count);
+    projectSelect.replaceChildren(...options); projectSelect.value = selected;
+    const warning = projectLibrary.some(item => item.searchWarnings?.length);
+    projectNote.textContent = stale ? '所选项目已移出项目库，请重新选择；当前不会扩大搜索范围。'
+      : projectLoadError || (warning ? '部分 worktree 的项目归属暂时无法读取，对应记录仍可在“全部会话”搜索。' : '');
+    projectNote.hidden = !projectNote.textContent;
     if (projectRail) {
       projectRail.replaceChildren();
-      const caption=document.createElement('strong');caption.textContent='项目';projectRail.append(caption);
-      for (const [value,label] of [['','全部项目'], ...[...knownProjects.keys()].map(p=>[p, /^(C:[\\/]AIWork|C:[\\/]Vibe)$/i.test(p)?'未分类工作记录':p])]) {
+      const caption=document.createElement('strong');caption.textContent='项目库';projectRail.append(caption);
+      const subtitle=document.createElement('small');subtitle.textContent='与 AI 群聊保持一致';projectRail.append(subtitle);
+      for (const [value,label] of [['','全部会话'], ...projectLibrary.map(item => [item.path, item.name])]) {
         const button=document.createElement('button');button.type='button';button.textContent=label;button.title=label;
-        button.className=value===selectedProject?'active':'';button.dataset.project=value;
-        button.addEventListener('click',()=>{if (![...projectSelect.options].some(o=>o.value===value)) projectSelect.append(createOption(label,value));projectSelect.value=value;scheduleSearch();});
+        button.className=value===selected?'active':'';button.dataset.project=value;
+        button.setAttribute('aria-pressed', String(value === selected));
+        button.addEventListener('click',()=>{projectSelect.value=value;renderProjectLibrary();scheduleSearch();});
         projectRail.append(button);
       }
+      if (!projectLibrary.length) {
+        const empty=document.createElement('p');empty.textContent='项目库暂无项目，仍可搜索全部会话。';projectRail.append(empty);
+      }
+    }
+  }
+
+  async function loadProjectLibrary() {
+    const sequence = ++projectLoadSequence;
+    projectSelect.setAttribute('aria-busy', 'true');
+    try {
+      const response = await ipcRenderer.invoke('workspace:prepared-projects', { searchRoots: true });
+      if (sequence !== projectLoadSequence || !isOpen()) return;
+      if (!Array.isArray(response?.items)) throw new Error('项目库返回格式无效');
+      projectLibrary = response.items.filter(item => item && projectPathKey(item.path) && typeof item.name === 'string');
+      projectLoadError = '';
+      renderProjectLibrary();
+      // Membership may change when projects/worktrees were added between opens.
+      scheduleSearch();
+    } catch (error) {
+      if (sequence !== projectLoadSequence || !isOpen()) return;
+      projectLoadError = `项目库读取失败${projectLibrary.length ? '，暂用上次名单' : ''}：${error.message}。重新打开可重试。`;
+      renderProjectLibrary();
+      announce(projectNote.textContent);
+    } finally {
+      if (sequence === projectLoadSequence) projectSelect.removeAttribute('aria-busy');
     }
   }
 
@@ -521,7 +551,7 @@ function createGlobalSessionSearch(options) {
     metaRow.className = 'session-search-result-meta';
     for (const text of [
       ...(hit.matchReasons || [resultScopeLabel(hit.bestMatch && hit.bestMatch.scope)]),
-      hit.projectLabel || null,
+      projectForCwd(projectLibrary, hit.cwd)?.name || null,
       `${Number(hit.matchCount) || 1} 处命中`,
       hit.turnCount ? `${hit.turnCount} 条记录` : null,
     ].filter(Boolean)) {
@@ -565,7 +595,7 @@ function createGlobalSessionSearch(options) {
     if(conditions && lastRequest) {
       const r=lastRequest;
       const date=r.time.from==null?'不限时间':`${new Date(r.time.from).toLocaleString('zh-CN')} — ${new Date(r.time.to).toLocaleString('zh-CN')}`;
-      conditions.textContent=`${r.time.field==='conversationTime'?'会话活动':'消息发生'}：${date} · ${r.time.timeZone} · ${r.scopes.map(x=>SCOPE_LABELS[x]).join(' / ')}${r.project?' · '+r.project:''}`;
+      conditions.textContent=`${r.time.field==='conversationTime'?'会话活动':'消息发生'}：${date} · ${r.time.timeZone} · ${r.scopes.map(x=>SCOPE_LABELS[x]).join(' / ')}${r.projectName?' · '+r.projectName:''}`;
       if(r.time.from!=null && response.coverage?.unknownTimeSources) conditions.textContent+=` · ${response.coverage.unknownTimeSources} 个来源时间未知`;
     }
     if(!partial && response.queryId && response.queryId!==lastRecordedQueryId) {
@@ -663,7 +693,7 @@ function createGlobalSessionSearch(options) {
     const header=document.createElement('header');header.className='session-search-preview-header';
     const heading=document.createElement('div');heading.className='session-search-preview-heading';
     const title=document.createElement('h3');title.textContent=preview.session.title||hit.title;
-    const meta=document.createElement('p');meta.textContent=[providerMeta(hit.provider).label,preview.session.projectLabel||preview.session.cwd,`${preview.totalRecords||0} 条原始记录`].filter(Boolean).join(' · ');
+    const meta=document.createElement('p');meta.textContent=[providerMeta(hit.provider).label,projectForCwd(projectLibrary, preview.session.cwd || hit.cwd)?.name || preview.session.cwd,`${preview.totalRecords||0} 条原始记录`].filter(Boolean).join(' · ');
     heading.append(title,meta);
     const actions=document.createElement('div');actions.className='session-search-preview-actions';
     const action=(text,fn,primary=false)=>{const b=document.createElement('button');b.type='button';b.className='session-search-action'+(primary?' primary':'');b.textContent=text;b.addEventListener('click',fn);return b;};
@@ -822,6 +852,8 @@ function createGlobalSessionSearch(options) {
     // 每次打开重建一次即时标题索引：期间可能新建/改名/关闭过会话。
     // 682 条实测亚毫秒，放在同步路径上不影响弹窗打开。
     refreshTitleIndex();
+    renderProjectLibrary();
+    void loadProjectLibrary();
     void refreshStatus({ repeat: true });
     void performSearch({ immediate: true });
     window.requestAnimationFrame(() => {
@@ -833,6 +865,7 @@ function createGlobalSessionSearch(options) {
   function close({ restoreFocus = true } = {}) {
     if (!overlay) return;
     overlay.style.display = 'none';
+    projectLoadSequence += 1;
     searchSequence += 1;
     previewSequence += 1;
     if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
@@ -882,6 +915,7 @@ function createGlobalSessionSearch(options) {
     scheduleSearch();
   });
   for (const select of [timeSelect, projectSelect, sortSelect, timeField].filter(Boolean)) select.addEventListener('change', () => { if(queryInput.value.trim()) {try { window.localStorage.setItem('hub.search.sort',sortSelect.value); } catch {}} scheduleSearch(); });
+  projectSelect.addEventListener('change', renderProjectLibrary);
   sortSelect.addEventListener('change',()=>{directionSelect.value=sortSelect.value==='title'?'asc':'desc';directionSelect.disabled=sortSelect.value==='relevance';});
   directionSelect.addEventListener('change',()=>scheduleSearch());
   closeButton.addEventListener('click', close);

@@ -16,6 +16,12 @@ const FAKE_HOME = path.join(TEMP_ROOT, 'home');
 const CLAUDE_ROOT = path.join(FAKE_HOME, '.claude', 'projects');
 const CODEX_ROOT = path.join(FAKE_HOME, '.codex', 'sessions');
 const WORKSPACE = path.join(TEMP_ROOT, 'workspace');
+const SUBDIRECTORY = path.join(WORKSPACE, 'src');
+const WORKTREE = path.join(TEMP_ROOT, 'search-worktree');
+const UNUSED_PROJECT = path.join(TEMP_ROOT, 'unused-project');
+const PROJECT_MARKER = 'PROJECT_MEMBERSHIP';
+const TIME_MARKER = 'ROLLING_TIME_WINDOW';
+const FIXTURE_NOW = Date.now();
 const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'global-session-search');
 const SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-${RUN_ID}.png`);
@@ -56,7 +62,7 @@ function writeClaudeFixture() {
   fs.mkdirSync(directory, { recursive: true });
   const rows = [
     {
-      type: 'user', uuid: 'claude-user-global', cwd: WORKSPACE, timestamp: '2026-08-20T10:00:00Z',
+      type: 'user', uuid: 'claude-user-global', cwd: SUBDIRECTORY, timestamp: '2026-08-20T10:00:00Z',
       message: { content: `${COMMON} Claude 用户提问：端口冲突怎么处理？` },
     },
     {
@@ -67,6 +73,7 @@ function writeClaudeFixture() {
       },
     },
   ];
+  rows.push({type:'user',uuid:'claude-recent',timestamp:new Date(FIXTURE_NOW-12*3600000).toISOString(),message:{content:`${TIME_MARKER} ${PROJECT_MARKER} 最近十二小时的记录`}});
   fs.writeFileSync(transcriptPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n', 'utf8');
   return { sid, transcriptPath };
 }
@@ -84,13 +91,14 @@ function writeCodexFixture() {
   const transcriptPath = path.join(dayDir, `rollout-2026-08-21T10-00-00-${sid}.jsonl`);
   fs.mkdirSync(dayDir, { recursive: true });
   const rows = [
-    { timestamp: '2026-08-21T10:00:00Z', type: 'session_meta', payload: { id: sid, timestamp: '2026-08-21T10:00:00Z', cwd: WORKSPACE, source: 'cli', originator: 'codex_cli_rs' } },
+    { timestamp: '2026-08-21T10:00:00Z', type: 'session_meta', payload: { id: sid, timestamp: '2026-08-21T10:00:00Z', cwd: WORKTREE, source: 'cli', originator: 'codex_cli_rs' } },
     { timestamp: '2026-08-21T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: `${COMMON} Codex 用户提问：路径 URL 为什么识别错？` } },
     { timestamp: '2026-08-21T10:00:01.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', output: `data:image/png;base64,GLOBAL_SEARCH_BINARY_GARBAGE${'X'.repeat(9 * 1024 * 1024)}` } },
     { timestamp: '2026-08-21T10:00:02Z', type: 'event_msg', payload: { type: 'task_started' } },
     { timestamp: '2026-08-21T10:00:03Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: `${COMMON} CODEX_ANSWER_MARKER：统一 openPathInHub 路径入口。`, duration_ms: 1000 } },
     { timestamp: '2026-08-21T10:00:04Z', type: 'response_item', payload: { item: { type: 'command_execution', command: 'node tests/path-link.test.js', cwd: WORKSPACE } } },
   ];
+  rows.push({timestamp:new Date(FIXTURE_NOW-48*3600000).toISOString(),type:'event_msg',payload:{type:'user_message',message:`${TIME_MARKER} ${PROJECT_MARKER} 两天前的分支记录`}});
   fs.writeFileSync(transcriptPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n', 'utf8');
   return { sid, transcriptPath };
 }
@@ -120,10 +128,11 @@ function writeMeetingFixture() {
     // workflow step is actually run.
     serialWorkflow: { enabled: true, steps: [['m1']], loop: { enabled: false } },
     _cursors: { [memberId]: 0 },
-    _nextIdx: 2,
+    _nextIdx: 3,
     _timeline: [
       { idx: 0, sid: 'user', text: `${COMMON} 群聊用户问题：公式渲染如何验收？`, ts: Date.parse('2026-08-22T10:00:00Z') },
       { idx: 1, sid: memberId, text: `${COMMON} MEETING_ANSWER_MARKER：采用两层 guard 和浏览器验收。`, ts: Date.parse('2026-08-22T10:00:05Z') },
+      { idx: 2, sid: 'user', text: `${TIME_MARKER} ${PROJECT_MARKER} 四天前的群聊记录`, ts: FIXTURE_NOW-96*3600000 },
     ],
   };
   const meetingDir = path.join(DATA_DIR, 'meetings');
@@ -136,12 +145,12 @@ function writeHubState(claude, codex, meetingFixture) {
   const sessions = [
     {
       schemaVersion: 1, hubId: 'hub-claude-search', kind: 'claude', title: 'Claude 标题搜索样本',
-      cwd: WORKSPACE, ccSessionId: claude.sid, transcriptPath: claude.transcriptPath,
+      cwd: SUBDIRECTORY, ccSessionId: claude.sid, transcriptPath: claude.transcriptPath,
       lastMessageTime: Date.parse('2026-08-20T10:00:01Z'), updatedAt: Date.parse('2026-08-20T10:00:01Z'),
     },
     {
       schemaVersion: 1, hubId: 'hub-codex-search', kind: 'codex', title: 'Codex 路径修复标题',
-      cwd: WORKSPACE, codexSid: codex.sid, codexSessionsRoot: CODEX_ROOT, transcriptPath: codex.transcriptPath,
+      cwd: WORKTREE, codexSid: codex.sid, codexSessionsRoot: CODEX_ROOT, transcriptPath: codex.transcriptPath,
       lastMessageTime: Date.parse('2026-08-21T10:00:04Z'), updatedAt: Date.parse('2026-08-21T10:00:04Z'),
     },
     {
@@ -169,6 +178,26 @@ async function setSearch(client, query) {
   })()`);
 }
 
+function writeProjectFixtures() {
+  for (const [root,name] of [[WORKSPACE,'搜索测试项目'],[UNUSED_PROJECT,'没有会话的项目']]) {
+    fs.mkdirSync(path.join(root,'.git'),{recursive:true});
+    fs.mkdirSync(path.join(root,'.agents'),{recursive:true});
+    fs.writeFileSync(path.join(root,'.agents','project.json'),JSON.stringify({name,trunk:'master'}));
+  }
+  fs.mkdirSync(SUBDIRECTORY,{recursive:true});fs.mkdirSync(WORKTREE,{recursive:true});
+  const admin=path.join(WORKSPACE,'.git','worktrees','search');fs.mkdirSync(admin,{recursive:true});
+  fs.writeFileSync(path.join(admin,'commondir'),'../..\n');
+  fs.writeFileSync(path.join(admin,'gitdir'),path.join(WORKTREE,'.git')+'\n');
+  fs.writeFileSync(path.join(WORKTREE,'.git'),'gitdir: '+admin+'\n');
+  const dir=path.join(CODEX_ROOT,'2026','09','09');fs.mkdirSync(dir,{recursive:true});
+  const sid='019d2222-2222-7222-8222-222222222222';
+  const rows=[
+    {timestamp:new Date(FIXTURE_NOW).toISOString(),type:'session_meta',payload:{id:sid,cwd:WORKSPACE+'2',source:'cli'}},
+    {timestamp:new Date(FIXTURE_NOW).toISOString(),type:'event_msg',payload:{type:'user_message',message:`${PROJECT_MARKER} 搜索测试项目：随机目录中的同名讨论`}},
+  ];
+  fs.writeFileSync(path.join(dir,`rollout-2026-09-09T00-00-00-${sid}.jsonl`),rows.map(row=>JSON.stringify(row)).join('\n')+'\n');
+}
+
 async function clickFilter(client, selector) {
   await client.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
 }
@@ -188,6 +217,7 @@ async function waitSearchState(client, predicate, label) {
   try {
     fs.mkdirSync(WORKSPACE, { recursive: true });
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+    writeProjectFixtures();
     writeFakeClaudeCli();
     const claude = writeClaudeFixture();
     const codex = writeCodexFixture();
@@ -206,6 +236,7 @@ async function waitSearchState(client, predicate, label) {
         DEEPSEEK_API_KEY: '',
         USERPROFILE: FAKE_HOME,
         HOME: FAKE_HOME,
+        AI_HUB_WORKSPACE_ROOT: path.join(TEMP_ROOT,'work-root'),
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: CLAUDE_ROOT,
         HUB_SESSION_SEARCH_CODEX_ROOTS: CODEX_ROOT,
         HUB_SESSION_SEARCH_REFRESH_TTL_MS: '500',
@@ -309,6 +340,31 @@ async function waitSearchState(client, predicate, label) {
     assert.match(result.timeConditions,/消息发生/);
     await client.eval(`(() => {const s=document.getElementById('session-search-time');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
     await waitSearchState(client,s=>s.state==='complete' && s.resultCount===3,'clear time restores old fixture');
+
+    result.projectLibrary = await waitFor('same project library as group chat', async () => {
+      const state=await client.eval(`(async()=>({items:(await require('electron').ipcRenderer.invoke('workspace:prepared-projects')).items.map(p=>({name:p.name,path:p.path})),options:[...document.getElementById('session-search-project').options].filter(p=>p.value).map(p=>({name:p.textContent,path:p.value}))}))()`);
+      return state.options.length===2 ? state : null;
+    });
+    assert.deepEqual(result.projectLibrary.options,result.projectLibrary.items);
+    assert.deepEqual(new Set(result.projectLibrary.options.map(p=>p.name)),new Set(['搜索测试项目','没有会话的项目']));
+    await setSearch(client,PROJECT_MARKER);
+    await waitSearchState(client,s=>s.state==='complete' && s.resultCount===4,'all includes unassigned sessions');
+    await client.eval(`(()=>{const s=document.getElementById('session-search-project');s.value=${JSON.stringify(WORKSPACE)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    result.projectMembership=await waitSearchState(client,s=>s.state==='complete' && s.resultCount===3 && s.appliedFilters?.projectFilter?.roots.length===2,'project includes root, subdirectory and external worktree only');
+    await client.eval(`(()=>{const s=document.getElementById('session-search-project');s.value=${JSON.stringify(UNUSED_PROJECT)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await waitSearchState(client,s=>s.state==='complete' && s.resultCount===0,'zero-hit library project remains selectable');
+    assert.equal(await client.eval(`document.getElementById('session-search-project').options.length`),3);
+    await client.eval(`(()=>{const s=document.getElementById('session-search-project');s.value='';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await setSearch(client,TIME_MARKER);
+    result.shortTimeRanges={};
+    for(const [range,count,hours] of [['24h',1,24],['3d',2,72],['7d',3,168]]) {
+      await client.eval(`(()=>{const s=document.getElementById('session-search-time');s.value=${JSON.stringify(range)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+      const state=await waitSearchState(client,s=>s.state==='complete' && s.resultCount===count && s.appliedFilters?.time.to-s.appliedFilters?.time.from===hours*3600000,range+' actually filters messages');
+      result.shortTimeRanges[range]={count:state.resultCount,time:state.appliedFilters.time};
+    }
+    await client.eval(`(()=>{const s=document.getElementById('session-search-time');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await setSearch(client,COMMON);
+    await waitSearchState(client,s=>s.state==='complete' && s.resultCount===3,'restore common query after membership and rolling time checks');
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="codex"]');
     result.codexOnly = await waitSearchState(client, state => state.activeProvider === 'codex' && state.resultCount === 1, 'Codex-only filter');
@@ -488,6 +544,10 @@ async function waitSearchState(client, predicate, label) {
           bodyText: (document.body && document.body.innerText || '').slice(0, 500),
         }))()`);
         console.error('RENDERER_DIAGNOSTICS', JSON.stringify(diagnostics, null, 2));
+        console.error('PROJECT_DIAGNOSTICS', JSON.stringify(await client.eval(`(async()=>({
+          hits:(await require('electron').ipcRenderer.invoke('search-past-sessions',{query:${JSON.stringify(PROJECT_MARKER)}})).results.map(r=>({key:r.key,cwd:r.cwd,provider:r.provider})),
+          meetings:(await require('electron').ipcRenderer.invoke('get-meetings')).map(m=>({id:m.id,workspace:m.workspace})),
+        }))()`),null,2));
       } catch (diagnosticError) {
         console.error('RENDERER_DIAGNOSTICS_FAILED', diagnosticError.message);
       }

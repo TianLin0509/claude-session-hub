@@ -127,11 +127,14 @@ function listPreparedProjects(candidates, deps = {}, opts = {}) {
   for (const entry of byKey.values()) {
     const info = inspectPreparedProject(entry.path, deps);
     if (!info) continue;
+    const search = opts.searchRoots
+      ? require('./session-search-projects').readProjectSearchRoots(entry.path, deps) : null;
     out.push({
       name: info.name,
       path: entry.path,
       trunk: info.trunk,
       activeAt: Math.max(entry.activeAt, info.gitActiveAt),
+      ...(search ? { searchRoots: search.roots, searchWarnings: search.warnings } : {}),
     });
   }
   out.sort((a, b) => (b.activeAt - a.activeAt) || a.name.localeCompare(b.name, 'zh-Hans-CN'));

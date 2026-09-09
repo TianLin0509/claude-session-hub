@@ -574,13 +574,14 @@
               <button type="button" class="session-search-chip" data-provider="kimi" aria-pressed="false" hidden><span class="provider-dot provider-kimi"></span><span>Kimi</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="gemini" aria-pressed="false" hidden><span class="provider-dot provider-gemini"></span><span>Gemini</span><b>0</b></button>
             </div>
-            <div class="session-search-selects">
-              <label><span>时间</span><select id="session-search-time"><option value="all">不限</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="365d">最近一年</option></select></label>
-              <label><span>项目</span><select id="session-search-project"><option value="">全部</option></select></label>
-              <label><span>时间依据</span><select id="session-search-time-field"><option value="eventTime">消息发生</option><option value="conversationTime">会话活动</option></select></label>
-              <label><span>排序</span><select id="session-search-sort"><option value="relevance">相关度</option><option value="conversationTime">最近对话</option><option value="matchTime">最近命中</option><option value="title">标题 A–Z</option></select></label>
-            </div>
           </div>
+          <div class="session-search-selects" role="group" aria-label="时间、项目与排序">
+            <label class="session-search-filter" for="session-search-time"><span>时间</span><select id="session-search-time"><option value="all">不限时间</option><option value="24h">最近 24 小时</option><option value="3d">最近 3 天</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="365d">最近一年</option></select></label>
+            <label class="session-search-filter" for="session-search-project"><span>项目</span><select id="session-search-project" title="与 AI 群聊项目库一致"><option value="">全部会话</option></select></label>
+            <label class="session-search-filter" for="session-search-time-field"><span>依据</span><select id="session-search-time-field"><option value="eventTime">消息时间</option><option value="conversationTime">会话活动</option></select></label>
+            <div class="session-search-filter session-search-sort-control" role="group" aria-label="排序"><span id="session-search-sort-label">排序</span><select id="session-search-sort" aria-labelledby="session-search-sort-label"><option value="relevance">相关度</option><option value="conversationTime">最近对话</option><option value="matchTime">最近命中</option><option value="title">标题 A–Z</option></select></div>
+          </div>
+          <div id="session-search-project-note" class="session-search-project-note" role="status" hidden></div>
           <div class="session-search-scope-tabs" id="session-search-scope-tabs" role="tablist" aria-label="搜索范围">
             <button type="button" class="active" data-scope="dialogue" role="tab" aria-selected="true">对话内容</button>
             <button type="button" data-scope="all" role="tab" aria-selected="false">全部内容</button>

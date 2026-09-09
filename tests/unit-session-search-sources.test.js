@@ -16,6 +16,17 @@ const {
   titleOnlySources,
 } = require('../core/session-search-sources.js');
 
+test('historical meeting project survives a null overlay from older restoration', t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'search-meeting-project-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const filePath=path.join(root,'meeting.json');
+  fs.writeFileSync(filePath,JSON.stringify({title:'原群聊',workspace:'C:/Repos/App',workspaceLabel:'正式项目',_timeline:[]}));
+  const parsed=parseSourceDescriptor({type:'meeting',key:'meeting:m',meetingId:'m',filePath,meeting:{workspace:null,workspaceLabel:null}},createMetadataMaps({sessions:[],meetings:[]}));
+  assert.equal(parsed.session.cwd,'C:/Repos/App');assert.equal(parsed.session.projectLabel,'正式项目');
+  const moved=parseSourceDescriptor({type:'meeting',key:'meeting:m',meetingId:'m',filePath,meeting:{workspace:'D:/Repos/New',workspaceLabel:null}},createMetadataMaps({sessions:[],meetings:[]}));
+  assert.equal(moved.session.cwd,'D:/Repos/New');assert.notEqual(moved.session.projectLabel,'正式项目');
+});
+
 test('bounded JSONL reads discard a partial head record and preserve recent tail records', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-bounded-source-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

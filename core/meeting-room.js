@@ -359,6 +359,8 @@ class MeetingRoomManager {
       id: meetingData.id,
       type: 'meeting',
       title: restoredTitle,
+      workspace: typeof meetingData.workspace === 'string' ? meetingData.workspace : null,
+      workspaceLabel: typeof meetingData.workspaceLabel === 'string' ? meetingData.workspaceLabel : null,
       userRenamed: restoredUserRenamed,
       autoTitlePending: restoredAutoTitlePending,
       autoTitleGenerated: restoredAutoTitleGenerated,
