@@ -61,16 +61,25 @@ function checkDevWorkspace(dir, deps = {}) {
     // 退到一个随便什么存在的文件夹并不能解决问题 —— 那只是把失败推迟到第一步，
     // 而且会造出一个开在非项目目录上的开发房。
     const ancestor = _nearestExistingAncestor(_fs, d);
-    const fallback = ancestor ? _findRepoRoot(_fs, ancestor) : null;
+    const owningProject = ancestor ? _findRepoRoot(_fs, ancestor) : null;
+    // 找不到所属项目时退到**平铺工作根**：它是任务书说的「受约束的有效目录」——
+    // 带着项目库，CLI 能在那里起来做只读定位，而不是把用户挡在建房外面。
+    // 连工作根都拿不到才继续硬报错。
+    const workRootFallback = (!owningProject && deps.workRoot && _exists(_fs, deps.workRoot))
+      ? deps.workRoot : null;
+    const fallback = owningProject || workRootFallback;
     if (fallback) {
       return {
         ok: true,
         reason: 'ready-fallback',
         resolvedRoot: fallback,
         requestedPath: d,
+        atWorkRoot: !owningProject,
         message: [
           `你选的目录不存在：${d}`,
-          `已经退到它所属的项目根：${fallback}`,
+          owningProject
+            ? `已经退到它所属的项目根：${fallback}`
+            : `已经退到默认工作目录：${fallback}（AI 会按任务和项目库自己定位到目标项目）`,
           'AI 会在那里先只读核实这是不是本任务要动的项目，确认之前不写任何文件。',
         ].join(String.fromCharCode(10)),
       };

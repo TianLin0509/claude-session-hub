@@ -611,12 +611,22 @@ async function _onCreate() {
 
     let workspace = await _syncWorkspace();
     // 开发场景开在平铺工作根上：放行，但 prompt 里要带项目库让 AI 自己定位项目根。
-    const atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!(workspace && workspace.flat);
+    let atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!(workspace && workspace.flat);
+    let fellBackToWorkRoot = false;
     let devProjects = [];
     if (scene === 'dev') {
       // 挡在建群这一刻。落错目录的代价是几分钟后才看得出来的一次空转，
       // 而这里只要一行判断。见 renderer/dev-workspace-guard.js 的注释。
-      const verdict = checkDevWorkspace(workspace && workspace.path, { workRoot: atWorkRoot ? workspace.path : '' });
+      // 工作根总是要问一次：失效目录的兜底落脚点就是它（任务书第七节第 8 条）。
+      // 只读查询，没有副作用。
+      let workRootPath = atWorkRoot && workspace ? workspace.path : '';
+      if (!workRootPath) {
+        try {
+          const info = await ipcRenderer.invoke('workspace:work-root');
+          if (info && info.flat && info.root) workRootPath = info.root;
+        } catch (error) { console.warn('[meeting-create] 取工作根失败：', error && error.message); }
+      }
+      const verdict = checkDevWorkspace(workspace && workspace.path, { workRoot: workRootPath });
       if (!verdict.ok) throw new Error(verdict.message);
       // 用户选中的是仓库**子目录**时，闸门会把仓库根算出来。必须按仓库根建群 ——
       // 合同里那些仓库内相对路径（.agents/AUTHOR.md、scripts/merge_task.py）
@@ -629,6 +639,10 @@ async function _onCreate() {
       if (verdict.reason === 'ready-fallback' && verdict.message) {
         console.warn('[meeting-create] 工作目录已纠正：' + verdict.message);
       }
+      // 退到工作根时，这个房就是「不在项目根上」——项目库和定位说明要跟着进来，
+      // 否则 AI 到了那儿既没有合同也没有线索。
+      if (verdict.reason === 'ready-fallback' && verdict.atWorkRoot) fellBackToWorkRoot = true;
+      if (fellBackToWorkRoot) atWorkRoot = true;
       if (atWorkRoot) {
         createBtn.textContent = '正在读取项目库...';
         devProjects = await _loadProjectLibrary(true);

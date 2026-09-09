@@ -92,7 +92,14 @@ function mk(opts = {}) {
       },
       getAllMeetings: () => [{ id: meetingId, groupChat: true, scene: 'dev', serialWorkflow: workflow }],
     },
-    sessionManager: { getSession: (sid) => ({ id: sid, title: sid, kind: 'codex', status: 'idle' }) },
+    sessionManager: {
+      getSession: (sid) => {
+        // 模拟「席位从休眠恢复、ensureMemberReady 正在 await」的那一刻：
+        // 测试可以在这里让停止到达，验证判断是不是真的贴着派发做。
+        if (typeof opts.onEnsureReady === 'function') opts.onEnsureReady(sid);
+        return { id: sid, title: sid, kind: 'codex', status: 'idle' };
+      },
+    },
     sendToRenderer: () => {},
     writeReport: () => null,
     logger: { log: () => {} },
@@ -680,6 +687,40 @@ function writeDoc(docsDir, pos, body) {
     engineRef = h.engine;
     const state = await h.engine.runLoop('mtg', '做点事', null, {});
     assert.strictEqual(builderDispatches, 1, '等待窗口里点的停止，循环这边同样不许再派');
+    assert.strictEqual(state.status, 'stopped_user');
+  });
+
+  // ── 2026-09-08 第六轮：会话恢复等待期间到达的停止 ────────────────────────
+  //
+  // ensureMemberReady() 在席位休眠时会 await（恢复会话最长等 30 秒）。
+  // 停止如果落在这段等待里，上一版的检查（在 await 之前）看不见它，照样派出去。
+  // 判断必须在 ensureMemberReady 之后、真正调派发之前再做一次。
+
+  await t('阻断 停止落在会话恢复等待里 → 开题仍不许派出去', async () => {
+    let engineRef = null;
+    let dispatches = 0;
+    const h = mk({
+      devPhase: 'discuss',
+      onEnsureReady: () => { engineRef.stopLoop('mtg', { interrupt: false }); },
+      onDispatch: (args) => {
+        if (args.workflowRun && args.workflowRun.kind === 'kickoff') dispatches += 1;
+      },
+    });
+    engineRef = h.engine;
+    const outcome = await h.engine.runKickoff('mtg', {});
+    assert.strictEqual(dispatches, 0, '恢复等待期间点的停止同样算数，一次都不该派');
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(h.getWorkflow().devPhase, 'kickoff');
+  });
+
+  await t('阻断 停止落在会话恢复等待里 → 实现位和审查位也不许派出去', async () => {
+    let engineRef = null;
+    const h = mk({
+      onEnsureReady: () => { engineRef.stopLoop('mtg', { interrupt: false }); },
+    });
+    engineRef = h.engine;
+    const state = await h.engine.runLoop('mtg', '做点事', null, {});
+    assert.strictEqual(h.turnCalls.length, 0, '恢复等待里点的停止，循环这边一次都不该派');
     assert.strictEqual(state.status, 'stopped_user');
   });
 

@@ -185,9 +185,13 @@ test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定�
 test('建群弹窗：开发场景不再强制切到「选择已有路径」，但开在工作根必须先拿项目库', () => {
   assert(!/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
     '选中 dev 时不许再替用户把档位切走');
-  assert(/const atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!\(workspace && workspace\.flat\)/.test(modal),
+  // 2026-09-08：这一行从 const 改成 let —— 失效目录退到工作根时要把它翻成 true，
+  // 项目库和定位说明才会跟进来（见 dev-workspace-guard 的 ready-fallback）。判据本身没变。
+  assert(/let atWorkRoot = scene === 'dev' && _meetingWorkspaceMode === 'default' && !!\(workspace && workspace\.flat\)/.test(modal),
     '只有「默认档 + 平铺工作根」才算开在工作根');
-  assert(/checkDevWorkspace\(workspace && workspace\.path, \{ workRoot: atWorkRoot \? workspace\.path : '' \}\)/.test(modal),
+  assert(/if \(fellBackToWorkRoot\) atWorkRoot = true;/.test(modal),
+    '唯一能额外把它翻成 true 的，只有「失效目录退到工作根」这一条');
+  assert(/checkDevWorkspace\(workspace && workspace\.path, \{ workRoot: workRootPath \}\)/.test(modal),
     '闸门要拿到工作根路径才知道该放行');
   const iLoad = modal.indexOf('devProjects = await _loadProjectLibrary(true)');
   const iCreate = modal.indexOf("invoke('create-meeting'");

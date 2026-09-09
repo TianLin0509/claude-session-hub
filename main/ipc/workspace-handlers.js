@@ -309,6 +309,13 @@ function registerWorkspaceIpc(ipcMain, deps) {
     return { ...workspace, flat };
   });
 
+  // 只读：拿平铺工作根的路径。建房闸门要用它做「失效目录」的兜底落脚点 ——
+  // workspace:default 会顺带创建/选中工作区，问一句路径不该有副作用。
+  ipcMain.handle('workspace:work-root', () => ({
+    root: workspaceService.getWorkspaceRoot(),
+    flat: workspaceService.isFlatWorkRoot(),
+  }));
+
   ipcMain.handle('workspace:select', (_event, cwd) => {
     const workspace = workspaceService.resolveForSession(cwd, { select: false });
     sendToRenderer('workspace-updated', { workspace });

@@ -175,6 +175,17 @@ function createLoopEngine(deps) {
   // 所以它必须落盘，并且只由**用户自己**的明确动作清掉（点开始 / 继续 / 重发）。
   // 停止不删除任何成果：已接收的交付凭据、文档、会话全部留着，人回来接着走。
 
+  /**
+   * 此刻还该不该把活派出去。
+   *
+   * 2026-09-08 第六轮合并位复现：判断原来放在 ensureMemberReady() **之前**，
+   * 而它在席位休眠时会 await（恢复会话最长 30 秒）。停止落在那段等待里就被漏掉，
+   * 开题 / 实现 / 审查三处照样各派一次。判断必须贴着真正的派发调用做。
+   */
+  function shouldNotDispatch(meetingId, entry) {
+    return !!((entry && entry.abort) || stopIntentOf(meetingId));
+  }
+
   function stopIntentOf(meetingId) {
     const workflow = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
     return workflow.stopRequested || null;
@@ -689,7 +700,7 @@ function createLoopEngine(deps) {
         let failureReason = null;
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
-          if (entry.abort) { state.status = 'stopped_user'; break; }
+          if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
           const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
           const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
@@ -939,9 +950,10 @@ function createLoopEngine(deps) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
             // 停止可能正好落在上一次重试的等待窗口里 —— 判断要贴着派发这一刻做（第五轮阻断）。
-            if (entry.abort || stopIntentOf(meetingId)) break;
+            if (shouldNotDispatch(meetingId, entry)) break;
             try {
               await ensureMemberReady(meeting, builderId);
+              if (shouldNotDispatch(meetingId, entry)) break;
               bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: builderPrompt,
                 targetMemberIds: [builderId],
@@ -1096,9 +1108,10 @@ function createLoopEngine(deps) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
             // 同上：等待窗口里点的停止同样算数。
-            if (entry.abort || stopIntentOf(meetingId)) break;
+            if (shouldNotDispatch(meetingId, entry)) break;
             try {
               for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+              if (shouldNotDispatch(meetingId, entry)) break;
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
                 targetMemberIds: reviewerIds,
@@ -1436,7 +1449,7 @@ function createLoopEngine(deps) {
           // 于是「停止」或「报告」正好落在那 500ms 等待窗口里就被漏掉，照样派第二次。
           // 判断必须贴着派发这一刻做 —— 等待期间发生的事同样算数。
           if (transportAttempt > 1) {
-            if (entry.abort || stopIntentOf(meetingId)) {
+            if (shouldNotDispatch(meetingId, entry)) {
               logger.log('[loop-engine] 用户已停止，开题不再重试派发');
               dispatchStopped = true;
               break;
@@ -1449,6 +1462,8 @@ function createLoopEngine(deps) {
           }
           try {
             await ensureMemberReady(meeting, authorId);
+            // 恢复会话可能等了很久，停止就发生在这段等待里 —— 派之前再问一次。
+            if (shouldNotDispatch(meetingId, entry)) { dispatchStopped = true; break; }
             const dispatched = await getDispatcher().dispatchGroupChatTurn(meetingId, {
               userInput: prompt,
               targetMemberIds: [authorId],

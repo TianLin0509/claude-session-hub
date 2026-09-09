@@ -184,8 +184,36 @@ test('阻断 失效目录不该在建房这一刻硬报错：有像样的落脚�
   assert.ok(/不存在/.test(verdict.message), '得让用户看见路径被纠正过');
 });
 
-test('落脚点不属于任何项目时，仍然如实报「目录不存在」', () => {
-  // 退到一个随便什么存在的文件夹并不能解决问题，只是把失败推迟到第一步。
+test('阻断 失效目录且不属于任何项目 → 退到工作根，不把用户挡在建房外', () => {
+  // 合并位的判断：任务书允许在**受约束的有效目录**只读定位。工作根就是那个目录 ——
+  // 它带着项目库，AI 到那儿能自己定位；把用户挡回去才是不符合要求的那一种。
+  const SEP = String.fromCharCode(92);
+  const WORK_ROOT = 'C:' + SEP + 'AIWork';
+  const files = new Set([WORK_ROOT]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => true };
+    },
+  };
+  const verdict = checkDevWorkspace(['D:', 'gone', 'project'].join(SEP), { fs: fakeFs, workRoot: WORK_ROOT });
+  assert.strictEqual(verdict.ok, true, '有工作根兜底就不该硬报错');
+  assert.strictEqual(verdict.reason, 'ready-fallback');
+  assert.strictEqual(verdict.resolvedRoot, WORK_ROOT);
+  assert.strictEqual(verdict.atWorkRoot, true, '要标成「不在项目根上」，项目库和定位说明才会跟进来');
+  assert.ok(/项目库/.test(verdict.message));
+});
+
+test('建群路径：退到工作根时要把项目库带进工作流配置', () => {
+  const modal = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-create-modal.js'), 'utf-8');
+  assert(/workspace:work-root/.test(modal), '要先问一次工作根，才有兜底落脚点');
+  assert(/verdict\.reason === 'ready-fallback' && verdict\.atWorkRoot/.test(modal));
+  assert(/if \(fellBackToWorkRoot\) atWorkRoot = true;/.test(modal), '兜底之后必须按工作根那条路拿项目库');
+});
+
+test('既没有所属项目、又拿不到工作根时，才如实报「目录不存在」', () => {
+  // 这是最后的边界：退到一个随便什么存在的文件夹并不能解决问题，
+  // 只是把失败推迟到第一步。有工作根时走上面那条兜底，不到这里。
   const SEP = String.fromCharCode(92);
   const PLAIN = 'C:' + SEP + 'tmpdir';
   const files = new Set([PLAIN]);
