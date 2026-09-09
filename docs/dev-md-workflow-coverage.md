@@ -105,11 +105,13 @@
 | U | `node scripts/run_unit_tests.js` | 392 个文件全过 | 终端输出 |
 | U | 同上（第五轮修完后重跑） | 392 个文件全过 | 终端输出 |
 | U | 同上（第七轮修完后重跑） | 393 个文件全过 | 终端输出 |
+| U | 同上（第八轮修完后重跑） | 394 个文件全过 | 终端输出 |
 | I | `node tests/dev-md-handoff-i-e2e.js` | 56 / 56（含新增的 E01–E04 九条） | 隔离数据目录见运行日志 |
 | L | `node tests/dev-md-handoff-l-e2e.js --stage=full --budget=1200` | 25 / 25（路径闸门加上之后又跑了一遍，仍 25/25） | `evidence/`：开题报告、合并手册、master 测试输出、fixture 图、逐人送达 JSON |
 | L | `node tests/dev-md-handoff-l-e2e.js --stage=fail-first --budget=1200` | 19 / 19 | 同上，另含 `review-1-fail.md`（真实 FAIL）与 `review-2.md`（复审 PASS） |
 | L | 同 full（第六轮改完派发闸门后再跑一遍） | 25 / 25 | 真实两家 CLI 全流程未受影响，仍有真实 `--no-ff` 合并 |
 | L | 同 full（第七轮改完就绪判定后再跑一遍） | 26 / 26 | 新增「开题 prompt 真的送进 CLI」按执行状态判的那一条；仍有真实 `--no-ff` 合并 |
+| L | 同 full（第八轮补齐需求投递与学习目录隔离后） | 28 / 28 | 新增「初始需求进了投递账本」「需求真的出现在执笔者 prompt 原文里」两条；真实学习目录三次运行前后都是 14 条，未被写入 |
 
 L 层 full 的真实合并：`b394057 merge: feat/greet-greeting`（`--no-ff` 合进 master），
 合并手册的 VERIFIED 记录了它亲跑测试、变异回放、试合并再 abort、最终生成合并提交。
