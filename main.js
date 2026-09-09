@@ -1825,6 +1825,7 @@ const sessionSearchPrewarmDelayMs = Math.max(
   Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 5_000,
 );
 const sessionSearchPrewarmTimer = setTimeout(() => {
+  sessionSearchService.startMaintenance(buildSessionSearchSnapshot);
   void (async () => {
     const lockPath = path.join(getHubDataDir(), 'cache', 'session-search-prewarm.lock');
     try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
@@ -1842,6 +1843,11 @@ const sessionSearchPrewarmTimer = setTimeout(() => {
   });
 }, sessionSearchPrewarmDelayMs);
 sessionSearchPrewarmTimer.unref?.();
+// Persistent source watchers cover external CLI saves too. Semantic events
+// coalesce into the same background queue; the engine owns the shared writer lease.
+for (const event of ['turn-complete', 'prompt-submitted', 'turn-aborted', 'turn-error', 'session-bound']) {
+  transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot(), payload?.hubSessionId || event));
+}
 
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
 //   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。

@@ -63,7 +63,7 @@ function writeClaudeFixture() {
       type: 'assistant', uuid: 'claude-answer-global', timestamp: '2026-08-20T10:00:01Z',
       message: {
         model: 'claude-sonnet', stop_reason: 'end_turn',
-        content: [{ type: 'text', text: `${COMMON} CLAUDE_ANSWER_MARKER：检查端口并复用现有服务。<script>window.__SEARCH_XSS=1</script>` }],
+        content: [{ type: 'text', text: `${COMMON} CLAUDE_ANSWER_MARKER：检查端口并复用现有服务。<script>window.__SEARCH_XSS=1</script>\n\n## 处理步骤\n\n- 查看端口\n- 复用已有服务\n\n\`\`\`js\nconst ready = true;\n\`\`\`\n\n公式：$x^2 + y^2$` }],
       },
     },
   ];
@@ -280,7 +280,7 @@ async function waitSearchState(client, predicate, label) {
       width:'47%',
       percent:'47%',
       detail:'正在解析会话 · 1032/2181 个来源 · 可继续使用 AI Hub',
-      refreshDisabled:true,
+      refreshDisabled:false,
     });
     const progressShot = await client.send('Page.captureScreenshot', { format:'png', fromSurface:true });
     fs.writeFileSync(PROGRESS_SCREENSHOT, Buffer.from(progressShot.data, 'base64'));
@@ -303,6 +303,12 @@ async function waitSearchState(client, predicate, label) {
     })`);
     assert.equal(result.preview.matchCount, 1);
     assert.equal(result.preview.xss, 0, 'transcript HTML must render as inert text');
+    await client.eval(`(() => {const s=document.getElementById('session-search-time');s.value='7d';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    result.recentEmpty=await waitSearchState(client,s=>s.state==='complete' && s.resultCount===0 && s.appliedFilters?.time.from>0,'7-day message filter excludes old fixture');
+    result.timeConditions=await client.eval(`document.getElementById('session-search-conditions').textContent`);
+    assert.match(result.timeConditions,/消息发生/);
+    await client.eval(`(() => {const s=document.getElementById('session-search-time');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await waitSearchState(client,s=>s.state==='complete' && s.resultCount===3,'clear time restores old fixture');
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="codex"]');
     result.codexOnly = await waitSearchState(client, state => state.activeProvider === 'codex' && state.resultCount === 1, 'Codex-only filter');
@@ -317,6 +323,9 @@ async function waitSearchState(client, predicate, label) {
     await setSearch(client, 'CLAUDE_ANSWER_MARKER');
     result.answerOnly = await waitSearchState(client, state => state.activeScope === 'assistant' && state.resultCount === 1, 'answer-only filter');
     result.answerPreview = await waitSearchState(client, state => /Claude/.test(state.previewTitle), 'answer preview');
+    result.nativeCards=await client.eval(`({heading:!!document.querySelector('#session-search-preview .turn-body h2'),code:!!document.querySelector('#session-search-preview .turn-body pre'),actions:document.querySelectorAll('#session-search-preview [data-action]').length,liveIds:document.querySelectorAll('#session-search-preview [data-turn-id]').length})`);
+    assert.equal(result.nativeCards.heading,true);assert.equal(result.nativeCards.code,true);
+    assert.equal(result.nativeCards.actions,0);assert.equal(result.nativeCards.liveIds,0);
 
     await clickFilter(client, '[data-scope="user"]');
     result.userNoMatch = await waitSearchState(client, state => state.activeScope === 'user' && state.resultCount === 0, 'user scope excludes assistant marker');
@@ -325,6 +334,7 @@ async function waitSearchState(client, predicate, label) {
     await setSearch(client, '群聊专项评审标题');
     result.titleOnly = await waitSearchState(client, state => state.activeScope === 'title' && state.resultCount === 1, 'title-only search');
     result.titlePreview = await waitSearchState(client, state => /群聊专项评审标题/.test(state.previewTitle), 'title preview');
+    result.titlePreviewHasDialogue=await waitFor('provisional title preview upgrades to indexed dialogue',()=>client.eval(`!!document.querySelector('#session-search-preview .session-search-native-card')`));
 
     await clickFilter(client, '[data-scope="all"]');
     await setSearch(client, COMMON);
@@ -353,6 +363,8 @@ async function waitSearchState(client, predicate, label) {
 
     const desktop = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(SCREENSHOT, Buffer.from(desktop.data, 'base64'));
+    result.savedWidth=await client.eval(`(() => {document.querySelector('.session-search-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));return Number(localStorage.getItem('hub.search.resultShare'));})()`);
+    assert.equal(result.savedWidth,44);
 
     await client.send('Emulation.setDeviceMetricsOverride', { width: 760, height: 820, deviceScaleFactor: 1, mobile: false });
     await _waitMs(120);
@@ -412,7 +424,7 @@ async function waitSearchState(client, predicate, label) {
     await clickFilter(client, '[data-scope="assistant"]');
     await setSearch(client, 'CLAUDE_ANSWER_MARKER');
     await waitSearchState(client, state => state.activeProvider === 'claude' && state.activeScope === 'assistant' && state.resultCount === 1 && /Claude/.test(state.previewTitle), 'Claude result before precise open');
-    await client.eval(`[...document.querySelectorAll('.session-search-action')].find(button => button.textContent === '定位到命中').click()`);
+    await client.eval(`[...document.querySelectorAll('.session-search-action')].find(button => button.textContent === '继续会话').click()`);
     result.openClaude = await waitFor('precise Claude result opens card at matching event', async () => {
       const state = await client.eval(`({
         modalOpen: document.getElementById('search-modal').style.display === 'flex',
@@ -422,6 +434,16 @@ async function waitSearchState(client, predicate, label) {
       })`);
       return !state.modalOpen && state.terminalIds.includes('hub-claude-search') && state.matchMounted ? state : null;
     }, 20_000);
+
+    const previousErrors=await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS || []`);
+    await client.send('Page.reload');
+    await waitFor('reloaded UI',()=>client.eval(`!!window.__hubE2E?.globalSessionSearch`));
+    await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS=${JSON.stringify(previousErrors)};document.getElementById('btn-global-search').click()`);
+    result.reloadedPreferences=await waitFor('restored split and empty-query ordering',()=>client.eval(`(() => {const s=document.getElementById('session-search-sort');return s.value==='conversationTime' && s.querySelector('[value="relevance"]').disabled ? {share:document.querySelector('.session-search-workspace-panes').style.getPropertyValue('--search-result-share'),sort:s.value,description:s.title}:null;})()`));
+    assert.equal(result.reloadedPreferences.share,'44%');
+    assert.match(result.reloadedPreferences.description,/未输入关键词/);
+    await setSearch(client,COMMON);
+    await waitFor('nonempty relevance ordering restored',()=>client.eval(`document.getElementById('session-search-sort').value==='relevance' && !document.querySelector('#session-search-sort [value="relevance"]').disabled`));
 
     const databasePath = path.join(DATA_DIR, 'cache', 'session-search-v3.sqlite');
     result.cacheExists = fs.existsSync(databasePath);

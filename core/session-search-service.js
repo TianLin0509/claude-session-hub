@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const os = require('node:os');
+const fs = require('node:fs');
 const { fork } = require('node:child_process');
 const {
   DEFAULT_MAX_CANDIDATE_SESSIONS,
@@ -21,6 +22,7 @@ class SessionSearchService {
     this._childData = {
       cachePath: options.cachePath || null,
       databasePath: options.databasePath || sqlitePathForLegacyCache(options.cachePath),
+      backgroundWriter: options.backgroundWriter !== false,
       claudeRoots: Array.isArray(options.claudeRoots) ? options.claudeRoots : [],
       codexRoots: Array.isArray(options.codexRoots) ? options.codexRoots : [],
       kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
@@ -41,6 +43,12 @@ class SessionSearchService {
     this._nextId = 0;
     this._pending = new Map();
     this._closed = false;
+    this._watchers = new Map();
+    this._queuedSources = new Set();
+    this._queuedSnapshot = null;
+    this._maintenanceTimer = null;
+    this._queueTimer = null;
+    this._maintenanceBusy = false;
     this._status = {
       phase: 'idle', ready: false, refreshing: false,
       index: { sessions: 0, documents: 0, terms: 0, providers: {}, storage: 'sqlite-child-process' },
@@ -182,7 +190,65 @@ class SessionSearchService {
   }
 
   refresh(snapshot = {}, options = {}) {
-    return this._request('refresh', { snapshot, force: options.force === true });
+    return this._request('refresh', { snapshot, force: options.force === true, immediate: options.immediate === true });
+  }
+
+  queueRefresh(snapshot = {}, source = 'reconcile') {
+    if(this._closed) return;
+    this._queuedSnapshot = snapshot;
+    this._queuedSources.add(String(source || 'reconcile'));
+    if(this._queueTimer || this._maintenanceBusy) return;
+    this._queueTimer = setTimeout(()=>{
+      this._queueTimer=null;
+      void this._flushRefreshQueue();
+    },400);
+    this._queueTimer.unref?.();
+  }
+
+  async _flushRefreshQueue() {
+    if(this._closed || this._maintenanceBusy || !this._queuedSnapshot) return;
+    this._maintenanceBusy=true;
+    const snapshot=this._queuedSnapshot;this._queuedSnapshot=null;this._queuedSources.clear();
+    let retry=false;
+    try {
+      const status=await this.refresh(snapshot,{immediate:true});
+      retry=status?.phase==='waiting_writer';
+    } catch(error) {
+      retry=true;
+      this._status={...this._status,phase:this._status.ready?'ready_with_errors':'error',refreshing:false,lastError:error.message};
+      console.warn('[session-search] background sync failed:',error.message);
+    } finally {
+      this._maintenanceBusy=false;
+      if(retry && !this._queuedSnapshot) this._queuedSnapshot=snapshot;
+      if(!this._closed && this._queuedSnapshot) {
+        this._queueTimer=setTimeout(()=>{this._queueTimer=null;void this._flushRefreshQueue();},retry?2000:400);
+        this._queueTimer.unref?.();
+      }
+    }
+  }
+
+  startMaintenance(getSnapshot) {
+    if(this._closed || this._maintenanceTimer || !this._prewarmEnabled) return;
+    const reconcile=()=>{
+      const roots=[...this._childData.claudeRoots,...this._childData.codexRoots,...this._childData.kimiRoots,...this._childData.geminiRoots,this._childData.meetingDir].filter(Boolean);
+      for(const root of new Set(roots)) {
+        if(this._watchers.has(root) || !fs.existsSync(root)) continue;
+        try {
+          const watcher=fs.watch(root,{recursive:true,persistent:false},(_event,file)=>{
+            if(!file || /\.(jsonl|json)$/i.test(String(file))) this.queueRefresh(getSnapshot(),path.join(root,String(file||'')));
+          });
+          watcher.on('error',error=>{
+            watcher.close();this._watchers.delete(root);
+            this._status={...this._status,watchError:error.message};
+            console.warn('[session-search] source watcher failed; periodic reconciliation remains active:',error.message);
+          });
+          this._watchers.set(root,watcher);
+        } catch(error) {this._status={...this._status,watchError:error.message};console.warn('[session-search] watch unavailable:',error.message);}
+      }
+      this.queueRefresh(getSnapshot());
+    };
+    this._maintenanceTimer=setInterval(reconcile,60000);this._maintenanceTimer.unref?.();
+    reconcile();
   }
 
   status() {
@@ -222,6 +288,9 @@ class SessionSearchService {
   async close() {
     if (this._closed) return;
     this._closed = true;
+    clearInterval(this._maintenanceTimer);clearTimeout(this._queueTimer);
+    for(const watcher of this._watchers.values()) watcher.close();
+    this._watchers.clear();this._queuedSources.clear();this._queuedSnapshot=null;
     const error = new Error('Session search service closed');
     for (const pending of this._pending.values()) {
       clearTimeout(pending.timer);

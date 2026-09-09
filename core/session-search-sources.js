@@ -1002,12 +1002,12 @@ function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
       docs.push({
         id: 'last-output-preview', eventId: 'last-output-preview',
         scope: 'assistant', role: 'assistant', speaker: providerLabel(provider),
-        text: String(session.lastOutputPreview), ordinal: 0, timestamp: updatedAt,
+        text: String(session.lastOutputPreview), ordinal: 0, timestamp: 0,
       });
     }
     out.push({
       key: `hub:${hubId}`,
-      signature: `meta:${metadataSignature(session)}`,
+      signature: `meta-time-v2:${metadataSignature(session)}`,
       searchable: true,
       session: {
         key: `hub:${hubId}`, provider,

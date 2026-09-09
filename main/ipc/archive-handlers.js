@@ -30,7 +30,7 @@ function registerArchiveIpc(ipcMain, deps = {}) {
       logger.warn('[群聊] search-past-sessions failed:', e.message);
       if (searchService) {
         return {
-          results: [], totalSessions: 0, totalMatches: 0, truncated: false,
+          results: [], totalSessions: 0, totalMatches: 0, truncated: false, state: 'error', total: {value:0,relation:'lowerBound'},
           facets: { providers: {}, scopes: {}, projects: [] },
           queryMs: 0,
           error: e.message,
@@ -46,7 +46,7 @@ function registerArchiveIpc(ipcMain, deps = {}) {
       return await searchService.preview(request);
     } catch (e) {
       logger.warn('[session-search] preview failed:', e.message);
-      return null;
+      return { error: e.message, state: 'error' };
     }
   });
 
@@ -65,7 +65,7 @@ function registerArchiveIpc(ipcMain, deps = {}) {
   ipcMain.handle('refresh-session-search', async (_e, request = {}) => {
     if (!searchService || typeof searchService.refresh !== 'function') return null;
     try {
-      return await searchService.refresh(getSearchSnapshot(), { force: request.force === true });
+      return await searchService.refresh(getSearchSnapshot(), { force: request.force === true, immediate: request.immediate === true });
     } catch (e) {
       logger.warn('[session-search] refresh failed:', e.message);
       return { phase: 'error', ready: false, refreshing: false, lastError: e.message };

@@ -1,9 +1,8 @@
 'use strict';
 
-const { recordSearch } = require('../core/search-recent.js');
-const { buildTitleIndex, mergeTitleHits, searchTitles } = require('../core/title-index.js');
+const { recordSearch, readRecent } = require('../core/search-recent.js');
+const { buildTitleIndex, searchTitles, sameSession } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
-const { beijingParts, formatBeijingDateTime } = require('../core/beijing-time.js');
 const { AGENT_SESSION_GROUPS, agentGroupOf, getSidebarSearchEntries } = require('./session-list-renderer.js');
 
 const FACET_STORAGE_KEY = 'hub.search.facets';
@@ -100,15 +99,16 @@ function formatSearchTime(timestamp, now = Date.now()) {
   if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
   if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
   if (diff < 2 * day) return '昨天';
-  const date = beijingParts(at);
-  const current = beijingParts(now);
+  const parts = value => {const d=new Date(value);return {year:d.getFullYear(),month:d.getMonth()+1,day:d.getDate()};};
+  const date = parts(at);
+  const current = parts(now);
   const year = date.year === current.year ? '' : `${date.year}-`;
   return `${year}${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
 }
 
 function formatAbsolute(timestamp) {
   if (!timestamp) return '';
-  try { return formatBeijingDateTime(timestamp); }
+  try { return new Date(timestamp).toLocaleString('zh-CN'); }
   catch { return ''; }
 }
 
@@ -173,6 +173,8 @@ function createGlobalSessionSearch(options) {
     // 侧栏那 682 个标题（会话 + 群聊）。它们本来就在渲染进程的内存里，
     // 加起来只有 10KB —— 标题检索不该走 IPC，也不该等全文索引建好。
     getLocalTitles = null,
+    cardRenderer = null,
+    openPath = null,
   } = options;
   const overlay = document.getElementById('search-modal');
   const queryInput = document.getElementById('search-query');
@@ -186,6 +188,10 @@ function createGlobalSessionSearch(options) {
   const timeSelect = document.getElementById('session-search-time');
   const projectSelect = document.getElementById('session-search-project');
   const sortSelect = document.getElementById('session-search-sort');
+  const timeField = document.getElementById('session-search-time-field');
+  const conditions = document.getElementById('session-search-conditions');
+  const projectRail = document.getElementById('session-search-project-rail');
+  const indexDetails = document.getElementById('session-search-index-details');
   const statusButton = document.getElementById('session-search-index-status');
   const statusText = document.getElementById('session-search-status-text');
   const progressRoot = document.getElementById('session-search-progress');
@@ -198,7 +204,7 @@ function createGlobalSessionSearch(options) {
   const savedFacets = loadSearchFacets(window.localStorage);
   let activeProvider = savedFacets.provider;
   let activeAgent = savedFacets.agent;
-  let activeScope = 'all';
+  let activeScope = 'dialogue';
   let results = [];
   let activeIndex = -1;
   let activePreview = null;
@@ -212,6 +218,51 @@ function createGlobalSessionSearch(options) {
   let titleIndex = [];
   let lastTitleHits = [];
   let lastStatus = null;
+  let lastRequest = null;
+  let lastRecordedQueryId = null;
+  let previewMode = 'overview';
+  let previewPage = {};
+  const knownProjects = new Map();
+  try { sortSelect.value = window.localStorage.getItem('hub.search.sort') || 'relevance'; } catch { /* Optional UI preference. */ }
+  if (!sortSelect.value) sortSelect.value='relevance';
+  const directionSelect=document.createElement('select');directionSelect.id='session-search-direction';directionSelect.setAttribute('aria-label','排序方向');
+  for(const [value,text] of [['desc','降序'],['asc','升序']]) {const option=document.createElement('option');option.value=value;option.textContent=text;directionSelect.append(option);}
+  sortSelect.after(directionSelect);
+  directionSelect.disabled=sortSelect.value==='relevance';
+  directionSelect.value=sortSelect.value==='title'?'asc':'desc';
+  let lastQuerySort=sortSelect.value,lastQueryDirection=directionSelect.value,queryWasEmpty=false;
+  function syncSortChoice(query) {
+    const empty=!query;
+    if(empty && !queryWasEmpty) {lastQuerySort=sortSelect.value;lastQueryDirection=directionSelect.value;if(sortSelect.value==='relevance') sortSelect.value='conversationTime';}
+    else if(!empty && queryWasEmpty) {sortSelect.value=lastQuerySort;directionSelect.value=lastQueryDirection;}
+    queryWasEmpty=empty;
+    const relevance=sortSelect.querySelector('option[value="relevance"]');
+    relevance.disabled=empty;relevance.textContent=empty?'相关度（需关键词）':'相关度';
+    sortSelect.title=empty?'未输入关键词，按字段浏览；输入后恢复上次搜索排序。':'';
+    directionSelect.disabled=sortSelect.value==='relevance';
+  }
+  const recentList=document.createElement('datalist');recentList.id='session-search-recent';queryInput.setAttribute('list',recentList.id);queryInput.after(recentList);
+  const newResults = document.createElement('button');
+  newResults.type='button';newResults.className='session-search-new-results';newResults.hidden=true;
+  newResults.textContent='内容已更新 · 刷新结果';
+  newResults.addEventListener('click',()=>{newResults.hidden=true;void performSearch({immediate:true});});
+  conditions?.after(newResults);
+  const panes=overlay.querySelector('.session-search-workspace-panes');
+  const divider=document.createElement('div');divider.className='session-search-divider';divider.tabIndex=0;
+  divider.setAttribute('role','separator');divider.setAttribute('aria-label','调整结果与预览宽度');divider.setAttribute('aria-orientation','vertical');
+  let resultShare=42;
+  const resizeShare=value=>{resultShare=Math.max(30,Math.min(62,value));panes.style.setProperty('--search-result-share',resultShare+'%');divider.setAttribute('aria-valuenow',String(Math.round(resultShare)));};
+  const saveResultShare=()=>{try {window.localStorage.setItem('hub.search.resultShare',String(resultShare));} catch { /* Optional UI preference. */ }};
+  divider.setAttribute('aria-valuemin','30');divider.setAttribute('aria-valuemax','62');
+  if(panes) {
+    panes.append(divider);
+    let savedShare=42;try {const saved=Number(window.localStorage.getItem('hub.search.resultShare'));if(saved>=30 && saved<=62) savedShare=saved;} catch { /* Optional UI preference. */ }
+    resizeShare(savedShare);
+  }
+  divider.addEventListener('pointerdown',event=>{event.preventDefault();divider.setPointerCapture(event.pointerId);});
+  divider.addEventListener('pointermove',event=>{if(!divider.hasPointerCapture(event.pointerId)) return;const rect=panes.getBoundingClientRect();resizeShare(100*(event.clientX-rect.left)/rect.width);});
+  divider.addEventListener('pointerup',event=>{if(divider.hasPointerCapture(event.pointerId)) {divider.releasePointerCapture(event.pointerId);saveResultShare();}});
+  divider.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();resizeShare(resultShare+(event.key==='ArrowRight'?2:-2));saveResultShare();}});
 
   const agentRoot = document.createElement('div');
   agentRoot.id = 'session-search-agent-filters';
@@ -251,14 +302,6 @@ function createGlobalSessionSearch(options) {
   }
   const browsingCatalogue = () => activeScope === 'dormant' || activeScope === 'pinned' || activeAgent !== 'all';
 
-  /** 索引正在重建时给一句人话，别让用户对着转圈猜。 */
-  function indexBuildingNote() {
-    if (!lastStatus || !lastStatus.refreshing) return '';
-    const done = Number(lastStatus.indexedSources) || 0;
-    const total = Number(lastStatus.totalSources) || 0;
-    return total ? `全文索引重建中 ${done}/${total}` : '全文索引重建中';
-  }
-
   /** 打开弹窗时重建一次即时标题索引。682 条 / 10KB，实测亚毫秒。 */
   function refreshTitleIndex() {
     try {
@@ -271,11 +314,16 @@ function createGlobalSessionSearch(options) {
 
   function localTitleHits(request) {
     if (!titleIndex.length) return [];
+    // Live catalogue metadata cannot prove message timestamps. Timed title
+    // hits and all final ordering therefore come from the same SQLite snapshot.
+    if (request.timeRange !== 'all' || !request.scopes.includes('title')) return [];
     try {
       return searchTitles(catalogueFilter(request), request.query, {
         limit: request.limit || 50,
         providers: request.providers,
         since: request.since,
+        sort: request.sort,
+        direction: request.direction,
       });
     } catch {
       return [];
@@ -294,13 +342,13 @@ function createGlobalSessionSearch(options) {
     if (status && status.refreshing) {
       const done = Number(status.indexedSources) || 0;
       const total = Number(status.totalSources) || 0;
-      return total ? `正在建立本地索引 · ${done}/${total}` : '正在发现本地会话…';
+      return status.ready ? `后台更新 · ${done}/${total} 个变化来源` : total ? `首次整理 · ${done}/${total}` : '正在发现历史记录…';
     }
     if (status && status.ready) {
       const suffix = status.phase === 'ready_with_errors' && status.staleSources
         ? ` · ${status.staleSources} 个来源仅保留旧索引或标题`
         : '';
-      return `本地索引已更新 · ${Number(stats.sessions) || 0} 个 session · ${Number(stats.documents) || 0} 条记录${suffix}`;
+      return `已同步 · ${Number(stats.sessions) || 0} 个会话${suffix}`;
     }
     return '正在读取本地索引…';
   }
@@ -314,14 +362,10 @@ function createGlobalSessionSearch(options) {
     else if (status && status.lastError && !status.ready) statusButton.classList.add('error');
     else statusButton.classList.add('busy');
     statusText.textContent = statusDescription(status);
-    statusButton.disabled = progress.visible;
-    statusButton.title = progress.visible
-      ? '正在后台建立索引，无需重复点击'
-      : (status && status.lastError
-        ? `${status.lastError}\n点击重新建立本地索引`
-        : '点击重新建立本地索引');
+    statusButton.disabled = false;
+    statusButton.title = '查看同步详情';
     if (progressRoot && progressTrack && progressFill && progressPercent && progressDetail) {
-      progressRoot.hidden = !progress.visible;
+      progressRoot.hidden = !progress.visible || !!(status && status.ready);
       progressTrack.classList.toggle('indeterminate', progress.visible && !progress.determinate);
       progressFill.style.width = progress.determinate ? `${progress.percent}%` : '34%';
       progressPercent.textContent = progress.percentText;
@@ -335,16 +379,17 @@ function createGlobalSessionSearch(options) {
   async function refreshStatus({ repeat = true } = {}) {
     try {
       const status = await ipcRenderer.invoke('get-session-search-status');
+      const contentChanged=lastStatus && status?.contentUpdatedAt>(lastStatus.contentUpdatedAt||0);
       renderStatus(status);
-      const refreshJustCompleted = statusWasRefreshing && status && status.ready && !status.refreshing;
+      const refreshJustCompleted = (statusWasRefreshing || contentChanged) && status && status.ready && !status.refreshing;
       statusWasRefreshing = !!(status && status.refreshing);
-      if (refreshJustCompleted && isOpen() && queryInput.value.trim().length >= 2) {
-        void performSearch({ immediate: true });
+      if (refreshJustCompleted && isOpen()) {
+        if(!results.length) void performSearch({ immediate: true });
+        else newResults.hidden=false;
       }
-      const shouldPoll = status && (status.refreshing || (!status.ready && !status.lastError));
-      if (repeat && isOpen() && shouldPoll) {
+      if (repeat && isOpen()) {
         if (statusTimer) clearTimeoutFn(statusTimer);
-        statusTimer = setTimeoutFn(() => refreshStatus({ repeat: true }), 450);
+        statusTimer = setTimeoutFn(() => refreshStatus({ repeat: true }), status?.refreshing?450:3000);
       }
       return status;
     } catch (error) {
@@ -353,34 +398,22 @@ function createGlobalSessionSearch(options) {
     }
   }
 
-  function renderInitialState() {
-    results = [];
-    activeIndex = -1;
-    activePreview = null;
-    summaryRoot.firstElementChild.textContent = titleIndex.length
-      ? `输入即搜 · ${titleIndex.length} 个标题已在内存里，两个字起搜正文`
-      : '输入至少 2 个字符开始搜索';
-    summaryRoot.lastElementChild.textContent = '';
-    resultsRoot.replaceChildren(createStaticEmpty(document, {
-      title: '找回以前解决过的问题',
-      detail: '支持 Claude、Codex、DeepSeek 和 AI 群聊；所有内容仅在本机索引。',
-    }));
-    previewRoot.innerHTML = `
-      <div class="session-search-preview-empty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5Z"/><path d="M4 5.5v16M8 7h8M8 11h6"/></svg>
-        <strong>选择左侧结果查看完整上下文</strong>
-        <span>预览不会启动 CLI，也不会修改原会话。</span>
-      </div>`;
-  }
-
   function searchRequest() {
+    const query = queryInput.value.trim();
+    syncSortChoice(query);
+    const days = {'7d':7,'30d':30,'365d':365}[timeSelect.value];
+    const now = Date.now();
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     return {
-      query: queryInput.value.trim(),
+      query,
       providers: activeProvider === 'all' ? [] : [activeProvider],
-      scopes: ['all', 'dormant', 'pinned'].includes(activeScope) ? [] : [activeScope],
+      scopes: activeScope === 'all' ? ['title','user','assistant','tool']
+        : ['dialogue','dormant','pinned'].includes(activeScope) ? ['title','user','assistant'] : [activeScope],
       timeRange: timeSelect.value || 'all',
       project: projectSelect.value || '',
-      sort: sortSelect.value || 'relevance',
+      time: {field:timeField?.value || 'eventTime',from:days?now-days*86400000:null,to:days?now:null,timeZone},
+      sort: !query && sortSelect.value === 'relevance' ? 'conversationTime' : sortSelect.value || 'relevance',
+      direction: directionSelect.value,
       limit: 50,
     };
   }
@@ -396,7 +429,7 @@ function createGlobalSessionSearch(options) {
   }
 
   function setScope(scope) {
-    activeScope = ['all', 'title', 'user', 'assistant', 'tool', 'dormant', 'pinned'].includes(scope) ? scope : 'all';
+    activeScope = ['all', 'dialogue', 'title', 'user', 'assistant', 'tool', 'dormant', 'pinned'].includes(scope) ? scope : 'dialogue';
     for (const button of scopeRoot.querySelectorAll('[data-scope]')) {
       const active = button.dataset.scope === activeScope;
       button.classList.toggle('active', active);
@@ -436,6 +469,17 @@ function createGlobalSessionSearch(options) {
     if (selectedProject && !selectedStillPresent) options.push(createOption(selectedProject, selectedProject));
     projectSelect.replaceChildren(...options);
     projectSelect.value = selectedProject;
+    for (const project of projects) if (project?.label) knownProjects.set(project.label, project.count);
+    if (projectRail) {
+      projectRail.replaceChildren();
+      const caption=document.createElement('strong');caption.textContent='项目';projectRail.append(caption);
+      for (const [value,label] of [['','全部项目'], ...[...knownProjects.keys()].map(p=>[p, /^(C:[\\/]AIWork|C:[\\/]Vibe)$/i.test(p)?'未分类工作记录':p])]) {
+        const button=document.createElement('button');button.type='button';button.textContent=label;button.title=label;
+        button.className=value===selectedProject?'active':'';button.dataset.project=value;
+        button.addEventListener('click',()=>{if (![...projectSelect.options].some(o=>o.value===value)) projectSelect.append(createOption(label,value));projectSelect.value=value;scheduleSearch();});
+        projectRail.append(button);
+      }
+    }
   }
 
   function resultScopeLabel(scope) {
@@ -459,7 +503,9 @@ function createGlobalSessionSearch(options) {
     provider.append(dot, document.createTextNode(meta.label));
     const time = document.createElement('time');
     time.className = 'session-search-result-time';
-    time.textContent = formatSearchTime(hit.bestMatch && hit.bestMatch.timestamp || hit.updatedAt);
+    const timestamp=lastRequest?.sort==='conversationTime'?hit.lastConversationAt:hit.newestMatchedEventAt;
+    time.textContent = `${lastRequest?.sort==='conversationTime'?'对话':'命中'} · ${timestamp?formatSearchTime(timestamp):'标题'}`;
+    time.title = timestamp ? new Date(timestamp).toLocaleString('zh-CN') : '标题没有命中消息时间';
     line.append(provider, time);
 
     const title = document.createElement('div');
@@ -468,10 +514,13 @@ function createGlobalSessionSearch(options) {
     const snippet = document.createElement('div');
     snippet.className = 'session-search-result-snippet';
     appendHighlightedText(document, snippet, hit.bestMatch && hit.bestMatch.text || '', queryInput.value);
+    const question=document.createElement('div');question.className='session-search-result-question';
+    appendHighlightedText(document,question,hit.questionExcerpt?'问：'+hit.questionExcerpt:'标题：'+hit.title,queryInput.value);
+    if(hit.answerExcerpt) {snippet.replaceChildren();appendHighlightedText(document,snippet,'答：'+hit.answerExcerpt,queryInput.value);}
     const metaRow = document.createElement('div');
     metaRow.className = 'session-search-result-meta';
     for (const text of [
-      resultScopeLabel(hit.bestMatch && hit.bestMatch.scope),
+      ...(hit.matchReasons || [resultScopeLabel(hit.bestMatch && hit.bestMatch.scope)]),
       hit.projectLabel || null,
       `${Number(hit.matchCount) || 1} 处命中`,
       hit.turnCount ? `${hit.turnCount} 条记录` : null,
@@ -482,8 +531,8 @@ function createGlobalSessionSearch(options) {
       chip.title = text;
       metaRow.appendChild(chip);
     }
-    button.append(line, title, snippet, metaRow);
-    button.addEventListener('click', () => selectResult(index, { focusRow: false }));
+    button.append(line, title, question, snippet, metaRow);
+    button.addEventListener('click', () => {overlay.classList.add('reading');void selectResult(index, { focusRow: false });});
     button.addEventListener('dblclick', () => openSelectedHit({ focus: true }));
     button.addEventListener('keydown', (event) => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -501,76 +550,60 @@ function createGlobalSessionSearch(options) {
   }
 
   function renderResults(response) {
-    lastResponse = response;
-    activeIndex = -1;
-    activePreview = null;
+    const selected=results[activeIndex], previousPreview=activePreview;
+    lastResponse=response;
     updateFacets(response);
-    // 全文结果在前（信息更丰富），标题层里全文没覆盖到的补在后面。
-    // 冷启动、或全文索引还在建时，全文那半边是空的 —— 用户照样立刻看到标题命中。
-    const fullText = Array.isArray(response && response.results) ? response.results : [];
-    const merged = mergeTitleHits(fullText, lastTitleHits, Number(response && response.limit) || 50);
-    results = merged.results;
-    const totalSessions = (Number(response && response.totalSessions) || 0) + merged.titleOnlyCount;
-    const totalMatches = (Number(response && response.totalMatches) || 0) + merged.titleOnlyCount;
-    // 2026-08-27：把跑出结果的查询留痕，工作台的「常用搜索 · 最近命中」要用。
-    // 零命中的不记（见 core/search-recent.js）；记录失败绝不能影响搜索本身。
-    try {
-      recordSearch(window.localStorage, {
-        query: queryInput.value,
-        sessions: totalSessions,
-        matches: totalMatches,
-      });
-    } catch { /* 留痕是附加功能 */ }
-    // 后端一直在返回 truncated / narrowedScopes，但以前没人读，用户看到的
-    // 「找到 N 个」其实可能是被闸门截断后的数字。这里如实说出来。
-    const building = indexBuildingNote();
-    const titleOnlyScope = activeScope === 'title';
-    const notes = [];
-    if (response && response.pendingFullText) {
-      // 用户明确点了「标题」页签时别说"全文检索中" —— 那正是他抱怨的
-      // 「我已经指定了用标题搜索，还是像搜全文一样」。
-      notes.push(titleOnlyScope ? '正在补历史会话标题…' : '全文检索中…');
-    } else if (building) notes.push(`${building} · 标题已可搜`);
-    else if (response && response.indexing) notes.push('全文索引后台建立中，标题已可搜');
-    if (merged.titleOnlyCount) notes.push(`${merged.titleOnlyCount} 条仅标题命中`);
-    if (response && response.truncated) notes.push('结果已截断，请再加一个关键词');
-    if (response && Array.isArray(response.narrowedScopes)) notes.push('短词未搜工具输出');
-    summaryRoot.firstElementChild.textContent = totalSessions
-      ? `找到 ${totalSessions} 个 session · ${totalMatches} 处命中${notes.length ? ' · ' + notes.join(' · ') : ''}`
-      : `没有匹配的会话${notes.length ? ' · ' + notes.join(' · ') : ''}`;
-    summaryRoot.lastElementChild.textContent = response && Number.isFinite(response.queryMs)
-      ? `${response.queryMs}ms · ${sortSelect.value === 'recent' ? '最近更新' : '相关度'} ↓`
-      : '';
-    if (!results.length) {
-      const pending = !!(response && response.pendingFullText);
-      let emptyTitle = '没有找到匹配内容';
-      let emptyDetail = '可减少关键词，切换“全部内容”，或放宽来源、时间和项目范围。';
-      if (pending && titleOnlyScope) {
-        emptyTitle = '标题里没有这个词';
-        emptyDetail = `当前只搜标题（${titleIndex.length} 个会话标题即时可搜）。想搜对话内容请切到“全部内容”。`;
-      } else if (pending) {
-        emptyTitle = '正在搜索全文';
-        emptyDetail = '标题里没有匹配，正文结果马上到。';
-      } else if (building) {
-        // 重建期间"没找到"往往只是还没轮到那个来源，说清楚比让人干等强
-        emptyTitle = '正文还在重建索引';
-        emptyDetail = `${building}。标题现在就能搜；正文要等重建跑完，期间不影响你正常用 Hub。`;
-      }
-      resultsRoot.replaceChildren(createStaticEmpty(document, {
-        title: emptyTitle, detail: emptyDetail, busy: pending || !!building,
-      }));
-      previewRoot.replaceChildren(createStaticEmpty(document, {
-        title: '换个条件再试试',
-        detail: '搜索不会修改任何历史记录。',
-      }));
-      if (!(response && response.pendingFullText)) announce('没有找到匹配的会话');
+    // Only the provisional layer uses local titles. The final snapshot includes
+    // indexed titles itself, under exactly the same scope/time/ranking contract.
+    const indexedResults=Array.isArray(response.results)?response.results:[];
+    const preliminary=response.pendingFullText || (response.indexing && !indexedResults.length);
+    results=preliminary?lastTitleHits.slice():indexedResults;
+    const total=Number(response.totalSessions)||results.length;
+    const partial=response.state==='partial'||response.pendingFullText||response.indexing;
+    summaryRoot.firstElementChild.textContent=`${partial?'至少 ':''}${total} 个会话${partial?' · 继续检索中':''}`;
+    summaryRoot.lastElementChild.textContent=`${Number(response.queryMs)||0} ms · ${preliminary?'标题预备结果':'条件已生效'}`;
+    if(conditions && lastRequest) {
+      const r=lastRequest;
+      const date=r.time.from==null?'不限时间':`${new Date(r.time.from).toLocaleString('zh-CN')} — ${new Date(r.time.to).toLocaleString('zh-CN')}`;
+      conditions.textContent=`${r.time.field==='conversationTime'?'会话活动':'消息发生'}：${date} · ${r.time.timeZone} · ${r.scopes.map(x=>SCOPE_LABELS[x]).join(' / ')}${r.project?' · '+r.project:''}`;
+      if(r.time.from!=null && response.coverage?.unknownTimeSources) conditions.textContent+=` · ${response.coverage.unknownTimeSources} 个来源时间未知`;
+    }
+    if(!partial && response.queryId && response.queryId!==lastRecordedQueryId) {
+      lastRecordedQueryId=response.queryId;
+      try { recordSearch(window.localStorage,{query:queryInput.value,sessions:total,matches:response.totalMatches||0}); } catch { /* Optional recent-search history. */ }
+    }
+    if(!results.length) {
+      activeIndex=-1;activePreview=null;
+      resultsRoot.replaceChildren(createStaticEmpty(document,{title:partial?'正在检索其余记录':'当前条件下没有匹配',detail:partial?'已找到的结果会陆续出现。':'试试明确的关键词、项目名或标题；时间和内容范围已应用。',busy:partial}));
+      previewRoot.replaceChildren(createStaticEmpty(document,{title:'选中会话，查看相关问答',detail:'问题、答复、命中位置和产物会在这里显示。'}));
       return;
     }
-    const fragment = document.createDocumentFragment();
-    results.forEach((hit, index) => fragment.appendChild(createResultRow(hit, index)));
+    activeIndex=selected?results.findIndex(hit=>sameSession(hit,selected)):-1;
+    const fragment=document.createDocumentFragment();
+    results.forEach((hit,index)=>fragment.append(createResultRow(hit,index)));
+    if(response.nextPageCursor) {
+      const more=document.createElement('button');more.type='button';more.className='session-search-load-more';more.textContent='加载更多会话';
+      let restart=false;
+      more.addEventListener('click',async()=>{
+        if(restart) {void performSearch({immediate:true});return;}
+        const seq=searchSequence;more.disabled=true;
+        try {
+          const next=await ipcRenderer.invoke('search-past-sessions',{...lastRequest,cursor:response.nextPageCursor});
+          if(seq!==searchSequence || !isOpen()) return;
+          if(next.error) throw new Error(next.error);
+          renderResults({...next,results:[...results,...next.results]});
+        } catch(error) { if(seq===searchSequence) {restart=true;more.disabled=false;more.textContent=error.message+' · 重新搜索';} }
+      });
+      fragment.append(more);
+    }
     resultsRoot.replaceChildren(fragment);
-    announce(`找到 ${totalSessions} 个会话，${totalMatches} 处命中`);
-    selectResult(0, { focusRow: false });
+    if(activeIndex>=0 && previousPreview) {
+      activePreview=previousPreview;
+      resultsRoot.querySelector(`[data-result-index="${activeIndex}"]`)?.classList.add('active');
+      const current=results[activeIndex];
+      if((!selected.indexed && current.indexed) || selected.bestMatch?.eventId!==current.bestMatch?.eventId) void loadPreview(current);
+    } else void selectResult(activeIndex<0?0:activeIndex);
+    announce(`${partial?'至少':''}${total} 个会话，条件已生效`);
   }
 
   function renderSearchError(error) {
@@ -585,53 +618,34 @@ function createGlobalSessionSearch(options) {
   }
 
   async function performSearch({ immediate = false } = {}) {
-    if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
-    const request = searchRequest();
-    const trimmed = request.query.normalize('NFKC').trim();
-    if (browsingCatalogue()) refreshTitleIndex();
-    if (!trimmed.length && browsingCatalogue()) {
-      lastTitleHits = [];
-      const entries = catalogueFilter(request).sort((a, b) => b.updatedAt - a.updatedAt);
-      const providers = {};
-      for (const entry of entries) providers[entry.provider] = (providers[entry.provider] || 0) + 1;
-      renderResults({ results: entries.map(catalogueHit), totalSessions: entries.length, totalMatches: entries.length,
-        limit: Math.max(50, entries.length), facets: { providers } });
-      return;
+    if(searchTimer) {clearTimeoutFn(searchTimer);searchTimer=null;}
+    const request={...searchRequest()};
+    const seq=++searchSequence;request.requestId=String(seq);
+    if(browsingCatalogue()) refreshTitleIndex();
+    // Catalogue facets select sessions only. Their metadata timestamps must not
+    // pre-filter the backend's message-time query.
+    const entries=browsingCatalogue()?catalogueFilter({...request,timeRange:'all'}):null;
+    if(entries) request.sessionFilter={hubSessionIds:entries.map(e=>e.hubSessionId).filter(Boolean),meetingIds:entries.map(e=>e.meetingId).filter(Boolean)};
+    lastRequest=request;
+    lastTitleHits=request.query?localTitleHits(request):[];
+    if(!request.query && browsingCatalogue() && !lastStatus?.ready) lastTitleHits=entries.map(catalogueHit);
+    if(!immediate) {
+      renderResults({results:[],totalSessions:0,pendingFullText:true});
+      searchTimer=setTimeoutFn(()=>performSearch({immediate:true}),160);return;
     }
-    if (!trimmed.length) {
-      lastTitleHits = [];
-      renderInitialState();
-      return;
-    }
-    // 标题层：同步、零 IPC、不等防抖、不等索引。单字也给结果 ——
-    // 682 个标题一共 10KB，没有任何理由让用户等。
-    lastTitleHits = localTitleHits(request);
-    renderResults({ results: [], totalSessions: 0, totalMatches: 0, pendingFullText: true });
-    // 单字（「蜃」「熵」这种）在中文里是完整检索单位，后端已放开到 1 个字符，
-    // 所以这里也不再拦；防抖照旧，避免逐键打后端。
-    if (!immediate) {
-      searchTimer = setTimeoutFn(() => performSearch({ immediate: true }), 160);
-      return;
-    }
-    const seq = ++searchSequence;
     try {
-      const entries = browsingCatalogue() ? catalogueFilter(request) : null;
-      const sessionFilter = entries && {
-        hubSessionIds: entries.map(entry => entry.hubSessionId).filter(Boolean),
-        meetingIds: entries.map(entry => entry.meetingId).filter(Boolean),
-      };
-      const response = await ipcRenderer.invoke('search-past-sessions', {
-        ...request, ...(sessionFilter ? { sessionFilter } : {}),
-      });
-      if (seq !== searchSequence || !isOpen()) return;
-      if (response && response.error) throw new Error(response.error);
-      renderResults(response || {});
-      if (response && response.status) renderStatus(response.status);
-      if (response && response.refreshing) void refreshStatus({ repeat: true });
-    } catch (error) {
-      if (seq !== searchSequence || !isOpen()) return;
-      renderSearchError(error);
-    }
+      let cursor=null;
+      do {
+        const response=await ipcRenderer.invoke('search-past-sessions',{...request,...(cursor?{cursor}:{})});
+        if(seq!==searchSequence || !isOpen()) return;
+        if(response?.error) throw new Error(response.error);
+        renderResults(response||{});
+        if(response?.status) renderStatus(response.status);
+        if(response?.refreshing) void refreshStatus({repeat:true});
+        cursor=response?.continuationCursor;
+        if(cursor) await new Promise(resolve=>setTimeoutFn(resolve,25));
+      } while(cursor && seq===searchSequence && isOpen());
+    } catch(error) {if(seq===searchSequence && isOpen()) renderSearchError(error);}
   }
 
   function previewLabel(item) {
@@ -642,128 +656,79 @@ function createGlobalSessionSearch(options) {
   }
 
   function renderPreview(hit, preview) {
-    if (!preview || !preview.session) {
-      previewRoot.replaceChildren(createStaticEmpty(document, {
-        title: '无法读取这条上下文', detail: '原始记录可能正在写入或已被移动。', className: 'error',
-      }));
-      return;
+    if(!preview?.session) {
+      previewRoot.replaceChildren(createStaticEmpty(document,{title:'暂时无法读取原文',detail:preview?.error || '原始记录可能正在写入或已被移动。',className:'error'}));return;
     }
-    activePreview = preview;
-    const header = document.createElement('header');
-    header.className = 'session-search-preview-header';
-    const heading = document.createElement('div');
-    heading.className = 'session-search-preview-heading';
-    const title = document.createElement('h3');
-    title.textContent = preview.session.title || hit.title || '未命名会话';
-    const meta = document.createElement('p');
-    const provider = providerMeta(preview.session.provider || hit.provider).label;
-    meta.textContent = [provider, preview.session.projectLabel || preview.session.cwd, formatAbsolute(hit.updatedAt)].filter(Boolean).join(' · ');
-    heading.append(title, meta);
-    const actions = document.createElement('div');
-    actions.className = 'session-search-preview-actions';
-    const copy = document.createElement('button');
-    copy.type = 'button'; copy.className = 'session-search-action'; copy.textContent = '复制引用';
-    const locate = document.createElement('button');
-    locate.type = 'button'; locate.className = 'session-search-action primary'; locate.textContent = '定位到命中';
-    const open = document.createElement('button');
-    open.type = 'button'; open.className = 'session-search-action'; open.textContent = hit.provider === 'meeting' ? '打开群聊' : '打开会话';
-    open.dataset.searchAction = 'open';
-    copy.addEventListener('click', () => copyReference(hit, preview, copy));
-    locate.addEventListener('click', () => openSelectedHit({ focus: true }));
-    open.addEventListener('click', () => openSelectedHit({ focus: false }));
-    actions.append(copy, locate, open);
-    if (activeScope === 'pinned' && (hit.hubSessionId || hit.meetingId)) {
-      const manage = document.createElement('button');
-      manage.type = 'button'; manage.className = 'session-search-action'; manage.textContent = '管理置顶';
-      manage.addEventListener('click', event => {
-        close({ restoreFocus: false });
-        document.dispatchEvent(new window.CustomEvent('sidebar:manage-pin', {
-          detail: { id: hit.hubSessionId || hit.meetingId, x: event.clientX, y: event.clientY },
-        }));
-      });
-      actions.appendChild(manage);
+    activePreview=preview;
+    const header=document.createElement('header');header.className='session-search-preview-header';
+    const heading=document.createElement('div');heading.className='session-search-preview-heading';
+    const title=document.createElement('h3');title.textContent=preview.session.title||hit.title;
+    const meta=document.createElement('p');meta.textContent=[providerMeta(hit.provider).label,preview.session.projectLabel||preview.session.cwd,`${preview.totalRecords||0} 条原始记录`].filter(Boolean).join(' · ');
+    heading.append(title,meta);
+    const actions=document.createElement('div');actions.className='session-search-preview-actions';
+    const action=(text,fn,primary=false)=>{const b=document.createElement('button');b.type='button';b.className='session-search-action'+(primary?' primary':'');b.textContent=text;b.addEventListener('click',fn);return b;};
+    const copy=action('复制引用',()=>copyReference(hit,preview,copy));
+    const open=action(hit.provider==='meeting'?'打开群聊':'继续会话',()=>openSelectedHit({focus:true}),true);open.dataset.searchAction='open';
+    actions.append(copy,open);header.append(heading,actions);
+    const tabs=document.createElement('nav');tabs.className='session-search-preview-tabs';
+    for(const [mode,label] of [['overview','会话概览'],['hits','命中位置'],['conversation','原始对话'],['artifacts','产物']]) {
+      const button=action(label,()=>{previewMode=mode;previewPage={};void loadPreview(hit);});button.dataset.previewMode=mode;button.classList.toggle('active',previewMode===mode);tabs.append(button);
     }
-    header.append(heading, actions);
-
-    const context = document.createElement('div');
-    context.className = 'session-search-preview-context';
-    for (const item of (Array.isArray(preview.context) ? preview.context : [])) {
-      const turn = document.createElement('article');
-      turn.className = `session-search-preview-turn ${item.role === 'user' ? 'user' : ''} ${item.isMatch ? 'match' : ''}`.trim();
-      if (item.isMatch) turn.dataset.searchMatch = '1';
-      const turnMeta = document.createElement('div');
-      turnMeta.className = 'session-search-preview-meta';
-      const label = document.createElement('span');
-      label.textContent = `${previewLabel(item)}${item.isMatch ? ' · 精确命中' : ' · 上下文'}`;
-      const time = document.createElement('time');
-      time.textContent = formatAbsolute(item.timestamp);
-      turnMeta.append(label, time);
-      const text = document.createElement('div');
-      text.className = 'session-search-preview-text';
-      appendHighlightedText(document, text, item.text || '', queryInput.value);
-      turn.append(turnMeta, text);
-      if (item.truncated) {
-        const note = document.createElement('div');
-        note.className = 'session-search-preview-truncated';
-        note.textContent = '此处仅显示命中附近内容；打开原会话可查看完整回答。';
-        turn.appendChild(note);
+    const context=document.createElement('div');context.className='session-search-preview-context';
+    if(preview.sourceAvailability==='missing') {const note=document.createElement('p');note.className='session-search-notice';note.textContent='原始文件已移动或不存在，当前显示保存的历史索引。';context.append(note);}
+    if(previewMode==='artifacts') {
+      if(!preview.artifacts?.length) context.append(createStaticEmpty(document,{title:'这段问答未发现可打开的产物',detail:'原文中的历史路径仍可在“原始对话”里查看。'}));
+      for(const artifact of preview.artifacts||[]) {
+        const button=action(artifact.name||artifact.path,async()=>{try {await openPath?.(artifact.path,{cwd:preview.session.cwd});} catch(e) {announce(e.message);button.textContent='无法打开：'+e.message;}});
+        button.classList.add('session-search-artifact');button.title=artifact.path;context.append(button);
       }
-      context.appendChild(turn);
+    } else {
+      if(preview.beforeCursor) context.append(action('加载前面的原文',()=>loadPreview(hit,{beforeEventId:preview.beforeCursor})));
+      for(const item of preview.context||[]) {
+        const turn=document.createElement(item.scope==='tool'?'details':'article');
+        turn.className=`session-search-preview-turn ${item.role==='user'?'user':''} ${item.isMatch?'match':''}`;
+        if(item.isMatch) turn.dataset.searchMatch='1';
+        const label=document.createElement(item.scope==='tool'?'summary':'div');label.className='session-search-preview-meta';
+        label.textContent=`${previewLabel(item)} · ${item.isMatch?'命中原文':'相关原文'}${item.timestamp?' · '+new Date(item.timestamp).toLocaleString('zh-CN'):''}`;
+        turn.append(label);
+        if(cardRenderer && item.scope!=='tool' && item.scope!=='title') {
+          const rendered=cardRenderer.renderReadOnlyCard({id:item.eventId,role:item.role,text:item.text,ts:item.timestamp,kind:hit.provider,model:item.speaker});
+          rendered.classList.add('session-search-native-card');turn.append(rendered);
+          rendered.addEventListener('click',async event=>{const link=event.target.closest('a');if(!link) return;event.preventDefault();event.stopPropagation();try {await openPath?.(link.getAttribute('href'),{cwd:preview.session.cwd});} catch(error) {announce(error.message);}});
+        } else {
+          const text=document.createElement('div');text.className='session-search-preview-text';appendHighlightedText(document,text,item.text||'',queryInput.value);turn.append(text);
+        }
+        if(item.truncated && !item.expanded) turn.append(action(`展开这条原文（共 ${item.fullLength} 字符）`,()=>loadPreview(hit,{expandEventId:item.eventId,textOffset:0})));
+        if(item.expanded && item.nextTextOffset) turn.append(action('读取下一段原文',()=>loadPreview(hit,{expandEventId:item.eventId,textOffset:item.nextTextOffset})));
+        context.append(turn);
+      }
+      if(preview.omittedRecords) context.append(action(`本轮另有 ${preview.omittedRecords} 条记录 · 查看全部`,()=>{previewMode='conversation';void loadPreview(hit);}));
+      if(preview.afterCursor) context.append(action('加载后面的原文',()=>loadPreview(hit,{afterEventId:preview.afterCursor})));
     }
-    previewRoot.replaceChildren(header, context);
-    const match = context.querySelector('[data-search-match="1"]');
-    if (match) match.scrollIntoView({ block: 'center' });
+    const back=action('← 返回结果',()=>overlay.classList.remove('reading'));back.classList.add('session-search-back');
+    previewRoot.replaceChildren(back,header,tabs,context);
+  }
+
+  async function loadPreview(hit,extra={}) {
+    const seq=++previewSequence;
+    if(extra.afterEventId || extra.beforeEventId) previewPage={...(extra.afterEventId?{afterEventId:extra.afterEventId}:{beforeEventId:extra.beforeEventId})};
+    try {
+      const preview=hit.titleOnly && !hit.indexed?{session:hit,context:[{role:'title',scope:'title',text:hit.title,isMatch:true}],sourceAvailability:'metadata-only'}:
+        await ipcRenderer.invoke('get-session-search-preview',{sessionKey:hit.sessionKey,eventId:hit.bestMatch?.eventId,query:queryInput.value.trim(),filters:{scopes:lastRequest?.scopes,time:lastRequest?.time},mode:previewMode==='artifacts'?'overview':previewMode,...previewPage,...extra});
+      if(seq===previewSequence && isOpen() && sameSession(results[activeIndex],hit)) renderPreview(hit,preview);
+    } catch(error) {if(seq===previewSequence && isOpen()) renderPreview(hit,{error:error.message});}
   }
 
   async function selectResult(index, { focusRow = false } = {}) {
-    if (!Number.isInteger(index) || index < 0 || index >= results.length) return;
-    activeIndex = index;
-    activePreview = null;
-    for (const row of resultsRoot.querySelectorAll('.session-search-result')) {
-      const active = Number(row.dataset.resultIndex) === index;
-      row.classList.toggle('active', active);
-      row.setAttribute('aria-selected', String(active));
-      if (active) {
-        row.scrollIntoView({ block: 'nearest' });
-        if (focusRow) row.focus();
-      }
+    if(!Number.isInteger(index) || index<0 || index>=results.length) return;
+    activeIndex=index;activePreview=null;previewMode='overview';previewPage={};
+    for(const row of resultsRoot.querySelectorAll('.session-search-result')) {
+      const active=Number(row.dataset.resultIndex)===index;
+      row.classList.toggle('active',active);row.setAttribute('aria-selected',String(active));
+      if(active && focusRow) {row.scrollIntoView({block:'nearest'});row.focus();}
     }
-    const hit = results[index];
-    const seq = ++previewSequence;
-    // 标题层的命中不在 SQLite 索引里（可能是刚建的会话，或全文索引还没建到它），
-    // 直接问 preview 只会拿到「读不到上下文」的报错。用手上已有的元数据渲染一个
-    // 轻量预览，「打开会话」照常可用。
-    if (hit && hit.titleOnly) {
-      activePreview = null;
-      renderPreview(hit, {
-        session: {
-          title: hit.title,
-          provider: hit.provider,
-          cwd: hit.cwd,
-          projectLabel: hit.projectLabel,
-        },
-        context: [{
-          role: 'title', scope: 'title', timestamp: hit.updatedAt,
-          text: hit.title, isMatch: true,
-        }],
-      });
-      return;
-    }
-    previewRoot.replaceChildren(createStaticEmpty(document, {
-      title: '正在读取上下文', detail: '从已经建立的本地索引中提取命中前后记录。', busy: true,
-    }));
-    try {
-      const preview = await ipcRenderer.invoke('get-session-search-preview', {
-        sessionKey: hit.sessionKey,
-        eventId: hit.bestMatch && hit.bestMatch.eventId,
-        query: queryInput.value.trim(),
-      });
-      if (seq !== previewSequence || activeIndex !== index || !isOpen()) return;
-      renderPreview(hit, preview);
-    } catch (error) {
-      if (seq !== previewSequence || !isOpen()) return;
-      renderPreview(hit, null);
-    }
+    if(focusRow || document.activeElement?.closest('.session-search-result')) overlay.classList.add('reading');
+    await loadPreview(results[index]);
   }
 
   async function copyReference(hit, preview, button) {
@@ -814,19 +779,24 @@ function createGlobalSessionSearch(options) {
     void performSearch({ immediate: false });
   }
 
-  async function forceRefresh() {
-    statusButton.disabled = true;
-    renderStatus({ ready: false, refreshing: true, indexedSources: 0, totalSources: 0 });
+  function showIndexDetails() {
+    if(!indexDetails) return;
+    indexDetails.hidden=!indexDetails.hidden;
+    statusButton.setAttribute('aria-expanded',String(!indexDetails.hidden));
+    if(indexDetails.hidden) return;
+    const status=lastStatus||{};indexDetails.replaceChildren();
+    const p=document.createElement('p');p.textContent=`${status.index?.sessions||0} 个会话 · ${status.index?.documents||0} 条记录。上次同步：${status.lastRefreshAt?new Date(status.lastRefreshAt).toLocaleString('zh-CN'):'首次整理中'}。${status.lastError||''}`;indexDetails.append(p);
+    const sync=document.createElement('button');sync.type='button';sync.textContent='同步变化内容';sync.addEventListener('click',()=>forceRefresh(false));indexDetails.append(sync);
+    const advanced=document.createElement('details');const summary=document.createElement('summary');summary.textContent='高级诊断';advanced.append(summary);
+    const note=document.createElement('p');note.textContent='仅在索引损坏或解析规则变化时重新构建；常规保存会自动同步。';advanced.append(note);
+    const rebuild=document.createElement('button');rebuild.type='button';rebuild.textContent='重新构建全部索引';rebuild.addEventListener('click',()=>{if(window.confirm('重新解析全部历史来源？现有索引会保持可用。')) void forceRefresh(true);});advanced.append(rebuild);indexDetails.append(advanced);
+  }
+  async function forceRefresh(force=false) {
     try {
-      const status = await ipcRenderer.invoke('refresh-session-search', { force: true });
-      renderStatus(status);
-      if (queryInput.value.trim().length >= 2) await performSearch({ immediate: true });
-    } catch (error) {
-      renderStatus({ ready: false, refreshing: false, lastError: error.message });
-      announce(`索引刷新失败：${error.message}`);
-    } finally {
-      statusButton.disabled = false;
-    }
+      const status=await ipcRenderer.invoke('refresh-session-search',{force,immediate:true});
+      renderStatus(status);if(status?.lastError && !status.ready) throw new Error(status.lastError);
+      await performSearch({immediate:true});
+    } catch(error) {announce(`同步失败：${error.message}`);renderStatus({...lastStatus,lastError:error.message,refreshing:false});}
   }
 
   // 2026-08-27：允许带查询词打开——工作台的「常用搜索」点一下要直接搜，
@@ -836,7 +806,7 @@ function createGlobalSessionSearch(options) {
     searchSequence += 1;
     previewSequence += 1;
     if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
-    setScope(scope || 'all');
+    setScope(scope || 'dialogue');
     if (scope === 'dormant' || scope === 'pinned') {
       queryInput.value = ''; setProvider('all'); setAgent('all');
       timeSelect.value = 'all'; projectSelect.value = '';
@@ -846,12 +816,14 @@ function createGlobalSessionSearch(options) {
       ? document.activeElement
       : launchButton;
     overlay.style.display = 'flex';
+    overlay.classList.remove('reading');newResults.hidden=true;
+    recentList.replaceChildren();
+    for(const entry of readRecent(window.localStorage).slice(0,10)) {const option=document.createElement('option');option.value=entry.query;recentList.append(option);}
     // 每次打开重建一次即时标题索引：期间可能新建/改名/关闭过会话。
     // 682 条实测亚毫秒，放在同步路径上不影响弹窗打开。
     refreshTitleIndex();
     void refreshStatus({ repeat: true });
-    if (queryInput.value.trim().length >= 1 || browsingCatalogue()) void performSearch({ immediate: true });
-    else renderInitialState();
+    void performSearch({ immediate: true });
     window.requestAnimationFrame(() => {
       queryInput.focus();
       queryInput.select();
@@ -909,10 +881,12 @@ function createGlobalSessionSearch(options) {
     setScope(button.dataset.scope);
     scheduleSearch();
   });
-  for (const select of [timeSelect, projectSelect, sortSelect]) select.addEventListener('change', scheduleSearch);
+  for (const select of [timeSelect, projectSelect, sortSelect, timeField].filter(Boolean)) select.addEventListener('change', () => { if(queryInput.value.trim()) {try { window.localStorage.setItem('hub.search.sort',sortSelect.value); } catch {}} scheduleSearch(); });
+  sortSelect.addEventListener('change',()=>{directionSelect.value=sortSelect.value==='title'?'asc':'desc';directionSelect.disabled=sortSelect.value==='relevance';});
+  directionSelect.addEventListener('change',()=>scheduleSearch());
   closeButton.addEventListener('click', close);
   if (launchButton) launchButton.addEventListener('click', open);
-  statusButton.addEventListener('click', () => void forceRefresh());
+  statusButton.addEventListener('click', showIndexDetails);
   overlay.addEventListener('mousedown', event => { if (event.target === overlay) close(); });
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && String(event.key).toLowerCase() === 'f') {
@@ -958,6 +932,9 @@ function createGlobalSessionSearch(options) {
         activeProvider,
         activeAgent,
         activeScope,
+        state:lastResponse?.state,
+        appliedFilters:lastResponse?.appliedFilters,
+        selectedSessionKey:results[activeIndex]?.sessionKey,
         resultCount: results.length,
         activeIndex,
         totalSessions: lastResponse && lastResponse.totalSessions || 0,

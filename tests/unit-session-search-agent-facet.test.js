@@ -132,7 +132,7 @@ test('会话范围以稳定 ID 匹配群聊，空集合和未知 ID 不扩大搜
   assert.equal(meeting.results[0].sessionKey, 'meeting-source');
   assert.equal(index.search({ ...request, sessionFilter: {} }).totalSessions, 0);
   assert.equal(index.search({ ...request, sessionFilter: { hubSessionIds: ['unknown'] } }).totalSessions, 0);
-  assert.throws(() => index.search({ ...request, sessionFilter: { hubSessionIds: 'hub' } }), /arrays/);
+  assert.match(index.search({ ...request, sessionFilter: { hubSessionIds: 'hub' } }).error, /arrays/);
   assert.equal(index.search(request).totalSessions, 2);
 });
 

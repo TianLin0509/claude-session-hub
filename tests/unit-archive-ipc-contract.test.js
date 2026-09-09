@@ -101,7 +101,7 @@ test('unified search IPC passes the live snapshot and exposes preview/status/ref
     ['search', { query: '公式', providers: ['codex'] }, snapshot],
     ['preview', { sessionKey: 'codex:1', eventId: 'a1' }],
     ['status'],
-    ['refresh', snapshot, { force: true }],
+    ['refresh', snapshot, { force: true, immediate: false }],
   ]);
 });
 
