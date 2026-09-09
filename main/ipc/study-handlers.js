@@ -29,6 +29,7 @@ const workflow = require('../../core/study-workflow.js');
 const { waitCliReady, sendToPty } = require('../../core/group-chat-watcher.js');
 const { DEFAULT_MODEL_BY_KIND } = require('../../core/model-options.js');
 const { stripAnsi } = require('../../core/ansi-utils.js');
+const { evaluateAgentLeagueSchedulerSafety } = require('../../core/agent-league-scheduler-safety.js');
 
 const DEFAULT_STUDY_ROOT = process.env.AGENT_STUDY_DIR || 'C:\\Vibe\\AI\\agent-study';
 const SESSION_PURPOSE = 'study-companion';
@@ -450,10 +451,22 @@ function registerStudyIpc(ipcMain, deps = {}) {
 
   // 60 秒 tick，与联赛同频。0 点没开 Hub 时，早上第一次 tick 就会补跑
   // （shouldRunNow 只看「今天这一课有没有出」，不看是不是刚好 0 点）。
-  const schedulerTimer = setInterval(() => {
-    schedulerTick().catch((e) => logger.warn('[study] scheduler tick failed:', e && e.message));
-  }, 60 * 1000);
-  if (schedulerTimer.unref) schedulerTimer.unref();
+  //
+  // 2026-09-08：隔离实例不许自动跑。合并位在一次隔离验收里撞到 —— 测试 Hub 起来后
+  // 自动开了学习任务，真的往**真实**学习目录写了新文件（S15-t1-…md，还追加了 INDEX.md）。
+  // 联赛那边早就有同一条规则（core/agent-league-scheduler-safety.js），学习这边漏了。
+  // 判据完全复用它：隔离数据目录之外的产物目录 → 自动调度停用，手动操作仍可用。
+  const studySafety = evaluateAgentLeagueSchedulerSafety({ leagueRoot: studyRoot() });
+  let schedulerTimer = null;
+  if (studySafety.allowed) {
+    schedulerTimer = setInterval(() => {
+      schedulerTick().catch((e) => logger.warn('[study] scheduler tick failed:', e && e.message));
+    }, 60 * 1000);
+    if (schedulerTimer.unref) schedulerTimer.unref();
+  } else {
+    logger.warn('[study] 自动调度已停用：' + studySafety.reason
+      + '；studyRoot=' + studySafety.leagueRoot + ' dataDir=' + studySafety.dataDir);
+  }
 
   /* ─────────────────────── transcript 事件 ─────────────────────── */
 
@@ -716,7 +729,7 @@ function registerStudyIpc(ipcMain, deps = {}) {
     // 跑棒期间保护会话不被自动休眠收走
     getProtectedSessionIds: () => new Set(pendingByHubSession.keys()),
     _test: { pendingByHubSession, handleTurnComplete, artifactsReady, todayDate, localMinutes },
-    dispose: () => { clearInterval(schedulerTimer); clearAllPending(); },
+    dispose: () => { if (schedulerTimer) clearInterval(schedulerTimer); clearAllPending(); },
   };
 }
 

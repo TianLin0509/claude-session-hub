@@ -22,7 +22,10 @@ assert.ok(rendererSrc.includes('_restoreHeroAssignments(meetingData[mid] || meet
 
 assert.ok(dispatcherSrc.includes("require('../../core/hero-prompts.js')"), 'main dispatcher must own final hero prompt injection');
 assert.ok(dispatcherSrc.includes('normalizeHeroAssignments('), 'main dispatcher must reject arbitrary prompt payloads');
-assert.ok(dispatcherSrc.includes('prompt: appendHeroPrompt(basePrompt, normalizedHeroIdBySid[member.sid])'), 'dispatcher must append a different hero block per target AI');
+// 2026-09-08：这一行现在多包了一层「维护者补充」块（basePrompt 之后、英雄块之前），
+// 所以不再逐字比对。守的还是同一件事：英雄块由主进程按 member.sid 逐个追加在最末。
+assert.match(dispatcherSrc, /prompt:\s*appendHeroPrompt\([\s\S]{0,240}?normalizedHeroIdBySid\[member\.sid\]/,
+  'dispatcher must append a different hero block per target AI');
 assert.ok(loopHandlerSrc.includes('heroIdBySid: args.heroIdBySid || {}'), 'loop entry must preserve the same per-AI hero mapping');
 
 for (const selector of [

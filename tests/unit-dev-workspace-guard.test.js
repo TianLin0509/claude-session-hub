@@ -164,4 +164,108 @@ test('「选择已有路径」那一行有项目库下拉：点开列已整理�
 
 try { require('child_process').execSync(`cmd /c rmdir /S /Q "${ROOT}"`, { stdio: 'ignore' }); } catch (e) {}
 console.log('\n──────────────');
+test('阻断 失效目录不该在建房这一刻硬报错：有像样的落脚点就放行并带回它', () => {
+  // 任务书第七节：不存在的 cwd 会让 CLI 在启动前就失败，Hub 应当在**有效目录**
+  // 进入只读定位流程，而不是把用户挡在建房外面（2026-09-08 合并位在真实入口复现）。
+  const SEP = String.fromCharCode(92);
+  // 真实场景：用户选的是某个项目里已经被删掉的子目录 / 过期 worktree 路径。
+  const REPO = 'C:' + SEP + 'projects' + SEP + 'demo';
+  const files = new Set([REPO, [REPO, '.git'].join(SEP), [REPO, '.agents', 'project.json'].join(SEP)]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => !target.endsWith('project.json') };
+    },
+  };
+  const verdict = checkDevWorkspace([REPO, 'ghost', 'deeper'].join(SEP), { fs: fakeFs });
+  assert.strictEqual(verdict.ok, true, '路径所属的项目还在，就不该把用户挡在建房外');
+  assert.strictEqual(verdict.reason, 'ready-fallback');
+  assert.strictEqual(verdict.resolvedRoot, REPO, '要退回它所属的项目根');
+  assert.ok(/不存在/.test(verdict.message), '得让用户看见路径被纠正过');
+});
+
+test('阻断 失效目录且不属于任何项目 → 退到工作根，不把用户挡在建房外', () => {
+  // 合并位的判断：任务书允许在**受约束的有效目录**只读定位。工作根就是那个目录 ——
+  // 它带着项目库，AI 到那儿能自己定位；把用户挡回去才是不符合要求的那一种。
+  const SEP = String.fromCharCode(92);
+  const WORK_ROOT = 'C:' + SEP + 'AIWork';
+  const files = new Set([WORK_ROOT]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => true };
+    },
+  };
+  const verdict = checkDevWorkspace(['D:', 'gone', 'project'].join(SEP), { fs: fakeFs, workRoot: WORK_ROOT });
+  assert.strictEqual(verdict.ok, true, '有工作根兜底就不该硬报错');
+  assert.strictEqual(verdict.reason, 'ready-fallback');
+  assert.strictEqual(verdict.resolvedRoot, WORK_ROOT);
+  assert.strictEqual(verdict.atWorkRoot, true, '要标成「不在项目根上」，项目库和定位说明才会跟进来');
+  assert.ok(/项目库/.test(verdict.message));
+});
+
+test('建群路径：退到工作根时要把项目库带进工作流配置', () => {
+  const modal = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-create-modal.js'), 'utf-8');
+  assert(/workspace:work-root/.test(modal), '要先问一次工作根，才有兜底落脚点');
+  assert(/verdict\.reason === 'ready-fallback' && verdict\.atWorkRoot/.test(modal));
+  assert(/if \(fellBackToWorkRoot\) atWorkRoot = true;/.test(modal), '兜底之后必须按工作根那条路拿项目库');
+});
+
+test('既没有所属项目、又拿不到工作根时，才如实报「目录不存在」', () => {
+  // 这是最后的边界：退到一个随便什么存在的文件夹并不能解决问题，
+  // 只是把失败推迟到第一步。有工作根时走上面那条兜底，不到这里。
+  const SEP = String.fromCharCode(92);
+  const PLAIN = 'C:' + SEP + 'tmpdir';
+  const files = new Set([PLAIN]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => true };
+    },
+  };
+  assert.strictEqual(checkDevWorkspace([PLAIN, 'ghost'].join(SEP), { fs: fakeFs }).reason, 'not-found');
+  const nothing = { statSync() { throw new Error('ENOENT'); } };
+  assert.strictEqual(checkDevWorkspace(['Z:', 'nope', 'deeper'].join(SEP), { fs: nothing }).reason, 'not-found');
+});
+
+test('合法仓库子目录不该被拦：向上找到仓库根，并把它带回给调用方', () => {
+  // 用户选到 repo/src 时，原来只看 repo/src/.git 在不在 → 判成「不是 git 仓库」，
+  // 但那明明就是那个项目（2026-09-08 合并位在真实隔离 IPC 上复现）。
+  const SEP = String.fromCharCode(92);          // Windows 路径分隔符，避免源码里堆转义
+  const ROOT = 'C:' + SEP + 'repo';
+  const at = (...parts) => [ROOT, ...parts].join(SEP);
+  const files = new Set([ROOT, at('.git'), at('.agents', 'project.json'), at('src'), at('src', 'deep')]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => !target.endsWith('project.json') };
+    },
+  };
+  const verdict = checkDevWorkspace(at('src', 'deep'), { fs: fakeFs });
+  assert.strictEqual(verdict.ok, true, '子目录必须放行');
+  assert.strictEqual(verdict.reason, 'ready-subdir');
+  assert.strictEqual(verdict.resolvedRoot, ROOT, '要把仓库根带回去，建群按它走');
+  assert.strictEqual(checkDevWorkspace(ROOT, { fs: fakeFs }).reason, 'ready', '本来就在根上还是 ready');
+});
+
+test('worktree（.git 是文件）同样放行', () => {
+  const SEP = String.fromCharCode(92);
+  const WT = 'C:' + SEP + 'wt';
+  const files = new Set([WT, [WT, '.git'].join(SEP), [WT, '.agents', 'project.json'].join(SEP)]);
+  const fakeFs = {
+    statSync(target) {
+      if (!files.has(target)) throw new Error('ENOENT');
+      return { isDirectory: () => target === WT };   // .git 是文件，不是目录
+    },
+  };
+  assert.strictEqual(checkDevWorkspace(WT, { fs: fakeFs }).ok, true);
+});
+
+test('建群时子目录会被换成仓库根', () => {
+  const modal = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-create-modal.js'), 'utf-8');
+  assert(/verdict\.reason === 'ready-subdir' \|\| verdict\.reason === 'ready-fallback'/.test(modal),
+    '子目录和「路径被纠正过」两种都要按带回来的项目根建群');
+  assert(/workspace = \{ \.\.\.workspace, path: verdict\.resolvedRoot \}/.test(modal));
+});
+
 console.log('通过 ' + pass + ' / 失败 0');

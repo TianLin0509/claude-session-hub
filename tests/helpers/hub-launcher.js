@@ -67,6 +67,7 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   const requestedDataDir = extraEnv.CLAUDE_HUB_DATA_DIR;
   const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
   const requestedAgentLeagueDir = extraEnv.CHUXIN_AGENT_LEAGUE_DIR;
+  const requestedStudyDir = extraEnv.AGENT_STUDY_DIR;
   const requestedCodexHome = extraEnv.CODEX_HOME;
   const requestedClaudeConfigDir = extraEnv.CLAUDE_CONFIG_DIR;
   const requestedKey = extraEnv.DEEPSEEK_API_KEY;
@@ -84,6 +85,9 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     if (requestedAgentLeagueDir && !_isPathInside(testRoot, requestedAgentLeagueDir)) {
       throw new Error('isolated Hub requires CHUXIN_AGENT_LEAGUE_DIR inside the test root');
     }
+    if (requestedStudyDir && !_isPathInside(testRoot, requestedStudyDir)) {
+      throw new Error('isolated Hub requires AGENT_STUDY_DIR inside the test root');
+    }
     if (requestedCodexHome && !_isPathInside(testRoot, requestedCodexHome)) {
       throw new Error('isolated Hub requires CODEX_HOME inside the test root');
     }
@@ -98,6 +102,7 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   delete safeExtraEnv.CLAUDE_HUB_HOME_DIR;
   delete safeExtraEnv.DEEPSEEK_API_KEY;
   delete safeExtraEnv.CHUXIN_AGENT_LEAGUE_DIR;
+  delete safeExtraEnv.AGENT_STUDY_DIR;
   delete safeExtraEnv.CLAUDE_HUB_E2E_WINDOW_MODE;
   const env = {
     ...cleanBaseEnv,
@@ -105,6 +110,9 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     CLAUDE_HUB_DATA_DIR: allowExternalState && requestedDataDir ? requestedDataDir : resolvedDataDir,
     CLAUDE_HUB_HOME_DIR: requestedHomeDir || path.join(resolvedDataDir, 'isolated-home'),
     CHUXIN_AGENT_LEAGUE_DIR: requestedAgentLeagueDir || path.join(resolvedDataDir, 'agent-league'),
+    // 2026-09-08：学习任务的产物目录也必须隔离。合并位撞到过 —— 测试 Hub 起来后
+    // 自动开了学习任务，真的往 C:\Vibe\AIgent-study 写了新文件。
+    AGENT_STUDY_DIR: requestedStudyDir || path.join(resolvedDataDir, 'agent-study'),
     DEEPSEEK_API_KEY: allowExternalState && requestedKey ? requestedKey : '',
     CLAUDE_HUB_E2E_WINDOW_MODE: windowMode,
   };

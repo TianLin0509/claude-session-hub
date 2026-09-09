@@ -53,6 +53,37 @@ function checkDevWorkspace(dir, deps = {}) {
   try {
     stat = _fs.statSync(d);
   } catch (e) {
+    // 2026-09-08 第五轮：配置的目录不存在时，原来在建房这一刻硬报错把用户挡在外面。
+    // 任务书第七节要的是另一种处理：不存在的 cwd 会让 CLI 在启动前就失败，
+    // 所以 Hub 应当**退到一个确实存在的目录**、在那里进入只读定位流程，
+    // 并把「你配的那个不存在」明确说出来。找不到像样的落脚点才继续硬报错。
+    // 只在这个落脚点**本身就是一个有效项目现场**时才放行。
+    // 退到一个随便什么存在的文件夹并不能解决问题 —— 那只是把失败推迟到第一步，
+    // 而且会造出一个开在非项目目录上的开发房。
+    const ancestor = _nearestExistingAncestor(_fs, d);
+    const owningProject = ancestor ? _findRepoRoot(_fs, ancestor) : null;
+    // 找不到所属项目时退到**平铺工作根**：它是任务书说的「受约束的有效目录」——
+    // 带着项目库，CLI 能在那里起来做只读定位，而不是把用户挡在建房外面。
+    // 连工作根都拿不到才继续硬报错。
+    const workRootFallback = (!owningProject && deps.workRoot && _exists(_fs, deps.workRoot))
+      ? deps.workRoot : null;
+    const fallback = owningProject || workRootFallback;
+    if (fallback) {
+      return {
+        ok: true,
+        reason: 'ready-fallback',
+        resolvedRoot: fallback,
+        requestedPath: d,
+        atWorkRoot: !owningProject,
+        message: [
+          `你选的目录不存在：${d}`,
+          owningProject
+            ? `已经退到它所属的项目根：${fallback}`
+            : `已经退到默认工作目录：${fallback}（AI 会按任务和项目库自己定位到目标项目）`,
+          'AI 会在那里先只读核实这是不是本任务要动的项目，确认之前不写任何文件。',
+        ].join(String.fromCharCode(10)),
+      };
+    }
     return {
       ok: false,
       reason: 'not-found',
@@ -63,8 +94,13 @@ function checkDevWorkspace(dir, deps = {}) {
     return { ok: false, reason: 'not-dir', message: `这不是一个目录：${d}` };
   }
 
-  const isGit = _exists(_fs, path.join(d, '.git'));
-  const cfg = path.join(d, '.agents', 'project.json');
+  // 2026-09-08：仓库**子目录**也是合法现场。原来只看 d/.git 在不在，
+  // 于是用户选到 repo/src 会被判成「不是 git 仓库」——但那明明就是那个项目。
+  // 向上找到仓库根，找到就按仓库根走（.git 是文件的 worktree 同样算数）。
+  const repoRoot = _findRepoRoot(_fs, d);
+  const isGit = !!repoRoot;
+  const base = repoRoot || d;
+  const cfg = path.join(base, '.agents', 'project.json');
   const hasCfg = _exists(_fs, cfg);
 
   if (!isGit) {
@@ -97,7 +133,41 @@ function checkDevWorkspace(dir, deps = {}) {
     };
   }
 
-  return { ok: true, reason: 'ready', message: '' };
+  return {
+    ok: true,
+    reason: _sameDir(base, d) ? 'ready' : 'ready-subdir',
+    // 选中的是子目录时把仓库根带出来，调用方应当用它建群 —— 否则合同里那些
+    // 仓库内相对路径（.agents/AUTHOR.md、scripts/merge_task.py）还是找不到。
+    resolvedRoot: base,
+    message: '',
+  };
+}
+
+/**
+ * 向上找最近一个确实存在的祖先目录。盘符根不算 —— 退到 `C:\` 既没意义又危险。
+ */
+function _nearestExistingAncestor(_fs, dir) {
+  let current = String(dir || '');
+  for (let depth = 0; depth < 40; depth += 1) {
+    const parent = path.dirname(current);
+    if (!parent || parent === current) return null;   // 走到盘符根就放弃
+    current = parent;
+    if (path.dirname(current) === current) return null;
+    if (_exists(_fs, current)) return current;
+  }
+  return null;
+}
+
+/** 从 dir 向上找仓库根。`.git` 是文件（git worktree）同样算数。 */
+function _findRepoRoot(_fs, dir) {
+  let current = String(dir || '');
+  for (let depth = 0; depth < 40 && current; depth += 1) {
+    if (_exists(_fs, path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
 }
 
 function _exists(_fs, p) {

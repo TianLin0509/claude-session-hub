@@ -24,6 +24,7 @@
 
   const PHASE_DISCUSS = 'discuss';
   const PHASE_BUILD = 'build';
+  const PHASE_KICKOFF = 'kickoff';
 
   const TASK_SPEC_HEADING = '## 任务说明';
 
@@ -38,7 +39,11 @@
 
   function phaseOf(serialWorkflow) {
     const sw = serialWorkflow && typeof serialWorkflow === 'object' ? serialWorkflow : null;
-    return sw && sw.devPhase === PHASE_DISCUSS ? PHASE_DISCUSS : PHASE_BUILD;
+    if (!sw) return PHASE_BUILD;
+    if (sw.devPhase === PHASE_DISCUSS) return PHASE_DISCUSS;
+    // 开题：讨论收口，指定的那一位在写任务书。循环在这个阶段同样不许起。
+    if (sw.devPhase === PHASE_KICKOFF) return PHASE_KICKOFF;
+    return PHASE_BUILD;
   }
 
   function isDiscussing(meeting) {
@@ -107,6 +112,37 @@
     });
   }
 
+  /**
+   * 开题阶段：讨论已经收尾，由**一位**指定执笔者把需求写成任务书。
+   * 和讨论阶段的区别只有两条：只派一个人（避免两人写重），且写完要改名交付。
+   * 循环在这个阶段照样不许起 —— 任务书还没接收，开工就是绕过它。
+   */
+  function isKickingOff(meeting) {
+    return !!(meeting && meeting.scene === 'dev' && meeting.groupChat
+      && phaseOf(meeting.serialWorkflow) === PHASE_KICKOFF);
+  }
+
+  /** 开题任务的正文。文档路径由调用方用 dev-task-docs 的 buildDocBlock 追加。 */
+  function buildKickoffPrompt(opts = {}) {
+    const locator = String(opts.locator || '').trim();
+    const lines = ['## 开题：把需求写成一份自包含的任务书'];
+    if (locator) lines.push(locator, '');
+    lines.push(
+      '本群的讨论到此收口，由你执笔写任务书；另一位不写，避免两人写重。',
+      '依据是本群到目前为止的讨论和维护者的要求；先读本仓库 .agents/ 下的合同了解开工后的规矩。',
+      '任务书必须自包含 —— 一个没看过本群讨论的人只读它就能动手。至少写清四项：',
+      '目标（要解决什么、用户能看到什么变化）／非目标（本任务明确不做什么）／',
+      '验收标准（可执行的步骤、通过条件、关键异常情况）／风险与回退（风险、保留哪些成果、怎么退回去）。',
+      '另外写上你核实过的项目定位和必要的工作入口，其中**项目根必须单独成一行**，格式就写：',
+      '项目根：<绝对路径>',
+      'Hub 会读这一行，把本群后续所有步骤都绑到这个已核实的现场 —— 实现位和审查位从此用同一个路径，不各自再猜一遍。',
+      '有会改变范围或验收的未决问题，先写一条 ASK: 问维护者，不要替他拍板，也不要把没写完的报告当成完成。',
+      '本阶段只写任务书：不改代码、不建 worktree、不提交、不推送；可以读代码和跑只读命令来核实事实。',
+      '报告被接收后会自动进入实现阶段，不需要维护者再确认一次。',
+    );
+    return lines.join('\n');
+  }
+
   /** 从一条 AI 回复里抠出任务说明（从「## 任务说明」那一行起到结尾）。没有就返回空串。 */
   function extractTaskSpec(text) {
     const s = String(text == null ? '' : text);
@@ -131,6 +167,9 @@
   return {
     PHASE_DISCUSS,
     PHASE_BUILD,
+    PHASE_KICKOFF,
+    isKickingOff,
+    buildKickoffPrompt,
     TASK_SPEC_HEADING,
     CONVERGE_REQUEST,
     DISCUSS_MARKER,

@@ -1232,6 +1232,11 @@ function createGroupChatDispatcher(deps) {
           }),
           DevDiscuss.discussBlockFor(meeting, member.memberId),
         );
+        // 这位成员还没确认收到的维护者插话，逐条补进本次 prompt。
+        // 只有 sendToPty 真的成功之后才标已读（见下方 markUserSupplementsDelivered），
+        // 失败就继续挂着待确认，不提前标、也不盲目重发。
+        const pendingSupplements = orch.pendingUserSupplementsFor(member.sid);
+        const supplementBlock = pendingSupplements.length ? orch.buildUserSupplementBlock(member.sid) : '';
         return {
           sid: member.sid,
           kind: member.kind,
@@ -1239,11 +1244,15 @@ function createGroupChatDispatcher(deps) {
           member,
           deliveredIdx,
           deliveredSeq,
+          supplementSeqs: pendingSupplements.map(item => item.seq),
           runId,
           heroId: normalizedHeroIdBySid[member.sid] || null,
           // 英雄块每轮都追加在最终 Prompt 末尾；不能塞进 systemPromptText，后者只在
           // 该 sid 首次进入群聊时发送，无法满足“下一轮一次性注入”。
-          prompt: appendHeroPrompt(basePrompt, normalizedHeroIdBySid[member.sid]),
+          prompt: appendHeroPrompt(
+            supplementBlock ? `${basePrompt}\n\n${supplementBlock}` : basePrompt,
+            normalizedHeroIdBySid[member.sid],
+          ),
         };
       });
 
@@ -1317,6 +1326,11 @@ function createGroupChatDispatcher(deps) {
             });
           }
           if (ok) {
+            // 送达确认了才记「这位收到过这几条插话」。发送失败走 else 分支，账本原样留着。
+            if (t.supplementSeqs && t.supplementSeqs.length) {
+              try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs); }
+              catch (e) { warn('[groupchat] mark user supplement delivered failed:', e && e.message); }
+            }
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
             t.promptSubmittedAt = sendStartedAt;
             t.submissionAcknowledged = !!(sendResult && sendResult.acknowledgementSource);

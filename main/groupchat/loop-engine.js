@@ -17,6 +17,12 @@
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
 const { suspendMeetingRoom: suspendMeetingRoomImpl } = require('../../core/meeting-room-suspend.js');
 const WT = require('../../renderer/workflow-templates.js');
+const DOCS = require('../../core/dev-task-docs.js');
+const DevDiscuss = require('../../core/dev-discuss.js');
+const LOCATOR = require('../../core/dev-project-locator.js');
+const NEWLINE = String.fromCharCode(10);
+const fsx = require('fs');
+const path = require('path');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 开机自动续跑串行工作流的年龄上限：超过这个时长没动静的，只做提示不自动派发。
@@ -144,6 +150,196 @@ function createLoopEngine(deps) {
   const awaitVerdictText = (meetingId, turnNum, sid, settledText, opts) =>
     awaitStepText(meetingId, turnNum, sid, settledText, hasVerdict, opts);
 
+  // ── MD 交接闸门（2026-09-08）────────────────────────────────────────────
+  //
+  // 「某次 CLI 回复结束」不再等于「本开发步骤完成」。允许维护者随时插话之后，一步里会有
+  // 很多次回复：它答「收到」、中途报 UPDATE、跑测试时转录静默被 idle timer 提前结算……
+  // 任何一次都可能被误读成交付。
+  //
+  // 所以交付换成一个 agent 明确做出、Hub 能独立核验的动作：把本阶段草稿改名成「已完成-…」。
+  // 引擎在这里只回答两个分开的问题：
+  //   A 交付成立了吗 —— 预期完成文件在不在、读得完整吗、最少字段够不够；
+  //   B 现在能派下一位吗 —— A 成立、用户没喊停、且这一步没有已确认的派发。
+  // A 成立而 B 还不成立时显示「已交付，等待执行结束」，不回退业务阶段。
+  const DOC_POLL_MS = Number(_w.docPollMs) > 0 ? Number(_w.docPollMs) : 4000;
+  const DOC_WAIT_CAP_MS = Number(_w.docCapMs) > 0 ? Number(_w.docCapMs) : 5 * 60_000;
+
+  // ── 用户的停止意图（2026-09-08 合并位复现的阻断）──────────────────────────
+  //
+  // 原来「停止」只写在内存里那条 running 记录上（entry.abort）。两个后果：
+  //   1. 迟到的完成文件照样能推进 —— 用户点停止的那一刻，文件可能正好在同一次重读里
+  //      被判成「已接收」，于是开题接收后照常自动开工、循环照常派下一位；
+  //   2. Hub 一重启，abort 就没了，开机重扫又会把它捡起来接着跑。
+  //
+  // 任务书说得很直接：「用户明确『停止』的意图优先，不能被迟到文件或重启覆盖。」
+  // 所以它必须落盘，并且只由**用户自己**的明确动作清掉（点开始 / 继续 / 重发）。
+  // 停止不删除任何成果：已接收的交付凭据、文档、会话全部留着，人回来接着走。
+
+  /**
+   * 此刻还该不该把活派出去。
+   *
+   * 2026-09-08 第六轮合并位复现：判断原来放在 ensureMemberReady() **之前**，
+   * 而它在席位休眠时会 await（恢复会话最长 30 秒）。停止落在那段等待里就被漏掉，
+   * 开题 / 实现 / 审查三处照样各派一次。判断必须贴着真正的派发调用做。
+   */
+  function shouldNotDispatch(meetingId, entry) {
+    return !!((entry && entry.abort) || stopIntentOf(meetingId));
+  }
+
+  function stopIntentOf(meetingId) {
+    const workflow = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+    return workflow.stopRequested || null;
+  }
+
+  function writeStopIntent(meetingId, value) {
+    try {
+      const workflow = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+      meetingManager.updateMeeting(meetingId, {
+        serialWorkflow: Object.assign({}, workflow, { stopRequested: value }),
+      });
+      return true;
+    } catch (error) {
+      logError('[loop-engine] 停止意图落盘失败:', error);
+      return false;
+    }
+  }
+
+  /** 用户明确要求继续（loop:start / loop:resume / dev:kickoff / dev:redispatch）时调。 */
+  function clearStopIntent(meetingId) {
+    if (!stopIntentOf(meetingId)) return;
+    writeStopIntent(meetingId, null);
+  }
+
+  function hubDataDir() {
+    if (typeof deps.getHubDataDir === 'function') return deps.getHubDataDir();
+    return require('../../core/data-dir.js').getHubDataDir();
+  }
+
+  /**
+   * 这个群该不该走 MD 交接。只对**新建的**双席位开发群聊生效：
+   * 老房间没有这个字段，行为一字不改；极简单席位保留原流程（任务书明确要求）。
+   * 多评审时不启用 —— 一份合并手册说不清是谁的裁决，宁可不用也不要猜。
+   */
+  function docsEnabled(meeting, reviewerIds) {
+    const wf = meeting && meeting.serialWorkflow;
+    return !!(meeting && meeting.scene === 'dev' && meeting.groupChat
+      && wf && wf.mdHandoff === true
+      && Array.isArray(reviewerIds) && reviewerIds.length === 1);
+  }
+
+  function taskDirFor(meetingId) {
+    return DOCS.ensureTaskDocsDir(hubDataDir(), meetingId);
+  }
+
+  function readDocLedger(meetingId, dir) {
+    const wf = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+    return DOCS.normalizeLedger(wf.taskDocs, dir);
+  }
+
+  function saveDocLedger(meetingId, ledger) {
+    const wf = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+    meetingManager.updateMeeting(meetingId, { serialWorkflow: Object.assign({}, wf, { taskDocs: ledger }) });
+  }
+
+  /**
+   * 读一次预期完成文件并与账本对账。接收成功就**立刻落盘**接收凭据 ——
+   * 「已接收」这个事实不能只活在内存里，否则崩在这里会让上一位白干一遍。
+   */
+  function checkDeliveryOnce(meetingId, dir, pos) {
+    const spec = DOCS.docSpecForPos(pos);
+    if (!spec) return { status: 'pending', reason: 'bad_pos' };
+    const ledger = readDocLedger(meetingId, dir);
+    const delivery = DOCS.readDelivery(dir, spec.done);
+    const outcome = DOCS.reconcileDelivery(ledger, pos, delivery, spec.kind);
+    if (outcome.status === 'accepted') {
+      try { saveDocLedger(meetingId, DOCS.withAccepted(ledger, pos, outcome.record)); }
+      catch (error) { logError('[loop-engine] 接收凭据落盘失败:', error); return { status: 'pending', reason: 'accept_persist_failed' }; }
+    }
+    return Object.assign({ spec, delivery }, outcome);
+  }
+
+  /**
+   * 预扫结果里，哪些是「必须先让人看一眼」而不是「继续派工」的。
+   *
+   * 2026-09-08 合并位提的阻断：已接收的完成文件被人事后改过时，引擎原来先照常派一次工
+   * （真实 CLI 转一整轮），等到闸门那一步才报「待核对」。既白烧一轮，也给 agent 一个
+   * 它根本无从下手的任务。判据在派发之前就已经拿到了，就该在派发之前用。
+   */
+  function needsHumanBeforeDispatch(outcome) {
+    return !!outcome && outcome.status === 'changed_after_accept';
+  }
+
+  function deliveryAccepted(outcome) {
+    return !!outcome && (outcome.status === 'accepted' || outcome.status === 'duplicate');
+  }
+
+  /**
+   * 等这一阶段的完成文件出现。文件监听事件只是唤醒提示，这里靠**重读**兜底 ——
+   * 丢事件、重启后文件其实已经在了，都不该让流程永久卡死（任务书 B04）。
+   * 等不到不是任务失败，是「还不能接收」，调用方保留阶段并说明具体原因。
+   */
+  async function awaitDelivery(meetingId, dir, pos, opts = {}) {
+    const isAborted = typeof opts.isAborted === 'function' ? opts.isAborted : () => false;
+    const capMs = Number(opts.capMs) > 0 ? Number(opts.capMs) : DOC_WAIT_CAP_MS;
+    const tick = Number(opts.pollMs) > 0 ? Number(opts.pollMs) : DOC_POLL_MS;
+    const deadline = Date.now() + capMs;
+    let last = checkDeliveryOnce(meetingId, dir, pos);
+    while (!deliveryAccepted(last)) {
+      // 已接收的文件后来又被改动：不覆盖已接收版本，也不继续等，停在待核对。
+      if (last.status === 'changed_after_accept') return last;
+      if (isAborted() || Date.now() >= deadline) return last;
+      await sleep(tick);
+      last = checkDeliveryOnce(meetingId, dir, pos);
+    }
+    return last;
+  }
+
+  /**
+   * 一次**新**的循环运行该从哪个实现位起步。
+   *
+   * 为什么需要它：账本按 pos 记「哪一阶段已经交付过」。续跑要复用这些凭据（崩在派发前
+   * 不能让上一位白干一遍）；但维护者在暂停后重新发一句话，那是一个**新目标**，
+   * 不能把上一轮的阶段交付当成这一轮的。所以新运行从「还没被接收过的下一个实现位」开始，
+   * 旧轮的完成文件原样留着当对照，也就不会去覆盖任何已有的完成文件。
+   */
+  function nextFreePosBase(meetingId, dir) {
+    const ledger = readDocLedger(meetingId, dir);
+    const maxAccepted = Object.keys(ledger.accepted || {})
+      .map(Number).filter(Number.isInteger)
+      .reduce((a, b) => Math.max(a, b), 0);
+    // 实现位永远是奇数（1、3、5…）：0 是开题，偶数是审查。
+    return maxAccepted % 2 === 1 ? maxAccepted + 2 : maxAccepted + 1;
+  }
+
+  /** 已接收的上游文档绝对路径，按 pos 从小到大，给下一位当阅读入口。 */
+  function acceptedDocPaths(meetingId, dir, uptoPos) {
+    const ledger = readDocLedger(meetingId, dir);
+    return Object.keys(ledger.accepted || {})
+      .map(Number)
+      .filter(pos => Number.isInteger(pos) && pos < uptoPos)
+      .sort((a, b) => a - b)
+      .map(pos => (ledger.accepted[String(pos)] || {}).path)
+      .filter(Boolean);
+  }
+
+  function withDocBlock(prompt, dir, pos, inputDocs) {
+    const block = dir ? DOCS.buildDocBlock({ dir, pos, inputDocs }) : '';
+    return block ? `${prompt}\n\n${block}` : prompt;
+  }
+
+  /** 交付已按文档接收、这一步不需要再派人时，用它顶掉一次派发结果。 */
+  function deliveredWithoutDispatch(meeting, memberIds, turnNum, note) {
+    return {
+      status: 'completed',
+      turnNum: turnNum || null,
+      results: memberIds.map(memberId => ({
+        sid: sidOf(meeting, memberId), status: 'completed', text: note, recovered: true,
+      })),
+      recovered: true,
+    };
+  }
+
+
   // Dormant members must resume through the same provider-native path as a
   // normal Session.  Recreating with only {id,title} silently lost cwd/model/
   // tuning/MCP and was a major source of workflow-only failures.
@@ -199,6 +395,11 @@ function createLoopEngine(deps) {
             currentStep: state.currentStep || null, attempt: state.attempt || (state.round + 1),
             currentTurnNum: state.currentTurnNum || null,
             stepAttempt: Number(state.stepAttempt) || 0,
+            // 本次运行的阶段文件起点。续跑必须沿用它，否则会去找别的轮次的文件。
+            posBase: Number(state.posBase) > 0 ? Number(state.posBase) : null,
+            // 损坏标记跟着每次落盘走：正常跑的时候它就是 null，
+            // 这样「记录被写坏过」不会永远粘在这个群上。
+            damaged: state.damaged || null,
             lastError: state.lastError || null,
           },
         }),
@@ -227,9 +428,41 @@ function createLoopEngine(deps) {
   // 前端不露入口只是礼貌，这里才是闸门：loop:start / loop:resume / 工作台恢复三条路都经过 runLoop。
   function discussPhaseBlock(meeting) {
     const wf = meeting && meeting.serialWorkflow;
-    return meeting && meeting.scene === 'dev' && wf && wf.devPhase === 'discuss'
-      ? { ok: false, reason: 'dev_discuss_phase' }
-      : null;
+    if (!meeting || meeting.scene !== 'dev' || !wf) return null;
+    // 开题阶段同样不许起循环：任务书还没被接收，开工就是绕过它。
+    if (wf.devPhase === 'discuss') return { ok: false, reason: 'dev_discuss_phase' };
+    if (wf.devPhase === 'kickoff') return { ok: false, reason: 'dev_kickoff_phase' };
+    return null;
+  }
+
+  /**
+   * 续跑前先看一眼这份持久记录本身是不是可信的。
+   *
+   * 2026-09-08 I 层复现：把 loopState.round 写成 -3、posBase 写成 'NaN-ish'，
+   * 引擎照单全收 —— 算出来的阶段位置是负的，预期文件名直接变成 undefined。
+   * 任务书对这种情况写得很直白：「状态记录丢失/损坏：不能按目录里最大的阶段号盲目继续；
+   * 先核对可恢复记录与现场，不明则人工处理。」所以这里只做判断，不做修复：
+   * 记录不可信就停下来让人看，不猜一个「大概是第几轮」接着跑。
+   */
+  function describeLoopStateDamage(persisted) {
+    if (!persisted || typeof persisted !== 'object') return null;
+    const problems = [];
+    const round = persisted.round;
+    if (round !== undefined && round !== null
+      && (!Number.isSafeInteger(Number(round)) || Number(round) < 0)) {
+      problems.push(`round=${JSON.stringify(round)}`);
+    }
+    const posBase = persisted.posBase;
+    if (posBase !== undefined && posBase !== null
+      && (!Number.isSafeInteger(Number(posBase)) || Number(posBase) < 1)) {
+      problems.push(`posBase=${JSON.stringify(posBase)}`);
+    }
+    const attempt = persisted.stepAttempt;
+    if (attempt !== undefined && attempt !== null
+      && (!Number.isSafeInteger(Number(attempt)) || Number(attempt) < 0)) {
+      problems.push(`stepAttempt=${JSON.stringify(attempt)}`);
+    }
+    return problems.length ? problems.join('，') : null;
   }
 
   function validateResume(meetingId) {
@@ -467,7 +700,7 @@ function createLoopEngine(deps) {
         let failureReason = null;
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
-          if (entry.abort) { state.status = 'stopped_user'; break; }
+          if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
           const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
           const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
@@ -553,6 +786,45 @@ function createLoopEngine(deps) {
       config = buildConfig(wf.loop);
 
       let prevMerge = null, goal, resuming = false;
+      // 用户明确开新一轮（给了新目标、没有沿用旧检查点）= 人工决定，损坏标记到此为止。
+      const startingFresh = !persistedLoopState && String(userInput || '').trim();
+      if (startingFresh) {
+        const current = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+        if (current.loopState && current.loopState.damaged) {
+          try {
+            meetingManager.updateMeeting(meetingId, {
+              serialWorkflow: Object.assign({}, current, {
+                loopState: Object.assign({}, current.loopState, { damaged: null }),
+              }),
+            });
+          } catch (error) { logError('[loop-engine] 清除损坏标记失败:', error); }
+        }
+      }
+      // 损坏标记是**持久**的：第一次暂停时如果把 round 归零再落盘，第二次点重发
+      // 记录就已经「干净」了，于是照常派工 —— 这正是第四轮合并位复现的那条。
+      // 所以既看这次传进来的记录，也看盘上留着的标记，两者任一命中就拒绝。
+      const persistedDamage = ((meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {}).loopState;
+      const damage = describeLoopStateDamage(persistedLoopState)
+        || (!startingFresh && persistedDamage && persistedDamage.damaged ? persistedDamage.damaged.detail : null);
+      if (damage) {
+        const damagedState = {
+          status: 'paused', round: 0, phase: 'reaching', currentStep: null,
+          // 原始的损坏值不覆盖、不修正，只加一个持久标记 —— 它是给人看的证据。
+          damaged: { detail: damage, at: Date.now() },
+          lastError: { stage: 'loop-engine', reason: 'state_record_damaged', detail: damage, at: Date.now() },
+        };
+        logger.log('[loop-engine] 持久状态不可信，停下来等人处理：' + damage);
+        try {
+          meetingManager.updateMeeting(meetingId, {
+            serialWorkflow: Object.assign({}, meeting.serialWorkflow || {}, {
+              loopState: Object.assign({}, persistedLoopState, damagedState),
+            }),
+          });
+        } catch (error) { logError('[loop-engine] 损坏状态落盘失败:', error); }
+        try { sendToRenderer('loop:progress', { meetingId, status: 'paused', stage: 'paused', error: damagedState.lastError }); }
+        catch (error) { logError('[loop-engine] 损坏状态进度推送失败:', error); }
+        return damagedState;
+      }
       if (persistedLoopState && persistedLoopState.status === 'running') {
         const r = LC.resumeState(persistedLoopState); state = r.state; prevMerge = r.prevMerge; goal = state.goal || (userInput || '').trim(); resuming = true;
       } else { goal = (userInput || '').trim(); state = LC.newLoopState(); state.goal = goal; }
@@ -580,6 +852,40 @@ function createLoopEngine(deps) {
         Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 25 * 60_000));
 
       const dispatcher = getDispatcher();
+      // MD 交接只对新建的双席位开发群聊启用；老房间和极简单席位一字不改。
+      const useDocs = docsEnabled(meeting, reviewerIds);
+      let docsDir = null;
+      let docsDirError = null;
+      if (useDocs) {
+        try { docsDir = taskDirFor(meetingId); }
+        catch (error) { docsDirError = error; logError('[loop-engine] 任务目录建不出来:', error); }
+      }
+      // 2026-09-08 合并位复现的阻断：这里原来是「建不出来就回落到聊天判定」——
+      // 那是一次静默降级：交接闸门整个关掉，一份 MD 都没有也能把任务判成完成。
+      // 开了 MD 交接就必须靠 MD 交接。目录出问题是环境问题，如实暂停等人处理。
+      if (useDocs && !docsDir) {
+        const stalled = {
+          status: 'paused',
+          currentStep: null,
+          lastError: {
+            stage: 'task-docs', reason: 'task_dir_unavailable',
+            detail: (docsDirError && docsDirError.message) || '', at: Date.now(),
+          },
+        };
+        logger.log('[loop-engine] 任务目录不可用，拒绝退回聊天判定 ' + meetingId);
+        try {
+          state.status = stalled.status;
+          state.lastError = stalled.lastError;
+          persist(meetingId, state, config);
+          sendToRenderer('loop:progress', { meetingId, round: state.round, phase: state.phase, status: state.status, stage: 'paused', error: state.lastError });
+        } catch (error) { logError('[loop-engine] 任务目录故障落盘失败:', error); }
+        return state;
+      }
+      const docsOn = !!(useDocs && docsDir);
+      if (docsOn) {
+        const carried = Number(resuming ? persistedLoopState.posBase : state.posBase);
+        state.posBase = Number.isInteger(carried) && carried > 0 ? carried : nextFreePosBase(meetingId, docsDir);
+      }
       const progress = (extra) => {
         try { sendToRenderer('loop:progress', Object.assign({ meetingId, round: state.round, phase: state.phase, status: state.status }, extra || {})); }
         catch (error) { logError('[loop-engine] progress delivery failed:', error); }
@@ -596,18 +902,45 @@ function createLoopEngine(deps) {
       progress({ stage: 'start' });
 
       while (state.status === 'running') {
-        if (entry.abort) { state.status = 'stopped_user'; break; }
+        // 停止意图落了盘，所以「运行中点停止」和「上次点了停止之后 Hub 重启」是同一回事。
+        if (entry.abort || stopIntentOf(meetingId)) { state.status = 'stopped_user'; break; }
         if (state.round > config.stop.maxRounds + 2) { state.status = 'stopped_max'; break; } // 本地兜底
 
         const taskInfo = LC.builderTaskText(state, prevMerge, config);
-        const builderPrompt = LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt });
+        const posBase = Number(state.posBase) > 0 ? Number(state.posBase) : 1;
+        const builderPos = posBase + state.round * 2;
+        const reviewerPos = builderPos + 1;
+        const builderPrompt = withLocator(withDocBlock(
+          LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt }),
+          docsOn ? docsDir : null, builderPos,
+          docsOn ? acceptedDocPaths(meetingId, docsDir, builderPos) : [],
+        ), meeting, userTaskTextOf(meetingId, goal));
         state.currentStep = 'builder'; state.attempt = state.round + 1; state.lastError = null;
         if (!persistOrPause()) break;
         progress({ stage: 'builder', round: state.round + 1 });
         let bRes = null;
         const builderStepIndex = state.round * 2;
-        const builderEvidence = stepEvidence(meetingId, state.runId, builderStepIndex);
-        if (builderEvidence && evidenceIsSuccessful(builderEvidence, 1)) {
+        // 派发前先重扫一次预期完成文件：丢事件、Hub 重启后文件其实已经在了，
+        // 都靠这一次重读认出来 —— 不要求 agent 再改一次名，也不重复派工（B04 / D02 / D03）。
+        const builderPreAccepted = docsOn ? checkDeliveryOnce(meetingId, docsDir, builderPos) : null;
+        if (needsHumanBeforeDispatch(builderPreAccepted)) {
+          const spec = DOCS.docSpecForPos(builderPos) || {};
+          state.status = 'paused';
+          state.currentStep = 'builder';
+          state.lastError = {
+            stage: 'builder', reason: 'handoff_' + builderPreAccepted.status,
+            detail: builderPreAccepted.reason || '', doc: spec.done || '', dir: docsDir, at: Date.now(),
+          };
+          logger.log('[loop-engine] 已接收的协作手册被改动，派发前停在待核对');
+          persistOrPause();
+          break;
+        }
+        const builderEvidence = deliveryAccepted(builderPreAccepted)
+          ? null : stepEvidence(meetingId, state.runId, builderStepIndex);
+        if (deliveryAccepted(builderPreAccepted)) {
+          bRes = deliveredWithoutDispatch(meeting, [builderId], state.currentTurnNum, '（本阶段协作手册已接收，不重复派工）');
+          progress({ stage: 'builder-delivered', round: state.round + 1 });
+        } else if (builderEvidence && evidenceIsSuccessful(builderEvidence, 1)) {
           bRes = dispatchResultFromEvidence(meeting, [builderId], builderEvidence);
           state.currentTurnNum = bRes.turnNum;
           progress({ stage: 'builder-recovered', round: state.round + 1 });
@@ -616,8 +949,11 @@ function createLoopEngine(deps) {
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
+            // 停止可能正好落在上一次重试的等待窗口里 —— 判断要贴着派发这一刻做（第五轮阻断）。
+            if (shouldNotDispatch(meetingId, entry)) break;
             try {
               await ensureMemberReady(meeting, builderId);
+              if (shouldNotDispatch(meetingId, entry)) break;
               bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: builderPrompt,
                 targetMemberIds: [builderId],
@@ -648,6 +984,17 @@ function createLoopEngine(deps) {
             }
           }
         }
+        // 停止是在重试等待窗口里到的：跳出重试后要落成「用户停止」，
+        // 而不是让下面的结果校验把它记成一次「步骤失败」。
+        // 但停止只挡「派下一位」，不挡「接收交付」—— 盘上已经躺着的交付要照常收下，
+        // 否则用户点一次停止就把 agent 已经交出来的东西作废了（任务书 4.1 两段式）。
+        if (entry.abort || stopIntentOf(meetingId)) {
+          if (docsOn) checkDeliveryOnce(meetingId, docsDir, builderPos);
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          persistOrPause();
+          break;
+        }
         const builderChecked = validateStepResult(meeting, [builderId], bRes);
         if (!builderChecked.ok && !builderChecked.takenOver) {
           state.status = 'paused';
@@ -676,11 +1023,51 @@ function createLoopEngine(deps) {
         //   工作位的 PROGRESS 只是给人看的汇报，缺了不影响流程正确性 ——
         //   万一它就是没按合同输出，不该让每一轮都白等一分钟。
         // 10 秒足以跨过一次工具调用造成的静默，这才是这个等待真正要解决的问题。
-        await awaitStepText(meetingId, turnNum, sidOf(meeting, builderId),
-          textFrom(bRes.results, sidOf(meeting, builderId)), hasProgressCard,
-          { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
+        // 没走 MD 交接的房间保留原判定：等它把 PROGRESS 交出来再派审查。
+        // 走 MD 交接的房间下面那道文件闸门更硬，这一等就纯属浪费，跳过。
+        if (!docsOn) {
+          await awaitStepText(meetingId, turnNum, sidOf(meeting, builderId),
+            textFrom(bRes.results, sidOf(meeting, builderId)), hasProgressCard,
+            { isAborted: () => !!entry.abort, quietMs: BUILDER_QUIET_MS, capMs: BUILDER_WAIT_CAP_MS });
+        }
 
-        const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
+        // ── 交付闸门 A：本阶段协作手册被接收了吗 ──
+        // 「回复结束」不算。接收不了就保留当前阶段、写清具体原因，不判代码 FAIL、
+        // 不重开一轮 —— 维护者点「继续」时从这里接着走，成果和文档都还在。
+        if (docsOn) {
+          const outcome = deliveryAccepted(builderPreAccepted)
+            ? builderPreAccepted
+            : await awaitDelivery(meetingId, docsDir, builderPos, { isAborted: () => !!entry.abort });
+          if (!deliveryAccepted(outcome)) {
+            const spec = DOCS.docSpecForPos(builderPos) || {};
+            state.status = 'paused';
+            state.currentStep = 'builder';
+            state.lastError = {
+              stage: 'builder', reason: 'handoff_' + (outcome.status || 'pending'),
+              detail: outcome.reason || '', missing: outcome.missing || null,
+              doc: spec.done || '', dir: docsDir, at: Date.now(),
+            };
+            logger.log('[loop-engine] 协作手册尚未接收：' + state.lastError.reason + ' → ' + state.lastError.doc);
+            persistOrPause();
+            break;
+          }
+        }
+
+        // 「交付接收成立」和「现在能不能派下一位」是两件事。用户在等文件的这段时间里
+        // 点了停止，迟到的文件不许把审查派出去 —— 交付凭据留着，人回来接着走（任务书 D06）。
+        if (entry.abort || stopIntentOf(meetingId)) {
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          logger.log('[loop-engine] 用户已停止，交付保留但不派下一位 ' + meetingId);
+          persistOrPause();
+          break;
+        }
+
+        const reviewerPrompt = withLocator(withDocBlock(
+          LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt }),
+          docsOn ? docsDir : null, reviewerPos,
+          docsOn ? acceptedDocPaths(meetingId, docsDir, reviewerPos) : [],
+        ), meeting, userTaskTextOf(meetingId, goal));
         // 【同席位必须另起一轮】评审这一步平时复用工作位那一轮（同一轮里两批不同成员，
         // 各占各的格子）。但「极简」是同一个人先实现再自审 —— 一轮里每位成员只有一格
         // （orchestrator 的 by[sid]），复用就等于让评审的回答顶掉刚落盘的实现报告：
@@ -695,16 +1082,36 @@ function createLoopEngine(deps) {
         progress({ stage: 'reviewer', round: state.round + 1 });
         let rRes = null;
         const reviewerStepIndex = state.round * 2 + 1;
-        const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
-        if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
+        const reviewerPreAccepted = docsOn ? checkDeliveryOnce(meetingId, docsDir, reviewerPos) : null;
+        if (needsHumanBeforeDispatch(reviewerPreAccepted)) {
+          const spec = DOCS.docSpecForPos(reviewerPos) || {};
+          state.status = 'paused';
+          state.currentStep = 'reviewer';
+          state.lastError = {
+            stage: 'reviewer', reason: 'handoff_' + reviewerPreAccepted.status,
+            detail: reviewerPreAccepted.reason || '', doc: spec.done || '', dir: docsDir, at: Date.now(),
+          };
+          logger.log('[loop-engine] 已接收的合并手册被改动，派发前停在待核对');
+          persistOrPause();
+          break;
+        }
+        const reviewerEvidence = deliveryAccepted(reviewerPreAccepted)
+          ? null : stepEvidence(meetingId, state.runId, reviewerStepIndex);
+        if (deliveryAccepted(reviewerPreAccepted)) {
+          rRes = deliveredWithoutDispatch(meeting, reviewerIds, reviewerTurnNum, '（本阶段合并手册已接收，不重复派工）');
+          progress({ stage: 'reviewer-delivered', round: state.round + 1 });
+        } else if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
           rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
         } else {
           for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
+            // 同上：等待窗口里点的停止同样算数。
+            if (shouldNotDispatch(meetingId, entry)) break;
             try {
               for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+              if (shouldNotDispatch(meetingId, entry)) break;
               rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
                 userInput: reviewerPrompt,
                 targetMemberIds: reviewerIds,
@@ -733,6 +1140,13 @@ function createLoopEngine(deps) {
             }
           }
         }
+        if (entry.abort || stopIntentOf(meetingId)) {
+          if (docsOn) checkDeliveryOnce(meetingId, docsDir, reviewerPos);
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          persistOrPause();
+          break;
+        }
         const reviewerChecked = validateStepResult(meeting, reviewerIds, rRes);
         if (!reviewerChecked.ok && !reviewerChecked.takenOver) {
           state.status = 'paused';
@@ -751,12 +1165,78 @@ function createLoopEngine(deps) {
         // 判裁决前先等文本真的不再增长，避免把「还在验证」误读成「没给裁决」。
         const verdictTurnNum = rRes.turnNum || turnNum;
         const reviews = [];
-        for (const rid of reviewerIds) {
-          const sid = sidOf(meeting, rid);
-          const raw = await awaitVerdictText(meetingId, verdictTurnNum, sid, textFrom(rRes.results, sid), {
-            isAborted: () => !!entry.abort,
-          });
-          reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
+        if (docsOn) {
+          // ── 交付闸门 B：本阶段合并手册被接收了吗 ──
+          // 裁决以已接收的合并手册为权威依据。群聊回执缺失不卡流程（任务书 B07），
+          // 但两者**明确矛盾**时不猜，停在待核对（B08）。
+          const outcome = deliveryAccepted(reviewerPreAccepted)
+            ? reviewerPreAccepted
+            : await awaitDelivery(meetingId, docsDir, reviewerPos, { isAborted: () => !!entry.abort });
+          const spec = DOCS.docSpecForPos(reviewerPos) || {};
+          if (!deliveryAccepted(outcome)) {
+            state.status = 'paused';
+            state.currentStep = 'reviewer';
+            state.lastError = {
+              stage: 'reviewer', reason: 'handoff_' + (outcome.status || 'pending'),
+              detail: outcome.reason || '', missing: outcome.missing || null,
+              doc: spec.done || '', dir: docsDir, at: Date.now(),
+            };
+            logger.log('[loop-engine] 合并手册尚未接收：' + state.lastError.reason + ' → ' + state.lastError.doc);
+            persistOrPause();
+            break;
+          }
+          const docRead = DOCS.readDelivery(docsDir, spec.done);
+          if (docRead.status !== 'ok') {
+            state.status = 'paused';
+            state.currentStep = 'reviewer';
+            state.lastError = { stage: 'reviewer', reason: 'handoff_reread_failed', detail: docRead.reason || '', doc: spec.done || '', dir: docsDir, at: Date.now() };
+            persistOrPause();
+            break;
+          }
+          const rid = reviewerIds[0];
+          const docVerdict = LC.parseVerdict(docRead.content);
+          const chatVerdict = LC.parseVerdict(textFrom(rRes.results, sidOf(meeting, rid)));
+          // 2026-09-08 合并位复现的阻断：矛盾原来只在内存里判一次。用户点「继续」时
+          // 这一步已经接收过、不再重新派发，聊天文本变成占位符，矛盾就凭空消失、
+          // 任务直接变成完成 —— 期间没人改过文档，也没人重新审查过。
+          // 所以矛盾要连同**当时那份手册的指纹**一起记进账本：指纹没变就说明这份交付
+          // 一个字没动，矛盾自然还在，再点多少次继续都还是待核对。
+          const freshConflict = (chatVerdict && docVerdict && chatVerdict.decision !== docVerdict.decision)
+            ? {
+                fingerprint: docRead.fingerprint,
+                docDecision: docVerdict.decision, chatDecision: chatVerdict.decision, at: Date.now(),
+              }
+            : null;
+          const priorConflict = DOCS.unresolvedConflictAt(readDocLedger(meetingId, docsDir), reviewerPos, docRead.fingerprint);
+          const conflict = freshConflict || priorConflict;
+          if (conflict) {
+            if (freshConflict) {
+              try { saveDocLedger(meetingId, DOCS.withConflict(readDocLedger(meetingId, docsDir), reviewerPos, freshConflict)); }
+              catch (error) { logError('[loop-engine] 裁决矛盾落盘失败:', error); }
+            }
+            state.status = 'paused';
+            state.currentStep = 'reviewer';
+            state.lastError = {
+              stage: 'reviewer', reason: 'verdict_conflict',
+              detail: '合并手册判 ' + String(conflict.docDecision).toUpperCase()
+                + '，群聊里说的是 ' + String(conflict.chatDecision).toUpperCase()
+                + '；这份手册一个字没改过，需要你来定',
+              doc: spec.done || '', dir: docsDir, at: Date.now(),
+            };
+            logger.log('[loop-engine] 手册与群聊裁决矛盾，停在待核对'
+              + (freshConflict ? '' : '（这是上次就记下的，文档没有变化）'));
+            persistOrPause();
+            break;
+          }
+          reviews.push({ from: labelOf(meeting, rid), verdict: docVerdict, raw: docRead.content, source: 'doc' });
+        } else {
+          for (const rid of reviewerIds) {
+            const sid = sidOf(meeting, rid);
+            const raw = await awaitVerdictText(meetingId, verdictTurnNum, sid, textFrom(rRes.results, sid), {
+              isAborted: () => !!entry.abort,
+            });
+            reviews.push({ from: labelOf(meeting, rid), verdict: LC.parseVerdict(raw), raw });
+          }
         }
         // 评审席位根本没能力干活（额度用尽 / 被限流 / 掉登录），不是「答了但没给裁决」。
         // 这两者对用户的意义完全不同：前者换个人就好，后者才是任务本身的问题。
@@ -819,7 +1299,291 @@ function createLoopEngine(deps) {
     }
   }
 
+  // ── 项目定位（任务书第七节 / E01–E04）────────────────────────────────────
+  //
+  // 界面上那个工作目录不是真相。它可能是默认工作根、可能压根不存在、也可能指着
+  // 另一个同样有效但不相干的仓库。这里做两件事：给每一步的 prompt 附上一段
+  // 「先核实现场」的说明（含唯一确认 / 多候选只问一个问题 / worktree 也算数 /
+  // 不许全盘扫），以及在开题报告被接收后，把它声明的项目根**绑到这个群**，
+  // 让实现位和审查位之后用的是同一个已核实路径。
+
+  /**
+   * 「任务原文」= 维护者自己说过的话。定位要靠它去比对项目库，
+   * 所以不能只拿调用方顺手传的字符串 —— 开题那一步压根没有别的来源。
+   * 只取 origin==='user' 的消息：Hub 自己生成的阶段指令不是任务线索。
+   */
+  function userTaskTextOf(meetingId, fallback) {
+    const parts = [];
+    try {
+      const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
+      const messages = (orchestrator && orchestrator.state && orchestrator.state.messages) || [];
+      for (const message of messages) {
+        if (!message || message.role !== 'user' || message.origin !== 'user') continue;
+        const text = String(message.content || '').trim();
+        if (text) parts.push(text);
+      }
+    } catch (error) { logError('[loop-engine] 读取任务原文失败:', error); }
+    const tail = parts.slice(-5).join(NEWLINE);
+    return [String(fallback || '').trim(), tail].filter(Boolean).join(NEWLINE);
+  }
+
+  function locatorBlockFor(meeting, taskText) {
+    try {
+      const workflow = (meeting && meeting.serialWorkflow) || {};
+      const launch = LOCATOR.resolveLaunchDir(meeting && meeting.workspace, workflow.workRootPath || null);
+      return LOCATOR.buildLocatorBlock({
+        taskText,
+        projects: Array.isArray(workflow.projectLibrary) ? workflow.projectLibrary : [],
+        launch: launch.dir ? launch : { ...launch, dir: (meeting && meeting.workspace) || '' },
+        atWorkRoot: workflow.workRoot === true,
+      });
+    } catch (error) {
+      logError('[loop-engine] 定位说明生成失败:', error);
+      return '';
+    }
+  }
+
+  function withLocator(prompt, meeting, taskText) {
+    const block = locatorBlockFor(meeting, taskText);
+    return block ? `${prompt}\n\n${block}` : prompt;
+  }
+
+  /**
+   * 开题报告里那一行「项目根：<绝对路径>」。核实通过就把群聊的工作现场绑过去。
+   * 核实不过（目录不在 / 是聚合根 / 不是仓库）就**不动**原设置，只记一条原因 ——
+   * 猜错的代价是在错仓库里动手。
+   */
+  function bindProjectRootFromReport(meetingId, reportPath) {
+    try {
+      if (!reportPath || !fsx.existsSync(reportPath)) return null;
+      const declared = LOCATOR.extractDeclaredProjectRoot(fsx.readFileSync(reportPath, 'utf8'));
+      if (!declared) return { ok: false, reason: 'not_declared' };
+      const verified = LOCATOR.verifyDeclaredProjectRoot(declared);
+      if (!verified.ok) {
+        logger.log('[loop-engine] 开题报告声明的项目根没通过核实：' + declared + ' → ' + verified.reason);
+        return verified;
+      }
+      const meeting = meetingManager.getMeeting(meetingId);
+      const current = meeting && meeting.workspace ? String(meeting.workspace) : '';
+      if (path.resolve(current || '') === verified.path) return { ok: true, path: verified.path, unchanged: true };
+      meetingManager.updateMeeting(meetingId, { workspace: verified.path });
+      logger.log('[loop-engine] 项目现场已绑定到已核实路径：' + verified.path);
+      return { ok: true, path: verified.path, previous: current };
+    } catch (error) {
+      logError('[loop-engine] 绑定项目根失败:', error);
+      return { ok: false, reason: (error && error.message) || 'bind_failed' };
+    }
+  }
+
+  // ── 开题（步骤位置 0）───────────────────────────────────────────────────
+  //
+  // 普通开发群聊建好后先自由讨论；维护者点「开题」时指定一位执笔者，
+  // 只给他派活（两个人一起写会写重）。报告改名成「已完成-开题报告.md」被接收后
+  // **自动开工**，不再要维护者点第二次 —— 点「开题」那一下就已经包含了这份授权。
+  //
+  // 这里不做自动恢复 prompt：Hub 重启后只重新读一次文件（dispatch:false），
+  // 认出已经交付就接着开工，认不出就保留在开题阶段等维护者点「重发本轮」。
+
+  function kickoffAuthorOf(workflow, requested) {
+    const steps = Array.isArray(workflow && workflow.steps) ? workflow.steps : [];
+    const builderId = (steps[0] || [])[0] || null;
+    const known = new Set([].concat(...steps).filter(Boolean).map(String));
+    const asked = String(requested || '').trim();
+    // 指定的人必须真的在这个工作流里，否则回落到工作位（默认执笔者）。
+    return asked && known.has(asked) ? asked : builderId;
+  }
+
+  async function _kickoffPhase(meetingId, options = {}) {
+    if (running.has(meetingId)) return { ok: false, reason: 'already_running' };
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat || meeting.scene !== 'dev') {
+      return { ok: false, reason: 'group_chat_not_found' };
+    }
+    const workflow = meeting.serialWorkflow || {};
+    const authorId = kickoffAuthorOf(workflow, options.authorMemberId);
+    if (!authorId) return { ok: false, reason: 'no_author' };
+    let dir = null;
+    try { dir = taskDirFor(meetingId); }
+    catch (error) { logError('[loop-engine] 开题任务目录建不出来:', error); return { ok: false, reason: 'task_dir_unavailable' }; }
+
+    const entry = { abort: false, mode: 'kickoff', runId: runId('kickoff'), startedAt: Date.now() };
+    running.set(meetingId, entry);
+    const emit = (stage, extra) => {
+      try { sendToRenderer('loop:progress', Object.assign({ meetingId, kind: 'kickoff', stage, status: 'running' }, extra || {})); }
+      catch (error) { logError('[loop-engine] kickoff progress delivery failed:', error); }
+    };
+    const saveKickoff = (patch) => {
+      const current = (meetingManager.getMeeting(meetingId) || {}).serialWorkflow || {};
+      meetingManager.updateMeeting(meetingId, {
+        serialWorkflow: Object.assign({}, current, {
+          devPhase: patch.devPhase || current.devPhase,
+          kickoff: Object.assign({}, current.kickoff, patch.kickoff || {}),
+        }),
+      });
+    };
+    try {
+      // 派发前先看一眼：报告可能已经在了（丢事件、上次被停住、用户手动放好）。
+      // 已经能接收就别再派一次开题 —— 那等于让它把同一份任务书重写一遍。
+      const preAccepted = checkDeliveryOnce(meetingId, dir, 0);
+      const shouldDispatch = options.dispatch !== false && !deliveryAccepted(preAccepted);
+      if (shouldDispatch) {
+        saveKickoff({
+          devPhase: 'kickoff',
+          kickoff: { status: 'running', authorMemberId: authorId, runId: entry.runId, startedAt: Date.now() },
+        });
+        emit('kickoff-dispatch', { authorMemberId: authorId });
+        const prompt = withLocator(withDocBlock(
+          DevDiscuss.buildKickoffPrompt({ locator: typeof workflow.projectLocator === 'string' ? workflow.projectLocator : '' }),
+          dir, 0, [],
+        ), meeting, userTaskTextOf(meetingId, options.taskText));
+        // 2026-09-08 合并位在真实 CLI 上撞到的：CLI 还没起来，派发以 cli_not_ready 失败，
+        // 而这里原来只 await、从不看结果 —— 于是界面显示「正在等开题报告」，
+        // 实际上一个字都没送进 CLI，用户完全看不出区别。
+        // 修法和循环那两步一致：有界传输重试 + 结果校验；仍然失败就明说是派发失败，
+        // 把真实原因带出来，不含混地等。
+        let dispatchFailure = null;
+        let dispatchStopped = false;
+        for (let transportAttempt = 1; transportAttempt <= 2; transportAttempt += 1) {
+          dispatchFailure = null;
+          // 2026-09-08 第五轮：这两个判断原来放在 sleep(500) **之前**，
+          // 于是「停止」或「报告」正好落在那 500ms 等待窗口里就被漏掉，照样派第二次。
+          // 判断必须贴着派发这一刻做 —— 等待期间发生的事同样算数。
+          if (transportAttempt > 1) {
+            if (shouldNotDispatch(meetingId, entry)) {
+              logger.log('[loop-engine] 用户已停止，开题不再重试派发');
+              dispatchStopped = true;
+              break;
+            }
+            if (deliveryAccepted(checkDeliveryOnce(meetingId, dir, 0))) {
+              logger.log('[loop-engine] 开题报告其实已经交付，回执丢了也不重派');
+              dispatchFailure = null;
+              break;
+            }
+          }
+          try {
+            await ensureMemberReady(meeting, authorId);
+            // 恢复会话可能等了很久，停止就发生在这段等待里 —— 派之前再问一次。
+            if (shouldNotDispatch(meetingId, entry)) { dispatchStopped = true; break; }
+            const dispatched = await getDispatcher().dispatchGroupChatTurn(meetingId, {
+              userInput: prompt,
+              targetMemberIds: [authorId],
+              appendUserMessage: true,
+              dispatchMode: 'serial',
+              turnTimeoutMs: 20 * 60_000,
+              allowActiveExtend: true,
+              workflowRun: { runId: entry.runId, kind: 'kickoff', stepIndex: 0, attempt: transportAttempt, targetMemberIds: [authorId] },
+            });
+            const checked = validateStepResult(meeting, [authorId], dispatched);
+            if (checked.ok || checked.takenOver) break;
+            dispatchFailure = checked.reason || 'kickoff_dispatch_failed';
+          } catch (error) {
+            dispatchFailure = (error && error.message) || 'kickoff_dispatch_exception';
+          }
+          if (!dispatchFailure || transportAttempt >= 2) continue;
+          logger.log('[loop-engine] 开题派发失败，重试一次：' + dispatchFailure);
+          await sleep(500);
+        }
+        if (dispatchStopped) {
+          saveKickoff({ kickoff: { status: 'awaiting_report', lastReason: 'user_stop', updatedAt: Date.now() } });
+          return { ok: false, reason: 'stopped_by_user', authorMemberId: authorId };
+        }
+        if (dispatchFailure) {
+          // 回执丢了不等于没送到：先看一眼报告是不是其实已经交了（任务书 D04）。
+          const salvaged = checkDeliveryOnce(meetingId, dir, 0);
+          if (!deliveryAccepted(salvaged)) {
+            saveKickoff({ kickoff: { status: 'dispatch_failed', lastReason: dispatchFailure, updatedAt: Date.now() } });
+            emit('kickoff-dispatch-failed', { reason: dispatchFailure, authorMemberId: authorId });
+            logger.log('[loop-engine] 开题 prompt 没能送进 CLI：' + dispatchFailure);
+            return { ok: false, reason: 'kickoff_dispatch_failed', detail: dispatchFailure, authorMemberId: authorId };
+          }
+          logger.log('[loop-engine] 开题派发回执丢失，但报告已交付，按成果继续');
+        }
+      }
+
+      // 只重扫时给一次读取的预算就够：开机不为每个开题房间挂五分钟的轮询。
+      const outcome = deliveryAccepted(preAccepted) ? preAccepted : await awaitDelivery(meetingId, dir, 0, {
+        isAborted: () => !!entry.abort,
+        capMs: shouldDispatch ? undefined : 1,
+      });
+      if (!deliveryAccepted(outcome)) {
+        const spec = DOCS.docSpecForPos(0) || {};
+        saveKickoff({ kickoff: { status: 'awaiting_report', lastReason: outcome.status || 'pending', updatedAt: Date.now() } });
+        emit('kickoff-awaiting', { reason: outcome.status, missing: outcome.missing || null, doc: spec.done });
+        return {
+          ok: false, reason: 'kickoff_report_not_delivered',
+          detail: outcome.reason || '', missing: outcome.missing || null,
+          doc: spec.done, dir,
+        };
+      }
+
+      const reportPath = (outcome.record && outcome.record.path) || '';
+      // 报告里声明的项目根通过核实就绑到本群：之后实现位和审查位用的是同一个已核实现场（E01/E04）。
+      const bound = bindProjectRootFromReport(meetingId, reportPath);
+      if (bound && bound.ok && !bound.unchanged) emit('project-root-bound', { path: bound.path, previous: bound.previous });
+      // 2026-09-08 第四轮阻断：核实失败以前只记一行日志就照常开工 —— 那等于让实现位
+      // 在一个没人核实过的现场动手。现在分两种：
+      //   · 报告声明了项目根但核实不过（目录不在 / 不是仓库 / 是聚合根）→ 停；
+      //   · 报告没声明，而当前工作目录本身也不是有效仓库现场 → 同样停。
+      // 只有「声明并核实通过」或「本来就在有效现场」才允许进实现。
+      if (!bound || !bound.ok) {
+        const currentWorkspace = (meetingManager.getMeeting(meetingId) || {}).workspace || '';
+        const siteOk = !!currentWorkspace && LOCATOR.classifyRepo(currentWorkspace).valid
+          && !LOCATOR.isAggregateRoot(currentWorkspace);
+        // 报告**声明了**项目根却核实不过 → 一律停：它断言了一件假的事，
+        // 这时候退回界面上那个目录继续跑，等于用一个没人核实的现场掩盖掉这个信号。
+        // 报告**没声明** → 才退一步看当前现场本身是否成立。
+        const declaredButBad = bound && bound.reason && bound.reason !== 'not_declared';
+        if (declaredButBad || !siteOk) {
+          const detail = bound && bound.reason === 'not_declared'
+            ? '报告里没有「项目根：<绝对路径>」这一行，当前工作目录也不是有效仓库现场'
+            : `报告声明的项目根没通过核实（${(bound && bound.reason) || '未知'}${bound && bound.path ? '：' + bound.path : ''}）`;
+          saveKickoff({ kickoff: { status: 'project_root_unverified', lastReason: detail, reportPath, updatedAt: Date.now() } });
+          emit('kickoff-project-root-unverified', { detail, reportPath });
+          logger.log('[loop-engine] 项目现场没核实过，不进实现：' + detail);
+          return { ok: false, reason: 'project_root_unverified', detail, reportPath };
+        }
+      }
+      // 报告接收成立，但用户在这期间点了停止 → 只记下交付，不翻阶段、不自动开工。
+      // 迟到的完成文件不能覆盖明确的停止意图（任务书 D06）。
+      if (entry.abort || stopIntentOf(meetingId)) {
+        saveKickoff({ kickoff: { status: 'accepted_stopped', reportPath, acceptedAt: Date.now() } });
+        emit('kickoff-accepted-stopped', { reportPath });
+        logger.log('[loop-engine] 开题报告已接收，但用户已停止，不自动开工 ' + meetingId);
+        return { ok: true, autoStart: false, stopped: true, reportPath };
+      }
+      saveKickoff({ devPhase: 'build', kickoff: { status: 'accepted', reportPath, acceptedAt: Date.now() } });
+      try {
+        const orchestrator = typeof getOrchestrator === 'function' ? getOrchestrator(meetingId) : null;
+        if (orchestrator && typeof orchestrator.appendSystemNote === 'function') {
+          orchestrator.appendSystemNote(orchestrator.state.currentTurn || 1,
+            '开题报告已接收，现在自动进入实现阶段。任务书全文：' + reportPath, { kind: 'kickoff' });
+        }
+      } catch (error) { logError('[loop-engine] 开题接收提示写不进群聊:', error); }
+      emit('kickoff-accepted', { reportPath });
+      return { ok: true, autoStart: true, goal: '按已接收的开题报告实施。任务书全文（绝对路径）：' + reportPath, reportPath };
+    } catch (error) {
+      logError('[loop-engine] 开题阶段失败:', error);
+      saveKickoff({ kickoff: { status: 'failed', lastReason: (error && error.message) || 'kickoff_error', updatedAt: Date.now() } });
+      return { ok: false, reason: (error && error.message) || 'kickoff_error' };
+    } finally {
+      if (running.get(meetingId) === entry) running.delete(meetingId);
+    }
+  }
+
+  /** 开题入口。接收成功就直接开工 —— 这一步的授权在维护者点「开题」那一下就给过了。 */
+  async function runKickoff(meetingId, options = {}) {
+    const outcome = await _kickoffPhase(meetingId, options);
+    if (outcome && outcome.ok && outcome.autoStart) {
+      runLoop(meetingId, outcome.goal, null, { heroIdBySid: options.heroIdBySid || {} })
+        .catch(error => logError('[loop-engine] 开题后自动开工失败:', error));
+    }
+    return outcome;
+  }
+
   function stopLoop(meetingId, options = {}) {
+    // 先落盘再谈中断：用户点了停止，这个事实不能因为「当前没有在跑的运行」
+    // 或者随后的进程退出而丢失。
+    writeStopIntent(meetingId, { at: Date.now(), reason: options.reason || 'user_stop' });
     const r = running.get(meetingId);
     if (!r) return false;
     r.abort = true;
@@ -839,6 +1603,10 @@ function createLoopEngine(deps) {
       running: false,
       serialRunState: workflow.serialRunState || null,
       loopState: workflow.loopState || null,
+      // 开题记录和 MD 交付账本：前端要靠它们说清「现在停在哪一步、缺的是哪个文件」。
+      kickoff: workflow.kickoff || null,
+      taskDocs: workflow.taskDocs || null,
+      devPhase: DevDiscuss.phaseOf(workflow),
     };
   }
 
@@ -849,6 +1617,20 @@ function createLoopEngine(deps) {
       for (const mt of all) {
         const sw = mt && mt.serialWorkflow; const ls = sw && sw.loopState;
         const serialState = sw && sw.serialRunState;
+        // 用户上次明确停过 → 开机不许自作主张接着跑。清掉它是用户点「继续/重发」的事。
+        if (sw && sw.stopRequested) {
+          logger.log('[loop-engine] skip boot resume for ' + mt.id + ': user stop intent is on record');
+          continue;
+        }
+        // 开题中被打断：**只重新读一次文件**，不重新派开题任务、不发恢复 prompt。
+        // 认出已交付就接着自动开工；认不出就留在开题阶段，等维护者点「重发本轮」。
+        if (sw && sw.kickoff && ['running', 'awaiting_report'].includes(sw.kickoff.status)
+          && DevDiscuss.phaseOf(sw) === DevDiscuss.PHASE_KICKOFF) {
+          logger.log('[loop-engine] boot rescan kickoff ' + mt.id);
+          runKickoff(mt.id, { authorMemberId: sw.kickoff.authorMemberId, dispatch: false })
+            .catch(error => logError('[loop-engine] boot kickoff rescan failed:', error));
+          continue;
+        }
         if (sw && sw.enabled && !(sw.loop && sw.loop.enabled)
           && serialState && serialState.status === 'running') {
           // 循环工作流有 deadlineTs 兜底，串行没有。没有年龄下限的话，几天前被打断的
@@ -871,7 +1653,9 @@ function createLoopEngine(deps) {
   }
 
   return {
-    getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateResume, validateSerial,
+    getStatus, isRunning, resumePending, runKickoff, runLoop, runSerial, stopLoop, clearStopIntent, stopIntentOf,
+    describeLoopStateDamage, bindProjectRootFromReport, locatorBlockFor,
+    validateLoop, validateResume, validateSerial,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
     __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,

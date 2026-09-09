@@ -1,5 +1,6 @@
 'use strict';
 
+const devProjectLocator = require('../../core/dev-project-locator.js');
 const { ensureClaudeMemoryFile } = require('../../core/claude-memory-loader.js');
 const { normalizeCodexContextWindow } = require('../../core/codex-context-window.js');
 
@@ -127,7 +128,17 @@ function createMeetingSubAdder(deps) {
     }
 
     if (!sessionOpts.cwd && meeting && meeting.workspace) {
-      sessionOpts.cwd = meeting.workspace;
+      // 2026-09-08：界面上配的工作目录可能已经不存在了（项目被搬走、worktree 被清掉）。
+      // 原来直接拿它当 cwd —— CLI 在启动前就失败，报一个跟任务毫无关系的错。
+      // 现在退到一个确实存在的目录（最近的存在祖先），让它至少能起来做只读定位；
+      // prompt 里那段「先核实项目现场」会明说这只是落脚点、确认之前别在这写文件。
+      const resolved = devProjectLocator.resolveLaunchDir(meeting.workspace, null);
+      // 找不到更好的落脚点（连一个像样的存在祖先都没有）就保持原样 ——
+      // 这时候换成盘符根或用户主目录只会更糟，行为也不该和以前不一样。
+      sessionOpts.cwd = resolved.dir || meeting.workspace;
+      if (resolved.dir && resolved.corrected) {
+        logger.warn(`[meeting-sub] 工作目录 ${meeting.workspace} 不存在，本次退到 ${resolved.dir} 起会话（只读定位）`);
+      }
     }
     if (!sessionOpts.cwd) {
       let workspaceDir = null;

@@ -5007,12 +5007,17 @@ if (typeof document !== 'undefined') (function () {
         ? '未选择成员，发送前需要至少勾选 1 位'
         : `发送给 ${selectedNames.join(' / ')}${selected > selectedNames.length ? ` 等 ${selected} 位` : ''}`;
       if (dormantSlotsN > 0) panelDetail += `· ${dormantSlotsN} 位休眠不计入`;
-      if (DevDiscuss.isDiscussing(current)) {
-        // 「先讨论再开工」：循环配置在，但现在只是普通群聊。两个入口都放在这一行：
-        // 「收敛」让工作位把讨论写成任务说明；「开工」把它交给循环。
+      if (DevDiscuss.isKickingOff(current)) {
+        // 开题中：指定的那一位在写任务书。这里**不给**「开工」入口 ——
+        // 报告被接收后自动开工，多一个按钮只会让人以为还要再确认一次。
+        chips.push(_renderInputChip('阶段', '开题中 · 等任务书交付', 'warn'));
+        chips.push(`<span class="mr-input-preflight-chip clickable" data-dev-redispatch="1" title="不重置任务、不重开轮次，只把当前阶段的职责和文档入口再发一次给原执笔者"><span>本轮</span><strong>↻ 重发</strong></span>`);
+        panelDetail += ' · 开题阶段，这里发的话会作为补充送给执笔者';
+      } else if (DevDiscuss.isDiscussing(current)) {
+        // 建好房先自由讨论；聊清楚了点「开题」，指定一位执笔者把需求写成任务书。
+        // 需求本来就明确时也不用多聊几轮 —— 直接点「开题」即可。
         chips.push(_renderInputChip('阶段', '讨论中 · 不改代码', 'warn'));
-        chips.push(`<span class="mr-input-preflight-chip accent clickable" data-dev-converge="1" title="让工作位把到目前为止的讨论收敛成一份任务说明（目标 / 非目标 / 验收标准 / 风险与回退），合并位补充"><span>讨论</span><strong>收敛</strong></span>`);
-        chips.push(`<span class="mr-input-preflight-chip saved clickable" data-dev-kickoff="1" title="确认任务说明后进入「工作位实现 ↔ 合并位审查」循环"><span>开工</span><strong>▶ 进入实现</strong></span>`);
+        chips.push(`<span class="mr-input-preflight-chip saved clickable" data-dev-kickoff="1" title="指定一位执笔者把需求写成任务书（目标 / 非目标 / 验收标准 / 风险与回退），写完存进本群任务目录并改名交付。报告完成后自动开工。"><span>开题</span><strong>▶ 指定执笔者</strong></span>`);
         panelDetail += ' · 讨论阶段，发送走普通群聊';
       } else if (current.serialWorkflow && current.serialWorkflow.enabled && workflowSteps > 0) {
         const workflowApi = window.WorkflowTemplates;
@@ -5064,7 +5069,11 @@ if (typeof document !== 'undefined') (function () {
     } else if (loopSt && loopSt.status === 'paused' && discussingNow) {
       chips.push(_renderInputChip('闭环', '旧循环已暂停 · 讨论中不可恢复，请「开工」', ''));
     } else if (loopSt && loopSt.status === 'paused') {
-      chips.push(`<span class="mr-input-preflight-chip warn clickable" data-loop-resume="1" title="${escapeHtml((loopSt.error && loopSt.error.reason) || (loopSt.lastError && loopSt.lastError.reason) || '步骤失败，循环已暂停')}；点击从持久检查点继续"><span>闭环</span><strong>已暂停 · 继续</strong></span>`);
+      const pauseWhy = _devPauseReasonText(loopSt.error || loopSt.lastError);
+      chips.push(`<span class="mr-input-preflight-chip warn clickable" data-loop-resume="1" title="${escapeHtml(pauseWhy)}；点击从持久检查点继续"><span>闭环</span><strong>已暂停 · 继续</strong></span>`);
+      // 停在等交付时，「继续」是重新核对现场，「重发」是把当前职责和文档入口再说一遍。
+      // 两个都不重置任务、不重开轮次。
+      chips.push(`<span class="mr-input-preflight-chip clickable" data-dev-redispatch="1" title="${escapeHtml(pauseWhy)}；重发只补当前阶段的职责和文档入口，不重置任务、不重做已完成的部分"><span>本轮</span><strong>↻ 重发</strong></span>`);
     }
     const serialSt = _workflowStateByMeeting[current.id]
       || (current.serialWorkflow && current.serialWorkflow.serialRunState)
@@ -5104,13 +5113,18 @@ if (typeof document !== 'undefined') (function () {
       const result = await ipcRenderer.invoke('loop:resume', { meetingId: current.id });
       if (!result || !result.ok) _showGcEscapeNotice(`循环工作流继续失败：${result && result.reason || 'unknown'}`, 'error');
     });
-    const convergeChip = row.querySelector('[data-dev-converge]');
-    if (convergeChip) convergeChip.addEventListener('click', () => {
-      const m = meetingData[current.id];
-      if (!m || !DevDiscuss.isDiscussing(m)) return;
-      _dispatchMeetingInputImpl(m, DevDiscuss.CONVERGE_REQUEST, {});
-      _pushPromptHistory(m.id, DevDiscuss.CONVERGE_REQUEST);
-      _updateInputPreflight(m);
+    const redispatchChip = row.querySelector('[data-dev-redispatch]');
+    if (redispatchChip) redispatchChip.addEventListener('click', async () => {
+      redispatchChip.classList.add('is-busy');
+      let result = null;
+      try { result = await ipcRenderer.invoke('dev:redispatch', { meetingId: current.id }); }
+      catch (error) { console.error('[dev-redispatch] IPC failed:', error && error.message); }
+      redispatchChip.classList.remove('is-busy');
+      if (!result || !result.ok) {
+        _showGcEscapeNotice('重发失败：' + ((result && result.reason) || '未知') + '（现场保留，没有重复启动任何东西）', 'error');
+        return;
+      }
+      _showGcEscapeNotice('已按当前阶段重发一次；不会重开轮次，也不会重做已完成的部分', 'info');
     });
     const kickoffChip = row.querySelector('[data-dev-kickoff]');
     if (kickoffChip) kickoffChip.addEventListener('click', () => { void _openDevKickoffDialog(meetingData[current.id]); });
@@ -5196,6 +5210,36 @@ if (typeof document !== 'undefined') (function () {
 
   // 阶段字段住在 serialWorkflow 里（meeting-store 只持久化它整体）。用同步 IPC 写，
   // 写成功再启动循环：否则 loop:start 可能读到旧阶段。
+  // 循环停下来的原因翻成人话。MD 交接那几种停法尤其要说清楚「缺的是哪个文件」，
+  // 否则维护者看到的只有 handoff_pending 这种词，根本不知道该找谁。
+  function _devPauseReasonText(err) {
+    if (!err || typeof err !== 'object') return '步骤失败，循环已暂停';
+    const doc = err.doc ? `「${err.doc}」` : '本阶段完成文件';
+    const who = err.stage === 'reviewer' ? '合并位' : err.stage === 'builder' ? '工作位' : '这一位';
+    switch (err.reason) {
+      case 'handoff_pending':
+        return `还没收到${doc}：${who}可能还在写，也可能是写完了忘了改名`;
+      case 'handoff_incomplete':
+        return `${doc}收到了，但少了必需字段：${(err.missing || []).join('、') || '未知'}`;
+      case 'handoff_changed_after_accept':
+        return `${doc}已经接收过，之后又被改动了 —— 停下来等你核对，不覆盖已接收的那一版`;
+      case 'handoff_reread_failed':
+        return `${doc}这次读不出来（${err.detail || '原因未知'}），保留当前阶段等重读`;
+      case 'verdict_conflict':
+        return err.detail || '合并手册和群聊里的裁决对不上，停下来等你核对';
+      case 'project_root_unverified':
+        return `项目现场没核实过（${err.detail || '细节未知'}）—— 先确认要动的是哪个仓库，再让它开工`;
+      case 'state_record_damaged':
+        return `这个群聊的流程记录被写坏了（${err.detail || '细节未知'}）—— 停下来等你处理，不按目录里最大的阶段号瞎猜`;
+      case 'kickoff_dispatch_failed':
+        return `开题任务没能送进 CLI（${err.detail || '原因未知'}）—— 它一个字都没收到，点「重发」再来一次`;
+      case 'reviewer_unavailable':
+        return '审查那一位干不了活（额度/限流/登录），换个人或稍后再来，这不是代码问题';
+      default:
+        return err.reason || '步骤失败，循环已暂停';
+    }
+  }
+
   async function _setDevPhase(meeting, phase) {
     const m = meetingData[meeting.id] || meeting;
     if (!m || !m.serialWorkflow) { _showGcEscapeNotice('这个群还没有开发工作流配置，先点工作流按钮配一下', 'error'); return false; }
@@ -5215,64 +5259,86 @@ if (typeof document !== 'undefined') (function () {
     return true;
   }
 
-  // 「开工」：把讨论收敛出的任务说明确认一遍，再以它为「上一条消息」启动循环。
-  // 预填取群里最近一份「## 任务说明」（工作位按「收敛」要求写的）；没有就留空让用户自己写。
-  // 这样工作位合同里「任务是维护者上一条消息说的那件事」一个字不用改。
+  // 「开题」：讨论到此收口，指定一位执笔者把需求写成任务书（写进本群任务目录的
+  // 开题报告.md，写完改名成「已完成-开题报告.md」）。只派一个人 —— 两位一起写会写重。
+  //
+  // 点这一下就已经包含了后续正常开发流程的授权：报告被 Hub 接收后自动开工，
+  // 不再有第二个确认弹窗，正常 PASS 也不需要维护者审批。
   async function _openDevKickoffDialog(meeting) {
     const current = meeting || meetingData[activeMeetingId];
     if (!current || !DevDiscuss.isDiscussing(current)) return;
-    if (_isGroupTurnRunning(current)) { _showGcEscapeNotice('本轮还有成员在回答，等讨论这一轮结束再开工', 'error'); return; }
-    let prefill = '';
-    try {
-      const state = await ipcRenderer.invoke('groupchat:get-state', { meetingId: current.id });
-      prefill = DevDiscuss.latestTaskSpec(state && Array.isArray(state.messages) ? state.messages : []);
-    } catch (e) { console.warn('[dev-kickoff] read group state failed:', e && e.message); }
+    if (_isGroupTurnRunning(current)) {
+      _showGcEscapeNotice('本轮还有成员在回答，等这一轮讨论结束再开题（不要强停 CLI）', 'error');
+      return;
+    }
+    const members = _buildWorkflowMembers(current);
+    if (!members.length) { _showGcEscapeNotice('群里还没有可用的成员', 'error'); return; }
+    const steps = (current.serialWorkflow && Array.isArray(current.serialWorkflow.steps)) ? current.serialWorkflow.steps : [];
+    const defaultAuthor = (steps[0] || [])[0] || members[0].memberId;
     const existing = document.getElementById('mr-dev-kickoff-overlay');
     if (existing) existing.remove();
     const overlay = document.createElement('div');
     overlay.id = 'mr-dev-kickoff-overlay';
     overlay.className = 'mr-input-editor-overlay';
+    const roleOf = (memberId) => (DevDiscuss.devRoleOf(current.serialWorkflow, memberId) === 'merger' ? '合并位' : '工作位');
     overlay.innerHTML = `
-      <div class="mr-input-editor" role="dialog" aria-modal="true" aria-label="开工：确认任务说明">
-        <div class="mr-input-editor-head">
-          <strong>开工 · 确认任务说明</strong>
-          <span id="mr-dev-kickoff-count">0 字</span>
+      <div class="mr-input-editor" role="dialog" aria-modal="true" aria-label="开题：指定执笔者">
+        <div class="mr-input-editor-head"><strong>开题 · 指定执笔者</strong></div>
+        <div class="mr-dev-kickoff-hint">
+          只给指定的这一位派开题任务，另一位不写，避免两人写重。<br>
+          他会把需求写成一份自包含的任务书（目标 / 非目标 / 验收标准 / 风险与回退），
+          存进本群的任务目录并改名交付。<strong>报告完成后自动开工</strong>，不需要你再确认一次。
         </div>
-        <div class="mr-dev-kickoff-hint">${prefill
-          ? '下面是群里最近一份任务说明，可以直接改。确认后它会作为你的一条消息发出，工作位据此开工，合并位据此审查。'
-          : '群里还没有「## 任务说明」。可以先点「收敛」让工作位写一份，或者直接在这里写清楚：目标 / 非目标 / 验收标准 / 风险与回退。'}</div>
-        <textarea id="mr-dev-kickoff-textarea" class="mr-input-editor-textarea" spellcheck="false" placeholder="## 任务说明&#10;目标：&#10;非目标：&#10;验收标准：&#10;风险与回退："></textarea>
+        <div class="mcm-workspace-choices" role="radiogroup" aria-label="开题执笔者">
+          ${members.map(member => `
+            <button type="button" class="mcm-workspace-choice${member.memberId === defaultAuthor ? ' selected' : ''}"
+              data-kickoff-author="${escapeHtml(member.memberId)}" role="radio"
+              aria-checked="${member.memberId === defaultAuthor ? 'true' : 'false'}">
+              <strong>${escapeHtml(member.title)}</strong><small>${escapeHtml(roleOf(member.memberId))}${member.memberId === defaultAuthor ? ' · 默认执笔' : ''}</small>
+            </button>`).join('')}
+        </div>
         <div class="mr-input-editor-actions">
           <button type="button" class="mr-input-editor-btn" data-action="cancel">取消</button>
-          <button type="button" class="mr-input-editor-btn send" data-action="kickoff">开工 ▶</button>
+          <button type="button" class="mr-input-editor-btn send" data-action="kickoff">开题 ▶</button>
         </div>
       </div>
     `;
     document.body.appendChild(overlay);
-    const textarea = overlay.querySelector('#mr-dev-kickoff-textarea');
-    const countEl = overlay.querySelector('#mr-dev-kickoff-count');
-    const updateCount = () => { if (countEl) countEl.textContent = `${textarea.value.length} 字`; };
+    let author = defaultAuthor;
     const close = () => { overlay.remove(); document.removeEventListener('keydown', onKeydown); };
     const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
-    textarea.value = prefill;
-    updateCount();
-    textarea.addEventListener('input', updateCount);
+    overlay.querySelectorAll('[data-kickoff-author]').forEach((button) => {
+      button.addEventListener('click', () => {
+        author = button.getAttribute('data-kickoff-author');
+        overlay.querySelectorAll('[data-kickoff-author]').forEach((other) => {
+          const on = other === button;
+          other.classList.toggle('selected', on);
+          other.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+      });
+    });
     overlay.querySelector('[data-action="cancel"]').addEventListener('click', close);
-    overlay.querySelector('[data-action="kickoff"]').addEventListener('click', async () => {
-      const spec = textarea.value.trim();
-      if (!spec) { _showGcEscapeNotice('任务说明是空的：没有它，工作位不知道该做什么', 'error'); textarea.focus(); return; }
+    const startBtn = overlay.querySelector('[data-action="kickoff"]');
+    startBtn.addEventListener('click', async () => {
+      // 双击防护在主进程（引擎的 running map）也有一道；这里只是不让按钮连点。
+      startBtn.disabled = true;
       const m = meetingData[current.id];
-      if (!m || typeof _dispatchMeetingInputImpl !== 'function') return;
-      const ok = await _setDevPhase(m, DevDiscuss.PHASE_BUILD);
-      if (!ok) return;
+      if (!m) { close(); return; }
+      let result = null;
+      try { result = await ipcRenderer.invoke('dev:kickoff', { meetingId: m.id, authorMemberId: author }); }
+      catch (error) { console.error('[dev-kickoff] IPC failed:', error && error.message); }
+      if (!result || !result.ok) {
+        startBtn.disabled = false;
+        _showGcEscapeNotice('开题没能开始：' + ((result && result.reason) || '未知'), 'error');
+        return;
+      }
       close();
-      _dispatchMeetingInputImpl(m, spec, {});
-      _pushPromptHistory(m.id, spec);
-      _updateInputPreflight(m);
+      _showGcEscapeNotice('已进入开题：等它写完任务书并交付，Hub 接收后自动开工', 'info');
+      const refreshed = meetingData[current.id];
+      if (refreshed) _updateInputPreflight(refreshed);
     });
     overlay.addEventListener('mousedown', (ev) => { if (ev.target === overlay) close(); });
     document.addEventListener('keydown', onKeydown);
-    setTimeout(() => textarea.focus(), 0);
   }
 
   function _openLongInputEditor(meeting) {
@@ -6595,36 +6661,84 @@ if (typeof document !== 'undefined') (function () {
         handleMeetingSend(finalText, m, { heroIdBySid });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
-        const pendingLoopQuestion = _rememberPendingUserMessage(m, finalText);
-        const restoreLoopStartFailure = (reason) => {
-          if (Object.keys(heroIdBySid).length) _restoreHeroAssignments(m, heroIdBySid);
-          _discardPendingUserMessage(m.id, { clientId: pendingLoopQuestion && pendingLoopQuestion.clientId });
-          const recovery = _restoreQuestionAndPreserveDraft(m.id, finalText);
-          const recoveryText = recovery.mergedWithDraft
-            ? '；失败问题与当前草稿均已保留在输入框'
-            : recovery.restored ? '；问题已恢复到输入框' : '';
-          _showGcEscapeNotice('循环启动失败：' + (reason || '未知') + recoveryText, 'error');
-        };
-        // 先把原始目标作为独立用户消息落 timeline，再启动 main 驱动的内部步骤。
-        // timeline 写入失败不阻断执行，但会明确记录日志；避免内部 builder prompt 冒充原问题。
-        ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: finalText })
-          .catch((e) => console.warn('[loop] append original goal failed:', e && e.message))
-          .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText, heroIdBySid }))
-          .then((r) => {
-            if (!r || !r.ok) {
-              console.warn('[loop] start failed:', r && r.reason);
-              restoreLoopStartFailure((r && r.reason) || '未知');
-            }
-          }).catch((e) => {
-            console.error('[loop] start IPC failed:', e && e.message);
-            restoreLoopStartFailure(e && e.message);
-          });
+        // 循环已经在跑时，这句话的语义是「给当前任务补一句」，不是「开一个新任务」。
+        // 以前这里照样调 loop:start，主进程以 already_running 拒绝，消息被退回输入框 ——
+        // 用户以为说了，其实一个字都没送出去。现在先问主进程「循环在跑吗」（不信 renderer
+        // 缓存），在跑就走插话闭环：落盘 + 当前执行者即时收到 + 待命者记账下次补。
+        void _routeLoopInput(m, finalText, heroIdBySid);
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         runSerialWorkflow(m, finalText, { heroIdBySid });
       } else {
         handleMeetingSend(finalText, m, { heroIdBySid });
       }
+    }
+
+    async function _routeLoopInput(m, finalText, heroIdBySid) {
+      let running = false;
+      try {
+        const status = await ipcRenderer.invoke('loop:status', { meetingId: m.id });
+        running = !!(status && status.running);
+      } catch (e) {
+        console.warn('[loop] status probe failed, treating as not running:', e && e.message);
+      }
+      if (running) { await _sendUserSupplement(m, finalText); return; }
+      _startLoopWithGoal(m, finalText, heroIdBySid);
+    }
+
+    // 插话：不开新一轮、不抢占当前步骤、不重置返工预算。
+    // 主进程返回「谁即时收到了、谁要等下次运行」，这里如实说给用户听 ——
+    // 待命者没收到不是失败，但真发不出去必须让用户看见。
+    async function _sendUserSupplement(m, finalText) {
+      let result = null;
+      try {
+        result = await ipcRenderer.invoke('groupchat:user-supplement', { meetingId: m.id, text: finalText });
+      } catch (e) {
+        console.error('[loop] supplement IPC failed:', e && e.message);
+      }
+      if (!result || !result.ok) {
+        const recovery = _restoreQuestionAndPreserveDraft(m.id, finalText);
+        const tail = recovery.restored ? '；这句话已恢复到输入框' : '';
+        _showGcEscapeNotice('这句话没能送出去：' + ((result && result.reason) || '未知') + tail, 'error');
+        return;
+      }
+      const nowCount = (result.deliveredNow || []).length;
+      const waitCount = (result.pendingSids || []).length;
+      const failed = (result.failures || []).length;
+      const parts = [];
+      if (nowCount) parts.push(`${nowCount} 位正在执行的已即时收到`);
+      if (waitCount) parts.push(`${waitCount} 位待命，下次轮到它时补上原文`);
+      if (failed) parts.push(`${failed} 位没送达，仍在待确认`);
+      _showGcEscapeNotice('已记下这句话：' + (parts.join('；') || '已保存'), failed ? 'error' : 'info');
+      const refreshed = meetingData[m.id];
+      if (refreshed && refreshed.id === activeMeetingId) void refreshGroupChatPanel(refreshed);
+    }
+
+    function _startLoopWithGoal(m, finalText, heroIdBySid) {
+      const pendingLoopQuestion = _rememberPendingUserMessage(m, finalText);
+      const restoreLoopStartFailure = (reason) => {
+        if (Object.keys(heroIdBySid).length) _restoreHeroAssignments(m, heroIdBySid);
+        _discardPendingUserMessage(m.id, { clientId: pendingLoopQuestion && pendingLoopQuestion.clientId });
+        const recovery = _restoreQuestionAndPreserveDraft(m.id, finalText);
+        const recoveryText = recovery.mergedWithDraft
+          ? '；失败问题与当前草稿均已保留在输入框'
+          : recovery.restored ? '；问题已恢复到输入框' : '';
+        _showGcEscapeNotice('循环启动失败：' + (reason || '未知') + recoveryText, 'error');
+      };
+      // 先把原始目标作为独立用户消息落 timeline，再启动 main 驱动的内部步骤。
+      // timeline 写入失败不阻断执行，但会明确记录日志；避免内部 builder prompt 冒充原问题。
+      ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: finalText })
+        .catch((e) => console.warn('[loop] append original goal failed:', e && e.message))
+        .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText, heroIdBySid }))
+        .then((r) => {
+          if (!r || !r.ok) {
+            console.warn('[loop] start failed:', r && r.reason);
+            restoreLoopStartFailure((r && r.reason) || '未知');
+          }
+        }).catch((e) => {
+          console.error('[loop] start IPC failed:', e && e.message);
+          restoreLoopStartFailure(e && e.message);
+        });
     }
     _dispatchMeetingInputImpl = _dispatchMeetingInput;
 
