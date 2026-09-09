@@ -615,16 +615,16 @@ function createGlobalSessionSearch(options) {
     }
     const seq = ++searchSequence;
     try {
-      let response = await ipcRenderer.invoke('search-past-sessions', { ...request, limit: browsingCatalogue() ? 200 : request.limit });
+      const entries = browsingCatalogue() ? catalogueFilter(request) : null;
+      const sessionFilter = entries && {
+        hubSessionIds: entries.map(entry => entry.hubSessionId).filter(Boolean),
+        meetingIds: entries.map(entry => entry.meetingId).filter(Boolean),
+      };
+      const response = await ipcRenderer.invoke('search-past-sessions', {
+        ...request, ...(sessionFilter ? { sessionFilter } : {}),
+      });
       if (seq !== searchSequence || !isOpen()) return;
       if (response && response.error) throw new Error(response.error);
-      if (browsingCatalogue()) {
-        const filtered = filterSearchHits(response?.results || [], catalogueFilter(request));
-        const providers = {};
-        for (const hit of filtered) providers[hit.provider] = (providers[hit.provider] || 0) + 1;
-        response = { ...response, results: filtered, totalSessions: filtered.length,
-          totalMatches: filtered.reduce((n, hit) => n + (hit.matchCount || 1), 0), limit: 50, facets: { providers } };
-      }
       renderResults(response || {});
       if (response && response.status) renderStatus(response.status);
       if (response && response.refreshing) void refreshStatus({ repeat: true });
