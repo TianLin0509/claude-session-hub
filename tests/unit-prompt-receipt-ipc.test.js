@@ -169,3 +169,30 @@ test('retry ignores historical prompt echoes, edited drafts and hidden multiline
     assert.equal(writes, 0);
   }
 });
+
+test('content mismatch stops retry without another write and is never returned as ok', async () => {
+  const original = watcher.sendToPty;
+  const handlers = new Map(), tap = new EventEmitter(), sm = new EventEmitter();
+  sm.getSession = () => ({ kind: 'codex' });
+  let writes = 0;
+  watcher.sendToPty = async (sid, _text, _kind, options) => {
+    writes++;
+    tap.emit('prompt-submitted', { hubSessionId: sid, text: 'line1line2', submittedAt: Date.now(),
+      signalSource: 'user_message', turnId: 'altered' });
+    assert.equal(options.submissionReceipt.status, 'content-mismatch');
+    return { ok: false, sendStatus: 'content-mismatch' };
+  };
+  const registration = registerPromptSubmitIpc({ handle: (k, v) => handlers.set(k, v) }, {
+    sessionManager: sm, transcriptTap: tap,
+  });
+  try {
+    const request = { sessionId: 's', text: 'line1\nline2', clientSubmissionId: 'changed' };
+    const first = await handlers.get('session:send-prompt')(null, request);
+    assert.equal(first.ok, false);
+    assert.equal(first.receipt.status, 'content-mismatch');
+    const retry = await handlers.get('session:resend-prompt')(null, request);
+    assert.equal(retry.ok, false);
+    assert.equal(retry.reason, 'content-mismatch');
+    assert.equal(writes, 1);
+  } finally { watcher.sendToPty = original; registration.dispose(); }
+});

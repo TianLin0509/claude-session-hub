@@ -40,9 +40,22 @@ async function main() {
     if (fs.existsSync(path.join(source, name))) fs.copyFileSync(path.join(source, name), path.join(codexHome, name));
   }
   let hub, client;
+  const composerInputs = [];
+  let entryPath = ROOT;
+  if (process.env.HUB_RECEIPT_TRACE === '1') {
+    entryPath = path.join(OUT, `${RUN}-trace-entry.cjs`);
+    fs.writeFileSync(entryPath, `const fs = require('node:fs');
+      const { SessionManager } = require(${JSON.stringify(path.join(ROOT, 'core/session-manager.js'))});
+      const original = SessionManager.prototype.writeToSession;
+      SessionManager.prototype.writeToSession = function(sid, data) {
+        fs.appendFileSync(${JSON.stringify(path.join(OUT, `${RUN}-pty-writes.jsonl`))}, JSON.stringify({sid,data,at:Date.now()})+'\\n');
+        return original.apply(this, arguments);
+      };
+      require(${JSON.stringify(path.join(ROOT, 'main-bootstrap.js'))});`, 'utf8');
+  }
   try {
     hub = await launchIsolatedHub({ dataDir: path.join(TEMP, 'data'), port: await freePort(),
-      windowMode: 'hidden', label: RUN,
+      windowMode: 'hidden', label: RUN, entryPath,
       extraEnv: { CLAUDE_HUB_E2E: '1', CODEX_HOME: codexHome,
         CLAUDE_HUB_HOME_DIR: path.join(TEMP, 'home'), AI_HUB_WORKSPACE_ROOT: path.dirname(workspace),
         DEEPSEEK_API_KEY: '' },
@@ -65,11 +78,14 @@ async function main() {
     }, 90000);
 
     async function send(text) {
-      await client.eval(`(() => {
+      const actualInput = await client.eval(`(() => {
         const box = document.querySelector('.floating-input-box');
         box.focus(); replaceContenteditableText(box, ${JSON.stringify(text)});
         box.dispatchEvent(new Event('input', { bubbles: true }));
+        return readContenteditablePlainText(box);
       })()`);
+      composerInputs.push({ intended: text, actual: actualInput });
+      assert.equal(actualInput, text, 'composer must preserve all submitted newlines');
       await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       return client.eval(`floatingPromptDeliveries.get(${JSON.stringify(sid)})?.clientSubmissionId`);
@@ -138,10 +154,32 @@ async function main() {
     assert.equal((await state()).delivery.status, 'confirmed');
     assert.equal((await state()).warning, '');
     checks.push({ name: 'old send cannot mutate B; delayed timeout cannot resurrect warning', passed: true });
+    const altered = await send('line1\nline2');
+    await client.eval(`(() => {
+      ipcRenderer.emit('session:prompt-receipt', {}, { sessionId: ${JSON.stringify(sid)},
+        clientSubmissionId: ${JSON.stringify(altered)}, status: 'content-mismatch' });
+      window.__receiptPending[3].resolve({ ok: true, sendStatus: 'stuck' });
+    })()`);
+    assert.equal((await state()).delivery.status, 'content-mismatch');
+    assert.ok((await state()).warning.includes('换行或空白不同'));
+    assert.equal(await client.eval(`document.querySelector('.fi-stuck-resend').disabled`), true);
+    await shot('content-mismatch');
+    checks.push({ name: 'content integrity warning remains visible and disables resend', passed: true });
     await client.eval('ipcRenderer.invoke = window.__receiptOriginalInvoke');
     fs.writeFileSync(path.join(OUT, `${RUN}-checks.json`), JSON.stringify({ checks }, null, 2), 'utf8');
     console.log(`PASS ${checks.length} cases; ${OUT}`);
+  } catch (error) {
+    if (client) {
+      const diagnostic = await client.eval(`({ sessionId: activeSessionId,
+        screen: window.__hubE2E.terminalLiveScreenText(activeSessionId),
+        deliveries: [...floatingPromptDeliveries], warning: document.querySelector('.fi-stuck')?.textContent })`);
+      fs.writeFileSync(path.join(OUT, `${RUN}-failure.json`), JSON.stringify(diagnostic, null, 2), 'utf8');
+      const screenshot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      fs.writeFileSync(path.join(OUT, `${RUN}-failure.png`), Buffer.from(screenshot.data, 'base64'));
+    }
+    throw error;
   } finally {
+    fs.writeFileSync(path.join(OUT, `${RUN}-composer-inputs.json`), JSON.stringify(composerInputs, null, 2), 'utf8');
     if (hub) fs.writeFileSync(path.join(OUT, `${RUN}-hub.log`), hub.log().join('\n'), 'utf8');
     if (client) await client.close();
     if (hub) await gracefulQuit(hub);

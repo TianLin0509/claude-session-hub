@@ -64,6 +64,30 @@ test('automatic goal update is not a user-message receipt', () => {
   assert.equal(a.status, 'pending');
 });
 
+test('observed real 100-line Codex record missing one LF raises integrity warning, not success', () => {
+  const expected = `${Array.from({ length: 100 }, (_, i) => `材料第 ${i + 1} 行：用于验证多行中文消息已提交。`).join('\n')}\n只回复 RECEIPT_LONG_OK，不调用工具。`;
+  const actual = expected.replace('已提交。\n材料第 4 行', '已提交。材料第 4 行');
+  assert.equal(actual.length, expected.length - 1);
+  const updates = [];
+  const receipts = new PromptSubmissionReceipts(e => updates.push(e));
+  const a = receipts.begin('s', 'a', expected, 100);
+  receipts.observe({ sessionId: 's', text: actual, submittedAt: 110,
+    turnId: 'native-altered-turn', signalSource: 'item_completed_user_message' });
+  assert.equal(a.status, 'content-mismatch');
+  assert.equal(a.started, false);
+  assert.equal(a.resolved, true);
+  receipts.finish(a, { ok: true, sendStatus: 'stuck' });
+  assert.equal(a.status, 'content-mismatch');
+  assert.equal(updates.some(e => e.status === 'confirmed'), false);
+});
+
+test('different non-whitespace content remains unconfirmed', () => {
+  const receipts = new PromptSubmissionReceipts();
+  const a = receipts.begin('s', 'a', 'delete A\nkeep B', 100);
+  assert.equal(receipts.observe({ sessionId: 's', text: 'delete A\ndelete B', submittedAt: 110 }), false);
+  assert.equal(a.status, 'pending');
+});
+
 test('close drops retained prompt and receipt; public updates never contain prompt text', () => {
   const updates = [];
   const receipts = new PromptSubmissionReceipts(u => updates.push(u));

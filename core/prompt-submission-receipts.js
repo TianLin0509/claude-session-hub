@@ -5,6 +5,10 @@ function promptFingerprint(text) {
   return createHash('sha256').update(String(text || '').replace(/\r\n?/g, '\n').trim()).digest('hex');
 }
 
+function contentFingerprint(text) {
+  return promptFingerprint(String(text || '').replace(/\s/g, ''));
+}
+
 // Delivery receipts share provider events with RuntimeTruth, but must identify
 // the submitted message. Running/automatic continuation alone cannot do that.
 class PromptSubmissionReceipts {
@@ -18,8 +22,10 @@ class PromptSubmissionReceipts {
   begin(sessionId, clientSubmissionId, text, dispatchedAt = Date.now()) {
     const receipt = {
       sessionId, clientSubmissionId, dispatchedAt,
-      fingerprint: promptFingerprint(text), status: 'pending', acknowledgement: null,
+      fingerprint: promptFingerprint(text), contentFingerprint: contentFingerprint(text),
+      status: 'pending', acknowledgement: null,
       get started() { return this.status === 'confirmed'; },
+      get resolved() { return this.started || this.status === 'content-mismatch'; },
       dispose() {}, // owned by the IPC registration, survives sendToPty timeout
     };
     this.entries.set(sessionId, receipt);
@@ -40,7 +46,7 @@ class PromptSubmissionReceipts {
   }
 
   finish(receipt, result) {
-    if (this.get(receipt.sessionId) !== receipt || receipt.started) return;
+    if (this.get(receipt.sessionId) !== receipt || receipt.resolved) return;
     // A generic PTY/activity success cannot identify this particular message.
     receipt.status = result?.ok === false ? 'failed' : 'unconfirmed';
     this.onUpdate(this.snapshot(receipt));
@@ -54,18 +60,23 @@ class PromptSubmissionReceipts {
     const submittedAt = Number(event.submittedAt || event.observedAt);
     if (!Number.isFinite(submittedAt)) return false;
     const fingerprint = promptFingerprint(event.text);
+    const content = contentFingerprint(event.text);
     // Claude hooks can be timestamped on arrival. Repeated "continue" sends
     // must consume the oldest unresolved matching attempt, never the newest.
     const pending = this.unresolved.get(sessionId) || [];
-    const receipt = pending.find(item => item.fingerprint === fingerprint && submittedAt >= item.dispatchedAt);
+    const receipt = pending.find(item => submittedAt >= item.dispatchedAt
+      && (item.fingerprint === fingerprint || item.contentFingerprint === content));
     if (!receipt) return false;
     const key = `${event.turnId || submittedAt}:${fingerprint}`;
     const seen = this.seen.get(sessionId) || new Set();
     if (seen.has(key)) return false;
     seen.add(key);
     this.seen.set(sessionId, seen);
-    if (fingerprint !== receipt.fingerprint || receipt.started) return false;
-    receipt.status = 'confirmed';
+    if (receipt.resolved) return false;
+    // A content-equivalent but whitespace-different record is evidence of a
+    // possible altered submission, NEVER an exact success. Keep its warning
+    // and stop retries rather than silently accepting loss or duplicating it.
+    receipt.status = fingerprint === receipt.fingerprint ? 'confirmed' : 'content-mismatch';
     receipt.acknowledgement = {
       source: event.signalSource || 'prompt-submitted', observedAt: submittedAt,
       turnId: event.turnId || null,

@@ -3489,7 +3489,10 @@ function updateFloatingPromptReceipt(receipt) {
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
     if (state.status === 'confirmed') clearFloatingInputStuck(bar);
-    else if (!state.dismissed) markFloatingInputStuck(bar, receipt.sessionId);
+    else if (!state.dismissed) {
+      if (state.status === 'content-mismatch') clearFloatingInputStuck(bar);
+      markFloatingInputStuck(bar, receipt.sessionId);
+    }
   }
 }
 
@@ -3511,7 +3514,9 @@ function markFloatingInputStuck(bar, sessionId) {
 
   const label = document.createElement('span');
   label.className = 'fi-stuck-label';
-  label.textContent = delivery?.status === 'failed'
+  label.textContent = delivery?.status === 'content-mismatch'
+    ? '⚠ 检测到正文相同但换行或空白不同的提交，请核对终端；已停止补发'
+    : delivery?.status === 'failed'
     ? '⚠ 消息发送失败，请检查终端后重试'
     : '⚠ 暂未确认消息提交，请查看终端；收到确认后此提示会自动消失';
 
@@ -3519,6 +3524,10 @@ function markFloatingInputStuck(bar, sessionId) {
   resendBtn.type = 'button';
   resendBtn.className = 'fi-stuck-resend';
   resendBtn.textContent = '补发';
+  if (delivery?.status === 'content-mismatch') {
+    resendBtn.disabled = true;
+    resendBtn.textContent = '需核对';
+  }
   resendBtn.title = '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
   resendBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
@@ -4175,14 +4184,15 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
-      if (delivery.status === 'confirmed') return;
+      if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
-      if (floatingPromptDeliveries.get(sessionId) !== delivery || delivery.status === 'confirmed') return;
+      if (floatingPromptDeliveries.get(sessionId) !== delivery
+          || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
@@ -4286,7 +4296,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   bar.addEventListener('mousedown', (e) => e.stopPropagation());
 
   const restoredDelivery = floatingPromptDeliveries.get(sessionId);
-  if (restoredDelivery && ['unconfirmed', 'failed'].includes(restoredDelivery.status)) {
+  if (restoredDelivery && ['unconfirmed', 'failed', 'content-mismatch'].includes(restoredDelivery.status)) {
     markFloatingInputStuck(bar, sessionId);
   }
 

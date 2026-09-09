@@ -30,3 +30,12 @@ test('dismissal survives repeated status delivery, next send has its own warning
   assert.equal(state.dismissed, true);
   assert.equal(beginPromptDelivery('b').dismissed, false);
 });
+
+test('integrity warning cannot be hidden by old timeout, failure or ordinary success', () => {
+  const state = beginPromptDelivery('a');
+  applyPromptReceipt(state, { clientSubmissionId: 'a', status: 'content-mismatch' });
+  for (const status of ['unconfirmed', 'failed', 'confirmed']) {
+    assert.equal(applyPromptReceipt(state, { clientSubmissionId: 'a', status }), false);
+  }
+  assert.equal(state.status, 'content-mismatch');
+});

@@ -128,7 +128,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           logger.warn(`[prompt-submit] ${kind}(${sessionId.slice(0, 8)}) prompt not acknowledged; renderer will offer manual resend`);
         }
         return {
-          ok: true,
+          ok: sendStatus !== 'content-mismatch',
           kind,
           sendStatus,
           mode: 'closed-loop',
@@ -162,6 +162,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
               || latestRequestBySid.get(sessionId) !== request.clientSubmissionId) {
             return { ok: false, error: 'superseded-submission' };
           }
+          if (receipt.status === 'content-mismatch') return { ok: false, mode: 'none',
+            reason: 'content-mismatch', receipt: receipts.snapshot(receipt) };
           if (receipt.started) return { ok: true, mode: 'already-submitted', receipt: receipts.snapshot(receipt) };
           const result = await groupChatWatcher.resendCurrentPrompt({
             sid: sessionId, prompt, kind, promptHeader: firstLine(prompt), submissionReceipt: receipt,
