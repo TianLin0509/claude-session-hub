@@ -423,7 +423,10 @@ async function main() {
       'C03/L 已确认收到之后不再重复注入（同一条只出现一次）', JSON.stringify(hits));
 
     const st = await gcState();
-    const suppMsg = ((st && st.messages) || []).find((m) => m && m.supplement);
+    // 按 U12 标识挑那一条 —— 现在初始需求也是一条补充，取第一条会挑错人
+    // （2026-09-08 我自己引入的选择器 bug，真实跑里当场暴露）。
+    const suppMsg = ((st && st.messages) || [])
+      .find((m) => m && m.supplement && String(m.content || '').includes(U12));
     ok(!!suppMsg && suppMsg.content === LONG_SUPPLEMENT,
       'C05/L 多行 / 中文 / 路径 / emoji / 长文本原样保存，没有被截断或拆开',
       suppMsg ? String((suppMsg.content || '').length) : 'missing');
