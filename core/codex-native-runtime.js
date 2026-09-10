@@ -129,6 +129,7 @@ function reduceNativeRuntime(previous, event) {
     n.submission = event.submission;
   } else if (event.type === 'configuration') {
     n.configurationError = event.error || null;
+    if (['plan', 'default'].includes(event.collaborationMode)) n.collaborationMode = event.collaborationMode;
   } else if (event.type === 'snapshot') {
     const thread = event.thread;
     if (!thread || !thread.id || (n.threadId && thread.id !== n.threadId)) return p;

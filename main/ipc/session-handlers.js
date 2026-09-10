@@ -214,6 +214,7 @@ function registerSessionIpc(ipcMain, deps) {
       else if (payload.action === 'reconnect') result = await native.reconnect();
       else if (payload.action === 'interrupt') result = await native.interrupt();
       else if (payload.action === 'configure') result = await native.configure(payload);
+      else if (payload.action === 'collaboration-mode') result = await native.configureMode(payload.mode, payload.epoch);
       else if (payload.action === 'snapshot') result = native.runtime;
       else if (payload.action === 'review-submission') result = native.reviewUnknownSubmission(payload.submissionId,payload.epoch);
       else return {ok:false,message:'不支持的 Codex 操作'};

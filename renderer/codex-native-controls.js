@@ -133,7 +133,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const runtime = session.nativeRuntime;
     const requests = runtime && runtime.connection === 'connected' ? runtime.requests || [] : [];
     const choices = session.nativeThreadChoices || [];
-    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection]);
+    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.collaborationMode]);
     if (signature === next) return;
     signature = next;
     // Reuse the actual form nodes. Resolving another request must preserve
@@ -141,6 +141,15 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const keep = new Set(requests.map(r => JSON.stringify([runtime.epoch,r.id])));
     for (const key of forms.keys()) if (!keep.has(key)) forms.delete(key);
     const children = [];
+    if (runtime?.collaborationMode === 'plan') {
+      const modeBox = node('div', null, 'codex-native-mode');
+      modeBox.append(node('span', '计划模式 · 讨论与只读调查；后续消息沿用此模式。'));
+      const error = node('div', '', 'codex-native-error');
+      const reset = node('button', '切回默认模式'); reset.type = 'button';
+      reset.disabled = runtime.connection !== 'connected' || !['idle', 'completed', 'failed', 'interrupted'].includes(runtime.state);
+      reset.addEventListener('click', () => action({action:'collaboration-mode',mode:'default',epoch:runtime.epoch}, modeBox, error));
+      modeBox.append(reset, error); children.push(modeBox);
+    }
     if(runtime?.configurationError)children.push(node('p',runtime.configurationError,'codex-native-error'));
     if (runtime?.submission?.status === 'unknown') {
       const box=node('div',null,'codex-native-request');

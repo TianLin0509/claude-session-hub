@@ -501,15 +501,17 @@ class CodexNativeSession extends EventEmitter {
       if (old.result) return old.result;
       throw new Error('此前提交结果不明，请先核对；不会自动重发');
     }
+    const active = ['running','waiting'].includes(this.runtime.state);
+    const modeParams = active ? {} : require('./codex-native-mode').turnCollaborationMode(this);
     const receipt = {digest,inputDigest:payloadDigest,text,submittedAt,result:null};
     this.receipts.set(id,receipt);
     while (this.receipts.size > 100) this.receipts.delete(this.receipts.keys().next().value);
     const submission = {id,status:'submitting',digest,inputDigest:payloadDigest,submittedAt};
     this.apply({type:'submission',submission});
-    const active = ['running','waiting'].includes(this.runtime.state);
     const method = active ? 'turn/steer' : 'turn/start';
     const params = {threadId:this.threadId,input,clientUserMessageId:id,
-      ...(active ? {expectedTurnId:this.runtime.turnId} : this.options.turnParams)};
+      ...(active ? {expectedTurnId:this.runtime.turnId}
+        : {...this.options.turnParams,...modeParams})};
     try {
       this.print('\n› '+text+'\n');
       const result = await client.request(method,params,undefined,{beforeWrite:()=>{
@@ -579,6 +581,9 @@ class CodexNativeSession extends EventEmitter {
   }
   configure(options) {
     return this.enqueueSend(intent=>this._configure(options,intent));
+  }
+  configureMode(mode, epoch) {
+    return this.enqueueSend(intent => require('./codex-native-mode').configureMode(this, mode, intent, epoch));
   }
   async _configure({model,effort}, intent) {
     await this.start();
@@ -659,7 +664,10 @@ class CodexNativeSession extends EventEmitter {
       this.print('\n'+JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2)+'\n');
     } else if (command === '/status' || command === '/help') {
       this.print('\n'+(command === '/status' ? JSON.stringify(this.runtime,null,2)
-          : '原生命令：/status /mcp /model <模型> /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n新建、恢复、分叉请使用 Hub 会话菜单；终端仅显示输出。\n')+'\n');
+          : '原生命令：/status /mcp /model <模型> /plan /plan off /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n新建、恢复、分叉请使用 Hub 会话菜单；终端仅显示输出。\n')+'\n');
+    } else if (command === '/plan' && (!value || value === 'off')) {
+      await require('./codex-native-mode').configureMode(this, value === 'off' ? 'default' : 'plan', intent);
+      this.print('\n工作方式已选择：'+(value === 'off' ? '默认' : '计划')+'，下一条消息生效。\n');
     } else if (command === '/rename' && value) {
       await request('thread/name/set',{threadId:this.threadId,name:value});
       this.emit('renamed',value);

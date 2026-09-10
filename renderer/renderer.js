@@ -4308,7 +4308,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     // 2026-09-07：这里原来逐家列 claude / codex / kimi，把 Gemini 漏在外面 —— Gemini 同样
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
-    const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
+    const nativeCommand = session?.runtimeBackend === 'codex-app-server' && text.trimStart().startsWith('/');
+    const cardCapableKind = !nativeCommand && !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
     if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
@@ -4328,6 +4329,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     floatingPromptDeliveries.set(sessionId, delivery);
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+      if (result?.ok && result.mode === 'native-command') {
+        updateFloatingPromptReceipt({sessionId,clientSubmissionId,status:'confirmed'});
+        showToast('原生命令已完成', 'success');
+        return;
+      }
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
