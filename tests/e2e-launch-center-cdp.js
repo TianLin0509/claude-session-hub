@@ -252,12 +252,12 @@ async function verifyPersistentMembers(client, result) {
   // Real extra members exercise wrapping without fabricating sidebar DOM.
   await clickPoint(client, '#btn-new-more');
   await clickPoint(client, '[data-launch-intent="group"]');
+  await clickPoint(client, '[data-mcm-scene="general"]');
+  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 0; i < 3; i++) {
     await client.eval(`document.getElementById('mcm-add-member').scrollIntoView({ block: 'center' })`);
     await clickPoint(client, '#mcm-add-member');
   }
-  await clickPoint(client, '[data-mcm-scene="general"]');
-  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 1; i <= 5; i++) await chooseValue(client, `.mcm-slot:nth-child(${i}) .mcm-ai-select`, 'codex');
   await client.eval(`document.getElementById('mcm-title-input').value = 'T4 多成员换行与长标题不会遮住下一条会话'`);
   await clickPoint(client, '.mcm-create');

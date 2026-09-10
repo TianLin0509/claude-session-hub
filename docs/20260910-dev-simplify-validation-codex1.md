@@ -32,6 +32,7 @@
 | `node tests/dev-prep-controls-e2e.js --double-codex` | 22 项通过，含切通用后重开恢复开发/已有路径、两个独立 Codex 席位 |
 | `node tests/dev-file-workflow-i-e2e.js` | 12 项通过：开题/文件交接、暂停、迟到交付、继续 |
 | `node tests/e2e-dev-scene-project-library-cdp.js` | PASS：默认已有路径、项目库读取和实际选项选择 |
+| `node tests/e2e-launch-center-cdp.js` | PASS，errors=[]：启动中心重开默认值、桌面/窄屏布局及两人/五人通用群聊；测试显式选择通用场景与默认目录 |
 | `node tests/dev-prompt-catalog-e2e.js <上述 HTML 路径>` | 9 项通过：Chrome 实际载入/编辑/刷新/筛选/恢复/导入，校验三种导出的 Blob 内容，宽窄截图 |
 | `node tests/meeting-create-modal-static.test.js` | 全部通过 |
 | `node tests/unit-dev-scene-contract.test.js` | 14/14 通过 |
@@ -39,6 +40,8 @@
 | `node --check`（修改的 JS）与 `git diff --check` | 通过 |
 
 全量首轮 417/418：目录提示的旧文本断言仍要求旧文案，按新需求更新后全量通过。单独静态测试另修正了此前已经落后的默认发言人断言。
+
+启动中心完整回归前两次失败均来自旧测试操作：默认变更后需显式选通用/默认目录，且应在添加成员滚动页面前选择；校正操作顺序后全部通过。最终记录：`output/20260910-launch-center-final-codex1.log`。
 
 I 层使用真实隔离 Electron/UI/IPC/文件系统，Agent 派发器为受控 fixture，**不证明真实模型完成实现或合并**。HTML 导出验证检查浏览器生成的内容，未自动应用到源码。
 
