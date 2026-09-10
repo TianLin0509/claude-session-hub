@@ -175,9 +175,11 @@ async function run() {
     check('quota remains available in real group view', await cdp.eval(`document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
     await shot('A-real-group');
     const scroll = await cdp.eval(`(() => {const e=document.querySelector('#session-list'),r=e.getBoundingClientRect();e.scrollTop=0;return {x:r.x+r.width/2,y:r.y+r.height/2,quotaY:document.querySelector('.sidebar-quota').getBoundingClientRect().y};})()`);
+    await cdp.eval(`window.quotaWheelEvents=[];document.querySelector('#session-list').addEventListener('wheel',e=>window.quotaWheelEvents.push({x:e.clientX,y:e.clientY,deltaY:e.deltaY,trusted:e.isTrusted}),{passive:true})`);
     await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved',x:scroll.x,y:scroll.y });
     await cdp.send('Input.dispatchMouseEvent', { type:'mouseWheel', x:scroll.x,y:scroll.y,deltaX:0,deltaY:1000 });
-    await _waitMs(300);
+    try { await waitFor(cdp,`document.querySelector('#session-list').scrollTop > 0`); }
+    finally { evidence.scroll={before:scroll,after:await cdp.eval(`({top:document.querySelector('#session-list').scrollTop,quotaY:document.querySelector('.sidebar-quota').getBoundingClientRect().y,events:window.quotaWheelEvents})`)}; }
     check('real list wheel scroll leaves bottom quota fixed', await cdp.eval(`document.querySelector('#session-list').scrollTop > 0 && document.querySelector('.sidebar-quota').getBoundingClientRect().y === ${scroll.quotaY}`));
     await click(cdp, btn('claude'));
     await key(cdp, 'Tab', 'Tab', 9);
