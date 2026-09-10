@@ -112,6 +112,7 @@ function _buildSessionPayload(hubId, data) {
     effort: typeof data.effort === 'string' ? data.effort : null,
     contextPct: typeof data.contextPct === 'number' ? data.contextPct : null,
     contextUsed: typeof data.contextUsed === 'number' ? data.contextUsed : null,
+    sessionUsage: data.sessionUsage || null,
     contextMax: typeof data.contextMax === 'number' ? data.contextMax : null,
     contextEffectiveMax: typeof data.contextEffectiveMax === 'number' ? data.contextEffectiveMax : null,
     contextEffectiveObservedAt: typeof data.contextEffectiveObservedAt === 'number'

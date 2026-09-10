@@ -143,6 +143,7 @@ function buildSessionResumeMeta(session, overrides = {}) {
     branchAutoTitlePending: !!session.branchAutoTitlePending,
     contextPct: typeof session.contextPct === 'number' ? session.contextPct : null,
     contextUsed: typeof session.contextUsed === 'number' ? session.contextUsed : null,
+    sessionUsage: session.sessionUsage || null,
     contextMax: typeof session.contextMax === 'number' ? session.contextMax : null,
     contextEffectiveMax: typeof session.contextEffectiveMax === 'number' ? session.contextEffectiveMax : null,
     contextEffectiveObservedAt: typeof session.contextEffectiveObservedAt === 'number'

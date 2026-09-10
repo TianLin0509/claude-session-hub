@@ -109,7 +109,7 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
-function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null } = {}) {
+function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
   for (const s of [...(items || [])].sort(compareSidebarPlacement)) {
@@ -120,7 +120,8 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const fresh = now - latestActivityTime(s, now) < 86400000;
     const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
     const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
-    const working = s._resumePending || (meeting ? meeting.running : sessionRuntimeIsActive(s, { now }));
+    const working = s._resumePending || (meeting ? meeting.running
+      : (s.meetingId || groupMemberIds.has(s.id)) ? isGroupChatMemberRunning(s, now) : sessionRuntimeIsActive(s, { now }));
     const unread = !selected && (!dormant || fresh) && (s._isMeeting ? s.unreadAnsweredSize > 0 : sessionHasCompletedUnread(s));
     states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
     if (s.pinned) pinned.push(s);
@@ -152,8 +153,24 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
 
 
 function createSessionListRenderer(options = {}) {
+  const { detailsHtml, usageText } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  let detailsEnabled = false;
+  try { detailsEnabled = storage.getItem('hubSessionDetails') === 'true'; } catch {}
+  const collapsedDetailsMeetings = new Set();
+  let hoveredMeetingId = null;
+  let hoverPoint = null;
+  const detailsButton = doc.getElementById?.('btn-session-details');
+  const syncDetailsButton = () => detailsButton?.setAttribute?.('aria-pressed', String(detailsEnabled));
+  syncDetailsButton();
+  detailsButton?.addEventListener('click', () => {
+    detailsEnabled = !detailsEnabled;
+    try { storage.setItem('hubSessionDetails', String(detailsEnabled)); }
+    catch (error) { console.warn('[sidebar] detail preference could not be saved:', error.message); }
+    syncDetailsButton();
+    renderSessionList();
+  });
   const sessionListEl = options.sessionListEl;
   const getSessions = typeof options.getSessions === 'function' ? options.getSessions : () => new Map();
   const getMeetings = typeof options.getMeetings === 'function' ? options.getMeetings : () => ({});
@@ -202,6 +219,12 @@ function _persistExpandedMeetings() {
   } catch {}
 }
 function toggleMeetingExpand(meetingId) {
+  if (detailsEnabled && getMeetings()[meetingId]?.groupChat) {
+    if (collapsedDetailsMeetings.has(meetingId)) collapsedDetailsMeetings.delete(meetingId);
+    else collapsedDetailsMeetings.add(meetingId);
+    renderSessionList();
+    return;
+  }
   if (_expandedMeetings.has(meetingId)) _expandedMeetings.delete(meetingId);
   else _expandedMeetings.add(meetingId);
   _persistExpandedMeetings();
@@ -346,6 +369,8 @@ function _sessionWarningText(session) {
 
   function navigationIntentFromTarget(target) {
     if (!target || typeof target.closest !== 'function') return null;
+    const usage = target.closest('[data-usage-id]');
+    if (usage) return { type: 'usage', id: usage.getAttribute('data-usage-id') };
     const jump = target.closest('[data-sub-id]');
     if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id') };
     const toggle = target.closest('[data-action="toggle-expand"]');
@@ -363,6 +388,19 @@ function _sessionWarningText(session) {
   function activateNavigationIntent(intent) {
     if (!intent || !intent.id) return false;
     try {
+      if (intent.type === 'usage') {
+        const session = getSessions().get(intent.id);
+        if (!session) return false;
+        let dialog = doc.getElementById('session-usage-dialog');
+        if (!dialog) {
+          dialog = doc.createElement('dialog');
+          dialog.id = 'session-usage-dialog';
+          doc.body.appendChild(dialog);
+        }
+        dialog.innerHTML = `<form method="dialog"><button aria-label="关闭用量明细">关闭</button></form><h3>${escapeHtml(session.title || '会话用量')}</h3><pre>${escapeHtml(usageText(session))}</pre>`;
+        if (!dialog.open) dialog.showModal();
+        return true;
+      }
       if (intent.type === 'toggle-meeting') {
         toggleMeetingExpand(intent.id);
         return true;
@@ -454,7 +492,8 @@ sessionListEl.addEventListener('keydown', event => {
   const row = event.target?.closest?.('.session-item');
   if (!row) return;
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    const rows = [...sessionListEl.querySelectorAll('.session-item')];
+    const rows = [...sessionListEl.querySelectorAll('.session-item')]
+      .filter(el => !el.getClientRects || el.getClientRects().length > 0);
     const index = rows.indexOf(row);
     const next = rows[Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))];
     event.preventDefault(); event.stopPropagation(); next?.focus();
@@ -471,8 +510,9 @@ sessionListEl.addEventListener('keydown', event => {
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
   function collectSidebarItems(sessionMap = getSessions()) {
+    const memberIds = new Set(Object.values(getMeetings()).flatMap(m => m.subSessions || []));
     const regularSessions = Array.from(sessionMap.values())
-    .filter(s => !s.meetingId && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
+    .filter(s => !s.meetingId && !memberIds.has(s.id) && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
 
   const meetingItems = Object.values(getMeetings()).map(m => ({
     id: m.id,
@@ -582,14 +622,23 @@ sessionListEl.addEventListener('keydown', event => {
   if (!fragment) sessionListEl.innerHTML = '';
 
   // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
-  function appendItem(s) {
+  const detailSessionIds = new Set();
+  function appendItem(s, child = false, target = renderTarget) {
     if (s._isMeeting) {
       const isActive = getActiveMeetingId() === s.id;
       const isGroupChat = !!s._meeting.groupChat;
-      // 2026-07-20 道雪：群聊不再提供展开按钮（行2 mini-jump 已覆盖子会话跳转）；
-      //   老式 🎯 meeting 保留展开。canExpand 同时决定箭头渲染与子行挂载。
-      const canExpand = !isGroupChat;
-      const isExpanded = canExpand && _expandedMeetings.has(s.id);
+      // Compact groups reveal members on hover/focus; detail mode has an
+      // explicit collapse arrow. Legacy meeting expansion stays unchanged.
+      const canExpand = !isGroupChat || detailsEnabled;
+      const isExpanded = isGroupChat && detailsEnabled
+        ? !collapsedDetailsMeetings.has(s.id) : canExpand && _expandedMeetings.has(s.id);
+      const groupContainer = isGroupChat ? doc.createElement('div') : null;
+      if (groupContainer) {
+        groupContainer.className = 'sidebar-group' + (detailsEnabled ? ' detailed-group' : ' compact-group')
+          + (hoveredMeetingId === s.id ? ' hover-open' : '');
+        groupContainer.dataset.sidebarGroup = s.id;
+        target.appendChild(groupContainer);
+      }
       const div = doc.createElement('div');
       // 2026-07-19 道雪 · 方案C：群聊两行卡（行1 状态+标题+时间，行2 成员 mini-jump），
       //   不再渲染 badge pill（等你/休眠进 sl-state，已选数进行2 末尾）。
@@ -602,6 +651,7 @@ sessionListEl.addEventListener('keydown', event => {
       const anySubFailed = meetingRuntime.failed;
       const anySubDisconnected = meetingRuntime.disconnected;
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
+        + (detailsEnabled ? ' has-session-details' : '')
         + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
         + (hasUnread ? ' need-unread' : '');
@@ -623,7 +673,7 @@ sessionListEl.addEventListener('keydown', event => {
         if (!warning) return '';
         return `${(sub && (sub.title || sub.kind)) || `AI ${idx + 1}`}：${warning}`;
       }).filter(Boolean).join('；');
-      const miniJumpsHtml = miniSids.map((subId, idx) => {
+      const miniJumpsHtml = isGroupChat ? '' : miniSids.map((subId, idx) => {
         const sub = sessionMap.get(subId);
         const label = isGroupChat
           ? ((sub && (sub.title || sub.kind)) || `AI ${idx + 1}`)
@@ -669,11 +719,11 @@ sessionListEl.addEventListener('keydown', event => {
       div.innerHTML = [
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
-        _ringHtml(null, dotCls),
+        isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
         '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, '已答 ' + s.unreadAnsweredSize + '/' + memberTotal].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
         '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
         '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span></div>',
-        '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
+        isGroupChat ? '' : '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
         isGroupChat ? '<span class="sl-group-progress" title="已答 ' + s.unreadAnsweredSize + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
       ].join('');
       div.addEventListener('contextmenu', (e) => {
@@ -681,13 +731,27 @@ sessionListEl.addEventListener('keydown', event => {
         const member = e.target.closest('.mini-jump-btn[data-sub-id]');
         openContextMenu(member ? member.dataset.subId : s.id, e.clientX, e.clientY);
       });
-      renderTarget.appendChild(div);
+      (groupContainer || target).appendChild(div);
+
+      if (isGroupChat) {
+        if (!detailsEnabled || isExpanded) {
+          const children = doc.createElement('div');
+          children.className = 'sidebar-group-children';
+          groupContainer.appendChild(children);
+          for (const id of s._meeting.subSessions || []) {
+            const member = sessionMap.get(id);
+            if (member) appendItem(member, true, children);
+          }
+        }
+        return;
+      }
 
       // Render child sub-sessions if expanded (clicking goes straight to shell view).
       if (isExpanded) {
         for (const subId of s._meeting.subSessions) {
           const sub = sessionMap.get(subId);
           if (!sub) continue;
+          if (detailsEnabled) { appendItem(sub, true, target); continue; }
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
           const childRuntime = getSessionRuntimeTruth(sub);
@@ -721,7 +785,7 @@ sessionListEl.addEventListener('keydown', event => {
           // shows terminal-panel, and mounts the cached xterm container.
           // This is exactly the "single-viewer strict switch" the spec calls for.
           childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
-          renderTarget.appendChild(childDiv);
+          target.appendChild(childDiv);
         }
       }
       return;
@@ -746,7 +810,9 @@ sessionListEl.addEventListener('keydown', event => {
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
     const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
     // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
-    const dotCls = s._resumePending ? 'start' : sections.states.get(s.id) || 'idle';
+    const dotCls = s._resumePending ? 'start' : (child
+      ? partitionSidebarSessions([s], { sessionMap, activeSessionId: getActiveSessionId(), groupMemberIds: new Set([s.id]) }).states.get(s.id)
+      : sections.states.get(s.id)) || 'idle';
     const showRunning = dotCls === 'run' || dotCls === 'start';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
@@ -776,8 +842,15 @@ sessionListEl.addEventListener('keydown', event => {
       + '<span class="sl-title" title="' + escapeHtml(titleTip) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
       + _sessionKindHtml(s.kind, modelTxt)
       + '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>';
+    if (child) div.className += ' child';
+    if (detailsEnabled) {
+      div.className += ' has-details';
+      div.innerHTML = '<div class="sl-line1">' + div.innerHTML + '</div>'
+        + detailsHtml(s, { escapeHtml, modelShort });
+      detailSessionIds.add(s.id);
+    }
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
-    renderTarget.appendChild(div);
+    target.appendChild(div);
   }
 
   function appendSecHeader(label, items, cls, action, onAction) {
@@ -814,8 +887,19 @@ sessionListEl.addEventListener('keydown', event => {
   renderSidebarStrip(sessionMap);
 
   if (afterRender) afterRender();
+  if (detailsEnabled && options.requestSessionUsage) options.requestSessionUsage([...detailSessionIds]);
 
   sessionListEl.scrollTop = savedScrollTop;
+  // Whole-list updates must preserve a stationary pointer's expanded group.
+  // If sorting moved that group away, release it at its new geometry.
+  if (hoverPoint && hoveredMeetingId && sessionListEl.querySelectorAll) {
+    const group = [...sessionListEl.querySelectorAll('.sidebar-group')].find(el => el.dataset.sidebarGroup === hoveredMeetingId);
+    const rect = group?.getBoundingClientRect();
+    if (!rect || hoverPoint.x < rect.left || hoverPoint.x > rect.right || hoverPoint.y < rect.top || hoverPoint.y > rect.bottom) {
+      hoveredMeetingId = null;
+      group?.classList.remove('hover-open');
+    }
+  }
   if (hadListFocus && focusId) {
     const replacement = [...sessionListEl.querySelectorAll('.session-item')].find(row => (row.dataset.sessionId || row.dataset.meetingId) === focusId);
     replacement?.focus({ preventScroll: true });
@@ -829,11 +913,22 @@ sessionListEl.addEventListener('keydown', event => {
 
 // --- Session card hover light-tracking + click ripple (event delegation) ---
 sessionListEl.addEventListener('mousemove', (e) => {
+  const group = e.target.closest('.sidebar-group');
+  hoveredMeetingId = group?.dataset.sidebarGroup || null;
+  hoverPoint = { x: e.clientX, y: e.clientY };
+  for (const wrapper of sessionListEl.querySelectorAll('.sidebar-group')) {
+    wrapper.classList.toggle('hover-open', wrapper.dataset.sidebarGroup === hoveredMeetingId);
+  }
   const item = e.target.closest('.session-item');
   if (!item) return;
   const rect = item.getBoundingClientRect();
   item.style.setProperty('--mx', ((e.clientX - rect.left) / rect.width * 100) + '%');
   item.style.setProperty('--my', ((e.clientY - rect.top) / rect.height * 100) + '%');
+});
+sessionListEl.addEventListener('mouseleave', () => {
+  hoveredMeetingId = null;
+  hoverPoint = null;
+  for (const wrapper of sessionListEl.querySelectorAll('.sidebar-group')) wrapper.classList.remove('hover-open');
 });
 sessionListEl.addEventListener('mousedown', (e) => {
   const item = e.target.closest('.session-item');
