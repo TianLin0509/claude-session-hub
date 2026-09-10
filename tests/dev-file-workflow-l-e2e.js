@@ -73,16 +73,27 @@ async function run() {
         }
       }
     }
+    const readyDeadline = Date.now() + 180000;
+    while (Date.now() < readyDeadline) {
+      await handleFixtureStartup();
+      if ((await Promise.all(m.subSessions.map(sid=>invoke('cli-ready-status',sid)))).every(Boolean)) break;
+      await sleep(1000);
+    }
+    assert((await Promise.all(m.subSessions.map(sid=>invoke('cli-ready-status',sid)))).every(Boolean),'both isolated CLI sessions must finish startup');
+    const nativeSessions = await cdp.eval(`[...sessions.values()].filter(s=>${JSON.stringify(m.subSessions)}.includes(s.id)).map(s=>({id:s.id,kind:s.kind,model:s.model,effort:s.effort,runtimeBackend:s.runtimeBackend,nativeRuntime:s.nativeRuntime}))`);
+    fs.writeFileSync(path.join(ROOT,'native-startup.json'),JSON.stringify(nativeSessions,null,2));
+    if (alternate) assert(nativeSessions.length===2 && nativeSessions.every(s=>s.runtimeBackend==='codex-app-server' && s.nativeRuntime?.connection==='connected'),
+      'double Codex test must actually use two connected App Server sessions');
     let userInput;
     if (RESUME) userInput = '继续，沿用已交付的开题与实现文件完成独立合并验证。补充明确：origin 是本测试目录内的本地 bare fixture，允许按项目既有合并脚本向它同步；不需要禁止 file 传输，禁止连接其他远端。';
     else {
-      const readyDeadline = Date.now() + 180000;
-      while (Date.now() < readyDeadline && !await invoke('cli-ready-status', m.subSessions[0])) { await handleFixtureStartup(); await sleep(1000); }
       const preset = await invoke('dev-file:kickoff-preset', { meetingId });
       await invoke('groupchat:set-participants', { meetingId, participants: [0] });
       const task = '为 greet(name, greeting) 增加可选 greeting 参数；省略时保持 hello，显式空字符串应保留为空。补充测试并实际验证，由独立合并位亲验后合到此临时 fixture 的 master。本次只操作测试临时目录；项目 origin 指向本目录下的本地 bare fixture，明确允许按合并脚本向它同步，禁止连接其他远端。';
-      userInput = task + '\n\n' + preset.prompt;
+      userInput = task + (process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1'
+        ? '\n本次同时验收群聊消息留存：每个阶段用普通中文发至少三条简短进展，不加 PLAN/UPDATE 等标签，至少一条包含真实验证命令或路径。交付文件后用最后一条回答说明本阶段交付情况。' : '') + '\n\n' + preset.prompt;
     }
+    if(RESUME && process.env.HUB_FILEFLOW_ASSERT_HISTORY==='1') userInput+='\n继续验收消息留存：本阶段用普通中文发至少三条不同进展，不加固定标签；交付文件后给出最终答复。';
     await cdp.eval(`void require('electron').ipcRenderer.invoke('groupchat:turn', ${JSON.stringify({ meetingId, userInput })})`);
     let previous = '', done = false;
     const deadline = Date.now() + Number(process.env.HUB_FILEFLOW_L_BUDGET_MS || 900000);
@@ -96,9 +107,32 @@ async function run() {
       if (state.error || state.dispatchError) throw new Error(state.error || state.dispatchError);
       await sleep(2000);
     }
-    const gc = await invoke('groupchat:get-state', { meetingId });
+    let gc = await invoke('groupchat:get-state', { meetingId });
+    if(done && process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1') {
+      const endDeadline=Date.now()+90000;
+      while(Date.now()<endDeadline && Object.values(gc.devChatHistory?.receipts || {}).some(r=>!r.sourceCompletedAt)) {
+        await sleep(500);gc=await invoke('groupchat:get-state',{meetingId});
+      }
+    }
     fs.writeFileSync(path.join(ROOT, 'groupchat.json'), JSON.stringify(gc, null, 2));
+    fs.writeFileSync(path.join(ROOT,'native-final.json'),JSON.stringify(await cdp.eval(`[...sessions.values()].filter(s=>${JSON.stringify(m.subSessions)}.includes(s.id)).map(s=>({id:s.id,runtimeBackend:s.runtimeBackend,nativeRuntime:s.nativeRuntime}))`),null,2));
     assert(done, 'real Agents did not finish the file chain within budget');
+    if(process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1') {
+      const sourceMessages=gc.messages.filter(m=>m.sourceMessage);
+      for(const receipt of Object.values(gc.devChatHistory?.receipts || {})) {
+        if(alternate) {
+          const attempt=gc.attempts[receipt.attemptId];
+          assert(attempt.providerThreadId && attempt.providerTurnId,`turn ${receipt.turnNum} must retain native thread/turn submission binding`);
+        }
+        const owned=sourceMessages.filter(m=>m.attemptId===receipt.attemptId);
+        assert(owned.filter(m=>m.phase==='commentary').length>=3,`turn ${receipt.turnNum} must preserve at least three natural progress messages`);
+        assert(owned.some(m=>m.phase==='final') && receipt.sourceCompletedAt,`turn ${receipt.turnNum} must preserve its own final after file delivery`);
+      }
+      assert(sourceMessages.length>=4,'natural source messages and the final must be persisted');
+      assert(!gc.messages.some(m=>m.role==='assistant' && m.status==='superseded'),'automatic handoffs must not supersede answers');
+      assert.equal(await cdp.eval("document.querySelectorAll('[data-gc-retry-answer]').length"),0,'development cards must not offer retry');
+      console.log('PASS real source history: '+sourceMessages.length+' cards, no superseded answers or retry buttons');
+    }
     assert.notEqual(git('rev-parse', 'master').trim(), baseline);
     const output = execFileSync(process.execPath, ['test.js'], { cwd: REPO, encoding: 'utf8' });
     assert(output.includes('OK'));
@@ -106,6 +140,19 @@ async function run() {
     const shot = await cdp.send('Page.captureScreenshot', {format:'png'}); fs.writeFileSync(path.join(ROOT, 'completed-ui.png'), Buffer.from(shot.data, 'base64'));
     console.log('PASS real kickoff -> implementation -> independent merge; actual master behavior verified');
     fs.writeFileSync(path.join(ROOT, 'result.json'), JSON.stringify({ pass: true, baseline, head: git('rev-parse', 'HEAD').trim(), output, root: ROOT }, null, 2));
+  } catch(error) {
+    try { if(cdp && meetingId) {
+      const state=await cdp.eval(`require('electron').ipcRenderer.invoke('groupchat:get-state',{meetingId:${JSON.stringify(meetingId)}})`);
+      fs.writeFileSync(path.join(ROOT,'failed-groupchat.json'),JSON.stringify(state,null,2));
+      const meeting=await cdp.eval(`require('electron').ipcRenderer.invoke('get-meetings').then(ms=>ms.find(m=>m.id===${JSON.stringify(meetingId)}))`);
+      for(const sid of meeting.subSessions) {
+        const buffer=await cdp.eval(`require('electron').ipcRenderer.invoke('debug:get-session-buffer',${JSON.stringify(sid)})`);
+        fs.writeFileSync(path.join(ROOT,`failed-buffer-${sid}.txt`),String(buffer || ''));
+      }
+      const shot=await cdp.send('Page.captureScreenshot',{format:'png'});
+      fs.writeFileSync(path.join(ROOT,'failed-ui.png'),Buffer.from(shot.data,'base64'));
+    } } catch(diagnosticError) { console.error('failed to save CLI failure evidence:',diagnosticError.message); }
+    throw error;
   } finally {
     try {
       if (cdp && meetingId) {

@@ -1,6 +1,7 @@
 'use strict';
 
 const { createSidebarAccountUsage } = require('./sidebar-account-usage.js');
+const { mergeCodexEntry, sameScope } = require('../main/usage/usage-cache-merge.js');
 
 const LOW_BALANCE_THRESHOLD = 20;
 const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
@@ -134,8 +135,7 @@ function createAccountUsageController({
       agentUsageLastSeen.gemini = totals.gemini.observedAt || totals.gemini._ts || nowFn();
     }
     if (Object.prototype.hasOwnProperty.call(totals || {}, 'codex')) {
-      agentUsage.codex = totals.codex;
-      agentUsageLastSeen.codex = (totals.codex && (totals.codex.observedAt || totals.codex._ts)) || nowFn();
+      recordCodexUsage(totals.codex);
     }
     if (Object.prototype.hasOwnProperty.call(totals || {}, 'kimi')) {
       agentUsage.kimi = totals.kimi;
@@ -148,6 +148,14 @@ function createAccountUsageController({
     render();
   }
 
+  function recordCodexUsage(value) {
+    // Explicit clears/account switches cannot inherit another account's quota.
+    const merged = value && sameScope(agentUsage.codex, value)
+      ? mergeCodexEntry(agentUsage.codex, value, nowFn()) : value;
+    agentUsage.codex = merged;
+    agentUsageLastSeen.codex = merged && (merged.observedAt || merged._ts || merged.ts) || 0;
+  }
+
   function applyUsageCache(cached) {
     if (!cached) cached = {};
     if (cached.claude && (cached.claude.usage5h || cached.claude.usage7d)) {
@@ -157,8 +165,7 @@ function createAccountUsageController({
     }
     if (cached.gemini) agentUsage.gemini = cached.gemini;
     if (cached.gemini) agentUsageLastSeen.gemini = cached.gemini.observedAt || cached.gemini.ts || agentUsageLastSeen.gemini;
-    if (cached.codex) agentUsage.codex = cached.codex;
-    if (cached.codex) agentUsageLastSeen.codex = cached.codex.observedAt || cached.codex.ts || agentUsageLastSeen.codex;
+    if (Object.prototype.hasOwnProperty.call(cached, 'codex')) recordCodexUsage(cached.codex);
     if (cached.kimi) agentUsage.kimi = cached.kimi;
     if (cached.kimi) agentUsageLastSeen.kimi = cached.kimi.observedAt || cached.kimi.ts || agentUsageLastSeen.kimi;
     if (cached.deepseek) agentUsage.deepseek = cached.deepseek;
@@ -302,7 +309,7 @@ function createAccountUsageController({
     const sidebar = root.className === 'sidebar-account-usage' ? createSidebarAccountUsage({
       document, root, refresh: refreshProviderNow, formatAge, formatBalance, freshness: usageFreshnessClass,
     }) : null;
-    const button = makeElement('button', 'rail-usage-button', sidebar ? sidebar.footer : root);
+    const button = makeElement('button', 'rail-usage-button', sidebar ? sidebar.detailsHost : root);
     button.type = 'button';
     button.setAttribute('aria-haspopup', 'dialog');
     button.setAttribute('aria-controls', 'rail-usage-popover');
@@ -310,7 +317,7 @@ function createAccountUsageController({
     const ring = makeElement('span', 'rail-usage-ring', button);
     const value = makeElement('span', 'rail-usage-value', ring);
     ring.setAttribute('aria-hidden', 'true');
-    if (sidebar) makeElement('span', 'sidebar-quota-details', button, '详情');
+    if (sidebar) makeElement('span', 'sidebar-quota-details', button, '⋯');
     const popover = makeElement('section', 'usage-popover', root);
     popover.id = 'rail-usage-popover';
     popover.hidden = true;

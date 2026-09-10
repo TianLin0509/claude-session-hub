@@ -117,17 +117,21 @@ class CodexAppServerClient extends EventEmitter {
       this.fail(new Error('Codex 单条协议消息超过 32 MiB，连接待核对')); this.close();
     }
   }
-  send(message) {
+  send(message, {beforeWrite} = {}) {
     if (this.closed || !this.proc) return Promise.reject(new Error('Codex 连接不可用'));
     const bytes = JSON.stringify(message) + '\n';
     const next = this.writeTail.then(() => new Promise((resolve, reject) => {
       if (this.closed) { reject(new Error('Codex 连接已断开')); return; }
+      // A session can close while this shared transport is draining another
+      // write. Reject that unsent intention without failing the other threads.
+      try { beforeWrite?.(); }
+      catch (error) { error.notSent = true; reject(error); return; }
       this.proc.stdin.write(bytes, 'utf8', error => error ? reject(error) : resolve());
     }));
-    this.writeTail = next.catch(error => { this.fail(error); });
+    this.writeTail = next.catch(error => { if (!error.notSent) this.fail(error); });
     return next;
   }
-  request(method, params, timeoutMs = this.options.timeoutMs || 60000) {
+  request(method, params, timeoutMs = this.options.timeoutMs || 60000, writeOptions) {
     const id = this.nextId++;
     return new Promise((resolve,reject) => {
       if (this.closed) { reject(new Error('Codex 连接不可用')); return; }
@@ -139,11 +143,11 @@ class CodexAppServerClient extends EventEmitter {
         setImmediate(()=>this.rejectOrphans());
       }, timeoutMs);
       this.pending.set(id,{resolve,reject,timer,method});
-      this.send({id,method,params}).catch(error => {
+      this.send({id,method,params},writeOptions).catch(error => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id); clearTimeout(timer);
-        error.uncertain = true;
+        error.uncertain = !error.notSent;
         reject(error);
       });
     });

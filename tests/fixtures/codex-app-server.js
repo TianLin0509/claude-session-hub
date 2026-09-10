@@ -32,6 +32,12 @@ rl.on('line',line=>{
   const thread=threads.get(p.threadId);
   if (!msg.method) {
     const a=awaiting.get(msg.id);
+    if(a && a.resolveError){
+      awaiting.delete(msg.id);a.thread.status={type:'systemError'};status(a.thread);save();
+      event('serverRequest/resolved',{threadId:a.thread.id,requestId:msg.id});
+      setTimeout(()=>event('serverRequest/resolved',{threadId:a.thread.id,requestId:msg.id}),100);
+      return;
+    }
     if(a){ awaiting.delete(msg.id);event('serverRequest/resolved',{threadId:a.thread.id,requestId:msg.id});
       const rest=[...awaiting.values()].some(r=>r.turn===a.turn);
       a.thread.status={type:'active',activeFlags:rest?['waitingOnUserInput']:[]};status(a.thread);if(!rest)finish(a.thread,a.turn); }
@@ -69,11 +75,11 @@ rl.on('line',line=>{
         finish(thread,turn,'completed','');
         setTimeout(()=>answer(msg.id,reply),30);
       } else if(mode==='fixture:no-ack') { finish(thread,turn);
-      } else if(['fixture:wait','fixture:multi','fixture:optional','fixture:approval','fixture:file-approval','fixture:permissions','fixture:mcp','fixture:orphan'].includes(mode)) {
+      } else if(['fixture:resolve-error','fixture:wait','fixture:multi','fixture:optional','fixture:approval','fixture:file-approval','fixture:permissions','fixture:mcp','fixture:orphan'].includes(mode)) {
         answer(msg.id,{turn});
         for(let index=0;index<(mode==='fixture:multi'?2:1);index++){
         const id=nextRequest++;
-        awaiting.set(id,{thread,turn});
+        awaiting.set(id,{thread,turn,resolveError:mode==='fixture:resolve-error'});
         thread.status={type:'active',activeFlags:mode==='fixture:optional'?[]:['waitingOnUserInput']};status(thread);
         const methods={'fixture:approval':'item/commandExecution/requestApproval','fixture:file-approval':'item/fileChange/requestApproval','fixture:permissions':'item/permissions/requestApproval','fixture:mcp':'mcpServer/elicitation/request','fixture:orphan':'unknown/test'};
         const method=methods[mode] || 'item/tool/requestUserInput';

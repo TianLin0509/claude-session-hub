@@ -43,6 +43,21 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
         return { ok: false, reason: 'meeting_state_unavailable', detail: '群聊状态不可用（meeting 不存在或状态文件读取失败），无法定位轮次写回。' };
       }
     }
+    if (orch && require('../../core/dev-file-workflow').enabled(meeting)) {
+      const n=requestedTurn || orch.state.currentTurn;
+      const receipts=Object.values(orch.state.devChatHistory?.receipts || {});
+      const receipt=receipts.find(r=>r.sid===sid && r.turnNum===n);
+      const sourcePath=receipt?.sourcePath || session?.transcriptPath
+        || (typeof transcriptTap.getCodexRolloutPath==='function' && transcriptTap.getCodexRolloutPath(sid));
+      if(!sourcePath)return {ok:false,reason:'source_unavailable',detail:'本轮原始记录尚未绑定，无法可靠重新收录；未重新发送任务。'};
+      try {
+        await require('../../core/dev-chat-history').recollectHistory({orch,sid,kind:receipt?.kind || runtimeKind,sourcePath,speaker:session?.title || 'Agent'});
+        const owned=orch.state.messages.filter(m=>m.sourceMessage && m.sid===sid && Number(m.turnNum)===n);
+        if(!owned.length)return {ok:false,reason:'source_identity_unavailable',detail:'没有找到与本轮提问匹配的原始发言；未使用最新回答填充旧轮。'};
+        sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision});
+        return {ok:true,text:owned.map(m=>m.content).join('\n\n'),source:'transcript',mode:'dev_history_recollect'};
+      } catch(error) { return {ok:false,reason:'extract_failed',detail:error.message}; }
+    }
     const readCurrentTurn = () => (orch && Number.isFinite(orch.state.currentTurn) && orch.state.currentTurn > 0
       ? orch.state.currentTurn : null);
     let effectiveSince = Math.max(0, Number(sincePromptTs) || 0);
@@ -295,6 +310,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     if (typeof dispatchGroupChatTurn !== 'function') return { ok: false, reason: 'retry_unavailable' };
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    if (meeting.scene === 'dev') return {ok:false,reason:'dev_workflow_uses_continue',detail:'开发任务请发送“继续”按当前阶段接续，不能重发历史阶段。'};
     if (isWorkflowRunning(meetingId)) return { ok: false, reason: 'workflow_running' };
     const activeWatcher = getActiveWatchers().get(sid);
     if (activeWatcher && !activeWatcher.isSettled()) return { ok: false, reason: 'participant_still_running' };

@@ -104,7 +104,8 @@ async function main() {
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');
-  assert.match(nodes.find(n => n.className === 'sidebar-quota-feedback').textContent, /offline/);
+  assert.strictEqual(nodes.some(n => n.className === 'sidebar-quota-feedback' || n.className === 'sidebar-quota-footer'), false);
+  assert.match(buttons[2].title, /offline/, 'refresh errors remain available on the provider control');
   // Exercise the actual main service body: account changes must be rejected
   // before the shared cache and background broadcaster can see the old result.
   const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'main.js'), 'utf8');

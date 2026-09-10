@@ -135,6 +135,7 @@ test('registers expected meeting channels', () => {
     'switch-scene',
     'get-meetings',
     'remove-meeting-sub',
+    'suspend-meeting',
     'close-meeting',
   ]) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
@@ -152,6 +153,32 @@ test('meeting rename fields preserve old title semantics', () => {
     title: 'AI',
     autoTitleGenerated: true,
   });
+});
+
+test('manual room sleep targets every member, preserves membership, and exposes partial failure', () => {
+  const ipc = createFakeIpc();
+  const meetingManager = createFakeMeetingManager();
+  const calls = [], emitted = [];
+  let blocked = true;
+  registerMeetingIpc(ipc, { meetingManager, sendToRenderer: (...args) => emitted.push(args),
+    sessionManager: { suspendSession(id, opts) {
+      calls.push([id, opts.reason]);
+      return blocked && id === 's2' ? { ok: false, error: 'protected-session', message: '受保护成员' } : { ok: true };
+    } },
+  });
+  const sleep = ipc.handlers.get('suspend-meeting');
+  assert.strictEqual(sleep(null, '../bad').ok, false);
+  const partial = sleep(null, 'meet-1');
+  assert.strictEqual(partial.meetingDormant, false);
+  assert.strictEqual(partial.blocked[0].message, '受保护成员');
+  assert.deepStrictEqual(calls.map(c => c[0]), meetingManager.meeting.subSessions);
+  assert.ok(calls.every(c => c[1] === 'user-suspend-meeting'));
+  const before = [...meetingManager.meeting.subSessions];
+  blocked = false;
+  const complete = sleep(null, 'meet-1');
+  assert.strictEqual(complete.meetingDormant, true);
+  assert.deepStrictEqual(meetingManager.meeting.subSessions, before);
+  assert.strictEqual(emitted.at(-1)[0], 'meeting-updated');
 });
 
 test('update-meeting-sync emits update and returns boolean result', () => {

@@ -4,6 +4,28 @@
 // T2（2026-05-04 道雪）：底部 module.exports 暴露 _isPartialUnchanged 给 Node unit test，
 //   require 时 typeof document === 'undefined' → IIFE 体内大量 DOM/IPC 引用会爆，故 IIFE 只在 renderer 浏览器环境跑。
 
+// A never-opened member terminal can retain the previous inline picker above
+// the current one. The real Codex 0.153.4 frame contained both highlighted rows:
+// model 1 and reasoning 3. Only the latest panel may supply a cursor.
+function groupInputTuningFrame(screen) {
+  // Ultra uses » for the same native input. Normalize only its leading glyph
+  // for the shared picker; retain draft text so its non-empty input guard holds.
+  const lines = String(screen || '').split('\n')
+    .map(line => line.replace(/^(\s*)»(?=\s|$)/, '$1›'));
+  let panel = -1, prompt = -1, changed = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^(?:Select Model and Effort|Select Reasoning Level\b|Advanced Reasoning\b)/i.test(line)) panel = i;
+    if (/^›(?:\s*$|\s+(?!\d+\.).*)/.test(line)) prompt = i;
+    if (/^[•·]?\s*Model changed to\b/i.test(line)) changed = i;
+  }
+  if (panel < 0) return lines.join('\n');
+  // An input prompt below a panel means the panel has closed. Retain the real
+  // confirmation when present, but never offer the old menu to the next switch.
+  const start = prompt > panel ? (changed > panel ? changed : prompt) : panel;
+  return lines.slice(start).join('\n');
+}
+
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
@@ -1316,7 +1338,7 @@ if (typeof document !== 'undefined') (function () {
   //   气泡/卡片不得继续显示「思考中」「正在发言」。'interrupted' 是用户点「停止本轮」
   //   后的终态（可能带已生成的半截文本）。集中成一个判定，避免各处硬编码列表漏掉新状态
   //   ——历史上「永久思考中」卡死正是漏判造成的。
-  const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted']);
+  const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted', 'handed_off']);
   function _isGcSettledStatus(status) {
     return _GC_SETTLED_NO_ANSWER.has(status);
   }
@@ -2295,10 +2317,17 @@ if (typeof document !== 'undefined') (function () {
   // 2026-07-12 道雪：watcher settle 的失败原因 → 用户能看懂的中文标签。
   //   原因来源：turn-completion-watcher 的 markErrored/markProcessExit（经
   //   orchestrator statusReason 持久化 / partial-update reason 实时透传）。
-  function _gcFailReasonLabel(reason) {
+  function _gcFailReasonLabel(reason, dev = false) {
     const failure = reason && typeof reason === 'object' ? reason : null;
     const r = String((failure && failure.code) || reason || '').trim();
     if (!r) return '';
+    if (dev) {
+      const label = { quota_exceeded: '额度已用尽', rate_limited: '请求触发限流',
+        network_interrupted: '网络连接中断', provider_unavailable: '服务暂时不可用',
+        context_limit: '上下文过长', runtime_exited: 'Agent 已退出',
+        response_timeout: '等待回答超时', provider_error: 'Agent 本轮异常结束' }[r];
+      if (label) return `${label}；已有发言保留，处理后发送“继续”接续当前阶段`;
+    }
     if (r === 'quota_exceeded') return '额度已用尽；其他成员回答已保留，额度恢复或切换账号后可只重试本家';
     if (r === 'rate_limited') return '请求触发限流；请等待后只重试本家，Hub 不会自动重复发送';
     if (r === 'network_interrupted') return '网络连接中断；已保留现有输出，网络恢复后可只重试本家';
@@ -2367,6 +2396,7 @@ if (typeof document !== 'undefined') (function () {
       : status === 'accepted' ? '已收到 · 等待执行'
       : status === 'waiting' ? '等待你的回复'
       : isPending ? '正在发言'
+      : status === 'handed_off' ? '文件已交接'
       : status === 'superseded' ? '被新提问覆盖'
       : status === 'interrupted' ? '已被你停止'
       : status === 'absent' ? '已跳过'
@@ -2377,7 +2407,7 @@ if (typeof document !== 'undefined') (function () {
     //   对已 completed/manual_extracted 的回答无意义且误导用户以为"没同步成功"，故仅非成功态渲染。
     // 2026-07-12 收紧：成功态但内容为空（如 PTY 干净退出兜底 settle）仍要给同步入口。
     const _syncSettled = (status === 'completed' || status === 'manual_extracted') && hasContent;
-    const syncAction = (!isUser && message.sid && !message.committeeAct && !_syncSettled)
+    const syncAction = (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !_syncSettled)
       ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
       : '';
     // 2026-07-12 道雪：空内容的非成功态消息不再渲染成"空气泡+裸图标排"（截图血泪），
@@ -2399,9 +2429,10 @@ if (typeof document !== 'undefined') (function () {
             : '思考中...';
       body = `<span class="mr-gc-waiting">${escapeHtml(waitingText)}</span>`;
     } else if (!isUser && !hasContent) {
-      const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason);
+      const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason, meeting.scene === 'dev');
       const ph = status === 'errored'
         ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或点「原文」核对。`
+        : status === 'handed_off' ? '阶段文件已交付；本阶段的后续发言会继续收录。'
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
         : status === 'interrupted' ? '你已停止本轮，该 AI 未来得及输出内容。'
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
@@ -2439,13 +2470,13 @@ if (typeof document !== 'undefined') (function () {
     // 2026-06-28 道雪：每张 AI 气泡 hover 显示「重新提取」(↻) —— 本轮回答提取错/截断时，
     //   手动从该 AI 的 shell/transcript 重新同步。复用 data-gc-sync-answer 处理器
     //   (_handleGcManualSync)，传 turnNum 精确重抓该轮；pending/empty 态不显示（还没答完）。
-    const resyncAction = (!isUser && message.sid && !message.committeeAct && !isPending && !(opts.empty && !_isSettledStatus))
+    const resyncAction = (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !isPending && !(opts.empty && !_isSettledStatus))
       ? `<button type="button" class="mr-gc-resync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="提取错了？从该 AI 的 shell / transcript 重新同步本轮回答" aria-label="重新提取本轮回答">↻</button>`
       : '';
     const submitAgainAction = (!isUser && message.sid && sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn is-submit" data-gc-escape="resend-prompt" data-gc-sid="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="再次提交已进入 CLI 输入框的完整 prompt">再次发送</button>`
       : '';
-    const retryParticipantAction = (!isUser && message.sid && !message.committeeAct && !isPending && !sendStuck)
+    const retryParticipantAction = (meeting.scene !== 'dev' && !isUser && message.sid && !message.committeeAct && !isPending && !sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn${status === 'completed' || status === 'manual_extracted' ? '' : ' is-failure'}" data-gc-retry-answer="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="让该成员重新回答本轮问题">${status === 'completed' || status === 'manual_extracted' ? '重答' : '重试'}</button>`
       : '';
     // 派发卡片是流程自己发的，不给「作为新一轮重发/放回输入框」——那两个按钮的语义是
@@ -2539,7 +2570,14 @@ if (typeof document !== 'undefined') (function () {
     const rawCount = messages.length;
     const mode = state.currentMode || 'idle';
     const sideCollapsed = _getGroupSideCollapsed();
-    const renderMessages = messages.slice();
+    // The source collector may recover an old canonical placeholder's final
+    // answer after its progress cards. Render that source final once in order.
+    const sourceFinals = new Set(messages.filter(m => m.sourceMessage && m.phase === 'final')
+      .map(m => JSON.stringify([m.attemptId, m.content])));
+    const renderMessages = meeting.scene === 'dev'
+      ? messages.filter(m => m.sourceMessage || m.role !== 'assistant'
+        || !sourceFinals.has(JSON.stringify([m.attemptId, m.content])))
+      : messages.slice();
     // 本地那条 pending 提问什么时候可以撤掉：等服务端把**同一条**消息写进权威历史。
     //
     // 2026-09-07：这里原来的判据是「历史里存在轮号大于 pendingUser.afterTurn 的 user 消息」。
@@ -4901,9 +4939,163 @@ if (typeof document !== 'undefined') (function () {
     return row;
   }
 
-  function _ensureInputTools() {
+  let _inputModelUi = null;
+  let _inputModelSessionId = null;
+  let _taskFilesMeetingId = null;
+
+  function _getInputModelUi() {
+    if (!_inputModelUi) _inputModelUi = createModelUiController({
+      document, ipcRenderer, sessions, terminalPanelEl, escapeHtml,
+      getActiveSessionId: () => _inputModelSessionId,
+      refreshModelCatalog: (kind, session) => window.WorkspaceController.loadModelCatalog(kind, {
+        codexProfile: session && session.codexProfile,
+      }),
+      // A group member need not have an opened terminal tab. Read the same hydrated
+      // xterm buffer without opening a tab or resizing its PTY.
+      getTerminalScreenText: sessionId => {
+        const cached = terminalCache.get(sessionId);
+        if (!cached?._hydrated) return '';
+        const terminal = cached.terminal, buffer = terminal.buffer.active;
+        const lines = [];
+        for (let i = buffer.baseY; i < buffer.baseY + terminal.rows; i++) {
+          lines.push(buffer.getLine(i)?.translateToString(true) || '');
+        }
+        return groupInputTuningFrame(lines.join('\n'));
+      },
+      isSessionBusy: session => sessionRuntimeIsActive(session),
+      repaintActiveComposer: () => _updateInputTuning(meetingData[activeMeetingId]),
+    });
+    return _inputModelUi;
+  }
+
+  async function _openInputTuning(button, sessionId, kind) {
+    const meetingId = activeMeetingId;
+    button.disabled = true;
+    try {
+      const cached = getOrCreateTerminal(sessionId);
+      if (!cached.opened && !cached._hydrated) {
+        // Fast snapshots carry native geometry but no resize operations. An
+        // unopened xterm otherwise stays at 80x24 while the PTY paints 120x30,
+        // leaving an old empty prompt above a newly typed draft. Size only the
+        // local reader before the existing ordered hydrate; never resize PTY.
+        const snapshot = await ipcRenderer.invoke('get-session-buffer-snapshot', sessionId);
+        if (activeMeetingId !== meetingId || !button.isConnected) return;
+        if (!cached.opened && !cached._hydrated && !cached._hydrating) {
+          const cols = Number(snapshot?.baseCols || snapshot?.cols);
+          const rows = Number(snapshot?.baseRows || snapshot?.rows);
+          if (!Number.isInteger(cols) || cols < 2 || !Number.isInteger(rows) || rows < 1) {
+            throw new Error('无法确认成员终端尺寸，请先打开成员会话后重试');
+          }
+          cached.terminal.resize(cols, rows);
+        }
+      }
+      await hydrateTerminalFromSnapshot(sessionId, cached);
+      if (activeMeetingId !== meetingId || !button.isConnected) return;
+      if (!cached._hydrated) throw new Error('成员终端正在载入，请稍后重试');
+      _inputModelSessionId = sessionId;
+      modelUi.closeModelPicker();
+      const ui = _getInputModelUi();
+      if (kind === 'effort') {
+        const rail = buildComposerRailModel(sessions.get(sessionId), {
+          supportedEfforts: composerSupportedEfforts(sessions.get(sessionId)),
+        });
+        ui.showEffortPicker(button, sessionId, { efforts: rail.thinking.options });
+      } else await ui.showModelPicker(button, sessionId);
+    } catch (error) {
+      _showGcEscapeNotice('成员设置打开失败：' + error.message, 'error');
+    } finally { button.disabled = false; }
+  }
+
+  function _updateInputTuning(meeting) {
+    const rail = document.getElementById('mr-input-tuning');
+    if (!rail || !meeting?.groupChat || meeting.id !== activeMeetingId) return;
+    const members = rail.querySelector('.mr-input-tuning-members');
+    const slots = _getGcSlots(meeting).filter(Boolean);
+    const key = JSON.stringify([meeting.id, slots.map(slot => slot.sid)]);
+    if (members.dataset.key !== key) {
+      _inputModelUi?.closeModelPicker();
+      members.dataset.key = key;
+      members.replaceChildren();
+      for (const slot of slots) {
+        const pair = document.createElement('div');
+        pair.className = 'mr-input-member-tuning';
+        pair.dataset.sid = slot.sid;
+        pair.innerHTML = '<span class="mr-input-member-label"></span><button type="button" class="composer-chip composer-model"><span class="composer-model-logo"></span><span class="composer-chip-label"></span><span class="composer-chip-caret">▾</span></button><button type="button" class="composer-chip composer-thinking"><span aria-hidden="true">ϟ</span><span class="composer-chip-label"></span><span class="composer-chip-caret">▾</span></button>';
+        pair.querySelector('.composer-model').addEventListener('click', event => {
+          event.stopPropagation(); void _openInputTuning(event.currentTarget, slot.sid, 'model');
+        });
+        pair.querySelector('.composer-thinking').addEventListener('click', event => {
+          event.stopPropagation(); void _openInputTuning(event.currentTarget, slot.sid, 'effort');
+        });
+        members.appendChild(pair);
+      }
+    }
+    for (const pair of members.children) {
+      const session = sessions.get(pair.dataset.sid);
+      const slot = slots.find(item => item.sid === pair.dataset.sid);
+      const model = buildComposerRailModel(session, { supportedEfforts: composerSupportedEfforts(session) });
+      pair.querySelector('.mr-input-member-label').textContent = slot.displayLabel;
+      const modelButton = pair.querySelector('.composer-model');
+      modelButton.hidden = !model.model.visible;
+      modelButton.querySelector('.composer-chip-label').textContent = model.model.pending
+        ? `${model.model.label} → ${model.model.pending}` : model.model.label;
+      modelButton.title = `${slot.displayLabel} · 点击切换模型`;
+      const logo = modelButton.querySelector('.composer-model-logo');
+      logo.className = `composer-model-logo ${modelClass(session?.currentModel?.id || '')}`;
+      logo.textContent = (model.model.label || '?').trim().charAt(0).toUpperCase();
+      const effortButton = pair.querySelector('.composer-thinking');
+      effortButton.hidden = !model.thinking.visible;
+      effortButton.disabled = !model.thinking.interactive;
+      effortButton.querySelector('.composer-chip-label').textContent = model.thinking.label;
+      effortButton.querySelector('.composer-chip-caret').hidden = !model.thinking.interactive;
+      effortButton.title = model.thinking.interactive
+        ? `${slot.displayLabel} · 点击选择思考深度`
+        : `${slot.displayLabel} · 该 CLI 不支持会话内改档`;
+    }
+  }
+
+  function _ensureInputTools(meeting) {
     const inputBox = document.getElementById('mr-input-box');
     if (!inputBox || !inputBox.parentNode) return;
+    const row = inputBox.parentNode;
+    row.classList.toggle('mr-group-composer', !!meeting?.groupChat);
+    row.classList.toggle('composer', !!meeting?.groupChat);
+    let tuning = document.getElementById('mr-input-tuning');
+    if (tuning) tuning.hidden = !meeting?.groupChat;
+    if (meeting?.groupChat) {
+      document.getElementById('mr-input-history-btn')?.remove();
+      document.getElementById('mr-input-expand-btn')?.remove();
+      if (!tuning) {
+        tuning = document.createElement('div');
+        tuning.id = 'mr-input-tuning';
+        tuning.className = 'composer-rail';
+        tuning.innerHTML = '<div class="mr-input-tuning-members"></div><div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div>';
+        tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
+          const button = event.currentTarget, meetingId = activeMeetingId;
+          event.stopPropagation();
+          if (button.disabled) return;
+          button.disabled = true; button.textContent = '拉取中…';
+          try {
+            await chatgptBridgeController.pullForInput(async content => {
+              if (activeMeetingId !== meetingId || !inputBox.isConnected) return false;
+              const incoming = String(content || '').trim();
+              if (!incoming) return false;
+              const current = readContenteditablePlainText(inputBox);
+              const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
+              replaceContenteditableText(inputBox, `${current}${separator}${incoming}`);
+              _setInputDraft(meetingId, readContenteditablePlainText(inputBox));
+              inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+              inputBox.focus(); placeCaretAtContenteditableEnd(inputBox);
+              return true;
+            });
+          } catch (error) { _showGcEscapeNotice('拉取失败：' + error.message, 'error'); }
+          finally { button.disabled = false; button.textContent = '拉取'; }
+        });
+        row.appendChild(tuning);
+      }
+      _updateInputTuning(meeting);
+      return;
+    }
     let historyBtn = document.getElementById('mr-input-history-btn');
     if (!historyBtn) {
       historyBtn = document.createElement('button');
@@ -5030,8 +5222,18 @@ if (typeof document !== 'undefined') (function () {
       const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
       const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
     });
-    row.querySelector('[data-file-docs]')?.addEventListener('click', () => {
-      ipcRenderer.invoke('dev-file:open-docs', { meetingId: current.id }).catch(e => _showGcEscapeNotice(e.message, 'error'));
+    row.querySelector('[data-file-docs]')?.addEventListener('click', async () => {
+      try {
+        const state = await ipcRenderer.invoke('dev-file:status', { meetingId: current.id });
+        if (activeMeetingId !== current.id) return;
+        if (!state?.dir) throw new Error('任务目录不可用');
+        if (!window.FileManagerPanel) throw new Error('内部文件管理尚未就绪');
+        await require('fs').promises.mkdir(state.dir, { recursive: true });
+        if (activeMeetingId !== current.id) return;
+        _taskFilesMeetingId = current.id;
+        const result = await window.FileManagerPanel.open({ cwd: state.dir, label: '任务文件' });
+        if (!result?.ok) throw new Error(result?.error || '任务目录读取失败');
+      } catch (error) { _showGcEscapeNotice('打开任务文件失败：' + error.message, 'error'); }
     });
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
     row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
@@ -5057,6 +5259,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _updateInputPreflight(meeting) {
+    _updateInputTuning(meeting);
     const row = _ensureInputPreflightRow();
     if (!row) return;
     const current = meeting || meetingData[activeMeetingId];
@@ -5626,6 +5829,10 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function openMeeting(meetingId, meeting, opts = {}) {
+    if (activeMeetingId !== meetingId) {
+      _inputModelUi?.closeModelPicker();
+      _taskFilesMeetingId = null;
+    }
     // 切换前先保存上一个 meeting 的草稿（如果有）；切换到同一个 meeting 不存。
     if (activeMeetingId && activeMeetingId !== meetingId) _saveInputDraft();
     activeMeetingId = meetingId;
@@ -5693,6 +5900,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
+    _inputModelUi?.closeModelPicker();
+    _taskFilesMeetingId = null;
     // 离开 AI 群聊前先保存草稿，下次重新进入时恢复。
     _saveInputDraft();
     activeMeetingId = null;
@@ -5800,6 +6009,7 @@ if (typeof document !== 'undefined') (function () {
   // until some unrelated group-chat event happens to trigger a full render.
   function refreshSessionMetrics(sessionId) {
     const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
+    _updateInputTuning(meeting);
     if (!meeting || !Array.isArray(meeting.subSessions)) return false;
     const slot = _getGcSlots(meeting).find(item => item && item.sid === sessionId);
     if (!slot) return false;
@@ -5974,9 +6184,10 @@ if (typeof document !== 'undefined') (function () {
       filesBtn.classList.toggle('active', window.FileManagerPanel.isOpenFor(meeting.workspace));
       filesBtn.setAttribute('aria-pressed', String(window.FileManagerPanel.isOpenFor(meeting.workspace)));
       filesBtn.addEventListener('click', () => {
+        _taskFilesMeetingId = null;
         void window.FileManagerPanel.toggle({ cwd: meeting.workspace, label: meeting.workspaceLabel });
       });
-      if (window.FileManagerPanel.isOpen()) {
+      if (window.FileManagerPanel.isOpen() && _taskFilesMeetingId !== meeting.id) {
         void window.FileManagerPanel.syncContext({ cwd: meeting.workspace, label: meeting.workspaceLabel });
       }
     }
@@ -6652,7 +6863,7 @@ if (typeof document !== 'undefined') (function () {
       window.attachContenteditablePasteImage(inputBox);
     }
     _ensureInputPreflightRow();
-    _ensureInputTools();
+    _ensureInputTools(meeting);
     _renderHeroDock(meeting);
     _updateInputPreflight(meeting);
     if (targetSelect) {
@@ -7174,6 +7385,7 @@ if (typeof module !== 'undefined' && module.exports) {
   // 双份函数体看起来 DRY 违反，但 IIFE 内部变量（document、ipcRenderer）在 Node require 时不存在 →
   // 把整个 IIFE 移出来代价巨大。_isPartialUnchanged 是纯函数无外部依赖 → 复制一份是最低成本路径。
   module.exports = {
+    groupInputTuningFrame,
     _isPartialUnchanged: function _isPartialUnchanged(prev, next) {
       if (!prev && !next) return true;
       if (!prev || !next) return false;

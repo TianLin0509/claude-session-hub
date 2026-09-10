@@ -66,13 +66,15 @@ assert.ok(/const\s+groupChatTurnQueue\s*=\s*new Map\(\)/.test(dispatcherSrc) &&
 
 // 抢占式连发（2026-06-24 道雪）：用户点发送即放行 —— 新一轮进来抢占结算上一轮没答完的 AI，
 //   让卡死的 AI 不再无限期挂起整个串行队列。
-assert.ok(/function supersedeActiveWatchersForMeeting\(meetingId\)/.test(dispatcherSrc) &&
+assert.ok(/function supersedeActiveWatchersForMeeting\(meetingId(?:,[^)]*)?\)/.test(dispatcherSrc) &&
   /watcher\.supersede\(\)/.test(dispatcherSrc) &&
   /const meetingDispatchSeq\s*=\s*new Map\(\)/.test(dispatcherSrc),
   'dispatcher should preempt the previous turn by superseding in-flight watchers');
 
-assert.ok(/if\s*\(!args\.silent\)\s*\{[\s\S]*meetingDispatchSeq\.set\(key,\s*dispatchSeq\)[\s\S]*supersedeActiveWatchersForMeeting\(meetingId\)/.test(dispatcherSrc),
+assert.ok(/if\s*\(!args\.silent\)\s*\{[\s\S]*meetingDispatchSeq\.set\(key,\s*dispatchSeq\)[\s\S]*supersedeActiveWatchersForMeeting\(meetingId[,)]/.test(dispatcherSrc),
   'real user sends (non-silent) should bump the dispatch sequence and preempt the prior turn');
+assert.ok(/args\.fileHandoff === true && DevFile\.enabled/.test(dispatcherSrc) && /watcher\.handoff\(\)/.test(dispatcherSrc),
+  'only explicit file-workflow handoffs may retain the prior source collection');
 
 assert.ok(/wasSuperseded\s*=\s*_dispatchSeq\s*!=\s*null\s*&&\s*meetingDispatchSeq\.get\(String\(meetingId\s*\|\|\s*''\)\)\s*!==\s*_dispatchSeq/.test(dispatcherSrc) &&
   /superseded:\s*wasSuperseded/.test(dispatcherSrc),

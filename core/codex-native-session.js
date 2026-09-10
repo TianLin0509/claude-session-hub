@@ -77,6 +77,7 @@ class CodexNativeSession extends EventEmitter {
     this.entry = null;
     this.threadId = null;
     this.queue = Promise.resolve();
+    this.sendController = new AbortController();
     this.requestReplies = new Set();
     this.completed = new Map();
     this.receipts = new Map();
@@ -310,7 +311,8 @@ class CodexNativeSession extends EventEmitter {
       this.print('\n['+({completed:'已完成',interrupted:'已中断',failed:'执行失败'}[p.turn.status])+']\n');
     } else if (type === 'thread/status/changed') {
       this.apply({type:'status',threadId:this.threadId,status:p.status});
-      if (p.status && p.status.type === 'idle' && ['running','waiting'].includes(this.runtime.state)) {
+      if ((p.status?.type === 'idle' && ['running','waiting'].includes(this.runtime.state))
+          || (p.status?.type === 'active' && this.runtime.state === 'unknown')) {
         this.reconcile().catch(error => this.emit('diagnostic',error.message));
       }
     } else if (type === 'serverRequest/resolved') {
@@ -407,42 +409,77 @@ class CodexNativeSession extends EventEmitter {
       }).finally(()=>{this.reconciling=null;});
     return this.reconciling;
   }
-  async idle(timeoutMs = 0) {
+  async idle(timeoutMs = 0, signal) {
+    if (signal?.aborted) throw signal.reason;
     if (TERMINAL.has(this.runtime.state) || this.runtime.state === 'idle') return;
     if (!['running','waiting'].includes(this.runtime.state)) throw new Error('Codex 状态待核对，不能派发');
     return new Promise((resolve,reject)=>{
       let timer;
+      const cleanup = () => {
+        this.off('state',listener); clearTimeout(timer);
+        signal?.removeEventListener('abort',abort);
+      };
+      const abort = () => { cleanup(); reject(signal.reason); };
       const listener = r => {
         if (['running','waiting'].includes(r.state) && r.connection === 'connected') return;
-        this.off('state',listener);
-        clearTimeout(timer);
+        cleanup();
         if (r.connection !== 'connected' || r.state === 'unknown') reject(new Error(r.reason || 'Codex 连接异常'));
         else resolve();
       };
       this.on('state',listener);
+      signal?.addEventListener('abort',abort,{once:true});
       if (timeoutMs) timer = setTimeout(() => {
-        this.off('state',listener);
-        reject(new Error('Codex 尚未确认停止，保留会话供核对'));
+        cleanup(); reject(new Error('Codex 尚未确认停止，保留会话供核对'));
       }, timeoutMs);
     });
   }
-  send(text, options = {}) {
-    const task = this.queue.then(()=>this._send(text,options));
-    this.queue = task.catch(()=>{});
-    return task;
-  }
-  async _send(text, options) {
-    await this.start();
+  checkSendIntent(intent) {
+    if (intent.signal.aborted) throw intent.signal.reason;
     if (this.closed) throw new Error('Codex 会话正在关闭，未发送');
+    if (this.runtime.epoch !== intent.epoch
+        || (intent.client && this.entry?.client !== intent.client)
+        || (intent.threadId && this.threadId !== intent.threadId)) {
+      throw new Error('Codex 连接或会话身份已变化，已取消排队消息，未发送');
+    }
+  }
+  enqueueSend(operation) {
+    const intent = {signal:this.sendController.signal,epoch:this.runtime.epoch,
+      client:this.entry?.client,threadId:this.threadId,sent:false};
+    // Cancel even tasks behind a pending RPC; its eventual continuation still
+    // carries the aborted intent, including if a shared-thread close fails.
+    const task = this.queue.then(()=>{this.checkSendIntent(intent);return operation(intent);});
+    this.queue = task.catch(()=>{});
+    return new Promise((resolve,reject)=>{
+      const abort = () => { if (!intent.sent) reject(intent.signal.reason); };
+      intent.signal.addEventListener('abort',abort,{once:true});
+      if (intent.signal.aborted) abort();
+      task.then(resolve,reject).finally(()=>intent.signal.removeEventListener('abort',abort));
+    });
+  }
+  send(text, options = {}) {
+    return this.enqueueSend(intent=>this._send(text,options,intent));
+  }
+  checkSendable(intent) {
+    this.checkSendIntent(intent);
     if (!this.threadId) throw new Error('请先选择要恢复的历史会话');
-    if (this.runtime.connection !== 'connected') throw new Error('Codex 连接已断开，请先核对');
-    if (String(text).trimStart().startsWith('/')) return this.slash(String(text).trim());
+    if (this.runtime.connection !== 'connected' || !this.entry || this.entry.client.closed) throw new Error('Codex 连接已断开，请先核对');
     if (this.runtime.configurationError) throw new Error(this.runtime.configurationError);
     if (this.runtime.state === 'unknown') throw new Error('Codex 状态待核对，未发送');
     if (this.runtime.submission?.status === 'unknown') throw new Error('上一条提交结果不明，请先核对消息记录；不会自动重发');
     if (this.runtime.state === 'waiting' && this.runtime.requests.length) throw new Error('请先回答当前审批或问题');
-    if (options.requireReady !== false) await this.idle();
-    const client = this.entry.client, epoch = this.runtime.epoch, threadId = this.threadId;
+  }
+  async _send(text, options, intent) {
+    await this.start();
+    this.checkSendIntent(intent);
+    if (!this.threadId) throw new Error('请先选择要恢复的历史会话');
+    if (this.runtime.connection !== 'connected') throw new Error('Codex 连接已断开，请先核对');
+    intent.client ||= this.entry.client;
+    intent.threadId ||= this.threadId;
+    if (String(text).trimStart().startsWith('/')) return this.slash(String(text).trim(),intent);
+    this.checkSendable(intent);
+    if (options.requireReady !== false) await this.idle(0,intent.signal);
+    this.checkSendable(intent);
+    const client = intent.client, epoch = intent.epoch, threadId = intent.threadId;
     const submittedAt = Date.now();
     const id = options.clientSubmissionId || randomUUID();
     const input = textInput(text,options.attachments);
@@ -465,7 +502,13 @@ class CodexNativeSession extends EventEmitter {
       ...(active ? {expectedTurnId:this.runtime.turnId} : this.options.turnParams)};
     try {
       this.print('\n› '+text+'\n');
-      const result = await client.request(method,params);
+      const result = await client.request(method,params,undefined,{beforeWrite:()=>{
+        this.checkSendable(intent);
+        if (active ? this.runtime.turnId !== params.expectedTurnId : !TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') {
+          throw new Error('Codex 活跃轮次已变化，未发送排队消息');
+        }
+        intent.sent = true;
+      }});
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.threadId !== threadId || this.closed) {
         throw Object.assign(new Error('提交响应来自已关闭的连接，请核对原生记录'),{uncertain:true});
       }
@@ -525,18 +568,18 @@ class CodexNativeSession extends EventEmitter {
     return {ok:true};
   }
   configure(options) {
-    const task = this.queue.then(()=>this._configure(options));
-    this.queue = task.catch(()=>{});
-    return task;
+    return this.enqueueSend(intent=>this._configure(options,intent));
   }
-  async _configure({model,effort}) {
+  async _configure({model,effort}, intent) {
     await this.start();
+    if (intent) this.checkSendIntent(intent);
     if (this.runtime.connection !== 'connected'
         || !['idle','completed','interrupted','failed'].includes(this.runtime.state)) {
       throw new Error('请在 Codex 当前轮次结束且连接正常后切换模型或思考档');
     }
     const client = this.entry.client, epoch = this.runtime.epoch;
     const check = () => {
+      if (intent) this.checkSendIntent(intent);
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.closed) throw new Error('配置响应来自旧连接，请重新核对');
       if (!['idle','completed','interrupted','failed'].includes(this.runtime.state)) throw new Error('Codex 已开始新轮次，不能切换配置');
     };
@@ -583,15 +626,24 @@ class CodexNativeSession extends EventEmitter {
       text:result.text,status:result.status,completedAt:result.completedAt,abortedAt:result.completedAt,
       message:result.error?.message,errorInfo:result.error,finality:'provider_final'};
   }
-  async slash(text) {
+  async slash(text, intent) {
     const space = text.search(/\s/);
     const command = (space < 0 ? text : text.slice(0,space)).toLowerCase();
     const value = space < 0 ? '' : text.slice(space).trim();
     const client = this.entry.client;
+    const request = (method,params) => client.request(method,params,undefined,{beforeWrite:()=>{
+      this.checkSendIntent(intent);
+      if (this.runtime.connection !== 'connected') throw new Error('Codex 连接已断开，未发送命令');
+      if (method === 'thread/compact/start' || method === 'review/start') {
+        this.checkSendable(intent);
+        if (!TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') throw new Error('Codex 已开始新轮次，未发送排队命令');
+      }
+      intent.sent = true;
+    }});
     if (command === '/mcp') {
       const all = []; let cursor;
       do {
-        const result = await client.request('mcpServerStatus/list',{threadId:this.threadId,...(cursor ? {cursor} : {}),limit:100});
+        const result = await request('mcpServerStatus/list',{threadId:this.threadId,...(cursor ? {cursor} : {}),limit:100});
         all.push(...(result.data || [])); cursor = result.nextCursor;
       } while (cursor);
       this.print('\n'+JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2)+'\n');
@@ -599,23 +651,23 @@ class CodexNativeSession extends EventEmitter {
       this.print('\n'+(command === '/status' ? JSON.stringify(this.runtime,null,2)
           : '原生命令：/status /mcp /model <模型> /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n新建、恢复、分叉请使用 Hub 会话菜单；终端仅显示输出。\n')+'\n');
     } else if (command === '/rename' && value) {
-      await client.request('thread/name/set',{threadId:this.threadId,name:value});
+      await request('thread/name/set',{threadId:this.threadId,name:value});
       this.emit('renamed',value);
     } else if (command === '/goal') {
       if (!value) {
-        const goal = await client.request('thread/goal/get',{threadId:this.threadId});
+        const goal = await request('thread/goal/get',{threadId:this.threadId});
         this.print('\n'+JSON.stringify(goal,null,2)+'\n');
-      } else if (value === 'clear') await client.request('thread/goal/clear',{threadId:this.threadId});
-      else await client.request('thread/goal/set',{threadId:this.threadId,
+      } else if (value === 'clear') await request('thread/goal/clear',{threadId:this.threadId});
+      else await request('thread/goal/set',{threadId:this.threadId,
         ...(['pause','resume'].includes(value) ? {status:value === 'pause' ? 'paused' : 'active'} : {objective:value})});
     } else if (command === '/compact') {
-      await this.idle();
-      await client.request('thread/compact/start',{threadId:this.threadId});
+      await this.idle(0,intent.signal);
+      await request('thread/compact/start',{threadId:this.threadId});
     } else if (command === '/model' && value) {
-      await this._configure({model:value});
+      await this._configure({model:value},intent);
     } else if (command === '/review' && !value) {
-      await this.idle();
-      await client.request('review/start',{threadId:this.threadId,target:{type:'uncommittedChanges'},delivery:'inline'});
+      await this.idle(0,intent.signal);
+      await request('review/start',{threadId:this.threadId,target:{type:'uncommittedChanges'},delivery:'inline'});
     } else {
       throw new Error('此命令尚无 Hub 原生映射：'+command+'。未发送给模型；请使用 Hub 对应操作。');
     }
@@ -631,6 +683,7 @@ class CodexNativeSession extends EventEmitter {
     }
   }
   async reconnect() {
+    if (this.closed) throw new Error('Codex 会话正在关闭，不能重新连接');
     if (this.runtime.connection === 'connected') return this.reconcile();
     if (!this.entry || this.entry.client.closed || !this.threadId) {
       if (this.entry?.client.closed) await this.entry.client.waitForExit();
@@ -672,6 +725,7 @@ class CodexNativeSession extends EventEmitter {
   kill() {
     if (this.closed) return;
     this.closed = true;
+    this.sendController.abort(new Error('Codex 会话正在关闭，已取消排队消息，未发送'));
     const c = this.entry && this.entry.client;
     const finish = () => {
       this.apply({type:'disconnect',reason:'会话已关闭'});
@@ -690,7 +744,7 @@ class CodexNativeSession extends EventEmitter {
       })().catch(error=>{
         this.emit('diagnostic','关闭 Codex 会话：'+error.message);
         if (c.closed || this.entry?.refs === 1) finish();
-        else { this.closed=false; this.emit('action-error',error.message); }
+        else { this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message); }
       });
     } else finish();
   }

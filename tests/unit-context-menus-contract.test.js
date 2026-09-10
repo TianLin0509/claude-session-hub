@@ -55,6 +55,7 @@ async function main() {
   const sent = [];
   const notices = [];
   const wakes = [];
+  let roomResult = { ok: true, meetingDormant: true, blocked: [] };
   const sessionMenu = createSessionContextMenuController({
     document: { addEventListener() {} },
     window: { innerWidth: 800, innerHeight: 600, confirm: () => true },
@@ -64,6 +65,7 @@ async function main() {
     ipcRenderer: {
       invoke(channel, sid) {
         invoked.push({ channel, sid });
+        if (channel === 'suspend-meeting') return Promise.resolve(roomResult);
         if (channel === 'restart-session') {
           return Promise.resolve({ ok: false, message: '尚未绑定原生会话 ID' });
         }
@@ -161,6 +163,13 @@ async function main() {
 
   meetings.m1 = { id: 'm1', title: '群聊', pinned: false, bottomed: false };
   sessionMenu.open('m1', 10, 20);
+  assert.strictEqual(closeBtn.textContent, '休眠会议室');
+  assert.strictEqual(deleteBtn.textContent, '删除会议室');
+  assert.strictEqual(deleteBtn.style.display, '');
+  await closeBtn._listeners.click();
+  assert.deepStrictEqual(invoked.at(-1), { channel: 'suspend-meeting', sid: 'm1' });
+  assert.ok(meetings.m1, 'sleep must not delete the room');
+  sessionMenu.open('m1', 10, 20);
   assert.strictEqual(pinBtn.textContent, '置顶');
   assert.strictEqual(bottomBtn.textContent, '置底');
   await bottomBtn._listeners.click();
@@ -170,6 +179,22 @@ async function main() {
     channel: 'update-meeting',
     payload: { meetingId: 'm1', fields: { pinned: false, bottomed: true } },
   });
+
+  sessions.set('member', { id: 'member', title: '休眠成员', kind: 'codex', codexSid: 'native-member', status: 'dormant', meetingId: 'm1' });
+  sessionMenu.open('member', 10, 20);
+  await deleteBtn._listeners.click();
+  assert.deepStrictEqual(invoked.at(-1), { channel: 'remove-meeting-sub', sid: { meetingId: 'm1', sessionId: 'member' } });
+  assert.strictEqual(sessions.has('member'), false, 'dormant member deletion updates the room through its authoritative API');
+
+  meetings.m1.status = 'dormant';
+  meetings.m1.subSessions = ['s2'];
+  sessions.set('s2', { id: 's2', title: '已唤醒成员', kind: 'codex', status: 'running' });
+  sessionMenu.open('m1', 10, 20);
+  assert.strictEqual(closeBtn.disabled, false, 'a room with a woken member can be put to sleep again');
+  roomResult = { ok: true, meetingDormant: false, blocked: [{ sessionId: 's2', error: 'native-session-id-missing', message: '尚未绑定原生会话 ID' }] };
+  await closeBtn._listeners.click();
+  assert.match(notices.at(-1), /已唤醒成员：尚未绑定原生会话 ID/);
+  assert.ok(meetings.m1, 'partial failure retains the room');
 
   const previewBtn = makeElement();
   previewBtn.dataset.action = 'preview';

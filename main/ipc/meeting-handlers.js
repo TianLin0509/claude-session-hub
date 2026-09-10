@@ -1,4 +1,5 @@
 'use strict';
+const { suspendMeetingRoom } = require('../../core/meeting-room-suspend.js');
 
 function withUserRenameFields(fields) {
   if (fields && typeof fields.title === 'string' && !fields.autoTitleGenerated) {
@@ -258,6 +259,13 @@ function registerMeetingIpc(ipcMain, deps) {
       meeting: freshMeeting,
       ...(persistWarning ? { persistWarning } : {}),
     };
+  });
+
+  ipcMain.handle('suspend-meeting', (_e, meetingId) => {
+    if (!isValidMeetingId(meetingId)) return { ok: false, error: 'invalid-meeting-id', message: '缺少有效会议室 ID' };
+    return suspendMeetingRoom(meetingId, {
+      meetingManager, sessionManager, sendToRenderer, reason: 'user-suspend-meeting',
+    });
   });
 
   ipcMain.handle('close-meeting', (_e, meetingId) => {

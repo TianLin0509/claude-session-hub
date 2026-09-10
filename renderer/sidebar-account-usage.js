@@ -43,13 +43,9 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
     });
     entries[provider] = { row, button, cells };
   }
-  const footer = el('div', 'sidebar-quota-footer', root);
-  const feedback = el('span', 'sidebar-quota-feedback', footer);
-  feedback.setAttribute('role', 'status');
   return {
-    footer,
+    detailsHost: claudeRow,
     render(snapshot, states) {
-      const notices = [];
       for (const provider of Object.keys(entries)) {
         const { row, cells, button } = entries[provider];
         const data = snapshot[provider] || {};
@@ -63,7 +59,6 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
         button.setAttribute('aria-disabled', String(!!state.inFlight));
         button.dataset.state = state.inFlight ? 'loading' : state.error ? 'error' : 'idle';
         button.textContent = state.inFlight ? '…' : state.error ? '!' : '↻';
-        if (status) notices.push({ priority: state.error ? 0 : state.inFlight ? 1 : 2, text: NAMES[provider] + ' ' + status });
         for (const [window, cell] of Object.entries(cells)) {
           if (window === 'balance') {
             cell.value.textContent = formatBalance(data);
@@ -75,12 +70,13 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
             cell.value.textContent = pct === null ? '—' : Math.round(pct) + '%';
             cell.fill.style.width = (pct ?? 0) + '%';
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
-            cell.cell.title = window + ' 剩余额度 · ' + age;
+            const observation = data['usage' + window];
+            const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : 0;
+            cell.cell.title = window + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
+              + (reset && reset <= Date.now() ? ' · 上次记录，等待刷新' : '');
           }
         }
       }
-      feedback.textContent = notices.sort((a, b) => a.priority - b.priority).map(n => n.text).join('；') || '余量 · 悬停查看各家数据时间';
-      feedback.title = Object.keys(entries).map(p => entries[p].row.title).join('\n');
     },
   };
 }
