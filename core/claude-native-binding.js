@@ -7,7 +7,18 @@ function bindClaudeNativeSession(manager, id, driver) {
   };
   const publish = () => {
     const entry = current();
-    if (entry) manager.emit('session-updated', manager._toPublic(entry.info));
+    if (!entry) return;
+    // A new CLI history can appear after initialization. Bind its exact UUID
+    // for cumulative usage only; the native snapshot remains execution truth.
+    if (!entry.info.transcriptPath) {
+      try {
+        const file = driver.historyPath();
+        if (file) entry.info.transcriptPath = file;
+      } catch (error) {
+        driver.emit('diagnostic', { type: 'history-path-error', message: error.message });
+      }
+    }
+    manager.emit('session-updated', manager._toPublic(entry.info));
   };
   driver.on('state', snapshot => {
     const entry = current();

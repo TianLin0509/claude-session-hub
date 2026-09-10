@@ -407,10 +407,39 @@ let desktopNotificationController = null;
 let agentLeagueTray = null;
 let explicitHubQuitRequested = false;
 const sessionManager = new SessionManager();
+const { SessionTokenUsageService } = require('./main/usage/session-token-usage-service.js');
+const sessionUsageService = new SessionTokenUsageService({
+  publish(id, usage) {
+    const current = sessionManager.getSession(id);
+    const persisted = lastPersistedSessions.find(item => item.hubId === id);
+    const old = current?.sessionUsage || persisted?.sessionUsage;
+    if (old?.sourcePath === usage.sourcePath && old.total > usage.total) return;
+    const updated = current ? sessionManager.updateSessionMeta(id, { sessionUsage: usage }) : null;
+    if (persisted) persisted.sessionUsage = usage;
+    if (updated || persisted) sessionStore.markDirty(id, updated || persisted);
+    sendToRenderer('session-usage-updated', { sessionId: id, usage });
+  },
+});
+sessionManager.on('session-token-usage', event => {
+  sessionUsageService.native(sessionManager.getSession(event.sessionId), event.total);
+});
+sessionManager.on('session-exited', event => sessionUsageService.remove(event.sessionId));
+transcriptTap.on('session-bound', event => {
+  const session = sessionManager.getSession(event.hubSessionId);
+  if (session) sessionUsageService.bind({ ...session, transcriptPath: event.transcriptPath || event.rolloutPath || session.transcriptPath });
+});
+ipcMain.on('session-usage:watch', (_event, ids) => {
+  if (!Array.isArray(ids)) return;
+  for (const id of new Set(ids.filter(id => typeof id === 'string'))) {
+    const session = sessionManager.getSession(id) || lastPersistedSessions.find(item => item.hubId === id);
+    if (session) sessionUsageService.bind(session);
+  }
+});
 sessionManager.on('managed-launch', (record) => {
   appendManagedLaunchAudit(record, { logger: console });
 });
 sessionManager.on('codex-session-updated', session => {
+  sessionUsageService.bind(session);
   sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
@@ -452,6 +481,7 @@ const workspaceMigrationSessionIds = new Set();
 
 sessionManager.on('session-updated', session => {
   if (session.runtimeBackend !== 'claude-stream-json') return;
+  sessionUsageService.bind(session);
   sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
   sendToRenderer('session-updated', { session });
 });
@@ -1343,6 +1373,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // backend starts watching its CLI-native transcript file. DeepSeek normally
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
+  sessionUsageService.bind(session);
   if (['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
@@ -1860,6 +1891,12 @@ try {
 let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
   ? bootState.immersiveByMeeting : {};
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
+const repairedMemberships = require('./core/session-meeting-membership.js')
+  .restoreMissingMeetingIds(lastPersistedSessions, bootMeetings);
+if (repairedMemberships.length) {
+  console.info(`[sessions] restored ${repairedMemberships.length} missing meeting membership(s)`);
+  for (const id of repairedMemberships) sessionStore.markDirty(id, lastPersistedSessions.find(s => s.hubId === id));
+}
 let lastPersistedMeetings = bootMeetings;
 for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
@@ -3009,6 +3046,7 @@ async function runFinalShutdownCleanup() {
     }
   });
   capture('dev-chat-history', () => { clearInterval(devChatHistoryTimer); devChatHistory.dispose(); });
+  capture('session-token-usage', () => sessionUsageService.dispose());
   capture('transcript-tap', () => transcriptTap.dispose());
   // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，
   // 让另一台/另一个 Hub 可以立即恢复同一个 native session；崩溃场景

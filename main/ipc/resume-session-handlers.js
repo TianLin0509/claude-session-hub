@@ -39,6 +39,8 @@ function createResumeSessionHandler(deps) {
 
   return async function resumeSession(meta) {
     if (!meta || !meta.hubId) return null;
+    require('../../core/session-meeting-membership.js').restoreMissingMeetingIds(
+      [meta], meetingManager.getAllMeetings?.() || []);
     const isGemini = meta.kind === 'gemini' || meta.kind === 'gemini-resume';
     const isDeepSeek = meta.kind === 'deepseek' || meta.kind === 'deepseek-resume';
     const isLegacyDeepSeek = isDeepSeek && !!meta.ccSessionId && !meta.codexSid;
@@ -293,6 +295,7 @@ function createResumeSessionHandler(deps) {
       lastOutputPreview: meta.lastOutputPreview,
       ...(typeof meta.contextPct === 'number' ? { contextPct: meta.contextPct } : {}),
       ...(typeof meta.contextUsed === 'number' ? { contextUsed: meta.contextUsed } : {}),
+      ...(meta.sessionUsage ? { sessionUsage: meta.sessionUsage } : {}),
       ...(typeof meta.contextMax === 'number' ? { contextMax: meta.contextMax } : {}),
       ...(typeof meta.contextEffectiveMax === 'number'
         ? { contextEffectiveMax: meta.contextEffectiveMax }

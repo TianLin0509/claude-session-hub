@@ -70,7 +70,13 @@ rl.on('line',line=>{
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:empty') {
+      if(mode==='fixture:usage') {
+        answer(msg.id,{turn});
+        event('thread/tokenUsage/updated',{threadId:thread.id,turnId:turn.id,tokenUsage:{
+          total:{inputTokens:240000,outputTokens:10000,totalTokens:250000,cachedInputTokens:100000,reasoningOutputTokens:4000},
+          last:{inputTokens:8000,outputTokens:1000,totalTokens:9000,cachedInputTokens:6000,reasoningOutputTokens:400},modelContextWindow:100000}});
+        finish(thread,turn);
+      } else if(mode==='fixture:empty') {
         const reply={turn:{...turn}};
         finish(thread,turn,'completed','');
         setTimeout(()=>answer(msg.id,reply),30);

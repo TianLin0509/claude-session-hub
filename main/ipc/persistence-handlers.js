@@ -31,6 +31,7 @@ const RESUME_META_FIELDS = [
   'effort',
   'contextPct',
   'contextUsed',
+  'sessionUsage',
   'contextMax',
   'contextEffectiveMax',
   'contextEffectiveObservedAt',
@@ -168,8 +169,14 @@ function handlePersistSessions(list, meetingList, deps) {
     (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
   );
   mergeResumeMetaFields(list, previousSessions);
+  require('../../core/session-meeting-membership.js').restoreMissingMeetingIds(
+    list, meetingManager.getAllMeetings?.() || []);
   for (const session of list) {
     const live = deps.getLiveSession?.(session.hubId);
+    // Renderer persistence can race the latest usage event. The main-process
+    // snapshot owns accounting; never replace it with an older renderer copy.
+    const authoritativeUsage = live?.sessionUsage || previousSessionsById.get(session.hubId)?.sessionUsage;
+    if (authoritativeUsage) session.sessionUsage = authoritativeUsage;
     if (live && live.runtimeBackend === 'codex-app-server') {
       session.runtimeBackend = live.runtimeBackend;
       session.nativeRuntime = require('../../core/codex-native-runtime.js').persistNativeRuntime(live);
