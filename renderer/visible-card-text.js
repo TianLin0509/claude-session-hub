@@ -19,8 +19,14 @@ function extractVisibleCardText(root) {
     '.mr-gc-code-copy',
     '.mr-ft-cursor',
     '.mr-truncated-hint',
+    '.conversation-entry-head',
+    '.conversation-long-preview',
     '[data-copy-exclude]',
   ].join(',')).forEach(node => node.remove());
+  clone.querySelectorAll('.conversation-long-message, .conversation-activity').forEach(details => {
+    details.open=true;
+    details.querySelector('summary')?.remove();
+  });
 
   // A collapsed code block is still answer content; only its fold control is UI.
   clone.querySelectorAll('pre').forEach(pre => {

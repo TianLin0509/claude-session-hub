@@ -216,6 +216,7 @@ function _mergeConsecutiveAssistantTurns(turns) {
           ? { input_tokens: t.usage.input_tokens || 0, output_tokens: t.usage.output_tokens || 0 }
           : { input_tokens: 0, output_tokens: 0 },
         mergedCount: 1,
+        displayMessages: [],
       };
     } else {
       if (t.text) acc.text += (acc.text ? '\n\n' : '') + t.text;
@@ -239,6 +240,8 @@ function _mergeConsecutiveAssistantTurns(turns) {
       }
       acc.mergedCount += 1;
     }
+    if (t.text) acc.displayMessages.push({id:`claude-message-${t.id}`,text:t.text,
+      ts:t.ts,phase:claudeEntryEndsAssistantTurn(t)?'final_answer':'commentary'});
     // 终止于「带正文的终态 entry」（一轮真完成）
     if (claudeEntryEndsAssistantTurn(t)) {
       flush();

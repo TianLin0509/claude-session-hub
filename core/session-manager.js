@@ -1617,6 +1617,17 @@ class SessionManager extends EventEmitter {
       ptyProcess.on('lifecycle', event => {
         this.emit('codex-lifecycle',event);
       });
+      let contentTimer=null;
+      ptyProcess.on('items',()=>{
+        if(contentTimer)return;
+        contentTimer=setTimeout(()=>{
+          contentTimer=null;
+          if(this.sessions.get(id)?.pty===ptyProcess)this.emit('codex-content-updated',
+            {sessionId:id,threadId:ptyProcess.threadId,turnId:ptyProcess.runtime.turnId,revision:ptyProcess.contentRevision});
+        },80);
+        contentTimer.unref?.();
+      });
+      ptyProcess.once('exit',()=>{if(contentTimer)clearTimeout(contentTimer);contentTimer=null;});
       ptyProcess.on('action-error', message => {
         info.nativeActionError = message; publish();
       });
