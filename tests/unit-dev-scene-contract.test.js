@@ -25,12 +25,12 @@ const modal = read('renderer/meeting-create-modal.js');
 const room = read('renderer/meeting-room.js');
 
 test('开发场景建群时自动写入默认工作流（否则「零配置」不成立）', () => {
-  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects, devPhase: _devStart \}\)/.test(modal),
+  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
     'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
   assert(/function _applyDefaultDevWorkflow/.test(modal), '该函数必须存在');
   assert(/scene !== 'dev'/.test(modal), '只对 dev 场景生效');
   assert(/createTemplateConfig\(templateId, members/.test(modal), '默认工作流由 templateId 决定');
-  assert(/simple \? 'dev-task-solo' : 'dev-task'/.test(modal), '只有极简走单席位模板，其余仍是 dev-task');
+  assert(/const templateId = 'dev-task'/.test(modal), '新建群聊统一按成员数量配置');
   assert(/serialWorkflow: config/.test(modal), '必须写进 meeting.serialWorkflow');
 });
 
@@ -50,9 +50,7 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
   // 2026-09-08：取消了「任务已明确，直接开工」那一挡 —— 它绕过开题，实现位手里
   // 只有聊天记录、没有一份自包含可验收的任务书。双席位现在一律从讨论阶段起步，
   // 需求本来就明确时直接点「开题」即可，不强制多聊几轮。
-  assert(/data-mcm-dev-start="discuss"/.test(modal), '建群弹窗的双席位那一挡还在');
-  assert(!/data-mcm-dev-start="build"/.test(modal), '「直接开工」那一挡必须真的没了，否则还能绕过开题');
-  assert(/_devStart = 'discuss';/.test(modal), '重开弹窗必须重置为双席位讨论起手');
+  assert(!/data-mcm-dev-start/.test(modal), '删除起手选项');
   const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
   const discuss = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss' });
   assert.strictEqual(discuss.devPhase, 'discuss');
@@ -86,23 +84,25 @@ test('讨论阶段堵死「恢复旧循环」的三条路（2026-09-06 合并位
   assert(/devPhase === 'discuss'\) return \{ ok: false/.test(read('main/groupchat/dev-workbench.js')), '工作台：恢复动作按阶段拒绝');
 });
 
-test('单人群聊不写默认工作流，除非用户明确选了极简（一个人没法自审自合是默认立场）', () => {
-  assert(/if \(!simple && slots\.length < 2\) return;/.test(modal),
-    '成员数下限仍在，只对显式选了极简的放行');
+test('单人按当前成员配置双职责，不限制 AI 品牌', () => {
+  for (const kind of ['claude', 'codex', 'deepseek']) {
+    const c = WT.createTemplateConfig('dev-task', [{ memberId: 'm1', kind }]);
+    assert.equal(c.soloDevelopment, true);
+    assert.deepEqual(c.steps, [['m1'], ['m1']]);
+    assert.equal(c.loop.enabled, false);
+    const F = require('../core/dev-file-workflow');
+    const m = {groupChat:true, scene:'dev', serialWorkflow:c};
+    assert(F.isSolo(m));
+    assert(!F.common(m, 'dir').includes('第二席位'));
+    assert(F.common(m, 'dir').includes('自审'));
+  }
 });
 
 test('极简起手：一位 Codex 既当工作位也当合并位（2026-09-07 用户要求）', () => {
   // 小到不值得占两个席位的改动（改一句文案、加一个开关），双席位的代价是
   // 一次完整的上下文交接 + 一倍 token。极简把这条代价换成「没有独立第三方」，
   // 取舍由用户在建群那一刻选，不由 Hub 替他决定。
-  assert(/data-mcm-dev-start="simple"/.test(modal), '建群弹窗要有极简这一挡');
-  assert(/data-mcm-dev-start="discuss"/.test(modal), '双席位那一挡不能被挤掉');
-  assert(/const SIMPLE_DEV_MEMBERS = \[\{ kind: 'codex'/.test(modal), '极简的默认成员是 Codex');
-  assert(/function _setDevStart/.test(modal) && /_groupSlots = _cloneSlots\(SIMPLE_DEV_MEMBERS\)/.test(modal),
-    '选极简要把成员名单换成一个人，否则界面和选项自相矛盾');
-  assert(/_currentMode !== 'dev' && _devStart === 'simple'/.test(modal),
-    '离开开发场景必须把极简放掉，否则成员被减到一个而选项已经藏起来了');
-
+  assert(!/data-mcm-dev-start/.test(modal), '旧模板只兼容历史配置，创建入口已移除');
   const solo = WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind: 'codex' }]);
   assert(solo, '单人也要能构造出配置');
   assert.deepStrictEqual(solo.steps, [['m1'], ['m1']],

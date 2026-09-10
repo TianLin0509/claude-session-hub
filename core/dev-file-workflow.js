@@ -6,6 +6,35 @@ const VERSION = 2;
 const PRESET_START = '【AI HUB 开题提示词】';
 const PRESET_END = '【开题提示词结束】';
 const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+const SOLO_START = '【AI HUB 独立开工提示词】';
+const SOLO_END = '【独立开工提示词结束】';
+const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
+function soloCommon(meeting) {
+  return [
+    '## AI HUB 单 Agent 开发',
+    `工作目录：${meeting.workspace || '先核实本群任务对应的项目根目录'}`,
+    meeting.serialWorkflow?.projectLocator || '',
+    '本群由同一位 Agent 负责实现、验证与合并；这是自审，不是独立审查。',
+    '普通讨论和进度询问只回答；用户明确要求开工或继续时，接续同一任务。',
+    '遵守用户明确范围和项目规则；能判断的选择直接采用推荐方案，不反复索取流程批准。',
+  ].filter(Boolean).join('\n');
+}
+function independentPrompt() {
+  return [
+    '按本条需求和此前讨论独立开工，由你同时担任实现 Agent 与合并 Agent。',
+    '先读项目 AGENTS.md、.agents/AUTHOR.md、.agents/MERGER.md 和 .agents/project.json，简述方案后完成实现。',
+    '在独立 worktree 中工作，保留他人的改动；复用本任务已有分支和成果。',
+    '实现后亲自检查最终提交，在最新主干上执行项目规定的验证与 dry-run；发现问题自行修复并重验。明确这是自审，不冒充独立审查。',
+    '验证通过后按项目入口合并，完成合并后检查。本条授权本任务范围内的实现与合并；用户明确的限制、项目额外审批及远端发布要求仍须满足。',
+    '直接完成整个任务，无需开题报告和分阶段交接文件。最后报告改动、完整 SHA、实际验证、合并结果及剩余问题；受阻时如实说明，不宣称完成。',
+  ].join('\n');
+}
+function appendIndependent(text) {
+  let base = String(text || '');
+  const start = base.indexOf(SOLO_START), end = base.indexOf(SOLO_END, start);
+  if (start >= 0 && end >= start) base = base.slice(0, start).trimEnd() + base.slice(end + SOLO_END.length);
+  return [base.trim(), `${SOLO_START}\n${independentPrompt()}\n${SOLO_END}`].filter(Boolean).join('\n\n');
+}
 function appendProjectPrep(text) {
   const base = String(text || '');
   if (base.includes(PROJECT_PREP_PROMPT)) return base;
@@ -64,6 +93,7 @@ function appendKickoff(text, prompt) {
   return [base.trim(), `${PRESET_START}\n${prompt}\n${PRESET_END}`].filter(Boolean).join('\n\n');
 }
 function common(meeting, dir) {
+  if (isSolo(meeting)) return soloCommon(meeting);
   return [
     '## AI HUB 文件工作流',
     `本群任务目录：${dir}`,
@@ -104,4 +134,5 @@ function phasePrompt(meeting, dir, state) {
     '只有真实合并及要求的后置操作成功才用“已完成”改名。环境、权限、审批或工具失败保留草稿并说明，不把它伪装成实现缺陷或成功。');
   return base.join('\n');
 }
-module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt };
+module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt,
+  PROJECT_PREP_PROMPT, isSolo, soloCommon, independentPrompt, appendIndependent, SOLO_START, SOLO_END };

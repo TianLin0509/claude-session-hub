@@ -5237,7 +5237,8 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     const s = state || { phase: 'discuss', label: '读取文件进度…' };
-    const phases = [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
+    const solo = DevFile.isSolo(current);
+    const phases = solo ? [] : [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
     const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
     const names = selected.map(slot => slot.displayLabel || slot.label || slot.kind).join(' / ');
     const running = !!s.running || _isGroupTurnRunning(current);
@@ -5247,7 +5248,8 @@ if (typeof document !== 'undefined') (function () {
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
-        ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${solo ? '<button type="button" data-file-independent title="填入同一位 Agent 实现、验证并合并的提示词；检查后按 Enter 发送">独立开工</button>' : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
       </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
@@ -5275,6 +5277,21 @@ if (typeof document !== 'undefined') (function () {
       } catch (error) { _showGcEscapeNotice('打开任务文件失败：' + error.message, 'error'); }
     });
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
+    row.querySelector('[data-file-independent]')?.addEventListener('click', async () => {
+      try {
+        const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [0]);
+        const box = document.getElementById('mr-input-box');
+        if (!box || activeMeetingId !== current.id) return;
+        box.textContent = DevFile.appendIndependent(box.innerText);
+        _setInputDraft(current.id, box.innerText);
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        renderToolbar(fresh);
+        box.focus();
+        const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        _updateInputPreflight(fresh);
+      } catch (error) { _showGcEscapeNotice('独立开工提示词准备失败：' + error.message, 'error'); }
+    });
     row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -6878,7 +6895,9 @@ if (typeof document !== 'undefined') (function () {
         : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
     }
     if (DevFile.enabled(meeting)) {
-      inputBox.dataset.placeholder = '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
+      inputBox.dataset.placeholder = DevFile.isSolo(meeting)
+        ? '输入任务；点“独立开工”填入提示词，检查后 Enter 发送。'
+        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }

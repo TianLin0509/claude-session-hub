@@ -61,6 +61,17 @@ async function run() {
     e.tick(); await flush(); assert.equal(calls.length, 5);
     for (const resolve of pending) resolve({ status: 'completed' }); await flush();
     assert(events.some(x => x.name === 'dev-file:changed' && x.data.done));
+    // A single Agent uses direct prompts, even if unrelated phase filenames exist.
+    meeting.serialWorkflow.soloDevelopment = true;
+    meeting.subSessions = ['s1'];
+    e.tick(); await flush(); assert.equal(calls.length, 5);
+    assert.equal(e.status(meeting.id).key, 'solo');
+    assert.throws(() => e.kickoffPreset(meeting.id), /独立开工/);
+    e.stop(meeting.id);
+    const soloResume = e.userTurn(meeting.id, { userInput: '继续' }); await flush();
+    assert.equal(calls.length, 6); assert.equal(calls[5].userInput, '继续');
+    assert.equal(e.status(meeting.id).paused, false);
+    pending[5]({status:'completed'}); await soloResume;
     // Legacy rooms never participate in the filename scanner.
     delete meeting.serialWorkflow.fileFlowVersion; e.tick(); assert.equal(e.status(meeting.id), null);
     console.log('dev-file-engine: prefill, independent handoff, idempotence, pause, restart, resume and wake race passed');

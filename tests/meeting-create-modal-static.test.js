@@ -105,7 +105,7 @@ test('scene picker replaces the duplicate template row and sits above member tun
   }
   assert.ok(!MODAL_CSS.includes('.mcm-template'), 'template card CSS must be removed too');
   assert.match(MODAL_JS, /function\s+_applyScene/);
-  assert.match(MODAL_JS, /_applyScene\('general',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
+  assert.match(MODAL_JS, /_applyScene\('dev',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
   // 场景仍然是 create-meeting 的 mode 来源，radio 的 name 不能改。
   assert.match(MODAL_JS, /input\[name="mcm-scene"\]:checked/);
   const sceneAt = MODAL_JS.indexOf('id="mcm-scene-row"');
@@ -140,7 +140,7 @@ test('scene hint is painted from scene state, not from the radio change event', 
   assert.doesNotMatch(changeHandlerBody, /hint\.textContent/,
     'radio change 处理器不许再自己画说明');
   // 弹窗一律从通用开：允许直接开在 dev 会再造一条「场景=开发但目录=默认」的矛盾路径。
-  assert.match(MODAL_JS, /_applyScene\('general',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
+  assert.match(MODAL_JS, /_applyScene\('dev',\s*\{\s*clearTitle:\s*true,\s*resetSlots:\s*true\s*\}\)/);
   assert.doesNotMatch(MODAL_JS, /options\.scene/,
     '没有配套处理工作目录之前，不许通过参数直接开在别的场景');
 });
@@ -238,7 +238,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session provider-specific payload rules');
   assert.match(MODAL_JS, /WorkspaceController\.loadPrimaryModelCatalogs/,
     'Claude and Codex options must refresh from their current CLI catalogs');
-  assert.match(MODAL_JS, /默认保留 Claude \+ Codex/);
+  assert.match(MODAL_JS, /一位成员负责实现与合并/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
 });
@@ -249,7 +249,7 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /mcm-add-member/);
   assert.match(MODAL_JS, /groupChat:\s*_isGroupChat/);
   assert.match(MODAL_JS, /groupMode:\s*_isGroupChat\s*\?\s*['"]deliberation['"]/);
-  assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*slots\.map/);
+  assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*\(scene === \'dev\' \? \[slots\[0\]\.index\] : slots\.map/);
   assert.ok(!/id="btn-group-chat"/.test(HTML), 'legacy standalone group-chat header button must stay removed');
   // 冷杉 v2 T0：场景按钮搬去 #scene-rail（排在侧栏之前），启动按钮留在侧栏头部。
   assert.match(HTML, /id="scene-rail"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"[\s\S]*?id="btn-new"/);

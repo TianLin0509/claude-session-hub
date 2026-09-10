@@ -23,38 +23,25 @@ const SLOT_NAMES = ['一号位', '二号位', '三号位'];
 // 选一个场景 + 换一句房名 placeholder，和这里的三个场景完全重叠。两处并存必然出现
 // 「模板卡选了投研，底下场景还停在通用」这种自相矛盾状态，故删卡、只留场景。
 const SCENES = [
+  { id: 'dev', label: '开发', placeholder: '例如：实现这个需求，完成验证与合并' },
   { id: 'general',  label: '通用', placeholder: '例如：帮我拆解这个问题，给出可执行方案' },
   { id: 'research', label: '投研', placeholder: '例如：分析这只股票后续走势和操作计划' },
-  { id: 'dev',      label: '开发', placeholder: '例如：实现这个需求，并让另一位独立审查' },
 ];
 
 let _modalEl = null;
-let _currentMode = 'general';
+let _currentMode = 'dev';
 let _isGroupChat = true;
 let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
 let _meetingWorkspace = null;
 // 群聊与单会话同一个默认档：工作根（2026-08-31 平铺决策）。
 // 群聊尤其需要——180 场会议 100% 共用 cwd，本来就是「多个 AI 同一个目录」的场景。
-let _meetingWorkspaceMode = 'default';
+let _meetingWorkspaceMode = 'existing';
 // 项目库：已被 project-prep 整理过的项目（中文名 → 路径，按活跃时间排序）。
 // 建群那一刻从主进程取快照；「选择已有路径」的下拉和开发场景的 prompt 都用它。
 let _projectLibrary = [];
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
-// 开发场景的起手方式，两选一：
-//   discuss —— 普通双席位（工作位 + 合并位）。建好房先自由讨论，聊清楚了点「开题」
-//              指定一位执笔者写任务书；报告交付后自动开工。
-//              2026-09-08 取消了原来的「任务已明确，直接开工」分岔：那条路绕过开题，
-//              于是实现位手里永远只有聊天记录，没有一份自包含、可验收的任务书。
-//              需求本来就明确时也不必多聊几轮 —— 建好房直接点「开题」就行。
-//   simple  —— 极简：只留一个 Codex，同一个会话既当工作位也当合并位。给「改一行文案」
-//              这种小到不值得占两个席位、也不值得做一次上下文交接的需求用。
-//              极简保留原流程，不套用双席位的开题链路。
-let _devStart = 'discuss';
-const DEV_STARTS = ['discuss', 'simple'];
-// 极简起手的成员名单：一个 Codex。Codex 是日常主力，且这条路径本来就是省 token 的。
-const SIMPLE_DEV_MEMBERS = [{ kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex }];
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
 
@@ -254,54 +241,15 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    // 开发场景两条路都通：留在默认工作目录，AI 按任务从项目库里自己定位项目根；
-    // 或者点「选择已有路径」→「项目库」一键选定。说清楚，用户才知道不必去找路径。
-    hint.textContent = '开发场景要开在项目根上：留在「默认工作目录」也行，AI 会根据你的任务从项目库里'
-      + '自己找到项目根；想指定项目，点「选择已有路径」→「项目库」一键选。'
-      + '项目没整理过的话，先用 project-prep skill 跑一次。';
+    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。';
     hint.style.display = '';
   } else {
     hint.textContent = '';
     hint.style.display = 'none';
   }
-  _paintDevStart();
 }
 
-// 起手方式那一排只在开发场景出现；和场景说明一样挂在 _applyScene 这条重置路径上，
-// 换回通用场景时必须跟着消失，否则会留下「场景=通用却在问开不开工」的残影。
-function _paintDevStart() {
-  const row = _modalEl && _modalEl.querySelector('#mcm-dev-start-row');
-  if (!row) return;
-  row.hidden = _currentMode !== 'dev';
-  row.querySelectorAll('[data-mcm-dev-start]').forEach(button => {
-    const selected = button.getAttribute('data-mcm-dev-start') === _devStart;
-    button.classList.toggle('selected', selected);
-    button.setAttribute('aria-checked', selected ? 'true' : 'false');
-  });
-}
-
-// 起手方式换挡。极简和另外两挡的成员数不一样（1 vs 2），所以这里顺带换成员名单——
-// 否则用户选了「极简」底下还摆着两个人，建群出来的群聊和他选的那句话对不上。
-// 只在真的换挡时动名单，重复点同一挡不会把用户刚调好的模型/档位冲掉。
-function _setDevStart(next) {
-  const requested = DEV_STARTS.includes(next) ? next : 'build';
-  if (requested === _devStart) { _paintDevStart(); return; }
-  const wasSimple = _devStart === 'simple';
-  _devStart = requested;
-  if (requested === 'simple') {
-    _groupSlots = _cloneSlots(SIMPLE_DEV_MEMBERS);
-    _renderSlots();
-  } else if (wasSimple) {
-    // 从极简切回来要把默认双席位还回去，否则会留下「选了直接开工却只有一个人」的残影，
-    // 而单人在非极简模式下根本不会被写默认工作流（见 _applyDefaultDevWorkflow）。
-    _groupSlots = _cloneSlots(DEFAULT_GROUP_MEMBERS);
-    _renderSlots();
-  }
-  _paintDevStart();
-}
-
-// 只改场景，不动成员名单。删掉模板卡之后成员起手一律是「Claude 工作位 + Codex 合并位」，
-// 换场景不该把用户已经调好的模型/档位冲掉。
+// 场景切换保留已选成员、模型与调优。
 function _applyScene(sceneId, opts = {}) {
   const scene = SCENES.find(s => s.id === sceneId) || SCENES[0];
   _currentMode = scene.id;
@@ -314,9 +262,10 @@ function _applyScene(sceneId, opts = {}) {
     if (opts.clearTitle) titleInput.value = '';
     titleInput.placeholder = scene.placeholder || '留空则自动编号：AI 群聊 #N';
   }
-  // 起手方式只在开发场景成立。离开 dev 还留着「极简」的话，成员名单会一直是单个 Codex，
-  // 而那一排选项已经被藏起来，用户根本看不到是谁把人减掉的。
-  if (_currentMode !== 'dev' && _devStart === 'simple') _setDevStart('build');
+  if (_currentMode === 'dev') {
+    _meetingWorkspaceMode = 'existing';
+    _paintWorkspace();
+  }
   if (!_modalEl) return;
   const sceneRadio = _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
   if (sceneRadio) sceneRadio.checked = true;
@@ -484,19 +433,12 @@ function _ensureModal() {
         </div>
         <div class="mcm-scene" id="mcm-scene-row">
           <span class="mcm-scene-caption">场景</span>
-          ${_renderSceneChoices('general')}
+          ${_renderSceneChoices('dev')}
         </div>
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
-        <div class="mcm-workspace-block mcm-dev-start" id="mcm-dev-start-row" hidden>
-          <span class="mcm-workspace-caption">起手</span>
-          <div class="mcm-workspace-choices" role="radiogroup" aria-label="开发场景起手方式">
-            <button type="button" class="mcm-workspace-choice selected" data-mcm-dev-start="discuss" role="radio" aria-checked="true"><strong>工作位 + 合并位（默认）</strong><small>先聊清楚，点「开题」写任务书；报告交付后自动开工</small></button>
-            <button type="button" class="mcm-workspace-choice" data-mcm-dev-start="simple" role="radio" aria-checked="false"><strong>极简：一个 Codex 自己改自己合</strong><small>只留一位成员，同一会话既当工作位也当合并位；小改动用</small></button>
-          </div>
-        </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
+          <span>一位成员负责实现与合并；两位时第一位实现、第二位合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
@@ -559,16 +501,8 @@ function _bindEvents() {
       if (!radio.checked) return;
       // 场景高亮、房名提示、场景说明都归 _applyScene 管，这里不重复画。
       _applyScene(radio.value);
-      // 开发场景不再替用户把档位切到「选择已有路径」（2026-09-06 用户明确不想每次找路径）。
-      // 留在默认工作根时，建群会把项目库写进 prompt，AI 按任务自己定位项目根；
-      // 这里只预热项目库，让用户一点「选择已有路径」就能看到列表。
+      // 预热项目库；用户仍可手动改选工作目录方式。
       if (radio.value === 'dev') void _loadProjectLibrary();
-    });
-  });
-  _modalEl.querySelectorAll('[data-mcm-dev-start]').forEach(button => {
-    button.addEventListener('click', () => {
-      _syncGroupSlotsFromDom();
-      _setDevStart(button.getAttribute('data-mcm-dev-start'));
     });
   });
   _modalEl.addEventListener('click', (e) => {
@@ -663,7 +597,7 @@ async function _onCreate() {
       workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
-    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects, devPhase: _devStart });
+    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects });
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -695,26 +629,21 @@ async function _onCreate() {
 //
 // devPhase 是起手方式：双席位一律先落 'discuss'（循环配置照样写好，只是发送先走普通群聊）。
 // 用户在群里点「开题」→ 阶段翻成 'kickoff'，指定执笔者写任务书；
-// 报告改名交付被 Hub 接收后自动翻成 'build' 并开工。极简仍然直接是 'build'。
+// 双席位报告交付后自动开工；单席位通过预置 prompt 独立完成。
 function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return;
   const WT = window.WorkflowTemplates;
   if (!WT || typeof WT.createTemplateConfig !== 'function') return;
   if (!Array.isArray(slots) || !slots.length) return;
-  const simple = !!(workspaceHint && workspaceHint.devPhase === 'simple');
-  // 单人默认不配工作流（一个人没法自审自合）；只有用户在起手那一排**明确选了极简**，
-  // 才认这个取舍，走单席位的 dev-task-solo。
-  if (!simple && slots.length < 2) return;
   try {
     const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
-    const templateId = simple ? 'dev-task-solo' : 'dev-task';
+    const templateId = 'dev-task';
     const config = WT.createTemplateConfig(templateId, members, {
       workspace: {
         atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
         projects: (workspaceHint && workspaceHint.projects) || [],
       },
-      // 极简走 dev-task-solo（它自己把 devPhase 钉成 build）；双席位一律从讨论阶段起步。
-      devPhase: simple ? 'build' : 'discuss',
+      devPhase: 'discuss',
     });
     if (!config) return;
     config.templateId = templateId;
@@ -750,10 +679,8 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   } else {
     _isGroupChat = true;
   }
-  // 弹窗一律从「通用」开：工作目录档位在下面被重置成 default，
-  // 若允许直接开在 dev，就又会出现「场景=开发但目录=默认」的不一致。
-  // 需要开在别的场景时，要连同工作目录一起处理，不是加个参数就行。
-  _currentMode = 'general';
+  // 每次进入默认开发场景，并让用户选择已有项目路径。
+  _currentMode = 'dev';
   _ensureModal();
   const embeddedHost = options.embedded === true && options.host && typeof options.host.appendChild === 'function'
     ? options.host
@@ -771,9 +698,8 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
   };
   _clearError();
-  _devStart = 'build';
-  _applyScene('general', { clearTitle: true, resetSlots: true });
-  _meetingWorkspaceMode = 'default';
+  _applyScene('dev', { clearTitle: true, resetSlots: true });
+  _meetingWorkspaceMode = 'existing';
   _meetingWorkspace = null;
   _projectLibraryOpen = false;
   _paintWorkspace();

@@ -18,7 +18,8 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
     const m = get(id);
     if (!F.enabled(m)) return null;
     const dir = F.directory(getHubDataDir(), id), runtime = m.serialWorkflow.fileFlow || {};
-    return { ...F.scan(dir), dir, paused: stopped.has(id) || !!runtime.paused, dispatchError: runtime.error || '',
+    const progress = F.isSolo(m) ? { phase: 'discuss', key: 'solo', label: '独立开发 · 同一位负责实现与合并', done: false, error: null } : F.scan(dir);
+    return { ...progress, dir, paused: stopped.has(id) || !!runtime.paused, dispatchError: runtime.error || '',
       running: preparing.has(id) || !!active.get(id)?.size, participants: m.participants };
   }
   function emit(id) {
@@ -132,7 +133,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
   }
   function tick() {
     for (const m of meetingManager.getAllMeetings()) {
-      if (!F.enabled(m)) continue;
+      if (!F.enabled(m) || F.isSolo(m)) continue;
       try {
         const s = status(m.id);
         emit(m.id);
@@ -145,6 +146,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
   function kickoffPreset(id) {
     const m = get(id);
     if (!F.enabled(m)) throw new Error('文件工作流不可用');
+    if (F.isSolo(m)) throw new Error('单 Agent 请使用独立开工');
     const s = status(id);
     if (s.error || !['discuss', 'kickoff'].includes(s.phase)) throw new Error(s.error || '本任务已经开题，请用普通消息继续');
     // No mkdir, no phase change, no dispatch. The button only prepares editable composer text.
