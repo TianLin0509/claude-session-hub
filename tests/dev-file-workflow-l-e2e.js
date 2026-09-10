@@ -102,12 +102,23 @@ async function run() {
       if (state.error || state.dispatchError) throw new Error(state.error || state.dispatchError);
       await sleep(2000);
     }
-    const gc = await invoke('groupchat:get-state', { meetingId });
+    let gc = await invoke('groupchat:get-state', { meetingId });
+    if(done && process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1') {
+      const endDeadline=Date.now()+90000;
+      while(Date.now()<endDeadline && Object.values(gc.devChatHistory?.receipts || {}).some(r=>!r.sourceCompletedAt)) {
+        await sleep(500);gc=await invoke('groupchat:get-state',{meetingId});
+      }
+    }
     fs.writeFileSync(path.join(ROOT, 'groupchat.json'), JSON.stringify(gc, null, 2));
     assert(done, 'real Agents did not finish the file chain within budget');
     if(process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1') {
       const sourceMessages=gc.messages.filter(m=>m.sourceMessage);
-      assert(sourceMessages.length>=3,'natural source messages must be persisted');
+      for(const receipt of Object.values(gc.devChatHistory?.receipts || {})) {
+        const owned=sourceMessages.filter(m=>m.attemptId===receipt.attemptId);
+        assert(owned.filter(m=>m.phase==='commentary').length>=3,`turn ${receipt.turnNum} must preserve at least three natural progress messages`);
+        assert(owned.some(m=>m.phase==='final') && receipt.sourceCompletedAt,`turn ${receipt.turnNum} must preserve its own final after file delivery`);
+      }
+      assert(sourceMessages.length>=4,'natural source messages and the final must be persisted');
       assert(!gc.messages.some(m=>m.role==='assistant' && m.status==='superseded'),'automatic handoffs must not supersede answers');
       assert.equal(await cdp.eval("document.querySelectorAll('[data-gc-retry-answer]').length"),0,'development cards must not offer retry');
       console.log('PASS real source history: '+sourceMessages.length+' cards, no superseded answers or retry buttons');

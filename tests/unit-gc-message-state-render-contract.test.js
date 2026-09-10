@@ -94,7 +94,8 @@ assert.ok(
   'renderer 必须接收并缓存 partial 的失败原因',
 );
 assert.ok(
-  rendererSrc.includes('function _gcFailReasonLabel(reason)') &&
+  rendererSrc.includes('function _gcFailReasonLabel(reason, dev = false)') &&
+  rendererSrc.includes("_gcFailReasonLabel(message.failure || message.statusReason, meeting.scene === 'dev')") &&
   rendererSrc.includes("if (r === 'auth_required') return"),
   '失败原因需映射为用户可读中文标签',
 );

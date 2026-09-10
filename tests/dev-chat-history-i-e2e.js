@@ -29,6 +29,12 @@ async function run(){
     const pending=orch.recordTurnPrompt(turnNum,sid,'fixture prompt',{runId,memberId:'m1',kind:'codex'});
     const receipt=rememberPrompt(orch,sid,pending),source=path.join(root,'source.jsonl');receipt.sourcePath=source;
     orch.completeTurn(turnNum,'fixture prompt',[{sid,attemptId:pending.attemptId,status:'superseded',text:''}], {[sid]:{sid,memberId:'m1',kind:'codex'}},{}, {runId});
+    for(const status of ['running','handed_off','errored','superseded','completed']) {
+      orch._appendMessage({id:`state-${status}`,role:'assistant',sid:`fixture-${status}`,turnNum,
+        speaker:`状态验收 ${status}`,status,content:status==='completed'?'已完成状态验收':'',
+        ...(status==='errored'?{failure:{code:'quota_exceeded'}}:{})});
+    }
+    orch._saveState();
     const records=[{type:'task_started',turn_id:'fixture-turn'},{type:'user_message',message:'fixture prompt'}];
     for(let i=1;i<=45;i++)records.push({type:'item_completed',turn_id:'fixture-turn',item:{id:`m${i}`,type:'AgentMessage',phase:'commentary',text:`进展 ${i}：保留原文与路径 C:\\fixture\\test.js`}});
     records.push({type:'item_completed',turn_id:'fixture-turn',item:{id:'final',type:'AgentMessage',phase:'final_answer',text:'最终验证结果：消息已保留。'}});
@@ -39,6 +45,7 @@ async function run(){
     const state=await invoke('groupchat:get-state',{meetingId:id});ok('45 条进展和最终消息全部保存',state.messages.filter(m=>m.sourceMessage).length===46);
     await until(()=>cdp.eval("document.body.innerText.includes('进展 45')"));
     ok('开发卡片无重试按钮',await cdp.eval("document.querySelectorAll('[data-gc-retry-answer]').length===0"));
+    ok('失败说明引导继续当前阶段',await cdp.eval("document.body.innerText.includes('额度已用尽；已有发言保留，处理后发送“继续”接续当前阶段') && !document.body.innerText.includes('只重试本家')"));
     ok('中间进展在真实界面可见',await cdp.eval("document.body.innerText.includes('进展 1：') && document.body.innerText.includes('进展 23：')"));
     ok('最终答复在进展之后显示且无镜像重复',await cdp.eval("document.body.innerText.indexOf('最终验证结果：消息已保留。') > document.body.innerText.indexOf('进展 45：') && document.body.innerText.split('最终验证结果：消息已保留。').length===2"));
     await invoke('groupchat-manual-extract',{meetingId:id,sid,turnNum});
