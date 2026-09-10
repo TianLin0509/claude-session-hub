@@ -85,8 +85,14 @@
 
 ## 版本号（2026-08-29）
 
-- 用户规矩：**所有对 Hub 的改动，完成后在同一提交里同步升版本号**（默认 patch 位；纯文档/纯测试可不动）。
+- 用户规矩：所有对 Hub 的功能改动完成后升版本号；由 `scripts/merge_task.py` 在合并时同步抬升，实现分支不提前修改。纯文档/纯测试可不动。
 - 理由：Hub 源码模式运行且没有单实例锁，桌面上常年并存多个实例各持不同时刻的代码。窗口标题 `AI 群聊 Hub：PID <pid> v<version>` 动态读 `package.json`，版本号是唯一能一眼确认"这个窗口跑的是不是新代码"的信号。
 - 同步 3 处：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。用 `node tests\unit-hub-version-sync.test.js` 守。
 - 不要动 `tests\unit-hub-exe-branding.test.js` / `tests\unit-process-lifecycle-journal.test.js` 里的版本字面量——那是 fixture 输入和 `app.getVersion` mock，不是生产版本号。
 - 升版本会触发 `core\hub-exe-branding.js` 重建 `AIGroupChatHub.exe`；该路径已处理"副本被运行中的 Hub 占用"（先 rename 成 `.stale-*` 再替换），**不要为此关生产实例**。
+
+## 文件工作流的授权与项目合同（2026-09-09）
+
+- 新版双席位开发群聊中，用户亲自发送开题提示词，即授权在开题范围内实现，并由独立合并位验证通过后按项目入口合并；用户另有范围、禁止或审批要求时以其要求为准。普通会话仍遵守先在 worktree 交付、用户同意后合入主干的约定。
+- 文件工作流的阶段、改名交付和无 ASK 规则由 Hub 提示词维护；`.agents/AUTHOR.md`、`.agents/MERGER.md` 只放本项目的环境、验证与合并入口。
+- `AGENTS.md` 与 `CLAUDE.md` 的版本策略一致：实现分支不提前升版本，合并脚本统一抬升。

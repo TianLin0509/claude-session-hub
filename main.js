@@ -1126,6 +1126,7 @@ function createWindow() {
       setTimeout(() => {
         try { if (global.__loopEngine) global.__loopEngine.resumePending(); }
         catch (e) { console.warn('[loop] boot resume failed:', e && e.message); }
+        global.__devFileEngine?.start();
       }, 8000);
     }
     if (!global.__groupChatRecoveryScanned) {
@@ -1424,9 +1425,14 @@ groupChatDispatcher = createGroupChatDispatcher({
 });
 
 registerGroupchatTurnIpc(ipcMain, {
-  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
-  interruptGroupChatTurn: groupChatDispatcher.interruptMeetingTurn,
-  stopLoop: (meetingId, options) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
+  dispatchGroupChatTurn: (meetingId, args) => global.__devFileEngine
+    ? global.__devFileEngine.userTurn(meetingId, args)
+    : groupChatDispatcher.dispatchGroupChatTurn(meetingId, args),
+  interruptGroupChatTurn: (meetingId, options) => groupChatDispatcher.interruptMeetingTurn(meetingId, {
+    ...options, targetSids: global.__devFileEngine?.interruptSids(meetingId) || [],
+  }),
+  stopLoop: (meetingId, options) => global.__devFileEngine?.stop(meetingId)
+    || (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
 });
 
 // Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
@@ -1454,6 +1460,7 @@ try {
     // resumeSession is initialized later in this module; the closure is only
     // invoked after startup, when the provider-native resume handler exists.
     resumeSession: (meta) => resumeSession(meta),
+    loadSessionMeta: (sid) => stateStore.isMarkedRemovedSession(sid) ? null : sessionStore.loadSessionFile(sid),
     writeReport: (html) => {
       try {
         const fsx = require('fs'), pathx = require('path'), osx = require('os');
@@ -1470,8 +1477,17 @@ try {
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
 
 try {
+  global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
+    meetingManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
+    sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,
+  });
+  global.__devFileEngine.registerIpc(ipcMain, require('electron').shell);
+} catch (error) { console.error('[dev-file] initialization failed:', error); }
+
+try {
   devWorkbench = require('./main/groupchat/dev-workbench.js').createDevWorkbench({
-    meetingManager, sessionManager, loopEngine: global.__loopEngine, getHubDataDir, sendToRenderer, logger: console,
+    meetingManager, sessionManager, loopEngine: global.__loopEngine, fileEngine: global.__devFileEngine, getHubDataDir, sendToRenderer, logger: console,
   });
   devWorkbench.registerIpc(ipcMain);
 } catch (error) { console.error('[dev-workbench] initialization failed:', error.message); }

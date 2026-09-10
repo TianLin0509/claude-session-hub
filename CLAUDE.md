@@ -258,3 +258,9 @@ production / prod / release 分支。所以"生产分支 = 主分支"不是要�
 3. **不要**去改 `tests\unit-hub-exe-branding.test.js` 和 `tests\unit-process-lifecycle-journal.test.js` 里出现的版本字面量 —— 那些是自洽的 fixture 输入和 `app.getVersion` mock，跟生产版本号无关，跟着改反而制造假耦合。
 4. 升版本会让品牌 stamp 失配，下次启动重新生成 `AIGroupChatHub.exe`。这条路径**已经**处理了"副本正被运行中的 Hub 占用"：`core\hub-exe-branding.js` 先把旧副本 rename 成 `.stale-*` 腾位再替换（Windows 允许 rename 正在执行的映像，但不允许 delete），失败也只是回落 electron.exe 图标。**不需要为了升版本去关生产实例。**
 5. 验证：重启后看窗口标题里的 `v<version>` 是否等于 `package.json` 里的值。
+
+## 文件工作流的授权与项目合同（2026-09-09）
+
+- 新版双席位开发群聊中，用户亲自发送开题提示词，即授权在开题范围内实现，并由独立合并位验证通过后按项目入口合并；用户另有范围、禁止或审批要求时以其要求为准。普通会话仍遵守先在 worktree 交付、用户同意后合入主干的约定。
+- 文件工作流的阶段、改名交付和无 ASK 规则由 Hub 提示词维护；`.agents/AUTHOR.md`、`.agents/MERGER.md` 只放本项目的环境、验证与合并入口。
+- `AGENTS.md` 与 `CLAUDE.md` 的版本策略一致：实现分支不提前升版本，合并脚本统一抬升。

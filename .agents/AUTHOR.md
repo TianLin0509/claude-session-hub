@@ -1,137 +1,24 @@
-# 工作位合同
+# AI HUB · 实现补充
 
-**你是工作位。读完这份就开工，不用回复"我明白了"。**
+先读 `AGENTS.md` 与 `.agents/project.json`。通用阶段职责、任务文件和交接方式由群聊提示词提供。
 
-任务是群里维护者上一条消息说的那件事。没说清就问一句，别猜。
+## 工作环境
 
----
+- 主工作目录 `C:\Users\lintian\claude-session-hub` 正在运行生产 Hub，禁止在其中实现或提交功能改动。
+- worktree 放在 `C:/AIWork/日期-任务-席位`；分支用 `feat/`、`fix/` 或 `chore/` 前缀。
+- 用 junction 复用主目录 `node_modules`；创建后确认成功。禁止在共享依赖的 worktree 中运行 `npm install`、`npm ci`、`npm prune`、`npm run dist`。
+- 版本由 `scripts/merge_task.py` 自动抬升；实现分支不提前修改版本号。
 
-## 一、先开自己的 worktree（不这么做会被钩子挡住）
-
-主目录 `C:\Users\lintian\claude-session-hub` 是生产 Hub 正在跑的目录，**在那里提交会被 pre-commit 直接拒绝**。
-
-```bash
-git worktree add C:/AIWork/<日期>-<任务简称>-<你的席位> -b <分支名> master
-cmd /c mklink /J C:\AIWork\<同上>\node_modules C:\Users\lintian\claude-session-hub\node_modules
-```
-
-- 分支名用 `feat/` `fix/` `chore/` 开头 + 一句能看懂在干嘛的短语 + 日期
-- **worktree 里禁止 `npm install` / `npm ci` / `npm run dist`** —— node_modules 是 junction，指向生产依赖，装包会写坏它
-- 别去动主目录里别人的未提交改动
-
-## 二、只做这一个任务
-
-一个群聊只对应一个任务。看到顺手能改的别的问题，**记下来告诉维护者，不要顺手改**——那会让合并位没法判断这次改动到底该不该合。
-
-## 三、实现
-
-- 一个提交只做一件事，提交信息写人话
-- 改了行为就要有测试跟着改；**修 bug 必须先加一条会红的测试**，再让它变绿
-- 不确定的地方问，不要猜着写然后在报告里说"应该没问题"
-
-## 四、自己跑一遍（这是给自己看的，不叫审核）
-
-```bash
+```text
+git worktree add C:/AIWork/日期-任务-席位 -b feat/任务-日期 master
+cmd /c mklink /J C:\AIWork\日期-任务-席位\node_modules C:\Users\lintian\claude-session-hub\node_modules
 node scripts/run_unit_tests.js
 ```
 
-运行器会自动发现并执行全部 `unit-*.test.js`。**必须真跑，真看结果。** 合并位会再跑一遍，你报的结果对不上会被当场发现。
+## 验证入口
 
-改了 UI 就起隔离实例看一眼，不要凭想象：
-
-```powershell
-$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-$portProbe.Start()
-$hubCdpPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
-$portProbe.Stop()
-$env:CLAUDE_HUB_DATA_DIR = Join-Path $env:TEMP "hub-check-$PID-$hubCdpPort"
-& '.\node_modules\electron\dist\electron.exe' . "--remote-debugging-port=$hubCdpPort"
-```
-
-**绝不碰生产 Hub 进程。**
-
-## 五、不要碰版本号
-
-`package.json` 和 `package-lock.json` 里的 `version`，**分支一行都不要改**。合并脚本会在合并那一刻自动把 3 处一起抬。
-
-原因：那三行是所有并行分支都要改的同三行，而「我是第几个合进去的」这个信息只有合并那一刻才存在。以前让分支自己抬，两个群聊同时开工必然撞车 —— 要么数值和主干重复被打回，要么 `package.json` / `package-lock.json` 直接合并冲突。合并是排队的，所以这件事挪给了合并脚本。
-
-要改主/次版本号（`1.6.x` → `1.7.0` 这种）是人的决定，告诉维护者，不要自己动。
-
-## 六、怎么向维护者说话
-
-维护者是通信专业的，**不看代码**。把他当成"懂技术方向但不懂实现细节的专家"：
-他要判断的是方向对不对、值不值得、有没有坑，不是你改了哪个函数。
-
-他能看到的只有群聊和开发工作台，而工作台只呈现下面这几个标签里的内容。
-**你不写，他就什么都看不到** —— 沉默不等于顺利，只等于失联。
-
-下面四个标签允许多行，写成段落就行；给的是**下限**，不是上限。
-
-### 开工前：先说打算怎么做
-
-读完任务、开始动手之前写一段：
-
-```
-PLAN: 我打算怎么做
-准备动哪几块、为什么这么切、有什么取舍或不确定。
-```
-
-三五句就够，别列文件清单。这一段的价值在于：如果方向不对，现在纠正只花一句话。
-
-### 实现中：每到一个可解释的阶段就写一条
-
-```
-UPDATE: 刚完成什么，现在在做什么，或者被什么挡住
-```
-
-这是过程进展，**现在会全部保留**（以前只留最后一条），群聊和工作台的任务纪事按时间排开。
-所以中途多写几条是有意义的，不是刷屏。判据是「有没有新信息」，不是「过了多久」：
-复现成功、方案改了、卡在某处、开始跑验证 —— 这些都值得一条。空话和重复不值得。
-不要为了写 UPDATE 而额外调用模型。
-
-### 需要维护者拍板时：单独提出来
-
-```
-ASK: 需要你决定的问题
-两个选项各自的代价，以及你的推荐。
-```
-
-工作台会把带 `ASK` 的任务顶到「需要我」里。不确定就问，别猜着写完再在报告里说"应该没问题"。
-
-### 交付时：四行协议 + 一段说明
-
-群里最后必须原样输出这四行（机器要解析，标签用英文冒号，内容用中文）：
-
-```
-PROGRESS: 一句话说清你干了什么，别写文件名和函数名
-VERIFIED: 实际跑了什么、什么结果，写数字
-RISK: 有什么要注意的；确实没有就写「无」
-REPORT: HTML 报告的绝对路径；没有就写「无」
-```
-
-这四行必须各占一行、不要跨行 —— 循环引擎按行解析它们。
-**最终交接前不要提前输出这四行**；`UPDATE` 不表示完成，也不代替最终汇报。
-
-四行之后再写一段给维护者的说明：
-
-```
-NOTES: 给维护者的说明
-做了什么、为什么这么做、什么明明可以做却没做、怎么验证的。
-```
-
-**别贴代码、别列文件清单。**
-
-## 七、交给合并位
-
-```bash
-git push -u origin <你的分支>
-```
-
-推主干会被 pre-push 挡住，这是故意的——主干只有合并脚本一个入口。
-
-推完在群里说一句："分支 `<名字>` 可以审了"，然后停下等合并位。
-
-## 八、被打回时
-
-合并位会给 `BLOCKERS`。**只修 BLOCKERS 里列的东西**，别顺手改别的——那会让下一轮审查失去对照。改完再推同一个分支，重新说一句可以审了。
+- 全量入口是 `.agents/project.json` 的 `test`；修 Bug 先复现或添加能失败的行为断言，再验证修复。
+- GUI 使用 `tests/helpers/hub-launcher.js` 起隔离实例，配独立 CDP、数据目录、home 和转录目录；证据要来自真实 Hub。
+- 不关闭、重启生产 Hub，不改生产 state/config。CLI prompt 必须走现有提交管线，详见 `AGENTS.md`。
+- 不清理其他任务的 worktree、分支或未提交内容；交付保留候选完整 SHA 和实际验证证据。
+- 远端分支推送沿用任务已有授权；主干推送由合并入口处理。

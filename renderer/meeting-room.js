@@ -38,6 +38,15 @@ if (typeof document !== 'undefined') (function () {
   } = require('../core/hero-prompts.js');
   // 开发群聊「先讨论再开工」的阶段判断与收敛文本，和主进程 dispatcher 共用同一份。
   const DevDiscuss = require('../core/dev-discuss.js');
+  const DevFile = require('../core/dev-file-workflow.js');
+  const _devFileStates = {}, _devFileRequests = new Set();
+  ipcRenderer.on('dev-file:changed', (_e, state) => {
+    if (!state?.meetingId) return;
+    _devFileStates[state.meetingId] = state;
+    const m = meetingData[state.meetingId];
+    if (m && Array.isArray(state.participants)) m.participants = state.participants;
+    if (m && activeMeetingId === m.id) { renderToolbar(m); _updateInputPreflight(m); }
+  });
   // isPasteSensitive 不再在本文件用：paste 敏感性的判断已经下沉到主进程的
   //   session:send-prompt 闭环里（main/ipc/prompt-submit-handlers.js）。
   const { kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
@@ -2082,7 +2091,7 @@ if (typeof document !== 'undefined') (function () {
         _showGcEscapeNotice('停止本轮失败：' + ((r && r.reason) || '未知'), 'error');
         return;
       }
-      const n = Array.isArray(r.stopped) ? r.stopped.length : 0;
+      const n = Math.max(Array.isArray(r.stopped) ? r.stopped.length : 0, Array.isArray(r.signaled) ? r.signaled.length : 0);
       const loopTail = r.loopStopped ? '，工作流已一并停止' : '';
       _showGcEscapeNotice(n > 0
         ? `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
@@ -4288,6 +4297,7 @@ if (typeof document !== 'undefined') (function () {
   function _updateWorkflowBtnState(meeting) {
     const btn = document.getElementById('mr-workflow-btn');
     if (!btn) return;
+    if (DevFile.enabled(meeting)) { btn.style.display = 'none'; return; }
     // 2026-07-20 道雪 [修#7d]：非群聊会议隐藏 workflow 按钮。
     btn.style.display = (meeting && meeting.groupChat) ? '' : 'none';
     if (!(meeting && meeting.groupChat)) return;
@@ -4969,6 +4979,59 @@ if (typeof document !== 'undefined') (function () {
     }
   });
 
+  function _renderDevFileControls(row, current) {
+    const state = _devFileStates[current.id];
+    if (!state && !_devFileRequests.has(current.id)) {
+      _devFileRequests.add(current.id);
+      ipcRenderer.invoke('dev-file:status', { meetingId: current.id }).then(s => {
+        _devFileStates[current.id] = s || { error: '文件工作流未就绪', label: '状态不可用' };
+      }).catch(error => {
+        _devFileStates[current.id] = { error: error.message, label: '状态读取失败' };
+      }).finally(() => {
+        _devFileRequests.delete(current.id);
+        if (activeMeetingId === current.id) _updateInputPreflight(meetingData[current.id]);
+      });
+    }
+    const s = state || { phase: 'discuss', label: '读取文件进度…' };
+    const phases = [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
+    const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
+    const names = selected.map(slot => slot.displayLabel || slot.label || slot.kind).join(' / ');
+    const running = !!s.running || _isGroupTurnRunning(current);
+    row.innerHTML = `<div class="mr-file-flow" data-file-phase="${escapeHtml(s.phase || '')}">
+      <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
+      <div class="mr-file-detail"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
+        ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
+      <div class="mr-file-actions"><small>${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small>
+        ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
+        <button type="button" data-file-docs>任务文件</button>
+        ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
+      </div></div>`;
+    row.querySelector('[data-file-docs]')?.addEventListener('click', () => {
+      ipcRenderer.invoke('dev-file:open-docs', { meetingId: current.id }).catch(e => _showGcEscapeNotice(e.message, 'error'));
+    });
+    row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
+    row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const preset = await ipcRenderer.invoke('dev-file:kickoff-preset', { meetingId: current.id });
+        if (activeMeetingId !== current.id) return;
+        const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [preset.slot]);
+        const box = document.getElementById('mr-input-box');
+        if (!box || activeMeetingId !== current.id) return;
+        box.textContent = DevFile.appendKickoff(box.innerText, preset.prompt);
+        _setInputDraft(current.id, box.innerText);
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        renderToolbar(fresh);
+        box.focus();
+        const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
+        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        _updateInputPreflight(fresh);
+      } catch (error) { _showGcEscapeNotice('开题提示词准备失败：' + error.message, 'error'); }
+      finally { button.disabled = false; }
+    });
+  }
+
   function _updateInputPreflight(meeting) {
     const row = _ensureInputPreflightRow();
     if (!row) return;
@@ -4978,6 +5041,11 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
     row.style.display = '';
+    if (DevFile.enabled(current)) {
+      _renderDevFileControls(row, current);
+      _updateInputHistoryButton(current);
+      return;
+    }
     const raw = _getInputRawText();
     const charCount = raw.length;
     const chips = [];
@@ -6535,7 +6603,9 @@ if (typeof document !== 'undefined') (function () {
         ? 'AI 群聊：请勾选成员，或用 @成员名 / @m1 / @all 指定发言人'
         : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
     }
-    if (DevDiscuss.isDiscussing(meeting)) {
+    if (DevFile.enabled(meeting)) {
+      inputBox.dataset.placeholder = '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
+    } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
     // 灰态：readonly + class 切换
@@ -6657,7 +6727,7 @@ if (typeof document !== 'undefined') (function () {
     // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
     function _dispatchMeetingInput(m, finalText, heroIdBySid) {
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
-      if (DevDiscuss.isDiscussing(m)) {
+      if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {
         handleMeetingSend(finalText, m, { heroIdBySid });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {

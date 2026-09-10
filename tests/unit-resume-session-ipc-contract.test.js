@@ -306,6 +306,17 @@ test('unbound Agent League Claude shell starts fresh instead of continuing an un
     && call[2] === 'agent-league-trend-agent'));
 });
 
+test('unbound file-workflow member starts fresh under the same Hub id without a cross-session continue', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  deps.meetingManager.getMeeting = () => ({id:'file-room',groupChat:true,scene:'dev',subSessions:['file-claude'],serialWorkflow:{fileFlowVersion:2}});
+  registerResumeSessionIpc(ipc, deps);
+  const session = await ipc.handlers.get('resume-session')(null, {hubId:'file-claude',meetingId:'file-room',kind:'claude',ccSessionId:null,cwd:'C:/fixture',title:'Merger'});
+  assert.strictEqual(session.opts.useContinue, false);
+  assert.strictEqual(session.opts.id, 'file-claude');
+  assert.strictEqual(session.opts.cwd, 'C:/fixture');
+});
+
 test('does not resume a persisted Codex subagent binding as the Hub top-level PTY', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps({

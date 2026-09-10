@@ -102,10 +102,11 @@ assert.ok(/interruptMeetingTurn,/.test(dispatcherSrc), 'dispatcher 必须导出 
 
 assert.ok(/ipcMain\.handle\('groupchat:interrupt'/.test(turnIpcSrc), '必须注册 groupchat:interrupt IPC');
 assert.ok(/stopLoop\(args\.meetingId, \{ interrupt: false \}\)/.test(turnIpcSrc), '停止本轮应先标记工作流停止，再由统一群聊中断路径发 ESC');
-assert.ok(/interruptGroupChatTurn: groupChatDispatcher\.interruptMeetingTurn/.test(mainSrc),
+assert.ok(/interruptGroupChatTurn: [\s\S]{0,100}groupChatDispatcher\.interruptMeetingTurn/.test(mainSrc),
   'main.js 必须把 dispatcher 的中断能力接进 IPC');
-assert.ok(/stopLoop: \(meetingId, options\) => \(global\.__loopEngine \? global\.__loopEngine\.stopLoop\(meetingId, options\) : false\)/.test(mainSrc),
-  'main.js 必须把 loopEngine.stopLoop 接进中断 IPC');
+assert.ok(mainSrc.includes('global.__devFileEngine?.stop(meetingId)')
+  && mainSrc.includes('global.__loopEngine.stopLoop(meetingId, options)'),
+  '中断 IPC 必须优先暂停文件派工，并保留旧循环停止路径');
 
 assert.ok(/if \(bRes\.interrupted \|\| bRes\.superseded\)/.test(loopSrc)
   && /if \(rRes\.interrupted \|\| rRes\.superseded\)/.test(loopSrc),

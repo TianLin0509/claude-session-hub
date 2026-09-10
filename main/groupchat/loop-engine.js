@@ -347,6 +347,13 @@ function createLoopEngine(deps) {
     const sid = sidOf(meeting, memberId);
     if (!sid || !sessionManager) throw new Error(`workflow member ${memberId} is missing`);
     let session = sessionManager.getSession(sid);
+    if (!session && require('../../core/dev-file-workflow').enabled(meeting) && typeof deps.loadSessionMeta === 'function') {
+      const meta = deps.loadSessionMeta(sid);
+      if (meta && meta.hubId === sid && meta.meetingId === meeting.id) {
+        if (typeof resumeSession !== 'function' || !await resumeSession(meta)) throw new Error(`workflow member ${memberId} could not restore its saved session`);
+        session = sessionManager.getSession(sid);
+      }
+    }
     // Boot resume can race renderer/session restoration. Wait for the persisted
     // session to materialize before declaring the workflow broken.
     for (let i = 0; !session && i < 60; i += 1) {
@@ -413,6 +420,7 @@ function createLoopEngine(deps) {
 
   function validateSerial(meetingId) {
     const meeting = meetingManager.getMeeting(meetingId);
+    if (require('../../core/dev-file-workflow').enabled(meeting)) return { ok: false, reason: 'dev_file_workflow_uses_composer' };
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
     const workflow = meeting.serialWorkflow || {};
     const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
@@ -427,6 +435,7 @@ function createLoopEngine(deps) {
   // 任务说明确认（2026-09-06 合并位在隔离实例复现：旧循环暂停 → 回到讨论 → 点继续 → 后端照跑）。
   // 前端不露入口只是礼貌，这里才是闸门：loop:start / loop:resume / 工作台恢复三条路都经过 runLoop。
   function discussPhaseBlock(meeting) {
+    if (require('../../core/dev-file-workflow').enabled(meeting)) return { ok: false, reason: 'dev_file_workflow_uses_composer' };
     const wf = meeting && meeting.serialWorkflow;
     if (!meeting || meeting.scene !== 'dev' || !wf) return null;
     // 开题阶段同样不许起循环：任务书还没被接收，开工就是绕过它。
@@ -1572,6 +1581,7 @@ function createLoopEngine(deps) {
 
   /** 开题入口。接收成功就直接开工 —— 这一步的授权在维护者点「开题」那一下就给过了。 */
   async function runKickoff(meetingId, options = {}) {
+    if (require('../../core/dev-file-workflow').enabled(meetingManager.getMeeting(meetingId))) return { ok: false, reason: 'dev_file_workflow_uses_composer' };
     const outcome = await _kickoffPhase(meetingId, options);
     if (outcome && outcome.ok && outcome.autoStart) {
       runLoop(meetingId, outcome.goal, null, { heroIdBySid: options.heroIdBySid || {} })
@@ -1615,6 +1625,7 @@ function createLoopEngine(deps) {
     try {
       const all = (meetingManager.getAllMeetings && meetingManager.getAllMeetings()) || [];
       for (const mt of all) {
+        if (require('../../core/dev-file-workflow').enabled(mt)) continue;
         const sw = mt && mt.serialWorkflow; const ls = sw && sw.loopState;
         const serialState = sw && sw.serialRunState;
         // 用户上次明确停过 → 开机不许自作主张接着跑。清掉它是用户点「继续/重发」的事。
@@ -1655,7 +1666,7 @@ function createLoopEngine(deps) {
   return {
     getStatus, isRunning, resumePending, runKickoff, runLoop, runSerial, stopLoop, clearStopIntent, stopIntentOf,
     describeLoopStateDamage, bindProjectRootFromReport, locatorBlockFor,
-    validateLoop, validateResume, validateSerial,
+    validateLoop, validateResume, validateSerial, ensureMemberReady,
     // 仅供单测：裁决取文本这条路径是「代码合对了但引擎判失败」的根因所在，
     // 必须能脱离真实 CLI 会话单独验证。见 unit-loop-verdict-capture.test.js。
     __test: { awaitVerdictText, awaitStepText, hasVerdict, hasProgressCard,
