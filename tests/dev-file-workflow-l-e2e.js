@@ -107,14 +107,17 @@ async function run() {
     console.log('PASS real kickoff -> implementation -> independent merge; actual master behavior verified');
     fs.writeFileSync(path.join(ROOT, 'result.json'), JSON.stringify({ pass: true, baseline, head: git('rev-parse', 'HEAD').trim(), output, root: ROOT }, null, 2));
   } finally {
-    if (cdp && meetingId) {
-      try { await cdp.eval(`require('electron').ipcRenderer.invoke('groupchat:interrupt', {meetingId:${JSON.stringify(meetingId)}})`); }
-      catch (error) { console.error('test interrupt failed', error.message); }
-    }
-    if (cdp) await cdp.close(); if (hub) await gracefulQuit(hub);
-    // Remove credential copies created by this test; keep transcripts and fixture evidence.
-    for (const [dir, names] of [['codex-home', ['auth.json', 'config.toml']], ['claude-config', ['.credentials.json', 'settings.json', '.claude.json']]]) {
-      for (const name of names) { const file = path.join(ROOT, dir, name); if (fs.existsSync(file)) fs.unlinkSync(file); }
+    try {
+      if (cdp && meetingId) {
+        try { await cdp.eval(`require('electron').ipcRenderer.invoke('groupchat:interrupt', {meetingId:${JSON.stringify(meetingId)}})`); }
+        catch (error) { console.error('test interrupt failed', error.message); }
+      }
+      if (cdp) await cdp.close(); if (hub) await gracefulQuit(hub);
+    } finally {
+      // Teardown can itself fail. Credential cleanup must still run.
+      for (const [dir, names] of [['codex-home', ['auth.json', 'config.toml']], ['claude-config', ['.credentials.json', 'settings.json', '.claude.json']]]) {
+        for (const name of names) { const file = path.join(ROOT, dir, name); if (fs.existsSync(file)) fs.unlinkSync(file); }
+      }
     }
   }
 }
