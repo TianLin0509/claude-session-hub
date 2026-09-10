@@ -2483,6 +2483,7 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
+      meetingId: info.meetingId || null,
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
         nativeConfig:info.nativeConfig,
         ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),

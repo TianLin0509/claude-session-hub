@@ -428,7 +428,7 @@ function createGroupChatDispatcher(deps) {
     registerPatchListener(sid, watcher);
 
     let streamTimer = null;
-    if (typeof onPartial === 'function') {
+    if (!native && typeof onPartial === 'function') {
       streamTimer = setInterval(() => {
         if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
         const session = sessionManager.getSession(sid);
@@ -753,6 +753,7 @@ function createGroupChatDispatcher(deps) {
 
     const cleanupWaitResources = () => {
       if (native && nativeStateListener) native.off('state',nativeStateListener);
+      if (native && nativeItemsListener) native.off('items',nativeItemsListener);
       if (hardTimeout) clearTimeout(hardTimeout);
       clearInterval(hostShellHeartbeat);
       if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
@@ -775,11 +776,45 @@ function createGroupChatDispatcher(deps) {
     };
 
     let nativeStateListener = null;
+    let nativeItemsListener = null;
     const waiting = watcher.wait();
     if (native) {
       let reading = false;
+      let readAgain = false;
+      let lastProgress = '';
+      const publishNativeProgress = (includeOutput = false) => {
+        if (watcher.isSettled()) return;
+        const runtime = native.runtime;
+        const expectedTurnId = opts.providerTurnId || attempt?.providerTurnId;
+        if (!expectedTurnId || runtime.turnId !== expectedTurnId || runtime.connection !== 'connected'
+            || !['running', 'waiting'].includes(runtime.state)) return;
+        try {
+          const key = [runtime.epoch, expectedTurnId, runtime.state].join(':');
+          if (key !== lastProgress && orch && opts.attemptId) {
+            const progress = orch.updateAttempt(opts.attemptId, { status: runtime.state,
+              providerTurnId: expectedTurnId, signalSource: 'codex-app-server',
+              nativeEpoch: runtime.epoch, nativeRevision: runtime.revision }, 'native_attempt_progress');
+            if (!silent) publishAttempt(meetingId, orch, progress);
+            lastProgress = key;
+          }
+          if (includeOutput && typeof onPartial === 'function') {
+            // This accessor reads native items only; no terminal scan or timer.
+            const output = groupChatWatcher.extractStreamingText(sid, 'codex');
+            if (output.text || output.blocks.length) onPartial({ sid, label,
+              status: runtime.state === 'waiting' ? 'waiting' : 'streaming',
+              attemptId: opts.attemptId, runId: opts.runId, providerTurnId: expectedTurnId,
+              source: 'codex-app-server', text: output.text, blocks: output.blocks,
+              cleanBufLen: output.text.length });
+          }
+        } catch (error) {
+          watcher.markErrored('native_progress_delivery_failed: ' + error.message);
+          native.emit('action-error', '群聊状态保存失败：' + error.message);
+        }
+      };
       const replay = async () => {
-        if (reading || watcher.isSettled()) return;
+        publishNativeProgress();
+        if (watcher.isSettled()) return;
+        if (reading) { readAgain = true; return; }
         if (native.runtime.connection !== 'connected') {
           if (orch && opts.attemptId) {
             const pending = orch.updateAttempt(opts.attemptId,{status:'recovering',reason:'native_connection_unknown'},'native_disconnected');
@@ -788,17 +823,26 @@ function createGroupChatDispatcher(deps) {
           return;
         }
         reading = true;
+        readAgain = false;
         try {
           const outcome = await native.readOutcome(opts.providerTurnId || attempt?.providerTurnId);
           if (outcome) watcher.observeNativeOutcome(outcome);
         } catch (error) { warn('[codex-native] group outcome read failed:',error.message); }
-        finally { reading = false; }
+        finally {
+          reading = false;
+          // A terminal event can arrive before an older read response. Coalesce
+          // that observed event into one further read; never lose the wake-up.
+          if (readAgain && !watcher.isSettled()) void replay();
+        }
       };
       nativeStateListener = () => { void replay(); };
+      nativeItemsListener = () => publishNativeProgress(true);
       native.on('state',nativeStateListener);
+      native.on('items',nativeItemsListener);
       // The engine may have completed before turn/start responded. Read its
       // exact stored outcome after subscribing; never infer from final text.
       void replay();
+      publishNativeProgress(true);
       watcher.interrupt = () => {
         native.interrupt().catch(error=>warn('[codex-native] group interrupt failed:',error.message));
       };

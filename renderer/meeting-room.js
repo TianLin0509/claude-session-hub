@@ -1801,6 +1801,8 @@ if (typeof document !== 'undefined') (function () {
     return {
       idle: '待命',
       queued: '待发言',
+      accepted: '已收到 · 等待执行',
+      waiting: '等待你的回复',
       off: '未选',
       thinking: '思考中',
       streaming: '输出中',
