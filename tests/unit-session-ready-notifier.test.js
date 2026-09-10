@@ -1,4 +1,5 @@
 'use strict';
+const {nativeSnapshot}=require('./helpers/native-runtime-fixture');
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -19,7 +20,9 @@ function readySession(id, at = 1000) {
     replyReadyText: `回答 ${id}`,
     lastCompletedAt: at,
     lastMessageTime: at,
-    runtimeTruth: {
+    nativeRuntime: {
+      ...nativeSnapshot('completed'),
+      turnId:'turn-'+at,
       state: 'completed',
       source: 'test-completion',
       confidence: 'authoritative',
@@ -31,10 +34,11 @@ function readySession(id, at = 1000) {
 
 test('eligibility is the exact completed-unread state, not raw completion noise', () => {
   assert.equal(isDesktopNotificationReady(readySession('ok')), true);
-  assert.equal(isDesktopNotificationReady({ ...readySession('running'), status: 'running', runtimeTruth: {
+  assert.equal(isDesktopNotificationReady({ ...readySession('running'), status: 'running', nativeRuntime: {
+    ...nativeSnapshot('running'),
     state: 'running', source: 'test-running', confidence: 'authoritative', observedAt: 2000,
   } }), false);
-  assert.equal(isDesktopNotificationReady({ ...readySession('waiting'), attentionState: 'needs-input' }), false);
+  assert.equal(isDesktopNotificationReady({ ...readySession('waiting'), nativeRuntime:nativeSnapshot('waiting') }), false);
   assert.equal(isDesktopNotificationReady({ ...readySession('seen'), unreadCount: 0 }), false);
   assert.equal(isDesktopNotificationReady({ ...readySession('meeting'), meetingId: 'm-1' }), false);
 });
@@ -92,4 +96,11 @@ test('simultaneous completions coalesce into one payload with an accurate count'
   assert.equal(sent[0][1].sessionId, 'latest');
   assert.equal(sent[0][1].readyCount, 2);
   assert.equal(sent[0][1].newCount, 2);
+});
+
+test('the same native turn cannot notify twice after old attention reappears',()=>{
+ const sessions=new Map(),sent=[];const notifier=createSessionReadyNotifier({ipcRenderer:{send:(...x)=>sent.push(x)},getSessions:()=>sessions});notifier.prime();
+ const s=readySession('task',1000);sessions.set(s.id,s);assert.equal(notifier.scan().notified,true);
+ s.unreadCount=0;notifier.scan();s.unreadCount=1;assert.equal(notifier.scan().notified,false);
+ s.nativeRuntime.turnId='new-turn';assert.equal(notifier.scan().notified,true);assert.equal(sent.length,2);
 });

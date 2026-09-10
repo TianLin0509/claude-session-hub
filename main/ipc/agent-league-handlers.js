@@ -637,6 +637,8 @@ function publicAgent(row, sessionManager, options = {}) {
   const automationRunning = !!(row.session && row.session.hubSessionId
     && options.pendingSessionIds instanceof Set
     && options.pendingSessionIds.has(row.session.hubSessionId));
+  const nativeExecution = live && require('../../core/codex-native-runtime').isCodexSession(live)
+    ? require('../../core/codex-native-runtime').nativeRuntimeTruth(live) : null;
   const philosophy = getPhilosophy(row.agent.philosophyKey) || {
     key: row.agent.philosophyKey,
     title: row.agent.philosophyTitle,
@@ -675,7 +677,8 @@ function publicAgent(row, sessionManager, options = {}) {
     session: {
       ...row.session,
       live: !!live,
-      status: automationRunning
+      ...(nativeExecution ? {execution:{state:nativeExecution.state,connection:nativeExecution.connection,source:nativeExecution.source}} : {}),
+      status: nativeExecution ? nativeExecution.state : automationRunning
         ? 'running'
         : live ? (live.status || 'idle') : (row.session.status || (row.session.hubSessionId ? 'restorable' : 'unbound')),
       nativeSession: live ? { ...(row.session.nativeSession || {}), ...nativeSessionMeta(live) } : (row.session.nativeSession || {}),
@@ -923,6 +926,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const windows = Array.isArray(options.windows) && options.windows.length ? options.windows : defaultWindows;
     for (let index = 0; index < windows.length; index += 1) {
       if (await waitReady(sessionId, kind, windows[index])) return true;
+      if(sessionManager?.getNativeCodex?.(sessionId))continue;
       if (!codexRuntime || index >= windows.length - 1 || !sessionManager
           || typeof sessionManager.writeToSession !== 'function') continue;
       const live = typeof sessionManager.getSession === 'function' ? sessionManager.getSession(sessionId) : null;
@@ -982,6 +986,11 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   }
 
   async function ensureAgentCliReady(agentId, row, session, stage) {
+    const managed=sessionManager?.getNativeCodex?.(session.id);
+    if(managed) {
+      await managed.start();
+      return {ready:await waitForAgentCliReady(session.id,row,stage),session,freshFallback:false};
+    }
     const native = row && row.session && row.session.nativeSession || {};
     const resumeCodex = isCodexRuntimeAgent(row) && !!native.codexSid;
     const resumeWindows = resumeCodex
@@ -1402,6 +1411,15 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
     pending.timeoutTimer = setTimeout(() => {
       if (pendingByHubSession.get(sessionId) !== pending) return;
+      const native=sessionManager?.getNativeCodex?.(sessionId);
+      if(native && !['completed','failed','interrupted'].includes(native.runtime.state)) {
+        // A workflow deadline cannot decide whether Codex has stopped. Keep
+        // ownership and the pending task; reconcile without replaying input.
+        native.reconcile().catch(error=>console.warn('[agent-league] native task reconciliation:',error.message));
+        emit('session-recovering',{sessionId,agentId:pending.agentId,mode:'native-outcome-unconfirmed'});
+        armPendingTimeout(sessionId,pending);
+        return;
+      }
       // Parsing and read-only market verification can briefly outlive the
       // provider turn. Do not race a watchdog against that critical section.
       if (pending.processing) {
@@ -1484,7 +1502,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (runtimeStore && runtimeAttempt && !drainingForHandoff && !staleOwner) {
       try {
         const stageAttempts = runtimeStore.stageAttemptCount(runtimeAttempt.taskKey, runtimeAttempt.stage);
-        const terminal = stageAttempts >= stageMaxAttempts;
+        const terminal = error?.noRetry === true || stageAttempts >= stageMaxAttempts;
         runtimeStore.failTask(
           runtimeAttempt.taskKey,
           runtimeAttempt.attemptId,
@@ -3157,12 +3175,23 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     transcriptTap.on('turn-complete', (event = {}) => {
       const pending = pendingByHubSession.get(event.hubSessionId);
       if (!pending) return;
+      const native=sessionManager?.getNativeCodex?.(event.hubSessionId);
+      if(native && (event.signalSource!=='codex-app-server' || event.threadId!==native.threadId
+          || event.turnId!==native.runtime.turnId || native.runtime.state!=='completed'))return;
       handleAgentTurnComplete(event, pending).catch((error) => {
         markFailed(pending.agentId, error);
         clearPendingTask(pending);
         pumpQueue();
         finishRunIfDone();
       });
+    });
+    for(const type of ['turn-error','turn-aborted'])transcriptTap.on(type,(event={})=>{
+      const native=sessionManager?.getNativeCodex?.(event.hubSessionId),pending=pendingByHubSession.get(event.hubSessionId);
+      if(!native || !pending || event.signalSource!=='codex-app-server' || event.threadId!==native.threadId
+          || event.turnId!==native.runtime.turnId || !['failed','interrupted'].includes(native.runtime.state))return;
+      const error=new Error(event.message || (type==='turn-aborted'?'Codex 任务已中断':'Codex 任务失败'));
+      if(type==='turn-aborted')error.noRetry=true;
+      markFailed(pending.agentId,error);clearPendingTask(pending);pumpQueue();finishRunIfDone();
     });
   }
 

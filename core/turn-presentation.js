@@ -34,6 +34,8 @@ function optionalFiniteNumber(value) {
 
 function normalizeActivityStatus(tool = {}) {
   const raw = String(tool.status || '').replace(/[-\s]/g, '_').toLowerCase();
+  if (raw === 'unknown') return 'unknown';
+  if (raw === 'declined') return 'declined';
   if (tool.isError === true || Number(tool.exitCode) > 0) return 'failed';
   if (raw === 'failed' || raw === 'error' || raw === 'errored') return 'failed';
   if (raw === 'cancelled' || raw === 'canceled' || raw === 'interrupted') return 'cancelled';
@@ -205,6 +207,7 @@ function verificationStatus(activity) {
 }
 
 function isTurnComplete(turn = {}) {
+  if (turn.source === 'codex-app-server') return turn.nativeOutcome === 'completed';
   return FINAL_STOP_REASONS.has(String(turn.stopReason || '').toLowerCase());
 }
 

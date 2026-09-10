@@ -255,6 +255,9 @@ function createResumeSessionHandler(deps) {
       useResume: isNativeResumeKind && !freshUnboundAgentLeague,
       codexResumePicker: codexMissingSid && !freshUnboundAgentLeague,
       codexSid: effectiveCodexSid,
+      ...(meta.nativeRuntime ? {nativeRuntime:meta.nativeRuntime} : {}),
+      ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),
+      ...(meta.codexSandbox ? {sandbox:meta.codexSandbox} : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,
       // MCP 档位现在 Claude 家族也有（core/claude-mcp-profile.js），不能再只给
       // codex runtime 继承 —— 否则 resume 出来的 Claude 会话会从用户选的 Lean

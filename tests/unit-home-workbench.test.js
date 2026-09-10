@@ -1,4 +1,5 @@
 'use strict';
+const {nativeSnapshot}=require('./helpers/native-runtime-fixture');
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -13,6 +14,7 @@ test('HUB workbench groups top-level sessions and meetings into actionable lanes
   const now = Date.UTC(2026, 7, 10, 10, 0, 0);
   const sessions = new Map([
     ['wait', {
+      nativeRuntime:nativeSnapshot('waiting',{requests:[{params:{reason:'需要确认提交范围'}}]}),
       id: 'wait', kind: 'codex', title: '等待确认', status: 'idle', isWaiting: true,
       unreadCount: 1, waitingText: '需要确认提交范围', lastMessageTime: now - 60_000,
     }],
@@ -71,6 +73,7 @@ test('meeting lanes aggregate child RuntimeTruth waiting and failure states', ()
       lastMessageTime: now,
     }],
     ['failed-child', {
+      nativeRuntime:nativeSnapshot('failed',{reason:'rate limited'}),
       id: 'failed-child', kind: 'codex', title: '执行失败', status: 'error',
       lastError: 'rate limited', meetingId: 'failed-meeting', lastMessageTime: now,
     }],
@@ -155,6 +158,7 @@ test('workbench derives P0/P1 operational insights without transcript scans', ()
   const artifactPath = 'C:\\Vibe\\AI\\report.html';
   const sessions = new Map([
     ['long', {
+      nativeRuntime:nativeSnapshot('running',{startedAt:now - 22 * 60_000}),
       id: 'long', kind: 'codex', title: '长任务', status: 'running',
       runStartedAt: now - 22 * 60_000,
       lastMessageTime: now - 8 * 60_000,

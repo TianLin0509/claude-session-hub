@@ -1,5 +1,7 @@
 'use strict';
 
+const { isCodexSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
+
 const {
   ATTENTION_NEEDS_INPUT,
   ATTENTION_REPLY_READY,
@@ -14,6 +16,7 @@ const RUNTIME_IDLE = 'idle';
 const RUNTIME_FAILED = 'failed';
 const RUNTIME_DORMANT = 'dormant';
 const RUNTIME_UNKNOWN = 'unknown';
+const RUNTIME_INTERRUPTED = 'interrupted';
 
 const CONFIDENCE_AUTHORITATIVE = 'authoritative';
 const CONFIDENCE_STRONG = 'strong';
@@ -34,6 +37,7 @@ const VALID_STATES = new Set([
   RUNTIME_FAILED,
   RUNTIME_DORMANT,
   RUNTIME_UNKNOWN,
+  RUNTIME_INTERRUPTED,
 ]);
 
 const CONFIDENCE_RANK = Object.freeze({
@@ -78,6 +82,7 @@ function runtimeLabel(state) {
     [RUNTIME_FAILED]: '运行异常',
     [RUNTIME_DORMANT]: '休眠中',
     [RUNTIME_UNKNOWN]: '状态未知',
+    [RUNTIME_INTERRUPTED]: '已中断',
   }[state] || '状态未知';
 }
 
@@ -95,6 +100,7 @@ function runtimeConfidenceLabel(confidence) {
 function runtimeSourceLabel(source) {
   const value = String(source || 'unspecified');
   const exact = {
+    'codex-app-server': 'Codex 原生执行状态',
     'claude-user-prompt-submit': 'Claude UserPromptSubmit',
     'claude-stop': 'Claude Stop',
     'claude-transcript-complete': 'Claude transcript stop_reason',
@@ -193,6 +199,7 @@ function isSameOrUnknownTurn(previous, next) {
 }
 
 function applySessionRuntimeObservation(session, observation = {}, options = {}) {
+  if (isCodexSession(session)) return { applied: false, reason: 'codex-native-only' };
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const previous = session.runtimeTruth && VALID_STATES.has(session.runtimeTruth.state)
     ? session.runtimeTruth
@@ -305,6 +312,7 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 }
 
 function getSessionRuntimeTruth(session, options = {}) {
+  if (isCodexSession(session)) return nativeRuntimeTruth(session);
   const now = Number(options.now) || Date.now();
   if (!session || typeof session !== 'object') {
     return normalizeObservation({ state: RUNTIME_UNKNOWN, source: 'missing-session', confidence: CONFIDENCE_NONE }, null, now);
@@ -383,6 +391,7 @@ function runtimeTruthSummary(truth) {
 }
 
 module.exports = {
+  RUNTIME_INTERRUPTED,
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
   RUNTIME_WAITING,

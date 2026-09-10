@@ -31,6 +31,7 @@ const CLAUDE_FINAL_SOURCES = new Set([
 ]);
 
 const CODEX_FINAL_SOURCES = new Set([
+  'codex-app-server',
   'task_complete',
   'item_completed_agent_message_final_answer',
   'codex_auto_extract_final_answer',

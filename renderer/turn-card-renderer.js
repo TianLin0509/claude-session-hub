@@ -99,7 +99,7 @@ function _toolCmdFromInput(input) {
 const _TOOL_RESULT_HARD_LIMIT = 50000;
 function _activityStatusHtml(activity) {
   const labels = {
-    pending: '等待', running: '进行中', completed: '完成', failed: '失败', cancelled: '取消',
+    pending: '等待', running: '进行中', completed: '完成', failed: '失败', cancelled: '取消', unknown:'结果未确认', declined:'已拒绝',
   };
   const status = labels[activity.status] ? activity.status : 'pending';
   return `<span class="turn-activity-status ${status}" data-activity-status="${status}">${labels[status]}</span>`;
@@ -147,6 +147,8 @@ function renderToolCluster(turnId, toolCalls) {
     counts.completed ? `${counts.completed} 完成` : '',
     counts.failed ? `${counts.failed} 失败` : '',
     counts.cancelled ? `${counts.cancelled} 取消` : '',
+    counts.unknown ? `${counts.unknown} 结果未确认` : '',
+    counts.declined ? `${counts.declined} 已拒绝` : '',
   ].filter(Boolean).join(' · ');
   const items = activities.map(_renderToolRow).join('');
   const hasLive = !!(counts.running || counts.pending);
@@ -443,7 +445,8 @@ function renderTurnCard(turn) {
       : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
   }
 
-  const body = renderMarkdownPreservingLocalPaths(turn.text);
+  const emptyNative = !turn.text && ({completed:'本轮已完成，没有回答正文',interrupted:'本轮已中断',failed:'本轮执行失败'})[turn.nativeOutcome];
+  const body = emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>` : renderMarkdownPreservingLocalPaths(turn.text);
   const presentation = turn.presentation || buildTurnPresentation(turn);
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', presentation.activities);
@@ -487,7 +490,7 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body${turn.text ? '' : ' turn-body-empty'}">${body}</div>
+      <div class="turn-body${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}

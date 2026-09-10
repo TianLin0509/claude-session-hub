@@ -1,4 +1,5 @@
 'use strict';
+const {nativeSnapshot}=require('./helpers/native-runtime-fixture');
 // 2026-07-28 用户反馈：群聊里单独点进 Codex 的 CLI 布置任务，Codex 已经在跑，
 //   但 (1) 成员状态点还是绿色（就绪），(2) 该群聊没有被归到侧栏的「运行中」分区。
 //
@@ -88,6 +89,7 @@ function groupChat(statuses, extra = {}) {
   kinds.forEach((kind, i) => {
     sessions.set('sid-' + kind, {
       id: 'sid-' + kind, title: 'AI-' + kind, kind,
+      ...(kind === 'codex' ? {nativeRuntime:nativeSnapshot(statuses[i] === 'error' ? 'failed' : statuses[i])} : {}),
       status: statuses[i], contextPct: 10 + i,
       ...(extra.subs || {}),
     });
@@ -239,7 +241,7 @@ test('休眠或错误是硬终态，不会被延迟到达的新鲜心跳重新�
   }
 });
 
-test('成员状态未知（既非 idle 也非 running）时仍尊重 gcWorking', () => {
+test('Codex 未接管时不会由 gcWorking 冒充运行', () => {
   const sessions = new Map();
   sessions.set('sid-codex', { id: 'sid-codex', title: 'AI-codex', kind: 'codex', gcWorking: true });
   const meetings = {
@@ -249,8 +251,8 @@ test('成员状态未知（既非 idle 也非 running）时仍尊重 gcWorking',
     },
   };
   const html = render({ sessions, meetings });
-  assert.strictEqual(sectionOf(html, '群聊X'), '活跃',
-    '会话自身没有明确状态时，群聊调度的 gcWorking 仍是有效信号');
+  assert.notStrictEqual(sectionOf(html, '群聊X'), '活跃',
+    'Codex 未接管时心跳不能证明正在执行');
 });
 
 test('renderer 同时监听真实目标名单、心跳和轮次完成三条状态事件', () => {

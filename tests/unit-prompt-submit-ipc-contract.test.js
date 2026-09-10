@@ -94,7 +94,7 @@ test('a plain shell session bypasses the paste machinery entirely', async () => 
 
 test('concurrent sends on one session serialize instead of interleaving chunks', async () => {
   // 分块投喂引入的新风险：两条 payload 并发写同一个 PTY 会交错成乱码。
-  const h = createHarness({ kind: 'codex', ackOnEnter: 1 });
+  const h = createHarness({ kind: 'deepseek', ackOnEnter: 1 });
   const send = h.ipc.handlers.get('session:send-prompt');
   const a = 'A'.repeat(9000);
   const b = 'B'.repeat(9000);

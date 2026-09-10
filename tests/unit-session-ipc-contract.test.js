@@ -541,48 +541,17 @@ test('restart-session recreates a non-resumable PowerShell terminal', () => {
   assert.deepStrictEqual(emitted, [['session-created', { session: fresh }]]);
 });
 
-testAsync('restart-session resumes the exact Codex thread and preserves provider metadata', async () => {
+testAsync('restart-session reconciles the owned native Codex connection without killing or recreating it', async () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
-  const resumed = [];
-  registerSessionIpc(ipc, {
-    sessionManager,
-    sendToRenderer: () => {},
-    resumeSession: async (meta) => {
-      resumed.push(meta);
-      return { id: meta.hubId, kind: meta.kind, codexSid: meta.codexSid };
-    },
-  });
-
-  const fresh = await ipc.handlers.get('restart-session')(null, 'codex-source');
-  assert.deepStrictEqual(fresh, {
-    id: 'codex-source', kind: 'codex-resume', codexSid: '22222222-2222-4222-8222-222222222222',
-  });
-  assert.strictEqual(resumed.length, 1);
-  assert.deepStrictEqual({
-    hubId: resumed[0].hubId,
-    kind: resumed[0].kind,
-    codexSid: resumed[0].codexSid,
-    model: resumed[0].model,
-    codexProfile: resumed[0].codexProfile,
-    mcpProfile: resumed[0].mcpProfile,
-    codexSpeedTier: resumed[0].codexSpeedTier,
-    contextMax: resumed[0].contextMax,
-  }, {
-    hubId: 'codex-source',
-    kind: 'codex-resume',
-    codexSid: '22222222-2222-4222-8222-222222222222',
-    model: 'gpt-5.5',
-    codexProfile: 'work',
-    mcpProfile: 'browser',
-    codexSpeedTier: 'standard',
-    contextMax: 272000,
-  });
-  assert.deepStrictEqual(
-    sessionManager.calls.filter(call => ['getSession', 'closeSession', 'createSession'].includes(call[0])),
-    [['getSession', 'codex-source'], ['closeSession', 'codex-source']],
-    'Restart must delegate to native resume instead of creating a fresh Codex session',
-  );
+  let reconciled = 0;
+  sessionManager.getNativeCodex = id => id === 'codex-source' ? { reconnect:async()=>{reconciled++;} } : null;
+  registerSessionIpc(ipc, {sessionManager,sendToRenderer:()=>{},resumeSession:async()=>{throw Error('must not recreate');}});
+  const before = sessionManager.getSession('codex-source');
+  const fresh = await ipc.handlers.get('restart-session')(null,'codex-source');
+  assert.deepStrictEqual(fresh,before);
+  assert.equal(reconciled,1);
+  assert.deepStrictEqual(sessionManager.calls.filter(c=>['closeSession','createSession'].includes(c[0])),[]);
 });
 
 testAsync('restart-session refuses an unbound Codex session without killing it', async () => {
@@ -597,7 +566,7 @@ testAsync('restart-session refuses an unbound Codex session without killing it',
 
   const result = await ipc.handlers.get('restart-session')(null, 'codex-unbound');
   assert.strictEqual(result.ok, false);
-  assert.strictEqual(result.error, 'native-session-id-missing');
+  assert.strictEqual(result.error, 'unmanaged-codex');
   assert.strictEqual(resumed, false);
   assert.deepStrictEqual(
     sessionManager.calls.filter(call => call[0] === 'closeSession'),

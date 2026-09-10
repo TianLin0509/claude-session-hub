@@ -1,6 +1,7 @@
 const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+(.+?)(?:\s*[│╯╰╭╮]+\s*)?$/;
 const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
+const { isCodexSession } = require('../core/codex-native-runtime.js');
 const SILENCE_MS = 2000;
 const RUNTIME_PROBE_MS = 300;
 // A renderer-side fit sends SIGWINCH to the CLI, and full-screen TUIs answer by
@@ -133,6 +134,7 @@ function createTerminalActivityMonitor({
 
   function observeRuntimeState(sessionId, observedAt = Date.now()) {
     const session = sessions.get(sessionId);
+    if (isCodexSession(session)) return null;
     if (!session || typeof classifyRuntimeState !== 'function') return null;
     let result = null;
     try {
@@ -149,6 +151,7 @@ function createTerminalActivityMonitor({
   }
 
   function scheduleRuntimeProbe(sessionId) {
+    if (isCodexSession(sessions.get(sessionId))) return;
     if (runtimeProbeTimers.has(sessionId)) return;
     runtimeProbeTimers.set(sessionId, setTimeout(() => {
       runtimeProbeTimers.delete(sessionId);
@@ -188,6 +191,7 @@ function createTerminalActivityMonitor({
 
   function onTerminalOutput(sessionId, dataLen) {
     const session = sessions.get(sessionId);
+    if (isCodexSession(session)) return;
     if (!session) return;
 
     const now = Date.now();

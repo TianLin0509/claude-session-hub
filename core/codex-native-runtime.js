@@ -1,0 +1,189 @@
+'use strict';
+
+// Main owns this snapshot. Renderer consumers may project it, never vote on it.
+const BACKEND = 'codex-app-server';
+const TERMINAL = new Set(['completed', 'interrupted', 'failed']);
+function isCodexSession(session) {
+  return !!session && (session.kind === 'codex' || session.kind === 'codex-resume'
+    || session.runtimeBackend === BACKEND);
+}
+function createNativeRuntime(epoch = 1) {
+  return { state:'unknown', connection:'connecting', epoch, revision:0,
+    threadId:null, turnId:null, startedAt:0, completedAt:0, observedAt:0,
+    requests:[], endedTurns:[], waitingFlags:[], reason:'正在连接 Codex', submission:null };
+}
+function requestSummary(request) {
+  const p = request && request.params || {};
+  return (p.questions || []).map(q => q.question).filter(Boolean).join('\n')
+    || p.reason || (Array.isArray(p.command) ? p.command.join(' ') : p.command)
+    || p.message || 'Codex 等待你确认';
+}
+function nativeRuntimeTruth(session) {
+  const r = session && session.nativeRuntime;
+  if (session && session.status === 'dormant') {
+    return { ...r, state:'dormant', source:BACKEND, confidence:'authoritative', expiresAt:0, sequence:r?.revision,
+      turnId:r && r.turnId || null, reason:'session-suspended' };
+  }
+  if (!r) return { state:'unknown', source:BACKEND, confidence:'none', expiresAt:0,
+    reason:'unmanaged', evidence:'旧会话尚未接管，请在原进程结束后恢复', requests:[] };
+  const connected = r.connection === 'connected';
+  const state = !connected && !TERMINAL.has(r.state) ? 'unknown' : r.state;
+  return { ...r, state, source:BACKEND, confidence:connected ? 'authoritative' : 'none',
+    expiresAt:0, sequence:r.revision,
+    evidence:state === 'waiting' ? (r.requests || []).map(requestSummary).join('\n') || 'Codex 正在等待操作'
+      : r.reason || null };
+}
+function nativeUnfinished(session) {
+  const r = nativeRuntimeTruth(session);
+  return r.state === 'running' || r.state === 'waiting';
+}
+function acceptNativeSnapshot(local, incoming) {
+  const next = incoming && incoming.nativeRuntime;
+  const old = local && local.nativeRuntime;
+  if (!next || !local || incoming.id !== local.id) return false;
+  if (old && (next.epoch < old.epoch
+      || (next.epoch === old.epoch && next.revision < old.revision))) return false;
+  local.runtimeBackend = BACKEND;
+  local.nativeRuntime = next;
+  local.nativeThreadChoices = incoming.nativeThreadChoices || [];
+  local.nativeActionError = incoming.nativeActionError || null;
+  local.codexApprovalPolicy = incoming.codexApprovalPolicy;
+  local.codexSandbox = incoming.codexSandbox;
+  local.status = incoming.status;
+  // Compatibility fields are projections only, never additional evidence.
+  local.runStartedAt = next.startedAt || null;
+  local.connectionIssue = null;
+  local.gcWorking = false;
+  local.cardWorkingSince = null;
+  local._agentWorking = null;
+  local._runSource = null;
+  local.needsUserInput = next.connection === 'connected' && next.state === 'waiting';
+  local.isWaiting = local.needsUserInput;
+  local.waitingText = local.needsUserInput ? nativeRuntimeTruth(local).evidence : null;
+  return true;
+}
+function persistNativeRuntime(data) {
+  const r = data && data.nativeRuntime;
+  if (!isCodexSession(data) || !r) return null;
+  // Requests belong to the live transport; never restore approval buttons.
+  return { ...r, connection:'disconnected', requests:[], waitingFlags:[],
+    state:TERMINAL.has(r.state) ? r.state : 'unknown', lastKnownState:r.state,
+    reason:'Hub 已重新启动，等待核对 Codex 会话' };
+}
+function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function reduceNativeRuntime(previous, event) {
+  const p = previous || createNativeRuntime();
+  if (!event || (event.epoch != null && event.epoch !== p.epoch && event.type !== 'connect')) return p;
+  const now = event.at || Date.now();
+  let n = { ...p, requests:p.requests.slice(), waitingFlags:p.waitingFlags.slice(),
+    endedTurns:p.endedTurns.slice() };
+  const remember = id => {
+    if (id && !n.endedTurns.includes(id)) n.endedTurns = [...n.endedTurns, id].slice(-128);
+  };
+  const activeState = () => n.requests.some(r => r.method !== 'item/tool/requestUserInput' || r.params?.isBlocking !== false)
+    || n.waitingFlags.length ? 'waiting' : 'running';
+  const start = turn => {
+    if (!turn || !turn.id || n.endedTurns.includes(turn.id)) return false;
+    if (n.turnId && n.turnId !== turn.id && !TERMINAL.has(n.state) && n.state !== 'idle' && n.state !== 'unknown') {
+      n.state = 'unknown'; n.reason = '收到不同的活跃轮次，需要核对'; return false;
+    }
+    if (n.turnId !== turn.id) {
+      n.requests = []; n.waitingFlags = []; n.completedAt = 0;
+      n.startedAt = Number.isFinite(turn.startedAt) ? turn.startedAt * 1000 : now;
+    }
+    n.turnId = turn.id; n.state = activeState(); n.reason = null;
+    return true;
+  };
+  const finish = turn => {
+    if (!turn || !turn.id || !TERMINAL.has(turn.status)) return false;
+    if (n.endedTurns.includes(turn.id)) return false;
+    if (n.turnId && n.turnId !== turn.id) return false;
+    n.turnId = turn.id; n.state = turn.status;
+    n.completedAt = Number.isFinite(turn.completedAt) ? turn.completedAt * 1000 : now;
+    n.requests = []; n.waitingFlags = [];
+    n.reason = turn.error && turn.error.message || null;
+    remember(turn.id);
+    return true;
+  };
+  if (event.type === 'connect') {
+    if (event.epoch < p.epoch) return p;
+    n.epoch = event.epoch; n.connection = 'connecting';
+    n.requests = []; n.waitingFlags = [];
+    n.reason = '正在核对 Codex 会话';
+    if (!TERMINAL.has(n.state)) n.state = 'unknown';
+  } else if (event.type === 'disconnect') {
+    n.connection = 'disconnected';
+    n.reason = event.reason || 'Codex 连接已断开，状态待核对';
+    if (!TERMINAL.has(n.state)) n.state = 'unknown';
+    n.requests = []; n.waitingFlags = [];
+  } else if (event.type === 'submission') {
+    n.submission = event.submission;
+  } else if (event.type === 'configuration') {
+    n.configurationError = event.error || null;
+  } else if (event.type === 'snapshot') {
+    const thread = event.thread;
+    if (!thread || !thread.id || (n.threadId && thread.id !== n.threadId)) return p;
+    n.threadId = thread.id;
+    n.connection = 'connected';
+    n.reason = null;
+    const turns = thread.turns || [];
+    const last = turns[turns.length - 1];
+    const status = thread.status || {};
+    if (last && last.status === 'inProgress') {
+      if (status.type === 'active') start(last);
+      else {
+        n.turnId = last.id; n.state = 'unknown';
+        n.reason = '历史轮次尚无终态，当前运行实例未确认执行';
+      }
+    } else if (last && TERMINAL.has(last.status)) {
+      // A snapshot response may race a newly started turn; never end that turn.
+      if (TERMINAL.has(n.state) && n.turnId !== last.id) n.turnId = null;
+      if (!n.turnId || n.turnId === last.id) finish(last);
+    }
+    if (status.type === 'systemError') {
+      n.state = 'unknown'; n.reason = 'Codex 服务端状态异常';
+    } else if (status.type === 'notLoaded') {
+      if (!TERMINAL.has(n.state)) n.state = 'unknown';
+      n.reason = 'Codex 会话尚未加载';
+    } else if (status.type === 'idle' && !n.turnId) {
+      n.state = 'idle';
+    } else if (status.type === 'active') {
+      n.waitingFlags = status.activeFlags || [];
+      if (n.turnId && !TERMINAL.has(n.state)) n.state = activeState();
+      else { n.state = 'unknown'; n.reason = '活跃轮次身份待核对'; }
+    }
+  } else {
+    if (event.threadId !== n.threadId || n.connection !== 'connected') return p;
+    if (event.type === 'started') start(event.turn);
+    else if (event.type === 'completed') finish(event.turn);
+    else if (event.type === 'status') {
+      const status = event.status || {};
+      if (status.type === 'active' && n.turnId && !TERMINAL.has(n.state)) {
+        n.waitingFlags = status.activeFlags || [];
+        n.state = activeState();
+      } else if (status.type === 'systemError' || status.type === 'notLoaded') {
+        if (!TERMINAL.has(n.state)) n.state = 'unknown';
+        n.reason = status.type === 'systemError' ? 'Codex 服务端状态异常' : 'Codex 会话未加载';
+      } else if (status.type === 'idle' && !n.turnId) {
+        n.state = 'idle'; n.reason = null;
+      }
+      // Thread idle is not a turn outcome. Completion only comes from the turn.
+    } else if (event.type === 'request') {
+      const request = event.request;
+      const turnId = request && request.params && request.params.turnId;
+      if (!request || request.id == null || TERMINAL.has(n.state)
+          || (turnId && turnId !== n.turnId)) return p;
+      if (!n.requests.some(r => r.id === request.id)) n.requests.push(request);
+      n.state = activeState();
+    } else if (event.type === 'resolved') {
+      n.requests = n.requests.filter(r => r.id !== event.requestId);
+      if (!TERMINAL.has(n.state) && n.turnId) n.state = activeState();
+    } else return p;
+  }
+  if (same({ ...n, observedAt:p.observedAt, revision:p.revision }, p)) return p;
+  n.observedAt = now;
+  n.revision = p.revision + 1;
+  return n;
+}
+module.exports = { BACKEND, TERMINAL, isCodexSession, createNativeRuntime, reduceNativeRuntime,
+  nativeRuntimeTruth, nativeUnfinished, requestSummary, acceptNativeSnapshot, persistNativeRuntime };

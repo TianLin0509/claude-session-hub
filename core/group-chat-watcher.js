@@ -308,6 +308,11 @@ async function writeSubmitFallbackSignals(sessionManager, sid, kind, tries = 1, 
 //   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
 async function waitCliReady(sid, kind, maxMs = 60000) {
   const { sessionManager, cliReadyDetector } = _deps;
+  const native = sessionManager.getNativeCodex?.(sid);
+  if (native) {
+    try { await native.start(); return native.runtime.connection === 'connected'; }
+    catch (error) { console.warn('[codex-native] ready failed:', error.message); return false; }
+  }
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
@@ -329,6 +334,14 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
   const { sessionManager } = _deps;
+  const native = sessionManager.getNativeCodex?.(sid);
+  if (native) return native.send(prompt, {
+    ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
+  });
+  const session = sessionManager.getSession?.(sid);
+  if (session && (session.kind === 'codex' || session.kind === 'codex-resume')) {
+    throw new Error('旧 Codex 会话尚未接管，未发送新消息');
+  }
   const alreadySubmitted = () => ({ ok: options.submissionReceipt?.status !== 'content-mismatch',
     sendStatus: options.submissionReceipt?.status === 'content-mismatch' ? 'content-mismatch' : 'ok', enterAttempts: 0,
     acknowledgementSource: options.submissionReceipt?.acknowledgement?.source || 'prompt-submitted' });
@@ -643,6 +656,11 @@ async function sendToPty(sid, prompt, kind, options = {}) {
 //   返回 { source: 'tap'|'placeholder', blocks: Array<Block>, text: string }
 //   kind 参数保留为 API 稳定性（未使用）。
 function extractStreamingText(sid, _kind) {
+  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  if (native) {
+    const blocks = native.blocks();
+    return {source:'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+  }
   const { transcriptTap } = _deps;
   const tapBlocks = transcriptTap.getStreamingText(sid);
   if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
@@ -728,6 +746,12 @@ function inspectPromptSubmissionState({ sid, kind, promptHeader }) {
 }
 
 async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true, submissionReceipt }) {
+  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  if (native) {
+    await native.reconcile();
+    return {ok:false,mode:'none',reason:'native-resend-requires-review',
+      message:'已核对 Codex 原生状态；不会自动重发结果不明的消息，请检查当前轮次。'};
+  }
   const { sessionManager } = _deps;
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };

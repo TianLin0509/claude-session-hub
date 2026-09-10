@@ -129,6 +129,12 @@ async function parseSessionTranscript(args = {}, deps) {
   let transcriptPath = null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
+    const native = hubSessionId && sessionManager.getNativeCodex?.(hubSessionId);
+    if (native) {
+      await native.start();
+      return {turns:native.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
+        error:null,source:'codex-app-server'};
+    }
     const kind = session ? session.kind : inKind;
     // Public kind stays `deepseek` across the migration. A persisted Claude id
     // without a Codex id is the unambiguous marker for a pre-migration session;
@@ -246,6 +252,8 @@ function registerTranscriptIpc(ipcMain, deps) {
   } = deps;
 
   ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
+    const native = deps.sessionManager.getNativeCodex?.(sessionId);
+    if (native) return native.finalText();
     return transcriptTap.getLastAssistantText(sessionId);
   });
 

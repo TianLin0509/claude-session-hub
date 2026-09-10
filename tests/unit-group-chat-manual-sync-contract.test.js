@@ -14,7 +14,7 @@ const cssSrc = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'
 //   表达——turnTimeoutMs 未传（普通群聊）时仍为 true，不变量保持。
 assert.ok(
   dispatcherSrc.includes('const disableHardTimeout = opts.disableHardTimeout === true;') &&
-  dispatcherSrc.includes('if (!disableHardTimeout) {') &&
+  dispatcherSrc.includes('if (!disableHardTimeout && !native) {') &&
   dispatcherSrc.includes('disableHardTimeout: !(Number(turnTimeoutMs) > 0),'),
   'AI waits must opt out of the transitional 5-minute hard timeout unless an explicit turn timeout is requested',
 );

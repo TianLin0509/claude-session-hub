@@ -277,7 +277,8 @@ function createModelUiController({
     } else if (strategy === 'codex-picker') {
       const live = options.some(option => option.source === 'codex-app-server');
       menuNote(menu, `${live ? '当前账号实时目录' : 'Codex CLI 本地缓存'} · `
-        + '将打开原生模型与推理档位面板；Hub 确认终端回执后再更新徽标。');
+        + (session.runtimeBackend === 'codex-app-server' ? '选择后由 Codex 确认模型和思考档，再更新显示。'
+          : '将打开原生模型与推理档位面板；Hub 确认终端回执后再更新徽标。'));
     } else {
       const accountCache = options.some(option => option.source === 'claude-cli-cache');
       menuNote(menu, `${accountCache ? '当前账号模型缓存' : 'Claude CLI 兼容目录'} · `
@@ -372,6 +373,14 @@ function createModelUiController({
   }
 
   async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
+    if (session.runtimeBackend === 'codex-app-server') {
+      const response = await ipcRenderer.invoke('codex:native-action', {
+        sessionId, action:'configure', model:option.id, effort:effortOverride || session.effort,
+      });
+      if (!response || !response.ok) throw new Error(response && response.message || 'Codex 未确认模型切换');
+      return response.result;
+    }
+    if (session.kind === 'codex' || session.kind === 'codex-resume') throw new Error('旧 Codex 会话尚未接管，请结束后恢复');
     if (isSessionBusy(session)) throw new Error('当前回答仍在运行，请结束后再切换模型');
     if (!terminalAcceptsModelCommand(getTerminalScreenText(sessionId), 'codex-picker')) {
       throw new Error('Codex 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
@@ -518,6 +527,7 @@ function createModelUiController({
       renderModelPicker(menu, badgeEl, sessionId, {
         text: preferenceWarning
           ? `已切换到 ${session.currentModel.displayName}，但恢复 Claude 默认模型失败：${confirmed.preference.status}`
+          : switched.appliesOn === 'next-turn' ? `✓ 已选择 ${session.currentModel.displayName}；下次发送生效`
           : `✓ 已切换到 ${session.currentModel.displayName}${confirmed.preference ? '；全局默认未改变' : ''}`,
         state: preferenceWarning ? 'warning' : 'success',
       });
@@ -541,7 +551,7 @@ function createModelUiController({
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[model-switch] failed:', error && (error.stack || error.message));
-      if (strategy === 'codex-picker') writeTerminal(sessionId, '\x1b');
+      if (strategy === 'codex-picker' && session.runtimeBackend !== 'codex-app-server') writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
         renderModelPicker(menu, badgeEl, sessionId, {
           text: `切换失败：${error && error.message ? error.message : String(error)}${cleanupWarning}`,
@@ -567,8 +577,8 @@ function createModelUiController({
       ? (session.currentModel.displayName || session.currentModel.id)
       : '当前模型';
     if (!message) {
-      menuNote(menu, `${modelLabel} 支持的思考档 · 将打开 Codex 原生面板，`
-        + 'Hub 确认终端回执后再更新档位。');
+      menuNote(menu, `${modelLabel} 支持的思考档 · `+(session?.runtimeBackend==='codex-app-server'
+        ? '选择后由 Codex 确认，再更新显示。' : '将打开 Codex 原生面板，Hub 确认终端回执后再更新档位。'));
     }
     for (const effort of efforts) {
       const item = document.createElement('div');
@@ -635,7 +645,7 @@ function createModelUiController({
       updateActiveModelChip();
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
-          text: `✓ 思考档已切到 ${session.effort}`,
+          text: switched.appliesOn === 'next-turn' ? `✓ 已选择 ${session.effort}；下次发送生效` : `✓ 思考档已切到 ${session.effort}`,
           state: 'success',
         });
       }
@@ -646,7 +656,7 @@ function createModelUiController({
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[effort-switch] failed:', error && (error.stack || error.message));
-      writeTerminal(sessionId, '\x1b');
+      if (session.runtimeBackend !== 'codex-app-server') writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
           text: `切换失败：${error && error.message ? error.message : String(error)}`,

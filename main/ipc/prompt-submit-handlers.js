@@ -112,12 +112,13 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     lastPromptBySid.set(sessionId, text);
     return enqueue(sessionId, async () => {
       const receipt = clientSubmissionId && supportsMessageReceipt(kind, text)
-        ? receipts.begin(sessionId, clientSubmissionId, text) : null;
+        ? receipts.begin(sessionId, clientSubmissionId, text, Date.now(), {nativeOnly:!!sessionManager.getNativeCodex?.(sessionId)}) : null;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
         const result = await groupChatWatcher.sendToPty(sessionId, text, kind, {
           requireReady: false, submissionReceipt: receipt,
+          clientSubmissionId, attachments:request.attachments,
         });
         if (receipt) receipts.finish(receipt, result || { ok: false });
         if (!result || result === false) {
@@ -131,9 +132,10 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           ok: sendStatus !== 'content-mismatch',
           kind,
           sendStatus,
-          mode: 'closed-loop',
-          enterAttempts: result.enterAttempts || null,
+          mode: result.mode || 'closed-loop',
+          enterAttempts: result.enterAttempts ?? null,
           acknowledgementSource: result.acknowledgementSource || null,
+          ...(result.threadId ? {threadId:result.threadId,turnId:result.turnId} : {}),
           ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };
       } catch (error) {
