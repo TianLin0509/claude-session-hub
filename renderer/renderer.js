@@ -1876,7 +1876,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
       if (opts.forceScrollBottom) cached._codexFollowBottom = true;
       if (pinOnShow) cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
-      if (opts.focus) cached.terminal.focus();
+      // A delayed layout frame must not take focus from a card selection or
+      // its composer after the user has switched away from the PTY surface.
+      if (opts.focus && (embedded || currentView === 'pty')) cached.terminal.focus();
       const vp = cached.container.querySelector('.xterm-viewport');
       if (pinOnShow && vp) vp.scrollTop = vp.scrollHeight;
       if (dbg && dbg.isOn()) dbg.log('show:after-vp1', dbg.snap(cached.terminal, sessionId));
@@ -2400,7 +2402,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     });
   }
 
-  const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
+  const turns = require('../core/conversation-display').displayTurns(
+    (result && Array.isArray(result.turns)) ? result.turns : []);
   const ipcError = (result && result.error) ? result.error : null;
   // A streaming incremental result can land while this full parse is in
   // flight. Those cards are newer than the full snapshot and must survive the
@@ -2524,8 +2527,17 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     // history. Reorder the authoritative full snapshot first, then append only
     // genuinely newer concurrent cards. Cards removed by optimistic/provisional
     // dedup are intentionally skipped here.
+    const desiredCards=turns.map(turn=>turn?.id && container.querySelector(
+      `:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`)).filter(Boolean)
+      .concat(concurrentExtraCards.filter(card=>card.parentNode===container));
+    const currentCards=Array.from(container.querySelectorAll(':scope > .turn-card'));
+    const alreadyOrdered=desiredCards.length===currentCards.length && desiredCards.every((card,i)=>card===currentCards[i]);
+    const selection=window.getSelection();
+    const savedSelection=selection?.rangeCount && container.contains(selection.anchorNode) && container.contains(selection.focusNode)
+      ? {anchor:selection.anchorNode,anchorOffset:selection.anchorOffset,focus:selection.focusNode,focusOffset:selection.focusOffset} : null;
     const streamingTail = container.querySelector(':scope > .streaming-indicator');
     const placeBeforeStreamingTail = (card) => {
+      if(alreadyOrdered)return;
       if (!card || card.parentNode !== container) return;
       if (streamingTail && streamingTail.parentNode === container) {
         container.insertBefore(card, streamingTail);
@@ -2545,6 +2557,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       if (card.parentNode === container) lastConcurrentCard = card;
     }
     if (lastConcurrentCard) lastCardEl = lastConcurrentCard;
+    if(savedSelection && savedSelection.anchor.isConnected && savedSelection.focus.isConnected) {
+      selection.setBaseAndExtent(savedSelection.anchor,savedSelection.anchorOffset,savedSelection.focus,savedSelection.focusOffset);
+    }
   }
 
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
@@ -4225,9 +4240,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
+    const clientSubmissionId = require('node:crypto').randomUUID();
     if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
-        mountOptimisticUserCard(sessionId, text.trim(), kind);
+        mountOptimisticUserCard(sessionId, text.trim(), kind, clientSubmissionId);
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }
@@ -4240,7 +4256,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
     //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
     clearFloatingInputStuck(bar);
-    const clientSubmissionId = require('node:crypto').randomUUID();
     const delivery = beginPromptDelivery(clientSubmissionId);
     floatingPromptDeliveries.set(sessionId, delivery);
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
@@ -5914,7 +5929,9 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     state.lastReloadAt = Date.now();
     loadSessionHistoryToOverlay(sessionId, {
       incremental: true,
-      parseOpts: { limit: 1, fromTail: true },
+      parseOpts: sessions.get(sessionId)?.runtimeBackend === 'codex-app-server'
+        ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
+        : { limit: 1, fromTail: true },
     })
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
       .finally(() => {
@@ -5964,11 +5981,16 @@ function scheduleCardSettleRefresh(sessionId) {
 }
 
 function noteCardTerminalOutput(sessionId) {
+  if(sessions.get(sessionId)?.runtimeBackend === 'codex-app-server')return false;
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
   if (isCodexSession(sessions.get(sessionId))) return true;
   scheduleCardSettleRefresh(sessionId);
   return true;
 }
+
+ipcRenderer.on('codex-content-updated', (_e, {sessionId}) => {
+  requestCardIncrementalRefresh(sessionId,{reason:'app-server-item'});
+});
 
 ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
   noteStreamDisconnect(sessionId, data);

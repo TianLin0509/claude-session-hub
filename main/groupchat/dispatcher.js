@@ -324,6 +324,17 @@ function createGroupChatDispatcher(deps) {
     const orch = meetingId ? orchestratorFor(meetingId) : null;
     const attempt = opts.attempt || (orch && opts.attemptId ? orch.getAttempt(opts.attemptId) : null);
     const promptSubmitSinceTs = Math.max(0, Number(opts.promptSubmitSinceTs) || (startTs - 1000));
+    const captureDisplayMessages = () => {
+      if(silent || !orch || !opts.attemptId)return [];
+      const activeSession=sessionManager.getSession(sid);
+      const messages=require('../../core/conversation-capture').captureConversationMessages({
+        native,kind:waitKind,sourcePath:activeSession?.transcriptPath,
+        providerTurnId:opts.providerTurnId || attempt?.providerTurnId,clientSubmissionId:opts.attemptId,
+        prompt:opts.prompt,since:opts.promptSubmittedAt || promptSubmitSinceTs,
+      });
+      orch.recordDisplayMessages(opts.attemptId,messages);
+      return messages;
+    };
     let codexPromptSubmitted = false;
     let codexPromptSubmittedAt = 0;
     try { transcriptTap.clearLastTokens(sid); }
@@ -407,9 +418,13 @@ function createGroupChatDispatcher(deps) {
         const buf = sessionManager.getSessionBuffer(sid) || '';
         const cleanBufLen = groupChatWatcher.cleanBufLen(buf);
         if (hasContent) {
+          let displayMessages;
+          try { displayMessages=captureDisplayMessages(); }
+          catch(error) { warn('[conversation] progress message capture failed:',error.message); }
           try {
             onPartial({
               sid, label, status: 'streaming',
+              displayMessages,
               blocks: result.blocks, source: result.source, text: result.text,
               cleanBufLen,
             });
@@ -774,6 +789,8 @@ function createGroupChatDispatcher(deps) {
     }
     return waiting.then(result => {
       cleanupWaitResources();
+      try { result.displayMessages=captureDisplayMessages(); }
+      catch(error) { warn('[conversation] final message capture failed:',error.message); }
       if (!native) setTimeout(() => {
         try { unregisterPatchListener(sid, watcher); }
         catch (e) { warn('[patch] unregisterPatchListener throw:', e && e.message); }
@@ -1580,6 +1597,7 @@ function createGroupChatDispatcher(deps) {
               status: partial.status,
               text: partial.text,
               blocks: partial.blocks,
+              displayMessages: partial.displayMessages,
               source: partial.source,
               thinkSec: partial.thinkSec, tokens: partial.tokens,
               cleanBufLen: partial.cleanBufLen,

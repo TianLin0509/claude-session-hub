@@ -76,6 +76,19 @@ rl.on('line',line=>{
           total:{inputTokens:240000,outputTokens:10000,totalTokens:250000,cachedInputTokens:100000,reasoningOutputTokens:4000},
           last:{inputTokens:8000,outputTokens:1000,totalTokens:9000,cachedInputTokens:6000,reasoningOutputTokens:400},modelContextWindow:100000}});
         finish(thread,turn);
+      } else if(mode==='fixture:conversation') {
+        answer(msg.id,{turn});
+        const progress=(id,text)=>{const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};
+          turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});};
+        const first={id:'progress-one-'+turn.id,type:'agentMessage',phase:'commentary',text:'已定位问题'};
+        turn.items.push(first);event('item/started',{threadId:thread.id,turnId:turn.id,item:first});
+        setTimeout(()=>{const delta='：同一轮中的进展和最终回答，需要保留各自的消息身份。';first.text+=delta;save();
+          event('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:first.id,delta});
+          event('item/completed',{threadId:thread.id,turnId:turn.id,item:first});},1200);
+        setTimeout(()=>progress('progress-two','正在验证：重复回放只更新同一条消息，新的进展独立显示。'),1800);
+        setTimeout(()=>{const tool={id:'verify-'+turn.id,type:'commandExecution',command:'node --test conversation.test.js',status:'completed',aggregatedOutput:'1 test passed',exitCode:0};
+          turn.items.push(tool);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item:tool});},2400);
+        setTimeout(()=>finish(thread,turn,'completed','已完成：过程消息保持可见，最终回答独立展示。\n\n'+Array.from({length:36},(_,i)=>`${i+1}. 这是同一条长回答中的验证说明，展开后可阅读完整正文；它不会被伪造为多条消息。`).join('\n')),3800);
       } else if(mode==='fixture:empty') {
         const reply={turn:{...turn}};
         finish(thread,turn,'completed','');

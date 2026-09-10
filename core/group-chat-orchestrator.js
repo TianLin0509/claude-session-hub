@@ -480,6 +480,33 @@ class GroupChatOrchestrator {
 
   // Informational, source-authored progress. Never touches turn results,
   // completion receipts or workflow gates. Fence against old/dormant sessions.
+  recordDisplayMessages(attemptId, messages) {
+    const attempt=this.state.attempts?.[attemptId];
+    if(!attempt || !Array.isArray(messages) || !messages.length)return false;
+    const safe=messages.filter(m=>m && m.id && typeof m.text==='string'
+      && (!m.providerTurnId || m.providerTurnId===attempt.providerTurnId))
+      .map(m=>({id:m.id,text:m.text,phase:m.phase || 'message',ts:m.ts,
+        providerTurnId:m.providerTurnId || null,...(m.toolCalls?.length ? {toolCalls:m.toolCalls} : {})}));
+    if(!safe.length)return false;
+    const byAttempt=this.state.displayMessagesByAttempt || (this.state.displayMessagesByAttempt={});
+    const previous=byAttempt[attemptId] || [];
+    // Snapshot replacement can omit a previously seen item after reconnect.
+    // Upsert each provider identity; omission is never a deletion instruction.
+    const merged=new Map(previous.map(m=>[m.id,m]));
+    for(const m of safe)merged.set(m.id,m);
+    const next=[...merged.values()];
+    if(JSON.stringify(previous)===JSON.stringify(next))return false;
+    byAttempt[attemptId]=next;
+    try { this._saveState('conversation_items_saved',{attemptId}); }
+    catch(error) {
+      // Do not let in-memory equality suppress the next durable write retry.
+      if(previous.length)byAttempt[attemptId]=previous;
+      else delete byAttempt[attemptId];
+      throw error;
+    }
+    return true;
+  }
+
   recordProgressUpdate(sid, text, at, speaker, event = {}) {
     const turnNum = Number(this.state.currentTurn) || 0;
     const pending = this.state.pendingPrompts?.[String(turnNum)]?.[sid];

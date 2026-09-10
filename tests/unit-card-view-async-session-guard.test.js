@@ -117,8 +117,8 @@ test('active card refresh is provider-aware without requiring renderer transcrip
   );
   assert.match(
     block,
-    /parseOpts:\s*\{\s*limit:\s*1,\s*fromTail:\s*true\s*\}/,
-    'each live refresh must stay bounded to the transcript tail',
+    /parseOpts:[\s\S]{0,100}=== 'codex-app-server'\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+    'native refresh must scope provider items to one turn; log refresh stays bounded to the tail',
   );
 });
 

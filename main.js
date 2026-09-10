@@ -443,6 +443,7 @@ sessionManager.on('codex-session-updated', session => {
   sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
+sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
 sessionManager.on('codex-lifecycle', event => {
   transcriptTap.emit(event.type, event);
 });
@@ -1537,6 +1538,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
+  if(session && sessionManager.getNativeCodex?.(session.id))return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1550,8 +1552,19 @@ function watchDevChatHistory(session, sourcePath) {
   }
 }
 transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
+const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
 const devChatHistoryTimer=setInterval(()=>{
-  for(const session of sessionManager.getAllSessions()) watchDevChatHistory(session);
+  for(const session of sessionManager.getAllSessions()) {
+    const native=sessionManager.getNativeCodex?.(session.id);
+    const meeting=session.meetingId && meetingManager.getMeeting(session.meetingId);
+    if(native && meeting?.groupChat) {
+      try {
+        const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
+        if(collectGroupConversation({native,orch,sid:session.id}))sendToRenderer('groupchat-history-updated',
+          {meetingId:meeting.id,sid:session.id,revision:orch.state.revision});
+      } catch(error) { console.error('[conversation-history] native item persistence failed:',error); }
+    } else watchDevChatHistory(session);
+  }
 },1000);
 devChatHistoryTimer.unref?.();
 
