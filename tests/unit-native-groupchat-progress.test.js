@@ -21,7 +21,7 @@ test('public native members stay inside their meeting in sidebar/home consumers'
   }
 });
 
-test('native group progress follows its exact turn, never polls PTY, and removes listeners on completion', { timeout: 10000 }, async t => {
+for (const terminal of ['completed', 'disconnected']) test(`native group ${terminal} follows its exact turn, never polls PTY, and removes listeners`, { timeout: 10000 }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-progress-'));
   const native = new EventEmitter(), tap = new EventEmitter(), manager = new EventEmitter();
   const session = { id: 's', kind: 'codex', title: 'Codex 1', status: 'running', meetingId: 'm' };
@@ -29,8 +29,11 @@ test('native group progress follows its exact turn, never polls PTY, and removes
   const ipc = []; let outcome = null, ptyReads = 0, releaseFirstRead;
   native.runtime = { state: 'waiting', connection: 'connected', turnId: 'turn-current', epoch: 1, revision: 5 };
   native.start = async () => {};
-  native.send = async (_text, opts) => ({ ok: true, sendStatus: 'ok', clientSubmissionId: opts.clientSubmissionId,
-    acknowledgementSource: 'codex-app-server', acknowledgementTurnId: 'turn-current' });
+  native.send = async (_text, opts) => {
+    native.runtime.submission = { id: opts.clientSubmissionId, status: 'accepted', turnId: 'turn-current' };
+    return { ok: true, sendStatus: 'ok', clientSubmissionId: opts.clientSubmissionId,
+      acknowledgementSource: 'codex-app-server', acknowledgementTurnId: 'turn-current' };
+  };
   native.readOutcome = async id => {
     if (!releaseFirstRead) return new Promise(resolve => { releaseFirstRead = resolve; });
     return id === 'turn-current' ? outcome : null;
@@ -72,16 +75,27 @@ test('native group progress follows its exact turn, never polls PTY, and removes
   assert.equal(ptyReads, 0);
   outcome = { hubSessionId: 's', turnId: 'turn-current', threadId: 'thread', source: 'codex-app-server',
     signalSource: 'codex-app-server', status: 'completed', text: '准确结束', completedAt: Date.now(), finality: 'provider_final' };
-  native.runtime = { ...native.runtime, state: 'completed', revision: 8 };
+  native.runtime = { ...native.runtime, state: terminal === 'completed' ? 'completed' : 'unknown',
+    connection: terminal === 'completed' ? 'connected' : 'disconnected', revision: 8 };
   native.emit('state');
   // Completion arrives while a read of the earlier unfinished turn is in flight.
-  releaseFirstRead(null);
+  if (terminal === 'completed') releaseFirstRead(null);
   let timer;
   const result = await Promise.race([pending, new Promise((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error('Completion during outcome read was lost')), 2000);
   })]).finally(() => clearTimeout(timer));
-  assert.equal(result.results[0].status, 'completed');
-  assert.equal(result.results[0].text, '准确结束');
+  if (terminal === 'completed') {
+    assert.equal(result.results[0].status, 'completed');
+    assert.equal(result.results[0].text, '准确结束');
+  } else {
+    assert.equal(result.results[0].failure.code, 'submission_unknown');
+    assert.equal(result.results[0].finality, 'unknown');
+    assert.equal(latest().failure.autoRetry, false);
+    assert.equal(orch.getState().turns.at(-1).failureBy.s.code, 'submission_unknown');
+    releaseFirstRead(outcome); // Late stored completion must not silently relabel the delivered unknown result.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(latest().failure.code, 'submission_unknown');
+  }
   assert.equal(native.listenerCount('state'), 0);
   assert.equal(native.listenerCount('items'), 0);
   assert.equal(ptyReads, 0);

@@ -4,6 +4,9 @@
 const fs = require('fs'), path = require('path'), os = require('os'), net = require('net');
 const assert = require('node:assert/strict');
 const { randomUUID } = require('crypto');
+const { execFileSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
+const { screenshotReadOnlyReport } = require('./helpers/readonly-report-screenshot');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 const ROOT = path.resolve(__dirname, '..');
@@ -27,7 +30,7 @@ async function main() {
   ].map(value => JSON.stringify(value)).join('\n') + '\n';
   fs.writeFileSync(file, history, 'utf8');
   let oldHub, oldClient, hub, client;
-  const result = { temp, out, controlledHistory: true, realModel: false, checks: [] };
+  const result = { temp, out, head: execFileSync('git',['rev-parse','HEAD'],{cwd:ROOT,encoding:'utf8'}).trim(), controlledHistory: true, realModel: false, checks: [] };
   const until = async (c, expression, label) => {
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) { if (await c.eval(expression)) return; await _waitMs(100); }
@@ -97,6 +100,8 @@ async function main() {
         unsentDraft: await client.eval('readContenteditablePlainText(document.querySelector(".floating-input-box"))'),
         instruction: 'Read-only export. Do not resend automatically.'
       }, null, 2), 'utf8');
+      const recoveryHtml = path.join(out, 'rollback-recovery.html');
+      execFileSync(process.execPath,[path.join(ROOT,'scripts/render-native-recovery.js'),path.join(out,'rollback-recovery.json'),recoveryHtml]);
       await shot('before-rollback');
       await client.close(); client = null;
       result.beforeRollbackExit = await gracefulQuit(hub); hub = null;
@@ -117,6 +122,18 @@ async function main() {
       result.rollbackOldReaderSeesNativeOnlyAnswer = oldHistory.turns.some(turn => turn.text.includes('完成 🧪'));
       const oldImage = await oldClient.send('Page.captureScreenshot', { format: 'png' });
       fs.writeFileSync(path.join(out, 'rollback-old.png'), Buffer.from(oldImage.data, 'base64'));
+      // Explicit compatibility reader, not a claim that the unchanged old UI
+      // understands a new journal schema. It cannot send or replay anything.
+      await oldClient.send('Page.navigate',{url:pathToFileURL(recoveryHtml).href});
+      await until(oldClient,'document.getElementById("recovery-json")','offline rollback reader');
+      const recovered = await oldClient.eval('JSON.parse(document.getElementById("recovery-json").textContent)');
+      assert.deepEqual(recovered,JSON.parse(fs.readFileSync(path.join(out,'rollback-recovery.json'),'utf8')));
+      assert.deepEqual(recovered.turns,before.turns);
+      assert.equal(recovered.unsentDraft,savedDraft.record.text);
+      assert.equal(recovered.providerId,providerId);
+      assert.equal(await oldClient.eval('document.querySelectorAll("script,button,form,iframe").length'),0);
+      result.reportRendering = screenshotReadOnlyReport(recoveryHtml,path.join(out,'rollback-readonly-reader.png'));
+      result.rollbackReadOnlyCompanionPassed = true;
       await oldClient.close(); oldClient = null;
       result.rollbackExit = await gracefulQuit(oldHub); oldHub = null;
       hub = await launch(ROOT, true); client = await connectFirstPage(hub);
@@ -124,7 +141,7 @@ async function main() {
       await client.eval(`selectSession(${sid})`);
       await until(client, `sessions.get(${sid})?.nativeRuntime?.connection==='connected'`, 'reupgrade writer');
       const after = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`);
-      assert.deepEqual(after.turns.map(turn => [turn.role, turn.text]), before.turns.map(turn => [turn.role, turn.text]));
+      assert.deepEqual(after.turns.map(turn => [turn.id, turn.role, turn.text]), before.turns.map(turn => [turn.id, turn.role, turn.text]));
       result.reupgradeDraft = await client.eval(`({stored:localStorage.getItem('hub.claude-native.draft.v1:'+${sid}),
         memory:floatingInputDrafts.get(${sid}),input:readContenteditablePlainText(document.querySelector('.floating-input-box')),
         backend:sessions.get(${sid}).runtimeBackend,selected:activeSessionId})`);
@@ -138,7 +155,8 @@ async function main() {
       assert.ok(afterRuntime.state === 'completed' || afterRuntime.state === 'idle');
       await shot('reupgrade-preserved');
       result.checks.push('actual old/new version roundtrip keeps historical and native journal answers, session identity, and unsent draft without replay');
-      result.rollbackGatePassed = result.rollbackOldComposerCompatible && result.rollbackOldReaderSeesNativeOnlyAnswer;
+      result.rollbackCompatibilityMode = 'explicit-read-only-companion; old UI does not read new schema';
+      result.rollbackGatePassed = result.rollbackReadOnlyCompanionPassed;
     }
     result.passed = true;
   } catch (error) {

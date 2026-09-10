@@ -6,6 +6,7 @@ async function startResponsesFixture({chunks=200,delayMs=100}={}){
   const requests=[],sockets=new Set();
   const server=http.createServer((req,res)=>{
     if(req.method!=='POST' || !req.url.endsWith('/responses')){res.writeHead(404);res.end('{}');return;}
+    req.setEncoding('utf8');
     let raw='';req.on('data',b=>raw+=b);req.on('end',()=>{
       let body;try{body=JSON.parse(raw);}catch{res.writeHead(400);res.end('{}');return;}
       const record={model:body.model,effort:body.reasoning?.effort,serviceTier:body.service_tier,at:Date.now(),chunks:0,completed:false,
