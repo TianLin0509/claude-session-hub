@@ -35,6 +35,16 @@ function mergeCodexEntry(current, incoming, now = Date.now()) {
   if (!incoming) return current;
   if (!sameScope(current, incoming)) return newerEntry(current, incoming);
 
+  // Missing windows are not new observations. Keep the last weekly quota
+  // across reset/refresh gaps with its original timestamp, until data arrives.
+  const validWindow = value => typeof value?.pct === 'number' && Number.isFinite(value.pct) && value.pct >= 0;
+  if (validWindow(current.usage7d) && !validWindow(incoming.usage7d)) {
+    if (!validWindow(incoming.usage5h)) return current;
+    incoming = { ...incoming, unavailable: false, usage7d: {
+      ...current.usage7d, observedAt: current.usage7d.observedAt || observedAt(current),
+    } };
+  }
+
   const currentLive = current.source === 'app-server';
   const incomingLive = incoming.source === 'app-server';
   if (currentLive && !incomingLive && shouldPreferCodexLiveUsage(current, incoming, now)) return current;

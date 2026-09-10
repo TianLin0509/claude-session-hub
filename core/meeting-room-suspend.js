@@ -55,7 +55,7 @@ function suspendMeetingRoom(meetingId, deps = {}) {
     }
     const key = (result && result.error) || 'unknown';
     skipped[key] = (skipped[key] || 0) + 1;
-    if (!SETTLED_ERRORS.has(key)) blocked.push({ sessionId, error: key });
+    if (!SETTLED_ERRORS.has(key)) blocked.push({ sessionId, error: key, ...(result?.message ? { message: result.message } : {}) });
   }
 
   let meetingDormant = false;

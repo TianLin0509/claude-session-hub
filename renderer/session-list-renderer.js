@@ -676,7 +676,11 @@ sessionListEl.addEventListener('keydown', event => {
         '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
         isGroupChat ? '<span class="sl-group-progress" title="已答 ' + s.unreadAnsweredSize + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
       ].join('');
-      div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const member = e.target.closest('.mini-jump-btn[data-sub-id]');
+        openContextMenu(member ? member.dataset.subId : s.id, e.clientX, e.clientY);
+      });
       renderTarget.appendChild(div);
 
       // Render child sub-sessions if expanded (clicking goes straight to shell view).

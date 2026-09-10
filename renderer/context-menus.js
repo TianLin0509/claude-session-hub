@@ -31,6 +31,8 @@ function createSessionContextMenuController({
     : (message) => {
       if (window && typeof window.alert === 'function') window.alert(message);
     };
+  const roomAlreadyAsleep = meeting => meeting?.status === 'dormant'
+    && !(meeting.subSessions || []).some(id => sessions.has(id) && sessions.get(id).status !== 'dormant');
 
   function open(sessionId, x, y) {
     contextMenuSessionId = sessionId;
@@ -62,17 +64,17 @@ function createSessionContextMenuController({
     }
     if (closeBtn) {
       closeBtn.style.display = meeting || session ? '' : 'none';
-      closeBtn.disabled = !!(session && session.status === 'dormant');
+      closeBtn.disabled = !!(session && session.status === 'dormant') || roomAlreadyAsleep(meeting);
       closeBtn.textContent = meeting
-        ? '删除会议室'
+        ? '休眠会议室'
         : (supportsRecoverableSessionKind(session) ? '休眠' : '关闭');
       if (closeBtn.classList && typeof closeBtn.classList.toggle === 'function') {
-        closeBtn.classList.toggle('danger', !!meeting);
+        closeBtn.classList.toggle('danger', false);
       }
     }
     if (deleteBtn) {
-      deleteBtn.style.display = session ? '' : 'none';
-      deleteBtn.textContent = '删除';
+      deleteBtn.style.display = session || meeting ? '' : 'none';
+      deleteBtn.textContent = meeting ? '删除会议室' : '删除';
     }
     if (pinBtn) {
       const target = session || meeting;
@@ -108,6 +110,23 @@ function createSessionContextMenuController({
         const meeting = meetings[sid];
 
         if (action === 'close' && meeting) {
+          if (roomAlreadyAsleep(meeting)) return;
+          try {
+            const result = await ipcRenderer.invoke('suspend-meeting', sid);
+            if (!result?.ok || !result.meetingDormant) {
+              const blocked = (result?.blocked || []).map(item => {
+                const name = sessions.get(item.sessionId)?.title || item.sessionId;
+                return name + '：' + (item.message || item.error);
+              }).join('；');
+              showNotice(blocked ? '部分成员未能休眠：' + blocked : (result?.message || '会议室休眠失败，请稍后重试。'));
+            }
+          } catch (error) {
+            showNotice('会议室休眠失败：' + (error?.message || String(error)));
+          }
+          return;
+        }
+
+        if (action === 'delete' && meeting) {
           await ipcRenderer.invoke('close-meeting', sid);
           delete meetings[sid];
           if (getActiveMeetingId() === sid) {
@@ -201,6 +220,26 @@ function createSessionContextMenuController({
             ? true
             : window.confirm(`永久删除“${session.title || '此会话'}”？\n\n这会终止当前进程并移除 Hub 卡片，之后不能从该卡片唤醒。`);
           if (!confirmed) return;
+          if (session.meetingId && meetings[session.meetingId]) {
+            // Remove membership and its dependent participant/workflow indices
+            // through the room API, including when the member is already asleep.
+            try {
+              const result = await ipcRenderer.invoke('remove-meeting-sub', { meetingId: session.meetingId, sessionId: sid });
+              if (!result?.ok) {
+                const reasons = { last_member: '这是最后一个成员，请使用删除会议室。', turn_in_progress: '本轮群聊正在进行，请结束后再删除成员。',
+                  turn_state_unavailable: '无法确认群聊状态，请稍后重试。' };
+                showNotice(reasons[result?.reason] || result?.message || '删除会议室成员失败，请稍后重试。');
+                return;
+              }
+              sessions.delete(sid);
+              if (getActiveSessionId() === sid) setActiveSessionId(null);
+              renderSessionList();
+              schedulePersist();
+            } catch (error) {
+              showNotice('删除会议室成员失败：' + (error?.message || String(error)));
+            }
+            return;
+          }
           if (session.status === 'dormant') {
             sessions.delete(sid);
             if (getActiveSessionId() === sid) setActiveSessionId(null);
