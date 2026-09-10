@@ -5,6 +5,12 @@ const path = require('node:path');
 const VERSION = 2;
 const PRESET_START = '【AI HUB 开题提示词】';
 const PRESET_END = '【开题提示词结束】';
+const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+function appendProjectPrep(text) {
+  const base = String(text || '');
+  if (base.includes(PROJECT_PREP_PROMPT)) return base;
+  return base ? `${base}\n\n${PROJECT_PREP_PROMPT}` : PROJECT_PREP_PROMPT;
+}
 const enabled = m => !!(m?.groupChat && m.scene === 'dev' && m.serialWorkflow?.fileFlowVersion === VERSION);
 function directory(dataDir, id) {
   if (!/^[a-zA-Z0-9_-]{1,255}$/.test(String(id || ''))) throw new Error('无效的群聊任务目录');
@@ -98,4 +104,4 @@ function phasePrompt(meeting, dir, state) {
     '只有真实合并及要求的后置操作成功才用“已完成”改名。环境、权限、审批或工具失败保留草稿并说明，不把它伪装成实现缺陷或成功。');
   return base.join('\n');
 }
-module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, PRESET_START, PRESET_END, common, phasePrompt };
+module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt };

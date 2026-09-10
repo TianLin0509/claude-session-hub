@@ -1,6 +1,12 @@
 'use strict';
 const assert = require('node:assert/strict');
 const F = require('../core/dev-file-workflow');
+const prep = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+assert.equal(F.appendProjectPrep(''), prep);
+const draft = '  用户任务\n保留多行和空格  \n';
+assert.equal(F.appendProjectPrep(draft), draft + '\n\n' + prep);
+assert.equal(F.appendProjectPrep(F.appendProjectPrep(draft)), F.appendProjectPrep(draft));
+assert.equal(F.appendProjectPrep(prep + '\n后续补充'), prep + '\n后续补充');
 const scan = (...names) => F.fromNames(names);
 assert.equal(scan().phase, 'discuss');
 assert.equal(scan('开题报告.md').phase, 'kickoff');

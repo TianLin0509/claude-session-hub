@@ -5001,11 +5001,22 @@ if (typeof document !== 'undefined') (function () {
       <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
       <div class="mr-file-detail"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
-      <div class="mr-file-actions"><small>${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small>
+      <div class="mr-file-actions">
+        ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
-      </div></div>`;
+      </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
+    row.querySelector('[data-file-prep]')?.addEventListener('click', () => {
+      const box = document.getElementById('mr-input-box');
+      if (!box || activeMeetingId !== current.id) return;
+      box.textContent = DevFile.appendProjectPrep(box.innerText);
+      _setInputDraft(current.id, box.innerText);
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      box.focus();
+      const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    });
     row.querySelector('[data-file-docs]')?.addEventListener('click', () => {
       ipcRenderer.invoke('dev-file:open-docs', { meetingId: current.id }).catch(e => _showGcEscapeNotice(e.message, 'error'));
     });

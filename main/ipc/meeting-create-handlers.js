@@ -285,10 +285,16 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     if (Array.isArray(safe.slots) && safe.slots.length > 0) {
       safe.slots = safe.slots.map((slot, index) => sanitizeMeetingSlot(slot, index));
       safe.slotSpecs = safe.slots.map(slot => ({ ...slot }));
-      if (safe.groupChat && !Array.isArray(safe.participants)) {
+      if (safe.groupChat && safe.mode !== 'dev' && !Array.isArray(safe.participants)) {
         safe.participants = safe.slots.map((_, i) => i);
       }
     }
+    // Initialization only: adding each session below otherwise selects every new member.
+    // Existing rooms and later add-meeting-sub calls keep their own selection behavior.
+    const devParticipants = safe.mode === 'dev'
+      ? (Array.isArray(safe.participants) ? safe.participants.slice() : [safe.slotSpecs?.[0]?.index ?? 0])
+      : null;
+    if (devParticipants) safe.participants = devParticipants.slice();
     const meeting = meetingManager.createMeeting(safe);
 
     if (Array.isArray(safe.slots) && safe.slots.length > 0) {
@@ -305,6 +311,7 @@ function registerMeetingCreateIpc(ipcMain, deps) {
           logger.warn('[create-meeting] add-sub failed for slot', slot, err && err.message);
         }
       }
+      if (devParticipants) meetingManager.setParticipants(meeting.id, devParticipants.slice());
       const finalMeeting = meetingManager.getMeeting(meeting.id);
       const subCount = finalMeeting ? (finalMeeting.subSessions || []).length : 0;
       if (subCount === 0) {
