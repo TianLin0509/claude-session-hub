@@ -53,7 +53,7 @@ async function run() {
     meetingId = m.id; assert.equal(m.subSessions.length, 2);
     console.log('CLI_SESSIONS ' + JSON.stringify(m.subSessions));
     const config = await cdp.eval("window.WorkflowTemplates.createTemplateConfig('dev-task', [{memberId:'m1',kind:'codex'},{memberId:'m2',kind:'claude'}])");
-    if (!RESUME || alternate) await invoke('update-meeting-sync', { meetingId, fields: { serialWorkflow: { ...config, ...(alternate ? {fileFlow:{paused:true}} : {}) } } });
+    if (!RESUME || alternate) await invoke('update-meeting-sync', { meetingId, fields: { serialWorkflow: { ...config, ...(RESUME && alternate ? {fileFlow:{paused:true}} : {}) } } });
     if (RESUME && alternate) {
       const source = path.join(DATA, 'task-docs', prior.id), dest = path.join(DATA, 'task-docs', meetingId);
       fs.mkdirSync(dest, {recursive:true});
