@@ -75,6 +75,8 @@
 #session-list .sl-dot.error { background: var(--status-danger); }
 #session-list .sl-dot.run,
 #session-list .sl-dot.start { background: var(--status-success); }
+#session-list .sl-dot.run,
+#session-list .sl-dot.start { animation: mini-st-pulse 1.5s ease-in-out infinite; }
 #session-list .sl-dot.unread { background: var(--brand); }
 #session-list .session-item.slim.meeting { display: block; }
 #session-list .session-item.slim.meeting .sl-line1 {
@@ -137,7 +139,8 @@
 
 /* A: two compact quota rows above the two system rows. */
 .sidebar-account-usage { flex: none; min-width: 0; padding: 4px 10px 0; border-top: 1px solid var(--border-subtle); color: var(--fg-default); font-size: 11px; }
-.sidebar-quota-claude { border-bottom: 1px solid var(--border-subtle); }
+.sidebar-quota-claude { display: flex; align-items: center; border-bottom: 1px solid var(--border-subtle); }
+.sidebar-quota-claude .sidebar-quota-provider { flex: 1; }
 .sidebar-quota-provider { display: flex; align-items: center; gap: 6px; min-width: 0; height: 35px; }
 .sidebar-quota-name { flex: none; font-weight: 600; }
 .sidebar-quota-metrics { display: flex; gap: 9px; flex: 1; min-width: 0; }
@@ -159,11 +162,9 @@
 .sidebar-quota-refresh[data-state='error'] { color: var(--status-warning); background: var(--brand-tint); font-weight: 700; }
 .sidebar-quota-metric[data-level='warn'], .sidebar-quota-provider[data-level='warn'] .sidebar-quota-value { color: var(--status-warning); }
 .sidebar-quota-metric[data-level='danger'] { color: var(--status-danger); }
-.sidebar-quota-provider:not([data-freshness='fresh']) .sidebar-quota-metric,
-.sidebar-quota-provider:not([data-freshness='fresh']) .sidebar-quota-value { color: var(--fg-muted); }
-.sidebar-quota-footer { display: flex; align-items: center; height: 22px; gap: 5px; color: var(--fg-muted); }
-.sidebar-quota-feedback { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.sidebar-account-usage .rail-usage-button { display: inline-flex; width: auto; height: 21px; padding: 1px 4px; color: var(--fg-muted); font-size: 10px; flex: none; }
+.sidebar-quota-provider[data-freshness='unknown'] .sidebar-quota-metric,
+.sidebar-quota-provider[data-freshness='unknown'] .sidebar-quota-value { color: var(--fg-muted); }
+.sidebar-account-usage .rail-usage-button { display: inline-flex; width: 18px; height: 26px; padding: 0; color: var(--fg-muted); font-size: 14px; flex: none; }
 .sidebar-account-usage .rail-usage-ring { display: none; }
 .sidebar-quota { container-type: inline-size; }
 @container (max-width: 280px) {

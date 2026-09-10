@@ -2377,11 +2377,9 @@ async function refreshDeepSeekAccountBalanceLive() {
 }
 
 function loadUsageCacheForCurrentConfig() {
-  const scoped = filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
-  if (scoped.codex && scoped.codex.source === 'app-server') {
-    scoped.codex = expireCodexUsageWindows(scoped.codex, Date.now());
-  }
-  return scoped;
+  // Source selection checks expiry; display retains the last account-scoped
+  // observation with its real age, including across reset/refresh gaps.
+  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
 }
 
 try {
@@ -2633,6 +2631,7 @@ async function scanAgentSessions(opts = {}) {
     agentData.codex = liveForScope;
     cacheAgentUsage('codex', liveForScope, codexScope);
   }
+  agentData.codex = mergeCodexEntry(diskForScope, agentData.codex, now);
   // Gemini: quota from CLI footer > token estimates
   if (_agentQuota.gemini) {
     const gemData = { usage5h: _agentQuota.gemini.usage5h };
