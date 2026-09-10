@@ -28,12 +28,13 @@ function harness({ items = [], meetings = {}, active = null, store = new Map(), 
     ...extra,
   });
   renderer.renderSessionList();
-  const row = id => list.children.find(el => el.dataset.sessionId === id || el.dataset.meetingId === id);
+  const descendants = el => [el, ...el.children.flatMap(descendants)];
+  const row = id => descendants(list).find(el => el.dataset.sessionId === id || el.dataset.meetingId === id);
   const section = id => {
     let name = '';
     for (const el of list.children) {
       if (/session-(sec|time-group)-header/.test(el.className)) name = el.innerHTML;
-      if (el === row(id)) return name;
+      if (descendants(el).includes(row(id))) return name;
     }
     return null;
   };
@@ -67,13 +68,13 @@ test('旧休眠未读归档，唤醒与异常在活跃，新未读点为蓝色',
   assert.match(h.row('wake').innerHTML, /sl-dot start/);
   assert.match(h.row('error').innerHTML, /sl-dot error/);
 });
-test('休眠群聊未读进入活跃，成员来源和进度保留，已读群聊只计归档', () => {
+test('休眠群聊未读进入活跃，成员归属和上下文保留，已读群聊只计归档', () => {
   const h = harness({ items: [dormant('child', { meetingId: 'group', contextPct: 38 })], meetings: { group: meetingFixture(true) } });
   assert.match(h.section('group'), /活跃/);
-  assert.match(h.row('group').innerHTML, /sl-dot unread/);
-  assert.match(h.row('group').innerHTML, /sl-group-progress/);
-  assert.match(h.row('group').innerHTML, /data-sub-id="child"/);
-  assert.match(h.row('group').innerHTML, /Ctx 38%/);
+  assert.match(h.row('group').innerHTML, /sl-group-icon unread/);
+  assert.doesNotMatch(h.row('group').innerHTML, /session-mini-jumps/);
+  assert.match(h.row('child').className, /child/);
+  assert.match(h.row('child').innerHTML, /Ctx 38%/);
   assert.doesNotMatch(h.row('group').innerHTML, /🌙|💬|📌/);
   const read = harness({ items: [dormant('child', { meetingId: 'group' })], meetings: { group: meetingFixture() } });
   assert.equal(read.row('group'), undefined);

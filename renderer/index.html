@@ -8,6 +8,7 @@
   <script src="theme-bootstrap.js"></script>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="session-details.css">
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
@@ -177,6 +178,7 @@
           <kbd>Ctrl Shift F</kbd>
         </button>
       </div>
+      <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息 <span aria-hidden="true">≡</span></button></div>
       <div class="session-list" id="session-list"></div>
       <!-- 账户余量常驻侧栏底部，沿用控制器入口 id，轨道不再重复显示。 -->
       <div class="sidebar-account-usage" id="rail-usage"></div>

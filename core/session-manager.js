@@ -1397,6 +1397,7 @@ class SessionManager extends EventEmitter {
       currentModel,
       ...(typeof opts.contextPct === 'number' ? { contextPct: opts.contextPct } : {}),
       ...(typeof opts.contextUsed === 'number' ? { contextUsed: opts.contextUsed } : {}),
+      ...(opts.sessionUsage ? { sessionUsage: opts.sessionUsage } : {}),
       ...(typeof effectiveContextMax === 'number' ? { contextMax: effectiveContextMax } : {}),
       // contextMax is the launch request and must remain stable for
       // resume/fork/relaunch. Codex reports the clamped effective value later
@@ -1621,6 +1622,7 @@ class SessionManager extends EventEmitter {
       });
       ptyProcess.on('diagnostic', message => console.warn('[codex-native]',id,message));
       ptyProcess.on('usage', usage => {
+        this.emit('session-token-usage', { sessionId: id, total: usage && usage.total });
         const total = usage && usage.last;
         if (total && typeof total.totalTokens === 'number') info.contextUsed = total.totalTokens;
         if (usage && usage.modelContextWindow) {
@@ -2653,6 +2655,7 @@ class SessionManager extends EventEmitter {
         codexApprovalPolicy:info.codexApprovalPolicy,codexSandbox:info.codexSandbox,
         nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null} : {}),
       id: info.id,
+      meetingId: info.meetingId || null,
       title: info.title,
       kind: info.kind,
       cwd: info.cwd,
@@ -2684,6 +2687,7 @@ class SessionManager extends EventEmitter {
       ...(info.effort ? { effort: info.effort } : {}),
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
       ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
+      ...(info.sessionUsage ? { sessionUsage: info.sessionUsage } : {}),
       ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
       ...(typeof info.contextEffectiveMax === 'number' ? { contextEffectiveMax: info.contextEffectiveMax } : {}),
       ...(typeof info.contextEffectiveObservedAt === 'number'

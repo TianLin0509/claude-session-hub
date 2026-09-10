@@ -833,6 +833,7 @@ function normalizeMarkdownPathBreaks(text) {
 
 const { createSessionListRenderer } = require('./session-list-renderer.js');
 const sessionListRenderer = createSessionListRenderer({
+  requestSessionUsage: ids => ipcRenderer.send('session-usage:watch', ids),
   document,
   localStorage,
   sessionListEl,
@@ -6120,6 +6121,14 @@ const memoryPanel = createMemoryPanel({
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 
+ipcRenderer.on('session-usage-updated', (_e, { sessionId, usage }) => {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.sessionUsage = usage;
+  scheduleSessionListRender();
+  schedulePersist();
+});
+
 ipcRenderer.on('status-event', (_e, payload) => {
   const session = sessions.get(payload.sessionId);
   if (session) {
@@ -7676,6 +7685,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     return;
   }
   // Merge server updates but keep local preview/status (managed by renderer)
+  if (session.meetingId) local.meetingId = session.meetingId;
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
@@ -7690,6 +7700,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.effort) local.effort = session.effort;
+  if (session.sessionUsage) local.sessionUsage = session.sessionUsage;
   let persistModel = false;
   if (session.currentModel && session.currentModel.id) {
     const previousModelId = local.currentModel && local.currentModel.id;
@@ -7798,6 +7809,7 @@ function schedulePersist() {
         effort: s.effort || null,
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
         contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
+        sessionUsage: s.sessionUsage || null,
         contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
         contextEffectiveMax: typeof s.contextEffectiveMax === 'number' ? s.contextEffectiveMax : null,
         contextEffectiveObservedAt: typeof s.contextEffectiveObservedAt === 'number'
@@ -8005,6 +8017,7 @@ window.resumeDormantSession = resumeDormantSession;
         effort: meta.effort || null,
         contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
+        sessionUsage: meta.sessionUsage || null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
         contextEffectiveMax: typeof meta.contextEffectiveMax === 'number' ? meta.contextEffectiveMax : null,
         contextEffectiveObservedAt: typeof meta.contextEffectiveObservedAt === 'number'

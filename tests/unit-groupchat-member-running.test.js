@@ -24,6 +24,8 @@ const {
 } = require(path.join(__dirname, '..', 'core', 'groupchat-running-state.js'));
 const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 
+function treeHtml(el) { return [el.innerHTML || '', ...(el.children || []).map(treeHtml)].join('\n'); }
+
 let failed = 0;
 function test(name, fn) {
   try {
@@ -78,8 +80,8 @@ function render({ sessions, meetings, activeMeetingId = null }) {
     openContextMenu: () => {},
   });
   r.renderSessionList();
-  // 分区标题和会话卡都是 sessionListEl 的直接子节点，按顺序拼起来即可判断归属。
-  return sessionListEl.children.map(c => c.innerHTML || '').join('\n');
+  // Include nested group members in DOM order when checking section ownership.
+  return treeHtml(sessionListEl);
 }
 
 // 一个三成员群聊：claude / codex / kimi，可指定各自 status。
@@ -124,13 +126,11 @@ console.log('Running unit-groupchat-member-running tests...');
 test('成员自己在跑时，它的状态点是运行中（黄色脉冲）而不是就绪（绿色）', () => {
   const { sessions, meetings } = groupChat(['idle', 'running', 'idle']);
   const html = render({ sessions, meetings });
-  const codexDot = html.match(/mini-jump-status-dot ([a-z-]+)"[^>]*><\/span>\s*<span class="mini-jump-text">codex/)
-    || html.match(/mini-st-\w+/g);
-  assert.ok(/mini-st-thinking/.test(html),
-    '正在跑的 codex 成员必须渲染 mini-st-thinking（黄色脉冲），实际: ' + (codexDot || []).join(','));
+  assert.ok(/sl-dot run/.test(html),
+    '正在跑的 codex 成员必须渲染普通会话运行状态');
   // 另外两个 idle 成员仍是就绪绿点
-  assert.strictEqual((html.match(/mini-st-ready/g) || []).length, 2,
-    'claude / kimi 仍是 idle，应各保留一个 mini-st-ready');
+  assert.strictEqual((html.match(/sl-dot idle/g) || []).length, 2,
+    'claude / kimi 仍是 idle，应各保留一个 sl-dot idle');
 });
 
 test('群聊里任意一个成员在跑，该群聊就归到侧栏「运行中」分区', () => {
@@ -143,7 +143,7 @@ test('群聊里任意一个成员在跑，该群聊就归到侧栏「运行中�
 test('三个成员都空闲时群聊不进运行中', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
   const html = render({ sessions, meetings });
-  assert.ok(!/mini-st-thinking/.test(html), '没人在跑就不该有运行中状态点');
+  assert.ok(!/sl-dot run/.test(html), '没人在跑就不该有运行中状态点');
   assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
 });
 
@@ -155,15 +155,15 @@ test('群聊父项优先显示等待和运行，不会被部分完成未读覆�
   waitingCase.sessions.get('sid-claude').waitingText = 'Allow PowerShell?';
   const waitingHtml = render(waitingCase);
   assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '活跃');
-  assert.match(waitingHtml, /sl-dot wait/);
+  assert.match(waitingHtml, /sl-group-icon wait/);
 
   const runningCase = groupChat(['running', 'idle', 'idle'], {
     meeting: { unreadAnswered: new Set(['sid-codex']) },
   });
   const runningHtml = render(runningCase);
   assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '活跃');
-  assert.match(runningHtml, /sl-dot run/);
-  assert.doesNotMatch(runningHtml, /sl-dot unread/);
+  assert.match(runningHtml, /sl-group-icon run/);
+  assert.doesNotMatch(runningHtml, /sl-group-icon unread/);
 });
 
 test('群聊成员失败会聚合到父项异常分区', () => {
@@ -171,8 +171,8 @@ test('群聊成员失败会聚合到父项异常分区', () => {
   fixture.sessions.get('sid-codex').lastError = 'rate limited';
   const html = render(fixture);
   assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
-  assert.match(html, /mini-st-error/);
   assert.match(html, /sl-dot error/);
+  assert.match(html, /sl-group-icon error/);
 });
 
 test('只有运行异常而没有运行中时，普通会话仍显示「最近」分区标题', () => {
@@ -196,7 +196,7 @@ test('折叠群聊会聚合显示成员的 cwd / memory 告警', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
   sessions.get('sid-claude').memoryLinkWarning = '错链：没有指向规范库';
   const html = render({ sessions, meetings });
-  assert.ok(html.includes('⚠'), '群聊父行必须有可见告警图标');
+  assert.ok(html.includes('sl-warning'), '群聊父行必须有可见告警图标');
   assert.ok(html.includes('记忆未接入规范库'), '父行或成员 tooltip 必须解释记忆告警');
   assert.ok(html.includes('AI-claude'), '聚合告警必须指出具体成员，不能只报群聊有问题');
 });
@@ -206,7 +206,7 @@ test('成员被 Ctrl+C 打断（自己 idle）时，无时间戳的旧 gcWorking
     subs: { gcWorking: true },
   });
   const html = render({ sessions, meetings });
-  assert.ok(!/mini-st-thinking/.test(html), '会话自己说 idle 就以会话为准');
+  assert.ok(!/sl-dot run/.test(html), '会话自己说 idle 就以会话为准');
   assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
 });
 
@@ -216,7 +216,7 @@ test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊
   claude.gcWorking = true;
   claude._gcWorkingLastTs = Date.now();
   const html = render({ sessions, meetings });
-  assert.strictEqual((html.match(/mini-st-thinking/g) || []).length, 1,
+  assert.strictEqual((html.match(/sl-dot run/g) || []).length, 1,
     '只有正在发言的 Claude 应显示黄色脉冲');
   assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃',
     '新鲜 watcher 必须让群聊父项归入运行中');

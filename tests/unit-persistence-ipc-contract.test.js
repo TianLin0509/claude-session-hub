@@ -230,4 +230,17 @@ test('identical snapshots do not fan out per-id writes or rewrite state', () => 
   assert.strictEqual(secondSessions[0].updatedAt, firstSessions[0].updatedAt);
 });
 
+test('usage persists the main snapshot when a stale renderer save races a new usage event', () => {
+  const deps = createDeps();
+  const latest = { total: 1500000, output: 80000, sourcePath: 'C:\\test\\codex.jsonl' };
+  deps.getLiveSession = id => id === 'keep' ? { sessionUsage: latest } : null;
+  const incoming = [{ hubId: 'keep', sessionUsage: { total: 1280000, output: 64000 } }];
+  handlePersistSessions(incoming, [], deps);
+  assert.deepStrictEqual(incoming[0].sessionUsage, latest);
+  deps.getLiveSession = () => null;
+  const afterExit = [{ hubId: 'keep', sessionUsage: { total: 100, output: 10 } }];
+  handlePersistSessions(afterExit, [], deps);
+  assert.deepStrictEqual(afterExit[0].sessionUsage, latest);
+});
+
 console.log('All persistence IPC contract tests passed.');
