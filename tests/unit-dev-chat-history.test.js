@@ -143,3 +143,14 @@ test('a deferred write failure forces replay and flushes the original message du
   const restored=new GroupChatOrchestrator(dir,'meeting');
   assert.equal(restored.state.messages.filter(m=>m.sourceMessage && m.content==='early text').length,1);
 });
+
+test('task_complete only coalesces the immediately preceding assistant message',t=>{
+  const {orch,row,makeTurn}=setup(t);makeTurn('first');
+  row({type:'task_started',turn_id:'provider'});row({type:'user_message',message:'first'});
+  row({type:'agent_message',message:'检查通过'});
+  row({type:'agent_message',message:'继续补查一个边界'});
+  row({type:'task_complete',turn_id:'provider',last_agent_message:'检查通过'});
+  const messages=orch.state.messages.filter(m=>m.sourceMessage);
+  assert.equal(messages.length,3,'an earlier equal-text progress message is not the terminal event mirror');
+  assert.deepEqual(messages.map(m=>m.phase),['commentary','commentary','final']);
+});

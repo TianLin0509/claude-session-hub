@@ -148,8 +148,9 @@ function createHistoryReader({ orch, sid, kind, sourcePath, speaker = 'Agent', o
       const final=message.completed || p.phase==='final_answer' || p.phase==='final';
       // task_complete repeats the last agent message; keep the actual message
       // card and use this event only as an end receipt when text already exists.
-      const mirror=p.type==='task_complete' && receipt && !receipt.unresolved
-        && orch.state.messages.findLast(m=>m.sourceMessage && m.attemptId===receipt.attemptId && m.content===message.text);
+      const previous=p.type==='task_complete' && receipt && !receipt.unresolved
+        && orch.state.messages.findLast(m=>m.sourceMessage && m.attemptId===receipt.attemptId);
+      const mirror=previous && previous.content===message.text ? previous : null;
       save(receipt,message.text,mirror?mirror.sourceKey:rawKey,at,final?'final':'commentary',final);
     } else if(obj.type==='event_msg' && ['turn_aborted','task_complete'].includes(p.type)) {
       const failure=p.type==='turn_aborted' ? '本轮 CLI 已中断，已收录的消息仍保留。' : textBlocks(p.error?.message || p.error?.text);
