@@ -786,7 +786,7 @@
 .mr-file-detail strong { color: var(--text-primary, #ddd); font-weight: 500; }
 .mr-file-error { color: #f18e85; display: block; }
 .mr-file-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.mr-file-actions small { opacity: .7; }
+.mr-file-recipients { flex: 0 1 180px; min-width: 0; overflow-wrap: anywhere; opacity: .7; font-size: 12px; }
 .mr-file-actions button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid #64748b55; background: transparent; color: inherit; cursor: pointer; }
 .mr-file-actions button[data-file-kickoff] { color: #74a7ff; border-color: #74a7ff66; }
 .mr-file-actions button.stop { color: #f18e85; }

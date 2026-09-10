@@ -113,6 +113,42 @@ function test(name, fn) {
 
 console.log('Running meeting create IPC contract tests...');
 
+test('new dev room selects only its first member after all sessions are created', async () => {
+  for (const kinds of [['codex', 'claude'], ['codex', 'codex']]) {
+    const ipc = createFakeIpc();
+    registerMeetingCreateIpc(ipc, createBaseDeps());
+    const room = await ipc.handlers.get('create-meeting')(null, {
+      mode: 'dev', slots: kinds.map((kind, index) => ({ kind, index })),
+    });
+    assert.equal(room.subSessions.length, 2);
+    assert.deepStrictEqual(room.participants, [0]);
+  }
+});
+
+test('dev creation preserves explicit recipients, including empty selection', async () => {
+  for (const participants of [[1], [0, 1], []]) {
+    const ipc = createFakeIpc();
+    registerMeetingCreateIpc(ipc, createBaseDeps());
+    const room = await ipc.handlers.get('create-meeting')(null, {
+      mode: 'dev', participants, slots: [{ kind: 'codex' }, { kind: 'codex' }],
+    });
+    assert.deepStrictEqual(room.participants, participants);
+  }
+});
+
+test('dev slotSpecs entry uses first configured slot and general remains all selected', async () => {
+  const ipc = createFakeIpc();
+  registerMeetingCreateIpc(ipc, createBaseDeps());
+  const room = await ipc.handlers.get('create-meeting')(null, {
+    mode: 'dev', slotSpecs: [{ index: 3, kind: 'codex' }, { index: 5, kind: 'codex' }],
+  });
+  assert.deepStrictEqual(room.participants, [3]);
+  const general = await ipc.handlers.get('create-meeting')(null, {
+    mode: 'general', slots: [{ kind: 'codex' }, { kind: 'claude' }],
+  });
+  assert.deepStrictEqual(general.participants, [0, 1]);
+});
+
 test('registers create-meeting and add-meeting-sub', () => {
   const ipc = createFakeIpc();
   registerMeetingCreateIpc(ipc, createBaseDeps());

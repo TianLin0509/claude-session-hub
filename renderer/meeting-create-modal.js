@@ -657,7 +657,7 @@ async function _onCreate() {
       groupChat: _isGroupChat,
       groupMode: _isGroupChat ? 'deliberation' : null,
       groupRecentRawN: 5,
-      participants: _isGroupChat ? slots.map((_, i) => i) : null,
+      participants: _isGroupChat ? (scene === 'dev' ? [slots[0].index] : slots.map((_, i) => i)) : null,
       workspace: workspace.path,
       workspaceLabel: workspace.label,
       workspaceDraft: !!workspace.draft,
