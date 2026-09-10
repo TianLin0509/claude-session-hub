@@ -6,7 +6,9 @@ const assert = require('assert');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 const { getFreePort, seedUsageData, waitFor, click, key } = require('./helpers/usage-refresh-fixture');
-const { measureQuota } = require('./helpers/sidebar-quota-geometry');
+const { measureQuota, setStaticSidebarLayout, waitForSidebarLayout,
+  assertSidebarLayout } = require('./helpers/sidebar-quota-geometry');
+const {runSidebarAnimation}=require('./helpers/sidebar-quota-animation');
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.resolve(process.env.HUB_QUOTA_EVIDENCE_DIR || path.join(ROOT, 'artifacts', '20260910-sidebar-quota-a'));
 
@@ -33,7 +35,7 @@ async function run() {
   try {
     const port = await getFreePort();
     hub = await launchIsolatedHub({ dataDir, port, label: 'sidebar-quota-a', windowMode: 'hidden',
-      extraEnv: { APPDATA: fixture.fakeAppData, CLAUDE_HUB_EGRESS_FIXTURE: JSON.stringify(networkFixture) } });
+      extraEnv: { CLAUDE_HUB_E2E:'1', APPDATA: fixture.fakeAppData, CLAUDE_HUB_EGRESS_FIXTURE: JSON.stringify(networkFixture) } });
     evidence.pid = hub.pid; evidence.cdpPort = port;
     cdp = await connectFirstPage(hub, t => /renderer[\\/]index\.html/.test(t.url));
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
@@ -53,12 +55,11 @@ async function run() {
     check('VPN uses Chinese city and hides IP', telemetry.location.includes('美国 洛杉矶') && !/\d+\.\d+\.\d+\.\d+/.test(telemetry.location));
     evidence.telemetry = telemetry;
     await shot('A-default');
+    evidence.layoutMode='Hidden static flow disables sidebar transitions. After teardown a separate visible isolated window verifies unmodified product animations.';
     for (const zoom of [1, 1.25]) {
-      await cdp.eval(`require('electron').webFrame.setZoomFactor(${zoom})`);
       for (const width of [280, 340, 380, 440]) {
         // Layout stress only; CSS sizes change, no product state or data is bypassed.
-        await cdp.eval(`document.querySelector('#session-sidebar').style.width='${width}px'; document.querySelector('#session-sidebar').style.minWidth='${width}px'`);
-        await _waitMs(230);
+        const settled=await setStaticSidebarLayout(cdp,width,zoom);
         const geometry = await cdp.eval(`(() => {
           const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
           const quota=document.querySelector('.sidebar-quota');
@@ -70,6 +71,8 @@ async function run() {
         })()`);
         assert.deepStrictEqual(geometry.overflow, [], `overflow at ${width}/${zoom}`);
         geometry.adjacent = await measureQuota(cdp);
+        geometry.stability=settled.stability;
+        assertSidebarLayout(geometry.adjacent,width,zoom);
         assert.deepStrictEqual(geometry.adjacent.overlaps, [], `adjacent overlap at ${width}/${zoom}`);
         assert.deepStrictEqual(geometry.adjacent.overflow, [], `leaf overflow at ${width}/${zoom}`);
         assert.strictEqual(geometry.providers[1].y, geometry.providers[2].y);
@@ -80,8 +83,8 @@ async function run() {
       }
     }
     check('280/340/380/440 widths at 100% and 125%', true);
-    await cdp.eval(`require('electron').webFrame.setZoomFactor(1); document.querySelector('#session-sidebar').style.width='380px'; document.querySelector('#session-sidebar').style.minWidth='380px'`);
-    await _waitMs(230); await shot('A-wide');
+    await setStaticSidebarLayout(cdp,380,1);
+    await shot('A-wide');
 
     const snapshot = () => cdp.eval(`accountUsageController.getSnapshot()`);
     const requests = () => fs.readFileSync(fixture.controlPath + '.requests', 'utf8').trim().split('\n').length;
@@ -99,11 +102,21 @@ async function run() {
     await click(cdp, btn('claude'));
     await waitFor(cdp, `accountUsageController.getSnapshot().claude.usage5h.pct === 20`);
     check('Claude newer disk snapshot updates via UI and IPC', (await cdp.eval(`document.querySelector('.sidebar-quota-value').textContent`)) === '80%');
-    fs.writeFileSync(fixture.controlPath, JSON.stringify({ mode: 'ring', percent: 66, delay: 1200 }));
+    // Hold the fixture response until both duplicate clicks have actually been
+    // delivered. A fixed 1200ms response can finish before the second CDP click.
+    const releasePath=path.join(dataDir,'release-codex-response');
+    fs.writeFileSync(fixture.controlPath, JSON.stringify({ mode: 'ring', percent: 66, releasePath }));
     const before = await snapshot(), readsBefore = requests();
     await click(cdp, btn('codex'));
+    await waitFor(cdp, `accountUsageController.getSnapshot().refresh.providers.codex.inFlight`);
+    await waitFor(cdp, `require('fs').readFileSync(${JSON.stringify(fixture.controlPath + '.requests')},'utf8').match(/read/g).length > ${readsBefore}`);
     await click(cdp, btn('codex'));
     await click(cdp, btn('deepseek'));
+    evidence.pendingRefresh=await snapshot();
+    evidence.requestsBeforeRelease=requests()-readsBefore;
+    assert.ok(evidence.pendingRefresh.refresh.providers.codex.inFlight, 'Codex response stays pending during duplicate clicks');
+    assert.strictEqual(evidence.requestsBeforeRelease,1,'one Codex request before releasing fixture response');
+    fs.writeFileSync(releasePath,'release');
     await waitFor(cdp, `!accountUsageController.getSnapshot().refresh.providers.codex.inFlight && !!accountUsageController.getSnapshot().refresh.providers.codex.result`);
     const after = await snapshot();
     check('Codex UI duplicate requests coalesce', requests() - readsBefore === 1);
@@ -130,9 +143,15 @@ async function run() {
     await click(cdp, '.sidebar-account-usage .rail-usage-button');
     await click(cdp, '.usage-home');
     check('home entry remains accessible', await cdp.eval(`document.querySelector('.usage-popover').hidden`));
-    if (await cdp.eval(`document.querySelector('#session-sidebar').getBoundingClientRect().width === 0`)) await click(cdp, '#btn-expand-sidebar');
-    await click(cdp, '#btn-expand-sidebar'); await _waitMs(250);
-    await click(cdp, '#btn-expand-sidebar'); await _waitMs(250);
+    await cdp.eval(`document.querySelector('#session-sidebar').style.width='';document.querySelector('#session-sidebar').style.minWidth=''`);
+    // Home can collapse the sidebar. Resolve its real class/state before toggling.
+    if(await cdp.eval(`document.querySelector('.app-container').classList.contains('sidebar-collapsed')`)) await click(cdp,'#btn-expand-sidebar');
+    evidence.expanded=await waitForSidebarLayout(cdp,280,1);
+    await click(cdp, '#btn-expand-sidebar');
+    evidence.collapsed=await waitForSidebarLayout(cdp,0,1);
+    await shot('A-collapsed');
+    await click(cdp, '#btn-expand-sidebar');
+    evidence.reexpanded=await waitForSidebarLayout(cdp,280,1);
     check('collapse and expand preserve quota controls', await cdp.eval(`document.querySelector('.sidebar-quota-refresh').getBoundingClientRect().width > 0`));
     await cdp.eval(`document.querySelector('#session-sidebar').style.width=''; document.querySelector('#session-sidebar').style.minWidth=''`);
     const terminal = await cdp.eval(`ipcRenderer.invoke('create-session', {kind:'powershell',opts:{cwd:${JSON.stringify(dataDir)},title:'A 方案真实终端'}})`);
@@ -156,6 +175,7 @@ async function run() {
     check('quota remains available in real group view', await cdp.eval(`document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
     await shot('A-real-group');
     const scroll = await cdp.eval(`(() => {const e=document.querySelector('#session-list'),r=e.getBoundingClientRect();e.scrollTop=0;return {x:r.x+r.width/2,y:r.y+r.height/2,quotaY:document.querySelector('.sidebar-quota').getBoundingClientRect().y};})()`);
+    await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved',x:scroll.x,y:scroll.y });
     await cdp.send('Input.dispatchMouseEvent', { type:'mouseWheel', x:scroll.x,y:scroll.y,deltaX:0,deltaY:1000 });
     await _waitMs(300);
     check('real list wheel scroll leaves bottom quota fixed', await cdp.eval(`document.querySelector('#session-list').scrollTop > 0 && document.querySelector('.sidebar-quota').getBoundingClientRect().y === ${scroll.quotaY}`));
@@ -166,6 +186,7 @@ async function run() {
     evidence.ok = true;
   } catch (error) {
     evidence.ok = false; evidence.error = error.stack;
+    evidence.layoutEvidence=error.layoutEvidence;
     if (cdp) { try { await shot('failure'); } catch (shotError) { evidence.screenshotError = shotError.message; } }
     throw error;
   } finally {
@@ -176,6 +197,9 @@ async function run() {
     finally { fs.writeFileSync(path.join(OUT, 'verification.json'), JSON.stringify(evidence, null, 2)); }
     // Keep isolated inputs with evidence for independent review; no recursive cleanup.
   }
+  try { evidence.animation=await runSidebarAnimation(path.join(OUT,'animation'),evidence.sha); }
+  catch(error) {evidence.ok=false;evidence.animationError=error.stack;throw error;}
+  finally {fs.writeFileSync(path.join(OUT,'verification.json'),JSON.stringify(evidence,null,2));}
   console.log('Sidebar quota A real Hub verification PASS:', path.join(OUT, 'verification.json'));
 }
 module.exports = { run };

@@ -3,10 +3,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert');
-const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
+const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
-const { getFreePort, seedUsageData, waitFor, click } = require('./helpers/usage-refresh-fixture');
-const { measureQuota } = require('./helpers/sidebar-quota-geometry');
+const { getFreePort, seedUsageData, waitFor } = require('./helpers/usage-refresh-fixture');
+const { measureQuota, assertSidebarLayout, setStaticSidebarLayout, clickQuotaOnce,
+  readQuotaPointerEvidence, assertQuotaPointerEvidence } = require('./helpers/sidebar-quota-geometry');
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.resolve(process.env.HUB_QUOTA_EVIDENCE_DIR || path.join(ROOT, 'artifacts/20260910-sidebar-quota-a-r2/amounts'));
 const samples = [
@@ -19,7 +20,8 @@ const samples = [
 async function run() {
   fs.mkdirSync(OUT, {recursive:true});
   const evidence = { root:ROOT, sha:require('child_process').execFileSync('git',['rev-parse','HEAD'],{cwd:ROOT,encoding:'utf8',windowsHide:true}).trim(),
-    fixture:'Amounts loaded from isolated usage-cache.json; real Hub, no DOM data injection. Controlled Codex app-server.', cases:[] };
+    fixture:'Amounts loaded from isolated usage-cache.json; real Hub, no DOM data injection. Controlled Codex app-server.',
+    layoutMode:'Static matrix explicitly disables sidebar transitions only; actual width/zoom and 3 stable button samples required. Real transitions covered by A flow.', cases:[] };
   try {
     for (const sample of samples) {
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-quota-amount-'));
@@ -48,10 +50,9 @@ async function run() {
         assert.deepStrictEqual(result.values,['0%','86%','100%',sample.text]);
         assert.ok(hub.log().some(line=>line.includes('hook server listening')));
         for (const zoom of [1,1.25]) for (const width of [280,340,380,440]) {
-          await cdp.eval(`require('electron').webFrame.setZoomFactor(${zoom});document.querySelector('#session-sidebar').style.width='${width}px';document.querySelector('#session-sidebar').style.minWidth='${width}px'`);
-          await _waitMs(230);
-          const geometry=await measureQuota(cdp);
+          const geometry=await setStaticSidebarLayout(cdp,width,zoom);
           result.geometry.push({width,zoom,...geometry});
+          assertSidebarLayout(geometry,width,zoom);
           if(width===280) {
             const clip=await cdp.eval(`(()=>{const r=document.querySelector('#rail-usage').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:3}})()`);
             // Electron zoom changes the CDP screenshot crop coordinate space.
@@ -66,18 +67,22 @@ async function run() {
         }
         // Actual pointer interaction at the narrowest width retains full amount
         // when the real DeepSeek refresh reports the isolated missing API key.
-        await cdp.eval(`require('electron').webFrame.setZoomFactor(1);document.querySelector('#session-sidebar').style.width='280px';document.querySelector('#session-sidebar').style.minWidth='280px'`);
-        await _waitMs(230);
-        await click(cdp,'.sidebar-quota-provider[data-provider="deepseek"] button');
+        await setStaticSidebarLayout(cdp,280,1);
+        result.beforeClick=await clickQuotaOnce(cdp,'deepseek',280,1);
         await waitFor(cdp,`!!accountUsageController.getSnapshot().refresh.providers.deepseek.error`);
         assert.strictEqual(await cdp.eval(`document.querySelector('[data-provider="deepseek"] .sidebar-quota-value').textContent`),sample.text);
         result.refreshError=await cdp.eval(`accountUsageController.getSnapshot().refresh.providers.deepseek.error`);
+        result.pointer=await readQuotaPointerEvidence(cdp);
+        assertQuotaPointerEvidence(result.pointer,'deepseek',280,1);
         result.ok=true;
       } catch(error) {
         result.error=error.stack;
+        result.layoutEvidence=error.layoutEvidence;
         if(cdp) {
           try {
             result.failureSnapshot=await cdp.eval(`accountUsageController.getSnapshot()`);
+            result.pointer=await readQuotaPointerEvidence(cdp);
+            result.failureGeometry=await measureQuota(cdp);
             const shot=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true});
             fs.writeFileSync(path.join(OUT,sample.name+'-failure.png'),Buffer.from(shot.data,'base64'));
           } catch(captureError) { result.captureError=captureError.stack; }

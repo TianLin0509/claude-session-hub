@@ -109,11 +109,21 @@ input.on('line', line => {
       return;
     }
     if (control.mode === 'ring') {
-      setTimeout(() => process.stdout.write(JSON.stringify({ id: request.id, result: { rateLimits: {
+      const reply = () => process.stdout.write(JSON.stringify({ id: request.id, result: { rateLimits: {
         limitId: 'codex',
         primary: { usedPercent: control.percent, windowDurationMins: 300, resetsAt: ${primaryResetSec} },
         secondary: { usedPercent: 28, windowDurationMins: 10080, resetsAt: ${weeklyResetSec} }
-      } } }) + '\\n'), control.delay || 0);
+      } } }) + '\\n');
+      if (control.releasePath) {
+        const deadline = Date.now() + 15000;
+        const timer = setInterval(() => {
+          if (require('fs').existsSync(control.releasePath)) { clearInterval(timer); reply(); }
+          else if (Date.now() > deadline) {
+            clearInterval(timer);
+            process.stdout.write(JSON.stringify({id:request.id,error:{code:-32000,message:'Test release gate timed out'}}) + '\\n');
+          }
+        }, 25);
+      } else setTimeout(reply, control.delay || 0);
       return;
     }
     process.stdout.write(JSON.stringify({
