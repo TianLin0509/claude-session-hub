@@ -95,6 +95,8 @@ async function run() {
     await click(member + ' .composer-thinking');
     await wait(() => cdp.eval(`!!document.querySelector('.effort-picker-menu [data-effort=${targetEffort}]')`), 'effort menu');
     evidence.screenBefore = await cdp.eval(`(()=>{const t=terminalCache.get(${JSON.stringify(sid)}).terminal,b=t.buffer.active;return {cols:t.cols,rows:t.rows,baseY:b.baseY,lines:Array.from({length:t.rows},(_,i)=>b.getLine(b.baseY+i)?.translateToString(true))};})()`);
+    const nativeGeometry = await invoke('get-session-buffer-snapshot', sid);
+    ok('unopened member reader uses native snapshot geometry', evidence.screenBefore.cols === nativeGeometry.cols && evidence.screenBefore.rows === nativeGeometry.rows);
     await click(`.effort-picker-menu [data-effort=${targetEffort}]`);
     await wait(() => cdp.eval(`sessions.get(${JSON.stringify(sid)}).effort===${JSON.stringify(targetEffort)} && !sessions.get(${JSON.stringify(sid)})._modelSwitchPending && window.__modelConfirmations.some(c=>c.args[0].sessionId===${JSON.stringify(sid)} && c.response.ok)`), 'real effort confirmation', 45000);
     ok('real Codex effort changed only for selected member and chip refreshed', await cdp.eval(`document.querySelector(${JSON.stringify(member + ' .composer-thinking .composer-chip-label')}).textContent===${JSON.stringify(targetEffort)} && sessions.get(${JSON.stringify(second)}).effort===${JSON.stringify(secondBefore.effort)}`));
@@ -106,6 +108,50 @@ async function run() {
     ok('real model changed only for selected member and group stayed open', await cdp.eval(`sessions.get(${JSON.stringify(second)}).currentModel.id===${JSON.stringify(secondBefore.model)} && MeetingRoom.getActiveMeetingId()===${JSON.stringify(id)} && !terminalCache.get(${JSON.stringify(sid)})?.opened`));
     await wait(() => cdp.eval("!document.querySelector('.model-picker-menu')"), 'model menu closes');
     await shot('model-changed');
+
+    // B1: exercise the advanced panel and return from its real » prompt without
+    // opening the member's terminal tab. Metadata alone is not a confirmation.
+    const nativeLines = () => cdp.eval(`(()=>{const t=terminalCache.get(${JSON.stringify(sid)}).terminal,b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.baseY+i)?.translateToString(true)||'');})()`);
+    const nativePrompt = async () => (await nativeLines()).map(line => line.trim()).filter(line => /^[›»]\s/.test(line)).at(-1);
+    const changeEffort = async effort => {
+      const before = await cdp.eval('window.__modelConfirmations.length');
+      await click(member + ' .composer-thinking');
+      await wait(() => cdp.eval(`!!document.querySelector('.effort-picker-menu [data-effort=${effort}]')`), 'advanced effort option');
+      await click(`.effort-picker-menu [data-effort=${effort}]`);
+      await wait(() => cdp.eval(`sessions.get(${JSON.stringify(sid)}).effort===${JSON.stringify(effort)} && !sessions.get(${JSON.stringify(sid)})._modelSwitchPending && window.__modelConfirmations.length>${before} && window.__modelConfirmations.at(-1).response.ok`), 'advanced effort confirmation ' + effort, 45000);
+      await wait(() => cdp.eval("!document.querySelector('.effort-picker-menu')"), 'advanced effort menu closes');
+      const lines = await nativeLines();
+      (evidence.advancedTransitions ||= []).push({ effort, lines });
+      ok('advanced effort round trip ' + effort, await cdp.eval(`sessions.get(${JSON.stringify(second)}).effort===${JSON.stringify(secondBefore.effort)} && document.querySelector(${JSON.stringify(member + ' .composer-thinking .composer-chip-label')}).textContent===${JSON.stringify(effort)}`));
+    };
+    for (const effort of ['max', 'ultra', 'low', 'ultra']) await changeEffort(effort);
+    ok('ultra uses the actual double-chevron empty prompt', await nativePrompt() === '» Ask Codex to do anything');
+
+    // Emulate typing into the native input, without Enter or a submitted prompt.
+    const draft = 'b1_native_draft';
+    await cdp.eval(`require('electron').ipcRenderer.send('terminal-input',{sessionId:${JSON.stringify(sid)},data:${JSON.stringify(draft)}})`);
+    await wait(async () => (await nativePrompt()) === '» ' + draft, 'native draft appears');
+    const guardedCount = await cdp.eval('window.__modelConfirmations.length');
+    await click(member + ' .composer-thinking');
+    await click('.effort-picker-menu [data-effort=high]');
+    await wait(() => cdp.eval("document.querySelector('.effort-picker-menu [data-state=error]')?.textContent.includes('未发送内容')"), 'native draft guard');
+    ok('ultra draft refuses tuning and preserves native input', await nativePrompt() === '» ' + draft && await cdp.eval(`sessions.get(${JSON.stringify(sid)}).effort==='ultra' && window.__modelConfirmations.length===${guardedCount} && !sessions.get(${JSON.stringify(sid)})._modelSwitchPending`));
+    evidence.guardedNativeLines = await nativeLines();
+    await shot('ultra-draft-guard');
+    await click('.mr-gc-empty-title');
+    await cdp.eval(`require('electron').ipcRenderer.send('terminal-input',{sessionId:${JSON.stringify(sid)},data:'\\x15'})`);
+    await wait(async () => (await nativePrompt()) === '» Ask Codex to do anything', 'native draft cleared by Ctrl+U');
+
+    const modelCount = await cdp.eval('window.__modelConfirmations.length');
+    await click(member + ' .composer-model');
+    await wait(() => cdp.eval(`!!document.querySelector('.model-picker-menu [data-model-id="${firstBefore.model}"]')`), 'model option from ultra');
+    await click(`.model-picker-menu [data-model-id="${firstBefore.model}"]`);
+    await wait(() => cdp.eval(`sessions.get(${JSON.stringify(sid)}).currentModel.id===${JSON.stringify(firstBefore.model)} && !sessions.get(${JSON.stringify(sid)})._modelSwitchPending && window.__modelConfirmations.length>${modelCount} && window.__modelConfirmations.at(-1).response.ok`), 'model confirmation from ultra', 45000);
+    await wait(() => cdp.eval("!document.querySelector('.model-picker-menu')"), 'ultra model menu closes');
+    ok('model switches from ultra while retaining effort and member isolation', await cdp.eval(`sessions.get(${JSON.stringify(sid)}).effort==='ultra' && sessions.get(${JSON.stringify(second)}).currentModel.id===${JSON.stringify(secondBefore.model)}`));
+    await changeEffort('high');
+    ok('ultra round trips keep the group open and member terminal unopened', await cdp.eval(`MeetingRoom.getActiveMeetingId()===${JSON.stringify(id)} && !terminalCache.get(${JSON.stringify(sid)})?.opened`));
+    await shot('ultra-roundtrip-complete');
     evidence.modelConfirmations = await cdp.eval('window.__modelConfirmations');
     const state = await invoke('dev-file:status', { meetingId: id });
     ok('task directory initially absent', !fs.existsSync(state.dir));
