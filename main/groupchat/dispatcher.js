@@ -230,6 +230,7 @@ function createGroupChatDispatcher(deps) {
   }
 
   function startPasteTrappedMonitor(sid, kind, meetingId, context = {}) {
+    if (sessionManager.getNativeCodex?.(sid)) return;
     const existingMonitor = pasteTrappedMonitors.get(sid);
     if (existingMonitor && existingMonitor.attemptId === context.attemptId) return;
     if (existingMonitor) stopPasteTrappedMonitor(sid);
@@ -317,6 +318,7 @@ function createGroupChatDispatcher(deps) {
     const allowActiveExtend = opts.allowActiveExtend !== false;
     const startTs = Date.now();
     const waitSession = sessionManager.getSession(sid);
+    const native = sessionManager.getNativeCodex?.(sid);
     const waitKind = waitSession?.transcriptKind || opts.kind || waitSession?.kind || 'unknown';
     const orch = meetingId ? orchestratorFor(meetingId) : null;
     const attempt = opts.attempt || (orch && opts.attemptId ? orch.getAttempt(opts.attemptId) : null);
@@ -331,6 +333,7 @@ function createGroupChatDispatcher(deps) {
       hubSessionId: sid,
       label,
       kind: waitKind,
+      nativeOnly: !!native,
       attempt,
       onSoftAlert: (level) => {
         try {
@@ -427,7 +430,7 @@ function createGroupChatDispatcher(deps) {
     }
 
     let hardTimeout = null;
-    if (!disableHardTimeout) {
+    if (!disableHardTimeout && !native) {
       const maxHardTimeoutMs = hardTimeoutMs + HARD_TIMEOUT_ACTIVE_MAX_EXTRA_MS;
       const armHardTimeout = (delayMs) => {
         hardTimeout = setTimeout(async () => {
@@ -489,7 +492,7 @@ function createGroupChatDispatcher(deps) {
 
     let hostShellHits = 0;
     const authBannerMonitor = createAuthBannerMonitor();
-    const hostShellHeartbeat = setInterval(() => {
+    const hostShellHeartbeat = native ? null : setInterval(() => {
       if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
       const buf = sessionManager.getSessionBuffer(sid) || '';
       // 登录失效判定收紧（2026-07-12）：tail + 连续 2 次命中 + 期间 PTY 静默才 confirmed，
@@ -516,14 +519,14 @@ function createGroupChatDispatcher(deps) {
         hostShellHits = 0;
       }
     }, HOST_SHELL_HEARTBEAT_MS);
-    hostShellHeartbeat.unref?.();
+    hostShellHeartbeat?.unref?.();
 
     let codexAutoExtractTimer = null;
     let codexPromptSubmitTimer = null;
     let codexPromptSubmitRetries = 0;
     let onCodexPromptSubmitted = null;
     let onAgentTurnStartedForExtract = null;
-    if (isCodexBaseKind(waitKind) || isClaudeFamily(waitKind)) {
+    if (!native && (isCodexBaseKind(waitKind) || isClaudeFamily(waitKind))) {
       const sincePromptTs = promptSubmitSinceTs;
       // promptSubmitSinceTs 故意比真实发送时刻早 1s，用来容忍 CLI 侧写 rollout 文件的
       //   时钟偏差——那个松弛只能用于「找本轮的用户消息」。判定「这条回答属于本轮」
@@ -717,6 +720,7 @@ function createGroupChatDispatcher(deps) {
     }
 
     const cleanupWaitResources = () => {
+      if (native && nativeStateListener) native.off('state',nativeStateListener);
       if (hardTimeout) clearTimeout(hardTimeout);
       clearInterval(hostShellHeartbeat);
       if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
@@ -738,9 +742,38 @@ function createGroupChatDispatcher(deps) {
       if (!pasteMonitor || !opts.attemptId || pasteMonitor.attemptId === opts.attemptId) stopPasteTrappedMonitor(sid);
     };
 
-    return watcher.wait().then(result => {
+    let nativeStateListener = null;
+    const waiting = watcher.wait();
+    if (native) {
+      let reading = false;
+      const replay = async () => {
+        if (reading || watcher.isSettled()) return;
+        if (native.runtime.connection !== 'connected') {
+          if (orch && opts.attemptId) {
+            const pending = orch.updateAttempt(opts.attemptId,{status:'recovering',reason:'native_connection_unknown'},'native_disconnected');
+            if (!silent) publishAttempt(meetingId,orch,pending);
+          }
+          return;
+        }
+        reading = true;
+        try {
+          const outcome = await native.readOutcome(opts.providerTurnId || attempt?.providerTurnId);
+          if (outcome) watcher.observeNativeOutcome(outcome);
+        } catch (error) { warn('[codex-native] group outcome read failed:',error.message); }
+        finally { reading = false; }
+      };
+      nativeStateListener = () => { void replay(); };
+      native.on('state',nativeStateListener);
+      // The engine may have completed before turn/start responded. Read its
+      // exact stored outcome after subscribing; never infer from final text.
+      void replay();
+      watcher.interrupt = () => {
+        native.interrupt().catch(error=>warn('[codex-native] group interrupt failed:',error.message));
+      };
+    }
+    return waiting.then(result => {
       cleanupWaitResources();
-      setTimeout(() => {
+      if (!native) setTimeout(() => {
         try { unregisterPatchListener(sid, watcher); }
         catch (e) { warn('[patch] unregisterPatchListener throw:', e && e.message); }
       }, 305_000).unref?.();
@@ -880,7 +913,7 @@ function createGroupChatDispatcher(deps) {
       try {
         const sendStartedAt = Date.now();
         if (t.attemptId) _orch.updateAttempt(t.attemptId, { status: 'submitting', dispatchAt: sendStartedAt }, 'attempt_submitting');
-        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {clientSubmissionId:t.attemptId});
         if (sendResult && sendResult.ok) {
           t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
           t.promptSubmittedAt = sendStartedAt;
@@ -1329,7 +1362,7 @@ function createGroupChatDispatcher(deps) {
             t.attempt = submitting;
             if (!silent) publishAttempt(meetingId, orch, submitting);
           }
-          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
+          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {clientSubmissionId:t.attemptId});
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
           try {
@@ -1654,6 +1687,27 @@ function createGroupChatDispatcher(deps) {
         }
         try {
           const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
+          if (liveSession.kind === 'codex' || liveSession.kind === 'codex-resume') {
+            const nativeSession = sessionManager.getNativeCodex?.(receipt.sid);
+            if (nativeSession) await nativeSession.start();
+            const outcome = nativeSession && await nativeSession.readOutcome(receipt.providerTurnId);
+            if (outcome) {
+              orch.patchTurnResult(receipt.turnNum,receipt.sid,{
+                ...outcome,status:outcome.status === 'failed' ? 'errored' : outcome.status,
+                attemptId:receipt.attemptId,runId:receipt.runId,memberId:receipt.memberId,
+                providerTurnId:outcome.turnId,speaker:liveSession.title || 'Codex',
+              });
+              publishAttempt(meeting.id,orch,orch.getAttempt(receipt.attemptId),{recovery:true});
+              summary.recovered += 1;
+            } else {
+              const pending = orch.updateAttempt(receipt.attemptId,{
+                status:ATTEMPT_AWAITING_BINDING,reason:'native_outcome_unconfirmed',
+              },'native_recovery_pending');
+              publishAttempt(meeting.id,orch,pending,{recovery:true});
+              summary.pending += 1;
+            }
+            continue;
+          }
           const extracted = await transcriptTap.extractLatestTurn(receipt.sid, floor);
           const codexFinal = isCodexBaseKind(receipt.kind) && extracted && extracted.extractMode === 'final_answer';
           // 与上面 auto-extract 同一条判据：恢复路径同样不能把未完成的开场白

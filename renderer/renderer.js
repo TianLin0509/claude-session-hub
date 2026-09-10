@@ -2,6 +2,8 @@
 // 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
 const fs = require('fs');
+const { isCodexSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
+const { createCodexNativeControls } = require('./codex-native-controls.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const {
@@ -317,6 +319,7 @@ function ptyInputReadyIsStable(session, runtime, observedAt) {
 // only when Hub has evidence that the user really submitted a prompt; idle TUI
 // animations and layout repaints otherwise cannot move a session to 运行中.
 function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
+  if (isCodexSession(sessions.get(sessionId))) return;
   const session = sessions.get(sessionId);
   if (!isAiRuntimeSession(session)) return;
   const at = Number(submittedAt) || Date.now();
@@ -364,6 +367,7 @@ function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
 }
 
 function canUsePtyBurstFallback(session, now = Date.now()) {
+  if (isCodexSession(session)) return false;
   if (!isAiRuntimeSession(session)) return true;
   const at = Number(now) || Date.now();
   return at >= (Number(session._ptyBurstCooldownUntil) || 0)
@@ -372,6 +376,7 @@ function canUsePtyBurstFallback(session, now = Date.now()) {
 
 function trackPtyPromptInput(sessionId, data) {
   const session = sessions.get(sessionId);
+  if (isCodexSession(session)) return;
   if (!isAiRuntimeSession(session)) return;
   const chunk = String(data || '');
   const printable = chunk
@@ -454,10 +459,26 @@ function saveFloatingInputDraft(sessionId, inputBox) {
   const text = readContenteditablePlainText(inputBox);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
+  if (isCodexSession(sessions.get(sessionId))) {
+    try {
+      if (text) localStorage.setItem('codex-native-draft:'+sessionId,text);
+      else localStorage.removeItem('codex-native-draft:'+sessionId);
+      inputBox.parentElement?.querySelector('.native-draft-error')?.remove();
+    } catch (error) {
+      console.warn('[codex-draft] persist failed:',error.message);
+      let message=inputBox.parentElement?.querySelector('.native-draft-error');
+      if(!message && inputBox.parentElement){message=document.createElement('div');message.className='native-draft-error';message.setAttribute('role','alert');inputBox.parentElement.append(message);}
+      if(message)message.textContent='草稿未能保存到磁盘，请复制后再关闭窗口：'+error.message;
+    }
+  }
 }
 
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
+  if (sessionId && isCodexSession(sessions.get(sessionId))) {
+    try { localStorage.removeItem('codex-native-draft:'+sessionId); }
+    catch(error){console.warn('[codex-draft] clear failed:',error.message);}
+  }
 }
 
 function getTerminalViewport(cached) {
@@ -2031,6 +2052,10 @@ const { createTurnCardRenderer } = require('./turn-card-renderer.js');
 function syncTurnPresentationToSession(sessionId, presentation, turn) {
   const session = sessions.get(sessionId);
   if (!session || !presentation || !turn || turn.role !== 'assistant') return;
+  if (isCodexSession(session)) {
+    if (!sessionRuntimeIsActive(session)) { session.currentCardActivity=null; return; }
+    if (!turn.id?.includes(':'+session.nativeRuntime?.turnId+':')) return;
+  }
   const current = presentation.currentActivity;
   const activities = Array.isArray(presentation.activities) ? presentation.activities : [];
   const lastActivity = activities.length ? activities[activities.length - 1] : null;
@@ -2954,6 +2979,17 @@ document.addEventListener('click', (e) => {
     // sid 必须取自这张卡片（getCardSessionId），不能用全局 activeSessionId ——
     // 否则在 A 会话的卡片上点重发，消息会打进当时恰好激活的 B 会话。
     const sid = getCardSessionId(card);
+    if (sid && isCodexSession(sessions.get(sid))) {
+      const original=btn.textContent;
+      let error=card.querySelector('.native-card-send-error');
+      if (!error) { error=document.createElement('div');error.className='native-card-send-error';error.setAttribute('role','alert');card.append(error); }
+      error.textContent='';btn.disabled=true;btn.textContent='提交中';
+      ipcRenderer.invoke('session:send-prompt',{sessionId:sid,text:promptText,clientSubmissionId:require('node:crypto').randomUUID()})
+        .then(result=>{if(!result?.ok)throw new Error(result?.message || 'Codex 未确认提交，请核对会话状态');})
+        .catch(problem=>{error.textContent=problem.message;})
+        .finally(()=>{btn.disabled=false;btn.textContent=original;});
+      return;
+    }
     if (sid && typeof ipcRenderer !== 'undefined') {
       armPtyBurstFallback(sid);
       // 2026-09-03：这里原本是 `promptText + '\r'` 一次写完 —— 连 bracketed paste
@@ -3072,6 +3108,7 @@ const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 
 function markCodexCardWorking(sessionId, source = 'prompt', runtimeOptions = {}) {
   const session = sessions.get(sessionId);
+  if (isCodexSession(session)) return;
   if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
@@ -3298,7 +3335,7 @@ function _updateStreamingIndicator(sessionId) {
       : (pendingSubmit || starting ? '启动中' : '工作中');
   } else if (!isRunning && indicator) {
     const runtimeTruth = getSessionRuntimeTruth(sess);
-    if ([RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
+    if (isCodexSession(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
       indicator.remove();
       return;
     }
@@ -3507,6 +3544,7 @@ function clearFloatingInputStuck(bar) {
 function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
   const delivery = floatingPromptDeliveries.get(sessionId);
+  const native = isCodexSession(sessions.get(sessionId));
   if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
@@ -3514,7 +3552,8 @@ function markFloatingInputStuck(bar, sessionId) {
 
   const label = document.createElement('span');
   label.className = 'fi-stuck-label';
-  label.textContent = delivery?.status === 'content-mismatch'
+  label.textContent = native ? '消息提交结果待核对；不会自动重发。'
+    : delivery?.status === 'content-mismatch'
     ? '⚠ 检测到正文相同但换行或空白不同的提交，请核对终端；已停止补发'
     : delivery?.status === 'failed'
     ? '⚠ 消息发送失败，请检查终端后重试'
@@ -3523,15 +3562,24 @@ function markFloatingInputStuck(bar, sessionId) {
   const resendBtn = document.createElement('button');
   resendBtn.type = 'button';
   resendBtn.className = 'fi-stuck-resend';
-  resendBtn.textContent = '补发';
+  resendBtn.textContent = native ? '核对' : '补发';
   if (delivery?.status === 'content-mismatch') {
     resendBtn.disabled = true;
     resendBtn.textContent = '需核对';
   }
-  resendBtn.title = '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
+  resendBtn.title = native ? '从 Codex 原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
   resendBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
     resendBtn.disabled = true;
+    if (native) {
+      try {
+        const result = await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
+        label.textContent = result?.ok ? '已核对连接；请查看上一轮内容，确认后再决定是否重新发送。'
+          : '核对失败：'+(result?.message || '连接不可用');
+      } catch (error) { label.textContent = '核对失败：'+error.message; }
+      resendBtn.disabled = false;
+      return;
+    }
     resendBtn.textContent = '补发中…';
     try {
       const result = await ipcRenderer.invoke('session:resend-prompt', {
@@ -3631,6 +3679,7 @@ function tailAboveCliPrompt(lines) {
 // 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
 // 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
 function detectComposerLiveQuestion(session, runtime) {
+  if (isCodexSession(session)) return null;
   if (!session || !runtime) return null;
   // 已经被权威信号标成「等你输入」的，用不着再猜。
   if (sessionNeedsUserInput(session)) return null;
@@ -3749,6 +3798,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
   bar.dataset.sessionId = sessionId;
+  const nativeControls = createCodexNativeControls({
+    sessionId, invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
+    openExternal: url => shell.openExternal(url),
+  });
+  bar.append(nativeControls.element);
+  if (isCodexSession(sessions.get(sessionId))) terminal.options.disableStdin = true;
 
   // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
   // 输入框其余行为一字不变 —— 历史是增强，不该成为新的单点故障。
@@ -3775,6 +3830,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
   inputBox.setAttribute('data-placeholder', '输入消息…');
+  if (isCodexSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
+    try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
+    catch(error){console.warn('[codex-draft] read failed:',error.message);}
+  }
   if (floatingInputDrafts.has(sessionId)) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
   }
@@ -4016,6 +4075,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
+    nativeControls.update(session);
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
       isRunning: isSessionCardWorking(session),
@@ -4146,7 +4206,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     replaceContenteditableText(inputBox, '');
     clearFloatingInputDraft(sessionId);
     terminal.scrollToBottom();
-    terminal.focus();
+    if (isCodexSession(sessions.get(sessionId))) inputBox.focus();
+    else terminal.focus();
 
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
@@ -4456,6 +4517,7 @@ function sweepStaleRunning() {
   const now = Date.now();
   let dirty = false;
   for (const s of sessions.values()) {
+    if (isCodexSession(s)) continue;
     if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
         const truth = getSessionRuntimeTruth(s, { now });
@@ -5265,6 +5327,7 @@ document.addEventListener('click', (e) => {
 
 // --- Terminal buffer reading and activity monitor ---
 function classifySessionRuntimeFrame(session, lines) {
+  if (isCodexSession(session)) return { state: 'unknown', confidence: 'none', reason: 'native-only' };
   if (isClaudeRuntimeSession(session)) return classifyTerminalRuntime('claude', lines);
   if (session && isCodexKind(session.kind)) return classifyTerminalRuntime('codex', lines);
   return { state: 'unknown', confidence: 'none', reason: 'unsupported-runtime', evidence: '' };
@@ -5363,6 +5426,7 @@ function raiseStreamDisconnectFailure(sessionId, issue, options = {}) {
 }
 
 function noteStreamDisconnect(sessionId, data) {
+  if (isCodexSession(sessions.get(sessionId))) return false;
   const session = sessions.get(sessionId);
   if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
   const tracked = appendStreamDisconnectChunk(session._streamDisconnectTail, data);
@@ -5372,6 +5436,7 @@ function noteStreamDisconnect(sessionId, data) {
 }
 
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
+  if (isCodexSession(session)) return false;
   if (!session || !runtime || session.status === 'dormant') return false;
   if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
 
@@ -5899,6 +5964,7 @@ function scheduleCardSettleRefresh(sessionId) {
 
 function noteCardTerminalOutput(sessionId) {
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
+  if (isCodexSession(sessions.get(sessionId))) return true;
   scheduleCardSettleRefresh(sessionId);
   return true;
 }
@@ -7587,6 +7653,22 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
+  if (isCodexSession(local) && session.nativeRuntime) {
+    if (!acceptNativeSnapshot(local, session)) return;
+    if (session.nativeMigrationDraft && local._importedNativeDraft!==session.nativeMigrationDraft) {
+      local._importedNativeDraft=session.nativeMigrationDraft;
+      const input=[...document.querySelectorAll('.floating-input-bar')].find(bar=>bar.dataset.sessionId===local.id)?.querySelector('.floating-input-box');
+      if(!floatingInputDrafts.has(local.id) && (!input || !readContenteditablePlainText(input))) {
+        floatingInputDrafts.set(local.id,session.nativeMigrationDraft);
+        if(input){input.textContent=session.nativeMigrationDraft;saveFloatingInputDraft(local.id,input);}
+        else {try{localStorage.setItem('codex-native-draft:'+local.id,session.nativeMigrationDraft);}catch(error){console.warn('[codex-draft] migration save failed:',error.message);}}
+      }
+    }
+    clearRuntimeTruthExpiryTimer(local.id);
+    clearPtyRunningAnimationCandidate(local);
+    _updateStreamingIndicator(local.id);
+    updateFloatingBarState();
+  }
   if (local.purpose === 'chuxin-research' || session.purpose === 'chuxin-research') {
     Object.assign(local, session);
     scheduleSessionListRender();
@@ -7730,6 +7812,10 @@ function schedulePersist() {
         branchAutoTitlePending: !!s.branchAutoTitlePending,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
+        runtimeBackend: s.runtimeBackend || null,
+        nativeRuntime: s.nativeRuntime || null,
+        codexApprovalPolicy: s.codexApprovalPolicy || null,
+        codexSandbox: s.codexSandbox || null,
         codexSessionsRoot: s.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
@@ -7939,6 +8025,10 @@ window.resumeDormantSession = resumeDormantSession;
         branchAutoTitlePending: !!meta.branchAutoTitlePending,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
+        runtimeBackend: meta.runtimeBackend || null,
+        nativeRuntime: require('../core/codex-native-runtime.js').persistNativeRuntime(meta),
+        codexApprovalPolicy: meta.codexApprovalPolicy || null,
+        codexSandbox: meta.codexSandbox || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
@@ -8034,6 +8124,7 @@ function _acceptSidebarGroupChatEvent(payload, options = {}) {
 }
 
 function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeOptions = {}) {
+  if (isCodexSession(session)) return false;
   if (!session) return false;
   const sid = String(session.id || '');
   const oldTimer = _groupChatWorkingExpiryTimers.get(sid);

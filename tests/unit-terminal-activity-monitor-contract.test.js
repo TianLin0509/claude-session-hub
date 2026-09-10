@@ -127,7 +127,7 @@ test('PTY burst is a running fallback when no semantic signal is actually active
 });
 
 test('renderer resize redraw does not create a running pulse', () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const session = { id: 's1', kind: 'deepseek', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   let rendered = 0;
   const monitor = createTerminalActivityMonitor({
@@ -150,7 +150,7 @@ test('renderer resize redraw does not create a running pulse', () => {
 });
 
 test('PTY fallback resumes after the renderer resize redraw window', () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const session = { id: 's1', kind: 'deepseek', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   const monitor = createTerminalActivityMonitor({
     sessions,
@@ -172,7 +172,7 @@ test('PTY fallback resumes after the renderer resize redraw window', () => {
 });
 
 test('unarmed AI TUI animation cannot move a recent session to running', () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const session = { id: 's1', kind: 'deepseek', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   let rendered = 0;
   const monitor = createTerminalActivityMonitor({
@@ -195,9 +195,9 @@ test('unarmed AI TUI animation cannot move a recent session to running', () => {
   monitor.clearSession('s1');
 });
 
-test('unarmed Codex output still probes a strong Working row on the live screen', async () => {
+test('unarmed DeepSeek Codex output still probes a strong Working row on the live screen', async () => {
   const session = {
-    id: 's1', kind: 'codex', status: 'idle',
+    id: 's1', kind: 'deepseek', status: 'idle',
     runtimeTruth: {
       state: 'completed', source: 'pty-codex-input-ready', confidence: 'strong',
       observedAt: Date.now() - 1000, completedAt: Date.now() - 1000, sequence: 1,
@@ -224,7 +224,7 @@ test('unarmed Codex output still probes a strong Working row on the live screen'
     canObserveRuntimeState: () => true,
     classifyRuntimeState: (item, liveLines) => {
       classified += 1;
-      return classifyTerminalRuntime(item.kind, liveLines);
+      return classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines);
     },
     onRuntimeState: (item, runtime) => {
       applied += 1;
@@ -262,7 +262,7 @@ test('unarmed Claude output still probes a structured animated status row', asyn
     hasSemanticWorking: () => false,
     canUsePtyBurstFallback: () => false,
     canObserveRuntimeState: () => true,
-    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines),
     onRuntimeState: (item, runtime) => {
       observed = runtime;
       if (runtime.state === 'running') item.status = 'running';
@@ -279,8 +279,8 @@ test('unarmed Claude output still probes a structured animated status row', asyn
   monitor.clearSession('s1');
 });
 
-test('probing an unarmed idle Codex footer does not promote it to running', async () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+test('probing an unarmed idle DeepSeek Codex footer does not promote it to running', async () => {
+  const session = { id: 's1', kind: 'deepseek', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   let observed = null;
   let rendered = 0;
@@ -298,7 +298,7 @@ test('probing an unarmed idle Codex footer does not promote it to running', asyn
     hasSemanticWorking: () => false,
     canUsePtyBurstFallback: () => false,
     canObserveRuntimeState: () => true,
-    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines),
     onRuntimeState: (_item, runtime) => {
       observed = runtime;
       return false;
@@ -316,7 +316,7 @@ test('probing an unarmed idle Codex footer does not promote it to running', asyn
 });
 
 test('expired AI PTY fallback immediately clears an existing burst state', () => {
-  const session = { id: 's1', kind: 'codex', status: 'running', _runSource: 'burst' };
+  const session = { id: 's1', kind: 'deepseek', status: 'running', _runSource: 'burst' };
   const sessions = new Map([['s1', session]]);
   let rendered = 0;
   let settled = 0;
@@ -362,7 +362,7 @@ test('active semantic signal remains authoritative over PTY burst fallback', () 
 });
 
 test('provider runtime observation reads only the logical live screen and can settle a missed completion', () => {
-  const session = { id: 's1', kind: 'codex', status: 'running', _runSource: 'semantic' };
+  const session = { id: 's1', kind: 'deepseek', status: 'running', _runSource: 'semantic' };
   const sessions = new Map([['s1', session]]);
   const lines = [
     '• Working (99s • esc to interrupt)', // historical scrollback: must be ignored
@@ -384,7 +384,7 @@ test('provider runtime observation reads only the logical live screen and can se
     updateStreamingIndicator: () => {},
     hasSemanticCardWorking: () => false,
     hasSemanticWorking: () => true,
-    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines),
     onRuntimeState: (item, runtime) => {
       observed = runtime;
       if (runtime.state === 'idle') item.status = 'idle';
@@ -400,7 +400,7 @@ test('provider runtime observation reads only the logical live screen and can se
 });
 
 test('an input-ready frame can defer burst settlement until the provider running phase was observed', async () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const session = { id: 's1', kind: 'deepseek', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   const monitor = createTerminalActivityMonitor({
     sessions,
@@ -416,7 +416,7 @@ test('an input-ready frame can defer burst settlement until the provider running
     hasSemanticWorking: () => false,
     canUsePtyBurstFallback: () => true,
     canObserveRuntimeState: () => true,
-    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines),
     onRuntimeState: () => false,
     runtimeProbeMs: 5,
     silenceMs: 20,
@@ -429,7 +429,7 @@ test('an input-ready frame can defer burst settlement until the provider running
   monitor.clearSession('s1');
 });
 
-test('an unarmed PTY chunk storm coalesces live-screen classification probes', async () => {
+test('Codex never schedules screen probes, including an unarmed PTY chunk storm', async () => {
   const session = { id: 's1', kind: 'codex', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   let classifyCount = 0;
@@ -450,7 +450,7 @@ test('an unarmed PTY chunk storm coalesces live-screen classification probes', a
     canObserveRuntimeState: () => true,
     classifyRuntimeState: (item, liveLines) => {
       classifyCount += 1;
-      return classifyTerminalRuntime(item.kind, liveLines);
+      return classifyTerminalRuntime(item.kind === 'deepseek' ? 'codex' : item.kind, liveLines);
     },
     onRuntimeState: () => true,
     runtimeProbeMs: 5,
@@ -458,6 +458,6 @@ test('an unarmed PTY chunk storm coalesces live-screen classification probes', a
   });
   for (let index = 0; index < 1000; index += 1) monitor.onTerminalOutput('s1', 1);
   await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(classifyCount, 1, '1000 PTY chunks should schedule one current-screen probe');
+  assert.equal(classifyCount, 0, 'Codex output must schedule zero screen probes');
   monitor.clearSession('s1');
 });

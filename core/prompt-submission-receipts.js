@@ -19,9 +19,9 @@ class PromptSubmissionReceipts {
     this.onUpdate = onUpdate;
   }
 
-  begin(sessionId, clientSubmissionId, text, dispatchedAt = Date.now()) {
+  begin(sessionId, clientSubmissionId, text, dispatchedAt = Date.now(), options = {}) {
     const receipt = {
-      sessionId, clientSubmissionId, dispatchedAt,
+      sessionId, clientSubmissionId, dispatchedAt, nativeOnly:options.nativeOnly === true,
       fingerprint: promptFingerprint(text), contentFingerprint: contentFingerprint(text),
       status: 'pending', acknowledgement: null,
       get started() { return this.status === 'confirmed'; },
@@ -42,6 +42,7 @@ class PromptSubmissionReceipts {
       sessionId: receipt.sessionId, clientSubmissionId: receipt.clientSubmissionId,
       status: receipt.status, acknowledgementSource: receipt.acknowledgement?.source || null,
       turnId: receipt.acknowledgement?.turnId || null,
+      ...(receipt.acknowledgement?.threadId ? {threadId:receipt.acknowledgement.threadId} : {}),
     };
   }
 
@@ -54,7 +55,7 @@ class PromptSubmissionReceipts {
 
   observe(event = {}) {
     if (event.signalSource && !['user_message', 'item_completed_user_message',
-      'claude-user-prompt-submit', 'prompt-submitted'].includes(event.signalSource)) return false;
+      'claude-user-prompt-submit', 'prompt-submitted', 'codex-app-server'].includes(event.signalSource)) return false;
     const sessionId = event.sessionId || event.hubSessionId;
     if (!this.get(sessionId) || typeof event.text !== 'string' || !event.text.trim()) return false;
     const submittedAt = Number(event.submittedAt || event.observedAt);
@@ -64,10 +65,14 @@ class PromptSubmissionReceipts {
     // Claude hooks can be timestamped on arrival. Repeated "continue" sends
     // must consume the oldest unresolved matching attempt, never the newest.
     const pending = this.unresolved.get(sessionId) || [];
-    const receipt = pending.find(item => submittedAt >= item.dispatchedAt
+    const native = event.signalSource === 'codex-app-server';
+    if (native && (!event.clientSubmissionId || !event.threadId || !event.turnId)) return false;
+    const receipt = pending.find(item => (!item.nativeOnly || native)
+      && (!native || item.clientSubmissionId === event.clientSubmissionId)
+      && submittedAt >= item.dispatchedAt
       && (item.fingerprint === fingerprint || item.contentFingerprint === content));
     if (!receipt) return false;
-    const key = `${event.turnId || submittedAt}:${fingerprint}`;
+    const key = `${native ? event.clientSubmissionId + ':' : ''}${event.turnId || submittedAt}:${fingerprint}`;
     const seen = this.seen.get(sessionId) || new Set();
     if (seen.has(key)) return false;
     seen.add(key);
@@ -80,6 +85,7 @@ class PromptSubmissionReceipts {
     receipt.acknowledgement = {
       source: event.signalSource || 'prompt-submitted', observedAt: submittedAt,
       turnId: event.turnId || null,
+      threadId: event.threadId || null,
     };
     this.unresolved.set(sessionId, pending.filter(item => item !== receipt));
     this.onUpdate(this.snapshot(receipt));

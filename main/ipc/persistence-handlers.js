@@ -9,6 +9,10 @@ const RESUME_META_FIELDS = [
   'cwdFellBackFrom',
   'transcriptPath',
   'codexSid',
+  'runtimeBackend',
+  'nativeRuntime',
+  'codexApprovalPolicy',
+  'codexSandbox',
   'codexSessionsRoot',
   'codexAllowMtimeFallback',
   'codexProfile',
@@ -163,6 +167,16 @@ function handlePersistSessions(list, meetingList, deps) {
     (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
   );
   mergeResumeMetaFields(list, previousSessions);
+  for (const session of list) {
+    const live = deps.getLiveSession?.(session.hubId);
+    if (live && live.runtimeBackend === 'codex-app-server') {
+      session.runtimeBackend = live.runtimeBackend;
+      session.nativeRuntime = require('../../core/codex-native-runtime.js').persistNativeRuntime(live);
+      session.codexSid = live.codexSid;
+      session.codexApprovalPolicy = live.codexApprovalPolicy;
+      session.codexSandbox = live.codexSandbox;
+    }
+  }
 
   const nowTs = Date.now();
   let changedSessions = 0;

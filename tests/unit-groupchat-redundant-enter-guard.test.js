@@ -1,3 +1,4 @@
+// Legacy Codex TUI submission remains used by DeepSeek; managed Codex uses native IPC.
 'use strict';
 
 // 两条「不要自作主张」的守卫，都是实测逼出来的：
@@ -24,7 +25,7 @@ function watcherHarness({ screenReadsRunning, pasteStuckInInputBox = false }) {
   let enters = 0;
   class SM extends EventEmitter {
     constructor() { super(); this.setMaxListeners(0); this.buf = ''; }
-    getSession() { return { id: 's', transcriptKind: 'codex', kind: 'codex', cwd: process.cwd() }; }
+    getSession() { return { id: 's', transcriptKind: 'codex', kind: 'deepseek', cwd: process.cwd() }; }
     getGroupChatReady() { return true; }
     setGroupChatReady() {}
     getGroupChatLastActivity() { return Date.now(); }

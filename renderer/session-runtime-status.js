@@ -1,5 +1,7 @@
 'use strict';
 
+const { isCodexSession } = require('../core/codex-native-runtime.js');
+
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -59,10 +61,11 @@ function legacyRunningStartedAt(session) {
 }
 
 function deriveSessionRuntimeStatus(session, options = {}) {
+  const native = isCodexSession(session);
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
   let truth = getSessionRuntimeTruth(session, { now });
-  if (options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+  if (!isCodexSession(session) && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
     truth = {
       ...truth,
       state: RUNTIME_RUNNING,
@@ -84,18 +87,19 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     meta = '需要操作';
     detail = String(truth.evidence || session && session.waitingText || '').trim();
   } else if (state === RUNTIME_STARTING || state === RUNTIME_RUNNING) {
-    const startedAt = Number(truth.startedAt) || legacyRunningStartedAt(session);
+    const startedAt = Number(truth.startedAt) || (native ? 0 : legacyRunningStartedAt(session));
     if (startedAt > 0 && now >= startedAt) meta = formatRuntimeDuration(now - startedAt);
     detail = String(
       session && session.currentCardActivity && session.currentCardActivity.label
       || truth.evidence
-      || session && session._ptyRuntimeEvidence
+      || !native && session && session._ptyRuntimeEvidence
       || '',
     ).trim();
   } else if (state === RUNTIME_COMPLETED) {
-    const completedAt = Number(truth.completedAt) || Number(session && session.lastCompletedAt) || 0;
+    const completedAt = Number(truth.completedAt) || (native ? 0 : Number(session && session.lastCompletedAt)) || 0;
     meta = formatCompletionAge(completedAt, now);
-    const durationMs = Number(session && session.lastRunDurationMs) || 0;
+    const durationMs = native ? (truth.startedAt && truth.completedAt ? truth.completedAt - truth.startedAt : 0)
+      : Number(session && session.lastRunDurationMs) || 0;
     detail = durationMs > 0 ? `本轮用时 ${formatRuntimeDuration(durationMs)}` : '';
   } else if (state === RUNTIME_UNKNOWN) {
     detail = truth.reason === 'observation-expired'
@@ -128,6 +132,7 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     source: truth.source,
     confidence: truth.confidence,
     observedAt: truth.observedAt,
+    ...(native ? {threadId:truth.threadId,turnId:truth.turnId,revision:truth.revision,epoch:truth.epoch,connection:truth.connection} : {}),
     visibleText,
     ariaLabel,
     title: titleParts.join('\n'),

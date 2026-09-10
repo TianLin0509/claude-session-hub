@@ -266,21 +266,23 @@ function composerRunStartedAt(session, truth) {
  * @returns {{ state, text, detail, quickReplies, action, canStop, runtime }}
  */
 function buildComposerStatusModel(session, options = {}) {
+  const native = require('./codex-native-runtime.js').isCodexSession(session);
   const now = Number(options.now) || Date.now();
   const runtime = options.runtime;
   if (!runtime || typeof runtime !== 'object') {
     throw new Error('buildComposerStatusModel requires the derived runtime status');
   }
   const truth = getSessionRuntimeTruth(session, { now });
-  const liveQuestion = options.liveQuestion && options.liveQuestion.waiting
+  const liveQuestion = !native && options.liveQuestion && options.liveQuestion.waiting
     ? options.liveQuestion
     : null;
   // 「等你响应」的判据与 respond-pill 完全一致（sessionNeedsUserInput），
   // 区别只在 pill 会跳过当前会话 —— composer 说的就是当前会话，所以不跳过。
   // liveQuestion 是同一件事的第二个证据来源，两者取或。
   const needsRespond = sessionNeedsUserInput(session) || !!liveQuestion;
-  const disconnected = hasStreamDisconnectIssue(session);
-  const state = composerStateFor(runtime.state, { needsRespond, disconnected });
+  const disconnected = native ? truth.state === 'unknown' || truth.connection === 'disconnected' : hasStreamDisconnectIssue(session);
+  const state = native && truth.state === 'failed' && !disconnected
+    ? COMPOSER_STATUS_READY : composerStateFor(runtime.state, { needsRespond, disconnected });
   const provider = runtime.provider || 'AI';
 
   if (state === COMPOSER_STATUS_WORKING) {
@@ -299,9 +301,9 @@ function buildComposerStatusModel(session, options = {}) {
 
   if (state === COMPOSER_STATUS_WAITING) {
     const raw = String(
-      (session && session.waitingText) || (liveQuestion && liveQuestion.text) || runtime.detail || '',
+      (native ? truth.evidence : (session && session.waitingText) || (liveQuestion && liveQuestion.text)) || runtime.detail || '',
     ).trim();
-    const quickReplies = parseQuickReplyOptions(liveQuestion ? liveQuestion.screen || raw : raw);
+    const quickReplies = native ? [] : parseQuickReplyOptions(liveQuestion ? liveQuestion.screen || raw : raw);
     // 选项行属于「快捷答复」那一行，不该再挤进问题摘要里念一遍。
     const question = quickReplies.length ? stripQuickReplyLines(raw) : raw;
     const summary = question ? normalizeQuestionSummary(question, 48) : '';
@@ -311,12 +313,17 @@ function buildComposerStatusModel(session, options = {}) {
       detail: '',
       quickReplies,
       action: null,
-      canStop: false,
+      canStop: native,
       runtime,
     };
   }
 
   if (state === COMPOSER_STATUS_DEAD) {
+    if (native && runtime.state !== RUNTIME_DORMANT) return {
+      state, text: truth.state === 'unknown' ? 'Codex 状态待核对' : 'Codex 连接已断开',
+      detail: truth.evidence || '', quickReplies: [], canStop: false, runtime,
+      action: session.runtimeBackend === 'codex-app-server' ? { kind:'reconnect', label:'核对连接' } : null,
+    };
     const issue = session && session.connectionIssue;
     const lost = session && session._processLost;
     const reason = String(
@@ -348,8 +355,10 @@ function buildComposerStatusModel(session, options = {}) {
   const age = runtime.state === RUNTIME_COMPLETED ? String(runtime.meta || '').trim() : '';
   return {
     state: COMPOSER_STATUS_READY,
-    text: age ? `已就绪 · ${age}完成上一轮` : '已就绪',
-    detail: '',
+    text: native && truth.state === 'interrupted' ? '上一轮已中断 · 可继续发送'
+      : native && truth.state === 'failed' ? '上一轮执行失败 · 可继续发送'
+      : age ? `已就绪 · ${age}完成上一轮` : '已就绪',
+    detail: native && truth.state === 'failed' ? truth.evidence || '' : '',
     quickReplies: [],
     action: age ? { kind: 'scroll-latest', label: '查看上一轮 ↑' } : null,
     canStop: false,

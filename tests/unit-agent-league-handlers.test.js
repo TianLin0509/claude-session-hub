@@ -1292,6 +1292,9 @@ test('virtual live runtime uses a real Session turn while isolating trades, stat
     await waitFor(() => harness.sentPrompts.length === 1, 'virtual DRAFT prompt');
     const sessionId = harness.sentPrompts[0].sessionId;
     assert.equal(harness.sessions.get(sessionId).purpose, 'agent-league-virtual');
+    // The fake transport above bypasses a real App Server. Supply its native
+    // started snapshot; pending business work alone must not certify running.
+    harness.sessions.get(sessionId).nativeRuntime = require('./helpers/native-runtime-fixture').nativeSnapshot('running');
     assert.match(harness.sessions.get(sessionId).title, /^虚拟 Agent ·/);
     assert.equal(harness.ipc.handlers.get('agent-league-virtual:list')(null, {}).agents[0].session.status, 'running');
     assert.match(harness.sentPrompts[0].prompt, /虚拟实盘调试/);
@@ -1358,4 +1361,20 @@ test('scheduler skips official 2026 holidays and stops outside verified calendar
     assert.match(uncovered.skipped, /calendar-out-of-coverage/);
     harness.bridge.stopScheduler();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('managed Codex ignores old completion, keeps long execution past a workflow deadline and does not retry user interruption',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'league-native-truth-'));let h;
+ try{
+  let reconciled=0;const native={threadId:'native-thread',runtime:{state:'running',connection:'connected',turnId:'native-turn'},start:async()=>{},reconcile:async()=>{reconciled++;}};
+  h=makeHarness(root,fakeMarketHttp(),{agentTurnTimeoutMs:120});h.sessionManager.getNativeCodex=()=>native;
+  h.store.createAgent({id:'native-agent',name:'Native',provider:'codex-cli',kind:'codex',model:'gpt-6-astra',philosophy:baseline});
+  await h.ipc.handlers.get('agent-league:run-day')(null,{force:true,decisionDate:'2026-08-27'});
+  await waitFor(()=>h.sentPrompts.length===1,'native start');const id=h.sentPrompts[0].sessionId;
+  h.transcriptTap.emit('turn-complete',{hubSessionId:id,text:'stale',signalSource:'stop-hook'});
+  await new Promise(r=>setTimeout(r,280));assert(reconciled>0);assert.equal(h.sentPrompts.length,1);assert.equal(h.createdOptions.length,1);
+  native.runtime.state='interrupted';h.transcriptTap.emit('turn-aborted',{hubSessionId:id,threadId:native.threadId,turnId:native.runtime.turnId,signalSource:'codex-app-server'});
+  await waitFor(()=>h.store.getDaily('native-agent','2026-08-27')?.status==='failed','native interrupted workflow');
+  await new Promise(r=>setTimeout(r,150));assert.equal(h.sentPrompts.length,1,'user cancellation cannot schedule an automatic model retry');
+ }finally{h?.bridge.stopScheduler();fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -8,12 +8,16 @@ const {
 } = require('./groupchat-attempt-protocol.js');
 
 class GroupChatProviderAdapter {
-  constructor(kind) {
+  constructor(kind, options = {}) {
     this.kind = kind || 'unknown';
+    this.nativeOnly = options.nativeOnly === true;
     this.family = normalizeProviderFamily(kind);
   }
 
   match(attempt, event, options = {}) {
+    if (this.nativeOnly && event?.signalSource !== 'codex-app-server') {
+      return {ok:false,reason:'native_lifecycle_required'};
+    }
     return attemptEventMatches(attempt, event, {
       kind: this.kind,
       // Codex exposes a real turn id. Once an attempt has bound one, refusing
@@ -31,6 +35,9 @@ class GroupChatProviderAdapter {
       return { accepted: false, reason: 'non_final_signal', identity };
     }
     const text = String(event.text || '').trim();
+    if (event.signalSource === 'codex-app-server') {
+      return {accepted:true,status:'completed',text,identity,emptyResult:!text};
+    }
     const failure = classifyProviderFailure({ text, fromAssistantText: true });
     if (failure) {
       return {
@@ -85,8 +92,8 @@ class GroupChatProviderAdapter {
   }
 }
 
-function createGroupChatProviderAdapter(kind) {
-  return new GroupChatProviderAdapter(kind);
+function createGroupChatProviderAdapter(kind, options) {
+  return new GroupChatProviderAdapter(kind, options);
 }
 
 module.exports = {
