@@ -85,6 +85,7 @@ class ClaudeNativeSession extends EventEmitter {
     this.foregroundState = 'idle';
     this.items = new Map();
     this.closed = false;
+    this.closePromise = null;
     this.ready = null;
     this.client = null;
     this.configurationChange = null;
@@ -198,7 +199,9 @@ class ClaudeNativeSession extends EventEmitter {
     const current = () => this.client === client && !this.reconnecting;
     client.on('disconnect', error => { if (current()) this.disconnect(error); });
     client.on('diagnostic', event => { if (current()) this.emit('diagnostic', event); });
-    client.on('exit', event => { if (current()) this.emit('exit', event); });
+    // Unexpected child exits keep the logical session recoverable. Explicit
+    // closure publishes its own single exit after the child and lease drain.
+    client.on('exit', event => { if (current() && !this.closed) this.emit('exit', event); });
     client.on('message', message => {
       if (!current()) return;
       try { this.message(message); }
@@ -600,6 +603,8 @@ class ClaudeNativeSession extends EventEmitter {
 
   async _reconnect({ stopActive = false } = {}) {
     if (this.reconnecting) throw new Error('Claude 正在重连');
+    const priorClose = this.closePromise;
+    if (priorClose) await priorClose;
     const busy = this.active || this.activities.pending().length || this.tasks.size;
     if (stopActive && busy && !this.unreconciled) await this.interrupt();
     if (!stopActive && !this.unreconciled && busy) throw new Error('请先停止当前任务，再重连');
@@ -609,6 +614,7 @@ class ClaudeNativeSession extends EventEmitter {
     try {
       // End only this owned writer before a new connection may send anything.
       if (old) await old.close();
+      if (this.closePromise !== priorClose) throw protocolError('Claude session closed during reconnect', 'CLAUDE_CLOSED');
       if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
       for (const record of this.records.values()) {
         clearTimeout(record.timer);
@@ -623,7 +629,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.runtime = initialRuntime(this.sessionId, this.runtime);
       this.options = { ...this.options, restoredRuntime: null, fork: false,
         resumeSessionId: this.historyPath() ? this.sessionId : undefined };
-      this.client = null; this.ready = null; this.closed = false;
+      this.client = null; this.ready = null; this.closed = false; this.closePromise = null;
       this.unreconciled = this.recoveryRecords().length > 0;
       this.reconnecting = false;
       await this.start();
@@ -664,14 +670,22 @@ class ClaudeNativeSession extends EventEmitter {
     return this.receipt(record);
   }
 
-  async close() {
+  close() {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    for (const record of this.records.values()) {
-      clearTimeout(record.timer);
-      if (record.status === 'queued' || record.status === 'submitting') record.reject(protocolError('Claude session closed', 'CLAUDE_CLOSED'));
-    }
-    if (this.client) await this.client.close();
-    if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
+    this.closePromise = Promise.resolve().then(async () => {
+      for (const record of this.records.values()) {
+        clearTimeout(record.timer);
+        if (record.status === 'queued' || record.status === 'submitting') record.reject(protocolError('Claude session closed', 'CLAUDE_CLOSED'));
+      }
+      if (this.client) await this.client.close();
+      if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
+      // A shutdown waiter may attach after the child already crashed (or
+      // before startup). Do not wait for another impossible OS exit event.
+      // This is resource closure only; unknown submissions retain their state.
+      this.emit('exit', { exitCode: 0, expected: true });
+    });
+    return this.closePromise;
   }
 }
 
