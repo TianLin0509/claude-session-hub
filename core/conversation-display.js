@@ -16,6 +16,7 @@ function displayTurns(turns) {
     if (turn.thinking || turn.toolCalls?.length || !cards.length) cards.push({
       ...base, id: `${turn.id}:activity`, logicalTurnId: turn.id,
       text: '', phase: 'activity',
+      nativeOutcome: cards.length && turn.nativeOutcome === 'completed' ? null : turn.nativeOutcome,
     });
     return cards;
   });

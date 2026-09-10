@@ -48,6 +48,14 @@ test('App Server items retain identity and progress when a final item arrives',(
     {id:'f',type:'agentMessage',phase:'final_answer',text:'Done'}]}])[0].text,'Done');
 });
 
+test('a separate activity row must not claim a completed answer has no body',()=>{
+  const base={id:'t',role:'assistant',nativeOutcome:'completed',toolCalls:[{name:'exec'}],
+    displayMessages:[{id:'f',phase:'final_answer',text:'Answer'}]};
+  assert.equal(displayTurns([base]).find(m=>m.phase==='activity').nativeOutcome,null);
+  assert.equal(displayTurns([{...base,displayMessages:[]}])[0].nativeOutcome,'completed');
+  assert.equal(displayTurns([{...base,nativeOutcome:'failed'}]).find(m=>m.phase==='activity').nativeOutcome,'failed');
+});
+
 const event=(type,extra={},n=0)=>({type:'event_msg',timestamp:`2026-09-10T10:00:0${n}.000Z`,payload:{type,...extra}});
 test('rollout completion receipt does not erase progress or duplicate the last message',()=>{
   const records=[event('task_started',{turn_id:'t'}),event('agent_message',{message:'First'},1),
