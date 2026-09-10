@@ -129,11 +129,25 @@ async function parseSessionTranscript(args = {}, deps) {
   let transcriptPath = null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
-    const native = hubSessionId && sessionManager.getNativeCodex?.(hubSessionId);
-    if (native) {
-      await native.start();
-      return {turns:native.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
+    const nativeCodex = hubSessionId && sessionManager.getNativeCodex?.(hubSessionId);
+    if (nativeCodex) {
+      await nativeCodex.start();
+      return {turns:nativeCodex.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
         error:null,source:'codex-app-server'};
+    }
+    const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
+    if (native) {
+      let history = [];
+      const turns = native.transcript(opts?.nativeLive ? { tailRecords: 4 } : {});
+      if (!opts?.nativeLive) {
+        const file = native.historyPath();
+        if (file) {
+          const parsed = await runTranscriptParser(deps, 'claude', file, native.historyExclusions(), parseClaudeTranscriptToTurns);
+          history = parsed.turns || [];
+        }
+      }
+      return { turns: applyTailLimit([...history, ...turns].sort((a, b) => (a.ts || 0) - (b.ts || 0)), Number(opts?.limit), opts?.fromTail),
+        transcriptPath: null, source: 'claude-stream-json', error: null };
     }
     const kind = session ? session.kind : inKind;
     // Public kind stays `deepseek` across the migration. A persisted Claude id
@@ -252,8 +266,10 @@ function registerTranscriptIpc(ipcMain, deps) {
   } = deps;
 
   ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
-    const native = deps.sessionManager.getNativeCodex?.(sessionId);
-    if (native) return native.finalText();
+    const nativeCodex = deps.sessionManager.getNativeCodex?.(sessionId);
+    if (nativeCodex) return nativeCodex.finalText();
+    const native = deps.sessionManager?.getNativeClaude?.(sessionId);
+    if (native) return native.transcript().filter(turn => turn.role === 'assistant').at(-1)?.text || null;
     return transcriptTap.getLastAssistantText(sessionId);
   });
 

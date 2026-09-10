@@ -1419,6 +1419,9 @@ if (typeof document !== 'undefined') (function () {
       idle: '待命',
       initializing: '创建中…',
       thinking: '思考中',
+      queued: '排队中',
+      accepted: '已收到 · 等待执行',
+      waiting: '等待你的回复',
       streaming: '输出中',
       completed: '已答 ✓',
       timeout: '超时',
@@ -2358,6 +2361,9 @@ if (typeof document !== 'undefined') (function () {
       : status === 'awaiting_binding' ? '已开工 · 等绑定'
       : status === 'awaiting_final_text' ? '已结束 · 收取中'
       : status === 'recovering' ? '恢复中'
+      : status === 'queued' ? '排队中'
+      : status === 'accepted' ? '已收到 · 等待执行'
+      : status === 'waiting' ? '等待你的回复'
       : isPending ? '正在发言'
       : status === 'superseded' ? '被新提问覆盖'
       : status === 'interrupted' ? '已被你停止'
@@ -2379,7 +2385,10 @@ if (typeof document !== 'undefined') (function () {
     if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      const waitingText = status === 'awaiting_binding'
+      const waitingText = status === 'queued' ? '本条消息已排队，前一条任务结束后才会发送。'
+        : status === 'accepted' ? '引擎已收到本条消息，正在等待执行。'
+        : status === 'waiting' ? '需要审批或回答问题，请打开该会话处理。'
+        : status === 'awaiting_binding'
         ? 'Agent 已开始工作，正在等待 transcript/rollout 完成绑定；不会自动重复发送 Prompt。'
         : status === 'awaiting_final_text'
           ? '已收到结束信号，正在从 transcript 收取同一轮最终答案。'
@@ -4487,7 +4496,9 @@ if (typeof document !== 'undefined') (function () {
     const uiStatus = {
       prepared: 'thinking',
       submitting: 'thinking',
-      accepted: 'streaming',
+      queued: 'queued',
+      accepted: payload.signalSource === 'claude-stream-json' ? 'accepted' : 'streaming',
+      waiting: 'waiting',
       running: 'streaming',
       awaiting_binding: 'awaiting_binding',
       awaiting_final_text: 'awaiting_final_text',

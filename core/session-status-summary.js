@@ -273,7 +273,19 @@ function buildComposerStatusModel(session, options = {}) {
     throw new Error('buildComposerStatusModel requires the derived runtime status');
   }
   const truth = getSessionRuntimeTruth(session, { now });
-  const liveQuestion = !native && options.liveQuestion && options.liveQuestion.waiting
+  if (session?.runtimeBackend === 'claude-stream-json') {
+    const snapshot = session.nativeRuntime || {};
+    const labels = { unknown: '本条提交待核对', starting: 'Claude 已收到，等待执行',
+      waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
+    if (labels[snapshot.state]) {
+      return { state: snapshot.state === 'starting' ? COMPOSER_STATUS_WORKING
+        : snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
+          : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
+        text: labels[snapshot.state], detail: snapshot.reason || '', quickReplies: [], action: null,
+        canStop: snapshot.connection === 'connected' && ['starting', 'waiting'].includes(snapshot.state), runtime };
+    }
+  }
+  const liveQuestion = !native && session?.runtimeBackend !== 'claude-stream-json' && options.liveQuestion && options.liveQuestion.waiting
     ? options.liveQuestion
     : null;
   // 「等你响应」的判据与 respond-pill 完全一致（sessionNeedsUserInput），

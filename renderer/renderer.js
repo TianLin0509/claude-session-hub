@@ -321,6 +321,7 @@ function ptyInputReadyIsStable(session, runtime, observedAt) {
 function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
   if (isCodexSession(sessions.get(sessionId))) return;
   const session = sessions.get(sessionId);
+  if (session?.runtimeBackend === 'claude-stream-json') return;
   if (!isAiRuntimeSession(session)) return;
   const at = Number(submittedAt) || Date.now();
   session._ptyFallbackArmedAt = at;
@@ -471,6 +472,12 @@ function saveFloatingInputDraft(sessionId, inputBox) {
       if(message)message.textContent='草稿未能保存到磁盘，请复制后再关闭窗口：'+error.message;
     }
   }
+  if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+    try {
+      const key = 'hub.claude-native.draft.v1:' + sessionId;
+      if (text) localStorage.setItem(key, text); else localStorage.removeItem(key);
+    } catch (error) { showToast('草稿保存失败：' + error.message, 'error'); }
+  }
 }
 
 function clearFloatingInputDraft(sessionId) {
@@ -478,6 +485,10 @@ function clearFloatingInputDraft(sessionId) {
   if (sessionId && isCodexSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
+  }
+  if (sessionId) {
+    try { localStorage.removeItem('hub.claude-native.draft.v1:' + sessionId); }
+    catch (error) { showToast('草稿清理失败：' + error.message, 'error'); }
   }
 }
 
@@ -1280,11 +1291,15 @@ function getOrCreateTerminal(sessionId) {
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => {
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') return;
     if (data) clearSessionWaitingState(sessionId);
     trackPtyPromptInput(sessionId, data);
     ipcRenderer.send('terminal-input', { sessionId, data });
   });
-  terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
+  terminal.onBinary((data) => {
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') return;
+    ipcRenderer.send('terminal-input', { sessionId, data });
+  });
 
   // Claude Code emits an OSC set-title escape sequence once near the start of a
   // conversation with an AI-generated short summary (e.g. "Greeting in Chinese").
@@ -2518,7 +2533,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
   }
 
-  if (!incremental) {
+  if (!incremental || session?.runtimeBackend === 'claude-stream-json') {
     // Mounting dedups existing concurrent cards but may leave them ahead of old
     // history. Reorder the authoritative full snapshot first, then append only
     // genuinely newer concurrent cards. Cards removed by optimistic/provisional
@@ -3109,6 +3124,7 @@ const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 function markCodexCardWorking(sessionId, source = 'prompt', runtimeOptions = {}) {
   const session = sessions.get(sessionId);
   if (isCodexSession(session)) return;
+  if (session?.runtimeBackend === 'claude-stream-json') return;
   if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
@@ -3363,6 +3379,7 @@ function _updateStreamingIndicator(sessionId) {
 // remember=false 用于「按会话恢复视图」这种回放场景：那不是用户在表达偏好，
 // 不该反过来覆盖记忆。用户点切换按钮走默认的 remember=true。
 function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false } = {}) {
+  if (sessions.get(activeSessionId)?.runtimeBackend === 'claude-stream-json') mode = 'card';
   const previousView = currentView;
   const overlay = document.getElementById('msg-overlay');
   if (mode !== 'card' && _cardViewBottomRestoreRaf) {
@@ -3382,6 +3399,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
     if (!b.dataset.view) return;
+    b.hidden = b.dataset.view === 'pty' && sessions.get(activeSessionId)?.runtimeBackend === 'claude-stream-json';
     b.classList.toggle('active', b.dataset.view === mode);
   });
   // 切到 PTY 时 refit xterm
@@ -3535,6 +3553,10 @@ function updateFloatingPromptReceipt(receipt) {
 
 ipcRenderer.on('session:prompt-receipt', (_event, receipt) => updateFloatingPromptReceipt(receipt));
 
+ipcRenderer.on('native-agent-item', (_event, event) => {
+  if (event.source === 'claude-stream-json') requestCardIncrementalRefresh(event.sessionId, { reason: 'native-item' });
+});
+
 function clearFloatingInputStuck(bar) {
   if (!bar) return;
   const existing = bar.querySelector('.fi-stuck');
@@ -3680,6 +3702,7 @@ function tailAboveCliPrompt(lines) {
 // 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
 function detectComposerLiveQuestion(session, runtime) {
   if (isCodexSession(session)) return null;
+  if (session?.runtimeBackend === 'claude-stream-json') return null;
   if (!session || !runtime) return null;
   // 已经被权威信号标成「等你输入」的，用不着再猜。
   if (sessionNeedsUserInput(session)) return null;
@@ -3798,11 +3821,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
   bar.dataset.sessionId = sessionId;
-  const nativeControls = createCodexNativeControls({
+  const codexControls = createCodexNativeControls({
     sessionId, invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
     openExternal: url => shell.openExternal(url),
   });
-  bar.append(nativeControls.element);
+  bar.append(codexControls.element);
   if (isCodexSession(sessions.get(sessionId))) terminal.options.disableStdin = true;
 
   // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
@@ -3833,6 +3856,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   if (isCodexSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
     try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
     catch(error){console.warn('[codex-draft] read failed:',error.message);}
+  }
+  if (!floatingInputDrafts.has(sessionId) && sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+    try {
+      const saved = localStorage.getItem('hub.claude-native.draft.v1:' + sessionId);
+      if (saved) floatingInputDrafts.set(sessionId, saved);
+    } catch (error) { showToast('草稿读取失败：' + error.message, 'error'); }
   }
   if (floatingInputDrafts.has(sessionId)) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
@@ -3999,11 +4028,19 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   const stopBtn = document.createElement('button');
   stopBtn.className = 'floating-input-stop';
-  stopBtn.title = '中断当前 AI（发送 Ctrl+C）';
+  stopBtn.title = '中断当前 AI';
   stopBtn.setAttribute('aria-label', '中断当前 AI');
   stopBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
-  stopBtn.addEventListener('click', (e) => {
+  stopBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+      try {
+        const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
+        if (!result?.ok) throw new Error(result?.error || '停止请求未确认');
+      } catch (error) { showToast('停止失败：' + error.message, 'error'); }
+      inputBox.focus();
+      return;
+    }
     ipcRenderer.send('terminal-input', { sessionId, data: '\x03' });
     terminal.focus();
   });
@@ -4066,7 +4103,16 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   const contentStack = document.createElement('div');
   contentStack.className = 'fi-content-stack';
-  contentStack.append(composer);
+  const nativeControls = require('./claude-native-controls').createClaudeNativeControls({ sessionId, ipcRenderer,
+    onHistory: () => loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: true }),
+    onRestoreDraft: record => {
+      if ((record.content || []).some(block => block.type !== 'text')) throw new Error('本条含附件，请从历史核对附件后重新添加');
+      if (readContenteditablePlainText(inputBox)) throw new Error('输入框已有草稿，请先保存或发送');
+      replaceContenteditableText(inputBox, record.text);
+      saveFloatingInputDraft(sessionId, inputBox); inputBox.focus();
+    },
+  });
+  contentStack.append(nativeControls.element, composer);
   bar.append(contentStack);
   bar.classList.add('visible');
 
@@ -4075,6 +4121,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
+    codexControls.update(session);
     nativeControls.update(session);
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
@@ -4196,7 +4243,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     if (!userText || !userText.trim()) return;
     const text = userText;
 
-    // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
+    // 立即清 UI；原生会话继续在 Hub 输入框接收下一条消息。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
     // 清掉原生撤销栈，误发之后 Ctrl+Z 拿不回原文。
     if (inputHistory) {
@@ -4206,12 +4253,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     replaceContenteditableText(inputBox, '');
     clearFloatingInputDraft(sessionId);
     terminal.scrollToBottom();
-    if (isCodexSession(sessions.get(sessionId))) inputBox.focus();
-    else terminal.focus();
-
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
+    if (isCodexSession(session) || session?.runtimeBackend === 'claude-stream-json') inputBox.focus();
+    else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
+    const clientSubmissionId = require('node:crypto').randomUUID();
     clearSessionWaitingState(sessionId);
     armPtyBurstFallback(sessionId);
     if (isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
@@ -4226,7 +4273,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
     if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
-        mountOptimisticUserCard(sessionId, text.trim(), kind);
+        mountOptimisticUserCard(sessionId, text, kind, session?.runtimeBackend === 'claude-stream-json' ? { clientSubmissionId } : {});
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }
@@ -4239,7 +4286,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
     //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
     clearFloatingInputStuck(bar);
-    const clientSubmissionId = require('node:crypto').randomUUID();
     const delivery = beginPromptDelivery(clientSubmissionId);
     floatingPromptDeliveries.set(sessionId, delivery);
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
@@ -4299,7 +4345,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         historyCursor.reset();
         return;
       }
-      terminal.focus();
+      if (!isNativeAgent(sessions.get(sessionId))) terminal.focus();
     }
   });
 
@@ -4518,6 +4564,7 @@ function sweepStaleRunning() {
   let dirty = false;
   for (const s of sessions.values()) {
     if (isCodexSession(s)) continue;
+    if (s.runtimeBackend === 'claude-stream-json') continue;
     if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
         const truth = getSessionRuntimeTruth(s, { now });
@@ -4646,6 +4693,10 @@ function flashPromptLine(terminal, lineNumber) {
 function syncRenameToClaude(sessionId, title) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  if (session.runtimeBackend === 'claude-stream-json') {
+    session._pendingRename = null;
+    return;
+  }
   const clean = String(title).replace(/[\r\n]/g, ' ').trim().slice(0, 80);
   if (!clean) return;
   if (session.status === 'idle') {
@@ -4688,7 +4739,8 @@ function startRename(sessionId, titleSpan) {
     schedulePersist();
     // 休眠会话没有 PTY，也没有主进程侧的 session 对象要同步，到此为止。
     if (session.status === 'dormant') return;
-    await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
+    const renamed = await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
+    if (renamed?.nativeRename?.status === 'failed') showToast('Hub 名称已保存；Claude 历史同步失败：' + renamed.nativeRename.message, 'warning');
     if (session.kind === 'claude' || session.kind === 'claude-resume') {
       syncRenameToClaude(sessionId, trimmed);
     }
@@ -5911,10 +5963,12 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     }
     state.inProgress = true;
     state.lastReloadAt = Date.now();
-    loadSessionHistoryToOverlay(sessionId, {
+    const refreshOptions = {
       incremental: true,
       parseOpts: { limit: 1, fromTail: true },
-    })
+    };
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') refreshOptions.parseOpts = { nativeLive: true };
+    loadSessionHistoryToOverlay(sessionId, refreshOptions)
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
       .finally(() => {
         state.inProgress = false;
@@ -6510,7 +6564,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     // Flush any queued /rename now that Claude is idle. Small delay so the
     // prompt fully re-renders before we inject the command.
     const s = sessions.get(sessionId);
-    if (outcome && outcome.completed && s && s._pendingRename) {
+    if (outcome && outcome.completed && s && s._pendingRename && s.runtimeBackend !== 'claude-stream-json') {
       const pending = s._pendingRename;
       s._pendingRename = null;
       setTimeout(() => {
@@ -7653,6 +7707,30 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
+  if (session.runtimeBackend === 'claude-stream-json') {
+    const old = local.nativeRuntime;
+    const next = session.nativeRuntime;
+    if (old && next && (next.epoch < old.epoch || (next.epoch === old.epoch && next.revision < old.revision))) return;
+    Object.assign(local, session);
+    if (session.nativeMigrationDraft && local._importedNativeDraft !== session.nativeMigrationDraft) {
+      local._importedNativeDraft = session.nativeMigrationDraft;
+      const input = [...document.querySelectorAll('.floating-input-bar')].find(bar => bar.dataset.sessionId === local.id)?.querySelector('.floating-input-box');
+      if (!floatingInputDrafts.has(local.id) && (!input || !readContenteditablePlainText(input))) {
+        floatingInputDrafts.set(local.id, session.nativeMigrationDraft);
+        if (input) { input.textContent = session.nativeMigrationDraft; saveFloatingInputDraft(local.id, input); }
+        else {
+          try { localStorage.setItem('hub.claude-native.draft.v1:' + local.id, session.nativeMigrationDraft); }
+          catch (error) { showToast('迁移草稿保存失败：' + error.message, 'error'); }
+        }
+      }
+    }
+    local.needsUserInput = next?.state === 'waiting';
+    local.gcWorking = false;
+    scheduleSessionListRender();
+    updateFloatingBarState();
+    window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
+    return;
+  }
   if (isCodexSession(local) && session.nativeRuntime) {
     if (!acceptNativeSnapshot(local, session)) return;
     if (session.nativeMigrationDraft && local._importedNativeDraft!==session.nativeMigrationDraft) {
@@ -7770,6 +7848,7 @@ function schedulePersist() {
         pinned: !!s.pinned,
         bottomed: !!s.bottomed && !s.pinned,
         ccSessionId: s.ccSessionId || null,
+        ...(s.runtimeBackend === 'claude-stream-json' ? { nativeConfig: s.nativeConfig } : {}),
         transcriptPath: s.transcriptPath || null,
         meetingId: s.meetingId || null,
         lastMessageTime: s.lastMessageTime || Date.now(),
@@ -7999,6 +8078,7 @@ window.resumeDormantSession = resumeDormantSession;
         pinned: !!meta.pinned,
         bottomed: !!meta.bottomed && !meta.pinned,
         ccSessionId: meta.ccSessionId || null,
+        ...(meta.runtimeBackend === 'claude-stream-json' ? { nativeConfig: meta.nativeConfig } : {}),
         transcriptPath: meta.transcriptPath || null,
         meetingId: meta.meetingId || null,
         currentModel: resolvedModel,
@@ -8026,7 +8106,7 @@ window.resumeDormantSession = resumeDormantSession;
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
         runtimeBackend: meta.runtimeBackend || null,
-        nativeRuntime: require('../core/codex-native-runtime.js').persistNativeRuntime(meta),
+        nativeRuntime: require('../core/native-agent-runtime.js').persistNativeRuntime(meta),
         codexApprovalPolicy: meta.codexApprovalPolicy || null,
         codexSandbox: meta.codexSandbox || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,

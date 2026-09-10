@@ -200,6 +200,9 @@ function isSameOrUnknownTurn(previous, next) {
 
 function applySessionRuntimeObservation(session, observation = {}, options = {}) {
   if (isCodexSession(session)) return { applied: false, reason: 'codex-native-only' };
+  if (require('./claude-native-runtime').isNativeClaude(session)) {
+    return { applied: false, reason: 'native-authority', truth: require('./claude-native-runtime').claudeRuntimeTruth(session) };
+  }
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const previous = session.runtimeTruth && VALID_STATES.has(session.runtimeTruth.state)
     ? session.runtimeTruth
@@ -313,6 +316,9 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 
 function getSessionRuntimeTruth(session, options = {}) {
   if (isCodexSession(session)) return nativeRuntimeTruth(session);
+  if (require('./claude-native-runtime').isNativeClaude(session)) {
+    return require('./claude-native-runtime').claudeRuntimeTruth(session);
+  }
   const now = Number(options.now) || Date.now();
   if (!session || typeof session !== 'object') {
     return normalizeObservation({ state: RUNTIME_UNKNOWN, source: 'missing-session', confidence: CONFIDENCE_NONE }, null, now);

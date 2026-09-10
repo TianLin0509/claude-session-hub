@@ -503,6 +503,15 @@ function createModelUiController({
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
     let preferencePrepared = false;
     try {
+      if (session.runtimeBackend === 'claude-stream-json') {
+        const result = await ipcRenderer.invoke('claude-native:set-model', { sessionId, modelId: option.id });
+        if (!result?.ok) throw new Error(result?.error || '模型切换未确认');
+        session.currentModel = result.model;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result;
+      }
       if (strategy === 'claude-inline' && typeof ipcRenderer.invoke === 'function') {
         const prepared = await ipcRenderer.invoke('prepare-session-model-switch', {
           sessionId,

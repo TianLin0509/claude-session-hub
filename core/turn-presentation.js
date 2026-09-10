@@ -207,7 +207,7 @@ function verificationStatus(activity) {
 }
 
 function isTurnComplete(turn = {}) {
-  if (turn.source === 'codex-app-server') return turn.nativeOutcome === 'completed';
+  if (['codex-app-server', 'claude-stream-json'].includes(turn.source)) return turn.nativeOutcome === 'completed';
   return FINAL_STOP_REASONS.has(String(turn.stopReason || '').toLowerCase());
 }
 

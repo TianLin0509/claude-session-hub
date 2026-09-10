@@ -450,6 +450,31 @@ const completionNotifier = new CompletionNotifier({
 sessionManager.workspaceService = workspaceService;
 const workspaceMigrationSessionIds = new Set();
 
+sessionManager.on('session-updated', session => {
+  if (session.runtimeBackend !== 'claude-stream-json') return;
+  sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
+  sendToRenderer('session-updated', { session });
+});
+sessionManager.on('native-agent-item', event => sendToRenderer('native-agent-item', event));
+sessionManager.on('native-agent-lifecycle', event => {
+  if (event.signalSource !== 'claude-stream-json') return;
+  const native = sessionManager.getNativeClaude(event.sessionId);
+  const record = native?.records.get(event.clientSubmissionId);
+  if (!native || !record) return;
+  const payload = { ...event, submittedAt: record.createdAt, startedAt: native.runtime.startedAt,
+    completedAt: native.runtime.completedAt, transcriptPath: null };
+  if (event.type === 'submission-accepted') {
+    transcriptTap.emit('prompt-submitted', { ...payload, text: record.text });
+    sendToRenderer('session:prompt-receipt', { sessionId: event.sessionId,
+      clientSubmissionId: event.clientSubmissionId, status: 'confirmed' });
+  } else if (event.type === 'agent-turn-started') transcriptTap.emit('turn-started', payload);
+  else if (event.type === 'agent-turn-complete') {
+    if (event.status === 'completed') transcriptTap.emit('turn-complete', payload);
+    else if (event.status === 'interrupted') transcriptTap.emit('turn-aborted', payload);
+    else transcriptTap.emit('turn-error', { ...payload, message: native.runtime.reason });
+  }
+});
+
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
 
@@ -531,7 +556,7 @@ transcriptTap.on('turn-started', (ev) => {
   completionNotifier.noteTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
-    sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
+    if (session?.runtimeBackend !== 'claude-stream-json') sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
       startedAt: ev.startedAt,
       signalSource: ev.signalSource || 'task_started',
       turnId: ev.turnId || null,
@@ -1316,7 +1341,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // backend starts watching its CLI-native transcript file. DeepSeek normally
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
-  if (session && session.runtimeBackend === 'codex-app-server') return;
+  if (['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1884,6 +1909,7 @@ let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).f
 let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
 
 registerPersistenceIpc(ipcMain, {
+  sessionManager,
   bootWasClean,
   getLiveSession: id => sessionManager.getSession(id),
   getImmersiveByMeeting: () => _immersiveByMeeting,
@@ -2062,6 +2088,9 @@ const hookServer = http.createServer((req, res) => {
     const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
     if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
       res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;
+    }
+    if (isHook && hookTargetSession?.runtimeBackend === 'claude-stream-json') {
+      res.writeHead(202); res.end('{"ignored":"native-protocol-authority"}'); return;
     }
     if (parsed.sessionId && hookTargetSession) {
       if (isHook) {

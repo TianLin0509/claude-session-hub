@@ -117,6 +117,7 @@ function registerSessionIpc(ipcMain, deps) {
     const branchIndex = nextBranchIndex(source.id, siblingPool);
     const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting, branchIndex });
     const opts = {
+      ...(source.runtimeBackend === 'claude-stream-json' ? source.nativeConfig : {}),
       title: resolvedTitle.title,
       cwd: source.cwd,
       branchSourceSessionId: source.id,
@@ -195,6 +196,11 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native) {
+      native.emit('action-error', '原生 Claude 会话请通过 Hub 输入框发送消息或停止按钮操作');
+      return;
+    }
     sessionManager.writeToSession(sessionId, data);
   });
 
@@ -366,6 +372,14 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
     const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native && userRenamed && session) {
+      try { session.nativeRename = native.rename(title); }
+      catch (error) {
+        native.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
+        session.nativeRename = { status: 'failed', message: error.message };
+      }
+    }
     if (session) sendToRenderer('session-updated', { session });
     return session;
   });
@@ -404,6 +418,11 @@ function registerSessionIpc(ipcMain, deps) {
     }
     if (old.purpose === 'chuxin-research') {
       return { ok: false, error: 'protected-session', message: '初心投研任务不能从这里重启' };
+    }
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native) {
+      return native.reconnect({ stopActive: true }).then(() => sessionManager.getSession(sessionId))
+        .catch(error => ({ ok: false, error: 'native-reconnect-failed', message: error.message }));
     }
 
     if (supportsRecoverableSession(old)) {

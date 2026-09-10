@@ -90,6 +90,9 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
 
 ## 铁律：往 CLI 输入框发 prompt，只走闭环，永远不许盲发回车
 
+- **原生会话优先（2026-09-10）**：Hub 管理的 Codex 走 App Server，Claude 走双向 stream-json。统一入口 `session:send-prompt` / `groupChatWatcher.sendToPty` 按后端路由结构化消息；它们不进入下面的 PTY 粘贴、输入框探测或补 Enter 闭环。状态只取 Main 按会话、提交、原生身份及 epoch/revision 维护的快照；没有确认就保留未知，不猜成功、不自动重发。
+- 原生审批、提问、停止、恢复、模型切换均走对应控制接口；禁止用 TUI 命令补未实现能力。未知提交须核对原生历史；接管前确认旧 writer 已释放，不强杀其他 Hub。下列粘贴规则仅约束仍使用 PTY 的其他 provider，不能重新套到原生会话上。
+
 **从 2026-04-30 到 06-18 至少返工过 6 次的同一个 bug**：内容进了 CLI 输入框，折叠成
 `[Pasted text +N lines]` / `[[Pasted Content N chars]]`，**就是不提交**，也没有任何提示，
 用户干等几十秒。每次都被当成"再多发几个 \r / 再多等 200ms"的调参问题，于是每次都复发。

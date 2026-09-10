@@ -20,11 +20,14 @@ function test(name, fn) {
 console.log('Running native session fork command contract tests...');
 
 test('Claude branches use --resume <id> plus --fork-session', () => {
+  const native = fs.readFileSync(path.join(__dirname, '..', 'core', 'claude-native-session.js'), 'utf8');
   assert.match(
     SRC,
-    /claude --resume \$\{opts\.forkCCSessionId\} --fork-session --model \$\{model\}\$\{effortFlag\}/,
+    /resumeSessionId: opts\.forkCCSessionId \|\| opts\.resumeCCSessionId, fork: !!opts\.forkCCSessionId/,
     'Claude branch command must inherit the source transcript under a fresh native session id',
   );
+  assert.match(native, /launchArgs\.push\('--resume', this\.options\.resumeSessionId\)/);
+  assert.match(native, /launchArgs\.push\('--fork-session', '--session-id', this\.sessionId\)/);
 });
 
 test('Codex branches use codex fork and preserve model/reasoning/permission flags', () => {

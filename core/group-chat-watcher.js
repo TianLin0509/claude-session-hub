@@ -313,6 +313,11 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
     try { await native.start(); return native.runtime.connection === 'connected'; }
     catch (error) { console.warn('[codex-native] ready failed:', error.message); return false; }
   }
+  const nativeClaude = sessionManager.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    await nativeClaude.start();
+    return nativeClaude.runtime.connection === 'connected' && !nativeClaude.unreconciled;
+  }
   const start = Date.now();
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
@@ -341,6 +346,14 @@ async function sendToPty(sid, prompt, kind, options = {}) {
   const session = sessionManager.getSession?.(sid);
   if (session && (session.kind === 'codex' || session.kind === 'codex-resume')) {
     throw new Error('旧 Codex 会话尚未接管，未发送新消息');
+  }
+  const nativeClaude = sessionManager.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    const { claudeNativeReceipt } = require('./claude-native-binding');
+    return claudeNativeReceipt(await nativeClaude.submit(prompt, options));
+  }
+  if (sessionManager.getSession?.(sid)?.runtimeBackend === 'claude-stream-json') {
+    throw new Error('Claude 原生连接不可用，消息未发送');
   }
   const alreadySubmitted = () => ({ ok: options.submissionReceipt?.status !== 'content-mismatch',
     sendStatus: options.submissionReceipt?.status === 'content-mismatch' ? 'content-mismatch' : 'ok', enterAttempts: 0,
@@ -662,6 +675,13 @@ function extractStreamingText(sid, _kind) {
     return {source:'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
+  const nativeClaude = _deps.sessionManager?.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    const record = nativeClaude.active;
+    const answer = record && nativeClaude.transcript().find(item => item.id === record.userMessageId + ':assistant');
+    const text = answer?.text || '';
+    return { source: 'claude-stream-json', text, blocks: text ? [{ type: 'text', text }] : [] };
+  }
   const tapBlocks = transcriptTap.getStreamingText(sid);
   if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
     const text = tapBlocks
@@ -753,6 +773,10 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       message:'已核对 Codex 原生状态；不会自动重发结果不明的消息，请检查当前轮次。'};
   }
   const { sessionManager } = _deps;
+  if (sessionManager.getNativeClaude?.(sid)
+      || sessionManager.getSession?.(sid)?.runtimeBackend === 'claude-stream-json') {
+    return { ok: false, mode: 'none', reason: 'native-reconciliation-required' };
+  }
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };
   if (submissionReceipt) {
@@ -841,6 +865,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
 //     CLI 已死，立即 markProcessExit。核心检测函数已抽到 core/host-shell-detector.js
 //     方便单测。
 function checkHostShellTakeover(sid) {
+  if (_deps.sessionManager.getNativeClaude?.(sid)) return false;
   const { sessionManager } = _deps;
   return detectHostShellTakeover(sessionManager.getSessionBuffer(sid));
 }

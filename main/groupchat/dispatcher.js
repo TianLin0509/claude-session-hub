@@ -161,6 +161,8 @@ function createGroupChatDispatcher(deps) {
       status: attempt.status,
       providerTurnId: attempt.providerTurnId || null,
       acknowledgementSource: attempt.acknowledgementSource || null,
+      userMessageId: attempt.userMessageId || null,
+      signalSource: attempt.signalSource || null,
       reason: attempt.reason || null,
       failure: attempt.failure || null,
       updatedAt: attempt.updatedAt || Date.now(),
@@ -229,7 +231,7 @@ function createGroupChatDispatcher(deps) {
   }
 
   function startPasteTrappedMonitor(sid, kind, meetingId, context = {}) {
-    if (sessionManager.getNativeCodex?.(sid)) return;
+    if (sessionManager.getNativeCodex?.(sid) || sessionManager.getNativeClaude?.(sid)) return;
     const existingMonitor = pasteTrappedMonitors.get(sid);
     if (existingMonitor && existingMonitor.attemptId === context.attemptId) return;
     if (existingMonitor) stopPasteTrappedMonitor(sid);
@@ -309,7 +311,38 @@ function createGroupChatDispatcher(deps) {
     pasteTrappedMonitors.set(sid, monitor);
   }
 
+  function waitNativeClaude(sid, label, opts) {
+    const native = sessionManager.getNativeClaude(sid);
+    const watcher = require('../../core/claude-native-watcher').createClaudeNativeWatcher(native, {
+      sid, label, submissionId: opts.attemptId, attemptId: opts.attemptId, runId: opts.runId, onPartial: opts.onPartial,
+      onProgress: progress => {
+        if (!opts.meetingId || !opts.attemptId) return;
+        const orch = orchestratorFor(opts.meetingId);
+        const attempt = orch.updateAttempt(opts.attemptId, progress, 'native_attempt_progress');
+        if (!opts.silent) publishAttempt(opts.meetingId, orch, attempt);
+      },
+    });
+    activeWatchers.set(sid, watcher);
+    activeWatchersByAttempt.set(opts.attemptId, watcher);
+    const startedAt = Date.now();
+    return watcher.wait().then(result => {
+      result.thinkSec = Math.round((Date.now() - startedAt) / 100) / 10;
+      if (!opts.silent && opts.meetingId && opts.turnNum) {
+        const orch = orchestratorFor(opts.meetingId);
+        orch.patchTurnResult(opts.turnNum, sid, { ...result, memberId: opts.memberId,
+          speaker: opts.speaker || label, sourcePrompt: opts.prompt, statusReason: result.reason });
+        publishAttempt(opts.meetingId, orch, orch.getAttempt(opts.attemptId));
+      }
+      if (typeof opts.onPartial === 'function') opts.onPartial(result);
+      return result;
+    }).finally(() => {
+      if (activeWatchers.get(sid) === watcher) activeWatchers.delete(sid);
+      if (activeWatchersByAttempt.get(opts.attemptId) === watcher) activeWatchersByAttempt.delete(opts.attemptId);
+    });
+  }
+
   function waitTurnComplete(sid, label, opts = {}) {
+    if (sessionManager.getNativeClaude?.(sid)) return waitNativeClaude(sid, label, opts);
     const { meetingId, mode, turnNum, onPartial } = opts;
     const silent = opts.silent === true;
     const disableHardTimeout = opts.disableHardTimeout === true;
@@ -912,7 +945,9 @@ function createGroupChatDispatcher(deps) {
       try {
         const sendStartedAt = Date.now();
         if (t.attemptId) _orch.updateAttempt(t.attemptId, { status: 'submitting', dispatchAt: sendStartedAt }, 'attempt_submitting');
-        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {clientSubmissionId:t.attemptId});
+        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
+          clientSubmissionId: t.attemptId, metadata: { attemptId: t.attemptId, runId, meetingId },
+        });
         if (sendResult && sendResult.ok) {
           t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
           t.promptSubmittedAt = sendStartedAt;
@@ -921,6 +956,8 @@ function createGroupChatDispatcher(deps) {
           _orch.setSendStatus(0, t.sid, sendResult.sendStatus || 'submitted', {
             acknowledgementSource: sendResult.acknowledgementSource,
             providerTurnId: sendResult.acknowledgementTurnId,
+            userMessageId: sendResult.userMessageId,
+            nativePromptFingerprint: sendResult.promptFingerprint,
             attemptId: t.attemptId,
           });
           t.attempt = t.attemptId ? _orch.getAttempt(t.attemptId) : t.attempt;
@@ -1107,6 +1144,12 @@ function createGroupChatDispatcher(deps) {
     const signaled = [];
     for (const sid of sids || []) {
       try {
+        const native = sessionManager.getNativeClaude?.(sid);
+        if (native) {
+          native.interrupt().catch(error => native.emit('action-error', error.message));
+          signaled.push(sid);
+          continue;
+        }
         sessionManager.writeToSession(sid, INTERRUPT_KEY);
         signaled.push(sid);
         for (let i = 1; i < INTERRUPT_KEY_REPEAT; i += 1) {
@@ -1331,16 +1374,21 @@ function createGroupChatDispatcher(deps) {
             t.attempt = submitting;
             if (!silent) publishAttempt(meetingId, orch, submitting);
           }
-          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {clientSubmissionId:t.attemptId});
+          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
+            clientSubmissionId: t.attemptId, metadata: { attemptId: t.attemptId, runId, meetingId, turnNum },
+          });
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
           try {
             orch.setSendStatus(turnNum, t.sid, sendStatus || (ok ? 'submitted' : 'send_failed'), {
               acknowledgementSource: sendResult && sendResult.acknowledgementSource,
               providerTurnId: sendResult && sendResult.acknowledgementTurnId,
+              userMessageId: sendResult && sendResult.userMessageId,
+              nativePromptFingerprint: sendResult && sendResult.promptFingerprint,
               attemptId: t.attemptId,
             });
           } catch (e) {
+            if (sessionManager.getNativeClaude?.(t.sid) || sessionManager.getNativeCodex?.(t.sid)) throw e;
             warn('[groupchat] persist send receipt failed:', e && e.message);
           }
           if (!silent && ok) {
@@ -1356,6 +1404,7 @@ function createGroupChatDispatcher(deps) {
                 acknowledgementSource: sendResult && sendResult.acknowledgementSource || null,
                 enterAttempts: Number(sendResult && sendResult.enterAttempts) || null,
                 providerTurnId: sendResult && sendResult.acknowledgementTurnId || null,
+                userMessageId: sendResult && sendResult.userMessageId || null,
                 ...(sendResult && sendResult.probeDiagnostics ? { probeDiagnostics: sendResult.probeDiagnostics } : {}),
               });
             } catch (e) { warn('[groupchat] send ack telemetry failed:', e && e.message); }
@@ -1656,7 +1705,7 @@ function createGroupChatDispatcher(deps) {
         }
         try {
           const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
-          if (liveSession.kind === 'codex' || liveSession.kind === 'codex-resume') {
+          if (liveSession.runtimeBackend === 'codex-app-server' || liveSession.kind === 'codex' || liveSession.kind === 'codex-resume') {
             const nativeSession = sessionManager.getNativeCodex?.(receipt.sid);
             if (nativeSession) await nativeSession.start();
             const outcome = nativeSession && await nativeSession.readOutcome(receipt.providerTurnId);
@@ -1673,6 +1722,30 @@ function createGroupChatDispatcher(deps) {
                 status:ATTEMPT_AWAITING_BINDING,reason:'native_outcome_unconfirmed',
               },'native_recovery_pending');
               publishAttempt(meeting.id,orch,pending,{recovery:true});
+              summary.pending += 1;
+            }
+            continue;
+          }
+          if (liveSession.runtimeBackend === 'claude-stream-json') {
+            const nativeSession = sessionManager.getNativeClaude?.(receipt.sid);
+            const record = nativeSession?.records.get(receipt.attemptId);
+            const matches = record && receipt.userMessageId === record.userMessageId
+              && receipt.nativePromptFingerprint === record.fingerprint;
+            if (matches && ['completed', 'failed', 'interrupted'].includes(record.status)) {
+              orch.patchTurnResult(receipt.turnNum, receipt.sid, {
+                text: record.finalText || '', status: record.status === 'failed' ? 'errored' : record.status,
+                attemptId: receipt.attemptId, runId: receipt.runId, memberId: receipt.memberId,
+                userMessageId: record.userMessageId, providerTurnId: null,
+                signalSource: 'claude-stream-json', completedAt: record.completedAt,
+                speaker: liveSession.title || 'Claude', finality: record.status === 'completed' ? 'provider_final' : record.status,
+              });
+              publishAttempt(meeting.id, orch, orch.getAttempt(receipt.attemptId), { recovery: true });
+              summary.recovered += 1;
+            } else {
+              const pending = orch.updateAttempt(receipt.attemptId, {
+                status: ATTEMPT_AWAITING_BINDING, reason: 'native_outcome_unconfirmed',
+              }, 'native_recovery_pending');
+              publishAttempt(meeting.id, orch, pending, { recovery: true });
               summary.pending += 1;
             }
             continue;

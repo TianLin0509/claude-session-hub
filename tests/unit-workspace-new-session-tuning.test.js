@@ -84,7 +84,7 @@ test('touchWorkspace never clears draft — only archiveDraft may', () => {
   });
 });
 
-test('Claude command uses the validated opts.effort and falls back to max', () => {
+test('Claude native launch defaults omitted effort and rejects unsupported explicit effort', () => {
   assert.match(
     SESSION_MANAGER_SRC,
     /const CLAUDE_EFFORT_LEVELS = new Set\(\['low', 'medium', 'high', 'xhigh', 'max'\]\)/,
@@ -92,12 +92,14 @@ test('Claude command uses the validated opts.effort and falls back to max', () =
   );
   assert.match(
     SESSION_MANAGER_SRC,
-    /const effort = CLAUDE_EFFORT_LEVELS\.has\(opts\.effort\) \? opts\.effort : 'max'/,
-    'out-of-enum effort must fall back to max instead of reaching the PTY command line',
+    /: \(opts\.effort \|\| 'max'\)/,
+    'only omitted effort defaults to max; explicit input reaches the typed validator',
   );
+  const { buildClaudeNativeArgs } = require('../core/claude-native-launch');
+  assert.throws(() => buildClaudeNativeArgs({ model: 'claude-opus-5[1m]', effort: 'unsupported' }), /Unsupported Claude effort/);
   assert.match(
     SESSION_MANAGER_SRC,
-    /effortFlag = process\.env\.CLAUDE_HUB_NO_EFFORT_MAX === '1' \? '' : ` --effort \$\{effort\}`/,
+    /effort: legacy \|\| process\.env\.CLAUDE_HUB_NO_EFFORT_MAX === '1' \? null/,
     'the kill switch must still win over an explicit effort',
   );
   assert.match(
