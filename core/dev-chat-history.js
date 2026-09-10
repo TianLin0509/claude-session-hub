@@ -170,7 +170,15 @@ function createHistoryService({ getOrchestrator, onChanged = () => {}, logger = 
     const key=`${meetingId}:${sid}:${sourcePath}`;
     if(readers.has(key)) {
       const existing=readers.get(key);
-      if(!existing.failed) { existing.reader.refresh(); return existing.ready; }
+      if(!existing.failed) {
+        try { existing.reader.refresh(); return existing.ready; }
+        catch(error) {
+          existing.failed=true;
+          logger.error('[dev-chat-history] deferred source write failed:',error);
+          existing.reader.error('已绑定消息的保存失败，正在从原始记录补收；未重新发送任务。');
+          throw error;
+        }
+      }
       existing.tail.close();readers.delete(key); // replay source after a failed durable write
     }
     const orch=getOrchestrator(meetingId);

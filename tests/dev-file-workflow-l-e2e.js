@@ -89,6 +89,7 @@ async function run() {
       userInput = task + (process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1'
         ? '\n本次同时验收群聊消息留存：每个阶段用普通中文发至少三条简短进展，不加 PLAN/UPDATE 等标签，至少一条包含真实验证命令或路径。交付文件后用最后一条回答说明本阶段交付情况。' : '') + '\n\n' + preset.prompt;
     }
+    if(RESUME && process.env.HUB_FILEFLOW_ASSERT_HISTORY==='1') userInput+='\n继续验收消息留存：本阶段用普通中文发至少三条不同进展，不加固定标签；交付文件后给出最终答复。';
     await cdp.eval(`void require('electron').ipcRenderer.invoke('groupchat:turn', ${JSON.stringify({ meetingId, userInput })})`);
     let previous = '', done = false;
     const deadline = Date.now() + Number(process.env.HUB_FILEFLOW_L_BUDGET_MS || 900000);

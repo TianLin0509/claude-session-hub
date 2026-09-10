@@ -123,3 +123,23 @@ test('an interrupted collector replays a late final on restart without duplicati
   assert.deepEqual(restored.state.messages.filter(m=>m.sourceMessage).map(m=>m.content),['ordinary progress','late final']);
   assert.ok(Object.values(restored.state.devChatHistory.receipts)[0].sourceCompletedAt);
 });
+
+test('a deferred write failure forces replay and flushes the original message durably',async t=>{
+  const {orch,dir,makeTurn}=setup(t);const a=makeTurn('first\n\nline');
+  const sourcePath=path.join(dir,'source.jsonl');
+  fs.writeFileSync(sourcePath,[{type:'task_started',turn_id:'provider'},{type:'user_message',message:'first\nline'},
+    {type:'agent_message',message:'early text'}].map(payload=>JSON.stringify({type:'event_msg',payload})).join('\n')+'\n');
+  const service=createHistoryService({getOrchestrator:()=>orch,logger:{error(){}}});t.after(()=>service.dispose());
+  const options={sid:'s',meetingId:'meeting',kind:'codex',sourcePath};
+  await service.watch(options);
+  orch.updateAttempt(a.attemptId,{providerTurnId:'provider'});
+  const original=orch._saveState.bind(orch);let failed=false;
+  orch._saveState=(event,details)=>{
+    if(event==='dev_chat_message_saved' && !failed){failed=true;throw new Error('test durable write failure');}
+    return original(event,details);
+  };
+  await assert.rejects(service.watch(options),/test durable write failure/);
+  await service.watch(options);
+  const restored=new GroupChatOrchestrator(dir,'meeting');
+  assert.equal(restored.state.messages.filter(m=>m.sourceMessage && m.content==='early text').length,1);
+});
