@@ -6,8 +6,9 @@ const assert = require('assert');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 const { getFreePort, seedUsageData, waitFor, click, key } = require('./helpers/usage-refresh-fixture');
+const { measureQuota } = require('./helpers/sidebar-quota-geometry');
 const ROOT = path.resolve(__dirname, '..');
-const OUT = path.join(ROOT, 'artifacts', '20260910-sidebar-quota-a');
+const OUT = path.resolve(process.env.HUB_QUOTA_EVIDENCE_DIR || path.join(ROOT, 'artifacts', '20260910-sidebar-quota-a'));
 
 async function run() {
   fs.mkdirSync(OUT, { recursive: true });
@@ -68,6 +69,9 @@ async function run() {
             buttonWidths:[...document.querySelectorAll('.sidebar-quota-refresh')].map(e=>e.getBoundingClientRect().width) };
         })()`);
         assert.deepStrictEqual(geometry.overflow, [], `overflow at ${width}/${zoom}`);
+        geometry.adjacent = await measureQuota(cdp);
+        assert.deepStrictEqual(geometry.adjacent.overlaps, [], `adjacent overlap at ${width}/${zoom}`);
+        assert.deepStrictEqual(geometry.adjacent.overflow, [], `leaf overflow at ${width}/${zoom}`);
         assert.strictEqual(geometry.providers[1].y, geometry.providers[2].y);
         assert.ok(geometry.providers[0].bottom <= geometry.providers[1].y + 1);
         assert.ok(geometry.quota.bottom <= geometry.resources.y);

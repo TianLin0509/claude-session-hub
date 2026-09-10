@@ -147,7 +147,10 @@
 .sidebar-quota-value { font-size: 11px; font-variant-numeric: tabular-nums; }
 .sidebar-quota-track { display: block; height: 3px; margin-top: 3px; border-radius: 3px; background: var(--border-subtle); overflow: hidden; }
 .sidebar-quota-track i { display: block; height: 100%; background: currentColor; }
-.sidebar-quota-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px; }
+/* Reserve each provider's complete reading before sharing spare space. A
+   currency prefix or longer balance must not shrink underneath its refresh. */
+.sidebar-quota-pair { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(max-content, 1fr); gap: 7px; }
+.sidebar-quota-pair .sidebar-quota-metrics, .sidebar-quota-pair .sidebar-quota-metric { min-width: max-content; }
 .sidebar-quota-pair > :last-child { border-left: 1px solid var(--border-subtle); padding-left: 7px; }
 .sidebar-quota-refresh { flex: none; padding: 0; width: 22px; height: 26px; border: 0; border-radius: var(--radius-sm); color: var(--fg-muted); background: transparent; cursor: pointer; font-size: 16px; }
 .sidebar-quota-refresh:hover { background: var(--brand-tint); color: var(--fg-default); }
