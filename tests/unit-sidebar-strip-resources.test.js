@@ -30,6 +30,7 @@ const sessions = new Map([
   ['history', { id: 'history', status: 'dormant' }],
 ]);
 let resourceUsage = { cpuPct: 23.4, memoryPct: 67.8 };
+let proxyInfo = null;
 
 const document = {
   createElement: () => makeEl(),
@@ -53,6 +54,7 @@ const renderer = createSessionListRenderer({
   formatTime: () => '',
   pctClass: () => '',
   getResourceUsage: () => resourceUsage,
+  getProxyInfo: () => proxyInfo,
   selectSession() {},
   selectMeeting() {},
   openContextMenu() {},
@@ -65,6 +67,8 @@ assert.match(stripEl.innerHTML, /title="CPU 23%"/);
 assert.match(stripEl.innerHTML, /width:23%/);
 assert.match(stripEl.innerHTML, /title="内存 68%"/);
 assert.match(stripEl.innerHTML, /width:68%/);
+assert.match(stripEl.innerHTML, /CPU<b>23%<\/b>/);
+assert.match(stripEl.innerHTML, /内存<b>68%<\/b>/);
 assert.ok(!stripEl.innerHTML.includes('等你'));
 assert.ok(!stripEl.innerHTML.includes('ctx'));
 assert.ok(!stripEl.innerHTML.includes('%/h'));
@@ -74,4 +78,26 @@ resourceUsage = { cpuPct: 91, memoryPct: 86 };
 renderer.renderSidebarStrip();
 assert.strictEqual((stripEl.innerHTML.match(/strip-resource-high/g) || []).length, 2);
 
+proxyInfo = { proxy: 'http://127.0.0.1:9', egress: {
+  foreign: { ok: true, ip: '203.0.113.10', countryZh: '美国', cityZh: '洛杉矶', locationLabel: '美国·洛杉矶' },
+  domestic: { ok: true, countryZh: '中国', cityZh: '北京' },
+} };
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /美国 洛杉矶/);
+assert.match(stripEl.innerHTML, /国内正常/);
+assert.doesNotMatch(stripEl.innerHTML, /203\.0\.113\.10/);
+proxyInfo.egress.foreign.cityZh = '';
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /美国 城市未知/);
+proxyInfo.egress.foreign.ok = false;
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /出口未知/);
+proxyInfo.proxy = '';
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /直连/);
+assert.match(stripEl.innerHTML, /中国 北京/);
+resourceUsage = {};
+renderer.renderSidebarStrip();
+assert.match(stripEl.innerHTML, /CPU<b>—<\/b>/);
+assert.match(stripEl.innerHTML, /内存<b>—<\/b>/);
 console.log('unit-sidebar-strip-resources OK');

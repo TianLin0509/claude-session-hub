@@ -83,7 +83,7 @@ async function main() {
 
   const port = await reservePort();
     const hub = await launchIsolatedHub({
-      dataDir: DATA, port, label: 'proxy',
+      dataDir: DATA, port, label: 'proxy', windowMode: 'hidden',
       extraEnv: {
         AI_HUB_WORKSPACE_ROOT: WS,
         CLAUDE_HUB_NO_EFFORT_MAX: '1',
@@ -108,7 +108,7 @@ async function main() {
                  domesticText: domestic ? (domestic.textContent || '').replace(/\\s+/g, ' ').trim() : null,
                  foreignTitle: foreign ? (foreign.getAttribute('title') || '') : null,
                  domesticTitle: domestic ? (domestic.getAttribute('title') || '') : null,
-                 foreignClass: foreign ? foreign.className : null,
+                 foreignClass: foreign?.querySelector('.strip-route-dot')?.className || '',
                  acknowledgeable: !!(foreign && foreign.dataset.egressAck === 'true'),
                  visible: getComputedStyle(el).display !== 'none' };
       })()`);
@@ -121,29 +121,30 @@ async function main() {
     console.log(`国产模型   : ${strip.domesticText}`);
 
     assert.equal(strip.visible, true, '状态条必须可见');
-    assert.equal(strip.rows, 2, '左下角必须恰好两行出口');
-    assert.match(strip.foreignText, /国外/);
-    assert.match(strip.domesticText, /国产/);
+    assert.equal(strip.rows, 2, '网络行保留代理与国内两个状态');
+    assert.match(strip.foreignText, /VPN/);
+    assert.match(strip.domesticText, /国内/);
     assert.match(strip.foreignTitle, /Claude \/ Codex.*Gemini/);
     assert.match(strip.domesticTitle, /Kimi \/ DeepSeek/);
     assert.ok(!strip.foreignText.includes('127.0.0.1'), '可见文案不得再显示本地代理端口');
     assert.ok(!strip.domesticText.includes('127.0.0.1'), '可见文案不得显示本地代理端口');
 
     if (!LIVE && SCENARIO === 'changed') {
-      assert.match(strip.foreignText, /美国·洛杉矶/);
-      assert.match(strip.foreignText, /38\.246\.239\.122/);
-      assert.match(strip.domesticText, /中国·上海/);
-      assert.match(strip.domesticText, /180\.158\.74\.254/);
-      assert.match(strip.foreignClass, /strip-route-warning/);
+      assert.match(strip.foreignText, /美国 洛杉矶/);
+      assert.doesNotMatch(strip.foreignText, /38\.246\.239\.122/);
+      assert.match(strip.domesticText, /国内正常/);
+      assert.doesNotMatch(strip.domesticText, /180\.158\.74\.254/);
+      assert.match(strip.foreignClass, /warning/);
       assert.equal(strip.acknowledgeable, true, '节点变化应持续显眼，直到用户确认');
     } else if (!LIVE && SCENARIO === 'unavailable') {
-      assert.match(strip.foreignText, /VPN 出口不可用/);
-      assert.match(strip.foreignClass, /strip-route-critical/);
+      assert.match(strip.foreignText, /出口未知/);
+      assert.match(strip.foreignTitle, /VPN 出口不可用/);
+      assert.match(strip.foreignClass, /warning/);
       assert.equal(strip.acknowledgeable, false, '不可用告警不能被手动忽略');
-      assert.match(strip.domesticText, /中国·上海/);
+      assert.match(strip.domesticText, /国内正常/);
     } else {
-      assert.match(strip.foreignText, /\d+\.\d+\.\d+\.\d+/);
-      assert.match(strip.domesticText, /\d+\.\d+\.\d+\.\d+/);
+      assert.doesNotMatch(strip.foreignText, /\d+\.\d+\.\d+\.\d+/);
+      assert.doesNotMatch(strip.domesticText, /\d+\.\d+\.\d+\.\d+/);
     }
 
     const shot = path.join(ARTIFACT, `sidebar-egress-${LIVE ? 'live' : SCENARIO}-${Date.now()}.png`);
@@ -154,7 +155,7 @@ async function main() {
       await client.eval(`document.querySelector('.strip-route-foreign[data-egress-ack="true"]')?.click()`);
       await waitFor('acknowledge changed VPN node', async () => client.eval(`(() => {
         const row = document.querySelector('.strip-route-foreign');
-        return !!row && !row.classList.contains('strip-route-warning') && !row.dataset.egressAck;
+        return !!row && !row.querySelector('.strip-route-dot').classList.contains('warning') && !row.dataset.egressAck;
       })()`));
     }
 
@@ -163,7 +164,9 @@ async function main() {
   } finally {
     if (client) await client.close().catch(() => {});
     await gracefulQuit(hub);
-    fs.rmSync(ROOT, { recursive: true, force: true });
+    const resolved = path.resolve(ROOT);
+    if (!resolved.startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(resolved).startsWith('hub-proxy-')) throw new Error('unsafe test cleanup path');
+    fs.rmSync(resolved, { recursive: true, force: true });
   }
 }
 

@@ -108,13 +108,20 @@ test('搬家保留了 data-* 入口与可访问名', () => {
 test('rail 的排布顺序：logo → 四场景 → 弹性空位 → 用量占位 → 主题 → 选项', () => {
   const rail = railInner();
   const order = ['rail-logo', 'btn-home', 'btn-research', 'btn-study', 'btn-ran',
-    'rail-spacer', 'rail-usage', 'btn-theme', 'btn-options'];
+    'rail-spacer', 'btn-theme', 'btn-options'];
   let cursor = -1;
   for (const token of order) {
     const at = rail.indexOf(token, cursor + 1);
     assert.ok(at > cursor, token + ' 的位置不对（应当排在 ' + order[order.indexOf(token) - 1] + ' 之后）');
     cursor = at;
   }
+});
+
+test('账户余量迁到侧栏底部且只保留一个控制器挂载点', () => {
+  assert.ok(!railInner().includes('id="rail-usage"'));
+  const sidebar = sidebarInner();
+  assert.ok(sidebar.indexOf('id="rail-usage"') > sidebar.indexOf('id="session-list"'));
+  assert.ok(sidebar.indexOf('id="sidebar-strip"') > sidebar.indexOf('id="rail-usage"'));
 });
 
 test('rail 样式表已经挂进清单，且 rail 是 52px / 按钮 34px', () => {

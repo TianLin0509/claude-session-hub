@@ -82,11 +82,11 @@ async function waitFor(client, expression, timeoutMs = 30000) {
       };
     })()`);
     assert.ok(!/活跃|等你|ctx|🔥|%\/h/.test(beforeClose.text), beforeClose.text);
-    assert.match(beforeClose.foreignTitle, /实测公网 IPv4/);
-    assert.match(beforeClose.domesticTitle, /实测公网 IPv4/);
+    assert.match(beforeClose.foreignTitle, /出口地区/);
+    assert.match(beforeClose.domesticTitle, /出口地区/);
     assert.strictEqual(beforeClose.display, 'flex');
 
-    // Active count was removed in T3; resource telemetry stays a single line with live PTYs.
+    // A keeps numeric resource telemetry above the geographic network row.
     assert.equal(await client.eval("!!document.querySelector('#sidebar-strip .strip-active')"), false);
 
     const afterClose = await client.eval(`(() => {
@@ -97,7 +97,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
     })()`);
-    assert.ok(afterClose.rect.height <= 32, JSON.stringify(afterClose));
+    assert.ok(afterClose.rect.height >= 60 && afterClose.rect.height <= 64, JSON.stringify(afterClose));
     const shot = await client.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,

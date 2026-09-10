@@ -294,27 +294,32 @@ function _sessionWarningText(session) {
     const egress = proxy && proxy.egress;
     const foreign = egress && egress.foreign;
     const domestic = egress && egress.domestic;
+    const displayRoute = proxyShort ? foreign : domestic;
     const alert = egress && egress.alert;
 
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
-      'Claude / Codex 订阅、Gemini：强制经 VPN 代理',
+      proxyShort ? 'Claude / Codex 订阅、Gemini：经 VPN 代理' : '未配置 VPN，显示直连出口',
       proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',
-      foreign && foreign.ok ? `实测公网 IPv4：${foreign.ip} (${foreign.locationLabel || '未知地区'})` : `状态：${foreign && foreign.error || '检测中'}`,
+      displayRoute && displayRoute.ok ? `出口地区：${displayRoute.locationLabel || '未知地区'}` : `状态：${displayRoute && displayRoute.error || '检测中'}`,
       alert ? `${alert.title || '节点异常'}：${alert.message || ''}` : '',
       alert && alert.acknowledgeable ? '点击此行确认当前节点' : '',
     ].filter(Boolean).join('\n');
     const domesticTitle = [
       'Kimi / DeepSeek：清空 HTTP(S)_PROXY 后直连',
-      domestic && domestic.ok ? `实测公网 IPv4：${domestic.ip} (${domestic.locationLabel || '未知地区'})` : `状态：${domestic && domestic.error || '检测中'}`,
+      domestic && domestic.ok ? `出口地区：${domestic.locationLabel || '未知地区'}` : `状态：${domestic && domestic.error || '检测中'}`,
     ].join('\n');
 
     const routeClass = (route, warning) => !egress ? 'pending' : warning || !route?.ok ? 'warning' : 'ok';
-    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const location = displayRoute?.ok
+      ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
+      : '出口未知';
+    const domesticLabel = !egress ? '国内检测中' : domestic?.ok ? '国内正常' : '国内异常';
     stripEl.innerHTML =
-      `<button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(foreign, alert)}"></span>国外</button>` +
-      `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>国产</span>` +
-      metric('CPU', cpuPct) + metric('内存', memoryPct);
+      '<div class="strip-resources">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + '</div>' +
+      `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span></button>` +
+      `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
     stripEl.title = '';
     stripEl.style.display = 'flex';
 
