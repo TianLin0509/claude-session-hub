@@ -14,6 +14,7 @@ const ATTEMPT_FAILED = 'failed';
 const ATTEMPT_INTERRUPTED = 'interrupted';
 const ATTEMPT_SUPERSEDED = 'superseded';
 const ATTEMPT_ABSENT = 'absent';
+const ATTEMPT_HANDED_OFF = 'handed_off';
 
 const TERMINAL_ATTEMPT_STATES = new Set([
   ATTEMPT_COMPLETED,
@@ -21,6 +22,7 @@ const TERMINAL_ATTEMPT_STATES = new Set([
   ATTEMPT_INTERRUPTED,
   ATTEMPT_SUPERSEDED,
   ATTEMPT_ABSENT,
+  ATTEMPT_HANDED_OFF,
 ]);
 
 const CLAUDE_FINAL_SOURCES = new Set([
@@ -234,6 +236,7 @@ function attemptEventMatches(attempt, event = {}, options = {}) {
 }
 
 module.exports = {
+  ATTEMPT_HANDED_OFF,
   ATTEMPT_PREPARED,
   ATTEMPT_SUBMITTING,
   ATTEMPT_ACCEPTED,

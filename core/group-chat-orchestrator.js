@@ -445,6 +445,7 @@ class GroupChatOrchestrator {
       failed: ATTEMPT_FAILED,
       interrupted: ATTEMPT_INTERRUPTED,
       superseded: ATTEMPT_SUPERSEDED,
+      handed_off: 'handed_off',
       absent: ATTEMPT_ABSENT,
     };
     return this.updateAttempt(attemptId, {
@@ -977,7 +978,7 @@ class GroupChatOrchestrator {
         && !!(by[sid] && String(by[sid]).trim().length)
         && _sameAttempt
         && _existingMsg && _existingMsg.finality === 'provider_final';
-      const _preserveExistingFinal = _hasCompletedResult && _rStatus === 'errored';
+      const _preserveExistingFinal = _hasCompletedResult && ['errored','handed_off'].includes(_rStatus);
       // 用户主动同步得到的完整文本优先于随后迟到的自动/退出信号；再次手动同步仍可更新。
       const _acceptIncomingContent = _writeContent
         && (!_hasManualResult || _incomingIsManual)
@@ -1123,7 +1124,7 @@ class GroupChatOrchestrator {
         ? ATTEMPT_SUPERSEDED
         : (results.length > 0 && results.every(result => result && ['errored', 'failed', 'absent'].includes(result.status)))
           ? ATTEMPT_FAILED
-          : ATTEMPT_COMPLETED;
+          : results.some(result => result && result.status === 'handed_off') ? 'handed_off' : ATTEMPT_COMPLETED;
     const activeRunMatches = !this.state.activeRun || !runId || this.state.activeRun.runId === runId;
     if (activeRunMatches) {
       this.state.currentMode = 'idle';
@@ -1241,6 +1242,9 @@ class GroupChatOrchestrator {
     const failureBy = pending ? {} : (turn.failureBy = turn.failureBy || {});
     let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum)
       && m.role === 'assistant' && m.sid === sid && !isProgressUpdateMessage(m));
+    if (status === 'handed_off' && !String(text || '').trim()
+        && msg?.status === 'completed' && msg.finality === 'provider_final'
+        && msg.attemptId === attemptId && String(msg.content || '').trim()) return msg;
     if (pending && msg) {
       if (msg.content && String(msg.content).trim()) by[sid] = msg.content;
       if (msg.status) byStatus[sid] = msg.status;

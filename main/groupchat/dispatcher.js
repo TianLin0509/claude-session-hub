@@ -98,6 +98,7 @@ function createGroupChatDispatcher(deps) {
   // 抢占式连发（2026-06-24 道雪）：每个 meeting 的派发序号，单调递增。runGroupChatTurn
   //   完成时比对，若已有更新的轮号 → 自己是被抢占的旧轮，给前端的 turn-complete 带 superseded。
   const meetingDispatchSeq = new Map();
+  const meetingHandoffSeq = new Map();
   // 运行中中断（2026-07-29 道雪）：每个 meeting 的中断代际，单调递增。
   //   用于关掉「用户在 sendToPty 还没跑完时就点了停止」的竞态窗口——此刻 activeWatchers
   //   里还没有 watcher 可以结算，如果不记代际，这一轮会在中断之后才开始等待，卡片
@@ -958,14 +959,23 @@ function createGroupChatDispatcher(deps) {
   //   waitTurnComplete Promise 立刻 resolve → 上一轮 runGroupChatTurn 的 Promise.allSettled
   //   立即完成 → 串行队列放行新轮，不再被卡死的 AI 无限期挂起。
   //   只结算属于本 meeting 的 watcher（activeWatchers 以 sid 为键，跨 meeting 不共享 sid）。
-  function supersedeActiveWatchersForMeeting(meetingId) {
+  function supersedeActiveWatchersForMeeting(meetingId, fileHandoff = false) {
     const meeting = meetingManager.getMeeting(meetingId);
     const sids = meeting && Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
     let count = 0;
     for (const sid of sids) {
       const watcher = activeWatchers.get(sid);
       if (watcher && !watcher.isSettled()) {
-        try { watcher.supersede(); count += 1; }
+        try {
+          if (fileHandoff && typeof watcher.handoff === 'function') {
+            const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+            const receipt = Object.values(orch.state.devChatHistory?.receipts || {}).find(r =>
+              r.sid === sid && r.attemptId === orch.state.pendingPrompts?.[String(orch.state.currentTurn)]?.[sid]?.attemptId);
+            if (receipt) { receipt.handedOffAt=Date.now(); orch._saveState('dev_chat_handoff',{sid,attemptId:receipt.attemptId}); }
+            watcher.handoff();
+          } else watcher.supersede();
+          count += 1;
+        }
         catch (e) { warn('[groupchat] supersede watcher threw:', e && e.message); }
       }
     }
@@ -1099,7 +1109,9 @@ function createGroupChatDispatcher(deps) {
     if (!args.silent) {
       dispatchSeq = (meetingDispatchSeq.get(key) || 0) + 1;
       meetingDispatchSeq.set(key, dispatchSeq);
-      try { supersedeActiveWatchersForMeeting(meetingId); }
+      const fileHandoff=args.fileHandoff === true && DevFile.enabled(meetingManager.getMeeting(meetingId));
+      if(fileHandoff)meetingHandoffSeq.set(key,dispatchSeq);else meetingHandoffSeq.delete(key);
+      try { supersedeActiveWatchersForMeeting(meetingId, fileHandoff); }
       catch (e) { warn('[groupchat] preempt supersede threw:', e && e.message); }
     }
     const previous = groupChatTurnQueue.get(key) || Promise.resolve();
@@ -1162,6 +1174,24 @@ function createGroupChatDispatcher(deps) {
           }
         : parseGroupTargets(userInput || '', members, meeting.participants);
       const targetMembers = routed.targets || [];
+      if (DevFile.enabled(meeting)) {
+        const historyOrch=groupchat.getOrchestrator(getHubDataDir(),meetingId);
+        const sids=new Set(targetMembers.map(m=>m.sid));
+        const waiting=()=>Object.values(historyOrch.state.devChatHistory?.receipts || {})
+          .filter(r=>sids.has(r.sid) && r.handedOffAt && !r.sourceCompletedAt);
+        const waitStart=Date.now();
+        if(waiting().length) {
+          historyOrch.appendSystemNote(historyOrch.state.currentTurn,'文件已交付，正在等待该席位上一轮 CLI 收尾后接续；已有消息会保留。');
+          emitGroupChat('dev-workbench:progress',{meetingId,revision:historyOrch.state.revision});
+        }
+        while(waiting().length) {
+          if(interruptedSinceStart() || (shouldDispatch && !shouldDispatch()))
+            return {status:'error',reason:'文件进度已变化或用户已停止',turnNum:null};
+          if(Date.now()-waitStart > (Number(turnTimeoutMs) || 30*60_000))
+            return {status:'error',reason:'等待上一轮 CLI 收尾超时；请查看原文，确认后继续',turnNum:null};
+          await new Promise(resolve=>setTimeout(resolve,100));
+        }
+      }
       // 2026-07-20 道雪 [修#3d]：被勾选但 dormant/不可达的成员以 absent 合入本轮，
       //   不再静默消失（此前卡片全程"思考中"、轮末查无此人）。仅整组发送时统计；
       //   @ 点名/显式 targetMemberIds 时，未被点到的不算缺席。
@@ -1279,6 +1309,7 @@ function createGroupChatDispatcher(deps) {
             dispatchAt: turnStartedAt,
           });
           t.attemptId = receipt && receipt.attemptId;
+          if (DevFile.enabled(meeting)) require('../../core/dev-chat-history').rememberPrompt(orch,t.sid,receipt);
           t.attempt = t.attemptId ? orch.getAttempt(t.attemptId) : null;
           if (t.attempt && !silent) publishAttempt(meetingId, orch, t.attempt);
         }
@@ -1507,7 +1538,7 @@ function createGroupChatDispatcher(deps) {
         //   「本轮还在 sendToPty、activeWatchers 还是空」的窗口时会落空，新一问就要被串行
         //   队列扣到本轮成员自然结算为止（CLI 卡死时可能是几分钟——用户感知就是"追问石沉大海"）。
         //   watcher 刚同步注册完，这里补一次抢占，让追加的提问立刻开跑。
-        try { supersedeActiveWatchersForMeeting(meetingId); }
+        try { supersedeActiveWatchersForMeeting(meetingId, meetingHandoffSeq.get(interruptKey) === meetingDispatchSeq.get(interruptKey)); }
         catch (e) { warn('[groupchat] late preempt supersede threw:', e && e.message); }
       }
       const settled = await settledPromise;

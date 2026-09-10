@@ -85,7 +85,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       const prompt = F.phasePrompt(m, s.dir, s);
       const args = { ...(userArgs || {}), userInput: userArgs ? `${userArgs.userInput}\n\n${prompt}` : prompt,
         targetMemberIds: [member.id], appendUserMessage: true, dispatchMode: 'serial',
-        turnTimeoutMs: 30 * 60_000, allowActiveExtend: true,
+        turnTimeoutMs: 30 * 60_000, allowActiveExtend: true, fileHandoff: !userArgs,
         shouldDispatch: () => { const now = status(id); return !!now && !now.paused && !now.error && !now.done && now.key === key; },
         workflowRun: { runId: token, kind: 'dev-file', stepIndex: s.phase === 'kickoff' ? 0 : s.round * 2 - (s.phase === 'build' ? 1 : 0), attempt: 1 } };
       const promise = getDispatcher().dispatchGroupChatTurn(id, args);

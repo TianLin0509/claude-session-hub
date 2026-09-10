@@ -681,6 +681,8 @@ transcriptTap.on('session-bound', (ev) => {
       if (current && current.codexSessionsRoot) patch.codexSessionsRoot = current.codexSessionsRoot;
       if (current && current.codexAllowMtimeFallback) patch.codexAllowMtimeFallback = true;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
+    } else if (isClaudeFamily(ev.kind) && ev.transcriptPath) {
+      sessionManager.updateSessionMeta(ev.hubSessionId, {transcriptPath:ev.transcriptPath});
     } else if ((ev.kind === 'gemini' || ev.kind === 'gemini-resume')
         && (ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot)) {
       const patch = {};
@@ -1492,11 +1494,35 @@ try {
   devWorkbench.registerIpc(ipcMain);
 } catch (error) { console.error('[dev-workbench] initialization failed:', error.message); }
 
+const devChatHistory = require('./core/dev-chat-history').createHistoryService({
+  getOrchestrator: id => groupchat.getOrchestrator(getHubDataDir(),id),
+  onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
+});
+function watchDevChatHistory(session, sourcePath) {
+  const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
+  if(!require('./core/dev-file-workflow').enabled(meeting))return;
+  const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
+  const paths=new Set([sourcePath || session.transcriptPath || transcriptTap.getCodexRolloutPath(session.id),
+    ...Object.values(orch.state.devChatHistory?.receipts || {})
+      .filter(r=>r.sid===session.id && r.sourcePath && !r.sourceCompletedAt).map(r=>r.sourcePath)]);
+  for(const file of paths) {
+    void devChatHistory.watch({sid:session.id,meetingId:meeting.id,kind:session.transcriptKind || session.kind,
+      sourcePath:file,speaker:session.title || session.kind})
+      .catch(error=>console.error('[dev-chat-history] watch failed:',error));
+  }
+}
+transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
+const devChatHistoryTimer=setInterval(()=>{
+  for(const session of sessionManager.getAllSessions()) watchDevChatHistory(session);
+},1000);
+devChatHistoryTimer.unref?.();
+
 transcriptTap.on('progress-update', event => {
   try {
     const session = event && sessionManager.getSession(event.hubSessionId);
     const meeting = session && session.meetingId && meetingManager.getMeeting(session.meetingId);
     if (!meeting || !meeting.groupChat || meeting.scene !== 'dev') return;
+    if (require('./core/dev-file-workflow').enabled(meeting)) return; // collected losslessly by source identity
     const orch = groupchat.getOrchestrator(getHubDataDir(), meeting.id);
     if (orch.recordProgressUpdate(session.id, event.text, event.at, session.title || session.kind, event)) {
       sendToRenderer('dev-workbench:progress', { meetingId: meeting.id, revision: orch.state.revision,
@@ -2940,6 +2966,7 @@ async function runFinalShutdownCleanup() {
       });
     }
   });
+  capture('dev-chat-history', () => { clearInterval(devChatHistoryTimer); devChatHistory.dispose(); });
   capture('transcript-tap', () => transcriptTap.dispose());
   // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，
   // 让另一台/另一个 Hub 可以立即恢复同一个 native session；崩溃场景
