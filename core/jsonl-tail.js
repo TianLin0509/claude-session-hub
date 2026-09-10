@@ -7,6 +7,8 @@ class JsonlTail {
   constructor(filepath, onLine, opts = {}) {
     this._filepath = filepath;
     this._onLine = onLine;
+    this._onError = typeof opts.onError === 'function' ? opts.onError : null;
+    this._lastReadError = null;
     this._offset = 0;
     this._lineFilter = typeof opts.lineFilter === 'function' ? opts.lineFilter : null;
     this._maxPrefixBytes = Number.isFinite(opts.maxPrefixBytes) && opts.maxPrefixBytes > 0
@@ -51,8 +53,8 @@ class JsonlTail {
   }
 
   _resetScanner() {
-    this._scanner = new JsonlByteScanner((obj) => {
-      try { this._onLine(obj); } catch (error) {
+    this._scanner = new JsonlByteScanner((obj, lineIndex, meta) => {
+      try { this._onLine(obj, lineIndex, meta); } catch (error) {
         console.warn('[jsonl-tail] onLine callback failed; record dropped:', error && error.message, '| file:', this._filepath);
       }
     }, {
@@ -115,8 +117,10 @@ class JsonlTail {
       } finally {
         await fh.close();
       }
-    } catch {
+    } catch (error) {
       // Transient IO errors such as rotation/deletion are retried on the next tick.
+      this._lastReadError = error;
+      if (this._onError) this._onError(error);
     } finally {
       this._reading = false;
     }
@@ -134,6 +138,7 @@ class JsonlTail {
   getStats() {
     return {
       offset: this._offset,
+      lastReadError: this._lastReadError,
       maxReadBytes: this._maxReadBytes,
       maxObservedReadBytes: this._maxObservedReadBytes,
       yieldCount: this._yieldCount,

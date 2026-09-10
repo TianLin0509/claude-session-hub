@@ -339,6 +339,12 @@ function createTurnCompletionWatcher(opts) {
      *   不进 patch 窗口（superseded 不在 PATCHABLE_STATUSES）：旧轮已废弃，CLI 后续
      *   吐的收尾内容不该再回填这条被覆盖的记录。
      */
+    handoff() {
+      // Dispatch may advance independently; the durable source reader keeps
+      // receiving this attempt's commentary and final text after this wait.
+      settle({sid:hubSessionId,label,status:'handed_off',text:'',reason:'file_handoff'});
+    },
+
     supersede() {
       settle({
         sid: hubSessionId,
