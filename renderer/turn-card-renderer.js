@@ -151,8 +151,7 @@ function renderToolCluster(turnId, toolCalls) {
     counts.declined ? `${counts.declined} 已拒绝` : '',
   ].filter(Boolean).join(' · ');
   const items = activities.map(_renderToolRow).join('');
-  const hasLive = !!(counts.running || counts.pending);
-  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}"${hasLive ? ' open' : ''}>
+  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}">
     <summary class="tc-cluster-head"><span class="turn-activity-title">活动 ${activities.length}</span><span class="turn-activity-breakdown">${escapeHtml(breakdown)}</span></summary>
     <div class="tc-cluster-list">${items}</div>
   </details>`;
@@ -430,7 +429,7 @@ function renderTurnCard(turn) {
   // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, toolCalls? }
   const isUser = turn.role === 'user';
   // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
-  const cls = (isUser ? 'turn-card user' : 'turn-card') + (turn.inherited ? ' inherited' : '');
+  const cls = (isUser ? 'turn-card user' : 'turn-card assistant') + (turn.inherited ? ' inherited' : '');
   const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
 
@@ -447,11 +446,16 @@ function renderTurnCard(turn) {
 
   const emptyNative = !turn.text && ({completed:'本轮已完成，没有回答正文',interrupted:'本轮已中断',failed:'本轮执行失败'})[turn.nativeOutcome];
   const activityLabel = turn.nativeActivity ? '<div class="turn-native-outcome">Claude 后台活动</div>' : '';
-  const body = activityLabel + (emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>` : renderMarkdownPreservingLocalPaths(turn.text));
+  const body = activityLabel + (emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
+    : require('./conversation-message-view').renderMessageBody(turn.text,
+      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
+  const attachments = isUser && turn.attachments?.length
+    ? `<details class="conversation-attachments"><summary>附件 · ${turn.attachments.length} 张图片</summary>`
+      + turn.attachments.map((a,i)=>`<div class="conversation-attachment">${escapeHtml(a.path || `图片 ${i+1}`)}</div>`).join('')+'</details>' : '';
   const presentation = turn.presentation || buildTurnPresentation(turn);
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', presentation.activities);
-  const deliveryHtml = !isUser ? renderDeliverySummary(presentation.delivery) : '';
+  const deliveryHtml = !isUser && turn.phase !== 'commentary' && turn.phase !== 'activity' ? renderDeliverySummary(presentation.delivery) : '';
 
   // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
   // S1 parser exposes turn.thinking as multi-block joined string (or null).
@@ -472,11 +476,12 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
+        ${!isUser && turn.phase ? `<span class="conversation-phase">${turn.phase === 'final_answer' ? '结果' : turn.phase === 'commentary' ? '进展' : turn.phase === 'activity' ? '活动记录' : '消息'}</span>` : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
@@ -492,6 +497,7 @@ function renderTurnCard(turn) {
       </div>
       ${thinkingHtml}
       <div class="turn-body${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+      ${attachments}
       ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}
@@ -591,6 +597,7 @@ function postProcessLongTextFold(cardEl) {
   if (!cardEl) return;
   const body = cardEl.querySelector('.turn-body');
   if (!body) return;
+  if (body.querySelector('.conversation-long-message')) return;
   // 已存在折叠按钮（rerender 路径） → 跳过
   if (cardEl.querySelector('.body-fold-toggle')) return;
   if (body.scrollHeight <= _BODY_FOLD_THRESHOLD_PX) return;
@@ -812,6 +819,7 @@ function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
   cardEl.dataset.optimistic = 'true';
   cardEl.dataset.optimisticText = text;
   if (options.clientSubmissionId) cardEl.dataset.clientSubmissionId = options.clientSubmissionId;
+  cardEl.dataset.submittedAt = String(turn.ts);
 
   // 插在 streaming-indicator 之前（与 mountSessionTurnCard 一致），保证位置正确
   // 2026-05-24：必须用 `:scope > .streaming-indicator` 限定为 container 直接子。
@@ -850,6 +858,8 @@ function turnRenderSignature(turn) {
   if (!turn) return '';
   const raw = JSON.stringify({
     role: turn.role || '',
+    phase: turn.phase || '',
+    attachments: turn.attachments || null,
     text: turn.text || '',
     ts: turn.ts || null,
     model: turn.model || '',
@@ -870,6 +880,13 @@ function turnRenderSignature(turn) {
 }
 
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
+  if (turn && Array.isArray(turn.displayMessages)) {
+    let last = null;
+    for (const message of require('../core/conversation-display').displayTurns([turn])) {
+      last = mountSessionTurnCard(sessionId, message, opts) || last;
+    }
+    return last;
+  }
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
     console.warn('[mountSessionTurnCard] invalid turn (missing id/role):', turn);
@@ -887,22 +904,21 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 
   // optimistic user-card dedup：真 user turn 从 transcript 进来时，扫现存
   //   optimistic 占位卡，文本相同则删掉（让真卡片接替）。trim 比较两端容差。
-  if (turn.role === 'user') {
+  if (turn.role === 'user' && !container.querySelector(`.turn-card[data-turn-id="${cssEscape(turn.id)}"]`)) {
     const sidStr = String(sessionId || '');
     const realText = (turn.text || '').trim();
     if (realText) {
       const opts2 = container.querySelectorAll('.turn-card.user[data-optimistic="true"]');
-      opts2.forEach(opt => {
-        if (opt.dataset.sessionId !== sidStr) return;
-        if (turn.clientSubmissionId || opt.dataset.clientSubmissionId) {
-          if (turn.clientSubmissionId === opt.dataset.clientSubmissionId) opt.remove();
-          return;
-        }
-        const optText = (opt.dataset.optimisticText || '').trim();
-        if (optText && optText === realText) {
-          opt.remove();
-        }
+      const normalize = require('../core/conversation-display').userTextIdentity;
+      const candidates = Array.from(opts2).filter(opt => {
+        if (opt.dataset.sessionId !== sidStr) return false;
+        if (turn.clientSubmissionId || opt.dataset.clientSubmissionId) return turn.clientSubmissionId === opt.dataset.clientSubmissionId;
+        const sentAt = Number(opt.dataset.submittedAt);
+        return (!sentAt || (Number(turn.ts) >= sentAt - 1000))
+          && normalize(opt.dataset.optimisticText) === normalize(realText);
       });
+      // One receipt claims one placeholder, never every repeated prompt.
+      if (candidates[0]) candidates[0].remove();
     }
   }
 
@@ -1030,6 +1046,23 @@ win._mountSessionTurnCard = mountSessionTurnCard;
 
 // click handler — code-copy + code-expand/collapse
 doc.addEventListener('click', (e) => {
+  const messageCopy = e.target.closest('[data-action="conversation-copy"]');
+  if(messageCopy) {
+    e.preventDefault();e.stopPropagation();
+    const text=require('./visible-card-text').extractVisibleCardText(messageCopy.closest('.conversation-entry'));
+    Promise.resolve(clipboardApi.writeText(text)).then(()=>{messageCopy.textContent='已复制';})
+      .catch(error=>{messageCopy.textContent='复制失败';console.warn('[conversation-copy]',error);});
+    return;
+  }
+  const filter = e.target.closest('[data-conversation-filter]');
+  if (filter) {
+    const results = filter.dataset.conversationFilter !== 'results';
+    filter.dataset.conversationFilter = results ? 'results' : 'all';
+    filter.setAttribute('aria-pressed', String(results));
+    filter.textContent = results ? '只看结果 · 进展已隐藏' : '全部消息';
+    doc.body.classList.toggle('conversation-results-only', results);
+    return;
+  }
   const copyBtn = e.target.closest('[data-action="code-copy"]');
   if (copyBtn) {
     const code = copyBtn.parentElement.querySelector('pre code');

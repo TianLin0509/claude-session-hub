@@ -45,7 +45,19 @@ function claudeTranscriptTurns(records) {
     const toolCalls = new Map();
     const results = new Map();
     const text = []; const thinking = [];
+    const displayByMessage = new Map();
     for (const frame of frames) {
+      if (frame.type === 'assistant' && !frame.parent_tool_use_id) {
+        const messageId = frame.message?.id || frame.uuid;
+        const body = (frame.message?.content || []).filter(b => b?.type === 'text').map(b => b.text || '').join('\n\n');
+        if (messageId && body) {
+          const previous = displayByMessage.get(messageId);
+          displayByMessage.set(messageId, { id: `${id}:message:${messageId}`, itemId: messageId,
+            clientSubmissionId: record.submissionId, userMessageId: id, providerTurnId: null,
+            text: previous ? previous.text + '\n\n' + body : body,
+            phase: frame.message.stop_reason === 'end_turn' ? 'final_answer' : 'commentary', ts: record.createdAt });
+        }
+      }
       for (const block of frame.message?.content || []) {
         if (!block) continue;
         if (block.type === 'tool_result') results.set(block.tool_use_id, block);
@@ -64,13 +76,28 @@ function claudeTranscriptTurns(records) {
     }
     const terminal = END.has(record.status);
     const answer = terminal ? record.finalText || '' : text.join('\n\n');
+    const displayMessages = [...displayByMessage.values()];
+    const finalMessage = terminal && displayMessages.findLast(m => m.text === answer);
+    if (finalMessage) finalMessage.phase = 'final_answer';
+    if (terminal && answer && !displayMessages.some(m => m.text === answer)
+        && displayMessages.map(m => m.text).join('\n\n') !== answer) {
+      displayMessages.push({ id: `${id}:result`, text: answer, phase: 'final_answer',
+        clientSubmissionId: record.submissionId, userMessageId: id, providerTurnId: null,
+        ts: record.completedAt || record.createdAt });
+    }
     if (answer || thinking.length || toolCalls.size || terminal) cards.push({ id: id + ':assistant',
       role: 'assistant', kind: 'claude', text: answer, thinking: thinking.join('\n\n'),
       toolCalls: [...toolCalls.values()], ts: record.createdAt, tsEnd: record.completedAt || null,
-      source, nativeActivity: record.nativeActivity || false, nativeOrigin: record.origin || null,
+      source, displayMessages, clientSubmissionId: record.submissionId, userMessageId: id,
+      nativeActivity: record.nativeActivity || false, nativeOrigin: record.origin || null,
       stopReason: terminal ? record.status : null, nativeOutcome: terminal ? record.status : null });
   }
   return cards;
 }
 
-module.exports = { captureClaudeMessage, claudeTranscriptTurns };
+function claudeDisplayMessages(record) {
+  return record ? require('./conversation-display').displayTurns(claudeTranscriptTurns([record]))
+    .filter(m => m.role === 'assistant' && (m.text || m.toolCalls?.length || m.thinking)) : [];
+}
+
+module.exports = { captureClaudeMessage, claudeTranscriptTurns, claudeDisplayMessages };

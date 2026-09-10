@@ -207,8 +207,13 @@ async function main() {
       await shot('background-restored');
       checks.push('whole Hub restart retains the background activity without replaying it as a user prompt');
     } else if (MODE === 'recovery') assert.equal(transcript.turns.filter(turn => turn.role === 'user').length, 2);
-    else assert.deepEqual(orderedRoles, ['user', 'assistant']);
-    if (MODE === 'normal' || MODE === 'mixed') {
+    else if (MODE === 'conversation') {
+      assert.deepEqual(orderedRoles, ['user', 'assistant', 'assistant', 'assistant']);
+      const texts = await client.eval("[...document.querySelectorAll('#msg-overlay > .turn-card.assistant .turn-body')].map(e=>e.innerText)");
+      assert.ok(texts[0].includes('progress-one') && texts[1].includes('progress-two') && texts[2].includes('完成'));
+      checks.push('native Claude retains separate provider progress messages and final answer in order');
+    } else assert.deepEqual(orderedRoles, ['user', 'assistant']);
+    if (['normal', 'mixed', 'conversation'].includes(MODE)) {
       const secondSlot = MODE === 'mixed'
         ? { kind: 'codex', model: 'gpt-6-astra', effort: 'xhigh', mcpProfile: 'none', codexSpeedTier: 'fast' }
         : { kind: 'claude', model: 'claude-opus-5[1m]', effort: 'max', mcpProfile: 'lean', fastMode: false };
@@ -226,6 +231,13 @@ async function main() {
         return state?.currentMode === 'idle' && Object.values(state.turns?.at(-1)?.byStatus || {}).filter(s => s === 'completed').length === 2 ? state : null;
       });
       await waitFor('visible group answers', () => client.eval("document.querySelector('.mr-gc-shell')?.innerText.includes('完成')"));
+      if (MODE === 'conversation') {
+        assert.equal(Object.values(groupState.displayMessagesByAttempt).length, 2);
+        for (const items of Object.values(groupState.displayMessagesByAttempt)) {
+          assert.deepEqual(items.map(m => m.text), ['独立进度 — progress-one', '独立进度 — progress-two', '完成 🧪']);
+        }
+        await waitFor('visible group progress messages', () => client.eval("document.querySelector('.mr-gc-shell')?.innerText.includes('独立进度 — progress-two')"));
+      }
       fs.writeFileSync(path.join(OUT, 'group.json'), JSON.stringify(groupState, null, 2), 'utf8');
       await shot('group-completed');
       checks.push((MODE === 'mixed' ? 'Claude and Codex native members' : 'two native Claude members') + ' finish through real group composer and dispatcher');

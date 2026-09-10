@@ -14,6 +14,7 @@ function createClaudeNativeWatcher(driver, { sid, label, submissionId, attemptId
     if (settled) return;
     settled = true; cleanup();
     resolveWait({ sid, label, attemptId, runId, submissionId, status,
+      displayMessages: require('./claude-native-transcript').claudeDisplayMessages(record),
       text: record?.finalText || '', reason, completedAt: record?.completedAt || Date.now(),
       providerTurnId: null, userMessageId: record?.userMessageId || null,
       signalSource: 'claude-stream-json', finality: status === 'completed' ? 'provider_final' : status });
@@ -52,6 +53,7 @@ function createClaudeNativeWatcher(driver, { sid, label, submissionId, attemptId
     const answer = driver.transcript().find(item => item.id === record.userMessageId + ':assistant');
     try {
       onPartial({ sid, label, attemptId, runId, submissionId, status: 'streaming',
+        displayMessages: require('./claude-native-transcript').claudeDisplayMessages(record),
         source: 'claude-stream-json', text: answer?.text || '', blocks: [], cleanBufLen: answer?.text?.length || 0 });
     } catch (error) {
       // A display/persistence consumer failure does not prove the engine disconnected.

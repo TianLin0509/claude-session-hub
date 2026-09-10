@@ -97,6 +97,13 @@ rl.on('line', async line => {
       }, 25);
       return;
     }
+    if (mode === 'conversation') {
+      for (const messageId of ['progress-one', 'progress-two']) {
+        await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
+          message: { id: messageId, role: 'assistant', stop_reason: 'tool_use',
+            content: [{ type: 'text', text: '独立进度 — ' + messageId }] } });
+      }
+    }
     if (mode === 'tool-result') {
       await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId, message: {
         id: 'assistant-tool', role: 'assistant', content: [{ type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'file.txt' } }] } });

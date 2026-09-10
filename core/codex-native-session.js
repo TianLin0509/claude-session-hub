@@ -71,6 +71,7 @@ class CodexNativeSession extends EventEmitter {
         ? {...options.restoredRuntime.submission,status:'unknown'} : options.restoredRuntime.submission,
     } : createNativeRuntime();
     this.items = new Map();
+    this.contentRevision = 0;
     this.history = new Map();
     this.closed = false;
     this.ready = null;
@@ -294,11 +295,12 @@ class CodexNativeSession extends EventEmitter {
         this.lifecycle('turn-started',{startedAt:this.runtime.startedAt});
       }
     } else if (type === 'turn/completed') {
+      this.contentRevision++;
       if (!p.turn || !TERMINAL.has(p.turn.status)) {
         throw new Error('turn/completed 携带非终态');
       }
       if (p.turn.id !== this.runtime.turnId && this.runtime.turnId) return;
-      for (const item of p.turn.items || []) this.items.set(item.id,item);
+      for (const item of p.turn.items || []) this.items.set(item.id,{...this.items.get(item.id),...item});
       this.history.set(p.turn.id,{...this.history.get(p.turn.id),...p.turn,items:[...this.items.values()],hubCompletedAt:Date.now()});
       if (!this.apply({type:'completed',threadId:this.threadId,turn:p.turn})) return;
       const text = this.finalText();
@@ -321,10 +323,12 @@ class CodexNativeSession extends EventEmitter {
     } else if (p.turnId && p.turnId !== this.runtime.turnId) {
       return;
     } else if (type === 'item/started' || type === 'item/completed') {
+      this.contentRevision++;
       const item = p.item;
       if (!item || !item.id) throw new Error('Codex item 缺少身份');
       const old = this.items.get(item.id);
-      this.items.set(item.id,{...old,...item});
+      this.items.set(item.id,{...old,...item,hubStartedAt:old?.hubStartedAt || Date.now(),
+        ...(type === 'item/completed' ? {hubCompletedAt:Date.now()} : {})});
       if (type === 'item/completed' && item.type === 'agentMessage' && item.text && !(old && old.text)) {
         this.print(item.text);
       } else if (type === 'item/started' && item.type !== 'agentMessage' && item.type !== 'userMessage') {
@@ -332,7 +336,8 @@ class CodexNativeSession extends EventEmitter {
       }
       this.emit('items',this.blocks());
     } else if (type === 'item/agentMessage/delta') {
-      const item = this.items.get(p.itemId) || {id:p.itemId,type:'agentMessage',text:''};
+      this.contentRevision++;
+      const item = this.items.get(p.itemId) || {id:p.itemId,type:'agentMessage',text:'',hubStartedAt:Date.now()};
       item.text = (item.text || '') + p.delta;
       this.items.set(p.itemId,item);
       this.print(p.delta);
@@ -352,10 +357,15 @@ class CodexNativeSession extends EventEmitter {
     return finals.map(i => i.text || '').join('\n');
   }
   blocks() {
-    return [...this.items.values()].filter(i => i.type === 'agentMessage').map(i => ({type:'text',text:i.text || ''}));
+    return [...this.items.values()].filter(i => i.type === 'agentMessage').map(i => ({
+      type:'text',text:i.text || '',id:i.id,itemId:i.id,threadId:this.threadId,
+      turnId:this.runtime.turnId,phase:i.phase || 'message',ts:i.hubStartedAt || this.runtime.startedAt,
+    }));
   }
   readTranscript(options = {}) {
-    const turns = [...this.history.values()].map(t=>t.id === this.runtime.turnId
+    const history=options.turnId ? [this.history.get(options.turnId)].filter(Boolean)
+      : options.latestTurn ? [...this.history.values()].slice(-1) : [...this.history.values()];
+    const turns = history.map(t=>t.id === this.runtime.turnId
       ? {...t,items:[...this.items.values()]} : t);
     const cards = require('./codex-native-transcript').nativeTranscriptTurns(this.threadId,turns);
     const limit = options.limit == null ? 50 : options.limit;

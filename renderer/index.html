@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="file-manager-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
+  <link rel="stylesheet" href="conversation-stream.css">
   <script src="../node_modules/prismjs/prism.js"></script>
   <script src="../node_modules/prismjs/components/prism-bash.min.js"></script>
   <script src="../node_modules/prismjs/components/prism-javascript.min.js"></script>
@@ -55,6 +56,7 @@
         <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">PTY</button>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
+      <button class="conversation-filter" data-conversation-filter="all" aria-pressed="false" title="显示全部消息，或暂时隐藏进展与活动记录">全部消息</button>
       <!-- 右端给 Windows 自己画的最小化 / 最大化 / 关闭留位。宽度优先用
            env(titlebar-area-*)，取不到时回落到 138px 常量。 -->
       <div class="toolbar-window-controls" id="toolbar-window-controls" aria-hidden="true"></div>

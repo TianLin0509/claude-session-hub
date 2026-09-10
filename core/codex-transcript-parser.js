@@ -306,20 +306,27 @@ function hasNearbyEventUserDuplicate(entries, entryIndex, text) {
   const normalized = normalizeUserDuplicateText(text);
   if (!normalized) return false;
   const maxLookahead = Math.min(entries.length, entryIndex + 6);
+  const sourceAt=toMs(entries[entryIndex]?.obj?.timestamp);
   for (let i = entryIndex + 1; i < maxLookahead; i++) {
     const obj = entries[i] && entries[i].obj;
+    if(obj?.type==='response_item' && obj.payload?.role==='user') {
+      if(isSyntheticUserEntry(obj,textFromPayload(obj.payload)))continue;
+      break;
+    }
+    if(obj?.type==='event_msg' && ['task_started','agent_message','task_complete'].includes(obj.payload?.type))break;
     const userEvent = codexUserMessageEventFromRecord(obj);
     if (!userEvent) continue;
-    if (normalizeUserDuplicateText(userEvent.text) === normalized) return true;
+    if(isSyntheticUserEntry(obj,userEvent.text))continue;
+    // Only the next user event can mirror this record. Never scan past a
+    // different submission and accidentally claim a later repeated prompt.
+    const near=!sourceAt || !userEvent.submittedAt || Math.abs(userEvent.submittedAt-sourceAt)<=2000;
+    return near && normalizeUserDuplicateText(userEvent.text) === normalized;
   }
   return false;
 }
 
 function normalizeUserDuplicateText(text) {
-  return String(text || '')
-    .replace(/<image\b[^>]*>/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return require('./conversation-display').userTextIdentity(text);
 }
 
 function parseCodexRolloutEntries(entries) {
@@ -336,6 +343,7 @@ function parseCodexRolloutEntries(entries) {
         finalText: '',
         durationMs: null,
         agentMessages: [],
+        displayMessages: [],
         toolCalls: [],
       };
     }
@@ -362,6 +370,7 @@ function parseCodexRolloutEntries(entries) {
         stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
         durationMs: pendingAssistant.durationMs || undefined,
         toolCalls: pendingAssistant.toolCalls,
+        displayMessages: pendingAssistant.displayMessages,
         source: pendingAssistant.finalText ? 'codex_rollout' : 'codex_rollout_streaming',
       });
     }
@@ -455,6 +464,17 @@ function parseCodexRolloutEntries(entries) {
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
         pending.tsEnd = agentEvent.completedAt || toMs(obj.timestamp);
+        const last = pending.displayMessages.at(-1);
+        // task_complete is a receipt that can echo the preceding item. It is
+        // not another message. Distinct provider items with identical text
+        // are deliberately retained.
+        const mirror = payload.type === 'task_complete' && last && last.text === agentEvent.text;
+        const id = mirror ? last.id : _makeTurnId('codex-message', obj, index);
+        const message = {id, text:agentEvent.text, phase:agentEvent.phase || 'message',
+          providerTurnId:agentEvent.turnId,ts:toMs(obj.timestamp),tsEnd:agentEvent.completedAt};
+        const found = pending.displayMessages.findIndex(m=>m.id===id);
+        if(found < 0) pending.displayMessages.push(message);
+        else pending.displayMessages[found] = {...message,ts:pending.displayMessages[found].ts};
         if (agentEvent.completed) pending.finalText = agentEvent.text;
         else pending.agentMessages.push(agentEvent.text);
         if (Number.isFinite(agentEvent.durationMs)) pending.durationMs = agentEvent.durationMs;

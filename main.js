@@ -443,6 +443,7 @@ sessionManager.on('codex-session-updated', session => {
   sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
+sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
 sessionManager.on('codex-lifecycle', event => {
   transcriptTap.emit(event.type, event);
 });
@@ -1563,6 +1564,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
+  if (['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1576,8 +1578,27 @@ function watchDevChatHistory(session, sourcePath) {
   }
 }
 transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
+const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
+function collectNativeGroupItems(event) {
+  const sid = event.sessionId || event.id;
+  const session = sessionManager.getSession(sid);
+  const meeting = session?.meetingId && meetingManager.getMeeting(session.meetingId);
+  if (!meeting?.groupChat) return;
+  const native = sessionManager.getNativeCodex?.(sid);
+  const claude = sessionManager.getNativeClaude?.(sid);
+  if (!native && !claude) return;
+  try {
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meeting.id);
+    if (collectGroupConversation({ native, claude, event, orch, sid })) sendToRenderer('groupchat-history-updated',
+      { meetingId: meeting.id, sid, revision: orch.state.revision });
+  } catch (error) { console.error('[conversation-history] native item persistence failed:', error); }
+}
+sessionManager.on('codex-content-updated', collectNativeGroupItems);
+sessionManager.on('codex-session-updated', collectNativeGroupItems);
+sessionManager.on('native-agent-item', collectNativeGroupItems);
+sessionManager.on('native-agent-lifecycle', collectNativeGroupItems);
 const devChatHistoryTimer=setInterval(()=>{
-  for(const session of sessionManager.getAllSessions()) watchDevChatHistory(session);
+  for (const session of sessionManager.getAllSessions()) watchDevChatHistory(session);
 },1000);
 devChatHistoryTimer.unref?.();
 

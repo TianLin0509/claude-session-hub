@@ -114,6 +114,16 @@ async function main(){
       await until(`sessions.get(${sid}).nativeRuntime.state==='completed' && sessions.get(${sid}).nativeRuntime.turnId!==${JSON.stringify(priorRuntime.turnId)}`,'real follow-up after resume');
       assert.ok((await cdp.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`)).turns.some(t=>t.role==='assistant' && t.text.includes('GUI_RESUME_OK')));
       await snap('real-resume-followup');result.checks.push('real Hub restart preserves exact thread/history/draft revision without replay; subsequent real model turn completes');
+      const questionPrior=await cdp.eval(`sessions.get(${sid}).nativeRuntime.turnId`);
+      await send('这是原生提问界面的隔离验收。请使用 request_user_input 工具提问“选择哪个验收标记？”，两个选项为 NATIVE_A 与 NATIVE_B。收到工具返回的选择后，只回复该标记。不要调用命令、不要读取文件、不要改动任何配置。');
+      await until(`sessions.get(${sid}).nativeRuntime.requests.some(r=>r.method==='item/tool/requestUserInput')`,'real native question',120000);
+      await until('document.querySelector(".codex-native-request textarea")','real question form');
+      result.question=await cdp.eval(`sessions.get(${sid}).nativeRuntime.requests.filter(r=>r.method==='item/tool/requestUserInput').map(r=>({method:r.method,params:r.params}))`);
+      await snap('real-question');
+      await cdp.eval(`(()=>{const form=[...document.querySelectorAll('.codex-native-request')].find(f=>f.querySelector('textarea'));form.querySelector('textarea').value='NATIVE_A';form.querySelector('button[type=submit]').click();})()`);
+      await until(`sessions.get(${sid}).nativeRuntime.state==='completed' && sessions.get(${sid}).nativeRuntime.turnId!==${JSON.stringify(questionPrior)}`,'real answer after question');
+      assert.ok((await cdp.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`)).turns.some(t=>t.role==='assistant' && t.text.includes('NATIVE_A')));
+      await snap('real-question-answered');result.checks.push('real model emits a native user question and consumes the actual Hub form answer');
     }
     result.passed=true;
   }finally{

@@ -1912,7 +1912,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
       if (opts.forceScrollBottom) cached._codexFollowBottom = true;
       if (pinOnShow) cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
-      if (opts.focus) cached.terminal.focus();
+      // A delayed layout frame must not take focus from a card selection or
+      // its composer after the user has switched away from the PTY surface.
+      if (opts.focus && (embedded || currentView === 'pty')) cached.terminal.focus();
       const vp = cached.container.querySelector('.xterm-viewport');
       if (pinOnShow && vp) vp.scrollTop = vp.scrollHeight;
       if (dbg && dbg.isOn()) dbg.log('show:after-vp1', dbg.snap(cached.terminal, sessionId));
@@ -2436,7 +2438,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     });
   }
 
-  const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
+  const turns = require('../core/conversation-display').displayTurns(
+    (result && Array.isArray(result.turns)) ? result.turns : []);
   const ipcError = (result && result.error) ? result.error : null;
   // A streaming incremental result can land while this full parse is in
   // flight. Those cards are newer than the full snapshot and must survive the
@@ -2560,8 +2563,17 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     // history. Reorder the authoritative full snapshot first, then append only
     // genuinely newer concurrent cards. Cards removed by optimistic/provisional
     // dedup are intentionally skipped here.
+    const desiredCards=turns.map(turn=>turn?.id && container.querySelector(
+      `:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`)).filter(Boolean)
+      .concat(concurrentExtraCards.filter(card=>card.parentNode===container));
+    const currentCards=Array.from(container.querySelectorAll(':scope > .turn-card'));
+    const alreadyOrdered=desiredCards.length===currentCards.length && desiredCards.every((card,i)=>card===currentCards[i]);
+    const selection=window.getSelection();
+    const savedSelection=selection?.rangeCount && container.contains(selection.anchorNode) && container.contains(selection.focusNode)
+      ? {anchor:selection.anchorNode,anchorOffset:selection.anchorOffset,focus:selection.focusNode,focusOffset:selection.focusOffset} : null;
     const streamingTail = container.querySelector(':scope > .streaming-indicator');
     const placeBeforeStreamingTail = (card) => {
+      if(alreadyOrdered)return;
       if (!card || card.parentNode !== container) return;
       if (streamingTail && streamingTail.parentNode === container) {
         container.insertBefore(card, streamingTail);
@@ -2581,6 +2593,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       if (card.parentNode === container) lastConcurrentCard = card;
     }
     if (lastConcurrentCard) lastCardEl = lastConcurrentCard;
+    if(savedSelection && savedSelection.anchor.isConnected && savedSelection.focus.isConnected) {
+      selection.setBaseAndExtent(savedSelection.anchor,savedSelection.anchorOffset,savedSelection.focus,savedSelection.focusOffset);
+    }
   }
 
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
@@ -5988,7 +6003,9 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     state.lastReloadAt = Date.now();
     const refreshOptions = {
       incremental: true,
-      parseOpts: { limit: 1, fromTail: true },
+      parseOpts: sessions.get(sessionId)?.runtimeBackend === 'codex-app-server'
+        ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
+        : { limit: 1, fromTail: true },
     };
     if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') refreshOptions.parseOpts = { nativeLive: true };
     loadSessionHistoryToOverlay(sessionId, refreshOptions)
@@ -6040,11 +6057,16 @@ function scheduleCardSettleRefresh(sessionId) {
 }
 
 function noteCardTerminalOutput(sessionId) {
+  if(sessions.get(sessionId)?.runtimeBackend === 'codex-app-server')return false;
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
   if (isCodexSession(sessions.get(sessionId))) return true;
   scheduleCardSettleRefresh(sessionId);
   return true;
 }
+
+ipcRenderer.on('codex-content-updated', (_e, {sessionId}) => {
+  requestCardIncrementalRefresh(sessionId,{reason:'app-server-item'});
+});
 
 ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
   noteStreamDisconnect(sessionId, data);

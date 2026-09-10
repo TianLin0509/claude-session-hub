@@ -1471,6 +1471,8 @@ if (typeof document !== 'undefined') (function () {
       ? partial.text : null;
     const textFromHistory = (!partial && lastTurn && lastTurn.by && lastTurn.by[sub.sid])
       ? lastTurn.by[sub.sid] : null;
+    const displaySequence=partial?.displayMessages
+      || state.displayMessagesByAttempt?.[partial?.attemptId || lastTurn?.attemptIdBy?.[sub.sid]];
 
     let bottomHtml = '';
     if (status === 'thinking') {
@@ -1479,7 +1481,9 @@ if (typeof document !== 'undefined') (function () {
     } else if (status === 'streaming') {
       if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
       let inner;
-      if (blocksFromPartial) {
+      if (displaySequence?.length) {
+        inner=require('./conversation-message-view').renderMessageSequence(displaySequence,{escapeHtml,renderMarkdown:_renderMarkdown});
+      } else if (blocksFromPartial) {
         inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
       } else if (textFromPartial) {
         inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
@@ -1494,7 +1498,9 @@ if (typeof document !== 'undefined') (function () {
       bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
     } else if (blocksFromPartial || textFromPartial || textFromHistory) {
       let inner;
-      if (blocksFromPartial) {
+      if (displaySequence?.length) {
+        inner=require('./conversation-message-view').renderMessageSequence(displaySequence,{escapeHtml,renderMarkdown:_renderMarkdown});
+      } else if (blocksFromPartial) {
         inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
       } else if (textFromPartial) {
         inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
@@ -2426,7 +2432,10 @@ if (typeof document !== 'undefined') (function () {
     //   按 status 给占位文案 + 失败原因，让用户知道发生了什么、下一步点哪里。
     //   settle 态即使被调用方标了 empty 也不显示"思考中"——已经结束的轮不存在"思考中"。
     let body;
-    if (sendStuck && !hasContent) {
+    if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
+      body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
+        {escapeHtml,renderMarkdown:_renderMarkdown});
+    } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
       const waitingText = status === 'queued' ? '本条消息已排队，前一条任务结束后才会发送。'
@@ -2458,12 +2467,13 @@ if (typeof document !== 'undefined') (function () {
       const headBlock = parts.head
         ? `<details class="mr-gc-dispatch-head"><summary>${escapeHtml(dispatchCollapsedTitle(parts.head))}`
           + `<span class="mr-gc-dispatch-hint">每轮重复，点开看全文</span></summary>`
-          + `<div class="mr-gc-md">${_renderMarkdown(parts.head)}</div></details>`
+          + `<div class="mr-gc-md conversation-user-text">${escapeHtml(parts.head)}</div></details>`
         : '';
-      const bodyBlock = parts.body ? `<div class="mr-gc-md">${_renderMarkdown(parts.body)}</div>` : '';
+      const bodyBlock = parts.body ? `<div class="mr-gc-md conversation-user-text">${escapeHtml(parts.body)}</div>` : '';
       body = headBlock + bodyBlock;
     } else {
-      body = `<div class="mr-gc-md">${_renderMarkdown(contentStr)}</div>`;
+      body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
+        {isUser,escapeHtml,renderMarkdown:_renderMarkdown})}</div>`;
     }
     // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
     //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
@@ -2512,7 +2522,7 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -2564,6 +2574,7 @@ if (typeof document !== 'undefined') (function () {
         turnNum: state.currentTurn || '',
         speaker: slot.displayLabel || slot.label,
         content: text,
+        displayMessages: partial?.displayMessages || state.displayMessagesByAttempt?.[partial?.attemptId],
         status,
         sendStatus: partial && partial.sendStatus ? partial.sendStatus : '',
         statusReason: partial && partial.reason ? partial.reason : '',
@@ -2575,7 +2586,10 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupChatView(state, meeting, softBanner, totalSecTxt) {
-    const messages = Array.isArray(state.messages) ? state.messages : [];
+    const originalMessages = Array.isArray(state.messages) ? state.messages : [];
+    const messages = originalMessages.map(m=>({...m,
+      displayMessages:require('../core/conversation-display').groupDisplayMessages(m,
+        state.displayMessagesByAttempt?.[m.attemptId] || m.displayMessages)}));
     const memberBySid = _groupMemberMap(meeting);
     const slots = _getGcSlots(meeting).filter(Boolean);
     const selected = new Set(Array.isArray(meeting.participants) ? meeting.participants : slots.map(slot => slot.slotIndex));
@@ -2588,7 +2602,8 @@ if (typeof document !== 'undefined') (function () {
     const sourceFinals = new Set(messages.filter(m => m.sourceMessage && m.phase === 'final')
       .map(m => JSON.stringify([m.attemptId, m.content])));
     const renderMessages = meeting.scene === 'dev'
-      ? messages.filter(m => m.sourceMessage || m.role !== 'assistant'
+      ? messages.filter(m => m.sourceMessage || m.status === 'progress_update' ? !state.displayMessagesByAttempt?.[m.attemptId]?.length : m.role !== 'assistant'
+        || m.displayMessages?.length
         || !sourceFinals.has(JSON.stringify([m.attemptId, m.content])))
       : messages.slice();
     // 本地那条 pending 提问什么时候可以撤掉：等服务端把**同一条**消息写进权威历史。
@@ -2973,6 +2988,7 @@ if (typeof document !== 'undefined') (function () {
       turnNum: state.currentTurn || '',
       speaker: slot.displayLabel || slot.label,
       content: text,
+      displayMessages: partial.displayMessages || state.displayMessagesByAttempt?.[partial.attemptId],
       status,
       sendStatus: partial.sendStatus || '',
       statusReason: partial.reason || '',
@@ -2983,7 +2999,9 @@ if (typeof document !== 'undefined') (function () {
     const stick = (maxTop0 - messagesEl.scrollTop) <= 48;
     // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindGcPanelEvents），
     //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
-    articleEl.outerHTML = newHtml;
+    const replacement=document.createElement('div');
+    replacement.innerHTML=newHtml;
+    require('./conversation-message-view').patchConversationArticle(articleEl,replacement.firstElementChild);
     if (stick) {
       requestAnimationFrame(() => {
         const after = panel.querySelector('.mr-gc-messages');
@@ -3090,6 +3108,9 @@ if (typeof document !== 'undefined') (function () {
     const COLLAPSE_PX = 360;
     const bubbles = panel.querySelectorAll('.mr-gc-msg.ai:not(.pending) .mr-gc-bubble');
     bubbles.forEach(b => {
+      // Each provider message owns its own disclosure. Folding the enclosing
+      // agent reply would hide later progress/final messages together again.
+      if (b.querySelector('.conversation-entry, .conversation-long-message')) return;
       if (b.dataset.collapseChecked) return;
       b.dataset.collapseChecked = '1';
       if (b.scrollHeight > COLLAPSE_PX + 48) {
@@ -4116,7 +4137,11 @@ if (typeof document !== 'undefined') (function () {
       if (!turn) return '<div class="mr-gc-tl-empty">该 AI 还没有可显示的历史回答。</div>';
       // T3：_live 走 partial blocks（如有）→ markdown text → 占位
       let bodyHtml;
-      if (turn._live) {
+      const sequence=turn._live ? partial?.displayMessages
+        : state.displayMessagesByAttempt?.[turn.attemptIdBy?.[sid]];
+      if(sequence?.length) {
+        bodyHtml=require('./conversation-message-view').renderMessageSequence(sequence,{escapeHtml,renderMarkdown:_renderMarkdown});
+      } else if (turn._live) {
         if (turn._partialBlocks && turn._partialBlocks.length > 0) {
           bodyHtml = _renderPreviewBlocks(turn._partialBlocks, sid);
         } else if (turn.by[sid]) {
@@ -4132,7 +4157,8 @@ if (typeof document !== 'undefined') (function () {
       }
       const userIn = (turn.userInput || '').trim();
       const userBlock = userIn
-        ? `<div class="mr-gc-tl-user">用户输入：${escapeHtml(userIn.slice(0, 400))}${userIn.length > 400 ? '…' : ''}</div>`
+        ? `<div class="mr-gc-tl-user">用户输入：${require('./conversation-message-view').renderMessageBody(userIn,
+          {isUser:true,escapeHtml,renderMarkdown:_renderMarkdown})}</div>`
         : '';
       const decisionTag = turn.decisionTitle
         ? `<div class="mr-gc-tl-decision-row">📌 决策标题：${escapeHtml(turn.decisionTitle)}</div>`
@@ -4496,6 +4522,7 @@ if (typeof document !== 'undefined') (function () {
     if (prev.sendStatus !== next.sendStatus) return false;
     if (prev.attemptId !== next.attemptId) return false;
     if (prev.providerTurnId !== next.providerTurnId) return false;
+    if (JSON.stringify(prev.displayMessages) !== JSON.stringify(next.displayMessages)) return false;
     if (prev.reason !== next.reason) return false;
     if ((prev.failure && prev.failure.code) !== (next.failure && next.failure.code)) return false;
     const pt = prev.tokens && prev.tokens.total;
@@ -4587,6 +4614,7 @@ if (typeof document !== 'undefined') (function () {
   ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
     if (!_acceptGcPush(payload)) return;
     const { meetingId, turnNum, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason, failure, attemptId, providerTurnId } = payload;
+    const { displayMessages } = payload;
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
@@ -4611,6 +4639,7 @@ if (typeof document !== 'undefined') (function () {
       thinkSec: typeof thinkSec === 'number' ? thinkSec : undefined,
       tokens: tokens || undefined,
       blocks: Array.isArray(blocks) ? blocks : undefined,
+      displayMessages: Array.isArray(displayMessages) ? displayMessages : undefined,
       source: source || undefined,
       cleanBufLen: typeof cleanBufLen === 'number' ? cleanBufLen : undefined,
       // errored settle 带失败原因，占位文案用它解释"为什么失败"（2026-07-12）
@@ -4809,6 +4838,29 @@ if (typeof document !== 'undefined') (function () {
   //   H1 修复：补 activeMeetingId 守卫。
   //   M2 修复（最小化方案）：先 await refreshGroupChatPanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
+  ipcRenderer.on('groupchat-history-updated', async (_e, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const meeting=meetingData[payload.meetingId];
+    if(!meeting)return;
+    const {state,ok}=await _syncGroupChatCacheFromServer(meeting);
+    if(!ok || meeting.id!==activeMeetingId)return;
+    const panel=document.getElementById('meeting-room-panel');
+    if(!panel)return;
+    const members=_groupMemberMap(meeting),scroll=_captureGroupChatScroll(panel,meeting);
+    for(const m of state.messages || []) {
+      if(m.sid!==payload.sid || m.sourceMessage || m.status==='progress_update')continue;
+      const displayMessages=require('../core/conversation-display').groupDisplayMessages(m,state.displayMessagesByAttempt?.[m.attemptId]);
+      if(!displayMessages?.length)continue;
+      const old=panel.querySelector(`[data-gc-msg-id="${CSS.escape(m.id)}"]`);
+      if(!old)continue;
+      const temp=document.createElement('div');
+      temp.innerHTML=_renderGroupChatMessage({...m,displayMessages},meeting,members);
+      require('./conversation-message-view').patchConversationArticle(old,temp.firstElementChild);
+    }
+    _patchGroupChatPendingMessage(panel,meeting,payload.sid,state);
+    _restoreGroupChatScroll(panel,scroll);
+  });
+
   ipcRenderer.on('dev-workbench:progress', (_e, payload = {}) => {
     if (!_acceptGcPush(payload)) return;
     const meeting = meetingData[payload.meetingId];
