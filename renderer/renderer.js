@@ -4295,7 +4295,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
     if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
-        mountOptimisticUserCard(sessionId, text, kind, session?.runtimeBackend === 'claude-stream-json' ? { clientSubmissionId } : {});
+        mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }

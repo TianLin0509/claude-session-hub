@@ -74,6 +74,13 @@ async function main(){
     assert.equal(await cdp.eval('document.querySelectorAll(".fi-stuck").length'),0);
     await snap('empty-cards');
     result.checks.push('native history cards retain empty completion and show no false unconfirmed banner');
+    await send('原生卡片身份去重验证');
+    await until('sessions.get('+sid+').nativeRuntime.state === "completed"','card input completed');
+    await until('[...document.querySelectorAll(".turn-card.user")].some(card=>card.dataset.optimistic!=="true" && card.innerText.includes("原生卡片身份去重验证"))','authoritative user card mounted');
+    await snap('composer-card-identity');
+    assert.equal(await cdp.eval('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length'),0,
+      'native receipt must replace the optimistic user card by clientSubmissionId');
+    result.checks.push('card composer preserves submission identity and displays one user card');
     const beforeResend=await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId');
     await until('document.querySelector(".turn-card.user [data-action=resend]")','card resend button');
     await cdp.eval('[...document.querySelectorAll(".turn-card.user [data-action=resend]")].at(-1).click()');

@@ -46,6 +46,7 @@ async function main(){
     await send('这是隔离环境的审批界面验收。请用 exec_command 发起一次 sandbox_permissions="require_escalated" 的命令请求，cmd 为 Write-Output APPROVAL_TEST，justification 为“隔离审批界面测试”。不要自行执行其他命令，也不要规避拒绝。如果被拒绝，只回复 APPROVAL_DECLINED。');
     await until('sessions.get('+sid+').nativeRuntime.requests.some(r=>r.method==="item/commandExecution/requestApproval")','real approval');
     await until('document.querySelector(".codex-native-request")','real approval form');
+    await until('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length===0','real native card replaced its optimistic placeholder');
     result.approval=await cdp.eval('sessions.get('+sid+').nativeRuntime.requests.map(r=>({method:r.method,params:r.params}))');
     await snap('real-approval');
     await cdp.eval('[...document.querySelectorAll(".codex-native-request button")].find(b=>b.textContent==="拒绝").click()');
