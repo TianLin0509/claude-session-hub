@@ -54,7 +54,9 @@ async function run() {
           result.geometry.push({width,zoom,...geometry});
           if(width===280) {
             const clip=await cdp.eval(`(()=>{const r=document.querySelector('#rail-usage').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:3}})()`);
-            const shot=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true,clip});
+            // Electron zoom changes the CDP screenshot crop coordinate space.
+            // Keep a full-window capture at 125% so evidence is never cropped away.
+            const shot=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true,...(zoom===1?{clip}:{})});
             fs.writeFileSync(path.join(OUT,`${sample.name}-${zoom}.png`),Buffer.from(shot.data,'base64'));
           }
           assert.deepStrictEqual(geometry.overlaps,[],`adjacent overlap: ${sample.name}/${width}/${zoom}`);
@@ -71,6 +73,16 @@ async function run() {
         assert.strictEqual(await cdp.eval(`document.querySelector('[data-provider="deepseek"] .sidebar-quota-value').textContent`),sample.text);
         result.refreshError=await cdp.eval(`accountUsageController.getSnapshot().refresh.providers.deepseek.error`);
         result.ok=true;
+      } catch(error) {
+        result.error=error.stack;
+        if(cdp) {
+          try {
+            result.failureSnapshot=await cdp.eval(`accountUsageController.getSnapshot()`);
+            const shot=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true});
+            fs.writeFileSync(path.join(OUT,sample.name+'-failure.png'),Buffer.from(shot.data,'base64'));
+          } catch(captureError) { result.captureError=captureError.stack; }
+        }
+        throw error;
       } finally {
         if(hub) fs.writeFileSync(path.join(OUT,sample.name+'-hub.log'),hub.log().join('\n'));
         try { if(cdp) await cdp.close(); }
