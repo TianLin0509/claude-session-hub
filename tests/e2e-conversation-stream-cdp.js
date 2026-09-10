@@ -40,12 +40,15 @@ async function main(){
     assert.equal(await cdp.eval('document.querySelectorAll("#msg-overlay .turn-card.user").length'),1);
     assert.equal(await cdp.eval('document.querySelector("#msg-overlay .conversation-user-text").textContent'),prompt);
     assert.equal(await cdp.eval('!!document.querySelector("#msg-overlay .conversation-long-message:not([open])")'),true);
+    assert.equal(await cdp.eval('document.querySelector("#msg-overlay .turn-card[data-phase=activity]")?.innerText.includes("没有回答正文")'),false);
     const copied=await cdp.eval('require("./visible-card-text").extractVisibleCardText(document.querySelector("#msg-overlay .turn-card[data-phase=final_answer] .turn-body"))');
     assert.equal((copied.match(/这是同一条长回答/g) || []).length,36);
     assert(!copied.includes('展开全文'));assert.equal(copied.match(/已完成：/g).length,1);
     evidence.longCopy={length:copied.length,paragraphs:36};
     await cdp.eval('document.getElementById("msg-overlay").scrollTop=0');
     await snap('ordinary-all');evidence.checks.push('real composer -> stdio App Server -> one user card; two progress item nodes survive final');
+    await cdp.eval('document.querySelector("#msg-overlay .turn-card[data-phase=final_answer]").scrollIntoView({block:"center"})');
+    await snap('ordinary-result');
     await cdp.eval('document.querySelector("[data-conversation-filter]").click()');
     assert.equal(await cdp.eval('[...document.querySelectorAll("#msg-overlay .turn-card[data-phase=commentary]")].every(e=>getComputedStyle(e).display==="none")'),true);
     await cdp.eval('document.querySelector("[data-conversation-filter]").click()');
