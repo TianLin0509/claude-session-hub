@@ -445,8 +445,8 @@ test('streaming card refresh requests only the newest turn', () => {
   const start = src.indexOf('function requestCardIncrementalRefresh');
   const end = src.indexOf('function noteCardTerminalOutput', start);
   const block = src.slice(start, end);
-  assert.match(block, /parseOpts:\s*\{\s*limit:\s*1,\s*fromTail:\s*true\s*\}/,
-    'the shared streaming/settle refresh path must avoid full 50-turn parses');
+  assert.match(block, /parseOpts:[\s\S]{0,100}=== 'codex-app-server'\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+    'native refresh must request one provider turn; log refresh must avoid full 50-turn parses');
   assert.match(src, /CARD_STREAM_SETTLE_RETRY_MS\s*=\s*\[1000,\s*2500,\s*6000\]/,
     'late writeback recovery must stay finite rather than polling forever');
   assert.match(block, /requestCardIncrementalRefresh\(sessionId/,

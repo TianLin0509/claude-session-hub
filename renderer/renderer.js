@@ -5930,7 +5930,7 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     loadSessionHistoryToOverlay(sessionId, {
       incremental: true,
       parseOpts: sessions.get(sessionId)?.runtimeBackend === 'codex-app-server'
-        ? { limit: Infinity, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
+        ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
         : { limit: 1, fromTail: true },
     })
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))

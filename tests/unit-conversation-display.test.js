@@ -7,6 +7,20 @@ const {parseCodexRolloutText}=require('../core/codex-transcript-parser');
 const {parseClaudeTranscriptText}=require('../core/claude-transcript-parser');
 const {captureConversationMessages}=require('../core/conversation-capture');
 
+test('native incremental reads retain all current items without projecting older turns',()=>{
+  const {CodexNativeSession}=require('../core/codex-native-session');
+  const old={id:'old',status:'completed',items:[{id:'old-final',type:'agentMessage',text:'Old'}]};
+  const latest={id:'latest',status:'completed',items:[
+    {id:'u',type:'userMessage',content:[{type:'text',text:'New input'}]},
+    {id:'p',type:'agentMessage',phase:'commentary',text:'Progress'},
+    {id:'f',type:'agentMessage',phase:'final_answer',text:'Final'}]};
+  const session={threadId:'thread',runtime:{turnId:null},history:new Map([['old',old],['latest',latest]])};
+  const read=options=>displayTurns(CodexNativeSession.prototype.readTranscript.call(session,options));
+  assert.deepEqual(read({latestTurn:true,limit:Infinity}).map(m=>m.text),['New input','Progress','Final']);
+  assert.deepEqual(read({turnId:'old',latestTurn:true,limit:Infinity}).map(m=>m.text),['Old']);
+  assert.deepEqual(read({turnId:'missing',latestTurn:true,limit:Infinity}),[]);
+});
+
 test('steering within one native turn preserves item order and attempt ownership',()=>{
   const items=[{id:'u1',type:'userMessage',clientId:'attempt-one',content:[{type:'text',text:'First input'}]},
     {id:'p1',type:'agentMessage',phase:'commentary',text:'Same words'},

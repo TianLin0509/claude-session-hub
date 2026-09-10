@@ -363,7 +363,8 @@ class CodexNativeSession extends EventEmitter {
     }));
   }
   readTranscript(options = {}) {
-    const history=options.turnId ? [this.history.get(options.turnId)].filter(Boolean) : [...this.history.values()];
+    const history=options.turnId ? [this.history.get(options.turnId)].filter(Boolean)
+      : options.latestTurn ? [...this.history.values()].slice(-1) : [...this.history.values()];
     const turns = history.map(t=>t.id === this.runtime.turnId
       ? {...t,items:[...this.items.values()]} : t);
     const cards = require('./codex-native-transcript').nativeTranscriptTurns(this.threadId,turns);
