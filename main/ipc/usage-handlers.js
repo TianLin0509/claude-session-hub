@@ -9,7 +9,9 @@ function hasUsageData(value) {
 }
 
 function hasDeepSeekBalanceData(value) {
-  return !!(value && Number.isFinite(Number(value.totalBalance)) && value.currency);
+  return !!(value && value.totalBalance !== null && value.totalBalance !== undefined
+    && String(value.totalBalance).trim() !== '' && typeof value.totalBalance !== 'boolean'
+    && Number.isFinite(Number(value.totalBalance)) && value.currency);
 }
 
 function deepSeekBalanceChanged(before, after) {
@@ -32,6 +34,7 @@ function registerUsageIpc(ipcMain, deps) {
     refreshDeepSeekAccountBalance,
     refreshKimiAccountUsage,
     scanAgentSessions,
+    getCodexUsageScopeKey = () => null,
   } = deps;
 
   const usageChanged = (before, after) => JSON.stringify({
@@ -46,7 +49,47 @@ function registerUsageIpc(ipcMain, deps) {
 
   ipcMain.handle('get-usage-cache', () => loadUsageCacheForCurrentConfig());
 
-  ipcMain.handle('refresh-usage-now', async () => {
+  const providerFlights = new Map();
+  async function refreshProvider(provider) {
+    const before = (loadUsageCacheForCurrentConfig() || {})[provider] || null;
+    const scopeKey = provider === 'codex' ? getCodexUsageScopeKey() : null;
+    const observed = value => value && (value.observedAt || value._ts || value.ts) || 0;
+    try {
+      const refresh = { claude: refreshClaudeAccountUsage, codex: refreshCodexAccountUsage,
+        deepseek: refreshDeepSeekAccountBalance }[provider];
+      if (typeof refresh !== 'function') throw new Error('刷新服务不可用');
+      const raw = await refresh();
+      if (provider === 'codex' && getCodexUsageScopeKey() !== scopeKey) throw new Error('Codex 账号已切换，请重新刷新');
+      const data = provider === 'claude' && raw?.data !== undefined ? raw.data : raw;
+      const valid = provider === 'deepseek' ? hasDeepSeekBalanceData(data) : hasUsageData(data);
+      if (!valid) throw new Error('未取得有效数据');
+      const observedAt = observed(data) || (provider === 'claude' ? raw?.observedAt : 0) || 0;
+      const value = { ...data, observedAt };
+      return { cache: { [provider]: value }, agentData: {}, refreshedAt: Date.now(),
+        providerResults: { [provider]: { ok: true,
+          changed: provider === 'claude' ? didClaudeSnapshotAdvance(before, value)
+            : provider === 'deepseek' ? deepSeekBalanceChanged(before, value) : usageChanged(before, value),
+          fresh: observedAt > observed(before), observedAt,
+          mode: provider === 'claude' ? 'snapshot' : 'live',
+          source: raw?.source || data.source || (provider === 'claude' ? 'statusline-cache' : 'live') } } };
+    } catch (error) {
+      // Keep the last observed value. A scoped refresh must never scan other
+      // providers or manufacture a new observation timestamp on failure.
+      const retained = provider === 'codex' && getCodexUsageScopeKey() !== scopeKey ? null : before;
+      return { cache: retained ? { [provider]: retained } : {}, agentData: {}, refreshedAt: Date.now(),
+        providerResults: { [provider]: { ok: false, fresh: false, changed: false,
+          observedAt: observed(before), mode: 'snapshot', error: errorText(error, '刷新失败') } } };
+    }
+  }
+  ipcMain.handle('refresh-usage-now', async (_event, provider) => {
+    if (provider !== undefined) {
+      if (!['claude', 'codex', 'deepseek'].includes(provider)) throw new Error('不支持的刷新提供方');
+      if (!providerFlights.has(provider)) {
+        const flight = refreshProvider(provider).finally(() => providerFlights.delete(provider));
+        providerFlights.set(provider, flight);
+      }
+      return providerFlights.get(provider);
+    }
     const before = loadUsageCacheForCurrentConfig() || {};
     const providerResults = {};
     let refreshedClaudeData = null;

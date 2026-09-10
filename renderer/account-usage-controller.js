@@ -1,5 +1,7 @@
 'use strict';
 
+const { createSidebarAccountUsage } = require('./sidebar-account-usage.js');
+
 const LOW_BALANCE_THRESHOLD = 20;
 const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
 const usageLevel = percent => percent > 85 ? 'danger' : percent >= 60 ? 'warn' : 'muted';
@@ -49,6 +51,8 @@ function createAccountUsageController({
   const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0, deepseek: 0 };
   let _claudeUsageLastSeen = 0;
   const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0, providerResults: null };
+  const providerRefreshStates = Object.fromEntries(['claude', 'codex', 'deepseek'].map(p => [p,
+    { inFlight: false, error: null, result: null }]));
   let _refreshStatusTimer = null;
   let staleTimer = null;
   let hoverTimer = null;
@@ -193,7 +197,34 @@ function createAccountUsageController({
     return nowFn() - ts > 120000 ? 'stale' : 'fresh';
   }
 
-  function refreshUsageNow() {
+  async function refreshProviderNow(provider) {
+    if (!Object.prototype.hasOwnProperty.call(providerRefreshStates, provider)) throw new Error('不支持的刷新提供方');
+    const state = providerRefreshStates[provider];
+    if (!state) throw new Error('不支持的刷新提供方');
+    if (state.inFlight || usageRefreshState.inFlight) return null;
+    state.inFlight = true; state.error = null; state.result = null;
+    render();
+    try {
+      const result = await ipcRenderer.invoke('refresh-usage-now', provider);
+      const status = result?.providerResults?.[provider];
+      if (!status) throw new Error('刷新未返回提供方结果');
+      state.result = status;
+      state.error = status.ok === false || status.degraded ? status.error || '未取得有效数据' : null;
+      const value = result.cache?.[provider];
+      const lastSeen = getSnapshot()[provider]?.lastSeen || 0;
+      const observedAt = value?.observedAt || value?._ts || value?.ts || 0;
+      // Do not roll a provider back when its background observation won a race.
+      if (status.ok && !status.degraded && value && observedAt >= lastSeen) applyUsageCache({ [provider]: value });
+      return result;
+    } catch (error) {
+      state.error = error?.message || '刷新失败';
+      throw error;
+    } finally { state.inFlight = false; render(); }
+  }
+
+  function refreshUsageNow(provider) {
+    if (provider !== undefined) return refreshProviderNow(provider);
+    if (Object.values(providerRefreshStates).some(state => state.inFlight)) return Promise.resolve(null);
     if (usageRefreshState.inFlight) return Promise.resolve(null);
     usageRefreshState.inFlight = true;
     usageRefreshState.error = null;
@@ -268,7 +299,10 @@ function createAccountUsageController({
     if (ui) return ui;
     const root = document.getElementById('rail-usage');
     if (!root) return null;
-    const button = makeElement('button', 'rail-usage-button', root);
+    const sidebar = root.className === 'sidebar-account-usage' ? createSidebarAccountUsage({
+      document, root, refresh: refreshProviderNow, formatAge, formatBalance, freshness: usageFreshnessClass,
+    }) : null;
+    const button = makeElement('button', 'rail-usage-button', sidebar ? sidebar.footer : root);
     button.type = 'button';
     button.setAttribute('aria-haspopup', 'dialog');
     button.setAttribute('aria-controls', 'rail-usage-popover');
@@ -276,6 +310,7 @@ function createAccountUsageController({
     const ring = makeElement('span', 'rail-usage-ring', button);
     const value = makeElement('span', 'rail-usage-value', ring);
     ring.setAttribute('aria-hidden', 'true');
+    if (sidebar) makeElement('span', 'sidebar-quota-details', button, '详情');
     const popover = makeElement('section', 'usage-popover', root);
     popover.id = 'rail-usage-popover';
     popover.hidden = true;
@@ -296,7 +331,7 @@ function createAccountUsageController({
     const home = actions.querySelector('.usage-home');
     const notice = makeElement('div', 'usage-refresh-notice', popover);
     notice.setAttribute('role', 'status');
-    ui = { root, button, ring, value, popover, rows, age, refresh, memo, home, notice };
+    ui = { root, button, ring, value, popover, rows, age, refresh, memo, home, notice, sidebar };
     const enter = () => { cancelHoverClose(); setPopoverOpen(true); };
     const leave = () => {
       cancelHoverClose();
@@ -354,6 +389,7 @@ function createAccountUsageController({
     if (ticker) ticker.style.display = 'none'; // One-release compatibility node.
     if (!ensureUi()) return;
     const snapshot = getSnapshot();
+    if (ui.sidebar) ui.sidebar.render(snapshot, providerRefreshStates);
     const tightest = pickTightestWindow(snapshot);
     const lastSeen = tightest ? snapshot[tightest.provider]?.lastSeen : 0;
     const freshness = usageFreshnessClass(lastSeen);
@@ -368,12 +404,18 @@ function createAccountUsageController({
     ui.button.dataset.freshness = freshness;
     ui.button.title = selectedLabel + ' · ' + formatAge(lastSeen) + '（按获选提供商观测时间）';
     ui.button.setAttribute('aria-label', ui.button.title + '；打开账户用量明细');
+    if (ui.sidebar) {
+      ui.button.title = '账户用量明细、备忘录与主页';
+      ui.button.setAttribute('aria-label', ui.button.title);
+    }
     ui.ring.style.setProperty('--usage-percent', (tightest ? Math.min(100, Math.max(0, tightest.percent)) : 0) + '%');
     ui.value.textContent = display;
     if (staleTimer !== null) clearTimeoutFn(staleTimer);
     staleTimer = null;
-    if (lastSeen && freshness === 'fresh') {
-      staleTimer = setTimeoutFn(() => { staleTimer = null; render(); }, Math.max(1, lastSeen + 120001 - nowFn()));
+    const nextExpiry = ['claude', 'codex', 'deepseek'].map(p => snapshot[p]?.lastSeen)
+      .filter(ts => ts && usageFreshnessClass(ts) === 'fresh').sort((a, b) => a - b)[0];
+    if (nextExpiry) {
+      staleTimer = setTimeoutFn(() => { staleTimer = null; render(); }, Math.max(1, nextExpiry + 120001 - nowFn()));
     }
 
     const renderBar = (percent, level) => '<span class="usage-bar-track" aria-hidden="true"><span class="usage-bar-fill ' + level
@@ -416,7 +458,7 @@ function createAccountUsageController({
     ui.age.textContent = formatAge(times.length ? Math.min(...times) : 0) + (times.length ? '（取三家最旧）' : '');
     ui.refresh.textContent = usageRefreshState.inFlight ? '刷新中…' : '刷新';
     // aria-disabled keeps keyboard focus on the same node; refreshUsageNow guards re-entry.
-    ui.refresh.setAttribute('aria-disabled', String(usageRefreshState.inFlight));
+    ui.refresh.setAttribute('aria-disabled', String(usageRefreshState.inFlight || Object.values(providerRefreshStates).some(s => s.inFlight)));
     ui.memo.classList.toggle('active', isMemoOpen());
     ui.notice.textContent = usageRefreshState.error ? '刷新异常：' + usageRefreshState.error
       : usageRefreshState.lastManualAt && nowFn() - usageRefreshState.lastManualAt < 60000 ? '刷新请求已完成，数据时间以各提供商观测为准' : '';
@@ -447,6 +489,7 @@ function createAccountUsageController({
         inFlight: usageRefreshState.inFlight,
         error: usageRefreshState.error,
         lastManualAt: usageRefreshState.lastManualAt,
+        providers: Object.fromEntries(Object.entries(providerRefreshStates).map(([p, s]) => [p, { ...s }])),
       },
     };
   }

@@ -2348,6 +2348,9 @@ async function refreshCodexAccountUsageLive() {
     timeoutMs: 8000,
   });
   const payload = { ...raw, _ts: raw.observedAt };
+  if (scope.scopeKey !== currentCodexUsageScope().scopeKey) {
+    throw new Error('Codex 账号已切换，请重新刷新');
+  }
   _codexLiveUsage = attachCodexUsageScope(payload, scope);
   cacheAgentUsage('codex', payload, scope);
   return _codexLiveUsage;
@@ -2390,6 +2393,7 @@ registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   loadUsageCacheForCurrentConfig,
   refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
+  getCodexUsageScopeKey: () => currentCodexUsageScope().scopeKey,
   refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
