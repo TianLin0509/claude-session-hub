@@ -55,6 +55,36 @@
   z-index: 2; /* 浮于 G 地平线光晕之上 */
 }
 
+/* Group composer shares the session chips, while keeping its member controls
+   and file-workflow preflight above the input. */
+.mr-input-row.mr-group-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  margin: 8px 12px;
+  padding: 10px 12px 8px;
+  gap: 8px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px var(--border-subtle), var(--shadow-md);
+}
+.mr-group-composer .mr-free-avatars-row { grid-column: 1 / -1; grid-row: 1; justify-self: start; }
+.mr-group-composer .mr-input-box { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+.mr-group-composer #mr-input-tuning { grid-column: 1; grid-row: 3; flex-wrap: wrap; min-width: 0; }
+.mr-group-composer .mr-workflow-btn { grid-column: 2; grid-row: 3; align-self: end; }
+.mr-group-composer .mr-send-btn { grid-column: 3; grid-row: 3; align-self: end; }
+.mr-input-tuning-members { display: flex; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+.mr-input-member-tuning { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.mr-input-member-label { color: var(--fg-muted); font-size: 11px; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mr-input-member-tuning .composer-model { max-width: 230px; }
+.mr-input-member-tuning .composer-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mr-input-member-tuning .composer-thinking:disabled { opacity: .65; cursor: default; }
+/* The bridge status is text-only; in a group it must not cover the send key. */
+body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgpt-bridge-status {
+  top: 64px;
+  bottom: auto !important;
+  pointer-events: none;
+}
+
 .mr-input-preflight {
   display: flex;
   align-items: center;
