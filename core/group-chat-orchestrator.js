@@ -864,6 +864,7 @@ class GroupChatOrchestrator {
       if (details.acknowledgementSource) entry.acknowledgementSource = String(details.acknowledgementSource);
       if (details.reason) entry.reason = String(details.reason);
       if (details.providerTurnId) entry.providerTurnId = String(details.providerTurnId);
+      if (details.providerThreadId) entry.providerThreadId = String(details.providerThreadId);
       if (details.attemptId) entry.attemptId = String(details.attemptId);
     }
     const attemptId = String(details.attemptId || entry.attemptId || '');
@@ -878,6 +879,7 @@ class GroupChatOrchestrator {
       attempt.deliveryAttempt = Math.max(Number(attempt.deliveryAttempt) || 0, Number(entry.attempts) || 0);
       attempt.acknowledgementSource = entry.acknowledgementSource || null;
       attempt.providerTurnId = entry.providerTurnId || attempt.providerTurnId || null;
+      attempt.providerThreadId = entry.providerThreadId || attempt.providerThreadId || null;
       attempt.reason = entry.reason || null;
       attempt.acceptedAt = phase === ATTEMPT_ACCEPTED ? Date.now() : (attempt.acceptedAt || null);
       attempt.updatedAt = Date.now();

@@ -37,6 +37,15 @@ function nativeUnfinished(session) {
   const r = nativeRuntimeTruth(session);
   return r.state === 'running' || r.state === 'waiting';
 }
+// File handoff consumers use the same authoritative execution snapshot. A
+// transcript's final text is deliberately not evidence that execution ended.
+function nativeTurnHasEnded(session, { threadId, turnId } = {}) {
+  const r = nativeRuntimeTruth(session);
+  if (!threadId || !turnId || r.threadId !== threadId || r.connection !== 'connected'
+      || (!TERMINAL.has(r.state) && r.state !== 'idle')
+      || ['submitting', 'unknown'].includes(r.submission?.status)) return false;
+  return (r.turnId === turnId && TERMINAL.has(r.state)) || (r.endedTurns || []).includes(turnId);
+}
 function acceptNativeSnapshot(local, incoming) {
   const next = incoming && incoming.nativeRuntime;
   const old = local && local.nativeRuntime;
@@ -193,4 +202,4 @@ function reduceNativeRuntime(previous, event) {
   return n;
 }
 module.exports = { BACKEND, TERMINAL, isCodexSession, createNativeRuntime, reduceNativeRuntime,
-  nativeRuntimeTruth, nativeUnfinished, requestSummary, acceptNativeSnapshot, persistNativeRuntime };
+  nativeRuntimeTruth, nativeUnfinished, nativeTurnHasEnded, requestSummary, acceptNativeSnapshot, persistNativeRuntime };

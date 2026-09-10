@@ -80,6 +80,10 @@ async function run() {
       await sleep(1000);
     }
     assert((await Promise.all(m.subSessions.map(sid=>invoke('cli-ready-status',sid)))).every(Boolean),'both isolated CLI sessions must finish startup');
+    const nativeSessions = await cdp.eval(`[...sessions.values()].filter(s=>${JSON.stringify(m.subSessions)}.includes(s.id)).map(s=>({id:s.id,kind:s.kind,model:s.model,effort:s.effort,runtimeBackend:s.runtimeBackend,nativeRuntime:s.nativeRuntime}))`);
+    fs.writeFileSync(path.join(ROOT,'native-startup.json'),JSON.stringify(nativeSessions,null,2));
+    if (alternate) assert(nativeSessions.length===2 && nativeSessions.every(s=>s.runtimeBackend==='codex-app-server' && s.nativeRuntime?.connection==='connected'),
+      'double Codex test must actually use two connected App Server sessions');
     let userInput;
     if (RESUME) userInput = '继续，沿用已交付的开题与实现文件完成独立合并验证。补充明确：origin 是本测试目录内的本地 bare fixture，允许按项目既有合并脚本向它同步；不需要禁止 file 传输，禁止连接其他远端。';
     else {
@@ -111,10 +115,15 @@ async function run() {
       }
     }
     fs.writeFileSync(path.join(ROOT, 'groupchat.json'), JSON.stringify(gc, null, 2));
+    fs.writeFileSync(path.join(ROOT,'native-final.json'),JSON.stringify(await cdp.eval(`[...sessions.values()].filter(s=>${JSON.stringify(m.subSessions)}.includes(s.id)).map(s=>({id:s.id,runtimeBackend:s.runtimeBackend,nativeRuntime:s.nativeRuntime}))`),null,2));
     assert(done, 'real Agents did not finish the file chain within budget');
     if(process.env.HUB_FILEFLOW_ASSERT_HISTORY === '1') {
       const sourceMessages=gc.messages.filter(m=>m.sourceMessage);
       for(const receipt of Object.values(gc.devChatHistory?.receipts || {})) {
+        if(alternate) {
+          const attempt=gc.attempts[receipt.attemptId];
+          assert(attempt.providerThreadId && attempt.providerTurnId,`turn ${receipt.turnNum} must retain native thread/turn submission binding`);
+        }
         const owned=sourceMessages.filter(m=>m.attemptId===receipt.attemptId);
         assert(owned.filter(m=>m.phase==='commentary').length>=3,`turn ${receipt.turnNum} must preserve at least three natural progress messages`);
         assert(owned.some(m=>m.phase==='final') && receipt.sourceCompletedAt,`turn ${receipt.turnNum} must preserve its own final after file delivery`);
