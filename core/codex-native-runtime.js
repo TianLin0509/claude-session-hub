@@ -160,7 +160,9 @@ function reduceNativeRuntime(previous, event) {
       const status = event.status || {};
       if (status.type === 'active' && n.turnId && !TERMINAL.has(n.state)) {
         n.waitingFlags = status.activeFlags || [];
-        n.state = activeState();
+        // Thread activity lacks a turn ID. Recover uncertainty through a
+        // matching turn event or an authoritative thread/read snapshot.
+        if (n.state !== 'unknown') { n.state = activeState(); n.reason = null; }
       } else if (status.type === 'systemError' || status.type === 'notLoaded') {
         if (!TERMINAL.has(n.state)) n.state = 'unknown';
         n.reason = status.type === 'systemError' ? 'Codex 服务端状态异常' : 'Codex 会话未加载';
@@ -171,13 +173,18 @@ function reduceNativeRuntime(previous, event) {
     } else if (event.type === 'request') {
       const request = event.request;
       const turnId = request && request.params && request.params.turnId;
-      if (!request || request.id == null || TERMINAL.has(n.state)
+      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state)
+          || (request.params?.threadId && request.params.threadId !== n.threadId)
           || (turnId && turnId !== n.turnId)) return p;
       if (!n.requests.some(r => r.id === request.id)) n.requests.push(request);
-      n.state = activeState();
+      // Interaction bookkeeping cannot clear a lifecycle/identity error.
+      if (n.state !== 'unknown') n.state = activeState();
     } else if (event.type === 'resolved') {
-      n.requests = n.requests.filter(r => r.id !== event.requestId);
-      if (!TERMINAL.has(n.state) && n.turnId) n.state = activeState();
+      const request = n.requests.find(r => r.id === event.requestId);
+      if (!request || (request.params?.turnId && request.params.turnId !== n.turnId)
+          || (request.params?.threadId && request.params.threadId !== n.threadId)) return p;
+      n.requests = n.requests.filter(r => r !== request);
+      if (n.state !== 'unknown' && !TERMINAL.has(n.state) && n.turnId) n.state = activeState();
     } else return p;
   }
   if (same({ ...n, observedAt:p.observedAt, revision:p.revision }, p)) return p;
