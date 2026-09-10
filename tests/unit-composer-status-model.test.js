@@ -61,6 +61,7 @@ test('工作中：带 CLI 名、秒表与最近工具行，并允许停止', () 
 test('工作中：秒表按会话真实起点走，不同 CLI 名字不串', () => {
   const result = model({
     kind: 'codex',
+    nativeRuntime: { state:'running', connection:'connected', startedAt:NOW - 3_600_000, requests:[] },
     status: 'running',
     _runSource: 'semantic',
     runStartedAt: NOW - 3_600_000,
@@ -70,13 +71,13 @@ test('工作中：秒表按会话真实起点走，不同 CLI 名字不串', () 
 
 test('等你回答：问题摘要来自会话的等待文本，选项另起一行成为快捷答复', () => {
   const result = model({
-    kind: 'codex',
+    kind: 'claude',
     status: 'idle',
     needsUserInput: true,
     waitingText: '是否要我直接修改 index.html？\n1. 是，继续\n2. 先看 diff\n3. 换个方案',
   });
   assert.equal(result.state, COMPOSER_STATUS_WAITING);
-  assert.equal(result.text, 'Codex 在等你回答：「是否要我直接修改 index.html？」');
+  assert.equal(result.text, 'Claude 在等你回答：「是否要我直接修改 index.html？」');
   assert.deepEqual(result.quickReplies, ['是，继续', '先看 diff', '换个方案']);
   assert.equal(result.canStop, false);
 });
@@ -93,11 +94,9 @@ test('等你回答：解析不出选项就不给 chip，宁可不给也不能给
   assert.deepEqual(result.quickReplies, []);
 });
 
-// 2026-09-07 评审实测：Codex 真的问出「你选择 A 还是 B？」时，会话级 attention
-// 仍是「已完成未读」（那条信号只有 Claude 的回合结束路径会点亮），composer 因此
-// 显示「已就绪」。补上第二个证据来源：当前终端画面上的现有问题检测。
+// 屏幕问题推断只保留在其他 provider；Codex 原生等待在独立合同中测试。
 test('等你回答：会话状态没标记时，当前画面的问题检测也能把它顶成等待态', () => {
-  const session = { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 };
+  const session = { kind: 'claude', status: 'idle', lastCompletedAt: NOW - 3_000 };
   const asReady = model(session);
   assert.equal(asReady.state, COMPOSER_STATUS_READY, '没有问题检测结果时仍是就绪');
 
@@ -105,11 +104,11 @@ test('等你回答：会话状态没标记时，当前画面的问题检测也�
     liveQuestion: { waiting: true, reason: 'question', text: '你选择 A 还是 B？' },
   });
   assert.equal(withQuestion.state, COMPOSER_STATUS_WAITING);
-  assert.equal(withQuestion.text, 'Codex 在等你回答：「你选择 A 还是 B？」');
+  assert.equal(withQuestion.text, 'Claude 在等你回答：「你选择 A 还是 B？」');
 });
 
 test('等你回答：只有检测器判定是选择题时才解析编号选项', () => {
-  const session = { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 };
+  const session = { kind: 'claude', status: 'idle', lastCompletedAt: NOW - 3_000 };
   const choice = model(session, {
     liveQuestion: {
       waiting: true,
@@ -129,7 +128,7 @@ test('等你回答：只有检测器判定是选择题时才解析编号选项',
 
 test('等你回答：waiting=false 的检测结果不算数', () => {
   const result = model(
-    { kind: 'codex', status: 'idle', lastCompletedAt: NOW - 3_000 },
+    { kind: 'claude', status: 'idle', lastCompletedAt: NOW - 3_000 },
     { liveQuestion: { waiting: false, text: '随便什么' } },
   );
   assert.equal(result.state, COMPOSER_STATUS_READY);
@@ -150,7 +149,7 @@ test('断开：休眠与运行异常都归到同一档，并给出重连动作',
 // 并落成可唤醒，进程怎么没的单独记一笔 —— 不能被笼统的“会话已休眠”盖掉。
 test('断开：进程自己死了要报出退出码，不能冒充休眠', () => {
   const lost = model({
-    kind: 'codex',
+    kind: 'claude',
     status: 'dormant',
     _processLost: { reason: 'CLI 进程退出码 1', at: NOW },
   });
@@ -159,13 +158,13 @@ test('断开：进程自己死了要报出退出码，不能冒充休眠', () =>
   assert.deepEqual(lost.action, { kind: 'reconnect', label: '重连' });
 
   // 没有进程丢失标记时仍然是普通休眠的说法
-  const dormant = model({ kind: 'codex', status: 'dormant' });
+  const dormant = model({ kind: 'claude', status: 'dormant' });
   assert.equal(dormant.text, '会话已断开（会话已休眠）· 重连后可继续');
 });
 
 test('断开：断流也算断开，原因用 connectionIssue 的说法', () => {
   const result = model({
-    kind: 'codex',
+    kind: 'claude',
     status: 'idle',
     connectionIssue: { type: 'stream-disconnected', reason: 'API Error: stream disconnected' },
   });

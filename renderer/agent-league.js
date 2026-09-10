@@ -120,6 +120,7 @@ function createAgentLeaguePanel(options = {}) {
       return ['running', 'DRAFT 中'];
     }
     if (agent.session && agent.session.hubSessionId && !nativeBound) return ['pending', '待首次运行'];
+    if (agent.session && agent.session.live && agent.session.execution) return ['active', sessionAvailabilityLabel(agent)];
     if (agent.session && agent.session.live) return ['active', status === 'idle' ? '空闲' : '活跃'];
     if (!agent.session || !agent.session.hubSessionId || status === 'unbound') return ['unbound', '未创建'];
     return ['sleep', '休眠'];
@@ -342,8 +343,8 @@ function createAgentLeaguePanel(options = {}) {
     const board = root.querySelector('.cxl-board');
     empty.hidden = state.agents.length > 0;
     board.hidden = state.agents.length === 0;
-    const active = state.agents.filter((agent) => agent.session && agent.session.live && agent.session.status !== 'idle').length;
-    const idle = state.agents.filter((agent) => agent.session && agent.session.live && agent.session.status === 'idle').length;
+    const active = state.agents.filter((agent) => agent.session && agent.session.live && (agent.session.execution ? ['running','waiting'].includes(agent.session.execution.state) && agent.session.execution.connection==='connected' : agent.session.status !== 'idle')).length;
+    const idle = state.agents.filter((agent) => agent.session && agent.session.live && (agent.session.execution ? ['idle','completed','interrupted','failed'].includes(agent.session.execution.state) && agent.session.execution.connection==='connected' : agent.session.status === 'idle')).length;
     const sleeping = state.agents.filter((agent) => !agent.session || !agent.session.live).length;
     const durable = durableRuntime();
     const election = durable.schedulerElection || {};
@@ -890,6 +891,11 @@ function createAgentLeaguePanel(options = {}) {
 
   function sessionAvailabilityLabel(agent) {
     const session = agent && agent.session || {};
+    if (session.live && session.execution) {
+      const r=session.execution;
+      if(r.connection!=='connected')return 'Codex 连接待核对';
+      return 'Codex '+({running:'执行中',waiting:'等待操作',completed:'已完成',interrupted:'已中断',failed:'执行失败',idle:'空闲',unknown:'状态待核对'}[r.state] || '状态待核对');
+    }
     if (session.live) return session.status === 'idle' ? 'Session 空闲' : 'Session 活跃';
     if (session.hubSessionId) return 'Session 可恢复';
     return 'Session 未创建';

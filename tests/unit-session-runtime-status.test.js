@@ -1,4 +1,5 @@
 'use strict';
+const {nativeSnapshot}=require('./helpers/native-runtime-fixture');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -15,12 +16,12 @@ test('runtime duration uses a stable clock format', () => {
   assert.equal(formatRuntimeDuration((2 * 60 * 60 + 3 * 60 + 4) * 1000), '2:03:04');
 });
 
-test('Codex running state exposes a visible elapsed clock and PTY evidence', () => {
+test('Codex running state exposes a native elapsed clock and ignores PTY evidence', () => {
   const now = 2_000_000;
   const result = deriveSessionRuntimeStatus({
     kind: 'codex',
     status: 'running',
-    runStartedAt: now - (12 * 60_000 + 1_000),
+    nativeRuntime:nativeSnapshot('running',{startedAt:now - (12 * 60_000 + 1_000)}),
     _ptyRuntimeEvidence: '• Working (12m 01s • esc to interrupt)',
   }, { now, isRunning: true });
   assert.deepEqual({
@@ -36,7 +37,7 @@ test('Codex running state exposes a visible elapsed clock and PTY evidence', () 
     visibleText: '工作中 · 12:01',
     ariaLabel: 'Codex 工作中',
   });
-  assert.match(result.title, /esc to interrupt/);
+  assert.doesNotMatch(result.title, /esc to interrupt/);
 });
 
 test('active structured tool detail is visible instead of hiding in the title tooltip', () => {
@@ -44,7 +45,7 @@ test('active structured tool detail is visible instead of hiding in the title to
   const result = deriveSessionRuntimeStatus({
     kind: 'codex',
     status: 'running',
-    runStartedAt: now - 2500,
+    nativeRuntime:nativeSnapshot('running',{startedAt:now - 2500}),
     currentCardActivity: { label: '执行 · CommandExecution：npm test', status: 'running' },
   }, { now });
   assert.equal(result.state, 'running');
@@ -56,7 +57,7 @@ test('waiting for input wins over a stale running flag', () => {
   const result = deriveSessionRuntimeStatus({
     kind: 'codex',
     status: 'running',
-    attentionState: 'needs-input',
+    nativeRuntime:nativeSnapshot('waiting',{requests:[{params:{reason:'Allow command execution?'}}]}),
     waitingText: 'Allow command execution?',
   }, { now: 2_000_000, isRunning: true });
   assert.equal(result.state, 'waiting');
@@ -69,15 +70,15 @@ test('completed and untouched idle sessions are distinguishable without color al
   const completed = deriveSessionRuntimeStatus({
     kind: 'codex',
     status: 'idle',
-    attentionState: 'reply-ready',
+    nativeRuntime:nativeSnapshot('completed',{startedAt:now - 102_000,completedAt:now - 30_000}),
     lastCompletedAt: now - 30_000,
-    lastRunDurationMs: 72_000,
+    lastRunDurationMs: 999_000,
   }, { now });
   assert.equal(completed.state, 'completed');
   assert.equal(completed.visibleText, '已完成 · 刚刚');
   assert.match(completed.title, /本轮用时 01:12/);
 
-  const idle = deriveSessionRuntimeStatus({ kind: 'codex', status: 'idle' }, { now });
+  const idle = deriveSessionRuntimeStatus({ kind: 'codex', nativeRuntime:nativeSnapshot('idle') }, { now });
   assert.equal(idle.state, 'idle');
   assert.equal(idle.visibleText, '已就绪');
 
@@ -85,10 +86,10 @@ test('completed and untouched idle sessions are distinguishable without color al
     kind: 'codex',
     status: 'idle',
     lastCompletedAt: now - 60_000,
-    _attentionClock: { lastPromptAt: now - 10_000 },
+    nativeRuntime:nativeSnapshot('interrupted'),
   }, { now });
-  assert.equal(abortedAfterOlderCompletion.state, 'idle');
-  assert.equal(abortedAfterOlderCompletion.visibleText, '已就绪');
+  assert.equal(abortedAfterOlderCompletion.state, 'interrupted');
+  assert.equal(abortedAfterOlderCompletion.visibleText, '已中断');
 });
 
 test('completion age remains concise', () => {

@@ -410,6 +410,13 @@ const sessionManager = new SessionManager();
 sessionManager.on('managed-launch', (record) => {
   appendManagedLaunchAudit(record, { logger: console });
 });
+sessionManager.on('codex-session-updated', session => {
+  sessionStore.markDirty(session.id, session);
+  sendToRenderer('session-updated', {session});
+});
+sessionManager.on('codex-lifecycle', event => {
+  transcriptTap.emit(event.type, event);
+});
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
 let networkEgressProbe;
@@ -1309,6 +1316,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // backend starts watching its CLI-native transcript file. DeepSeek normally
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
+  if (session && session.runtimeBackend === 'codex-app-server') return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1877,6 +1885,7 @@ let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(B
 
 registerPersistenceIpc(ipcMain, {
   bootWasClean,
+  getLiveSession: id => sessionManager.getSession(id),
   getImmersiveByMeeting: () => _immersiveByMeeting,
   getLastPersistedMeetingIds: () => _lastPersistedMeetingIds,
   getLastPersistedMeetings: () => lastPersistedMeetings,
@@ -2051,6 +2060,9 @@ const hookServer = http.createServer((req, res) => {
       res.writeHead(403); res.end('{}'); return;
     }
     const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
+    if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
+      res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;
+    }
     if (parsed.sessionId && hookTargetSession) {
       if (isHook) {
         const event = req.url.slice('/api/hook/'.length);
@@ -2510,6 +2522,7 @@ async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
+    if (s.runtimeBackend === 'codex-app-server') continue;
     const runtimeKind = s.transcriptKind || s.kind;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;

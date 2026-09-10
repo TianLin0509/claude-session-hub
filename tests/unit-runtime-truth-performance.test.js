@@ -1,4 +1,5 @@
 'use strict';
+const {nativeSnapshot}=require('./helpers/native-runtime-fixture');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -16,7 +17,7 @@ test('RuntimeTruth plus an 80-row PTY classification stays lightweight', () => {
     '› Improve documentation in @filename',
     'gpt-5.6-sol max fast · Context 90% left · C:\\repo',
   ]);
-  const session = { id: 'perf', kind: 'codex', status: 'idle' };
+  const session = { id:'perf', kind:'codex', nativeRuntime:nativeSnapshot('running') };
   applySessionRuntimeObservation(session, {
     state: 'running', source: 'perf-start', confidence: 'semantic', observedAt: Date.now(),
   });

@@ -19,6 +19,7 @@ function isDesktopNotificationReady(session) {
 }
 
 function notificationTime(session) {
+  if (require('../core/codex-native-runtime').isCodexSession(session)) return Number(session.nativeRuntime?.completedAt) || 0;
   return Math.max(
     Number(session && session.lastCompletedAt) || 0,
     Number(session && session.lastMessageTime) || 0,
@@ -47,6 +48,13 @@ function createSessionReadyNotifier({ ipcRenderer, getSessions } = {}) {
   if (!ipcRenderer || typeof ipcRenderer.send !== 'function') throw new Error('ipcRenderer.send is required');
   if (typeof getSessions !== 'function') throw new Error('getSessions is required');
   let armed = false;
+  const notifiedNativeTurns = new Set();
+  const nativeKey = session => require('../core/codex-native-runtime').isCodexSession(session)
+    ? JSON.stringify([session.id,session.nativeRuntime?.threadId,session.nativeRuntime?.turnId]) : null;
+  const rememberNative = session => {
+    const key=nativeKey(session);if(key)notifiedNativeTurns.add(key);
+    while(notifiedNativeTurns.size>2048)notifiedNativeTurns.delete(notifiedNativeTurns.values().next().value);
+  };
   let eligibleIds = new Set();
   let notificationCount = 0;
   let lastPayload = null;
@@ -62,6 +70,7 @@ function createSessionReadyNotifier({ ipcRenderer, getSessions } = {}) {
   function prime() {
     const eligible = eligibleSessions();
     eligibleIds = new Set(eligible.map(session => String(session.id)));
+    eligible.forEach(rememberNative);
     armed = true;
     return { armed, readyCount: eligible.length, notified: false };
   }
@@ -70,7 +79,9 @@ function createSessionReadyNotifier({ ipcRenderer, getSessions } = {}) {
     if (!armed) return { armed: false, readyCount: 0, notified: false };
     const eligible = eligibleSessions();
     const nextIds = new Set(eligible.map(session => String(session.id)));
-    const entered = eligible.filter(session => !eligibleIds.has(String(session.id)));
+    const entered = eligible.filter(session => nativeKey(session)
+      ? !notifiedNativeTurns.has(nativeKey(session)) : !eligibleIds.has(String(session.id)));
+    entered.forEach(rememberNative);
     eligibleIds = nextIds;
     if (entered.length === 0) return { armed, readyCount: eligible.length, notified: false };
 

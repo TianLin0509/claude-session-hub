@@ -131,6 +131,8 @@ function registerSessionIpc(ipcMain, deps) {
     if (sourceModel) opts.model = sourceModel;
     // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
     if (source.effort) opts.effort = source.effort;
+    if (source.codexApprovalPolicy) opts.approvalPolicy = source.codexApprovalPolicy;
+    if (source.codexSandbox) opts.sandbox = source.codexSandbox;
     // 同理：MCP 档位和 fast 开关也要跟着分支走，否则从 Lean/关 fast 的会话
     // 拉出来的分支会被悄悄拉回 Full / 开 fast。
     if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
@@ -194,6 +196,25 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
     sessionManager.writeToSession(sessionId, data);
+  });
+
+  ipcMain.handle('codex:native-action', async (_event, payload = {}) => {
+    const native = sessionManager.getNativeCodex?.(payload.sessionId);
+    if (!native) return {ok:false,message:'该 Codex 会话尚未接管'};
+    try {
+      let result;
+      if (payload.action === 'reply') result = await native.reply(payload.requestId,payload.result,payload.epoch);
+      else if (payload.action === 'choose-thread') result = await native.chooseThread(payload.threadId);
+      else if (payload.action === 'reconnect') result = await native.reconnect();
+      else if (payload.action === 'interrupt') result = await native.interrupt();
+      else if (payload.action === 'configure') result = await native.configure(payload);
+      else if (payload.action === 'snapshot') result = native.runtime;
+      else if (payload.action === 'review-submission') result = native.reviewUnknownSubmission(payload.submissionId,payload.epoch);
+      else return {ok:false,message:'不支持的 Codex 操作'};
+      return {ok:true,result};
+    } catch (error) {
+      return {ok:false,message:error.message};
+    }
   });
 
   ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows, force }) => {
@@ -293,6 +314,13 @@ function registerSessionIpc(ipcMain, deps) {
     const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     if (!session) return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    if (session.runtimeBackend === 'codex-app-server') {
+      const current = session.currentModel || {};
+      if (current.id !== modelId || (payload.effort && payload.effort !== session.effort)) {
+        return {ok:false,message:'原生 Codex 尚未确认该模型或思考档'};
+      }
+      return {ok:true,model:current,effort:session.effort};
+    }
     const kind = String(session.kind || '').replace(/-resume$/, '').toLowerCase();
     const valid = kind === 'codex'
       ? isCodexConversationModelId(modelId)
@@ -367,6 +395,12 @@ function registerSessionIpc(ipcMain, deps) {
     const old = sessionManager.getSession(sessionId);
     if (!old) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (old.purpose !== 'chuxin-research' && (old.kind === 'codex' || old.kind === 'codex-resume')) {
+      const native = sessionManager.getNativeCodex?.(sessionId);
+      if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
+      return native.reconnect().then(()=>sessionManager.getSession(sessionId))
+        .catch(error=>({ok:false,message:error.message}));
     }
     if (old.purpose === 'chuxin-research') {
       return { ok: false, error: 'protected-session', message: '初心投研任务不能从这里重启' };

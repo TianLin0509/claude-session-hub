@@ -42,6 +42,7 @@ function createTurnCompletionWatcher(opts) {
     patchWindowMs = PATCH_WINDOW_MS,        // 新增（测试可注入更短的窗口）
     attempt = null,
     kind = null,
+    nativeOnly = false,
     onAttemptEvent = () => {},
     onEventRejected = () => {},
     onAwaitingFinalText = () => {},
@@ -57,7 +58,7 @@ function createTurnCompletionWatcher(opts) {
   let onTurnComplete = null;
   let onTurnError = null;
   let onTurnAborted = null;
-  const providerAdapter = createGroupChatProviderAdapter(kind || (attempt && attempt.kind));
+  const providerAdapter = createGroupChatProviderAdapter(kind || (attempt && attempt.kind), {nativeOnly});
 
   // patch-after-settle 状态（2026-05-03）
   let patchListener = null;
@@ -97,11 +98,13 @@ function createTurnCompletionWatcher(opts) {
     const retryableFailureCanRecover = result.status === 'errored'
       && result.failure && result.failure.retryable === true;
     const PATCHABLE_SIGNAL_SOURCES = new Set([
+      'codex-app-server',
       'stop_reason_terminal', 'stop_hook', 'idle_timer_terminal',
       'task_complete', 'item_completed_agent_message_final_answer',
       'claude_auto_extract_final_answer', 'codex_auto_extract_final_answer',
     ]);
-    if ((PATCHABLE_STATUSES.has(result.status) || retryableFailureCanRecover) && onTurnPatched && !patchCancelled) {
+    if ((!nativeOnly || result.status === 'manual_extracted')
+        && (PATCHABLE_STATUSES.has(result.status) || retryableFailureCanRecover) && onTurnPatched && !patchCancelled) {
       patchListener = (evt) => {
         if (evt.hubSessionId !== hubSessionId) return;
         const decision = providerAdapter.completion(attempt, evt);
@@ -304,6 +307,15 @@ function createTurnCompletionWatcher(opts) {
         finality: 'provider_final',
       });
       return true;
+    },
+    // Replay a stored engine outcome after subscription. It remains subject to
+    // exactly the same attempt/thread-turn guards as the live event.
+    observeNativeOutcome(event) {
+      if (!event || event.signalSource !== 'codex-app-server') return false;
+      if (event.status === 'completed' && onTurnComplete) onTurnComplete(event);
+      else if (event.status === 'interrupted' && onTurnAborted) onTurnAborted(event);
+      else if (event.status === 'failed' && onTurnError) onTurnError(event);
+      return settled;
     },
 
     /**

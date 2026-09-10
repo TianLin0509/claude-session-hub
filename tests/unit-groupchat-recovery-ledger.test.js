@@ -19,6 +19,9 @@ function make(extractResult) {
   sessionManager.getSession = sid => sid === 's1'
     ? { id: 's1', kind: 'codex', transcriptKind: 'codex', title: 'Codex 1', meetingId: 'm1' }
     : null;
+  sessionManager.getNativeCodex = () => ({start:async()=>{},readOutcome:async turnId=>
+    extractResult.source==='codex-app-server' && extractResult.turnId===turnId
+      ? {...extractResult,signalSource:'codex-app-server',status:'completed',hubSessionId:'s1',threadId:'native-thread'} : null});
   const tap = new EventEmitter();
   tap.extractLatestTurn = async () => extractResult;
   tap.clearLastTokens = () => {};
@@ -43,7 +46,7 @@ async function run() {
     {
       const h = make({
         text: 'crash 前已经写完的最终答案', extractMode: 'final_answer',
-        source: 'manual_codex_rollout', turnId: 'turn-1', completedAt: Date.now(),
+        source: 'codex-app-server', turnId: 'turn-1', completedAt: Date.now(),
       });
       const orch = groupchat.getOrchestrator(h.root, 'm1');
       const begin = orch.beginTurn('重启前的问题');
@@ -66,7 +69,7 @@ async function run() {
     {
       const h = make({
         text: '另一轮的答案', extractMode: 'final_answer',
-        source: 'manual_codex_rollout', turnId: 'turn-old', completedAt: Date.now(),
+        source: 'codex-app-server', turnId: 'turn-old', completedAt: Date.now(),
       });
       const orch = groupchat.getOrchestrator(h.root, 'm1');
       const begin = orch.beginTurn('当前问题');
@@ -85,6 +88,16 @@ async function run() {
       assert.strictEqual((state.turns || []).length, 0);
     }
 
+    {
+      const h=make({text:'看起来像最终答案，但没有原生终态',extractMode:'final_answer',source:'manual-extract',turnId:'same-turn',completedAt:Date.now()});
+      const orch=groupchat.getOrchestrator(h.root,'m1'),begin=orch.beginTurn('不可按正文恢复');
+      const receipt=orch.recordTurnPrompt(begin.turnNum,'s1','不可按正文恢复',{runId:begin.runId,memberId:'m1',kind:'codex',dispatchAt:Date.now()-100});
+      orch.setSendStatus(begin.turnNum,'s1','submitted',{attemptId:receipt.attemptId,providerTurnId:'same-turn'});
+      groupchat._private.resetCache();
+      const summary=await h.dispatcher.recoverPendingAttempts();
+      assert.strictEqual(summary.recovered,0);assert.strictEqual(summary.pending,1);
+      assert.notStrictEqual(groupchat.getOrchestrator(h.root,'m1').getState().attempts[receipt.attemptId].status,'completed');
+    }
     {
       const h = make({ text: '', extractMode: 'no_task_complete_yet' });
       const orch = groupchat.getOrchestrator(h.root, 'm1');

@@ -1,3 +1,4 @@
+// Legacy Codex TUI submission remains used by DeepSeek; managed Codex uses native IPC.
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -11,7 +12,7 @@ function harness({ acknowledgeOnEnter = 2 } = {}) {
   let activity = 0;
   let enterCount = 0;
   const sessionManager = {
-    getSession: () => ({ id: 'agent-session', transcriptKind: 'codex', kind: 'codex', cwd: process.cwd() }),
+    getSession: () => ({ id: 'agent-session', transcriptKind: 'codex', kind: 'deepseek', cwd: process.cwd() }),
     getGroupChatReady: () => true,
     setGroupChatReady() {},
     getGroupChatLastActivity: () => activity,
@@ -106,7 +107,7 @@ test('strong two-frame Codex PTY runtime confirms work before a delayed rollout 
   let activity = 0;
   let enterCount = 0;
   Object.assign(sessionManager, {
-    getSession: () => ({ id: 'pty-ack', transcriptKind: 'codex', kind: 'codex' }),
+    getSession: () => ({ id: 'pty-ack', transcriptKind: 'codex', kind: 'deepseek' }),
     getGroupChatReady: () => true,
     setGroupChatReady() {},
     getGroupChatLastActivity: () => activity,
@@ -149,7 +150,7 @@ test('long-prompt submit watchdog survives 80 mixed first/second-Enter acknowled
   const enters = new Map();
   const writes = new Map();
   Object.assign(sessionManager, {
-    getSession: sid => ({ id: sid, transcriptKind: 'codex', kind: 'codex', cwd: process.cwd() }),
+    getSession: sid => ({ id: sid, transcriptKind: 'codex', kind: 'deepseek', cwd: process.cwd() }),
     getGroupChatReady: () => true,
     setGroupChatReady() {},
     getGroupChatLastActivity: sid => activity.get(sid) || 0,

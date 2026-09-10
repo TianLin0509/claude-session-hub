@@ -896,6 +896,55 @@ function ensureCodexMcpEntries(configDir, entries, managedNames = []) {
   }
 }
 
+function buildNativeCodexOptions(info, opts, env) {
+  const home = env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const profile = info.mcpProfile;
+  const configuredNames = listCodexMcpServerNames(home);
+  const allowed = new Set(profile === 'full' ? configuredNames.filter(name=>!CODEX_MANAGED_MCP_NAMES.includes(name)) : []);
+  if (profile === 'browser') allowed.add('playwright');
+  if (profile !== 'none' && (profile === 'wireless' || isWirelessWorkspace(info.cwd))) {
+    WIRELESS_MCP_NAMES.forEach(name => allowed.add(name));
+  }
+  const entries = profile === 'none' ? [] : (opts.codexMcpEntries || []);
+  entries.forEach(entry => allowed.add(entry.name));
+  const config = {};
+  // Even a disabled MCP table must contain a valid transport in Codex. Never
+  // synthesize incomplete tables for room servers absent from this profile.
+  for (const name of new Set([...configuredNames, ...entries.map(entry=>entry.name)])) {
+    config['mcp_servers.' + name + '.enabled'] = allowed.has(name);
+  }
+  for (const entry of entries) {
+    if (!/^[A-Za-z0-9_-]+$/.test(entry.name)) throw new Error('Codex MCP 名称无效');
+    config['mcp_servers.' + entry.name + '.command'] = entry.command;
+    config['mcp_servers.' + entry.name + '.args'] = entry.args || [];
+    for (const [key,value] of Object.entries(entry.env || {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('Codex MCP 环境字段无效');
+      config['mcp_servers.' + entry.name + '.env.' + key] = String(value);
+    }
+  }
+  const tier = info.codexSpeedTier;
+  if (tier !== 'inherit') {
+    config['features.fast_mode'] = tier === 'fast';
+    config.service_tier = tier === 'standard' ? 'default' : tier;
+  }
+  const threadConfig = { model_reasoning_effort:normalizeCodexEffort(info.effort),
+    'windows.sandbox':'unelevated', 'notice.hide_full_access_warning':true };
+  if (info.contextMax) threadConfig.model_context_window = info.contextMax;
+  if (opts.codexInstructionFile) threadConfig.model_instructions_file = opts.codexInstructionFile;
+  const approvalPolicy = opts.approvalPolicy || 'never';
+  const sandbox = opts.sandbox || 'danger-full-access';
+  return {
+    mcpProfile:profile,
+    processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+JSON.stringify(value)]),
+    threadParams:{cwd:info.cwd,model:info.currentModel.id,approvalPolicy,sandbox,config:threadConfig},
+    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort)},
+    resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
+    forkId:opts.codexForkSid || null,
+    picker:!opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
+    resumeLatest:opts.useResume && !opts.codexSid,
+  };
+}
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -948,6 +997,24 @@ class SessionManager extends EventEmitter {
     // remains resumable instead of being silently discarded.
     const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
     const isCodex = kind === 'codex' || kind === 'codex-resume';
+    if (isCodex) {
+      if (opts.model && normalizeCodexSessionModel(opts.model) !== String(opts.model).trim()) throw new Error('Codex 模型名称无效，未替换成默认模型');
+      if (opts.effort && !CODEX_EFFORT_LEVELS.has(opts.effort)) throw new Error('Codex 思考档无效，未降低精度');
+      if (opts.mcpProfile && !CODEX_MCP_PROFILES.has(opts.mcpProfile)) throw new Error('Codex MCP 配置档无效');
+      if (opts.codexSpeedTier && !CODEX_SPEED_TIERS.has(opts.codexSpeedTier)) throw new Error('Codex 服务通道无效');
+      if (opts.contextMax != null && !normalizeCodexContextWindow(opts.contextMax)) throw new Error('Codex 上下文配置无效');
+      const nativeConfig=getConfigValues();
+      if(nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
+      if(opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
+    }
+    if (isCodex && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
+    if (isCodex && opts.codexSid && opts.useResume) {
+      for (const live of this.sessions.values()) {
+        if (live.info?.codexSid === opts.codexSid && live.info.status !== 'dormant') {
+          throw new Error('该 Codex 原生会话仍在另一个窗口中，请等待原会话关闭后恢复');
+        }
+      }
+    }
     const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
     const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi;
@@ -1001,7 +1068,7 @@ class SessionManager extends EventEmitter {
         sessionEnv.CODEX_HOME = getCodexApiHome();
       } else {
         if (isCodex) {
-          if (opts.meetingId) {
+          if (opts.meetingId && !opts.codexProfile) {
             // 群聊 Codex 统一用默认 ~/.codex/，记忆汇合到一处方便管理
             // 跟 Hub 直开 Codex 共享 1.9MB 历史记忆库
             delete sessionEnv.CODEX_HOME;
@@ -1068,6 +1135,8 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    if (isCodex && cwdFellBack) throw new Error('Codex 工作目录不存在，未启动：' + cwdFellBack);
+
     // Claude 与旧 DeepSeek-Claude 的入口从这里把 cwd 的
     // memory 桶链到规范记忆库，否则每个 _scratch\inbox-* 都是零记忆开局。
     // 不能让 Codex / Kimi / PowerShell 的启动顺带迁移 Claude 的记忆目录：这段逻辑现在
@@ -1129,6 +1198,7 @@ class SessionManager extends EventEmitter {
         const relative = path.relative(testRoot, path.resolve(selectedProfileHome));
         selectedProfileHomeAllowed = relative === ''
           || (!relative.startsWith('..') && !path.isAbsolute(relative));
+        if(!selectedProfileHomeAllowed && opts.codexProfile) throw new Error('选定 Codex 账号不在隔离目录内，未替换账号或启动会话');
       }
       if (isCodexApiBackend(cv)) {
         sessionEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
@@ -1181,7 +1251,14 @@ class SessionManager extends EventEmitter {
       ensureClaudeProjectTrusted(spawnCwd, { configDir: sessionEnv.CLAUDE_CONFIG_DIR || null });
     }
 
-    const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
+    if (isCodex) {
+
+      for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
+        'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
+    }
+    const ptyProcess = isCodex
+      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime})
+      : pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
@@ -1291,6 +1368,8 @@ class SessionManager extends EventEmitter {
       kind,
       title,
       status: 'idle',
+      ...(isCodex ? {runtimeBackend:'codex-app-server',nativeRuntime:ptyProcess.runtime,
+        codexApprovalPolicy:opts.approvalPolicy || 'never',codexSandbox:opts.sandbox || 'danger-full-access'} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
@@ -1407,7 +1486,7 @@ class SessionManager extends EventEmitter {
       // boundary so the renderer, terminal-ring fallback, and TerminalSnapshot all see
       // the same lossless terminal stream. Legacy DeepSeek runs Claude and is
       // deliberately excluded; new DeepSeek uses the Codex runtime.
-      terminalOutputRewriter: isCodexRuntime ? new CodexXtermScrollbackRewriter({
+      terminalOutputRewriter: isCodexRuntime && !isCodex ? new CodexXtermScrollbackRewriter({
         cols: 120,
         rows: 30,
         // On Windows, ConPTY consumes Codex's original region-scroll command
@@ -1507,6 +1586,55 @@ class SessionManager extends EventEmitter {
       }
       this._handlePtyExit(id, ptyProcess, exitInfo);
     });
+
+    if (isCodex) {
+      Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
+      const publish = () => {
+        if (this.sessions.get(id)?.pty !== ptyProcess) return;
+        this.emit('codex-session-updated', this._toPublic(info));
+      };
+      ptyProcess.on('state', (runtime) => {
+        info.nativeRuntime = runtime;
+        info.status = ['running','waiting'].includes(runtime.state) ? 'running' : 'idle';
+        info.connectionIssue = null;
+        const entry = this.sessions.get(id);
+        if (entry) entry.groupChatReady = runtime.connection === 'connected';
+        if (runtime.completedAt) info.lastCompletedAt = runtime.completedAt;
+        publish();
+      });
+      ptyProcess.on('bound', bound => {
+        info.codexSid = bound.threadId;
+        if (bound.cwd) info.cwd = bound.cwd;
+        if (bound.path) info.transcriptPath = bound.path;
+        if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
+        if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
+        publish();
+      });
+      ptyProcess.on('choices', choices => { info.nativeThreadChoices = choices; publish(); });
+      ptyProcess.on('migration-draft', text => { info.nativeMigrationDraft=text; publish(); });
+      ptyProcess.on('renamed', name => { info.title = name; publish(); });
+      ptyProcess.on('lifecycle', event => {
+        this.emit('codex-lifecycle',event);
+      });
+      ptyProcess.on('action-error', message => {
+        info.nativeActionError = message; publish();
+      });
+      ptyProcess.on('diagnostic', message => console.warn('[codex-native]',id,message));
+      ptyProcess.on('usage', usage => {
+        const total = usage && usage.last;
+        if (total && typeof total.totalTokens === 'number') info.contextUsed = total.totalTokens;
+        if (usage && usage.modelContextWindow) {
+          info.contextEffectiveMax = usage.modelContextWindow;
+          info.contextPct = info.contextUsed / usage.modelContextWindow * 100;
+        }
+        publish();
+      });
+      // Deferral lets the normal session-created IPC finish before native updates.
+      queueMicrotask(() => ptyProcess.start().catch(error => {
+        console.warn('[codex-native] start failed:',id,error.message);
+      }));
+      return this._toPublic(info);
+    }
 
     if (kind === 'powershell') {
       ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle ListView 2>$null; clear\r\n');
@@ -1976,6 +2104,13 @@ class SessionManager extends EventEmitter {
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
+    if (session.info.runtimeBackend === 'codex-app-server') {
+      const runtime = session.info.nativeRuntime;
+      if (!runtime || runtime.connection !== 'connected'
+          || !['idle','completed','interrupted','failed'].includes(runtime.state)) {
+        return {ok:false,error:'native-turn-unfinished',message:'Codex 仍在执行、等待操作或状态待核对'};
+      }
+    }
     if (session.suspendRequestedAt) {
       return { ok: false, error: 'suspend-pending', message: '会话正在进入休眠' };
     }
@@ -2335,6 +2470,11 @@ class SessionManager extends EventEmitter {
     return s ? { ...s.info } : undefined;
   }
 
+  getNativeCodex(sessionId) {
+    const session = this.sessions.get(sessionId);
+    return session && session.info.runtimeBackend === 'codex-app-server' ? session.pty : null;
+  }
+
   // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
   getGroupChatReady(sessionId) {
     const s = this.sessions.get(sessionId);
@@ -2396,6 +2536,15 @@ class SessionManager extends EventEmitter {
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
   relaunchCli(sessionId, options = {}) {
     const s = this.sessions.get(sessionId);
+    if (s && s.info.runtimeBackend === 'codex-app-server') {
+      const runtime = s.info.nativeRuntime;
+      if (runtime && ['running','waiting'].includes(runtime.state)) return false;
+      s.pty.reconnect().catch(error => {
+        s.info.nativeActionError = error.message;
+        this.emit('codex-session-updated', this._toPublic(s.info));
+      });
+      return true;
+    }
     if (!s || !s.pty) return false;
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
@@ -2499,6 +2648,10 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
+      ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
+        ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),
+        codexApprovalPolicy:info.codexApprovalPolicy,codexSandbox:info.codexSandbox,
+        nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null} : {}),
       id: info.id,
       title: info.title,
       kind: info.kind,
@@ -2896,6 +3049,7 @@ module.exports = {
   dismissCodexRateLimitDialog,
   clearSessionManagerConfigCache,
   _private: {
+    buildNativeCodexOptions,
     ensureCodexCwdTrusted,
     clearProxyEnv,
     applyProxyEnv,

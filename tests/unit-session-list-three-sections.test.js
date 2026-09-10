@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { partitionSidebarSessions } = require('../renderer/session-list-renderer');
 const now = Date.now(), DAY = 86400000;
-const item = (id, extra = {}) => ({ id, kind: 'codex', status: 'idle', lastMessageTime: now, ...extra });
+const item = (id, extra = {}) => ({ id, kind: 'claude', status: 'idle', lastMessageTime: now, ...extra });
 const ids = items => items.map(s => s.id);
 
 test('置顶优先，活跃按等待、异常、运行、未读排序，今天严格小于 24h', () => {

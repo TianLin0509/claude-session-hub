@@ -97,7 +97,7 @@ assert.match(metricsBody, /typeof session\.contextPct === 'number' \? session\.c
 // updateActiveMetricsRow 顺带刷新；搬进面包屑之后必须自己刷。
 const sessionUpdatedStart = renderer.indexOf("ipcRenderer.on('session-updated'");
 assert.ok(sessionUpdatedStart > 0, '找不到 session-updated 处理器');
-const sessionUpdatedBody = renderer.slice(sessionUpdatedStart, sessionUpdatedStart + 5200);
+const sessionUpdatedBody = renderer.slice(sessionUpdatedStart, renderer.indexOf('\n});',sessionUpdatedStart)+4);
 assert.match(sessionUpdatedBody, /local\.workspaceLabel = session\.workspaceLabel/,
   'session-updated 仍然要接收 workspaceLabel');
 assert.match(sessionUpdatedBody, /updateActiveCrumbWorkspace\(\);/,

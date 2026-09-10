@@ -5,6 +5,24 @@ const { EventEmitter } = require('node:events');
 const watcher = require('../core/group-chat-watcher');
 const { registerPromptSubmitIpc } = require('../main/ipc/prompt-submit-handlers');
 
+test('managed Codex IPC ignores legacy receipts and binds the exact native message, thread and turn', async () => {
+  const original=watcher.sendToPty,handlers=new Map(),tap=new EventEmitter(),sm=new EventEmitter(),events=[];
+  sm.getSession=()=>({id:'native',kind:'codex',runtimeBackend:'codex-app-server'});
+  sm.getNativeCodex=()=>({});
+  watcher.sendToPty=async()=>({ok:true,sendStatus:'stuck',mode:'codex-app-server'});
+  const registration=registerPromptSubmitIpc({handle:(k,v)=>handlers.set(k,v)},{sessionManager:sm,transcriptTap:tap,sendToRenderer:(_c,p)=>events.push(p),logger:{warn(){}}});
+  try{
+    const request={sessionId:'native',text:'同一条\n完整消息',clientSubmissionId:'native-message'};
+    await handlers.get('session:send-prompt')(null,request);
+    const base={hubSessionId:'native',text:request.text,submittedAt:Date.now(),turnId:'turn'};
+    for(const signalSource of ['task_started','task_complete','stop-hook',undefined])tap.emit('prompt-submitted',{...base,signalSource});
+    tap.emit('prompt-submitted',{...base,signalSource:'codex-app-server',threadId:'thread',clientSubmissionId:'other-message'});
+    assert.equal(events.filter(e=>e.status==='confirmed').length,0);
+    tap.emit('prompt-submitted',{...base,signalSource:'codex-app-server',threadId:'thread',clientSubmissionId:'native-message'});
+    assert.equal(events.at(-1).status,'confirmed');assert.equal(events.at(-1).threadId,'thread');assert.equal(events.at(-1).turnId,'turn');
+  }finally{watcher.sendToPty=original;registration.dispose();}
+});
+
 test('a real IPC timeout is corrected by late transcript receipt, and resend then writes nothing', async () => {
   const original = watcher.sendToPty;
   let writes = 0;
@@ -36,7 +54,7 @@ test('tracked send acknowledges matching user message without task_started; old 
   let enters = 0;
   const prompt = 'only this new prompt';
   Object.assign(sm, {
-    getSession: () => ({ kind: 'codex' }), getGroupChatReady: () => true,
+    getSession: () => ({ kind: 'deepseek', transcriptKind: 'codex' }), getGroupChatReady: () => true,
     getSessionBuffer: () => '', getGroupChatLastActivity: () => 0,
     getAgentTurnStartSeq: () => 0,
     writeToSession(sid, data) {
