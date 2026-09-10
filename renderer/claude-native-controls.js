@@ -9,6 +9,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   const requests = document.createElement('div');
   const recovery = document.createElement('div');
   const error = document.createElement('div'); error.style.color = '#e88'; error.setAttribute('role', 'alert');
+  let displayedActionError = null;
   element.append(status, requests, recovery, error);
   let signature = '';
   let recoveryKey = '';
@@ -73,7 +74,12 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       + (runtime.queued?.length ? ` · ${runtime.queued.length} 条排队中` : '')
       + (runtime.backgroundTasks?.length ? ` · ${runtime.backgroundTasks.length} 个后台任务` : '')
       + (runtime.reason ? '\n' + runtime.reason : '');
-    if (session.nativeActionError) error.textContent = session.nativeActionError;
+    const actionError = session.nativeActionError || null;
+    if (actionError !== displayedActionError) {
+      if (actionError) error.textContent = actionError;
+      else if (error.textContent === displayedActionError) error.textContent = '';
+      displayedActionError = actionError;
+    }
     const nextRecoveryKey = recoverySignature(runtime);
     const currentRecovery = runtime.epoch > recoveryVersion.epoch
       || (runtime.epoch === recoveryVersion.epoch && runtime.revision >= recoveryVersion.revision);

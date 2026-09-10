@@ -3,6 +3,7 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
 const fs = require('fs');
 const { isCodexSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
+const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -232,6 +233,7 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
+const nativeDraftControllers = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
@@ -455,33 +457,52 @@ function isCaretAtContenteditableStart(el) {
   }
 }
 
+function attachNativeDraft(sessionId, inputBox) {
+  if (!isNativeAgent(sessions.get(sessionId))) return null;
+  if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
+  const view = {
+    onRestore(text) {
+      inputBox.textContent = text;
+      if (text) floatingInputDrafts.set(sessionId, text); else floatingInputDrafts.delete(sessionId);
+      if (document.activeElement === inputBox) placeCaretAtContenteditableEnd(inputBox);
+    },
+    onStatus(error, state) {
+      inputBox.dataset.draftState = error ? 'failed' : state.saving ? 'saving' : 'saved';
+      let message = inputBox.parentElement?.querySelector('.native-draft-error');
+      if (error && !message && inputBox.parentElement) {
+        message = document.createElement('div'); message.className = 'native-draft-error'; message.setAttribute('role', 'alert');
+        inputBox.parentElement.append(message);
+      }
+      if (message) {
+        message.textContent = error ? '草稿未保存，请先复制保留：' + error.message : '';
+        message.hidden = !error;
+      }
+    },
+  };
+  let controller = nativeDraftControllers.get(sessionId);
+  if (controller) controller.attach(view);
+  else {
+    controller = require('./native-draft-controller').createNativeDraftController({
+      sessionId, initialText: readContenteditablePlainText(inputBox),
+      invoke: (channel, request) => ipcRenderer.invoke(channel, request), ...view,
+    });
+    nativeDraftControllers.set(sessionId, controller);
+  }
+  inputBox._nativeDraftController = controller;
+  return controller;
+}
+
 function saveFloatingInputDraft(sessionId, inputBox) {
   if (!sessionId || !inputBox) return;
   const text = readContenteditablePlainText(inputBox);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
-  if (isCodexSession(sessions.get(sessionId))) {
-    try {
-      if (text) localStorage.setItem('codex-native-draft:'+sessionId,text);
-      else localStorage.removeItem('codex-native-draft:'+sessionId);
-      inputBox.parentElement?.querySelector('.native-draft-error')?.remove();
-    } catch (error) {
-      console.warn('[codex-draft] persist failed:',error.message);
-      let message=inputBox.parentElement?.querySelector('.native-draft-error');
-      if(!message && inputBox.parentElement){message=document.createElement('div');message.className='native-draft-error';message.setAttribute('role','alert');inputBox.parentElement.append(message);}
-      if(message)message.textContent='草稿未能保存到磁盘，请复制后再关闭窗口：'+error.message;
-    }
-  }
-  if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
-    try {
-      const key = 'hub.claude-native.draft.v1:' + sessionId;
-      if (text) localStorage.setItem(key, text); else localStorage.removeItem(key);
-    } catch (error) { showToast('草稿保存失败：' + error.message, 'error'); }
-  }
+  attachNativeDraft(sessionId, inputBox)?.change(text);
 }
 
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
+  nativeDraftControllers.get(sessionId)?.change('');
   if (sessionId && isCodexSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
@@ -4121,6 +4142,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
+    attachNativeDraft(sessionId, inputBox);
     codexControls.update(session);
     nativeControls.update(session);
     const runtime = deriveSessionRuntimeStatus(session, {
@@ -7669,6 +7691,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
     _codexSubmitPendingTimers.delete(sessionId);
   }
   clearFloatingInputDraft(sessionId);
+  nativeDraftControllers.delete(sessionId);
   if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
   if (_turnCompleteBackfillTimers.has(sessionId)) {
     try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}

@@ -8,6 +8,33 @@ const { deriveSessionRuntimeStatus } = require('../renderer/session-runtime-stat
 const { buildComposerStatusModel } = require('../core/session-status-summary');
 const { buildHomeSnapshot } = require('../renderer/home-workbench');
 const { persistNativeRuntime } = require('../core/native-agent-runtime');
+const { createClaudeNativeControls } = require('../renderer/claude-native-controls');
+
+test('resolved native action error clears from the displayed controls while local errors are retained', () => {
+  const previousDocument = global.document;
+  class Element {
+    constructor() { this.children = []; this.style = {}; this.dataset = {}; this.textContent = ''; }
+    append(...nodes) { this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute() {}
+  }
+  global.document = { createElement: () => new Element() };
+  try {
+    const controls = createClaudeNativeControls({ sessionId: 'hub', ipcRenderer: {} });
+    const session = { runtimeBackend: 'claude-stream-json', nativeRuntime: {
+      state: 'idle', connection: 'connected', epoch: 2, revision: 1, requests: [] }, nativeActionError: 'old writer still holds session' };
+    controls.update(session);
+    const error = controls.element.children[3];
+    assert.equal(error.textContent, session.nativeActionError);
+    controls.update({ ...session, nativeActionError: null });
+    assert.equal(error.textContent, '', 'Main cleared the failure after reconnect');
+    error.textContent = 'new local operation failed';
+    controls.update({ ...session, nativeActionError: null });
+    assert.equal(error.textContent, 'new local operation failed', 'unrelated local errors remain visible');
+  } finally {
+    if (previousDocument === undefined) delete global.document; else global.document = previousDocument;
+  }
+});
 
 test('Claude consumers keep the same native identity and ignore contradictory screen, heartbeat and attention caches', () => {
   for (const state of ['idle', 'starting', 'running', 'waiting', 'completed', 'interrupted', 'failed', 'unknown']) {

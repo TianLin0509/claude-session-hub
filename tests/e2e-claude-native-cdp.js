@@ -5,7 +5,17 @@ const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
-const { connectFirstPage } = require('./helpers/cdp-client');
+const { connectFirstPage: connectPage } = require('./helpers/cdp-client');
+const rendererErrors = [];
+async function connectFirstPage(...args) {
+  const client = await connectPage(...args);
+  client.ws.on('message', data => {
+    const message = JSON.parse(data.toString());
+    if (message.method === 'Runtime.exceptionThrown') rendererErrors.push(message.params.exceptionDetails);
+  });
+  await client.send('Runtime.enable');
+  return client;
+}
 const ROOT = path.resolve(__dirname, '..');
 const MODE = process.argv.find(value => value.startsWith('--mode='))?.split('=')[1] || 'approval';
 const RUN = 'claude-native-' + MODE + '-' + Date.now();
@@ -50,6 +60,12 @@ async function main() {
     await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 });
     await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
   }
+  async function assertTiming(expected) {
+    await waitFor(expected + ' state rendered', () => client.eval(`claudeNativeTiming.samples.some(row=>row.state===${JSON.stringify(expected)} && !row.supersededBy)`));
+    const row = await client.eval(`claudeNativeTiming.samples.filter(row=>row.state===${JSON.stringify(expected)} && !row.supersededBy).at(-1)`);
+    fs.writeFileSync(path.join(OUT, expected + '-timing.json'), JSON.stringify(row, null, 2), 'utf8');
+    assert.ok(row.match && row.latencyMs <= 1000, JSON.stringify(row));
+  }
   try {
     const launchOptions = { dataDir: path.join(TEMP, 'data'), port: await freePort(), windowMode: 'hidden', label: RUN,
       extraEnv: { CLAUDE_HUB_E2E: '1', CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome,
@@ -69,6 +85,38 @@ async function main() {
     await waitFor('session', () => client.eval(`sessions.has(${JSON.stringify(sid)})`));
     await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(sid)}, {forceScrollBottom:true})`);
     await waitFor('native ready', async () => (await state()).session?.nativeRuntime?.connection === 'connected');
+    // Observe real Main IPC and DOM mutations; never manufacture runtime state.
+    await client.eval(`(() => {
+      const id=${JSON.stringify(sid)};
+      window.claudeNativeTiming={samples:[],pending:[],last:null};
+      const trace=window.claudeNativeTiming;
+      function sample() {
+        const side=document.querySelector('.session-item[data-session-id="'+id+'"]')?.dataset.runtimeState;
+        const header=document.querySelector('.terminal-crumb-dot')?.dataset.runtimeState;
+        const composer=document.querySelector('.composer')?.dataset.state;
+        const map={idle:'ready',starting:'working',running:'working',waiting:'waiting',completed:'ready',interrupted:'ready',failed:'dead',unknown:'waiting'};
+        for(const p of trace.pending) {
+          const match=side===p.state && header===p.state && composer===map[p.state];
+          if(!p.done && (match || Date.now()-p.at>1100)) {
+            p.done=true;trace.samples.push({...p,side,header,composer,match,latencyMs:Date.now()-p.at});
+          }
+        }
+      }
+      ipcRenderer.on('session-updated',(_e,{session:s})=>{
+        if(s.id!==id || !s.nativeRuntime)return;
+        const r=s.nativeRuntime,key=[r.epoch,r.state,r.connection].join(':');
+        if(key===trace.last)return;trace.last=key;
+        // A later Main state supersedes a sub-frame transitional state. Keep
+        // the evidence instead of demanding the DOM paint obsolete snapshots.
+        for(const p of trace.pending) if(!p.done) {
+          p.done=true;trace.samples.push({...p,supersededBy:r.revision,ageMs:Date.now()-p.at});
+        }
+        trace.pending.push({state:r.state,connection:r.connection,at:r.observedAt,epoch:r.epoch,revision:r.revision,
+          userMessageId:r.userMessageId});sample();
+      });
+      new MutationObserver(sample).observe(document.body,{childList:true,subtree:true,attributes:true,characterData:true});
+      setInterval(sample,25);
+    })()`);
     if (MODE === 'recovery') assert.deepEqual((await state()).session.nativeConfig, configOptions);
     await shot('ready');
     const prompt = '  第一行 🧪\n' + Array.from({ length: 600 }, (_, i) => `- 材料 ${i + 1}：编号与换行`).join('\n') + '\n末行  ';
@@ -81,6 +129,7 @@ async function main() {
     if (MODE === 'recovery') {
       await waitFor('unknown receipt after crash', async () => (await state()).session.nativeRuntime.state === 'unknown'
         && (await state()).session.nativeRuntime.connection === 'disconnected');
+      await assertTiming('unknown');
       await shot('unknown');
       const oldIdentity = (await state()).session.nativeRuntime.submission.userMessageId;
       await click('.claude-reconnect');
@@ -107,6 +156,7 @@ async function main() {
       await shot('draft-while-starting');
       await click('.floating-input-stop');
       await waitFor('protocol interruption', async () => (await state()).session.nativeRuntime.state === 'interrupted');
+      await assertTiming('interrupted');
       assert.equal(await client.eval("document.activeElement === document.querySelector('.floating-input-box')"), true);
       await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
       assert.equal(await client.eval("document.activeElement === document.querySelector('.floating-input-box')"), true);
@@ -116,6 +166,7 @@ async function main() {
     }
     if (['approval', 'question'].includes(MODE)) {
       await waitFor('request UI', async () => (await state()).session.nativeRuntime.state === 'waiting');
+      await assertTiming('waiting');
       await shot('waiting');
       if (MODE === 'question') {
         await click('.claude-native-controls input');
@@ -126,6 +177,7 @@ async function main() {
     }
     if (MODE !== 'hold') {
     await waitFor('completed', async () => (await state()).session.nativeRuntime.state === 'completed');
+    await assertTiming('completed');
     await waitFor('visible answer card', async () => (await state()).card?.includes('完成 🧪'));
     const transcript = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`);
     assert.equal(transcript.turns.find(turn => turn.role === 'user').text, prompt);
@@ -220,6 +272,12 @@ async function main() {
     }
     }
     const snapshot = await state();
+    fs.writeFileSync(path.join(OUT, 'renderer-errors.json'), JSON.stringify(rendererErrors, null, 2), 'utf8');
+    assert.deepEqual(rendererErrors, [], 'actual renderer exceptions must fail GUI verification');
+    const timing = await client.eval('window.claudeNativeTiming?.samples || []');
+    fs.writeFileSync(path.join(OUT, 'state-timing.json'), JSON.stringify({
+      boundary: 'Main observedAt to actual sidebar/header/composer DOM; not a full group/workbench matrix', samples: timing
+    }, null, 2), 'utf8');
     fs.writeFileSync(path.join(OUT, 'evidence.json'), JSON.stringify({ mode: MODE, controlledProtocol: true,
       realModel: false, checks, snapshot, temp: TEMP, pid: hub.pid }, null, 2), 'utf8');
     console.log('PASS ' + checks.length + ' checks; ' + OUT);

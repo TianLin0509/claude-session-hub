@@ -57,6 +57,24 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     logger = console,
   } = deps;
 
+  let nativeDraftStore;
+  for (const operation of ['read', 'save']) {
+    ipcMain.handle('native-draft:' + operation, (_event, request = {}) => {
+      const session = sessionManager.getSession(request.sessionId);
+      if (!['claude-stream-json', 'codex-app-server'].includes(session?.runtimeBackend)) {
+        return { ok: false, error: '当前会话不是原生会话' };
+      }
+      try {
+        nativeDraftStore ||= new (require('../../core/native-draft-store').NativeDraftStore)();
+        const record = operation === 'read' ? nativeDraftStore.read(request.sessionId)
+          : nativeDraftStore.save(request.sessionId, request.text, request.revision);
+        return { ok: true, record };
+      } catch (error) {
+        return { ok: false, error: error.message, code: error.code || null };
+      }
+    });
+  }
+
   ipcMain.handle('claude-native:set-model', async (_event, request = {}) => {
     const native = sessionManager.getNativeClaude?.(request.sessionId);
     if (!native || !require('../../core/model-options').isClaudeModelSelection(request.modelId)) {
@@ -242,6 +260,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
 
   return {
     dispose() {
+      nativeDraftStore?.close();
       transcriptTap?.removeListener('prompt-submitted', onTranscriptPrompt);
       sessionManager.removeListener?.('agent-turn-started', onClaudePrompt);
       receipts.prune(() => false);

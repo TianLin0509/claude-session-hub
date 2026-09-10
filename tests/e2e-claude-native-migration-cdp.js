@@ -68,6 +68,7 @@ async function main() {
     result.oldExit = await gracefulQuit(oldHub); oldHub = null;
     await client.eval('document.querySelector(".claude-reconnect").click()');
     await until(client, `sessions.get(${sid}).nativeRuntime.connection==='connected'`, 'new ownership after old exit');
+    assert.ok(!(await client.eval('document.querySelector(".claude-native-controls")?.innerText')).includes('原 Hub 仍持有'), 'resolved ownership error must disappear after successful reconnect');
     const restored = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`);
     assert.ok(restored.turns.some(turn => turn.text.includes('保留的历史回答')));
     assert.equal(await client.eval(`sessions.get(${sid}).ccSessionId`), providerId);
@@ -75,7 +76,74 @@ async function main() {
     assert.ok(fs.readFileSync(file, 'utf8').startsWith(history));
     await shot('native-resumed');
     result.checks.push('explicit reconnect after old Hub exit keeps the exact history identity and unsent draft');
+    if (process.argv.includes('--rollback')) {
+      await client.eval('document.querySelector(".floating-input-box").focus()');
+      await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await until(client, `sessions.get(${sid})?.nativeRuntime?.state==='completed'`, 'new version completed before rollback');
+      const completed = await client.eval(`sessions.get(${sid}).nativeRuntime.submission`);
+      await client.eval('document.querySelector(".floating-input-box").focus()');
+      await client.send('Input.insertText', { text: '回退后仍需保留的新草稿' });
+      const before = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`);
+      assert.ok(before.turns.some(turn => turn.text.includes('完成 🧪')));
+      result.rollbackSubmission = completed;
+      await until(client, 'document.querySelector(".floating-input-box")?.dataset.draftState==="saved"', 'Main durably saved draft');
+      const savedDraft = await client.eval(`ipcRenderer.invoke('native-draft:read',{sessionId:${sid}})`);
+      assert.equal(savedDraft.record.text, '回退后仍需保留的新草稿');
+      result.savedDraftRevision = savedDraft.record.revision;
+      result.nativeStorageOrigin = await client.eval('location.href');
+      fs.writeFileSync(path.join(out, 'rollback-recovery.json'), JSON.stringify({
+        sessionId: old.id, providerId, submission: completed, turns: before.turns,
+        unsentDraft: await client.eval('readContenteditablePlainText(document.querySelector(".floating-input-box"))'),
+        instruction: 'Read-only export. Do not resend automatically.'
+      }, null, 2), 'utf8');
+      await shot('before-rollback');
+      await client.close(); client = null;
+      result.beforeRollbackExit = await gracefulQuit(hub); hub = null;
+      // Reopen the actual baseline against the same isolated data. Do not send
+      // any prompts through its old TUI. It must retain unknown newer fields.
+      oldHub = await launch(baseline, false); oldClient = await connectFirstPage(oldHub);
+      await until(oldClient, `typeof sessions!=='undefined' && sessions.has(${sid})`, 'rollback restores session');
+      await oldClient.eval(`selectSession(${sid})`);
+      await until(oldClient, '!!document.querySelector(".floating-input-box")', 'rollback composer');
+      // The old release never persisted drafts and does not read the native
+      // draft key. Check durability separately; do not label old UI compatible.
+      result.rollbackOldComposerCompatible = await oldClient.eval('document.querySelector(".floating-input-box")?.innerText==="回退后仍需保留的新草稿"');
+      result.rollbackStorageOrigin = await oldClient.eval('location.href');
+      result.rollbackOldNativeDraftValue = await oldClient.eval(`localStorage.getItem('hub.claude-native.draft.v1:'+${sid})`);
+      const oldHistory = await oldClient.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid},
+        ccSessionId:${JSON.stringify(providerId)},transcriptPath:${JSON.stringify(file)},kind:'claude'})`);
+      assert.ok(oldHistory.turns.some(turn => turn.text.includes('保留的历史回答')));
+      result.rollbackOldReaderSeesNativeOnlyAnswer = oldHistory.turns.some(turn => turn.text.includes('完成 🧪'));
+      const oldImage = await oldClient.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(out, 'rollback-old.png'), Buffer.from(oldImage.data, 'base64'));
+      await oldClient.close(); oldClient = null;
+      result.rollbackExit = await gracefulQuit(oldHub); oldHub = null;
+      hub = await launch(ROOT, true); client = await connectFirstPage(hub);
+      await until(client, `typeof sessions!=='undefined' && sessions.has(${sid})`, 'reupgrade session');
+      await client.eval(`selectSession(${sid})`);
+      await until(client, `sessions.get(${sid})?.nativeRuntime?.connection==='connected'`, 'reupgrade writer');
+      const after = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`);
+      assert.deepEqual(after.turns.map(turn => [turn.role, turn.text]), before.turns.map(turn => [turn.role, turn.text]));
+      result.reupgradeDraft = await client.eval(`({stored:localStorage.getItem('hub.claude-native.draft.v1:'+${sid}),
+        memory:floatingInputDrafts.get(${sid}),input:readContenteditablePlainText(document.querySelector('.floating-input-box')),
+        backend:sessions.get(${sid}).runtimeBackend,selected:activeSessionId})`);
+      await until(client, 'document.querySelector(".floating-input-box")?.innerText==="回退后仍需保留的新草稿"', 'reupgrade draft visible');
+      result.reupgradeMainDraft = await client.eval(`ipcRenderer.invoke('native-draft:read',{sessionId:${sid}})`);
+      assert.equal(result.reupgradeMainDraft.record.text, savedDraft.record.text);
+      assert.equal(result.reupgradeMainDraft.record.revision, savedDraft.record.revision, 'restore does not resave or resend');
+      assert.equal(await client.eval('readContenteditablePlainText(document.querySelector(".floating-input-box"))'), '回退后仍需保留的新草稿');
+      assert.equal(await client.eval(`sessions.get(${sid}).ccSessionId`), providerId);
+      const afterRuntime = await client.eval(`sessions.get(${sid}).nativeRuntime`);
+      assert.ok(afterRuntime.state === 'completed' || afterRuntime.state === 'idle');
+      await shot('reupgrade-preserved');
+      result.checks.push('actual old/new version roundtrip keeps historical and native journal answers, session identity, and unsent draft without replay');
+      result.rollbackGatePassed = result.rollbackOldComposerCompatible && result.rollbackOldReaderSeesNativeOnlyAnswer;
+    }
     result.passed = true;
+  } catch (error) {
+    result.failure = { message: error.message, stack: error.stack };
+    throw error;
   } finally {
     const cleanupErrors = [];
     if (client) { try { await shot('final'); } catch (error) { result.captureError = error.message; } }
@@ -93,7 +161,7 @@ async function main() {
     if (cleanupErrors.length) result.passed = false;
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify({ out, passed: result.passed === true, checks: result.checks }));
-    if (cleanupErrors.length) throw new Error(cleanupErrors.join('; '));
+    if (cleanupErrors.length && !result.failure) throw new Error(cleanupErrors.join('; '));
   }
 }
 main().catch(error => { console.error(error.stack); process.exitCode = 1; });
