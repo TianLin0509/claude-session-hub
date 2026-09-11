@@ -1,0 +1,26 @@
+.voice-button{font:inherit;font-size:12px;border:1px solid var(--border,#475569);border-radius:6px;padding:4px 9px;background:var(--bg-secondary,#253143);color:var(--text-primary,#e2e8f0);cursor:pointer;white-space:nowrap}
+.voice-button:focus-visible{outline:2px solid #55b7d7;outline-offset:2px}
+.voice-button:disabled{opacity:.5;cursor:wait}
+.voice-mic[aria-pressed=true]{color:#fff;background:#9c3333}
+.voice-panel{box-sizing:border-box;margin:6px 0;padding:9px 12px;border:1px solid var(--border,#475569);border-radius:8px;background:var(--bg-secondary,#253143);color:var(--text-primary,#e2e8f0);font-size:12px;max-width:100%;flex:0 0 auto}
+.voice-panel[hidden],.voice-button[hidden]{display:none!important}
+.voice-status{overflow-wrap:anywhere}
+.voice-panel meter{width:55px;height:10px;margin-left:10px}
+.voice-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:140px;overflow:auto;margin:6px 0;font-size:14px;user-select:text}
+.voice-actions{display:flex;gap:8px;flex-wrap:wrap}
+.voice-settings{position:fixed;inset:0;background:#0008;z-index:20000;display:flex;align-items:center;justify-content:center}
+.voice-settings-dialog{box-sizing:border-box;width:min(560px,95vw);max-height:90vh;overflow:auto;padding:22px;border-radius:12px;background:var(--bg-primary,#172132);color:var(--text-primary,#e2e8f0);box-shadow:0 12px 50px #0006}
+.voice-settings-dialog h3{margin:0 0 12px}
+.voice-settings-dialog p{font-size:13px;line-height:1.6}
+.voice-settings-dialog label{display:block;margin:12px 0;font-size:13px}
+.voice-settings-dialog input,.voice-settings-dialog textarea,.voice-settings-dialog select{box-sizing:border-box;display:block;width:100%;margin-top:5px;border:1px solid var(--border,#475569);padding:8px;border-radius:6px;background:var(--bg-secondary,#253143);color:var(--text-primary,#e2e8f0);font:inherit}
+.voice-settings-note{overflow-wrap:anywhere;opacity:.8}
+
+.voice-panel{flex:0 0 auto}
+.voice-mic{flex:none;min-width:36px}
+.composer-rail.voice-enabled{flex-wrap:wrap}
+.mr-input-row.mr-group-composer.voice-enabled{grid-template-columns:minmax(0,1fr) auto auto auto}
+.mr-group-composer.voice-enabled .voice-mic{grid-column:2;grid-row:3;align-self:end}
+.mr-group-composer.voice-enabled .mr-workflow-btn{grid-column:3}
+.mr-group-composer.voice-enabled .mr-send-btn{grid-column:4}
+#meeting-room-panel>.voice-panel{margin:0 12px 8px}

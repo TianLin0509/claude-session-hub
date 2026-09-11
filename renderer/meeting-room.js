@@ -7453,6 +7453,13 @@ if (typeof document !== 'undefined') (function () {
     focusSearchHit,
     updateMeetingData,
   };
+  const voiceBox = document.getElementById('mr-input-box');
+  const voiceRail = document.getElementById('mr-input-row');
+  if (voiceBox && voiceRail) require('./voice-input').attachVoiceInput({
+    input: voiceBox, rail: voiceRail, panelHost: voiceRail.parentElement,
+    getTarget: () => ({ id: activeMeetingId, project: meetingData[activeMeetingId]?.workspace || '' }),
+    isActive: target => activeMeetingId === target.id && voiceBox.getClientRects().length > 0,
+  });
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     // 走真实 handleMeetingSend，但**不 await** —— e2e 要量的正是「按下发送那一刻
     // 到看见自己那张气泡」的间隔，await 会把这个间隔藏起来。

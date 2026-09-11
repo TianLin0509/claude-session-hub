@@ -4087,6 +4087,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   composer.className = 'composer';
   composer.dataset.state = 'ready';
   composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const voiceInput = require('./voice-input').attachVoiceInput({
+    input: inputBox, rail: composerRail, panelHost: composer,
+    getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
+    isActive: () => activeSessionId === sessionId,
+  });
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
   // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
@@ -4420,6 +4425,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   return {
     dispose() {
       saveFloatingInputDraft(sessionId, inputBox);
+      voiceInput.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
       if (panel) panel.style.setProperty('--fi-bar-h', '0px');
