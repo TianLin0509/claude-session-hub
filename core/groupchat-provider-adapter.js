@@ -12,17 +12,18 @@ class GroupChatProviderAdapter {
     this.kind = kind || 'unknown';
     this.nativeOnly = options.nativeOnly === true;
     this.family = normalizeProviderFamily(kind);
+    this.nativeSource = require('./acp-profiles').isAcpKind(kind) ? 'acp' : 'codex-app-server';
   }
 
   match(attempt, event, options = {}) {
-    if (this.nativeOnly && event?.signalSource !== 'codex-app-server') {
+    if (this.nativeOnly && event?.signalSource !== this.nativeSource) {
       return {ok:false,reason:'native_lifecycle_required'};
     }
     return attemptEventMatches(attempt, event, {
       kind: this.kind,
       // Codex exposes a real turn id. Once an attempt has bound one, refusing
       // an unscoped completion is safer than attaching it to the wrong turn.
-      requireProviderTurn: this.family === 'codex',
+      requireProviderTurn: this.family === 'codex' || this.nativeSource === 'acp',
       ...options,
     });
   }
@@ -35,7 +36,7 @@ class GroupChatProviderAdapter {
       return { accepted: false, reason: 'non_final_signal', identity };
     }
     const text = String(event.text || '').trim();
-    if (event.signalSource === 'codex-app-server') {
+    if (event.signalSource === this.nativeSource) {
       return {accepted:true,status:'completed',text,identity,emptyResult:!text};
     }
     const failure = classifyProviderFailure({ text, fromAssistantText: true });

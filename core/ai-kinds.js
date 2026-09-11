@@ -20,7 +20,7 @@
 //   新增 AI 时只需追加这个数组 + 补 KIND_LABELS。
 //   不含 'powershell' 等非 AI 类型。
 // ---------------------------------------------------------------------------
-const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi'];
+const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi', 'qwen', 'deepseek-acp', 'glm'];
 const WEB_STYLE_KINDS = [];
 // DeepSeek V4 Pro / Flash 原生支持 Responses API，并适配 Codex 0.144.0+。
 // 新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时
@@ -41,6 +41,9 @@ const KIND_LABELS = {
   codex: 'Codex',
   deepseek: 'DeepSeek',
   kimi: 'Kimi',
+  qwen: '千问',
+  'deepseek-acp': 'DeepSeek 原生',
+  glm: '智谱',
 };
 
 // ---------------------------------------------------------------------------
@@ -128,10 +131,13 @@ function kindRegexAlternation() {
 //   返回家族字符串：claude / gemini / gpt / deepseek
 // ---------------------------------------------------------------------------
 // 群聊记忆系统的家族存储 key 集合（去重 canonical 后）
-const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'kimi'];
+const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'kimi', 'qwen', 'glm'];
 const _FAMILY_SET = new Set(FAMILY_KINDS);
 
 function canonicalAiKind(rawKind) {
+  if (rawKind === 'deepseek-acp' || rawKind === 'deepseek-acp-resume') return 'deepseek';
+  if (rawKind === 'qwen-resume') return 'qwen';
+  if (rawKind === 'glm-resume') return 'glm';
   if (rawKind === 'codex') return 'gpt';
   if (rawKind === 'claude-resume') return 'claude';
   if (rawKind === 'deepseek-resume' || rawKind === 'deepseek-legacy' || rawKind === 'deepseek-legacy-resume') return 'deepseek';

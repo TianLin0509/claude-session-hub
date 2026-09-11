@@ -6362,7 +6362,7 @@ if (typeof document !== 'undefined') (function () {
     // 历史会议里的 Gemini/Kimi 等成员继续可读可运行，只是不再从群聊入口新增。
     const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', deepseek: 'DeepSeek · Codex', kimi: 'Kimi Code' };
     const availableKinds = meeting.groupChat
-      ? ['claude', 'codex', 'deepseek']
+      ? ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm']
       : ALL_AI_KINDS;
     const kinds = availableKinds.map(k => ({
       kind: k,

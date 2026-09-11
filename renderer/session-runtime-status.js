@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession } = require('../core/codex-native-runtime.js');
+const { isNativeSession } = require('../core/codex-native-runtime.js');
 
 const {
   RUNTIME_STARTING,
@@ -61,11 +61,11 @@ function legacyRunningStartedAt(session) {
 }
 
 function deriveSessionRuntimeStatus(session, options = {}) {
-  const native = isCodexSession(session);
+  const native = isNativeSession(session);
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
   let truth = getSessionRuntimeTruth(session, { now });
-  if (!isCodexSession(session) && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+  if (!isNativeSession(session) && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
     truth = {
       ...truth,
       state: RUNTIME_RUNNING,

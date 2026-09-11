@@ -481,7 +481,7 @@ function renderTurnCard(turn) {
   const isUser = turn.role === 'user';
   // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
   const cls = (isUser ? 'turn-card user' : 'turn-card assistant') + (turn.inherited ? ' inherited' : '');
-  const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
+  const who = isUser ? '你' : (turn.model || (turn.source==='acp' ? require('../core/ai-kinds').getKindLabel(turn.kind) : turn.kind) || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
 
   // 头像分支

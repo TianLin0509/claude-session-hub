@@ -141,7 +141,16 @@ function registerSessionIpc(ipcMain, deps) {
     if (typeof source.contextMax === 'number') opts.contextMax = source.contextMax;
 
     let kind;
-    if (providerFamily === 'claude') {
+    const createFork=()=>{
+      const session=sessionManager.createSession(kind,opts);
+      registerSessionForTap(session);sendToRenderer('session-created',{session});
+      return {ok:true,session};
+    };
+    if (providerFamily === 'acp') {
+      kind = source.kind.replace(/-resume$/, '');
+      return sessionManager.getNativeSession(source.id).fork().then(fork=>{opts.acpFork=fork;return createFork();})
+        .catch(error=>({ok:false,error:'acp-fork-failed',message:error.message}));
+    } else if (providerFamily === 'claude') {
       kind = isDeepSeek ? 'deepseek' : 'claude';
       opts.forkCCSessionId = nativeSessionId;
       if (runtimeKind.startsWith('deepseek-legacy')) opts.deepseekLegacyClaude = true;
@@ -151,10 +160,7 @@ function registerSessionIpc(ipcMain, deps) {
       opts.codexForkSid = nativeSessionId;
     }
 
-    const session = sessionManager.createSession(kind, opts);
-    registerSessionForTap(session);
-    sendToRenderer('session-created', { session });
-    return { ok: true, session };
+    return createFork();
   });
 
   ipcMain.handle('close-session', (_e, sessionId) => {
@@ -199,7 +205,7 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('codex:native-action', async (_event, payload = {}) => {
-    const native = sessionManager.getNativeCodex?.(payload.sessionId);
+    const native = (sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId));
     if (!native) return {ok:false,message:'该 Codex 会话尚未接管'};
     try {
       let result;
@@ -314,7 +320,7 @@ function registerSessionIpc(ipcMain, deps) {
     const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     if (!session) return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
-    if (session.runtimeBackend === 'codex-app-server') {
+    if (['codex-app-server','acp'].includes(session.runtimeBackend)) {
       const current = session.currentModel || {};
       if (current.id !== modelId || (payload.effort && payload.effort !== session.effort)) {
         return {ok:false,message:'原生 Codex 尚未确认该模型或思考档'};
@@ -408,7 +414,7 @@ function registerSessionIpc(ipcMain, deps) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
     if (old.purpose !== 'chuxin-research' && (old.kind === 'codex' || old.kind === 'codex-resume')) {
-      const native = sessionManager.getNativeCodex?.(sessionId);
+      const native = (sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId));
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
       return native.reconnect().then(()=>sessionManager.getSession(sessionId))
         .catch(error=>({ok:false,message:error.message}));

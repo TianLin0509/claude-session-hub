@@ -266,7 +266,7 @@ function composerRunStartedAt(session, truth) {
  * @returns {{ state, text, detail, quickReplies, action, canStop, runtime }}
  */
 function buildComposerStatusModel(session, options = {}) {
-  const native = require('./codex-native-runtime.js').isCodexSession(session);
+  const native = require('./codex-native-runtime.js').isNativeSession(session);
   const now = Number(options.now) || Date.now();
   const runtime = options.runtime;
   if (!runtime || typeof runtime !== 'object') {
@@ -320,9 +320,9 @@ function buildComposerStatusModel(session, options = {}) {
 
   if (state === COMPOSER_STATUS_DEAD) {
     if (native && runtime.state !== RUNTIME_DORMANT) return {
-      state, text: truth.state === 'unknown' ? 'Codex 状态待核对' : 'Codex 连接已断开',
+      state, text: truth.state === 'unknown' ? `${provider} 状态待核对` : `${provider} 连接已断开`,
       detail: truth.evidence || '', quickReplies: [], canStop: false, runtime,
-      action: session.runtimeBackend === 'codex-app-server' ? { kind:'reconnect', label:'核对连接' } : null,
+      action: ['codex-app-server','acp'].includes(session.runtimeBackend) ? { kind:'reconnect', label:'核对连接' } : null,
     };
     const issue = session && session.connectionIssue;
     const lost = session && session._processLost;
