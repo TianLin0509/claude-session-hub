@@ -100,7 +100,7 @@
       lines.push('项目库（按最近活跃排序）：');
       lines.push(...list);
     } else {
-      lines.push('项目库目前是空的：在工作根下找含 .agents/project.json 的 git 仓库根（不要选 .git 是文件的 worktree）。');
+      lines.push('项目库目前是空的：完成 project-prep 后登记正式目录。不得把扫描发现的目录当作项目库项目。');
     }
     lines.push('判断不了属于哪个项目就先问我一句，不要猜，也不要在工作根下乱翻。');
     return lines.join('\n');

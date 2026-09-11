@@ -152,7 +152,7 @@ test('「选择已有路径」那一行有项目库下拉：点开列已整理�
   // 主进程接口真的注册了，且不递归扫盘
   const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'workspace-handlers.js'), 'utf-8');
   assert(/ipcMain\.handle\('workspace:prepared-projects'/.test(handlers), '主进程要注册 workspace:prepared-projects');
-  assert(/prepared-project-library\.js/.test(handlers), '要用 core 里的项目库模块，不在 IPC 里重写判据');
+  assert(/prepared-project-registry/.test(handlers), '要用 core 里的项目库模块，不在 IPC 里重写判据');
   assert(!/readdirSync\([^)]*recursive/.test(handlers), '不许递归扫盘');
 });
 

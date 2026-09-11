@@ -765,6 +765,11 @@ function createHomeWorkbench(options = {}) {
   function renderQuickLaunch() {
     const target = el('home-workspace-launch');
     if (!target) return;
+    if (state.workspaceError) {
+      state.workspaceItems = [];
+      setHtml('home-workspace-launch', `<div class="home-operational-empty" role="status">项目库读取失败：${escapeHtml(state.workspaceError)}。点击刷新重试。</div>`);
+      return;
+    }
     const listing = state.workspaceListing || {};
     const recommended = Array.isArray(listing.recommended) ? listing.recommended : [];
     const recent = Array.isArray(listing.items) ? listing.items : [];
@@ -779,7 +784,7 @@ function createHomeWorkbench(options = {}) {
       })
       .slice(0, 6);
     if (!state.workspaceItems.length) {
-      setHtml('home-workspace-launch', '<div class="home-operational-empty">刷新后显示 AI、Wireless、投研与最近项目</div>');
+      setHtml('home-workspace-launch', '<div class="home-operational-empty">暂无已登记项目，完成项目准备并登记后刷新</div>');
       return;
     }
     setHtml('home-workspace-launch', state.workspaceItems.map((item, index) => {
@@ -986,10 +991,13 @@ function createHomeWorkbench(options = {}) {
   async function loadWorkspaceListing() {
     try {
       state.workspaceListing = await loadWorkspaces();
+      state.workspaceError = '';
       if (isVisible()) render();
       return state.workspaceListing;
     } catch (error) {
       state.workspaceListing = null;
+      state.workspaceError = error.message;
+      if (isVisible()) render();
       return null;
     }
   }

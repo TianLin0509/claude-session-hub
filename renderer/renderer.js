@@ -6186,7 +6186,11 @@ homeWorkbench = createHomeWorkbench({
   getHubConfig: () => hubProxyInfo,
   getUsageSnapshot: () => accountUsageController.getSnapshot(),
   getTerminalCacheSize: () => terminalCache.size,
-  loadWorkspaces: () => ipcRenderer.invoke('workspace:list'),
+  loadWorkspaces: async () => {
+    const result = await ipcRenderer.invoke('workspace:prepared-projects');
+    if (!Array.isArray(result?.items)) throw new Error('项目库返回格式无效');
+    return { items: result.items.map(item => ({ ...item, label: item.name })) };
+  },
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
   getOperationsSnapshot: () => operationsOverview,

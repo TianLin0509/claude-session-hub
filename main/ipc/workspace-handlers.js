@@ -210,52 +210,19 @@ function registerWorkspaceIpc(ipcMain, deps) {
 
   ipcMain.handle('workspace:list', () => workspaceService.listWorkspaces(activePaths()));
 
-  // 项目库：已被 project-prep 整理成可开并行群聊的项目，按活跃时间排序。
-  // 候选 = 工作区注册表 + 所有会话 cwd + 所有会议 workspace + 工作根的一级子目录，
-  // 再由 core 补一路「候选的父目录各读一层」——**刚整理好、Hub 还没用过的项目靠这一路才看得见**
-  // （否则必须先在它上面开一次会话登记进注册表，用户遇到的就是「第一次识别不到」）。
-  // 每路都带自己的活跃时间，core 里取最大值并去重。全程只读一层，绝不递归扫盘。
+  // All project consumers share formal registration; activity never grants membership.
   ipcMain.handle('workspace:prepared-projects', (_event, request = {}) => {
-    const { listPreparedProjects } = require('../../core/prepared-project-library.js');
-    const candidates = [];
-    try {
-      for (const item of workspaceService.listWorkspaces(activePaths()).items || []) {
-        if (item && item.path) candidates.push({ path: item.path, activeAt: Number(item.lastUsedAt) || 0 });
-      }
-    } catch (error) {
-      console.warn('[workspace] prepared-projects: registry unavailable:', error && error.message);
-    }
-    for (const session of sessionManager.getAllSessions()) {
-      if (!session || !session.cwd) continue;
-      candidates.push({
-        path: session.cwd,
-        activeAt: Math.max(Number(session.lastInputAt) || 0, Number(session.lastOutputAt) || 0,
-          Number(session.lastMessageTime) || 0, Number(session.createdAt) || 0),
+    const { PreparedProjectRegistry } = require('../../core/prepared-project-registry');
+    const registry = new PreparedProjectRegistry({ dataDir: path.dirname(workspaceService.getRegistryPath()) });
+    const candidates = sessionManager.getAllSessions().filter(s => s && s.cwd).map(s => ({
+      path: s.cwd, activeAt: Math.max(Number(s.lastInputAt) || 0, Number(s.lastOutputAt) || 0, Number(s.createdAt) || 0),
+    }));
+    if (meetingManager && typeof meetingManager.getAllMeetings === 'function') {
+      for (const m of meetingManager.getAllMeetings()) if (m && m.workspace) candidates.push({
+        path: m.workspace, activeAt: Math.max(Number(m.updatedAt) || 0, Number(m.createdAt) || 0),
       });
     }
-    if (meetingManager && typeof meetingManager.getAllMeetings === 'function') {
-      for (const meeting of meetingManager.getAllMeetings()) {
-        if (!meeting || !meeting.workspace) continue;
-        candidates.push({
-          path: meeting.workspace,
-          activeAt: Math.max(Number(meeting.updatedAt) || 0, Number(meeting.createdAt) || 0),
-        });
-      }
-    }
-    try {
-      const root = workspaceService.getWorkspaceRoot();
-      // 工作根自己也要进候选：它不是项目（会被 core 过滤掉），但同级扫描是按**候选的父目录**
-      // 展开的，不放进来的话工作根的上一层永远扫不到 —— 而用户的项目大多就并排放在那一层。
-      candidates.push({ path: root, activeAt: 0 });
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (entry.isDirectory() && !entry.name.startsWith('_') && !entry.name.startsWith('.')) {
-          candidates.push({ path: path.join(root, entry.name), activeAt: 0 });
-        }
-      }
-    } catch (error) {
-      console.warn('[workspace] prepared-projects: root scan skipped:', error && error.message);
-    }
-    return { items: listPreparedProjects(candidates, {}, { siblingScan: true, searchRoots: request?.searchRoots === true }) };
+    return registry.list({ searchRoots: request?.searchRoots === true, candidates });
   });
 
   // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型

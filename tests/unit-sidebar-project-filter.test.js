@@ -48,7 +48,7 @@ test('failed first load never classifies all paths as random, retry recovers wit
   h.response(async () => ({ items: projects })); await h.filter.refresh();
   assert.equal(h.note.hidden, true); assert(h.filter.matches({ cwd: 'C:/Else' }));
   h.response(async () => { throw new Error('offline again'); }); await h.filter.refresh();
-  assert.match(h.note.textContent, /上次名单/); assert(!h.filter.matches({ cwd: 'C:/Repo/App' }));
+  assert.match(h.note.textContent, /无法判断项目归属/); assert(!h.filter.matches({ cwd: 'C:/Repo/App' }));
 });
 
 test('missing saved projects do not broaden results; explicit search reveal clears the filter', async () => {
