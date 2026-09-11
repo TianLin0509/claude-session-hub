@@ -135,6 +135,7 @@ function createCardQuestionNavigator(options = {}) {
   function scrollToQuestion(index, { focusMarker = false } = {}) {
     const entry = entries[index];
     if (!entry || !overlay) return false;
+    overlay._cardFollowController?.pause();
     const overlayRect = overlay.getBoundingClientRect();
     const cardRect = entry.card.getBoundingClientRect();
     const targetTop = Math.max(0, overlay.scrollTop + cardRect.top - overlayRect.top - 10);

@@ -75,9 +75,9 @@ assert.ok(
   'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
-  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: true })") &&
+  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() })") &&
   rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true })"),
-  'delegated sidebar navigation must request bottom pinning for sessions and meetings',
+  'reselecting a session requests latest output; switching preserves its reading position',
 );
 assert.ok(
   rendererSrc.includes("detachFromBottom") &&
@@ -85,7 +85,7 @@ assert.ok(
   'Codex wheel-up intent must immediately disable bottom following before the next streaming write',
 );
 assert.ok(
-  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus })") &&
+  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom })") &&
   rendererSrc.includes("const _batchWasAtBottom = forceScrollBottom || (incremental ? _isCardOverlayAtBottom(container) : overlayScrollBeforeLoad.wasAtBottom);"),
   'Codex card overlay reload must honor explicit sidebar bottom pinning',
 );

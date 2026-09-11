@@ -16,7 +16,7 @@ function targetFor(attribute, id) {
   };
 }
 
-function makeHarness(rows = []) {
+function makeHarness(rows = [], activeSessionId = null) {
   const listeners = new Map();
   const selected = [];
   const meetings = [];
@@ -40,6 +40,7 @@ function makeHarness(rows = []) {
     formatTime: () => '',
     pctClass: () => '',
     selectSession: (id, opts) => selected.push({ id, opts }),
+    getActiveSessionId: () => activeSessionId,
     selectMeeting: (id, opts) => meetings.push({ id, opts }),
     openContextMenu() {},
   });
@@ -61,7 +62,7 @@ test('pointer intent survives row replacement between down and up', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.selected, [{
-    id: 'session-b', opts: { forceScrollBottom: true },
+    id: 'session-b', opts: { forceScrollBottom: false },
   }]);
 
   // Chromium may still synthesize click after pointer-up. A rebuild may also
@@ -81,8 +82,19 @@ test('pointer intent survives row replacement between down and up', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.selected.at(-1), {
-    id: 'session-c', opts: { forceScrollBottom: true },
+    id: 'session-c', opts: { forceScrollBottom: false },
   });
+});
+
+test('reselecting the current session is an explicit jump; switching sessions preserves reading position', () => {
+  const harness = makeHarness([], 'session-a');
+  for (const id of ['session-b', 'session-a']) harness.emit('click', {
+    detail: 0, target: targetFor('data-session-id', id), preventDefault() {}, stopPropagation() {},
+  });
+  assert.deepEqual(harness.selected, [
+    { id: 'session-b', opts: { forceScrollBottom: false } },
+    { id: 'session-a', opts: { forceScrollBottom: true } },
+  ]);
 });
 
 test('back-to-back pointer activations suppress every delayed compatibility click', () => {

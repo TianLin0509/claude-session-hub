@@ -59,6 +59,7 @@ marked.use({
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
+const { mountTerminalPresentation } = require('./terminal-presentation.js');
 const {
   createSessionContextMenuController,
   createTerminalContextMenuController,
@@ -1199,6 +1200,7 @@ function suspendInactiveTerminalRenderers(activeId) {
   for (const [sessionId, cached] of terminalCache) {
     if (activeId && sessionId === activeId) continue;
     if (cached && cached.container) cached.container.style.display = 'none';
+    if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
     unloadGpuRenderer(cached);
   }
 }
@@ -1206,6 +1208,7 @@ function suspendInactiveTerminalRenderers(activeId) {
 function disposeCachedTerminal(sessionId) {
   const cached = terminalCache.get(sessionId);
   if (!cached) return false;
+  if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (cached._ro) cached._ro.disconnect();
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
@@ -1251,6 +1254,7 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
+    lineHeight: isCodexSession(sessions.get(sessionId)) ? 1.3 : 1,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
@@ -1818,7 +1822,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
   const embedded = mountTarget !== terminalPanelEl;
+  if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (!embedded) terminalPanelEl.classList.remove('home-active');
+  if (!embedded) cardFollowScroll.activate(sessionId, { force: !!opts.forceScrollBottom });
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
@@ -1859,6 +1865,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   }
   loadGpuRenderer(cached);
   setupCodexViewportScrollTracker(sessionId, cached);
+
+  if (!embedded) {
+    cached._ptyPresentation = mountTerminalPresentation({
+      document, host: termContainer, cached, native: isCodexSession(session), readOnly: session.readOnly,
+      focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
+    });
+  }
 
   requestAnimationFrame(() => {
     const dbg = window.__scrollDebug;
@@ -1947,7 +1960,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       // 卡片视图切换 session 时也跳到最新对话，与上方 PTY 的 pinOnShow focus 兜底对称：
       // 切到不同 session 时靠 opts.focus；重复点击当前侧栏项时靠显式 forceScrollBottom。
       // view 切换（PTY↔卡片）走 applyViewMode 不经此处、不传 forceScrollBottom，保持阅读位置不受影响。
-      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus }).catch(err => {
+      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
       });
     }
@@ -2100,6 +2113,8 @@ function syncTurnPresentationToSession(sessionId, presentation, turn) {
   if (target) paintTerminalRuntimeStatus(target, session);
   if (adoptedLiveActivities) queueMicrotask(() => rerenderTurn(turn.id));
 }
+const { createCardFollowScroll } = require('./card-follow-scroll');
+const cardFollowScroll = createCardFollowScroll({ element: document.getElementById('msg-overlay'), window, document });
 const turnCardRenderer = createTurnCardRenderer({
   document,
   window,
@@ -2297,6 +2312,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     top: container.scrollTop,
     wasAtBottom: forceScrollBottom || _isCardOverlayAtBottom(container),
   };
+  if (forceScrollBottom) cardFollowScroll.follow();
+  const followSnapshot = cardFollowScroll.capture();
 
   // 2. clear container + Map (avoid stale turns from previous session)
   if (!incremental) {
@@ -2498,9 +2515,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const concurrentExtraCards = !incremental
     ? concurrentFullCards.filter(card => !fullTurnIds.has(card.dataset.turnId))
     : [];
-  if (!incremental) {
-    removeLoadingPlaceholder();
-  }
+  removeLoadingPlaceholder();
   // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
   //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
   //   末尾的 batch scrollIntoView 没 guard → 用户上翻历史时仍被拍回底部。
@@ -2560,7 +2575,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
   // — 仅当 batch 开始前用户在底部才滚(scroll-respect-user)
-  if (lastCardEl && _batchWasAtBottom) {
+  if (container._cardFollowController) {
+    cardFollowScroll.restore(followSnapshot);
+  } else if (lastCardEl && _batchWasAtBottom) {
     try {
       lastCardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
     } catch {
@@ -3336,9 +3353,7 @@ function _updateStreamingIndicator(sessionId) {
       indicator.dataset.sessionId = String(sessionId);
       indicator.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>';
       targetParent.appendChild(indicator);
-      if (wasAtBottom && targetParent === overlay) {
-        try { overlay.scrollTop = overlay.scrollHeight; } catch {}
-      }
+      if (wasAtBottom && targetParent === overlay) cardFollowScroll.request();
     } else if (indicator.parentElement !== targetParent) {
       // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
       targetParent.appendChild(indicator);
@@ -3417,9 +3432,11 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
   // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
   // 因为 turn-complete-event 可能已在 overlay 留了单张卡但历史并未 hydrate。
-  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId) {
-    if (_cardHistoryHydratedSid !== activeSessionId) {
-      loadSessionHistoryToOverlay(activeSessionId).then(r => {
+  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId && !skipPreviousCardCapture) {
+    if (_cardHistoryHydratedSid !== activeSessionId || previousView !== 'card') {
+      // PTY output does not update the hidden card DOM. Refresh on return,
+      // preserving existing cards and the user's scroll intent.
+      loadSessionHistoryToOverlay(activeSessionId, { incremental: _cardHistoryHydratedSid === activeSessionId }).then(r => {
         if (r && r.mounted > 0) _cardHistoryHydratedSid = activeSessionId;
       }).catch(err => {
         console.warn('[applyViewMode card] auto-load failed:', err);
@@ -3439,7 +3456,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     // leaves the newest question partially behind the footer. Preserve user
     // intent: only re-pin when they were already following the bottom before
     // leaving card view; a reader who scrolled up stays exactly where they were.
-    const pinBottom = () => { overlay.scrollTop = overlay.scrollHeight; };
+    const pinBottom = () => cardFollowScroll.request();
     const restoreSessionId = activeSessionId;
     pinBottom();
     if (_cardViewBottomRestoreRaf) cancelAnimationFrame(_cardViewBottomRestoreRaf);
@@ -3751,6 +3768,7 @@ function scrollToLatestTurn(terminal) {
     const cards = overlay.querySelectorAll(':scope > .turn-card');
     const last = cards[cards.length - 1];
     if (last) {
+      cardFollowScroll.pause();
       const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       last.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
       return true;
@@ -4991,6 +5009,7 @@ function focusOrdinarySearchHit(hit, preview) {
     catch {}
   }
   if (card) {
+    cardFollowScroll.pause();
     card.classList.add('global-search-focus');
     card.scrollIntoView({ block: 'center', behavior: 'smooth' });
     setTimeout(() => { if (card.isConnected) card.classList.remove('global-search-focus'); }, 1500);
@@ -5013,6 +5032,7 @@ function focusOrdinarySearchHit(hit, preview) {
   const body = document.createElement('p');
   body.textContent = text;
   notice.append(title, body);
+  cardFollowScroll.pause();
   overlay.prepend(notice);
   notice.scrollIntoView({ block: 'start', behavior: 'smooth' });
   return true;
@@ -7507,7 +7527,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   const unreadWantedCard = _completedUnreadCardViews.delete(session.id);
   applyViewMode(
     requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : (session.kind === 'powershell' ? 'pty' : 'card'))),
-    { remember: !wasDormant },
+    { remember: !wasDormant, skipPreviousCardCapture: true },
   );
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),

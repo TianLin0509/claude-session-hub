@@ -83,6 +83,30 @@ rl.on('line',line=>{
           turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
         }
         setTimeout(()=>finish(thread,turn,'completed','受控验证已完成'),400);
+      } else if(mode==='fixture:scroll') {
+        answer(msg.id,{turn});
+        for(let i=1;i<=40;i++)setTimeout(()=>{
+          const item={id:'scroll-'+i+'-'+turn.id,type:'agentMessage',phase:'commentary',text:`第 ${i} 步：正在持续输出验证信息。\n\n本段用于检查新内容到来时阅读位置是否稳定，用户可以随时向上翻阅。`};
+          turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+          if(i===40)finish(thread,turn,'completed','滚动验收结束。');
+        },i*300);
+      } else if(mode==='fixture:terminal-design') {
+        answer(msg.id,{turn});
+        const progress={id:'progress-'+turn.id,type:'agentMessage',phase:'commentary',text:'正在检查项目结构，确认本次改动的入口。'};
+        turn.items.push(progress);event('item/started',{threadId:thread.id,turnId:turn.id,item:progress});
+        const command={id:'command-'+turn.id,type:'commandExecution',command:'node --test tests/session.test.js',status:'inProgress',aggregatedOutput:''};
+        turn.items.push(command);event('item/started',{threadId:thread.id,turnId:turn.id,item:command});
+        command.aggregatedOutput='PASS  欢迎页与任务输入\nPASS  深色主题与窄屏布局\n';
+        event('item/commandExecution/outputDelta',{threadId:thread.id,turnId:turn.id,itemId:command.id,delta:command.aggregatedOutput});
+        command.status='completed';command.exitCode=0;save();
+        event('item/completed',{threadId:thread.id,turnId:turn.id,item:command});
+        const reply={id:'reply-'+turn.id,type:'agentMessage',phase:'final_answer',text:''};
+        turn.items.push(reply);event('item/started',{threadId:thread.id,turnId:turn.id,item:reply});
+        const chunks=['## 界面已更新\n\n','输出按问题、执行过程和回答分段，阅读时更容易找到重点。\n\n','```javascript\n','const theme = "midnight";\n','function welcome(name) {\n  return `Hello, ${name}`;\n}\n','```\n\n','- 原始输出仍可选择、复制和搜索。\n- 所有检查通过，接下来可以继续提交任务。'];
+        chunks.forEach((delta,index)=>setTimeout(()=>{
+          reply.text+=delta;save();event('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:reply.id,delta});
+          if(index===chunks.length-1){event('item/completed',{threadId:thread.id,turnId:turn.id,item:reply});finish(thread,turn,'completed',null);}
+        },250+index*160));
       } else if(mode==='fixture:card-details') {
         answer(msg.id,{turn});
         const emit=item=>{turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});};

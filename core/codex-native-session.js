@@ -4,6 +4,7 @@ const { createHash, randomUUID } = require('crypto');
 const { CodexAppServerClient } = require('../main/codex-app-server-client');
 const { BACKEND, TERMINAL, createNativeRuntime, reduceNativeRuntime } = require('./codex-native-runtime');
 const { claimThread, releaseThread, assertNoOtherHubOwner } = require('./codex-thread-ownership');
+const { CodexTerminalPresentation } = require('./codex-terminal-presentation');
 const pool = new Map();
 const threadOwners = new Map();
 function ownershipKey(options, threadId) {
@@ -71,6 +72,7 @@ class CodexNativeSession extends EventEmitter {
         ? {...options.restoredRuntime.submission,status:'unknown'} : options.restoredRuntime.submission,
     } : createNativeRuntime();
     this.items = new Map();
+    this.terminalPresentation = new CodexTerminalPresentation(text => this.emit('data', text.replace(/\r?\n/g, '\r\n')));
     this.contentRevision = 0;
     this.history = new Map();
     this.closed = false;
@@ -310,7 +312,7 @@ class CodexNativeSession extends EventEmitter {
         {text,completedAt:this.runtime.completedAt,abortedAt:this.runtime.completedAt,
           message:p.turn.error && p.turn.error.message,errorInfo:p.turn.error || null,
           finality:'provider_final',durationMs:this.runtime.completedAt-this.runtime.startedAt});
-      this.print('\n['+({completed:'已完成',interrupted:'已中断',failed:'执行失败'}[p.turn.status])+']\n');
+      this.terminalPresentation.finish(p.turn.status);
     } else if (type === 'thread/status/changed') {
       this.apply({type:'status',threadId:this.threadId,status:p.status});
       if ((p.status?.type === 'idle' && ['running','waiting'].includes(this.runtime.state))
@@ -329,10 +331,10 @@ class CodexNativeSession extends EventEmitter {
       const old = this.items.get(item.id);
       this.items.set(item.id,{...old,...item,hubStartedAt:old?.hubStartedAt || Date.now(),
         ...(type === 'item/completed' ? {hubCompletedAt:Date.now()} : {})});
-      if (type === 'item/completed' && item.type === 'agentMessage' && item.text && !(old && old.text)) {
-        this.print(item.text);
-      } else if (type === 'item/started' && item.type !== 'agentMessage' && item.type !== 'userMessage') {
-        this.print('\n['+item.type+'] '+(item.command || '')+'\n');
+      if (item.type === 'agentMessage') {
+        this.terminalPresentation.agent(this.items.get(item.id));
+      } else if (item.type !== 'userMessage') {
+        this.terminalPresentation.tool(item, type === 'item/completed');
       }
       this.emit('items',this.blocks());
     } else if (type === 'item/agentMessage/delta') {
@@ -340,10 +342,10 @@ class CodexNativeSession extends EventEmitter {
       const item = this.items.get(p.itemId) || {id:p.itemId,type:'agentMessage',text:'',hubStartedAt:Date.now()};
       item.text = (item.text || '') + p.delta;
       this.items.set(p.itemId,item);
-      this.print(p.delta);
+      this.terminalPresentation.agent(item);
       this.emit('items',this.blocks());
     } else if (type === 'item/commandExecution/outputDelta') {
-      this.print(p.delta);
+      this.terminalPresentation.toolDelta(p.itemId, p.delta);
     } else if (type === 'thread/tokenUsage/updated') {
       this.emit('usage',p.tokenUsage);
     } else if (type === 'error') {
@@ -511,7 +513,7 @@ class CodexNativeSession extends EventEmitter {
     const params = {threadId:this.threadId,input,clientUserMessageId:id,
       ...(active ? {expectedTurnId:this.runtime.turnId} : this.options.turnParams)};
     try {
-      this.print('\n› '+text+'\n');
+      this.terminalPresentation.prompt(text, { reset: !active });
       const result = await client.request(method,params,undefined,{beforeWrite:()=>{
         this.checkSendable(intent);
         if (active ? this.runtime.turnId !== params.expectedTurnId : !TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') {
