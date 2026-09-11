@@ -2472,10 +2472,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
     if (!incremental) {
       if (concurrentFullCards.length === 0) {
-        showPlaceholder(
-          '新会话，发首条消息试试看 — '
-          + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
-        );
+        container.innerHTML = require('./session-welcome').renderSessionWelcome(session, escapeHtml);
       } else {
         removeLoadingPlaceholder();
       }
@@ -3514,6 +3511,21 @@ document.addEventListener('click', (e) => {
 
 // T10 placeholder: "切到 PTY 视图" link
 document.addEventListener('click', (e) => {
+  const starter = e.target.closest && e.target.closest('[data-welcome-prompt]');
+  if (starter) {
+    const box = document.querySelector('#terminal-panel .floating-input-box');
+    if (box) {
+      if (!box.textContent.trim() && !box.querySelector('img, [data-file-path]')) {
+        box.textContent = starter.dataset.welcomePrompt;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      box.focus();
+      const range = document.createRange();
+      range.selectNodeContents(box); range.collapse(false);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    }
+    return;
+  }
   const a = e.target.closest && e.target.closest('[data-action="switch-to-pty"]');
   if (!a) return;
   e.preventDefault();

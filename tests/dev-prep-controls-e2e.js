@@ -140,7 +140,7 @@ async function run() {
       const g = await cdp.eval(`(() => {
         const rect = e => { const r = e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height,right:r.right,bottom:r.bottom}; };
         const f = document.querySelector('.mr-file-flow'), a = document.querySelector('.mr-file-actions'), n = document.querySelector('.mr-file-recipients');
-        return {flow:rect(f),actions:rect(a),recipients:rect(n),buttons:[...a.querySelectorAll('button')].map(e => {
+        return {flow:rect(f),actions:rect(a),recipients:rect(n),avatar:rect(document.querySelector('#mr-free-avatars-row')),head:rect(document.querySelector('#mr-composer-head')),buttons:[...a.querySelectorAll('button')].map(e => {
           const r = e.getBoundingClientRect();
           return {text:e.innerText,...rect(e),hit:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
         })};
@@ -148,7 +148,7 @@ async function run() {
       evidence.geometry[width] = g;
       ok(`宽度 ${width}：按钮可点击且不溢出`, g.buttons.every(b => b.hit && b.x >= g.flow.x - 1 && b.right <= g.flow.right + 1));
       ok(`宽度 ${width}：立项紧邻开题`, g.buttons[0].text === '立项' && g.buttons[1].text === '开题');
-      if (width === 1600) ok('宽屏按钮组左移至收件人左侧', g.recipients.x >= g.actions.right && g.flow.right - g.actions.right >= 150);
+      ok(`宽度 ${width}：头像、状态与操作保持一行`, g.avatar.x < g.flow.x && Math.abs(g.avatar.y + g.avatar.h / 2 - g.actions.y - g.actions.h / 2) < 5 && g.head.h <= 45);
       await shot('controls-' + width);
     }
     await size(1600);

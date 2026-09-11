@@ -1380,6 +1380,49 @@
   cursor: pointer;
 }
 
+.msg-overlay-placeholder.session-welcome {
+  box-sizing: border-box;
+  max-width: 760px;
+  border-radius: 32px;
+  margin: clamp(16px, 5vh, 64px) auto 0;
+  padding: 24px 28px;
+  color: var(--fg-default);
+  opacity: 1;
+  font-style: normal;
+  font-size: 14px;
+  text-align: center;
+  background: radial-gradient(ellipse at 50% 12%, var(--brand-tint), transparent 64%);
+}
+.session-welcome-mark { width: 58px; height: 58px; margin: 0 auto 18px; display: grid; place-items: center; border: 1px solid var(--border-subtle); border-radius: 18px; background: var(--surface-card); box-shadow: var(--shadow-sm); }
+.session-welcome-mark img { width: 34px; height: 34px; object-fit: contain; }
+.session-welcome-eyebrow { font-size: 12px; color: var(--fg-muted); letter-spacing: .05em; }
+.session-welcome h2 { margin: 8px 0; font-size: clamp(24px, 2.5vw, 34px); font-weight: 600; letter-spacing: -.03em; color: var(--fg-default); }
+.session-welcome-intro { margin: 0; color: var(--fg-muted); }
+.session-welcome-project { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; margin-top: 18px; padding: 5px 12px; border: 1px solid var(--border-subtle); border-radius: 24px; font-size: 12px; color: var(--fg-muted); }
+.session-welcome-project span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-welcome svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.session-welcome-project svg { width: 15px; height: 15px; }
+.session-welcome-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 28px; }
+.session-welcome-actions button { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 18px 16px; border: 1px solid var(--border-subtle); border-radius: 14px; background: var(--surface-card); color: var(--fg-default); text-align: left; cursor: pointer; font: inherit; transition: border-color 150ms, background 150ms; }
+.session-welcome-actions button:hover { border-color: var(--brand); background: var(--brand-tint); }
+.session-welcome-actions button:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
+.session-welcome-actions svg { color: var(--brand); margin-bottom: 5px; }
+.session-welcome-actions strong { font-weight: 600; font-size: 14px; }
+.session-welcome-actions small { color: var(--fg-muted); font-size: 11px; line-height: 1.6; }
+.session-welcome-hint { margin-top: 20px; color: var(--fg-muted); font-size: 11px; }
+#terminal-panel:has(.session-welcome):not(:has(.turn-card)) #recent-turn-copy { display: none; }
+@media (max-width: 900px) {
+  .msg-overlay-placeholder.session-welcome { padding: 20px 16px; margin-top: 12px; }
+  .session-welcome-actions { gap: 8px; }
+  .session-welcome-actions button { padding: 12px; }
+}
+@media (max-width: 600px) {
+  .session-welcome-actions { grid-template-columns: 1fr; }
+  .session-welcome-actions button { display: grid; grid-template-columns: 24px 1fr; gap: 2px 10px; }
+  .session-welcome-actions svg { grid-row: 1 / 3; margin: 4px 0; }
+}
+@media (prefers-reduced-motion: reduce) { .session-welcome-actions button { transition: none; } }
+
 /* =========================================================================
    2026-06-28 道雪 · 卡片视图皮肤 v1：深空灰 + 气泡 + 紧凑（合并方案 01+09+10）
    全部 scope 在 .msg-overlay 子树，不影响 sidebar / 群聊 / PTY。
