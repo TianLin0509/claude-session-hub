@@ -1103,6 +1103,8 @@ function createWindow() {
       maximized: !mainWindow.isMaximized ? false : mainWindow.isMaximized(),
       fullScreen: !mainWindow.isFullScreen ? false : mainWindow.isFullScreen(),
       nativeTitleBar,
+      version: _pkgVersion,
+      pid: process.pid,
     });
   };
   mainWindow.on('maximize', emitWindowState);

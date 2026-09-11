@@ -265,3 +265,16 @@ test('history picker follows every native cursor and rejects an incomplete repea
     await assert.rejects(s.listThreads(),/分页游标重复/);
   }finally{await close(s);}
 });
+
+test('native command output returns to card UI and logout is rejected without a model turn',async()=>{
+  const s=make();try {
+    await s.start();
+    const help=await s.send('/help');
+    assert.equal(help.mode,'native-command');assert.match(help.commandOutput,/codex logout/);
+    const status=await s.send('/status');assert.equal(JSON.parse(status.commandOutput).state,'idle');
+    await assert.rejects(s.send('/logout'),/未执行.*PowerShell.*CODEX_HOME/);
+    await assert.rejects(s.send('/unknown-command'),/未发送给模型.*\/help/);
+    assert.equal(s.runtime.turnId,null);assert.equal(s.runtime.state,'idle');
+    await s.send('ordinary prompt after commands');await s.idle();assert.equal(s.runtime.state,'completed');
+  }finally{await close(s);}
+});

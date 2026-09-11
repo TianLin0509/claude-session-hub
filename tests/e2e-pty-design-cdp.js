@@ -69,7 +69,7 @@ async function main(){
     await waitFor('ready',()=>client.eval('!!window.LaunchCenter'));
     const session=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd:workspace,workspaceLabel:'PTY 阅读体验',model:'gpt-6-astra',effort:'high',mcpProfile:'none'}})+')');
     await waitFor('session',()=>client.eval('!!document.querySelector(".session-welcome")'));
-    await clickPoint(client,'[data-view="pty"]');
+    if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');
     await waitFor('native welcome',()=>client.eval('!!document.querySelector(".pty-awaiting-output")'));
     await shot('welcome');
     await clickPoint(client,'.pty-welcome-compose');
@@ -98,16 +98,16 @@ async function main(){
     await shot('output-light');
     await size(760);await shot('output-narrow');
     assert(await client.eval('(()=>{const c=terminalCache.get(activeSessionId);return c.terminal.cols>20&&c.terminal.rows>10&&c.container.getBoundingClientRect().right<=innerWidth;})()'));
-    await clickPoint(client,'[data-view="card"]');
+    if(await client.eval('currentView')!=='card')await clickPoint(client,'#btn-backstage');
     await waitFor('cards',()=>client.eval('document.querySelectorAll(".turn-card").length>0'));
     assert.equal(await client.eval('document.querySelector(".pty-output-heading").getBoundingClientRect().height'),0);
-    await clickPoint(client,'[data-view="pty"]');await _waitMs(250);
+    if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');await _waitMs(250);
     assert.match(await buffer(),/const theme/);
     result.checks.push('深浅主题、760px 窄屏和卡片切换保留输出');
     await size(1500);
     const shell=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'powershell',opts:{cwd:workspace}})+')');
     await waitFor('shell',()=>client.eval(`activeSessionId===${JSON.stringify(shell.id)}&&!!terminalCache.get(activeSessionId)?._hydrated`));
-    await clickPoint(client,'[data-view="pty"]');
+    if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');
     await client.eval('ipcRenderer.send("terminal-input",'+JSON.stringify({sessionId:shell.id,data:"Write-Output 'PTY_REAL_SHELL_OK'\r"})+')');
     await waitFor('shell output',async()=>/PTY_REAL_SHELL_OK/.test(await buffer()));
     assert.equal(await client.eval('!!document.querySelector(".pty-welcome")'),false);

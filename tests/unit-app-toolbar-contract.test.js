@@ -28,8 +28,9 @@ const toolbarHtml = html.slice(toolbarStart, html.indexOf('</header>', toolbarSt
 const order = [
   'id="btn-expand-sidebar"',
   'id="toolbar-crumb"',
-  'class="view-toggle"',
+  'id="hub-identity"',
   'id="toolbar-actions"',
+  'id="btn-backstage"',
   'id="toolbar-window-controls"',
 ];
 let cursor = -1;
