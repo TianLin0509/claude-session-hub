@@ -32,7 +32,8 @@ function nativeTranscriptTurns(threadId, turns) {
     const finals=messages.filter(i=>i.phase==='final_answer' || !i.phase);
     const text=(TERMINAL.has(turn.status) && finals.length ? finals : messages).map(i=>i.text || '').join('\n\n');
     const tools=items.filter(i=>!['userMessage','agentMessage','reasoning'].includes(i.type)).map(i=>({
-      id:i.id,callId:i.id,name:i.type,input:i,output:i.aggregatedOutput || i.result || null,
+      id:i.id,callId:i.id,name:i.type,input:i,output:i.aggregatedOutput ?? i.result ?? i.error ?? null,
+      exitCode:i.exitCode ?? null,durationMs:i.durationMs ?? null,isError:i.isError === true || !!i.error,
       clientSubmissionId:ownerByItem.get(i.id),
       status:(!i.status || i.status==='inProgress') ? (TERMINAL.has(turn.status)?'unknown':'running') : i.status,
       startedAt:ts,...(i.status==='completed'?{completedAt:tsEnd}:{}),

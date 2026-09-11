@@ -2113,6 +2113,7 @@ const turnCardRenderer = createTurnCardRenderer({
   wrapPathLinksInElement: (rootEl, opts) => wrapPathLinksInElement(rootEl, opts),
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
+  openAttachment: (target, opts) => openPathInHub(target, opts),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -2925,7 +2926,7 @@ function getCardSessionId(cardEl) {
     || null;
 }
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.ta-btn');
   if (!btn) return;
   const card = btn.closest('.turn-card');
@@ -2978,7 +2979,9 @@ document.addEventListener('click', (e) => {
       promptText = turn.text;
     } else {
       // regen: walk DOM up looking for prior user .turn-card
-      const cards = [...document.querySelectorAll('.msg-overlay .turn-card')];
+      const owner = getCardSessionId(card);
+      const cards = [...card.closest('.msg-overlay').querySelectorAll('.turn-card')]
+        .filter(item => getCardSessionId(item) === owner);
       const myIdx = cards.indexOf(card);
       for (let i = myIdx - 1; i >= 0; i--) {
         if (cards[i].classList.contains('user')) {
@@ -2993,6 +2996,15 @@ document.addEventListener('click', (e) => {
     // sid 必须取自这张卡片（getCardSessionId），不能用全局 activeSessionId ——
     // 否则在 A 会话的卡片上点重发，消息会打进当时恰好激活的 B 会话。
     const sid = getCardSessionId(card);
+    if (action === 'regen') {
+      if (['commentary', 'activity'].includes(turn.phase)) return;
+      const target = sessions.get(sid);
+      const confirmed = await turnCardRenderer.confirmCardResend({
+        text: promptText, sessionLabel: (target?.name || target?.title || target?.kind || '会话') + ' · ' + sid,
+      });
+      if (!confirmed) return;
+      if (!sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
+    }
     if (sid && isCodexSession(sessions.get(sid))) {
       const original=btn.textContent;
       let error=card.querySelector('.native-card-send-error');

@@ -18,6 +18,14 @@ function displayTurns(turns) {
       text: '', phase: 'activity',
       nativeOutcome: cards.length && turn.nativeOutcome === 'completed' ? null : turn.nativeOutcome,
     });
+    // Message completion is not turn completion. Keep one display-only link
+    // to the logical turn, owned by its last result (never each progress item).
+    const owner = [...cards].reverse().find(m => ['final_answer', 'final'].includes(m.phase))
+      || [...cards].reverse().find(m => !['commentary', 'activity'].includes(m.phase));
+    if (owner) owner.deliveryContext = {
+      id: turn.id, source: turn.source, nativeOutcome: turn.nativeOutcome,
+      stopReason: turn.stopReason, text: turn.text, toolCalls: turn.toolCalls,
+    };
     return cards;
   });
   // Steering inserts another user item inside the same App Server turn.
