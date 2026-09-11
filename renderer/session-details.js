@@ -38,7 +38,7 @@ function detailsHtml(session, { escapeHtml, modelShort }) {
   const model = modelEffort(session, modelShort);
   const ctx = Number.isFinite(session.contextPct) ? `${Math.round(session.contextPct)}%` : '—';
   return '<div class="sl-details">'
-    + `<button type="button" class="sl-usage" data-usage-id="${escapeHtml(session.id)}" title="${escapeHtml(usageText(session))}" aria-label="查看累计与输出用量明细">累计 ${compactCount(usage?.total)}/${compactCount(usage?.output)}${usage?.stale || usage?.partial ? ' *' : ''}</button>`
+    + `<span class="sl-usage" data-usage-id="${escapeHtml(session.id)}" title="${escapeHtml(usageText(session))}">累计 ${compactCount(usage?.total)}/${compactCount(usage?.output)}${usage?.stale || usage?.partial ? ' *' : ''}</span>`
     + `<span class="sl-detail-model" title="${escapeHtml(model)}">${escapeHtml(model)}</span>`
     + `<span class="sl-detail-context" title="上下文占用 ${ctx}">上下文 ${ctx}</span></div>`;
 }
