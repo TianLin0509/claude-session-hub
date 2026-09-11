@@ -135,6 +135,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           mode: result.mode || 'closed-loop',
           enterAttempts: result.enterAttempts ?? null,
           acknowledgementSource: result.acknowledgementSource || null,
+          ...(typeof result.commandOutput === 'string' ? { commandOutput: result.commandOutput } : {}),
           ...(result.threadId ? {threadId:result.threadId,turnId:result.turnId} : {}),
           ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };

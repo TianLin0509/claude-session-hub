@@ -1523,6 +1523,14 @@ function getOrCreateTerminal(sessionId) {
 // 所以这里只认一件事实：现在屏幕上哪块主面板是可见的。
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
+const backstageButton = document.getElementById('btn-backstage');
+function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId && !sessions.get(activeSessionId)?.meetingId) {
+  if (!backstageButton) return;
+  backstageButton.hidden = !visible;
+  backstageButton.setAttribute('aria-pressed', String(currentView === 'pty'));
+  backstageButton.title = currentView === 'pty' ? '返回卡片视图' : '查看后台输出';
+}
+
 const appToolbarEl = document.getElementById('app-toolbar');
 
 // 面板 → 视图名。预览面板之类的附属层不参与，只看主区那几块。
@@ -1549,6 +1557,7 @@ function paintAppToolbarForView(label) {
   toolbarCrumbEl.title = '';
   toolbarActionsEl.replaceChildren();
   toolbarActionsEl.hidden = true;
+  syncBackstageButton(false);
   const signature = 'view:' + label;
   if (toolbarCrumbEl.dataset.signature === signature) return;
   toolbarCrumbEl.dataset.signature = signature;
@@ -1563,6 +1572,7 @@ function paintAppToolbarForView(label) {
 // ⋯ 溢出菜单、文件 / 记忆 / ⋯ / 关闭四个动作。改的只是「填进哪两个常驻节点」。
 function paintAppToolbarForSession(sessionId, session, cached) {
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
+  syncBackstageButton(!session.meetingId);
   toolbarCrumbEl.dataset.signature = 'session:' + sessionId;
   // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
   // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
@@ -1790,6 +1800,8 @@ if (process && process.env && process.env.CLAUDE_HUB_NATIVE_TITLEBAR === '1') {
 ipcRenderer.on('hub:window-state', (_event, state) => {
   const maximized = !!(state && state.maximized);
   appContainerEl.classList.toggle('window-maximized', maximized);
+  document.getElementById('hub-version').textContent = state?.version ? 'v' + state.version : '';
+  document.getElementById('hub-pid').textContent = Number.isInteger(state?.pid) ? 'PID: ' + state.pid : '';
 });
 
 // 系统窗口按钮到底占多宽，Windows 自己最清楚：WCO 报得出就用真值，
@@ -3418,10 +3430,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   cardQuestionNavigator.refresh();
   recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
   cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
-  document.querySelectorAll('.view-toggle-btn').forEach(b => {
-    if (!b.dataset.view) return;
-    b.classList.toggle('active', b.dataset.view === mode);
-  });
+  syncBackstageButton();
   // 切到 PTY 时 refit xterm
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
@@ -3522,8 +3531,10 @@ function recoverVisibleActiveTerminalSurface() {
 }
 
 document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.view-toggle-btn');
-  if (btn && btn.dataset.view) applyViewMode(btn.dataset.view);
+  const btn = e.target.closest('#btn-backstage');
+  if (btn && !btn.hidden && activeSessionId && !currentAppToolbarView()) {
+    applyViewMode(currentView === 'pty' ? 'card' : 'pty');
+  }
 });
 
 // T10 placeholder: "切到 PTY 视图" link
@@ -3853,6 +3864,8 @@ function composerSupportedEfforts(session) {
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
+  const commandFeedback = require('./codex-command-feedback').createCodexCommandFeedback(document, bar);
+  let commandFeedbackSequence = 0;
   bar.dataset.sessionId = sessionId;
   const nativeControls = createCodexNativeControls({
     sessionId, invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
@@ -4251,6 +4264,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const userText = readContenteditablePlainText(inputBox);
     if (!userText || !userText.trim()) return;
     const text = userText;
+    const nativeCommand = isCodexSession(sessions.get(sessionId)) && text.trimStart().startsWith('/');
+    const feedbackSequence = ++commandFeedbackSequence;
+    commandFeedback.clear();
+    if (nativeCommand) commandFeedback.show(text.trim(), '正在执行…');
 
     // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
@@ -4268,9 +4285,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
-    clearSessionWaitingState(sessionId);
-    armPtyBurstFallback(sessionId);
-    if (isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (!nativeCommand) {
+      clearSessionWaitingState(sessionId);
+      armPtyBurstFallback(sessionId);
+    }
+    if (!nativeCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
@@ -4281,7 +4300,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
     const clientSubmissionId = require('node:crypto').randomUUID();
-    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
+    if (!nativeCommand && currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text.trim(), kind, clientSubmissionId);
       } catch (err) {
@@ -4296,9 +4315,15 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
     //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
     clearFloatingInputStuck(bar);
-    const delivery = beginPromptDelivery(clientSubmissionId);
-    floatingPromptDeliveries.set(sessionId, delivery);
+    const delivery = nativeCommand ? null : beginPromptDelivery(clientSubmissionId);
+    if (delivery) floatingPromptDeliveries.set(sessionId, delivery);
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
+      if (nativeCommand) {
+        if (feedbackSequence !== commandFeedbackSequence) return;
+        const failed = !result?.ok || result.sendStatus === 'stuck';
+        commandFeedback.show(text.trim(), failed ? (result?.message || result?.error || '命令未执行，请重试') : (result.commandOutput || '命令已执行。'), failed);
+        return;
+      }
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
@@ -4308,6 +4333,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
+      if (nativeCommand) {
+        if (feedbackSequence === commandFeedbackSequence) commandFeedback.show(text.trim(), err.message || '命令提交失败', true);
+        return;
+      }
       if (floatingPromptDeliveries.get(sessionId) !== delivery
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);

@@ -642,6 +642,8 @@ class CodexNativeSession extends EventEmitter {
     const space = text.search(/\s/);
     const command = (space < 0 ? text : text.slice(0,space)).toLowerCase();
     const value = space < 0 ? '' : text.slice(space).trim();
+    let commandOutput = '';
+    const printResult = text => { commandOutput = String(text); this.print('\n' + commandOutput + '\n'); };
     const client = this.entry.client;
     const request = (method,params) => client.request(method,params,undefined,{beforeWrite:()=>{
       this.checkSendIntent(intent);
@@ -658,17 +660,17 @@ class CodexNativeSession extends EventEmitter {
         const result = await request('mcpServerStatus/list',{threadId:this.threadId,...(cursor ? {cursor} : {}),limit:100});
         all.push(...(result.data || [])); cursor = result.nextCursor;
       } while (cursor);
-      this.print('\n'+JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2)+'\n');
+      printResult(JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2));
     } else if (command === '/status' || command === '/help') {
-      this.print('\n'+(command === '/status' ? JSON.stringify(this.runtime,null,2)
-          : '原生命令：/status /mcp /model <模型> /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n新建、恢复、分叉请使用 Hub 会话菜单；终端仅显示输出。\n')+'\n');
+      printResult(command === '/status' ? JSON.stringify(this.runtime,null,2)
+          : '原生命令：/status /mcp /model <模型> /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n在 Hub 输入框提交以上命令；后台仅显示输出。\n新建、恢复、分叉请使用 Hub 会话菜单。\n/logout、/login 尚未接入：在 PowerShell 使用 codex logout、codex login（相同 CODEX_HOME）。\n');
     } else if (command === '/rename' && value) {
       await request('thread/name/set',{threadId:this.threadId,name:value});
       this.emit('renamed',value);
     } else if (command === '/goal') {
       if (!value) {
         const goal = await request('thread/goal/get',{threadId:this.threadId});
-        this.print('\n'+JSON.stringify(goal,null,2)+'\n');
+        printResult(JSON.stringify(goal,null,2));
       } else if (value === 'clear') await request('thread/goal/clear',{threadId:this.threadId});
       else await request('thread/goal/set',{threadId:this.threadId,
         ...(['pause','resume'].includes(value) ? {status:value === 'pause' ? 'paused' : 'active'} : {objective:value})});
@@ -680,10 +682,12 @@ class CodexNativeSession extends EventEmitter {
     } else if (command === '/review' && !value) {
       await this.idle(0,intent.signal);
       await request('review/start',{threadId:this.threadId,target:{type:'uncommittedChanges'},delivery:'inline'});
+    } else if (command === '/logout' || command === '/login') {
+      throw new Error(command + ' 尚未接入 Hub，未执行。请在 PowerShell 使用 codex ' + command.slice(1) + '，并使用与本会话相同的 CODEX_HOME。账号操作影响共享该登录目录的会话；后台是只读输出，不能直接输入 CLI 命令。');
     } else {
-      throw new Error('此命令尚无 Hub 原生映射：'+command+'。未发送给模型；请使用 Hub 对应操作。');
+      throw new Error('此命令尚无 Hub 原生映射：'+command+'。未发送给模型；输入 /help 查看支持的命令，其他 CLI 命令请在独立终端运行 Codex。');
     }
-    return {ok:true,sendStatus:'ok',mode:'native-command',enterAttempts:0,acknowledgementSource:BACKEND};
+    return {ok:true,sendStatus:'ok',mode:'native-command',commandOutput,enterAttempts:0,acknowledgementSource:BACKEND};
   }
   write(data) {
     if (data === '\x03' || data === '\x1b') {
