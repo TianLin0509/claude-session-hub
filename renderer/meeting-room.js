@@ -126,6 +126,7 @@ if (typeof document !== 'undefined') (function () {
 
   // [幕次折叠] meetingId -> Set(actKey) 当前被折叠的幕次（前端临时状态，不持久化；刷新后默认全展开）。
   const _gcCollapsedActs = {};
+  const _gcToolsExpanded = {};
 
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
@@ -2691,14 +2692,16 @@ if (typeof document !== 'undefined') (function () {
                群成员按钮移到 header；操作按钮(综合共识等)移到作战面板；research 场景保留精简 topbar 只放投委会入口。 -->
           ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="开投委会：手输股票，自动跑五幕出双榜">⚖️ 开投委会</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="过往投委会：回看历史五幕发言+双榜+主席报告">📋 过往投委会</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="技术初筛=独立趋势龙雷达，与投委会解耦">📊 技术初筛</button></div></div>` : ''}
 
-          <div class="mr-gc-search-row"><input type="text" class="mr-gc-search" placeholder="🔍 搜索本群聊消息…" /><span class="mr-gc-search-count"></span></div>
-          ${progressLane}
+          <div class="mr-gc-tools" id="mr-gc-tools" ${_gcToolsExpanded[meeting.id] ? '' : 'hidden'}>
+            <div class="mr-gc-search-row"><input type="text" class="mr-gc-search" placeholder="搜索本群聊消息…" aria-label="搜索本群聊消息" /><span class="mr-gc-search-count"></span></div>
+            ${progressLane}
+            ${mobileWorkbench}
+          </div>
           <div class="mr-gc-messages">
             ${emptyHtml}
             ${messageHtml}
             ${pendingHtml}
           </div>
-          ${mobileWorkbench}
           <button type="button" class="mr-gc-scroll-bottom" data-gc-scroll-bottom="1" title="回到最新回答">↓ 最新</button>
           <button type="button" class="mr-gc-collapse-all" data-gc-collapse-all="1" title="折叠/展开所有长回答">⇕ 折叠全部</button>
         </main>
@@ -4975,6 +4978,23 @@ if (typeof document !== 'undefined') (function () {
         if (m) _handleNextAction(btn.getAttribute('data-gc-next-action'), m);
       });
     }
+    // Keep the existing nodes and listeners: only their layout parent changes.
+    const avatars = document.getElementById('mr-free-avatars-row');
+    let head = document.getElementById('mr-composer-head');
+    if (inputRow.classList.contains('mr-group-composer')) {
+      if (!head) {
+        head = document.createElement('div');
+        head.id = 'mr-composer-head';
+        head.className = 'mr-composer-head';
+        inputRow.prepend(head);
+      }
+      if (avatars && avatars.parentNode !== head) head.prepend(avatars);
+      if (row.parentNode !== head) head.append(row);
+    } else if (head) {
+      if (avatars) inputRow.prepend(avatars);
+      inputRow.parentNode.insertBefore(row, inputRow);
+      head.remove();
+    }
     return row;
   }
 
@@ -5244,7 +5264,7 @@ if (typeof document !== 'undefined') (function () {
     const running = !!s.running || _isGroupTurnRunning(current);
     row.innerHTML = `<div class="mr-file-flow" data-file-phase="${escapeHtml(s.phase || '')}">
       <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
-      <div class="mr-file-detail"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
+      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，输入“继续”接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
@@ -6183,7 +6203,7 @@ if (typeof document !== 'undefined') (function () {
       <!-- 2026-06-28 道雪：删 header 进度条（与标题旁 meta 的"已N轮·本轮N/M"文字信息重叠），保留 meta。_updateHeaderProgress 的 progEl 分支会因元素缺失自动跳过。 -->
       <div class="mr-header-right">
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
-        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${viewToggleHtml}</div>
+        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
           ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>注入记忆</button>` : ''}
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
@@ -6231,6 +6251,23 @@ if (typeof document !== 'undefined') (function () {
     });
     // 2026-06-28 道雪：header 群成员按钮 → toggle 右侧群成员栏（替代原 topbar 里的 data-gc-side-toggle）。
     const groupMembersBtn = document.getElementById('mr-btn-group-members');
+    const groupToolsBtn = document.getElementById('mr-btn-group-tools');
+    if (groupToolsBtn) groupToolsBtn.addEventListener('click', () => {
+      const open = !_gcToolsExpanded[meeting.id];
+      _gcToolsExpanded[meeting.id] = open;
+      const tools = document.getElementById('mr-gc-tools');
+      if (tools) {
+        tools.hidden = !open;
+        const search = tools.querySelector('.mr-gc-search');
+        if (open) search?.focus();
+        else if (search?.value) {
+          search.value = '';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      groupToolsBtn.setAttribute('aria-expanded', String(open));
+      groupToolsBtn.classList.toggle('active', open);
+    });
     if (groupMembersBtn) groupMembersBtn.addEventListener('click', () => {
       _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
       renderHeader(meeting);
