@@ -103,6 +103,7 @@ async function main() {
   for (const dir of [DATA_DIR, WORKSPACE_ROOT, ARTIFACT_DIR]) fs.mkdirSync(dir,{recursive:true});
   fs.writeFileSync(path.join(WORKSPACE_ROOT,'.aiwork-root'),'');
   const project=path.join(WORKSPACE_ROOT,'project');seedProject(project,{name:'欢迎页验收项目',trunk:'master'});
+  new (require('../core/prepared-project-registry').PreparedProjectRegistry)({dataDir:DATA_DIR}).register(project);
   const dispatch=path.join(TEMP_ROOT,'dispatch.js');fs.writeFileSync(dispatch,"module.exports=()=>({text:'群聊布局验收回复'});");
   let hub,client;const result={checks:[],geometry:{}};
   const shot=name=>screenshot(client,path.join(ARTIFACT_DIR,name+'.png'));
@@ -139,7 +140,8 @@ async function main() {
     await clickPoint(client,'[data-remove-member="1"]');
     await clickPoint(client,'#meeting-create-modal .mcm-create');
     const created=await waitFor('persisted development workflow',()=>client.eval('ipcRenderer.invoke("get-meetings").then(ms=>ms.find(m=>m.scene==="dev" && m.serialWorkflow?.fileFlowVersion===2) || null)'));
-    await client.eval('selectMeeting('+JSON.stringify(created.id)+')');
+    // Verify the automatically opened room. Reselecting it masks first-open initialization bugs.
+    assert.equal(await client.eval('activeMeetingId'),created.id);
     await waitFor('solo controls',()=>client.eval('!!document.querySelector("[data-file-independent]") && !!document.querySelector("#mr-gc-tools")'));
     for(const width of [1500,1100,760]) {
       await size(width);
@@ -179,6 +181,18 @@ async function main() {
     assert.equal(await client.eval('document.querySelector(".mr-gc-search-row").getBoundingClientRect().height'),0);
     assert.equal(await client.eval('document.querySelectorAll(".mr-gc-search-dim").length'),0);
     result.checks.push('真实群聊受控派发后进度仍默认隐藏；工具可展开，搜索有效，收起时清除筛选');
+    await client.eval("openMeetingCreateModal('group')");
+    await clickPoint(client,'[data-mcm-scene="dev"]');
+    await clickPoint(client,'[data-mcm-workspace-mode="default"]');
+    await client.eval(`document.querySelectorAll('.mcm-slot .mcm-ai-select').forEach(s=>{s.value='codex';s.dispatchEvent(new Event('change',{bubbles:true}));})`);
+    await clickPoint(client,'#meeting-create-modal .mcm-create');
+    const dual=await waitFor('dual group auto opened',()=>client.eval('ipcRenderer.invoke("get-meetings").then(ms=>ms.find(m=>m.scene==="dev" && m.subSessions.length===2 && m.serialWorkflow?.fileFlowVersion===2) || null)'));
+    await waitFor('dual auto selection',()=>client.eval('activeMeetingId==='+JSON.stringify(dual.id)));
+    await waitFor('dual controls without reselection',()=>client.eval('!!document.querySelector("[data-file-kickoff]") && !!document.querySelector("[data-file-prep]") && !!document.querySelector("[data-file-docs]")'));
+    assert.equal(await client.eval('document.querySelectorAll(".mr-free-avatar-chk").length'),2);
+    assert.match(await client.eval('document.querySelector("#mr-input-box").dataset.placeholder'),/开题/);
+    await shot('dual-first-open');
+    result.checks.push('单人及双人开发群聊创建后自动完整初始化，不补点侧栏；双人显示两头像、开题/立项/任务文件及对应输入提示');
     result.passed=true;
   } finally {
     if(client){if(!result.passed) result.debug=await client.eval(`({errors:window.__welcomeErrors, meetings: Object.values(meetings).map(m=>({id:m.id,scene:m.scene,workflow:m.serialWorkflow})),preflight:document.getElementById('mr-input-preflight')?.outerHTML})`);await shot('final');await client.close();}if(hub)await gracefulQuit(hub);
