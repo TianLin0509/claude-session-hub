@@ -387,13 +387,14 @@ const css = read('renderer/styles/card-view.css');
 const cardRenderer = read('renderer/turn-card-renderer.js');
 const controllerSource = read('renderer/card-multi-select.js');
 
-test('入口按钮在卡片头部那一行，且是中文', () => {
+test('多选保留在卡片头部的更多菜单内，且是中文', () => {
   assert.match(cardRenderer, /data-action="multi-select"[^>]*>多选</);
   assert.match(
     cardRenderer,
-    /<div class="turn-actions">[\s\S]{0,400}data-action="multi-select"/,
-    '多选按钮必须和复制 / 公司 / 重发在同一行',
+    /<div class="turn-actions">\s*\$\{renderCardActions\(turn\)\}/,
+    '更多菜单必须由卡片头部的操作区渲染',
   );
+  assert.match(cardRenderer, /card-actions-popover[\s\S]{0,40}\+ multi/);
 });
 
 test('操作条节点存在且能挺过终端面板重建', () => {

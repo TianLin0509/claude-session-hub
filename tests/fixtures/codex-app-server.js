@@ -83,6 +83,19 @@ rl.on('line',line=>{
           turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
         }
         setTimeout(()=>finish(thread,turn,'completed','受控验证已完成'),400);
+      } else if(mode==='fixture:card-details') {
+        answer(msg.id,{turn});
+        const emit=item=>{turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});};
+        emit({id:'progress-'+turn.id,type:'agentMessage',phase:'commentary',text:'已定位卡片信息缺失，正在验证工具输出与交付关联。'});
+        setTimeout(()=>{
+          emit({id:'change-'+turn.id,type:'fileChange',status:'completed',changes:[{path:'src/card-example.js',kind:{type:'update'},diff:'-old\n+new'}]});
+          emit({id:'change-failed-'+turn.id,type:'fileChange',status:'failed',error:'controlled write failure',changes:[{path:'src/not-written.js',kind:{type:'update'},diff:'-old\n+new'}]});
+          for(let i=0;i<25;i++)emit({id:'check-'+i+'-'+turn.id,type:'commandExecution',command:'node --test src/example-'+i+'.test.js',status:'completed',aggregatedOutput:'',exitCode:0,durationMs:12});
+          emit({id:'failed-'+turn.id,type:'commandExecution',command:'node --test missing.test.js',status:'completed',aggregatedOutput:'Error: interrupted process',exitCode:-1,durationMs:1200});
+          emit({id:'long-'+turn.id,type:'commandExecution',command:'node --test card-example.test.js',status:'completed',aggregatedOutput:'完整日志\n'+'验'.repeat(60001)+'\nEND-OF-FULL-OUTPUT',exitCode:0,durationMs:2300});
+          emit({id:'mcp-'+turn.id,type:'mcpToolCall',server:'fixture',tool:'check',status:'completed',result:{content:[{type:'text',text:'结构化结果保留'}]}});
+          finish(thread,turn,'completed','卡片细节已验证。\n\n- 修改文件：`src/card-example.js`\n- 成功命令 26 条，失败命令 1 条；失败没有被隐藏。\n- 交付：[验收说明](./card-delivery.html)');
+        },500);
       } else if(mode==='fixture:conversation') {
         answer(msg.id,{turn});
         const progress=(id,text)=>{const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};
