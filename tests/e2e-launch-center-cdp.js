@@ -200,6 +200,8 @@ async function verifyPersistentMembers(client, result) {
   await waitFor('more button opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
   await clickPoint(client, '[data-launch-intent="group"]');
   await waitFor('two member form', () => client.eval(`document.querySelectorAll('.mcm-ai-select').length === 2`));
+  await clickPoint(client, '[data-mcm-scene="general"]');
+  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 1; i <= 2; i++) await chooseValue(client, `.mcm-slot:nth-child(${i}) .mcm-ai-select`, 'codex');
   await client.eval(`document.getElementById('mcm-title-input').value = 'T4 两个 Codex 常驻成员'`);
   await clickPoint(client, '.mcm-create');
@@ -250,6 +252,8 @@ async function verifyPersistentMembers(client, result) {
   // Real extra members exercise wrapping without fabricating sidebar DOM.
   await clickPoint(client, '#btn-new-more');
   await clickPoint(client, '[data-launch-intent="group"]');
+  await clickPoint(client, '[data-mcm-scene="general"]');
+  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 0; i < 3; i++) {
     await client.eval(`document.getElementById('mcm-add-member').scrollIntoView({ block: 'center' })`);
     await clickPoint(client, '#mcm-add-member');
@@ -426,8 +430,8 @@ async function main() {
       };
     })()`);
     assert.deepEqual(result.sceneReset, {
-      scene: 'general', devSceneSelected: false, workspaceMode: 'default',
-      hintShown: false, hintText: '',
+      scene: 'dev', devSceneSelected: true, workspaceMode: 'existing',
+      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。',
     }, '重开后场景说明必须跟着场景一起复位');
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });

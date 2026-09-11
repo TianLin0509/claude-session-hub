@@ -6,6 +6,53 @@ const VERSION = 2;
 const PRESET_START = '【AI HUB 开题提示词】';
 const PRESET_END = '【开题提示词结束】';
 const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+const SOLO_START = '【AI HUB 独立开工提示词】';
+const SOLO_END = '【独立开工提示词结束】';
+const PROMPT_VERSION = 1;
+const HUMAN_REPORT = '用大白话、言简意赅地向用户汇报关键进展、结果或阻碍，不用固定英文标签，不复述文件全文。复杂内容必要时制作 HTML，给出准确路径；不为每一步都写报告。';
+const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
+function roles(meeting, members = []) {
+  const specs = meeting.slotSpecs || [];
+  const resolve = index => {
+    const id = meeting.serialWorkflow?.steps?.[index]?.[0] || specs[index]?.memberId || `m${index + 1}`;
+    const member = members.find(m => m.memberId === id);
+    const spec = specs.find((m, i) => (m.memberId || `m${i + 1}`) === id);
+    return { id, name: member?.displayName || spec?.title || spec?.name || `成员 ${id}` };
+  };
+  return { author: resolve(0), merger: resolve(1) };
+}
+function protocolKey(meeting, members = []) {
+  return JSON.stringify([PROMPT_VERSION, !!isSolo(meeting), meeting.workspace || '', meeting.serialWorkflow?.projectLocator || '', roles(meeting, members)]);
+}
+function soloCommon(meeting, dir, members = []) {
+  const { author } = roles(meeting, members);
+  return [
+    '## AI HUB 单 Agent 开发',
+    `工作目录：${meeting.workspace || '先核实本群任务对应的项目根目录'}`,
+    meeting.serialWorkflow?.projectLocator || '',
+    `${author.name} 负责实现、验证和已授权的合并；自测不等于独立审查。普通讨论不启动施工，明确开工后持续完成任务，不等待 Hub 派下一阶段。`,
+    `任务记录：${path.join(dir || '本群任务目录', '任务记录.md')}。执行前读取并核对现场，无记录则创建；只更新变化与必要证据，UTF-8 保存并回读。不另建阶段交接文件，不靠改名派工。`,
+    '遵守用户范围和项目规范；项目要求独立审查或额外审批时仍须满足。完成写真实结果，阻塞写原因和未完成项，不反复索取已有授权。',
+    HUMAN_REPORT,
+  ].filter(Boolean).join('\n');
+}
+function independentPrompt(meeting = {}, dir = '本群任务目录', members = []) {
+  const { author } = roles(meeting, members), record = path.join(dir, '任务记录.md');
+  return [
+    `${author.name}：按当前需求独立开工，兼任实现 Agent 与合并 Agent。项目：${meeting.workspace || '先核实真实项目根'}。`,
+    `先读项目 AGENTS.md、.agents/AUTHOR.md、.agents/MERGER.md、.agents/project.json 和 ${record}；无记录则创建。复用已有成果，在独立 worktree 实现，保护生产与他人改动。`,
+    '完成必要测试，GUI 改动提供真实隔离证据；在最新主干核实完整 SHA、执行项目验证与 dry-run，通过后按项目入口合并并完成后置检查。已完成步骤不重复。',
+    '本条授权本任务范围内的实现与合并；用户限制、项目独立审查或额外审批要求仍须满足，自测不冒充独立审查。',
+    `在 ${record} 更新项目位置、分支、完整 SHA、实际验证命令及结果、合并结果和风险；UTF-8 保存回读后报告，不改名、不等待派工。阻塞如实记录。`,
+    HUMAN_REPORT,
+  ].join('\n');
+}
+function appendIndependent(text, prompt = independentPrompt()) {
+  let base = String(text || '');
+  const start = base.indexOf(SOLO_START), end = base.indexOf(SOLO_END, start);
+  if (start >= 0 && end >= start) base = base.slice(0, start).trimEnd() + base.slice(end + SOLO_END.length);
+  return [base.trim(), `${SOLO_START}\n${prompt}\n${SOLO_END}`].filter(Boolean).join('\n\n');
+}
 function appendProjectPrep(text) {
   const base = String(text || '');
   if (base.includes(PROJECT_PREP_PROMPT)) return base;
@@ -63,27 +110,31 @@ function appendKickoff(text, prompt) {
   if (start >= 0 && end >= start) base = base.slice(0, start).trimEnd() + base.slice(end + PRESET_END.length);
   return [base.trim(), `${PRESET_START}\n${prompt}\n${PRESET_END}`].filter(Boolean).join('\n\n');
 }
-function common(meeting, dir) {
+function common(meeting, dir, members = []) {
+  if (isSolo(meeting)) return soloCommon(meeting, dir, members);
+  const { author, merger } = roles(meeting, members);
   return [
     '## AI HUB 文件工作流',
     `本群任务目录：${dir}`,
     `工作目录：${meeting.workspace || '按本群项目线索定位并核实真实 Git 根目录'}`,
     meeting.serialWorkflow?.projectLocator || '',
-    '角色固定：第一席位负责开题和实现，第二席位负责独立验证与合并；头像选择只决定下一条用户消息发送给谁。',
+    `${author.name} 负责开题与实现，${merger.name} 负责独立验证与合并。头像选择只决定消息接收人，不改变已绑定的职责。`,
     '用户发送开题提示词后，授权按开题范围实现，并在独立验证通过后按项目入口合并；用户明确的禁止事项或额外审批条件优先。',
-    '能从现有需求和项目事实判断的选择，直接采用推荐方案并简述取舍；不使用 ASK，不反复索取流程批准。遵守用户明确的范围、禁止事项以及必要的权限边界。',
+    '遵守项目规范及用户范围；能判断的选择直接采用合理方案，不反复索取已有授权。',
     '普通讨论和进度询问只回答，不据此开始施工。收到明确的开题、阶段派工或继续执行指令才执行对应阶段。',
-    '“继续”指本群同一个任务：先读已有草稿和已交付文件，核对现场，复用原 worktree、分支和已完成成果；不要新开一个任务。',
-    '每阶段先创建或接续草稿，在草稿记录进展、决策、真实验证和阻碍。写完保存、回读，最后同目录原子改名交付；不覆盖已完成文件。',
-    '开题报告.md → 已完成-开题报告.md；实现手册-轮次N.md → 已完成-实现手册-轮次N.md；合并手册-轮次N.md → 需返工-合并手册-轮次N.md 或 已完成-合并手册-轮次N.md。',
-    'Hub 只按文件名接续流程，不读取正文裁决。客观阻塞或中断就保留草稿并说明事实，不能用完成文件表示失败。改名交付后结束本阶段，由 Hub 派下一位。',
-    '正文中的 SHA、验证命令、结果和项目位置供下一位 Agent 核查，不能省略；无需固定的聊天标签或重复交接四行。',
+    '执行前读指定输入并核对阶段文件；已有交付件则核实报告，不重建草稿。否则先创建或接续指定草稿，记录必要进展和证据。',
+    '交付时 UTF-8 保存、回读，同目录原子改名；确认目标存在、草稿消失后结束当前阶段。不得自创文件名、跳轮、覆盖交付件或用聊天代替落盘。',
+    'Hub 只按文件名接续；输入缺失、状态冲突或客观阻塞保留现状并报告，不伪造完成。用户手动继续仍接续同一任务，不另开分支或重复已完成步骤。',
+    HUMAN_REPORT,
   ].filter(Boolean).join('\n');
 }
-function phasePrompt(meeting, dir, state) {
+function phasePrompt(meeting, dir, state, members = []) {
   const s = state.phase === 'discuss' ? spec('kickoff') : state;
-  const base = [common(meeting, dir), `\n## 执行${{ kickoff: '开题', build: '施工', merge: '合并' }[s.phase]}${s.round ? ` · 第 ${s.round} 轮` : ''}`,
-    `本阶段草稿：${path.join(dir, s.draft)}`, `完成交付：${path.join(dir, s.completed)}`];
+  const { author, merger } = roles(meeting, members);
+  const draft = path.join(dir, s.draft), done = path.join(dir, s.completed);
+  const base = [`## ${s.phase === 'merge' ? merger.name : author.name}：执行${{ kickoff: '开题', build: '实现', merge: '合并' }[s.phase]}${s.round ? ` · 第 ${s.round} 轮` : ''}`,
+    `项目：${meeting.workspace || '先核实真实项目根'}`, meeting.serialWorkflow?.projectLocator || '',
+    `先读指定输入并核对阶段文件，再创建或接续草稿：${draft}。已有交付件则核实，不重建或覆盖。`];
   if (s.phase === 'kickoff') base.push(
     '依据用户这条消息和此前讨论，先核实项目位置、阅读项目 AGENTS.md 和 .agents/project.json，写自包含开题报告。',
     '报告包括：目标、范围、推荐方案、可执行验收、风险与回退、项目绝对路径及工作入口；记录你采用的合理假设。',
@@ -93,15 +144,19 @@ function phasePrompt(meeting, dir, state) {
     s.round > 1 ? `阅读 ${path.join(dir, spec('merge', s.round - 1).rework)}，优先修复其中具体阻断项，保留此前成果。` : '按开题范围开始实现。',
     '在独立 worktree 实现并完成必要测试，形成可审查提交；不得改写生产工作目录或混入别人的改动。',
     '手册写明项目根、worktree、分支、完整提交 SHA、实际执行的验证命令/结果和残余风险。GUI 改动需真实隔离 GUI 证据。',
-    '只有可交给独立审查时才改名交付；工作位不自行合并。');
+    `只有可交给 ${merger.name} 独立审查时才交付；不自行合并。`);
   if (s.phase === 'merge') base.push(
     `阅读 ${path.join(dir, '已完成-开题报告.md')}、${path.join(dir, spec('build', s.round).completed)}、项目 .agents/MERGER.md 和 .agents/project.json。`,
-    '独立检查实际分支和完整 SHA，不采信工作位的自报通过，不代修实现。亲自执行项目 dry-run 和必要验证；使用测试隔离环境，不能触碰运行中的生产服务。',
+    `独立核实分支和完整 SHA，不采信 ${author.name} 的自报通过，不代修实现。亲自执行项目 dry-run 和必要验证；使用隔离环境，不触碰运行中的生产服务。`,
     '针对最新主干核验集成；只有真实冲突或测试失败才要求返工，主干单纯前移不构成返工理由。',
-    `有具体代码或验收缺陷：写清证据及修复要求，改名为 ${path.join(dir, s.rework)}，由 Hub 派下一轮实现。`,
+    `有真实代码或验收缺陷：写清证据和修复要求，将 ${draft} 以 UTF-8 保存、回读后同目录原子改名为 ${path.join(dir, s.rework)}，确认目标存在、草稿消失后结束，由 Hub 派 ${author.name} 返工。`,
     '验证通过且本任务已有合并授权时，按项目规定入口合并被验证的完整 SHA，并完成规定的合并后检查。项目既有人工审批或远端发布要求仍须满足，不从“无 ASK”推导新的权限。',
     '先核查该提交是否已合并；中断发生在 Git 成功后时只补剩余检查和记录，不重复合并或升版本。',
     '只有真实合并及要求的后置操作成功才用“已完成”改名。环境、权限、审批或工具失败保留草稿并说明，不把它伪装成实现缺陷或成功。');
-  return base.join('\n');
+  base.push(`达到本阶段成功交付条件后，将 ${draft} 以 UTF-8 保存、回读，同目录原子改名为 ${done}；确认目标存在、草稿消失后结束本阶段，由 Hub 接续。不得覆盖交付件；输入缺失、状态冲突或客观阻塞则保留现状并说明。`,
+    '用大白话简短汇报交付结果、文件位置和遗留问题；复杂内容必要时制作 HTML。');
+  return base.filter(Boolean).join('\n');
 }
-module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt };
+module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt,
+  PROJECT_PREP_PROMPT, isSolo, soloCommon, independentPrompt, appendIndependent, SOLO_START, SOLO_END,
+  PROMPT_VERSION, HUMAN_REPORT, roles, protocolKey };

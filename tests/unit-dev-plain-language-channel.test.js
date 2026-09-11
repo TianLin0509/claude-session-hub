@@ -137,7 +137,8 @@ test('C3 · 项目合同精简，旧协议留在旧模板，新流程由 Hub 注
   assert(legacy.stepConfigs[0].prompt.includes('PROGRESS / VERIFIED / RISK / REPORT'));
   const F = require('../core/dev-file-workflow');
   const prompt = F.phasePrompt({}, '/fixture', F.spec('merge', 1));
-  assert(prompt.includes('不使用 ASK'));
+  assert(F.common({}, '/fixture').includes('不用固定英文标签'));
+  assert(prompt.includes('大白话'));
   assert(prompt.includes('需返工-合并手册-轮次1.md'));
   assert.deepEqual(Feed.fields('PLAN: a\nUPDATE: b\nASK: c\nNOTES: d'), {PLAN:'a', UPDATE:'b', ASK:'c', NOTES:'d'});
 });

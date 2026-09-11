@@ -1,7 +1,15 @@
 'use strict';
 
-function renderMessageBody(text, {isUser=false, escapeHtml, renderMarkdown}) {
-  const raw=String(text || '');
+function plainProgressText(text) {
+  let fence = null;
+  return String(text || '').split('\n').map(line => {
+    const marker = line.match(/^\s*(`{3,}|~{3,})/);
+    if (marker) { if (!fence) fence=marker[1]; else if (marker[1][0]===fence[0] && marker[1].length>=fence.length) fence=null; return line; }
+    return fence ? line : line.replace(/^(\s*)(?:PLAN|UPDATE)\s*[:：]\s*/,'$1');
+  }).join('\n');
+}
+function renderMessageBody(text, {isUser=false, plainProgress=false, escapeHtml, renderMarkdown}) {
+  const raw=plainProgress && !isUser ? plainProgressText(text) : String(text || '');
   const body=isUser ? `<div class="conversation-user-text">${escapeHtml(raw)}</div>` : renderMarkdown(raw);
   if(raw.length<1200 && raw.split('\n').length<32)return body;
   // This is an explicit presentation fold of ONE source message. No invented
@@ -19,12 +27,12 @@ function renderActivity(message,escapeHtml) {
       + `<pre>${escapeHtml(typeof t.input==='string' ? t.input : JSON.stringify(t.input || {},null,2))}</pre>`
       + (t.output ? `<pre>${escapeHtml(typeof t.output==='string' ? t.output : JSON.stringify(t.output,null,2))}</pre>` : '')+'</div>').join('')+'</details>';
 }
-function renderMessageSequence(messages,{escapeHtml,renderMarkdown}) {
+function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false}) {
   return messages.filter(m=>m && (m.text || m.toolCalls?.length)).map(m=>`<section class="conversation-entry" data-message-id="${escapeHtml(m.id || '')}" data-phase="${escapeHtml(m.phase || 'message')}">`
     + `<div class="conversation-entry-head"><span class="conversation-phase">${phaseLabel(m.phase)}</span>`
     + `${m.ts ? `<time>${escapeHtml(require('../core/beijing-time').formatBeijingClock(m.ts))}</time>` : ''}`
     + '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条消息" aria-label="复制这条消息">复制</button></div>'
-    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown}))+'</section>').join('');
+    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown,plainProgress:plainProgress && m.phase==='commentary'}))+'</section>').join('');
 }
 function patchConversationArticle(existing, next) {
   const doc=existing.ownerDocument;
@@ -55,4 +63,4 @@ function patchConversationArticle(existing, next) {
       if(r.toString()===savedSelection.text){selection.removeAllRanges();selection.addRange(r);}}
   }
 }
-module.exports={renderMessageBody,renderMessageSequence,phaseLabel,patchConversationArticle};
+module.exports={renderMessageBody,renderMessageSequence,phaseLabel,patchConversationArticle,plainProgressText};

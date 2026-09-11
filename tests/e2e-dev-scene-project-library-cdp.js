@@ -167,9 +167,9 @@ async function main() {
       existingHidden: document.getElementById('mcm-workspace-existing')?.hidden,
     }))()`);
     assert.equal(result.afterDev.scene, 'dev');
-    assert.equal(result.afterDev.workspaceMode, 'default', '开发场景不再强制切到「选择已有路径」');
-    assert.equal(result.afterDev.existingHidden, true);
-    assert.match(result.afterDev.hint, /默认工作目录/);
+    assert.equal(result.afterDev.workspaceMode, 'existing', '开发场景不再强制切到「选择已有路径」');
+    assert.equal(result.afterDev.existingHidden, false);
+    assert.match(result.afterDev.hint, /独立开工/);
     assert.match(result.afterDev.hint, /项目库/);
 
     // 3. 点「选择已有路径」：项目库自动展开，列出中文名 + 路径，且没有弹系统对话框

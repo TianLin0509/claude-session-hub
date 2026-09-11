@@ -61,19 +61,46 @@ async function run() {
     await size(1600);
     // Use the actual creation modal and its normal create handler, not synthetic members.
     await cdp.eval("openMeetingCreateModal('group')");
-    await click('[data-mcm-scene="dev"]');
+    await click('[data-mcm-scene="general"]');
+    await cdp.eval("closeMeetingCreateModal();openMeetingCreateModal('group')");
+    ok('默认开发排第一，默认选择已有路径', await cdp.eval(`document.querySelector('input[name="mcm-scene"]:checked').value==='dev' && document.querySelector('[data-mcm-scene]').dataset.mcmScene==='dev' && document.querySelector('[data-mcm-workspace-mode="existing"]').getAttribute('aria-checked')==='true'`));
+    ok('创建页不再显示起手选项', await cdp.eval("!document.querySelector('[data-mcm-dev-start]')"));
+    await click('[data-mcm-workspace-mode="default"]');
+    if (process.argv.includes('--solo')) await click('[data-remove-member="1"]');
     if (process.argv.includes('--double-codex')) {
       await cdp.eval(`(() => {const s=document.querySelector('.mcm-slot[data-slot="0"] .mcm-ai-select');s.value='codex';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
     }
     await shot('creation');
     await click('#meeting-create-modal .mcm-create');
-    const created = await wait(async () => (await invoke('get-meetings')).find(m => m.scene === 'dev' && m.subSessions.length === 2 && m.serialWorkflow?.fileFlowVersion === 2), 'real UI created room');
+    const created = await wait(async () => (await invoke('get-meetings')).find(m => m.scene === 'dev' && m.subSessions.length === (process.argv.includes('--solo') ? 1 : 2) && m.serialWorkflow?.fileFlowVersion === 2), 'real UI created room');
     const id = created.id;
     const room = async () => (await invoke('get-meetings')).find(m => m.id === id);
     await cdp.eval(`selectMeeting(${JSON.stringify(id)})`);
-    await wait(() => cdp.eval("!!document.querySelector('[data-file-kickoff]')"), 'file controls');
+    await wait(() => cdp.eval("!!document.querySelector('[data-file-prep]')"), 'file controls');
     await shot('initial-wide');
     evidence.initial = created;
+    if (process.argv.includes('--solo')) {
+      ok('单 Claude 自动分配两项职责，保留模型选择', created.slotSpecs[0].kind==='claude' && created.serialWorkflow.soloDevelopment && JSON.stringify(created.serialWorkflow.steps)==='[["m1"],["m1"]]');
+      ok('单人显示独立开工，隐藏双人开题', await cdp.eval("!!document.querySelector('[data-file-independent]') && !document.querySelector('[data-file-kickoff]')"));
+      const before = calls().length;
+      await type('修改按钮文案\n保留用户要求');
+      await click('[data-file-independent]');
+      await wait(() => cdp.eval("document.getElementById('mr-input-box').innerText.includes('【独立开工提示词结束】')"), 'independent preset IPC');
+      const filled = await cdp.eval("document.getElementById('mr-input-box').innerText");
+      await click('[data-file-independent]');
+      ok('独立开工保留草稿、重复点击不叠加', filled.startsWith('修改按钮文案\n保留用户要求') && filled.includes('实现 Agent 与合并 Agent') && filled===await cdp.eval("document.getElementById('mr-input-box').innerText"));
+      ok('预填不派发、不创建交接文件', calls().length===before && !fs.existsSync(path.join(DATA,'task-docs',id)));
+      for (const width of [1600, 760]) { await size(width); await shot('solo-'+width); }
+      await enter();
+      await wait(() => calls().length>before, 'independent user send');
+      ok('Enter 仅发送一条完整 prompt 给单成员', calls().length===before+1 && calls()[before].userInput===filled && JSON.stringify((await room()).participants)==='[0]');
+      await wait(async () => !(await invoke('dev-file:status',{meetingId:id})).running,'solo settles');
+      await sleep(1500);
+      ok('回复结束不会自动启动第二轮或旧循环', calls().length===before+1 && !created.serialWorkflow.loop.enabled);
+      evidence.ok=true;
+      return;
+    }
+
     ok('实际建群 UI：两席保留，初始仅首席选中', JSON.stringify(created.participants) === '[0]');
     if (process.argv.includes('--double-codex')) ok('两个独立 Codex 席位', created.slotSpecs.every(s => s.kind === 'codex') && new Set(created.subSessions).size === 2);
     ok('首席头像与收件人一致', await cdp.eval("JSON.stringify([...document.querySelectorAll('.mr-free-slot-cb:checked')].map(e=>Number(e.dataset.slotIdx)))==='[0]'"));

@@ -28,7 +28,7 @@
     // 开发场景的默认工作流。**通用**：prompt 里不出现任何项目名或绝对路径，
     // 全部走仓库内相对路径 —— 群聊的工作目录就是项目根，所以 .agents/AUTHOR.md 对任何项目都成立。
     // 项目差异沉淀在各自仓库的 .agents/ 里，改流程只改那几个 .md，不用回来动 Hub。
-    { id: 'dev-task', name: '开发任务', desc: '工作位实现 ↔ 合并位审，PASS 即合并', minMembers: 2, recommended: true },
+    { id: 'dev-task', name: '开发任务', desc: '按成员数量分配实现与合并职责', minMembers: 1, recommended: true },
     // 极简：同一个 AI 先当工作位改，再当合并位审自己的改动。针对「小到不值得占两个席位」
     // 的需求（改一行文案、加一个开关）。代价说清楚：没有独立第三方，评审的独立性不成立，
     // 换来的是少一半 token 和少一次上下文交接。要不要接受这个代价由用户在建群时选。
@@ -233,6 +233,7 @@
       // Explicit legacy build configs remain compatible; new dual rooms use the name-only protocol.
       if (!(opts && opts.devPhase === 'build')) {
         devConfig.fileFlowVersion = 2;
+        if (ids.length === 1) devConfig.soloDevelopment = true;
         devConfig.loop = { enabled: false };
         devConfig.stepConfigs = [
           { name: '开题与实现', prompt: '项目差异见 .agents/AUTHOR.md；通用阶段提示词由 AI HUB 文件工作流统一注入。' },
