@@ -156,6 +156,31 @@ function createSessionListRenderer(options = {}) {
   const { detailsHtml, usageText } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  const sectionKeys = ['sec-pinned', 'sec-active', 'sec-today', 'sec-dormant'];
+  let collapsedSections = new Set();
+  let dormantDays = 1;
+  let modelFilter = 'all';
+  try {
+    const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
+    if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
+    const days = Number(storage.getItem('hubSidebarDormantDays'));
+    if ([1, 3, 7].includes(days)) dormantDays = days;
+    const model = storage.getItem('hubSidebarModelFilter');
+    if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
+  } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
+  function savePreference(key, value) {
+    try { storage.setItem(key, value); }
+    catch (error) { console.warn('[sidebar] preference could not be saved:', error.message); }
+  }
+  const modelControl = doc.getElementById?.('session-model-filter');
+  if (modelControl) {
+    modelControl.value = modelFilter;
+    modelControl.addEventListener('change', () => {
+      modelFilter = SESSION_FAMILY_KEYS.includes(modelControl.value) ? modelControl.value : 'all';
+      savePreference('hubSidebarModelFilter', modelFilter);
+      renderSessionList();
+    });
+  }
   let detailsEnabled = false;
   try { detailsEnabled = storage.getItem('hubSessionDetails') === 'true'; } catch {}
   const collapsedDetailsMeetings = new Set();
@@ -563,6 +588,29 @@ sessionListEl.addEventListener('keydown', event => {
     if (typeof options.openSearch === 'function') return options.openSearch(detail);
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
+  function filteredSidebarItems(sessionMap = getSessions()) {
+    return collectSidebarItems(sessionMap).filter(item => modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter));
+  }
+  function revealSearchItem(id, memberId = null) {
+    const item = collectSidebarItems().find(entry => entry.id === id);
+    if (!item) return;
+    const member = memberId && item._meeting?.subSessions?.includes(memberId) ? getSessions().get(memberId) : null;
+    if (modelFilter !== 'all' && !(member ? sessionFamilies(member, getSessions()) : sessionFamilies(item, getSessions())).has(modelFilter)) {
+      modelFilter = 'all';
+      if (modelControl) modelControl.value = modelFilter;
+      savePreference('hubSidebarModelFilter', modelFilter);
+    }
+    if (member) {
+      collapsedDetailsMeetings.delete(id);
+      _expandedMeetings.add(id);
+      _persistExpandedMeetings();
+    }
+    const parts = partitionSidebarSessions([item], { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    const key = parts.pinned.length ? 'sec-pinned' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
+    collapsedSections.delete(key);
+    savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
+    renderSessionList();
+  }
   doc.addEventListener?.('sidebar:manage-pin', event => {
     if (!collectSidebarItems().some(item => item.id === event.detail?.id && item.pinned)) return;
     openContextMenu(event.detail.id, event.detail.x, event.detail.y);
@@ -574,7 +622,7 @@ sessionListEl.addEventListener('keydown', event => {
     const failures = [];
     try {
       const ipc = options.ipcRenderer || require('electron').ipcRenderer;
-      const current = partitionSidebarSessions(collectSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+      const current = partitionSidebarSessions(filteredSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
       for (const item of current.today) {
         try {
           const members = item._isMeeting ? (item._meeting.subSessions || []) : [item.id];
@@ -602,7 +650,7 @@ sessionListEl.addEventListener('keydown', event => {
   function renderSessionList() {
     const renderStartedAt = nowMs();
     const sessionMap = getSessions();
-  const visible = collectSidebarItems(sessionMap);
+  const visible = filteredSidebarItems(sessionMap);
   const sections = partitionSidebarSessions(visible, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
@@ -610,6 +658,7 @@ sessionListEl.addEventListener('keydown', event => {
   const savedScrollTop = sessionListEl.scrollTop;
   const focused = doc.activeElement;
   const focusId = focused?.dataset?.sessionId || focused?.dataset?.meetingId;
+  const focusControl = focused?.dataset?.sidebarControl;
   const hadListFocus = focused && sessionListEl.contains?.(focused);
   // Build the entire status reclassification off-DOM, then commit once. A
   // running -> needs-input transition used to clear and repopulate the live
@@ -635,6 +684,7 @@ sessionListEl.addEventListener('keydown', event => {
       const groupContainer = isGroupChat ? doc.createElement('div') : null;
       if (groupContainer) {
         groupContainer.className = 'sidebar-group' + (detailsEnabled ? ' detailed-group' : ' compact-group')
+          + (s._meeting.subSessions?.includes(getActiveSessionId()) ? ' has-active-member' : '')
           + (hoveredMeetingId === s.id ? ' hover-open' : '');
         groupContainer.dataset.sidebarGroup = s.id;
         target.appendChild(groupContainer);
@@ -740,7 +790,7 @@ sessionListEl.addEventListener('keydown', event => {
           groupContainer.appendChild(children);
           for (const id of s._meeting.subSessions || []) {
             const member = sessionMap.get(id);
-            if (member) appendItem(member, true, children);
+            if (member && (modelFilter === 'all' || familyOfKind(member.kind) === modelFilter)) appendItem(member, true, children);
           }
         }
         return;
@@ -751,6 +801,7 @@ sessionListEl.addEventListener('keydown', event => {
         for (const subId of s._meeting.subSessions) {
           const sub = sessionMap.get(subId);
           if (!sub) continue;
+          if (modelFilter !== 'all' && familyOfKind(sub.kind) !== modelFilter) continue;
           if (detailsEnabled) { appendItem(sub, true, target); continue; }
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
@@ -854,21 +905,46 @@ sessionListEl.addEventListener('keydown', event => {
   }
 
   function appendSecHeader(label, items, cls, action, onAction) {
+    const collapsed = collapsedSections.has(cls);
     const h = doc.createElement('div');
     h.className = 'session-sec-header ' + cls;
-    h.innerHTML = '<span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
+    h.innerHTML = '<button type="button" class="sec-collapse" data-sidebar-control="' + cls + '" aria-label="' + (collapsed ? '展开' : '折叠') + label + '" aria-expanded="' + !collapsed + '">' + (collapsed ? '▸' : '▾') + '</button><span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
       + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-active' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
     h.addEventListener('click', event => {
+      if (event.target?.closest?.('.sec-collapse') || /sec-collapse/.test(event.target?.className || '')) {
+        event.preventDefault(); event.stopPropagation();
+        if (collapsedSections.has(cls)) collapsedSections.delete(cls); else collapsedSections.add(cls);
+        savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
+        renderSessionList();
+        return;
+      }
       if (!event.target?.closest?.('.sec-action') && !/sec-action|sec-mark-all-read/.test(event.target?.className || '')) return;
       event.preventDefault(); event.stopPropagation();
       return onAction?.();
     });
+    if (cls === 'sec-dormant') {
+      const range = doc.createElement('select');
+      range.className = 'sec-dormant-range';
+      range.dataset.sidebarControl = 'dormant-range';
+      range.setAttribute?.('aria-label', '休眠显示范围');
+      range.innerHTML = '<option value="1">最近24小时</option><option value="3">最近3天</option><option value="7">最近7天</option>';
+      range.value = String(dormantDays);
+      range.addEventListener('change', () => {
+        const days = Number(range.value);
+        if (![1, 3, 7].includes(days)) return;
+        dormantDays = days;
+        savePreference('hubSidebarDormantDays', String(days));
+        renderSessionList();
+      });
+      h.appendChild(range);
+    }
     renderTarget.appendChild(h);
-    for (const item of items) appendItem(item);
+    if (!collapsed) for (const item of items) appendItem(item);
   }
   appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
   appendSecHeader('活跃', sections.active, 'sec-active', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
   appendSecHeader('今天', sections.today, 'sec-today', sections.today.length ? '归档全部' : '', archiveToday);
+  appendSecHeader('休眠', sections.archive.filter(item => Date.now() - latestActivityTime(item) < dormantDays * 86400000), 'sec-dormant');
   const archive = doc.createElement('button');
   archive.type = 'button';
   archive.className = 'session-archive-entry';
@@ -903,6 +979,9 @@ sessionListEl.addEventListener('keydown', event => {
   if (hadListFocus && focusId) {
     const replacement = [...sessionListEl.querySelectorAll('.session-item')].find(row => (row.dataset.sessionId || row.dataset.meetingId) === focusId);
     replacement?.focus({ preventScroll: true });
+  }
+  if (hadListFocus && focusControl) {
+    [...sessionListEl.querySelectorAll('[data-sidebar-control]')].find(control => control.dataset.sidebarControl === focusControl)?.focus({ preventScroll: true });
   }
   const elapsed = Math.max(0, nowMs() - renderStartedAt);
   renderStats.renders += 1;
@@ -948,6 +1027,7 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
   return {
     renderSessionList,
+    revealSearchItem,
     renderSidebarStrip,
     getRenderStats: () => ({ ...renderStats }),
   };

@@ -133,9 +133,9 @@ test('未知 kind 回落到 .sl-model 文字列', () => {
 });
 
 // ---------------- 用例 5：休眠行不再印"休眠"二字，但 dormant 标记还在 ----------------
-test('休眠会话只贡献归档数，不再绘制休眠行', () => {
+test('最近休眠会话绘制休眠行并保留完整归档入口', () => {
   const { rows, html } = renderRows(oneSession({ id: 'd1', kind: 'codex', status: 'dormant' }));
-  assert.ok(!rows.some(r => r.dataset.sessionId === 'd1'));
+  assert.ok(rows.some(r => r.dataset.sessionId === 'd1'));
   assert.match(html, /archive-count">1</);
 });
 test('断连使用红色圆点，原因保留在 tooltip', () => {

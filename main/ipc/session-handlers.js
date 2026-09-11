@@ -370,6 +370,17 @@ function registerSessionIpc(ipcMain, deps) {
     return session;
   });
 
+  // Only explicit history navigation calls this. Previewing search results
+  // must not manufacture activity or a completed model response.
+  ipcMain.handle('session:record-history-open', (_e, { sessionId } = {}) => {
+    const session = sessionManager.getSession(sessionId);
+    if (!session) return { ok: false, message: '会话不存在或未成功恢复' };
+    const at = Math.max(Date.now(), Number(session.lastMessageTime) || 0);
+    const updated = sessionManager.updateSessionMeta(sessionId, { lastMessageTime: at, hiddenFromSidebar: false });
+    if (!updated) return { ok: false, message: '侧栏活动时间更新失败' };
+    return { ok: true, at };
+  });
+
   ipcMain.handle('get-sessions', () => {
     return sessionManager.getAllSessions();
   });
