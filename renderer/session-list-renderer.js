@@ -153,7 +153,7 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
 
 
 function createSessionListRenderer(options = {}) {
-  const { detailsHtml, usageText } = require('./session-details.js');
+  const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
   const sectionKeys = ['sec-pinned', 'sec-active', 'sec-today', 'sec-dormant'];
@@ -414,16 +414,8 @@ function _sessionWarningText(session) {
     if (!intent || !intent.id) return false;
     try {
       if (intent.type === 'usage') {
-        const session = getSessions().get(intent.id);
-        if (!session) return false;
-        let dialog = doc.getElementById('session-usage-dialog');
-        if (!dialog) {
-          dialog = doc.createElement('dialog');
-          dialog.id = 'session-usage-dialog';
-          doc.body.appendChild(dialog);
-        }
-        dialog.innerHTML = `<form method="dialog"><button aria-label="关闭用量明细">关闭</button></form><h3>${escapeHtml(session.title || '会话用量')}</h3><pre>${escapeHtml(usageText(session))}</pre>`;
-        if (!dialog.open) dialog.showModal();
+        // Usage details live in the hover tooltip. Consume the click so it
+        // does not activate or resume the surrounding session row.
         return true;
       }
       if (intent.type === 'toggle-meeting') {

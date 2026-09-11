@@ -89,12 +89,14 @@ async function main() {
     assert.match(await cdp.eval(`document.querySelector('[data-session-id="single-codex"] .sl-detail-model').textContent`), /Astra High/);
     assert.match(await cdp.eval(`document.querySelector('[data-usage-id="unknown"]').textContent`), /—\/—/);
     result.checks.push('real transcript -> main -> IPC -> ordinary and indented member rows; unknown placeholder');
-    await click(cdp, '[data-usage-id="single-codex"]');
-    await until(cdp, `document.querySelector('#session-usage-dialog')?.open`);
-    assert.match(await cdp.eval(`document.querySelector('#session-usage-dialog').textContent`), /1,280,000/);
-    await click(cdp, '#session-usage-dialog button');
-    await until(cdp, `!document.querySelector('#session-usage-dialog')?.open`);
-    result.checks.push('physical click on usage opens and closes the details dialog');
+    const selectionBeforeUsage = await cdp.eval(`activeSessionId`);
+    for (const id of ['single-codex', 'member-codex']) {
+      await click(cdp, `[data-usage-id="${id}"]`);
+      assert.equal(await cdp.eval(`!!document.querySelector('#session-usage-dialog')?.open`), false, 'usage click must not open a modal');
+      assert.equal(await cdp.eval(`activeSessionId`), selectionBeforeUsage, 'usage click must not navigate');
+      assert.match(await cdp.eval(`document.querySelector('[data-usage-id="${id}"]').title`), /1,280,000/);
+    }
+    result.checks.push('ordinary/member usage keeps hover details; physical clicks neither open a modal nor navigate');
     await click(cdp, '[data-meeting-id="details-group"] .expand-arrow');
     await until(cdp, `document.querySelectorAll('.child.has-details').length === 0`);
     await _waitMs(450);
