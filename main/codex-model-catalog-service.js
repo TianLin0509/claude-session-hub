@@ -14,7 +14,7 @@ function readCodexModelList(options = {}) {
   const spawnFn = options.spawnFn || spawn;
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 8000);
   const commandSpec = resolveCodexAppServerCommand(options);
-  const env = { ...(options.env || process.env) };
+  const env = { ...(options.env || process.env), ...commandSpec.env };
   if (options.home) env.CODEX_HOME = options.home;
   if (options.proxy) {
     env.HTTP_PROXY = options.proxy;

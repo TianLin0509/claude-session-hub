@@ -259,3 +259,13 @@
   .scene-rail .btn-options,
   .scene-rail .btn-rail-theme { transition: none; }
 }
+
+/* Compact, themed two-tone navigation artwork. */
+.scene-rail #btn-home { --rail-accent: #8199ff; }
+.scene-rail #btn-research { --rail-accent: #48bfa5; }
+.scene-rail #btn-study { --rail-accent: #b194ec; }
+.scene-rail #btn-ran { --rail-accent: #62b8e2; }
+.scene-rail #btn-rail-memo { --rail-accent: #d9ac60; }
+.scene-rail .btn-shell-nav .btn-icon { width: 22px; height: 22px; color: var(--rail-accent, var(--fg-muted)); }
+.scene-rail .btn-shell-nav:hover .btn-icon { filter: brightness(1.12); }
+.scene-rail .btn-shell-nav.active { box-shadow: inset 0 0 0 1px var(--border-subtle); }

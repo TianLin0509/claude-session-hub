@@ -7490,12 +7490,12 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // event makes the card button intermittently bounce back to PTY.
   const requestedView = _chuxinRequestedSessionViews.get(session.id);
   if (requestedView) _chuxinRequestedSessionViews.delete(session.id);
-  // New ordinary sessions default to PTY. Dormant resumes use this session's
+  // New ordinary AI sessions default to cards. Dormant resumes use this session's
   // remembered view unless a shortcut explicitly requested one.
   const unreadWantedCard = _completedUnreadCardViews.delete(session.id);
   applyViewMode(
-    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : 'pty')),
-    { remember: false },
+    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : (session.kind === 'powershell' ? 'pty' : 'card'))),
+    { remember: !wasDormant },
   );
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),

@@ -123,6 +123,10 @@ function resolveCodexAppServerCommand(opts = {}) {
   if (platform === 'win32') {
     const appData = opts.appData || process.env.APPDATA || '';
     const npmCmd = appData ? path.join(appData, 'npm', 'codex.cmd') : '';
+    if (!opts.codexCommand && npmCmd && fs.existsSync(npmCmd)) {
+      const launch = require('../codex-windows-command').resolveWindowsCodex(opts.env || process.env, { shim: npmCmd });
+      return { ...launch, args: ['app-server', '--listen', 'stdio://'] };
+    }
     const codexCommand = opts.codexCommand || (npmCmd && fs.existsSync(npmCmd) ? npmCmd : 'codex');
     return {
       command: opts.comSpec || process.env.ComSpec || 'cmd.exe',
@@ -164,7 +168,7 @@ function readCodexAccountUsage(opts = {}) {
   const killTreeFn = opts.killTreeFn || (proc => terminateOwnedProcessTree(proc, {
     platform: opts.platform,
   }));
-  const env = { ...(opts.env || process.env) };
+  const env = { ...(opts.env || process.env), ...commandSpec.env };
   if (opts.home) env.CODEX_HOME = opts.home;
   if (opts.proxy) {
     env.HTTP_PROXY = opts.proxy;

@@ -2,8 +2,6 @@
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { StringDecoder } = require('string_decoder');
-const fs = require('fs');
-const path = require('path');
 
 function resolveNativeCommand(env = process.env) {
   // A test fixture is an explicit executable/script in an isolated Hub only.
@@ -12,14 +10,7 @@ function resolveNativeCommand(env = process.env) {
       env:{ ...env, ELECTRON_RUN_AS_NODE:'1' } };
   }
   if (process.platform !== 'win32') return { command:'codex', args:[], env };
-  const shim = path.join(env.APPDATA || '', 'npm', 'codex.cmd');
-  const text = fs.readFileSync(shim, 'utf8');
-  const match = text.match(/"([^"\r\n]*[\\/]bin[\\/]codex(?:-managed)?\.js)"/i);
-  if (!match) throw new Error('无法解析 Codex npm 启动器：' + shim);
-  const script = match[1].replace(/%dp0%/gi, path.dirname(shim) + path.sep);
-  if (!fs.existsSync(script)) throw new Error('Codex 启动入口不存在：' + script);
-  // Use Node directly; passing TOML through cmd.exe loses quotes and risks expansion.
-  return { command:process.execPath, args:[script], env:{ ...env, ELECTRON_RUN_AS_NODE:'1' } };
+  return require('./codex-windows-command').resolveWindowsCodex(env);
 }
 
 class CodexAppServerClient extends EventEmitter {
