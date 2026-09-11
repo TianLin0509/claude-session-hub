@@ -80,6 +80,8 @@
 #session-list .sl-dot.start { background: var(--status-success); }
 #session-list .sl-dot.run,
 #session-list .sl-dot.start { animation: mini-st-pulse 1.5s ease-in-out infinite; }
+#session-list .sl-dot.idle { background: #3b82f6; border: none; }
+#session-list .sl-dot.dorm { background: var(--fg-faint); border: none; }
 #session-list .sl-dot.unread { background: var(--brand); }
 #session-list .session-item.slim.meeting { display: block; }
 #session-list .session-item.slim.meeting .sl-line1 {

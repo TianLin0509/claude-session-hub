@@ -1039,6 +1039,11 @@ function showDormantResumePlaceholder(session, error = null) {
 }
 
 
+const wakeDormantMeetingMembers = require('./meeting-member-wake.js').createMeetingMemberWake({
+  getSession: id => sessions.get(id),
+  resumeSession: id => resumeDormantSession(id),
+});
+
 async function selectMeeting(meetingId, opts = {}) {
   void savePreviewState({ nonBlocking: true });
   activeSessionId = null;
@@ -1068,10 +1073,13 @@ async function selectMeeting(meetingId, opts = {}) {
     meeting.unreadCount = 0;
     if (meeting.unreadAnswered instanceof Set) meeting.unreadAnswered.clear();
     let acknowledgedFailure = false;
+    const readMembers = [];
     for (const sid of meeting.subSessions || []) {
+      if (clearSessionCompletedUnread(sessions.get(sid))) readMembers.push(sid);
       acknowledgedFailure = acknowledgeSessionFailureState(sid, { render: false }) || acknowledgedFailure;
     }
-    if (acknowledgedFailure) schedulePersist();
+    if (readMembers.length) ipcRenderer.send('mark-sessions-read', { sessionIds: readMembers });
+    if (acknowledgedFailure || readMembers.length) schedulePersist();
   }
   paintSidebarActiveTarget({ meetingId });
   scheduleSessionListRender();
@@ -1098,6 +1106,7 @@ async function selectMeeting(meetingId, opts = {}) {
   });
   if (activeMeetingId !== meetingId || activeSessionId !== null) return;
   if (meeting && typeof MeetingRoom !== 'undefined') {
+    let shouldWakeMembers = opts.wakeDormantMembers === true;
     if (meeting.status === 'dormant') {
       meeting.status = 'idle';
       // 2026-07-20 道雪 [修#2]：唤醒状态同步落后端——否则下一次 meeting-updated
@@ -1109,16 +1118,14 @@ async function selectMeeting(meetingId, opts = {}) {
         workflow && workflow.enabled && !workflow.loop?.enabled
         && Array.isArray(workflow.steps) && workflow.steps.length
       );
-      // 普通群聊保持历史行为；纯串行工作流由 runSerialWorkflow 在每一步前
-      // 只唤醒本步成员，避免“打开房间”就同时拉起所有 CLI/MCP。
-      if (!usesLazySerialWake) {
-        for (const sid of meeting.subSessions) {
-          const s = sessions.get(sid);
-          if (s && s.status === 'dormant') {
-            resumeDormantSession(sid);
-          }
-        }
-      }
+      // Background navigation retains lazy serial wake. Explicit sidebar opening
+      // wakes every dormant member, including unselected workflow participants.
+      shouldWakeMembers ||= !usesLazySerialWake;
+    }
+    if (shouldWakeMembers) {
+      void wakeDormantMeetingMembers(meeting).catch(error => {
+        alert(`群聊“${meeting.title || meeting.id}”部分成员唤醒失败：\n${error.message}`);
+      });
     }
     MeetingRoom.openMeeting(meetingId, meeting, {
       forceScrollBottom: opts.forceScrollBottom === true,
