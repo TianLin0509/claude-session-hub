@@ -181,6 +181,12 @@ function createSessionListRenderer(options = {}) {
       renderSessionList();
     });
   }
+  const { createSidebarProjectFilter } = require('./sidebar-project-filter');
+  const projectFilter = createSidebarProjectFilter({
+    document: doc, storage,
+    ipcRenderer: options.ipcRenderer || (doc.getElementById?.('session-project-filter') ? require('electron').ipcRenderer : null),
+    onChange: () => renderSessionList(),
+  });
   let detailsEnabled = false;
   try { detailsEnabled = storage.getItem('hubSessionDetails') === 'true'; } catch {}
   const collapsedDetailsMeetings = new Set();
@@ -581,11 +587,12 @@ sessionListEl.addEventListener('keydown', event => {
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
   function filteredSidebarItems(sessionMap = getSessions()) {
-    return collectSidebarItems(sessionMap).filter(item => modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter));
+    return collectSidebarItems(sessionMap).filter(item => projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
   }
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
+    projectFilter.reveal(item);
     const member = memberId && item._meeting?.subSessions?.includes(memberId) ? getSessions().get(memberId) : null;
     if (modelFilter !== 'all' && !(member ? sessionFamilies(member, getSessions()) : sessionFamilies(item, getSessions())).has(modelFilter)) {
       modelFilter = 'all';
@@ -1016,6 +1023,8 @@ sessionListEl.addEventListener('mousedown', (e) => {
 });
 
 
+
+  queueMicrotask(() => projectFilter.refresh());
 
   return {
     renderSessionList,

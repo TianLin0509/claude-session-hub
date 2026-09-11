@@ -23,3 +23,12 @@
 #session-list .session-item.slim.meeting.has-session-details .sl-line1.with-arrow { grid-template-columns: 10px 15px minmax(0, 1fr) auto auto; }
 #session-list .session-item.slim.meeting.has-session-details .sl-line1.with-arrow .expand-arrow { display: inline-block; transform: rotate(0); }
 #session-list .session-item.slim.meeting.has-session-details.expanded .sl-line1.with-arrow .expand-arrow { transform: rotate(90deg); }
+
+/* Keep both filters beside details within the default narrow sidebar. */
+.session-detail-bar { gap: 5px; padding-inline: 8px; }
+.session-model-filter, .session-project-filter { white-space: nowrap; }
+.session-project-filter { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 74px; color: var(--text-secondary); font-size: 11px; }
+.session-project-filter select { width: 100%; min-width: 0; max-width: 110px; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; font: inherit; padding: 3px; text-overflow: ellipsis; }
+.session-model-filter select { max-width: 65px; }
+#btn-session-details { gap: 4px; padding-inline: 4px; }
+.session-project-filter-note { padding: 3px 8px; color: var(--accent-orange); font-size: 11px; }

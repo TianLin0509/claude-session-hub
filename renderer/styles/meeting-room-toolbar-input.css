@@ -69,7 +69,8 @@
 }
 .mr-group-composer .mr-free-avatars-row { grid-column: 1 / -1; grid-row: 1; justify-self: start; }
 .mr-group-composer .mr-composer-head { grid-column: 1 / -1; grid-row: 1; display: flex; align-items: center; gap: 10px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.mr-composer-head .mr-free-avatars-row { padding: 0; border: 0; background: transparent; max-width: 150px; gap: 4px; }
+.mr-composer-head .mr-free-avatars-row { padding: 2px; border: 0; background: transparent; max-width: 150px; gap: 4px; overflow-y: hidden; scrollbar-width: none; }
+.mr-composer-head .mr-free-avatars-row::-webkit-scrollbar { display: none; }
 .mr-composer-head .mr-free-avatar-chk { width: 28px; height: 28px; flex: none; }
 .mr-composer-head .mr-free-avatar-chk-mark { width: 12px; height: 12px; font-size: 8px; }
 .mr-composer-head .mr-input-preflight { flex: 1; min-width: 0; padding: 0; min-height: 32px; flex-wrap: nowrap; gap: 8px; }
@@ -419,7 +420,7 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
   border-color: rgba(var(--rgb-success), 0.4);
 }
 .mr-free-avatar-chk:hover:not(.disabled) {
-  transform: scale(1.05);
+  transform: none;
 }
 .mr-free-avatar-chk.disabled {
   cursor: not-allowed; opacity: 0.5;
