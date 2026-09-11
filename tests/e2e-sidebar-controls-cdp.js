@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { randomUUID } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 delete process.env.ELECTRON_RUN_AS_NODE;
@@ -16,9 +17,9 @@ const out = path.resolve(__dirname, '../artifacts/sidebar-controls');
 const runId = `${Date.now()}-${process.pid}`;
 fs.mkdirSync(data); fs.mkdirSync(out, { recursive: true });
 for (const name of ['claude-projects', 'codex-sessions', 'kimi-sessions', 'gemini-sessions']) fs.mkdirSync(path.join(root, name));
-const now = Date.now(), day = 86400000, nativeId = randomUUID();
+const now = Date.now(), day = 86400000, nativeId = randomUUID(), groupNativeId = randomUUID();
 const nativeStore = path.join(root, 'native-store.json');
-fs.writeFileSync(nativeStore, JSON.stringify([[nativeId, { id: nativeId, cwd: root, path: null, status: { type: 'idle' }, turns: [], model: 'gpt-6-astra', reasoningEffort: 'high' }]]));
+fs.writeFileSync(nativeStore, JSON.stringify([nativeId, groupNativeId].map(id => [id, { id, cwd: root, path: null, status: { type: 'idle' }, turns: [], model: 'gpt-6-astra', reasoningEffort: 'high' }])));
 const record = (hubId, age, extra = {}) => ({ hubId, kind: 'codex', title: hubId, cwd: root,
   status: 'dormant', lastMessageTime: now - age, lastCompletedAt: now - age, createdAt: now - age,
   currentModel: { id: 'gpt-6-astra', displayName: 'Astra High' }, effort: 'high', ...extra });
@@ -27,11 +28,14 @@ fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ version: 1, cle
     record('sleep-2d', 2 * day, { kind: 'claude' }), record('sleep-6d', 6 * day, { kind: 'deepseek' }),
     record('history-nine-days', 9 * day, { codexSid: nativeId, title: 'HistoryUniqueNineDays' }),
     record('group-codex', 3 * 3600000, { meetingId: 'mixed' }),
-    record('group-claude', 3 * 3600000, { kind: 'claude', meetingId: 'mixed' })],
-  meetings: [{ id: 'mixed', title: 'MixedGroup', groupChat: true, status: 'dormant', subSessions: ['group-codex', 'group-claude'], participants: [0, 1], createdAt: now - 3 * 3600000, lastMessageTime: now - 3 * 3600000 }], immersiveByMeeting: {} }));
+    record('group-claude', 3 * 3600000, { kind: 'claude', meetingId: 'mixed' }),
+    record('history-group-child', 9 * day, { meetingId: 'history-group', codexSid: groupNativeId })],
+  meetings: [{ id: 'mixed', title: 'MixedGroup', groupChat: true, status: 'dormant', subSessions: ['group-codex', 'group-claude'], participants: [0, 1], createdAt: now - 3 * 3600000, lastMessageTime: now - 3 * 3600000 },
+    { id: 'history-group', title: 'HistoryGroupUnique', groupChat: true, status: 'dormant', subSessions: ['history-group-child'], participants: [0], createdAt: now - 9 * day, lastMessageTime: now - 9 * day }], immersiveByMeeting: {} }));
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 let hub, cdp;
-const result = { runId, root, checks: [], screenshots: [], errors: [] };
+const windowMode = process.env.HUB_SIDEBAR_TEST_HIDDEN === '1' ? 'hidden' : 'visible';
+const result = { runId, root, windowMode, candidateSha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(__dirname, '..'), encoding: 'utf8' }).trim(), checks: [], screenshots: [], errors: [] };
 async function until(expression, timeout = 20000) {
   const start = Date.now();
   while (!await cdp.eval(`(async()=>Boolean(await (${expression})))()`)) {
@@ -62,7 +66,8 @@ async function shot(label) {
   fs.writeFileSync(file, Buffer.from(shot.data, 'base64')); result.screenshots.push(file);
 }
 async function start() {
-  hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), windowMode: 'hidden', label: 'sidebar-controls', extraEnv: {
+  hub = await launchIsolatedHub({ dataDir: data, port: await freePort(), windowMode, label: 'sidebar-controls', extraEnv: {
+    CLAUDE_HUB_E2E: '1',
     CODEX_HOME: path.join(root, 'codex-home'), CLAUDE_CONFIG_DIR: path.join(root, 'claude-home'),
     CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
     CLAUDE_HUB_NATIVE_FIXTURE_STORE: nativeStore,
@@ -125,15 +130,21 @@ async function main() {
     await click('#search-query');
     await until(`document.activeElement === document.getElementById('search-query')`);
     await cdp.eval(`document.getElementById('search-query').select()`);
-    await cdp.send('Input.insertText', { text: 'MixedGroup' });
-    assert.equal(await cdp.eval(`document.getElementById('search-query').value`), 'MixedGroup');
+    await cdp.send('Input.insertText', { text: 'HistoryGroupUnique' });
+    assert.equal(await cdp.eval(`document.getElementById('search-query').value`), 'HistoryGroupUnique');
     await until(`document.querySelector('[data-search-action="open"]')?.textContent === '打开群聊'`);
     await _waitMs(800);
-    assert.equal(await cdp.eval(`meetings.mixed.lastMessageTime`), now - 3 * 3600000);
+    assert.equal(await cdp.eval(`meetings['history-group'].lastMessageTime`), now - 9 * day);
     await click('[data-search-action="open"]');
-    await until(`activeMeetingId === 'mixed' && meetings.mixed.lastMessageTime > ${now}`);
-    assert.equal(await cdp.eval(`document.querySelector('#session-list [data-meeting-id="mixed"] .sl-time').textContent`), '刚刚');
+    await until(`activeMeetingId === 'history-group' && meetings['history-group'].lastMessageTime > ${now}`);
+    assert.equal(await cdp.eval(`document.querySelector('#session-list [data-meeting-id="history-group"] .sl-time').textContent`), '刚刚');
     result.checks.push('physical Open Group updates activity; group preview leaves previous time intact; 280/340/440px controls fit');
+    // Test search entry scenarios independently; retain the separate baseline
+    // reproduction of repeated search after entering a card/meeting view.
+    await _waitMs(800);
+    await cdp.close(); cdp = null; await gracefulQuit(hub); hub = null;
+    await start();
+    assert.ok(await cdp.eval(`meetings['history-group'].lastMessageTime`) > now);
     // Preview must not bump old metadata; actual continue must restore via native IPC.
     await select('#session-model-filter', 1);
     await click('.sec-today .sec-collapse');
