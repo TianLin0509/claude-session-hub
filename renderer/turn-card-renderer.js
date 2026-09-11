@@ -248,6 +248,7 @@ function _captureCardUiState(card) {
     disclosures,
     selection,
     parent,
+    followSnapshot: parent?._cardFollowController?.capture(),
     parentScrollTop: parent ? parent.scrollTop : 0,
     parentBottomGap: parent ? Math.max(0, parent.scrollHeight - parent.scrollTop - parent.clientHeight) : 0,
   };
@@ -319,7 +320,8 @@ function _restoreCardUiState(card, snapshot) {
   }
   const parent = snapshot.parent;
   if (parent && card.parentElement === parent) {
-    if (snapshot.parentBottomGap < 50) parent.scrollTop = parent.scrollHeight;
+    if (parent._cardFollowController) parent._cardFollowController.restore(snapshot.followSnapshot);
+    else if (snapshot.parentBottomGap < 50) parent.scrollTop = parent.scrollHeight;
     else parent.scrollTop = snapshot.parentScrollTop;
   }
   return selectionRestored;
@@ -813,6 +815,7 @@ win._mountTurnCard = mountTurnCard;
 //       incremental=true throttle 反复触发时不应拍底;incremental=false 切 session
 //       时 container 已 innerHTML='' → helper 自然 true → 初次加载行为不退化
 function _isCardOverlayAtBottom(el) {
+  if (el?._cardFollowController) return el._cardFollowController.isFollowing();
   if (!el) return true;
   return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
 }
@@ -860,6 +863,10 @@ function mountOptimisticUserCard(sessionId, text, kind, clientSubmissionId) {
   if (updateStreamingIndicator) updateStreamingIndicator(sessionId);
 
   // 用户主动发了一条消息 → 一定希望看到自己刚发的气泡；不走 _wasAtBottom 守卫
+  if (container._cardFollowController) {
+    container._cardFollowController.follow();
+    return cardEl;
+  }
   try {
     cardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
   } catch {
@@ -1058,7 +1065,8 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 9. autoScroll — 2026-05-06 道雪 scroll-respect-user:仅当用户原本在底部时才滚
   //   (向上翻历史时不打断,避免被新 turn 拍回底部)
   if (opts.autoScroll && _wasAtBottom) {
-    try {
+    if (container._cardFollowController) container._cardFollowController.request();
+    else try {
       cardEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch {
       // older browsers without smooth-scroll options: fall back to plain scroll

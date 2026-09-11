@@ -424,7 +424,7 @@ function _sessionWarningText(session) {
       }
       const action = intent.type === 'meeting'
         ? selectMeeting(intent.id, { forceScrollBottom: true })
-        : selectSession(intent.id, { forceScrollBottom: true });
+        : selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() });
       Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
       return true;
     } catch (error) {
