@@ -1531,7 +1531,7 @@ function getOrCreateTerminal(sessionId) {
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
-function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId && !sessions.get(activeSessionId)?.meetingId) {
+function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
   if (!backstageButton) return;
   backstageButton.hidden = !visible;
   backstageButton.setAttribute('aria-pressed', String(currentView === 'pty'));
@@ -1579,7 +1579,7 @@ function paintAppToolbarForView(label) {
 // ⋯ 溢出菜单、文件 / 记忆 / ⋯ / 关闭四个动作。改的只是「填进哪两个常驻节点」。
 function paintAppToolbarForSession(sessionId, session, cached) {
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
-  syncBackstageButton(!session.meetingId);
+  syncBackstageButton(true);
   toolbarCrumbEl.dataset.signature = 'session:' + sessionId;
   // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
   // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
@@ -3114,11 +3114,20 @@ const _cardOverlayFollowBottomBySession = new Map();
 // 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
 // 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
 const cardViewSessions = readCardViewSessions(localStorage);
+// Older members skipped the ordinary-session card initialization. Initialize
+// their first standalone opening once, then preserve explicit card/PTY choices.
+const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
+const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
 const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
 // 「已完成未读」的会话点开默认进卡片视图。休眠会话点开会先清未读再走 session-created
 // 重新定视图，所以这里把这一次的判断结果留一份，让唤醒后的那次 applyViewMode 也认它。
 const _completedUnreadCardViews = new Set();
 function selectionViewModeForSession(sessionId, session) {
+  if (session?.meetingId && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
+    rememberViewModeForSession(sessionId, 'card');
+    memberCardDefaults.add(sessionId);
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   const completedUnread = !!session && sessionHasCompletedUnread(session);
   // 只有休眠会话会在唤醒后再定一次视图，别的会话记下来就没人来取了。
   if (completedUnread && session && session.status === 'dormant') _completedUnreadCardViews.add(sessionId);
@@ -3129,6 +3138,9 @@ function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
 }
 function forgetViewModeForSession(sessionId) {
+  if (memberCardDefaults.delete(sessionId)) {
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   _cardOverlayFollowBottomBySession.delete(sessionId);
   if (forgetViewMode(cardViewSessions, sessionId)) writeCardViewSessions(localStorage, cardViewSessions);
 }
@@ -7536,6 +7548,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // session metadata here; an xterm is created and hydrated on explicit shell
   // selection, otherwise dozens of invisible 10k-line buffers accumulate.
   if (session.meetingId) {
+    // A member explicitly opened while dormant needs its standalone surface
+    // mounted after resume. Background group wakes must never steal selection.
+    if (wasDormant && activeSessionId === session.id) {
+      await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
+    }
     scheduleSessionListRender();
     return;
   }

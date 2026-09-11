@@ -166,3 +166,12 @@ test('renderer 的 selectSession 走 selectionViewModeFor，而不是只看记�
 });
 
 console.log('unit-session-view-mode OK');
+
+test('成员首次卡片初始化记录与普通视图记忆使用独立存储，不互相覆盖', () => {
+  const data = new Map();
+  const store = { getItem: key => data.get(key), setItem: (key, value) => data.set(key, value) };
+  writeCardViewSessions(store, new Set(['normal']));
+  writeCardViewSessions(store, new Set(['member']), 'hub.memberCardDefaults');
+  assert.deepEqual([...readCardViewSessions(store)], ['normal']);
+  assert.deepEqual([...readCardViewSessions(store, 'hub.memberCardDefaults')], ['member']);
+});
