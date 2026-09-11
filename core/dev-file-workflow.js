@@ -8,7 +8,7 @@ const PRESET_END = '【开题提示词结束】';
 const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
 const SOLO_START = '【AI HUB 独立开工提示词】';
 const SOLO_END = '【独立开工提示词结束】';
-const PROMPT_VERSION = 1;
+const PROMPT_VERSION = 2;
 const HUMAN_REPORT = '用大白话、言简意赅地向用户汇报关键进展、结果或阻碍，不用固定英文标签，不复述文件全文。复杂内容必要时制作 HTML，给出准确路径；不为每一步都写报告。';
 const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
 function roles(meeting, members = []) {
@@ -33,6 +33,7 @@ function soloCommon(meeting, dir, members = []) {
     `${author.name} 负责实现、验证和已授权的合并；自测不等于独立审查。普通讨论不启动施工，明确开工后持续完成任务，不等待 Hub 派下一阶段。`,
     `任务记录：${path.join(dir || '本群任务目录', '任务记录.md')}。执行前读取并核对现场，无记录则创建；只更新变化与必要证据，UTF-8 保存并回读。不另建阶段交接文件，不靠改名派工。`,
     '遵守用户范围和项目规范；项目要求独立审查或额外审批时仍须满足。完成写真实结果，阻塞写原因和未完成项，不反复索取已有授权。',
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].filter(Boolean).join('\n');
 }
@@ -44,6 +45,7 @@ function independentPrompt(meeting = {}, dir = '本群任务目录', members = [
     '完成必要测试，GUI 改动提供真实隔离证据；在最新主干核实完整 SHA、执行项目验证与 dry-run，通过后按项目入口合并并完成后置检查。已完成步骤不重复。',
     '本条授权本任务范围内的实现与合并；用户限制、项目独立审查或额外审批要求仍须满足，自测不冒充独立审查。',
     `在 ${record} 更新项目位置、分支、完整 SHA、实际验证命令及结果、合并结果和风险；UTF-8 保存回读后报告，不改名、不等待派工。阻塞如实记录。`,
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].join('\n');
 }
@@ -125,6 +127,7 @@ function common(meeting, dir, members = []) {
     '执行前读指定输入并核对阶段文件；已有交付件则核实报告，不重建草稿。否则先创建或接续指定草稿，记录必要进展和证据。',
     '交付时 UTF-8 保存、回读，同目录原子改名；确认目标存在、草稿消失后结束当前阶段。不得自创文件名、跳轮、覆盖交付件或用聊天代替落盘。',
     'Hub 只按文件名接续；输入缺失、状态冲突或客观阻塞保留现状并报告，不伪造完成。用户手动继续仍接续同一任务，不另开分支或重复已完成步骤。',
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].filter(Boolean).join('\n');
 }
