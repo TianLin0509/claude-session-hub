@@ -85,6 +85,7 @@ async function run() {
       const before = calls().length;
       await type('修改按钮文案\n保留用户要求');
       await click('[data-file-independent]');
+      await wait(() => cdp.eval("document.getElementById('mr-input-box').innerText.includes('【独立开工提示词结束】')"), 'independent preset IPC');
       const filled = await cdp.eval("document.getElementById('mr-input-box').innerText");
       await click('[data-file-independent]');
       ok('独立开工保留草稿、重复点击不叠加', filled.startsWith('修改按钮文案\n保留用户要求') && filled.includes('实现 Agent 与合并 Agent') && filled===await cdp.eval("document.getElementById('mr-input-box').innerText"));

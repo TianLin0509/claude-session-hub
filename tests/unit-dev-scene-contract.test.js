@@ -94,7 +94,7 @@ test('单人按当前成员配置双职责，不限制 AI 品牌', () => {
     const m = {groupChat:true, scene:'dev', serialWorkflow:c};
     assert(F.isSolo(m));
     assert(!F.common(m, 'dir').includes('第二席位'));
-    assert(F.common(m, 'dir').includes('自审'));
+    assert(F.common(m, 'dir').includes('自测不等于独立审查'));
   }
 });
 

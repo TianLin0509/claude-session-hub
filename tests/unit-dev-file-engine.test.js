@@ -44,8 +44,9 @@ async function run() {
     // A restart honors persistent pause and uses filenames, never a chat verdict or old phase cache.
     e.dispose(); e = createDevFileEngine(deps); e.tick(); await flush(); assert.equal(calls.length, 3);
     const resumed = e.userTurn(meeting.id, { userInput: '继续' });
-    await flush(); assert.equal(calls.length, 4); assert.deepEqual(calls[3].targetMemberIds, ['author']);
-    assert(calls[3].userInput.includes('实现手册-轮次2.md')); assert.equal(e.status(meeting.id).paused, false);
+    await flush(); assert.equal(calls.length, 4); assert.equal(calls[3].targetMemberIds, undefined);
+    assert.equal(calls[3].userInput, '继续'); assert.equal(e.status(meeting.id).paused, false);
+    assert.deepEqual(meeting.participants, [1], 'manual continue must not change the chosen recipient');
     pending[3]({ status: 'completed' }); await resumed;
     e.tick(); await flush(); assert.equal(calls.length, 4, 'reply completion must not repeat same stage');
     write('已完成-实现手册-轮次2.md');
@@ -56,6 +57,7 @@ async function run() {
     wake = async () => {};
     const resumeMerge = e.userTurn(meeting.id, { userInput: '继续执行' }); await flush();
     assert.equal(calls.length, 5); assert.deepEqual(meeting.participants, [1]);
+    assert.equal(calls[4].userInput, '继续执行'); assert(!calls[4].workflowRun);
     write('已完成-合并手册-轮次2.md'); e.tick(); await flush(); assert(e.status(meeting.id).done);
     pending[4]({ status: 'completed' }); await resumeMerge;
     e.tick(); await flush(); assert.equal(calls.length, 5);

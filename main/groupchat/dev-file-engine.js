@@ -3,11 +3,12 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const F = require('../../core/dev-file-workflow');
 
-function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ensureMemberReady,
+function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
   let timer = null;
   const get = id => meetingManager.getMeeting(id);
+  const members = m => getMembers ? getMembers(m) : getDispatcher().groupMembersForMeeting?.(m, { includeDormant: true }) || [];
   function save(id, fields) {
     const m = get(id);
     if (!F.enabled(m)) throw new Error('文件工作流不可用');
@@ -83,7 +84,8 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       // A stop or a rename during session wake must win over this scheduled send.
       if (!s || s.paused || s.key !== key || s.error || s.done) return { status: 'error', reason: '现场已变化，取消本次派工' };
       select(id, member);
-      const prompt = F.phasePrompt(m, s.dir, s);
+      m = get(id);
+      const prompt = F.phasePrompt(m, s.dir, s, members(m));
       const args = { ...(userArgs || {}), userInput: userArgs ? `${userArgs.userInput}\n\n${prompt}` : prompt,
         targetMemberIds: [member.id], appendUserMessage: true, dispatchMode: 'serial',
         turnTimeoutMs: 30 * 60_000, allowActiveExtend: true, fileHandoff: !userArgs,
@@ -119,13 +121,13 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
     if (!F.enabled(get(id))) return getDispatcher().dispatchGroupChatTurn(id, args);
     const s = status(id);
     if (F.isResume(args.userInput) && !s.error) {
-      save(id, { paused: false, error: '' });
+      // Resume is the user's message, not another phase prompt or a change
+      // of recipient. Latch this phase so the scanner cannot race it with
+      // automatic dispatch; only a later file handoff advances the workflow.
+      const m = get(id), selected = (m.participants || [0])[0];
+      save(id, { paused: false, error: '', lastDispatch: { key: s.key, token: crypto.randomUUID(),
+        memberId: args.targetMemberIds?.[0] || m.slotSpecs?.[selected]?.memberId || `m${selected + 1}` } });
       stopped.delete(id);
-    }
-    if (F.isResume(args.userInput) && s.phase !== 'discuss' && !s.done) {
-      if (s.error) return { status: 'error', reason: s.error };
-      save(id, { paused: false, error: '' });
-      return dispatchStage(id, args);
     }
     // A normal question is still a normal group message; it must not clear stop intent.
     const token = crypto.randomUUID();
@@ -150,11 +152,17 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
     const s = status(id);
     if (s.error || !['discuss', 'kickoff'].includes(s.phase)) throw new Error(s.error || '本任务已经开题，请用普通消息继续');
     // No mkdir, no phase change, no dispatch. The button only prepares editable composer text.
-    return { prompt: F.phasePrompt(m, s.dir, F.spec('kickoff')), slot: executor(m, F.spec('kickoff')).slot };
+    return { prompt: F.phasePrompt(m, s.dir, F.spec('kickoff'), members(m)), slot: executor(m, F.spec('kickoff')).slot };
+  }
+  function independentPreset(id) {
+    const m = get(id);
+    if (!F.isSolo(m)) throw new Error('独立开工仅用于单 Agent 开发群聊');
+    return { prompt: F.independentPrompt(m, F.directory(getHubDataDir(), id), members(m)), slot: executor(m, F.spec('kickoff')).slot };
   }
   function registerIpc(ipcMain, shell) {
     ipcMain.handle('dev-file:status', (_e, { meetingId }) => status(meetingId));
     ipcMain.handle('dev-file:kickoff-preset', (_e, { meetingId }) => kickoffPreset(meetingId));
+    ipcMain.handle('dev-file:independent-preset', (_e, { meetingId }) => independentPreset(meetingId));
     ipcMain.handle('dev-file:open-docs', async (_e, { meetingId }) => {
       const s = status(meetingId);
       if (!s) throw new Error('文件工作流不可用');
@@ -164,7 +172,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       return { ok: true };
     });
   }
-  return { status, userTurn, stop, interruptSids, tick, kickoffPreset, registerIpc,
+  return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc,
     start() { if (!timer) { tick(); timer = setInterval(tick, 1000); timer.unref?.(); } },
     dispose() { if (timer) clearInterval(timer); timer = null; } };
 }

@@ -76,6 +76,13 @@ rl.on('line',line=>{
           total:{inputTokens:240000,outputTokens:10000,totalTokens:250000,cachedInputTokens:100000,reasoningOutputTokens:4000},
           last:{inputTokens:8000,outputTokens:1000,totalTokens:9000,cachedInputTokens:6000,reasoningOutputTokens:400},modelContextWindow:100000}});
         finish(thread,turn);
+      } else if(mode==='fixture:dev-progress') {
+        answer(msg.id,{turn});
+        for (const [id,text] of [['plan','PLAN: 已定位问题'],['update','UPDATE: 验证已通过']]) {
+          const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};
+          turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+        }
+        setTimeout(()=>finish(thread,turn,'completed','受控验证已完成'),400);
       } else if(mode==='fixture:conversation') {
         answer(msg.id,{turn});
         const progress=(id,text)=>{const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};

@@ -2414,7 +2414,7 @@ if (typeof document !== 'undefined') (function () {
     let body;
     if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
       body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
-        {escapeHtml,renderMarkdown:_renderMarkdown});
+        {escapeHtml,renderMarkdown:_renderMarkdown,plainProgress:DevFile.enabled(meeting)});
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
@@ -2449,7 +2449,7 @@ if (typeof document !== 'undefined') (function () {
       body = headBlock + bodyBlock;
     } else {
       body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
-        {isUser,escapeHtml,renderMarkdown:_renderMarkdown})}</div>`;
+        {isUser,escapeHtml,renderMarkdown:_renderMarkdown,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
     }
     // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
     //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
@@ -5248,7 +5248,7 @@ if (typeof document !== 'undefined') (function () {
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
-        ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并选择负责开题的成员；检查后按 Enter 发送">开题</button>' : ''}
         ${solo ? '<button type="button" data-file-independent title="填入同一位 Agent 实现、验证并合并的提示词；检查后按 Enter 发送">独立开工</button>' : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
@@ -5279,10 +5279,12 @@ if (typeof document !== 'undefined') (function () {
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
     row.querySelector('[data-file-independent]')?.addEventListener('click', async () => {
       try {
-        const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [0]);
+        const preset = await ipcRenderer.invoke('dev-file:independent-preset', { meetingId: current.id });
+        if (activeMeetingId !== current.id) return;
+        const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [preset.slot]);
         const box = document.getElementById('mr-input-box');
         if (!box || activeMeetingId !== current.id) return;
-        box.textContent = DevFile.appendIndependent(box.innerText);
+        box.textContent = DevFile.appendIndependent(box.innerText, preset.prompt);
         _setInputDraft(current.id, box.innerText);
         box.dispatchEvent(new Event('input', { bubbles: true }));
         renderToolbar(fresh);
