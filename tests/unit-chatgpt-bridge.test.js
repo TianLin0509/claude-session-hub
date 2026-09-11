@@ -279,7 +279,8 @@ test('Hub UI exposes card/company, composer pull, and selection actions without 
     'PTY view must fall back to the current session transcript for latest-answer push');
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
-  assert.match(card, /data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT">公司<\/button>/);
+  assert.match(card, /data-action="sync-chatgpt"[^>]*>同步这条消息到公司<\/button>/,
+    'the card action remains available with its explicit label in the more menu');
   assert.match(renderer, /#msg-overlay > \.turn-card:not\(\.user\)/,
     'latest-answer push must select assistant cards, whose class is turn-card without .user');
 });
