@@ -76,7 +76,7 @@ assert.ok(
 );
 assert.ok(
   rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() })") &&
-  rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true })"),
+  rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })"),
   'reselecting a session requests latest output; switching preserves its reading position',
 );
 assert.ok(
