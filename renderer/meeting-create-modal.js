@@ -591,6 +591,7 @@ async function _onCreate() {
         if (_projectLibraryError) throw _projectLibraryError;
       }
     }
+    const serialWorkflow = _buildDefaultDevWorkflow(scene, slots, { atWorkRoot, projects: devProjects });
     createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,
@@ -604,9 +605,9 @@ async function _onCreate() {
       workspace: workspace.path,
       workspaceLabel: workspace.label,
       workspaceDraft: !!workspace.draft,
+      serialWorkflow,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
-    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects });
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -639,31 +640,25 @@ async function _onCreate() {
 // devPhase 是起手方式：双席位一律先落 'discuss'（循环配置照样写好，只是发送先走普通群聊）。
 // 用户在群里点「开题」→ 阶段翻成 'kickoff'，指定执笔者写任务书；
 // 双席位报告交付后自动开工；单席位通过预置 prompt 独立完成。
-function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
-  if (scene !== 'dev') return;
+function _buildDefaultDevWorkflow(scene, slots, workspaceHint = {}) {
+  if (scene !== 'dev') return null;
   const WT = window.WorkflowTemplates;
-  if (!WT || typeof WT.createTemplateConfig !== 'function') return;
-  if (!Array.isArray(slots) || !slots.length) return;
-  try {
-    const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
-    const templateId = 'dev-task';
-    const config = WT.createTemplateConfig(templateId, members, {
-      workspace: {
-        atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
-        projects: (workspaceHint && workspaceHint.projects) || [],
-      },
-      devPhase: 'discuss',
-    });
-    if (!config) return;
-    config.templateId = templateId;
-    ipcRenderer.send('update-meeting', {
-      meetingId: meeting.id,
-      fields: { serialWorkflow: config },
-    });
-  } catch (error) {
-    // 配不上不该挡住建群 —— 用户还能手动点工作流配置补上
-    console.warn('[meeting-create] 默认开发工作流写入失败:', error && error.message);
-  }
+  if (!WT || typeof WT.createTemplateConfig !== 'function') throw new Error('开发工作流尚未加载，请重试创建');
+  if (!Array.isArray(slots) || !slots.length) throw new Error('开发群聊至少需要一位成员');
+  const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
+  const templateId = 'dev-task';
+  const config = WT.createTemplateConfig(templateId, members, {
+    workspace: {
+      atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
+      projects: (workspaceHint && workspaceHint.projects) || [],
+    },
+    devPhase: 'discuss',
+  });
+  if (!config) throw new Error('无法生成默认开发工作流，请重试创建');
+  config.templateId = templateId;
+  // Submit with create-meeting: the first creation event and response must
+  // already contain the workflow, before the room constructs its controls.
+  return config;
 }
 
 function _showError(text) {

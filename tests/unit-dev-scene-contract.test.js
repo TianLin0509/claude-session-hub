@@ -25,13 +25,13 @@ const modal = read('renderer/meeting-create-modal.js');
 const room = read('renderer/meeting-room.js');
 
 test('开发场景建群时自动写入默认工作流（否则「零配置」不成立）', () => {
-  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
-    'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
-  assert(/function _applyDefaultDevWorkflow/.test(modal), '该函数必须存在');
+  assert(/_buildDefaultDevWorkflow\(scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
+    'create-meeting 之前必须生成默认工作流，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
+  assert(/function _buildDefaultDevWorkflow/.test(modal), '该函数必须存在');
   assert(/scene !== 'dev'/.test(modal), '只对 dev 场景生效');
   assert(/createTemplateConfig\(templateId, members/.test(modal), '默认工作流由 templateId 决定');
   assert(/const templateId = 'dev-task'/.test(modal), '新建群聊统一按成员数量配置');
-  assert(/serialWorkflow: config/.test(modal), '必须写进 meeting.serialWorkflow');
+  assert(/workspaceDraft: !!workspace.draft,\s*serialWorkflow,/.test(modal), '必须写进 meeting.serialWorkflow');
 });
 
 test('发送按钮仍按 serialWorkflow 三岔路分发（默认工作流才有意义）', () => {

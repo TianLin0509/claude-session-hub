@@ -6154,8 +6154,10 @@ if (typeof document !== 'undefined') (function () {
         const modeModeChanged = prev && (prev.mode !== updated.mode);
         if (prevSubs !== newSubs || modeChanged || participantsChanged || modeModeChanged) {
           renderTerminals(updated);
-          setupInput(updated);
         }
+        // Workflow/config updates can arrive independently of member changes.
+        // setupInput refreshes controls before its binding guard, preserving drafts.
+        setupInput(updated);
       }
     } catch (e) {
       console.error('[meeting-room] updateMeetingData error:', e);

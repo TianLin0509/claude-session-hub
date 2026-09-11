@@ -8354,6 +8354,13 @@ ipcRenderer.on('meeting-created', (_e, { meeting }) => {
 });
 
 ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
+  // Unread attention belongs to this window. Backend metadata updates (including
+  // the reply's completion timestamp) must not acknowledge unread answers.
+  const previous = meetings[meeting.id];
+  if (previous?.unreadAnswered instanceof Set) {
+    meeting.unreadAnswered = new Set([...previous.unreadAnswered].filter(sid => meeting.subSessions?.includes(sid)));
+    meeting._lastUnreadTurnNum = previous._lastUnreadTurnNum;
+  }
   meetings[meeting.id] = meeting;
   if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {
