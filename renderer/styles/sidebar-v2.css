@@ -42,6 +42,9 @@
 }
 #session-list .sec-count { background: none; padding: 0; font: inherit; }
 #session-list .sec-rule { height: 1px; background: var(--border-subtle); flex: 1; }
+#session-list .sec-collapse { flex: 0 0 18px; height: 22px; padding: 0; border: 0; background: transparent; color: var(--fg-muted); font-size: 13px; cursor: pointer; }
+#session-list .sec-collapse:focus-visible, #session-list .sec-dormant-range:focus-visible { outline: 1px solid var(--brand); outline-offset: 1px; }
+#session-list .sec-dormant-range { flex: 0 0 auto; max-width: 105px; padding: 2px; color: var(--fg-muted); background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 4px; font: inherit; letter-spacing: normal; }
 #session-list .sec-action {
   opacity: 0; pointer-events: none; border: 0; padding: 0 2px; cursor: pointer;
   color: var(--fg-muted); background: transparent; font-size: 10px;

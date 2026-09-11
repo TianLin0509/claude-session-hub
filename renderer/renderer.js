@@ -19,7 +19,6 @@ const {
 } = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
-  formatBeijingClock,
   formatBeijingMonthDay,
 } = require('./format-time.js');
 const { marked } = require('marked');
@@ -807,13 +806,12 @@ const memoPanel = createMemoPanel({
 });
 memoPanel.init();
 // --- Helpers ---
-// 2026-07-20 道雪：侧栏时间显示规则——2h 内显示具体时刻（HH:MM），
-//   24h 内显示「N 小时前」，更早显示「N 天前」（N 小时前超过 24 可读性差）。
+// 侧栏统一按活动距今显示；不影响历史正文与其他面板的绝对时间。
 function formatTime(ts) {
+  if (!Number.isFinite(Number(ts)) || Number(ts) <= 0) return '—';
   const diff = Date.now() - ts;
-  if (diff < 2 * 3600000) {
-    return formatBeijingClock(ts);
-  }
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
   if (diff < 24 * 3600000) return `${Math.floor(diff / 3600000)}小时前`;
   return `${Math.floor(diff / 86400000)}天前`;
 }
@@ -4587,6 +4585,8 @@ function sweepStaleRunning() {
   if (dirty) scheduleSessionListRender();
 }
 setInterval(sweepStaleRunning, 60 * 1000);
+// Even fully idle sessions age across minute/day and dormant-window boundaries.
+setInterval(scheduleSessionListRender, 60 * 1000);
 function updateRespondPill() {
   const pill = document.getElementById('respond-pill');
   if (!pill) return;
@@ -5025,6 +5025,12 @@ async function openGlobalSearchHit(hit, opts = {}) {
     const meetingId = hit.meetingId;
     if (!meetingId || !meetings[meetingId]) throw new Error('群聊记录已不存在');
     await selectMeeting(meetingId, { forceScrollBottom: false });
+    const openedAt = Date.now();
+    const saved = await ipcRenderer.invoke('update-meeting-sync', { meetingId, fields: { lastMessageTime: openedAt } });
+    if (!saved) throw new Error('群聊已打开，但侧栏活动时间保存失败');
+    meetings[meetingId].lastMessageTime = openedAt;
+    schedulePersist();
+    sessionListRenderer.revealSearchItem(meetingId);
     if (opts.focus && typeof MeetingRoom !== 'undefined' && typeof MeetingRoom.focusSearchHit === 'function') {
       const target = opts.preview && Array.isArray(opts.preview.context)
         ? (opts.preview.context.find(item => item && item.isMatch) || opts.preview.context[0])
@@ -5049,6 +5055,22 @@ async function openGlobalSearchHit(hit, opts = {}) {
   }
   if (!target || !target.id) throw new Error('会话记录已不存在');
   await selectSession(target.id, { forceScrollBottom: !opts.focus });
+  const recorded = await ipcRenderer.invoke('session:record-history-open', { sessionId: target.id });
+  if (!recorded?.ok) throw new Error(recorded?.message || '会话已打开，但侧栏活动时间保存失败');
+  const openedSession = sessions.get(target.id);
+  if (openedSession) {
+    openedSession.lastMessageTime = Math.max(openedSession.lastMessageTime || 0, recorded.at);
+    openedSession.hiddenFromSidebar = false;
+  }
+  // 群聊成员仍从原群聊入口进入，避免复制成一个普通会话。
+  const parentId = openedSession?.meetingId || Object.values(meetings).find(m => m.subSessions?.includes(target.id))?.id;
+  if (parentId && meetings[parentId]) {
+    const saved = await ipcRenderer.invoke('update-meeting-sync', { meetingId: parentId, fields: { lastMessageTime: recorded.at } });
+    if (!saved) throw new Error('会话已打开，但所属群聊的活动时间保存失败');
+    meetings[parentId].lastMessageTime = recorded.at;
+  }
+  schedulePersist();
+  sessionListRenderer.revealSearchItem(parentId || target.id, target.id);
 
   if (opts.focus) {
     // 搜索命中要在卡片视图里看，但这是导航副作用而非用户的视图偏好，不写记忆。

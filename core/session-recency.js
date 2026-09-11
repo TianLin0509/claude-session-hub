@@ -20,8 +20,9 @@ function positiveTimestamp(value) {
  *
  * 现在取所有「有来往」时刻的最大值。这样刚聊过的会话必然浮到最上面。
  *
- * 为什么「只打开不说话」仍然不会上浮：选中会话不写这里的任何字段
- * （见 renderer.js 的 selectSession）；runStartedAt 只在用户**提交提问**时写
+ * 普通侧栏选中不写这里的字段；「昨日之我」明确打开/继续会话时更新
+ * lastMessageTime，让用户随后能从侧栏继续找回。搜索预览不更新时间。
+ * runStartedAt 只在用户**提交提问**时写
  * （见 core/session-attention-state.js 的 applyPromptSubmitted）。
  *
  * 有意不看终端原始输出时间戳：那会让任何刷屏的会话不停顶到最上面。
