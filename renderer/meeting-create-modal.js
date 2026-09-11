@@ -40,6 +40,7 @@ let _meetingWorkspaceMode = 'existing';
 // 项目库：已被 project-prep 整理过的项目（中文名 → 路径，按活跃时间排序）。
 // 建群那一刻从主进程取快照；「选择已有路径」的下拉和开发场景的 prompt 都用它。
 let _projectLibrary = [];
+let _projectLibraryError = null;
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
 let _creating = false;
@@ -71,14 +72,17 @@ function _paintWorkspace(workspace) {
 // 数据源是主进程的 workspace:prepared-projects（core/prepared-project-library.js）。
 async function _loadProjectLibrary(force = false) {
   if (_projectLibraryLoading) return _projectLibraryLoading;
-  if (_projectLibrary.length && !force) return _projectLibrary;
+  // Refresh every open; no stale enrollment cache.
   _projectLibraryLoading = (async () => {
     try {
       const result = await ipcRenderer.invoke('workspace:prepared-projects');
-      _projectLibrary = ((result && result.items) || []).filter(item => item && item.path);
+      if (!Array.isArray(result?.items)) throw new Error('项目库返回格式无效');
+      _projectLibrary = result.items.filter(item => item && item.path);
+      _projectLibraryError = null;
     } catch (error) {
       console.warn('[meeting-create] 项目库读取失败:', error && error.message);
       _projectLibrary = [];
+      _projectLibraryError = error;
     } finally {
       _projectLibraryLoading = null;
     }
@@ -115,9 +119,13 @@ function _renderProjectLibrary() {
     listEl.innerHTML = '<div class="mcm-project-library-empty">正在读取项目库…</div>';
     return;
   }
+  if (_projectLibraryError) {
+    listEl.textContent = `项目库读取失败：${_projectLibraryError.message}。重新打开可重试。`;
+    return;
+  }
   if (!_projectLibrary.length) {
     listEl.innerHTML = '<div class="mcm-project-library-empty">还没有整理过的项目。'
-      + '在项目目录开一个普通会话，说「用 project-prep skill 整理这个仓库」，整理一次即可。</div>';
+      + '在项目目录开一个普通会话，说「用 project-prep skill 整理这个仓库」，完成后按 docs/project-prep.md 登记正式目录。</div>';
     return;
   }
   const currentKey = _meetingWorkspace && _meetingWorkspace.path ? _pathKey(_meetingWorkspace.path) : '';
@@ -580,6 +588,7 @@ async function _onCreate() {
       if (atWorkRoot) {
         createBtn.textContent = '正在读取项目库...';
         devProjects = await _loadProjectLibrary(true);
+        if (_projectLibraryError) throw _projectLibraryError;
       }
     }
     createBtn.textContent = '正在创建成员会话...';

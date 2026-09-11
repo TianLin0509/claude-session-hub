@@ -1,7 +1,10 @@
 'use strict';
 const assert = require('node:assert/strict');
 const F = require('../core/dev-file-workflow');
-const prep = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+const prep = F.PROJECT_PREP_PROMPT;
+assert.match(prep, /prepared-projects\.js/);
+assert.match(prep, /register/);
+assert.match(prep, /--data-dir/);
 assert.equal(F.appendProjectPrep(''), prep);
 const draft = '  用户任务\n保留多行和空格  \n';
 assert.equal(F.appendProjectPrep(draft), draft + '\n\n' + prep);

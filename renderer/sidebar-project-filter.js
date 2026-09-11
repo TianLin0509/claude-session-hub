@@ -25,6 +25,7 @@ function createSidebarProjectFilter({ document: doc, storage, ipcRenderer, onCha
     for (const [value, label, title] of entries) {
       const option = doc.createElement('option');
       option.value = value; option.textContent = label; option.title = title;
+      if (label === '项目暂不可用') option.disabled = true;
       control.appendChild(option);
     }
     control.value = selected;
@@ -48,6 +49,7 @@ function createSidebarProjectFilter({ document: doc, storage, ipcRenderer, onCha
         loaded = true;
         if (note) { note.hidden = true; note.textContent = ''; }
       } catch (error) {
+        projects = []; loaded = false;
         const message = `项目库读取失败${loaded ? '，暂用上次名单' : '，无法判断项目归属'}；重新点击项目筛选可重试。`;
         if (note) { note.textContent = message; note.hidden = false; }
         console.warn('[sidebar] project library:', error.message);

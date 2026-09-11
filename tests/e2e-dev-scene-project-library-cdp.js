@@ -116,6 +116,9 @@ async function main() {
   seedProject(path.join(TEMP_ROOT, 'never-used'), { name: '从未用过的项目', trunk: 'master' },
     { gitTime: new Date(2022, 0, 1) });
 
+  const registry = new (require('../core/prepared-project-registry').PreparedProjectRegistry)({ dataDir: DATA_DIR });
+  for (const dir of [JIA, YI, path.join(TEMP_ROOT, 'never-used')]) registry.register(dir);
+
   const port = await reservePort();
   let hub = null;
   let client = null;

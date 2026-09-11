@@ -1342,13 +1342,13 @@ function createLoopEngine(deps) {
       const launch = LOCATOR.resolveLaunchDir(meeting && meeting.workspace, workflow.workRootPath || null);
       return LOCATOR.buildLocatorBlock({
         taskText,
-        projects: Array.isArray(workflow.projectLibrary) ? workflow.projectLibrary : [],
+        projects: new (require('../../core/prepared-project-registry').PreparedProjectRegistry)({ dataDir: hubDataDir() }).list().items,
         launch: launch.dir ? launch : { ...launch, dir: (meeting && meeting.workspace) || '' },
         atWorkRoot: workflow.workRoot === true,
       });
     } catch (error) {
       logError('[loop-engine] 定位说明生成失败:', error);
-      return '';
+      return '正式项目库读取失败：' + error.message + '。不要使用旧项目快照或按同名副本猜选；明确的用户项目路径仍需只读核实。';
     }
   }
 
@@ -1442,7 +1442,7 @@ function createLoopEngine(deps) {
         });
         emit('kickoff-dispatch', { authorMemberId: authorId });
         const prompt = withLocator(withDocBlock(
-          DevDiscuss.buildKickoffPrompt({ locator: typeof workflow.projectLocator === 'string' ? workflow.projectLocator : '' }),
+          DevDiscuss.buildKickoffPrompt({ locator: '' }),
           dir, 0, [],
         ), meeting, userTaskTextOf(meetingId, options.taskText));
         // 2026-09-08 合并位在真实 CLI 上撞到的：CLI 还没起来，派发以 cli_not_ready 失败，

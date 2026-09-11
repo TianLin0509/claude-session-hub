@@ -54,7 +54,7 @@ test('讨论块：禁改代码、分工明确、指向合同、带定位说明',
 test('讨论块只在讨论阶段追加，且和英雄块一样接在 prompt 末尾', () => {
   const discussing = { scene: 'dev', groupChat: true, serialWorkflow: { devPhase: 'discuss', steps: [['m1'], ['m2']], projectLocator: '【先定位项目根】X' } };
   const block = DD.discussBlockFor(discussing, 'm2');
-  assert(/MERGER\.md/.test(block) && /【先定位项目根】X/.test(block));
+  assert(/MERGER\.md/.test(block) && !/【先定位项目根】X/.test(block), '旧项目库快照不再注入讨论');
   assert.strictEqual(DD.discussBlockFor({ ...discussing, serialWorkflow: { ...discussing.serialWorkflow, devPhase: 'build' } }, 'm2'), '', '开工后一个字不加');
   assert.strictEqual(DD.appendDiscussBlock('base', ''), 'base');
   assert.strictEqual(DD.appendDiscussBlock('base', 'extra'), 'base\n\nextra');

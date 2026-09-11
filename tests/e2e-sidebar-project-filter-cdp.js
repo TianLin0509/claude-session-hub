@@ -92,6 +92,8 @@ async function main() {
   fs.mkdirSync(linked);fs.mkdirSync(admin,{recursive:true});
   fs.writeFileSync(path.join(admin,'commondir'),'../..');fs.writeFileSync(path.join(admin,'gitdir'),path.join(linked,'.git'));
   fs.writeFileSync(path.join(linked,'.git'),'gitdir: '+admin);
+  const registry = new (require('../core/prepared-project-registry').PreparedProjectRegistry)({ dataDir: DATA_DIR });
+  registry.register(project);registry.register(second);
   let hub,client;const result={checks:[],baseline};
   const shot=name=>screenshot(client,path.join(ARTIFACT_DIR,name+'.png'));
   const size=width=>client.send('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:0,mobile:false});
@@ -153,7 +155,7 @@ async function main() {
     }
     await shot('narrow');
     // Refresh on re-entry, including a library project added while Hub is open.
-    const third=path.join(WORKSPACE_ROOT,'gamma');seedProject(third,{name:'项目丙',trunk:'master'});
+    const third=path.join(WORKSPACE_ROOT,'gamma');seedProject(third,{name:'项目丙',trunk:'master'});registry.register(third);
     await client.eval('document.querySelector("#session-project-filter").blur();document.querySelector("#session-project-filter").focus()');
     await waitFor('fresh library',()=>client.eval('Array.from(document.querySelector("#session-project-filter").options).some(o=>o.textContent==="项目丙")'));
     await client.send('Page.reload');await waitFor('reload',()=>client.eval('!!window.LaunchCenter && !!document.querySelector("#session-project-filter") && document.querySelector("#session-project-filter").value==='+JSON.stringify(key(project))));

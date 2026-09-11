@@ -175,7 +175,7 @@ test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定�
 
   // 项目库空的时候也要给出可执行的找法，而不是一句「自己找」
   const empty = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: true, projects: [] } });
-  assert(/\.agents\/project\.json/.test(empty.stepConfigs[0].prompt), '空库时要说清判据');
+  assert(/project-prep.*登记正式目录/.test(empty.stepConfigs[0].prompt), '空库必须走准备及登记，不能从扫描推断身份');
 
   // 不在工作根（选了项目根）时，一个字都不多：agent 已经站在项目里了
   const onRepo = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: false, projects } });

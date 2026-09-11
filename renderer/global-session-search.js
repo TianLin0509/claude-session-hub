@@ -470,8 +470,8 @@ function createGlobalSessionSearch(options) {
     }
     projectSelect.replaceChildren(...options); projectSelect.value = selected;
     const warning = projectLibrary.some(item => item.searchWarnings?.length);
-    projectNote.textContent = stale ? '所选项目已移出项目库，请重新选择；当前不会扩大搜索范围。'
-      : projectLoadError || (warning ? '部分 worktree 的项目归属暂时无法读取，对应记录仍可在“全部会话”搜索。' : '');
+    projectNote.textContent = projectLoadError || (stale ? '所选项目已移出项目库，请重新选择；当前不会扩大搜索范围。'
+      : (warning ? '部分 worktree 的项目归属暂时无法读取，对应记录仍可在“全部会话”搜索。' : ''));
     projectNote.hidden = !projectNote.textContent;
     if (projectRail) {
       projectRail.replaceChildren();
@@ -504,7 +504,9 @@ function createGlobalSessionSearch(options) {
       scheduleSearch();
     } catch (error) {
       if (sequence !== projectLoadSequence || !isOpen()) return;
-      projectLoadError = `项目库读取失败${projectLibrary.length ? '，暂用上次名单' : ''}：${error.message}。重新打开可重试。`;
+      projectLibrary = [];
+      projectLoadError = `项目库读取失败：${error.message}。重新打开可重试。`;
+      scheduleSearch();
       renderProjectLibrary();
       announce(projectNote.textContent);
     } finally {
