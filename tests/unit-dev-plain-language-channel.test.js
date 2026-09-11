@@ -218,7 +218,7 @@ function board(meetingId, workspace) {
   return { instance, row: () => instance.snapshot().rows.find(r => r.id === meetingId) };
 }
 
-test('D1 · Agent 提问会把任务顶进「需要我」，维护者回话之后自动落下', () => {
+test('D1 · 旧 ASK 保留在历史摘要，但不冒充结构化用户待决事项', () => {
   const id = 'gc-ask';
   const orch = groupchat.getOrchestrator(root, id);
   const now = Date.now();
@@ -232,9 +232,8 @@ test('D1 · Agent 提问会把任务顶进「需要我」，维护者回话之�
     orch._saveState();   // 摘要是落盘那一刻推给订阅者的，工作台必须先在场
     instance.flush();
     let r = row();
-    assert.equal(r.attention && r.attention.kind, 'ask', '提问没有被顶进「需要我」');
-    assert.ok(r.attention.text.includes('手机推送'));
-    assert.equal(r.ask, r.attention.text);
+    assert.equal(r.attention, null, '旧 ASK 不计入当前待决事项');
+    assert.ok(r.ask.includes('手机推送'), '原始摘要仍保留供兼容读取');
 
     // 维护者在群里回了一句 —— 这条提问就不该继续挂着
     orch.state.messages.push({ id: 'u2', role: 'user', speaker: '你', turnNum: 2, createdAt: now + 20 });
