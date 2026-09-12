@@ -208,6 +208,8 @@ function createMeetingSubAdder(deps) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
 
+    if (meeting?.groupChat && (meeting.mode === 'dev' || meeting.scene === 'dev')
+        && (kind === 'codex' || kind === 'codex-resume')) sessionOpts.lazyStart = true;
     const session = sessionManager.createSession(kind, sessionOpts);
     if (!session) return null;
     const updated = meetingManager.addSubSession(meetingId, session.id);

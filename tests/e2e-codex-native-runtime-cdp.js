@@ -26,9 +26,10 @@ async function main(){
     await cdp.eval('document.querySelector(\'.session-item[data-session-id="'+s.id+'"]\').click()');
     await until('!!document.querySelector(".floating-input-box")','composer');
     async function send(text){
+      await cdp.send('Page.bringToFront');
       await cdp.eval('(()=>{const input=document.querySelector(".floating-input-box");input.textContent='+JSON.stringify(text)+';input.dispatchEvent(new Event("input",{bubbles:true}));input.focus();})()');
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+      await until('document.querySelector(".floating-input-send") && !document.querySelector(".floating-input-send").disabled','send ready');
+      await cdp.eval('document.querySelector(".floating-input-send").click()');
     }
     await send('fixture:wait');
     await until('sessions.get('+sid+')?.nativeRuntime?.state === "waiting"','native waiting');
@@ -69,7 +70,8 @@ async function main(){
     await until('sessions.get('+sid+').nativeRuntime.state === "completed"','approval complete');
     await send('fixture:empty');
     await until('sessions.get('+sid+').nativeRuntime.state === "completed" && sessions.get('+sid+').nativeRuntime.submission?.status === "accepted"','empty done');
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    await cdp.eval('if(currentView!=="card") document.querySelector("#btn-backstage").click()');
+    await until('currentView==="card"','card view');
     await until('document.querySelector(".turn-native-outcome")?.getBoundingClientRect().height > 0','visible empty outcome card');
     assert.equal(await cdp.eval('document.querySelectorAll(".fi-stuck").length'),0);
     await snap('empty-cards');
@@ -81,6 +83,8 @@ async function main(){
     const beforeRegen=await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId');
     await until('document.querySelector(".turn-card [data-action=regen]")','card regenerate button');
     await cdp.eval('[...document.querySelectorAll(".turn-card [data-action=regen]")].at(-1).click()');
+    await until('[...document.querySelectorAll("button")].some(b=>b.textContent==="按此正文重发")','regenerate confirmation');
+    await cdp.eval('[...document.querySelectorAll("button")].find(b=>b.textContent==="按此正文重发").click()');
     await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(beforeRegen)+' && sessions.get('+sid+').nativeRuntime.state==="completed"','card regenerate through native driver');
     result.checks.push('real card resend and regenerate each create one newly acknowledged native turn');
     const group=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'Codex 原生群聊验收',scene:'general',workspace:cwd,slots:[{kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'}]})+')');
