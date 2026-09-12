@@ -291,7 +291,7 @@
   border-color: var(--brand);
   font-weight: 650;
 }
-.composer-speed:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.composer-speed:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .speed-picker-menu { max-width: calc(100vw - 16px); box-sizing: border-box; }
 .speed-picker-menu button { width: 100%; color: var(--text-primary); background: transparent; border: 0; text-align: left; font: inherit; }
 .speed-picker-menu button:hover:not(:disabled) { background: var(--surface-hover); }
