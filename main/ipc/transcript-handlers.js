@@ -129,11 +129,11 @@ async function parseSessionTranscript(args = {}, deps) {
   let transcriptPath = null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
-    const native = hubSessionId && sessionManager.getNativeCodex?.(hubSessionId);
+    const native = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (native) {
       if (!require('../../core/codex-native-runtime').isUnstartedRuntime(native.runtime)) await native.start();
       return {turns:native.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
-        error:null,source:'codex-app-server'};
+        error:null,source:native.options?.kind && require('../../core/acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const kind = session ? session.kind : inKind;
     // Public kind stays `deepseek` across the migration. A persisted Claude id
@@ -252,7 +252,7 @@ function registerTranscriptIpc(ipcMain, deps) {
   } = deps;
 
   ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
-    const native = deps.sessionManager.getNativeCodex?.(sessionId);
+    const native = (deps.sessionManager.getNativeSession?.(sessionId) || deps.sessionManager.getNativeCodex?.(sessionId));
     if (native) return native.finalText();
     return transcriptTap.getLastAssistantText(sessionId);
   });

@@ -46,7 +46,7 @@ function firstLine(text) {
 function supportsMessageReceipt(kind, text) {
   // Native slash commands need not create a user-message record (e.g. /goal
   // writes a goal update). Keep their existing CLI submission contract.
-  return (isClaudeFamily(kind) || isCodexCliKind(kind)) && !String(text).trimStart().startsWith('/');
+  return (isClaudeFamily(kind) || isCodexCliKind(kind) || require('../../core/acp-profiles').isAcpKind(kind)) && !String(text).trimStart().startsWith('/');
 }
 
 function registerPromptSubmitIpc(ipcMain, deps) {
@@ -100,7 +100,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     if (!kind) return { ok: false, error: 'no-session' };
 
     // 宿主 shell：没有 paste-detect，直写最快也最准。
-    if (!isPasteSensitive(kind)) {
+    if (!isPasteSensitive(kind) && !sessionManager.getNativeSession?.(sessionId)) {
       sessionManager.writeToSession(sessionId, `${text}\r`);
       return { ok: true, sendStatus: 'ok', mode: 'plain-shell', kind };
     }
@@ -112,7 +112,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     lastPromptBySid.set(sessionId, text);
     return enqueue(sessionId, async () => {
       const receipt = clientSubmissionId && supportsMessageReceipt(kind, text)
-        ? receipts.begin(sessionId, clientSubmissionId, text, Date.now(), {nativeOnly:!!sessionManager.getNativeCodex?.(sessionId)}) : null;
+        ? receipts.begin(sessionId, clientSubmissionId, text, Date.now(), {nativeOnly:!!(sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId))}) : null;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。

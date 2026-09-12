@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession, nativeUnfinished } = require('./codex-native-runtime.js');
+const { isNativeSession, nativeUnfinished } = require('./codex-native-runtime.js');
 
 const {
   RUNTIME_FAILED,
@@ -22,7 +22,7 @@ function hasFreshGroupChatWork(session, now = Date.now()) {
 }
 
 function isGroupChatMemberRunning(session, now = Date.now()) {
-  if (isCodexSession(session)) return nativeUnfinished(session);
+  if (isNativeSession(session)) return nativeUnfinished(session);
   if (!session) return false;
   const runtime = getSessionRuntimeTruth(session, { now });
   if (sessionRuntimeIsActive(session, { now })) return true;
