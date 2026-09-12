@@ -1757,9 +1757,24 @@ if (typeof MutationObserver === 'function') {
   }
 }
 
-// 双击工具栏空白处最大化 / 还原 —— 这是原生标题栏的既有行为，隐掉标题栏之后
-// 必须自己补回来，否则用户会觉得「这条栏坏了」。只认空白处：落在按钮、面包屑
-// 或视图切换上的双击是在操作那个控件，不该顺手改变窗口大小。
+// Header logo opens another independent Hub process, like the taskbar task.
+const btnNewHub = document.getElementById('btn-new-hub');
+btnNewHub.addEventListener('click', async (event) => {
+  if (btnNewHub.disabled || event.detail > 1) return;
+  btnNewHub.disabled = true;
+  btnNewHub.setAttribute('aria-busy', 'true');
+  try {
+    await ipcRenderer.invoke('hub:new-instance');
+  } catch (error) {
+    console.error('[hub-instance] launch failed:', error);
+    alert(`新建 AI Hub 失败：${error.message || error}`);
+  } finally {
+    btnNewHub.disabled = false;
+    btnNewHub.removeAttribute('aria-busy');
+  }
+});
+
+// 双击工具栏空白处最大化 / 还原。控件上的双击不改变窗口大小。
 if (appToolbarEl) {
   appToolbarEl.addEventListener('dblclick', (event) => {
     if (event.target.closest('button, a, input, select, .terminal-crumb, .view-toggle')) return;
@@ -4982,7 +4997,7 @@ const launchCenter = createLaunchCenterController({
 window.LaunchCenter = launchCenter;
 
 // --- Unified launch center ---
-btnNew.addEventListener('click', () => { void launchCenter.launchLast(); });
+btnNew.addEventListener('click', () => launchCenter.open('session'));
 document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
 
 document.addEventListener('mousedown', (e) => {
