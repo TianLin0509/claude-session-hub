@@ -4017,6 +4017,7 @@ function composerStopAllowed(session, runtimeTruth) {
 // gpt-5.6-sol 到 ultra、gpt-5.5 只到 xhigh。目录几乎不变，按 slug 记一份就够。
 const _codexEffortCache = new Map();
 function composerSupportedEfforts(session) {
+  if (session?.runtimeBackend === 'acp') return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
@@ -5198,7 +5199,7 @@ window.LaunchCenter = launchCenter;
 // --- Unified launch center ---
 btnNew.addEventListener('click', () => launchCenter.open('session'));
 document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
-document.getElementById('acp-settings-open').addEventListener('click', () => {
+document.getElementById('acp-settings-open')?.addEventListener('click', () => {
   require('./acp-settings').openAcpSettings({ document, invoke:(...args)=>ipcRenderer.invoke(...args) })
     .catch(error => alert('ACP 配置未打开：' + error.message));
 });

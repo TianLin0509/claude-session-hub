@@ -10,9 +10,9 @@
 // `/model gpt-5.5` to Codex 0.151 is an ordinary model prompt, not a switch.
 
 const MODEL_OPTIONS_BY_KIND = {
-  qwen: [{id:'qwen3.8-max',label:'Qwen 3.8 Max · 套餐'}],
-  'deepseek-acp': [{id:'deepseek-v4-pro',label:'DeepSeek V4 Pro · 套餐'}],
-  glm: [{id:'glm-5.2',label:'GLM 5.2 · 套餐'}],
+  qwen: require('./acp-model-catalog').acpModelOptions('qwen'),
+  'deepseek-acp': require('./acp-model-catalog').acpModelOptions('deepseek-acp'),
+  glm: require('./acp-model-catalog').acpModelOptions('glm'),
   claude: [
     { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
     { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M context)' },

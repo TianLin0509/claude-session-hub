@@ -11,6 +11,7 @@
   const { defaultCodexContextWindow } = require('../core/codex-context-window.js');
 
   const KIND_LABELS = {
+    ...require('../core/acp-profiles').LABELS,
     claude: 'Claude Code',
     gemini: 'Gemini CLI',
     codex: 'Codex CLI',
@@ -974,7 +975,7 @@
   function paint() {
     if (!menuEl) return;
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
-      const selected = button.dataset.kind === selectedKind;
+      const selected = button.dataset.kind === (selectedKind === 'deepseek-acp' ? 'deepseek' : selectedKind);
       button.classList.toggle('selected', selected);
       button.setAttribute('aria-pressed', selected ? 'true' : 'false');
     });
@@ -986,6 +987,10 @@
 
     paintTuning();
 
+    const routeField = document.getElementById('new-session-deepseek-route-field');
+    if (routeField) routeField.hidden = !['deepseek','deepseek-acp'].includes(selectedKind);
+    const routeSelect = document.getElementById('new-session-deepseek-route');
+    if (routeSelect && routeField && !routeField.hidden) routeSelect.value = selectedKind;
     const existingRow = document.getElementById('new-session-existing-path');
     menuEl.querySelectorAll('[data-project-path]').forEach(button => {
       const selected = workspacePathKey(existingWorkspace?.path) === workspacePathKey(button.dataset.projectPath);
@@ -1099,7 +1104,7 @@
     // this controller without going through the unified launcher. Always reset
     // the shell to the session intent before focusing the selected provider.
     window.dispatchEvent(new CustomEvent('launch-center:session-opened'));
-    const selected = menuEl.querySelector(`.new-session-option[data-kind="${selectedKind}"]`);
+    const selected = menuEl.querySelector(`.new-session-option[data-kind="${selectedKind === 'deepseek-acp' ? 'deepseek' : selectedKind}"]`);
     if (selected) selected.focus();
     void loadRecent().then(paint);
     // 每次打开都向当前 CLI 目录服务取一次（main 有短 TTL），不把模型表冻结到 Hub 启动时。
@@ -1180,7 +1185,7 @@
     const base = String(kind || '').replace(/-resume$/, '');
     if (require('../core/acp-profiles').isAcpKind(base)) return ipcRenderer.invoke('acp:settings:get').then(settings=>{
       const model=settings.providers?.[base]?.model;
-      if(model)setRuntimeModelOptions(base,[{id:model,label:model+' · 套餐',source:'acp-profile'}]);
+      setRuntimeModelOptions(base,require('../core/acp-model-catalog').acpModelOptions(base,model));
       return settings;
     });
     if (base === 'codex') return loadCodexTuningCatalog(options);
@@ -1248,7 +1253,7 @@
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       button.addEventListener('click', () => {
         rememberTuning(selectedKind);
-        selectedKind = button.dataset.kind || 'claude';
+        selectedKind = button.dataset.kind === 'deepseek' ? (document.getElementById('new-session-deepseek-route')?.value || 'deepseek-acp') : button.dataset.kind || 'claude';
         applyTuningMemory(selectedKind);
         setError('');
         paint();
@@ -1268,6 +1273,13 @@
           void loadPreparedProjects();
         }
       });
+    });
+    document.getElementById('new-session-deepseek-route')?.addEventListener('change', event => {
+      rememberTuning(selectedKind);
+      selectedKind = event.target.value === 'deepseek' ? 'deepseek' : 'deepseek-acp';
+      applyTuningMemory(selectedKind);
+      setError(''); paint();
+      void loadModelCatalog(selectedKind).then(paint);
     });
     const modelSelect = document.getElementById('new-session-model');
     document.getElementById('new-session-project-refresh')?.addEventListener('click', loadPreparedProjects);

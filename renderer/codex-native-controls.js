@@ -212,18 +212,6 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       modeBox.append(reset, error); children.push(modeBox);
     }
     if (cancelling) children.push(node('p','正在停止，等待原生 Harness 确认','acp-cancelling'));
-    if(session.runtimeBackend==='acp' && session.acpConfigOptions?.some(o=>['mode','thought_level'].includes(o.category))) {
-      const details=node('details');details.append(node('summary','原生执行设置'));
-      for(const option of session.acpConfigOptions.filter(o=>['mode','thought_level'].includes(o.category))) {
-        const form=node('div'),label=node('label',option.name || option.id),select=node('select');
-        for(const c of option.options.flatMap(o=>o.options || [o])) {const el=node('option',c.name || c.value);el.value=c.value;select.append(el);}
-        select.value=option.currentValue;select.disabled=runtime?.connection!=='connected' || ['running','waiting'].includes(runtime?.state);
-        const error=node('p','','codex-native-error');
-        select.addEventListener('change',()=>action({action:'configure',configId:option.id,value:select.value},form,error));
-        label.append(select);form.append(label,error);details.append(form);
-      }
-      children.push(details);
-    }
     if (runtime?.connection === 'unstarted') children.push(node('p','尚未开始，收到消息后启动。'));
     if (runtime?.emptyRecovery) {
       const box=node('div',null,'codex-native-request'), error=node('div','','codex-native-error');
