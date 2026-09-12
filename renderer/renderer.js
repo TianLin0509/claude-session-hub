@@ -876,9 +876,9 @@ const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
 //   渲染层内存 → 侧栏立刻消失；state.json → 重启后不再回来；
 //   主进程 sessionManager → 活会话的下一次 session-updated 广播不会把 unreadCount 推回来。
 // 刻意不碰 needs-input：CLI 真卡在等用户输入时把它标成已读，等于替用户撒谎。
-function markMeetingMemberRead(meetingId, sid) {
+function markMeetingMemberRead(meetingId, sid, readContext = null) {
   const meeting = meetings[meetingId];
-  const result = meetingUnread.readMeetingMember(meeting, sid, sessions);
+  const result = meetingUnread.readMeetingMember(meeting, sid, sessions, readContext);
   if (!result.changed) return false;
   if (result.sessionRead) {
     ipcRenderer.send('mark-sessions-read', { sessionIds: [sid] });

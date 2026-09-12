@@ -24,7 +24,7 @@
 }
 #session-list .sl-unread-members { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px 5px 6px 20px; }
 #session-list .sl-unread-member {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0;
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; width: auto; height: auto;
   margin: 0; padding: 2px 5px; min-height: 23px; border-radius: 4px;
   background: transparent; color: var(--text-secondary); border: 1px solid transparent;
   font: 10px/16px var(--font-ui, sans-serif); cursor: pointer;

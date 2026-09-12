@@ -58,3 +58,10 @@ test('only final answers from current members create attention', () => {
   recordMeetingAnswer(m, answer('b', 1, {status: 'manual_extracted'}));
   assert.deepEqual([...getMeetingUnreadMemberIds(m)], ['b']);
 });
+
+test('reading a stale bubble cannot acknowledge a newer answer', () => {
+  const m = group(); recordMeetingAnswer(m, answer('a', 2));
+  assert.equal(readMeetingMember(m, 'a', new Map(), {turnNum: 1}).changed, false);
+  assert.equal(getMeetingUnreadMemberIds(m).size, 1);
+  assert.equal(readMeetingMember(m, 'a', new Map(), {turnNum: 2}).changed, true);
+});

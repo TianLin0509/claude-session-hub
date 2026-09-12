@@ -132,7 +132,9 @@ async function main() {
     assert.equal(await client.eval(`!!document.querySelector(${JSON.stringify(groupRow(group.id)+' .sl-group-icon.run')})`),true);
     result.checks.push('成员未读状态夹具令群聊进入未读；另一成员真实原生运行状态仍闪烁');
     await shot('dark-unread');
-    await clickPoint(client,groupRow(group.id));
+    await clickPoint(client,groupRow(group.id)+' .sl-title');
+    assert.equal(await client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount`),1,'opening the room does not read every member');
+    await clickPoint(client,groupRow(group.id)+` .sl-unread-member[data-sub-id="${b}"]`);
     await waitFor('read acknowledged',()=>client.eval(`sessions.get(${JSON.stringify(b)}).unreadCount===0 && !sessions.get(${JSON.stringify(b)}).replyReady`));
     const mainMembers=await invoke('get-sessions');
     assert.equal(mainMembers.find(s=>s.id===b).unreadCount || 0,0);
@@ -145,8 +147,8 @@ async function main() {
     await waitFor('both dormant',()=>client.eval(`${JSON.stringify([a,b])}.every(id=>sessions.get(id)?.status==='dormant')`));
     await invoke('update-meeting-sync',{meetingId:group.id,fields:{status:'idle',participants:[0]}});
     await waitFor('parent idle',()=>client.eval(`meetings[${JSON.stringify(group.id)}].status==='idle'`));
-    await clickPoint(client,groupRow(group.id));
-    await clickPoint(client,groupRow(group.id));
+    await clickPoint(client,groupRow(group.id)+' .sl-title');
+    await clickPoint(client,groupRow(group.id)+' .sl-title');
     await waitFor('all members auto resumed',()=>client.eval(`${JSON.stringify([a,b])}.every(id=>sessions.get(id)?.status!=='dormant' && !sessions.get(id)?._resumePending)`));
     assert.equal(await client.eval('activeMeetingId'),group.id); assert.equal(await client.eval('activeSessionId'),null);
     assert.equal(await client.eval(`getComputedStyle(document.querySelector('#meeting-room-panel')).display!=='none'`),true);

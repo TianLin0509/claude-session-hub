@@ -59,6 +59,11 @@ async function main() {
     await wait('room selected',()=>c.eval(`activeMeetingId===${JSON.stringify(group.id)}`));
     check('Entering the room keeps both members unread',await unread()===2);
     await screenshot('selected-unread');
+    await click(`.mr-gc-msg[data-unread-answer="true"][data-source-sid="${b}"] .mr-gc-bubble`);
+    await wait('latest bubble read',async()=>await unread()===1);
+    check('Reading one latest group bubble acknowledges only its member');
+    const rereply=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal followup',targetMemberIds:[group.slotSpecs?.[1]?.memberId || 'm2'],turnTimeoutMs:20000});
+    assert.equal(rereply.status,'completed');await wait('both unread again',async()=>await unread()===2);
     await click(row+` [data-sub-id="${a}"]`);
     await wait('one member read',async()=>await unread()===1);
     check('Member chip opens real member session and only clears that member',await c.eval(`activeSessionId===${JSON.stringify(a)} && meetings[${JSON.stringify(group.id)}].unreadAnswered.has(${JSON.stringify(b)})`));
@@ -75,13 +80,14 @@ async function main() {
     await click(row+` [data-sub-id="${a}"]`);
     await click(`#session-list [data-session-id="${ready.id}"]`);
     // The next round targets only a: b must retain the answer from the old round.
-    const third=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal third',targetMemberIds:[a],turnTimeoutMs:20000});
+    const third=await invoke('groupchat:turn',{meetingId:group.id,userInput:'fixture:normal third',targetMemberIds:[group.slotSpecs?.[0]?.memberId || 'm1'],turnTimeoutMs:20000});
     assert.equal(third.status,'completed');
     await wait('cross round unread',async()=>await unread()===2);
     check('Old unread survives a new round answering only the other member');
     const pending=await invoke('session:send-prompt',{sessionId:a,text:'fixture:wait'});assert.equal(pending.ok,true);
     await wait('waiting member',()=>c.eval(`sessions.get(${JSON.stringify(a)})?.nativeRuntime?.state==='waiting'`));
-    check('Unread badge coexists with actual waiting state',await c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-group-icon.wait')}) && !!document.querySelector(${JSON.stringify(row+' .sl-unread-badge')})`));
+    await wait('waiting icon rendered',()=>c.eval(`!!document.querySelector(${JSON.stringify(row+' .sl-group-icon.wait')}) && !!document.querySelector(${JSON.stringify(row+' .sl-unread-badge')})`));
+    check('Unread badge coexists with actual waiting state');
     result.themes=[];
     for(const theme of ['dark','frost','claude','codex','hub','slate']) {
       await c.eval(`themeController.setTheme(${JSON.stringify(theme)})`);

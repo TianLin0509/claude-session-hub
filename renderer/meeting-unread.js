@@ -21,15 +21,21 @@ function recordMeetingAnswer(meeting, payload, { seenByUser = false } = {}) {
   }
   meeting.answeredThisTurn.add(sid);
   const key = JSON.stringify([round, payload.attemptId || '', payload.providerTurnId || '', status]);
-  if (meeting._answerCompletionKeys.get(sid) === key) return false;
-  meeting._answerCompletionKeys.set(sid, key);
+  if (meeting._answerCompletionKeys.get(sid)?.key === key) return false;
+  meeting._answerCompletionKeys.set(sid, { key, turnNum });
   if (!seenByUser) meeting.unreadAnswered.add(sid);
   else meeting.unreadAnswered.delete(sid);
   return true;
 }
 
-function readMeetingMember(meeting, sid, sessions = new Map()) {
+function readMeetingMember(meeting, sid, sessions = new Map(), readContext = null) {
   if (!meeting?.subSessions?.includes(sid)) return { changed: false, sessionRead: false };
+  const latest = meeting._answerCompletionKeys?.get(sid);
+  // A delayed panel repaint must not let an old visible bubble acknowledge a
+  // newer completion which arrived after that bubble was rendered.
+  if (readContext && latest && Number(readContext.turnNum) !== Number(latest.turnNum)) {
+    return { changed: false, sessionRead: false };
+  }
   const removed = meeting.unreadAnswered instanceof Set && meeting.unreadAnswered.delete(sid);
   const sessionRead = clearSessionCompletedUnread(sessions.get(sid));
   return { changed: removed || sessionRead, sessionRead };

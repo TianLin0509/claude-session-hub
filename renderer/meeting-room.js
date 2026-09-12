@@ -2559,7 +2559,7 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -3708,7 +3708,7 @@ if (typeof document !== 'undefined') (function () {
       const article = bubble.closest('[data-source-sid]');
       const sid = article.dataset.sourceSid;
       const replies = panel.querySelectorAll(`.mr-gc-msg[data-unread-answer="true"][data-source-sid="${CSS.escape(sid)}"]`);
-      if (sid && replies[replies.length - 1] === article) window.markMeetingMemberRead?.(meeting.id, sid);
+      if (sid && replies[replies.length - 1] === article) window.markMeetingMemberRead?.(meeting.id, sid, { turnNum: article.dataset.readTurn });
     }
 
     const sessionJump = _closestInPanel(ev.target, '[data-gc-open-session]', panel);

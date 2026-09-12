@@ -440,9 +440,12 @@ function _sessionWarningText(session) {
         toggleMeetingExpand(intent.id);
         return true;
       }
+      const forceScrollBottom = !!intent.latest || intent.id === getActiveSessionId()
+        || sessionHasCompletedUnread(getSessions().get(intent.id))
+        || Object.values(getMeetings()).some(m => getMeetingUnreadMemberIds(m, getSessions()).has(intent.id));
       const action = intent.type === 'meeting'
         ? selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })
-        : selectSession(intent.id, { forceScrollBottom: !!intent.latest || !!getSessions().get(intent.id)?.meetingId || sessionHasCompletedUnread(getSessions().get(intent.id)) || intent.id === getActiveSessionId() });
+        : selectSession(intent.id, { forceScrollBottom });
       Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
       return true;
     } catch (error) {
