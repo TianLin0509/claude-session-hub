@@ -17,11 +17,11 @@
    会盖过 UA 给 [hidden] 的 display:none。 */
 .composer [hidden] { display: none !important; }
 
-.composer-start-actions { display: flex; align-items: center; }
+.composer-start-actions { display: flex; align-items: center; flex: none; }
 .composer-one-click-start {
   border: 1px solid var(--border-subtle); border-radius: 6px;
   padding: 4px 9px; background: transparent; color: var(--fg-muted);
-  font: inherit; font-size: 12.5px; cursor: pointer;
+  font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap;
 }
 .composer-one-click-start:hover { color: var(--fg-primary); background: var(--surface-hover); }
 .composer-one-click-start:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }

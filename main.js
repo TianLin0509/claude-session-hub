@@ -2513,6 +2513,10 @@ registerConfigIpc(ipcMain, {
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
+require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
+  app, safeStorage: require('electron').safeStorage,
+});
+
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
 // IPC 为面板提供只读巡检数据与手动触发；调度器每天到点自动跑一轮沉淀。
 // 写入一律走 dream-consolidation 的快照+changelog 通道，可回溯可回滚。
