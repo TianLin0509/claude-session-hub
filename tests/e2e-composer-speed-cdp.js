@@ -73,6 +73,7 @@ async function main(){
   for(const width of [1000,760]) {
    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false});
    await click(`#mr-input-tuning [data-sid="${ids[1]}"] .composer-speed`);
+   await wait("!!document.querySelector('.speed-picker-menu [data-speed=fast]:not(:disabled)')");
    ok('speed menu fits '+width,await cdp.eval(`(()=>{const r=document.querySelector('.speed-picker-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;})()`));
    await shot('group-'+width);
   }
