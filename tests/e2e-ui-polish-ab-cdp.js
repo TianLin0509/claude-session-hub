@@ -17,6 +17,7 @@ async function main(){
   const until=async(expr,label)=>{const deadline=Date.now()+30000;let last;while(Date.now()<deadline){last=await cdp.eval(expr);if(last===true || typeof last==='string' && last)return last;await sleep(100);}throw Error('timeout: '+label+' '+JSON.stringify(last));};
   const click=async(selector,button='left')=>{
     const p=await cdp.eval(`(()=>{const es=[...document.querySelectorAll(${JSON.stringify(selector)})];const e=es.find(el=>{const r=el.getBoundingClientRect();return r.width&&r.height&&getComputedStyle(el).visibility!=='hidden'});if(!e)throw Error('Missing visible '+${JSON.stringify(selector)});const r=e.getBoundingClientRect();const x=r.x+r.width/2,y=r.y+r.height/2;if(!e.contains(document.elementFromPoint(x,y)))throw Error('Occluded '+${JSON.stringify(selector)});return {x,y};})()`);
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});
     await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',...p,button,clickCount:1});
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',...p,button,clickCount:1});
   };
@@ -84,6 +85,7 @@ async function main(){
     const disposable=await cdp.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{...opts,title:'删除确认验证'}})+')');
     const disposableId=JSON.stringify(disposable.id);
     await until('sessions.get('+disposableId+')?.nativeRuntime?.state === "idle"','disposable ready');
+    await until('!!document.querySelector('+JSON.stringify('.session-item[data-session-id="'+disposable.id+'"]')+')','disposable row rendered');
     await click('.session-item[data-session-id="'+disposable.id+'"]','right');await click('#context-menu [data-action="delete"]');
     await until('!!document.querySelector(".hub-dialog[open]")','delete acceptance');
     ok('destructive confirmation focuses cancel',await cdp.eval('document.activeElement.textContent === "保留会话"'));
