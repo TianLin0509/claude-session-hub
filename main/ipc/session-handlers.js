@@ -244,6 +244,13 @@ function registerSessionIpc(ipcMain, deps) {
     if (typeof sessionId !== 'string' || !sessionId) {
       return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
     }
+    const native = sessionManager.getNativeCodex?.(sessionId);
+    const control = native?.control;
+    if (control?.shared) {
+      if (control.role !== 'controller') return { ok:false, error:'shared-viewer', message:'当前窗口只能查看，不能永久删除共享会话' };
+      if (!control.transferReady) return { ok:false, error:'shared-busy', message:control.transferReason || 'Codex 工作中，不能永久删除' };
+      if (control.viewerCount > 1) return { ok:false, error:'shared-viewers', message:'其他 Hub 仍在查看此会话，请先关闭其他查看窗口' };
+    }
     lastResizeBySid.delete(sessionId);
     sessionManager.closeSession(sessionId);
     return { ok: true, sessionId, action: 'deleted' };
@@ -288,7 +295,9 @@ function registerSessionIpc(ipcMain, deps) {
       else if (payload.action === 'configure') result = await native.configure(payload);
       else if (payload.action === 'collaboration-mode') result = await native.configureMode(payload.mode, payload.epoch);
       else if (payload.action === 'snapshot') result = native.runtime;
-      else if (payload.action === 'review-submission') result = native.reviewUnknownSubmission(payload.submissionId,payload.epoch);
+      else if (payload.action === 'request-control' && typeof native.requestControl === 'function') result = await native.requestControl();
+      else if (payload.action === 'locate-controller' && typeof native.locateController === 'function') result = await native.locateController();
+      else if (payload.action === 'review-submission') result = await Promise.resolve(native.reviewUnknownSubmission(payload.submissionId,payload.epoch));
       else return {ok:false,message:'不支持的 Codex 操作'};
       return {ok:true,result};
     } catch (error) {
@@ -444,12 +453,14 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
+    const codexNative = sessionManager.getNativeCodex?.(sessionId);
+    if (codexNative?.control?.shared && codexNative.control.role !== 'controller') return null;
     const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
-    const native = sessionManager.getNativeClaude?.(sessionId);
-    if (native && userRenamed && session) {
-      try { session.nativeRename = native.rename(title); }
+    const claudeNative = sessionManager.getNativeClaude?.(sessionId);
+    if (claudeNative && userRenamed && session) {
+      try { session.nativeRename = claudeNative.rename(title); }
       catch (error) {
-        native.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
+        claudeNative.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
         session.nativeRename = { status: 'failed', message: error.message };
       }
     }

@@ -10,6 +10,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
   element.hidden = true;
   element.setAttribute('aria-label', '原生会话操作');
   let signature = '';
+  let lastSharedViewer = false;
   const forms = new Map();
   const node = (tag, text, className) => {
     const el = doc.createElement(tag);
@@ -191,10 +192,30 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       return;
     }
     const runtime = session.nativeRuntime;
+    const sharedViewer = session.codexSharedControl?.shared && session.codexSharedControl.role !== 'controller';
+    if (sharedViewer !== lastSharedViewer) {
+      forms.clear();
+      lastSharedViewer = sharedViewer;
+    }
     const cancelling = runtime?.cancellation?.status === 'pending';
     const requests = runtime && runtime.connection === 'connected' && !cancelling ? runtime.requests || [] : [];
     const choices = session.nativeThreadChoices || [];
-    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.acpConfigOptions,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.collaborationMode,runtime?.cancellation,runtime?.emptyRecovery]);
+    const next = JSON.stringify([
+      runtime && runtime.epoch,
+      requests,
+      choices,
+      session.acpConfigOptions,
+      session.nativeActionError,
+      runtime?.configurationError,
+      runtime?.submission?.status,
+      runtime?.state,
+      runtime?.connection,
+      runtime?.collaborationMode,
+      runtime?.cancellation,
+      runtime?.emptyRecovery,
+      sharedViewer,
+      session.codexSharedControl?.controllerEpoch,
+    ]);
     if (signature === next) return;
     signature = next;
     // Reuse the actual form nodes. Resolving another request must preserve
@@ -276,6 +297,11 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       if (element.children[index] !== child) element.insertBefore(child,element.children[index] || null);
     });
     while (element.children.length > children.length) element.lastElementChild.remove();
+    element.querySelectorAll('button,select,input,textarea').forEach(control => {
+      if (sharedViewer) control.disabled = true;
+    });
+    element.dataset.sharedRole = sharedViewer ? 'viewer' : 'controller';
+    element.title = sharedViewer ? '审批和原生操作由当前操作窗口处理' : '';
     if (focused && element.contains(focused) && doc.activeElement !== focused) focused.focus();
     element.hidden = element.childElementCount === 0;
   }
