@@ -8025,6 +8025,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     }
     local.needsUserInput = next?.state === 'waiting';
     local.gcWorking = false;
+    _updateStreamingIndicator(local.id);
     scheduleSessionListRender();
     updateFloatingBarState();
     window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
