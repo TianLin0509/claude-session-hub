@@ -36,6 +36,14 @@ const complete = async () => {
     parent_tool_use_id: null, message: { id: randomUUID(), role: 'assistant', content: [{ type: 'text', text: '完成 🧪' }] } });
   await result();
 };
+const PERMISSION_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'default', 'dontAsk', 'manual', 'plan'];
+const flagSettings = (() => {
+  const at = process.argv.indexOf('--settings');
+  if (at < 0) return {};
+  try { return JSON.parse(require('node:fs').readFileSync(process.argv[at + 1], 'utf8')); } catch { return {}; }
+})();
+let permissionMode = process.argv[process.argv.indexOf('--permission-mode') + 1] || 'default';
+
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async line => {
   const m = JSON.parse(line);
@@ -45,13 +53,32 @@ rl.on('line', async line => {
       if (mode === 'malformed') return process.stdout.write('{broken}\n');
       if (mode === 'truncated') { process.stdout.write('{"type":'); return process.exit(8); }
       if (mode === 'no-init') return;
-      await success(m.request_id, { commands: [], models: [], test: true });
+      await success(m.request_id, { commands: [], models: [], test: true,
+        // The real engine reports these on initialize; the Hub's speed chip and
+        // working-mode control read them, so the fixture must answer in kind.
+        fast_mode_state: flagSettings.fastMode === true ? 'on' : 'off',
+        ...(flagSettings.fastMode === true ? {} : { fast_mode_disabled_reason: 'sdk_opt_in_required' }),
+        current_permission_mode: permissionMode });
     } else if (m.request.subtype === 'interrupt') {
       await success(m.request_id);
       if (lastUser) { lastUser = null; await result({ terminal_reason: 'aborted_streaming' }); }
     } else if (m.request.subtype === 'get_context_usage') {
       await success(m.request_id, { totalTokens: 12500, maxTokens: 950000, rawMaxTokens: 1000000,
         percentage: 12500 / 950000 * 100, model: 'claude-opus-5[1m]' });
+    } else if (m.request.subtype === 'apply_flag_settings') {
+      if (!m.request.settings || typeof m.request.settings !== 'object' || Array.isArray(m.request.settings)) {
+        return frame({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id,
+          error: 'apply_flag_settings requires `settings` to be an object' } });
+      }
+      Object.assign(flagSettings, m.request.settings);
+      await success(m.request_id, {});
+    } else if (m.request.subtype === 'set_permission_mode') {
+      if (!PERMISSION_MODES.includes(m.request.mode)) {
+        return frame({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id,
+          error: 'Cannot set permission mode: must be one of ' + PERMISSION_MODES.join(', ') } });
+      }
+      permissionMode = m.request.mode;
+      await success(m.request_id, { mode: permissionMode });
     } else if (m.request.subtype === 'fixture-env') {
       await success(m.request_id, { inherited: Object.hasOwn(process.env, 'HUB_NATIVE_TEST_PARENT_ONLY') });
     } else if (m.request.subtype === 'fixture-config') {
