@@ -3872,6 +3872,8 @@ function composerSupportedEfforts(session) {
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
   if (!slug) return null;
+  const webRoute = require('../core/chatgpt-web-models').chatgptWebRoute(slug);
+  if (webRoute) return [webRoute.effort];
   if (_codexEffortCache.has(slug)) return _codexEffortCache.get(slug);
   let efforts = null;
   try { efforts = describeCodexModelTuning(slug).efforts || null; }

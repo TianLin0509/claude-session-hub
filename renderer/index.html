@@ -118,12 +118,14 @@
                     <div class="menu-group-label">AI / 终端</div>
                     <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
                       <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
-                      <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
                       <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+                      <button class="new-session-option" data-kind="chatgpt" aria-pressed="false"><span class="ai-logo logo-codex"></span>ChatGPT</button>
                       <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
                       <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+                      <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
                       <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
                     </div>
+                    <div id="chatgpt-web-panel" hidden><p id="chatgpt-web-status" role="status"></p><button id="chatgpt-web-settings" type="button">打开 Codex Web GPT 设置</button><button id="chatgpt-web-refresh" type="button">刷新状态与模型</button></div>
                     <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
                     <div class="session-tuning-grid" id="new-session-tuning">
                       <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>

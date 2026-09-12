@@ -17,6 +17,7 @@ function modelClass(id) {
   if (s.includes('sonnet')) return 'sonnet';
   if (s.includes('haiku')) return 'haiku';
   if (s.includes('gemini')) return 'gemini';
+  if (s.startsWith('chatgpt-web/')) return 'codex';
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
   if (s.includes('kimi') || s === 'k3') return 'kimi';
@@ -27,6 +28,8 @@ function modelClass(id) {
 // ("Opus 4.6 (1M context)"); we strip the parenthetical to keep the pill slim.
 function modelShort(m) {
   if (!m) return '';
+  const web = require('../core/chatgpt-web-models').chatgptWebRoute(m.id);
+  if (web) return web.label;
   const dn = m.displayName || '';
   if (dn) return dn.replace(/\s*\(.*?\)\s*$/, '').trim();
   const id = (m.id || '').toLowerCase();
@@ -259,7 +262,7 @@ function createModelUiController({
     if (!menu || menu._removed) return;
     const session = sessions.get(sessionId);
     const kind = session && session.kind ? session.kind : '';
-    const options = getModelOptions(kind);
+    const options = getModelOptions(require('../core/chatgpt-web-models').isChatgptWebModel(session?.currentModel?.id) ? 'chatgpt' : kind);
     const strategy = modelSwitchStrategy(kind);
     const currentId = session && session.currentModel ? (session.currentModel.id || '') : '';
     const hasExactCurrent = options.some(option => String(option.id).toLowerCase() === String(currentId).toLowerCase());
@@ -274,6 +277,8 @@ function createModelUiController({
     }
     if (!canSwitchInSession(kind)) {
       menuNote(menu, 'ℹ 该 CLI 暂不支持从 Hub 原地切换；请在新建会话时选择', 'warning');
+    } else if (require('../core/chatgpt-web-models').isChatgptWebModel(currentId)) {
+      menuNote(menu, 'Codex Web GPT 当前配置 · 每个模型使用其固定思考档，下一轮生效。');
     } else if (strategy === 'codex-picker') {
       const live = options.some(option => option.source === 'codex-app-server');
       menuNote(menu, `${live ? '当前账号实时目录' : 'Codex CLI 本地缓存'} · `
@@ -322,7 +327,8 @@ function createModelUiController({
     menuNote(menu, '正在刷新当前账号的模型目录…', 'pending');
     const session = sessions.get(sessionId);
     try {
-      const catalog = await refreshModelCatalog(session && session.kind, session);
+      const web = require('../core/chatgpt-web-models').isChatgptWebModel(session?.currentModel?.id);
+      const catalog = await refreshModelCatalog(web ? 'chatgpt' : session && session.kind, session);
       if (openModelPicker && openModelPicker.el === menu) {
         renderModelPicker(menu, badgeEl, sessionId, catalog && catalog.refreshError ? {
           text: `实时目录刷新失败，已使用本地兜底：${catalog.refreshError}`,
@@ -375,7 +381,7 @@ function createModelUiController({
   async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
     if (session.runtimeBackend === 'codex-app-server') {
       const response = await ipcRenderer.invoke('codex:native-action', {
-        sessionId, action:'configure', model:option.id, effort:effortOverride || session.effort,
+        sessionId, action:'configure', model:option.id, effort:effortOverride || require('../core/chatgpt-web-models').chatgptWebRoute(option.id)?.effort || session.effort,
       });
       if (!response || !response.ok) throw new Error(response && response.message || 'Codex 未确认模型切换');
       return response.result;

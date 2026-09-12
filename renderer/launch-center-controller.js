@@ -2,7 +2,7 @@
 
 const LAUNCH_INTENTS = Object.freeze(['session', 'group', 'resume']);
 const LAST_LAUNCH_KEY = 'hub.launch.last';
-const CLI_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', gemini: 'Gemini', deepseek: 'DeepSeek', kimi: 'Kimi', powershell: 'PowerShell' });
+const CLI_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', chatgpt: 'ChatGPT', gemini: 'Gemini', deepseek: 'DeepSeek', kimi: 'Kimi', powershell: 'PowerShell' });
 const TUNING_FIELDS = ['model', 'effort', 'mcpProfile', 'fastMode', 'codexSpeedTier'];
 
 function normalizeLastLaunch(value) {
@@ -157,7 +157,7 @@ function createLaunchCenterController({
       if (!directoryOk) throw new Error(`工作区不存在或不是目录：${last.workspace.path}`);
       const workspace = getWorkspaceController();
       const catalog = await workspace.loadModelCatalog(last.kind);
-      if (['codex', 'claude'].includes(last.kind) && !catalog) throw new Error('模型配置目录不可用，请在启动中心确认');
+      if (['codex', 'claude', 'chatgpt'].includes(last.kind) && !catalog) throw new Error('模型配置目录不可用，请在启动中心确认');
       if (catalog && (catalog.refreshError || catalog.ok === false)) throw new Error(`模型配置目录读取失败：${catalog.refreshError || '目录不可用'}`);
       const tuning = workspace.resolveSessionTuning(last.kind, last.model, last);
       const required = [

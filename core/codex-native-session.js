@@ -583,6 +583,15 @@ class CodexNativeSession extends EventEmitter {
     return this.enqueueSend(intent=>this._configure(options,intent));
   }
   async _configure({model,effort}, intent) {
+    const { chatgptWebRoute } = require('./chatgpt-web-models');
+    const currentWeb = chatgptWebRoute(this.options.turnParams?.model);
+    const targetWeb = chatgptWebRoute(model);
+    if (!!currentWeb !== !!targetWeb) throw new Error('ChatGPT 与 Codex 使用不同连接配置，请从启动中心新建对应会话');
+    if (targetWeb) {
+      require('./chatgpt-web-integration').requireWebTools(model, this.options.env);
+      if (effort && effort !== targetWeb.effort) throw new Error('ChatGPT 档位由模型固定，不能单独修改');
+      effort = targetWeb.effort;
+    }
     await this.start();
     if (intent) this.checkSendIntent(intent);
     if (this.runtime.connection !== 'connected'

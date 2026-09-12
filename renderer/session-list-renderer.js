@@ -289,8 +289,8 @@ function _aiLogoHtml(kind) {
 function _sessionKindHtml(kind, modelTxt) {
   const k = _logoKind(kind);
   if (!k) return `<span class="sl-model">${escapeHtml(modelTxt || '')}</span>`;
-  const label = KIND_LABELS[k] || k;
-  const tip = modelTxt ? `${label} · ${modelTxt}` : label;
+  const label = String(modelTxt || '').startsWith('ChatGPT') ? 'ChatGPT' : (KIND_LABELS[k] || k);
+  const tip = label === 'ChatGPT' ? modelTxt : modelTxt ? `${label} · ${modelTxt}` : label;
   return `<span class="sl-kind ai-logo logo-${k}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(tip)}"></span>`;
 }
 
