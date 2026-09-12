@@ -158,7 +158,7 @@ test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "已答 N"', () => {
 });
 
 // ---------------- 用例 5：active 时不显示 badge（即便 unreadAnswered 非空） ----------------
-test('meeting 当前 active 时不显示 unread badge', () => {
+test('meeting 当前 active 时仍保留未读 badge', () => {
   const sessions = new Map();
   sessions.set('sid-a', { id: 'sid-a', title: 'AI-A', kind: 'gemini', status: 'idle' });
   const meetings = {
@@ -172,7 +172,7 @@ test('meeting 当前 active 时不显示 unread badge', () => {
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: 'm1' });
   renderSessionList();
   const html = treeHtml(sessionListEl);
-  assert.ok(!/sl-group-icon unread/.test(html), 'active meeting 不应显示等你状态（用户正看着，不打扰）');
+  assert.ok(/sl-unread-badge[^>]*>1 位未读/.test(html), '选中群聊不应清除成员未读');
 });
 
 test('自动休眠会话保留未读红点、数量和唤醒提示', () => {

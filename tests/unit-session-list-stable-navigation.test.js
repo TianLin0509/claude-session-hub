@@ -16,7 +16,7 @@ function targetFor(attribute, id) {
   };
 }
 
-function makeHarness(rows = [], activeSessionId = null) {
+function makeHarness(rows = [], activeSessionId = null, sessions = new Map(), groups = {}) {
   const listeners = new Map();
   const selected = [];
   const meetings = [];
@@ -30,6 +30,8 @@ function makeHarness(rows = [], activeSessionId = null) {
     releasePointerCapture() {},
   };
   createSessionListRenderer({
+    getSessions: () => sessions,
+    getMeetings: () => groups,
     document: {},
     localStorage: { getItem() { return null; }, setItem() {} },
     sessionListEl,
@@ -95,6 +97,14 @@ test('reselecting the current session is an explicit jump; switching sessions pr
     { id: 'session-b', opts: { forceScrollBottom: false } },
     { id: 'session-a', opts: { forceScrollBottom: true } },
   ]);
+});
+
+test('unread member rows and explicit member chips reveal the latest answer', () => {
+  const h = makeHarness([], null, new Map([['plain', {id:'plain',unreadCount:1}]]), {g:{subSessions:['member'],unreadAnswered:new Set(['member'])}});
+  for (const [attr,id] of [['data-session-id','plain'],['data-session-id','member'],['data-sub-id','read-member']]) h.emit('click', {
+    detail:0,target:targetFor(attr,id),preventDefault(){},stopPropagation(){},
+  });
+  assert.deepEqual(h.selected.map(x=>[x.id,x.opts.forceScrollBottom]), [['plain',true],['member',true],['read-member',true]]);
 });
 
 test('back-to-back pointer activations suppress every delayed compatibility click', () => {

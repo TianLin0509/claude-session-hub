@@ -830,6 +830,7 @@ function normalizeMarkdownPathBreaks(text) {
 }
 
 const { createSessionListRenderer } = require('./session-list-renderer.js');
+const meetingUnread = require('./meeting-unread.js');
 const sessionListRenderer = createSessionListRenderer({
   requestSessionUsage: ids => ipcRenderer.send('session-usage:watch', ids),
   document,
@@ -864,6 +865,7 @@ const sessionListRenderer = createSessionListRenderer({
   selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   markAllSessionsRead: () => markAllSessionsRead(),
+  markMeetingRead: id => markMeetingRead(id),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
@@ -874,6 +876,23 @@ const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
 //   渲染层内存 → 侧栏立刻消失；state.json → 重启后不再回来；
 //   主进程 sessionManager → 活会话的下一次 session-updated 广播不会把 unreadCount 推回来。
 // 刻意不碰 needs-input：CLI 真卡在等用户输入时把它标成已读，等于替用户撒谎。
+function markMeetingMemberRead(meetingId, sid, readContext = null) {
+  const meeting = meetings[meetingId];
+  const result = meetingUnread.readMeetingMember(meeting, sid, sessions, readContext);
+  if (!result.changed) return false;
+  if (result.sessionRead) {
+    ipcRenderer.send('mark-sessions-read', { sessionIds: [sid] });
+    schedulePersist();
+  }
+  scheduleSessionListRender();
+  return true;
+}
+window.markMeetingMemberRead = markMeetingMemberRead;
+
+function markMeetingRead(meetingId) {
+  for (const sid of meetings[meetingId]?.subSessions || []) markMeetingMemberRead(meetingId, sid);
+}
+
 function markAllSessionsRead() {
   const clearedSessionIds = [];
   for (const session of sessions.values()) {
@@ -1066,19 +1085,14 @@ async function selectMeeting(meetingId, opts = {}) {
   clearPreviewUI();
 
   let meeting = meetings[meetingId];
-  // 2026-05-05 道雪 修3：清 unread —— 用户点进 AI 群聊即"看过"，跟普通 session 一致。
-  // 2026-05-31 道雪：新语义清"本轮已答 sid 集合"；_lastUnreadTurnNum 保留，避免离开后同一轮再答完又从 1 起跳。
+  // Opening the room is navigation, not proof that every member was read.
+  // Member answers are acknowledged by explicit member/card navigation.
   if (meeting) {
-    meeting.unreadCount = 0;
-    if (meeting.unreadAnswered instanceof Set) meeting.unreadAnswered.clear();
     let acknowledgedFailure = false;
-    const readMembers = [];
     for (const sid of meeting.subSessions || []) {
-      if (clearSessionCompletedUnread(sessions.get(sid))) readMembers.push(sid);
       acknowledgedFailure = acknowledgeSessionFailureState(sid, { render: false }) || acknowledgedFailure;
     }
-    if (readMembers.length) ipcRenderer.send('mark-sessions-read', { sessionIds: readMembers });
-    if (acknowledgedFailure || readMembers.length) schedulePersist();
+    if (acknowledgedFailure) schedulePersist();
   }
   paintSidebarActiveTarget({ meetingId });
   scheduleSessionListRender();
@@ -4789,8 +4803,7 @@ function updateRespondPill() {
     else if (sessionHasCompletedUnread(s)) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
   }
   for (const m of Object.values(meetings || {})) {
-    if (m.id === activeMeetingId || m.status === 'dormant') continue;
-    const n = m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0;
+    const n = meetingUnread.getMeetingUnreadMemberIds(m, sessions).size;
     if (n > 0) items.push({ id: m.id, meeting: true, wait: false, t: m.lastMessageTime || 0 });
   }
   if (!items.length) { pill.style.display = 'none'; return; }
@@ -4979,7 +4992,8 @@ async function selectSession(id, opts = {}) {
     });
     return;
   }
-  clearSessionAttention(session, { clearUnread: true });
+  // Reading a reply must not dismiss a still-pending request for input.
+  clearSessionCompletedUnread(session);
   // 2026-08-27：「运行异常/断连」是一个**提醒**信号，用户点开看过就算处理过了。
   // 原来 clearSessionConnectionIssue 只在提交提问或回答完成时调用，所以只是点开
   // 看一眼的话，那条断连会一直挂在侧栏「运行异常」组里下不去。
@@ -4989,6 +5003,9 @@ async function selectSession(id, opts = {}) {
   acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
+  for (const meeting of Object.values(meetings)) {
+    if (meeting.subSessions?.includes(id)) markMeetingMemberRead(meeting.id, id);
+  }
   scheduleSessionListRender();
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
@@ -8383,10 +8400,7 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   // Unread attention belongs to this window. Backend metadata updates (including
   // the reply's completion timestamp) must not acknowledge unread answers.
   const previous = meetings[meeting.id];
-  if (previous?.unreadAnswered instanceof Set) {
-    meeting.unreadAnswered = new Set([...previous.unreadAnswered].filter(sid => meeting.subSessions?.includes(sid)));
-    meeting._lastUnreadTurnNum = previous._lastUnreadTurnNum;
-  }
+  meetingUnread.preserveMeetingAttention(previous, meeting);
   meetings[meeting.id] = meeting;
   if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {
@@ -8441,10 +8455,8 @@ ipcRenderer.on('groupchat-attempt-changed', (_event, payload = {}) => {
   if (changed || status === 'failed') scheduleSessionListRender();
 });
 
-// 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
-//   partial-update IPC 在终态（completed/manual_extracted）触发；turnNum 与上次记录不同时清空 Set 重新计数；
-//   active meeting 不累加（用户正看着，不打扰）。selectMeeting 时 clear（在 selectMeeting 函数内）。
-//   meeting-room.js 也监听 partial-update 但职责是渲染抽屉/卡片内容，与本侧栏聚合器互不干扰。
+// Unread survives round changes and room selection. Only a visible member's
+// latest answer or an explicit read action acknowledges that member.
 ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
   if (!_acceptSidebarGroupChatEvent(payload)) return;
   const { meetingId, turnNum, sid, status } = payload;
@@ -8460,13 +8472,10 @@ ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
   if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
-  if (!(meeting.unreadAnswered instanceof Set)) meeting.unreadAnswered = new Set();
-  if (meeting._lastUnreadTurnNum !== turnNum) {
-    meeting.unreadAnswered.clear();
-    meeting._lastUnreadTurnNum = turnNum;
-  }
-  if (meetingId === activeMeetingId) return;  // 用户正在看，不打扰
-  meeting.unreadAnswered.add(sid);
+  const overlay = document.getElementById('msg-overlay');
+  const seenByUser = activeSessionId === sid && document.hasFocus() && !document.hidden
+    && (currentView === 'pty' || (overlay && _isCardOverlayAtBottom(overlay)));
+  meetingUnread.recordMeetingAnswer(meeting, payload, { seenByUser });
   scheduleSessionListRender();
 });
 

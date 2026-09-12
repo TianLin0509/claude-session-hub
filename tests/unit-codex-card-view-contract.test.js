@@ -75,9 +75,9 @@ assert.ok(
   'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
-  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() })") &&
+  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom })") &&
   rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })"),
-  'reselecting a session requests latest output; switching preserves its reading position',
+  'sidebar forwards the read-aware bottom intent; behavioral navigation tests cover read and unread targets',
 );
 assert.ok(
   rendererSrc.includes("detachFromBottom") &&

@@ -2559,7 +2559,7 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -3207,6 +3207,7 @@ if (typeof document !== 'undefined') (function () {
   function _handleSlotCardClick(card, ev, meeting) {
     const sid = card.getAttribute('data-ft-sid');
     if (!sid) return;
+    _readVisibleMemberCard(meeting, sid);
     if (_isCardTabMode()) return;
     if (ev && (ev.ctrlKey || ev.metaKey)) {
       ev.stopPropagation();
@@ -3702,6 +3703,13 @@ if (typeof document !== 'undefined') (function () {
   async function _handleGcPanelClick(ev, panel) {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
+    const bubble = _closestInPanel(ev.target, '.mr-gc-msg[data-unread-answer="true"] .mr-gc-bubble', panel);
+    if (bubble && !_gcViewingTurnN[meeting.id] && document.hasFocus() && !document.hidden) {
+      const article = bubble.closest('[data-source-sid]');
+      const sid = article.dataset.sourceSid;
+      const replies = panel.querySelectorAll(`.mr-gc-msg[data-unread-answer="true"][data-source-sid="${CSS.escape(sid)}"]`);
+      if (sid && replies[replies.length - 1] === article) window.markMeetingMemberRead?.(meeting.id, sid, { turnNum: article.dataset.readTurn });
+    }
 
     const sessionJump = _closestInPanel(ev.target, '[data-gc-open-session]', panel);
     if (sessionJump) {
@@ -3821,7 +3829,10 @@ if (typeof document !== 'undefined') (function () {
     if (cardTab) {
       ev.stopPropagation();
       const sid = cardTab.getAttribute('data-gc-card-tab-sid');
-      if (sid) _focusGroupChatSession(meeting, sid);
+      if (sid) {
+        _focusGroupChatSession(meeting, sid);
+        _readVisibleMemberCard(meeting, sid);
+      }
       return;
     }
 
@@ -6906,6 +6917,15 @@ if (typeof document !== 'undefined') (function () {
     refreshGroupChatPanel(meeting);
     renderHeader(meeting);
     return true;
+  }
+
+  // An explicit card click can acknowledge its completed answer; opening the
+  // room, mentioning a member, or inspecting a historical round cannot.
+  function _readVisibleMemberCard(meeting, sid) {
+    if (_gcViewingTurnN[meeting.id] || !document.hasFocus() || document.hidden) return;
+    const card = document.querySelector(`.mr-ft[data-ft-sid="${CSS.escape(sid)}"]`);
+    if (!card || !card.getClientRects().length || !card.querySelector('.mr-ft-status.completed, .mr-ft-status.manual_extracted')) return;
+    window.markMeetingMemberRead?.(meeting.id, sid);
   }
 
   function _focusGroupChatKind(meeting, kind) {
