@@ -9,6 +9,8 @@
 .msg-overlay .turn-card .turn-avatar { width: 28px; height: 28px; flex-basis: 28px; }
 .msg-overlay .turn-card .turn-body { padding: 4px 0 8px; border: 0; border-radius: 0; background: transparent; box-shadow: none; line-height: 1.8; font-size: 15px; overflow-wrap: anywhere; }
 .msg-overlay .turn-card.user { flex-direction: row; margin-top: 24px; }
+.msg-overlay .turn-card.user > .turn-avatar,
+.mr-gc-messages .mr-gc-msg.mine > .mr-gc-avatar-user { display: none; }
 .msg-overlay .turn-card.user .turn-body { background: rgba(137,154,180,.09); border: 1px solid rgba(137,154,180,.16); border-radius: 12px; padding: 15px 18px; color: inherit; }
 .msg-overlay .turn-card[data-phase="final_answer"] .turn-body { border-left: 2px solid #65baaa; padding-left: 18px; }
 .turn-card[data-phase="commentary"] .turn-body { color: var(--conversation-text); }
@@ -60,6 +62,68 @@
 .conversation-activity { color: var(--conversation-muted); font-size: 12px; }
 .conversation-activity summary { cursor: pointer; }
 .conversation-tool { padding: 10px 0; }
+
+/* B: one identity per response, aligned time/text rows. Keep source cards in
+   place so selection, item actions and incremental replay retain their anchors. */
+.msg-overlay > .turn-card.assistant[data-phase="commentary"] { margin-bottom: 0; }
+.msg-overlay > .turn-card.conversation-response-continuation { margin-top: 0; }
+.msg-overlay > .turn-card.conversation-response-continuation > .turn-avatar { visibility: hidden; }
+.msg-overlay .conversation-response-continuation .turn-who,
+.msg-overlay .conversation-response-continuation .turn-branch-chip { display: none; }
+.msg-overlay .turn-card[data-phase="commentary"] .turn-head > .turn-meta { display: none; }
+.msg-overlay .turn-card[data-phase="commentary"] .turn-head { width: 100%; box-sizing: border-box; }
+.conversation-response-copy { border: 0; background: transparent; color: var(--conversation-muted); font: inherit; font-size: 11px; padding: 2px 6px; cursor: pointer; }
+.conversation-response-copy:focus-visible { outline: 2px solid var(--link, #829eff); outline-offset: 2px; }
+.msg-overlay .conversation-response-continuation[data-phase="commentary"] .turn-head { margin: 0; min-height: 0; }
+.msg-overlay .conversation-response-continuation[data-phase="commentary"] .turn-head > :not(.streaming-indicator) { display: none; }
+.msg-overlay .turn-card .turn-body.conversation-progress-row,
+.conversation-entry.conversation-progress-row {
+  display: grid; grid-template-columns: 42px minmax(0,1fr); column-gap: 12px;
+  position: relative; padding: 5px 0; margin: 0; border: 0;
+  width: 100%; max-width: 100%; box-sizing: border-box;
+  border-bottom: 1px solid var(--border-subtle, rgba(137,154,180,.13));
+  font-size: var(--card-content-font-size, 15px); line-height: 1.55;
+  background: transparent; border-radius: 0;
+}
+.conversation-progress-time {
+  grid-column: 1; grid-row: 1; padding-top: 3px;
+  font: 11px/1.6 "Segoe UI", sans-serif; font-variant-numeric: tabular-nums;
+  color: var(--conversation-muted); white-space: nowrap;
+}
+.conversation-progress-content { grid-column: 2; grid-row: 1; min-width: 0; overflow-wrap: anywhere; }
+.conversation-progress-content > :first-child { margin-top: 0; }
+.conversation-progress-content > :last-child { margin-bottom: 0; }
+.conversation-progress-content p { margin: 0 0 8px; }
+.conversation-progress-actions {
+  position: absolute; right: 0; top: 3px; display: flex; align-items: center;
+  font-size: 11px; background: var(--bg-card, #1b232c); border-radius: 4px;
+  opacity: 0; pointer-events: none; z-index: 2;
+}
+.conversation-progress-row:hover > .conversation-progress-actions,
+.conversation-progress-row:focus-within > .conversation-progress-actions,
+.conversation-progress-actions:has(.card-actions-menu[open]) { opacity: 1; pointer-events: auto; }
+.conversation-progress-actions .ta-btn { padding: 2px 6px; font-size: 11px; }
+.conversation-progress-actions .conversation-message-copy { font-size: 11px; }
+.conversation-progress-row .conversation-long-frame { padding: 8px 10px; }
+.conversation-progress-row + .conversation-entry:not(.conversation-progress-row) { margin-top: 18px; }
+.conversation-entry[data-phase="final_answer"], .conversation-entry[data-phase="final"],
+.msg-overlay .turn-card.conversation-response-continuation:is([data-phase="final_answer"], [data-phase="final"]) > .turn-content {
+  border-left: 0; border-top: 1px solid var(--border-subtle, rgba(137,154,180,.22));
+  margin-top: 18px; padding: 15px 0 0;
+}
+.msg-overlay .turn-card:is([data-phase="final_answer"], [data-phase="final"]) .turn-body { border-left: 0; padding-left: 0; }
+.conversation-results-only .turn-card.conversation-response-continuation > .turn-avatar { visibility: visible; }
+.conversation-results-only .turn-card.conversation-response-continuation .turn-who,
+.conversation-results-only .turn-card.conversation-response-continuation .turn-branch-chip { display: inline; }
+.msg-overlay.multi-select-active .conversation-progress-actions { display: none; }
+@media (max-width: 700px) {
+  .msg-overlay .turn-card .turn-body.conversation-progress-row,
+  .conversation-entry.conversation-progress-row { grid-template-columns: 34px minmax(0,1fr); column-gap: 8px; }
+  .conversation-progress-time { font-size: 10px; }
+}
+@media (hover: none) {
+  .conversation-progress-actions { position: static; grid-column: 2; justify-self: end; opacity: 1; pointer-events: auto; }
+}
 @media (max-width: 900px) { .msg-overlay { padding: 18px 16px 80px; } .conversation-filter { max-width: 160px; overflow: hidden; text-overflow: ellipsis; } }
 
 /* Existing activity/delivery disclosures stay compact and closed initially. */
