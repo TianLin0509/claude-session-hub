@@ -30,8 +30,16 @@ function renderActivity(message,escapeHtml) {
       + `<pre>${escapeHtml(typeof t.input==='string' ? t.input : JSON.stringify(t.input || {},null,2))}</pre>`
       + (t.output ? `<pre>${escapeHtml(typeof t.output==='string' ? t.output : JSON.stringify(t.output,null,2))}</pre>` : '')+'</div>').join('')+'</details>';
 }
-function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false}) {
-  return messages.filter(m=>m && (m.text || m.toolCalls?.length)).map(m=>m.phase==='commentary' && !m.toolCalls?.length
+function renderSequenceActivity(messages, escapeHtml) {
+  const activities = (messages || []).filter(m => m?.toolCalls?.length);
+  if (!activities.length) return '';
+  return require('./conversation-header-activity').renderHeaderActivity(activities.map(m =>
+    `<div data-message-id="${escapeHtml(m.id || '')}:activity">${renderActivity(m,escapeHtml)}</div>`).join(''),
+    activities.reduce((n,m) => n + m.toolCalls.length, 0));
+}
+function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false,activityInHeader=false}) {
+  return messages.filter(m=>m && (m.text || m.toolCalls?.length) && !(activityInHeader && m.toolCalls?.length && !m.text))
+    .map(m=>activityInHeader && m.toolCalls?.length ? {...m,toolCalls:[]} : m).map(m=>m.phase==='commentary' && !m.toolCalls?.length
     ? `<section class="conversation-entry conversation-progress-row" data-message-id="${escapeHtml(m.id || '')}" data-phase="commentary">`
       + renderProgressRow(m, {escapeHtml,renderMarkdown,plainProgress}) + '</section>'
     : `<section class="conversation-entry" data-message-id="${escapeHtml(m.id || '')}" data-phase="${escapeHtml(m.phase || 'message')}">`
@@ -73,9 +81,11 @@ function syncResponseCard(card) {
 function syncResponseNeighbors(card) {
   syncResponseCard(card);
   syncResponseCard(adjacentCard(card,'nextElementSibling'));
+  require('./conversation-header-activity').syncHeaderActivities(card?.parentElement,responseCards);
 }
 function syncResponseGroups(container) {
   container.querySelectorAll(':scope > .turn-card').forEach(syncResponseCard);
+  require('./conversation-header-activity').syncHeaderActivities(container,responseCards);
 }
 function responseCards(card) {
   const cards=[card];
@@ -89,6 +99,9 @@ function responseCards(card) {
   return cards;
 }
 function patchConversationArticle(existing, next) {
+  const activity = existing.querySelector('.conversation-header-activity');
+  const nextActivity = next.querySelector('.conversation-header-activity');
+  if (activity && nextActivity) nextActivity.open = activity.open;
   const delivery = existing.querySelector('.turn-delivery-summary');
   const nextDelivery = next.querySelector('.turn-delivery-summary');
   if (delivery && nextDelivery) nextDelivery.open = delivery.open;
@@ -120,4 +133,4 @@ function patchConversationArticle(existing, next) {
       if(r.toString()===savedSelection.text){selection.removeAllRanges();selection.addRange(r);}}
   }
 }
-module.exports={renderMessageBody,renderMessageSequence,renderProgressRow,sameResponse,syncResponseNeighbors,syncResponseGroups,responseCards,phaseLabel,patchConversationArticle,plainProgressText};
+module.exports={renderMessageBody,renderMessageSequence,renderSequenceActivity,renderProgressRow,sameResponse,syncResponseNeighbors,syncResponseGroups,responseCards,phaseLabel,patchConversationArticle,plainProgressText};

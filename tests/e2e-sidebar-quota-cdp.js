@@ -27,7 +27,7 @@ async function run() {
   let hub, cdp;
   const evidence = { root: ROOT, sha: require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true }).trim(), dataDir, checks: [], geometry: [], fixture: 'Controlled Codex app-server + cached Claude/DeepSeek + egress probe; real Hub UI/IPC/services and real system telemetry' };
   const check = (name, condition) => { assert.ok(condition, name); evidence.checks.push(name); console.log('PASS', name); };
-  const btn = p => `.sidebar-quota-provider[data-provider="${p}"] .sidebar-quota-refresh`;
+  const btn = p => `.sidebar-quota-provider[data-provider="${p}"]`;
   const shot = async name => {
     const result = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(path.join(OUT, name + '.png'), Buffer.from(result.data, 'base64'));
@@ -40,7 +40,8 @@ async function run() {
     cdp = await connectFirstPage(hub, t => /renderer[\\/]index\.html/.test(t.url));
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-refresh').length === 4`);
+    await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-provider').length === 4`);
+    await click(cdp, btn('codex'));
     await waitFor(cdp, `accountUsageController.getSnapshot().codex?.source === 'app-server'`);
     await waitFor(cdp, `document.querySelector('.strip-location').textContent.includes('洛杉矶')`);
     check('isolated hook server started', hub.log().some(line => line.includes('hook server listening')));
@@ -64,10 +65,10 @@ async function run() {
           const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
           const quota=document.querySelector('.sidebar-quota');
           const providers=[...document.querySelectorAll('.sidebar-quota-provider')];
-          const elements=[...document.querySelectorAll('.sidebar-quota-name,.sidebar-quota-value,.sidebar-quota-refresh')];
+          const elements=[...document.querySelectorAll('.sidebar-quota-name,.sidebar-quota-value')];
           return { quota:rect(quota), providers:providers.map(rect), resources:rect(document.querySelector('.strip-resources')), network:rect(document.querySelector('.strip-network')),
             overflow:elements.filter(e=>{const r=e.getBoundingClientRect(),p=e.closest('.sidebar-quota-provider').getBoundingClientRect();return r.x<p.x-.5||r.right>p.right+.5;}).map(e=>e.className),
-            buttonWidths:[...document.querySelectorAll('.sidebar-quota-refresh')].map(e=>e.getBoundingClientRect().width) };
+            buttonWidths:[...document.querySelectorAll('.sidebar-quota-provider')].map(e=>e.getBoundingClientRect().width) };
         })()`);
         assert.deepStrictEqual(geometry.overflow, [], `overflow at ${width}/${zoom}`);
         geometry.adjacent = await measureQuota(cdp);
@@ -92,7 +93,7 @@ async function run() {
     await click(cdp, btn('claude'));
     await waitFor(cdp, `!!accountUsageController.getSnapshot().refresh.providers.claude.result`);
     check('Claude cached snapshot stays explicitly old', (await snapshot()).claude.lastSeen === initial.claude.lastSeen
-      && (await cdp.eval(`document.querySelector('.sidebar-quota-feedback').textContent`)).includes('未取得新数据'));
+      && (await cdp.eval(`document.querySelector('.sidebar-quota-provider[data-provider=claude]').title`)).includes('未取得新数据'));
     check('Claude refresh does not query Codex', requests() === initialReads);
     const statusline = JSON.parse(fs.readFileSync(path.join(dataDir, 'statusline-cache.json'), 'utf8'));
     statusline['session-usage-e2e'].ts = Date.now(); statusline['session-usage-e2e'].usage5h.pct = 20;
@@ -129,7 +130,7 @@ async function run() {
     await waitFor(cdp, `!!accountUsageController.getSnapshot().refresh.providers.codex.error`);
     const failure = await snapshot();
     check('Codex failure preserves observation and value', failure.codex.lastSeen === after.codex.lastSeen && failure.codex.usage5h.pct === after.codex.usage5h.pct);
-    check('error feedback names provider', (await cdp.eval(`document.querySelector('.sidebar-quota-feedback').textContent`)).includes('Codex 刷新失败'));
+    check('error feedback names provider', (await cdp.eval(`document.querySelector('.sidebar-quota-provider[data-provider=codex]').title`)).includes('刷新失败'));
     evidence.failure = failure.refresh.providers;
     await shot('A-refresh-failure');
 
@@ -152,13 +153,13 @@ async function run() {
     await shot('A-collapsed');
     await click(cdp, '#btn-expand-sidebar');
     evidence.reexpanded=await waitForSidebarLayout(cdp,280,1);
-    check('collapse and expand preserve quota controls', await cdp.eval(`document.querySelector('.sidebar-quota-refresh').getBoundingClientRect().width > 0`));
+    check('collapse and expand preserve quota controls', await cdp.eval(`document.querySelector('.sidebar-quota-provider').getBoundingClientRect().width > 0`));
     await cdp.eval(`document.querySelector('#session-sidebar').style.width=''; document.querySelector('#session-sidebar').style.minWidth=''`);
     const terminal = await cdp.eval(`ipcRenderer.invoke('create-session', {kind:'powershell',opts:{cwd:${JSON.stringify(dataDir)},title:'A 方案真实终端'}})`);
     await waitFor(cdp, `!!document.querySelector('[data-session-id="${terminal.id}"]')`);
     await click(cdp, `[data-session-id="${terminal.id}"]`);
     await waitFor(cdp, `activeSessionId === '${terminal.id}'`);
-    check('quota remains available in real shell session', await cdp.eval(`document.querySelectorAll('.sidebar-quota-refresh').length === 4 && document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
+    check('quota remains available in real shell session', await cdp.eval(`document.querySelectorAll('.sidebar-quota-provider').length === 4 && document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
     await shot('A-real-session');
     const roomIds = [];
     for (let i = 0; i < 22; i++) {
