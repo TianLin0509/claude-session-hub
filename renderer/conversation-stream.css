@@ -24,10 +24,14 @@
 .conversation-results-only .mr-gc-msg[data-phase="commentary"],
 .conversation-results-only .conversation-entry[data-phase="activity"],
 .conversation-results-only .conversation-entry[data-phase="commentary"] { display: none; }
-.conversation-long-message { border: 1px solid rgba(137,154,180,.18); border-radius: 8px; padding: 12px 15px; }
+.conversation-long-frame { border: 1px solid rgba(137,154,180,.18); border-radius: 8px; padding: 12px 15px; min-width: 0; }
 .conversation-long-message > summary { color: var(--link, #a8bbd8); cursor: pointer; font-size: 12px; }
-.conversation-long-preview { display: block; margin-top: 12px; color: var(--conversation-text); white-space: pre-wrap; line-height: 1.75; font-size: 14px; max-height: 7em; overflow: hidden; }
-.conversation-long-message[open] > summary .conversation-long-preview { display: none; }
+.conversation-long-preview { display: flow-root; margin-top: 12px; color: var(--conversation-text); white-space: normal; line-height: 1.75; font-size: 14px; max-height: 7em; overflow: hidden; overflow-wrap: anywhere; }
+.conversation-long-preview > :first-child { margin-top: 0; }
+.conversation-long-preview pre { white-space: pre-wrap; }
+.conversation-long-message[open] + .conversation-long-preview,
+.conversation-long-message[open] .conversation-expand-label,
+.conversation-long-message:not([open]) .conversation-collapse-label { display: none; }
 .conversation-full-text { margin-top: 14px; }
 .conversation-attachments { margin: 8px 0; color: var(--conversation-muted); font-size: 12px; }
 .conversation-attachments summary { cursor: pointer; }

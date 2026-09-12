@@ -120,6 +120,9 @@ rl.on('line',line=>{
           emit({id:'mcp-'+turn.id,type:'mcpToolCall',server:'fixture',tool:'check',status:'completed',result:{content:[{type:'text',text:'结构化结果保留'}]}});
           finish(thread,turn,'completed','卡片细节已验证。\n\n- 修改文件：`src/card-example.js`\n- 成功命令 26 条，失败命令 1 条；失败没有被隐藏。\n- 交付：[验收说明](./card-delivery.html)');
         },500);
+      } else if(mode==='fixture:collapsed-markdown') {
+        answer(msg.id,{turn});
+        setTimeout(()=>finish(thread,turn,'completed',require('./collapsed-markdown')),250);
       } else if(mode==='fixture:conversation') {
         answer(msg.id,{turn});
         const progress=(id,text)=>{const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};

@@ -836,7 +836,10 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
 .mr-file-error { color: #f18e85; display: block; }
 .mr-file-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .mr-file-recipients { flex: 0 1 180px; min-width: 0; overflow-wrap: anywhere; opacity: .7; font-size: 12px; }
-.mr-file-actions button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid #64748b55; background: transparent; color: inherit; cursor: pointer; }
-.mr-file-actions button[data-file-kickoff] { color: #74a7ff; border-color: #74a7ff66; }
-.mr-file-actions button.stop { color: #f18e85; }
+.mr-file-actions button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border-strong, #64748b); background: var(--surface-raised, #1c2128); color: var(--fg-default, #e8ecf2); cursor: pointer; }
+.mr-file-actions button[data-file-kickoff],
+.mr-file-actions button[data-file-independent] { color: var(--brand-text, #c9d5ff); background: var(--brand-tint, #202c48); border-color: var(--brand, #6d8dff); }
+.mr-file-actions button:not(:disabled):hover { border-color: var(--brand, #6d8dff); background: var(--surface-active, #253044); color: var(--fg-strong, #fff); }
+.mr-file-actions button:focus-visible { outline: 2px solid var(--brand, #6d8dff); outline-offset: 3px; }
+.mr-file-actions button.stop { color: var(--status-danger, #f18e85); }
 .mr-file-actions button:disabled { opacity: .5; cursor: wait; }
