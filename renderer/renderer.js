@@ -2884,6 +2884,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
     a.textContent = local.displayPath;
   }
   const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE']);
+  if (opts.skipCodeBlocks) SKIP_TAGS.add('PRE');
   const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentNode;

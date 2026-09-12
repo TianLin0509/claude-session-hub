@@ -35,6 +35,9 @@ function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress
     + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown,plainProgress:plainProgress && m.phase==='commentary'}))+'</section>').join('');
 }
 function patchConversationArticle(existing, next) {
+  const delivery = existing.querySelector('.turn-delivery-summary');
+  const nextDelivery = next.querySelector('.turn-delivery-summary');
+  if (delivery && nextDelivery) nextDelivery.open = delivery.open;
   const doc=existing.ownerDocument;
   const selection=doc.defaultView.getSelection();
   let savedSelection;
