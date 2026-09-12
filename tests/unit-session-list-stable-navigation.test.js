@@ -16,7 +16,7 @@ function targetFor(attribute, id) {
   };
 }
 
-function makeHarness(rows = []) {
+function makeHarness(rows = [], activeSessionId = null, sessions = new Map(), groups = {}) {
   const listeners = new Map();
   const selected = [];
   const meetings = [];
@@ -30,6 +30,8 @@ function makeHarness(rows = []) {
     releasePointerCapture() {},
   };
   createSessionListRenderer({
+    getSessions: () => sessions,
+    getMeetings: () => groups,
     document: {},
     localStorage: { getItem() { return null; }, setItem() {} },
     sessionListEl,
@@ -40,6 +42,7 @@ function makeHarness(rows = []) {
     formatTime: () => '',
     pctClass: () => '',
     selectSession: (id, opts) => selected.push({ id, opts }),
+    getActiveSessionId: () => activeSessionId,
     selectMeeting: (id, opts) => meetings.push({ id, opts }),
     openContextMenu() {},
   });
@@ -61,7 +64,7 @@ test('pointer intent survives row replacement between down and up', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.selected, [{
-    id: 'session-b', opts: { forceScrollBottom: true },
+    id: 'session-b', opts: { forceScrollBottom: false },
   }]);
 
   // Chromium may still synthesize click after pointer-up. A rebuild may also
@@ -81,8 +84,27 @@ test('pointer intent survives row replacement between down and up', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.selected.at(-1), {
-    id: 'session-c', opts: { forceScrollBottom: true },
+    id: 'session-c', opts: { forceScrollBottom: false },
   });
+});
+
+test('reselecting the current session is an explicit jump; switching sessions preserves reading position', () => {
+  const harness = makeHarness([], 'session-a');
+  for (const id of ['session-b', 'session-a']) harness.emit('click', {
+    detail: 0, target: targetFor('data-session-id', id), preventDefault() {}, stopPropagation() {},
+  });
+  assert.deepEqual(harness.selected, [
+    { id: 'session-b', opts: { forceScrollBottom: false } },
+    { id: 'session-a', opts: { forceScrollBottom: true } },
+  ]);
+});
+
+test('unread member rows and explicit member chips reveal the latest answer', () => {
+  const h = makeHarness([], null, new Map([['plain', {id:'plain',unreadCount:1}]]), {g:{subSessions:['member'],unreadAnswered:new Set(['member'])}});
+  for (const [attr,id] of [['data-session-id','plain'],['data-session-id','member'],['data-sub-id','read-member']]) h.emit('click', {
+    detail:0,target:targetFor(attr,id),preventDefault(){},stopPropagation(){},
+  });
+  assert.deepEqual(h.selected.map(x=>[x.id,x.opts.forceScrollBottom]), [['plain',true],['member',true],['read-member',true]]);
 });
 
 test('back-to-back pointer activations suppress every delayed compatibility click', () => {
@@ -172,7 +194,7 @@ test('meeting pointer intent also survives a full sidebar rebuild', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.meetings, [{
-    id: 'meeting-a', opts: { forceScrollBottom: true },
+    id: 'meeting-a', opts: { forceScrollBottom: true, wakeDormantMembers: true },
   }]);
 });
 

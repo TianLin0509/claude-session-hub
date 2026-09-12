@@ -221,6 +221,8 @@
   // 在旧配置下也不会出错。
   let workspaceMode = 'default';
   let existingWorkspace = null;
+  let preparedProjects = [];
+  let projectLoadId = 0;
   let submitting = false;
   let selectedModel = '';
   let selectedEffort = defaultEffortFor('claude');
@@ -715,6 +717,70 @@
     });
   }
 
+  async function loadPreparedProjects() {
+    const loadId = ++projectLoadId;
+    const list = document.getElementById('new-session-project-library');
+    if (!list) return;
+    list.textContent = '正在读取项目库…';
+    try {
+      const result = await ipcRenderer.invoke('workspace:prepared-projects');
+      if (loadId !== projectLoadId) return;
+      if (!Array.isArray(result?.items)) throw new Error('项目库返回格式无效');
+      preparedProjects = result.items.filter(item => item && item.path);
+      renderPreparedProjects();
+    } catch (error) {
+      if (loadId !== projectLoadId) return;
+      preparedProjects = [];
+      list.textContent = `项目库读取失败：${error.message}。可点击刷新重试，或浏览文件夹。`;
+    }
+  }
+
+  function renderPreparedProjects() {
+    const list = document.getElementById('new-session-project-library');
+    if (!list) return;
+    list.replaceChildren();
+    if (!preparedProjects.length) {
+      list.textContent = '暂无已整理的项目，可从下方最近工作区或浏览文件夹选择。';
+      return;
+    }
+    for (const item of preparedProjects) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-recent-item';
+      button.setAttribute('role', 'option');
+      const selected = workspacePathKey(existingWorkspace?.path) === workspacePathKey(item.path);
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-selected', String(selected));
+      button.dataset.projectPath = item.path;
+      button.title = item.path;
+      const text = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = item.name || path.basename(item.path);
+      const location = document.createElement('small');
+      location.textContent = item.path;
+      text.append(name, location);
+      button.append(text);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        setError('');
+        try {
+          const workspace = await ipcRenderer.invoke('workspace:select', item.path);
+          if (!workspace?.path) throw new Error('项目目录不可用');
+          existingWorkspace = workspace;
+          workspaceMode = 'existing';
+          await loadRecent();
+          paint();
+        } catch (error) {
+          setError(`选择项目失败：${error.message}`);
+        } finally {
+          button.disabled = false;
+          renderPreparedProjects();
+        }
+      });
+      list.append(button);
+    }
+  }
+
   function renderRecent() {
     const listEl = document.getElementById('new-session-recent');
     if (!listEl) return;
@@ -921,6 +987,11 @@
     paintTuning();
 
     const existingRow = document.getElementById('new-session-existing-path');
+    menuEl.querySelectorAll('[data-project-path]').forEach(button => {
+      const selected = workspacePathKey(existingWorkspace?.path) === workspacePathKey(button.dataset.projectPath);
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-selected', String(selected));
+    });
     const pathValue = document.getElementById('new-session-path-value');
     if (existingRow) existingRow.hidden = workspaceMode !== 'existing';
     if (pathValue) {
@@ -1008,6 +1079,7 @@
       : null;
     workspaceMode = requestedWorkspace ? 'existing' : 'default';
     existingWorkspace = requestedWorkspace;
+    void loadPreparedProjects();
     submitting = false;
     selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
     applyTuningMemory(selectedKind);
@@ -1106,6 +1178,11 @@
 
   function loadModelCatalog(kind, options = {}) {
     const base = String(kind || '').replace(/-resume$/, '');
+    if (require('../core/acp-profiles').isAcpKind(base)) return ipcRenderer.invoke('acp:settings:get').then(settings=>{
+      const model=settings.providers?.[base]?.model;
+      if(model)setRuntimeModelOptions(base,[{id:model,label:model+' · 套餐',source:'acp-profile'}]);
+      return settings;
+    });
     if (base === 'codex') return loadCodexTuningCatalog(options);
     if (base === 'claude') return loadClaudeModelCatalog(options);
     return Promise.resolve(null);
@@ -1115,6 +1192,7 @@
     return Promise.all([
       loadClaudeModelCatalog(options),
       loadCodexTuningCatalog(options),
+      ...require('../core/acp-profiles').ACP_KINDS.map(kind=>loadModelCatalog(kind)),
     ]);
   }
 
@@ -1194,10 +1272,14 @@
         paint();
         // No auto-opening the OS dialog: the recent list is shown first and
         // "浏览文件夹…" is the explicit fallback.
-        if (workspaceMode === 'existing') void loadRecent().then(paint);
+        if (workspaceMode === 'existing') {
+          void loadRecent().then(paint);
+          void loadPreparedProjects();
+        }
       });
     });
     const modelSelect = document.getElementById('new-session-model');
+    document.getElementById('new-session-project-refresh')?.addEventListener('click', loadPreparedProjects);
     if (modelSelect) {
       modelSelect.addEventListener('change', () => {
         selectedModel = modelSelect.value;

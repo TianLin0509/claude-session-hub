@@ -87,6 +87,7 @@ function createMemoPanel(deps) {
   function syncToggleButtons(open) {
     document.querySelectorAll('.btn-memo-toggle').forEach(btn => {
       btn.classList.toggle('active', open);
+      btn.setAttribute('aria-expanded', String(open));
     });
   }
 

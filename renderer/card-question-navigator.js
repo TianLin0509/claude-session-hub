@@ -4,6 +4,7 @@ function normalizeQuestionSummary(value, maxLength = 72) {
   const limit = Math.max(12, Number(maxLength) || 72);
   const text = String(value || '')
     .replace(/```[\s\S]*?```/g, ' [代码] ')
+    .replace(/[A-Za-z]:[\\/][^\r\n<>"`]*?\.(?:png|jpe?g|webp|gif)\b/gi, '[图片附件]')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]\s)\s*/gm, '')
     .replace(/\s+/g, ' ')
@@ -28,6 +29,7 @@ function createCardQuestionNavigator(options = {}) {
   const win = options.window || window;
   const overlay = options.overlay || doc.getElementById('msg-overlay');
   const root = options.root || doc.getElementById('card-question-nav');
+  if (root) root.innerHTML = `<header class="question-directory-head"><strong>问题目录 <span class="question-directory-count"></span></strong><button type="button" class="question-directory-toggle" aria-label="折叠问题目录" title="折叠问题目录"></button></header><div class="card-question-nav-track"></div><footer class="question-directory-actions">${[['top','到顶部','M5 4h14M6 15l6-6 6 6M12 9v11'],['up','向上翻一屏','M6 14l6-6 6 6'],['down','向下翻一屏','M6 10l6 6 6-6'],['latest','回到最新','M5 20h14M6 9l6 6 6-6M12 4v11']].map(([action,label,d])=>`<button type="button" data-directory-action="${action}" title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg></button>`).join('')}</footer><div class="card-question-nav-tooltip" role="tooltip" hidden><span class="card-question-nav-tooltip-index"></span><span class="card-question-nav-tooltip-summary"></span></div>`;
   const track = root && root.querySelector('.card-question-nav-track');
   const tooltip = root && root.querySelector('.card-question-nav-tooltip');
   const tooltipIndex = tooltip && tooltip.querySelector('.card-question-nav-tooltip-index');
@@ -50,6 +52,48 @@ function createCardQuestionNavigator(options = {}) {
   let highlightedCard = null;
   let highlightTimer = null;
   let disposed = false;
+  let resizeObserver = null, narrow = false, narrowOverride = null, preferenceKey = '';
+  const layout = options.layoutElement || overlay?.parentElement;
+  function storedCollapsed() {
+    try { return win.localStorage.getItem(preferenceKey) === 'collapsed'; }
+    catch { return false; }
+  }
+  function updateLayout() {
+    if (!root || !overlay || !layout) return;
+    const key = 'hub.questionDirectory.' + String(getActiveSessionId() || '');
+    const nextNarrow = layout.clientWidth < 820;
+    if (key !== preferenceKey || narrow !== nextNarrow) narrowOverride = null;
+    preferenceKey = key; narrow = nextNarrow;
+    const collapsed = narrow ? (narrowOverride ?? true) : storedCollapsed();
+    root.classList.toggle('directory-collapsed', collapsed);
+    root.classList.toggle('directory-auto-collapsed', narrow && narrowOverride === null);
+    overlay.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
+    if (options.layoutElement) layout.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
+    const toggle = root.querySelector('.question-directory-toggle');
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('aria-label', collapsed ? '展开问题目录' : '折叠问题目录');
+    toggle.title = collapsed ? (narrow ? '展开问题目录（窗口较窄，已自动收起）' : '展开问题目录') : '折叠问题目录';
+    toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16m${collapsed ? '-6-11-3 3 3 3' : '-6-11 3 3-3 3'}"/></svg>`;
+    overlay._cardFollowController?.request();
+  }
+  function toggleDirectory() {
+    const collapsed = !root.classList.contains('directory-collapsed');
+    if (narrow) narrowOverride = collapsed;
+    else { try { win.localStorage.setItem(preferenceKey, collapsed ? 'collapsed' : 'expanded'); } catch (e) { console.warn('[question-directory] preference could not be saved:', e.message); } }
+    hideTooltip(); updateLayout();
+  }
+  function navigate(action) {
+    hideTooltip();
+    const follow = overlay._cardFollowController;
+    if (action === 'latest') { if (follow) follow.follow(); else overlay.scrollTop = overlay.scrollHeight; }
+    else {
+      follow?.pause();
+      const top = action === 'top' ? 0 : overlay.scrollTop + overlay.clientHeight * .8 * (action === 'up' ? -1 : 1);
+      overlay.scrollTo({top, behavior:'auto'});
+      if (action === 'down' && overlay.scrollHeight-overlay.clientHeight-overlay.scrollTop < 4) follow?.follow();
+    }
+    updateActive();
+  }
 
   function prefersReducedMotion() {
     try { return !!win.matchMedia?.('(prefers-reduced-motion: reduce)').matches; }
@@ -80,6 +124,7 @@ function createCardQuestionNavigator(options = {}) {
     root.hidden = !visible;
     overlay.classList.toggle('question-nav-visible', visible);
     if (!visible) hideTooltip();
+    updateLayout();
   }
 
   function keepActiveButtonVisible(button) {
@@ -112,6 +157,9 @@ function createCardQuestionNavigator(options = {}) {
       if (active) entry.button.setAttribute('aria-current', 'true');
       else entry.button.removeAttribute('aria-current');
     });
+    const counter = root.querySelector('.question-directory-count');
+    if (counter) counter.textContent = `${activeIndex + 1}/${entries.length}`;
+    for (const b of root.querySelectorAll('[data-directory-action]')) b.disabled = ['top','up'].includes(b.dataset.directoryAction) ? overlay.scrollTop < 2 : atBottom;
     if (changed && keepMarkerVisible) keepActiveButtonVisible(entries[activeIndex]?.button);
     return activeIndex;
   }
@@ -135,6 +183,7 @@ function createCardQuestionNavigator(options = {}) {
   function scrollToQuestion(index, { focusMarker = false } = {}) {
     const entry = entries[index];
     if (!entry || !overlay) return false;
+    overlay._cardFollowController?.pause();
     const overlayRect = overlay.getBoundingClientRect();
     const cardRect = entry.card.getBoundingClientRect();
     const targetTop = Math.max(0, overlay.scrollTop + cardRect.top - overlayRect.top - 10);
@@ -178,7 +227,8 @@ function createCardQuestionNavigator(options = {}) {
     refreshFrame = null;
     const sessionId = String(getActiveSessionId() || '');
     const cardViewVisible = getCurrentView() === 'card' && !!sessionId && !overlay.classList.contains('hidden');
-    const cards = cardViewVisible
+    const customEntries = cardViewVisible && options.getEntries ? options.getEntries() : null;
+    const cards = customEntries ? customEntries.map(entry => entry.card) : cardViewVisible
       ? Array.from(overlay.querySelectorAll(':scope > .turn-card.user')).filter(card => (
         !card.dataset.sessionId || card.dataset.sessionId === sessionId
       ))
@@ -189,14 +239,19 @@ function createCardQuestionNavigator(options = {}) {
     activeIndex = -1;
     root.classList.toggle('dense', cards.length > 12);
     root.classList.toggle('very-dense', cards.length > 28);
-    if (cards.length < 2) {
+    if (cards.length < 1) {
       setVisible(false);
       return { count: cards.length, activeIndex, visible: false };
     }
 
     const fragment = doc.createDocumentFragment();
     cards.forEach((card, index) => {
-      const summary = normalizeQuestionSummary(questionTextForCard(card));
+      const raw = customEntries?.[index]?.text ?? questionTextForCard(card);
+      const summary = normalizeQuestionSummary(raw);
+      const turn = getTurnById(card.dataset.turnId || '');
+      const timestamp = customEntries?.[index]?.timestamp || turn?.ts || turn?.timestamp;
+      const time = timestamp ? require('../core/beijing-time').formatBeijingClock(timestamp) : '';
+      const meta = customEntries?.[index]?.meta || time || '用户提问';
       const button = doc.createElement('button');
       button.type = 'button';
       button.className = 'card-question-nav-item';
@@ -210,7 +265,9 @@ function createCardQuestionNavigator(options = {}) {
       const label = doc.createElement('span');
       label.className = 'card-question-nav-label';
       label.textContent = `Q${index + 1}`;
-      button.append(dot, label);
+      const title = doc.createElement('span'); title.className = 'question-directory-title'; title.textContent = summary;
+      const detail = doc.createElement('small'); detail.textContent = meta; title.appendChild(detail);
+      button.append(dot, label, title);
       const entry = { index, card, button, summary };
       button.addEventListener('click', () => scrollToQuestion(index));
       button.addEventListener('keydown', event => markerKeydown(event, index));
@@ -244,9 +301,14 @@ function createCardQuestionNavigator(options = {}) {
     if (!root || !track || !overlay) return false;
     overlay.addEventListener('scroll', onScroll, { passive: true });
     if (typeof win.MutationObserver === 'function') {
-      observer = new win.MutationObserver(scheduleRefresh);
-      observer.observe(overlay, { childList: true });
+      observer = new win.MutationObserver(records => {
+        if (records.some(r=>r.target === overlay || r.target.closest?.('.mr-gc-msg.mine'))) scheduleRefresh();
+      });
+      observer.observe(overlay, { childList: true, subtree: !!options.getEntries });
     }
+    root.querySelector('.question-directory-toggle').addEventListener('click', toggleDirectory);
+    root.querySelectorAll('[data-directory-action]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.directoryAction)));
+    if (typeof win.ResizeObserver === 'function' && layout) { resizeObserver = new win.ResizeObserver(updateLayout); resizeObserver.observe(layout); }
     scheduleRefresh();
     return true;
   }
@@ -256,7 +318,7 @@ function createCardQuestionNavigator(options = {}) {
     if (refreshFrame !== null) cancelRaf(refreshFrame);
     if (scrollFrame !== null) cancelRaf(scrollFrame);
     if (highlightTimer) clearTimeout(highlightTimer);
-    observer?.disconnect();
+    observer?.disconnect(); resizeObserver?.disconnect();
     overlay?.removeEventListener('scroll', onScroll);
     if (highlightedCard) highlightedCard.classList.remove('question-jump-highlight');
     entries = [];
@@ -270,10 +332,13 @@ function createCardQuestionNavigator(options = {}) {
     scheduleRefresh,
     scrollToQuestion,
     updateActive,
+    updateLayout,
     getState: () => ({
       count: entries.length,
       activeIndex,
       visible: !!root && !root.hidden,
+      collapsed: root?.classList.contains('directory-collapsed'),
+      autoCollapsed: root?.classList.contains('directory-auto-collapsed'),
       summaries: entries.map(entry => entry.summary),
     }),
   };

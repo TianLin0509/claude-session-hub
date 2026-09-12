@@ -114,7 +114,7 @@ async function reloadReady(client) {
 }
 
 async function verifyLastLaunch(client, result) {
-  console.log('[T4] real launch, memory and fallback');
+  console.log('[launch] real launch, persistent memory and stable center entry');
   await clickPoint(client, '[data-launch-intent="session"]');
   await clickPoint(client, '.new-session-option[data-kind="codex"]');
   await waitFor('Codex tuning catalog', () => client.eval(`document.querySelector('#new-session-model')?.options.length > 0`));
@@ -133,26 +133,24 @@ async function verifyLastLaunch(client, result) {
   assert.equal(saved.codexSpeedTier, 'standard');
   assert.equal(saved.workspace.path, first.cwd);
   assert.equal(first.currentModel.id, saved.model);
-  assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), `启动 Codex  ${saved.workspace.label}`);
-  // Observe the real modal throughout direct launch, without replacing creation/IPC.
+  assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), '启动');
+  // History must not change the primary button into a direct session launch.
   await client.eval(`(() => {
     window.__t4ModalOpens = 0;
     window.addEventListener('launch-center:session-opened', () => { window.__t4ModalOpens += 1; });
   })()`);
   await clickPoint(client, '#btn-new');
-  const second = await waitFor('second real Codex session', () => client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.find(s => s.kind === 'codex' && !${JSON.stringify([...beforeIds, first.id])}.includes(s.id)) || null)`), 60000);
-  await waitFor('direct launch settled', () => client.eval(`!document.getElementById('btn-new').disabled`));
-  for (const key of ['kind', 'cwd', 'model', 'effort', 'mcpProfile', 'codexSpeedTier', 'fastMode']) assert.deepEqual(second[key], first[key], key);
-  assert.equal(second.currentModel.id, saved.model);
-  assert.notEqual(first.id, second.id);
-  assert.equal(await client.eval('window.__t4ModalOpens'), 0);
+  await waitFor('primary opens center with history', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
+  assert.deepEqual(await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.map(s => s.id).sort())`), [...beforeIds, first.id].sort());
+  assert.equal(await client.eval('window.__t4ModalOpens'), 1);
+  await clickPoint(client, '#new-session-close');
   const dimensions = await client.eval(`(() => ({ height: document.querySelector('.launch-split').getBoundingClientRect().height, moreWidth: document.getElementById('btn-new-more').getBoundingClientRect().width }))()`);
   assert.equal(dimensions.height, 32); assert.equal(dimensions.moreWidth, 30);
   await screenshot(client, path.join(ARTIFACT_DIR, 'T4-launch-split.png'));
-  result.lastLaunch = { first, second, saved, dimensions, modalOpens: 0 };
+  result.lastLaunch = { first, saved, dimensions, modalOpens: 1 };
 
   await reloadReady(client);
-  await waitFor('remembered launch after reload', () => client.eval(`Boolean(window.LaunchCenter && document.querySelector('#btn-new .btn-label').textContent.startsWith('启动 Codex'))`));
+  await waitFor('stable launch after reload', () => client.eval(`Boolean(window.LaunchCenter && document.querySelector('#btn-new .btn-label').textContent === '启动')`));
   await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'n', code: 'KeyN', modifiers: 2 });
   await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'n', code: 'KeyN', modifiers: 2 });
   await waitFor('Ctrl+N still opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
@@ -165,21 +163,8 @@ async function verifyLastLaunch(client, result) {
   await client.eval(`localStorage.setItem('hub.launch.last', JSON.stringify({ ...${JSON.stringify(saved)}, workspace: { path: ${JSON.stringify(missing)}, label: '已删除的测试工作区' } }))`);
   const count = await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.length)`);
   await clickPoint(client, '#btn-new');
-  await waitFor('missing directory falls back and settles', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex' && !document.getElementById('btn-new').disabled`));
-  result.missingWorkspace = await client.eval(`({ message: document.getElementById('new-session-error').textContent, errorVisible: !document.getElementById('new-session-error').hidden, path: document.getElementById('new-session-path-value').title, model: document.getElementById('new-session-model').value, effort: document.getElementById('new-session-effort').value })`);
-  assert.match(result.missingWorkspace.message, /工作区/);
-  assert.equal(result.missingWorkspace.errorVisible, true);
-  result.missingWorkspace.errorUnobscured = await client.eval(`(() => {
-    const error = document.getElementById('new-session-error');
-    const rect = error.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    const footer = document.querySelector('.session-create-footer').getBoundingClientRect();
-    return rect.height > 0 && rect.bottom <= footer.top + 1 && (hit === error || error.contains(hit));
-  })()`);
-  assert.equal(result.missingWorkspace.errorUnobscured, true, 'fallback reason must be visible above the footer');
-  assert.equal(result.missingWorkspace.path, missing);
-  assert.equal(result.missingWorkspace.model, saved.model);
-  assert.equal(result.missingWorkspace.effort, saved.effort);
+  await waitFor('stale history still opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex' && !document.getElementById('btn-new').disabled`));
+  assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), '启动');
   assert.equal(await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.length)`), count);
   assert.equal(fs.existsSync(missing), false);
   await screenshot(client, path.join(ARTIFACT_DIR, 'T4-missing-workspace.png'));
@@ -200,6 +185,8 @@ async function verifyPersistentMembers(client, result) {
   await waitFor('more button opens center', () => client.eval(`document.getElementById('new-session-menu').style.display === 'flex'`));
   await clickPoint(client, '[data-launch-intent="group"]');
   await waitFor('two member form', () => client.eval(`document.querySelectorAll('.mcm-ai-select').length === 2`));
+  await clickPoint(client, '[data-mcm-scene="general"]');
+  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 1; i <= 2; i++) await chooseValue(client, `.mcm-slot:nth-child(${i}) .mcm-ai-select`, 'codex');
   await client.eval(`document.getElementById('mcm-title-input').value = 'T4 两个 Codex 常驻成员'`);
   await clickPoint(client, '.mcm-create');
@@ -250,6 +237,8 @@ async function verifyPersistentMembers(client, result) {
   // Real extra members exercise wrapping without fabricating sidebar DOM.
   await clickPoint(client, '#btn-new-more');
   await clickPoint(client, '[data-launch-intent="group"]');
+  await clickPoint(client, '[data-mcm-scene="general"]');
+  await clickPoint(client, '[data-mcm-workspace-mode="default"]');
   for (let i = 0; i < 3; i++) {
     await client.eval(`document.getElementById('mcm-add-member').scrollIntoView({ block: 'center' })`);
     await clickPoint(client, '#mcm-add-member');
@@ -426,8 +415,8 @@ async function main() {
       };
     })()`);
     assert.deepEqual(result.sceneReset, {
-      scene: 'general', devSceneSelected: false, workspaceMode: 'default',
-      hintShown: false, hintText: '',
+      scene: 'dev', devSceneSelected: true, workspaceMode: 'existing',
+      hintShown: true, hintText: '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。',
     }, '重开后场景说明必须跟着场景一起复位');
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });

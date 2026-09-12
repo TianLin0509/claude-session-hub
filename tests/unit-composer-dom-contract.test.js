@@ -33,18 +33,19 @@ test('文本框仍是原来那个节点，属性一个都没丢', () => {
 
 test('composer 三段结构：状态行 → 文本框 → 底栏，且仍装在 fi-content-stack 里', () => {
   assert.match(mount, /composer\.append\(statusRow, quickReplyRow, composerRow, composerRail\)/);
+  assert.match(mount, /bridgeToolbar\.after\(startActions\)/);
   assert.match(mount, /composerRow\.append\(inputBox\)/);
   // 几何锁契约（unit-floating-input-geometry-contract）依赖这一层，不能被拆掉。
   assert.match(mount, /contentStack\.className = 'fi-content-stack'/);
   assert.match(mount, /contentStack\.append\(nativeControls\.element, composer\)/);
 });
 
-test('底栏节点顺序固定：附件 · 模型 · 思考档 · 拉取/分支 ｜ 预算环 · 提示 · 停止/发送', () => {
+test('底栏节点顺序固定：附件 · 模型 · 思考档 · 速度 · 拉取/分支 ｜ 预算环 · 提示 · 停止/发送', () => {
   const railAppend = mount.match(/composerRail\.append\(([\s\S]*?)\);/);
   assert.ok(railAppend, '定位不到底栏的 append');
   const order = railAppend[1].split(',').map(part => part.trim()).filter(Boolean);
   assert.deepEqual(order, [
-    'attachBtn', 'modelChip', 'thinkingChip', 'bridgeToolbar',
+    'attachBtn', 'modelChip', 'thinkingChip', 'speedChip', 'bridgeToolbar',
     'railSpacer', 'ctxRing', 'sendHint', 'stopBtn', 'sendBtn',
   ]);
 });

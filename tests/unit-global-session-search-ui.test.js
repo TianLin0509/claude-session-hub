@@ -45,7 +45,7 @@ test('project library loads preserve the current selection and reject stale resp
 
   const failed=fixture(),failure=failed.context.loadProjectLibrary();
   failed.pending[0].reject(new Error('offline'));await failure;
-  assert.equal(failed.select.value,'C:/A');assert.equal(failed.context.projectLibrary.length,2);
+  assert.equal(failed.select.value,'C:/A');assert.equal(failed.context.projectLibrary.length,0);
   assert.match(failed.context.projectNote.textContent,/读取失败/);
 
   const closed=fixture(),late=closed.context.loadProjectLibrary();closed.context.projectLoadSequence++;

@@ -40,6 +40,50 @@ function registerSessionIpc(ipcMain, deps) {
 
   const lastResizeBySid = new Map();
   const claudeModelPreferenceGuards = new Map();
+  let claudeFastQueue = Promise.resolve();
+
+  ipcMain.handle('session:set-fast', (_event, payload = {}) => {
+    const task = async () => {
+      const {sessionId,enabled} = payload;
+      const session = sessionManager.getSession(sessionId);
+      if (typeof enabled !== 'boolean' || !session) return {ok:false,message:'会话或速度设置无效'};
+      const {claudeSupportsFast,pendingSpeedSwitches} = require('../../core/session-speed');
+      if (String(session.kind).replace(/-resume$/, '') !== 'claude' || !claudeSupportsFast(session.currentModel?.id)) {
+        return {ok:false,message:'当前 Claude 型号未确认支持 Fast，请先选择明确的受支持型号'};
+      }
+      if (require('../../core/session-runtime-truth').sessionRuntimeIsActive(session) || session.status === 'running' || session.autonomous || process.env.CLAUDE_HUB_NO_FAST === '1') {
+        return {ok:false,message:'请在会话空闲且允许 Fast 时切换'};
+      }
+      const {claudeSettingsPath,readJsonObject,writeJsonAtomic} = require('../../core/claude-model-preference-guard');
+      const file = claudeSettingsPath();
+      const previous = readJsonObject(file);
+      const observer = require('../../core/claude-fast-command').observeClaudeFastCommand(sessionManager,sessionId,enabled);
+      pendingSpeedSwitches.add(sessionId);
+      try {
+        const result = await require('../../core/group-chat-watcher').sendToPty(sessionId,`/fast ${enabled ? 'on' : 'off'}`,session.kind,
+          {requireReady:false,localCommandObserver:observer});
+        if (!result?.ok) return {ok:false,message:result?.message || 'Claude 未确认速度切换'};
+        const updated = sessionManager.updateSessionMeta(sessionId,{fastMode:enabled});
+        if (!updated) return {ok:false,message:'Claude 已切换，但会话信息保存失败'};
+        sendToRenderer('session-updated',{session:updated});
+        return {ok:true,result:{fastMode:enabled}};
+      } finally {
+        pendingSpeedSwitches.delete(sessionId);
+        observer.dispose();
+        // /fast persists a user default. Restore only our field, preserving
+        // unrelated concurrent edits, just like the existing model guard.
+        const current = readJsonObject(file);
+        if (current.fastMode === enabled && previous.fastMode !== enabled) {
+          if (Object.hasOwn(previous,'fastMode')) current.fastMode = previous.fastMode;
+          else delete current.fastMode;
+          writeJsonAtomic(file,current);
+        }
+      }
+    };
+    const pending = claudeFastQueue.then(task).catch(error=>({ok:false,message:error.message}));
+    claudeFastQueue = pending;
+    return pending;
+  });
 
   ipcMain.handle('create-session', (_e, arg) => {
     // Back-compat: legacy callers pass just a kind string; newer callers pass { kind, opts }.
@@ -142,7 +186,16 @@ function registerSessionIpc(ipcMain, deps) {
     if (typeof source.contextMax === 'number') opts.contextMax = source.contextMax;
 
     let kind;
-    if (providerFamily === 'claude') {
+    const createFork=()=>{
+      const session=sessionManager.createSession(kind,opts);
+      registerSessionForTap(session);sendToRenderer('session-created',{session});
+      return {ok:true,session};
+    };
+    if (providerFamily === 'acp') {
+      kind = source.kind.replace(/-resume$/, '');
+      return sessionManager.getNativeSession(source.id).fork().then(fork=>{opts.acpFork=fork;return createFork();})
+        .catch(error=>({ok:false,error:'acp-fork-failed',message:error.message}));
+    } else if (providerFamily === 'claude') {
       kind = isDeepSeek ? 'deepseek' : 'claude';
       opts.forkCCSessionId = nativeSessionId;
       if (runtimeKind.startsWith('deepseek-legacy')) opts.deepseekLegacyClaude = true;
@@ -152,10 +205,7 @@ function registerSessionIpc(ipcMain, deps) {
       opts.codexForkSid = nativeSessionId;
     }
 
-    const session = sessionManager.createSession(kind, opts);
-    registerSessionForTap(session);
-    sendToRenderer('session-created', { session });
-    return { ok: true, session };
+    return createFork();
   });
 
   ipcMain.handle('close-session', (_e, sessionId) => {
@@ -205,13 +255,14 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('codex:native-action', async (_event, payload = {}) => {
-    const native = sessionManager.getNativeCodex?.(payload.sessionId);
+    const native = (sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId));
     if (!native) return {ok:false,message:'该 Codex 会话尚未接管'};
     try {
       let result;
       if (payload.action === 'reply') result = await native.reply(payload.requestId,payload.result,payload.epoch);
       else if (payload.action === 'choose-thread') result = await native.chooseThread(payload.threadId);
       else if (payload.action === 'reconnect') result = await native.reconnect();
+      else if (payload.action === 'restart-empty') result = await native.restartEmpty(payload);
       else if (payload.action === 'interrupt') result = await native.interrupt();
       else if (payload.action === 'configure') result = await native.configure(payload);
       else if (payload.action === 'collaboration-mode') result = await native.configureMode(payload.mode, payload.epoch);
@@ -321,7 +372,7 @@ function registerSessionIpc(ipcMain, deps) {
     const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     if (!session) return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
-    if (session.runtimeBackend === 'codex-app-server') {
+    if (['codex-app-server','acp'].includes(session.runtimeBackend)) {
       const current = session.currentModel || {};
       if (current.id !== modelId || (payload.effort && payload.effort !== session.effort)) {
         return {ok:false,message:'原生 Codex 尚未确认该模型或思考档'};
@@ -385,6 +436,17 @@ function registerSessionIpc(ipcMain, deps) {
     return session;
   });
 
+  // Only explicit history navigation calls this. Previewing search results
+  // must not manufacture activity or a completed model response.
+  ipcMain.handle('session:record-history-open', (_e, { sessionId } = {}) => {
+    const session = sessionManager.getSession(sessionId);
+    if (!session) return { ok: false, message: '会话不存在或未成功恢复' };
+    const at = Math.max(Date.now(), Number(session.lastMessageTime) || 0);
+    const updated = sessionManager.updateSessionMeta(sessionId, { lastMessageTime: at, hiddenFromSidebar: false });
+    if (!updated) return { ok: false, message: '侧栏活动时间更新失败' };
+    return { ok: true, at };
+  });
+
   ipcMain.handle('get-sessions', () => {
     return sessionManager.getAllSessions();
   });
@@ -412,7 +474,7 @@ function registerSessionIpc(ipcMain, deps) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
     if (old.purpose !== 'chuxin-research' && (old.kind === 'codex' || old.kind === 'codex-resume')) {
-      const native = sessionManager.getNativeCodex?.(sessionId);
+      const native = (sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId));
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
       return native.reconnect().then(()=>sessionManager.getSession(sessionId))
         .catch(error=>({ok:false,message:error.message}));

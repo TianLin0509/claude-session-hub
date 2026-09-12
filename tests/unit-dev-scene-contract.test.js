@@ -25,13 +25,13 @@ const modal = read('renderer/meeting-create-modal.js');
 const room = read('renderer/meeting-room.js');
 
 test('开发场景建群时自动写入默认工作流（否则「零配置」不成立）', () => {
-  assert(/_applyDefaultDevWorkflow\(meeting, scene, slots, \{ atWorkRoot, projects: devProjects, devPhase: _devStart \}\)/.test(modal),
-    'create-meeting 之后必须调用 _applyDefaultDevWorkflow，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
-  assert(/function _applyDefaultDevWorkflow/.test(modal), '该函数必须存在');
+  assert(/_buildDefaultDevWorkflow\(scene, slots, \{ atWorkRoot, projects: devProjects \}\)/.test(modal),
+    'create-meeting 之前必须生成默认工作流，并把「是否开在工作根 + 项目库快照 + 起手方式」传进去');
+  assert(/function _buildDefaultDevWorkflow/.test(modal), '该函数必须存在');
   assert(/scene !== 'dev'/.test(modal), '只对 dev 场景生效');
   assert(/createTemplateConfig\(templateId, members/.test(modal), '默认工作流由 templateId 决定');
-  assert(/simple \? 'dev-task-solo' : 'dev-task'/.test(modal), '只有极简走单席位模板，其余仍是 dev-task');
-  assert(/serialWorkflow: config/.test(modal), '必须写进 meeting.serialWorkflow');
+  assert(/const templateId = 'dev-task'/.test(modal), '新建群聊统一按成员数量配置');
+  assert(/workspaceDraft: !!workspace.draft,\s*serialWorkflow,/.test(modal), '必须写进 meeting.serialWorkflow');
 });
 
 test('发送按钮仍按 serialWorkflow 三岔路分发（默认工作流才有意义）', () => {
@@ -50,9 +50,7 @@ test('先讨论再开工：讨论阶段发送走普通群聊，循环配置原�
   // 2026-09-08：取消了「任务已明确，直接开工」那一挡 —— 它绕过开题，实现位手里
   // 只有聊天记录、没有一份自包含可验收的任务书。双席位现在一律从讨论阶段起步，
   // 需求本来就明确时直接点「开题」即可，不强制多聊几轮。
-  assert(/data-mcm-dev-start="discuss"/.test(modal), '建群弹窗的双席位那一挡还在');
-  assert(!/data-mcm-dev-start="build"/.test(modal), '「直接开工」那一挡必须真的没了，否则还能绕过开题');
-  assert(/_devStart = 'discuss';/.test(modal), '重开弹窗必须重置为双席位讨论起手');
+  assert(!/data-mcm-dev-start/.test(modal), '删除起手选项');
   const members = [{ memberId: 'm1', kind: 'claude' }, { memberId: 'm2', kind: 'codex' }];
   const discuss = WT.createTemplateConfig('dev-task', members, { devPhase: 'discuss' });
   assert.strictEqual(discuss.devPhase, 'discuss');
@@ -86,47 +84,18 @@ test('讨论阶段堵死「恢复旧循环」的三条路（2026-09-06 合并位
   assert(/devPhase === 'discuss'\) return \{ ok: false/.test(read('main/groupchat/dev-workbench.js')), '工作台：恢复动作按阶段拒绝');
 });
 
-test('单人群聊不写默认工作流，除非用户明确选了极简（一个人没法自审自合是默认立场）', () => {
-  assert(/if \(!simple && slots\.length < 2\) return;/.test(modal),
-    '成员数下限仍在，只对显式选了极简的放行');
-});
-
-test('极简起手：一位 Codex 既当工作位也当合并位（2026-09-07 用户要求）', () => {
-  // 小到不值得占两个席位的改动（改一句文案、加一个开关），双席位的代价是
-  // 一次完整的上下文交接 + 一倍 token。极简把这条代价换成「没有独立第三方」，
-  // 取舍由用户在建群那一刻选，不由 Hub 替他决定。
-  assert(/data-mcm-dev-start="simple"/.test(modal), '建群弹窗要有极简这一挡');
-  assert(/data-mcm-dev-start="discuss"/.test(modal), '双席位那一挡不能被挤掉');
-  assert(/const SIMPLE_DEV_MEMBERS = \[\{ kind: 'codex'/.test(modal), '极简的默认成员是 Codex');
-  assert(/function _setDevStart/.test(modal) && /_groupSlots = _cloneSlots\(SIMPLE_DEV_MEMBERS\)/.test(modal),
-    '选极简要把成员名单换成一个人，否则界面和选项自相矛盾');
-  assert(/_currentMode !== 'dev' && _devStart === 'simple'/.test(modal),
-    '离开开发场景必须把极简放掉，否则成员被减到一个而选项已经藏起来了');
-
-  const solo = WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind: 'codex' }]);
-  assert(solo, '单人也要能构造出配置');
-  assert.deepStrictEqual(solo.steps, [['m1'], ['m1']],
-    '两步派给同一个 memberId：loop-engine 的 builder=steps[0][0]、reviewer=steps.slice(1) 照常成立');
-  assert.strictEqual(solo.loop.enabled, true, '极简仍然是循环，只是循环里只有一个人');
-  assert.strictEqual(solo.devPhase, 'build', '极简没有讨论阶段');
-  assert.notStrictEqual(solo.mdHandoff, true, '极简保留原流程，不套用双席位的 MD 交接链路');
-  // 工作流配置弹窗的闭环形状校验：恰好 2 步、第 1 步 1 人、第 2 步 ≥1 人
-  assert(solo.steps.length === 2 && solo.steps[0].length === 1 && solo.steps[1].length >= 1,
-    '形状必须仍然是配置弹窗认的那种闭环，否则用户一打开配置就被判非法');
-
-  const [impl, merge] = solo.stepConfigs.map(s => s.prompt);
-  assert(/\.agents\/AUTHOR\.md/.test(impl) && /\.agents\/MERGER\.md/.test(merge), '两步仍各读各的合同');
-  assert(/自己写的/.test(merge), '必须点明这一步没有独立第三方，否则模型会照抄「独立性成立」那套说辞');
-  assert(/ASK/.test(impl), '规模超预期时要能提议升级成双席位，而不是硬做');
-  assert(!/[A-Za-z]:\\/.test(impl + merge), '不许有 Windows 绝对路径');
-  assert(!/SuperRAN|superran|claude-session-hub/i.test(impl + merge), '不许写死项目名');
-
-  // 开在工作根时同样要带项目库定位说明
-  const soloPath = 'C:\\repo\\x';
-  const atRoot = WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind: 'codex' }],
-    { workspace: { atWorkRoot: true, projects: [{ name: 'X', path: soloPath }] } });
-  assert(atRoot.stepConfigs.every(step => step.prompt.startsWith('【先定位项目根】')), '两步都要带定位说明');
-  assert(atRoot.projectLocator.includes('X → ' + soloPath), '讨论/普通路径也要拿得到定位说明');
+test('单人开发移到普通会话，不再生成极简群聊模板', () => {
+  for (const kind of ['claude', 'codex', 'deepseek']) {
+    assert.equal(WT.createTemplateConfig('dev-task', [{ memberId: 'm1', kind }]), null);
+    assert.equal(WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind }]), null);
+  }
+  assert(!WT.TASK_PRESETS.some(t => t.id === 'dev-task-solo'));
+  assert(!room.includes('data-file-independent'));
+  // Persisted single-agent rooms still use their stored config and retain records.
+  const F = require('../core/dev-file-workflow');
+  const legacy = {groupChat:true,scene:'dev',serialWorkflow:{fileFlowVersion:2,soloDevelopment:true}};
+  assert(F.isSolo(legacy));
+  assert(F.common(legacy, 'dir').includes('自测不等于独立审查'));
 });
 
 test('dev 场景有工作位与合并位两顶流水线角色帽子', () => {
@@ -175,7 +144,7 @@ test('开在工作根时，两步 prompt 前面都带项目库让 AI 自己定�
 
   // 项目库空的时候也要给出可执行的找法，而不是一句「自己找」
   const empty = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: true, projects: [] } });
-  assert(/\.agents\/project\.json/.test(empty.stepConfigs[0].prompt), '空库时要说清判据');
+  assert(/project-prep.*登记正式目录/.test(empty.stepConfigs[0].prompt), '空库必须走准备及登记，不能从扫描推断身份');
 
   // 不在工作根（选了项目根）时，一个字都不多：agent 已经站在项目里了
   const onRepo = WT.createTemplateConfig('dev-task', members, { devPhase: 'build', workspace: { atWorkRoot: false, projects } });

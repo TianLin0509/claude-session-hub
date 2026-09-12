@@ -52,15 +52,15 @@ assert.ok(
 // 2026-07-27：卡片视图从 Claude+Codex 扩到 Claude+Codex+Kimi。占位文案必须与
 // supportsCardHistory 的真实 gate 一致，否则用户会被告知一个不存在的限制。
 assert.ok(
-  /supportsCardHistory = kind && \(isClaudeFamily\(kind\) \|\| isCodexKind\(kind\) \|\| isKimiCliKind\(kind\)\)/
+  /supportsCardHistory = kind && \(isNativeSession\(session\) \|\| isClaudeFamily\(kind\) \|\| isCodexKind\(kind\) \|\| isKimiCliKind\(kind\)\)/
     .test(rendererSrc),
-  'card history gate must cover Claude, Codex and Kimi',
+  'card history gate must cover native ACP, Claude, Codex and Kimi',
 );
 assert.ok(
-  rendererSrc.includes('卡片视图当前支持 Claude、Codex 与 Kimi session')
+  rendererSrc.includes('该会话没有结构化历史')
     && !rendererSrc.includes('卡片视图当前仅支持 Claude session')
     && !rendererSrc.includes('卡片视图当前支持 Claude 与 Codex session'),
-  'unsupported-kind placeholder must name exactly the three supported card backends',
+  'unsupported-kind placeholder must not describe ACP as unsupported',
 );
 assert.ok(
   rendererSrc.includes("scheduleCodexHistoryRetry"),
@@ -75,9 +75,9 @@ assert.ok(
   'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
-  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: true })") &&
-  rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true })"),
-  'delegated sidebar navigation must request bottom pinning for sessions and meetings',
+  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom })") &&
+  rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })"),
+  'sidebar forwards the read-aware bottom intent; behavioral navigation tests cover read and unread targets',
 );
 assert.ok(
   rendererSrc.includes("detachFromBottom") &&
@@ -85,7 +85,7 @@ assert.ok(
   'Codex wheel-up intent must immediately disable bottom following before the next streaming write',
 );
 assert.ok(
-  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus })") &&
+  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom })") &&
   rendererSrc.includes("const _batchWasAtBottom = forceScrollBottom || (incremental ? _isCardOverlayAtBottom(container) : overlayScrollBeforeLoad.wasAtBottom);"),
   'Codex card overlay reload must honor explicit sidebar bottom pinning',
 );

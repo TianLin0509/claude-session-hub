@@ -141,7 +141,9 @@ test('successful center notification remembers a snapshot; open, cancel, group a
   ui.view.emit('launch-center:session-created', { sessionId: 'first', launch: record });
   record.workspace.label = 'changed later';
   assert.equal(JSON.parse(ui.stored()).workspace.label, 'AIWork');
-  assert.equal(ui.label.textContent, '启动 Codex  AIWork');
+  assert.equal(ui.label.textContent, '启动');
+  assert.equal(ui.trigger.title, '打开启动中心 (Ctrl+N)');
+  assert.equal(ui.trigger.getAttribute('aria-haspopup'), 'dialog');
   const stored = ui.stored();
   ui.controller.open('group'); ui.controller.close(); ui.controller.open('resume'); ui.controller.close();
   ui.view.emit('launch-center:session-created', { launch: lastLaunch() });

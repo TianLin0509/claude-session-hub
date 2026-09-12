@@ -88,13 +88,13 @@ function safeRemove(dir) {
 }
 
 async function openResearchPanel(client) {
-  await waitEval(client, 'document.getElementById("btn-chuxin")', 'Chuxin entry');
+  await waitEval(client, 'document.getElementById("btn-research")', 'Chuxin entry');
   await client.eval(`(() => {
     const errors = [];
     window.__cxE2EErrors = errors;
     window.addEventListener('error', e => errors.push(String(e.error || e.message || 'error')));
     window.addEventListener('unhandledrejection', e => errors.push(String(e.reason || 'unhandled')));
-    document.getElementById('btn-chuxin').click();
+    document.getElementById('btn-research').click();
   })()`);
   await waitEval(client, 'document.querySelector(".cx-status.online")', 'online panel', 30000);
   await waitEval(client, 'document.querySelectorAll(".cx-agent").length === 3 && document.querySelectorAll(".cx-hero-card").length >= 2', 'agents and heroes', 30000);

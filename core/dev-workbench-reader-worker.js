@@ -4,7 +4,12 @@
 const { parentPort } = require('node:worker_threads');
 const fs = require('node:fs');
 const { summarizeGroupState } = require('./dev-workbench-feed');
-parentPort.on('message', ({ requestId, file }) => {
+parentPort.on('message', async ({ requestId, file, type, dataDir, meeting }) => {
+  if(type==='task'){
+    try { parentPort.postMessage({requestId,task:await require('./dev-task-view').readTask(dataDir,meeting)}); }
+    catch(error){parentPort.postMessage({requestId,error:error.message || String(error)});}
+    return;
+  }
   try {
     const size = fs.statSync(file).size;
     if (size > 64 * 1024 * 1024) throw new Error('旧群聊记录超过 64 MB，未自动载入；请进入群聊查看。新的汇报仍会自动推送。');

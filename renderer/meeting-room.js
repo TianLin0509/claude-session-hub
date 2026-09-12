@@ -28,6 +28,7 @@ function groupInputTuningFrame(screen) {
 
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
+  const { speedControl } = require('../core/session-speed.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { extractVisibleCardText } = require('./visible-card-text.js');
   const { unclaimedPendingUserMessages } = require('../core/groupchat-pending-claim.js');
@@ -126,6 +127,7 @@ if (typeof document !== 'undefined') (function () {
 
   // [幕次折叠] meetingId -> Set(actKey) 当前被折叠的幕次（前端临时状态，不持久化；刷新后默认全展开）。
   const _gcCollapsedActs = {};
+  const _gcToolsExpanded = {};
 
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
@@ -237,11 +239,21 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
+    const deliveryOpen = new Map([...panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')]
+      .map(el => [el.closest('.mr-gc-msg').dataset.gcMsgId, el.open]));
+    panel.querySelector('.mr-gc-messages')?._cardFollowController?.dispose();
+    panel._questionDirectory?.dispose();
     panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    for (const el of panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')) {
+      const id = el.closest('.mr-gc-msg').dataset.gcMsgId;
+      if (deliveryOpen.has(id)) el.open = deliveryOpen.get(id);
+    }
     _bindGcPanelEvents(panel, meeting);
     // 2026-07-20 道雪 [修#5]：后处理四件套统一在此执行（此前只在 refreshGroupChatPanel）。
     _applyLongAnswerCollapse(panel);
     _setupScrollToBottom(panel);
+    _setupQuestionDirectory(panel, meeting);
+    _enhanceGroupCardContent(panel);
     _enhanceCodeBlocks(panel);
     _setupGcSearch(panel);
     _renderHeroDock(meeting);
@@ -505,9 +517,9 @@ if (typeof document !== 'undefined') (function () {
   //   （如 `python C:\script.py --arg` 包路径会让脚本视觉断开）。
   // 2026-05-03 道雪：从 SKIP 移除 CODE 是用户场景反馈：历史回答面板的路径
   //   出现在 inline code 内，原 skip CODE 让它没有 link。
-  function _wrapFilePathsInDom(rootEl) {
+  function _wrapFilePathsInDom(rootEl, cwd = _activeMeetingCwd()) {
     if (typeof window !== 'undefined' && typeof window.wrapPathLinksInElement === 'function') {
-      window.wrapPathLinksInElement(rootEl, { cwd: _activeMeetingCwd() });
+      window.wrapPathLinksInElement(rootEl, { cwd, skipCodeBlocks:true });
       return;
     }
     const SKIP_TAGS = new Set(['PRE', 'A', 'SCRIPT', 'STYLE']);
@@ -585,11 +597,13 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  function _renderMarkdownUncached(text) {
+  function _renderMarkdownUncached(text, cwd) {
     try {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
-      const pathGuard = guardMarkdownLocalPaths(_normalizeMarkdownPathBreaks(text));
+      const math = require('./markdown-math-guard');
+      const mathGuard = math.guardMarkdownMath(_normalizeMarkdownPathBreaks(text));
+      const pathGuard = guardMarkdownLocalPaths(mathGuard.text);
       const html = _markedCache.parse(pathGuard.text, { breaks: true, gfm: true });
       const sanitized = restoreMarkdownLocalPaths(
         _domPurifyCache.sanitize(html, { ADD_ATTR: ['data-path', 'class'] }),
@@ -599,12 +613,18 @@ if (typeof document !== 'undefined') (function () {
       //   注意必须在 sanitize 之后做，因为我们新增的 <a> 元素文本来自 sanitize 后的 textContent
       //   （已 escape），data-path 也是从同一字符串复制，无注入风险。
       const wrapper = document.createElement('div');
-      wrapper.innerHTML = sanitized;
-      _wrapFilePathsInDom(wrapper);
+      wrapper.innerHTML = math.restoreMarkdownMath(sanitized, mathGuard);
+      if (typeof window.renderMathInElement === 'function') window.renderMathInElement(wrapper, {
+        delimiters: [{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}],
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
+        ignoredClasses: ['katex', 'katex-display'], throwOnError:false, strict:'ignore', trust:false,
+      });
+      _wrapFilePathsInDom(wrapper, cwd);
       // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
       _highlightCodeBlocks(wrapper);
       return wrapper.innerHTML;
     } catch (e) {
+      console.warn("[groupchat] Markdown rendering failed:", e && e.message);
       // 回退到纯文本（escapeHtml）
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
@@ -618,17 +638,18 @@ if (typeof document !== 'undefined') (function () {
   const _mdCache = new Map();
   const _MD_CACHE_MAX = 300;
   const _mdStats = { renders: 0, hits: 0 };
-  function _renderMarkdown(text) {
+  function _renderMarkdown(text, cwd = _activeMeetingCwd()) {
     if (!text) return '';
-    const hit = _mdCache.get(text);
+    const cacheKey = JSON.stringify([cwd, text]);
+    const hit = _mdCache.get(cacheKey);
     if (hit !== undefined) {
-      _mdCache.delete(text); _mdCache.set(text, hit);
+      _mdCache.delete(cacheKey); _mdCache.set(cacheKey, hit);
       _mdStats.hits++;
       return hit;
     }
-    const out = _renderMarkdownUncached(text);
+    const out = _renderMarkdownUncached(text, cwd);
     _mdStats.renders++;
-    _mdCache.set(text, out);
+    _mdCache.set(cacheKey, out);
     if (_mdCache.size > _MD_CACHE_MAX) _mdCache.delete(_mdCache.keys().next().value);
     return out;
   }
@@ -730,18 +751,44 @@ if (typeof document !== 'undefined') (function () {
     return html.join('');
   }
 
-  function _renderGroupDelivery(text, cwd) {
-    if (!text) return '';
-    const presentation = buildTurnPresentation({
-      role: 'assistant',
-      text,
-      stopReason: 'end_turn',
-      toolCalls: [],
-    }, { cwd });
-    const artifacts = presentation.delivery.artifacts || [];
-    if (!artifacts.length) return '';
-    const items = artifacts.map(item => `<a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">↗ ${escapeHtml(item.name)}</a>`).join('');
-    return `<div class="mr-ft-delivery" data-summary-source="deterministic"><strong>交付产物</strong>${items}</div>`;
+  function _renderGroupDelivery(text, cwd, toolCalls = []) {
+    if (!text && !toolCalls.length) return '';
+    const presentation = buildTurnPresentation({ role:'assistant', text, stopReason:'end_turn', toolCalls }, {cwd});
+    return require('./delivery-summary').renderDeliverySummary(presentation.delivery, escapeHtml);
+  }
+
+  function _enhanceGroupCardContent(root) {
+    if (!root) return;
+    const cards = root.matches?.('.mr-gc-msg') ? [root] : [...root.querySelectorAll('.mr-gc-msg')];
+    for (const card of cards) {
+      const session = typeof sessions !== 'undefined' && sessions.get(card.dataset.sourceSid);
+      const cwd = session?.cwd || meetingData[activeMeetingId]?.workspace || _activeMeetingCwd();
+      if (typeof window.wrapPathLinksInElement === 'function') window.wrapPathLinksInElement(card, {cwd, skipCodeBlocks:true});
+    }
+  }
+
+  function _setupQuestionDirectory(panel, meeting) {
+    const overlay = panel.querySelector('.mr-gc-messages'), root = panel.querySelector('#mr-question-nav');
+    if (!overlay || !root) return;
+    const navigator = require('./card-question-navigator').createCardQuestionNavigator({
+      document, window, root, overlay, layoutElement:overlay.parentElement,
+      getActiveSessionId:()=> 'group:' + meeting.id,
+      getCurrentView:()=> 'card',
+      requestAnimationFrame: callback=>requestAnimationFrame(callback), cancelAnimationFrame:handle=>cancelAnimationFrame(handle),
+      getEntries:()=> {
+        const messages = _gcPanelState[meeting.id]?.messages || [];
+        const byId = new Map(messages.map(m=>[m.id,m])), replies = new Map();
+        for (const m of messages) if(m.role==='assistant' && m.sid) { if(!replies.has(m.turnNum)) replies.set(m.turnNum,new Set()); replies.get(m.turnNum).add(m.sid); }
+        return [...overlay.querySelectorAll('.mr-gc-msg[data-user-question="true"]')].map(card=>{
+          const message = byId.get(card.dataset.gcMsgId);
+          const count = replies.get(message?.turnNum)?.size || 0;
+          const timestamp = message?.createdAt;
+          return {card, text:message?.content || card.querySelector('.conversation-user-text')?.innerText || '',timestamp,
+            meta: [timestamp ? _formatGroupChatTime(timestamp) : '', count ? count+' 位成员已回复' : '用户提问'].filter(Boolean).join(' · ')};
+        });
+      },
+    });
+    panel._questionDirectory = navigator; navigator.init(); navigator.refresh();
   }
 
   // 注：顶部 scene toggle（群聊/投研）的 _renderModeToggle/_bindModeToggle 已删除
@@ -2133,9 +2180,10 @@ if (typeof document !== 'undefined') (function () {
         return;
       }
       const n = Math.max(Array.isArray(r.stopped) ? r.stopped.length : 0, Array.isArray(r.signaled) ? r.signaled.length : 0);
+      const nativePending = (m.subSessions || []).some(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
       const loopTail = r.loopStopped ? '，工作流已一并停止' : '';
       _showGcEscapeNotice(n > 0
-        ? `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
+        ? nativePending ? `已发送停止请求：等待原生 Harness 确认${loopTail}` : `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
         : r.pendingDispatch
           ? `本轮正在发送中，已登记停止；发出后立即中断${loopTail}`
           : `本轮已经没有正在回答的 AI，状态已收回待命${loopTail}`);
@@ -2361,6 +2409,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
+    const sourceSession = typeof sessions !== 'undefined' && sessions.get(message.sid);
+    const renderMarkdown = text => _renderMarkdown(text, sourceSession?.cwd || meeting.workspace || _activeMeetingCwd());
     if (!message) return '';
     // 系统提示（循环自愈的每一次动作都会留一行）：不是谁的发言，不给气泡也不给重发按钮，
     // 只在时间线上留一条居中的细线 —— 但必须看得见，静默重试才是真正的损失。
@@ -2394,6 +2444,7 @@ if (typeof document !== 'undefined') (function () {
     //   不依赖调用方各自清 pending flag（多方审查加固）。
     const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
+    const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
     const failureStatusText = failureCode === 'submission_unknown' ? '本条提交待核对'
       : failureCode === 'quota_exceeded' ? '额度中断'
@@ -2405,6 +2456,7 @@ if (typeof document !== 'undefined') (function () {
                 : '本轮失败';
     const statusText = sendStuck ? '输入未提交'
       : status === 'errored' ? failureStatusText
+      : cancelling ? '正在停止'
       : status === 'awaiting_binding' ? '已开工 · 等绑定'
       : status === 'awaiting_final_text' ? '已结束 · 收取中'
       : status === 'recovering' ? '恢复中'
@@ -2434,11 +2486,12 @@ if (typeof document !== 'undefined') (function () {
     let body;
     if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
       body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
-        {escapeHtml,renderMarkdown:_renderMarkdown});
+        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting)});
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      const waitingText = status === 'queued' ? '本条消息已排队，前一条任务结束后才会发送。'
+      const waitingText = cancelling ? '正在停止，等待原生 Harness 确认'
+        : status === 'queued' ? '本条消息已排队，前一条任务结束后才会发送。'
         : status === 'accepted' ? '引擎已收到本条消息，正在等待执行。'
         : status === 'waiting' ? '需要审批或回答问题，请打开该会话处理。'
         : status === 'awaiting_binding'
@@ -2473,7 +2526,16 @@ if (typeof document !== 'undefined') (function () {
       body = headBlock + bodyBlock;
     } else {
       body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
-        {isUser,escapeHtml,renderMarkdown:_renderMarkdown})}</div>`;
+        {isUser,escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
+    }
+    const sequence = message.displayMessages || [];
+    const hasFinal = sequence.some(m=>['final','final_answer'].includes(m.phase));
+    if (!isUser && !isPending && (hasFinal || ['completed','manual_extracted'].includes(status))
+        && !['commentary','activity'].includes(message.phase) && message.status !== 'progress_update') {
+      const tools = [...(message.toolCalls || []), ...sequence.flatMap(m=>m.toolCalls || [])];
+      const text = sequence.filter(m=>['final','final_answer'].includes(m.phase)).map(m=>m.text || '').join('\n') || contentStr;
+      const session = (typeof sessions !== 'undefined' && sessions.get(message.sid)) || null;
+      body += _renderGroupDelivery(text, session?.cwd || meeting.workspace, tools);
     }
     // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
     //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
@@ -2522,7 +2584,7 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -2715,14 +2777,17 @@ if (typeof document !== 'undefined') (function () {
                群成员按钮移到 header；操作按钮(综合共识等)移到作战面板；research 场景保留精简 topbar 只放投委会入口。 -->
           ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="开投委会：手输股票，自动跑五幕出双榜">⚖️ 开投委会</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="过往投委会：回看历史五幕发言+双榜+主席报告">📋 过往投委会</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="技术初筛=独立趋势龙雷达，与投委会解耦">📊 技术初筛</button></div></div>` : ''}
 
-          <div class="mr-gc-search-row"><input type="text" class="mr-gc-search" placeholder="🔍 搜索本群聊消息…" /><span class="mr-gc-search-count"></span></div>
-          ${progressLane}
+          <div class="mr-gc-tools" id="mr-gc-tools" ${_gcToolsExpanded[meeting.id] ? '' : 'hidden'}>
+            <div class="mr-gc-search-row"><input type="text" class="mr-gc-search" placeholder="搜索本群聊消息…" aria-label="搜索本群聊消息" /><span class="mr-gc-search-count"></span></div>
+            ${progressLane}
+            ${mobileWorkbench}
+          </div>
           <div class="mr-gc-messages">
             ${emptyHtml}
             ${messageHtml}
             ${pendingHtml}
           </div>
-          ${mobileWorkbench}
+          <nav id="mr-question-nav" class="card-question-nav" aria-label="问题导航" hidden></nav>
           <button type="button" class="mr-gc-scroll-bottom" data-gc-scroll-bottom="1" title="回到最新回答">↓ 最新</button>
           <button type="button" class="mr-gc-collapse-all" data-gc-collapse-all="1" title="折叠/展开所有长回答">⇕ 折叠全部</button>
         </main>
@@ -2913,21 +2978,19 @@ if (typeof document !== 'undefined') (function () {
     const bottomGap = Math.max(0, maxTop - el.scrollTop);
     return {
       scrollTop: el.scrollTop,
-      stickToBottom: bottomGap <= 48,
+      stickToBottom: el._cardFollowController ? el._cardFollowController.isFollowing() : bottomGap <= 48,
     };
   }
 
   function _restoreGroupChatScroll(panel, snapshot, opts = {}) {
     if (!panel || !snapshot) return;
-    const forceBottom = !!opts.forceBottom;
-    const apply = () => {
-      const el = panel.querySelector('.mr-gc-messages');
-      if (!el) return;
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      el.scrollTop = (forceBottom || snapshot.stickToBottom) ? maxTop : Math.min(snapshot.scrollTop, maxTop);
-    };
-    apply();
-    requestAnimationFrame(apply);
+    const el = panel.querySelector('.mr-gc-messages');
+    if (!el) return;
+    const follow = el._cardFollowController;
+    if (follow) {
+      if (opts.forceBottom || snapshot.stickToBottom) follow.follow();
+      else { follow.pause(); follow.restore({...follow.capture(),top:snapshot.scrollTop}); }
+    } else el.scrollTop = opts.forceBottom || snapshot.stickToBottom ? el.scrollHeight : snapshot.scrollTop;
   }
 
   // 用户从左侧栏重新进入群聊时，“打开该会话”与普通 session 一样表示查看最新。
@@ -2938,7 +3001,8 @@ if (typeof document !== 'undefined') (function () {
     const apply = () => {
       if (meeting.groupChat) {
         const messages = panel.querySelector('.mr-gc-messages');
-        if (messages) messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
+        if (messages?._cardFollowController) messages._cardFollowController.follow();
+        else if (messages) messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
         return;
       }
       panel.querySelectorAll('.mr-ft-preview, .mr-ft-bottom').forEach((el) => {
@@ -2993,30 +3057,12 @@ if (typeof document !== 'undefined') (function () {
       sendStatus: partial.sendStatus || '',
       statusReason: partial.reason || '',
     }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status, sendStatus: partial.sendStatus });
-    // 抓底距决定 patch 后是否跟随：bottomGap ≤ 48 视为"贴底"，patch 后 scrollTo 底
-    const maxTop0 = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
-    const savedScrollTop = messagesEl.scrollTop;
-    const stick = (maxTop0 - messagesEl.scrollTop) <= 48;
-    // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindGcPanelEvents），
-    //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
+    const scroll = _captureGroupChatScroll(panel, meeting);
     const replacement=document.createElement('div');
     replacement.innerHTML=newHtml;
     require('./conversation-message-view').patchConversationArticle(articleEl,replacement.firstElementChild);
-    if (stick) {
-      requestAnimationFrame(() => {
-        const after = panel.querySelector('.mr-gc-messages');
-        if (after) after.scrollTop = Math.max(0, after.scrollHeight - after.clientHeight);
-      });
-    } else {
-      const restore = () => {
-        const after = panel.querySelector('.mr-gc-messages');
-        if (!after) return;
-        const maxTop = Math.max(0, after.scrollHeight - after.clientHeight);
-        after.scrollTop = Math.min(savedScrollTop, maxTop);
-      };
-      restore();
-      requestAnimationFrame(restore);
-    }
+    _enhanceGroupCardContent(articleEl);
+    _restoreGroupChatScroll(panel, scroll);
     return true;
   }
 
@@ -3087,18 +3133,10 @@ if (typeof document !== 'undefined') (function () {
   // 2026-06-28 道雪 [改进2]：回到最新悬浮按钮——群聊滚离底部超 240px 时显示，点击回到最新。
   //   .mr-gc-messages 每次重渲都重绑 scroll（scroll 事件不冒泡，无法委托）。
   function _setupScrollToBottom(panel) {
-    if (!panel) return;
-    const el = panel.querySelector('.mr-gc-messages');
-    const btn = panel.querySelector('.mr-gc-scroll-bottom');
-    if (!el || !btn) return;
-    const update = () => {
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      btn.classList.toggle('visible', (maxTop - el.scrollTop) > 240);
-    };
-    if (el._scrollBtnHandler) el.removeEventListener('scroll', el._scrollBtnHandler);
-    el._scrollBtnHandler = update;
-    el.addEventListener('scroll', update, { passive: true });
-    update();
+    const el = panel?.querySelector('.mr-gc-messages'), button = panel?.querySelector('.mr-gc-scroll-bottom');
+    if (!el || !button || el._cardFollowController) return;
+    const follow = require('./card-follow-scroll').createCardFollowScroll({element:el,window,document,button});
+    follow.activate(activeMeetingId);
   }
 
   // 2026-06-28 道雪 [改进1]：长回答折叠——超阈值高度的 AI 回答默认折叠 + 渐变遮罩 + 展开按钮，
@@ -3194,6 +3232,7 @@ if (typeof document !== 'undefined') (function () {
   function _handleSlotCardClick(card, ev, meeting) {
     const sid = card.getAttribute('data-ft-sid');
     if (!sid) return;
+    _readVisibleMemberCard(meeting, sid);
     if (_isCardTabMode()) return;
     if (ev && (ev.ctrlKey || ev.metaKey)) {
       ev.stopPropagation();
@@ -3689,6 +3728,13 @@ if (typeof document !== 'undefined') (function () {
   async function _handleGcPanelClick(ev, panel) {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
+    const bubble = _closestInPanel(ev.target, '.mr-gc-msg[data-unread-answer="true"] .mr-gc-bubble', panel);
+    if (bubble && !_gcViewingTurnN[meeting.id] && document.hasFocus() && !document.hidden) {
+      const article = bubble.closest('[data-source-sid]');
+      const sid = article.dataset.sourceSid;
+      const replies = panel.querySelectorAll(`.mr-gc-msg[data-unread-answer="true"][data-source-sid="${CSS.escape(sid)}"]`);
+      if (sid && replies[replies.length - 1] === article) window.markMeetingMemberRead?.(meeting.id, sid, { turnNum: article.dataset.readTurn });
+    }
 
     const sessionJump = _closestInPanel(ev.target, '[data-gc-open-session]', panel);
     if (sessionJump) {
@@ -3736,7 +3782,8 @@ if (typeof document !== 'undefined') (function () {
     if (scrollBtn) {
       ev.stopPropagation();
       const el = panel.querySelector('.mr-gc-messages');
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el?._cardFollowController) el._cardFollowController.follow();
+      else if (el) el.scrollTop = el.scrollHeight;
       return;
     }
 
@@ -3807,7 +3854,10 @@ if (typeof document !== 'undefined') (function () {
     if (cardTab) {
       ev.stopPropagation();
       const sid = cardTab.getAttribute('data-gc-card-tab-sid');
-      if (sid) _focusGroupChatSession(meeting, sid);
+      if (sid) {
+        _focusGroupChatSession(meeting, sid);
+        _readVisibleMemberCard(meeting, sid);
+      }
       return;
     }
 
@@ -4858,6 +4908,7 @@ if (typeof document !== 'undefined') (function () {
       require('./conversation-message-view').patchConversationArticle(old,temp.firstElementChild);
     }
     _patchGroupChatPendingMessage(panel,meeting,payload.sid,state);
+    _enhanceGroupCardContent(panel);
     _restoreGroupChatScroll(panel,scroll);
   });
 
@@ -5001,6 +5052,23 @@ if (typeof document !== 'undefined') (function () {
         if (m) _handleNextAction(btn.getAttribute('data-gc-next-action'), m);
       });
     }
+    // Keep the existing nodes and listeners: only their layout parent changes.
+    const avatars = document.getElementById('mr-free-avatars-row');
+    let head = document.getElementById('mr-composer-head');
+    if (inputRow.classList.contains('mr-group-composer')) {
+      if (!head) {
+        head = document.createElement('div');
+        head.id = 'mr-composer-head';
+        head.className = 'mr-composer-head';
+        inputRow.prepend(head);
+      }
+      if (avatars && avatars.parentNode !== head) head.prepend(avatars);
+      if (row.parentNode !== head) head.append(row);
+    } else if (head) {
+      if (avatars) inputRow.prepend(avatars);
+      inputRow.parentNode.insertBefore(row, inputRow);
+      head.remove();
+    }
     return row;
   }
 
@@ -5065,7 +5133,8 @@ if (typeof document !== 'undefined') (function () {
           supportedEfforts: composerSupportedEfforts(sessions.get(sessionId)),
         });
         ui.showEffortPicker(button, sessionId, { efforts: rail.thinking.options });
-      } else await ui.showModelPicker(button, sessionId);
+      } else if (kind === 'speed') await ui.showSpeedPicker(button, sessionId);
+      else await ui.showModelPicker(button, sessionId);
     } catch (error) {
       _showGcEscapeNotice('成员设置打开失败：' + error.message, 'error');
     } finally { button.disabled = false; }
@@ -5092,6 +5161,12 @@ if (typeof document !== 'undefined') (function () {
         pair.querySelector('.composer-thinking').addEventListener('click', event => {
           event.stopPropagation(); void _openInputTuning(event.currentTarget, slot.sid, 'effort');
         });
+        const speedButton = document.createElement('button');
+        speedButton.type = 'button'; speedButton.className = 'composer-chip composer-speed';
+        speedButton.addEventListener('click',event=>{
+          event.stopPropagation(); void _openInputTuning(speedButton,slot.sid,'speed');
+        });
+        pair.appendChild(speedButton);
         members.appendChild(pair);
       }
     }
@@ -5116,6 +5191,13 @@ if (typeof document !== 'undefined') (function () {
       effortButton.title = model.thinking.interactive
         ? `${slot.displayLabel} · 点击选择思考深度`
         : `${slot.displayLabel} · 该 CLI 不支持会话内改档`;
+      const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
+      const speedButton = pair.querySelector('.composer-speed');
+      speedButton.hidden = !speed.visible;
+      speedButton.textContent = speed.label;
+      speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
+      speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
+      speedButton.title = `${slot.displayLabel} · 标准 / Fast；Fast 会增加用量或费用`;
     }
   }
 
@@ -5263,17 +5345,18 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     const s = state || { phase: 'discuss', label: '读取文件进度…' };
-    const phases = [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
+    const solo = DevFile.isSolo(current);
+    const phases = solo ? [] : [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
     const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
     const names = selected.map(slot => slot.displayLabel || slot.label || slot.kind).join(' / ');
     const running = !!s.running || _isGroupTurnRunning(current);
     row.innerHTML = `<div class="mr-file-flow" data-file-phase="${escapeHtml(s.phase || '')}">
       <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
-      <div class="mr-file-detail"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
+      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，输入“继续”接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
-        ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并只选第一位成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并选择负责开题的成员；检查后按 Enter 发送">开题</button>' : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
       </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
@@ -5414,7 +5497,10 @@ if (typeof document !== 'undefined') (function () {
     // 2026-07-29 道雪 [群聊运行中可操作]：本轮有 AI 在跑 → 常驻一个明确的「停止本轮」入口。
     //   等价于用户在单 session 终端里按 ESC，只是一次批量下发给本轮所有在跑成员。
     //   输入框/发送按钮**不因此禁用**：运行中追加提问是支持的（后端抢占式结算）。
-    if (_isGroupTurnRunning(current)) {
+    const cancellingMembers = (current.subSessions || []).filter(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
+    if (cancellingMembers.length) {
+      chips.push(`<span class="mr-input-preflight-chip stop" data-gc-cancelling="1"><span>本轮</span><strong>${cancellingMembers.length} 位正在停止 · 等待确认</strong></span>`);
+    } else if (_isGroupTurnRunning(current)) {
       chips.push(`<span class="mr-input-preflight-chip stop clickable" data-gc-stop-turn="1" title="停止本轮：向所有还在回答的 AI 下发中断（等同你在终端按 ESC）。想直接追问就继续在下面输入，不必先停。"><span>本轮</span><strong>进行中 ⏹ 停止</strong></span>`);
     }
     // 2026-07-20 道雪 [修#8]：循环状态 chip——运行中显示轮次·阶段，点击停止
@@ -5987,9 +6073,9 @@ if (typeof document !== 'undefined') (function () {
     if (typeof _clearQuoteChips === 'function') _clearQuoteChips();
     if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none';
     const panel = panelEl();
-    if (panel) panel.style.display = 'none';
+    if (panel) { panel.querySelector('.mr-gc-messages')?._cardFollowController?.dispose(); panel.querySelector('#mr-group-chat-panel')?._questionDirectory?.dispose(); panel.style.display = 'none'; }
     const el = terminalsEl();
-    if (el) el.innerHTML = '';
+    if (el) { el.querySelector('.mr-gc-messages')?._cardFollowController?.dispose(); el.querySelector('#mr-group-chat-panel')?._questionDirectory?.dispose(); el.innerHTML = ''; }
   }
 
   // Card optimization Task 10（2026-05-01）— 动态重排兜底：
@@ -6114,6 +6200,13 @@ if (typeof document !== 'undefined') (function () {
     return changed;
   }
 
+  function refreshNativeCancellation(sessionId) {
+    const meeting = activeMeetingId && meetingData[activeMeetingId];
+    if (!meeting?.subSessions?.includes(sessionId)) return;
+    _renderActivePanelFromCache(meeting);
+    _updateInputPreflight(meeting);
+  }
+
   let _updating = false;
   function updateMeetingData(meetingId, updated) {
     if (_updating) return;
@@ -6141,8 +6234,10 @@ if (typeof document !== 'undefined') (function () {
         const modeModeChanged = prev && (prev.mode !== updated.mode);
         if (prevSubs !== newSubs || modeChanged || participantsChanged || modeModeChanged) {
           renderTerminals(updated);
-          setupInput(updated);
         }
+        // Workflow/config updates can arrive independently of member changes.
+        // setupInput refreshes controls before its binding guard, preserving drafts.
+        setupInput(updated);
       }
     } catch (e) {
       console.error('[meeting-room] updateMeetingData error:', e);
@@ -6190,7 +6285,7 @@ if (typeof document !== 'undefined') (function () {
       <!-- 2026-06-28 道雪：删 header 进度条（与标题旁 meta 的"已N轮·本轮N/M"文字信息重叠），保留 meta。_updateHeaderProgress 的 progEl 分支会因元素缺失自动跳过。 -->
       <div class="mr-header-right">
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
-        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${viewToggleHtml}</div>
+        <div class="mr-header-primary-actions">${gcMembersBtnHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
           ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>注入记忆</button>` : ''}
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
@@ -6238,6 +6333,23 @@ if (typeof document !== 'undefined') (function () {
     });
     // 2026-06-28 道雪：header 群成员按钮 → toggle 右侧群成员栏（替代原 topbar 里的 data-gc-side-toggle）。
     const groupMembersBtn = document.getElementById('mr-btn-group-members');
+    const groupToolsBtn = document.getElementById('mr-btn-group-tools');
+    if (groupToolsBtn) groupToolsBtn.addEventListener('click', () => {
+      const open = !_gcToolsExpanded[meeting.id];
+      _gcToolsExpanded[meeting.id] = open;
+      const tools = document.getElementById('mr-gc-tools');
+      if (tools) {
+        tools.hidden = !open;
+        const search = tools.querySelector('.mr-gc-search');
+        if (open) search?.focus();
+        else if (search?.value) {
+          search.value = '';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      groupToolsBtn.setAttribute('aria-expanded', String(open));
+      groupToolsBtn.classList.toggle('active', open);
+    });
     if (groupMembersBtn) groupMembersBtn.addEventListener('click', () => {
       _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
       renderHeader(meeting);
@@ -6332,7 +6444,7 @@ if (typeof document !== 'undefined') (function () {
     // 历史会议里的 Gemini/Kimi 等成员继续可读可运行，只是不再从群聊入口新增。
     const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', deepseek: 'DeepSeek · Codex', kimi: 'Kimi Code' };
     const availableKinds = meeting.groupChat
-      ? ['claude', 'codex', 'deepseek']
+      ? ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm']
       : ALL_AI_KINDS;
     const kinds = availableKinds.map(k => ({
       kind: k,
@@ -6834,6 +6946,15 @@ if (typeof document !== 'undefined') (function () {
     return true;
   }
 
+  // An explicit card click can acknowledge its completed answer; opening the
+  // room, mentioning a member, or inspecting a historical round cannot.
+  function _readVisibleMemberCard(meeting, sid) {
+    if (_gcViewingTurnN[meeting.id] || !document.hasFocus() || document.hidden) return;
+    const card = document.querySelector(`.mr-ft[data-ft-sid="${CSS.escape(sid)}"]`);
+    if (!card || !card.getClientRects().length || !card.querySelector('.mr-ft-status.completed, .mr-ft-status.manual_extracted')) return;
+    window.markMeetingMemberRead?.(meeting.id, sid);
+  }
+
   function _focusGroupChatKind(meeting, kind) {
     const sid = findSessionByKind(meeting, kind);
     if (!sid) return false;
@@ -6904,7 +7025,9 @@ if (typeof document !== 'undefined') (function () {
         : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
     }
     if (DevFile.enabled(meeting)) {
-      inputBox.dataset.placeholder = '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
+      inputBox.dataset.placeholder = DevFile.isSolo(meeting)
+        ? '输入任务；点“独立开工”填入提示词，检查后 Enter 发送。'
+        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
@@ -7418,9 +7541,18 @@ if (typeof document !== 'undefined') (function () {
     getActiveMeetingId,
     getMeetingData,
     refreshSessionMetrics,
+    refreshNativeCancellation,
     focusSearchHit,
     updateMeetingData,
   };
+  const voiceBox = document.getElementById('mr-input-box');
+  const voiceRail = document.getElementById('mr-input-row');
+  if (voiceBox && voiceRail) require('./voice-input').attachVoiceInput({
+    input: voiceBox, rail: voiceRail,
+    getStatusHost: () => document.getElementById('mr-composer-head') || document.getElementById('mr-input-preflight'),
+    getTarget: () => ({ id: activeMeetingId, project: meetingData[activeMeetingId]?.workspace || '' }),
+    isActive: target => activeMeetingId === target.id && voiceBox.getClientRects().length > 0,
+  });
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     // 走真实 handleMeetingSend，但**不 await** —— e2e 要量的正是「按下发送那一刻
     // 到看见自己那张气泡」的间隔，await 会把这个间隔藏起来。

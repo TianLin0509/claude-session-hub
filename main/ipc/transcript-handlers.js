@@ -129,11 +129,11 @@ async function parseSessionTranscript(args = {}, deps) {
   let transcriptPath = null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
-    const nativeCodex = hubSessionId && sessionManager.getNativeCodex?.(hubSessionId);
+    const nativeCodex = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (nativeCodex) {
-      await nativeCodex.start();
+      if (!require('../../core/codex-native-runtime').isUnstartedRuntime(nativeCodex.runtime)) await nativeCodex.start();
       return {turns:nativeCodex.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
-        error:null,source:'codex-app-server'};
+        error:null,source:nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
     if (native) {
@@ -266,7 +266,7 @@ function registerTranscriptIpc(ipcMain, deps) {
   } = deps;
 
   ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
-    const nativeCodex = deps.sessionManager.getNativeCodex?.(sessionId);
+    const nativeCodex = (deps.sessionManager.getNativeSession?.(sessionId) || deps.sessionManager.getNativeCodex?.(sessionId));
     if (nativeCodex) return nativeCodex.finalText();
     const native = deps.sessionManager?.getNativeClaude?.(sessionId);
     if (native) return native.transcript().filter(turn => turn.role === 'assistant').at(-1)?.text || null;

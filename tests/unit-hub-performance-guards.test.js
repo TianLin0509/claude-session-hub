@@ -410,7 +410,7 @@ test('sidebar status transitions are coalesced and committed atomically', () => 
   assert.match(renderer.slice(completeEnd, promptEnd), /scheduleSessionListRender\(\)/);
   assert.match(renderer, /createTerminalActivityMonitor\(\{[\s\S]*?renderSessionList:\s*scheduleSessionListRender,/,
     'PTY-driven status transitions must use the sidebar coalescer too');
-  assert.match(home, /if \(!options\.force && !isVisible\(\)\) return state\.snapshot/,
+  assert.match(home, /if \(!isVisible\(\)\) return/,
     'hidden home workbench must not rebuild alongside every sidebar state event');
 });
 
@@ -445,7 +445,7 @@ test('streaming card refresh requests only the newest turn', () => {
   const start = src.indexOf('function requestCardIncrementalRefresh');
   const end = src.indexOf('function noteCardTerminalOutput', start);
   const block = src.slice(start, end);
-  assert.match(block, /parseOpts:[\s\S]{0,100}=== 'codex-app-server'\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+  assert.match(block, /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
     'native refresh must request one provider turn; log refresh must avoid full 50-turn parses');
   assert.match(src, /CARD_STREAM_SETTLE_RETRY_MS\s*=\s*\[1000,\s*2500,\s*6000\]/,
     'late writeback recovery must stay finite rather than polling forever');

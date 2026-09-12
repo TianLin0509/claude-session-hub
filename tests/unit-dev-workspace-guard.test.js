@@ -128,17 +128,11 @@ test('建群时 dev 场景确实调用了闸门，且在 create-meeting 之前',
     '不通过必须抛出，让用户看到那段说明');
 });
 
-test('选「开发」场景不再替用户切档位；说明文字要把两条路都讲清', () => {
-  // 2026-09-06 用户明确：不想每次找项目路径。默认档留给 AI 自己定位（见 work-root 用例），
-  // 想指定项目就走「选择已有路径 → 项目库」一键选。
-  assert(!/radio\.value === 'dev' && _meetingWorkspaceMode !== 'existing'/.test(modal),
-    '不许再在选中 dev 时强制切到 existing');
-  assert(/hint\.textContent = '开发场景要开在项目根上/.test(modal), '说明文字仍然要有');
-  const hintAt = modal.indexOf("hint.textContent = '开发场景要开在项目根上");
-  const hintBody = modal.slice(hintAt, hintAt + 400);
-  assert(/默认工作目录/.test(hintBody) && /项目库/.test(hintBody),
-    '说明要同时提到「默认工作目录也行」和「项目库一键选」');
-  assert(/project-prep/.test(modal), '提示里要点名该跑哪个 skill');
+test('开发默认选择已有路径，并说明单人和双人入口', () => {
+  const scene = modal.slice(modal.indexOf('function _applyScene'), modal.indexOf('function _slotHtml'));
+  assert(/_meetingWorkspaceMode = 'existing'/.test(scene));
+  assert(/hint\.textContent = '从「项目库」选择项目/.test(modal));
+  assert(/单人开发请使用普通会话的「一键开工」/.test(modal));
 });
 
 test('「选择已有路径」那一行有项目库下拉：点开列已整理项目，点一项即选中', () => {
@@ -158,7 +152,7 @@ test('「选择已有路径」那一行有项目库下拉：点开列已整理�
   // 主进程接口真的注册了，且不递归扫盘
   const handlers = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'workspace-handlers.js'), 'utf-8');
   assert(/ipcMain\.handle\('workspace:prepared-projects'/.test(handlers), '主进程要注册 workspace:prepared-projects');
-  assert(/prepared-project-library\.js/.test(handlers), '要用 core 里的项目库模块，不在 IPC 里重写判据');
+  assert(/prepared-project-registry/.test(handlers), '要用 core 里的项目库模块，不在 IPC 里重写判据');
   assert(!/readdirSync\([^)]*recursive/.test(handlers), '不许递归扫盘');
 });
 

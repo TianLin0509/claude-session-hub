@@ -10,6 +10,9 @@ const RESUME_META_FIELDS = [
   'cwdFellBackFrom',
   'transcriptPath',
   'codexSid',
+  'acpSid',
+  'acpProfileId',
+  'acpCapabilities',
   'runtimeBackend',
   'nativeRuntime',
   'codexApprovalPolicy',
@@ -177,12 +180,15 @@ function handlePersistSessions(list, meetingList, deps) {
     // snapshot owns accounting; never replace it with an older renderer copy.
     const authoritativeUsage = live?.sessionUsage || previousSessionsById.get(session.hubId)?.sessionUsage;
     if (authoritativeUsage) session.sessionUsage = authoritativeUsage;
-    if (live && live.runtimeBackend === 'codex-app-server') {
+    if (live && ['codex-app-server','acp'].includes(live.runtimeBackend)) {
       session.runtimeBackend = live.runtimeBackend;
       session.nativeRuntime = require('../../core/codex-native-runtime.js').persistNativeRuntime(live);
       session.codexSid = live.codexSid;
       session.codexApprovalPolicy = live.codexApprovalPolicy;
       session.codexSandbox = live.codexSandbox;
+      if(live.runtimeBackend==='acp') {
+        session.acpSid=live.acpSid;session.acpProfileId=live.acpProfileId;session.acpCapabilities=live.acpCapabilities;
+      }
     }
   }
 

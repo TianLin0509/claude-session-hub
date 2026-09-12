@@ -137,7 +137,8 @@ test('C3 · 项目合同精简，旧协议留在旧模板，新流程由 Hub 注
   assert(legacy.stepConfigs[0].prompt.includes('PROGRESS / VERIFIED / RISK / REPORT'));
   const F = require('../core/dev-file-workflow');
   const prompt = F.phasePrompt({}, '/fixture', F.spec('merge', 1));
-  assert(prompt.includes('不使用 ASK'));
+  assert(F.common({}, '/fixture').includes('不用固定英文标签'));
+  assert(prompt.includes('大白话'));
   assert(prompt.includes('需返工-合并手册-轮次1.md'));
   assert.deepEqual(Feed.fields('PLAN: a\nUPDATE: b\nASK: c\nNOTES: d'), {PLAN:'a', UPDATE:'b', ASK:'c', NOTES:'d'});
 });
@@ -217,7 +218,7 @@ function board(meetingId, workspace) {
   return { instance, row: () => instance.snapshot().rows.find(r => r.id === meetingId) };
 }
 
-test('D1 · Agent 提问会把任务顶进「需要我」，维护者回话之后自动落下', () => {
+test('D1 · 旧 ASK 保留在历史摘要，但不冒充结构化用户待决事项', () => {
   const id = 'gc-ask';
   const orch = groupchat.getOrchestrator(root, id);
   const now = Date.now();
@@ -231,9 +232,8 @@ test('D1 · Agent 提问会把任务顶进「需要我」，维护者回话之�
     orch._saveState();   // 摘要是落盘那一刻推给订阅者的，工作台必须先在场
     instance.flush();
     let r = row();
-    assert.equal(r.attention && r.attention.kind, 'ask', '提问没有被顶进「需要我」');
-    assert.ok(r.attention.text.includes('手机推送'));
-    assert.equal(r.ask, r.attention.text);
+    assert.equal(r.attention, null, '旧 ASK 不计入当前待决事项');
+    assert.ok(r.ask.includes('手机推送'), '原始摘要仍保留供兼容读取');
 
     // 维护者在群里回了一句 —— 这条提问就不该继续挂着
     orch.state.messages.push({ id: 'u2', role: 'user', speaker: '你', turnNum: 2, createdAt: now + 20 });

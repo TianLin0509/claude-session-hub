@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession } = require('../core/codex-native-runtime.js');
+const { isNativeSession } = require('../core/codex-native-runtime.js');
 
 const {
   RUNTIME_STARTING,
@@ -65,8 +65,7 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
   let truth = getSessionRuntimeTruth(session, { now });
-  if (!isCodexSession(session) && session?.runtimeBackend !== 'claude-stream-json' && options.isRunning === true
-      && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+  if (!native && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
     truth = {
       ...truth,
       state: RUNTIME_RUNNING,
@@ -76,7 +75,8 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     };
   }
   const state = truth.state;
-  const label = runtimeLabel(state);
+  const cancelling = truth.cancellation?.status === 'pending' && truth.connection === 'connected';
+  const label = cancelling ? '正在停止' : runtimeLabel(state);
   let meta = '';
   let detail = '';
 
@@ -91,7 +91,8 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     const startedAt = Number(truth.startedAt) || (native ? 0 : legacyRunningStartedAt(session));
     if (startedAt > 0 && now >= startedAt) meta = formatRuntimeDuration(now - startedAt);
     detail = String(
-      session && session.currentCardActivity && session.currentCardActivity.label
+      cancelling && truth.evidence
+      || session && session.currentCardActivity && session.currentCardActivity.label
       || truth.evidence
       || !native && session && session._ptyRuntimeEvidence
       || '',

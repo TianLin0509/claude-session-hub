@@ -1,14 +1,25 @@
 'use strict';
 
-function renderMessageBody(text, {isUser=false, escapeHtml, renderMarkdown}) {
-  const raw=String(text || '');
+function plainProgressText(text) {
+  let fence = null;
+  return String(text || '').split('\n').map(line => {
+    const marker = line.match(/^\s*(`{3,}|~{3,})/);
+    if (marker) { if (!fence) fence=marker[1]; else if (marker[1][0]===fence[0] && marker[1].length>=fence.length) fence=null; return line; }
+    return fence ? line : line.replace(/^(\s*)(?:PLAN|UPDATE)\s*[:：]\s*/,'$1');
+  }).join('\n');
+}
+function renderMessageBody(text, {isUser=false, plainProgress=false, escapeHtml, renderMarkdown}) {
+  const raw=plainProgress && !isUser ? plainProgressText(text) : String(text || '');
   const body=isUser ? `<div class="conversation-user-text">${escapeHtml(raw)}</div>` : renderMarkdown(raw);
   if(raw.length<1200 && raw.split('\n').length<32)return body;
   // This is an explicit presentation fold of ONE source message. No invented
   // message boundaries, truncation of the source, or rewritten summary.
-  return `<details class="conversation-long-message"><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · 展开全文</span>`
-    + `<span class="conversation-long-preview">${escapeHtml(raw.slice(0,240))}…</span></summary>`
-    + `<div class="conversation-full-text">${body}</div></details>`;
+  // Reuse the complete, sanitized rendering: slicing Markdown can cut a fence,
+  // link or emphasis delimiter. CSS clips the preview without changing source.
+  // Keep block Markdown outside summary so tables/lists/code remain valid HTML.
+  return `<div class="conversation-long-frame"><details class="conversation-long-message"><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
+    + `<div class="conversation-full-text">${body}</div></details>`
+    + `<div class="conversation-long-preview" data-copy-exclude>${body}</div></div>`;
 }
 function phaseLabel(phase) {
   return ({commentary:'进展',final_answer:'结果',final:'结果',activity:'活动记录'})[phase] || '消息';
@@ -19,14 +30,68 @@ function renderActivity(message,escapeHtml) {
       + `<pre>${escapeHtml(typeof t.input==='string' ? t.input : JSON.stringify(t.input || {},null,2))}</pre>`
       + (t.output ? `<pre>${escapeHtml(typeof t.output==='string' ? t.output : JSON.stringify(t.output,null,2))}</pre>` : '')+'</div>').join('')+'</details>';
 }
-function renderMessageSequence(messages,{escapeHtml,renderMarkdown}) {
-  return messages.filter(m=>m && (m.text || m.toolCalls?.length)).map(m=>`<section class="conversation-entry" data-message-id="${escapeHtml(m.id || '')}" data-phase="${escapeHtml(m.phase || 'message')}">`
+function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false}) {
+  return messages.filter(m=>m && (m.text || m.toolCalls?.length)).map(m=>m.phase==='commentary' && !m.toolCalls?.length
+    ? `<section class="conversation-entry conversation-progress-row" data-message-id="${escapeHtml(m.id || '')}" data-phase="commentary">`
+      + renderProgressRow(m, {escapeHtml,renderMarkdown,plainProgress}) + '</section>'
+    : `<section class="conversation-entry" data-message-id="${escapeHtml(m.id || '')}" data-phase="${escapeHtml(m.phase || 'message')}">`
     + `<div class="conversation-entry-head"><span class="conversation-phase">${phaseLabel(m.phase)}</span>`
     + `${m.ts ? `<time>${escapeHtml(require('../core/beijing-time').formatBeijingClock(m.ts))}</time>` : ''}`
     + '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条消息" aria-label="复制这条消息">复制</button></div>'
-    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown}))+'</section>').join('');
+    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown,plainProgress:plainProgress && m.phase==='commentary'}))+'</section>').join('');
+}
+// The same time/text grid is used by ordinary cards and meeting replies. The
+// provider item remains the copy/selection/disclosure boundary.
+function renderProgressRow(message, {escapeHtml,renderMarkdown,plainProgress=false,actions}) {
+  const clock=message.ts ? require('../core/beijing-time').formatBeijingClock(message.ts) : '';
+  return `<time class="conversation-progress-time" data-copy-exclude title="${escapeHtml(clock)}">${escapeHtml(clock.slice(0,5))}</time>`
+    + `<div class="conversation-progress-content">${renderMessageBody(message.text,{escapeHtml,renderMarkdown,plainProgress})}</div>`
+    + `<div class="conversation-progress-actions" data-copy-exclude>${actions ?? '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条进展" aria-label="复制这条进展">复制</button>'}</div>`;
+}
+
+function sameResponse(previous, current) {
+  return !!(previous && current && previous.role==='assistant' && current.role==='assistant'
+    && previous.logicalTurnId && previous.logicalTurnId===current.logicalTurnId
+    && previous.sessionId===current.sessionId && previous.agent===current.agent
+    && previous.inherited===current.inherited);
+}
+function cardResponse(card) {
+  return card && {role:card.classList.contains('assistant')?'assistant':'user',
+    logicalTurnId:card.dataset.responseId,sessionId:card.dataset.sessionId,
+    agent:card.dataset.responseAgent,inherited:card.dataset.inherited};
+}
+function adjacentCard(card, direction) {
+  let next=card?.[direction];
+  while(next && !next.classList.contains('turn-card'))next=next[direction];
+  return next;
+}
+function syncResponseCard(card) {
+  if(!card?.classList?.contains('turn-card'))return;
+  const previous=adjacentCard(card,'previousElementSibling');
+  card.classList.toggle('conversation-response-continuation',sameResponse(cardResponse(previous),cardResponse(card)));
+}
+function syncResponseNeighbors(card) {
+  syncResponseCard(card);
+  syncResponseCard(adjacentCard(card,'nextElementSibling'));
+}
+function syncResponseGroups(container) {
+  container.querySelectorAll(':scope > .turn-card').forEach(syncResponseCard);
+}
+function responseCards(card) {
+  const cards=[card];
+  for(const direction of ['previousElementSibling','nextElementSibling']) {
+    let current=card, next;
+    while((next=adjacentCard(current,direction)) && sameResponse(cardResponse(current),cardResponse(next))) {
+      if(direction==='previousElementSibling')cards.unshift(next);else cards.push(next);
+      current=next;
+    }
+  }
+  return cards;
 }
 function patchConversationArticle(existing, next) {
+  const delivery = existing.querySelector('.turn-delivery-summary');
+  const nextDelivery = next.querySelector('.turn-delivery-summary');
+  if (delivery && nextDelivery) nextDelivery.open = delivery.open;
   const doc=existing.ownerDocument;
   const selection=doc.defaultView.getSelection();
   let savedSelection;
@@ -50,9 +115,9 @@ function patchConversationArticle(existing, next) {
   if(savedSelection) {
     const walker=doc.createTreeWalker(existing,4),nodes=[];let node,offset=0;
     while((node=walker.nextNode())){nodes.push({node,start:offset,end:offset+node.textContent.length});offset+=node.textContent.length;}
-    const a=nodes.find(n=>n.end>=savedSelection.start),b=nodes.find(n=>n.end>=savedSelection.start+savedSelection.length);
+    const a=nodes.find(n=>n.end>savedSelection.start) || nodes[nodes.length-1],b=nodes.find(n=>n.end>=savedSelection.start+savedSelection.length);
     if(a && b){const r=doc.createRange();r.setStart(a.node,savedSelection.start-a.start);r.setEnd(b.node,savedSelection.start+savedSelection.length-b.start);
       if(r.toString()===savedSelection.text){selection.removeAllRanges();selection.addRange(r);}}
   }
 }
-module.exports={renderMessageBody,renderMessageSequence,phaseLabel,patchConversationArticle};
+module.exports={renderMessageBody,renderMessageSequence,renderProgressRow,sameResponse,syncResponseNeighbors,syncResponseGroups,responseCards,phaseLabel,patchConversationArticle,plainProgressText};

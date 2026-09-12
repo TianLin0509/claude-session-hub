@@ -108,7 +108,7 @@
     const sw = meeting.serialWorkflow || {};
     return buildDiscussBlock({
       role: devRoleOf(sw, memberId),
-      locator: typeof sw.projectLocator === 'string' ? sw.projectLocator : '',
+      locator: typeof require === 'function' ? require('./prepared-project-registry').projectLocator(meeting) : '',
     });
   }
 

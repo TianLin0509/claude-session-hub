@@ -20,9 +20,9 @@ function test(name, fn) {
   }
 }
 
-test('普通 session 与群聊的侧栏点击都显式请求跳到最新', () => {
-  assert.match(sidebar, /selectSession\(intent\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
-  assert.match(sidebar, /selectMeeting\(intent\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
+test('普通 session 重选或未读时跳到最新，已读切换保留阅读位置', () => {
+  assert.match(sidebar, /selectSession\(intent\.id,\s*\{\s*forceScrollBottom\s*\}\)/);
+  assert.match(sidebar, /selectMeeting\(intent\.id,\s*\{\s*forceScrollBottom:\s*true,\s*wakeDormantMembers:\s*true\s*\}\)/);
   assert.match(sidebar, /addEventListener\('pointerdown'/);
   assert.match(sidebar, /addEventListener\('pointerup'/);
 });

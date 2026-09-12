@@ -2,7 +2,7 @@
 // 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
 const fs = require('fs');
-const { isCodexSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
+const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const path = require('path');
@@ -20,7 +20,6 @@ const {
 } = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
-  formatBeijingClock,
   formatBeijingMonthDay,
 } = require('./format-time.js');
 const { marked } = require('marked');
@@ -61,6 +60,7 @@ marked.use({
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
+const { mountTerminalPresentation } = require('./terminal-presentation.js');
 const {
   createSessionContextMenuController,
   createTerminalContextMenuController,
@@ -70,7 +70,6 @@ const { createPathLinkContextMenuController } = require('./path-link-context-men
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
-const { createHomeCardLayout } = require('./home-card-layout.js');
 const {
   forgetViewMode,
   readCardViewSessions,
@@ -79,7 +78,6 @@ const {
   viewModeFor,
   writeCardViewSessions,
 } = require('../core/session-view-mode.js');
-const { createProcessReclaimCard } = require('./process-reclaim-card.js');
 const {
   createTerminalInputController,
   formatPastedFilePaths,
@@ -88,6 +86,7 @@ const { createAccountUsageController } = require('./account-usage-controller.js'
 const { createMemoryPanel } = require('./memory-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
+const { speedControl } = require('../core/session-speed.js');
 const { describeCodexModelTuning } = require('../core/codex-model-catalog.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
@@ -247,7 +246,7 @@ const PTY_INPUT_READY_STABLE_MS = 2 * 1000;
 
 function isTranscriptCliKind(kind) {
   const base = String(kind || '').replace(/-resume$/i, '').toLowerCase();
-  return isCodexKind(kind) || isKimiCliKind(kind) || base === 'gemini';
+  return isCodexKind(kind) || isKimiCliKind(kind) || require('../core/acp-profiles').isAcpKind(kind) || base === 'gemini';
 }
 
 function isLegacyDeepSeekSession(session) {
@@ -321,7 +320,7 @@ function ptyInputReadyIsStable(session, runtime, observedAt) {
 // only when Hub has evidence that the user really submitted a prompt; idle TUI
 // animations and layout repaints otherwise cannot move a session to 运行中.
 function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
-  if (isCodexSession(sessions.get(sessionId))) return;
+  if (isNativeSession(sessions.get(sessionId))) return;
   const session = sessions.get(sessionId);
   if (session?.runtimeBackend === 'claude-stream-json') return;
   if (!isAiRuntimeSession(session)) return;
@@ -370,7 +369,7 @@ function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
 }
 
 function canUsePtyBurstFallback(session, now = Date.now()) {
-  if (isCodexSession(session)) return false;
+  if (isNativeSession(session)) return false;
   if (!isAiRuntimeSession(session)) return true;
   const at = Number(now) || Date.now();
   return at >= (Number(session._ptyBurstCooldownUntil) || 0)
@@ -379,7 +378,7 @@ function canUsePtyBurstFallback(session, now = Date.now()) {
 
 function trackPtyPromptInput(sessionId, data) {
   const session = sessions.get(sessionId);
-  if (isCodexSession(session)) return;
+  if (isNativeSession(session)) return;
   if (!isAiRuntimeSession(session)) return;
   const chunk = String(data || '');
   const printable = chunk
@@ -503,7 +502,7 @@ function saveFloatingInputDraft(sessionId, inputBox) {
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
   nativeDraftControllers.get(sessionId)?.change('');
-  if (sessionId && isCodexSession(sessions.get(sessionId))) {
+  if (sessionId && isNativeSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
   }
@@ -839,13 +838,12 @@ const memoPanel = createMemoPanel({
 });
 memoPanel.init();
 // --- Helpers ---
-// 2026-07-20 道雪：侧栏时间显示规则——2h 内显示具体时刻（HH:MM），
-//   24h 内显示「N 小时前」，更早显示「N 天前」（N 小时前超过 24 可读性差）。
+// 侧栏统一按活动距今显示；不影响历史正文与其他面板的绝对时间。
 function formatTime(ts) {
+  if (!Number.isFinite(Number(ts)) || Number(ts) <= 0) return '—';
   const diff = Date.now() - ts;
-  if (diff < 2 * 3600000) {
-    return formatBeijingClock(ts);
-  }
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
   if (diff < 24 * 3600000) return `${Math.floor(diff / 3600000)}小时前`;
   return `${Math.floor(diff / 86400000)}天前`;
 }
@@ -864,6 +862,7 @@ function normalizeMarkdownPathBreaks(text) {
 }
 
 const { createSessionListRenderer } = require('./session-list-renderer.js');
+const meetingUnread = require('./meeting-unread.js');
 const sessionListRenderer = createSessionListRenderer({
   requestSessionUsage: ids => ipcRenderer.send('session-usage:watch', ids),
   document,
@@ -898,6 +897,7 @@ const sessionListRenderer = createSessionListRenderer({
   selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   markAllSessionsRead: () => markAllSessionsRead(),
+  markMeetingRead: id => markMeetingRead(id),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
@@ -908,6 +908,23 @@ const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
 //   渲染层内存 → 侧栏立刻消失；state.json → 重启后不再回来；
 //   主进程 sessionManager → 活会话的下一次 session-updated 广播不会把 unreadCount 推回来。
 // 刻意不碰 needs-input：CLI 真卡在等用户输入时把它标成已读，等于替用户撒谎。
+function markMeetingMemberRead(meetingId, sid, readContext = null) {
+  const meeting = meetings[meetingId];
+  const result = meetingUnread.readMeetingMember(meeting, sid, sessions, readContext);
+  if (!result.changed) return false;
+  if (result.sessionRead) {
+    ipcRenderer.send('mark-sessions-read', { sessionIds: [sid] });
+    schedulePersist();
+  }
+  scheduleSessionListRender();
+  return true;
+}
+window.markMeetingMemberRead = markMeetingMemberRead;
+
+function markMeetingRead(meetingId) {
+  for (const sid of meetings[meetingId]?.subSessions || []) markMeetingMemberRead(meetingId, sid);
+}
+
 function markAllSessionsRead() {
   const clearedSessionIds = [];
   for (const session of sessions.values()) {
@@ -1072,6 +1089,11 @@ function showDormantResumePlaceholder(session, error = null) {
 }
 
 
+const wakeDormantMeetingMembers = require('./meeting-member-wake.js').createMeetingMemberWake({
+  getSession: id => sessions.get(id),
+  resumeSession: id => resumeDormantSession(id),
+});
+
 async function selectMeeting(meetingId, opts = {}) {
   void savePreviewState({ nonBlocking: true });
   activeSessionId = null;
@@ -1094,12 +1116,10 @@ async function selectMeeting(meetingId, opts = {}) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
 
-  const meeting = meetings[meetingId];
-  // 2026-05-05 道雪 修3：清 unread —— 用户点进 AI 群聊即"看过"，跟普通 session 一致。
-  // 2026-05-31 道雪：新语义清"本轮已答 sid 集合"；_lastUnreadTurnNum 保留，避免离开后同一轮再答完又从 1 起跳。
+  let meeting = meetings[meetingId];
+  // Opening the room is navigation, not proof that every member was read.
+  // Member answers are acknowledged by explicit member/card navigation.
   if (meeting) {
-    meeting.unreadCount = 0;
-    if (meeting.unreadAnswered instanceof Set) meeting.unreadAnswered.clear();
     let acknowledgedFailure = false;
     for (const sid of meeting.subSessions || []) {
       acknowledgedFailure = acknowledgeSessionFailureState(sid, { render: false }) || acknowledgedFailure;
@@ -1130,7 +1150,11 @@ async function selectMeeting(meetingId, opts = {}) {
     requestAnimationFrame(() => { paintTimer = setTimeout(done, 0); });
   });
   if (activeMeetingId !== meetingId || activeSessionId !== null) return;
+  // Creation/member updates can finish while the paint yield is pending.
+  // Opening the captured partial snapshot would overwrite the completed room.
+  meeting = meetings[meetingId];
   if (meeting && typeof MeetingRoom !== 'undefined') {
+    let shouldWakeMembers = opts.wakeDormantMembers === true;
     if (meeting.status === 'dormant') {
       meeting.status = 'idle';
       // 2026-07-20 道雪 [修#2]：唤醒状态同步落后端——否则下一次 meeting-updated
@@ -1142,16 +1166,14 @@ async function selectMeeting(meetingId, opts = {}) {
         workflow && workflow.enabled && !workflow.loop?.enabled
         && Array.isArray(workflow.steps) && workflow.steps.length
       );
-      // 普通群聊保持历史行为；纯串行工作流由 runSerialWorkflow 在每一步前
-      // 只唤醒本步成员，避免“打开房间”就同时拉起所有 CLI/MCP。
-      if (!usesLazySerialWake) {
-        for (const sid of meeting.subSessions) {
-          const s = sessions.get(sid);
-          if (s && s.status === 'dormant') {
-            resumeDormantSession(sid);
-          }
-        }
-      }
+      // Background navigation retains lazy serial wake. Explicit sidebar opening
+      // wakes every dormant member, including unselected workflow participants.
+      shouldWakeMembers ||= !usesLazySerialWake;
+    }
+    if (shouldWakeMembers) {
+      void wakeDormantMeetingMembers(meeting).catch(error => {
+        alert(`群聊“${meeting.title || meeting.id}”部分成员唤醒失败：\n${error.message}`);
+      });
     }
     MeetingRoom.openMeeting(meetingId, meeting, {
       forceScrollBottom: opts.forceScrollBottom === true,
@@ -1233,6 +1255,7 @@ function suspendInactiveTerminalRenderers(activeId) {
   for (const [sessionId, cached] of terminalCache) {
     if (activeId && sessionId === activeId) continue;
     if (cached && cached.container) cached.container.style.display = 'none';
+    if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
     unloadGpuRenderer(cached);
   }
 }
@@ -1240,6 +1263,7 @@ function suspendInactiveTerminalRenderers(activeId) {
 function disposeCachedTerminal(sessionId) {
   const cached = terminalCache.get(sessionId);
   if (!cached) return false;
+  if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (cached._ro) cached._ro.disconnect();
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
@@ -1285,6 +1309,7 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
+    lineHeight: isNativeSession(sessions.get(sessionId)) ? 1.3 : 1,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
@@ -1557,6 +1582,14 @@ function getOrCreateTerminal(sessionId) {
 // 所以这里只认一件事实：现在屏幕上哪块主面板是可见的。
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
+const backstageButton = document.getElementById('btn-backstage');
+function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
+  if (!backstageButton) return;
+  backstageButton.hidden = !visible;
+  backstageButton.setAttribute('aria-pressed', String(currentView === 'pty'));
+  backstageButton.title = currentView === 'pty' ? '返回卡片视图' : '查看后台输出';
+}
+
 const appToolbarEl = document.getElementById('app-toolbar');
 
 // 面板 → 视图名。预览面板之类的附属层不参与，只看主区那几块。
@@ -1583,6 +1616,7 @@ function paintAppToolbarForView(label) {
   toolbarCrumbEl.title = '';
   toolbarActionsEl.replaceChildren();
   toolbarActionsEl.hidden = true;
+  syncBackstageButton(false);
   const signature = 'view:' + label;
   if (toolbarCrumbEl.dataset.signature === signature) return;
   toolbarCrumbEl.dataset.signature = signature;
@@ -1597,6 +1631,7 @@ function paintAppToolbarForView(label) {
 // ⋯ 溢出菜单、文件 / 记忆 / ⋯ / 关闭四个动作。改的只是「填进哪两个常驻节点」。
 function paintAppToolbarForSession(sessionId, session, cached) {
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
+  syncBackstageButton(true);
   toolbarCrumbEl.dataset.signature = 'session:' + sessionId;
   // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
   // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
@@ -1774,9 +1809,24 @@ if (typeof MutationObserver === 'function') {
   }
 }
 
-// 双击工具栏空白处最大化 / 还原 —— 这是原生标题栏的既有行为，隐掉标题栏之后
-// 必须自己补回来，否则用户会觉得「这条栏坏了」。只认空白处：落在按钮、面包屑
-// 或视图切换上的双击是在操作那个控件，不该顺手改变窗口大小。
+// Header logo opens another independent Hub process, like the taskbar task.
+const btnNewHub = document.getElementById('btn-new-hub');
+btnNewHub.addEventListener('click', async (event) => {
+  if (btnNewHub.disabled || event.detail > 1) return;
+  btnNewHub.disabled = true;
+  btnNewHub.setAttribute('aria-busy', 'true');
+  try {
+    await ipcRenderer.invoke('hub:new-instance');
+  } catch (error) {
+    console.error('[hub-instance] launch failed:', error);
+    alert(`新建 AI Hub 失败：${error.message || error}`);
+  } finally {
+    btnNewHub.disabled = false;
+    btnNewHub.removeAttribute('aria-busy');
+  }
+});
+
+// 双击工具栏空白处最大化 / 还原。控件上的双击不改变窗口大小。
 if (appToolbarEl) {
   appToolbarEl.addEventListener('dblclick', (event) => {
     if (event.target.closest('button, a, input, select, .terminal-crumb, .view-toggle')) return;
@@ -1824,6 +1874,8 @@ if (process && process.env && process.env.CLAUDE_HUB_NATIVE_TITLEBAR === '1') {
 ipcRenderer.on('hub:window-state', (_event, state) => {
   const maximized = !!(state && state.maximized);
   appContainerEl.classList.toggle('window-maximized', maximized);
+  document.getElementById('hub-version').textContent = state?.version ? 'v' + state.version : '';
+  document.getElementById('hub-pid').textContent = Number.isInteger(state?.pid) ? 'PID: ' + state.pid : '';
 });
 
 // 系统窗口按钮到底占多宽，Windows 自己最清楚：WCO 报得出就用真值，
@@ -1856,7 +1908,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
   const embedded = mountTarget !== terminalPanelEl;
+  if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (!embedded) terminalPanelEl.classList.remove('home-active');
+  if (!embedded) cardFollowScroll.activate(sessionId, { force: !!opts.forceScrollBottom });
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
@@ -1898,6 +1952,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   loadGpuRenderer(cached);
   setupCodexViewportScrollTracker(sessionId, cached);
 
+  if (!embedded) {
+    cached._ptyPresentation = mountTerminalPresentation({
+      document, host: termContainer, cached, native: isNativeSession(session), readOnly: session.readOnly,
+      focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
+    });
+  }
+
   requestAnimationFrame(() => {
     const dbg = window.__scrollDebug;
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
@@ -1906,8 +1967,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
     if (forcePtyResize) cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
-    const isCodexSession = isCodexKind(session.kind);
-    const pinOnShow = !!opts.forceScrollBottom || (!isCodexSession && !!opts.focus);
+    const nativeKind = isNativeSession(session) || isCodexKind(session.kind);
+    const pinOnShow = !!opts.forceScrollBottom || (!nativeKind && !!opts.focus);
     if (pinOnShow || opts.focus) {
       if (opts.forceScrollBottom) cached._codexFollowBottom = true;
       if (pinOnShow) cached.terminal.scrollToBottom();
@@ -1985,7 +2046,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       // 卡片视图切换 session 时也跳到最新对话，与上方 PTY 的 pinOnShow focus 兜底对称：
       // 切到不同 session 时靠 opts.focus；重复点击当前侧栏项时靠显式 forceScrollBottom。
       // view 切换（PTY↔卡片）走 applyViewMode 不经此处、不传 forceScrollBottom，保持阅读位置不受影响。
-      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus }).catch(err => {
+      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
       });
     }
@@ -2091,7 +2152,7 @@ const { createTurnCardRenderer } = require('./turn-card-renderer.js');
 function syncTurnPresentationToSession(sessionId, presentation, turn) {
   const session = sessions.get(sessionId);
   if (!session || !presentation || !turn || turn.role !== 'assistant') return;
-  if (isCodexSession(session)) {
+  if (isNativeSession(session)) {
     if (!sessionRuntimeIsActive(session)) { session.currentCardActivity=null; return; }
     if (!turn.id?.includes(':'+session.nativeRuntime?.turnId+':')) return;
   }
@@ -2138,6 +2199,8 @@ function syncTurnPresentationToSession(sessionId, presentation, turn) {
   if (target) paintTerminalRuntimeStatus(target, session);
   if (adoptedLiveActivities) queueMicrotask(() => rerenderTurn(turn.id));
 }
+const { createCardFollowScroll } = require('./card-follow-scroll');
+const cardFollowScroll = createCardFollowScroll({ element: document.getElementById('msg-overlay'), window, document });
 const turnCardRenderer = createTurnCardRenderer({
   document,
   window,
@@ -2151,6 +2214,7 @@ const turnCardRenderer = createTurnCardRenderer({
   wrapPathLinksInElement: (rootEl, opts) => wrapPathLinksInElement(rootEl, opts),
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
+  openAttachment: (target, opts) => openPathInHub(target, opts),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -2334,6 +2398,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     top: container.scrollTop,
     wasAtBottom: forceScrollBottom || _isCardOverlayAtBottom(container),
   };
+  if (forceScrollBottom) cardFollowScroll.follow();
+  const followSnapshot = cardFollowScroll.capture();
 
   // 2. clear container + Map (avoid stale turns from previous session)
   if (!incremental) {
@@ -2367,10 +2433,10 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — all transcript-backed coding CLIs share the card experience.
-  const supportsCardHistory = kind && (isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind));
+  const supportsCardHistory = kind && (isNativeSession(session) || isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind));
   if (kind && !supportsCardHistory) {
     showPlaceholder(
-      '卡片视图当前支持 Claude、Codex 与 Kimi session — '
+      '该会话没有结构化历史 — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
     );
     return { mounted: 0, error: null };
@@ -2509,10 +2575,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
     if (!incremental) {
       if (concurrentFullCards.length === 0) {
-        showPlaceholder(
-          '新会话，发首条消息试试看 — '
-          + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
-        );
+        container.innerHTML = require('./session-welcome').renderSessionWelcome(session, escapeHtml);
       } else {
         removeLoadingPlaceholder();
       }
@@ -2538,9 +2601,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const concurrentExtraCards = !incremental
     ? concurrentFullCards.filter(card => !fullTurnIds.has(card.dataset.turnId))
     : [];
-  if (!incremental) {
-    removeLoadingPlaceholder();
-  }
+  removeLoadingPlaceholder();
   // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
   //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
   //   末尾的 batch scrollIntoView 没 guard → 用户上翻历史时仍被拍回底部。
@@ -2598,9 +2659,34 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
   }
 
+  if(incremental && session?.runtimeBackend==='acp' && turns.length) {
+    // ACP can acknowledge on its first delta. A full-history hydration may
+    // therefore overlap a live user card. Reconcile the native snapshot order
+    // instead of leaving the replaced optimistic card behind its answer.
+    const ids=new Set(turns.map(t=>t.id));
+    const current=Array.from(container.querySelectorAll(':scope > .turn-card'));
+    const firstAt=Math.min(...turns.map(t=>Number(t.ts)).filter(t=>t>0));
+    const extras=current.filter(card=>!ids.has(card.dataset.turnId));
+    const before=extras.filter(card=>Number(window._sessionTurns?.get(card.dataset.turnId)?.ts)<firstAt);
+    const after=extras.filter(card=>!before.includes(card));
+    const byId=new Map(current.map(card=>[card.dataset.turnId,card]));
+    const ordered=before.concat(turns.map(t=>byId.get(t.id)).filter(Boolean),after);
+    if(ordered.some((card,i)=>card!==current[i])) {
+      const selection=window.getSelection();
+      const saved=selection?.rangeCount && container.contains(selection.anchorNode) && container.contains(selection.focusNode)
+        ? {a:selection.anchorNode,ao:selection.anchorOffset,f:selection.focusNode,fo:selection.focusOffset}:null;
+      const tail=container.querySelector(':scope > .streaming-indicator');
+      for(const card of ordered)container.insertBefore(card,tail);
+      if(saved && saved.a.isConnected && saved.f.isConnected)selection.setBaseAndExtent(saved.a,saved.ao,saved.f,saved.fo);
+    }
+  }
+
+  require('./conversation-message-view').syncResponseGroups(container);
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
   // — 仅当 batch 开始前用户在底部才滚(scroll-respect-user)
-  if (lastCardEl && _batchWasAtBottom) {
+  if (container._cardFollowController) {
+    cardFollowScroll.restore(followSnapshot);
+  } else if (lastCardEl && _batchWasAtBottom) {
     try {
       lastCardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
     } catch {
@@ -2888,6 +2974,7 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
     a.textContent = local.displayPath;
   }
   const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE']);
+  if (opts.skipCodeBlocks) SKIP_TAGS.add('PRE');
   const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentNode;
@@ -2963,7 +3050,7 @@ function getCardSessionId(cardEl) {
     || null;
 }
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.ta-btn');
   if (!btn) return;
   const card = btn.closest('.turn-card');
@@ -3016,7 +3103,9 @@ document.addEventListener('click', (e) => {
       promptText = turn.text;
     } else {
       // regen: walk DOM up looking for prior user .turn-card
-      const cards = [...document.querySelectorAll('.msg-overlay .turn-card')];
+      const owner = getCardSessionId(card);
+      const cards = [...card.closest('.msg-overlay').querySelectorAll('.turn-card')]
+        .filter(item => getCardSessionId(item) === owner);
       const myIdx = cards.indexOf(card);
       for (let i = myIdx - 1; i >= 0; i--) {
         if (cards[i].classList.contains('user')) {
@@ -3031,7 +3120,16 @@ document.addEventListener('click', (e) => {
     // sid 必须取自这张卡片（getCardSessionId），不能用全局 activeSessionId ——
     // 否则在 A 会话的卡片上点重发，消息会打进当时恰好激活的 B 会话。
     const sid = getCardSessionId(card);
-    if (sid && isCodexSession(sessions.get(sid))) {
+    if (action === 'regen') {
+      if (['commentary', 'activity'].includes(turn.phase)) return;
+      const target = sessions.get(sid);
+      const confirmed = await turnCardRenderer.confirmCardResend({
+        text: promptText, sessionLabel: (target?.name || target?.title || target?.kind || '会话') + ' · ' + sid,
+      });
+      if (!confirmed) return;
+      if (!sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
+    }
+    if (sid && isNativeSession(sessions.get(sid))) {
       const original=btn.textContent;
       let error=card.querySelector('.native-card-send-error');
       if (!error) { error=document.createElement('div');error.className='native-card-send-error';error.setAttribute('role','alert');card.append(error); }
@@ -3107,11 +3205,20 @@ const _cardOverlayFollowBottomBySession = new Map();
 // 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
 // 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
 const cardViewSessions = readCardViewSessions(localStorage);
+// Older members skipped the ordinary-session card initialization. Initialize
+// their first standalone opening once, then preserve explicit card/PTY choices.
+const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
+const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
 const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
 // 「已完成未读」的会话点开默认进卡片视图。休眠会话点开会先清未读再走 session-created
 // 重新定视图，所以这里把这一次的判断结果留一份，让唤醒后的那次 applyViewMode 也认它。
 const _completedUnreadCardViews = new Set();
 function selectionViewModeForSession(sessionId, session) {
+  if (session?.meetingId && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
+    rememberViewModeForSession(sessionId, 'card');
+    memberCardDefaults.add(sessionId);
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   const completedUnread = !!session && sessionHasCompletedUnread(session);
   // 只有休眠会话会在唤醒后再定一次视图，别的会话记下来就没人来取了。
   if (completedUnread && session && session.status === 'dormant') _completedUnreadCardViews.add(sessionId);
@@ -3122,6 +3229,9 @@ function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
 }
 function forgetViewModeForSession(sessionId) {
+  if (memberCardDefaults.delete(sessionId)) {
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   _cardOverlayFollowBottomBySession.delete(sessionId);
   if (forgetViewMode(cardViewSessions, sessionId)) writeCardViewSessions(localStorage, cardViewSessions);
 }
@@ -3160,8 +3270,7 @@ const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 
 function markCodexCardWorking(sessionId, source = 'prompt', runtimeOptions = {}) {
   const session = sessions.get(sessionId);
-  if (isCodexSession(session)) return;
-  if (session?.runtimeBackend === 'claude-stream-json') return;
+  if (isNativeAgent(session)) return;
   if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
@@ -3366,9 +3475,7 @@ function _updateStreamingIndicator(sessionId) {
       indicator.dataset.sessionId = String(sessionId);
       indicator.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>';
       targetParent.appendChild(indicator);
-      if (wasAtBottom && targetParent === overlay) {
-        try { overlay.scrollTop = overlay.scrollHeight; } catch {}
-      }
+      if (wasAtBottom && targetParent === overlay) cardFollowScroll.request();
     } else if (indicator.parentElement !== targetParent) {
       // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
       targetParent.appendChild(indicator);
@@ -3388,7 +3495,7 @@ function _updateStreamingIndicator(sessionId) {
       : (pendingSubmit || starting ? '启动中' : '工作中');
   } else if (!isRunning && indicator) {
     const runtimeTruth = getSessionRuntimeTruth(sess);
-    if (isCodexSession(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
+    if (isNativeSession(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
       indicator.remove();
       return;
     }
@@ -3434,11 +3541,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   cardQuestionNavigator.refresh();
   recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
   cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
-  document.querySelectorAll('.view-toggle-btn').forEach(b => {
-    if (!b.dataset.view) return;
-    b.hidden = b.dataset.view === 'pty' && sessions.get(activeSessionId)?.runtimeBackend === 'claude-stream-json';
-    b.classList.toggle('active', b.dataset.view === mode);
-  });
+  syncBackstageButton();
   // 切到 PTY 时 refit xterm
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
@@ -3449,9 +3552,11 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
   // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
   // 因为 turn-complete-event 可能已在 overlay 留了单张卡但历史并未 hydrate。
-  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId) {
-    if (_cardHistoryHydratedSid !== activeSessionId) {
-      loadSessionHistoryToOverlay(activeSessionId).then(r => {
+  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId && !skipPreviousCardCapture) {
+    if (_cardHistoryHydratedSid !== activeSessionId || previousView !== 'card') {
+      // PTY output does not update the hidden card DOM. Refresh on return,
+      // preserving existing cards and the user's scroll intent.
+      loadSessionHistoryToOverlay(activeSessionId, { incremental: _cardHistoryHydratedSid === activeSessionId }).then(r => {
         if (r && r.mounted > 0) _cardHistoryHydratedSid = activeSessionId;
       }).catch(err => {
         console.warn('[applyViewMode card] auto-load failed:', err);
@@ -3471,7 +3576,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     // leaves the newest question partially behind the footer. Preserve user
     // intent: only re-pin when they were already following the bottom before
     // leaving card view; a reader who scrolled up stays exactly where they were.
-    const pinBottom = () => { overlay.scrollTop = overlay.scrollHeight; };
+    const pinBottom = () => cardFollowScroll.request();
     const restoreSessionId = activeSessionId;
     pinBottom();
     if (_cardViewBottomRestoreRaf) cancelAnimationFrame(_cardViewBottomRestoreRaf);
@@ -3537,12 +3642,29 @@ function recoverVisibleActiveTerminalSurface() {
 }
 
 document.addEventListener('click', (e) => {
-  const btn = e.target.closest('.view-toggle-btn');
-  if (btn && btn.dataset.view) applyViewMode(btn.dataset.view);
+  const btn = e.target.closest('#btn-backstage');
+  if (btn && !btn.hidden && activeSessionId && !currentAppToolbarView()) {
+    applyViewMode(currentView === 'pty' ? 'card' : 'pty');
+  }
 });
 
 // T10 placeholder: "切到 PTY 视图" link
 document.addEventListener('click', (e) => {
+  const starter = e.target.closest && e.target.closest('[data-welcome-prompt]');
+  if (starter) {
+    const box = document.querySelector('#terminal-panel .floating-input-box');
+    if (box) {
+      if (!box.textContent.trim() && !box.querySelector('img, [data-file-path]')) {
+        box.textContent = starter.dataset.welcomePrompt;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      box.focus();
+      const range = document.createRange();
+      range.selectNodeContents(box); range.collapse(false);
+      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    }
+    return;
+  }
   const a = e.target.closest && e.target.closest('[data-action="switch-to-pty"]');
   if (!a) return;
   e.preventDefault();
@@ -3603,7 +3725,7 @@ function clearFloatingInputStuck(bar) {
 function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
   const delivery = floatingPromptDeliveries.get(sessionId);
-  const native = isCodexSession(sessions.get(sessionId));
+  const native = isNativeSession(sessions.get(sessionId));
   if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
@@ -3738,8 +3860,7 @@ function tailAboveCliPrompt(lines) {
 // 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
 // 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
 function detectComposerLiveQuestion(session, runtime) {
-  if (isCodexSession(session)) return null;
-  if (session?.runtimeBackend === 'claude-stream-json') return null;
+  if (isNativeAgent(session)) return null;
   if (!session || !runtime) return null;
   // 已经被权威信号标成「等你输入」的，用不着再猜。
   if (sessionNeedsUserInput(session)) return null;
@@ -3773,6 +3894,7 @@ function scrollToLatestTurn(terminal) {
     const cards = overlay.querySelectorAll(':scope > .turn-card');
     const last = cards[cards.length - 1];
     if (last) {
+      cardFollowScroll.pause();
       const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       last.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
       return true;
@@ -3857,13 +3979,15 @@ function composerSupportedEfforts(session) {
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
+  const commandFeedback = require('./codex-command-feedback').createCodexCommandFeedback(document, bar);
+  let commandFeedbackSequence = 0;
   bar.dataset.sessionId = sessionId;
   const codexControls = createCodexNativeControls({
     sessionId, invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
     openExternal: url => shell.openExternal(url),
   });
   bar.append(codexControls.element);
-  if (isCodexSession(sessions.get(sessionId))) terminal.options.disableStdin = true;
+  if (isNativeAgent(sessions.get(sessionId))) terminal.options.disableStdin = true;
 
   // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
   // 输入框其余行为一字不变 —— 历史是增强，不该成为新的单点故障。
@@ -3890,7 +4014,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
   inputBox.setAttribute('data-placeholder', '输入消息…');
-  if (isCodexSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
+  if (isNativeSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
     try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
     catch(error){console.warn('[codex-draft] read failed:',error.message);}
   }
@@ -4049,6 +4173,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   });
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
+  const speedChip = document.createElement('button');
+  speedChip.type = 'button';
+  speedChip.className = 'composer-chip composer-speed';
+  speedChip.addEventListener('click',event=>{
+    event.stopPropagation(); void modelUi.showSpeedPicker(speedChip,sessionId);
+  });
   // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
   const ctxRing = document.createElement('span');
   ctxRing.className = 'composer-ctx';
@@ -4093,7 +4223,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composerRail = document.createElement('div');
   composerRail.className = 'composer-rail';
   composerRail.append(
-    attachBtn, modelChip, thinkingChip, bridgeToolbar,
+    attachBtn, modelChip, thinkingChip, speedChip, bridgeToolbar,
     railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
   );
 
@@ -4104,7 +4234,38 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composer = document.createElement('div');
   composer.className = 'composer';
   composer.dataset.state = 'ready';
+  const startActions = document.createElement('div');
+  startActions.className = 'composer-start-actions';
+  // Group members use the group's own dispatch controls, even in session view.
+  startActions.hidden = !!sessions.get(sessionId)?.meetingId
+    || Object.values(meetings).some(m => m?.subSessions?.includes(sessionId));
+  const startButton = document.createElement('button');
+  startButton.type = 'button';
+  startButton.className = 'composer-one-click-start';
+  startButton.textContent = '▶ 一键开工';
+  startButton.title = '追加自主实现、验证与合并的提示词；可编辑，发送后授权执行';
+  startButton.addEventListener('click', () => {
+    const suffix = require('./one-click-start').suffix(readContenteditablePlainText(inputBox));
+    inputBox.focus();
+    placeCaretAtContenteditableEnd(inputBox);
+    if (suffix) {
+      // Append at the end instead of replacing the draft, preserving attachments
+      // and the browser undo history. The existing send path remains unchanged.
+      const html = escapeHtml(suffix).replace(/\n/g, '<br>');
+      if (!document.execCommand('insertHTML', false, html)) inputBox.appendChild(document.createTextNode(suffix));
+      saveFloatingInputDraft(sessionId, inputBox);
+      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+      placeCaretAtContenteditableEnd(inputBox);
+    }
+  });
+  startActions.appendChild(startButton);
+  bridgeToolbar.after(startActions);
   composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const voiceInput = require('./voice-input').attachVoiceInput({
+    input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
+    getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
+    isActive: () => activeSessionId === sessionId,
+  });
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
   // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
@@ -4236,6 +4397,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
     }
 
+    const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
+    speedChip.hidden = !speed.visible;
+    speedChip.textContent = speed.label;
+    speedChip.setAttribute('aria-label',`速度：${speed.label}`);
+    speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
+    speedChip.title = '选择标准 / Fast；Fast 会增加用量或费用';
+
     ctxRing.hidden = !rail.context.visible;
     if (rail.context.visible) {
       ctxRing.dataset.level = rail.context.level;
@@ -4279,7 +4447,17 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   function sendInput() {
     const userText = readContenteditablePlainText(inputBox);
     if (!userText || !userText.trim()) return;
+    const acpSession=sessions.get(sessionId);
+    if(acpSession?.runtimeBackend==='acp') {
+      try {const {imagePaths,validateImages}=require('../core/acp-attachments');
+        validateImages(imagePaths(userText),acpSession.currentModel?.id,acpSession.acpCapabilities);
+      }catch(error){commandFeedback.show('图片未发送',error.message,true);return;}
+    }
     const text = userText;
+    const nativeCommand = isNativeSession(sessions.get(sessionId)) && text.trimStart().startsWith('/');
+    const feedbackSequence = ++commandFeedbackSequence;
+    commandFeedback.clear();
+    if (nativeCommand) commandFeedback.show(text.trim(), '正在执行…');
 
     // 立即清 UI；原生会话继续在 Hub 输入框接收下一条消息。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
@@ -4297,9 +4475,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
     const clientSubmissionId = require('node:crypto').randomUUID();
-    clearSessionWaitingState(sessionId);
-    armPtyBurstFallback(sessionId);
-    if (isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (!nativeCommand) {
+      clearSessionWaitingState(sessionId);
+      armPtyBurstFallback(sessionId);
+    }
+    if (!nativeCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
@@ -4308,9 +4488,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     // 2026-09-07：这里原来逐家列 claude / codex / kimi，把 Gemini 漏在外面 —— Gemini 同样
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
-    const nativeCommand = session?.runtimeBackend === 'codex-app-server' && text.trimStart().startsWith('/');
-    const cardCapableKind = !nativeCommand && !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
+    const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
+    if (!nativeCommand && currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
@@ -4325,9 +4504,15 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   分块投喂 → 体积自适应 settle → 单发 \r → 等 UserPromptSubmit / task_started
     //   语义确认 → 缺确认才补一次回车 → 仍无确认就亮「补发」按钮。
     clearFloatingInputStuck(bar);
-    const delivery = beginPromptDelivery(clientSubmissionId);
-    floatingPromptDeliveries.set(sessionId, delivery);
+    const delivery = nativeCommand ? null : beginPromptDelivery(clientSubmissionId);
+    if (delivery) floatingPromptDeliveries.set(sessionId, delivery);
     ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
+      if (nativeCommand) {
+        if (feedbackSequence !== commandFeedbackSequence) return;
+        const failed = !result?.ok || result.sendStatus === 'stuck';
+        commandFeedback.show(text.trim(), failed ? (result?.message || result?.error || '命令未执行，请重试') : (result.commandOutput || '命令已执行。'), failed);
+        return;
+      }
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
       if (result?.ok && result.mode === 'native-command') {
         updateFloatingPromptReceipt({sessionId,clientSubmissionId,status:'confirmed'});
@@ -4342,6 +4527,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
+      if (nativeCommand) {
+        if (feedbackSequence === commandFeedbackSequence) commandFeedback.show(text.trim(), err.message || '命令提交失败', true);
+        return;
+      }
       if (floatingPromptDeliveries.get(sessionId) !== delivery
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
@@ -4453,7 +4642,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   return {
     dispose() {
-      saveFloatingInputDraft(sessionId, inputBox);
+      // A hidden contenteditable's innerText collapses to textContent, losing
+      // DIV/BR line breaks. Input events already saved the visible draft.
+      if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
+      voiceInput.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
       if (panel) panel.style.setProperty('--fi-bar-h', '0px');
@@ -4607,8 +4799,7 @@ function sweepStaleRunning() {
   const now = Date.now();
   let dirty = false;
   for (const s of sessions.values()) {
-    if (isCodexSession(s)) continue;
-    if (s.runtimeBackend === 'claude-stream-json') continue;
+    if (isNativeAgent(s)) continue;
     if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
         const truth = getSessionRuntimeTruth(s, { now });
@@ -4662,6 +4853,8 @@ function sweepStaleRunning() {
   if (dirty) scheduleSessionListRender();
 }
 setInterval(sweepStaleRunning, 60 * 1000);
+// Even fully idle sessions age across minute/day and dormant-window boundaries.
+setInterval(scheduleSessionListRender, 60 * 1000);
 function updateRespondPill() {
   const pill = document.getElementById('respond-pill');
   if (!pill) return;
@@ -4680,8 +4873,7 @@ function updateRespondPill() {
     else if (sessionHasCompletedUnread(s)) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
   }
   for (const m of Object.values(meetings || {})) {
-    if (m.id === activeMeetingId || m.status === 'dormant') continue;
-    const n = m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0;
+    const n = meetingUnread.getMeetingUnreadMemberIds(m, sessions).size;
     if (n > 0) items.push({ id: m.id, meeting: true, wait: false, t: m.lastMessageTime || 0 });
   }
   if (!items.length) { pill.style.display = 'none'; return; }
@@ -4875,7 +5067,8 @@ async function selectSession(id, opts = {}) {
     });
     return;
   }
-  clearSessionAttention(session, { clearUnread: true });
+  // Reading a reply must not dismiss a still-pending request for input.
+  clearSessionCompletedUnread(session);
   // 2026-08-27：「运行异常/断连」是一个**提醒**信号，用户点开看过就算处理过了。
   // 原来 clearSessionConnectionIssue 只在提交提问或回答完成时调用，所以只是点开
   // 看一眼的话，那条断连会一直挂在侧栏「运行异常」组里下不去。
@@ -4885,6 +5078,9 @@ async function selectSession(id, opts = {}) {
   acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
+  for (const meeting of Object.values(meetings)) {
+    if (meeting.subSessions?.includes(id)) markMeetingMemberRead(meeting.id, id);
+  }
   scheduleSessionListRender();
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
@@ -4945,8 +5141,12 @@ const launchCenter = createLaunchCenterController({
 window.LaunchCenter = launchCenter;
 
 // --- Unified launch center ---
-btnNew.addEventListener('click', () => { void launchCenter.launchLast(); });
+btnNew.addEventListener('click', () => launchCenter.open('session'));
 document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
+document.getElementById('acp-settings-open').addEventListener('click', () => {
+  require('./acp-settings').openAcpSettings({ document, invoke:(...args)=>ipcRenderer.invoke(...args) })
+    .catch(error => alert('ACP 配置未打开：' + error.message));
+});
 
 document.addEventListener('mousedown', (e) => {
   if (!wrapperEl.contains(e.target) && menuEl.style.display !== 'none') launchCenter.close();
@@ -5047,6 +5247,7 @@ function focusOrdinarySearchHit(hit, preview) {
     catch {}
   }
   if (card) {
+    cardFollowScroll.pause();
     card.classList.add('global-search-focus');
     card.scrollIntoView({ block: 'center', behavior: 'smooth' });
     setTimeout(() => { if (card.isConnected) card.classList.remove('global-search-focus'); }, 1500);
@@ -5069,6 +5270,7 @@ function focusOrdinarySearchHit(hit, preview) {
   const body = document.createElement('p');
   body.textContent = text;
   notice.append(title, body);
+  cardFollowScroll.pause();
   overlay.prepend(notice);
   notice.scrollIntoView({ block: 'start', behavior: 'smooth' });
   return true;
@@ -5105,6 +5307,12 @@ async function openGlobalSearchHit(hit, opts = {}) {
     const meetingId = hit.meetingId;
     if (!meetingId || !meetings[meetingId]) throw new Error('群聊记录已不存在');
     await selectMeeting(meetingId, { forceScrollBottom: false });
+    const openedAt = Date.now();
+    const saved = await ipcRenderer.invoke('update-meeting-sync', { meetingId, fields: { lastMessageTime: openedAt } });
+    if (!saved) throw new Error('群聊已打开，但侧栏活动时间保存失败');
+    meetings[meetingId].lastMessageTime = openedAt;
+    schedulePersist();
+    sessionListRenderer.revealSearchItem(meetingId);
     if (opts.focus && typeof MeetingRoom !== 'undefined' && typeof MeetingRoom.focusSearchHit === 'function') {
       const target = opts.preview && Array.isArray(opts.preview.context)
         ? (opts.preview.context.find(item => item && item.isMatch) || opts.preview.context[0])
@@ -5129,6 +5337,22 @@ async function openGlobalSearchHit(hit, opts = {}) {
   }
   if (!target || !target.id) throw new Error('会话记录已不存在');
   await selectSession(target.id, { forceScrollBottom: !opts.focus });
+  const recorded = await ipcRenderer.invoke('session:record-history-open', { sessionId: target.id });
+  if (!recorded?.ok) throw new Error(recorded?.message || '会话已打开，但侧栏活动时间保存失败');
+  const openedSession = sessions.get(target.id);
+  if (openedSession) {
+    openedSession.lastMessageTime = Math.max(openedSession.lastMessageTime || 0, recorded.at);
+    openedSession.hiddenFromSidebar = false;
+  }
+  // 群聊成员仍从原群聊入口进入，避免复制成一个普通会话。
+  const parentId = openedSession?.meetingId || Object.values(meetings).find(m => m.subSessions?.includes(target.id))?.id;
+  if (parentId && meetings[parentId]) {
+    const saved = await ipcRenderer.invoke('update-meeting-sync', { meetingId: parentId, fields: { lastMessageTime: recorded.at } });
+    if (!saved) throw new Error('会话已打开，但所属群聊的活动时间保存失败');
+    meetings[parentId].lastMessageTime = recorded.at;
+  }
+  schedulePersist();
+  sessionListRenderer.revealSearchItem(parentId || target.id, target.id);
 
   if (opts.focus) {
     // 搜索命中要在卡片视图里看，但这是导航副作用而非用户的视图偏好，不写记忆。
@@ -5423,7 +5647,7 @@ document.addEventListener('click', (e) => {
 
 // --- Terminal buffer reading and activity monitor ---
 function classifySessionRuntimeFrame(session, lines) {
-  if (isCodexSession(session)) return { state: 'unknown', confidence: 'none', reason: 'native-only' };
+  if (isNativeSession(session)) return { state: 'unknown', confidence: 'none', reason: 'native-only' };
   if (isClaudeRuntimeSession(session)) return classifyTerminalRuntime('claude', lines);
   if (session && isCodexKind(session.kind)) return classifyTerminalRuntime('codex', lines);
   return { state: 'unknown', confidence: 'none', reason: 'unsupported-runtime', evidence: '' };
@@ -5522,7 +5746,7 @@ function raiseStreamDisconnectFailure(sessionId, issue, options = {}) {
 }
 
 function noteStreamDisconnect(sessionId, data) {
-  if (isCodexSession(sessions.get(sessionId))) return false;
+  if (isNativeSession(sessions.get(sessionId))) return false;
   const session = sessions.get(sessionId);
   if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
   const tracked = appendStreamDisconnectChunk(session._streamDisconnectTail, data);
@@ -5532,7 +5756,7 @@ function noteStreamDisconnect(sessionId, data) {
 }
 
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
-  if (isCodexSession(session)) return false;
+  if (isNativeSession(session)) return false;
   if (!session || !runtime || session.status === 'dormant') return false;
   if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
 
@@ -5938,7 +6162,7 @@ const CARD_STREAM_SETTLE_RETRY_MS = [1000, 2500, 6000];
 
 function cardSessionSupportsLiveRefresh(session) {
   if (!session) return false;
-  return isClaudeFamily(session.kind) || isCodexKind(session.kind) || isKimiCliKind(session.kind);
+  return isNativeSession(session) || isClaudeFamily(session.kind) || isCodexKind(session.kind) || isKimiCliKind(session.kind);
 }
 
 function clearCardSettleRefresh(sessionId) {
@@ -5994,9 +6218,12 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
   }
 
   const sinceLast = Date.now() - state.lastReloadAt;
+  // ACP emits compact in-memory turn snapshots; the PTY transcript throttle
+  // otherwise holds genuine streamed updates for 1.2 seconds.
+  const acpStream = session.runtimeBackend === 'acp';
   const delay = options.force
     ? 0
-    : Math.max(200, CARD_STREAM_REFRESH_MIN_INTERVAL_MS - sinceLast);
+    : Math.max(acpStream ? 40 : 200, (acpStream ? 200 : CARD_STREAM_REFRESH_MIN_INTERVAL_MS) - sinceLast);
   state.pendingTimer = setTimeout(() => {
     state.pendingTimer = null;
     if (sessionId !== activeSessionId || currentView !== 'card') return;
@@ -6009,7 +6236,7 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     state.lastReloadAt = Date.now();
     const refreshOptions = {
       incremental: true,
-      parseOpts: sessions.get(sessionId)?.runtimeBackend === 'codex-app-server'
+      parseOpts: isNativeSession(sessions.get(sessionId))
         ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
         : { limit: 1, fromTail: true },
     };
@@ -6063,9 +6290,9 @@ function scheduleCardSettleRefresh(sessionId) {
 }
 
 function noteCardTerminalOutput(sessionId) {
-  if(sessions.get(sessionId)?.runtimeBackend === 'codex-app-server')return false;
+  if(isNativeSession(sessions.get(sessionId)))return false;
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
-  if (isCodexSession(sessions.get(sessionId))) return true;
+  if (isNativeSession(sessions.get(sessionId))) return true;
   scheduleCardSettleRefresh(sessionId);
   return true;
 }
@@ -6117,92 +6344,12 @@ const accountUsageController = createAccountUsageController({
   isMemoOpen: () => memoPanel.isOpen(),
 });
 const renderAccountUsage = accountUsageController.render;
-function getWorkbenchWorkspaceHints() {
-  const hints = [];
-  const recent = Array.from(sessions.values())
-    .filter(session => session && session.cwd && session.purpose !== 'chuxin-research')
-    .sort((a, b) => Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0))
-    .slice(0, 24);
-  for (const session of recent) {
-    const base = {
-      sessionId: session.id || session.hubId,
-      title: session.title || '',
-      kind: session.kind || '',
-      lastMessageTime: Number(session.lastMessageTime || session.updatedAt || session.createdAt || 0),
-    };
-    hints.push({ ...base, cwd: session.cwd });
-    // Group chats often run from a broad home directory. Persisted artifacts
-    // give us a precise, bounded path back to the actual project without any
-    // recursive search of C:\Users\lintian or C:\Vibe.
-    const artifacts = Array.isArray(session.recentArtifacts) ? session.recentArtifacts.slice(-3) : [];
-    for (const artifact of artifacts) {
-      if (!artifact || typeof artifact.path !== 'string' || !path.isAbsolute(artifact.path)) continue;
-      hints.push({ ...base, cwd: path.dirname(artifact.path), lastMessageTime: Number(artifact.timestamp || base.lastMessageTime) });
-    }
-  }
-  return hints;
-}
-let homeCardLayout = null;
-// 驾驶舱 UI 已删；「最近文件」要的 Git 变更改成直接问主进程要一次 overview，
-// 不再有常驻控制器，也不再每 30 秒扫一遍（那是撤掉收件箱后剩下的纯浪费）。
-let operationsOverview = null;
-async function refreshOperationsOverview() {
-  try {
-    const result = await ipcRenderer.invoke('workbench:get-overview', {});
-    operationsOverview = result && result.ok === false ? null : result;
-  } catch (error) {
-    console.warn('[workbench-operations] overview 拉取失败:', error && error.message);
-    operationsOverview = null;
-  }
-  return operationsOverview;
-}
-
+// 欢迎页只提供创建入口；项目数据按需由现有创建面板加载。
 homeWorkbench = createHomeWorkbench({
   document,
-  sessions,
-  getSessions: () => sessions,
-  getMeetings: () => meetings,
-  getResourceUsage: () => systemResourceUsage,
-  getHubConfig: () => hubProxyInfo,
-  getUsageSnapshot: () => accountUsageController.getSnapshot(),
-  getTerminalCacheSize: () => terminalCache.size,
-  loadWorkspaces: () => ipcRenderer.invoke('workspace:list'),
-  selectSession: (sessionId, opts) => selectSession(sessionId, opts),
-  selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
-  getOperationsSnapshot: () => operationsOverview,
-  loadOperations: () => refreshOperationsOverview(),
-  onOpenSearch: (query) => openSearchModal({ query }),
-  // 每轮渲染完让卡片布局重新判空：内容为空的卡自动收成一行。
-  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
-  onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
-  onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
-  onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false, fullscreen: true }),
-  onLaunchWorkspace: (workspace) => launchCenter.open('session', { kind: 'claude', workspace }),
-  onOpenServerSettings: () => configModal.openOperationsSetup(),
-  escapeHtml,
-  onRefresh: async () => {
-    const results = await Promise.allSettled([
-      refreshSystemResourceUsage(true),
-      refreshHubProxyInfo(),
-      accountUsageController.refreshUsageNow(),
-    ]);
-    if (results.every((result) => result.status === 'rejected')) {
-      throw new Error('全局状态刷新失败');
-    }
-  },
+  onCreate: intent => launchCenter.open(intent),
 });
 homeWorkbench.render();
-// 卡片布局要在首轮渲染之后接管：那时 #home-card-stack 里的卡才齐。
-homeCardLayout = createHomeCardLayout({ document, localStorage });
-// 全机残留卡片。扫一次要 3 秒（一次 CIM 全量枚举 + 一次 CPU 基线采样），
-// 所以只在用户点「扫描」时才跑，绝不挂到那条 3 秒资源心跳上。
-const processReclaimCard = createProcessReclaimCard({
-  document,
-  ipcRenderer,
-  escapeHtml,
-  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
-  openPath: filePath => ipcRenderer.invoke('show-in-folder', filePath),
-});
 // 记忆系统面板：会话 header 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
 // 因为 session / meeting header 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
@@ -7512,6 +7659,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // session metadata here; an xterm is created and hydrated on explicit shell
   // selection, otherwise dozens of invisible 10k-line buffers accumulate.
   if (session.meetingId) {
+    // A member explicitly opened while dormant needs its standalone surface
+    // mounted after resume. Background group wakes must never steal selection.
+    if (wasDormant && activeSessionId === session.id) {
+      await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
+    }
     scheduleSessionListRender();
     return;
   }
@@ -7538,12 +7690,12 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // event makes the card button intermittently bounce back to PTY.
   const requestedView = _chuxinRequestedSessionViews.get(session.id);
   if (requestedView) _chuxinRequestedSessionViews.delete(session.id);
-  // New ordinary sessions default to PTY. Dormant resumes use this session's
+  // New ordinary AI sessions default to cards. Dormant resumes use this session's
   // remembered view unless a shortcut explicitly requested one.
   const unreadWantedCard = _completedUnreadCardViews.delete(session.id);
   applyViewMode(
-    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : 'pty')),
-    { remember: false },
+    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : (session.kind === 'powershell' ? 'pty' : 'card'))),
+    { remember: !wasDormant, skipPreviousCardCapture: true },
   );
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),
@@ -7791,8 +7943,12 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
     return;
   }
-  if (isCodexSession(local) && session.nativeRuntime) {
+  if (isNativeSession(local) && session.nativeRuntime) {
+    const cancellationStatus = local.nativeRuntime?.cancellation?.status;
     if (!acceptNativeSnapshot(local, session)) return;
+    if (cancellationStatus !== local.nativeRuntime?.cancellation?.status) {
+      window.MeetingRoom?.refreshNativeCancellation?.(local.id);
+    }
     if (session.nativeMigrationDraft && local._importedNativeDraft!==session.nativeMigrationDraft) {
       local._importedNativeDraft=session.nativeMigrationDraft;
       const input=[...document.querySelectorAll('.floating-input-bar')].find(bar=>bar.dataset.sessionId===local.id)?.querySelector('.floating-input-box');
@@ -7954,6 +8110,7 @@ function schedulePersist() {
         branchAutoTitlePending: !!s.branchAutoTitlePending,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
+        acpSid:s.acpSid || null,acpProfileId:s.acpProfileId || null,acpCapabilities:s.acpCapabilities || null,
         runtimeBackend: s.runtimeBackend || null,
         nativeRuntime: s.nativeRuntime || null,
         codexApprovalPolicy: s.codexApprovalPolicy || null,
@@ -8169,6 +8326,7 @@ window.resumeDormantSession = resumeDormantSession;
         branchAutoTitlePending: !!meta.branchAutoTitlePending,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
+        acpSid:meta.acpSid || null,acpProfileId:meta.acpProfileId || null,acpCapabilities:meta.acpCapabilities || null,
         runtimeBackend: meta.runtimeBackend || null,
         nativeRuntime: require('../core/native-agent-runtime.js').persistNativeRuntime(meta),
         codexApprovalPolicy: meta.codexApprovalPolicy || null,
@@ -8268,7 +8426,7 @@ function _acceptSidebarGroupChatEvent(payload, options = {}) {
 }
 
 function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeOptions = {}) {
-  if (isCodexSession(session)) return false;
+  if (isNativeSession(session)) return false;
   if (!session) return false;
   const sid = String(session.id || '');
   const oldTimer = _groupChatWorkingExpiryTimers.get(sid);
@@ -8334,12 +8492,19 @@ function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeO
 
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
+  if (activeMeetingId === meeting.id && typeof MeetingRoom !== 'undefined') {
+    MeetingRoom.updateMeetingData(meeting.id, meeting);
+  }
   // 2026-05-05 道雪：新 AI 群聊默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
   //   slot 头像跳转按钮，用户能直接点头像进 sub session，不必展开看 slot 列表。
   renderSessionList();
 });
 
 ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
+  // Unread attention belongs to this window. Backend metadata updates (including
+  // the reply's completion timestamp) must not acknowledge unread answers.
+  const previous = meetings[meeting.id];
+  meetingUnread.preserveMeetingAttention(previous, meeting);
   meetings[meeting.id] = meeting;
   if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {
@@ -8394,10 +8559,8 @@ ipcRenderer.on('groupchat-attempt-changed', (_event, payload = {}) => {
   if (changed || status === 'failed') scheduleSessionListRender();
 });
 
-// 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
-//   partial-update IPC 在终态（completed/manual_extracted）触发；turnNum 与上次记录不同时清空 Set 重新计数；
-//   active meeting 不累加（用户正看着，不打扰）。selectMeeting 时 clear（在 selectMeeting 函数内）。
-//   meeting-room.js 也监听 partial-update 但职责是渲染抽屉/卡片内容，与本侧栏聚合器互不干扰。
+// Unread survives round changes and room selection. Only a visible member's
+// latest answer or an explicit read action acknowledges that member.
 ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
   if (!_acceptSidebarGroupChatEvent(payload)) return;
   const { meetingId, turnNum, sid, status } = payload;
@@ -8413,13 +8576,10 @@ ipcRenderer.on('groupchat-partial-update', (_event, payload = {}) => {
   if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
-  if (!(meeting.unreadAnswered instanceof Set)) meeting.unreadAnswered = new Set();
-  if (meeting._lastUnreadTurnNum !== turnNum) {
-    meeting.unreadAnswered.clear();
-    meeting._lastUnreadTurnNum = turnNum;
-  }
-  if (meetingId === activeMeetingId) return;  // 用户正在看，不打扰
-  meeting.unreadAnswered.add(sid);
+  const overlay = document.getElementById('msg-overlay');
+  const seenByUser = activeSessionId === sid && document.hasFocus() && !document.hidden
+    && (currentView === 'pty' || (overlay && _isCardOverlayAtBottom(overlay)));
+  meetingUnread.recordMeetingAnswer(meeting, payload, { seenByUser });
   scheduleSessionListRender();
 });
 

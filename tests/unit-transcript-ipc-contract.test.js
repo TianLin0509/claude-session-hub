@@ -119,6 +119,17 @@ async function test(name, fn) {
 }
 
 async function main() {
+  await test('reading an unused native seat does not start its backend', async () => {
+    const { CodexNativeSession } = require('../core/codex-native-session');
+    const native = new CodexNativeSession({id:'unused',lazyStart:true});
+    native.start = () => { throw new Error('passive read must not start'); };
+    const deps = createDeps({sessionManager:{getSession:()=>({id:'unused',kind:'codex'}),getNativeCodex:()=>native}});
+    const result = await parseSessionTranscript({hubSessionId:'unused'},deps);
+    assert.strictEqual(result.error,null);
+    assert.deepStrictEqual(result.turns,[]);
+    assert.strictEqual(native.entry,null);
+    native.kill();
+  });
   console.log('Running transcript IPC contract tests...');
 
   await test('registers transcript channels and delegates last assistant text', async () => {

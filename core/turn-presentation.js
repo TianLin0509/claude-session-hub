@@ -6,9 +6,7 @@ const { discoverCompletionArtifacts } = require('./completion-artifacts.js');
 const MAX_ACTIVITIES = 24;
 const MAX_CHANGED_FILES = 12;
 const MAX_CHECKS = 8;
-// Match the existing card renderer's hard cap so the activity layer never
-// silently reduces a tool result that users could previously inspect.
-const MAX_RESULT_PREVIEW = 50000;
+// Keep source results complete; only the renderer limits its initial preview.
 
 const FINAL_STOP_REASONS = new Set([
   'end_turn',
@@ -34,9 +32,10 @@ function optionalFiniteNumber(value) {
 
 function normalizeActivityStatus(tool = {}) {
   const raw = String(tool.status || '').replace(/[-\s]/g, '_').toLowerCase();
+  const exit = optionalFiniteNumber(tool.exitCode);
+  if (tool.isError === true || (exit !== null && exit !== 0)) return 'failed';
   if (raw === 'unknown') return 'unknown';
   if (raw === 'declined') return 'declined';
-  if (tool.isError === true || Number(tool.exitCode) > 0) return 'failed';
   if (raw === 'failed' || raw === 'error' || raw === 'errored') return 'failed';
   if (raw === 'cancelled' || raw === 'canceled' || raw === 'interrupted') return 'cancelled';
   if (raw === 'completed' || raw === 'complete' || raw === 'done' || raw === 'success' || raw === 'succeeded') {
@@ -112,13 +111,17 @@ function activityTitle(kind, name) {
   return `${labels[kind] || labels.other} · ${toolName}`;
 }
 
+function toolResultText(tool) {
+  const value = tool?.result ?? tool?.output;
+  if (value == null) return '';
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
 function normalizeToolActivity(tool, index = 0) {
   const input = tool && Object.prototype.hasOwnProperty.call(tool, 'input') ? tool.input : {};
   const name = cleanText(tool && tool.name || 'Tool', 80) || 'Tool';
   const kind = activityKind(name, input);
-  const result = typeof tool?.result === 'string'
-    ? tool.result.slice(0, MAX_RESULT_PREVIEW)
-    : '';
+  const result = toolResultText(tool);
   return {
     id: cleanText(tool && (tool.id || tool.toolCallId || tool.callId) || `activity-${index}`, 160),
     name,
@@ -193,7 +196,8 @@ function looksLikeVerification(command) {
 
 function verificationStatus(activity) {
   if (!activity) return 'unknown';
-  if (activity.status === 'failed' || activity.isError === true || Number(activity.exitCode) > 0) return 'failed';
+  const exit = optionalFiniteNumber(activity.exitCode);
+  if (activity.status === 'failed' || activity.isError === true || (exit !== null && exit !== 0)) return 'failed';
   if (activity.status === 'running' || activity.status === 'pending' || activity.status === 'cancelled') return activity.status;
   if (activity.exitCode === 0) return 'completed';
   const output = String(activity.result || '');
@@ -207,32 +211,39 @@ function verificationStatus(activity) {
 }
 
 function isTurnComplete(turn = {}) {
-  if (['codex-app-server', 'claude-stream-json'].includes(turn.source)) return turn.nativeOutcome === 'completed';
+  if (['codex-app-server','acp','claude-stream-json'].includes(turn.source)) return turn.nativeOutcome === 'completed';
   return FINAL_STOP_REASONS.has(String(turn.stopReason || '').toLowerCase());
 }
 
 function buildTurnPresentation(turn = {}, options = {}) {
   const cwd = options.cwd || null;
-  const activities = (Array.isArray(turn.toolCalls) ? turn.toolCalls : [])
-    .slice(-MAX_ACTIVITIES)
-    .map(normalizeToolActivity);
+  const allActivities = (Array.isArray(turn.toolCalls) ? turn.toolCalls : []).map(normalizeToolActivity);
+  const activities = allActivities.slice(-MAX_ACTIVITIES);
+  const deliveryTurn = turn.deliveryContext || turn;
+  const deliveryActivities = deliveryTurn === turn ? allActivities
+    : (deliveryTurn.toolCalls || []).map(normalizeToolActivity);
   const running = [...activities].reverse().find(activity => activity.status === 'running' || activity.status === 'pending') || null;
   const changedFiles = [];
-  const changedSeen = new Set();
-  for (const activity of activities) {
+  const changedSeen = new Map();
+  for (const activity of deliveryActivities) {
     for (const filePath of changedPathsFromActivity(activity, cwd)) {
       const key = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
-      if (changedSeen.has(key)) continue;
-      changedSeen.add(key);
-      changedFiles.push({ path: filePath, name: path.basename(filePath), status: activity.status, kind: activity.kind });
-      if (changedFiles.length >= MAX_CHANGED_FILES) break;
+      const previous = changedSeen.get(key);
+      if (previous) {
+        previous.status = previous.status === 'completed' || activity.status === 'completed' ? 'completed' : activity.status;
+        if (activity.status === 'completed') previous.kind = activity.kind;
+        if (activity.status === 'failed') previous.failedAttempts++;
+        continue;
+      }
+      const file = { path: filePath, name: path.basename(filePath), status: activity.status, kind: activity.kind,
+        failedAttempts: activity.status === 'failed' ? 1 : 0 };
+      changedSeen.set(key, file);
+      changedFiles.push(file);
     }
-    if (changedFiles.length >= MAX_CHANGED_FILES) break;
   }
 
-  const checks = activities
+  const checks = deliveryActivities
     .filter(activity => activity.kind === 'execute' && looksLikeVerification(activity.detail))
-    .slice(-MAX_CHECKS)
     .map(activity => ({
       id: activity.id,
       command: activity.detail,
@@ -242,8 +253,8 @@ function buildTurnPresentation(turn = {}, options = {}) {
     }));
 
   let artifacts = [];
-  if (isTurnComplete(turn) && turn.text) {
-    try { artifacts = discoverCompletionArtifacts(turn.text, cwd, { maxArtifacts: 3 }); }
+  if (isTurnComplete(deliveryTurn) && deliveryTurn.text) {
+    try { artifacts = discoverCompletionArtifacts(deliveryTurn.text, cwd, { maxArtifacts: 3 }); }
     catch (error) {
       artifacts = [];
       console.warn('[turn-presentation] artifact discovery failed:', error && error.message);
@@ -252,7 +263,8 @@ function buildTurnPresentation(turn = {}, options = {}) {
 
   const delivery = {
     source: 'deterministic',
-    complete: isTurnComplete(turn),
+    complete: isTurnComplete(deliveryTurn),
+    logicalTurnId: deliveryTurn.id || null,
     changedFiles,
     checks,
     artifacts,
@@ -263,6 +275,7 @@ function buildTurnPresentation(turn = {}, options = {}) {
   return {
     source: 'deterministic',
     activities,
+    activityCount: allActivities.length,
     currentActivity: running,
     delivery,
   };
@@ -281,6 +294,7 @@ module.exports = {
   looksLikeVerification,
   normalizeActivityStatus,
   normalizeToolActivity,
+  toolResultText,
   parseEmbeddedCommand,
   verificationStatus,
 };

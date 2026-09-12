@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
+const { isNativeSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
 
 const {
   ATTENTION_NEEDS_INPUT,
@@ -199,7 +199,7 @@ function isSameOrUnknownTurn(previous, next) {
 }
 
 function applySessionRuntimeObservation(session, observation = {}, options = {}) {
-  if (isCodexSession(session)) return { applied: false, reason: 'codex-native-only' };
+  if (isNativeSession(session)) return { applied: false, reason: 'codex-native-only' };
   if (require('./claude-native-runtime').isNativeClaude(session)) {
     return { applied: false, reason: 'native-authority', truth: require('./claude-native-runtime').claudeRuntimeTruth(session) };
   }
@@ -315,7 +315,7 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 }
 
 function getSessionRuntimeTruth(session, options = {}) {
-  if (isCodexSession(session)) return nativeRuntimeTruth(session);
+  if (isNativeSession(session)) return nativeRuntimeTruth(session);
   if (require('./claude-native-runtime').isNativeClaude(session)) {
     return require('./claude-native-runtime').claudeRuntimeTruth(session);
   }

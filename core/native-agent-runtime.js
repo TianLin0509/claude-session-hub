@@ -3,7 +3,7 @@ const codex = require('./codex-native-runtime');
 const claude = require('./claude-native-runtime');
 
 function isNativeAgent(session) {
-  return codex.isCodexSession(session) || session?.runtimeBackend === 'claude-stream-json';
+  return codex.isNativeSession(session) || session?.runtimeBackend === 'claude-stream-json';
 }
 
 function nativeRuntimeTruth(session) {

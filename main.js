@@ -27,6 +27,7 @@ const {
   managedLaunchAuditPath,
 } = require('./core/managed-launch-audit.js');
 const { spawn } = require('child_process');
+const { launchHubInstance } = require('./core/hub-instance-launcher.js');
 const {
   HUB_APP_USER_MODEL_ID,
   ensureWindowsShellIntegration,
@@ -115,6 +116,7 @@ const {
   shouldPreferCodexLiveUsage,
 } = require('./main/usage/codex-app-server-usage.js');
 const { readKimiAccountUsage } = require('./main/usage/kimi-account-usage.js');
+const { createTokenPlanUsageService } = require('./main/usage/token-plan-usage.js');
 const { readDeepSeekAccountBalance } = require('./main/usage/deepseek-account-balance.js');
 const {
   didClaudeSnapshotAdvance,
@@ -1079,6 +1081,16 @@ ipcMain.handle('hub:toggle-maximize', () => {
   return action;
 });
 
+ipcMain.handle('hub:new-instance', () => launchHubInstance({
+  appRoot: __dirname,
+  execPath: isIsolatedHub() || HUB_IS_PACKAGED ? process.execPath : resolveHubLaunchExePath({
+    execPath: process.execPath,
+    icoPath: path.join(__dirname, 'claude-wx.ico'),
+    productVersion: require('./package.json').version,
+  }),
+  isPackaged: HUB_IS_PACKAGED,
+}));
+
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
@@ -1129,6 +1141,8 @@ function createWindow() {
       maximized: !mainWindow.isMaximized ? false : mainWindow.isMaximized(),
       fullScreen: !mainWindow.isFullScreen ? false : mainWindow.isFullScreen(),
       nativeTitleBar,
+      version: _pkgVersion,
+      pid: process.pid,
     });
   };
   mainWindow.on('maximize', emitWindowState);
@@ -1375,7 +1389,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
   sessionUsageService.bind(session);
-  if (['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1546,6 +1560,7 @@ try {
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
     meetingManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,
   });
@@ -1564,7 +1579,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
-  if (['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1598,7 +1613,17 @@ sessionManager.on('codex-session-updated', collectNativeGroupItems);
 sessionManager.on('native-agent-item', collectNativeGroupItems);
 sessionManager.on('native-agent-lifecycle', collectNativeGroupItems);
 const devChatHistoryTimer=setInterval(()=>{
-  for (const session of sessionManager.getAllSessions()) watchDevChatHistory(session);
+  for(const session of sessionManager.getAllSessions()) {
+    const native=(sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id));
+    const meeting=session.meetingId && meetingManager.getMeeting(session.meetingId);
+    if(native && meeting?.groupChat) {
+      try {
+        const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
+        if(collectGroupConversation({native,orch,sid:session.id}))sendToRenderer('groupchat-history-updated',
+          {meetingId:meeting.id,sid:session.id,revision:orch.state.revision});
+      } catch(error) { console.error('[conversation-history] native item persistence failed:',error); }
+    } else watchDevChatHistory(session);
+  }
 },1000);
 devChatHistoryTimer.unref?.();
 
@@ -1826,6 +1851,7 @@ registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
+require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain);
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
   const sessionId = request && typeof request.sessionId === 'string' ? request.sessionId : null;
@@ -2501,10 +2527,20 @@ async function refreshDeepSeekAccountBalanceLive() {
   return payload;
 }
 
+const tokenPlanUsage = createTokenPlanUsageService({
+  configDir: isIsolatedHub() ? path.join(getHubDataDir(), 'bailian') : undefined,
+});
+
+async function refreshTokenPlanUsage(force = false) {
+  try { return await tokenPlanUsage.refresh(force); }
+  finally { sendToRenderer('agent-usage', { tokenPlan: tokenPlanUsage.snapshot() }); }
+}
+
 function loadUsageCacheForCurrentConfig() {
   // Source selection checks expiry; display retains the last account-scoped
   // observation with its real age, including across reset/refresh gaps.
-  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+  return { ...filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope()),
+    tokenPlan: tokenPlanUsage.snapshot() };
 }
 
 try {
@@ -2519,6 +2555,7 @@ registerUsageIpc(ipcMain, {
   getCodexUsageScopeKey: () => currentCodexUsageScope().scopeKey,
   refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
+  refreshTokenPlanUsage: () => refreshTokenPlanUsage(true),
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
 });
@@ -2534,6 +2571,10 @@ registerConfigIpc(ipcMain, {
   sendToRenderer,
   sessionManager,
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
+});
+
+require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
+  app, safeStorage: require('electron').safeStorage,
 });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
@@ -2635,7 +2676,7 @@ async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.runtimeBackend === 'codex-app-server') continue;
+    if (['codex-app-server','acp'].includes(s.runtimeBackend)) continue;
     const runtimeKind = s.transcriptKind || s.kind;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;
@@ -2842,12 +2883,15 @@ function startAgentScanner() {
   void refreshCodexUsageIfDue(true).catch(() => null);
   refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
+  void refreshTokenPlanUsage().catch(() => {});
   _agentScanInterval = setInterval(() => {
     void run();
     const codexRefresh = refreshCodexUsageIfDue(false);
     if (codexRefresh) void codexRefresh.catch(() => null);
     refreshDeepSeekBalanceIfDue(false);
     refreshKimiUsageIfDue(false);
+    // The service publishes errors in its snapshot and bounds read-only polling.
+    void refreshTokenPlanUsage().catch(() => {});
   }, 5000);
 }
 

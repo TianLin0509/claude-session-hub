@@ -74,8 +74,8 @@ async function waitEval(client, expression, label, timeoutMs = 60000) {
 async function openPanel(client) {
   // The button is static HTML; wait for chuxin.js to build its skeleton and
   // bind the click handler before clicking it.
-  await waitEval(client, 'document.getElementById("btn-chuxin") && document.querySelector(".cx-status")', 'initialized entry');
-  await client.eval('document.getElementById("btn-chuxin").click()');
+  await waitEval(client, 'document.getElementById("btn-research") && document.querySelector(".cx-status")', 'initialized entry');
+  await client.eval('document.getElementById("btn-research").click()');
   try {
     await waitEval(client, 'document.querySelector(".cx-status.online") && document.querySelectorAll(".cx-agent").length >= 3', 'online panel', 30000);
   } catch (error) {

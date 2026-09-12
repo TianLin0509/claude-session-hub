@@ -7,6 +7,7 @@ const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
+const { isAcpKind, buildAcpOptions, LABELS: ACP_LABELS } = require('./acp-profiles');
 const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
 const {
   nativeSessionIdentity,
@@ -965,7 +966,9 @@ function buildNativeCodexOptions(info, opts, env) {
   }
   const tier = info.codexSpeedTier;
   if (tier !== 'inherit') {
-    config['features.fast_mode'] = tier === 'fast';
+    // Keep the native server capable of honoring per-turn speed changes.
+    // The service tier below controls billing; false here silently drops Fast.
+    config['features.fast_mode'] = true;
     config.service_tier = tier === 'standard' ? 'default' : tier;
   }
   const threadConfig = { model_reasoning_effort:normalizeCodexEffort(info.effort),
@@ -978,11 +981,12 @@ function buildNativeCodexOptions(info, opts, env) {
     mcpProfile:profile,
     processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+JSON.stringify(value)]),
     threadParams:{cwd:info.cwd,model:info.currentModel.id,approvalPolicy,sandbox,config:threadConfig},
-    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort)},
+    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort),
+      ...(tier && tier !== 'inherit' ? {serviceTier:tier === 'standard' ? 'default' : tier} : {})},
     resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
     forkId:opts.codexForkSid || null,
-    picker:!opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
-    resumeLatest:opts.useResume && !opts.codexSid,
+    picker:!opts.lazyStart && !opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
+    resumeLatest:!opts.lazyStart && opts.useResume && !opts.codexSid,
   };
 }
 
@@ -1030,6 +1034,7 @@ class SessionManager extends EventEmitter {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
     const id = opts.id || uuid();
+    const isAcp = isAcpKind(kind);
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
@@ -1058,9 +1063,10 @@ class SessionManager extends EventEmitter {
     }
     const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
-    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi;
+    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi || isAcp;
     let title;
     if (opts.title) title = opts.title;
+    else if (isAcp) title = ACP_LABELS[kind.replace(/-resume$/, '')];
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
@@ -1286,8 +1292,12 @@ class SessionManager extends EventEmitter {
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
     }
-    const ptyProcess = isCodex
-      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime})
+    const ptyProcess = isAcp
+      ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
+        {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
+      : isCodex
+      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+        lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
       : pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
@@ -1359,6 +1369,8 @@ class SessionManager extends EventEmitter {
       status: 'idle',
       ...(isCodex ? {runtimeBackend:'codex-app-server',nativeRuntime:ptyProcess.runtime,
         codexApprovalPolicy:opts.approvalPolicy || 'never',codexSandbox:opts.sandbox || 'danger-full-access'} : {}),
+      ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
+        acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
@@ -1582,8 +1594,8 @@ class SessionManager extends EventEmitter {
       this._handlePtyExit(id, ptyProcess, exitInfo);
     });
 
-    if (isCodex) {
-      Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
+    if (isCodex || isAcp) {
+      if (isCodex) Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
       const publish = () => {
         if (this.sessions.get(id)?.pty !== ptyProcess) return;
         this.emit('codex-session-updated', this._toPublic(info));
@@ -1598,13 +1610,19 @@ class SessionManager extends EventEmitter {
         publish();
       });
       ptyProcess.on('bound', bound => {
-        info.codexSid = bound.threadId;
+        if (isAcp) {
+          info.acpSid = bound.threadId;
+          if (bound.capabilities) info.acpCapabilities = bound.capabilities;
+          if (bound.configOptions) info.acpConfigOptions = bound.configOptions;
+        } else info.codexSid = bound.threadId;
         if (bound.cwd) info.cwd = bound.cwd;
-        if (bound.path) info.transcriptPath = bound.path;
+        if (Object.hasOwn(bound, 'path')) info.transcriptPath = bound.path;
         if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
         if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
+        if (bound.codexSpeedTier) info.codexSpeedTier = bound.codexSpeedTier;
         publish();
       });
+      ptyProcess.on('thread-reset', () => { info.codexSid=null; info.transcriptPath=null; publish(); });
       ptyProcess.on('choices', choices => { info.nativeThreadChoices = choices; publish(); });
       ptyProcess.on('migration-draft', text => { info.nativeMigrationDraft=text; publish(); });
       ptyProcess.on('renamed', name => { info.title = name; publish(); });
@@ -1637,7 +1655,7 @@ class SessionManager extends EventEmitter {
         publish();
       });
       // Deferral lets the normal session-created IPC finish before native updates.
-      queueMicrotask(() => ptyProcess.start().catch(error => {
+      if (ptyProcess.runtime.connection !== 'unstarted') queueMicrotask(() => ptyProcess.start().catch(error => {
         console.warn('[codex-native] start failed:',id,error.message);
       }));
       return this._toPublic(info);
@@ -1937,7 +1955,7 @@ class SessionManager extends EventEmitter {
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
-    if (['codex-app-server', 'claude-stream-json'].includes(session.info.runtimeBackend)) {
+    if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
       if (!runtime || runtime.connection !== 'connected'
           || !['idle','completed','interrupted','failed'].includes(runtime.state)
@@ -2321,6 +2339,11 @@ class SessionManager extends EventEmitter {
     return session?.info.runtimeBackend === 'claude-stream-json' ? session.pty : null;
   }
 
+  getNativeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    return session && ['codex-app-server','acp'].includes(session.info.runtimeBackend) ? session.pty : null;
+  }
+
   // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
   getGroupChatReady(sessionId) {
     const s = this.sessions.get(sessionId);
@@ -2383,7 +2406,7 @@ class SessionManager extends EventEmitter {
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
   relaunchCli(sessionId, options = {}) {
     const s = this.sessions.get(sessionId);
-    if (s && s.info.runtimeBackend === 'codex-app-server') {
+    if (s && ['codex-app-server','acp'].includes(s.info.runtimeBackend)) {
       const runtime = s.info.nativeRuntime;
       if (runtime && ['running','waiting'].includes(runtime.state)) return false;
       s.pty.reconnect().catch(error => {
@@ -2447,6 +2470,9 @@ class SessionManager extends EventEmitter {
       if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode, autonomous })) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      } else if (s.info?.fastMode === false) {
+        const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
+        fastFlag = ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
       // 单人和群聊都沿用自己的 MCP 档位；群聊与 autonomous 额外恢复 research config。
       const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))
@@ -2496,7 +2522,8 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
-      meetingId: info.meetingId || null,
+      ...(info.runtimeBackend === 'acp' ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
+        acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
         nativeConfig:info.nativeConfig,
         ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),

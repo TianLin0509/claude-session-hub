@@ -3175,8 +3175,9 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     transcriptTap.on('turn-complete', (event = {}) => {
       const pending = pendingByHubSession.get(event.hubSessionId);
       if (!pending) return;
-      const native=sessionManager?.getNativeCodex?.(event.hubSessionId);
-      if(native && (event.signalSource!=='codex-app-server' || event.threadId!==native.threadId
+      const native=sessionManager?.getNativeSession?.(event.hubSessionId) || sessionManager?.getNativeCodex?.(event.hubSessionId);
+      const source=require('../../core/acp-profiles').isAcpKind(native?.options?.kind)?'acp':'codex-app-server';
+      if(native && (event.signalSource!==source || event.threadId!==native.threadId
           || event.turnId!==native.runtime.turnId || native.runtime.state!=='completed'))return;
       handleAgentTurnComplete(event, pending).catch((error) => {
         markFailed(pending.agentId, error);
@@ -3186,8 +3187,9 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       });
     });
     for(const type of ['turn-error','turn-aborted'])transcriptTap.on(type,(event={})=>{
-      const native=sessionManager?.getNativeCodex?.(event.hubSessionId),pending=pendingByHubSession.get(event.hubSessionId);
-      if(!native || !pending || event.signalSource!=='codex-app-server' || event.threadId!==native.threadId
+      const native=sessionManager?.getNativeSession?.(event.hubSessionId) || sessionManager?.getNativeCodex?.(event.hubSessionId),pending=pendingByHubSession.get(event.hubSessionId);
+      const source=require('../../core/acp-profiles').isAcpKind(native?.options?.kind)?'acp':'codex-app-server';
+      if(!native || !pending || event.signalSource!==source || event.threadId!==native.threadId
           || event.turnId!==native.runtime.turnId || !['failed','interrupted'].includes(native.runtime.state))return;
       const error=new Error(event.message || (type==='turn-aborted'?'Codex 任务已中断':'Codex 任务失败'));
       if(type==='turn-aborted')error.noRetry=true;

@@ -14,7 +14,7 @@ const DATA = path.join(ROOT, 'data');
 const ART = path.resolve(__dirname, '../output/playwright', `dev-prep-${Date.now()}`);
 const LOG = path.join(ROOT, 'dispatch.jsonl');
 const SCRIPT = path.join(ROOT, 'dispatch.js');
-const PREP = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+let PREP;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const calls = () => fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
 const freePort = () => new Promise((resolve, reject) => {
@@ -22,6 +22,8 @@ const freePort = () => new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(e => e ? reject(e) : resolve(port)); });
 });
 fs.mkdirSync(WORK, { recursive: true }); fs.mkdirSync(ART, { recursive: true });
+fs.mkdirSync(DATA, { recursive: true });
+fs.writeFileSync(path.join(DATA, 'prepared-projects.json'), JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
 fs.writeFileSync(path.join(WORK, '.aiwork-root'), '');
 fs.writeFileSync(SCRIPT, `const fs=require('fs'); module.exports=args=>{ fs.appendFileSync(${JSON.stringify(LOG)},JSON.stringify(args)+'\\n'); return {text:'受控验收已收到'}; };`);
 
@@ -36,6 +38,8 @@ async function run() {
         CODEX_HOME: path.join(ROOT, 'codex'), CLAUDE_CONFIG_DIR: path.join(ROOT, 'claude') } });
     evidence.pid = hub.pid; evidence.port = hub.port;
     cdp = await connectFirstPage(hub, t => /index\.html/.test(t.url));
+    PREP = await cdp.eval("require('../core/dev-file-workflow').PROJECT_PREP_PROMPT");
+    assert(PREP.includes('project-prep') && PREP.includes(DATA), 'project registration targets isolated data');
     const wait = async (fn, label) => {
       const deadline = Date.now() + 25000;
       while (Date.now() < deadline) { const v = await fn(); if (v) return v; await sleep(120); }
@@ -61,7 +65,22 @@ async function run() {
     await size(1600);
     // Use the actual creation modal and its normal create handler, not synthetic members.
     await cdp.eval("openMeetingCreateModal('group')");
-    await click('[data-mcm-scene="dev"]');
+    await click('[data-mcm-scene="general"]');
+    await cdp.eval("closeMeetingCreateModal();openMeetingCreateModal('group')");
+    ok('默认开发排第一，默认选择已有路径', await cdp.eval(`document.querySelector('input[name="mcm-scene"]:checked').value==='dev' && document.querySelector('[data-mcm-scene]').dataset.mcmScene==='dev' && document.querySelector('[data-mcm-workspace-mode="existing"]').getAttribute('aria-checked')==='true'`));
+    ok('创建页不再显示起手选项', await cdp.eval("!document.querySelector('[data-mcm-dev-start]')"));
+    await click('[data-mcm-workspace-mode="default"]');
+    if (process.argv.includes('--solo')) {
+      ok('开发群聊保留至少两位成员', await cdp.eval("!document.querySelector('[data-remove-member]')"));
+      await click('[data-mcm-scene="general"]');
+      await click('[data-remove-member="1"]');
+      await click('[data-mcm-scene="dev"]');
+      await click('#meeting-create-modal .mcm-create');
+      await wait(() => cdp.eval("document.querySelector('.mcm-error')?.textContent.includes('至少需要两位')"), 'solo creation rejected');
+      ok('单人开发引导至普通会话的一键开工', await cdp.eval("document.querySelector('.mcm-error').textContent.includes('一键开工')"));
+      evidence.ok=true;
+      return;
+    }
     if (process.argv.includes('--double-codex')) {
       await cdp.eval(`(() => {const s=document.querySelector('.mcm-slot[data-slot="0"] .mcm-ai-select');s.value='codex';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
     }
@@ -71,7 +90,7 @@ async function run() {
     const id = created.id;
     const room = async () => (await invoke('get-meetings')).find(m => m.id === id);
     await cdp.eval(`selectMeeting(${JSON.stringify(id)})`);
-    await wait(() => cdp.eval("!!document.querySelector('[data-file-kickoff]')"), 'file controls');
+    await wait(() => cdp.eval("!!document.querySelector('[data-file-prep]')"), 'file controls');
     await shot('initial-wide');
     evidence.initial = created;
     ok('实际建群 UI：两席保留，初始仅首席选中', JSON.stringify(created.participants) === '[0]');
@@ -113,7 +132,7 @@ async function run() {
       const g = await cdp.eval(`(() => {
         const rect = e => { const r = e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height,right:r.right,bottom:r.bottom}; };
         const f = document.querySelector('.mr-file-flow'), a = document.querySelector('.mr-file-actions'), n = document.querySelector('.mr-file-recipients');
-        return {flow:rect(f),actions:rect(a),recipients:rect(n),buttons:[...a.querySelectorAll('button')].map(e => {
+        return {flow:rect(f),actions:rect(a),recipients:rect(n),avatar:rect(document.querySelector('#mr-free-avatars-row')),head:rect(document.querySelector('#mr-composer-head')),buttons:[...a.querySelectorAll('button')].map(e => {
           const r = e.getBoundingClientRect();
           return {text:e.innerText,...rect(e),hit:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))};
         })};
@@ -121,7 +140,7 @@ async function run() {
       evidence.geometry[width] = g;
       ok(`宽度 ${width}：按钮可点击且不溢出`, g.buttons.every(b => b.hit && b.x >= g.flow.x - 1 && b.right <= g.flow.right + 1));
       ok(`宽度 ${width}：立项紧邻开题`, g.buttons[0].text === '立项' && g.buttons[1].text === '开题');
-      if (width === 1600) ok('宽屏按钮组左移至收件人左侧', g.recipients.x >= g.actions.right && g.flow.right - g.actions.right >= 150);
+      ok(`宽度 ${width}：头像、状态与操作保持一行`, g.avatar.x < g.flow.x && Math.abs(g.avatar.y + g.avatar.h / 2 - g.actions.y - g.actions.h / 2) < 5 && g.head.h <= 45);
       await shot('controls-' + width);
     }
     await size(1600);

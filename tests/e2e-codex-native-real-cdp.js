@@ -39,7 +39,7 @@ async function main(){
     }
     await send('这是真实 AI Hub 隔离 GUI 验收。不要调用工具，只回复 GUI_NATIVE_OK。');
     await until('sessions.get('+sid+').nativeRuntime.state==="completed"','real GUI complete');
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    await until('currentView === "card"','default native conversation view');
     await until('[...document.querySelectorAll(".turn-card .turn-body")].some(e=>e.innerText.includes("GUI_NATIVE_OK"))','real answer card');
     assert.equal(await cdp.eval('document.querySelectorAll(".fi-stuck").length'),0);
     await snap('real-answer');result.checks.push('real model GUI composer -> native receipt -> answer card');

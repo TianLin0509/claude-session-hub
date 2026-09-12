@@ -1,6 +1,7 @@
 // 纯函数：按最新 AI 回答时间年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+const { getMeetingUnreadMemberIds } = require('./meeting-unread');
 const { compareLatestActivityDesc, latestActivityTime } = require('../core/session-recency.js');
 const {
   sessionHasCompletedUnread,
@@ -109,6 +110,11 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
+function sidebarItemHasUnread(item, sessionMap) {
+  if (!item._isMeeting) return sessionHasCompletedUnread(item);
+  return getMeetingUnreadMemberIds(item._meeting, sessionMap).size > 0 || item.unreadAnsweredSize > 0;
+}
+
 function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
@@ -116,24 +122,23 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const truth = s._isMeeting ? null : getSessionRuntimeTruth(s, { now });
     const meeting = s._isMeeting ? _meetingRuntimeAggregate(s._meeting, sessionMap, now) : null;
     const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
-    const selected = s.id === (s._isMeeting ? activeMeetingId : activeSessionId);
     const fresh = now - latestActivityTime(s, now) < 86400000;
     const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
     const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
     const working = s._resumePending || (meeting ? meeting.running
       : (s.meetingId || groupMemberIds.has(s.id)) ? isGroupChatMemberRunning(s, now) : sessionRuntimeIsActive(s, { now }));
-    const unread = !selected && (!dormant || fresh) && (s._isMeeting ? s.unreadAnsweredSize > 0 : sessionHasCompletedUnread(s));
+    const unread = sidebarItemHasUnread(s, sessionMap);
     states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
-    if (s.pinned) pinned.push(s);
+    if (unread) completed.push(s);
+    else if (s.pinned) pinned.push(s);
     else if (waiting) respond.push(s);
     else if (error) failed.push(s);
     else if (working) running.push(s);
-    else if (unread) completed.push(s);
     else if (dormant) archive.push(s);
     else if (fresh) today.push(s);
     else older.push(s);
   }
-  return { pinned, active: [...respond, ...failed, ...running, ...completed], today, archive, older, archiveCount: archive.length, states };
+  return { pinned, unread: completed, active: [...respond, ...failed, ...running], today, archive, older, archiveCount: archive.length, states };
 }
 
 function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
@@ -153,9 +158,40 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
 
 
 function createSessionListRenderer(options = {}) {
-  const { detailsHtml, usageText } = require('./session-details.js');
+  const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  const sectionKeys = ['sec-pinned', 'sec-unread', 'sec-active', 'sec-today', 'sec-dormant'];
+  let collapsedSections = new Set();
+  let dormantDays = 1;
+  let modelFilter = 'all';
+  try {
+    const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
+    if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
+    const days = Number(storage.getItem('hubSidebarDormantDays'));
+    if ([1, 3, 7].includes(days)) dormantDays = days;
+    const model = storage.getItem('hubSidebarModelFilter');
+    if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
+  } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
+  function savePreference(key, value) {
+    try { storage.setItem(key, value); }
+    catch (error) { console.warn('[sidebar] preference could not be saved:', error.message); }
+  }
+  const modelControl = doc.getElementById?.('session-model-filter');
+  if (modelControl) {
+    modelControl.value = modelFilter;
+    modelControl.addEventListener('change', () => {
+      modelFilter = SESSION_FAMILY_KEYS.includes(modelControl.value) ? modelControl.value : 'all';
+      savePreference('hubSidebarModelFilter', modelFilter);
+      renderSessionList();
+    });
+  }
+  const { createSidebarProjectFilter } = require('./sidebar-project-filter');
+  const projectFilter = createSidebarProjectFilter({
+    document: doc, storage,
+    ipcRenderer: options.ipcRenderer || (doc.getElementById?.('session-project-filter') ? require('electron').ipcRenderer : null),
+    onChange: () => renderSessionList(),
+  });
   let detailsEnabled = false;
   try { detailsEnabled = storage.getItem('hubSessionDetails') === 'true'; } catch {}
   const collapsedDetailsMeetings = new Set();
@@ -190,6 +226,7 @@ function createSessionListRenderer(options = {}) {
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
+  const markMeetingRead = options.markMeetingRead;
   // 「已完成未读」组头上的一键已读。渲染层只负责按钮，真正清状态由 renderer.js 注入。
   const markAllSessionsRead = typeof options.markAllSessionsRead === 'function'
     ? options.markAllSessionsRead
@@ -262,7 +299,7 @@ function _warningHtml(message) {
   return message ? `<svg class="sl-warning" viewBox="0 0 24 24" role="img" aria-label="${escapeHtml(message)}"><title>${escapeHtml(message)}</title><path d="M12 3 2 21h20L12 3Zm0 6v5m0 3v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` : '';
 }
 function _ringHtml(ctxPct, dotCls) {
-  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '已完成未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
+  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
   return '<span class="sl-dot ' + dotCls + '" role="img" aria-label="' + (labels[dotCls] || '就绪') + '"></span>';
 }
 
@@ -369,10 +406,12 @@ function _sessionWarningText(session) {
 
   function navigationIntentFromTarget(target) {
     if (!target || typeof target.closest !== 'function') return null;
+    const read = target.closest('[data-action="mark-meeting-read"]');
+    if (read) return { type: 'read-meeting', id: read.closest('[data-meeting-id]')?.dataset.meetingId };
     const usage = target.closest('[data-usage-id]');
     if (usage) return { type: 'usage', id: usage.getAttribute('data-usage-id') };
     const jump = target.closest('[data-sub-id]');
-    if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id') };
+    if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id'), latest: true };
     const toggle = target.closest('[data-action="toggle-expand"]');
     if (toggle) {
       const meeting = toggle.closest('[data-meeting-id]');
@@ -388,26 +427,25 @@ function _sessionWarningText(session) {
   function activateNavigationIntent(intent) {
     if (!intent || !intent.id) return false;
     try {
+      if (intent.type === 'read-meeting') {
+        markMeetingRead?.(intent.id);
+        return true;
+      }
       if (intent.type === 'usage') {
-        const session = getSessions().get(intent.id);
-        if (!session) return false;
-        let dialog = doc.getElementById('session-usage-dialog');
-        if (!dialog) {
-          dialog = doc.createElement('dialog');
-          dialog.id = 'session-usage-dialog';
-          doc.body.appendChild(dialog);
-        }
-        dialog.innerHTML = `<form method="dialog"><button aria-label="关闭用量明细">关闭</button></form><h3>${escapeHtml(session.title || '会话用量')}</h3><pre>${escapeHtml(usageText(session))}</pre>`;
-        if (!dialog.open) dialog.showModal();
+        // Usage details live in the hover tooltip. Consume the click so it
+        // does not activate or resume the surrounding session row.
         return true;
       }
       if (intent.type === 'toggle-meeting') {
         toggleMeetingExpand(intent.id);
         return true;
       }
+      const forceScrollBottom = !!intent.latest || intent.id === getActiveSessionId()
+        || sessionHasCompletedUnread(getSessions().get(intent.id))
+        || Object.values(getMeetings()).some(m => getMeetingUnreadMemberIds(m, getSessions()).has(intent.id));
       const action = intent.type === 'meeting'
-        ? selectMeeting(intent.id, { forceScrollBottom: true })
-        : selectSession(intent.id, { forceScrollBottom: true });
+        ? selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })
+        : selectSession(intent.id, { forceScrollBottom });
       Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
       return true;
     } catch (error) {
@@ -524,11 +562,7 @@ sessionListEl.addEventListener('keydown', event => {
       ? `AI 群聊 · ${(m.participants || m.subSessions || []).length}/${(m.subSessions || []).length} 已选`
       : `${m.subSessions.length} 个子会话`,
     status: m.status || 'idle',
-    // 2026-05-05 道雪 修3：AI 群聊 item 接入 unread 机制 —— 全员答完且非 active 时累加，
-    //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
-    // 2026-05-31 道雪：unread 语义改为"本轮已答 AI 数（Set<sid>.size）" — 任一 AI 答完 +1，
-    //   显示"已答 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
-    unreadAnsweredSize: m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0,
+    unreadAnsweredSize: getMeetingUnreadMemberIds(m, sessionMap).size,
     pinned: m.pinned,
     bottomed: m.bottomed,
     _isMeeting: true,
@@ -563,6 +597,30 @@ sessionListEl.addEventListener('keydown', event => {
     if (typeof options.openSearch === 'function') return options.openSearch(detail);
     doc.dispatchEvent(new doc.defaultView.CustomEvent('sidebar:open-search', { detail }));
   }
+  function filteredSidebarItems(sessionMap = getSessions()) {
+    return collectSidebarItems(sessionMap).filter(item => projectFilter.matches(item) && (modelFilter === 'all' || sessionFamilies(item, sessionMap).has(modelFilter)));
+  }
+  function revealSearchItem(id, memberId = null) {
+    const item = collectSidebarItems().find(entry => entry.id === id);
+    if (!item) return;
+    projectFilter.reveal(item);
+    const member = memberId && item._meeting?.subSessions?.includes(memberId) ? getSessions().get(memberId) : null;
+    if (modelFilter !== 'all' && !(member ? sessionFamilies(member, getSessions()) : sessionFamilies(item, getSessions())).has(modelFilter)) {
+      modelFilter = 'all';
+      if (modelControl) modelControl.value = modelFilter;
+      savePreference('hubSidebarModelFilter', modelFilter);
+    }
+    if (member) {
+      collapsedDetailsMeetings.delete(id);
+      _expandedMeetings.add(id);
+      _persistExpandedMeetings();
+    }
+    const parts = partitionSidebarSessions([item], { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    const key = parts.pinned.length ? 'sec-pinned' : parts.unread.length ? 'sec-unread' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
+    collapsedSections.delete(key);
+    savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
+    renderSessionList();
+  }
   doc.addEventListener?.('sidebar:manage-pin', event => {
     if (!collectSidebarItems().some(item => item.id === event.detail?.id && item.pinned)) return;
     openContextMenu(event.detail.id, event.detail.x, event.detail.y);
@@ -574,7 +632,7 @@ sessionListEl.addEventListener('keydown', event => {
     const failures = [];
     try {
       const ipc = options.ipcRenderer || require('electron').ipcRenderer;
-      const current = partitionSidebarSessions(collectSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+      const current = partitionSidebarSessions(filteredSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
       for (const item of current.today) {
         try {
           const members = item._isMeeting ? (item._meeting.subSessions || []) : [item.id];
@@ -602,7 +660,7 @@ sessionListEl.addEventListener('keydown', event => {
   function renderSessionList() {
     const renderStartedAt = nowMs();
     const sessionMap = getSessions();
-  const visible = collectSidebarItems(sessionMap);
+  const visible = filteredSidebarItems(sessionMap);
   const sections = partitionSidebarSessions(visible, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
@@ -610,6 +668,7 @@ sessionListEl.addEventListener('keydown', event => {
   const savedScrollTop = sessionListEl.scrollTop;
   const focused = doc.activeElement;
   const focusId = focused?.dataset?.sessionId || focused?.dataset?.meetingId;
+  const focusControl = focused?.dataset?.sidebarControl;
   const hadListFocus = focused && sessionListEl.contains?.(focused);
   // Build the entire status reclassification off-DOM, then commit once. A
   // running -> needs-input transition used to clear and repopulate the live
@@ -623,6 +682,7 @@ sessionListEl.addEventListener('keydown', event => {
 
   // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
   const detailSessionIds = new Set();
+  const unreadMemberIds = new Set(Object.values(getMeetings()).flatMap(m => [...getMeetingUnreadMemberIds(m, sessionMap)]));
   function appendItem(s, child = false, target = renderTarget) {
     if (s._isMeeting) {
       const isActive = getActiveMeetingId() === s.id;
@@ -635,6 +695,7 @@ sessionListEl.addEventListener('keydown', event => {
       const groupContainer = isGroupChat ? doc.createElement('div') : null;
       if (groupContainer) {
         groupContainer.className = 'sidebar-group' + (detailsEnabled ? ' detailed-group' : ' compact-group')
+          + (s._meeting.subSessions?.includes(getActiveSessionId()) ? ' has-active-member' : '')
           + (hoveredMeetingId === s.id ? ' hover-open' : '');
         groupContainer.dataset.sidebarGroup = s.id;
         target.appendChild(groupContainer);
@@ -643,7 +704,8 @@ sessionListEl.addEventListener('keydown', event => {
       // 2026-07-19 道雪 · 方案C：群聊两行卡（行1 状态+标题+时间，行2 成员 mini-jump），
       //   不再渲染 badge pill（等你/休眠进 sl-state，已选数进行2 末尾）。
       const isDormantMeeting = s.status === 'dormant';
-      const hasUnread = !isActive && (s.unreadAnsweredSize > 0);
+      const unreadMembers = getMeetingUnreadMemberIds(s._meeting, sessionMap);
+      const hasUnread = sidebarItemHasUnread(s, sessionMap);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
       const meetingRuntime = _meetingRuntimeAggregate(s._meeting, sessionMap);
       const anySubRunning = meetingRuntime.running;
@@ -715,16 +777,27 @@ sessionListEl.addEventListener('keydown', event => {
       // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
       const dotCls = sections.states.get(s.id) || 'idle';
       const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => _aiLogoHtml(sessionMap.get(id)?.kind)).join('');
-      const progress = memberTotal ? Math.min(100, s.unreadAnsweredSize / memberTotal * 100) : 0;
+      const answered = s._meeting.answeredThisTurn?.size || 0;
+      const progress = memberTotal ? Math.min(100, answered / memberTotal * 100) : 0;
+      const unreadChips = isGroupChat && hasUnread ? (s._meeting.subSessions || []).map(sid => {
+        const sub = sessionMap.get(sid);
+        const unread = unreadMembers.has(sid);
+        const runtime = sub ? getSessionRuntimeTruth(sub) : null;
+        const state = runtime?.state === RUNTIME_WAITING ? 'wait' : _subIsRunning(sub) ? 'run' : '';
+        const label = sub?.title || KIND_LABELS[_logoKind(sub?.kind)] || '成员';
+        return `<button type="button" class="mini-jump-btn sl-unread-member${unread ? ' has-unread' : ''}" data-sub-id="${escapeHtml(sid)}" title="${escapeHtml(label)} · ${unread ? '有未读，查看最新回答' : '查看成员'}"><span class="sl-member-name">${escapeHtml(label)}</span>${state ? `<span class="sl-member-runtime ${state}">${state === 'wait' ? '待输入' : '运行中'}</span>` : ''}${unread ? '<span class="sl-member-unread-dot" aria-label="未读"></span>' : ''}</button>`;
+      }).join('') : '';
       div.innerHTML = [
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
         isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
-        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, '已答 ' + s.unreadAnsweredSize + '/' + memberTotal].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
         '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
-        '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span></div>',
+        (hasUnread ? '<span class="sl-unread-badge">' + unreadMembers.size + ' 位未读</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>') + '</div>',
+        unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '',
+        hasUnread && markMeetingRead ? '<button type="button" class="sl-meeting-read" data-action="mark-meeting-read" data-sidebar-control="read-' + escapeHtml(s.id) + '">整组已读</button>' : '',
         isGroupChat ? '' : '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
-        isGroupChat ? '<span class="sl-group-progress" title="已答 ' + s.unreadAnsweredSize + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
+        isGroupChat ? '<span class="sl-group-progress" title="本轮已答 ' + answered + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
       ].join('');
       div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -740,7 +813,7 @@ sessionListEl.addEventListener('keydown', event => {
           groupContainer.appendChild(children);
           for (const id of s._meeting.subSessions || []) {
             const member = sessionMap.get(id);
-            if (member) appendItem(member, true, children);
+            if (member && (modelFilter === 'all' || familyOfKind(member.kind) === modelFilter)) appendItem(member, true, children);
           }
         }
         return;
@@ -751,6 +824,7 @@ sessionListEl.addEventListener('keydown', event => {
         for (const subId of s._meeting.subSessions) {
           const sub = sessionMap.get(subId);
           if (!sub) continue;
+          if (modelFilter !== 'all' && familyOfKind(sub.kind) !== modelFilter) continue;
           if (detailsEnabled) { appendItem(sub, true, target); continue; }
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
@@ -808,7 +882,7 @@ sessionListEl.addEventListener('keydown', event => {
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
-    const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
+    const showUnread = sessionHasCompletedUnread(s) || unreadMemberIds.has(s.id);
     // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
     const dotCls = s._resumePending ? 'start' : (child
       ? partitionSidebarSessions([s], { sessionMap, activeSessionId: getActiveSessionId(), groupMemberIds: new Set([s.id]) }).states.get(s.id)
@@ -841,7 +915,7 @@ sessionListEl.addEventListener('keydown', event => {
     div.innerHTML = _ringHtml(ctxPct, dotCls)
       + '<span class="sl-title" title="' + escapeHtml(titleTip) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
       + _sessionKindHtml(s.kind, modelTxt)
-      + '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>';
+      + (showUnread ? '<span class="sl-unread-badge">新回复</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>');
     if (child) div.className += ' child';
     if (detailsEnabled) {
       div.className += ' has-details';
@@ -854,21 +928,47 @@ sessionListEl.addEventListener('keydown', event => {
   }
 
   function appendSecHeader(label, items, cls, action, onAction) {
+    const collapsed = collapsedSections.has(cls);
     const h = doc.createElement('div');
     h.className = 'session-sec-header ' + cls;
-    h.innerHTML = '<span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
-      + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-active' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
+    h.innerHTML = '<button type="button" class="sec-collapse" data-sidebar-control="' + cls + '" aria-label="' + (collapsed ? '展开' : '折叠') + label + '" aria-expanded="' + !collapsed + '">' + (collapsed ? '▸' : '▾') + '</button><span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
+      + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-unread' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
     h.addEventListener('click', event => {
+      if (event.target?.closest?.('.sec-collapse') || /sec-collapse/.test(event.target?.className || '')) {
+        event.preventDefault(); event.stopPropagation();
+        if (collapsedSections.has(cls)) collapsedSections.delete(cls); else collapsedSections.add(cls);
+        savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
+        renderSessionList();
+        return;
+      }
       if (!event.target?.closest?.('.sec-action') && !/sec-action|sec-mark-all-read/.test(event.target?.className || '')) return;
       event.preventDefault(); event.stopPropagation();
       return onAction?.();
     });
+    if (cls === 'sec-dormant') {
+      const range = doc.createElement('select');
+      range.className = 'sec-dormant-range';
+      range.dataset.sidebarControl = 'dormant-range';
+      range.setAttribute?.('aria-label', '休眠显示范围');
+      range.innerHTML = '<option value="1">最近24小时</option><option value="3">最近3天</option><option value="7">最近7天</option>';
+      range.value = String(dormantDays);
+      range.addEventListener('change', () => {
+        const days = Number(range.value);
+        if (![1, 3, 7].includes(days)) return;
+        dormantDays = days;
+        savePreference('hubSidebarDormantDays', String(days));
+        renderSessionList();
+      });
+      h.appendChild(range);
+    }
     renderTarget.appendChild(h);
-    for (const item of items) appendItem(item);
+    if (!collapsed) for (const item of items) appendItem(item);
   }
   appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
-  appendSecHeader('活跃', sections.active, 'sec-active', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
+  appendSecHeader('未读', sections.unread, 'sec-unread', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
+  appendSecHeader('活跃', sections.active, 'sec-active');
   appendSecHeader('今天', sections.today, 'sec-today', sections.today.length ? '归档全部' : '', archiveToday);
+  appendSecHeader('休眠', sections.archive.filter(item => Date.now() - latestActivityTime(item) < dormantDays * 86400000), 'sec-dormant');
   const archive = doc.createElement('button');
   archive.type = 'button';
   archive.className = 'session-archive-entry';
@@ -903,6 +1003,9 @@ sessionListEl.addEventListener('keydown', event => {
   if (hadListFocus && focusId) {
     const replacement = [...sessionListEl.querySelectorAll('.session-item')].find(row => (row.dataset.sessionId || row.dataset.meetingId) === focusId);
     replacement?.focus({ preventScroll: true });
+  }
+  if (hadListFocus && focusControl) {
+    [...sessionListEl.querySelectorAll('[data-sidebar-control]')].find(control => control.dataset.sidebarControl === focusControl)?.focus({ preventScroll: true });
   }
   const elapsed = Math.max(0, nowMs() - renderStartedAt);
   renderStats.renders += 1;
@@ -946,8 +1049,11 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
+  queueMicrotask(() => projectFilter.refresh());
+
   return {
     renderSessionList,
+    revealSearchItem,
     renderSidebarStrip,
     getRenderStats: () => ({ ...renderStats }),
   };

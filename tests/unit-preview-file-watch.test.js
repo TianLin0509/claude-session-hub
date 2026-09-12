@@ -175,7 +175,15 @@ test('unexpected close retries, rescans changes and ignores late errors from old
   fs.signatures.set(target, { mtimeMs: 1, size: 10 });
   const events = [];
   const manager = createPreviewFileWatchManager({ fs, debounceMs: 1, retryMs: 1, maxRetryMs: 2 });
-  manager.subscribe(target, event => events.push(event));
+  let recovered;
+  const recovery = new Promise(resolve => { recovered = resolve; });
+  let deadline;
+  const timeout = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('recovery scan did not arrive')), 2000); });
+  t.after(() => { clearTimeout(deadline); manager.dispose(); });
+  manager.subscribe(target, event => {
+    events.push(event);
+    if (event.eventType === 'watch-recovered-scan') recovered();
+  });
   const oldWatcher = fs.watchers[0];
   oldWatcher.emit('close');
   assert.equal(manager.getStats().degradedDirectories, 1);

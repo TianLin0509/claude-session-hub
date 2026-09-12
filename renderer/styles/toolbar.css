@@ -52,6 +52,23 @@
   -webkit-app-region: no-drag;
 }
 
+.hub-new-instance {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.hub-new-instance:hover { background: var(--bg-hover, rgba(128, 128, 128, 0.15)); }
+.hub-new-instance:focus-visible { outline: 2px solid var(--accent, #7185ff); outline-offset: 2px; }
+.hub-new-instance:disabled { opacity: 0.5; cursor: wait; }
+
 /* 系统窗口按钮的留位。WCO 可用时按它给的真实宽度走：用户改过系统缩放、
    或者将来按钮数量变了，都不用回来改这个常量。 */
 .toolbar-window-controls {
@@ -234,29 +251,25 @@
   .terminal-crumb-dot.running { animation: none; }
 }
 
-/* ── 中：视图切换 ────────────────────────────────────────────────────
-   T2 把它从右上角浮层收进舞台头部，T6 跟着头部一起上移到工具栏。
-   节点已经从 #terminal-panel 里搬走，所以也从 preserve 名单里删掉了。 */
-.app-toolbar > .view-toggle {
-  /* 「中央」按工具栏中线算，不是「剩余空间的中点」—— 后者会随标题长度左右漂，
-     用户每次找它都得重新扫一遍。面包屑那边用 max-width 保证不会撞上来。 */
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  top: 50%;
-  margin-top: -13px;
-  right: auto;
-  z-index: 2;
-  border-radius: var(--radius-pill);
-  background: rgba(var(--rgb-overlay), 0.05);
-  padding: 2px;
-  gap: 2px;
-}
-.app-toolbar > .view-toggle .view-toggle-btn {
-  border-radius: var(--radius-pill);
-  padding: 3px 12px;
-  font-size: 11px;
-  font-weight: 600;
+/* Application identity stays in the normal flow so it cannot cover controls. */
+.hub-identity { display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1 0 auto; white-space: nowrap; color: var(--fg-default); }
+.hub-identity img { width: 24px; height: 24px; object-fit: contain; }
+.hub-identity strong { font-size: 14px; letter-spacing: .02em; font-weight: 650; }
+#hub-version { font-size: 11px; color: var(--fg-muted); padding: 2px 6px; border: 1px solid var(--border-subtle); border-radius: 5px; }
+.hub-pid { font: 10px/1.4 Consolas, monospace; color: var(--fg-muted); }
+.app-toolbar .terminal-crumb { flex: 1 1 180px; max-width: 28%; margin-right: 0; }
+.app-toolbar .terminal-header-actions { flex: 0 0 auto; }
+.backstage-toggle { flex: none; border: 1px solid var(--border-mid); background: transparent; color: var(--fg-default); border-radius: 7px; padding: 5px 10px; white-space: nowrap; font: inherit; font-size: 12px; cursor: pointer; }
+.backstage-toggle[hidden] { display: none; }
+.backstage-toggle[aria-pressed="true"] { color: var(--accent-blue); background: rgba(var(--rgb-info), .1); border-color: var(--accent-blue); }
+.backstage-toggle:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+@media (max-width: 900px) {
+  .app-toolbar { gap: 6px; }
+  .hub-identity { gap: 5px; }
+  .hub-identity img { width: 20px; height: 20px; }
+  .hub-identity strong { font-size: 12px; }
+  .app-toolbar .terminal-crumb { max-width: 15%; }
+  .app-toolbar .terminal-header-actions .header-overflow-wrap { margin-left: 0; }
 }
 
 /* 「复制对话」原来靠 right: 414px 挤在那排浮层（视图切换 220 / 通知 312）的左边。

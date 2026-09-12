@@ -89,7 +89,7 @@ test('incremental card refresh keeps existing cards when parsing is temporarily 
   );
   assert.match(
     block,
-    /if \(turns\.length === 0\) \{[\s\S]*?if \(!incremental\) \{\s*if \(concurrentFullCards\.length === 0\) \{\s*showPlaceholder\(\s*'新会话/,
+    /if \(turns\.length === 0\) \{[\s\S]*?if \(!incremental\) \{\s*if \(concurrentFullCards\.length === 0\) \{\s*container\.innerHTML = require\('\.\/session-welcome'\)\.renderSessionWelcome/,
     'an empty incremental snapshot must not erase existing cards',
   );
 });
@@ -117,7 +117,7 @@ test('active card refresh is provider-aware without requiring renderer transcrip
   );
   assert.match(
     block,
-    /parseOpts:[\s\S]{0,100}=== 'codex-app-server'\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
+    /parseOpts:\s*isNativeSession\(sessions\.get\(sessionId\)\)\s*\? \{ limit: Infinity, latestTurn: true, turnId:[^\n]+\}\s*: \{ limit: 1, fromTail: true \}/,
     'native refresh must scope provider items to one turn; log refresh stays bounded to the tail',
   );
 });

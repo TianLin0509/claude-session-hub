@@ -6,6 +6,9 @@ const { Worker } = require('node:worker_threads');
 const Feed = require('../../core/dev-workbench-feed');
 const DP = require('../../renderer/dev-progress');
 const FileFlow = require('../../core/dev-file-workflow');
+const TaskView = require('../../core/dev-task-view');
+const Runtime = require('../../core/session-runtime-truth');
+const { createTaskReader } = require('./dev-task-reader');
 
 // 项目卡的标题读项目自己的 .agents/project.json。
 // 以前用的是 meeting.workspaceLabel —— 那个字段会被自动标题改写成 AI 的第一句回复
@@ -36,6 +39,27 @@ function createDevWorkbench(deps) {
   const log = error => logger.warn('[dev-workbench]', errorText(error));
   const meeting = id => validId(id) ? (meetingManager.getDevWorkbenchRecord
     ? meetingManager.getDevWorkbenchRecord(id) : meetingManager.getMeeting(id)) : null;
+  const allMeetings = () => meetingManager.getDevWorkbenchRecords ? meetingManager.getDevWorkbenchRecords() : meetingManager.getAllMeetings?.() || [];
+  const taskReader = createTaskReader({ getMeetings:allMeetings, getMeeting:meeting, getRuntime:taskRuntime, getHubDataDir, onChanged:changed, read:readTaskInWorker });
+  function readTaskInWorker(dataDir, m) {
+    return new Promise((resolve,reject)=>{
+      const key=++requestId;
+      try{
+        const instance=getWorker();
+        const timeout=setTimeout(()=>failWorker(new Error('任务文件读取超时，保留最后有效记录')),10000);timeout.unref?.();
+        reads.set(key,{timer:timeout,reject,resolve:p=>p.error?reject(new Error(p.error)):resolve(p.task)});
+        instance.postMessage({requestId:key,type:'task',dataDir,meeting:m});
+      }catch(error){const pending=reads.get(key);if(pending)clearTimeout(pending.timer);reads.delete(key);reject(error);}
+    });
+  }
+  function taskRuntime(m) {
+    const truths = (m.subSessions || []).map((sid,i) => {
+      const s = deps.sessionManager?.getSession(sid);
+      const t = Runtime.getSessionRuntimeTruth(s);
+      return { state:t.state, source:t.source, confidence:t.confidence, label:Runtime.runtimeLabel(t.state), memberId:m.slotSpecs?.[i]?.memberId || `m${i+1}` };
+    });
+    return ['running','starting','waiting','failed','interrupted','unknown','completed','idle','dormant'].map(k=>truths.find(t=>t.state===k)).find(Boolean) || { state:'unknown',label:'运行状态未知' };
+  }
 
   function runtime(m) {
     if (!loopEngine) return { running: false, unavailable: true };
@@ -147,7 +171,19 @@ function createDevWorkbench(deps) {
     };
   }
   function safeRow(m) {
-    try { return makeRow(m); }
+    try {
+      if (FileFlow.enabled(m)) {
+        const flow=m.serialWorkflow?.fileFlow || {};
+        const row = TaskView.projectFileRow(m, taskReader.get(m), taskRuntime(m), { paused:flow.paused, dispatchError:flow.error });
+        return { id:m.id, workspace:m.workspace || '', project:projectNameOf(m.workspace,Feed.clean), createdAt:m.createdAt, ...row };
+      }
+      const row = makeRow(m);
+      const scope = ['passed','stopped','stoppedUser'].includes(row.stage.key) ? 'history' : row.flow.phase==='discuss' ? 'discuss' : 'current';
+      // Legacy reports remain readable, but legacy ASK / FAIL is not a new user decision.
+      return { ...row, scope, mode:'旧协议', attention:null, notice:row.feedError || row.lastError || '', actions:{},
+        basis:'旧协议记录；阶段和报告尚未按文件工作流核对', source:{name:'旧群聊汇报',at:row.progressSource?.at || 0},
+        runtime:taskRuntime(m), quality:row.feedError?'stale':row.loading?'loading':'fresh' };
+    }
     catch (error) {
       log(error);
       return { id: m.id, title: Feed.clean(m.title, 240) || '开发群聊', stage: { key: 'damaged', tone: 'bad', label: '任务数据异常' },
@@ -234,18 +270,24 @@ function createDevWorkbench(deps) {
     const devs = meetings.filter(DP.isDevMeeting);
     for (const m of devs) {
       if (retryErrors && summaries.get(m.id)?.error) summaries.delete(m.id);
-      queue(m.id);
+      if (!FileFlow.enabled(m)) queue(m.id);
     }
     pump();
     return { ok: true, epoch, sequence, rows: devs.map(safeRow) };
   }
   function handleEvent(channel, data) {
     if (disposed || !data) return;
+    if (channel==='session-updated') {
+      const sid=data.session?.id || data.sid;
+      if(sid) for(const m of allMeetings()) if(m.subSessions?.includes(sid)) changed(m.id);
+      return;
+    }
     const channels = ['loop:progress', 'workflow:progress', 'meeting-created', 'meeting-updated', 'meeting-closed', 'meeting-created-with-errors'];
     if (!channels.includes(channel)) return;
     const id = data.meetingId || data.meeting?.id;
     if (!validId(id)) return;
-    if (DP.isDevMeeting(meeting(id))) { queue(id); pump(); }
+    const m=meeting(id);if(FileFlow.enabled(m))taskReader.enqueue(m);
+    if (DP.isDevMeeting(m) && !FileFlow.enabled(m)) { queue(id); pump(); }
     changed(id);
   }
 
@@ -323,9 +365,21 @@ function createDevWorkbench(deps) {
       try { return snapshot(args && typeof args === 'object' ? args : {}); }
       catch (error) { log(error); return { ok: false, reason: errorText(error) }; }
     });
-    ipcMain.handle('dev-workbench:action', (_event, args) => action(args && typeof args === 'object' ? args : {}));
+    // The workbench is read-only. Keep old internal helpers for compatibility,
+    // but never expose dispatch or meeting mutation through its IPC surface.
+    ipcMain.handle('dev-workbench:action', () => ({ ok:false, reason:'工作台只读，请在原群聊操作' }));
+    ipcMain.handle('dev-workbench:read-source', async (_event, args={}) => {
+      try {
+        const m=meeting(args.meetingId);if(!FileFlow.enabled(m))throw new Error('该任务没有文件来源');
+        const row=safeRow(m), name=row.source?.name;
+        if(!name)throw new Error('尚无当前阶段的任务记录');
+        const dir=FileFlow.directory(getHubDataDir(),m.id);
+        const raw=await TaskView.readText(dir,path.join(dir,name));
+        return {ok:true,name,text:raw.text,hash:raw.hash,at:raw.at};
+      }catch(error){return {ok:false,reason:errorText(error)};}
+    });
   }
-  function dispose() { disposed = true; unsubscribe(); if (timer) clearTimeout(timer); failWorker(new Error('工作台已关闭')); }
+  function dispose() { disposed = true; taskReader.dispose(); unsubscribe(); if (timer) clearTimeout(timer); failWorker(new Error('工作台已关闭')); }
   return { snapshot, action, handleEvent, registerIpc, dispose, ingest, flush, changed, _test: { makeRow, summaries, controls } };
 }
 module.exports = { createDevWorkbench };

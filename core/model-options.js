@@ -10,6 +10,9 @@
 // `/model gpt-5.5` to Codex 0.151 is an ordinary model prompt, not a switch.
 
 const MODEL_OPTIONS_BY_KIND = {
+  qwen: [{id:'qwen3.8-max',label:'Qwen 3.8 Max · 套餐'}],
+  'deepseek-acp': [{id:'deepseek-v4-pro',label:'DeepSeek V4 Pro · 套餐'}],
+  glm: [{id:'glm-5.2',label:'GLM 5.2 · 套餐'}],
   claude: [
     { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
     { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M context)' },
@@ -96,6 +99,9 @@ function clearRuntimeModelOptions(kind) {
 }
 
 const DEFAULT_MODEL_BY_KIND = {
+  qwen: 'qwen3.8-max',
+  'deepseek-acp': 'deepseek-v4-pro',
+  glm: 'glm-5.2',
   claude: 'claude-opus-5[1m]',
   gemini: 'gemini-3-pro-preview',
   codex: 'gpt-6-astra',
@@ -165,6 +171,9 @@ function modelOptionsFor(kind) {
 const MODEL_SWITCH_STRATEGY_BY_KIND = Object.freeze({
   claude: 'claude-inline',
   codex: 'codex-picker',
+  qwen: 'acp-native',
+  'deepseek-acp': 'acp-native',
+  glm: 'acp-native',
 });
 
 function modelSwitchStrategy(kind) {

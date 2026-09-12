@@ -68,6 +68,25 @@
   box-shadow: inset 0 0 0 1px var(--border-subtle), var(--shadow-md);
 }
 .mr-group-composer .mr-free-avatars-row { grid-column: 1 / -1; grid-row: 1; justify-self: start; }
+.mr-group-composer .mr-composer-head { grid-column: 1 / -1; grid-row: 1; display: flex; align-items: center; gap: 10px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.mr-composer-head .mr-free-avatars-row { padding: 2px; border: 0; background: transparent; max-width: 150px; gap: 4px; overflow-y: hidden; scrollbar-width: none; }
+.mr-composer-head .mr-free-avatars-row::-webkit-scrollbar { display: none; }
+.mr-composer-head .mr-free-avatar-chk { width: 28px; height: 28px; flex: none; }
+.mr-composer-head .mr-free-avatar-chk-mark { width: 12px; height: 12px; font-size: 8px; }
+.mr-composer-head .mr-input-preflight { flex: 1; min-width: 0; padding: 0; min-height: 32px; flex-wrap: nowrap; gap: 8px; }
+.mr-composer-head .mr-file-flow { flex: 1; width: auto; min-width: 0; flex-wrap: nowrap; gap: 10px; padding: 0; }
+.mr-composer-head .mr-file-steps, .mr-composer-head .mr-file-recipients { display: none; }
+.mr-composer-head .mr-file-detail { flex: 1; min-width: 90px; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mr-composer-head .mr-file-detail strong { font-weight: 500; }
+.mr-composer-head .mr-file-error { display: inline; margin-left: 6px; }
+.mr-composer-head .mr-file-actions { flex: none; flex-wrap: nowrap; gap: 6px; }
+.mr-composer-head .mr-file-actions button { white-space: nowrap; padding: 4px 9px; }
+.mr-composer-head .mr-input-battle-detail { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mr-composer-head .mr-input-battle-chips { flex-wrap: nowrap; }
+.mr-composer-head .mr-next-actions { flex-wrap: nowrap; white-space: nowrap; }
+.mr-gc-tools[hidden] { display: none !important; }
+.mr-gc-tools { flex: none; max-height: 35vh; overflow-y: auto; border-bottom: 1px solid var(--border-subtle); }
+.mr-gc-tools .mr-gc-search-row { margin-bottom: 8px; }
 .mr-group-composer .mr-input-box { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
 .mr-group-composer #mr-input-tuning { grid-column: 1; grid-row: 3; flex-wrap: wrap; min-width: 0; }
 .mr-group-composer .mr-workflow-btn { grid-column: 2; grid-row: 3; align-self: end; }
@@ -401,7 +420,7 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
   border-color: rgba(var(--rgb-success), 0.4);
 }
 .mr-free-avatar-chk:hover:not(.disabled) {
-  transform: scale(1.05);
+  transform: none;
 }
 .mr-free-avatar-chk.disabled {
   cursor: not-allowed; opacity: 0.5;
@@ -817,7 +836,10 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
 .mr-file-error { color: #f18e85; display: block; }
 .mr-file-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .mr-file-recipients { flex: 0 1 180px; min-width: 0; overflow-wrap: anywhere; opacity: .7; font-size: 12px; }
-.mr-file-actions button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 1px solid #64748b55; background: transparent; color: inherit; cursor: pointer; }
-.mr-file-actions button[data-file-kickoff] { color: #74a7ff; border-color: #74a7ff66; }
-.mr-file-actions button.stop { color: #f18e85; }
+.mr-file-actions button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border-strong, #64748b); background: var(--surface-raised, #1c2128); color: var(--fg-default, #e8ecf2); cursor: pointer; }
+.mr-file-actions button[data-file-kickoff],
+.mr-file-actions button[data-file-independent] { color: var(--brand-text, #c9d5ff); background: var(--brand-tint, #202c48); border-color: var(--brand, #6d8dff); }
+.mr-file-actions button:not(:disabled):hover { border-color: var(--brand, #6d8dff); background: var(--surface-active, #253044); color: var(--fg-strong, #fff); }
+.mr-file-actions button:focus-visible { outline: 2px solid var(--brand, #6d8dff); outline-offset: 3px; }
+.mr-file-actions button.stop { color: var(--status-danger, #f18e85); }
 .mr-file-actions button:disabled { opacity: .5; cursor: wait; }

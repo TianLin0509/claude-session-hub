@@ -7,7 +7,7 @@ const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js')
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const DevFile = require('../../core/dev-file-workflow');
-const { isCodexSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
+const { isNativeSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
 const { nativeUnknownOutcome } = require('../../core/native-groupchat-outcome');
 const {
@@ -240,7 +240,7 @@ function createGroupChatDispatcher(deps) {
   }
 
   function startPasteTrappedMonitor(sid, kind, meetingId, context = {}) {
-    if (sessionManager.getNativeCodex?.(sid) || sessionManager.getNativeClaude?.(sid)) return;
+    if (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid) || sessionManager.getNativeClaude?.(sid)) return;
     const existingMonitor = pasteTrappedMonitors.get(sid);
     if (existingMonitor && existingMonitor.attemptId === context.attemptId) return;
     if (existingMonitor) stopPasteTrappedMonitor(sid);
@@ -361,7 +361,7 @@ function createGroupChatDispatcher(deps) {
     const allowActiveExtend = opts.allowActiveExtend !== false;
     const startTs = Date.now();
     const waitSession = sessionManager.getSession(sid);
-    const native = sessionManager.getNativeCodex?.(sid);
+    const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
     const waitKind = waitSession?.transcriptKind || opts.kind || waitSession?.kind || 'unknown';
     const orch = meetingId ? orchestratorFor(meetingId) : null;
     const attempt = opts.attempt || (orch && opts.attemptId ? orch.getAttempt(opts.attemptId) : null);
@@ -702,6 +702,9 @@ function createGroupChatDispatcher(deps) {
         };
         const verifyPromptSubmitted = async () => {
           if (watcher.isSettled() || codexPromptSubmitted) return;
+          // File workflows are continued by the user. Missing output never
+          // authorizes another prompt submission or a timed recovery action.
+          if (DevFile.enabled(meetingManager.getMeeting(meetingId))) return;
           const currentWaitSession = sessionManager.getSession(sid) || waitSession;
           const boundNow = hasBoundCodexTranscript(currentWaitSession);
           if (!boundNow) {
@@ -932,7 +935,7 @@ function createGroupChatDispatcher(deps) {
     });
   }
 
-  function groupMembersForMeeting(meeting) {
+  function groupMembersForMeeting(meeting, { includeDormant = false } = {}) {
     const subSids = Array.isArray(meeting && meeting.subSessions) ? meeting.subSessions : [];
     const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
     const kindCounts = {};
@@ -945,7 +948,7 @@ function createGroupChatDispatcher(deps) {
     const orch = meeting && meeting.id ? orchestratorFor(meeting.id) : null;
     return subSids.map((sid, idx) => {
       const s = sessionManager.getSession(sid);
-      if (!s || s.status === 'dormant') return null;
+      if (!s || (!includeDormant && s.status === 'dormant')) return null;
       const spec = specs[idx] || {};
       const kind = s.kind || spec.kind || 'ai';
       seenKind[kind] = (seenKind[kind] || 0) + 1;
@@ -1334,12 +1337,12 @@ function createGroupChatDispatcher(deps) {
           const attempts=Object.values(historyOrch.state.attempts || {});
           return targetMembers.filter(member=>{
             const session=sessionManager.getSession(member.sid);
-            if (!isCodexSession(session)) return receipts.some(r=>r.sid===member.sid && r.handedOffAt && !r.sourceCompletedAt);
+            if (!isNativeSession(session)) return receipts.some(r=>r.sid===member.sid && r.handedOffAt && !r.sourceCompletedAt);
             // Only the latest dispatched attempt can occupy this seat. Older
             // receipts remain collectable without becoming extra send gates.
             const attempt=attempts.filter(a=>a.sid===member.sid).at(-1);
             if (!attempt || !(attempt.status==='handed_off' || receipts.some(r=>r.attemptId===attempt.attemptId && r.handedOffAt))) return false;
-            const native=sessionManager.getNativeCodex?.(member.sid);
+            const native=(sessionManager.getNativeSession?.(member.sid) || sessionManager.getNativeCodex?.(member.sid));
             if (!native) return true;
             const r=native.runtime || {};
             let threadId=attempt.providerThreadId, turnId=attempt.providerTurnId;
@@ -1439,20 +1442,24 @@ function createGroupChatDispatcher(deps) {
       const deliveredIdx = orch.state.messages.length - 1;
       const deliveredMessage = orch.state.messages[deliveredIdx];
       const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
+      const fileMembers = DevFile.enabled(meeting) ? groupMembersForMeeting(meeting, { includeDormant: true }) : [];
+      const fileProtocolKey = DevFile.enabled(meeting) ? DevFile.protocolKey(meeting, fileMembers) : null;
       const targets = targetMembers.map(member => {
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
           // 产物写进本群聊的 workspace，而不是 home 下的公共 artifacts 目录。
           workspace: meeting.workspace || null,
         });
-        // 开发群聊「讨论阶段」块和英雄块一样逐轮追加（阶段可来回切，systemPrompt 只发一次）。
-        // 放在英雄块之前：英雄块自称最高优先级，讨论块管的是"这一轮不许改代码"，两者不冲突。
+        // File protocol is sent once per actual session and role/name binding,
+        // and only acknowledged after successful delivery. Ordinary messages
+        // keep the existing conversation delta, including manual "continue".
+        const needsFileProtocol = fileProtocolKey && orch.state.devFilePromptReceipts?.[member.sid]?.key !== fileProtocolKey;
         const basePrompt = DevDiscuss.appendDiscussBlock(
           orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
             currentUserMessageAppended: begin.didAppendUserMessage,
           }),
           DevFile.enabled(meeting)
-            ? DevFile.common(meeting, DevFile.directory(getHubDataDir(), meeting.id))
+            ? (needsFileProtocol ? DevFile.common(meeting, DevFile.directory(getHubDataDir(), meeting.id), fileMembers) : '')
             : DevDiscuss.discussBlockFor(meeting, member.memberId),
         );
         // 这位成员还没确认收到的维护者插话，逐条补进本次 prompt。
@@ -1468,6 +1475,7 @@ function createGroupChatDispatcher(deps) {
           deliveredIdx,
           deliveredSeq,
           supplementSeqs: pendingSupplements.map(item => item.seq),
+          fileProtocolKey: needsFileProtocol ? fileProtocolKey : null,
           runId,
           heroId: normalizedHeroIdBySid[member.sid] || null,
           // 英雄块每轮都追加在最终 Prompt 末尾；不能塞进 systemPromptText，后者只在
@@ -1557,6 +1565,11 @@ function createGroupChatDispatcher(deps) {
             });
           }
           if (ok) {
+            if (t.fileProtocolKey) {
+              orch.state.devFilePromptReceipts ||= {};
+              orch.state.devFilePromptReceipts[t.sid] = { key: t.fileProtocolKey, memberId: t.member.memberId, attemptId: t.attemptId };
+              orch._saveState('dev_file_protocol_delivered', { sid: t.sid, attemptId: t.attemptId });
+            }
             // 送达确认了才记「这位收到过这几条插话」。发送失败走 else 分支，账本原样留着。
             if (t.supplementSeqs && t.supplementSeqs.length) {
               try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs); }
@@ -1844,8 +1857,8 @@ function createGroupChatDispatcher(deps) {
         }
         try {
           const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
-          if (liveSession.runtimeBackend === 'codex-app-server' || liveSession.kind === 'codex' || liveSession.kind === 'codex-resume') {
-            const nativeSession = sessionManager.getNativeCodex?.(receipt.sid);
+          if (require('../../core/codex-native-runtime').isNativeSession(liveSession)) {
+            const nativeSession = (sessionManager.getNativeSession?.(receipt.sid) || sessionManager.getNativeCodex?.(receipt.sid));
             if (nativeSession) await nativeSession.start();
             const outcome = nativeSession && await nativeSession.readOutcome(receipt.providerTurnId);
             if (outcome) {
