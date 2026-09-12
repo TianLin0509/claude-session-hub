@@ -87,6 +87,7 @@ const { createAccountUsageController } = require('./account-usage-controller.js'
 const { createMemoryPanel } = require('./memory-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
+const { speedControl } = require('../core/session-speed.js');
 const { describeCodexModelTuning } = require('../core/codex-model-catalog.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
@@ -4071,6 +4072,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   });
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
+  const speedChip = document.createElement('button');
+  speedChip.type = 'button';
+  speedChip.className = 'composer-chip composer-speed';
+  speedChip.addEventListener('click',event=>{
+    event.stopPropagation(); void modelUi.showSpeedPicker(speedChip,sessionId);
+  });
   // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
   const ctxRing = document.createElement('span');
   ctxRing.className = 'composer-ctx';
@@ -4107,7 +4114,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composerRail = document.createElement('div');
   composerRail.className = 'composer-rail';
   composerRail.append(
-    attachBtn, modelChip, thinkingChip, bridgeToolbar,
+    attachBtn, modelChip, thinkingChip, speedChip, bridgeToolbar,
     railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
   );
 
@@ -4238,6 +4245,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
     }
+
+    const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
+    speedChip.hidden = !speed.visible;
+    speedChip.textContent = speed.label;
+    speedChip.setAttribute('aria-label',`速度：${speed.label}`);
+    speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
+    speedChip.title = '选择标准 / Fast；Fast 会增加用量或费用';
 
     ctxRing.hidden = !rail.context.visible;
     if (rail.context.visible) {

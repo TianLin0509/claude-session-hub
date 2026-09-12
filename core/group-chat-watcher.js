@@ -333,6 +333,9 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
+  if (require('./session-speed').pendingSpeedSwitches.has(sid) && !options.localCommandObserver) {
+    throw new Error('正在确认当前会话的速度设置，请完成后再发送');
+  }
   const { sessionManager } = _deps;
   const native = sessionManager.getNativeCodex?.(sid);
   if (native) return native.send(prompt, {
@@ -428,6 +431,13 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     // empty submissions after a prompt already started.
     sessionManager.writeToSession(sid, '\r');
     let enterAttempts = 1;
+    // Local settings commands do not start an agent turn. Their own explicit
+    // acknowledgement must decide success; a TUI repaint is not confirmation.
+    if (options.localCommandObserver) {
+      const confirmation = await options.localCommandObserver.wait();
+      return {ok:confirmation.ok,sendStatus:confirmation.ok ? 'ok' : 'stuck',
+        message:confirmation.message,enterAttempts,acknowledgementSource:'local-command'};
+    }
 
     // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
     //   慢启动场景误判 stuck（实测：\r 后 claude TUI 渲染 user message + 启 streaming

@@ -15,6 +15,20 @@ async function until(check) {
   while(!check()){if(Date.now()>end)throw Error('condition timeout');await new Promise(r=>setTimeout(r,10));}
 }
 async function close(s){s.kill();await until(()=>!s.entry);}
+test('speed selection preserves model, effort and history, rejects unsupported Fast',async()=>{
+  const s=make();try{
+    await s.start();const id=s.threadId,count=s.history.size;
+    await s.configure({codexSpeedTier:'standard'});
+    assert.equal(s.options.turnParams.serviceTier,'default');
+    await s.configure({codexSpeedTier:'fast'});
+    assert.equal(s.options.turnParams.serviceTier,'fast');
+    assert.equal(s.options.turnParams.model,'fixture-model');assert.equal(s.options.turnParams.effort,'max');
+    assert.equal(s.threadId,id);assert.equal(s.history.size,count);
+    await assert.rejects(s.configure({codexSpeedTier:'invalid'}),/无效/);
+    await assert.rejects(s.configure({model:'fixture-model-2',codexSpeedTier:'fast'}),/不支持 Fast/);
+    assert.equal(s.options.turnParams.model,'fixture-model');
+  }finally{await close(s);}
+});
 test('real stdio framing: one complete multi-line prompt, unicode output and identity receipt',async()=>{
   const s=make();try{
     await s.start();

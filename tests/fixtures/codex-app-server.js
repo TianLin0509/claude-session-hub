@@ -190,7 +190,7 @@ rl.on('line',line=>{
       if(text==='fixture:stop-race'){finish(thread,t,'completed','');setTimeout(()=>answer(msg.id,{}),50);break;}
       answer(msg.id,{});finish(thread,t,'interrupted','');break;
     }
-    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
+    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,additionalSpeedTiers:model==='fixture-model-2'?[]:['fast'],supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }

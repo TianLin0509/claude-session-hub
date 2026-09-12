@@ -63,7 +63,8 @@
     ],
     "asarUnpack": [
       "core/claude-fast-settings.json",
-      "core/claude-subscription-fast-settings.json"
+      "core/claude-subscription-fast-settings.json",
+      "core/claude-subscription-standard-settings.json"
     ],
     "extraResources": [
       {

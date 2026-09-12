@@ -239,7 +239,8 @@ test('Claude CLI 原地 relaunch 沿用 effort、MCP 档位和关闭 fast 的选
     assert.match(command, /claude --model claude-fable-5 --effort low/);
     assert.match(command, /--mcp-config "/);
     assert.match(command, /--strict-mcp-config/);
-    assert.doesNotMatch(command, /--settings/);
+    assert.match(command, /--settings ".*claude-subscription-standard-settings\.json"/);
+    assert.equal(require('../core/claude-subscription-standard-settings.json').fastMode, false);
   } finally {
     manager.dispose();
     if (oldDataDir === undefined) delete process.env.CLAUDE_HUB_DATA_DIR;

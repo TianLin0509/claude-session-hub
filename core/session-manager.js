@@ -937,7 +937,8 @@ function buildNativeCodexOptions(info, opts, env) {
     mcpProfile:profile,
     processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+JSON.stringify(value)]),
     threadParams:{cwd:info.cwd,model:info.currentModel.id,approvalPolicy,sandbox,config:threadConfig},
-    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort)},
+    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort),
+      ...(tier && tier !== 'inherit' ? {serviceTier:tier === 'standard' ? 'default' : tier} : {})},
     resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
     forkId:opts.codexForkSid || null,
     picker:!opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
@@ -1609,6 +1610,7 @@ class SessionManager extends EventEmitter {
         if (bound.path) info.transcriptPath = bound.path;
         if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
         if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
+        if (bound.codexSpeedTier) info.codexSpeedTier = bound.codexSpeedTier;
         publish();
       });
       ptyProcess.on('choices', choices => { info.nativeThreadChoices = choices; publish(); });
@@ -1737,6 +1739,9 @@ class SessionManager extends EventEmitter {
       if (shouldUseClaudeFastSettings(cv, opts)) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      } else if (opts.fastMode === false) {
+        const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
+        cmd += ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
       cmd += '\r\n';
       let sent = false;
@@ -2612,6 +2617,9 @@ class SessionManager extends EventEmitter {
       if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode, autonomous })) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      } else if (s.info?.fastMode === false) {
+        const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
+        fastFlag = ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
       // 单人和群聊都沿用自己的 MCP 档位；群聊与 autonomous 额外恢复 research config。
       const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))

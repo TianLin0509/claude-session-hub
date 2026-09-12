@@ -582,7 +582,7 @@ class CodexNativeSession extends EventEmitter {
   configure(options) {
     return this.enqueueSend(intent=>this._configure(options,intent));
   }
-  async _configure({model,effort}, intent) {
+  async _configure({model,effort,codexSpeedTier}, intent) {
     await this.start();
     if (intent) this.checkSendIntent(intent);
     if (this.runtime.connection !== 'connected'
@@ -595,10 +595,16 @@ class CodexNativeSession extends EventEmitter {
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.closed) throw new Error('配置响应来自旧连接，请重新核对');
       if (!['idle','completed','interrupted','failed'].includes(this.runtime.state)) throw new Error('Codex 已开始新轮次，不能切换配置');
     };
+    model = model || this.options.turnParams.model;
     const list = await client.request('model/list',{});
     check();
     const target = (list.data || []).find(m=>m.id === model || m.model === model);
     if (!target) throw new Error('Codex 模型目录中没有：'+model);
+    if (codexSpeedTier !== undefined) {
+      if (!['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
+      const tiers = [...(target.additionalSpeedTiers || []), ...(target.serviceTiers || []).map(t=>t.id)];
+      if (codexSpeedTier === 'fast' && !tiers.includes('fast')) throw new Error(model+' 当前不支持 Fast');
+    }
     const requestedEffort = effort || this.options.turnParams.effort;
     if (requestedEffort && !(target.supportedReasoningEfforts || []).some(e=>e.reasoningEffort === requestedEffort)) {
       throw new Error(model+' 不支持 '+requestedEffort+'；请明确选择支持的思考档');
@@ -613,12 +619,16 @@ class CodexNativeSession extends EventEmitter {
     }
     this.options.threadParams = params;
     this.options.turnParams = {...this.options.turnParams,model,effort:requestedEffort};
+    if (codexSpeedTier !== undefined) {
+      this.options.turnParams.serviceTier = codexSpeedTier === 'fast' ? 'fast' : 'default';
+    }
     this.apply({type:'configuration',error:null});
     // Loaded thread/resume deliberately ignores model/effort overrides.
     // Selection is applied by the next turn/start, never by a fake task or
     // changing the shared server/global config. UI labels this explicitly.
-    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort});
-    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,appliesOn:'next-turn'};
+    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort,
+      ...(codexSpeedTier !== undefined ? {codexSpeedTier} : {})});
+    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,codexSpeedTier,appliesOn:'next-turn'};
   }
   async readOutcome(turnId) {
     if (!turnId) return null;
