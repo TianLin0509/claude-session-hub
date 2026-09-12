@@ -97,10 +97,12 @@ async function main() {
     formatAge: ts => String(ts || 0), formatBalance: data => data.totalBalance == null ? '—' : '¥' + data.totalBalance.toFixed(2),
     freshness: ts => ts === 200 ? 'fresh' : 'stale' });
   const buttons = nodes.filter(n => n.tag === 'button');
-  assert.strictEqual(buttons.length, 3);
+  assert.strictEqual(buttons.length, 4);
   view.render({ ...cache, deepseek: { ...cache.deepseek, lastSeen: 200 } }, {});
   const values = nodes.filter(n => n.className === 'sidebar-quota-value').map(n => n.textContent);
-  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00']);
+  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00', '—']);
+  view.render({ tokenPlan: { usage7d: { pct: 45.3284435 }, lastSeen: 200 } }, {});
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '54.67%');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');

@@ -1,6 +1,6 @@
 'use strict';
 
-const NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
+const NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', tokenPlan: 'Token Plan' };
 function remainingPercent(window) {
   const used = window?.pct;
   return typeof used === 'number' && Number.isFinite(used) && used >= 0
@@ -19,16 +19,16 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
   const pair = el('div', 'sidebar-quota-pair', quota);
   const entries = {};
   for (const provider of Object.keys(NAMES)) {
-    const row = el('div', 'sidebar-quota-provider', provider === 'claude' ? claudeRow : pair);
+    const row = el('div', 'sidebar-quota-provider', provider === 'claude' ? claudeRow : provider === 'tokenPlan' ? quota : pair);
     row.dataset.provider = provider;
     el('span', 'sidebar-quota-name', row, NAMES[provider]);
     const metrics = el('div', 'sidebar-quota-metrics', row);
-    const windows = provider === 'claude' ? ['5h', '7d'] : provider === 'codex' ? ['7d'] : ['balance'];
+    const windows = provider === 'claude' ? ['5h', '7d'] : ['codex', 'tokenPlan'].includes(provider) ? ['7d'] : ['balance'];
     const cells = {};
     for (const window of windows) {
       const cell = el('span', 'sidebar-quota-metric', metrics); cell.dataset.window = window;
       const line = el('span', 'sidebar-quota-reading', cell);
-      el('span', 'sidebar-quota-period', line, window === 'balance' ? '' : window + (provider === 'claude' ? ' 余量' : ''));
+      el('span', 'sidebar-quota-period', line, window === 'balance' ? '' : window + (['claude', 'tokenPlan'].includes(provider) ? ' 余量' : ''));
       const value = el('b', 'sidebar-quota-value', line, '—');
       const track = window !== 'balance' ? el('span', 'sidebar-quota-track', cell) : null;
       const fill = track ? el('i', '', track) : null;
@@ -50,11 +50,14 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
         const { row, cells, button } = entries[provider];
         const data = snapshot[provider] || {};
         const state = states[provider] || {};
-        row.dataset.freshness = freshness(data.lastSeen);
+        row.dataset.freshness = provider === 'tokenPlan' && data.lastSeen
+          ? (Date.now() - data.lastSeen > 600000 || state.error ? 'stale' : 'fresh') : freshness(data.lastSeen);
         const age = formatAge(data.lastSeen);
+        const tokenReset = provider === 'tokenPlan' && data.usage7d?.resetsAt;
+        const resetTip = tokenReset ? '重置：' + new Date(tokenReset).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 北京时间' : '';
         const status = state.inFlight ? '刷新中…' : state.error ? '刷新失败：' + state.error
           : state.result ? state.result.fresh ? '已取得新数据' : '未取得新数据，保留旧值' : '';
-        row.title = [NAMES[provider], data.profileLabel, age, status].filter(Boolean).join(' · ');
+        row.title = [NAMES[provider], data.profileLabel, age, status, resetTip].filter(Boolean).join(' · ');
         button.title = '刷新 ' + row.title;
         button.setAttribute('aria-disabled', String(!!state.inFlight));
         button.dataset.state = state.inFlight ? 'loading' : state.error ? 'error' : 'idle';
@@ -67,7 +70,8 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
             cell.cell.title = '余额 · ' + age + ((data.balance || data).available === false ? ' · 当前不可用' : '');
           } else {
             const pct = remainingPercent(data['usage' + window]);
-            cell.value.textContent = pct === null ? '—' : Math.round(pct) + '%';
+            cell.value.textContent = pct === null ? (provider === 'tokenPlan' && data.needsLogin ? '需登录' : '—')
+              : (provider === 'tokenPlan' ? pct.toFixed(2) : Math.round(pct)) + '%';
             cell.fill.style.width = (pct ?? 0) + '%';
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
             const observation = data['usage' + window];

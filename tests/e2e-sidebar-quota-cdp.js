@@ -40,13 +40,13 @@ async function run() {
     cdp = await connectFirstPage(hub, t => /renderer[\\/]index\.html/.test(t.url));
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-refresh').length === 3`);
+    await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-refresh').length === 4`);
     await waitFor(cdp, `accountUsageController.getSnapshot().codex?.source === 'app-server'`);
     await waitFor(cdp, `document.querySelector('.strip-location').textContent.includes('洛杉矶')`);
     check('isolated hook server started', hub.log().some(line => line.includes('hook server listening')));
     check('no production meetings', (await cdp.eval(`ipcRenderer.invoke('get-meetings')`)).length === 0);
     const values = await cdp.eval(`Array.from(document.querySelectorAll('.sidebar-quota-value'), e=>e.textContent)`);
-    assert.deepStrictEqual(values, ['0%', '86%', '93%', '¥60.60']);
+    assert.deepStrictEqual(values, ['0%', '86%', '93%', '¥60.60', '—']);
     check('remaining percentages and weekly-only Codex mapping', true);
     check('no visible quota ring in rail', await cdp.eval(`!document.querySelector('#scene-rail #rail-usage') && getComputedStyle(document.querySelector('.rail-usage-ring')).display === 'none'`));
     await waitFor(cdp, `Number.isFinite(systemResourceUsage?.cpuPct) && Number.isFinite(systemResourceUsage?.memoryPct)`);
@@ -158,7 +158,7 @@ async function run() {
     await waitFor(cdp, `!!document.querySelector('[data-session-id="${terminal.id}"]')`);
     await click(cdp, `[data-session-id="${terminal.id}"]`);
     await waitFor(cdp, `activeSessionId === '${terminal.id}'`);
-    check('quota remains available in real shell session', await cdp.eval(`document.querySelectorAll('.sidebar-quota-refresh').length === 3 && document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
+    check('quota remains available in real shell session', await cdp.eval(`document.querySelectorAll('.sidebar-quota-refresh').length === 4 && document.querySelector('.sidebar-quota').getBoundingClientRect().height > 0`));
     await shot('A-real-session');
     const roomIds = [];
     for (let i = 0; i < 22; i++) {

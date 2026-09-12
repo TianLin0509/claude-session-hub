@@ -45,9 +45,9 @@ async function run() {
         cdp=await connectFirstPage(hub,t=>/renderer[\\/]index\.html/.test(t.url));
         await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
         await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
-        await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-value').length===4 && accountUsageController.getSnapshot().codex?.source==='app-server'`);
+        await waitFor(cdp, `document.querySelectorAll('.sidebar-quota-value').length===5 && accountUsageController.getSnapshot().codex?.source==='app-server'`);
         result.values=await cdp.eval(`Array.from(document.querySelectorAll('.sidebar-quota-value'),e=>e.textContent)`);
-        assert.deepStrictEqual(result.values,['0%','86%','100%',sample.text]);
+        assert.deepStrictEqual(result.values,['0%','86%','100%',sample.text,'—']);
         assert.ok(hub.log().some(line=>line.includes('hook server listening')));
         for (const zoom of [1,1.25]) for (const width of [280,340,380,440]) {
           const geometry=await setStaticSidebarLayout(cdp,width,zoom);
