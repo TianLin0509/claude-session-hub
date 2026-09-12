@@ -1,8 +1,10 @@
 # 开发群聊文件工作流 v2
 
-新建开发群聊默认选中开发场景和已有路径。成员数量决定职责：一位成员负责实现、验证与合并；两位及以上时第一位实现、第二位独立验证与合并，其余成员参与讨论。
+新建开发群聊默认选中开发场景和已有路径，至少两位成员：第一位实现、第二位独立验证与合并，其余成员参与讨论。前端和创建 IPC 均拒绝单人开发群聊，不再提供极简模板或“独立开工”按钮。
 
-单 Agent 使用 `fileFlowVersion: 2` 的控件与消息路径，并设置 `soloDevelopment: true`。点击“独立开工”只预填可编辑 prompt、选择该 Agent 并保留草稿；Enter 后由同一 Agent 完成整个任务，以 `任务记录.md` 记录变化和验证证据，不运行旧循环、不建阶段交接文件、不靠改名派工。自测不宣称独立审查，项目要求的审查或额外审批仍须满足。停止/继续走普通群聊中断与接续。
+单人开发使用普通 session 输入框上方的“一键开工”。点击只追加完整可编辑提示词，保留需求与附件，不发送；重复点击不叠加已有预设、不覆盖用户修改。用户发送后授权当前任务的自主实现、验证、审阅和合并；后续消息不自动追加，既有项目审批限制仍须遵守。没有阶段、文件改名、固定任务记录或工作台 JSON 要求，复杂任务按需保存必要记录。群聊成员的 session 视图不显示这个按钮。
+
+历史 `soloDevelopment: true` 的会话及任务文件原样保留，仍可通过普通消息接续，不迁移、不删除。历史单人自测仍不宣称独立审查。
 
 双席位使用下面的文件交接协议。历史群聊和旧 `dev-task-solo` 配置保持原协议，避免把旧的 FAIL 合并文档误认为成功。创建页不再提供起手卡片。
 
@@ -39,7 +41,8 @@ AUTHOR 不自行合并；MERGER 独立亲验，并满足项目授权条件后执
 ```text
 node scripts/run_unit_tests.js
 node tests/dev-file-workflow-i-e2e.js
-node tests/dev-prep-controls-e2e.js --solo
+node tests/dev-prep-controls-e2e.js --solo  # 验证拒绝新建单人开发群聊
+node tests/e2e-one-click-start-cdp.js
 node tests/dev-prep-controls-e2e.js --double-codex
 node tests/dev-prompt-policy-e2e.js
 node tests/dev-file-workflow-l-e2e.js

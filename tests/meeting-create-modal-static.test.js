@@ -238,7 +238,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session provider-specific payload rules');
   assert.match(MODAL_JS, /WorkspaceController\.loadPrimaryModelCatalogs/,
     'Claude and Codex options must refresh from their current CLI catalogs');
-  assert.match(MODAL_JS, /一位成员负责实现与合并/);
+  assert.match(MODAL_JS, /开发群聊第一位实现、第二位独立验证与合并/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
 });
