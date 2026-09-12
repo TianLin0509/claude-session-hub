@@ -4,7 +4,7 @@ const fs=require('fs'),{randomUUID}=require('crypto');
 const store=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE;
 const trace=process.env.CLAUDE_HUB_NATIVE_FIXTURE_TRACE;
 const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
-const save=()=>{if(store)fs.writeFileSync(store,JSON.stringify([...threads]));};
+const save=()=>{if(store)fs.writeFileSync(store,JSON.stringify([...threads].filter(([,t])=>process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)));};
 let nextRequest=1000;
 const awaiting = new Map();
 const out = obj => process.stdout.write(JSON.stringify(obj)+'\n');
@@ -51,7 +51,7 @@ rl.on('line',line=>{
       threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
     }
     case 'thread/resume':
-      if(!thread){out({id:msg.id,error:{code:-1,message:'missing thread'}});break;}
+      if(!thread){out({id:msg.id,error:{code:-1,message:'no rollout found for thread id '+p.threadId}});break;}
       // Like the native server, loaded resume does not update model/effort.
       if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(p.sandbox)thread.sandbox=p.sandbox;
       save();answer(msg.id,opened(thread,p));break;
