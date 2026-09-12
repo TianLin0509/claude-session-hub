@@ -5,13 +5,21 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   element.className = 'claude-native-controls';
   element.hidden = true;
   element.style.cssText = 'max-height:42vh;overflow:auto;padding:8px 12px;border-top:1px solid var(--border-color,#444);font-size:13px;white-space:pre-wrap';
-  const status = document.createElement('div');
+  // Only for what needs the user: the same contract as the Codex panel, which
+  // stays hidden unless there is an approval, a recovery step or an error.
+  // Runtime status belongs to the composer and is not repeated here.
+  const notice = document.createElement('div');
+  notice.className = 'claude-native-notice';
   const requests = document.createElement('div');
   const recovery = document.createElement('div');
   const error = document.createElement('div'); error.className = 'claude-native-error';
   error.style.color = '#e88'; error.setAttribute('role', 'alert');
   let displayedActionError = null;
-  element.append(status, requests, recovery, error);
+  element.append(notice, requests, recovery, error);
+  const refreshVisibility = () => {
+    element.hidden = !(notice.textContent || requests.childElementCount
+      || recovery.childElementCount || error.textContent);
+  };
   let signature = '';
   let recoveryKey = '';
   let recoveryVersion = { epoch: 0, revision: -1 };
@@ -56,6 +64,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         recovery.append(row);
       }
     } catch (failure) { error.textContent = failure.message; button.disabled = false; }
+    refreshVisibility();
   }
   async function act(request, decision, button) {
     button.disabled = true; error.textContent = '';
@@ -64,18 +73,12 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         epoch: request.epoch, submissionId: request.submissionId, decision });
       if (!result?.ok) throw new Error(result?.error || '操作未确认');
     } catch (failure) { error.textContent = failure.message; button.disabled = false; }
+    refreshVisibility();
   }
   function update(session) {
-    element.hidden = session?.runtimeBackend !== 'claude-stream-json';
-    if (element.hidden) return;
+    if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
     const runtime = session.nativeRuntime || {};
-    const labels = { idle: '就绪', starting: '已收到，等待执行', running: '执行中', waiting: '等待你的回复', completed: '已完成',
-      interrupted: '已停止', failed: '执行失败', unknown: '待核对' };
-    status.textContent = 'Claude · ' + (runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动'
-      : labels[runtime.state] || '正在连接')
-      + (runtime.queued?.length ? ` · ${runtime.queued.length} 条排队中` : '')
-      + (runtime.backgroundTasks?.length ? ` · ${runtime.backgroundTasks.length} 个后台任务` : '')
-      + (runtime.reason ? '\n' + runtime.reason : '');
+    notice.textContent = runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;
@@ -97,7 +100,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       }
     }
     const next = JSON.stringify([runtime.epoch, (runtime.requests || []).map(item => item.id)]);
-    if (next === signature) return;
+    if (next === signature) { refreshVisibility(); return; }
     signature = next; requests.replaceChildren();
     for (const request of runtime.requests || []) {
       const box = document.createElement('form'); box.dataset.requestId = request.id;
@@ -136,6 +139,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       deny.addEventListener('click', () => act(request, { behavior: 'deny' }, deny));
       requests.append(box);
     }
+    refreshVisibility();
   }
   return { element, update };
 }

@@ -284,18 +284,20 @@ function buildComposerStatusModel(session, options = {}) {
   const truth = getSessionRuntimeTruth(session, { now });
   if (session?.runtimeBackend === 'claude-stream-json') {
     const snapshot = session.nativeRuntime || {};
-    const labels = { unknown: '本条提交待核对', starting: 'Claude 已收到，等待执行',
+    // Work in flight (starting/running) takes the shared working line, the same
+    // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
+    // report a result get a Claude-specific message here.
+    const labels = { unknown: '本条提交待核对',
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
       // Same entry point Codex offers when its native state needs checking:
       // one button that reconciles the engine record without resending.
       const needsReconcile = snapshot.state === 'unknown' || snapshot.connection === 'disconnected';
-      return { state: snapshot.state === 'starting' ? COMPOSER_STATUS_WORKING
-        : snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
+      return { state: snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
           : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
         text: labels[snapshot.state], detail: snapshot.reason || '', quickReplies: [],
         action: needsReconcile ? { kind: 'reconnect', label: '核对连接' } : null,
-        canStop: snapshot.connection === 'connected' && ['starting', 'waiting'].includes(snapshot.state), runtime };
+        canStop: snapshot.connection === 'connected' && snapshot.state === 'waiting', runtime };
     }
   }
   const liveQuestion = !native && session?.runtimeBackend !== 'claude-stream-json' && options.liveQuestion && options.liveQuestion.waiting

@@ -64,6 +64,10 @@ function activityKind(name, input = {}) {
   return 'other';
 }
 
+// Same fields, same precedence, as activityDetail reads from an object input:
+// a command wins over the file or query it touches.
+const EMBEDDED_DETAIL_KEYS = ['command', 'cmd', 'file_path', 'path', 'pattern', 'query', 'url', 'description'];
+
 function parseEmbeddedCommand(input) {
   if (typeof input !== 'string') return '';
   const trimmed = input.trim();
@@ -71,14 +75,27 @@ function parseEmbeddedCommand(input) {
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed && typeof parsed === 'object') {
-      if (typeof parsed.cmd === 'string') return parsed.cmd;
-      if (typeof parsed.command === 'string') return parsed.command;
+      for (const key of EMBEDDED_DETAIL_KEYS) {
+        if (typeof parsed[key] === 'string' && parsed[key].trim()) return parsed[key];
+      }
     }
   } catch {}
-  const match = trimmed.match(/["']cmd["']\s*:\s*"((?:\\.|[^"\\])*)"/s)
-    || trimmed.match(/["']command["']\s*:\s*"((?:\\.|[^"\\])*)"/s);
-  if (match) {
-    try { return JSON.parse(`"${match[1]}"`); } catch { return match[1]; }
+  for (const key of EMBEDDED_DETAIL_KEYS) {
+    const match = trimmed.match(new RegExp(`["']${key}["']\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 's'));
+    if (match) {
+      try { return JSON.parse(`"${match[1]}"`); } catch { return match[1]; }
+    }
+  }
+  // A tool call whose arguments are still streaming is an unterminated JSON
+  // string such as '{"file_path": "C:\\Users\\li'. Show the value typed so far,
+  // so a running row reads like the finished one instead of a raw JSON prefix.
+  for (const key of EMBEDDED_DETAIL_KEYS) {
+    // A delta can end right after an escape character, leaving one lone
+    // backslash; it is dropped rather than letting it break the whole match.
+    const partial = trimmed.match(new RegExp(`["']${key}["']\\s*:\\s*"((?:\\\\.|[^"\\\\])*)\\\\?$`, 's'));
+    if (partial) {
+      try { return JSON.parse(`"${partial[1]}"`); } catch { return partial[1]; }
+    }
   }
   return trimmed.split(/\r?\n/)[0].slice(0, 300);
 }
