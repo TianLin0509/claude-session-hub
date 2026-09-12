@@ -123,7 +123,7 @@ async function main(){
     await sleep(1200);
     assert.equal(Object.keys((await cdp.eval(devState)).attempts).length,Object.keys(beforeBuild.attempts).length,'native completion without file rename must not advance stage');
     fs.renameSync(path.join(docs,'开题报告.md'),path.join(docs,'已完成-开题报告.md'));
-    await until('(async()=>{const x=await '+devState+';return x.messages.some(m=>m.role==="user" && m.content.includes("执行施工")) && Object.values(x.attempts).filter(a=>a.status==="completed").length>=2;})()','file rename dispatches author through native driver');
+    await until('(async()=>{const x=await '+devState+';return x.messages.some(m=>m.role==="user" && m.content.includes("执行实现")) && Object.values(x.attempts).filter(a=>a.status==="completed").length>=2;})()','file rename dispatches author through native driver');
     fs.writeFileSync(path.join(docs,'实现手册-轮次1.md'),'隔离实现 fixture');fs.renameSync(path.join(docs,'实现手册-轮次1.md'),path.join(docs,'已完成-实现手册-轮次1.md'));
     await until('(async()=>{const x=await '+devState+';return Object.values(x.attempts).some(a=>a.sid==='+JSON.stringify(dev.subSessions[1])+' && a.status==="completed" && a.signalSource==="codex-app-server");})()','file rename dispatches merger through native driver');
     result.dev=await cdp.eval(devState);await snap('file-workflow');
