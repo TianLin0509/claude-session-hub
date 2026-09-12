@@ -18,6 +18,7 @@ const {
 } = require('../core/session-runtime-truth.js');
 
 function providerLabel(session) {
+  if (require('../core/chatgpt-web-models').isChatgptWebModel(session?.currentModel?.id)) return 'ChatGPT Web';
   const kind = String(session && session.kind || '').replace(/-resume$/i, '').toLowerCase();
   if (kind === 'codex' || kind === 'deepseek') return kind === 'codex' ? 'Codex' : 'DeepSeek';
   if (kind === 'claude') return 'Claude';

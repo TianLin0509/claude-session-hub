@@ -604,9 +604,16 @@ class CodexNativeSession extends EventEmitter {
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.closed) throw new Error('配置响应来自旧连接，请重新核对');
       if (!['idle','completed','interrupted','failed'].includes(this.runtime.state)) throw new Error('Codex 已开始新轮次，不能切换配置');
     };
-    const list = await client.request('model/list',{});
+    // Web route aliases belong to the bridge's account catalog, not the ordinary
+    // Codex model/list catalog. requireWebTools above has validated availability.
+    let target;
+    if (targetWeb) {
+      target = {id:model,displayName:targetWeb.label,supportedReasoningEfforts:[{reasoningEffort:targetWeb.effort}]};
+    } else {
+      const list = await client.request('model/list',{});
+      target = (list.data || []).find(m=>m.id === model || m.model === model);
+    }
     check();
-    const target = (list.data || []).find(m=>m.id === model || m.model === model);
     if (!target) throw new Error('Codex 模型目录中没有：'+model);
     const requestedEffort = effort || this.options.turnParams.effort;
     if (requestedEffort && !(target.supportedReasoningEfforts || []).some(e=>e.reasoningEffort === requestedEffort)) {

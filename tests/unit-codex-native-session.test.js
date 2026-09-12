@@ -15,6 +15,26 @@ async function until(check) {
   while(!check()){if(Date.now()>end)throw Error('condition timeout');await new Promise(r=>setTimeout(r,10));}
 }
 async function close(s){s.kill();await until(()=>!s.entry);}
+test('web configure validates bridge aliases without requiring them in the ordinary native catalog',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-web-options-'));
+  fs.mkdirSync(path.join(root,'runtime'));fs.mkdirSync(path.join(root,'codex-home'));
+  fs.writeFileSync(path.join(root,'isolation.json'),JSON.stringify({version:1,purpose:'ai-hub-chatgpt-only',port:17861}));
+  const config=path.join(root,'runtime','config.json');
+  fs.writeFileSync(config,JSON.stringify({host:'127.0.0.1',port:17861,mode:'full',proAvailable:true}));
+  const s=make('web-configure');
+  s.options.env={...s.options.env,CODEX_HOME:path.join(root,'codex-home'),AI_HUB_CHATGPT_ROOT:root};
+  s.options.threadParams.model='chatgpt-web/high';s.options.turnParams={model:'chatgpt-web/high',effort:'high'};
+  try{
+    await s.start();
+    const result=await s.configure({model:'chatgpt-web/medium',effort:'medium'});
+    assert.equal(result.appliesOn,'next-turn');assert.equal(s.options.turnParams.model,'chatgpt-web/medium');
+    assert.equal(s.options.turnParams.effort,'medium');
+    await assert.rejects(s.configure({model:'chatgpt-web/pro',effort:'high'}),/不能单独修改/);
+    await assert.rejects(s.configure({model:'fixture-model',effort:'max'}),/不同连接配置/);
+    fs.writeFileSync(config,JSON.stringify({host:'127.0.0.1',port:17861,mode:'full',proAvailable:false}));
+    await assert.rejects(s.configure({model:'chatgpt-web/pro',effort:'ultra'}),/不可用/);
+  }finally{await close(s);}
+});
 test('real stdio framing: one complete multi-line prompt, unicode output and identity receipt',async()=>{
   const s=make();try{
     await s.start();

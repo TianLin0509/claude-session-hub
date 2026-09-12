@@ -278,7 +278,18 @@ function createModelUiController({
     if (!canSwitchInSession(kind)) {
       menuNote(menu, 'ℹ 该 CLI 暂不支持从 Hub 原地切换；请在新建会话时选择', 'warning');
     } else if (require('../core/chatgpt-web-models').isChatgptWebModel(currentId)) {
-      menuNote(menu, 'Codex Web GPT 当前配置 · 每个模型使用其固定思考档，下一轮生效。');
+      menuNote(menu, 'ChatGPT 网页 · 选择档位时同步思考强度，下一轮生效。本地工具由 Codex 执行。');
+      const settings = document.createElement('button');
+      settings.type = 'button';
+      settings.className = 'model-picker-item chatgpt-web-settings-link';
+      settings.textContent = '打开专用网页窗口与高级设置';
+      settings.title = '进入“浏览器”查看真实网页会话；自动/手动模式及更大上下文在专用设置中调整。';
+      settings.addEventListener('click', async event => {
+        event.stopPropagation();
+        try { await ipcRenderer.invoke('chatgpt-web:settings'); }
+        catch (error) { menuNote(menu, error.message, 'warning'); }
+      });
+      menu.appendChild(settings);
     } else if (strategy === 'codex-picker') {
       const live = options.some(option => option.source === 'codex-app-server');
       menuNote(menu, `${live ? '当前账号实时目录' : 'Codex CLI 本地缓存'} · `
