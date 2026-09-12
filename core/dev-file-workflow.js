@@ -5,12 +5,15 @@ const path = require('node:path');
 const VERSION = 2;
 const PRESET_START = '【AI HUB 开题提示词】';
 const PRESET_END = '【开题提示词结束】';
-const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。'
+  + `准备验证通过后，在正式主目录运行 node "${path.resolve(__dirname, '../scripts/prepared-projects.js')}" register "<已核实的项目绝对路径>" --data-dir "${require('./data-dir').getHubDataDir()}"，`
+  + '把占位路径替换为实际主目录；登记成功才完成 Hub 接入。不要登记 worktree 或验证副本。';
 const SOLO_START = '【AI HUB 独立开工提示词】';
 const SOLO_END = '【独立开工提示词结束】';
-const PROMPT_VERSION = 1;
+const PROMPT_VERSION = 2;
 const HUMAN_REPORT = '用大白话、言简意赅地向用户汇报关键进展、结果或阻碍，不用固定英文标签，不复述文件全文。复杂内容必要时制作 HTML，给出准确路径；不为每一步都写报告。';
 const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
+const currentProjectLocator = meeting => require('./prepared-project-registry').projectLocator(meeting);
 function roles(meeting, members = []) {
   const specs = meeting.slotSpecs || [];
   const resolve = index => {
@@ -22,17 +25,18 @@ function roles(meeting, members = []) {
   return { author: resolve(0), merger: resolve(1) };
 }
 function protocolKey(meeting, members = []) {
-  return JSON.stringify([PROMPT_VERSION, !!isSolo(meeting), meeting.workspace || '', meeting.serialWorkflow?.projectLocator || '', roles(meeting, members)]);
+  return JSON.stringify([PROMPT_VERSION, !!isSolo(meeting), meeting.workspace || '', currentProjectLocator(meeting), roles(meeting, members)]);
 }
 function soloCommon(meeting, dir, members = []) {
   const { author } = roles(meeting, members);
   return [
     '## AI HUB 单 Agent 开发',
     `工作目录：${meeting.workspace || '先核实本群任务对应的项目根目录'}`,
-    meeting.serialWorkflow?.projectLocator || '',
+    currentProjectLocator(meeting),
     `${author.name} 负责实现、验证和已授权的合并；自测不等于独立审查。普通讨论不启动施工，明确开工后持续完成任务，不等待 Hub 派下一阶段。`,
     `任务记录：${path.join(dir || '本群任务目录', '任务记录.md')}。执行前读取并核对现场，无记录则创建；只更新变化与必要证据，UTF-8 保存并回读。不另建阶段交接文件，不靠改名派工。`,
     '遵守用户范围和项目规范；项目要求独立审查或额外审批时仍须满足。完成写真实结果，阻塞写原因和未完成项，不反复索取已有授权。',
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].filter(Boolean).join('\n');
 }
@@ -44,6 +48,7 @@ function independentPrompt(meeting = {}, dir = '本群任务目录', members = [
     '完成必要测试，GUI 改动提供真实隔离证据；在最新主干核实完整 SHA、执行项目验证与 dry-run，通过后按项目入口合并并完成后置检查。已完成步骤不重复。',
     '本条授权本任务范围内的实现与合并；用户限制、项目独立审查或额外审批要求仍须满足，自测不冒充独立审查。',
     `在 ${record} 更新项目位置、分支、完整 SHA、实际验证命令及结果、合并结果和风险；UTF-8 保存回读后报告，不改名、不等待派工。阻塞如实记录。`,
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].join('\n');
 }
@@ -117,7 +122,7 @@ function common(meeting, dir, members = []) {
     '## AI HUB 文件工作流',
     `本群任务目录：${dir}`,
     `工作目录：${meeting.workspace || '按本群项目线索定位并核实真实 Git 根目录'}`,
-    meeting.serialWorkflow?.projectLocator || '',
+    currentProjectLocator(meeting),
     `${author.name} 负责开题与实现，${merger.name} 负责独立验证与合并。头像选择只决定消息接收人，不改变已绑定的职责。`,
     '用户发送开题提示词后，授权按开题范围实现，并在独立验证通过后按项目入口合并；用户明确的禁止事项或额外审批条件优先。',
     '遵守项目规范及用户范围；能判断的选择直接采用合理方案，不反复索取已有授权。',
@@ -125,6 +130,7 @@ function common(meeting, dir, members = []) {
     '执行前读指定输入并核对阶段文件；已有交付件则核实报告，不重建草稿。否则先创建或接续指定草稿，记录必要进展和证据。',
     '交付时 UTF-8 保存、回读，同目录原子改名；确认目标存在、草稿消失后结束当前阶段。不得自创文件名、跳轮、覆盖交付件或用聊天代替落盘。',
     'Hub 只按文件名接续；输入缺失、状态冲突或客观阻塞保留现状并报告，不伪造完成。用户手动继续仍接续同一任务，不另开分支或重复已完成步骤。',
+    require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].filter(Boolean).join('\n');
 }
@@ -133,7 +139,7 @@ function phasePrompt(meeting, dir, state, members = []) {
   const { author, merger } = roles(meeting, members);
   const draft = path.join(dir, s.draft), done = path.join(dir, s.completed);
   const base = [`## ${s.phase === 'merge' ? merger.name : author.name}：执行${{ kickoff: '开题', build: '实现', merge: '合并' }[s.phase]}${s.round ? ` · 第 ${s.round} 轮` : ''}`,
-    `项目：${meeting.workspace || '先核实真实项目根'}`, meeting.serialWorkflow?.projectLocator || '',
+    `项目：${meeting.workspace || '先核实真实项目根'}`, currentProjectLocator(meeting),
     `先读指定输入并核对阶段文件，再创建或接续草稿：${draft}。已有交付件则核实，不重建或覆盖。`];
   if (s.phase === 'kickoff') base.push(
     '依据用户这条消息和此前讨论，先核实项目位置、阅读项目 AGENTS.md 和 .agents/project.json，写自包含开题报告。',

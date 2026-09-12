@@ -29,6 +29,8 @@
   border: 1px solid #777; border-radius: 6px; background: var(--bg-input, #151820); color: inherit;
 }
 .codex-native-controls pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 160px; overflow: auto; }
+.codex-native-controls .codex-native-confirm { display: flex; align-items: center; gap: 8px; }
+.codex-native-controls .codex-native-confirm input { width: auto; margin: 0; padding: 0; }
 .codex-native-controls button {
   color: inherit; background: var(--bg-hover, #343947); border: 1px solid #7777;
   padding: 6px 10px; border-radius: 6px; margin: 4px 6px 4px 0; cursor: pointer;

@@ -184,7 +184,7 @@ test('meeting pointer intent also survives a full sidebar rebuild', () => {
     preventDefault() {}, stopPropagation() {},
   });
   assert.deepEqual(harness.meetings, [{
-    id: 'meeting-a', opts: { forceScrollBottom: true },
+    id: 'meeting-a', opts: { forceScrollBottom: true, wakeDormantMembers: true },
   }]);
 });
 

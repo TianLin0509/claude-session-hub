@@ -13,7 +13,7 @@ const DEFAULT_SLOTS = [
   { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
   { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
 ];
-const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek'];
+const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm'];
 // Claude + Codex are the durable default pair. DeepSeek is an explicit third
 // member rather than a cost/latency-bearing default in every room.
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.slice(0, 2).map(x => ({ ...x }));
@@ -40,6 +40,7 @@ let _meetingWorkspaceMode = 'existing';
 // 项目库：已被 project-prep 整理过的项目（中文名 → 路径，按活跃时间排序）。
 // 建群那一刻从主进程取快照；「选择已有路径」的下拉和开发场景的 prompt 都用它。
 let _projectLibrary = [];
+let _projectLibraryError = null;
 let _projectLibraryLoading = null;
 let _projectLibraryOpen = false;
 let _creating = false;
@@ -71,14 +72,17 @@ function _paintWorkspace(workspace) {
 // 数据源是主进程的 workspace:prepared-projects（core/prepared-project-library.js）。
 async function _loadProjectLibrary(force = false) {
   if (_projectLibraryLoading) return _projectLibraryLoading;
-  if (_projectLibrary.length && !force) return _projectLibrary;
+  // Refresh every open; no stale enrollment cache.
   _projectLibraryLoading = (async () => {
     try {
       const result = await ipcRenderer.invoke('workspace:prepared-projects');
-      _projectLibrary = ((result && result.items) || []).filter(item => item && item.path);
+      if (!Array.isArray(result?.items)) throw new Error('项目库返回格式无效');
+      _projectLibrary = result.items.filter(item => item && item.path);
+      _projectLibraryError = null;
     } catch (error) {
       console.warn('[meeting-create] 项目库读取失败:', error && error.message);
       _projectLibrary = [];
+      _projectLibraryError = error;
     } finally {
       _projectLibraryLoading = null;
     }
@@ -115,9 +119,13 @@ function _renderProjectLibrary() {
     listEl.innerHTML = '<div class="mcm-project-library-empty">正在读取项目库…</div>';
     return;
   }
+  if (_projectLibraryError) {
+    listEl.textContent = `项目库读取失败：${_projectLibraryError.message}。重新打开可重试。`;
+    return;
+  }
   if (!_projectLibrary.length) {
     listEl.innerHTML = '<div class="mcm-project-library-empty">还没有整理过的项目。'
-      + '在项目目录开一个普通会话，说「用 project-prep skill 整理这个仓库」，整理一次即可。</div>';
+      + '在项目目录开一个普通会话，说「用 project-prep skill 整理这个仓库」，完成后按 docs/project-prep.md 登记正式目录。</div>';
     return;
   }
   const currentKey = _meetingWorkspace && _meetingWorkspace.path ? _pathKey(_meetingWorkspace.path) : '';
@@ -241,7 +249,7 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。';
+    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员，点「开题」后由第一位实现、第二位验证与合并。单人开发请使用普通会话的「一键开工」。';
     hint.style.display = '';
   } else {
     hint.textContent = '';
@@ -273,6 +281,7 @@ function _applyScene(sceneId, opts = {}) {
     const input = el.querySelector('input[name="mcm-scene"]');
     el.classList.toggle('selected', !!input && input.value === _currentMode);
   });
+  _renderSlots();
   _paintSceneHint();
 }
 
@@ -286,7 +295,7 @@ function _slotHtml(i, spec, isGroup) {
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
   const label = isGroup ? `成员 ${i + 1}` : `Slot ${i + 1} · ${SLOT_NAMES[i]}`;
-  const removeBtn = isGroup && i >= 1
+  const removeBtn = isGroup && i >= 1 && (_currentMode !== 'dev' || _groupSlots.length > 2)
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
   const effortField = tuning.showEffort ? `
@@ -388,7 +397,7 @@ function _renderSlots() {
     btn.addEventListener('click', () => {
       _syncGroupSlotsFromDom();
       const idx = parseInt(btn.getAttribute('data-remove-member'), 10);
-      if (Number.isInteger(idx) && idx >= 0 && idx < _groupSlots.length) {
+      if ((_currentMode !== 'dev' || _groupSlots.length > 2) && Number.isInteger(idx) && idx >= 0 && idx < _groupSlots.length) {
         _groupSlots.splice(idx, 1);
         _renderSlots();
       }
@@ -438,7 +447,7 @@ function _ensureModal() {
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>一位成员负责实现与合并；两位时第一位实现、第二位合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
+          <span>开发群聊第一位实现、第二位独立验证与合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
@@ -538,6 +547,7 @@ async function _onCreate() {
     if (!slots.length) throw new Error('请至少保留一个群聊成员');
     const sceneInput = _modalEl.querySelector('input[name="mcm-scene"]:checked');
     const scene = sceneInput ? sceneInput.value : 'general';
+    if (scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
     // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
     const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
     const titleInput = _modalEl.querySelector('#mcm-title-input');
@@ -580,8 +590,10 @@ async function _onCreate() {
       if (atWorkRoot) {
         createBtn.textContent = '正在读取项目库...';
         devProjects = await _loadProjectLibrary(true);
+        if (_projectLibraryError) throw _projectLibraryError;
       }
     }
+    const serialWorkflow = _buildDefaultDevWorkflow(scene, slots, { atWorkRoot, projects: devProjects });
     createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,
@@ -595,9 +607,9 @@ async function _onCreate() {
       workspace: workspace.path,
       workspaceLabel: workspace.label,
       workspaceDraft: !!workspace.draft,
+      serialWorkflow,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
-    _applyDefaultDevWorkflow(meeting, scene, slots, { atWorkRoot, projects: devProjects });
     const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
     if (typeof onCreated === 'function') {
@@ -629,32 +641,26 @@ async function _onCreate() {
 //
 // devPhase 是起手方式：双席位一律先落 'discuss'（循环配置照样写好，只是发送先走普通群聊）。
 // 用户在群里点「开题」→ 阶段翻成 'kickoff'，指定执笔者写任务书；
-// 双席位报告交付后自动开工；单席位通过预置 prompt 独立完成。
-function _applyDefaultDevWorkflow(meeting, scene, slots, workspaceHint = {}) {
-  if (scene !== 'dev') return;
+// 双席位报告交付后自动开工；单人开发使用普通会话。
+function _buildDefaultDevWorkflow(scene, slots, workspaceHint = {}) {
+  if (scene !== 'dev') return null;
   const WT = window.WorkflowTemplates;
-  if (!WT || typeof WT.createTemplateConfig !== 'function') return;
-  if (!Array.isArray(slots) || !slots.length) return;
-  try {
-    const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
-    const templateId = 'dev-task';
-    const config = WT.createTemplateConfig(templateId, members, {
-      workspace: {
-        atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
-        projects: (workspaceHint && workspaceHint.projects) || [],
-      },
-      devPhase: 'discuss',
-    });
-    if (!config) return;
-    config.templateId = templateId;
-    ipcRenderer.send('update-meeting', {
-      meetingId: meeting.id,
-      fields: { serialWorkflow: config },
-    });
-  } catch (error) {
-    // 配不上不该挡住建群 —— 用户还能手动点工作流配置补上
-    console.warn('[meeting-create] 默认开发工作流写入失败:', error && error.message);
-  }
+  if (!WT || typeof WT.createTemplateConfig !== 'function') throw new Error('开发工作流尚未加载，请重试创建');
+  if (!Array.isArray(slots) || slots.length < 2) throw new Error('开发群聊至少需要两位成员');
+  const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
+  const templateId = 'dev-task';
+  const config = WT.createTemplateConfig(templateId, members, {
+    workspace: {
+      atWorkRoot: !!(workspaceHint && workspaceHint.atWorkRoot),
+      projects: (workspaceHint && workspaceHint.projects) || [],
+    },
+    devPhase: 'discuss',
+  });
+  if (!config) throw new Error('无法生成默认开发工作流，请重试创建');
+  config.templateId = templateId;
+  // Submit with create-meeting: the first creation event and response must
+  // already contain the workflow, before the room constructs its controls.
+  return config;
 }
 
 function _showError(text) {

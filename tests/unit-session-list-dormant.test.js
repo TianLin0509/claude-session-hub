@@ -52,25 +52,25 @@ test('最近休眠挂载到独立分组，旧休眠保留归档入口，置顶�
   const h = harness({ items: [dormant('new'), dormant('old', { lastMessageTime: now - 8 * 86400000 }),
     dormant('pin', { pinned: true }), dormant('fresh', { unreadCount: 1 })], extra: { openSearch: o => { opened = o; } } });
   assert.match(h.section('new'), /休眠/); assert.equal(h.row('old'), undefined);
-  assert.match(h.section('pin'), /置顶/); assert.match(h.section('fresh'), /活跃/);
+  assert.match(h.section('pin'), /置顶/); assert.match(h.section('fresh'), /未读/);
   const entry = h.list.children.find(e => e.className === 'session-archive-entry');
   assert.match(entry.innerHTML, /archive-count">2</);
   entry.listeners.click(); assert.deepEqual(opened, { scope: 'dormant' });
-  assert.equal(h.list.children.filter(e => e.className.startsWith('session-sec-header')).length, 4);
+  assert.equal(h.list.children.filter(e => e.className.startsWith('session-sec-header')).length, 5);
 });
-test('旧休眠未读归档，唤醒与异常在活跃，新未读点为蓝色', () => {
+test('旧休眠未读仍可见，唤醒与异常在活跃', () => {
   const h = harness({ items: [dormant('old', { unreadCount: 1, lastMessageTime: now - 8 * 86400000 }),
     dormant('wake', { _resumePending: true }), dormant('fresh', { unreadCount: 1 }),
     dormant('error', { connectionIssue: { type: 'stream-disconnected', message: 'lost' } })] });
-  assert.equal(h.row('old'), undefined);
-  for (const id of ['wake', 'fresh', 'error']) { assert.match(h.section(id), /活跃/); assert.equal(h.row(id).tabIndex, 0); }
+  assert.match(h.section('old'), /未读/); assert.match(h.section('fresh'), /未读/);
+  for (const id of ['wake', 'error']) { assert.match(h.section(id), /活跃/); assert.equal(h.row(id).tabIndex, 0); }
   assert.match(h.row('fresh').innerHTML, /sl-dot unread/);
   assert.match(h.row('wake').innerHTML, /sl-dot start/);
   assert.match(h.row('error').innerHTML, /sl-dot error/);
 });
-test('休眠群聊未读进入活跃，已读进入休眠，成员归属和上下文保留', () => {
+test('休眠群聊未读进入未读组，已读进入休眠，成员归属和上下文保留', () => {
   const h = harness({ items: [dormant('child', { meetingId: 'group', contextPct: 38 })], meetings: { group: meetingFixture(true) } });
-  assert.match(h.section('group'), /活跃/);
+  assert.match(h.section('group'), /未读/);
   assert.match(h.row('group').innerHTML, /sl-group-icon unread/);
   assert.doesNotMatch(h.row('group').innerHTML, /session-mini-jumps/);
   assert.match(h.row('child').className, /child/);
@@ -79,10 +79,10 @@ test('休眠群聊未读进入活跃，已读进入休眠，成员归属和上�
   const read = harness({ items: [dormant('child', { meetingId: 'group' })], meetings: { group: meetingFixture() } });
   assert.match(read.section('group'), /休眠/);
 });
-test('活跃段全部已读只由动作按钮触发', () => {
+test('未读段全部已读只由动作按钮触发', () => {
   let calls = 0;
   const h = harness({ items: [dormant('fresh', { unreadCount: 1 })], extra: { markAllSessionsRead: () => calls++ } });
-  const header = h.list.children.find(e => /sec-active/.test(e.className));
+  const header = h.list.children.find(e => /sec-unread/.test(e.className));
   const event = className => ({ target: { className }, preventDefault() {}, stopPropagation() {} });
   header.listeners.click(event('sl-title')); assert.equal(calls, 0);
   header.listeners.click(event('sec-mark-all-read')); assert.equal(calls, 1);
@@ -128,12 +128,12 @@ test('休眠时间范围为回溯窗口，包含群聊，切换后持久化', ()
   assert.equal(h.store.get('hubSidebarDormantDays'), '7');
 });
 
-test('四个组头可独立折叠，动作不误触发，重新创建保留选择', () => {
+test('组头可独立折叠，动作不误触发，重新创建保留选择', () => {
   const items = [dormant('sleep'), dormant('pin', { pinned: true }), dormant('unread', { unreadCount: 1 }),
     dormant('today', { status: 'idle' })];
   const h = harness({ items });
   const toggle = cls => h.list.children.find(e => e.className.includes(cls)).listeners.click({ target: { className: 'sec-collapse' }, preventDefault() {}, stopPropagation() {} });
-  for (const [cls, id] of [['sec-pinned','pin'], ['sec-active','unread'], ['sec-today','today'], ['sec-dormant','sleep']]) {
+  for (const [cls, id] of [['sec-pinned','pin'], ['sec-unread','unread'], ['sec-today','today'], ['sec-dormant','sleep']]) {
     assert.ok(h.row(id)); toggle(cls); assert.equal(h.row(id), undefined);
   }
   const restored = harness({ items, store: h.store });

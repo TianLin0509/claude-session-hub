@@ -78,6 +78,19 @@ function test(name, fn) {
 
 console.log('Running resume session IPC contract tests...');
 
+test('an unstarted development seat restores configuration without a history picker', async () => {
+  const ipc=createFakeIpc();
+  const runtime=new (require('../core/codex-native-session').CodexNativeSession)({id:'lazy-seat',lazyStart:true}).runtime;
+  const deps=createBaseDeps({meetingManager:{getMeeting:()=>({id:'dev-room',mode:'dev',groupChat:true,subSessions:['lazy-seat']})}});
+  registerResumeSessionIpc(ipc,deps);
+  const session=await ipc.handlers.get('resume-session')(null,{hubId:'lazy-seat',kind:'codex',meetingId:'dev-room',
+    cwd:'C:\\project',nativeRuntime:runtime,currentModel:{id:'gpt-6-astra'},effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'});
+  assert.equal(session.opts.lazyStart,true);assert.equal(session.opts.useResume,false);assert.equal(session.opts.codexResumePicker,false);
+  assert.equal(session.opts.id,'lazy-seat');assert.equal(session.opts.model,'gpt-6-astra');assert.equal(session.opts.effort,'xhigh');
+  assert.equal(session.opts.mcpProfile,'none');assert.equal(session.opts.codexSpeedTier,'standard');
+  assert.equal(deps.calls.filter(c=>c[0]==='findCodexRolloutBySid').length,0);
+});
+
 test('registers resume-session and rejects empty meta', async () => {
   const ipc = createFakeIpc();
   registerResumeSessionIpc(ipc, createBaseDeps());

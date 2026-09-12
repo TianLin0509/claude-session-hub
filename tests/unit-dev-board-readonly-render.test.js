@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {rowHtml}=require('../renderer/dev-task-view-render');
+const row={id:'task-1',title:'任务',stage:{label:'实现中',tone:'run'},progress:'已定位根因',mode:'单 Agent',source:{name:'任务记录.md'},basis:'任务记录报告',outcome:'未交付',runtime:{label:'已回复'}};
+const html=rowHtml(row,true);
+for(const text of ['已定位根因','任务记录报告','未交付','已回复','查看来源原文','进入原群聊'])assert(html.includes(text));
+for(const action of ['takeover','resume','stop','restore','create','pin'])assert(!html.includes(`data-devb-action="${action}"`));
+assert(!rowHtml({...row,title:'<script>bad()</script>'}).includes('<script>'));
+assert(!rowHtml({...row,attention:{kind:'ask',text:'旧问题'}}).includes('旧问题'));
+assert(rowHtml({...row,attention:{kind:'user-decision',text:'确认范围'}}).includes('确认范围'));
+assert(rowHtml({...row,quality:'stale',notice:'文件读取失败'}).includes('待核对'));
+assert(rowHtml({...row,quality:'stale',notice:'文件读取失败'}).includes('文件读取失败'));
+assert(rowHtml({id:'empty'}).includes('尚无可核对的进展'));
+console.log('readonly rendering, evidence, decisions, missing state, escaping: PASS');

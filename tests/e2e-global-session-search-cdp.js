@@ -184,6 +184,8 @@ function writeProjectFixtures() {
     fs.mkdirSync(path.join(root,'.agents'),{recursive:true});
     fs.writeFileSync(path.join(root,'.agents','project.json'),JSON.stringify({name,trunk:'master'}));
   }
+  const registry = new (require('../core/prepared-project-registry').PreparedProjectRegistry)({ dataDir: DATA_DIR });
+  registry.register(WORKSPACE); registry.register(UNUSED_PROJECT);
   fs.mkdirSync(SUBDIRECTORY,{recursive:true});fs.mkdirSync(WORKTREE,{recursive:true});
   const admin=path.join(WORKSPACE,'.git','worktrees','search');fs.mkdirSync(admin,{recursive:true});
   fs.writeFileSync(path.join(admin,'commondir'),'../..\n');
@@ -521,6 +523,8 @@ async function waitSearchState(client, predicate, label) {
       await _waitMs(keepOpenMs);
     }
   } catch (error) {
+    result.success = false; result.failure = error.stack || error.message;
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.error(error.stack || error.message);
     if (client) {
       try {

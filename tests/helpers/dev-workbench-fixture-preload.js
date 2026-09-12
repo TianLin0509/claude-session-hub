@@ -13,6 +13,18 @@ if (process.type === 'browser' && process.env.HUB_DEV_WORKBENCH_FIXTURE === '1')
   const groupchat=require('../../core/group-chat-orchestrator');
   const WT=require('../../renderer/workflow-templates');
   const ids=[];
+  ipcMain.handle('fixture:readonly-seed',()=>{
+    const out=[];
+    for(let i=0;i<5;i++){
+      const workspace=path.join(dir,i===2?'project-b':'project-a');fs.mkdirSync(path.join(workspace,'.agents'),{recursive:true});fs.writeFileSync(path.join(workspace,'.agents','project.json'),JSON.stringify({name:'同名项目'}));
+      const m=manager.createMeeting({mode:'dev',title:['工作台重构','语音输入修复','附件失败处理','设计讨论','历史交付'][i],workspace});
+      manager.updateMeeting(m.id,{serialWorkflow:{fileFlowVersion:2,soloDevelopment:true,steps:[['m1']]}});
+      const taskDir=path.join(dir,'task-docs',m.id);fs.mkdirSync(taskDir,{recursive:true});
+      const record={schema:'hub.task-view.v1',taskId:m.id,revision:1,phase:i===3?'discussion':i===4?'completed':'implementing',summary:'示例进度 '+i,decision:i===2?{id:'decision',recipient:'user',resolved:false,text:'需要确认附件保留规则'}:null};
+      fs.writeFileSync(path.join(taskDir,'任务记录.md'),'# 任务记录\n```hub-task-view\n'+JSON.stringify(record)+'\n```\n');out.push({id:m.id,workspace,taskDir,record});
+    }
+    return out;
+  });
   ipcMain.handle('fixture:dev-seed',(_event,{count=6}={})=>{
     for(let i=ids.length;i<count;i++){
       const m=manager.createMeeting({mode:i===5?'general':'dev',title:i===0?'群聊创建页更紧凑':i===1?'报告导出异常恢复':i===2?'附件预览保留阅读位置':`开发任务 ${i}`,workspace:path.join(dir,i===4?'other-hub':i%2?'lab':'ai-hub'),workspaceLabel:i%2?'实验笔记':'AI Hub'});

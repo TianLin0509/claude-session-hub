@@ -1103,6 +1103,8 @@ function createWindow() {
       maximized: !mainWindow.isMaximized ? false : mainWindow.isMaximized(),
       fullScreen: !mainWindow.isFullScreen ? false : mainWindow.isFullScreen(),
       nativeTitleBar,
+      version: _pkgVersion,
+      pid: process.pid,
     });
   };
   mainWindow.on('maximize', emitWindowState);
@@ -1349,7 +1351,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
   sessionUsageService.bind(session);
-  if (session && session.runtimeBackend === 'codex-app-server') return;
+  if (session && ['codex-app-server','acp'].includes(session.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1539,7 +1541,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
-  if(session && sessionManager.getNativeCodex?.(session.id))return;
+  if(session && (sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id)))return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1556,7 +1558,7 @@ transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSe
 const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
 const devChatHistoryTimer=setInterval(()=>{
   for(const session of sessionManager.getAllSessions()) {
-    const native=sessionManager.getNativeCodex?.(session.id);
+    const native=(sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id));
     const meeting=session.meetingId && meetingManager.getMeeting(session.meetingId);
     if(native && meeting?.groupChat) {
       try {
@@ -1793,6 +1795,7 @@ registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
+require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain);
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
   const sessionId = request && typeof request.sessionId === 'string' ? request.sessionId : null;
@@ -2602,7 +2605,7 @@ async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.runtimeBackend === 'codex-app-server') continue;
+    if (['codex-app-server','acp'].includes(s.runtimeBackend)) continue;
     const runtimeKind = s.transcriptKind || s.kind;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;

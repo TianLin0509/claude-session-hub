@@ -109,6 +109,12 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
+function sidebarItemHasUnread(item, sessionMap) {
+  if (!item._isMeeting) return sessionHasCompletedUnread(item);
+  return item.unreadAnsweredSize > 0
+    || (item._meeting?.subSessions || []).some(id => sessionHasCompletedUnread(sessionMap.get(id)));
+}
+
 function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
@@ -122,18 +128,18 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
     const working = s._resumePending || (meeting ? meeting.running
       : (s.meetingId || groupMemberIds.has(s.id)) ? isGroupChatMemberRunning(s, now) : sessionRuntimeIsActive(s, { now }));
-    const unread = !selected && (!dormant || fresh) && (s._isMeeting ? s.unreadAnsweredSize > 0 : sessionHasCompletedUnread(s));
+    const unread = !selected && sidebarItemHasUnread(s, sessionMap);
     states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
     if (s.pinned) pinned.push(s);
+    else if (unread) completed.push(s);
     else if (waiting) respond.push(s);
     else if (error) failed.push(s);
     else if (working) running.push(s);
-    else if (unread) completed.push(s);
     else if (dormant) archive.push(s);
     else if (fresh) today.push(s);
     else older.push(s);
   }
-  return { pinned, active: [...respond, ...failed, ...running, ...completed], today, archive, older, archiveCount: archive.length, states };
+  return { pinned, unread: completed, active: [...respond, ...failed, ...running], today, archive, older, archiveCount: archive.length, states };
 }
 
 function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
@@ -156,7 +162,7 @@ function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
-  const sectionKeys = ['sec-pinned', 'sec-active', 'sec-today', 'sec-dormant'];
+  const sectionKeys = ['sec-pinned', 'sec-unread', 'sec-active', 'sec-today', 'sec-dormant'];
   let collapsedSections = new Set();
   let dormantDays = 1;
   let modelFilter = 'all';
@@ -293,7 +299,7 @@ function _warningHtml(message) {
   return message ? `<svg class="sl-warning" viewBox="0 0 24 24" role="img" aria-label="${escapeHtml(message)}"><title>${escapeHtml(message)}</title><path d="M12 3 2 21h20L12 3Zm0 6v5m0 3v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` : '';
 }
 function _ringHtml(ctxPct, dotCls) {
-  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '已完成未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
+  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
   return '<span class="sl-dot ' + dotCls + '" role="img" aria-label="' + (labels[dotCls] || '就绪') + '"></span>';
 }
 
@@ -429,7 +435,7 @@ function _sessionWarningText(session) {
         return true;
       }
       const action = intent.type === 'meeting'
-        ? selectMeeting(intent.id, { forceScrollBottom: true })
+        ? selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })
         : selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() });
       Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
       return true;
@@ -605,7 +611,7 @@ sessionListEl.addEventListener('keydown', event => {
       _persistExpandedMeetings();
     }
     const parts = partitionSidebarSessions([item], { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    const key = parts.pinned.length ? 'sec-pinned' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
+    const key = parts.pinned.length ? 'sec-pinned' : parts.unread.length ? 'sec-unread' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
     collapsedSections.delete(key);
     savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
     renderSessionList();
@@ -692,7 +698,7 @@ sessionListEl.addEventListener('keydown', event => {
       // 2026-07-19 道雪 · 方案C：群聊两行卡（行1 状态+标题+时间，行2 成员 mini-jump），
       //   不再渲染 badge pill（等你/休眠进 sl-state，已选数进行2 末尾）。
       const isDormantMeeting = s.status === 'dormant';
-      const hasUnread = !isActive && (s.unreadAnsweredSize > 0);
+      const hasUnread = !isActive && sidebarItemHasUnread(s, sessionMap);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
       const meetingRuntime = _meetingRuntimeAggregate(s._meeting, sessionMap);
       const anySubRunning = meetingRuntime.running;
@@ -908,7 +914,7 @@ sessionListEl.addEventListener('keydown', event => {
     const h = doc.createElement('div');
     h.className = 'session-sec-header ' + cls;
     h.innerHTML = '<button type="button" class="sec-collapse" data-sidebar-control="' + cls + '" aria-label="' + (collapsed ? '展开' : '折叠') + label + '" aria-expanded="' + !collapsed + '">' + (collapsed ? '▸' : '▾') + '</button><span>' + label + '</span><span class="sec-count">' + items.length + '</span><span class="sec-rule"></span>'
-      + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-active' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
+      + (action ? '<button type="button" class="sec-action ' + (cls === 'sec-unread' ? 'sec-mark-all-read' : '') + '">' + action + '</button>' : '');
     h.addEventListener('click', event => {
       if (event.target?.closest?.('.sec-collapse') || /sec-collapse/.test(event.target?.className || '')) {
         event.preventDefault(); event.stopPropagation();
@@ -941,7 +947,8 @@ sessionListEl.addEventListener('keydown', event => {
     if (!collapsed) for (const item of items) appendItem(item);
   }
   appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
-  appendSecHeader('活跃', sections.active, 'sec-active', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
+  appendSecHeader('未读', sections.unread, 'sec-unread', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
+  appendSecHeader('活跃', sections.active, 'sec-active');
   appendSecHeader('今天', sections.today, 'sec-today', sections.today.length ? '归档全部' : '', archiveToday);
   appendSecHeader('休眠', sections.archive.filter(item => Date.now() - latestActivityTime(item) < dormantDays * 86400000), 'sec-dormant');
   const archive = doc.createElement('button');

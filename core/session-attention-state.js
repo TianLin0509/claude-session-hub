@@ -35,7 +35,7 @@ function normalizeTurnId(value) {
 
 function attentionStateOf(session) {
   if (!session || typeof session !== 'object') return ATTENTION_NONE;
-  if (require('./codex-native-runtime.js').isCodexSession(session)) {
+  if (require('./codex-native-runtime.js').isNativeSession(session)) {
     if (require('./codex-native-runtime.js').nativeRuntimeTruth(session).state === 'waiting') return ATTENTION_NEEDS_INPUT;
     return session.replyReady === true ? ATTENTION_REPLY_READY : ATTENTION_NONE;
   }
@@ -53,7 +53,7 @@ function attentionStateOf(session) {
 }
 
 function sessionNeedsUserInput(session) {
-  if (require('./codex-native-runtime.js').isCodexSession(session)) {
+  if (require('./codex-native-runtime.js').isNativeSession(session)) {
     return require('./codex-native-runtime.js').nativeRuntimeTruth(session).state === 'waiting';
   }
   return attentionStateOf(session) === ATTENTION_NEEDS_INPUT;

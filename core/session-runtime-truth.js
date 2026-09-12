@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
+const { isNativeSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
 
 const {
   ATTENTION_NEEDS_INPUT,
@@ -199,7 +199,7 @@ function isSameOrUnknownTurn(previous, next) {
 }
 
 function applySessionRuntimeObservation(session, observation = {}, options = {}) {
-  if (isCodexSession(session)) return { applied: false, reason: 'codex-native-only' };
+  if (isNativeSession(session)) return { applied: false, reason: 'codex-native-only' };
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const previous = session.runtimeTruth && VALID_STATES.has(session.runtimeTruth.state)
     ? session.runtimeTruth
@@ -312,7 +312,7 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 }
 
 function getSessionRuntimeTruth(session, options = {}) {
-  if (isCodexSession(session)) return nativeRuntimeTruth(session);
+  if (isNativeSession(session)) return nativeRuntimeTruth(session);
   const now = Number(options.now) || Date.now();
   if (!session || typeof session !== 'object') {
     return normalizeObservation({ state: RUNTIME_UNKNOWN, source: 'missing-session', confidence: CONFIDENCE_NONE }, null, now);

@@ -190,9 +190,13 @@ function createResumeSessionHandler(deps) {
     // continue an unrelated conversation and Codex/Kimi can open a picker that
     // consumes the automation prompt.
     const managedMeeting = meta.meetingId && meetingManager.getMeeting(meta.meetingId);
+    const unstartedCodex = isCodexRuntime && require('../../core/codex-native-runtime').isUnstartedRuntime(meta.nativeRuntime)
+      && !effectiveCodexSid;
+    const lazyCodex = !isDeepSeek && isCodexRuntime && managedMeeting?.groupChat
+      && (managedMeeting.mode === 'dev' || managedMeeting.scene === 'dev');
     const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
       && managedMeeting.subSessions?.includes(meta.hubId);
-    const freshUnboundAgentLeague = (isAgentLeague || isFileFlowMember) && (
+    const freshUnboundAgentLeague = unstartedCodex || (isAgentLeague || isFileFlowMember) && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)
@@ -256,8 +260,10 @@ function createResumeSessionHandler(deps) {
       // 保留 Hub ID fresh start；一旦首次 turn 生成 codexSid，后续仍精确 resume。
       useResume: isNativeResumeKind && !freshUnboundAgentLeague,
       codexResumePicker: codexMissingSid && !freshUnboundAgentLeague,
-      codexSid: effectiveCodexSid,
+        codexSid: effectiveCodexSid,
+        ...(meta.acpSid ? { acpSid: meta.acpSid } : {}),
       ...(meta.nativeRuntime ? {nativeRuntime:meta.nativeRuntime} : {}),
+      ...((lazyCodex || unstartedCodex) ? {lazyStart:true} : {}),
       ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),
       ...(meta.codexSandbox ? {sandbox:meta.codexSandbox} : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,

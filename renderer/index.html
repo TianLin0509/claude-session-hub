@@ -35,6 +35,7 @@
   <script src="../node_modules/prismjs/components/prism-markdown.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/contrib/auto-render.min.js"></script>
+  <link rel="stylesheet" href="styles/question-directory.css">
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -49,15 +50,13 @@
            两个方向都点得动。逻辑仍是 renderer.js 的 toggleSidebar，一字未改。 -->
       <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
       <div class="terminal-crumb" id="toolbar-crumb"></div>
-      <!-- 视图切换按钮：T2 把它从右上角浮层收进舞台头部，T6 跟着头部一起上移到工具栏。
-           节点从 #terminal-panel 里搬出来了，所以它不再需要 preserveAndClearTerminalPanel
-           保护 —— 那份名单里也同步删掉了它，否则清舞台时会被搬回舞台里去。 -->
-      <div class="view-toggle">
-        <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">卡片</button>
-        <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">PTY</button>
+      <div class="hub-identity" id="hub-identity" aria-label="AI Hub 运行实例">
+        <img src="../claude-wx.ico" alt="" width="24" height="24">
+        <strong>AI Hub</strong><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
       <button class="conversation-filter" data-conversation-filter="all" aria-pressed="false" title="显示全部消息，或暂时隐藏进展与活动记录">全部消息</button>
+      <button type="button" class="backstage-toggle" id="btn-backstage" aria-pressed="false" title="查看后台输出" hidden>后台</button>
       <!-- 右端给 Windows 自己画的最小化 / 最大化 / 关闭留位。宽度优先用
            env(titlebar-area-*)，取不到时回落到 138px 常量。 -->
       <div class="toolbar-window-controls" id="toolbar-window-controls" aria-hidden="true"></div>
@@ -125,9 +124,13 @@
                       <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
                       <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
                       <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+                      <button class="new-session-option" data-kind="qwen" aria-pressed="false">千问 · Qwen Code</button>
+                      <button class="new-session-option" data-kind="deepseek-acp" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek 原生</button>
+                      <button class="new-session-option" data-kind="glm" aria-pressed="false">智谱 · ZCode</button>
                       <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
                     </div>
                     <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
+                    <button type="button" id="acp-settings-open">配置原生 Harness / 套餐</button>
                     <div class="session-tuning-grid" id="new-session-tuning">
                       <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
                       <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span id="new-session-effort-label">思考强度</span><select id="new-session-effort"></select></label>

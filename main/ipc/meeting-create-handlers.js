@@ -208,6 +208,8 @@ function createMeetingSubAdder(deps) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
 
+    if (meeting?.groupChat && (meeting.mode === 'dev' || meeting.scene === 'dev')
+        && (kind === 'codex' || kind === 'codex-resume')) sessionOpts.lazyStart = true;
     const session = sessionManager.createSession(kind, sessionOpts);
     if (!session) return null;
     const updated = meetingManager.addSubSession(meetingId, session.id);
@@ -269,6 +271,11 @@ function registerMeetingCreateIpc(ipcMain, deps) {
   ipcMain.handle('create-meeting', async (_e, opts) => {
     const safe = { ...(opts || {}) };
     safe.groupChat = true;
+    const devSlots = Array.isArray(safe.slots) ? safe.slots : safe.slotSpecs;
+    if (safe.serialWorkflow?.soloDevelopment || safe.serialWorkflow?.templateId === 'dev-task-solo'
+      || (safe.mode === 'dev' && (!Array.isArray(devSlots) || devSlots.length < 2))) {
+      throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
+    }
     const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
     safe.autoTitlePending = !hasCustomTitle;
     safe.userRenamed = hasCustomTitle;

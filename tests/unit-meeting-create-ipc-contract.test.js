@@ -113,6 +113,32 @@ function test(name, fn) {
 
 console.log('Running meeting create IPC contract tests...');
 
+test('development Codex seats defer their native launch while other seats keep existing behavior', async () => {
+  for (const mode of ['dev','general']) {
+    const ipc=createFakeIpc(),deps=createBaseDeps();registerMeetingCreateIpc(ipc,deps);
+    await ipc.handlers.get('create-meeting')(null,{mode,slots:[{kind:'codex'},{kind:'claude'}]});
+    const created=deps.calls.filter(c=>c[0]==='createSession');
+    assert.equal(created.length,2);
+    assert.equal(created[0][2].lazyStart,mode==='dev'?true:undefined);
+    assert.equal(created[1][2].lazyStart,undefined);
+  }
+});
+
+test('rejects new solo development before creating workspaces or sessions', async () => {
+  for (const opts of [
+    {mode:'dev',slots:[{kind:'codex'}]},
+    {mode:'dev',slotSpecs:[{kind:'claude'}]},
+    {mode:'dev',slots:[{kind:'codex'},{kind:'codex'}],serialWorkflow:{soloDevelopment:true}},
+    {mode:'general',serialWorkflow:{templateId:'dev-task-solo'}},
+  ]) {
+    const ipc=createFakeIpc(),deps=createBaseDeps();
+    registerMeetingCreateIpc(ipc,deps);
+    await assert.rejects(ipc.handlers.get('create-meeting')(null,opts), /普通会话/);
+    assert.equal(deps.calls.length,0);
+    assert.equal(deps.meetingManager.calls.length,0);
+  }
+});
+
 test('new dev room selects only its first member after all sessions are created', async () => {
   for (const kinds of [['codex', 'claude'], ['codex', 'codex']]) {
     const ipc = createFakeIpc();

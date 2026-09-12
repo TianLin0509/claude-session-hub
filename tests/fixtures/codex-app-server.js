@@ -4,7 +4,7 @@ const fs=require('fs'),{randomUUID}=require('crypto');
 const store=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE;
 const trace=process.env.CLAUDE_HUB_NATIVE_FIXTURE_TRACE;
 const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
-const save=()=>{if(store)fs.writeFileSync(store,JSON.stringify([...threads]));};
+const save=()=>{if(store)fs.writeFileSync(store,JSON.stringify([...threads].filter(([,t])=>process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)));};
 let nextRequest=1000;
 const awaiting = new Map();
 const out = obj => process.stdout.write(JSON.stringify(obj)+'\n');
@@ -51,7 +51,7 @@ rl.on('line',line=>{
       threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
     }
     case 'thread/resume':
-      if(!thread){out({id:msg.id,error:{code:-1,message:'missing thread'}});break;}
+      if(!thread){out({id:msg.id,error:{code:-1,message:'no rollout found for thread id '+p.threadId}});break;}
       // Like the native server, loaded resume does not update model/effort.
       if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(p.sandbox)thread.sandbox=p.sandbox;
       save();answer(msg.id,opened(thread,p));break;
@@ -120,6 +120,9 @@ rl.on('line',line=>{
           emit({id:'mcp-'+turn.id,type:'mcpToolCall',server:'fixture',tool:'check',status:'completed',result:{content:[{type:'text',text:'结构化结果保留'}]}});
           finish(thread,turn,'completed','卡片细节已验证。\n\n- 修改文件：`src/card-example.js`\n- 成功命令 26 条，失败命令 1 条；失败没有被隐藏。\n- 交付：[验收说明](./card-delivery.html)');
         },500);
+      } else if(mode==='fixture:collapsed-markdown') {
+        answer(msg.id,{turn});
+        setTimeout(()=>finish(thread,turn,'completed',require('./collapsed-markdown')),250);
       } else if(mode==='fixture:conversation') {
         answer(msg.id,{turn});
         const progress=(id,text)=>{const item={id:id+'-'+turn.id,type:'agentMessage',phase:'commentary',text};
