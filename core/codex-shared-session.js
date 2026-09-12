@@ -5,7 +5,7 @@ const os = require('os');
 const { EventEmitter } = require('events');
 const { randomUUID } = require('crypto');
 const { connectBroker } = require('../main/codex-runtime-broker-client');
-const { createNativeRuntime, reduceNativeRuntime, TERMINAL, isUnstartedRuntime } = require('./codex-native-runtime');
+const { createNativeRuntime, TERMINAL } = require('./codex-native-runtime');
 
 function restoredRuntime(options) {
   if (!options.restoredRuntime) {
@@ -39,6 +39,9 @@ class CodexSharedSession extends EventEmitter {
     this.runtime = restoredRuntime(options);
     this.viewEpoch = this.runtime.epoch;
     this.hostRuntimeEpoch = null;
+    this.hostRuntimeRevision = null;
+    this.reconnectTimer = null;
+    this.reconnectDelay = 250;
     this.everAttached = false;
     this.threadId = this.runtime.threadId || options.resumeId || null;
     this.contentRevision = 0;
@@ -50,6 +53,7 @@ class CodexSharedSession extends EventEmitter {
       controllerEpoch:0, canTransfer:false, transferReason:'正在连接共享服务', viewerCount:0 };
     this.view = {
       viewId:this.control.viewId,
+      contentMode:'turn',
       sessionId:options.id,
       hubPid:Number(options.hubPid) || process.pid,
       hubVersion:String(options.hubVersion || ''),
@@ -57,6 +61,7 @@ class CodexSharedSession extends EventEmitter {
     };
     this.key = null;
     this.client = null;
+    this.clientSubscriptions = new WeakMap();
     this.ready = null;
     this.closed = false;
     this.exiting = false;
@@ -68,8 +73,15 @@ class CodexSharedSession extends EventEmitter {
   print(text) { this.emit('data', String(text || '').replace(/\r?\n/g, '\r\n')); }
   applyRuntime(next) {
     if (!next || next === this.runtime) return;
+    if (this.hostRuntimeEpoch != null && (next.epoch < this.hostRuntimeEpoch
+      || (next.epoch === this.hostRuntimeEpoch && next.revision < this.hostRuntimeRevision))) return;
+    if (this.hostRuntimeEpoch != null && next.epoch > this.hostRuntimeEpoch) this.viewEpoch++;
     this.hostRuntimeEpoch = next.epoch;
-    next = { ...next, brokerEpoch:next.epoch, epoch:this.viewEpoch };
+    this.hostRuntimeRevision = next.revision;
+    // Renderer revisions belong to this view. A local transport disconnect
+    // must never outrank a subsequent valid snapshot from the native host.
+    next = { ...next, brokerEpoch:next.epoch, epoch:this.viewEpoch,
+      revision:Math.max(Number(this.runtime.revision) + 1 || 1, Number(next.revision) || 0) };
     const previous = this.runtime;
     this.runtime = next;
     this.threadId = next.threadId || this.threadId;
@@ -84,7 +96,13 @@ class CodexSharedSession extends EventEmitter {
   applyContent(content) {
     if (!content) return;
     this.contentRevision = Number(content.contentRevision) || this.contentRevision;
-    this.transcript = Array.isArray(content.transcript) ? content.transcript : this.transcript;
+    if (Array.isArray(content.transcript)) {
+      if (content.replaceTurnId) {
+        const key=`${content.threadId || this.threadId}:${content.replaceTurnId}`;
+        this.transcript = this.transcript.filter(card => card.displayTurnKey !== key && card.providerTurnId !== content.replaceTurnId)
+          .concat(content.transcript);
+      } else this.transcript = content.transcript;
+    }
     this.textBlocks = Array.isArray(content.blocks) ? content.blocks : this.textBlocks;
     this.lastFinalText = typeof content.finalText === 'string' ? content.finalText : this.lastFinalText;
     this.emit('items', this.textBlocks);
@@ -113,6 +131,10 @@ class CodexSharedSession extends EventEmitter {
         const bound = args[0] || {};
         this.threadId = bound.threadId || this.threadId;
         this.emit('bound', bound);
+      } else if (p.event === 'thread-reset') {
+        this.threadId=null;
+        this.applyContent({transcript:[],blocks:[],finalText:'',contentRevision:0});
+        this.emit('thread-reset',...args);
       } else if (p.event === 'lifecycle') {
         // Lifecycle has persistence, notification and workflow side effects in
         // Main. Only the controller Hub publishes those; viewers already get
@@ -127,16 +149,47 @@ class CodexSharedSession extends EventEmitter {
     }
   };
   onDisconnect = error => {
-    if (this.closed) return;
-    const next = reduceNativeRuntime(this.runtime, { type:'disconnect', epoch:this.runtime.epoch,
-      reason:error?.message || 'Codex 共享服务连接已断开' });
-    this.applyRuntime(next);
+    if (this.closed || this.exiting) return;
+    const previous = this.runtime;
+    this.runtime = { ...previous, connection:'disconnected', revision:previous.revision + 1,
+      reason:'Hub 状态同步连接已断开，正在重新连接', observedAt:Date.now() };
+    // The window transport knows nothing new about the native turn's outcome.
+    // Keep its last state/identity, mark observation unavailable, never fail it.
+    this.emit('state', this.runtime, previous);
+    this.emit('diagnostic', error?.message || 'Hub 状态同步连接已断开');
+    const client=this.client;
     this.client = null;
+    this.releaseClient(client);
     this.ready = null;
+    this.scheduleReconnect();
   };
+  releaseClient(client) {
+    if(!client)return;
+    this.clientSubscriptions.get(client)?.();
+    this.clientSubscriptions.delete(client);
+    client.close();
+  }
+  scheduleReconnect() {
+    if (this.closed || this.exiting || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer=null;
+      this.start().catch(error => {
+        this.emit('diagnostic', 'Hub 状态同步重连失败：' + error.message);
+        this.reconnectDelay=Math.min(this.reconnectDelay*2,5000);
+        this.scheduleReconnect();
+      });
+    },this.reconnectDelay);
+    this.reconnectTimer.unref?.();
+  }
   async start() {
     if (this.closed) throw new Error('Codex 会话已关闭，不能启动');
-    if (!this.ready) this.ready = this._start().catch(error => { this.ready = null; throw error; });
+    if (!this.ready) this.ready = this._start().catch(error => {
+      this.ready = null;
+      const previous=this.runtime;
+      this.runtime={...previous,connection:'disconnected',revision:previous.revision+1,reason:error.message};
+      this.emit('state',this.runtime,previous);
+      throw error;
+    });
     return this.ready;
   }
   async _start() {
@@ -145,25 +198,38 @@ class CodexSharedSession extends EventEmitter {
       || path.join(os.homedir(), '.claude-session-hub');
     const client = await this.brokerConnector({ dataDir });
     if (this.closed) { client.close(); return; }
+    const serviceId=client.metadata?.serviceId;
+    if (serviceId && this.serviceId && this.serviceId!==serviceId) {
+      this.hostRuntimeEpoch=null;
+      this.hostRuntimeRevision=null;
+    }
+    if(serviceId)this.serviceId=serviceId;
     this.client = client;
-    client.on('notification', this.onNotification);
-    client.once('disconnect', this.onDisconnect);
+    const onNotification = message => { if(this.client===client)this.onNotification(message); };
+    const onDisconnect = error => { if(this.client===client)this.onDisconnect(error); };
+    client.on('notification', onNotification);
+    client.once('disconnect', onDisconnect);
+    this.clientSubscriptions.set(client,()=>{
+      client.off('notification',onNotification);
+      client.off('disconnect',onDisconnect);
+    });
     let snapshot;
     try {
-      snapshot = await client.request('attach', { options:cleanOptions(this.options), view:this.view });
+      // A recovered window attaches to the same returned thread, never to its
+      // stale pre-start/fork options which could create another native task.
+      const options=this.threadId ? {...this.options,resumeId:this.threadId,forkId:null} : this.options;
+      snapshot = await client.request('attach', { options:cleanOptions(options), view:this.view });
     } catch (error) {
-      client.off('notification', this.onNotification);
-      client.off('disconnect', this.onDisconnect);
-      client.close();
       if (this.client === client) this.client = null;
+      this.releaseClient(client);
       throw error;
     }
-    if (this.client !== client || this.closed) return;
+    if (this.client !== client || client.closed || this.closed) throw new Error('Hub 状态同步连接在初始化时断开');
     this.applySnapshot(snapshot);
     this.everAttached = true;
-    this.print(this.control.role === 'controller'
-      ? '\nCodex 已通过共享服务连接，本窗口可以操作。\n'
-      : `\nCodex 已通过共享服务连接，当前由 ${this.control.controller?.label || '另一窗口'} 操作。\n`);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer=null;
+    this.reconnectDelay=250;
     return this.runtime;
   }
   async request(method, params = {}, timeoutMs) {
@@ -220,10 +286,17 @@ class CodexSharedSession extends EventEmitter {
   readOutcome(turnId) { return this.action('readOutcome', [turnId]).then(result => result ? { ...result, hubSessionId:this.options.id } : result); }
   reconcile() { return this.action('reconcile'); }
   async reconnect() {
-    if (this.client && !this.client.closed) return this.action('reconnect');
+    if (this.client && !this.client.closed) {
+      const snapshot = await this.request('snapshot');
+      this.applySnapshot(snapshot);
+      if (['connected','unstarted'].includes(snapshot.runtime?.connection)) return this.runtime;
+      const recovered = await this.action('reconnect');
+      if(recovered?.runtime)this.applySnapshot(recovered);
+      return this.runtime;
+    }
     this.ready = null;
     await this.start();
-    return this.action('reconcile');
+    return this.runtime;
   }
   finalText() { return this.lastFinalText; }
   blocks() { return this.textBlocks.slice(); }
@@ -249,13 +322,11 @@ class CodexSharedSession extends EventEmitter {
   kill() {
     if (this.closed || this.exiting) return;
     this.exiting = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer=null;
     const client = this.client;
     const finish = () => {
-      if (client) {
-        client.off('notification', this.onNotification);
-        client.off('disconnect', this.onDisconnect);
-        client.close();
-      }
+      this.releaseClient(client);
       this.client = null;
       this.closed = true;
       this.exiting = false;

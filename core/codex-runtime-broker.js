@@ -6,7 +6,7 @@ const { CodexNativeSession } = require('./codex-native-session');
 const { TERMINAL, isUnstartedRuntime } = require('./codex-native-runtime');
 
 const MUTATING_ACTIONS = new Set([
-  'send', 'interrupt', 'reply', 'configure', 'configureMode', 'chooseThread', 'restartEmpty', 'reviewUnknownSubmission',
+  'send', 'interrupt', 'reply', 'configure', 'configureMode', 'chooseThread', 'restartEmpty', 'reviewUnknownSubmission', 'reconnect',
 ]);
 
 function normalizedHome(options) {
@@ -61,11 +61,15 @@ class RuntimeRecord {
     this.exited = false;
     this.cleanupTimer = null;
     this.commandQueue = Promise.resolve();
+    this.contentTimer = null;
     this.bindEvents();
   }
   bindEvents() {
     for (const name of ['data','state','thread-reset','choices','migration-draft','renamed','lifecycle','action-error','diagnostic','usage']) {
       this.session.on(name, (...args) => {
+        // Terminal-only items must reach capture consumers before the state
+        // and lifecycle events which cause them to read the transcript.
+        if ((name === 'state' && TERMINAL.has(args[0]?.state)) || name === 'lifecycle') this.flushContent();
         if (name === 'lifecycle' && args[0]) args[0] = { ...args[0], hubSessionId:null };
         this.broadcast({ method:'session-event', params:{ key:this.key, event:name, args } });
         if (name === 'state') { this.broadcastControl(); this.scheduleCleanup(); }
@@ -73,7 +77,7 @@ class RuntimeRecord {
     }
     this.session.on('bound', bound => {
       const oldKey = this.key;
-      const newKey = threadIdentity(this.options, bound.threadId);
+      const newKey = bound.threadId ? threadIdentity(this.options, bound.threadId) : oldKey;
       if (newKey !== oldKey) {
         const conflict = this.broker.records.get(newKey);
         if (conflict && conflict !== this) {
@@ -85,9 +89,10 @@ class RuntimeRecord {
         }
       }
       this.broadcast({ method:'session-event', params:{ key:this.key, previousKey:oldKey, event:'bound', args:[bound] } });
+      if(bound.threadId)this.broadcastHistory();
       this.broadcastControl();
     });
-    this.session.on('items', () => this.broadcastContent());
+    this.session.on('items', () => this.scheduleContent());
     this.session.once('exit', exit => {
       this.exited = true;
       this.broadcast({ method:'session-event', params:{ key:this.key, event:'exit', args:[exit] } });
@@ -187,6 +192,16 @@ class RuntimeRecord {
       control:this.controlFor(viewId),
     };
   }
+  scheduleContent() {
+    if (this.contentTimer || !this.views.size) return;
+    this.contentTimer = setTimeout(() => { this.contentTimer=null; this.broadcastContent(); }, 50);
+    this.contentTimer.unref?.();
+  }
+  flushContent() {
+    if (this.contentTimer) clearTimeout(this.contentTimer);
+    this.contentTimer = null;
+    this.broadcastContent();
+  }
   sendToView(viewId, message) {
     const view = this.views.get(viewId);
     if (view) view.peer.send(message);
@@ -205,8 +220,31 @@ class RuntimeRecord {
     }
   }
   broadcastContent() {
-    this.broadcast({ method:'content', params:{ key:this.key, contentRevision:this.session.contentRevision,
-      transcript:this.session.readTranscript({ limit:Infinity }), blocks:this.session.blocks(), finalText:this.session.finalText() } });
+    if (!this.views.size) return;
+    const turnId = this.session.runtime?.turnId;
+    if (!turnId) return;
+    // History is hydrated once on attach. Streaming replaces only this turn;
+    // sending all previous turns for every token flooded even a single Hub.
+    const update={ method:'content', params:{ key:this.key, contentRevision:this.session.contentRevision,
+      replaceTurnId:turnId, threadId:this.session.threadId,
+      transcript:this.session.readTranscript({ limit:Infinity, turnId }), blocks:this.session.blocks(), finalText:this.session.finalText() } };
+    let legacy;
+    for(const view of this.views.values()) {
+      // Old Hub adapters replace their whole cache on each message. Keep
+      // their history complete while the new adapters use per-turn updates.
+      if(view.contentMode==='turn')view.peer.send(update);
+      else {
+        legacy ||= {method:'content',params:{...update.params,replaceTurnId:undefined,
+          transcript:this.session.readTranscript({limit:Infinity})}};
+        view.peer.send(legacy);
+      }
+    }
+  }
+  broadcastHistory() {
+    if(!this.views.size)return;
+    this.broadcast({method:'content',params:{key:this.key,threadId:this.session.threadId,
+      contentRevision:this.session.contentRevision,transcript:this.session.readTranscript({limit:Infinity}),
+      blocks:this.session.blocks(),finalText:this.session.finalText()}});
   }
   assertController(viewId, expectedEpoch) {
     if (!this.controller || this.controller.viewId !== viewId) throw new Error('此窗口只能查看；请在空闲后点击“在此操作”');
@@ -237,8 +275,18 @@ class RuntimeRecord {
     if (MUTATING_ACTIONS.has(action)) this.assertController(viewId, expectedEpoch);
     if (action === 'start') return this.ensureStarted().then(() => this.snapshot(viewId));
     if (action === 'readOutcome') return this.session.readOutcome(...args);
-    if (action === 'reconcile') return this.session.reconcile();
-    if (action === 'reconnect') return this.session.reconnect();
+    if (action === 'reconcile') {
+      const runtime=await this.session.reconcile();
+      this.broadcastHistory();
+      return runtime;
+    }
+    if (action === 'reconnect') {
+      // A display refresh never restarts/reconciles a healthy native runtime.
+      // Only the controller may explicitly recover an actually lost engine.
+      this.assertController(viewId, expectedEpoch);
+      if (!['connected','unstarted'].includes(this.session.runtime?.connection)) await this.session.reconnect();
+      return this.snapshot(viewId);
+    }
     if (!MUTATING_ACTIONS.has(action) || typeof this.session[action] !== 'function') throw new Error('共享服务不支持操作：' + action);
     return this.session[action](...args);
   }
@@ -273,10 +321,11 @@ class CodexRuntimeBroker {
       } else if (record.scopeFingerprint !== runtimeProfileFingerprint(options)) {
         throw new Error('同一 Codex 会话的运行配置不同，不能共享后台');
       }
-      const recovered = record.addView(peer, view);
+      record.addView(peer, view);
       if (!isUnstartedRuntime(record.session.runtime)) {
-        if (recovered && record.started && record.session.runtime?.connection !== 'connected') await record.session.reconnect();
-        else await record.ensureStarted();
+        // Attaching an observer must not replace the App Server. Existing
+        // runtime recovery is a separate, explicit controller operation.
+        await record.ensureStarted();
       }
       record.broadcastControl();
       return record.snapshot(view.viewId);

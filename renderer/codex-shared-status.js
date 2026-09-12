@@ -63,7 +63,7 @@ function createCodexSharedStatus({ document:doc = document, invoke, getSession, 
     sessionId = session?.id || null;
     // The owning window needs no informational banner or reserved space.
     // Viewer actions still provide the actual cross-window control handoff.
-    if (!control?.shared || control.role === 'controller') {
+    if (!control?.shared || !control.controller || control.role === 'controller') {
       element.hidden = true;
       feedback.textContent = '';
       return;

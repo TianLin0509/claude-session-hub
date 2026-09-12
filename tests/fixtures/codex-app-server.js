@@ -49,6 +49,9 @@ rl.on('line',line=>{
     case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
+      const historyChars=Number(process.env.CLAUDE_HUB_NATIVE_FIXTURE_HISTORY_CHARS)||0;
+      if(msg.method==='thread/start' && historyChars>0)t.turns.push({id:'history-turn',status:'completed',items:[
+        {id:'history-answer',type:'agentMessage',phase:'final_answer',text:'旧'.repeat(historyChars)}]});
       threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
     }
     case 'thread/resume':
@@ -71,7 +74,20 @@ rl.on('line',line=>{
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:usage') {
+      if(mode==='fixture:broker-burst') {
+        answer(msg.id,{turn});
+        const item={id:'burst-'+turn.id,type:'agentMessage',phase:'final_answer',text:''};
+        turn.items.push(item);event('item/started',{threadId:thread.id,turnId:turn.id,item});
+        for(let i=0;i<500;i++) {
+          item.text+='流';
+          event('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta:'流'});
+        }
+        // No item/completed: some providers return the authoritative final
+        // contents only in turn/completed. The shared observer must retain it.
+        item.text='流'.repeat(500)+' FINAL_ONLY_完整结束';
+        turn.status='completed';thread.status={type:'idle'};save();
+        event('turn/completed',{threadId:thread.id,turn});status(thread);
+      } else if(mode==='fixture:usage') {
         answer(msg.id,{turn});
         event('thread/tokenUsage/updated',{threadId:thread.id,turnId:turn.id,tokenUsage:{
           total:{inputTokens:240000,outputTokens:10000,totalTokens:250000,cachedInputTokens:100000,reasoningOutputTokens:4000},

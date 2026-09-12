@@ -1599,7 +1599,7 @@ class SessionManager extends EventEmitter {
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
-      if (isNativeClaude) {
+      if (isNativeClaude || isCodex) {
         // Display only, the same backstage contract Codex native sessions get.
         // Native items remain the single source of runtime state, so these
         // bytes must not feed activity counters, the CLI-ready detector or the
