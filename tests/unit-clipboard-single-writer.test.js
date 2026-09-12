@@ -171,14 +171,14 @@ test('silent 失败时也如实返回 ok:false，不会被静默吞掉', async (
   assert.equal(result.attempts, 2);
 });
 
-test('renderer 必须把 clipboardController 接到「复制对话」上', () => {
+test('renderer 必须把 clipboardController 接到保留的卡片多选复制上', () => {
   // 单测只能证明模块支持注入；真正的接线在 renderer.js 里，漏接就等于 bug 复发。
   const src = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
-  const start = src.indexOf('createRecentTurnCopyController({');
-  assert.ok(start > 0, '定位不到 createRecentTurnCopyController 调用');
+  const start = src.indexOf('createCardMultiSelectController({');
+  assert.ok(start > 0, '定位不到 createCardMultiSelectController 调用');
   const block = src.slice(start, src.indexOf('});', start) + 3);
   assert.match(block, /copyText:\s*\(text,\s*options\)\s*=>\s*clipboardController\.copyText\(/,
-    '「复制对话」必须复用 clipboardController.copyText，不能自己写剪贴板');
+    '卡片多选复制必须复用 clipboardController.copyText，不能自己写剪贴板');
   assert.ok(src.indexOf('const clipboardController = createClipboardController') < start,
     'clipboardController 必须先于此处定义，否则运行时 undefined');
 });

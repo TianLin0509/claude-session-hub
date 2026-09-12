@@ -1200,7 +1200,7 @@
   color: currentColor;
   white-space: nowrap;
 }
-/* cardCount=0 fallback：indicator 直接挂 overlay 时给点视觉余量（原 banner 极简化） */
+/* Live status is a stable tail below the newest message, including tool-only work. */
 .msg-overlay > .streaming-indicator {
   display: flex;
   margin: 12px 0 4px 8px;

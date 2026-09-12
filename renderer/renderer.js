@@ -756,7 +756,6 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('card-session-status'),
     document.getElementById('card-question-nav'),
     document.getElementById('completion-notification-toggle'),
-    document.getElementById('recent-turn-copy'),
     document.getElementById('card-multi-select-bar'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
@@ -1116,7 +1115,6 @@ async function selectMeeting(meetingId, opts = {}) {
   void savePreviewState({ nonBlocking: true });
   activeSessionId = null;
   suspendInactiveTerminalRenderers(null);
-  if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
   if (typeof cardMultiSelectController !== 'undefined') cardMultiSelectController.setVisible(false);
   activeMeetingId = meetingId;
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
@@ -1945,7 +1943,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // 嵌入模式（初心投研把同一套 xterm 挂到别的容器里）没有工具栏可填，跳过。
   if (!embedded) paintAppToolbarForSession(sessionId, session, cached);
   codexSharedStatus.update(embedded ? null : session);
-  if (!embedded) terminalPanelEl.classList.toggle('shared-control-visible', !!session.codexSharedControl?.shared);
+  if (!embedded) terminalPanelEl.classList.toggle('shared-control-visible', !codexSharedStatus.element.hidden);
 
   // 实时量（ctx% · N tok · ⏱）仍然是终端卡右上角的 10px 覆盖层。
   // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
@@ -2256,21 +2254,7 @@ const {
   mountSessionTurnCard,
   isCardOverlayAtBottom: _isCardOverlayAtBottom,
 } = turnCardRenderer;
-const { createRecentTurnCopyController, formatRecentConversation } = require('./recent-turn-copy.js');
-const recentTurnCopyController = createRecentTurnCopyController({
-  document,
-  window,
-  navigator,
-  // 剪贴板只允许一个写入方：和 Ctrl+C 共用 Electron 原生路径（写后读回校验 +
-  //   有界重试）。混用 navigator.clipboard 会让 Chromium 持有剪贴板，导致粘贴
-  //   拿到的是它的旧缓存而不是刚写进去的内容。silent 是因为按钮自带反馈。
-  copyText: (text, options) => clipboardController.copyText(text, options),
-  storage: localStorage,
-  getActiveSessionId: () => activeSessionId,
-  getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),
-  extractVisibleCardText,
-});
-recentTurnCopyController.init();
+const { formatRecentConversation } = require('./recent-turn-copy.js');
 const { createCardMultiSelectController } = require('./card-multi-select.js');
 // 微信式多选：卡片头部「多选」按钮进入，逐条勾选后一次性复制。
 // 剪贴板走同一个写入方（clipboardController），不碰 navigator.clipboard。
@@ -3524,16 +3508,9 @@ function _updateStreamingIndicator(sessionId) {
     _w16RemoveTimers.delete(sessionId);
   }
   if (isRunning && currentView === 'card') {
-    // The status belongs to the active turn, not necessarily the previous
-    // assistant reply. Once the optimistic/current user card exists, migrate
-    // the chip to that card so a new question never looks like the old answer
-    // is still generating.
-    const allTurnCards = overlay.querySelectorAll(
-      `.turn-card[data-turn-id][data-session-id="${CSS.escape(sidStr)}"]`,
-    );
-    const latestTurnCard = allTurnCards[allTurnCards.length - 1];
-    const latestTurnHead = latestTurnCard ? latestTurnCard.querySelector('.turn-head') : null;
-    const targetParent = latestTurnHead || overlay;
+    // Own the status at the stream tail. Activity cards may be hidden and
+    // progress headers may be folded; neither can own live runtime feedback.
+    const targetParent = overlay;
 
     if (!indicator) {
       // 2026-05-06 道雪 scroll-respect-user:append 前记录是否在底部,仅满足条件才滚
@@ -3545,8 +3522,7 @@ function _updateStreamingIndicator(sessionId) {
       indicator.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>';
       targetParent.appendChild(indicator);
       if (wasAtBottom && targetParent === overlay) cardFollowScroll.request();
-    } else if (indicator.parentElement !== targetParent) {
-      // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
+    } else if (indicator.parentElement !== targetParent || overlay.lastElementChild !== indicator) {
       targetParent.appendChild(indicator);
     }
     // 卡片内常驻短文案；完整上下文仍放 title，header 胶囊显示精确持续时长。
@@ -3564,7 +3540,7 @@ function _updateStreamingIndicator(sessionId) {
       : (pendingSubmit || starting ? '启动中' : '工作中');
   } else if (!isRunning && indicator) {
     const runtimeTruth = getSessionRuntimeTruth(sess);
-    if (isNativeSession(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
+    if (isNativeAgent(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
       indicator.remove();
       return;
     }
@@ -3608,7 +3584,6 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
   if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   cardQuestionNavigator.refresh();
-  recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
   cardMultiSelectController.setVisible(mode === 'card' && !!activeSessionId);
   syncBackstageButton();
   // 切到 PTY 时 refit xterm
@@ -4883,7 +4858,7 @@ function updateFloatingBarState() {
     return;
   }
   codexSharedStatus.update(s);
-  terminalPanelEl.classList.toggle('shared-control-visible', !!s.codexSharedControl?.shared);
+  terminalPanelEl.classList.toggle('shared-control-visible', !codexSharedStatus.element.hidden);
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
@@ -5154,7 +5129,6 @@ async function selectSession(id, opts = {}) {
   activeSessionId = id;
   applyViewMode(targetView, { remember: false, skipPreviousCardCapture: switching });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
-  recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
   cardMultiSelectController.setVisible(currentView === 'card' && !!activeSessionId);
   paintSidebarActiveTarget({ sessionId: id });
 
@@ -7906,7 +7880,6 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
     activeSessionId = null;
     if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
-    recentTurnCopyController.setVisible(false);
     cardMultiSelectController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -8018,7 +7991,6 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
     activeSessionId = null;
     if (fileManagerPanel) fileManagerPanel.close();
     completionNotificationToggle.refreshTarget();
-    recentTurnCopyController.setVisible(false);
     cardMultiSelectController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -8053,6 +8025,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     }
     local.needsUserInput = next?.state === 'waiting';
     local.gcWorking = false;
+    _updateStreamingIndicator(local.id);
     scheduleSessionListRender();
     updateFloatingBarState();
     window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));

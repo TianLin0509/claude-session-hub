@@ -74,6 +74,26 @@ async function main(){
  const invoke=(channel,payload)=>{if(channel!=='groupchat:get-state')console.log(channel);return client.eval('ipcRenderer.invoke('+JSON.stringify(channel)+','+JSON.stringify(payload)+')');};
  const shot=name=>screenshot(client,path.join(ARTIFACT_DIR,name+'.png'));
  const size=(width)=>client.send('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:0,mobile:false});
+ const verifyAnswerNavigation=async(nav,overlay,answers)=>{
+   await clickPoint(client,nav+' [data-directory-action="top"]');
+   const anchors=await client.eval(`(()=>{const o=document.querySelector(${JSON.stringify(overlay)}),r=o.getBoundingClientRect();return [...o.querySelectorAll(${JSON.stringify(answers)})].map(e=>Math.max(0,Math.min(o.scrollHeight-o.clientHeight,o.scrollTop+e.getBoundingClientRect().top-r.top-10)));})()`);
+   assert.equal(anchors.length,3,'fixture supplies three logical AI answers');
+   for(const [action,index] of [['down',0],['down',1],['up',0]]){
+     await clickPoint(client,nav+' [data-directory-action="'+action+'"]');
+     await waitFor('answer anchor '+action+index,()=>client.eval(`Math.abs(document.querySelector(${JSON.stringify(overlay)}).scrollTop-${anchors[index]})<3`));
+   }
+   assert.equal(await client.eval(`document.querySelector(${JSON.stringify(overlay)})._cardFollowController.isFollowing()`),false);
+   result.checks.push(nav+': previous/next land exactly on logical answer starts, skip progress continuations, preserve reading intent');
+   const point=await client.eval(`(()=>{const r=document.querySelector(${JSON.stringify(overlay)}).getBoundingClientRect();return {x:r.left+100,y:r.top+r.height/2};})()`);
+   await client.send('Input.dispatchMouseEvent',{type:'mouseWheel',...point,deltaX:0,deltaY:160});
+   await waitFor('manual reading moves past navigation anchor',()=>client.eval(`document.querySelector(${JSON.stringify(overlay)}).scrollTop>${anchors[0]+50}`));
+   await clickPoint(client,nav+' .question-directory-toggle');
+   await clickPoint(client,nav+' .question-directory-toggle');
+   await client.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+   assert(await client.eval(`(()=>{const o=document.querySelector(${JSON.stringify(overlay)});return o.querySelector(${JSON.stringify(answers)}).getBoundingClientRect().top-o.getBoundingClientRect().top < -30;})()`),'manual scroll releases the selected answer before reflow');
+   result.checks.push(nav+': manual wheel scrolling releases the navigation anchor');
+   await clickPoint(client,nav+' [data-directory-action="latest"]');
+ };
  try{
  hub=await launchIsolatedHub({dataDir:DATA_DIR,port:await reservePort(),label:'question-directory',windowMode:'hidden',extraEnv:{AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
  client=await connectFirstPage(hub);await size(1500);await waitFor('renderer',()=>client.eval('!!window.MeetingRoom'));
@@ -95,7 +115,7 @@ async function main(){
  }
  await waitFor('three user cards',()=>client.eval('document.querySelectorAll(".mr-gc-msg.mine").length===3'));
  result.before=await client.eval(`(()=>{const el=document.querySelector('.mr-gc-messages');return {userLinks:el.querySelectorAll('.mine a').length,delivery:el.querySelectorAll('.turn-delivery-summary').length,gap:el.scrollHeight-el.clientHeight-el.scrollTop,assistantLinks:el.querySelectorAll('.ai a.rt-file-link').length}})()`);
- await size(900);await _waitMs(600);result.halfGap=await client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return e.scrollHeight-e.clientHeight-e.scrollTop})()");
+ await size(900);await waitFor('group resize follows latest',()=>client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return e.scrollHeight-e.clientHeight-e.scrollTop<8})()"));result.halfGap=await client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return e.scrollHeight-e.clientHeight-e.scrollTop})()");
  if(process.env.HUB_DIRECTORY_BASELINE==='1'){result.baseline=true;await shot('baseline-half');return;}
  assert(result.before.userLinks>=6,'group user URLs should be clickable');assert(result.before.delivery>=3,'group delivery summaries');assert(result.halfGap<8,'resize stays at latest');
 
@@ -106,6 +126,7 @@ async function main(){
  assert.equal(await client.eval(`document.querySelectorAll('${groupNav} .card-question-nav-item').length`),3);
  assert(await client.eval("document.querySelectorAll('.mr-gc-messages .turn-delivery-check.status-failed').length>0"),'failed validation remains visible');
  await shot('group-wide');
+ await verifyAnswerNavigation(groupNav,'.mr-gc-messages','.mr-gc-msg.ai');
  await clickPoint(client,groupNav+' .question-directory-toggle');assert(await collapsed());
  await invoke('update-meeting-sync',{meetingId:group.id,fields:{title:'目录偏好保持'}});
  await waitFor('updated group title',()=>client.eval(`meetings[${JSON.stringify(group.id)}].title==='目录偏好保持'`));assert(await collapsed());
@@ -113,14 +134,20 @@ async function main(){
  await size(900);await waitFor('auto narrow',collapsed);await shot('group-half');
  await clickPoint(client,groupNav+' .question-directory-toggle');assert(!await collapsed(),'manual expansion available in narrow view');
  await size(1500);await waitFor('wide preference restored',async()=>!await collapsed());
- await clickPoint(client,groupNav+' [data-question-index="1"]');await _waitMs(500);
+ await clickPoint(client,groupNav+' [data-question-index="1"]');
+ await waitFor('question jump settles before resize',()=>client.eval(`(()=>{const e=document.querySelector('.mr-gc-messages'),q=e.querySelectorAll('.mr-gc-msg.mine')[1];return Math.abs(q.getBoundingClientRect().top-e.getBoundingClientRect().top-10)<3;})()`));
  assert.equal(await client.eval("document.querySelector('.mr-gc-messages')._cardFollowController.isFollowing()"),false);
  const reading=await client.eval("document.querySelector('.mr-gc-messages').scrollTop");
- await size(900);await _waitMs(400);
+ result.reading=reading;
+ await size(900);await waitFor('reading layout narrowed',collapsed);
+ await waitFor('narrow reading anchor restored',()=>client.eval(`(()=>{const e=document.querySelector('.mr-gc-messages');return Math.abs(e.querySelectorAll('.mine')[1].getBoundingClientRect().top-e.getBoundingClientRect().top-10)<3;})()`));
+ result.narrowReading=await client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return {top:e.scrollTop,width:e.clientWidth,height:e.clientHeight,question:e.querySelectorAll('.mine')[1].getBoundingClientRect().top-e.getBoundingClientRect().top}})()");
  assert.equal(await client.eval("document.querySelector('.mr-gc-messages')._cardFollowController.isFollowing()"),false);
  assert(await client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return e.scrollHeight-e.clientHeight-e.scrollTop})()")>40);
- await size(1500);await _waitMs(400);
- assert(Math.abs(await client.eval("document.querySelector('.mr-gc-messages').scrollTop")-reading)<12);
+ await size(1500);
+ await waitFor('reading layout widened',async()=>!await collapsed());
+ result.wideReading=await client.eval("(()=>{const e=document.querySelector('.mr-gc-messages');return {top:e.scrollTop,width:e.clientWidth,height:e.clientHeight,question:e.querySelectorAll('.mine')[1].getBoundingClientRect().top-e.getBoundingClientRect().top}})()");
+ await waitFor('wide reading position restored',()=>client.eval(`Math.abs(document.querySelector('.mr-gc-messages').scrollTop-${reading})<12`));
  await clickPoint(client,groupNav+' [data-directory-action="up"]');await _waitMs(120);
  const up=await client.eval("document.querySelector('.mr-gc-messages').scrollTop");assert(up<reading);
  await clickPoint(client,groupNav+' [data-directory-action="down"]');await _waitMs(120);assert(await client.eval("document.querySelector('.mr-gc-messages').scrollTop")>up);
@@ -145,9 +172,11 @@ async function main(){
  await waitFor('ordinary final '+i,()=>client.eval(`document.querySelectorAll('#msg-overlay .turn-delivery-summary').length>=${i+1} && sessions.get(${JSON.stringify(ordinary.id)}).nativeRuntime.state!=='running'`));
  }
  await waitFor('ordinary questions',()=>client.eval("document.querySelectorAll('#card-question-nav .card-question-nav-item').length===3"));
+ await verifyAnswerNavigation('#card-question-nav','#msg-overlay',':scope > .turn-card.assistant[data-phase="commentary"]:not(.conversation-response-continuation)');
  assert(!await client.eval("document.querySelector('#card-question-nav').classList.contains('directory-collapsed')"));
  result.ordinaryWide=await client.eval("(()=>{const e=document.querySelector('#msg-overlay');return {...e._cardFollowController.capture(),gap:e.scrollHeight-e.clientHeight-e.scrollTop}})()");
- await shot('ordinary-wide');await size(900);await _waitMs(500);
+ await shot('ordinary-wide');await size(900);
+ await waitFor('ordinary resize follows latest',()=>client.eval("document.querySelector('#card-question-nav').classList.contains('directory-collapsed') && (()=>{const e=document.querySelector('#msg-overlay');return e.scrollHeight-e.clientHeight-e.scrollTop<8})()"));
  result.ordinaryHalfState=await client.eval("document.querySelector('#msg-overlay')._cardFollowController.capture()");
  result.ordinaryHalfGap=await client.eval("(()=>{const e=document.querySelector('#msg-overlay');return e.scrollHeight-e.clientHeight-e.scrollTop})()");assert(result.ordinaryHalfGap<8);
  assert(await client.eval("document.querySelector('#card-question-nav').classList.contains('directory-collapsed')"));

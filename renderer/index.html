@@ -274,18 +274,8 @@
         </svg>
         <span id="completion-notification-toggle-label">通知未配</span>
       </button>
-      <div class="recent-turn-copy" id="recent-turn-copy" hidden>
-        <span class="recent-turn-copy-label">近</span>
-        <!-- 选项由 recent-turn-copy.js 的 refreshRoundOptions() 按"当前卡片里真实
-             存在的完整轮数"重建（原来写死 1/2/3，想复制整段只能点三次再手动拼）。
-             这里留一个 1 轮做首帧兜底，脚本没跑起来时也不是个空下拉。 -->
-        <select id="recent-turn-copy-count" aria-label="复制最近对话轮数">
-          <option value="1">1 轮</option>
-        </select>
-        <button type="button" id="recent-turn-copy-button">复制对话</button>
-      </div>
       <!-- 卡片多选操作条：由卡片头部的「多选」按钮唤起，微信式勾选后一次性复制。
-           和 #recent-turn-copy 一样必须列进 preserveAndClearTerminalPanel，
+           必须列进 preserveAndClearTerminalPanel，
            否则关掉一个会话后整条被 innerHTML='' 抹掉，再也回不来。 -->
       <div class="card-multi-select-bar" id="card-multi-select-bar" role="toolbar" aria-label="卡片多选" hidden>
         <span class="cms-count" id="card-multi-select-count">已选 0 条</span>

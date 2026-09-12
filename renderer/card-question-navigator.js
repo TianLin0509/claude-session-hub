@@ -24,12 +24,19 @@ function activeQuestionIndexFromTops(tops, anchor, atBottom = false) {
   return active;
 }
 
+function answerTargetFromTops(tops, scrollTop, maxScroll, direction) {
+  const targets = tops.map(top => Math.max(0, Math.min(maxScroll, top)));
+  return direction === 'up'
+    ? targets.findLastIndex(top => top < scrollTop - 2)
+    : targets.findIndex(top => top > scrollTop + 2);
+}
+
 function createCardQuestionNavigator(options = {}) {
   const doc = options.document || document;
   const win = options.window || window;
   const overlay = options.overlay || doc.getElementById('msg-overlay');
   const root = options.root || doc.getElementById('card-question-nav');
-  if (root) root.innerHTML = `<header class="question-directory-head"><strong>问题目录 <span class="question-directory-count"></span></strong><button type="button" class="question-directory-toggle" aria-label="折叠问题目录" title="折叠问题目录"></button></header><div class="card-question-nav-track"></div><footer class="question-directory-actions">${[['top','到顶部','M5 4h14M6 15l6-6 6 6M12 9v11'],['up','向上翻一屏','M6 14l6-6 6 6'],['down','向下翻一屏','M6 10l6 6 6-6'],['latest','回到最新','M5 20h14M6 9l6 6 6-6M12 4v11']].map(([action,label,d])=>`<button type="button" data-directory-action="${action}" title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg></button>`).join('')}</footer><div class="card-question-nav-tooltip" role="tooltip" hidden><span class="card-question-nav-tooltip-index"></span><span class="card-question-nav-tooltip-summary"></span></div>`;
+  if (root) root.innerHTML = `<header class="question-directory-head"><strong>问题目录 <span class="question-directory-count"></span></strong><button type="button" class="question-directory-toggle" aria-label="折叠问题目录" title="折叠问题目录"></button></header><div class="card-question-nav-track"></div><footer class="question-directory-actions">${[['top','到顶部','M5 4h14M6 15l6-6 6 6M12 9v11'],['up','上一个回答','M6 14l6-6 6 6'],['down','下一个回答','M6 10l6 6 6-6'],['latest','回到最新','M5 20h14M6 9l6 6 6-6M12 4v11']].map(([action,label,d])=>`<button type="button" data-directory-action="${action}" title="${label}" aria-label="${label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg></button>`).join('')}</footer><div class="card-question-nav-tooltip" role="tooltip" hidden><span class="card-question-nav-tooltip-index"></span><span class="card-question-nav-tooltip-summary"></span></div>`;
   const track = root && root.querySelector('.card-question-nav-track');
   const tooltip = root && root.querySelector('.card-question-nav-tooltip');
   const tooltipIndex = tooltip && tooltip.querySelector('.card-question-nav-tooltip-index');
@@ -53,7 +60,27 @@ function createCardQuestionNavigator(options = {}) {
   let highlightTimer = null;
   let disposed = false;
   let resizeObserver = null, narrow = false, narrowOverride = null, preferenceKey = '';
+  let layoutWidth = null, navigationAnchor = null, anchorFrame = null;
   const layout = options.layoutElement || overlay?.parentElement;
+  function rememberNavigation(card) {
+    navigationAnchor = card ? {card, sessionId:getActiveSessionId(), epoch:overlay._cardFollowController?.capture().epoch} : null;
+  }
+  function clearNavigationAnchor() { navigationAnchor = null; }
+  function restoreNavigationAfterLayout() {
+    if (!navigationAnchor || anchorFrame !== null) return;
+    anchorFrame = raf(() => {
+      anchorFrame = null;
+      const anchor = navigationAnchor, follow = overlay._cardFollowController;
+      if (!anchor || !anchor.card.isConnected || anchor.sessionId !== getActiveSessionId()
+          || follow?.isFollowing() || anchor.epoch !== follow?.capture().epoch) return;
+      const top = overlay.scrollTop + anchor.card.getBoundingClientRect().top - overlay.getBoundingClientRect().top - 10;
+      // Browser anchoring may select a descendant of the preceding response.
+      // A deliberate answer/question jump keeps its own anchor across reflow,
+      // until the reader scrolls or otherwise changes navigation intent.
+      overlay.scrollTo({top:Math.max(0, top), behavior:'instant'});
+      updateActive();
+    });
+  }
   function storedCollapsed() {
     try { return win.localStorage.getItem(preferenceKey) === 'collapsed'; }
     catch { return false; }
@@ -65,6 +92,8 @@ function createCardQuestionNavigator(options = {}) {
     if (key !== preferenceKey || narrow !== nextNarrow) narrowOverride = null;
     preferenceKey = key; narrow = nextNarrow;
     const collapsed = narrow ? (narrowOverride ?? true) : storedCollapsed();
+    const reflow = layoutWidth !== layout.clientWidth || root.classList.contains('directory-collapsed') !== collapsed;
+    layoutWidth = layout.clientWidth;
     root.classList.toggle('directory-collapsed', collapsed);
     root.classList.toggle('directory-auto-collapsed', narrow && narrowOverride === null);
     overlay.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
@@ -75,6 +104,7 @@ function createCardQuestionNavigator(options = {}) {
     toggle.title = collapsed ? (narrow ? '展开问题目录（窗口较窄，已自动收起）' : '展开问题目录') : '折叠问题目录';
     toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16m${collapsed ? '-6-11-3 3 3 3' : '-6-11 3 3-3 3'}"/></svg>`;
     overlay._cardFollowController?.request();
+    if (reflow) restoreNavigationAfterLayout();
   }
   function toggleDirectory() {
     const collapsed = !root.classList.contains('directory-collapsed');
@@ -84,15 +114,42 @@ function createCardQuestionNavigator(options = {}) {
   }
   function navigate(action) {
     hideTooltip();
+    clearNavigationAnchor();
     const follow = overlay._cardFollowController;
     if (action === 'latest') { if (follow) follow.follow(); else overlay.scrollTop = overlay.scrollHeight; }
     else {
       follow?.pause();
-      const top = action === 'top' ? 0 : overlay.scrollTop + overlay.clientHeight * .8 * (action === 'up' ? -1 : 1);
-      overlay.scrollTo({top, behavior:'auto'});
-      if (action === 'down' && overlay.scrollHeight-overlay.clientHeight-overlay.scrollTop < 4) follow?.follow();
+      if (action === 'top') overlay.scrollTo({top: 0, behavior:'auto'});
+      else {
+        const {cards, tops, index} = answerTarget(action);
+        if (index < 0) return;
+        rememberNavigation(cards[index]);
+        overlay.scrollTo({top: tops[index], behavior:'auto'});
+        flashCard(cards[index]);
+      }
     }
     updateActive();
+  }
+
+  function answerTarget(direction) {
+    const sessionId = String(getActiveSessionId() || '');
+    const candidates = options.getAnswerCards ? options.getAnswerCards()
+      : [...overlay.querySelectorAll(':scope > .turn-card.assistant')].filter(card =>
+        !card.dataset.sessionId || card.dataset.sessionId === sessionId);
+    const seen = new Set();
+    const cards = candidates.filter(card => {
+      if (!card.getClientRects().length || card.dataset.phase === 'activity') return false;
+      // Progress and result items from one native response share one anchor.
+      const key = card.dataset.responseId && JSON.stringify([card.dataset.sessionId,
+        card.dataset.responseId, card.dataset.responseAgent, card.dataset.inherited]);
+      if (key && seen.has(key)) return false;
+      if (key) seen.add(key);
+      return true;
+    });
+    const origin = overlay.getBoundingClientRect().top;
+    const tops = cards.map(card => overlay.scrollTop + card.getBoundingClientRect().top - origin - 10);
+    return {cards, tops, index: answerTargetFromTops(tops, overlay.scrollTop,
+      Math.max(0, overlay.scrollHeight - overlay.clientHeight), direction)};
   }
 
   function prefersReducedMotion() {
@@ -159,7 +216,10 @@ function createCardQuestionNavigator(options = {}) {
     });
     const counter = root.querySelector('.question-directory-count');
     if (counter) counter.textContent = `${activeIndex + 1}/${entries.length}`;
-    for (const b of root.querySelectorAll('[data-directory-action]')) b.disabled = ['top','up'].includes(b.dataset.directoryAction) ? overlay.scrollTop < 2 : atBottom;
+    for (const b of root.querySelectorAll('[data-directory-action]')) {
+      const action = b.dataset.directoryAction;
+      b.disabled = action === 'top' ? overlay.scrollTop < 2 : action === 'latest' ? atBottom : answerTarget(action).index < 0;
+    }
     if (changed && keepMarkerVisible) keepActiveButtonVisible(entries[activeIndex]?.button);
     return activeIndex;
   }
@@ -184,6 +244,7 @@ function createCardQuestionNavigator(options = {}) {
     const entry = entries[index];
     if (!entry || !overlay) return false;
     overlay._cardFollowController?.pause();
+    rememberNavigation(entry.card);
     const overlayRect = overlay.getBoundingClientRect();
     const cardRect = entry.card.getBoundingClientRect();
     const targetTop = Math.max(0, overlay.scrollTop + cardRect.top - overlayRect.top - 10);
@@ -300,9 +361,10 @@ function createCardQuestionNavigator(options = {}) {
   function init() {
     if (!root || !track || !overlay) return false;
     overlay.addEventListener('scroll', onScroll, { passive: true });
+    for (const type of ['wheel','touchstart','pointerdown','keydown']) overlay.addEventListener(type, clearNavigationAnchor, {passive:true});
     if (typeof win.MutationObserver === 'function') {
       observer = new win.MutationObserver(records => {
-        if (records.some(r=>r.target === overlay || r.target.closest?.('.mr-gc-msg.mine'))) scheduleRefresh();
+        if (records.some(r=>r.target === overlay || r.target.closest?.('.mr-gc-msg') || r.addedNodes.length || r.removedNodes.length)) scheduleRefresh();
       });
       observer.observe(overlay, { childList: true, subtree: !!options.getEntries });
     }
@@ -317,9 +379,11 @@ function createCardQuestionNavigator(options = {}) {
     disposed = true;
     if (refreshFrame !== null) cancelRaf(refreshFrame);
     if (scrollFrame !== null) cancelRaf(scrollFrame);
+    if (anchorFrame !== null) cancelRaf(anchorFrame);
     if (highlightTimer) clearTimeout(highlightTimer);
     observer?.disconnect(); resizeObserver?.disconnect();
     overlay?.removeEventListener('scroll', onScroll);
+    for (const type of ['wheel','touchstart','pointerdown','keydown']) overlay?.removeEventListener(type, clearNavigationAnchor);
     if (highlightedCard) highlightedCard.classList.remove('question-jump-highlight');
     entries = [];
     setVisible(false);
@@ -345,6 +409,7 @@ function createCardQuestionNavigator(options = {}) {
 }
 
 module.exports = {
+  answerTargetFromTops,
   activeQuestionIndexFromTops,
   createCardQuestionNavigator,
   normalizeQuestionSummary,

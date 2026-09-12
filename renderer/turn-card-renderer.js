@@ -769,7 +769,7 @@ function mountTurnCard(container, turn) {
   const tmp = doc.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
   const cardEl = tmp.firstElementChild;
-  container.appendChild(cardEl);
+  container.insertBefore(cardEl, container.querySelector(':scope > .streaming-indicator'));
   if (turn.id) win._sessionTurns.set(turn.id, turn);
   _postProcessTurnCard(cardEl, getActiveSessionId());
   publishTurnPresentation(getActiveSessionId(), turn);

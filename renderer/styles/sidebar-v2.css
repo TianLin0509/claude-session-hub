@@ -73,6 +73,8 @@
 #session-list .sl-warning { display: inline-block; width: 9px; height: 9px; margin-right: 4px; color: var(--status-warning); }
 #session-list .sl-kind,
 #session-list .sl-group-logos .ai-logo { width: 14px; height: 14px; border-radius: 50%; animation: none; opacity: 1; }
+#session-list .session-item.slim.running .sl-kind,
+#session-list .session-item.slim.running .sl-group-logos .ai-logo { animation: sl-logo-breathe 1.6s ease-in-out infinite; }
 #session-list .sl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-faint); }
 #session-list .sl-dot.wait { background: var(--status-warning); box-shadow: 0 0 0 3px rgba(var(--rgb-warning), .14), 0 0 8px rgba(var(--rgb-warning), .35); }
 #session-list .sl-dot.error { background: var(--status-danger); }
@@ -80,6 +82,11 @@
 #session-list .sl-dot.start { background: var(--status-success); }
 #session-list .sl-dot.run,
 #session-list .sl-dot.start { animation: mini-st-pulse 1.5s ease-in-out infinite; }
+#session-list .session-item.slim.running .sl-kind,
+#session-list .session-item.slim.running .sl-group-logos .ai-logo,
+#session-list .sl-group-icon.run,
+#session-list .sl-dot.run,
+#session-list .sl-dot.start { animation-delay: var(--sidebar-work-phase, 0ms); }
 #session-list .sl-dot.idle { background: #3b82f6; border: none; }
 #session-list .sl-dot.dorm { background: var(--fg-faint); border: none; }
 #session-list .sl-dot.unread { background: var(--brand); }
