@@ -59,6 +59,7 @@ async function main() {
   const sessionMenu = createSessionContextMenuController({
     document: { addEventListener() {} },
     window: { innerWidth: 800, innerHeight: 600, confirm: () => true },
+    confirmAction: async () => true,
     contextMenuEl,
     sessions,
     meetings,

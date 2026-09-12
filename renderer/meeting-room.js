@@ -3689,7 +3689,7 @@ if (typeof document !== 'undefined') (function () {
     if (index < 0) return;
     const slot = _getGcSlots(latestMeeting)[index] || {};
     const label = slot.displayLabel || slot.label || slot.kind || ('成员 ' + (index + 1));
-    if (typeof window.confirm === 'function' && !window.confirm('移除“' + label + '”并关闭它的会话？')) return;
+    if (!await require('./ui-feedback').confirmHubAction('移除“' + label + '”并关闭它的会话？', { title: '移除这位成员？', acceptLabel: '移除成员', danger: true })) return;
 
     btn.disabled = true;
     const oldText = btn.textContent;
@@ -5186,7 +5186,7 @@ if (typeof document !== 'undefined') (function () {
       const effortButton = pair.querySelector('.composer-thinking');
       effortButton.hidden = !model.thinking.visible;
       effortButton.disabled = !model.thinking.interactive;
-      effortButton.querySelector('.composer-chip-label').textContent = model.thinking.label;
+      effortButton.querySelector('.composer-chip-label').textContent = '推理 · ' + require('./ui-labels').effortLabel(model.thinking.label);
       effortButton.querySelector('.composer-chip-caret').hidden = !model.thinking.interactive;
       effortButton.title = model.thinking.interactive
         ? `${slot.displayLabel} · 点击选择思考深度`
@@ -5194,7 +5194,7 @@ if (typeof document !== 'undefined') (function () {
       const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
       const speedButton = pair.querySelector('.composer-speed');
       speedButton.hidden = !speed.visible;
-      speedButton.textContent = speed.label;
+      speedButton.textContent = '速度 · ' + speed.label;
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
       speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
@@ -7111,7 +7111,7 @@ if (typeof document !== 'undefined') (function () {
       if (m.mode === 'free' && !m.groupChat) {
         const parts = Array.isArray(m.participants) ? m.participants : [];
         if (parts.length === 0) {
-          alert('请先勾选至少一位发言人');
+          require('./ui-feedback').showHubAlert('请先勾选至少一位发言人');
           return;
         }
       }
@@ -7254,7 +7254,7 @@ if (typeof document !== 'undefined') (function () {
           return;
         }
         const members = _buildWorkflowMembers(m);
-        if (!members.length) { alert('群里还没有可用的 AI 成员，先添加成员再配置工作流'); return; }
+        if (!members.length) { require('./ui-feedback').showHubAlert('群里还没有可用的 AI 成员，先添加成员再配置工作流'); return; }
         window.openWorkflowConfigModal({
           members,
           config: m.serialWorkflow || null,
