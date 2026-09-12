@@ -3,7 +3,6 @@
 const path = require('path');
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
 const { supportsForkSession } = require('../core/session-capabilities.js');
-const { readRecent: readSearchRecent } = require('../core/search-recent.js');
 const {
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
@@ -18,7 +17,6 @@ const { collectPathCandidates } = require('./path-candidates.js');
 const {
   beijingEpoch,
   beijingParts,
-  formatBeijingClock,
   formatBeijingDateTime,
 } = require('../core/beijing-time.js');
 
@@ -523,587 +521,54 @@ function formatDurationShort(ms) {
   return `${hours} 小时${minutes ? ` ${minutes} 分钟` : ''}`;
 }
 
-function createHomeWorkbench(options = {}) {
-  const doc = options.document || document;
-  const getSessions = typeof options.getSessions === 'function' ? options.getSessions : () => new Map();
-  const getMeetings = typeof options.getMeetings === 'function' ? options.getMeetings : () => ({});
-  const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
-  const getHubConfig = typeof options.getHubConfig === 'function' ? options.getHubConfig : () => null;
-  const getUsageSnapshot = typeof options.getUsageSnapshot === 'function' ? options.getUsageSnapshot : () => null;
-  const getTerminalCacheSize = typeof options.getTerminalCacheSize === 'function' ? options.getTerminalCacheSize : () => 0;
-  const loadWorkspaces = typeof options.loadWorkspaces === 'function' ? options.loadWorkspaces : async () => null;
-  const selectSession = typeof options.selectSession === 'function' ? options.selectSession : () => {};
-  const selectMeeting = typeof options.selectMeeting === 'function' ? options.selectMeeting : () => {};
-  const onCopyRecentTurns = typeof options.onCopyRecentTurns === 'function' ? options.onCopyRecentTurns : async () => null;
-  const onForkSession = typeof options.onForkSession === 'function' ? options.onForkSession : async () => null;
-  const onOpenArtifact = typeof options.onOpenArtifact === 'function' ? options.onOpenArtifact : async () => null;
-  const onLaunchWorkspace = typeof options.onLaunchWorkspace === 'function' ? options.onLaunchWorkspace : () => null;
-  const onOpenServerSettings = typeof options.onOpenServerSettings === 'function' ? options.onOpenServerSettings : () => null;
-  const getOperationsSnapshot = typeof options.getOperationsSnapshot === 'function' ? options.getOperationsSnapshot : () => null;
-  const loadOperations = typeof options.loadOperations === 'function' ? options.loadOperations : async () => null;
-  const onRefresh = typeof options.onRefresh === 'function' ? options.onRefresh : async () => {};
-  // 渲染完一轮后回调：卡片布局用它把空卡收成一行（见 home-card-layout.js）。
-  const onRendered = typeof options.onRendered === 'function' ? options.onRendered : null;
-  const onOpenSearch = typeof options.onOpenSearch === 'function' ? options.onOpenSearch : () => {};
-  const getLocalStorage = typeof options.getLocalStorage === 'function'
-    ? options.getLocalStorage
-    : () => (typeof localStorage === 'undefined' ? null : localStorage);
-  const escapeHtml = typeof options.escapeHtml === 'function'
-    ? options.escapeHtml
-    : value => String(value || '').replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[char]);
-  const nowFn = typeof options.nowFn === 'function' ? options.nowFn : Date.now;
-  const setIntervalFn = typeof options.setIntervalFn === 'function' ? options.setIntervalFn : setInterval;
-  const pathExists = typeof options.pathExists === 'function' ? options.pathExists : () => true;
-  const root = doc.getElementById('empty-state');
-  const state = {
-    refreshing: false,
-    lastRefreshAt: nowFn(),
-    refreshError: '',
-    snapshot: null,
-    workspaceListing: null,
-    workspaceItems: [],
-    htmlCache: new Map(),
-  };
-
-  function el(id) {
-    return doc.getElementById(id);
-  }
-
-  function setText(id, value) {
-    const target = el(id);
-    if (target) target.textContent = String(value == null ? '' : value);
-  }
-
-  function setHtml(id, html) {
-    const target = el(id);
-    if (!target || state.htmlCache.get(id) === html) return target;
-    target.innerHTML = html;
-    state.htmlCache.set(id, html);
-    return target;
-  }
-
-  function relativeTime(timestamp, now = nowFn()) {
-    if (!timestamp) return '刚刚';
-    const diff = Math.max(0, now - Number(timestamp));
-    if (diff < 60_000) return '刚刚';
-    if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-    if (diff < 24 * 60 * 60_000) return `${Math.floor(diff / (60 * 60_000))} 小时前`;
-    return `${Math.floor(diff / (24 * 60 * 60_000))} 天前`;
-  }
-
-  function shortText(value, limit = 92) {
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!text) return '';
-    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
-  }
-
-  function formatResetIn(resetsAt) {
-    if (!resetsAt) return '';
-    const ms = new Date(resetsAt).getTime() - nowFn();
-    if (!Number.isFinite(ms) || ms <= 0) return '';
-    const mins = Math.max(1, Math.round(ms / 60_000));
-    if (mins < 60) return `${mins}m 后重置`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h${mins % 60 ? ` ${mins % 60}m` : ''} 后重置`;
-    return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ''} 后重置`;
-  }
-
-  function usageUpdatedLabel(usage) {
-    const observedAt = finiteNumber(usage && (usage.observedAt || usage.lastSeen || usage._ts));
-    return observedAt ? `更新于 ${relativeTime(observedAt)}` : '尚未刷新';
-  }
-
-  function usageWindowMarkup(label, usageWindow) {
-    const pctValue = finiteNumber(usageWindow && usageWindow.pct);
-    const pct = pctValue == null ? null : Math.round(pctValue);
-    const width = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-    const level = pct == null ? 'unknown' : pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
-    const resetText = usageWindow ? formatResetIn(usageWindow.resetsAt) : '';
-    const refreshText = resetText ? resetText.replace(/后重置$/, '后刷新') : '刷新时间未知';
-    const resetAt = usageWindow && usageWindow.resetsAt ? Number(new Date(usageWindow.resetsAt)) : NaN;
-    const resetTitle = Number.isFinite(resetAt)
-      ? `配额刷新时间：${formatBeijingDateTime(resetAt)}`
-      : '配额刷新时间未知';
-    return `<div class="home-usage-window ${level}" title="${escapeHtml(resetTitle)}">`
-      + `<div class="home-usage-window-head"><span>${escapeHtml(label)}</span><strong>${pct == null ? '—' : `${pct}%`}</strong></div>`
-      + `<div class="home-quota-track"><span class="${level}" style="width:${width}%"></span></div>`
-      + `<small class="home-usage-reset">${escapeHtml(refreshText)}</small></div>`;
-  }
-
-  function providerUsageRow(name, kind, usage, activeCount) {
-    const updated = usageUpdatedLabel(usage);
-    return `<div class="home-provider-row">`
-      + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em data-usage-updated="true">${activeCount || 0} 活跃 · ${escapeHtml(updated)}</em></div>`
-      + `<div class="home-usage-windows">${usageWindowMarkup('5h', usage && usage.usage5h)}${usageWindowMarkup('7d', usage && usage.usage7d)}</div>`
-      + '</div>';
-  }
-
-  function moneyLabel(currency, value) {
-    const amount = Number(value);
-    if (!Number.isFinite(amount)) return '—';
-    const symbol = String(currency || '').toUpperCase() === 'CNY' ? '¥' : `${String(currency || '').toUpperCase()} `;
-    return `${symbol}${amount.toFixed(2)}`;
-  }
-
-  function providerBalanceRow(name, kind, balance, activeCount, configured) {
-    const updated = usageUpdatedLabel(balance);
-    const hasBalance = balance && Number.isFinite(Number(balance.totalBalance));
-    if (!hasBalance) {
-      const status = configured ? `${activeCount || 0} 活跃 · 待刷新` : '未配置 API Key';
-      return `<div class="home-provider-row balance">`
-        + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em>${escapeHtml(status)}</em></div>`
-        + `<div class="home-provider-refresh"><span>官方余额接口 · 每 5 分钟轮询</span><span data-usage-updated="true">${escapeHtml(updated)}</span></div>`
-        + '</div>';
-    }
-    const currency = balance.currency || 'CNY';
-    const total = moneyLabel(currency, balance.totalBalance);
-    const toppedUp = moneyLabel(currency, balance.toppedUpBalance);
-    const granted = moneyLabel(currency, balance.grantedBalance);
-    const available = balance.available !== false;
-    const totalNumber = Number(balance.totalBalance);
-    const level = !available || totalNumber < 10 ? 'danger' : totalNumber < 30 ? 'warn' : 'ok';
-    return `<div class="home-provider-row balance">`
-      + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em class="${level}">余额 ${escapeHtml(total)} · ${available ? '可用' : '不可用'}</em></div>`
-      + `<div class="home-provider-detail">充值 ${escapeHtml(toppedUp)} · 赠金 ${escapeHtml(granted)}</div>`
-      + `<div class="home-provider-refresh"><span>官方余额接口 · 每 5 分钟轮询</span><span data-usage-updated="true">${escapeHtml(updated)}</span></div>`
-      + '</div>';
-  }
-
-  function renderProviderHealth(snapshot, usage) {
-    const target = el('home-provider-health');
-    if (!target) return;
-    const config = getHubConfig() || {};
-    setHtml('home-provider-health', [
-      providerUsageRow('Claude', 'claude', usage.claude, snapshot.providerActive.claude),
-      providerUsageRow('Codex', 'codex', usage.codex, snapshot.providerActive.codex),
-      providerUsageRow('Kimi', 'kimi', usage.kimi, snapshot.providerActive.kimi),
-      providerBalanceRow('DeepSeek API', 'deepseek', usage.deepseek, snapshot.providerActive.deepseek, config.deepseekApiKeySet === true),
-    ].join(''));
-  }
-
-  // 2026-08-27：上下文风险原来是主区一整张卡，长期为空。现在只留指标条上的一个数字。
-  function renderContextRisk(snapshot) {
-    setText('home-metric-context', snapshot.contextRisk.length);
-  }
-
-  function renderResumeCandidates(snapshot) {
-    const list = snapshot.resumeCandidates || [];
-    if (!list.length) {
-      setHtml('home-resume-list', '');
-      setText('home-resume-meta', '没有值得回去的休眠会话');
-      return;
-    }
-    setText('home-resume-meta', `休眠 ${snapshot.metrics.dormant} 个 · 挑了 ${list.length} 个`);
-    setHtml('home-resume-list', list.map((item) => {
-      const badge = item.unreadCount > 0
-        ? `<span class="home-resume-badge unread">${item.unreadCount} 条未读</span>`
-        : '<span class="home-resume-badge">可恢复</span>';
-      const meta = [item.model || baseKind(item.kind), relativeTime(item.lastMessageTime)]
-        .filter(Boolean).map(escapeHtml).join(' · ');
-      return `<button type="button" class="home-resume-item" data-home-type="${escapeHtml(item.type || 'session')}"`
-        + ` data-home-id="${escapeHtml(item.id)}">`
-        + `<span class="home-resume-copy"><strong>${escapeHtml(shortText(item.title || '未命名会话', 46))}</strong>`
-        + `<small>${meta}</small></span>${badge}</button>`;
-    }).join(''));
-  }
-
-  function renderSearchRecent() {
-    let recent = [];
-    try { recent = readSearchRecent(getLocalStorage()); } catch { recent = []; }
-    if (!recent.length) {
-      setHtml('home-search-recent', '');
-      return;
-    }
-    setHtml('home-search-recent', recent.map((entry) => (
-      `<button type="button" class="home-search-chip" data-home-action="run-search"`
-      + ` data-home-query="${escapeHtml(entry.query)}"`
-      + ` title="${escapeHtml(`${entry.sessions} 个 session · ${entry.matches} 处命中 · 用过 ${entry.uses} 次`)}">`
-      + `<span>${escapeHtml(shortText(entry.query, 24))}</span>`
-      + `<em>${entry.sessions}</em></button>`
-    )).join(''));
-  }
-
-  function renderArtifacts(snapshot) {
-    const target = el('home-artifact-list');
-    if (!target) return;
-    const operations = getOperationsSnapshot() || {};
-    const gitFiles = Array.isArray(operations.recentFiles) ? operations.recentFiles.map(file => ({
-      path: file.absolutePath || path.join(file.repoRoot || '', file.path || ''),
-      name: path.basename(file.path || file.absolutePath || ''),
-      timestamp: file.modifiedAt || operations.checkedAt || nowFn(),
-      sessionTitle: `${file.repoName || 'Git'} · ${file.status || '变更'}`,
-      source: 'git',
-      risk: file.risk || 'low',
-    })) : [];
-    const seen = new Set();
-    const files = snapshot.artifacts.map(artifact => ({ ...artifact, source: 'artifact' })).concat(gitFiles)
-      .filter(file => {
-        const key = String(file.path || '').toLowerCase();
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
-      .slice(0, 10);
-    setText('home-artifact-count', files.length);
-    if (!files.length) {
-      setHtml('home-artifact-list', '<div class="home-operational-empty">最近 Session 的 Git 变更与 Agent 产物会自动汇总到这里</div>');
-      return;
-    }
-    setHtml('home-artifact-list', files.map((artifact) => `<button type="button" class="home-artifact-item" data-home-action="open-artifact" data-artifact-path="${escapeHtml(artifact.path)}" title="${escapeHtml(artifact.path)}">`
-      + '<span class="home-artifact-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/></svg></span>'
-      + `<span><strong>${escapeHtml(shortText(artifact.name, 42))}<i class="home-file-source ${escapeHtml(artifact.source)}">${artifact.source === 'git' ? 'Git 变更' : 'Agent 产物'}</i></strong><small>${escapeHtml(shortText(artifact.sessionTitle, 42))} · ${relativeTime(artifact.timestamp)}</small><em>${escapeHtml(shortText(artifact.path, 74))}</em></span>`
-      + '<svg class="home-artifact-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>').join(''));
-  }
-
-  function workspaceKey(value) {
-    return String(value || '').replace(/[\\/]+$/, '').toLowerCase();
-  }
-
-  function renderQuickLaunch() {
-    const target = el('home-workspace-launch');
-    if (!target) return;
-    if (state.workspaceError) {
-      state.workspaceItems = [];
-      setHtml('home-workspace-launch', `<div class="home-operational-empty" role="status">项目库读取失败：${escapeHtml(state.workspaceError)}。点击刷新重试。</div>`);
-      return;
-    }
-    const listing = state.workspaceListing || {};
-    const recommended = Array.isArray(listing.recommended) ? listing.recommended : [];
-    const recent = Array.isArray(listing.items) ? listing.items : [];
-    const seen = new Set();
-    state.workspaceItems = recommended.concat(recent)
-      .filter(item => {
-        if (!item || !item.path || item.legacy || item.tier === 'root') return false;
-        const key = workspaceKey(item.path);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 6);
-    if (!state.workspaceItems.length) {
-      setHtml('home-workspace-launch', '<div class="home-operational-empty">暂无已登记项目，完成项目准备并登记后刷新</div>');
-      return;
-    }
-    setHtml('home-workspace-launch', state.workspaceItems.map((item, index) => {
-      const initial = String(item.label || path.basename(item.path) || 'P').trim().slice(0, 1).toUpperCase();
-      const tag = item.recommended ? '常用' : item.pinned ? '置顶' : '最近';
-      return `<button type="button" class="home-workspace-item" data-home-action="launch-workspace" data-workspace-index="${index}" title="在 ${escapeHtml(item.path)} 新建 Claude 会话">`
-        + `<span class="home-workspace-initial">${escapeHtml(initial)}</span><span><strong>${escapeHtml(item.label || path.basename(item.path))}</strong><small>${escapeHtml(shortText(item.path, 52))}</small></span><em>${tag}</em></button>`;
-    }).join(''));
-  }
-
-  function shortProxy(raw) {
-    const value = String(raw || '').trim();
-    if (!value) return '直连';
-    try {
-      const parsed = new URL(value.includes('://') ? value : `http://${value}`);
-      return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
-    } catch {
-      return value.replace(/^[a-z0-9+.-]+:\/\//i, '').replace(/^[^@/]*@/, '').split('/')[0] || '已配置';
-    }
-  }
-
-  function setSyncValue(id, value, level = 'ok') {
-    const target = el(id);
-    if (!target) return;
-    target.textContent = value;
-    target.className = `home-sync-value ${level}`;
-  }
-
-  function setResourceMetric(name, value) {
-    const number = value != null && value !== '' && Number.isFinite(Number(value))
-      ? Math.max(0, Math.min(100, Math.round(Number(value))))
-      : null;
-    setText(`home-system-${name}`, number == null ? '--' : `${number}%`);
-    const bar = el(`home-system-${name}-bar`);
-    if (bar) {
-      bar.style.width = `${number == null ? 0 : number}%`;
-      bar.className = number != null && number >= 90 ? 'danger' : number != null && number >= 75 ? 'warn' : '';
-    }
-    return number;
-  }
-
-  function formatBytes(value) {
-    const number = Number(value);
-    if (!Number.isFinite(number) || number < 0) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let current = number;
-    let index = 0;
-    while (current >= 1024 && index < units.length - 1) { current /= 1024; index += 1; }
-    return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
-  }
-
-  function renderSystemAndServer() {
-    const resources = getResourceUsage() || {};
-    const operations = getOperationsSnapshot() || {};
-    const cpu = setResourceMetric('cpu', resources.cpuPct);
-    const memory = setResourceMetric('memory', resources.memoryPct);
-    const gpu = setResourceMetric('gpu', resources.gpu && resources.gpu.usagePct);
-    const disk = setResourceMetric('disk', resources.disk && resources.disk.usagePct);
-    const gpuCell = el('home-system-gpu')?.closest('.home-system-cell');
-    if (gpuCell) {
-      const gpuInfo = resources.gpu;
-      gpuCell.title = gpuInfo
-        ? `${gpuInfo.name || 'GPU'} · 显存 ${formatBytes(gpuInfo.memoryUsedBytes)} / ${formatBytes(gpuInfo.memoryTotalBytes)}${gpuInfo.temperatureC != null ? ` · ${gpuInfo.temperatureC}°C` : ''}`
-        : '未检测到可读取利用率的 GPU';
-    }
-    const systemCard = el('home-system-title')?.closest('.home-system-card');
-    if (systemCard) systemCard.classList.toggle('pressure', [cpu, memory, gpu, disk].some(value => value != null && value >= 90));
-
-    const remote = operations.remote || {};
-    const serverBar = el('home-server-storage-bar');
-    setText('home-server-label', remote.label || '阿里云服务器');
-    const dot = el('home-server-dot');
-    const server = el('home-server-status');
-    if (!remote.configured) {
-      setText('home-server-latency', '未配置');
-      setText('home-server-storage-label', '保存健康检查 URL 后显示在线与存储');
-      setText('home-server-storage-value', '--');
-      setText('home-server-metrics', '远端指标等待配置');
-      if (serverBar) { serverBar.style.width = '0%'; serverBar.className = ''; }
-      if (dot) dot.className = 'home-status-dot dim';
-      if (server) server.className = 'home-server-status unconfigured';
-    } else if (!remote.online) {
-      setText('home-server-latency', '离线');
-      setText('home-server-storage-label', `连接失败 · ${shortText(remote.error || 'unreachable', 42)}`);
-      setText('home-server-storage-value', '--');
-      setText('home-server-metrics', `最后检查 ${formatBeijingClock(remote.checkedAt || nowFn())}`);
-      if (serverBar) { serverBar.style.width = '0%'; serverBar.className = ''; }
-      if (dot) dot.className = 'home-status-dot danger';
-      if (server) server.className = 'home-server-status offline';
-    } else {
-      setText('home-server-latency', `在线 · ${Math.round(remote.latencyMs || 0)}ms`);
-      if (dot) dot.className = 'home-status-dot ok';
-      if (server) server.className = 'home-server-status online';
-      const storage = remote.storage;
-      setText('home-server-storage-label', storage ? `${storage.mount || '/'} 存储` : '在线 · 指标端点未返回存储');
-      setText('home-server-storage-value', storage && storage.usagePct != null
-        ? `${storage.usagePct}% · ${formatBytes(storage.usedBytes)} / ${formatBytes(storage.totalBytes)}`
-        : '--');
-      const remoteCpu = remote.cpuPct != null && Number.isFinite(Number(remote.cpuPct)) ? `${Math.round(Number(remote.cpuPct))}%` : '--';
-      const remoteMemory = remote.memoryPct != null && Number.isFinite(Number(remote.memoryPct)) ? `${Math.round(Number(remote.memoryPct))}%` : '--';
-      setText('home-server-metrics', `远端 CPU ${remoteCpu} · 内存 ${remoteMemory}`);
-      if (serverBar) {
-        const pct = storage && Number.isFinite(Number(storage.usagePct)) ? Number(storage.usagePct) : 0;
-        serverBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-        serverBar.className = pct >= 90 ? 'danger' : pct >= 75 ? 'warn' : '';
-      }
-    }
-  }
-
-  function renderSyncHealth(snapshot) {
-    const config = getHubConfig() || {};
-    const resources = getResourceUsage() || {};
-    const configured = config.notificationConfigured === true || config.feishuTargetSet === true;
-    setSyncValue('home-sync-notification', configured ? '已配置 · 按会话开启' : '未配置', configured ? 'ok' : 'warn');
-    setSyncValue('home-sync-proxy', shortProxy(config.proxy), config.proxy ? 'ok' : 'dim');
-
-    const terminalCount = Math.max(0, Number(getTerminalCacheSize() || 0));
-    setSyncValue('home-sync-terminals', `${terminalCount} 个终端保留`, terminalCount > 0 ? 'ok' : 'dim');
-
-    const cpu = Number.isFinite(resources.cpuPct) ? Math.round(resources.cpuPct) : null;
-    const memory = Number.isFinite(resources.memoryPct) ? Math.round(resources.memoryPct) : null;
-    const resourceLevel = (cpu != null && cpu >= 85) || (memory != null && memory >= 85) ? 'warn' : 'ok';
-
-    const healthLabel = el('home-health-label');
-    const healthDot = el('home-health-dot');
-    const remote = getOperationsSnapshot() && getOperationsSnapshot().remote;
-    const operationsScanErrors = Number(getOperationsSnapshot() && getOperationsSnapshot().summary && getOperationsSnapshot().summary.scanErrors || 0);
-    const pressureHigh = resourceLevel === 'warn';
-    const serverOffline = remote && remote.configured && !remote.online;
-    const hasExceptions = snapshot.exceptions.length > 0;
-    if (healthLabel) {
-      healthLabel.textContent = state.refreshError
-        ? '部分状态刷新失败'
-        : hasExceptions
-          ? `${snapshot.exceptions.length} 项需要关注`
-          : operationsScanErrors > 0
-            ? `${operationsScanErrors} 个 Git 工作区扫描失败`
-          : serverOffline
-            ? `${remote.label || '服务器'}离线`
-          : pressureHigh
-            ? '系统负载偏高'
-            : '当前 HUB 状态正常';
-    }
-    if (healthDot) healthDot.className = `home-status-dot ${state.refreshError || hasExceptions || operationsScanErrors || pressureHigh || serverOffline ? 'warn' : 'ok'}`;
-  }
+// Snapshot helpers above remain available to runtime consumers. The welcome page
+// does not build snapshots, read project files, scan Git, or start polling.
+function createHomeWorkbench({ document: doc, onCreate } = {}) {
+  const root = doc && doc.getElementById('empty-state');
+  if (!root) throw new Error('Welcome page root missing');
+  if (typeof onCreate !== 'function') throw new TypeError('Welcome page requires a creation handler');
 
   function isVisible() {
-    return !!(root && root.isConnected !== false && (!root.style || root.style.display !== 'none'));
+    return root.isConnected !== false && root.style.display !== 'none';
   }
 
-  function render(options = {}) {
-    if (!root) return null;
-    if (!options.force && !isVisible()) return state.snapshot;
-    const notificationSlot = el('home-notification-slot');
-    const notificationToggle = el('completion-notification-toggle');
-    if (isVisible() && notificationSlot && notificationToggle && notificationToggle.parentElement !== notificationSlot) {
-      notificationSlot.appendChild(notificationToggle);
-    }
-    const usage = getUsageSnapshot() || {};
-    const snapshot = buildHomeSnapshot({
-      sessions: getSessions(),
-      meetings: getMeetings(),
-      now: nowFn(),
-      resourceUsage: getResourceUsage(),
-      hubConfig: getHubConfig(),
-      usageSnapshot: usage,
-      refreshError: state.refreshError,
-      pathExists,
-    });
-    state.snapshot = snapshot;
-
-    setText('home-metric-active', snapshot.metrics.active);
-    setText('home-metric-waiting', snapshot.metrics.waiting);
-    setText('home-metric-unread', snapshot.metrics.unread);
-    setText('home-metric-dormant', snapshot.metrics.dormant);
-    setText('home-last-sync', `更新于 ${formatBeijingClock(state.lastRefreshAt, { seconds: true })}`);
-
-    const refreshButton = el('home-refresh');
-    if (refreshButton) {
-      refreshButton.disabled = state.refreshing;
-      refreshButton.classList.toggle('loading', state.refreshing);
-      const label = refreshButton.querySelector('span');
-      if (label) label.textContent = state.refreshing ? '刷新中' : '刷新';
-    }
-
-    // 2026-08-27 取舍：改动审阅收件箱、异常收件箱、夜间任务摘要三块已从工作台撤下。
-    // buildExceptions / buildNightSummary 仍在跑并留在 snapshot 里（单测依赖，
-    // 也留给以后别处复用），只是不再占工作台的版面。
-    renderContextRisk(snapshot);
-    renderResumeCandidates(snapshot);
-    renderArtifacts(snapshot);
-    renderSearchRecent();
-    renderQuickLaunch();
-    renderProviderHealth(snapshot, usage);
-    renderSystemAndServer();
-    renderSyncHealth(snapshot);
-    if (typeof onRendered === 'function') {
-      try { onRendered(snapshot); } catch { /* 布局回调不该拖垮渲染 */ }
-    }
+  function render() {
+    if (!isVisible()) return;
+    // The same notification control is shared with the session header.
+    const slot = doc.getElementById('home-notification-slot');
+    const toggle = doc.getElementById('completion-notification-toggle');
+    if (slot && toggle && toggle.parentElement !== slot) slot.appendChild(toggle);
     root.dataset.homeReady = 'true';
-    return snapshot;
   }
 
-  async function loadWorkspaceListing() {
+  async function handleClick(event) {
+    const button = event.target && event.target.closest && event.target.closest('[data-home-create]');
+    if (!button || !root.contains(button) || button.disabled) return;
+    const intent = button.dataset.homeCreate;
+    if (intent !== 'session' && intent !== 'group') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const errorEl = doc.getElementById('home-welcome-error');
+    if (errorEl) { errorEl.hidden = true; errorEl.textContent = ''; }
     try {
-      state.workspaceListing = await loadWorkspaces();
-      state.workspaceError = '';
-      if (isVisible()) render();
-      return state.workspaceListing;
+      // Let the launcher capture the focused trigger before disabling it;
+      // otherwise closing the dialog cannot restore keyboard focus.
+      const opening = onCreate(intent);
+      button.disabled = true;
+      await opening;
     } catch (error) {
-      state.workspaceListing = null;
-      state.workspaceError = error.message;
-      if (isVisible()) render();
-      return null;
-    }
-  }
-
-  async function refresh() {
-    if (state.refreshing) return false;
-    state.refreshing = true;
-    state.refreshError = '';
-    render();
-    try {
-      await Promise.all([onRefresh(), loadWorkspaceListing(), loadOperations()]);
-      state.lastRefreshAt = nowFn();
-      return true;
-    } catch (error) {
-      state.refreshError = error && error.message ? error.message : '刷新失败';
-      state.lastRefreshAt = nowFn();
-      return false;
+      console.error('[home-welcome] creation failed:', error);
+      if (errorEl) {
+        errorEl.textContent = `创建面板打开失败：${error && error.message ? error.message : String(error)}`;
+        errorEl.hidden = false;
+      }
     } finally {
-      state.refreshing = false;
-      render();
+      button.disabled = false;
     }
   }
 
-  function activateFlowItem(target) {
-    const item = target && target.closest ? target.closest('[data-home-type][data-home-id]') : null;
-    if (!item) return false;
-    if (item.dataset.homeType === 'meeting') selectMeeting(item.dataset.homeId, { forceScrollBottom: true });
-    else selectSession(item.dataset.homeId, { forceScrollBottom: true });
-    return true;
-  }
-
-  async function runAction(button) {
-    const action = button && button.dataset && button.dataset.homeAction;
-    if (!action) return false;
-    const original = button.textContent;
-    try {
-      if (action === 'refresh') {
-        await refresh();
-      } else if (action === 'copy-turns') {
-        button.disabled = true;
-        const result = await onCopyRecentTurns(button.dataset.sessionId, 3);
-        button.textContent = result && result.copiedRounds ? `已复制 ${result.copiedRounds} 轮` : '暂无完整轮次';
-      } else if (action === 'fork-session') {
-        button.disabled = true;
-        await onForkSession(button.dataset.sessionId);
-        button.textContent = '已发起';
-      } else if (action === 'open-artifact') {
-        await onOpenArtifact(button.dataset.artifactPath);
-      } else if (action === 'launch-workspace') {
-        const item = state.workspaceItems[Number(button.dataset.workspaceIndex)];
-        if (item) onLaunchWorkspace(item);
-      } else if (action === 'open-server-settings') {
-        await onOpenServerSettings();
-      } else if (action === 'open-search') {
-        onOpenSearch('');
-      } else if (action === 'run-search') {
-        onOpenSearch(button.dataset.homeQuery || '');
-      }
-    } catch {
-      button.textContent = '操作失败';
-    } finally {
-      if (action === 'copy-turns' || action === 'fork-session') {
-        setTimeout(() => {
-          if (!button.isConnected) return;
-          button.disabled = false;
-          button.textContent = original;
-        }, 1800);
-      }
-    }
-    return true;
-  }
-
-  if (root) {
-    root.addEventListener('click', (event) => {
-      const actionButton = event.target && event.target.closest ? event.target.closest('[data-home-action]') : null;
-      if (actionButton) {
-        event.preventDefault();
-        event.stopPropagation();
-        void runAction(actionButton);
-        return;
-      }
-      if (activateFlowItem(event.target)) return;
-      const refreshButton = event.target && event.target.closest ? event.target.closest('#home-refresh') : null;
-      if (refreshButton) void refresh();
-    });
-    root.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      if (activateFlowItem(event.target)) event.preventDefault();
-    });
-  }
-
-  void loadWorkspaceListing();
-  // 「最近文件」要 Git 变更，所以启动时拉一次 overview。撤掉的是**定时**扫描
-  // （每 30 秒对每个工作区跑一遍 Git，实测上万文件），不是这份数据本身。
-  void loadOperations().then(() => { if (isVisible()) render(); }).catch(() => {});
-  // 2026-08-27：改动审阅收件箱从工作台撤下后，这里原本每 30 秒跑一次
-  // loadOperations（对每个工作区做 Git 扫描，实测一次上万文件）喂给一张已经不存在的卡。
-  // 现在只在有人真的要看审阅驾驶舱时才拉，定时器只保留轻量的 render（刷新相对时间）。
-  setIntervalFn(() => { if (isVisible()) render(); }, 30_000);
-
-  return {
-    render,
-    refresh,
-    isVisible,
-    getSnapshot: () => state.snapshot,
-  };
+  root.addEventListener('click', handleClick);
+  return { render, isVisible, dispose: () => root.removeEventListener('click', handleClick) };
 }
 
 module.exports = {
