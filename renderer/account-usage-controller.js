@@ -4,7 +4,7 @@ const { createSidebarAccountUsage } = require('./sidebar-account-usage.js');
 const { mergeCodexEntry, sameScope } = require('../main/usage/usage-cache-merge.js');
 
 const LOW_BALANCE_THRESHOLD = 20;
-const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek' };
+const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', tokenPlan: 'Token Plan' };
 const usageLevel = percent => percent > 85 ? 'danger' : percent >= 60 ? 'warn' : 'muted';
 const validPercent = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 function balanceValue(provider) {
@@ -48,11 +48,11 @@ function createAccountUsageController({
   if (typeof escapeHtml !== 'function') throw new Error('escapeHtml is required');
 
   const accountUsage = { usage5h: null, usage7d: null };
-  const agentUsage = { gemini: null, codex: null, kimi: null, deepseek: null };
-  const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0, deepseek: 0 };
+  const agentUsage = { gemini: null, codex: null, kimi: null, deepseek: null, tokenPlan: null };
+  const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0, deepseek: 0, tokenPlan: 0 };
   let _claudeUsageLastSeen = 0;
   const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0, providerResults: null };
-  const providerRefreshStates = Object.fromEntries(['claude', 'codex', 'deepseek'].map(p => [p,
+  const providerRefreshStates = Object.fromEntries(['claude', 'codex', 'deepseek', 'tokenPlan'].map(p => [p,
     { inFlight: false, error: null, result: null }]));
   let _refreshStatusTimer = null;
   let staleTimer = null;
@@ -141,11 +141,18 @@ function createAccountUsageController({
       agentUsage.kimi = totals.kimi;
       agentUsageLastSeen.kimi = (totals.kimi && (totals.kimi.observedAt || totals.kimi._ts)) || nowFn();
     }
+    if (Object.prototype.hasOwnProperty.call(totals || {}, 'tokenPlan')) recordTokenPlan(totals.tokenPlan);
     if (Object.prototype.hasOwnProperty.call(totals || {}, 'deepseek')) {
       agentUsage.deepseek = totals.deepseek;
       agentUsageLastSeen.deepseek = (totals.deepseek && (totals.deepseek.observedAt || totals.deepseek._ts)) || nowFn();
     }
     render();
+  }
+
+  function recordTokenPlan(value) {
+    agentUsage.tokenPlan = value;
+    agentUsageLastSeen.tokenPlan = value?.observedAt || 0;
+    providerRefreshStates.tokenPlan.error = value?.error || null;
   }
 
   function recordCodexUsage(value) {
@@ -168,6 +175,7 @@ function createAccountUsageController({
     if (Object.prototype.hasOwnProperty.call(cached, 'codex')) recordCodexUsage(cached.codex);
     if (cached.kimi) agentUsage.kimi = cached.kimi;
     if (cached.kimi) agentUsageLastSeen.kimi = cached.kimi.observedAt || cached.kimi.ts || agentUsageLastSeen.kimi;
+    if (Object.prototype.hasOwnProperty.call(cached, 'tokenPlan')) recordTokenPlan(cached.tokenPlan);
     if (cached.deepseek) agentUsage.deepseek = cached.deepseek;
     if (cached.deepseek) agentUsageLastSeen.deepseek = cached.deepseek.observedAt || cached.deepseek.ts || agentUsageLastSeen.deepseek;
     render();
@@ -491,6 +499,7 @@ function createAccountUsageController({
       codex: agentUsage.codex ? { ...agentUsage.codex, lastSeen: agentUsageLastSeen.codex } : null,
       gemini: agentUsage.gemini ? { ...agentUsage.gemini, lastSeen: agentUsageLastSeen.gemini } : null,
       kimi: agentUsage.kimi ? { ...agentUsage.kimi, lastSeen: agentUsageLastSeen.kimi } : null,
+      tokenPlan: agentUsage.tokenPlan ? { ...agentUsage.tokenPlan, lastSeen: agentUsageLastSeen.tokenPlan } : null,
       deepseek: agentUsage.deepseek ? { ...agentUsage.deepseek, lastSeen: agentUsageLastSeen.deepseek } : null,
       refresh: {
         inFlight: usageRefreshState.inFlight,

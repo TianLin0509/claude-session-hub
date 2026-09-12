@@ -148,6 +148,8 @@
 .sidebar-quota-claude .sidebar-quota-provider { flex: 1; }
 .sidebar-quota-provider { display: flex; align-items: center; gap: 6px; min-width: 0; height: 35px; }
 .sidebar-quota-name { flex: none; font-weight: 600; }
+.sidebar-quota-provider[data-provider='tokenPlan'] { border-top: 1px solid var(--border-subtle); }
+.sidebar-quota-provider[data-provider='tokenPlan'][data-freshness='stale'] .sidebar-quota-value::after { content: ' ·旧'; color: var(--fg-muted); font-size: 9px; }
 .sidebar-quota-metrics { display: flex; gap: 9px; flex: 1; min-width: 0; }
 .sidebar-quota-metric { flex: 1; min-width: 0; color: var(--status-success); }
 .sidebar-quota-reading { display: flex; align-items: baseline; justify-content: space-between; gap: 3px; white-space: nowrap; }
