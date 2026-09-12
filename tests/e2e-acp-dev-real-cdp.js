@@ -64,10 +64,17 @@ async function main(){
     await invoke('groupchat:interrupt',{meetingId:meeting.id});
     // Read-only verification uses the other three real engines in the same dev group.
     const verify='本条只做只读验收发言，不接管开题/实现/合并，不更改任何文件。读取 '+done+'，回复其中随机 UUID 标记，前缀 DEV_ACP_OK。';
-    const promise=invoke('groupchat:turn',{meetingId:meeting.id,userInput:verify,targetMemberIds:['m2','m3','m4']});
-    promise.catch(()=>{});
+    // A real turn can outlast one CDP Runtime.evaluate request (30 seconds).
+    // Keep the actual IPC promise in the isolated renderer and poll its result;
+    // do not swallow a transport timeout after the models already succeeded.
+    await cdp.eval('(()=>{window.__acpDevVerification={done:false};ipcRenderer.invoke("groupchat:turn",'+
+      JSON.stringify({meetingId:meeting.id,userInput:verify,targetMemberIds:['m2','m3','m4']})+
+      ').then(result=>{window.__acpDevVerification={done:true,result};},error=>{window.__acpDevVerification={done:true,error:error.message};});})()');
     await until(async()=>{const g=await state();return g.messages.filter(m=>m.role==='assistant'&&m.content?.includes('DEV_ACP_OK')&&m.content.includes(nonce)).length===3;},'DeepSeek GLM Codex native file verification',180000);
-    await promise;result.group=await state();result.file=await invoke('dev-file:status',{meetingId:meeting.id});await snap('verified');
+    await until(()=>cdp.eval('window.__acpDevVerification.done'),'verification dispatch settled');
+    result.dispatch=await cdp.eval('window.__acpDevVerification');
+    if(result.dispatch.error)throw Error(result.dispatch.error);
+    result.group=await state();result.file=await invoke('dev-file:status',{meetingId:meeting.id});await snap('verified');
     result.checks.push('DeepSeek, GLM and real Codex read the native-delivered file with correct member ownership in development group');result.passed=true;
   }catch(e){result.error=e.message;throw e;}finally{
     if(cdp){try{if(meeting){result.group=await invoke('groupchat:get-state',{meetingId:meeting.id});await invoke('groupchat:interrupt',{meetingId:meeting.id});}await snap('final');}catch(e){result.captureError=e.message;}await cdp.close();}
