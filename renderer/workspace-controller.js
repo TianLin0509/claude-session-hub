@@ -1141,7 +1141,7 @@
   // 键按 kind 存而不是全局一份 —— 两家的合法枚举和默认值都不一样。
   function rememberTuning(kind) {
     tuningMemory.set(kind, {
-      model: selectedModel,
+      ...(kind === 'chatgpt' ? { model: selectedModel } : {}),
       effort: selectedEffort,
       mcpProfile: selectedMcpProfile,
       fastMode: selectedFastMode,
@@ -1151,7 +1151,7 @@
 
   function applyTuningMemory(kind) {
     const saved = tuningMemory.get(kind);
-    selectedModel = saved?.model || (kind === 'chatgpt' ? 'chatgpt-web/high' : DEFAULT_MODEL_BY_KIND[kind]) || '';
+    if (kind === 'chatgpt') selectedModel = saved?.model || 'chatgpt-web/high';
     selectedEffort = (saved && saved.effort) || defaultEffortFor(kind);
     selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
     selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : DEFAULT_FAST_MODE;
