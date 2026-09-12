@@ -177,6 +177,30 @@
 }
 .session-tuning-note[hidden] { display: none; }
 
+#chatgpt-web-panel {
+  margin: 12px 20px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+#chatgpt-web-panel[hidden] { display: none; }
+#chatgpt-web-status { margin: 0 0 8px; }
+#chatgpt-web-panel button {
+  padding: 5px 9px;
+  margin: 0 6px 3px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+#chatgpt-web-panel button:hover { border-color: var(--text-muted); }
+
 /* Recent workspaces come first; the system folder dialog is the fallback. */
 .session-existing-path {
   display: flex;

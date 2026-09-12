@@ -960,6 +960,11 @@ function buildNativeCodexOptions(info, opts, env) {
   const entries = profile === 'none' ? [] : (opts.codexMcpEntries || []);
   entries.forEach(entry => allowed.add(entry.name));
   const config = {};
+  if (require('./chatgpt-web-models').isChatgptWebModel(info.currentModel?.id)) {
+    const web = require('./chatgpt-web-integration').requireWebTools(info.currentModel.id);
+    config.model_provider = 'openai';
+    config.openai_base_url = `http://127.0.0.1:${web.port}/v1`;
+  }
   // Even a disabled MCP table must contain a valid transport in Codex. Never
   // synthesize incomplete tables for room servers absent from this profile.
   for (const name of new Set([...configuredNames, ...entries.map(entry=>entry.name)])) {
@@ -1064,6 +1069,12 @@ class SessionManager extends EventEmitter {
     // remains resumable instead of being silently discarded.
     const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
     const isCodex = kind === 'codex' || kind === 'codex-resume';
+    const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
+    if (webRoute) {
+      require('./chatgpt-web-integration').requireWebTools(opts.model);
+      if (opts.effort && opts.effort !== webRoute.effort) throw new Error('ChatGPT 模型与思考档不匹配');
+      opts = { ...opts, effort: webRoute.effort, codexSpeedTier: 'inherit' };
+    }
     if (isCodex) {
       if (opts.model && normalizeCodexSessionModel(opts.model) !== String(opts.model).trim()) throw new Error('Codex 模型名称无效，未替换成默认模型');
       if (opts.effort && !CODEX_EFFORT_LEVELS.has(opts.effort)) throw new Error('Codex 思考档无效，未降低精度');
@@ -1071,8 +1082,8 @@ class SessionManager extends EventEmitter {
       if (opts.codexSpeedTier && !CODEX_SPEED_TIERS.has(opts.codexSpeedTier)) throw new Error('Codex 服务通道无效');
       if (opts.contextMax != null && !normalizeCodexContextWindow(opts.contextMax)) throw new Error('Codex 上下文配置无效');
       const nativeConfig=getConfigValues();
-      if(nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
-      if(opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
+      if(!webRoute && nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
+      if(!webRoute && opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
     }
     if ((isCodex || isClaude || isDeepSeekLegacy) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
     if (isCodex && opts.codexSid && opts.useResume) {
@@ -1091,6 +1102,7 @@ class SessionManager extends EventEmitter {
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
+    else if (webRoute) { this.codexCounter = (this.codexCounter || 0) + 1; title = `${webRoute.label} ${this.codexCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'kimi') { this.kimiCounter = (this.kimiCounter || 0) + 1; title = `Kimi ${this.kimiCounter}`; }
@@ -1128,6 +1140,14 @@ class SessionManager extends EventEmitter {
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
       if (process.env.CLAUDE_HUB_DATA_DIR) sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+    } else if (webRoute) {
+      clearProxyEnv(sessionEnv);
+      const isolation = require('./chatgpt-isolation').isolatedPaths();
+      sessionEnv.CODEX_HOME = isolation.codexHome;
+      sessionEnv.CODEX_CHATGPT_WEB_HOME = isolation.runtime;
+      delete sessionEnv.OPENAI_BASE_URL;
+      delete sessionEnv.OPENAI_API_KEY;
+      delete sessionEnv.CODEX_API_KEY;
     } else if (isGemini || isCodex) {
       const cv = getConfigValues();
       if (isCodex && isCodexApiBackend(cv)) {
@@ -1249,7 +1269,9 @@ class SessionManager extends EventEmitter {
     }
 
     let codexSessionsRoot = null;
-    if (isDeepSeek && !isDeepSeekLegacy) {
+    if (webRoute) {
+      codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
+    } else if (isDeepSeek && !isDeepSeekLegacy) {
       const profile = ensureDeepSeekCodexProfile(spawnCwd);
       sessionEnv.CODEX_HOME = profile.codexHome;
       codexSessionsRoot = path.join(profile.codexHome, 'sessions');
@@ -1313,7 +1335,9 @@ class SessionManager extends EventEmitter {
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
     }
-    const CodexSessionClass = isCodex && sharedCodexRuntimeEnabled(sessionEnv)
+    // The web bridge must never attach to an already-running ordinary Codex
+    // broker, whose loaded code and lifecycle belong to other Hub sessions.
+    const CodexSessionClass = isCodex && !webRoute && sharedCodexRuntimeEnabled(sessionEnv)
       ? require('./codex-shared-session').CodexSharedSession
       : require('./codex-native-session').CodexNativeSession;
     const ptyProcess = isAcp
@@ -1355,7 +1379,7 @@ class SessionManager extends EventEmitter {
       // 旧写法 `isCodexApiBackend ? cv.CODEX_API_MODEL : (opts.model || ...)` 在 packy api 模式下
       // 强制覆盖用户选择，AI 群聊选 5.4/5.3 实际跑出来都是 5.5。
       const cmid = normalizeCodexSessionModel(opts.model || resolveDefaultCodexModel(cv));
-      currentModel = { id: cmid, displayName: cmid.toUpperCase() };
+      currentModel = { id: cmid, displayName: webRoute ? webRoute.label : cmid.toUpperCase() };
     } else if (isDeepSeek) {
       const mid = isDeepSeekLegacy
         ? normalizeLegacyDeepSeekClaudeModel(opts.model)

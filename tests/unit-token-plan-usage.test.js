@@ -20,8 +20,11 @@ async function main() {
     const service = createTokenPlanUsageService({ configDir: dir, cliPath: __filename, now: () => time,
       execute(node, args, options, cb) {
         calls++; callback = cb;
+        assert.equal(args[0], __filename);
         assert.deepEqual(args.slice(1, 3), ['usage', 'token-plan']);
-        assert(!args.some(a => /chat|api-key|mcp/.test(a)));
+        // The executable path may itself contain "chat" (for example a
+        // chatgpt worktree); only CLI arguments describe requested actions.
+        assert(!args.slice(1).some(a => /chat|api-key|mcp/.test(a)));
         assert.equal(options.windowsHide, true);
         assert.equal(options.env.BAILIAN_CONFIG_DIR, dir);
         assert.equal(options.timeout, 20000);
