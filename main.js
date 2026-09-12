@@ -27,6 +27,7 @@ const {
   managedLaunchAuditPath,
 } = require('./core/managed-launch-audit.js');
 const { spawn } = require('child_process');
+const { launchHubInstance } = require('./core/hub-instance-launcher.js');
 const {
   HUB_APP_USER_MODEL_ID,
   ensureWindowsShellIntegration,
@@ -1052,6 +1053,16 @@ ipcMain.handle('hub:toggle-maximize', () => {
   mainWindow[action]();
   return action;
 });
+
+ipcMain.handle('hub:new-instance', () => launchHubInstance({
+  appRoot: __dirname,
+  execPath: isIsolatedHub() || HUB_IS_PACKAGED ? process.execPath : resolveHubLaunchExePath({
+    execPath: process.execPath,
+    icoPath: path.join(__dirname, 'claude-wx.ico'),
+    productVersion: require('./package.json').version,
+  }),
+  isPackaged: HUB_IS_PACKAGED,
+}));
 
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND

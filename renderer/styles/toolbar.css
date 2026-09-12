@@ -52,6 +52,23 @@
   -webkit-app-region: no-drag;
 }
 
+.hub-new-instance {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.hub-new-instance:hover { background: var(--bg-hover, rgba(128, 128, 128, 0.15)); }
+.hub-new-instance:focus-visible { outline: 2px solid var(--accent, #7185ff); outline-offset: 2px; }
+.hub-new-instance:disabled { opacity: 0.5; cursor: wait; }
+
 /* 系统窗口按钮的留位。WCO 可用时按它给的真实宽度走：用户改过系统缩放、
    或者将来按钮数量变了，都不用回来改这个常量。 */
 .toolbar-window-controls {
