@@ -205,6 +205,11 @@ let hubProxyInfo = null;
 //   在启动 get-hub-config-raw 回调里根据 cfg.deepseekApiKey 设置。
 let _deepseekAutoTitleEnabled = false;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
+const cardHistoryViews = require('./card-history-views').createCardHistoryViews({
+  document, getTurns: () => window._sessionTurns,
+  setTurns: turns => { window._sessionTurns = turns; },
+  clearSignatures: () => turnCardRenderer.clearTurnRenderSignatures(),
+});
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
 const clipboardController = createClipboardController({ document, window, clipboard });
@@ -2005,8 +2010,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (!embedded && currentView === 'card') {
     // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
     // for empty/error/non-Claude cases. Don't pre-clear here.
-    _cardHistoryHydratedSid = null; // 切 session 重置，等 loadSessionHistoryToOverlay 成功后再设
-    if (typeof loadSessionHistoryToOverlay === 'function') {
+    if (!cardHistoryViews.ready(session)) _cardHistoryHydratedSid = null;
+    if (typeof loadSessionHistoryToOverlay === 'function'
+        && (!opts.reuseCardHistory || !cardHistoryViews.ready(session))) {
       // 卡片视图切换 session 时也跳到最新对话，与上方 PTY 的 pinOnShow focus 兜底对称：
       // 切到不同 session 时靠 opts.focus；重复点击当前侧栏项时靠显式 forceScrollBottom。
       // view 切换（PTY↔卡片）走 applyViewMode 不经此处、不传 forceScrollBottom，保持阅读位置不受影响。
@@ -2018,6 +2024,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     // PTY view: just clear msg-overlay (don't load cards user can't see)
     const overlay = document.getElementById('msg-overlay');
     if (overlay) {
+      cardHistoryViews.suspend();
       overlay.innerHTML = '';
       if (window._sessionTurns) window._sessionTurns.clear();
     }
@@ -2349,7 +2356,6 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // 依赖 mountSessionTurnCard 内的 turnId dedup 自动跳过已 mount 的 turn。
   // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
   // 切 session 时调用方传默认（incremental=false）走全量。
-  const incremental = opts.incremental === true;
   const forceScrollBottom = opts.forceScrollBottom === true;
 
   // 1. resolve container
@@ -2358,6 +2364,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     console.warn('[loadSessionHistoryToOverlay] container not found (msg-overlay missing)');
     return { mounted: 0, error: 'container missing' };
   }
+  if (sessionId !== activeSessionId || currentView !== 'card') return {mounted: 0, error: 'stale load'};
+  const viewSession = sessions.get(sessionId) || {id: sessionId};
+  const view = cardHistoryViews.activate(viewSession);
+  const incremental = opts.incremental === true || view.hydrated;
+  if (view.hydrated) _cardHistoryHydratedSid = sessionId;
   const overlayScrollBeforeLoad = {
     top: container.scrollTop,
     wasAtBottom: forceScrollBottom || _isCardOverlayAtBottom(container),
@@ -2429,8 +2440,23 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     || window._cardLoadSeqBySid.get(sessionId)[loadLane] !== loadSeq
   );
   if (!incremental) {
-    showPlaceholder('正在加载历史卡片…');
+    container.innerHTML = require('./card-history-views').loadingMarkup();
   }
+
+  const showRefreshError = message => {
+    let status = container.querySelector(':scope > .card-history-status');
+    if (!status) {
+      status = document.createElement('div'); status.className = 'card-history-status';
+      status.setAttribute('role', 'status'); container.appendChild(status);
+    }
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试';
+    retry.addEventListener('click', () => {
+      if (sessionId !== activeSessionId || currentView !== 'card') return;
+      retry.disabled = true;
+      loadSessionHistoryToOverlay(sessionId).catch(error => console.warn('[card-history retry]', error));
+    });
+    status.replaceChildren(document.createTextNode('历史同步暂未完成：' + message + ' '), retry);
+  };
 
   // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
   let result;
@@ -2451,10 +2477,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
         '加载历史失败：' + msg + ' — '
         + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
       );
-    }
+    } else showRefreshError(msg);
     return { mounted: 0, error: msg };
   }
   if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
+  container.querySelector(':scope > .card-history-status')?.remove();
   if (result && result.transcriptPath && session && session.transcriptPath !== result.transcriptPath) {
     session.transcriptPath = result.transcriptPath;
     if (typeof schedulePersist === 'function') schedulePersist();
@@ -2527,6 +2554,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } else if (!incremental) {
       removeLoadingPlaceholder();
     }
+    if (incremental) showRefreshError(ipcError);
     return { mounted: 0, error: ipcError };
   }
 
@@ -2549,6 +2577,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     // mountOptimisticUserCard 把 placeholder 隐藏,turn-complete 又看到 hydrated=null
     // 反而触发全量 reload → 闪烁。
     if (!incremental) _cardHistoryHydratedSid = sessionId;
+    if (!opts.incremental || view.hydrated) cardHistoryViews.markHydrated(sessions.get(sessionId) || viewSession);
     return { mounted: concurrentFullCards.length, error: null };
   }
 
@@ -2575,11 +2604,29 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const _batchWasAtBottom = forceScrollBottom || (incremental ? _isCardOverlayAtBottom(container) : overlayScrollBeforeLoad.wasAtBottom);
   let mounted = 0;
   let lastCardEl = null;
-  for (const turn of turns) {
+  let batchStarted = performance.now();
+  const turnsBeforeMount = new Map(window._sessionTurns);
+  const mountTurns = incremental ? turns : [...turns].reverse();
+  for (const turn of mountTurns) {
+    if (!incremental && window._sessionTurns.has(turn.id)
+        && window._sessionTurns.get(turn.id) !== turnsBeforeMount.get(turn.id)) continue;
     const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind });
     if (cardEl) {
       mounted++;
-      lastCardEl = cardEl;
+      if (incremental || !lastCardEl) lastCardEl = cardEl;
+      if (!incremental) container.insertBefore(cardEl, container.querySelector(':scope > .turn-card'));
+    }
+    // Yield between complete cards, preserving all Markdown and tool content.
+    // Check ownership after every yield so rapid navigation cannot append an
+    // old session's remaining cards into the newly selected conversation.
+    if (!incremental && performance.now() - batchStarted >= 12) {
+      await new Promise(resolve => {
+        let frame;
+        const timer = setTimeout(() => { cancelAnimationFrame(frame); resolve(); }, 40);
+        frame = requestAnimationFrame(() => { clearTimeout(timer); setTimeout(resolve, 0); });
+      });
+      if (isStaleLoad()) return {mounted, error: 'stale load'};
+      batchStarted = performance.now();
     }
   }
 
@@ -2675,6 +2722,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   if (!incremental && mounted > 0) {
     _cardHistoryHydratedSid = sessionId;
   }
+  if (mounted > 0 && (!opts.incremental || view.hydrated)) cardHistoryViews.markHydrated(sessions.get(sessionId) || viewSession);
 
   _updateStreamingIndicator(sessionId);
   return { mounted, error: null };
@@ -4921,6 +4969,8 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 async function selectSession(id, opts = {}) {
+  const reuseCardHistory = activeSessionId === id && !activeMeetingId && currentView === 'card'
+    && terminalPanelEl.style.display !== 'none' && !terminalPanelEl.classList.contains('home-active');
   void savePreviewState({ nonBlocking: true });
   activeMeetingId = null;
   // Hiding the meeting DOM alone leaves meeting-room.js believing the room is
@@ -5002,7 +5052,7 @@ async function selectSession(id, opts = {}) {
   // 终态 + 记住已确认签名，提醒才真的只提醒一次。
   acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
-  showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
+  showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom, reuseCardHistory });
   for (const meeting of Object.values(meetings)) {
     if (meeting.subSessions?.includes(id)) markMeetingMemberRead(meeting.id, id);
   }
@@ -7780,6 +7830,7 @@ function markSessionProcessLost(sessionId, exitInfo) {
 }
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
+  cardHistoryViews.drop(sessionId);
   floatingPromptDeliveries.delete(sessionId);
   const closing = sessions.get(sessionId);
   // 只管普通会话：群聊成员会话的生命周期由会议室自己管，把它们一并留下
