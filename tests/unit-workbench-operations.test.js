@@ -120,7 +120,12 @@ test('malformed health redirects reject through the request promise', async t =>
   );
 });
 
-test('overview, review decisions and checkpoints use an isolated Git index', { timeout: 30_000 }, async t => {
+// This end-to-end workflow invokes 52 real Git commands in addition to fixture
+// setup. A timed Windows run spent 27s in the workflow without any stalled
+// command, so a 30s aggregate cap cancels healthy runs under suite concurrency.
+// Keep every assertion and each service command's own timeout; bound the whole
+// integration separately from those per-operation failure limits.
+test('overview, review decisions and checkpoints use an isolated Git index', { timeout: 90_000 }, async t => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-test-'));
   const repo = path.join(tempRoot, 'repo');
   const dataDir = path.join(tempRoot, 'hub-data');
