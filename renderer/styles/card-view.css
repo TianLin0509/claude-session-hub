@@ -1395,6 +1395,42 @@
   cursor: pointer;
 }
 
+.msg-overlay-placeholder.card-history-loading {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-style: normal;
+  text-align: left;
+  opacity: 1;
+}
+.card-history-caption { padding: 0 4px 12px; }
+.card-history-ghost {
+  padding: 20px;
+  margin: 12px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-card);
+}
+.card-history-ghost.user { margin-left: 18%; }
+.card-history-ghost i {
+  display: block;
+  height: 9px;
+  margin: 12px 0;
+  border-radius: 5px;
+  background: var(--fg-muted);
+  opacity: .15;
+}
+.card-history-ghost i:first-child { width: 35%; }
+.card-history-ghost i:last-child { width: 68%; }
+.card-history-status {
+  padding: 12px 20px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .msg-overlay-placeholder.session-welcome {
   box-sizing: border-box;
   max-width: 760px;

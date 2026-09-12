@@ -71,7 +71,7 @@ assert.ok(
   rendererSrc.includes("const requestedBottomPin = opts && opts.forceScrollBottom === true;") &&
   rendererSrc.includes("const forceScrollBottom = requestedBottomPin") &&
   rendererSrc.includes("|| !!(isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
-  rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });"),
+  rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom, reuseCardHistory });"),
   'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
