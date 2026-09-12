@@ -21,7 +21,7 @@ async function main(){
     await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',...p,button,clickCount:1});
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',...p,button,clickCount:1});
   };
-  const snap=async(name)=>{await cdp.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
+  const snap=async(name)=>{await cdp.send('Page.bringToFront');await cdp.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
   try{
     hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await freePort(),windowMode:'visible',label:'ui-polish',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
     result.pid=hub.pid;result.port=hub.port;
