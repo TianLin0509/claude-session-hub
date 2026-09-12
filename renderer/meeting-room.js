@@ -7486,7 +7486,8 @@ if (typeof document !== 'undefined') (function () {
   const voiceBox = document.getElementById('mr-input-box');
   const voiceRail = document.getElementById('mr-input-row');
   if (voiceBox && voiceRail) require('./voice-input').attachVoiceInput({
-    input: voiceBox, rail: voiceRail, panelHost: voiceRail.parentElement,
+    input: voiceBox, rail: voiceRail,
+    getStatusHost: () => document.getElementById('mr-composer-head') || document.getElementById('mr-input-preflight'),
     getTarget: () => ({ id: activeMeetingId, project: meetingData[activeMeetingId]?.workspace || '' }),
     isActive: target => activeMeetingId === target.id && voiceBox.getClientRects().length > 0,
   });

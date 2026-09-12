@@ -13,21 +13,13 @@ function selectedRange(input) {
   if (selection?.rangeCount && input.contains(selection.getRangeAt(0).commonAncestorContainer)) return selection.getRangeAt(0).cloneRange();
   const range = document.createRange(); range.selectNodeContents(input); range.collapse(false); return range;
 }
-function insertText(input, text, range) {
-  if (!range || !input.contains(range.commonAncestorContainer)) range = selectedRange(input);
-  range.deleteContents();
-  const node = document.createTextNode(text); range.insertNode(node); range.setStartAfter(node); range.collapse(true);
-  input.focus(); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
 async function showSettings(target) {
   if (document.querySelector('.voice-settings')) return;
   const overlay = document.createElement('div'); overlay.className = 'voice-settings';
   const dialog = document.createElement('section'); dialog.className = 'voice-settings-dialog';
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', '语音输入设置');
   const heading = document.createElement('h3'); heading.textContent = '语音输入设置';
-  const note = document.createElement('p'); note.textContent = '录音发送至阿里云百炼，按语音服务计费。停止后只写入草稿，由你检查并发送。';
+  const note = document.createElement('p'); note.textContent = '录音发送至阿里云百炼，按语音服务计费。识别文字实时写入输入框，由你检查并发送。';
   dialog.append(heading, note);
   const field = (label, tag = 'input') => {
     const wrap = document.createElement('label'); wrap.textContent = label;
@@ -75,27 +67,30 @@ async function showSettings(target) {
   };
 }
 
-function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
+function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
   const mic = button('语音', 'voice-mic'); mic.title = '点击开始语音输入'; mic.setAttribute('aria-label', '开始语音输入');
-  const settings = button('语音设置', 'voice-settings-button'); settings.title = '配置识别服务和项目术语';
+  mic.title = '点击开始语音输入 · 右键打开语音设置';
   rail.classList.add('voice-enabled');
   rail.insertBefore(mic, rail.querySelector('.floating-input-send, #mr-workflow-btn'));
-  const panel = document.createElement('div'); panel.className = 'voice-panel'; panel.hidden = true;
   const status = document.createElement('span'); status.className = 'voice-status'; status.setAttribute('role', 'status');
-  const meter = document.createElement('meter'); meter.min = 0; meter.max = 1; meter.value = 0; meter.setAttribute('aria-label', '麦克风输入音量');
-  const preview = document.createElement('div'); preview.className = 'voice-preview';
-  const actions = document.createElement('div'); actions.className = 'voice-actions';
-  const cancel = button('取消'); const keep = button('插入草稿'); keep.hidden = true;
-  actions.append(cancel, keep, settings); panel.append(status, meter, preview, actions); panelHost.append(panel);
-  let recording = null, disposed = false;
-  const setStatus = message => { panel.hidden = false; status.textContent = message; };
+  let recording = null, disposed = false, writing = false, statusTimer, statusHost;
+  const setStatus = (message, expires = false) => {
+    clearTimeout(statusTimer);
+    const host = getStatusHost();
+    if (statusHost !== host) statusHost?.classList.remove('voice-status-active');
+    statusHost = host;
+    if (host && status.parentElement !== host) host.append(status);
+    status.textContent = message; status.title = message;
+    status.hidden = !message;
+    host?.classList.toggle('voice-status-active', !!message);
+    if (expires) statusTimer = setTimeout(() => setStatus(''), 3000);
+  };
   const sameTarget = r => isActive(r.target) && getTarget()?.id === r.target.id && input.isConnected && input.isContentEditable;
   const releaseAudio = async r => {
     if (r.timer) clearInterval(r.timer);
     r.stream?.getTracks().forEach(track => track.stop());
     r.source?.disconnect(); r.node?.disconnect();
     if (r.context && r.context.state !== 'closed') await r.context.close();
-    meter.value = 0;
   };
   function finishUI(r) {
     r.ended = true;
@@ -105,16 +100,16 @@ function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
   }
   async function cancelRecording() {
     const r = recording;
+    recording = null; setStatus('');
     if (r && !r.ended) {
       finishUI(r);
       try { await ipcRenderer.invoke('voice:cancel', r.id); } catch (error) { setStatus(cleanError(error)); return; }
     }
-    recording = null; preview.textContent = ''; panel.hidden = true;
   }
   function fail(r, message) {
     if (recording !== r || r.ended) return;
-    finishUI(r); keep.hidden = !preview.textContent;
-    setStatus(`${message}。已有输入未改动；临时文字请检查后插入。`);
+    finishUI(r);
+    setStatus(`${message}。已识别文字保留在输入框。`);
     void ipcRenderer.invoke('voice:cancel', r.id).catch(error => setStatus(`取消识别失败：${cleanError(error)}`));
   }
   async function stop(r) {
@@ -134,12 +129,11 @@ function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
     } catch (error) { fail(r, cleanError(error)); }
   }
   async function start() {
-    if (activeRecording) { setStatus('已有录音正在进行，请先停止或取消。'); return; }
-    if (recording && preview.textContent && !panel.hidden) { setStatus('请先插入或取消上次识别文字。'); return; }
+    if (activeRecording) { setStatus('已有录音正在进行，请先停止。'); return; }
     const target = getTarget();
     if (!target?.id || !isActive(target) || !input.isContentEditable) { setStatus('请先选择一个可编辑的会话。'); return; }
     const r = { id: randomUUID(), target, range: selectedRange(input), html: input.innerHTML, queue: Promise.resolve(), queuedBytes: 0, ended: false };
-    recording = r; activeRecording = r; keep.hidden = true; preview.textContent = ''; mic.disabled = true;
+    recording = r; activeRecording = r; mic.disabled = true;
     setStatus('正在准备麦克风…');
     try {
       const config = await ipcRenderer.invoke('voice:config', target.project);
@@ -158,7 +152,6 @@ function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
       r.node.port.onmessage = ({ data }) => {
         if (data.flushed) { r.flushed?.(); return; }
         if (r.ended || !data.pcm) return;
-        meter.value = data.peak;
         if (data.peak > .01) r.lastSound = Date.now();
         r.queuedBytes += data.pcm.byteLength;
         if (r.queuedBytes > r.context.sampleRate * 4) { fail(r, '网络发送积压，请分段重试'); return; }
@@ -174,7 +167,8 @@ function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
       mic.disabled = false; mic.textContent = '停止'; mic.setAttribute('aria-label', '停止语音输入'); mic.setAttribute('aria-pressed', 'true');
       r.timer = setInterval(() => {
         const seconds = Math.floor((Date.now() - r.started) / 1000);
-        if (!sameTarget(r) || seconds >= 295) { void stop(r); return; }
+        if (!sameTarget(r)) { void cancelRecording(); return; }
+        if (seconds >= 295) { void stop(r); return; }
         setStatus(`录音 ${seconds}s · ${Date.now() - r.lastSound > 5000 ? '未检测到声音，请检查麦克风' : '说完点击停止'} · 最长 5 分钟`);
       }, 250);
       setStatus('正在录音 · 说完点击停止');
@@ -183,33 +177,70 @@ function attachVoiceInput({ input, rail, panelHost, getTarget, isActive }) {
       fail(r, message);
     }
   }
+  // Only replace the text node owned by this recording. Existing text/attachments
+  // keep their DOM identity, and partial hypotheses replace rather than append.
+  function updateDraft(r, text) {
+    if (!sameTarget(r)) { void cancelRecording(); return false; }
+    if (input.innerHTML !== r.html) { onEdit(); return false; }
+    if (!text && !r.textNode) return true;
+    if (r.textNode && r.textNode.data === text) return true;
+    writing = true;
+    try {
+      if (!r.textNode) {
+        r.range.deleteContents(); r.textNode = document.createTextNode(''); r.range.insertNode(r.textNode);
+      }
+      const selection = window.getSelection();
+      const follow = document.activeElement === input && (!selection?.rangeCount || selection.isCollapsed
+        && (selection.anchorNode === r.textNode && selection.anchorOffset === r.textNode.length || !r.wrote));
+      const anchor = selection?.anchorNode === r.textNode ? selection.anchorOffset : null;
+      const focus = selection?.focusNode === r.textNode ? selection.focusOffset : null;
+      r.textNode.data = text;
+      if (follow) selection.setPosition(r.textNode, text.length);
+      else if (anchor !== null && focus !== null) selection.setBaseAndExtent(r.textNode, Math.min(anchor, text.length), r.textNode, Math.min(focus, text.length));
+      r.wrote = true; r.html = input.innerHTML;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    } finally { writing = false; }
+    return true;
+  }
+  function onEdit() {
+    if (writing) return;
+    if (recording && !recording.ended) {
+      void cancelRecording();
+      setStatus('已停止录音，可继续编辑。', true);
+    } else setStatus('');
+  }
+  function onSubmit(event) {
+    if (!recording || recording.ended) return;
+    if (event.type === 'keydown' && (event.key !== 'Enter' || event.shiftKey || event.isComposing)) return;
+    if (event.type === 'click' && !event.target.closest('.floating-input-send, #mr-send-btn, #mr-workflow-btn')) return;
+    void cancelRecording();
+  }
   function onEvent(_event, result) {
     const r = recording;
     if (!r || r.id !== result.id || r.ended || disposed) return;
-    preview.textContent = result.text || '';
     if (result.type === 'error') { fail(r, result.message); return; }
+    if (!updateDraft(r, result.text || '')) return;
     if (result.type !== 'done') return;
     finishUI(r);
     if (!result.text) { setStatus('未识别到文字，请检查麦克风后重试。'); return; }
-    if (sameTarget(r) && input.innerHTML === r.html) {
-      insertText(input, result.text, r.range); preview.textContent = ''; keep.hidden = true;
-      setStatus('已写入草稿，请检查术语和数字后发送。');
-    } else {
-      keep.hidden = false; setStatus('草稿或会话已改变。请回到原会话，检查文字后点击插入草稿。');
-    }
+    setStatus('语音输入完成', true);
   }
   ipcRenderer.on('voice:event', onEvent);
   mic.onclick = () => { if (recording && !recording.ended) void stop(recording); else void start(); };
   mic.addEventListener('mousedown', event => event.preventDefault());
-  cancel.onclick = () => void cancelRecording();
-  keep.onclick = () => {
-    if (!recording || !sameTarget(recording)) { setStatus('请回到开始录音的原会话再插入。'); return; }
-    insertText(input, preview.textContent, selectedRange(input)); preview.textContent = ''; keep.hidden = true;
-    setStatus('已写入草稿，请检查后发送。');
-  };
-  settings.onclick = () => { if (activeRecording) setStatus('请先停止或取消录音。'); else void showSettings(getTarget() || { project: '' }); };
-  // Right-click also opens settings without adding a second toolbar icon.
-  mic.addEventListener('contextmenu', event => { event.preventDefault(); settings.click(); });
-  return { dispose() { disposed = true; void cancelRecording(); ipcRenderer.removeListener('voice:event', onEvent); mic.remove(); panel.remove(); } };
+  input.addEventListener('beforeinput', onEdit);
+  input.addEventListener('input', onEdit);
+  input.addEventListener('compositionstart', onEdit);
+  input.addEventListener('keydown', onSubmit, true);
+  rail.addEventListener('click', onSubmit, true);
+  mic.addEventListener('contextmenu', event => { event.preventDefault(); if (activeRecording) setStatus('请先停止录音。'); else void showSettings(getTarget() || { project: '' }); });
+  return { dispose() {
+    disposed = true; void cancelRecording(); clearTimeout(statusTimer);
+    ipcRenderer.removeListener('voice:event', onEvent);
+    input.removeEventListener('beforeinput', onEdit); input.removeEventListener('input', onEdit);
+    input.removeEventListener('compositionstart', onEdit); input.removeEventListener('keydown', onSubmit, true);
+    rail.removeEventListener('click', onSubmit, true);
+    mic.remove(); status.remove(); statusHost?.classList.remove('voice-status-active');
+  } };
 }
-module.exports = { attachVoiceInput, insertText };
+module.exports = { attachVoiceInput };

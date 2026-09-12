@@ -4166,9 +4166,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
   });
   startActions.appendChild(startButton);
-  composer.append(statusRow, quickReplyRow, startActions, composerRow, composerRail);
+  bridgeToolbar.after(startActions);
+  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
   const voiceInput = require('./voice-input').attachVoiceInput({
-    input: inputBox, rail: composerRail, panelHost: composer,
+    input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
     isActive: () => activeSessionId === sessionId,
   });
