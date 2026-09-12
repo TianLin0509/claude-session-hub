@@ -387,14 +387,18 @@ const css = read('renderer/styles/card-view.css');
 const cardRenderer = read('renderer/turn-card-renderer.js');
 const controllerSource = read('renderer/card-multi-select.js');
 
-test('多选保留在卡片头部的更多菜单内，且是中文', () => {
-  assert.match(cardRenderer, /data-action="multi-select"[^>]*>多选</);
-  assert.match(
-    cardRenderer,
-    /<div class="turn-actions">\s*\$\{renderCardActions\(turn\)\}/,
-    '更多菜单必须由卡片头部的操作区渲染',
-  );
-  assert.match(cardRenderer, /card-actions-popover[\s\S]{0,40}\+ multi/);
+test('每条消息保留一个中文多选入口；紧凑进展放在本行更多菜单内', () => {
+  const {createTurnCardRenderer}=require('../renderer/turn-card-renderer');
+  const view=createTurnCardRenderer({document:{addEventListener(){}},window:{},navigator:{},
+    escapeHtml:s=>String(s || ''),marked:{parse:s=>'<p>'+s+'</p>'},DOMPurify:{sanitize:s=>s},
+    formatAbsoluteTime:()=>'',normalizeMarkdownPathBreaks:s=>s});
+  for(const turn of [{role:'user'}, {role:'assistant',phase:'commentary'}, {role:'assistant',phase:'final_answer'}]) {
+    const rendered=view.renderTurnCard({...turn,id:'message',text:'正文'});
+    assert.equal((rendered.match(/data-action="multi-select"/g)||[]).length,1);
+    assert.match(rendered,/card-actions-popover[\s\S]*data-action="multi-select"[^>]*>多选</);
+    if(turn.phase==='commentary')assert.match(rendered,/conversation-progress-actions[\s\S]*data-action="multi-select"/);
+    else assert.match(rendered,/turn-actions[\s\S]*data-action="multi-select"/);
+  }
 });
 
 test('操作条节点存在且能挺过终端面板重建', () => {
