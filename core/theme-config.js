@@ -15,8 +15,8 @@ const THEMES = Object.freeze([
   Object.freeze({
     id: 'dark',
     label: '深色',
-    hint: 'GitHub Dark · 默认',
-    swatch: Object.freeze(['#0d1117', '#161b22', '#8b5cf6']),
+    hint: '石墨 · 克制精密 · 默认',
+    swatch: Object.freeze(['#17191e', '#23272f', '#abb8ff']),
   }),
   Object.freeze({
     id: 'frost',
@@ -33,8 +33,8 @@ const THEMES = Object.freeze([
   Object.freeze({
     id: 'codex',
     label: 'Codex 纸白',
-    hint: '纯白 · 紧凑发丝线 · 近乎单色',
-    swatch: Object.freeze(['#ffffff', '#fafafa', '#1a1a1a']),
+    hint: '瓷白 · 清晰分层 · 蓝色点睛',
+    swatch: Object.freeze(['#f4f6fa', '#ffffff', '#2768bd']),
   }),
   Object.freeze({
     id: 'hub',
@@ -54,7 +54,7 @@ const THEME_IDS = Object.freeze(THEMES.map(t => t.id));
 /* 深色皮肤要点名，不能用「不是 dark 就是浅色」反推：冷杉是第二套深色，
    靠反推会被判成浅色，浅色专属的终端岛内缩、黑色 overlay 会一起错上去。 */
 const DARK_THEME_IDS = Object.freeze(['dark', 'frost']);
-const DEFAULT_THEME = 'frost';
+const DEFAULT_THEME = 'dark';
 const THEME_STORAGE_KEY = 'hub.theme';
 const THEME_ATTRIBUTE = 'data-theme';
 

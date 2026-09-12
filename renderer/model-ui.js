@@ -245,8 +245,33 @@ function createModelUiController({
     const below = rect.bottom + 4;
     const flipUp = viewportHeight > 0 && menuHeight > 0 && below + menuHeight > viewportHeight
       && rect.top - 4 - menuHeight >= 0;
-    menu.style.top = (flipUp ? rect.top - 4 - menuHeight : below) + 'px';
-    menu.style.left = rect.left + 'px';
+    const view = menu.ownerDocument?.defaultView;
+    const viewportWidth = view?.innerWidth || 0;
+    menu.style.top = Math.max(8, Math.min(flipUp ? rect.top - 8 - menuHeight : below,
+      viewportHeight > 0 ? viewportHeight - menuHeight - 8 : below)) + 'px';
+    menu.style.left = (viewportWidth > 0 ? Math.max(8, Math.min(rect.left, viewportWidth - menu.getBoundingClientRect().width - 8)) : rect.left) + 'px';
+    menu.setAttribute?.('role', 'menu');
+    for (const item of menu.querySelectorAll?.('.model-picker-item') || []) {
+      item.tabIndex = item.classList.contains('disabled') || item.disabled ? -1 : 0;
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('aria-disabled', String(item.tabIndex < 0));
+    }
+    if (!menu._keyboardReady) {
+      menu._keyboardReady = true;
+      menu.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeModelPicker(); badgeEl.focus?.(); return; }
+        const items = [...menu.querySelectorAll('.model-picker-item')].filter(item => item.tabIndex === 0);
+        const index = items.indexOf(document.activeElement);
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && items.length) {
+          event.preventDefault();
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          items[next].focus();
+        } else if (['Enter',' '].includes(event.key) && index >= 0 && items[index].tagName !== 'BUTTON') {
+          event.preventDefault(); items[index].click();
+        }
+      });
+      menu.querySelector?.('.model-picker-item[tabindex="0"]')?.focus?.({ preventScroll:true });
+    }
   }
 
   function menuNote(menu, text, state = 'info') {
@@ -609,7 +634,7 @@ function createModelUiController({
       if (session && session._modelSwitchPending) item.classList.add('disabled');
       item.title = description || effort;
       item.innerHTML = `<span class="model-picker-check">${isCurrent ? '✓' : ''}</span>`
-        + `<span class="model-picker-label">${escapeHtml(require('../core/acp-model-catalog').acpThoughtChoices(session).find(o=>o.value===effort)?.name || effort)}</span>`
+        + `<span class="model-picker-label">${escapeHtml(nativeChoice?.name || require('./ui-labels').effortLabel(effort))}</span>`
         + `<span class="model-picker-id">${escapeHtml(description)}</span>`;
       if (!isCurrent && !(session && session._modelSwitchPending)) {
         item.addEventListener('click', (event) => {

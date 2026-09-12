@@ -68,7 +68,9 @@ async function showSettings(target) {
 }
 
 function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
-  const mic = button('语音', 'voice-mic'); mic.title = '点击开始语音输入'; mic.setAttribute('aria-label', '开始语音输入');
+  const mic = button('', 'voice-mic');
+  const micIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg>';
+  mic.innerHTML = micIcon; mic.title = '点击开始语音输入'; mic.setAttribute('aria-label', '开始语音输入');
   mic.title = '点击开始语音输入 · 右键打开语音设置';
   rail.classList.add('voice-enabled');
   rail.insertBefore(mic, rail.querySelector('.floating-input-send, #mr-workflow-btn'));
@@ -95,7 +97,7 @@ function attachVoiceInput({ input, rail, getStatusHost, getTarget, isActive }) {
   function finishUI(r) {
     r.ended = true;
     if (activeRecording === r) activeRecording = null;
-    mic.textContent = '语音'; mic.disabled = false; mic.setAttribute('aria-label', '开始语音输入'); mic.setAttribute('aria-pressed', 'false');
+    mic.innerHTML = micIcon; mic.disabled = false; mic.setAttribute('aria-label', '开始语音输入'); mic.setAttribute('aria-pressed', 'false');
     void releaseAudio(r).catch(error => setStatus(`麦克风关闭失败：${cleanError(error)}`));
   }
   async function cancelRecording() {
