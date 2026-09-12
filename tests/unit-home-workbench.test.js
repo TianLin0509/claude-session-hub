@@ -8,6 +8,7 @@ const path = require('path');
 const {
   LONG_TASK_MS,
   buildHomeSnapshot,
+  createHomeWorkbench,
 } = require('../renderer/home-workbench.js');
 
 test('HUB workbench groups top-level sessions and meetings into actionable lanes', () => {
@@ -87,70 +88,51 @@ test('meeting lanes aggregate child RuntimeTruth waiting and failure states', ()
   assert.ok(snapshot.exceptions.some(item => item.targetId === 'failed-meeting' && /rate limited/.test(item.detail)));
 });
 
-test('shell keeps one launcher plus Home and Research navigation while retaining the home research card', () => {
+test('welcome replaces dashboard while retaining shell navigation and shared notification control', () => {
   const root = path.resolve(__dirname, '..');
-  const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
-  const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
-  const workbench = fs.readFileSync(path.join(root, 'renderer', 'home-workbench.js'), 'utf8');
-  const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'home-workbench.css'), 'utf8');
-
-  const launchIndex = html.indexOf('id="btn-new"');
-  const railIndex = html.indexOf('id="scene-rail"');
-  const homeIndex = html.indexOf('id="btn-home"');
-  const topResearchIndex = html.indexOf('id="btn-research"');
-  const workbenchIndex = html.indexOf('id="empty-state"');
-  const researchIndex = html.indexOf('id="btn-chuxin"');
-  assert.ok(launchIndex >= 0, 'single top launcher should exist');
-  assert.ok(homeIndex >= 0, 'top home button should exist');
-  // 冷杉 v2 T0：场景按钮搬去最左侧的 rail，rail 排在侧栏之前，
-  // 所以顺序由「启动 → 主页 → 投研」变成「rail(主页 → 投研) → 侧栏启动」。
-  assert.ok(railIndex >= 0 && railIndex < homeIndex && homeIndex < topResearchIndex,
-    'scene rail should host Home then Research');
-  assert.ok(topResearchIndex < launchIndex, 'rail should come before the sidebar launcher');
-  assert.ok(workbenchIndex > launchIndex, 'workbench should live in the main panel');
-  assert.ok(researchIndex > workbenchIndex, 'research entry should live inside the home workbench');
-  assert.match(html, /id="btn-home"[^>]*>[\s\S]*?<span class="btn-label">主页<\/span>/);
-  assert.match(html, /id="btn-research"[^>]*>[\s\S]*?<span class="btn-label">投研<\/span>/);
-  assert.match(html, /id="btn-chuxin"[\s\S]*?<strong>初心投研<\/strong>/);
-  assert.match(html, /id="home-notification-slot"/);
-  assert.match(renderer, /btnHome\.addEventListener\('click', \(\) => escapeToHome\(\)\)/);
-  assert.match(renderer, /homeWorkbench = createHomeWorkbench\(/);
-  assert.match(html, /四模型用量/);
-  // 2026-08-27 取舍：改动审阅收件箱 / 异常收件箱 / 夜间任务摘要三块已从工作台撤下，
-  // 上下文风险从整张卡收成指标条上的一个数字，副标题去掉。
-  assert.doesNotMatch(html, /改动审阅收件箱|异常收件箱|夜间任务摘要/);
-  assert.doesNotMatch(html, /home-workbench-subtitle/);
-  assert.match(html, /id="home-metric-context"[^>]*>[\s\S]*?上下文吃紧/);
-  assert.match(html, /今天该续哪个/);
-  assert.match(html, /常用搜索/);
-  // 工作台是单栏卡片流；每张卡带 data-home-card，折叠/排序由 home-card-layout.js 接管
-  assert.match(html, /id="home-card-stack"/);
-  for (const card of ['resume', 'workspace', 'artifacts', 'search', 'system', 'provider']) {
-    assert.match(html, new RegExp(`data-home-card="${card}"`), `${card} 卡应在工作台卡片流里`);
+  const html = fs.readFileSync(path.join(root, 'renderer/index.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(root, 'renderer/renderer.js'), 'utf8');
+  const source = fs.readFileSync(path.join(root, 'renderer/home-workbench.js'), 'utf8');
+  const controller = source.slice(source.indexOf('function createHomeWorkbench('));
+  for (const id of ['btn-new', 'btn-home', 'btn-research', 'home-create-session', 'home-create-group', 'home-notification-slot']) {
+    assert.ok(html.includes(`id="${id}"`), id);
   }
-  // 侧栏「路径预览」按钮撤掉，功能仍在 Ctrl+O
-  assert.doesNotMatch(html, /id="btn-preview-path"/);
-  // 2026-08-27：改动审阅驾驶舱整体删除（弹窗、控制器、IPC、服务、样式全撤）
-  assert.doesNotMatch(html, /operations-review-modal|ops-center|ops-tabs/);
-  assert.doesNotMatch(html, /data-home-action="open-review"/);
-  assert.doesNotMatch(renderer, /workbenchOperations|workbench-operations-controller/);
-  assert.doesNotMatch(css, /\.ops-modal|\.ops-center/);
-  // 撤掉收件箱后就不该再为它做定时 Git 扫描
-  assert.doesNotMatch(workbench, /loadOperations\(false\)/,
-    '工作台不再显示审阅数据，不应再定时触发 Git 扫描');
-  assert.match(html, /本机与服务器/);
-  assert.match(html, /id="cfg-aliyun-health-url"/);
-  assert.doesNotMatch(html, /Session 流水线/);
-  assert.doesNotMatch(workbench, /renderLane|home-lane-running|home-flow-item/);
-  assert.doesNotMatch(workbench, /\b(?:fs\.)?(?:statSync|readFileSync)\s*\(/, 'home render must not block on filesystem I/O');
-  assert.match(workbench, /function setHtml\(id, html\)/, 'frequent resource ticks should reuse unchanged list DOM');
-  assert.doesNotMatch(html, /趋势快照|本机采样/);
-  assert.doesNotMatch(workbench, /usage-trend-store|home-trend-spark|趋势积累/);
-  assert.match(workbench, /usageWindowMarkup\('5h'/);
-  assert.match(workbench, /usageWindowMarkup\('7d'/);
-  assert.match(css, /\.home-usage-windows/);
-  assert.match(css, /\.home-card-stack/);
-  assert.ok(!html.includes('\uFFFD'), 'index.html must remain valid UTF-8');
+  assert.doesNotMatch(html, /id="(?:home-card-stack|home-refresh|home-metric-active|home-workspace-launch|btn-chuxin)"/);
+  assert.match(renderer, /onCreate: intent => launchCenter.open\(intent\)/);
+  assert.doesNotMatch(renderer, /createHomeCardLayout|createProcessReclaimCard|refreshOperationsOverview/);
+  assert.doesNotMatch(controller, /setInterval|loadOperations|loadWorkspaces|buildHomeSnapshot\(/,
+    'welcome must not poll or build the removed dashboard');
+  assert.ok(!html.includes('\uFFFD'));
+});
+
+test('welcome handles nested button clicks, reports failure, and permits retry without rebuilding DOM', async (t) => {
+  const calls = [], listeners = new Map();
+  const root = { style: {}, dataset: {}, isConnected: true, contains: b => b === button,
+    addEventListener: (type, fn) => listeners.set(type, fn), removeEventListener: type => listeners.delete(type) };
+  const button = { dataset: { homeCreate: 'group' }, disabled: false };
+  const error = { hidden: true, textContent: '' };
+  const toggle = { parentElement: null };
+  let moves = 0;
+  const slot = { appendChild: node => { moves++; node.parentElement = slot; } };
+  const nodes = { 'empty-state': root, 'home-welcome-error': error, 'home-notification-slot': slot, 'completion-notification-toggle': toggle };
+  const controller = createHomeWorkbench({ document: { getElementById: id => nodes[id] }, onCreate: intent => {
+    calls.push(intent);
+    if (calls.length === 1) throw new Error('test launch failure');
+  } });
+  t.mock.method(console, 'error', () => {});
+  const event = { target: { closest: () => button }, preventDefault() {}, stopPropagation() {} };
+  await listeners.get('click')(event);
+  assert.strictEqual(error.hidden, false);
+  assert.match(error.textContent, /test launch failure/);
+  assert.strictEqual(button.disabled, false);
+  await listeners.get('click')(event);
+  assert.deepStrictEqual(calls, ['group', 'group']);
+  assert.strictEqual(error.hidden, true);
+  controller.render(); controller.render();
+  assert.strictEqual(moves, 1, 'resource ticks must preserve existing DOM and focus');
+  root.style.display = 'none'; toggle.parentElement = null; controller.render();
+  assert.strictEqual(moves, 1, 'hidden welcome must not move the shared notification');
+  controller.dispose(); assert.strictEqual(listeners.size, 0);
 });
 
 test('workbench derives P0/P1 operational insights without transcript scans', () => {

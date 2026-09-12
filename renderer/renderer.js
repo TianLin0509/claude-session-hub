@@ -69,7 +69,6 @@ const { createPathLinkContextMenuController } = require('./path-link-context-men
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
-const { createHomeCardLayout } = require('./home-card-layout.js');
 const {
   forgetViewMode,
   readCardViewSessions,
@@ -78,7 +77,6 @@ const {
   viewModeFor,
   writeCardViewSessions,
 } = require('../core/session-view-mode.js');
-const { createProcessReclaimCard } = require('./process-reclaim-card.js');
 const {
   createTerminalInputController,
   formatPastedFilePaths,
@@ -6229,96 +6227,12 @@ const accountUsageController = createAccountUsageController({
   isMemoOpen: () => memoPanel.isOpen(),
 });
 const renderAccountUsage = accountUsageController.render;
-function getWorkbenchWorkspaceHints() {
-  const hints = [];
-  const recent = Array.from(sessions.values())
-    .filter(session => session && session.cwd && session.purpose !== 'chuxin-research')
-    .sort((a, b) => Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0))
-    .slice(0, 24);
-  for (const session of recent) {
-    const base = {
-      sessionId: session.id || session.hubId,
-      title: session.title || '',
-      kind: session.kind || '',
-      lastMessageTime: Number(session.lastMessageTime || session.updatedAt || session.createdAt || 0),
-    };
-    hints.push({ ...base, cwd: session.cwd });
-    // Group chats often run from a broad home directory. Persisted artifacts
-    // give us a precise, bounded path back to the actual project without any
-    // recursive search of C:\Users\lintian or C:\Vibe.
-    const artifacts = Array.isArray(session.recentArtifacts) ? session.recentArtifacts.slice(-3) : [];
-    for (const artifact of artifacts) {
-      if (!artifact || typeof artifact.path !== 'string' || !path.isAbsolute(artifact.path)) continue;
-      hints.push({ ...base, cwd: path.dirname(artifact.path), lastMessageTime: Number(artifact.timestamp || base.lastMessageTime) });
-    }
-  }
-  return hints;
-}
-let homeCardLayout = null;
-// 驾驶舱 UI 已删；「最近文件」要的 Git 变更改成直接问主进程要一次 overview，
-// 不再有常驻控制器，也不再每 30 秒扫一遍（那是撤掉收件箱后剩下的纯浪费）。
-let operationsOverview = null;
-async function refreshOperationsOverview() {
-  try {
-    const result = await ipcRenderer.invoke('workbench:get-overview', {});
-    operationsOverview = result && result.ok === false ? null : result;
-  } catch (error) {
-    console.warn('[workbench-operations] overview 拉取失败:', error && error.message);
-    operationsOverview = null;
-  }
-  return operationsOverview;
-}
-
+// 欢迎页只提供创建入口；项目数据按需由现有创建面板加载。
 homeWorkbench = createHomeWorkbench({
   document,
-  sessions,
-  getSessions: () => sessions,
-  getMeetings: () => meetings,
-  getResourceUsage: () => systemResourceUsage,
-  getHubConfig: () => hubProxyInfo,
-  getUsageSnapshot: () => accountUsageController.getSnapshot(),
-  getTerminalCacheSize: () => terminalCache.size,
-  loadWorkspaces: async () => {
-    const result = await ipcRenderer.invoke('workspace:prepared-projects');
-    if (!Array.isArray(result?.items)) throw new Error('项目库返回格式无效');
-    return { items: result.items.map(item => ({ ...item, label: item.name })) };
-  },
-  selectSession: (sessionId, opts) => selectSession(sessionId, opts),
-  selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
-  getOperationsSnapshot: () => operationsOverview,
-  loadOperations: () => refreshOperationsOverview(),
-  onOpenSearch: (query) => openSearchModal({ query }),
-  // 每轮渲染完让卡片布局重新判空：内容为空的卡自动收成一行。
-  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
-  onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
-  onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
-  onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false, fullscreen: true }),
-  onLaunchWorkspace: (workspace) => launchCenter.open('session', { kind: 'claude', workspace }),
-  onOpenServerSettings: () => configModal.openOperationsSetup(),
-  escapeHtml,
-  onRefresh: async () => {
-    const results = await Promise.allSettled([
-      refreshSystemResourceUsage(true),
-      refreshHubProxyInfo(),
-      accountUsageController.refreshUsageNow(),
-    ]);
-    if (results.every((result) => result.status === 'rejected')) {
-      throw new Error('全局状态刷新失败');
-    }
-  },
+  onCreate: intent => launchCenter.open(intent),
 });
 homeWorkbench.render();
-// 卡片布局要在首轮渲染之后接管：那时 #home-card-stack 里的卡才齐。
-homeCardLayout = createHomeCardLayout({ document, localStorage });
-// 全机残留卡片。扫一次要 3 秒（一次 CIM 全量枚举 + 一次 CPU 基线采样），
-// 所以只在用户点「扫描」时才跑，绝不挂到那条 3 秒资源心跳上。
-const processReclaimCard = createProcessReclaimCard({
-  document,
-  ipcRenderer,
-  escapeHtml,
-  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
-  openPath: filePath => ipcRenderer.invoke('show-in-folder', filePath),
-});
 // 记忆系统面板：会话 header 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
 // 因为 session / meeting header 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
