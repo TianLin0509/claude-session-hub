@@ -131,6 +131,28 @@ rl.on('line', async line => {
             content: [{ type: 'text', text: '独立进度 — ' + messageId }] } });
       }
     }
+    if (mode === 'many-tools') {
+      // A long silent tool run, like a real multi-step task: many calls with no
+      // prose between them, then one final answer. Reproduces cards that froze
+      // mid-turn and a composer with no live progress.
+      const count = Number(process.env.CLAUDE_HUB_FIXTURE_TOOL_COUNT) || 30;
+      const gap = Number(process.env.CLAUDE_HUB_FIXTURE_TOOL_GAP_MS) || 60;
+      for (let i = 1; i <= count; i += 1) {
+        const id = 'tool-' + i;
+        await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId, timestamp: new Date().toISOString(),
+          message: { id: 'assistant-' + i, role: 'assistant', stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id, name: i % 3 ? 'Read' : 'Bash',
+              input: i % 3 ? { file_path: 'file-' + i + '.txt' } : { command: 'echo step ' + i } }] } });
+        await new Promise(resolve => setTimeout(resolve, gap));
+        await frame({ type: 'user', uuid: randomUUID(), session_id: sessionId, timestamp: new Date().toISOString(),
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok ' + i }] } });
+      }
+      await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId, parent_tool_use_id: null,
+        message: { id: 'assistant-final', role: 'assistant', stop_reason: 'end_turn',
+          content: [{ type: 'text', text: '全部步骤完成：最终回答' }] } });
+      await result({ result: '全部步骤完成：最终回答' });
+      return;
+    }
     if (mode === 'tool-result') {
       await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId, message: {
         id: 'assistant-tool', role: 'assistant', content: [{ type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'file.txt' } }] } });
