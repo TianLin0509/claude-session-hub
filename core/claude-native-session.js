@@ -84,6 +84,15 @@ class ClaudeNativeSession extends EventEmitter {
     if (this.records.size && [...this.records.values()].every(record => TERMINAL.has(record.status) || record.reconciliation)) {
       this.unreconciled = false;
     }
+    // A dev-group seat holds its identity without spawning an engine until it is
+    // actually given work. Claude owns its session UUID from the start, so an
+    // unstarted seat is simply one whose engine has never run -- there is no
+    // thread to reconcile and nothing to recover.
+    this.lazyStart = options.lazyStart === true || options.restoredRuntime?.lazyStart === true;
+    if (this.lazyStart && !this.records.size && !options.resumeSessionId && !this.unreconciled) {
+      Object.assign(this.runtime, { state: 'idle', connection: 'unstarted', lazyStart: true,
+        reason: '尚未开始，收到消息后启动' });
+    }
     this.queue = [];
     this.active = null;
     this.seen = new Set();
@@ -192,6 +201,9 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   async _start() {
+    if (this.runtime.connection === 'unstarted') {
+      this.update({ connection: 'connecting', state: 'unknown', reason: '正在连接 Claude' });
+    }
     const previous = this.options.restoredRuntime;
     const oldHubAlive = previous && previous.ownerPid !== process.pid && processExists(previous.ownerPid);
     const oldChildAlive = previous && previous.ownerPid !== process.pid && processExists(previous.childPid);
@@ -780,6 +792,10 @@ class ClaudeNativeSession extends EventEmitter {
 
   async reconnect({ stopActive = false } = {}) {
     if (this.reconnectPending) throw new Error('Claude 正在重连');
+    // A seat that never started has no connection to rebuild and no submission
+    // to reconcile; going through the reconnect path would mark it unreconciled
+    // and block its first dispatch.
+    if (this.runtime.connection === 'unstarted') return this.runtime;
     this.reconnectPending = true;
     try { return await this._reconnect({ stopActive }); }
     finally { this.reconnectPending = false; }

@@ -75,6 +75,8 @@ function bindClaudeNativeSession(manager, id, driver) {
   });
   setImmediate(() => {
     if (!current() || driver.closed) return;
+    // An unstarted dev-group seat spawns its engine on first dispatch, not here.
+    if (driver.runtime.connection === 'unstarted') return;
     driver.start().catch(error => {
       if (!current()) return;
       driver.update({ state: 'failed', connection: 'disconnected', reason: error.message });

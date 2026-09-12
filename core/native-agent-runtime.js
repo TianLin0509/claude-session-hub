@@ -15,7 +15,12 @@ function nativeRuntimeTruth(session) {
 function persistNativeRuntime(session) {
   if (session?.runtimeBackend !== 'claude-stream-json') return codex.persistNativeRuntime(session);
   const runtime = session.nativeRuntime;
-  return runtime ? { ...runtime, connection: 'disconnected', requests: [], waitingFlags: [], recoveryReady: false } : null;
+  if (!runtime) return null;
+  // "Never started" is not "disconnected": a seat that has not run yet must come
+  // back unstarted instead of asking the user to reconcile a thread that never
+  // existed.
+  const connection = runtime.connection === 'unstarted' ? 'unstarted' : 'disconnected';
+  return { ...runtime, connection, requests: [], waitingFlags: [], recoveryReady: false };
 }
 
 module.exports = { isNativeAgent, persistNativeRuntime, nativeRuntimeTruth };

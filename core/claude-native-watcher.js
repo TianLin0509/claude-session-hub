@@ -13,7 +13,24 @@ function createClaudeNativeWatcher(driver, { sid, label, submissionId, attemptId
   const settle = (status, record, reason = null) => {
     if (settled) return;
     settled = true; cleanup();
+    // Group members share one failure vocabulary, so a Claude seat says
+    // "额度中断" / "限流中断" / "网络中断" like a Codex seat instead of showing a
+    // raw reason string. The engine's own transport message is the best input.
+    const failure = status === 'errored'
+      ? require('./groupchat-attempt-protocol').classifyProviderFailure({
+        reason, message: driver.runtime?.reason, force: true })
+      : null;
+    // Token cost per member turn, from the usage the engine reports on its
+    // result frame. Absent usage stays absent rather than being shown as zero.
+    const usage = record && record.usage;
+    const tokens = usage ? {
+      total: (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0)
+        + (usage.cache_creation_input_tokens || 0) + (usage.output_tokens || 0),
+      input: (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0),
+      output: usage.output_tokens || 0,
+    } : null;
     resolveWait({ sid, label, attemptId, runId, submissionId, status,
+      ...(failure ? { failure } : {}), ...(tokens ? { tokens } : {}),
       displayMessages: require('./claude-native-transcript').claudeDisplayMessages(record),
       text: record?.finalText || '', reason, completedAt: record?.completedAt || Date.now(),
       providerTurnId: null, userMessageId: record?.userMessageId || null,

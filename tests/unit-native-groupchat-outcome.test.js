@@ -60,3 +60,41 @@ test('accepted Claude disconnect preserves partial output and releases all watch
   assert.equal(result.text, failure.text);
   for (const name of ['state', 'lifecycle', 'item']) assert.equal(claude.listenerCount(name), 0);
 });
+
+test('a Claude seat reports the same failure vocabulary and turn cost as a Codex seat', async () => {
+  const claude = new EventEmitter();
+  claude.runtime = { reason: 'Claude stdout ended: ECONNRESET', requests: [] };
+  const record = { submissionId: 'A', userMessageId: 'uuid-A', status: 'running', started: true, accepted: true };
+  claude.records = new Map([['A', record]]); claude.active = record;
+  const watcher = createClaudeNativeWatcher(claude, { sid: 's', submissionId: 'A', attemptId: 'A' });
+  const pending = watcher.wait();
+  record.status = 'failed'; claude.emit('state');
+  const result = await pending;
+  // The member card renders this code; a raw reason string would show nothing.
+  assert.equal(result.failure.code, 'network_interrupted');
+  assert.equal(result.failure.retryable, true);
+
+  // Token cost comes from the engine's own result usage, cached reads included.
+  const done = new EventEmitter();
+  done.runtime = { reason: null, requests: [] };
+  const finished = { submissionId: 'B', userMessageId: 'uuid-B', status: 'running', started: true, accepted: true,
+    finalText: 'done', usage: { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 5 } };
+  done.records = new Map([['B', finished]]); done.active = finished;
+  const second = createClaudeNativeWatcher(done, { sid: 's2', submissionId: 'B', attemptId: 'B' });
+  const secondPending = second.wait();
+  finished.status = 'completed'; done.emit('state');
+  const completed = await secondPending;
+  assert.deepEqual(completed.tokens, { total: 105, input: 100, output: 5 });
+  assert.equal(completed.failure, undefined, 'a completed turn carries no failure');
+});
+
+test('a turn without reported usage shows no token figure instead of zero', async () => {
+  const claude = new EventEmitter();
+  claude.runtime = { reason: null, requests: [] };
+  const record = { submissionId: 'A', userMessageId: 'uuid-A', status: 'running', started: true, accepted: true };
+  claude.records = new Map([['A', record]]); claude.active = record;
+  const watcher = createClaudeNativeWatcher(claude, { sid: 's', submissionId: 'A', attemptId: 'A' });
+  const pending = watcher.wait();
+  record.status = 'completed'; claude.emit('state');
+  assert.equal((await pending).tokens, undefined);
+});
