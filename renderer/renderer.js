@@ -4052,6 +4052,8 @@ function composerSupportedEfforts(session) {
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
   if (!slug) return null;
+  const webRoute = require('../core/chatgpt-web-models').chatgptWebRoute(slug);
+  if (webRoute) return [webRoute.effort];
   if (_codexEffortCache.has(slug)) return _codexEffortCache.get(slug);
   let efforts = null;
   try { efforts = describeCodexModelTuning(slug).efforts || null; }
@@ -4250,6 +4252,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   thinkingChip.append(thinkingChipLabel, thinkingChipCaret);
   thinkingChip.addEventListener('click', (event) => {
     event.stopPropagation();
+    if (require('../core/chatgpt-web-models').isChatgptWebModel(sessions.get(sessionId)?.currentModel?.id)) {
+      void modelUi.showModelPicker(thinkingChip, sessionId);
+      return;
+    }
     if (thinkingChip.dataset.interactive !== '1') return;
     const efforts = composerSupportedEfforts(sessions.get(sessionId));
     if (!efforts || !efforts.length) return;
@@ -4458,14 +4464,17 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const rail = buildComposerRailModel(session, {
       supportedEfforts: composerSupportedEfforts(session),
     });
+    const webRoute = require('../core/chatgpt-web-models').chatgptWebRoute(session?.currentModel?.id);
     modelChip.hidden = !rail.model.visible;
     if (rail.model.visible) {
       const label = rail.model.pending
         ? `${rail.model.label} → ${rail.model.pending}`
-        : rail.model.label;
+        : webRoute ? webRoute.label.replace('ChatGPT ·', 'ChatGPT Web ·') : rail.model.label;
       if (modelChipLabel.textContent !== label) modelChipLabel.textContent = label;
       modelChip.classList.toggle('switching', !!rail.model.pending);
-      modelChip.title = `${rail.model.id || rail.model.label} — 点击切换模型`;
+      modelChip.title = webRoute
+        ? '通过 ChatGPT 网页回答，本地 Codex 执行工具。点击调整网页档位或打开专用设置。'
+        : `${rail.model.id || rail.model.label} — 点击切换模型`;
       modelChip.disabled = !!sharedViewer;
       const logoClass = `composer-model-logo ${modelClass(rail.model.id)}`.trim();
       if (modelChipLogo.className !== logoClass) modelChipLogo.className = logoClass;
@@ -4478,17 +4487,17 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       if (thinkingChipLabel.textContent !== '推理 · ' + require('./ui-labels').effortLabel(rail.thinking.label)) {
         thinkingChipLabel.textContent = '推理 · ' + require('./ui-labels').effortLabel(rail.thinking.label);
       }
-      thinkingChip.dataset.interactive = rail.thinking.interactive ? '1' : '0';
-      thinkingChipCaret.hidden = !rail.thinking.interactive;
-      thinkingChip.classList.toggle('is-static', !rail.thinking.interactive);
-      thinkingChip.title = rail.thinking.interactive
+      thinkingChip.dataset.interactive = rail.thinking.interactive || webRoute ? '1' : '0';
+      thinkingChipCaret.hidden = !(rail.thinking.interactive || webRoute);
+      thinkingChip.classList.toggle('is-static', !(rail.thinking.interactive || webRoute));
+      thinkingChip.title = webRoute ? '思考强度随网页档位变化；点击选择 Medium、High、Pro 等档位，下一轮生效。' : rail.thinking.interactive
         ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
       thinkingChip.disabled = !!sharedViewer;
     }
 
     const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
-    speedChip.hidden = !speed.visible;
+    speedChip.hidden = !!webRoute || !speed.visible;
     speedChip.textContent = '速度 · ' + speed.label;
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));

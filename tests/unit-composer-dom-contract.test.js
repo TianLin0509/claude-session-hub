@@ -57,10 +57,12 @@ test('模型选择器是接现成的，不是重造一个', () => {
 
 // 2026-09-07 评审实测：思考档 chip 当时打开的是模型列表，点当前模型就关闭，
 // 等于根本改不了档。档位必须有自己的面板，且走 Codex 原生的 reasoning 步骤。
-test('思考档 chip 打开的是档位面板，不是模型列表', () => {
+test('普通 Codex 思考档打开档位面板；网页固定档位允许联动模型菜单', () => {
   assert.match(mount, /showEffortPicker\(thinkingChip, sessionId, \{ efforts \}\)/);
-  assert.ok(!/showModelPicker\(thinkingChip/.test(mount),
-    '思考档 chip 不得再打开模型列表');
+  const webOnly = /if \(require\('\.\.\/core\/chatgpt-web-models'\)\.isChatgptWebModel\(sessions\.get\(sessionId\)\?\.currentModel\?\.id\)\) \{\s*void modelUi\.showModelPicker\(thinkingChip, sessionId\);\s*return;\s*\}/;
+  assert.match(mount, webOnly, '联动模型菜单必须限定在 ChatGPT 网页会话');
+  assert.ok(!/showModelPicker\(thinkingChip/.test(mount.replace(webOnly, '')),
+    '普通 Codex 思考档 chip 不得打开模型列表');
   assert.match(modelUiSrc, /function showEffortPicker\(anchorEl, sessionId/);
   assert.match(modelUiSrc, /async function switchEffort\(sessionId, effort/);
   // 改档必须复用换模型那条原生面板路径，不得新造一条写 PTY 的路。
