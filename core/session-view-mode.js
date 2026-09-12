@@ -19,10 +19,10 @@ const CARD = 'card';
 const PTY = 'pty';
 const LIMIT = 300;
 
-function readCardViewSessions(store) {
+function readCardViewSessions(store, storageKey = STORAGE_KEY) {
   if (!store || typeof store.getItem !== 'function') return new Set();
   try {
-    const raw = JSON.parse(store.getItem(STORAGE_KEY) || '[]');
+    const raw = JSON.parse(store.getItem(storageKey) || '[]');
     if (!Array.isArray(raw)) return new Set();
     return new Set(raw.filter(id => typeof id === 'string' && id));
   } catch {
@@ -30,11 +30,11 @@ function readCardViewSessions(store) {
   }
 }
 
-function writeCardViewSessions(store, set) {
+function writeCardViewSessions(store, set, storageKey = STORAGE_KEY) {
   if (!store || typeof store.setItem !== 'function') return false;
   try {
     // 超上限时丢**最早**加入的，保留最近用过的那些。
-    store.setItem(STORAGE_KEY, JSON.stringify([...set].slice(-LIMIT)));
+    store.setItem(storageKey, JSON.stringify([...set].slice(-LIMIT)));
     return true;
   } catch {
     // 存不下只影响下次启动时的视图记忆，不该拦住这次切换。

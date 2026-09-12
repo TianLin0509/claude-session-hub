@@ -40,6 +40,7 @@ async function main(){
       const s=await cdp.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind,opts:{cwd,model:config.acp.providers[kind].model}})+')');
       assert(s.id,JSON.stringify(s));result.currentId=s.id;const sid=JSON.stringify(s.id);
       await until('sessions.get('+sid+')?.nativeRuntime?.state==="idle"','native connected');
+      await until('document.querySelector(\'.session-item[data-session-id="'+s.id+'"]\')','native sidebar row');
       await cdp.eval('document.querySelector(\'.session-item[data-session-id="'+s.id+'"]\').click()');
       await until('document.querySelector(".floating-input-box")','composer');
       await until('currentView === "card"','default conversation view');

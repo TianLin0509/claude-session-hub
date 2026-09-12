@@ -1531,7 +1531,7 @@ function getOrCreateTerminal(sessionId) {
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
-function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId && !sessions.get(activeSessionId)?.meetingId) {
+function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
   if (!backstageButton) return;
   backstageButton.hidden = !visible;
   backstageButton.setAttribute('aria-pressed', String(currentView === 'pty'));
@@ -1579,7 +1579,7 @@ function paintAppToolbarForView(label) {
 // ⋯ 溢出菜单、文件 / 记忆 / ⋯ / 关闭四个动作。改的只是「填进哪两个常驻节点」。
 function paintAppToolbarForSession(sessionId, session, cached) {
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
-  syncBackstageButton(!session.meetingId);
+  syncBackstageButton(true);
   toolbarCrumbEl.dataset.signature = 'session:' + sessionId;
   // T2 冷杉 v2 · 面包屑：头部只回答「我在哪、看什么、能做什么」。
   // 工作区 › 会话标题 + 6px 状态点，整条 hover 给完整 cwd。
@@ -3136,11 +3136,20 @@ const _cardOverlayFollowBottomBySession = new Map();
 // 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
 // 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
 const cardViewSessions = readCardViewSessions(localStorage);
+// Older members skipped the ordinary-session card initialization. Initialize
+// their first standalone opening once, then preserve explicit card/PTY choices.
+const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
+const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
 const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
 // 「已完成未读」的会话点开默认进卡片视图。休眠会话点开会先清未读再走 session-created
 // 重新定视图，所以这里把这一次的判断结果留一份，让唤醒后的那次 applyViewMode 也认它。
 const _completedUnreadCardViews = new Set();
 function selectionViewModeForSession(sessionId, session) {
+  if (session?.meetingId && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
+    rememberViewModeForSession(sessionId, 'card');
+    memberCardDefaults.add(sessionId);
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   const completedUnread = !!session && sessionHasCompletedUnread(session);
   // 只有休眠会话会在唤醒后再定一次视图，别的会话记下来就没人来取了。
   if (completedUnread && session && session.status === 'dormant') _completedUnreadCardViews.add(sessionId);
@@ -3151,6 +3160,9 @@ function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
 }
 function forgetViewModeForSession(sessionId) {
+  if (memberCardDefaults.delete(sessionId)) {
+    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
+  }
   _cardOverlayFollowBottomBySession.delete(sessionId);
   if (forgetViewMode(cardViewSessions, sessionId)) writeCardViewSessions(localStorage, cardViewSessions);
 }
@@ -4128,7 +4140,32 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composer = document.createElement('div');
   composer.className = 'composer';
   composer.dataset.state = 'ready';
-  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const startActions = document.createElement('div');
+  startActions.className = 'composer-start-actions';
+  // Group members use the group's own dispatch controls, even in session view.
+  startActions.hidden = !!sessions.get(sessionId)?.meetingId
+    || Object.values(meetings).some(m => m?.subSessions?.includes(sessionId));
+  const startButton = document.createElement('button');
+  startButton.type = 'button';
+  startButton.className = 'composer-one-click-start';
+  startButton.textContent = '▶ 一键开工';
+  startButton.title = '追加自主实现、验证与合并的提示词；可编辑，发送后授权执行';
+  startButton.addEventListener('click', () => {
+    const suffix = require('./one-click-start').suffix(readContenteditablePlainText(inputBox));
+    inputBox.focus();
+    placeCaretAtContenteditableEnd(inputBox);
+    if (suffix) {
+      // Append at the end instead of replacing the draft, preserving attachments
+      // and the browser undo history. The existing send path remains unchanged.
+      const html = escapeHtml(suffix).replace(/\n/g, '<br>');
+      if (!document.execCommand('insertHTML', false, html)) inputBox.appendChild(document.createTextNode(suffix));
+      saveFloatingInputDraft(sessionId, inputBox);
+      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+      placeCaretAtContenteditableEnd(inputBox);
+    }
+  });
+  startActions.appendChild(startButton);
+  composer.append(statusRow, quickReplyRow, startActions, composerRow, composerRail);
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
   // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
@@ -4483,7 +4520,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   return {
     dispose() {
-      saveFloatingInputDraft(sessionId, inputBox);
+      // A hidden contenteditable's innerText collapses to textContent, losing
+      // DIV/BR line breaks. Input events already saved the visible draft.
+      if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
       if (panel) panel.style.setProperty('--fi-bar-h', '0px');
@@ -7571,6 +7610,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // session metadata here; an xterm is created and hydrated on explicit shell
   // selection, otherwise dozens of invisible 10k-line buffers accumulate.
   if (session.meetingId) {
+    // A member explicitly opened while dormant needs its standalone surface
+    // mounted after resume. Background group wakes must never steal selection.
+    if (wasDormant && activeSessionId === session.id) {
+      await selectSession(session.id, { forceScrollBottom: pendingResume?.forceScrollBottom === true });
+    }
     scheduleSessionListRender();
     return;
   }
@@ -8378,6 +8422,13 @@ ipcRenderer.on('meeting-created', (_e, { meeting }) => {
 });
 
 ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
+  // Unread attention belongs to this window. Backend metadata updates (including
+  // the reply's completion timestamp) must not acknowledge unread answers.
+  const previous = meetings[meeting.id];
+  if (previous?.unreadAnswered instanceof Set) {
+    meeting.unreadAnswered = new Set([...previous.unreadAnswered].filter(sid => meeting.subSessions?.includes(sid)));
+    meeting._lastUnreadTurnNum = previous._lastUnreadTurnNum;
+  }
   meetings[meeting.id] = meeting;
   if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {

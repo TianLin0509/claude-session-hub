@@ -941,8 +941,8 @@ function buildNativeCodexOptions(info, opts, env) {
     turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort)},
     resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
     forkId:opts.codexForkSid || null,
-    picker:!opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
-    resumeLatest:opts.useResume && !opts.codexSid,
+    picker:!opts.lazyStart && !opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
+    resumeLatest:!opts.lazyStart && opts.useResume && !opts.codexSid,
   };
 }
 
@@ -1263,7 +1263,8 @@ class SessionManager extends EventEmitter {
       ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isCodex
-      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime})
+      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+        lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
       cols: 120,
@@ -1618,11 +1619,12 @@ class SessionManager extends EventEmitter {
           if (bound.configOptions) info.acpConfigOptions = bound.configOptions;
         } else info.codexSid = bound.threadId;
         if (bound.cwd) info.cwd = bound.cwd;
-        if (bound.path) info.transcriptPath = bound.path;
+        if (Object.hasOwn(bound, 'path')) info.transcriptPath = bound.path;
         if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
         if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
         publish();
       });
+      ptyProcess.on('thread-reset', () => { info.codexSid=null; info.transcriptPath=null; publish(); });
       ptyProcess.on('choices', choices => { info.nativeThreadChoices = choices; publish(); });
       ptyProcess.on('migration-draft', text => { info.nativeMigrationDraft=text; publish(); });
       ptyProcess.on('renamed', name => { info.title = name; publish(); });
@@ -1655,7 +1657,7 @@ class SessionManager extends EventEmitter {
         publish();
       });
       // Deferral lets the normal session-created IPC finish before native updates.
-      queueMicrotask(() => ptyProcess.start().catch(error => {
+      if (ptyProcess.runtime.connection !== 'unstarted') queueMicrotask(() => ptyProcess.start().catch(error => {
         console.warn('[codex-native] start failed:',id,error.message);
       }));
       return this._toPublic(info);

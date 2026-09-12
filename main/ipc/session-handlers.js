@@ -212,6 +212,7 @@ function registerSessionIpc(ipcMain, deps) {
       if (payload.action === 'reply') result = await native.reply(payload.requestId,payload.result,payload.epoch);
       else if (payload.action === 'choose-thread') result = await native.chooseThread(payload.threadId);
       else if (payload.action === 'reconnect') result = await native.reconnect();
+      else if (payload.action === 'restart-empty') result = await native.restartEmpty(payload);
       else if (payload.action === 'interrupt') result = await native.interrupt();
       else if (payload.action === 'configure') result = await native.configure(payload);
       else if (payload.action === 'snapshot') result = native.runtime;

@@ -13,6 +13,10 @@ function createNativeRuntime(epoch = 1) {
     threadId:null, turnId:null, startedAt:0, completedAt:0, observedAt:0,
     requests:[], endedTurns:[], waitingFlags:[], reason:'正在连接 Codex', submission:null };
 }
+function isUnstartedRuntime(r) {
+  return !!r && r.lazyStart === true && r.connection === 'unstarted'
+    && !r.threadId && !r.turnId && !r.submission && !r.startedAt && !(r.endedTurns || []).length;
+}
 function requestSummary(request) {
   const p = request && request.params || {};
   return (p.questions || []).map(q => q.question).filter(Boolean).join('\n')
@@ -28,6 +32,8 @@ function nativeRuntimeTruth(session) {
   }
   if (!r) return { state:'unknown', source, confidence:'none', expiresAt:0,
     reason:'unmanaged', evidence:'旧会话尚未接管，请在原进程结束后恢复', requests:[] };
+  if (isUnstartedRuntime(r)) return { ...r, state:'idle', source, confidence:'authoritative',
+    expiresAt:0, sequence:r.revision, evidence:'尚未开始，收到消息后启动' };
   const connected = r.connection === 'connected';
   const state = !connected && !TERMINAL.has(r.state) ? 'unknown' : r.state;
   return { ...r, state, source, confidence:connected ? 'authoritative' : 'none',
@@ -82,6 +88,7 @@ function acceptNativeSnapshot(local, incoming) {
 function persistNativeRuntime(data) {
   const r = data && data.nativeRuntime;
   if (!isNativeSession(data) || !r) return null;
+  if (isUnstartedRuntime(r)) return { ...r, requests:[], waitingFlags:[] };
   // Requests belong to the live transport; never restore approval buttons.
   return { ...r, connection:'disconnected', requests:[], waitingFlags:[],
     state:TERMINAL.has(r.state) ? r.state : 'unknown', lastKnownState:r.state,
@@ -124,7 +131,10 @@ function reduceNativeRuntime(previous, event) {
     remember(turn.id);
     return true;
   };
-  if (event.type === 'connect') {
+  if (event.type === 'fresh-thread') {
+    n = { ...createNativeRuntime(p.epoch), lazyStart:p.lazyStart,
+      replacedThreadId:p.threadId || event.previousThreadId || null };
+  } else if (event.type === 'connect') {
     if (event.epoch < p.epoch) return p;
     n.epoch = event.epoch; n.connection = 'connecting';
     n.requests = []; n.waitingFlags = [];
@@ -138,6 +148,8 @@ function reduceNativeRuntime(previous, event) {
     n.requests = []; n.waitingFlags = [];
   } else if (event.type === 'submission') {
     n.submission = event.submission;
+  } else if (event.type === 'empty-recovery') {
+    n.emptyRecovery = event.recovery;
   } else if (event.type === 'configuration') {
     n.configurationError = event.error || null;
   } else if (event.type === 'snapshot') {
@@ -223,4 +235,4 @@ function reduceNativeRuntime(previous, event) {
   return n;
 }
 module.exports = { BACKEND, TERMINAL, isCodexSession, isNativeSession, createNativeRuntime, reduceNativeRuntime,
-  nativeRuntimeTruth, nativeUnfinished, nativeTurnHasEnded, requestSummary, acceptNativeSnapshot, persistNativeRuntime };
+  nativeRuntimeTruth, nativeUnfinished, nativeTurnHasEnded, requestSummary, acceptNativeSnapshot, persistNativeRuntime, isUnstartedRuntime };
