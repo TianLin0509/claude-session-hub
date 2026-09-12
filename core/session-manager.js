@@ -276,13 +276,22 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const journal = new NativeAgentJournal({ directory: path.join(hubDataDir, 'native-agent-submissions'), sessionId: id });
   const fixture = process.env.CLAUDE_HUB_CLAUDE_STREAM_FIXTURE;
   if (fixture && !process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Claude protocol fixtures require isolated Hub data');
+  // A seat that never started has a Hub-assigned session ID but no conversation
+  // behind it. Resuming that ID would fail ("no conversation found"), so it is
+  // relaunched under the same identity instead -- provided the engine really
+  // never wrote a history for it.
+  const records = journal.list();
+  const unstarted = opts.nativeRuntime?.connection === 'unstarted' && opts.nativeRuntime?.lazyStart === true
+    && !records.length && !opts.forkCCSessionId && !!opts.resumeCCSessionId
+    && !require('./claude-native-history').findNativeClaudeHistory(opts.resumeCCSessionId, { cwd, env });
   return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs, settingsFile,
     fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
-    ownership: true, nativeProvider: 'claude',
+    ownership: true, nativeProvider: 'claude', lazyStart: opts.lazyStart === true,
     historyTitle: opts.userRenamed ? opts.title : null,
-    resumeSessionId: opts.forkCCSessionId || opts.resumeCCSessionId, fork: !!opts.forkCCSessionId,
+    ...(unstarted ? { sessionId: opts.resumeCCSessionId } : {}),
+    resumeSessionId: unstarted ? null : (opts.forkCCSessionId || opts.resumeCCSessionId), fork: !!opts.forkCCSessionId,
     restoredRuntime: opts.nativeRuntime,
-    restoredRecords: journal.list(),
+    restoredRecords: records,
     restoredActivities: journal.listActivities(), persistActivity: data => journal.saveActivity(data),
     persistSubmission: data => journal.saveSubmission(data), persistLifecycle: event => journal.saveLifecycle(event),
     ...(fixture ? { executable: process.execPath,

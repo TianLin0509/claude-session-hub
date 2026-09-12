@@ -63,7 +63,7 @@ test('session-manager builds both current Codex and legacy Claude DeepSeek forks
   );
   assert.match(
     MANAGER_SRC,
-    /resumeSessionId: opts\.forkCCSessionId \|\| opts\.resumeCCSessionId, fork: !!opts\.forkCCSessionId/,
+    /resumeSessionId: unstarted \? null : \(opts\.forkCCSessionId \|\| opts\.resumeCCSessionId\), fork: !!opts\.forkCCSessionId/,
     'DeepSeek fork must reuse the claude CLI fork flag and keep bypassPermissions',
   );
   assert.match(MANAGER_SRC, /opts\.autonomous === true \|\| legacy \? 'bypassPermissions'/);

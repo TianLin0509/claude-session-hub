@@ -192,8 +192,13 @@ function createResumeSessionHandler(deps) {
     const managedMeeting = meta.meetingId && meetingManager.getMeeting(meta.meetingId);
     const unstartedCodex = isCodexRuntime && require('../../core/codex-native-runtime').isUnstartedRuntime(meta.nativeRuntime)
       && !effectiveCodexSid;
-    const lazyCodex = !isDeepSeek && isCodexRuntime && managedMeeting?.groupChat
+    const isDevSeat = !!managedMeeting?.groupChat
       && (managedMeeting.mode === 'dev' || managedMeeting.scene === 'dev');
+    const lazyCodex = !isDeepSeek && isCodexRuntime && isDevSeat;
+    // Same for a native Claude dev seat: it keeps its Hub-assigned session ID and
+    // only spawns the engine when the room actually dispatches to it.
+    const lazyClaude = meta.runtimeBackend === 'claude-stream-json'
+      && (isDevSeat || meta.nativeRuntime?.connection === 'unstarted');
     const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
       && managedMeeting.subSessions?.includes(meta.hubId);
     const freshUnboundAgentLeague = unstartedCodex || (isAgentLeague || isFileFlowMember) && (
@@ -264,7 +269,7 @@ function createResumeSessionHandler(deps) {
         codexSid: effectiveCodexSid,
         ...(meta.acpSid ? { acpSid: meta.acpSid } : {}),
       ...(meta.nativeRuntime ? {nativeRuntime:meta.nativeRuntime} : {}),
-      ...((lazyCodex || unstartedCodex) ? {lazyStart:true} : {}),
+      ...((lazyCodex || unstartedCodex || lazyClaude) ? {lazyStart:true} : {}),
       ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),
       ...(meta.codexSandbox ? {sandbox:meta.codexSandbox} : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,

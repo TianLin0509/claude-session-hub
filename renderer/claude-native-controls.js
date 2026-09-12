@@ -71,7 +71,8 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     const runtime = session.nativeRuntime || {};
     const labels = { idle: '就绪', starting: '已收到，等待执行', running: '执行中', waiting: '等待你的回复', completed: '已完成',
       interrupted: '已停止', failed: '执行失败', unknown: '待核对' };
-    status.textContent = 'Claude · ' + (labels[runtime.state] || '正在连接')
+    status.textContent = 'Claude · ' + (runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动'
+      : labels[runtime.state] || '正在连接')
       + (runtime.queued?.length ? ` · ${runtime.queued.length} 条排队中` : '')
       + (runtime.backgroundTasks?.length ? ` · ${runtime.backgroundTasks.length} 个后台任务` : '')
       + (runtime.reason ? '\n' + runtime.reason : '');

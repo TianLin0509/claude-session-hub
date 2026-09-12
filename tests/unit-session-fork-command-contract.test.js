@@ -23,7 +23,7 @@ test('Claude branches use --resume <id> plus --fork-session', () => {
   const native = fs.readFileSync(path.join(__dirname, '..', 'core', 'claude-native-session.js'), 'utf8');
   assert.match(
     SRC,
-    /resumeSessionId: opts\.forkCCSessionId \|\| opts\.resumeCCSessionId, fork: !!opts\.forkCCSessionId/,
+    /resumeSessionId: unstarted \? null : \(opts\.forkCCSessionId \|\| opts\.resumeCCSessionId\), fork: !!opts\.forkCCSessionId/,
     'Claude branch command must inherit the source transcript under a fresh native session id',
   );
   assert.match(native, /launchArgs\.push\('--resume', this\.options\.resumeSessionId\)/);
