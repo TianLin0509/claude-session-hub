@@ -20,17 +20,12 @@
   box-shadow: var(--shadow-sm);
 }
 .codex-shared-status[hidden] { display: none; }
-.codex-shared-status[data-role='controller'] {
-  border-color: rgba(var(--rgb-success), .32);
-  background: color-mix(in srgb, var(--surface-overlay) 90%, var(--status-success-tint));
-}
 .codex-shared-status-icon {
   display: grid;
   place-items: center;
   flex: 0 0 24px;
   color: var(--status-info);
 }
-.codex-shared-status[data-role='controller'] .codex-shared-status-icon { color: var(--status-success); }
 .codex-shared-status-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .codex-shared-status-copy { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; }
 .codex-shared-status-copy strong {

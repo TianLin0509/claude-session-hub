@@ -116,7 +116,7 @@ async function main() {
     await size(1500);
     const session=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd:project,workspaceLabel:'欢迎页验收项目',model:'gpt-6-astra',effort:'high',mcpProfile:'none'}})+')');
     await waitFor('welcome',()=>client.eval('!!document.querySelector(".session-welcome")'));
-    assert.equal(await client.eval('document.querySelector("#recent-turn-copy").getBoundingClientRect().height'),0);
+    assert.equal(await client.eval('!!document.getElementById("recent-turn-copy")'),false);
     await shot('welcome-dark');
     await clickPoint(client,'.session-welcome-actions button');
     const draft=await client.eval('document.querySelector(".floating-input-box").textContent');
@@ -131,8 +131,8 @@ async function main() {
     await clickPoint(client,'.floating-input-send');
     await waitFor('first answer',()=>client.eval('document.querySelectorAll(".turn-card").length > 0'));
     assert.equal(await client.eval('document.querySelector(".session-welcome")?.getBoundingClientRect().height || 0'),0);
-    assert(await client.eval('document.querySelector("#recent-turn-copy").getBoundingClientRect().height > 0'));
-    result.checks.push('发送首条消息后欢迎页消失，恢复对话复制工具');
+    assert.equal(await client.eval('!!document.getElementById("recent-turn-copy")'),false);
+    result.checks.push('发送首条消息后欢迎页消失，已删除的复制工具不会恢复');
     await client.eval("openMeetingCreateModal('group')");
     await clickPoint(client,'[data-mcm-scene="dev"]');
     await clickPoint(client,'[data-mcm-workspace-mode="default"]');

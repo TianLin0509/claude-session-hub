@@ -30,7 +30,7 @@ const navigator = fs.readFileSync(path.join(root, 'renderer', 'card-question-nav
 assert.match(html, /id="card-question-nav"[^>]*aria-label="问题导航"/);
 assert.match(renderer, /document\.getElementById\('card-question-nav'\)[\s\S]*?preserved\.forEach/,
   'terminal panel rebuilds must preserve the navigator node');
-assert.match(renderer, /cardQuestionNavigator\.refresh\(\)[\s\S]*?recentTurnCopyController/,
+assert.match(renderer, /cardQuestionNavigator\.refresh\(\)[\s\S]*?cardMultiSelectController\.setVisible/,
   'view switches must synchronously hide/show the navigator');
 assert.match(css, /\.card-question-nav-item:focus-visible/);
 assert.match(css, /\.card-question-nav-dot/);

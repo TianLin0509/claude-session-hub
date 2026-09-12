@@ -58,6 +58,7 @@ async function main(){
       result[theme]=probe;
       ok(theme+' main/voice controls follow the approved theme',probe.sendInside&&probe.shadow==='none'&&probe.voice);
       ok(theme+' parameters have product labels',probe.status.includes('推理 · 高')&&probe.status.includes('速度 · 标准'));
+      ok(theme+' redundant copy toolbar and owning-window banner are absent',await cdp.eval('!document.getElementById("recent-turn-copy") && document.getElementById("codex-shared-status").hidden && !document.getElementById("terminal-panel").classList.contains("shared-control-visible") && document.getElementById("codex-shared-status").getBoundingClientRect().height===0'));
       await snap(theme+'-session');
       const p=await cdp.eval('(()=>{const r=document.querySelector('+JSON.stringify(row)+').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()');
       await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});
@@ -112,6 +113,7 @@ async function main(){
       await snap(theme+'-group');
       ok(theme+' group voice and send stay visible',await cdp.eval('(()=>{const send=document.getElementById("mr-send-btn"),r=send.getBoundingClientRect();return r.width>0&&r.right<=innerWidth&&!!document.querySelector(".mr-group-composer .voice-mic");})()'));
       ok(theme+' group parameters share ordinary-session labels',await cdp.eval('document.querySelector(".mr-group-composer .composer-thinking").textContent.includes("推理 · 高") && document.querySelector(".mr-group-composer .composer-speed").textContent.includes("速度 · 标准")'));
+      ok(theme+' group has no retired toolbar or green owner banner',await cdp.eval('!document.getElementById("recent-turn-copy") && document.getElementById("codex-shared-status").hidden'));
     }
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1024,height:768,deviceScaleFactor:1,mobile:false});
     await snap('codex-group-1024');

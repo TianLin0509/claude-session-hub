@@ -70,7 +70,7 @@ async function main() {
     result.serverPid = await a.eval(`sessions.get(${sid}).codexSharedControl.serverPid`);
     assert(result.threadId && result.serverPid);
     await a.eval(`selectSession(${sid})`);
-    await until(a, 'document.querySelector("#codex-shared-status:not([hidden])")?.innerText.includes("当前由本窗口操作")', 'A status bar');
+    await until(a, 'document.getElementById("codex-shared-status").hidden && !document.getElementById("terminal-panel").classList.contains("shared-control-visible")', 'A has no informational owner banner');
 
     await a.eval(`(()=>{const box=document.querySelector('.floating-input-box');box.textContent='fixture:hold';box.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.floating-input-send').click();})()`);
     await until(a, `sessions.get(${sid})?.nativeRuntime?.state === "running"`, 'A running');
@@ -138,10 +138,12 @@ async function main() {
     const mobile = await b.eval(`(()=>{const el=document.getElementById('codex-shared-status');const r=el.getBoundingClientRect();return {viewport:innerWidth,pageWidth:document.documentElement.scrollWidth,left:r.left,right:r.right,width:r.width,height:r.height,visible:!el.hidden};})()`);
     assert.equal(mobile.viewport, 390);
     assert.equal(mobile.pageWidth, 390);
-    assert(mobile.visible && mobile.left >= 0 && mobile.right <= 390 && mobile.width > 300, JSON.stringify(mobile));
+    assert(!mobile.visible && mobile.height === 0, JSON.stringify(mobile));
     await shot(b, 'controller-mobile');
     result.mobile = mobile;
-    result.checks.push('scheme A status bar stays fully visible without horizontal overflow at 390px');
+    result.checks.push('controller banner remains absent without reserved height at 390px');
+    await a.send('Emulation.setDeviceMetricsOverride', { width:390, height:844, deviceScaleFactor:1, mobile:false });
+    await until(a, '(()=>{const el=document.getElementById("codex-shared-status"),r=el.getBoundingClientRect();return !el.hidden&&r.left>=0&&r.right<=390&&r.width>300})()', 'viewer handoff controls remain reachable at 390px');
 
     const broker = readMetadata(dataDir);
     assert(broker && broker.pid > 0);
