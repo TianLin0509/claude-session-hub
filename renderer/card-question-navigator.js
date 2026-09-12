@@ -60,7 +60,27 @@ function createCardQuestionNavigator(options = {}) {
   let highlightTimer = null;
   let disposed = false;
   let resizeObserver = null, narrow = false, narrowOverride = null, preferenceKey = '';
+  let layoutWidth = null, navigationAnchor = null, anchorFrame = null;
   const layout = options.layoutElement || overlay?.parentElement;
+  function rememberNavigation(card) {
+    navigationAnchor = card ? {card, sessionId:getActiveSessionId(), epoch:overlay._cardFollowController?.capture().epoch} : null;
+  }
+  function clearNavigationAnchor() { navigationAnchor = null; }
+  function restoreNavigationAfterLayout() {
+    if (!navigationAnchor || anchorFrame !== null) return;
+    anchorFrame = raf(() => {
+      anchorFrame = null;
+      const anchor = navigationAnchor, follow = overlay._cardFollowController;
+      if (!anchor || !anchor.card.isConnected || anchor.sessionId !== getActiveSessionId()
+          || follow?.isFollowing() || anchor.epoch !== follow?.capture().epoch) return;
+      const top = overlay.scrollTop + anchor.card.getBoundingClientRect().top - overlay.getBoundingClientRect().top - 10;
+      // Browser anchoring may select a descendant of the preceding response.
+      // A deliberate answer/question jump keeps its own anchor across reflow,
+      // until the reader scrolls or otherwise changes navigation intent.
+      overlay.scrollTo({top:Math.max(0, top), behavior:'instant'});
+      updateActive();
+    });
+  }
   function storedCollapsed() {
     try { return win.localStorage.getItem(preferenceKey) === 'collapsed'; }
     catch { return false; }
@@ -72,6 +92,8 @@ function createCardQuestionNavigator(options = {}) {
     if (key !== preferenceKey || narrow !== nextNarrow) narrowOverride = null;
     preferenceKey = key; narrow = nextNarrow;
     const collapsed = narrow ? (narrowOverride ?? true) : storedCollapsed();
+    const reflow = layoutWidth !== layout.clientWidth || root.classList.contains('directory-collapsed') !== collapsed;
+    layoutWidth = layout.clientWidth;
     root.classList.toggle('directory-collapsed', collapsed);
     root.classList.toggle('directory-auto-collapsed', narrow && narrowOverride === null);
     overlay.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
@@ -82,6 +104,7 @@ function createCardQuestionNavigator(options = {}) {
     toggle.title = collapsed ? (narrow ? '展开问题目录（窗口较窄，已自动收起）' : '展开问题目录') : '折叠问题目录';
     toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16m${collapsed ? '-6-11-3 3 3 3' : '-6-11 3 3-3 3'}"/></svg>`;
     overlay._cardFollowController?.request();
+    if (reflow) restoreNavigationAfterLayout();
   }
   function toggleDirectory() {
     const collapsed = !root.classList.contains('directory-collapsed');
@@ -91,6 +114,7 @@ function createCardQuestionNavigator(options = {}) {
   }
   function navigate(action) {
     hideTooltip();
+    clearNavigationAnchor();
     const follow = overlay._cardFollowController;
     if (action === 'latest') { if (follow) follow.follow(); else overlay.scrollTop = overlay.scrollHeight; }
     else {
@@ -99,6 +123,7 @@ function createCardQuestionNavigator(options = {}) {
       else {
         const {cards, tops, index} = answerTarget(action);
         if (index < 0) return;
+        rememberNavigation(cards[index]);
         overlay.scrollTo({top: tops[index], behavior:'auto'});
         flashCard(cards[index]);
       }
@@ -219,6 +244,7 @@ function createCardQuestionNavigator(options = {}) {
     const entry = entries[index];
     if (!entry || !overlay) return false;
     overlay._cardFollowController?.pause();
+    rememberNavigation(entry.card);
     const overlayRect = overlay.getBoundingClientRect();
     const cardRect = entry.card.getBoundingClientRect();
     const targetTop = Math.max(0, overlay.scrollTop + cardRect.top - overlayRect.top - 10);
@@ -335,6 +361,7 @@ function createCardQuestionNavigator(options = {}) {
   function init() {
     if (!root || !track || !overlay) return false;
     overlay.addEventListener('scroll', onScroll, { passive: true });
+    for (const type of ['wheel','touchstart','pointerdown','keydown']) overlay.addEventListener(type, clearNavigationAnchor, {passive:true});
     if (typeof win.MutationObserver === 'function') {
       observer = new win.MutationObserver(records => {
         if (records.some(r=>r.target === overlay || r.target.closest?.('.mr-gc-msg') || r.addedNodes.length || r.removedNodes.length)) scheduleRefresh();
@@ -352,9 +379,11 @@ function createCardQuestionNavigator(options = {}) {
     disposed = true;
     if (refreshFrame !== null) cancelRaf(refreshFrame);
     if (scrollFrame !== null) cancelRaf(scrollFrame);
+    if (anchorFrame !== null) cancelRaf(anchorFrame);
     if (highlightTimer) clearTimeout(highlightTimer);
     observer?.disconnect(); resizeObserver?.disconnect();
     overlay?.removeEventListener('scroll', onScroll);
+    for (const type of ['wheel','touchstart','pointerdown','keydown']) overlay?.removeEventListener(type, clearNavigationAnchor);
     if (highlightedCard) highlightedCard.classList.remove('question-jump-highlight');
     entries = [];
     setVisible(false);
