@@ -410,7 +410,7 @@ test('sidebar status transitions are coalesced and committed atomically', () => 
   assert.match(renderer.slice(completeEnd, promptEnd), /scheduleSessionListRender\(\)/);
   assert.match(renderer, /createTerminalActivityMonitor\(\{[\s\S]*?renderSessionList:\s*scheduleSessionListRender,/,
     'PTY-driven status transitions must use the sidebar coalescer too');
-  assert.match(home, /if \(!options\.force && !isVisible\(\)\) return state\.snapshot/,
+  assert.match(home, /if \(!isVisible\(\)\) return/,
     'hidden home workbench must not rebuild alongside every sidebar state event');
 });
 

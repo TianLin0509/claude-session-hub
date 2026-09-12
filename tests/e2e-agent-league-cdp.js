@@ -163,12 +163,12 @@ function removeTempRoot() {
     await client.send('Runtime.enable');
     await client.send('Page.enable');
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await waitEval(client, 'document.getElementById("btn-chuxin") && document.querySelector(".cx-primary-tab[data-tab=league]")', 'Agent League tab');
+    await waitEval(client, 'document.getElementById("btn-research") && document.querySelector(".cx-primary-tab[data-tab=league]")', 'Agent League tab');
     await client.eval(`(() => {
       window.__agentLeagueErrors = [];
       window.addEventListener('error', event => window.__agentLeagueErrors.push(String(event.error || event.message)));
       window.addEventListener('unhandledrejection', event => window.__agentLeagueErrors.push(String(event.reason)));
-      document.getElementById('btn-chuxin').click();
+      document.getElementById('btn-research').click();
       document.querySelector('.cx-primary-tab[data-tab="league"]').click();
     })()`);
     await waitEval(client, 'document.querySelectorAll(".cxl-row").length === 10', 'ten leaderboard rows');
