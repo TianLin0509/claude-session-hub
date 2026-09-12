@@ -132,7 +132,7 @@ test('开发默认选择已有路径，并说明单人和双人入口', () => {
   const scene = modal.slice(modal.indexOf('function _applyScene'), modal.indexOf('function _slotHtml'));
   assert(/_meetingWorkspaceMode = 'existing'/.test(scene));
   assert(/hint\.textContent = '从「项目库」选择项目/.test(modal));
-  assert(/单人点「独立开工」；两人点「开题」/.test(modal));
+  assert(/单人开发请使用普通会话的「一键开工」/.test(modal));
 });
 
 test('「选择已有路径」那一行有项目库下拉：点开列已整理项目，点一项即选中', () => {

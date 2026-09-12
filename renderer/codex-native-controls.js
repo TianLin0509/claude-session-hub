@@ -133,7 +133,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const runtime = session.nativeRuntime;
     const requests = runtime && runtime.connection === 'connected' ? runtime.requests || [] : [];
     const choices = session.nativeThreadChoices || [];
-    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection]);
+    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.emptyRecovery]);
     if (signature === next) return;
     signature = next;
     // Reuse the actual form nodes. Resolving another request must preserve
@@ -141,6 +141,17 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const keep = new Set(requests.map(r => JSON.stringify([runtime.epoch,r.id])));
     for (const key of forms.keys()) if (!keep.has(key)) forms.delete(key);
     const children = [];
+    if (runtime?.connection === 'unstarted') children.push(node('p','尚未开始，收到消息后启动。'));
+    if (runtime?.emptyRecovery) {
+      const box=node('div',null,'codex-native-request'), error=node('div','','codex-native-error');
+      box.append(node('p','旧线程没有可恢复记录，且旧版本没有提交凭证。仅在确认这个席位从未执行任务时，才建立新线程；不会自动重发任务。'));
+      const confirm=node('input');confirm.type='checkbox';
+      const label=node('label','我确认这个席位从未执行过任务','codex-native-confirm');label.prepend(confirm);box.append(label);
+      const restart=node('button','为原席位建立新线程');restart.type='button';restart.disabled=true;
+      confirm.addEventListener('change',()=>{restart.disabled=!confirm.checked;});
+      restart.addEventListener('click',()=>action({action:'restart-empty',...runtime.emptyRecovery,confirmed:true},box,error));
+      box.append(restart,error);children.push(box);
+    }
     if(runtime?.configurationError)children.push(node('p',runtime.configurationError,'codex-native-error'));
     if (runtime?.submission?.status === 'unknown') {
       const box=node('div',null,'codex-native-request');

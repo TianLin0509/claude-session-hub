@@ -1,0 +1,83 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net');
+const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
+const {connectFirstPage}=require('./helpers/cdp-client');
+const P=require('../renderer/one-click-start');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function run(){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-oneclick-')),trace=path.join(root,'native.jsonl');
+ const out=path.resolve('output/playwright/one-click-'+Date.now());fs.mkdirSync(out,{recursive:true});
+ const evidence={root,checks:[],fixture:'Real isolated Electron, composer and native transport; controlled model'};let hub,cdp;
+ fs.mkdirSync(path.join(root,'data'));fs.writeFileSync(path.join(root,'data/prepared-projects.json'),JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
+ const ok=(name,value)=>{assert(value,name);evidence.checks.push(name);console.log('PASS '+name)};
+ try{
+  const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p))})});
+  hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',extraEnv:{CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace}});
+  evidence.pid=hub.pid;cdp=await connectFirstPage(hub);
+  const until=async(expr)=>{for(let i=0;i<250;i++){if(await cdp.eval(expr))return;await sleep(100)}throw Error('timeout: '+expr)};
+  const invoke=(channel,args={})=>cdp.eval(`ipcRenderer.invoke(${JSON.stringify(channel)},${JSON.stringify(args)})`);
+  const click=async sel=>{const p=await cdp.eval(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});if(!e)throw Error('missing '+${JSON.stringify(sel)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;if(!r.width||!r.height||!e.contains(document.elementFromPoint(x,y)))throw Error('not clickable '+${JSON.stringify(sel)});return {x,y}})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});};
+  const turns=()=>fs.existsSync(trace)?fs.readFileSync(trace,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(m=>m.method==='turn/start'):[];
+  await until("typeof sessions!=='undefined' && typeof ipcRenderer!=='undefined'");
+  const session=await invoke('create-session',{kind:'codex',opts:{cwd:root,model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none'}});
+  const sid=JSON.stringify(session.id),box='.floating-input-bar[data-session-id="'+session.id+'"] .floating-input-box',button='.floating-input-bar[data-session-id="'+session.id+'"] .composer-one-click-start';
+  await until(`sessions.get(${sid})?.nativeRuntime?.state==='idle'`);
+  await until(`document.querySelector('[data-session-id="${session.id}"]')`);await click(`#session-list [data-session-id="${session.id}"]`);
+  await until(`document.querySelector(${JSON.stringify(button)})`);
+  const draft='实现按钮样式\n- 保留多行需求\n附件：C:\\示例\\截图.png';
+  await cdp.eval(`(()=>{const b=document.querySelector(${JSON.stringify(box)});b.focus();document.execCommand('insertText',false,${JSON.stringify(draft)})})()`);
+  evidence.before=await cdp.eval(`({text:document.querySelector(${JSON.stringify(box)}).innerText,html:document.querySelector(${JSON.stringify(box)}).innerHTML})`);
+  await click(button);
+  await until(`document.querySelector(${JSON.stringify(box)}).innerText.includes(${JSON.stringify(P.START)})`);
+  const filled=await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`);
+  evidence.draft=draft;evidence.filled=filled;
+  evidence.afterHtml=await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerHTML`);
+  ok('点击保留需求、完整填入授权和 worktree 提示词',filled.startsWith(draft+'\n\n') && filled.endsWith(P.suffix('')));
+  ok('仅填入，不发送、不建任务文件',turns().length===0&&!fs.existsSync(path.join(root,'data/task-docs')));
+  await click(button);ok('重复点击不叠加',await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`)===filled);
+  await cdp.eval(`document.querySelector(${JSON.stringify(box)}).focus();document.execCommand('undo')`);
+  ok('撤销一次恢复原始需求',await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`)===draft);
+  await click(button);
+  await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText=${JSON.stringify(filled.replace('必要测试','针对本次改动的测试'))};document.querySelector(${JSON.stringify(box)}).dispatchEvent(new Event('input',{bubbles:true}))`);
+  await click(button);const edited=await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`);
+  ok('用户改过的预设不会被覆盖',edited.includes('针对本次改动的测试')&&edited.split(P.START).length===2);
+  await click('#btn-home');await click(`#session-list [data-session-id="${session.id}"]`);
+  await until(`document.querySelector(${JSON.stringify(box)}).getBoundingClientRect().height>0`);
+  evidence.edited=edited;evidence.restored=await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`);
+  ok('切换会话视图仍保留草稿',await cdp.eval(`document.querySelector(${JSON.stringify(box)}).innerText`)===edited);
+  for(const width of [1440,760]){
+   await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});await sleep(200);
+   ok('按钮在输入框上方且可见 '+width,await cdp.eval(`(()=>{const a=document.querySelector(${JSON.stringify(button)}).getBoundingClientRect(),b=document.querySelector(${JSON.stringify(box)}).getBoundingClientRect();return a.height>0&&a.bottom<=b.top+1&&a.left>=0&&a.right<=innerWidth})()`));
+   const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'20260911-oneclick-'+width+'-codex1.png'),Buffer.from(shot.data,'base64'));
+  }
+  await cdp.eval(`document.querySelector(${JSON.stringify(box)}).focus()`);
+  for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  await until(`sessions.get(${sid})?.nativeRuntime?.state==='completed'`);
+  ok('用户发送后仅提交一条实际可见的完整 prompt',turns().length===1&&turns()[0].params.input.map(x=>x.text||'').join('')===edited);
+  await cdp.eval(`document.querySelector(${JSON.stringify(box)}).focus();document.execCommand('insertText',false,'继续')`);
+  await click('.floating-input-bar[data-session-id="'+session.id+'"] .floating-input-send');
+  await until(`sessions.get(${sid})?.nativeRuntime?.state==='completed' && document.querySelector(${JSON.stringify(box)}).innerText===''`);
+  ok('下一轮不再追加任何开工约定',turns().length===2&&turns()[1].params.input.map(x=>x.text||'').join('')==='继续');
+  await cdp.eval("openMeetingCreateModal('group')");
+  ok('开发群聊不再允许移除到单人',await cdp.eval("document.querySelectorAll('.mcm-slot').length===2&&!document.querySelector('[data-remove-member]')"));
+  await click('[data-mcm-scene="general"]');await click('[data-remove-member="1"]');await click('[data-mcm-scene="dev"]');
+  await click('#meeting-create-modal .mcm-create');
+  await until("document.querySelector('.mcm-error')?.textContent.includes('至少需要两位')");
+  ok('单人切到开发场景明确引导普通会话',await cdp.eval("document.querySelector('.mcm-error').textContent.includes('一键开工')"));
+  let rejected=false;try{await invoke('create-meeting',{mode:'dev',workspace:root,slots:[{kind:'codex'}]})}catch(e){rejected=e.message.includes('至少需要两位')}
+  ok('IPC 同样拒绝新建单人开发群聊',rejected);
+  ok('模板目录已移除极简',await cdp.eval("!WorkflowTemplates.TASK_PRESETS.some(p=>p.id==='dev-task-solo')"));
+  await cdp.eval('closeMeetingCreateModal()');
+  const members=[{memberId:'m1',kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none'},{memberId:'m2',kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none'}];
+  const config=await cdp.eval(`WorkflowTemplates.createTemplateConfig('dev-task',${JSON.stringify(members)})`);
+  const group=await invoke('create-meeting',{mode:'dev',workspace:root,slots:members,serialWorkflow:config});
+  await until(`sessions.get(${JSON.stringify(group.subSessions[0])})?.nativeRuntime?.state==='idle'`);
+  await cdp.eval(`selectMeeting(${JSON.stringify(group.id)})`);await until("!!document.querySelector('[data-file-kickoff]')");
+  ok('双人群聊保留开题，移除独立开工',await cdp.eval("!document.querySelector('[data-file-independent]')"));
+  await cdp.eval(`selectSession(${JSON.stringify(group.subSessions[0])})`);
+  await until(`!!document.querySelector('.floating-input-bar[data-session-id="${group.subSessions[0]}"]')`);
+  ok('群聊成员的普通视图不出现一键开工',await cdp.eval(`document.querySelector('.floating-input-bar[data-session-id="${group.subSessions[0]}"] .composer-start-actions').hidden`));
+  evidence.passed=true;
+ }finally{fs.writeFileSync(path.join(out,'20260911-oneclick-evidence-codex1.json'),JSON.stringify(evidence,null,2));if(hub)fs.writeFileSync(path.join(out,'20260911-hub-log-codex1.txt'),hub.log().join('\n'));if(cdp)await cdp.close();if(hub)await gracefulQuit(hub);console.log('ARTIFACT_ROOT '+out)}
+}
+run().catch(e=>{console.error(e);process.exitCode=1});

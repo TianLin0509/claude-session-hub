@@ -60,7 +60,7 @@ async function main(){
   await cdp.eval(`document.querySelectorAll('.mcm-ai-select').forEach(s=>{s.value='codex';s.dispatchEvent(new Event('change',{bubbles:true}));})`);
   await click('#meeting-create-modal .mcm-create');
   await wait(`document.querySelectorAll('#mr-input-tuning .composer-speed').length===2`);
-  await wait(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning')).every(e=>sessions.get(e.dataset.sid)?.nativeRuntime?.state==='idle')`);
+  await wait(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning')).every(e=>sessions.get(e.dataset.sid)?.nativeRuntime?.connection==='unstarted')`);
   const ids=await cdp.eval(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning'),e=>e.dataset.sid)`);
   const before=(await invoke('get-sessions')).find(s=>s.id===ids[1]).codexSpeedTier;
   await click(`#mr-input-tuning [data-sid="${ids[0]}"] .composer-speed`);
