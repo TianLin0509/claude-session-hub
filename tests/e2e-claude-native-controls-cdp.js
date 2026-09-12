@@ -72,6 +72,29 @@ async function main() {
       backstage.includes('本页显示引擎原始输出'));
     ok('backstage line endings are terminal-safe', !/[^\r]\n/.test(backstage));
 
+    // The 后台 button must actually switch to the backstage and back. Output in
+    // the ring buffer is not enough: the view switch itself used to be blocked
+    // for native Claude, so the button did nothing.
+    const view = () => client.eval(`({view: currentView,
+      pressed: document.getElementById('btn-backstage')?.getAttribute('aria-pressed'),
+      buttonHidden: document.getElementById('btn-backstage')?.hidden,
+      overlayHidden: document.getElementById('msg-overlay')?.classList.contains('hidden')})`);
+    await client.eval(`applyViewMode('card')`);
+    ok('backstage button is offered for a native Claude session', (await view()).buttonHidden === false, await view());
+    await client.eval(`document.getElementById('btn-backstage').click()`);
+    const pty = await waitFor('backstage view shown', async () => {
+      const value = await view();
+      return value.view === 'pty' ? value : null;
+    });
+    ok('clicking 后台 opens the backstage', pty.pressed === 'true' && pty.overlayHidden === true, pty);
+    const screen = await client.eval(`(() => { const t=terminalCache.get(${q})?.terminal; if(!t) return '';
+      const b=t.buffer.active; const out=[]; for(let y=0;y<b.length;y++){const l=b.getLine(y); if(l) out.push(l.translateToString(true));}
+      return out.join('\\n'); })()`);
+    ok('the backstage terminal shows engine output', /Claude/.test(screen), screen.slice(0, 160));
+    await client.eval(`document.getElementById('btn-backstage').click()`);
+    await waitFor('back to cards', async () => (await view()).view === 'card');
+    checks.push('clicking 后台 again returns to the card view');
+
     const chip = () => client.eval(`(() => { const el=document.querySelector('.composer-speed-chip,.composer-chip.composer-speed');
       return el ? {hidden:el.hidden,text:el.textContent.trim(),pressed:el.getAttribute('aria-pressed')} : null; })()`);
     const speed = await waitFor('speed chip painted', async () => {

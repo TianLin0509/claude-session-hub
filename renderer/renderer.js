@@ -3592,7 +3592,10 @@ function _updateStreamingIndicator(sessionId) {
 // remember=false 用于「按会话恢复视图」这种回放场景：那不是用户在表达偏好，
 // 不该反过来覆盖记忆。用户点切换按钮走默认的 remember=true。
 function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false } = {}) {
-  if (sessions.get(activeSessionId)?.runtimeBackend === 'claude-stream-json') mode = 'card';
+  // A native Claude session has a read-only backstage like Codex: engine output
+  // is delivered to its terminal, input still goes through the composer
+  // (terminal.onData ignores it). Forcing card view here made the 后台 button
+  // do nothing.
   const previousView = currentView;
   const overlay = document.getElementById('msg-overlay');
   if (mode !== 'card' && _cardViewBottomRestoreRaf) {
