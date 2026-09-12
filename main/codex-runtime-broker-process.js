@@ -47,24 +47,45 @@ class Peer extends EventEmitter {
     this.authenticated = false;
     this.views = new Map();
     this.closed = false;
+    this.blocked = false;
+    this.outbound = [];
+    this.coalesced = new Map();
     socket.setEncoding('utf8');
     socket.on('data', chunk => this.feed(chunk));
     socket.on('error', error => this.close(error));
     socket.on('close', () => this.close());
+    socket.on('drain', () => { this.blocked=false; this.flush(); });
   }
   send(message) {
     if (this.closed || this.socket.destroyed) return;
-    if (this.socket.writableLength > 16 * 1024 * 1024) {
-      this.socket.destroy(new Error('Codex 共享服务订阅者读取过慢'));
-      return;
+    const key = message.method === 'content' ? `content:${message.params.key}:${message.params.replaceTurnId || ''}`
+      : message.method === 'control' ? `control:${message.params.key}` : null;
+    const pending = key && this.coalesced.get(key);
+    if (pending) pending.message = message;
+    else {
+      const entry={message,key};
+      this.outbound.push(entry);
+      if(key)this.coalesced.set(key,entry);
     }
+    this.flush();
+  }
+  flush() {
+    while (!this.blocked && !this.closed && !this.socket.destroyed && this.outbound.length) {
+      const entry=this.outbound.shift();
+      if(entry.key)this.coalesced.delete(entry.key);
+      this.write(entry.message);
+    }
+  }
+  write(message) {
     let line;
     try { line = JSON.stringify(message) + '\n'; }
     catch (error) {
       this.socket.destroy(new Error('Codex 共享服务响应无法序列化：' + error.message));
       return;
     }
-    this.socket.write(line);
+    // Respect Node stream backpressure; a brief reader delay is not a lost
+    // Codex connection. Only redundant content snapshots are coalesced.
+    this.blocked = !this.socket.write(line);
   }
   feed(chunk) {
     this.buffer += chunk;
@@ -104,6 +125,8 @@ class Peer extends EventEmitter {
   close(error) {
     if (this.closed) return;
     this.closed = true;
+    this.outbound.length = 0;
+    this.coalesced.clear();
     this.broker.disconnect(this);
     if (error) console.warn('[codex-broker] peer closed:', error.message);
     this.emit('closed');

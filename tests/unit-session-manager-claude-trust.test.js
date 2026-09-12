@@ -12,9 +12,9 @@ assert.match(source, /isNativeClaude \? createNativeClaudeDriver/);
 // scrollback rewriter and the CLI-ready detector that infer state from PTY
 // bytes -- native items stay the single source of runtime truth.
 const handler = source.slice(source.indexOf('ptyProcess.onData((data) => {'));
-assert.match(handler, /if \(isNativeClaude\) \{[\s\S]*?deliverTerminalData\(data\);[\s\S]*?return;[\s\S]*?\}/);
+assert.match(handler, /if \(isNativeClaude \|\| isCodex\) \{[\s\S]*?deliverTerminalData\(data\);[\s\S]*?return;[\s\S]*?\}/);
 assert.ok(handler.indexOf('deliverTerminalData(data);') < handler.indexOf('entry.groupChatLastActivity = Date.now();'),
-  'native Claude must deliver display bytes before, and instead of, the PTY activity bookkeeping');
+  'native Claude and Codex must deliver display bytes before, and instead of, the PTY activity bookkeeping');
 const client = require('../main/claude-stream-client');
 const args = client.streamArgs([]);
 assert.ok(args.includes('--print'));
