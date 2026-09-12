@@ -3540,7 +3540,7 @@ function _updateStreamingIndicator(sessionId) {
       : (pendingSubmit || starting ? '启动中' : '工作中');
   } else if (!isRunning && indicator) {
     const runtimeTruth = getSessionRuntimeTruth(sess);
-    if (isNativeSession(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
+    if (isNativeAgent(sess) || [RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
       indicator.remove();
       return;
     }

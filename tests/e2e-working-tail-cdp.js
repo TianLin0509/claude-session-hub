@@ -65,7 +65,8 @@ async function main(){
     await wait(tailProbe);check('Claude working feedback uses the same visible stream tail',true);
     await shot('claude-tail');
     await click('.floating-input-stop');
-    await wait(`!document.querySelector(${j(groupSel)})?.classList.contains('running')`);
+    await wait(`!document.querySelector(${j(groupSel)})?.classList.contains('running') && !document.querySelector('#msg-overlay .streaming-indicator')`);
+    check('Claude stop clears its working chip',true);
     await click(`.session-item[data-session-id="${ordinary.id}"]`);
     await wait(`activeSessionId===${sid}`);check('switching sessions leaves no ghost working chip',await c.eval('!document.querySelector("#msg-overlay .streaming-indicator")'));
     result.passed=true;
