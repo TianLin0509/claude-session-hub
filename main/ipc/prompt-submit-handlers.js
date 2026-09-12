@@ -20,9 +20,6 @@
 const { isPasteSensitive, isClaudeFamily, isCodexCliKind } = require('../../core/ai-kinds.js');
 const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { PromptSubmissionReceipts } = require('../../core/prompt-submission-receipts.js');
-// The engine rejects anything outside this list; keep the Hub's own gate in
-// step so an invalid IPC value never reaches the transport.
-const CLAUDE_PERMISSION_MODES = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'manual', 'bypassPermissions'];
 
 // 每个会话串行化。用户连按两下回车时两次 sendToPty 会并发写同一个 PTY，
 //   分块投喂下两条 payload 会交错成一团乱码 —— 这是分块引入的新风险，入口挡掉。
@@ -90,23 +87,6 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       if (!updated) throw new Error('模型已切换，但 Hub 元数据保存失败');
       sendToRenderer('session-updated', { session: updated });
       return { ok: true, model: currentModel };
-    } catch (error) { return { ok: false, error: error.message }; }
-  });
-
-  // Mirrors the Codex collaboration-mode action: one confirmed switch, stored
-  // where resume reads it so a reconnect does not quietly drop plan mode.
-  ipcMain.handle('claude-native:set-permission-mode', async (_event, request = {}) => {
-    const native = sessionManager.getNativeClaude?.(request.sessionId);
-    if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
-    if (!CLAUDE_PERMISSION_MODES.includes(request.mode)) return { ok: false, error: '工作方式无效' };
-    try {
-      const result = await native.setPermissionMode(request.mode);
-      const session = sessionManager.getSession(request.sessionId);
-      const updated = sessionManager.updateSessionMeta(request.sessionId,
-        { nativeConfig: { ...(session?.nativeConfig || {}), permissionMode: result.permissionMode } });
-      if (!updated) throw new Error('工作方式已切换，但 Hub 元数据保存失败');
-      sendToRenderer('session-updated', { session: updated });
-      return { ok: true, result };
     } catch (error) { return { ok: false, error: error.message }; }
   });
 

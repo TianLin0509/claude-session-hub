@@ -64,6 +64,14 @@ async function main() {
     await client.eval(`window.__hubE2E.selectSession(${q}, {forceScrollBottom:true})`);
     await waitFor('native ready', () => client.eval(`sessions.get(${q})?.nativeRuntime?.connection==='connected'`));
 
+    // The backstage pane used to stay blank for a native Claude session because
+    // Main dropped its output. It must carry engine text like Codex's does.
+    const backstage = await waitFor('backstage receives native output',
+      () => client.eval(`ipcRenderer.invoke('debug:get-session-buffer', ${q}).then(t => t && t.includes('Claude 已连接') ? t : null)`));
+    ok('backstage carries engine output instead of staying blank',
+      backstage.includes('本页显示引擎原始输出'));
+    ok('backstage line endings are terminal-safe', !/[^\r]\n/.test(backstage));
+
     const chip = () => client.eval(`(() => { const el=document.querySelector('.composer-speed-chip,.composer-chip.composer-speed');
       return el ? {hidden:el.hidden,text:el.textContent.trim(),pressed:el.getAttribute('aria-pressed')} : null; })()`);
     const speed = await waitFor('speed chip painted', async () => {
@@ -86,22 +94,11 @@ async function main() {
     const overlay = path.join(TEMP, 'data', 'native-agent-settings', sid + '.json');
     ok('relaunch overlay stores the tier', JSON.parse(fs.readFileSync(overlay, 'utf8')).fastMode === true);
 
-    const select = '.claude-native-controls .claude-native-mode select';
-    await waitFor('mode control painted', () => client.eval(`!!document.querySelector(${JSON.stringify(select)})`));
-    ok('mode control shows the engine mode',
-      (await client.eval(`document.querySelector(${JSON.stringify(select)}).value`)) === 'default');
-    await client.eval(`(() => { const el=document.querySelector(${JSON.stringify(select)});
-      el.value='plan'; el.dispatchEvent(new Event('change',{bubbles:true})); })()`);
-    await waitFor('plan mode stored', () => client.eval(`sessions.get(${q})?.nativeConfig?.permissionMode==='plan'`));
-    ok('working mode switch reaches resume config and runtime',
-      (await client.eval(`sessions.get(${q}).nativeRuntime.permissionMode`)) === 'plan');
-
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(OUT, 'controls.png'), Buffer.from(shot.data, 'base64'));
     fs.writeFileSync(path.join(OUT, 'evidence.json'), JSON.stringify({ sid, checks,
-      session: await client.eval(`(({id,fastMode,nativeConfig,nativeRuntime})=>({id,fastMode,nativeConfig,
-        runtime:{fastMode:nativeRuntime.fastMode,fastModeBlocked:nativeRuntime.fastModeBlocked,
-        permissionMode:nativeRuntime.permissionMode}}))(sessions.get(${q}))`) }, null, 2), 'utf8');
+      session: await client.eval(`(({id,fastMode,nativeRuntime})=>({id,fastMode,
+        runtime:{fastMode:nativeRuntime.fastMode,fastModeBlocked:nativeRuntime.fastModeBlocked}}))(sessions.get(${q}))`) }, null, 2), 'utf8');
     console.log('PASS ' + checks.length + ' checks; ' + OUT);
   } finally {
     if (client) try { await client.close(); } catch { /* already gone */ }
