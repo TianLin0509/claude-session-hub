@@ -203,7 +203,6 @@
 #new-session-wrapper .launch-split button:hover { background: rgba(255, 255, 255, .12); }
 #new-session-wrapper .launch-split button:focus-visible { outline: 2px solid #fff; outline-offset: -3px; }
 #new-session-wrapper .launch-split #btn-new:disabled { opacity: .65; cursor: wait; }
-#launch-split-status { font-size: 11px; color: var(--status-warning, #ba6a00); padding-top: 4px; overflow-wrap: anywhere; }
 .session-search-filter-row { flex-wrap: wrap; }
 @media (prefers-reduced-motion: reduce) {
   #session-list .session-item.slim { transition: none; }

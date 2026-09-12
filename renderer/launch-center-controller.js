@@ -1,24 +1,6 @@
 'use strict';
 
 const LAUNCH_INTENTS = Object.freeze(['session', 'group', 'resume']);
-const LAST_LAUNCH_KEY = 'hub.launch.last';
-const CLI_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex', gemini: 'Gemini', deepseek: 'DeepSeek', kimi: 'Kimi', powershell: 'PowerShell' });
-const TUNING_FIELDS = ['model', 'effort', 'mcpProfile', 'fastMode', 'codexSpeedTier'];
-
-function normalizeLastLaunch(value) {
-  if (!value || !Object.hasOwn(CLI_LABELS, value.kind) || !Number.isFinite(value.ts)) return null;
-  const workspace = value.workspace;
-  if (!workspace || typeof workspace.path !== 'string' || !require('path').isAbsolute(workspace.path)) return null;
-  const record = {
-    kind: value.kind, workspace: { path: workspace.path, label: typeof workspace.label === 'string' ? workspace.label : require('path').basename(workspace.path), draft: workspace.draft === true }, ts: value.ts,
-  };
-  for (const key of TUNING_FIELDS) {
-    if (value[key] === undefined) continue;
-    if (typeof value[key] !== (key === 'fastMode' ? 'boolean' : 'string')) return null;
-    record[key] = value[key];
-  }
-  return record;
-}
 const INTENT_COPY = Object.freeze({
   session: '选择 AI、模型与工作目录',
   group: '直接配置模板、成员与工作目录',
@@ -36,15 +18,11 @@ function createLaunchCenterController({
   prepareGroupPanel,
   closeGroupPanel,
   resumeSession,
-  storage,
-  getWorkspaceController = () => document.defaultView.WorkspaceController,
-  isDirectory = async path => (await require('fs').promises.stat(path)).isDirectory(),
 }) {
   if (!document) throw new Error('launch center requires document');
   const menuEl = document.getElementById('new-session-menu');
   const triggerEl = document.getElementById('btn-new');
   const moreEl = document.getElementById('btn-new-more');
-  const statusEl = document.getElementById('launch-split-status');
   const subtitleEl = document.getElementById('launch-center-subtitle');
   const errorEl = document.getElementById('launch-center-error');
   const groupErrorEl = document.getElementById('launch-center-group-error');
@@ -55,126 +33,14 @@ function createLaunchCenterController({
   let activeIntent = 'session';
   let groupPrepared = false;
   let returnFocus = null;
-  let launching = false;
-  let openRevision = 0;
 
-  function showLaunchStatus(message = '') {
-    if (statusEl) {
-      statusEl.textContent = message;
-      statusEl.hidden = !message;
-    }
-    const formError = document.getElementById('new-session-error');
-    if (message && formError && activeIntent === 'session' && menuEl.style.display !== 'none') {
-      formError.textContent = message;
-      formError.hidden = false;
-      formError.scrollIntoView({ block: 'nearest' });
-    }
-  }
-
-  function readLastLaunch() {
-    try {
-      const raw = (storage || document.defaultView.localStorage)?.getItem(LAST_LAUNCH_KEY);
-      if (!raw) return null;
-      try { return normalizeLastLaunch(JSON.parse(raw)); }
-      catch { return null; } // A malformed record is equivalent to no usable history.
-    } catch (error) {
-      showLaunchStatus(`启动记忆不可用：${error.message || error}`);
-      return null;
-    }
-  }
-
-  function refreshLastLaunch() {
-    const last = readLastLaunch();
+  function initializeTrigger() {
     const label = triggerEl && triggerEl.querySelector('.btn-label');
     if (label) label.textContent = '启动';
     if (triggerEl) {
       triggerEl.title = '打开启动中心 (Ctrl+N)';
       triggerEl.setAttribute('aria-haspopup', 'dialog');
       triggerEl.setAttribute('aria-expanded', menuEl && menuEl.style.display !== 'none' ? 'true' : 'false');
-    }
-    return last;
-  }
-
-  function rememberLaunch(launch) {
-    const last = normalizeLastLaunch({ ...launch, ts: Date.now() });
-    if (!last) {
-      showLaunchStatus('会话已创建，记忆未保存：启动配置不完整');
-      return;
-    }
-    try {
-      const target = storage || document.defaultView.localStorage;
-      if (!target) throw new Error('本地存储不可用');
-      target.setItem(LAST_LAUNCH_KEY, JSON.stringify(last));
-      showLaunchStatus();
-      refreshLastLaunch();
-    } catch (error) {
-      showLaunchStatus(`会话已创建，记忆未保存：${error.message || error}`);
-    }
-  }
-
-  async function fallbackToCenter(last, message) {
-    open('session', last ? { kind: last.kind, workspace: { ...last.workspace } } : {});
-    showLaunchStatus(message);
-    if (!last) return;
-    const revision = openRevision;
-    try {
-      await getWorkspaceController().loadModelCatalog(last.kind);
-      if (revision !== openRevision || activeIntent !== 'session' || menuEl.style.display === 'none') return;
-      const selected = menuEl.querySelector?.('.new-session-option.selected');
-      if (selected && selected.dataset.kind !== last.kind) return;
-      // Restore via the existing controls so private form state follows the UI.
-      for (const [field, id] of [['model', 'new-session-model'], ['effort', 'new-session-effort'], ['mcpProfile', 'new-session-mcp'], ['fastMode', 'new-session-fast'], ['codexSpeedTier', 'new-session-codex-tier']]) {
-        const input = document.getElementById(id);
-        if (!input || last[field] === undefined) continue;
-        if (field === 'fastMode') input.checked = last[field];
-        else {
-          if (![...input.options].some(option => option.value === last[field])) continue;
-          input.value = last[field];
-        }
-        input.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
-      }
-    } catch (error) {
-      if (revision === openRevision) showLaunchStatus(`${message}；配置预填失败：${error.message || error}`);
-    }
-  }
-
-  async function launchLast() {
-    if (launching) return null;
-    showLaunchStatus();
-    const last = refreshLastLaunch();
-    if (!last) { open('session'); return null; }
-    launching = true;
-    if (triggerEl) { triggerEl.disabled = true; triggerEl.setAttribute('aria-busy', 'true'); }
-    try {
-      let directoryOk;
-      try { directoryOk = await isDirectory(last.workspace.path); }
-      catch (error) { throw new Error(`工作区无法访问（${error.code === 'ENOENT' ? '目录已不存在' : '请检查目录及访问权限'}）：${last.workspace.path}`); }
-      if (!directoryOk) throw new Error(`工作区不存在或不是目录：${last.workspace.path}`);
-      const workspace = getWorkspaceController();
-      const catalog = await workspace.loadModelCatalog(last.kind);
-      if (['codex', 'claude'].includes(last.kind) && !catalog) throw new Error('模型配置目录不可用，请在启动中心确认');
-      if (catalog && (catalog.refreshError || catalog.ok === false)) throw new Error(`模型配置目录读取失败：${catalog.refreshError || '目录不可用'}`);
-      const tuning = workspace.resolveSessionTuning(last.kind, last.model, last);
-      const required = [
-        ['model', tuning.modelOptions.length > 0], ['effort', tuning.showEffort], ['mcpProfile', tuning.showMcp],
-        ['fastMode', tuning.showFast], ['codexSpeedTier', tuning.showCodexTier],
-      ];
-      for (const [field, applies] of required) {
-        if (applies && (last[field] === undefined || tuning[field] !== last[field])) {
-          throw new Error(`上次配置已不可用或不完整（${field}: ${last[field] ?? '未记录'}），请在启动中心确认`);
-        }
-      }
-      const opts = workspace.buildSessionTuningOpts(last.kind, last.model, last);
-      const session = await workspace.createSession(last.kind, { workspace: { ...last.workspace }, opts });
-      if (!session || !session.id) throw new Error('创建未返回有效会话');
-      rememberLaunch(last);
-      return session;
-    } catch (error) {
-      await fallbackToCenter(last, `无法直接启动：${error.message || error}`);
-      return null;
-    } finally {
-      launching = false;
-      if (triggerEl) { triggerEl.disabled = false; triggerEl.removeAttribute('aria-busy'); }
     }
   }
 
@@ -203,7 +69,6 @@ function createLaunchCenterController({
   }
 
   function selectIntent(value, { focus = true } = {}) {
-    openRevision += 1;
     activeIntent = normalizeLaunchIntent(value);
     clearErrors();
     for (const button of intentButtons) {
@@ -246,7 +111,6 @@ function createLaunchCenterController({
   }
 
   function close() {
-    openRevision += 1;
     clearErrors();
     if (groupPrepared && typeof closeGroupPanel === 'function') closeGroupPanel();
     groupPrepared = false;
@@ -298,17 +162,11 @@ function createLaunchCenterController({
 
   const view = document.defaultView;
   if (view && typeof view.addEventListener === 'function') {
-    view.addEventListener('focus', refreshLastLaunch);
-    view.addEventListener('storage', refreshLastLaunch);
-    view.addEventListener('launch-center:session-created', event => {
-      if (event.detail && event.detail.sessionId && event.detail.launch) rememberLaunch(event.detail.launch);
-    });
     view.addEventListener('launch-center:session-opened', () => {
       setOpenState(true);
       selectIntent('session', { focus: false });
     });
     view.addEventListener('launch-center:closed', () => {
-      openRevision += 1;
       if (groupPrepared && typeof closeGroupPanel === 'function') closeGroupPanel();
       groupPrepared = false;
       clearErrors();
@@ -317,11 +175,7 @@ function createLaunchCenterController({
   }
 
   if (menuEl) {
-    // A user edit cancels any delayed fallback prefill still awaiting its catalog.
-    menuEl.addEventListener('pointerdown', () => { openRevision += 1; });
-    menuEl.addEventListener('input', () => { openRevision += 1; });
     menuEl.addEventListener('keydown', event => {
-      openRevision += 1;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -345,15 +199,13 @@ function createLaunchCenterController({
   }
 
   selectIntent('session', { focus: false });
-  refreshLastLaunch();
+  initializeTrigger();
   return {
     close,
     getActiveIntent: () => activeIntent,
     open,
     selectIntent,
     toggle,
-    launchLast,
-    refreshLastLaunch,
   };
 }
 
@@ -362,5 +214,4 @@ module.exports = {
   LAUNCH_INTENTS,
   createLaunchCenterController,
   normalizeLaunchIntent,
-  normalizeLastLaunch,
 };

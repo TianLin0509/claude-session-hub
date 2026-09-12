@@ -70,3 +70,21 @@ assert.equal(empty.availableRounds, 0);
 assert.equal(empty.text, '');
 
 console.log('recent turn copy unit tests ok');
+
+// Counting can reuse unchanged rendered text, while actual copy must read the
+// live DOM. Mutating a card invalidates only that card's cached extraction.
+{
+  const {createRecentTurnCopyController}=require('../renderer/recent-turn-copy');
+  const bodies=[{innerHTML:'question'},{innerHTML:'answer'}];
+  const cards=bodies.map((body,i)=>({dataset:{sessionId:'s',turnId:String(i)},querySelector:()=>body}));
+  let extractions=0;
+  const controller=createRecentTurnCopyController({
+    document:{getElementById:()=>({querySelectorAll:()=>cards})},
+    getActiveSessionId:()=> 's',getTurnById:id=>({role:id==='0'?'user':'assistant'}),
+    extractVisibleCardText:body=>{extractions++;return body.innerHTML;},
+  });
+  assert.equal(controller.availableRoundCount(),1);assert.equal(extractions,2);
+  assert.equal(controller.availableRoundCount(),1);assert.equal(extractions,2);
+  bodies[1].innerHTML='new answer';assert.equal(controller.availableRoundCount(),1);assert.equal(extractions,3);
+  assert.equal(controller.collectVisibleEntries()[1].text,'new answer');assert.equal(extractions,5);
+}
