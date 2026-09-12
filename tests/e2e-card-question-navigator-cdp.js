@@ -99,7 +99,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       buttons[2].dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
       return {
         state: window.__hubE2E.cardQuestionNavigator.state(),
-        markerTexts: buttons.map(button => button.textContent.trim()),
+        markerTexts: buttons.map(button => button.querySelector('.card-question-nav-label').textContent.trim()),
         tabStops:buttons.filter(button => button.tabIndex === 0).map(button => Number(button.dataset.questionIndex)),
         dotCount: root.querySelectorAll('.card-question-nav-dot').length,
         labels: buttons.map(button => button.getAttribute('aria-label')),
@@ -209,8 +209,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     fs.writeFileSync(SCREENSHOT_PATH, Buffer.from(desktopScreenshot.data, 'base64'));
 
     await client.send('Emulation.setDeviceMetricsOverride', {
-      // Match the user's captured narrow-window geometry closely.
-      width: 502,
+      // Half-window viewport: exercise automatic folding and an explicitly expanded directory.
+      width: 850,
       height: 1600,
       deviceScaleFactor: 1,
       mobile: false,
@@ -225,6 +225,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       'dense 24-question rail',
     );
     await client.eval(`(() => {
+      document.querySelector('#card-question-nav .question-directory-toggle').click();
       window.__hubE2E.cardQuestionNavigator.scrollTo(11);
       const button = document.querySelectorAll('#card-question-nav .card-question-nav-item')[11];
       button.dispatchEvent(new MouseEvent('mouseenter', { bubbles:true }));
@@ -242,7 +243,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       dense: document.getElementById('card-question-nav').classList.contains('dense'),
       veryDense: document.getElementById('card-question-nav').classList.contains('very-dense'),
       markerCount: document.querySelectorAll('#card-question-nav .card-question-nav-item').length,
-      activeText: document.querySelector('#card-question-nav .card-question-nav-item.active').textContent.trim(),
+      activeText: document.querySelector('#card-question-nav .card-question-nav-item.active .card-question-nav-label').textContent.trim(),
       activeLabelOpacity: getComputedStyle(document.querySelector('#card-question-nav .card-question-nav-item.active .card-question-nav-label')).opacity,
       inactiveLabelOpacity: getComputedStyle(document.querySelector('#card-question-nav .card-question-nav-item:not(.active) .card-question-nav-label')).opacity,
       tooltipText: document.querySelector('#card-question-nav .card-question-nav-tooltip').textContent.trim(),
@@ -260,9 +261,9 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     assert.equal(result.responsive.markerCount, 24);
     assert.equal(result.responsive.activeText, 'Q12');
     assert.equal(result.responsive.activeLabelOpacity, '1');
-    assert.equal(result.responsive.inactiveLabelOpacity, '0');
+    assert.equal(result.responsive.inactiveLabelOpacity, '1');
     assert.match(result.responsive.tooltipText, /问题 12 \/ 24/);
-    assert.ok(result.responsive.tooltipWidth <= 181, JSON.stringify(result.responsive));
+    assert.ok(result.responsive.tooltipWidth <= 350, JSON.stringify(result.responsive));
     assert.ok(result.responsive.minMarkerWidth >= 24, JSON.stringify(result.responsive));
     assert.ok(result.responsive.minMarkerHeight >= 24, JSON.stringify(result.responsive));
     assert.ok(result.responsive.tooltipTop >= 0 && result.responsive.tooltipBottom <= 1600, JSON.stringify(result.responsive));
@@ -271,7 +272,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     fs.writeFileSync(RESPONSIVE_SCREENSHOT_PATH, Buffer.from(responsiveScreenshot.data, 'base64'));
 
     await client.send('Emulation.setDeviceMetricsOverride', {
-      width: 502,
+      width: 850,
       height: 600,
       deviceScaleFactor: 1,
       mobile: false,
@@ -285,6 +286,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         && document.getElementById('card-question-nav').classList.contains('very-dense')`,
       'very-dense short question rail',
     );
+    await client.eval(`document.querySelector('#card-question-nav .question-directory-toggle').click()`);
     result.veryDense = await client.eval(`(() => {
       const root = document.getElementById('card-question-nav');
       const track = root.querySelector('.card-question-nav-track');
@@ -316,7 +318,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       sessionId: 'card-question-nav-single', start: 1, count: 1, clear: true
     })`);
     assert.equal(result.singleQuestion.state.count, 1);
-    assert.equal(result.singleQuestion.state.visible, false, 'one question should not create navigation clutter');
+    assert.equal(result.singleQuestion.state.visible, true, 'one question still provides folding and scroll controls');
     result.screenshot = SCREENSHOT_PATH;
     result.responsiveScreenshot = RESPONSIVE_SCREENSHOT_PATH;
     testBodyPassed = true;
