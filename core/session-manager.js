@@ -1652,7 +1652,10 @@ class SessionManager extends EventEmitter {
         if (isAcp) {
           info.acpSid = bound.threadId;
           if (bound.capabilities) info.acpCapabilities = bound.capabilities;
-          if (bound.configOptions) info.acpConfigOptions = bound.configOptions;
+          if (bound.configOptions) {
+            info.acpConfigOptions = bound.configOptions;
+            info.effort = bound.configOptions.find(o => o.category === 'thought_level')?.currentValue || null;
+          }
         } else info.codexSid = bound.threadId;
         if (bound.cwd) info.cwd = bound.cwd;
         if (Object.hasOwn(bound, 'path')) info.transcriptPath = bound.path;

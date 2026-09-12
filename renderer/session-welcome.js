@@ -5,8 +5,7 @@ function renderSessionWelcome(session, escapeHtml) {
   const kind = String(session?.kind || 'claude').replace(/-resume$/, '');
   const provider = kind==='deepseek-acp' ? 'deepseek' : ['claude', 'codex', 'gemini', 'kimi', 'deepseek','qwen','glm'].includes(kind) ? kind : 'claude';
   const label = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', kimi: 'Kimi', deepseek: 'DeepSeek',qwen:'千问 · Qwen Code',glm:'智谱 · ZCode' }[provider];
-  const mark=['qwen','glm'].includes(provider) ? `<span aria-label="${label}">${provider==='qwen'?'QW':'GLM'}</span>`
-    : `<img src="assets/ai-logos/${provider}.svg" alt="${label}" />`;
+  const mark = `<img src="assets/ai-logos/${provider}.svg" alt="${label}" />`;
   const cwd = session?.cwd || '';
   const project = session?.workspaceLabel || path.basename(cwd) || '当前工作区';
   const actions = [

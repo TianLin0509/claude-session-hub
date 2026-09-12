@@ -23,6 +23,7 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     if (!path.isAbsolute(file) || !fs.statSync(file).isFile()) throw new Error('Harness 可执行文件不存在或不是绝对路径');
   }
   const model = opts.model || entry.model;
+  const models = require('./acp-model-catalog').acpModelOptions(kind, model);
   if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model))throw new Error('请填写套餐模型 ID，不可切到其他供应商命名空间');
   let mcpServers=[];
   if(entry.mcpConfigPath) {
@@ -64,10 +65,13 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
   let authMethod;
   let authMeta;
   if (kind === 'qwen') {
-    args.push('--acp', '--model', model);
+    args.push('--acp', '--model', model, '--approval-mode', 'yolo');
     Object.assign(env, { OPENAI_API_KEY: key, OPENAI_BASE_URL: baseURL, OPENAI_MODEL: model,
       QWEN_CODE_DISABLE_AUTO_UPDATE: '1', NO_COLOR: '1' });
     authMethod = 'openai';
+    writeJson(path.join(home, '.qwen/settings.json'), {
+      modelProviders: { openai: models.map(({id}) => ({ id, name: id, baseUrl: baseURL, envKey: 'OPENAI_API_KEY' })) },
+    });
   } else if (kind === 'deepseek-acp') {
     if(!entry.bridgePath)throw new Error('DeepSeek 完整交互需要配置 ACP 扩展包目录');
     env.DSH_HOME = path.join(home, '.dsh');
@@ -75,7 +79,9 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     const settings = {
       'agent-default-model': { provider: 'bailian-tpp', model },
       'llm-pi-ai': { providers: { 'bailian-tpp': { api: 'openai-completions', baseURL,
-        apiKeyEnv: 'BAILIAN_API_KEY', models: [{ id: model, compat: { thinkingFormat: 'deepseek' } }] } } },
+        apiKeyEnv: 'BAILIAN_API_KEY', models: models.map(({id}) => ({ id,
+          reasoningEfforts: require('./acp-model-catalog').deepseekReasoningEfforts(id),
+          compat: { thinkingFormat: 'deepseek' } })) } } },
     };
     writeJson(path.join(env.DSH_HOME, 'settings.yaml'), settings);
     const patch = path.join(sessionRoot, 'acp-route.yaml');
@@ -92,7 +98,7 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
       writeJson(path.join(env.DSH_HOME, 'profiles/acp/package.json'), { name: 'hub-dsh-acp-profile', private: true,
         dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@openma/deepseek-harness-acp'], patchReload: 'startup' } } });
       Object.assign(env, { DSH_PROVIDER: 'bailian-tpp', DSH_MODEL: model,
-        DSH_ACP_MODELS: model, DSH_SESSION_ROOT: path.join(env.DSH_HOME, 'sessions') });
+        DSH_ACP_MODELS: models.map(m => m.id).join(','), DSH_SESSION_ROOT: path.join(env.DSH_HOME, 'sessions') });
       authMethod = 'api-key:bailian-tpp';
       authMeta = { 'api-key': { provider:'bailian-tpp',apiKey:key } };
       routePatches.pop();
@@ -114,7 +120,8 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
     } } });
   }
   return { id: opts.id, kind, cwd: opts.cwd, profileId, model, effort: opts.effort,mcpServers,
-    defaultMode: {qwen:'default','deepseek-acp':'workspace-write',glm:'build'}[kind],
+    permissionPolicy: 'bypass',
+    defaultMode: {qwen:'yolo','deepseek-acp':'danger-full-access',glm:'yolo'}[kind],
     resumeId: opts.acpFork?.sessionId || opts.acpSid, restoredRuntime: opts.nativeRuntime, forkHistory: opts.acpFork?.history,
     storeDir: path.join(dataDir, 'acp-history'), home, authMethod, authMeta,
     launch: { command: profile.nodePath, args, cwd: opts.cwd, env, secrets: [key] } };

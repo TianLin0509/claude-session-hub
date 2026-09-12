@@ -790,7 +790,7 @@ function createGlobalSessionSearch(options) {
       await openHit(hit, { focus: !!focus, preview });
     } catch (error) {
       console.warn('[session-search] open hit failed:', error);
-      if (window && typeof window.alert === 'function') window.alert(`打开历史会话失败：${error && error.message ? error.message : String(error)}`);
+      require('./ui-feedback').showHubAlert(`打开历史会话失败：${error && error.message ? error.message : String(error)}`);
     }
   }
 
@@ -821,7 +821,7 @@ function createGlobalSessionSearch(options) {
     const sync=document.createElement('button');sync.type='button';sync.textContent='同步变化内容';sync.addEventListener('click',()=>forceRefresh(false));indexDetails.append(sync);
     const advanced=document.createElement('details');const summary=document.createElement('summary');summary.textContent='高级诊断';advanced.append(summary);
     const note=document.createElement('p');note.textContent='仅在索引损坏或解析规则变化时重新构建；常规保存会自动同步。';advanced.append(note);
-    const rebuild=document.createElement('button');rebuild.type='button';rebuild.textContent='重新构建全部索引';rebuild.addEventListener('click',()=>{if(window.confirm('重新解析全部历史来源？现有索引会保持可用。')) void forceRefresh(true);});advanced.append(rebuild);indexDetails.append(advanced);
+    const rebuild=document.createElement('button');rebuild.type='button';rebuild.textContent='重新构建全部索引';rebuild.addEventListener('click',async()=>{if(await require('./ui-feedback').confirmHubAction('重新解析全部历史来源？现有索引会保持可用。')) void forceRefresh(true);});advanced.append(rebuild);indexDetails.append(advanced);
   }
   async function forceRefresh(force=false) {
     try {

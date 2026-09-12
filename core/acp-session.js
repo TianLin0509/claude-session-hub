@@ -127,10 +127,11 @@ class AcpSession extends EventEmitter {
       }
       if (this.options.model) await this.configure({ model: this.options.model, effort: this.options.effort }, true);
       if(resumeId)for(const saved of this.saved?.configOptions || []) {
-        if(['mode','thought_level'].includes(saved.category))await this.configure({configId:saved.id,value:saved.currentValue},true);
+        if(saved.category==='thought_level' || (saved.category==='mode' && this.options.permissionPolicy!=='bypass'))await this.configure({configId:saved.id,value:saved.currentValue},true);
       }
-      if (!resumeId && this.options.defaultMode) {
+      if ((!resumeId || this.options.permissionPolicy==='bypass') && this.options.defaultMode) {
         const mode=this.configOptions.find(o=>o.category==='mode');
+        if(!mode && this.options.permissionPolicy==='bypass')throw new Error('原生 Harness 未提供可确认的完全权限模式');
         if(mode)await this.configure({configId:mode.id,value:this.options.defaultMode},true);
       }
       this.bootstrapping = false;
@@ -215,6 +216,16 @@ class AcpSession extends EventEmitter {
     }
     if (this.active.cancelling) return this.client.respond(message.id, this.cancelResponse(message));
     this.acknowledge();
+    // Explicit user-selected full access. Real questions still need user input.
+    if(this.options.permissionPolicy==='bypass' && message.method==='session/request_permission'
+        && !p.toolCall?._meta?.qwenQuestions) {
+      const allow=(p.options || []).find(o=>o.kind==='allow_once') || (p.options || []).find(o=>o.kind==='allow_always');
+      if(!allow)throw new Error('原生权限请求没有允许选项，无法按完全权限执行');
+      const active=this.active,client=this.client,epoch=this.runtime.epoch;
+      return client.respond(message.id,{outcome:{outcome:'selected',optionId:allow.optionId}},null,response =>
+        this.active!==active || active.cancelling || this.client!==client || this.runtime.epoch!==epoch || this.closed
+          ? this.cancelResponse(message) : response);
+    }
     this.apply({ type: 'request', threadId: this.threadId, request: { ...message,
       params: { ...p, threadId: this.threadId, turnId: this.active.turnId, reason: p.toolCall?.title || '原生工具请求权限' } } });
   }
@@ -256,7 +267,7 @@ class AcpSession extends EventEmitter {
     if (typeof text !== 'string' || !text.trim()) throw new Error('消息不能为空');
     const prompt = [{ type: 'text', text }];
     for (const attachment of options.attachments || []) {
-      if (!this.capabilities.promptCapabilities?.image || /^(deepseek-v4|glm-5\.2)/.test(this.currentModel)) throw new Error('当前模型或 Harness 不支持图片，未发送消息');
+      if (!this.capabilities.promptCapabilities?.image || /^(deepseek-v4|glm-5\.2|qwen3\.7-max)/.test(this.currentModel)) throw new Error('当前模型或 Harness 不支持图片，未发送消息');
       if (attachment.type === 'localImage') {
         const ext = path.extname(attachment.path).toLowerCase();
         const mimeType = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }[ext];
@@ -449,6 +460,7 @@ class AcpSession extends EventEmitter {
       if (category === 'model') this.currentModel = value;
       if (category === 'thought_level') this.currentEffort = value;
     }
+    this.currentEffort=this.configOptions.find(o=>o.category==='thought_level')?.currentValue || null;
     if(!this.bootstrapping)this.emit('bound', { threadId: this.threadId, model: this.currentModel, configOptions: this.configOptions });
     this.apply({type:'configuration',error:null});
     this.persist();

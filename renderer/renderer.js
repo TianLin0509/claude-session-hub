@@ -1190,7 +1190,7 @@ async function selectMeeting(meetingId, opts = {}) {
     }
     if (shouldWakeMembers) {
       void wakeDormantMeetingMembers(meeting).catch(error => {
-        alert(`群聊“${meeting.title || meeting.id}”部分成员唤醒失败：\n${error.message}`);
+        require('./ui-feedback').showHubAlert(`群聊“${meeting.title || meeting.id}”部分成员唤醒失败：\n${error.message}`);
       });
     }
     MeetingRoom.openMeeting(meetingId, meeting, {
@@ -1310,11 +1310,11 @@ async function closeSessionAsSleep(sessionId) {
   try {
     const result = await ipcRenderer.invoke('close-session', sessionId);
     if (!result || !result.ok) {
-      window.alert((result && result.message) || '关闭休眠失败，请稍后重试。');
+      require('./ui-feedback').showHubAlert((result && result.message) || '关闭休眠失败，请稍后重试。');
     }
     return result || null;
   } catch (error) {
-    window.alert(`关闭休眠失败：${error && error.message ? error.message : String(error)}`);
+    require('./ui-feedback').showHubAlert(`关闭休眠失败：${error && error.message ? error.message : String(error)}`);
     return null;
   }
 }
@@ -1839,7 +1839,7 @@ btnNewHub.addEventListener('click', async (event) => {
     await ipcRenderer.invoke('hub:new-instance');
   } catch (error) {
     console.error('[hub-instance] launch failed:', error);
-    alert(`新建 AI Hub 失败：${error.message || error}`);
+    require('./ui-feedback').showHubAlert(`新建 AI Hub 失败：${error.message || error}`);
   } finally {
     btnNewHub.disabled = false;
     btnNewHub.removeAttribute('aria-busy');
@@ -4041,6 +4041,7 @@ const _codexEffortCache = new Map();
 const CLAUDE_COMPOSER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto'];
 
 function composerSupportedEfforts(session) {
+  if (session?.runtimeBackend === 'acp') return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
   // A native Claude session changes effort over its own command channel, so the
   // chip is live there; a PTY session still cannot and stays static.
@@ -4303,7 +4304,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composerRail = document.createElement('div');
   composerRail.className = 'composer-rail';
   composerRail.append(
-    attachBtn, modelChip, thinkingChip, speedChip, bridgeToolbar,
+    attachBtn, modelChip, thinkingChip, speedChip,
     railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
   );
 
@@ -4322,7 +4323,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const startButton = document.createElement('button');
   startButton.type = 'button';
   startButton.className = 'composer-one-click-start';
-  startButton.textContent = '▶ 一键开工';
+  startButton.textContent = '一键开工';
   startButton.title = '追加自主实现、验证与合并的提示词；可编辑，发送后授权执行';
   startButton.addEventListener('click', () => {
     const suffix = require('./one-click-start').suffix(readContenteditablePlainText(inputBox));
@@ -4339,8 +4340,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
   });
   startActions.appendChild(startButton);
-  bridgeToolbar.after(startActions);
-  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const secondaryActions = document.createElement('div');
+  secondaryActions.className = 'composer-secondary-actions';
+  secondaryActions.append(bridgeToolbar, startActions);
+  composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -4469,8 +4472,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
     thinkingChip.hidden = !rail.thinking.visible;
     if (rail.thinking.visible) {
-      if (thinkingChipLabel.textContent !== rail.thinking.label) {
-        thinkingChipLabel.textContent = rail.thinking.label;
+      if (thinkingChipLabel.textContent !== '推理 · ' + require('./ui-labels').effortLabel(rail.thinking.label)) {
+        thinkingChipLabel.textContent = '推理 · ' + require('./ui-labels').effortLabel(rail.thinking.label);
       }
       thinkingChip.dataset.interactive = rail.thinking.interactive ? '1' : '0';
       thinkingChipCaret.hidden = !rail.thinking.interactive;
@@ -4483,7 +4486,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
     const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
     speedChip.hidden = !speed.visible;
-    speedChip.textContent = speed.label;
+    speedChip.textContent = '速度 · ' + speed.label;
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
     speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
@@ -4834,8 +4837,8 @@ function updateCardSessionStatus(session) {
   // T2：模型名与工作目录从这条状态行撤掉 —— 模型名归 composer 底栏的 chip，
   // 工作目录归头部面包屑。同一件事在三个地方各说一遍，就是这一版要治的病。
   const parts = [
-    ['effort', summary.effort],
-    ['speed', summary.speed],
+    ['effort', summary.effort ? '推理 · ' + require('./ui-labels').effortLabel(summary.effort) : null],
+    ['speed', summary.speed ? '速度 · ' + require('./ui-labels').speedLabel(summary.speed) : null],
     ['context', summary.contextText],
   ].filter(([, value]) => value);
   parts.forEach(([key, value], index) => {
@@ -5165,7 +5168,7 @@ async function selectSession(id, opts = {}) {
     void resumeDormantSession(id, opts).catch((error) => {
       console.warn('[resume-session] dormant wake failed:', error);
       if (activeSessionId === id) showDormantResumePlaceholder(session, error);
-      alert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
+      require('./ui-feedback').showHubAlert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
     });
     return;
   }
@@ -5245,9 +5248,9 @@ window.LaunchCenter = launchCenter;
 // --- Unified launch center ---
 btnNew.addEventListener('click', () => launchCenter.open('session'));
 document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
-document.getElementById('acp-settings-open').addEventListener('click', () => {
+document.getElementById('acp-settings-open')?.addEventListener('click', () => {
   require('./acp-settings').openAcpSettings({ document, invoke:(...args)=>ipcRenderer.invoke(...args) })
-    .catch(error => alert('ACP 配置未打开：' + error.message));
+    .catch(error => require('./ui-feedback').showHubAlert('ACP 配置未打开：' + error.message));
 });
 
 document.addEventListener('mousedown', (e) => {
@@ -7681,13 +7684,13 @@ if (suspendIdleItem) {
     lines.push('现在立即执行一次手动巡检吗？');
     lines.push('手动这次会额外跳过全部群聊成员；会话卡片、未读标记和历史都会保留。');
 
-    if (!window.confirm(lines.join('\n'))) return;
+    if (!await require('./ui-feedback').confirmHubAction(lines.join('\n'), { title: '巡检长期闲置会话？', acceptLabel: '开始巡检' })) return;
 
     suspendIdleItem.setAttribute('aria-busy', 'true');
     try {
       const result = await ipcRenderer.invoke('suspend-idle-sessions', { idleMs: 5 * 60 * 60 * 1000 });
       if (!result || !result.ok) {
-        window.alert((result && result.message) || '批量休眠失败，请稍后重试。');
+        require('./ui-feedback').showHubAlert((result && result.message) || '批量休眠失败，请稍后重试。');
         return;
       }
       const skipped = Object.entries(result.skipped || {});
@@ -7695,11 +7698,11 @@ if (suspendIdleItem) {
         ? `\n\n跳过 ${skipped.reduce((sum, [, n]) => sum + n, 0)} 个：\n`
           + skipped.sort((a, b) => b[1] - a[1]).map(([reason, n]) => `  · ${reason} × ${n}`).join('\n')
         : '';
-      window.alert((result.count > 0
+      require('./ui-feedback').showHubAlert((result.count > 0
         ? `已请求休眠 ${result.count} 个长期闲置会话；内存会在对应 CLI 退出后释放。`
         : '没有符合条件的长期闲置会话。') + detail);
     } catch (error) {
-      window.alert(`批量休眠失败：${error && error.message ? error.message : String(error)}`);
+      require('./ui-feedback').showHubAlert(`批量休眠失败：${error && error.message ? error.message : String(error)}`);
     } finally {
       suspendIdleItem.removeAttribute('aria-busy');
     }
@@ -8303,7 +8306,7 @@ async function resumeDormantSession(hubId, opts = {}) {
     throw error;
   }
   if (resumed && resumed.cwdFellBackFrom) {
-    alert(`原工作目录已不存在：\n${resumed.cwdFellBackFrom}\n\n会话已回落到：\n${resumed.cwd}\n\n请先重定位或归档 workspace；不要在聚合根继续写文件。`);
+    require('./ui-feedback').showHubAlert(`原工作目录已不存在：\n${resumed.cwdFellBackFrom}\n\n会话已回落到：\n${resumed.cwd}\n\n请先重定位或归档 workspace；不要在聚合根继续写文件。`);
   }
   // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
   // 没看 → 应保留到真正进入终端；普通会话由 session-created 展示终端时清零，

@@ -27,6 +27,11 @@ function sessionModelLabel(session) {
 
 function sessionEffortLabel(session) {
   const kind = baseKind(session);
+  if (session?.runtimeBackend === 'acp') {
+    const { acpThoughtOption, acpThoughtChoices } = require('./acp-model-catalog');
+    const current = acpThoughtOption(session)?.currentValue;
+    return acpThoughtChoices(session).find(o => o.value === current)?.name || current || '';
+  }
   if (!['claude', 'codex', 'deepseek', 'deepseek-claude'].includes(kind)) return '';
   return String(session && session.effort || 'max').trim().toLowerCase();
 }
@@ -159,6 +164,10 @@ function composerThinkingChip(session, options = {}) {
   const kind = baseKind(session);
   const label = sessionEffortLabel(session);
   const hidden = { visible: false, label: '', interactive: false, options: [] };
+  if (session?.runtimeBackend === 'acp') {
+    const choices = require('./acp-model-catalog').acpThoughtChoices(session);
+    return choices.length ? { visible: true, label: label || '模型默认', interactive: true, options: choices.map(o => o.value) } : hidden;
+  }
   if (!label) return hidden;
   if (kind === 'codex') {
     const supported = Array.isArray(options.supportedEfforts)

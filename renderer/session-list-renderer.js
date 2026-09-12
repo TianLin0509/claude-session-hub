@@ -653,7 +653,7 @@ sessionListEl.addEventListener('keydown', event => {
       const message = '部分会话未归档，仍保留原入口：\n' + failures.join('\n');
       console.warn('[sidebar] archive:', message);
       if (options.notify) options.notify(message);
-      else doc.defaultView?.alert(message);
+      else require('./ui-feedback').showHubAlert(message, { document: doc });
     }
   }
 
@@ -990,6 +990,7 @@ sessionListEl.addEventListener('keydown', event => {
   if (detailsEnabled && options.requestSessionUsage) options.requestSessionUsage([...detailSessionIds]);
 
   sessionListEl.scrollTop = savedScrollTop;
+  hoverCard?.refresh();
   // Whole-list updates must preserve a stationary pointer's expanded group.
   // If sorting moved that group away, release it at its new geometry.
   if (hoverPoint && hoveredMeetingId && sessionListEl.querySelectorAll) {
@@ -1049,6 +1050,11 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
+  const hoverCard = require('./session-hover-card').attachSessionHoverCard({
+    document: doc, root: sessionListEl,
+    getSession: id => getSessions().get(id), getMeeting: id => getMeetings()[id],
+    selectSession, selectMeeting,
+  });
   queueMicrotask(() => projectFilter.refresh());
 
   return {

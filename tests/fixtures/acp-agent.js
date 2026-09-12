@@ -8,6 +8,14 @@ const update = value => output({ method: 'session/update', params: { sessionId, 
 const model=process.argv.includes('--model')?process.argv[process.argv.indexOf('--model')+1]:'fixture';
 const configs = [{ id: 'model', category: 'model', type: 'select', currentValue: model, options: [{ value: model, name: model }] }];
 configs.push({id:'mode',category:'mode',type:'select',currentValue:'yolo',options:['default','plan','yolo'].map(value=>({value,name:value}))});
+if (process.env.HUB_ACP_UI_FIXTURE === '1') {
+  const kind=process.env.DSH_MODEL ? 'deepseek-acp' : process.env.ZCODE_MODEL ? 'glm' : 'qwen';
+  const current=process.env.DSH_MODEL || process.env.ZCODE_MODEL || model;
+  configs[0].currentValue=current;
+  configs[0].options=require('../../core/acp-model-catalog').acpModelOptions(kind,current).map(o=>({value:o.id,name:o.id}));
+  configs[1].options.push({value:'danger-full-access',name:'Full access'});
+  configs.push({id:'effort',category:'thought_level',type:'select',currentValue:'high',options:['low','high','max'].map(value=>({value,name:value}))});
+}
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line), p = m.params || {};
   if (m.method === 'initialize') return result(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
@@ -39,10 +47,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     }
     update({ sessionUpdate: 'agent_message_chunk', messageId: 'msg', content: { type: 'text', text: '中文🧪 ' } });
     update({ sessionUpdate: 'agent_thought_chunk', messageId: 'msg', content: { type: 'text', text: 'separate thought' } });
-    if (text === 'permission') {
+    if (text === 'permission' || text === 'qwen-question') {
       pendingPrompt = m.id;
       return output({ id: requestId++, method: 'session/request_permission', params: { sessionId,
-        toolCall: { toolCallId: 'read', title: 'Read fixture' }, options: [
+        toolCall: { toolCallId: 'read', title: 'Read fixture', ...(text === 'qwen-question' ? {_meta:{qwenQuestions:[{question:'选择文件名'}]}} : {}) }, options: [
           { optionId: 'yes', name: '允许本次', kind: 'allow_once' }, { optionId: 'no', name: '拒绝', kind: 'reject_once' }] } });
     }
     if (text === 'cancel') { pendingPrompt = m.id; return; }
