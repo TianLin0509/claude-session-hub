@@ -93,13 +93,13 @@ function removeTempRoot() {
     await client.send('Runtime.enable');
     await client.send('Page.enable');
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await waitEval(client, 'document.getElementById("btn-chuxin") && document.querySelector(".cx-status")', 'research entry');
+    await waitEval(client, 'document.getElementById("btn-research") && document.querySelector(".cx-status")', 'research entry');
     await _waitMs(2000);
     await client.eval(`(() => {
       window.__singleNavErrors = [];
       window.addEventListener('error', (event) => window.__singleNavErrors.push(String(event.error || event.message)));
       window.addEventListener('unhandledrejection', (event) => window.__singleNavErrors.push(String(event.reason)));
-      document.getElementById('btn-chuxin').click();
+      document.getElementById('btn-research').click();
     })()`);
     await waitEval(client, 'getComputedStyle(document.getElementById("chuxin-panel")).display !== "none"', 'visible research panel');
     try {

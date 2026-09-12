@@ -53,25 +53,13 @@ async function waitFor(client, expression, timeoutMs = 60_000) {
     await client.send('Page.enable');
     await client.send('Runtime.enable');
 
-    // ── STEP 1：卡片存在，且初始是「还没扫描过」的空态 ──────────
-    await waitFor(client, `document.querySelector('[data-home-card="reclaim"]')`);
-    await waitFor(client, `/还没扫描过/.test(document.querySelector('#home-reclaim-summary')?.innerText || '')`);
-    console.log('STEP 1 ok — 卡片存在且初始为空态');
-
-    // ── STEP 2：点「扫描」，UI 真的把结果渲染出来 ────────────────
-    await client.eval(`document.querySelector('[data-reclaim-action="scan"]').click()`);
-    await waitFor(client, `/正在扫描/.test(document.querySelector('#home-reclaim-summary')?.innerText || '')`, 10_000);
-    await waitFor(client, `!/正在扫描/.test(document.querySelector('#home-reclaim-summary')?.innerText || '')`);
-
-    const summaryText = await client.eval(`document.querySelector('#home-reclaim-summary')?.innerText || ''`);
-    assert.ok(/未发现残留|检出 \d+ 个残留进程/.test(summaryText), `摘要行渲染异常: ${summaryText}`);
-    const guardText = await client.eval(`document.querySelector('#home-reclaim-guard')?.innerText || ''`);
-    assert.ok(/已保护 \d+ 个进程/.test(guardText), `保护区未渲染: ${guardText}`);
-    console.log(`STEP 2 ok — UI 摘要「${summaryText.split('\n')[0]}」`);
+    // 欢迎页不再展示残留卡；继续通过真实 IPC 验证进程保护合同。
+    await waitFor(client, `document.getElementById('empty-state')?.dataset.homeReady === 'true'`);
+    assert.ok(await client.eval(`!document.querySelector('[data-home-card="reclaim"]')`));
 
     // ── STEP 3：报告结构自洽 ────────────────────────────────────
     const report = await client.eval(
-      `require('electron').ipcRenderer.invoke('get-process-reclaim-report', { force: false })`,
+      `require('electron').ipcRenderer.invoke('get-process-reclaim-report', { force: true })`,
     );
     assert.ok(report && report.ok, `扫描失败: ${JSON.stringify(report && report.error)}`);
     assert.ok(report.totals.processes > 50, `全机进程数看起来不对: ${report.totals.processes}`);

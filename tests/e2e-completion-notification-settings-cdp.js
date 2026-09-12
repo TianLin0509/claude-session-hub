@@ -112,14 +112,14 @@ async function main() {
       while (button.dataset.state !== 'unconfigured' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
-      const view = document.querySelector('.view-toggle').getBoundingClientRect();
+      const view = document.querySelector('.view-toggle');
       const toggle = button.getBoundingClientRect();
       return {
         state: button.dataset.state,
         label: document.getElementById('completion-notification-toggle-label').textContent,
         title: button.title,
         parentId: button.parentElement && button.parentElement.id,
-        viewDisplay: getComputedStyle(document.querySelector('.view-toggle')).display,
+        viewDisplay: view ? getComputedStyle(view).display : 'none',
         visible: toggle.width > 0 && toggle.height > 0,
       };
     })()`);
