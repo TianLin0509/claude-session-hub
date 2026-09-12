@@ -333,7 +333,12 @@ class ClaudeNativeSession extends EventEmitter {
     const record = this.queue.shift();
     this.active = record;
     record.status = 'submitting';
-    this.update({ state: 'unknown', reason: '等待 Claude 确认本条输入', turnId: record.userMessageId,
+    // Writing a submission is ordinary work in flight, not an uncertain result.
+    // Publishing it as "unknown" made every send flash "本条提交待核对" and a
+    // reconnect button. A crash here still leaves a non-idle snapshot, so a
+    // restore continues to demand reconciliation; disconnect() still marks the
+    // record unknown when the outcome really is unknown.
+    this.update({ state: 'starting', reason: '正在提交给 Claude', turnId: record.userMessageId,
       userMessageId: record.userMessageId, submission: this.receipt(record), requests: [], startedAt: 0, completedAt: 0 });
     // Integration must persist this identity before handing bytes to the engine.
     try {

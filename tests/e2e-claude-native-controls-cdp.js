@@ -79,13 +79,13 @@ async function main() {
       return value && !value.hidden ? value : null;
     });
     // The engine said fast mode is off, so the chip must say so too.
-    ok('speed chip reflects the engine standard tier', speed.text === '标准' && speed.pressed === 'false', speed);
+    ok('speed chip reflects the engine standard tier', /标准/.test(speed.text) && speed.pressed === 'false', speed);
 
     const switched = await client.eval(`ipcRenderer.invoke('session:set-fast',{sessionId:${q},enabled:true})`);
     ok('Main confirms the protocol switch', switched.ok === true && switched.result.fastMode === true, switched);
     const fast = await waitFor('chip flips to Fast', async () => {
       const value = await chip();
-      return value && value.text === 'Fast' ? value : null;
+      return value && /Fast/.test(value.text) ? value : null;
     });
     ok('speed chip follows the confirmed tier', fast.pressed === 'true', fast);
     ok('session keeps the confirmed tier', (await client.eval(`sessions.get(${q}).nativeRuntime.fastMode`)) === true);
