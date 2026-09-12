@@ -29,6 +29,10 @@ const TESTS = path.join(REPO, 'tests');
 
 const argv = process.argv.slice(2);
 let jobs = Math.max(2, Math.min(16, os.cpus().length));
+// Let merge_task keep the same full gate while bounding this run's CPU load.
+// --jobs still takes precedence; coverage, budgets and failure rules are unchanged.
+const envJobs = Number(process.env.HUB_UNIT_JOBS);
+if (Number.isInteger(envJobs) && envJobs > 0) jobs = Math.min(16, envJobs);
 let useLock = process.env.HUB_UNIT_NO_LOCK !== '1';
 // 首次失败是否阻断闸门。**默认阻断** —— 串行复测只是诊断证据，不是放行理由：
 // 复测通过只能证明这次失败不稳定，不能证明它是负载造成的（2026-09-06 合并位的阻断项）。
