@@ -101,6 +101,8 @@ function runtimeSourceLabel(source) {
   const value = String(source || 'unspecified');
   const exact = {
     'codex-app-server': 'Codex 原生执行状态',
+    'claude-stream-json': 'Claude 原生执行状态',
+    'acp': '原生 Harness 执行状态',
     'claude-user-prompt-submit': 'Claude UserPromptSubmit',
     'claude-stop': 'Claude Stop',
     'claude-transcript-complete': 'Claude transcript stop_reason',

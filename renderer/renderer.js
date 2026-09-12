@@ -3725,7 +3725,7 @@ function clearFloatingInputStuck(bar) {
 function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
   const delivery = floatingPromptDeliveries.get(sessionId);
-  const native = isNativeSession(sessions.get(sessionId));
+  const native = isNativeAgent(sessions.get(sessionId));
   if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
@@ -3748,15 +3748,20 @@ function markFloatingInputStuck(bar, sessionId) {
     resendBtn.disabled = true;
     resendBtn.textContent = '需核对';
   }
-  resendBtn.title = native ? '从 Codex 原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
+  resendBtn.title = native ? '从原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
   resendBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
     resendBtn.disabled = true;
     if (native) {
       try {
-        const result = await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
+        // Each native backend owns its own reconciliation entry point; the
+        // Codex action channel cannot answer for a Claude transport.
+        const claudeNative = sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json';
+        const result = claudeNative
+          ? await ipcRenderer.invoke('claude-native:reconnect', {sessionId})
+          : await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
         label.textContent = result?.ok ? '已核对连接；请查看上一轮内容，确认后再决定是否重新发送。'
-          : '核对失败：'+(result?.message || '连接不可用');
+          : '核对失败：'+(result?.message || result?.error || '连接不可用');
       } catch (error) { label.textContent = '核对失败：'+error.message; }
       resendBtn.disabled = false;
       return;

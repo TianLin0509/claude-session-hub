@@ -69,6 +69,20 @@ function prepareClaudeSettingsOverlay(files, { directory, sessionId, overrides =
   return destination;
 }
 
+// Fast is a per-session flag, but a reconnect or resume relaunches the CLI with
+// the same --settings overlay.  Rewriting that file keeps the tier the user
+// last confirmed instead of silently falling back to the launch value.
+function mergeClaudeSettingsFile(file, patch) {
+  if (!path.isAbsolute(file)) throw new Error('Invalid Claude settings overlay path');
+  const current = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+  if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('Claude settings overlay must be an object');
+  const merged = mergeSettings(current, patch);
+  const temporary = file + '.' + randomUUID() + '.tmp';
+  fs.writeFileSync(temporary, JSON.stringify(merged, null, 2), { encoding: 'utf8', flag: 'wx' });
+  fs.renameSync(temporary, file);
+  return merged;
+}
+
 function claudeNativeResumeConfig(options) {
   const result = {};
   for (const key of ['permissionMode', 'mcpConfigFile', 'appendSystemPromptFile', 'addDirs', 'settingSources']) {
@@ -77,4 +91,4 @@ function claudeNativeResumeConfig(options) {
   return result;
 }
 
-module.exports = { buildClaudeNativeArgs, prepareClaudeSettingsOverlay, claudeNativeResumeConfig };
+module.exports = { buildClaudeNativeArgs, prepareClaudeSettingsOverlay, mergeClaudeSettingsFile, claudeNativeResumeConfig };

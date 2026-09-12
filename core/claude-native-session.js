@@ -558,6 +558,38 @@ class ClaudeNativeSession extends EventEmitter {
     }
   }
 
+  // Fast is Claude's equivalent of the Codex speed tier.  apply_flag_settings
+  // merges it into the engine's flag-settings layer, which is exactly the layer
+  // --settings populates, so the switch stays scoped to this session instead of
+  // writing the user's settings files the way /fast and update_settings do.
+  // Only the control response confirms it; a rejection is surfaced, never
+  // reported as a successful switch.
+  async setFastMode(enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('速度设置无效');
+    await this.start();
+    if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
+      throw new Error('请等当前任务和配置切换结束并核对提交状态后再切换速度');
+    }
+    const pending = this.client.control({ subtype: 'apply_flag_settings', settings: { fastMode: enabled } });
+    this.configurationChange = pending;
+    try {
+      await pending;
+      // Durability is best effort and must not claim the engine failed: the
+      // tier is already live.  A failed overlay write is reported as a warning
+      // so the next relaunch is not silently different from what the UI shows.
+      let overlayWarning = null;
+      if (this.options.settingsFile) {
+        try { require('./claude-native-launch').mergeClaudeSettingsFile(this.options.settingsFile, { fastMode: enabled }); }
+        catch (error) { overlayWarning = '速度已生效，但重连后可能回到启动时的设置：' + error.message; }
+      }
+      this.options = { ...this.options, fastMode: enabled };
+      this.update({ fastMode: enabled });
+      return { fastMode: enabled, ...(overlayWarning ? { warning: overlayWarning } : {}) };
+    } finally {
+      if (this.configurationChange === pending) this.configurationChange = null;
+    }
+  }
+
   historyPath() { return findNativeClaudeHistory(this.sessionId, this.options); }
 
   async refreshContext() {

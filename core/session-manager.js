@@ -276,7 +276,8 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const journal = new NativeAgentJournal({ directory: path.join(hubDataDir, 'native-agent-submissions'), sessionId: id });
   const fixture = process.env.CLAUDE_HUB_CLAUDE_STREAM_FIXTURE;
   if (fixture && !process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Claude protocol fixtures require isolated Hub data');
-  return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs,
+  return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs, settingsFile,
+    fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
     ownership: true, nativeProvider: 'claude',
     historyTitle: opts.userRenamed ? opts.title : null,
     resumeSessionId: opts.forkCCSessionId || opts.resumeCCSessionId, fork: !!opts.forkCCSessionId,

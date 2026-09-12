@@ -54,6 +54,22 @@ function registerSessionIpc(ipcMain, deps) {
       if (require('../../core/session-runtime-truth').sessionRuntimeIsActive(session) || session.status === 'running' || session.autonomous || process.env.CLAUDE_HUB_NO_FAST === '1') {
         return {ok:false,message:'请在会话空闲且允许 Fast 时切换'};
       }
+      // Native sessions carry a protocol control for this. They have no
+      // terminal to type `/fast` into, and apply_flag_settings never touches
+      // the user's settings files, so the restore dance below is not needed.
+      const nativeClaude = sessionManager.getNativeClaude?.(sessionId);
+      if (nativeClaude) {
+        pendingSpeedSwitches.add(sessionId);
+        try {
+          const result = await nativeClaude.setFastMode(enabled);
+          const updated = sessionManager.updateSessionMeta(sessionId,{fastMode:enabled});
+          if (!updated) return {ok:false,message:'Claude 已切换，但会话信息保存失败'};
+          sendToRenderer('session-updated',{session:updated});
+          return {ok:true,result:{fastMode:enabled},...(result?.warning ? {warning:result.warning} : {})};
+        } catch (error) {
+          return {ok:false,message:error.message};
+        } finally { pendingSpeedSwitches.delete(sessionId); }
+      }
       const {claudeSettingsPath,readJsonObject,writeJsonAtomic} = require('../../core/claude-model-preference-guard');
       const file = claudeSettingsPath();
       const previous = readJsonObject(file);
