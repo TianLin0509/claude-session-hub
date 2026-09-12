@@ -25,16 +25,8 @@ const CLI_CALL_PATH = path.join(TEMP_ROOT, 'fake-lark-cli-calls.jsonl');
 
 async function captureTopControls(client, filePath) {
   const clip = await client.eval(`(() => {
-    const notification = document.getElementById('completion-notification-toggle').getBoundingClientRect();
-    const view = document.querySelector('.view-toggle').getBoundingClientRect();
-    const x = Math.max(0, notification.left - 12);
-    return {
-      x,
-      y: Math.max(0, Math.min(notification.top, view.top) - 8),
-      width: Math.ceil(view.right - x + 12),
-      height: Math.ceil(Math.max(notification.bottom, view.bottom) - Math.max(0, Math.min(notification.top, view.top) - 8) + 8),
-      scale: 2,
-    };
+    const header = document.getElementById('app-toolbar').getBoundingClientRect();
+    return { x:header.x, y:header.y, width:header.width, height:header.height, scale:2 };
   })()`);
   const result = await client.send('Page.captureScreenshot', {
     format: 'png',
@@ -201,24 +193,19 @@ async function main() {
       while (button.dataset.state !== 'disabled' && Date.now() < stateDeadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
-      const viewEl = document.querySelector('.view-toggle');
-      const view = viewEl.getBoundingClientRect();
       const toggle = button.getBoundingClientRect();
       return {
         parentId: button.parentElement && button.parentElement.id,
-        viewDisplay: getComputedStyle(viewEl).display,
-        gapToViewToggle: Math.round(view.left - toggle.right),
-        topDelta: Math.round(Math.abs(view.top - toggle.top)),
+        menuEntry: !!document.querySelector('#app-toolbar .ho-notify'),
+        floatingDisplay: getComputedStyle(button).display,
         state: button.dataset.state,
         enabled: (await ipcRenderer.invoke('get-sessions'))
           .find(session => session.id === 'notification-layout-session')?.completionNotificationEnabled,
       };
     })()`);
     assert.equal(result.sessionPlacement.parentId, 'terminal-panel');
-    assert.notEqual(result.sessionPlacement.viewDisplay, 'none');
-    assert.ok(result.sessionPlacement.gapToViewToggle >= 6 && result.sessionPlacement.gapToViewToggle <= 14,
-      `notification toggle should sit directly left of view toggle in a Session, gap=${result.sessionPlacement.gapToViewToggle}`);
-    assert.ok(result.sessionPlacement.topDelta <= 2);
+    assert.equal(result.sessionPlacement.menuEntry, true, 'session notifications live in the header menu');
+    assert.equal(result.sessionPlacement.floatingDisplay, 'none');
     assert.equal(result.sessionPlacement.state, 'disabled');
     assert.equal(result.sessionPlacement.enabled, false, 'a newly-created session must default to notifications off');
     await captureTopControls(client, OFF_SCREENSHOT);
