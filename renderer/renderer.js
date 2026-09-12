@@ -2631,6 +2631,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
   }
 
+  require('./conversation-message-view').syncResponseGroups(container);
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
   // — 仅当 batch 开始前用户在底部才滚(scroll-respect-user)
   if (container._cardFollowController) {

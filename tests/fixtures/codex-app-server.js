@@ -84,6 +84,28 @@ rl.on('line',line=>{
           turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
         }
         setTimeout(()=>finish(thread,turn,'completed','受控验证已完成'),400);
+      } else if(mode==='fixture:compact-progress') {
+        answer(msg.id,{turn});
+        const lines=[
+          '我先核对最新代码，确认普通会话和群聊的消息入口。',
+          '已找到重复标识的原因：每条进展都渲染了完整头像、名称和操作栏。',
+          '开始接入分行记录：左侧显示时间，右侧保留完整正文。',
+          '连续回复共用一次 Agent 标识；出现新提问后重新显示标识。',
+          '进展中的 **重点文字** 和 `代码标识` 继续按原格式显示。',
+          '消息下方重复的耗时已移除，结果区域仍保留验证信息。',
+          '正在核对复制操作。\n\n第二段说明也必须完整保留，不能被挤成一行或省略。',
+          '工具记录和长消息继续支持展开，更新时保留展开状态。',
+          '已检查历史回放，刷新后仍按同一顺序显示进展和结果。',
+          '开始检查窄屏布局，以及调整正文字号后的可读性。',
+          '正在验证阅读旧内容时，新进展不会强制拉动视图。',
+          '检查已完成，准备汇报普通会话与群聊的验证结果。',
+        ];
+        lines.forEach((text,i)=>setTimeout(()=>{
+          if(turn.status!=='inProgress')return;
+          const item={id:'compact-'+i+'-'+turn.id,type:'agentMessage',phase:'commentary',text};
+          turn.items.push(item);save();event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+          if(i===lines.length-1)finish(thread,turn,'completed','**分行记录布局已完成。**\n\n普通会话与群聊保留完整正文，最终答复单独突出。');
+        },600*(i+1)));
       } else if(mode==='fixture:scroll') {
         answer(msg.id,{turn});
         for(let i=1;i<=40;i++)setTimeout(()=>{
