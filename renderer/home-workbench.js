@@ -63,7 +63,7 @@ function itemTime(item) {
 
 function runStartedAtOf(session, now = Date.now()) {
   const runtime = getSessionRuntimeTruth(session, { now });
-  if (require('../core/codex-native-runtime').isCodexSession(session)) return finiteNumber(runtime.startedAt) || 0;
+  if (require('../core/native-agent-runtime').isNativeAgent(session)) return finiteNumber(runtime.startedAt) || 0;
   return finiteNumber(runtime.startedAt || session && (session.runStartedAt || session.cardWorkingSince)) || 0;
 }
 

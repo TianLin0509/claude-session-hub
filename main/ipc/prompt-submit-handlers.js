@@ -20,6 +20,9 @@
 const { isPasteSensitive, isClaudeFamily, isCodexCliKind } = require('../../core/ai-kinds.js');
 const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { PromptSubmissionReceipts } = require('../../core/prompt-submission-receipts.js');
+// The engine rejects anything outside this list; keep the Hub's own gate in
+// step so an invalid IPC value never reaches the transport.
+const CLAUDE_PERMISSION_MODES = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'manual', 'bypassPermissions'];
 
 // 每个会话串行化。用户连按两下回车时两次 sendToPty 会并发写同一个 PTY，
 //   分块投喂下两条 payload 会交错成一团乱码 —— 这是分块引入的新风险，入口挡掉。
@@ -56,6 +59,81 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     sendToRenderer = () => {},
     logger = console,
   } = deps;
+
+  let nativeDraftStore;
+  for (const operation of ['read', 'save']) {
+    ipcMain.handle('native-draft:' + operation, (_event, request = {}) => {
+      const session = sessionManager.getSession(request.sessionId);
+      if (!['claude-stream-json', 'codex-app-server'].includes(session?.runtimeBackend)) {
+        return { ok: false, error: '当前会话不是原生会话' };
+      }
+      try {
+        nativeDraftStore ||= new (require('../../core/native-draft-store').NativeDraftStore)();
+        const record = operation === 'read' ? nativeDraftStore.read(request.sessionId)
+          : nativeDraftStore.save(request.sessionId, request.text, request.revision);
+        return { ok: true, record };
+      } catch (error) {
+        return { ok: false, error: error.message, code: error.code || null };
+      }
+    });
+  }
+
+  ipcMain.handle('claude-native:set-model', async (_event, request = {}) => {
+    const native = sessionManager.getNativeClaude?.(request.sessionId);
+    if (!native || !require('../../core/model-options').isClaudeModelSelection(request.modelId)) {
+      return { ok: false, error: '无法为当前 Claude 会话选择该模型' };
+    }
+    try {
+      await native.setModel(request.modelId);
+      const currentModel = { id: request.modelId, displayName: request.modelId };
+      const updated = sessionManager.updateSessionMeta(request.sessionId, { currentModel });
+      if (!updated) throw new Error('模型已切换，但 Hub 元数据保存失败');
+      sendToRenderer('session-updated', { session: updated });
+      return { ok: true, model: currentModel };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
+  // Mirrors the Codex collaboration-mode action: one confirmed switch, stored
+  // where resume reads it so a reconnect does not quietly drop plan mode.
+  ipcMain.handle('claude-native:set-permission-mode', async (_event, request = {}) => {
+    const native = sessionManager.getNativeClaude?.(request.sessionId);
+    if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
+    if (!CLAUDE_PERMISSION_MODES.includes(request.mode)) return { ok: false, error: '工作方式无效' };
+    try {
+      const result = await native.setPermissionMode(request.mode);
+      const session = sessionManager.getSession(request.sessionId);
+      const updated = sessionManager.updateSessionMeta(request.sessionId,
+        { nativeConfig: { ...(session?.nativeConfig || {}), permissionMode: result.permissionMode } });
+      if (!updated) throw new Error('工作方式已切换，但 Hub 元数据保存失败');
+      sendToRenderer('session-updated', { session: updated });
+      return { ok: true, result };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
+  for (const action of ['respond', 'interrupt']) {
+    ipcMain.handle('claude-native:' + action, async (_event, request = {}) => {
+      const native = sessionManager.getNativeClaude?.(request.sessionId);
+      if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
+      try {
+        const result = action === 'respond' ? await native.respond(request.requestId, request.decision,
+          { epoch: request.epoch, submissionId: request.submissionId })
+          : await native.interrupt();
+        return { ok: true, result };
+      } catch (error) { return { ok: false, error: error.message }; }
+    });
+  }
+
+  for (const action of ['reconnect', 'inspect-recovery', 'reconcile']) {
+    ipcMain.handle('claude-native:' + action, async (_event, request = {}) => {
+      const native = sessionManager.getNativeClaude?.(request.sessionId);
+      if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
+      try {
+        if (action === 'reconnect') await native.reconnect();
+        if (action === 'reconcile') native.reconcile(request.identity || {});
+        return { ok: true, runtime: native.runtime, records: native.recoveryRecords() };
+      } catch (error) { return { ok: false, error: error.message }; }
+    });
+  }
 
   // 「补发」按钮要重放原文，所以记住每个会话最后一次提交的 prompt。
   //   每会话只留最后一条，且只在内存里 —— 不做持久化，prompt 可能含敏感内容。
@@ -98,6 +176,14 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     if (!sessionId || !text) return { ok: false, error: 'bad-request' };
     const kind = resolveKind(sessionId);
     if (!kind) return { ok: false, error: 'no-session' };
+
+    if (sessionManager.getNativeClaude?.(sessionId)) {
+      try {
+        return await groupChatWatcher.sendToPty(sessionId, text, kind, {
+          clientSubmissionId: request.clientSubmissionId, attachments: request.attachments,
+        });
+      } catch (error) { return { ok: false, error: error.code || 'native-send-failed', message: error.message }; }
+    }
 
     // 宿主 shell：没有 paste-detect，直写最快也最准。
     if (!isPasteSensitive(kind) && !sessionManager.getNativeSession?.(sessionId)) {
@@ -153,6 +239,9 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   ipcMain.handle('session:resend-prompt', async (_event, request = {}) => {
     const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
     if (!sessionId) return { ok: false, error: 'bad-request' };
+    if (sessionManager.getNativeClaude?.(sessionId)) {
+      return { ok: false, error: 'native-reconciliation-required', message: '请先核对原生会话记录；不会通过补回车重发' };
+    }
     const kind = resolveKind(sessionId);
     if (!kind) return { ok: false, error: 'no-session' };
     const prompt = lastPromptBySid.get(sessionId);
@@ -192,6 +281,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
 
   return {
     dispose() {
+      nativeDraftStore?.close();
       transcriptTap?.removeListener('prompt-submitted', onTranscriptPrompt);
       sessionManager.removeListener?.('agent-turn-started', onClaudePrompt);
       receipts.prune(() => false);

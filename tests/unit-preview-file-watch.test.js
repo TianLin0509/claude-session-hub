@@ -97,7 +97,8 @@ test('rename is surfaced even when timestamp and size are unchanged', async () =
   manager.dispose();
 });
 
-test('watch setup failure remains subscribed, reports degradation and recovers', async () => {
+test('watch setup failure remains subscribed, reports degradation and recovers', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const fs = makeFakeFs();
   const target = path.resolve('C:\\work\\retry.md');
   fs.signatures.set(target, { mtimeMs: 1, size: 10 });
@@ -116,7 +117,11 @@ test('watch setup failure remains subscribed, reports degradation and recovers',
   assert.equal(events.filter(event => event.eventType === 'watch-error').length, 1);
   assert.match(events[0].watchError, /watch setup failed/);
   fs.signatures.set(target, { mtimeMs: 2, size: 11 });
-  await new Promise(resolve => setTimeout(resolve, 30));
+  // Recovery schedules its scan in a second timer. A busy event loop can run
+  // a fixed 30 ms assertion before that newly scheduled scan has fired.
+  t.mock.timers.tick(10);
+  assert.ok(!events.some(event => event.eventType === 'watch-recovered-scan'));
+  t.mock.timers.tick(1);
   assert.equal(fs.watchers.length, 1);
   assert.equal(manager.getStats().degradedDirectories, 0);
   assert.ok(events.some(event => event.eventType === 'watch-recovered' && event.watchError === null));
@@ -163,7 +168,8 @@ test('I/O errors are distinct from missing files', () => {
   assert.equal(result.errorCode, 'EACCES');
 });
 
-test('unexpected close retries, rescans changes and ignores late errors from old watcher', async t => {
+test('unexpected close retries, rescans changes and ignores late errors from old watcher', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const fs = makeFakeFs();
   const target = path.resolve('C:\\work\\runtime-close.md');
   fs.signatures.set(target, { mtimeMs: 1, size: 10 });
@@ -182,15 +188,14 @@ test('unexpected close retries, rescans changes and ignores late errors from old
   oldWatcher.emit('close');
   assert.equal(manager.getStats().degradedDirectories, 1);
   fs.signatures.set(target, { mtimeMs: 2, size: 12 });
-  // Recovery schedules a second debounce timer. If the event loop stalls,
-  // a fixed 30 ms sleep can finish before that newly scheduled scan timer.
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
-  await Promise.race([recovery, timeout]);
+  t.mock.timers.tick(10);
+  assert.ok(!events.some(event => event.eventType === 'watch-recovered-scan'));
+  t.mock.timers.tick(1);
   assert.equal(fs.watchers.length, 2);
   assert.equal(manager.getStats().degradedDirectories, 0);
   assert.ok(events.some(event => event.eventType === 'watch-recovered-scan' && event.exists === true));
   oldWatcher.emit('error', new Error('late old watcher error'));
-  await new Promise(resolve => setTimeout(resolve, 5));
+  t.mock.timers.tick(5);
   assert.equal(manager.getStats().degradedDirectories, 0);
   assert.equal(fs.watchers[1].closed, false);
   manager.dispose();

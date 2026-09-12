@@ -1484,10 +1484,15 @@ if (typeof document !== 'undefined') (function () {
 
     let statusForLabel = status;
     if (partial && partial.sendStatus === 'stuck') statusForLabel = 'send_stuck';
+    const failure = partial ? partial.failure : lastTurn?.failureBy?.[sub.sid];
+    if (status === 'errored' && failure?.code === 'submission_unknown') statusForLabel = 'submission_unknown';
     const statusLabel = {
       idle: '待命',
       initializing: '创建中…',
       thinking: '思考中',
+      queued: '排队中',
+      accepted: '已收到 · 等待执行',
+      waiting: '等待你的回复',
       streaming: '输出中',
       completed: '已答 ✓',
       timeout: '超时',
@@ -1500,6 +1505,7 @@ if (typeof document !== 'undefined') (function () {
       recovering: '正在恢复本轮',
       send_stuck: '⚠ 输入卡顿，请点 📤 发送',
       errored: '错误',
+      submission_unknown: '待核对',
       interrupted: '已中断',
       transport_lost: '连接断开',
     }[statusForLabel] || statusForLabel;
@@ -1873,6 +1879,8 @@ if (typeof document !== 'undefined') (function () {
     return {
       idle: '待命',
       queued: '待发言',
+      accepted: '已收到 · 等待执行',
+      waiting: '等待你的回复',
       off: '未选',
       thinking: '思考中',
       streaming: '输出中',
@@ -1919,9 +1927,12 @@ if (typeof document !== 'undefined') (function () {
       if (byStatus[slot.sid]) status = byStatus[slot.sid];
       else if (lastTurn.by && lastTurn.by[slot.sid]) status = 'completed';
     }
+    const failure = currentMode && currentMode !== 'idle' ? partial?.failure : lastTurn?.failureBy?.[slot.sid];
+    const unknown = status === 'errored' && failure?.code === 'submission_unknown';
     return {
       status,
-      label: _turnStatusLabel(status),
+      label: unknown ? '待核对' : _turnStatusLabel(status),
+      unknown,
       selected: selectedSet.has(slot.slotIndex),
       text: (partial && partial.text) || (lastTurn && lastTurn.by && lastTurn.by[slot.sid]) || '',
     };
@@ -1945,7 +1956,9 @@ if (typeof document !== 'undefined') (function () {
       const st = _slotTurnStatus(state, meeting, slot, viewingTurnN);
       const bucket = _turnStatusBucket(st.status);
       const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
-      const actionHtml = (bucket === 'warn' || st.status === 'absent')
+      const actionHtml = st.unknown
+        ? `<span class="mr-turn-lane-actions"><button type="button" data-gc-open-session="${escapeHtml(slot.sid)}">核对消息</button></span>`
+        : (bucket === 'warn' || st.status === 'absent')
         ? `<span class="mr-turn-lane-actions">
             <button type="button" data-gc-escape="extract" data-gc-sid="${escapeHtml(slot.sid)}" data-gc-kind="${escapeHtml(slot.kind)}">提取</button>
             <button type="button" data-gc-escape="skip" data-gc-sid="${escapeHtml(slot.sid)}" data-gc-kind="${escapeHtml(slot.kind)}">跳过</button>
@@ -2370,6 +2383,7 @@ if (typeof document !== 'undefined') (function () {
     const failure = reason && typeof reason === 'object' ? reason : null;
     const r = String((failure && failure.code) || reason || '').trim();
     if (!r) return '';
+    if (r === 'submission_unknown') return '本条是否受理或完成尚未确认；请打开会话核对原生历史，Hub 不会自动重发';
     if (dev) {
       const label = { quota_exceeded: '额度已用尽', rate_limited: '请求触发限流',
         network_interrupted: '网络连接中断', provider_unavailable: '服务暂时不可用',
@@ -2432,7 +2446,8 @@ if (typeof document !== 'undefined') (function () {
     const isPending = !!opts.pending && !_isSettledStatus;
     const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
-    const failureStatusText = failureCode === 'quota_exceeded' ? '额度中断'
+    const failureStatusText = failureCode === 'submission_unknown' ? '本条提交待核对'
+      : failureCode === 'quota_exceeded' ? '额度中断'
       : failureCode === 'rate_limited' ? '限流中断'
         : failureCode === 'network_interrupted' ? '网络中断'
           : failureCode === 'auth_required' ? '登录失效'
@@ -2445,6 +2460,9 @@ if (typeof document !== 'undefined') (function () {
       : status === 'awaiting_binding' ? '已开工 · 等绑定'
       : status === 'awaiting_final_text' ? '已结束 · 收取中'
       : status === 'recovering' ? '恢复中'
+      : status === 'queued' ? '排队中'
+      : status === 'accepted' ? '已收到 · 等待执行'
+      : status === 'waiting' ? '等待你的回复'
       : isPending ? '正在发言'
       : status === 'handed_off' ? '文件已交接'
       : status === 'superseded' ? '被新提问覆盖'
@@ -2457,7 +2475,9 @@ if (typeof document !== 'undefined') (function () {
     //   对已 completed/manual_extracted 的回答无意义且误导用户以为"没同步成功"，故仅非成功态渲染。
     // 2026-07-12 收紧：成功态但内容为空（如 PTY 干净退出兜底 settle）仍要给同步入口。
     const _syncSettled = (status === 'completed' || status === 'manual_extracted') && hasContent;
-    const syncAction = (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !_syncSettled)
+    const syncAction = (failureCode === 'submission_unknown' && !isUser && message.sid)
+      ? `<button type="button" class="mr-gc-sync-btn" data-gc-open-session="${escapeHtml(message.sid)}">核对消息</button>`
+      : (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !_syncSettled)
       ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
       : '';
     // 2026-07-12 道雪：空内容的非成功态消息不再渲染成"空气泡+裸图标排"（截图血泪），
@@ -2470,7 +2490,11 @@ if (typeof document !== 'undefined') (function () {
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      const waitingText = cancelling ? '正在停止，等待原生 Harness 确认' : status === 'awaiting_binding'
+      const waitingText = cancelling ? '正在停止，等待原生 Harness 确认'
+        : status === 'queued' ? '本条消息已排队，前一条任务结束后才会发送。'
+        : status === 'accepted' ? '引擎已收到本条消息，正在等待执行。'
+        : status === 'waiting' ? '需要审批或回答问题，请打开该会话处理。'
+        : status === 'awaiting_binding'
         ? 'Agent 已开始工作，正在等待 transcript/rollout 完成绑定；不会自动重复发送 Prompt。'
         : status === 'awaiting_final_text'
           ? '已收到结束信号，正在从 transcript 收取同一轮最终答案。'
@@ -2480,7 +2504,8 @@ if (typeof document !== 'undefined') (function () {
       body = `<span class="mr-gc-waiting">${escapeHtml(waitingText)}</span>`;
     } else if (!isUser && !hasContent) {
       const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason, meeting.scene === 'dev');
-      const ph = status === 'errored'
+      const ph = failureCode === 'submission_unknown' ? reasonTxt
+        : status === 'errored'
         ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或点「原文」核对。`
         : status === 'handed_off' ? '阶段文件已交付；本阶段的后续发言会继续收录。'
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
@@ -2536,7 +2561,7 @@ if (typeof document !== 'undefined') (function () {
     const submitAgainAction = (!isUser && message.sid && sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn is-submit" data-gc-escape="resend-prompt" data-gc-sid="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="再次提交已进入 CLI 输入框的完整 prompt">再次发送</button>`
       : '';
-    const retryParticipantAction = (meeting.scene !== 'dev' && !isUser && message.sid && !message.committeeAct && !isPending && !sendStuck)
+    const retryParticipantAction = (failureCode !== 'submission_unknown' && meeting.scene !== 'dev' && !isUser && message.sid && !message.committeeAct && !isPending && !sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn${status === 'completed' || status === 'manual_extracted' ? '' : ' is-failure'}" data-gc-retry-answer="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="让该成员重新回答本轮问题">${status === 'completed' || status === 'manual_extracted' ? '重答' : '重试'}</button>`
       : '';
     // 派发卡片是流程自己发的，不给「作为新一轮重发/放回输入框」——那两个按钮的语义是
@@ -4601,7 +4626,9 @@ if (typeof document !== 'undefined') (function () {
     const uiStatus = {
       prepared: 'thinking',
       submitting: 'thinking',
-      accepted: 'streaming',
+      queued: 'queued',
+      accepted: payload.signalSource === 'claude-stream-json' ? 'accepted' : 'streaming',
+      waiting: 'waiting',
       running: 'streaming',
       awaiting_binding: 'awaiting_binding',
       awaiting_final_text: 'awaiting_final_text',
@@ -5170,7 +5197,7 @@ if (typeof document !== 'undefined') (function () {
       speedButton.textContent = speed.label;
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-      speedButton.title = `${slot.displayLabel} · 标准 / Fast；Fast 会增加用量或费用`;
+      speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
     }
   }
 

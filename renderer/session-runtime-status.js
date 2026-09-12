@@ -61,11 +61,11 @@ function legacyRunningStartedAt(session) {
 }
 
 function deriveSessionRuntimeStatus(session, options = {}) {
-  const native = isNativeSession(session);
+  const native = require('../core/native-agent-runtime').isNativeAgent(session);
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
   let truth = getSessionRuntimeTruth(session, { now });
-  if (!isNativeSession(session) && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+  if (!native && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
     truth = {
       ...truth,
       state: RUNTIME_RUNNING,
@@ -134,7 +134,8 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     source: truth.source,
     confidence: truth.confidence,
     observedAt: truth.observedAt,
-    ...(native ? {threadId:truth.threadId,turnId:truth.turnId,revision:truth.revision,epoch:truth.epoch,connection:truth.connection} : {}),
+    ...(native ? {threadId:truth.threadId,turnId:truth.turnId,revision:truth.revision,epoch:truth.epoch,connection:truth.connection,
+      userMessageId:truth.userMessageId,providerSessionId:truth.providerSessionId} : {}),
     visibleText,
     ariaLabel,
     title: titleParts.join('\n'),

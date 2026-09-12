@@ -2,7 +2,8 @@
 // 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
 const fs = require('fs');
-const { isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
+const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
+const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -236,6 +237,7 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
+const nativeDraftControllers = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
@@ -325,6 +327,7 @@ function ptyInputReadyIsStable(session, runtime, observedAt) {
 function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
   if (isNativeSession(sessions.get(sessionId))) return;
   const session = sessions.get(sessionId);
+  if (session?.runtimeBackend === 'claude-stream-json') return;
   if (!isAiRuntimeSession(session)) return;
   const at = Number(submittedAt) || Date.now();
   session._ptyFallbackArmedAt = at;
@@ -458,30 +461,59 @@ function isCaretAtContenteditableStart(el) {
   }
 }
 
+function attachNativeDraft(sessionId, inputBox) {
+  if (!isNativeAgent(sessions.get(sessionId))) return null;
+  if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
+  const view = {
+    onRestore(text) {
+      inputBox.textContent = text;
+      if (text) floatingInputDrafts.set(sessionId, text); else floatingInputDrafts.delete(sessionId);
+      if (document.activeElement === inputBox) placeCaretAtContenteditableEnd(inputBox);
+    },
+    onStatus(error, state) {
+      inputBox.dataset.draftState = error ? 'failed' : state.saving ? 'saving' : 'saved';
+      let message = inputBox.parentElement?.querySelector('.native-draft-error');
+      if (error && !message && inputBox.parentElement) {
+        message = document.createElement('div'); message.className = 'native-draft-error'; message.setAttribute('role', 'alert');
+        inputBox.parentElement.append(message);
+      }
+      if (message) {
+        message.textContent = error ? '草稿未保存，请先复制保留：' + error.message : '';
+        message.hidden = !error;
+      }
+    },
+  };
+  let controller = nativeDraftControllers.get(sessionId);
+  if (controller) controller.attach(view);
+  else {
+    controller = require('./native-draft-controller').createNativeDraftController({
+      sessionId, initialText: readContenteditablePlainText(inputBox),
+      invoke: (channel, request) => ipcRenderer.invoke(channel, request), ...view,
+    });
+    nativeDraftControllers.set(sessionId, controller);
+  }
+  inputBox._nativeDraftController = controller;
+  return controller;
+}
+
 function saveFloatingInputDraft(sessionId, inputBox) {
   if (!sessionId || !inputBox) return;
   const text = readContenteditablePlainText(inputBox);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
-  if (isNativeSession(sessions.get(sessionId))) {
-    try {
-      if (text) localStorage.setItem('codex-native-draft:'+sessionId,text);
-      else localStorage.removeItem('codex-native-draft:'+sessionId);
-      inputBox.parentElement?.querySelector('.native-draft-error')?.remove();
-    } catch (error) {
-      console.warn('[codex-draft] persist failed:',error.message);
-      let message=inputBox.parentElement?.querySelector('.native-draft-error');
-      if(!message && inputBox.parentElement){message=document.createElement('div');message.className='native-draft-error';message.setAttribute('role','alert');inputBox.parentElement.append(message);}
-      if(message)message.textContent='草稿未能保存到磁盘，请复制后再关闭窗口：'+error.message;
-    }
-  }
+  attachNativeDraft(sessionId, inputBox)?.change(text);
 }
 
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
+  nativeDraftControllers.get(sessionId)?.change('');
   if (sessionId && isNativeSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
+  }
+  if (sessionId) {
+    try { localStorage.removeItem('hub.claude-native.draft.v1:' + sessionId); }
+    catch (error) { showToast('草稿清理失败：' + error.message, 'error'); }
   }
 }
 
@@ -1311,11 +1343,15 @@ function getOrCreateTerminal(sessionId) {
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => {
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') return;
     if (data) clearSessionWaitingState(sessionId);
     trackPtyPromptInput(sessionId, data);
     ipcRenderer.send('terminal-input', { sessionId, data });
   });
-  terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
+  terminal.onBinary((data) => {
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') return;
+    ipcRenderer.send('terminal-input', { sessionId, data });
+  });
 
   // Claude Code emits an OSC set-title escape sequence once near the start of a
   // conversation with an AI-generated short summary (e.g. "Greeting in Chinese").
@@ -2630,7 +2666,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
   }
 
-  if (!incremental) {
+  if (!incremental || session?.runtimeBackend === 'claude-stream-json') {
     // Mounting dedups existing concurrent cards but may leave them ahead of old
     // history. Reorder the authoritative full snapshot first, then append only
     // genuinely newer concurrent cards. Cards removed by optimistic/provisional
@@ -3282,7 +3318,7 @@ const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 
 function markCodexCardWorking(sessionId, source = 'prompt', runtimeOptions = {}) {
   const session = sessions.get(sessionId);
-  if (isNativeSession(session)) return;
+  if (isNativeAgent(session)) return;
   if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
@@ -3535,6 +3571,7 @@ function _updateStreamingIndicator(sessionId) {
 // remember=false 用于「按会话恢复视图」这种回放场景：那不是用户在表达偏好，
 // 不该反过来覆盖记忆。用户点切换按钮走默认的 remember=true。
 function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false } = {}) {
+  if (sessions.get(activeSessionId)?.runtimeBackend === 'claude-stream-json') mode = 'card';
   const previousView = currentView;
   const overlay = document.getElementById('msg-overlay');
   if (mode !== 'card' && _cardViewBottomRestoreRaf) {
@@ -3723,6 +3760,10 @@ function updateFloatingPromptReceipt(receipt) {
 
 ipcRenderer.on('session:prompt-receipt', (_event, receipt) => updateFloatingPromptReceipt(receipt));
 
+ipcRenderer.on('native-agent-item', (_event, event) => {
+  if (event.source === 'claude-stream-json') requestCardIncrementalRefresh(event.sessionId, { reason: 'native-item' });
+});
+
 function clearFloatingInputStuck(bar) {
   if (!bar) return;
   const existing = bar.querySelector('.fi-stuck');
@@ -3732,7 +3773,7 @@ function clearFloatingInputStuck(bar) {
 function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
   const delivery = floatingPromptDeliveries.get(sessionId);
-  const native = isNativeSession(sessions.get(sessionId));
+  const native = isNativeAgent(sessions.get(sessionId));
   if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
@@ -3755,15 +3796,20 @@ function markFloatingInputStuck(bar, sessionId) {
     resendBtn.disabled = true;
     resendBtn.textContent = '需核对';
   }
-  resendBtn.title = native ? '从 Codex 原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
+  resendBtn.title = native ? '从原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
   resendBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
     resendBtn.disabled = true;
     if (native) {
       try {
-        const result = await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
+        // Each native backend owns its own reconciliation entry point; the
+        // Codex action channel cannot answer for a Claude transport.
+        const claudeNative = sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json';
+        const result = claudeNative
+          ? await ipcRenderer.invoke('claude-native:reconnect', {sessionId})
+          : await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
         label.textContent = result?.ok ? '已核对连接；请查看上一轮内容，确认后再决定是否重新发送。'
-          : '核对失败：'+(result?.message || '连接不可用');
+          : '核对失败：'+(result?.message || result?.error || '连接不可用');
       } catch (error) { label.textContent = '核对失败：'+error.message; }
       resendBtn.disabled = false;
       return;
@@ -3867,7 +3913,7 @@ function tailAboveCliPrompt(lines) {
 // 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
 // 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
 function detectComposerLiveQuestion(session, runtime) {
-  if (isNativeSession(session)) return null;
+  if (isNativeAgent(session)) return null;
   if (!session || !runtime) return null;
   // 已经被权威信号标成「等你输入」的，用不着再猜。
   if (sessionNeedsUserInput(session)) return null;
@@ -3989,12 +4035,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const commandFeedback = require('./codex-command-feedback').createCodexCommandFeedback(document, bar);
   let commandFeedbackSequence = 0;
   bar.dataset.sessionId = sessionId;
-  const nativeControls = createCodexNativeControls({
+  const codexControls = createCodexNativeControls({
     sessionId, invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
     openExternal: url => shell.openExternal(url),
   });
-  bar.append(nativeControls.element);
-  if (isNativeSession(sessions.get(sessionId))) terminal.options.disableStdin = true;
+  bar.append(codexControls.element);
+  if (isNativeAgent(sessions.get(sessionId))) terminal.options.disableStdin = true;
 
   // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
   // 输入框其余行为一字不变 —— 历史是增强，不该成为新的单点故障。
@@ -4024,6 +4070,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   if (isNativeSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
     try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
     catch(error){console.warn('[codex-draft] read failed:',error.message);}
+  }
+  if (!floatingInputDrafts.has(sessionId) && sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+    try {
+      const saved = localStorage.getItem('hub.claude-native.draft.v1:' + sessionId);
+      if (saved) floatingInputDrafts.set(sessionId, saved);
+    } catch (error) { showToast('草稿读取失败：' + error.message, 'error'); }
   }
   if (floatingInputDrafts.has(sessionId)) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
@@ -4196,11 +4248,19 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   const stopBtn = document.createElement('button');
   stopBtn.className = 'floating-input-stop';
-  stopBtn.title = '中断当前 AI（发送 Ctrl+C）';
+  stopBtn.title = '中断当前 AI';
   stopBtn.setAttribute('aria-label', '中断当前 AI');
   stopBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
-  stopBtn.addEventListener('click', (e) => {
+  stopBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+      try {
+        const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
+        if (!result?.ok) throw new Error(result?.error || '停止请求未确认');
+      } catch (error) { showToast('停止失败：' + error.message, 'error'); }
+      inputBox.focus();
+      return;
+    }
     ipcRenderer.send('terminal-input', { sessionId, data: '\x03' });
     terminal.focus();
   });
@@ -4294,7 +4354,16 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   const contentStack = document.createElement('div');
   contentStack.className = 'fi-content-stack';
-  contentStack.append(composer);
+  const nativeControls = require('./claude-native-controls').createClaudeNativeControls({ sessionId, ipcRenderer,
+    onHistory: () => loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: true }),
+    onRestoreDraft: record => {
+      if ((record.content || []).some(block => block.type !== 'text')) throw new Error('本条含附件，请从历史核对附件后重新添加');
+      if (readContenteditablePlainText(inputBox)) throw new Error('输入框已有草稿，请先保存或发送');
+      replaceContenteditableText(inputBox, record.text);
+      saveFloatingInputDraft(sessionId, inputBox); inputBox.focus();
+    },
+  });
+  contentStack.append(nativeControls.element, composer);
   bar.append(contentStack);
   bar.classList.add('visible');
 
@@ -4303,6 +4372,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
+    attachNativeDraft(sessionId, inputBox);
+    codexControls.update(session);
     nativeControls.update(session);
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
@@ -4384,7 +4455,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     speedChip.textContent = speed.label;
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-    speedChip.title = '选择标准 / Fast；Fast 会增加用量或费用';
+    speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
 
     ctxRing.hidden = !rail.context.visible;
     if (rail.context.visible) {
@@ -4441,7 +4512,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     commandFeedback.clear();
     if (nativeCommand) commandFeedback.show(text.trim(), '正在执行…');
 
-    // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
+    // 立即清 UI；原生会话继续在 Hub 输入框接收下一条消息。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
     // 清掉原生撤销栈，误发之后 Ctrl+Z 拿不回原文。
     if (inputHistory) {
@@ -4451,12 +4522,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     replaceContenteditableText(inputBox, '');
     clearFloatingInputDraft(sessionId);
     terminal.scrollToBottom();
-    if (isNativeSession(sessions.get(sessionId))) inputBox.focus();
-    else terminal.focus();
-
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
+    if (isCodexSession(session) || session?.runtimeBackend === 'claude-stream-json') inputBox.focus();
+    else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
+    const clientSubmissionId = require('node:crypto').randomUUID();
     if (!nativeCommand) {
       clearSessionWaitingState(sessionId);
       armPtyBurstFallback(sessionId);
@@ -4471,10 +4542,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    const clientSubmissionId = require('node:crypto').randomUUID();
     if (!nativeCommand && currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
-        mountOptimisticUserCard(sessionId, text.trim(), kind, clientSubmissionId);
+        mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }
@@ -4497,6 +4567,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         return;
       }
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
+      if (result?.ok && result.mode === 'native-command') {
+        updateFloatingPromptReceipt({sessionId,clientSubmissionId,status:'confirmed'});
+        showToast('原生命令已完成', 'success');
+        return;
+      }
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
@@ -4556,7 +4631,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         historyCursor.reset();
         return;
       }
-      terminal.focus();
+      if (!isNativeAgent(sessions.get(sessionId))) terminal.focus();
     }
   });
 
@@ -4777,7 +4852,7 @@ function sweepStaleRunning() {
   const now = Date.now();
   let dirty = false;
   for (const s of sessions.values()) {
-    if (isNativeSession(s)) continue;
+    if (isNativeAgent(s)) continue;
     if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
         const truth = getSessionRuntimeTruth(s, { now });
@@ -4907,6 +4982,10 @@ function flashPromptLine(terminal, lineNumber) {
 function syncRenameToClaude(sessionId, title) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  if (session.runtimeBackend === 'claude-stream-json') {
+    session._pendingRename = null;
+    return;
+  }
   const clean = String(title).replace(/[\r\n]/g, ' ').trim().slice(0, 80);
   if (!clean) return;
   if (session.status === 'idle') {
@@ -4949,7 +5028,8 @@ function startRename(sessionId, titleSpan) {
     schedulePersist();
     // 休眠会话没有 PTY，也没有主进程侧的 session 对象要同步，到此为止。
     if (session.status === 'dormant') return;
-    await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
+    const renamed = await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
+    if (renamed?.nativeRename?.status === 'failed') showToast('Hub 名称已保存；Claude 历史同步失败：' + renamed.nativeRename.message, 'warning');
     if (session.kind === 'claude' || session.kind === 'claude-resume') {
       syncRenameToClaude(sessionId, trimmed);
     }
@@ -6209,12 +6289,14 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     }
     state.inProgress = true;
     state.lastReloadAt = Date.now();
-    loadSessionHistoryToOverlay(sessionId, {
+    const refreshOptions = {
       incremental: true,
       parseOpts: isNativeSession(sessions.get(sessionId))
         ? { limit: Infinity, latestTurn: true, turnId: sessions.get(sessionId)?.nativeRuntime?.turnId }
         : { limit: 1, fromTail: true },
-    })
+    };
+    if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') refreshOptions.parseOpts = { nativeLive: true };
+    loadSessionHistoryToOverlay(sessionId, refreshOptions)
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
       .finally(() => {
         state.inProgress = false;
@@ -6743,7 +6825,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     // Flush any queued /rename now that Claude is idle. Small delay so the
     // prompt fully re-renders before we inject the command.
     const s = sessions.get(sessionId);
-    if (outcome && outcome.completed && s && s._pendingRename) {
+    if (outcome && outcome.completed && s && s._pendingRename && s.runtimeBackend !== 'claude-stream-json') {
       const pending = s._pendingRename;
       s._pendingRename = null;
       setTimeout(() => {
@@ -7854,6 +7936,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
     _codexSubmitPendingTimers.delete(sessionId);
   }
   clearFloatingInputDraft(sessionId);
+  nativeDraftControllers.delete(sessionId);
   if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
   if (_turnCompleteBackfillTimers.has(sessionId)) {
     try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}
@@ -7892,6 +7975,30 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
+  if (session.runtimeBackend === 'claude-stream-json') {
+    const old = local.nativeRuntime;
+    const next = session.nativeRuntime;
+    if (old && next && (next.epoch < old.epoch || (next.epoch === old.epoch && next.revision < old.revision))) return;
+    Object.assign(local, session);
+    if (session.nativeMigrationDraft && local._importedNativeDraft !== session.nativeMigrationDraft) {
+      local._importedNativeDraft = session.nativeMigrationDraft;
+      const input = [...document.querySelectorAll('.floating-input-bar')].find(bar => bar.dataset.sessionId === local.id)?.querySelector('.floating-input-box');
+      if (!floatingInputDrafts.has(local.id) && (!input || !readContenteditablePlainText(input))) {
+        floatingInputDrafts.set(local.id, session.nativeMigrationDraft);
+        if (input) { input.textContent = session.nativeMigrationDraft; saveFloatingInputDraft(local.id, input); }
+        else {
+          try { localStorage.setItem('hub.claude-native.draft.v1:' + local.id, session.nativeMigrationDraft); }
+          catch (error) { showToast('迁移草稿保存失败：' + error.message, 'error'); }
+        }
+      }
+    }
+    local.needsUserInput = next?.state === 'waiting';
+    local.gcWorking = false;
+    scheduleSessionListRender();
+    updateFloatingBarState();
+    window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
+    return;
+  }
   if (isNativeSession(local) && session.nativeRuntime) {
     const cancellationStatus = local.nativeRuntime?.cancellation?.status;
     if (!acceptNativeSnapshot(local, session)) return;
@@ -8015,6 +8122,7 @@ function schedulePersist() {
         pinned: !!s.pinned,
         bottomed: !!s.bottomed && !s.pinned,
         ccSessionId: s.ccSessionId || null,
+        ...(s.runtimeBackend === 'claude-stream-json' ? { nativeConfig: s.nativeConfig } : {}),
         transcriptPath: s.transcriptPath || null,
         meetingId: s.meetingId || null,
         lastMessageTime: s.lastMessageTime || Date.now(),
@@ -8246,6 +8354,7 @@ window.resumeDormantSession = resumeDormantSession;
         pinned: !!meta.pinned,
         bottomed: !!meta.bottomed && !meta.pinned,
         ccSessionId: meta.ccSessionId || null,
+        ...(meta.runtimeBackend === 'claude-stream-json' ? { nativeConfig: meta.nativeConfig } : {}),
         transcriptPath: meta.transcriptPath || null,
         meetingId: meta.meetingId || null,
         currentModel: resolvedModel,
@@ -8275,7 +8384,7 @@ window.resumeDormantSession = resumeDormantSession;
         codexSid: meta.codexSid || null,
         acpSid:meta.acpSid || null,acpProfileId:meta.acpProfileId || null,acpCapabilities:meta.acpCapabilities || null,
         runtimeBackend: meta.runtimeBackend || null,
-        nativeRuntime: require('../core/codex-native-runtime.js').persistNativeRuntime(meta),
+        nativeRuntime: require('../core/native-agent-runtime.js').persistNativeRuntime(meta),
         codexApprovalPolicy: meta.codexApprovalPolicy || null,
         codexSandbox: meta.codexSandbox || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,

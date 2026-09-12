@@ -37,7 +37,7 @@ test('composer 三段结构：状态行 → 文本框 → 底栏，且仍装在 
   assert.match(mount, /composerRow\.append\(inputBox\)/);
   // 几何锁契约（unit-floating-input-geometry-contract）依赖这一层，不能被拆掉。
   assert.match(mount, /contentStack\.className = 'fi-content-stack'/);
-  assert.match(mount, /contentStack\.append\(composer\)/);
+  assert.match(mount, /contentStack\.append\(nativeControls\.element, composer\)/);
 });
 
 test('底栏节点顺序固定：附件 · 模型 · 思考档 · 速度 · 拉取/分支 ｜ 预算环 · 提示 · 停止/发送', () => {

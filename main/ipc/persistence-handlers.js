@@ -6,6 +6,7 @@ const { isDeepStrictEqual } = require('node:util');
 // 而 memory link 每次 spawn 都会重新检测——放进来会让警告一旦出现就永久粘住，修好了也删不掉
 // （cwdFellBackFrom 能放是因为 healPersistedCwds 里有显式 delete 清除路径，它没有）。
 const RESUME_META_FIELDS = [
+  'nativeConfig',
   'cwdFellBackFrom',
   'transcriptPath',
   'codexSid',
@@ -209,6 +210,13 @@ function handlePersistSessions(list, meetingList, deps) {
 
   for (const session of list) {
     if (!session || !session.hubId) continue;
+    const authoritative = deps.sessionManager?.getSession(session.hubId);
+    if (authoritative?.runtimeBackend === 'claude-stream-json') {
+      session.runtimeBackend = authoritative.runtimeBackend;
+      session.nativeRuntime = authoritative.nativeRuntime;
+      session.nativeConfig = authoritative.nativeConfig;
+      session.ccSessionId = authoritative.ccSessionId;
+    }
     const previous = previousSessionsById.get(session.hubId);
     const changed = !previous
       || typeof previous.updatedAt !== 'number'

@@ -483,11 +483,12 @@ function renderTurnCard(turn) {
   }
 
   const emptyNative = !turn.text && ({completed:'本轮已完成，没有回答正文',interrupted:'本轮已中断',failed:'本轮执行失败'})[turn.nativeOutcome];
-  const body = isProgress ? require('./conversation-message-view').renderProgressRow(turn,
+  const activityLabel = turn.nativeActivity ? '<div class="turn-native-outcome">Claude 后台活动</div>' : '';
+  const body = activityLabel + (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.text,
-      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths});
+      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
   const attachments = isUser ? renderImageAttachments(turn.attachments, { escapeHtml, cwd: turn.attachmentCwd }) : '';
   const presentation = turn.presentation || buildTurnPresentation(turn);
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
@@ -815,7 +816,7 @@ function _isCardOverlayAtBottom(el) {
 //   待真 user turn 从 transcript 解析进来时（mountSessionTurnCard 顶部的 dedup），扫一眼
 //   现存 optimistic 卡片，文本匹配的删掉。turn.id 用 'pending-user-' 前缀的临时 id，
 //   不进 _sessionTurns Map（不是权威 turn，避免被当作真 turn dedup-replace 链路对象）。
-function mountOptimisticUserCard(sessionId, text, kind, clientSubmissionId) {
+function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
   const container = doc.getElementById('msg-overlay');
   if (!container) return null;
   // 隐藏 placeholder 而非删除 — 后续 turn-complete-event / applyViewMode
@@ -838,7 +839,7 @@ function mountOptimisticUserCard(sessionId, text, kind, clientSubmissionId) {
   cardEl.dataset.sessionId = String(sessionId || '');
   cardEl.dataset.optimistic = 'true';
   cardEl.dataset.optimisticText = text;
-  cardEl.dataset.submissionId = clientSubmissionId || '';
+  if (options.clientSubmissionId) cardEl.dataset.clientSubmissionId = options.clientSubmissionId;
   cardEl.dataset.submittedAt = String(turn.ts);
 
   // 插在 streaming-indicator 之前（与 mountSessionTurnCard 一致），保证位置正确
@@ -940,7 +941,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
       const normalize = require('../core/conversation-display').userTextIdentity;
       const candidates = Array.from(opts2).filter(opt => {
         if (opt.dataset.sessionId !== sidStr) return false;
-        if (turn.clientSubmissionId && opt.dataset.submissionId) return turn.clientSubmissionId === opt.dataset.submissionId;
+        if (turn.clientSubmissionId || opt.dataset.clientSubmissionId) return turn.clientSubmissionId === opt.dataset.clientSubmissionId;
         const sentAt = Number(opt.dataset.submittedAt);
         return (!sentAt || (Number(turn.ts) >= sentAt - 1000))
           && normalize(opt.dataset.optimisticText) === normalize(realText);

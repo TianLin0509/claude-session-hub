@@ -506,6 +506,15 @@ function createModelUiController({
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
     let preferencePrepared = false;
     try {
+      if (session.runtimeBackend === 'claude-stream-json') {
+        const result = await ipcRenderer.invoke('claude-native:set-model', { sessionId, modelId: option.id });
+        if (!result?.ok) throw new Error(result?.error || '模型切换未确认');
+        session.currentModel = result.model;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result;
+      }
       if (strategy === 'claude-inline' && typeof ipcRenderer.invoke === 'function') {
         const prepared = await ipcRenderer.invoke('prepare-session-model-switch', {
           sessionId,
@@ -715,7 +724,10 @@ function createModelUiController({
       try {
         if (isSessionBusy(session)) throw new Error('请等当前回答结束后再切换速度');
         const native = session.runtimeBackend === 'codex-app-server';
-        if (!native && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
+        // Native Claude answers over the protocol; there is no terminal prompt
+        // to inspect, and the old screen check would reject every switch.
+        const nativeClaude = session.runtimeBackend === 'claude-stream-json';
+        if (!native && !nativeClaude && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
           throw new Error('Claude 终端输入框有草稿或不在主提示符，请先处理后再切换');
         }
         const response = await ipcRenderer.invoke(native ? 'codex:native-action' : 'session:set-fast', native
@@ -726,7 +738,8 @@ function createModelUiController({
         else session.fastMode = response.result.fastMode;
         delete session._modelSwitchPending;
         updateActiveModelChip();
-        if (openModelPicker?.el === menu) paint(native ? '✓ 已选择，下次发送生效' : '✓ Claude 已确认速度设置','success');
+        if (openModelPicker?.el === menu) paint(native ? '✓ 已选择，下次发送生效'
+          : response.warning ? '✓ 已切换 · ' + response.warning : '✓ Claude 已确认速度设置','success');
         await sleep(650);
         if (openModelPicker?.el === menu) closeModelPicker();
       } catch (error) {

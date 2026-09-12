@@ -48,11 +48,32 @@ function registerSessionIpc(ipcMain, deps) {
       const session = sessionManager.getSession(sessionId);
       if (typeof enabled !== 'boolean' || !session) return {ok:false,message:'会话或速度设置无效'};
       const {claudeSupportsFast,pendingSpeedSwitches} = require('../../core/session-speed');
-      if (String(session.kind).replace(/-resume$/, '') !== 'claude' || !claudeSupportsFast(session.currentModel?.id)) {
+      // A connected native engine already said whether it serves Fast. Trusting
+      // only the model table would refuse to turn Fast back off on a model the
+      // table does not know yet.
+      const engineServesFast = session.nativeRuntime?.fastMode === true;
+      if (String(session.kind).replace(/-resume$/, '') !== 'claude'
+          || !(claudeSupportsFast(session.currentModel?.id) || engineServesFast)) {
         return {ok:false,message:'当前 Claude 型号未确认支持 Fast，请先选择明确的受支持型号'};
       }
       if (require('../../core/session-runtime-truth').sessionRuntimeIsActive(session) || session.status === 'running' || session.autonomous || process.env.CLAUDE_HUB_NO_FAST === '1') {
         return {ok:false,message:'请在会话空闲且允许 Fast 时切换'};
+      }
+      // Native sessions carry a protocol control for this. They have no
+      // terminal to type `/fast` into, and apply_flag_settings never touches
+      // the user's settings files, so the restore dance below is not needed.
+      const nativeClaude = sessionManager.getNativeClaude?.(sessionId);
+      if (nativeClaude) {
+        pendingSpeedSwitches.add(sessionId);
+        try {
+          const result = await nativeClaude.setFastMode(enabled);
+          const updated = sessionManager.updateSessionMeta(sessionId,{fastMode:enabled});
+          if (!updated) return {ok:false,message:'Claude 已切换，但会话信息保存失败'};
+          sendToRenderer('session-updated',{session:updated});
+          return {ok:true,result:{fastMode:enabled},...(result?.warning ? {warning:result.warning} : {})};
+        } catch (error) {
+          return {ok:false,message:error.message};
+        } finally { pendingSpeedSwitches.delete(sessionId); }
       }
       const {claudeSettingsPath,readJsonObject,writeJsonAtomic} = require('../../core/claude-model-preference-guard');
       const file = claudeSettingsPath();
@@ -161,6 +182,7 @@ function registerSessionIpc(ipcMain, deps) {
     const branchIndex = nextBranchIndex(source.id, siblingPool);
     const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting, branchIndex });
     const opts = {
+      ...(source.runtimeBackend === 'claude-stream-json' ? source.nativeConfig : {}),
       title: resolvedTitle.title,
       cwd: source.cwd,
       branchSourceSessionId: source.id,
@@ -245,6 +267,11 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native) {
+      native.emit('action-error', '原生 Claude 会话请通过 Hub 输入框发送消息或停止按钮操作');
+      return;
+    }
     sessionManager.writeToSession(sessionId, data);
   });
 
@@ -259,6 +286,7 @@ function registerSessionIpc(ipcMain, deps) {
       else if (payload.action === 'restart-empty') result = await native.restartEmpty(payload);
       else if (payload.action === 'interrupt') result = await native.interrupt();
       else if (payload.action === 'configure') result = await native.configure(payload);
+      else if (payload.action === 'collaboration-mode') result = await native.configureMode(payload.mode, payload.epoch);
       else if (payload.action === 'snapshot') result = native.runtime;
       else if (payload.action === 'review-submission') result = native.reviewUnknownSubmission(payload.submissionId,payload.epoch);
       else return {ok:false,message:'不支持的 Codex 操作'};
@@ -417,6 +445,14 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
     const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native && userRenamed && session) {
+      try { session.nativeRename = native.rename(title); }
+      catch (error) {
+        native.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
+        session.nativeRename = { status: 'failed', message: error.message };
+      }
+    }
     if (session) sendToRenderer('session-updated', { session });
     return session;
   });
@@ -466,6 +502,11 @@ function registerSessionIpc(ipcMain, deps) {
     }
     if (old.purpose === 'chuxin-research') {
       return { ok: false, error: 'protected-session', message: '初心投研任务不能从这里重启' };
+    }
+    const native = sessionManager.getNativeClaude?.(sessionId);
+    if (native) {
+      return native.reconnect({ stopActive: true }).then(() => sessionManager.getSession(sessionId))
+        .catch(error => ({ ok: false, error: 'native-reconnect-failed', message: error.message }));
     }
 
     if (supportsRecoverableSession(old)) {

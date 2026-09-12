@@ -4,7 +4,19 @@ const {captureConversationMessages}=require('./conversation-capture');
 // that watcher while its original App Server turn continues producing items.
 function createGroupConversationCollector() {
   const seen=new WeakMap();
-  return function collect({native,orch,sid}) {
+  return function collect({native,claude,event,orch,sid}) {
+    if (claude) {
+      const { claudeDisplayMessages } = require('./claude-native-transcript');
+      const records = event?.clientSubmissionId ? [claude.records.get(event.clientSubmissionId)]
+        : [...claude.records.values()].filter(r => r.userMessageId === event?.userMessageId);
+      let changed = false;
+      for (const record of records.filter(Boolean)) {
+        const attempt = orch.state.attempts?.[record.submissionId];
+        if (!attempt || attempt.sid !== sid || (attempt.userMessageId && attempt.userMessageId !== record.userMessageId)) continue;
+        changed = orch.recordDisplayMessages(record.submissionId, claudeDisplayMessages(record)) || changed;
+      }
+      return changed;
+    }
     const attempts=Object.values(orch.state.attempts || {}).filter(a=>a.sid===sid
       && a.providerThreadId===native.threadId && a.providerTurnId);
     const signature=`${native.contentRevision}:${native.runtime.revision}:${attempts.length}`;

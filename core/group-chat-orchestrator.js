@@ -891,11 +891,13 @@ class GroupChatOrchestrator {
       if (details.acknowledgementSource) entry.acknowledgementSource = String(details.acknowledgementSource);
       if (details.reason) entry.reason = String(details.reason);
       if (details.providerTurnId) entry.providerTurnId = String(details.providerTurnId);
+      if (details.userMessageId) entry.userMessageId = String(details.userMessageId);
+      if (details.nativePromptFingerprint) entry.nativePromptFingerprint = String(details.nativePromptFingerprint);
       if (details.providerThreadId) entry.providerThreadId = String(details.providerThreadId);
       if (details.attemptId) entry.attemptId = String(details.attemptId);
     }
     const attemptId = String(details.attemptId || entry.attemptId || '');
-    const phase = /send_failed|exception/i.test(String(status || '')) ? ATTEMPT_FAILED
+    const phase = status === 'queued' ? 'queued' : /send_failed|exception/i.test(String(status || '')) ? ATTEMPT_FAILED
       : /stuck|unknown|awaiting_binding/i.test(String(status || '')) ? ATTEMPT_AWAITING_BINDING
         : /submitted|recovered|\bok\b/i.test(String(status || '')) ? ATTEMPT_ACCEPTED
           : /sending|submitting/i.test(String(status || '')) ? ATTEMPT_SUBMITTING
@@ -906,6 +908,8 @@ class GroupChatOrchestrator {
       attempt.deliveryAttempt = Math.max(Number(attempt.deliveryAttempt) || 0, Number(entry.attempts) || 0);
       attempt.acknowledgementSource = entry.acknowledgementSource || null;
       attempt.providerTurnId = entry.providerTurnId || attempt.providerTurnId || null;
+      attempt.userMessageId = entry.userMessageId || attempt.userMessageId || null;
+      attempt.nativePromptFingerprint = entry.nativePromptFingerprint || attempt.nativePromptFingerprint || null;
       attempt.providerThreadId = entry.providerThreadId || attempt.providerThreadId || null;
       attempt.reason = entry.reason || null;
       attempt.acceptedAt = phase === ATTEMPT_ACCEPTED ? Date.now() : (attempt.acceptedAt || null);

@@ -24,3 +24,21 @@ test('Claude needs matching fresh command and positive acknowledgement',async()=
   assert.equal((await observer.wait(5)).ok,true);
   observer.dispose();assert.equal(manager.listenerCount('output'),0);
 });
+
+test('native Claude speed follows the engine state, not the model table',()=>{
+  const base={kind:'claude',runtimeBackend:'claude-stream-json',currentModel:{id:'claude-opus-5'}};
+  // A connected engine that serves Fast wins over a stale session preference.
+  assert.deepEqual(speedControl({...base,fastMode:false,nativeRuntime:{fastMode:true}},null),
+    {visible:true,label:'Fast',tier:'fast',kind:'claude',interactive:true});
+  assert.equal(speedControl({...base,nativeRuntime:{fastMode:false}},null).label,'标准');
+  // The SDK opt-in is exactly what this switch does, so it must stay clickable.
+  const optIn=speedControl({...base,nativeRuntime:{fastMode:false,fastModeBlocked:'sdk_opt_in_required'}},null);
+  assert.equal(optIn.interactive,true);
+  assert.equal(optIn.reason,undefined);
+  // A real refusal disables the control and says why instead of failing later.
+  const blocked=speedControl({...base,nativeRuntime:{fastMode:false,fastModeBlocked:'model_not_allowed'}},null);
+  assert.equal(blocked.interactive,false);
+  assert.match(blocked.reason,/模型/);
+  // An unsupported model with no engine opinion yet stays hidden as before.
+  assert.equal(speedControl({...base,currentModel:{id:'claude-sonnet-4-8'},nativeRuntime:{}},null).visible,false);
+});

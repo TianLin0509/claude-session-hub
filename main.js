@@ -482,6 +482,32 @@ const completionNotifier = new CompletionNotifier({
 sessionManager.workspaceService = workspaceService;
 const workspaceMigrationSessionIds = new Set();
 
+sessionManager.on('session-updated', session => {
+  if (session.runtimeBackend !== 'claude-stream-json') return;
+  sessionUsageService.bind(session);
+  sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
+  sendToRenderer('session-updated', { session });
+});
+sessionManager.on('native-agent-item', event => sendToRenderer('native-agent-item', event));
+sessionManager.on('native-agent-lifecycle', event => {
+  if (event.signalSource !== 'claude-stream-json') return;
+  const native = sessionManager.getNativeClaude(event.sessionId);
+  const record = native?.records.get(event.clientSubmissionId);
+  if (!native || !record) return;
+  const payload = { ...event, submittedAt: record.createdAt, startedAt: native.runtime.startedAt,
+    completedAt: native.runtime.completedAt, transcriptPath: null };
+  if (event.type === 'submission-accepted') {
+    transcriptTap.emit('prompt-submitted', { ...payload, text: record.text });
+    sendToRenderer('session:prompt-receipt', { sessionId: event.sessionId,
+      clientSubmissionId: event.clientSubmissionId, status: 'confirmed' });
+  } else if (event.type === 'agent-turn-started') transcriptTap.emit('turn-started', payload);
+  else if (event.type === 'agent-turn-complete') {
+    if (event.status === 'completed') transcriptTap.emit('turn-complete', payload);
+    else if (event.status === 'interrupted') transcriptTap.emit('turn-aborted', payload);
+    else transcriptTap.emit('turn-error', { ...payload, message: native.runtime.reason });
+  }
+});
+
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
 
@@ -563,7 +589,7 @@ transcriptTap.on('turn-started', (ev) => {
   completionNotifier.noteTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
-    sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
+    if (session?.runtimeBackend !== 'claude-stream-json') sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
       startedAt: ev.startedAt,
       signalSource: ev.signalSource || 'task_started',
       turnId: ev.turnId || null,
@@ -1363,7 +1389,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
   sessionUsageService.bind(session);
-  if (session && ['codex-app-server','acp'].includes(session.runtimeBackend)) return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1553,7 +1579,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
-  if(session && (sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id)))return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1568,6 +1594,24 @@ function watchDevChatHistory(session, sourcePath) {
 }
 transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
 const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
+function collectNativeGroupItems(event) {
+  const sid = event.sessionId || event.id;
+  const session = sessionManager.getSession(sid);
+  const meeting = session?.meetingId && meetingManager.getMeeting(session.meetingId);
+  if (!meeting?.groupChat) return;
+  const native = sessionManager.getNativeCodex?.(sid);
+  const claude = sessionManager.getNativeClaude?.(sid);
+  if (!native && !claude) return;
+  try {
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meeting.id);
+    if (collectGroupConversation({ native, claude, event, orch, sid })) sendToRenderer('groupchat-history-updated',
+      { meetingId: meeting.id, sid, revision: orch.state.revision });
+  } catch (error) { console.error('[conversation-history] native item persistence failed:', error); }
+}
+sessionManager.on('codex-content-updated', collectNativeGroupItems);
+sessionManager.on('codex-session-updated', collectNativeGroupItems);
+sessionManager.on('native-agent-item', collectNativeGroupItems);
+sessionManager.on('native-agent-lifecycle', collectNativeGroupItems);
 const devChatHistoryTimer=setInterval(()=>{
   for(const session of sessionManager.getAllSessions()) {
     const native=(sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id));
@@ -1975,6 +2019,7 @@ let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).f
 let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
 
 registerPersistenceIpc(ipcMain, {
+  sessionManager,
   bootWasClean,
   getLiveSession: id => sessionManager.getSession(id),
   getImmersiveByMeeting: () => _immersiveByMeeting,
@@ -2153,6 +2198,9 @@ const hookServer = http.createServer((req, res) => {
     const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
     if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
       res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;
+    }
+    if (isHook && hookTargetSession?.runtimeBackend === 'claude-stream-json') {
+      res.writeHead(202); res.end('{"ignored":"native-protocol-authority"}'); return;
     }
     if (parsed.sessionId && hookTargetSession) {
       if (isHook) {

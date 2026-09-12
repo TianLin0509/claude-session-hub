@@ -253,6 +253,7 @@ function createResumeSessionHandler(deps) {
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+      ...(meta.runtimeBackend === 'claude-stream-json' ? { ...meta.nativeConfig, nativeRuntime: meta.nativeRuntime } : {}),
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId && !freshUnboundAgentLeague,
       // Agent 联赛的空壳 Session 从未产生过原生 turn，没有历史可选。

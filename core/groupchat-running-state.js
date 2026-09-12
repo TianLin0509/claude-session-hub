@@ -23,6 +23,7 @@ function hasFreshGroupChatWork(session, now = Date.now()) {
 
 function isGroupChatMemberRunning(session, now = Date.now()) {
   if (isNativeSession(session)) return nativeUnfinished(session);
+  if (session?.runtimeBackend === 'claude-stream-json') return ['starting', 'running', 'waiting'].includes(getSessionRuntimeTruth(session).state);
   if (!session) return false;
   const runtime = getSessionRuntimeTruth(session, { now });
   if (sessionRuntimeIsActive(session, { now })) return true;

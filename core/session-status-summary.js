@@ -273,7 +273,23 @@ function buildComposerStatusModel(session, options = {}) {
     throw new Error('buildComposerStatusModel requires the derived runtime status');
   }
   const truth = getSessionRuntimeTruth(session, { now });
-  const liveQuestion = !native && options.liveQuestion && options.liveQuestion.waiting
+  if (session?.runtimeBackend === 'claude-stream-json') {
+    const snapshot = session.nativeRuntime || {};
+    const labels = { unknown: '本条提交待核对', starting: 'Claude 已收到，等待执行',
+      waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
+    if (labels[snapshot.state]) {
+      // Same entry point Codex offers when its native state needs checking:
+      // one button that reconciles the engine record without resending.
+      const needsReconcile = snapshot.state === 'unknown' || snapshot.connection === 'disconnected';
+      return { state: snapshot.state === 'starting' ? COMPOSER_STATUS_WORKING
+        : snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
+          : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
+        text: labels[snapshot.state], detail: snapshot.reason || '', quickReplies: [],
+        action: needsReconcile ? { kind: 'reconnect', label: '核对连接' } : null,
+        canStop: snapshot.connection === 'connected' && ['starting', 'waiting'].includes(snapshot.state), runtime };
+    }
+  }
+  const liveQuestion = !native && session?.runtimeBackend !== 'claude-stream-json' && options.liveQuestion && options.liveQuestion.waiting
     ? options.liveQuestion
     : null;
   // 「等你响应」的判据与 respond-pill 完全一致（sessionNeedsUserInput），
@@ -326,7 +342,7 @@ function buildComposerStatusModel(session, options = {}) {
     if (native && runtime.state !== RUNTIME_DORMANT) return {
       state, text: truth.state === 'unknown' ? `${provider} 状态待核对` : `${provider} 连接已断开`,
       detail: truth.evidence || '', quickReplies: [], canStop: false, runtime,
-      action: ['codex-app-server','acp'].includes(session.runtimeBackend) ? { kind:'reconnect', label:'核对连接' } : null,
+      action: ['codex-app-server','acp','claude-stream-json'].includes(session.runtimeBackend) ? { kind:'reconnect', label:'核对连接' } : null,
     };
     const issue = session && session.connectionIssue;
     const lost = session && session._processLost;

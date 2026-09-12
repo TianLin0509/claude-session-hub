@@ -637,8 +637,8 @@ function publicAgent(row, sessionManager, options = {}) {
   const automationRunning = !!(row.session && row.session.hubSessionId
     && options.pendingSessionIds instanceof Set
     && options.pendingSessionIds.has(row.session.hubSessionId));
-  const nativeExecution = live && require('../../core/codex-native-runtime').isNativeSession(live)
-    ? require('../../core/codex-native-runtime').nativeRuntimeTruth(live) : null;
+  const nativeExecution = live && require('../../core/native-agent-runtime').isNativeAgent(live)
+    ? require('../../core/native-agent-runtime').nativeRuntimeTruth(live) : null;
   const philosophy = getPhilosophy(row.agent.philosophyKey) || {
     key: row.agent.philosophyKey,
     title: row.agent.philosophyTitle,

@@ -19,7 +19,7 @@ function isDesktopNotificationReady(session) {
 }
 
 function notificationTime(session) {
-  if (require('../core/codex-native-runtime').isNativeSession(session)) return Number(session.nativeRuntime?.completedAt) || 0;
+  if (require('../core/native-agent-runtime').isNativeAgent(session)) return Number(session.nativeRuntime?.completedAt) || 0;
   return Math.max(
     Number(session && session.lastCompletedAt) || 0,
     Number(session && session.lastMessageTime) || 0,
@@ -49,8 +49,8 @@ function createSessionReadyNotifier({ ipcRenderer, getSessions } = {}) {
   if (typeof getSessions !== 'function') throw new Error('getSessions is required');
   let armed = false;
   const notifiedNativeTurns = new Set();
-  const nativeKey = session => require('../core/codex-native-runtime').isNativeSession(session)
-    ? JSON.stringify([session.id,session.nativeRuntime?.threadId,session.nativeRuntime?.turnId]) : null;
+  const nativeKey = session => require('../core/native-agent-runtime').isNativeAgent(session)
+    ? JSON.stringify([session.id,session.nativeRuntime?.threadId || session.nativeRuntime?.providerSessionId,session.nativeRuntime?.turnId]) : null;
   const rememberNative = session => {
     const key=nativeKey(session);if(key)notifiedNativeTurns.add(key);
     while(notifiedNativeTurns.size>2048)notifiedNativeTurns.delete(notifiedNativeTurns.values().next().value);

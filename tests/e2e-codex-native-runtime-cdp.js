@@ -13,7 +13,7 @@ async function main(){
   const until=async(expr,label)=>{const deadline=Date.now()+30000;while(Date.now()<deadline){if(await cdp.eval(expr))return;await sleep(100);}throw Error('timeout: '+label);};
   const snap=async(name)=>{const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await freePort(),label:'codex-native',
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await freePort(),windowMode:'hidden',label:'codex-native',
       extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),
         CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures','codex-app-server.js')}});
     result.pid=hub.pid;result.port=hub.port;
@@ -31,6 +31,12 @@ async function main(){
       await until('document.querySelector(".floating-input-send") && !document.querySelector(".floating-input-send").disabled','send ready');
       await cdp.eval('document.querySelector(".floating-input-send").click()');
     }
+    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    await send('/plan');
+    await until('sessions.get('+sid+').nativeRuntime.collaborationMode === "plan" && document.querySelector(".codex-native-mode")','native plan selected');
+    assert.equal(await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId'),null);
+    assert.equal(await cdp.eval('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length'),0);
+    await snap('plan-selected');result.checks.push('actual /plan composer command selects official mode without a fake model turn or optimistic message');
     await send('fixture:wait');
     await until('sessions.get('+sid+')?.nativeRuntime?.state === "waiting"','native waiting');
     await until('document.querySelector(".codex-native-controls:not([hidden]) textarea")','request form');
@@ -38,6 +44,9 @@ async function main(){
     await snap('waiting');
     await cdp.eval('document.querySelector(".codex-native-request textarea").value="A";document.querySelector(".codex-native-request button[type=submit]").click()');
     await until('sessions.get('+sid+')?.nativeRuntime?.state === "completed"','resolved completion');
+    await cdp.eval('document.querySelector(".codex-native-mode button").click()');
+    await until('sessions.get('+sid+').nativeRuntime.collaborationMode === "default"','native default selected');
+    result.checks.push('actual mode button resets future turns without touching global config');
     await until('document.querySelector(".codex-native-controls").hidden','request gone');
     result.checks.push('user response -> native resolution -> completed');
     await send('fixture:hold');
@@ -76,6 +85,13 @@ async function main(){
     assert.equal(await cdp.eval('document.querySelectorAll(".fi-stuck").length'),0);
     await snap('empty-cards');
     result.checks.push('native history cards retain empty completion and show no false unconfirmed banner');
+    await send('原生卡片身份去重验证');
+    await until('sessions.get('+sid+').nativeRuntime.state === "completed"','card input completed');
+    await until('[...document.querySelectorAll(".turn-card.user")].some(card=>card.dataset.optimistic!=="true" && card.innerText.includes("原生卡片身份去重验证"))','authoritative user card mounted');
+    await snap('composer-card-identity');
+    assert.equal(await cdp.eval('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length'),0,
+      'native receipt must replace the optimistic user card by clientSubmissionId');
+    result.checks.push('card composer preserves submission identity and displays one user card');
     const beforeResend=await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId');
     await until('document.querySelector(".turn-card.user [data-action=resend]")','card resend button');
     await cdp.eval('[...document.querySelectorAll(".turn-card.user [data-action=resend]")].at(-1).click()');
