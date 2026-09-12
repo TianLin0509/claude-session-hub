@@ -190,9 +190,18 @@ function createResumeSessionHandler(deps) {
     // continue an unrelated conversation and Codex/Kimi can open a picker that
     // consumes the automation prompt.
     const managedMeeting = meta.meetingId && meetingManager.getMeeting(meta.meetingId);
+    const unstartedCodex = isCodexRuntime && require('../../core/codex-native-runtime').isUnstartedRuntime(meta.nativeRuntime)
+      && !effectiveCodexSid;
+    const isDevSeat = !!managedMeeting?.groupChat
+      && (managedMeeting.mode === 'dev' || managedMeeting.scene === 'dev');
+    const lazyCodex = !isDeepSeek && isCodexRuntime && isDevSeat;
+    // Same for a native Claude dev seat: it keeps its Hub-assigned session ID and
+    // only spawns the engine when the room actually dispatches to it.
+    const lazyClaude = meta.runtimeBackend === 'claude-stream-json'
+      && (isDevSeat || meta.nativeRuntime?.connection === 'unstarted');
     const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
       && managedMeeting.subSessions?.includes(meta.hubId);
-    const freshUnboundAgentLeague = (isAgentLeague || isFileFlowMember) && (
+    const freshUnboundAgentLeague = unstartedCodex || (isAgentLeague || isFileFlowMember) && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)
@@ -249,6 +258,7 @@ function createResumeSessionHandler(deps) {
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+      ...(meta.runtimeBackend === 'claude-stream-json' ? { ...meta.nativeConfig, nativeRuntime: meta.nativeRuntime } : {}),
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId && !freshUnboundAgentLeague,
       // Agent 联赛的空壳 Session 从未产生过原生 turn，没有历史可选。
@@ -256,8 +266,10 @@ function createResumeSessionHandler(deps) {
       // 保留 Hub ID fresh start；一旦首次 turn 生成 codexSid，后续仍精确 resume。
       useResume: isNativeResumeKind && !freshUnboundAgentLeague,
       codexResumePicker: codexMissingSid && !freshUnboundAgentLeague,
-      codexSid: effectiveCodexSid,
+        codexSid: effectiveCodexSid,
+        ...(meta.acpSid ? { acpSid: meta.acpSid } : {}),
       ...(meta.nativeRuntime ? {nativeRuntime:meta.nativeRuntime} : {}),
+      ...((lazyCodex || unstartedCodex || lazyClaude) ? {lazyStart:true} : {}),
       ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),
       ...(meta.codexSandbox ? {sandbox:meta.codexSandbox} : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,

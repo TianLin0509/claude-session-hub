@@ -7,6 +7,7 @@ const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
+const { isAcpKind, buildAcpOptions, LABELS: ACP_LABELS } = require('./acp-profiles');
 const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
 const {
   nativeSessionIdentity,
@@ -24,8 +25,6 @@ const {
   ensureDeepSeekCodexProfile,
 } = require('./deepseek-codex-profile.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
-const { ensureClaudeProjectTrusted } = require('./claude-project-trust.js');
-const { detectClaudeTrustDialog } = require('./claude-trust-dialog.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
@@ -246,6 +245,59 @@ const CLAUDE_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'pl
 function claudePermissionModeArg(opts = {}) {
   const requested = opts.permissionMode || (opts.autonomous === true ? 'bypassPermissions' : '');
   return CLAUDE_PERMISSION_MODES.has(requested) ? ` --permission-mode ${requested}` : '';
+}
+
+function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
+  const { ClaudeNativeSession } = require('./claude-native-session');
+  const { NativeAgentJournal } = require('./native-agent-journal');
+  const { buildClaudeNativeArgs, prepareClaudeSettingsOverlay } = require('./claude-native-launch');
+  if ((opts.useContinue || opts.resumePicker || kind === 'claude-resume')
+      && !opts.resumeCCSessionId && !opts.forkCCSessionId) {
+    throw new Error('请选择要恢复的 Claude 历史会话；原生连接需要明确的会话 ID');
+  }
+  const cv = getConfigValues();
+  const hubDataDir = getHubDataDir();
+  const mcp = buildClaudeMeetingMcpArgs({ cwd, hubDataDir, mcpConfigFile: opts.mcpConfigFile,
+    mcpProfile: opts.mcpProfile || (legacy ? 'lean' : 'full') });
+  const settings = [];
+  if (opts.meetingId || opts.autonomous === true) settings.push(ensureGroupChatSettings(hubDataDir));
+  if (!legacy && shouldUseClaudeFastSettings(cv, opts)) settings.push(resolveAsarUnpacked('claude-subscription-fast-settings.json'));
+  const settingsFile = prepareClaudeSettingsOverlay(settings, {
+    directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id,
+    overrides: { fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts) },
+  });
+  const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
+    effort: legacy || process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
+      : (opts.effort || 'max'),
+    permissionMode: opts.permissionMode || (opts.autonomous === true || legacy ? 'bypassPermissions' : undefined),
+    appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
+    addDirs: opts.addDirs, settingSources: opts.settingSources,
+    mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
+  const journal = new NativeAgentJournal({ directory: path.join(hubDataDir, 'native-agent-submissions'), sessionId: id });
+  const fixture = process.env.CLAUDE_HUB_CLAUDE_STREAM_FIXTURE;
+  if (fixture && !process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Claude protocol fixtures require isolated Hub data');
+  // A seat that never started has a Hub-assigned session ID but no conversation
+  // behind it. Resuming that ID would fail ("no conversation found"), so it is
+  // relaunched under the same identity instead -- provided the engine really
+  // never wrote a history for it.
+  const records = journal.list();
+  const unstarted = opts.nativeRuntime?.connection === 'unstarted' && opts.nativeRuntime?.lazyStart === true
+    && !records.length && !opts.forkCCSessionId && !!opts.resumeCCSessionId
+    && !require('./claude-native-history').findNativeClaudeHistory(opts.resumeCCSessionId, { cwd, env });
+  return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs, settingsFile,
+    fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
+    ownership: true, nativeProvider: 'claude', lazyStart: opts.lazyStart === true,
+    historyTitle: opts.userRenamed ? opts.title : null,
+    ...(unstarted ? { sessionId: opts.resumeCCSessionId } : {}),
+    resumeSessionId: unstarted ? null : (opts.forkCCSessionId || opts.resumeCCSessionId), fork: !!opts.forkCCSessionId,
+    restoredRuntime: opts.nativeRuntime,
+    restoredRecords: records,
+    restoredActivities: journal.listActivities(), persistActivity: data => journal.saveActivity(data),
+    persistSubmission: data => journal.saveSubmission(data), persistLifecycle: event => journal.saveLifecycle(event),
+    ...(fixture ? { executable: process.execPath,
+      commandArgs: [fixture, '--fixture=' + (process.env.CLAUDE_HUB_CLAUDE_FIXTURE_MODE || 'normal')],
+      env: { ...env, ELECTRON_RUN_AS_NODE: '1' } } : {}),
+  });
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -929,7 +981,9 @@ function buildNativeCodexOptions(info, opts, env) {
   }
   const tier = info.codexSpeedTier;
   if (tier !== 'inherit') {
-    config['features.fast_mode'] = tier === 'fast';
+    // Keep the native server capable of honoring per-turn speed changes.
+    // The service tier below controls billing; false here silently drops Fast.
+    config['features.fast_mode'] = true;
     config.service_tier = tier === 'standard' ? 'default' : tier;
   }
   const threadConfig = { model_reasoning_effort:normalizeCodexEffort(info.effort),
@@ -942,12 +996,24 @@ function buildNativeCodexOptions(info, opts, env) {
     mcpProfile:profile,
     processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+JSON.stringify(value)]),
     threadParams:{cwd:info.cwd,model:info.currentModel.id,approvalPolicy,sandbox,config:threadConfig},
-    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort)},
+    turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort),
+      ...(tier && tier !== 'inherit' ? {serviceTier:tier === 'standard' ? 'default' : tier} : {})},
     resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
     forkId:opts.codexForkSid || null,
-    picker:!opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
-    resumeLatest:opts.useResume && !opts.codexSid,
+    picker:!opts.lazyStart && !opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
+    resumeLatest:!opts.lazyStart && opts.useResume && !opts.codexSid,
   };
+}
+
+function sharedCodexRuntimeEnabled(env = process.env) {
+  const value = String(env.CLAUDE_HUB_CODEX_SHARED_RUNTIME || '').trim().toLowerCase();
+  if (['0','false','off'].includes(value)) return false;
+  if (['1','true','on'].includes(value)) return true;
+  if (env.CLAUDE_HUB_E2E === '1') return false;
+  // Production runs inside Electron. Plain Node unit tests keep the direct
+  // session unless they explicitly opt in, so existing injected clients stay
+  // deterministic while isolated Electron E2E covers the shared path.
+  return !!process.versions.electron;
 }
 
 class SessionManager extends EventEmitter {
@@ -994,6 +1060,7 @@ class SessionManager extends EventEmitter {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
     const id = opts.id || uuid();
+    const isAcp = isAcpKind(kind);
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
@@ -1018,7 +1085,7 @@ class SessionManager extends EventEmitter {
       if(!webRoute && nativeConfig.CODEX_BACKEND==='api' && !nativeConfig.CODEX_API_KEY) throw new Error('Codex API 账号未配置密钥，未切换到订阅账号');
       if(!webRoute && opts.codexProfile && resolveCodexSubscriptionProfile(nativeConfig,opts.codexProfile).id!==opts.codexProfile) throw new Error('Codex 账号配置不存在，未切换到默认账号');
     }
-    if (isCodex && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
+    if ((isCodex || isClaude || isDeepSeekLegacy) && this.sessions.has(id)) throw new Error('该 Hub 会话仍然存在，请返回原会话；不能重复接管');
     if (isCodex && opts.codexSid && opts.useResume) {
       for (const live of this.sessions.values()) {
         if (live.info?.codexSid === opts.codexSid && live.info.status !== 'dormant') {
@@ -1028,9 +1095,10 @@ class SessionManager extends EventEmitter {
     }
     const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
-    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi;
+    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi || isAcp;
     let title;
     if (opts.title) title = opts.title;
+    else if (isAcp) title = ACP_LABELS[kind.replace(/-resume$/, '')];
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
@@ -1261,25 +1329,25 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (isDeepSeekLegacy) {
-      ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
-    } else if (isClaude) {
-      // 2026-08-28：新建会话又开始卡「Quick safety check / Yes, I trust this folder」。
-      // 主桌 Claude 走共享的 ~/.claude.json（没有 CLAUDE_CONFIG_DIR），以前完全靠下面
-      // 那段 PTY 探测按回车兜着；而 Claude Code v2.1.251 把默认高亮项换成了
-      // "No, exit"，盲按回车等于替用户选退出，等于这条兜底彻底失效。
-      // 实测预写 projects[cwd].hasTrustDialogAccepted 能让框根本不出现，且是唯一
-      // 无竞态的做法（写的是 spawn 之前、CLI 还没起来的时刻）。
-      ensureClaudeProjectTrusted(spawnCwd, { configDir: sessionEnv.CLAUDE_CONFIG_DIR || null });
-    }
-
+    const isNativeClaude = isClaude || isDeepSeekLegacy;
     if (isCodex) {
 
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
     }
-    const ptyProcess = isCodex
-      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime})
+    // The web bridge must never attach to an already-running ordinary Codex
+    // broker, whose loaded code and lifecycle belong to other Hub sessions.
+    const CodexSessionClass = isCodex && !webRoute && sharedCodexRuntimeEnabled(sessionEnv)
+      ? require('./codex-shared-session').CodexSharedSession
+      : require('./codex-native-session').CodexNativeSession;
+    const ptyProcess = isAcp
+      ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
+        {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
+      : isCodex
+      ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+        hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
+        lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
+      : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
       : pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
       cols: 120,
@@ -1295,52 +1363,6 @@ class SessionManager extends EventEmitter {
       // cursor makes Windows ConPTY more prone to transient cursor ghosts.
       conptyInheritCursor: (isCodexRuntime || isKimi) ? false : !opts.noInheritCursor,
     });
-
-    // 信任框兜底。正常路径是上面 spawn 前的 ensureClaudeProjectTrusted 已经把
-    // projects[cwd].hasTrustDialogAccepted 写好、框根本不出现；这里只处理预写没
-    // 生效的场景（.claude.json 损坏 / 只读 / Claude 换了存储位置）。
-    //
-    // ⚠ 绝不能再像老实现那样「检测到就直接回车」：2026-08-28 实测 Claude Code
-    // v2.1.251 的默认高亮项是 "No, exit"，盲按回车等于替用户选退出。
-    // detectClaudeTrustDialog 会按 CUP 把整帧还原成行，定位到「Yes, I trust this
-    // folder」那一行，用方向键移过去再确认；定位不出来就一个键都不发，把选择权
-    // 还给用户。避免新 meeting workspace 卡 trust dialog 致 cli 永不 ready
-    //（群聊里该 Claude 全程 no_sent，如投委会主席）。
-    if (isClaude) {
-      // 信任框首帧画出来时 ink 还没把 stdin 切到 raw 模式，此刻发按键会被整段丢掉
-      // （2026-08-28 实测：检测到就立刻发 → 光标纹丝不动；等 1.2s 再发 → 正常选中
-      // Yes 并进入提示符）。所以先攒一拍，再拿最新缓冲重放一次确认框还在。
-      const TRUST_SETTLE_MS = 1200;
-      let _trustDone = false;
-      let _trustBuf = '';
-      let _trustTimer = null;
-      const _trustSub = ptyProcess.onData((d) => {
-        if (_trustDone) return;
-        // 4000 太小：整帧带 SGR 的信任框轻松超过它，会把 Yes 选项那几行切掉。
-        _trustBuf = (_trustBuf + d).slice(-16000);
-        if (_trustTimer) return;
-        if (!detectClaudeTrustDialog(_trustBuf)) return;
-        _trustTimer = setTimeout(() => {
-          _trustTimer = null;
-          // 这一拍里用户可能已经自己答了。重放缓冲得到的是**最终**屏幕状态，
-          // 框没了就返回 null，我们什么都不发。
-          const dialog = detectClaudeTrustDialog(_trustBuf);
-          if (!dialog) return;
-          _trustDone = true;
-          // 逐键发送并留出间隔：方向键和回车挤在同一次 write 里可能被同一帧一起
-          // 吞掉，回车就落在错误的选项上。
-          dialog.keys.forEach((key, index) => {
-            setTimeout(() => { try { ptyProcess.write(key); } catch {} }, index * 80);
-          });
-          try { _trustSub.dispose(); } catch {}
-        }, TRUST_SETTLE_MS);
-      });
-      setTimeout(() => {
-        if (_trustDone) return;
-        if (_trustTimer) { clearTimeout(_trustTimer); _trustTimer = null; }
-        try { _trustSub.dispose(); } catch {}
-      }, 45000);
-    }
 
     let currentModel = null;
     if (isClaude) {
@@ -1388,10 +1410,16 @@ class SessionManager extends EventEmitter {
     const info = {
       id,
       kind,
+      ...(isNativeClaude ? { runtimeBackend: 'claude-stream-json', nativeRuntime: ptyProcess.runtime,
+        ccSessionId: ptyProcess.sessionId,
+        nativeConfig: require('./claude-native-launch').claudeNativeResumeConfig({ ...opts,
+          permissionMode: opts.permissionMode || (opts.autonomous === true || isDeepSeekLegacy ? 'bypassPermissions' : undefined) }) } : {}),
       title,
       status: 'idle',
       ...(isCodex ? {runtimeBackend:'codex-app-server',nativeRuntime:ptyProcess.runtime,
         codexApprovalPolicy:opts.approvalPolicy || 'never',codexSandbox:opts.sandbox || 'danger-full-access'} : {}),
+      ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
+        acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
@@ -1571,6 +1599,14 @@ class SessionManager extends EventEmitter {
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
+      if (isNativeClaude) {
+        // Display only, the same backstage contract Codex native sessions get.
+        // Native items remain the single source of runtime state, so these
+        // bytes must not feed activity counters, the CLI-ready detector or the
+        // scrollback rewriter -- only the terminal pane.
+        if (entry && entry.pty === ptyProcess) deliverTerminalData(data);
+        return;
+      }
       // Match the exit-path id-reuse guard: late bytes from an old PTY must
       // never mutate the replacement session's rewriter or terminal state.
       if (!entry || entry.pty !== ptyProcess) return;
@@ -1599,6 +1635,10 @@ class SessionManager extends EventEmitter {
     });
 
     ptyProcess.onExit((exitInfo) => {
+      if (isNativeClaude && !ptyProcess.closed) {
+        // Keep the managed session and its unknown receipt available for explicit recovery.
+        return;
+      }
       const entry = this.sessions.get(id);
       if (entry && entry.pty === ptyProcess && entry.terminalOutputFlushTimer) {
         clearTimeout(entry.terminalOutputFlushTimer);
@@ -1610,8 +1650,8 @@ class SessionManager extends EventEmitter {
       this._handlePtyExit(id, ptyProcess, exitInfo);
     });
 
-    if (isCodex) {
-      Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
+    if (isCodex || isAcp) {
+      if (isCodex) Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
       const publish = () => {
         if (this.sessions.get(id)?.pty !== ptyProcess) return;
         this.emit('codex-session-updated', this._toPublic(info));
@@ -1625,14 +1665,30 @@ class SessionManager extends EventEmitter {
         if (runtime.completedAt) info.lastCompletedAt = runtime.completedAt;
         publish();
       });
-      ptyProcess.on('bound', bound => {
-        info.codexSid = bound.threadId;
-        if (bound.cwd) info.cwd = bound.cwd;
-        if (bound.path) info.transcriptPath = bound.path;
-        if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
-        if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
+      if (isCodex) ptyProcess.on('control', control => {
+        info.codexSharedControl = control;
         publish();
       });
+      if (isCodex) ptyProcess.on('locate-request', () => {
+        this.emit('codex-locate-request', { sessionId:id });
+      });
+      ptyProcess.on('bound', bound => {
+        if (isAcp) {
+          info.acpSid = bound.threadId;
+          if (bound.capabilities) info.acpCapabilities = bound.capabilities;
+          if (bound.configOptions) {
+            info.acpConfigOptions = bound.configOptions;
+            info.effort = bound.configOptions.find(o => o.category === 'thought_level')?.currentValue || null;
+          }
+        } else info.codexSid = bound.threadId;
+        if (bound.cwd) info.cwd = bound.cwd;
+        if (Object.hasOwn(bound, 'path')) info.transcriptPath = bound.path;
+        if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
+        if (bound.reasoningEffort) info.effort = bound.reasoningEffort;
+        if (bound.codexSpeedTier) info.codexSpeedTier = bound.codexSpeedTier;
+        publish();
+      });
+      ptyProcess.on('thread-reset', () => { info.codexSid=null; info.transcriptPath=null; publish(); });
       ptyProcess.on('choices', choices => { info.nativeThreadChoices = choices; publish(); });
       ptyProcess.on('migration-draft', text => { info.nativeMigrationDraft=text; publish(); });
       ptyProcess.on('renamed', name => { info.title = name; publish(); });
@@ -1665,7 +1721,7 @@ class SessionManager extends EventEmitter {
         publish();
       });
       // Deferral lets the normal session-created IPC finish before native updates.
-      queueMicrotask(() => ptyProcess.start().catch(error => {
+      if (ptyProcess.sharedRuntime || ptyProcess.runtime.connection !== 'unstarted') queueMicrotask(() => ptyProcess.start().catch(error => {
         console.warn('[codex-native] start failed:',id,error.message);
       }));
       return this._toPublic(info);
@@ -1675,115 +1731,7 @@ class SessionManager extends EventEmitter {
       ptyProcess.write('Set-PSReadLineOption -PredictionViewStyle ListView 2>$null; clear\r\n');
     }
 
-    if (isClaude) {
-      // 所有路径（fresh / resume / continue）都显式传 --model，
-      // 防止 user-level ~/.claude/settings.local.json 的 model 字段（被 /model 命令污染）
-      // 影响 resume 出来的 session。Claude CLI 的 --resume 仅恢复 transcript 对话历史，
-      // 不从 transcript 反推 model 设置；下一条消息的 model 解析顺序为
-      // CLI --model > env > settings 文件，所以必须显式覆盖。
-      // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
-      const model = opts.model || DEFAULT_MODEL_BY_KIND.claude;
-      // 默认 --effort max：用户偏好"立花道雪工作台"所有 Claude 会话上 max effort。
-      // settings.json 持久档为 effortLevel: max（CLI --effort 合法枚举：low/medium/high/xhigh/max；
-      // ultracode 不是合法 --effort 枚举值，旧注释把它当 enum 是错的）。
-      // 这里 --effort max 与 settings.effortLevel=max 同值，作为"防御性显式指定"——
-      //   防止 settings.local.json 或 /effort 命令污染把会话降到低档。
-      // ultracode 是独立的 per-turn 关键词触发器（在 prompt 里输入 "ultracode" 字面词
-      //   即可本回合 opt-in workflow tool + xhigh effort），由 settings.json 的
-      //   `workflowKeywordTriggerEnabled` 控制（默认 on，无需显式写）。注意：UI/遥测
-      //   名为 ultracodeKeywordTrigger，但 on-disk key 实际是 workflowKeywordTriggerEnabled。
-      //   --effort max 不会阻塞该触发器，因为触发器是会话内独立 toggle，与启动 flag 解耦。
-      // CLAUDE_HUB_NO_EFFORT_MAX=1 可关启动期注入。
-      // opts.effort 让新建会话弹窗选定的档位生效（枚举外的值一律忽略，回落 max，
-      // 避免把非法字符串拼进 PTY 命令行）。
-      const effort = CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : 'max';
-      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
-      const permissionFlag = claudePermissionModeArg(opts);
-      let cmd;
-      if (opts.forkCCSessionId) {
-        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model}${effortFlag}${permissionFlag}`;
-      } else if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}${effortFlag}${permissionFlag}`;
-      } else if (opts.useContinue) {
-        cmd = ` claude --continue --model ${model}${effortFlag}${permissionFlag}`;
-      } else if (kind === 'claude-resume') {
-        cmd = ` claude --resume --model ${model}${effortFlag}${permissionFlag}`;
-      } else {
-        cmd = ` claude --model ${model}${effortFlag}${permissionFlag}`;
-      }
-      // Append system prompt file if provided (TeamSessionManager injects character prompt)
-      if (opts.appendSystemPromptFile) {
-        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
-      }
-      // 群聊按成员选择 MCP 档位，同时把 research/通信 MCP 合并进同一个
-      // --mcp-config 列表；它们是房间能力，不能被 Lean/Browser/Wireless 过滤掉。
-      if (opts.meetingId || (opts.autonomous === true && opts.mcpConfigFile)) {
-        // autonomous 走与群聊同一条合并路径：注入的 research MCP 是"房间能力"必须
-        // 保留，同时靠档位 + --strict-mcp-config 把 ~/.claude.json 里的全局 server
-        // 挡在外面。少了 strict，只给 --mcp-config 等于和全局合并，Agent 会平白
-        // 拉起 superran 这类常驻子进程（单个恒定提交 2.66 GB）。
-        const mcpPlan = buildClaudeMeetingMcpArgs({
-          mcpConfigFile: opts.mcpConfigFile,
-          mcpProfile: opts.mcpProfile,
-          cwd: spawnCwd,
-          hubDataDir: getHubDataDir(),
-        });
-        cmd += mcpPlan.args;
-        console.log(`[claude-mcp] ${kind} ${opts.meetingId ? '群聊' : 'autonomous'}档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无额外全局 MCP)'}`);
-      // Append MCP config file if provided (TeamSessionManager injects MCP server config)
-      } else if (opts.mcpConfigFile) {
-        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
-      } else {
-        // 单人会话的 MCP 加载档位（对标 Codex 的 lean/browser/wireless/full）。
-        // 默认 full = 全量继承 = 改动前的行为；选了别的档才生成过滤后的 config。
-        const mcpPlan = buildClaudeMcpProfileArgs({
-          mcpProfile: opts.mcpProfile,
-          cwd: spawnCwd,
-          hubDataDir: getHubDataDir(),
-        });
-        if (mcpPlan.args) {
-          cmd += mcpPlan.args;
-          console.log(`[claude-mcp] ${kind} 档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无)'}`);
-        }
-      }
-      // 群聊成员与 autonomous Agent：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
-      cmd += buildGroupChatIsolationFlags(opts.meetingId || opts.autonomous === true);
-      // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
-      // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
-      // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
-      // 2026-06-11：实测 fastMode 交互式会话不落盘 transcript jsonl（/exit 后仍空），
-      //   导致 transcript-tap 拿不到 turn 文本 → 卡片同步收不到回复。
-      //   CLAUDE_HUB_NO_FAST=1 可全局禁用 fast 注入；
-      //   新建会话弹窗的「快速模式」开关则是按会话关（opts.fastMode === false）。
-      const cv = getConfigValues();
-      if (shouldUseClaudeFastSettings(cv, opts)) {
-        const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
-        cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
-      }
-      cmd += '\r\n';
-      let sent = false;
-      let debounceTimer = null;
-      const watcher = ptyProcess.onData(() => {
-        if (sent) return;
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          if (sent) return;
-          sent = true;
-          watcher.dispose();
-          const s = this.sessions.get(id);
-          if (s) s.pty.write(cmd);
-        }, 200);
-      });
-      const safetyTimer = setTimeout(() => {
-        if (sent) return;
-        sent = true;
-        watcher.dispose();
-        if (debounceTimer) clearTimeout(debounceTimer);
-        const s = this.sessions.get(id);
-        if (s) s.pty.write(cmd);
-      }, 3000);
-      pendingTimers.push(safetyTimer);
-    }
+    if (isNativeClaude) require('./claude-native-binding').bindClaudeNativeSession(this, id, ptyProcess);
 
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
@@ -1908,72 +1856,6 @@ class SessionManager extends EventEmitter {
           key: '\x1b[C',   // Right
         });
       }
-    }
-
-    if (isDeepSeekLegacy) {
-      let cmd;
-      // 仅用于恢复迁移前的 Claude transcript。新 DeepSeek 会话已经在上面的
-      // isCodexRuntime 分支通过 Responses API 启动。
-      if (opts.forkCCSessionId) {
-        // DeepSeek 也是 claude CLI，--fork-session 同样可用；接上之后分支功能不再是
-        // Claude/Codex 专属（Kimi CLI 没有 fork 能力，只有 --session/--continue）。
-        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
-        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model} --permission-mode bypassPermissions`;
-      } else if (opts.resumeCCSessionId) {
-        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
-      } else if (kind === 'deepseek-resume') {
-        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
-        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
-      } else if (opts.useContinue) {
-        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
-        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
-      } else {
-        cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(opts.model)} --permission-mode bypassPermissions`;
-      }
-      // 迁移前的 DeepSeek 群聊同样按成员档位合并投研 MCP；无历史字段时 Lean
-      // 保持原先 strict 隔离行为，避免恢复老会话后突然拉起全部全局 MCP。
-      if (opts.meetingId) {
-        const mcpPlan = buildClaudeMeetingMcpArgs({
-          mcpConfigFile: opts.mcpConfigFile,
-          mcpProfile: opts.mcpProfile || 'lean',
-          cwd: spawnCwd,
-          hubDataDir: getHubDataDir(),
-        });
-        cmd += mcpPlan.args;
-      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
-      } else if (opts.mcpConfigFile) {
-        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
-      }
-      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
-      if (opts.appendSystemPromptFile) {
-        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
-      }
-      // 群聊成员：禁 skill + plugin
-      cmd += buildGroupChatIsolationFlags(opts.meetingId);
-      cmd += '\r\n';
-      let sent = false;
-      let debounceTimer = null;
-      const watcher = ptyProcess.onData(() => {
-        if (sent) return;
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          if (sent) return;
-          sent = true;
-          watcher.dispose();
-          const s = this.sessions.get(id);
-          if (s) s.pty.write(cmd);
-        }, 200);
-      });
-      const safetyTimer = setTimeout(() => {
-        if (sent) return;
-        sent = true;
-        watcher.dispose();
-        if (debounceTimer) clearTimeout(debounceTimer);
-        const s = this.sessions.get(id);
-        if (s) s.pty.write(cmd);
-      }, 3000);
-      pendingTimers.push(safetyTimer);
     }
 
     if (isKimi) {
@@ -2123,6 +2005,7 @@ class SessionManager extends EventEmitter {
     const result = this.suspendSession(sessionId, {
       ...options,
       reason: options.reason || 'user-close',
+      allowSharedViewerDetach: session.pty?.control?.shared && session.pty.control.role === 'viewer',
     });
     return result && result.ok
       ? { ...result, action: 'suspended', recoverable: true }
@@ -2139,11 +2022,15 @@ class SessionManager extends EventEmitter {
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
-    if (session.info.runtimeBackend === 'codex-app-server') {
+    if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
-      if (!runtime || runtime.connection !== 'connected'
-          || !['idle','completed','interrupted','failed'].includes(runtime.state)) {
-        return {ok:false,error:'native-turn-unfinished',message:'Codex 仍在执行、等待操作或状态待核对'};
+      const sharedViewerDetach = options.allowSharedViewerDetach === true
+        && session.info.runtimeBackend === 'codex-app-server'
+        && session.pty?.control?.shared && session.pty.control.role === 'viewer';
+      if (!sharedViewerDetach && (!runtime || runtime.connection !== 'connected'
+          || !['idle','completed','interrupted','failed'].includes(runtime.state)
+          || runtime.backgroundTasks?.length || runtime.backgroundActivities?.length)) {
+        return {ok:false,error:'native-turn-unfinished',message:'会话仍在执行、等待操作或状态待核对'};
       }
     }
     if (session.suspendRequestedAt) {
@@ -2436,6 +2323,13 @@ class SessionManager extends EventEmitter {
 
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
+    if (s?.info.runtimeBackend === 'claude-stream-json') {
+      if (data === '\u0003') {
+        s.pty.interrupt().catch(error => s.pty.emit('action-error', error.message));
+        return;
+      }
+      throw new Error('Claude 原生会话必须通过结构化消息入口发送');
+    }
     if (s && s.pty) {
       const inputAt = Date.now();
       s.lastInputAt = inputAt;
@@ -2510,6 +2404,16 @@ class SessionManager extends EventEmitter {
     return session && session.info.runtimeBackend === 'codex-app-server' ? session.pty : null;
   }
 
+  getNativeClaude(sessionId) {
+    const session = this.sessions.get(sessionId);
+    return session?.info.runtimeBackend === 'claude-stream-json' ? session.pty : null;
+  }
+
+  getNativeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    return session && ['codex-app-server','acp'].includes(session.info.runtimeBackend) ? session.pty : null;
+  }
+
   // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
   getGroupChatReady(sessionId) {
     const s = this.sessions.get(sessionId);
@@ -2547,6 +2451,7 @@ class SessionManager extends EventEmitter {
   noteAgentTurnStarted(sessionId, event = {}) {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
+    if (s.info.runtimeBackend === 'claude-stream-json' && event.signalSource !== 'claude-stream-json') return null;
     const observedAt = Number(event.observedAt || event.startedAt) || Date.now();
     s.agentTurnStartSeq = (s.agentTurnStartSeq || 0) + 1;
     s.agentTurnStartedAt = observedAt;
@@ -2571,7 +2476,7 @@ class SessionManager extends EventEmitter {
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
   relaunchCli(sessionId, options = {}) {
     const s = this.sessions.get(sessionId);
-    if (s && s.info.runtimeBackend === 'codex-app-server') {
+    if (s && ['codex-app-server','acp'].includes(s.info.runtimeBackend)) {
       const runtime = s.info.nativeRuntime;
       if (runtime && ['running','waiting'].includes(runtime.state)) return false;
       s.pty.reconnect().catch(error => {
@@ -2581,6 +2486,7 @@ class SessionManager extends EventEmitter {
       return true;
     }
     if (!s || !s.pty) return false;
+    if (s.info.runtimeBackend === 'claude-stream-json') return false;
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     const meetingId = s.info && s.info.meetingId;
@@ -2634,6 +2540,9 @@ class SessionManager extends EventEmitter {
       if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode, autonomous })) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      } else if (s.info?.fastMode === false) {
+        const standardSettingsPath = resolveAsarUnpacked('claude-subscription-standard-settings.json');
+        fastFlag = ` --settings "${standardSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
       // 单人和群聊都沿用自己的 MCP 档位；群聊与 autonomous 额外恢复 research config。
       const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))
@@ -2683,10 +2592,14 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
+      ...(info.runtimeBackend === 'acp' ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
+        acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
+        nativeConfig:info.nativeConfig,
         ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),
         codexApprovalPolicy:info.codexApprovalPolicy,codexSandbox:info.codexSandbox,
-        nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null} : {}),
+        nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null,
+        ...(info.codexSharedControl ? {codexSharedControl:info.codexSharedControl} : {})} : {}),
       id: info.id,
       meetingId: info.meetingId || null,
       title: info.title,
@@ -3087,6 +3000,7 @@ module.exports = {
   clearSessionManagerConfigCache,
   _private: {
     buildNativeCodexOptions,
+    sharedCodexRuntimeEnabled,
     ensureCodexCwdTrusted,
     clearProxyEnv,
     applyProxyEnv,

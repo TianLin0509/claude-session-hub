@@ -43,6 +43,32 @@ function make(extractResult) {
 async function run() {
   const originalInit = groupChatWatcher.init;
   try {
+    for (const scenario of ['matching', 'wrong-user', 'wrong-content', 'unfinished', 'empty']) {
+      const h = make({ text: '不得用旧转录猜结果' });
+      h.sessionManager.getSession = sid => sid === 's1' ? { id: sid, kind: 'claude',
+        runtimeBackend: 'claude-stream-json', title: 'Claude 1', meetingId: 'm1' } : null;
+      h.tap.extractLatestTurn = () => { throw new Error('native recovery entered legacy transcript extraction'); };
+      const orch = groupchat.getOrchestrator(h.root, 'm1');
+      const begin = orch.beginTurn('exact Claude attempt');
+      const receipt = orch.recordTurnPrompt(begin.turnNum, 's1', 'exact Claude attempt', {
+        runId: begin.runId, memberId: 'm1', kind: 'claude', dispatchAt: Date.now() - 100,
+      });
+      orch.setSendStatus(begin.turnNum, 's1', 'submitted', { attemptId: receipt.attemptId,
+        userMessageId: 'user-current', nativePromptFingerprint: 'content-current' });
+      h.sessionManager.getNativeClaude = () => ({ records: new Map([[receipt.attemptId, {
+        userMessageId: scenario === 'wrong-user' ? 'old-user' : 'user-current',
+        fingerprint: scenario === 'wrong-content' ? 'wrong-content' : 'content-current',
+        status: scenario === 'unfinished' ? 'unknown' : 'completed',
+        finalText: scenario === 'empty' ? '' : 'precise Claude result', completedAt: Date.now(),
+      }]]) });
+      groupchat._private.resetCache();
+      const summary = await h.dispatcher.recoverPendingAttempts();
+      const valid = ['matching', 'empty'].includes(scenario);
+      assert.strictEqual(summary.recovered, valid ? 1 : 0, scenario);
+      assert.strictEqual(summary.pending, valid ? 0 : 1, scenario);
+      if (valid) assert.strictEqual(groupchat.getOrchestrator(h.root, 'm1').getState().turns[0].by.s1,
+        scenario === 'empty' ? '' : 'precise Claude result');
+    }
     {
       const h = make({
         text: 'crash 前已经写完的最终答案', extractMode: 'final_answer',

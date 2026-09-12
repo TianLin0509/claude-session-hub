@@ -48,16 +48,11 @@ async function shot(name) {
 const query = (selector, attr) => client.eval(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map(e=>${attr ? `e.getAttribute(${JSON.stringify(attr)})` : 'e.textContent'})`);
 const norm = p => p.replace(/\\/g, '/').toLowerCase();
 async function catalogs(expected, tag) {
-  await click('#home-refresh');
-  await wait('home formal projects', async () => (await query('#home-workspace-launch [data-workspace-index]')).length === Math.min(expected.length,6));
-  const titles = await query('#home-workspace-launch [data-workspace-index]', 'title');
-  assert(titles.every(t => expected.some(p => t.includes(p))));
-  await shot(tag + '-home');
   await client.eval('document.querySelector("#session-project-filter").blur();document.querySelector("#session-project-filter").focus()');
   await wait('sidebar loaded', () => client.eval('!document.querySelector("#session-project-filter").hasAttribute("aria-busy")'));
   const sidebar = (await query('#session-project-filter option', 'value')).filter(v => !['all', 'random'].includes(v));
   assert.deepEqual(sidebar.sort(), expected.map(norm).sort()); await shot(tag + '-sidebar');
-  await click('#btn-new');
+  await click('#home-create-session');
   await wait('session library', async () => (await query('#new-session-project-library [data-project-path]', 'data-project-path')).length === expected.length);
   assert.deepEqual((await query('#new-session-project-library [data-project-path]', 'data-project-path')).sort(), [...expected].sort());
   await shot(tag + '-session');
@@ -106,10 +101,7 @@ async function run() {
     await wait('visible registry error', () => client.eval('!document.querySelector("#session-project-filter-note").hidden'));
     await shot('read-error');
     assert(!(await query('#session-project-filter option', 'value')).includes(norm(main)), 'no stale catalog on read failure');
-    await click('#home-refresh');
-    await wait('home read error', () => client.eval('document.querySelector("#home-workspace-launch").textContent.includes("读取失败")'));
-    await shot('home-read-error');
-    await click('#btn-new');
+    await click('#home-create-session');
     await wait('session read error', () => client.eval('document.querySelector("#new-session-project-library").textContent.includes("读取失败")'));
     await shot('session-read-error');
     await click('[data-launch-intent="group"]'); await click('[data-mcm-scene="dev"]');

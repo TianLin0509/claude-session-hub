@@ -1,0 +1,23 @@
+'use strict';
+const assert = require('node:assert/strict');
+const { noticeContent } = require('../renderer/ui-feedback');
+const { hoverSummary, excerpt } = require('../renderer/session-hover-card');
+const { effortLabel, speedLabel } = require('../renderer/ui-labels');
+const occupied = noticeContent('会话恢复失败：thread private-id already has an active writer');
+assert.equal(occupied.title, '这个会话正在另一窗口中使用');
+assert.match(occupied.detail, /private-id/);
+assert.doesNotMatch(occupied.body, /private-id/);
+assert.equal(noticeContent('原始错误 <script>不可丢失</script>').body, '原始错误 <script>不可丢失</script>');
+assert.equal(hoverSummary({}).context, '未知');
+assert.equal(hoverSummary({}).model, '未确认');
+assert.equal(hoverSummary({}).speed, '未确认');
+assert.match(hoverSummary({}).excerpt, /暂无摘要/);
+assert.match(hoverSummary({}).status, /未知|未确认/);
+assert.equal(hoverSummary({contextPct:NaN}).context, '未知');
+assert.equal(hoverSummary({contextPct:0,effort:'high',codexSpeedTier:'standard'}).context, '0%');
+assert.equal(excerpt('\x1b[32m不要删除 English 48 kHz\x1b[0m'), '不要删除 English 48 kHz');
+assert.equal(excerpt('😀'.repeat(350)).length, 681); // no split surrogate pair
+assert.equal(effortLabel('high'), '高');
+assert.equal(effortLabel('future-tier'), 'future-tier');
+assert.equal(speedLabel('standard'), '标准');
+console.log('PASS UI presentation: lossless error detail, unknown state, excerpt and parameter labels');

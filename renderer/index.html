@@ -8,7 +8,9 @@
   <script src="theme-bootstrap.js"></script>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="voice-input.css">
   <link rel="stylesheet" href="session-details.css">
+  <link rel="stylesheet" href="sidebar-unread.css">
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
@@ -34,6 +36,8 @@
   <script src="../node_modules/prismjs/components/prism-markdown.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/katex/contrib/auto-render.min.js"></script>
+  <link rel="stylesheet" href="styles/question-directory.css">
+  <link rel="stylesheet" href="styles/ui-polish.css">
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -49,7 +53,7 @@
       <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
       <div class="terminal-crumb" id="toolbar-crumb"></div>
       <div class="hub-identity" id="hub-identity" aria-label="AI Hub 运行实例">
-        <img src="../claude-wx.ico" alt="" width="24" height="24">
+        <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><img src="../claude-wx.ico" alt="" width="24" height="24"></button>
         <strong>AI Hub</strong><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
@@ -99,7 +103,6 @@
             <button type="button" class="btn-new-session" id="btn-new" title="打开启动中心 (Ctrl+N)" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
             <button type="button" id="btn-new-more" title="打开启动中心 (Ctrl+N)" aria-label="打开启动中心" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
           </div>
-          <div id="launch-split-status" role="status" aria-live="polite" hidden></div>
           <div class="new-session-menu" id="new-session-menu" role="dialog" aria-modal="true" aria-labelledby="launch-center-title" style="display:none">
             <div class="session-create-head">
               <div><strong id="launch-center-title">启动中心</strong><span id="launch-center-subtitle">选择 AI、模型与工作目录</span></div>
@@ -122,11 +125,14 @@
                       <button class="new-session-option" data-kind="chatgpt" aria-pressed="false"><span class="ai-logo logo-codex"></span>ChatGPT</button>
                       <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
                       <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+                      <button class="new-session-option" data-kind="qwen" aria-pressed="false"><span class="ai-logo logo-qwen"></span>千问 · Qwen Code</button>
+                      <button class="new-session-option" data-kind="glm" aria-pressed="false"><span class="ai-logo logo-glm"></span>智谱 · ZCode</button>
                       <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
                       <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
                     </div>
                     <div id="chatgpt-web-panel" hidden><p id="chatgpt-web-status" role="status"></p><button id="chatgpt-web-settings" type="button">打开 Codex Web GPT 设置</button><button id="chatgpt-web-refresh" type="button">刷新状态与模型</button></div>
                     <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
+                    <label class="session-tuning-field" id="new-session-deepseek-route-field" hidden><span>DeepSeek 接入</span><select id="new-session-deepseek-route"><option value="deepseek-acp">Token Plan</option><option value="deepseek">API</option></select></label>
                     <div class="session-tuning-grid" id="new-session-tuning">
                       <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
                       <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span id="new-session-effort-label">思考强度</span><select id="new-session-effort"></select></label>
@@ -216,127 +222,38 @@
     </div>
     <div class="terminal-panel home-active" id="terminal-panel">
       <div class="empty-state home-workbench" id="empty-state">
-        <main class="home-workbench-shell" aria-labelledby="home-workbench-title">
-          <header class="home-workbench-head">
-            <div>
-              <div class="home-title-row">
-                <h1 class="home-workbench-title" id="home-workbench-title">HUB 工作台</h1>
-                <span class="home-title-pill">主页</span>
-              </div>
-            </div>
-            <div class="home-head-actions">
-              <div class="home-health" role="status" aria-live="polite">
-                <i class="home-status-dot ok" id="home-health-dot"></i>
-                <span id="home-health-label">当前 HUB 状态正常</span>
-                <span class="home-last-sync" id="home-last-sync">正在同步</span>
-              </div>
+        <main class="home-welcome" aria-labelledby="home-welcome-title">
+          <header class="home-welcome-head">
+            <div class="home-welcome-brand"><span aria-hidden="true">✳</span> AI Hub</div>
+            <div class="home-welcome-tools">
+              <span class="home-welcome-greeting">欢迎回来</span>
               <div class="home-notification-slot" id="home-notification-slot" aria-label="飞书完成通知开关"></div>
-              <button class="home-refresh" id="home-refresh" type="button" title="刷新 Session、配额与系统状态">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0 1 4"/><path d="M20 4v7h-7"/></svg>
-                <span>刷新</span>
-              </button>
             </div>
           </header>
-
-          <div class="home-pulse-body">
-            <section class="home-metrics" aria-label="当前 HUB Session 概览">
-              <div class="home-metric active">
-                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/></svg></span>
-                <div><div class="home-metric-value" id="home-metric-active">0</div><div class="home-metric-label">活跃 Session</div></div>
-              </div>
-              <div class="home-metric waiting">
-                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></span>
-                <div><div class="home-metric-value" id="home-metric-waiting">0</div><div class="home-metric-label">需要你处理</div></div>
-              </div>
-              <div class="home-metric unread">
-                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/><circle cx="12" cy="12" r="10"/></svg></span>
-                <div><div class="home-metric-value" id="home-metric-unread">0</div><div class="home-metric-label">完成未读</div></div>
-              </div>
-              <div class="home-metric context" data-home-jump="context-risk" title="上下文超过 70% 的会话数；原来是主区一整张卡，现在收成一个数字">
-                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
-                <div><div class="home-metric-value" id="home-metric-context">0</div><div class="home-metric-label">上下文吃紧</div></div>
-              </div>
-              <div class="home-metric dormant">
-                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"/></svg></span>
-                <div><div class="home-metric-value" id="home-metric-dormant">0</div><div class="home-metric-label">可恢复休眠</div></div>
-              </div>
-            </section>
-
-            <!-- 2026-08-27：三栏改单栏。每张卡都带 data-home-card，折叠状态与顺序由
-                 home-card-layout.js 存在本机；卡片内容为空时自动收成一行标题。 -->
-            <div class="home-card-stack" id="home-card-stack">
-                <button class="home-research-entry" id="btn-chuxin" type="button" title="打开初心投研工作台">
-                  <span class="home-research-main">
-                    <span class="home-research-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></span>
-                    <span class="home-research-copy"><strong>初心投研</strong><span>固定入口 · 英雄 Agent 参谋</span></span>
-                  </span>
-                  <svg class="home-research-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
-                </button>
-                <section data-home-card="resume" class="home-section-card" aria-labelledby="home-resume-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-resume-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>今天该续哪个</div>
-                    <span class="home-section-meta" id="home-resume-meta">按最近活跃 + 有未完成动作排序</span>
-                  </div>
-                  <div class="home-resume-list" id="home-resume-list"></div>
-                </section>
-                <section data-home-card="workspace" class="home-section-card" aria-labelledby="home-workspace-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-workspace-title">常用项目启动区</div><span class="home-section-meta">默认 Claude · 可再切模型</span></div>
-                  <div class="home-workspace-launch" id="home-workspace-launch"></div>
-                </section>
-                <section data-home-card="artifacts" class="home-section-card" aria-labelledby="home-artifact-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近文件</div>
-                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个 Git 变更或 Agent 产物</span>
-                  </div>
-                  <div class="home-artifact-list" id="home-artifact-list"></div>
-                </section>
-                <section data-home-card="search" class="home-section-card" aria-labelledby="home-search-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-search-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>常用搜索 · 最近命中</div>
-                    <button class="home-section-action subtle" type="button" data-home-action="open-search">全局搜索</button>
-                  </div>
-                  <div class="home-search-recent" id="home-search-recent"></div>
-                </section>
-                <section data-home-card="system" class="home-section-card home-system-card" aria-labelledby="home-system-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-system-title">本机与服务器</div><button class="home-section-action subtle" type="button" data-home-action="open-server-settings">配置</button></div>
-                  <div class="home-system-grid" aria-label="本机资源使用情况">
-                    <div class="home-system-cell"><span>CPU</span><strong id="home-system-cpu">--</strong><i><b id="home-system-cpu-bar"></b></i></div>
-                    <div class="home-system-cell"><span>GPU</span><strong id="home-system-gpu">--</strong><i><b id="home-system-gpu-bar"></b></i></div>
-                    <div class="home-system-cell"><span>内存</span><strong id="home-system-memory">--</strong><i><b id="home-system-memory-bar"></b></i></div>
-                    <div class="home-system-cell"><span>磁盘</span><strong id="home-system-disk">--</strong><i><b id="home-system-disk-bar"></b></i></div>
-                  </div>
-                  <div class="home-server-status" id="home-server-status">
-                    <div class="home-server-head"><span><i class="home-status-dot dim" id="home-server-dot"></i><strong id="home-server-label">阿里云服务器</strong></span><em id="home-server-latency">未配置</em></div>
-                    <div class="home-server-storage"><span><b id="home-server-storage-label">存储信息等待配置</b><em id="home-server-storage-value">--</em></span><i><b id="home-server-storage-bar"></b></i></div>
-                    <div class="home-server-metrics" id="home-server-metrics">远端指标等待配置</div>
-                  </div>
-                  <div class="home-link-health">
-                    <span>通知 <b id="home-sync-notification">同步中</b></span>
-                    <span>出口 <b id="home-sync-proxy">同步中</b></span>
-                    <span>PTY <b id="home-sync-terminals">同步中</b></span>
-                  </div>
-                </section>
-                <!-- 2026-08-27：全机残留。多实例共用数据目录，所以任意一个 Hub 打开
-                     这张卡看到的都是整台电脑的情况。v1 只读：出清单 + 预演脚本，不杀进程。 -->
-                <section data-home-card="reclaim" class="home-section-card home-reclaim-card" aria-labelledby="home-reclaim-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-reclaim-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg>全机残留</div>
-                    <button class="home-section-action subtle" type="button" data-reclaim-action="scan">扫描</button>
-                  </div>
-                  <div class="home-reclaim-summary" id="home-reclaim-summary"></div>
-                  <div class="home-reclaim-groups" id="home-reclaim-groups"></div>
-                  <div class="home-reclaim-guard" id="home-reclaim-guard"></div>
-                </section>
-                <section data-home-card="provider" class="home-section-card" aria-labelledby="home-provider-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-provider-title">四模型用量</div><span class="home-section-meta">5h · 7d · 配额刷新</span></div>
-                  <div class="home-provider-health" id="home-provider-health"></div>
-                </section>
-                        </div>
+          <div class="home-welcome-body">
+            <div class="home-welcome-intro">
+              <p class="home-welcome-eyebrow">YOUR IDEAS, IN MOTION</p>
+              <h1 id="home-welcome-title">好想法，<br>现在<span>开始。</span></h1>
+              <p class="home-welcome-subtitle">选择你的协作方式。<br>剩下的，从第一句对话展开。</p>
+              <div class="home-welcome-line" aria-hidden="true"></div>
+            </div>
+            <div class="home-welcome-portals" aria-label="创建会话">
+              <button class="home-welcome-portal" id="home-create-session" type="button" data-home-create="session">
+                <span class="home-welcome-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4H3V6a2 2 0 0 1 2-2Z"/><path d="M8 9h8M8 13h5"/></svg></span>
+                <svg class="home-welcome-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+                <strong>新建普通会话</strong><span class="home-welcome-description">一个 AI，专注完成你的任务。</span>
+              </button>
+              <button class="home-welcome-portal secondary" id="home-create-group" type="button" data-home-create="group">
+                <span class="home-welcome-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="14" height="12" rx="3"/><path d="M7 15v4l5-4M19 8h1a2 2 0 0 1 2 2v9h-3v3l-5-3h-3M6 8h6"/></svg></span>
+                <svg class="home-welcome-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+                <strong>新建 AI 群聊</strong><span class="home-welcome-description">多个 AI，共同讨论与分工协作。</span>
+              </button>
+              <p id="home-welcome-error" class="home-welcome-error" role="alert" hidden></p>
+            </div>
           </div>
+          <footer class="home-welcome-foot">AI HUB <span aria-hidden="true">/</span> 你的 AI 工作空间</footer>
         </main>
       </div>
-      <!-- 2026-08-27：改动审阅驾驶舱整体删除（无实用价值）。阿里云监控配置留在设置里，
-           由「公司收件箱」卡片使用。 -->
       <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
       <div id="msg-overlay" class="msg-overlay"></div>
       <div id="card-session-status" class="card-session-status" role="status" aria-live="polite" aria-atomic="true"></div>

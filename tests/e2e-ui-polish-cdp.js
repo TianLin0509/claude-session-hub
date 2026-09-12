@@ -73,7 +73,7 @@ async function main() {
     }
     await setStaticSidebarLayout(cdp, 340, 1);
     await shot('quota-persistent');
-    await click(cdp, '.sidebar-quota-provider[data-provider="codex"] .sidebar-quota-refresh');
+    await click(cdp, '.sidebar-quota-provider[data-provider="codex"]');
     await waitFor(cdp, `!!accountUsageController.getSnapshot().refresh.providers.codex.error`);
     assert.equal((await quota()).values[2], '72%');
     await cdp.close(); cdp = null;

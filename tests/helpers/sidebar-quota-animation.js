@@ -19,7 +19,7 @@ async function runSidebarAnimation(out,sha) {
     evidence.pid=hub.pid;evidence.port=hub.port;
     cdp=await connectFirstPage(hub,t=>/renderer[\\/]index\.html/.test(t.url));
     await cdp.send('Page.enable');await cdp.send('Runtime.enable');
-    await waitFor(cdp,`document.querySelectorAll('.sidebar-quota-refresh').length===3`);
+    await waitFor(cdp,`document.querySelectorAll('.sidebar-quota-provider').length===4`);
     evidence.window=await cdp.eval(`ipcRenderer.invoke('debug:agent-league-background-state')`);
     assert.ok(evidence.window.windowVisible && evidence.window.pid===hub.pid);
     assert.ok(hub.log().some(line=>line.includes('hook server listening')));

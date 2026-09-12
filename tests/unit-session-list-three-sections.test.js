@@ -32,7 +32,7 @@ test('休眠未读不受归档时间限制；置底休眠进归档；置顶不�
   assert.equal(p.archiveCount, 1);
   assert.deepEqual(ids(p.pinned), ['pin']);
 });
-test('旧活信号不消失，群聊沿用成员状态；已选未读不计作新提醒', () => {
+test('旧活信号不消失，群聊沿用成员状态；选中不等于已读', () => {
   const sub = item('sub', { status: 'idle', attentionState: 'needs-input' });
   const p = partitionSidebarSessions([
     item('group', { _isMeeting: true, _meeting: { subSessions: ['sub'] }, lastMessageTime: now - 8 * DAY }),
@@ -40,7 +40,7 @@ test('旧活信号不消失，群聊沿用成员状态；已选未读不计作�
     item('waking', { status: 'dormant', _resumePending: true, lastMessageTime: now - 8 * DAY }),
   ], { now, sessionMap: new Map([['sub', sub]]), activeSessionId: 'selected' });
   assert.deepEqual(ids(p.active), ['group', 'waking']);
-  assert.deepEqual(ids(p.today), ['selected']);
+  assert.deepEqual(ids(p.unread), ['selected']);
 });
 test('700 多条休眠只贡献归档计数，输入不被修改', () => {
   const rows = Array.from({ length: 712 }, (_, i) => Object.freeze(item(String(i), { status: 'dormant' })));

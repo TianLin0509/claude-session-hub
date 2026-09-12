@@ -43,7 +43,7 @@ async function port() {
     await page.locator('.new-session-option[data-kind="chatgpt"]').click();
     await page.waitForFunction(() => document.querySelector('#new-session-model')?.options.length === 5);
     const order = await page.locator('.new-session-option').evaluateAll(nodes => nodes.map(n => n.dataset.kind));
-    assert.deepEqual(order, ['claude', 'codex', 'chatgpt', 'deepseek', 'kimi', 'gemini', 'powershell']);
+    assert.deepEqual(order, ['claude', 'codex', 'chatgpt', 'deepseek', 'kimi', 'qwen', 'glm', 'gemini', 'powershell']);
     assert.equal(await page.locator('#new-session-model').inputValue(), 'chatgpt-web/high');
     await page.locator('#new-session-model').selectOption('chatgpt-web/pro');
     await page.locator('.new-session-option[data-kind="gemini"]').click();

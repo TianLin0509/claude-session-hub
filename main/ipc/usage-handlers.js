@@ -33,6 +33,7 @@ function registerUsageIpc(ipcMain, deps) {
     refreshCodexAccountUsage,
     refreshDeepSeekAccountBalance,
     refreshKimiAccountUsage,
+    refreshTokenPlanUsage,
     scanAgentSessions,
     getCodexUsageScopeKey = () => null,
   } = deps;
@@ -56,7 +57,7 @@ function registerUsageIpc(ipcMain, deps) {
     const observed = value => value && (value.observedAt || value._ts || value.ts) || 0;
     try {
       const refresh = { claude: refreshClaudeAccountUsage, codex: refreshCodexAccountUsage,
-        deepseek: refreshDeepSeekAccountBalance }[provider];
+        deepseek: refreshDeepSeekAccountBalance, tokenPlan: refreshTokenPlanUsage }[provider];
       if (typeof refresh !== 'function') throw new Error('刷新服务不可用');
       const raw = await refresh();
       if (provider === 'codex' && getCodexUsageScopeKey() !== scopeKey) throw new Error('Codex 账号已切换，请重新刷新');
@@ -83,7 +84,7 @@ function registerUsageIpc(ipcMain, deps) {
   }
   ipcMain.handle('refresh-usage-now', async (_event, provider) => {
     if (provider !== undefined) {
-      if (!['claude', 'codex', 'deepseek'].includes(provider)) throw new Error('不支持的刷新提供方');
+      if (!['claude', 'codex', 'deepseek', 'tokenPlan'].includes(provider)) throw new Error('不支持的刷新提供方');
       if (!providerFlights.has(provider)) {
         const flight = refreshProvider(provider).finally(() => providerFlights.delete(provider));
         providerFlights.set(provider, flight);
@@ -92,6 +93,10 @@ function registerUsageIpc(ipcMain, deps) {
     }
     const before = loadUsageCacheForCurrentConfig() || {};
     const providerResults = {};
+    if (typeof refreshTokenPlanUsage === 'function') {
+      const tokenResult = await refreshProvider('tokenPlan');
+      Object.assign(providerResults, tokenResult.providerResults);
+    }
     let refreshedClaudeData = null;
 
     try {

@@ -15,14 +15,16 @@ const {requireWebTools}=require('../core/chatgpt-web-integration');
   const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
   let hub,browser;const evidence={ok:false,root,steps:[]};
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,label:'web-switch',windowMode:'hidden',extraEnv:{CODEX_HOME:home,AI_HUB_CHATGPT_ROOT:root,AI_HUB_WORKSPACE_ROOT:root}});
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,label:'web-switch',windowMode:'hidden',extraEnv:{CODEX_HOME:home,AI_HUB_CHATGPT_ROOT:root,AI_HUB_WORKSPACE_ROOT:root,CLAUDE_HUB_CODEX_SHARED_RUNTIME:'1'}});
     browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`);const p=browser.contexts()[0].pages()[0];
     await p.waitForFunction(()=>typeof sessions!=='undefined');
     const session=await p.evaluate(input=>ipcRenderer.invoke('create-session',input),{kind:'chatgpt',opts:{cwd,model:'chatgpt-web/high',effort:'high',mcpProfile:'none'}});
     await p.waitForFunction(id=>sessions.get(id)?.nativeRuntime?.state==='idle',session.id,{timeout:60000});
+    assert.equal(await p.evaluate(id=>!!sessions.get(id)?.codexSharedControl,session.id),false,'web must not attach to the ordinary shared Codex broker');
     await p.locator(`.session-item[data-session-id="${session.id}"]`).click();
     for(const [model,effort] of [['medium','medium'],['pro','ultra'],['high','high']]){
       assert((await p.locator('.composer-model:visible').innerText()).includes('ChatGPT Web'));
+      assert.equal(await p.locator('.composer-speed:visible').count(),0,'web tiers do not use Codex API Fast');
       await p.locator(model==='medium'?'.composer-thinking:visible':'.composer-model:visible').click();
       await p.locator('.chatgpt-web-settings-link').waitFor();
       await p.locator(`.model-picker-item[data-model-id="chatgpt-web/${model}"]`).click();

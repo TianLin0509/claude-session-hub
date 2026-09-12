@@ -192,6 +192,7 @@ function _mergeConsecutiveAssistantTurns(turns) {
   };
 
   for (const t of turns) {
+    if (t.role === 'boundary') { flush(); continue; }
     if (t.role === 'user') {
       flush();
       merged.push(t);
@@ -274,11 +275,13 @@ function readTailWindowText(jsonlPath, bytes) {
   }
 }
 
-function parseClaudeTranscriptText(raw) {
+function parseClaudeTranscriptText(raw, opts = {}) {
   const lines = raw.split(/\r?\n/);
   const rawTurns = [];
   // Spec 3 · W9：tool_use_id → result 映射，用于关联 stdout 到 toolCall
   const toolResultMap = new Map();
+  const excludeEntryIds = new Set(opts.excludeEntryIds || []);
+  const excludeMessageIds = new Set(opts.excludeMessageIds || []);
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -290,6 +293,13 @@ function parseClaudeTranscriptText(raw) {
       continue; // 损坏行 skip
     }
     if (!entry || typeof entry !== 'object') continue;
+    if (excludeEntryIds.has(entry.uuid) || excludeMessageIds.has(entry.message?.id)) {
+      // Keep the conversational boundary even when the live projection already
+      // renders this input. Later provider entries may not have reached Hub's
+      // journal before a disconnect; they must remain readable.
+      if (entry.type === 'user' && !isToolResultEntry(entry)) rawTurns.push({ role: 'boundary' });
+      continue;
+    }
 
     // tool_result entry：提取后存映射，不作为 turn
     if (isToolResultEntry(entry)) {
@@ -407,7 +417,7 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
       // request.  If the tail cannot satisfy the requested turn count, jump
       // directly to one full read instead of replaying overlapping windows.
       const { raw } = readTailWindowText(jsonlPath, TAIL_WINDOW_INITIAL_BYTES);
-      const tailTurns = parseClaudeTranscriptText(raw);
+      const tailTurns = parseClaudeTranscriptText(raw, opts);
       if (isTailTurnSliceComplete(tailTurns, limit)) {
         return applyTurnLimit(tailTurns, limit, true);
       }
@@ -415,7 +425,7 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   }
 
   const raw = fs.readFileSync(jsonlPath, 'utf8');
-  return applyTurnLimit(parseClaudeTranscriptText(raw), limit, fromTail);
+  return applyTurnLimit(parseClaudeTranscriptText(raw, opts), limit, fromTail);
 }
 
 module.exports = {

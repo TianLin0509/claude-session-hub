@@ -37,15 +37,22 @@ async function main(){
     let runtimeState='running',events=0;
     const expiry=createTaskReader({getMeetings:()=>[m],getHubDataDir:()=>dir,getRuntime:()=>runtimeState,onChanged(){events++;},read:async()=>value,interval:60000});
     expiry.reconcile();await new Promise(r=>setTimeout(r,25));events=0;runtimeState='unknown';expiry.reconcile();assert(events>0,'Runtime expiry emits without file change');expiry.dispose();
-    const m2={...m,id:'cache-failure'},mkdir=fs.mkdir;let writes=0;
+    const m2={...m,id:'cache-failure'},mkdir=fs.mkdir,rename=fs.rename;let writes=0;
     const storage=createTaskReader({getMeetings:()=>[m2],getHubDataDir:()=>dir,onChanged(){},read:async()=>({...value,record:{...value.record,taskId:m2.id}}),interval:60000});
     try{
       fs.mkdir=async(...args)=>{if(String(args[0]).endsWith('workbench-cache')){writes++;throw Error('EACCES fixture');}return mkdir(...args);};
       storage.get(m2);for(let i=0;i<50&&!storage._test.cache.size;i++)await new Promise(r=>setTimeout(r,5));
       assert.match(storage.get(m2).error,/缓存保存失败/);storage.enqueue(m2);await new Promise(r=>setTimeout(r,30));
       assert(writes>=2,'Unchanged source retries failed cache persistence');assert.match(storage.get(m2).error,/缓存保存失败/);
-      fs.mkdir=mkdir;storage.enqueue(m2);await new Promise(r=>setTimeout(r,30));assert.equal(storage.get(m2).error,'');
-    }finally{fs.mkdir=mkdir;storage.dispose();}
+      fs.mkdir=mkdir;
+      // Slow disk completion must not race a fixed 30 ms assertion.
+      fs.rename=async(...args)=>{if(String(args[1]).endsWith('cache-failure.json'))await new Promise(r=>setTimeout(r,80));return rename(...args);};
+      storage.enqueue(m2);
+      const deadline=Date.now()+5000;
+      while(storage.get(m2)?.error!=='' && Date.now()<deadline)await new Promise(r=>setTimeout(r,10));
+      assert.equal(storage.get(m2).error,'');
+      assert.equal(JSON.parse(await fs.readFile(path.join(dir,'workbench-cache','cache-failure.json'),'utf8')).value.record.taskId,m2.id);
+    }finally{fs.mkdir=mkdir;fs.rename=rename;storage.dispose();}
     await fs.writeFile(file,'\ufffd');await T.readTask(dir,m); // valid UTF-8 without structured status is unknown
     await fs.writeFile(file,Buffer.from([0xff]));await assert.rejects(()=>T.readTask(dir,m));
     // Real Git topology: a report alone is insufficient; both ancestry links must hold.

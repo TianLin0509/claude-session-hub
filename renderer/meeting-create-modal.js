@@ -13,7 +13,7 @@ const DEFAULT_SLOTS = [
   { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
   { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
 ];
-const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek'];
+const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm'];
 // Claude + Codex are the durable default pair. DeepSeek is an explicit third
 // member rather than a cost/latency-bearing default in every room.
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.slice(0, 2).map(x => ({ ...x }));
@@ -197,7 +197,8 @@ function _escapeHtml(s) {
 
 function _aiLogo(kind) {
   // *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
-  return `assets/ai-logos/${String(kind).replace(/-resume$/, '')}.svg`;
+  const base=String(kind).replace(/-resume$/, '');
+  return `assets/ai-logos/${base === 'deepseek-acp' ? 'deepseek' : base}.svg`;
 }
 
 function _modelOptions(kind, selected) {
@@ -289,8 +290,8 @@ function _slotHtml(i, spec, isGroup) {
   const def = _normalizeSlotSpec(spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0]);
   const tuning = window.WorkspaceController.resolveSessionTuning(def.kind, def.model, def);
   const providerKinds = isGroup ? GROUP_MEMBER_KINDS : Array.from(MODEL_KINDS);
-  const aiOptions = providerKinds.map(k =>
-    `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
+  const aiOptions = providerKinds.filter(k => k !== 'deepseek-acp').map(k =>
+    `<option value="${_escapeHtml(k)}"${k === (def.kind === 'deepseek-acp' ? 'deepseek' : def.kind) ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
@@ -324,6 +325,7 @@ function _slotHtml(i, spec, isGroup) {
       </div>
       <div class="mcm-slot-fields">
         <label><span class="mcm-slot-field-name">AI</span><select class="mcm-ai-select">${aiOptions}</select></label>
+        ${['deepseek','deepseek-acp'].includes(def.kind) ? `<label><span class="mcm-slot-field-name">DeepSeek 接入</span><select class="mcm-deepseek-route"><option value="deepseek-acp"${def.kind === 'deepseek-acp' ? ' selected' : ''}>Token Plan</option><option value="deepseek"${def.kind === 'deepseek' ? ' selected' : ''}>API</option></select></label>` : ''}
         <label><span class="mcm-slot-field-name">模型</span><select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
         ${effortField}
         ${mcpField}
@@ -342,7 +344,7 @@ function _readSlotSpec(el, i, { strict = true } = {}) {
     return _groupSlots[i] ? _normalizeSlotSpec(_groupSlots[i]) : null;
   }
   const spec = {
-    kind: aiSelect.value,
+    kind: aiSelect.value === 'deepseek' ? (el.querySelector('.mcm-deepseek-route')?.value || 'deepseek-acp') : aiSelect.value,
     model: modelSelect ? modelSelect.value : '',
   };
   const effort = el.querySelector('.mcm-effort-select');
@@ -381,13 +383,19 @@ function _renderSlots() {
   wrap.querySelectorAll('.mcm-slot').forEach(slotEl => {
     slotEl.querySelector('.mcm-ai-select').addEventListener('change', () => {
       const i = Number(slotEl.getAttribute('data-slot'));
-      const kind = slotEl.querySelector('.mcm-ai-select').value;
+      const selected = slotEl.querySelector('.mcm-ai-select').value;
+      const kind = selected === 'deepseek' ? 'deepseek-acp' : selected;
       _groupSlots[i] = _normalizeSlotSpec({ kind, model: DEFAULT_MODEL_BY_KIND[kind] });
       _renderSlots();
     });
     slotEl.querySelector('.mcm-model-select').addEventListener('change', () => {
       _syncGroupSlotsFromDom();
       // Codex 的 effort / Fast 选项跟模型目录走，切模型后要重新生成这一张卡。
+      _renderSlots();
+    });
+    slotEl.querySelector('.mcm-deepseek-route')?.addEventListener('change', event => {
+      const kind = event.target.value;
+      _groupSlots[Number(slotEl.getAttribute('data-slot'))] = _normalizeSlotSpec({kind, model:DEFAULT_MODEL_BY_KIND[kind]});
       _renderSlots();
     });
     slotEl.querySelectorAll('.mcm-effort-select, .mcm-mcp-select, .mcm-fast-checkbox, .mcm-codex-tier-select')

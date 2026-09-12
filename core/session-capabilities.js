@@ -31,6 +31,7 @@ function runtimeKindForSession(session) {
 }
 
 function sessionProviderFamily(session) {
+  if (session?.runtimeBackend === 'acp') return 'acp';
   const runtimeKind = runtimeKindForSession(session);
   if (isClaudeFamily(runtimeKind)) return 'claude';
   if (isCodexCliKind(runtimeKind)) return 'codex';
@@ -43,6 +44,7 @@ function sessionProviderFamily(session) {
 
 function nativeSessionIdentity(session) {
   if (!session || typeof session !== 'object') return null;
+  if (session.runtimeBackend === 'acp') return session.acpSid ? {family:'acp',field:'acpSid',value:session.acpSid} : null;
   const family = sessionProviderFamily(session);
   const field = family === 'claude'
     ? 'ccSessionId'
@@ -60,11 +62,13 @@ function nativeSessionIdentity(session) {
 
 function supportsRecoverableSession(session) {
   if (!session) return false;
+  if (session.runtimeBackend === 'acp') return !!(session.acpCapabilities?.loadSession || session.acpCapabilities?.sessionCapabilities?.resume);
   return ['claude', 'codex', 'gemini', 'kimi'].includes(sessionProviderFamily(session));
 }
 
 function supportsForkSession(session) {
   if (!session || session.purpose === 'chuxin-research') return false;
+  if (session.runtimeBackend === 'acp') return session.kind === 'qwen' || !!session.acpCapabilities?.sessionCapabilities?.fork;
   return ['claude', 'codex'].includes(sessionProviderFamily(session));
 }
 
@@ -106,6 +110,9 @@ function buildSessionResumeMeta(session, overrides = {}) {
     pinned: !!session.pinned,
     bottomed: !!session.bottomed && !session.pinned,
     ccSessionId: session.ccSessionId || null,
+    ...(session.runtimeBackend === 'claude-stream-json' ? {
+      nativeConfig: session.nativeConfig || null,
+    } : {}),
     transcriptPath: session.transcriptPath || null,
     meetingId: session.meetingId || null,
     completionNotificationEnabled: session.completionNotificationEnabled === true,
@@ -114,6 +121,9 @@ function buildSessionResumeMeta(session, overrides = {}) {
     model: sessionModelId(session),
     effort: session.effort || null,
     codexSid: session.codexSid || null,
+    acpSid: session.acpSid || null,
+    acpProfileId: session.acpProfileId || null,
+    acpCapabilities: session.acpCapabilities || null,
     runtimeBackend: session.runtimeBackend || null,
     nativeRuntime: session.nativeRuntime || null,
     codexApprovalPolicy: session.codexApprovalPolicy || null,

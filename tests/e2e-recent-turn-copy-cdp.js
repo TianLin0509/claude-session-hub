@@ -130,11 +130,17 @@ async function main() {
       const toolbar = document.getElementById('recent-turn-copy');
       const select = document.getElementById('recent-turn-copy-count');
       const button = document.getElementById('recent-turn-copy-button');
+      const waitCopied = async count => {
+        const end = Date.now() + 5000;
+        while (button.textContent !== '已复制 ' + count + ' 轮' || !window.__readCopied()) {
+          if (Date.now() > end) throw Error('copy acknowledgement timeout: ' + button.textContent);
+          await wait(25);
+        }
+      };
       select.value = '3';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
-      await wait(50);
+      await waitCopied(3);
       const three = window.__readCopied();
       const threeButtonText = button.textContent;
       const rect = toolbar.getBoundingClientRect();
@@ -143,7 +149,7 @@ async function main() {
       select.value = '1';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
+      await waitCopied(1);
       const one = window.__readCopied();
 
       // 轮数上限不再是写死的 3：这 9 张卡是 4 个完整轮次，下拉里就该有 4 项，
@@ -155,8 +161,7 @@ async function main() {
       select.value = String(optionValues[optionValues.length - 1]);
       select.dispatchEvent(new Event('change', { bubbles: true }));
       button.click();
-      for (let i = 0; i < 30 && !window.__readCopied(); i += 1) await wait(50);
-      await wait(50);
+      await waitCopied(4);
       const all = window.__readCopied();
       const allButtonText = button.textContent;
 
@@ -167,7 +172,7 @@ async function main() {
       select.dispatchEvent(new Event('change', { bubbles: true }));
       __clip.writeText('');
       button.click();
-      await wait(80);
+      await waitCopied(3);
 
       // 还原用户原本的剪贴板：这台机器上跑测试时用户很可能正在用它。
       try { __clip.writeText(window.__clipboardBackup || ''); } catch {}

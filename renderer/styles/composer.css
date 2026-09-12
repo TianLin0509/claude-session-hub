@@ -3,6 +3,97 @@
    全部走 base.css 的 token，所以六套皮肤（含 T0 要加的 frost）都能直接生效，
    本文件一行都不碰 base.css。字号只用本轮允许的六档：10 / 11 / 11.5 / 12.5 / 13.5 / 15。 */
 
+/* Codex 共享会话 · 方案 A：操作权在会话内容顶部常驻。 */
+.codex-shared-status {
+  position: relative;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-height: 48px;
+  margin: 10px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--rgb-info), .34);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-overlay) 88%, var(--status-info-tint));
+  box-shadow: var(--shadow-sm);
+}
+.codex-shared-status[hidden] { display: none; }
+.codex-shared-status[data-role='controller'] {
+  border-color: rgba(var(--rgb-success), .32);
+  background: color-mix(in srgb, var(--surface-overlay) 90%, var(--status-success-tint));
+}
+.codex-shared-status-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  color: var(--status-info);
+}
+.codex-shared-status[data-role='controller'] .codex-shared-status-icon { color: var(--status-success); }
+.codex-shared-status-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.codex-shared-status-copy { display: grid; flex: 1 1 auto; min-width: 0; gap: 1px; }
+.codex-shared-status-copy strong {
+  overflow: hidden;
+  color: var(--fg-strong);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.codex-shared-status-copy small {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.codex-shared-status-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.codex-shared-status-actions button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-default);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.codex-shared-status-actions button.primary { border-color: var(--brand); background: var(--brand); color: var(--brand-ink); }
+.codex-shared-status-actions button:disabled { opacity: .46; cursor: not-allowed; }
+.codex-shared-status-actions button:focus-visible { outline: 2px solid var(--status-info); outline-offset: 2px; }
+.codex-shared-status-feedback { flex: 0 1 auto; color: var(--status-warning); font-size: 10px; }
+.terminal-panel.shared-control-visible { --codex-shared-status-h: 58px; }
+.terminal-panel.shared-control-visible .msg-overlay {
+  top: calc(var(--term-header-h, 43px) + var(--codex-shared-status-h, 0px));
+}
+.terminal-panel.shared-control-visible .card-question-nav {
+  top: calc(var(--term-header-h, 43px) + var(--codex-shared-status-h, 0px) + 10px);
+}
+.floating-input-bar[data-shared-role='viewer'] .floating-input-send,
+.floating-input-bar[data-shared-role='viewer'] .composer-model,
+.floating-input-bar[data-shared-role='viewer'] .composer-thinking { opacity: .48; cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .codex-shared-status {
+    position: fixed;
+    top: calc(var(--app-toolbar-h, 44px) + 8px);
+    left: 10px;
+    right: 10px;
+    z-index: 119;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    width: auto;
+    margin: 0;
+  }
+  .codex-shared-status-copy { min-width: calc(100% - 36px); }
+  .codex-shared-status-actions { margin-left: 34px; }
+  .codex-shared-status-feedback { flex-basis: 100%; margin-left: 34px; }
+  .terminal-panel.shared-control-visible { --codex-shared-status-h: 92px; }
+}
+
 .composer {
   display: flex;
   flex-direction: column;
@@ -17,11 +108,11 @@
    会盖过 UA 给 [hidden] 的 display:none。 */
 .composer [hidden] { display: none !important; }
 
-.composer-start-actions { display: flex; align-items: center; }
+.composer-start-actions { display: flex; align-items: center; flex: none; }
 .composer-one-click-start {
   border: 1px solid var(--border-subtle); border-radius: 6px;
   padding: 4px 9px; background: transparent; color: var(--fg-muted);
-  font: inherit; font-size: 12.5px; cursor: pointer;
+  font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap;
 }
 .composer-one-click-start:hover { color: var(--fg-primary); background: var(--surface-hover); }
 .composer-one-click-start:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
@@ -192,6 +283,8 @@
 .composer-model-logo.gemini { background: #4285f4; }
 .composer-model-logo.deepseek { background: #4d6bfe; }
 .composer-model-logo.kimi { background: #1f1f1f; }
+.composer-model-logo.qwen { background: url('../assets/ai-logos/qwen.svg') center / contain no-repeat; color: transparent; }
+.composer-model-logo.glm { background: url('../assets/ai-logos/glm.svg') center / contain no-repeat; color: transparent; }
 
 .composer-thinking { background: rgba(var(--rgb-neutral), .06); }
 .composer-thinking.is-static { cursor: default; }
@@ -283,3 +376,16 @@
   .composer-rail .floating-input-send { transition: none; }
   .composer[data-state='working'] .composer-status-dot { animation: none; }
 }
+
+.composer-speed { color: var(--fg-strong); }
+.composer-speed[aria-pressed='true'] {
+  color: var(--brand-text);
+  background: var(--brand-tint);
+  border-color: var(--brand);
+  font-weight: 650;
+}
+.composer-speed:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.speed-picker-menu { max-width: calc(100vw - 16px); box-sizing: border-box; }
+.speed-picker-menu button { width: 100%; color: var(--text-primary); background: transparent; border: 0; text-align: left; font: inherit; }
+.speed-picker-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+.speed-picker-menu button:disabled { opacity: .5; cursor: not-allowed; }

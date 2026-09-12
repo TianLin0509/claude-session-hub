@@ -1,6 +1,7 @@
 // 纯函数：按最新 AI 回答时间年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+const { getMeetingUnreadMemberIds } = require('./meeting-unread');
 const { compareLatestActivityDesc, latestActivityTime } = require('../core/session-recency.js');
 const {
   sessionHasCompletedUnread,
@@ -111,8 +112,7 @@ function getSidebarSearchEntries(doc) {
 
 function sidebarItemHasUnread(item, sessionMap) {
   if (!item._isMeeting) return sessionHasCompletedUnread(item);
-  return item.unreadAnsweredSize > 0
-    || (item._meeting?.subSessions || []).some(id => sessionHasCompletedUnread(sessionMap.get(id)));
+  return getMeetingUnreadMemberIds(item._meeting, sessionMap).size > 0 || item.unreadAnsweredSize > 0;
 }
 
 function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
@@ -122,16 +122,15 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const truth = s._isMeeting ? null : getSessionRuntimeTruth(s, { now });
     const meeting = s._isMeeting ? _meetingRuntimeAggregate(s._meeting, sessionMap, now) : null;
     const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
-    const selected = s.id === (s._isMeeting ? activeMeetingId : activeSessionId);
     const fresh = now - latestActivityTime(s, now) < 86400000;
     const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
     const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
     const working = s._resumePending || (meeting ? meeting.running
       : (s.meetingId || groupMemberIds.has(s.id)) ? isGroupChatMemberRunning(s, now) : sessionRuntimeIsActive(s, { now }));
-    const unread = !selected && sidebarItemHasUnread(s, sessionMap);
+    const unread = sidebarItemHasUnread(s, sessionMap);
     states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
-    if (s.pinned) pinned.push(s);
-    else if (unread) completed.push(s);
+    if (unread) completed.push(s);
+    else if (s.pinned) pinned.push(s);
     else if (waiting) respond.push(s);
     else if (error) failed.push(s);
     else if (working) running.push(s);
@@ -227,6 +226,7 @@ function createSessionListRenderer(options = {}) {
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
+  const markMeetingRead = options.markMeetingRead;
   // 「已完成未读」组头上的一键已读。渲染层只负责按钮，真正清状态由 renderer.js 注入。
   const markAllSessionsRead = typeof options.markAllSessionsRead === 'function'
     ? options.markAllSessionsRead
@@ -406,10 +406,12 @@ function _sessionWarningText(session) {
 
   function navigationIntentFromTarget(target) {
     if (!target || typeof target.closest !== 'function') return null;
+    const read = target.closest('[data-action="mark-meeting-read"]');
+    if (read) return { type: 'read-meeting', id: read.closest('[data-meeting-id]')?.dataset.meetingId };
     const usage = target.closest('[data-usage-id]');
     if (usage) return { type: 'usage', id: usage.getAttribute('data-usage-id') };
     const jump = target.closest('[data-sub-id]');
-    if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id') };
+    if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id'), latest: true };
     const toggle = target.closest('[data-action="toggle-expand"]');
     if (toggle) {
       const meeting = toggle.closest('[data-meeting-id]');
@@ -425,6 +427,10 @@ function _sessionWarningText(session) {
   function activateNavigationIntent(intent) {
     if (!intent || !intent.id) return false;
     try {
+      if (intent.type === 'read-meeting') {
+        markMeetingRead?.(intent.id);
+        return true;
+      }
       if (intent.type === 'usage') {
         // Usage details live in the hover tooltip. Consume the click so it
         // does not activate or resume the surrounding session row.
@@ -434,9 +440,12 @@ function _sessionWarningText(session) {
         toggleMeetingExpand(intent.id);
         return true;
       }
+      const forceScrollBottom = !!intent.latest || intent.id === getActiveSessionId()
+        || sessionHasCompletedUnread(getSessions().get(intent.id))
+        || Object.values(getMeetings()).some(m => getMeetingUnreadMemberIds(m, getSessions()).has(intent.id));
       const action = intent.type === 'meeting'
         ? selectMeeting(intent.id, { forceScrollBottom: true, wakeDormantMembers: true })
-        : selectSession(intent.id, { forceScrollBottom: intent.id === getActiveSessionId() });
+        : selectSession(intent.id, { forceScrollBottom });
       Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
       return true;
     } catch (error) {
@@ -553,11 +562,7 @@ sessionListEl.addEventListener('keydown', event => {
       ? `AI 群聊 · ${(m.participants || m.subSessions || []).length}/${(m.subSessions || []).length} 已选`
       : `${m.subSessions.length} 个子会话`,
     status: m.status || 'idle',
-    // 2026-05-05 道雪 修3：AI 群聊 item 接入 unread 机制 —— 全员答完且非 active 时累加，
-    //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
-    // 2026-05-31 道雪：unread 语义改为"本轮已答 AI 数（Set<sid>.size）" — 任一 AI 答完 +1，
-    //   显示"已答 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
-    unreadAnsweredSize: m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0,
+    unreadAnsweredSize: getMeetingUnreadMemberIds(m, sessionMap).size,
     pinned: m.pinned,
     bottomed: m.bottomed,
     _isMeeting: true,
@@ -648,7 +653,7 @@ sessionListEl.addEventListener('keydown', event => {
       const message = '部分会话未归档，仍保留原入口：\n' + failures.join('\n');
       console.warn('[sidebar] archive:', message);
       if (options.notify) options.notify(message);
-      else doc.defaultView?.alert(message);
+      else require('./ui-feedback').showHubAlert(message, { document: doc });
     }
   }
 
@@ -677,6 +682,7 @@ sessionListEl.addEventListener('keydown', event => {
 
   // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
   const detailSessionIds = new Set();
+  const unreadMemberIds = new Set(Object.values(getMeetings()).flatMap(m => [...getMeetingUnreadMemberIds(m, sessionMap)]));
   function appendItem(s, child = false, target = renderTarget) {
     if (s._isMeeting) {
       const isActive = getActiveMeetingId() === s.id;
@@ -698,7 +704,8 @@ sessionListEl.addEventListener('keydown', event => {
       // 2026-07-19 道雪 · 方案C：群聊两行卡（行1 状态+标题+时间，行2 成员 mini-jump），
       //   不再渲染 badge pill（等你/休眠进 sl-state，已选数进行2 末尾）。
       const isDormantMeeting = s.status === 'dormant';
-      const hasUnread = !isActive && sidebarItemHasUnread(s, sessionMap);
+      const unreadMembers = getMeetingUnreadMemberIds(s._meeting, sessionMap);
+      const hasUnread = sidebarItemHasUnread(s, sessionMap);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
       const meetingRuntime = _meetingRuntimeAggregate(s._meeting, sessionMap);
       const anySubRunning = meetingRuntime.running;
@@ -770,16 +777,27 @@ sessionListEl.addEventListener('keydown', event => {
       // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
       const dotCls = sections.states.get(s.id) || 'idle';
       const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => _aiLogoHtml(sessionMap.get(id)?.kind)).join('');
-      const progress = memberTotal ? Math.min(100, s.unreadAnsweredSize / memberTotal * 100) : 0;
+      const answered = s._meeting.answeredThisTurn?.size || 0;
+      const progress = memberTotal ? Math.min(100, answered / memberTotal * 100) : 0;
+      const unreadChips = isGroupChat && hasUnread ? (s._meeting.subSessions || []).map(sid => {
+        const sub = sessionMap.get(sid);
+        const unread = unreadMembers.has(sid);
+        const runtime = sub ? getSessionRuntimeTruth(sub) : null;
+        const state = runtime?.state === RUNTIME_WAITING ? 'wait' : _subIsRunning(sub) ? 'run' : '';
+        const label = sub?.title || KIND_LABELS[_logoKind(sub?.kind)] || '成员';
+        return `<button type="button" class="mini-jump-btn sl-unread-member${unread ? ' has-unread' : ''}" data-sub-id="${escapeHtml(sid)}" title="${escapeHtml(label)} · ${unread ? '有未读，查看最新回答' : '查看成员'}"><span class="sl-member-name">${escapeHtml(label)}</span>${state ? `<span class="sl-member-runtime ${state}">${state === 'wait' ? '待输入' : '运行中'}</span>` : ''}${unread ? '<span class="sl-member-unread-dot" aria-label="未读"></span>' : ''}</button>`;
+      }).join('') : '';
       div.innerHTML = [
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
         isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
-        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, '已答 ' + s.unreadAnsweredSize + '/' + memberTotal].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
         '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
-        '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span></div>',
+        (hasUnread ? '<span class="sl-unread-badge">' + unreadMembers.size + ' 位未读</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>') + '</div>',
+        unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '',
+        hasUnread && markMeetingRead ? '<button type="button" class="sl-meeting-read" data-action="mark-meeting-read" data-sidebar-control="read-' + escapeHtml(s.id) + '">整组已读</button>' : '',
         isGroupChat ? '' : '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
-        isGroupChat ? '<span class="sl-group-progress" title="已答 ' + s.unreadAnsweredSize + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
+        isGroupChat ? '<span class="sl-group-progress" title="本轮已答 ' + answered + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
       ].join('');
       div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -864,7 +882,7 @@ sessionListEl.addEventListener('keydown', event => {
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
-    const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
+    const showUnread = sessionHasCompletedUnread(s) || unreadMemberIds.has(s.id);
     // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
     const dotCls = s._resumePending ? 'start' : (child
       ? partitionSidebarSessions([s], { sessionMap, activeSessionId: getActiveSessionId(), groupMemberIds: new Set([s.id]) }).states.get(s.id)
@@ -897,7 +915,7 @@ sessionListEl.addEventListener('keydown', event => {
     div.innerHTML = _ringHtml(ctxPct, dotCls)
       + '<span class="sl-title" title="' + escapeHtml(titleTip) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
       + _sessionKindHtml(s.kind, modelTxt)
-      + '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>';
+      + (showUnread ? '<span class="sl-unread-badge">新回复</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>');
     if (child) div.className += ' child';
     if (detailsEnabled) {
       div.className += ' has-details';
@@ -972,6 +990,7 @@ sessionListEl.addEventListener('keydown', event => {
   if (detailsEnabled && options.requestSessionUsage) options.requestSessionUsage([...detailSessionIds]);
 
   sessionListEl.scrollTop = savedScrollTop;
+  hoverCard?.refresh();
   // Whole-list updates must preserve a stationary pointer's expanded group.
   // If sorting moved that group away, release it at its new geometry.
   if (hoverPoint && hoveredMeetingId && sessionListEl.querySelectorAll) {
@@ -1031,6 +1050,11 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
+  const hoverCard = require('./session-hover-card').attachSessionHoverCard({
+    document: doc, root: sessionListEl,
+    getSession: id => getSessions().get(id), getMeeting: id => getMeetings()[id],
+    selectSession, selectMeeting,
+  });
   queueMicrotask(() => projectFilter.refresh());
 
   return {

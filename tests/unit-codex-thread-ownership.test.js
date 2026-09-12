@@ -26,6 +26,9 @@ test('live legacy Hub ownership blocks resume; missing native identity is protec
     await assert.rejects(assertNoOtherHubOwner(options,'thread',async()=>[{id:'old',kind:'codex',codexSid:'thread'}]),/原 Hub 仍持有/);
     await assert.rejects(assertNoOtherHubOwner(options,'thread',async()=>[{id:'same-card',kind:'codex'}]),/原 Hub 仍持有/);
     await assertNoOtherHubOwner(options,'thread',async()=>[{id:'unrelated',kind:'codex',codexSid:'different'}]);
+    const claudeOptions={...options,nativeProvider:'claude',env:{...options.env,CLAUDE_CONFIG_DIR:root}};
+    await assert.rejects(assertNoOtherHubOwner(claudeOptions,'cc-thread',async()=>[{id:'old-claude',kind:'claude',ccSessionId:'cc-thread'}]),/原 Hub 仍持有/);
+    await assertNoOtherHubOwner(claudeOptions,'cc-thread',async()=>[{id:'codex-only',kind:'codex',codexSid:'cc-thread'}]);
     await assert.rejects(assertNoOtherHubOwner(options,'thread',async()=>{throw Error('unreachable');}),/unreachable/);
   }finally{const exit=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();await exit;}
   await assertNoOtherHubOwner(options,'thread',async()=>{throw Error('dead process must not be contacted');});

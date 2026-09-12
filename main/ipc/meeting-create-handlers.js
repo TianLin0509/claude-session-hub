@@ -208,6 +208,11 @@ function createMeetingSubAdder(deps) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
 
+    // Dev seats hold identity without an engine until they are given work. Both
+    // native backends support it, so a Claude seat does not spawn a process the
+    // room may never use.
+    if (meeting?.groupChat && (meeting.mode === 'dev' || meeting.scene === 'dev')
+        && ['codex', 'codex-resume', 'claude', 'claude-resume'].includes(kind)) sessionOpts.lazyStart = true;
     const session = sessionManager.createSession(kind, sessionOpts);
     if (!session) return null;
     const updated = meetingManager.addSubSession(meetingId, session.id);

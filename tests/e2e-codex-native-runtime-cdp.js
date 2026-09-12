@@ -13,7 +13,7 @@ async function main(){
   const until=async(expr,label)=>{const deadline=Date.now()+30000;while(Date.now()<deadline){if(await cdp.eval(expr))return;await sleep(100);}throw Error('timeout: '+label);};
   const snap=async(name)=>{const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await freePort(),label:'codex-native',
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await freePort(),windowMode:'hidden',label:'codex-native',
       extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),
         CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures','codex-app-server.js')}});
     result.pid=hub.pid;result.port=hub.port;
@@ -26,10 +26,17 @@ async function main(){
     await cdp.eval('document.querySelector(\'.session-item[data-session-id="'+s.id+'"]\').click()');
     await until('!!document.querySelector(".floating-input-box")','composer');
     async function send(text){
+      await cdp.send('Page.bringToFront');
       await cdp.eval('(()=>{const input=document.querySelector(".floating-input-box");input.textContent='+JSON.stringify(text)+';input.dispatchEvent(new Event("input",{bubbles:true}));input.focus();})()');
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,nativeVirtualKeyCode:13});
+      await until('document.querySelector(".floating-input-send") && !document.querySelector(".floating-input-send").disabled','send ready');
+      await cdp.eval('document.querySelector(".floating-input-send").click()');
     }
+    await cdp.eval('if(currentView!=="card") document.querySelector(\'[data-view="card"]\')?.click()');
+    await send('/plan');
+    await until('sessions.get('+sid+').nativeRuntime.collaborationMode === "plan" && document.querySelector(".codex-native-mode")','native plan selected');
+    assert.equal(await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId'),null);
+    assert.equal(await cdp.eval('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length'),0);
+    await snap('plan-selected');result.checks.push('actual /plan composer command selects official mode without a fake model turn or optimistic message');
     await send('fixture:wait');
     await until('sessions.get('+sid+')?.nativeRuntime?.state === "waiting"','native waiting');
     await until('document.querySelector(".codex-native-controls:not([hidden]) textarea")','request form');
@@ -37,6 +44,9 @@ async function main(){
     await snap('waiting');
     await cdp.eval('document.querySelector(".codex-native-request textarea").value="A";document.querySelector(".codex-native-request button[type=submit]").click()');
     await until('sessions.get('+sid+')?.nativeRuntime?.state === "completed"','resolved completion');
+    await cdp.eval('document.querySelector(".codex-native-mode button").click()');
+    await until('sessions.get('+sid+').nativeRuntime.collaborationMode === "default"','native default selected');
+    result.checks.push('actual mode button resets future turns without touching global config');
     await until('document.querySelector(".codex-native-controls").hidden','request gone');
     result.checks.push('user response -> native resolution -> completed');
     await send('fixture:hold');
@@ -69,11 +79,19 @@ async function main(){
     await until('sessions.get('+sid+').nativeRuntime.state === "completed"','approval complete');
     await send('fixture:empty');
     await until('sessions.get('+sid+').nativeRuntime.state === "completed" && sessions.get('+sid+').nativeRuntime.submission?.status === "accepted"','empty done');
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    await cdp.eval('if(currentView!=="card") document.querySelector("#btn-backstage").click()');
+    await until('currentView==="card"','card view');
     await until('document.querySelector(".turn-native-outcome")?.getBoundingClientRect().height > 0','visible empty outcome card');
     assert.equal(await cdp.eval('document.querySelectorAll(".fi-stuck").length'),0);
     await snap('empty-cards');
     result.checks.push('native history cards retain empty completion and show no false unconfirmed banner');
+    await send('原生卡片身份去重验证');
+    await until('sessions.get('+sid+').nativeRuntime.state === "completed"','card input completed');
+    await until('[...document.querySelectorAll(".turn-card.user")].some(card=>card.dataset.optimistic!=="true" && card.innerText.includes("原生卡片身份去重验证"))','authoritative user card mounted');
+    await snap('composer-card-identity');
+    assert.equal(await cdp.eval('document.querySelectorAll(".turn-card.user[data-optimistic=true]").length'),0,
+      'native receipt must replace the optimistic user card by clientSubmissionId');
+    result.checks.push('card composer preserves submission identity and displays one user card');
     const beforeResend=await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId');
     await until('document.querySelector(".turn-card.user [data-action=resend]")','card resend button');
     await cdp.eval('[...document.querySelectorAll(".turn-card.user [data-action=resend]")].at(-1).click()');
@@ -81,6 +99,15 @@ async function main(){
     const beforeRegen=await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId');
     await until('document.querySelector(".turn-card [data-action=regen]")','card regenerate button');
     await cdp.eval('[...document.querySelectorAll(".turn-card [data-action=regen]")].at(-1).click()');
+    await until('[...document.querySelectorAll("button")].some(b=>b.textContent==="按此正文重发")','regenerate confirmation');
+    await cdp.eval('[...document.querySelectorAll("button")].find(b=>b.textContent==="按此正文重发").click()');
+    await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(beforeRegen)+' && ["waiting","completed"].includes(sessions.get('+sid+').nativeRuntime.state)','regenerated turn acknowledged');
+    // The last nonempty assistant card is fixture:multi; regeneration correctly
+    // asks its questions again. Complete the real forms before expecting done.
+    if(await cdp.eval('sessions.get('+sid+').nativeRuntime.state==="waiting"')) {
+      await until('document.querySelectorAll(".codex-native-request textarea").length===2','regenerated questions');
+      await cdp.eval('[...document.querySelectorAll(".codex-native-request form, form.codex-native-request")].forEach(f=>{f.querySelector("textarea").value="A";f.querySelector("button[type=submit]").click()})');
+    }
     await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(beforeRegen)+' && sessions.get('+sid+').nativeRuntime.state==="completed"','card regenerate through native driver');
     result.checks.push('real card resend and regenerate each create one newly acknowledged native turn');
     const group=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'Codex 原生群聊验收',scene:'general',workspace:cwd,slots:[{kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'}]})+')');
@@ -112,7 +139,7 @@ async function main(){
     await sleep(1200);
     assert.equal(Object.keys((await cdp.eval(devState)).attempts).length,Object.keys(beforeBuild.attempts).length,'native completion without file rename must not advance stage');
     fs.renameSync(path.join(docs,'开题报告.md'),path.join(docs,'已完成-开题报告.md'));
-    await until('(async()=>{const x=await '+devState+';return x.messages.some(m=>m.role==="user" && m.content.includes("执行施工")) && Object.values(x.attempts).filter(a=>a.status==="completed").length>=2;})()','file rename dispatches author through native driver');
+    await until('(async()=>{const x=await '+devState+';return x.messages.some(m=>m.role==="user" && m.content.includes("执行实现")) && Object.values(x.attempts).filter(a=>a.status==="completed").length>=2;})()','file rename dispatches author through native driver');
     fs.writeFileSync(path.join(docs,'实现手册-轮次1.md'),'隔离实现 fixture');fs.renameSync(path.join(docs,'实现手册-轮次1.md'),path.join(docs,'已完成-实现手册-轮次1.md'));
     await until('(async()=>{const x=await '+devState+';return Object.values(x.attempts).some(a=>a.sid==='+JSON.stringify(dev.subSessions[1])+' && a.status==="completed" && a.signalSource==="codex-app-server");})()','file rename dispatches merger through native driver');
     result.dev=await cdp.eval(devState);await snap('file-workflow');

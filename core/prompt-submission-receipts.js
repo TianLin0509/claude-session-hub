@@ -55,7 +55,7 @@ class PromptSubmissionReceipts {
 
   observe(event = {}) {
     if (event.signalSource && !['user_message', 'item_completed_user_message',
-      'claude-user-prompt-submit', 'prompt-submitted', 'codex-app-server'].includes(event.signalSource)) return false;
+      'claude-user-prompt-submit', 'prompt-submitted', 'codex-app-server', 'acp'].includes(event.signalSource)) return false;
     const sessionId = event.sessionId || event.hubSessionId;
     if (!this.get(sessionId) || typeof event.text !== 'string' || !event.text.trim()) return false;
     const submittedAt = Number(event.submittedAt || event.observedAt);
@@ -65,7 +65,7 @@ class PromptSubmissionReceipts {
     // Claude hooks can be timestamped on arrival. Repeated "continue" sends
     // must consume the oldest unresolved matching attempt, never the newest.
     const pending = this.unresolved.get(sessionId) || [];
-    const native = event.signalSource === 'codex-app-server';
+    const native = ['codex-app-server','acp'].includes(event.signalSource);
     if (native && (!event.clientSubmissionId || !event.threadId || !event.turnId)) return false;
     const receipt = pending.find(item => (!item.nativeOnly || native)
       && (!native || item.clientSubmissionId === event.clientSubmissionId)

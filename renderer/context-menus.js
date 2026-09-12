@@ -23,13 +23,14 @@ function createSessionContextMenuController({
   schedulePersist,
   notify,
   wakeDormantSession,
+  confirmAction = (message, options) => require('./ui-feedback').confirmHubAction(message, { document, ...options }),
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let contextMenuSessionId = null;
   const showNotice = typeof notify === 'function'
     ? notify
     : (message) => {
-      if (window && typeof window.alert === 'function') window.alert(message);
+      require('./ui-feedback').showHubAlert(message, { document });
     };
   const roomAlreadyAsleep = meeting => meeting?.status === 'dormant'
     && !(meeting.subSessions || []).some(id => sessions.has(id) && sessions.get(id).status !== 'dormant');
@@ -216,9 +217,7 @@ function createSessionContextMenuController({
             showNotice((result && result.message) || '关闭休眠失败，请稍后重试。');
           }
         } else if (action === 'delete') {
-          const confirmed = !window || typeof window.confirm !== 'function'
-            ? true
-            : window.confirm(`永久删除“${session.title || '此会话'}”？\n\n这会终止当前进程并移除 Hub 卡片，之后不能从该卡片唤醒。`);
+          const confirmed = await confirmAction(`永久删除“${session.title || '此会话'}”？\n\n这会终止当前进程并移除 Hub 卡片，之后不能从该卡片唤醒。`, { title: '永久删除这个会话？', acceptLabel: '永久删除', cancelLabel: '保留会话', danger: true });
           if (!confirmed) return;
           if (session.meetingId && meetings[session.meetingId]) {
             // Remove membership and its dependent participant/workflow indices

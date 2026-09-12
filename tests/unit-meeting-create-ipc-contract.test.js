@@ -113,6 +113,21 @@ function test(name, fn) {
 
 console.log('Running meeting create IPC contract tests...');
 
+test('development native seats defer their launch; other rooms and providers keep existing behavior', async () => {
+  // Both native backends hold their seat identity without an engine, so a dev
+  // room spawns nothing until it actually dispatches. A general room, and a
+  // provider without that contract, still start as before.
+  for (const mode of ['dev','general']) {
+    const ipc=createFakeIpc(),deps=createBaseDeps();registerMeetingCreateIpc(ipc,deps);
+    await ipc.handlers.get('create-meeting')(null,{mode,slots:[{kind:'codex'},{kind:'claude'},{kind:'gemini'}]});
+    const created=deps.calls.filter(c=>c[0]==='createSession');
+    assert.equal(created.length,3);
+    assert.equal(created[0][2].lazyStart,mode==='dev'?true:undefined);
+    assert.equal(created[1][2].lazyStart,mode==='dev'?true:undefined);
+    assert.equal(created[2][2].lazyStart,undefined);
+  }
+});
+
 test('rejects new solo development before creating workspaces or sessions', async () => {
   for (const opts of [
     {mode:'dev',slots:[{kind:'codex'}]},

@@ -308,10 +308,15 @@ async function writeSubmitFallbackSignals(sessionManager, sid, kind, tries = 1, 
 //   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
 async function waitCliReady(sid, kind, maxMs = 60000) {
   const { sessionManager, cliReadyDetector } = _deps;
-  const native = sessionManager.getNativeCodex?.(sid);
+  const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) {
     try { await native.start(); return native.runtime.connection === 'connected'; }
     catch (error) { console.warn('[codex-native] ready failed:', error.message); return false; }
+  }
+  const nativeClaude = sessionManager.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    await nativeClaude.start();
+    return nativeClaude.runtime.connection === 'connected' && !nativeClaude.unreconciled;
   }
   const start = Date.now();
   while (Date.now() - start < maxMs) {
@@ -333,14 +338,30 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
+  if (require('./session-speed').pendingSpeedSwitches.has(sid) && !options.localCommandObserver) {
+    throw new Error('正在确认当前会话的速度设置，请完成后再发送');
+  }
   const { sessionManager } = _deps;
-  const native = sessionManager.getNativeCodex?.(sid);
+  const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
   });
   const session = sessionManager.getSession?.(sid);
   if (session && (session.kind === 'codex' || session.kind === 'codex-resume')) {
     throw new Error('旧 Codex 会话尚未接管，未发送新消息');
+  }
+  const nativeClaude = sessionManager.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    // Slash commands are a command channel, not a prompt: the driver reports the
+    // engine's own output so the composer can show the result.
+    if (String(prompt).trimStart().startsWith('/') && !(options.attachments || []).length) {
+      return nativeClaude.slash(prompt);
+    }
+    const { claudeNativeReceipt } = require('./claude-native-binding');
+    return claudeNativeReceipt(await nativeClaude.submit(prompt, options));
+  }
+  if (sessionManager.getSession?.(sid)?.runtimeBackend === 'claude-stream-json') {
+    throw new Error('Claude 原生连接不可用，消息未发送');
   }
   const alreadySubmitted = () => ({ ok: options.submissionReceipt?.status !== 'content-mismatch',
     sendStatus: options.submissionReceipt?.status === 'content-mismatch' ? 'content-mismatch' : 'ok', enterAttempts: 0,
@@ -428,6 +449,13 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     // empty submissions after a prompt already started.
     sessionManager.writeToSession(sid, '\r');
     let enterAttempts = 1;
+    // Local settings commands do not start an agent turn. Their own explicit
+    // acknowledgement must decide success; a TUI repaint is not confirmation.
+    if (options.localCommandObserver) {
+      const confirmation = await options.localCommandObserver.wait();
+      return {ok:confirmation.ok,sendStatus:confirmation.ok ? 'ok' : 'stuck',
+        message:confirmation.message,enterAttempts,acknowledgementSource:'local-command'};
+    }
 
     // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
     //   慢启动场景误判 stuck（实测：\r 后 claude TUI 渲染 user message + 启 streaming
@@ -656,12 +684,19 @@ async function sendToPty(sid, prompt, kind, options = {}) {
 //   返回 { source: 'tap'|'placeholder', blocks: Array<Block>, text: string }
 //   kind 参数保留为 API 稳定性（未使用）。
 function extractStreamingText(sid, _kind) {
-  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     const blocks = native.blocks();
-    return {source:'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+    return {source:native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
+  const nativeClaude = _deps.sessionManager?.getNativeClaude?.(sid);
+  if (nativeClaude) {
+    const record = nativeClaude.active;
+    const answer = record && nativeClaude.transcript().find(item => item.id === record.userMessageId + ':assistant');
+    const text = answer?.text || '';
+    return { source: 'claude-stream-json', text, blocks: text ? [{ type: 'text', text }] : [] };
+  }
   const tapBlocks = transcriptTap.getStreamingText(sid);
   if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
     const text = tapBlocks
@@ -746,13 +781,17 @@ function inspectPromptSubmissionState({ sid, kind, promptHeader }) {
 }
 
 async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true, submissionReceipt }) {
-  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     await native.reconcile();
     return {ok:false,mode:'none',reason:'native-resend-requires-review',
       message:'已核对 Codex 原生状态；不会自动重发结果不明的消息，请检查当前轮次。'};
   }
   const { sessionManager } = _deps;
+  if (sessionManager.getNativeClaude?.(sid)
+      || sessionManager.getSession?.(sid)?.runtimeBackend === 'claude-stream-json') {
+    return { ok: false, mode: 'none', reason: 'native-reconciliation-required' };
+  }
   kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };
   if (submissionReceipt) {
@@ -841,6 +880,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
 //     CLI 已死，立即 markProcessExit。核心检测函数已抽到 core/host-shell-detector.js
 //     方便单测。
 function checkHostShellTakeover(sid) {
+  if (_deps.sessionManager.getNativeClaude?.(sid)) return false;
   const { sessionManager } = _deps;
   return detectHostShellTakeover(sessionManager.getSessionBuffer(sid));
 }

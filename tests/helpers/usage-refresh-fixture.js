@@ -154,6 +154,26 @@ input.on('line', line => {
   fs.writeFileSync(path.join(fakeNpmDir, 'codex.cmd'),
     `@echo off\r\n"${process.execPath}" "${fakeServerPath}" %*\r\n`, 'utf8');
 
+  // The Windows launcher now resolves npm shims to their native executable.
+  // Supply that same layout with a fixture-only stdio forwarding executable.
+  if (process.platform === 'win32') {
+    const packageRoot = path.join(fakeNpmDir, 'node_modules/@openai/codex');
+    const bin = path.join(packageRoot, 'bin');
+    const target = path.join(packageRoot, 'vendor', (process.arch === 'arm64' ? 'aarch64' : 'x86_64') + '-pc-windows-msvc/bin');
+    fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'codex.js'), '// Controlled account-usage fixture.\n');
+    fs.writeFileSync(path.join(fakeNpmDir, 'codex.cmd'), `@echo off\r\nnode "%dp0%node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n`);
+    const source = path.join(dataDir, 'usage-fixture-launcher.cs');
+    fs.writeFileSync(source, 'using System; using System.Diagnostics; using System.Threading; class Fixture { static int Main() { var p = Process.Start(new ProcessStartInfo('
+      + JSON.stringify(process.execPath) + ', "\\\"" + ' + JSON.stringify(fakeServerPath)
+      + ' + "\\\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true });'
+      + ' var input = new Thread(() => { string line; while ((line = Console.ReadLine()) != null) { p.StandardInput.WriteLine(line); p.StandardInput.Flush(); } p.StandardInput.Close(); }); input.IsBackground = true; input.Start();'
+      + ' var error = new Thread(() => { string line; while ((line = p.StandardError.ReadLine()) != null) Console.Error.WriteLine(line); }); error.IsBackground = true; error.Start();'
+      + ' string output; while ((output = p.StandardOutput.ReadLine()) != null) Console.WriteLine(output); p.WaitForExit(); return p.ExitCode; } }');
+    const csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+    require('child_process').execFileSync(csc, ['/nologo', '/target:exe', '/out:' + path.join(target, 'codex.exe'), source], { windowsHide: true });
+  }
+
   return {
     codexHome,
     controlPath,

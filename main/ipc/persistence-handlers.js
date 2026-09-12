@@ -6,9 +6,13 @@ const { isDeepStrictEqual } = require('node:util');
 // 而 memory link 每次 spawn 都会重新检测——放进来会让警告一旦出现就永久粘住，修好了也删不掉
 // （cwdFellBackFrom 能放是因为 healPersistedCwds 里有显式 delete 清除路径，它没有）。
 const RESUME_META_FIELDS = [
+  'nativeConfig',
   'cwdFellBackFrom',
   'transcriptPath',
   'codexSid',
+  'acpSid',
+  'acpProfileId',
+  'acpCapabilities',
   'runtimeBackend',
   'nativeRuntime',
   'codexApprovalPolicy',
@@ -164,6 +168,7 @@ function handlePersistSessions(list, meetingList, deps) {
   } = deps;
 
   const previousSessions = getLastPersistedSessions();
+  const sharedViewerIds = new Set();
   const previousSessionsById = new Map(
     (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
   );
@@ -176,12 +181,16 @@ function handlePersistSessions(list, meetingList, deps) {
     // snapshot owns accounting; never replace it with an older renderer copy.
     const authoritativeUsage = live?.sessionUsage || previousSessionsById.get(session.hubId)?.sessionUsage;
     if (authoritativeUsage) session.sessionUsage = authoritativeUsage;
-    if (live && live.runtimeBackend === 'codex-app-server') {
+    if (live && ['codex-app-server','acp'].includes(live.runtimeBackend)) {
       session.runtimeBackend = live.runtimeBackend;
       session.nativeRuntime = require('../../core/codex-native-runtime.js').persistNativeRuntime(live);
       session.codexSid = live.codexSid;
       session.codexApprovalPolicy = live.codexApprovalPolicy;
       session.codexSandbox = live.codexSandbox;
+      if(live.runtimeBackend==='acp') {
+        session.acpSid=live.acpSid;session.acpProfileId=live.acpProfileId;session.acpCapabilities=live.acpCapabilities;
+      }
+      if (live.codexSharedControl?.role === 'viewer') sharedViewerIds.add(session.hubId);
     }
   }
 
@@ -203,11 +212,22 @@ function handlePersistSessions(list, meetingList, deps) {
 
   for (const session of list) {
     if (!session || !session.hubId) continue;
+    const authoritative = deps.sessionManager?.getSession(session.hubId);
+    if (authoritative?.runtimeBackend === 'claude-stream-json') {
+      session.runtimeBackend = authoritative.runtimeBackend;
+      session.nativeRuntime = authoritative.nativeRuntime;
+      session.nativeConfig = authoritative.nativeConfig;
+      session.ccSessionId = authoritative.ccSessionId;
+    }
     const previous = previousSessionsById.get(session.hubId);
     const changed = !previous
       || typeof previous.updatedAt !== 'number'
       || !persistentEntityEquals(session, previous);
     if (changed) {
+      if (sharedViewerIds.has(session.hubId)) {
+        session.updatedAt = typeof previous?.updatedAt === 'number' ? previous.updatedAt : nowTs;
+        continue;
+      }
       session.updatedAt = nowTs;
       sessionStore.markDirty(session.hubId, session);
       changedSessions += 1;

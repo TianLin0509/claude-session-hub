@@ -81,7 +81,7 @@ const detailControls = createCardDetailControls({
   document: doc, window: win, clipboard: clipboardApi,
   resolveTurn: card => win._sessionTurns.get(card?.dataset.turnId),
   resolveResult: element => {
-    const card = element.closest('.turn-card'), turn = win._sessionTurns.get(card?.dataset.turnId);
+    const card = element.closest('.turn-card'), turn = win._sessionTurns.get(element.closest('[data-turn]')?.dataset.turn || card?.dataset.turnId);
     const id = element.closest('[data-activity-id]')?.dataset.activityId;
     const activity = (turn?.toolCalls || []).map(normalizeToolActivity).find(a => a.id === id);
     if (!activity) throw new Error('未找到完整工具来源，请重新载入会话');
@@ -167,46 +167,13 @@ function renderToolCluster(turnId, toolCalls, total = toolCalls?.length || 0) {
     counts.declined ? `${counts.declined} 已拒绝` : '',
   ].filter(Boolean).join(' · ');
   const items = activities.map(_renderToolRow).join('');
-  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}">
+  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}" data-activity-count="${total}">
     <summary class="tc-cluster-head"><span class="turn-activity-title">活动 ${total}</span><span class="turn-activity-breakdown">${total > activities.length ? `最近 ${activities.length} 项：` : ''}${escapeHtml(breakdown)}</span></summary>
     <div class="tc-cluster-list">${items}${total > activities.length ? '<button type="button" data-action="tc-show-all">查看全部活动</button>' : ''}</div>
   </details>`;
 }
 
-function _deliveryStatusLabel(status) {
-  return { completed: '命令成功', failed: '失败', running: '运行中', pending: '待确认', cancelled: '已取消', unknown: '已运行 · 未判定' }[status] || '待确认';
-}
-
-function _deliveryStatusIcon(status) {
-  return { completed: '✓', failed: '×', running: '↻', pending: '·', cancelled: '—', unknown: '?' }[status] || '?';
-}
-
-function renderDeliverySummary(delivery) {
-  if (!delivery || !delivery.hasContent) return '';
-  const files = Array.isArray(delivery.changedFiles) ? delivery.changedFiles : [];
-  const checks = Array.isArray(delivery.checks) ? delivery.checks : [];
-  const artifacts = Array.isArray(delivery.artifacts) ? delivery.artifacts : [];
-  const metrics = [];
-  if (files.length) metrics.push(`${files.length} 个${files.some(f => f.status !== 'completed' || f.failedAttempts) ? '文件记录' : '变更文件'}`);
-  if (checks.length) metrics.push(`${checks.length} 项验证`);
-  if (artifacts.length) metrics.push(`${artifacts.length} 个产物`);
-  const fileItems = files.map(item => {
-    const state = item.status === 'completed' ? (item.kind === 'delete' ? '已删除' : '已修改')
-      : item.status === 'failed' ? '失败 · 变更未确认' : '变更未确认';
-    const history = item.status === 'completed' && item.failedAttempts ? ` · 另有 ${item.failedAttempts} 次失败` : '';
-    return `<li class="turn-delivery-file status-${escapeHtml(item.status)}"><span class="turn-delivery-icon">Δ</span><a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">${escapeHtml(item.path)}</a><em>${escapeHtml(state + history)}</em></li>`;
-  }).join('');
-  const checkItems = checks.map(item => `<li class="turn-delivery-check status-${escapeHtml(item.status)}"><span class="turn-delivery-icon">${escapeHtml(_deliveryStatusIcon(item.status))}</span><span>${escapeHtml(item.command)}</span><em>${escapeHtml(_deliveryStatusLabel(item.status))}${item.exitCode !== null ? ` · exit ${escapeHtml(item.exitCode)}` : ''}</em></li>`).join('');
-  const artifactItems = artifacts.map(item => `<li class="turn-delivery-artifact"><span class="turn-delivery-icon">↗</span><a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">${escapeHtml(item.name || item.path)}</a><em>${escapeHtml(item.kind || '')}</em></li>`).join('');
-  return `<details class="turn-delivery-summary" data-summary-source="${escapeHtml(delivery.source || 'deterministic')}">
-    <summary><span>交付结果</span><small>${escapeHtml(metrics.join(' · '))}</small></summary>
-    <div class="turn-delivery-body">
-      ${files.length ? `<section><strong>文件</strong><ul>${fileItems}</ul></section>` : ''}
-      ${checks.length ? `<section><strong>验证</strong><ul>${checkItems}</ul></section>` : ''}
-      ${artifacts.length ? `<section><strong>产物</strong><ul>${artifactItems}</ul></section>` : ''}
-    </div>
-  </details>`;
-}
+const renderDeliverySummary = delivery => require('./delivery-summary').renderDeliverySummary(delivery, escapeHtml);
 
 function _disclosureKey(element, index) {
   if (!element) return `details:${index}`;
@@ -272,13 +239,16 @@ function _restoreCardSelection(card, snapshot) {
     let node;
     while ((node = walker.nextNode())) {
       const length = node.textContent.length;
-      if (!startNode && wantedStart <= cursor + length) {
+      // At a text-node boundary, start in the next node. Ending in the time
+      // column would include a visual grid newline in the restored selection.
+      if (!startNode && wantedStart < cursor + length) {
         startNode = node;
         startOffset = Math.max(0, Math.min(length, wantedStart - cursor));
       }
       if (!endNode && wantedEnd <= cursor + length) {
         endNode = node;
         endOffset = Math.max(0, Math.min(length, wantedEnd - cursor));
+        if (!startNode && wantedStart === wantedEnd) { startNode = endNode; startOffset = endOffset; }
         break;
       }
       cursor += length;
@@ -327,7 +297,7 @@ function _restoreCardUiState(card, snapshot) {
   return selectionRestored;
 }
 
-function _postProcessTurnCard(card, sessionId) {
+function _postProcessTurnCard(card, sessionId, deferActivity = false) {
   if (!card) return;
   if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(card);
   if (typeof postProcessToolResults === 'function') postProcessToolResults(card);
@@ -335,11 +305,17 @@ function _postProcessTurnCard(card, sessionId) {
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId });
   postProcessCardMath(card);
   if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(card);
+  if (!deferActivity) require('./conversation-message-view').syncResponseNeighbors(card);
 }
 
 function patchTurnCardInPlace(existing, newCard, sessionId) {
   if (!existing || !newCard || typeof existing.replaceChildren !== 'function') return null;
+  require('./conversation-header-activity').restoreActivitySources(existing.parentElement);
   const snapshot = _captureCardUiState(existing);
+  const workingIndicator = existing.querySelector('.streaming-indicator');
+  const workingAnimations = workingIndicator?.getAnimations?.({subtree:true}).map(animation=>({
+    element:animation.effect?.target,name:animation.animationName,time:animation.currentTime,
+  })) || [];
   const priorSessionId = existing.dataset.sessionId || String(sessionId || '');
   const patchCount = Number(existing.dataset.patchCount || 0) + 1;
   for (const attribute of Array.from(existing.attributes || [])) {
@@ -352,8 +328,17 @@ function patchTurnCardInPlace(existing, newCard, sessionId) {
   existing.dataset.patchCount = String(patchCount);
   existing.dataset.renderMode = 'in-place';
   existing.replaceChildren(...Array.from(newCard.childNodes));
-  _postProcessTurnCard(existing, sessionId);
+  if (workingIndicator) {
+    existing.querySelector('.turn-head')?.appendChild(workingIndicator);
+    // A streaming patch must not restart the ring/breathing on every delta.
+    for (const saved of workingAnimations) {
+      const animation=saved.element?.getAnimations?.().find(a=>a.animationName===saved.name);
+      if (animation && typeof saved.time==='number') animation.currentTime=saved.time;
+    }
+  }
+  _postProcessTurnCard(existing, sessionId, true);
   const selectionRestored = _restoreCardUiState(existing, snapshot);
+  require('./conversation-message-view').syncResponseNeighbors(existing);
   if (!win.__cardRenderMetrics) win.__cardRenderMetrics = { inPlacePatches: 0, rootReplacements: 0 };
   win.__cardRenderMetrics.inPlacePatches += 1;
   win.__cardRenderMetrics.lastSelection = {
@@ -422,6 +407,9 @@ function _fmtDuration(ms) {
   return s.toFixed(1) + 's';
 }
 function _renderMetaPills(turn) {
+  // Item timestamps inherit the logical turn end; repeating that elapsed time
+  // on every progress item is both noisy and misleading.
+  if (turn.phase === 'commentary') return '';
   const isUser = turn.role === 'user';
   if (isUser) {
     const n = (turn.text || '').length;
@@ -479,9 +467,10 @@ function confirmCardResend({ text, sessionLabel }) {
 function renderTurnCard(turn) {
   // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, toolCalls? }
   const isUser = turn.role === 'user';
+  const isProgress = !isUser && turn.phase === 'commentary';
   // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
   const cls = (isUser ? 'turn-card user' : 'turn-card assistant') + (turn.inherited ? ' inherited' : '');
-  const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
+  const who = isUser ? '你' : (turn.model || (turn.source==='acp' ? require('../core/ai-kinds').getKindLabel(turn.kind) : turn.kind) || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
 
   // 头像分支
@@ -496,9 +485,12 @@ function renderTurnCard(turn) {
   }
 
   const emptyNative = !turn.text && ({completed:'本轮已完成，没有回答正文',interrupted:'本轮已中断',failed:'本轮执行失败'})[turn.nativeOutcome];
-  const body = emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
+  const activityLabel = turn.nativeActivity ? '<div class="turn-native-outcome">Claude 后台活动</div>' : '';
+  const body = activityLabel + (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
+    {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
+    : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.text,
-      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths});
+      {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
   const attachments = isUser ? renderImageAttachments(turn.attachments, { escapeHtml, cwd: turn.attachmentCwd }) : '';
   const presentation = turn.presentation || buildTurnPresentation(turn);
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
@@ -524,20 +516,21 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         ${!isUser && turn.phase ? `<span class="conversation-phase">${turn.phase === 'final_answer' ? '结果' : turn.phase === 'commentary' ? '进展' : turn.phase === 'activity' ? '活动记录' : '消息'}</span>` : ''}
+        ${!isUser ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
-          ${renderCardActions(turn)}
+          ${isProgress ? '<button class="conversation-response-copy" data-action="conversation-response-copy" title="复制本轮当前已收到的完整回复">复制本轮</button>' : renderCardActions(turn)}
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+      <div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${attachments}
       ${deliveryHtml}
       ${toolHtml}
@@ -746,10 +739,10 @@ doc.addEventListener('click', (e) => {
   const allButton = t.closest('[data-action="tc-show-all"]');
   if (allButton) {
     e.preventDefault();
-    const card = allButton.closest('.turn-card');
-    if (card?.dataset.turnId) {
-      _fullActivityTurns.add(card.dataset.turnId);
-      rerenderTurn(card.dataset.turnId);
+    const turnId = allButton.closest('[data-turn]')?.dataset.turn || allButton.closest('.turn-card')?.dataset.turnId;
+    if (turnId) {
+      _fullActivityTurns.add(turnId);
+      rerenderTurn(turnId);
     }
     return;
   }
@@ -826,7 +819,7 @@ function _isCardOverlayAtBottom(el) {
 //   待真 user turn 从 transcript 解析进来时（mountSessionTurnCard 顶部的 dedup），扫一眼
 //   现存 optimistic 卡片，文本匹配的删掉。turn.id 用 'pending-user-' 前缀的临时 id，
 //   不进 _sessionTurns Map（不是权威 turn，避免被当作真 turn dedup-replace 链路对象）。
-function mountOptimisticUserCard(sessionId, text, kind, clientSubmissionId) {
+function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
   const container = doc.getElementById('msg-overlay');
   if (!container) return null;
   // 隐藏 placeholder 而非删除 — 后续 turn-complete-event / applyViewMode
@@ -849,7 +842,7 @@ function mountOptimisticUserCard(sessionId, text, kind, clientSubmissionId) {
   cardEl.dataset.sessionId = String(sessionId || '');
   cardEl.dataset.optimistic = 'true';
   cardEl.dataset.optimisticText = text;
-  cardEl.dataset.submissionId = clientSubmissionId || '';
+  if (options.clientSubmissionId) cardEl.dataset.clientSubmissionId = options.clientSubmissionId;
   cardEl.dataset.submittedAt = String(turn.ts);
 
   // 插在 streaming-indicator 之前（与 mountSessionTurnCard 一致），保证位置正确
@@ -893,6 +886,7 @@ function turnRenderSignature(turn) {
   if (!turn) return '';
   const raw = JSON.stringify({
     role: turn.role || '',
+    logicalTurnId: turn.logicalTurnId || '',
     phase: turn.phase || '',
     attachments: turn.attachments || null,
     attachmentCwd: turn.attachmentCwd || null,
@@ -950,7 +944,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
       const normalize = require('../core/conversation-display').userTextIdentity;
       const candidates = Array.from(opts2).filter(opt => {
         if (opt.dataset.sessionId !== sidStr) return false;
-        if (turn.clientSubmissionId && opt.dataset.submissionId) return turn.clientSubmissionId === opt.dataset.submissionId;
+        if (turn.clientSubmissionId || opt.dataset.clientSubmissionId) return turn.clientSubmissionId === opt.dataset.clientSubmissionId;
         const sentAt = Number(opt.dataset.submittedAt);
         return (!sentAt || (Number(turn.ts) >= sentAt - 1000))
           && normalize(opt.dataset.optimisticText) === normalize(realText);
@@ -1085,6 +1079,16 @@ win._mountSessionTurnCard = mountSessionTurnCard;
 
 // click handler — code-copy + code-expand/collapse
 doc.addEventListener('click', (e) => {
+  const responseCopy = e.target.closest('[data-action="conversation-response-copy"]');
+  if (responseCopy) {
+    e.preventDefault();e.stopPropagation();
+    const text=require('./conversation-message-view').responseCards(responseCopy.closest('.turn-card'))
+      .filter(card=>card.dataset.phase!=='activity')
+      .map(card=>require('./visible-card-text').extractVisibleCardText(card.querySelector('.turn-body'))).filter(Boolean).join('\n\n');
+    Promise.resolve(clipboardApi.writeText(text)).then(()=>{responseCopy.textContent='已复制';})
+      .catch(error=>{responseCopy.textContent='复制失败';console.warn('[conversation-response-copy]',error);});
+    return;
+  }
   const messageCopy = e.target.closest('[data-action="conversation-copy"]');
   if(messageCopy) {
     e.preventDefault();e.stopPropagation();

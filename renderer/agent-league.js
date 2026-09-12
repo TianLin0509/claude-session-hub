@@ -740,8 +740,8 @@ function createAgentLeaguePanel(options = {}) {
     }
   }
 
-  function closePromptWorkbench() {
-    if (state.promptDirty && !window.confirm('当前提示词尚未保存，确认关闭并丢弃修改？')) return;
+  async function closePromptWorkbench() {
+    if (state.promptDirty && !await require('./ui-feedback').confirmHubAction('当前提示词尚未保存，确认关闭并丢弃修改？')) return;
     root.querySelector('[data-role="prompt-overlay"]').hidden = true;
     state.promptAgentId = null;
     state.promptWorkbench = null;
@@ -759,8 +759,8 @@ function createAgentLeaguePanel(options = {}) {
     nav.innerHTML = groups.map((group) => `<section><h4>${escapeHtml(promptGroupLabel(group))}</h4>${rows.filter((row) => row.group === group).map((row) => `<button type="button" class="${row.key === state.promptKey ? 'active' : ''}" data-prompt-key="${escapeHtml(row.key)}"><span>${row.editable ? icon('file') : icon('lock')}<b>${escapeHtml(row.title)}</b></span><small>${escapeHtml(row.name || (row.group === 'contract' ? '编译预览' : ''))}</small></button>`).join('')}</section>`).join('');
   }
 
-  function selectPromptFile(key, force = false) {
-    if (!force && state.promptDirty && !window.confirm('切换文件会丢弃尚未保存的修改，是否继续？')) return;
+  async function selectPromptFile(key, force = false) {
+    if (!force && state.promptDirty && !await require('./ui-feedback').confirmHubAction('切换文件会丢弃尚未保存的修改，是否继续？')) return;
     const item = promptItems().find((row) => row.key === key);
     if (!item) return;
     state.promptKey = key;
@@ -811,7 +811,7 @@ function createAgentLeaguePanel(options = {}) {
 
   async function reloadPromptWorkbench() {
     if (!state.promptAgentId) return;
-    if (state.promptDirty && !window.confirm('重新载入会丢弃当前修改，是否继续？')) return;
+    if (state.promptDirty && !await require('./ui-feedback').confirmHubAction('重新载入会丢弃当前修改，是否继续？')) return;
     const keepKey = state.promptKey;
     const result = await ipcRenderer.invoke(leagueChannel('prompt-files'), { agentId: state.promptAgentId });
     if (!result || !result.ok) return notify((result && result.message) || '重新载入失败', true);
@@ -1013,7 +1013,7 @@ function createAgentLeaguePanel(options = {}) {
 
   async function runPhase(button, action, progressText, successText) {
     const forceWeekly = action === 'run-weekly' && state.environment !== 'virtual'
-      && window.confirm('自动赛程只在周六运行。现在继续会作为手动验收立即沉淀最近交易日，是否继续？');
+      && await require('./ui-feedback').confirmHubAction('自动赛程只在周六运行。现在继续会作为手动验收立即沉淀最近交易日，是否继续？');
     if (action === 'run-weekly' && state.environment !== 'virtual' && !forceWeekly) return;
     button.disabled = true;
     const previous = button.innerHTML;
@@ -1040,7 +1040,7 @@ function createAgentLeaguePanel(options = {}) {
       state.virtual = null;
       state.selectedId = null;
       closeDetail();
-      closePromptWorkbench();
+      await closePromptWorkbench();
       while (state.loading) await new Promise((resolve) => setTimeout(resolve, 20));
       await refresh(true);
       notify('已返回正式联赛；虚拟沙盒保留，可稍后继续');
@@ -1108,7 +1108,7 @@ function createAgentLeaguePanel(options = {}) {
 
   async function resetVirtual() {
     if (state.environment !== 'virtual') return;
-    if (!window.confirm('重置只会删除隔离虚拟沙盒中的 Agent、Session、交易和统计；正式联赛不会受影响。确认继续？')) return;
+    if (!await require('./ui-feedback').confirmHubAction('重置只会删除隔离虚拟沙盒中的 Agent、Session、交易和统计；正式联赛不会受影响。确认继续？')) return;
     try {
       const scenario = root.querySelector('[data-role="virtual-scenario"]').value;
       const result = await ipcRenderer.invoke('agent-league:virtual-reset', { scenario });

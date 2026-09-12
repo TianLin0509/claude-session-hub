@@ -3,8 +3,9 @@ const path = require('path');
 
 function renderSessionWelcome(session, escapeHtml) {
   const kind = String(session?.kind || 'claude').replace(/-resume$/, '');
-  const provider = ['claude', 'codex', 'gemini', 'kimi', 'deepseek'].includes(kind) ? kind : 'claude';
-  const label = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', kimi: 'Kimi', deepseek: 'DeepSeek' }[provider];
+  const provider = kind==='deepseek-acp' ? 'deepseek' : ['claude', 'codex', 'gemini', 'kimi', 'deepseek','qwen','glm'].includes(kind) ? kind : 'claude';
+  const label = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', kimi: 'Kimi', deepseek: 'DeepSeek',qwen:'千问 · Qwen Code',glm:'智谱 · ZCode' }[provider];
+  const mark = `<img src="assets/ai-logos/${provider}.svg" alt="${label}" />`;
   const cwd = session?.cwd || '';
   const project = session?.workspaceLabel || path.basename(cwd) || '当前工作区';
   const actions = [
@@ -13,7 +14,7 @@ function renderSessionWelcome(session, escapeHtml) {
     ['排查问题', '从现象和证据开始定位', '请帮我排查这个问题，先确认原因再修改。现象是：', '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M10 7v4m0 2v.1"/>'],
   ];
   return `<section class="msg-overlay-placeholder session-welcome" aria-label="新会话欢迎页">
-    <div class="session-welcome-mark"><img src="assets/ai-logos/${provider}.svg" alt="${label}" /></div>
+    <div class="session-welcome-mark">${mark}</div>
     <span class="session-welcome-eyebrow">和 ${label} 一起开始</span>
     <h2>今天，想完成什么？</h2>
     <p class="session-welcome-intro">描述你的目标，或从下面选一个起点。</p>

@@ -27,6 +27,7 @@ const {
   managedLaunchAuditPath,
 } = require('./core/managed-launch-audit.js');
 const { spawn } = require('child_process');
+const { launchHubInstance } = require('./core/hub-instance-launcher.js');
 const {
   HUB_APP_USER_MODEL_ID,
   ensureWindowsShellIntegration,
@@ -115,6 +116,7 @@ const {
   shouldPreferCodexLiveUsage,
 } = require('./main/usage/codex-app-server-usage.js');
 const { readKimiAccountUsage } = require('./main/usage/kimi-account-usage.js');
+const { createTokenPlanUsageService } = require('./main/usage/token-plan-usage.js');
 const { readDeepSeekAccountBalance } = require('./main/usage/deepseek-account-balance.js');
 const {
   didClaudeSnapshotAdvance,
@@ -440,10 +442,20 @@ sessionManager.on('managed-launch', (record) => {
 });
 sessionManager.on('codex-session-updated', session => {
   sessionUsageService.bind(session);
-  sessionStore.markDirty(session.id, session);
+  // Viewer Hubs receive the same live snapshot but must not race the
+  // controller for the per-session persistence file.
+  if (session.codexSharedControl?.role !== 'viewer') sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
 sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
+sessionManager.on('codex-locate-request', ({ sessionId }) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    sendToRenderer('codex-focus-session', { sessionId });
+  }
+});
 sessionManager.on('codex-lifecycle', event => {
   transcriptTap.emit(event.type, event);
 });
@@ -479,6 +491,32 @@ const completionNotifier = new CompletionNotifier({
 // （core/session-manager.js 里 this.workspaceService.seedUngovernedAgentsFile）。
 sessionManager.workspaceService = workspaceService;
 const workspaceMigrationSessionIds = new Set();
+
+sessionManager.on('session-updated', session => {
+  if (session.runtimeBackend !== 'claude-stream-json') return;
+  sessionUsageService.bind(session);
+  sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
+  sendToRenderer('session-updated', { session });
+});
+sessionManager.on('native-agent-item', event => sendToRenderer('native-agent-item', event));
+sessionManager.on('native-agent-lifecycle', event => {
+  if (event.signalSource !== 'claude-stream-json') return;
+  const native = sessionManager.getNativeClaude(event.sessionId);
+  const record = native?.records.get(event.clientSubmissionId);
+  if (!native || !record) return;
+  const payload = { ...event, submittedAt: record.createdAt, startedAt: native.runtime.startedAt,
+    completedAt: native.runtime.completedAt, transcriptPath: null };
+  if (event.type === 'submission-accepted') {
+    transcriptTap.emit('prompt-submitted', { ...payload, text: record.text });
+    sendToRenderer('session:prompt-receipt', { sessionId: event.sessionId,
+      clientSubmissionId: event.clientSubmissionId, status: 'confirmed' });
+  } else if (event.type === 'agent-turn-started') transcriptTap.emit('turn-started', payload);
+  else if (event.type === 'agent-turn-complete') {
+    if (event.status === 'completed') transcriptTap.emit('turn-complete', payload);
+    else if (event.status === 'interrupted') transcriptTap.emit('turn-aborted', payload);
+    else transcriptTap.emit('turn-error', { ...payload, message: native.runtime.reason });
+  }
+});
 
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
@@ -561,7 +599,7 @@ transcriptTap.on('turn-started', (ev) => {
   completionNotifier.noteTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
-    sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
+    if (session?.runtimeBackend !== 'claude-stream-json') sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
       startedAt: ev.startedAt,
       signalSource: ev.signalSource || 'task_started',
       turnId: ev.turnId || null,
@@ -1053,6 +1091,16 @@ ipcMain.handle('hub:toggle-maximize', () => {
   return action;
 });
 
+ipcMain.handle('hub:new-instance', () => launchHubInstance({
+  appRoot: __dirname,
+  execPath: isIsolatedHub() || HUB_IS_PACKAGED ? process.execPath : resolveHubLaunchExePath({
+    execPath: process.execPath,
+    icoPath: path.join(__dirname, 'claude-wx.ico'),
+    productVersion: require('./package.json').version,
+  }),
+  isPackaged: HUB_IS_PACKAGED,
+}));
+
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
@@ -1351,7 +1399,7 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 // routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
   sessionUsageService.bind(session);
-  if (session && session.runtimeBackend === 'codex-app-server') return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   if (!session || !session.id) return;
   try {
     transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
@@ -1521,7 +1569,7 @@ try {
 
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
-    meetingManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    meetingManager, sessionManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,
@@ -1541,7 +1589,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
   onChanged: (meetingId,orch) => sendToRenderer('dev-workbench:progress',{meetingId,revision:orch.state.revision}),
 });
 function watchDevChatHistory(session, sourcePath) {
-  if(session && sessionManager.getNativeCodex?.(session.id))return;
+  if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if(!require('./core/dev-file-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
@@ -1556,9 +1604,27 @@ function watchDevChatHistory(session, sourcePath) {
 }
 transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
 const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
+function collectNativeGroupItems(event) {
+  const sid = event.sessionId || event.id;
+  const session = sessionManager.getSession(sid);
+  const meeting = session?.meetingId && meetingManager.getMeeting(session.meetingId);
+  if (!meeting?.groupChat) return;
+  const native = sessionManager.getNativeCodex?.(sid);
+  const claude = sessionManager.getNativeClaude?.(sid);
+  if (!native && !claude) return;
+  try {
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meeting.id);
+    if (collectGroupConversation({ native, claude, event, orch, sid })) sendToRenderer('groupchat-history-updated',
+      { meetingId: meeting.id, sid, revision: orch.state.revision });
+  } catch (error) { console.error('[conversation-history] native item persistence failed:', error); }
+}
+sessionManager.on('codex-content-updated', collectNativeGroupItems);
+sessionManager.on('codex-session-updated', collectNativeGroupItems);
+sessionManager.on('native-agent-item', collectNativeGroupItems);
+sessionManager.on('native-agent-lifecycle', collectNativeGroupItems);
 const devChatHistoryTimer=setInterval(()=>{
   for(const session of sessionManager.getAllSessions()) {
-    const native=sessionManager.getNativeCodex?.(session.id);
+    const native=(sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id));
     const meeting=session.meetingId && meetingManager.getMeeting(session.meetingId);
     if(native && meeting?.groupChat) {
       try {
@@ -1795,6 +1861,7 @@ registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
+require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain);
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
   const sessionId = request && typeof request.sessionId === 'string' ? request.sessionId : null;
@@ -1962,6 +2029,7 @@ let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).f
 let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
 
 registerPersistenceIpc(ipcMain, {
+  sessionManager,
   bootWasClean,
   getLiveSession: id => sessionManager.getSession(id),
   getImmersiveByMeeting: () => _immersiveByMeeting,
@@ -2140,6 +2208,9 @@ const hookServer = http.createServer((req, res) => {
     const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
     if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
       res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;
+    }
+    if (isHook && hookTargetSession?.runtimeBackend === 'claude-stream-json') {
+      res.writeHead(202); res.end('{"ignored":"native-protocol-authority"}'); return;
     }
     if (parsed.sessionId && hookTargetSession) {
       if (isHook) {
@@ -2363,6 +2434,35 @@ function loadStatuslineCache() {
   try { return JSON.parse(fs.readFileSync(STATUSLINE_CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 
+// Native Claude sessions answer the account quota over their own control; the
+// status line that used to feed this never runs in that transport. Any live
+// connection can answer, so take the first one and fall back to the cache when
+// none is connected or the engine will not say.
+async function refreshClaudeAccountUsageLive() {
+  for (const session of sessionManager.getAllSessions()) {
+    if (session.runtimeBackend !== 'claude-stream-json') continue;
+    const native = sessionManager.getNativeClaude?.(session.id);
+    if (!native) continue;
+    let snapshot = null;
+    try { snapshot = await native.readAccountUsage(); }
+    catch (error) { console.warn('[claude-usage] native read failed:', error && error.message); continue; }
+    if (!snapshot) continue;
+    const before = loadUsageCache().claude || null;
+    const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
+    if (filtered.anyAccepted) {
+      cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d, ts: snapshot.observedAt });
+    }
+    const data = loadUsageCache().claude || null;
+    return { data, changed: didClaudeSnapshotAdvance(before, { ...data, observedAt: snapshot.observedAt }),
+      observedAt: snapshot.observedAt, source: 'claude-native' };
+  }
+  return null;
+}
+
+async function refreshClaudeAccountUsage() {
+  return (await refreshClaudeAccountUsageLive()) || refreshClaudeAccountUsageFromStatuslineCache();
+}
+
 function refreshClaudeAccountUsageFromStatuslineCache() {
   const before = loadUsageCache().claude || null;
   const snapshot = selectClaudeStatuslineUsage(loadStatuslineCache());
@@ -2466,10 +2566,20 @@ async function refreshDeepSeekAccountBalanceLive() {
   return payload;
 }
 
+const tokenPlanUsage = createTokenPlanUsageService({
+  configDir: isIsolatedHub() ? path.join(getHubDataDir(), 'bailian') : undefined,
+});
+
+async function refreshTokenPlanUsage(force = false) {
+  try { return await tokenPlanUsage.refresh(force); }
+  finally { sendToRenderer('agent-usage', { tokenPlan: tokenPlanUsage.snapshot() }); }
+}
+
 function loadUsageCacheForCurrentConfig() {
   // Source selection checks expiry; display retains the last account-scoped
   // observation with its real age, including across reset/refresh gaps.
-  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+  return { ...filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope()),
+    tokenPlan: tokenPlanUsage.snapshot() };
 }
 
 try {
@@ -2480,10 +2590,11 @@ try {
 registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   loadUsageCacheForCurrentConfig,
-  refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
+  refreshClaudeAccountUsage,
   getCodexUsageScopeKey: () => currentCodexUsageScope().scopeKey,
   refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
+  refreshTokenPlanUsage: () => refreshTokenPlanUsage(true),
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
 });
@@ -2499,6 +2610,10 @@ registerConfigIpc(ipcMain, {
   sendToRenderer,
   sessionManager,
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
+});
+
+require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
+  app, safeStorage: require('electron').safeStorage,
 });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
@@ -2600,7 +2715,7 @@ async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.runtimeBackend === 'codex-app-server') continue;
+    if (['codex-app-server','acp'].includes(s.runtimeBackend)) continue;
     const runtimeKind = s.transcriptKind || s.kind;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;
@@ -2807,12 +2922,15 @@ function startAgentScanner() {
   void refreshCodexUsageIfDue(true).catch(() => null);
   refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
+  void refreshTokenPlanUsage().catch(() => {});
   _agentScanInterval = setInterval(() => {
     void run();
     const codexRefresh = refreshCodexUsageIfDue(false);
     if (codexRefresh) void codexRefresh.catch(() => null);
     refreshDeepSeekBalanceIfDue(false);
     refreshKimiUsageIfDue(false);
+    // The service publishes errors in its snapshot and bounds read-only polling.
+    void refreshTokenPlanUsage().catch(() => {});
   }, 5000);
 }
 

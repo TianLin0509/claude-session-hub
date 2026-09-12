@@ -85,9 +85,9 @@ function cleanup() {
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
     await client.send('Runtime.enable');
     await client.send('Page.enable');
-    await waitEval(client, `document.getElementById('btn-chuxin') && document.querySelector('.cx-primary-tab[data-tab="league"]')`, 'league tab');
+    await waitEval(client, `document.getElementById('btn-research') && document.querySelector('.cx-primary-tab[data-tab="league"]')`, 'league tab');
     await client.eval(`(() => {
-      document.getElementById('btn-chuxin').click();
+      document.getElementById('btn-research').click();
       document.querySelector('.cx-primary-tab[data-tab="league"]').click();
     })()`);
     await waitEval(client, `document.querySelectorAll('.cxl-row').length===1`, 'league row');

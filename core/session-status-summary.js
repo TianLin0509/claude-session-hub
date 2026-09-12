@@ -27,6 +27,11 @@ function sessionModelLabel(session) {
 
 function sessionEffortLabel(session) {
   const kind = baseKind(session);
+  if (session?.runtimeBackend === 'acp') {
+    const { acpThoughtOption, acpThoughtChoices } = require('./acp-model-catalog');
+    const current = acpThoughtOption(session)?.currentValue;
+    return acpThoughtChoices(session).find(o => o.value === current)?.name || current || '';
+  }
   if (!['claude', 'codex', 'deepseek', 'deepseek-claude'].includes(kind)) return '';
   return String(session && session.effort || 'max').trim().toLowerCase();
 }
@@ -159,6 +164,10 @@ function composerThinkingChip(session, options = {}) {
   const kind = baseKind(session);
   const label = sessionEffortLabel(session);
   const hidden = { visible: false, label: '', interactive: false, options: [] };
+  if (session?.runtimeBackend === 'acp') {
+    const choices = require('./acp-model-catalog').acpThoughtChoices(session);
+    return choices.length ? { visible: true, label: label || '模型默认', interactive: true, options: choices.map(o => o.value) } : hidden;
+  }
   if (!label) return hidden;
   if (kind === 'codex') {
     const supported = Array.isArray(options.supportedEfforts)
@@ -266,14 +275,30 @@ function composerRunStartedAt(session, truth) {
  * @returns {{ state, text, detail, quickReplies, action, canStop, runtime }}
  */
 function buildComposerStatusModel(session, options = {}) {
-  const native = require('./codex-native-runtime.js').isCodexSession(session);
+  const native = require('./codex-native-runtime.js').isNativeSession(session);
   const now = Number(options.now) || Date.now();
   const runtime = options.runtime;
   if (!runtime || typeof runtime !== 'object') {
     throw new Error('buildComposerStatusModel requires the derived runtime status');
   }
   const truth = getSessionRuntimeTruth(session, { now });
-  const liveQuestion = !native && options.liveQuestion && options.liveQuestion.waiting
+  if (session?.runtimeBackend === 'claude-stream-json') {
+    const snapshot = session.nativeRuntime || {};
+    const labels = { unknown: '本条提交待核对', starting: 'Claude 已收到，等待执行',
+      waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
+    if (labels[snapshot.state]) {
+      // Same entry point Codex offers when its native state needs checking:
+      // one button that reconciles the engine record without resending.
+      const needsReconcile = snapshot.state === 'unknown' || snapshot.connection === 'disconnected';
+      return { state: snapshot.state === 'starting' ? COMPOSER_STATUS_WORKING
+        : snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
+          : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
+        text: labels[snapshot.state], detail: snapshot.reason || '', quickReplies: [],
+        action: needsReconcile ? { kind: 'reconnect', label: '核对连接' } : null,
+        canStop: snapshot.connection === 'connected' && ['starting', 'waiting'].includes(snapshot.state), runtime };
+    }
+  }
+  const liveQuestion = !native && session?.runtimeBackend !== 'claude-stream-json' && options.liveQuestion && options.liveQuestion.waiting
     ? options.liveQuestion
     : null;
   // 「等你响应」的判据与 respond-pill 完全一致（sessionNeedsUserInput），
@@ -286,6 +311,10 @@ function buildComposerStatusModel(session, options = {}) {
   const provider = runtime.provider || 'AI';
 
   if (state === COMPOSER_STATUS_WORKING) {
+    if (truth.cancellation?.status === 'pending') return {
+      state, text:`${provider} 正在停止`, detail:truth.evidence || '',
+      quickReplies:[], action:null, canStop:false, runtime,
+    };
     const startedAt = composerRunStartedAt(session, truth);
     const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
     return {
@@ -320,9 +349,9 @@ function buildComposerStatusModel(session, options = {}) {
 
   if (state === COMPOSER_STATUS_DEAD) {
     if (native && runtime.state !== RUNTIME_DORMANT) return {
-      state, text: truth.state === 'unknown' ? 'Codex 状态待核对' : 'Codex 连接已断开',
+      state, text: truth.state === 'unknown' ? `${provider} 状态待核对` : `${provider} 连接已断开`,
       detail: truth.evidence || '', quickReplies: [], canStop: false, runtime,
-      action: session.runtimeBackend === 'codex-app-server' ? { kind:'reconnect', label:'核对连接' } : null,
+      action: ['codex-app-server','acp','claude-stream-json'].includes(session.runtimeBackend) ? { kind:'reconnect', label:'核对连接' } : null,
     };
     const issue = session && session.connectionIssue;
     const lost = session && session._processLost;

@@ -2,9 +2,15 @@
 const assert = require('assert');
 const { registerUsageIpc, hasDeepSeekBalanceData } = require('../main/ipc/usage-handlers');
 const { createAccountUsageController } = require('../renderer/account-usage-controller');
-const { remainingPercent, createSidebarAccountUsage } = require('../renderer/sidebar-account-usage');
+const { remainingPercent, createSidebarAccountUsage, formatResetCountdown } = require('../renderer/sidebar-account-usage');
 
 async function main() {
+  const now = Date.UTC(2026,8,12);
+  for (const [delta, expected] of [[1,'1m'],[60000,'1m'],[80*60000,'1h20m'],[76*3600000,'3d4h'],[24*3600000,'1d'],[0,'0m'],[-1,'0m']]) {
+    assert.strictEqual(formatResetCountdown(now + delta,now),expected);
+  }
+  for (const missing of [null,undefined,'invalid','']) assert.strictEqual(formatResetCountdown(missing,now),'—');
+  assert.strictEqual(formatResetCountdown(new Date(now+80*60000).toISOString(),now),'1h20m');
   for (const [used, expected] of [[0, 100], [100, 0], [101, 0], [35, 65], [-1, null], [null, null], [NaN, null], ['5', null]]) {
     assert.strictEqual(remainingPercent({ pct: used }), expected);
   }
@@ -97,10 +103,12 @@ async function main() {
     formatAge: ts => String(ts || 0), formatBalance: data => data.totalBalance == null ? '—' : '¥' + data.totalBalance.toFixed(2),
     freshness: ts => ts === 200 ? 'fresh' : 'stale' });
   const buttons = nodes.filter(n => n.tag === 'button');
-  assert.strictEqual(buttons.length, 3);
+  assert.strictEqual(buttons.length, 4);
   view.render({ ...cache, deepseek: { ...cache.deepseek, lastSeen: 200 } }, {});
   const values = nodes.filter(n => n.className === 'sidebar-quota-value').map(n => n.textContent);
-  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00']);
+  assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00', '—']);
+  view.render({ tokenPlan: { usage7d: { pct: 45.3284435 }, lastSeen: 200 } }, {});
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '54.67%');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');

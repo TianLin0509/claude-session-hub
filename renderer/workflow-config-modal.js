@@ -86,7 +86,7 @@ function _applySemanticTemplate(templateId) {
     const tpl = api && typeof api.getTemplateMeta === 'function'
       ? api.getTemplateMeta(templateId)
       : (api && Array.isArray(api.TEMPLATES) ? api.TEMPLATES.find(t => t.id === templateId) : null);
-    alert(`模板至少需要 ${(tpl && tpl.minMembers) || 2} 个 AI 成员`);
+    require('./ui-feedback').showHubAlert(`模板至少需要 ${(tpl && tpl.minMembers) || 2} 个 AI 成员`);
     return false;
   }
   _state.enabled = true;
@@ -320,7 +320,7 @@ function _save() {
   const stepConfigs = pairs.map(pair => ({ name: String(pair.cfg.name || ''), prompt: String(pair.cfg.prompt || '') }));
   const loopOn = !!(_state.loop && _state.loop.enabled);
   if (loopOn && !(steps.length === 2 && steps[0].length === 1 && steps[1].length >= 1)) {
-    alert('评审闭环需要恰好 2 步：第 1 步选择 1 个执行 AI，第 2 步选择至少 1 个评审 AI。');
+    require('./ui-feedback').showHubAlert('评审闭环需要恰好 2 步：第 1 步选择 1 个执行 AI，第 2 步选择至少 1 个评审 AI。');
     return;
   }
   const config = {

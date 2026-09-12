@@ -12,6 +12,9 @@
 const { isChatgptWebModel } = require('./chatgpt-web-models');
 const MODEL_OPTIONS_BY_KIND = {
   chatgpt: [],
+  qwen: require('./acp-model-catalog').acpModelOptions('qwen'),
+  'deepseek-acp': require('./acp-model-catalog').acpModelOptions('deepseek-acp'),
+  glm: require('./acp-model-catalog').acpModelOptions('glm'),
   claude: [
     { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
     { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M context)' },
@@ -98,6 +101,9 @@ function clearRuntimeModelOptions(kind) {
 }
 
 const DEFAULT_MODEL_BY_KIND = {
+  qwen: 'qwen3.8-max',
+  'deepseek-acp': 'deepseek-v4-pro',
+  glm: 'glm-5.2',
   claude: 'claude-opus-5[1m]',
   gemini: 'gemini-3-pro-preview',
   codex: 'gpt-6-astra',
@@ -168,6 +174,9 @@ function modelOptionsFor(kind) {
 const MODEL_SWITCH_STRATEGY_BY_KIND = Object.freeze({
   claude: 'claude-inline',
   codex: 'codex-picker',
+  qwen: 'acp-native',
+  'deepseek-acp': 'acp-native',
+  glm: 'acp-native',
 });
 
 function modelSwitchStrategy(kind) {

@@ -57,10 +57,7 @@ test('a precise native id wins over the *-resume picker kind', () => {
   assert.ok(codexExact >= 0 && codexPicker > codexExact,
     'codex-resume with a bound codexSid must run `codex resume <sid>`, not reopen the picker');
 
-  const legacyStart = SRC.lastIndexOf('if (isDeepSeekLegacy) {');
-  const legacyExact = SRC.indexOf('} else if (opts.resumeCCSessionId) {', legacyStart);
-  const legacyPicker = SRC.indexOf("} else if (kind === 'deepseek-resume') {", legacyExact);
-  assert.ok(legacyExact >= 0 && legacyPicker > legacyExact,
+  assert.match(SRC, /resumeSessionId: unstarted \? null : \(opts\.forkCCSessionId \|\| opts\.resumeCCSessionId\)/,
     'legacy DeepSeek resume must prefer its exact Claude session id over the picker');
 
   const geminiExact = SRC.indexOf('if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {');

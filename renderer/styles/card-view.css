@@ -465,6 +465,8 @@
 .logo-gemini    { background-image: url('../assets/ai-logos/gemini.svg'); }
 .logo-codex     { background-image: url('../assets/ai-logos/codex.svg'); }
 .logo-deepseek  { background-image: url('../assets/ai-logos/deepseek.svg'); }
+.logo-qwen      { background-image: url('../assets/ai-logos/qwen.svg'); }
+.logo-glm       { background-image: url('../assets/ai-logos/glm.svg'); }
 .logo-kimi      { background-image: url('../assets/ai-logos/kimi.svg'); }
 .logo-powershell{ background-image: url('../assets/ai-logos/powershell.svg'); }
 
@@ -1175,6 +1177,7 @@
   font-weight: 650;
   line-height: 1;
   vertical-align: middle;
+  animation: streaming-breathe 2.4s ease-in-out infinite;
 }
 .streaming-indicator .spinner-icon {
   width: 9px;
@@ -1183,11 +1186,15 @@
   border-top-color: transparent;
   border-radius: 50%;
   display: inline-block;
-  animation: streaming-spin 0.8s linear infinite;
-  opacity: 0.65;
+  animation: streaming-spin 1s linear infinite;
+  opacity: 0.9;
   flex-shrink: 0;
 }
 @keyframes streaming-spin { to { transform: rotate(360deg); } }
+@keyframes streaming-breathe {
+  0%, 100% { background-color: rgba(35, 134, 54, .08); border-color: rgba(var(--rgb-success), .25); box-shadow: 0 0 0 rgba(var(--rgb-success), 0); }
+  50% { background-color: rgba(35, 134, 54, .2); border-color: rgba(var(--rgb-success), .65); box-shadow: 0 0 7px rgba(var(--rgb-success), .16); }
+}
 .streaming-indicator::after {
   content: attr(data-label);
   color: currentColor;
@@ -1201,9 +1208,8 @@
   padding: 5px 9px;
   font-size: 11px;
 }
-@media (prefers-reduced-motion: reduce) {
-  .streaming-indicator .spinner-icon { animation: none; }
-}
+/* Explicit working feedback stays active: a small rotating ring and a color
+   pulse, without scaling or moving text. General UI motion rules stay separate. */
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {
   max-height: 400px;
@@ -1389,6 +1395,42 @@
   color: var(--ui-purple-2);
   text-decoration: underline;
   cursor: pointer;
+}
+
+.msg-overlay-placeholder.card-history-loading {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-style: normal;
+  text-align: left;
+  opacity: 1;
+}
+.card-history-caption { padding: 0 4px 12px; }
+.card-history-ghost {
+  padding: 20px;
+  margin: 12px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-card);
+}
+.card-history-ghost.user { margin-left: 18%; }
+.card-history-ghost i {
+  display: block;
+  height: 9px;
+  margin: 12px 0;
+  border-radius: 5px;
+  background: var(--fg-muted);
+  opacity: .15;
+}
+.card-history-ghost i:first-child { width: 35%; }
+.card-history-ghost i:last-child { width: 68%; }
+.card-history-status {
+  padding: 12px 20px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .msg-overlay-placeholder.session-welcome {

@@ -2,7 +2,8 @@
 const { EventEmitter } = require('events');
 const { createHash, randomUUID } = require('crypto');
 const { CodexAppServerClient } = require('../main/codex-app-server-client');
-const { BACKEND, TERMINAL, createNativeRuntime, reduceNativeRuntime } = require('./codex-native-runtime');
+const { BACKEND, TERMINAL, createNativeRuntime, reduceNativeRuntime, isUnstartedRuntime } = require('./codex-native-runtime');
+const startJournal = require('./codex-start-journal');
 const { claimThread, releaseThread, assertNoOtherHubOwner } = require('./codex-thread-ownership');
 const { CodexTerminalPresentation } = require('./codex-terminal-presentation');
 const pool = new Map();
@@ -71,6 +72,11 @@ class CodexNativeSession extends EventEmitter {
       submission: options.restoredRuntime.submission?.status === 'submitting'
         ? {...options.restoredRuntime.submission,status:'unknown'} : options.restoredRuntime.submission,
     } : createNativeRuntime();
+    if (options.lazyStart || options.restoredRuntime?.lazyStart) this.runtime.lazyStart = true;
+    if (this.runtime.lazyStart && !options.resumeId && !options.forkId && !this.runtime.threadId
+        && !this.runtime.turnId && !this.runtime.submission && !this.runtime.startedAt && !this.runtime.endedTurns.length) {
+      Object.assign(this.runtime, {state:'idle',connection:'unstarted',reason:'尚未开始，收到消息后启动'});
+    }
     this.items = new Map();
     this.terminalPresentation = new CodexTerminalPresentation(text => this.emit('data', text.replace(/\r?\n/g, '\r\n')));
     this.contentRevision = 0;
@@ -108,6 +114,8 @@ class CodexNativeSession extends EventEmitter {
     return this.ready;
   }
   async _start() {
+    if (this.closed) throw new Error('Codex 会话已关闭，不能启动');
+    if (isUnstartedRuntime(this.runtime)) this.apply({type:'connect',epoch:this.runtime.epoch});
     this.entry = acquire(this.options);
     const client = this.entry.client;
     const epoch = this.runtime.epoch;
@@ -170,7 +178,21 @@ class CodexNativeSession extends EventEmitter {
         if (!match) throw new Error('当前目录没有可恢复的 Codex 历史；请明确新建会话');
         id = match.id;
       }
-      await this.openThread(o.forkId ? 'thread/fork' : id ? 'thread/resume' : 'thread/start',o.forkId || id);
+      try {
+        await this.openThread(o.forkId ? 'thread/fork' : id ? 'thread/resume' : 'thread/start',o.forkId || id);
+      } catch (error) {
+        if (!o.forkId && id && this.runtime.lazyStart && this.isMissingRollout(error, id) && this.hasNoTurnEvidence()) {
+          const proof = startJournal.read(o, id);
+          if (proof?.submissionAttempted === false && !this.emptyRecoveryUsed) {
+            this.emptyRecoveryUsed = true;
+            this.resetEmptyIdentity(id);
+            await this.openThread('thread/start');
+          } else {
+            if (!proof) this.apply({type:'empty-recovery',recovery:{threadId:id,epoch:this.runtime.epoch}});
+            throw error;
+          }
+        } else throw error;
+      }
     } catch (error) {
       if (this.closed) return;
       if (error.nativeDraft) this.emit('migration-draft',error.nativeDraft);
@@ -178,6 +200,38 @@ class CodexNativeSession extends EventEmitter {
       this.print('\n[连接失败] '+error.message+'\n');
       throw error;
     }
+  }
+  isMissingRollout(error, id) {
+    return !error.uncertain && String(error.message).includes('no rollout found for thread id ' + id);
+  }
+  hasNoTurnEvidence() {
+    const r = this.runtime;
+    return !r.turnId && !r.startedAt && !r.completedAt && !r.submission && !r.endedTurns.length && !this.history.size;
+  }
+  resetEmptyIdentity(previousThreadId) {
+    if (!this.hasNoTurnEvidence()) throw new Error('Codex 已有执行或提交记录，不能替换为空会话');
+    this.threadId = null;
+    Object.assign(this.options, {resumeId:null,forkId:null,picker:false,resumeLatest:false});
+    this.apply({type:'fresh-thread',previousThreadId});
+    this.emit('thread-reset', {previousThreadId});
+  }
+  restartEmpty({threadId,epoch,confirmed}) {
+    return this.enqueueSend(async () => {
+      const recovery = this.runtime.emptyRecovery;
+      if (confirmed !== true || !recovery || recovery.threadId !== threadId || recovery.epoch !== epoch
+          || this.runtime.epoch !== epoch || !this.hasNoTurnEvidence()) throw new Error('空会话恢复条件已变化，请重新核对');
+      const proof = startJournal.read(this.options, threadId);
+      if (proof?.submissionAttempted) throw new Error('Codex 存在提交尝试，不能建立新线程替代');
+      await assertNoOtherHubOwner(this.options, threadId);
+      if (this.closed || this.runtime.epoch !== epoch || this.runtime.emptyRecovery !== recovery
+          || !this.hasNoTurnEvidence()) throw new Error('会话已变化，取消重建');
+      this.emptyRecoveryUsed = true;
+      this.resetEmptyIdentity(threadId);
+      this.detach();
+      this.ready = null;
+      await this.start();
+      return {threadId:this.threadId,previousThreadId:threadId,resent:false};
+    });
   }
   async listThreads() {
     const result=[],seen=new Set();let cursor;
@@ -201,7 +255,11 @@ class CodexNativeSession extends EventEmitter {
       throw new Error('该 Codex 会话已在另一个 Hub 卡片中运行，请返回原会话');
     }
     if (method === 'thread/resume') {
-      await assertNoOtherHubOwner(this.options,id);
+      // A shared broker is itself the single writer. Viewer Hub cards are
+      // subscribers to this instance, so the legacy cross-Hub card scan would
+      // reject the very sharing the broker guarantees. The durable SQLite
+      // lease below remains authoritative against an older live writer.
+      if (!this.options.sharedBroker) await assertNoOtherHubOwner(this.options,id);
       this.ownershipLease = claimThread(this.options,id,this.pid);
     }
     if (method === 'thread/resume') { entry.owners.set(id,this); threadOwners.set(ownerKey,this); }
@@ -238,6 +296,9 @@ class CodexNativeSession extends EventEmitter {
         }
         throw error;
       }
+    }
+    if (this.runtime.lazyStart && method === 'thread/start') {
+      startJournal.write(this.options, result.thread.id, !!result.thread.turns?.length);
     }
     entry.owners.set(result.thread.id,this);
     threadOwners.set(ownershipKey(this.options,result.thread.id),this);
@@ -400,6 +461,7 @@ class CodexNativeSession extends EventEmitter {
     return null;
   }
   async reconcile() {
+    if (isUnstartedRuntime(this.runtime)) return this.runtime;
     if (this.reconciling) return this.reconciling;
     if (!this.threadId || this.entry.client.closed) throw new Error('Codex 连接不可核对');
     const epoch = this.runtime.epoch;
@@ -503,15 +565,17 @@ class CodexNativeSession extends EventEmitter {
       if (old.result) return old.result;
       throw new Error('此前提交结果不明，请先核对；不会自动重发');
     }
+    const active = ['running','waiting'].includes(this.runtime.state);
+    const modeParams = active ? {} : require('./codex-native-mode').turnCollaborationMode(this);
     const receipt = {digest,inputDigest:payloadDigest,text,submittedAt,result:null};
     this.receipts.set(id,receipt);
     while (this.receipts.size > 100) this.receipts.delete(this.receipts.keys().next().value);
     const submission = {id,status:'submitting',digest,inputDigest:payloadDigest,submittedAt};
     this.apply({type:'submission',submission});
-    const active = ['running','waiting'].includes(this.runtime.state);
     const method = active ? 'turn/steer' : 'turn/start';
     const params = {threadId:this.threadId,input,clientUserMessageId:id,
-      ...(active ? {expectedTurnId:this.runtime.turnId} : this.options.turnParams)};
+      ...(active ? {expectedTurnId:this.runtime.turnId}
+        : {...this.options.turnParams,...modeParams})};
     try {
       this.terminalPresentation.prompt(text, { reset: !active });
       const result = await client.request(method,params,undefined,{beforeWrite:()=>{
@@ -519,6 +583,7 @@ class CodexNativeSession extends EventEmitter {
         if (active ? this.runtime.turnId !== params.expectedTurnId : !TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') {
           throw new Error('Codex 活跃轮次已变化，未发送排队消息');
         }
+        if (this.runtime.lazyStart) startJournal.write(this.options, threadId, true, {submissionId:id});
         intent.sent = true;
       }});
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.threadId !== threadId || this.closed) {
@@ -541,6 +606,11 @@ class CodexNativeSession extends EventEmitter {
     }
   }
   async interrupt() {
+    if (this.runtime.lazyStart && !this.runtime.turnId && !this.runtime.submission) {
+      this.sendController.abort(new Error('已停止，未发送排队消息'));
+      this.sendController = new AbortController();
+      return {ok:true,pending:false,notStarted:true};
+    }
     await this.start();
     if (!['running','waiting'].includes(this.runtime.state) || this.runtime.connection !== 'connected') {
       throw new Error('没有可确认的活跃 Codex 轮次');
@@ -582,7 +652,11 @@ class CodexNativeSession extends EventEmitter {
   configure(options) {
     return this.enqueueSend(intent=>this._configure(options,intent));
   }
-  async _configure({model,effort}, intent) {
+  configureMode(mode, epoch) {
+    return this.enqueueSend(intent => require('./codex-native-mode').configureMode(this, mode, intent, epoch));
+  }
+  async _configure({model,effort,codexSpeedTier}, intent) {
+    model = model || this.options.turnParams.model;
     const { chatgptWebRoute } = require('./chatgpt-web-models');
     const currentWeb = chatgptWebRoute(this.options.turnParams?.model);
     const targetWeb = chatgptWebRoute(model);
@@ -591,6 +665,29 @@ class CodexNativeSession extends EventEmitter {
       require('./chatgpt-web-integration').requireWebTools(model, this.options.env);
       if (effort && effort !== targetWeb.effort) throw new Error('ChatGPT 档位由模型固定，不能单独修改');
       effort = targetWeb.effort;
+    }
+    if (codexSpeedTier !== undefined && !['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
+    if (isUnstartedRuntime(this.runtime)) {
+      if (intent) this.checkSendIntent(intent);
+      if (typeof model !== 'string' || !model.trim() || /[\s\x00-\x1f]/.test(model)) throw new Error('Codex 模型名称无效');
+      const requestedEffort = effort || this.options.turnParams.effort;
+      if (!['none','minimal','low','medium','high','xhigh','max','ultra'].includes(requestedEffort)) throw new Error('Codex 思考档无效');
+      if (codexSpeedTier === 'fast') {
+        const tuning = require('./codex-model-catalog').describeCodexModelTuning(model,{configDir:this.options.env?.CODEX_HOME});
+        if (!tuning.fromCache || !tuning.supportsFast) throw new Error('当前模型目录尚未确认 Fast 支持，请刷新目录后重试');
+        const args = [...(this.options.processArgs || [])];
+        const flag = args.findIndex((value,index)=>args[index-1] === '-c' && value.startsWith('features.fast_mode='));
+        if (flag >= 0) args[flag] = 'features.fast_mode=true';
+        else args.push('-c','features.fast_mode=true');
+        this.options.processArgs = args;
+      }
+      this.options.threadParams = {...this.options.threadParams,model,
+        config:{...this.options.threadParams.config,model_reasoning_effort:requestedEffort}};
+      this.options.turnParams = {...this.options.turnParams,model,effort:requestedEffort};
+      if (codexSpeedTier !== undefined) this.options.turnParams.serviceTier = codexSpeedTier === 'fast' ? 'fast' : 'default';
+      this.emit('bound',{threadId:null,path:null,model,reasoningEffort:requestedEffort,
+        ...(codexSpeedTier !== undefined ? {codexSpeedTier} : {})});
+      return {modelId:model,displayName:model,effort:requestedEffort,codexSpeedTier,appliesOn:'first-turn',validation:'on-start'};
     }
     await this.start();
     if (intent) this.checkSendIntent(intent);
@@ -615,6 +712,18 @@ class CodexNativeSession extends EventEmitter {
     }
     check();
     if (!target) throw new Error('Codex 模型目录中没有：'+model);
+    if (codexSpeedTier !== undefined) {
+      if (!['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
+      const tiers = [...(target.additionalSpeedTiers || []), ...(target.serviceTiers || []).map(t=>t.id)];
+      if (codexSpeedTier === 'fast' && !tiers.includes('fast')) throw new Error(model+' 当前不支持 Fast');
+      if (codexSpeedTier === 'fast') {
+        const configuration = await client.request('config/read',{includeLayers:false});
+        check();
+        if (configuration.config?.features?.fast_mode === false) {
+          throw new Error('该会话启动时禁用了 Fast 能力；新建标准或 Fast 会话后可使用开关');
+        }
+      }
+    }
     const requestedEffort = effort || this.options.turnParams.effort;
     if (requestedEffort && !(target.supportedReasoningEfforts || []).some(e=>e.reasoningEffort === requestedEffort)) {
       throw new Error(model+' 不支持 '+requestedEffort+'；请明确选择支持的思考档');
@@ -629,12 +738,16 @@ class CodexNativeSession extends EventEmitter {
     }
     this.options.threadParams = params;
     this.options.turnParams = {...this.options.turnParams,model,effort:requestedEffort};
+    if (codexSpeedTier !== undefined) {
+      this.options.turnParams.serviceTier = codexSpeedTier === 'fast' ? 'fast' : 'default';
+    }
     this.apply({type:'configuration',error:null});
     // Loaded thread/resume deliberately ignores model/effort overrides.
     // Selection is applied by the next turn/start, never by a fake task or
     // changing the shared server/global config. UI labels this explicitly.
-    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort});
-    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,appliesOn:'next-turn'};
+    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort,
+      ...(codexSpeedTier !== undefined ? {codexSpeedTier} : {})});
+    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,codexSpeedTier,appliesOn:'next-turn'};
   }
   async readOutcome(turnId) {
     if (!turnId) return null;
@@ -668,6 +781,9 @@ class CodexNativeSession extends EventEmitter {
         this.checkSendable(intent);
         if (!TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') throw new Error('Codex 已开始新轮次，未发送排队命令');
       }
+      if (this.runtime.lazyStart && !['mcpServerStatus/list','thread/goal/get'].includes(method)) {
+        startJournal.write(this.options, this.threadId, true, {command:method});
+      }
       intent.sent = true;
     }});
     if (command === '/mcp') {
@@ -679,7 +795,10 @@ class CodexNativeSession extends EventEmitter {
       printResult(JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2));
     } else if (command === '/status' || command === '/help') {
       printResult(command === '/status' ? JSON.stringify(this.runtime,null,2)
-          : '原生命令：/status /mcp /model <模型> /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n在 Hub 输入框提交以上命令；后台仅显示输出。\n新建、恢复、分叉请使用 Hub 会话菜单。\n/logout、/login 尚未接入：在 PowerShell 使用 codex logout、codex login（相同 CODEX_HOME）。\n');
+          : '原生命令：/status /mcp /model <模型> /plan /plan off /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n在 Hub 输入框提交以上命令；后台仅显示输出。\n新建、恢复、分叉请使用 Hub 会话菜单。\n/logout、/login 尚未接入：在 PowerShell 使用 codex logout、codex login（相同 CODEX_HOME）。');
+    } else if (command === '/plan' && (!value || value === 'off')) {
+      await require('./codex-native-mode').configureMode(this, value === 'off' ? 'default' : 'plan', intent);
+      printResult('工作方式已选择：'+(value === 'off' ? '默认' : '计划')+'，下一条消息生效。\n');
     } else if (command === '/rename' && value) {
       await request('thread/name/set',{threadId:this.threadId,name:value});
       this.emit('renamed',value);
@@ -716,6 +835,7 @@ class CodexNativeSession extends EventEmitter {
   }
   async reconnect() {
     if (this.closed) throw new Error('Codex 会话正在关闭，不能重新连接');
+    if (isUnstartedRuntime(this.runtime)) return this.runtime;
     if (this.runtime.connection === 'connected') return this.reconcile();
     if (!this.entry || this.entry.client.closed || !this.threadId) {
       if (this.entry?.client.closed) await this.entry.client.waitForExit();
@@ -730,7 +850,7 @@ class CodexNativeSession extends EventEmitter {
       this.options.resumeId = this.threadId || this.options.resumeId;
       this.options.forkId = null;
       this.options.resumeLatest = false;
-      this.options.picker = !this.options.resumeId;
+      this.options.picker = !this.options.resumeId && !this.runtime.lazyStart;
       this.apply({type:'connect',epoch:this.runtime.epoch+1});
       this.ready = null;
       return this.start();
@@ -760,7 +880,7 @@ class CodexNativeSession extends EventEmitter {
     this.sendController.abort(new Error('Codex 会话正在关闭，已取消排队消息，未发送'));
     const c = this.entry && this.entry.client;
     const finish = () => {
-      this.apply({type:'disconnect',reason:'会话已关闭'});
+      if (!isUnstartedRuntime(this.runtime)) this.apply({type:'disconnect',reason:'会话已关闭'});
       this.detach();
       this.emit('exit',{exitCode:0});
     };

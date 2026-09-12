@@ -7,6 +7,7 @@ const {
 } = require('../core/model-options.js');
 // 档位说明文案复用 Codex 模型目录那份，不在 UI 层再拄一份。
 const { EFFORT_DESCRIPTIONS } = require('../core/codex-model-catalog.js');
+const { speedControl } = require('../core/session-speed.js');
 
 // Map a model id to a CSS family class for badge coloring.
 function modelClass(id) {
@@ -20,6 +21,8 @@ function modelClass(id) {
   if (s.startsWith('chatgpt-web/')) return 'codex';
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
+  if (s.includes('qwen')) return 'qwen';
+  if (s.includes('glm')) return 'glm';
   if (s.includes('kimi') || s === 'k3') return 'kimi';
   return '';
 }
@@ -245,8 +248,33 @@ function createModelUiController({
     const below = rect.bottom + 4;
     const flipUp = viewportHeight > 0 && menuHeight > 0 && below + menuHeight > viewportHeight
       && rect.top - 4 - menuHeight >= 0;
-    menu.style.top = (flipUp ? rect.top - 4 - menuHeight : below) + 'px';
-    menu.style.left = rect.left + 'px';
+    const view = menu.ownerDocument?.defaultView;
+    const viewportWidth = view?.innerWidth || 0;
+    menu.style.top = Math.max(8, Math.min(flipUp ? rect.top - 8 - menuHeight : below,
+      viewportHeight > 0 ? viewportHeight - menuHeight - 8 : below)) + 'px';
+    menu.style.left = (viewportWidth > 0 ? Math.max(8, Math.min(rect.left, viewportWidth - menu.getBoundingClientRect().width - 8)) : rect.left) + 'px';
+    menu.setAttribute?.('role', 'menu');
+    for (const item of menu.querySelectorAll?.('.model-picker-item') || []) {
+      item.tabIndex = item.classList.contains('disabled') || item.disabled ? -1 : 0;
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('aria-disabled', String(item.tabIndex < 0));
+    }
+    if (!menu._keyboardReady) {
+      menu._keyboardReady = true;
+      menu.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeModelPicker(); badgeEl.focus?.(); return; }
+        const items = [...menu.querySelectorAll('.model-picker-item')].filter(item => item.tabIndex === 0);
+        const index = items.indexOf(document.activeElement);
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && items.length) {
+          event.preventDefault();
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          items[next].focus();
+        } else if (['Enter',' '].includes(event.key) && index >= 0 && items[index].tagName !== 'BUTTON') {
+          event.preventDefault(); items[index].click();
+        }
+      });
+      menu.querySelector?.('.model-picker-item[tabindex="0"]')?.focus?.({ preventScroll:true });
+    }
   }
 
   function menuNote(menu, text, state = 'info') {
@@ -290,6 +318,8 @@ function createModelUiController({
         catch (error) { menuNote(menu, error.message, 'warning'); }
       });
       menu.appendChild(settings);
+    } else if (strategy === 'acp-native') {
+      menuNote(menu,'阿里云套餐模型 · 选择后由原生 Harness 确认，再更新显示。');
     } else if (strategy === 'codex-picker') {
       const live = options.some(option => option.source === 'codex-app-server');
       menuNote(menu, `${live ? '当前账号实时目录' : 'Codex CLI 本地缓存'} · `
@@ -520,6 +550,15 @@ function createModelUiController({
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
     let preferencePrepared = false;
     try {
+      if (session.runtimeBackend === 'claude-stream-json') {
+        const result = await ipcRenderer.invoke('claude-native:set-model', { sessionId, modelId: option.id });
+        if (!result?.ok) throw new Error(result?.error || '模型切换未确认');
+        session.currentModel = result.model;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result;
+      }
       if (strategy === 'claude-inline' && typeof ipcRenderer.invoke === 'function') {
         const prepared = await ipcRenderer.invoke('prepare-session-model-switch', {
           sessionId,
@@ -530,7 +569,10 @@ function createModelUiController({
         }
         preferencePrepared = true;
       }
-      const switched = strategy === 'codex-picker'
+      const switched = strategy === 'acp-native'
+        ? await (async()=>{const r=await ipcRenderer.invoke('codex:native-action',{sessionId,action:'configure',model:option.id});
+          if(!r?.ok)throw new Error(r?.message || '原生 Harness 未确认模型');return r.result;})()
+        : strategy === 'codex-picker'
         ? await switchCodexModel(sessionId, session, option)
         : await switchClaudeModel(sessionId, session, option);
       const confirmed = await confirmSwitch(sessionId, switched);
@@ -587,27 +629,30 @@ function createModelUiController({
   function renderEffortPicker(menu, anchorEl, sessionId, efforts, message = null) {
     if (!menu || menu._removed) return;
     const session = sessions.get(sessionId);
-    const current = String(session && session.effort || '').trim().toLowerCase();
+    const nativeThought = require('../core/acp-model-catalog').acpThoughtOption(session);
+    const current = nativeThought?.currentValue || String(session && session.effort || '').trim().toLowerCase();
     menu.innerHTML = '';
     if (message) menuNote(menu, message.text, message.state);
     const modelLabel = session && session.currentModel
       ? (session.currentModel.displayName || session.currentModel.id)
       : '当前模型';
     if (!message) {
-      menuNote(menu, `${modelLabel} 支持的思考档 · `+(session?.runtimeBackend==='codex-app-server'
+      menuNote(menu, `${modelLabel} 支持的思考档 · `+(session?.runtimeBackend==='acp' ? '由原生 Harness 确认后生效。' : session?.runtimeBackend==='codex-app-server'
         ? '选择后由 Codex 确认，再更新显示。' : '将打开 Codex 原生面板，Hub 确认终端回执后再更新档位。'));
     }
     for (const effort of efforts) {
+      const nativeChoice = require('../core/acp-model-catalog').acpThoughtChoices(session).find(o=>o.value===effort);
+      const description = nativeChoice ? (nativeChoice.description || '') : (EFFORT_DESCRIPTIONS[effort] || '');
       const item = document.createElement('div');
       item.className = 'model-picker-item';
       item.dataset.effort = effort;
       const isCurrent = effort === current;
       if (isCurrent) item.classList.add('current');
       if (session && session._modelSwitchPending) item.classList.add('disabled');
-      item.title = EFFORT_DESCRIPTIONS[effort] || effort;
+      item.title = description || effort;
       item.innerHTML = `<span class="model-picker-check">${isCurrent ? '✓' : ''}</span>`
-        + `<span class="model-picker-label">${escapeHtml(effort)}</span>`
-        + `<span class="model-picker-id">${escapeHtml(EFFORT_DESCRIPTIONS[effort] || '')}</span>`;
+        + `<span class="model-picker-label">${escapeHtml(nativeChoice?.name || require('./ui-labels').effortLabel(effort))}</span>`
+        + `<span class="model-picker-id">${escapeHtml(description)}</span>`;
       if (!isCurrent && !(session && session._modelSwitchPending)) {
         item.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -621,7 +666,7 @@ function createModelUiController({
   function showEffortPicker(anchorEl, sessionId, { efforts = [] } = {}) {
     closeModelPicker();
     const list = (Array.isArray(efforts) ? efforts : [])
-      .map(value => String(value || '').trim().toLowerCase())
+      .map(value => String(value || '').trim())
       .filter(Boolean);
     if (!list.length) return null;
     const menu = document.createElement('div');
@@ -638,7 +683,28 @@ function createModelUiController({
   async function switchEffort(sessionId, effort, menu, anchorEl) {
     const session = sessions.get(sessionId);
     if (!session || session._modelSwitchPending) return null;
-    if (modelSwitchStrategy(session.kind) !== 'codex-picker') return null;
+    if (session.runtimeBackend === 'claude-stream-json') {
+      session._modelSwitchPending = { id: session.currentModel?.id, label: effort };
+      updateActiveModelChip();
+      renderEffortPicker(menu, anchorEl, sessionId, (openModelPicker && openModelPicker.efforts) || [effort],
+        { text: `正在切换到 ${effort}…`, state: 'pending' });
+      try {
+        const result = await ipcRenderer.invoke('claude-native:set-effort', { sessionId, effort });
+        if (!result?.ok) throw new Error(result?.error || '引擎未确认思考档');
+        session.effort = result.result.effort;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result.result;
+      } catch (error) {
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        renderEffortPicker(menu, anchorEl, sessionId, (openModelPicker && openModelPicker.efforts) || [effort],
+          { text: '切换失败：' + error.message, state: 'error' });
+        return null;
+      }
+    }
+    if (!['codex-picker','acp-native'].includes(modelSwitchStrategy(session.kind))) return null;
     const modelId = String(session.currentModel && session.currentModel.id || '').trim();
     if (!modelId) return null;
     const option = {
@@ -650,7 +716,13 @@ function createModelUiController({
     updateActiveModelChip();
     renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
     try {
-      const switched = await switchCodexModel(sessionId, session, option, { effortOverride: effort });
+      const switched = session.runtimeBackend === 'acp'
+        ? await (async () => {
+          const response = await ipcRenderer.invoke('codex:native-action', {sessionId, action:'configure', effort});
+          if (!response?.ok) throw new Error(response?.message || '原生 Harness 未确认思考深度');
+          return response.result;
+        })()
+        : await switchCodexModel(sessionId, session, option, { effortOverride: effort });
       const confirmed = await confirmSwitch(sessionId, switched);
       const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
       session.currentModel = {
@@ -673,7 +745,7 @@ function createModelUiController({
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[effort-switch] failed:', error && (error.stack || error.message));
-      if (session.runtimeBackend !== 'codex-app-server') writeTerminal(sessionId, '\x1b');
+      if (!['codex-app-server','acp'].includes(session.runtimeBackend)) writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
           text: `切换失败：${error && error.message ? error.message : String(error)}`,
@@ -691,11 +763,83 @@ function createModelUiController({
     openModelPicker = null;
   }
 
+  async function showSpeedPicker(anchorEl, sessionId) {
+    closeModelPicker();
+    let catalogLoading = true;
+    const menu = document.createElement('div');
+    menu.className = 'model-picker-menu speed-picker-menu';
+    document.body.appendChild(menu);
+    const onDocClick = event => { if (!menu.contains(event.target)) closeModelPicker(); };
+    openModelPicker = {el:menu,badge:anchorEl,onDocClick};
+    setTimeoutFn(()=>document.addEventListener('click',onDocClick),0);
+    const paint = (note, state) => {
+      menu.replaceChildren();
+      const session = sessions.get(sessionId);
+      const tuning = document.defaultView?.WorkspaceController?.codexModelTuning(session?.currentModel?.id);
+      const control = speedControl(session,tuning);
+      for (const [tier,label] of [['standard','标准'],['fast','Fast · 增加用量 / 费用']]) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'model-picker-item'; button.dataset.speed = tier;
+        button.textContent = `${control.tier === tier ? '✓ ' : ''}${label}`;
+        button.disabled = catalogLoading || !!session?._modelSwitchPending || (tier === 'fast' && !control.interactive);
+        button.addEventListener('click',()=>void select(tier));
+        menu.appendChild(button);
+      }
+      menuNote(menu,note || (control.interactive ? '仅调整当前会话速度，不改变模型或思考深度' : '当前目录尚未确认 Fast 支持；可选择标准'),state || 'pending');
+      placeMenu(menu,anchorEl);
+      const width = document.defaultView?.innerWidth;
+      if (width) menu.style.left = Math.max(8,Math.min(anchorEl.getBoundingClientRect().left,width-menu.getBoundingClientRect().width-8))+'px';
+    };
+    const select = async tier => {
+      const session = sessions.get(sessionId);
+      if (!session || session._modelSwitchPending) return;
+      session._modelSwitchPending = {id:session.currentModel?.id,label:tier};
+      paint('正在确认速度设置…','pending'); updateActiveModelChip();
+      try {
+        if (isSessionBusy(session)) throw new Error('请等当前回答结束后再切换速度');
+        const native = session.runtimeBackend === 'codex-app-server';
+        // Native Claude answers over the protocol; there is no terminal prompt
+        // to inspect, and the old screen check would reject every switch.
+        const nativeClaude = session.runtimeBackend === 'claude-stream-json';
+        if (!native && !nativeClaude && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
+          throw new Error('Claude 终端输入框有草稿或不在主提示符，请先处理后再切换');
+        }
+        const response = await ipcRenderer.invoke(native ? 'codex:native-action' : 'session:set-fast', native
+          ? {sessionId,action:'configure',codexSpeedTier:tier}
+          : {sessionId,enabled:tier === 'fast'});
+        if (!response?.ok) throw new Error(response?.message || '未收到速度切换确认');
+        if (native) session.codexSpeedTier = response.result.codexSpeedTier;
+        else session.fastMode = response.result.fastMode;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        if (openModelPicker?.el === menu) paint(native ? '✓ 已选择，下次发送生效'
+          : response.warning ? '✓ 已切换 · ' + response.warning : '✓ Claude 已确认速度设置','success');
+        await sleep(650);
+        if (openModelPicker?.el === menu) closeModelPicker();
+      } catch (error) {
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        if (openModelPicker?.el === menu) paint('切换失败：'+error.message,'error');
+      }
+    };
+    paint('正在核对当前模型支持的速度…','pending');
+    const session = sessions.get(sessionId);
+    try {
+      await refreshModelCatalog(session?.kind,session);
+      catalogLoading = false;
+      if (openModelPicker?.el === menu) paint();
+    } catch (error) {
+      catalogLoading = false;
+      if (openModelPicker?.el === menu) paint('目录刷新失败：'+error.message,'error');
+    }
+  }
+
   return {
     attachModelPickerHandler,
     updateActiveModelChip,
     closeModelPicker,
     showEffortPicker,
+    showSpeedPicker,
     showModelPicker,
     switchEffort,
     switchModel,

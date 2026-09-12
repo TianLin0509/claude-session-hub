@@ -35,8 +35,8 @@ function normalizeTurnId(value) {
 
 function attentionStateOf(session) {
   if (!session || typeof session !== 'object') return ATTENTION_NONE;
-  if (require('./codex-native-runtime.js').isCodexSession(session)) {
-    if (require('./codex-native-runtime.js').nativeRuntimeTruth(session).state === 'waiting') return ATTENTION_NEEDS_INPUT;
+  if (require('./native-agent-runtime.js').isNativeAgent(session)) {
+    if (require('./native-agent-runtime.js').nativeRuntimeTruth(session).state === 'waiting') return ATTENTION_NEEDS_INPUT;
     return session.replyReady === true ? ATTENTION_REPLY_READY : ATTENTION_NONE;
   }
   if (VALID_ATTENTION_STATES.has(session.attentionState)) return session.attentionState;
@@ -53,8 +53,8 @@ function attentionStateOf(session) {
 }
 
 function sessionNeedsUserInput(session) {
-  if (require('./codex-native-runtime.js').isCodexSession(session)) {
-    return require('./codex-native-runtime.js').nativeRuntimeTruth(session).state === 'waiting';
+  if (require('./native-agent-runtime.js').isNativeAgent(session)) {
+    return require('./native-agent-runtime.js').nativeRuntimeTruth(session).state === 'waiting';
   }
   return attentionStateOf(session) === ATTENTION_NEEDS_INPUT;
 }

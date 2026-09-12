@@ -1,6 +1,6 @@
 'use strict';
 
-const { isCodexSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
+const { isNativeSession, nativeRuntimeTruth } = require('./codex-native-runtime.js');
 
 const {
   ATTENTION_NEEDS_INPUT,
@@ -101,6 +101,8 @@ function runtimeSourceLabel(source) {
   const value = String(source || 'unspecified');
   const exact = {
     'codex-app-server': 'Codex 原生执行状态',
+    'claude-stream-json': 'Claude 原生执行状态',
+    'acp': '原生 Harness 执行状态',
     'claude-user-prompt-submit': 'Claude UserPromptSubmit',
     'claude-stop': 'Claude Stop',
     'claude-transcript-complete': 'Claude transcript stop_reason',
@@ -199,7 +201,10 @@ function isSameOrUnknownTurn(previous, next) {
 }
 
 function applySessionRuntimeObservation(session, observation = {}, options = {}) {
-  if (isCodexSession(session)) return { applied: false, reason: 'codex-native-only' };
+  if (isNativeSession(session)) return { applied: false, reason: 'codex-native-only' };
+  if (require('./claude-native-runtime').isNativeClaude(session)) {
+    return { applied: false, reason: 'native-authority', truth: require('./claude-native-runtime').claudeRuntimeTruth(session) };
+  }
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const previous = session.runtimeTruth && VALID_STATES.has(session.runtimeTruth.state)
     ? session.runtimeTruth
@@ -312,7 +317,10 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 }
 
 function getSessionRuntimeTruth(session, options = {}) {
-  if (isCodexSession(session)) return nativeRuntimeTruth(session);
+  if (isNativeSession(session)) return nativeRuntimeTruth(session);
+  if (require('./claude-native-runtime').isNativeClaude(session)) {
+    return require('./claude-native-runtime').claudeRuntimeTruth(session);
+  }
   const now = Number(options.now) || Date.now();
   if (!session || typeof session !== 'object') {
     return normalizeObservation({ state: RUNTIME_UNKNOWN, source: 'missing-session', confidence: CONFIDENCE_NONE }, null, now);

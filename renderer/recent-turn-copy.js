@@ -133,8 +133,9 @@ function createRecentTurnCopyController(options = {}) {
   // 往往一轮都还没有，此时若直接把选中值夹到 1 并写回，用户存的偏好（比如 8 轮）
   // 就被永久抹掉了 —— 等卡片到齐再点复制，只会复制 1 轮且毫无提示。
   let desiredCount = 1;
+  const countTextCache = new WeakMap();
 
-  function collectVisibleEntries() {
+  function collectVisibleEntries({ countOnly = false } = {}) {
     const overlay = doc && doc.getElementById('msg-overlay');
     const activeSessionId = String(getActiveSessionId() || '');
     if (!overlay || !activeSessionId) return [];
@@ -145,9 +146,16 @@ function createRecentTurnCopyController(options = {}) {
         if (cardSessionId && cardSessionId !== activeSessionId) return null;
         const turn = getTurnById(card.dataset.turnId);
         if (!turn || (turn.role !== 'user' && turn.role !== 'assistant')) return null;
+        const body = card.querySelector('.turn-body');
+        // Counting rounds must not clone/layout every unchanged answer on
+        // every navigation or card mutation. Actual copy always reads afresh.
+        const html = countOnly && body && typeof body.innerHTML === 'string' ? body.innerHTML : null;
+        const cached = html !== null ? countTextCache.get(body) : null;
+        const text = cached?.html === html && cached ? cached.text : extractVisibleCardText(body);
+        if (html !== null && cached?.html !== html) countTextCache.set(body, {html, text});
         return {
           role: turn.role,
-          text: extractVisibleCardText(card.querySelector('.turn-body')),
+          text,
           kind: turn.kind,
           model: turn.model,
         };
@@ -156,7 +164,7 @@ function createRecentTurnCopyController(options = {}) {
   }
 
   function availableRoundCount() {
-    return collectCompleteConversationRounds(collectVisibleEntries()).length;
+    return collectCompleteConversationRounds(collectVisibleEntries({ countOnly: true })).length;
   }
 
   function selectedCount() {

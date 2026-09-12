@@ -98,7 +98,7 @@ async function main() {
   // --- 皮肤清单 ---
   assert.deepStrictEqual(THEME_IDS.slice(), ['dark', 'frost', 'claude', 'codex', 'hub', 'slate']);
   // 冷杉是新装默认。已存过皮肤的用户读回自己那套，不受这条影响。
-  assert.strictEqual(DEFAULT_THEME, 'frost');
+  assert.strictEqual(DEFAULT_THEME, 'dark');
   assert.ok(THEME_IDS.includes('frost'), '冷杉必须在皮肤清单里');
   assert.strictEqual(getTheme('frost').label, '冷杉');
   assert.deepStrictEqual(DARK_THEME_IDS.slice(), ['dark', 'frost']);
@@ -141,8 +141,8 @@ async function main() {
   // --- 默认：没存过就是冷杉 ---
   {
     const h = makeHarness();
-    assert.strictEqual(h.controller.getTheme(), 'frost');
-    assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'frost');
+    assert.strictEqual(h.controller.getTheme(), 'dark');
+    assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'dark');
     assert.strictEqual(h.terminal.options.theme, XTERM_THEMES.dark);
     assert.ok(h.elements.get('options-theme-picker').innerHTML.includes('data-theme-id="codex"'));
   }
