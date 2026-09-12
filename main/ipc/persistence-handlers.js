@@ -168,6 +168,7 @@ function handlePersistSessions(list, meetingList, deps) {
   } = deps;
 
   const previousSessions = getLastPersistedSessions();
+  const sharedViewerIds = new Set();
   const previousSessionsById = new Map(
     (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
   );
@@ -189,6 +190,7 @@ function handlePersistSessions(list, meetingList, deps) {
       if(live.runtimeBackend==='acp') {
         session.acpSid=live.acpSid;session.acpProfileId=live.acpProfileId;session.acpCapabilities=live.acpCapabilities;
       }
+      if (live.codexSharedControl?.role === 'viewer') sharedViewerIds.add(session.hubId);
     }
   }
 
@@ -222,6 +224,10 @@ function handlePersistSessions(list, meetingList, deps) {
       || typeof previous.updatedAt !== 'number'
       || !persistentEntityEquals(session, previous);
     if (changed) {
+      if (sharedViewerIds.has(session.hubId)) {
+        session.updatedAt = typeof previous?.updatedAt === 'number' ? previous.updatedAt : nowTs;
+        continue;
+      }
       session.updatedAt = nowTs;
       sessionStore.markDirty(session.hubId, session);
       changedSessions += 1;

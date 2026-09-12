@@ -12,9 +12,9 @@ async function measureQuota(cdp) {
     }; };
     const providers = [...document.querySelectorAll('.sidebar-quota-provider')].map(p => ({
       provider: p.dataset.provider, box: rect(p),
-      items: [...p.querySelectorAll('.sidebar-quota-name,.sidebar-quota-period,.sidebar-quota-value,.sidebar-quota-refresh')]
+      items: [...p.querySelectorAll('.sidebar-quota-name,.sidebar-quota-period,.sidebar-quota-value')]
         .filter(e => e.textContent).map(rect),
-      buttons: [...p.querySelectorAll('button')].map(e => {
+      buttons: [p].map(e => {
         const r = e.getBoundingClientRect();
         return { x:r.x, y:r.y, width: r.width, height: r.height, hit: e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)) };
       })
@@ -91,7 +91,7 @@ async function clickQuotaOnce(cdp,provider,width,zoom) {
     if(window.quotaPointerObserverInstalled) return;
     window.quotaPointerObserverInstalled=true;
     for(const type of ['pointerdown','pointerup','click']) document.addEventListener(type,e=>{
-      const button=e.target.closest?.('.sidebar-quota-refresh');
+      const button=e.target.closest?.('.sidebar-quota-provider');
       window.quotaPointerEvidence.events.push({type,x:e.clientX,y:e.clientY,trusted:e.isTrusted,
         provider:button?.closest('[data-provider]')?.dataset.provider || null,
         target:e.target.tagName,width:document.querySelector('#session-sidebar').getBoundingClientRect().width,
@@ -99,7 +99,7 @@ async function clickQuotaOnce(cdp,provider,width,zoom) {
     },true);
   })()`);
   // Exactly one real mouse down/up pair; no synthetic DOM click or retry.
-  await click(cdp,`.sidebar-quota-provider[data-provider="${provider}"] button`);
+  await click(cdp,`.sidebar-quota-provider[data-provider="${provider}"]`);
   return before;
 }
 

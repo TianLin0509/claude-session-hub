@@ -641,6 +641,27 @@ function createModelUiController({
   async function switchEffort(sessionId, effort, menu, anchorEl) {
     const session = sessions.get(sessionId);
     if (!session || session._modelSwitchPending) return null;
+    if (session.runtimeBackend === 'claude-stream-json') {
+      session._modelSwitchPending = { id: session.currentModel?.id, label: effort };
+      updateActiveModelChip();
+      renderEffortPicker(menu, anchorEl, sessionId, (openModelPicker && openModelPicker.efforts) || [effort],
+        { text: `正在切换到 ${effort}…`, state: 'pending' });
+      try {
+        const result = await ipcRenderer.invoke('claude-native:set-effort', { sessionId, effort });
+        if (!result?.ok) throw new Error(result?.error || '引擎未确认思考档');
+        session.effort = result.result.effort;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        closeModelPicker();
+        return result.result;
+      } catch (error) {
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        renderEffortPicker(menu, anchorEl, sessionId, (openModelPicker && openModelPicker.efforts) || [effort],
+          { text: '切换失败：' + error.message, state: 'error' });
+        return null;
+      }
+    }
     if (!['codex-picker','acp-native'].includes(modelSwitchStrategy(session.kind))) return null;
     const modelId = String(session.currentModel && session.currentModel.id || '').trim();
     if (!modelId) return null;

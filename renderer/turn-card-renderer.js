@@ -81,7 +81,7 @@ const detailControls = createCardDetailControls({
   document: doc, window: win, clipboard: clipboardApi,
   resolveTurn: card => win._sessionTurns.get(card?.dataset.turnId),
   resolveResult: element => {
-    const card = element.closest('.turn-card'), turn = win._sessionTurns.get(card?.dataset.turnId);
+    const card = element.closest('.turn-card'), turn = win._sessionTurns.get(element.closest('[data-turn]')?.dataset.turn || card?.dataset.turnId);
     const id = element.closest('[data-activity-id]')?.dataset.activityId;
     const activity = (turn?.toolCalls || []).map(normalizeToolActivity).find(a => a.id === id);
     if (!activity) throw new Error('未找到完整工具来源，请重新载入会话');
@@ -167,7 +167,7 @@ function renderToolCluster(turnId, toolCalls, total = toolCalls?.length || 0) {
     counts.declined ? `${counts.declined} 已拒绝` : '',
   ].filter(Boolean).join(' · ');
   const items = activities.map(_renderToolRow).join('');
-  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}">
+  return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}" data-activity-count="${total}">
     <summary class="tc-cluster-head"><span class="turn-activity-title">活动 ${total}</span><span class="turn-activity-breakdown">${total > activities.length ? `最近 ${activities.length} 项：` : ''}${escapeHtml(breakdown)}</span></summary>
     <div class="tc-cluster-list">${items}${total > activities.length ? '<button type="button" data-action="tc-show-all">查看全部活动</button>' : ''}</div>
   </details>`;
@@ -297,19 +297,20 @@ function _restoreCardUiState(card, snapshot) {
   return selectionRestored;
 }
 
-function _postProcessTurnCard(card, sessionId) {
+function _postProcessTurnCard(card, sessionId, deferActivity = false) {
   if (!card) return;
-  require('./conversation-message-view').syncResponseNeighbors(card);
   if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(card);
   if (typeof postProcessToolResults === 'function') postProcessToolResults(card);
   const bodyEl = card.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId });
   postProcessCardMath(card);
   if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(card);
+  if (!deferActivity) require('./conversation-message-view').syncResponseNeighbors(card);
 }
 
 function patchTurnCardInPlace(existing, newCard, sessionId) {
   if (!existing || !newCard || typeof existing.replaceChildren !== 'function') return null;
+  require('./conversation-header-activity').restoreActivitySources(existing.parentElement);
   const snapshot = _captureCardUiState(existing);
   const workingIndicator = existing.querySelector('.streaming-indicator');
   const workingAnimations = workingIndicator?.getAnimations?.({subtree:true}).map(animation=>({
@@ -335,8 +336,9 @@ function patchTurnCardInPlace(existing, newCard, sessionId) {
       if (animation && typeof saved.time==='number') animation.currentTime=saved.time;
     }
   }
-  _postProcessTurnCard(existing, sessionId);
+  _postProcessTurnCard(existing, sessionId, true);
   const selectionRestored = _restoreCardUiState(existing, snapshot);
+  require('./conversation-message-view').syncResponseNeighbors(existing);
   if (!win.__cardRenderMetrics) win.__cardRenderMetrics = { inPlacePatches: 0, rootReplacements: 0 };
   win.__cardRenderMetrics.inPlacePatches += 1;
   win.__cardRenderMetrics.lastSelection = {
@@ -520,6 +522,7 @@ function renderTurnCard(turn) {
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         ${!isUser && turn.phase ? `<span class="conversation-phase">${turn.phase === 'final_answer' ? '结果' : turn.phase === 'commentary' ? '进展' : turn.phase === 'activity' ? '活动记录' : '消息'}</span>` : ''}
+        ${!isUser ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
@@ -736,10 +739,10 @@ doc.addEventListener('click', (e) => {
   const allButton = t.closest('[data-action="tc-show-all"]');
   if (allButton) {
     e.preventDefault();
-    const card = allButton.closest('.turn-card');
-    if (card?.dataset.turnId) {
-      _fullActivityTurns.add(card.dataset.turnId);
-      rerenderTurn(card.dataset.turnId);
+    const turnId = allButton.closest('[data-turn]')?.dataset.turn || allButton.closest('.turn-card')?.dataset.turnId;
+    if (turnId) {
+      _fullActivityTurns.add(turnId);
+      rerenderTurn(turnId);
     }
     return;
   }

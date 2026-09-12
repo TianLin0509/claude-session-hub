@@ -239,11 +239,22 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
+    // Pending and completed articles have different IDs. Bind disclosure to
+    // the provider activity item so the same response survives that handoff.
+    const activityKey = el => el.closest('.mr-gc-msg')?.dataset.sourceSid + ':'
+      + el.querySelector('[data-message-id]')?.dataset.messageId;
+    const activityOpen = new Map(panel.__mrGcMeeting?.id === meeting.id
+      ? [...panel.querySelectorAll('.conversation-header-activity')].map(el =>
+        [activityKey(el), [el, ...el.querySelectorAll('details')].map(d => d.open)]) : []);
     const deliveryOpen = new Map([...panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')]
       .map(el => [el.closest('.mr-gc-msg').dataset.gcMsgId, el.open]));
     panel.querySelector('.mr-gc-messages')?._cardFollowController?.dispose();
     panel._questionDirectory?.dispose();
     panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    for (const el of panel.querySelectorAll('.conversation-header-activity')) {
+      const open = activityOpen.get(activityKey(el));
+      if (open) [el, ...el.querySelectorAll('details')].forEach((d,i) => { if (i < open.length) d.open = open[i]; });
+    }
     for (const el of panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')) {
       const id = el.closest('.mr-gc-msg').dataset.gcMsgId;
       if (deliveryOpen.has(id)) el.open = deliveryOpen.get(id);
@@ -2486,7 +2497,7 @@ if (typeof document !== 'undefined') (function () {
     let body;
     if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
       body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
-        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting)});
+        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting),activityInHeader:true});
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
@@ -2576,9 +2587,10 @@ if (typeof document !== 'undefined') (function () {
     // 不标收件人就分不清哪张是哪张。
     const recipient = isUser ? dispatchRecipientText(message) : '';
     const attemptLabel = isUser ? dispatchAttemptText(message) : '';
+    const activityHeader = !isUser ? require('./conversation-message-view').renderSequenceActivity(message.displayMessages, escapeHtml) : '';
     const recipientBadge = recipient ? `<span class="mr-gc-to-badge">${escapeHtml(recipient)}</span>` : '';
     const attemptBadge = attemptLabel ? `<span class="mr-gc-to-badge is-retry">${escapeHtml(attemptLabel)}</span>` : '';
-    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
+    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串

@@ -991,6 +991,17 @@ function buildNativeCodexOptions(info, opts, env) {
   };
 }
 
+function sharedCodexRuntimeEnabled(env = process.env) {
+  const value = String(env.CLAUDE_HUB_CODEX_SHARED_RUNTIME || '').trim().toLowerCase();
+  if (['0','false','off'].includes(value)) return false;
+  if (['1','true','on'].includes(value)) return true;
+  if (env.CLAUDE_HUB_E2E === '1') return false;
+  // Production runs inside Electron. Plain Node unit tests keep the direct
+  // session unless they explicitly opt in, so existing injected clients stay
+  // deterministic while isolated Electron E2E covers the shared path.
+  return !!process.versions.electron;
+}
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -1293,11 +1304,15 @@ class SessionManager extends EventEmitter {
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
     }
+    const CodexSessionClass = isCodex && sharedCodexRuntimeEnabled(sessionEnv)
+      ? require('./codex-shared-session').CodexSharedSession
+      : require('./codex-native-session').CodexNativeSession;
     const ptyProcess = isAcp
       ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isCodex
-      ? new (require('./codex-native-session').CodexNativeSession)({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+      ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+        hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
         lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
       : pty.spawn('powershell.exe', shellArgs, {
@@ -1617,6 +1632,13 @@ class SessionManager extends EventEmitter {
         if (runtime.completedAt) info.lastCompletedAt = runtime.completedAt;
         publish();
       });
+      if (isCodex) ptyProcess.on('control', control => {
+        info.codexSharedControl = control;
+        publish();
+      });
+      if (isCodex) ptyProcess.on('locate-request', () => {
+        this.emit('codex-locate-request', { sessionId:id });
+      });
       ptyProcess.on('bound', bound => {
         if (isAcp) {
           info.acpSid = bound.threadId;
@@ -1666,7 +1688,7 @@ class SessionManager extends EventEmitter {
         publish();
       });
       // Deferral lets the normal session-created IPC finish before native updates.
-      if (ptyProcess.runtime.connection !== 'unstarted') queueMicrotask(() => ptyProcess.start().catch(error => {
+      if (ptyProcess.sharedRuntime || ptyProcess.runtime.connection !== 'unstarted') queueMicrotask(() => ptyProcess.start().catch(error => {
         console.warn('[codex-native] start failed:',id,error.message);
       }));
       return this._toPublic(info);
@@ -1950,6 +1972,7 @@ class SessionManager extends EventEmitter {
     const result = this.suspendSession(sessionId, {
       ...options,
       reason: options.reason || 'user-close',
+      allowSharedViewerDetach: session.pty?.control?.shared && session.pty.control.role === 'viewer',
     });
     return result && result.ok
       ? { ...result, action: 'suspended', recoverable: true }
@@ -1968,9 +1991,12 @@ class SessionManager extends EventEmitter {
     }
     if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
-      if (!runtime || runtime.connection !== 'connected'
+      const sharedViewerDetach = options.allowSharedViewerDetach === true
+        && session.info.runtimeBackend === 'codex-app-server'
+        && session.pty?.control?.shared && session.pty.control.role === 'viewer';
+      if (!sharedViewerDetach && (!runtime || runtime.connection !== 'connected'
           || !['idle','completed','interrupted','failed'].includes(runtime.state)
-          || runtime.backgroundTasks?.length || runtime.backgroundActivities?.length) {
+          || runtime.backgroundTasks?.length || runtime.backgroundActivities?.length)) {
         return {ok:false,error:'native-turn-unfinished',message:'会话仍在执行、等待操作或状态待核对'};
       }
     }
@@ -2539,7 +2565,8 @@ class SessionManager extends EventEmitter {
         nativeConfig:info.nativeConfig,
         ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),
         codexApprovalPolicy:info.codexApprovalPolicy,codexSandbox:info.codexSandbox,
-        nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null} : {}),
+        nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null,
+        ...(info.codexSharedControl ? {codexSharedControl:info.codexSharedControl} : {})} : {}),
       id: info.id,
       meetingId: info.meetingId || null,
       title: info.title,
@@ -2940,6 +2967,7 @@ module.exports = {
   clearSessionManagerConfigCache,
   _private: {
     buildNativeCodexOptions,
+    sharedCodexRuntimeEnabled,
     ensureCodexCwdTrusted,
     clearProxyEnv,
     applyProxyEnv,

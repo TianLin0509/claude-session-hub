@@ -68,6 +68,8 @@ function acceptNativeSnapshot(local, incoming) {
     local.acpConfigOptions = incoming.acpConfigOptions;
   }
   local.nativeRuntime = next;
+  if (incoming.codexSharedControl) local.codexSharedControl = incoming.codexSharedControl;
+  else if (local.codexSharedControl) delete local.codexSharedControl;
   local.nativeThreadChoices = incoming.nativeThreadChoices || [];
   local.nativeActionError = incoming.nativeActionError || null;
   local.codexApprovalPolicy = incoming.codexApprovalPolicy;

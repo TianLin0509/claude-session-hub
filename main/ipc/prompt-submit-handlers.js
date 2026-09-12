@@ -90,6 +90,19 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
+  // The thinking chip: the engine confirms the level, then Hub metadata follows.
+  ipcMain.handle('claude-native:set-effort', async (_event, request = {}) => {
+    const native = sessionManager.getNativeClaude?.(request.sessionId);
+    if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
+    try {
+      const result = await native.setEffort(request.effort);
+      const updated = sessionManager.updateSessionMeta(request.sessionId, { effort: result.effort });
+      if (!updated) throw new Error('思考档已切换，但 Hub 元数据保存失败');
+      sendToRenderer('session-updated', { session: updated });
+      return { ok: true, result };
+    } catch (error) { return { ok: false, error: error.message }; }
+  });
+
   for (const action of ['respond', 'interrupt']) {
     ipcMain.handle('claude-native:' + action, async (_event, request = {}) => {
       const native = sessionManager.getNativeClaude?.(request.sessionId);

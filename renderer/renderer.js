@@ -5,6 +5,7 @@ const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
+const { createCodexSharedStatus } = require('./codex-shared-status.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const {
@@ -732,6 +733,17 @@ const operationsReviewModalEl = document.getElementById('operations-review-modal
 if (operationsReviewModalEl && operationsReviewModalEl.parentElement === terminalPanelEl) {
   document.body.appendChild(operationsReviewModalEl);
 }
+const codexSharedStatus = createCodexSharedStatus({
+  document,
+  invoke:(channel, payload) => ipcRenderer.invoke(channel, payload),
+  getSession:sessionId => sessions.get(sessionId),
+  onControlChanged:session => {
+    codexSharedStatus.update(session);
+    renderSessionList();
+    updateFloatingBarState();
+  },
+});
+terminalPanelEl.prepend(codexSharedStatus.element);
 
 // Spec 2 preserve helper — both showTerminal AND session-closed handler clear
 // terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
@@ -739,6 +751,7 @@ if (operationsReviewModalEl && operationsReviewModalEl.parentElement === termina
 // after the first session close → no card view + no view toggle button.
 function preserveAndClearTerminalPanel() {
   const preserved = [
+    document.getElementById('codex-shared-status'),
     document.getElementById('msg-overlay'),
     document.getElementById('card-session-status'),
     document.getElementById('card-question-nav'),
@@ -1660,9 +1673,11 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   titleSpan.textContent = session.title;
   // title 属性刻意留空：HTML tooltip 会往上找祖先，空着才轮得到 .terminal-crumb
   // 那条「完整 cwd」。重命名这件事改用 aria-label + hover 虚下划线表达。
-  titleSpan.setAttribute('aria-label', session.readOnly ? '只读会话' : `${session.title} · 点击重命名`);
-  if (session.readOnly) titleSpan.classList.add('is-readonly');
-  if (!session.readOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
+  const sharedViewer = session.codexSharedControl?.shared && session.codexSharedControl.role !== 'controller';
+  const titleReadOnly = session.readOnly || sharedViewer;
+  titleSpan.setAttribute('aria-label', titleReadOnly ? '同步查看会话' : `${session.title} · 点击重命名`);
+  if (titleReadOnly) titleSpan.classList.add('is-readonly');
+  if (!titleReadOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
 
   // 状态点：runtime truth 的四色（绿 / 琥珀 / 红 / 灰），title 给 runtimeLabel。
   const statusDot = document.createElement('span');
@@ -1882,6 +1897,10 @@ ipcRenderer.on('hub:window-state', (_event, state) => {
   document.getElementById('hub-version').textContent = state?.version ? 'v' + state.version : '';
   document.getElementById('hub-pid').textContent = Number.isInteger(state?.pid) ? 'PID: ' + state.pid : '';
 });
+ipcRenderer.on('codex-focus-session', (_event, payload = {}) => {
+  const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+  if (sessionId && sessions.has(sessionId)) void selectSession(sessionId, { forceScrollBottom:true });
+});
 
 // 系统窗口按钮到底占多宽，Windows 自己最清楚：WCO 报得出就用真值，
 // 用户改过系统缩放或将来按钮数量变了都不用回来改常量。
@@ -1925,6 +1944,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // T6：舞台不再自己画头部 —— 面包屑和四个动作都在窗口顶部那条常驻工具栏上。
   // 嵌入模式（初心投研把同一套 xterm 挂到别的容器里）没有工具栏可填，跳过。
   if (!embedded) paintAppToolbarForSession(sessionId, session, cached);
+  codexSharedStatus.update(embedded ? null : session);
+  if (!embedded) terminalPanelEl.classList.toggle('shared-control-visible', !!session.codexSharedControl?.shared);
 
   // 实时量（ctx% · N tok · ⏱）仍然是终端卡右上角的 10px 覆盖层。
   // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
@@ -4016,9 +4037,15 @@ function composerStopAllowed(session, runtimeTruth) {
 // 思考档的可选项按**模型**取，不写死一份：codex 的 models_cache.json 里
 // gpt-5.6-sol 到 ultra、gpt-5.5 只到 xhigh。目录几乎不变，按 slug 记一份就够。
 const _codexEffortCache = new Map();
+// Levels the engine itself accepts for /effort, measured on Claude Code 2.1.269.
+const CLAUDE_COMPOSER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto'];
+
 function composerSupportedEfforts(session) {
   if (session?.runtimeBackend === 'acp') return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
+  // A native Claude session changes effort over its own command channel, so the
+  // chip is live there; a PTY session still cannot and stays static.
+  if (session?.runtimeBackend === 'claude-stream-json') return CLAUDE_COMPOSER_EFFORTS;
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
   if (!slug) return null;
@@ -4376,6 +4403,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     attachNativeDraft(sessionId, inputBox);
     codexControls.update(session);
     nativeControls.update(session);
+    const sharedViewer = session.codexSharedControl?.shared && session.codexSharedControl.role !== 'controller';
+    bar.dataset.sharedRole = sharedViewer ? 'viewer' : 'controller';
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
       isRunning: isSessionCardWorking(session),
@@ -4417,7 +4446,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
     // 停止键沿用既有的中断按钮，判据也沿用既有那条：PTY 字节活动不足以
     // 给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
-    const canStop = status.canStop && composerStopAllowed(session, status.runtime);
+    const canStop = !sharedViewer && status.canStop && composerStopAllowed(session, status.runtime);
     stopBtn.classList.toggle('visible', canStop);
     sendBtn.hidden = canStop;
 
@@ -4432,6 +4461,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       if (modelChipLabel.textContent !== label) modelChipLabel.textContent = label;
       modelChip.classList.toggle('switching', !!rail.model.pending);
       modelChip.title = `${rail.model.id || rail.model.label} — 点击切换模型`;
+      modelChip.disabled = !!sharedViewer;
       const logoClass = `composer-model-logo ${modelClass(rail.model.id)}`.trim();
       if (modelChipLogo.className !== logoClass) modelChipLogo.className = logoClass;
       const initial = (rail.model.label || '?').trim().charAt(0).toUpperCase();
@@ -4449,6 +4479,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       thinkingChip.title = rail.thinking.interactive
         ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
+      thinkingChip.disabled = !!sharedViewer;
     }
 
     const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
@@ -4466,12 +4497,16 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ctxRing.setAttribute('aria-label', rail.context.ariaLabel);
     }
 
-    sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
+    sendBtn.disabled = !!sharedViewer;
+    sendBtn.title = sharedViewer ? '当前由另一窗口操作；空闲后点击上方“在此操作”'
+      : '发送 (Enter) · Shift+Enter 换行';
+    inputBox.setAttribute('aria-description', sharedViewer ? '同步查看状态；可以准备草稿，取得操作权后才能发送' : '');
+    sendHint.hidden = canStop || sharedViewer || !readContenteditablePlainText(inputBox).trim();
   }
   bar._paintComposer = paintComposer;
   paintComposer(sessions.get(sessionId));
   inputBox.addEventListener('input', () => {
-    sendHint.hidden = stopBtn.classList.contains('visible')
+    sendHint.hidden = bar.dataset.sharedRole === 'viewer' || stopBtn.classList.contains('visible')
       || !readContenteditablePlainText(inputBox).trim();
   });
 
@@ -4501,6 +4536,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   function sendInput() {
     const userText = readContenteditablePlainText(inputBox);
     if (!userText || !userText.trim()) return;
+    const shared = sessions.get(sessionId)?.codexSharedControl;
+    if (shared?.shared && shared.role !== 'controller') {
+      commandFeedback.show('同步查看', shared.transferReason || '当前由另一窗口操作；请在空闲后点击“在此操作”', true);
+      return;
+    }
     const acpSession=sessions.get(sessionId);
     if(acpSession?.runtimeBackend==='acp') {
       try {const {imagePaths,validateImages}=require('../core/acp-attachments');
@@ -4508,7 +4548,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       }catch(error){commandFeedback.show('图片未发送',error.message,true);return;}
     }
     const text = userText;
-    const nativeCommand = isNativeSession(sessions.get(sessionId)) && text.trimStart().startsWith('/');
+    // Every native backend answers slash commands on its own command channel.
+    const nativeCommand = isNativeAgent(sessions.get(sessionId)) && text.trimStart().startsWith('/');
     const feedbackSequence = ++commandFeedbackSequence;
     commandFeedback.clear();
     if (nativeCommand) commandFeedback.show(text.trim(), '正在执行…');
@@ -4816,16 +4857,22 @@ function updateCardSessionStatus(session) {
 
 function updateFloatingBarState() {
   if (!activeSessionId) {
+    codexSharedStatus.update(null);
+    terminalPanelEl.classList.remove('shared-control-visible');
     updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   const s = sessions.get(activeSessionId);
   if (!s) {
+    codexSharedStatus.update(null);
+    terminalPanelEl.classList.remove('shared-control-visible');
     updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
+  codexSharedStatus.update(s);
+  terminalPanelEl.classList.toggle('shared-control-visible', !!s.codexSharedControl?.shared);
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
