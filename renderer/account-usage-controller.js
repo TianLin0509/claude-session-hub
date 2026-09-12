@@ -315,7 +315,7 @@ function createAccountUsageController({
     const root = document.getElementById('rail-usage');
     if (!root) return null;
     const sidebar = root.className === 'sidebar-account-usage' ? createSidebarAccountUsage({
-      document, root, refresh: refreshProviderNow, formatAge, formatBalance, freshness: usageFreshnessClass,
+      document, root, refresh: refreshProviderNow, formatAge, formatBalance, freshness: usageFreshnessClass, nowFn,
     }) : null;
     const button = makeElement('button', 'rail-usage-button', sidebar ? sidebar.detailsHost : root);
     button.type = 'button';

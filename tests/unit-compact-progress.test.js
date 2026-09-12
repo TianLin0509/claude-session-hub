@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {sameResponse,renderMessageSequence}=require('../renderer/conversation-message-view');
+const {sameResponse,renderMessageSequence,renderSequenceActivity}=require('../renderer/conversation-message-view');
 const {displayTurns}=require('../core/conversation-display');
 test('identity grouping requires a known logical turn and the same agent/session; user steering breaks the group',()=>{
   const a={role:'assistant',logicalTurnId:'turn',sessionId:'s',agent:'codex'};
@@ -28,4 +28,13 @@ test('group progress grid preserves every source item, paragraphs and distinct f
   assert.equal((html.match(/first\n\nsecond/g)||[]).length,2);
   assert(html.includes('09:02</time>'));assert(html.includes('data-phase="final_answer"'));
   assert(html.includes('conversation-activity'));assert(html.includes('PASS'));
+});
+test('header activity keeps tools and mixed-message text without a second activity section',()=>{
+  const messages=[{id:'mixed',phase:'commentary',text:'keep this progress',toolCalls:[{name:'test',input:'run',output:'PASS'}]},
+    {id:'tools',phase:'activity',toolCalls:[{name:'test',input:'run',output:'FAIL',status:'failed'}]}];
+  const opts={escapeHtml:String,renderMarkdown:String,activityInHeader:true};
+  const original=JSON.stringify(messages),body=renderMessageSequence(messages,opts),header=renderSequenceActivity(messages,String);
+  assert(body.includes('keep this progress'));assert(!body.includes('conversation-activity'));
+  assert(header.includes('活动 2'));assert(header.includes('PASS'));assert(header.includes('FAIL'));
+  assert(!header.includes(' open'));assert.equal(JSON.stringify(messages),original);
 });

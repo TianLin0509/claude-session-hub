@@ -32,7 +32,7 @@ async function run() {
   const result = { dataDir, checks: [], modelCalls: 0, fixture: 'Controlled CLI at real executable boundary; actual isolated Hub, service, IPC and UI' };
   const check = (name, passed) => { assert(passed, name); result.checks.push(name); console.log('PASS', name); };
   const value = `document.querySelector('.sidebar-quota-provider[data-provider="tokenPlan"] .sidebar-quota-value')`;
-  const button = '.sidebar-quota-provider[data-provider="tokenPlan"] .sidebar-quota-refresh';
+  const button = '.sidebar-quota-provider[data-provider="tokenPlan"]';
   try {
     hub = await launchIsolatedHub({ dataDir, port: await getFreePort(), windowMode: 'hidden',
       extraEnv: { APPDATA: fixture.fakeAppData, CLAUDE_HUB_E2E: '1' } });
