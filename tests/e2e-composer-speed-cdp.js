@@ -64,11 +64,12 @@ async function main(){
   const ids=await cdp.eval(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning'),e=>e.dataset.sid)`);
   const before=(await invoke('get-sessions')).find(s=>s.id===ids[1]).codexSpeedTier;
   await click(`#mr-input-tuning [data-sid="${ids[0]}"] .composer-speed`);
-  await click('.speed-picker-menu [data-speed="standard"]');
-  await wait(`sessions.get(${JSON.stringify(ids[0])})?.codexSpeedTier==='standard' && !sessions.get(${JSON.stringify(ids[0])})?._modelSwitchPending`);
+  await click('.speed-picker-menu [data-speed="fast"]');
+  await wait(`sessions.get(${JSON.stringify(ids[0])})?.codexSpeedTier==='fast' && !sessions.get(${JSON.stringify(ids[0])})?._modelSwitchPending`);
   const after=await invoke('get-sessions');
-  ok('group changes only the chosen member',after.find(s=>s.id===ids[0]).codexSpeedTier==='standard'&&after.find(s=>s.id===ids[1]).codexSpeedTier===before);
-  await shot('group-standard');await wait("!document.querySelector('.speed-picker-menu')");await click('#mr-input-box');
+  ok('group changes only the chosen member',before==='standard'&&after.find(s=>s.id===ids[0]).codexSpeedTier==='fast'&&after.find(s=>s.id===ids[1]).codexSpeedTier===before);
+  ok('changing an unused seat does not start Codex',ids.every(id=>!after.find(s=>s.id===id).codexSid && after.find(s=>s.id===id).nativeRuntime.connection==='unstarted'));
+  await shot('group-fast');await wait("!document.querySelector('.speed-picker-menu')");await click('#mr-input-box');
   await cdp.send('Page.reload');
   await wait(`typeof sessions!=='undefined' && sessions.has(${sid})`);
   ok('renderer reload retains selected tier',await cdp.eval(`sessions.get(${sid}).codexSpeedTier==='standard'`));
