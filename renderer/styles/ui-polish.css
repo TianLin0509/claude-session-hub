@@ -88,6 +88,7 @@
 :root:is([data-theme='dark'],[data-theme='codex']) .session-sidebar,
 :root:is([data-theme='dark'],[data-theme='codex']) .scene-rail { background:var(--surface-sunken); }
 :root[data-theme='codex'] .session-sidebar,:root[data-theme='codex'] .scene-rail { background:var(--surface-raised); }
+:root:is([data-theme='dark'],[data-theme='codex']) .scene-rail { z-index:120; }
 :root:is([data-theme='dark'],[data-theme='codex']) #session-list .session-item.selected { background:var(--brand-tint); border-color:transparent; box-shadow:none; }
 :root:is([data-theme='dark'],[data-theme='codex']) #session-list .session-item:before,
 :root:is([data-theme='dark'],[data-theme='codex']) #session-list .ripple-fx { display:none; }

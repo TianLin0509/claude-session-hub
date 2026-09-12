@@ -45,7 +45,9 @@ async function main(){
     for(const theme of ['dark','codex']){
       await click('#btn-theme');await click('#theme-menu [data-theme-id="'+theme+'"]');
       await until('document.documentElement.dataset.theme === '+JSON.stringify(theme),'theme switch');
-      await snap(theme+'-themes');await click('#btn-theme');
+      await snap(theme+'-themes');
+      ok(theme+' theme menu paints above the composer',await cdp.eval('(()=>{const e=document.getElementById("theme-menu"),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.right-5,r.bottom-12));})()'));
+      await click('#btn-theme');
       const probe=await cdp.eval(`(()=>{const c=document.querySelector('.composer'),r=c.getBoundingClientRect(),send=c.querySelector('.floating-input-send'),sr=send.getBoundingClientRect();return {bg:getComputedStyle(c).backgroundColor,shadow:getComputedStyle(send).boxShadow,sendInside:sr.left>=r.left&&sr.right<=r.right,status:document.getElementById('card-session-status')?.textContent,voice:!!c.querySelector('.voice-mic svg')};})()`);
       result[theme]=probe;
       ok(theme+' main/voice controls follow the approved theme',probe.sendInside&&probe.shadow==='none'&&probe.voice);
