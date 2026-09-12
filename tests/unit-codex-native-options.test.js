@@ -30,7 +30,11 @@ test('MCP none disables only real configured transports; scoped custom entries r
 test('SessionManager preserves account scopes including group members and API settings; rejects implicit account fallback',async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-profiles-')),data=path.join(root,'data'),aHome=path.join(root,'account-a'),bHome=path.join(root,'account-b');
   for(const dir of [data,aHome,bHome])fs.mkdirSync(dir);
-  const env={CLAUDE_HUB_DATA_DIR:data,CODEX_HOME:aHome,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),HUB_CODEX_BACKEND:'subscription',HUB_CODEX_API_KEY:'',HUB_CODEX_API_BASE_URL:'http://127.0.0.1:9/v1',HUB_CODEX_PROFILE:'default'};
+  const webRoot=path.join(root,'chatgpt'),webHome=path.join(webRoot,'codex-home');
+  fs.mkdirSync(path.join(webRoot,'runtime'),{recursive:true});fs.mkdirSync(webHome);
+  fs.writeFileSync(path.join(webRoot,'isolation.json'),JSON.stringify({version:1,purpose:'ai-hub-chatgpt-only',port:17861}));
+  fs.writeFileSync(path.join(webRoot,'runtime','config.json'),JSON.stringify({host:'127.0.0.1',port:17861,mode:'full',proAvailable:true}));
+  const env={AI_HUB_CHATGPT_ROOT:webRoot,CLAUDE_HUB_DATA_DIR:data,CODEX_HOME:aHome,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),HUB_CODEX_BACKEND:'subscription',HUB_CODEX_API_KEY:'',HUB_CODEX_API_BASE_URL:'http://127.0.0.1:9/v1',HUB_CODEX_PROFILE:'default'};
   const before=Object.fromEntries(Object.keys(env).map(k=>[k,process.env[k]]));Object.assign(process.env,env);
   const config={providers:{codex:{backend:'subscription',subscription_profiles:[{id:'default',label:'A',home:aHome},{id:'second',label:'B',home:bHome}]}}};
   fs.writeFileSync(path.join(data,'config.json'),JSON.stringify(config));
@@ -42,6 +46,12 @@ test('SessionManager preserves account scopes including group members and API se
     const launch=async(extra)=>{const s=manager.createSession('codex',{...opts,...extra}),d=manager.getNativeCodex(s.id);drivers.push(d);await d.start();return d;};
     const a=await launch({codexProfile:'default'}),a2=await launch({codexProfile:'default'}),b=await launch({codexProfile:'second',meetingId:'test-group'});
     assert.equal(a.options.env.CODEX_HOME,aHome);assert.equal(b.options.env.CODEX_HOME,bHome);assert.equal(a.pid,a2.pid);assert.notEqual(a.pid,b.pid);
+    const originalConfig=fs.readFileSync(path.join(aHome,'config.toml'),'utf8');
+    const web=await launch({model:'chatgpt-web/high',effort:'high'});
+    assert.equal(web.options.env.CODEX_HOME,webHome);assert.notEqual(web.pid,a.pid);
+    assert(web.options.processArgs.includes('openai_base_url="http://127.0.0.1:17861/v1"'));
+    assert(!a.options.processArgs.some(arg=>arg.includes('openai_base_url')));
+    assert.equal(fs.readFileSync(path.join(aHome,'config.toml'),'utf8'),originalConfig);
     assert.throws(()=>manager.createSession('codex',{...opts,codexProfile:'nonexistent'}),/账号配置不存在/);
     process.env.HUB_CODEX_BACKEND='api';reset();assert.throws(()=>manager.createSession('codex',opts),/未配置密钥/);
     process.env.HUB_CODEX_API_KEY='isolated-dummy-key';process.env.HUB_CODEX_API_BASE_URL='http://127.0.0.1:9/v1';reset();

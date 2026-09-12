@@ -20,11 +20,12 @@ async function port() {
   delete process.env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(run, { recursive: true });
   const temp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'hub-chatgpt-ui-'));
-  const bridge = path.join(temp, 'bridge');
+  const bridge = path.join(temp, 'runtime');
   const codex = path.join(temp, 'codex-home');
   fs.mkdirSync(bridge); fs.mkdirSync(codex);
+  fs.writeFileSync(path.join(temp, 'isolation.json'), JSON.stringify({version:1,purpose:'ai-hub-chatgpt-only',port:17861}));
   // Explicit configuration fixture tests the missing connector path; no fake model response.
-  fs.writeFileSync(path.join(bridge, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: 17841, mode: 'browser-only', proAvailable: true }));
+  fs.writeFileSync(path.join(bridge, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: 17861, mode: 'browser-only', proAvailable: true }));
   fs.writeFileSync(path.join(codex, 'config.toml'), '');
   const data = path.join(temp, 'hub-data');
   fs.mkdirSync(data);
@@ -33,7 +34,7 @@ async function port() {
   let hub, browser;
   const errors = [];
   try {
-    hub = await launchIsolatedHub({ dataDir: data, port: p, label: 'chatgpt-ui', windowMode: 'hidden', extraEnv: { CODEX_HOME: codex, CODEX_CHATGPT_WEB_HOME: bridge, AI_HUB_WORKSPACE_ROOT: workspace } });
+    hub = await launchIsolatedHub({ dataDir: data, port: p, label: 'chatgpt-ui', windowMode: 'hidden', extraEnv: { CODEX_HOME: codex, AI_HUB_CHATGPT_ROOT: temp, AI_HUB_WORKSPACE_ROOT: workspace } });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${p}`);
     const page = browser.contexts()[0].pages()[0];
     page.on('pageerror', e => errors.push(e.message));
@@ -56,7 +57,7 @@ async function port() {
     await page.waitForFunction(() => document.querySelector('#new-session-error').textContent.includes('Full MCP'));
     await page.screenshot({ path: path.join(run, '20260911-chatgpt-full-mcp-required-codex1.png') });
     // Live refresh must follow advanced manual mode settings instead of retaining automatic choices.
-    fs.writeFileSync(path.join(bridge, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: 17841, mode: 'browser-only', browserInteractionMode: 'manual', zeroRiskProEnabled: true }));
+    fs.writeFileSync(path.join(bridge, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: 17861, mode: 'browser-only', browserInteractionMode: 'manual', zeroRiskProEnabled: true }));
     await page.locator('#chatgpt-web-refresh').click();
     await page.waitForFunction(() => [...document.querySelector('#new-session-model').options].some(o => o.value === 'chatgpt-web/zero-risk'));
     assert.equal(await page.locator('#new-session-model').inputValue(), 'chatgpt-web/pro', 'unavailable choice must not silently downgrade');

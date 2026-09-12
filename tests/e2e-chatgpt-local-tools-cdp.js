@@ -24,10 +24,14 @@ const out = path.resolve(__dirname, '../artifacts', `20260911-chatgpt-real-codex
     return;
   }
   delete process.env.ELECTRON_RUN_AS_NODE;
-  const source = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const source = require('../core/chatgpt-isolation').isolatedPaths().codexHome;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-chatgpt-real-'));
-  const home = path.join(temp, 'codex'), cwd = path.join(temp, 'workspace');
+  const home = path.join(temp, 'codex-home'), cwd = path.join(temp, 'workspace');
   fs.mkdirSync(home); fs.mkdirSync(cwd);
+  fs.mkdirSync(path.join(temp, 'runtime'));
+  const publicConfig = Object.fromEntries(['host','port','mode','browserInteractionMode','solAvailable','proAvailable','zeroRiskProEnabled'].map(key => [key, config[key]]));
+  fs.writeFileSync(path.join(temp, 'runtime', 'config.json'), JSON.stringify(publicConfig));
+  fs.writeFileSync(path.join(temp, 'isolation.json'), JSON.stringify({version:1,purpose:'ai-hub-chatgpt-only',port:config.port}));
   const auth = path.join(home, 'auth.json');
   const hashes = {};
   const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -44,7 +48,7 @@ const out = path.resolve(__dirname, '../artifacts', `20260911-chatgpt-real-codex
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
     await new Promise(resolve => server.close(resolve));
-    hub = await launchIsolatedHub({ dataDir: path.join(temp, 'data'), port, label: 'chatgpt-real', windowMode: 'hidden', extraEnv: { CODEX_HOME: home, AI_HUB_WORKSPACE_ROOT: cwd } });
+    hub = await launchIsolatedHub({ dataDir: path.join(temp, 'data'), port, label: 'chatgpt-real', windowMode: 'hidden', extraEnv: { CODEX_HOME: home, AI_HUB_CHATGPT_ROOT: temp, AI_HUB_WORKSPACE_ROOT: temp } });
     cdp = await connectFirstPage(hub);
     const until = async (expression, timeout = 300000) => {
       const end = Date.now() + timeout;

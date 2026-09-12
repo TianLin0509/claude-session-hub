@@ -1074,7 +1074,12 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
     } else if (webRoute) {
       clearProxyEnv(sessionEnv);
-      sessionEnv.CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+      const isolation = require('./chatgpt-isolation').isolatedPaths();
+      sessionEnv.CODEX_HOME = isolation.codexHome;
+      sessionEnv.CODEX_CHATGPT_WEB_HOME = isolation.runtime;
+      delete sessionEnv.OPENAI_BASE_URL;
+      delete sessionEnv.OPENAI_API_KEY;
+      delete sessionEnv.CODEX_API_KEY;
     } else if (isGemini || isCodex) {
       const cv = getConfigValues();
       if (isCodex && isCodexApiBackend(cv)) {

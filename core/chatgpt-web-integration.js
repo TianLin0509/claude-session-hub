@@ -1,16 +1,16 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { isolatedPaths, launcherEnvironment } = require('./chatgpt-isolation');
 const { chatgptWebRoute } = require('./chatgpt-web-models');
 
 function readWebConfig(env = process.env) {
-  const installedRoot = 'C:\\VibeData\\CodexChatGPTWeb\\runtime';
-  const root = env.CODEX_CHATGPT_WEB_HOME || (fs.existsSync(path.join(installedRoot, 'config.json')) ? installedRoot : path.join(os.homedir(), '.codex-chatgpt-web'));
+  const isolation = isolatedPaths(env);
+  const root = isolation.runtime;
   let config;
   try { config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8')); }
   catch (error) { throw new Error(`无法读取 Codex Web GPT 配置，请打开原工具完成设置（${error.code || '配置无效'}）`); }
-  if (config.host !== '127.0.0.1' || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
+  if (config.host !== '127.0.0.1' || config.port !== isolation.port) {
     throw new Error('Codex Web GPT 本地服务地址无效');
   }
   return config;
@@ -38,7 +38,8 @@ async function webStatus(env = process.env) {
     let online = false;
     try {
       const response = await fetch(`http://127.0.0.1:${config.port}/healthz`, { signal: AbortSignal.timeout(3000) });
-      online = response.ok;
+      const health = await response.json();
+      online = response.ok && health.service === 'codex-chatgpt-web' && health.port === config.port && health.mode === config.mode && health.accepting_turns === true;
     } catch { /* Explicit offline status is presented below and blocks launch. */ }
     return {
       ok: true, models: availableRoutes(config), online, full: config.mode === 'full',
@@ -50,20 +51,16 @@ async function webStatus(env = process.env) {
   } catch (error) { return { ok: false, models: [], online: false, full: false, message: error.message }; }
 }
 async function openWebSettings() {
-  const { shell } = require('electron');
-  const launcher = process.env.CODEX_WEB_GPT_LAUNCHER_PATH || 'C:\\DevTools\\CodexWebGPT\\Start-CodexWebGPT.ps1';
+  const launcher = 'C:\\DevTools\\CodexWebGPT-AIHub\\Codex Web GPT.exe';
+  const env = launcherEnvironment();
+  if (!fs.existsSync(path.join(path.dirname(launcher), 'ai-hub-isolation-install.json'))) throw new Error('未安装 AI Hub 专用隔离启动器');
   if (!fs.existsSync(launcher)) throw new Error('未找到 Codex Web GPT 启动器，请设置 CODEX_WEB_GPT_LAUNCHER_PATH');
-  // A .ps1 opened via shell.openPath may open an editor. Run the installed wrapper explicitly.
-  if (path.extname(launcher).toLowerCase() === '.ps1') {
-    await new Promise((resolve, reject) => {
-      const child = require('child_process').spawn('powershell.exe', ['-NoProfile', '-File', launcher], { windowsHide: true, stdio: 'ignore' });
-      child.once('error', reject);
-      child.once('exit', code => code === 0 ? resolve() : reject(new Error(`启动器退出：${code}`)));
-    });
-  } else {
-    const error = await shell.openPath(launcher);
-    if (error) throw new Error(error);
-  }
+  readWebConfig(); // Validate the dedicated port before the launcher can start a service.
+  await new Promise((resolve, reject) => {
+    const child = require('child_process').spawn(launcher, [], { env, windowsHide: true, detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => { child.unref(); resolve(); });
+  });
   return { ok: true };
 }
 module.exports = { readWebConfig, availableRoutes, requireWebTools, webStatus, openWebSettings };
