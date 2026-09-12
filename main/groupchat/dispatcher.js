@@ -7,7 +7,7 @@ const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js')
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const DevFile = require('../../core/dev-file-workflow');
-const { isCodexSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
+const { isNativeSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
 const {
   ATTEMPT_AWAITING_BINDING,
@@ -231,7 +231,7 @@ function createGroupChatDispatcher(deps) {
   }
 
   function startPasteTrappedMonitor(sid, kind, meetingId, context = {}) {
-    if (sessionManager.getNativeCodex?.(sid)) return;
+    if ((sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid))) return;
     const existingMonitor = pasteTrappedMonitors.get(sid);
     if (existingMonitor && existingMonitor.attemptId === context.attemptId) return;
     if (existingMonitor) stopPasteTrappedMonitor(sid);
@@ -319,7 +319,7 @@ function createGroupChatDispatcher(deps) {
     const allowActiveExtend = opts.allowActiveExtend !== false;
     const startTs = Date.now();
     const waitSession = sessionManager.getSession(sid);
-    const native = sessionManager.getNativeCodex?.(sid);
+    const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
     const waitKind = waitSession?.transcriptKind || opts.kind || waitSession?.kind || 'unknown';
     const orch = meetingId ? orchestratorFor(meetingId) : null;
     const attempt = opts.attempt || (orch && opts.attemptId ? orch.getAttempt(opts.attemptId) : null);
@@ -1235,12 +1235,12 @@ function createGroupChatDispatcher(deps) {
           const attempts=Object.values(historyOrch.state.attempts || {});
           return targetMembers.filter(member=>{
             const session=sessionManager.getSession(member.sid);
-            if (!isCodexSession(session)) return receipts.some(r=>r.sid===member.sid && r.handedOffAt && !r.sourceCompletedAt);
+            if (!isNativeSession(session)) return receipts.some(r=>r.sid===member.sid && r.handedOffAt && !r.sourceCompletedAt);
             // Only the latest dispatched attempt can occupy this seat. Older
             // receipts remain collectable without becoming extra send gates.
             const attempt=attempts.filter(a=>a.sid===member.sid).at(-1);
             if (!attempt || !(attempt.status==='handed_off' || receipts.some(r=>r.attemptId===attempt.attemptId && r.handedOffAt))) return false;
-            const native=sessionManager.getNativeCodex?.(member.sid);
+            const native=(sessionManager.getNativeSession?.(member.sid) || sessionManager.getNativeCodex?.(member.sid));
             if (!native) return true;
             const r=native.runtime || {};
             let threadId=attempt.providerThreadId, turnId=attempt.providerTurnId;
@@ -1749,8 +1749,8 @@ function createGroupChatDispatcher(deps) {
         }
         try {
           const floor = Math.max(Number(receipt.startedAt) || 0, Number(receipt.acceptedAt) || 0, Number(receipt.dispatchAt) || 0);
-          if (liveSession.kind === 'codex' || liveSession.kind === 'codex-resume') {
-            const nativeSession = sessionManager.getNativeCodex?.(receipt.sid);
+          if (require('../../core/codex-native-runtime').isNativeSession(liveSession)) {
+            const nativeSession = (sessionManager.getNativeSession?.(receipt.sid) || sessionManager.getNativeCodex?.(receipt.sid));
             if (nativeSession) await nativeSession.start();
             const outcome = nativeSession && await nativeSession.readOutcome(receipt.providerTurnId);
             if (outcome) {

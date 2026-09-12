@@ -308,7 +308,7 @@ async function writeSubmitFallbackSignals(sessionManager, sid, kind, tries = 1, 
 //   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
 async function waitCliReady(sid, kind, maxMs = 60000) {
   const { sessionManager, cliReadyDetector } = _deps;
-  const native = sessionManager.getNativeCodex?.(sid);
+  const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) {
     try { await native.start(); return native.runtime.connection === 'connected'; }
     catch (error) { console.warn('[codex-native] ready failed:', error.message); return false; }
@@ -334,7 +334,7 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
   const { sessionManager } = _deps;
-  const native = sessionManager.getNativeCodex?.(sid);
+  const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
   });
@@ -656,10 +656,10 @@ async function sendToPty(sid, prompt, kind, options = {}) {
 //   返回 { source: 'tap'|'placeholder', blocks: Array<Block>, text: string }
 //   kind 参数保留为 API 稳定性（未使用）。
 function extractStreamingText(sid, _kind) {
-  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     const blocks = native.blocks();
-    return {source:'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+    return {source:native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
   const tapBlocks = transcriptTap.getStreamingText(sid);
@@ -746,7 +746,7 @@ function inspectPromptSubmissionState({ sid, kind, promptHeader }) {
 }
 
 async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, allowRewrite = true, submissionReceipt }) {
-  const native = _deps.sessionManager.getNativeCodex?.(sid);
+  const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     await native.reconcile();
     return {ok:false,mode:'none',reason:'native-resend-requires-review',

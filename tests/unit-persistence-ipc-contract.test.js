@@ -243,4 +243,15 @@ test('usage persists the main snapshot when a stale renderer save races a new us
   assert.deepStrictEqual(afterExit[0].sessionUsage, latest);
 });
 
+test('ACP session identity and authority survive stale renderer saves and dormancy',()=>{
+  const deps=createDeps();
+  const live={id:'keep',kind:'qwen',runtimeBackend:'acp',acpSid:'engine-session',acpProfileId:'plan',acpCapabilities:{loadSession:true},
+    nativeRuntime:{...require('../core/codex-native-runtime').createNativeRuntime(3),state:'completed',connection:'connected',turnId:'t1'}};
+  deps.getLiveSession=()=>live;
+  const incoming=[{hubId:'keep',runtimeBackend:null,acpSid:null}];handlePersistSessions(incoming,[],deps);
+  assert.equal(incoming[0].acpSid,'engine-session');assert.equal(incoming[0].nativeRuntime.epoch,3);
+  assert.equal(incoming[0].runtimeBackend,'acp');
+  deps.getLiveSession=()=>null;const dormant=[{hubId:'keep',acpSid:null}];handlePersistSessions(dormant,[],deps);
+  assert.equal(dormant[0].acpSid,'engine-session');assert.deepEqual(dormant[0].acpCapabilities,{loadSession:true});
+});
 console.log('All persistence IPC contract tests passed.');

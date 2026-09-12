@@ -1178,6 +1178,11 @@
 
   function loadModelCatalog(kind, options = {}) {
     const base = String(kind || '').replace(/-resume$/, '');
+    if (require('../core/acp-profiles').isAcpKind(base)) return ipcRenderer.invoke('acp:settings:get').then(settings=>{
+      const model=settings.providers?.[base]?.model;
+      if(model)setRuntimeModelOptions(base,[{id:model,label:model+' · 套餐',source:'acp-profile'}]);
+      return settings;
+    });
     if (base === 'codex') return loadCodexTuningCatalog(options);
     if (base === 'claude') return loadClaudeModelCatalog(options);
     return Promise.resolve(null);
@@ -1187,6 +1192,7 @@
     return Promise.all([
       loadClaudeModelCatalog(options),
       loadCodexTuningCatalog(options),
+      ...require('../core/acp-profiles').ACP_KINDS.map(kind=>loadModelCatalog(kind)),
     ]);
   }
 
