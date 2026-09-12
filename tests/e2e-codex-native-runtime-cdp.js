@@ -85,6 +85,13 @@ async function main(){
     await cdp.eval('[...document.querySelectorAll(".turn-card [data-action=regen]")].at(-1).click()');
     await until('[...document.querySelectorAll("button")].some(b=>b.textContent==="按此正文重发")','regenerate confirmation');
     await cdp.eval('[...document.querySelectorAll("button")].find(b=>b.textContent==="按此正文重发").click()');
+    await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(beforeRegen)+' && ["waiting","completed"].includes(sessions.get('+sid+').nativeRuntime.state)','regenerated turn acknowledged');
+    // The last nonempty assistant card is fixture:multi; regeneration correctly
+    // asks its questions again. Complete the real forms before expecting done.
+    if(await cdp.eval('sessions.get('+sid+').nativeRuntime.state==="waiting"')) {
+      await until('document.querySelectorAll(".codex-native-request textarea").length===2','regenerated questions');
+      await cdp.eval('[...document.querySelectorAll(".codex-native-request form, form.codex-native-request")].forEach(f=>{f.querySelector("textarea").value="A";f.querySelector("button[type=submit]").click()})');
+    }
     await until('sessions.get('+sid+').nativeRuntime.turnId!=='+JSON.stringify(beforeRegen)+' && sessions.get('+sid+').nativeRuntime.state==="completed"','card regenerate through native driver');
     result.checks.push('real card resend and regenerate each create one newly acknowledged native turn');
     const group=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'Codex 原生群聊验收',scene:'general',workspace:cwd,slots:[{kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'}]})+')');
