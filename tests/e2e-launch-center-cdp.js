@@ -113,8 +113,8 @@ async function reloadReady(client) {
   await waitFor('new renderer document ready', () => client.eval(`Boolean(performance.timeOrigin !== ${previousOrigin} && document.readyState === 'complete' && window.LaunchCenter && window.WorkspaceController)`));
 }
 
-async function verifyLastLaunch(client, result) {
-  console.log('[launch] real launch, persistent memory and stable center entry');
+async function verifySessionCreation(client, result) {
+  console.log('[launch] real creation without launch history and stable center entry');
   await clickPoint(client, '[data-launch-intent="session"]');
   await clickPoint(client, '.new-session-option[data-kind="codex"]');
   await waitFor('Codex tuning catalog', () => client.eval(`document.querySelector('#new-session-model')?.options.length > 0`));
@@ -125,14 +125,11 @@ async function verifyLastLaunch(client, result) {
   const beforeIds = await client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.map(s => s.id))`);
   await clickPoint(client, '#new-session-submit');
   const first = await waitFor('first real Codex session', () => client.eval(`require('electron').ipcRenderer.invoke('get-sessions').then(list => list.find(s => s.kind === 'codex' && !${JSON.stringify(beforeIds)}.includes(s.id)) || null)`), 60000);
-  await waitFor('last launch stored', () => client.eval(`localStorage.getItem('hub.launch.last') && document.getElementById('new-session-menu').style.display === 'none'`));
-  const saved = await client.eval(`JSON.parse(localStorage.getItem('hub.launch.last'))`);
-  assert.equal(saved.kind, 'codex');
-  assert.equal(saved.effort, 'high');
-  assert.equal(saved.mcpProfile, 'none');
-  assert.equal(saved.codexSpeedTier, 'standard');
-  assert.equal(saved.workspace.path, first.cwd);
-  assert.equal(first.currentModel.id, saved.model);
+  await waitFor('session form closed', () => client.eval(`document.getElementById('new-session-menu').style.display === 'none'`));
+  assert.equal(await client.eval(`localStorage.getItem('hub.launch.last')`), null);
+  assert.equal(await client.eval(`document.getElementById('launch-split-status')`), null);
+  // An obsolete record is only a fixture for the later reload/navigation checks.
+  const saved = { kind: 'codex', effort: 'high', mcpProfile: 'none', codexSpeedTier: 'standard', model: first.currentModel.id, workspace: { path: first.cwd }, ts: Date.now() };
   assert.equal(await client.eval(`document.querySelector('#btn-new .btn-label').textContent`), '启动');
   // History must not change the primary button into a direct session launch.
   await client.eval(`(() => {
@@ -147,7 +144,7 @@ async function verifyLastLaunch(client, result) {
   const dimensions = await client.eval(`(() => ({ height: document.querySelector('.launch-split').getBoundingClientRect().height, moreWidth: document.getElementById('btn-new-more').getBoundingClientRect().width }))()`);
   assert.equal(dimensions.height, 32); assert.equal(dimensions.moreWidth, 30);
   await screenshot(client, path.join(ARTIFACT_DIR, 'T4-launch-split.png'));
-  result.lastLaunch = { first, saved, dimensions, modalOpens: 1 };
+  result.sessionCreation = { first, dimensions, modalOpens: 1 };
 
   await reloadReady(client);
   await waitFor('stable launch after reload', () => client.eval(`Boolean(window.LaunchCenter && document.querySelector('#btn-new .btn-label').textContent === '启动')`));
@@ -503,7 +500,7 @@ async function main() {
     await setViewport(client, 1500, 960);
     await client.eval(`window.LaunchCenter.selectIntent('session', { focus: false })`);
     await screenshot(client, SCREENSHOT_PATH);
-    await verifyLastLaunch(client, result);
+    await verifySessionCreation(client, result);
     await verifyPersistentMembers(client, result);
     result.errors = [...rendererErrors, ...await client.eval('window.__launchCenterErrors || []')];
     assert.deepEqual(result.errors, []);
