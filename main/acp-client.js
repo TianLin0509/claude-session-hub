@@ -103,7 +103,10 @@ class AcpClient extends EventEmitter {
   send(message) {
     const write = this.tail.then(() => new Promise((resolve, reject) => {
       if (this.closed || !this.proc) return reject(Object.assign(new Error('ACP 连接不可用'), { notSent: true }));
-      this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n', 'utf8', error => error ? reject(error) : resolve());
+      // Evaluate response guards at the actual serialized write, not when an
+      // approval first joins the queue. Stop can revoke it while stdin drains.
+      const frame = typeof message === 'function' ? message() : message;
+      this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...frame }) + '\n', 'utf8', error => error ? reject(error) : resolve());
     }));
     this.tail = write.catch(error => { if (!error.notSent) this.fail(error); });
     return write;
@@ -126,10 +129,10 @@ class AcpClient extends EventEmitter {
     return promise;
   }
   notify(method, params) { return this.send({ method, params }); }
-  async respond(id, result, error) {
+  async respond(id, result, error, beforeWrite) {
     if (!this.incoming.has(id)) throw new Error('ACP 交互请求已失效');
     this.incoming.delete(id);
-    await this.send({ id, ...(error ? { error } : { result }) });
+    await this.send(() => ({ id, ...(error ? { error } : { result: beforeWrite ? beforeWrite(result) : result }) }));
   }
   fail(error) {
     if (this.closed) return;

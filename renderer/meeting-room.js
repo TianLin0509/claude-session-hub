@@ -2121,9 +2121,10 @@ if (typeof document !== 'undefined') (function () {
         return;
       }
       const n = Math.max(Array.isArray(r.stopped) ? r.stopped.length : 0, Array.isArray(r.signaled) ? r.signaled.length : 0);
+      const nativePending = (m.subSessions || []).some(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
       const loopTail = r.loopStopped ? '，工作流已一并停止' : '';
       _showGcEscapeNotice(n > 0
-        ? `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
+        ? nativePending ? `已发送停止请求：等待原生 Harness 确认${loopTail}` : `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
         : r.pendingDispatch
           ? `本轮正在发送中，已登记停止；发出后立即中断${loopTail}`
           : `本轮已经没有正在回答的 AI，状态已收回待命${loopTail}`);
@@ -2381,6 +2382,7 @@ if (typeof document !== 'undefined') (function () {
     //   不依赖调用方各自清 pending flag（多方审查加固）。
     const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
+    const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
     const failureStatusText = failureCode === 'quota_exceeded' ? '额度中断'
       : failureCode === 'rate_limited' ? '限流中断'
@@ -2391,6 +2393,7 @@ if (typeof document !== 'undefined') (function () {
                 : '本轮失败';
     const statusText = sendStuck ? '输入未提交'
       : status === 'errored' ? failureStatusText
+      : cancelling ? '正在停止'
       : status === 'awaiting_binding' ? '已开工 · 等绑定'
       : status === 'awaiting_final_text' ? '已结束 · 收取中'
       : status === 'recovering' ? '恢复中'
@@ -2419,7 +2422,7 @@ if (typeof document !== 'undefined') (function () {
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      const waitingText = status === 'awaiting_binding'
+      const waitingText = cancelling ? '正在停止，等待原生 Harness 确认' : status === 'awaiting_binding'
         ? 'Agent 已开始工作，正在等待 transcript/rollout 完成绑定；不会自动重复发送 Prompt。'
         : status === 'awaiting_final_text'
           ? '已收到结束信号，正在从 transcript 收取同一轮最终答案。'
@@ -5427,7 +5430,10 @@ if (typeof document !== 'undefined') (function () {
     // 2026-07-29 道雪 [群聊运行中可操作]：本轮有 AI 在跑 → 常驻一个明确的「停止本轮」入口。
     //   等价于用户在单 session 终端里按 ESC，只是一次批量下发给本轮所有在跑成员。
     //   输入框/发送按钮**不因此禁用**：运行中追加提问是支持的（后端抢占式结算）。
-    if (_isGroupTurnRunning(current)) {
+    const cancellingMembers = (current.subSessions || []).filter(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
+    if (cancellingMembers.length) {
+      chips.push(`<span class="mr-input-preflight-chip stop" data-gc-cancelling="1"><span>本轮</span><strong>${cancellingMembers.length} 位正在停止 · 等待确认</strong></span>`);
+    } else if (_isGroupTurnRunning(current)) {
       chips.push(`<span class="mr-input-preflight-chip stop clickable" data-gc-stop-turn="1" title="停止本轮：向所有还在回答的 AI 下发中断（等同你在终端按 ESC）。想直接追问就继续在下面输入，不必先停。"><span>本轮</span><strong>进行中 ⏹ 停止</strong></span>`);
     }
     // 2026-07-20 道雪 [修#8]：循环状态 chip——运行中显示轮次·阶段，点击停止
@@ -6125,6 +6131,13 @@ if (typeof document !== 'undefined') (function () {
       }
     });
     return changed;
+  }
+
+  function refreshNativeCancellation(sessionId) {
+    const meeting = activeMeetingId && meetingData[activeMeetingId];
+    if (!meeting?.subSessions?.includes(sessionId)) return;
+    _renderActivePanelFromCache(meeting);
+    _updateInputPreflight(meeting);
   }
 
   let _updating = false;
@@ -7450,6 +7463,7 @@ if (typeof document !== 'undefined') (function () {
     getActiveMeetingId,
     getMeetingData,
     refreshSessionMetrics,
+    refreshNativeCancellation,
     focusSearchHit,
     updateMeetingData,
   };

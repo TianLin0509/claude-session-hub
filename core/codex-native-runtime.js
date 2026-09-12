@@ -105,6 +105,7 @@ function reduceNativeRuntime(previous, event) {
       n.state = 'unknown'; n.reason = '收到不同的活跃轮次，需要核对'; return false;
     }
     if (n.turnId !== turn.id) {
+      if (n.cancellation) n.cancellation = null;
       n.requests = []; n.waitingFlags = []; n.completedAt = 0;
       n.startedAt = Number.isFinite(turn.startedAt) ? turn.startedAt * 1000 : now;
     }
@@ -116,6 +117,7 @@ function reduceNativeRuntime(previous, event) {
     if (n.endedTurns.includes(turn.id)) return false;
     if (n.turnId && n.turnId !== turn.id) return false;
     n.turnId = turn.id; n.state = turn.status;
+    if (n.cancellation) n.cancellation = null;
     n.completedAt = Number.isFinite(turn.completedAt) ? turn.completedAt * 1000 : now;
     n.requests = []; n.waitingFlags = [];
     n.reason = turn.error && turn.error.message || null;
@@ -129,6 +131,7 @@ function reduceNativeRuntime(previous, event) {
     n.reason = '正在核对 Codex 会话';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
   } else if (event.type === 'disconnect') {
+    if (n.cancellation) n.cancellation = { ...n.cancellation, status:'unknown' };
     n.connection = 'disconnected';
     n.reason = event.reason || 'Codex 连接已断开，状态待核对';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
@@ -171,7 +174,11 @@ function reduceNativeRuntime(previous, event) {
     }
   } else {
     if (event.threadId !== n.threadId || n.connection !== 'connected') return p;
-    if (event.type === 'started') start(event.turn);
+    if (event.type === 'cancelling') {
+      if (event.turnId !== n.turnId || TERMINAL.has(n.state)) return p;
+      n.cancellation = { turnId:event.turnId, status:'pending', requestedAt:now, deadlineAt:event.deadlineAt };
+      n.requests = []; n.waitingFlags = [];
+    } else if (event.type === 'started') start(event.turn);
     else if (event.type === 'completed') finish(event.turn);
     else if (event.type === 'status') {
       const status = event.status || {};
@@ -190,7 +197,7 @@ function reduceNativeRuntime(previous, event) {
     } else if (event.type === 'request') {
       const request = event.request;
       const turnId = request && request.params && request.params.turnId;
-      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state)
+      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state) || n.cancellation?.status === 'pending'
           || (request.params?.threadId && request.params.threadId !== n.threadId)
           || (turnId && turnId !== n.turnId)) return p;
       if (!n.requests.some(r => r.id === request.id)) n.requests.push(request);
@@ -203,6 +210,12 @@ function reduceNativeRuntime(previous, event) {
       n.requests = n.requests.filter(r => r !== request);
       if (n.state !== 'unknown' && !TERMINAL.has(n.state) && n.turnId) n.state = activeState();
     } else return p;
+  }
+  // Cancellation is an unfinished execution phase. Keep existing running and
+  // group handoff contracts, but never let a tail update reopen waiting UI.
+  if (n.cancellation?.status === 'pending' && n.connection === 'connected' && !TERMINAL.has(n.state)) {
+    n.state = 'running'; n.requests = []; n.waitingFlags = [];
+    n.reason = '正在停止，等待原生 Harness 确认';
   }
   if (same({ ...n, observedAt:p.observedAt, revision:p.revision }, p)) return p;
   n.observedAt = now;

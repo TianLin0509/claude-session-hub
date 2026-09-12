@@ -77,7 +77,11 @@ HTTP / SSE 只在 Harness 握手声明支持时接受；未支持的传输会阻
 
 ## 验证入口和回退
 
-确定性测试：`node tests/unit-acp-session.test.js`、`node tests/unit-acp-profiles.test.js`；全量入口：`node scripts/run_unit_tests.js`。
+确定性测试：`node tests/unit-acp-session.test.js`、`node tests/unit-acp-profiles.test.js`、`node tests/unit-acp-cancellation.test.js`；全量入口：`node scripts/run_unit_tests.js`。
+
+点击停止立即锁定该轮交互：迟到权限/提问和仍在写入队列中的旧允许响应均取消。Main 快照以 `cancellation.status=pending` 表示“正在停止”，执行状态保持未结束；普通页面与群聊都等待原 prompt 结果确认。15 秒仍未收到终态时，连接关闭、结果显示未知，禁止自动重发；需核对原生记录后继续。已在停止之前送达并执行的操作无法撤销。
+
+`node tests/e2e-acp-cancel-race-cdp.js` 用真实隔离 Hub + stdio fixture 验证普通/群聊停止、迟到请求、旧按钮和缺失回执，截图与结果写入 `artifacts/acp-round2`。这是故障注入 GUI 证据；真实三家停止另跑 `node tests/acp-cancellation-real.js`。
 
 真实验收脚本使用 `ACP_TOOLS_ROOT` 和 `ACP_TEST_KEY_FILE` 两个环境变量引用外部工具及受限凭据文件：
 

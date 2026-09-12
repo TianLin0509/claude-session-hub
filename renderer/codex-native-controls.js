@@ -191,9 +191,10 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       return;
     }
     const runtime = session.nativeRuntime;
-    const requests = runtime && runtime.connection === 'connected' ? runtime.requests || [] : [];
+    const cancelling = runtime?.cancellation?.status === 'pending';
+    const requests = runtime && runtime.connection === 'connected' && !cancelling ? runtime.requests || [] : [];
     const choices = session.nativeThreadChoices || [];
-    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.acpConfigOptions,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection]);
+    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.acpConfigOptions,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.cancellation]);
     if (signature === next) return;
     signature = next;
     // Reuse the actual form nodes. Resolving another request must preserve
@@ -201,6 +202,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const keep = new Set(requests.map(r => JSON.stringify([runtime.epoch,r.id])));
     for (const key of forms.keys()) if (!keep.has(key)) forms.delete(key);
     const children = [];
+    if (cancelling) children.push(node('p','正在停止，等待原生 Harness 确认','acp-cancelling'));
     if(session.runtimeBackend==='acp' && session.acpConfigOptions?.some(o=>['mode','thought_level'].includes(o.category))) {
       const details=node('details');details.append(node('summary','原生执行设置'));
       for(const option of session.acpConfigOptions.filter(o=>['mode','thought_level'].includes(o.category))) {

@@ -7826,7 +7826,11 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
   if (isNativeSession(local) && session.nativeRuntime) {
+    const cancellationStatus = local.nativeRuntime?.cancellation?.status;
     if (!acceptNativeSnapshot(local, session)) return;
+    if (cancellationStatus !== local.nativeRuntime?.cancellation?.status) {
+      window.MeetingRoom?.refreshNativeCancellation?.(local.id);
+    }
     if (session.nativeMigrationDraft && local._importedNativeDraft!==session.nativeMigrationDraft) {
       local._importedNativeDraft=session.nativeMigrationDraft;
       const input=[...document.querySelectorAll('.floating-input-bar')].find(bar=>bar.dataset.sessionId===local.id)?.querySelector('.floating-input-box');

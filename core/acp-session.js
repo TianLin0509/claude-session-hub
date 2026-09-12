@@ -83,8 +83,11 @@ class AcpSession extends EventEmitter {
         if (!current()) return;
         this.apply({ type: 'disconnect', reason: error.message });
         if (this.active) {
+          clearTimeout(this.active.timer);
+          clearTimeout(this.active.cancelTimer);
           this.apply({ type: 'submission', submission: { ...this.runtime.submission, status: 'unknown', error: error.message } });
           this.active.reject(error);
+          this.persist();
         }
       });
       this.initialized = await client.start();
@@ -210,6 +213,7 @@ class AcpSession extends EventEmitter {
     if (!['session/request_permission','elicitation/create'].includes(message.method)) {
       return this.client.respond(message.id, null, { code: -32601, message: 'Unsupported ACP client method: ' + message.method });
     }
+    if (this.active.cancelling) return this.client.respond(message.id, this.cancelResponse(message));
     this.acknowledge();
     this.apply({ type: 'request', threadId: this.threadId, request: { ...message,
       params: { ...p, threadId: this.threadId, turnId: this.active.turnId, reason: p.toolCall?.title || '原生工具请求权限' } } });
@@ -292,6 +296,7 @@ class AcpSession extends EventEmitter {
     }, error => {
       if (this.active !== active || this.closed) return;
       if (error.uncertain) {
+        clearTimeout(active.cancelTimer);
         this.apply({ type: 'disconnect', reason: error.message });
         this.apply({ type: 'submission', submission: { ...this.runtime.submission, status: 'unknown', error: error.message } });
         active.reject(error);
@@ -307,6 +312,7 @@ class AcpSession extends EventEmitter {
   }
   finish(active, status, error) {
     clearTimeout(active.timer);
+    clearTimeout(active.cancelTimer);
     if (this.runtime.turnId !== active.turnId) this.apply({ type: 'started', threadId: this.threadId, turn: { id: active.turnId } });
     const completedAt = Date.now();
     const turn = { ...this.history.get(active.turnId), status, items: [...this.items.values()], hubCompletedAt: completedAt, error };
@@ -347,10 +353,19 @@ class AcpSession extends EventEmitter {
   async reply(requestId, result, epoch) {
     if (epoch !== this.runtime.epoch || this.runtime.connection !== 'connected') throw new Error('ACP 权限来自旧连接');
     const request = this.runtime.requests.find(r => r.id === requestId);
-    if (!request || request.params.turnId !== this.active?.turnId) throw new Error('ACP 权限请求已失效');
+    if (!request || request.params.turnId !== this.active?.turnId || this.active.cancelling) throw new Error('ACP 权限请求已失效');
+    const active = this.active, client = this.client;
+    let revoked = false;
+    const respond = async response => {
+      await client.respond(requestId, response, null, value => {
+        revoked = this.active !== active || active.cancelling || this.runtime.epoch !== epoch || this.closed;
+        return revoked ? this.cancelResponse(request) : value;
+      });
+      if (revoked) throw new Error('ACP 权限请求已失效：轮次已停止');
+    };
     if (request.method === 'elicitation/create') {
       const response = require('./acp-elicitation').validateElicitation(result, request.params.requestedSchema);
-      await this.client.respond(requestId, response);
+      await respond(response);
       this.apply({ type: 'resolved', threadId: this.threadId, requestId });
       return { ok: true };
     }
@@ -364,15 +379,37 @@ class AcpSession extends EventEmitter {
       if (!answers || questions.some((q,index)=>typeof answers[String(index)]!=='string' || !answers[String(index)].trim())) throw new Error('请填写每个问题的回答');
       if (Object.keys(answers).some(key=>!/^\d+$/.test(key) || Number(key)>=questions.length)) throw new Error('未知提问字段');
     }
-    await this.client.respond(requestId, { outcome, ...(answers ? {answers} : {}) });
+    await respond({ outcome, ...(answers ? {answers} : {}) });
     this.apply({ type: 'resolved', threadId: this.threadId, requestId });
     return { ok: true };
   }
+  cancelResponse(request) {
+    return request.method === 'elicitation/create' ? { action:'cancel' } : { outcome:{ outcome:'cancelled' } };
+  }
   async interrupt() {
     if (!this.active || this.runtime.connection !== 'connected') throw new Error('没有可确认的 ACP 活跃轮次');
-    for (const request of [...this.runtime.requests]) await this.reply(request.id,
-      request.method === 'elicitation/create' ? { action:'cancel' } : { outcome: { outcome: 'cancelled' } }, this.runtime.epoch);
-    await this.client.notify('session/cancel', { sessionId: this.threadId });
+    const active = this.active, client = this.client;
+    if (active.cancelling) return { ok:true, pending:true };
+    const requests = [...this.runtime.requests];
+    // Fence both incoming requests and approvals already queued for writing
+    // before any await or state callback can yield control to another action.
+    active.cancelling = true;
+    clearTimeout(active.timer);
+    const timeoutMs = this.options.cancelTimeoutMs || 15000;
+    active.cancelTimer = setTimeout(() => {
+      if (this.active !== active || this.client !== client || this.closed) return;
+      client.fail(new Error('ACP 停止未在期限内得到确认；结果未知，请核对原生记录，不会自动重发'));
+    }, timeoutMs);
+    this.apply({ type:'cancelling', threadId:this.threadId, turnId:active.turnId, deadlineAt:Date.now() + timeoutMs });
+    this.persist();
+    try {
+      const cancel = client.notify('session/cancel', { sessionId:this.threadId });
+      // An already queued reply owns its incoming ID and has a write-time
+      // revocation guard. Do not send a duplicate response for that ID.
+      const replies = requests.filter(request => client.incoming.has(request.id))
+        .map(request => client.respond(request.id, this.cancelResponse(request)));
+      await Promise.all([cancel, ...replies]);
+    } catch (error) { client.fail(error); throw error; }
     return { ok: true, pending: true };
   }
   async configure({ model, effort, configId, value:configValue }, starting = false) {
@@ -479,7 +516,7 @@ class AcpSession extends EventEmitter {
     try { this.persist(); }
     finally {
       this.closed = true;
-      if (this.active) { clearTimeout(this.active.timer); this.active.reject(new Error('ACP 会话已关闭')); }
+      if (this.active) { clearTimeout(this.active.timer); clearTimeout(this.active.cancelTimer); this.active.reject(new Error('ACP 会话已关闭')); }
       this.client?.close();
       this.emit('exit', { exitCode: 0 });
     }

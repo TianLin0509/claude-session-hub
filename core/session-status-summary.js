@@ -286,6 +286,10 @@ function buildComposerStatusModel(session, options = {}) {
   const provider = runtime.provider || 'AI';
 
   if (state === COMPOSER_STATUS_WORKING) {
+    if (truth.cancellation?.status === 'pending') return {
+      state, text:`${provider} 正在停止`, detail:truth.evidence || '',
+      quickReplies:[], action:null, canStop:false, runtime,
+    };
     const startedAt = composerRunStartedAt(session, truth);
     const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
     return {

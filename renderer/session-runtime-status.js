@@ -75,7 +75,8 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     };
   }
   const state = truth.state;
-  const label = runtimeLabel(state);
+  const cancelling = truth.cancellation?.status === 'pending' && truth.connection === 'connected';
+  const label = cancelling ? '正在停止' : runtimeLabel(state);
   let meta = '';
   let detail = '';
 
@@ -90,7 +91,8 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     const startedAt = Number(truth.startedAt) || (native ? 0 : legacyRunningStartedAt(session));
     if (startedAt > 0 && now >= startedAt) meta = formatRuntimeDuration(now - startedAt);
     detail = String(
-      session && session.currentCardActivity && session.currentCardActivity.label
+      cancelling && truth.evidence
+      || session && session.currentCardActivity && session.currentCardActivity.label
       || truth.evidence
       || !native && session && session._ptyRuntimeEvidence
       || '',
