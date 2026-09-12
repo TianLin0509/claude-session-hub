@@ -230,6 +230,10 @@
       // Explicit legacy build configs remain compatible; new dual rooms use the name-only protocol.
       if (!(opts && opts.devPhase === 'build')) {
         devConfig.fileFlowVersion = 2;
+        devConfig.settingsVersion = 1;
+        devConfig.settingsPreset = 'development';
+        devConfig.executionLimit = 6;
+        devConfig.fileStages = require('../core/workflow-settings').createPreset('development', members).rounds;
         devConfig.loop = { enabled: false };
         devConfig.stepConfigs = [
           { name: '开题与实现', prompt: '项目差异见 .agents/AUTHOR.md；通用阶段提示词由 AI HUB 文件工作流统一注入。' },
@@ -308,6 +312,7 @@
         name: typeof item.name === 'string' ? item.name : '',
         prompt: typeof item.prompt === 'string' ? item.prompt : '',
       };
+      if (item.after === 'end' || item.after === 'next') out.after = item.after;
       // timeoutMs 是可选的按步超时。loop-engine 会读它（缺省 10 分钟，钳位 1–30 分钟），
       // 但这里以前只保留 name/prompt，模板填的值在归一化时被吃掉，引擎永远读到 undefined。
       // 只在是有限正数时保留，避免把 NaN/字符串塞进去让引擎的 clamp 退回默认值。

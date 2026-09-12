@@ -92,17 +92,15 @@ async function main() {
     const active = await ev(`return (typeof activeMeetingId!=='undefined')?activeMeetingId:(window.activeMeetingId||null)`);
     rec(`active=${active}（目标 ${m.id}）`);
 
-    // 配置循环：真实 UI 路径（点 workflow 按钮 → 操作 modal → 保存），绕开 CDP 访问 IIFE 局部变量
-    const cfgRes = await ev(`function q(s){return document.querySelector(s)}
-      var wb=document.getElementById('mr-workflow-btn');if(!wb)return 'NO_WF_BTN';wb.click();
-      if(!q('#workflow-config-modal'))return 'NO_MODAL';
-      var sw=q('.wf-switch');if(sw&&!sw.classList.contains('on'))sw.click();
-      var t1=q('[data-wf="tpl"][data-tpl="t1"]');if(t1)t1.click();
-      var lt=q('[data-wf="loop-toggle"]');if(lt&&!lt.checked)lt.click();
-      var mr=q('#wf-loop-rounds');if(mr)mr.value='2';
-      var sv=q('.wf-save');if(!sv)return 'NO_SAVE';sv.click();
-      return 'CONFIGURED';`);
-    rec('配置循环(UI): ' + cfgRes);
+    // Legacy loop-engine coverage: install an explicit legacy fixture. The new
+    // settings UI is exercised separately by e2e-workflow-settings-a-cdp.js.
+    const cfgRes = await ev(`const ipc=require('electron').ipcRenderer;
+      const room=(await ipc.invoke('get-meetings')).find(x=>x.id===${JSON.stringify(m.id)});
+      const wf=window.WorkflowTemplates.createTemplateConfig('fast-review-loop',room.slotSpecs);
+      wf.loop.maxRounds=2;
+      const saved=await ipc.invoke('update-meeting-sync',{meetingId:room.id,fields:{serialWorkflow:wf}});
+      return saved?'CONFIGURED':'SAVE_FAILED';`);
+    rec('配置旧循环测试夹具(IPC): ' + cfgRes);
     if (cfgRes !== 'CONFIGURED') { rec('配置失败'); flush('FAIL_CONFIG_' + cfgRes); cleanup(); process.exit(2); }
 
     // 填输入框 + 点发送（真实 UI 路径 → doSend → main workflow engine）

@@ -79,7 +79,7 @@ async function main() {
     await A.ev(`try{if(window.openMeeting)window.openMeeting('${meetingId}');}catch(e){}try{var el=document.querySelector('[data-meeting-id="${meetingId}"]');if(el)el.click();}catch(e){}return '';`);
     await sleep(1500);
     // 配循环：maxRounds=4（留足续跑空间）
-    const cfg = await A.ev(`function q(s){return document.querySelector(s)}var wb=document.getElementById('mr-workflow-btn');if(!wb)return 'NO_BTN';wb.click();if(!q('#workflow-config-modal'))return 'NO_MODAL';var sw=q('.wf-switch');if(sw&&!sw.classList.contains('on'))sw.click();var t1=q('[data-wf="tpl"][data-tpl="t1"]');if(t1)t1.click();var lt=q('[data-wf="loop-toggle"]');if(lt&&!lt.checked)lt.click();var mr=q('#wf-loop-rounds');if(mr)mr.value='4';var sv=q('.wf-save');if(!sv)return 'NO_SAVE';sv.click();return 'OK';`);
+    const cfg = await A.ev(`const ipc=require('electron').ipcRenderer;const room=(await ipc.invoke('get-meetings')).find(x=>x.id===${JSON.stringify(meetingId)});const wf=window.WorkflowTemplates.createTemplateConfig('fast-review-loop',room.slotSpecs);wf.loop.maxRounds=4;return await ipc.invoke('update-meeting-sync',{meetingId:room.id,fields:{serialWorkflow:wf}})?'OK':'SAVE_FAILED';`);
     if (cfg !== 'OK') { rec('配置失败 ' + cfg); flush('FAIL_CFG'); cleanup(); process.exit(2); }
     rec('循环配置 maxRounds=4');
     const goal = `在目录 ${WS}（空目录，测试专用）创建 add.js 导出 add(a,b)=a+b；add.test.js 用 node assert 验证 add(2,3)===5 打印 OK。只在该目录操作。`;

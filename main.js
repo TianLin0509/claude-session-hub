@@ -1570,6 +1570,7 @@ try {
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
     meetingManager, sessionManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    isWorkflowRunning: id => !!global.__loopEngine?.isRunning(id),
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,

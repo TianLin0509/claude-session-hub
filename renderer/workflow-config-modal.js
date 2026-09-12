@@ -1,394 +1,100 @@
-'use strict';
-
-// Editable serial-workflow configuration. Templates are optional prefills only.
-// Persisted shape (v2):
-// { schemaVersion:2, enabled, templateId, steps:[[memberId...]], stepConfigs:[{name,prompt}], loop:{...} }
+﻿'use strict';
 (function () {
-
-const BASIC_TEMPLATES = [
-  { id: 't1', name: '逐个接力', desc: '每个 AI 各占一步，按成员顺序串行执行' },
-  { id: 't2', name: '并行 → 汇总', desc: '第一步全员并行，第二步由一人收口' },
-  { id: 't3', name: '保持当前 · 自定义', desc: '不套模板，继续自由调整步骤、成员和 prompt' },
-];
-const MAX_STEPS = 8;
-
-let _modalEl = null;
-let _state = null;
-let _onSave = null;
-let _escListener = null;
-
-function _api() { return window.WorkflowTemplates || null; }
-function _escapeHtml(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-// *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
-function _aiLogo(kind) { return `assets/ai-logos/${_escapeHtml(String(kind || 'claude').replace(/-resume$/, ''))}.svg`; }
-function _memberTitle(memberId) {
-  const m = (_state.members || []).find(x => x.memberId === memberId);
-  return m ? (m.title || m.memberId) : memberId;
-}
-function _normalizeStepConfigs() {
-  const api = _api();
-  if (api && typeof api.normalizeStepConfigs === 'function') {
-    _state.stepConfigs = api.normalizeStepConfigs(_state.steps || [], _state.stepConfigs || []);
-  } else {
-    _state.stepConfigs = (_state.steps || []).map((_s, i) => {
-      const old = (_state.stepConfigs || [])[i] || {};
-      return { name: String(old.name || ''), prompt: String(old.prompt || '') };
-    });
-  }
-}
-function _markCustom(updateCards) {
-  _state.templateId = null;
-  if (updateCards && _modalEl) {
-    _modalEl.querySelectorAll('.wf-tpl-card.selected').forEach(el => el.classList.remove('selected'));
-  }
-}
-
-function _applyBasicTemplate(tplId) {
-  const members = _state.members || [];
-  if (tplId === 't1') {
-    _state.steps = members.map(m => [m.memberId]);
-    if (_state.steps.length === 0) _state.steps = [[]];
-    _state.stepConfigs = _state.steps.map((_s, i) => ({ name: `接力 ${i + 1}`, prompt: '' }));
-    _state.loop = { enabled: false, policyVersion: 2, maxRounds: 3, consecutivePass: 1, polish: false };
-  } else if (tplId === 't2') {
-    if (members.length === 0) {
-      _state.steps = [[]];
-      _state.stepConfigs = [{ name: '并行回答', prompt: '' }];
-    } else {
-      const all = members.map(m => m.memberId);
-      _state.steps = members.length === 1 ? [all] : [all, [members[0].memberId]];
-      _state.stepConfigs = members.length === 1
-        ? [{ name: '回答', prompt: '' }]
-        : [
-            { name: '并行回答', prompt: '独立分析总目标，给出结论、依据和风险；不要迎合其他 AI。' },
-            { name: '汇总收口', prompt: '综合前序意见，明确共识、分歧和取舍，输出唯一结论与下一步。' },
-          ];
-    }
-    _state.loop = { enabled: false, policyVersion: 2, maxRounds: 3, consecutivePass: 1, polish: false };
-  } else {
-    if (!_state.steps || !_state.steps.length) _state.steps = [[]];
-    _normalizeStepConfigs();
-    _state.loop.enabled = false;
-  }
-  _state.enabled = true;
-  _state.templateId = tplId;
-}
-
-function _applySemanticTemplate(templateId) {
-  const api = _api();
-  const built = api && typeof api.createTemplateConfig === 'function'
-    ? api.createTemplateConfig(templateId, _state.members || [])
-    : null;
-  if (!built) {
-    const tpl = api && typeof api.getTemplateMeta === 'function'
-      ? api.getTemplateMeta(templateId)
-      : (api && Array.isArray(api.TEMPLATES) ? api.TEMPLATES.find(t => t.id === templateId) : null);
-    require('./ui-feedback').showHubAlert(`模板至少需要 ${(tpl && tpl.minMembers) || 2} 个 AI 成员`);
-    return false;
-  }
-  _state.enabled = true;
-  _state.templateId = templateId;
-  _state.steps = built.steps.map(s => [...s]);
-  _state.stepConfigs = built.stepConfigs.map(s => ({ name: s.name || '', prompt: s.prompt || '' }));
-  _state.loop = Object.assign({ enabled: false, policyVersion: 2, maxRounds: 3, consecutivePass: 1, polish: false }, built.loop || {});
-  return true;
-}
-
-function _setStepCount(n) {
-  _syncStepInputs();
-  const steps = _state.steps || [];
-  n = Math.max(1, Math.min(MAX_STEPS, n));
-  while (steps.length < n) steps.push([]);
-  while (steps.length > n) steps.pop();
-  _state.steps = steps;
-  _normalizeStepConfigs();
-  _markCustom(false);
-}
-
-function _toggleMember(stepIdx, memberId) {
-  const step = _state.steps[stepIdx];
-  if (!step) return;
-  const i = step.indexOf(memberId);
-  if (i >= 0) step.splice(i, 1); else step.push(memberId);
-  _markCustom(false);
-}
-
-function _syncLoopInputs() {
-  if (!_state.loop) _state.loop = { enabled: false, policyVersion: 2, maxRounds: 3, consecutivePass: 1, polish: false };
-  const rounds = _modalEl && _modalEl.querySelector('#wf-loop-rounds');
-  if (rounds && rounds.value) _state.loop.maxRounds = Math.max(1, Math.min(10, parseInt(rounds.value, 10) || 3));
-  _state.loop.policyVersion = 2;
-  _state.loop.consecutivePass = 1;
-  _state.loop.polish = false;
-}
-
-function _syncStepInputs() {
-  if (!_modalEl || !_state) return;
-  _normalizeStepConfigs();
-  _modalEl.querySelectorAll('[data-wf-step-name]').forEach(input => {
-    const i = parseInt(input.getAttribute('data-wf-step-name'), 10);
-    if (_state.stepConfigs[i]) _state.stepConfigs[i].name = input.value;
+const S = require('../core/workflow-settings');
+let modal, state, members, onSave, original, dirty, saving, focusBefore, sourceConfig, context;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const name = id => members.find(m => m.memberId === id)?.title || id;
+function message(text) { modal.querySelector('#wf-error').textContent = text; }
+function ensure() {
+  if (modal) return;
+  modal = document.createElement('div'); modal.id = 'workflow-config-modal'; modal.className = 'mcm-overlay'; modal.style.display = 'none';
+  modal.innerHTML = `<section class="mcm-dialog wf-dialog" role="dialog" aria-modal="true" aria-labelledby="wf-title-text"><header class="wf-header"><div class="wf-mark" aria-hidden="true">≋</div><div><h2 id="wf-title-text">工作流设置</h2><p>按轮次安排成员与指令，让协作按你的计划进行。</p></div><button class="mcm-close" aria-label="关闭工作流设置">×</button></header><div id="wf-body"></div><footer class="wf-footer"><div><p>完成可提前结束；实际执行到第 6 轮仍未完成，保存现场并暂停。</p><p id="wf-error" role="status" aria-live="polite"></p></div><div class="wf-actions"><button data-wf="restore">恢复原设置</button><button data-wf="preview">预演轮次</button><button class="wf-save">保存设置</button></div></footer></section>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', async e => {
+    if (saving) return;
+    if (e.target.closest('.mcm-close')) return close();
+    if (e.target.closest('.wf-save')) return save();
+    const b = e.target.closest('[data-wf]'); if (!b || b.disabled) return;
+    const action = b.dataset.wf, i = Number(b.dataset.step);
+    if (action === 'task-preset') {
+      if (dirty && !await require('./ui-feedback').confirmHubAction('替换当前未保存的轮次与 prompt？')) return;
+      try { state = S.createPreset(b.dataset.taskPreset, members); dirty = true; render(); } catch (err) { message(err.message); }
+    } else if (action === 'chip') {
+      const r = state.rounds[i], id = b.dataset.member, at = r.members.indexOf(id);
+      if (at >= 0 && r.members.length === 1) return message('每轮至少保留 1 位 Agent');
+      if (at < 0 && r.members.length >= 3) return message('每轮最多 3 位 Agent');
+      if (state.kind === 'file') {
+        if (at === 0) return message('首位是文件交付负责人，保留其绑定；可以调整协作成员');
+        if (id === state.rounds[i === 2 ? 0 : 2].members[0]) return message('实现与独立评审负责人不能参加对方阶段');
+      }
+      if (at >= 0) r.members.splice(at, 1); else r.members.push(id);
+      dirty = true; render(); message('成员已更新，请检查共享 prompt 中的分工');
+    } else if (action === 'add' && state.kind !== 'file' && state.rounds.length < 6) {
+      state.rounds.push({ name:`第 ${state.rounds.length + 1} 轮`, members:[members[0].memberId], prompt:'', after:'end' });
+      state.rounds[state.rounds.length - 2].after = 'next'; dirty = true; render();
+      modal.querySelector('.wf-scroll').scrollTop = modal.querySelector('.wf-scroll').scrollHeight;
+    } else if (action === 'remove' && state.kind !== 'file' && state.rounds.length > 1) {
+      state.rounds.splice(i, 1); dirty = true; render();
+    } else if (action === 'move' && state.kind !== 'file') {
+      const j = i + Number(b.dataset.delta); if (j < 0 || j >= state.rounds.length) return;
+      [state.rounds[i],state.rounds[j]] = [state.rounds[j],state.rounds[i]]; dirty = true; render();
+    } else if (action === 'restore') { state = structuredClone(original); dirty = false; render(); }
+    else if (action === 'toggle') { state.enabled = !state.enabled; dirty = true; render(); }
+    else if (action === 'protocol') { const box = modal.querySelector('#wf-protocol'); box.hidden = !box.hidden; if(!box.hidden) { try {box.textContent=protocol();} catch(err){box.textContent=err.message;} } }
+    else if (action === 'preview') preview();
   });
-  _modalEl.querySelectorAll('[data-wf-step-prompt]').forEach(input => {
-    const i = parseInt(input.getAttribute('data-wf-step-prompt'), 10);
-    if (_state.stepConfigs[i]) _state.stepConfigs[i].prompt = input.value;
+  modal.addEventListener('input', e => {
+    const i = Number(e.target.dataset.wfStepName ?? e.target.dataset.wfStepPrompt);
+    if (e.target.matches('[data-wf-step-name]')) state.rounds[i].name = e.target.value;
+    else if (e.target.matches('[data-wf-step-prompt]')) state.rounds[i].prompt = e.target.value;
+    else return;
+    dirty = true; modal.querySelector('#wf-dirty').textContent = '已修改';
+  });
+  modal.addEventListener('change', e => { if (e.target.matches('[data-after]')) { state.rounds[Number(e.target.dataset.after)].after = e.target.value; dirty = true; } });
+  modal.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    if (e.key !== 'Tab') return;
+    const nodes = [...modal.querySelectorAll('button:not(:disabled),input,textarea,select')].filter(n => n.getClientRects().length);
+    const first = nodes[0], last = nodes[nodes.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   });
 }
-
-function _previewHtml() {
-  const steps = _state.steps || [];
-  if (!steps.length) return '<span class="wf-empty">还没有步骤</span>';
-  return steps.map((step, i) => {
-    const name = ((_state.stepConfigs || [])[i] || {}).name;
-    const label = name ? `<b>${_escapeHtml(name)}</b> · ` : '';
-    if (!step.length) return `<span class="wf-empty">${label}(未选 AI)</span>`;
-    return label + step.map(mid => _escapeHtml(_memberTitle(mid))).join('<span class="wf-plus">+</span>');
-  }).join('<span class="wf-arrow">→</span>');
+function protocol() {
+  if (state.kind !== 'file') return S.GENERAL;
+  const F = require('../core/dev-file-workflow');
+  const cfg = S.toConfig(sourceConfig, state, members.map(m => m.memberId));
+  const meeting = { ...(context.meeting || {}), groupChat:true, serialWorkflow:cfg };
+  const dir = context.taskDir || (context.meeting?.id ? F.directory(require('../core/data-dir').getHubDataDir(),context.meeting.id) : '由当前群聊任务目录确定');
+  const people = members.map(m => ({ ...m, displayName:m.title }));
+  return F.common(meeting, dir, people) + '\n\n' + state.rounds.map((r,i) => F.phasePrompt(meeting,dir,F.spec(r.phase,i ? 1 : 0),people)).join('\n\n');
 }
-
-function _semanticTemplatesHtml() {
-  const api = _api();
-  if (!api || !Array.isArray(api.TEMPLATES)) return '';
-  return api.TEMPLATES.map(t => {
-    const disabled = (_state.members || []).length < (t.minMembers || 1);
-    return `<button type="button" class="wf-tpl-card wf-semantic-card${_state.templateId === t.id ? ' selected' : ''}${disabled ? ' disabled' : ''}" data-wf="semantic-tpl" data-stpl="${_escapeHtml(t.id)}" ${disabled ? 'disabled' : ''}>
-      <div class="wf-tpl-name">${t.recommended ? '<span class="wf-recommended">推荐</span>' : ''}${_escapeHtml(t.name)}</div>
-      <div class="wf-tpl-desc">${_escapeHtml(t.desc)}${disabled ? ` · 至少 ${t.minMembers} 个 AI` : ''}</div>
-    </button>`;
-  }).join('');
+function render() {
+  const file = state.kind === 'file';
+  modal.querySelector('#wf-body').innerHTML = `<div class="wf-templatebar"><small>从模板开始</small>${[...S.PRESETS,{id:'custom',name:'＋ 自定义',minMembers:1}].map(p=>`<button class="wf-preset${state.presetId===p.id?' selected':''}" data-wf="task-preset" data-task-preset="${p.id}" ${members.length<p.minMembers?'disabled':''}>${p.name}</button>`).join('')}<span class="wf-budget">最多执行 <b>6</b> 轮 · 返工计入</span></div><div class="wf-summary"><span>${state.rounds.length} 个预设轮次 · 每轮 1–3 位 Agent · 同轮全部完成后接续 <em id="wf-dirty">${dirty?'已修改':''}</em></span>${file?'<span class="wf-tag">文件交接</span>':`<button data-wf="toggle" role="switch" aria-checked="${state.enabled}">${state.enabled?'已启用':'未启用'}</button>`}</div><div class="wf-scroll"><div class="wf-steps">${state.rounds.map((r,i)=>`<article class="wf-step-row" data-round="${i}"><header class="wf-round-header"><span class="wf-step-index">${String(i+1).padStart(2,'0')}</span><input class="wf-step-name" maxlength="80" aria-label="第 ${i+1} 轮名称" data-wf-step-name="${i}" value="${esc(r.name)}"><div class="wf-round-tools"><button data-wf="move" data-step="${i}" data-delta="-1" aria-label="上移第 ${i+1} 轮" ${file||i===0?'disabled':''}>↑</button><button data-wf="move" data-step="${i}" data-delta="1" aria-label="下移第 ${i+1} 轮" ${file||i===state.rounds.length-1?'disabled':''}>↓</button><button data-wf="remove" data-step="${i}" aria-label="删除第 ${i+1} 轮" ${file||state.rounds.length===1?'disabled':''}>×</button></div></header><div class="wf-member-chips"><small>参与者</small>${members.map(m=>`<button class="wf-member-chip${r.members.includes(m.memberId)?' selected':''}" data-wf="chip" data-step="${i}" data-member="${esc(m.memberId)}" aria-pressed="${r.members.includes(m.memberId)}"><img src="assets/ai-logos/${esc(String(m.kind||'claude').replace(/-resume$/,''))}.svg" alt="">${esc(m.title||m.memberId)}</button>`).join('')}</div><label class="wf-prompt-label" for="wf-prompt-${i}">本轮共享 Prompt${file?' · 完整文件协议自动附加':''}</label><textarea id="wf-prompt-${i}" class="wf-step-prompt" maxlength="16000" rows="4" data-wf-step-prompt="${i}">${esc(r.prompt)}</textarea><div class="wf-round-rule"><span>${r.members.length} 位参与 · 同一份指令${file?' · '+esc(name(r.members[0]))+' 负责文件交付':''}</span>${file?`<span>${i===2?'完成 → 结束 · 需返工 → 实现':'交付后 → 下一轮'}</span>`:`<label>交付后 <select data-after="${i}" aria-label="第 ${i+1} 轮交付后"><option value="next" ${r.after==='next'?'selected':''}>进入下一轮</option><option value="end" ${r.after==='end'?'selected':''}>结束流程</option></select></label>`}</div></article>`).join('')}</div><button class="wf-add" data-wf="add" ${file||state.rounds.length>=6?'disabled':''}>${file?'开发文件流保留三段接续结构；返工复用实现与评审配置':state.rounds.length>=6?'已达 6 个预设轮次':'＋ 添加一轮'}</button><div class="wf-protocolbar"><span>${file?'完整文件流协议与动态阶段路径随派工附加':'用户任务、共享职责和必要前序结果随派工附加'}</span><button data-wf="protocol">查看完整指令</button></div><pre id="wf-protocol" hidden></pre><div id="wf-preview" hidden></div></div>`;
+  message(state.legacyProtocol ? '此群仍使用旧版执行协议；保留原设置继续使用，选择新模板后才会转换。' : '');
 }
-
-function _taskPresetsHtml() {
-  const api = _api();
-  if (!api || !Array.isArray(api.TASK_PRESETS)) return '';
-  return api.TASK_PRESETS.map(t => {
-    const disabled = (_state.members || []).length < (t.minMembers || 1);
-    return `<button type="button" class="wf-preset-btn${_state.templateId === t.id ? ' selected' : ''}${disabled ? ' disabled' : ''}" data-wf="task-preset" data-task-preset="${_escapeHtml(t.id)}" title="${_escapeHtml(t.desc)}" ${disabled ? 'disabled' : ''}>
-      ${_escapeHtml(t.name)}${t.recommended ? '<span>推荐</span>' : ''}
-    </button>`;
-  }).join('');
+function preview() {
+  const box = modal.querySelector('#wf-preview'); box.hidden = false;
+  if (state.kind === 'file') box.textContent = '首次通过：开题 1 → 实现 2 → 评审合并 3，完成。\n返工一次：开题 1 → 实现 2 → 评审 3 → 实现 4 → 评审合并 5，完成。\n持续返工：第 6 轮实现交付后暂停，尚未再次评审或合并，不自动派第 7 轮。';
+  else { const visible=[]; for (const r of state.rounds) { visible.push(r.name); if(r.after==='end')break; } box.textContent=visible.join(' → ')+' → 结束'; }
+  box.scrollIntoView({block:'nearest'});
 }
-
-function _bodyHtml() {
-  _normalizeStepConfigs();
-  const s = _state;
-  const basicCards = BASIC_TEMPLATES.map(t =>
-    `<button type="button" class="wf-tpl-card${s.templateId === t.id ? ' selected' : ''}" data-wf="tpl" data-tpl="${t.id}">
-       <div class="wf-tpl-name">${_escapeHtml(t.name)}</div>
-       <div class="wf-tpl-desc">${_escapeHtml(t.desc)}</div>
-     </button>`).join('');
-  const loopOn = !!(s.loop && s.loop.enabled);
-  const stepRows = (s.steps || []).map((step, idx) => {
-    const chips = (s.members || []).map(m => {
-      const sel = step.includes(m.memberId);
-      return `<button type="button" class="wf-member-chip${sel ? ' selected' : ''}" data-wf="chip" data-step="${idx}" data-member="${_escapeHtml(m.memberId)}">
-                <img src="${_aiLogo(m.kind)}" alt="">${_escapeHtml(m.title || m.memberId)}
-              </button>`;
-    }).join('');
-    const roleTag = loopOn
-      ? `<span class="wf-role-tag ${idx === 0 ? 'builder' : 'reviewer'}">${idx === 0 ? '执行' : '评审'}</span>`
-      : '<span class="wf-role-tag serial">串行</span>';
-    const cfg = (s.stepConfigs || [])[idx] || {};
-    return `<div class="wf-step-row">
-              <span class="wf-step-index">${idx + 1}</span>
-              <div class="wf-step-main">
-                <div class="wf-step-members">${roleTag}<div class="wf-member-chips">${chips || '<span class="wf-empty">群里暂无可选 AI</span>'}</div></div>
-                <div class="wf-step-fields">
-                  <input type="text" maxlength="40" class="wf-step-name" data-wf-step-name="${idx}" value="${_escapeHtml(cfg.name || '')}" placeholder="步骤名称（可选）">
-                  <textarea rows="2" maxlength="1200" class="wf-step-prompt" data-wf-step-prompt="${idx}" placeholder="本步骤职责 / prompt（留空则沿用原问题）">${_escapeHtml(cfg.prompt || '')}</textarea>
-                </div>
-              </div>
-            </div>`;
-  }).join('');
-  const stepCount = (s.steps || []).length;
-  const loopShapeOk = stepCount === 2 && (s.steps[0] || []).length === 1 && (s.steps[1] || []).length >= 1;
-
-  return `
-    <div class="wf-toggle-row">
-      <div class="wf-toggle-text">
-        <div class="wf-toggle-title">启用串行工作流</div>
-        <div class="wf-toggle-sub">步骤之间依次执行；同一步选多个 AI 时并行。模板只是可选起点，所有内容始终可编辑。</div>
-      </div>
-      <button type="button" class="wf-switch${s.enabled ? ' on' : ''}" data-wf="toggle" aria-label="启用开关"></button>
-    </div>
-    <div class="wf-config-area${s.enabled ? '' : ' disabled'}">
-      <div class="wf-section-label">任务预设</div>
-      <div class="wf-template-help">选择常用任务后，Hub 会自动填充成员顺序、步骤职责和验收方式。只影响当前群聊，保存前仍可逐项修改。</div>
-      <div class="wf-preset-buttons">${_taskPresetsHtml()}</div>
-      <div class="wf-section-label">高级流程模板（可选）</div>
-      <div class="wf-template-help">点击后只会填充下方步骤。你仍可修改 AI、步骤数、名称和 prompt；手动修改后自动转为“自定义”。</div>
-      <div class="wf-templates wf-semantic-templates">${_semanticTemplatesHtml()}</div>
-      <div class="wf-section-label">基础结构 / 自定义</div>
-      <div class="wf-templates wf-basic-templates">${basicCards}</div>
-      <div class="wf-section-head">
-        <div class="wf-section-label">自定义步骤</div>
-        <div class="wf-stepcount">
-          <button type="button" class="wf-stepper-btn" data-wf="step-dec"${stepCount <= 1 ? ' disabled' : ''}>−</button>
-          <span class="wf-stepcount-val">${stepCount}</span>
-          <button type="button" class="wf-stepper-btn" data-wf="step-inc"${stepCount >= MAX_STEPS ? ' disabled' : ''}>＋</button>
-        </div>
-      </div>
-      <div class="wf-steps">${stepRows}</div>
-      <div class="wf-preview"><span class="wf-preview-label">流程预览</span>${_previewHtml()}</div>
-      <div class="wf-loop-card${loopOn ? ' active' : ''}">
-        <div class="wf-loop-head">
-          <label><input type="checkbox" data-wf="loop-toggle" ${loopOn ? 'checked' : ''}> <b>评审闭环</b></label>
-          <span>最多 <input id="wf-loop-rounds" type="number" min="1" max="10" value="${(s.loop && s.loop.maxRounds) || 3}"> 次</span>
-        </div>
-        <div class="wf-loop-help">仅在 FAIL 时回修：第 1 步必须是 1 个执行 AI，第 2 步是 1–2 个并行评审 AI；PASS 立即结束，不再自动生成“打磨建议池”。</div>
-        ${loopOn && !loopShapeOk ? '<div class="wf-validation">启用闭环时请保留 2 步：第 1 步选 1 个执行 AI，第 2 步至少选 1 个评审 AI。</div>' : ''}
-      </div>
-    </div>`;
+async function save() {
+  try {
+    S.validate(state,members.map(m=>m.memberId)); saving = true;
+    modal.querySelector('.wf-save').disabled = true;
+    if (typeof onSave === 'function') await onSave(S.toConfig(sourceConfig,state,members.map(m=>m.memberId)),structuredClone(state));
+    dirty=false; saving=false; close();
+  } catch (err) { message('保存失败：'+err.message); }
+  finally { saving=false; modal.querySelector('.wf-save').disabled=false; }
 }
-
-function _ensureModal() {
-  if (_modalEl && document.body.contains(_modalEl)) return _modalEl;
-  _modalEl = document.createElement('div');
-  _modalEl.id = 'workflow-config-modal';
-  _modalEl.className = 'mcm-overlay';
-  _modalEl.style.display = 'none';
-  _modalEl.innerHTML = `
-    <div class="mcm-dialog wf-dialog" role="dialog" aria-labelledby="wf-title-text">
-      <div class="mcm-header">
-        <span class="mcm-title" id="wf-title-text">串行工作流</span>
-        <button class="mcm-close" aria-label="关闭">×</button>
-      </div>
-      <div class="mcm-body" id="wf-body"></div>
-      <div class="mcm-footer">
-        <button class="mcm-cancel">取消</button>
-        <button class="mcm-primary wf-save">保存</button>
-      </div>
-    </div>`;
-  document.body.appendChild(_modalEl);
-  _bindEvents();
-  return _modalEl;
-}
-
-function _renderBody() {
-  const body = _modalEl.querySelector('#wf-body');
-  if (body) body.innerHTML = _bodyHtml();
-}
-
-function _bindEvents() {
-  _modalEl.addEventListener('click', (e) => {
-    if (e.target === _modalEl) { closeWorkflowConfigModal(); return; }
-    if (e.target.closest('.mcm-close') || e.target.closest('.mcm-cancel')) { closeWorkflowConfigModal(); return; }
-    if (e.target.closest('.wf-save')) { _save(); return; }
-    const node = e.target.closest('[data-wf]');
-    if (!node || node.disabled) return;
-    const action = node.getAttribute('data-wf');
-    if (action === 'toggle') { _syncStepInputs(); _state.enabled = !_state.enabled; _renderBody(); }
-    else if (action === 'tpl') { _syncStepInputs(); _applyBasicTemplate(node.getAttribute('data-tpl')); _renderBody(); }
-    else if (action === 'task-preset') { _syncStepInputs(); if (_applySemanticTemplate(node.getAttribute('data-task-preset'))) _renderBody(); }
-    else if (action === 'semantic-tpl') { _syncStepInputs(); if (_applySemanticTemplate(node.getAttribute('data-stpl'))) _renderBody(); }
-    else if (action === 'step-inc') { _setStepCount((_state.steps || []).length + 1); _renderBody(); }
-    else if (action === 'step-dec') { _setStepCount((_state.steps || []).length - 1); _renderBody(); }
-    else if (action === 'chip') {
-      _syncStepInputs();
-      _toggleMember(parseInt(node.getAttribute('data-step'), 10), node.getAttribute('data-member'));
-      _renderBody();
-    }
-    else if (action === 'loop-toggle') {
-      _syncStepInputs(); _syncLoopInputs();
-      _state.loop.enabled = !_state.loop.enabled;
-      _markCustom(false);
-      _renderBody();
-    }
-  });
-  _modalEl.addEventListener('input', (e) => {
-    if (e.target.matches('[data-wf-step-name], [data-wf-step-prompt]')) {
-      _syncStepInputs();
-      _markCustom(true);
-    } else if (e.target.matches('#wf-loop-rounds')) {
-      _syncLoopInputs();
-      _markCustom(true);
-    }
-  });
-}
-
-function _save() {
-  _syncStepInputs();
-  _syncLoopInputs();
-  const pairs = (_state.steps || []).map((step, i) => ({
-    step: Array.isArray(step) ? [...step] : [],
-    cfg: Object.assign({ name: '', prompt: '' }, (_state.stepConfigs || [])[i] || {}),
-  })).filter(pair => pair.step.length > 0);
-  const steps = pairs.map(pair => pair.step);
-  const stepConfigs = pairs.map(pair => ({ name: String(pair.cfg.name || ''), prompt: String(pair.cfg.prompt || '') }));
-  const loopOn = !!(_state.loop && _state.loop.enabled);
-  if (loopOn && !(steps.length === 2 && steps[0].length === 1 && steps[1].length >= 1)) {
-    require('./ui-feedback').showHubAlert('评审闭环需要恰好 2 步：第 1 步选择 1 个执行 AI，第 2 步选择至少 1 个评审 AI。');
-    return;
-  }
-  const config = {
-    schemaVersion: 2,
-    enabled: (!!_state.enabled || loopOn) && steps.length > 0,
-    templateId: _state.templateId || null,
-    steps,
-    stepConfigs,
-    loop: {
-      enabled: loopOn,
-      policyVersion: 2,
-      maxRounds: (_state.loop && _state.loop.maxRounds) || 3,
-      consecutivePass: 1,
-      polish: false,
-    },
-  };
-  if (typeof _onSave === 'function') _onSave(config);
-  closeWorkflowConfigModal();
-}
-
-function _migrateLegacyLoopState(state) {
-  if (!state.loop || !state.loop.enabled || !Array.isArray(state.steps) || state.steps.length <= 2) return;
-  const reviewers = Array.from(new Set([].concat(...state.steps.slice(1)).filter(Boolean)));
-  state.steps = [(state.steps[0] || []).slice(0, 1), reviewers];
-  state.stepConfigs = [
-    state.stepConfigs[0] || { name: '实现或修复', prompt: '' },
-    state.stepConfigs[1] || { name: '并行验收', prompt: '' },
-  ];
-  state.templateId = null;
-}
-
-function openWorkflowConfigModal({ members = [], config = null, onSave = null } = {}) {
-  _ensureModal();
-  _onSave = onSave;
-  const cfg = (config && typeof config === 'object') ? config : null;
-  _state = {
-    enabled: cfg ? !!cfg.enabled : false,
-    templateId: (cfg && cfg.templateId) ? cfg.templateId : null,
-    steps: (cfg && Array.isArray(cfg.steps) && cfg.steps.length)
-      ? cfg.steps.map(step => Array.isArray(step) ? [...step] : [])
-      : null,
-    stepConfigs: (cfg && Array.isArray(cfg.stepConfigs))
-      ? cfg.stepConfigs.map(item => ({ name: String(item && item.name || ''), prompt: String(item && item.prompt || '') }))
-      : [],
-    loop: (cfg && cfg.loop && typeof cfg.loop === 'object')
-      ? { enabled: !!cfg.loop.enabled, policyVersion: 2, maxRounds: Math.min(10, cfg.loop.maxRounds || 3), consecutivePass: 1, polish: false }
-      : { enabled: false, policyVersion: 2, maxRounds: 3, consecutivePass: 1, polish: false },
-    members: (members || []).map(m => ({ memberId: m.memberId, kind: m.kind, title: m.title })),
-  };
-  if (!_state.steps) {
-    const initialEnabled = _state.enabled;
-    _applyBasicTemplate('t1');
-    _state.enabled = initialEnabled;
-  }
-  _normalizeStepConfigs();
-  _migrateLegacyLoopState(_state);
-  _renderBody();
-  _modalEl.style.display = 'flex';
-  if (_escListener) document.removeEventListener('keydown', _escListener);
-  _escListener = (e) => { if (e.key === 'Escape' && _modalEl.style.display !== 'none') closeWorkflowConfigModal(); };
-  document.addEventListener('keydown', _escListener);
-}
-
-function closeWorkflowConfigModal() {
-  if (_modalEl) _modalEl.style.display = 'none';
-  if (_escListener) { document.removeEventListener('keydown', _escListener); _escListener = null; }
-}
-
-window.openWorkflowConfigModal = openWorkflowConfigModal;
-window.closeWorkflowConfigModal = closeWorkflowConfigModal;
+function close() { if(saving)return; modal.style.display='none'; focusBefore?.focus?.(); }
+window.openWorkflowConfigModal = ({members:people=[],config=null,onSave:callback=null,...extra}={}) => {
+  ensure(); members=people; if(!members.length)return;
+  sourceConfig=structuredClone(config || {}); context=extra; onSave=callback;
+  state=S.fromConfig(config,members); original=structuredClone(state); dirty=false; saving=false; focusBefore=document.activeElement;
+  render(); modal.style.display='flex'; modal.querySelector('.mcm-close').focus();
+};
+window.closeWorkflowConfigModal=close;
 })();

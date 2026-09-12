@@ -28,7 +28,15 @@ const REPO = path.resolve(__dirname, '..');
 const TESTS = path.join(REPO, 'tests');
 
 const argv = process.argv.slice(2);
-let jobs = Math.max(2, Math.min(16, os.cpus().length));
+// The merge entrypoint invokes this runner without CLI flags. Allow callers
+// on a shared Windows host to limit workers without skipping any tests or
+// changing their assertions/timeouts. --jobs remains the explicit override.
+const requestedJobs = process.env.HUB_UNIT_JOBS;
+if (requestedJobs !== undefined && (!/^\d+$/.test(requestedJobs) || Number(requestedJobs) < 1 || Number(requestedJobs) > 64)) {
+  console.error('HUB_UNIT_JOBS 必须为 1–64 的整数');
+  process.exit(2);
+}
+let jobs = requestedJobs ? Number(requestedJobs) : Math.max(2, Math.min(16, os.cpus().length));
 let useLock = process.env.HUB_UNIT_NO_LOCK !== '1';
 // 首次失败是否阻断闸门。**默认阻断** —— 串行复测只是诊断证据，不是放行理由：
 // 复测通过只能证明这次失败不稳定，不能证明它是负载造成的（2026-09-06 合并位的阻断项）。
