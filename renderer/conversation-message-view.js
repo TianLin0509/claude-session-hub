@@ -14,9 +14,12 @@ function renderMessageBody(text, {isUser=false, plainProgress=false, escapeHtml,
   if(raw.length<1200 && raw.split('\n').length<32)return body;
   // This is an explicit presentation fold of ONE source message. No invented
   // message boundaries, truncation of the source, or rewritten summary.
-  return `<details class="conversation-long-message"><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · 展开全文</span>`
-    + `<span class="conversation-long-preview">${escapeHtml(raw.slice(0,240))}…</span></summary>`
-    + `<div class="conversation-full-text">${body}</div></details>`;
+  // Reuse the complete, sanitized rendering: slicing Markdown can cut a fence,
+  // link or emphasis delimiter. CSS clips the preview without changing source.
+  // Keep block Markdown outside summary so tables/lists/code remain valid HTML.
+  return `<div class="conversation-long-frame"><details class="conversation-long-message"><summary><span>长消息 · ${raw.length.toLocaleString('zh-CN')} 字 · </span><span class="conversation-expand-label">展开全文</span><span class="conversation-collapse-label">收起全文</span></summary>`
+    + `<div class="conversation-full-text">${body}</div></details>`
+    + `<div class="conversation-long-preview" data-copy-exclude>${body}</div></div>`;
 }
 function phaseLabel(phase) {
   return ({commentary:'进展',final_answer:'结果',final:'结果',activity:'活动记录'})[phase] || '消息';

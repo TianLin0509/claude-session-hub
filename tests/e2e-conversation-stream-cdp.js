@@ -23,7 +23,7 @@ async function main(){
     await until('document.querySelector(\'.session-item[data-session-id="'+session.id+'"]\')','sidebar');
     await cdp.eval('document.querySelector(\'.session-item[data-session-id="'+session.id+'"]\').click()');
     await until('!!document.querySelector(".floating-input-box")','composer');
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    // Native sessions and group rooms now open directly in card view.
     const prompt='fixture:conversation\n---\n1. 原样保留编号\n- 不拆分同一条输入';
     async function send(){await cdp.eval('(()=>{const b=document.querySelector(".floating-input-box");b.textContent='+JSON.stringify(prompt)+';b.dispatchEvent(new Event("input",{bubbles:true}));b.focus();})()');
       await cdp.eval('document.querySelector(".floating-input-send").click()');}
@@ -57,13 +57,13 @@ async function main(){
     evidence.checks.push('intentional identical second submission retained; explicit results filter reversible');
     await cdp.send('Page.reload');await until('typeof sessions!=="undefined" && sessions.has('+sid+')','reload');
     await cdp.eval('document.querySelector(\'.session-item[data-session-id="'+session.id+'"]\').click()');
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    // Native sessions and group rooms now open directly in card view.
     await until('document.querySelectorAll("#msg-overlay .turn-card[data-phase=commentary]").length===4','history replay preserves all items');
     for(const scene of ['general','dev']) {
       const group=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'消息流验收 '+scene,scene,workspace:cwd,slots:[{kind:'codex',...opts}]})+')');
       const gid=JSON.stringify(group.id);await until('sessions.get('+JSON.stringify(group.subSessions[0])+')?.nativeRuntime?.state==="idle"','group ready');
       await cdp.eval('window.MeetingRoom.openMeeting('+gid+','+JSON.stringify(group)+')');await until('document.getElementById("mr-input-box")','group composer');
-      await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+      // Native sessions and group rooms now open directly in card view.
       await cdp.eval('(()=>{const b=document.getElementById("mr-input-box");b.textContent='+JSON.stringify(prompt)+';b.dispatchEvent(new Event("input",{bubbles:true}));document.getElementById("mr-send-btn").click();})()');
       const read='ipcRenderer.invoke("groupchat:get-state",{meetingId:'+gid+'})';
       await until('(async()=>{const x=await '+read+';return Object.values(x.displayMessagesByAttempt || {}).some(ms=>ms.filter(m=>m.text).length===3);})()','durable group item history '+scene);
