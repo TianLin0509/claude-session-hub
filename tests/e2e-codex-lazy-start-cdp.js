@@ -61,7 +61,7 @@ async function run(){try{
   const mergeThread=await client.eval(`sessions.get(${quote(merger)}).codexSid`);
   assert.equal(calls().filter(x=>x.method==='turn/start' && x.params.threadId===mergeThread).length,1);
   await shot('merger-first-task-after-restart');result.checks.push('real kickoff and atomic file handoff start only the target; unused merger survives Hub restart and starts once');
-  const legacy=await createRoom('旧空会话恢复验收',[spec]);const sid=legacy.subSessions[0];
+  const legacy=await createRoom('旧空会话恢复验收',[spec,spec]);const sid=legacy.subSessions[0];
   for(let i=0;i<100 && !fs.existsSync(path.join(data,'sessions',sid+'.json'));i++)await sleep(100);
   await stop();
   const file=path.join(data,'sessions',sid+'.json'),meta=JSON.parse(fs.readFileSync(file,'utf8'));
