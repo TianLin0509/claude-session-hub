@@ -70,6 +70,12 @@ async function main(){
   ok('group changes only the chosen member',before==='standard'&&after.find(s=>s.id===ids[0]).codexSpeedTier==='fast'&&after.find(s=>s.id===ids[1]).codexSpeedTier===before);
   ok('changing an unused seat does not start Codex',ids.every(id=>!after.find(s=>s.id===id).codexSid && after.find(s=>s.id===id).nativeRuntime.connection==='unstarted'));
   await shot('group-fast');await wait("!document.querySelector('.speed-picker-menu')");await click('#mr-input-box');
+  for(const width of [1000,760]) {
+   await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false});
+   await click(`#mr-input-tuning [data-sid="${ids[1]}"] .composer-speed`);
+   ok('speed menu fits '+width,await cdp.eval(`(()=>{const r=document.querySelector('.speed-picker-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;})()`));
+   await shot('group-'+width);
+  }
   await cdp.send('Page.reload');
   await wait(`typeof sessions!=='undefined' && sessions.has(${sid})`);
   ok('renderer reload retains selected tier',await cdp.eval(`sessions.get(${sid}).codexSpeedTier==='standard'`));

@@ -699,6 +699,8 @@ function createModelUiController({
       }
       menuNote(menu,note || (control.interactive ? '仅调整当前会话速度，不改变模型或思考深度' : '当前目录尚未确认 Fast 支持；可选择标准'),state || 'pending');
       placeMenu(menu,anchorEl);
+      const width = document.defaultView?.innerWidth;
+      if (width) menu.style.left = Math.max(8,Math.min(anchorEl.getBoundingClientRect().left,width-menu.getBoundingClientRect().width-8))+'px';
     };
     const select = async tier => {
       const session = sessions.get(sessionId);

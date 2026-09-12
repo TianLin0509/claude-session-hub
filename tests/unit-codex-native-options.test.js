@@ -7,13 +7,15 @@ test('native launch preserves explicit tuning, policy, cwd, instructions and res
   const opts={useResume:true,codexSid:'native-id',approvalPolicy:'on-request',sandbox:'read-only',codexInstructionFile:path.join(home,'rules.md')};
   const o=buildNativeCodexOptions(info,opts,{CODEX_HOME:home});
   assert.deepEqual(o.threadParams,{cwd:home,model:'gpt-6-astra',approvalPolicy:'on-request',sandbox:'read-only',config:{model_reasoning_effort:'xhigh','windows.sandbox':'unelevated','notice.hide_full_access_warning':true,model_context_window:400000,model_instructions_file:opts.codexInstructionFile}});
-  assert.deepEqual(o.turnParams,{model:'gpt-6-astra',effort:'xhigh'});assert.equal(o.resumeId,'native-id');assert.equal(o.picker,false);
+  assert.deepEqual(o.turnParams,{model:'gpt-6-astra',effort:'xhigh',serviceTier:'default'});assert.equal(o.resumeId,'native-id');assert.equal(o.picker,false);
   const lazy=buildNativeCodexOptions({...info,kind:'codex-resume'},{lazyStart:true,useResume:true,codexResumePicker:true},{CODEX_HOME:home});
   assert.equal(lazy.picker,false);assert.equal(lazy.resumeLatest,false);
   assert(o.processArgs.includes('service_tier="default"'));assert(o.processArgs.includes('features.fast_mode=false'));
   const inherit=buildNativeCodexOptions({...info,codexSpeedTier:'inherit'}, {},{CODEX_HOME:home});
   assert(!inherit.processArgs.some(x=>/service_tier|fast_mode/.test(x)));
+  assert.equal(Object.hasOwn(inherit.turnParams,'serviceTier'),false);
   const fast=buildNativeCodexOptions({...info,codexSpeedTier:'fast'}, {},{CODEX_HOME:home});assert(fast.processArgs.includes('service_tier="fast"'));
+  assert.equal(fast.turnParams.serviceTier,'fast');
 });
 test('MCP none disables only real configured transports; scoped custom entries remain exact',()=>{
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'native-mcp-'));
