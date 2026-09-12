@@ -12,6 +12,11 @@ const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
 const DELEGATED = new Set(['local_agent', 'local_workflow']);
 const TASK_TERMINAL = new Set(['completed', 'failed', 'stopped', 'killed', 'cancelled']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Measured against Claude Code 2.1.269: `/effort banana` answers "Valid options
+// are: low, medium, high, xhigh, max, ultracode, auto". The --effort launch flag
+// accepts only the first five, so only those are written back to the args.
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto']);
+const EFFORT_LAUNCH_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function contentBlocks(text, attachments = []) {
   if (typeof text !== 'string') throw new TypeError('Claude prompt must be one string');
@@ -126,6 +131,19 @@ class ClaudeNativeSession extends EventEmitter {
       }
     }
     return { excludeEntryIds, excludeMessageIds };
+  }
+
+  // The echo proves the engine received exactly this submission. A slash command
+  // is the one case where it legitimately differs: the engine answers with its
+  // own <command-name> envelope, so verify the command identity instead of the
+  // bytes rather than weakening the check for ordinary prompts.
+  echoMatches(message, record) {
+    if (digest(message.message.content) === record.fingerprint) return true;
+    if (!record.commandName) return false;
+    const echoed = /<command-name>\s*([^<]+?)\s*<\/command-name>/.exec(textOf(message.message.content));
+    if (!echoed) return false;
+    const normalize = value => String(value).trim().replace(/^\//, '').toLowerCase();
+    return normalize(echoed[1]) === normalize(record.commandName);
   }
 
   update(patch) {
@@ -266,7 +284,10 @@ class ClaudeNativeSession extends EventEmitter {
     }
     const record = { submissionId, userMessageId: randomUUID(), fingerprint, content, text,
       status: 'queued', createdAt: Date.now(), accepted: false, started: false, finalText: '',
-      metadata: options.metadata || null, delegated: false };
+      metadata: options.metadata || null, delegated: false,
+      // The engine rewrites a command echo into its own envelope, so the echo
+      // check below verifies the command name instead of the exact bytes.
+      commandName: options.localCommand === true ? String(text).trim().split(/\s/)[0] : null };
     record.ack = new Promise((resolve, reject) => { record.resolve = resolve; record.reject = reject; });
     // Queued callers get a visible queued receipt; eventual errors are also emitted.
     record.ack.catch(() => undefined);
@@ -393,7 +414,7 @@ class ClaudeNativeSession extends EventEmitter {
       if (!record || message.uuid !== record.userMessageId) {
         this.emit('diagnostic', { type: 'unmatched-user', userMessageId: message.uuid }); return;
       }
-      if (digest(message.message.content) !== record.fingerprint) {
+      if (!this.echoMatches(message, record)) {
         this.disconnect(protocolError('Claude 回显正文与本次提交不同', 'CLAUDE_CONTENT_MISMATCH'));
         record.status = 'content-mismatch';
         this.update({ submission: this.receipt(record) }); return;
@@ -455,6 +476,15 @@ class ClaudeNativeSession extends EventEmitter {
       }
       if (message.type === 'assistant') {
         this.items.set(message.message?.id || message.uuid, message);
+        if (typeof message.message?.model === 'string' && message.message.model) outputOwner.model = message.message.model;
+        // A slash command is executed by the engine itself and answered with a
+        // local_command_source frame instead of a model reply. Keep that output
+        // separate so the composer can report it as a command result.
+        if (typeof message.local_command_source === 'string') {
+          outputOwner.localCommand = true;
+          const rendered = textOf(message.message?.content) || message.local_command_source;
+          outputOwner.commandOutput = outputOwner.commandOutput ? outputOwner.commandOutput + '\n' + rendered : rendered;
+        }
         if (!message.parent_tool_use_id && !this.activities.ambiguous) outputOwner.finalText = textOf(message.message?.content);
       }
       const delta = message.type === 'stream_event' && message.event?.delta?.type === 'text_delta'
@@ -472,6 +502,9 @@ class ClaudeNativeSession extends EventEmitter {
     const completedAt = Date.now();
     record.resultId = message.uuid;
     record.finalText = typeof message.result === 'string' ? message.result : record.finalText;
+    // The engine reports this turn's tokens on the result frame; the cards
+    // showed them for every Claude turn before the native transport.
+    if (message.usage && typeof message.usage === 'object') record.usage = message.usage;
     const reason = failed ? (message.errors?.join('; ') || message.result || message.subtype) : null;
     this.lifecycle('agent-turn-complete', record, { status, text: record.finalText,
       accepted: true, completedAt, transcriptMessages: [...(record.messages?.values() || [])],
@@ -581,6 +614,97 @@ class ClaudeNativeSession extends EventEmitter {
   // writing the user's settings files the way /fast and update_settings do.
   // Only the control response confirms it; a rejection is surfaced, never
   // reported as a successful switch.
+  // Slash commands. Measured on Claude Code 2.1.269: the engine executes its own
+  // commands when they arrive as ordinary user text and answers with a
+  // local_command_source frame, no model call. So the Hub forwards them instead
+  // of hand-mapping a short list, and only intercepts the three whose result it
+  // also displays -- model, speed and working mode would otherwise drift out of
+  // sync with the chips.
+  async slash(text) {
+    const line = String(text).trim();
+    const space = line.search(/\s/);
+    const command = (space < 0 ? line : line.slice(0, space)).toLowerCase();
+    const value = space < 0 ? '' : line.slice(space).trim();
+    const done = output => ({ ok: true, sendStatus: 'ok', mode: 'native-command',
+      commandOutput: String(output || ''), enterAttempts: 0, acknowledgementSource: BACKEND });
+    if (command === '/plan' && (!value || value === 'off')) {
+      const mode = value === 'off' ? 'default' : 'plan';
+      const applied = await this.setPermissionMode(mode);
+      return done('工作方式：' + (applied.permissionMode === 'plan' ? '计划（只讨论不改文件）' : '默认') + '。');
+    }
+    if (command === '/model' && value) {
+      await this.setModel(value);
+      return done('模型已切换：' + value);
+    }
+    if (command === '/fast' && ['on', 'off'].includes(value)) {
+      const applied = await this.setFastMode(value === 'on');
+      return done('速度：' + (applied.fastMode ? 'Fast' : '标准') + (applied.warning ? ' · ' + applied.warning : ''));
+    }
+    // Everything else is the engine's own command. Wait for its result so the
+    // composer reports the real output rather than "sent".
+    const receipt = await this.submit(line, { localCommand: true });
+    const record = this.records.get(receipt.clientSubmissionId);
+    if (!record) return done('');
+    await record.ack;
+    const deadline = Date.now() + (this.options.commandTimeoutMs || 120000);
+    while (!TERMINAL.has(record.status) && Date.now() < deadline && !this.closed) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (!TERMINAL.has(record.status)) {
+      // Never claim an unconfirmed command succeeded; the card still shows it.
+      return { ok: false, sendStatus: 'stuck', mode: 'native-command', enterAttempts: 0,
+        message: '命令已发出，但引擎尚未返回结果；请看卡片或后台' };
+    }
+    if (record.status !== 'completed') {
+      throw new Error('命令未完成：' + record.status);
+    }
+    return done(record.commandOutput || record.finalText || '命令已执行。');
+  }
+
+  // Thinking effort. The engine owns this as its own command, and answers an
+  // unsupported level with an ordinary command message rather than an error --
+  // so the reply is checked before the chip is allowed to move.
+  async setEffort(level) {
+    const normalized = String(level || '').trim().toLowerCase();
+    if (!EFFORT_LEVELS.has(normalized)) throw new Error('思考档无效：' + level);
+    const result = await this.slash('/effort ' + normalized);
+    const output = String(result.commandOutput || '');
+    if (!new RegExp('set effort level to ' + normalized + '(?![a-z])', 'i').test(output)) {
+      throw new Error(output.trim().slice(0, 200) || '引擎未确认思考档切换');
+    }
+    if (EFFORT_LAUNCH_LEVELS.has(normalized)) {
+      const args = [...(this.options.launchArgs || [])];
+      const index = args.indexOf('--effort');
+      if (index >= 0) args[index + 1] = normalized; else args.push('--effort', normalized);
+      this.options = { ...this.options, launchArgs: args };
+    }
+    this.update({ effort: normalized });
+    return { effort: normalized, output };
+  }
+
+  // Codex exposes plan mode as a collaboration mode; Claude's equivalent is the
+  // permission mode, which the engine accepts mid-session and echoes back. The
+  // echoed value is what gets stored -- a requested mode is not a confirmed one.
+  async setPermissionMode(mode) {
+    await this.start();
+    if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
+      throw new Error('请等当前任务结束并核对提交状态后再切换工作方式');
+    }
+    const pending = this.client.control({ subtype: 'set_permission_mode', mode });
+    this.configurationChange = pending;
+    try {
+      const applied = (await pending)?.mode || mode;
+      const args = [...(this.options.launchArgs || [])];
+      const index = args.indexOf('--permission-mode');
+      if (index >= 0) args[index + 1] = applied; else args.push('--permission-mode', applied);
+      this.options = { ...this.options, launchArgs: args };
+      this.update({ permissionMode: applied });
+      return { permissionMode: applied };
+    } finally {
+      if (this.configurationChange === pending) this.configurationChange = null;
+    }
+  }
+
   async setFastMode(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('速度设置无效');
     await this.start();

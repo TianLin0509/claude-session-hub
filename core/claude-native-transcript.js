@@ -24,6 +24,10 @@ function captureClaudeMessage(record, frame) {
     return;
   }
   if (frame.type === 'assistant' || frame.type === 'user') {
+    // Cards show a clock per row and a duration per tool call. The engine
+    // stamps most frames; anything unstamped is timed on arrival rather than
+    // inheriting the turn's start, which would make every row read alike.
+    if (!frame.hubObservedAt) frame.hubObservedAt = Date.parse(frame.timestamp || '') || Date.now();
     record.messages.set(frame.uuid || frame.message?.id, frame);
     if (frame.type === 'assistant') {
       for (const [key, stream] of record.streams) {
@@ -55,24 +59,32 @@ function claudeTranscriptTurns(records) {
           displayByMessage.set(messageId, { id: `${id}:message:${messageId}`, itemId: messageId,
             clientSubmissionId: record.submissionId, userMessageId: id, providerTurnId: null,
             text: previous ? previous.text + '\n\n' + body : body,
-            phase: frame.message.stop_reason === 'end_turn' ? 'final_answer' : 'commentary', ts: record.createdAt });
+            phase: frame.message.stop_reason === 'end_turn' ? 'final_answer' : 'commentary',
+            // A message is an instant, not an interval: without its own end the
+            // row would inherit the turn's and show a meaningless sub-second
+            // duration next to the answer.
+            ts: frame.hubObservedAt || record.createdAt,
+            tsEnd: frame.hubObservedAt || record.createdAt });
         }
       }
       for (const block of frame.message?.content || []) {
         if (!block) continue;
-        if (block.type === 'tool_result') results.set(block.tool_use_id, block);
+        if (block.type === 'tool_result') results.set(block.tool_use_id, { block, at: frame.hubObservedAt || null });
         if (frame.type !== 'assistant') continue;
         if (block.type === 'text' && !frame.parent_tool_use_id) text.push(block.text || '');
         if (block.type === 'thinking') thinking.push(block.thinking || '');
         if (block.type === 'tool_use') toolCalls.set(block.id, { id: block.id, callId: block.id,
-          name: block.name, input: block.partialInput || block.input,
+          name: block.name, input: block.partialInput || block.input, startedAt: frame.hubObservedAt || null,
           parentToolUseId: frame.parent_tool_use_id || null, status: END.has(record.status) ? 'unknown' : 'running' });
       }
     }
     for (const [id, tool] of toolCalls) {
-      const result = results.get(id);
-      if (result) Object.assign(tool, { output: result.content, isError: result.is_error === true,
-        status: result.is_error ? 'failed' : 'completed' });
+      const entry = results.get(id);
+      if (!entry) continue;
+      const result = entry.block;
+      Object.assign(tool, { output: result.content, isError: result.is_error === true,
+        status: result.is_error ? 'failed' : 'completed', completedAt: entry.at,
+        ...(tool.startedAt && entry.at && entry.at >= tool.startedAt ? { durationMs: entry.at - tool.startedAt } : {}) });
     }
     const terminal = END.has(record.status);
     const answer = terminal ? record.finalText || '' : text.join('\n\n');
@@ -83,12 +95,18 @@ function claudeTranscriptTurns(records) {
         && displayMessages.map(m => m.text).join('\n\n') !== answer) {
       displayMessages.push({ id: `${id}:result`, text: answer, phase: 'final_answer',
         clientSubmissionId: record.submissionId, userMessageId: id, providerTurnId: null,
-        ts: record.completedAt || record.createdAt });
+        ts: record.completedAt || record.createdAt, tsEnd: record.completedAt || record.createdAt });
     }
     if (answer || thinking.length || toolCalls.size || terminal) cards.push({ id: id + ':assistant',
       role: 'assistant', kind: 'claude', text: answer, thinking: thinking.join('\n\n'),
       toolCalls: [...toolCalls.values()], ts: record.createdAt, tsEnd: record.completedAt || null,
       source, displayMessages, clientSubmissionId: record.submissionId, userMessageId: id,
+      ...(record.model ? { model: record.model } : {}),
+      ...(record.usage ? { usage: {
+        input_tokens: (record.usage.input_tokens || 0) + (record.usage.cache_read_input_tokens || 0)
+          + (record.usage.cache_creation_input_tokens || 0),
+        output_tokens: record.usage.output_tokens || 0,
+      } } : {}),
       nativeActivity: record.nativeActivity || false, nativeOrigin: record.origin || null,
       stopReason: terminal ? record.status : null, nativeOutcome: terminal ? record.status : null });
   }
