@@ -5,9 +5,18 @@ const {CodexAppServerClient}=require('../main/codex-app-server-client');
 const {createNativeRuntime,reduceNativeRuntime}=require('../core/codex-native-runtime');
 const fs=require('fs'),os=require('os');
 const testHome=fs.mkdtempSync(path.join(os.tmpdir(),'native-unit-home-'));
+function fixtureClient(options) {
+  const client = new CodexAppServerClient(options);
+  const request = client.request.bind(client);
+  // initialize includes spawning a real Node process. Keep the 1.5s timeout
+  // used by lost-response tests, but do not use it as a process-start budget.
+  client.request = (method, params, timeoutMs, writeOptions) => request(method, params,
+    timeoutMs ?? (method === 'initialize' ? 10_000 : 1500), writeOptions);
+  return client;
+}
 function make(id='hub-1') {
   return new CodexNativeSession({id,cwd:__dirname,env:{case:'native-tests',CODEX_HOME:testHome,CLAUDE_HUB_DATA_DIR:path.join(testHome,'hub')},threadParams:{model:'fixture-model'},turnParams:{model:'fixture-model',effort:'max'},
-    clientFactory:()=>new CodexAppServerClient({cwd:__dirname,timeoutMs:1500,
+    clientFactory:()=>fixtureClient({cwd:__dirname,timeoutMs:1500,
       launch:{command:process.execPath,args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:process.env}})});
 }
 async function until(check) {
@@ -31,7 +40,7 @@ test('speed selection preserves model, effort and history, rejects unsupported F
 });
 test('inherited disabled Fast capability cannot report a successful speed switch',async()=>{
   const s=make('speed-disabled');
-  s.options.clientFactory=()=>new CodexAppServerClient({cwd:__dirname,timeoutMs:1500,
+  s.options.clientFactory=()=>fixtureClient({cwd:__dirname,timeoutMs:1500,
     launch:{command:process.execPath,args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED:'1'}}});
   try {
     await s.configure({codexSpeedTier:'standard'});
