@@ -70,7 +70,8 @@ function normalizeProviderFamily(kind) {
   // Resume kinds are persisted verbatim on the session (kind='deepseek-resume'
   // etc.). Missing one here silently drops the whole attempt gate back to the
   // permissive legacy path for that member, so keep both variants listed.
-  if (value === 'claude' || value === 'claude-resume' || value === 'glm'
+  if (require('./acp-profiles').isAcpKind(value)) return value.replace(/-resume$/, '');
+  if (value === 'claude' || value === 'claude-resume'
       || value === 'deepseek-legacy' || value === 'deepseek-legacy-resume') return 'claude';
   if (value === 'codex' || value === 'codex-resume'
       || value === 'deepseek' || value === 'deepseek-resume') return 'codex';
@@ -94,6 +95,7 @@ function normalizeEventTime(event = {}) {
 function isAuthoritativeFinalSignal(kind, signalSource) {
   const family = normalizeProviderFamily(kind);
   const source = String(signalSource || '').trim();
+  if (require('./acp-profiles').isAcpKind(kind)) return source === 'acp';
   if (family === 'claude') return CLAUDE_FINAL_SOURCES.has(source);
   if (family === 'codex') return CODEX_FINAL_SOURCES.has(source);
   // Gemini/Kimi taps emit turn-complete only after their provider-specific
@@ -213,6 +215,7 @@ function attemptEventMatches(attempt, event = {}, options = {}) {
   }
 
   const family = normalizeProviderFamily(attempt.kind || options.kind);
+  const acp = require('./acp-profiles').isAcpKind(attempt.kind || options.kind);
   const eventAt = normalizeEventTime(event);
   const floor = Math.max(
     Number(attempt.startedAt) || 0,
@@ -220,12 +223,12 @@ function attemptEventMatches(attempt, event = {}, options = {}) {
     Number(attempt.dispatchAt) || 0,
   );
   const toleranceMs = Math.max(0, Number(options.clockToleranceMs) || 250);
-  if ((family === 'claude' || family === 'codex' || options.enforceTimeBoundary === true)
+  if ((family === 'claude' || family === 'codex' || acp || options.enforceTimeBoundary === true)
       && eventAt && floor && eventAt + toleranceMs < floor) {
     return { ok: false, reason: 'before_attempt_boundary', eventAt, floor };
   }
 
-  if (family === 'codex' && expectedTurn && !actualTurn && options.requireProviderTurn !== false) {
+  if ((family === 'codex' || acp) && expectedTurn && !actualTurn && options.requireProviderTurn !== false) {
     return { ok: false, reason: 'missing_provider_turn_id', expectedTurn };
   }
 

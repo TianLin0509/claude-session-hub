@@ -274,6 +274,8 @@ function createModelUiController({
     }
     if (!canSwitchInSession(kind)) {
       menuNote(menu, 'ℹ 该 CLI 暂不支持从 Hub 原地切换；请在新建会话时选择', 'warning');
+    } else if (strategy === 'acp-native') {
+      menuNote(menu,'阿里云套餐模型 · 选择后由原生 Harness 确认，再更新显示。');
     } else if (strategy === 'codex-picker') {
       const live = options.some(option => option.source === 'codex-app-server');
       menuNote(menu, `${live ? '当前账号实时目录' : 'Codex CLI 本地缓存'} · `
@@ -513,7 +515,10 @@ function createModelUiController({
         }
         preferencePrepared = true;
       }
-      const switched = strategy === 'codex-picker'
+      const switched = strategy === 'acp-native'
+        ? await (async()=>{const r=await ipcRenderer.invoke('codex:native-action',{sessionId,action:'configure',model:option.id});
+          if(!r?.ok)throw new Error(r?.message || '原生 Harness 未确认模型');return r.result;})()
+        : strategy === 'codex-picker'
         ? await switchCodexModel(sessionId, session, option)
         : await switchClaudeModel(sessionId, session, option);
       const confirmed = await confirmSwitch(sessionId, switched);

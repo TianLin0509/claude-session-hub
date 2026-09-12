@@ -238,11 +238,21 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
+    const deliveryOpen = new Map([...panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')]
+      .map(el => [el.closest('.mr-gc-msg').dataset.gcMsgId, el.open]));
+    panel.querySelector('.mr-gc-messages')?._cardFollowController?.dispose();
+    panel._questionDirectory?.dispose();
     panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    for (const el of panel.querySelectorAll('.mr-gc-msg .turn-delivery-summary')) {
+      const id = el.closest('.mr-gc-msg').dataset.gcMsgId;
+      if (deliveryOpen.has(id)) el.open = deliveryOpen.get(id);
+    }
     _bindGcPanelEvents(panel, meeting);
     // 2026-07-20 道雪 [修#5]：后处理四件套统一在此执行（此前只在 refreshGroupChatPanel）。
     _applyLongAnswerCollapse(panel);
     _setupScrollToBottom(panel);
+    _setupQuestionDirectory(panel, meeting);
+    _enhanceGroupCardContent(panel);
     _enhanceCodeBlocks(panel);
     _setupGcSearch(panel);
     _renderHeroDock(meeting);
@@ -506,9 +516,9 @@ if (typeof document !== 'undefined') (function () {
   //   （如 `python C:\script.py --arg` 包路径会让脚本视觉断开）。
   // 2026-05-03 道雪：从 SKIP 移除 CODE 是用户场景反馈：历史回答面板的路径
   //   出现在 inline code 内，原 skip CODE 让它没有 link。
-  function _wrapFilePathsInDom(rootEl) {
+  function _wrapFilePathsInDom(rootEl, cwd = _activeMeetingCwd()) {
     if (typeof window !== 'undefined' && typeof window.wrapPathLinksInElement === 'function') {
-      window.wrapPathLinksInElement(rootEl, { cwd: _activeMeetingCwd() });
+      window.wrapPathLinksInElement(rootEl, { cwd, skipCodeBlocks:true });
       return;
     }
     const SKIP_TAGS = new Set(['PRE', 'A', 'SCRIPT', 'STYLE']);
@@ -586,11 +596,13 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  function _renderMarkdownUncached(text) {
+  function _renderMarkdownUncached(text, cwd) {
     try {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
-      const pathGuard = guardMarkdownLocalPaths(_normalizeMarkdownPathBreaks(text));
+      const math = require('./markdown-math-guard');
+      const mathGuard = math.guardMarkdownMath(_normalizeMarkdownPathBreaks(text));
+      const pathGuard = guardMarkdownLocalPaths(mathGuard.text);
       const html = _markedCache.parse(pathGuard.text, { breaks: true, gfm: true });
       const sanitized = restoreMarkdownLocalPaths(
         _domPurifyCache.sanitize(html, { ADD_ATTR: ['data-path', 'class'] }),
@@ -600,12 +612,18 @@ if (typeof document !== 'undefined') (function () {
       //   注意必须在 sanitize 之后做，因为我们新增的 <a> 元素文本来自 sanitize 后的 textContent
       //   （已 escape），data-path 也是从同一字符串复制，无注入风险。
       const wrapper = document.createElement('div');
-      wrapper.innerHTML = sanitized;
-      _wrapFilePathsInDom(wrapper);
+      wrapper.innerHTML = math.restoreMarkdownMath(sanitized, mathGuard);
+      if (typeof window.renderMathInElement === 'function') window.renderMathInElement(wrapper, {
+        delimiters: [{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}],
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
+        ignoredClasses: ['katex', 'katex-display'], throwOnError:false, strict:'ignore', trust:false,
+      });
+      _wrapFilePathsInDom(wrapper, cwd);
       // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
       _highlightCodeBlocks(wrapper);
       return wrapper.innerHTML;
     } catch (e) {
+      console.warn("[groupchat] Markdown rendering failed:", e && e.message);
       // 回退到纯文本（escapeHtml）
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
@@ -619,17 +637,18 @@ if (typeof document !== 'undefined') (function () {
   const _mdCache = new Map();
   const _MD_CACHE_MAX = 300;
   const _mdStats = { renders: 0, hits: 0 };
-  function _renderMarkdown(text) {
+  function _renderMarkdown(text, cwd = _activeMeetingCwd()) {
     if (!text) return '';
-    const hit = _mdCache.get(text);
+    const cacheKey = JSON.stringify([cwd, text]);
+    const hit = _mdCache.get(cacheKey);
     if (hit !== undefined) {
-      _mdCache.delete(text); _mdCache.set(text, hit);
+      _mdCache.delete(cacheKey); _mdCache.set(cacheKey, hit);
       _mdStats.hits++;
       return hit;
     }
-    const out = _renderMarkdownUncached(text);
+    const out = _renderMarkdownUncached(text, cwd);
     _mdStats.renders++;
-    _mdCache.set(text, out);
+    _mdCache.set(cacheKey, out);
     if (_mdCache.size > _MD_CACHE_MAX) _mdCache.delete(_mdCache.keys().next().value);
     return out;
   }
@@ -731,18 +750,44 @@ if (typeof document !== 'undefined') (function () {
     return html.join('');
   }
 
-  function _renderGroupDelivery(text, cwd) {
-    if (!text) return '';
-    const presentation = buildTurnPresentation({
-      role: 'assistant',
-      text,
-      stopReason: 'end_turn',
-      toolCalls: [],
-    }, { cwd });
-    const artifacts = presentation.delivery.artifacts || [];
-    if (!artifacts.length) return '';
-    const items = artifacts.map(item => `<a href="#" class="rt-file-link" data-path="${escapeHtml(item.path)}">↗ ${escapeHtml(item.name)}</a>`).join('');
-    return `<div class="mr-ft-delivery" data-summary-source="deterministic"><strong>交付产物</strong>${items}</div>`;
+  function _renderGroupDelivery(text, cwd, toolCalls = []) {
+    if (!text && !toolCalls.length) return '';
+    const presentation = buildTurnPresentation({ role:'assistant', text, stopReason:'end_turn', toolCalls }, {cwd});
+    return require('./delivery-summary').renderDeliverySummary(presentation.delivery, escapeHtml);
+  }
+
+  function _enhanceGroupCardContent(root) {
+    if (!root) return;
+    const cards = root.matches?.('.mr-gc-msg') ? [root] : [...root.querySelectorAll('.mr-gc-msg')];
+    for (const card of cards) {
+      const session = typeof sessions !== 'undefined' && sessions.get(card.dataset.sourceSid);
+      const cwd = session?.cwd || meetingData[activeMeetingId]?.workspace || _activeMeetingCwd();
+      if (typeof window.wrapPathLinksInElement === 'function') window.wrapPathLinksInElement(card, {cwd, skipCodeBlocks:true});
+    }
+  }
+
+  function _setupQuestionDirectory(panel, meeting) {
+    const overlay = panel.querySelector('.mr-gc-messages'), root = panel.querySelector('#mr-question-nav');
+    if (!overlay || !root) return;
+    const navigator = require('./card-question-navigator').createCardQuestionNavigator({
+      document, window, root, overlay, layoutElement:overlay.parentElement,
+      getActiveSessionId:()=> 'group:' + meeting.id,
+      getCurrentView:()=> 'card',
+      requestAnimationFrame: callback=>requestAnimationFrame(callback), cancelAnimationFrame:handle=>cancelAnimationFrame(handle),
+      getEntries:()=> {
+        const messages = _gcPanelState[meeting.id]?.messages || [];
+        const byId = new Map(messages.map(m=>[m.id,m])), replies = new Map();
+        for (const m of messages) if(m.role==='assistant' && m.sid) { if(!replies.has(m.turnNum)) replies.set(m.turnNum,new Set()); replies.get(m.turnNum).add(m.sid); }
+        return [...overlay.querySelectorAll('.mr-gc-msg[data-user-question="true"]')].map(card=>{
+          const message = byId.get(card.dataset.gcMsgId);
+          const count = replies.get(message?.turnNum)?.size || 0;
+          const timestamp = message?.createdAt;
+          return {card, text:message?.content || card.querySelector('.conversation-user-text')?.innerText || '',timestamp,
+            meta: [timestamp ? _formatGroupChatTime(timestamp) : '', count ? count+' 位成员已回复' : '用户提问'].filter(Boolean).join(' · ')};
+        });
+      },
+    });
+    panel._questionDirectory = navigator; navigator.init(); navigator.refresh();
   }
 
   // 注：顶部 scene toggle（群聊/投研）的 _renderModeToggle/_bindModeToggle 已删除
@@ -2121,9 +2166,10 @@ if (typeof document !== 'undefined') (function () {
         return;
       }
       const n = Math.max(Array.isArray(r.stopped) ? r.stopped.length : 0, Array.isArray(r.signaled) ? r.signaled.length : 0);
+      const nativePending = (m.subSessions || []).some(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
       const loopTail = r.loopStopped ? '，工作流已一并停止' : '';
       _showGcEscapeNotice(n > 0
-        ? `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
+        ? nativePending ? `已发送停止请求：等待原生 Harness 确认${loopTail}` : `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
         : r.pendingDispatch
           ? `本轮正在发送中，已登记停止；发出后立即中断${loopTail}`
           : `本轮已经没有正在回答的 AI，状态已收回待命${loopTail}`);
@@ -2348,6 +2394,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
+    const sourceSession = typeof sessions !== 'undefined' && sessions.get(message.sid);
+    const renderMarkdown = text => _renderMarkdown(text, sourceSession?.cwd || meeting.workspace || _activeMeetingCwd());
     if (!message) return '';
     // 系统提示（循环自愈的每一次动作都会留一行）：不是谁的发言，不给气泡也不给重发按钮，
     // 只在时间线上留一条居中的细线 —— 但必须看得见，静默重试才是真正的损失。
@@ -2381,6 +2429,7 @@ if (typeof document !== 'undefined') (function () {
     //   不依赖调用方各自清 pending flag（多方审查加固）。
     const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
+    const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
     const failureStatusText = failureCode === 'quota_exceeded' ? '额度中断'
       : failureCode === 'rate_limited' ? '限流中断'
@@ -2391,6 +2440,7 @@ if (typeof document !== 'undefined') (function () {
                 : '本轮失败';
     const statusText = sendStuck ? '输入未提交'
       : status === 'errored' ? failureStatusText
+      : cancelling ? '正在停止'
       : status === 'awaiting_binding' ? '已开工 · 等绑定'
       : status === 'awaiting_final_text' ? '已结束 · 收取中'
       : status === 'recovering' ? '恢复中'
@@ -2415,11 +2465,11 @@ if (typeof document !== 'undefined') (function () {
     let body;
     if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
       body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
-        {escapeHtml,renderMarkdown:_renderMarkdown,plainProgress:DevFile.enabled(meeting)});
+        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting)});
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
-      const waitingText = status === 'awaiting_binding'
+      const waitingText = cancelling ? '正在停止，等待原生 Harness 确认' : status === 'awaiting_binding'
         ? 'Agent 已开始工作，正在等待 transcript/rollout 完成绑定；不会自动重复发送 Prompt。'
         : status === 'awaiting_final_text'
           ? '已收到结束信号，正在从 transcript 收取同一轮最终答案。'
@@ -2450,7 +2500,16 @@ if (typeof document !== 'undefined') (function () {
       body = headBlock + bodyBlock;
     } else {
       body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
-        {isUser,escapeHtml,renderMarkdown:_renderMarkdown,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
+        {isUser,escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
+    }
+    const sequence = message.displayMessages || [];
+    const hasFinal = sequence.some(m=>['final','final_answer'].includes(m.phase));
+    if (!isUser && !isPending && (hasFinal || ['completed','manual_extracted'].includes(status))
+        && !['commentary','activity'].includes(message.phase) && message.status !== 'progress_update') {
+      const tools = [...(message.toolCalls || []), ...sequence.flatMap(m=>m.toolCalls || [])];
+      const text = sequence.filter(m=>['final','final_answer'].includes(m.phase)).map(m=>m.text || '').join('\n') || contentStr;
+      const session = (typeof sessions !== 'undefined' && sessions.get(message.sid)) || null;
+      body += _renderGroupDelivery(text, session?.cwd || meeting.workspace, tools);
     }
     // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
     //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
@@ -2499,7 +2558,7 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -2702,6 +2761,7 @@ if (typeof document !== 'undefined') (function () {
             ${messageHtml}
             ${pendingHtml}
           </div>
+          <nav id="mr-question-nav" class="card-question-nav" aria-label="问题导航" hidden></nav>
           <button type="button" class="mr-gc-scroll-bottom" data-gc-scroll-bottom="1" title="回到最新回答">↓ 最新</button>
           <button type="button" class="mr-gc-collapse-all" data-gc-collapse-all="1" title="折叠/展开所有长回答">⇕ 折叠全部</button>
         </main>
@@ -2892,21 +2952,19 @@ if (typeof document !== 'undefined') (function () {
     const bottomGap = Math.max(0, maxTop - el.scrollTop);
     return {
       scrollTop: el.scrollTop,
-      stickToBottom: bottomGap <= 48,
+      stickToBottom: el._cardFollowController ? el._cardFollowController.isFollowing() : bottomGap <= 48,
     };
   }
 
   function _restoreGroupChatScroll(panel, snapshot, opts = {}) {
     if (!panel || !snapshot) return;
-    const forceBottom = !!opts.forceBottom;
-    const apply = () => {
-      const el = panel.querySelector('.mr-gc-messages');
-      if (!el) return;
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      el.scrollTop = (forceBottom || snapshot.stickToBottom) ? maxTop : Math.min(snapshot.scrollTop, maxTop);
-    };
-    apply();
-    requestAnimationFrame(apply);
+    const el = panel.querySelector('.mr-gc-messages');
+    if (!el) return;
+    const follow = el._cardFollowController;
+    if (follow) {
+      if (opts.forceBottom || snapshot.stickToBottom) follow.follow();
+      else { follow.pause(); follow.restore({...follow.capture(),top:snapshot.scrollTop}); }
+    } else el.scrollTop = opts.forceBottom || snapshot.stickToBottom ? el.scrollHeight : snapshot.scrollTop;
   }
 
   // 用户从左侧栏重新进入群聊时，“打开该会话”与普通 session 一样表示查看最新。
@@ -2917,7 +2975,8 @@ if (typeof document !== 'undefined') (function () {
     const apply = () => {
       if (meeting.groupChat) {
         const messages = panel.querySelector('.mr-gc-messages');
-        if (messages) messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
+        if (messages?._cardFollowController) messages._cardFollowController.follow();
+        else if (messages) messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
         return;
       }
       panel.querySelectorAll('.mr-ft-preview, .mr-ft-bottom').forEach((el) => {
@@ -2972,30 +3031,12 @@ if (typeof document !== 'undefined') (function () {
       sendStatus: partial.sendStatus || '',
       statusReason: partial.reason || '',
     }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status, sendStatus: partial.sendStatus });
-    // 抓底距决定 patch 后是否跟随：bottomGap ≤ 48 视为"贴底"，patch 后 scrollTo 底
-    const maxTop0 = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
-    const savedScrollTop = messagesEl.scrollTop;
-    const stick = (maxTop0 - messagesEl.scrollTop) <= 48;
-    // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindGcPanelEvents），
-    //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
+    const scroll = _captureGroupChatScroll(panel, meeting);
     const replacement=document.createElement('div');
     replacement.innerHTML=newHtml;
     require('./conversation-message-view').patchConversationArticle(articleEl,replacement.firstElementChild);
-    if (stick) {
-      requestAnimationFrame(() => {
-        const after = panel.querySelector('.mr-gc-messages');
-        if (after) after.scrollTop = Math.max(0, after.scrollHeight - after.clientHeight);
-      });
-    } else {
-      const restore = () => {
-        const after = panel.querySelector('.mr-gc-messages');
-        if (!after) return;
-        const maxTop = Math.max(0, after.scrollHeight - after.clientHeight);
-        after.scrollTop = Math.min(savedScrollTop, maxTop);
-      };
-      restore();
-      requestAnimationFrame(restore);
-    }
+    _enhanceGroupCardContent(articleEl);
+    _restoreGroupChatScroll(panel, scroll);
     return true;
   }
 
@@ -3066,18 +3107,10 @@ if (typeof document !== 'undefined') (function () {
   // 2026-06-28 道雪 [改进2]：回到最新悬浮按钮——群聊滚离底部超 240px 时显示，点击回到最新。
   //   .mr-gc-messages 每次重渲都重绑 scroll（scroll 事件不冒泡，无法委托）。
   function _setupScrollToBottom(panel) {
-    if (!panel) return;
-    const el = panel.querySelector('.mr-gc-messages');
-    const btn = panel.querySelector('.mr-gc-scroll-bottom');
-    if (!el || !btn) return;
-    const update = () => {
-      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      btn.classList.toggle('visible', (maxTop - el.scrollTop) > 240);
-    };
-    if (el._scrollBtnHandler) el.removeEventListener('scroll', el._scrollBtnHandler);
-    el._scrollBtnHandler = update;
-    el.addEventListener('scroll', update, { passive: true });
-    update();
+    const el = panel?.querySelector('.mr-gc-messages'), button = panel?.querySelector('.mr-gc-scroll-bottom');
+    if (!el || !button || el._cardFollowController) return;
+    const follow = require('./card-follow-scroll').createCardFollowScroll({element:el,window,document,button});
+    follow.activate(activeMeetingId);
   }
 
   // 2026-06-28 道雪 [改进1]：长回答折叠——超阈值高度的 AI 回答默认折叠 + 渐变遮罩 + 展开按钮，
@@ -3715,7 +3748,8 @@ if (typeof document !== 'undefined') (function () {
     if (scrollBtn) {
       ev.stopPropagation();
       const el = panel.querySelector('.mr-gc-messages');
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el?._cardFollowController) el._cardFollowController.follow();
+      else if (el) el.scrollTop = el.scrollHeight;
       return;
     }
 
@@ -4835,6 +4869,7 @@ if (typeof document !== 'undefined') (function () {
       require('./conversation-message-view').patchConversationArticle(old,temp.firstElementChild);
     }
     _patchGroupChatPendingMessage(panel,meeting,payload.sid,state);
+    _enhanceGroupCardContent(panel);
     _restoreGroupChatScroll(panel,scroll);
   });
 
@@ -5409,7 +5444,10 @@ if (typeof document !== 'undefined') (function () {
     // 2026-07-29 道雪 [群聊运行中可操作]：本轮有 AI 在跑 → 常驻一个明确的「停止本轮」入口。
     //   等价于用户在单 session 终端里按 ESC，只是一次批量下发给本轮所有在跑成员。
     //   输入框/发送按钮**不因此禁用**：运行中追加提问是支持的（后端抢占式结算）。
-    if (_isGroupTurnRunning(current)) {
+    const cancellingMembers = (current.subSessions || []).filter(sid => sessions.get(sid)?.nativeRuntime?.cancellation?.status === 'pending');
+    if (cancellingMembers.length) {
+      chips.push(`<span class="mr-input-preflight-chip stop" data-gc-cancelling="1"><span>本轮</span><strong>${cancellingMembers.length} 位正在停止 · 等待确认</strong></span>`);
+    } else if (_isGroupTurnRunning(current)) {
       chips.push(`<span class="mr-input-preflight-chip stop clickable" data-gc-stop-turn="1" title="停止本轮：向所有还在回答的 AI 下发中断（等同你在终端按 ESC）。想直接追问就继续在下面输入，不必先停。"><span>本轮</span><strong>进行中 ⏹ 停止</strong></span>`);
     }
     // 2026-07-20 道雪 [修#8]：循环状态 chip——运行中显示轮次·阶段，点击停止
@@ -5982,9 +6020,9 @@ if (typeof document !== 'undefined') (function () {
     if (typeof _clearQuoteChips === 'function') _clearQuoteChips();
     if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none';
     const panel = panelEl();
-    if (panel) panel.style.display = 'none';
+    if (panel) { panel.querySelector('.mr-gc-messages')?._cardFollowController?.dispose(); panel.querySelector('#mr-group-chat-panel')?._questionDirectory?.dispose(); panel.style.display = 'none'; }
     const el = terminalsEl();
-    if (el) el.innerHTML = '';
+    if (el) { el.querySelector('.mr-gc-messages')?._cardFollowController?.dispose(); el.querySelector('#mr-group-chat-panel')?._questionDirectory?.dispose(); el.innerHTML = ''; }
   }
 
   // Card optimization Task 10（2026-05-01）— 动态重排兜底：
@@ -6107,6 +6145,13 @@ if (typeof document !== 'undefined') (function () {
       }
     });
     return changed;
+  }
+
+  function refreshNativeCancellation(sessionId) {
+    const meeting = activeMeetingId && meetingData[activeMeetingId];
+    if (!meeting?.subSessions?.includes(sessionId)) return;
+    _renderActivePanelFromCache(meeting);
+    _updateInputPreflight(meeting);
   }
 
   let _updating = false;
@@ -6346,7 +6391,7 @@ if (typeof document !== 'undefined') (function () {
     // 历史会议里的 Gemini/Kimi 等成员继续可读可运行，只是不再从群聊入口新增。
     const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', deepseek: 'DeepSeek · Codex', kimi: 'Kimi Code' };
     const availableKinds = meeting.groupChat
-      ? ['claude', 'codex', 'deepseek']
+      ? ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm']
       : ALL_AI_KINDS;
     const kinds = availableKinds.map(k => ({
       kind: k,
@@ -7434,6 +7479,7 @@ if (typeof document !== 'undefined') (function () {
     getActiveMeetingId,
     getMeetingData,
     refreshSessionMetrics,
+    refreshNativeCancellation,
     focusSearchHit,
     updateMeetingData,
   };

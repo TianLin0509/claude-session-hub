@@ -260,7 +260,8 @@ function createResumeSessionHandler(deps) {
       // 保留 Hub ID fresh start；一旦首次 turn 生成 codexSid，后续仍精确 resume。
       useResume: isNativeResumeKind && !freshUnboundAgentLeague,
       codexResumePicker: codexMissingSid && !freshUnboundAgentLeague,
-      codexSid: effectiveCodexSid,
+        codexSid: effectiveCodexSid,
+        ...(meta.acpSid ? { acpSid: meta.acpSid } : {}),
       ...(meta.nativeRuntime ? {nativeRuntime:meta.nativeRuntime} : {}),
       ...((lazyCodex || unstartedCodex) ? {lazyStart:true} : {}),
       ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),

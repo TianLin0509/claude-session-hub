@@ -7,6 +7,7 @@ function isCodexSession(session) {
   return !!session && (session.kind === 'codex' || session.kind === 'codex-resume'
     || session.runtimeBackend === BACKEND);
 }
+function isNativeSession(session) { return isCodexSession(session) || session?.runtimeBackend === 'acp'; }
 function createNativeRuntime(epoch = 1) {
   return { state:'unknown', connection:'connecting', epoch, revision:0,
     threadId:null, turnId:null, startedAt:0, completedAt:0, observedAt:0,
@@ -24,17 +25,18 @@ function requestSummary(request) {
 }
 function nativeRuntimeTruth(session) {
   const r = session && session.nativeRuntime;
+  const source = session?.runtimeBackend === 'acp' ? 'acp' : BACKEND;
   if (session && session.status === 'dormant') {
-    return { ...r, state:'dormant', source:BACKEND, confidence:'authoritative', expiresAt:0, sequence:r?.revision,
+    return { ...r, state:'dormant', source, confidence:'authoritative', expiresAt:0, sequence:r?.revision,
       turnId:r && r.turnId || null, reason:'session-suspended' };
   }
-  if (!r) return { state:'unknown', source:BACKEND, confidence:'none', expiresAt:0,
+  if (!r) return { state:'unknown', source, confidence:'none', expiresAt:0,
     reason:'unmanaged', evidence:'旧会话尚未接管，请在原进程结束后恢复', requests:[] };
-  if (isUnstartedRuntime(r)) return { ...r, state:'idle', source:BACKEND, confidence:'authoritative',
+  if (isUnstartedRuntime(r)) return { ...r, state:'idle', source, confidence:'authoritative',
     expiresAt:0, sequence:r.revision, evidence:'尚未开始，收到消息后启动' };
   const connected = r.connection === 'connected';
   const state = !connected && !TERMINAL.has(r.state) ? 'unknown' : r.state;
-  return { ...r, state, source:BACKEND, confidence:connected ? 'authoritative' : 'none',
+  return { ...r, state, source, confidence:connected ? 'authoritative' : 'none',
     expiresAt:0, sequence:r.revision,
     evidence:state === 'waiting' ? (r.requests || []).map(requestSummary).join('\n') || 'Codex 正在等待操作'
       : r.reason || null };
@@ -58,7 +60,13 @@ function acceptNativeSnapshot(local, incoming) {
   if (!next || !local || incoming.id !== local.id) return false;
   if (old && (next.epoch < old.epoch
       || (next.epoch === old.epoch && next.revision < old.revision))) return false;
-  local.runtimeBackend = BACKEND;
+  local.runtimeBackend = incoming.runtimeBackend || BACKEND;
+  if (incoming.runtimeBackend === 'acp') {
+    local.acpSid = incoming.acpSid;
+    local.acpProfileId = incoming.acpProfileId;
+    local.acpCapabilities = incoming.acpCapabilities;
+    local.acpConfigOptions = incoming.acpConfigOptions;
+  }
   local.nativeRuntime = next;
   local.nativeThreadChoices = incoming.nativeThreadChoices || [];
   local.nativeActionError = incoming.nativeActionError || null;
@@ -79,12 +87,12 @@ function acceptNativeSnapshot(local, incoming) {
 }
 function persistNativeRuntime(data) {
   const r = data && data.nativeRuntime;
-  if (!isCodexSession(data) || !r) return null;
+  if (!isNativeSession(data) || !r) return null;
   if (isUnstartedRuntime(r)) return { ...r, requests:[], waitingFlags:[] };
   // Requests belong to the live transport; never restore approval buttons.
   return { ...r, connection:'disconnected', requests:[], waitingFlags:[],
     state:TERMINAL.has(r.state) ? r.state : 'unknown', lastKnownState:r.state,
-    reason:'Hub 已重新启动，等待核对 Codex 会话' };
+    reason:data.runtimeBackend==='acp'?'Hub 已重新启动，等待核对原生 Harness 会话':'Hub 已重新启动，等待核对 Codex 会话' };
 }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function reduceNativeRuntime(previous, event) {
@@ -104,6 +112,7 @@ function reduceNativeRuntime(previous, event) {
       n.state = 'unknown'; n.reason = '收到不同的活跃轮次，需要核对'; return false;
     }
     if (n.turnId !== turn.id) {
+      if (n.cancellation) n.cancellation = null;
       n.requests = []; n.waitingFlags = []; n.completedAt = 0;
       n.startedAt = Number.isFinite(turn.startedAt) ? turn.startedAt * 1000 : now;
     }
@@ -115,6 +124,7 @@ function reduceNativeRuntime(previous, event) {
     if (n.endedTurns.includes(turn.id)) return false;
     if (n.turnId && n.turnId !== turn.id) return false;
     n.turnId = turn.id; n.state = turn.status;
+    if (n.cancellation) n.cancellation = null;
     n.completedAt = Number.isFinite(turn.completedAt) ? turn.completedAt * 1000 : now;
     n.requests = []; n.waitingFlags = [];
     n.reason = turn.error && turn.error.message || null;
@@ -131,6 +141,7 @@ function reduceNativeRuntime(previous, event) {
     n.reason = '正在核对 Codex 会话';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
   } else if (event.type === 'disconnect') {
+    if (n.cancellation) n.cancellation = { ...n.cancellation, status:'unknown' };
     n.connection = 'disconnected';
     n.reason = event.reason || 'Codex 连接已断开，状态待核对';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
@@ -175,7 +186,11 @@ function reduceNativeRuntime(previous, event) {
     }
   } else {
     if (event.threadId !== n.threadId || n.connection !== 'connected') return p;
-    if (event.type === 'started') start(event.turn);
+    if (event.type === 'cancelling') {
+      if (event.turnId !== n.turnId || TERMINAL.has(n.state)) return p;
+      n.cancellation = { turnId:event.turnId, status:'pending', requestedAt:now, deadlineAt:event.deadlineAt };
+      n.requests = []; n.waitingFlags = [];
+    } else if (event.type === 'started') start(event.turn);
     else if (event.type === 'completed') finish(event.turn);
     else if (event.type === 'status') {
       const status = event.status || {};
@@ -194,7 +209,7 @@ function reduceNativeRuntime(previous, event) {
     } else if (event.type === 'request') {
       const request = event.request;
       const turnId = request && request.params && request.params.turnId;
-      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state)
+      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state) || n.cancellation?.status === 'pending'
           || (request.params?.threadId && request.params.threadId !== n.threadId)
           || (turnId && turnId !== n.turnId)) return p;
       if (!n.requests.some(r => r.id === request.id)) n.requests.push(request);
@@ -208,10 +223,16 @@ function reduceNativeRuntime(previous, event) {
       if (n.state !== 'unknown' && !TERMINAL.has(n.state) && n.turnId) n.state = activeState();
     } else return p;
   }
+  // Cancellation is an unfinished execution phase. Keep existing running and
+  // group handoff contracts, but never let a tail update reopen waiting UI.
+  if (n.cancellation?.status === 'pending' && n.connection === 'connected' && !TERMINAL.has(n.state)) {
+    n.state = 'running'; n.requests = []; n.waitingFlags = [];
+    n.reason = '正在停止，等待原生 Harness 确认';
+  }
   if (same({ ...n, observedAt:p.observedAt, revision:p.revision }, p)) return p;
   n.observedAt = now;
   n.revision = p.revision + 1;
   return n;
 }
-module.exports = { BACKEND, TERMINAL, isCodexSession, createNativeRuntime, reduceNativeRuntime,
+module.exports = { BACKEND, TERMINAL, isCodexSession, isNativeSession, createNativeRuntime, reduceNativeRuntime,
   nativeRuntimeTruth, nativeUnfinished, nativeTurnHasEnded, requestSummary, acceptNativeSnapshot, persistNativeRuntime, isUnstartedRuntime };

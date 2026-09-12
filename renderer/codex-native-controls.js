@@ -8,7 +8,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
   const element = doc.createElement('section');
   element.className = 'codex-native-controls';
   element.hidden = true;
-  element.setAttribute('aria-label', 'Codex 操作');
+  element.setAttribute('aria-label', '原生会话操作');
   let signature = '';
   const forms = new Map();
   const node = (tag, text, className) => {
@@ -18,13 +18,14 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     return el;
   };
   const action = async (payload, form, error) => {
-    const buttons = [...form.querySelectorAll('button')];
+    const buttons = [...form.querySelectorAll('button,select')];
     buttons.forEach(b => { b.disabled = true; });
     error.textContent = '';
     try {
       const result = await invoke('codex:native-action', { sessionId, ...payload });
-      if (!result || !result.ok) throw new Error(result && result.message || 'Codex 未确认操作');
-      if (payload.action === 'reply') error.textContent = '回答已送达，等待 Codex 确认';
+      if (!result || !result.ok) throw new Error(result && result.message || '原生会话未确认操作');
+      if (payload.action === 'reply') error.textContent = '回答已送达，等待原生会话确认';
+      else buttons.forEach(b => { b.disabled = false; });
     } catch (err) {
       error.textContent = err.message;
       buttons.forEach(b => { b.disabled = false; });
@@ -45,7 +46,66 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       b.addEventListener('click', run);
       controls.append(b);
     };
-    if (request.method === 'item/tool/requestUserInput') {
+    if (request.method === 'session/request_permission' && p.toolCall?._meta?.qwenInteractionKind==='user_question') {
+      form.append(node('strong','千问需要你的回答'));
+      const fields=[];
+      for(const [index,q] of (p.toolCall._meta.qwenQuestions || []).entries()) {
+        const label=node('label',q.question || q.header);const input=node('textarea');
+        input.required=true;input.setAttribute('aria-label',q.question || q.header);label.append(input);form.append(label);
+        for(const option of q.options || []) {const choose=node('button',option.label);choose.type='button';choose.title=option.description || '';
+          choose.addEventListener('click',()=>{input.value=q.multiSelect && input.value ? input.value+', '+option.label:option.label;input.focus();});form.append(choose);}
+        fields.push([String(index),input]);
+      }
+      form.addEventListener('submit',event=>{event.preventDefault();if(!form.reportValidity())return;
+        const option=p.options.find(o=>o.kind==='allow_once');if(!option){error.textContent='原生提问缺少提交选项';return;}
+        reply({outcome:{outcome:'selected',optionId:option.optionId},answers:Object.fromEntries(fields.map(([key,input])=>[key,input.value]))});
+      });
+      const submit=node('button','提交回答');submit.type='submit';controls.append(submit);button('取消',()=>reply({outcome:{outcome:'cancelled'}}));
+    } else if (request.method === 'session/request_permission') {
+      form.append(node('strong','原生 Harness 请求授权'),node('p',p.toolCall?.title || p.reason || ''));
+      if (p.toolCall?.rawInput) form.append(node('pre',JSON.stringify(p.toolCall.rawInput,null,2)));
+      for (const option of p.options || []) button(option.name || option.optionId,
+        () => reply({outcome:{outcome:'selected',optionId:option.optionId}}));
+      button('取消', () => reply({outcome:{outcome:'cancelled'}}));
+    } else if (request.method === 'elicitation/create') {
+      form.append(node('strong','需要你的回答'),node('p',p.message || ''));
+      const schema = p.requestedSchema || {};
+      const fields = [];
+      for (const [name, spec] of Object.entries(schema.properties || {})) {
+        const label = node('label',spec.title || name);
+        if (spec.description) label.append(node('p',spec.description));
+        const choices = spec.oneOf || spec.enum?.map((v,i)=>({const:v,title:spec.enumNames?.[i] || String(v)}))
+          || spec.items?.anyOf || spec.items?.enum?.map(v=>({const:v,title:String(v)}));
+        let input;
+        if (choices) {
+          input = node('select'); input.multiple = spec.type === 'array';
+          if (!input.multiple) { const blank=node('option','请选择'); blank.value=''; input.append(blank); }
+          for (const choice of choices) { const option=node('option',choice.title || String(choice.const)); option.value=JSON.stringify(choice.const); input.append(option); }
+        } else {
+          input = node(spec.type === 'string' ? 'textarea' : 'input');
+          if (spec.type === 'boolean') input.type='checkbox';
+          if (['number','integer'].includes(spec.type)) {input.type='number';input.step=spec.type==='integer'?'1':'any';}
+        }
+        input.name=name; input.setAttribute('aria-label',spec.title || name);
+        input.required=(schema.required || []).includes(name) && spec.type!=='boolean';
+        label.append(input); form.append(label); fields.push({name,spec,input,choices});
+      }
+      form.addEventListener('submit',event=>{
+        event.preventDefault(); if(!form.reportValidity())return;
+        try {
+          const content={};
+          for(const {name,spec,input,choices} of fields) {
+            if(spec.type==='boolean') content[name]=input.checked;
+            else if(choices && spec.type==='array')content[name]=[...input.selectedOptions].map(o=>JSON.parse(o.value));
+            else if(input.value!=='')content[name]=choices?JSON.parse(input.value):['integer','number'].includes(spec.type)?Number(input.value):input.value;
+          }
+          const result=require('../core/acp-elicitation').validateElicitation({action:'accept',content},schema);
+          reply(result);
+        }catch(err){error.textContent=err.message;}
+      });
+      const submit=node('button','提交回答'); submit.type='submit';controls.append(submit);
+      button('跳过',()=>reply({action:'decline'}));button('取消',()=>reply({action:'cancel'}));
+    } else if (request.method === 'item/tool/requestUserInput') {
       form.append(node('strong', p.isBlocking === false ? 'Codex 有一个问题，可在执行期间回答' : 'Codex 需要你的回答'));
       const fields = [];
       for (const q of p.questions || []) {
@@ -126,14 +186,15 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     return form;
   }
   function update(session) {
-    if (!session || session.runtimeBackend !== BACKEND) {
+    if (!session || ![BACKEND,'acp'].includes(session.runtimeBackend)) {
       element.hidden = true;
       return;
     }
     const runtime = session.nativeRuntime;
-    const requests = runtime && runtime.connection === 'connected' ? runtime.requests || [] : [];
+    const cancelling = runtime?.cancellation?.status === 'pending';
+    const requests = runtime && runtime.connection === 'connected' && !cancelling ? runtime.requests || [] : [];
     const choices = session.nativeThreadChoices || [];
-    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.emptyRecovery]);
+    const next = JSON.stringify([runtime && runtime.epoch,requests,choices,session.acpConfigOptions,session.nativeActionError,runtime?.configurationError,runtime?.submission?.status,runtime?.state,runtime?.connection,runtime?.cancellation,runtime?.emptyRecovery]);
     if (signature === next) return;
     signature = next;
     // Reuse the actual form nodes. Resolving another request must preserve
@@ -141,6 +202,19 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const keep = new Set(requests.map(r => JSON.stringify([runtime.epoch,r.id])));
     for (const key of forms.keys()) if (!keep.has(key)) forms.delete(key);
     const children = [];
+    if (cancelling) children.push(node('p','正在停止，等待原生 Harness 确认','acp-cancelling'));
+    if(session.runtimeBackend==='acp' && session.acpConfigOptions?.some(o=>['mode','thought_level'].includes(o.category))) {
+      const details=node('details');details.append(node('summary','原生执行设置'));
+      for(const option of session.acpConfigOptions.filter(o=>['mode','thought_level'].includes(o.category))) {
+        const form=node('div'),label=node('label',option.name || option.id),select=node('select');
+        for(const c of option.options.flatMap(o=>o.options || [o])) {const el=node('option',c.name || c.value);el.value=c.value;select.append(el);}
+        select.value=option.currentValue;select.disabled=runtime?.connection!=='connected' || ['running','waiting'].includes(runtime?.state);
+        const error=node('p','','codex-native-error');
+        select.addEventListener('change',()=>action({action:'configure',configId:option.id,value:select.value},form,error));
+        label.append(select);form.append(label,error);details.append(form);
+      }
+      children.push(details);
+    }
     if (runtime?.connection === 'unstarted') children.push(node('p','尚未开始，收到消息后启动。'));
     if (runtime?.emptyRecovery) {
       const box=node('div',null,'codex-native-request'), error=node('div','','codex-native-error');
