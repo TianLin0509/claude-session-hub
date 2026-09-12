@@ -86,16 +86,11 @@ function createLaunchCenterController({
   function refreshLastLaunch() {
     const last = readLastLaunch();
     const label = triggerEl && triggerEl.querySelector('.btn-label');
-    if (label) label.textContent = last ? `启动 ${CLI_LABELS[last.kind]}  ${last.workspace.label || last.workspace.path}` : '启动';
+    if (label) label.textContent = '启动';
     if (triggerEl) {
-      triggerEl.title = last ? `再次启动 ${CLI_LABELS[last.kind]} · ${last.workspace.path}` : '打开启动中心 (Ctrl+N)';
-      if (last) {
-        triggerEl.removeAttribute('aria-haspopup');
-        triggerEl.removeAttribute('aria-expanded');
-      } else {
-        triggerEl.setAttribute('aria-haspopup', 'dialog');
-        triggerEl.setAttribute('aria-expanded', menuEl && menuEl.style.display !== 'none' ? 'true' : 'false');
-      }
+      triggerEl.title = '打开启动中心 (Ctrl+N)';
+      triggerEl.setAttribute('aria-haspopup', 'dialog');
+      triggerEl.setAttribute('aria-expanded', menuEl && menuEl.style.display !== 'none' ? 'true' : 'false');
     }
     return last;
   }

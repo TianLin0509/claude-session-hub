@@ -120,7 +120,10 @@ test('malformed health redirects reject through the request promise', async t =>
   );
 });
 
-test('overview, review decisions and checkpoints use an isolated Git index', { timeout: 30_000 }, async t => {
+// This round trip performs 63 real Git subprocess calls (20-27s even in a
+// standalone Windows run). Allow scheduling headroom for the full suite;
+// assertions and the service's per-command timeouts remain unchanged.
+test('overview, review decisions and checkpoints use an isolated Git index', { timeout: 120_000 }, async t => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-test-'));
   const repo = path.join(tempRoot, 'repo');
   const dataDir = path.join(tempRoot, 'hub-data');
