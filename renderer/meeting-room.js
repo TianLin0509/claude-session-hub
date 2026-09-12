@@ -5269,7 +5269,6 @@ if (typeof document !== 'undefined') (function () {
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
         ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并选择负责开题的成员；检查后按 Enter 发送">开题</button>' : ''}
-        ${solo ? '<button type="button" data-file-independent title="填入同一位 Agent 实现、验证并合并的提示词；检查后按 Enter 发送">独立开工</button>' : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
       </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
@@ -5297,23 +5296,6 @@ if (typeof document !== 'undefined') (function () {
       } catch (error) { _showGcEscapeNotice('打开任务文件失败：' + error.message, 'error'); }
     });
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
-    row.querySelector('[data-file-independent]')?.addEventListener('click', async () => {
-      try {
-        const preset = await ipcRenderer.invoke('dev-file:independent-preset', { meetingId: current.id });
-        if (activeMeetingId !== current.id) return;
-        const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [preset.slot]);
-        const box = document.getElementById('mr-input-box');
-        if (!box || activeMeetingId !== current.id) return;
-        box.textContent = DevFile.appendIndependent(box.innerText, preset.prompt);
-        _setInputDraft(current.id, box.innerText);
-        box.dispatchEvent(new Event('input', { bubbles: true }));
-        renderToolbar(fresh);
-        box.focus();
-        const range = document.createRange(); range.selectNodeContents(box); range.collapse(false);
-        const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-        _updateInputPreflight(fresh);
-      } catch (error) { _showGcEscapeNotice('独立开工提示词准备失败：' + error.message, 'error'); }
-    });
     row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
       const button = event.currentTarget;
       button.disabled = true;

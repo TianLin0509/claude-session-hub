@@ -249,7 +249,7 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。单人点「独立开工」；两人点「开题」，由第一位实现、第二位验证与合并。';
+    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员，点「开题」后由第一位实现、第二位验证与合并。单人开发请使用普通会话的「一键开工」。';
     hint.style.display = '';
   } else {
     hint.textContent = '';
@@ -281,6 +281,7 @@ function _applyScene(sceneId, opts = {}) {
     const input = el.querySelector('input[name="mcm-scene"]');
     el.classList.toggle('selected', !!input && input.value === _currentMode);
   });
+  _renderSlots();
   _paintSceneHint();
 }
 
@@ -294,7 +295,7 @@ function _slotHtml(i, spec, isGroup) {
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
   const label = isGroup ? `成员 ${i + 1}` : `Slot ${i + 1} · ${SLOT_NAMES[i]}`;
-  const removeBtn = isGroup && i >= 1
+  const removeBtn = isGroup && i >= 1 && (_currentMode !== 'dev' || _groupSlots.length > 2)
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
   const effortField = tuning.showEffort ? `
@@ -396,7 +397,7 @@ function _renderSlots() {
     btn.addEventListener('click', () => {
       _syncGroupSlotsFromDom();
       const idx = parseInt(btn.getAttribute('data-remove-member'), 10);
-      if (Number.isInteger(idx) && idx >= 0 && idx < _groupSlots.length) {
+      if ((_currentMode !== 'dev' || _groupSlots.length > 2) && Number.isInteger(idx) && idx >= 0 && idx < _groupSlots.length) {
         _groupSlots.splice(idx, 1);
         _renderSlots();
       }
@@ -446,7 +447,7 @@ function _ensureModal() {
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin:-6px 0 12px; line-height:1.6;"></div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>一位成员负责实现与合并；两位时第一位实现、第二位合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
+          <span>开发群聊第一位实现、第二位独立验证与合并。需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
@@ -546,6 +547,7 @@ async function _onCreate() {
     if (!slots.length) throw new Error('请至少保留一个群聊成员');
     const sceneInput = _modalEl.querySelector('input[name="mcm-scene"]:checked');
     const scene = sceneInput ? sceneInput.value : 'general';
+    if (scene === 'dev' && slots.length < 2) throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');
     // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
     const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
     const titleInput = _modalEl.querySelector('#mcm-title-input');
@@ -639,12 +641,12 @@ async function _onCreate() {
 //
 // devPhase 是起手方式：双席位一律先落 'discuss'（循环配置照样写好，只是发送先走普通群聊）。
 // 用户在群里点「开题」→ 阶段翻成 'kickoff'，指定执笔者写任务书；
-// 双席位报告交付后自动开工；单席位通过预置 prompt 独立完成。
+// 双席位报告交付后自动开工；单人开发使用普通会话。
 function _buildDefaultDevWorkflow(scene, slots, workspaceHint = {}) {
   if (scene !== 'dev') return null;
   const WT = window.WorkflowTemplates;
   if (!WT || typeof WT.createTemplateConfig !== 'function') throw new Error('开发工作流尚未加载，请重试创建');
-  if (!Array.isArray(slots) || !slots.length) throw new Error('开发群聊至少需要一位成员');
+  if (!Array.isArray(slots) || slots.length < 2) throw new Error('开发群聊至少需要两位成员');
   const members = slots.map((s, i) => ({ memberId: `m${i + 1}`, kind: s.kind }));
   const templateId = 'dev-task';
   const config = WT.createTemplateConfig(templateId, members, {

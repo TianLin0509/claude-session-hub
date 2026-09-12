@@ -124,6 +124,21 @@ test('development Codex seats defer their native launch while other seats keep e
   }
 });
 
+test('rejects new solo development before creating workspaces or sessions', async () => {
+  for (const opts of [
+    {mode:'dev',slots:[{kind:'codex'}]},
+    {mode:'dev',slotSpecs:[{kind:'claude'}]},
+    {mode:'dev',slots:[{kind:'codex'},{kind:'codex'}],serialWorkflow:{soloDevelopment:true}},
+    {mode:'general',serialWorkflow:{templateId:'dev-task-solo'}},
+  ]) {
+    const ipc=createFakeIpc(),deps=createBaseDeps();
+    registerMeetingCreateIpc(ipc,deps);
+    await assert.rejects(ipc.handlers.get('create-meeting')(null,opts), /普通会话/);
+    assert.equal(deps.calls.length,0);
+    assert.equal(deps.meetingManager.calls.length,0);
+  }
+});
+
 test('new dev room selects only its first member after all sessions are created', async () => {
   for (const kinds of [['codex', 'claude'], ['codex', 'codex']]) {
     const ipc = createFakeIpc();

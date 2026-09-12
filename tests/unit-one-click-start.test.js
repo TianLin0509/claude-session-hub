@@ -1,0 +1,13 @@
+'use strict';
+const assert=require('node:assert/strict');
+const P=require('../renderer/one-click-start');
+const draft='需求第一行\n- 保留细节\n附件：C:\\task\\image.png\n';
+const filled=draft+P.suffix(draft);
+assert(filled.startsWith(draft));
+assert.equal(P.suffix(filled),'');
+assert.equal(P.suffix(filled.replace(P.PROMPT,'用户已修改预设')),'');
+assert.equal(P.suffix(filled.replace(P.END,'')),'');
+assert(P.suffix('').startsWith(P.START));
+assert(P.PROMPT.includes('本条授权') && P.PROMPT.includes('重新验证'));
+assert(!P.PROMPT.includes('hub-task-view') && !P.PROMPT.includes('任务记录.md'));
+console.log('one-click start: preserved multiline draft, idempotence, edited block protection, no task-file contract');
