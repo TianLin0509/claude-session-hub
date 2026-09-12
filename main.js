@@ -116,6 +116,7 @@ const {
   shouldPreferCodexLiveUsage,
 } = require('./main/usage/codex-app-server-usage.js');
 const { readKimiAccountUsage } = require('./main/usage/kimi-account-usage.js');
+const { createTokenPlanUsageService } = require('./main/usage/token-plan-usage.js');
 const { readDeepSeekAccountBalance } = require('./main/usage/deepseek-account-balance.js');
 const {
   didClaudeSnapshotAdvance,
@@ -2478,10 +2479,20 @@ async function refreshDeepSeekAccountBalanceLive() {
   return payload;
 }
 
+const tokenPlanUsage = createTokenPlanUsageService({
+  configDir: isIsolatedHub() ? path.join(getHubDataDir(), 'bailian') : undefined,
+});
+
+async function refreshTokenPlanUsage(force = false) {
+  try { return await tokenPlanUsage.refresh(force); }
+  finally { sendToRenderer('agent-usage', { tokenPlan: tokenPlanUsage.snapshot() }); }
+}
+
 function loadUsageCacheForCurrentConfig() {
   // Source selection checks expiry; display retains the last account-scoped
   // observation with its real age, including across reset/refresh gaps.
-  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+  return { ...filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope()),
+    tokenPlan: tokenPlanUsage.snapshot() };
 }
 
 try {
@@ -2496,6 +2507,7 @@ registerUsageIpc(ipcMain, {
   getCodexUsageScopeKey: () => currentCodexUsageScope().scopeKey,
   refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
+  refreshTokenPlanUsage: () => refreshTokenPlanUsage(true),
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
 });
@@ -2823,12 +2835,15 @@ function startAgentScanner() {
   void refreshCodexUsageIfDue(true).catch(() => null);
   refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
+  void refreshTokenPlanUsage().catch(() => {});
   _agentScanInterval = setInterval(() => {
     void run();
     const codexRefresh = refreshCodexUsageIfDue(false);
     if (codexRefresh) void codexRefresh.catch(() => null);
     refreshDeepSeekBalanceIfDue(false);
     refreshKimiUsageIfDue(false);
+    // The service publishes errors in its snapshot and bounds read-only polling.
+    void refreshTokenPlanUsage().catch(() => {});
   }, 5000);
 }
 
