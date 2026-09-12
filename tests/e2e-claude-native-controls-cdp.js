@@ -94,6 +94,17 @@ async function main() {
     const overlay = path.join(TEMP, 'data', 'native-agent-settings', sid + '.json');
     ok('relaunch overlay stores the tier', JSON.parse(fs.readFileSync(overlay, 'utf8')).fastMode === true);
 
+    // Slash commands are a command channel: the composer reports the engine's
+    // (or the Hub's) result instead of treating it as a prompt to the model.
+    await client.eval(`document.querySelector('.floating-input-box').focus()`);
+    await client.send('Input.insertText', { text: '/plan' });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await waitFor('plan mode confirmed', () => client.eval(`sessions.get(${q})?.nativeRuntime?.permissionMode==='plan'`));
+    const feedback = await waitFor('command result shown', () => client.eval(
+      `(() => { const el=document.querySelector('.codex-command-feedback,.command-feedback'); return el && el.innerText.trim() ? el.innerText : null; })()`));
+    ok('composer reports the command result, not a model turn', /计划/.test(feedback), feedback);
+
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(OUT, 'controls.png'), Buffer.from(shot.data, 'base64'));
     fs.writeFileSync(path.join(OUT, 'evidence.json'), JSON.stringify({ sid, checks,

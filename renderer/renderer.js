@@ -4037,8 +4037,14 @@ function composerStopAllowed(session, runtimeTruth) {
 // 思考档的可选项按**模型**取，不写死一份：codex 的 models_cache.json 里
 // gpt-5.6-sol 到 ultra、gpt-5.5 只到 xhigh。目录几乎不变，按 slug 记一份就够。
 const _codexEffortCache = new Map();
+// Levels the engine itself accepts for /effort, measured on Claude Code 2.1.269.
+const CLAUDE_COMPOSER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto'];
+
 function composerSupportedEfforts(session) {
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
+  // A native Claude session changes effort over its own command channel, so the
+  // chip is live there; a PTY session still cannot and stays static.
+  if (session?.runtimeBackend === 'claude-stream-json') return CLAUDE_COMPOSER_EFFORTS;
   if (kind !== 'codex') return null;
   const slug = String((session.currentModel && session.currentModel.id) || '').trim();
   if (!slug) return null;
@@ -4541,7 +4547,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       }catch(error){commandFeedback.show('图片未发送',error.message,true);return;}
     }
     const text = userText;
-    const nativeCommand = isNativeSession(sessions.get(sessionId)) && text.trimStart().startsWith('/');
+    // Every native backend answers slash commands on its own command channel.
+    const nativeCommand = isNativeAgent(sessions.get(sessionId)) && text.trimStart().startsWith('/');
     const feedbackSequence = ++commandFeedbackSequence;
     commandFeedback.clear();
     if (nativeCommand) commandFeedback.show(text.trim(), '正在执行…');
