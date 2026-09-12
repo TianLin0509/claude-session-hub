@@ -6,6 +6,20 @@ const now = Date.now(), DAY = 86400000;
 const item = (id, extra = {}) => ({ id, kind: 'claude', status: 'idle', lastMessageTime: now, ...extra });
 const ids = items => items.map(s => s.id);
 
+test('群聊任一原生成员工作优先于另一位等待或失败，全部等待不能误报工作', () => {
+  const native = (id, state, connection = 'connected') => item(id, { kind:'codex',
+    nativeRuntime:{state,connection,requests:[]}, gcWorking:true, _gcWorkingLastTs:now });
+  const members = new Map([['a',native('a','running')],['b',native('b','waiting')]]);
+  const group = item('g',{_isMeeting:true,_meeting:{groupChat:true,subSessions:['a','b']}});
+  const state = () => partitionSidebarSessions([group],{now,sessionMap:members}).states.get('g');
+  assert.equal(state(),'run');
+  members.set('b',native('b','failed')); assert.equal(state(),'run');
+  members.set('a',native('a','starting')); assert.equal(state(),'run');
+  members.set('a',native('a','waiting')); members.set('b',native('b','waiting')); assert.equal(state(),'wait');
+  members.set('a',native('a','completed')); members.set('b',native('b','completed')); assert.equal(state(),'idle');
+  members.set('a',native('a','running','disconnected')); assert.notEqual(state(),'run');
+});
+
 test('置顶、未读优先，活跃按等待、异常、运行排序，今天严格小于 24h', () => {
   const rows = [item('today'), item('read', { unreadCount: 1 }),
     item('run', { status: 'running' }), item('error', { status: 'failed' }),

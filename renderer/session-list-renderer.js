@@ -115,6 +115,11 @@ function sidebarItemHasUnread(item, sessionMap) {
   return getMeetingUnreadMemberIds(item._meeting, sessionMap).size > 0 || item.unreadAnsweredSize > 0;
 }
 
+function isSidebarMemberWorking(session, now = Date.now()) {
+  return getSessionRuntimeTruth(session, { now }).state !== RUNTIME_WAITING
+    && (sessionRuntimeIsActive(session, { now }) || isGroupChatMemberRunning(session, now));
+}
+
 function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
   const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
   const states = new Map();
@@ -126,9 +131,9 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
     const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
     const working = s._resumePending || (meeting ? meeting.running
-      : (s.meetingId || groupMemberIds.has(s.id)) ? isGroupChatMemberRunning(s, now) : sessionRuntimeIsActive(s, { now }));
+      : (s.meetingId || groupMemberIds.has(s.id)) ? isSidebarMemberWorking(s, now) : sessionRuntimeIsActive(s, { now }));
     const unread = sidebarItemHasUnread(s, sessionMap);
-    states.set(s.id, waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
+    states.set(s.id, meeting && working ? 'run' : waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
     if (unread) completed.push(s);
     else if (s.pinned) pinned.push(s);
     else if (waiting) respond.push(s);
@@ -149,7 +154,7 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
   return {
     waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
     running: meeting && !meeting.groupChat && meeting.status === 'running'
-      || truths.some(item => isGroupChatMemberRunning(item.session, now)),
+      || truths.some(item => isSidebarMemberWorking(item.session, now)),
     disconnected: truths.some(item => hasStreamDisconnectIssue(item.session)),
     failed: truths.some(item => item.truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(item.session)),
     truths,
@@ -659,6 +664,9 @@ sessionListEl.addEventListener('keydown', event => {
 
   function renderSessionList() {
     const renderStartedAt = nowMs();
+    // Rebuilt rows join the same clock instead of restarting their pulse on
+    // every runtime delta (which can otherwise make a busy logo look static).
+    sessionListEl.style?.setProperty('--sidebar-work-phase', `${-(Date.now() % 24000)}ms`);
     const sessionMap = getSessions();
   const visible = filteredSidebarItems(sessionMap);
   const sections = partitionSidebarSessions(visible, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
@@ -713,6 +721,7 @@ sessionListEl.addEventListener('keydown', event => {
       const anySubFailed = meetingRuntime.failed;
       const anySubDisconnected = meetingRuntime.disconnected;
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
+        + (anySubRunning ? ' running' : '')
         + (detailsEnabled ? ' has-session-details' : '')
         + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')

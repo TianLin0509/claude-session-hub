@@ -785,6 +785,7 @@ if (typeof document !== 'undefined') (function () {
       document, window, root, overlay, layoutElement:overlay.parentElement,
       getActiveSessionId:()=> 'group:' + meeting.id,
       getCurrentView:()=> 'card',
+      getAnswerCards:()=> [...overlay.querySelectorAll('.mr-gc-msg.ai')],
       requestAnimationFrame: callback=>requestAnimationFrame(callback), cancelAnimationFrame:handle=>cancelAnimationFrame(handle),
       getEntries:()=> {
         const messages = _gcPanelState[meeting.id]?.messages || [];

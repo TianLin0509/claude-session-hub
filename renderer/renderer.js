@@ -3508,16 +3508,9 @@ function _updateStreamingIndicator(sessionId) {
     _w16RemoveTimers.delete(sessionId);
   }
   if (isRunning && currentView === 'card') {
-    // The status belongs to the active turn, not necessarily the previous
-    // assistant reply. Once the optimistic/current user card exists, migrate
-    // the chip to that card so a new question never looks like the old answer
-    // is still generating.
-    const allTurnCards = overlay.querySelectorAll(
-      `.turn-card[data-turn-id][data-session-id="${CSS.escape(sidStr)}"]`,
-    );
-    const latestTurnCard = allTurnCards[allTurnCards.length - 1];
-    const latestTurnHead = latestTurnCard ? latestTurnCard.querySelector('.turn-head') : null;
-    const targetParent = latestTurnHead || overlay;
+    // Own the status at the stream tail. Activity cards may be hidden and
+    // progress headers may be folded; neither can own live runtime feedback.
+    const targetParent = overlay;
 
     if (!indicator) {
       // 2026-05-06 道雪 scroll-respect-user:append 前记录是否在底部,仅满足条件才滚
@@ -3529,8 +3522,7 @@ function _updateStreamingIndicator(sessionId) {
       indicator.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>';
       targetParent.appendChild(indicator);
       if (wasAtBottom && targetParent === overlay) cardFollowScroll.request();
-    } else if (indicator.parentElement !== targetParent) {
-      // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
+    } else if (indicator.parentElement !== targetParent || overlay.lastElementChild !== indicator) {
       targetParent.appendChild(indicator);
     }
     // 卡片内常驻短文案；完整上下文仍放 title，header 胶囊显示精确持续时长。

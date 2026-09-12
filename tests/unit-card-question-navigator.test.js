@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   activeQuestionIndexFromTops,
+  answerTargetFromTops,
   normalizeQuestionSummary,
 } = require('../renderer/card-question-navigator.js');
 
@@ -21,6 +22,12 @@ assert.equal(activeQuestionIndexFromTops([100, 300, 500], 320), 1);
 assert.equal(activeQuestionIndexFromTops([100, 300, 500], 999), 2);
 assert.equal(activeQuestionIndexFromTops([100, 300, 500], 0, true), 2);
 assert.equal(activeQuestionIndexFromTops([], 100), -1);
+assert.equal(answerTargetFromTops([70, 390, 1800], 390, 2000, 'up'), 0);
+assert.equal(answerTargetFromTops([70, 390, 1800], 390, 2000, 'down'), 2);
+assert.equal(answerTargetFromTops([70, 390, 1800], 700, 2000, 'up'), 1);
+assert.equal(answerTargetFromTops([70, 390, 1800], 0, 1500, 'up'), -1);
+assert.equal(answerTargetFromTops([70, 390, 1800], 1500, 1500, 'down'), -1);
+assert.equal(answerTargetFromTops([], 0, 1500, 'down'), -1);
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');

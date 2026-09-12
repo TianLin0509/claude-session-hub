@@ -105,6 +105,7 @@ async function readStatus(client) {
       ariaLabel: root?.getAttribute('aria-label') || '',
       inlineLabel: inline?.dataset.label || '',
       inlineVisible: !!inline && inline.getBoundingClientRect().width > 0,
+      inlineAtTail: !!inline && inline.parentElement === overlay && overlay.lastElementChild === inline,
       inlineParentRole: inline?.closest('.turn-card')?.classList.contains('user') ? 'user'
         : (inline?.closest('.turn-card') ? 'assistant' : 'overlay'),
       inlineParentTurnId: inline?.closest('.turn-card')?.dataset.turnId || null,
@@ -315,10 +316,10 @@ async function main() {
     })()`);
     result.newPromptPlacement = await waitFor('working status follows newest user prompt', async () => {
       const state = await readStatus(client);
-      return state.inlineVisible && state.inlineParentRole === 'user'
+      return state.inlineVisible && state.inlineAtTail
         && state.overlayBottomGap <= 1 && state.latestUserVisible ? state : null;
     });
-    assert.match(result.newPromptPlacement.inlineParentTurnId || '', /^pending-user-/);
+    assert.equal(result.newPromptPlacement.inlineParentTurnId, null);
     await screenshot(client, NEW_PROMPT_SHOT);
 
     result.promptStress = await client.eval(`(async () => {
