@@ -84,49 +84,18 @@ test('讨论阶段堵死「恢复旧循环」的三条路（2026-09-06 合并位
   assert(/devPhase === 'discuss'\) return \{ ok: false/.test(read('main/groupchat/dev-workbench.js')), '工作台：恢复动作按阶段拒绝');
 });
 
-test('单人按当前成员配置双职责，不限制 AI 品牌', () => {
+test('单人开发移到普通会话，不再生成极简群聊模板', () => {
   for (const kind of ['claude', 'codex', 'deepseek']) {
-    const c = WT.createTemplateConfig('dev-task', [{ memberId: 'm1', kind }]);
-    assert.equal(c.soloDevelopment, true);
-    assert.deepEqual(c.steps, [['m1'], ['m1']]);
-    assert.equal(c.loop.enabled, false);
-    const F = require('../core/dev-file-workflow');
-    const m = {groupChat:true, scene:'dev', serialWorkflow:c};
-    assert(F.isSolo(m));
-    assert(!F.common(m, 'dir').includes('第二席位'));
-    assert(F.common(m, 'dir').includes('自测不等于独立审查'));
+    assert.equal(WT.createTemplateConfig('dev-task', [{ memberId: 'm1', kind }]), null);
+    assert.equal(WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind }]), null);
   }
-});
-
-test('极简起手：一位 Codex 既当工作位也当合并位（2026-09-07 用户要求）', () => {
-  // 小到不值得占两个席位的改动（改一句文案、加一个开关），双席位的代价是
-  // 一次完整的上下文交接 + 一倍 token。极简把这条代价换成「没有独立第三方」，
-  // 取舍由用户在建群那一刻选，不由 Hub 替他决定。
-  assert(!/data-mcm-dev-start/.test(modal), '旧模板只兼容历史配置，创建入口已移除');
-  const solo = WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind: 'codex' }]);
-  assert(solo, '单人也要能构造出配置');
-  assert.deepStrictEqual(solo.steps, [['m1'], ['m1']],
-    '两步派给同一个 memberId：loop-engine 的 builder=steps[0][0]、reviewer=steps.slice(1) 照常成立');
-  assert.strictEqual(solo.loop.enabled, true, '极简仍然是循环，只是循环里只有一个人');
-  assert.strictEqual(solo.devPhase, 'build', '极简没有讨论阶段');
-  assert.notStrictEqual(solo.mdHandoff, true, '极简保留原流程，不套用双席位的 MD 交接链路');
-  // 工作流配置弹窗的闭环形状校验：恰好 2 步、第 1 步 1 人、第 2 步 ≥1 人
-  assert(solo.steps.length === 2 && solo.steps[0].length === 1 && solo.steps[1].length >= 1,
-    '形状必须仍然是配置弹窗认的那种闭环，否则用户一打开配置就被判非法');
-
-  const [impl, merge] = solo.stepConfigs.map(s => s.prompt);
-  assert(/\.agents\/AUTHOR\.md/.test(impl) && /\.agents\/MERGER\.md/.test(merge), '两步仍各读各的合同');
-  assert(/自己写的/.test(merge), '必须点明这一步没有独立第三方，否则模型会照抄「独立性成立」那套说辞');
-  assert(/ASK/.test(impl), '规模超预期时要能提议升级成双席位，而不是硬做');
-  assert(!/[A-Za-z]:\\/.test(impl + merge), '不许有 Windows 绝对路径');
-  assert(!/SuperRAN|superran|claude-session-hub/i.test(impl + merge), '不许写死项目名');
-
-  // 开在工作根时同样要带项目库定位说明
-  const soloPath = 'C:\\repo\\x';
-  const atRoot = WT.createTemplateConfig('dev-task-solo', [{ memberId: 'm1', kind: 'codex' }],
-    { workspace: { atWorkRoot: true, projects: [{ name: 'X', path: soloPath }] } });
-  assert(atRoot.stepConfigs.every(step => step.prompt.startsWith('【先定位项目根】')), '两步都要带定位说明');
-  assert(atRoot.projectLocator.includes('X → ' + soloPath), '讨论/普通路径也要拿得到定位说明');
+  assert(!WT.TASK_PRESETS.some(t => t.id === 'dev-task-solo'));
+  assert(!room.includes('data-file-independent'));
+  // Persisted single-agent rooms still use their stored config and retain records.
+  const F = require('../core/dev-file-workflow');
+  const legacy = {groupChat:true,scene:'dev',serialWorkflow:{fileFlowVersion:2,soloDevelopment:true}};
+  assert(F.isSolo(legacy));
+  assert(F.common(legacy, 'dir').includes('自测不等于独立审查'));
 });
 
 test('dev 场景有工作位与合并位两顶流水线角色帽子', () => {

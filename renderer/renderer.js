@@ -4119,7 +4119,32 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composer = document.createElement('div');
   composer.className = 'composer';
   composer.dataset.state = 'ready';
-  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const startActions = document.createElement('div');
+  startActions.className = 'composer-start-actions';
+  // Group members use the group's own dispatch controls, even in session view.
+  startActions.hidden = !!sessions.get(sessionId)?.meetingId
+    || Object.values(meetings).some(m => m?.subSessions?.includes(sessionId));
+  const startButton = document.createElement('button');
+  startButton.type = 'button';
+  startButton.className = 'composer-one-click-start';
+  startButton.textContent = '▶ 一键开工';
+  startButton.title = '追加自主实现、验证与合并的提示词；可编辑，发送后授权执行';
+  startButton.addEventListener('click', () => {
+    const suffix = require('./one-click-start').suffix(readContenteditablePlainText(inputBox));
+    inputBox.focus();
+    placeCaretAtContenteditableEnd(inputBox);
+    if (suffix) {
+      // Append at the end instead of replacing the draft, preserving attachments
+      // and the browser undo history. The existing send path remains unchanged.
+      const html = escapeHtml(suffix).replace(/\n/g, '<br>');
+      if (!document.execCommand('insertHTML', false, html)) inputBox.appendChild(document.createTextNode(suffix));
+      saveFloatingInputDraft(sessionId, inputBox);
+      inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+      placeCaretAtContenteditableEnd(inputBox);
+    }
+  });
+  startActions.appendChild(startButton);
+  composer.append(statusRow, quickReplyRow, startActions, composerRow, composerRail);
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
   // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
@@ -4468,7 +4493,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   return {
     dispose() {
-      saveFloatingInputDraft(sessionId, inputBox);
+      // A hidden contenteditable's innerText collapses to textContent, losing
+      // DIV/BR line breaks. Input events already saved the visible draft.
+      if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
       if (panel) panel.style.setProperty('--fi-bar-h', '0px');
