@@ -2,20 +2,21 @@
 
 // Following is user intent, not a measurement recomputed after a card grows.
 // Only this controller writes automatic scroll positions for ordinary cards.
-function createCardFollowScroll({ element, window: win, document: doc }) {
+function createCardFollowScroll({ element, window: win, document: doc, button: suppliedButton = null }) {
   let sessionId = null, following = true, epoch = 0, frame = 0, pendingTop = null;
   let userDirection = 0, dragging = false, touchY = null;
   const saved = new Map(), observed = new Set();
   element.tabIndex = 0;
   element.setAttribute('aria-label', '会话消息');
-  const button = doc.createElement('button');
-  button.id = 'card-jump-latest'; button.type = 'button'; button.hidden = true;
+  const button = suppliedButton || doc.createElement('button');
+  if (!suppliedButton) button.id = 'card-jump-latest'; button.type = 'button'; button.hidden = true;
   button.textContent = '↓ 回到最新'; button.setAttribute('aria-label', '回到最新输出并继续跟随');
   const gap = () => Math.max(0, element.scrollHeight - element.clientHeight - element.scrollTop);
   const visible = () => element.isConnected && element.clientHeight > 0;
   function paint() {
-    if (element.parentNode && button.parentNode !== element.parentNode) element.parentNode.appendChild(button);
+    if (!suppliedButton && element.parentNode && button.parentNode !== element.parentNode) element.parentNode.appendChild(button);
     button.hidden = !visible() || following || gap() <= 3;
+    if (suppliedButton) button.classList.toggle('visible', !button.hidden);
     // Browser anchoring helps preserve a reader's visible paragraph. While
     // following, the explicit bottom pin owns positioning instead.
     element.style.overflowAnchor = following ? 'none' : 'auto';

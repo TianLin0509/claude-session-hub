@@ -2,9 +2,12 @@ const {
   ABS_PATH_RE,
   WINDOWS_FILE_PATH_RE,
   WINDOWS_PATH_TOKEN_RE,
-  REL_PATH_RE,
   URL_RE,
 } = require('./path-candidates.js');
+
+// Markdown punctuation bounds relative paths; swallowing ` or [label]( breaks
+// inline code and links before marked gets a chance to parse them.
+const MARKDOWN_REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s：`()[\]]+[\\/])+[^\\/:*?"<>|\r\n\s：`()[\]]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 
 function _cloneGlobal(re) {
   return new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
@@ -33,7 +36,7 @@ function _collectGuardSpans(source) {
     urls.push({ start: m.index, end: m.index + m[0].length });
   }
 
-  for (const baseRe of [WINDOWS_FILE_PATH_RE, WINDOWS_PATH_TOKEN_RE, ABS_PATH_RE, REL_PATH_RE]) {
+  for (const baseRe of [WINDOWS_FILE_PATH_RE, WINDOWS_PATH_TOKEN_RE, ABS_PATH_RE, MARKDOWN_REL_PATH_RE]) {
     const re = _cloneGlobal(baseRe);
     while ((m = re.exec(source))) {
       const start = m.index;

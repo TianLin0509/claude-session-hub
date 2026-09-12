@@ -56,3 +56,10 @@ test('HTML-escapes restored path text after sanitization boundary', () => {
   assert.ok(html.includes('safe&amp;sound'));
   assert.ok(!html.includes('safe&sound'));
 });
+
+
+test('relative paths preserve inline code and Markdown link structure', () => {
+  const { html } = render('修改：`src/card-example.js`；交付：[验收说明](./card-delivery.html)');
+  assert.ok(html.includes('<code>src/card-example.js</code>'), html);
+  assert.ok(html.includes('<a href="./card-delivery.html">验收说明</a>'), html);
+});
