@@ -3,12 +3,39 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const F = require('../../core/dev-file-workflow');
 
-function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers,
+function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
+  const reservations = new Map();
   let timer = null;
   const get = id => meetingManager.getMeeting(id);
   const members = m => getMembers ? getMembers(m) : getDispatcher().groupMembersForMeeting?.(m, { includeDormant: true }) || [];
+  async function ensureReservation(id) {
+    if (reservations.has(id)) return reservations.get(id);
+    const reservationId = `dev-file:${id}`;
+    const held = [];
+    try {
+      for (const sid of new Set((get(id)?.subSessions || []).filter(Boolean))) {
+        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid);
+        if (!native || typeof native.reserveWorkflow !== 'function') continue;
+        await native.reserveWorkflow(reservationId, '文件开发工作流');
+        held.push(native);
+      }
+      const value = { reservationId, held };
+      reservations.set(id, value);
+      return value;
+    } catch (error) {
+      await Promise.allSettled(held.map(native => native.releaseWorkflow(reservationId)));
+      throw error;
+    }
+  }
+  async function releaseReservation(id) {
+    const value = reservations.get(id);
+    if (!value) return;
+    reservations.delete(id);
+    const results = await Promise.allSettled(value.held.map(native => native.releaseWorkflow(value.reservationId)));
+    for (const result of results) if (result.status === 'rejected') logger.warn('[dev-file] release Codex control reservation:', result.reason?.message || result.reason);
+  }
   function save(id, fields) {
     const m = get(id);
     if (!F.enabled(m)) throw new Error('文件工作流不可用');
@@ -64,6 +91,8 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       active.get(id)?.delete(token);
       if (!active.get(id)?.size) active.delete(id);
       if (F.enabled(get(id))) emit(id);
+      const current = F.enabled(get(id)) ? status(id) : null;
+      if (!current || current.paused || current.error || current.done) void releaseReservation(id);
     });
   }
   async function dispatchStage(id, userArgs = null) {
@@ -80,6 +109,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       const member = executor(m, s), token = crypto.randomUUID(), key = s.key;
       save(id, { lastDispatch: { key, token, memberId: member.id }, error: '' });
       await ensureMemberReady(m, member.id);
+      await ensureReservation(id);
       s = status(id);
       // A stop or a rename during session wake must win over this scheduled send.
       if (!s || s.paused || s.key !== key || s.error || s.done) return { status: 'error', reason: '现场已变化，取消本次派工' };
@@ -98,6 +128,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       return await track(id, promise, token, key);
     } catch (error) {
       if (!released && F.enabled(get(id))) save(id, { error: error.message });
+      if (!released) await releaseReservation(id);
       throw error;
     } finally { if (!released) preparing.delete(id); if (F.enabled(get(id))) emit(id); }
   }
@@ -105,6 +136,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
     if (!F.enabled(get(id))) return false;
     stopped.add(id);
     save(id, { paused: true });
+    void releaseReservation(id);
     emit(id);
     return true;
   }
@@ -120,6 +152,7 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
   async function userTurn(id, args) {
     if (!F.enabled(get(id))) return getDispatcher().dispatchGroupChatTurn(id, args);
     const s = status(id);
+    await ensureReservation(id);
     if (F.isResume(args.userInput) && !s.error) {
       // Resume is the user's message, not another phase prompt or a change
       // of recipient. Latch this phase so the scanner cannot race it with
@@ -131,7 +164,12 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
     }
     // A normal question is still a normal group message; it must not clear stop intent.
     const token = crypto.randomUUID();
-    return track(id, getDispatcher().dispatchGroupChatTurn(id, args), token, s.key);
+    try {
+      return await track(id, getDispatcher().dispatchGroupChatTurn(id, args), token, s.key);
+    } catch (error) {
+      await releaseReservation(id);
+      throw error;
+    }
   }
   function tick() {
     for (const m of meetingManager.getAllMeetings()) {
@@ -139,7 +177,8 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
       try {
         const s = status(m.id);
         emit(m.id);
-        if (s.paused || s.error || s.done || !['build', 'merge'].includes(s.phase) || preparing.has(m.id)) continue;
+        if (s.paused || s.error || s.done) { void releaseReservation(m.id); continue; }
+        if (!['build', 'merge'].includes(s.phase) || preparing.has(m.id)) continue;
         if (m.serialWorkflow.fileFlow?.lastDispatch?.key === s.key) continue;
         void dispatchStage(m.id).catch(error => logger.error('[dev-file] automatic dispatch:', error));
       } catch (error) { logger.error('[dev-file] scan failed:', error); }
@@ -174,6 +213,6 @@ function createDevFileEngine({ meetingManager, getHubDataDir, getDispatcher, ens
   }
   return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc,
     start() { if (!timer) { tick(); timer = setInterval(tick, 1000); timer.unref?.(); } },
-    dispose() { if (timer) clearInterval(timer); timer = null; } };
+    dispose() { if (timer) clearInterval(timer); timer = null; for (const id of reservations.keys()) void releaseReservation(id); } };
 }
 module.exports = { createDevFileEngine };

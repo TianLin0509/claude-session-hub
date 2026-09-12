@@ -442,10 +442,20 @@ sessionManager.on('managed-launch', (record) => {
 });
 sessionManager.on('codex-session-updated', session => {
   sessionUsageService.bind(session);
-  sessionStore.markDirty(session.id, session);
+  // Viewer Hubs receive the same live snapshot but must not race the
+  // controller for the per-session persistence file.
+  if (session.codexSharedControl?.role !== 'viewer') sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
 sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
+sessionManager.on('codex-locate-request', ({ sessionId }) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    sendToRenderer('codex-focus-session', { sessionId });
+  }
+});
 sessionManager.on('codex-lifecycle', event => {
   transcriptTap.emit(event.type, event);
 });
@@ -1559,7 +1569,7 @@ try {
 
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
-    meetingManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    meetingManager, sessionManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,

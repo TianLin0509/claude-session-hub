@@ -31,7 +31,7 @@ async function main(){
       await until('document.querySelector(".floating-input-send") && !document.querySelector(".floating-input-send").disabled','send ready');
       await cdp.eval('document.querySelector(".floating-input-send").click()');
     }
-    await cdp.eval('document.querySelector(\'[data-view="card"]\').click()');
+    await cdp.eval('if(currentView!=="card") document.querySelector(\'[data-view="card"]\')?.click()');
     await send('/plan');
     await until('sessions.get('+sid+').nativeRuntime.collaborationMode === "plan" && document.querySelector(".codex-native-mode")','native plan selected');
     assert.equal(await cdp.eval('sessions.get('+sid+').nativeRuntime.turnId'),null);
