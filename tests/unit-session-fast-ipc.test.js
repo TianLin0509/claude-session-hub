@@ -63,5 +63,14 @@ test('native Claude switches speed over the protocol, keeps the relaunch overlay
   assert.equal(session.fastMode,true);
   assert.deepEqual(JSON.parse(fs.readFileSync(overlay,'utf8')),{fastMode:true,permissions:{allow:['Read']}});
   assert.equal(require('../core/session-speed').pendingSpeedSwitches.has('n1'),false);
+  // The engine's own state is enough: a model the static table does not know
+  // must still be switchable, otherwise Fast can be turned on but never off.
+  session.currentModel.id='claude-opus-9-future';
+  session.nativeRuntime.fastMode=true;
+  controls.length=0;
+  const again=await setFast(false).catch(error=>({ok:false,message:error.message}));
+  assert.equal(again.ok,false,'the stub rejects fastMode:false');
+  assert.deepEqual(controls,[{subtype:'apply_flag_settings',settings:{fastMode:false}}],
+    'the request reached the engine instead of being blocked by the model table');
  }finally{if(previousNoFast===undefined)delete process.env.CLAUDE_HUB_NO_FAST;else process.env.CLAUDE_HUB_NO_FAST=previousNoFast;}
 });

@@ -48,7 +48,12 @@ function registerSessionIpc(ipcMain, deps) {
       const session = sessionManager.getSession(sessionId);
       if (typeof enabled !== 'boolean' || !session) return {ok:false,message:'会话或速度设置无效'};
       const {claudeSupportsFast,pendingSpeedSwitches} = require('../../core/session-speed');
-      if (String(session.kind).replace(/-resume$/, '') !== 'claude' || !claudeSupportsFast(session.currentModel?.id)) {
+      // A connected native engine already said whether it serves Fast. Trusting
+      // only the model table would refuse to turn Fast back off on a model the
+      // table does not know yet.
+      const engineServesFast = session.nativeRuntime?.fastMode === true;
+      if (String(session.kind).replace(/-resume$/, '') !== 'claude'
+          || !(claudeSupportsFast(session.currentModel?.id) || engineServesFast)) {
         return {ok:false,message:'当前 Claude 型号未确认支持 Fast，请先选择明确的受支持型号'};
       }
       if (require('../../core/session-runtime-truth').sessionRuntimeIsActive(session) || session.status === 'running' || session.autonomous || process.env.CLAUDE_HUB_NO_FAST === '1') {

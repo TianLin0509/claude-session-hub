@@ -74,7 +74,7 @@ function prepareClaudeSettingsOverlay(files, { directory, sessionId, overrides =
 // last confirmed instead of silently falling back to the launch value.
 function mergeClaudeSettingsFile(file, patch) {
   if (!path.isAbsolute(file)) throw new Error('Invalid Claude settings overlay path');
-  const current = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+  const current = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
   if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('Claude settings overlay must be an object');
   const merged = mergeSettings(current, patch);
   const temporary = file + '.' + randomUUID() + '.tmp';

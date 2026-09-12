@@ -64,7 +64,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   const MODES = [['default', '默认 · 逐次征求同意'], ['plan', '计划 · 只讨论不改文件'],
     ['acceptEdits', '自动接受文件修改'], ['bypassPermissions', '全部放行']];
   let modeSignature = '';
-  function renderMode(session, runtime) {
+  function renderMode(runtime) {
     const current = runtime.permissionMode || null;
     const busy = runtime.connection !== 'connected' || ['running', 'waiting', 'starting'].includes(runtime.state);
     const next = JSON.stringify([current, busy]);
@@ -122,7 +122,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       + (runtime.queued?.length ? ` · ${runtime.queued.length} 条排队中` : '')
       + (runtime.backgroundTasks?.length ? ` · ${runtime.backgroundTasks.length} 个后台任务` : '')
       + (runtime.reason ? '\n' + runtime.reason : '');
-    renderMode(session, runtime);
+    renderMode(runtime);
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;
