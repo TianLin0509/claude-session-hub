@@ -37,6 +37,13 @@ function textOf(content) {
   if (typeof content === 'string') return content;
   return (content || []).filter(block => block.type === 'text').map(block => block.text).join('');
 }
+// The backstage pane is a terminal: model text arrives as plain newlines and an
+// escape sequence from a tool result must never be able to drive the emulator.
+// Same contract the Codex native session uses for its own backstage output.
+function sanitizeTerminal(text) {
+  return String(text || '').replace(/\x1b/g, '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
 function initialRuntime(sessionId, previous) {
   return { state: 'unknown', connection: 'connecting', epoch: (previous?.epoch || 0) + 1, revision: 0,
     providerSessionId: sessionId, turnId: null, userMessageId: null, ownerPid: process.pid, childPid: null,
@@ -97,6 +104,7 @@ class ClaudeNativeSession extends EventEmitter {
 
   get pid() { return this.client?.proc?.pid || null; }
   onData(fn) { this.on('data', fn); return { dispose: () => this.off('data', fn) }; }
+  print(text) { this.emit('data', sanitizeTerminal(text).replace(/\r?\n/g, '\r\n')); }
   onExit(fn) { this.on('exit', fn); return { dispose: () => this.off('exit', fn) }; }
   resize() {}
   kill() {
@@ -237,6 +245,7 @@ class ClaudeNativeSession extends EventEmitter {
       permissionMode: initialization.current_permission_mode || this.runtime.permissionMode || null,
       state: this.unreconciled ? 'unknown' : this.runtime.requests.length ? 'waiting' : 'idle',
       reason: this.unreconciled ? '上次 Claude 提交状态需要核对；不会自动重发' : null });
+    this.print('\nClaude 已连接。请使用 Hub 输入框发送消息；本页显示引擎原始输出。\n');
     this.refreshContext().catch(error => this.emit('action-error', '上下文用量读取失败：' + error.message));
     return this.runtime;
   }
@@ -334,6 +343,7 @@ class ClaudeNativeSession extends EventEmitter {
 
   disconnect(error) {
     if (this.closed) return;
+    this.print('\n[连接中断] ' + (error && error.message || '') + '\n');
     this.unreconciled = true;
     const record = this.active;
     if (record) {
@@ -449,7 +459,7 @@ class ClaudeNativeSession extends EventEmitter {
       }
       const delta = message.type === 'stream_event' && message.event?.delta?.type === 'text_delta'
         ? message.event.delta.text : null;
-      if (delta) this.emit('data', delta);
+      if (delta) this.print(delta);
       this.emit('item', { message, userMessageId: outputOwner.userMessageId });
     } else this.emit('diagnostic', { type: 'unsupported-event', messageType: message.type });
   }
@@ -597,28 +607,15 @@ class ClaudeNativeSession extends EventEmitter {
     }
   }
 
-  // Codex exposes plan mode as a collaboration mode; Claude's equivalent is the
-  // permission mode, which the engine accepts mid-session and echoes back. The
-  // echoed value is what gets stored -- a requested mode is not a confirmed one.
-  async setPermissionMode(mode) {
-    await this.start();
-    if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
-      throw new Error('请等当前任务结束并核对提交状态后再切换工作方式');
-    }
-    const pending = this.client.control({ subtype: 'set_permission_mode', mode });
-    this.configurationChange = pending;
-    try {
-      const applied = (await pending)?.mode || mode;
-      // A reconnect relaunches the CLI, so the flag has to follow the change.
-      const args = [...(this.options.launchArgs || [])];
-      const index = args.indexOf('--permission-mode');
-      if (index >= 0) args[index + 1] = applied; else args.push('--permission-mode', applied);
-      this.options = { ...this.options, launchArgs: args };
-      this.update({ permissionMode: applied });
-      return { permissionMode: applied };
-    } finally {
-      if (this.configurationChange === pending) this.configurationChange = null;
-    }
+  // Account quota, read from the engine rather than the status line (see
+  // core/claude-native-usage.js). Returns null when this connection cannot
+  // answer, so a caller falls back instead of publishing an invented figure.
+  async readAccountUsage() {
+    if (this.closed || this.runtime.connection !== 'connected' || !this.client) return null;
+    const client = this.client;
+    const response = await client.control({ subtype: 'get_usage' });
+    if (this.client !== client || this.closed) return null;
+    return require('./claude-native-usage').claudeAccountUsageFromControl(response);
   }
 
   historyPath() { return findNativeClaudeHistory(this.sessionId, this.options); }

@@ -2424,6 +2424,35 @@ function loadStatuslineCache() {
   try { return JSON.parse(fs.readFileSync(STATUSLINE_CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 
+// Native Claude sessions answer the account quota over their own control; the
+// status line that used to feed this never runs in that transport. Any live
+// connection can answer, so take the first one and fall back to the cache when
+// none is connected or the engine will not say.
+async function refreshClaudeAccountUsageLive() {
+  for (const session of sessionManager.getAllSessions()) {
+    if (session.runtimeBackend !== 'claude-stream-json') continue;
+    const native = sessionManager.getNativeClaude?.(session.id);
+    if (!native) continue;
+    let snapshot = null;
+    try { snapshot = await native.readAccountUsage(); }
+    catch (error) { console.warn('[claude-usage] native read failed:', error && error.message); continue; }
+    if (!snapshot) continue;
+    const before = loadUsageCache().claude || null;
+    const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
+    if (filtered.anyAccepted) {
+      cacheAccountUsage({ usage5h: filtered.usage5h, usage7d: filtered.usage7d, ts: snapshot.observedAt });
+    }
+    const data = loadUsageCache().claude || null;
+    return { data, changed: didClaudeSnapshotAdvance(before, { ...data, observedAt: snapshot.observedAt }),
+      observedAt: snapshot.observedAt, source: 'claude-native' };
+  }
+  return null;
+}
+
+async function refreshClaudeAccountUsage() {
+  return (await refreshClaudeAccountUsageLive()) || refreshClaudeAccountUsageFromStatuslineCache();
+}
+
 function refreshClaudeAccountUsageFromStatuslineCache() {
   const before = loadUsageCache().claude || null;
   const snapshot = selectClaudeStatuslineUsage(loadStatuslineCache());
@@ -2551,7 +2580,7 @@ try {
 registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   loadUsageCacheForCurrentConfig,
-  refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
+  refreshClaudeAccountUsage,
   getCodexUsageScopeKey: () => currentCodexUsageScope().scopeKey,
   refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,

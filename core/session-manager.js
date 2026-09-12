@@ -1467,7 +1467,7 @@ class SessionManager extends EventEmitter {
     // groupChatLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
     let terminalSnapshot = null;
     try {
-      if (!isNativeClaude) terminalSnapshot = new TerminalSnapshot({ cols: 120, rows: 30, scrollback: 10000 });
+      terminalSnapshot = new TerminalSnapshot({ cols: 120, rows: 30, scrollback: 10000 });
     } catch (error) {
       // Dependency/init failure must not prevent the CLI from starting. The old
       // The terminal ring remains available as an explicit degraded fallback.
@@ -1550,8 +1550,15 @@ class SessionManager extends EventEmitter {
     };
 
     ptyProcess.onData((data) => {
-      if (isNativeClaude) return; // Native items refresh cards; terminal bytes cannot drive runtime state.
       const entry = this.sessions.get(id);
+      if (isNativeClaude) {
+        // Display only, the same backstage contract Codex native sessions get.
+        // Native items remain the single source of runtime state, so these
+        // bytes must not feed activity counters, the CLI-ready detector or the
+        // scrollback rewriter -- only the terminal pane.
+        if (entry && entry.pty === ptyProcess) deliverTerminalData(data);
+        return;
+      }
       // Match the exit-path id-reuse guard: late bytes from an old PTY must
       // never mutate the replacement session's rewriter or terminal state.
       if (!entry || entry.pty !== ptyProcess) return;
