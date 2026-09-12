@@ -5,9 +5,18 @@ const {CodexAppServerClient}=require('../main/codex-app-server-client');
 const {createNativeRuntime,reduceNativeRuntime}=require('../core/codex-native-runtime');
 const fs=require('fs'),os=require('os');
 const testHome=fs.mkdtempSync(path.join(os.tmpdir(),'native-unit-home-'));
+function fixtureClient(options) {
+  const client = new CodexAppServerClient(options);
+  const request = client.request.bind(client);
+  // initialize includes spawning a real Node process. Keep the 1.5s timeout
+  // used by lost-response tests, but do not use it as a process-start budget.
+  client.request = (method, params, timeoutMs, writeOptions) => request(method, params,
+    timeoutMs ?? (method === 'initialize' ? 10_000 : 1500), writeOptions);
+  return client;
+}
 function make(id='hub-1') {
   return new CodexNativeSession({id,cwd:__dirname,env:{case:'native-tests',CODEX_HOME:testHome,CLAUDE_HUB_DATA_DIR:path.join(testHome,'hub')},threadParams:{model:'fixture-model'},turnParams:{model:'fixture-model',effort:'max'},
-    clientFactory:()=>new CodexAppServerClient({cwd:__dirname,timeoutMs:1500,
+    clientFactory:()=>fixtureClient({cwd:__dirname,timeoutMs:1500,
       launch:{command:process.execPath,args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:process.env}})});
 }
 async function until(check) {
@@ -15,6 +24,31 @@ async function until(check) {
   while(!check()){if(Date.now()>end)throw Error('condition timeout');await new Promise(r=>setTimeout(r,10));}
 }
 async function close(s){s.kill();await until(()=>!s.entry);}
+test('speed selection preserves model, effort and history, rejects unsupported Fast',async()=>{
+  const s=make();try{
+    await s.start();const id=s.threadId,count=s.history.size;
+    await s.configure({codexSpeedTier:'standard'});
+    assert.equal(s.options.turnParams.serviceTier,'default');
+    await s.configure({codexSpeedTier:'fast'});
+    assert.equal(s.options.turnParams.serviceTier,'fast');
+    assert.equal(s.options.turnParams.model,'fixture-model');assert.equal(s.options.turnParams.effort,'max');
+    assert.equal(s.threadId,id);assert.equal(s.history.size,count);
+    await assert.rejects(s.configure({codexSpeedTier:'invalid'}),/无效/);
+    await assert.rejects(s.configure({model:'fixture-model-2',codexSpeedTier:'fast'}),/不支持 Fast/);
+    assert.equal(s.options.turnParams.model,'fixture-model');
+  }finally{await close(s);}
+});
+test('inherited disabled Fast capability cannot report a successful speed switch',async()=>{
+  const s=make('speed-disabled');
+  s.options.clientFactory=()=>fixtureClient({cwd:__dirname,timeoutMs:1500,
+    launch:{command:process.execPath,args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED:'1'}}});
+  try {
+    await s.configure({codexSpeedTier:'standard'});
+    await assert.rejects(s.configure({codexSpeedTier:'fast'}),/禁用了 Fast/);
+    assert.equal(s.options.turnParams.serviceTier,'default');
+    assert.equal(s.history.size,0);
+  }finally{await close(s);}
+});
 test('real stdio framing: one complete multi-line prompt, unicode output and identity receipt',async()=>{
   const s=make();try{
     await s.start();

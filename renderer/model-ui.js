@@ -7,6 +7,7 @@ const {
 } = require('../core/model-options.js');
 // 档位说明文案复用 Codex 模型目录那份，不在 UI 层再拄一份。
 const { EFFORT_DESCRIPTIONS } = require('../core/codex-model-catalog.js');
+const { speedControl } = require('../core/session-speed.js');
 
 // Map a model id to a CSS family class for badge coloring.
 function modelClass(id) {
@@ -679,11 +680,79 @@ function createModelUiController({
     openModelPicker = null;
   }
 
+  async function showSpeedPicker(anchorEl, sessionId) {
+    closeModelPicker();
+    let catalogLoading = true;
+    const menu = document.createElement('div');
+    menu.className = 'model-picker-menu speed-picker-menu';
+    document.body.appendChild(menu);
+    const onDocClick = event => { if (!menu.contains(event.target)) closeModelPicker(); };
+    openModelPicker = {el:menu,badge:anchorEl,onDocClick};
+    setTimeoutFn(()=>document.addEventListener('click',onDocClick),0);
+    const paint = (note, state) => {
+      menu.replaceChildren();
+      const session = sessions.get(sessionId);
+      const tuning = document.defaultView?.WorkspaceController?.codexModelTuning(session?.currentModel?.id);
+      const control = speedControl(session,tuning);
+      for (const [tier,label] of [['standard','标准'],['fast','Fast · 增加用量 / 费用']]) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'model-picker-item'; button.dataset.speed = tier;
+        button.textContent = `${control.tier === tier ? '✓ ' : ''}${label}`;
+        button.disabled = catalogLoading || !!session?._modelSwitchPending || (tier === 'fast' && !control.interactive);
+        button.addEventListener('click',()=>void select(tier));
+        menu.appendChild(button);
+      }
+      menuNote(menu,note || (control.interactive ? '仅调整当前会话速度，不改变模型或思考深度' : '当前目录尚未确认 Fast 支持；可选择标准'),state || 'pending');
+      placeMenu(menu,anchorEl);
+      const width = document.defaultView?.innerWidth;
+      if (width) menu.style.left = Math.max(8,Math.min(anchorEl.getBoundingClientRect().left,width-menu.getBoundingClientRect().width-8))+'px';
+    };
+    const select = async tier => {
+      const session = sessions.get(sessionId);
+      if (!session || session._modelSwitchPending) return;
+      session._modelSwitchPending = {id:session.currentModel?.id,label:tier};
+      paint('正在确认速度设置…','pending'); updateActiveModelChip();
+      try {
+        if (isSessionBusy(session)) throw new Error('请等当前回答结束后再切换速度');
+        const native = session.runtimeBackend === 'codex-app-server';
+        if (!native && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
+          throw new Error('Claude 终端输入框有草稿或不在主提示符，请先处理后再切换');
+        }
+        const response = await ipcRenderer.invoke(native ? 'codex:native-action' : 'session:set-fast', native
+          ? {sessionId,action:'configure',codexSpeedTier:tier}
+          : {sessionId,enabled:tier === 'fast'});
+        if (!response?.ok) throw new Error(response?.message || '未收到速度切换确认');
+        if (native) session.codexSpeedTier = response.result.codexSpeedTier;
+        else session.fastMode = response.result.fastMode;
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        if (openModelPicker?.el === menu) paint(native ? '✓ 已选择，下次发送生效' : '✓ Claude 已确认速度设置','success');
+        await sleep(650);
+        if (openModelPicker?.el === menu) closeModelPicker();
+      } catch (error) {
+        delete session._modelSwitchPending;
+        updateActiveModelChip();
+        if (openModelPicker?.el === menu) paint('切换失败：'+error.message,'error');
+      }
+    };
+    paint('正在核对当前模型支持的速度…','pending');
+    const session = sessions.get(sessionId);
+    try {
+      await refreshModelCatalog(session?.kind,session);
+      catalogLoading = false;
+      if (openModelPicker?.el === menu) paint();
+    } catch (error) {
+      catalogLoading = false;
+      if (openModelPicker?.el === menu) paint('目录刷新失败：'+error.message,'error');
+    }
+  }
+
   return {
     attachModelPickerHandler,
     updateActiveModelChip,
     closeModelPicker,
     showEffortPicker,
+    showSpeedPicker,
     showModelPicker,
     switchEffort,
     switchModel,

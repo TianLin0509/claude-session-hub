@@ -85,6 +85,7 @@ const { createAccountUsageController } = require('./account-usage-controller.js'
 const { createMemoryPanel } = require('./memory-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
+const { speedControl } = require('../core/session-speed.js');
 const { describeCodexModelTuning } = require('../core/codex-model-catalog.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
@@ -1064,7 +1065,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
 
-  const meeting = meetings[meetingId];
+  let meeting = meetings[meetingId];
   // 2026-05-05 道雪 修3：清 unread —— 用户点进 AI 群聊即"看过"，跟普通 session 一致。
   // 2026-05-31 道雪：新语义清"本轮已答 sid 集合"；_lastUnreadTurnNum 保留，避免离开后同一轮再答完又从 1 起跳。
   if (meeting) {
@@ -1103,6 +1104,9 @@ async function selectMeeting(meetingId, opts = {}) {
     requestAnimationFrame(() => { paintTimer = setTimeout(done, 0); });
   });
   if (activeMeetingId !== meetingId || activeSessionId !== null) return;
+  // Creation/member updates can finish while the paint yield is pending.
+  // Opening the captured partial snapshot would overwrite the completed room.
+  meeting = meetings[meetingId];
   if (meeting && typeof MeetingRoom !== 'undefined') {
     let shouldWakeMembers = opts.wakeDormantMembers === true;
     if (meeting.status === 'dormant') {
@@ -4107,6 +4111,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   });
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
+  const speedChip = document.createElement('button');
+  speedChip.type = 'button';
+  speedChip.className = 'composer-chip composer-speed';
+  speedChip.addEventListener('click',event=>{
+    event.stopPropagation(); void modelUi.showSpeedPicker(speedChip,sessionId);
+  });
   // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
   const ctxRing = document.createElement('span');
   ctxRing.className = 'composer-ctx';
@@ -4143,7 +4153,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composerRail = document.createElement('div');
   composerRail.className = 'composer-rail';
   composerRail.append(
-    attachBtn, modelChip, thinkingChip, bridgeToolbar,
+    attachBtn, modelChip, thinkingChip, speedChip, bridgeToolbar,
     railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
   );
 
@@ -4299,6 +4309,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
     }
+
+    const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
+    speedChip.hidden = !speed.visible;
+    speedChip.textContent = speed.label;
+    speedChip.setAttribute('aria-label',`速度：${speed.label}`);
+    speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
+    speedChip.title = '选择标准 / Fast；Fast 会增加用量或费用';
 
     ctxRing.hidden = !rail.context.visible;
     if (rail.context.visible) {
@@ -8346,6 +8363,9 @@ function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeO
 
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
+  if (activeMeetingId === meeting.id && typeof MeetingRoom !== 'undefined') {
+    MeetingRoom.updateMeetingData(meeting.id, meeting);
+  }
   // 2026-05-05 道雪：新 AI 群聊默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
   //   slot 头像跳转按钮，用户能直接点头像进 sub session，不必展开看 slot 列表。
   renderSessionList();

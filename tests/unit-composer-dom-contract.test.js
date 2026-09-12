@@ -39,12 +39,12 @@ test('composer 三段结构：状态行 → 文本框 → 底栏，且仍装在 
   assert.match(mount, /contentStack\.append\(composer\)/);
 });
 
-test('底栏节点顺序固定：附件 · 模型 · 思考档 · 拉取/分支 ｜ 预算环 · 提示 · 停止/发送', () => {
+test('底栏节点顺序固定：附件 · 模型 · 思考档 · 速度 · 拉取/分支 ｜ 预算环 · 提示 · 停止/发送', () => {
   const railAppend = mount.match(/composerRail\.append\(([\s\S]*?)\);/);
   assert.ok(railAppend, '定位不到底栏的 append');
   const order = railAppend[1].split(',').map(part => part.trim()).filter(Boolean);
   assert.deepEqual(order, [
-    'attachBtn', 'modelChip', 'thinkingChip', 'bridgeToolbar',
+    'attachBtn', 'modelChip', 'thinkingChip', 'speedChip', 'bridgeToolbar',
     'railSpacer', 'ctxRing', 'sendHint', 'stopBtn', 'sendBtn',
   ]);
 });

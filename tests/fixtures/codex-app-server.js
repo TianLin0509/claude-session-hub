@@ -46,6 +46,7 @@ rl.on('line',line=>{
   switch(msg.method){
     case 'initialize':answer(msg.id,{userAgent:'fixture-0.153.4'});break;
     case 'initialized':break;
+    case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
       threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
@@ -190,7 +191,7 @@ rl.on('line',line=>{
       if(text==='fixture:stop-race'){finish(thread,t,'completed','');setTimeout(()=>answer(msg.id,{}),50);break;}
       answer(msg.id,{});finish(thread,t,'interrupted','');break;
     }
-    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
+    case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,additionalSpeedTiers:model==='fixture-model-2'?[]:['fast'],supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }

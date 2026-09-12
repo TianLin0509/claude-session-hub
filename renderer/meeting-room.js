@@ -28,6 +28,7 @@ function groupInputTuningFrame(screen) {
 
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
+  const { speedControl } = require('../core/session-speed.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { extractVisibleCardText } = require('./visible-card-text.js');
   const { unclaimedPendingUserMessages } = require('../core/groupchat-pending-claim.js');
@@ -5094,7 +5095,8 @@ if (typeof document !== 'undefined') (function () {
           supportedEfforts: composerSupportedEfforts(sessions.get(sessionId)),
         });
         ui.showEffortPicker(button, sessionId, { efforts: rail.thinking.options });
-      } else await ui.showModelPicker(button, sessionId);
+      } else if (kind === 'speed') await ui.showSpeedPicker(button, sessionId);
+      else await ui.showModelPicker(button, sessionId);
     } catch (error) {
       _showGcEscapeNotice('成员设置打开失败：' + error.message, 'error');
     } finally { button.disabled = false; }
@@ -5121,6 +5123,12 @@ if (typeof document !== 'undefined') (function () {
         pair.querySelector('.composer-thinking').addEventListener('click', event => {
           event.stopPropagation(); void _openInputTuning(event.currentTarget, slot.sid, 'effort');
         });
+        const speedButton = document.createElement('button');
+        speedButton.type = 'button'; speedButton.className = 'composer-chip composer-speed';
+        speedButton.addEventListener('click',event=>{
+          event.stopPropagation(); void _openInputTuning(speedButton,slot.sid,'speed');
+        });
+        pair.appendChild(speedButton);
         members.appendChild(pair);
       }
     }
@@ -5145,6 +5153,13 @@ if (typeof document !== 'undefined') (function () {
       effortButton.title = model.thinking.interactive
         ? `${slot.displayLabel} · 点击选择思考深度`
         : `${slot.displayLabel} · 该 CLI 不支持会话内改档`;
+      const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
+      const speedButton = pair.querySelector('.composer-speed');
+      speedButton.hidden = !speed.visible;
+      speedButton.textContent = speed.label;
+      speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
+      speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
+      speedButton.title = `${slot.displayLabel} · 标准 / Fast；Fast 会增加用量或费用`;
     }
   }
 

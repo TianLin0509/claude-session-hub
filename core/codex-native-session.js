@@ -646,17 +646,30 @@ class CodexNativeSession extends EventEmitter {
   configure(options) {
     return this.enqueueSend(intent=>this._configure(options,intent));
   }
-  async _configure({model,effort}, intent) {
+  async _configure({model,effort,codexSpeedTier}, intent) {
+    model = model || this.options.turnParams.model;
+    if (codexSpeedTier !== undefined && !['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
     if (isUnstartedRuntime(this.runtime)) {
       if (intent) this.checkSendIntent(intent);
       if (typeof model !== 'string' || !model.trim() || /[\s\x00-\x1f]/.test(model)) throw new Error('Codex 模型名称无效');
       const requestedEffort = effort || this.options.turnParams.effort;
-      if (!['none','minimal','low','medium','high','xhigh','max'].includes(requestedEffort)) throw new Error('Codex 思考档无效');
+      if (!['none','minimal','low','medium','high','xhigh','max','ultra'].includes(requestedEffort)) throw new Error('Codex 思考档无效');
+      if (codexSpeedTier === 'fast') {
+        const tuning = require('./codex-model-catalog').describeCodexModelTuning(model,{configDir:this.options.env?.CODEX_HOME});
+        if (!tuning.fromCache || !tuning.supportsFast) throw new Error('当前模型目录尚未确认 Fast 支持，请刷新目录后重试');
+        const args = [...(this.options.processArgs || [])];
+        const flag = args.findIndex((value,index)=>args[index-1] === '-c' && value.startsWith('features.fast_mode='));
+        if (flag >= 0) args[flag] = 'features.fast_mode=true';
+        else args.push('-c','features.fast_mode=true');
+        this.options.processArgs = args;
+      }
       this.options.threadParams = {...this.options.threadParams,model,
         config:{...this.options.threadParams.config,model_reasoning_effort:requestedEffort}};
       this.options.turnParams = {...this.options.turnParams,model,effort:requestedEffort};
-      this.emit('bound',{threadId:null,path:null,model,reasoningEffort:requestedEffort});
-      return {modelId:model,displayName:model,effort:requestedEffort,appliesOn:'first-turn',validation:'on-start'};
+      if (codexSpeedTier !== undefined) this.options.turnParams.serviceTier = codexSpeedTier === 'fast' ? 'fast' : 'default';
+      this.emit('bound',{threadId:null,path:null,model,reasoningEffort:requestedEffort,
+        ...(codexSpeedTier !== undefined ? {codexSpeedTier} : {})});
+      return {modelId:model,displayName:model,effort:requestedEffort,codexSpeedTier,appliesOn:'first-turn',validation:'on-start'};
     }
     await this.start();
     if (intent) this.checkSendIntent(intent);
@@ -670,10 +683,23 @@ class CodexNativeSession extends EventEmitter {
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.closed) throw new Error('配置响应来自旧连接，请重新核对');
       if (!['idle','completed','interrupted','failed'].includes(this.runtime.state)) throw new Error('Codex 已开始新轮次，不能切换配置');
     };
+    model = model || this.options.turnParams.model;
     const list = await client.request('model/list',{});
     check();
     const target = (list.data || []).find(m=>m.id === model || m.model === model);
     if (!target) throw new Error('Codex 模型目录中没有：'+model);
+    if (codexSpeedTier !== undefined) {
+      if (!['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
+      const tiers = [...(target.additionalSpeedTiers || []), ...(target.serviceTiers || []).map(t=>t.id)];
+      if (codexSpeedTier === 'fast' && !tiers.includes('fast')) throw new Error(model+' 当前不支持 Fast');
+      if (codexSpeedTier === 'fast') {
+        const configuration = await client.request('config/read',{includeLayers:false});
+        check();
+        if (configuration.config?.features?.fast_mode === false) {
+          throw new Error('该会话启动时禁用了 Fast 能力；新建标准或 Fast 会话后可使用开关');
+        }
+      }
+    }
     const requestedEffort = effort || this.options.turnParams.effort;
     if (requestedEffort && !(target.supportedReasoningEfforts || []).some(e=>e.reasoningEffort === requestedEffort)) {
       throw new Error(model+' 不支持 '+requestedEffort+'；请明确选择支持的思考档');
@@ -688,12 +714,16 @@ class CodexNativeSession extends EventEmitter {
     }
     this.options.threadParams = params;
     this.options.turnParams = {...this.options.turnParams,model,effort:requestedEffort};
+    if (codexSpeedTier !== undefined) {
+      this.options.turnParams.serviceTier = codexSpeedTier === 'fast' ? 'fast' : 'default';
+    }
     this.apply({type:'configuration',error:null});
     // Loaded thread/resume deliberately ignores model/effort overrides.
     // Selection is applied by the next turn/start, never by a fake task or
     // changing the shared server/global config. UI labels this explicitly.
-    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort});
-    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,appliesOn:'next-turn'};
+    this.emit('bound',{threadId:this.threadId,model,reasoningEffort:requestedEffort,
+      ...(codexSpeedTier !== undefined ? {codexSpeedTier} : {})});
+    return {modelId:model,displayName:target.displayName || model,effort:requestedEffort,codexSpeedTier,appliesOn:'next-turn'};
   }
   async readOutcome(turnId) {
     if (!turnId) return null;

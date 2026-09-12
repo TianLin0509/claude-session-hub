@@ -163,18 +163,29 @@ test('I/O errors are distinct from missing files', () => {
   assert.equal(result.errorCode, 'EACCES');
 });
 
-test('unexpected close retries, rescans changes and ignores late errors from old watcher', async () => {
+test('unexpected close retries, rescans changes and ignores late errors from old watcher', async t => {
   const fs = makeFakeFs();
   const target = path.resolve('C:\\work\\runtime-close.md');
   fs.signatures.set(target, { mtimeMs: 1, size: 10 });
   const events = [];
   const manager = createPreviewFileWatchManager({ fs, debounceMs: 1, retryMs: 1, maxRetryMs: 2 });
-  manager.subscribe(target, event => events.push(event));
+  let recovered;
+  const recovery = new Promise(resolve => { recovered = resolve; });
+  let deadline;
+  const timeout = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('recovery scan did not arrive')), 2000); });
+  t.after(() => { clearTimeout(deadline); manager.dispose(); });
+  manager.subscribe(target, event => {
+    events.push(event);
+    if (event.eventType === 'watch-recovered-scan') recovered();
+  });
   const oldWatcher = fs.watchers[0];
   oldWatcher.emit('close');
   assert.equal(manager.getStats().degradedDirectories, 1);
   fs.signatures.set(target, { mtimeMs: 2, size: 12 });
-  await new Promise(resolve => setTimeout(resolve, 30));
+  // Recovery schedules a second debounce timer. If the event loop stalls,
+  // a fixed 30 ms sleep can finish before that newly scheduled scan timer.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+  await Promise.race([recovery, timeout]);
   assert.equal(fs.watchers.length, 2);
   assert.equal(manager.getStats().degradedDirectories, 0);
   assert.ok(events.some(event => event.eventType === 'watch-recovered-scan' && event.exists === true));

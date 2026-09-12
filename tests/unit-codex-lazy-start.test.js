@@ -37,11 +37,25 @@ test('an unused development seat survives persistence without becoming a resume 
   assert.equal(nativeRuntimeTruth({ kind: 'codex', nativeRuntime: stored }).state, 'idle');
   assert.equal(stored.threadId, null);
 });
+test('explicit Fast on an unused seat enables the capability without launching',async()=>{
+  const h=harness();fs.mkdirSync(h.opts.env.CODEX_HOME,{recursive:true});
+  fs.writeFileSync(path.join(h.opts.env.CODEX_HOME,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',additional_speed_tiers:['fast']}]}));
+  const s=h.make({processArgs:['-c','features.fast_mode=false']});
+  try {
+    await s.configure({codexSpeedTier:'fast'});
+    assert.deepEqual(s.options.processArgs,['-c','features.fast_mode=true']);
+    assert.equal(s.options.turnParams.serviceTier,'fast');
+    assert.equal(s.pid,null);assert.equal(h.calls().length,0);
+  }finally{await close(s);}
+});
 
 test('configuration and reading do not start a seat; first send starts exactly one thread',async()=>{
   const h=harness(),s=h.make();
   try {
     await s.configure({model:'fixture-model-2',effort:'xhigh'});
+    await s.configure({codexSpeedTier:'standard'});
+    assert.equal(s.options.turnParams.serviceTier,'default');
+    await assert.rejects(s.configure({codexSpeedTier:'fast'}),/尚未确认 Fast/);
     await s.reconcile();await s.reconnect();assert.deepEqual(s.readTranscript(),[]);
     assert.equal(h.calls().length,0);assert.equal(s.pid,null);
     await Promise.all([s.start(),s.start(),s.start()]);
