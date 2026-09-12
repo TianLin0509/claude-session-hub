@@ -191,6 +191,8 @@ function registerLoopIpc(ipcMain, deps) {
         : Number(persisted.nextStepIndex);
       if (Number.isFinite(resumeIndex)) attemptsByStep[resumeIndex] = 0;
       const resumable = { ...persisted, status: 'running', attemptsByStep, lastError: null };
+      // Only this explicit user action grants another bounded execution budget.
+      if (Number(persisted.executedRounds || 0) - Number(persisted.budgetStart || 0) >= 6) resumable.budgetStart = Number(persisted.executedRounds);
       loopEngine.runSerial(args.meetingId, null, resumable, { heroIdBySid: args.heroIdBySid || {} })
         .catch(err => logger.error('[serial:resume] background run failed:', err));
       return { ok: true };

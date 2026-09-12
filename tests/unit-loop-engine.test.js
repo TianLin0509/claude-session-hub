@@ -122,6 +122,20 @@ function mkSerial(opts = {}) {
 
 async function main() {
   console.log('loop-engine');
+  await t('A 设置：六轮预算持久暂停，用户显式继续获得新预算，保持累计次数', async () => {
+    const m=mkSerial({serialWorkflow:{settingsVersion:1}}), eng=createLoopEngine(m.deps);
+    const state=await eng.runSerial(m.meeting.id,null,{runId:'bounded',goal:'test',status:'running',nextStepIndex:1,currentStepIndex:null,attemptsByStep:{},completedSteps:[],executedRounds:5,budgetStart:0});
+    assert.equal(state.status,'paused');assert.equal(state.executedRounds,6);assert.equal(m.turnCalls.length,1);
+    const handlers={};let resumed;
+    require('../main/ipc/loop-handlers').registerLoopIpc({handle:(name,fn)=>handlers[name]=fn},{loopEngine:{isRunning:()=>false,getStatus:()=>({serialRunState:m.meeting.serialWorkflow.serialRunState}),runSerial:(...args)=>(resumed=eng.runSerial(...args)),clearStopIntent:()=>{}}});
+    const reply=await handlers['serial:resume'](null,{meetingId:m.meeting.id});assert(reply.ok);await resumed;
+    assert.equal(m.meeting.serialWorkflow.serialRunState.status,'done');assert.equal(m.meeting.serialWorkflow.serialRunState.executedRounds,7);assert.equal(m.meeting.serialWorkflow.serialRunState.budgetStart,6);
+  });
+  await t('A 设置：显式结束规则不再派后续步骤', async () => {
+    const m=mkSerial({serialWorkflow:{settingsVersion:1,stepConfigs:[{name:'finish',prompt:'stop here',after:'end'}]}});
+    const state=await createLoopEngine(m.deps).runSerial(m.meeting.id,'goal');
+    assert.equal(state.status,'done');assert.equal(m.turnCalls.length,1);
+  });
 
   await t('开发群聊讨论阶段：循环既不能起也不能恢复（绕过「开工」确认的口子必须堵在引擎）', async () => {
     const m = mk();

@@ -10,7 +10,7 @@ const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB
   + '把占位路径替换为实际主目录；登记成功才完成 Hub 接入。不要登记 worktree 或验证副本。';
 const SOLO_START = '【AI HUB 独立开工提示词】';
 const SOLO_END = '【独立开工提示词结束】';
-const PROMPT_VERSION = 2;
+const PROMPT_VERSION = 3;
 const HUMAN_REPORT = '用大白话、言简意赅地向用户汇报关键进展、结果或阻碍，不用固定英文标签，不复述文件全文。复杂内容必要时制作 HTML，给出准确路径；不为每一步都写报告。';
 const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
 const currentProjectLocator = meeting => require('./prepared-project-registry').projectLocator(meeting);
@@ -63,7 +63,7 @@ function appendProjectPrep(text) {
   if (base.includes(PROJECT_PREP_PROMPT)) return base;
   return base ? `${base}\n\n${PROJECT_PREP_PROMPT}` : PROJECT_PREP_PROMPT;
 }
-const enabled = m => !!(m?.groupChat && m.scene === 'dev' && m.serialWorkflow?.fileFlowVersion === VERSION);
+const enabled = m => !!(m?.groupChat && m.serialWorkflow?.fileFlowVersion === VERSION);
 function directory(dataDir, id) {
   if (!/^[a-zA-Z0-9_-]{1,255}$/.test(String(id || ''))) throw new Error('无效的群聊任务目录');
   return path.join(dataDir, 'task-docs', id);
@@ -130,6 +130,8 @@ function common(meeting, dir, members = []) {
     '执行前读指定输入并核对阶段文件；已有交付件则核实报告，不重建草稿。否则先创建或接续指定草稿，记录必要进展和证据。',
     '交付时 UTF-8 保存、回读，同目录原子改名；确认目标存在、草稿消失后结束当前阶段。不得自创文件名、跳轮、覆盖交付件或用聊天代替落盘。',
     'Hub 只按文件名接续；输入缺失、状态冲突或客观阻塞保留现状并报告，不伪造完成。用户手动继续仍接续同一任务，不另开分支或重复已完成步骤。',
+    '每次自动执行最多 6 轮，开题和每次返工派工都计入，同轮 1–3 位成员只计 1 轮。完成提前结束；达到上限保留现场并暂停，不自动派第 7 轮。仅用户明确继续后才获得新的执行预算。',
+    '同轮每位成员收到相同职责说明；只执行自己分工。指定负责人是唯一交接文档写入者，其余协作成员只交付建议，不代写交接文件、不代替负责人实现、独立审查或合并。同轮全部交付后再接续下一阶段。',
     require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
   ].filter(Boolean).join('\n');
@@ -161,6 +163,8 @@ function phasePrompt(meeting, dir, state, members = []) {
     '只有真实合并及要求的后置操作成功才用“已完成”改名。环境、权限、审批或工具失败保留草稿并说明，不把它伪装成实现缺陷或成功。');
   base.push(`达到本阶段成功交付条件后，将 ${draft} 以 UTF-8 保存、回读，同目录原子改名为 ${done}；确认目标存在、草稿消失后结束本阶段，由 Hub 接续。不得覆盖交付件；输入缺失、状态冲突或客观阻塞则保留现状并说明。`,
     '用大白话简短汇报交付结果、文件位置和遗留问题；复杂内容必要时制作 HTML。');
+  const stage = meeting.serialWorkflow?.fileStages?.find(r => r.phase === s.phase);
+  if (stage) base.push(`本轮参与者：${stage.members.map(id => members.find(m => m.memberId === id)?.displayName || id).join('、')}。唯一文件交付负责人：${s.phase === 'merge' ? merger.name : author.name}。`, '本轮共享 Prompt（补充要求不取消以上文件交付条件）：', stage.prompt);
   return base.filter(Boolean).join('\n');
 }
 module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt,

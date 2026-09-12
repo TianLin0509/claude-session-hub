@@ -447,6 +447,7 @@ function createLoopEngine(deps) {
     if (steps.some(step => !Array.isArray(step) || !step.filter(Boolean).length)) {
       return { ok: false, reason: 'serial_workflow_has_empty_step' };
     }
+    if (workflow.settingsVersion === 1 && (steps.length > 6 || steps.some(step => step.length > 3 || new Set(step).size !== step.length))) return {ok:false,reason:'工作流最多 6 轮，每轮 1–3 位不同成员'};
     return { ok: true, meeting, workflow, steps };
   }
 
@@ -531,6 +532,8 @@ function createLoopEngine(deps) {
           currentStepIndex: state.currentStepIndex,
           currentTurnNum: state.currentTurnNum,
           attemptsByStep: { ...(state.attemptsByStep || {}) },
+          executedRounds: Number(state.executedRounds) || 0,
+          budgetStart: Number(state.budgetStart) || 0,
           completedSteps: Array.isArray(state.completedSteps) ? state.completedSteps.slice(-100) : [],
           startedAt: state.startedAt,
           updatedAt: Date.now(),
@@ -703,7 +706,7 @@ function createLoopEngine(deps) {
           if (!state.completedSteps.some(item => Number(item.stepIndex) === index)) {
             state.completedSteps.push({ stepIndex: index, completedAt: recovered.entry.completedAt || Date.now(), recovered: true });
           }
-          state.nextStepIndex = index + 1;
+          state.nextStepIndex = stepConfigs[index]?.after === 'end' ? steps.length : index + 1;
           state.currentStepIndex = null;
           state.lastError = null;
           persistSerial(meetingId, state);
@@ -732,8 +735,14 @@ function createLoopEngine(deps) {
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
           if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
-          const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
+          if (workflow.settingsVersion === 1 && Number(state.executedRounds || 0) - Number(state.budgetStart || 0) >= 6) {
+            state.status = 'paused'; state.lastError = {reason:'已达 6 轮执行上限，保留现场并暂停',at:Date.now()}; break;
+          }
+          let stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
+          if (workflow.settingsVersion === 1) stepPrompt = require('../../core/workflow-settings').GENERAL + '\n\n' + stepPrompt;
           const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
+          state.executedRounds = Number(state.executedRounds || 0) + 1;
+          persistSerial(meetingId, state);
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
             userInput: stepPrompt,
             targetMemberIds,
@@ -766,7 +775,7 @@ function createLoopEngine(deps) {
 
         if (!failureReason) {
           state.completedSteps.push({ stepIndex: index, completedAt: Date.now(), attempt });
-          state.nextStepIndex = index + 1;
+          state.nextStepIndex = stepConfigs[index]?.after === 'end' ? steps.length : index + 1;
           state.currentStepIndex = null;
           state.lastError = null;
           persistSerial(meetingId, state);

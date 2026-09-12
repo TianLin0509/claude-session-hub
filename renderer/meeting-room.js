@@ -4447,7 +4447,7 @@ if (typeof document !== 'undefined') (function () {
   function _updateWorkflowBtnState(meeting) {
     const btn = document.getElementById('mr-workflow-btn');
     if (!btn) return;
-    if (DevFile.enabled(meeting)) { btn.style.display = 'none'; return; }
+    // File workflows use the same settings entry; their protocol stays attached.
     // 2026-07-20 道雪 [修#7d]：非群聊会议隐藏 workflow 按钮。
     btn.style.display = (meeting && meeting.groupChat) ? '' : 'none';
     if (!(meeting && meeting.groupChat)) return;
@@ -4458,11 +4458,12 @@ if (typeof document !== 'undefined') (function () {
     const presetMeta = on && workflowApi && typeof workflowApi.getTemplateMeta === 'function'
       ? workflowApi.getTemplateMeta(wf.templateId)
       : null;
-    const workflowLabel = presetMeta ? presetMeta.name : '串行工作流';
+    const workflowLabel = require('../core/workflow-settings').PRESETS.find(p=>p.id===wf?.settingsPreset)?.name || presetMeta?.name || '工作流';
     btn.classList.toggle('active', on);
-    if (badge) badge.textContent = on ? String(wf.steps.length) : '';
-    btn.title = on ? `${workflowLabel}已启用：${wf.steps.length} 步（点击修改）` : '串行工作流设置';
-    btn.setAttribute('aria-label', on ? `${workflowLabel}，${wf.steps.length} 步，点击修改` : '串行工作流设置');
+    const roundCount = DevFile.enabled(meeting) && !DevFile.isSolo(meeting) ? 3 : wf?.steps?.length || 0;
+    if (badge) badge.textContent = on ? String(roundCount) : '';
+    btn.title = on ? `${workflowLabel}已启用：${roundCount} 轮（点击修改）` : '工作流设置';
+    btn.setAttribute('aria-label', on ? `${workflowLabel}，${roundCount} 轮，点击修改` : '工作流设置');
   }
 
   async function runSerialWorkflow(meeting, userInput, opts = {}) {
@@ -5357,6 +5358,7 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     const s = state || { phase: 'discuss', label: '读取文件进度…' };
+    if (s.limitReached && !s.done && !s.running) s.label = '已达 6 轮上限 · 保留现场，尚未完成';
     const solo = DevFile.isSolo(current);
     const phases = solo ? [] : [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
     const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
@@ -7171,7 +7173,7 @@ if (typeof document !== 'undefined') (function () {
         // 用户以为说了，其实一个字都没送出去。现在先问主进程「循环在跑吗」（不信 renderer
         // 缓存），在跑就走插话闭环：落盘 + 当前执行者即时收到 + 待命者记账下次补。
         void _routeLoopInput(m, finalText, heroIdBySid);
-      } else if (m.scene && m.serialWorkflow && m.serialWorkflow.enabled &&
+      } else if (m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         runSerialWorkflow(m, finalText, { heroIdBySid });
       } else {
@@ -7251,9 +7253,16 @@ if (typeof document !== 'undefined') (function () {
 
     const workflowBtn = document.getElementById('mr-workflow-btn');
     if (workflowBtn) {
-      workflowBtn.addEventListener('click', () => {
+      workflowBtn.addEventListener('click', async () => {
         const m = meetingData[activeMeetingId];
         if (!m || !m.groupChat) return;
+        // Creation emits intermediate seat snapshots; settings must bind to the
+        // completed main-process identities, including on the very first open.
+        try {
+          const latest = (await ipcRenderer.invoke('get-meetings')).find(item => item.id === m.id);
+          if (!latest || activeMeetingId !== m.id) return;
+          m.slotSpecs = latest.slotSpecs; m.subSessions = latest.subSessions; m.serialWorkflow = latest.serialWorkflow;
+        } catch (error) { _showGcEscapeNotice('读取工作流设置失败：'+error.message, 'error'); return; }
         // 2026-07-20 道雪 [修#8]：循环运行中禁改配置（本次运行按旧 steps 跑，改了也不生效还误导）
         const loopSt0 = _loopStateByMeeting[m.id]
           || (m.serialWorkflow && m.serialWorkflow.loopState)
@@ -7267,12 +7276,16 @@ if (typeof document !== 'undefined') (function () {
         }
         const members = _buildWorkflowMembers(m);
         if (!members.length) { require('./ui-feedback').showHubAlert('群里还没有可用的 AI 成员，先添加成员再配置工作流'); return; }
+        const settingsRevision = m.serialWorkflow?.settingsRevision || 0;
         window.openWorkflowConfigModal({
           members,
           config: m.serialWorkflow || null,
-          onSave: (config) => {
-            m.serialWorkflow = config;
-            ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { serialWorkflow: config } });
+          meeting: m,
+          taskDir: _devFileStates[m.id]?.dir,
+          onSave: async (_config, draft) => {
+            const result = await ipcRenderer.invoke('workflow:configure', { meetingId: m.id, draft, expectedRevision: settingsRevision });
+            if (!result?.ok) throw new Error(result?.reason || '工作流设置未保存');
+            m.serialWorkflow = result.config;
             _updateWorkflowBtnState(m);
             _updateInputPreflight(m);
             // 主动落 state.json（boot 恢复源），不赌 schedulePersist 时机

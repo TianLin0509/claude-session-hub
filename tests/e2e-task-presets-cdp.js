@@ -118,7 +118,7 @@ async function screenshot(client, file) {
         }
         return window.__taskPresetOriginalInvoke.call(this, channel, ...args);
       };
-      const terminal = { focus(){}, scrollToBottom(){} };
+      const terminal = { options:{}, focus(){}, scrollToBottom(){} };
       const termContainer = stage.querySelector('.terminal-container');
       window.__taskPresetE2EControl = mountFloatingInput(sid, termContainer, terminal);
       const input = stage.querySelector('.floating-input-box');
@@ -159,20 +159,20 @@ async function screenshot(client, file) {
         config:null,
         onSave(config){ window.__workflowPresetSaved = config; },
       });
-      document.querySelector('.wf-switch').click();
-      document.querySelector('[data-wf="task-preset"][data-task-preset="task-root-cause-fix"]').click();
+      document.querySelector('[data-wf="task-preset"][data-task-preset="research"]').click();
+      document.querySelector('[data-wf="preview"]').click();
     })()`);
 
     const workflow = await client.eval(`(() => ({
       presetButtons: document.querySelectorAll('[data-wf="task-preset"]').length,
-      selected: document.querySelector('[data-task-preset="task-root-cause-fix"]').classList.contains('selected'),
+      selected: document.querySelector('[data-task-preset="research"]').classList.contains('selected'),
       stepNames: Array.from(document.querySelectorAll('[data-wf-step-name]')).map(el => el.value),
-      preview: document.querySelector('.wf-preview')?.innerText || '',
+      preview: document.querySelector('#wf-preview')?.innerText || '',
     }))()`);
-    assert.strictEqual(workflow.presetButtons, 5, 'serial workflow modal must render five task preset buttons');
+    assert.strictEqual(workflow.presetButtons, 4, 'settings show three task templates and blank custom');
     assert.strictEqual(workflow.selected, true, 'workflow task preset must expose selected state');
-    assert.deepStrictEqual(workflow.stepNames, ['并行诊断', '最小修复', '独立回归']);
-    assert(/并行诊断/.test(workflow.preview) && /独立回归/.test(workflow.preview), 'workflow preview must reflect the generated steps');
+    assert.deepStrictEqual(workflow.stepNames, ['分工查证', '补证核验', '形成结论']);
+    assert(/分工查证/.test(workflow.preview) && /形成结论/.test(workflow.preview), 'workflow preview must reflect the generated steps');
     await screenshot(client, WORKFLOW_SHOT);
 
     const saved = await client.eval(`(() => {
@@ -180,9 +180,9 @@ async function screenshot(client, file) {
       return window.__workflowPresetSaved;
     })()`);
     assert(saved && saved.enabled, 'workflow preset must save as enabled');
-    assert.strictEqual(saved.templateId, 'task-root-cause-fix');
+    assert.strictEqual(saved.templateId, 'research');
     assert.strictEqual(saved.steps.length, 3);
-    assert.strictEqual(saved.stepConfigs[1].name, '最小修复');
+    assert.strictEqual(saved.stepConfigs[1].name, '补证核验');
 
     console.log(JSON.stringify({
       ok: true,

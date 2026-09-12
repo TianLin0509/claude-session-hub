@@ -51,6 +51,15 @@ function runRunner(root, args = [], env = {}) {
 }
 
 const PASS_FIXTURE = 'process.exit(0);\n';
+test('merge callers can bound worker count without weakening the gate', t => {
+  const root=makeFakeRepo({'unit-pass.test.js':PASS_FIXTURE});
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const env=runRunner(root,['--strict'],{HUB_UNIT_JOBS:'2'});
+  assert.equal(env.code,0);assert.match(env.out,/并发 2/);
+  const override=runRunner(root,['--strict','--jobs','1'],{HUB_UNIT_JOBS:'2'});
+  assert.equal(override.code,0);assert.match(override.out,/并发 1/);
+  assert.equal(runRunner(root,['--strict'],{HUB_UNIT_JOBS:'invalid'}).code,2);
+});
 const HARD_FAIL_FIXTURE = 'console.log("assert boom");\nprocess.exit(1);\n';
 const HANG_FIXTURE = 'setInterval(() => {}, 1000);\n';
 test('环境并发限制保留全部测试，命令行 --jobs 优先', () => {
