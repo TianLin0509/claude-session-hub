@@ -15,7 +15,7 @@ async function main(){
   const shot=async(name)=>{const v=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
   const check=(name,value)=>{assert(value,name);result.checks.push(name);console.log('PASS '+name);};
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),windowMode:'hidden',label:'working-tail',extraEnv:{CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.join(__dirname,'fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'hold'}});
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),windowMode:'hidden',label:'working-tail',extraEnv:{CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.join(__dirname,'fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'gated',CLAUDE_HUB_FIXTURE_GATE_DIR:path.join(root,'claude-gates')}});
     c=await connectFirstPage(hub);await wait('!!window.MeetingRoom');
     await c.send('Emulation.setDeviceMetricsOverride',{width:1500,height:950,deviceScaleFactor:1,mobile:false});
     const model={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none'};
