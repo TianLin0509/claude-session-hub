@@ -5197,7 +5197,7 @@ if (typeof document !== 'undefined') (function () {
       speedButton.textContent = speed.label;
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-      speedButton.title = `${slot.displayLabel} · 标准 / Fast；Fast 会增加用量或费用`;
+      speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
     }
   }
 

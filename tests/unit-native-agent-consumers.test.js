@@ -24,7 +24,9 @@ test('resolved native action error clears from the displayed controls while loca
     const session = { runtimeBackend: 'claude-stream-json', nativeRuntime: {
       state: 'idle', connection: 'connected', epoch: 2, revision: 1, requests: [] }, nativeActionError: 'old writer still holds session' };
     controls.update(session);
-    const error = controls.element.children[3];
+    // Find the alert by class: the panel gains rows over time and a fixed
+    // index silently starts asserting about a different element.
+    const error = controls.element.children.find(child => child.className === 'claude-native-error');
     assert.equal(error.textContent, session.nativeActionError);
     controls.update({ ...session, nativeActionError: null });
     assert.equal(error.textContent, '', 'Main cleared the failure after reconnect');

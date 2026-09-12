@@ -6,11 +6,14 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   element.hidden = true;
   element.style.cssText = 'max-height:42vh;overflow:auto;padding:8px 12px;border-top:1px solid var(--border-color,#444);font-size:13px;white-space:pre-wrap';
   const status = document.createElement('div');
+  const mode = document.createElement('div');
+  mode.className = 'claude-native-mode';
   const requests = document.createElement('div');
   const recovery = document.createElement('div');
-  const error = document.createElement('div'); error.style.color = '#e88'; error.setAttribute('role', 'alert');
+  const error = document.createElement('div'); error.className = 'claude-native-error';
+  error.style.color = '#e88'; error.setAttribute('role', 'alert');
   let displayedActionError = null;
-  element.append(status, requests, recovery, error);
+  element.append(status, mode, requests, recovery, error);
   let signature = '';
   let recoveryKey = '';
   let recoveryVersion = { epoch: 0, revision: -1 };
@@ -56,6 +59,51 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       }
     } catch (failure) { error.textContent = failure.message; button.disabled = false; }
   }
+  // Same shape as the Codex mode control: the label states the engine's current
+  // mode and the switch only offers what this CLI accepts.
+  const MODES = [['default', '默认 · 逐次征求同意'], ['plan', '计划 · 只讨论不改文件'],
+    ['acceptEdits', '自动接受文件修改'], ['bypassPermissions', '全部放行']];
+  let modeSignature = '';
+  function renderMode(session, runtime) {
+    const current = runtime.permissionMode || null;
+    const busy = runtime.connection !== 'connected' || ['running', 'waiting', 'starting'].includes(runtime.state);
+    const next = JSON.stringify([current, busy]);
+    if (next === modeSignature) return;
+    modeSignature = next;
+    mode.replaceChildren();
+    if (!current) return;
+    const label = document.createElement('label');
+    label.textContent = '工作方式 ';
+    const select = document.createElement('select');
+    for (const [value, text] of MODES) {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = text;
+      select.append(option);
+    }
+    // An engine mode the Hub does not offer (auto/manual/dontAsk) still has to
+    // be shown truthfully rather than silently displayed as something else.
+    if (!MODES.some(([value]) => value === current)) {
+      const option = document.createElement('option');
+      option.value = current; option.textContent = current;
+      select.append(option);
+    }
+    select.value = current;
+    select.disabled = busy;
+    select.addEventListener('change', async () => {
+      const requested = select.value;
+      select.disabled = true; error.textContent = '';
+      try {
+        const result = await ipcRenderer.invoke('claude-native:set-permission-mode', { sessionId, mode: requested });
+        if (!result?.ok) throw new Error(result?.error || '工作方式未确认');
+      } catch (failure) {
+        error.textContent = failure.message;
+        select.value = current;
+      } finally { select.disabled = busy; }
+    });
+    label.append(select);
+    mode.append(label);
+  }
+
   async function act(request, decision, button) {
     button.disabled = true; error.textContent = '';
     try {
@@ -74,6 +122,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       + (runtime.queued?.length ? ` · ${runtime.queued.length} 条排队中` : '')
       + (runtime.backgroundTasks?.length ? ` · ${runtime.backgroundTasks.length} 个后台任务` : '')
       + (runtime.reason ? '\n' + runtime.reason : '');
+    renderMode(session, runtime);
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;

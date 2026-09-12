@@ -227,7 +227,14 @@ class ClaudeNativeSession extends EventEmitter {
     }
     if (this.closed) throw protocolError('Claude session closed during startup', 'CLAUDE_CLOSED');
     for (const activity of this.activities.pending()) this.activities.save(activity);
+    // The engine reports whether Fast is actually serving this session and why
+    // not. That is the only honest source for the speed chip: the launch
+    // overlay is a request, and a subscription or model can refuse it.
+    const initialization = this.client.initialization || {};
     this.update({ connection: 'connected', childPid: this.pid,
+      fastMode: initialization.fast_mode_state === 'on',
+      fastModeBlocked: initialization.fast_mode_disabled_reason || null,
+      permissionMode: initialization.current_permission_mode || this.runtime.permissionMode || null,
       state: this.unreconciled ? 'unknown' : this.runtime.requests.length ? 'waiting' : 'idle',
       reason: this.unreconciled ? '上次 Claude 提交状态需要核对；不会自动重发' : null });
     this.refreshContext().catch(error => this.emit('action-error', '上下文用量读取失败：' + error.message));
@@ -583,8 +590,32 @@ class ClaudeNativeSession extends EventEmitter {
         catch (error) { overlayWarning = '速度已生效，但重连后可能回到启动时的设置：' + error.message; }
       }
       this.options = { ...this.options, fastMode: enabled };
-      this.update({ fastMode: enabled });
+      this.update({ fastMode: enabled, fastModeBlocked: null });
       return { fastMode: enabled, ...(overlayWarning ? { warning: overlayWarning } : {}) };
+    } finally {
+      if (this.configurationChange === pending) this.configurationChange = null;
+    }
+  }
+
+  // Codex exposes plan mode as a collaboration mode; Claude's equivalent is the
+  // permission mode, which the engine accepts mid-session and echoes back. The
+  // echoed value is what gets stored -- a requested mode is not a confirmed one.
+  async setPermissionMode(mode) {
+    await this.start();
+    if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
+      throw new Error('请等当前任务结束并核对提交状态后再切换工作方式');
+    }
+    const pending = this.client.control({ subtype: 'set_permission_mode', mode });
+    this.configurationChange = pending;
+    try {
+      const applied = (await pending)?.mode || mode;
+      // A reconnect relaunches the CLI, so the flag has to follow the change.
+      const args = [...(this.options.launchArgs || [])];
+      const index = args.indexOf('--permission-mode');
+      if (index >= 0) args[index + 1] = applied; else args.push('--permission-mode', applied);
+      this.options = { ...this.options, launchArgs: args };
+      this.update({ permissionMode: applied });
+      return { permissionMode: applied };
     } finally {
       if (this.configurationChange === pending) this.configurationChange = null;
     }

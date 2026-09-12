@@ -4407,7 +4407,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     speedChip.textContent = speed.label;
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-    speedChip.title = '选择标准 / Fast；Fast 会增加用量或费用';
+    speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
 
     ctxRing.hidden = !rail.context.visible;
     if (rail.context.visible) {
