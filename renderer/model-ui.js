@@ -20,6 +20,8 @@ function modelClass(id) {
   if (s.includes('gemini')) return 'gemini';
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
+  if (s.includes('qwen')) return 'qwen';
+  if (s.includes('glm')) return 'glm';
   if (s.includes('kimi') || s === 'k3') return 'kimi';
   return '';
 }
@@ -610,27 +612,30 @@ function createModelUiController({
   function renderEffortPicker(menu, anchorEl, sessionId, efforts, message = null) {
     if (!menu || menu._removed) return;
     const session = sessions.get(sessionId);
-    const current = String(session && session.effort || '').trim().toLowerCase();
+    const nativeThought = require('../core/acp-model-catalog').acpThoughtOption(session);
+    const current = nativeThought?.currentValue || String(session && session.effort || '').trim().toLowerCase();
     menu.innerHTML = '';
     if (message) menuNote(menu, message.text, message.state);
     const modelLabel = session && session.currentModel
       ? (session.currentModel.displayName || session.currentModel.id)
       : '当前模型';
     if (!message) {
-      menuNote(menu, `${modelLabel} 支持的思考档 · `+(session?.runtimeBackend==='codex-app-server'
+      menuNote(menu, `${modelLabel} 支持的思考档 · `+(session?.runtimeBackend==='acp' ? '由原生 Harness 确认后生效。' : session?.runtimeBackend==='codex-app-server'
         ? '选择后由 Codex 确认，再更新显示。' : '将打开 Codex 原生面板，Hub 确认终端回执后再更新档位。'));
     }
     for (const effort of efforts) {
+      const nativeChoice = require('../core/acp-model-catalog').acpThoughtChoices(session).find(o=>o.value===effort);
+      const description = nativeChoice ? (nativeChoice.description || '') : (EFFORT_DESCRIPTIONS[effort] || '');
       const item = document.createElement('div');
       item.className = 'model-picker-item';
       item.dataset.effort = effort;
       const isCurrent = effort === current;
       if (isCurrent) item.classList.add('current');
       if (session && session._modelSwitchPending) item.classList.add('disabled');
-      item.title = EFFORT_DESCRIPTIONS[effort] || effort;
+      item.title = description || effort;
       item.innerHTML = `<span class="model-picker-check">${isCurrent ? '✓' : ''}</span>`
-        + `<span class="model-picker-label">${escapeHtml(require('./ui-labels').effortLabel(effort))}</span>`
-        + `<span class="model-picker-id">${escapeHtml(EFFORT_DESCRIPTIONS[effort] || '')}</span>`;
+        + `<span class="model-picker-label">${escapeHtml(nativeChoice?.name || require('./ui-labels').effortLabel(effort))}</span>`
+        + `<span class="model-picker-id">${escapeHtml(description)}</span>`;
       if (!isCurrent && !(session && session._modelSwitchPending)) {
         item.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -644,7 +649,7 @@ function createModelUiController({
   function showEffortPicker(anchorEl, sessionId, { efforts = [] } = {}) {
     closeModelPicker();
     const list = (Array.isArray(efforts) ? efforts : [])
-      .map(value => String(value || '').trim().toLowerCase())
+      .map(value => String(value || '').trim())
       .filter(Boolean);
     if (!list.length) return null;
     const menu = document.createElement('div');
@@ -682,7 +687,7 @@ function createModelUiController({
         return null;
       }
     }
-    if (modelSwitchStrategy(session.kind) !== 'codex-picker') return null;
+    if (!['codex-picker','acp-native'].includes(modelSwitchStrategy(session.kind))) return null;
     const modelId = String(session.currentModel && session.currentModel.id || '').trim();
     if (!modelId) return null;
     const option = {
@@ -694,7 +699,13 @@ function createModelUiController({
     updateActiveModelChip();
     renderEffortPicker(menu, anchorEl, sessionId, efforts, { text: `正在切换到 ${effort}…`, state: 'pending' });
     try {
-      const switched = await switchCodexModel(sessionId, session, option, { effortOverride: effort });
+      const switched = session.runtimeBackend === 'acp'
+        ? await (async () => {
+          const response = await ipcRenderer.invoke('codex:native-action', {sessionId, action:'configure', effort});
+          if (!response?.ok) throw new Error(response?.message || '原生 Harness 未确认思考深度');
+          return response.result;
+        })()
+        : await switchCodexModel(sessionId, session, option, { effortOverride: effort });
       const confirmed = await confirmSwitch(sessionId, switched);
       const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
       session.currentModel = {
@@ -717,7 +728,7 @@ function createModelUiController({
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[effort-switch] failed:', error && (error.stack || error.message));
-      if (session.runtimeBackend !== 'codex-app-server') writeTerminal(sessionId, '\x1b');
+      if (!['codex-app-server','acp'].includes(session.runtimeBackend)) writeTerminal(sessionId, '\x1b');
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
           text: `切换失败：${error && error.message ? error.message : String(error)}`,

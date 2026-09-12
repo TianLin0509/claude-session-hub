@@ -4041,6 +4041,7 @@ const _codexEffortCache = new Map();
 const CLAUDE_COMPOSER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'auto'];
 
 function composerSupportedEfforts(session) {
+  if (session?.runtimeBackend === 'acp') return require('../core/acp-model-catalog').acpThoughtChoices(session).map(o => o.value);
   const kind = String((session && session.kind) || '').replace(/-resume$/i, '').toLowerCase();
   // A native Claude session changes effort over its own command channel, so the
   // chip is live there; a PTY session still cannot and stays static.
@@ -5247,7 +5248,7 @@ window.LaunchCenter = launchCenter;
 // --- Unified launch center ---
 btnNew.addEventListener('click', () => launchCenter.open('session'));
 document.getElementById('btn-new-more').addEventListener('click', () => launchCenter.open('session'));
-document.getElementById('acp-settings-open').addEventListener('click', () => {
+document.getElementById('acp-settings-open')?.addEventListener('click', () => {
   require('./acp-settings').openAcpSettings({ document, invoke:(...args)=>ipcRenderer.invoke(...args) })
     .catch(error => require('./ui-feedback').showHubAlert('ACP 配置未打开：' + error.message));
 });

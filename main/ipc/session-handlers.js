@@ -405,7 +405,7 @@ function registerSessionIpc(ipcMain, deps) {
     if (['codex-app-server','acp'].includes(session.runtimeBackend)) {
       const current = session.currentModel || {};
       if (current.id !== modelId || (payload.effort && payload.effort !== session.effort)) {
-        return {ok:false,message:'原生 Codex 尚未确认该模型或思考档'};
+        return {ok:false,message:'原生会话尚未确认该模型或思考档'};
       }
       return {ok:true,model:current,effort:session.effort};
     }

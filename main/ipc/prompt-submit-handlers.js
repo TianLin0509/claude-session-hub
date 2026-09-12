@@ -61,7 +61,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   for (const operation of ['read', 'save']) {
     ipcMain.handle('native-draft:' + operation, (_event, request = {}) => {
       const session = sessionManager.getSession(request.sessionId);
-      if (!['claude-stream-json', 'codex-app-server'].includes(session?.runtimeBackend)) {
+      if (!['claude-stream-json', 'codex-app-server', 'acp'].includes(session?.runtimeBackend)) {
         return { ok: false, error: '当前会话不是原生会话' };
       }
       try {
