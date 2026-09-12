@@ -32,7 +32,7 @@ test('文本框仍是原来那个节点，属性一个都没丢', () => {
 });
 
 test('composer 三段结构：状态行 → 文本框 → 底栏，且仍装在 fi-content-stack 里', () => {
-  assert.match(mount, /composer\.append\(statusRow, quickReplyRow, composerRow, composerRail\)/);
+  assert.match(mount, /composer\.append\(statusRow, quickReplyRow, startActions, composerRow, composerRail\)/);
   assert.match(mount, /composerRow\.append\(inputBox\)/);
   // 几何锁契约（unit-floating-input-geometry-contract）依赖这一层，不能被拆掉。
   assert.match(mount, /contentStack\.className = 'fi-content-stack'/);

@@ -14,7 +14,7 @@ const DATA = path.join(ROOT, 'data');
 const ART = path.resolve(__dirname, '../output/playwright', `dev-prep-${Date.now()}`);
 const LOG = path.join(ROOT, 'dispatch.jsonl');
 const SCRIPT = path.join(ROOT, 'dispatch.js');
-const PREP = '用 project-prep 整理当前仓库，接入 AI HUB 群聊开发，保留现有测试和合并规则。';
+let PREP;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const calls = () => fs.existsSync(LOG) ? fs.readFileSync(LOG, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
 const freePort = () => new Promise((resolve, reject) => {
@@ -22,6 +22,8 @@ const freePort = () => new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(e => e ? reject(e) : resolve(port)); });
 });
 fs.mkdirSync(WORK, { recursive: true }); fs.mkdirSync(ART, { recursive: true });
+fs.mkdirSync(DATA, { recursive: true });
+fs.writeFileSync(path.join(DATA, 'prepared-projects.json'), JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
 fs.writeFileSync(path.join(WORK, '.aiwork-root'), '');
 fs.writeFileSync(SCRIPT, `const fs=require('fs'); module.exports=args=>{ fs.appendFileSync(${JSON.stringify(LOG)},JSON.stringify(args)+'\\n'); return {text:'受控验收已收到'}; };`);
 
@@ -36,6 +38,8 @@ async function run() {
         CODEX_HOME: path.join(ROOT, 'codex'), CLAUDE_CONFIG_DIR: path.join(ROOT, 'claude') } });
     evidence.pid = hub.pid; evidence.port = hub.port;
     cdp = await connectFirstPage(hub, t => /index\.html/.test(t.url));
+    PREP = await cdp.eval("require('../core/dev-file-workflow').PROJECT_PREP_PROMPT");
+    assert(PREP.includes('project-prep') && PREP.includes(DATA), 'project registration targets isolated data');
     const wait = async (fn, label) => {
       const deadline = Date.now() + 25000;
       while (Date.now() < deadline) { const v = await fn(); if (v) return v; await sleep(120); }
@@ -66,41 +70,29 @@ async function run() {
     ok('默认开发排第一，默认选择已有路径', await cdp.eval(`document.querySelector('input[name="mcm-scene"]:checked').value==='dev' && document.querySelector('[data-mcm-scene]').dataset.mcmScene==='dev' && document.querySelector('[data-mcm-workspace-mode="existing"]').getAttribute('aria-checked')==='true'`));
     ok('创建页不再显示起手选项', await cdp.eval("!document.querySelector('[data-mcm-dev-start]')"));
     await click('[data-mcm-workspace-mode="default"]');
-    if (process.argv.includes('--solo')) await click('[data-remove-member="1"]');
+    if (process.argv.includes('--solo')) {
+      ok('开发群聊保留至少两位成员', await cdp.eval("!document.querySelector('[data-remove-member]')"));
+      await click('[data-mcm-scene="general"]');
+      await click('[data-remove-member="1"]');
+      await click('[data-mcm-scene="dev"]');
+      await click('#meeting-create-modal .mcm-create');
+      await wait(() => cdp.eval("document.querySelector('.mcm-error')?.textContent.includes('至少需要两位')"), 'solo creation rejected');
+      ok('单人开发引导至普通会话的一键开工', await cdp.eval("document.querySelector('.mcm-error').textContent.includes('一键开工')"));
+      evidence.ok=true;
+      return;
+    }
     if (process.argv.includes('--double-codex')) {
       await cdp.eval(`(() => {const s=document.querySelector('.mcm-slot[data-slot="0"] .mcm-ai-select');s.value='codex';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
     }
     await shot('creation');
     await click('#meeting-create-modal .mcm-create');
-    const created = await wait(async () => (await invoke('get-meetings')).find(m => m.scene === 'dev' && m.subSessions.length === (process.argv.includes('--solo') ? 1 : 2) && m.serialWorkflow?.fileFlowVersion === 2), 'real UI created room');
+    const created = await wait(async () => (await invoke('get-meetings')).find(m => m.scene === 'dev' && m.subSessions.length === 2 && m.serialWorkflow?.fileFlowVersion === 2), 'real UI created room');
     const id = created.id;
     const room = async () => (await invoke('get-meetings')).find(m => m.id === id);
     await cdp.eval(`selectMeeting(${JSON.stringify(id)})`);
     await wait(() => cdp.eval("!!document.querySelector('[data-file-prep]')"), 'file controls');
     await shot('initial-wide');
     evidence.initial = created;
-    if (process.argv.includes('--solo')) {
-      ok('单 Claude 自动分配两项职责，保留模型选择', created.slotSpecs[0].kind==='claude' && created.serialWorkflow.soloDevelopment && JSON.stringify(created.serialWorkflow.steps)==='[["m1"],["m1"]]');
-      ok('单人显示独立开工，隐藏双人开题', await cdp.eval("!!document.querySelector('[data-file-independent]') && !document.querySelector('[data-file-kickoff]')"));
-      const before = calls().length;
-      await type('修改按钮文案\n保留用户要求');
-      await click('[data-file-independent]');
-      await wait(() => cdp.eval("document.getElementById('mr-input-box').innerText.includes('【独立开工提示词结束】')"), 'independent preset IPC');
-      const filled = await cdp.eval("document.getElementById('mr-input-box').innerText");
-      await click('[data-file-independent]');
-      ok('独立开工保留草稿、重复点击不叠加', filled.startsWith('修改按钮文案\n保留用户要求') && filled.includes('实现 Agent 与合并 Agent') && filled===await cdp.eval("document.getElementById('mr-input-box').innerText"));
-      ok('预填不派发、不创建交接文件', calls().length===before && !fs.existsSync(path.join(DATA,'task-docs',id)));
-      for (const width of [1600, 760]) { await size(width); await shot('solo-'+width); }
-      await enter();
-      await wait(() => calls().length>before, 'independent user send');
-      ok('Enter 仅发送一条完整 prompt 给单成员', calls().length===before+1 && calls()[before].userInput===filled && JSON.stringify((await room()).participants)==='[0]');
-      await wait(async () => !(await invoke('dev-file:status',{meetingId:id})).running,'solo settles');
-      await sleep(1500);
-      ok('回复结束不会自动启动第二轮或旧循环', calls().length===before+1 && !created.serialWorkflow.loop.enabled);
-      evidence.ok=true;
-      return;
-    }
-
     ok('实际建群 UI：两席保留，初始仅首席选中', JSON.stringify(created.participants) === '[0]');
     if (process.argv.includes('--double-codex')) ok('两个独立 Codex 席位', created.slotSpecs.every(s => s.kind === 'codex') && new Set(created.subSessions).size === 2);
     ok('首席头像与收件人一致', await cdp.eval("JSON.stringify([...document.querySelectorAll('.mr-free-slot-cb:checked')].map(e=>Number(e.dataset.slotIdx)))==='[0]'"));
