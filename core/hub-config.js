@@ -115,6 +115,7 @@ function getConfig() {
   const codexSubscriptionProfiles = normalizeCodexSubscriptionProfiles(codexProvider.subscription_profiles);
 
   _cachedConfig = {
+    acp: rawConfig.acp || {},
     proxy: getConfigValue('proxy', 'CLAUDE_PROXY', 'proxy.http', DEFAULTS.proxy),
     claudeBackend: getConfigValue('claudeBackend', 'HUB_CLAUDE_BACKEND', 'providers.claude.backend', DEFAULTS.claude_backend),
     claudeApiKey: getConfigValue('claudeApiKey', 'HUB_CLAUDE_API_KEY', 'providers.claude.api_key', ''),
