@@ -924,7 +924,9 @@ function buildNativeCodexOptions(info, opts, env) {
   }
   const tier = info.codexSpeedTier;
   if (tier !== 'inherit') {
-    config['features.fast_mode'] = tier === 'fast';
+    // Keep the native server capable of honoring per-turn speed changes.
+    // The service tier below controls billing; false here silently drops Fast.
+    config['features.fast_mode'] = true;
     config.service_tier = tier === 'standard' ? 'default' : tier;
   }
   const threadConfig = { model_reasoning_effort:normalizeCodexEffort(info.effort),

@@ -29,6 +29,17 @@ test('speed selection preserves model, effort and history, rejects unsupported F
     assert.equal(s.options.turnParams.model,'fixture-model');
   }finally{await close(s);}
 });
+test('inherited disabled Fast capability cannot report a successful speed switch',async()=>{
+  const s=make('speed-disabled');
+  s.options.clientFactory=()=>new CodexAppServerClient({cwd:__dirname,timeoutMs:1500,
+    launch:{command:process.execPath,args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED:'1'}}});
+  try {
+    await s.configure({codexSpeedTier:'standard'});
+    await assert.rejects(s.configure({codexSpeedTier:'fast'}),/禁用了 Fast/);
+    assert.equal(s.options.turnParams.serviceTier,'default');
+    assert.equal(s.history.size,0);
+  }finally{await close(s);}
+});
 test('real stdio framing: one complete multi-line prompt, unicode output and identity receipt',async()=>{
   const s=make();try{
     await s.start();

@@ -10,7 +10,7 @@ test('native launch preserves explicit tuning, policy, cwd, instructions and res
   assert.deepEqual(o.turnParams,{model:'gpt-6-astra',effort:'xhigh',serviceTier:'default'});assert.equal(o.resumeId,'native-id');assert.equal(o.picker,false);
   const lazy=buildNativeCodexOptions({...info,kind:'codex-resume'},{lazyStart:true,useResume:true,codexResumePicker:true},{CODEX_HOME:home});
   assert.equal(lazy.picker,false);assert.equal(lazy.resumeLatest,false);
-  assert(o.processArgs.includes('service_tier="default"'));assert(o.processArgs.includes('features.fast_mode=false'));
+  assert(o.processArgs.includes('service_tier="default"'));assert(o.processArgs.includes('features.fast_mode=true'));
   const inherit=buildNativeCodexOptions({...info,codexSpeedTier:'inherit'}, {},{CODEX_HOME:home});
   assert(!inherit.processArgs.some(x=>/service_tier|fast_mode/.test(x)));
   assert.equal(Object.hasOwn(inherit.turnParams,'serviceTier'),false);

@@ -657,6 +657,11 @@ class CodexNativeSession extends EventEmitter {
       if (codexSpeedTier === 'fast') {
         const tuning = require('./codex-model-catalog').describeCodexModelTuning(model,{configDir:this.options.env?.CODEX_HOME});
         if (!tuning.fromCache || !tuning.supportsFast) throw new Error('当前模型目录尚未确认 Fast 支持，请刷新目录后重试');
+        const args = [...(this.options.processArgs || [])];
+        const flag = args.findIndex((value,index)=>args[index-1] === '-c' && value.startsWith('features.fast_mode='));
+        if (flag >= 0) args[flag] = 'features.fast_mode=true';
+        else args.push('-c','features.fast_mode=true');
+        this.options.processArgs = args;
       }
       this.options.threadParams = {...this.options.threadParams,model,
         config:{...this.options.threadParams.config,model_reasoning_effort:requestedEffort}};
@@ -687,6 +692,13 @@ class CodexNativeSession extends EventEmitter {
       if (!['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
       const tiers = [...(target.additionalSpeedTiers || []), ...(target.serviceTiers || []).map(t=>t.id)];
       if (codexSpeedTier === 'fast' && !tiers.includes('fast')) throw new Error(model+' 当前不支持 Fast');
+      if (codexSpeedTier === 'fast') {
+        const configuration = await client.request('config/read',{includeLayers:false});
+        check();
+        if (configuration.config?.features?.fast_mode === false) {
+          throw new Error('该会话启动时禁用了 Fast 能力；新建标准或 Fast 会话后可使用开关');
+        }
+      }
     }
     const requestedEffort = effort || this.options.turnParams.effort;
     if (requestedEffort && !(target.supportedReasoningEfforts || []).some(e=>e.reasoningEffort === requestedEffort)) {

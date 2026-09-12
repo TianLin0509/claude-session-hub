@@ -12,7 +12,8 @@ async function main(){
   fs.copyFileSync(path.join(source,'models_cache.json'),path.join(home,'models_cache.json'));
   const fixture=await require('./fixtures/codex-responses-server').startResponsesFixture({chunks:1,delayMs:20});
   fs.writeFileSync(path.join(home,'config.toml'),'model='+JSON.stringify(model)+'\nmodel_reasoning_effort='+JSON.stringify(originalEffort)+'\nservice_tier='+JSON.stringify(tier||'fast')+'\nmodel_provider="settings_fixture"\n[model_providers.settings_fixture]\nname="Native settings verification"\nbase_url="http://127.0.0.1:'+fixture.port+'/v1"\nwire_api="responses"\nenv_key="HUB_SETTINGS_FIXTURE_KEY"\nsupports_websockets=false\nrequires_openai_auth=false\n[windows]\nsandbox="unelevated"\n');
-  const s=new CodexNativeSession({id:'real-settings',cwd:root,env:{...scrubParentControlEnv(process.env),CODEX_HOME:home,CLAUDE_HUB_DATA_DIR:path.join(root,'hub'),HUB_SETTINGS_FIXTURE_KEY:'isolated'},threadParams:{cwd:root,model,approvalPolicy:'never',sandbox:'danger-full-access',config:{model_reasoning_effort:originalEffort}},turnParams:{model,effort:originalEffort}});
+  const launch=require('../core/session-manager')._private.buildNativeCodexOptions({kind:'codex',cwd:root,currentModel:{id:model},effort:originalEffort,codexSpeedTier:'standard',mcpProfile:'none'},{},{CODEX_HOME:home});
+  const s=new CodexNativeSession({...launch,id:'real-settings',cwd:root,env:{...scrubParentControlEnv(process.env),CODEX_HOME:home,CLAUDE_HUB_DATA_DIR:path.join(root,'hub'),HUB_SETTINGS_FIXTURE_KEY:'isolated'}});
   const result={root,model,originalEffort,tier,passed:false,checks:[]};
   try{
     await s.start();const threadId=s.threadId;

@@ -46,6 +46,7 @@ rl.on('line',line=>{
   switch(msg.method){
     case 'initialize':answer(msg.id,{userAgent:'fixture-0.153.4'});break;
     case 'initialized':break;
+    case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
       threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
