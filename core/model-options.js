@@ -9,7 +9,9 @@
 // inline-argument command. Keep those strategies distinct: sending
 // `/model gpt-5.5` to Codex 0.151 is an ordinary model prompt, not a switch.
 
+const { isChatgptWebModel } = require('./chatgpt-web-models');
 const MODEL_OPTIONS_BY_KIND = {
+  chatgpt: [],
   qwen: require('./acp-model-catalog').acpModelOptions('qwen'),
   'deepseek-acp': require('./acp-model-catalog').acpModelOptions('deepseek-acp'),
   glm: require('./acp-model-catalog').acpModelOptions('glm'),
@@ -115,6 +117,7 @@ const DEFAULT_MODEL_BY_KIND = {
 const CODEX_NON_CONVERSATION_MODEL_RE = /(?:^|[-_.])(?:image(?:gen)?|audio|tts|whisper|embedding|moderation|realtime)(?:$|[-_.])/i;
 
 function isCodexConversationModelId(modelId) {
+  if (isChatgptWebModel(modelId)) return true;
   const raw = String(modelId || '').trim();
   if (!/^(?:gpt-[\w.-]+|o\d[\w.-]*)$/i.test(raw)) return false;
   return !CODEX_NON_CONVERSATION_MODEL_RE.test(raw);

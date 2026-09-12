@@ -657,6 +657,15 @@ class CodexNativeSession extends EventEmitter {
   }
   async _configure({model,effort,codexSpeedTier}, intent) {
     model = model || this.options.turnParams.model;
+    const { chatgptWebRoute } = require('./chatgpt-web-models');
+    const currentWeb = chatgptWebRoute(this.options.turnParams?.model);
+    const targetWeb = chatgptWebRoute(model);
+    if (!!currentWeb !== !!targetWeb) throw new Error('ChatGPT 与 Codex 使用不同连接配置，请从启动中心新建对应会话');
+    if (targetWeb) {
+      require('./chatgpt-web-integration').requireWebTools(model, this.options.env);
+      if (effort && effort !== targetWeb.effort) throw new Error('ChatGPT 档位由模型固定，不能单独修改');
+      effort = targetWeb.effort;
+    }
     if (codexSpeedTier !== undefined && !['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');
     if (isUnstartedRuntime(this.runtime)) {
       if (intent) this.checkSendIntent(intent);
@@ -692,10 +701,16 @@ class CodexNativeSession extends EventEmitter {
       if (this.entry?.client !== client || this.runtime.epoch !== epoch || this.closed) throw new Error('配置响应来自旧连接，请重新核对');
       if (!['idle','completed','interrupted','failed'].includes(this.runtime.state)) throw new Error('Codex 已开始新轮次，不能切换配置');
     };
-    model = model || this.options.turnParams.model;
-    const list = await client.request('model/list',{});
+    // Web route aliases belong to the bridge's account catalog, not the ordinary
+    // Codex model/list catalog. requireWebTools above has validated availability.
+    let target;
+    if (targetWeb) {
+      target = {id:model,displayName:targetWeb.label,supportedReasoningEfforts:[{reasoningEffort:targetWeb.effort}]};
+    } else {
+      const list = await client.request('model/list',{});
+      target = (list.data || []).find(m=>m.id === model || m.model === model);
+    }
     check();
-    const target = (list.data || []).find(m=>m.id === model || m.model === model);
     if (!target) throw new Error('Codex 模型目录中没有：'+model);
     if (codexSpeedTier !== undefined) {
       if (!['standard','fast'].includes(codexSpeedTier)) throw new Error('无效的速度档位');

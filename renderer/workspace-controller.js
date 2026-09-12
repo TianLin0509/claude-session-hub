@@ -15,6 +15,7 @@
     claude: 'Claude Code',
     gemini: 'Gemini CLI',
     codex: 'Codex CLI',
+    chatgpt: 'ChatGPT',
     deepseek: 'DeepSeek',
     kimi: 'Kimi Code · K3',
     powershell: 'PowerShell',
@@ -64,6 +65,7 @@
     max: '最大推理深度',
     ultra: '最大推理 + 自动任务分派',
   };
+  let chatgptCatalog = null;
   let codexTuningCatalog = null;
   let claudeModelCatalog = null;
   let codexCatalogInFlight = null;
@@ -200,6 +202,11 @@
   function buildSessionTuningOpts(kind, modelId, selection = {}) {
     const tuning = resolveSessionTuning(kind, modelId, selection);
     const opts = {};
+    if (kind === 'chatgpt') {
+      const route = require('../core/chatgpt-web-models').chatgptWebRoute(tuning.model);
+      if (!route || (modelId && modelId !== route.id)) throw new Error('所选 ChatGPT 模型已不可用，请重新选择档位');
+      return { model: route.id, effort: route.effort, mcpProfile: 'none', codexSpeedTier: 'inherit' };
+    }
     if (tuning.modelOptions.length > 0 && tuning.model) opts.model = tuning.model;
     if (tuning.showEffort && tuning.effort) opts.effort = tuning.effort;
     if (tuning.showMcp) opts.mcpProfile = tuning.mcpProfile;
@@ -660,8 +667,10 @@
   function setError(message = '') {
     const errorEl = document.getElementById('new-session-error');
     if (!errorEl) return;
-    errorEl.textContent = message;
+    errorEl.textContent = selectedKind === 'chatgpt'
+      ? message.replace(/Error invoking remote method '[^']+': (?:Error: )?/, '') : message;
     errorEl.hidden = !message;
+    if (message && selectedKind === 'chatgpt') errorEl.scrollIntoView({ block: 'nearest' });
   }
 
   // Recent workspaces are the primary way to pick an existing path; the OS folder
@@ -854,7 +863,8 @@
     }
 
     if (!options.some(option => option.id === selectedModel)) {
-      selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || options[0].id;
+      selectedModel = selectedKind === 'chatgpt' && selectedModel.startsWith('chatgpt-web/')
+        ? selectedModel : DEFAULT_MODEL_BY_KIND[selectedKind] || options[0].id;
     }
     const wanted = options.map(option => `${option.id}\u0000${option.label}`).join('|');
     if (modelSelect.dataset.builtFor !== wanted) {
@@ -862,6 +872,15 @@
         .map(option => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`)
         .join('');
       modelSelect.dataset.builtFor = wanted;
+    }
+    modelSelect.querySelector('[data-chatgpt-unavailable]')?.remove();
+    if (selectedKind === 'chatgpt' && !options.some(option => option.id === selectedModel)) {
+      const unavailable = document.createElement('option');
+      unavailable.value = selectedModel;
+      unavailable.textContent = '原档位当前不可用，请选择模型';
+      unavailable.disabled = true;
+      unavailable.dataset.chatgptUnavailable = 'true';
+      modelSelect.appendChild(unavailable);
     }
     modelSelect.value = selectedModel;
 
@@ -974,6 +993,10 @@
 
   function paint() {
     if (!menuEl) return;
+    const webPanel = document.getElementById('chatgpt-web-panel');
+    if (webPanel) webPanel.hidden = selectedKind !== 'chatgpt';
+    const webStatus = document.getElementById('chatgpt-web-status');
+    if (webStatus) webStatus.textContent = chatgptCatalog?.message || '正在读取 Codex Web GPT 配置…';
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       const selected = button.dataset.kind === (selectedKind === 'deepseek-acp' ? 'deepseek' : selectedKind);
       button.classList.toggle('selected', selected);
@@ -1039,7 +1062,10 @@
   function summaryText() {
     const parts = [KIND_LABELS[selectedKind] || selectedKind];
     const tuning = tuningTag();
-    if (tuning) parts.push(tuning);
+    if (tuning) {
+      if (selectedKind === 'chatgpt') parts[0] = tuning;
+      else parts.push(tuning);
+    }
     const target = targetPathPreview();
     if (workspaceMode === 'existing' && existingWorkspace) parts.push(workspaceTierLabel(existingWorkspace.tier));
     parts.push(target ? compactPath(target, 46) : '请选择目录');
@@ -1086,7 +1112,7 @@
     existingWorkspace = requestedWorkspace;
     void loadPreparedProjects();
     submitting = false;
-    selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
+    selectedModel = selectedKind === 'chatgpt' ? 'chatgpt-web/high' : DEFAULT_MODEL_BY_KIND[selectedKind] || '';
     applyTuningMemory(selectedKind);
     setError('');
     renderRecommendations();
@@ -1115,6 +1141,7 @@
   // 键按 kind 存而不是全局一份 —— 两家的合法枚举和默认值都不一样。
   function rememberTuning(kind) {
     tuningMemory.set(kind, {
+      ...(kind === 'chatgpt' ? { model: selectedModel } : {}),
       effort: selectedEffort,
       mcpProfile: selectedMcpProfile,
       fastMode: selectedFastMode,
@@ -1124,6 +1151,7 @@
 
   function applyTuningMemory(kind) {
     const saved = tuningMemory.get(kind);
+    if (kind === 'chatgpt') selectedModel = saved?.model || 'chatgpt-web/high';
     selectedEffort = (saved && saved.effort) || defaultEffortFor(kind);
     selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
     selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : DEFAULT_FAST_MODE;
@@ -1183,6 +1211,17 @@
 
   function loadModelCatalog(kind, options = {}) {
     const base = String(kind || '').replace(/-resume$/, '');
+    if (base === 'chatgpt') {
+      return ipcRenderer.invoke('chatgpt-web:status').then(result => {
+        chatgptCatalog = result;
+        setRuntimeModelOptions('chatgpt', result.models || []);
+        return result;
+      }).catch(error => {
+        chatgptCatalog = { ok: false, models: [], message: error.message };
+        setRuntimeModelOptions('chatgpt', []);
+        return chatgptCatalog;
+      });
+    }
     if (require('../core/acp-profiles').isAcpKind(base)) return ipcRenderer.invoke('acp:settings:get').then(settings=>{
       const model=settings.providers?.[base]?.model;
       setRuntimeModelOptions(base,require('../core/acp-model-catalog').acpModelOptions(base,model));
@@ -1250,6 +1289,10 @@
     menuEl = document.getElementById('new-session-menu');
     if (!menuEl) return;
 
+    document.getElementById('chatgpt-web-settings')?.addEventListener('click', async () => {
+      try { await ipcRenderer.invoke('chatgpt-web:settings'); } catch (error) { setError(error.message); }
+    });
+    document.getElementById('chatgpt-web-refresh')?.addEventListener('click', () => { void loadModelCatalog('chatgpt').then(paint); });
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       button.addEventListener('click', () => {
         rememberTuning(selectedKind);

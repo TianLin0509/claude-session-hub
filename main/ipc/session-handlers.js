@@ -106,6 +106,9 @@ function registerSessionIpc(ipcMain, deps) {
     return pending;
   });
 
+  const web = require('../../core/chatgpt-web-integration');
+  ipcMain.handle('chatgpt-web:status', () => web.webStatus());
+  ipcMain.handle('chatgpt-web:settings', () => web.openWebSettings());
   ipcMain.handle('create-session', (_e, arg) => {
     // Back-compat: legacy callers pass just a kind string; newer callers pass { kind, opts }.
     let kind;
@@ -120,6 +123,21 @@ function registerSessionIpc(ipcMain, deps) {
       kind = 'powershell';
       opts = {};
     }
+    if (kind === 'chatgpt') {
+      if (!require('../../core/chatgpt-web-models').isChatgptWebModel(opts.model)) throw new Error('请选择可用的 ChatGPT 模型');
+      kind = 'codex';
+    }
+    if (require('../../core/chatgpt-web-models').isChatgptWebModel(opts.model)) {
+      web.requireWebTools(opts.model);
+      return web.webStatus().then(status => {
+        if (!status.online) throw new Error(status.message);
+        return createResolvedSession(kind, opts);
+      });
+    }
+    return createResolvedSession(kind, opts);
+  });
+
+  function createResolvedSession(kind, opts) {
     const isResumePicker = typeof kind === 'string' && kind.endsWith('-resume');
     // Native resume pickers must start in their historical/default scope when
     // the caller has no known cwd. Creating a fresh scratch here makes the CLI
@@ -134,7 +152,7 @@ function registerSessionIpc(ipcMain, deps) {
     registerSessionForTap(session);
     sendToRenderer('session-created', { session });
     return session;
-  });
+  }
 
   ipcMain.handle('fork-session', (_e, request) => {
     const sourceSessionId = request && typeof request === 'object'

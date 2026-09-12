@@ -103,6 +103,7 @@ function buildCodexModelOptions(models) {
   return (Array.isArray(models) ? models : [])
     .map((model, index) => ({ model, index, id: codexModelSlug(model) }))
     .filter(entry => entry.id && isCodexConversationModelId(entry.id)
+      && !require('./chatgpt-web-models').isChatgptWebModel(entry.id)
       && entry.model.hidden !== true
       && String(entry.model.visibility || 'list').toLowerCase() !== 'hide')
     .sort((a, b) => {

@@ -53,6 +53,15 @@ function runRunner(root, args = [], env = {}) {
 const PASS_FIXTURE = 'process.exit(0);\n';
 const HARD_FAIL_FIXTURE = 'console.log("assert boom");\nprocess.exit(1);\n';
 const HANG_FIXTURE = 'setInterval(() => {}, 1000);\n';
+test('环境并发限制保留全部测试，命令行 --jobs 优先', () => {
+  const root = makeFakeRepo({ 'unit-a.test.js': PASS_FIXTURE, 'unit-b.test.js': PASS_FIXTURE, 'unit-c.test.js': PASS_FIXTURE });
+  const limited = runRunner(root, ['--strict'], { HUB_UNIT_JOBS: '2' });
+  assert.equal(limited.code, 0, limited.out);
+  assert.match(limited.out, /3 个文件，并发 2/);
+  const explicit = runRunner(root, ['--strict', '--jobs', '1'], { HUB_UNIT_JOBS: '2' });
+  assert.equal(explicit.code, 0, explicit.out);
+  assert.match(explicit.out, /3 个文件，并发 1/);
+});
 // 第一次跑失败、留个标记，第二次跑就通过 —— 模拟"被 CPU 饿着才失败"的负载相关失败
 const FLAKY_FIXTURE = `
 const fs = require('fs'), path = require('path');
