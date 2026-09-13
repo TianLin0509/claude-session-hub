@@ -455,6 +455,7 @@ sessionManager.on('codex-session-updated', session => {
   sendToRenderer('session-updated', {session});
 });
 sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
+sessionManager.on('codex-backstage-updated', event => sendToRenderer('codex-backstage-updated',event));
 sessionManager.on('codex-locate-request', ({ sessionId }) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();

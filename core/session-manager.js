@@ -1714,6 +1714,9 @@ class SessionManager extends EventEmitter {
         info.nativeActionError = message; publish();
       });
       ptyProcess.on('diagnostic', message => console.warn('[codex-native]',id,message));
+      ptyProcess.on('backstage-updated', event => {
+        if (this.sessions.get(id)?.pty === ptyProcess) this.emit('codex-backstage-updated', {sessionId:id,...event});
+      });
       ptyProcess.on('usage', usage => {
         this.emit('session-token-usage', { sessionId: id, total: usage && usage.total });
         const total = usage && usage.last;

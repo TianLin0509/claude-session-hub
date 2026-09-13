@@ -12,7 +12,7 @@ async function configureMode(session, mode, intent, expectedEpoch) {
   };
   check();
   const client = session.entry.client;
-  const result = await client.request('collaborationMode/list', {}, undefined, { beforeWrite: check });
+  const result = await session.requestNative(client, 'collaborationMode/list', {}, undefined, { beforeWrite: check });
   check();
   if (client !== session.entry.client) throw new Error('模式响应来自旧连接');
   if (!(result.data || []).some(item => item.mode === mode)) throw new Error('当前 Codex 不支持所选工作方式');

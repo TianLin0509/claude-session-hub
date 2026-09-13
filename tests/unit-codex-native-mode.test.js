@@ -41,6 +41,7 @@ test('native plan command creates no turn, preserves model/effort, and default r
 test('mode changes reject busy, stale, unknown and unsupported cases without applying presets', async () => {
   const applied = [];
   const session = { runtime: { state: 'running', epoch: 2 }, start: async () => {},
+    requestNative:CodexNativeSession.prototype.requestNative,
     checkSendable() {}, apply: value => applied.push(value), entry: { client: { request: async () => ({ data: [] }) } } };
   await assert.rejects(configureMode(session, 'plan', {}), /当前轮次/);
   session.runtime.state = 'completed';
@@ -55,6 +56,7 @@ test('mode changes reject busy, stale, unknown and unsupported cases without app
 test('a mode-list response cannot configure a replaced connection or newly started turn', async () => {
   let resolve;
   const session = { runtime: { state: 'completed', epoch: 1 }, start: async () => {}, checkSendable() {},
+    requestNative:CodexNativeSession.prototype.requestNative,
     apply() { assert.fail('must not apply stale mode'); }, entry: { client: { request: () => new Promise(r => { resolve = r; }) } } };
   const pending = configureMode(session, 'plan', {}); await until(() => resolve);
   session.runtime.state = 'running'; resolve({ data: [{ mode: 'plan' }] });

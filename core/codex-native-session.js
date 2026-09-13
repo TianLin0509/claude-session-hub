@@ -79,6 +79,9 @@ class CodexNativeSession extends EventEmitter {
       Object.assign(this.runtime, {state:'idle',connection:'unstarted',reason:'尚未开始，收到消息后启动'});
     }
     this.items = new Map();
+    this.backstage = new (require('./codex-backstage').CodexBackstage)(this);
+    this.on('diagnostic', message => this.backstage.note('Hub 诊断', typeof message === 'string' ? message : JSON.stringify(message), 'warning'));
+    this.on('action-error', message => this.backstage.note('操作失败', message, 'error'));
     this.terminalPresentation = new CodexTerminalPresentation(text => this.emit('data', text.replace(/\r?\n/g, '\r\n')));
     this.contentRevision = 0;
     this.history = new Map();
@@ -97,7 +100,15 @@ class CodexNativeSession extends EventEmitter {
   onData(fn) { this.on('data',fn); return {dispose:()=>this.off('data',fn)}; }
   onExit(fn) { this.on('exit',fn); return {dispose:()=>this.off('exit',fn)}; }
   resize() {}
-  print(text) { this.emit('data',sanitizeTerminal(text).replace(/\r?\n/g,'\r\n')); }
+  print(text, { capture = true } = {}) {
+    if(capture)this.backstage.note('Codex', String(text || '').trim());
+    this.emit('data',sanitizeTerminal(text).replace(/\r?\n/g,'\r\n'));
+  }
+  readBackstage(options) { return this.backstage.read(options); }
+  async requestNative(client, ...args) {
+    try { return await client.request(...args); }
+    catch (error) { this.backstage.requestError(args[0],error); throw error; }
+  }
   apply(event) {
     const next = reduceNativeRuntime(this.runtime,{epoch:this.runtime.epoch,...event});
     if (next === this.runtime) return false;
@@ -146,16 +157,22 @@ class CodexNativeSession extends EventEmitter {
         return;
       }
       const item = this.items.get(msg.params?.itemId);
+      this.backstage.note('Codex 审批或提问', msg.method, 'info', {id:msg.id,params:msg.params});
       this.apply({type:'request',threadId:this.threadId,request:{...msg,
         params:{...msg.params,...(item ? {operation:item} : {})}}});
     };
-    this.onDisconnect = error => this.apply({type:'disconnect',reason:error.message,epoch});
+    this.onDisconnect = error => {
+      this.backstage.note('连接中断', error.message, 'error');
+      this.apply({type:'disconnect',reason:error.message,epoch});
+    };
+    this.onStderr = text => this.backstage.note('App Server stderr（共享进程）', text, 'warning');
     this.onLateResponse = () => {
       if (this.threadId && !this.closed) this.reconcile().catch(error => this.emit('diagnostic',error.message));
     };
     client.on('notification',this.onNotification);
     client.on('server-request',this.onRequest);
     client.on('disconnect',this.onDisconnect);
+    client.on('stderr',this.onStderr);
     client.on('late-response',this.onLateResponse);
     this.onDiagnostic = d => {
       this.emit('diagnostic',d.message);
@@ -174,7 +191,7 @@ class CodexNativeSession extends EventEmitter {
       }
       let id = o.resumeId;
       if (!id && o.resumeLatest) {
-        const threads = await client.request('thread/list',{limit:100,sortKey:'updated_at',cwd:o.cwd});
+        const threads = await this.requestNative(client,'thread/list',{limit:100,sortKey:'updated_at',cwd:o.cwd});
         const match = (threads.data || []).find(t => String(t.cwd).toLowerCase() === String(o.cwd).toLowerCase());
         if (!match) throw new Error('当前目录没有可恢复的 Codex 历史；请明确新建会话');
         id = match.id;
@@ -196,6 +213,7 @@ class CodexNativeSession extends EventEmitter {
       }
     } catch (error) {
       if (this.closed) return;
+      this.backstage.requestError('连接',error);
       if (error.nativeDraft) this.emit('migration-draft',error.nativeDraft);
       this.apply({type:'disconnect',reason:error.message});
       this.print('\n[连接失败] '+error.message+'\n');
@@ -238,7 +256,7 @@ class CodexNativeSession extends EventEmitter {
     const result=[],seen=new Set();let cursor;
     do {
       if (this.closed) throw new Error('Codex 会话已关闭');
-      const page=await this.entry.client.request('thread/list',{limit:100,sortKey:'updated_at',...(cursor?{cursor}:{})});
+      const page=await this.requestNative(this.entry.client,'thread/list',{limit:100,sortKey:'updated_at',...(cursor?{cursor}:{})});
       result.push(...(page.data || []));
       cursor=page.nextCursor;
       if (cursor && seen.has(cursor)) throw new Error('Codex 历史分页游标重复，列表未完整加载');
@@ -266,7 +284,7 @@ class CodexNativeSession extends EventEmitter {
     if (method === 'thread/resume') { entry.owners.set(id,this); threadOwners.set(ownerKey,this); }
     let result;
     try {
-      result = await entry.client.request(method,{
+      result = await this.requestNative(entry.client,method,{
         ...this.options.threadParams, ...(id ? {threadId:id} : {}),
       });
     } catch (error) {
@@ -281,7 +299,7 @@ class CodexNativeSession extends EventEmitter {
       throw new Error('Codex 返回的 thread 身份缺失或不匹配');
     }
     if (this.closed) {
-      if (!entry.client.closed) await entry.client.request('thread/unsubscribe',{threadId:result.thread.id});
+      if (!entry.client.closed) await this.requestNative(entry.client,'thread/unsubscribe',{threadId:result.thread.id});
       return result;
     }
     if (entry.owners.has(result.thread.id) && entry.owners.get(result.thread.id) !== this) {
@@ -292,7 +310,7 @@ class CodexNativeSession extends EventEmitter {
       catch (error) {
         // Only retire the new thread opened by this request, never another owner.
         if (method !== 'thread/resume') {
-          await entry.client.request('thread/unsubscribe',{threadId:result.thread.id},3000)
+          await this.requestNative(entry.client,'thread/unsubscribe',{threadId:result.thread.id},3000)
             .catch(cleanup => this.emit('diagnostic','未能释放新建会话：'+cleanup.message));
         }
         throw error;
@@ -305,6 +323,7 @@ class CodexNativeSession extends EventEmitter {
     threadOwners.set(ownershipKey(this.options,result.thread.id),this);
     this.unsubscribed = false;
     this.threadId = result.thread.id;
+    this.backstage.bind();
     for (const turn of result.thread.turns || []) this.history.set(turn.id,turn);
     const lastTurn = (result.thread.turns || []).at(-1);
     if (lastTurn) this.items = new Map((lastTurn.items || []).map(i=>[i.id,i]));
@@ -332,7 +351,7 @@ class CodexNativeSession extends EventEmitter {
   async chooseThread(threadId) {
     if (this.threadId) throw new Error('会话已经绑定，不能重复接管');
     await this.start();
-    const read = await this.entry.client.request('thread/read',{threadId,includeTurns:false});
+    const read = await this.requestNative(this.entry.client,'thread/read',{threadId,includeTurns:false});
     const cwd = read.thread?.cwd;
     if (!cwd || !require('fs').statSync(cwd).isDirectory()) throw new Error('历史会话的工作目录不存在');
     this.options.threadParams = {...this.options.threadParams,cwd};
@@ -349,6 +368,12 @@ class CodexNativeSession extends EventEmitter {
     }
     if (p.threadId !== this.threadId) return;
     const type = msg.method;
+    // Record only this thread/current turn. Late old-turn events cannot repaint
+    // or contaminate the active task, and capture never owns runtime state.
+    if ((!p.turnId || p.turnId === this.runtime.turnId)
+        && (!p.turn?.id || !this.runtime.turnId || p.turn.id === this.runtime.turnId || type === 'turn/started')) {
+      this.backstage.notification(msg);
+    }
     if (type === 'turn/started') {
       const prior = this.runtime;
       if (this.apply({type:'started',threadId:this.threadId,turn:p.turn})
@@ -412,7 +437,7 @@ class CodexNativeSession extends EventEmitter {
       this.tokenUsage = p.tokenUsage;
       this.emit('usage',p.tokenUsage);
     } else if (type === 'error') {
-      this.print('\n[Codex] '+(p.error && p.error.message || '执行过程发生错误')+'\n');
+      this.print('\n[Codex] '+(p.error && p.error.message || '执行过程发生错误')+'\n', {capture:false});
       // A retryable error notification is not a terminal turn result.
     }
   }
@@ -468,7 +493,7 @@ class CodexNativeSession extends EventEmitter {
     if (!this.threadId || this.entry.client.closed) throw new Error('Codex 连接不可核对');
     const epoch = this.runtime.epoch;
     const revision = this.runtime.revision;
-    this.reconciling = this.entry.client.request('thread/read',{threadId:this.threadId,includeTurns:true})
+    this.reconciling = this.requestNative(this.entry.client,'thread/read',{threadId:this.threadId,includeTurns:true})
       .then(result => {
         if (this.runtime.epoch !== epoch || this.runtime.revision !== revision) return this.runtime;
         if (!result.thread || result.thread.id !== this.threadId) throw new Error('Codex 回查返回了不同会话');
@@ -581,7 +606,7 @@ class CodexNativeSession extends EventEmitter {
         : {...this.options.turnParams,...modeParams})};
     try {
       this.terminalPresentation.prompt(text, { reset: !active });
-      const result = await client.request(method,params,undefined,{beforeWrite:()=>{
+      const result = await this.requestNative(client,method,params,undefined,{beforeWrite:()=>{
         this.checkSendable(intent);
         if (active ? this.runtime.turnId !== params.expectedTurnId : !TERMINAL.has(this.runtime.state) && this.runtime.state !== 'idle') {
           throw new Error('Codex 活跃轮次已变化，未发送排队消息');
@@ -618,7 +643,7 @@ class CodexNativeSession extends EventEmitter {
     if (!['running','waiting'].includes(this.runtime.state) || this.runtime.connection !== 'connected') {
       throw new Error('没有可确认的活跃 Codex 轮次');
     }
-    await this.entry.client.request('turn/interrupt',{threadId:this.threadId,turnId:this.runtime.turnId});
+    await this.requestNative(this.entry.client,'turn/interrupt',{threadId:this.threadId,turnId:this.runtime.turnId});
     return {ok:true,pending:!TERMINAL.has(this.runtime.state)};
   }
   reviewUnknownSubmission(id, epoch) {
@@ -710,7 +735,7 @@ class CodexNativeSession extends EventEmitter {
     if (targetWeb) {
       target = {id:model,displayName:targetWeb.label,supportedReasoningEfforts:[{reasoningEffort:targetWeb.effort}]};
     } else {
-      const list = await client.request('model/list',{});
+      const list = await this.requestNative(client,'model/list',{});
       target = (list.data || []).find(m=>m.id === model || m.model === model);
     }
     check();
@@ -720,7 +745,7 @@ class CodexNativeSession extends EventEmitter {
       const tiers = [...(target.additionalSpeedTiers || []), ...(target.serviceTiers || []).map(t=>t.id)];
       if (codexSpeedTier === 'fast' && !tiers.includes('fast')) throw new Error(model+' 当前不支持 Fast');
       if (codexSpeedTier === 'fast') {
-        const configuration = await client.request('config/read',{includeLayers:false});
+        const configuration = await this.requestNative(client,'config/read',{includeLayers:false});
         check();
         if (configuration.config?.features?.fast_mode === false) {
           throw new Error('该会话启动时禁用了 Fast 能力；新建标准或 Fast 会话后可使用开关');
@@ -757,7 +782,7 @@ class CodexNativeSession extends EventEmitter {
     const epoch = this.runtime.epoch;
     let result = this.completed.get(turnId);
     if (!result) {
-      const response = await this.entry.client.request('thread/read',{threadId:this.threadId,includeTurns:true});
+      const response = await this.requestNative(this.entry.client,'thread/read',{threadId:this.threadId,includeTurns:true});
       if (this.runtime.epoch !== epoch) throw new Error('Codex 结果来自旧连接，请重新核对');
       if (response.thread?.id !== this.threadId) throw new Error('Codex 结果回查身份不匹配');
       const turn = (response.thread.turns || []).find(t=>t.id === turnId);
@@ -777,7 +802,7 @@ class CodexNativeSession extends EventEmitter {
     let commandOutput = '';
     const printResult = text => { commandOutput = String(text); this.print('\n' + commandOutput + '\n'); };
     const client = this.entry.client;
-    const request = (method,params) => client.request(method,params,undefined,{beforeWrite:()=>{
+    const request = (method,params) => this.requestNative(client,method,params,undefined,{beforeWrite:()=>{
       this.checkSendIntent(intent);
       if (this.runtime.connection !== 'connected') throw new Error('Codex 连接已断开，未发送命令');
       if (method === 'thread/compact/start' || method === 'review/start') {
@@ -858,7 +883,7 @@ class CodexNativeSession extends EventEmitter {
       // A timed-out resume may have loaded the thread without returning its ID.
       // Confirm unsubscribe on the same server before releasing its lease.
       if (!this.threadId && this.ownershipLease && this.entry && !this.entry.client.closed) {
-        await this.entry.client.request('thread/unsubscribe',{threadId:this.ownershipLease.threadId},3000);
+        await this.requestNative(this.entry.client,'thread/unsubscribe',{threadId:this.ownershipLease.threadId},3000);
         this.options.resumeId=this.ownershipLease.threadId;
         this.unsubscribed=true;
       }
@@ -885,6 +910,7 @@ class CodexNativeSession extends EventEmitter {
     c.off('notification',this.onNotification);
     c.off('server-request',this.onRequest);
     c.off('disconnect',this.onDisconnect);
+    c.off('stderr',this.onStderr);
     c.off('late-response',this.onLateResponse);
     c.off('diagnostic',this.onDiagnostic);
     release(this.entry);
@@ -898,15 +924,16 @@ class CodexNativeSession extends EventEmitter {
     const finish = () => {
       if (!isUnstartedRuntime(this.runtime)) this.apply({type:'disconnect',reason:'会话已关闭'});
       this.detach();
+      this.backstage.close();
       this.emit('exit',{exitCode:0});
     };
     if (c && !c.closed && this.threadId) {
       (async()=>{
         if (['running','waiting'].includes(this.runtime.state)) {
-          await c.request('turn/interrupt',{threadId:this.threadId,turnId:this.runtime.turnId},5000);
+          await this.requestNative(c,'turn/interrupt',{threadId:this.threadId,turnId:this.runtime.turnId},5000);
           await this.idle(5000);
         }
-        await c.request('thread/unsubscribe',{threadId:this.threadId},3000);
+        await this.requestNative(c,'thread/unsubscribe',{threadId:this.threadId},3000);
         this.unsubscribed=true;
         finish();
       })().catch(error=>{

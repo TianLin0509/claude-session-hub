@@ -37,6 +37,7 @@ function registerSessionIpc(ipcMain, deps) {
     getTerminalOutputBatchStats = () => null,
     getPersistedSessions = () => [],
   } = deps;
+  require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
 
   const lastResizeBySid = new Map();
   const claudeModelPreferenceGuards = new Map();

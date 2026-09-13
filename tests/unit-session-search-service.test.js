@@ -127,7 +127,9 @@ test('child-process service builds, queries, previews and reopens its persistent
   }], meetings: [] };
 
   const service = new SessionSearchService({
-    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
+    // This case checks explicit incremental refresh. Keep ordinary queries
+    // from starting a competing TTL refresh before the append is verified.
+    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
   });
   t.after(async () => {
     await service.close().catch(() => {});
@@ -159,8 +161,7 @@ test('child-process service builds, queries, previews and reopens its persistent
     type: 'assistant', uuid: 'worker-a2', timestamp: '2026-08-20T10:00:03Z',
     message: { model: 'claude-sonnet', stop_reason: 'end_turn', content: [{ type: 'text', text: 'INCREMENTAL_REFRESH_MARKER 已进入索引' }] },
   })}\n`, 'utf8');
-  await new Promise(resolve => setTimeout(resolve, 20));
-  const incremental = await service.refresh(snapshot, { force: false });
+  const incremental = await service.refresh(snapshot, { force: false, immediate: true });
   assert.equal(incremental.ready, true);
   assert.equal(incremental.parsedSources, 1);
   const incrementalResult = await service.search({ query: 'INCREMENTAL_REFRESH_MARKER' }, snapshot);

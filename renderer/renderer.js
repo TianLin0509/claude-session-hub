@@ -6,6 +6,7 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const { createCodexSharedStatus } = require('./codex-shared-status.js');
+const { createCodexBackstage } = require('./codex-backstage.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const {
@@ -1226,6 +1227,7 @@ function _loadCanvasRenderer(cached) {
 }
 
 function loadGpuRenderer(cached) {
+  if (cached._backstageReadable) return;
   if (cached._gpuLoaded) return;
   const pref = localStorage.getItem('hub.renderer') || 'canvas';
   if (pref === 'dom') {
@@ -1284,6 +1286,7 @@ function suspendInactiveTerminalRenderers(activeId) {
 function disposeCachedTerminal(sessionId) {
   const cached = terminalCache.get(sessionId);
   if (!cached) return false;
+  cached._codexBackstage?.dispose();
   if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (cached._ro) cached._ro.disconnect();
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
@@ -1942,6 +1945,7 @@ syncTitleBarOverlayColors();
 scheduleAppToolbarRefresh();
 
 function showTerminal(sessionId, opts = { focus: true }) {
+  for (const [sid, entry] of terminalCache) if (sid !== sessionId) entry._codexBackstage?.setVisible(false);
   suspendInactiveTerminalRenderers(sessionId);
 
   const session = sessions.get(sessionId);
@@ -1957,6 +1961,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
   const embedded = mountTarget !== terminalPanelEl;
+  if (embedded) { cached._codexBackstage?.setVisible(false);cached._backstageReadable=false; }
   if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (!embedded) terminalPanelEl.classList.remove('home-active');
   if (!embedded) cardFollowScroll.activate(sessionId, { force: !!opts.forceScrollBottom });
@@ -2010,6 +2015,15 @@ function showTerminal(sessionId, opts = { focus: true }) {
       engine: require('../core/native-ui-labels').nativeUiLabel(session),
       focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
     });
+    if (isNativeSession(session) && ['codex','codex-resume'].includes(session.kind)) {
+      cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
+        getSession:() => sessions.get(sessionId),
+        renderProse:text => DOMPurify.sanitize(marked.parse(text, {async:false}), {FORBID_TAGS:['img','video','audio','iframe']}),
+        onModeChange:mode => { cached._backstageReadable=mode!=='legacy';if(cached._backstageReadable)unloadGpuRenderer(cached);else loadGpuRenderer(cached); },
+        focusComposer:() => mountTarget.querySelector('.floating-input-box')?.focus() });
+      cached._codexBackstage.mount(termContainer);
+      cached._codexBackstage.setVisible(currentView === 'pty', {force:!!opts.forceScrollBottom});
+    }
   }
 
   requestAnimationFrame(() => {
@@ -3634,6 +3648,7 @@ function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false 
     _cardOverlayFollowBottomBySession.set(activeSessionId, _isCardOverlayAtBottom(overlay));
   }
   currentView = mode;
+  terminalCache.get(activeSessionId)?._codexBackstage?.setVisible(mode === 'pty');
   if (remember) rememberViewModeForSession(activeSessionId, mode);
   if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
@@ -4924,6 +4939,7 @@ function updateFloatingBarState() {
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
+  terminalCache.get(activeSessionId)?._codexBackstage?.updateStatus();
   codexSharedStatus.update(s);
   terminalPanelEl.classList.toggle('shared-control-visible', !codexSharedStatus.element.hidden);
 
@@ -6459,6 +6475,9 @@ ipcRenderer.on('codex-content-updated', (_e, {sessionId}) => {
   requestCardIncrementalRefresh(sessionId,{reason:'app-server-item'});
 });
 
+ipcRenderer.on('codex-backstage-updated', (_event, event) => {
+  terminalCache.get(event.sessionId)?._codexBackstage?.notify(event);
+});
 ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
   noteStreamDisconnect(sessionId, data);
   const cached = terminalCache.get(sessionId);

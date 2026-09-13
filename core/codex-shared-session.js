@@ -303,6 +303,12 @@ class CodexSharedSession extends EventEmitter {
     return this.action('reviewUnknownSubmission', [id, this.hostRuntimeEpoch]);
   }
   readOutcome(turnId) { return this.action('readOutcome', [turnId]).then(result => result ? { ...result, hubSessionId:this.options.id } : result); }
+  async readBackstage(options) {
+    await this.start();
+    if (!this.client?.features?.includes('codex-backstage-v1')) return { unsupported:true,
+      message:'当前共享后台仍在使用旧版显示。原始终端仍可查看；共享后台空闲更新后可使用工作记录。' };
+    return this.action('readBackstage', [options]);
+  }
   reconcile() { return this.action('reconcile'); }
   async reconnect() {
     if (this.client && !this.client.closed) {

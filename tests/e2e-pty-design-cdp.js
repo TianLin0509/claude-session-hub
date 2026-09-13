@@ -70,6 +70,10 @@ async function main(){
     const session=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd:workspace,workspaceLabel:'PTY 阅读体验',model:'gpt-6-astra',effort:'high',mcpProfile:'none'}})+')');
     await waitFor('session',()=>client.eval('!!document.querySelector(".session-welcome")'));
     if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');
+    // This suite validates the preserved xterm compatibility view. The new
+    // default transcript has its own live, error, paging and shared-Hub suite.
+    await waitFor('backstage selector',()=>client.eval('!!document.querySelector(".cb-tabs")'));
+    await clickPoint(client,'.cb-tabs button:last-child');
     await waitFor('native welcome',()=>client.eval('!!document.querySelector(".pty-awaiting-output")'));
     await shot('welcome');
     await clickPoint(client,'.pty-welcome-compose');
