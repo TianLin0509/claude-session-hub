@@ -8,7 +8,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
   const reservations = new Map();
-  let timer = null;
+  let timer = null, directoryEvents = null;
   const get = id => meetingManager.getMeeting(id);
   const members = m => getMembers ? getMembers(m) : getDispatcher().groupMembersForMeeting?.(m, { includeDormant: true }) || [];
   async function ensureReservation(id) {
@@ -55,8 +55,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     return { ...progress, dir, executedRounds, limitReached, recovering, paused: stopped.has(id) || !!runtime.paused || recovering || (limitReached && !active.get(id)?.size), dispatchError: runtime.error || (recovering ? '上次派工回执尚未确认，请核对现场后明确继续' : ''),
       running: preparing.has(id) || !!active.get(id)?.size, participants: m.participants };
   }
-  function emit(id) {
-    const s = status(id);
+  function emit(id, s = status(id)) {
     const json = JSON.stringify(s);
     if (snapshots.get(id) === json) return;
     snapshots.set(id, json);
@@ -117,6 +116,9 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       if (F.enabled(get(id))) emit(id);
       const current = F.enabled(get(id)) ? status(id) : null;
       if (!current || current.paused || current.error || current.done) void releaseReservation(id);
+      // A rename can arrive before the previous dispatch receipt settles.
+      // Reconsider it at that boundary instead of waiting for the safety scan.
+      else if (timer) setImmediate(() => { if (timer) tick(id); });
     });
   }
   async function dispatchStage(id, userArgs = null) {
@@ -223,12 +225,14 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       throw error;
     } finally { if (kickoff) {preparing.delete(id); if(!active.get(id)?.size) await releaseReservation(id); if(F.enabled(get(id)))emit(id);} }
   }
-  function tick() {
-    for (const m of meetingManager.getAllMeetings()) {
+  function tick(onlyId = null) {
+    const records = onlyId ? [get(onlyId)].filter(Boolean) :
+      (meetingManager.getDevWorkbenchRecords?.() || meetingManager.getAllMeetings());
+    for (const m of records) {
       if (!F.enabled(m) || F.isSolo(m)) continue;
       try {
         const s = status(m.id);
-        emit(m.id);
+        emit(m.id, s);
         if (s.paused || s.error || s.dispatchError || s.done) { void releaseReservation(m.id); continue; }
         if (m.serialWorkflow.settingsVersion === 1 && active.get(m.id)?.size) continue;
         if (!['build', 'merge'].includes(s.phase) || preparing.has(m.id)) continue;
@@ -283,7 +287,10 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     });
   }
   return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc,
-    start() { if (!timer) { tick(); timer = setInterval(tick, 1000); timer.unref?.(); } },
-    dispose() { if (timer) clearInterval(timer); timer = null; for (const id of reservations.keys()) void releaseReservation(id); } };
+    start() { if (!timer) {
+      directoryEvents = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), id => tick(id), logger);
+      tick(); timer = setInterval(() => { directoryEvents.ensure(); tick(); }, 30_000); timer.unref?.();
+    } },
+    dispose() { if (timer) clearInterval(timer); timer = null; directoryEvents?.dispose(); directoryEvents = null; for (const id of reservations.keys()) void releaseReservation(id); } };
 }
 module.exports = { createDevFileEngine };

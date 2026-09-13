@@ -43,6 +43,7 @@ class CodexSharedSession extends EventEmitter {
     this.hostRuntimeRevision = null;
     this.reconnectTimer = null;
     this.reconnectDelay = 250;
+    this.reconnectBackoff = require('./reconnect-backoff').createReconnectBackoff(options.reconnectBackoffOptions);
     this.everAttached = false;
     this.threadId = this.runtime.threadId || options.resumeId || null;
     this.contentRevision = 0;
@@ -92,6 +93,8 @@ class CodexSharedSession extends EventEmitter {
   }
   applyControl(control) {
     if (!control) return;
+    control = { ...control, runtimeBuild:control.runtimeBuild || this.client?.runtimeBuild || null,
+      backendUpgrade:control.backendUpgrade || this.client?.upgrade || null };
     const previous = this.control;
     this.control = control;
     this.emit('control', control, previous);
@@ -173,6 +176,7 @@ class CodexSharedSession extends EventEmitter {
     this.client = null;
     this.releaseClient(client);
     this.ready = null;
+    this.reconnectDelay = this.reconnectBackoff.disconnected();
     this.scheduleReconnect();
   };
   releaseClient(client) {
@@ -187,7 +191,7 @@ class CodexSharedSession extends EventEmitter {
       this.reconnectTimer=null;
       this.start().catch(error => {
         this.emit('diagnostic', 'Hub 状态同步重连失败：' + error.message);
-        this.reconnectDelay=Math.min(this.reconnectDelay*2,5000);
+        this.reconnectDelay=this.reconnectBackoff.disconnected();
         this.scheduleReconnect();
       });
     },this.reconnectDelay);
@@ -243,7 +247,7 @@ class CodexSharedSession extends EventEmitter {
     this.everAttached = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer=null;
-    this.reconnectDelay=250;
+    this.reconnectBackoff.connected();
     return this.runtime;
   }
   attachOptions() { return this.threadId ? {...this.options,resumeId:this.threadId,forkId:null} : this.options; }

@@ -97,6 +97,9 @@ function registerAppUtilityIpc(ipcMain, deps) {
 
   ipcMain.handle('get-system-resource-usage', async (_event, options = {}) => {
     const coreUsage = sampleSystemResourceUsage();
+    // The permanent sidebar uses CPU/memory only. Do not spawn nvidia-smi
+    // or query disks for values no visible UI consumes.
+    if (options.extended === false) return coreUsage;
     try {
       const extended = await systemTelemetry.sample({ force: options && options.force === true });
       return { ...coreUsage, ...extended };

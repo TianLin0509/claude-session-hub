@@ -64,7 +64,7 @@ async function withInheritedBranchTurns(args, deps, liveSession, childTurns, par
   const depth = Number(args && args.__branchDepth) || 0;
   if (depth >= MAX_BRANCH_DEPTH) return childTurns;
   const limit = Number(parseOpts && parseOpts.limit);
-  if (Number.isFinite(limit) && limit < BRANCH_INHERITANCE_MIN_LIMIT) return childTurns;
+  if (Number.isFinite(limit) && limit < BRANCH_INHERITANCE_MIN_LIMIT && !parseOpts?.includeBranchHistory) return childTurns;
 
   // 休眠 / Hub 重启后的分支会话拿不到活对象，branchSourceSessionId 只在落盘记录里。
   const session = liveSession
@@ -137,16 +137,18 @@ async function parseSessionTranscript(args = {}, deps) {
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
     if (native) {
+      const parseOpts = { limit: 50, fromTail: true, ...(opts || {}) };
       let history = [];
-      const turns = native.transcript(opts?.nativeLive ? { tailRecords: 4 } : {});
+      const turns = native.transcript(opts?.nativeLive ? { tailRecords: 4 }
+        : Number.isFinite(parseOpts.limit) && parseOpts.fromTail !== false ? { tailRecords: Math.max(4, parseOpts.limit) } : {});
       if (!opts?.nativeLive) {
         const file = native.historyPath();
         if (file) {
-          const parsed = await runTranscriptParser(deps, 'claude', file, native.historyExclusions(), parseClaudeTranscriptToTurns);
+          const parsed = await runTranscriptParser(deps, 'claude', file, { ...native.historyExclusions(), ...parseOpts }, parseClaudeTranscriptToTurns);
           history = parsed.turns || [];
         }
       }
-      return { turns: applyTailLimit([...history, ...turns].sort((a, b) => (a.ts || 0) - (b.ts || 0)), Number(opts?.limit), opts?.fromTail),
+      return { turns: applyTailLimit([...history, ...turns].sort((a, b) => (a.ts || 0) - (b.ts || 0)), Number(parseOpts.limit), parseOpts.fromTail),
         transcriptPath: null, source: 'claude-stream-json', error: null };
     }
     const kind = session ? session.kind : inKind;

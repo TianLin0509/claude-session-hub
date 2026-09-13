@@ -2460,6 +2460,7 @@ function cacheAccountUsage(data) {
       usage7d: data.usage7d || cur.usage7d || null,
       ts: data.ts || Date.now(),
     };
+    if (JSON.stringify(cur) === JSON.stringify(existing.claude)) return;
     _usageCacheMemory = existing;
     scheduleUsageCacheWrite();
   } catch {}
@@ -2533,7 +2534,9 @@ function cacheAgentUsage(provider, tokenData, scope = null) {
       ? attachCodexUsageScope(tokenData, scope)
       : tokenData;
     const observedAt = tokenData && (tokenData.observedAt || tokenData._ts) || Date.now();
-    existing[provider] = { ...scoped, ts: observedAt };
+    const next = { ...scoped, ts: observedAt };
+    if (JSON.stringify(existing[provider]) === JSON.stringify(next)) return;
+    existing[provider] = next;
     _usageCacheMemory = existing;
     scheduleUsageCacheWrite();
   } catch {}
@@ -2746,15 +2749,22 @@ function calcAgentUsage(kind, scopeOrRoot = null) {
   };
 }
 
+const _agentBufferRevisions = new Map();
+let _agentUsageBroadcastSignature = '';
 async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
+  const liveIds = new Set(allSessions.map(s => s.id));
+  for (const id of _agentBufferRevisions.keys()) if (!liveIds.has(id)) _agentBufferRevisions.delete(id);
   for (const s of allSessions) {
     if (['codex-app-server','acp'].includes(s.runtimeBackend)) continue;
     const runtimeKind = s.transcriptKind || s.kind;
     const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
     if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;
     if (s.status === 'dormant') continue;
+    const revision = sessionManager.getSessionOutputRevision?.(s.id);
+    const bufferKey = revision == null ? null : `${runtimeKind}:${revision}`;
+    if (!force && bufferKey !== null && _agentBufferRevisions.get(s.id) === bufferKey) continue;
     const buf = sessionManager.getSessionBuffer(s.id);
     if (!buf) continue;
     const plain = stripAnsi(buf);
@@ -2763,6 +2773,7 @@ async function scanAgentSessions(opts = {}) {
       : isKimiCliKind(runtimeKind)
         ? parseKimiUsage(plain)
         : parseCodexUsage(plain);
+    if (bufferKey !== null) _agentBufferRevisions.set(s.id, bufferKey);
     if (isOpenAiCodex && (parsed.usage5h || parsed.usage7d)) {
       const usageSig = JSON.stringify({ usage5h: parsed.usage5h || null, usage7d: parsed.usage7d || null });
       const usageKey = s.id + ':codex-cli-usage';
@@ -2884,7 +2895,11 @@ async function scanAgentSessions(opts = {}) {
     const usage = calcAgentUsage('gemini');
     if (usage) { agentData.gemini = usage; cacheAgentUsage('gemini', usage); }
   }
-  if (Object.keys(agentData).length > 0) sendToRenderer('agent-usage', agentData);
+  const broadcastSignature = JSON.stringify(agentData);
+  if (Object.keys(agentData).length > 0 && (force || broadcastSignature !== _agentUsageBroadcastSignature)) {
+    _agentUsageBroadcastSignature = broadcastSignature;
+    sendToRenderer('agent-usage', agentData);
+  }
   return agentData;
 }
 
