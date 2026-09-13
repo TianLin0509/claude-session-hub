@@ -2,7 +2,7 @@
 const { EventEmitter } = require('events');
 const { randomUUID, createHash } = require('crypto');
 const { ClaudeStreamClient, protocolError } = require('../main/claude-stream-client');
-const { claudeTranscriptTurns } = require('./claude-native-transcript');
+const { claudeTranscriptTurns, tailClaudeRecords } = require('./claude-native-transcript');
 const { findNativeClaudeHistory, processExists, renameNativeClaudeHistory } = require('./claude-native-history');
 const ownership = require('./native-session-ownership');
 const { ClaudeNativeActivities } = require('./claude-native-activities');
@@ -127,7 +127,7 @@ class ClaudeNativeSession extends EventEmitter {
   write() { throw new Error('Claude native sessions accept structured prompts, not terminal input'); }
   transcript(options = {}) {
     const records = [...this.records.values(), ...this.activities.records.values()].sort((a, b) => a.createdAt - b.createdAt);
-    return claudeTranscriptTurns(options.tailRecords ? records.slice(-options.tailRecords) : records);
+    return claudeTranscriptTurns(options.tailRecords ? tailClaudeRecords(records, options.tailRecords) : records);
   }
 
   historyExclusions() {
@@ -415,13 +415,13 @@ class ClaudeNativeSession extends EventEmitter {
       if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value);
     }
     const record = this.active;
-    const outputOwner = this.activities.owner(message, record);
+    let outputOwner = this.activities.owner(message, record);
     const isToolResult = message.type === 'user' && Array.isArray(message.message?.content)
       && message.message.content.some(block => block.type === 'tool_result');
     if (isToolResult) {
       if (outputOwner && !this.unreconciled) {
         this.activities.capture(outputOwner, message);
-        this.persistLateOutput(outputOwner);
+        this.persistLateOutput(outputOwner, message);
         this.emit('item', { message, userMessageId: outputOwner.userMessageId });
       }
       else this.emit('diagnostic', { type: 'unassociated-tool-result', messageId: message.uuid });
@@ -429,8 +429,7 @@ class ClaudeNativeSession extends EventEmitter {
     }
     if (message.type === 'user' && !message.parent_tool_use_id && message.message?.role === 'user') {
       if (message.origin?.kind && message.origin.kind !== 'human') {
-        this.activities.deferSegment();
-        const activity = this.activities.begin(message);
+        const activity = this.activities.inject(message);
         this.update({});
         this.emit('item', { message, userMessageId: activity.userMessageId });
         return;
@@ -486,12 +485,19 @@ class ClaudeNativeSession extends EventEmitter {
       this.activities.resolveSegment(record);
       this.finish(record, message); return;
     }
+    // A root assistant frame with no owner is the start of an engine-initiated
+    // turn whose injected input has not been replayed yet (see beginProvisional).
+    if (!outputOwner && !record && !this.unreconciled && !message.parent_tool_use_id
+        && (message.type === 'assistant' || message.type === 'stream_event')) {
+      outputOwner = this.activities.beginProvisional();
+      this.update({});
+    }
     if (!outputOwner || (!outputOwner.nativeActivity && !outputOwner.accepted) || this.unreconciled) {
       this.emit('diagnostic', { type: 'unassociated-event', messageType: message.type }); return;
     }
     if (message.type === 'assistant' || message.type === 'stream_event') {
       this.activities.capture(outputOwner, message);
-      if (message.type === 'assistant') this.persistLateOutput(outputOwner);
+      if (message.type === 'assistant') this.persistLateOutput(outputOwner, message);
       if (outputOwner === record && !record.started && !message.parent_tool_use_id && !this.activities.ambiguous) {
         record.started = true;
         record.startedAt = Date.now();
@@ -549,11 +555,15 @@ class ClaudeNativeSession extends EventEmitter {
     this.pump().catch(error => this.disconnect(error));
   }
 
-  persistLateOutput(record) {
+  // Only frames that arrive after the record settled need their own durable
+  // write; frames of a running record are covered by its terminal snapshot.
+  // Each late frame is appended alone -- re-saving the whole transcript per
+  // frame grew one session's journal to 378 MB (measured 2026-09-13).
+  persistLateOutput(record, frame) {
     if (!TERMINAL.has(record.status)) return;
-    if (record.nativeActivity) this.activities.save(record);
-    else this.lifecycle('transcript-updated', record, { status: record.status, text: record.finalText,
-      transcriptMessages: [...(record.messages?.values() || [])] });
+    if (record.nativeActivity) this.activities.saveAppended(record, frame);
+    else this.lifecycle('transcript-appended', record, { status: record.status, text: record.finalText,
+      transcriptAppend: [frame] });
   }
 
   request(message) {

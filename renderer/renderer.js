@@ -4281,7 +4281,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   // 思考档 chip：只对**实测**支持的 CLI 渲染，判据在 composerThinkingChip。
   // Codex 的档位和模型在同一个原生面板里选，所以点它复用同一个选择器；
-  // Claude 没有会话内改档的现成通路，就只显示不可点，不新造写 PTY 的路径。
+  // 原生 Claude 走 claude-native:set-effort；PTY Claude 没有会话内改档的通路，
+  // 只显示不可点，不新造写 PTY 的路径。
   const thinkingChip = document.createElement('button');
   thinkingChip.type = 'button';
   thinkingChip.className = 'composer-chip composer-thinking';

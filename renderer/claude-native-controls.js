@@ -10,6 +10,30 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   // Runtime status belongs to the composer and is not repeated here.
   const notice = document.createElement('div');
   notice.className = 'claude-native-notice';
+  // Plan mode is a session-wide setting, so it gets the same banner and
+  // "切回默认模式" button as the Codex panel instead of a bare /plan off.
+  // Built and mounted only while plan mode is on: a hidden button here would
+  // still be the panel's first button and swallow clicks meant for a form.
+  let modeBox = null, modeReset = null;
+  function mountModeBox(runtime) {
+    if (!modeBox) {
+      modeBox = document.createElement('div'); modeBox.className = 'codex-native-mode';
+      const text = document.createElement('span'); text.textContent = '计划模式 · 只讨论不改文件；后续消息沿用此模式。';
+      const modeError = document.createElement('div'); modeError.className = 'codex-native-error';
+      modeReset = document.createElement('button'); modeReset.type = 'button'; modeReset.textContent = '切回默认模式';
+      modeReset.addEventListener('click', async () => {
+        modeReset.disabled = true; modeError.textContent = '';
+        try {
+          const result = await ipcRenderer.invoke('claude-native:set-permission-mode', { sessionId, mode: 'default' });
+          if (!result?.ok) throw new Error(result?.error || '引擎未确认');
+        } catch (failure) { modeError.textContent = failure.message; modeReset.disabled = false; }
+      });
+      modeBox.append(text, modeReset, modeError);
+    }
+    if (!modeBox.isConnected) element.insertBefore(modeBox, requests);
+    modeReset.disabled = viewer || runtime.connection !== 'connected'
+      || !['idle', 'completed', 'failed', 'interrupted'].includes(runtime.state);
+  }
   const requests = document.createElement('div');
   const recovery = document.createElement('div');
   const error = document.createElement('div'); error.className = 'claude-native-error';
@@ -17,7 +41,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   let displayedActionError = null;
   element.append(notice, requests, recovery, error);
   const refreshVisibility = () => {
-    element.hidden = !(notice.textContent || requests.childElementCount
+    element.hidden = !(notice.textContent || modeBox?.isConnected || requests.childElementCount
       || recovery.childElementCount || error.textContent);
   };
   let signature = '';
@@ -93,6 +117,8 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
     notice.textContent = runtime.cancellation?.status === 'pending' ? '正在停止，等待 Claude 确认'
       : runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
+    if (runtime.permissionMode === 'plan') mountModeBox(runtime);
+    else if (modeBox?.isConnected) modeBox.remove();
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;
