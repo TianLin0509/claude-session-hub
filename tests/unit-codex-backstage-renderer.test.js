@@ -76,11 +76,11 @@ test('broker upgrade clears obsolete notices and restores export without racing 
     await until(() => ui.stats().mode === 'legacy');
     const exportButton = ui.root.querySelector('.cb-export');
     const compatibility = ui.root.querySelector('.cb-compat');
-    
+
     assert.equal(exportButton.disabled, true);
     ui.root.querySelector('.cb-tabs').children[0].click();
     await until(() => ui.stats().revision === 1);
-    
+
     assert.equal(exportButton.disabled, false, 'Successful upgraded read must restore export');
     assert.equal(compatibility.hidden, true, 'Successful upgraded read must hide obsolete notice');
     exportButton.click();await until(()=>exports===1);assert.equal(exportButton.disabled,true);
