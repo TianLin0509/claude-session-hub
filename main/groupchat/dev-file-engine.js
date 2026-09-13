@@ -17,7 +17,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     const held = [];
     try {
       for (const sid of new Set((get(id)?.subSessions || []).filter(Boolean))) {
-        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid);
+        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid) || sessionManager?.getNativeClaude?.(sid);
         if (!native || typeof native.reserveWorkflow !== 'function') continue;
         await native.reserveWorkflow(reservationId, '文件开发工作流');
         held.push(native);

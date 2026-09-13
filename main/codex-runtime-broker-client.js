@@ -133,6 +133,7 @@ async function connectMetadata(dataDir, metadata) {
       throw new Error('Codex 共享服务身份或协议不匹配');
     }
     connection.metadata = metadata;
+    connection.features = Array.isArray(hello.features) ? hello.features : [];
     return connection;
   } catch (error) {
     connection.close();
@@ -152,7 +153,7 @@ function tryAcquireStartLock(dataDir) {
     if (error.code !== 'EEXIST') throw error;
     try {
       const record = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-      if (!alive(Number(record.pid)) || Date.now() - Number(record.at || 0) > 20_000) fs.unlinkSync(lockPath);
+      if (record.childPid ? !alive(Number(record.childPid)) : !alive(Number(record.pid))) fs.unlinkSync(lockPath);
     } catch {}
     return null;
   }
@@ -193,26 +194,36 @@ async function connectBroker({ dataDir, timeoutMs = 12_000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let launched = null;
   let lastError = null;
+  let startLock = null;
+  try {
   while (Date.now() < deadline) {
     const metadata = readMetadata(dataDir);
     if (metadata) {
       try { return await connectMetadata(dataDir, metadata); }
       catch (error) { lastError = error; }
     }
-    const lock = tryAcquireStartLock(dataDir);
-    if (lock) {
-      try {
+    // Keep the lock until the child publishes its pipe. Releasing it just
+    // after spawn launched another broker every 100 ms during slow startup.
+    if (!startLock && !(metadata && alive(Number(metadata.pid)))) startLock = tryAcquireStartLock(dataDir);
+    if (startLock && !launched) {
         const existing = readMetadata(dataDir);
         if (existing) {
           try { return await connectMetadata(dataDir, existing); }
           catch (error) { lastError = error; }
         }
         launched = launchBroker(dataDir);
-      } finally { releaseStartLock(lock); }
+        fs.writeFileSync(startLock.lockPath, JSON.stringify({ pid:process.pid, childPid:launched.pid,
+          nonce:startLock.nonce, at:Date.now() }), {encoding:'utf8',mode:0o600});
     }
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error('无法启动或连接 Codex 共享服务' + (lastError ? '：' + lastError.message : launched ? `（PID ${launched.pid}）` : ''));
+  } finally {
+    // A slow child still owns this startup attempt after the caller times out.
+    // Its PID stays in the lock so another caller waits instead of respawning.
+    if (!launched || !alive(Number(launched.pid)) || readMetadata(dataDir)?.serviceId===launched.serviceId) releaseStartLock(startLock);
+  }
 }
 
-module.exports = { PROTOCOL_VERSION, BrokerConnection, connectBroker, metadataPath, pipeName, readMetadata };
+const acquireBroker = require('./broker-connect-singleflight').createBrokerConnector(connectBroker, connectMetadata);
+module.exports = { PROTOCOL_VERSION, BrokerConnection, connectBroker, acquireBroker, metadataPath, pipeName, readMetadata };

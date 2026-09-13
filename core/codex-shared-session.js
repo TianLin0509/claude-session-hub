@@ -4,8 +4,9 @@ const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
 const { randomUUID } = require('crypto');
-const { connectBroker } = require('../main/codex-runtime-broker-client');
+const { acquireBroker } = require('../main/codex-runtime-broker-client');
 const { createNativeRuntime, TERMINAL } = require('./codex-native-runtime');
+const { SharedContentDecoder } = require('./shared-content-codec');
 
 function restoredRuntime(options) {
   if (!options.restoredRuntime) {
@@ -35,7 +36,7 @@ class CodexSharedSession extends EventEmitter {
     super();
     this.options = options;
     this.sharedRuntime = true;
-    this.brokerConnector = options.brokerConnector || connectBroker;
+    this.brokerConnector = options.brokerConnector || acquireBroker;
     this.runtime = restoredRuntime(options);
     this.viewEpoch = this.runtime.epoch;
     this.hostRuntimeEpoch = null;
@@ -45,6 +46,7 @@ class CodexSharedSession extends EventEmitter {
     this.everAttached = false;
     this.threadId = this.runtime.threadId || options.resumeId || null;
     this.contentRevision = 0;
+    this.contentDecoder = new SharedContentDecoder();
     this.transcript = [];
     this.textBlocks = [];
     this.lastFinalText = '';
@@ -82,6 +84,7 @@ class CodexSharedSession extends EventEmitter {
     // must never outrank a subsequent valid snapshot from the native host.
     next = { ...next, brokerEpoch:next.epoch, epoch:this.viewEpoch,
       revision:Math.max(Number(this.runtime.revision) + 1 || 1, Number(next.revision) || 0) };
+    if(this.options.nativeProvider==='claude')next.requests=(next.requests||[]).map(request=>({...request,brokerEpoch:request.epoch,epoch:this.viewEpoch}));
     const previous = this.runtime;
     this.runtime = next;
     this.threadId = next.threadId || this.threadId;
@@ -121,8 +124,17 @@ class CodexSharedSession extends EventEmitter {
     const p = message.params || {};
     if (p.previousKey && this.key === p.previousKey) this.key = p.key;
     if (this.key && p.key && p.key !== this.key) return;
+    if (p.control?.viewId && p.control.viewId !== this.view.viewId) return;
     if (message.method === 'control') this.applyControl(p.control);
     else if (message.method === 'content') this.applyContent(p);
+    else if (message.method === 'content-delta') {
+      try { this.applyContent(this.contentDecoder.decode(p.key, p.transfer)); }
+      catch (error) {
+        // Reattach the observation channel to obtain an authoritative full
+        // snapshot. No native reconnect, turn replay or automatic resend.
+        this.onDisconnect(new Error('会话增量同步中断，正在重新读取完整状态：' + error.message));
+      }
+    }
     else if (message.method === 'locate-request') this.emit('locate-request', { sessionId:this.options.id });
     else if (message.method === 'session-event') {
       const args = Array.isArray(p.args) ? p.args : [];
@@ -139,11 +151,11 @@ class CodexSharedSession extends EventEmitter {
         // Lifecycle has persistence, notification and workflow side effects in
         // Main. Only the controller Hub publishes those; viewers already get
         // the same authoritative state and content events.
-        if (this.control.role === 'controller') {
+        if (p.controllerViewId ? p.controllerViewId===this.view.viewId : this.control.role === 'controller') {
           this.emit('lifecycle', { ...(args[0] || {}), hubSessionId:this.options.id });
         }
       } else if (p.event === 'usage') {
-        if (this.control.role === 'controller') this.emit('usage', ...args);
+        this.emit('usage', ...args);
       } else if (p.event === 'exit') this.emit('diagnostic', 'Codex 共享运行实例已退出');
       else this.emit(p.event, ...args);
     }
@@ -205,6 +217,8 @@ class CodexSharedSession extends EventEmitter {
     }
     if(serviceId)this.serviceId=serviceId;
     this.client = client;
+    this.contentDecoder.entries.clear();
+    this.view.contentMode = client.features?.includes('content-delta-v1') ? 'delta-v1' : 'turn';
     const onNotification = message => { if(this.client===client)this.onNotification(message); };
     const onDisconnect = error => { if(this.client===client)this.onDisconnect(error); };
     client.on('notification', onNotification);
@@ -217,7 +231,7 @@ class CodexSharedSession extends EventEmitter {
     try {
       // A recovered window attaches to the same returned thread, never to its
       // stale pre-start/fork options which could create another native task.
-      const options=this.threadId ? {...this.options,resumeId:this.threadId,forkId:null} : this.options;
+      const options=this.attachOptions();
       snapshot = await client.request('attach', { options:cleanOptions(options), view:this.view });
     } catch (error) {
       if (this.client === client) this.client = null;
@@ -232,6 +246,7 @@ class CodexSharedSession extends EventEmitter {
     this.reconnectDelay=250;
     return this.runtime;
   }
+  attachOptions() { return this.threadId ? {...this.options,resumeId:this.threadId,forkId:null} : this.options; }
   async request(method, params = {}, timeoutMs) {
     await this.start();
     if (!this.client || this.client.closed) throw new Error('Codex 共享服务连接已断开');

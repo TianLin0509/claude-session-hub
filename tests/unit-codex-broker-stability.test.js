@@ -30,6 +30,22 @@ class NativeFixture extends EventEmitter {
   finalText() { return this.current.text; }
   kill() { throw Error('observer must never kill native session'); }
 }
+test('wire deltas are based on the last delivered content even when queued snapshots coalesce',()=>{
+  const {SharedContentDecoder}=require('../core/shared-content-codec');
+  const socket=new PausedSocket(),peer=new Peer(socket,{disconnect(){}},'token','service'),decoder=new SharedContentDecoder();
+  const content=text=>({method:'content',deltaContent:true,params:{key:'k',replaceTurnId:'t',transcript:[{text}],finalText:text}});
+  const initial='旧'.repeat(200000);
+  peer.send(content(initial));
+  for(let i=0;i<500;i++)peer.send(content(initial+'追加'+i));
+  assert.equal(peer.outbound.length,1);
+  socket.drain();
+  assert.equal(socket.lines.length,2);
+  const frames=socket.lines.map(line=>JSON.parse(line));
+  assert.equal(frames[1].method,'content-delta');assert(Buffer.byteLength(socket.lines[1])<1000);
+  decoder.decode('k',frames[0].params.transfer);
+  assert.equal(decoder.decode('k',frames[1].params.transfer).finalText,initial+'追加499');
+  peer.close();
+});
 test('long history and a paused Hub do not disconnect the native observer during a burst', async () => {
   const native=new NativeFixture(),broker=new CodexRuntimeBroker({sessionFactory:()=>native});
   const socket=new PausedSocket(),peer=new Peer(socket,broker,'token','service');
@@ -101,4 +117,26 @@ test('completed event snapshots include final-only native items before lifecycle
   const content=messages.findIndex(x=>x.method==='content'&&x.params.finalText===native.current.text);
   const lifecycle=messages.findIndex(x=>x.params?.event==='lifecycle');
   assert(content>=0&&content<lifecycle,'capture must see terminal-only items, not a stale partial answer');
+});
+test('coalescing retains Claude background completion and control order across lifecycle',()=>{
+  const socket=new PausedSocket(),peer=new Peer(socket,{disconnect(){}},'token','service');
+  peer.send({id:1,result:'block'});
+  peer.send({method:'content',params:{key:'k',nativeRecords:[{userMessageId:'background',status:'completed',finalText:'full final'}]}});
+  peer.send({method:'content',params:{key:'k',nativeRecords:[{userMessageId:'foreground',status:'running'}]}});
+  peer.send({method:'control',params:{key:'k',control:{viewId:'v',role:'controller'}}});
+  peer.send({method:'session-event',params:{key:'k',event:'lifecycle',controllerViewId:'v'}});
+  peer.send({method:'control',params:{key:'k',control:{viewId:'v',role:'viewer'}}});
+  for(let i=0;i<10;i++)socket.drain();
+  const messages=socket.lines.map(line=>JSON.parse(line));
+  assert.equal(messages[1].params.nativeRecords[0].finalText,'full final');
+  assert.deepEqual(messages.slice(2).map(message=>message.params.control?.role || message.params.event),['controller','lifecycle','viewer']);peer.close();
+});
+test('stop and approval are handled while submit still waits for acknowledgement',async()=>{
+  const native=new NativeFixture();let finish,started=false,interrupted=false;
+  native.invoke=async action=>{if(action==='submit'){started=true;await new Promise(resolve=>finish=resolve);}else if(action==='interrupt')interrupted=true;return {ok:true};};
+  const broker=new CodexRuntimeBroker({sessionFactory:()=>native}),peer={views:new Map(),send(){}};
+  const snapshot=await broker.handle(peer,'attach',{options:{id:'a',nativeProvider:'claude',sessionId:'uuid'},view:{viewId:'v',sessionId:'a'}});
+  const params={key:snapshot.key,viewId:'v',controllerEpoch:1};
+  const submitted=broker.handle(peer,'action',{...params,action:'submit'});await Promise.resolve();assert(started);
+  await broker.handle(peer,'action',{...params,action:'interrupt'});assert(interrupted);finish();await submitted;
 });

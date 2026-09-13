@@ -17,6 +17,7 @@ const http = require('http');
 const MEETING_ID = process.env.ARENA_MEETING_ID || '';
 const HUB_PORT = parseInt(process.env.ARENA_HUB_PORT || '0', 10);
 const HOOK_TOKEN = process.env.ARENA_HOOK_TOKEN || '';
+const HUB_ROUTE_FILE = process.env.ARENA_HUB_ROUTE_FILE || '';
 const AI_KIND = process.env.ARENA_AI_KIND || 'unknown';
 
 const fs = require('fs');
@@ -53,7 +54,7 @@ logErr('startup pid=' + process.pid + ' meeting=' + MEETING_ID + ' port=' + HUB_
 // Stub mode: 当 ARENA_* env 缺失（例如用户在终端独立跑 gemini，或非 research 群聊会议
 // spawn gemini）时，server 不退出而是进入 stub —— 响应 initialize、tools/list 返回空，
 // 避免 gemini settings.json 里全局注册的 arena-research server 在无 ARENA_* 环境下报错。
-const STUB_MODE = !MEETING_ID || !HUB_PORT || !HOOK_TOKEN;
+const STUB_MODE = !MEETING_ID || (!HUB_ROUTE_FILE && (!HUB_PORT || !HOOK_TOKEN));
 if (STUB_MODE) {
   logErr('no ARENA_* env detected, running in STUB mode (tools list will be empty)');
 }
@@ -396,10 +397,13 @@ function renderSentimentMarkdown(data) {
 // Plan 2: 默认 200s 给 stock_static（9 个 op 并行，180s bridge 超时 + 20s 余量）留足。
 function postFetch(endpoint, body, timeoutMs = 200000) {
   return new Promise((resolve) => {
-    const data = JSON.stringify(body);
+    let route;
+    try { route = require('./shared-runtime-tool-route').resolveToolRoute(HUB_ROUTE_FILE, { port:HUB_PORT, token:HOOK_TOKEN }); }
+    catch (error) { resolve({ ok:false, status:0, body:'Hub route error: ' + error.message }); return; }
+    const data = JSON.stringify({ ...body, token:route.token });
     const req = http.request({
       hostname: '127.0.0.1',
-      port: HUB_PORT,
+      port: route.port,
       path: endpoint,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },

@@ -63,7 +63,7 @@ function createLoopEngine(deps) {
     const held = [];
     try {
       for (const sid of new Set((meeting?.subSessions || []).filter(Boolean))) {
-        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid);
+        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid) || sessionManager?.getNativeClaude?.(sid);
         if (!native || typeof native.reserveWorkflow !== 'function') continue;
         await native.reserveWorkflow(reservationId, label);
         held.push(native);

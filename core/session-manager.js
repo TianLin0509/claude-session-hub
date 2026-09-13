@@ -263,7 +263,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   if (opts.meetingId || opts.autonomous === true) settings.push(ensureGroupChatSettings(hubDataDir));
   if (!legacy && shouldUseClaudeFastSettings(cv, opts)) settings.push(resolveAsarUnpacked('claude-subscription-fast-settings.json'));
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
-    directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id,
+    directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     overrides: { fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts) },
   });
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
@@ -284,7 +284,10 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const unstarted = opts.nativeRuntime?.connection === 'unstarted' && opts.nativeRuntime?.lazyStart === true
     && !records.length && !opts.forkCCSessionId && !!opts.resumeCCSessionId
     && !require('./claude-native-history').findNativeClaudeHistory(opts.resumeCCSessionId, { cwd, env });
-  return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs, settingsFile,
+  const shared = sharedCodexRuntimeEnabled({...process.env,CLAUDE_HUB_CODEX_SHARED_RUNTIME:process.env.CLAUDE_HUB_CLAUDE_SHARED_RUNTIME || process.env.CLAUDE_HUB_CODEX_SHARED_RUNTIME});
+  const Driver = shared ? require('./claude-shared-session').ClaudeSharedSession : ClaudeNativeSession;
+  return new Driver({ id, kind, cwd, env, launchArgs, settingsFile, hubDataDir, journalSessionId:id,
+    hubPid:process.pid,hubVersion:require('../package.json').version,
     fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
     ownership: true, nativeProvider: 'claude', lazyStart: opts.lazyStart === true,
     historyTitle: opts.userRenamed ? opts.title : null,
@@ -1666,6 +1669,7 @@ class SessionManager extends EventEmitter {
         publish();
       });
       if (isCodex) ptyProcess.on('control', control => {
+        info.nativeSharedControl = control;
         info.codexSharedControl = control;
         publish();
       });
@@ -2025,7 +2029,6 @@ class SessionManager extends EventEmitter {
     if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
       const sharedViewerDetach = options.allowSharedViewerDetach === true
-        && session.info.runtimeBackend === 'codex-app-server'
         && session.pty?.control?.shared && session.pty.control.role === 'viewer';
       if (!sharedViewerDetach && (!runtime || runtime.connection !== 'connected'
           || !['idle','completed','interrupted','failed'].includes(runtime.state)
@@ -2599,7 +2602,8 @@ class SessionManager extends EventEmitter {
         ...(info.nativeMigrationDraft ? {nativeMigrationDraft:info.nativeMigrationDraft} : {}),
         codexApprovalPolicy:info.codexApprovalPolicy,codexSandbox:info.codexSandbox,
         nativeThreadChoices:info.nativeThreadChoices || [],nativeActionError:info.nativeActionError || null,
-        ...(info.codexSharedControl ? {codexSharedControl:info.codexSharedControl} : {})} : {}),
+        ...(info.codexSharedControl ? {codexSharedControl:info.codexSharedControl} : {}),
+        ...(info.nativeSharedControl ? {nativeSharedControl:info.nativeSharedControl} : {})} : {}),
       id: info.id,
       meetingId: info.meetingId || null,
       title: info.title,

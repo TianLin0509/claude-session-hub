@@ -4,19 +4,22 @@ const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { CodexNativeSession } = require('./codex-native-session');
 const { TERMINAL, isUnstartedRuntime } = require('./codex-native-runtime');
+const { normalizedLaunch, prepareToolRoute } = require('./shared-runtime-tool-route');
 
 const MUTATING_ACTIONS = new Set([
   'send', 'interrupt', 'reply', 'configure', 'configureMode', 'chooseThread', 'restartEmpty', 'reviewUnknownSubmission', 'reconnect',
+  'submit','respond','setModel','setEffort','setPermissionMode','setFastMode','rename','slash','claude-reconcile',
 ]);
 
 function normalizedHome(options) {
-  const raw = options?.env?.CODEX_HOME || path.join(require('os').homedir(), '.codex');
+  const raw = options.nativeProvider==='claude' ? options?.env?.CLAUDE_CONFIG_DIR || path.join(require('os').homedir(), '.claude')
+    : options?.env?.CODEX_HOME || path.join(require('os').homedir(), '.codex');
   const value = path.resolve(raw);
   return process.platform === 'win32' ? value.toLowerCase() : value;
 }
 
 function threadIdentity(options, threadId) {
-  return createHash('sha256').update(`${normalizedHome(options)}\0${threadId}`).digest('hex');
+  return createHash('sha256').update(`${options.nativeProvider==='claude'?'claude\0':''}${normalizedHome(options)}\0${threadId}`).digest('hex');
 }
 
 function pendingIdentity(options) {
@@ -24,6 +27,7 @@ function pendingIdentity(options) {
 }
 
 function recordIdentity(options) {
+  if(options.nativeProvider==='claude')return threadIdentity(options,options.sessionId || options.resumeSessionId);
   // A fork source is not the identity of the new thread. Two independent
   // branch cards may fork the same source and must remain separate until each
   // receives its own returned thread id.
@@ -34,11 +38,11 @@ function recordIdentity(options) {
 function runtimeProfileFingerprint(options) {
   const env = options?.env || {};
   const relevantEnv = Object.keys(env).sort().filter(key =>
-    key === 'PATH' || key === 'CODEX_HOME' || /^(OPENAI|CODEX|DEEPSEEK|HTTP|HTTPS|ALL_PROXY|NO_PROXY|SSL)_/i.test(key)
-  ).map(key => [key, env[key]]);
+    key === 'PATH' || key === 'CODEX_HOME' || key === 'CLAUDE_CONFIG_DIR' || /^(ANTHROPIC|CLAUDE|OPENAI|CODEX|DEEPSEEK|HTTP|HTTPS|ALL_PROXY|NO_PROXY|SSL)_/i.test(key)
+  ).filter(key=>!key.startsWith('CLAUDE_HUB_')).map(key => [key, env[key]]);
   return createHash('sha256').update(JSON.stringify({
     home:normalizedHome(options), cwd:path.resolve(options.cwd || options.threadParams?.cwd || '.'),
-    args:options.processArgs || [], relevantEnv,
+    launch:normalizedLaunch(options), relevantEnv,
   })).digest('hex');
 }
 
@@ -50,9 +54,11 @@ class RuntimeRecord {
   constructor(broker, key, options) {
     this.broker = broker;
     this.key = key;
-    this.options = { ...serializableOptions(options), id:`broker:${key.slice(0, 12)}`, sharedBroker:true };
+    this.options = { ...serializableOptions(options), id:options.nativeProvider==='claude'?options.id:`broker:${key.slice(0, 12)}`, sharedBroker:true };
     this.scopeFingerprint = runtimeProfileFingerprint(this.options);
-    this.session = broker.sessionFactory(this.options);
+    this.toolRoute = prepareToolRoute(this.options);
+    try { this.session = broker.sessionFactory(this.options); }
+    catch (error) { this.toolRoute?.dispose(); throw error; }
     this.views = new Map();
     this.controller = null;
     this.controllerEpoch = 1;
@@ -65,13 +71,15 @@ class RuntimeRecord {
     this.bindEvents();
   }
   bindEvents() {
-    for (const name of ['data','state','thread-reset','choices','migration-draft','renamed','lifecycle','action-error','diagnostic','usage']) {
+    for (const name of ['data','state','thread-reset','choices','migration-draft','renamed','lifecycle','action-error','diagnostic','usage','session-usage']) {
       this.session.on(name, (...args) => {
+        if(name==='state' && args[0]?.connection==='connected')this.exited=false;
         // Terminal-only items must reach capture consumers before the state
         // and lifecycle events which cause them to read the transcript.
         if ((name === 'state' && TERMINAL.has(args[0]?.state)) || name === 'lifecycle') this.flushContent();
         if (name === 'lifecycle' && args[0]) args[0] = { ...args[0], hubSessionId:null };
-        this.broadcast({ method:'session-event', params:{ key:this.key, event:name, args } });
+        this.broadcast({ method:'session-event', params:{ key:this.key, event:name, args,
+          ...(name==='lifecycle'?{controllerViewId:this.controller?.viewId,controllerEpoch:this.controllerEpoch}:{}) } });
         if (name === 'state') { this.broadcastControl(); this.scheduleCleanup(); }
       });
     }
@@ -123,8 +131,10 @@ class RuntimeRecord {
       // so restoring the only view is recovery, not a competing takeover.
       this.controller = { ...view };
       this.controllerEpoch++;
+      this.toolRoute?.update(this.controller, true);
       return true;
     }
+    this.toolRoute?.update(this.controller, !!this.views.get(this.controller?.viewId));
     return false;
   }
   removeView(viewId, peer) {
@@ -132,6 +142,12 @@ class RuntimeRecord {
     if (!view || view.peer !== peer) return;
     this.views.delete(viewId);
     peer.views.delete(viewId);
+    try { this.toolRoute?.update(this.controller, !!this.views.get(this.controller?.viewId)); }
+    catch (error) {
+      this.toolRoute.invalidate();
+      console.error('[native-tool-route] detach update failed:', error.message);
+      this.broadcast({method:'session-event',params:{key:this.key,event:'diagnostic',args:[{type:'tool-route-error',message:error.message}]}});
+    }
     this.broadcastControl();
     this.scheduleCleanup();
   }
@@ -142,6 +158,7 @@ class RuntimeRecord {
       if (this.views.size || (!this.exited && !this.canTransfer().ok)) return;
       this.broker.records.delete(this.key);
       this.session.kill();
+      this.toolRoute?.dispose();
     }, this.broker.idleRetentionMs);
     this.cleanupTimer.unref?.();
   }
@@ -154,6 +171,7 @@ class RuntimeRecord {
     }
     if (['submitting','unknown'].includes(r.submission?.status)) return { ok:false, reason:'消息提交结果尚未确认' };
     if ((r.requests || []).length) return { ok:false, reason:'仍有审批或问题待处理' };
+    if(this.session.pendingWork?.())return {ok:false,reason:'仍有排队消息或后台活动未结束'};
     if (this.reservations.size) return { ok:false, reason:'自动工作流尚未结束或暂停' };
     return { ok:true, reason:'本轮已结束且没有待处理工作' };
   }
@@ -190,6 +208,7 @@ class RuntimeRecord {
       blocks:this.session.blocks(),
       finalText:this.session.finalText(),
       control:this.controlFor(viewId),
+      ...this.session.snapshotExtra?.({full:true}),
     };
   }
   scheduleContent() {
@@ -222,17 +241,22 @@ class RuntimeRecord {
   broadcastContent() {
     if (!this.views.size) return;
     const turnId = this.session.runtime?.turnId;
-    if (!turnId) return;
+    if (!turnId && !this.session.snapshotExtra) return;
     // History is hydrated once on attach. Streaming replaces only this turn;
     // sending all previous turns for every token flooded even a single Hub.
     const update={ method:'content', params:{ key:this.key, contentRevision:this.session.contentRevision,
       replaceTurnId:turnId, threadId:this.session.threadId,
-      transcript:this.session.readTranscript({ limit:Infinity, turnId }), blocks:this.session.blocks(), finalText:this.session.finalText() } };
+      transcript:this.session.readTranscript({ limit:Infinity, turnId }), blocks:this.session.blocks(), finalText:this.session.finalText(),
+      ...this.session.snapshotExtra?.() } };
     let legacy;
+    const sent = new Set();
     for(const view of this.views.values()) {
       // Old Hub adapters replace their whole cache on each message. Keep
       // their history complete while the new adapters use per-turn updates.
-      if(view.contentMode==='turn')view.peer.send(update);
+      if (sent.has(view.peer)) continue;
+      sent.add(view.peer);
+      if(view.contentMode==='delta-v1')view.peer.send({...update,deltaContent:true});
+      else if(view.contentMode==='turn')view.peer.send(update);
       else {
         legacy ||= {method:'content',params:{...update.params,replaceTurnId:undefined,
           transcript:this.session.readTranscript({limit:Infinity})}};
@@ -256,6 +280,7 @@ class RuntimeRecord {
     if (this.controller?.viewId === viewId) return this.controlFor(viewId);
     if (Number(expectedEpoch) !== this.controllerEpoch) throw new Error('操作权已经变化，请刷新后重试');
     if (this.controller && !this.views.has(this.controller.viewId)) {
+      this.toolRoute?.update(view, true);
       this.controller = { viewId:view.viewId, sessionId:view.sessionId, hubPid:view.hubPid,
         hubVersion:view.hubVersion, label:view.label };
       this.controllerEpoch++;
@@ -265,6 +290,7 @@ class RuntimeRecord {
     }
     const transfer = this.canTransfer();
     if (!transfer.ok) throw new Error(transfer.reason);
+    this.toolRoute?.update(view, true);
     this.controller = { viewId:view.viewId, sessionId:view.sessionId, hubPid:view.hubPid,
       hubVersion:view.hubVersion, label:view.label };
     this.controllerEpoch++;
@@ -273,6 +299,15 @@ class RuntimeRecord {
   }
   async action(viewId, action, args, expectedEpoch) {
     if (MUTATING_ACTIONS.has(action)) this.assertController(viewId, expectedEpoch);
+    if(this.options.nativeProvider==='claude' && this.session.invoke) {
+      if(action==='start')return this.ensureStarted().then(()=>this.snapshot(viewId));
+      if(action==='claude-reconcile')return this.session.invoke('reconcile',args);
+      if(action==='readAccountUsage')return this.session.invoke(action,args);
+      if(!MUTATING_ACTIONS.has(action))throw Error('共享服务不支持操作：'+action);
+      const result=await this.session.invoke(action,args);
+      this.flushContent();
+      return result;
+    }
     if (action === 'start') return this.ensureStarted().then(() => this.snapshot(viewId));
     if (action === 'readOutcome') return this.session.readOutcome(...args);
     if (action === 'reconcile') {
@@ -293,7 +328,8 @@ class RuntimeRecord {
 }
 
 class CodexRuntimeBroker {
-  constructor({ serviceId = randomUUID(), sessionFactory = options => new CodexNativeSession(options), idleRetentionMs = 30 * 60_000 } = {}) {
+  constructor({ serviceId = randomUUID(), sessionFactory = options => options.nativeProvider==='claude'
+    ? new (require('./claude-broker-session').ClaudeBrokerSession)(options) : new CodexNativeSession(options), idleRetentionMs = 30 * 60_000 } = {}) {
     this.serviceId = serviceId;
     this.sessionFactory = sessionFactory;
     this.idleRetentionMs = Math.max(1000, Number(idleRetentionMs) || 30 * 60_000);
@@ -318,7 +354,7 @@ class CodexRuntimeBroker {
       if (!record) {
         record = new RuntimeRecord(this, key, options);
         this.records.set(key, record);
-      } else if (record.scopeFingerprint !== runtimeProfileFingerprint(options)) {
+      } else if ((record.session.profileOptions ? runtimeProfileFingerprint(record.session.profileOptions()) : record.scopeFingerprint) !== runtimeProfileFingerprint(options)) {
         throw new Error('同一 Codex 会话的运行配置不同，不能共享后台');
       }
       record.addView(peer, view);
@@ -342,7 +378,7 @@ class CodexRuntimeBroker {
       const owner = record.controller;
       if (!owner) throw new Error('当前没有操作窗口，可以直接在此操作');
       if (!record.views.has(owner.viewId)) throw new Error('原操作窗口已断开；工作结束后可在此操作');
-      record.sendToView(owner.viewId, { method:'locate-request', params:{ key:record.key, sessionId:owner.sessionId } });
+      record.sendToView(owner.viewId, { method:'locate-request', params:{ key:record.key, sessionId:owner.sessionId, viewId:owner.viewId } });
       return { ok:true, controller:record.controlFor(params.viewId).controller };
     }
     if (method === 'reserve-workflow') {
@@ -363,6 +399,9 @@ class CodexRuntimeBroker {
     }
     if (method === 'action') {
       const run = () => record.action(params.viewId, params.action, params.args || [], params.controllerEpoch);
+      // An acknowledgement may take seconds. Stop/approval remain responsive
+      // while submit waits; each still checks the current controller epoch.
+      if(['interrupt','respond','reply'].includes(params.action))return run();
       return MUTATING_ACTIONS.has(params.action) ? record.enqueueCommand(run) : run();
     }
     if (method === 'snapshot') return record.snapshot(params.viewId);

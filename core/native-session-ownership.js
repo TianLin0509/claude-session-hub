@@ -45,7 +45,37 @@ function bindServerPid(lease,serverPid){
 function getJson(port,url){return new Promise((resolve,reject)=>{
   const req=http.get({hostname:'127.0.0.1',port,path:url,timeout:2000},res=>{let text='';res.on('error',reject);res.on('data',c=>{text+=c;if(text.length>1024*1024)req.destroy(new Error('本机 Hub 响应过大'));});res.on('end',()=>{try{resolve(JSON.parse(text));}catch(e){reject(e);}});});req.on('error',reject);req.on('timeout',()=>req.destroy(new Error('旧 Hub 暂未响应')));
 });}
+const pendingOwnerReads = new Map();
+function readMainOwnership(control) {
+  return new Promise((resolve,reject)=>{
+    const body=JSON.stringify({token:control.token});
+    const req=http.request({hostname:'127.0.0.1',port:control.hookPort,path:'/api/native-ownership',method:'POST',timeout:3000,
+      headers:{'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{
+      let text='';
+      res.on('error',reject);res.on('aborted',()=>reject(Error('原 Hub 归属核对响应中断')));
+      res.on('data',chunk=>{text+=chunk;if(Buffer.byteLength(text)>1024*1024)req.destroy(Error('原 Hub 归属响应过大'));});
+      res.on('end',()=>{
+        try {
+          if(res.statusCode!==200)throw Error('原 Hub 拒绝归属核对：'+res.statusCode);
+          const value=JSON.parse(text);
+          if(value.pid!==control.pid || !Array.isArray(value.sessions))throw Error('原 Hub 归属身份不匹配');
+          resolve(value.sessions);
+        }catch(error){reject(error);}
+      });
+    });
+    req.on('error',reject);req.on('timeout',()=>req.destroy(Error('原 Hub 归属核对超时')));req.end(body);
+  });
+}
 async function readOtherHubSessions(control){
+  // Share only concurrent requests. Never cache an "unowned" answer across
+  // time: the other Hub may start a writer immediately after replying.
+  const key=JSON.stringify([control.pid,control.startedAt,control.hookPort,control.cdpPort,control.token]);
+  if(pendingOwnerReads.has(key))return pendingOwnerReads.get(key);
+  const task=control.nativeOwnershipVersion===1 ? readMainOwnership(control) : readLegacyHubSessions(control);
+  pendingOwnerReads.set(key,task);
+  try{return await task;}finally{if(pendingOwnerReads.get(key)===task)pendingOwnerReads.delete(key);}
+}
+async function readLegacyHubSessions(control){
   if(!control.cdpPort)throw new Error('旧 Hub 未开放状态核对入口');
   const version=await getJson(control.cdpPort,'/json/version');
   const browserUrl=new URL(version.webSocketDebuggerUrl);
@@ -91,9 +121,9 @@ async function assertNoOtherHubOwner(options,threadId,readSessions=readOtherHubS
     if(control.pid!==pid)throw new Error('旧 Hub 进程身份不匹配，暂不能恢复该会话');
     const rows=await readSessions(control);
     checkedPids.push(pid);
-    const owner=rows.find(s=>options.nativeProvider==='claude'
+    const owner=rows.find(s=>!(options.sharedBroker && s.sharedRuntime===true) && (options.nativeProvider==='claude'
       ? (s.kind==='claude'||s.kind==='claude-resume'||s.runtimeBackend==='claude-stream-json') && (s.ccSessionId===threadId||s.id===options.id)
-      : (s.kind==='codex'||s.kind==='codex-resume') && (s.codexSid===threadId || s.id===options.id));
+      : (s.kind==='codex'||s.kind==='codex-resume') && (s.codexSid===threadId || s.id===options.id)));
     if(owner) {
       const error=new Error('原 Hub 仍持有这个原生会话，请在原窗口结束会话后恢复；没有启动第二个任务');
       if(owner.id===options.id && typeof owner.draft==='string')error.nativeDraft=owner.draft;

@@ -4,6 +4,7 @@ const path = require('node:path');
 const { JsonlTail } = require('../../core/jsonl-tail.js');
 const { isClaudeFamily, isCodexCliKind } = require('../../core/ai-kinds.js');
 const { codexUsage, ClaudeUsageLedger } = require('../../core/session-token-usage.js');
+const { isSessionViewer } = require('../../core/session-observer-policy');
 
 class SessionTokenUsageService {
   constructor({ publish, logger = console }) {
@@ -14,6 +15,7 @@ class SessionTokenUsageService {
 
   bind(session) {
     const id = session?.id || session?.hubId;
+    if (id && (isSessionViewer(session) || (session.runtimeBackend==='claude-stream-json' && session.codexSharedControl?.shared))) { this.remove(id); return; }
     const kind = session?.transcriptKind || session?.kind;
     if (!id || !session.transcriptPath || (!isClaudeFamily(kind) && !isCodexCliKind(kind))) return;
     const sourcePath = path.resolve(session.transcriptPath);
@@ -49,6 +51,7 @@ class SessionTokenUsageService {
     };
     entry.tail = new JsonlTail(sourcePath, accept, {
       maxReadBytes: 256 * 1024,
+      watchPollIntervalMs: 5000,
       onError: error => {
         if (!entry.errorLogged) this.logger.warn('[session-usage] transcript read failed:', id, error.message);
         entry.errorLogged = true;

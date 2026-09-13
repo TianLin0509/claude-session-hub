@@ -21,9 +21,10 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       || recovery.childElementCount || error.textContent);
   };
   let signature = '';
+  let viewer = false;
   let recoveryKey = '';
   let recoveryVersion = { epoch: 0, revision: -1 };
-  const recoverySignature = runtime => JSON.stringify([runtime.epoch, runtime.state === 'unknown', runtime.connection, runtime.recoveryReady]);
+  const recoverySignature = runtime => JSON.stringify([runtime.epoch, runtime.state === 'unknown', runtime.connection, runtime.recoveryReady,viewer]);
   async function inspectRecovery(button, reconnect = false) {
     button.disabled = true; error.textContent = '';
     try {
@@ -44,15 +45,16 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         original.style.cssText = 'max-height:160px;overflow:auto;white-space:pre-wrap';
         const resolve = document.createElement('button');
         resolve.className = 'claude-reconcile'; resolve.textContent = '我已核对，继续会话（不重发）';
-        resolve.disabled = !result.runtime.recoveryReady;
+        resolve.disabled = viewer || !result.runtime.recoveryReady;
         resolve.addEventListener('click', async () => {
+          if(viewer)return;
           resolve.disabled = true;
           try {
             const response = await ipcRenderer.invoke('claude-native:reconcile', { sessionId,
               identity: { ...record, text: undefined, content: undefined, resolution: 'do-not-replay' } });
             if (!response?.ok) throw new Error(response?.error || '核对未保存');
             row.remove();
-          } catch (e) { error.textContent = e.message; resolve.disabled = false; }
+          } catch (e) { error.textContent = e.message; resolve.disabled = viewer; }
         });
         const restore = document.createElement('button'); restore.textContent = '复制原文为新草稿';
         restore.className = 'claude-recovery-copy';
@@ -67,17 +69,19 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     refreshVisibility();
   }
   async function act(request, decision, button) {
+    if(viewer)return;
     button.disabled = true; error.textContent = '';
     try {
       const result = await ipcRenderer.invoke('claude-native:respond', { sessionId, requestId: request.id,
         epoch: request.epoch, submissionId: request.submissionId, decision });
       if (!result?.ok) throw new Error(result?.error || '操作未确认');
-    } catch (failure) { error.textContent = failure.message; button.disabled = false; }
+    } catch (failure) { error.textContent = failure.message; button.disabled = viewer; }
     refreshVisibility();
   }
   function update(session) {
     if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
     const runtime = session.nativeRuntime || {};
+    viewer = require('../core/session-observer-policy').isSessionViewer(session);
     notice.textContent = runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
@@ -95,11 +99,12 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         const reconnect = document.createElement('button');
         reconnect.className = 'claude-reconnect';
         reconnect.textContent = runtime.recoveryReady ? '核对待确认消息' : '重连并核对（不重发）';
+        reconnect.disabled = viewer && !runtime.recoveryReady;
         reconnect.addEventListener('click', () => inspectRecovery(reconnect, !runtime.recoveryReady));
         recovery.append(reconnect);
       }
     }
-    const next = JSON.stringify([runtime.epoch, (runtime.requests || []).map(item => item.id)]);
+    const next = JSON.stringify([runtime.epoch, viewer, (runtime.requests || []).map(item => item.id)]);
     if (next === signature) { refreshVisibility(); return; }
     signature = next; requests.replaceChildren();
     for (const request of runtime.requests || []) {
@@ -118,6 +123,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
             label.append(choices);
           }
           const input = document.createElement('input'); input.required = true; input.type = 'text';
+          input.disabled = viewer;
           input.style.cssText = 'display:block;width:95%;margin:6px 0;padding:6px';
           label.append(input); box.append(label); inputs.push([question.question, input]);
         }
@@ -129,6 +135,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       const allow = document.createElement('button'); allow.type = 'submit';
       allow.textContent = inputs.length ? '提交回答' : '允许本次';
       const deny = document.createElement('button'); deny.type = 'button'; deny.textContent = '拒绝';
+      allow.disabled = viewer; deny.disabled = viewer;
       box.append(allow, deny);
       box.addEventListener('submit', event => {
         event.preventDefault();
