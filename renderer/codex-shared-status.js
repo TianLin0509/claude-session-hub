@@ -1,6 +1,7 @@
 'use strict';
 
 function createCodexSharedStatus({ document:doc = document, invoke, getSession, onControlChanged = () => {} }) {
+  const updateNotice = require('./backend-update-notice').createBackendUpdateNotice({ document: doc });
   const element = doc.createElement('section');
   element.id = 'codex-shared-status';
   element.className = 'codex-shared-status';
@@ -60,19 +61,20 @@ function createCodexSharedStatus({ document:doc = document, invoke, getSession, 
 
   function update(session) {
     const control = session?.codexSharedControl;
+    if (sessionId !== (session?.id || null)) feedback.textContent = '';
     sessionId = session?.id || null;
-    const upgrade = control?.backendUpgrade;
-    if (upgrade && control.role === 'controller') {
-      element.hidden = false; actions.hidden = true;
-      title.textContent = upgrade.status === 'legacy' ? '共享后台待更新' : '共享后台更新待完成';
-      detail.textContent = upgrade.reason;
-      element.title = `实际后台 ${control.runtimeBuild?.version || '旧版本'} · ${control.serviceId || ''}`;
-      return;
-    }
+    updateNotice.update(session);
     // The owning window needs no informational banner or reserved space.
     // Viewer actions still provide the actual cross-window control handoff.
     if (!control?.shared || !control.controller || control.role === 'controller') {
       element.hidden = true;
+      actions.hidden = true;
+      locate.hidden = true;
+      take.hidden = true;
+      locate.disabled = true;
+      take.disabled = true;
+      element.removeAttribute('data-role');
+      element.removeAttribute('data-transferable');
       feedback.textContent = '';
       return;
     }
@@ -99,7 +101,7 @@ function createCodexSharedStatus({ document:doc = document, invoke, getSession, 
     if (!pending && feedback.textContent && own) feedback.textContent = '已切换到本窗口';
   }
 
-  return { element, update };
+  return { element, update, updateNotice };
 }
 
 module.exports = { createCodexSharedStatus };

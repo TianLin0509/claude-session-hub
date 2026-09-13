@@ -749,6 +749,7 @@ terminalPanelEl.prepend(codexSharedStatus.element);
 // notification toggle, msg-overlay) declared statically in index.html. Without preserve they vanish forever
 // after the first session close → no card view + no view toggle button.
 function preserveAndClearTerminalPanel() {
+  codexSharedStatus.updateNotice.collapse();
   const preserved = [
     document.getElementById('codex-shared-status'),
     document.getElementById('msg-overlay'),
@@ -4350,6 +4351,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const secondaryActions = document.createElement('div');
   secondaryActions.className = 'composer-secondary-actions';
   secondaryActions.append(bridgeToolbar, startActions);
+  if (termContainer.closest('.terminal-panel') === terminalPanelEl) {
+    composer.classList.add('has-backend-update-notice');
+    secondaryActions.appendChild(codexSharedStatus.updateNotice.element);
+  }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,

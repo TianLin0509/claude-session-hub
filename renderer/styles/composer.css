@@ -20,6 +20,7 @@
   box-shadow: var(--shadow-sm);
 }
 .codex-shared-status[hidden] { display: none; }
+.codex-shared-status [hidden] { display: none !important; }
 .codex-shared-status-icon {
   display: grid;
   place-items: center;
@@ -60,6 +61,29 @@
 .codex-shared-status-actions button:disabled { opacity: .46; cursor: not-allowed; }
 .codex-shared-status-actions button:focus-visible { outline: 2px solid var(--status-info); outline-offset: 2px; }
 .codex-shared-status-feedback { flex: 0 1 auto; color: var(--status-warning); font-size: 10px; }
+
+/* A backend update is secondary information, outside the conversation stage. */
+.composer.has-backend-update-notice { position: relative; }
+.backend-update-notice { flex: 0 0 auto; margin-left: auto; }
+.backend-update-notice[hidden], .backend-update-notice [hidden] { display: none !important; }
+.backend-update-toggle, .backend-update-close {
+  border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--fg-muted); font: inherit; font-size: 10px; padding: 3px 5px; cursor: pointer;
+}
+.backend-update-toggle:focus-visible, .backend-update-close:focus-visible {
+  outline: 2px solid var(--status-info); outline-offset: 2px;
+}
+.backend-update-details {
+  position: absolute; right: 12px; bottom: calc(100% + 8px); z-index: 130;
+  box-sizing: border-box; width: 320px; max-width: calc(100% - 24px);
+  padding: 12px; border: 1px solid var(--border-mid); border-radius: var(--radius-md);
+  background: var(--surface-overlay); color: var(--fg-default); box-shadow: var(--shadow-md);
+  font-size: 11px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere;
+}
+.backend-update-details strong { color: var(--fg-strong); font-size: 12.5px; }
+.backend-update-details p { margin: 6px 0; }
+.backend-update-details small { display: block; color: var(--fg-muted); font-size: 10px; }
+.backend-update-close { display: block; margin: 7px 0 0 auto; }
 .terminal-panel.shared-control-visible { --codex-shared-status-h: 58px; }
 .terminal-panel.shared-control-visible .msg-overlay {
   top: calc(var(--term-header-h, 43px) + var(--codex-shared-status-h, 0px));
