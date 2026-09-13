@@ -49,6 +49,7 @@ async function main() {
       windowMode: 'hidden', label: RUN,
       extraEnv: { CLAUDE_HUB_E2E: '1', CLAUDE_CONFIG_DIR: claudeHome,
         CLAUDE_HUB_HOME_DIR: path.join(TEMP, 'home'), AI_HUB_WORKSPACE_ROOT: TEMP,
+        CLAUDE_HUB_FIXTURE_CONFIG_DIR: path.join(TEMP, 'launch'),
         CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.join(ROOT, 'tests', 'fixtures', 'claude-stream.js'),
         DEEPSEEK_API_KEY: '' } });
     client = await connectFirstPage(hub, target => target.type === 'page' && /index\.html/.test(target.url));
@@ -114,7 +115,10 @@ async function main() {
     ok('session keeps the confirmed tier', (await client.eval(`sessions.get(${q}).nativeRuntime.fastMode`)) === true);
     // The relaunch overlay must carry the new tier, or a reconnect silently
     // drops back to the launch value.
-    const overlay = path.join(TEMP, 'data', 'native-agent-settings', sid + '.json');
+    const nativePid=await client.eval(`sessions.get(${q}).nativeRuntime.childPid`);
+    const launched=JSON.parse(fs.readFileSync(path.join(TEMP,'launch',nativePid+'.json'),'utf8'));
+    const overlay=path.resolve(launched.args[launched.args.indexOf('--settings')+1]);
+    assert(overlay.startsWith(TEMP+path.sep),'settings read must stay inside the isolated test');
     ok('relaunch overlay stores the tier', JSON.parse(fs.readFileSync(overlay, 'utf8')).fastMode === true);
 
     // Slash commands are a command channel: the composer reports the engine's

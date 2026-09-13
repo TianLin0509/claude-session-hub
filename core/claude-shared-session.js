@@ -21,6 +21,7 @@ class ClaudeSharedSession extends CodexSharedSession {
   constructor(options) {
     const sessionId=options.resumeSessionId&&!options.fork?options.resumeSessionId:options.sessionId||randomUUID();
     super({...options,sessionId,nativeProvider:'claude',brokerConnector:options.brokerConnector||connectClaudeBroker});
+    this.view.claudeMessageMode='delta-v1';
     delete this.transcript;
     this.sessionId=sessionId;this.threadId=sessionId;this.records=new Map();this.activities={records:new Map(),pending:()=>[...this.activities.records.values()].filter(r=>!END.has(r.status)&&!r.reconciliation)};
     this.recovery=[];this.historyFile=null;
@@ -40,7 +41,8 @@ class ClaudeSharedSession extends CodexSharedSession {
     if(content.replaceNativeRecords){this.records.clear();this.activities.records.clear();}
     const changed=[];
     for(const row of content.nativeRecords || []) {
-      const record=restoreRecord(row);const map=record.nativeActivity?this.activities.records:this.records;
+      const map=row.nativeActivity?this.activities.records:this.records;
+      const record=restoreRecord(row,map.get(row.nativeActivity?row.userMessageId:row.submissionId));
       map.set(record.nativeActivity?record.userMessageId:record.submissionId,record);changed.push(record.userMessageId);
     }
     if(Array.isArray(content.recoveryRecords))this.recovery=content.recoveryRecords;

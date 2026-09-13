@@ -48,8 +48,7 @@ async function main() {
     cards:[...document.querySelectorAll('.mr-ft-status')].map(e=>({text:e.innerText,cls:e.className})),
     lanes:[...document.querySelectorAll('.mr-turn-lane-meta')].map(e=>e.innerText),
     text:document.querySelector('.mr-gc-shell')?.innerText,
-    home:{active:document.getElementById('home-metric-active')?.innerText,waiting:document.getElementById('home-metric-waiting')?.innerText},
-    homeSnapshot:homeWorkbench?.getSnapshot?.()
+    home:{visible:homeWorkbench.isVisible(),ready:document.getElementById('empty-state')?.dataset.homeReady}
   })`);
   async function verifySession(slot) {
     const session = await client.eval(`ipcRenderer.invoke('create-session',${JSON.stringify({kind:provider,opts:{...slot,cwd,title:'原生单会话状态验收',userRenamed:true}})})`);
@@ -95,14 +94,10 @@ async function main() {
     await shot('session-'+scenario);
     result.checks.push(`visible sidebar, header and composer converge to ${expected} within 1 second of Main event`);
     await client.eval('escapeToHome()');
-    const refreshAt=Date.now();
-    await client.eval('document.getElementById("home-refresh").click()');
-    await until('home refresh state',`!document.getElementById('home-refresh').disabled && document.getElementById('home-metric-waiting').innerText===${JSON.stringify(expected==='waiting'?'1':'0')}`);
-    result.homeRefreshMs=Date.now()-refreshAt;
-    result.home=await client.eval('homeWorkbench.getSnapshot()');
+    await until('current welcome page','homeWorkbench.isVisible() && document.getElementById("empty-state").dataset.homeReady==="true"');
     assert.equal(await client.eval(`sessions.get(${sid}).nativeRuntime.state`),expected);
     await shot('home-'+scenario);
-    result.checks.push('actual home refresh retains the same native state and correct waiting count');
+    result.checks.push('returning to the current welcome page retains the same native state');
     if(scenario==='approval'){
       await client.eval(`selectSession(${sid})`);
       const selector=provider==='claude'?'.claude-native-controls button[type=button]':'.codex-native-controls button';
@@ -144,11 +139,10 @@ async function main() {
       result.checks.push('actual reconciliation button opens the exact member without sending');
     }
     await client.eval('escapeToHome()');
-    await until('home waiting cleared', 'document.getElementById("home-metric-waiting")?.innerText==="0"');
+    await until('current welcome page','homeWorkbench.isVisible() && document.getElementById("empty-state").dataset.homeReady==="true"');
     result.home = await groupSnapshot(); await shot('home-' + scenario);
-    await client.eval('document.getElementById("home-refresh").click()');
-    await until('refresh keeps terminal', `!document.getElementById('home-refresh').disabled && ${ids}.every(id=>sessions.get(id)?.nativeRuntime?.state===${expected})`);
-    result.checks.push(`actual home refresh preserves ${target.state}; waiting count stays zero`);
+    assert.equal(await client.eval(`${ids}.every(id=>sessions.get(id)?.nativeRuntime?.state===${expected})`),true);
+    result.checks.push(`returning to the current welcome page preserves ${target.state}`);
     result.sessions = [];
     for (const id of meeting.subSessions) {
       await client.eval(`selectSession(${JSON.stringify(id)})`);
@@ -198,12 +192,8 @@ async function main() {
       function sample(){for(const p of trace.pending){if(p.done)continue;
         const lane=document.querySelector('[data-turn-lane-sid="'+p.id+'"] .mr-turn-lane-meta');
         const text=lane?.innerText||'';
-        const home=document.getElementById('home-metric-waiting');
-        const homeChecked=visible(home);
-        const homeExpected=ids.some(id=>sessions.get(id)?.nativeRuntime?.state==='waiting')?'1':'0';
-        const homeActual=home?.innerText;
-        const match=new RegExp(labels[p.state]).test(text) && (!homeChecked || homeActual===homeExpected);
-        if(match || Date.now()-p.at>1100){p.done=true;trace.samples.push({...p,text,homeChecked,homeExpected,homeActual,match,latencyMs:Date.now()-p.at});}
+        const match=new RegExp(labels[p.state]).test(text);
+        if(match || Date.now()-p.at>1100){p.done=true;trace.samples.push({...p,text,match,latencyMs:Date.now()-p.at});}
       }}
       ipcRenderer.on('session-updated',(_e,{session:s})=>{const r=s.nativeRuntime;
         if(!ids.includes(s.id) || !r || !Object.hasOwn(labels,r.state))return;
@@ -231,12 +221,12 @@ async function main() {
     assert.ok(waitingTimes.every(row=>row.match && row.latencyMs<=1000), JSON.stringify(waitingTimes));
     result.checks.push('both group member statuses show native approval waiting');
     await client.eval('escapeToHome()');
-    await until('home waiting', 'document.getElementById("home-metric-waiting")?.innerText==="1"');
-    result.homeWaiting = await client.eval('({active:document.getElementById("home-metric-active").innerText,waiting:document.getElementById("home-metric-waiting").innerText})');
+    // Dashboard metrics/refresh were removed by welcome-page commit 34d95d1.
+    // Verify the current navigation contract instead of resurrecting old UI.
+    await until('current welcome page','homeWorkbench.isVisible() && document.getElementById("empty-state").dataset.homeReady==="true"');
     await shot('home-waiting');
-    await client.eval('document.getElementById("home-refresh").click()');
-    await until('home refresh preserves pending approvals', `!document.getElementById('home-refresh').disabled && document.getElementById('home-metric-waiting').innerText==='1' && ${ids}.every(id=>sessions.get(id)?.nativeRuntime?.state==='waiting')`);
-    await shot('home-refreshed'); result.checks.push('actual home refresh preserves both pending approvals and one meeting count');
+    assert.equal(await client.eval(`${ids}.every(id=>sessions.get(id)?.nativeRuntime?.state==='waiting')`),true);
+    result.checks.push('returning to the current welcome page preserves both pending approvals');
     for (const id of meeting.subSessions) {
       await client.eval(`selectSession(${JSON.stringify(id)})`);
       const selector = provider === 'claude' ? '.claude-native-controls button[type=button]' : '.codex-native-controls button';
@@ -249,10 +239,9 @@ async function main() {
     await until('completed roster', `[...document.querySelectorAll('.mr-turn-lane-meta')].length===2 && [...document.querySelectorAll('.mr-turn-lane-meta')].every(e=>/已答/.test(e.innerText))`);
     result.completed = await groupSnapshot(); await shot('group-completed');
     await client.eval('escapeToHome()');
-    await until('home completion', 'document.getElementById("home-metric-waiting")?.innerText==="0"');
-    // Home "active" counts awake sessions, not running turns.
-    assert.equal(await client.eval('document.getElementById("home-metric-active").innerText'), '2');
-    await shot('home-completed'); result.checks.push('home clears waiting after both exact member completions; awake session count stays two');
+    await until('current welcome page','homeWorkbench.isVisible() && document.getElementById("empty-state").dataset.homeReady==="true"');
+    assert.equal(await client.eval(`${ids}.every(id=>sessions.get(id)?.nativeRuntime?.state==='completed')`),true);
+    await shot('home-completed'); result.checks.push('both exact member completions survive group and welcome navigation');
     }
     result.events = await client.eval('consumerEvents');
     assert.deepEqual(result.rendererErrors, []);

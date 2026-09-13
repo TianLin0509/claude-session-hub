@@ -13,6 +13,7 @@ function claudeRuntimeTruth(session) {
     providerSessionId: snapshot.providerSessionId || null, epoch: snapshot.epoch || 0,
     revision: snapshot.revision || 0, evidence: snapshot.reason || '', corroborations: [],
     connection: snapshot.connection || 'disconnected',
+    cancellation: snapshot.cancellation || null,
   };
 }
 
