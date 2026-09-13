@@ -169,6 +169,7 @@ class SqliteSessionSearchIndex {
         timestamp INTEGER,
         UNIQUE(session_key, event_id)
       );
+      CREATE INDEX IF NOT EXISTS idx_docs_source ON docs(source_key);
       CREATE INDEX IF NOT EXISTS idx_docs_session ON docs(session_key, ordinal);
       CREATE INDEX IF NOT EXISTS idx_docs_scope_time ON docs(scope, timestamp);
       CREATE INDEX IF NOT EXISTS idx_docs_session_scope_time ON docs(session_key, scope, timestamp);
@@ -375,8 +376,12 @@ class SqliteSessionSearchIndex {
     try { return JSON.parse(row.value); } catch { return fallback; }
   }
 
-  getRepresentedIds() {
-    const rows = this.db.prepare('SELECT hub_session_id, meeting_id FROM sessions').all();
+  getRepresentedIds(sourceKeys) {
+    // Refresh chooses the retained transcript sources before pruning. Existing
+    // fallback titles must not suppress themselves or a removed transcript's
+    // replacement, even though both already have a sessions row.
+    const rows = this.db.prepare('SELECT source_key, hub_session_id, meeting_id FROM sessions').all()
+      .filter(row => !sourceKeys || sourceKeys.has(row.source_key));
     return {
       hubIds: new Set(rows.map(row => row.hub_session_id).filter(Boolean).map(String)),
       meetingIds: new Set(rows.map(row => row.meeting_id).filter(Boolean).map(String)),

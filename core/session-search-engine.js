@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { SqliteSessionSearchIndex } = require('./session-search-sqlite-index.js');
 const {
   collectSourceDescriptors,
+  isMetadataOnlySignature,
   normalizePath,
   parseSourceDescriptor,
   titleOnlySourceFromDescriptor,
@@ -393,18 +394,23 @@ class SessionSearchEngine {
         await new Promise(resolve => setImmediate(resolve));
       }
 
-      // Drop sources outside the current discovery/retention set before adding
-      // metadata-only Hub rows, otherwise an about-to-be-pruned transcript can
-      // incorrectly suppress its replacement title record.
+      // Plan transcript representation without deleting fallback titles first.
+      // Pruning here used to delete/reinsert every unchanged Hub title on each
+      // refresh; simply removing that prune would let a fallback hide itself.
       const persistedPaths=this.index.db.prepare('SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL').all().map(row=>normalizePath(row.transcript_path));
       const discoveryOptions=this._dynamicOptions(snapshot);
       const missingRoots=[...discoveryOptions.claudeRoots,...discoveryOptions.codexRoots,...discoveryOptions.kimiRoots,...discoveryOptions.geminiRoots,discoveryOptions.meetingDir]
         .filter(root=>root && !fs.existsSync(root) && persistedPaths.some(file=>file.startsWith(normalizePath(root).replace(/\/+$/,'')+'/')));
       if(missingRoots.length) {diagnostics.push(`来源目录暂不可达，保留已有记录：${missingRoots.join(', ')}`);staleSources+=missingRoots.length;}
       const discoveryComplete=!diagnostics.length && (collected.descriptors||[]).length===descriptors.length;
-      if(discoveryComplete) this.index.pruneSources(activeKeys);
-      else for(const key of sourceStates.keys()) activeKeys.add(key);
-      const represented = this.index.getRepresentedIds();
+      const representedSourceKeys = new Set(activeKeys);
+      if (!discoveryComplete) {
+        for (const [key, previous] of sourceStates) {
+          activeKeys.add(key);
+          if (!isMetadataOnlySignature(previous.signature)) representedSourceKeys.add(key);
+        }
+      }
+      const represented = this.index.getRepresentedIds(representedSourceKeys);
       const currentSignatures = this.index.getSourceSignatures();
       let metadataChanges=0;
       for (const source of titleOnlySources(collected.maps, represented.hubIds, represented.meetingIds)) {
