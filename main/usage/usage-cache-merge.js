@@ -61,8 +61,19 @@ function mergeUsageCacheSnapshots(current = {}, incoming = {}, now = Date.now())
   return merged;
 }
 
+const fileCache = new Map();
 function readUsageCacheFile(filePath) {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
+  try {
+    const stat = fs.statSync(filePath);
+    const stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    let cached = fileCache.get(filePath);
+    if (!cached || cached.stamp !== stamp) {
+      cached = { stamp, value:JSON.parse(fs.readFileSync(filePath, 'utf8')) };
+      fileCache.set(filePath, cached);
+      while (fileCache.size > 32) fileCache.delete(fileCache.keys().next().value);
+    }
+    return structuredClone(cached.value);
+  }
   catch { return {}; }
 }
 
@@ -77,7 +88,9 @@ async function writeMergedUsageCacheFile(filePath, incoming, opts = {}) {
   if (!lock) throw new Error(`usage cache lock timeout: ${lockPath}`);
   const tmp = tempPathFor(filePath);
   try {
-    const merged = mergeUsageCacheSnapshots(readUsageCacheFile(filePath), incoming, opts.now || Date.now());
+    const current = readUsageCacheFile(filePath);
+    const merged = mergeUsageCacheSnapshots(current, incoming, opts.now || Date.now());
+    if (JSON.stringify(current) === JSON.stringify(merged)) return merged;
     await fs.promises.writeFile(tmp, JSON.stringify(merged));
     await fs.promises.rename(tmp, filePath);
     return merged;

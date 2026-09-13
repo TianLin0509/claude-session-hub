@@ -1432,6 +1432,19 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.card-history-more {
+  display: block;
+  margin: 8px auto 16px;
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.card-history-more:disabled { cursor: wait; opacity: .65; }
 
 .msg-overlay-placeholder.session-welcome {
   box-sizing: border-box;

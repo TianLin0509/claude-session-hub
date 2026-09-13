@@ -61,6 +61,14 @@ function createCodexSharedStatus({ document:doc = document, invoke, getSession, 
   function update(session) {
     const control = session?.codexSharedControl;
     sessionId = session?.id || null;
+    const upgrade = control?.backendUpgrade;
+    if (upgrade && control.role === 'controller') {
+      element.hidden = false; actions.hidden = true;
+      title.textContent = upgrade.status === 'legacy' ? '共享后台待更新' : '共享后台更新待完成';
+      detail.textContent = upgrade.reason;
+      element.title = `实际后台 ${control.runtimeBuild?.version || '旧版本'} · ${control.serviceId || ''}`;
+      return;
+    }
     // The owning window needs no informational banner or reserved space.
     // Viewer actions still provide the actual cross-window control handoff.
     if (!control?.shared || !control.controller || control.role === 'controller') {

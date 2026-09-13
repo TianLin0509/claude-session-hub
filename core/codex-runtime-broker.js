@@ -67,6 +67,7 @@ class RuntimeRecord {
     this.exited = false;
     this.cleanupTimer = null;
     this.commandQueue = Promise.resolve();
+    this.pendingCommands = 0;
     this.contentTimer = null;
     this.bindEvents();
   }
@@ -80,7 +81,7 @@ class RuntimeRecord {
         if (name === 'lifecycle' && args[0]) args[0] = { ...args[0], hubSessionId:null };
         this.broadcast({ method:'session-event', params:{ key:this.key, event:name, args,
           ...(name==='lifecycle'?{controllerViewId:this.controller?.viewId,controllerEpoch:this.controllerEpoch}:{}) } });
-        if (name === 'state') { this.broadcastControl(); this.scheduleCleanup(); }
+        if (name === 'state') { this.broadcastControl(); this.scheduleCleanup(); this.broker.checkUpgrade?.(); }
       });
     }
     this.session.on('bound', bound => {
@@ -109,11 +110,15 @@ class RuntimeRecord {
     });
   }
   ensureStarted() {
-    if (!this.started) this.started = this.session.start();
+    if (!this.started) {
+      this.starting = true;
+      this.started = Promise.resolve().then(() => this.session.start()).finally(() => { this.starting = false; this.broker.checkUpgrade?.(); });
+    }
     return this.started;
   }
   enqueueCommand(operation) {
-    const task = this.commandQueue.then(operation);
+    this.pendingCommands++;
+    const task = this.commandQueue.then(operation).finally(() => { this.pendingCommands--; this.broker.checkUpgrade?.(); });
     this.commandQueue = task.catch(() => {});
     return task;
   }
@@ -195,6 +200,8 @@ class RuntimeRecord {
       transferReason:canRecover ? '原操作窗口已断开，可以恢复操作' : transfer.reason,
       viewerCount:this.views.size,
       serviceId:this.broker.serviceId,
+      runtimeBuild:this.broker.runtimeBuild || null,
+      backendUpgrade:this.broker.upgrade?.info() || null,
       serverPid:this.session.pid,
     };
   }
@@ -334,6 +341,7 @@ class CodexRuntimeBroker {
     this.sessionFactory = sessionFactory;
     this.idleRetentionMs = Math.max(1000, Number(idleRetentionMs) || 30 * 60_000);
     this.records = new Map();
+    this.draining = false;
   }
   findRecord(key) {
     const record = this.records.get(key);
@@ -341,6 +349,7 @@ class CodexRuntimeBroker {
     return record;
   }
   async handle(peer, method, params = {}) {
+    if (this.draining) throw Object.assign(new Error('共享后台正在空闲交接，请稍后重试'), { code:'broker-upgrading' });
     if (method === 'shutdown-test' && process.env.AI_HUB_CODEX_BROKER_TEST === '1') {
       setImmediate(() => process.exit(0));
       return { ok:true };

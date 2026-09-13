@@ -381,10 +381,13 @@ function _sessionWarningText(session) {
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';
     const domesticLabel = !egress ? '国内检测中' : domestic?.ok ? '国内正常' : '国内异常';
-    stripEl.innerHTML =
+    const markup =
       '<div class="strip-resources">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + '</div>' +
       `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span></button>` +
       `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
+    if (stripEl._resourceMarkup === markup) return;
+    stripEl._resourceMarkup = markup;
+    stripEl.innerHTML = markup;
     stripEl.title = '';
     stripEl.style.display = 'flex';
 

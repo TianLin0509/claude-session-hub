@@ -6,6 +6,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { CodexRuntimeBroker } = require('../core/codex-runtime-broker');
 const { PROTOCOL_VERSION, metadataPath, pipeName } = require('./codex-runtime-broker-client');
+const runtimeBuild = require('../core/runtime-build-info').runtimeBuildInfo();
 const { SharedContentEncoder } = require('../core/shared-content-codec');
 
 const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
@@ -137,7 +138,9 @@ class Peer extends EventEmitter {
         if (message.method !== 'hello' || message.params?.token !== this.token) throw Object.assign(new Error('Codex 共享服务认证失败'), { code:'unauthorized' });
         if (message.params?.protocolVersion !== PROTOCOL_VERSION) throw Object.assign(new Error('Codex 共享服务协议版本不兼容'), { code:'protocol-mismatch' });
         this.authenticated = true;
-        result = { serviceId:this.serviceId, protocolVersion:PROTOCOL_VERSION, pid:process.pid, features:['content-delta-v1','claude-shared-v1'] };
+        result = { serviceId:this.serviceId, protocolVersion:PROTOCOL_VERSION, pid:process.pid,
+          runtimeBuild, upgrade:this.broker.upgrade?.request(message.params?.runtimeBuild) || null,
+          features:['content-delta-v1','claude-shared-v1','idle-upgrade-v1'] };
       } else if (message.method === 'hello') throw new Error('Codex 共享服务已经初始化');
       else result = await this.broker.handle(this, message.method, message.params || {});
       this.send({ id, result });
@@ -152,7 +155,7 @@ class Peer extends EventEmitter {
     this.coalesced.clear();
     this.contentEncoder.entries.clear();
     this.broker.disconnect(this);
-    if (error) console.warn('[codex-broker] peer closed:', error.message);
+    if (error) console.warn(`[codex-broker] ${new Date().toISOString()} service=${this.serviceId} peer closed:`, error.message);
     this.emit('closed');
   }
 }
@@ -174,11 +177,20 @@ function main() {
     peers.add(peer);
     peer.once('closed', () => { peers.delete(peer); lastPeerAt = Date.now(); });
   });
+  broker.runtimeBuild = runtimeBuild;
+  broker.upgrade = require('../core/broker-upgrade').createBrokerUpgrade({ broker, build:runtimeBuild, onReady:() => {
+    console.log(`[codex-broker] ${new Date().toISOString()} idle upgrade; writers released`);
+    for (const peer of peers) peer.socket.end();
+    const closeTimer = setTimeout(() => { for (const peer of peers) peer.socket.destroy(); }, 2000);
+    closeTimer.unref?.();
+    server.close(() => { clearTimeout(closeTimer); process.exit(0); });
+  } });
+  broker.checkUpgrade = broker.upgrade.check;
   server.on('error', error => { console.error('[codex-broker] server error:', error.stack || error); process.exitCode = 1; });
   server.listen(pipe, () => {
     writeMetadata(dataDir, {
       protocolVersion:PROTOCOL_VERSION, serviceId, token, pipe, pid:process.pid,
-      startedAt:Date.now(), root:path.resolve(__dirname, '..'),
+      startedAt:Date.now(), root:path.resolve(__dirname, '..'), runtimeBuild,
     });
     console.log(`[codex-broker] listening pid=${process.pid} service=${serviceId}`);
   });

@@ -37,7 +37,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const after=await metric();
   const result=await cdp.eval('({requests:window.__cardProbe,loadingInsertions:window.__loadingSeen,cards:document.querySelectorAll("#msg-overlay>.turn-card").length,nodes:document.querySelectorAll("#msg-overlay *").length,cache:cardHistoryViews.stats()})');
   result.rendererTaskMs=1000*(after.TaskDuration-before.TaskDuration);results.push({label,...result});console.log(label,JSON.stringify(result));
-  assert.equal(result.cards,50,label);if(label!=='switch-A')assert.equal(result.loadingInsertions,0,label);
+  assert.equal(result.cards,8,label);if(label!=='switch-A')assert.equal(result.loadingInsertions,0,label);
   if(label.startsWith('repeat'))assert.equal(result.requests.length,0,'repeat must not re-read history');
   if(label==='switch-A')await cdp.eval(`window.__savedCard=document.querySelector('#msg-overlay>.turn-card.assistant');window.__savedDetail=__savedCard.querySelector('.conversation-long-message');if(!__savedDetail)throw Error('long message fixture missing');__savedDetail.open=true;`);
   if(label==='return-A') {const state=await cdp.eval(`({same:window.__savedCard===document.querySelector('#msg-overlay>.turn-card.assistant'),open:__savedDetail?.open,connected:__savedCard.isConnected,cache:cardHistoryViews.stats()})`);console.log('restore',state);assert(state.same && state.open!==false,'return keeps DOM and disclosure');}
@@ -47,7 +47,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  // Controlled IPC failure validates visible error handling without erasing cached content.
  await cdp.eval(`window.__originalInvoke=ipcRenderer.invoke;ipcRenderer.invoke=(ch,...args)=>ch==='parse-session-transcript'?Promise.reject(Error('fixture offline')):window.__originalInvoke(ch,...args);`);
  await cdp.eval(`window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])})`);
- assert(await cdp.eval(`document.querySelectorAll('#msg-overlay>.turn-card').length===50 && document.querySelector('.card-history-status').textContent.includes('fixture offline')`));
+ assert(await cdp.eval(`document.querySelectorAll('#msg-overlay>.turn-card').length===8 && document.querySelector('.card-history-status').textContent.includes('fixture offline')`));
  await shot('refresh-error');
  await cdp.eval('ipcRenderer.invoke=window.__originalInvoke');
  await cdp.eval(`window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])})`);
@@ -62,11 +62,11 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  // Force an explicit cache miss, then use the real navigation/hydration path.
  await cdp.eval(`cardHistoryViews.drop(${JSON.stringify(sessions[0])});window.__beats=0;window.__beatTimer=setInterval(()=>window.__beats++,10);`);
  const cold=await cdp.eval(`(async()=>{const start=performance.now();const p=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});const skeleton=!!document.querySelector('.card-history-loading');await p;clearInterval(window.__beatTimer);return{skeleton,beats:window.__beats,totalMs:performance.now()-start,cards:document.querySelectorAll('#msg-overlay>.turn-card').length,first:document.querySelector('#msg-overlay>.turn-card')?.dataset.turnId,last:document.querySelector('#msg-overlay>.turn-card:last-of-type')?.dataset.turnId};})()`);
- assert(cold.skeleton);assert(cold.beats>2,'cold hydration yields the UI thread');assert.equal(cold.cards,50);assert(cold.first.endsWith(':u-1'));results.push({label:'cold',...cold});
+ assert(cold.skeleton);assert(cold.beats>0 || cold.totalMs<50,'latest window completes within a frame budget or yields the UI thread');assert.equal(cold.cards,8);assert(cold.first);results.push({label:'cold',...cold});
  // Hold only the test IPC response to capture the genuine cold loading UI.
- await cdp.eval(`cardHistoryViews.drop(${JSON.stringify(sessions[0])});window.__delayInvoke=ipcRenderer.invoke;ipcRenderer.invoke=async(ch,...args)=>{if(ch==='parse-session-transcript')await new Promise(r=>window.__releaseHistory=r);return window.__delayInvoke(ch,...args);};window.__coldPending=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});void 0;`);
+ await cdp.eval(`cardHistoryViews.drop(${JSON.stringify(sessions[0])});window.__delayInvoke=ipcRenderer.invoke;window.__releaseHistory=[];ipcRenderer.invoke=async(ch,...args)=>{if(ch==='parse-session-transcript')await new Promise(r=>window.__releaseHistory.push(r));return window.__delayInvoke(ch,...args);};window.__coldPending=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});void 0;`);
  await shot('cold-skeleton');await cdp.send('Emulation.setDeviceMetricsOverride',{width:760,height:950,deviceScaleFactor:1,mobile:false});await shot('cold-760');
- await cdp.eval('ipcRenderer.invoke=window.__delayInvoke;window.__releaseHistory();window.__coldPending');
+ await cdp.eval('ipcRenderer.invoke=window.__delayInvoke;window.__releaseHistory.splice(0).forEach(release=>release());window.__coldPending');
  const refresh=await cdp.eval(`(async()=>{cardHistoryViews.drop(${JSON.stringify(sessions[0])});const p=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});await selectSession(${JSON.stringify(sessions[1])});await p;return{active:activeSessionId,owners:[...document.querySelectorAll('#msg-overlay>.turn-card')].map(c=>c.dataset.sessionId)};})()`);
  assert.equal(refresh.active,sessions[1]);assert(refresh.owners.every(id=>id===sessions[1]),'stale cold batches never append to another session');
  fs.writeFileSync(path.join(art,'probe.json'),JSON.stringify({fixture:'25 completed turns per session, Markdown content; real isolated Electron, no cloud model',results},null,2));

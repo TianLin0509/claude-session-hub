@@ -101,6 +101,7 @@ class BrokerConnection extends EventEmitter {
     this.closed = true;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
+    if (!this.socket.destroyed) this.socket.destroy?.();
     this.emit('disconnect', error);
   }
   close() {
@@ -128,12 +129,16 @@ async function connectMetadata(dataDir, metadata) {
   try {
     const hello = await connection.request('hello', {
       token:metadata.token, protocolVersion:PROTOCOL_VERSION, hubPid:process.pid,
+      runtimeBuild:require('../core/runtime-build-info').runtimeBuildInfo(),
     }, 3000);
     if (!hello || hello.serviceId !== metadata.serviceId || hello.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error('Codex 共享服务身份或协议不匹配');
     }
     connection.metadata = metadata;
     connection.features = Array.isArray(hello.features) ? hello.features : [];
+    connection.runtimeBuild = hello.runtimeBuild || null;
+    connection.upgrade = hello.upgrade || (hello.runtimeBuild ? null : { status:'legacy', reason:'共享后台尚未支持安全更新，现有工作保持运行；旧后台退出后才会加载新代码' });
+    if (hello.upgrade?.status === 'draining') throw Object.assign(new Error('共享后台正在空闲交接，稍后自动恢复连接'), { code:'broker-upgrading' });
     return connection;
   } catch (error) {
     connection.close();

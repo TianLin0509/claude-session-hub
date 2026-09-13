@@ -2729,6 +2729,7 @@ class SessionManager extends EventEmitter {
     if (!s) return null;
     return s.ringBuffer || '';
   }
+  getSessionOutputRevision(sessionId) { return this.sessions.get(sessionId)?.lastOutputSeq ?? null; }
 
   // Renderer 可以先拿一个带序号的原子尾部快照，再只接收更大的 seq，
   // 避免终端按需创建时既丢启动输出又把并发到达的 chunk 重复写入。

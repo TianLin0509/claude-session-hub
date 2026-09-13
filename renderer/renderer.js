@@ -993,8 +993,9 @@ ipcRenderer.on('desktop-notification:open-session', (_event, payload = {}) => {
 });
 
 async function refreshSystemResourceUsage(force = false) {
+  if (document.hidden && force !== true) return;
   try {
-    const next = await ipcRenderer.invoke('get-system-resource-usage', { force: force === true });
+    const next = await ipcRenderer.invoke('get-system-resource-usage', { force: force === true, extended: false });
     if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
     systemResourceUsage = next;
     renderSidebarStrip();
@@ -1005,6 +1006,7 @@ async function refreshSystemResourceUsage(force = false) {
 // 配置与真实出口一起刷新。main 进程对外网探测有缓存，renderer
 // 可以频繁读 IPC 而不会频繁请求地理服务。
 async function refreshHubProxyInfo(options = {}) {
+  if (document.hidden && options.force !== true) return;
   try {
     const [configResult, egressResult, notificationHealthResult] = await Promise.allSettled([
       ipcRenderer.invoke('get-hub-config-raw'),
@@ -1926,6 +1928,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const session = sessions.get(sessionId);
   if (!session) return;
+  const existingInput = terminalPanelEl.querySelector('.floating-input-bar');
+  if (opts.reuseCardHistory && !opts.mountTarget && currentView === 'card'
+      && existingInput?.dataset.sessionId === sessionId && cardHistoryViews.ready(session)) {
+    if (opts.forceScrollBottom) cardFollowScroll.follow();
+    if (opts.focus) existingInput.querySelector('.floating-input-box')?.focus();
+    return;
+  }
 
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
@@ -2409,6 +2418,10 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const viewSession = sessions.get(sessionId) || {id: sessionId};
   const view = cardHistoryViews.activate(viewSession);
   const incremental = opts.incremental === true || view.hydrated;
+  if (view.changed && !view.hydrated && !opts.older) cardHistoryPager.reset(sessionId);
+  const pageState = cardHistoryPager.get(sessionId);
+  const paged = !opts.parseOpts || opts.older;
+  const pageLimit = opts.older ? pageState.limit + cardHistoryPager.PAGE_CARDS : cardHistoryPager.INITIAL_CARDS;
   if (view.hydrated) _cardHistoryHydratedSid = sessionId;
   const overlayScrollBeforeLoad = {
     top: container.scrollTop,
@@ -2507,7 +2520,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       ccSessionId,
       transcriptPath,
       kind,
-      opts: opts.parseOpts,
+      opts: paged ? { limit: pageLimit + 1, fromTail: true, includeBranchHistory: true } : opts.parseOpts,
     });
   } catch (err) {
     if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
@@ -2536,8 +2549,15 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     });
   }
 
-  const turns = require('../core/conversation-display').displayTurns(
+  let turns = require('../core/conversation-display').displayTurns(
     (result && Array.isArray(result.turns)) ? result.turns : []);
+  if (paged && !result?.error) {
+    if (opts.older || !incremental || view.changed) {
+      pageState.more = turns.length > pageLimit || (result?.turns?.length || 0) > pageLimit;
+      pageState.limit = pageLimit;
+    }
+    turns = turns.slice(-pageLimit);
+  }
   const ipcError = (result && result.error) ? result.error : null;
   // A streaming incremental result can land while this full parse is in
   // flight. Those cards are newer than the full snapshot and must survive the
@@ -2635,7 +2655,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const concurrentExtraCards = !incremental
     ? concurrentFullCards.filter(card => !fullTurnIds.has(card.dataset.turnId))
     : [];
-  removeLoadingPlaceholder();
+  if (incremental) removeLoadingPlaceholder();
   // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
   //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
   //   末尾的 batch scrollIntoView 没 guard → 用户上翻历史时仍被拍回底部。
@@ -2647,20 +2667,21 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   let lastCardEl = null;
   let batchStarted = performance.now();
   const turnsBeforeMount = new Map(window._sessionTurns);
-  const mountTurns = incremental ? turns : [...turns].reverse();
+  const staging = !incremental || opts.older ? document.createElement('div') : null;
+  const mountTurns = turns;
   for (const turn of mountTurns) {
     if (!incremental && window._sessionTurns.has(turn.id)
         && window._sessionTurns.get(turn.id) !== turnsBeforeMount.get(turn.id)) continue;
-    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind });
+    const existing = staging && container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
+    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind, container: existing ? container : staging || container });
     if (cardEl) {
       mounted++;
-      if (incremental || !lastCardEl) lastCardEl = cardEl;
-      if (!incremental) container.insertBefore(cardEl, container.querySelector(':scope > .turn-card'));
+      lastCardEl = cardEl;
     }
     // Yield between complete cards, preserving all Markdown and tool content.
     // Check ownership after every yield so rapid navigation cannot append an
     // old session's remaining cards into the newly selected conversation.
-    if (!incremental && performance.now() - batchStarted >= 12) {
+    if (staging && performance.now() - batchStarted >= 12) {
       await new Promise(resolve => {
         let frame;
         const timer = setTimeout(() => { cancelAnimationFrame(frame); resolve(); }, 40);
@@ -2670,8 +2691,14 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       batchStarted = performance.now();
     }
   }
+  if (staging) {
+    const fragment = document.createDocumentFragment(); fragment.append(...staging.children);
+    container.insertBefore(fragment, container.querySelector(':scope > .turn-card,:scope > .streaming-indicator'));
+    removeLoadingPlaceholder();
+  }
+  cardHistoryPager.render(sessionId, container);
 
-  if (!incremental || session?.runtimeBackend === 'claude-stream-json') {
+  if (!incremental || opts.older || session?.runtimeBackend === 'claude-stream-json') {
     // Mounting dedups existing concurrent cards but may leave them ahead of old
     // history. Reorder the authoritative full snapshot first, then append only
     // genuinely newer concurrent cards. Cards removed by optimistic/provisional
@@ -2769,6 +2796,10 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   return { mounted, error: null };
 }
 window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
+const cardHistoryPager = require('./card-history-pager').createCardHistoryPager({
+  document, activeId: () => activeSessionId, load: loadSessionHistoryToOverlay,
+});
+cardHistoryPager.bind(document.getElementById('msg-overlay'));
 
 ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
   onPromptSubmittedFromTranscriptEvent(payload);
@@ -4782,6 +4813,7 @@ function syncTerminalRuntimeStatusTicker(session) {
   }
   if (_terminalRuntimeStatusTicker) return;
   _terminalRuntimeStatusTicker = setInterval(() => {
+    if (document.hidden) return;
     if (!activeSessionId) {
       stopTerminalRuntimeStatusTicker();
       return;
@@ -6951,7 +6983,10 @@ window.addEventListener('focus', () => {
   recoverVisibleActiveTerminalSurface();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') recoverVisibleActiveTerminalSurface();
+  if (document.visibilityState === 'visible') {
+    recoverVisibleActiveTerminalSurface();
+    void refreshSystemResourceUsage(); void refreshHubProxyInfo();
+  }
 });
 
 function buildReplyReadyPreview(text, fallback = 'Codex 回复完成，等你继续') {
@@ -8475,7 +8510,7 @@ window.resumeDormantSession = resumeDormantSession;
   renderSessionList();
   if (homeWorkbench) homeWorkbench.render();
   refreshSystemResourceUsage();
-  setInterval(refreshSystemResourceUsage, 3000);
+  setInterval(refreshSystemResourceUsage, 5000);
   refreshHubProxyInfo();
   setInterval(refreshHubProxyInfo, 15000);
   traceRendererStartup('renderSessionList done');

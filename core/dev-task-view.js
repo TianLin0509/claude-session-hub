@@ -3,9 +3,6 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFile } = require('node:child_process');
-const { promisify } = require('node:util');
-const git = promisify(execFile);
 const F = require('./dev-file-workflow');
 const LIMIT = 1024 * 1024;
 const phases = Object.freeze({ discussion: '讨论中', implementing: '实现中', reviewing: '审核中', waiting: '等待接续', paused: '已暂停', completed: '已报告完成', stopped: '已停止' });
@@ -54,11 +51,8 @@ async function readTask(dataDir, meeting) {
   if (!solo && JSON.stringify(F.fromNames(afterNames)) !== JSON.stringify(file)) throw new Error('阶段文件正在变化，等待稳定快照');
   let mergeVerified = false, mergeError = '';
   if (record?.merge && record.phase === 'completed' && meeting.workspace) {
-    const args = { cwd: meeting.workspace, windowsHide: true, timeout: 4000, maxBuffer: 16384 };
     try {
-      await git('git', ['merge-base', '--is-ancestor', record.merge.candidate, record.merge.commit], args);
-      await git('git', ['merge-base', '--is-ancestor', record.merge.commit, record.merge.target], args);
-      mergeVerified = true;
+      mergeVerified = await require('./git-merge-verification').verifyMerge(meeting.workspace, record.merge);
     } catch { mergeError = '尚未核对到候选进入目标分支；保留文档报告，不宣称已合并'; }
   }
   return { taskId, record, file, name: current || '', at: raw?.at || 0, hash: raw?.hash || '', mergeVerified, mergeError, checkedAt: Date.now() };

@@ -112,11 +112,19 @@ function createCardFollowScroll({ element, window: win, document: doc, button: s
       if (force) follow();
       paint();
     },
-    capture: () => ({ sessionId, epoch, following, top: pendingTop ?? element.scrollTop }),
+    capture: () => {
+      const rect = element.getBoundingClientRect();
+      const anchor = following || pendingTop !== null ? null : [...element.children].find(el => el.dataset.turnId && el.getBoundingClientRect().bottom > rect.top);
+      return { sessionId, epoch, following, top: pendingTop ?? element.scrollTop,
+        anchorId: anchor?.dataset.turnId, anchorOffset: anchor ? anchor.getBoundingClientRect().top - rect.top : 0 };
+    },
     restore(snapshot) {
       if (!snapshot || snapshot.sessionId !== sessionId || snapshot.epoch !== epoch) return;
-      if (following) request();
-      else element.scrollTop = snapshot.top;
+      if (following) { if (visible()) element.scrollTop = element.scrollHeight; request(); }
+      else {
+        const anchor = snapshot.anchorId && [...element.children].find(el => el.dataset.turnId === snapshot.anchorId);
+        element.scrollTop = anchor ? element.scrollTop + anchor.getBoundingClientRect().top - element.getBoundingClientRect().top - snapshot.anchorOffset : snapshot.top;
+      }
       pendingTop = null;
       paint();
     },
