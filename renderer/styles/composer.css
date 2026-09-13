@@ -63,7 +63,8 @@
 .codex-shared-status-feedback { flex: 0 1 auto; color: var(--status-warning); font-size: 10px; }
 
 /* A backend update is secondary information, outside the conversation stage. */
-.backend-update-notice { position: relative; flex: 0 0 auto; margin-left: auto; }
+.composer.has-backend-update-notice { position: relative; }
+.backend-update-notice { flex: 0 0 auto; margin-left: auto; }
 .backend-update-notice[hidden], .backend-update-notice [hidden] { display: none !important; }
 .backend-update-toggle, .backend-update-close {
   border: 0; border-radius: var(--radius-sm); background: transparent;
@@ -73,8 +74,8 @@
   outline: 2px solid var(--status-info); outline-offset: 2px;
 }
 .backend-update-details {
-  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 130;
-  box-sizing: border-box; width: min(320px, calc(100vw - 32px));
+  position: absolute; right: 12px; bottom: calc(100% + 8px); z-index: 130;
+  box-sizing: border-box; width: 320px; max-width: calc(100% - 24px);
   padding: 12px; border: 1px solid var(--border-mid); border-radius: var(--radius-md);
   background: var(--surface-overlay); color: var(--fg-default); box-shadow: var(--shadow-md);
   font-size: 11px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere;

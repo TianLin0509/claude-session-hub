@@ -4352,6 +4352,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   secondaryActions.className = 'composer-secondary-actions';
   secondaryActions.append(bridgeToolbar, startActions);
   if (termContainer.closest('.terminal-panel') === terminalPanelEl) {
+    composer.classList.add('has-backend-update-notice');
     secondaryActions.appendChild(codexSharedStatus.updateNotice.element);
   }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
