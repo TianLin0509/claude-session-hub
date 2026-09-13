@@ -8,24 +8,25 @@ function isCodexSession(session) {
     || session.runtimeBackend === BACKEND);
 }
 function isNativeSession(session) { return isCodexSession(session) || session?.runtimeBackend === 'acp'; }
-function createNativeRuntime(epoch = 1) {
+function createNativeRuntime(epoch = 1, label = 'Codex') {
   return { state:'unknown', connection:'connecting', epoch, revision:0,
     threadId:null, turnId:null, startedAt:0, completedAt:0, observedAt:0,
-    requests:[], endedTurns:[], waitingFlags:[], reason:'正在连接 Codex', submission:null };
+    requests:[], endedTurns:[], waitingFlags:[], reason:'正在连接 '+label, submission:null };
 }
 function isUnstartedRuntime(r) {
   return !!r && r.lazyStart === true && r.connection === 'unstarted'
     && !r.threadId && !r.turnId && !r.submission && !r.startedAt && !(r.endedTurns || []).length;
 }
-function requestSummary(request) {
+function requestSummary(request, label = 'Codex') {
   const p = request && request.params || {};
   return (p.questions || []).map(q => q.question).filter(Boolean).join('\n')
     || p.reason || (Array.isArray(p.command) ? p.command.join(' ') : p.command)
-    || p.message || 'Codex 等待你确认';
+    || p.message || label+' 等待你确认';
 }
 function nativeRuntimeTruth(session) {
   const r = session && session.nativeRuntime;
   const source = session?.runtimeBackend === 'acp' ? 'acp' : BACKEND;
+  const label = require('./native-ui-labels').nativeUiLabel(session);
   if (session && session.status === 'dormant') {
     return { ...r, state:'dormant', source, confidence:'authoritative', expiresAt:0, sequence:r?.revision,
       turnId:r && r.turnId || null, reason:'session-suspended' };
@@ -38,7 +39,7 @@ function nativeRuntimeTruth(session) {
   const state = !connected && !TERMINAL.has(r.state) ? 'unknown' : r.state;
   return { ...r, state, source, confidence:connected ? 'authoritative' : 'none',
     expiresAt:0, sequence:r.revision,
-    evidence:state === 'waiting' ? (r.requests || []).map(requestSummary).join('\n') || 'Codex 正在等待操作'
+    evidence:state === 'waiting' ? (r.requests || []).map(request=>requestSummary(request,label)).join('\n') || label+' 正在等待操作'
       : r.reason || null };
 }
 function nativeUnfinished(session) {
@@ -99,8 +100,8 @@ function persistNativeRuntime(data) {
     reason:data.runtimeBackend==='acp'?'Hub 已重新启动，等待核对原生 Harness 会话':'Hub 已重新启动，等待核对 Codex 会话' };
 }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
-function reduceNativeRuntime(previous, event) {
-  const p = previous || createNativeRuntime();
+function reduceNativeRuntime(previous, event, label = 'Codex') {
+  const p = previous || createNativeRuntime(1,label);
   if (!event || (event.epoch != null && event.epoch !== p.epoch && event.type !== 'connect')) return p;
   const now = event.at || Date.now();
   let n = { ...p, requests:p.requests.slice(), waitingFlags:p.waitingFlags.slice(),
@@ -142,12 +143,12 @@ function reduceNativeRuntime(previous, event) {
     if (event.epoch < p.epoch) return p;
     n.epoch = event.epoch; n.connection = 'connecting';
     n.requests = []; n.waitingFlags = [];
-    n.reason = '正在核对 Codex 会话';
+    n.reason = '正在核对 '+label+' 会话';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
   } else if (event.type === 'disconnect') {
     if (n.cancellation) n.cancellation = { ...n.cancellation, status:'unknown' };
     n.connection = 'disconnected';
-    n.reason = event.reason || 'Codex 连接已断开，状态待核对';
+    n.reason = event.reason || label+' 连接已断开，状态待核对';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
     n.requests = []; n.waitingFlags = [];
   } else if (event.type === 'submission') {
@@ -178,10 +179,10 @@ function reduceNativeRuntime(previous, event) {
       if (!n.turnId || n.turnId === last.id) finish(last);
     }
     if (status.type === 'systemError') {
-      n.state = 'unknown'; n.reason = 'Codex 服务端状态异常';
+      n.state = 'unknown'; n.reason = label+' 服务端状态异常';
     } else if (status.type === 'notLoaded') {
       if (!TERMINAL.has(n.state)) n.state = 'unknown';
-      n.reason = 'Codex 会话尚未加载';
+      n.reason = label+' 会话尚未加载';
     } else if (status.type === 'idle' && !n.turnId) {
       n.state = 'idle';
     } else if (status.type === 'active') {
@@ -206,7 +207,7 @@ function reduceNativeRuntime(previous, event) {
         if (n.state !== 'unknown') { n.state = activeState(); n.reason = null; }
       } else if (status.type === 'systemError' || status.type === 'notLoaded') {
         if (!TERMINAL.has(n.state)) n.state = 'unknown';
-        n.reason = status.type === 'systemError' ? 'Codex 服务端状态异常' : 'Codex 会话未加载';
+        n.reason = status.type === 'systemError' ? label+' 服务端状态异常' : label+' 会话未加载';
       } else if (status.type === 'idle' && !n.turnId) {
         n.state = 'idle'; n.reason = null;
       }

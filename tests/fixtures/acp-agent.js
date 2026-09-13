@@ -1,7 +1,7 @@
 'use strict';
 const readline = require('readline');
 const sessionId = 'fixture-session';
-let requestId = 1000, pendingPrompt;
+let requestId = 1000, pendingPrompt, heavyTimer;
 const output = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const result = (id, value) => output({ id, result: value });
 const update = value => output({ method: 'session/update', params: { sessionId, update: value } });
@@ -28,6 +28,24 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (m.method === 'session/prompt') {
     const text = p.prompt[0].text;
+    if (text === 'HEAVY_HISTORY') {
+      for(let index=0;index<10;index++) {
+        const body='x'.repeat(800000)+'\nFULL-END-'+index;
+        update({sessionUpdate:'tool_call',toolCallId:'large-'+index,title:'Edit large file '+index,kind:'edit',status:'in_progress',rawInput:{file_path:'fixture-'+index+'.js'}});
+        update({sessionUpdate:'tool_call_update',toolCallId:'large-'+index,status:'completed',
+          content:[{type:'content',content:{type:'text',text:body}}],rawOutput:{newContent:body}});
+      }
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'大工具记录已完成'}});
+      return result(m.id,{stopReason:'end_turn'});
+    }
+    if(text==='HEAVY_STREAM') {
+      pendingPrompt=m.id;let index=0;
+      heavyTimer=setInterval(()=>{
+        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'STREAM-'+index+'; '}});
+        if(++index===80){clearInterval(heavyTimer);heavyTimer=null;pendingPrompt=null;result(m.id,{stopReason:'end_turn'});}
+      },20);
+      return;
+    }
     if (text.startsWith('PERF_RUN_')) {
       let index=0;
       const timer=setInterval(()=>{
@@ -60,6 +78,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     return result(m.id, { stopReason: 'end_turn' });
   }
   if (m.method === 'session/cancel') {
+    clearInterval(heavyTimer);heavyTimer=null;
     if (pendingPrompt != null) result(pendingPrompt, { stopReason: 'cancelled' });
     pendingPrompt = null;
     return;

@@ -13,7 +13,7 @@ const update = text => emit({ method:'session/update', params:{sessionId, update
 }} });
 const configs = [{id:'model',category:'model',type:'select',currentValue:'qwen3.8-max',
   options:[{value:'qwen3.8-max',name:'qwen3.8-max'}]},
-{id:'mode',category:'mode',type:'select',currentValue:'default',options:[{value:'default',name:'default'}]}];
+{id:'mode',category:'mode',type:'select',currentValue:'default',options:[{value:'default',name:'default'},{value:'yolo',name:'yolo'}]}];
 function ask(method) {
   const id = nextRequest++;
   requests.set(id, {turn, method});
@@ -32,7 +32,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   if (m.method === 'initialize') return result(m.id,{protocolVersion:1,agentCapabilities:{loadSession:true}});
   if (m.method === 'authenticate') return result(m.id,{});
   if (['session/new','session/load'].includes(m.method)) return result(m.id,{sessionId,configOptions:configs});
-  if (m.method === 'session/set_config_option') return result(m.id,{configOptions:configs});
+  if (m.method === 'session/set_config_option') {
+    const option=configs.find(o=>o.id===m.params.configId);
+    if(option?.options.some(o=>o.value===m.params.value))option.currentValue=m.params.value;
+    return result(m.id,{configOptions:configs});
+  }
   if (m.method === 'session/prompt') {
     turn = {id:m.id,text:m.params.prompt[0].text};
     if (turn.text === 'next') {update('NEXT_TURN');return finish(turn);}

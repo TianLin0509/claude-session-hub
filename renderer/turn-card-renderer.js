@@ -85,6 +85,10 @@ const detailControls = createCardDetailControls({
     const id = element.closest('[data-activity-id]')?.dataset.activityId;
     const activity = (turn?.toolCalls || []).map(normalizeToolActivity).find(a => a.id === id);
     if (!activity) throw new Error('未找到完整工具来源，请重新载入会话');
+    if (activity.resultRef) {
+      if (!options.readToolResult) throw new Error('当前视图无法读取完整工具来源');
+      return options.readToolResult(activity.resultRef);
+    }
     return activity.result;
   },
   openAttachment: options.openAttachment,
@@ -133,7 +137,8 @@ function _renderToolRow(tc, index = 0) {
   if (!hasResult) return `<div class="tc-row turn-activity-item"${activityAttrs}>${head}</div>`;
   const isErr = activity.status === 'failed' || activity.isError === true;
   const rawLen = activity.result.length;
-  const truncated = rawLen > _TOOL_RESULT_HARD_LIMIT;
+  const deferred = activity.resultTruncated;
+  const truncated = deferred || rawLen > _TOOL_RESULT_HARD_LIMIT;
   const body = truncated
     ? activity.result.slice(0, _TOOL_RESULT_HARD_LIMIT)
     : activity.result;
@@ -143,7 +148,7 @@ function _renderToolRow(tc, index = 0) {
     <summary class="tc-row-head">${head}${errBadge}<span class="tc-row-actions"><button class="tc-row-preview-btn" data-action="tc-toggle-preview" type="button" title="预览工具返回">👁 预览</button></span></summary>
     <div class="tc-result-wrap">
       <div class="tc-result-toolbar">
-        <span class="tc-result-meta">${truncated ? `预览 ${_TOOL_RESULT_HARD_LIMIT.toLocaleString('zh-CN')} / ${sizeText} · 全文保留` : sizeText}</span>
+        <span class="tc-result-meta">${deferred ? '预览 · 全文按需读取' : truncated ? `预览 ${_TOOL_RESULT_HARD_LIMIT.toLocaleString('zh-CN')} / ${sizeText} · 全文保留` : sizeText}</span>
         ${truncated ? '<button class="tc-result-full" data-action="tc-open-full-result" type="button">查看全文</button>' : ''}
         <button class="tc-result-copy" data-action="tc-copy-result" type="button" title="复制全文">📋 复制</button>
       </div>
@@ -372,8 +377,9 @@ function aiLogoSrc(kind) {
   // 已有 logos: claude / codex / 等。其它 kind fallback 到字母。
   // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
   // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
-  const known = ['claude','codex','gemini','deepseek','kimi'];
+  const known = ['claude','codex','gemini','deepseek','kimi','qwen','glm'];
   let k = (kind || '').toLowerCase().replace(/-resume$/, '');
+  if (k === 'deepseek-acp') k = 'deepseek';
   if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
   return null;
 }

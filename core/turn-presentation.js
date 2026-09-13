@@ -148,6 +148,8 @@ function normalizeToolActivity(tool, index = 0) {
     detail: activityDetail(name, input),
     input,
     result,
+    resultRef: tool?.resultRef || null,
+    resultTruncated: tool?.resultTruncated === true,
     isError: tool?.isError === true,
     exitCode: optionalFiniteNumber(tool?.exitCode),
     durationMs: optionalFiniteNumber(tool?.durationMs),

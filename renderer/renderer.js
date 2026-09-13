@@ -1988,6 +1988,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (!embedded) {
     cached._ptyPresentation = mountTerminalPresentation({
       document, host: termContainer, cached, native: isNativeSession(session), readOnly: session.readOnly,
+      openingBanner: require('../core/native-ui-labels').nativeOpeningBanner(session),
+      engine: require('../core/native-ui-labels').nativeUiLabel(session),
       focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
     });
   }
@@ -2250,6 +2252,7 @@ const turnCardRenderer = createTurnCardRenderer({
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
   openAttachment: (target, opts) => openPathInHub(target, opts),
+  readToolResult: reference => ipcRenderer.invoke('acp:tool-result', reference),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -4583,7 +4586,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     terminal.scrollToBottom();
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
-    if (isCodexSession(session) || session?.runtimeBackend === 'claude-stream-json') inputBox.focus();
+    if (isNativeAgent(session)) inputBox.focus();
     else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
     const clientSubmissionId = require('node:crypto').randomUUID();

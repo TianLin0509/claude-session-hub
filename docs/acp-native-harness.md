@@ -75,6 +75,16 @@ HTTP / SSE 只在 Harness 握手声明支持时接受；未支持的传输会阻
 
 当前 ZCode 桥可能仅返回 `Thinking…` 状态提示，它不是模型完整思考正文。原生 `/auto`、`/goal` 等厂商扩展仍应按上游能力理解，本轮不把未测的自主循环当成已经验证的 Hub 自动任务。
 
+## 大历史会话的运行与显示
+
+Qwen、DeepSeek CLI（`deepseek-acp`）和智谱（`glm`）共用 ACP 保存、事件分发和卡片链路。输出增量只更新当前条目，使用已有 Node SQLite 能力按条目事务保存，不再每吐几个字同步重写整份 JSON 历史；接收确认和完成记录必须先保存，再发布对应生命周期事件。连续输出按短时间片处理，给其他会话和界面请求让出 Main 执行时间，不增加定时扫描。
+
+普通卡片快照只携带有界工具预览与稳定来源 ID，完整工具结果在点击查看、复制时读取。原始结果保存在历史中；内部工作流的完整历史读取不做预览裁剪。三家沿用统一卡片、草稿焦点、停止与详情控件，并显示各自名称和图标；供应商未提供的原生能力仍明确保持未知，不能据此宣称支持 Codex 的所有能力。DeepSeek API 路由仍由 Codex 后端处理。
+
+历史在首次打开时从原 `acp-history/<hash>.json` 无损导入旁边的 `.json.sqlite`，原 JSON 保留原样，新记录只写 SQLite。首次迁移仍需读取完整旧文件；这项优化针对持续输出的反复开销。打开时检查一次旧文件是否被旧 Hub 后续修改，有分歧会明确报错并保留两份，不能静默选一份覆盖另一份。不要让新旧版本同时恢复并写入同一 ACP 会话，也不要让旧版直接读取新版的旧 JSON 快照来继续写；回退前必须核对并导出完整 SQLite 历史。本改动没有新增 ACP 的跨 Hub writer 转交能力，不能把界面一致等同于共享执行进程已经一致。
+
+回归入口：`node tests/unit-acp-history-store.test.js` 验证无损迁移、逐条更新、存储故障、确认顺序和全文来源；`node tests/unit-acp-client-scheduling.test.js` 验证输出让出执行时间且不丢帧、不乱序；`node tests/acp-history-performance.js` 用约 24 MB 合成历史衡量持续输出的 Main 开销；`node tests/e2e-acp-runtime-parity-cdp.js` 用真实隔离 Hub 验证三家大历史、按需全文、持续输入、完成、停止及同时运行。合成压力数据不代表真实模型速度或所有生产负载。
+
 ## 验证入口和回退
 
 确定性测试：`node tests/unit-acp-session.test.js`、`node tests/unit-acp-profiles.test.js`、`node tests/unit-acp-cancellation.test.js`；全量入口：`node scripts/run_unit_tests.js`。

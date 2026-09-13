@@ -132,7 +132,7 @@ async function parseSessionTranscript(args = {}, deps) {
     const nativeCodex = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (nativeCodex) {
       if (!require('../../core/codex-native-runtime').isUnstartedRuntime(nativeCodex.runtime)) await nativeCodex.start();
-      return {turns:nativeCodex.readTranscript(opts),transcriptPath:session?.transcriptPath || null,
+      return {turns:nativeCodex.readTranscript({...opts,...(session?.runtimeBackend==='acp'?{toolPreviews:true}:{})}),transcriptPath:session?.transcriptPath || null,
         error:null,source:nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
