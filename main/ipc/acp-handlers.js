@@ -9,7 +9,13 @@ function publicSettings(config) {
   return { nodePath: value.nodePath || '', baseURL: value.baseURL || PLAN_BASE_URL,
     apiKeySet: !!value.apiKey, providers: value.providers || {} };
 }
-function registerAcpIpc(ipcMain) {
+function registerAcpIpc(ipcMain, {sessionManager} = {}) {
+  ipcMain.handle('acp:tool-result', async (_event, reference = {}) => {
+    const session = sessionManager?.getNativeSession(reference.hubSessionId);
+    if (!session?.readToolResult || session.options?.kind && !ACP_KINDS.includes(session.options.kind)) throw new Error('原生工具来源不可用，请重新载入会话');
+    await session.start();
+    return session.readToolResult(reference);
+  });
   ipcMain.handle('acp:settings:get', () => publicSettings(getConfig()));
   ipcMain.handle('acp:settings:save', (_event, request = {}) => {
     try {

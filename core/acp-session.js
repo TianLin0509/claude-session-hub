@@ -11,6 +11,7 @@ class AcpSession extends EventEmitter {
   constructor(options) {
     super();
     this.options = options;
+    this.label = require('./native-ui-labels').nativeUiLabel({runtimeBackend:BACKEND,kind:options.kind});
     this.runtime = { ...createNativeRuntime(), epoch: (options.restoredRuntime?.epoch || 0) + 1, reason: '正在连接原生 Harness' };
     this.threadId = null;
     this.items = new Map();
@@ -28,7 +29,7 @@ class AcpSession extends EventEmitter {
   resize() {}
   print(text) { this.emit('data', String(text).replace(/\x1b|[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').replace(/\r?\n/g, '\r\n')); }
   apply(event) {
-    const next = reduceNativeRuntime(this.runtime, { epoch: this.runtime.epoch, ...event });
+    const next = reduceNativeRuntime(this.runtime, { epoch: this.runtime.epoch, ...event }, this.label);
     if (next === this.runtime) return;
     const previous = this.runtime;
     this.runtime = next;
@@ -39,11 +40,16 @@ class AcpSession extends EventEmitter {
       threadId: this.threadId, turnId: this.runtime.turnId, signalSource: BACKEND, ...extra });
   }
   async start() { if (!this.ready) this.ready = this._start(); return this.ready; }
+  historyStore() {
+    if (!this.storePath) return null;
+    return this._historyStore ||= new (require('./acp-history-store').AcpHistoryStore)(this.storePath);
+  }
   loadHistory() {
-    if (!this.storePath || !fs.existsSync(this.storePath)) return;
-    const saved = JSON.parse(fs.readFileSync(this.storePath, 'utf8'));
-    if (saved.backend !== BACKEND || saved.kind !== this.options.kind || saved.profileId !== this.options.profileId
-        || path.resolve(saved.cwd) !== path.resolve(this.options.cwd)) throw new Error('ACP 历史配置域不匹配');
+    const saved = this.historyStore()?.read(saved => {
+      if (saved.backend !== BACKEND || saved.kind !== this.options.kind || saved.profileId !== this.options.profileId
+          || path.resolve(saved.cwd) !== path.resolve(this.options.cwd)) throw new Error('ACP 历史配置域不匹配');
+    });
+    if (!saved) return;
     this.saved = saved;
     this.history = new Map(saved.turns.map(turn => [turn.id, turn]));
     this.receipts = new Map(saved.receipts || []);
@@ -53,13 +59,11 @@ class AcpSession extends EventEmitter {
     if (!this.storePath || !this.threadId) return;
     const current = this.history.get(this.runtime.turnId);
     if (current) current.items = [...this.items.values()];
-    fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
-    const temporary = this.storePath + '.' + randomUUID() + '.tmp';
-    fs.writeFileSync(temporary, JSON.stringify({ backend: BACKEND, kind: this.options.kind,
+    try { this.historyStore().sync({ backend: BACKEND, kind: this.options.kind,
       profileId: this.options.profileId, cwd: this.options.cwd, sessionId: this.threadId,
       submission: this.runtime.submission, configOptions:this.configOptions,
-      receipts: [...this.receipts], turns: [...this.history.values()] }), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporary, this.storePath);
+      receipts: [...this.receipts], turns: [...this.history.values()] }); }
+    catch (error) { this.storageError = error; throw error; }
   }
   async _start() {
     this.bootstrapping = true;
@@ -87,7 +91,8 @@ class AcpSession extends EventEmitter {
           clearTimeout(this.active.cancelTimer);
           this.apply({ type: 'submission', submission: { ...this.runtime.submission, status: 'unknown', error: error.message } });
           this.active.reject(error);
-          this.persist();
+          try { this.persist(); }
+          catch (storageError) { this.emit('action-error', 'ACP 历史保存失败：' + storageError.message); }
         }
       });
       this.initialized = await client.start();
@@ -138,7 +143,7 @@ class AcpSession extends EventEmitter {
       this.emit('bound', { threadId: sessionId, cwd: this.options.cwd, model: this.currentModel,
         capabilities: this.capabilities, configOptions: this.configOptions });
       this.persist();
-      this.print('\n原生 Harness 已连接，请在 Hub 输入框发送。\n');
+      this.print('\n'+require('./native-ui-labels').nativeOpeningBanner({runtimeBackend:BACKEND,kind:this.options.kind})+'\n');
       return result;
     } catch (error) {
       this.bootstrapping = false;
@@ -157,14 +162,19 @@ class AcpSession extends EventEmitter {
     const result = { ok: true, sendStatus: 'ok', mode: BACKEND, acknowledgementSource: BACKEND,
       threadId: this.threadId, turnId: active.turnId, acknowledgementTurnId: active.turnId, clientSubmissionId: active.id, enterAttempts: 0 };
     this.receipts.set(active.id, { digest: active.digest, result });
+    this.persist();
     this.lifecycle('prompt-submitted', { text: active.text, clientSubmissionId: active.id, submittedAt: active.at });
     this.lifecycle('turn-start', { startedAt: active.at });
     active.resolve(result);
   }
-  changed() {
+  changed(item) {
     this.contentRevision++;
-    this.emit('items', this.blocks());
-    this.persist();
+    try {
+      if (item) this.historyStore()?.saveItem(this.active.turnId, item);
+      else this.persist();
+    } catch (error) { this.storageError = error; throw error; }
+    // Consumers request the latest content on their existing coalesced path.
+    this.emit('items');
   }
   notification(message) {
     if(this.restoring && !this.threadId && message.method==='session/update') {
@@ -181,6 +191,7 @@ class AcpSession extends EventEmitter {
     if (update.sessionUpdate === 'available_commands_update') { this.commands = update.availableCommands || []; return; }
     if (!this.active) return; // Late events cannot enter the next turn.
     this.acknowledge();
+    let changedItem;
     if (update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_thought_chunk') {
       if (update.content?.type !== 'text') throw new Error('ACP 返回未支持的输出内容类型：' + update.content?.type);
       const thought = update.sessionUpdate === 'agent_thought_chunk';
@@ -190,6 +201,7 @@ class AcpSession extends EventEmitter {
       item.text += update.content.text;
       if (thought) item.summary = [item.text];
       this.items.set(id, item);
+      changedItem = item;
       this.print(update.content.text);
     } else if (['tool_call', 'tool_call_update'].includes(update.sessionUpdate)) {
       if (!update.toolCallId) throw new Error('ACP 工具更新缺少 ID');
@@ -199,12 +211,15 @@ class AcpSession extends EventEmitter {
         status: update.status === 'in_progress' || update.status === 'pending' ? 'inProgress' : update.status || prior.status,
         result: update.content || prior.result, isError: update.status === 'failed' });
       if (update.sessionUpdate === 'tool_call') this.segment++;
+      changedItem = this.items.get(id);
     } else if (update.sessionUpdate === 'usage_update') {
       this.emit('usage', { last: { totalTokens: update.used }, modelContextWindow: update.size });
+      return;
     } else if (update.sessionUpdate === 'plan') {
       this.items.set(this.active.turnId + ':plan', { id: this.active.turnId + ':plan', type: 'acpPlan', entries: update.entries });
+      changedItem = this.items.get(this.active.turnId + ':plan');
     }
-    this.changed();
+    if (changedItem) this.changed(changedItem);
   }
   async request(message) {
     const p = message.params || {};
@@ -230,6 +245,7 @@ class AcpSession extends EventEmitter {
       params: { ...p, threadId: this.threadId, turnId: this.active.turnId, reason: p.toolCall?.title || '原生工具请求权限' } } });
   }
   async send(text, options = {}) {
+    if (this.storageError) throw new Error('ACP 历史保存失败，请处理存储问题后恢复：' + this.storageError.message);
     await this.start();
     options={...options,attachments:options.attachments || require('./acp-attachments').imagePaths(text)};
     require('./acp-attachments').validateImages(options.attachments,this.currentModel,this.capabilities);
@@ -296,8 +312,9 @@ class AcpSession extends EventEmitter {
       if (this.active !== active || active.accepted) return;
       const error = new Error('ACP 未在期限内返回执行证据；消息结果待核对');
       this.apply({ type: 'submission', submission: { ...this.runtime.submission, status: 'unknown', error: error.message } });
-      this.persist();
       reject(error);
+      try { this.persist(); }
+      catch (storageError) { this.client.fail(storageError); this.emit('action-error', storageError.message); }
     }, this.options.ackTimeoutMs || 60000);
     this.client.request('session/prompt', { sessionId: this.threadId, prompt }, 0).then(result => {
       if (this.active !== active || this.closed) return;
@@ -328,6 +345,13 @@ class AcpSession extends EventEmitter {
     const completedAt = Date.now();
     const turn = { ...this.history.get(active.turnId), status, items: [...this.items.values()], hubCompletedAt: completedAt, error };
     this.history.set(active.turnId, turn);
+    try { this.persist(); }
+    catch (storageError) {
+      // Recovery must keep the unfinished turn visible; never publish completion
+      // before its durable record exists.
+      this.history.set(active.turnId, { ...turn, status:'inProgress', hubCompletedAt:undefined, error:undefined });
+      throw storageError;
+    }
     this.completed.set(active.turnId, { text: this.finalText(), status, completedAt, error });
     this.apply({ type: 'completed', threadId: this.threadId, turn: { id: active.turnId, status, ...(error ? { error: { message: error } } : {}) } });
     this.lifecycle(status === 'completed' ? 'turn-complete' : status === 'interrupted' ? 'turn-aborted' : 'turn-error',
@@ -352,14 +376,28 @@ class AcpSession extends EventEmitter {
     turnId: this.active?.turnId || this.runtime.turnId, phase: 'message', ts: item.hubStartedAt })); }
   readTranscript(options = {}) {
     if (options.limit === 0) return [];
-    const turns = options.turnId ? [this.history.get(options.turnId)].filter(Boolean)
+    let turns = options.turnId ? [this.history.get(options.turnId)].filter(Boolean)
       : options.latestTurn ? [...this.history.values()].slice(-1) : [...this.history.values()];
+    // Each ACP turn has at least its user card. Select candidate turns before
+    // converting large tool histories; slicing cards afterwards is too late.
+    if(Number.isFinite(options.limit) && options.limit>0) turns = options.fromTail===false
+      ? turns.slice(0,options.limit) : turns.slice(-options.limit);
     const cards = require('./codex-native-transcript').nativeTranscriptTurns(this.threadId,
       turns.map(turn => turn.id === this.active?.turnId ? { ...turn, items: [...this.items.values()] } : turn))
       .map(card => ({ ...card, source: BACKEND, kind: this.options.kind,
-        ...(card.toolCalls ? {toolCalls:card.toolCalls.map(tool=>({...tool,
+        ...(card.toolCalls ? {toolCalls:card.toolCalls.map(tool=>({
+          ...(options.toolPreviews && tool.input.type==='acpTool'
+            ? require('./acp-tool-preview').toolPreview(tool,{hubSessionId:this.options.id,threadId:this.threadId,turnId:card.providerTurnId}) : tool),
           name:tool.input.title || (tool.input.type==='acpPlan' ? '执行计划' : tool.input.kind || tool.name)}))} : {}) }));
     return options.limit >= 0 ? options.fromTail === false ? cards.slice(0, options.limit) : cards.slice(-options.limit) : cards;
+  }
+  readToolResult({threadId,turnId,itemId}) {
+    if(threadId!==this.threadId)throw new Error('工具详情不属于当前原生会话');
+    const item=turnId===this.active?.turnId ? this.items.get(itemId)
+      : this.history.get(turnId)?.items.find(item=>item.id===itemId);
+    if(!item || item.type!=='acpTool')throw new Error('工具详情不存在，请重新载入会话');
+    const result=item.result ?? item.content ?? item.error;
+    return typeof result==='string' ? result : result==null ? '' : JSON.stringify(result,null,2);
   }
   async reply(requestId, result, epoch) {
     if (epoch !== this.runtime.epoch || this.runtime.connection !== 'connected') throw new Error('ACP 权限来自旧连接');
@@ -530,6 +568,8 @@ class AcpSession extends EventEmitter {
       this.closed = true;
       if (this.active) { clearTimeout(this.active.timer); clearTimeout(this.active.cancelTimer); this.active.reject(new Error('ACP 会话已关闭')); }
       this.client?.close();
+      this._historyStore?.close();
+      this._historyStore = null;
       this.emit('exit', { exitCode: 0 });
     }
   }

@@ -17,7 +17,9 @@ const {connectFirstPage}=require('./helpers/cdp-client');
     hub=await launchIsolatedHub({dataDir,port,label:'ACP cancellation race',extraEnv:{ACP_CANCEL_FIXTURE_HOLD_MS:'2000',
       CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude')}});report.pid=hub.pid;
     cdp=await connectFirstPage(hub);await until('typeof sessions!=="undefined"','renderer');
-    for (const mode of ['late-interactions','queued-permission','no-confirmation']) {
+    // The current profile confirms bypass at startup. A real question still
+    // needs user input; ordinary tool permission is automatically answered.
+    for (const mode of ['late-interactions','queued-question','no-confirmation']) {
       report.currentMode=mode;
       const cwd=path.join(root,mode);fs.mkdirSync(cwd);
       const s=await cdp.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'qwen',opts:{cwd,model:'qwen3.8-max'}})+')');assert(s.id);
@@ -28,7 +30,7 @@ const {connectFirstPage}=require('./helpers/cdp-client');
       await until('document.querySelector(".floating-input-box")','composer');await enter(mode);
       await until(runtime+'.state==="running" || '+runtime+'.state==="waiting"','running');
       let old;
-      if(mode==='queued-permission') {
+      if(mode==='queued-question') {
         await until('document.querySelector(".codex-native-request button")','existing permission');
         old=await cdp.eval(runtime+'.requests[0]');await snap(mode+'-before-stop');
       }
@@ -39,7 +41,7 @@ const {connectFirstPage}=require('./helpers/cdp-client');
       const record={mode,afterStop:await cdp.eval(runtime)};
       if(old) {
         record.oldReply=await cdp.eval('ipcRenderer.invoke("codex:native-action",'+JSON.stringify({sessionId:s.id,action:'reply',
-          requestId:old.id,epoch:record.afterStop.epoch,result:{outcome:{outcome:'selected',optionId:'allow'}}})+')');
+          requestId:old.id,epoch:record.afterStop.epoch,result:{action:'accept',content:{answer:'yes'}}})+')');
         assert.equal(record.oldReply.ok,false,'Main rejects old button payload');
       }
       const final=mode==='no-confirmation'?'unknown':'interrupted';

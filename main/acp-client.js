@@ -69,6 +69,11 @@ class AcpClient extends EventEmitter {
   feed(bytes) {
     if (this.closed) return;
     this.buffer += this.decoder.write(bytes);
+    if (!this.feedContinuation) this.drain();
+  }
+  drain() {
+    if (this.closed) return;
+    const deadline = performance.now() + 8;
     const max = this.options.maxBytes || 16 * 1024 * 1024;
     for (let nl; (nl = this.buffer.indexOf('\n')) >= 0;) {
       const line = this.buffer.slice(0, nl).trim();
@@ -97,8 +102,18 @@ class AcpClient extends EventEmitter {
         else if (Object.hasOwn(message, 'result')) pending.resolve(message.result);
         else pending.reject(Object.assign(new Error('ACP 响应缺少 result/error'), { uncertain: true }));
       } else return this.fail(new Error('ACP 消息缺少请求身份'));
+      if (this.closed) return;
+      if (performance.now() >= deadline && this.buffer.includes('\n')) {
+        this.proc?.stdout?.pause();
+        this.feedContinuation = setImmediate(() => {
+          this.feedContinuation = null;
+          this.drain();
+        });
+        return;
+      }
     }
     if (Buffer.byteLength(this.buffer) > max) this.fail(new Error('ACP 未结束消息超过大小限制'));
+    else if (!this.closed) this.proc?.stdout?.resume();
   }
   send(message) {
     const write = this.tail.then(() => new Promise((resolve, reject) => {
@@ -137,6 +152,8 @@ class AcpClient extends EventEmitter {
   fail(error) {
     if (this.closed) return;
     this.closed = true;
+    clearImmediate(this.feedContinuation);
+    this.feedContinuation = null;
     const failure = Object.assign(new Error(this.redact(error.message)), { uncertain: true });
     for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(failure); }
     this.pending.clear();

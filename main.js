@@ -1888,7 +1888,7 @@ registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
-require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain);
+require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain, {sessionManager});
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
   const sessionId = request && typeof request.sessionId === 'string' ? request.sessionId : null;

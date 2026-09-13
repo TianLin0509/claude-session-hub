@@ -86,14 +86,17 @@ function createCardDetailControls({ document: doc, window: win, clipboard, resol
   async function copyResult(button) {
     const reportError = errorReporter(button);
     try {
-      const full = resolveResult(button);
+      const full = await resolveResult(button);
       await clipboard.writeText(full);
       button.textContent = '已复制全文';
     } catch (error) { reportError('复制失败：' + error.message); }
   }
-  function openResult(button) {
+  async function openResult(button) {
+    const reportError = errorReporter(button);
+    if (button.disabled) return;
+    button.disabled = true;
     try {
-      const full = resolveResult(button), size = 50000;
+      const full = await resolveResult(button), size = 50000;
       const modal = dialog('工具返回 · 完整来源 ' + full.length.toLocaleString('zh-CN') + ' 字符');
       const toolbar = doc.createElement('div'); toolbar.className = 'card-detail-dialog-tools';
       const label = doc.createElement('span'), prev = doc.createElement('button'), next = doc.createElement('button');
@@ -124,7 +127,8 @@ function createCardDetailControls({ document: doc, window: win, clipboard, resol
       });
       toolbar.append(label, prev, next, copy, download); modal.append(toolbar, pre);
       paint(); modal.showModal();
-    } catch (error) { message(button, '无法查看全文：' + error.message); }
+    } catch (error) { reportError('无法查看全文：' + error.message); }
+    finally { button.disabled = false; }
   }
   async function openImage(button) {
     const reportError = errorReporter(button);

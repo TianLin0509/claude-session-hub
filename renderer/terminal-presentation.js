@@ -3,7 +3,8 @@
 // Recognize only the native bridge's exact opening banner. Anything else,
 // including diagnostics, belongs to xterm and must be visible immediately.
 const OPENING_BANNER = 'Codex 已连接。请使用 Hub 输入框发送消息。'.replace(/\s/g, '');
-function classifyOpeningOutput(terminal) {
+function classifyOpeningOutput(terminal, openingBanner = OPENING_BANNER) {
+  const expected = openingBanner.replace(/\s/g, '');
   const buffer = terminal.buffer.active;
   if (buffer.type !== 'normal' || buffer.baseY > 0 || buffer.cursorY >= 8) return 'output';
   let text = '';
@@ -11,11 +12,11 @@ function classifyOpeningOutput(terminal) {
     text += buffer.getLine(i)?.translateToString(true) || '';
   }
   text = text.replace(/\s/g, '');
-  if (text === OPENING_BANNER) return 'welcome';
-  return OPENING_BANNER.startsWith(text) ? 'pending' : 'output';
+  if (text === expected) return 'welcome';
+  return expected.startsWith(text) ? 'pending' : 'output';
 }
 
-function mountTerminalPresentation({ document, host, cached, native, readOnly, focusComposer }) {
+function mountTerminalPresentation({ document, host, cached, native, readOnly, focusComposer, openingBanner, engine = 'Codex' }) {
   host.classList.add('pty-surface');
   cached.container.classList.add('terminal-output-host');
   const chrome = document.createElement('div');
@@ -38,13 +39,14 @@ function mountTerminalPresentation({ document, host, cached, native, readOnly, f
       + '<p>在下方写下任务，<br>执行过程与输出会在这里展开。</p>'
       + '<button type="button" class="pty-welcome-compose">开始输入 <span aria-hidden="true">↗</span></button>'
       + '<div class="pty-welcome-hint">此处用于阅读输出，消息从 Hub 输入框发送</div></div>';
+    welcome.querySelector('.pty-welcome-eyebrow').textContent = engine+' · 输出视图';
     welcome.querySelector('button').addEventListener('click', event => {
       event.stopPropagation();
       focusComposer();
     });
     host.appendChild(welcome);
     const update = () => {
-      const state = classifyOpeningOutput(cached.terminal);
+      const state = classifyOpeningOutput(cached.terminal, openingBanner);
       const show = state === 'welcome';
       welcome.hidden = !show;
       host.classList.toggle('pty-awaiting-output', show);
