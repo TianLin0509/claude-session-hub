@@ -4,7 +4,7 @@ const {randomUUID}=require('crypto');
 const {CodexSharedSession}=require('./codex-shared-session');
 const {acquireBroker}=require('../main/codex-runtime-broker-client');
 const {restoreRecord}=require('./claude-broker-session');
-const {claudeTranscriptTurns}=require('./claude-native-transcript');
+const {claudeTranscriptTurns,tailClaudeRecords}=require('./claude-native-transcript');
 const END=new Set(['completed','failed','interrupted']);
 
 async function connectClaudeBroker(options) {
@@ -55,7 +55,7 @@ class ClaudeSharedSession extends CodexSharedSession {
   }
   transcript(options={}) {
     const records=[...this.records.values(),...this.activities.records.values()].sort((a,b)=>a.createdAt-b.createdAt);
-    return claudeTranscriptTurns(options.tailRecords?records.slice(-options.tailRecords):records);
+    return claudeTranscriptTurns(options.tailRecords?tailClaudeRecords(records,options.tailRecords):records);
   }
   historyPath(){return this.historyFile;}
   historyExclusions(){

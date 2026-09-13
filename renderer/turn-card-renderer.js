@@ -491,8 +491,12 @@ function renderTurnCard(turn) {
   }
 
   const emptyNative = !turn.text && ({completed:'本轮已完成，没有回答正文',interrupted:'本轮已中断',failed:'本轮执行失败'})[turn.nativeOutcome];
-  const activityLabel = turn.nativeActivity ? '<div class="turn-native-outcome">Claude 后台活动</div>' : '';
-  const body = activityLabel + (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
+  // An engine-initiated turn (channel input, scheduled task) that could not
+  // continue an earlier card is marked in the head, not above the body: the
+  // body reads like every other answer, matching Codex's card density.
+  const nativeChip = turn.nativeActivity && !isProgress
+    ? `<span class="turn-branch-chip turn-native-chip" title="Claude 自行发起的回合${turn.nativeOrigin?.kind ? '：' + escapeHtml(turn.nativeOrigin.kind) : ''}">后台</span>` : '';
+  const body = (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.text,
@@ -529,7 +533,7 @@ function renderTurnCard(turn) {
         <span class="turn-who">${escapeHtml(who)}</span>
         ${!isUser && turn.phase ? `<span class="conversation-phase">${turn.phase === 'final_answer' ? '结果' : turn.phase === 'commentary' ? '进展' : turn.phase === 'activity' ? '活动记录' : '消息'}</span>` : ''}
         ${!isUser ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
-        ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}
+        ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}${nativeChip}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
           ${isProgress ? '<button class="conversation-response-copy" data-action="conversation-response-copy" title="复制本轮当前已收到的完整回复">复制本轮</button>' : renderCardActions(turn)}

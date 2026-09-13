@@ -95,9 +95,21 @@ function toMs(timestamp) {
 
 // 共用 entry → turn 转换（tool_result/空 entry 已在调用方过滤）。
 // 返回 turn 对象或 null（非 user/assistant、空 assistant content）。
+// The engine records a background task's completion as an injected user entry
+// (origin.kind task-notification, text <task-notification>...) and answers it
+// in a fresh assistant run. It is not a prompt; the reply continues the
+// previous turn's card, as the live projection does (claude-native-transcript).
+function isTaskNotificationEntry(entry, text) {
+  return entry.origin?.kind === 'task-notification'
+    || String(text || '').trimStart().startsWith('<task-notification>');
+}
+
 function _entryToTurn(entry) {
   if (entry.type === 'user') {
     const message = entry.message || {};
+    const rawText = typeof message.content === 'string' ? message.content
+      : Array.isArray(message.content) ? message.content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text).join('\n') : '';
+    if (isTaskNotificationEntry(entry, rawText)) return { role: 'continuation' };
     // displayUserText 负责两件事：滤掉纯系统注入，以及把 AI 群聊脚手架里
     // 用户真正打的那段（`## 用户`）抽出来——卡片只显示用户自己的话。
     if (typeof message.content === 'string') {
@@ -193,6 +205,18 @@ function _mergeConsecutiveAssistantTurns(turns) {
 
   for (const t of turns) {
     if (t.role === 'boundary') { flush(); continue; }
+    if (t.role === 'continuation') {
+      // Reopen the settled card so the notification-driven run appends to it;
+      // its earlier answer becomes one more progress row.
+      const last = merged.at(-1);
+      if (!acc && last && last.role === 'assistant') {
+        acc = merged.pop();
+        acc.thinking = typeof acc.thinking === 'string' ? [acc.thinking] : Array.isArray(acc.thinking) ? acc.thinking : [];
+        for (const m of acc.displayMessages || []) if (m.phase === 'final_answer') m.phase = 'commentary';
+        acc.continued = (acc.continued || 0) + 1;
+      }
+      continue;
+    }
     if (t.role === 'user') {
       flush();
       merged.push(t);

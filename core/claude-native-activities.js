@@ -27,6 +27,13 @@ class ClaudeNativeActivities {
     const saved = this.options.persistActivity?.({ ...data, transcriptMessages: [...(messages?.values() || [])] });
     if (saved && typeof saved.then === 'function') throw new Error('persistActivity must save synchronously');
   }
+  // Late child output after the activity settled used to re-save the whole
+  // transcript per frame; the journal now merges an appended slice instead.
+  saveAppended(record, frame) {
+    const { messages, streams, ...data } = record;
+    const saved = this.options.persistActivity?.({ ...data, transcriptAppend: [frame] });
+    if (saved && typeof saved.then === 'function') throw new Error('persistActivity must save synchronously');
+  }
   begin(frame) {
     const id = frame.uuid || randomUUID(); // Local display identity if the provider omitted its UUID.
     const record = { userMessageId: id, providerMessageId: frame.uuid || null,
@@ -36,6 +43,29 @@ class ClaudeNativeActivities {
     this.records.set(id, record);
     this.current = record;
     return record;
+  }
+  // Measured on Claude Code 2.1.269: for a task-notification turn the engine
+  // streams the assistant frames first and replays the injected user frame
+  // (without a UUID) only milliseconds before the result. Dropping those early
+  // frames left the activity with nothing but result.result, so the card showed
+  // no progress and the disk history could not be deduplicated against it.
+  // A provisional record takes them in; the injected input or the result then
+  // adopts it instead of opening a second identity.
+  beginProvisional() {
+    const record = this.begin({ origin: { kind: 'pending' } });
+    record.provisional = true;
+    return record;
+  }
+  inject(frame) {
+    const current = this.current;
+    if (current?.provisional && !END.has(current.status)) {
+      Object.assign(current, { provisional: false, origin: frame.origin,
+        providerMessageId: frame.uuid || current.providerMessageId, content: frame.message?.content });
+      this.save(current);
+      return current;
+    }
+    this.deferSegment();
+    return this.begin(frame);
   }
   owner(frame, human) {
     if (frame.parent_tool_use_id) return this.toolOwners.get(frame.parent_tool_use_id) || null;
@@ -89,12 +119,15 @@ class ClaudeNativeActivities {
     }
   }
   finish(frame) {
-    const matches = this.pending().filter(r => originKey(r.origin) === originKey(frame.origin));
-    if (matches.length > 1) throw new Error('Claude injected result has ambiguous origin; no activity was settled');
+    const exact = this.pending().filter(r => !r.provisional && originKey(r.origin) === originKey(frame.origin));
+    if (exact.length > 1) throw new Error('Claude injected result has ambiguous origin; no activity was settled');
+    const provisional = exact.length ? [] : this.pending().filter(r => r.provisional);
+    const matches = exact.length ? exact : provisional;
     // Some CLI event types omit a replayed user frame. Keep that result as a
     // standalone activity; never borrow the active human's output or identity.
     const previous = this.current;
     const record = matches[0] || this.begin({ origin: frame.origin });
+    if (record.provisional) Object.assign(record, { provisional: false, origin: frame.origin });
     this.resolveSegment(record);
     const interrupted = ['aborted_streaming', 'aborted_tools'].includes(frame.terminal_reason);
     const status = interrupted ? 'interrupted' : frame.is_error || frame.subtype !== 'success' ? 'failed' : 'completed';
