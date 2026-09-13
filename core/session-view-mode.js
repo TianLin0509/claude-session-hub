@@ -3,12 +3,11 @@
 /**
  * 卡片 / PTY 视图模式的按会话记忆。
  *
- * 2026-08-27：这两个视图原来只有 renderer.js 里的一个全局 `currentView`，
- * 而 selectSession 从不调 applyViewMode——于是在 A 会话切到卡片、再点开 B 会话，
- * B 也跟着变成卡片。用户的本意是「每个会话记住自己的视图」。
+ * 历史版本会记住每个会话上次停在卡片还是后台。现在普通导航统一从卡片开始，
+ * 这份存储只保留给显式工具和旧数据兼容，不能再决定下一次点击的默认视图。
  *
- * 只记住**处于卡片视图**的会话 id：PTY 是默认值，不入集合。这样 1000+ 会话也不会
- * 把 localStorage 撑大（实测该用户有 1056 个会话），LIMIT 只是防御异常增长。
+ * 旧格式只记住**处于卡片视图**的会话 id，继续按原格式读写以兼容已有数据；
+ * 标准 session 点击与恢复不会再读取它来决定初始视图。
  *
  * 放在 core/ 而不是塞在 renderer.js 里，是为了能单测——renderer.js 是个几千行的
  * 非模块化文件，里面的东西测不到。
@@ -66,12 +65,11 @@ function forgetViewMode(set, sessionId) {
 /**
  * 点开一个会话时该用哪个视图。
  *
- * 2026-09-06：「已完成未读」的会话点进去默认走卡片视图 —— 这时你要看的是刚写完的那段
- * 答复，PTY 里得自己往回滚。只影响这一次打开，不写进记忆（调用方传 remember:false），
- * 所以你手动切回 PTY 之后，读完未读再点开还是你自己选的那个视图。
+ * 普通 AI 会话每次打开都从卡片开始。后台是当前查看期间的显式操作，不跨点击、
+ * resume 或页面恢复继承。PowerShell 没有结构化卡片，因此仍进入 PTY。
  */
-function selectionViewModeFor(set, sessionId, { completedUnread = false } = {}) {
-  return completedUnread ? CARD : viewModeFor(set, sessionId);
+function selectionViewModeFor(_set, _sessionId, { cardCapable = false } = {}) {
+  return cardCapable ? CARD : PTY;
 }
 
 module.exports = {
