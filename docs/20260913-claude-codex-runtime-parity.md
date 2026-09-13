@@ -39,6 +39,10 @@
 
 完整候选和最新主干的集成由 `python scripts/merge_task.py <完整 SHA> --dry-run` 检查，全量 `node scripts/run_unit_tests.js` 通过后才正式合并、升版本、推送；最终 SHA 和证据路径见交付报告。
 
+集成期间同步主干 4d0c76a（v1.6.160）的原样斜杠输入和原生命令卡片改动，保留 Claude 的新 slash 参数/回执检查及共用命令刷新，不覆盖另一任务的实现。
+
+历史切换额外做了 CPU profile / Chromium trace：默认隐藏窗口的整秒长任务位于 `LayerTreeHost::WaitForCommitCompletion`，包括光标闪烁定时器，并非 JavaScript 重建卡片。仅在临时测试入口关闭后台限速后，同一 3 会话、每会话 80 轮数据的 4 次切换，卡片刷新约 12.9–15 ms，Renderer 总任务时间约 55–106 ms，无长任务。该对照模拟前台调度，未修改生产 BrowserWindow 的限速/省电策略，不能当成真实桌面所有负载下的延迟承诺。可用 `$env:HUB_CARD_PROFILE='1'; $env:HUB_CARD_UNTHROTTLED='1'; node tests/e2e-card-history-windowing-cdp.js` 重现剖析；`PROFILE_ONLY` 不宣称分页 E2E 通过。
+
 ## 能力边界
 
 以上 GUI 使用真实 Hub 与受控原生协议进程，没有调用收费模型，不能据此承诺所有真实供应商负载都不会卡。历史首次读取仍需工作，旧的磁盘转录解析未在本任务全部改为有界投影。完整原始记录保留，摘要不能替代全文。
