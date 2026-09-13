@@ -41,7 +41,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   const nodes = new Map();
   let mode='readable',visible=false,dead=false,host=null,timer=null,busy=false,dirty=true,revision=null,first=null,rawFirst=null,rawLast=null;
   let followBottom=true,unread=0,scrollTop=0,more=false,historyMore=false,unsupported=false,needsLatest=false,resizeFrame=null;
-  let detailDialog=null,readCount=0,paintCount=0,pendingReset=true,modeEpoch=0;
+  let detailDialog=null,readCount=0,paintCount=0,pendingReset=true,modeEpoch=0,exporting=false;
   try { const pref=JSON.parse(localStorage.getItem('codex-backstage-display')||'{}');appearance.value=pref.appearance==='classic'?'classic':'refined';if([13,14,16,18].includes(pref.size))size.value=String(pref.size); }
   catch (error) { console.warn('[codex-backstage] display preference:',error.message); }
   function saveDisplay() { root.classList.toggle('cb-classic',appearance.value==='classic');root.style.setProperty('--cb-font-size',size.value+'px');try{localStorage.setItem('codex-backstage-display',JSON.stringify({appearance:appearance.value,size:Number(size.value)}));}catch(error){console.warn('[codex-backstage] display preference:',error.message);}if(followBottom)pin(); }
@@ -131,6 +131,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
       const page=await request(mode==='raw'?{mode:'raw',...(rawLast&&!reset?{after:rawLast}:{})}:{...(revision!=null&&!reset?{since:revision}:{}),limit:40});
       if(dead||requestedEpoch!==modeEpoch||!visible||doc.hidden){dirty=true;pendingReset ||= reset;return;}
       if(page.unsupported){unsupported=true;exportButton.disabled=true;compatibility.hidden=false;compatibility.textContent='后台待升级';compatibility.title=page.message;error(page.message);changeView('legacy');return;}
+      if(unsupported){unsupported=false;exportButton.disabled=exporting;compatibility.hidden=true;toolbar.title='';}
       renderPage(page,{reset});
       // Only catch up a bounded page when an event or user action found more
       // changes. There is no interval polling when the source is idle.
@@ -144,7 +145,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   function changeView(next){mode=next;modeEpoch++;pendingReset=true;onModeChange(next);root.dataset.view=mode;readable.setAttribute('aria-pressed',String(next==='readable'));raw.setAttribute('aria-pressed',String(next==='raw'));legacy.setAttribute('aria-pressed',String(next==='legacy'));host?.classList.toggle('codex-backstage-legacy',next==='legacy');list.hidden=next!=='readable';rawList.hidden=next!=='raw';area.hidden=next==='legacy';status.hidden=next==='legacy';appearance.hidden=next!=='readable';older.hidden=true;
     if(next!=='legacy'){revision=null;rawFirst=rawLast=null;more=false;followBottom=true;unread=0;void refresh(true);}else{loading.hidden=!unsupported;toolbar.title=unsupported?loading.textContent:'';} }
   function updateStatus(){const r=getSession()?.nativeRuntime;if(!r)return;const connected=['connected','unstarted'].includes(r.connection);stateText.textContent=!connected?'● 连接待核对':({running:'● 正在运行',waiting:'● 等待处理',completed:'✓ 已完成',failed:'× 执行失败',interrupted:'■ 已中断',idle:'● 就绪',unknown:'● 状态待核对'})[r.state]||'● '+r.state;status.dataset.state=!connected?'unknown':r.state;stateDetail.textContent=!connected?r.reason||'连接暂时不可用':r.state==='waiting'?'请在下方处理审批或问题':'';stateDetail.title=r.reason||'';}
-  async function exportOriginal(){exportButton.disabled=true;try{const result=await ipcRenderer.invoke('codex:backstage-export',{sessionId});if(!result?.ok)throw Error(result?.message||'导出失败');}catch(err){error(err.message);}finally{exportButton.disabled=false;}}
+  async function exportOriginal(){if(exporting||unsupported)return;exporting=true;exportButton.disabled=true;try{const result=await ipcRenderer.invoke('codex:backstage-export',{sessionId});if(!result?.ok)throw Error(result?.message||'导出失败');}catch(err){error(err.message);}finally{exporting=false;exportButton.disabled=unsupported;}}
   async function openDetail(entry){
     if(detailDialog)detailDialog.close();
     const dialog=make('dialog','cb-detail-dialog');detailDialog=dialog;
