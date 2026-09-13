@@ -50,7 +50,8 @@ function textInput(text, attachments = []) {
 }
 function inputDigest(input) {
   const canonical = input.map(i => i.type === 'text' ? {type:i.type,text:i.text}
-    : i.type === 'localImage' ? {type:i.type,path:i.path} : {type:i.type,url:i.url});
+    : i.type === 'localImage' ? {type:i.type,path:i.path}
+    : i.type === 'skill' ? {type:i.type,name:i.name,path:i.path} : {type:i.type,url:i.url});
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
 function sanitizeTerminal(text) {
@@ -408,6 +409,7 @@ class CodexNativeSession extends EventEmitter {
     } else if (type === 'item/commandExecution/outputDelta') {
       this.terminalPresentation.toolDelta(p.itemId, p.delta);
     } else if (type === 'thread/tokenUsage/updated') {
+      this.tokenUsage = p.tokenUsage;
       this.emit('usage',p.tokenUsage);
     } else if (type === 'error') {
       this.print('\n[Codex] '+(p.error && p.error.message || '执行过程发生错误')+'\n');
@@ -549,7 +551,7 @@ class CodexNativeSession extends EventEmitter {
     if (this.runtime.connection !== 'connected') throw new Error('Codex 连接已断开，请先核对');
     intent.client ||= this.entry.client;
     intent.threadId ||= this.threadId;
-    if (String(text).trimStart().startsWith('/')) return this.slash(String(text).trim(),intent);
+    if (!options.resolvedCommand && String(text).trimStart().startsWith('/')) return this.slash(String(text).trim(),intent,options);
     this.checkSendable(intent);
     if (options.requireReady !== false) await this.idle(0,intent.signal);
     this.checkSendable(intent);
@@ -557,6 +559,7 @@ class CodexNativeSession extends EventEmitter {
     const submittedAt = Date.now();
     const id = options.clientSubmissionId || randomUUID();
     const input = textInput(text,options.attachments);
+    if (options.commandSkill) input.push({type:'skill',name:options.commandSkill.name,path:options.commandSkill.path});
     const digest = createHash('sha256').update(text).digest('hex');
     const payloadDigest = inputDigest(input);
     const old = this.receipts.get(id);
@@ -767,7 +770,7 @@ class CodexNativeSession extends EventEmitter {
       text:result.text,status:result.status,completedAt:result.completedAt,abortedAt:result.completedAt,
       message:result.error?.message,errorInfo:result.error,finality:'provider_final'};
   }
-  async slash(text, intent) {
+  async slash(text, intent, options = {}) {
     const space = text.search(/\s/);
     const command = (space < 0 ? text : text.slice(0,space)).toLowerCase();
     const value = space < 0 ? '' : text.slice(space).trim();
@@ -795,32 +798,45 @@ class CodexNativeSession extends EventEmitter {
       printResult(JSON.stringify({profile:this.options.mcpProfile,servers:all},null,2));
     } else if (command === '/status' || command === '/help') {
       printResult(command === '/status' ? JSON.stringify(this.runtime,null,2)
-          : '原生命令：/status /mcp /model <模型> /plan /plan off /rename <名称> /compact /goal <目标> /goal pause /goal resume /goal clear /review\n在 Hub 输入框提交以上命令；后台仅显示输出。\n新建、恢复、分叉请使用 Hub 会话菜单。\n/logout、/login 尚未接入：在 PowerShell 使用 codex logout、codex login（相同 CODEX_HOME）。');
-    } else if (command === '/plan' && (!value || value === 'off')) {
+          : require('./codex-native-commands').HELP);
+    } else if (command === '/plan') {
       await require('./codex-native-mode').configureMode(this, value === 'off' ? 'default' : 'plan', intent);
+      if (value && value !== 'off') return this._send(value,{...options,resolvedCommand:true},intent);
       printResult('工作方式已选择：'+(value === 'off' ? '默认' : '计划')+'，下一条消息生效。\n');
     } else if (command === '/rename' && value) {
       await request('thread/name/set',{threadId:this.threadId,name:value});
       this.emit('renamed',value);
+      printResult('会话已重命名：'+value);
     } else if (command === '/goal') {
-      if (!value) {
-        const goal = await request('thread/goal/get',{threadId:this.threadId});
-        printResult(JSON.stringify(goal,null,2));
-      } else if (value === 'clear') await request('thread/goal/clear',{threadId:this.threadId});
-      else await request('thread/goal/set',{threadId:this.threadId,
-        ...(['pause','resume'].includes(value) ? {status:value === 'pause' ? 'paused' : 'active'} : {objective:value})});
+      const {formatGoal} = require('./codex-native-commands');
+      if (!value) printResult(formatGoal(await request('thread/goal/get',{threadId:this.threadId})));
+      else if (value === 'clear') {
+        await request('thread/goal/clear',{threadId:this.threadId}); printResult('目标已清除。');
+      } else if (value === 'edit') {
+        const result = await request('thread/goal/get',{threadId:this.threadId});
+        printResult(formatGoal(result)+'\n使用 /goal edit <新目标> 修改。');
+      } else {
+        const objective = value.replace(/^edit\s+/, '');
+        if (objective.length > 4000) throw new Error('目标最多 4000 字符；请把详细要求放在文件中，在目标里引用文件。');
+        const result = await request('thread/goal/set',{threadId:this.threadId,
+          ...(['pause','resume'].includes(value) ? {status:value === 'pause' ? 'paused' : 'active'} : {objective,status:'active'})});
+        printResult(formatGoal(result));
+      }
     } else if (command === '/compact') {
       await this.idle(0,intent.signal);
       await request('thread/compact/start',{threadId:this.threadId});
     } else if (command === '/model' && value) {
       await this._configure({model:value},intent);
-    } else if (command === '/review' && !value) {
+      printResult('模型已切换：'+value);
+    } else if (command === '/review') {
       await this.idle(0,intent.signal);
-      await request('review/start',{threadId:this.threadId,target:{type:'uncommittedChanges'},delivery:'inline'});
+      await request('review/start',{threadId:this.threadId,target:value ? {type:'custom',instructions:value} : {type:'uncommittedChanges'},delivery:'inline'});
     } else if (command === '/logout' || command === '/login') {
       throw new Error(command + ' 尚未接入 Hub，未执行。请在 PowerShell 使用 codex ' + command.slice(1) + '，并使用与本会话相同的 CODEX_HOME。账号操作影响共享该登录目录的会话；后台是只读输出，不能直接输入 CLI 命令。');
     } else {
-      throw new Error('此命令尚无 Hub 原生映射：'+command+'。未发送给模型；输入 /help 查看支持的命令，其他 CLI 命令请在独立终端运行 Codex。');
+      const route = await require('./codex-native-commands').extendedCommand(this,command,value,request);
+      if (route.prompt !== undefined) return this._send(route.prompt,{...options,resolvedCommand:true,commandSkill:route.skill},intent);
+      printResult(route.output);
     }
     return {ok:true,sendStatus:'ok',mode:'native-command',commandOutput,enterAttempts:0,acknowledgementSource:BACKEND};
   }
