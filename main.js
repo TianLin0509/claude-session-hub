@@ -5,6 +5,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
+// Freeze the running window's build before a later source-mode merge changes
+// files on disk, even if its first native session is opened much later.
+require('./core/runtime-build-info').runtimeBuildInfo();
 
 // 2026-05-16 道雪：防卡死后门 — 默认开 Chromium CDP 端口（OS 自动分配）。
 //   实际分配的端口在启动后写入 <dataDir>/control/<pid>.json 的 cdpPort 字段，

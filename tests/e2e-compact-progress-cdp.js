@@ -13,6 +13,24 @@ async function main(){
   let hub,c;const evidence={out,checks:[],passed:false};
   const until=async(expr,label)=>{const end=Date.now()+45000;while(Date.now()<end){if(await c.eval(expr))return;await pause(120)}throw Error('timeout: '+label)};
   const click=async selector=>{const p=await c.eval(`(()=>{const e=document.querySelector(${j(selector)});if(!e)throw Error('missing '+${j(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});for(const type of ['mousePressed','mouseReleased'])await c.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});await pause(100)};
+  // Reopening deliberately shows only the newest card page. Exercise the real
+  // history control before asserting that every durable progress row survives.
+  const revealOrdinaryRows=async count=>{
+    const rows='document.querySelectorAll("#msg-overlay .conversation-progress-row").length';
+    const more='!!document.querySelector("#msg-overlay .card-history-more:not(:disabled)")';
+    await until(`(${rows})===${count} || (${more})`,'initial history page');
+    // Real upward navigation leaves follow-latest mode before selecting a
+    // control above the viewport; scrollIntoView alone is not user intent.
+    await c.eval('document.getElementById("msg-overlay").focus()');
+    for(const type of ['keyDown','keyUp'])await c.send('Input.dispatchKeyEvent',{type,key:'Home',code:'Home',windowsVirtualKeyCode:36});
+    await until('document.getElementById("msg-overlay").scrollTop<3','history top');
+    for(let page=0;page<10 && await c.eval(rows)<count;page++){
+      const before=await c.eval(rows);
+      await click('#msg-overlay .card-history-more:not(:disabled)');
+      await until(`(${rows})>${before}`,'older progress page');
+    }
+    await until(`(${rows})===${count}`,'complete progress replay');
+  };
   const size=async(w,h)=>{await c.send('Emulation.setDeviceMetricsOverride',{width:w,height:h,deviceScaleFactor:1,mobile:false});await pause(120)};
   const shot=async name=>{await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:0,y:0});await pause(150);const s=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'))};
   const prompt='fixture:compact-progress\n请核对普通会话和群聊的紧凑进展布局。';
@@ -24,7 +42,7 @@ async function main(){
   }
   try{
     hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',label:'compact-progress-b',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
-    evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await until('typeof sessions!=="undefined" && !!window.__hubE2E','renderer');
+    evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await c.send('Page.bringToFront');await until('typeof sessions!=="undefined" && !!window.__hubE2E','renderer');
     await c.eval('require("electron").webFrame.setZoomFactor(1)');await size(1600,1100);
     const opts={cwd,model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'};
     const session=await c.eval(`ipcRenderer.invoke('create-session',${j({kind:'codex',opts})})`),sid=j(session.id);
@@ -55,7 +73,7 @@ async function main(){
     assert.equal(await c.eval('(require("electron").clipboard.readText().match(/我先核对最新代码/g)||[]).length'),1);
     await grid('#msg-overlay',24);await shot('ordinary-narrow');
     evidence.checks.push('new question starts a new identity; live append retains earlier reading position; narrow layout');
-    await c.send('Page.reload');await until(`typeof sessions!=='undefined' && sessions.has(${sid})`,'ordinary reload');await click(`.session-item[data-session-id="${session.id}"]`);await until('document.querySelectorAll("#msg-overlay .conversation-progress-row").length===24','ordinary replay');
+    await c.send('Page.reload');await until(`typeof sessions!=='undefined' && sessions.has(${sid})`,'ordinary reload');await click(`.session-item[data-session-id="${session.id}"]`);await revealOrdinaryRows(24);
     assert.equal(await c.eval('document.querySelectorAll("#msg-overlay .turn-card.assistant:not(.conversation-response-continuation)").length'),2);
     await size(1800,1150);
     for(const scene of ['general','dev']){
@@ -70,7 +88,7 @@ async function main(){
       await c.send('Page.reload');await until('typeof window.MeetingRoom!=="undefined"','group reload');await click(`[data-meeting-id="${group.id}"]`);await until('document.querySelectorAll(".mr-gc-messages .conversation-progress-row").length===12','group replay');
       // The member's ordinary card surface must use the same presentation too.
       await click('.mr-gc-messages .mr-gc-msg.ai [data-gc-open-session]');
-      await until('document.querySelectorAll("#msg-overlay .conversation-progress-row").length===12','member ordinary cards');await grid('#msg-overlay',12);
+      await revealOrdinaryRows(12);await grid('#msg-overlay',12);
       assert.equal(await c.eval('document.querySelectorAll("#msg-overlay .turn-card.assistant:not(.conversation-response-continuation)").length'),1);
       await shot('member-'+scene);
       evidence.checks.push(scene+' group: one actual agent identity, 12 aligned messages and distinct result, real copy and durable replay');

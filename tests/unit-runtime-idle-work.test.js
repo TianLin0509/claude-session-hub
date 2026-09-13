@@ -4,6 +4,23 @@ const fs = require('node:fs'), fsp = require('node:fs/promises'), os = require('
 const { EventEmitter } = require('node:events');
 const { createReconnectBackoff } = require('../core/reconnect-backoff');
 const { createBrokerUpgrade } = require('../core/broker-upgrade');
+test('running build identity stays frozen; a new release changes the fingerprint', () => {
+  let version = '1.0.0', reads = 0;
+  const source = fs.readFileSync(path.resolve(__dirname, '../core/runtime-build-info.js'), 'utf8');
+  function freshProcess() {
+    const box = { module: { exports: {} }, __dirname: path.resolve(__dirname, '../core'),
+      require: name => name === 'node:fs' ? { readFileSync(file) {
+        reads++; return file.endsWith('package.json') ? JSON.stringify({ version }) : 'unchanged source';
+      } } : require(name) };
+    require('node:vm').runInNewContext(source, box);
+    return box.module.exports.runtimeBuildInfo;
+  }
+  const current = freshProcess(), before = current();
+  const startupReads = reads; version = '1.0.1';
+  assert.equal(current(), before); assert.equal(reads, startupReads);
+  assert.equal(before.version, '1.0.0'); assert(Object.isFrozen(before));
+  assert.notEqual(freshProcess()().fingerprint, before.fingerprint);
+});
 const delay = ms => new Promise(r => setTimeout(r, ms));
 async function until(check) { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw Error('condition timed out'); await delay(15); } }
 test('short successful connections retain backoff; stable recovery resets it', () => {
