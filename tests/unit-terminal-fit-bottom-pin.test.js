@@ -9,6 +9,7 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 
@@ -40,32 +41,48 @@ test('bottom state is sampled before the fit, not after', () => {
   assert.ok(fitAt > sampleAt, 'the sample must be taken before fit() reflows the buffer');
 });
 
-test('a terminal that was at the bottom is re-pinned regardless of CLI kind', () => {
-  const body = fitBody();
-  assert.match(body, /else if \(wasAtBottom\) \{/,
-    'non-Codex terminals must also be re-pinned after a resize');
-  assert.match(body, /else if \(wasAtBottom\) \{[\s\S]{0,400}pinTerminalViewportToBottom\(cached\)/,
-    'the re-pin must actually scroll the viewport to the bottom');
+function resize(session, { atBottom = true, follow = true } = {}) {
+  const frames = [], calls = [];
+  const cached = { opened: true, container: { offsetWidth: 800, getBoundingClientRect: () => ({width:800,height:600}) },
+    terminal: { cols: 80, rows: 24 }, fitAddon: { fit() { calls.push('fit'); atBottom = false; } } };
+  const native = s => ['codex-app-server','claude-stream-json','acp'].includes(s?.runtimeBackend);
+  const codex = kind => /^codex(?:-resume)?$/.test(kind || '');
+  vm.runInNewContext(fitBody() + '\nfitAndResizeTerminal("session", cached, {force:true});', {
+    cached, sessions:new Map([['session',session]]), currentFontSize:14, currentZoom:1,
+    isNativeAgent:native, isCodexKind:codex,
+    isTerminalViewportAtBottom:()=>atBottom,
+    shouldAutoPinCodexTerminal:()=>follow && (native(session) || codex(session.kind)),
+    pinTerminalViewportToBottom:()=>{calls.push('pin');atBottom=true;},
+    scheduleCodexBottomPin:()=>calls.push('follow'),
+    requestAnimationFrame:fn=>frames.push(fn), ipcRenderer:{send:()=>calls.push('resize')},
+  });
+  return { calls, frames };
+}
+
+test('plain PTY bottom survives fit and the following reflow frame', () => {
+  const {calls,frames}=resize({kind:'claude'});
+  assert.deepEqual(calls,['fit','resize','pin']);
+  assert.equal(frames.length,1);frames[0]();
+  assert.deepEqual(calls,['fit','resize','pin','pin']);
 });
 
-test('the re-pin survives xterm reflow by repeating on the next frame', () => {
-  const body = fitBody();
-  assert.match(body, /else if \(wasAtBottom\) \{[\s\S]{0,500}requestAnimationFrame\(/,
-    'xterm settles reflow on the next frame, so one pin is not enough');
+test('every native provider uses the shared follow policy exactly once', () => {
+  for(const [kind,runtimeBackend] of [['codex','codex-app-server'],['claude','claude-stream-json'],['qwen','acp']]) {
+    const {calls,frames}=resize({kind,runtimeBackend});
+    assert.deepEqual(calls,['fit','resize','follow'],kind);assert.equal(frames.length,0);
+  }
 });
 
-test('Codex keeps its own follow-bottom logic and is not double-pinned', () => {
-  const body = fitBody();
-  assert.match(body, /if \(pinAfterFit\) scheduleCodexBottomPin\(sessionId, cached\);\s*\n\s*else if \(wasAtBottom\)/,
-    'Codex must take the scheduleCodexBottomPin branch exclusively, honouring _codexFollowBottom');
+test('upward native intent wins even while the DOM still reports the old bottom', () => {
+  for(const [kind,runtimeBackend] of [['codex','codex-app-server'],['claude','claude-stream-json'],['qwen','acp']]) {
+    const {calls,frames}=resize({kind,runtimeBackend},{atBottom:true,follow:false});
+    assert.deepEqual(calls,['fit','resize'],kind);assert.equal(frames.length,0);
+  }
 });
 
-test('a terminal the user scrolled away from is left alone', () => {
-  const body = fitBody();
-  // wasAtBottom 为 false 时不得有任何置底调用
-  const elseBranch = body.slice(body.indexOf('else if (wasAtBottom)'));
-  assert.ok(!/^\s*else\s*\{[\s\S]*pinTerminalViewportToBottom/m.test(elseBranch),
-    'scrolled-up terminals must not be yanked back to the bottom on resize');
+test('a plain terminal scrolled away from the bottom is left alone', () => {
+  const {calls,frames}=resize({kind:'claude'},{atBottom:false});
+  assert.deepEqual(calls,['fit','resize']);assert.equal(frames.length,0);
 });
 
 if (!process.exitCode) console.log('All terminal fit bottom-pin tests passed.');

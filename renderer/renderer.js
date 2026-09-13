@@ -529,7 +529,7 @@ function isTerminalViewportAtBottom(cached, epsilon = CODEX_BOTTOM_LOCK_EPSILON)
 
 function shouldAutoPinCodexTerminal(sessionId, cached) {
   const session = sessions.get(sessionId);
-  if (!session || !isCodexKind(session.kind) || !cached || !cached.opened) return false;
+  if (!session || !(isNativeAgent(session) || isCodexKind(session.kind)) || !cached || !cached.opened) return false;
   if (!cached.container || !cached.container.offsetWidth) return false;
   if (cached._codexUserScrollIntentUntil && performance.now() < cached._codexUserScrollIntentUntil && cached._codexFollowBottom === false) return false;
   return cached._codexFollowBottom !== false;
@@ -555,7 +555,7 @@ function scheduleCodexBottomPin(sessionId, cached) {
 
 function updateCodexFollowBottomFromUserScroll(sessionId, cached) {
   const session = sessions.get(sessionId);
-  if (!session || !isCodexKind(session.kind) || !cached) return;
+  if (!session || !(isNativeAgent(session) || isCodexKind(session.kind)) || !cached) return;
   requestAnimationFrame(() => {
     const now = performance.now();
     // This helper is only scheduled from a real wheel gesture. User intent
@@ -563,21 +563,24 @@ function updateCodexFollowBottomFromUserScroll(sessionId, cached) {
     // otherwise a streaming Codex TUI can keep the suppression window alive
     // and make upward scrolling feel as if it hits an invisible wall.
     if (!cached._codexUserScrollIntentUntil || now > cached._codexUserScrollIntentUntil) return;
-    cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
+    // The compositor may not have applied an upward wheel yet. A stale
+    // bottom position must not reattach a reader during snapshot replay.
+    cached._codexFollowBottom = cached._codexUserScrollCanAttach !== false && isTerminalViewportAtBottom(cached);
   });
 }
 
 function markCodexUserScrollIntent(sessionId, cached, opts = {}) {
   const session = sessions.get(sessionId);
-  if (!session || !isCodexKind(session.kind) || !cached) return;
+  if (!session || !(isNativeAgent(session) || isCodexKind(session.kind)) || !cached) return;
   cached._codexUserScrollIntentUntil = performance.now() + CODEX_SCROLL_INTENT_MS;
+  cached._codexUserScrollCanAttach = opts.detachFromBottom !== true;
   if (opts.detachFromBottom) cached._codexFollowBottom = false;
   if (opts.attachToBottom) cached._codexFollowBottom = true;
 }
 
 function setupCodexViewportScrollTracker(sessionId, cached) {
   const session = sessions.get(sessionId);
-  if (!session || !isCodexKind(session.kind) || !cached) return;
+  if (!session || !(isNativeAgent(session) || isCodexKind(session.kind)) || !cached) return;
   const vp = getTerminalViewport(cached);
   if (!vp || cached._codexTrackedViewport === vp) return;
   if (cached._codexTrackedViewport && cached._codexViewportScrollHandler) {
@@ -592,7 +595,7 @@ function setupCodexViewportScrollTracker(sessionId, cached) {
     // automatic scrollToBottom. The user's resulting viewport position is the
     // source of truth; subsequent writes stay detached until they return to
     // the bottom or explicitly click the sidebar item again.
-    cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
+    cached._codexFollowBottom = cached._codexUserScrollCanAttach !== false && isTerminalViewportAtBottom(cached);
   };
   vp.addEventListener('scroll', cached._codexViewportScrollHandler, { passive: true });
 }
@@ -650,7 +653,7 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   }
   if (cached._minimap) cached._minimap.invalidate();
   if (pinAfterFit) scheduleCodexBottomPin(sessionId, cached);
-  else if (wasAtBottom) {
+  else if (wasAtBottom && !(isNativeAgent(sessions.get(sessionId)) || isCodexKind(sessions.get(sessionId)?.kind))) {
     // xterm 的 reflow 在下一帧才落定，隔一帧再贴一次才稳。
     pinTerminalViewportToBottom(cached);
     requestAnimationFrame(() => {
@@ -1327,7 +1330,7 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
-    lineHeight: isNativeSession(sessions.get(sessionId)) ? 1.3 : 1,
+    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
@@ -1487,6 +1490,21 @@ function getOrCreateTerminal(sessionId) {
 
   const container = document.createElement('div');
   container.style.cssText = 'width:100%;height:100%;display:none';
+
+  terminal.attachCustomWheelEventHandler((event) => {
+    if (!isNativeAgent(sessions.get(sessionId)) || event.ctrlKey || event.metaKey) return true;
+    const viewport = terminal._core?.viewport;
+    if (!viewport?.getLinesScrolled) return true;
+    // Native backends display a plain output log. Scroll its logical buffer
+    // directly: xterm's deferred DOM scroll event can be swallowed by a
+    // concurrent replay/viewport sync and leave the reader pinned at the end.
+    const lines = viewport.getLinesScrolled(event);
+    if (!lines) return true;
+    markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId), { detachFromBottom: lines < 0 });
+    terminal.scrollLines(lines);
+    event.preventDefault();
+    return false;
+  });
 
   // Drag-and-drop: dropping a file/folder into the terminal inserts its path(s).
   container.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
@@ -1987,7 +2005,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   if (!embedded) {
     cached._ptyPresentation = mountTerminalPresentation({
-      document, host: termContainer, cached, native: isNativeSession(session), readOnly: session.readOnly,
+      document, host: termContainer, cached, native: isNativeAgent(session), readOnly: session.readOnly,
       openingBanner: require('../core/native-ui-labels').nativeOpeningBanner(session),
       engine: require('../core/native-ui-labels').nativeUiLabel(session),
       focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
@@ -2002,7 +2020,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     if (forcePtyResize) cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
-    const nativeKind = isNativeSession(session) || isCodexKind(session.kind);
+    const nativeKind = isNativeAgent(session) || isCodexKind(session.kind);
     const pinOnShow = !!opts.forceScrollBottom || (!nativeKind && !!opts.focus);
     if (pinOnShow || opts.focus) {
       if (opts.forceScrollBottom) cached._codexFollowBottom = true;
@@ -2193,6 +2211,12 @@ function syncTurnPresentationToSession(sessionId, presentation, turn) {
     if (!sessionRuntimeIsActive(session)) { session.currentCardActivity=null; return; }
     if (!turn.id?.includes(':'+session.nativeRuntime?.turnId+':')) return;
   }
+  if (session.runtimeBackend === 'claude-stream-json') {
+    if (!sessionRuntimeIsActive(session)) { session.currentCardActivity=null; return; }
+    const runtime = session.nativeRuntime || {};
+    if (turn.userMessageId !== runtime.userMessageId
+        && !(runtime.backgroundActivities || []).some(activity => activity.id === turn.userMessageId)) return;
+  }
   const current = presentation.currentActivity;
   const activities = Array.isArray(presentation.activities) ? presentation.activities : [];
   const lastActivity = activities.length ? activities[activities.length - 1] : null;
@@ -2252,7 +2276,7 @@ const turnCardRenderer = createTurnCardRenderer({
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
   openAttachment: (target, opts) => openPathInHub(target, opts),
-  readToolResult: reference => ipcRenderer.invoke('acp:tool-result', reference),
+  readToolResult: reference => ipcRenderer.invoke(reference.source==='claude-stream-json'?'claude-native:tool-result':'acp:tool-result', reference),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -4469,6 +4493,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     // 给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
     const canStop = !sharedViewer && status.canStop && composerStopAllowed(session, status.runtime);
     stopBtn.classList.toggle('visible', canStop);
+    stopBtn.disabled = session.nativeRuntime?.cancellation?.status === 'pending';
     sendBtn.hidden = canStop;
 
     const rail = buildComposerRailModel(session, {
@@ -6273,13 +6298,14 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
     fitAndResizeTerminal(sessionId, cached, { force: true, forcePtyResize: true });
     cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
-    try { cached.terminal.scrollToBottom(); } catch {}
+    const native = isNativeAgent(sessions.get(sessionId)) || isCodexKind(sessions.get(sessionId)?.kind);
+    if (!native || shouldAutoPinCodexTerminal(sessionId, cached)) pinTerminalViewportToBottom(cached);
     requestAnimationFrame(() => {
       if (terminalCache.get(sessionId) !== cached) return;
       if (!cached.opened || !cached.container || !cached.container.offsetWidth) return;
       fitAndResizeTerminal(sessionId, cached, { force: true });
       refreshTerminalRendererSurface(cached);
-      try { cached.terminal.scrollToBottom(); } catch {}
+      if (!native || shouldAutoPinCodexTerminal(sessionId, cached)) pinTerminalViewportToBottom(cached);
     });
   }
 }
@@ -8056,6 +8082,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     const next = session.nativeRuntime;
     if (old && next && (next.epoch < old.epoch || (next.epoch === old.epoch && next.revision < old.revision))) return;
     Object.assign(local, session);
+    if (old?.cancellation?.status !== next?.cancellation?.status) window.MeetingRoom?.refreshNativeCancellation?.(local.id);
     if (session.nativeMigrationDraft && local._importedNativeDraft !== session.nativeMigrationDraft) {
       local._importedNativeDraft = session.nativeMigrationDraft;
       const input = [...document.querySelectorAll('.floating-input-bar')].find(bar => bar.dataset.sessionId === local.id)?.querySelector('.floating-input-box');

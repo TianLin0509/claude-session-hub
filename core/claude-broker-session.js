@@ -9,8 +9,12 @@ function recordSnapshot(record) {
   const {timer,ack,resolve,reject,messages,streams,...fields}=record;
   return {...fields,messages:[...(messages || [])],streams:[...(streams || [])]};
 }
-function restoreRecord(record) {
-  return {...record,messages:new Map(record.messages || []),streams:new Map(record.streams || [])};
+function restoreRecord(record, previous) {
+  const {messagePatch,removedMessageIds,...fields}=record;
+  const messages=new Map(messagePatch ? previous?.messages || [] : []);
+  for(const id of removedMessageIds || [])messages.delete(id);
+  for(const [id,message] of record.messages || [])messages.set(id,message);
+  return {...fields,messages,streams:new Map(record.streams || [])};
 }
 
 // Adapt transport only. Claude still validates its own user UUID, receipt,
@@ -58,11 +62,22 @@ class ClaudeBrokerSession extends EventEmitter {
   readTranscript(){return [];}
   profileOptions(){return this.native.options;}
   pendingWork(){return this.native.queue.length>0 || this.native.activities.pending().length>0 || !!this.native.configurationChange;}
-  snapshotExtra({full=false}={}) {
+  snapshotExtra({full=false,messagePatches=false}={}) {
     const records=[...this.native.records.values(),...this.native.activities.records.values()];
     const selected=full?records:records.filter(r=>!END.has(r.status) || r.userMessageId===this.runtime.userMessageId || this.changedUsers.has(r.userMessageId));
     if(!full)this.changedUsers.clear();
-    return {nativeRecords:selected.map(recordSnapshot),replaceNativeRecords:full,
+    const snapshots=selected.map(record=>{
+      const snapshot=recordSnapshot(record);
+      if(full)return snapshot; // Attaching a new viewer must not consume existing viewers' pending updates.
+      this.sentMessages ||= new WeakMap();
+      const prior=this.sentMessages.get(record) || new Map();
+      this.sentMessages.set(record,new Map(record.messages || []));
+      if(!messagePatches)return snapshot; // Old views keep the complete record contract.
+      return {...snapshot,messagePatch:true,
+        messages:snapshot.messages.filter(([id,frame])=>prior.get(id)!==frame),
+        removedMessageIds:[...prior.keys()].filter(id=>!record.messages?.has(id))};
+    });
+    return {nativeRecords:snapshots,replaceNativeRecords:full,
       recoveryRecords:this.native.recoveryRecords(),historyFile:this.historyFile,sessionUsage:this.sessionUsage,
       relaunchOptions:{launchArgs:this.native.options.launchArgs?.map(arg=>this.options.relaunchMcpPaths?.[arg] || arg),settingsFile:this.native.options.settingsFile,
         fastMode:this.native.options.fastMode,historyTitle:this.native.options.historyTitle,

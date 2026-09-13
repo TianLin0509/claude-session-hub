@@ -79,15 +79,13 @@ class ClaudeStreamClient extends EventEmitter {
     });
     this.proc.stdout.on('end', () => {
       try {
+        this.inputEnded = true;
         this.consume(this.decoder.decode());
-        if (this.buffer.trim()) throw new Error('truncated JSONL frame');
       } catch (error) { this.fail(protocolError('Invalid Claude stream ending: ' + error.message)); }
-      if (!this.closed) this.fail(protocolError('Claude stdout ended', 'CLAUDE_DISCONNECTED'));
     });
     this.proc.on('close', (code, signal) => {
-      const expected = this.closed;
-      if (!expected) this.fail(protocolError(`Claude exited (${code ?? signal})`, 'CLAUDE_PROCESS_EXIT'));
-      this.emit('exit', { code, signal, expected });
+      this.processExit = { code, signal };
+      this.finishProcessExit();
     });
     try {
       const info = await this.control({ subtype: 'initialize' }, this.options.initializeTimeoutMs || 60000);
@@ -105,6 +103,8 @@ class ClaudeStreamClient extends EventEmitter {
   consume(text) {
     if (this.failure || this.closed) return;
     this.buffer += text;
+    if (this.consumeContinuation) return;
+    const deadline = performance.now() + 8;
     const limit = this.options.maxFrameBytes || 16 * 1024 * 1024;
     let end;
     while ((end = this.buffer.indexOf('\n')) >= 0) {
@@ -118,8 +118,33 @@ class ClaudeStreamClient extends EventEmitter {
       }
       this.receive(message);
       if (this.failure || this.closed) return;
+      if (performance.now() >= deadline && this.buffer.includes('\n')) {
+        this.proc?.stdout?.pause();
+        this.consumeContinuation = setImmediate(() => {
+          this.consumeContinuation = null;
+          try { this.consume(''); }
+          catch (error) { this.fail(protocolError('Invalid Claude stream: ' + error.message)); }
+          this.finishProcessExit();
+        });
+        return;
+      }
     }
     if (Buffer.byteLength(this.buffer, 'utf8') > limit) throw new Error('JSONL frame exceeds configured limit');
+    if (this.inputEnded) {
+      if (this.buffer.trim()) throw new Error('truncated JSONL frame');
+      if (!this.closed) this.fail(protocolError('Claude stdout ended', 'CLAUDE_DISCONNECTED'));
+    } else this.proc?.stdout?.resume();
+  }
+
+  finishProcessExit() {
+    // 'close' can follow EOF before a yielded parser drains complete frames.
+    // Publish those receipts before reporting the process exit to the session.
+    if (!this.processExit || this.consumeContinuation) return;
+    const { code, signal } = this.processExit;
+    this.processExit = null;
+    const expected = this.closed;
+    if (!expected) this.fail(protocolError(`Claude exited (${code ?? signal})`, 'CLAUDE_PROCESS_EXIT'));
+    this.emit('exit', { code, signal, expected });
   }
 
   receive(message) {
@@ -170,12 +195,16 @@ class ClaudeStreamClient extends EventEmitter {
   write(message) {
     // JSON encoding preserves newlines/Unicode as one protocol message. No shell.
     let line;
-    try { line = JSON.stringify(message) + '\n'; }
+    try { if (typeof message !== 'function') line = JSON.stringify(message) + '\n'; }
     catch (error) { return Promise.reject(error); }
     const send = () => new Promise((resolve, reject) => {
       if (this.failure || this.closed || !this.proc || this.proc.stdin.destroyed) {
         reject(this.failure || protocolError('Claude transport is not writable', 'CLAUDE_CLOSED'));
         return;
+      }
+      if (typeof message === 'function') {
+        try { line = JSON.stringify(message()) + '\n'; }
+        catch (error) { reject(error); return; }
       }
       this.proc.stdin.write(line, 'utf8', error => {
         if (error) {
@@ -207,29 +236,35 @@ class ClaudeStreamClient extends EventEmitter {
     });
   }
 
-  async respond(requestId, response, errorMessage = null) {
+  async respond(requestId, response, errorMessage = null, beforeWrite) {
     if (!this.requests.has(requestId)) throw protocolError('Claude request is no longer pending', 'CLAUDE_STALE_REQUEST');
     this.answeredRequests.set(requestId, createHash('sha256').update(JSON.stringify(this.requests.get(requestId).request)).digest('hex'));
     // Remove before awaiting write: two clicks cannot answer the same request.
     this.requests.delete(requestId);
-    await this.write({ type: 'control_response', response: errorMessage
+    await this.write(() => ({ type: 'control_response', response: errorMessage
       ? { subtype: 'error', request_id: requestId, error: String(errorMessage) }
-      : { subtype: 'success', request_id: requestId, response } });
+      : { subtype: 'success', request_id: requestId, response:beforeWrite ? beforeWrite(response) : response } }));
   }
 
   fail(error) {
     if (this.failure || this.closed) return;
     this.failure = error;
+    clearImmediate(this.consumeContinuation); this.consumeContinuation=null;
+    this.proc?.stdout?.resume();
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();
     this.requests.clear();
     this.answeredRequests.clear();
     this.emit('disconnect', error);
+    this.finishProcessExit();
   }
 
   async close() {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    clearImmediate(this.consumeContinuation); this.consumeContinuation=null;
+    this.finishProcessExit();
+    this.proc?.stdout?.resume();
     const error = protocolError('Claude transport closed', 'CLAUDE_CLOSED');
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();

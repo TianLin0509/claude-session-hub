@@ -11,11 +11,17 @@ const { buildComposerStatusModel } = require('../core/session-status-summary');
 class Element {
   constructor(tag) {
     this.tagName = tag; this.children = []; this.style = {}; this.dataset = {};
-    this.textContent = ''; this.hidden = false; this.listeners = {};
+    this.textContent = ''; this.hidden = false; this.listeners = {}; this.value = '';
   }
   get childElementCount() { return this.children.length; }
-  append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.children = nodes; }
+  append(...nodes) { for (const node of nodes) { node.remove(); node.parentNode=this; this.children.push(node); } }
+  replaceChildren(...nodes) { this.children.forEach(node=>{node.parentNode=null;}); this.children=[]; this.append(...nodes); }
+  insertBefore(node,before) { node.remove(); node.parentNode=this; this.children.splice(before?this.children.indexOf(before):this.children.length,0,node); }
+  remove() { if(this.parentNode) {this.parentNode.children=this.parentNode.children.filter(node=>node!==this);this.parentNode=null;} }
+  get lastElementChild() { return this.children.at(-1); }
+  contains(node) { return node===this || this.children.some(child=>child.contains(node)); }
+  querySelectorAll(selector) { const tags=selector.split(',');return this.children.flatMap(child=>[...(tags.includes(child.tagName)?[child]:[]),...child.querySelectorAll(selector)]); }
+  focus() { document.activeElement=this; }
   setAttribute() {}
   addEventListener(name, fn) { this.listeners[name] = fn; }
 }
@@ -51,6 +57,23 @@ test('the panel stays hidden unless something needs the user, like the Codex pan
   // A non-native session never shows it.
   controls.update({ kind: 'claude' });
   assert.equal(controls.element.hidden, true);
+}));
+
+test('questions preserve typed answers when another request arrives, and choices match Codex interaction',()=>withDocument(()=>{
+  const controls=createClaudeNativeControls({sessionId:'hub',ipcRenderer:{}});
+  const question=id=>({id,epoch:1,submissionId:'turn',method:'claude/requestUserInput',
+    params:{questions:[{question:id,options:[{label:'推荐方案',description:'保持完整记录'}]}]},raw:{input:{questions:[]}}});
+  controls.update(session({state:'waiting',requests:[question('first')]}));
+  const first=controls.element.querySelectorAll('textarea')[0];first.value='我写了一半';first.focus();
+  controls.update(session({state:'waiting',revision:2,requests:[question('first'),question('second')]}));
+  assert.equal(controls.element.querySelectorAll('textarea')[0],first);
+  assert.equal(first.value,'我写了一半');assert.equal(document.activeElement,first);
+  const second=controls.element.querySelectorAll('textarea')[1];second.value='第二个回答';
+  controls.update(session({state:'waiting',revision:3,requests:[question('second')]}));
+  assert.equal(controls.element.querySelectorAll('textarea')[0],second);assert.equal(second.value,'第二个回答');
+  const option=controls.element.querySelectorAll('button').find(button=>button.textContent==='推荐方案');
+  option.listeners.click();assert.equal(second.value,'推荐方案');assert.equal(document.activeElement,second);
+  assert(controls.element.className.includes('codex-native-controls'));
 }));
 
 test('work in flight reads as working, not as an uncertain result', () => {

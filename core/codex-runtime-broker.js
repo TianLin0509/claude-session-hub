@@ -254,7 +254,7 @@ class RuntimeRecord {
     const update={ method:'content', params:{ key:this.key, contentRevision:this.session.contentRevision,
       replaceTurnId:turnId, threadId:this.session.threadId,
       transcript:this.session.readTranscript({ limit:Infinity, turnId }), blocks:this.session.blocks(), finalText:this.session.finalText(),
-      ...this.session.snapshotExtra?.() } };
+      ...this.session.snapshotExtra?.({messagePatches:[...this.views.values()].every(view=>view.claudeMessageMode==='delta-v1')}) } };
     let legacy;
     const sent = new Set();
     for(const view of this.views.values()) {

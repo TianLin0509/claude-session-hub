@@ -148,7 +148,8 @@ async function parseProviderTranscript(args = {}, deps) {
           history = parsed.turns || [];
         }
       }
-      return { turns: applyTailLimit([...history, ...turns].sort((a, b) => (a.ts || 0) - (b.ts || 0)), Number(parseOpts.limit), parseOpts.fromTail),
+      const live=require('../../core/claude-tool-details').compactClaudeTools(turns,{hubSessionId,threadId:native.sessionId});
+      return { turns: applyTailLimit([...history, ...live].sort((a, b) => (a.ts || 0) - (b.ts || 0)), Number(parseOpts.limit), parseOpts.fromTail),
         transcriptPath: null, source: 'claude-stream-json', error: null };
     }
     const kind = session ? session.kind : inKind;
@@ -277,6 +278,11 @@ function registerTranscriptIpc(ipcMain, deps) {
   const {
     transcriptTap,
   } = deps;
+  ipcMain.handle('claude-native:tool-result', (_event, reference = {}) => {
+    const native=deps.sessionManager.getNativeClaude?.(reference.hubSessionId);
+    if(!native)throw Error('Claude 工具来源不可用，请重新载入会话');
+    return require('../../core/claude-tool-details').readClaudeToolResult(native,reference);
+  });
 
   ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
     const nativeCodex = (deps.sessionManager.getNativeSession?.(sessionId) || deps.sessionManager.getNativeCodex?.(sessionId));

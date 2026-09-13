@@ -1,10 +1,10 @@
 'use strict';
 
 function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onRestoreDraft }) {
-  const element = document.createElement('div');
-  element.className = 'claude-native-controls';
+  const element = document.createElement('section');
+  element.className = 'claude-native-controls codex-native-controls';
   element.hidden = true;
-  element.style.cssText = 'max-height:42vh;overflow:auto;padding:8px 12px;border-top:1px solid var(--border-color,#444);font-size:13px;white-space:pre-wrap';
+  element.setAttribute('aria-label', '原生会话操作');
   // Only for what needs the user: the same contract as the Codex panel, which
   // stays hidden unless there is an approval, a recovery step or an error.
   // Runtime status belongs to the composer and is not repeated here.
@@ -22,6 +22,8 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   };
   let signature = '';
   let viewer = false;
+  const forms = new Map();
+  const pendingForms = new WeakSet();
   let recoveryKey = '';
   let recoveryVersion = { epoch: 0, revision: -1 };
   const recoverySignature = runtime => JSON.stringify([runtime.epoch, runtime.state === 'unknown', runtime.connection, runtime.recoveryReady,viewer]);
@@ -70,19 +72,27 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   }
   async function act(request, decision, button) {
     if(viewer)return;
-    button.disabled = true; error.textContent = '';
+    const form = button.closest('form');
+    if (pendingForms.has(form)) return;
+    pendingForms.add(form);
+    form.querySelectorAll('button,input,textarea,select').forEach(control => { control.disabled = true; });
+    error.textContent = '';
     try {
       const result = await ipcRenderer.invoke('claude-native:respond', { sessionId, requestId: request.id,
         epoch: request.epoch, submissionId: request.submissionId, decision });
       if (!result?.ok) throw new Error(result?.error || '操作未确认');
-    } catch (failure) { error.textContent = failure.message; button.disabled = viewer; }
+    } catch (failure) {
+      error.textContent = failure.message; pendingForms.delete(form);
+      form.querySelectorAll('button,input,textarea,select').forEach(control => { control.disabled = viewer; });
+    }
     refreshVisibility();
   }
   function update(session) {
     if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
     const runtime = session.nativeRuntime || {};
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
-    notice.textContent = runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
+    notice.textContent = runtime.cancellation?.status === 'pending' ? '正在停止，等待 Claude 确认'
+      : runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     const actionError = session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;
@@ -104,11 +114,17 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         recovery.append(reconnect);
       }
     }
-    const next = JSON.stringify([runtime.epoch, viewer, (runtime.requests || []).map(item => item.id)]);
+    const activeRequests = runtime.cancellation?.status === 'pending' ? [] : runtime.requests || [];
+    const next = JSON.stringify([runtime.epoch, viewer, activeRequests.map(item => [item.id,item.submissionId])]);
     if (next === signature) { refreshVisibility(); return; }
-    signature = next; requests.replaceChildren();
-    for (const request of runtime.requests || []) {
+    signature = next;
+    const children = [];
+    for (const request of activeRequests) {
+      const key = JSON.stringify([runtime.epoch, request.id, request.submissionId]);
+      if (forms.has(key)) { children.push(forms.get(key)); continue; }
       const box = document.createElement('form'); box.dataset.requestId = request.id;
+      box.className = 'codex-native-request';
+      box.dataset.epoch = String(runtime.epoch);
       const title = document.createElement('strong');
       title.textContent = request.method === 'claude/requestUserInput' ? 'Claude 需要你回答' : '工具审批：' + request.params.toolName;
       box.append(title);
@@ -117,15 +133,25 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
         for (const question of request.params.questions || []) {
           const label = document.createElement('label'); label.style.display = 'block';
           label.textContent = question.question;
-          if (question.options?.length) {
-            const choices = document.createElement('div');
-            choices.textContent = question.options.map(item => item.label + (item.description ? '：' + item.description : '')).join('\n');
-            label.append(choices);
-          }
-          const input = document.createElement('input'); input.required = true; input.type = 'text';
+          const input = document.createElement(question.isSecret ? 'input' : 'textarea'); input.required = true;
+          if (question.isSecret) input.type = 'password';
+          input.rows = 2; input.setAttribute('aria-label', question.question);
           input.disabled = viewer;
-          input.style.cssText = 'display:block;width:95%;margin:6px 0;padding:6px';
           label.append(input); box.append(label); inputs.push([question.question, input]);
+          for (const option of question.options || []) {
+            const choose = document.createElement('button'); choose.type = 'button';
+            choose.textContent = option.label; choose.title = option.description || '';
+            choose.addEventListener('click', () => {
+              if (viewer || pendingForms.has(box)) return;
+              if (question.multiSelect) {
+                const values = input.value ? input.value.split(', ') : [];
+                input.value = values.includes(option.label) ? values.filter(value=>value!==option.label).join(', ')
+                  : [...values, option.label].join(', ');
+              } else input.value = option.label;
+              input.focus();
+            });
+            box.append(choose);
+          }
         }
       } else {
         const detail = document.createElement('pre');
@@ -136,16 +162,29 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       allow.textContent = inputs.length ? '提交回答' : '允许本次';
       const deny = document.createElement('button'); deny.type = 'button'; deny.textContent = '拒绝';
       allow.disabled = viewer; deny.disabled = viewer;
-      box.append(allow, deny);
+      const actions = document.createElement('div'); actions.className = 'codex-native-actions';
+      actions.append(allow, deny); box.append(actions);
       box.addEventListener('submit', event => {
         event.preventDefault();
+        if (!box.reportValidity()) return;
         act(request, { behavior: 'allow', updatedInput: inputs.length
           ? { ...request.raw.input, answers: Object.fromEntries(inputs.map(([question, input]) => [question, input.value])) }
           : request.raw.input }, allow);
       });
       deny.addEventListener('click', () => act(request, { behavior: 'deny' }, deny));
-      requests.append(box);
+      forms.set(key, box); children.push(box);
     }
+    const focused = document.activeElement;
+    const keep = new Set(children);
+    for (const [key, form] of forms) if (!keep.has(form)) forms.delete(key);
+    children.forEach((child,index) => {
+      if (requests.children[index] !== child) requests.insertBefore(child,requests.children[index] || null);
+      child.querySelectorAll('button,input,textarea,select').forEach(control => {
+        control.disabled = viewer || pendingForms.has(child);
+      });
+    });
+    while (requests.children.length > children.length) requests.lastElementChild.remove();
+    if (focused && requests.contains(focused) && document.activeElement !== focused) focused.focus();
     refreshVisibility();
   }
   return { element, update };

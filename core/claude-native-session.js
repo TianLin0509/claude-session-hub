@@ -156,6 +156,10 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   update(patch) {
+    if (this.cancellation?.hadWork && !this.active && !this.activities.pending().length && !this.tasks.size) {
+      clearTimeout(this.cancellation.timer); this.cancellation = null;
+      patch = { ...patch, cancellation:null };
+    }
     const backgroundTasks = [...this.tasks.values()];
     const backgroundActivities = this.activities?.pending().map(r => ({ id: r.userMessageId, origin: r.origin, state: r.status })) || [];
     if (['completed', 'failed', 'interrupted', 'idle'].includes(patch.state)) this.foregroundState = patch.state;
@@ -281,6 +285,7 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   async submit(text, options = {}) {
+    if (this.cancellation) throw protocolError('正在停止，请等待原生会话确认后发送', 'CLAUDE_CANCELLING');
     const content = contentBlocks(text, options.attachments);
     await this.start();
     if (this.configurationChange) await this.configurationChange;
@@ -381,6 +386,7 @@ class ClaudeNativeSession extends EventEmitter {
 
   disconnect(error) {
     if (this.closed) return;
+    if (this.cancellation) { clearTimeout(this.cancellation.timer); this.cancellation = null; }
     this.print('\n[连接中断] ' + (error && error.message || '') + '\n');
     this.unreconciled = true;
     const record = this.active;
@@ -391,6 +397,7 @@ class ClaudeNativeSession extends EventEmitter {
     }
     this.update({ connection: this.client?.failure ? 'disconnected' : this.runtime.connection,
       state: 'unknown', requests: [], reason: error.message,
+      ...(this.runtime.cancellation ? {cancellation:{...this.runtime.cancellation,status:'unknown'}} : {}),
       submission: record ? this.receipt(record) : this.runtime.submission });
     this.emit('action-error', error.message);
   }
@@ -550,6 +557,11 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   request(message) {
+    if (this.cancellation) {
+      this.client.respond(message.request_id, {behavior:'deny',message:'该轮正在停止，旧请求已取消'})
+        .catch(error=>this.disconnect(error));
+      return;
+    }
     const r = message.request;
     if (r.subtype !== 'can_use_tool') {
       const reason = 'Hub 尚未支持 Claude 控制请求：' + r.subtype;
@@ -567,6 +579,7 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   async respond(requestId, decision, identity = null) {
+    if (this.cancellation) throw protocolError('该轮正在停止，审批已失效', 'CLAUDE_STALE_REQUEST');
     const request = this.runtime.requests.find(r => r.id === requestId);
     if (!request) throw protocolError('Claude request no longer active', 'CLAUDE_STALE_REQUEST');
     if (identity && (identity.epoch !== request.epoch || identity.submissionId !== request.submissionId)) {
@@ -576,7 +589,13 @@ class ClaudeNativeSession extends EventEmitter {
     const response = decision.behavior === 'deny' ? { behavior: 'deny', message: decision.message || '用户拒绝' }
       : { behavior: 'allow', updatedInput: decision.updatedInput || request.raw.input };
     if (decision.updatedPermissions) response.updatedPermissions = decision.updatedPermissions;
-    await this.client.respond(requestId, response);
+    let revoked = false;
+    await this.client.respond(requestId, response, null, value => {
+      revoked = !!this.cancellation || this.closed || request.epoch !== this.runtime.epoch
+        || this.runtime.connection !== 'connected' || !this.runtime.requests.includes(request);
+      return revoked ? {behavior:'deny',message:'原操作已失效，未继续执行'} : value;
+    });
+    if (revoked) throw protocolError('该轮操作已失效，未继续执行', 'CLAUDE_STALE_REQUEST');
     const requests = this.runtime.requests.filter(r => r.id !== requestId);
     const stillOwnsTurn = request.epoch === this.runtime.epoch && request.submissionId === (this.active?.submissionId || null);
     this.update({ requests, ...(stillOwnsTurn ? { state: this.unreconciled ? 'unknown'
@@ -584,12 +603,14 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   async interrupt() {
+    if (this.cancellation) return {requested:true};
     if (this.runtime.connection === 'connecting' && this.client) {
       await this.close();
       this.update({ state: 'interrupted', connection: 'disconnected', requests: [], reason: 'Claude 启动已取消' });
       return { requested: true, cancelledStartup: true };
     }
-    await this.start();
+    if (this.runtime.connection !== 'connected') await this.start();
+    if (this.cancellation) return {requested:true};
     const pending = this.active || this.queue[0];
     if (pending && !pending.writeStarted) {
       pending.cancelled = true;
@@ -598,10 +619,28 @@ class ClaudeNativeSession extends EventEmitter {
     if (!this.active && !this.runtime.requests.length && !this.activities.pending().length && !this.tasks.size) {
       return { interrupted: false, reason: 'idle' };
     }
-    // Stopping a foreground query does not stop previously delegated agents.
-    // Request every known task explicitly; only lifecycle frames remove them.
-    for (const task of this.tasks.values()) await this.client.control({ subtype: 'stop_task', task_id: task.id });
-    await this.client.control({ subtype: 'interrupt' });
+    const client=this.client, epoch=this.runtime.epoch, requestedAt=Date.now();
+    const cancellation={epoch,requestedAt,deadlineAt:requestedAt+(this.options.cancelTimeoutMs || 15000),
+      hadWork:!!(this.active || this.activities.pending().length || this.tasks.size)};
+    this.cancellation=cancellation;
+    const requests=this.runtime.requests;
+    this.update({requests:[],cancellation:{status:'pending',userMessageId:this.active?.userMessageId || null,
+      requestedAt,deadlineAt:cancellation.deadlineAt}});
+    const failCancellation = error => {
+      if (this.cancellation !== cancellation || this.client !== client || this.runtime.epoch !== epoch) return;
+      client.fail(error);
+      client.close().catch(failure=>this.emit('action-error','停止后的连接关闭失败：'+failure.message));
+    };
+    cancellation.timer=setTimeout(()=>failCancellation(protocolError('Claude 停止未在期限内确认，结果待核对；不会自动重发','CLAUDE_CANCEL_TIMEOUT')),
+      Math.max(1,cancellation.deadlineAt-Date.now()));
+    try {
+      // Replies already in writeQueue recheck the cancellation at their actual
+      // write; remaining requests are denied without exposing stale buttons.
+      for (const request of requests) if(client.requests?.has(request.id))
+        await client.respond(request.id,{behavior:'deny',message:'用户已停止本轮'});
+      for (const task of this.tasks.values()) await client.control({ subtype: 'stop_task', task_id: task.id });
+      await client.control({ subtype: 'interrupt' });
+    } catch (error) { failCancellation(error); throw error; }
     return { requested: true }; // Only the terminal_reason confirms interruption.
   }
 
@@ -877,6 +916,7 @@ class ClaudeNativeSession extends EventEmitter {
 
   close() {
     if (this.closePromise) return this.closePromise;
+    if (this.cancellation) { clearTimeout(this.cancellation.timer); this.cancellation=null; }
     this.closed = true;
     this.closePromise = Promise.resolve().then(async () => {
       for (const record of this.records.values()) {
