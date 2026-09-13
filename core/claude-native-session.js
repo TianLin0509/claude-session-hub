@@ -637,7 +637,7 @@ class ClaudeNativeSession extends EventEmitter {
   // of hand-mapping a short list, and only intercepts the three whose result it
   // also displays -- model, speed and working mode would otherwise drift out of
   // sync with the chips.
-  async slash(text) {
+  async slash(text, options = {}) {
     const line = String(text).trim();
     const space = line.search(/\s/);
     const command = (space < 0 ? line : line.slice(0, space)).toLowerCase();
@@ -659,9 +659,9 @@ class ClaudeNativeSession extends EventEmitter {
     }
     // Everything else is the engine's own command. Wait for its result so the
     // composer reports the real output rather than "sent".
-    const receipt = await this.submit(line, { localCommand: true });
+    const receipt = await this.submit(line, { ...options, localCommand: true });
     const record = this.records.get(receipt.clientSubmissionId);
-    if (!record) return done('');
+    if (!record) throw new Error('命令提交记录缺失，执行结果无法确认');
     await record.ack;
     const deadline = Date.now() + (this.options.commandTimeoutMs || 120000);
     while (!TERMINAL.has(record.status) && Date.now() < deadline && !this.closed) {

@@ -231,6 +231,12 @@ rl.on('line',line=>{
     }
     case 'collaborationMode/list':answer(msg.id,{data:[{name:'Plan',mode:'plan',model:'do-not-copy',reasoning_effort:'low'},{name:'Default',mode:'default'}]});break;
     case 'model/list':answer(msg.id,{data:['fixture-model','fixture-model-2','gpt-6-astra'].map(model=>({id:model,model,displayName:model,additionalSpeedTiers:model==='fixture-model-2'?[]:['fast'],supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort}))}))});break;
+    case 'thread/goal/get':answer(msg.id,{goal:thread.goal || null});break;
+    case 'thread/goal/set':
+      thread.goal={...thread.goal,...p};save();answer(msg.id,{goal:thread.goal});
+      event('thread/goal/updated',{threadId:thread.id,goal:thread.goal});break;
+    case 'thread/goal/clear':thread.goal=null;save();answer(msg.id,{});break;
+    case 'skills/list':answer(msg.id,{data:[{cwd:p.cwds?.[0],skills:[{name:'fixture-skill',path:__filename,enabled:true,description:'Fixture skill'}],errors:[]}]});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }
