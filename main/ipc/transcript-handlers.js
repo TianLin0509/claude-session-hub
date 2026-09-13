@@ -101,7 +101,7 @@ async function withInheritedBranchTurns(args, deps, liveSession, childTurns, par
   return applyTailLimit(merged, limit, parseOpts && parseOpts.fromTail);
 }
 
-async function parseSessionTranscript(args = {}, deps) {
+async function parseProviderTranscript(args = {}, deps) {
   const {
     defaultCodexSessionsRoot,
     defer = defaultDefer,
@@ -261,6 +261,17 @@ async function parseSessionTranscript(args = {}, deps) {
   } catch (err) {
     return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
   }
+}
+
+async function parseSessionTranscript(args = {}, deps) {
+  const result = await parseProviderTranscript(args, deps);
+  if (!args.hubSessionId) return result;
+  const { commandTranscriptStore, mergeCommandTurns } = require('../../core/command-transcript-store');
+  const path = require('path'), fs = require('fs');
+  if (!deps.commandTranscriptStore && !fs.existsSync(path.join(require('../../core/data-dir').getHubDataDir(), 'command-transcript.sqlite'))) return result;
+  const commands = (deps.commandTranscriptStore || commandTranscriptStore()).read(args.hubSessionId);
+  if (!commands.length) return result;
+  return { ...result, turns: mergeCommandTurns(result.turns || [], commands, args.opts || {}) };
 }
 
 function registerTranscriptIpc(ipcMain, deps) {

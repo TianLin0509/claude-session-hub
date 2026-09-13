@@ -3810,6 +3810,10 @@ function updateFloatingPromptReceipt(receipt) {
 
 ipcRenderer.on('session:prompt-receipt', (_event, receipt) => updateFloatingPromptReceipt(receipt));
 
+ipcRenderer.on('session:command-updated', (_event, event) => {
+  requestCardIncrementalRefresh(event.sessionId, { reason: 'command' });
+});
+
 ipcRenderer.on('native-agent-item', (_event, event) => {
   if (event.source === 'claude-stream-json') requestCardIncrementalRefresh(event.sessionId, { reason: 'native-item' });
 });
@@ -4629,7 +4633,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    if (!nativeCommand && currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
+    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
@@ -4650,7 +4654,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       if (nativeCommand) {
         if (feedbackSequence !== commandFeedbackSequence) return;
         const failed = !result?.ok || result.sendStatus === 'stuck';
-        commandFeedback.show(text.trim(), failed ? (result?.message || result?.error || '命令未执行，请重试') : (result.commandOutput || '命令已执行。'), failed);
+        requestCardIncrementalRefresh(sessionId, { reason: 'command-result' });
+        commandFeedback.show(text.trim(), failed ? (result?.message || result?.error || '命令未执行，请重试')
+          : (result.commandOutput || (['native-command','acp-command'].includes(result.mode) ? '命令已执行。' : '已提交给引擎，执行进度见卡片。')), failed);
         return;
       }
       if (floatingPromptDeliveries.get(sessionId) !== delivery) return;

@@ -163,7 +163,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     return session.transcriptKind || session.kind || null;
   }
 
-  ipcMain.handle('session:send-prompt', async (_event, request = {}) => {
+  const sendPrompt = async (_event, request = {}) => {
     const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
     const text = typeof request.text === 'string' ? request.text : '';
     if (!sessionId || !text) return { ok: false, error: 'bad-request' };
@@ -208,13 +208,15 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           logger.warn(`[prompt-submit] ${kind}(${sessionId.slice(0, 8)}) prompt not acknowledged; renderer will offer manual resend`);
         }
         return {
-          ok: sendStatus !== 'content-mismatch',
+          ok: result.ok !== false && sendStatus !== 'content-mismatch',
           kind,
           sendStatus,
           mode: result.mode || 'closed-loop',
           enterAttempts: result.enterAttempts ?? null,
           acknowledgementSource: result.acknowledgementSource || null,
           ...(typeof result.commandOutput === 'string' ? { commandOutput: result.commandOutput } : {}),
+          ...(result.message ? {message:result.message} : {}),
+          ...(result.error ? {error:result.error} : {}),
           ...(result.threadId ? {threadId:result.threadId,turnId:result.turnId} : {}),
           ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };
@@ -224,6 +226,35 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         return { ok: false, error: 'send-threw', message: error && error.message, kind };
       }
     });
+  };
+
+  ipcMain.handle('session:send-prompt', async (event, request = {}) => {
+    const session = sessionManager.getSession(request.sessionId);
+    const native = session && (['codex-app-server', 'claude-stream-json', 'acp'].includes(session.runtimeBackend)
+      || sessionManager.getNativeSession?.(request.sessionId) || sessionManager.getNativeCodex?.(request.sessionId)
+      || sessionManager.getNativeClaude?.(request.sessionId));
+    const aiSession = native || (session && isPasteSensitive(session.transcriptKind || session.kind));
+    if (!aiSession || typeof request.text !== 'string' || !request.text.trimStart().startsWith('/')) return sendPrompt(event, request);
+    const id = typeof request.clientSubmissionId === 'string' && request.clientSubmissionId
+      ? request.clientSubmissionId.slice(0,160) : require('crypto').randomUUID();
+    let store;
+    try {
+      store = deps.commandTranscriptStore || require('../../core/command-transcript-store').commandTranscriptStore();
+      const record = store.begin(request.sessionId, id, request.text);
+      if (record.duplicate) return record.result || { ok: false, sendStatus: 'stuck', message: '命令提交结果待确认，未重复执行' };
+    } catch (error) { return { ok: false, error: 'command-history-failed', message: '命令未发送：' + error.message }; }
+    const notify = () => {
+      try { sendToRenderer('session:command-updated', { sessionId: request.sessionId }); }
+      catch (error) { logger.warn('[command-history] broadcast failed:', error.message); }
+    };
+    notify();
+    let result;
+    try { result = await sendPrompt(event, { ...request, clientSubmissionId: id }); }
+    catch (error) { result = { ok: false, error: 'command-failed', message: error.message }; }
+    try { store.finish(request.sessionId, id, result); }
+    catch (error) { result = { ...result, ok: false, message: '命令已提交，但结果保存失败；请核对后再操作：' + error.message }; }
+    notify();
+    return result;
   });
 
   // 「⚠ 未提交 · 补发」按钮。复用群聊那条手动补发路径：它会先用 prompt 首行指纹

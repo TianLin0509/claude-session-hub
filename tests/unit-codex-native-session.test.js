@@ -332,3 +332,24 @@ test('native command output returns to card UI and logout is rejected without a 
     await s.send('ordinary prompt after commands');await s.idle();assert.equal(s.runtime.state,'completed');
   }finally{await close(s);}
 });
+
+test('goal commands return native state, edit is not an objective, model list and inline skills work',async()=>{
+  const s=make('commands');try {
+    assert.match((await s.send('/goal')).commandOutput,/没有目标/);
+    assert.match((await s.send('/goal 原始目标')).commandOutput,/原始目标/);
+    assert.match((await s.send('/goal pause')).commandOutput,/已暂停/);
+    assert.match((await s.send('/goal edit')).commandOutput,/原始目标/);
+    assert.match((await s.send('/goal edit 新目标')).commandOutput,/新目标/);
+    assert.match((await s.send('/goal resume')).commandOutput,/进行中/);
+    assert.match((await s.send('/goal clear')).commandOutput,/已清除/);
+    assert.match((await s.send('/model')).commandOutput,/fixture-model/);
+    assert.match((await s.send('/skills')).commandOutput,/fixture-skill/);
+    assert.equal(s.runtime.turnId,null);
+    await s.send('/fixture-skill 保留任务',{clientSubmissionId:'skill-submit'}); await s.idle();
+    const turn=[...s.history.values()].at(-1);
+    assert.equal(turn.items.find(i=>i.type==='userMessage').content.find(i=>i.type==='skill').name,'fixture-skill');
+    await s.send('/plan 制定实施计划',{clientSubmissionId:'plan-submit'}); await s.idle();
+    assert.equal(s.runtime.collaborationMode,'plan');
+    assert.ok(s.readTranscript().some(t=>t.text==='制定实施计划'));
+  }finally{await close(s);}
+});

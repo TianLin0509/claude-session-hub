@@ -355,7 +355,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     // Slash commands are a command channel, not a prompt: the driver reports the
     // engine's own output so the composer can show the result.
     if (String(prompt).trimStart().startsWith('/') && !(options.attachments || []).length) {
-      return nativeClaude.slash(prompt);
+      return nativeClaude.slash(prompt, options);
     }
     const { claudeNativeReceipt } = require('./claude-native-binding');
     return claudeNativeReceipt(await nativeClaude.submit(prompt, options));
