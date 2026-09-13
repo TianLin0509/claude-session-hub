@@ -132,9 +132,8 @@ async function main() {
     if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');
     await clickPoint(client,'#btn-home');
     await clickPoint(client,'.session-item[data-session-id="'+created.id+'"]');
-    assert.equal(await client.eval('currentView'),'pty');
-    if(await client.eval('currentView')!=='card')await clickPoint(client,'#btn-backstage');
-    result.checks.push('项目库真实 IPC 选目录并创建 Codex 会话；新会话默认卡片（模型为 fixture）');
+    assert.equal(await client.eval('currentView'),'card');
+    result.checks.push('项目库创建及重复点击 Codex 会话均默认卡片；后台不跨点击保留');
     await clickPoint(client,'#btn-rail-memo');
     assert.equal(await client.eval('document.querySelector("#memo-panel").style.display'),'flex');
     await client.eval('document.querySelector("#memo-input").value="隔离验收备忘"');

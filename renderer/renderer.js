@@ -76,7 +76,6 @@ const {
   readCardViewSessions,
   rememberViewMode,
   selectionViewModeFor,
-  viewModeFor,
   writeCardViewSessions,
 } = require('../core/session-view-mode.js');
 const {
@@ -3293,21 +3292,14 @@ const cardViewSessions = readCardViewSessions(localStorage);
 // their first standalone opening once, then preserve explicit card/PTY choices.
 const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
 const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
-const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
-// 「已完成未读」的会话点开默认进卡片视图。休眠会话点开会先清未读再走 session-created
-// 重新定视图，所以这里把这一次的判断结果留一份，让唤醒后的那次 applyViewMode 也认它。
-const _completedUnreadCardViews = new Set();
 function selectionViewModeForSession(sessionId, session) {
   if (session?.meetingId && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
     rememberViewModeForSession(sessionId, 'card');
     memberCardDefaults.add(sessionId);
     writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
   }
-  const completedUnread = !!session && sessionHasCompletedUnread(session);
-  // 只有休眠会话会在唤醒后再定一次视图，别的会话记下来就没人来取了。
-  if (completedUnread && session && session.status === 'dormant') _completedUnreadCardViews.add(sessionId);
-  else _completedUnreadCardViews.delete(sessionId);
-  return selectionViewModeFor(cardViewSessions, sessionId, { completedUnread });
+  const cardCapable = !!session && session.kind !== 'powershell';
+  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable });
 }
 function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
@@ -5162,7 +5154,9 @@ async function selectSession(id, opts = {}) {
   const targetView = selectionViewModeForSession(id, session);
   const shouldFocusTerminal = switching || targetView === 'pty';
   activeSessionId = id;
-  applyViewMode(targetView, { remember: false, skipPreviousCardCapture: switching });
+  // showTerminal owns the history request (and the cached-view fast path).
+  // Selecting a session must not start a second load through applyViewMode.
+  applyViewMode(targetView, { remember: false, skipPreviousCardCapture: true });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   cardMultiSelectController.setVisible(currentView === 'card' && !!activeSessionId);
   paintSidebarActiveTarget({ sessionId: id });
@@ -7816,12 +7810,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // event makes the card button intermittently bounce back to PTY.
   const requestedView = _chuxinRequestedSessionViews.get(session.id);
   if (requestedView) _chuxinRequestedSessionViews.delete(session.id);
-  // New ordinary AI sessions default to cards. Dormant resumes use this session's
-  // remembered view unless a shortcut explicitly requested one.
-  const unreadWantedCard = _completedUnreadCardViews.delete(session.id);
+  // New sessions and resumed sessions share the same card-first default.
+  // Backstage remains an explicit action during the current viewing period.
   applyViewMode(
-    requestedView || (unreadWantedCard ? 'card' : (wasDormant ? viewModeForSession(session.id) : (session.kind === 'powershell' ? 'pty' : 'card'))),
-    { remember: !wasDormant, skipPreviousCardCapture: true },
+    requestedView || selectionViewModeForSession(session.id, session),
+    { remember: false, skipPreviousCardCapture: true },
   );
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),

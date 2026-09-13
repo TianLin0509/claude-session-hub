@@ -114,9 +114,10 @@ async function main() {
     await shot('card');result.checks.push('侧栏首次打开群聊成员默认卡片，后台按钮可见');
     await clickPoint(client,'#btn-backstage');assert.equal((await state()).view,'pty');await shot('backstage');
     await clickPoint(client,'[data-session-id="'+b+'"]');assert.equal((await state()).view,'card');
-    await clickPoint(client,'[data-session-id="'+a+'"]');assert.equal((await state()).view,'pty');
+    await clickPoint(client,'[data-session-id="'+a+'"]');assert.equal((await state()).view,'card');
+    await clickPoint(client,'#btn-backstage');assert.equal((await state()).view,'pty');
     await clickPoint(client,'#btn-backstage');assert.equal((await state()).view,'card');
-    result.checks.push('后台往返正常；成员视图各自记忆，不影响其他成员默认卡片');
+    result.checks.push('后台仅作用于当前查看；再次点击任一成员都默认回到卡片');
     await clickPoint(client,'[data-meeting-id="'+group.id+'"]');
     await waitFor('group hides button again',()=>client.eval('document.querySelector("#btn-backstage").hidden'));
     await shot('group');
@@ -124,9 +125,8 @@ async function main() {
     await client.send('Page.reload');await waitFor('reload sidebar',()=>client.eval(`!!document.querySelector('[data-session-id="${b}"]')`));
     await clickPoint(client,'[data-session-id="'+b+'"]');
     await waitFor('reload selected',()=>client.eval('activeSessionId==='+JSON.stringify(b)));
-    assert.equal((await state()).view,'pty');assert.equal((await state()).hidden,false);
-    await clickPoint(client,'#btn-backstage');
-    result.checks.push('返回群聊隐藏后台；页面刷新后保留成员手动选择');
+    assert.equal((await state()).view,'card');assert.equal((await state()).hidden,false);
+    result.checks.push('返回群聊隐藏后台；页面刷新后重新点击成员仍默认卡片');
     await clickPoint(client,'[data-session-id="'+a+'"]');
     assert.equal((await invoke('suspend-session',{sessionId:b})).ok,true);
     await waitFor('member dormant',()=>client.eval('sessions.get('+JSON.stringify(b)+').status==="dormant"'));

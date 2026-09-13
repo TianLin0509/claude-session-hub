@@ -107,14 +107,13 @@ test('会话关闭后清掉记忆', () => {
 });
 
 // —— 下面锁的是 renderer.js 的接线，光有纯函数正确还不够 ——
-test('renderer 必须在 selectSession 里按会话恢复视图，并且恢复时不写记忆', () => {
+test('renderer 必须在 selectSession 里计算默认卡片视图，并且选择时不写记忆', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
-  // 2026-09-06：这一行从 viewModeForSession 换成 selectionViewModeForSession —— 后者在
-  // 「已完成未读」时改走卡片视图，其余情况仍然只看记忆（selectionViewModeFor 内部转发）。
+  // 所有普通 AI session 都走同一个默认入口；PowerShell 由 helper 明确留在 PTY。
   assert.match(src, /const targetView = selectionViewModeForSession\(id, session\);/,
     'selectSession 必须先算出该会话的视图');
-  assert.match(src, /applyViewMode\(targetView, \{ remember: false, skipPreviousCardCapture: switching \}\);/,
-    '恢复视图是回放而不是用户偏好，不能写回记忆');
+  assert.match(src, /applyViewMode\(targetView, \{ remember: false, skipPreviousCardCapture: true \}\);/,
+    '选择视图由 showTerminal 单次加载历史，不能由 applyViewMode 再并发加载');
   assert.match(src, /const shouldFocusTerminal = switching \|\| targetView === 'pty';/,
     '卡片视图下不该抢终端焦点');
   // 搜索跳转与启动兜底都不能改写用户的视图偏好
@@ -140,29 +139,29 @@ test('renderer 必须在打开会话时清掉断连标记', () => {
 });
 
 
-test('「已完成未读」的会话点开默认进卡片视图，且不改写记忆', () => {
+test('所有可生成卡片的会话每次点开都默认进卡片，终端会话仍进 PTY', () => {
   const set = new Set();
-  // 没记过 → 平时是 PTY；这一次因为有未读结果，改走卡片。
-  assert.equal(selectionViewModeFor(set, 's1', { completedUnread: false }), PTY);
-  assert.equal(selectionViewModeFor(set, 's1', { completedUnread: true }), CARD);
-  assert.equal(set.size, 0, '这是一次性的打开行为，不该写进卡片视图记忆');
-  // 记过卡片的会话读完未读之后，仍然回到它自己记住的视图。
-  rememberViewMode(set, 's2', CARD);
-  assert.equal(selectionViewModeFor(set, 's2', { completedUnread: false }), CARD);
-  assert.equal(selectionViewModeFor(set, 's1', {}), PTY, '缺省参数等于「没有未读」');
+  assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true }), CARD);
+  rememberViewMode(set, 's1', PTY);
+  assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true }), CARD,
+    '上次手动看后台不能改变下次点开时的默认卡片视图');
+  assert.equal(selectionViewModeFor(set, 'shell', { cardCapable: false }), PTY);
+  assert.equal(set.size, 0, '默认视图判定本身不应写入偏好');
 });
 
-test('renderer 的 selectSession 走 selectionViewModeFor，而不是只看记忆', () => {
+test('renderer 的 selectSession 和 session-created 走同一默认卡片规则', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const select = src.slice(src.indexOf('async function selectSession'));
   const body = select.slice(0, select.indexOf('\n}\n'));
   assert.match(body, /selectionViewModeForSession\(id, session\)/,
-    '打开会话时要把「已完成未读」纳入视图判断');
+    '点击打开必须经过统一视图判断');
   const helper = src.slice(src.indexOf('function selectionViewModeForSession'));
   const helperBody = helper.slice(0, helper.indexOf('\n}\n'));
-  assert.match(helperBody, /sessionHasCompletedUnread\(session\)/,
-    '未读判据要跟侧栏「完成未读」分区用同一个函数');
+  assert.match(helperBody, /cardCapable/,
+    '选择视图必须显式区分结构化卡片会话与 PowerShell');
   assert.match(helperBody, /selectionViewModeFor\(cardViewSessions/);
+  assert.match(src, /requestedView \|\| selectionViewModeForSession\(session\.id, session\)/,
+    '新建和休眠恢复也必须走同一条默认卡片规则');
 });
 
 console.log('unit-session-view-mode OK');

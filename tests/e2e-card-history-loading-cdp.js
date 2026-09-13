@@ -67,6 +67,20 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
  await cdp.eval(`cardHistoryViews.drop(${JSON.stringify(sessions[0])});window.__delayInvoke=ipcRenderer.invoke;window.__releaseHistory=[];ipcRenderer.invoke=async(ch,...args)=>{if(ch==='parse-session-transcript')await new Promise(r=>window.__releaseHistory.push(r));return window.__delayInvoke(ch,...args);};window.__coldPending=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});void 0;`);
  await shot('cold-skeleton');await cdp.send('Emulation.setDeviceMetricsOverride',{width:760,height:950,deviceScaleFactor:1,mobile:false});await shot('cold-760');
  await cdp.eval('ipcRenderer.invoke=window.__delayInvoke;window.__releaseHistory.splice(0).forEach(release=>release());window.__coldPending');
+ // The default-card policy must coexist with 1.6.155's cached composer and
+ // eight-card page: selecting again must not rebuild the input or parse twice.
+ await cdp.eval(`window.__cardProbe=[];window.__savedComposer=document.querySelector('.floating-input-box');selectSession(${JSON.stringify(sessions[0])})`);
+ assert(await cdp.eval('document.querySelector(".floating-input-box")===window.__savedComposer'));
+ assert.equal(await cdp.eval('window.__cardProbe.length'),0,'repeated card selection keeps the 155 fast path');
+ await cdp.eval(`window.__cardProbe=[];applyViewMode('pty');selectSession(${JSON.stringify(sessions[0])})`);
+ await wait(`cardHistoryViews.ready(sessions.get(${JSON.stringify(sessions[0])}))`);
+ assert.equal(await cdp.eval('currentView'),'card','clicking a session resets an earlier backstage choice');
+ assert.equal(await cdp.eval('window.__cardProbe.length'),1,'one selection has exactly one history request');
+ assert.equal(await cdp.eval('document.querySelectorAll("#msg-overlay>.turn-card").length'),8,'155 latest-card window remains bounded');
+ const suspended=await cdp.eval(`ipcRenderer.invoke('suspend-session',{sessionId:${JSON.stringify(sessions[0])}})`);assert.equal(suspended.ok,true);
+ await wait(`sessions.get(${JSON.stringify(sessions[0])})?.status==='dormant'`);
+ await cdp.eval(`applyViewMode('pty');selectSession(${JSON.stringify(sessions[0])})`);
+ await wait(`sessions.get(${JSON.stringify(sessions[0])})?.status!=='dormant' && currentView==='card' && cardHistoryViews.ready(sessions.get(${JSON.stringify(sessions[0])}))`);
  const refresh=await cdp.eval(`(async()=>{cardHistoryViews.drop(${JSON.stringify(sessions[0])});const p=window._loadSessionHistoryToOverlay(${JSON.stringify(sessions[0])});await selectSession(${JSON.stringify(sessions[1])});await p;return{active:activeSessionId,owners:[...document.querySelectorAll('#msg-overlay>.turn-card')].map(c=>c.dataset.sessionId)};})()`);
  assert.equal(refresh.active,sessions[1]);assert(refresh.owners.every(id=>id===sessions[1]),'stale cold batches never append to another session');
  fs.writeFileSync(path.join(art,'probe.json'),JSON.stringify({fixture:'25 completed turns per session, Markdown content; real isolated Electron, no cloud model',results},null,2));
