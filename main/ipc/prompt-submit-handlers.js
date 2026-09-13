@@ -103,6 +103,15 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     } catch (error) { return { ok: false, error: error.message }; }
   });
 
+  // Plan-mode banner: the same "切回默认模式" Codex offers, over Claude's own
+  // permission-mode control frame.
+  ipcMain.handle('claude-native:set-permission-mode', async (_event, request = {}) => {
+    const native = sessionManager.getNativeClaude?.(request.sessionId);
+    if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
+    try { return { ok: true, result: await native.setPermissionMode(request.mode) }; }
+    catch (error) { return { ok: false, error: error.message }; }
+  });
+
   for (const action of ['respond', 'interrupt']) {
     ipcMain.handle('claude-native:' + action, async (_event, request = {}) => {
       const native = sessionManager.getNativeClaude?.(request.sessionId);

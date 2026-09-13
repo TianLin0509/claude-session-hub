@@ -131,6 +131,13 @@ async function main() {
     const feedback = await waitFor('command result shown', () => client.eval(
       `(() => { const el=document.querySelector('.codex-command-feedback,.command-feedback'); return el && el.innerText.trim() ? el.innerText : null; })()`));
     ok('composer reports the command result, not a model turn', /计划/.test(feedback), feedback);
+    // The plan-mode banner is the same control Codex shows: mounted only while
+    // the mode is on, and its reset button switches the engine back.
+    await waitFor('plan banner mounted', () => client.eval(
+      `(() => { const box=document.querySelector('.claude-native-controls .codex-native-mode'); return !!box && !document.querySelector('.claude-native-controls').hidden; })()`));
+    await client.eval(`document.querySelector('.claude-native-controls .codex-native-mode button').click()`);
+    await waitFor('default mode restored by the banner', () => client.eval(`sessions.get(${q})?.nativeRuntime?.permissionMode==='default'`));
+    ok('plan banner unmounts once the mode is reset', !(await client.eval(`!!document.querySelector('.claude-native-controls .codex-native-mode')`)));
 
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(path.join(OUT, 'controls.png'), Buffer.from(shot.data, 'base64'));

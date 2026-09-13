@@ -165,7 +165,8 @@ test('delegated work keeps stream open after the root and preserves its separate
   assert.equal(end.result.origin.kind, 'human');
   await background;
   assert.equal(s.tasks.size, 0);
-  assert.ok(s.transcript().some(turn => turn.nativeActivity));
+  // The notification result continues the settled human card instead of opening a second one.
+  assert.ok(s.transcript().some(turn => turn.continuations?.length === 1 && !turn.nativeActivity));
   assert.ok(states.includes('running'));
   assert.equal(s.client.closed, false);
 });

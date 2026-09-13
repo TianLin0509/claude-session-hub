@@ -111,7 +111,12 @@ test('思考档 chip 在不支持的 CLI 上不渲染', () => {
   });
   assert.equal(codex.visible, true);
   assert.equal(codex.interactive, true);
-  // Claude：有档位但 Hub 没有会话内改档的通路，只显示不可点。
+  // 原生 Claude：走 claude-native:set-effort，档位由调用方传入，和 Codex 一样可点。
+  const nativeClaude = composerThinkingChip({ kind: 'claude', runtimeBackend: 'claude-stream-json', effort: 'max' },
+    { supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
+  assert.deepEqual({ visible: nativeClaude.visible, interactive: nativeClaude.interactive, options: nativeClaude.options },
+    { visible: true, interactive: true, options: ['low', 'medium', 'high', 'xhigh', 'max'] });
+  // PTY Claude：有档位但没有会话内改档的通路，只显示不可点。
   const claude = composerThinkingChip({ kind: 'claude', effort: 'max' });
   assert.deepEqual(
     { visible: claude.visible, interactive: claude.interactive, label: claude.label },

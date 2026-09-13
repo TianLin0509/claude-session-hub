@@ -156,8 +156,9 @@ function composerModelChip(session) {
 //   - Codex 系：档位按模型走，由调用方读 ~/.codex/models_cache.json 后传进来
 //     （core/codex-model-catalog.js 的 describeCodexModelTuning）。写死一份必然
 //     给某些模型多出或少掉档位 —— gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh。
-//   - Claude 系：沿用现有 effort 字段，但 Hub 目前没有「会话内改档」的现成通路，
-//     所以只显示不可点，不为了凑一个 ▾ 去新造一条写 PTY 的路径。
+//   - Claude 系：原生 stream-json 会话有自己的 /effort 命令通道
+//     （claude-native:set-effort），档位由调用方传入，和 Codex 一样可点；
+//     PTY 会话没有这条通路，只显示不可点，不新造一条写 PTY 的路径。
 //   - DeepSeek 走的是 Codex 运行时但另一套模型目录，本轮按只读处理，不假装能改。
 //   - Gemini / Kimi / PowerShell：没有这个概念，直接不渲染。
 function composerThinkingChip(session, options = {}) {
@@ -169,7 +170,7 @@ function composerThinkingChip(session, options = {}) {
     return choices.length ? { visible: true, label: label || '模型默认', interactive: true, options: choices.map(o => o.value) } : hidden;
   }
   if (!label) return hidden;
-  if (kind === 'codex') {
+  if (kind === 'codex' || session?.runtimeBackend === 'claude-stream-json') {
     const supported = Array.isArray(options.supportedEfforts)
       ? options.supportedEfforts.map(value => String(value || '').trim().toLowerCase()).filter(Boolean)
       : [];
@@ -295,7 +296,11 @@ function buildComposerStatusModel(session, options = {}) {
       const needsReconcile = snapshot.state === 'unknown' || snapshot.connection === 'disconnected';
       return { state: snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
           : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
-        text: labels[snapshot.state], detail: snapshot.reason || '', quickReplies: [],
+        text: labels[snapshot.state],
+        detail: snapshot.state === 'waiting'
+          ? (snapshot.requests || []).map(require('./claude-native-runtime').claudeRequestSummary).join('; ') || snapshot.reason || ''
+          : snapshot.reason || '',
+        quickReplies: [],
         action: needsReconcile ? { kind: 'reconnect', label: '核对连接' } : null,
         canStop: snapshot.connection === 'connected' && snapshot.state === 'waiting', runtime };
     }
