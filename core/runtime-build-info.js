@@ -13,6 +13,7 @@ function runtimeBuildInfo() {
   hash.update(version);
   // Read once: changing package.json cannot change a process's loaded code.
   for (const file of ['core/codex-runtime-broker.js', 'core/codex-native-session.js',
+    'core/codex-backstage.js', 'core/codex-backstage-store.js', 'main/codex-app-server-client.js',
     'core/claude-native-session.js', 'core/claude-broker-session.js',
     'core/shared-content-codec.js', 'main/codex-runtime-broker-process.js']) {
     hash.update(file).update(fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n'));

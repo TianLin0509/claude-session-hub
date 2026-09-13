@@ -74,7 +74,29 @@ rl.on('line',line=>{
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:broker-burst') {
+      if(mode==='fixture:backstage') {
+        answer(msg.id,{turn});
+        const one={id:'backstage-a-'+turn.id,type:'commandExecution',command:'python verify_segments.py --all',cwd:thread.cwd,status:'inProgress',aggregatedOutput:''};
+        const two={id:'backstage-b-'+turn.id,type:'commandExecution',command:'python inspect_manifest.py',status:'inProgress',aggregatedOutput:''};
+        const say={id:'backstage-say-'+turn.id,type:'agentMessage',phase:'commentary',text:'我先检查视频分段，再核对素材清单。命令原始输出会持续显示。'};
+        turn.items.push(say,one,two);for(const item of [say,one,two])event('item/started',{threadId:thread.id,turnId:turn.id,item});
+        process.stderr.write('BACKSTAGE_STDERR 原始警告 😀 credential='+String(process.env.BACKSTAGE_TEST_API_KEY||'fixture-key')+'\n');
+        let index=0;
+        const tick=()=>{
+          if(turn.status!=='inProgress')return;
+          const item=index%2===0?one:two;
+          const delta=`${String(index).padStart(3,'0')} SEGMENT_PASS 原始输出 <b>not html</b> 😀\n`;
+          item.aggregatedOutput+=delta;event('item/commandExecution/outputDelta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta});
+          if(++index<45){setTimeout(tick,100);return;}
+          one.status='failed';one.exitCode=7;one.durationMs=4567;one.error={message:'EACCES: fixture 文件被占用',code:'EACCES',stack:'FIRST_HAND_STACK verify_segments.py:42'};
+          two.status='completed';two.exitCode=0;two.durationMs=3123;
+          event('item/completed',{threadId:thread.id,turnId:turn.id,item:one});event('item/completed',{threadId:thread.id,turnId:turn.id,item:two});
+          event('error',{threadId:thread.id,turnId:turn.id,error:{message:'Reconnecting... 1/5',codexErrorInfo:'streamDisconnected'},willRetry:true});
+          const huge={id:'backstage-large-'+turn.id,type:'mcpToolCall',server:'fixture',tool:'large-result',status:'completed',result:{content:[{type:'text',text:'ORIGINAL_HEAD\n'+'完整日志 😀\n'.repeat(50000)+'ORIGINAL_TAIL'}]}};
+          turn.items.push(huge);event('item/completed',{threadId:thread.id,turnId:turn.id,item:huge});
+          save();finish(thread,turn,'completed','**检查完成。**\n\n- 素材清单核对通过。\n- 分段检查退出码为 `7`，原始错误和堆栈已保留，请查看失败步骤。');
+        };setTimeout(tick,100);
+      } else if(mode==='fixture:broker-burst') {
         answer(msg.id,{turn});
         const item={id:'burst-'+turn.id,type:'agentMessage',phase:'final_answer',text:''};
         turn.items.push(item);event('item/started',{threadId:thread.id,turnId:turn.id,item});

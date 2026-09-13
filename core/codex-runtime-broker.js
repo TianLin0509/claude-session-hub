@@ -72,7 +72,7 @@ class RuntimeRecord {
     this.bindEvents();
   }
   bindEvents() {
-    for (const name of ['data','state','thread-reset','choices','migration-draft','renamed','lifecycle','action-error','diagnostic','usage','session-usage']) {
+    for (const name of ['data','state','thread-reset','choices','migration-draft','renamed','lifecycle','action-error','diagnostic','usage','session-usage','backstage-updated']) {
       this.session.on(name, (...args) => {
         if(name==='state' && args[0]?.connection==='connected')this.exited=false;
         // Terminal-only items must reach capture consumers before the state
@@ -317,6 +317,7 @@ class RuntimeRecord {
     }
     if (action === 'start') return this.ensureStarted().then(() => this.snapshot(viewId));
     if (action === 'readOutcome') return this.session.readOutcome(...args);
+    if (action === 'readBackstage') return this.session.readBackstage(...args);
     if (action === 'reconcile') {
       const runtime=await this.session.reconcile();
       this.broadcastHistory();

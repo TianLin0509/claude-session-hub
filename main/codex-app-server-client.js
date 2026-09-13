@@ -23,6 +23,8 @@ class CodexAppServerClient extends EventEmitter {
     this.closed = false;
     this.started = false;
     this.stderr = '';
+    this.stderrDecoder = new StringDecoder('utf8');
+    this.stderrPending = '';
     this.buffer = '';
     this.decoder = new StringDecoder('utf8');
     this.writeTail = Promise.resolve();
@@ -51,7 +53,8 @@ class CodexAppServerClient extends EventEmitter {
       this.proc.stdout.on('data', bytes => this.feed(bytes));
       this.proc.stdout.on('error', e => this.fail(e));
       this.proc.stdout.once('end', () => this.fail(new Error('Codex App Server 输出连接已关闭')));
-      this.proc.stderr.on('data', bytes => { this.stderr = (this.stderr + bytes.toString('utf8')).slice(-8192); });
+      this.proc.stderr.on('data', bytes => this.feedStderr(this.stderrDecoder.write(bytes)));
+      this.proc.stderr.once('end', () => { this.feedStderr(this.stderrDecoder.end()); this.flushStderr(); });
       this.proc.stderr.on('error', e => this.emit('diagnostic', { type:'stderr-error', message:e.message }));
       const initialized = await this.request('initialize', {
         clientInfo:{name:'ai_hub',title:'AI Hub',version:'1'},
@@ -108,6 +111,55 @@ class CodexAppServerClient extends EventEmitter {
       this.fail(new Error('Codex 单条协议消息超过 32 MiB，连接待核对')); this.close();
     }
   }
+  diagnosticSecrets() {
+    if (this._diagnosticSecrets) return this._diagnosticSecrets;
+    const secrets = [];
+    for (const [key,value] of Object.entries(this.options.env || this.options.launch?.env || {})) {
+      if (/token|secret|password|api.?key/i.test(key) && typeof value === 'string' && value.length > 6) secrets.push(value);
+    }
+    for (const argument of this.options.args || []) {
+      const match = String(argument).match(/^([^=]*(?:token|secret|password|api.?key)[^=]*)=(.*)$/i);
+      if (!match) continue;
+      let value = match[2];
+      try { value = JSON.parse(value); } catch { /* Non-JSON CLI literal. */ }
+      if (typeof value === 'string' && value.length > 6) secrets.push(value);
+    }
+    this._diagnosticSecrets = [...new Set(secrets)].sort((a,b) => b.length - a.length);
+    return this._diagnosticSecrets;
+  }
+  redactDiagnostic(text) {
+    for (const value of this.diagnosticSecrets()) text = text.split(value).join('[redacted]');
+    return text;
+  }
+  feedStderr(text) {
+    this.stderrPending += text;
+    // Retain possible split credentials until their following bytes arrive.
+    // A short event-driven flush makes newline-free diagnostics visible too.
+    if (!this.stderrTimer) {
+      this.stderrTimer = setTimeout(() => { this.stderrTimer = null; this.flushStderr(false); }, 50);
+      this.stderrTimer.unref?.();
+    }
+    if (this.stderrPending.length > 64 * 1024) this.flushStderr(false);
+  }
+  flushStderr(final = true) {
+    if (this.stderrTimer) clearTimeout(this.stderrTimer);
+    this.stderrTimer = null;
+    // Replace complete credentials before looking for a suffix that might be
+    // the beginning of another one (e.g. token-token ends in its own prefix).
+    this.stderrPending = this.redactDiagnostic(this.stderrPending);
+    let keep = 0;
+    if (!final) for (const secret of this.diagnosticSecrets()) {
+      for (let n = Math.min(secret.length - 1, this.stderrPending.length); n > keep; n--) {
+        if (this.stderrPending.endsWith(secret.slice(0,n))) { keep = n; break; }
+      }
+    }
+    const end = this.stderrPending.length - keep;
+    if (!end) return;
+    const text = this.redactDiagnostic(this.stderrPending.slice(0,end));
+    this.stderrPending = this.stderrPending.slice(end);
+    this.stderr = (this.stderr + text).slice(-8192);
+    this.emit('stderr',text);
+  }
   send(message, {beforeWrite} = {}) {
     if (this.closed || !this.proc) return Promise.reject(new Error('Codex 连接不可用'));
     const bytes = JSON.stringify(message) + '\n';
@@ -157,6 +209,7 @@ class CodexAppServerClient extends EventEmitter {
   }
   fail(error) {
     if (this.closed) return;
+    this.flushStderr();
     this.closed = true;
     if (this.stderr.trim()) {
       let diagnostic=this.stderr.trim();
