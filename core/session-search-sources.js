@@ -990,6 +990,12 @@ function parseSourceDescriptor(descriptor, maps, options = {}) {
   throw new Error(`Unsupported search source type: ${descriptor.type}`);
 }
 
+function isMetadataOnlySignature(signature) {
+  // Include persisted signatures from before the complete title projection
+  // fingerprint, so unavailable roots cannot make an old fallback hide itself.
+  return /^(?:meta:|meta-time-v2:|meeting-meta:|title-only-v1:)/.test(String(signature || ''));
+}
+
 function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
   const out = [];
   for (const session of maps.sessions) {
@@ -1050,10 +1056,17 @@ function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
       docs: [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }],
     });
   }
+  for (const source of out) {
+    // A fallback may change without its title/last-message time changing (for
+    // example lastOutputPreview). Hash the full searchable projection before
+    // allowing a refresh to reuse its existing rows.
+    source.signature = `title-only-v1:${stableJsonHash({ session: source.session, docs: source.docs })}`;
+  }
   return out;
 }
 
 module.exports = {
+  isMetadataOnlySignature,
   addExplicitTranscriptDescriptors,
   collectSourceDescriptors,
   createMetadataMaps,
