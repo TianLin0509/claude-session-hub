@@ -122,7 +122,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
       try {
         if (action === 'reconnect') await native.reconnect();
-        if (action === 'reconcile') native.reconcile(request.identity || {});
+        if (action === 'reconcile') await native.reconcile(request.identity || {});
         return { ok: true, runtime: native.runtime, records: native.recoveryRecords() };
       } catch (error) { return { ok: false, error: error.message }; }
     });

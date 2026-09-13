@@ -16,12 +16,12 @@ function controlFilePath(dataDir, pid) {
   return path.join(controlDir(dataDir), `${pid}.json`);
 }
 
-function writeControlFile({ pid, hookPort, cdpPort, token, dataDir, startedAt }) {
+function writeControlFile({ pid, hookPort, cdpPort, token, dataDir, startedAt, nativeOwnershipVersion }) {
   const dir = controlDir(dataDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = controlFilePath(dataDir, pid);
   const tmp = file + '.tmp';
-  const data = JSON.stringify({ pid, hookPort, cdpPort, token, dataDir, startedAt }, null, 2);
+  const data = JSON.stringify({ pid, hookPort, cdpPort, token, dataDir, startedAt, nativeOwnershipVersion }, null, 2);
   // 写 temp + rename 原子化，避免救援脚本读到半写文件
   fs.writeFileSync(tmp, data, { encoding: 'utf8' });
   fs.renameSync(tmp, file);

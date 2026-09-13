@@ -4,7 +4,7 @@
 // 注意: 变量名加 _PL_ 前缀，避免与 renderer.js 的全局 const URL_RE / FILE_EXT_RE 冲突
 const _PL_FILE_EXT_RE = /(?<![\w:./\\-])[\w:./\\\-]+\.(html?|markdown|md|json|py|jsx?|tsx?|css|scss|png|jpg|jpeg|gif|svg|pdf|txt|log|yaml|yml|toml|sh|ps1|bat)\b/gi;
 const _PL_URL_RE = /\bhttps?:\/\/[^\s<>'"]+/gi;
-const _PL_PATH_TOKEN_BREAK_RE = /([^\s"'`<>|]+)\r?\n[ \t]*([^\s"'`<>|]+)/g;
+const _PL_PATH_TOKEN_BREAK_RE = /(?<![^\s"'`<>|])([^\s"'`<>|]+)\r?\n[ \t]*([^\s"'`<>|]+)/g;
 
 function _looksLikeWrappedPathToken(left, right) {
   const combined = String(left || '') + String(right || '');
@@ -16,6 +16,7 @@ function _looksLikeWrappedPathToken(left, right) {
 
 function normalizeWrappedPathBreaks(text) {
   let out = String(text || '');
+  if (!out.includes('\n')) return out;
   for (let i = 0; i < 20; i++) {
     let changed = false;
     out = out.replace(_PL_PATH_TOKEN_BREAK_RE, (full, left, right) => {

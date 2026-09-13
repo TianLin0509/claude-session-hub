@@ -262,7 +262,7 @@ function registerSessionIpc(ipcMain, deps) {
     if (typeof sessionId !== 'string' || !sessionId) {
       return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
     }
-    const native = sessionManager.getNativeCodex?.(sessionId);
+    const native = sessionManager.getNativeCodex?.(sessionId) || sessionManager.getNativeClaude?.(sessionId);
     const control = native?.control;
     if (control?.shared) {
       if (control.role !== 'controller') return { ok:false, error:'shared-viewer', message:'当前窗口只能查看，不能永久删除共享会话' };
@@ -301,7 +301,8 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('codex:native-action', async (_event, payload = {}) => {
-    const native = (sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId));
+    const native = (sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId)
+      || (['request-control','locate-controller'].includes(payload.action) ? sessionManager.getNativeClaude?.(payload.sessionId) : null));
     if (!native) return {ok:false,message:'该 Codex 会话尚未接管'};
     try {
       let result;
@@ -471,19 +472,25 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
-    const codexNative = sessionManager.getNativeCodex?.(sessionId);
+    const codexNative = sessionManager.getNativeCodex?.(sessionId) || sessionManager.getNativeClaude?.(sessionId);
     if (codexNative?.control?.shared && codexNative.control.role !== 'controller') return null;
     const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
     const claudeNative = sessionManager.getNativeClaude?.(sessionId);
+    const finish = () => {
+      if (session) sendToRenderer('session-updated', { session });
+      return session;
+    };
     if (claudeNative && userRenamed && session) {
-      try { session.nativeRename = claudeNative.rename(title); }
-      catch (error) {
-        claudeNative.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
-        session.nativeRename = { status: 'failed', message: error.message };
-      }
+      return (async () => {
+        try { session.nativeRename = await claudeNative.rename(title); }
+        catch (error) {
+          claudeNative.emit('action-error', 'Hub 名称已保存；Claude 历史同步失败：' + error.message);
+          session.nativeRename = { status: 'failed', message: error.message };
+        }
+        return finish();
+      })();
     }
-    if (session) sendToRenderer('session-updated', { session });
-    return session;
+    return finish();
   });
 
   // Only explicit history navigation calls this. Previewing search results

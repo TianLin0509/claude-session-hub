@@ -25,6 +25,15 @@ function fixture(t) {
   const append = record => fs.appendFileSync(file, JSON.stringify(record) + '\n');
   return { root, file, write, append, service, values, errors };
 }
+test('observer views release their file watcher; native totals remain visible and takeover rebinds',async t=>{
+  const f=fixture(t);f.write([codex()]);
+  const session={id:'viewer',kind:'codex',transcriptPath:f.file};
+  f.service.bind(session);await until(()=>f.values.has('viewer'));
+  assert.equal(f.service.entries.size,1);
+  f.service.bind({...session,codexSharedControl:{role:'viewer'}});assert.equal(f.service.entries.size,0);
+  f.service.native(session,{inputTokens:900,outputTokens:200,totalTokens:1100});assert.equal(f.values.get('viewer').total,1100);
+  f.service.bind({...session,codexSharedControl:{role:'controller'}});assert.equal(f.service.entries.size,1);
+});
 
 test('Codex uses cumulative total; cache and reasoning remain subsets', () => {
   const usage = codexUsage({ inputTokens: 900, outputTokens: 100, totalTokens: 1000, cachedInputTokens: 800, reasoningOutputTokens: 60 });

@@ -27,6 +27,9 @@ function bindClaudeNativeSession(manager, id, driver) {
     if (snapshot.connection === 'connected' && info.nativeRuntime?.connection !== 'connected') info.nativeActionError = null;
     info.nativeRuntime = snapshot;
     info.ccSessionId = snapshot.providerSessionId;
+    if(snapshot.actualModel)info.currentModel={id:snapshot.actualModel,displayName:snapshot.actualModel};
+    if(snapshot.effort)info.effort=snapshot.effort;
+    if(snapshot.permissionMode)info.nativeConfig={...info.nativeConfig,permissionMode:snapshot.permissionMode};
     info.needsUserInput = snapshot.state === 'waiting';
     info.isWaiting = info.needsUserInput;
     info.gcWorking = false;
@@ -48,6 +51,14 @@ function bindClaudeNativeSession(manager, id, driver) {
     }
     manager.emit('native-agent-lifecycle', { ...event, sessionId: id });
   });
+  driver.on('control',control=>{
+    const entry=current();if(!entry)return;
+    entry.info.nativeSharedControl=control;entry.info.codexSharedControl=control;
+    publish();
+  });
+  driver.on('locate-request',()=>{if(current())manager.emit('codex-locate-request',{sessionId:id});});
+  driver.on('renamed',title=>{const entry=current();if(entry){entry.info.title=title;publish();}});
+  driver.on('session-usage',usage=>{if(current())manager.emit('session-usage-snapshot',{sessionId:id,usage});});
   driver.on('item', event => {
     if (current()) manager.emit('native-agent-item', { ...event, sessionId: id, source: 'claude-stream-json' });
   });
@@ -76,7 +87,7 @@ function bindClaudeNativeSession(manager, id, driver) {
   setImmediate(() => {
     if (!current() || driver.closed) return;
     // An unstarted dev-group seat spawns its engine on first dispatch, not here.
-    if (driver.runtime.connection === 'unstarted') return;
+    if (driver.runtime.connection === 'unstarted' && !driver.sharedRuntime) return;
     driver.start().catch(error => {
       if (!current()) return;
       driver.update({ state: 'failed', connection: 'disconnected', reason: error.message });

@@ -17,6 +17,7 @@ class JsonlTail {
     this._scanner = null;
     this._watcher = null;
     this._pollTimer = null;
+    this._watchPollIntervalMs = Math.max(500, Number(opts.watchPollIntervalMs) || 500);
     this._closed = false;
     this._reading = false;
     this._startAtEnd = opts.startAtEnd === true;
@@ -36,19 +37,29 @@ class JsonlTail {
     try { await this._prepareInitialOffset(); } catch {}
     this._resetScanner();
     try { await this._drain(); } catch {}
+    if (this._closed) return;
 
     try {
       this._watcher = fs.watch(this._filepath, { persistent: false }, () => {
         this._drain().catch(() => {});
       });
-      this._watcher.on('error', () => {});
+      this._watcher.on('error', () => {
+        this._watcher?.close(); this._watcher = null;
+        this._startPolling(500);
+      });
     } catch {
       // fs.watch can fail on network drives / exotic filesystems; polling below is the fallback.
     }
 
+    this._startPolling(this._watcher ? this._watchPollIntervalMs : 500);
+  }
+
+  _startPolling(intervalMs) {
+    if (this._pollTimer) clearInterval(this._pollTimer);
+    if (this._closed) return;
     this._pollTimer = setInterval(() => {
       this._drain().catch(() => {});
-    }, 500);
+    }, intervalMs);
     this._pollTimer.unref?.();
   }
 

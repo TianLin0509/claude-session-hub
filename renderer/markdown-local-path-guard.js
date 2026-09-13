@@ -7,7 +7,9 @@ const {
 
 // Markdown punctuation bounds relative paths; swallowing ` or [label]( breaks
 // inline code and links before marked gets a chance to parse them.
-const MARKDOWN_REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s：`()[\]]+[\\/])+[^\\/:*?"<>|\r\n\s：`()[\]]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+// Try once at each token boundary. Without this boundary, a long paragraph
+// without a slash retries the whole suffix at every character (quadratic).
+const MARKDOWN_REL_PATH_RE = /(?<![^:*?"<>|\r\n\s：`()[\]])[\\/]*(?:[^\\/:*?"<>|\r\n\s：`()[\]]+[\\/]+)+[^\\/:*?"<>|\r\n\s：`()[\]]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 
 function _cloneGlobal(re) {
   return new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');

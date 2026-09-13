@@ -410,6 +410,9 @@ let agentLeagueTray = null;
 let explicitHubQuitRequested = false;
 const sessionManager = new SessionManager();
 const { SessionTokenUsageService } = require('./main/usage/session-token-usage-service.js');
+const { isSessionViewer } = require('./core/session-observer-policy');
+const { createContentUpdateBatcher } = require('./core/content-update-batcher');
+const nativeItemNotifications = createContentUpdateBatcher();
 const sessionUsageService = new SessionTokenUsageService({
   publish(id, usage) {
     const current = sessionManager.getSession(id);
@@ -418,13 +421,14 @@ const sessionUsageService = new SessionTokenUsageService({
     if (old?.sourcePath === usage.sourcePath && old.total > usage.total) return;
     const updated = current ? sessionManager.updateSessionMeta(id, { sessionUsage: usage }) : null;
     if (persisted) persisted.sessionUsage = usage;
-    if (updated || persisted) sessionStore.markDirty(id, updated || persisted);
+    if ((updated || persisted) && !isSessionViewer(current || persisted)) sessionStore.markDirty(id, updated || persisted);
     sendToRenderer('session-usage-updated', { sessionId: id, usage });
   },
 });
 sessionManager.on('session-token-usage', event => {
   sessionUsageService.native(sessionManager.getSession(event.sessionId), event.total);
 });
+sessionManager.on('session-usage-snapshot',event=>sessionUsageService.publish(event.sessionId,event.usage));
 sessionManager.on('session-exited', event => sessionUsageService.remove(event.sessionId));
 transcriptTap.on('session-bound', event => {
   const session = sessionManager.getSession(event.hubSessionId);
@@ -495,11 +499,16 @@ const workspaceMigrationSessionIds = new Set();
 sessionManager.on('session-updated', session => {
   if (session.runtimeBackend !== 'claude-stream-json') return;
   sessionUsageService.bind(session);
-  sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
+  if(!isSessionViewer(session))sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
   sendToRenderer('session-updated', { session });
 });
-sessionManager.on('native-agent-item', event => sendToRenderer('native-agent-item', event));
+sessionManager.on('native-agent-item', event => {
+  const {sessionId,source,userMessageId,clientSubmissionId}=event;
+  nativeItemNotifications.schedule(sessionId,userMessageId || clientSubmissionId || '',()=>
+    sendToRenderer('native-agent-item',{sessionId,source,userMessageId,clientSubmissionId}));
+});
 sessionManager.on('native-agent-lifecycle', event => {
+  nativeItemNotifications.flush(event.sessionId);
   if (event.signalSource !== 'claude-stream-json') return;
   const native = sessionManager.getNativeClaude(event.sessionId);
   const record = native?.records.get(event.clientSubmissionId);
@@ -1605,12 +1614,14 @@ function watchDevChatHistory(session, sourcePath) {
 }
 transcriptTap.on('session-bound',event=>watchDevChatHistory(sessionManager.getSession(event.hubSessionId),event.transcriptPath || event.rolloutPath));
 const collectGroupConversation=require('./core/group-conversation-history').createGroupConversationCollector();
-function collectNativeGroupItems(event) {
+const nativeGroupContent = createContentUpdateBatcher();
+function collectNativeGroupItemsNow(event) {
   const sid = event.sessionId || event.id;
   const session = sessionManager.getSession(sid);
+  if (isSessionViewer(session)) return;
   const meeting = session?.meetingId && meetingManager.getMeeting(session.meetingId);
   if (!meeting?.groupChat) return;
-  const native = sessionManager.getNativeCodex?.(sid);
+  const native = sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid);
   const claude = sessionManager.getNativeClaude?.(sid);
   if (!native && !claude) return;
   try {
@@ -1619,12 +1630,24 @@ function collectNativeGroupItems(event) {
       { meetingId: meeting.id, sid, revision: orch.state.revision });
   } catch (error) { console.error('[conversation-history] native item persistence failed:', error); }
 }
+function collectNativeGroupItems(event) {
+  const sid=event.sessionId || event.id;
+  const session=sessionManager.getSession(sid);
+  if(!session?.meetingId || isSessionViewer(session))return;
+  const runtime=session.nativeRuntime;
+  if(event.type || ['completed','failed','interrupted','idle'].includes(runtime?.state)) {
+    nativeGroupContent.flush(sid);
+    collectNativeGroupItemsNow(event);
+  } else nativeGroupContent.schedule(sid,event.userMessageId || event.clientSubmissionId || '',()=>collectNativeGroupItemsNow(event));
+}
 sessionManager.on('codex-content-updated', collectNativeGroupItems);
 sessionManager.on('codex-session-updated', collectNativeGroupItems);
 sessionManager.on('native-agent-item', collectNativeGroupItems);
 sessionManager.on('native-agent-lifecycle', collectNativeGroupItems);
 const devChatHistoryTimer=setInterval(()=>{
-  for(const session of sessionManager.getAllSessions()) {
+  for(const {info:session} of sessionManager.sessions.values()) {
+    if (!session.meetingId) continue;
+    if (isSessionViewer(session)) continue;
     const native=(sessionManager.getNativeSession?.(session.id) || sessionManager.getNativeCodex?.(session.id));
     const meeting=session.meetingId && meetingManager.getMeeting(session.meetingId);
     if(native && meeting?.groupChat) {
@@ -1635,7 +1658,7 @@ const devChatHistoryTimer=setInterval(()=>{
       } catch(error) { console.error('[conversation-history] native item persistence failed:',error); }
     } else watchDevChatHistory(session);
   }
-},1000);
+},5000);
 devChatHistoryTimer.unref?.();
 
 transcriptTap.on('progress-update', event => {
@@ -2095,6 +2118,7 @@ const hookServer = http.createServer((req, res) => {
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
+  const isNativeOwnership = req.method === 'POST' && req.url === '/api/native-ownership';
   // 2026-05-16 道雪：防卡死 — 外部 HTTP 救援入口，tools/hub-escape.ps1 调
   const isEscapeHome = req.method === 'POST' && req.url === '/api/escape-home';
   // Plan 2: 3 个新聚合 endpoint（走 research-mcp/query.py 而非 LinDangAgent.data_query.py）
@@ -2107,7 +2131,7 @@ const hookServer = http.createServer((req, res) => {
   const isResearchFetch = isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
     || isResearchKlineSimilarity;
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
-  if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome) {
+  if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome && !isNativeOwnership) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -2123,6 +2147,16 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    if (isNativeOwnership) {
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      // Main owns these identities. A restore must not wake every other
+      // renderer or serialize its full session catalogue and prompt drafts.
+      const sessions = [...sessionManager.sessions.values()].map(({info:s,pty}) => ({
+        id:s.id, kind:s.kind, codexSid:s.codexSid, ccSessionId:s.ccSessionId, runtimeBackend:s.runtimeBackend,
+        sharedRuntime:pty?.sharedRuntime===true,
+      }));
+      res.writeHead(200); res.end(JSON.stringify({ pid:process.pid, sessions })); return;
+    }
     // 2026-05-16 道雪：外部 HTTP 救援 — tools/hub-escape.ps1 调这条路由触发 escapeToHome()
     if (isEscapeHome) {
       if (parsed.token !== HOOK_TOKEN) {
@@ -3094,6 +3128,7 @@ app.whenReady().then(async () => {
       token: HOOK_TOKEN,
       dataDir,
       startedAt: Date.now(),
+      nativeOwnershipVersion: 1,
     });
     console.log(`[hub-control] control file written: pid=${process.pid} hookPort=${hookPort} cdpPort=${cdpPort}`);
   } catch (e) {
@@ -3150,7 +3185,7 @@ async function runFinalShutdownCleanup() {
       });
     }
   });
-  capture('dev-chat-history', () => { clearInterval(devChatHistoryTimer); devChatHistory.dispose(); });
+  capture('dev-chat-history', () => { clearInterval(devChatHistoryTimer); nativeGroupContent.dispose(); nativeItemNotifications.dispose(); devChatHistory.dispose(); });
   capture('session-token-usage', () => sessionUsageService.dispose());
   capture('transcript-tap', () => transcriptTap.dispose());
   // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，

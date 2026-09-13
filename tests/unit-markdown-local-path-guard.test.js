@@ -63,3 +63,9 @@ test('relative paths preserve inline code and Markdown link structure', () => {
   assert.ok(html.includes('<code>src/card-example.js</code>'), html);
   assert.ok(html.includes('<a href="./card-delivery.html">验收说明</a>'), html);
 });
+
+test('root relative and repeated separators retain Markdown-sensitive backslashes', () => {
+  for (const raw of ['\\docs\\_scratch\\report.md', '\\docs\\\\_scratch\\\\report.md', 'docs\\\\_scratch\\\\report.md']) {
+    assert.ok(render(`path ${raw}`).html.includes(raw), raw);
+  }
+});
