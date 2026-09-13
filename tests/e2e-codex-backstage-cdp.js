@@ -80,6 +80,17 @@ try{
   await a.eval(`ipcRenderer.invoke('session:send-prompt',{sessionId:${sid},text:'fixture:broker-burst',clientSubmissionId:'backstage-hidden-burst'})`);
   await until(a,`sessions.get(${sid}).nativeRuntime.state==='completed'`,'hidden burst complete');await sleep(160);assert.equal(await a.eval('terminalCache.get(activeSessionId)._codexBackstage.stats().readCount'),suspendedBefore);
   await click(a,'#btn-backstage');await until(a,"document.querySelector('.cb-list').textContent.includes('FINAL_ONLY_完整结束')",'catch up without resend');assert.equal(await a.eval("document.querySelector('.floating-input-box').textContent"),'草稿保留，不要发送。');checked('card mode suspends reads; returning catches up and preserves composer draft');
+  await click(a,'.cb-tabs button:last-child');
+  const other=await a.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'powershell',opts:{cwd:workspace}})+')');
+  await until(a,`activeSessionId===${JSON.stringify(other.id)}`,'other provider selected');
+  assert(await a.eval("!document.querySelector('.codex-backstage') && !terminalCache.get(activeSessionId)._backstageReadable"),'other provider keeps its terminal');
+  await click(a,`.session-item[data-session-id="${created.id}"]`);
+  await until(a,`activeSessionId===${sid} && document.querySelector('.codex-backstage-legacy')`,'legacy mode survives real session switching');
+  if(await a.eval('currentView')!=='pty')await click(a,'#btn-backstage');
+  assert.equal(await a.eval("getComputedStyle(terminalCache.get(activeSessionId).container).visibility"),'visible');
+  await click(a,'.cb-tabs button:first-child');await until(a,"document.querySelector('.cb-list').textContent.includes('FIRST_HAND_STACK')",'readable restored');
+  assert.equal(await a.eval("terminalCache.get(activeSessionId)._gpuLoaded"),false);
+  checked('switching sessions preserves legacy visibility and other providers keep their own UI');
   await a.eval("document.querySelector('.cb-appearance').value='classic';document.querySelector('.cb-appearance').dispatchEvent(new Event('change'))");await shot(a,'classic');
   await a.eval("document.querySelector('.cb-font-size').value='18';document.querySelector('.cb-font-size').dispatchEvent(new Event('change'))");assert.equal(await a.eval("getComputedStyle(document.querySelector('.cb-prose .cb-output')).fontSize"),'18px');
   await a.eval("document.querySelector('.cb-appearance').value='refined';document.querySelector('.cb-appearance').dispatchEvent(new Event('change'));document.querySelector('.cb-font-size').value='14';document.querySelector('.cb-font-size').dispatchEvent(new Event('change'))");

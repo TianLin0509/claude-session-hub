@@ -1961,6 +1961,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
   const embedded = mountTarget !== terminalPanelEl;
+  if (embedded) { cached._codexBackstage?.setVisible(false);cached._backstageReadable=false; }
   if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
   if (!embedded) terminalPanelEl.classList.remove('home-active');
   if (!embedded) cardFollowScroll.activate(sessionId, { force: !!opts.forceScrollBottom });

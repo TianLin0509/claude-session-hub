@@ -85,7 +85,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
     if(entry.type==='commandExecution'&&entry.fields.command?.preview)title='$ '+entry.fields.command.preview.split(/\r?\n/)[0].slice(0,140);
     setText(row._title,title);
     const prose=['agentMessage','userMessage'].includes(entry.type);
-    const duration=Number(entry.durationMs);setText(row._meta,[entry.historical?'历史':null,prose&&entry.status==='completed'?null:rowStatus(entry),duration>0?(duration/1000).toFixed(1)+'s':null].filter(Boolean).join(' · '));
+    const duration=Number(entry.durationMs);setText(row._meta,[entry.historical?'历史':null,entry.type==='userMessage'||(prose&&entry.status==='completed')?null:rowStatus(entry),duration>0?(duration/1000).toFixed(1)+'s':null].filter(Boolean).join(' · '));
     const command=entry.fields.command;row._command.hidden=!command||(entry.type==='commandExecution'&&command.preview.length<=140&&!command.preview.includes('\n'));setText(row._command,command?'$ '+command.preview:'');
     const errorText=entry.fields.error?.preview||(isError&&entry.type==='diagnostic'?entry.fields.details?.preview:'')||'';
     const text=preview(entry);const bodyText=text===errorText?'':text;
@@ -130,7 +130,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
     try{
       const page=await request(mode==='raw'?{mode:'raw',...(rawLast&&!reset?{after:rawLast}:{})}:{...(revision!=null&&!reset?{since:revision}:{}),limit:40});
       if(dead||requestedEpoch!==modeEpoch||!visible||doc.hidden){dirty=true;pendingReset ||= reset;return;}
-      if(page.unsupported){unsupported=true;compatibility.hidden=false;compatibility.textContent='后台待升级';compatibility.title=page.message;error(page.message);changeView('legacy');return;}
+      if(page.unsupported){unsupported=true;exportButton.disabled=true;compatibility.hidden=false;compatibility.textContent='后台待升级';compatibility.title=page.message;error(page.message);changeView('legacy');return;}
       renderPage(page,{reset});
       // Only catch up a bounded page when an event or user action found more
       // changes. There is no interval polling when the source is idle.
@@ -159,7 +159,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   changeView('readable');
   return {
     root,
-    mount(target){host=target;target.classList.add('codex-backstage-enabled');target.append(root);},
+    mount(target){host=target;target.classList.add('codex-backstage-enabled');target.classList.toggle('codex-backstage-legacy',mode==='legacy');target.append(root);onModeChange(mode);},
     setVisible(value,{force=false}={}){visible=!!value;root.hidden=!visible;if(!visible){clearTimeout(timer);timer=null;return;}viewport.scrollTop=scrollTop;if(force)followLatest();updateStatus();if(dirty||revision==null)schedule();},
     notify(event){if(event?.error)error(event.error);schedule();updateStatus();},
     updateStatus,
