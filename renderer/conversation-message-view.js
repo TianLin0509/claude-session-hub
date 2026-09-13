@@ -8,10 +8,10 @@ function plainProgressText(text) {
     return fence ? line : line.replace(/^(\s*)(?:PLAN|UPDATE)\s*[:：]\s*/,'$1');
   }).join('\n');
 }
-function renderMessageBody(text, {isUser=false, plainProgress=false, escapeHtml, renderMarkdown}) {
+function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=true, escapeHtml, renderMarkdown}) {
   const raw=plainProgress && !isUser ? plainProgressText(text) : String(text || '');
   const body=isUser ? `<div class="conversation-user-text">${escapeHtml(raw)}</div>` : renderMarkdown(raw);
-  if(raw.length<1200 && raw.split('\n').length<32)return body;
+  if(!foldLong || (raw.length<1200 && raw.split('\n').length<32))return body;
   // This is an explicit presentation fold of ONE source message. No invented
   // message boundaries, truncation of the source, or rewritten summary.
   // Reuse the complete, sanitized rendering: slicing Markdown can cut a fence,
@@ -37,23 +37,23 @@ function renderSequenceActivity(messages, escapeHtml) {
     `<div data-message-id="${escapeHtml(m.id || '')}:activity">${renderActivity(m,escapeHtml)}</div>`).join(''),
     activities.reduce((n,m) => n + m.toolCalls.length, 0));
 }
-function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false,activityInHeader=false}) {
+function renderMessageSequence(messages,{escapeHtml,renderMarkdown,plainProgress=false,activityInHeader=false,foldLong=true}) {
   return messages.filter(m=>m && (m.text || m.toolCalls?.length) && !(activityInHeader && m.toolCalls?.length && !m.text))
     .map(m=>activityInHeader && m.toolCalls?.length ? {...m,toolCalls:[]} : m).map(m=>m.phase==='commentary' && !m.toolCalls?.length
     ? `<section class="conversation-entry conversation-progress-row" data-message-id="${escapeHtml(m.id || '')}" data-phase="commentary">`
-      + renderProgressRow(m, {escapeHtml,renderMarkdown,plainProgress}) + '</section>'
+      + renderProgressRow(m, {escapeHtml,renderMarkdown,plainProgress,foldLong}) + '</section>'
     : `<section class="conversation-entry" data-message-id="${escapeHtml(m.id || '')}" data-phase="${escapeHtml(m.phase || 'message')}">`
     + `<div class="conversation-entry-head"><span class="conversation-phase">${phaseLabel(m.phase)}</span>`
     + `${m.ts ? `<time>${escapeHtml(require('../core/beijing-time').formatBeijingClock(m.ts))}</time>` : ''}`
     + '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条消息" aria-label="复制这条消息">复制</button></div>'
-    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown,plainProgress:plainProgress && m.phase==='commentary'}))+'</section>').join('');
+    + (m.toolCalls?.length ? renderActivity(m,escapeHtml) : renderMessageBody(m.text,{escapeHtml,renderMarkdown,foldLong,plainProgress:plainProgress && m.phase==='commentary'}))+'</section>').join('');
 }
 // The same time/text grid is used by ordinary cards and meeting replies. The
 // provider item remains the copy/selection/disclosure boundary.
-function renderProgressRow(message, {escapeHtml,renderMarkdown,plainProgress=false,actions}) {
+function renderProgressRow(message, {escapeHtml,renderMarkdown,plainProgress=false,foldLong=true,actions}) {
   const clock=message.ts ? require('../core/beijing-time').formatBeijingClock(message.ts) : '';
   return `<time class="conversation-progress-time" data-copy-exclude title="${escapeHtml(clock)}">${escapeHtml(clock.slice(0,5))}</time>`
-    + `<div class="conversation-progress-content">${renderMessageBody(message.text,{escapeHtml,renderMarkdown,plainProgress})}</div>`
+    + `<div class="conversation-progress-content">${renderMessageBody(message.text,{escapeHtml,renderMarkdown,plainProgress,foldLong})}</div>`
     + `<div class="conversation-progress-actions" data-copy-exclude>${actions ?? '<button class="conversation-message-copy" data-action="conversation-copy" title="复制这条进展" aria-label="复制这条进展">复制</button>'}</div>`;
 }
 

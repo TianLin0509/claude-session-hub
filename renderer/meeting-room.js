@@ -234,9 +234,6 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
-  // 2026-07-20 道雪 [修#6b]：气泡展开态持久（key: meetingId|msgId）。
-  const _gcExpandedBubbles = new Map();
-
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
     // Pending and completed articles have different IDs. Bind disclosure to
@@ -2498,7 +2495,7 @@ if (typeof document !== 'undefined') (function () {
     let body;
     if (!isUser && Array.isArray(message.displayMessages) && message.displayMessages.length) {
       body = require('./conversation-message-view').renderMessageSequence(message.displayMessages,
-        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting),activityInHeader:true});
+        {escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting),activityInHeader:true,foldLong:false});
     } else if (sendStuck && !hasContent) {
       body = '<div class="mr-gc-md mr-gc-empty-placeholder">Prompt 已进入 CLI 输入框，但尚未检测到 agent 开工。Hub 已自动补按 Enter；仍未恢复时可点「再次发送」。</div>';
     } else if (opts.empty && !_isSettledStatus) {
@@ -2518,7 +2515,7 @@ if (typeof document !== 'undefined') (function () {
       const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason, meeting.scene === 'dev');
       const ph = failureCode === 'submission_unknown' ? reasonTxt
         : status === 'errored'
-        ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或点「原文」核对。`
+        ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或打开该成员会话核对。`
         : status === 'handed_off' ? '阶段文件已交付；本阶段的后续发言会继续收录。'
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
         : status === 'interrupted' ? '你已停止本轮，该 AI 未来得及输出内容。'
@@ -2538,8 +2535,9 @@ if (typeof document !== 'undefined') (function () {
       body = headBlock + bodyBlock;
     } else {
       body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
-        {isUser,escapeHtml,renderMarkdown,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
+        {isUser,escapeHtml,renderMarkdown,foldLong:isUser,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
     }
+    if (!isUser) body = `<div class="gc-journal-text">${body}</div>`;
     const sequence = message.displayMessages || [];
     const hasFinal = sequence.some(m=>['final','final_answer'].includes(m.phase));
     if (!isUser && !isPending && (hasFinal || ['completed','manual_extracted'].includes(status))
@@ -2549,26 +2547,22 @@ if (typeof document !== 'undefined') (function () {
       const session = (typeof sessions !== 'undefined' && sessions.get(message.sid)) || null;
       body += _renderGroupDelivery(text, session?.cwd || meeting.workspace, tools);
     }
-    // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
-    //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
-    // 2026-06-28 道雪：raw://group/... 串是内部噪音，缩成小图标按钮（hover title 仍显示完整索引，点击功能不变）。
-    const anchor = (!isUser && message.anchor)
-      ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引：${escapeHtml(message.anchor)}">🔗 原文</button>`
-      : '';
     const copyAction = `<button type="button" class="mr-gc-copy-btn" data-gc-copy-message="1" title="复制此条消息" aria-label="复制此条消息">📋</button>`;
     const anchorId = escapeHtml(message.id || '');
     // [查看本轮 prompt] 通用群聊功能：仅 AI 气泡 + 有存档 prompt 时显示，点开弹窗看该 AI 实际收到的 prompt。
     const promptAction = (!isUser && message.sourcePrompt)
-      ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt" aria-label="查看本轮 prompt">📥</button>`
+      ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt" aria-label="查看本轮 prompt">查看本轮输入</button>`
       : '';
     const attemptAction = (!isUser && message.attemptId)
-      ? `<button type="button" class="mr-gc-attempt-btn" data-gc-attempt-details="${escapeHtml(message.attemptId)}" title="查看本轮运行证据与状态变化">状态</button>`
+      ? `<button type="button" class="mr-gc-attempt-btn" data-gc-attempt-details="${escapeHtml(message.attemptId)}" title="查看本轮运行证据与状态变化">运行凭证</button>`
       : '';
     // 2026-06-28 道雪：每张 AI 气泡 hover 显示「重新提取」(↻) —— 本轮回答提取错/截断时，
     //   手动从该 AI 的 shell/transcript 重新同步。复用 data-gc-sync-answer 处理器
     //   (_handleGcManualSync)，传 turnNum 精确重抓该轮；pending/empty 态不显示（还没答完）。
-    const resyncAction = (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !isPending && !(opts.empty && !_isSettledStatus))
-      ? `<button type="button" class="mr-gc-resync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="提取错了？从该 AI 的 shell / transcript 重新同步本轮回答" aria-label="重新提取本轮回答">↻</button>`
+    const nativeSource = require('../core/codex-native-runtime').isNativeSession(sourceSession)
+      || require('../core/claude-native-runtime').isNativeClaude(sourceSession);
+    const resyncAction = (!isUser && !nativeSource && !message.sourceMessage && message.sid && !message.committeeAct && !isPending && !(opts.empty && !_isSettledStatus))
+      ? `<button type="button" class="mr-gc-resync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="提取错了？从该 AI 的 shell / transcript 重新同步本轮回答" aria-label="重新提取本轮回答">重新提取回答</button>`
       : '';
     const submitAgainAction = (!isUser && message.sid && sendStuck)
       ? `<button type="button" class="mr-gc-retry-btn is-submit" data-gc-escape="resend-prompt" data-gc-sid="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="再次提交已进入 CLI 输入框的完整 prompt">再次发送</button>`
@@ -2591,22 +2585,23 @@ if (typeof document !== 'undefined') (function () {
     const activityHeader = !isUser ? require('./conversation-message-view').renderSequenceActivity(message.displayMessages, escapeHtml) : '';
     const recipientBadge = recipient ? `<span class="mr-gc-to-badge">${escapeHtml(recipient)}</span>` : '';
     const attemptBadge = attemptLabel ? `<span class="mr-gc-to-badge is-retry">${escapeHtml(attemptLabel)}</span>` : '';
-    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
+    const journal = require('./groupchat-journal');
+    const journalActions = !isUser ? journal.actions({copy:copyAction,prompt:promptAction,attempt:attemptAction,resync:resyncAction,retry:retryParticipantAction,submit:submitAgainAction}) : '';
+    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}${journalActions}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
+      <article ${!isUser ? journal.attributes(meeting,message,escapeHtml) : ''} class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${sendStuck ? ' send-stuck' : ''}" data-gc-msg-id="${anchorId}" data-user-question="${isUser && !isDispatchCard(message)}" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${!isUser && !isPending && !!message.content && ['', 'completed', 'manual_extracted'].includes(status)}" data-phase="${escapeHtml(message.phase || (message.status === 'progress_update' ? 'commentary' : 'message'))}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
           <div class="mr-gc-bubble-row">
             ${isUser ? userTurnActions + copyAction : ''}
             <div class="mr-gc-bubble">${body}${isPending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
-            ${!isUser ? copyAction + promptAction + attemptAction + resyncAction + retryParticipantAction + submitAgainAction : ''}
           </div>
-          ${anchor}
+          ${!isUser ? journal.footer() : ''}
         </div>
         ${isUser ? _renderGroupAvatar(null, true) : ''}
       </article>
@@ -2791,6 +2786,7 @@ if (typeof document !== 'undefined') (function () {
           ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="开投委会：手输股票，自动跑五幕出双榜">⚖️ 开投委会</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="过往投委会：回看历史五幕发言+双榜+主席报告">📋 过往投委会</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="技术初筛=独立趋势龙雷达，与投委会解耦">📊 技术初筛</button></div></div>` : ''}
 
           <div class="mr-gc-tools" id="mr-gc-tools" ${_gcToolsExpanded[meeting.id] ? '' : 'hidden'}>
+            <button type="button" class="gc-journal-collapse-all" data-journal-collapse-all>收起全部长回答</button>
             <div class="mr-gc-search-row"><input type="text" class="mr-gc-search" placeholder="搜索本群聊消息…" aria-label="搜索本群聊消息" /><span class="mr-gc-search-count"></span></div>
             ${progressLane}
             ${mobileWorkbench}
@@ -2802,7 +2798,6 @@ if (typeof document !== 'undefined') (function () {
           </div>
           <nav id="mr-question-nav" class="card-question-nav" aria-label="问题导航" hidden></nav>
           <button type="button" class="mr-gc-scroll-bottom" data-gc-scroll-bottom="1" title="回到最新回答">↓ 最新</button>
-          <button type="button" class="mr-gc-collapse-all" data-gc-collapse-all="1" title="折叠/展开所有长回答">⇕ 折叠全部</button>
         </main>
         <aside class="mr-gc-side" aria-label="群成员">
           <div class="mr-gc-side-head">
@@ -3023,6 +3018,9 @@ if (typeof document !== 'undefined') (function () {
       });
     };
     apply();
+    // Group follow owns subsequent layout changes. A deferred forced follow
+    // would override a Home/wheel/disclosure pause made after this navigation.
+    if (meeting.groupChat) return;
     requestAnimationFrame(() => {
       apply();
       requestAnimationFrame(apply);
@@ -3074,6 +3072,7 @@ if (typeof document !== 'undefined') (function () {
     const replacement=document.createElement('div');
     replacement.innerHTML=newHtml;
     require('./conversation-message-view').patchConversationArticle(articleEl,replacement.firstElementChild);
+    require('./groupchat-journal').enhance(panel);
     _enhanceGroupCardContent(articleEl);
     _restoreGroupChatScroll(panel, scroll);
     return true;
@@ -3152,38 +3151,9 @@ if (typeof document !== 'undefined') (function () {
     follow.activate(activeMeetingId);
   }
 
-  // 2026-06-28 道雪 [改进1]：长回答折叠——超阈值高度的 AI 回答默认折叠 + 渐变遮罩 + 展开按钮，
-  //   避免多家长回答纵向刷屏。展开按钮点击走 _handleGcPanelClick 的 data-gc-expand-bubble 分支。
+  // Whole-response journal disclosure also covers native message sequences.
   function _applyLongAnswerCollapse(panel) {
-    if (!panel) return;
-    const COLLAPSE_PX = 360;
-    const bubbles = panel.querySelectorAll('.mr-gc-msg.ai:not(.pending) .mr-gc-bubble');
-    bubbles.forEach(b => {
-      // Each provider message owns its own disclosure. Folding the enclosing
-      // agent reply would hide later progress/final messages together again.
-      if (b.querySelector('.conversation-entry, .conversation-long-message')) return;
-      if (b.dataset.collapseChecked) return;
-      b.dataset.collapseChecked = '1';
-      if (b.scrollHeight > COLLAPSE_PX + 48) {
-        b.classList.add('mr-gc-collapsible');
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'mr-gc-expand-btn';
-        btn.setAttribute('data-gc-expand-bubble', '1');
-        btn.textContent = '展开全文 ▾';
-        const row = b.closest('.mr-gc-bubble-row');
-        if (row && row.parentElement) row.parentElement.insertBefore(btn, row.nextSibling);
-        const art = b.closest('.mr-gc-msg');
-        const mid = art && art.getAttribute('data-gc-msg-id');
-        if (mid && _gcExpandedBubbles.has(activeMeetingId + '|' + mid)) {
-          b.classList.add('mr-gc-expanded');
-          btn.textContent = '收起 ▴';
-        }
-      }
-    });
-    // [改进R2-3]：有可折叠回答时才显示"折叠全部"悬浮按钮
-    const collapseAllBtn = panel.querySelector('.mr-gc-collapse-all');
-    if (collapseAllBtn) collapseAllBtn.classList.toggle('visible', panel.querySelectorAll('.mr-gc-bubble.mr-gc-collapsible').length > 0);
+    require('./groupchat-journal').enhance(panel);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -3410,10 +3380,10 @@ if (typeof document !== 'undefined') (function () {
   async function _handleGcMessageCopy(btn) {
     const msgEl = btn.closest('.mr-gc-msg');
     const text = extractVisibleCardText(msgEl?.querySelector('.mr-gc-bubble'));
-    const oldText = btn.textContent;
+    const oldHtml = btn.innerHTML;
     if (!text) {
       btn.textContent = '空';
-      setTimeout(() => { btn.textContent = oldText; }, 900);
+      setTimeout(() => { btn.innerHTML = oldHtml; }, 900);
       return;
     }
     try {
@@ -3421,13 +3391,13 @@ if (typeof document !== 'undefined') (function () {
       btn.textContent = '✓';
       btn.classList.add('copied');
       setTimeout(() => {
-        btn.textContent = oldText;
+        btn.innerHTML = oldHtml;
         btn.classList.remove('copied');
       }, 1200);
     } catch (e) {
       console.warn('[groupchat] copy message failed:', e);
       btn.textContent = '复制失败';
-      setTimeout(() => { btn.textContent = oldText; }, 1200);
+      setTimeout(() => { btn.innerHTML = oldHtml; }, 1200);
     }
   }
 
@@ -3771,24 +3741,7 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
 
-    // 2026-06-28 道雪 [改进1]：长回答折叠 展开/收起
-    const expandBubbleBtn = _closestInPanel(ev.target, '[data-gc-expand-bubble]', panel);
-    if (expandBubbleBtn) {
-      ev.stopPropagation();
-      const row = expandBubbleBtn.previousElementSibling;
-      const bubble = row && row.querySelector ? row.querySelector('.mr-gc-bubble') : null;
-      if (bubble) {
-        const expanded = bubble.classList.toggle('mr-gc-expanded');
-        expandBubbleBtn.textContent = expanded ? '收起 ▴' : '展开全文 ▾';
-        const art = bubble.closest('.mr-gc-msg');
-        const mid = art && art.getAttribute('data-gc-msg-id');
-        if (mid) {
-          const k = activeMeetingId + '|' + mid;
-          if (expanded) _gcExpandedBubbles.set(k, 1); else _gcExpandedBubbles.delete(k);
-        }
-      }
-      return;
-    }
+    if (require('./groupchat-journal').handle(ev,panel)) return;
 
     // 2026-06-28 道雪 [改进2]：回到最新
     const scrollBtn = _closestInPanel(ev.target, '[data-gc-scroll-bottom]', panel);
@@ -3812,25 +3765,6 @@ if (typeof document !== 'undefined') (function () {
         codeCopyBtn.textContent = '已复制 ✓';
         setTimeout(() => { try { codeCopyBtn.textContent = old; } catch {} }, 1500);
       }
-      return;
-    }
-
-    // 2026-06-28 道雪 [改进R2-3]：折叠/展开全部长回答
-    const collapseAllBtn2 = _closestInPanel(ev.target, '[data-gc-collapse-all]', panel);
-    if (collapseAllBtn2) {
-      ev.stopPropagation();
-      const bubbles = panel.querySelectorAll('.mr-gc-bubble.mr-gc-collapsible');
-      const anyExpanded = Array.from(bubbles).some(b => b.classList.contains('mr-gc-expanded'));
-      bubbles.forEach(b => {
-        b.classList.toggle('mr-gc-expanded', !anyExpanded);
-        const art = b.closest('.mr-gc-msg');
-        const mid = art && art.getAttribute('data-gc-msg-id');
-        if (mid) { const k = activeMeetingId + '|' + mid; if (!anyExpanded) _gcExpandedBubbles.set(k, 1); else _gcExpandedBubbles.delete(k); }
-        const row = b.closest('.mr-gc-bubble-row');
-        const eb = row && row.nextElementSibling;
-        if (eb && eb.classList && eb.classList.contains('mr-gc-expand-btn')) eb.textContent = !anyExpanded ? '收起 ▴' : '展开全文 ▾';
-      });
-      collapseAllBtn2.textContent = anyExpanded ? '⇕ 展开全部' : '⇕ 折叠全部';
       return;
     }
 
@@ -4922,6 +4856,7 @@ if (typeof document !== 'undefined') (function () {
       require('./conversation-message-view').patchConversationArticle(old,temp.firstElementChild);
     }
     _patchGroupChatPendingMessage(panel,meeting,payload.sid,state);
+    require('./groupchat-journal').enhance(panel);
     _enhanceGroupCardContent(panel);
     _restoreGroupChatScroll(panel,scroll);
   });
