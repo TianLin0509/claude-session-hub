@@ -11,6 +11,7 @@ class ClaudeBackstage extends CodexBackstage {
   constructor(session) {
     super(session);
     this.streams = new Map();
+    this.messageOffsets = new Map();
     this.history = null;
   }
   ensure() {
@@ -50,6 +51,7 @@ class ClaudeBackstage extends CodexBackstage {
     if (frame.type === 'stream_event' && !historical) {
       const event = frame.event || {}, streamKey = frame.parent_tool_use_id || 'root';
       if (event.type === 'message_start') this.streams.set(streamKey, { id:event.message.id, turnId, blocks:new Map() });
+      if (event.type === 'message_stop') {this.streams.delete(streamKey);return;}
       const stream = this.streams.get(streamKey);
       if (!stream) return;
       if (event.type === 'content_block_start') stream.blocks.set(event.index, event.content_block);
@@ -69,11 +71,19 @@ class ClaudeBackstage extends CodexBackstage {
     }
     if (frame.type === 'assistant' || frame.type === 'user') {
       const content = typeof message.content === 'string' ? [{ type:'text', text:message.content }] : message.content || [];
+      let offset=frame.backstageBlockOffset || 0;
+      if (frame.type === 'assistant' && !historical && frame.uuid) {
+        const key=this.key(turnId,message.id || frame.uuid);
+        let cursor=this.messageOffsets.get(key);
+        if (!cursor) {cursor={next:0,frames:new Map()};this.messageOffsets.set(key,cursor);}
+        if (!cursor.frames.has(frame.uuid)) {cursor.frames.set(frame.uuid,cursor.next);cursor.next+=content.length;}
+        offset=cursor.frames.get(frame.uuid);
+      }
       const blocks = content.map((block, index) => ({ block, index }));
       if (historical) blocks.reverse();
       for (const {block, index} of blocks) {
         if (!block) continue;
-        const id = block.id || block.tool_use_id || `${message.id || frame.uuid}:${index}`;
+        const id = block.id || block.tool_use_id || `${message.id || frame.uuid}:${offset+index}`;
         const tool = block.type === 'tool_use', result = block.type === 'tool_result';
         const type = tool || result ? 'mcpToolCall' : block.type === 'thinking' ? 'reasoning'
           : frame.type === 'user' ? 'userMessage' : 'agentMessage';
@@ -84,10 +94,6 @@ class ClaudeBackstage extends CodexBackstage {
         this.entry(turnId, id, { type, ...(result ? {} : {title:block.name || (frame.type === 'user' ? '你' : 'Claude')}),
           phase:message.stop_reason === 'end_turn' ? 'final_answer' : 'commentary',
           status:tool ? (historical ? 'unknown' : 'running') : block.is_error ? 'failed' : 'completed' }, values, historical);
-      }
-      if (frame.type === 'assistant') {
-        const key = frame.parent_tool_use_id || 'root';
-        if (this.streams.get(key)?.id === message.id) this.streams.delete(key);
       }
     } else if (frame.type === 'result') {
       const status = ['aborted_streaming','aborted_tools'].includes(frame.terminal_reason) ? 'interrupted'
@@ -104,6 +110,7 @@ class ClaudeBackstage extends CodexBackstage {
           store.releaseHashes(id);
         }
         for (const [key,stream] of this.streams) if (stream.turnId === turnId) this.streams.delete(key);
+        for (const key of this.messageOffsets.keys()) if (key.startsWith(prefix)) this.messageOffsets.delete(key);
       });
       this.entry(turnId, '$result', {type:'turn', title:'本轮',
         status}, {result:frame}, historical);
@@ -114,9 +121,19 @@ class ClaudeBackstage extends CodexBackstage {
   seedHistory(count = 40) {
     if (!this.history) {
       this.history = [...this.session.records.values(), ...this.session.activities.records.values()]
-        .sort((a,b) => a.createdAt-b.createdAt).map(record => ({ id:record.userMessageId,
-          frames:[...(!record.nativeActivity ? [{type:'user', uuid:record.userMessageId, message:{content:record.content || record.text}}] : []),
-            ...(record.messages?.values() || []), ...(record.result ? [record.result] : [])] }));
+        .sort((a,b) => a.createdAt-b.createdAt).map(record => {
+          // SDK assistant frames contain individual blocks sharing one API
+          // message ID. Compute forward offsets before paging history backwards.
+          const offsets=new Map();
+          const frames=[...(record.messages?.values() || [])].map(frame=>{
+            if (frame.type !== 'assistant') return frame;
+            const key=frame.message?.id || frame.uuid,offset=offsets.get(key) || 0;
+            offsets.set(key,offset+(frame.message?.content?.length || 0));
+            return {...frame,backstageBlockOffset:offset};
+          });
+          return {id:record.userMessageId,frames:[...(!record.nativeActivity ? [{type:'user',uuid:record.userMessageId,message:{content:record.content || record.text}}] : []),
+            ...frames,...(record.result ? [record.result] : [])]};
+        });
       this.historyCursor = {turn:this.history.length-1, item:null};
     }
     const cursor = this.historyCursor;

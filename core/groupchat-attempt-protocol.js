@@ -126,6 +126,12 @@ function classifyProviderFailure(input = {}) {
 
   const definitions = [
     {
+      code:'submission_unknown', category:'reconciliation', retryable:false, autoRetry:false,
+      action:'reconcile_native_history', summary:'本条提交待核对',
+      patterns:[/CLAUDE_SUBMISSION_(?:UNKNOWN|TIMEOUT)/, /Claude submission requires reconciliation/i,
+        /Claude 未确认本条输入.*提交状态待核对/],
+    },
+    {
       code: 'quota_exceeded', category: 'quota', retryable: true, autoRetry: false,
       action: 'wait_or_switch_account', summary: '额度已用尽',
       assistantText: true,
@@ -179,7 +185,8 @@ function classifyProviderFailure(input = {}) {
 
   for (const definition of definitions) {
     if (input.fromAssistantText === true && definition.assistantText !== true) continue;
-    if (!definition.patterns.some(pattern => pattern.test(raw))) continue;
+    if (!(definition.code === 'submission_unknown' && /^CLAUDE_SUBMISSION_(UNKNOWN|TIMEOUT)$/.test(input.code || ''))
+        && !definition.patterns.some(pattern => pattern.test(raw))) continue;
     const { patterns: _patterns, assistantText: _assistantText, ...failure } = definition;
     return { ...failure, detail: compactRaw(raw, 300) };
   }

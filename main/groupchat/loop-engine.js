@@ -538,7 +538,7 @@ function createLoopEngine(deps) {
         const entry = entries.find(item => item
           && item.runId === runIdValue
           && Number(item.stepIndex) === Number(stepIndex));
-        if (entry) return { entry, turnNum: turn.n, turn };
+        if (entry) return { entry, turnNum: turn.n, turn, attempts:state.attempts || {} };
       }
     } catch (error) {
       logError('[workflow-engine] failed to inspect durable step evidence:', error);
@@ -590,7 +590,8 @@ function createLoopEngine(deps) {
     if (expectedSids.length !== targetMemberIds.length) return { ok: false, reason: 'workflow_member_missing' };
     if (failed.length) {
       const first = failed[0];
-      return { ok: false, reason: first && (first.reason || first.status) || 'participant_result_missing' };
+      return { ok: false, reason: first && (first.reason || first.status) || 'participant_result_missing',
+        reconciliationRequired:failed.some(item=>item?.failure?.category === 'reconciliation' || item?.reason === 'submission_unknown') };
     }
     return { ok: true };
   }
@@ -599,8 +600,15 @@ function createLoopEngine(deps) {
     const results = evidence && evidence.entry && Array.isArray(evidence.entry.results)
       ? evidence.entry.results
       : [];
-    return results.length >= targetCount && results.slice(0, targetCount).every(result =>
-      result && (!result.status || ['completed', 'manual_extracted'].includes(result.status)) && Number(result.textLength) > 0);
+    return results.length >= targetCount && results.slice(0, targetCount).every(result => {
+      if (result && (!result.status || ['completed', 'manual_extracted'].includes(result.status)) && Number(result.textLength) > 0) return true;
+      const sid=result?.sid, turn=evidence.turn, attempt=evidence.attempts?.[turn?.attemptIdBy?.[sid]];
+      // An explicit sync can complete a previously uncertain step. Its exact
+      // workflow attempt must match; another step's answer cannot skip this one.
+      return !!(attempt && attempt.workflowRun?.runId === evidence.entry.runId
+        && Number(attempt.workflowRun.stepIndex) === Number(evidence.entry.stepIndex)
+        && turn?.byStatus?.[sid] === 'manual_extracted' && String(turn.by?.[sid] || '').trim());
+    });
   }
 
   function dispatchResultFromEvidence(meeting, targetMemberIds, evidence) {
@@ -710,6 +718,7 @@ function createLoopEngine(deps) {
 
         let dispatchResult = null;
         let failureReason = null;
+        let reconciliationRequired = false;
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
           if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
@@ -745,7 +754,7 @@ function createLoopEngine(deps) {
             state.lastError = { stage: 'serial', stepIndex: index, reason: checked.reason, at: Date.now() };
             break;
           }
-          if (!checked.ok) failureReason = checked.reason;
+          if (!checked.ok) {failureReason = checked.reason;reconciliationRequired=checked.reconciliationRequired;}
         } catch (error) {
           failureReason = error && error.message || 'serial_step_exception';
           logError(`[workflow-engine] serial step ${index + 1} failed:`, error);
@@ -763,7 +772,7 @@ function createLoopEngine(deps) {
 
         state.lastError = { stage: 'serial', stepIndex: index, reason: failureReason, attempt, at: Date.now() };
         persistSerial(meetingId, state);
-        if (attempt < maxAttempts && !entry.abort) {
+        if (attempt < maxAttempts && !entry.abort && !reconciliationRequired) {
           progress({ stage: 'step-retry', stepIndex: index, attempt, error: state.lastError });
           await sleep(500);
           continue;

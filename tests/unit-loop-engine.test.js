@@ -345,6 +345,16 @@ async function main() {
     assert.match(state.lastError.reason, /send_stuck/);
   });
 
+  await t('串行原生提交待核对时立即暂停，不重试或派发下一步', async () => {
+    const m=mkSerial({dispatch:async()=>({status:'completed',turnNum:9,results:[{
+      sid:'s1',status:'errored',text:'',reason:'submission_unknown',
+      failure:{code:'submission_unknown',category:'reconciliation',retryable:false,autoRetry:false}
+    }]})});
+    const state=await createLoopEngine(m.deps).runSerial('serial-mtg','goal',null);
+    assert.strictEqual(state.status,'paused');assert.strictEqual(m.turnCalls.length,1);
+    assert.strictEqual(state.nextStepIndex,0);
+  });
+
   await t('崩溃窗恢复以 orchestrator workflow evidence 去重，不重复执行已完成步骤', async () => {
     const persisted = {
       runId: 'serial-existing-run',
@@ -380,6 +390,20 @@ async function main() {
     assert.deepStrictEqual(m.turnCalls[0].targetMemberIds, ['m2']);
     assert.strictEqual(m.turnCalls[0].reuseTurnNum, 11);
     assert.ok(state.completedSteps.some(step => step.stepIndex === 0 && step.recovered));
+  });
+
+  await t('同步成功后继续只派下一步，其他步骤的同步结果不能跳过本步', async () => {
+    for (const matching of [true,false]) {
+      const m=mkSerial({steps:[['m1'],['m2']],orchestratorState:{
+        attempts:{a:{workflowRun:{runId:'manual',stepIndex:matching?0:1}}},
+        turns:[{n:11,by:{s1:'synced answer'},byStatus:{s1:'manual_extracted'},attemptIdBy:{s1:'a'},
+          meta:{workflowSteps:[{runId:'manual',stepIndex:0,results:[{sid:'s1',status:'errored',textLength:0}]}]}}]
+      }});
+      const state=await createLoopEngine(m.deps).runSerial('serial-mtg',null,{runId:'manual',goal:'goal',status:'running',
+        nextStepIndex:0,currentTurnNum:11,attemptsByStep:{},completedSteps:[]});
+      assert.strictEqual(state.status,'done');assert.strictEqual(m.turnCalls.length,matching?1:2);
+      assert.deepStrictEqual(m.turnCalls[0].targetMemberIds,matching?['m2']:['m1']);
+    }
   });
 
   await t('崩溃发生在派发中时复用 pending turn，不重复追加用户问题', async () => {

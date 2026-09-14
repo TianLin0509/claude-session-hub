@@ -25,6 +25,28 @@ function test(name, fn) {
 
 console.log('Running groupchat recovery IPC contract tests...');
 
+test('Claude manual sync uses the exact native submission and never borrows latest PTY text', async () => {
+  for (const mode of ['completed','pending','wrong-id','pending-turn']) {
+    const ipc=createFakeIpc(), patches=[];
+    const record={status:mode==='pending'?'accepted':'completed',finalText:'native answer'};
+    const orch={state:{currentTurn:3,turns:mode==='pending-turn'?[]:[{n:3,attemptIdBy:{s1:'attempt'}}],
+      messages:[{id:'u3',role:'user',turnNum:3,createdAt:1}],pendingPrompts:{3:{s1:{attemptId:'attempt'}}}},
+      patchTurnResult:(...args)=>{patches.push(args);return true;}};
+    registerGroupchatRecoveryIpc(ipc,{
+      getActiveWatchers:()=>new Map(),getHubDataDir:()=>'/fixture',groupchat:{getOrchestrator:()=>orch},
+      meetingManager:{getMeeting:()=>({id:'meeting',subSessions:['s1']})},sendToRenderer:()=>{},
+      sessionManager:{getSession:()=>({kind:'claude',runtimeBackend:'claude-stream-json'}),
+        getNativeClaude:()=>({records:new Map([[mode==='wrong-id'?'other':'attempt',record]]),unreconciled:mode==='pending'})},
+      transcriptTap:{extractLatestTurn:()=>{throw Error('native sync reached old transcript');}},
+      groupChatWatcher:{extractStreamingText:()=>{throw Error('native sync reached PTY');}},
+    });
+    const result=await ipc.handlers.get('groupchat-manual-extract')(null,{meetingId:'meeting',sid:'s1',turnNum:3});
+    assert.strictEqual(result.ok,mode==='completed'||mode==='pending-turn');
+    if(result.ok){assert.strictEqual(result.text,'native answer');assert.strictEqual(patches[0][2].attemptId,'attempt');}
+    else {assert.strictEqual(patches.length,0);assert.doesNotMatch(result.detail,/PTY|Stop hook|idle-timer/);}
+  }
+});
+
 test('registers recovery channels', () => {
   const ipc = createFakeIpc();
   registerGroupchatRecoveryIpc(ipc, {

@@ -407,6 +407,8 @@ class ClaudeNativeSession extends EventEmitter {
     this.print('\n[连接中断] ' + (error && error.message || '') + '\n');
     this.unreconciled = true;
     const record = this.active;
+    this.lateAckRecovery = error.code === 'CLAUDE_SUBMISSION_TIMEOUT' && record
+      ? {record,client:this.client,epoch:this.runtime.epoch} : null;
     if (record) {
       clearTimeout(record.timer);
       if (!TERMINAL.has(record.status)) record.status = 'unknown';
@@ -460,9 +462,17 @@ class ClaudeNativeSession extends EventEmitter {
         this.update({ submission: this.receipt(record) }); return;
       }
       clearTimeout(record.timer);
+      const recovery=this.lateAckRecovery;
+      const confirmedLateAck=recovery?.record === record && recovery.client === this.client
+        && recovery.epoch === this.runtime.epoch && this.runtime.connection === 'connected'
+        && !this.client.failure && !this.reconnecting && !this.reconnectPending;
       record.accepted = true; record.status = 'accepted'; record.acceptedAt = Date.now();
       this.lifecycle('submission-accepted', record, { status: 'accepted', accepted: true, acceptedAt: record.acceptedAt }, () => {
-        this.update({ state: 'starting', submission: this.receipt(record), reason: 'Claude 已收到输入，等待执行' });
+        // An exact echo from the same live writer proves receipt even after
+        // the local acknowledgement deadline. It cannot clear other failures.
+        if (confirmedLateAck) {this.unreconciled=false;this.lateAckRecovery=null;}
+        this.update({ state: this.unreconciled ? 'unknown' : 'starting', submission: this.receipt(record),
+          reason: this.unreconciled ? 'Claude 已确认收到输入，但连接或历史状态仍需核对' : 'Claude 已收到输入，等待执行' });
       });
       record.resolve(this.receipt(record));
       return;

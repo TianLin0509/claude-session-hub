@@ -13,8 +13,18 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   }
   if(m.type==='control_response'){finish();return;}
   if(m.type!=='user')return;
-  frame(m);
   const text=m.message.content.map(x=>x.text||'').join('');
+  if(process.env.CLAUDE_HUB_LATE_ECHO_RECEIPTS) require('node:fs').appendFileSync(process.env.CLAUDE_HUB_LATE_ECHO_RECEIPTS,JSON.stringify({uuid:m.uuid,sessionId:id})+'\n');
+  if(text.includes('fixture:late-echo') && (!process.env.CLAUDE_HUB_LATE_ECHO_RECEIPTS || require('node:fs').readFileSync(process.env.CLAUDE_HUB_LATE_ECHO_RECEIPTS,'utf8').trim().split('\n').length===1)){
+    setTimeout(()=>{
+      frame(m);
+      const messageId=randomUUID();
+      for(const content of [[{type:'thinking',thinking:'first thought'}],[{type:'thinking',thinking:'second thought'}],[{type:'text',text:'STATUS_DONE'}]])
+        frame({type:'assistant',uuid:randomUUID(),message:{id:messageId,role:'assistant',stop_reason:'end_turn',content}});
+      finish();
+    },15700);return;
+  }
+  frame(m);
   if(text==='SILENT')return;
   if(text==='RUNNING'){
     // The engine starts an assistant message, with no output text at all.

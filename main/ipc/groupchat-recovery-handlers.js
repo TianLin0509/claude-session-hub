@@ -23,6 +23,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     const session = sessionManager.getSession(sid);
     const kind = session?.kind || 'unknown';
     const runtimeKind = session?.transcriptKind || kind;
+    const nativeClaude = sessionManager.getNativeClaude?.(sid);
+    const isNativeClaude = !!nativeClaude || session?.runtimeBackend === 'claude-stream-json';
 
     // 2026-07-12 道雪：轮次窗口改由 orchestrator 状态推导，不再信 renderer 的
     //   _gcTurnStartTs（那是"当前轮"的开始时间，对旧轮重提取完全错位；Hub 重启后是 0）。
@@ -84,7 +86,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
     // 非 Codex 后端只能读"最新回答"，对旧轮重提取会拿到最新轮内容 → 张冠李戴。
     //   诚实拒绝，提示用户用「原文」核对旧轮，而不是静默写错数据。
-    if (!isLatestTurn && !isCodexCliKind(runtimeKind)) {
+    if (!isLatestTurn && !isCodexCliKind(runtimeKind) && !isNativeClaude) {
       return {
         ok: false,
         reason: 'old_turn_resync_unsupported',
@@ -93,25 +95,39 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     }
 
     let extracted = null;
-    try {
-      extracted = await transcriptTap.extractLatestTurn(sid, effectiveSince, { untilTs });
-    } catch (err) {
-      return { ok: false, reason: 'extract_failed', detail: err.message };
-    }
-    if (!extracted || !extracted.text) {
-      // PTY/streaming 兜底只对"最新轮"有意义：旧轮内容早已不在流式缓冲里。
-      if (isLatestTurn) {
-        try {
-          const fromPty = groupChatWatcher.extractStreamingText(sid, runtimeKind);
-          if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
-            extracted = {
-              text: fromPty.text,
-              source: fromPty.source || 'pty_buffer',
-              extractMode: 'pty_buffer_fallback',
-            };
+    if (isNativeClaude) {
+      if (!nativeClaude) return {ok:false,reason:'native_unavailable',detail:'请先打开该 Claude 成员会话，再核对本轮原生记录。'};
+      const nativeTurnNum = requestedTurn || orchCurrentTurn;
+      const turn = orch?.state.turns?.find(t=>t.n === nativeTurnNum);
+      const submissionId = turn?.attemptIdBy?.[sid] || orch?.state.pendingPrompts?.[nativeTurnNum]?.[sid]?.attemptId;
+      const record = submissionId && nativeClaude.records.get(submissionId);
+      if (!record) return {ok:false,reason:'native_identity_unavailable',detail:'未找到与本轮派发身份匹配的 Claude 原生提交；请打开成员会话查看历史，不会用最新回答覆盖本轮。'};
+      if (record.status !== 'completed') return {ok:false,reason:'native_not_completed',detail:
+        nativeClaude.unreconciled ? '该 Claude 提交仍待核对。请打开成员会话查看原生历史，核对后继续；不要重复发送。'
+          : 'Claude 本次提交尚无成功完成回执；请打开成员会话查看当前状态，稍后同步。'};
+      if (!record.finalText?.trim()) return {ok:false,reason:'native_empty_result',detail:'Claude 本轮已结束，但原生最终回答为空；未使用其他轮次内容填充。'};
+      extracted={text:record.finalText,source:'claude-stream-json',extractMode:'native_submission'};
+    } else {
+      try {
+        extracted = await transcriptTap.extractLatestTurn(sid, effectiveSince, { untilTs });
+      } catch (err) {
+        return { ok: false, reason: 'extract_failed', detail: err.message };
+      }
+      if (!extracted || !extracted.text) {
+        // PTY/streaming 兜底只对"最新轮"有意义：旧轮内容早已不在流式缓冲里。
+        if (isLatestTurn) {
+          try {
+            const fromPty = groupChatWatcher.extractStreamingText(sid, runtimeKind);
+            if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
+              extracted = {
+                text: fromPty.text,
+                source: fromPty.source || 'pty_buffer',
+                extractMode: 'pty_buffer_fallback',
+              };
+            }
+          } catch (err) {
+            logger.warn('[manual-extract] PTY fallback failed:', err && err.message);
           }
-        } catch (err) {
-          logger.warn('[manual-extract] PTY fallback failed:', err && err.message);
         }
       }
     }

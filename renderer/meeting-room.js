@@ -2455,7 +2455,10 @@ if (typeof document !== 'undefined') (function () {
     const isPending = !!opts.pending && !_isSettledStatus;
     const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
-    const failureStatusText = failureCode === 'submission_unknown' ? '本条提交待核对'
+    const nativeSession=sessions.get(message.sid), nativeRuntime=nativeSession?.nativeRuntime;
+    const nativeResultReady=nativeSession?.runtimeBackend === 'claude-stream-json' && nativeRuntime?.state === 'completed'
+      && !!message.attemptId && nativeRuntime.submission?.clientSubmissionId === message.attemptId;
+    const failureStatusText = failureCode === 'submission_unknown' ? (nativeResultReady ? '原生已完成 · 待同步' : '本条提交待核对')
       : failureCode === 'quota_exceeded' ? '额度中断'
       : failureCode === 'rate_limited' ? '限流中断'
         : failureCode === 'network_interrupted' ? '网络中断'
@@ -2484,10 +2487,10 @@ if (typeof document !== 'undefined') (function () {
     //   对已 completed/manual_extracted 的回答无意义且误导用户以为"没同步成功"，故仅非成功态渲染。
     // 2026-07-12 收紧：成功态但内容为空（如 PTY 干净退出兜底 settle）仍要给同步入口。
     const _syncSettled = (status === 'completed' || status === 'manual_extracted') && hasContent;
-    const syncAction = (failureCode === 'submission_unknown' && !isUser && message.sid)
+    const syncAction = (failureCode === 'submission_unknown' && !nativeResultReady && !isUser && message.sid)
       ? `<button type="button" class="mr-gc-sync-btn" data-gc-open-session="${escapeHtml(message.sid)}">核对消息</button>`
       : (!isUser && !message.sourceMessage && message.sid && !message.committeeAct && !_syncSettled)
-      ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
+      ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="按本轮身份从该 AI 的原始记录同步回答">同步</button>`
       : '';
     // 2026-07-12 道雪：空内容的非成功态消息不再渲染成"空气泡+裸图标排"（截图血泪），
     //   按 status 给占位文案 + 失败原因，让用户知道发生了什么、下一步点哪里。
@@ -2515,7 +2518,7 @@ if (typeof document !== 'undefined') (function () {
       const reasonTxt = _gcFailReasonLabel(message.failure || message.statusReason, meeting.scene === 'dev');
       const ph = failureCode === 'submission_unknown' ? reasonTxt
         : status === 'errored'
-        ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或打开该成员会话核对。`
+        ? `本轮未收录最终回答${reasonTxt ? `（${reasonTxt}）` : ''}。请打开该成员会话核对状态和原始记录，再点「同步」；提交待核对时不要重复发送。`
         : status === 'handed_off' ? '阶段文件已交付；本阶段的后续发言会继续收录。'
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
         : status === 'interrupted' ? '你已停止本轮，该 AI 未来得及输出内容。'

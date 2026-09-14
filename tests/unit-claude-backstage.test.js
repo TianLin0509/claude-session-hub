@@ -10,6 +10,27 @@ function session(options={}) {
   return Object.assign(new EventEmitter(),{options,sessionId:'native',runtime:{state:'completed'},records:new Map(),activities:{records:new Map()}});
 }
 const assistant=(id, content)=>({type:'assistant',uuid:id,message:{id,content}});
+
+test('separate Claude block frames sharing an API message ID retain every block and stream row', () => {
+  const s=session(),b=new ClaudeBackstage(s),frames=[];
+  const stream=event=>b.frame({type:'stream_event',event},'u');
+  stream({type:'message_start',message:{id:'api'}});
+  for(const [index,type,text] of [[0,'thinking','first thought'],[1,'thinking','second thought'],[2,'text','answer']]) {
+    stream({type:'content_block_start',index,content_block:{type,[type==='text'?'text':'thinking']:''}});
+    stream({type:'content_block_delta',index,delta:{type:type==='text'?'text_delta':'thinking_delta',[type==='text'?'text':'thinking']:text}});
+    const frame={type:'assistant',uuid:'frame-'+index,message:{id:'api',content:[{type,[type==='text'?'text':'thinking']:text}]}};
+    frames.push(frame);b.frame(frame,'u');
+  }
+  try {
+    const entries=b.read().entries;
+    assert.equal(entries.length,3);
+    assert.deepEqual(entries.map(e=>e.fields.text?.preview||e.fields.summary?.preview),['first thought','second thought','answer']);
+    const saved=session();saved.records.set('submission',{userMessageId:'u',nativeActivity:true,createdAt:1,messages:new Map(frames.map(f=>[f.uuid,f]))});
+    const history=new ClaudeBackstage(saved);
+    try {assert.deepEqual(history.read().entries.map(e=>e.fields.text?.preview||e.fields.summary?.preview),['first thought','second thought','answer']);}
+    finally {history.close();}
+  } finally {b.close();}
+});
 test('stream snapshots deduplicate, tool results remain complete, and paged records survive reopening', () => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'claude-backstage-'));
   let backstage=new ClaudeBackstage(session({hubDataDir:root,id:'hub'}));

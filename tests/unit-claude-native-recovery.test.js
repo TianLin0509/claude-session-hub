@@ -10,6 +10,29 @@ const { NativeAgentJournal } = require('../core/native-agent-journal');
 const { findNativeClaudeHistory, renameNativeClaudeHistory } = require('../core/claude-native-history');
 const fixture = path.join(__dirname, 'fixtures', 'claude-stream.js');
 
+test('an exact late input echo reconciles only its own acknowledgement timeout and captures the result', async t => {
+  const s=new ClaudeNativeSession({executable:process.execPath,commandArgs:[fixture,'--fixture=no-echo'],submissionTimeoutMs:30});
+  t.after(()=>s.close());
+  await assert.rejects(s.submit('late echo',{submissionId:'late'}),e=>e.code==='CLAUDE_SUBMISSION_TIMEOUT');
+  assert.equal(s.unreconciled,true);
+  const record=s.records.get('late');
+  s.message({type:'user',uuid:record.userMessageId,session_id:s.sessionId,parent_tool_use_id:null,message:{role:'user',content:record.content}});
+  assert.equal(s.unreconciled,false);
+  s.message({type:'assistant',uuid:randomUUID(),session_id:s.sessionId,message:{id:'answer',content:[{type:'text',text:'late answer'}]}});
+  s.message({type:'result',uuid:randomUUID(),session_id:s.sessionId,subtype:'success',result:'late answer'});
+  assert.equal(record.status,'completed');assert.equal(record.finalText,'late answer');
+});
+
+test('a late echo cannot clear a later transport failure', async t => {
+  const s=new ClaudeNativeSession({executable:process.execPath,commandArgs:[fixture,'--fixture=no-echo'],submissionTimeoutMs:30});
+  t.after(()=>s.close());
+  await assert.rejects(s.submit('late echo',{submissionId:'late'}));
+  s.disconnect(Object.assign(new Error('connection lost'),{code:'TRANSPORT_FAILURE'}));
+  const record=s.records.get('late');
+  s.message({type:'user',uuid:record.userMessageId,session_id:s.sessionId,message:{role:'user',content:record.content}});
+  assert.equal(s.unreconciled,true);
+});
+
 test('explicit recovery preserves unknown identity, rejects stale UI, and never replays it after restart', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'native-reconcile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
