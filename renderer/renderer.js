@@ -6189,6 +6189,12 @@ function writeTerminalChunk(sessionId, cached, data) {
   const sess = sessions.get(sessionId);
   if (sess && isCodexKind(sess.kind)) {
     const pinAfterWrite = shouldAutoPinCodexTerminal(sessionId, cached);
+    // Native output is literal provider text, not an interactive CLI frame.
+    if (sess.runtimeBackend === 'codex-app-server' || sess.runtimeBackend === 'acp') {
+      cached.terminal.write(data);
+      if (pinAfterWrite) scheduleCodexBottomPin(sessionId, cached);
+      return;
+    }
     let filtered = data;
     if (filtered.includes('prove documentation')) {
       filtered = filtered.replace(CODEX_PLACEHOLDER_RE, '');
@@ -6304,7 +6310,9 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
       if (Number.isFinite(itemSeq) && itemSeq <= cached._hydratedSeq) continue;
       let data = String(item.data || '');
       const sess = sessions.get(sessionId);
-      if (sess && isCodexKind(sess.kind) && data.includes('prove documentation')) {
+      if (sess && isCodexKind(sess.kind)
+          && sess.runtimeBackend !== 'codex-app-server' && sess.runtimeBackend !== 'acp'
+          && data.includes('prove documentation')) {
         data = data.replace(CODEX_PLACEHOLDER_RE, '');
       }
       await writeXtermAndWait(cached.terminal, data);
