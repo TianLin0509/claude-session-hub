@@ -26,6 +26,7 @@ function makeEl() {
   const el = {
     children: [],
     _attrs: {},
+    setAttribute(name, value) { this._attrs[name] = String(value); },
     style: {},
     classList: { add() {}, remove() {}, toggle() {} },
     dataset: {},
@@ -99,7 +100,8 @@ test('群聊成员复用普通行，在状态环保留 Ctx 分级，旧 mini-jum
   assert.equal(wrapper.children[1].children.length, 3);
   assert.ok(wrapper.children[1].children.every(el => el.className.includes('child')));
   assert.doesNotMatch(html, /mini-jump-cell|sl-members-hint/);
-  for (const pct of [22, 88, 55]) assert.ok(html.includes(`Ctx ${pct}%`));
+  const memberLabels = wrapper.children[1].children.map(el => el._attrs['aria-label']).join('\n');
+  for (const pct of [22, 88, 55]) assert.ok(memberLabels.includes(`Ctx ${pct}%`));
 });
 
 // ---------------- 用例 2：contextPct=null 时不渲染数字（避免占位） ----------------
@@ -190,8 +192,11 @@ test('自动休眠会话保留未读红点、数量和唤醒提示', () => {
   renderSessionList();
   const html = treeHtml(sessionListEl);
   assert.ok(/sl-dot unread/.test(html), '休眠态有未读时应显示红色未读状态点');
-  assert.ok(/有 3 条未读/.test(html), '休眠态应保留未读数量');
-  assert.ok(/自动休眠/.test(html) && /点击唤醒/.test(html), 'tooltip 应说明自动休眠与唤醒动作');
+  const row = sessionListEl.children.find(el => el.dataset.sessionId === 'sleeping');
+  const label = row._attrs['aria-label'];
+  assert.ok(/有 3 条未读/.test(label), '无障碍标签应保留未读数量');
+  assert.ok(/自动休眠/.test(label) && /点击唤醒/.test(label), '无障碍标签应说明自动休眠与唤醒动作');
+  assert.equal(row.title, undefined, '会话行不再设置原生 hover 提示');
 });
 
 console.log('Running unit-session-list-renderer-mini-ctx tests...');

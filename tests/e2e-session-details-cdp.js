@@ -72,10 +72,13 @@ async function main() {
     await until(cdp, `document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height > 0`);
     await _waitMs(1200);
     assert.ok(await cdp.eval(`document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height > 0`), 'stationary hover survives sidebar refresh');
+    assert.equal(await cdp.eval(`!!document.querySelector('.hub-session-peek')`), false, 'group hover must not cover the conversation with a summary card');
     const memberPoint = await cdp.eval(`(()=>{const r=document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...memberPoint });
     await _waitMs(250);
     assert.ok(await cdp.eval(`document.querySelector('[data-session-id="member-claude"]').getBoundingClientRect().height > 0`), 'moving into members keeps group expanded');
+    await _waitMs(500);
+    assert.equal(await cdp.eval(`!!document.querySelector('.hub-session-peek')`), false, 'member hover must not open a summary card');
     result.screenshots.push(await shot(cdp, 'compact-hover'));
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1000, y: 500 });
     await until(cdp, `document.querySelector('[data-session-id="member-codex"]').getBoundingClientRect().height === 0`);
@@ -89,6 +92,15 @@ async function main() {
     assert.match(await cdp.eval(`document.querySelector('[data-session-id="single-codex"] .sl-detail-model').textContent`), /Astra High/);
     assert.match(await cdp.eval(`document.querySelector('[data-usage-id="unknown"]').textContent`), /—\/—/);
     result.checks.push('real transcript -> main -> IPC -> ordinary and indented member rows; unknown placeholder');
+    for (const selector of ['[data-session-id="single-codex"]', '[data-session-id="single-claude"]', '[data-meeting-id="details-group"]', '[data-session-id="member-codex"]']) {
+      const point = await cdp.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+      await _waitMs(700); // Observe beyond the removed card's 300 ms hover delay.
+      assert.equal(await cdp.eval(`!!document.querySelector('.hub-session-peek')`), false, 'session hover must not open a summary card');
+      assert.equal(await cdp.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});return e.hasAttribute('title') || !!e.querySelector('.sl-title[title],.child-title[title]')})()`), false, 'row/title must not fall back to a native summary tooltip');
+    }
+    result.checks.push('ordinary sessions, group and members have no hover summary or row/title tooltip');
+    result.screenshots.push(await shot(cdp, 'no-hover-card'));
     const selectionBeforeUsage = await cdp.eval(`activeSessionId`);
     for (const id of ['single-codex', 'member-codex']) {
       await click(cdp, `[data-usage-id="${id}"]`);
