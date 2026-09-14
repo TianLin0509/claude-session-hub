@@ -283,6 +283,13 @@ function buildComposerStatusModel(session, options = {}) {
     throw new Error('buildComposerStatusModel requires the derived runtime status');
   }
   const truth = getSessionRuntimeTruth(session, { now });
+  if(session?.runtimeBackend==='codex-app-server' && session.nativeRuntime?.connection==='disconnected'
+      && session.nativeRuntime.observation?.state==='reconnecting') {
+    const prolonged=now-session.nativeRuntime.observation.since>=30000;
+    return {state:prolonged?COMPOSER_STATUS_WAITING:'syncing',text:prolonged?'同步连接暂不可用':'正在恢复同步',
+      detail:'',quickReplies:[],canStop:false,runtime,
+      action:prolonged?{kind:'reconnect',label:'核对连接'}:null};
+  }
   if (session?.runtimeBackend === 'claude-stream-json') {
     const snapshot = session.nativeRuntime || {};
     // Work in flight (starting/running) takes the shared working line, the same

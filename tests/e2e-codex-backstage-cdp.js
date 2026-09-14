@@ -106,7 +106,7 @@ try{
 }finally{
   for(let i=0;i<clients.length;i++){try{await shot(clients[i],'final-'+i);}catch(error){result.screenshotError=error.message;}await clients[i].close();}
   for(const hub of hubs.reverse())await gracefulQuit(hub);
-  try{const metadata=readMetadata(dataDir);if(metadata){const broker=await connectBroker(dataDir,metadata);try{await broker.request('shutdown-test',{});}finally{broker.close();}}}catch(error){result.brokerShutdown=error.message;}
+  try{const metadata=readMetadata(dataDir);if(metadata){const broker=await connectBroker({dataDir});try{await broker.request('shutdown-test',{});}finally{broker.close();}}}catch(error){result.brokerShutdown=error.message;}
   fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify(result));
 }
 })().catch(error=>{console.error(error.stack);if(error.logTail)console.error(error.logTail);process.exitCode=1;});

@@ -34,6 +34,7 @@ function registerCodexBackstageIpc(ipcMain, { sessionManager }) {
         defaultPath:`codex-backstage-${new Date().toISOString().slice(0,10)}.txt`,
         filters:[{ name:'文本记录', extensions:['txt'] }] });
       if (selected.canceled || !selected.filePath) return { ok:true, canceled:true };
+      await native.prepareBackstageExport?.();
       file = selected.filePath + '.' + randomUUID() + '.partial';
       handle = await fs.promises.open(file, 'wx');
       await writeAll(handle,'Codex 原始记录（后台采集；已知凭据已脱敏；启用前的 stderr 不可补录）\n跨块的单独 UTF-16 码元以 [UTF-16 JSON] 标记保存，避免编码替换丢失。\n\n');

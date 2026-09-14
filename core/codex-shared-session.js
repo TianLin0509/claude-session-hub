@@ -47,6 +47,8 @@ class CodexSharedSession extends EventEmitter {
     this.everAttached = false;
     this.threadId = this.runtime.threadId || options.resumeId || null;
     this.contentRevision = 0;
+    this.fullContentRevision = null;
+    this.turnContentRevisions = new Map();
     this.contentDecoder = new SharedContentDecoder();
     this.transcript = [];
     this.textBlocks = [];
@@ -83,7 +85,7 @@ class CodexSharedSession extends EventEmitter {
     this.hostRuntimeRevision = next.revision;
     // Renderer revisions belong to this view. A local transport disconnect
     // must never outrank a subsequent valid snapshot from the native host.
-    next = { ...next, brokerEpoch:next.epoch, epoch:this.viewEpoch,
+    next = { ...next, observation:null, brokerEpoch:next.epoch, epoch:this.viewEpoch,
       revision:Math.max(Number(this.runtime.revision) + 1 || 1, Number(next.revision) || 0) };
     if(this.options.nativeProvider==='claude')next.requests=(next.requests||[]).map(request=>({...request,brokerEpoch:request.epoch,epoch:this.viewEpoch}));
     const previous = this.runtime;
@@ -101,17 +103,23 @@ class CodexSharedSession extends EventEmitter {
   }
   applyContent(content) {
     if (!content) return;
+    if(Number.isFinite(content.contentRevision) && content.contentRevision<this.contentRevision)return;
     this.contentRevision = Number(content.contentRevision) || this.contentRevision;
     if (Array.isArray(content.transcript)) {
       if (content.replaceTurnId) {
         const key=`${content.threadId || this.threadId}:${content.replaceTurnId}`;
         this.transcript = this.transcript.filter(card => card.displayTurnKey !== key && card.providerTurnId !== content.replaceTurnId)
           .concat(content.transcript);
-      } else this.transcript = content.transcript;
+        this.turnContentRevisions.set(content.replaceTurnId,this.contentRevision);
+      } else {
+        this.transcript = content.transcript;
+        this.fullContentRevision=this.contentRevision;this.turnContentRevisions.clear();
+      }
     }
     this.textBlocks = Array.isArray(content.blocks) ? content.blocks : this.textBlocks;
     this.lastFinalText = typeof content.finalText === 'string' ? content.finalText : this.lastFinalText;
     this.emit('items', this.textBlocks);
+    if(this.compatBackstage)this.emit('backstage-updated',{revision:this.contentRevision});
   }
   applySnapshot(snapshot) {
     if (!snapshot) return;
@@ -119,7 +127,33 @@ class CodexSharedSession extends EventEmitter {
     this.key = snapshot.key || this.key;
     this.threadId = snapshot.threadId || this.threadId;
     if (snapshot.runtime) this.applyRuntime(snapshot.runtime);
-    this.applyContent(snapshot);
+    if(oldThread!==this.threadId) {
+      this.contentRevision=0;this.fullContentRevision=null;this.turnContentRevisions.clear();
+      this.compatBackstage?.close();this.compatBackstage=null;
+    }
+    const incoming=Number(snapshot.contentRevision)||0;
+    if(this.options.nativeProvider!=='claude' && incoming<this.contentRevision && Array.isArray(snapshot.transcript)) {
+      // BrokerConnection drains a socket chunk synchronously. New turn data
+      // can arrive after the attach response but before its await continues.
+      // Preserve that data while still hydrating earlier turns from the reply.
+      if(this.fullContentRevision==null || this.fullContentRevision<incoming) {
+        const newer=new Set([...this.turnContentRevisions].filter(([,revision])=>revision>incoming).map(([id])=>id));
+        const turnId=card=>card.providerTurnId || card.displayTurnKey?.slice((this.threadId+':').length);
+        const groups=new Map();for(const card of this.transcript) {
+          const id=turnId(card);if(!newer.has(id))continue;
+          if(!groups.has(id))groups.set(id,[]);groups.get(id).push(card);
+        }
+        const merged=[],placed=new Set();
+        for(const card of snapshot.transcript) {
+          const id=turnId(card);
+          if(newer.has(id)){if(!placed.has(id)){merged.push(...(groups.get(id)||[]));placed.add(id);}}
+          else merged.push(card);
+        }
+        for(const [id,cards] of groups)if(!placed.has(id))merged.push(...cards);
+        this.transcript=merged;this.fullContentRevision=incoming;
+        this.emit('items',this.textBlocks);
+      }
+    } else this.applyContent(snapshot);
     this.applyControl(snapshot.control);
     if (this.threadId && this.threadId !== oldThread) this.emit('bound', { threadId:this.threadId });
   }
@@ -148,6 +182,8 @@ class CodexSharedSession extends EventEmitter {
         this.emit('bound', bound);
       } else if (p.event === 'thread-reset') {
         this.threadId=null;
+        this.contentRevision=0;this.fullContentRevision=null;this.turnContentRevisions.clear();
+        this.compatBackstage?.close();this.compatBackstage=null;
         this.applyContent({transcript:[],blocks:[],finalText:'',contentRevision:0});
         this.emit('thread-reset',...args);
       } else if (p.event === 'lifecycle') {
@@ -167,7 +203,8 @@ class CodexSharedSession extends EventEmitter {
     if (this.closed || this.exiting) return;
     const previous = this.runtime;
     this.runtime = { ...previous, connection:'disconnected', revision:previous.revision + 1,
-      reason:'Hub 状态同步连接已断开，正在重新连接', observedAt:Date.now() };
+      reason:'Hub 状态同步连接已断开，正在重新连接', observedAt:Date.now(),
+      observation:{state:'reconnecting',since:previous.observation?.since || Date.now(),reason:error?.message || ''} };
     // The window transport knows nothing new about the native turn's outcome.
     // Keep its last state/identity, mark observation unavailable, never fail it.
     this.emit('state', this.runtime, previous);
@@ -202,7 +239,8 @@ class CodexSharedSession extends EventEmitter {
     if (!this.ready) this.ready = this._start().catch(error => {
       this.ready = null;
       const previous=this.runtime;
-      this.runtime={...previous,connection:'disconnected',revision:previous.revision+1,reason:error.message};
+      this.runtime={...previous,connection:'disconnected',revision:previous.revision+1,reason:error.message,
+        ...(this.everAttached?{observation:{state:'reconnecting',since:previous.observation?.since || Date.now(),reason:error.message}}:{})};
       this.emit('state',this.runtime,previous);
       throw error;
     });
@@ -218,11 +256,14 @@ class CodexSharedSession extends EventEmitter {
     if (serviceId && this.serviceId && this.serviceId!==serviceId) {
       this.hostRuntimeEpoch=null;
       this.hostRuntimeRevision=null;
+      this.contentRevision=0;this.fullContentRevision=null;this.turnContentRevisions.clear();
     }
     if(serviceId)this.serviceId=serviceId;
     this.client = client;
+    this.backstageSupported=client.features?.includes('codex-backstage-v1')===true;
     this.contentDecoder.entries.clear();
     this.view.contentMode = client.features?.includes('content-delta-v1') ? 'delta-v1' : 'turn';
+    this.view.codexToolMode = this.options.nativeProvider!=='claude' && client.features?.includes('codex-tool-preview-v1') ? 'preview-v1' : null;
     const onNotification = message => { if(this.client===client)this.onNotification(message); };
     const onDisconnect = error => { if(this.client===client)this.onDisconnect(error); };
     client.on('notification', onNotification);
@@ -303,11 +344,30 @@ class CodexSharedSession extends EventEmitter {
     return this.action('reviewUnknownSubmission', [id, this.hostRuntimeEpoch]);
   }
   readOutcome(turnId) { return this.action('readOutcome', [turnId]).then(result => result ? { ...result, hubSessionId:this.options.id } : result); }
-  async readBackstage(options) {
-    await this.start();
-    if (!this.client?.features?.includes('codex-backstage-v1')) return { unsupported:true,
-      message:'当前共享后台仍在使用旧版显示。原始终端仍可查看；共享后台空闲更新后可使用工作记录。' };
-    return this.action('readBackstage', [options]);
+  async readBackstage(options={}) {
+    if(!this.transcript.length)await this.start();
+    if(this.backstageSupported && (!this.client || this.client.closed))throw Error('正在恢复后台同步，已有记录仍保留，请稍后重试');
+    const source=(this.client?.features?.includes('codex-backstage-v1')?'native:':'compat:')+this.threadId;
+    const reset=!!this.backstageReadSource && this.backstageReadSource!==source && options.mode!=='detail';
+    if(reset)options={...options,before:undefined,after:undefined,since:undefined};
+    if (!this.client?.features?.includes('codex-backstage-v1')) {
+      this.compatBackstage ||= new (require('./codex-backstage-compat').CodexBackstageCompat)(this);
+      const compat=this.compatBackstage;
+      if(options?.mode==='raw')await compat.prepareExport();
+      else if(compat.preparing)await compat.preparing;
+      if(this.compatBackstage!==compat || this.closed)throw Error('后台记录来源已切换，请重新读取');
+      const result=compat.read(options);this.backstageReadSource=source;
+      return {...result,reset};
+    }
+    this.compatBackstage?.close();this.compatBackstage=null;
+    const result=await this.action('readBackstage', [options]);this.backstageReadSource=source;
+    return {...result,reset};
+  }
+  async prepareBackstageExport() {
+    await this.readBackstage({limit:1});
+    if(this.compatBackstage){await this.compatBackstage.prepareExport();return;}
+    let page;
+    do {page=await this.readBackstage({history:true,limit:1});}while(page.historyMore);
   }
   reconcile() { return this.action('reconcile'); }
   async reconnect() {
@@ -336,9 +396,15 @@ class CodexSharedSession extends EventEmitter {
       const wanted = turnKey(cards.at(-1));
       cards = wanted ? cards.filter(card => turnKey(card) === wanted) : cards.slice(-1);
     }
+    if(options.toolPreviews || this.view.codexToolMode==='preview-v1')cards=require('./codex-tool-details').compactCodexTools(cards,{hubSessionId:this.options.id,threadId:this.threadId});
     const limit = options.limit == null ? 50 : options.limit;
     return Number.isFinite(limit) && limit >= 0
       ? (options.fromTail === false ? cards.slice(0, limit) : cards.slice(-limit)) : cards;
+  }
+  async readToolResult(reference) {
+    if(reference.threadId!==this.threadId)throw Error('工具详情不属于当前 Codex 会话');
+    if(this.client?.features?.includes('codex-tool-preview-v1'))return this.action('readToolResult',[reference]);
+    return require('./codex-tool-details').toolResult(this.transcript,reference,this.threadId);
   }
   write(data) {
     if (data === '\x03' || data === '\x1b') this.interrupt().catch(error => this.emit('action-error', error.message));
@@ -351,6 +417,7 @@ class CodexSharedSession extends EventEmitter {
     this.reconnectTimer=null;
     const client = this.client;
     const finish = () => {
+      this.compatBackstage?.close();this.compatBackstage=null;
       this.releaseClient(client);
       this.client = null;
       this.closed = true;

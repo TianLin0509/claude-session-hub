@@ -211,7 +211,7 @@ class RuntimeRecord {
       runtime:this.session.runtime,
       threadId:this.session.threadId,
       contentRevision:this.session.contentRevision,
-      transcript:this.session.readTranscript({ limit:Infinity }),
+      transcript:this.session.readTranscript({ limit:Infinity,toolPreviews:this.views.get(viewId)?.codexToolMode==='preview-v1' }),
       blocks:this.session.blocks(),
       finalText:this.session.finalText(),
       control:this.controlFor(viewId),
@@ -255,14 +255,18 @@ class RuntimeRecord {
       replaceTurnId:turnId, threadId:this.session.threadId,
       transcript:this.session.readTranscript({ limit:Infinity, turnId }), blocks:this.session.blocks(), finalText:this.session.finalText(),
       ...this.session.snapshotExtra?.({messagePatches:[...this.views.values()].every(view=>view.claudeMessageMode==='delta-v1')}) } };
-    let legacy;
+    let legacy,compact;
     const sent = new Set();
     for(const view of this.views.values()) {
       // Old Hub adapters replace their whole cache on each message. Keep
       // their history complete while the new adapters use per-turn updates.
       if (sent.has(view.peer)) continue;
       sent.add(view.peer);
-      if(view.contentMode==='delta-v1')view.peer.send({...update,deltaContent:true});
+      if(view.codexToolMode==='preview-v1') {
+        compact ||= {...update,params:{...update.params,transcript:require('./codex-tool-details').compactCodexTools(update.params.transcript,{threadId:this.session.threadId})}};
+        view.peer.send({...compact,deltaContent:view.contentMode==='delta-v1'});
+      }
+      else if(view.contentMode==='delta-v1')view.peer.send({...update,deltaContent:true});
       else if(view.contentMode==='turn')view.peer.send(update);
       else {
         legacy ||= {method:'content',params:{...update.params,replaceTurnId:undefined,
@@ -273,9 +277,17 @@ class RuntimeRecord {
   }
   broadcastHistory() {
     if(!this.views.size)return;
-    this.broadcast({method:'content',params:{key:this.key,threadId:this.session.threadId,
+    const message={method:'content',params:{key:this.key,threadId:this.session.threadId,
       contentRevision:this.session.contentRevision,transcript:this.session.readTranscript({limit:Infinity}),
-      blocks:this.session.blocks(),finalText:this.session.finalText()}});
+      blocks:this.session.blocks(),finalText:this.session.finalText()}};
+    let compact;const sent=new Set();
+    for(const view of this.views.values()) {
+      if(sent.has(view.peer))continue;sent.add(view.peer);
+      if(view.codexToolMode==='preview-v1') {
+        compact ||= {...message,params:{...message.params,transcript:require('./codex-tool-details').compactCodexTools(message.params.transcript,{threadId:this.session.threadId})}};
+        view.peer.send(compact);
+      } else view.peer.send(message);
+    }
   }
   assertController(viewId, expectedEpoch) {
     if (!this.controller || this.controller.viewId !== viewId) throw new Error('此窗口只能查看；请在空闲后点击“在此操作”');
@@ -318,6 +330,7 @@ class RuntimeRecord {
     if (action === 'start') return this.ensureStarted().then(() => this.snapshot(viewId));
     if (action === 'readOutcome') return this.session.readOutcome(...args);
     if (action === 'readBackstage') return this.session.readBackstage(...args);
+    if (action === 'readToolResult') return this.session.readToolResult(...args);
     if (action === 'reconcile') {
       const runtime=await this.session.reconcile();
       this.broadcastHistory();

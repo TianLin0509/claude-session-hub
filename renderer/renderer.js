@@ -2290,7 +2290,7 @@ const turnCardRenderer = createTurnCardRenderer({
   getActiveSessionId: () => activeSessionId,
   getSessionContext: (sessionId) => sessions.get(sessionId) || null,
   openAttachment: (target, opts) => openPathInHub(target, opts),
-  readToolResult: reference => ipcRenderer.invoke(reference.source==='claude-stream-json'?'claude-native:tool-result':'acp:tool-result', reference),
+  readToolResult: reference => ipcRenderer.invoke(reference.source==='claude-stream-json'?'claude-native:tool-result':reference.source==='codex-app-server'?'codex-native:tool-result':'acp:tool-result', reference),
   onTurnPresentation: syncTurnPresentationToSession,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
   renderMathInElement: window.renderMathInElement,
@@ -2519,7 +2519,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // stuck at "loading" with only the newest assistant card. Keep newest-wins
   // semantics within each lane while preserving the session/view ownership
   // guards shared by both.
-  const loadLane = incremental ? 'incremental' : 'full';
+  const loadLane = opts.older ? 'older' : incremental ? 'incremental' : 'full';
   const loadSeq = Date.now() + ':' + Math.random().toString(36).slice(2);
   if (!window._cardLoadSeqBySid) window._cardLoadSeqBySid = new Map();
   const previousLoadSeqs = window._cardLoadSeqBySid.get(sessionId);
@@ -2554,6 +2554,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   };
 
   // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
+  const refreshTurnIds=view.changed && view.hydrated && session?.runtimeBackend==='codex-app-server'
+    ? [...new Set([...window._sessionTurns.values()].map(turn=>turn.providerTurnId
+      || (turn.displayTurnKey?.startsWith(session.codexSid+':')?turn.displayTurnKey.slice((session.codexSid+':').length):null)).filter(Boolean))] : [];
   let result;
   try {
     result = await ipcRenderer.invoke('parse-session-transcript', {
@@ -2561,7 +2564,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       ccSessionId,
       transcriptPath,
       kind,
-      opts: paged ? { limit: pageLimit + 1, fromTail: true, includeBranchHistory: true } : opts.parseOpts,
+      opts: paged ? { limit: pageLimit + 1, fromTail: true, includeBranchHistory: true,refreshTurnIds,
+        refreshDisplayIds:refreshTurnIds.length?[...window._sessionTurns.keys()]:[] } : opts.parseOpts,
     });
   } catch (err) {
     if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
@@ -2592,12 +2596,17 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   let turns = require('../core/conversation-display').displayTurns(
     (result && Array.isArray(result.turns)) ? result.turns : []);
+  let nextPageState=null;
   if (paged && !result?.error) {
     if (opts.older || !incremental || view.changed) {
-      pageState.more = turns.length > pageLimit || (result?.turns?.length || 0) > pageLimit;
-      pageState.limit = pageLimit;
+      nextPageState={more:turns.length > pageLimit || (result?.turns?.length || 0) > pageLimit,limit:pageLimit};
     }
     turns = turns.slice(-pageLimit);
+  }
+  if(result?.refreshedTurns?.length) {
+    const refreshed=require('../core/conversation-display').displayTurns(result.refreshedTurns);
+    const latestIds=new Set(turns.map(turn=>turn.id));
+    turns=refreshed.filter(turn=>!latestIds.has(turn.id)).concat(turns);
   }
   const ipcError = (result && result.error) ? result.error : null;
   // A streaming incremental result can land while this full parse is in
@@ -2711,6 +2720,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const staging = !incremental || opts.older ? document.createElement('div') : null;
   const mountTurns = turns;
   for (const turn of mountTurns) {
+    // Loading older pages must not overwrite a newer streaming card which
+    // arrived while the history request was in flight.
+    if(opts.older && window._sessionTurns.has(turn.id))continue;
     if (!incremental && window._sessionTurns.has(turn.id)
         && window._sessionTurns.get(turn.id) !== turnsBeforeMount.get(turn.id)) continue;
     const existing = staging && container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
@@ -2737,6 +2749,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     container.insertBefore(fragment, container.querySelector(':scope > .turn-card,:scope > .streaming-indicator'));
     removeLoadingPlaceholder();
   }
+  if(nextPageState)Object.assign(pageState,nextPageState);
   cardHistoryPager.render(sessionId, container);
 
   if (!incremental || opts.older || session?.runtimeBackend === 'claude-stream-json') {

@@ -24,6 +24,7 @@ class ClaudeSharedSession extends CodexSharedSession {
     this.view.claudeMessageMode='delta-v1';
     delete this.transcript;
     this.sessionId=sessionId;this.threadId=sessionId;this.records=new Map();this.activities={records:new Map(),pending:()=>[...this.activities.records.values()].filter(r=>!END.has(r.status)&&!r.reconciliation)};
+    this.messageBases=new Map();this.messageRemovals=new Map();
     this.recovery=[];this.historyFile=null;
     this.nativeStarted=!!(options.resumeSessionId || options.restoredRuntime?.nativeStarted || options.restoredRuntime?.childPid);
     Object.assign(this.runtime,{providerSessionId:sessionId,ownerPid:null,childPid:null,reason:options.lazyStart?'尚未开始，收到消息后启动':'正在连接共享会话'});
@@ -37,11 +38,40 @@ class ClaudeSharedSession extends CodexSharedSession {
     if(next?.nativeStarted || next?.childPid || next?.connection==='connected')this.nativeStarted=true;}
   applyContent(content) {
     if(!content)return;
+    if(Number.isFinite(content.contentRevision) && content.contentRevision<this.contentRevision) {
+      // A late attach snapshot may fill missing history, but cannot replace a
+      // record already updated by a newer notification in the same socket read.
+      for(const row of content.nativeRecords || []) {
+        const map=row.nativeActivity?this.activities.records:this.records;
+        const key=row.nativeActivity?row.userMessageId:row.submissionId;
+        const identity=(row.nativeActivity?'activity:':'submission:')+key;
+        const existing=map.get(key);
+        if(existing) {
+          if(row.messagePatch || (this.messageBases.get(identity)??-1)>=content.contentRevision)continue;
+          const messages=new Map(row.messages || []);
+          for(const id of this.messageRemovals.get(identity)||[])messages.delete(id);
+          for(const [id,message] of existing.messages)messages.set(id,message);
+          existing.messages=messages;
+        } else map.set(key,restoreRecord(row));
+        this.messageBases.set(identity,content.contentRevision);
+        const record=map.get(key);
+        this.emit('item',{userMessageId:record.userMessageId});
+      }
+      return;
+    }
     if(content.relaunchOptions)this.options={...this.options,...content.relaunchOptions};
-    if(content.replaceNativeRecords){this.records.clear();this.activities.records.clear();}
+    if(content.replaceNativeRecords){this.records.clear();this.activities.records.clear();this.messageBases.clear();this.messageRemovals.clear();}
     const changed=[];
     for(const row of content.nativeRecords || []) {
       const map=row.nativeActivity?this.activities.records:this.records;
+      const identity=(row.nativeActivity?'activity:':'submission:')+(row.nativeActivity?row.userMessageId:row.submissionId);
+      if(!row.messagePatch){this.messageBases.set(identity,Number(content.contentRevision)||this.contentRevision);this.messageRemovals.delete(identity);}
+      else {
+        const removed=this.messageRemovals.get(identity)||new Set();
+        for(const id of row.removedMessageIds||[])removed.add(id);
+        for(const [id] of row.messages||[])removed.delete(id);
+        this.messageRemovals.set(identity,removed);
+      }
       const record=restoreRecord(row,map.get(row.nativeActivity?row.userMessageId:row.submissionId));
       map.set(record.nativeActivity?record.userMessageId:record.submissionId,record);changed.push(record.userMessageId);
     }

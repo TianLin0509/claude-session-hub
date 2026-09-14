@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 
-test('full and incremental card loads use separate generations while rejecting session/view switches', () => {
+test('full, incremental and older card loads use separate generations while rejecting session/view switches', () => {
   const start = rendererSource.indexOf('async function loadSessionHistoryToOverlay');
   const end = rendererSource.indexOf("ipcRenderer.on('prompt-submitted-event'", start);
   assert.ok(start >= 0 && end > start, 'loadSessionHistoryToOverlay block not found');
@@ -15,8 +15,8 @@ test('full and incremental card loads use separate generations while rejecting s
 
   assert.match(
     block,
-    /const loadLane = incremental \? 'incremental' : 'full';/,
-    'full hydration and incremental refreshes need independent generation lanes',
+    /const loadLane = opts\.older \? 'older' : incremental \? 'incremental' : 'full';/,
+    'full hydration, incremental refreshes and older paging need independent generation lanes',
   );
   assert.match(
     block,
