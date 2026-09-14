@@ -95,7 +95,7 @@ class CodexBackstage {
         store.set(id, old && !samePrefix ? 'reported-output' : 'output', value);
       }
       if (item.error != null) store.set(id, 'error', stringify(item.error));
-      const excluded = new Set(['id','type','text','content','command','cwd','aggregatedOutput','error','status','exitCode','durationMs','hubStartedAt','hubCompletedAt','phase']);
+      const excluded = new Set(['id','type','text','content','command','cwd','aggregatedOutput','error','status','exitCode','durationMs','hubStartedAt','hubCompletedAt','phase','itemOrder']);
       const detail = Object.fromEntries(Object.entries(item).filter(([key,value]) => !excluded.has(key) && value != null));
       if (Object.keys(detail).length) store.set(id, 'details', stringify(detail));
       if (completed && !['agentMessage','userMessage','reasoning'].includes(item.type)) {

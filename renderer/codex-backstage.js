@@ -132,7 +132,9 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
       if(dead||requestedEpoch!==modeEpoch||!visible||doc.hidden){dirty=true;pendingReset ||= reset;return;}
       if(page.unsupported){unsupported=true;exportButton.disabled=true;compatibility.hidden=false;compatibility.textContent='后台待升级';compatibility.title=page.message;error(page.message);changeView('legacy');return;}
       if(unsupported){unsupported=false;exportButton.disabled=exporting;compatibility.hidden=true;toolbar.title='';}
-      renderPage(page,{reset});
+      if(page.compatibility){compatibility.hidden=false;compatibility.textContent='历史兼容视图';compatibility.title=page.capture;}
+      else compatibility.hidden=true;
+      renderPage(page,{reset:reset||page.reset});
       // Only catch up a bounded page when an event or user action found more
       // changes. There is no interval polling when the source is idle.
       if(page.more&&incremental&&!needsLatest)dirty=true;
@@ -144,7 +146,10 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   function followLatest(){followBottom=true;unread=0;followUi();if(needsLatest){needsLatest=false;revision=null;void refresh(true);}else pin();}
   function changeView(next){mode=next;modeEpoch++;pendingReset=true;onModeChange(next);root.dataset.view=mode;readable.setAttribute('aria-pressed',String(next==='readable'));raw.setAttribute('aria-pressed',String(next==='raw'));legacy.setAttribute('aria-pressed',String(next==='legacy'));host?.classList.toggle('codex-backstage-legacy',next==='legacy');list.hidden=next!=='readable';rawList.hidden=next!=='raw';area.hidden=next==='legacy';status.hidden=next==='legacy';appearance.hidden=next!=='readable';older.hidden=true;
     if(next!=='legacy'){revision=null;rawFirst=rawLast=null;more=false;followBottom=true;unread=0;void refresh(true);}else{loading.hidden=!unsupported;toolbar.title=unsupported?loading.textContent:'';} }
-  function updateStatus(){const r=getSession()?.nativeRuntime;if(!r)return;const connected=['connected','unstarted'].includes(r.connection);stateText.textContent=!connected?'● 连接待核对':({running:'● 正在运行',waiting:'● 等待处理',completed:'✓ 已完成',failed:'× 执行失败',interrupted:'■ 已中断',idle:'● 就绪',unknown:'● 状态待核对'})[r.state]||'● '+r.state;status.dataset.state=!connected?'unknown':r.state;stateDetail.textContent=!connected?r.reason||'连接暂时不可用':r.state==='waiting'?'请在下方处理审批或问题':'';stateDetail.title=r.reason||'';}
+  function updateStatus(){const r=getSession()?.nativeRuntime;if(!r)return;const connected=['connected','unstarted'].includes(r.connection);
+    const observing=!connected&&r.observation?.state==='reconnecting';
+    stateText.textContent=observing?'● 正在恢复同步':!connected?'● 连接待核对':({running:'● 正在运行',waiting:'● 等待处理',completed:'✓ 已完成',failed:'× 执行失败',interrupted:'■ 已中断',idle:'● 就绪',unknown:'● 状态待核对'})[r.state]||'● '+r.state;
+    status.dataset.state=!connected?'unknown':r.state;stateDetail.textContent=observing?'':!connected?r.reason||'连接暂时不可用':r.state==='waiting'?'请在下方处理审批或问题':'';stateDetail.title=r.reason||'';}
   async function exportOriginal(){if(exporting||unsupported)return;exporting=true;exportButton.disabled=true;try{const result=await ipcRenderer.invoke('codex:backstage-export',{sessionId});if(!result?.ok)throw Error(result?.message||'导出失败');}catch(err){error(err.message);}finally{exporting=false;exportButton.disabled=unsupported;}}
   async function openDetail(entry){
     if(detailDialog)detailDialog.close();

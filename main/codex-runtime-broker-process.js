@@ -140,7 +140,7 @@ class Peer extends EventEmitter {
         this.authenticated = true;
         result = { serviceId:this.serviceId, protocolVersion:PROTOCOL_VERSION, pid:process.pid,
           runtimeBuild, upgrade:this.broker.upgrade?.request(message.params?.runtimeBuild) || null,
-          features:['content-delta-v1','claude-shared-v1','idle-upgrade-v1','codex-backstage-v1'] };
+          features:['content-delta-v1','claude-shared-v1','idle-upgrade-v1','codex-backstage-v1','codex-tool-preview-v1'] };
       } else if (message.method === 'hello') throw new Error('Codex 共享服务已经初始化');
       else result = await this.broker.handle(this, message.method, message.params || {});
       this.send({ id, result });

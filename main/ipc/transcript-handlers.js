@@ -132,7 +132,18 @@ async function parseProviderTranscript(args = {}, deps) {
     const nativeCodex = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (nativeCodex) {
       if (!require('../../core/codex-native-runtime').isUnstartedRuntime(nativeCodex.runtime)) await nativeCodex.start();
-      return {turns:nativeCodex.readTranscript({...opts,...(session?.runtimeBackend==='acp'?{toolPreviews:true}:{})}),transcriptPath:session?.transcriptPath || null,
+      const refreshIds=session?.runtimeBackend==='codex-app-server' && Array.isArray(opts?.refreshTurnIds)
+        ? [...new Set(opts.refreshTurnIds.filter(id=>typeof id==='string' && id.length<=256))].slice(0,128) : [];
+      const displayIds=new Set(Array.isArray(opts?.refreshDisplayIds)?opts.refreshDisplayIds.filter(id=>typeof id==='string' && id.length<=512).slice(0,4096):[]);
+      const refreshedTurns=refreshIds.flatMap(turnId=>nativeCodex.readTranscript({turnId,limit:Infinity,toolPreviews:true}))
+        .flatMap(turn=>{
+          if(!Array.isArray(turn.displayMessages))return displayIds.has(turn.id)?[turn]:[];
+          const final=[...turn.displayMessages].reverse().find(m=>['final_answer','final'].includes(m.phase));
+          const messages=turn.displayMessages.filter(m=>displayIds.has(m.id)||m===final);
+          return messages.length || displayIds.has(turn.id+':activity') ? [{...turn,displayMessages:messages}] : [];
+        });
+      return {turns:nativeCodex.readTranscript({...opts,toolPreviews:true}),
+        refreshedTurns,transcriptPath:session?.transcriptPath || null,
         error:null,source:nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
@@ -278,6 +289,11 @@ function registerTranscriptIpc(ipcMain, deps) {
   const {
     transcriptTap,
   } = deps;
+  ipcMain.handle('codex-native:tool-result', (_event, reference = {}) => {
+    const native=deps.sessionManager.getNativeCodex?.(reference.hubSessionId);
+    if(!native?.readToolResult)throw Error('Codex 工具来源不可用，请重新载入会话');
+    return native.readToolResult(reference);
+  });
   ipcMain.handle('claude-native:tool-result', (_event, reference = {}) => {
     const native=deps.sessionManager.getNativeClaude?.(reference.hubSessionId);
     if(!native)throw Error('Claude 工具来源不可用，请重新载入会话');

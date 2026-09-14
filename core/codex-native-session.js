@@ -105,6 +105,10 @@ class CodexNativeSession extends EventEmitter {
     this.emit('data',sanitizeTerminal(text).replace(/\r?\n/g,'\r\n'));
   }
   readBackstage(options) { return this.backstage.read(options); }
+  async prepareBackstageExport() {
+    let page;
+    do {page=this.backstage.read({history:true,limit:1});await new Promise(resolve=>setImmediate(resolve));}while(page.historyMore);
+  }
   async requestNative(client, ...args) {
     try { return await client.request(...args); }
     catch (error) { this.backstage.requestError(args[0],error); throw error; }
@@ -457,9 +461,13 @@ class CodexNativeSession extends EventEmitter {
       : options.latestTurn ? [...this.history.values()].slice(-1) : [...this.history.values()];
     const turns = history.map(t=>t.id === this.runtime.turnId
       ? {...t,items:[...this.items.values()]} : t);
-    const cards = require('./codex-native-transcript').nativeTranscriptTurns(this.threadId,turns);
+    let cards = require('./codex-native-transcript').nativeTranscriptTurns(this.threadId,turns);
+    if(options.toolPreviews)cards=require('./codex-tool-details').compactCodexTools(cards,{hubSessionId:this.options.id,threadId:this.threadId});
     const limit = options.limit == null ? 50 : options.limit;
     return Number.isFinite(limit) && limit >= 0 ? (options.fromTail === false ? cards.slice(0,limit) : cards.slice(-limit)) : cards;
+  }
+  readToolResult(reference) {
+    return require('./codex-tool-details').toolResult(this.readTranscript({turnId:reference.turnId,limit:Infinity}),reference,this.threadId);
   }
   acceptSubmission(submission, turnId, text) {
     const result = {ok:true,sendStatus:'ok',mode:BACKEND,enterAttempts:0,
