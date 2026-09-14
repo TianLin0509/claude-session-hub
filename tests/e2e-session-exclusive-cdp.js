@@ -30,14 +30,16 @@ async function main(){
     for(const kind of ['codex','claude']) {
       const s=await a.c.eval(`ipcRenderer.invoke('create-session',${JSON.stringify({kind,opts:{cwd:workspace,mcpProfile:'none',...(kind==='codex'?{model:'gpt-6-astra',effort:'xhigh'}:{})}})})`);
       ids[kind]=s.id;const key=JSON.stringify(s.id);
+      const inputBar=`.floating-input-bar[data-session-id="${s.id}"]`;
+      await until(kind+' native ready',()=>a.c.eval(`sessions.get(${key})?.nativeRuntime?.connection==='connected'`));
       await until(kind+' row',()=>a.c.eval(`!!document.querySelector('.session-item[data-session-id="${s.id}"]')`));
       await click(a.c,`.session-item[data-session-id="${s.id}"]`);
-      await until(kind+' input',()=>a.c.eval(`!!document.querySelector('.floating-input-box')`));
-      await click(a.c,'.floating-input-box');await a.c.send('Input.insertText',{text:'独占恢复验收 '+kind});
-      await click(a.c,'.floating-input-send');
+      await until(kind+' active input',()=>a.c.eval(`activeSessionId===${key} && !!document.querySelector(${JSON.stringify(inputBar+' .floating-input-box')})`));
+      await click(a.c,inputBar+' .floating-input-box');await a.c.send('Input.insertText',{text:'独占恢复验收 '+kind});
+      await click(a.c,inputBar+' .floating-input-send');
       await until(kind+' completed',()=>a.c.eval(`sessions.get(${key})?.nativeRuntime?.state==='completed'`));
       before[kind]=await a.c.eval(`sessions.get(${key})`);
-      await click(a.c,'.floating-input-box');await a.c.send('Input.insertText',{text:'未发送草稿 '+kind});
+      await click(a.c,inputBar+' .floating-input-box');await a.c.send('Input.insertText',{text:'未发送草稿 '+kind});
       await until(kind+' draft persisted',()=>a.c.eval(`ipcRenderer.invoke('native-draft:read',{sessionId:${key}}).then(r=>r.record?.text==='未发送草稿 ${kind}')`));
       await until(kind+' metadata persisted',()=>Promise.resolve(fs.existsSync(path.join(dataDir,'sessions',s.id+'.json'))));
     }

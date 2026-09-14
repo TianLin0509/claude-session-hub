@@ -45,14 +45,41 @@ test('native aliases prevent reopening through a different Hub card; forks have 
     store.release(fork);store.release(first);
   } finally {store.close();}
 });
+async function childReplies(codes) {
+  const children=codes.map(code=>spawn(process.execPath,['-e',code],{stdio:['pipe','pipe','pipe'],windowsHide:true}));
+  const records=children.map(child=>{
+    const record={child,stderr:''};
+    child.stderr.on('data',data=>{record.stderr+=String(data);});
+    record.exited=new Promise(resolve=>{child.once('exit',resolve);child.once('error',resolve);});
+    return record;
+  });
+  try {
+    const replies=records.map(record=>new Promise((resolve,reject)=>{
+      const {child}=record;
+      const timeout=setTimeout(()=>reject(Error('claim child timed out: '+record.stderr)),15000);
+      const fail=error=>{clearTimeout(timeout);reject(error);};
+      child.once('error',fail);child.stdin.once('error',fail);
+      child.stdout.once('data',data=>{clearTimeout(timeout);resolve(String(data).trim());});
+      child.once('exit',code=>fail(Error('unexpected exit '+code+': '+record.stderr)));
+    }));
+    for(const child of children)child.stdin.write('open');
+    return await Promise.all(replies);
+  } finally {
+    await Promise.all(records.map(async({child,exited})=>{
+      child.stdin.end();
+      // The exit listener was installed at spawn time: an early failure cannot
+      // disappear while another child's result is being awaited.
+      const timeout=setTimeout(()=>child.kill(),3000);
+      try {await exited;} finally {clearTimeout(timeout);}
+    }));
+  }
+}
+test('early child failure preserves stderr and never hangs cleanup',async()=>{
+  await assert.rejects(childReplies(["process.stdin.once('data',()=>{console.error('startup failed');process.exit(42);});"]),/unexpected exit 42: startup failed/);
+});
 test('simultaneous processes cannot both open the same session', async () => {
   const root=directory();
   const code=`const {SessionOpenOwnership}=require(${JSON.stringify(path.resolve(__dirname,'../core/session-open-ownership'))});const s=new SessionOpenOwnership({directory:${JSON.stringify(root)}});process.stdin.once('data',()=>{try{s.claim('race');console.log('won');}catch(e){console.log(e.code);} });process.stdin.resume();`;
-  const children=[0,1].map(()=>spawn(process.execPath,['-e',code],{stdio:['pipe','pipe','pipe'],windowsHide:true}));
-  try {
-    const replies=children.map(child=>new Promise((resolve,reject)=>{child.once('error',reject);child.stdout.once('data',data=>resolve(String(data).trim()));child.once('exit',code=>reject(Error('unexpected exit '+code)));}));
-    for(const child of children)child.stdin.write('open');
-    assert.deepEqual((await Promise.all(replies)).sort(),['SESSION_OCCUPIED','won']);
-  } finally {await Promise.all(children.map(child=>new Promise(resolve=>{child.once('exit',resolve);child.stdin.end();})));}
+  assert.deepEqual((await childReplies([code,code])).sort(),['SESSION_OCCUPIED','won']);
   const store=new SessionOpenOwnership({directory:root});try{store.release(store.claim('race'));}finally{store.close();}
 });
