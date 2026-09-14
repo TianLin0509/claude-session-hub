@@ -113,10 +113,25 @@ class ClaudeNativeSession extends EventEmitter {
     this.reconnecting = false;
     this.reconnectPending = false;
     this.recoveryReady = false;
+    this.backstage = new (require('./claude-backstage').ClaudeBackstage)(this);
+    this.on('item', event => this.backstage.frame(event.message, event.userMessageId));
+    this.on('lifecycle', event => {
+      if (event.type === 'agent-turn-complete') this.backstage.frame(event.result, event.userMessageId);
+      if (event.type === 'submission-accepted') {
+        const record = this.records.get(event.clientSubmissionId);
+        if (record) this.backstage.frame({type:'user', uuid:record.userMessageId, message:{content:record.content}}, record.userMessageId);
+      }
+    });
+    this.on('action-error', message => this.backstage.note('操作失败', message, 'error'));
     if (this.unreconciled) this.runtime.reason = '上次 Claude 提交状态需要核对；不会自动重发';
   }
 
   get pid() { return this.client?.proc?.pid || null; }
+  readBackstage(options) { return this.backstage.read(options); }
+  async prepareBackstageExport() {
+    let page;
+    do { page = this.backstage.read({history:true, limit:1}); await new Promise(resolve => setImmediate(resolve)); } while (page.historyMore);
+  }
   onData(fn) { this.on('data', fn); return { dispose: () => this.off('data', fn) }; }
   print(text) { this.emit('data', sanitizeTerminal(text).replace(/\r?\n/g, '\r\n')); }
   onExit(fn) { this.on('exit', fn); return { dispose: () => this.off('exit', fn) }; }
@@ -535,6 +550,7 @@ class ClaudeNativeSession extends EventEmitter {
     // The engine reports this turn's tokens on the result frame; the cards
     // showed them for every Claude turn before the native transport.
     if (message.usage && typeof message.usage === 'object') record.usage = message.usage;
+    record.result = message;
     const reason = failed ? (message.errors?.join('; ') || message.result || message.subtype) : null;
     this.lifecycle('agent-turn-complete', record, { status, text: record.finalText,
       accepted: true, completedAt, transcriptMessages: [...(record.messages?.values() || [])],
@@ -884,6 +900,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.options = { ...this.options, restoredRuntime: null, fork: false,
         resumeSessionId: this.historyPath() ? this.sessionId : undefined };
       this.client = null; this.ready = null; this.closed = false; this.closePromise = null;
+      if (this.backstage.closed) this.backstage = new (require('./claude-backstage').ClaudeBackstage)(this);
       this.unreconciled = this.recoveryRecords().length > 0;
       this.reconnecting = false;
       await this.start();
@@ -934,6 +951,7 @@ class ClaudeNativeSession extends EventEmitter {
         if (record.status === 'queued' || record.status === 'submitting') record.reject(protocolError('Claude session closed', 'CLAUDE_CLOSED'));
       }
       if (this.client) await this.client.close();
+      this.backstage.close();
       if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
       // A shutdown waiter may attach after the child already crashed (or
       // before startup). Do not wait for another impossible OS exit event.

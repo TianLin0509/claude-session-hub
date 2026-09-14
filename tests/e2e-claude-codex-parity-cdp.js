@@ -8,9 +8,13 @@ const j=JSON.stringify,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   fs.mkdirSync(out,{recursive:true});const report={root,out,fixture:true,checks:[],passed:false};let hub,c;
   fs.mkdirSync(path.join(root,'data'));
   fs.writeFileSync(path.join(root,'data','prepared-projects.json'),JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
+  const exported=path.join(out,'claude-original-export.txt'),entry=path.join(root,'entry.cjs');
+  // Only the OS save-location picker is stubbed; the click, IPC, pagination,
+  // UTF-8 writes and atomic export completion execute the production code.
+  fs.writeFileSync(entry,`const e=require('electron');e.app.setAppPath(${j(path.resolve('.'))});process.chdir(${j(path.resolve('.'))});e.dialog.showSaveDialog=async()=>({canceled:false,filePath:${j(exported)}});e.shell.showItemInFolder=()=>{};require(${j(path.resolve('main-bootstrap.js'))});`);
   const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
   try {
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',label:'Claude Codex parity',extraEnv:{
+    hub=await launchIsolatedHub({entryPath:entry,dataDir:path.join(root,'data'),port,windowMode:'hidden',label:'Claude Codex parity',extraEnv:{
       CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude'),
       CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-parity.js'),AI_HUB_CODEX_BROKER_TEST:'1'}});
     c=await connectFirstPage(hub);await c.send('Page.bringToFront');await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
@@ -24,6 +28,7 @@ const j=JSON.stringify,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     await until('typeof sessions!=="undefined"');
     const s=await c.eval(`ipcRenderer.invoke('create-session',${j({kind:'claude',opts:{cwd:root,model:'claude-opus-5[1m]',effort:'max',mcpProfile:'lean'}})})`),sid=s.id,q=j(sid);
     report.sid=sid;await until(`sessions.get(${q})?.nativeRuntime?.connection==='connected'`);
+    await until(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`,'sidebar session row');
     await click(`.session-item[data-session-id="${sid}"]`);await until('!!document.querySelector(".floating-input-box")');
     assert.equal(await c.eval('currentView'),'card');
     await c.eval(`window.__parity={payloads:[],details:0};const real=ipcRenderer.invoke.bind(ipcRenderer);ipcRenderer.invoke=async(channel,...args)=>{if(channel==='claude-native:tool-result')__parity.details++;const result=await real(channel,...args);if(channel==='parse-session-transcript')__parity.payloads.push(JSON.stringify(result).length);return result;};`);
@@ -35,6 +40,22 @@ const j=JSON.stringify,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     for(let i=0;i<15;i++){samples.push(await c.eval(`(async()=>{const t=performance.now();await ipcRenderer.invoke('get-sessions');return performance.now()-t;})()`));await sleep(40);}
     report.maxIpcMs=Math.max(...samples);assert(report.maxIpcMs<500);
     await click('#btn-backstage');await until('currentView==="pty"');
+    await until('document.querySelector(".codex-backstage")?.dataset.view==="readable" && document.querySelectorAll(".cb-list > *").length>0');
+    assert.equal(await c.eval('document.querySelector(".codex-backstage").getAttribute("aria-label")'),'Claude 后台工作记录');
+    await shot('claude-work-records');
+    await click('.cb-tabs button:nth-child(2)');
+    await until('document.querySelectorAll(".cb-raw-list > *").length>0');
+    await shot('claude-raw-records');
+    await click('.cb-export');
+    await until(`require('fs').existsSync(${j(exported)})`,'completed Claude export');
+    const exportedText=fs.readFileSync(exported,'utf8');
+    assert(exportedText.startsWith('Claude 原始记录'));
+    for(let i=0;i<10;i++)assert(exportedText.includes('FULL-END-'+i));
+    assert(exportedText.length>8000000);
+    report.exportBytes=fs.statSync(exported).size;
+    report.checks.push('real Claude export preserves all 10 large tool outputs and uses the Claude title (OS path picker fixture)');
+    await click('.cb-tabs button:nth-child(3)');
+    report.checks.push('Claude offers the same readable/raw/terminal backstage tabs with provider-correct labels and actual native records');
     assert.equal(await c.eval(`getOrCreateTerminal(${q}).terminal.options.lineHeight`),1.3);
     await until(`getOrCreateTerminal(${q}).terminal.buffer.active.baseY>20`);
     const wheel=await c.eval(`(()=>{const e=getOrCreateTerminal(${q}).container.querySelector('.xterm-viewport'),r=e.getBoundingClientRect();return{x:r.x+Math.min(180,r.width/2),y:r.y+Math.min(220,r.height/2)};})()`);
@@ -50,6 +71,13 @@ const j=JSON.stringify,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     await until(`getOrCreateTerminal(${q})._codexFollowBottom && isTerminalViewportAtBottom(getOrCreateTerminal(${q}))`,'scrolling down reattaches to latest output');
     await click('#btn-backstage');await until('currentView==="card"');
     await until(`sessions.get(${q}).nativeRuntime.state==='completed'`);
+    await until('document.querySelector("#msg-overlay .pill-token")?.textContent.includes("100.0k")');
+    assert.equal(await c.eval('document.querySelectorAll("#msg-overlay .pill-token").length'),1);
+    assert.match(await c.eval('document.querySelector("#msg-overlay .pill-ctx").textContent'),/1% ctx/);
+    assert.match(await c.eval('document.querySelector("#msg-overlay .pill-time").textContent'),/7.8s/);
+    await shot('claude-card-metrics');
+    assert.equal(await c.eval('document.querySelector(".card-session-status-speed").textContent'),'速度 · 标准');
+    report.checks.push('one final card shows 100k cumulative input, separately observed 1% context and 7.8s duration from native result');
     assert.equal(await c.eval('document.querySelector(".floating-input-box").textContent'),'草稿保留，不要发送');
     assert.equal(await c.eval('__parity.details'),0);
     report.maxTranscriptChars=await c.eval('Math.max(...__parity.payloads)');assert(report.maxTranscriptChars<100000);

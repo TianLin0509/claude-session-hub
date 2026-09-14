@@ -48,7 +48,7 @@ test('cards carry the clock, tool duration, model and tokens the Codex cards sho
   assert.equal(assistant.toolCalls[0].startedAt, Date.parse('2026-09-12T10:00:20.000Z'));
   assert.equal(assistant.model, 'claude-opus-5[1m]');
   // Cached reads are real context tokens; the pill would understate without them.
-  assert.deepEqual(assistant.usage, { input_tokens: 100, output_tokens: 5 });
+  assert.deepEqual(assistant.usage, { input_tokens: 100, output_tokens: 5, context_tokens: null });
 });
 
 test('an unstamped frame is timed on arrival, never left without a clock', () => {

@@ -14,8 +14,8 @@ const exportChunkText = text => text.isWellFormed() ? text : '[UTF-16 JSON] '+JS
 
 function registerCodexBackstageIpc(ipcMain, { sessionManager }) {
   function nativeFor(sessionId) {
-    const native = sessionManager.getNativeCodex?.(sessionId);
-    if (!native?.readBackstage) throw new Error('当前会话没有 Codex 后台记录');
+    const native = sessionManager.getNativeCodex?.(sessionId) || sessionManager.getNativeClaude?.(sessionId);
+    if (!native?.readBackstage) throw new Error('当前会话没有原生后台记录');
     return native;
   }
   ipcMain.handle('codex:backstage-read', async (_event, payload = {}) => {
@@ -29,15 +29,16 @@ function registerCodexBackstageIpc(ipcMain, { sessionManager }) {
     let file, handle;
     try {
       const native = nativeFor(payload.sessionId);
+      const provider = sessionManager.getNativeClaude?.(payload.sessionId) === native ? 'Claude' : 'Codex';
       const { dialog, shell } = require('electron');
-      const selected = await dialog.showSaveDialog({ title:'导出 Codex 原始记录',
-        defaultPath:`codex-backstage-${new Date().toISOString().slice(0,10)}.txt`,
+      const selected = await dialog.showSaveDialog({ title:`导出 ${provider} 原始记录`,
+        defaultPath:`${provider.toLowerCase()}-backstage-${new Date().toISOString().slice(0,10)}.txt`,
         filters:[{ name:'文本记录', extensions:['txt'] }] });
       if (selected.canceled || !selected.filePath) return { ok:true, canceled:true };
       await native.prepareBackstageExport?.();
       file = selected.filePath + '.' + randomUUID() + '.partial';
       handle = await fs.promises.open(file, 'wx');
-      await writeAll(handle,'Codex 原始记录（后台采集；已知凭据已脱敏；启用前的 stderr 不可补录）\n跨块的单独 UTF-16 码元以 [UTF-16 JSON] 标记保存，避免编码替换丢失。\n\n');
+      await writeAll(handle,`${provider} 原始记录（后台采集；未采集的历史和 stderr 不可补录）\n跨块的单独 UTF-16 码元以 [UTF-16 JSON] 标记保存，避免编码替换丢失。\n\n`);
       let after = 0, end = null;
       do {
         const page = await native.readBackstage({ mode:'raw', after, limit:16 });

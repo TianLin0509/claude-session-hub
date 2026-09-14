@@ -54,6 +54,9 @@ function bindClaudeNativeSession(manager, id, driver) {
   });
   driver.on('renamed',title=>{const entry=current();if(entry){entry.info.title=title;publish();}});
   driver.on('session-usage',usage=>{if(current())manager.emit('session-usage-snapshot',{sessionId:id,usage});});
+  driver.on('backstage-updated', event => {
+    if (current()) manager.emit('codex-backstage-updated', {sessionId:id, ...event});
+  });
   driver.on('item', event => {
     if (current()) manager.emit('native-agent-item', { ...event, sessionId: id, source: 'claude-stream-json' });
   });

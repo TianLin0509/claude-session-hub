@@ -38,6 +38,7 @@ function sessionEffortLabel(session) {
 
 function sessionSpeedLabel(session) {
   const kind = baseKind(session);
+  if (session?.runtimeBackend === 'claude-stream-json') return require('./session-speed').speedControl(session).tier;
   if (kind === 'claude' || kind === 'deepseek-claude') {
     return session && session.fastMode === false ? 'standard' : 'fast';
   }

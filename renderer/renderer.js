@@ -1999,7 +1999,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       engine: require('../core/native-ui-labels').nativeUiLabel(session),
       focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
     });
-    if (isNativeSession(session) && ['codex','codex-resume'].includes(session.kind)) {
+    if ((isNativeSession(session) && ['codex','codex-resume'].includes(session.kind)) || session.runtimeBackend === 'claude-stream-json') {
       cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
         getSession:() => sessions.get(sessionId),
         renderProse:text => DOMPurify.sanitize(marked.parse(text, {async:false}), {FORBID_TAGS:['img','video','audio','iframe']}),

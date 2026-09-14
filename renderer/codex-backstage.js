@@ -4,7 +4,8 @@ const MAX_ENTRIES = 180;
 function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession, focusComposer, renderProse, onModeChange = () => {} }) {
   const make = (tag, className, text) => { const node = doc.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
   const root = make('section', 'codex-backstage');
-  root.setAttribute('aria-label', 'Codex 后台工作记录');
+  const provider = getSession()?.runtimeBackend === 'claude-stream-json' ? 'Claude' : 'Codex';
+  root.setAttribute('aria-label', provider + ' 后台工作记录');
   root.addEventListener('click', event => event.stopPropagation());
   const toolbar = make('div','cb-toolbar');
   const heading = make('span','cb-heading','›_ 后台');
@@ -81,7 +82,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
     if(isError&&!(last?.status==='failed'||last?.exitCode>0||last?.level==='error'||last?.fields.error))row._details.open=true;
     setText(row._mark,entry.type==='userMessage'?'›':entry.type==='agentMessage'?'✳':isError?'×':entry.type==='diagnostic'?'·':['running','inProgress'].includes(entry.status)?'•':entry.type==='turn'?'—':'✓');
     let title=entry.title;
-    if(entry.type==='agentMessage')title=entry.phase==='final_answer'?'Codex · 回答':'Codex';
+    if(entry.type==='agentMessage')title=entry.phase==='final_answer'?provider+' · 回答':provider;
     if(entry.type==='commandExecution'&&entry.fields.command?.preview)title='$ '+entry.fields.command.preview.split(/\r?\n/)[0].slice(0,140);
     setText(row._title,title);
     const prose=['agentMessage','userMessage'].includes(entry.type);

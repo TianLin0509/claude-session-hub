@@ -59,7 +59,11 @@ rl.on('line',async line=>{
     await new Promise(resolve=>setTimeout(resolve,45));
   }
   if(active!==message)return;
-  await frame({type:'assistant',uuid:randomUUID(),message:{id,role:'assistant',stop_reason:'end_turn',content:[{type:'text',text:body}]}});
-  await frame({type:'result',subtype:'success',is_error:false,uuid:randomUUID(),result:body,terminal_reason:'completed',origin:{kind:'human'}});
+  await frame({type:'assistant',uuid:randomUUID(),message:{id,role:'assistant',model:'claude-opus-5[1m]',
+    usage:{input_tokens:100,cache_read_input_tokens:12400,output_tokens:500},
+    stop_reason:'end_turn',content:[{type:'text',text:body}]}});
+  await frame({type:'result',subtype:'success',is_error:false,uuid:randomUUID(),result:body,terminal_reason:'completed',origin:{kind:'human'},
+    usage:{input_tokens:1000,cache_read_input_tokens:99000,output_tokens:500},duration_ms:7800,
+    modelUsage:{'claude-opus-5[1m]':{contextWindow:1000000}}});
 });
 rl.on('close',()=>{active=null;clearTimeout(questionTimer);clearTimeout(stopTimer);});

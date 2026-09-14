@@ -132,6 +132,7 @@ class ClaudeNativeActivities {
     const interrupted = ['aborted_streaming', 'aborted_tools'].includes(frame.terminal_reason);
     const status = interrupted ? 'interrupted' : frame.is_error || frame.subtype !== 'success' ? 'failed' : 'completed';
     const completed = { ...record, status, completedAt: Date.now(), providerResultId: frame.uuid || null,
+      result: frame,
       finalText: typeof frame.result === 'string' ? frame.result : record.finalText,
       errors: frame.errors || null };
     this.save(completed);
