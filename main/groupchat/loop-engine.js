@@ -59,25 +59,6 @@ function createLoopEngine(deps) {
     const s = sid && sessionManager ? sessionManager.getSession(sid) : null;
     return (s && s.title) || memberId;
   }
-  async function reserveNativeWorkflow(meeting, reservationId, label) {
-    const held = [];
-    try {
-      for (const sid of new Set((meeting?.subSessions || []).filter(Boolean))) {
-        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid) || sessionManager?.getNativeClaude?.(sid);
-        if (!native || typeof native.reserveWorkflow !== 'function') continue;
-        await native.reserveWorkflow(reservationId, label);
-        held.push(native);
-      }
-      return held;
-    } catch (error) {
-      await Promise.allSettled(held.map(native => native.releaseWorkflow(reservationId)));
-      throw error;
-    }
-  }
-  async function releaseNativeWorkflow(held, reservationId) {
-    const results = await Promise.allSettled((held || []).map(native => native.releaseWorkflow(reservationId)));
-    for (const result of results) if (result.status === 'rejected') logError('[workflow-engine] release Codex control reservation failed:', result.reason);
-  }
   function textFrom(results, sid) {
     const r = (results || []).find((x) => x && x.sid === sid);
     return r ? (r.text || '') : '';
@@ -668,8 +649,6 @@ function createLoopEngine(deps) {
     if (!state.goal) state.goal = String(userInput || '').trim();
     const entry = { abort: false, mode: 'serial', runId: state.runId, startedAt: Date.now() };
     running.set(meetingId, entry);
-    const reservationId = `serial:${meetingId}:${state.runId}`;
-    let heldNative = [];
     const progress = (extra = {}) => {
       try {
         sendToRenderer('workflow:progress', {
@@ -689,7 +668,6 @@ function createLoopEngine(deps) {
       }
     };
     try {
-      heldNative = await reserveNativeWorkflow(meeting, reservationId, '串行工作流');
       persistSerial(meetingId, state);
       progress({ stage: 'start' });
       while (state.status === 'running' && state.nextStepIndex < steps.length) {
@@ -805,7 +783,6 @@ function createLoopEngine(deps) {
       progress({ stage: 'paused', error: state.lastError });
       return state;
     } finally {
-      await releaseNativeWorkflow(heldNative, reservationId);
       if (running.get(meetingId) === entry) running.delete(meetingId);
     }
   }
@@ -815,8 +792,6 @@ function createLoopEngine(deps) {
     let entry = null;
     let state = null;
     let config = null;
-    let heldNative = [];
-    let reservationId = null;
     try {
       const meeting = meetingManager.getMeeting(meetingId);
       if (!meeting) { logger.log('[loop-engine] meeting not found ' + meetingId); return null; }
@@ -875,8 +850,6 @@ function createLoopEngine(deps) {
       state.currentTurnNum = state.currentTurnNum || null;
       entry = { abort: false, mode: 'loop', runId: state.runId, startedAt: Date.now() };
       running.set(meetingId, entry);
-      reservationId = `loop:${meetingId}:${state.runId}`;
-      heldNative = await reserveNativeWorkflow(meeting, reservationId, '开发循环工作流');
       // v2 migration: a legacy run that already entered polishing has passed its gate.
       // Do not revive the old self-refilling suggestion loop after restart.
       if (state.phase === 'polishing' && !config.polish.enabled) {
@@ -1340,7 +1313,6 @@ function createLoopEngine(deps) {
       catch (progressError) { logError('[loop-engine] fatal progress delivery failed:', progressError); }
       return state;
     } finally {
-      await releaseNativeWorkflow(heldNative, reservationId);
       if (entry && running.get(meetingId) === entry) running.delete(meetingId);
     }
   }
@@ -1454,8 +1426,6 @@ function createLoopEngine(deps) {
 
     const entry = { abort: false, mode: 'kickoff', runId: runId('kickoff'), startedAt: Date.now() };
     running.set(meetingId, entry);
-    const reservationId = `kickoff:${meetingId}:${entry.runId}`;
-    let heldNative = [];
     const emit = (stage, extra) => {
       try { sendToRenderer('loop:progress', Object.assign({ meetingId, kind: 'kickoff', stage, status: 'running' }, extra || {})); }
       catch (error) { logError('[loop-engine] kickoff progress delivery failed:', error); }
@@ -1470,7 +1440,6 @@ function createLoopEngine(deps) {
       });
     };
     try {
-      heldNative = await reserveNativeWorkflow(meeting, reservationId, '开发开题流程');
       // 派发前先看一眼：报告可能已经在了（丢事件、上次被停住、用户手动放好）。
       // 已经能接收就别再派一次开题 —— 那等于让它把同一份任务书重写一遍。
       const preAccepted = checkDeliveryOnce(meetingId, dir, 0);
@@ -1615,7 +1584,6 @@ function createLoopEngine(deps) {
       saveKickoff({ kickoff: { status: 'failed', lastReason: (error && error.message) || 'kickoff_error', updatedAt: Date.now() } });
       return { ok: false, reason: (error && error.message) || 'kickoff_error' };
     } finally {
-      await releaseNativeWorkflow(heldNative, reservationId);
       if (running.get(meetingId) === entry) running.delete(meetingId);
     }
   }

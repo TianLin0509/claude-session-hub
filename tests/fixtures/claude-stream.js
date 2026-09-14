@@ -4,7 +4,8 @@ const readline = require('readline');
 const { randomUUID } = require('crypto');
 const mode = process.argv.find(arg => arg.startsWith('--fixture='))?.slice(10) || 'normal';
 let output = Promise.resolve();
-let sessionId = process.argv[process.argv.indexOf('--session-id') + 1] || randomUUID();
+const argValue = flag => { const index=process.argv.indexOf(flag); return index<0 ? undefined : process.argv[index+1]; };
+let sessionId = argValue('--session-id') || argValue('--resume') || randomUUID();
 let lastUser = null;
 if (process.env.CLAUDE_HUB_FIXTURE_CONFIG_DIR) {
   if (!process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Config capture requires isolated Hub data');
@@ -42,7 +43,7 @@ const flagSettings = (() => {
   if (at < 0) return {};
   try { return JSON.parse(require('node:fs').readFileSync(process.argv[at + 1], 'utf8')); } catch { return {}; }
 })();
-let permissionMode = process.argv[process.argv.indexOf('--permission-mode') + 1] || 'default';
+let permissionMode = argValue('--permission-mode') || 'default';
 
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async line => {

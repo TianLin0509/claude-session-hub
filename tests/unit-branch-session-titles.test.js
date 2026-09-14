@@ -12,6 +12,18 @@ const {
   readCodexForkedFromId,
 } = require('../core/branch-session-titles.js');
 
+test('boot title repair leaves foreign-owned records and their timestamps untouched', () => {
+  const session = {hubId:'foreign',kind:'codex',title:'Codex 2 · 分支',branchSourceSessionId:'parent',updatedAt:5};
+  const state = {sessions:[{hubId:'parent',title:'Parent'},session]};
+  const original = JSON.stringify(session), writes = [];
+  healPersistedBranchSessionTitles(state, {
+    canEditSession: row => row.hubId !== 'foreign',
+    sessionStore:{saveSessionFile: (...args)=>writes.push(args)},
+  });
+  assert.equal(JSON.stringify(session),original);
+  assert.equal(writes.length,0);
+});
+
 test('the title currently visible in renderer wins over stale backend metadata', () => {
   assert.deepEqual(buildBranchSessionTitle({
     rendererTitle: '用户看到的父会话名',

@@ -284,12 +284,10 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const unstarted = opts.nativeRuntime?.connection === 'unstarted' && opts.nativeRuntime?.lazyStart === true
     && !records.length && !opts.forkCCSessionId && !!opts.resumeCCSessionId
     && !require('./claude-native-history').findNativeClaudeHistory(opts.resumeCCSessionId, { cwd, env });
-  const shared = sharedCodexRuntimeEnabled({...process.env,CLAUDE_HUB_CODEX_SHARED_RUNTIME:process.env.CLAUDE_HUB_CLAUDE_SHARED_RUNTIME || process.env.CLAUDE_HUB_CODEX_SHARED_RUNTIME});
-  const Driver = shared ? require('./claude-shared-session').ClaudeSharedSession : ClaudeNativeSession;
-  return new Driver({ id, kind, cwd, env, launchArgs, settingsFile, hubDataDir, journalSessionId:id,
+  return new ClaudeNativeSession({ id, kind, cwd, env, launchArgs, settingsFile, hubDataDir, journalSessionId:id,
     hubPid:process.pid,hubVersion:require('../package.json').version,
     fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts),
-    ownership: true, nativeProvider: 'claude', lazyStart: opts.lazyStart === true,
+    ownership: true, exclusiveSession:true, nativeProvider: 'claude', lazyStart: opts.lazyStart === true,
     historyTitle: opts.userRenamed ? opts.title : null,
     ...(unstarted ? { sessionId: opts.resumeCCSessionId } : {}),
     resumeSessionId: unstarted ? null : (opts.forkCCSessionId || opts.resumeCCSessionId), fork: !!opts.forkCCSessionId,
@@ -1008,16 +1006,7 @@ function buildNativeCodexOptions(info, opts, env) {
   };
 }
 
-function sharedCodexRuntimeEnabled(env = process.env) {
-  const value = String(env.CLAUDE_HUB_CODEX_SHARED_RUNTIME || '').trim().toLowerCase();
-  if (['0','false','off'].includes(value)) return false;
-  if (['1','true','on'].includes(value)) return true;
-  if (env.CLAUDE_HUB_E2E === '1') return false;
-  // Production runs inside Electron. Plain Node unit tests keep the direct
-  // session unless they explicitly opt in, so existing injected clients stay
-  // deterministic while isolated Electron E2E covers the shared path.
-  return !!process.versions.electron;
-}
+function sharedCodexRuntimeEnabled() { return false; }
 
 class SessionManager extends EventEmitter {
   sessions = new Map();
@@ -1058,7 +1047,74 @@ class SessionManager extends EventEmitter {
   //   codexForkSid:       when set + kind=='codex', runs `codex fork <sid>` into a fresh task
   //   geminiChatId:       Gemini 8charId from chats/session-*.json (T8 new, used for index lookup)
   //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
+  _openOwners() {
+    // Plain Node unit fixtures never write the user's session library.
+    if (!process.versions.electron && !process.env.CLAUDE_HUB_DATA_DIR) return null;
+    return this.openOwners ||= new (require('./session-open-ownership').SessionOpenOwnership)();
+  }
+
+  _claimNativeOpenIdentity(id, kind, opts, env) {
+    const lease = this.openLeases?.get(id);
+    if (!lease) return;
+    this.openOwners.add(lease, require('./session-open-ownership').nativeKeys(kind, opts, env));
+    lease.env = env;
+    if (opts.codexForkSid || opts.forkCCSessionId) lease.forkSource = opts.codexForkSid || opts.forkCCSessionId;
+  }
+
+  _refreshOpenIdentity(id) {
+    const lease = this.openLeases?.get(id), entry = this.sessions.get(id);
+    if (!lease || !entry) return;
+    const info = entry.info;
+    this._claimNativeOpenIdentity(id, info.kind, {...info,
+      codexSid:info.codexSid === lease.forkSource ? null : info.codexSid,
+      resumeCCSessionId:info.ccSessionId === lease.forkSource ? null : info.ccSessionId}, lease.env);
+    this.openOwners.bindPid(lease, entry.pty?.pid);
+  }
+
+  _releaseOpenSession(id, info) {
+    const lease = this.openLeases?.get(id);
+    if (!lease) return;
+    // Commit the last authoritative identity/history settings before another
+    // Hub can acquire the session. A persistence failure keeps it unavailable.
+    if (info) {
+      const store = require('./session-store');
+      store.cancelDirty(id);
+      store.saveSessionFile(id, {...info, updatedAt:Date.now()});
+    }
+    this.openOwners.release(lease);
+    this.openLeases.delete(id);
+  }
+
+  reserveSessionOpen(id) {
+    if (this.sessions.has(id)) throw new Error('该会话已在本 Hub 打开，请返回原会话');
+    const owners = this._openOwners();
+    const lease = owners?.claim(id);
+    if (lease) { this.openLeases ||= new Map(); this.openLeases.set(id, lease); }
+    return lease?.nonce;
+  }
+
+  cancelReservedOpen(id, nonce) {
+    if (nonce && this.openLeases?.get(id)?.nonce===nonce && !this.sessions.has(id)) this._releaseOpenSession(id);
+  }
+
   createSession(kind = 'powershell', opts = {}) {
+    const id = opts.id || uuid();
+    if (opts._openLeaseNonce) {
+      if (this.sessions.has(id) || this.openLeases?.get(id)?.nonce!==opts._openLeaseNonce) throw new Error('会话打开预约已失效');
+    } else this.reserveSessionOpen(id);
+    const lease = this.openLeases?.get(id);
+    try {
+      if (lease) require('./session-store').resumeSessionWrites(id);
+      return this._createSession(kind, {...opts, id});
+    }
+    catch (error) {
+      if (!this.sessions.has(id)) this._releaseOpenSession(id);
+      else this.closeSession(id);
+      throw error;
+    }
+  }
+
+  _createSession(kind = 'powershell', opts = {}) {
     if (this._isShuttingDown) {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
@@ -1338,16 +1394,14 @@ class SessionManager extends EventEmitter {
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
     }
-    // The web bridge must never attach to an already-running ordinary Codex
-    // broker, whose loaded code and lifecycle belong to other Hub sessions.
-    const CodexSessionClass = isCodex && !webRoute && sharedCodexRuntimeEnabled(sessionEnv)
-      ? require('./codex-shared-session').CodexSharedSession
-      : require('./codex-native-session').CodexNativeSession;
+    // Every native driver is owned directly by this Hub; no cross-Hub broker.
+    const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
+    this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
     const ptyProcess = isAcp
       ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isCodex
-      ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,restoredRuntime:opts.nativeRuntime,
+      ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
         hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
         lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
@@ -1650,7 +1704,10 @@ class SessionManager extends EventEmitter {
       if (entry && entry.pty === ptyProcess && entry.terminalOutputRewriter) {
         try { deliverTerminalData(entry.terminalOutputRewriter.flush()); } catch {}
       }
-      this._handlePtyExit(id, ptyProcess, exitInfo);
+      Promise.resolve(this._handlePtyExit(id, ptyProcess, exitInfo)).catch(error => {
+        console.error('[session-release] history flush failed; ownership retained:', error);
+        ptyProcess.emit?.('action-error', '历史保存失败，尚未释放会话：' + error.message);
+      });
     });
 
     if (isCodex || isAcp) {
@@ -1668,14 +1725,6 @@ class SessionManager extends EventEmitter {
         if (runtime.completedAt) info.lastCompletedAt = runtime.completedAt;
         publish();
       });
-      if (isCodex) ptyProcess.on('control', control => {
-        info.nativeSharedControl = control;
-        info.codexSharedControl = control;
-        publish();
-      });
-      if (isCodex) ptyProcess.on('locate-request', () => {
-        this.emit('codex-locate-request', { sessionId:id });
-      });
       ptyProcess.on('bound', bound => {
         if (isAcp) {
           info.acpSid = bound.threadId;
@@ -1685,6 +1734,7 @@ class SessionManager extends EventEmitter {
             info.effort = bound.configOptions.find(o => o.category === 'thought_level')?.currentValue || null;
           }
         } else info.codexSid = bound.threadId;
+        this._refreshOpenIdentity(id);
         if (bound.cwd) info.cwd = bound.cwd;
         if (Object.hasOwn(bound, 'path')) info.transcriptPath = bound.path;
         if (bound.model) info.currentModel = {id:bound.model,displayName:bound.model};
@@ -1914,6 +1964,7 @@ class SessionManager extends EventEmitter {
       }
     }
 
+    this._refreshOpenIdentity(id);
     return { ...info };
   }
 
@@ -1931,6 +1982,13 @@ class SessionManager extends EventEmitter {
       }
       return false;
     }
+    entry.confirmedExit = exitInfo || {};
+    if (this.openLeases?.has(sessionId) && !entry.openReleaseReady) {
+      return require('./session-store').flushSessionForRelease(sessionId, entry.info).then(() => {
+        entry.openReleaseReady = true;
+        return this._handlePtyExit(sessionId, ptyProcess, exitInfo);
+      });
+    }
     const meetingId = entry.info ? entry.info.meetingId : null;
     const wasSuspended = !!entry.suspendRequestedAt;
     const dormantInfo = wasSuspended
@@ -1942,6 +2000,7 @@ class SessionManager extends EventEmitter {
       }
       : null;
     if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();
+    this._releaseOpenSession(sessionId);
     this.sessions.delete(sessionId);
     // App shutdown is process cleanup, not a user request to delete or suspend
     // a logical session. Preserve meeting membership and persisted cards; the
@@ -1987,10 +2046,12 @@ class SessionManager extends EventEmitter {
     for (const t of session.pendingTimers) clearTimeout(t);
     if (!session.pty) {
       if (session.terminalSnapshot) session.terminalSnapshot.dispose();
+      this._releaseOpenSession(sessionId, session.info);
       this.sessions.delete(sessionId);
       this.onSessionClosed(sessionId, null, { noPty: true, requested: true });
       return;
     }
+    if (session.confirmedExit) return this._handlePtyExit(sessionId, session.pty, session.confirmedExit);
     session.pty.kill();
     // Do NOT delete from this.sessions here — the onExit handler does it.
     // The guard in onExit (entry.pty !== ptyProcess) requires the entry to
@@ -2004,6 +2065,12 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (session.confirmedExit) {
+      session.suspendRequestedAt ||= Date.now();
+      session.suspendReason = options.reason || 'user-close';
+      return Promise.resolve(this._handlePtyExit(sessionId,session.pty,session.confirmedExit))
+        .then(()=>({ok:true,sessionId,action:'suspended',recoverable:true}),error=>({ok:false,error:'history-save-failed',message:error.message}));
     }
     if (!supportsRecoverableSuspend(session.info)) {
       this.closeSession(sessionId);
@@ -2214,6 +2281,7 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session || !fields || typeof fields !== 'object') return undefined;
     Object.assign(session.info, fields);
+    this._refreshOpenIdentity(sessionId);
     this.emit('session-updated', this._toPublic(session.info));
     return { ...session.info };
   }
@@ -2798,6 +2866,7 @@ class SessionManager extends EventEmitter {
         }
         if (!session.pty) {
           if (session.terminalSnapshot) session.terminalSnapshot.dispose();
+          this._releaseOpenSession(sessionId, session.info);
           this.sessions.delete(sessionId);
           this._shutdownDrainedSessions.set(sessionId, {
             meetingId: session.info && session.info.meetingId || null,
@@ -2819,7 +2888,8 @@ class SessionManager extends EventEmitter {
       for (const [sessionId, session] of entries) {
         if (!session.pty) continue;
         try {
-          session.pty.kill();
+          if (session.confirmedExit) await this._handlePtyExit(sessionId, session.pty, session.confirmedExit);
+          else session.pty.kill();
         } catch (error) {
           // Do not pretend this PTY is drained. Its already-registered onExit
           // waiter remains authoritative and prevents unsafe teardown.

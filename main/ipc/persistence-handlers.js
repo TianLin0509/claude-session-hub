@@ -172,6 +172,42 @@ function handlePersistSessions(list, meetingList, deps) {
   const previousSessionsById = new Map(
     (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
   );
+  // Closed copies in another Hub are navigation entries, not writers.
+  // Keep unchanged entries without disk polling. Explicit edits and resume read
+  // the current file under ownership protection instead of rewriting snapshots.
+  const owners = deps.sessionManager?._openOwners?.();
+  const uiFields = ['title','userRenamed','pinned','bottomed','completionNotificationEnabled','_connectionIssueAck'];
+  const uiSnapshots = deps.sessionManager ? (deps.sessionManager._persistedUiInputs ||= new Map()) : new Map();
+  let closedMetadataChanges = 0;
+
+  if (owners) list = list.map(session => {
+    if (!session?.hubId || deps.sessionManager.getSession(session.hubId)) return session;
+    const lastInput = uiSnapshots.get(session.hubId) || previousSessionsById.get(session.hubId) || {};
+    const edits = {};
+    for (const field of uiFields) if (Object.hasOwn(session,field) && !isDeepStrictEqual(session[field],lastInput[field])) edits[field]=session[field];
+    const accept = value => {uiSnapshots.set(session.hubId, Object.fromEntries(uiFields.map(field=>[field,session[field]])));return value;};
+    const previous = previousSessionsById.get(session.hubId);
+    if (previous && !Object.keys(edits).length) {
+      sharedViewerIds.add(session.hubId);
+      return accept({ ...previous });
+    }
+    const owner = owners.owner(session.hubId);
+    const saved = sessionStore.loadSessionFile(session.hubId,{strict:true});
+    if (owner && owner.pid !== process.pid) {
+      sharedViewerIds.add(session.hubId);
+      return accept(saved || session);
+    }
+    if (!saved) return accept(session);
+    sharedViewerIds.add(session.hubId);
+    if (!Object.keys(edits).length) return accept(saved);
+    return owners.editClosed(session.hubId, () => {
+      const latest=sessionStore.loadSessionFile(session.hubId,{strict:true}) || saved;
+      const next={...latest,...edits,updatedAt:Date.now()};
+      sessionStore.saveSessionFile(session.hubId,next);
+      closedMetadataChanges++;
+      return accept(next);
+    });
+  });
   mergeResumeMetaFields(list, previousSessions);
   require('../../core/session-meeting-membership.js').restoreMissingMeetingIds(
     list, meetingManager.getAllMeetings?.() || []);
@@ -195,17 +231,28 @@ function handlePersistSessions(list, meetingList, deps) {
   }
 
   const nowTs = Date.now();
-  let changedSessions = 0;
+  let changedSessions = closedMetadataChanges;
   let changedMeetings = 0;
   let removedEntities = 0;
 
   const newSessionIds = new Set(list.map(session => session && session.hubId).filter(Boolean));
   for (const oldId of getLastPersistedSessionIds()) {
     if (!newSessionIds.has(oldId)) {
-      stateStore.markRemovedSession(oldId);
-      sessionStore.deleteSessionFile(oldId);
-      sessionStore.cancelDirty(oldId);
-      removedEntities += 1;
+      const remove = () => {
+        stateStore.markRemovedSession(oldId);
+        sessionStore.deleteSessionFile(oldId);
+        sessionStore.cancelDirty(oldId);
+        removedEntities += 1;
+      };
+      try {
+        if (owners) owners.editSessions([oldId], remove, { allowOwn: true });
+        else remove();
+      } catch (error) {
+        if (error.code !== 'SESSION_OCCUPIED') throw error;
+        const saved = sessionStore.loadSessionFile(oldId,{strict:true}) || previousSessionsById.get(oldId);
+        sharedViewerIds.add(oldId);
+        if (saved) { list.push(saved); newSessionIds.add(oldId); }
+      }
     }
   }
   setLastPersistedSessionIds(newSessionIds);
@@ -296,7 +343,11 @@ function registerPersistenceIpc(ipcMain, deps) {
   }));
 
   ipcMain.on('persist-sessions', (_e, list, meetingList) => {
-    handlePersistSessions(list, meetingList, deps);
+    try { handlePersistSessions(list, meetingList, deps); }
+    catch(error) {
+      console.error('[session-persistence] save rejected:',error);
+      _e.sender?.send('session-persistence-error', {message:error.message});
+    }
   });
 }
 

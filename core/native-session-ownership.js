@@ -16,15 +16,17 @@ function ownershipDatabase(options){
   const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(file);
   try{db.exec('PRAGMA busy_timeout=100; CREATE TABLE IF NOT EXISTS owners (thread TEXT PRIMARY KEY, hub_pid INTEGER NOT NULL, server_pid INTEGER, session TEXT, nonce TEXT NOT NULL)');}
   catch(error){db.close();throw error;}
+  db.exec('CREATE TABLE IF NOT EXISTS owner_birth (thread TEXT PRIMARY KEY, nonce TEXT NOT NULL, observed_at INTEGER NOT NULL)');
   return {db,file};
 }
 function claimThread(options,threadId,serverPid){
   const {db,file}=ownershipDatabase(options),nonce=randomUUID();
   try{
     db.exec('BEGIN IMMEDIATE');
-    const previous=db.prepare('SELECT * FROM owners WHERE thread=?').get(threadId);
-    if(previous && (alive(previous.hub_pid)||alive(previous.server_pid)))throw new Error('该原生会话仍由另一个进程持有，请在原会话结束后恢复');
+    const previous=db.prepare('SELECT owners.*, owner_birth.observed_at FROM owners LEFT JOIN owner_birth ON owners.thread=owner_birth.thread AND owners.nonce=owner_birth.nonce WHERE owners.thread=?').get(threadId);
+    if(previous && (require('./owned-process').matches(previous.hub_pid,previous.observed_at)||require('./owned-process').matches(previous.server_pid,previous.observed_at)))throw new Error('该原生会话仍由另一个进程持有，请在原会话结束后恢复');
     db.prepare('INSERT OR REPLACE INTO owners VALUES (?,?,?,?,?)').run(threadId,process.pid,serverPid || null,options.id || null,nonce);
+    db.prepare('INSERT OR REPLACE INTO owner_birth VALUES (?,?,?)').run(threadId,nonce,Date.now());
     db.exec('COMMIT');return {file,threadId,nonce};
   }finally{db.close();}
 }
@@ -37,9 +39,11 @@ function releaseThread(lease){
 function bindServerPid(lease,serverPid){
   const {DatabaseSync}=require('node:sqlite'),db=new DatabaseSync(lease.file);
   try{
-    db.exec('PRAGMA busy_timeout=100');
+    db.exec('PRAGMA busy_timeout=100; BEGIN IMMEDIATE');
     const result=db.prepare('UPDATE owners SET server_pid=? WHERE thread=? AND nonce=?').run(serverPid,lease.threadId,lease.nonce);
+    db.prepare('UPDATE owner_birth SET observed_at=? WHERE thread=? AND nonce=?').run(Date.now(),lease.threadId,lease.nonce);
     if(result.changes!==1)throw new Error('原生会话写入权已经变化');
+    db.exec('COMMIT');
   }finally{db.close();}
 }
 function getJson(port,url){return new Promise((resolve,reject)=>{
@@ -119,6 +123,8 @@ async function assertNoOtherHubOwner(options,threadId,readSessions=readOtherHubS
     const pid=Number(name.slice(0,-5));if(pid===process.pid || !alive(pid))continue;
     let control;try{control=JSON.parse(fs.readFileSync(path.join(dir,name),'utf8'));}catch(e){throw new Error('旧 Hub 接管记录不可读，暂不能恢复该会话');}
     if(control.pid!==pid)throw new Error('旧 Hub 进程身份不匹配，暂不能恢复该会话');
+    // New Hubs coordinate opens atomically; only older windows need probing.
+    if (options.exclusiveSession && control.sessionExclusiveVersion === 1) { checkedPids.push(pid); continue; }
     const rows=await readSessions(control);
     checkedPids.push(pid);
     const owner=rows.find(s=>!(options.sharedBroker && s.sharedRuntime===true) && (options.nativeProvider==='claude'

@@ -2926,9 +2926,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const next = store.saveSchedule({
       ...previous,
       enabled: input.enabled === true,
-      keepAliveOnClose: typeof input.keepAliveOnClose === 'boolean'
-        ? input.keepAliveOnClose
-        : previous.keepAliveOnClose !== false,
+      keepAliveOnClose: false,
       decisionTime: /^\d{2}:\d{2}$/.test(String(input.decisionTime || '')) ? input.decisionTime : (previous.decisionTime || '08:30'),
       decisionCutoff: /^\d{2}:\d{2}$/.test(String(input.decisionCutoff || '')) ? input.decisionCutoff : (previous.decisionCutoff || '09:15'),
       executionTime: /^\d{2}:\d{2}$/.test(String(input.executionTime || '')) ? input.executionTime : (previous.executionTime || '09:35'),

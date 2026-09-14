@@ -5,7 +5,6 @@ const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
-const { createCodexSharedStatus } = require('./codex-shared-status.js');
 const { createCodexBackstage } = require('./codex-backstage.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -736,26 +735,14 @@ const operationsReviewModalEl = document.getElementById('operations-review-modal
 if (operationsReviewModalEl && operationsReviewModalEl.parentElement === terminalPanelEl) {
   document.body.appendChild(operationsReviewModalEl);
 }
-const codexSharedStatus = createCodexSharedStatus({
-  document,
-  invoke:(channel, payload) => ipcRenderer.invoke(channel, payload),
-  getSession:sessionId => sessions.get(sessionId),
-  onControlChanged:session => {
-    codexSharedStatus.update(session);
-    renderSessionList();
-    updateFloatingBarState();
-  },
-});
-terminalPanelEl.prepend(codexSharedStatus.element);
+
 
 // Spec 2 preserve helper — both showTerminal AND session-closed handler clear
 // terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
 // notification toggle, msg-overlay) declared statically in index.html. Without preserve they vanish forever
 // after the first session close → no card view + no view toggle button.
 function preserveAndClearTerminalPanel() {
-  codexSharedStatus.updateNotice.collapse();
   const preserved = [
-    document.getElementById('codex-shared-status'),
     document.getElementById('msg-overlay'),
     document.getElementById('card-session-status'),
     document.getElementById('card-question-nav'),
@@ -1694,8 +1681,7 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   titleSpan.textContent = session.title;
   // title 属性刻意留空：HTML tooltip 会往上找祖先，空着才轮得到 .terminal-crumb
   // 那条「完整 cwd」。重命名这件事改用 aria-label + hover 虚下划线表达。
-  const sharedViewer = session.codexSharedControl?.shared && session.codexSharedControl.role !== 'controller';
-  const titleReadOnly = session.readOnly || sharedViewer;
+  const titleReadOnly = session.readOnly;
   titleSpan.setAttribute('aria-label', titleReadOnly ? '同步查看会话' : `${session.title} · 点击重命名`);
   if (titleReadOnly) titleSpan.classList.add('is-readonly');
   if (!titleReadOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
@@ -1974,8 +1960,6 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // T6：舞台不再自己画头部 —— 面包屑和四个动作都在窗口顶部那条常驻工具栏上。
   // 嵌入模式（初心投研把同一套 xterm 挂到别的容器里）没有工具栏可填，跳过。
   if (!embedded) paintAppToolbarForSession(sessionId, session, cached);
-  codexSharedStatus.update(embedded ? null : session);
-  if (!embedded) terminalPanelEl.classList.toggle('shared-control-visible', !codexSharedStatus.element.hidden);
 
   // 实时量（ctx% · N tok · ⏱）仍然是终端卡右上角的 10px 覆盖层。
   // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
@@ -4413,7 +4397,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   secondaryActions.append(bridgeToolbar, startActions);
   if (termContainer.closest('.terminal-panel') === terminalPanelEl) {
     composer.classList.add('has-backend-update-notice');
-    secondaryActions.appendChild(codexSharedStatus.updateNotice.element);
   }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
   const voiceInput = require('./voice-input').attachVoiceInput({
@@ -4477,8 +4460,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     attachNativeDraft(sessionId, inputBox);
     codexControls.update(session);
     nativeControls.update(session);
-    const sharedViewer = session.codexSharedControl?.shared && session.codexSharedControl.role !== 'controller';
-    bar.dataset.sharedRole = sharedViewer ? 'viewer' : 'controller';
+
     const runtime = deriveSessionRuntimeStatus(session, {
       now,
       isRunning: isSessionCardWorking(session),
@@ -4520,7 +4502,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
     // 停止键沿用既有的中断按钮，判据也沿用既有那条：PTY 字节活动不足以
     // 给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
-    const canStop = !sharedViewer && status.canStop && composerStopAllowed(session, status.runtime);
+    const canStop = status.canStop && composerStopAllowed(session, status.runtime);
     stopBtn.classList.toggle('visible', canStop);
     stopBtn.disabled = session.nativeRuntime?.cancellation?.status === 'pending';
     sendBtn.hidden = canStop;
@@ -4539,7 +4521,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       modelChip.title = webRoute
         ? '通过 ChatGPT 网页回答，本地 Codex 执行工具。点击调整网页档位或打开专用设置。'
         : `${rail.model.id || rail.model.label} — 点击切换模型`;
-      modelChip.disabled = !!sharedViewer;
+      modelChip.disabled = false;
       const logoClass = `composer-model-logo ${modelClass(rail.model.id)}`.trim();
       if (modelChipLogo.className !== logoClass) modelChipLogo.className = logoClass;
       const initial = (rail.model.label || '?').trim().charAt(0).toUpperCase();
@@ -4557,7 +4539,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       thinkingChip.title = webRoute ? '思考强度随网页档位变化；点击选择 Medium、High、Pro 等档位，下一轮生效。' : rail.thinking.interactive
         ? `思考档 ${rail.thinking.label} · 可选 ${rail.thinking.options.join(' / ')}（与模型在同一面板里选）`
         : `思考档 ${rail.thinking.label} · 该 CLI 不支持会话内改档`;
-      thinkingChip.disabled = !!sharedViewer;
+      thinkingChip.disabled = false;
     }
 
     const speed = speedControl(session,window.WorkspaceController?.codexModelTuning(session?.currentModel?.id));
@@ -4575,11 +4557,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ctxRing.setAttribute('aria-label', rail.context.ariaLabel);
     }
 
-    sendBtn.disabled = !!sharedViewer;
-    sendBtn.title = sharedViewer ? '当前由另一窗口操作；空闲后点击上方“在此操作”'
-      : '发送 (Enter) · Shift+Enter 换行';
-    inputBox.setAttribute('aria-description', sharedViewer ? '同步查看状态；可以准备草稿，取得操作权后才能发送' : '');
-    sendHint.hidden = canStop || sharedViewer || !readContenteditablePlainText(inputBox).trim();
+    sendBtn.disabled = false;
+    sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
   }
   bar._paintComposer = paintComposer;
   paintComposer(sessions.get(sessionId));
@@ -4614,11 +4593,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   function sendInput() {
     const userText = readContenteditablePlainText(inputBox);
     if (!userText || !userText.trim()) return;
-    const shared = sessions.get(sessionId)?.codexSharedControl;
-    if (shared?.shared && shared.role !== 'controller') {
-      commandFeedback.show('同步查看', shared.transferReason || '当前由另一窗口操作；请在空闲后点击“在此操作”', true);
-      return;
-    }
     const acpSession=sessions.get(sessionId);
     if(acpSession?.runtimeBackend==='acp') {
       try {const {imagePaths,validateImages}=require('../core/acp-attachments');
@@ -4938,23 +4912,17 @@ function updateCardSessionStatus(session) {
 
 function updateFloatingBarState() {
   if (!activeSessionId) {
-    codexSharedStatus.update(null);
-    terminalPanelEl.classList.remove('shared-control-visible');
     updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   const s = sessions.get(activeSessionId);
   if (!s) {
-    codexSharedStatus.update(null);
-    terminalPanelEl.classList.remove('shared-control-visible');
     updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   terminalCache.get(activeSessionId)?._codexBackstage?.updateStatus();
-  codexSharedStatus.update(s);
-  terminalPanelEl.classList.toggle('shared-control-visible', !codexSharedStatus.element.hidden);
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
@@ -5178,7 +5146,20 @@ function startRename(sessionId, titleSpan) {
 }
 
 // --- Session selection ---
+let sessionOpenIntent = 0;
+ipcRenderer.on('session-persistence-error', (_event, error) => {
+  require('./ui-feedback').showHubAlert('会话信息未保存：' + error.message);
+});
 async function selectSession(id, opts = {}) {
+  const intent = ++sessionOpenIntent;
+  if (sessions.get(id)?.status === 'dormant') {
+    const opening = await ipcRenderer.invoke('session:open-status', id);
+    if (intent !== sessionOpenIntent) return;
+    if (!opening.available) {
+      require('./ui-feedback').showHubAlert(opening.message);
+      return;
+    }
+  }
   const reuseCardHistory = activeSessionId === id && !activeMeetingId && currentView === 'card'
     && terminalPanelEl.style.display !== 'none' && !terminalPanelEl.classList.contains('home-active');
   void savePreviewState({ nonBlocking: true });

@@ -209,8 +209,8 @@ class ClaudeNativeSession extends EventEmitter {
       this.update({ connection: 'connecting', state: 'unknown', reason: '正在连接 Claude' });
     }
     const previous = this.options.restoredRuntime;
-    const oldHubAlive = previous && previous.ownerPid !== process.pid && processExists(previous.ownerPid);
-    const oldChildAlive = previous && previous.ownerPid !== process.pid && processExists(previous.childPid);
+    const oldHubAlive = previous && previous.ownerPid !== process.pid && require('./owned-process').matches(previous.ownerPid, previous.observedAt);
+    const oldChildAlive = previous && previous.ownerPid !== process.pid && require('./owned-process').matches(previous.childPid, previous.observedAt);
     if (oldChildAlive || (!this.options.ownership && oldHubAlive)) {
       throw protocolError('旧 Claude 写入进程仍存活，请先在原 Hub 结束该会话再恢复', 'CLAUDE_WRITER_ACTIVE');
     }

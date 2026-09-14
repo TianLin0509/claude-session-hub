@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, screen, shell, Menu, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, screen, shell, Menu } = require('electron');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const fs = require('fs');
@@ -41,7 +41,6 @@ const {
   resolveHubLaunchExePath,
 } = require('./core/hub-exe-branding.js');
 const { isPackagedHubRuntime } = require('./core/electron-runtime-mode.js');
-const { decideLeagueKeepalive } = require('./core/league-keepalive-policy.js');
 const { acquireLockAsync, releaseLockAsync } = require('./core/file-lock.js');
 const {
   ensureClaudeHookIntegration,
@@ -409,8 +408,6 @@ let windowsShellWatchdog = null;
 
 let mainWindow;
 let desktopNotificationController = null;
-let agentLeagueTray = null;
-let explicitHubQuitRequested = false;
 const sessionManager = new SessionManager();
 const { SessionTokenUsageService } = require('./main/usage/session-token-usage-service.js');
 const { isSessionViewer } = require('./core/session-observer-policy');
@@ -419,12 +416,13 @@ const nativeItemNotifications = createContentUpdateBatcher();
 const sessionUsageService = new SessionTokenUsageService({
   publish(id, usage) {
     const current = sessionManager.getSession(id);
+    if (!current || current.status === 'exited') return;
     const persisted = lastPersistedSessions.find(item => item.hubId === id);
     const old = current?.sessionUsage || persisted?.sessionUsage;
     if (old?.sourcePath === usage.sourcePath && old.total > usage.total) return;
-    const updated = current ? sessionManager.updateSessionMeta(id, { sessionUsage: usage }) : null;
+    const updated = sessionManager.updateSessionMeta(id, { sessionUsage: usage });
     if (persisted) persisted.sessionUsage = usage;
-    if ((updated || persisted) && !isSessionViewer(current || persisted)) sessionStore.markDirty(id, updated || persisted);
+    if (updated) sessionStore.markDirty(id, updated);
     sendToRenderer('session-usage-updated', { sessionId: id, usage });
   },
 });
@@ -440,7 +438,7 @@ transcriptTap.on('session-bound', event => {
 ipcMain.on('session-usage:watch', (_event, ids) => {
   if (!Array.isArray(ids)) return;
   for (const id of new Set(ids.filter(id => typeof id === 'string'))) {
-    const session = sessionManager.getSession(id) || lastPersistedSessions.find(item => item.hubId === id);
+    const session = sessionManager.getSession(id);
     if (session) sessionUsageService.bind(session);
   }
 });
@@ -449,9 +447,7 @@ sessionManager.on('managed-launch', (record) => {
 });
 sessionManager.on('codex-session-updated', session => {
   sessionUsageService.bind(session);
-  // Viewer Hubs receive the same live snapshot but must not race the
-  // controller for the per-session persistence file.
-  if (session.codexSharedControl?.role !== 'viewer') sessionStore.markDirty(session.id, session);
+  sessionStore.markDirty(session.id, session);
   sendToRenderer('session-updated', {session});
 });
 sessionManager.on('codex-content-updated', event => sendToRenderer('codex-content-updated',event));
@@ -946,94 +942,6 @@ function focusPrimaryWindow() {
 
 module.exports.focusPrimaryWindow = focusPrimaryWindow;
 
-function shouldKeepAgentLeagueInBackground() {
-  if (!agentLeagueBridge || !agentLeagueBridge.store) return false;
-  try {
-    const schedule = agentLeagueBridge.store.getSchedule();
-    const activeRun = typeof agentLeagueBridge.getRunState === 'function' ? agentLeagueBridge.getRunState() : null;
-    // 选举只在需要它裁决时才刷新：前面几条判据（显式退出 / 守护关掉 / 赛程没开）
-    // 都不需要问别的 Hub，没必要为一次关窗多打一次 SQLite。
-    let election = null;
-    const needsElection = !explicitHubQuitRequested
-      && process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND !== '1'
-      && schedule.keepAliveOnClose !== false
-      && !activeRun
-      && schedule.enabled === true;
-    if (needsElection && typeof agentLeagueBridge.refreshSchedulerElection === 'function') {
-      try {
-        election = agentLeagueBridge.refreshSchedulerElection('window-close-keepalive', { force: true });
-      } catch (error) {
-        // 选举拿不到就让 policy 走「判不了则留守」的兜底分支。
-        console.warn('[agent-league] keepalive election refresh failed:', error && error.message);
-      }
-    }
-    const decision = decideLeagueKeepalive({
-      explicitQuitRequested: explicitHubQuitRequested,
-      disabledByEnv: process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND === '1',
-      schedule,
-      activeRun,
-      election,
-      selfPid: process.pid,
-    });
-    console.log(`[agent-league] window-close keepalive=${decision.keep} reason=${decision.reason}`
-      + `${decision.preferredPid ? ` preferredPid=${decision.preferredPid}` : ''} pid=${process.pid}`);
-    return decision.keep;
-  } catch (error) {
-    console.warn('[agent-league] failed to evaluate background keepalive:', error && error.message);
-    return false;
-  }
-}
-
-function destroyAgentLeagueTray() {
-  if (!agentLeagueTray) return false;
-  try { agentLeagueTray.destroy(); } catch {}
-  agentLeagueTray = null;
-  return true;
-}
-
-function showHubFromAgentLeagueTray() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.show();
-  mainWindow.restore?.();
-  mainWindow.focus();
-  destroyAgentLeagueTray();
-}
-
-function ensureAgentLeagueTray() {
-  if (agentLeagueTray || !app.isReady()) return agentLeagueTray;
-  const iconPath = path.join(__dirname, 'claude-wx.ico');
-  let icon = nativeImage.createFromPath(iconPath);
-  if (!icon.isEmpty()) icon = icon.resize({ width: 20, height: 20 });
-  agentLeagueTray = new Tray(icon);
-  agentLeagueTray.setToolTip(`AI 群聊 Hub · Agent 联赛后台守护 · PID ${process.pid}`);
-  const updateMenu = () => {
-    let scheduleLabel = 'Agent 联赛后台守护中';
-    try {
-      const state = agentLeagueBridge && agentLeagueBridge.store && agentLeagueBridge.store.getSchedule();
-      const run = agentLeagueBridge && agentLeagueBridge.getRunState && agentLeagueBridge.getRunState();
-      scheduleLabel = run
-        ? `Agent 联赛：${run.mode === 'weekly' ? '周度沉淀' : '盘前决策'}运行中`
-        : `Agent 联赛：等待 ${state && (state.decisionTime || state.runTime) || '08:30'}`;
-    } catch {}
-    agentLeagueTray.setContextMenu(Menu.buildFromTemplate([
-      { label: `打开 AI 群聊 Hub（PID ${process.pid}）`, click: showHubFromAgentLeagueTray },
-      { label: scheduleLabel, enabled: false },
-      { type: 'separator' },
-      {
-        label: '退出此 Hub（未完成任务可由其他 Hub 接班）',
-        click: () => {
-          explicitHubQuitRequested = true;
-          void beginGracefulHubShutdown('tray-explicit-quit');
-        },
-      },
-    ]));
-  };
-  updateMenu();
-  agentLeagueTray.on('click', showHubFromAgentLeagueTray);
-  agentLeagueTray.on('right-click', updateMenu);
-  return agentLeagueTray;
-}
-
 // T6：窗口按钮区的底色与符号色。默认值对应 dark 皮肤，换皮肤时由渲染层把
 // **当前皮肤真实算出来的颜色**发过来（见 hub:titlebar-overlay）—— 主进程不再
 // 维护第二份调色板，否则加一套皮肤就得改两个地方，迟早对不上。
@@ -1289,22 +1197,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('close', (event) => {
     if (shutdownDrainState === 'drained' || shutdownDrainState === 'finalizing') return;
-    if (shouldKeepAgentLeagueInBackground()) {
-      event.preventDefault();
-      try {
-        // Create the recovery affordance first. If Windows refuses the tray
-        // icon, keep the window visible instead of hiding the user's only way
-        // back into the still-running Hub.
-        ensureAgentLeagueTray();
-        mainWindow.hide();
-        console.log(`[agent-league] Hub window hidden; scheduler remains alive in tray (pid=${process.pid})`);
-      } catch (error) {
-        destroyAgentLeagueTray();
-        mainWindow.show();
-        console.error('[agent-league] tray keepalive failed; close cancelled:', error && error.message);
-      }
-      return;
-    }
+    // Closing the window releases its sessions; no invisible owner remains.
     event.preventDefault();
     void beginGracefulHubShutdown('window-close-requested');
   });
@@ -1747,7 +1640,7 @@ if (process.env.CLAUDE_HUB_E2E === '1') {
     ok: true,
     pid: process.pid,
     windowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
-    trayActive: !!agentLeagueTray,
+    trayActive: false,
     scheduler: agentLeagueBridge && agentLeagueBridge.schedulerSafety,
     runtimeAvailable: !!(agentLeagueBridge && agentLeagueBridge.runtimeStore),
   }));
@@ -1756,11 +1649,10 @@ if (process.env.CLAUDE_HUB_E2E === '1') {
     return {
       ok: true,
       windowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
-      trayActive: !!agentLeagueTray,
+      trayActive: false,
     };
   });
   ipcMain.handle('debug:agent-league-explicit-quit', () => {
-    explicitHubQuitRequested = true;
     setImmediate(() => { void beginGracefulHubShutdown('e2e-explicit-quit'); });
     return { ok: true };
   });
@@ -1928,7 +1820,13 @@ registerWorkspaceIpc(ipcMain, {
 // 2026-05-07 道雪：boot 走 loadAndSelfHeal，扫 sessions/ + meetings/ 目录把孤儿
 // 条目（state.json 已丢但 per-id JSON 仍在）合并回来。多 Hub 并发覆盖、
 // state.json 损坏、外部清理工具误删这三类灾难都能自我修复。
-const bootState = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
+// Hold the same short transaction as opening a session while boot repairs write.
+// Active sessions in other Hubs remain read-only, including title migration.
+const bootOwners = sessionManager._openOwners();
+const bootState = bootOwners.editSessions([], () => stateStore.loadAndSelfHeal({
+  sessionStore, meetingStore,
+  canEditSession: session => !bootOwners.owner(session.hubId || session.id),
+}));
 // loadAndSelfHeal 内部已经把 cleanShutdown 翻成 false（运行中状态），
 //   bootWasCleanShutdown 是它额外暴露的"原始盘上值"，告知是否上次优雅退出。
 const bootWasClean = !!bootState.bootWasCleanShutdown;
@@ -1952,6 +1850,7 @@ try {
   const homeDir = path.resolve(process.env.USERPROFILE || process.env.HOME || '.').toLowerCase();
   const suspect = lastPersistedSessions.filter(s => {
     if (!s || !s.ccSessionId || !s.cwd) return false;
+    if (bootOwners.owner(s.hubId || s.id)) return false;
     if (path.resolve(s.cwd).toLowerCase() === homeDir) return true;
     try { return !fs.statSync(s.cwd).isDirectory(); } catch { return true; }
   });
@@ -1977,10 +1876,20 @@ let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.imme
   ? bootState.immersiveByMeeting : {};
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 const repairedMemberships = require('./core/session-meeting-membership.js')
-  .restoreMissingMeetingIds(lastPersistedSessions, bootMeetings);
+  .restoreMissingMeetingIds(lastPersistedSessions.filter(s => !bootOwners.owner(s.hubId || s.id)), bootMeetings);
 if (repairedMemberships.length) {
   console.info(`[sessions] restored ${repairedMemberships.length} missing meeting membership(s)`);
-  for (const id of repairedMemberships) sessionStore.markDirty(id, lastPersistedSessions.find(s => s.hubId === id));
+  for (const id of repairedMemberships) {
+    try {
+      bootOwners.editClosed(id, () => {
+        const latest = sessionStore.loadSessionFile(id, { strict: true });
+        const repaired = lastPersistedSessions.find(s => s.hubId === id);
+        if (latest && repaired) sessionStore.saveSessionFile(id, { ...latest, meetingId: repaired.meetingId });
+      });
+    } catch (error) {
+      if (error.code !== 'SESSION_OCCUPIED') console.warn('[sessions] membership repair failed:', error.message);
+    }
+  }
 }
 let lastPersistedMeetings = bootMeetings;
 for (const m of bootMeetings) {
@@ -3148,6 +3057,7 @@ app.whenReady().then(async () => {
       dataDir,
       startedAt: Date.now(),
       nativeOwnershipVersion: 1,
+      sessionExclusiveVersion: 1,
     });
     console.log(`[hub-control] control file written: pid=${process.pid} hookPort=${hookPort} cdpPort=${cdpPort}`);
   } catch (e) {
@@ -3216,7 +3126,6 @@ async function runFinalShutdownCleanup() {
   if (agentLeagueBridge && typeof agentLeagueBridge.stopScheduler === 'function') {
     capture('agent-league-scheduler', () => agentLeagueBridge.stopScheduler());
   }
-  capture('agent-league-tray', () => destroyAgentLeagueTray());
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
   //   都能从另一层恢复。

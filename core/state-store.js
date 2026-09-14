@@ -112,7 +112,7 @@ function load() {
 //   3. scan meetings/<id>.json  → restore orphans missing from state.meetings (v2 only)
 //   4. write back the healed state (cleanShutdown=false, sync)
 //   返回 healed state.
-function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
+function loadAndSelfHeal({ sessionStore, meetingStore, canEditSession = () => true } = {}) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const fd = acquireLock(LOCK_FILE, { retries: 300, retryDelayMs: 10 });
   // 2026-05-07 多方审查 fix：原版即使 fd==null 仍 read+merge+write，
@@ -177,6 +177,7 @@ function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
     // recover the parent and use its real title (or the owning meeting title)
     // before state.json and per-session JSON are written back.
     const healedBranches = healPersistedBranchSessionTitles(disk, {
+      canEditSession,
       sessionStore: haveLock ? sessionStore : null,
       logger: console,
     });

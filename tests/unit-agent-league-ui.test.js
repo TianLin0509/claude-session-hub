@@ -79,7 +79,7 @@ test('league UI exposes durable owner progress, health diagnostics and backgroun
   assert.match(script, /由主控 PID/);
   assert.match(script, /data-action="health-check"/);
   assert.match(script, /data-role="health-checks"/);
-  assert.match(script, /data-action="toggle-background"/);
+  assert.doesNotMatch(script, /data-action="toggle-background"/);
   assert.match(script, /其他 Hub 运行中/);
 });
 

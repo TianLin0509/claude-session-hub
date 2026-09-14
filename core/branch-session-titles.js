@@ -87,6 +87,7 @@ function healPersistedBranchSessionTitles(state, {
   sessionStore = null,
   logger = console,
   now = () => Date.now(),
+  canEditSession = () => true,
 } = {}) {
   const sessions = Array.isArray(state && state.sessions) ? state.sessions : [];
   const meetings = Array.isArray(state && state.meetings) ? state.meetings : [];
@@ -111,6 +112,7 @@ function healPersistedBranchSessionTitles(state, {
   };
 
   for (const session of sessions) {
+    if (!canEditSession(session)) continue;
     if (!needsBranchTitleRecovery(session)) continue;
 
     let source = session.branchSourceSessionId
@@ -176,6 +178,7 @@ function healPersistedBranchSessionTitles(state, {
     }
     for (const session of siblings) {
       const branchIndex = assigned.get(session);
+      if (!canEditSession(session)) continue;
       const baseTitle = stripBranchTitlePrefix(session.title) || '待命名';
       const expectedTitle = formatBranchSessionTitle(baseTitle, '会话', branchIndex);
       const indexChanged = session.branchIndex !== branchIndex;

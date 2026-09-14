@@ -1,5 +1,12 @@
 # Claude Session Hub 项目规范
 
+## 会话独占（2026-09-14）
+
+- 同一个 session 同时只能在一个 Hub 打开；其他 Hub 显示占用者 PID/版本并拒绝打开。不得恢复共享查看、控制权转移或后台 broker 订阅。
+- 关闭会话或窗口必须先保存最终记录并停止原生 writer，再释放归属；另一 Hub 从最新持久化记录恢复同一个原生会话、历史和草稿。窗口关闭后不隐藏驻留托盘。
+- 未打开的会话是历史入口，不订阅实时状态、不启动用量监听、不反复回写旧快照。跨 Hub 仍保留原生单 writer、持久化事务锁和定时任务去重。
+- 实现契约与验证入口见 `docs/design/session-exclusive-ownership.md`。
+
 ## 铁律：Hub 依赖完整性（node_modules 不容许半坏）
 
 **Hub 反复出现"桌面图标点开报错无法打开"，几乎每次根因都是 `node_modules` 缺了传递依赖（典型：`Cannot find module 'dijkstrajs'` — `qrcode` 的依赖）。`main.js` 顶部 `require('qrcode')` 一挂，整个 Electron 启动链终止。防止这种事反复发生，规则如下：**
