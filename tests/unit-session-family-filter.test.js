@@ -40,6 +40,8 @@ function makeEl(id) {
     style: {},
     classList: { add() {}, remove() {}, toggle() {} },
     dataset: {},
+    _attrs: {},
+    setAttribute(name, value) { this._attrs[name] = String(value); },
     _listeners: {},
     addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
     appendChild(child) { this.children.push(child); },

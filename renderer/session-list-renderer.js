@@ -289,7 +289,7 @@ function _aiLogoHtml(kind) {
 
 // 2026-09-01 · 侧栏瘦身：时间左边的「Opus 5 / gpt-5.6-sol」字串换成一枚品牌小图标。
 //   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
-//   （sl-title 的 titleTip 里本来就有完整 displayName，这里再给一份就近的）。
+//   （会话行的无障碍标签也包含完整 displayName）。
 //   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
 function _sessionKindHtml(kind, modelTxt) {
   const k = _logoKind(kind);
@@ -737,7 +737,7 @@ sessionListEl.addEventListener('keydown', event => {
       const memberSelected = isGroupChat
         ? (Array.isArray(s._meeting.participants) ? s._meeting.participants.length : memberTotal)
         : memberTotal;
-      if (isDormantMeeting) div.title = `${s.title} · 休眠中 · ${memberSelected}/${memberTotal} 已选 · 点击打开群聊`;
+      div.setAttribute('aria-label', isDormantMeeting ? `${s.title} · 休眠中 · ${memberSelected}/${memberTotal} 已选 · 点击打开群聊` : s.title);
       // 群聊子会话默认折叠，若只在普通 session 行画告警，Claude/DeepSeek 成员的
       // memory link 错误在最常用的群聊视图里仍然不可见。父行聚合显示，mini-jump
       // tooltip 再指出具体成员。
@@ -803,7 +803,7 @@ sessionListEl.addEventListener('keydown', event => {
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
         isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
-        '<span class="sl-title" title="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
         '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
         (hasUnread ? '<span class="sl-unread-badge">' + unreadMembers.size + ' 位未读</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>') + '</div>',
         unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '',
@@ -864,7 +864,7 @@ sessionListEl.addEventListener('keydown', event => {
             : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
-            <span class="child-title" title="${escapeHtml([childWarning, childStateTip].filter(Boolean).join(' · '))}">${childDisconnected ? '<span class="sl-disconnect-label">断连</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
+            <span class="child-title" aria-label="${escapeHtml([sub.title, childWarning, childStateTip].filter(Boolean).join(' · '))}">${childDisconnected ? '<span class="sl-disconnect-label">断连</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
             ${modelLabel}
           `;
           // Use the existing selectSession path: it hides meeting-room-panel,
@@ -913,7 +913,7 @@ sessionListEl.addEventListener('keydown', event => {
       : isDormant
       ? `${s.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${showUnread ? `，有 ${unreadCount} 条未读` : ''}，点击唤醒`
       : '';
-    const titleTip = [s.title,
+    const accessibleSummary = [s.title,
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
@@ -923,9 +923,9 @@ sessionListEl.addEventListener('keydown', event => {
         ? (s.waitingText || '等你输入')
         : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
-    div.title = isResumePending ? '正在唤醒会话' : runtimeTruthSummary(runtimeTruth);
+    div.setAttribute('aria-label', accessibleSummary);
     div.innerHTML = _ringHtml(ctxPct, dotCls)
-      + '<span class="sl-title" title="' + escapeHtml(titleTip) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
+      + '<span class="sl-title">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
       + _sessionKindHtml(s.kind, modelTxt)
       + (showUnread ? '<span class="sl-unread-badge">新回复</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>');
     if (child) div.className += ' child';
@@ -1002,7 +1002,6 @@ sessionListEl.addEventListener('keydown', event => {
   if (detailsEnabled && options.requestSessionUsage) options.requestSessionUsage([...detailSessionIds]);
 
   sessionListEl.scrollTop = savedScrollTop;
-  hoverCard?.refresh();
   // Whole-list updates must preserve a stationary pointer's expanded group.
   // If sorting moved that group away, release it at its new geometry.
   if (hoverPoint && hoveredMeetingId && sessionListEl.querySelectorAll) {
@@ -1062,11 +1061,6 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
-  const hoverCard = require('./session-hover-card').attachSessionHoverCard({
-    document: doc, root: sessionListEl,
-    getSession: id => getSessions().get(id), getMeeting: id => getMeetings()[id],
-    selectSession, selectMeeting,
-  });
   queueMicrotask(() => projectFilter.refresh());
 
   return {

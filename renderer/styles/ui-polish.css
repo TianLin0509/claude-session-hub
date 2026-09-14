@@ -56,21 +56,6 @@
 .hub-button-quiet { border-color:transparent; background:transparent; color:var(--brand-text); }
 .hub-button:focus-visible,.hub-dialog summary:focus-visible { outline:2px solid var(--brand); outline-offset:3px; }
 
-.hub-session-peek {
-  position:fixed; z-index:18000; width:min(348px,calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto;
-  padding:20px; border:1px solid var(--border-mid); border-radius:var(--radius-lg);
-  background:var(--surface-overlay); color:var(--fg-default); box-shadow:var(--shadow-lg); font:13px/1.65 var(--font-sans);
-}
-.hub-session-peek h3 { color:var(--fg-strong); font-size:14px; line-height:1.55; font-weight:600; overflow-wrap:anywhere; }
-.hub-peek-project { color:var(--fg-muted); font-size:11px; margin-top:5px; overflow-wrap:anywhere; }
-.hub-peek-status { color:var(--fg-muted); font-size:11px; padding-top:14px; }
-.hub-peek-excerpt { color:var(--fg-strong); margin:9px 0 16px; line-height:1.85; overflow-wrap:anywhere; }
-.hub-peek-meta { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px 18px; padding:14px 0; border-block:1px solid var(--border-subtle); }
-.hub-peek-meta dt { font-size:11px; color:var(--fg-muted); }
-.hub-peek-meta dd { margin:3px 0 0; font-size:12px; color:var(--fg-strong); overflow-wrap:anywhere; }
-.hub-peek-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:10px; font-size:10px; color:var(--fg-muted); }
-.hub-peek-footer .hub-button { font-size:11px; min-height:28px; padding:4px 7px; }
-
 /* The two approved themes share control geometry; other palettes keep their
    existing shell. New dialogs and previews inherit every theme's tokens. */
 :root:is([data-theme='dark'],[data-theme='codex']) { --font-sans:'Segoe UI Variable','Segoe UI','Microsoft YaHei UI',sans-serif; }
@@ -146,4 +131,4 @@
 :root:is([data-theme='dark'],[data-theme='codex']) .mr-group-composer :is(.mr-workflow-btn,.mr-input-model-chip,.mr-input-effort-chip) { border-radius:var(--radius-sm); border-color:transparent; color:var(--fg-muted); background:transparent; font-size:12px; box-shadow:none; }
 :root:is([data-theme='dark'],[data-theme='codex']) :is(.session-project-filter select,.session-model-filter select) { background:var(--surface-sunken); color:var(--fg-default); border:1px solid var(--border-subtle); padding:4px 6px; border-radius:var(--radius-sm); }
 @media(max-width:900px) { .composer-secondary-actions { gap:5px; } :root:is([data-theme='dark'],[data-theme='codex']) .composer-hint { display:none; } }
-@media(prefers-reduced-motion:reduce) { .hub-button,.hub-session-peek { transition:none; } }
+@media(prefers-reduced-motion:reduce) { .hub-button { transition:none; } }

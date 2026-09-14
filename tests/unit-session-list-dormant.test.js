@@ -7,6 +7,8 @@ const { createSessionListRenderer } = require('../renderer/session-list-renderer
 function element() {
   return {
     children: [], dataset: {}, style: { setProperty() {} }, listeners: {},
+    _attrs: {},
+    setAttribute(name, value) { this._attrs[name] = String(value); },
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener(type, fn) { this.listeners[type] = fn; },
     appendChild(child) { this.children.push(child); },
@@ -74,7 +76,8 @@ test('休眠群聊未读进入未读组，已读进入休眠，成员归属和�
   assert.match(h.row('group').innerHTML, /sl-group-icon unread/);
   assert.doesNotMatch(h.row('group').innerHTML, /session-mini-jumps/);
   assert.match(h.row('child').className, /child/);
-  assert.match(h.row('child').innerHTML, /Ctx 38%/);
+  assert.match(h.row('child')._attrs['aria-label'], /Ctx 38%/);
+  assert.equal(h.row('child').title, undefined);
   assert.doesNotMatch(h.row('group').innerHTML, /🌙|💬|📌/);
   const read = harness({ items: [dormant('child', { meetingId: 'group' })], meetings: { group: meetingFixture() } });
   assert.match(read.section('group'), /休眠/);

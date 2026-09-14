@@ -33,6 +33,8 @@ function makeEl() {
     style: {},
     classList: { add() {}, remove() {}, toggle() {} },
     dataset: {},
+    _attrs: {},
+    setAttribute(name, value) { this._attrs[name] = String(value); },
     addEventListener() {},
     appendChild(child) { this.children.push(child); },
     getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; },

@@ -62,16 +62,13 @@ async function main(){
       await snap(theme+'-session');
       const p=await cdp.eval('(()=>{const r=document.querySelector('+JSON.stringify(row)+').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()');
       await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});
-      await until('!!document.querySelector(".hub-session-peek")','hover summary');
-      const hover=await cdp.eval('(()=>{const e=document.querySelector(".hub-session-peek"),r=e.getBoundingClientRect();return {x:r.left+20,y:r.top+20,inside:r.right<=innerWidth&&r.bottom<=innerHeight,text:e.textContent};})()');
-      await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:hover.x,y:hover.y});await sleep(350);
-      ok(theme+' hover remains open when entering card',hover.inside&&await cdp.eval('!!document.querySelector(".hub-session-peek")'));
-      await snap(theme+'-hover');
-      ok(theme+' hover stays visible after painting',await cdp.eval('!!document.querySelector(".hub-session-peek")'));
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
-      await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
-      await until('!document.querySelector(".hub-session-peek")','hover dismissed');
-      await sleep(400);ok(theme+' Escape does not reopen hover',await cdp.eval('!document.querySelector(".hub-session-peek")'));
+      await sleep(700); // Observe beyond the removed summary card's 300 ms delay.
+      ok(theme+' session hover leaves the conversation unobscured',await cdp.eval('!document.querySelector(".hub-session-peek")'));
+      await snap(theme+'-no-hover-card');
+      await click(row);
+      await until('document.activeElement.matches('+JSON.stringify(row)+')','sidebar row focused');
+      await sleep(700);
+      ok(theme+' focused session row does not open a summary card',await cdp.eval('!document.querySelector(".hub-session-peek")'));
       await click('.composer-thinking');await until('!!document.querySelector(".model-picker-menu")','effort menu');
       await snap(theme+'-model');
       ok(theme+' model menu exposes keyboard targets',await cdp.eval('[...document.querySelectorAll(".model-picker-item")].some(e=>e.tabIndex===0)'));
