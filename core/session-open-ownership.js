@@ -8,6 +8,39 @@ const { randomUUID } = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { getHubDataDir } = require('./data-dir');
 
+function openOwnershipDatabase(filename) {
+  // Concurrent first opens can return SQLITE_BUSY immediately while changing
+  // journal mode, even with busy_timeout set. Retry only this idempotent setup;
+  // ownership transactions must still fail normally when their lock is busy.
+  let deadline;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    let db;
+    try {
+      db = new DatabaseSync(filename);
+      // Fail setup locks promptly so a losing opener releases its connection;
+      // waiting here can prevent the winning opener from completing setup.
+      db.exec('PRAGMA busy_timeout=0');
+      db.exec('PRAGMA journal_mode=WAL');
+      db.exec('BEGIN IMMEDIATE');
+      db.exec('CREATE TABLE IF NOT EXISTS open_owners (key TEXT PRIMARY KEY, session TEXT NOT NULL, pid INTEGER NOT NULL, version TEXT, nonce TEXT NOT NULL, server_pid INTEGER, observed_at INTEGER)');
+      if (!db.prepare('PRAGMA table_info(open_owners)').all().some(c=>c.name==='observed_at')) db.exec('ALTER TABLE open_owners ADD COLUMN observed_at INTEGER');
+      db.exec('COMMIT');
+      db.exec('PRAGMA busy_timeout=1000');
+      return db;
+    }
+    catch (error) {
+      // Close also rolls back incomplete setup and releases the old journal
+      // mode's locks before another initializer can finish switching to WAL.
+      try { db?.close(); } catch (closeError) { error.closeError = closeError; throw error; }
+      if (error.code !== 'ERR_SQLITE_ERROR' || (error.errcode & 255) !== 5) throw error;
+      deadline ??= performance.now() + 1000;
+      if (performance.now() >= deadline) throw error;
+      Atomics.wait(pause, 0, 0, 10);
+    }
+  }
+}
+
 function alive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
@@ -20,10 +53,8 @@ function occupied(owner) {
 class SessionOpenOwnership {
   constructor({directory = getHubDataDir(), pid = process.pid, version = require('../package.json').version, isAlive = alive} = {}) {
     fs.mkdirSync(directory, {recursive:true});
-    this.db = new DatabaseSync(path.join(directory, 'session-open-owners.sqlite'));
+    this.db = openOwnershipDatabase(path.join(directory, 'session-open-owners.sqlite'));
     this.pid = pid; this.version = version; this.isAlive = isAlive;
-    this.db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS open_owners (key TEXT PRIMARY KEY, session TEXT NOT NULL, pid INTEGER NOT NULL, version TEXT, nonce TEXT NOT NULL, server_pid INTEGER, observed_at INTEGER)');
-    if (!this.db.prepare('PRAGMA table_info(open_owners)').all().some(c=>c.name==='observed_at')) this.db.exec('ALTER TABLE open_owners ADD COLUMN observed_at INTEGER');
   }
   live(row, verify = false) {
     if(!row)return false;
