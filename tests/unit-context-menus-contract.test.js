@@ -56,6 +56,7 @@ async function main() {
   const notices = [];
   const wakes = [];
   let roomResult = { ok: true, meetingDormant: true, blocked: [] };
+  let deleteResult = {ok:true};
   const sessionMenu = createSessionContextMenuController({
     document: { addEventListener() {} },
     window: { innerWidth: 800, innerHeight: 600, confirm: () => true },
@@ -67,6 +68,7 @@ async function main() {
       invoke(channel, sid) {
         invoked.push({ channel, sid });
         if (channel === 'suspend-meeting') return Promise.resolve(roomResult);
+        if (channel === 'delete-session') return Promise.resolve(deleteResult);
         if (channel === 'restart-session') {
           return Promise.resolve({ ok: false, message: '尚未绑定原生会话 ID' });
         }
@@ -127,6 +129,14 @@ async function main() {
   assert.deepStrictEqual(wakes, ['s1']);
   assert.deepStrictEqual(invoked, [], 'dormant Restart must wake through resume-session instead of calling live restart');
 
+  sessionMenu.open('s1', 10, 20);
+  deleteResult = {ok:false,message:'Use AI HUB PID 123'};
+  const savesBeforeRefusal = persisted;
+  await deleteBtn._listeners.click();
+  assert(sessions.has('s1'), 'occupied dormant card must remain recoverable');
+  assert.equal(persisted,savesBeforeRefusal);
+  assert.equal(notices.pop(),'Use AI HUB PID 123');
+  deleteResult = {ok:true};
   sessionMenu.open('s1', 10, 20);
   await deleteBtn._listeners.click();
   assert.strictEqual(activeSessionId, null);

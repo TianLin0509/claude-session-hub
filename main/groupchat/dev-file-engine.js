@@ -7,36 +7,9 @@ const Settings = require('../../core/workflow-settings');
 function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers, isWorkflowRunning = () => false,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
-  const reservations = new Map();
   let timer = null, directoryEvents = null;
   const get = id => meetingManager.getMeeting(id);
   const members = m => getMembers ? getMembers(m) : getDispatcher().groupMembersForMeeting?.(m, { includeDormant: true }) || [];
-  async function ensureReservation(id) {
-    if (reservations.has(id)) return reservations.get(id);
-    const reservationId = `dev-file:${id}`;
-    const held = [];
-    try {
-      for (const sid of new Set((get(id)?.subSessions || []).filter(Boolean))) {
-        const native = sessionManager?.getNativeSession?.(sid) || sessionManager?.getNativeCodex?.(sid) || sessionManager?.getNativeClaude?.(sid);
-        if (!native || typeof native.reserveWorkflow !== 'function') continue;
-        await native.reserveWorkflow(reservationId, '文件开发工作流');
-        held.push(native);
-      }
-      const value = { reservationId, held };
-      reservations.set(id, value);
-      return value;
-    } catch (error) {
-      await Promise.allSettled(held.map(native => native.releaseWorkflow(reservationId)));
-      throw error;
-    }
-  }
-  async function releaseReservation(id) {
-    const value = reservations.get(id);
-    if (!value) return;
-    reservations.delete(id);
-    const results = await Promise.allSettled(value.held.map(native => native.releaseWorkflow(value.reservationId)));
-    for (const result of results) if (result.status === 'rejected') logger.warn('[dev-file] release Codex control reservation:', result.reason?.message || result.reason);
-  }
   function save(id, fields) {
     const m = get(id);
     if (!F.enabled(m)) throw new Error('文件工作流不可用');
@@ -115,10 +88,9 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       if (!active.get(id)?.size) active.delete(id);
       if (F.enabled(get(id))) emit(id);
       const current = F.enabled(get(id)) ? status(id) : null;
-      if (!current || current.paused || current.error || current.done) void releaseReservation(id);
       // A rename can arrive before the previous dispatch receipt settles.
       // Reconsider it at that boundary instead of waiting for the safety scan.
-      else if (timer) setImmediate(() => { if (timer) tick(id); });
+      if (current && !current.paused && !current.error && !current.done && timer) setImmediate(() => { if (timer) tick(id); });
     });
   }
   async function dispatchStage(id, userArgs = null) {
@@ -135,7 +107,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       const stageMembers = targets(m, s), member = stageMembers[0], token = crypto.randomUUID(), key = s.key;
       save(id, { lastDispatch: { key, token, memberId: member.id }, error: '' });
       for (const target of stageMembers) await ensureMemberReady(m, target.id);
-      await ensureReservation(id);
+
       s = status(id);
       // A stop or a rename during session wake must win over this scheduled send.
       if (!s || s.paused || s.key !== key || s.error || s.done) return { status: 'error', reason: '现场已变化，取消本次派工' };
@@ -156,10 +128,9 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       return await track(id, promise, token, key);
     } catch (error) {
       if (!released && F.enabled(get(id))) save(id, { error: error.message });
-      if (!released) await releaseReservation(id);
       throw error;
     } finally {
-      if (!released) { preparing.delete(id); if (!active.get(id)?.size) await releaseReservation(id); }
+      if (!released) { preparing.delete(id);  }
       if (F.enabled(get(id))) emit(id);
     }
   }
@@ -167,7 +138,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     if (!F.enabled(get(id))) return false;
     stopped.add(id);
     save(id, { paused: true });
-    void releaseReservation(id);
+
     emit(id);
     return true;
   }
@@ -197,7 +168,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     }
     if (kickoff) preparing.add(id);
     try {
-    await ensureReservation(id);
+
     if (kickoff && (stopped.has(id) || status(id)?.paused || status(id)?.key !== s.key)) return {status:'error',reason:'现场已变化，取消本次开题'};
     if (F.isResume(args.userInput) && !s.error) {
       // Resume is the user's message, not another phase prompt or a change
@@ -221,9 +192,9 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       if (kickoff) preparing.delete(id);
       return await tracked;
     } catch (error) {
-      await releaseReservation(id);
+
       throw error;
-    } finally { if (kickoff) {preparing.delete(id); if(!active.get(id)?.size) await releaseReservation(id); if(F.enabled(get(id)))emit(id);} }
+    } finally { if (kickoff) {preparing.delete(id);  if(F.enabled(get(id)))emit(id);} }
   }
   function tick(onlyId = null) {
     const records = onlyId ? [get(onlyId)].filter(Boolean) :
@@ -233,7 +204,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       try {
         const s = status(m.id);
         emit(m.id, s);
-        if (s.paused || s.error || s.dispatchError || s.done) { void releaseReservation(m.id); continue; }
+        if (s.paused || s.error || s.dispatchError || s.done) {  continue; }
         if (m.serialWorkflow.settingsVersion === 1 && active.get(m.id)?.size) continue;
         if (!['build', 'merge'].includes(s.phase) || preparing.has(m.id)) continue;
         if (m.serialWorkflow.fileFlow?.lastDispatch?.key === s.key) continue;
@@ -291,6 +262,6 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       directoryEvents = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), id => tick(id), logger);
       tick(); timer = setInterval(() => { directoryEvents.ensure(); tick(); }, 30_000); timer.unref?.();
     } },
-    dispose() { if (timer) clearInterval(timer); timer = null; directoryEvents?.dispose(); directoryEvents = null; for (const id of reservations.keys()) void releaseReservation(id); } };
+    dispose() { if (timer) clearInterval(timer); timer = null; directoryEvents?.dispose(); directoryEvents = null;  } };
 }
 module.exports = { createDevFileEngine };

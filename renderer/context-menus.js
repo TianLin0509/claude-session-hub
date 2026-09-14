@@ -128,7 +128,11 @@ function createSessionContextMenuController({
         }
 
         if (action === 'delete' && meeting) {
-          await ipcRenderer.invoke('close-meeting', sid);
+          const result = await ipcRenderer.invoke('close-meeting', sid);
+          if (result !== true) {
+            showNotice(result?.message || '删除会议室失败，请稍后重试。');
+            return;
+          }
           delete meetings[sid];
           if (getActiveMeetingId() === sid) {
             setActiveMeetingId(null);
@@ -240,6 +244,11 @@ function createSessionContextMenuController({
             return;
           }
           if (session.status === 'dormant') {
+            const result = await ipcRenderer.invoke('delete-session', sid);
+            if (!result?.ok) {
+              showNotice(result?.message || '永久删除失败，请稍后重试。');
+              return;
+            }
             sessions.delete(sid);
             if (getActiveSessionId() === sid) setActiveSessionId(null);
             renderSessionList();

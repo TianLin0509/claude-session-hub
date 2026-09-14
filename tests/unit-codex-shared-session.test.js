@@ -17,7 +17,7 @@ fs.mkdirSync(dataDir, { recursive:true });
 fs.mkdirSync(codexHome, { recursive:true });
 
 test('shared runtime defaults are explicit and keep plain Node tests isolated', () => {
-  assert.equal(sharedCodexRuntimeEnabled({ CLAUDE_HUB_CODEX_SHARED_RUNTIME:'1' }), true);
+  assert.equal(sharedCodexRuntimeEnabled({ CLAUDE_HUB_CODEX_SHARED_RUNTIME:'1' }), false);
   assert.equal(sharedCodexRuntimeEnabled({ CLAUDE_HUB_CODEX_SHARED_RUNTIME:'0' }), false);
   assert.equal(sharedCodexRuntimeEnabled({ CLAUDE_HUB_E2E:'1' }), false);
 });

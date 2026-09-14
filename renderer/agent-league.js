@@ -177,7 +177,7 @@ function createAgentLeaguePanel(options = {}) {
       </section>
       <section class="cxl-health" data-role="health" hidden><header><div><b data-role="health-title">联赛健康检查</b><span data-role="health-summary"></span></div><button type="button" class="cxl-close" data-action="close-health" aria-label="关闭健康检查">${icon('close')}</button></header><div data-role="health-checks"></div></section>
       <section class="cxl-board">
-        <header><div><h2 data-role="board-title">实时排行榜</h2><p data-role="board-subtitle">当前快照 · 点击任意 Agent 行查看详情</p></div><div class="cxl-board-tools"><button type="button" class="cxl-icon-btn" data-action="refresh" title="刷新">${icon('refresh')}</button><button type="button" class="cxl-auto" data-action="toggle-auto"></button><button type="button" class="cxl-auto" data-action="toggle-background"></button><div class="cxl-sort"><button class="active" data-sort="return">按收益率</button><button data-sort="asset">按当前资产</button></div></div></header>
+        <header><div><h2 data-role="board-title">实时排行榜</h2><p data-role="board-subtitle">当前快照 · 点击任意 Agent 行查看详情</p></div><div class="cxl-board-tools"><button type="button" class="cxl-icon-btn" data-action="refresh" title="刷新">${icon('refresh')}</button><button type="button" class="cxl-auto" data-action="toggle-auto"></button><div class="cxl-sort"><button class="active" data-sort="return">按收益率</button><button data-sort="asset">按当前资产</button></div></div></header>
         <div class="cxl-board-filters" role="toolbar" aria-label="筛选参赛 Agent"><button type="button" class="active" data-agent-filter="all" aria-pressed="true">全部 <span data-filter-count="all">0</span></button><button type="button" data-agent-filter="attention" aria-pressed="false">需关注 <span data-filter-count="attention">0</span></button><button type="button" data-agent-filter="positions" aria-pressed="false">有持仓 <span data-filter-count="positions">0</span></button><button type="button" data-agent-filter="incomplete" aria-pressed="false">覆盖不足 <span data-filter-count="incomplete">0</span></button><small data-role="filter-summary" aria-live="polite"></small></div>
         <div class="cxl-table-head cxl-grid"><span>排名</span><span>Agent</span><span class="cxl-wide">赛程 / Session</span><span>当前资产</span><span>累计收益</span><span class="cxl-wide">最近一日</span><span class="cxl-wide">最大回撤</span><span class="cxl-wide">仓位</span><span class="cxl-wide">最近决策</span><span></span></div>
         <div class="cxl-ranking" data-role="ranking" aria-live="polite"></div>
@@ -238,7 +238,6 @@ function createAgentLeaguePanel(options = {}) {
         else if (action === 'record-close') await runPhase(actionEl, 'record-close', '正在读取收盘行情并更新净值', '收盘记账完成');
         else if (action === 'run-weekly') await runPhase(actionEl, 'run-weekly', '正在唤醒同一 Session 做周度沉淀', '周度沉淀已启动');
         else if (action === 'toggle-auto') await toggleAuto();
-        else if (action === 'toggle-background') await toggleBackground();
         else if (action === 'open-card') await openSession(actionEl.dataset.agent, 'card');
         else if (action === 'open-pty') await openSession(actionEl.dataset.agent, 'pty');
         else if (action === 'open-folder') await openFolder(actionEl.dataset.agent);
@@ -389,10 +388,6 @@ function createAgentLeaguePanel(options = {}) {
     auto.hidden = isVirtual;
     auto.classList.toggle('active', !!state.schedule.enabled);
     auto.textContent = state.schedule.enabled ? `自动 ${state.schedule.decisionTime || '08:30'} / 周六 ${state.schedule.weeklyTime || '10:00'}` : '自动赛程未启用';
-    const background = root.querySelector('[data-action="toggle-background"]');
-    background.hidden = isVirtual;
-    background.classList.toggle('active', state.schedule.keepAliveOnClose !== false);
-    background.textContent = state.schedule.keepAliveOnClose === false ? '关窗即退出' : '关窗后台守护';
     const runButton = root.querySelector('[data-action="run-day"]');
     const remoteRun = !isVirtual && !state.run && durableRun && durable.leader && durable.leader.active;
     const standby = !isVirtual && election.enabled && election.preferenceActive && !election.isPreferred;
@@ -1143,31 +1138,6 @@ function createAgentLeaguePanel(options = {}) {
       render();
     } catch (error) {
       notify(`自动赛程设置失败：${error.message}`, true);
-    }
-  }
-
-  async function toggleBackground() {
-    if (state.environment === 'virtual') return;
-    const keepAliveOnClose = state.schedule.keepAliveOnClose === false;
-    try {
-      const result = await ipcRenderer.invoke(leagueChannel('update-schedule'), {
-        enabled: state.schedule.enabled === true,
-        keepAliveOnClose,
-        decisionTime: state.schedule.decisionTime || '08:30',
-        decisionCutoff: state.schedule.decisionCutoff || '09:15',
-        executionTime: state.schedule.executionTime || '09:35',
-        resultTime: state.schedule.resultTime || '15:10',
-        weeklyTime: state.schedule.weeklyTime || '10:00',
-        maxConcurrency: state.schedule.maxConcurrency || 2,
-      });
-      if (!result || !result.ok) throw new Error(result && result.message || '设置失败');
-      state.schedule = result.schedule;
-      notify(keepAliveOnClose
-        ? '已启用关窗后台守护：关闭窗口后联赛继续运行，可从托盘重新打开'
-        : '已关闭后台守护：关闭窗口将退出此 Hub；其他 Hub 可按检查点接班');
-      render();
-    } catch (error) {
-      notify(`后台守护设置失败：${error.message}`, true);
     }
   }
 

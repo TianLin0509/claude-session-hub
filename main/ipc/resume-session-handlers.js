@@ -39,6 +39,14 @@ function createResumeSessionHandler(deps) {
 
   return async function resumeSession(meta) {
     if (!meta || !meta.hubId) return null;
+    const reservedId=meta.hubId;
+    const reservation=sessionManager.reserveSessionOpen?.(reservedId);
+    try {
+    // This window may have been idle since before another Hub's last turn.
+    // Resume the persisted authoritative identity, never its boot-time copy.
+    const saved = require('../../core/session-store').loadSessionFile(meta.hubId,{strict:true});
+    if (saved) meta = {...meta, ...saved, hubId:meta.hubId};
+
     require('../../core/session-meeting-membership.js').restoreMissingMeetingIds(
       [meta], meetingManager.getAllMeetings?.() || []);
     const isGemini = meta.kind === 'gemini' || meta.kind === 'gemini-resume';
@@ -247,6 +255,7 @@ function createResumeSessionHandler(deps) {
 
     const safeResumeModel = sessionModelId(meta);
     const createdSession = sessionManager.createSession(meta.kind || 'claude', {
+      ...(reservation ? {_openLeaseNonce:reservation} : {}),
       id: meta.hubId,
       title: meta.title,
       cwd: (isGemini && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
@@ -367,6 +376,7 @@ function createResumeSessionHandler(deps) {
     }
 
     return session;
+    } finally { sessionManager.cancelReservedOpen?.(reservedId,reservation); }
   };
 }
 

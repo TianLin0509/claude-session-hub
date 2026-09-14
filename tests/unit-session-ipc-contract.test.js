@@ -444,7 +444,7 @@ test('terminal-resize drops invalid and duplicate sizes but permits a forced TUI
   );
 });
 
-test('close-session clears resize cache and recoverably suspends; delete is explicit', () => {
+test('close-session clears resize cache and recoverably suspends; delete is explicit', async () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
   const registered = registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
@@ -452,7 +452,7 @@ test('close-session clears resize cache and recoverably suspends; delete is expl
   ipc.listeners.get('terminal-resize')(null, { sessionId: 's1', cols: 80, rows: 24 });
   assert.ok(registered.lastResizeBySid.has('s1'));
 
-  const closed = ipc.handlers.get('close-session')(null, 's1');
+  const closed = await ipc.handlers.get('close-session')(null, 's1');
 
   assert.strictEqual(closed.action, 'suspended');
   assert.ok(!registered.lastResizeBySid.has('s1'));
@@ -463,6 +463,17 @@ test('close-session clears resize cache and recoverably suspends; delete is expl
   const deleted = ipc.handlers.get('delete-session')(null, 's1');
   assert.strictEqual(deleted.action, 'deleted');
   assert.deepStrictEqual(sessionManager.calls.at(-1), ['closeSession', 's1']);
+});
+
+test('deleting a dormant foreign-owned session is refused before close', () => {
+  const ipc = createFakeIpc(), sessionManager = createFakeSessionManager();
+  sessionManager._openOwners = () => ({editSessions() {
+    throw Object.assign(new Error('Use AI HUB PID 123'), {code:'SESSION_OCCUPIED'});
+  }});
+  registerSessionIpc(ipc, {sessionManager,sendToRenderer() {}});
+  const result = ipc.handlers.get('delete-session')(null, 's1');
+  assert.equal(result.error, 'SESSION_OCCUPIED');
+  assert(!sessionManager.calls.some(([action])=>action==='closeSession'));
 });
 
 test('suspend handlers clear resize cache and delegate conservative idle policy', () => {

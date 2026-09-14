@@ -6334,7 +6334,11 @@ if (typeof document !== 'undefined') (function () {
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
     document.getElementById('mr-btn-close').addEventListener('click', async () => {
-      await ipcRenderer.invoke('close-meeting', meeting.id);
+      const result = await ipcRenderer.invoke('close-meeting', meeting.id);
+      if (result !== true) {
+        alert(result?.message || '删除会议室失败，请稍后重试。');
+        return;
+      }
       closeMeetingPanel();
     });
 

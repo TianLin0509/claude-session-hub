@@ -67,6 +67,7 @@ function switchScene({ meetingId, scene, covenant, deps }) {
     slotIds = [],
   } = deps;
 
+
   if (!isValidMeetingId(meetingId)) return { ok: false, error: 'invalid meetingId' };
   if (!scenes.getScene(scene)) return { ok: false, error: `invalid scene: ${scene}` };
   const meeting = meetingManager.getMeeting(meetingId);
@@ -114,6 +115,15 @@ function registerMeetingIpc(ipcMain, deps) {
     sessionStore,
     stateStore,
   } = deps;
+
+  function editMembers(ids, edit) {
+    try {
+      const owners = sessionManager._openOwners?.();
+      return owners ? owners.editSessions(ids, edit, { allowOwn: true }) : edit();
+    } catch (error) {
+      return { ok: false, error: error.code || 'session-edit-failed', message: error.message };
+    }
+  }
 
   ipcMain.handle('get-immersive-mode', () => {
     return { immersive: false };
@@ -191,7 +201,7 @@ function registerMeetingIpc(ipcMain, deps) {
     return meetingManager.getAllMeetings();
   });
 
-  ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId } = {}) => {
+  ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId } = {}) => editMembers([sessionId], () => {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting) return { ok: false, reason: 'meeting_not_found' };
     const subSessions = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
@@ -259,7 +269,7 @@ function registerMeetingIpc(ipcMain, deps) {
       meeting: freshMeeting,
       ...(persistWarning ? { persistWarning } : {}),
     };
-  });
+  }));
 
   ipcMain.handle('suspend-meeting', (_e, meetingId) => {
     if (!isValidMeetingId(meetingId)) return { ok: false, error: 'invalid-meeting-id', message: '缺少有效会议室 ID' };
@@ -268,7 +278,8 @@ function registerMeetingIpc(ipcMain, deps) {
     });
   });
 
-  ipcMain.handle('close-meeting', (_e, meetingId) => {
+  ipcMain.handle('close-meeting', (_e, meetingId) => editMembers(
+    meetingManager.getMeeting(meetingId)?.subSessions || [], () => {
     const subIds = meetingManager.closeMeeting(meetingId);
     if (!subIds) return false;
     for (const sid of subIds) {
@@ -282,7 +293,7 @@ function registerMeetingIpc(ipcMain, deps) {
     deps.deleteImmersiveByMeeting?.(meetingId);
     sendToRenderer('meeting-closed', { meetingId });
     return true;
-  });
+  }));
 }
 
 module.exports = {

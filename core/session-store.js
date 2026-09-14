@@ -189,17 +189,19 @@ async function saveSessionFileAsync(hubId, data) {
   }
 }
 
-function loadSessionFile(hubId) {
+function loadSessionFile(hubId, {strict = false} = {}) {
   try {
     const raw = fs.readFileSync(sessionFilePath(hubId), 'utf-8');
     const obj = JSON.parse(raw);
     if (obj.schemaVersion !== SCHEMA_VERSION) {
+      if(strict)throw Error('不支持的会话记录版本：' + obj.schemaVersion);
       console.warn(`[session-store] schema mismatch for ${hubId}: ${obj.schemaVersion}`);
       return null;
     }
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
     return migrateLegacyBranchSessionMeta(obj);
   } catch (e) {
+    if(strict && e.code!=='ENOENT')throw e;
     if (e.code !== 'ENOENT') console.warn(`[session-store] load ${hubId} failed:`, e.message);
     return null;
   }
@@ -235,6 +237,7 @@ function deleteSessionFile(hubId) {
 const _dirty = new Map();
 const _timers = new Map();
 const _writeChains = new Map();
+const _releasedWrites = new Set();
 
 function _isRemoved(hubId) {
   const ss = _getStateStore();
@@ -244,7 +247,7 @@ function _isRemoved(hubId) {
 function _enqueueWrite(hubId, snap) {
   const previous = _writeChains.get(hubId) || Promise.resolve();
   const task = previous.then(async () => {
-    if (_isRemoved(hubId)) return;
+    if (_isRemoved(hubId) || _releasedWrites.has(hubId)) return;
     await saveSessionFileAsync(hubId, snap);
     if (_dirty.get(hubId) === snap) _dirty.delete(hubId);
   });
@@ -259,6 +262,7 @@ function _enqueueWrite(hubId, snap) {
 
 function markDirty(hubId, data) {
   if (!hubId) return;
+  if (_releasedWrites.has(hubId)) return;
   // 2026-05-07 多方审查 fix：被标记 removed 的 sid 不再 markDirty——renderer 防抖
   //   窗口里的 stale list 不应复活已删条目。
   if (_isRemoved(hubId)) return;
@@ -283,6 +287,7 @@ function markDirty(hubId, data) {
 // 仍然保留 markDirty 的 pending 数据：本调用立即落盘，未触发的 debounce 取消。
 function markDirtySync(hubId, data) {
   if (!hubId) return;
+  if (_releasedWrites.has(hubId)) return;
   if (_isRemoved(hubId)) return;
   if (_timers.has(hubId)) { clearTimeout(_timers.get(hubId)); _timers.delete(hubId); }
   _dirty.delete(hubId);
@@ -291,7 +296,7 @@ function markDirtySync(hubId, data) {
 }
 
 function markDirtyImmediate(hubId, data) {
-  if (!hubId || _isRemoved(hubId)) return Promise.resolve();
+  if (!hubId || _isRemoved(hubId) || _releasedWrites.has(hubId)) return Promise.resolve();
   if (_timers.has(hubId)) { clearTimeout(_timers.get(hubId)); _timers.delete(hubId); }
   _dirty.set(hubId, data);
   return _enqueueWrite(hubId, data);
@@ -316,7 +321,19 @@ function cancelDirty(hubId) {
   _dirty.delete(hubId);
 }
 
+async function flushSessionForRelease(hubId, data) {
+  _releasedWrites.add(hubId);
+  cancelDirty(hubId);
+  // An older asynchronous rename must finish before the final authoritative
+  // snapshot is written and another Hub is allowed to resume.
+  while (_writeChains.has(hubId)) await _writeChains.get(hubId);
+  cancelDirty(hubId);
+  if (!_isRemoved(hubId)) saveSessionFile(hubId, {...data, updatedAt:Date.now()});
+}
+
 module.exports = {
+  resumeSessionWrites: hubId => _releasedWrites.delete(hubId),
+  flushSessionForRelease,
   saveSessionFile,
   loadSessionFile,
   listSessionFiles,

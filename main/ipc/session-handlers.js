@@ -40,6 +40,11 @@ function registerSessionIpc(ipcMain, deps) {
   require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
 
   const lastResizeBySid = new Map();
+  ipcMain.handle('session:open-status', (_event, sessionId) => {
+    const owner = sessionManager._openOwners?.()?.owner(sessionId, true);
+    if (!owner || (owner.pid === process.pid && sessionManager.getSession(sessionId))) return {available:true};
+    return {available:false, message:require('../../core/session-open-ownership').occupied(owner).message};
+  });
   const claudeModelPreferenceGuards = new Map();
   let claudeFastQueue = Promise.resolve();
 
@@ -248,11 +253,11 @@ function registerSessionIpc(ipcMain, deps) {
     return createFork();
   });
 
-  ipcMain.handle('close-session', (_e, sessionId) => {
+  ipcMain.handle('close-session', async (_e, sessionId) => {
     if (typeof sessionId !== 'string' || !sessionId) {
       return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
     }
-    const result = sessionManager.closeSessionRecoverably(sessionId, { reason: 'user-close' });
+    const result = await sessionManager.closeSessionRecoverably(sessionId, { reason: 'user-close' });
     if (result && result.ok) lastResizeBySid.delete(sessionId);
     return result;
   });
@@ -263,16 +268,17 @@ function registerSessionIpc(ipcMain, deps) {
     if (typeof sessionId !== 'string' || !sessionId) {
       return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
     }
-    const native = sessionManager.getNativeCodex?.(sessionId) || sessionManager.getNativeClaude?.(sessionId);
-    const control = native?.control;
-    if (control?.shared) {
-      if (control.role !== 'controller') return { ok:false, error:'shared-viewer', message:'当前窗口只能查看，不能永久删除共享会话' };
-      if (!control.transferReady) return { ok:false, error:'shared-busy', message:control.transferReason || 'Codex 工作中，不能永久删除' };
-      if (control.viewerCount > 1) return { ok:false, error:'shared-viewers', message:'其他 Hub 仍在查看此会话，请先关闭其他查看窗口' };
+    try {
+      const edit = () => {
+        lastResizeBySid.delete(sessionId);
+        sessionManager.closeSession(sessionId);
+        return { ok: true, sessionId, action: 'deleted' };
+      };
+      const owners = sessionManager._openOwners?.();
+      return owners ? owners.editSessions([sessionId], edit, { allowOwn: true }) : edit();
+    } catch (error) {
+      return { ok: false, error: error.code || 'session-edit-failed', message: error.message };
     }
-    lastResizeBySid.delete(sessionId);
-    sessionManager.closeSession(sessionId);
-    return { ok: true, sessionId, action: 'deleted' };
   });
 
   ipcMain.handle('suspend-session', (_e, arg) => {
@@ -302,8 +308,7 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('codex:native-action', async (_event, payload = {}) => {
-    const native = (sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId)
-      || (['request-control','locate-controller'].includes(payload.action) ? sessionManager.getNativeClaude?.(payload.sessionId) : null));
+    const native = sessionManager.getNativeSession?.(payload.sessionId) || sessionManager.getNativeCodex?.(payload.sessionId);
     if (!native) return {ok:false,message:'该 Codex 会话尚未接管'};
     try {
       let result;
@@ -315,8 +320,6 @@ function registerSessionIpc(ipcMain, deps) {
       else if (payload.action === 'configure') result = await native.configure(payload);
       else if (payload.action === 'collaboration-mode') result = await native.configureMode(payload.mode, payload.epoch);
       else if (payload.action === 'snapshot') result = native.runtime;
-      else if (payload.action === 'request-control' && typeof native.requestControl === 'function') result = await native.requestControl();
-      else if (payload.action === 'locate-controller' && typeof native.locateController === 'function') result = await native.locateController();
       else if (payload.action === 'review-submission') result = await Promise.resolve(native.reviewUnknownSubmission(payload.submissionId,payload.epoch));
       else return {ok:false,message:'不支持的 Codex 操作'};
       return {ok:true,result};

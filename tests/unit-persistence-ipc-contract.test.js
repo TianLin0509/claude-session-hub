@@ -121,6 +121,42 @@ function test(name, fn) {
 
 console.log('Running persistence IPC contract tests...');
 
+test('dormant copies never overwrite a newer native identity, but explicit title and pin edits survive', () => {
+  const deps=createDeps();
+  const old={hubId:'keep',kind:'codex',title:'old',codexSid:'old-thread',pinned:false,updatedAt:10};
+  let disk={...old,title:'owner title',codexSid:'latest-thread',nativeRuntime:{state:'completed'},updatedAt:20};
+  deps.setLastPersistedSessions([old]);deps.setLastPersistedSessionIds(new Set(['keep']));
+  deps.sessionManager={getSession:()=>null,_openOwners:()=>({owner:()=>null,editClosed:(_id,fn)=>fn()})};
+  let reads=0;
+  deps.sessionStore.loadSessionFile=()=>{reads++;return {...disk};};
+  deps.sessionStore.saveSessionFile=(_id,value)=>{disk={...value};};
+  for(let i=0;i<3;i++)handlePersistSessions([{...old}],[],deps);
+  assert.equal(reads,0,'unchanged dormant cards do not poll disk on each renderer persist');
+  assert.equal(disk.codexSid,'latest-thread');assert.equal(disk.title,'owner title');
+  handlePersistSessions([{...old,title:'user edit',userRenamed:true,pinned:true}],[],deps);
+  assert.equal(disk.codexSid,'latest-thread');assert.equal(disk.title,'user edit');assert.equal(disk.pinned,true);
+  handlePersistSessions([{...old,title:'user edit',userRenamed:true,pinned:true}],[],deps);
+  assert.equal(disk.nativeRuntime.state,'completed');
+});
+
+test('actual removed-file writes are inside the open-ownership transaction', () => {
+  const deps=createDeps();
+  deps.setLastPersistedSessions([{hubId:'keep'}]);deps.setLastPersistedSessionIds(new Set(['keep']));
+  let locked=false, refuse=true;
+  deps.sessionManager={getSession:()=>null,_openOwners:()=>({editSessions(ids,edit) {
+    assert.deepStrictEqual(ids,['keep']);
+    if(refuse)throw Object.assign(new Error('occupied'),{code:'SESSION_OCCUPIED'});
+    locked=true;try{return edit();}finally{locked=false;}
+  }})};
+  deps.sessionStore.loadSessionFile=()=>({hubId:'keep',codexSid:'latest'});
+  deps.sessionStore.deleteSessionFile=id=>{assert(locked);deps.calls.push(['deleteSessionFile',id]);};
+  handlePersistSessions([],[],deps);
+  assert(!deps.calls.some(call=>call[0]==='deleteSessionFile'));
+  assert(deps.getLastPersistedSessionIds().has('keep'));
+  refuse=false;handlePersistSessions([],[],deps);
+  assert(deps.calls.some(call=>call[0]==='deleteSessionFile'));
+});
+
 test('registers dormant and persist channels', () => {
   const ipc = createFakeIpc();
   const deps = createDeps();

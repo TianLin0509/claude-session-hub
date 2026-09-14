@@ -115,6 +115,28 @@ function test(name, fn) {
 
 console.log('Running meeting IPC contract tests...');
 
+test('foreign session ownership blocks member and room deletion before any mutation', () => {
+  const ipc = createFakeIpc(), meetingManager = createFakeMeetingManager();
+  const rejected = [], closed = [];
+  registerMeetingIpc(ipc, {
+    meetingManager, scenes: createFakeScenes(), sendToRenderer() {},
+    sessionManager: {
+      _openOwners: () => ({ editSessions(ids) {
+        rejected.push(ids);
+        throw Object.assign(new Error('Use AI HUB PID 123'), {code: 'SESSION_OCCUPIED'});
+      } }),
+      closeSession: sid => closed.push(sid),
+    },
+  });
+  const member = ipc.handlers.get('remove-meeting-sub')(null, {meetingId:'meet-1',sessionId:'s2'});
+  const room = ipc.handlers.get('close-meeting')(null, 'meet-1');
+  assert.equal(member.error, 'SESSION_OCCUPIED');
+  assert.equal(room.error, 'SESSION_OCCUPIED');
+  assert.deepStrictEqual(rejected, [['s2'], ['s1','s2','s3']]);
+  assert.deepStrictEqual(closed, []);
+  assert(!meetingManager.calls.some(([action]) => ['removeSubSession','closeMeeting'].includes(action)));
+});
+
 test('registers expected meeting channels', () => {
   const ipc = createFakeIpc();
   registerMeetingIpc(ipc, {
