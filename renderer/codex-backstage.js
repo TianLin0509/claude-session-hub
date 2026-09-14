@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX_ENTRIES = 180;
+const { backstageStatus } = require('../core/native-backstage-status');
 function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession, focusComposer, renderProse, onModeChange = () => {} }) {
   const make = (tag, className, text) => { const node = doc.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
   const root = make('section', 'codex-backstage');
@@ -8,7 +9,11 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   root.setAttribute('aria-label', provider + ' 后台工作记录');
   root.addEventListener('click', event => event.stopPropagation());
   const toolbar = make('div','cb-toolbar');
-  const heading = make('span','cb-heading','›_ 后台');
+  const heading = make('span','cb-heading cb-live');
+  const indicator = make('span','cb-live-indicator');indicator.setAttribute('aria-hidden','true');
+  const liveLabel = make('span','cb-live-label');liveLabel.setAttribute('role','status');
+  const elapsed = make('span','cb-live-elapsed');elapsed.setAttribute('aria-hidden','true');
+  heading.append(indicator,liveLabel,elapsed);
   const tabs = make('div','cb-tabs'); tabs.setAttribute('aria-label','后台显示方式');
   const button = (text, action, className = '') => { const node = make('button', className, text); node.type='button'; node.addEventListener('click',action); return node; };
   const readable = button('工作记录',()=>changeView('readable'));
@@ -29,7 +34,9 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   const list = make('div','cb-list');
   const rawList = make('div','cb-raw-list');rawList.hidden=true;
   const empty = make('div','cb-empty');
-  empty.append(make('div','cb-empty-mark','›_'),make('h2','','让想法开始运行'),make('p','','在下方输入任务，执行过程和原始输出会在这里展开。'),button('开始输入 ↗',focusComposer));
+  const emptyTitle=make('h2','','让想法开始运行'),emptyDetail=make('p','','在下方输入任务，执行过程和原始输出会在这里展开。');
+  const emptyInput=button('开始输入 ↗',focusComposer);
+  empty.append(make('div','cb-empty-mark','›_'),emptyTitle,emptyDetail,emptyInput);
   const loading = make('div','cb-notice','正在读取后台记录…');
   const follow = button('↓ 回到最新',()=>followLatest(),'cb-follow');follow.hidden=true;
   viewport.append(older,loading,empty,list,rawList);area.append(viewport,follow);
@@ -43,6 +50,7 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   let mode='readable',visible=false,dead=false,host=null,timer=null,busy=false,dirty=true,revision=null,first=null,rawFirst=null,rawLast=null;
   let followBottom=true,unread=0,scrollTop=0,more=false,historyMore=false,unsupported=false,needsLatest=false,resizeFrame=null;
   let detailDialog=null,readCount=0,paintCount=0,pendingReset=true,modeEpoch=0,exporting=false;
+  let statusTimer=null;
   try { const pref=JSON.parse(localStorage.getItem('codex-backstage-display')||'{}');appearance.value=pref.appearance==='classic'?'classic':'refined';if([13,14,16,18].includes(pref.size))size.value=String(pref.size); }
   catch (error) { console.warn('[codex-backstage] display preference:',error.message); }
   function saveDisplay() { root.classList.toggle('cb-classic',appearance.value==='classic');root.style.setProperty('--cb-font-size',size.value+'px');try{localStorage.setItem('codex-backstage-display',JSON.stringify({appearance:appearance.value,size:Number(size.value)}));}catch(error){console.warn('[codex-backstage] display preference:',error.message);}if(followBottom)pin(); }
@@ -147,10 +155,23 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   function followLatest(){followBottom=true;unread=0;followUi();if(needsLatest){needsLatest=false;revision=null;void refresh(true);}else pin();}
   function changeView(next){mode=next;modeEpoch++;pendingReset=true;onModeChange(next);root.dataset.view=mode;readable.setAttribute('aria-pressed',String(next==='readable'));raw.setAttribute('aria-pressed',String(next==='raw'));legacy.setAttribute('aria-pressed',String(next==='legacy'));host?.classList.toggle('codex-backstage-legacy',next==='legacy');list.hidden=next!=='readable';rawList.hidden=next!=='raw';area.hidden=next==='legacy';status.hidden=next==='legacy';appearance.hidden=next!=='readable';older.hidden=true;
     if(next!=='legacy'){revision=null;rawFirst=rawLast=null;more=false;followBottom=true;unread=0;void refresh(true);}else{loading.hidden=!unsupported;toolbar.title=unsupported?loading.textContent:'';} }
-  function updateStatus(){const r=getSession()?.nativeRuntime;if(!r)return;const connected=['connected','unstarted'].includes(r.connection);
-    const observing=!connected&&r.observation?.state==='reconnecting';
-    stateText.textContent=observing?'● 正在恢复同步':!connected?'● 连接待核对':({running:'● 正在运行',waiting:'● 等待处理',completed:'✓ 已完成',failed:'× 执行失败',interrupted:'■ 已中断',idle:'● 就绪',unknown:'● 状态待核对'})[r.state]||'● '+r.state;
-    status.dataset.state=!connected?'unknown':r.state;stateDetail.textContent=observing?'':!connected?r.reason||'连接暂时不可用':r.state==='waiting'?'请在下方处理审批或问题':'';stateDetail.title=r.reason||'';}
+  function updateStatus(){
+    if(dead)return;
+    const value=backstageStatus(getSession());
+    const animate=value.animated&&visible&&!doc.hidden;
+    heading.dataset.state=value.state;heading.dataset.animated=String(animate);
+    setText(liveLabel,`${value.provider} · ${value.title}`);setText(elapsed,value.elapsed);
+    heading.title=value.detail+' 动态标记表示任务或请求尚未结束，不代表服务端持续返回心跳。';
+    setText(indicator,value.animated?'':({completed:'✓',interrupted:'■',failed:'×',waiting:'?',unknown:'!'}[value.state]||'·'));
+    status.dataset.state=value.state;setText(stateText,value.title);setText(stateDetail,value.detail);stateDetail.title=value.detail;
+    setText(emptyTitle,value.engaged?value.title:'让想法开始运行');
+    setText(emptyDetail,value.engaged?value.detail:'在下方输入任务，执行过程与输出会在这里展开。');emptyInput.hidden=value.engaged;
+    host?.classList.toggle('cb-native-engaged',value.engaged);
+    // This clock renders existing evidence only: no polling, history reload,
+    // xterm writes or runtime mutation. Stop it when hidden or settled.
+    if(!animate){clearTimeout(statusTimer);statusTimer=null;}
+    else if(!statusTimer)statusTimer=setTimeout(()=>{statusTimer=null;updateStatus();},1000);
+  }
   async function exportOriginal(){if(exporting||unsupported)return;exporting=true;exportButton.disabled=true;try{const result=await ipcRenderer.invoke('codex:backstage-export',{sessionId});if(!result?.ok)throw Error(result?.message||'导出失败');}catch(err){error(err.message);}finally{exporting=false;exportButton.disabled=unsupported;}}
   async function openDetail(entry){
     if(detailDialog)detailDialog.close();
@@ -161,17 +182,17 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
     async function load(cursor={after:0}){prev.disabled=next.disabled=true;try{const page=await request({mode:'detail',id:expected,...cursor});if(!dialog.isConnected)return;content.replaceChildren();for(const chunk of page.chunks||[]){const block=make('section');block.append(make('div','cb-raw-source',`${chunk.field} / v${chunk.generation}`),make('pre','cb-raw-text',chunk.text));content.append(block);}if(!page.chunks?.length)content.textContent='该步骤没有原始文本。';pageFirst=page.first;pageLast=page.last;prev.disabled=cursor.after===0||!page.chunks?.length;next.disabled=cursor.before!=null?!page.chunks?.length:!page.more;content.scrollTop=0;}catch(err){content.textContent='读取原文失败：'+err.message;}}
     dialog.addEventListener('close',()=>{dialog.remove();if(detailDialog===dialog)detailDialog=null;},{once:true});dialog.showModal();await load();
   }
-  function visibility(){if(!doc.hidden&&visible&&dirty)schedule();}
+  function visibility(){updateStatus();if(!doc.hidden&&visible&&dirty)schedule();}
   doc.addEventListener('visibilitychange',visibility);
   changeView('readable');
   return {
     root,
     mount(target){host=target;target.classList.add('codex-backstage-enabled');target.classList.toggle('codex-backstage-legacy',mode==='legacy');target.append(root);onModeChange(mode);},
-    setVisible(value,{force=false}={}){visible=!!value;root.hidden=!visible;if(!visible){clearTimeout(timer);timer=null;return;}viewport.scrollTop=scrollTop;if(force)followLatest();updateStatus();if(dirty||revision==null)schedule();},
+    setVisible(value,{force=false}={}){visible=!!value;root.hidden=!visible;updateStatus();if(!visible){clearTimeout(timer);timer=null;return;}viewport.scrollTop=scrollTop;if(force)followLatest();if(dirty||revision==null)schedule();},
     notify(event){if(event?.error)error(event.error);schedule();updateStatus();},
     updateStatus,
     stats(){return{readCount,paintCount,entries:nodes.size,mode,visible,followBottom,revision};},
-    dispose(){dead=true;visible=false;clearTimeout(timer);cancelAnimationFrame(resizeFrame);ro.disconnect();doc.removeEventListener('visibilitychange',visibility);detailDialog?.close();root.remove();host?.classList.remove('codex-backstage-enabled','codex-backstage-legacy');},
+    dispose(){dead=true;visible=false;clearTimeout(timer);clearTimeout(statusTimer);cancelAnimationFrame(resizeFrame);ro.disconnect();doc.removeEventListener('visibilitychange',visibility);detailDialog?.close();root.remove();host?.classList.remove('codex-backstage-enabled','codex-backstage-legacy','cb-native-engaged');},
   };
 }
 
