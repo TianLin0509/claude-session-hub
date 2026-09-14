@@ -83,3 +83,69 @@ test('simultaneous processes cannot both open the same session', async () => {
   assert.deepEqual((await childReplies([code,code])).sort(),['SESSION_OCCUPIED','won']);
   const store=new SessionOpenOwnership({directory:root});try{store.release(store.claim('race'));}finally{store.close();}
 });
+
+for (const legacy of [false,true]) test(`synchronized ${legacy ? 'legacy migration' : 'first WAL initialization'} preserves exactly one session owner`, async () => {
+  const root=directory(), gate=path.join(root,'go'), count=8;
+  if(legacy){
+    const {DatabaseSync}=require('node:sqlite');
+    const seed=new DatabaseSync(path.join(root,'session-open-owners.sqlite'));
+    seed.exec('CREATE TABLE open_owners (key TEXT PRIMARY KEY, session TEXT NOT NULL, pid INTEGER NOT NULL, version TEXT, nonce TEXT NOT NULL, server_pid INTEGER)');
+    seed.close();
+  }
+  const codes=Array.from({length:count},(_,index)=>`
+    const fs=require('node:fs'),{DatabaseSync}=require('node:sqlite');
+    const original=DatabaseSync.prototype.exec;let gated=false;
+    DatabaseSync.prototype.exec=function(sql){
+      if(!gated && sql.includes('PRAGMA journal_mode=WAL')){
+        gated=true;fs.writeFileSync(${JSON.stringify(path.join(root,'ready-'))}+${index},'ready');
+        const deadline=Date.now()+10000;
+        while(!fs.existsSync(${JSON.stringify(gate)})){
+          if(Date.now()>deadline)throw Error('WAL barrier timed out');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1);
+        }
+      }
+      return original.call(this,sql);
+    };
+    const {SessionOpenOwnership}=require(${JSON.stringify(path.resolve(__dirname,'../core/session-open-ownership'))});
+    const store=new SessionOpenOwnership({directory:${JSON.stringify(root)},isAlive:()=>true});
+    process.stdin.once('data',()=>{try{store.claim('race');console.log('won');}catch(error){console.log(error.code);}});
+    process.stdin.resume();
+  `);
+  const release=async()=>{
+    const deadline=Date.now()+10000;
+    while(!Array.from({length:count},(_,index)=>fs.existsSync(path.join(root,'ready-'+index))).every(Boolean)){
+      if(Date.now()>deadline)throw Error('children did not reach WAL barrier');
+      await new Promise(resolve=>setTimeout(resolve,5));
+    }
+    fs.writeFileSync(gate,'go');
+  };
+  const [replies]=await Promise.all([childReplies(codes),release()]);
+  assert.equal(replies.filter(reply=>reply==='won').length,1);
+  assert.equal(replies.filter(reply=>reply==='SESSION_OCCUPIED').length,count-1);
+});
+
+test('WAL initialization does not swallow permanent errors and closes failed connections', () => {
+  const {DatabaseSync}=require('node:sqlite');
+  const originalExec=DatabaseSync.prototype.exec,originalClose=DatabaseSync.prototype.close;
+  const failure=Object.assign(new Error('disk I/O error'),{code:'ERR_SQLITE_ERROR',errcode:10});
+  let closed=0;
+  DatabaseSync.prototype.exec=function(sql){if(sql.includes('PRAGMA journal_mode=WAL'))throw failure;return originalExec.call(this,sql);};
+  DatabaseSync.prototype.close=function(){closed++;return originalClose.call(this);};
+  try {assert.throws(()=>new SessionOpenOwnership({directory:directory()}),error=>error===failure);assert.equal(closed,1);}
+  finally {DatabaseSync.prototype.exec=originalExec;DatabaseSync.prototype.close=originalClose;}
+});
+
+test('persistent initialization contention is bounded and every failed connection closes', () => {
+  const {DatabaseSync}=require('node:sqlite');
+  const originalExec=DatabaseSync.prototype.exec,originalClose=DatabaseSync.prototype.close;
+  const failure=Object.assign(new Error('database is locked'),{code:'ERR_SQLITE_ERROR',errcode:5});
+  let attempts=0,closed=0;
+  DatabaseSync.prototype.exec=function(sql){if(sql.includes('PRAGMA journal_mode=WAL')){attempts++;throw failure;}return originalExec.call(this,sql);};
+  DatabaseSync.prototype.close=function(){closed++;return originalClose.call(this);};
+  try {
+    const started=performance.now();
+    assert.throws(()=>new SessionOpenOwnership({directory:directory()}),error=>error===failure);
+    assert.ok(attempts>1);assert.equal(closed,attempts);
+    assert.ok(performance.now()-started<5000,'initialization retry must terminate');
+  } finally {DatabaseSync.prototype.exec=originalExec;DatabaseSync.prototype.close=originalClose;}
+});

@@ -113,10 +113,25 @@ class ClaudeNativeSession extends EventEmitter {
     this.reconnecting = false;
     this.reconnectPending = false;
     this.recoveryReady = false;
+    this.backstage = new (require('./claude-backstage').ClaudeBackstage)(this);
+    this.on('item', event => this.backstage.frame(event.message, event.userMessageId));
+    this.on('lifecycle', event => {
+      if (event.type === 'agent-turn-complete') this.backstage.frame(event.result, event.userMessageId);
+      if (event.type === 'submission-accepted') {
+        const record = this.records.get(event.clientSubmissionId);
+        if (record) this.backstage.frame({type:'user', uuid:record.userMessageId, message:{content:record.content}}, record.userMessageId);
+      }
+    });
+    this.on('action-error', message => this.backstage.note('操作失败', message, 'error'));
     if (this.unreconciled) this.runtime.reason = '上次 Claude 提交状态需要核对；不会自动重发';
   }
 
   get pid() { return this.client?.proc?.pid || null; }
+  readBackstage(options) { return this.backstage.read(options); }
+  async prepareBackstageExport() {
+    let page;
+    do { page = this.backstage.read({history:true, limit:1}); await new Promise(resolve => setImmediate(resolve)); } while (page.historyMore);
+  }
   onData(fn) { this.on('data', fn); return { dispose: () => this.off('data', fn) }; }
   print(text) { this.emit('data', sanitizeTerminal(text).replace(/\r?\n/g, '\r\n')); }
   onExit(fn) { this.on('exit', fn); return { dispose: () => this.off('exit', fn) }; }
@@ -181,7 +196,8 @@ class ClaudeNativeSession extends EventEmitter {
     return { ok: !['rejected', 'unknown', 'content-mismatch'].includes(record.status),
       sendStatus: record.status, source: BACKEND, submissionId: record.submissionId,
       clientSubmissionId: record.submissionId, providerSessionId: this.sessionId,
-      userMessageId: record.userMessageId, providerTurnId: null, promptFingerprint: record.fingerprint };
+      userMessageId: record.userMessageId, providerTurnId: null, promptFingerprint: record.fingerprint,
+      ...(record.submittedAt ? {submittedAt:record.submittedAt} : {}) };
   }
 
   lifecycle(type, record, extra = {}, beforeEmit = null) {
@@ -338,6 +354,7 @@ class ClaudeNativeSession extends EventEmitter {
     const record = this.queue.shift();
     this.active = record;
     record.status = 'submitting';
+    record.submittedAt = Date.now();
     // Writing a submission is ordinary work in flight, not an uncertain result.
     // Publishing it as "unknown" made every send flash "本条提交待核对" and a
     // reconnect button. A crash here still leaves a non-idle snapshot, so a
@@ -390,6 +407,8 @@ class ClaudeNativeSession extends EventEmitter {
     this.print('\n[连接中断] ' + (error && error.message || '') + '\n');
     this.unreconciled = true;
     const record = this.active;
+    this.lateAckRecovery = error.code === 'CLAUDE_SUBMISSION_TIMEOUT' && record
+      ? {record,client:this.client,epoch:this.runtime.epoch} : null;
     if (record) {
       clearTimeout(record.timer);
       if (!TERMINAL.has(record.status)) record.status = 'unknown';
@@ -443,9 +462,17 @@ class ClaudeNativeSession extends EventEmitter {
         this.update({ submission: this.receipt(record) }); return;
       }
       clearTimeout(record.timer);
+      const recovery=this.lateAckRecovery;
+      const confirmedLateAck=recovery?.record === record && recovery.client === this.client
+        && recovery.epoch === this.runtime.epoch && this.runtime.connection === 'connected'
+        && !this.client.failure && !this.reconnecting && !this.reconnectPending;
       record.accepted = true; record.status = 'accepted'; record.acceptedAt = Date.now();
       this.lifecycle('submission-accepted', record, { status: 'accepted', accepted: true, acceptedAt: record.acceptedAt }, () => {
-        this.update({ state: 'starting', submission: this.receipt(record), reason: 'Claude 已收到输入，等待执行' });
+        // An exact echo from the same live writer proves receipt even after
+        // the local acknowledgement deadline. It cannot clear other failures.
+        if (confirmedLateAck) {this.unreconciled=false;this.lateAckRecovery=null;}
+        this.update({ state: this.unreconciled ? 'unknown' : 'starting', submission: this.receipt(record),
+          reason: this.unreconciled ? 'Claude 已确认收到输入，但连接或历史状态仍需核对' : 'Claude 已收到输入，等待执行' });
       });
       record.resolve(this.receipt(record));
       return;
@@ -535,6 +562,7 @@ class ClaudeNativeSession extends EventEmitter {
     // The engine reports this turn's tokens on the result frame; the cards
     // showed them for every Claude turn before the native transport.
     if (message.usage && typeof message.usage === 'object') record.usage = message.usage;
+    record.result = message;
     const reason = failed ? (message.errors?.join('; ') || message.result || message.subtype) : null;
     this.lifecycle('agent-turn-complete', record, { status, text: record.finalText,
       accepted: true, completedAt, transcriptMessages: [...(record.messages?.values() || [])],
@@ -884,6 +912,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.options = { ...this.options, restoredRuntime: null, fork: false,
         resumeSessionId: this.historyPath() ? this.sessionId : undefined };
       this.client = null; this.ready = null; this.closed = false; this.closePromise = null;
+      if (this.backstage.closed) this.backstage = new (require('./claude-backstage').ClaudeBackstage)(this);
       this.unreconciled = this.recoveryRecords().length > 0;
       this.reconnecting = false;
       await this.start();
@@ -934,6 +963,7 @@ class ClaudeNativeSession extends EventEmitter {
         if (record.status === 'queued' || record.status === 'submitting') record.reject(protocolError('Claude session closed', 'CLAUDE_CLOSED'));
       }
       if (this.client) await this.client.close();
+      this.backstage.close();
       if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
       // A shutdown waiter may attach after the child already crashed (or
       // before startup). Do not wait for another impossible OS exit event.

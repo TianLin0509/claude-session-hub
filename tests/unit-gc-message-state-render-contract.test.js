@@ -44,7 +44,9 @@ assert.ok(
 // 3. 空内容非成功态消息渲染占位文案（不再是空气泡），且 CSS 有对应样式
 assert.ok(
   rendererSrc.includes('mr-gc-empty-placeholder') &&
-  rendererSrc.includes('本轮未收到回答') &&
+  rendererSrc.includes('本轮未收录最终回答') &&
+  rendererSrc.includes('请打开该成员会话核对状态和原始记录') &&
+  rendererSrc.includes('提交待核对时不要重复发送') &&
   rendererSrc.includes('本轮回答被下一轮提问覆盖，未收录。') &&
   rendererSrc.includes('本轮已跳过该 AI，无回答。'),
   '空内容消息必须按 status 渲染占位文案',

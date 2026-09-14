@@ -2,7 +2,6 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net'),assert=require('node:assert/strict');
 const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
-const {connectBroker,readMetadata}=require('../main/codex-runtime-broker-client');
 const ROOT=path.resolve(__dirname,'..');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-codex-backstage-'));
 const dataDir=path.join(temp,'data'),home=path.join(temp,'codex'),workspace=path.join(temp,'workspace');
@@ -44,7 +43,7 @@ try{
   await until(a,"document.querySelector('.cb-list').textContent.includes('FIRST_HAND_STACK')",'exact command error and stack');
   assert(await a.eval("document.querySelector('.cb-list').textContent.includes('exit 7') && document.querySelector('.cb-list').textContent.includes('BACKSTAGE_STDERR')"));
   assert(!(await a.eval("document.querySelector('.cb-list').textContent")).includes(extraEnv.BACKSTAGE_TEST_API_KEY));
-  assert(await a.eval("document.querySelector('.cb-list .cb-markdown strong')?.textContent==='检查完成。'"));
+  await until(a,"[...document.querySelectorAll('.cb-list .cb-markdown strong')].some(e=>e.textContent==='检查完成。')",'final Markdown arrives in the backstage DOM');
   assert.equal(await a.eval("terminalCache.get(activeSessionId)._gpuLoaded"),false,'readable transcript releases hidden xterm canvas');
   const errorVisible=await a.eval("(()=>{const e=document.querySelector('.cb-inline-error:not([hidden])');e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return e.closest('details').open&&r.height>30&&e.textContent.includes('FIRST_HAND_STACK')})()");assert(errorVisible,'original stack is outside clipped command log and visible without expansion');
   assert(await a.eval("!document.querySelector('.cb-output b') && document.querySelector('.cb-list').textContent.includes('<b>not html</b>')"));checked('real native errors, stderr, exit code, Unicode and untrusted text remain visible');
@@ -95,18 +94,27 @@ try{
   await a.eval("document.querySelector('.cb-font-size').value='18';document.querySelector('.cb-font-size').dispatchEvent(new Event('change'))");assert.equal(await a.eval("getComputedStyle(document.querySelector('.cb-prose .cb-output')).fontSize"),'18px');
   await a.eval("document.querySelector('.cb-appearance').value='refined';document.querySelector('.cb-appearance').dispatchEvent(new Event('change'));document.querySelector('.cb-font-size').value='14';document.querySelector('.cb-font-size').dispatchEvent(new Event('change'))");
   await a.send('Emulation.setDeviceMetricsOverride',{width:800,height:1050,deviceScaleFactor:1,mobile:false});await shot(a,'narrow');assert(await a.eval("document.querySelector('.codex-backstage').getBoundingClientRect().right<=innerWidth+1"));checked('classic/refined style, font size and narrow layout work in actual Hub');
-  // Wait on actual state persistence before the independent viewer attaches.
+  // Current ownership contract: the second Hub must wait until the first
+  // releases this session. It then reads the same persisted native history.
   await until(a,`(()=>{try{return JSON.parse(require('fs').readFileSync(${JSON.stringify(path.join(dataDir,'state.json'))},'utf8')).sessions.some(s=>s.hubId===${sid}||s.id===${sid})}catch{return false}})()`,'state persistence');
-  const b=await launch('backstage-b');await until(b,`sessions.has(${sid})`,'viewer restored session');await b.eval(`selectSession(${sid})`);if(await b.eval('currentView')!=='pty')await click(b,'#btn-backstage');
+  result.stats=await a.eval('terminalCache.get(activeSessionId)._codexBackstage.stats()');
+  const nativeId=await a.eval(`sessions.get(${sid}).codexSid`);
+  const b=await launch('backstage-b');await until(b,`sessions.has(${sid})`,'second Hub history entry');
+  assert.equal((await a.eval(`ipcRenderer.invoke('suspend-session',{sessionId:${sid}})`)).ok,true);
+  await until(a,`sessions.get(${sid}).status==='dormant'`,'first Hub releases writer');
+  await click(b,`.session-item[data-session-id="${created.id}"]`);
+  await until(b,`sessions.get(${sid}).nativeRuntime?.connection==='connected'`,'second Hub resumes native identity');
+  if(await b.eval('currentView')!=='pty')await click(b,'#btn-backstage');
   await until(b,"document.querySelector('.cb-list')?.textContent.includes('FIRST_HAND_STACK')",'viewer original history');
-  assert.equal(await b.eval(`sessions.get(${sid}).codexSharedControl.serverPid`),await a.eval(`sessions.get(${sid}).codexSharedControl.serverPid`));checked('second isolated Hub reads the same first-hand record from one native writer');
+  assert.equal(await b.eval(`sessions.get(${sid}).codexSid`),nativeId);checked('after owner closes the session, second Hub restores the native identity and original backstage records');
   await shot(b,'shared-viewer');
   for(const client of clients)assert.deepEqual(await client.eval('__backstageErrors'),[]);
-  result.stats=await a.eval('terminalCache.get(activeSessionId)._codexBackstage.stats()');result.exportBytes=fs.statSync(exported).size;result.passed=true;
-}finally{
+  result.exportBytes=fs.statSync(exported).size;result.passed=true;
+}catch(error){result.error=error.stack;throw error;}finally{
   for(let i=0;i<clients.length;i++){try{await shot(clients[i],'final-'+i);}catch(error){result.screenshotError=error.message;}await clients[i].close();}
-  for(const hub of hubs.reverse())await gracefulQuit(hub);
-  try{const metadata=readMetadata(dataDir);if(metadata){const broker=await connectBroker({dataDir});try{await broker.request('shutdown-test',{});}finally{broker.close();}}}catch(error){result.brokerShutdown=error.message;}
+  result.cleanupErrors=[];
+  for(const hub of hubs.reverse())try{await gracefulQuit(hub);}catch(error){result.cleanupErrors.push(error.message);}
+  if(result.cleanupErrors.length){result.passed=false;process.exitCode=1;}
   fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify(result));
 }
 })().catch(error=>{console.error(error.stack);if(error.logTail)console.error(error.logTail);process.exitCode=1;});

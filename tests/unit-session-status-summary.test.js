@@ -29,3 +29,12 @@ test('Claude default fast and explicit standard are both visible', () => {
   assert.equal(buildSessionStatusSummary({ kind: 'claude', effort: 'high' }).speed, 'fast');
   assert.equal(buildSessionStatusSummary({ kind: 'claude-resume', fastMode: false }).speed, 'standard');
 });
+
+test('native Claude stage and group summaries use the same confirmed speed as the composer', () => {
+  const {buildStageStatusSummary} = require('../core/session-status-summary');
+  for (const confirmed of [false,true]) {
+    const session={kind:'claude',runtimeBackend:'claude-stream-json',fastMode:!confirmed,nativeRuntime:{fastMode:confirmed}};
+    assert.equal(buildSessionStatusSummary(session).speed,confirmed?'fast':'standard');
+    assert.equal(buildStageStatusSummary(session).speed,confirmed?'fast':'standard');
+  }
+});

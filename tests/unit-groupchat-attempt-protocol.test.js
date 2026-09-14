@@ -69,4 +69,8 @@ assert.strictEqual(adapter.completion(attempt, {
   signalSource: 'task_complete', text: 'Quota exceeded',
 }).failure.code, 'quota_exceeded');
 
+for (const reason of ['Claude submission requires reconciliation','Claude 未确认本条输入，提交状态待核对']) {
+  const failure=classifyProviderFailure({reason,force:true});
+  assert.strictEqual(failure.code,'submission_unknown');assert.strictEqual(failure.retryable,false);
+}
 console.log('groupchat attempt protocol: ok');

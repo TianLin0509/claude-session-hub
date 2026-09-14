@@ -428,14 +428,16 @@ function _renderMetaPills(turn) {
   if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
     pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
   }
-  if (turn.usage && (turn.usage.context_tokens || turn.usage.input_tokens)) {
-    const contextTokens = turn.usage.context_tokens || turn.usage.input_tokens;
+  const contextTokens = turn.usage && (Object.hasOwn(turn.usage, 'context_tokens')
+    ? turn.usage.context_tokens : turn.usage.input_tokens);
+  if (typeof contextTokens === 'number' && contextTokens >= 0) {
     const win = turn.usage.context_window || _modelCtxWindow(turn.model);
     const pct = Math.min(100, Math.round(contextTokens / win * 100));
     pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
   }
-  if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {
-    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(turn.tsEnd - turn.ts)}</span>`);
+  const durationMs = turn.durationMs ?? (turn.tsEnd > turn.ts ? turn.tsEnd - turn.ts : null);
+  if (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs >= 0) {
+    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(durationMs)}</span>`);
   }
   if (pills.length === 0) return '';
   return `<span class="turn-meta-pills">${pills.join('')}</span>`;

@@ -26,6 +26,13 @@ function displayTurns(turns) {
       id: turn.id, source: turn.source, nativeOutcome: turn.nativeOutcome,
       stopReason: turn.stopReason, text: turn.text, toolCalls: turn.toolCalls,
     };
+    if (owner && turn.source === 'claude-stream-json') {
+      owner.usage = turn.usage;
+      owner.durationMs = turn.durationMs ?? (turn.tsEnd > turn.ts ? turn.tsEnd - turn.ts : undefined);
+      for (const card of cards) if (card.phase === 'activity') {
+        card.usage = undefined; card.durationMs = undefined; card.tsEnd = card.ts;
+      }
+    }
     return cards;
   });
   // Steering inserts another user item inside the same App Server turn.

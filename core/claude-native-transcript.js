@@ -127,12 +127,7 @@ function projectClaudeRecord(record) {
     role: 'assistant', kind: 'claude', text: answer, thinking: thinking.join('\n\n'),
     toolCalls: [...toolCalls.values()], ts: record.createdAt, tsEnd: record.completedAt || null,
     source, displayMessages, clientSubmissionId: record.submissionId, userMessageId: id,
-    ...(record.model ? { model: record.model } : {}),
-    ...(record.usage ? { usage: {
-      input_tokens: (record.usage.input_tokens || 0) + (record.usage.cache_read_input_tokens || 0)
-        + (record.usage.cache_creation_input_tokens || 0),
-      output_tokens: record.usage.output_tokens || 0,
-    } } : {}),
+    ...require('./claude-turn-metrics').claudeTurnMetrics(record, frames),
     nativeActivity: record.nativeActivity || false, nativeOrigin: record.origin || null,
     stopReason: terminal ? record.status : null, nativeOutcome: terminal ? record.status : null } : null;
   return { user, assistant };
@@ -152,6 +147,14 @@ function mergeContinuations(head, continuations) {
     merged.toolCalls.push(...assistant.toolCalls);
     if (assistant.thinking) thinking.push(assistant.thinking);
     if (assistant.model) merged.model = assistant.model;
+    if (assistant.usage) {
+      merged.usage = { ...assistant.usage,
+        input_tokens: (merged.usage?.input_tokens || 0) + assistant.usage.input_tokens,
+        output_tokens: (merged.usage?.output_tokens || 0) + assistant.usage.output_tokens };
+    }
+    // A continuation is part of this displayed turn; preserve the elapsed
+    // interval rather than retaining only the first query's engine duration.
+    delete merged.durationMs;
     const terminal = END.has(record.status);
     if (terminal && assistant.text) merged.text = assistant.text;
     merged.tsEnd = terminal ? record.completedAt || merged.tsEnd : null;
