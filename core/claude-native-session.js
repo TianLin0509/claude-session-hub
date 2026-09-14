@@ -196,7 +196,8 @@ class ClaudeNativeSession extends EventEmitter {
     return { ok: !['rejected', 'unknown', 'content-mismatch'].includes(record.status),
       sendStatus: record.status, source: BACKEND, submissionId: record.submissionId,
       clientSubmissionId: record.submissionId, providerSessionId: this.sessionId,
-      userMessageId: record.userMessageId, providerTurnId: null, promptFingerprint: record.fingerprint };
+      userMessageId: record.userMessageId, providerTurnId: null, promptFingerprint: record.fingerprint,
+      ...(record.submittedAt ? {submittedAt:record.submittedAt} : {}) };
   }
 
   lifecycle(type, record, extra = {}, beforeEmit = null) {
@@ -353,6 +354,7 @@ class ClaudeNativeSession extends EventEmitter {
     const record = this.queue.shift();
     this.active = record;
     record.status = 'submitting';
+    record.submittedAt = Date.now();
     // Writing a submission is ordinary work in flight, not an uncertain result.
     // Publishing it as "unknown" made every send flash "本条提交待核对" and a
     // reconnect button. A crash here still leaves a non-idle snapshot, so a

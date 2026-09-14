@@ -59,3 +59,18 @@ test('capture failures are visible and do not claim the model failed', () => {
   assert.equal(s.runtime.state,'completed');assert.match(errors[0],/disk full/);
   assert.throws(()=>b.read(),/disk full/);b.close();
 });
+
+test('a stopped turn cannot leave its unfinished tool and partial answer marked running', () => {
+  const b=new ClaudeBackstage(session());
+  try {
+    b.frame(assistant('call',[{type:'tool_use',id:'tool',name:'Read',input:{path:'a'}}]),'u');
+    b.frame(assistant('other',[{type:'tool_use',id:'other-tool',name:'Read',input:{path:'b'}}]),'other');
+    b.frame({type:'stream_event',event:{type:'message_start',message:{id:'partial'}}},'u');
+    b.frame({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:'partial'}}},'u');
+    b.frame({type:'result',subtype:'success',terminal_reason:'aborted_tools'},'u');
+    const rows=b.read().entries;
+    assert.equal(rows.find(e=>e.itemId==='tool').status,'interrupted');
+    assert.equal(rows.find(e=>e.itemId==='partial:0').status,'interrupted');
+    assert.equal(rows.find(e=>e.itemId==='other-tool').status,'running');
+  } finally {b.close();}
+});

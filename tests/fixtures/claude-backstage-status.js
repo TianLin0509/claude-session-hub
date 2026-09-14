@@ -18,7 +18,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   if(text==='SILENT')return;
   if(text==='RUNNING'){
     // The engine starts an assistant message, with no output text at all.
-    frame({type:'stream_event',event:{type:'message_start',message:{id:randomUUID(),role:'assistant',content:[]}}});return;
+    frame({type:'stream_event',event:{type:'message_start',message:{id:randomUUID(),role:'assistant',content:[]}}});
+    frame({type:'assistant',uuid:randomUUID(),message:{id:randomUUID(),role:'assistant',content:[{type:'tool_use',id:'unfinished-tool',name:'Read',input:{file_path:'fixture.txt'}}]}});return;
   }
   if(text==='WAIT'){frame({type:'control_request',request_id:'approval',request:{subtype:'can_use_tool',tool_name:'Read',tool_use_id:'r',input:{file_path:'fixture.txt'}}});return;}
   if(text==='CRASH'){setTimeout(()=>process.exit(9),100);return;}

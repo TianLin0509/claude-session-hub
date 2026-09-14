@@ -30,3 +30,19 @@ test('a rejected new submission is visible over an old completed turn, without s
   assert.equal(backstageStatus(model('codex-app-server','completed',rejected)).state,'failed');
   assert.equal(backstageStatus(model('codex-app-server','running',rejected)).state,'running');
 });
+
+test('Claude waiting elapsed time survives native status refreshes',async()=>{
+  const {ClaudeNativeSession}=require('../core/claude-native-session');
+  const driver=new ClaudeNativeSession({executable:process.execPath,
+    commandArgs:[require('node:path').join(__dirname,'fixtures/claude-stream.js'),'--fixture=hold']});
+  try {
+    await driver.submit('silent');
+    const before=driver.runtime;
+    assert.equal(before.state,'starting');
+    assert.ok(before.submission.submittedAt>0);
+    const now=before.submission.submittedAt+10000;
+    driver.update({actualModel:'model-confirmed'});
+    const after={...driver.runtime,observedAt:now-1000};
+    assert.equal(backstageStatus({runtimeBackend:'claude-stream-json',nativeRuntime:after},now).elapsed,'10s');
+  } finally {await driver.close();}
+});

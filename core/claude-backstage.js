@@ -49,7 +49,7 @@ class ClaudeBackstage extends CodexBackstage {
     const message = frame.message || {};
     if (frame.type === 'stream_event' && !historical) {
       const event = frame.event || {}, streamKey = frame.parent_tool_use_id || 'root';
-      if (event.type === 'message_start') this.streams.set(streamKey, { id:event.message.id, blocks:new Map() });
+      if (event.type === 'message_start') this.streams.set(streamKey, { id:event.message.id, turnId, blocks:new Map() });
       const stream = this.streams.get(streamKey);
       if (!stream) return;
       if (event.type === 'content_block_start') stream.blocks.set(event.index, event.content_block);
@@ -90,9 +90,23 @@ class ClaudeBackstage extends CodexBackstage {
         if (this.streams.get(key)?.id === message.id) this.streams.delete(key);
       }
     } else if (frame.type === 'result') {
+      const status = ['aborted_streaming','aborted_tools'].includes(frame.terminal_reason) ? 'interrupted'
+        : frame.is_error || frame.subtype !== 'success' ? 'failed' : 'completed';
+      if (!historical) this.capture(store => {
+        const prefix=this.key(turnId,'');
+        const rows=new Map([...store.db.prepare('SELECT id,value FROM entries WHERE id>=? AND id<?')
+          .iterate(prefix,prefix+'\uffff')].map(row=>[row.id,JSON.parse(row.value)]));
+        for (const [id,entry] of store.pending) if (id.startsWith(prefix)) rows.set(id,entry);
+        for (const [id,entry] of rows) if (entry.status === 'running') {
+          // The turn ended without this item's own completion. Do not leave
+          // it working forever or invent a successful tool result.
+          store.update(id,{status:status === 'completed' ? 'unknown' : status});
+          store.releaseHashes(id);
+        }
+        for (const [key,stream] of this.streams) if (stream.turnId === turnId) this.streams.delete(key);
+      });
       this.entry(turnId, '$result', {type:'turn', title:'本轮',
-        status:['aborted_streaming','aborted_tools'].includes(frame.terminal_reason) ? 'interrupted'
-          : frame.is_error || frame.subtype !== 'success' ? 'failed' : 'completed'}, {result:frame}, historical);
+        status}, {result:frame}, historical);
     } else if (frame.type === 'system') {
       this.entry(turnId, frame.uuid || `${frame.subtype}:${frame.task_id || ''}`, {type:'diagnostic', title:frame.subtype || 'Claude', status:'completed'}, {details:frame}, historical);
     }

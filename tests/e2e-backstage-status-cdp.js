@@ -52,7 +52,14 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms)),j=JSON.stringify;
       report.checks.push(provider+': status survives all three views and re-entry; hidden animation pauses');
       await click('.floating-input-stop');await state('interrupted');
       assert.equal(await c.eval('document.querySelector(".cb-live").dataset.animated'),'false');await shot(provider+'-stopped');
-      if(provider==='claude'){await send('RUNNING');await state('running');await shot('claude-running-without-text');await click('.floating-input-stop');await state('interrupted');}
+      if(provider==='claude'){
+        await send('RUNNING');await state('running');
+        await until('!!document.querySelector(".cb-entry[data-type=mcpToolCall][data-status=running]")');
+        await shot('claude-running-without-text');await click('.floating-input-stop');await state('interrupted');
+        await until('!!document.querySelector(".cb-entry[data-type=mcpToolCall][data-status=interrupted]")');
+        assert.equal(await c.eval('document.querySelectorAll(".cb-entry[data-status=running]").length'),0);
+        report.checks.push('claude: Stop settles unfinished tool rows as interrupted without inventing output');
+      }
       await send(provider==='codex'?'fixture:approval':'WAIT');await state('waiting');
       assert.equal(await c.eval('document.querySelector(".cb-live").dataset.animated'),'false');await shot(provider+'-waiting');
       await click(provider==='codex'?'.codex-native-controls form button':'.claude-native-controls form button');await state('completed');
