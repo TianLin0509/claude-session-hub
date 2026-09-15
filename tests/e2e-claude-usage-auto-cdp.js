@@ -64,10 +64,6 @@ async function main() {
       slots: [{ kind: 'claude', cwd: workspace, mcpProfile: 'lean' }] })})`);
     await waitFor(c, `!!document.querySelector('[data-meeting-id="${group.id}"]')`, 20000);
     await click(c, `[data-meeting-id="${group.id}"]`);
-    await waitFor(c, '!!document.querySelector("#mr-input-box")', 20000);
-    await c.eval('document.querySelector("#mr-input-box").focus()');
-    await c.send('Input.insertText', { text: '群聊额度验收' });
-    await click(c, '#mr-send-btn');
     await waitFor(c, 'accountUsageController.getSnapshot().claude?.usage5h?.pct===64', 75000);
     check('group member refreshes quota while ordinary session is dormant', await c.eval(`activeMeetingId===${j(group.id)}`));
     const screenshot = await c.send('Page.captureScreenshot', { format: 'png' });
