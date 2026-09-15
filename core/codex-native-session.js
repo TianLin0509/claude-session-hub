@@ -601,6 +601,9 @@ class CodexNativeSession extends EventEmitter {
     if (!options.resolvedCommand && String(text).trimStart().startsWith('/')) return this.slash(String(text).trim(),intent,options);
     this.checkSendable(intent);
     if (options.requireReady !== false) await this.idle(0,intent.signal);
+    if (require('./chatgpt-web-models').isChatgptWebModel(this.options.turnParams?.model)) {
+      await require('./chatgpt-web-startup').ensureWebReady(this.options.turnParams.model, this.options.env);
+    }
     this.checkSendable(intent);
     const client = intent.client, epoch = intent.epoch, threadId = intent.threadId;
     const submittedAt = Date.now();

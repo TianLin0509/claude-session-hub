@@ -35,29 +35,38 @@ function requireWebTools(model, env = process.env) {
 async function webStatus(env = process.env) {
   try {
     const config = readWebConfig(env);
-    let online = false;
+    let online = false, connected = false;
     try {
       const response = await fetch(`http://127.0.0.1:${config.port}/healthz`, { signal: AbortSignal.timeout(3000) });
       const health = await response.json();
-      online = response.ok && health.service === 'codex-chatgpt-web' && health.port === config.port && health.mode === config.mode && health.accepting_turns === true;
+      connected = response.ok && health.service === 'codex-chatgpt-web' && health.port === config.port && health.mode === config.mode;
+      online = connected && health.accepting_turns === true;
     } catch { /* Explicit offline status is presented below and blocks launch. */ }
     return {
-      ok: true, models: availableRoutes(config), online, full: config.mode === 'full',
+      ok: true, models: availableRoutes(config), online, connected, full: config.mode === 'full',
       interactionMode: config.browserInteractionMode,
-      message: !online ? 'Codex Web GPT 服务未连接，请打开原工具'
+      message: !online ? 'ChatGPT 专用服务未就绪，创建会话时将自动在后台启动'
         : config.mode !== 'full' ? '本地工具待配置：请在原工具 MCP 页面完成 Full MCP 并验证运行时'
           : config.browserInteractionMode === 'manual' ? '手动模式：每轮在原工具中选择模型并发送' : 'Full MCP 已配置；本地工具运行结果以实际会话为准',
     };
   } catch (error) { return { ok: false, models: [], online: false, full: false, message: error.message }; }
 }
-async function openWebSettings() {
+async function openWebSettings({ background = false, env: sourceEnv = process.env } = {}) {
   const launcher = 'C:\\DevTools\\CodexWebGPT-AIHub\\Codex Web GPT.exe';
-  const env = launcherEnvironment();
-  if (!fs.existsSync(path.join(path.dirname(launcher), 'ai-hub-isolation-install.json'))) throw new Error('未安装 AI Hub 专用隔离启动器');
-  if (!fs.existsSync(launcher)) throw new Error('未找到 Codex Web GPT 启动器，请设置 CODEX_WEB_GPT_LAUNCHER_PATH');
-  readWebConfig(); // Validate the dedicated port before the launcher can start a service.
+  const env = launcherEnvironment(sourceEnv);
+  const marker = path.join(path.dirname(launcher), 'ai-hub-isolation-install.json');
+  if (!fs.existsSync(marker)) throw new Error('未安装 AI Hub 专用隔离启动器');
+  const installed = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  // The pinned executable enforces its own fixed profile. A fixture or different
+  // root must never accidentally start the user's installed launcher.
+  if (installed.version !== 1 || installed.pinned !== true || typeof installed.root !== 'string'
+      || path.resolve(installed.root).toLowerCase() !== isolatedPaths(sourceEnv).root.toLowerCase()) {
+    throw new Error('ChatGPT 启动器与当前隔离目录不匹配，未启动');
+  }
+  if (!fs.existsSync(launcher)) throw new Error('未找到 AI Hub 专用 Codex Web GPT 启动器');
+  readWebConfig(sourceEnv); // Validate the dedicated port before the launcher can start a service.
   await new Promise((resolve, reject) => {
-    const child = require('child_process').spawn(launcher, [], { env, windowsHide: true, detached: true, stdio: 'ignore' });
+    const child = require('child_process').spawn(launcher, background ? ['--hidden'] : [], { env, windowsHide: true, detached: true, stdio: 'ignore' });
     child.once('error', reject);
     child.once('spawn', () => { child.unref(); resolve(); });
   });
