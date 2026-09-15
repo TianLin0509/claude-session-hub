@@ -1264,7 +1264,7 @@
     submitting = true;
     paint();
     const submit = document.getElementById('new-session-submit');
-    if (submit) submit.textContent = '创建中…';
+    if (submit) submit.textContent = selectedKind === 'chatgpt' ? '正在准备 ChatGPT…' : '创建中…';
     try {
       // 与群聊成员同一条准确性门：提交前等真实 Codex 模型目录并重新归一化，
       // 避免快速点击把 fallback 中该模型不支持的 effort 送进 PTY。

@@ -135,8 +135,7 @@ function registerSessionIpc(ipcMain, deps) {
     }
     if (require('../../core/chatgpt-web-models').isChatgptWebModel(opts.model)) {
       web.requireWebTools(opts.model);
-      return web.webStatus().then(status => {
-        if (!status.online) throw new Error(status.message);
+      return require('../../core/chatgpt-web-startup').ensureWebReady(opts.model).then(() => {
         return createResolvedSession(kind, opts);
       });
     }
