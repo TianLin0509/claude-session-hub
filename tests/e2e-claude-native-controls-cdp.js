@@ -11,6 +11,7 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client');
 
 const ROOT = path.resolve(__dirname, '..');
+const lateControl = process.argv.includes('--late-control');
 const RUN = 'claude-native-controls-' + Date.now();
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), RUN));
 const OUT = path.join(ROOT, 'artifacts', 'native-agent', RUN);
@@ -51,6 +52,7 @@ async function main() {
         CLAUDE_HUB_HOME_DIR: path.join(TEMP, 'home'), AI_HUB_WORKSPACE_ROOT: TEMP,
         CLAUDE_HUB_FIXTURE_CONFIG_DIR: path.join(TEMP, 'launch'),
         CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.join(ROOT, 'tests', 'fixtures', 'claude-stream.js'),
+        CLAUDE_HUB_CLAUDE_FIXTURE_MODE: lateControl ? 'late-fast-control' : 'normal',
         DEEPSEEK_API_KEY: '' } });
     client = await connectFirstPage(hub, target => target.type === 'page' && /index\.html/.test(target.url));
     await waitFor('renderer', () => client.eval('!!window.__hubE2E && !!window.WorkspaceController'));
@@ -105,8 +107,19 @@ async function main() {
     // The engine said fast mode is off, so the chip must say so too.
     ok('speed chip reflects the engine standard tier', /标准/.test(speed.text) && speed.pressed === 'false', speed);
 
-    const switched = await client.eval(`ipcRenderer.invoke('session:set-fast',{sessionId:${q},enabled:true})`);
-    ok('Main confirms the protocol switch', switched.ok === true && switched.result.fastMode === true, switched);
+    if (lateControl) {
+      await client.eval(`window.lateControlResult=null;ipcRenderer.invoke('session:set-fast',{sessionId:${q},enabled:true}).then(r=>window.lateControlResult=r);void 0`);
+      await waitFor('unknown configuration is visible',()=>client.eval(`sessions.get(${q})?.nativeRuntime?.configurationChange?.status==='unknown'
+        && document.querySelector('.claude-native-notice')?.innerText.includes('设置结果待核对')`),90000);
+      ok('timeout keeps actual Fast unchanged',await client.eval(`sessions.get(${q}).nativeRuntime.fastMode===false`));
+      const unknownShot=await client.send('Page.captureScreenshot',{format:'png'});
+      fs.writeFileSync(path.join(OUT,'late-control-unknown.png'),Buffer.from(unknownShot.data,'base64'));
+      await waitFor('late confirmation clears configuration barrier',()=>client.eval(`sessions.get(${q})?.nativeRuntime?.fastMode===true && !sessions.get(${q}).nativeRuntime.configurationChange`));
+      ok('late native confirmation updates the same session without replay',true);
+    } else {
+      const switched = await client.eval(`ipcRenderer.invoke('session:set-fast',{sessionId:${q},enabled:true})`);
+      ok('Main confirms the protocol switch', switched.ok === true && switched.result.fastMode === true, switched);
+    }
     const fast = await waitFor('chip flips to Fast', async () => {
       const value = await chip();
       return value && /Fast/.test(value.text) ? value : null;

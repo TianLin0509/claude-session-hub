@@ -32,6 +32,12 @@ for(const mode of ['late-requests','queued-permission','queued-question','no-con
   assert(responses.every(response=>response.response.behavior==='deny'));
   if(mode==='no-confirmation') {
     assert.equal(session.runtime.state,'unknown');assert.equal(session.runtime.cancellation.status,'unknown');
-    assert.match(session.runtime.reason,/停止未在期限/);await assert.rejects(session.submit('never replay'),/核对|连接|未知/);
+    assert.match(session.runtime.reason,/停止未在期限/);await assert.rejects(session.submit('never replay'),/正在停止/);
+    assert.equal(session.client.failure,null,'a missing receipt must not kill the live writer');
+    assert.equal(session.client.closed,false);
+    // An exact late terminal receipt still settles the original cancellation.
+    session.client.receive({type:'result',session_id:session.sessionId,uuid:'late-stop-result',subtype:'success',
+      is_error:false,result:'',terminal_reason:'aborted_streaming',origin:{kind:'human'}});
+    assert.equal(session.runtime.state,'interrupted');assert.equal(session.runtime.cancellation,null);
   } else {assert.equal(session.runtime.state,'interrupted');assert.equal(session.runtime.cancellation,null);}
 });

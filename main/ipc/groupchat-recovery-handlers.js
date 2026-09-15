@@ -25,6 +25,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     const runtimeKind = session?.transcriptKind || kind;
     const nativeClaude = sessionManager.getNativeClaude?.(sid);
     const isNativeClaude = !!nativeClaude || session?.runtimeBackend === 'claude-stream-json';
+    const nativeCodex = sessionManager.getNativeCodex?.(sid);
+    const isNativeCodex = !!nativeCodex || session?.runtimeBackend === 'codex-app-server';
 
     // 2026-07-12 道雪：轮次窗口改由 orchestrator 状态推导，不再信 renderer 的
     //   _gcTurnStartTs（那是"当前轮"的开始时间，对旧轮重提取完全错位；Hub 重启后是 0）。
@@ -86,7 +88,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
     // 非 Codex 后端只能读"最新回答"，对旧轮重提取会拿到最新轮内容 → 张冠李戴。
     //   诚实拒绝，提示用户用「原文」核对旧轮，而不是静默写错数据。
-    if (!isLatestTurn && !isCodexCliKind(runtimeKind) && !isNativeClaude) {
+    if (!isLatestTurn && !isCodexCliKind(runtimeKind) && !isNativeClaude && !isNativeCodex) {
       return {
         ok: false,
         reason: 'old_turn_resync_unsupported',
@@ -107,6 +109,34 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
           : 'Claude 本次提交尚无成功完成回执；请打开成员会话查看当前状态，稍后同步。'};
       if (!record.finalText?.trim()) return {ok:false,reason:'native_empty_result',detail:'Claude 本轮已结束，但原生最终回答为空；未使用其他轮次内容填充。'};
       extracted={text:record.finalText,source:'claude-stream-json',extractMode:'native_submission'};
+    } else if (isNativeCodex) {
+      if (!nativeCodex) return {ok:false,reason:'native_unavailable',detail:'请先打开该 Codex 成员会话，再核对本轮原生记录。'};
+      const nativeTurnNum = requestedTurn || orchCurrentTurn;
+      const identity = () => {
+        const turn = orch?.state.turns?.find(t=>t.n === nativeTurnNum);
+        const pending = orch?.state.pendingPrompts?.[nativeTurnNum]?.[sid];
+        return {submissionId:turn?.attemptIdBy?.[sid] || pending?.attemptId,
+          turnId:turn?.providerTurnIdBy?.[sid] || pending?.providerTurnId};
+      };
+      const expected = identity(), epoch = nativeCodex.runtime.epoch, threadId = nativeCodex.threadId;
+      if (!expected.submissionId) return {ok:false,reason:'native_identity_unavailable',detail:'本轮缺少 Codex 原生提交身份；不会用最新回答覆盖本轮。'};
+      try {
+        // A late ACK may only be recoverable from thread/read. Reconcile is
+        // read-only and validates the original client ID and content digest.
+        if (!expected.turnId && nativeCodex.runtime.submission?.id === expected.submissionId) await nativeCodex.reconcile();
+        const receipt = nativeCodex.receipts.get(expected.submissionId)?.result;
+        const providerTurnId = expected.turnId || (receipt?.clientSubmissionId === expected.submissionId && receipt?.threadId === threadId ? receipt.turnId : null);
+        if (!providerTurnId) return {ok:false,reason:'native_identity_unavailable',detail:'尚未找到本轮提交对应的 Codex 原生轮次，请先核对成员会话；未重新发送。'};
+        const outcome = await nativeCodex.readOutcome(providerTurnId);
+        if (nativeCodex.runtime.epoch !== epoch || nativeCodex.threadId !== threadId || identity().submissionId !== expected.submissionId) {
+          return {ok:false,reason:'native_identity_changed',detail:'同步期间会话或派发身份已变化，请重新核对。'};
+        }
+        if (outcome?.turnId !== providerTurnId || outcome?.threadId !== threadId || outcome.status !== 'completed') {
+          return {ok:false,reason:'native_not_completed',detail:'Codex 本次提交尚无成功完成回执，请在成员会话核对；未使用其他轮次内容。'};
+        }
+        if (!outcome.text?.trim()) return {ok:false,reason:'native_empty_result',detail:'Codex 本轮已结束，但原生最终回答为空。'};
+        extracted={text:outcome.text,source:'codex-app-server',extractMode:'native_submission',providerTurnId};
+      } catch (error) { return {ok:false,reason:'extract_failed',detail:error.message}; }
     } else {
       try {
         extracted = await transcriptTap.extractLatestTurn(sid, effectiveSince, { untilTs });
@@ -173,7 +203,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
             : turns[turns.length - 1];
           if (targetTurn) {
             const attemptId = targetTurn.attemptIdBy && targetTurn.attemptIdBy[sid];
-            const providerTurnId = targetTurn.providerTurnIdBy && targetTurn.providerTurnIdBy[sid];
+            const providerTurnId = targetTurn.providerTurnIdBy?.[sid] || extracted.providerTurnId;
             const patched = orch.patchTurnResult(targetTurn.n, sid, {
               text: extracted.text,
               status: 'manual_extracted',
@@ -223,8 +253,8 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
               speaker: session?.title || session?.kind || 'AI',
               ...(pendingReceipt && pendingReceipt.attemptId ? { attemptId: pendingReceipt.attemptId } : {}),
               ...(pendingReceipt && pendingReceipt.runId ? { runId: pendingReceipt.runId } : {}),
-              ...(extracted.turnId || (pendingReceipt && pendingReceipt.providerTurnId)
-                ? { providerTurnId: extracted.turnId || pendingReceipt.providerTurnId }
+              ...(extracted.providerTurnId || extracted.turnId || (pendingReceipt && pendingReceipt.providerTurnId)
+                ? { providerTurnId: extracted.providerTurnId || extracted.turnId || pendingReceipt.providerTurnId }
                 : {}),
               signalSource: 'manual',
             });

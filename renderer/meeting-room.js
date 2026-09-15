@@ -2456,8 +2456,11 @@ if (typeof document !== 'undefined') (function () {
     const cancelling = isPending && sessions.get(message.sid)?.nativeRuntime?.cancellation?.status === 'pending';
     const failureCode = String((message.failure && message.failure.code) || message.statusReason || '');
     const nativeSession=sessions.get(message.sid), nativeRuntime=nativeSession?.nativeRuntime;
-    const nativeResultReady=nativeSession?.runtimeBackend === 'claude-stream-json' && nativeRuntime?.state === 'completed'
-      && !!message.attemptId && nativeRuntime.submission?.clientSubmissionId === message.attemptId;
+    const nativeResultReady=nativeRuntime?.state === 'completed' && !!message.attemptId
+      && (nativeSession?.runtimeBackend === 'claude-stream-json'
+        ? nativeRuntime.submission?.clientSubmissionId === message.attemptId
+        : nativeSession?.runtimeBackend === 'codex-app-server' && nativeRuntime.submission?.id === message.attemptId
+          && nativeRuntime.submission?.turnId === nativeRuntime.turnId);
     const failureStatusText = failureCode === 'submission_unknown' ? (nativeResultReady ? '原生已完成 · 待同步' : '本条提交待核对')
       : failureCode === 'quota_exceeded' ? '额度中断'
       : failureCode === 'rate_limited' ? '限流中断'
@@ -7118,9 +7121,20 @@ if (typeof document !== 'undefined') (function () {
         void _routeLoopInput(m, finalText, heroIdBySid);
       } else if (m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
-        runSerialWorkflow(m, finalText, { heroIdBySid });
+        void _routeSerialInput(m, finalText, heroIdBySid);
       } else {
         handleMeetingSend(finalText, m, { heroIdBySid });
+      }
+    }
+
+    async function _routeSerialInput(m, finalText, heroIdBySid) {
+      try {
+        const status = await ipcRenderer.invoke('loop:status', {meetingId:m.id});
+        if (status?.running) await _sendUserSupplement(m, finalText);
+        else runSerialWorkflow(m, finalText, {heroIdBySid});
+      } catch (error) {
+        _restoreQuestionAndPreserveDraft(m.id, finalText);
+        _showGcEscapeNotice('无法核对工作流状态，补充内容已恢复到输入框：' + error.message, 'error');
       }
     }
 
@@ -7153,15 +7167,21 @@ if (typeof document !== 'undefined') (function () {
         return;
       }
       const nowCount = (result.deliveredNow || []).length;
+      const queuedCount = (result.queuedSids || []).length;
       const waitCount = (result.pendingSids || []).length;
       const failed = (result.failures || []).length;
       const parts = [];
       if (nowCount) parts.push(`${nowCount} 位正在执行的已即时收到`);
+      if (queuedCount) parts.push(`${queuedCount} 位已排队，当前任务结束后处理`);
       if (waitCount) parts.push(`${waitCount} 位待命，下次轮到它时补上原文`);
       if (failed) parts.push(`${failed} 位没送达，仍在待确认`);
-      _showGcEscapeNotice('已记下这句话：' + (parts.join('；') || '已保存'), failed ? 'error' : 'info');
       const refreshed = meetingData[m.id];
-      if (refreshed && refreshed.id === activeMeetingId) void refreshGroupChatPanel(refreshed);
+      if (refreshed && refreshed.id === activeMeetingId) {
+        await refreshGroupChatPanel(refreshed);
+        // Refresh rebuilds the banner node: publish the delivery notice after
+        // that render, otherwise the confirmation vanishes in the same tick.
+        if (activeMeetingId === m.id) _showGcEscapeNotice('已记下这句话：' + (parts.join('；') || '已保存'), failed ? 'error' : 'info');
+      }
     }
 
     function _startLoopWithGoal(m, finalText, heroIdBySid) {

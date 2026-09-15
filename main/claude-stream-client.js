@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { randomUUID, createHash } = require('crypto');
 const { TextDecoder } = require('util');
+const { NATIVE_CONFIRMATION_MS } = require('../core/native-confirmation-policy');
 
 // Wire contract: anthropics/claude-agent-sdk-python, _internal/query.py.
 // This is the CLI's bidirectional SDK transport, never a terminal/key writer.
@@ -160,8 +161,12 @@ class ClaudeStreamClient extends EventEmitter {
       }
       this.pending.delete(response.request_id);
       clearTimeout(pending.timer);
-      if (response.subtype === 'error') pending.reject(protocolError(String(response.error || 'Claude rejected control request'), 'CLAUDE_CONTROL_REJECTED'));
-      else pending.resolve(response.response || {});
+      if (response.subtype === 'error') {
+        const error = protocolError(String(response.error || 'Claude rejected control request'), 'CLAUDE_CONTROL_REJECTED');
+        pending.reject(error); pending.confirmReject?.(error);
+      } else {
+        pending.resolve(response.response || {}); pending.confirmResolve?.(response.response || {});
+      }
       return;
     }
     if (message.type === 'control_request') {
@@ -219,21 +224,45 @@ class ClaudeStreamClient extends EventEmitter {
     return result;
   }
 
-  control(request, timeoutMs = this.options.controlTimeoutMs || 30000) {
+  control(request, timeoutMs = this.options.controlTimeoutMs || NATIVE_CONFIRMATION_MS, options = {}) {
     const id = randomUUID();
-    return new Promise((resolve, reject) => {
+    let confirmResolve, confirmReject;
+    const confirmation = new Promise((resolve, reject) => { confirmResolve = resolve; confirmReject = reject; });
+    confirmation.catch(() => undefined); // Callers may only need the bounded response.
+    const response = new Promise((resolve, reject) => {
+      const pending = { resolve, reject, confirmResolve, confirmReject, sent: false };
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.expired.add(id);
-        if (this.expired.size > 256) this.expired.delete(this.expired.values().next().value);
-        reject(protocolError('Claude control timeout: ' + request.subtype, 'CLAUDE_CONTROL_TIMEOUT'));
+        const error = protocolError('Claude control timeout: ' + request.subtype
+          + (pending.sent ? '；设置或操作结果待核对' : '；请求尚未写入，已取消'), 'CLAUDE_CONTROL_TIMEOUT');
+        error.uncertain = pending.sent;
+        error.notSent = !pending.sent;
+        // Sent mutations retain their exact request ID until a reply or a real
+        // disconnect. The session can reconcile that late reply without replay.
+        if (!pending.sent || !options.reconcileLate) {
+          this.pending.delete(id);
+          this.expired.add(id);
+          if (this.expired.size > 256) this.expired.delete(this.expired.values().next().value);
+          confirmReject(error);
+        }
+        reject(error);
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.write({ type: 'control_request', request_id: id, request }).catch(error => {
+      pending.timer = timer;
+      this.pending.set(id, pending);
+      this.write(() => {
+        if (this.pending.get(id) !== pending) {
+          const error = protocolError('Claude control expired before write', 'CLAUDE_CONTROL_CANCELLED');
+          error.notSent = true;
+          throw error;
+        }
+        pending.sent = true;
+        return { type: 'control_request', request_id: id, request };
+      }).catch(error => {
         const pending = this.pending.get(id);
-        if (pending) { this.pending.delete(id); clearTimeout(timer); reject(error); }
+        if (pending) { this.pending.delete(id); clearTimeout(timer); reject(error); confirmReject(error); }
       });
     });
+    response.confirmation = confirmation;
+    return response;
   }
 
   async respond(requestId, response, errorMessage = null, beforeWrite) {
@@ -251,7 +280,7 @@ class ClaudeStreamClient extends EventEmitter {
     this.failure = error;
     clearImmediate(this.consumeContinuation); this.consumeContinuation=null;
     this.proc?.stdout?.resume();
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); pending.confirmReject?.(error); }
     this.pending.clear();
     this.requests.clear();
     this.answeredRequests.clear();
@@ -266,7 +295,7 @@ class ClaudeStreamClient extends EventEmitter {
     this.finishProcessExit();
     this.proc?.stdout?.resume();
     const error = protocolError('Claude transport closed', 'CLAUDE_CLOSED');
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); pending.confirmReject?.(error); }
     this.pending.clear();
     this.requests.clear();
     this.answeredRequests.clear();

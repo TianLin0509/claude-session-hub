@@ -30,6 +30,12 @@ test('循环在跑时输入框不再调 loop:start，改走插话路径', () => 
   assert(/_startLoopWithGoal\(m, finalText, heroIdBySid\)/.test(branch), '没在跑 → 才是新任务');
   assert(!/loop:start/.test(branch), '插话路径里不许再出现 loop:start');
 });
+test('普通串行执行期间的新输入也走插话，查询失败保留原文', () => {
+  const branch=room.slice(room.indexOf('async function _routeSerialInput'),room.indexOf('async function _routeLoopInput'));
+  assert(/invoke\('loop:status'/.test(branch));
+  assert(/status\?\.running/.test(branch));assert(/_sendUserSupplement\(m, finalText\)/.test(branch));
+  assert(/_restoreQuestionAndPreserveDraft/.test(branch));
+});
 
 test('插话不开新一轮：主进程不走 dispatchGroupChatTurn', () => {
   assert(!/dispatchGroupChatTurn/.test(handler),

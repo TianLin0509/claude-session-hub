@@ -118,7 +118,7 @@ function classifyProviderFailure(input = {}) {
     .map(value => compactRaw(value, 600))
     .filter(Boolean)
     .join(' · ');
-  if (!raw) return null;
+  if (!raw && !input.code && !input.uncertain) return null;
   // A provider refusal is often delivered as a short assistant message rather
   // than an error event. Keep this detector deliberately narrow so a real
   // technical answer discussing rate limits is never reclassified as failure.
@@ -129,7 +129,8 @@ function classifyProviderFailure(input = {}) {
       code:'submission_unknown', category:'reconciliation', retryable:false, autoRetry:false,
       action:'reconcile_native_history', summary:'本条提交待核对',
       patterns:[/CLAUDE_SUBMISSION_(?:UNKNOWN|TIMEOUT)/, /Claude submission requires reconciliation/i,
-        /Claude 未确认本条输入.*提交状态待核对/],
+        /Claude 未确认本条输入.*提交状态待核对/, /Codex 请求超时：turn\/(?:start|steer).*结果待核对/,
+        /ACP 未在期限内返回执行证据.*消息结果待核对/],
     },
     {
       code: 'quota_exceeded', category: 'quota', retryable: true, autoRetry: false,
@@ -185,7 +186,8 @@ function classifyProviderFailure(input = {}) {
 
   for (const definition of definitions) {
     if (input.fromAssistantText === true && definition.assistantText !== true) continue;
-    if (!(definition.code === 'submission_unknown' && /^CLAUDE_SUBMISSION_(UNKNOWN|TIMEOUT)$/.test(input.code || ''))
+    if (!(definition.code === 'submission_unknown' && (input.uncertain === true
+        || /^CLAUDE_SUBMISSION_(UNKNOWN|TIMEOUT)$/.test(input.code || '')))
         && !definition.patterns.some(pattern => pattern.test(raw))) continue;
     const { patterns: _patterns, assistantText: _assistantText, ...failure } = definition;
     return { ...failure, detail: compactRaw(raw, 300) };

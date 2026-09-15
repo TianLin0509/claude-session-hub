@@ -19,6 +19,11 @@ function backstageStatus(session, now = Date.now()) {
     state = 'connecting'; title = '正在连接'; detail = r.reason || '等待原生会话连接确认。'; animated = true;
   } else if (r.connection !== 'connected') {
     state = 'unknown'; title = '状态待核对'; detail = r.reason || '尚未收到原生会话状态。';
+  } else if (r.configurationChange) {
+    state = r.configurationChange.status === 'unknown' ? 'unknown' : 'configuring';
+    title = state === 'unknown' ? '设置结果待核对' : '正在更新设置';
+    detail = '等待引擎确认设置；确认前不发送新任务，晚到回执仍会更新实际设置。';
+    animated = state !== 'unknown';
   } else if (r.cancellation?.status === 'pending') {
     state = 'stopping'; title = '正在停止'; detail = '停止请求已发出，等待引擎确认。'; animated = true;
   } else if (delivery === 'submitting') {

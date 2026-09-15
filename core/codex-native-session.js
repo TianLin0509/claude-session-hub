@@ -118,6 +118,9 @@ class CodexNativeSession extends EventEmitter {
     if (next === this.runtime) return false;
     const previous = this.runtime;
     this.runtime = next;
+    if (!next.cancellation || next.connection !== 'connected') {
+      clearTimeout(this.cancelTimer); this.cancelTimer = null;
+    }
     this.emit('state',next,previous);
     return true;
   }
@@ -577,6 +580,7 @@ class CodexNativeSession extends EventEmitter {
   }
   checkSendable(intent) {
     this.checkSendIntent(intent);
+    if (this.runtime.cancellation) throw new Error('正在停止，请等待原生会话确认后发送');
     if (!this.threadId) throw new Error('请先选择要恢复的历史会话');
     if (this.runtime.connection !== 'connected' || !this.entry || this.entry.client.closed) throw new Error('Codex 连接已断开，请先核对');
     if (this.runtime.configurationError) throw new Error(this.runtime.configurationError);
@@ -649,16 +653,29 @@ class CodexNativeSession extends EventEmitter {
     }
   }
   async interrupt() {
+    if (this.runtime.cancellation) return {ok:true,pending:true};
     if (this.runtime.lazyStart && !this.runtime.turnId && !this.runtime.submission) {
       this.sendController.abort(new Error('已停止，未发送排队消息'));
       this.sendController = new AbortController();
       return {ok:true,pending:false,notStarted:true};
     }
     await this.start();
+    if (this.runtime.cancellation) return {ok:true,pending:true};
     if (!['running','waiting'].includes(this.runtime.state) || this.runtime.connection !== 'connected') {
       throw new Error('没有可确认的活跃 Codex 轮次');
     }
-    await this.requestNative(this.entry.client,'turn/interrupt',{threadId:this.threadId,turnId:this.runtime.turnId});
+    const epoch=this.runtime.epoch, threadId=this.threadId, turnId=this.runtime.turnId;
+    const timeoutMs=this.options.cancelTimeoutMs || require('./native-confirmation-policy').NATIVE_CONFIRMATION_MS;
+    this.apply({type:'cancelling',threadId,turnId,deadlineAt:Date.now()+timeoutMs});
+    const unknown=error=>this.apply({type:'cancel-unknown',epoch,threadId,turnId,reason:error.message});
+    this.cancelTimer=setTimeout(()=>unknown(new Error('Codex 停止未在期限内确认，结果待核对；不会自动重发')),timeoutMs);
+    this.cancelTimer.unref?.();
+    try { await this.requestNative(this.entry.client,'turn/interrupt',{threadId,turnId}); }
+    catch(error) {
+      if (error.uncertain) unknown(error);
+      else this.apply({type:'cancel-rejected',epoch,threadId,turnId,reason:error.message});
+      throw error;
+    }
     return {ok:true,pending:!TERMINAL.has(this.runtime.state)};
   }
   reviewUnknownSubmission(id, epoch) {

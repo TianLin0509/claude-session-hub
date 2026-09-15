@@ -115,7 +115,10 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
     const runtime = session.nativeRuntime || {};
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
-    notice.textContent = runtime.cancellation?.status === 'pending' ? '正在停止，等待 Claude 确认'
+    notice.textContent = runtime.configurationChange?.status === 'unknown' ? '设置结果待核对：等待 Claude 回执，或重连后重新确认设置。'
+      : runtime.configurationChange ? '正在更新设置，等待 Claude 确认'
+      : runtime.cancellation?.status === 'unknown' ? '停止结果待核对：继续等待 Claude 的结束回执，当前不会发送新任务。'
+      : runtime.cancellation?.status === 'pending' ? '正在停止，等待 Claude 确认'
       : runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     if (runtime.permissionMode === 'plan') mountModeBox(runtime);
     else if (modeBox?.isConnected) modeBox.remove();

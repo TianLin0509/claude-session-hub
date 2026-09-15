@@ -6,6 +6,7 @@ const { claudeTranscriptTurns, tailClaudeRecords } = require('./claude-native-tr
 const { findNativeClaudeHistory, processExists, renameNativeClaudeHistory } = require('./claude-native-history');
 const ownership = require('./native-session-ownership');
 const { ClaudeNativeActivities } = require('./claude-native-activities');
+const { NATIVE_CONFIRMATION_MS } = require('./native-confirmation-policy');
 
 const BACKEND = 'claude-stream-json';
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
@@ -256,7 +257,11 @@ class ClaudeNativeSession extends EventEmitter {
     const client = this.client;
     const current = () => this.client === client && !this.reconnecting;
     client.on('disconnect', error => { if (current()) this.disconnect(error); });
-    client.on('diagnostic', event => { if (current()) this.emit('diagnostic', event); });
+    client.on('diagnostic', event => {
+      if (!current()) return;
+      if (event.type === 'stderr') this.backstage.note('Claude stderr', event.message, 'warning');
+      this.emit('diagnostic', event);
+    });
     // Unexpected child exits keep the logical session recoverable. Explicit
     // closure publishes its own single exit after the child and lease drain.
     client.on('exit', event => { if (current() && !this.closed) this.emit('exit', event); });
@@ -304,6 +309,9 @@ class ClaudeNativeSession extends EventEmitter {
     if (this.cancellation) throw protocolError('正在停止，请等待原生会话确认后发送', 'CLAUDE_CANCELLING');
     const content = contentBlocks(text, options.attachments);
     await this.start();
+    if (this.runtime.configurationChange?.status === 'unknown') {
+      throw protocolError('Claude 设置结果待核对，请等待原生回执或重连后再发送', 'CLAUDE_CONFIGURATION_UNKNOWN');
+    }
     if (this.configurationChange) await this.configurationChange;
     if (this.reconnectPending || this.reconnecting) throw protocolError('Claude 正在重连', 'CLAUDE_RECONNECTING');
     if (this.closed || this.client.failure) throw this.client.failure || protocolError('Claude session closed', 'CLAUDE_CLOSED');
@@ -383,7 +391,7 @@ class ClaudeNativeSession extends EventEmitter {
     record.timer = setTimeout(() => {
       if (record.accepted || this.active !== record) return;
       this.disconnect(protocolError('Claude 未确认本条输入，提交状态待核对', 'CLAUDE_SUBMISSION_TIMEOUT'));
-    }, this.options.submissionTimeoutMs || 15000);
+    }, this.options.submissionTimeoutMs || NATIVE_CONFIRMATION_MS);
     try {
       record.writeStarted = true;
       await this.client.write({ type: 'user', uuid: record.userMessageId, session_id: this.sessionId,
@@ -658,7 +666,7 @@ class ClaudeNativeSession extends EventEmitter {
       return { interrupted: false, reason: 'idle' };
     }
     const client=this.client, epoch=this.runtime.epoch, requestedAt=Date.now();
-    const cancellation={epoch,requestedAt,deadlineAt:requestedAt+(this.options.cancelTimeoutMs || 15000),
+    const cancellation={epoch,requestedAt,deadlineAt:requestedAt+(this.options.cancelTimeoutMs || NATIVE_CONFIRMATION_MS),
       hadWork:!!(this.active || this.activities.pending().length || this.tasks.size)};
     this.cancellation=cancellation;
     const requests=this.runtime.requests;
@@ -666,8 +674,11 @@ class ClaudeNativeSession extends EventEmitter {
       requestedAt,deadlineAt:cancellation.deadlineAt}});
     const failCancellation = error => {
       if (this.cancellation !== cancellation || this.client !== client || this.runtime.epoch !== epoch) return;
-      client.fail(error);
-      client.close().catch(failure=>this.emit('action-error','停止后的连接关闭失败：'+failure.message));
+      // Elapsed time cannot prove that the writer stopped. Keep consuming the
+      // same stream so its terminal receipt can still settle this cancellation.
+      this.update({state:'unknown',reason:error.message,
+        cancellation:{...this.runtime.cancellation,status:'unknown'}});
+      this.emit('action-error', error.message);
     };
     cancellation.timer=setTimeout(()=>failCancellation(protocolError('Claude 停止未在期限内确认，结果待核对；不会自动重发','CLAUDE_CANCEL_TIMEOUT')),
       Math.max(1,cancellation.deadlineAt-Date.now()));
@@ -682,24 +693,47 @@ class ClaudeNativeSession extends EventEmitter {
     return { requested: true }; // Only the terminal_reason confirms interruption.
   }
 
+  async changeConfiguration(request, apply) {
+    const client = this.client, epoch = this.runtime.epoch;
+    const response = client.control(request, undefined, {reconcileLate:true});
+    let reportedUnknown = false;
+    const confirmation = (response.confirmation || response).then(value => {
+      if (this.closed || this.client !== client || this.runtime.epoch !== epoch) {
+        throw protocolError('旧连接的设置回执已失效', 'CLAUDE_STALE_CONFIGURATION');
+      }
+      return apply(value);
+    });
+    const pending = confirmation.finally(() => {
+      if (this.configurationChange !== pending) return;
+      this.configurationChange = null;
+      if (!this.closed && this.client === client && this.runtime.epoch === epoch) this.update({configurationChange:null});
+    });
+    pending.catch(error => { if (reportedUnknown) this.emit('action-error', '设置核对结束：' + error.message); });
+    this.configurationChange = pending;
+    this.update({configurationChange:{status:'pending',operation:request.subtype,requestedAt:Date.now()}});
+    try { await response; return await pending; }
+    catch (error) {
+      if (error.uncertain && this.configurationChange === pending && this.client === client && this.runtime.epoch === epoch) {
+        reportedUnknown = true;
+        this.update({configurationChange:{...this.runtime.configurationChange,status:'unknown',reason:error.message}});
+      }
+      throw error;
+    }
+  }
+
   async setModel(model) {
     await this.start();
     if (this.active || this.queue.length || this.activities.pending().length || [...this.tasks.values()].some(task => DELEGATED.has(task.type))
         || this.unreconciled || this.configurationChange || this.reconnectPending) {
       throw new Error('请等待当前任务和模型设置结束并核对提交状态后切换模型');
     }
-    const pending = this.client.control({ subtype: 'set_model', model });
-    this.configurationChange = pending;
-    try {
-      await pending;
+    return this.changeConfiguration({ subtype: 'set_model', model }, () => {
       const args = [...(this.options.launchArgs || [])];
       const index = args.indexOf('--model');
       if (index >= 0) args[index + 1] = model; else args.push('--model', model);
       this.options = { ...this.options, launchArgs: args };
       this.update({ actualModel: model });
-    } finally {
-      if (this.configurationChange === pending) this.configurationChange = null;
-    }
+    });
   }
 
   // Fast is Claude's equivalent of the Codex speed tier.  apply_flag_settings
@@ -784,19 +818,15 @@ class ClaudeNativeSession extends EventEmitter {
     if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
       throw new Error('请等当前任务结束并核对提交状态后再切换工作方式');
     }
-    const pending = this.client.control({ subtype: 'set_permission_mode', mode });
-    this.configurationChange = pending;
-    try {
-      const applied = (await pending)?.mode || mode;
+    return this.changeConfiguration({ subtype: 'set_permission_mode', mode }, value => {
+      const applied = value?.mode || mode;
       const args = [...(this.options.launchArgs || [])];
       const index = args.indexOf('--permission-mode');
       if (index >= 0) args[index + 1] = applied; else args.push('--permission-mode', applied);
       this.options = { ...this.options, launchArgs: args };
       this.update({ permissionMode: applied });
       return { permissionMode: applied };
-    } finally {
-      if (this.configurationChange === pending) this.configurationChange = null;
-    }
+    });
   }
 
   async setFastMode(enabled) {
@@ -805,10 +835,7 @@ class ClaudeNativeSession extends EventEmitter {
     if (this.active || this.queue.length || this.configurationChange || this.reconnectPending || this.unreconciled) {
       throw new Error('请等当前任务和配置切换结束并核对提交状态后再切换速度');
     }
-    const pending = this.client.control({ subtype: 'apply_flag_settings', settings: { fastMode: enabled } });
-    this.configurationChange = pending;
-    try {
-      await pending;
+    return this.changeConfiguration({ subtype: 'apply_flag_settings', settings: { fastMode: enabled } }, () => {
       // Durability is best effort and must not claim the engine failed: the
       // tier is already live.  A failed overlay write is reported as a warning
       // so the next relaunch is not silently different from what the UI shows.
@@ -820,9 +847,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.options = { ...this.options, fastMode: enabled };
       this.update({ fastMode: enabled, fastModeBlocked: null });
       return { fastMode: enabled, ...(overlayWarning ? { warning: overlayWarning } : {}) };
-    } finally {
-      if (this.configurationChange === pending) this.configurationChange = null;
-    }
+    });
   }
 
   // Account quota, read from the engine rather than the status line (see

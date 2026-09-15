@@ -194,8 +194,18 @@ function reduceNativeRuntime(previous, event, label = 'Codex') {
     if (event.threadId !== n.threadId || n.connection !== 'connected') return p;
     if (event.type === 'cancelling') {
       if (event.turnId !== n.turnId || TERMINAL.has(n.state)) return p;
-      n.cancellation = { turnId:event.turnId, status:'pending', requestedAt:now, deadlineAt:event.deadlineAt };
+      n.cancellation = { turnId:event.turnId, status:'pending', requestedAt:now, deadlineAt:event.deadlineAt,
+        requests:n.requests,waitingFlags:n.waitingFlags };
       n.requests = []; n.waitingFlags = [];
+    } else if (event.type === 'cancel-unknown') {
+      if (event.turnId !== n.turnId || !n.cancellation || TERMINAL.has(n.state)) return p;
+      n.cancellation = {...n.cancellation,status:'unknown'};
+      n.state = 'unknown'; n.reason = event.reason;
+    } else if (event.type === 'cancel-rejected') {
+      if (event.turnId !== n.turnId || !n.cancellation || TERMINAL.has(n.state)) return p;
+      n.requests = n.cancellation.requests || []; n.waitingFlags = n.cancellation.waitingFlags || [];
+      n.state = activeState();
+      n.cancellation = null; n.reason = event.reason;
     } else if (event.type === 'started') start(event.turn);
     else if (event.type === 'completed') finish(event.turn);
     else if (event.type === 'status') {
@@ -215,7 +225,7 @@ function reduceNativeRuntime(previous, event, label = 'Codex') {
     } else if (event.type === 'request') {
       const request = event.request;
       const turnId = request && request.params && request.params.turnId;
-      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state) || n.cancellation?.status === 'pending'
+      if (!request || request.id == null || !n.turnId || TERMINAL.has(n.state) || n.cancellation
           || (request.params?.threadId && request.params.threadId !== n.threadId)
           || (turnId && turnId !== n.turnId)) return p;
       if (!n.requests.some(r => r.id === request.id)) n.requests.push(request);

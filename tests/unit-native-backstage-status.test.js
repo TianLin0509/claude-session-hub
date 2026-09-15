@@ -2,6 +2,10 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {backstageStatus}=require('../core/native-backstage-status');
 const model=(backend,state,patch={})=>({runtimeBackend:backend,nativeRuntime:{connection:'connected',state,startedAt:1000,observedAt:2000,...patch}});
+test('configuration uncertainty remains visible even though the last model turn completed',()=>{
+  const status=backstageStatus(model('claude-stream-json','completed',{configurationChange:{status:'unknown'}}));
+  assert.equal(status.state,'unknown');assert.equal(status.title,'设置结果待核对');assert.equal(status.animated,false);
+});
 for(const backend of ['codex-app-server','claude-stream-json']) {
   test(backend+' distinguishes acknowledged silence, running, stopping and terminal states',()=>{
     const starting=backstageStatus(model(backend,'starting',{submission:{sendStatus:'accepted'}}),5000);

@@ -591,7 +591,8 @@ function createLoopEngine(deps) {
     if (failed.length) {
       const first = failed[0];
       return { ok: false, reason: first && (first.reason || first.status) || 'participant_result_missing',
-        reconciliationRequired:failed.some(item=>item?.failure?.category === 'reconciliation' || item?.reason === 'submission_unknown') };
+        reconciliationRequired:failed.some(item=>item?.failure?.category === 'reconciliation' || item?.reason === 'submission_unknown'),
+        autoRetryAllowed:failed.every(item=>item?.failure?.autoRetry !== false) };
     }
     return { ok: true };
   }
@@ -719,6 +720,7 @@ function createLoopEngine(deps) {
         let dispatchResult = null;
         let failureReason = null;
         let reconciliationRequired = false;
+        let autoRetryAllowed = true;
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
           if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
@@ -754,9 +756,10 @@ function createLoopEngine(deps) {
             state.lastError = { stage: 'serial', stepIndex: index, reason: checked.reason, at: Date.now() };
             break;
           }
-          if (!checked.ok) {failureReason = checked.reason;reconciliationRequired=checked.reconciliationRequired;}
+          if (!checked.ok) {failureReason = checked.reason;reconciliationRequired=checked.reconciliationRequired;autoRetryAllowed=checked.autoRetryAllowed !== false;}
         } catch (error) {
           failureReason = error && error.message || 'serial_step_exception';
+          autoRetryAllowed = false;
           logError(`[workflow-engine] serial step ${index + 1} failed:`, error);
         }
 
@@ -772,7 +775,7 @@ function createLoopEngine(deps) {
 
         state.lastError = { stage: 'serial', stepIndex: index, reason: failureReason, attempt, at: Date.now() };
         persistSerial(meetingId, state);
-        if (attempt < maxAttempts && !entry.abort && !reconciliationRequired) {
+        if (attempt < maxAttempts && !entry.abort && !reconciliationRequired && autoRetryAllowed) {
           progress({ stage: 'step-retry', stepIndex: index, attempt, error: state.lastError });
           await sleep(500);
           continue;
@@ -1000,9 +1003,11 @@ function createLoopEngine(deps) {
               if (checked.takenOver) break;
               if (checked.ok) break;
               state.lastError = { stage: 'builder', reason: checked.reason, attempt: transportAttempt, at: Date.now() };
+              if (checked.reconciliationRequired || checked.autoRetryAllowed === false) break;
             } catch (e) {
               state.lastError = { stage: 'builder', reason: (e && e.message) || 'builder_error', attempt: transportAttempt, at: Date.now() };
               logError('[loop-engine] builder turn failed:', e);
+              break; // No receipt proves this exception is safe to replay.
             }
             if (!persistOrPause()) break;
             if (transportAttempt < 2 && !entry.abort) {
@@ -1156,9 +1161,11 @@ function createLoopEngine(deps) {
               if (checked.takenOver) break;
               if (checked.ok) break;
               state.lastError = { stage: 'reviewer', reason: checked.reason, attempt: transportAttempt, at: Date.now() };
+              if (checked.reconciliationRequired || checked.autoRetryAllowed === false) break;
             } catch (e) {
               state.lastError = { stage: 'reviewer', reason: (e && e.message) || 'reviewer_error', attempt: transportAttempt, at: Date.now() };
               logError('[loop-engine] reviewer turn failed:', e);
+              break; // No receipt proves this exception is safe to replay.
             }
             if (!persistOrPause()) break;
             if (transportAttempt < 2 && !entry.abort) {

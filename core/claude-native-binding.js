@@ -24,6 +24,11 @@ function bindClaudeNativeSession(manager, id, driver) {
     const entry = current();
     if (!entry) return;
     const info = entry.info;
+    if (info.nativeRuntime?.configurationChange?.operation === 'apply_flag_settings' && !snapshot.configurationChange) {
+      info.fastMode = snapshot.fastMode;
+    }
+    if (info.nativeRuntime?.cancellation?.status === 'unknown' && !snapshot.cancellation
+        && info.nativeActionError === info.nativeRuntime.reason) info.nativeActionError = null;
     if (snapshot.connection === 'connected' && info.nativeRuntime?.connection !== 'connected') info.nativeActionError = null;
     info.nativeRuntime = snapshot;
     info.ccSessionId = snapshot.providerSessionId;
