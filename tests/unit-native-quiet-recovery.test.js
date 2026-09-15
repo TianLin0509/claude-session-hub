@@ -57,6 +57,10 @@ test('history corruption and journal write failure cannot silently unblock a Cla
     await assert.rejects(s.submit('must not send'),/reconciliation/);
   }
 });
+test('history disappearing between lookup and open rejects recovery without an uncaught stream error',async()=>{
+  const missing=path.join(os.tmpdir(),'absent-history-'+require('node:crypto').randomUUID()+'.jsonl');
+  await assert.rejects(require('../core/claude-recovery-history').inspect({historyPath:()=>missing},[{userMessageId:'old'}]),{code:'ENOENT'});
+});
 const {CodexNativeSession}=require('../core/codex-native-session');
 const {CodexAppServerClient}=require('../main/codex-app-server-client');
 function codex(){
