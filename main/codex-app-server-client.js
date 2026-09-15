@@ -174,19 +174,25 @@ class CodexAppServerClient extends EventEmitter {
     this.writeTail = next.catch(error => { if (!error.notSent) this.fail(error); });
     return next;
   }
-  request(method, params, timeoutMs = this.options.timeoutMs || 60000, writeOptions) {
+  request(method, params, timeoutMs = this.options.timeoutMs || require('../core/native-confirmation-policy').NATIVE_CONFIRMATION_MS, writeOptions) {
     const id = this.nextId++;
     return new Promise((resolve,reject) => {
       if (this.closed) { reject(new Error('Codex 连接不可用')); return; }
+      let sent = false;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const error = new Error('Codex 请求超时：' + method + '；结果待核对');
-        error.uncertain = true;
+        const error = new Error('Codex 请求超时：' + method + (sent ? '；结果待核对' : '；尚未写入，已取消发送'));
+        error.uncertain = sent;
+        error.notSent = !sent;
         reject(error);
         setImmediate(()=>this.rejectOrphans());
       }, timeoutMs);
       this.pending.set(id,{resolve,reject,timer,method});
-      this.send({id,method,params},writeOptions).catch(error => {
+      this.send({id,method,params},{...writeOptions,beforeWrite:()=>{
+        if (!this.pending.has(id)) throw Object.assign(new Error('Codex 请求已取消，未发送：'+method),{notSent:true});
+        writeOptions?.beforeWrite?.();
+        sent = true;
+      }}).catch(error => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id); clearTimeout(timer);

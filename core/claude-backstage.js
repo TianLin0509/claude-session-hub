@@ -148,7 +148,7 @@ class ClaudeBackstage extends CodexBackstage {
   }
   read(options = {}) {
     const result = super.read(options);
-    return {...result, capture:'保留启用后的 Claude 消息、思考、工具结果和原生回执；较早内容来自本 Hub 已保存的会话记录。未采集的 stderr 和历史逐字过程无法补录。'};
+    return {...result, capture:'保留启用后的 Claude 消息、思考、工具结果、原生回执和 stderr；较早内容来自本 Hub 已保存的会话记录。启用前未采集的诊断和历史逐字过程无法补录。'};
   }
 }
 module.exports = { ClaudeBackstage };

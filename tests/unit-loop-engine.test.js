@@ -121,6 +121,22 @@ function mkSerial(opts = {}) {
 }
 
 async function main() {
+  for (const error of [
+    {code:'CLAUDE_SUBMISSION_TIMEOUT',message:'Claude 未确认本条输入，提交状态待核对'},
+    {uncertain:true,message:'Codex 请求超时：turn/start；结果待核对'},
+    {message:'ACP 未在期限内返回执行证据；消息结果待核对'},
+    {message:'network error: ECONNRESET'},
+  ]) await t('all workflow paths honor no-auto-retry: '+error.message, async () => {
+    const failure=require('../core/groupchat-attempt-protocol').classifyProviderFailure({...error,force:true});
+    for (const legacy of [false,true]) {
+      const model=legacy ? mk({dispatch:async()=>({status:'completed',turnNum:1,results:[{sid:'sB',status:'errored',text:'',reason:failure.code,failure}]})})
+        : mkSerial({steps:[['m1']],dispatch:async()=>({status:'completed',turnNum:1,results:[{sid:'s1',status:'errored',text:'',reason:failure.code,failure}]})});
+      const engine=createLoopEngine(model.deps);
+      const result=legacy ? await engine.runLoop('mtg','goal') : await engine.runSerial(model.meeting.id,'goal');
+      assert.strictEqual(result.status,'paused');assert.strictEqual(model.turnCalls.length,1);
+    }
+  });
+
   console.log('loop-engine');
   await t('A 设置：六轮预算持久暂停，用户显式继续获得新预算，保持累计次数', async () => {
     const m=mkSerial({serialWorkflow:{settingsVersion:1}}), eng=createLoopEngine(m.deps);

@@ -47,8 +47,8 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms)),j=JSON.stringify;
       report.checks.push(provider+': reduced-motion preference disables rotation while status and elapsed time remain live');
       await shot(provider+'-silent');report.checks.push(provider+': received silent turn has a rotating indicator and advancing clock without history polling');
       for(const tab of [2,3,1]){await click(`.cb-tabs button:nth-child(${tab})`);assert.equal(await c.eval('document.querySelector(".cb-live").getBoundingClientRect().height>0'),true);}
-      await click('#btn-backstage');assert.equal(await c.eval('document.querySelector(".cb-live").dataset.animated'),'false');
-      await click('#btn-backstage');assert.equal(await c.eval('document.querySelector(".cb-live").dataset.animated'),'true');
+      await click('#btn-backstage');await until('currentView==="card" && document.querySelector(".cb-live").dataset.animated==="false"');
+      await click('#btn-backstage');await until('currentView==="pty" && document.querySelector(".cb-live").dataset.animated==="true"');
       report.checks.push(provider+': status survives all three views and re-entry; hidden animation pauses');
       await click('.floating-input-stop');await state('interrupted');
       assert.equal(await c.eval('document.querySelector(".cb-live").dataset.animated'),'false');await shot(provider+'-stopped');

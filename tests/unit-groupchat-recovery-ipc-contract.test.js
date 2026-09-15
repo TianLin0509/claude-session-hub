@@ -25,6 +25,34 @@ function test(name, fn) {
 
 console.log('Running groupchat recovery IPC contract tests...');
 
+test('Codex manual sync only collects its exact native outcome, including late ACKs', async () => {
+  for (const mode of ['completed','pending','wrong-turn','empty','changed','pending-turn','late-ack']) {
+    const ipc=createFakeIpc(),patches=[];
+    const orch={state:{currentTurn:3,turns:mode==='pending-turn'?[]:[{n:3,attemptIdBy:{s1:'attempt'},
+      providerTurnIdBy:mode==='late-ack'?{}:{s1:'native-turn'}}],
+      messages:[{id:'u3',role:'user',turnNum:3,createdAt:1}],pendingPrompts:{3:{s1:{attemptId:'attempt',providerTurnId:'native-turn'}}}},
+      patchTurnResult:(...args)=>{patches.push(args);return true;}};
+    if(mode==='late-ack')delete orch.state.pendingPrompts[3].s1.providerTurnId;
+    const native={threadId:'thread',runtime:{epoch:1,submission:{id:'attempt'}},receipts:new Map(),
+      reconcile:async()=>native.receipts.set('attempt',{result:{clientSubmissionId:'attempt',threadId:'thread',turnId:'native-turn'}}),
+      readOutcome:async turnId=>{
+        assert.strictEqual(turnId,'native-turn');if(mode==='changed')native.runtime.epoch++;
+        return {threadId:'thread',turnId:mode==='wrong-turn'?'other':turnId,status:mode==='pending'?'inProgress':'completed',text:mode==='empty'?'':'native Codex answer'};
+      }};
+    registerGroupchatRecoveryIpc(ipc,{
+      getActiveWatchers:()=>new Map(),getHubDataDir:()=>'/fixture',groupchat:{getOrchestrator:()=>orch},
+      meetingManager:{getMeeting:()=>({id:'meeting',subSessions:['s1']})},sendToRenderer(){},
+      sessionManager:{getSession:()=>({kind:'codex',runtimeBackend:'codex-app-server'}),getNativeCodex:()=>native},
+      transcriptTap:{extractLatestTurn:()=>{throw Error('native sync reached legacy transcript');}},
+      groupChatWatcher:{extractStreamingText:()=>{throw Error('native sync reached PTY');}},
+    });
+    const result=await ipc.handlers.get('groupchat-manual-extract')(null,{meetingId:'meeting',sid:'s1',turnNum:3});
+    assert.strictEqual(result.ok,['completed','pending-turn','late-ack'].includes(mode),JSON.stringify(result));
+    if(result.ok){assert.strictEqual(result.text,'native Codex answer');assert.strictEqual(patches[0][2].attemptId,'attempt');assert.strictEqual(patches[0][2].providerTurnId,'native-turn');}
+    else assert.strictEqual(patches.length,0);
+  }
+});
+
 test('Claude manual sync uses the exact native submission and never borrows latest PTY text', async () => {
   for (const mode of ['completed','pending','wrong-id','pending-turn']) {
     const ipc=createFakeIpc(), patches=[];

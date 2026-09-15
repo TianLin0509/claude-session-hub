@@ -9,7 +9,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms)),j=JSON.stringify;
   const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
   let hub,c,id;const report={out,checks:[],passed:false};
   const invoke=(name,args={})=>c.eval(`ipcRenderer.invoke(${j(name)},${j(args)})`);
-  const until=async(label,fn)=>{const end=Date.now()+30000;while(Date.now()<end){if(await fn())return;await sleep(60);}throw Error('timeout '+label);};
+  const until=async(label,fn)=>{const end=Date.now()+require('../core/native-confirmation-policy').NATIVE_CONFIRMATION_MS+30000;while(Date.now()<end){if(await fn())return;await sleep(60);}throw Error('timeout '+label);};
   async function click(selector){await until(selector,()=>c.eval(`!!document.querySelector(${j(selector)})`));
     const p=await c.eval(`(()=>{const e=document.querySelector(${j(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();if(!r.height)throw Error('hidden control');return{x:r.x+r.width/2,y:r.y+r.height/2};})()`);
     for(const type of ['mousePressed','mouseReleased'])await c.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});}

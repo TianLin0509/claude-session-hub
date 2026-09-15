@@ -22,7 +22,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
       for(const content of [[{type:'thinking',thinking:'first thought'}],[{type:'thinking',thinking:'second thought'}],[{type:'text',text:'STATUS_DONE'}]])
         frame({type:'assistant',uuid:randomUUID(),message:{id:messageId,role:'assistant',stop_reason:'end_turn',content}});
       finish();
-    },15700);return;
+    },require('../../core/native-confirmation-policy').NATIVE_CONFIRMATION_MS+700);return;
   }
   frame(m);
   if(text==='SILENT')return;

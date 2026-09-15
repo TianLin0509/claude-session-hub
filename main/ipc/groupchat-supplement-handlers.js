@@ -105,6 +105,7 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
     if (!added) return { ok: false, reason: 'empty_text' };
 
     const deliveredNow = [];
+    const queuedSids = [];
     const failures = [];
     for (const sid of runningSidsOf(orch, memberSids)) {
       const session = sessionManager.getSession(sid);
@@ -115,7 +116,10 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
         const result = await groupChatWatcher.sendToPty(sid, wrapImmediate(text), kind, { requireReady: false });
         if (result && result.ok) {
           orch.markUserSupplementsDelivered(sid, [added.seq]);
-          deliveredNow.push(sid);
+          // A durable native queue owns this text now, so the next workflow
+          // prompt must not repeat it. Queued is not an engine acknowledgement.
+          if (result.sendStatus === 'queued') queuedSids.push(sid);
+          else deliveredNow.push(sid);
         } else {
           failures.push({ sid, reason: (result && result.reason) || 'send_failed', sendStatus: result && result.sendStatus });
         }
@@ -127,7 +131,7 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
     try {
       sendToRenderer('groupchat-user-supplement', {
         meetingId, seq: added.seq, revision: orch.state.revision,
-        deliveredNow, pendingCount: memberSids.length - deliveredNow.length,
+        deliveredNow, queuedSids, pendingCount: memberSids.length - deliveredNow.length - queuedSids.length,
       });
     } catch (error) { logger.warn('[groupchat-supplement] renderer notify failed:', error && error.message); }
 
@@ -135,8 +139,9 @@ function registerGroupchatSupplementIpc(ipcMain, deps) {
       ok: true,
       seq: added.seq,
       deliveredNow,
+      queuedSids,
       // 没即时送到的不是「失败」，是「等它下次运行时补」。前端要按这个说人话。
-      pendingSids: memberSids.filter(sid => !deliveredNow.includes(sid)),
+      pendingSids: memberSids.filter(sid => !deliveredNow.includes(sid) && !queuedSids.includes(sid)),
       failures,
     };
   });

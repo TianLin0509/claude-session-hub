@@ -327,6 +327,20 @@ test('cancel acknowledgement, failure and completion race never invent interrupt
     s.entry.client.close();await until(()=>s.entry.client.proc.exitCode!==null);
   }finally{await close(s);}
 });
+test('a late Codex stop outcome survives its confirmation deadline without killing or repeating',async()=>{
+  const s=make('late-stop');s.options.cancelTimeoutMs=30;
+  try {
+    await s.send('fixture:stop-delayed');
+    let calls=0;const request=s.requestNative.bind(s);
+    s.requestNative=(client,method,...args)=>{if(method==='turn/interrupt')calls++;return request(client,method,...args);};
+    await s.interrupt();await s.interrupt();assert.equal(calls,1);
+    await until(()=>s.runtime.cancellation?.status==='unknown');
+    assert.equal(s.runtime.connection,'connected');assert.equal(s.entry.client.closed,false);
+    await assert.rejects(s.send('must not start new turn',{requireReady:false}),/正在停止/);
+    await until(()=>s.runtime.state==='interrupted');assert.equal(s.runtime.cancellation,null);
+    assert.equal(calls,1);
+  } finally {await close(s);}
+});
 test('tool-only completed turn is terminal, and obsolete requests cannot restore waiting',async()=>{
   const s=make();try{await s.send('fixture:tool-only');await s.idle();assert.equal(s.runtime.state,'completed');assert.equal(s.finalText(),'');
     const old=s.runtime.turnId;await s.send('fixture:hold');

@@ -67,6 +67,10 @@ rl.on('line', async line => {
       await success(m.request_id, { totalTokens: 12500, maxTokens: 950000, rawMaxTokens: 1000000,
         percentage: 12500 / 950000 * 100, model: 'claude-opus-5[1m]' });
     } else if (m.request.subtype === 'apply_flag_settings') {
+      if (mode === 'late-fast-control') {
+        process.stderr.write('fixture: waiting for delayed configuration confirmation\n');
+        await new Promise(resolve=>setTimeout(resolve,require('../../core/native-confirmation-policy').NATIVE_CONFIRMATION_MS+4000));
+      }
       if (!m.request.settings || typeof m.request.settings !== 'object' || Array.isArray(m.request.settings)) {
         return frame({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id,
           error: 'apply_flag_settings requires `settings` to be an object' } });

@@ -1054,7 +1054,7 @@ function createGroupChatDispatcher(deps) {
           sendFailures.push(result);
         }
       } catch (e) {
-        const failure = classifyProviderFailure({ code:e?.code, reason: e && e.message || 'send_exception', force: true });
+        const failure = classifyProviderFailure({ code:e?.code, uncertain:e?.uncertain, reason: e && e.message || 'send_exception', force: true });
         const result = projectNativeOutcome({
           sid: t.sid, label: t.label, status: 'errored', text: '',
           reason: failure.code, failure, runId, attemptId: t.attemptId,
@@ -1234,7 +1234,8 @@ function createGroupChatDispatcher(deps) {
     const signaled = [];
     for (const sid of sids || []) {
       try {
-        const native = sessionManager.getNativeClaude?.(sid);
+        const native = sessionManager.getNativeClaude?.(sid)
+          || sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid);
         if (native) {
           native.interrupt().catch(error => native.emit('action-error', error.message));
           signaled.push(sid);
@@ -1627,7 +1628,7 @@ function createGroupChatDispatcher(deps) {
             deliveredSeq: t.deliveredSeq,
             runId,
             attemptId: t.attemptId,
-            failure: classifyProviderFailure({ code:e?.code, reason: e && e.message || 'send_exception', force: true }),
+            failure: classifyProviderFailure({ code:e?.code, uncertain:e?.uncertain, reason: e && e.message || 'send_exception', force: true }),
             sourcePrompt: t.prompt,
           }, t);
           sendFailures.push(failed);
