@@ -16,6 +16,8 @@
 4. 恢复时先取得归属，再严格读取最新 per-session 文件；不能用另一个窗口启动时读到的旧快照覆盖原生身份。
 5. 异常退出后，只有旧 Hub 和原生 writer 均已退出才允许回收；核对进程开始时间，防止 Windows PID 复用误判。仍存活的旧 writer 不强杀。
 
+Codex 的原生子进程已确认退出时，驱动按原租约 nonce 释放该进程的原生线程占用，避免宿主仍存活导致死 writer 永久占用。Hub 会话的打开归属仍独立保留到最终保存和关闭完成。关闭/休眠时若原生 unsubscribe 失败，只有该会话独占的进程或已断开的进程可进入退出等待；确认实际退出前不向 SessionManager 报告关闭完成。共享进程中的其他会话不因其中一个会话关闭失败而被终止。
+
 归属不依赖周期心跳；记录由打开、原生进程绑定、关闭这些事件维护。未改变的历史卡片不因 renderer 列表保存而逐项读盘。
 
 ## 多 Hub 功能取舍
@@ -39,7 +41,8 @@
 
 ## 验证入口
 
-- `node tests/e2e-session-exclusive-cdp.js`：真实隔离 Electron 窗口、真实点击和原生子进程 fixture；两种 provider 的占用拒绝、不同会话并存、只关闭成员、窗口退出和异常退出恢复；核对身份、历史、草稿及无 broker。
+- `node tests/e2e-session-exclusive-cdp.js`：真实隔离 Electron 窗口、真实点击和原生子进程 fixture；两种 provider 的占用拒绝、不同会话并存、点击“关闭并休眠”后双向恢复、窗口退出和异常退出恢复；核对身份、历史、草稿及无 broker。
+- `node tests/unit-codex-native-session.test.js`：原生子进程异常退出后释放租约；unsubscribe 失败时等待实际退出后才报告会话关闭；共享进程中各线程独立关闭。
 - `node tests/e2e-codex-native-restart-cdp.js`：设置、草稿、历史和未知提交恢复。
 - `node tests/e2e-native-consumer-matrix-cdp.js --provider=codex --scenario=approval --view=group`：群聊审批与成员结果。
 - `node tests/e2e-claude-native-fileflow.js`：Claude 原生文件工作流。
