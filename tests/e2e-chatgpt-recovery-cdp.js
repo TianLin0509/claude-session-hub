@@ -27,7 +27,14 @@ const {requireWebTools}=require('../core/chatgpt-web-integration');
     evidence.creationPassed=true;
     await p.locator('.floating-input-box:visible').fill(`In the test directory ${cwd}, read input.txt using local file tools, copy its exact contents into proof.txt using a local command, and reply with the contents of proof.txt. Only access this test directory. Do not access other directories or processes.`);
     await p.locator('.floating-input-send:visible').click();
-    await p.waitForFunction(id=>['completed','failed','unknown'].includes(sessions.get(id)?.nativeRuntime?.state),id,{timeout:240000});
+    // Initial native connection is unknown + connecting, with no thread/turn.
+    // It is not a failed submission. Await an actual terminal turn or a receipt
+    // explicitly classified as unknown; all other stalls hit the bounded wait.
+    await p.waitForFunction(id=>{
+      const r=sessions.get(id)?.nativeRuntime;
+      return r && (['completed','failed'].includes(r.state)
+        || (r.state==='unknown' && r.submission?.status==='unknown'));
+    },id,{timeout:240000});
     evidence.runtime=await p.evaluate(id=>{const r=sessions.get(id).nativeRuntime;return {state:r.state,error:r.error,threadId:r.threadId};},id);
     assert.equal(evidence.runtime.state,'completed',JSON.stringify(evidence.runtime));
     assert.equal(fs.readFileSync(path.join(cwd,'proof.txt'),'utf8'),nonce);
