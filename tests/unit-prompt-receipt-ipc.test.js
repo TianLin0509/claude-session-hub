@@ -8,7 +8,8 @@ const { registerPromptSubmitIpc } = require('../main/ipc/prompt-submit-handlers'
 test('managed Codex IPC ignores legacy receipts and binds the exact native message, thread and turn', async () => {
   const original=watcher.sendToPty,handlers=new Map(),tap=new EventEmitter(),sm=new EventEmitter(),events=[];
   sm.getSession=()=>({id:'native',kind:'codex',runtimeBackend:'codex-app-server'});
-  sm.getNativeCodex=()=>({});
+  // SessionManager returns the same owned driver until the session is replaced.
+  const native={};sm.getNativeCodex=()=>native;
   watcher.sendToPty=async()=>({ok:true,sendStatus:'stuck',mode:'codex-app-server'});
   const registration=registerPromptSubmitIpc({handle:(k,v)=>handlers.set(k,v)},{sessionManager:sm,transcriptTap:tap,sendToRenderer:(_c,p)=>events.push(p),logger:{warn(){}}});
   try{
@@ -21,6 +22,24 @@ test('managed Codex IPC ignores legacy receipts and binds the exact native messa
     tap.emit('prompt-submitted',{...base,signalSource:'codex-app-server',threadId:'thread',clientSubmissionId:'native-message'});
     assert.equal(events.at(-1).status,'confirmed');assert.equal(events.at(-1).threadId,'thread');assert.equal(events.at(-1).turnId,'turn');
   }finally{watcher.sendToPty=original;registration.dispose();}
+});
+
+test('failed or replaced native recovery never dispatches a new IPC prompt',async()=>{
+  const original=watcher.sendToPty;let sends=0;
+  watcher.sendToPty=async()=>{sends++;return {ok:true};};
+  try{
+    for(const provider of ['claude','codex'])for(const reason of ['failure','replaced']){
+      const handlers=new Map(),sm=new EventEmitter();
+      sm.getSession=()=>({id:'s',kind:provider,runtimeBackend:provider==='claude'?'claude-stream-json':'codex-app-server'});
+      let current={prepareForNewPrompt:async()=>{if(reason==='failure')throw Error('writer still active');current={};}};
+      sm[provider==='claude'?'getNativeClaude':'getNativeCodex']=()=>current;
+      const registration=registerPromptSubmitIpc({handle:(k,v)=>handlers.set(k,v)},{sessionManager:sm});
+      try{
+        const result=await handlers.get('session:send-prompt')(null,{sessionId:'s',text:'preserve me',clientSubmissionId:'new'});
+        assert.equal(result.ok,false);assert.equal(result.notSent,true);assert.equal(sends,0);assert.ok(result.message);
+      }finally{registration.dispose();}
+    }
+  }finally{watcher.sendToPty=original;}
 });
 
 test('a real IPC timeout is corrected by late transcript receipt, and resend then writes nothing', async () => {
