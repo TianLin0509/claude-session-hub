@@ -35,65 +35,18 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
       || !['idle', 'completed', 'failed', 'interrupted'].includes(runtime.state);
   }
   const requests = document.createElement('div');
-  const recovery = document.createElement('div');
   const error = document.createElement('div'); error.className = 'claude-native-error';
   error.style.color = '#e88'; error.setAttribute('role', 'alert');
   let displayedActionError = null;
-  element.append(notice, requests, recovery, error);
+  element.append(notice, requests, error);
   const refreshVisibility = () => {
     element.hidden = !(notice.textContent || modeBox?.isConnected || requests.childElementCount
-      || recovery.childElementCount || error.textContent);
+      || error.textContent);
   };
   let signature = '';
   let viewer = false;
   const forms = new Map();
   const pendingForms = new WeakSet();
-  let recoveryKey = '';
-  let recoveryVersion = { epoch: 0, revision: -1 };
-  const recoverySignature = runtime => JSON.stringify([runtime.epoch, runtime.state === 'unknown', runtime.connection, runtime.recoveryReady,viewer]);
-  async function inspectRecovery(button, reconnect = false) {
-    button.disabled = true; error.textContent = '';
-    try {
-      const result = await ipcRenderer.invoke('claude-native:' + (reconnect ? 'reconnect' : 'inspect-recovery'), { sessionId });
-      if (!result?.ok) throw new Error(result?.error || '核对失败');
-      recoveryKey = recoverySignature(result.runtime);
-      recoveryVersion = { epoch: result.runtime.epoch, revision: result.runtime.revision };
-      recovery.replaceChildren();
-      const history = document.createElement('button'); history.textContent = '查看历史';
-      history.addEventListener('click', () => Promise.resolve(onHistory?.()).catch(e => { error.textContent = e.message; }));
-      recovery.append(history);
-      for (const record of result.records) {
-        const row = document.createElement('details');
-        const title = document.createElement('summary');
-        title.textContent = record.nativeActivity ? '待核对后台活动 ' + record.userMessageId
-          : '待核对消息 ' + record.userMessageId + (record.accepted ? '（曾确认收到）' : '（未确认收到）');
-        const original = document.createElement('pre'); original.textContent = record.text;
-        original.style.cssText = 'max-height:160px;overflow:auto;white-space:pre-wrap';
-        const resolve = document.createElement('button');
-        resolve.className = 'claude-reconcile'; resolve.textContent = '我已核对，继续会话（不重发）';
-        resolve.disabled = viewer || !result.runtime.recoveryReady;
-        resolve.addEventListener('click', async () => {
-          if(viewer)return;
-          resolve.disabled = true;
-          try {
-            const response = await ipcRenderer.invoke('claude-native:reconcile', { sessionId,
-              identity: { ...record, text: undefined, content: undefined, resolution: 'do-not-replay' } });
-            if (!response?.ok) throw new Error(response?.error || '核对未保存');
-            row.remove();
-          } catch (e) { error.textContent = e.message; resolve.disabled = viewer; }
-        });
-        const restore = document.createElement('button'); restore.textContent = '复制原文为新草稿';
-        restore.className = 'claude-recovery-copy';
-        restore.addEventListener('click', () => {
-          try { onRestoreDraft?.(record); } catch (e) { error.textContent = e.message; }
-        });
-        row.append(title, original, resolve);
-        if (!record.nativeActivity) row.append(restore);
-        recovery.append(row);
-      }
-    } catch (failure) { error.textContent = failure.message; button.disabled = false; }
-    refreshVisibility();
-  }
   async function act(request, decision, button) {
     if(viewer)return;
     const form = button.closest('form');
@@ -115,33 +68,17 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
     const runtime = session.nativeRuntime || {};
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
-    notice.textContent = runtime.configurationChange?.status === 'unknown' ? '设置结果待核对：等待 Claude 回执，或重连后重新确认设置。'
-      : runtime.configurationChange ? '正在更新设置，等待 Claude 确认'
-      : runtime.cancellation?.status === 'unknown' ? '停止结果待核对：继续等待 Claude 的结束回执，当前不会发送新任务。'
-      : runtime.cancellation?.status === 'pending' ? '正在停止，等待 Claude 确认'
+    notice.textContent = runtime.configurationChange ? '正在更新设置，等待 Claude 确认'
+      : runtime.cancellation ? '正在停止，等待 Claude 确认'
       : runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     if (runtime.permissionMode === 'plan') mountModeBox(runtime);
     else if (modeBox?.isConnected) modeBox.remove();
-    const actionError = session.nativeActionError || null;
+    const recovering = runtime.state === 'unknown' || runtime.connection === 'disconnected';
+    const actionError = recovering && session.nativeActionError === runtime.reason ? null : session.nativeActionError || null;
     if (actionError !== displayedActionError) {
       if (actionError) error.textContent = actionError;
       else if (error.textContent === displayedActionError) error.textContent = '';
       displayedActionError = actionError;
-    }
-    const nextRecoveryKey = recoverySignature(runtime);
-    const currentRecovery = runtime.epoch > recoveryVersion.epoch
-      || (runtime.epoch === recoveryVersion.epoch && runtime.revision >= recoveryVersion.revision);
-    if (currentRecovery && nextRecoveryKey !== recoveryKey) {
-      recoveryVersion = { epoch: runtime.epoch, revision: runtime.revision };
-      recoveryKey = nextRecoveryKey; recovery.replaceChildren();
-      if (runtime.state === 'unknown' || runtime.connection === 'disconnected') {
-        const reconnect = document.createElement('button');
-        reconnect.className = 'claude-reconnect';
-        reconnect.textContent = runtime.recoveryReady ? '核对待确认消息' : '重连并核对（不重发）';
-        reconnect.disabled = viewer && !runtime.recoveryReady;
-        reconnect.addEventListener('click', () => inspectRecovery(reconnect, !runtime.recoveryReady));
-        recovery.append(reconnect);
-      }
     }
     const activeRequests = runtime.cancellation?.status === 'pending' ? [] : runtime.requests || [];
     const next = JSON.stringify([runtime.epoch, viewer, activeRequests.map(item => [item.id,item.submissionId])]);

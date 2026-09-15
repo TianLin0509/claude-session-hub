@@ -524,6 +524,9 @@ class CodexNativeSession extends EventEmitter {
         const current = this.history.get(this.runtime.turnId);
         if (current) this.items = new Map((current.items || []).map(i=>[i.id,i]));
         this.recoverSubmission(result.thread);
+        this.lastRecoveryRead = { epoch, revision:this.runtime.revision, threadId:this.threadId,
+          client:this.entry.client, matchedUnknown:this.runtime.submission?.status === 'unknown'
+            && (result.thread.turns || []).some(t => (t.items || []).some(i => i.type === 'userMessage' && i.clientId === this.runtime.submission.id)) };
         return this.runtime;
       }).finally(()=>{this.reconciling=null;});
     return this.reconciling;
@@ -678,11 +681,41 @@ class CodexNativeSession extends EventEmitter {
     }
     return {ok:true,pending:!TERMINAL.has(this.runtime.state)};
   }
-  reviewUnknownSubmission(id, epoch) {
+  async prepareForNewPrompt() {
+    if (this.promptRecovery) return this.promptRecovery;
+    this.promptRecovery = (async () => {
+      if (this.closed) throw new Error('会话正在关闭，未发送');
+      const r = this.runtime;
+      if (r.cancellation) throw new Error('正在停止，请等待结束后发送');
+      if (r.connection === 'unstarted') return;
+      if (r.connection === 'connecting') { await this.start(); return; }
+      if (r.connection !== 'connected' || r.state === 'unknown' || r.submission?.status === 'unknown') {
+        await this.reconnect();
+        if (this.runtime.submission?.status === 'unknown'
+            && (this.lastRecoveryRead?.epoch !== this.runtime.epoch || this.lastRecoveryRead?.revision !== this.runtime.revision)) {
+          await this.reconcile();
+        }
+        const current = this.runtime;
+        const read = this.lastRecoveryRead;
+        // A live turn stays live. Only a read-confirmed idle/terminal thread can
+        // release the old unknown receipt, without turning it into success.
+        if (current.submission?.status === 'unknown'
+            && current.connection === 'connected' && ['idle','completed','failed','interrupted'].includes(current.state)) {
+          if (!read || read.epoch !== current.epoch || read.revision !== current.revision
+              || read.client !== this.entry.client || read.threadId !== this.threadId || read.matchedUnknown) {
+            throw new Error('原生记录尚未确认一致，未发送新消息');
+          }
+          this.reviewUnknownSubmission(current.submission.id, current.epoch, 'hub');
+        }
+      }
+    })().finally(() => { this.promptRecovery = null; });
+    return this.promptRecovery;
+  }
+  reviewUnknownSubmission(id, epoch, source = 'user') {
     const r=this.runtime;
     if (epoch !== r.epoch || r.submission?.id !== id || r.submission.status !== 'unknown') throw new Error('待核对消息已变化，请刷新');
     if (r.connection !== 'connected' || !['idle','completed','interrupted','failed'].includes(r.state)) throw new Error('必须先核对连接，并等待原生轮次结束');
-    this.apply({type:'submission',submission:{...r.submission,status:'reviewed',reviewedAt:Date.now()}});
+    this.apply({type:'submission',submission:{...r.submission,status:'reviewed',reviewedAt:Date.now(),reviewSource:source}});
     return {ok:true,resent:false};
   }
   async reply(requestId, result, epoch) {

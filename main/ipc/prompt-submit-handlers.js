@@ -180,11 +180,19 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     if (!kind) return { ok: false, error: 'no-session' };
 
     if (sessionManager.getNativeClaude?.(sessionId)) {
-      try {
-        return await groupChatWatcher.sendToPty(sessionId, text, kind, {
-          clientSubmissionId: request.clientSubmissionId, attachments: request.attachments,
-        });
-      } catch (error) { return { ok: false, error: error.code || 'native-send-failed', message: error.message }; }
+      return enqueue(sessionId, async () => {
+        const native = sessionManager.getNativeClaude(sessionId);
+        try {
+          await native.prepareForNewPrompt?.();
+          if (sessionManager.getNativeClaude(sessionId) !== native) throw new Error('会话已变化，未发送');
+        }
+        catch (error) { return {ok:false,notSent:true,error:'native-recovery-failed',message:error.message}; }
+        try {
+          return await groupChatWatcher.sendToPty(sessionId, text, kind, {
+            clientSubmissionId: request.clientSubmissionId, attachments: request.attachments,
+          });
+        } catch (error) { return { ok: false, error: error.code || 'native-send-failed', message: error.message }; }
+      });
     }
 
     // 宿主 shell：没有 paste-detect，直写最快也最准。
@@ -199,6 +207,12 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     latestRequestBySid.set(sessionId, clientSubmissionId);
     lastPromptBySid.set(sessionId, text);
     return enqueue(sessionId, async () => {
+      const native = sessionManager.getNativeCodex?.(sessionId);
+      try {
+        await native?.prepareForNewPrompt?.();
+        if (native && sessionManager.getNativeCodex(sessionId) !== native) throw new Error('会话已变化，未发送');
+      }
+      catch (error) { return { ok:false, notSent:true, error:error.code || 'native-recovery-failed', message:error.message }; }
       const receipt = clientSubmissionId && supportsMessageReceipt(kind, text)
         ? receipts.begin(sessionId, clientSubmissionId, text, Date.now(), {nativeOnly:!!(sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId))}) : null;
       try {

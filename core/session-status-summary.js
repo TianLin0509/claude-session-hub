@@ -296,20 +296,18 @@ function buildComposerStatusModel(session, options = {}) {
     // Work in flight (starting/running) takes the shared working line, the same
     // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
     // report a result get a Claude-specific message here.
-    const labels = { unknown: '本条提交待核对',
+    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : '等待连接响应',
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
-      // Same entry point Codex offers when its native state needs checking:
-      // one button that reconciles the engine record without resending.
-      const needsReconcile = snapshot.state === 'unknown' || snapshot.connection === 'disconnected';
+      // New composer sends recover in Main; no manual receipt-review action.
       return { state: snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
           : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
         text: labels[snapshot.state],
         detail: snapshot.state === 'waiting'
           ? (snapshot.requests || []).map(require('./claude-native-runtime').claudeRequestSummary).join('; ') || snapshot.reason || ''
-          : snapshot.reason || '',
+          : snapshot.state === 'unknown' ? '' : snapshot.reason || '',
         quickReplies: [],
-        action: needsReconcile ? { kind: 'reconnect', label: '核对连接' } : null,
+        action: null,
         canStop: snapshot.connection === 'connected' && snapshot.state === 'waiting', runtime };
     }
   }
@@ -363,6 +361,10 @@ function buildComposerStatusModel(session, options = {}) {
   }
 
   if (state === COMPOSER_STATUS_DEAD) {
+    if (session?.runtimeBackend === 'codex-app-server' && runtime.state !== RUNTIME_DORMANT) return {
+      state, text: truth.connection === 'disconnected' ? '连接已断开' : '等待连接响应',
+      detail:'',quickReplies:[],canStop:false,runtime,action:null,
+    };
     if (native && runtime.state !== RUNTIME_DORMANT) return {
       state, text: truth.state === 'unknown' ? `${provider} 状态待核对` : `${provider} 连接已断开`,
       detail: truth.evidence || '', quickReplies: [], canStop: false, runtime,

@@ -44,9 +44,9 @@ test('the panel stays hidden unless something needs the user, like the Codex pan
     controls.update(session({ state }));
     assert.equal(controls.element.hidden, true, state);
   }
-  // A genuine uncertainty offers the reconcile step.
+  // Recovery happens on the next send, without a manual-review panel.
   controls.update(session({ state: 'unknown', revision: 2 }));
-  assert.equal(controls.element.hidden, false);
+  assert.equal(controls.element.hidden, true);
   // An approval is something to act on.
   controls.update(session({ state: 'waiting', revision: 3, requests: [{ id: 'r1', method: 'claude/canUseTool',
     params: { toolName: 'Bash' }, raw: { input: { command: 'ls' } } }] }));
@@ -84,7 +84,7 @@ test('work in flight reads as working, not as an uncertain result', () => {
   assert.equal(composer.action, null, 'no reconnect button while a send is simply in flight');
   // A real uncertainty still says so.
   const unknown = session({ state: 'unknown' });
-  assert.equal(buildComposerStatusModel(unknown, { runtime: deriveSessionRuntimeStatus(unknown) }).text, '本条提交待核对');
+  assert.equal(buildComposerStatusModel(unknown, { runtime: deriveSessionRuntimeStatus(unknown) }).text, '等待连接响应');
 });
 
 test('a submission waiting for its echo is published as starting, never as unknown', async t => {
