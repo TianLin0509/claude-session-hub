@@ -3,8 +3,27 @@ const readline = require('readline');
 const fs=require('fs'),{randomUUID}=require('crypto');
 const store=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE;
 const trace=process.env.CLAUDE_HUB_NATIVE_FIXTURE_TRACE;
+const writerDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR;
 const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
-const save=()=>{if(store)fs.writeFileSync(store,JSON.stringify([...threads].filter(([,t])=>process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)));};
+const owned=new Set();
+const save=()=>{if(store){
+  const all=new Map(fs.existsSync(store)?JSON.parse(fs.readFileSync(store,'utf8')):[]);
+  for(const id of owned){const t=threads.get(id);if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)all.set(id,t);else all.delete(id);}
+  fs.writeFileSync(store,JSON.stringify([...all]));
+}};
+function claimWriter(id) {
+  if(writerDir){
+    fs.mkdirSync(writerDir,{recursive:true});
+    const file=require('path').join(writerDir,id+'.json');
+    if(fs.existsSync(file)){
+      const pid=JSON.parse(fs.readFileSync(file,'utf8')).pid;
+      let alive=true;try{process.kill(pid,0);}catch(error){if(error.code==='ESRCH')alive=false;else throw error;}
+      if(alive && pid!==process.pid)throw Error('thread '+id+' already has an active writer');
+    }
+    fs.writeFileSync(file,JSON.stringify({pid:process.pid}));
+  }
+  owned.add(id);
+}
 let nextRequest=1000;
 const awaiting = new Map();
 const out = obj => process.stdout.write(JSON.stringify(obj)+'\n');
@@ -29,6 +48,11 @@ rl.on('line',line=>{
   const msg=JSON.parse(line);
   if(trace)fs.appendFileSync(trace,JSON.stringify(msg)+'\n');
   const p=msg.params || {};
+  // Another session's dedicated process may have persisted newer history.
+  if(store && !owned.has(p.threadId) && fs.existsSync(store)){
+    const latest=new Map(JSON.parse(fs.readFileSync(store,'utf8'))).get(p.threadId);
+    if(latest)threads.set(p.threadId,latest);
+  }
   const thread=threads.get(p.threadId);
   if (!msg.method) {
     const a=awaiting.get(msg.id);
@@ -52,15 +76,18 @@ rl.on('line',line=>{
       const historyChars=Number(process.env.CLAUDE_HUB_NATIVE_FIXTURE_HISTORY_CHARS)||0;
       if(msg.method==='thread/start' && historyChars>0)t.turns.push({id:'history-turn',status:'completed',items:[
         {id:'history-answer',type:'agentMessage',phase:'final_answer',text:'旧'.repeat(historyChars)}]});
-      threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
+      claimWriter(t.id);threads.set(t.id,t);save();answer(msg.id,opened(t,p));break;
     }
     case 'thread/resume':
       if(!thread){out({id:msg.id,error:{code:-1,message:'no rollout found for thread id '+p.threadId}});break;}
+      try{claimWriter(thread.id);}catch(error){out({id:msg.id,error:{code:-32600,message:error.message}});break;}
       // Like the native server, loaded resume does not update model/effort.
       if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(p.sandbox)thread.sandbox=p.sandbox;
       save();answer(msg.id,opened(thread,p));break;
     case 'thread/read':answer(msg.id,{thread});break;
     case 'thread/list':answer(msg.id,{data:[...threads.values()],nextCursor:null});break;
+    // Intentionally retain the writer after ACK, just like native delayed GC.
+    // The next process can claim it only after this writer actually exits.
     case 'thread/unsubscribe':answer(msg.id,{status:'unsubscribed'});break;
     case 'turn/start': {
       if(p.model)thread.model=p.model;if(p.effort)thread.reasoningEffort=p.effort;

@@ -18,6 +18,8 @@
 
 Codex 的原生子进程已确认退出时，驱动按原租约 nonce 释放该进程的原生线程占用，避免宿主仍存活导致死 writer 永久占用。Hub 会话的打开归属仍独立保留到最终保存和关闭完成。关闭/休眠时若原生 unsubscribe 失败，只有该会话独占的进程或已断开的进程可进入退出等待；确认实际退出前不向 SessionManager 报告关闭完成。共享进程中的其他会话不因其中一个会话关闭失败而被终止。
 
+普通 Codex session（包括群聊成员）各自使用独立 App Server 进程，即使目录、账号、启动参数相同也不复用。Codex 的 `thread/unsubscribe` 成功只确认取消订阅，空闲 thread 仍可能在服务端保留 30 分钟并持有 writer；因此成功和失败路径均须等待本 session 的进程实际退出后才能报告休眠。尚未取得 thread ID 的启动失败也遵守此退出屏障。旧 broker 的内部兼容路径不用于新建 Hub session，不会为迁移强杀用户仍在使用的旧共享进程。
+
 归属不依赖周期心跳；记录由打开、原生进程绑定、关闭这些事件维护。未改变的历史卡片不因 renderer 列表保存而逐项读盘。
 
 ## 多 Hub 功能取舍
@@ -33,7 +35,7 @@ Codex 的原生子进程已确认退出时，驱动按原租约 nonce 释放该�
 | 删除会话、移除成员、删除群聊 | 变更前检查归属；实际文件删除与打开操作串行 |
 | 不同 Hub 打开不同会话 | 保留 |
 | 原生单 writer、并发文件保护、联赛调度去重 | 保留，防止历史损坏或同一任务重复执行 |
-| 同一 Hub 内 Codex 进程池 | 保留，不属于跨 Hub 共享会话 |
+| 同一 Hub 内普通 Codex 进程池 | 移除；每个 session 独立退出，避免取消订阅后仍持有 writer |
 
 旧 broker/共享驱动模块暂留作旧版本兼容说明和隔离契约测试；正式 SessionManager 不加载或启动它们。
 
@@ -42,7 +44,9 @@ Codex 的原生子进程已确认退出时，驱动按原租约 nonce 释放该�
 ## 验证入口
 
 - `node tests/e2e-session-exclusive-cdp.js`：真实隔离 Electron 窗口、真实点击和原生子进程 fixture；两种 provider 的占用拒绝、不同会话并存、点击“关闭并休眠”后双向恢复、窗口退出和异常退出恢复；核对身份、历史、草稿及无 broker。
-- `node tests/unit-codex-native-session.test.js`：原生子进程异常退出后释放租约；unsubscribe 失败时等待实际退出后才报告会话关闭；共享进程中各线程独立关闭。
+- `node tests/unit-codex-native-session.test.js`：原生子进程异常退出后释放租约；unsubscribe 成功、失败及未绑定 thread 的启动状态均等待实际退出才报告关闭；同配置会话独立运行和关闭。
+- `node tests/e2e-group-session-release-cdp.js`：同组 Codex 2 休眠后，在另一个 Hub 恢复同一个成员及历史；原 Hub 的 Codex 1 保持连接。
+- `node tests/manual-codex-writer-release.js`：使用本机真实 Codex 程序、隔离 CODEX_HOME 和合成历史，验证进程退出、立即恢复相同 thread 及历史保留；不发送模型任务。
 - `node tests/e2e-codex-native-restart-cdp.js`：设置、草稿、历史和未知提交恢复。
 - `node tests/e2e-native-consumer-matrix-cdp.js --provider=codex --scenario=approval --view=group`：群聊审批与成员结果。
 - `node tests/e2e-claude-native-fileflow.js`：Claude 原生文件工作流。

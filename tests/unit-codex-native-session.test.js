@@ -24,8 +24,9 @@ async function until(check) {
   while(!check()){if(Date.now()>end)throw Error('condition timeout');await new Promise(r=>setTimeout(r,10));}
 }
 async function close(s){s.kill();await until(()=>!s.entry);}
-test('native process exit releases its durable leases while the host remains alive',async()=>{
+test('legacy broker process exit releases its durable leases while the host remains alive',async()=>{
   const a=make('exited-owner-a'),b=make('exited-owner-b');
+  a.options.sharedBroker=true;b.options.sharedBroker=true;
   const {DatabaseSync}=require('node:sqlite');
   try {
     await a.start();await b.start();
@@ -52,6 +53,26 @@ test('failed unsubscribe does not announce session exit until its native writer 
     s.kill();await until(()=>closeRequested);
     assert.equal(client.proc.exitCode,null);
     assert.equal(exited,false,'Hub must keep ownership until actual writer exit');
+    client.close=realClose;realClose();await client.waitForExit();
+    await until(()=>exited);
+  } finally {client.close=realClose;realClose();await client.waitForExit();if(s.entry){s.closed=false;await close(s);}}
+});
+
+for(const unconfirmed of [false,true])test((unconfirmed?'unconfirmed thread start':'successful unsubscribe')+' keeps ownership and postpones sleep until the writer process exits',async()=>{
+  const s=make('successful-unsubscribe-writer');await s.start();
+  if(unconfirmed)s.threadId=null;
+  const client=s.entry.client,realClose=client.close.bind(client),lease=s.ownershipLease;
+  const {DatabaseSync}=require('node:sqlite');
+  let closeRequested=false,exited=false;
+  client.close=()=>{closeRequested=true;};
+  s.once('exit',()=>{exited=true;});
+  try {
+    s.kill();await until(()=>closeRequested);
+    assert.equal(client.proc.exitCode,null);
+    assert.equal(exited,false,'unsubscribe acknowledgement is not writer release');
+    const db=new DatabaseSync(lease.file,{readOnly:true});
+    try {assert(db.prepare('SELECT 1 FROM owners WHERE thread=? AND nonce=?').get(lease.threadId,lease.nonce));}
+    finally {db.close();}
     client.close=realClose;realClose();await client.waitForExit();
     await until(()=>exited);
   } finally {client.close=realClose;realClose();await client.waitForExit();if(s.entry){s.closed=false;await close(s);}}
@@ -138,14 +159,17 @@ test('native waiting request is actionable; stop waits for a native outcome',asy
     await s.interrupt();await until(()=>s.runtime.state==='interrupted');
   }finally{await close(s);}
 });
-test('shared scope has one process, independent threads and independent closure',async()=>{
+test('same-scope sessions have independent writers; sleeping one leaves its busy neighbour running',async()=>{
   const a=make('a'),b=make('b');try{
     await Promise.all([a.start(),b.start()]);
-    assert.equal(a.pid,b.pid);assert.notEqual(a.threadId,b.threadId);
+    assert.notEqual(a.pid,b.pid);assert.notEqual(a.threadId,b.threadId);
     await a.send('fixture:hold');await b.send('fixture:empty');
     assert.equal(a.runtime.state,'running');assert.equal(b.runtime.state,'completed');
+    const writer=b.entry.client.proc;
     await close(b);
+    assert.notEqual(writer.exitCode,null,'sleep must retire the writer, not wait for unsubscribe GC');
     assert.equal(a.runtime.connection,'connected');
+    assert.equal(a.runtime.state,'running');
     await a.interrupt();await until(()=>a.runtime.state==='interrupted');
   }finally{await close(a);await close(b);}
   assert.equal(pool.size,0);
@@ -296,11 +320,13 @@ test('slash model control is serialized without a self-deadlock',async()=>{
   }finally{await close(s);}
 });
 
-test('native policy mismatch blocks its thread without changing another pooled session',async()=>{
+test('native policy mismatch blocks its thread without changing another session',async()=>{
   const a=make('config-a'),b=make('config-b');try{
     a.options.threadParams.approvalPolicy='on-request';a.options.threadParams.sandbox='read-only';
-    await b.start();const client=b.entry.client,request=client.request.bind(client);
-    client.request=async(method,params,...rest)=>{const result=await request(method,params,...rest);return method==='thread/start'?{...result,approvalPolicy:'never'}:result;};
+    const factory=a.options.clientFactory;
+    a.options.clientFactory=()=>{const c=factory(),request=c.request.bind(c);
+      c.request=async(method,params,...rest)=>{const result=await request(method,params,...rest);return method==='thread/start'?{...result,approvalPolicy:'never'}:result;};return c;};
+    await b.start();const client=b.entry.client;
     await a.start();assert(a.runtime.configurationError);assert.equal(client.closed,false);
     await assert.rejects(a.configure({model:'fixture-model-2',effort:'xhigh'}),/权限范围/);
     await assert.rejects(a.send('must not submit'),/发送已暂停/);

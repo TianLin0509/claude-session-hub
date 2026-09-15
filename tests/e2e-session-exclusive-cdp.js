@@ -19,6 +19,7 @@ async function main(){
     CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),
     CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'normal',CLAUDE_HUB_FIXTURE_CONFIG_DIR:path.join(root,'launch-config'),
     CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl'),
+    CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR:path.join(root,'writers'),
     // Old environment settings cannot re-enable cross-Hub sharing.
     CLAUDE_HUB_CODEX_SHARED_RUNTIME:'1',CLAUDE_HUB_CLAUDE_SHARED_RUNTIME:'1'};
   const hubs=[], clients=[], checks=[], ids={}, before={};
@@ -53,6 +54,8 @@ async function main(){
       await shot(b.c,kind+'-occupied');await click(b.c,'dialog[open] .hub-dialog-actions button:last-child');
     }
     checks.push('real clicks show owning Hub PID and reject both providers before opening');
+    const neighbour=await a.c.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:{cwd:${JSON.stringify(workspace)},model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none'}})`);
+    await until('same-scope neighbour ready',()=>a.c.eval(`sessions.get(${JSON.stringify(neighbour.id)})?.nativeRuntime?.connection==='connected'`));
     const other=await b.c.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:{cwd:${JSON.stringify(workspace)},model:'gpt-6-astra',mcpProfile:'none'}})`);
     assert(other.id);checks.push('different sessions remain usable in another Hub');
     for (const kind of ['codex','claude']) {
@@ -61,6 +64,11 @@ async function main(){
       await until(kind+' selected for sleep',()=>a.c.eval(`activeSessionId===${key} && !!document.querySelector('.btn-close-session')`));
       await click(a.c,'.btn-close-session');
       await until(kind+' released while Hub A stays alive',()=>a.c.eval(`sessions.get(${key})?.status==='dormant'`));
+      assert.equal(await a.c.eval(`sessions.get(${JSON.stringify(neighbour.id)})?.nativeRuntime?.connection`),'connected');
+      if(kind==='codex'){
+        const oldWriter=JSON.parse(fs.readFileSync(path.join(root,'writers',before.codex.codexSid+'.json'),'utf8')).pid;
+        assert.throws(()=>process.kill(oldWriter,0),/ESRCH|no such process/,'old native writer must have exited before sleep completes');
+      }
       await click(b.c,`.session-item[data-session-id="${id}"]`);
       await until(kind+' resumes while previous Hub still alive',()=>b.c.eval(`sessions.get(${key})?.nativeRuntime?.connection==='connected'`));
       const resumed=await b.c.eval(`sessions.get(${key})`);
