@@ -55,9 +55,7 @@ async function main() {
     await waitFor(c, 'accountUsageController.getSnapshot().claude?.usage5h?.pct===63', 80000);
     check('background polling recovers after failure without another click',
       await c.eval('!accountUsageController.getSnapshot().refresh.providers.claude.error'));
-    await c.eval("document.querySelector('.floating-input-box').focus()");
-    await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-    await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await click(c, '.floating-input-stop');
     await waitFor(c, `sessions.get(${j(session.id)})?.nativeRuntime?.state==='interrupted'`, 20000);
     await click(c, '.btn-close-session');
     await waitFor(c, `sessions.get(${j(session.id)})?.status==='dormant'`, 20000);
@@ -66,6 +64,10 @@ async function main() {
       slots: [{ kind: 'claude', cwd: workspace, mcpProfile: 'lean' }] })})`);
     await waitFor(c, `!!document.querySelector('[data-meeting-id="${group.id}"]')`, 20000);
     await click(c, `[data-meeting-id="${group.id}"]`);
+    await waitFor(c, '!!document.querySelector("#mr-input-box")', 20000);
+    await c.eval('document.querySelector("#mr-input-box").focus()');
+    await c.send('Input.insertText', { text: '群聊额度验收' });
+    await click(c, '#mr-send-btn');
     await waitFor(c, 'accountUsageController.getSnapshot().claude?.usage5h?.pct===64', 75000);
     check('group member refreshes quota while ordinary session is dormant', await c.eval(`activeMeetingId===${j(group.id)}`));
     const screenshot = await c.send('Page.captureScreenshot', { format: 'png' });
