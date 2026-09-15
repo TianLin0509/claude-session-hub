@@ -951,7 +951,33 @@ class ClaudeNativeSession extends EventEmitter {
     }
   }
 
-  reconcile(identity) {
+  // Only the explicit composer send calls this. Background/group dispatch keeps
+  // its unknown-attempt gate; a quiet recovery never completes or replays it.
+  prepareForNewPrompt() {
+    if (this.promptRecovery) return this.promptRecovery;
+    this.promptRecovery = this._prepareForNewPrompt().finally(() => { this.promptRecovery = null; });
+    return this.promptRecovery;
+  }
+
+  async _prepareForNewPrompt() {
+    if (this.closed) throw new Error('会话正在关闭，未发送');
+    if (!this.unreconciled && this.runtime.connection !== 'disconnected') return;
+    if (this.configurationChange) throw new Error('正在更新设置，请稍后发送');
+    if (this.cancellation) throw new Error('正在停止，请等待结束后发送');
+    // reconnect waits for this owned writer to exit before resuming the UUID.
+    await this.reconnect();
+    const epoch = this.runtime.epoch;
+    const records = this.recoveryRecords();
+    const evidence = await require('./claude-recovery-history').inspect(this, records);
+    if (this.closed || this.runtime.epoch !== epoch || this.runtime.connection !== 'connected') {
+      throw new Error('恢复期间连接已变化，未发送');
+    }
+    for (const record of records) this.reconcile({ ...record, resolution: 'do-not-replay' },
+      { source: 'hub', history: evidence.get(record.userMessageId) || 'no-user-message' });
+    this.backstage.note('会话恢复', '旧任务结果保留原状；未重发旧消息，可以接收新消息。');
+  }
+
+  reconcile(identity, { source = 'user', history } = {}) {
     const record = identity.activityId ? this.activities.records.get(identity.activityId) : this.records.get(identity.submissionId);
     const fingerprint = record?.nativeActivity ? digest(record.content || '') : record?.fingerprint;
     if (!this.recoveryReady || this.runtime.connection !== 'connected' || this.reconnecting
@@ -960,7 +986,8 @@ class ClaudeNativeSession extends EventEmitter {
         || identity.promptFingerprint !== fingerprint || identity.resolution !== 'do-not-replay') {
       throw protocolError('核对信息已变化，请重新查看本条记录', 'CLAUDE_STALE_RECONCILIATION');
     }
-    const reconciliation = { source: 'user', resolution: identity.resolution, at: Date.now(), epoch: identity.epoch };
+    const reconciliation = { source, resolution: identity.resolution, at: Date.now(), epoch: identity.epoch,
+      ...(history ? { history } : {}) };
     if (record.nativeActivity) {
       this.activities.save({ ...record, status: 'unknown', reconciliation });
       Object.assign(record, { status: 'unknown', reconciliation });

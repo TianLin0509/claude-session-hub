@@ -110,7 +110,7 @@ async function main() {
     if (lateControl) {
       await client.eval(`window.lateControlResult=null;ipcRenderer.invoke('session:set-fast',{sessionId:${q},enabled:true}).then(r=>window.lateControlResult=r);void 0`);
       await waitFor('unknown configuration is visible',()=>client.eval(`sessions.get(${q})?.nativeRuntime?.configurationChange?.status==='unknown'
-        && document.querySelector('.claude-native-notice')?.innerText.includes('设置结果待核对')`),90000);
+        && document.querySelector('.claude-native-notice')?.innerText.includes('正在更新设置')`),90000);
       ok('timeout keeps actual Fast unchanged',await client.eval(`sessions.get(${q}).nativeRuntime.fastMode===false`));
       const unknownShot=await client.send('Page.captureScreenshot',{format:'png'});
       fs.writeFileSync(path.join(OUT,'late-control-unknown.png'),Buffer.from(unknownShot.data,'base64'));

@@ -3840,6 +3840,8 @@ function markFloatingInputStuck(bar, sessionId) {
   if (!bar || bar.querySelector('.fi-stuck')) return;
   const delivery = floatingPromptDeliveries.get(sessionId);
   const native = isNativeAgent(sessions.get(sessionId));
+  // Native recovery belongs to Main; do not add a second manual-check banner.
+  if (native) { clearFloatingInputStuck(bar); return; }
   if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
   const stack = bar.querySelector('.fi-content-stack') || bar;
   const row = document.createElement('div');
@@ -4674,6 +4676,14 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
+      if (isNativeAgent(session) && !result?.ok) {
+        // A failed new send remains actionable, without a manual-reconciliation
+        // panel. Only an explicitly unsent prompt can safely return to draft.
+        if (result?.notSent && !readContenteditablePlainText(inputBox)) {
+          replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox);
+        }
+        if (result?.notSent) showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
+      }
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
       if (nativeCommand) {
@@ -4683,6 +4693,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       if (floatingPromptDeliveries.get(sessionId) !== delivery
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
+      if (isNativeAgent(session)) showToast('发送未完成：' + err.message, 'error');
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
     });

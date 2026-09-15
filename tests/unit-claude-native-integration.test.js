@@ -74,7 +74,7 @@ test('legacy waiting/footer/timeout truth cannot replace native revision', () =>
   session.nativeRuntime.state = 'unknown';
   const { buildComposerStatusModel } = require('../core/session-status-summary');
   const composer = buildComposerStatusModel(session, { runtime: deriveSessionRuntimeStatus(session) });
-  assert.equal(composer.text, '本条提交待核对');
+  assert.equal(composer.text, '等待连接响应');
   assert.notEqual(composer.state, 'ready');
 });
 

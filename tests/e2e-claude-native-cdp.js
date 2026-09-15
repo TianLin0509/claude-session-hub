@@ -130,21 +130,16 @@ async function main() {
       await waitFor('unknown receipt after crash', async () => (await state()).session.nativeRuntime.state === 'unknown'
         && (await state()).session.nativeRuntime.connection === 'disconnected');
       await assertTiming('unknown');
+      assert.equal(await client.eval("!!document.querySelector('.codex-command-feedback:not([hidden])')"), false);
       await shot('unknown');
       const oldIdentity = (await state()).session.nativeRuntime.submission.userMessageId;
-      await click('.claude-reconnect');
-      await waitFor('recovery records', () => client.eval("!!document.querySelector('.claude-reconcile')"));
-      await click('.claude-native-controls summary');
-      await click('.claude-recovery-copy');
-      assert.equal(await client.eval("readContenteditablePlainText(document.querySelector('.floating-input-box'))"), prompt);
-      await shot('reconcile');
-      await click('.claude-reconcile');
-      await waitFor('explicit acknowledgement', async () => (await state()).session.nativeRuntime.state === 'idle');
+      assert.equal(await client.eval("!!document.querySelector('.claude-reconcile,.claude-reconnect,.fi-stuck')"), false);
       await client.eval("document.querySelector('.floating-input-box').focus()");
+      await client.send('Input.insertText', { text: '继续' });
       await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
       await waitFor('new identity', async () => (await state()).session.nativeRuntime.submission?.userMessageId !== oldIdentity);
-      checks.push('crash stays unknown; actual reconnect and reconcile buttons do not resend; Enter sends a new identity');
+      checks.push('crash stays unknown without manual-check panels; Enter automatically recovers and sends only the new message');
     }
     await waitFor('exact receipt', async () => (await state()).delivery?.status === 'confirmed');
     checks.push('real Hub composer -> Main -> OS pipe fixture -> exact receipt');

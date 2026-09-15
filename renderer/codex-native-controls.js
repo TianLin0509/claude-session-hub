@@ -237,20 +237,8 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       box.append(restart,error);children.push(box);
     }
     if(runtime?.configurationError)children.push(node('p',runtime.configurationError,'codex-native-error'));
-    if (runtime?.submission?.status === 'unknown') {
-      const box=node('div',null,'codex-native-request');
-      const error=node('div','','codex-native-error');
-      box.append(node('p','上一条消息提交结果不明。核对原生记录前不会重发，也不会提交下一条。'));
-      const check=node('button','核对原生记录');check.type='button';
-      check.addEventListener('click',()=>action({action:'reconnect'},box,error));box.append(check);
-      if (runtime.connection==='connected' && ['idle','completed','interrupted','failed'].includes(runtime.state)) {
-        const reviewed=node('button','我已核对，允许发送新消息');reviewed.type='button';
-        reviewed.addEventListener('click',()=>action({action:'review-submission',submissionId:runtime.submission.id,epoch:runtime.epoch},box,error));
-        box.append(reviewed);
-      }
-      box.append(error);children.push(box);
-    }
-    if (session.nativeActionError) {
+    if (session.nativeActionError && !((runtime?.state === 'unknown' || runtime?.connection === 'disconnected')
+        && [runtime?.reason,runtime?.submission?.error].includes(session.nativeActionError))) {
       children.push(node('p',session.nativeActionError,'codex-native-error'));
     }
     if (choices.length) {

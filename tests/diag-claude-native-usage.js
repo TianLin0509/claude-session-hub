@@ -47,6 +47,8 @@ async function main() {
       opts:{model:'claude-opus-5[1m]',effort:'max',mcpProfile:'lean'}}).then(s=>({id:s.id}))`);
     const q = JSON.stringify(created.id);
     await waitFor('native connected', () => client.eval(`sessions.get(${q})?.nativeRuntime?.connection==='connected'`));
+    await waitFor('automatic quota reaches sidebar without clicking', () => client.eval(
+      'accountUsageController.getSnapshot().claude?.lastSeen>0 && !!(accountUsageController.getSnapshot().claude?.usage5h || accountUsageController.getSnapshot().claude?.usage7d)'));
     const result = await client.eval("ipcRenderer.invoke('refresh-usage-now','claude')");
     const cache = await client.eval("ipcRenderer.invoke('get-usage-cache')");
     fs.writeFileSync(path.join(OUT, 'evidence.json'), JSON.stringify({ result, claude: cache.claude }, null, 2), 'utf8');
