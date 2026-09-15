@@ -28,6 +28,7 @@ const until=async(label,check)=>{const end=Date.now()+30000;while(!await check()
     await until('native disconnect',async()=>(await runtime()).connection==='disconnected');
     const before=await runtime();report.oldSubmission=before.submission;
     assert.equal(await c.eval('!!document.querySelector(".fi-stuck")'),false);
+    assert.equal(await c.eval('!!document.querySelector(".codex-command-feedback:not([hidden])")'),false);
     assert.equal(await c.eval('document.body.innerText.includes("我已核对") || document.body.innerText.includes("核对原生记录")'),false);
     report.checks.push('native disconnect renders no manual receipt-review panel or duplicate composer warning');
     await send('continue with new request');

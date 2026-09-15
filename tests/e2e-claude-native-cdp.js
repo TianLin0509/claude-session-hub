@@ -130,6 +130,7 @@ async function main() {
       await waitFor('unknown receipt after crash', async () => (await state()).session.nativeRuntime.state === 'unknown'
         && (await state()).session.nativeRuntime.connection === 'disconnected');
       await assertTiming('unknown');
+      assert.equal(await client.eval("!!document.querySelector('.codex-command-feedback:not([hidden])')"), false);
       await shot('unknown');
       const oldIdentity = (await state()).session.nativeRuntime.submission.userMessageId;
       assert.equal(await client.eval("!!document.querySelector('.claude-reconcile,.claude-reconnect,.fi-stuck')"), false);

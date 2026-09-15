@@ -4682,7 +4682,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         if (result?.notSent && !readContenteditablePlainText(inputBox)) {
           replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox);
         }
-        commandFeedback.show(result?.notSent ? '消息未发送' : '连接暂不可用', result?.message || result?.error || '发送未完成', true);
+        if (result?.notSent) showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
       }
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
@@ -4693,7 +4693,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       if (floatingPromptDeliveries.get(sessionId) !== delivery
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
-      if (isNativeAgent(session)) commandFeedback.show('发送未完成', err.message, true);
+      if (isNativeAgent(session)) showToast('发送未完成：' + err.message, 'error');
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
     });
