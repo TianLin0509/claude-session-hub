@@ -22,7 +22,7 @@ async function main(){
     // Old environment settings cannot re-enable cross-Hub sharing.
     CLAUDE_HUB_CODEX_SHARED_RUNTIME:'1',CLAUDE_HUB_CLAUDE_SHARED_RUNTIME:'1'};
   const hubs=[], clients=[], checks=[], ids={}, before={};
-  async function launch(label){const hub=await launchIsolatedHub({dataDir,port:await port(),label,extraEnv:env});hubs.push(hub);const c=await connectFirstPage(hub);clients.push(c);await until(label+' ready',()=>c.eval('typeof sessions!=="undefined"'));return {hub,c};}
+  async function launch(label){const hub=await launchIsolatedHub({dataDir,port:await port(),label,extraEnv:env,windowMode:'hidden'});hubs.push(hub);const c=await connectFirstPage(hub);clients.push(c);await until(label+' ready',()=>c.eval('typeof sessions!=="undefined"'));return {hub,c};}
   async function shot(c,name){const shot=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));}
   let passed=false;
   try {
@@ -55,13 +55,28 @@ async function main(){
     checks.push('real clicks show owning Hub PID and reject both providers before opening');
     const other=await b.c.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:{cwd:${JSON.stringify(workspace)},model:'gpt-6-astra',mcpProfile:'none'}})`);
     assert(other.id);checks.push('different sessions remain usable in another Hub');
-    const claudeKey=JSON.stringify(ids.claude);
-    const suspended=await a.c.eval(`ipcRenderer.invoke('suspend-session',{sessionId:${claudeKey}})`);
-    assert.equal(suspended.ok,true);
-    await until('Claude released while Hub A stays alive',()=>a.c.eval(`sessions.get(${claudeKey})?.status==='dormant'`));
-    await click(b.c,`.session-item[data-session-id="${ids.claude}"]`);
-    await until('Claude resumes while previous Hub still alive',()=>b.c.eval(`sessions.get(${claudeKey})?.nativeRuntime?.connection==='connected'`));
-    assert(a.hub.isAlive());checks.push('closing only the Claude session releases it without quitting its old Hub');
+    for (const kind of ['codex','claude']) {
+      const id=ids[kind],key=JSON.stringify(id);
+      await click(a.c,`.session-item[data-session-id="${id}"]`);
+      await until(kind+' selected for sleep',()=>a.c.eval(`activeSessionId===${key} && !!document.querySelector('.btn-close-session')`));
+      await click(a.c,'.btn-close-session');
+      await until(kind+' released while Hub A stays alive',()=>a.c.eval(`sessions.get(${key})?.status==='dormant'`));
+      await click(b.c,`.session-item[data-session-id="${id}"]`);
+      await until(kind+' resumes while previous Hub still alive',()=>b.c.eval(`sessions.get(${key})?.nativeRuntime?.connection==='connected'`));
+      const resumed=await b.c.eval(`sessions.get(${key})`);
+      assert.equal(kind==='codex'?resumed.codexSid:resumed.ccSessionId,kind==='codex'?before[kind].codexSid:before[kind].ccSessionId);
+      await until(kind+' sleep preserves draft',()=>b.c.eval(`document.querySelector('.floating-input-box')?.innerText==='未发送草稿 ${kind}'`));
+      assert(a.hub.isAlive());
+      await shot(b.c,kind+'-sleep-resumed');
+      // Return the session to A so window-close recovery also covers both
+      // providers, and verify another Codex session in B keeps working.
+      await click(b.c,'.btn-close-session');
+      await until(kind+' released by Hub B',()=>b.c.eval(`sessions.get(${key})?.status==='dormant'`));
+      assert.equal(await b.c.eval(`sessions.get(${JSON.stringify(other.id)})?.nativeRuntime?.connection`),'connected');
+      await click(a.c,`.session-item[data-session-id="${id}"]`);
+      await until(kind+' returns to Hub A',()=>a.c.eval(`sessions.get(${key})?.nativeRuntime?.connection==='connected'`));
+    }
+    checks.push('real Close and Sleep clicks release Codex and Claude immediately; native IDs and drafts survive; unrelated sessions remain connected');
     // Change settings after B booted: resumption must reload fresh disk state.
     await a.c.eval(`ipcRenderer.invoke('rename-session',{sessionId:${JSON.stringify(ids.codex)},title:'最新标题：跨 Hub 恢复'})`);
     // Exercise the actual window close path, including configurations that used

@@ -24,6 +24,38 @@ async function until(check) {
   while(!check()){if(Date.now()>end)throw Error('condition timeout');await new Promise(r=>setTimeout(r,10));}
 }
 async function close(s){s.kill();await until(()=>!s.entry);}
+test('native process exit releases its durable leases while the host remains alive',async()=>{
+  const a=make('exited-owner-a'),b=make('exited-owner-b');
+  const {DatabaseSync}=require('node:sqlite');
+  try {
+    await a.start();await b.start();
+    assert.equal(a.entry,b.entry);
+    const leases=[a.ownershipLease,b.ownershipLease],client=a.entry.client;
+    client.proc.kill();await client.waitForExit();
+    await until(()=>leases.every(lease=>{
+      const db=new DatabaseSync(lease.file,{readOnly:true});
+      try{return !db.prepare('SELECT 1 FROM owners WHERE thread=? AND nonce=?').get(lease.threadId,lease.nonce);}
+      finally{db.close();}
+    }));
+    assert.equal(a.ownershipLease,null);assert.equal(b.ownershipLease,null);
+    assert.equal(a.runtime.connection,'disconnected');
+  } finally {await close(a);await close(b);}
+});
+test('failed unsubscribe does not announce session exit until its native writer exits',async()=>{
+  const s=make('close-waits-for-writer');await s.start();
+  const client=s.entry.client,realClose=client.close.bind(client),request=client.request.bind(client);
+  let closeRequested=false,exited=false;
+  client.request=(method,...args)=>method==='thread/unsubscribe'?Promise.reject(Error('fixture unsubscribe failed')):request(method,...args);
+  client.close=()=>{closeRequested=true;};
+  s.once('exit',()=>{exited=true;});
+  try {
+    s.kill();await until(()=>closeRequested);
+    assert.equal(client.proc.exitCode,null);
+    assert.equal(exited,false,'Hub must keep ownership until actual writer exit');
+    client.close=realClose;realClose();await client.waitForExit();
+    await until(()=>exited);
+  } finally {client.close=realClose;realClose();await client.waitForExit();if(s.entry){s.closed=false;await close(s);}}
+});
 test('web configure validates bridge aliases without requiring them in the ordinary native catalog',async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-web-options-'));
   fs.mkdirSync(path.join(root,'runtime'));fs.mkdirSync(path.join(root,'codex-home'));

@@ -168,6 +168,13 @@ class CodexNativeSession extends EventEmitter {
     this.onDisconnect = error => {
       this.backstage.note('连接中断', error.message, 'error');
       this.apply({type:'disconnect',reason:error.message,epoch});
+      // A disconnected pipe alone is not proof of writer exit. Once the
+      // actual child exits, its leases must not remain pinned to a live host.
+      const lease = this.ownershipLease;
+      if (lease) client.waitForExit().then(() => {
+        releaseThread(lease);
+        if (this.ownershipLease === lease) this.ownershipLease = null;
+      }).catch(cleanup => this.emit('diagnostic','原生进程退出后的归属释放失败：'+cleanup.message));
     };
     this.onStderr = text => this.backstage.note('App Server stderr（共享进程）', text, 'warning');
     this.onLateResponse = () => {
@@ -944,10 +951,21 @@ class CodexNativeSession extends EventEmitter {
         await this.requestNative(c,'thread/unsubscribe',{threadId:this.threadId},3000);
         this.unsubscribed=true;
         finish();
-      })().catch(error=>{
+      })().catch(async error=>{
         this.emit('diagnostic','关闭 Codex 会话：'+error.message);
-        if (c.closed || this.entry?.refs === 1) finish();
-        else { this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message); }
+        if (c.closed || this.entry?.refs === 1) {
+          try {
+            c.close();
+            await c.waitForExit();
+            finish();
+            return;
+          } catch (cleanup) { error = cleanup; }
+        }
+        this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message);
+      });
+    } else if (c?.closed) {
+      c.waitForExit().then(finish).catch(error=>{
+        this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message);
       });
     } else finish();
   }
