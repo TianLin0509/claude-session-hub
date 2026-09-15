@@ -28,6 +28,9 @@ test('an engine that cannot report quota yields nothing instead of a zeroed ring
   assert.equal(claudeAccountUsageFromControl({ rate_limits_available: false, rate_limits: REPLY.rate_limits }), null);
   assert.equal(claudeAccountUsageFromControl({ rate_limits_available: true, rate_limits: {} }), null);
   assert.equal(claudeAccountUsageFromControl(null), null);
+  for (const utilization of [null, undefined, '', ' ', false, true]) {
+    assert.equal(claudeAccountUsageFromControl({ rate_limits: { five_hour: { utilization } } }), null);
+  }
   const partial = claudeAccountUsageFromControl({ rate_limits_available: true,
     rate_limits: { five_hour: { utilization: 41 }, seven_day: { utilization: 'n/a' } } });
   assert.deepEqual(partial.usage5h, { pct: 41, resetsAt: 0 });

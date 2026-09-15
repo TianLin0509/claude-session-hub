@@ -2376,7 +2376,7 @@ function cacheAccountUsage(data) {
     if (JSON.stringify(cur) === JSON.stringify(existing.claude)) return;
     _usageCacheMemory = existing;
     scheduleUsageCacheWrite();
-  } catch {}
+  } catch (error) { console.warn('[claude-usage] cache update failed:', error && error.message); }
 }
 
 function loadStatuslineCache() {
@@ -2391,7 +2391,7 @@ async function refreshClaudeAccountUsageLive() {
   for (const session of sessionManager.getAllSessions()) {
     if (session.runtimeBackend !== 'claude-stream-json') continue;
     const native = sessionManager.getNativeClaude?.(session.id);
-    if (!native) continue;
+    if (!native || native.closed || native.runtime?.connection !== 'connected') continue;
     let snapshot = null;
     try { snapshot = await native.readAccountUsage(); }
     catch (error) { console.warn('[claude-usage] native read failed:', error && error.message); continue; }
@@ -2409,8 +2409,29 @@ async function refreshClaudeAccountUsageLive() {
 }
 
 async function refreshClaudeAccountUsage() {
-  return (await refreshClaudeAccountUsageLive()) || refreshClaudeAccountUsageFromStatuslineCache();
+  return claudeAccountRefresh.refresh();
 }
+
+let claudeAccountBroadcast = '';
+const claudeAccountRefresh = require('./main/usage/claude-usage-refresh').createClaudeUsageRefresh({
+  refresh: async () => (await refreshClaudeAccountUsageLive()) || refreshClaudeAccountUsageFromStatuslineCache(),
+  getSessions: () => sessionManager.getAllSessions().flatMap(session => {
+    if (session.runtimeBackend !== 'claude-stream-json') return [];
+    const native = sessionManager.getNativeClaude?.(session.id);
+    return native && !native.closed && native.runtime?.connection === 'connected'
+      ? [{ id: session.id, ...native.runtime }] : [];
+  }),
+  getCached: () => loadUsageCache().claude,
+  publish: data => {
+    const signature = JSON.stringify(data);
+    if (signature === claudeAccountBroadcast) return;
+    claudeAccountBroadcast = signature;
+    sendToRenderer('status-event', { usage5h: data.usage5h, usage7d: data.usage7d,
+      observedAt: data.observedAt || data.ts || 0 });
+  },
+});
+app.on('browser-window-focus', () => { void claudeAccountRefresh.tick('focus'); });
+app.on('will-quit', () => { claudeAccountRefresh.stop(); });
 
 function refreshClaudeAccountUsageFromStatuslineCache() {
   const before = loadUsageCache().claude || null;
@@ -2882,12 +2903,14 @@ function startAgentScanner() {
     return _agentScanInFlight;
   };
   void run();
+  void claudeAccountRefresh.tick();
   void refreshCodexUsageIfDue(true).catch(() => null);
   refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
   void refreshTokenPlanUsage().catch(() => {});
   _agentScanInterval = setInterval(() => {
     void run();
+    void claudeAccountRefresh.tick();
     const codexRefresh = refreshCodexUsageIfDue(false);
     if (codexRefresh) void codexRefresh.catch(() => null);
     refreshDeepSeekBalanceIfDue(false);

@@ -91,6 +91,11 @@ async function main() {
   assert.strictEqual(controller.getSnapshot().refresh.providers.deepseek.inFlight, false);
   assert.strictEqual(controller.getSnapshot().deepseek.lastSeen, 200);
   await assert.rejects(controller.refreshUsageNow('__proto__'), /不支持/);
+  await assert.rejects(controller.refreshUsageNow('claude'), /IPC disconnected/);
+  controller.recordStatusUsage({ usage5h: { pct: 20 }, observedAt: 400 });
+  assert.strictEqual(controller.getSnapshot().refresh.providers.claude.error, null, 'fresh automatic result clears previous failure');
+  controller.recordStatusUsage({ usage5h: { pct: 12 }, observedAt: 300 });
+  assert.strictEqual(controller.getSnapshot().claude.usage5h.pct, 20, 'late background snapshot must not roll back quota');
 
   const nodes = [];
   const doc = { createElement(tag) {

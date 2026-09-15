@@ -63,6 +63,15 @@ rl.on('line', async line => {
     } else if (m.request.subtype === 'interrupt') {
       await success(m.request_id);
       if (lastUser) { lastUser = null; await result({ terminal_reason: 'aborted_streaming' }); }
+    } else if (m.request.subtype === 'get_usage') {
+      const file = process.env.CLAUDE_HUB_FIXTURE_USAGE_FILE;
+      if (!file) return success(m.request_id, { rate_limits_available: false });
+      if (!process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Usage fixture requires isolated data');
+      const fs = require('node:fs');
+      fs.appendFileSync(file + '.requests', JSON.stringify({ at: Date.now(), sessionId }) + '\n');
+      const usage = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (usage.error) return frame({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id, error: usage.error } });
+      await success(m.request_id, { rate_limits_available: true, rate_limits: usage });
     } else if (m.request.subtype === 'get_context_usage') {
       await success(m.request_id, { totalTokens: 12500, maxTokens: 950000, rawMaxTokens: 1000000,
         percentage: 12500 / 950000 * 100, model: 'claude-opus-5[1m]' });

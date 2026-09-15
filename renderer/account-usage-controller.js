@@ -111,7 +111,15 @@ function createAccountUsageController({
 
   function recordStatusUsage(payload) {
     if (!payload) return;
-    if (payload.usage5h || payload.usage7d) _claudeUsageLastSeen = payload.observedAt || nowFn();
+    if (payload.usage5h || payload.usage7d) {
+      const observedAt = payload.observedAt ?? nowFn();
+      if (observedAt < _claudeUsageLastSeen) return;
+      if (observedAt > _claudeUsageLastSeen) {
+        providerRefreshStates.claude.error = null;
+        providerRefreshStates.claude.result = null;
+      }
+      _claudeUsageLastSeen = observedAt;
+    }
     if (payload.usage5h) {
       accountUsage.usage5h = payload.usage5h;
       const now = nowFn();

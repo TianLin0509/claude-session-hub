@@ -15,7 +15,9 @@ function toResetMs(value) {
 
 function toWindow(entry) {
   if (!entry || typeof entry !== 'object') return null;
-  const pct = Number(entry.utilization);
+  const raw = entry.utilization;
+  if (raw === null || raw === undefined || typeof raw === 'boolean' || String(raw).trim() === '') return null;
+  const pct = Number(raw);
   // A missing utilization is not "0% used": publishing that would wipe a real
   // reading out of the monotonic filter.
   if (!Number.isFinite(pct) || pct < 0 || pct > 100) return null;
