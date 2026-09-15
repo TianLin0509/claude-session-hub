@@ -1,0 +1,38 @@
+# 普通会话左右二分屏
+
+## 使用方式
+
+会话界面右上角提供两个 SVG 布局图标：空矩形表示单屏，中间带竖线的矩形表示左右二分。
+
+- 点击二分屏：当前会话留在左屏，右屏显示选择入口并获得选择焦点。
+- 在窗格顶部选择 session，或先点击窗格再点击侧栏会话，即可在该屏打开。
+- 再次选择已经显示的 session，直接聚焦已有窗格，不重复挂载输入框。
+- 分隔线可拖动；聚焦后方向键调宽，Home 恢复等宽。
+- 点击单屏：保留当前聚焦会话。发送和审批继续使用现有原生控制入口。
+- 顶部后台、文件、关闭等会话操作对应当前聚焦的会话。
+
+## 范围与生命周期
+
+首期仅左右二分；没有三屏入口。布局比例是本窗口内的临时显示状态，不在重启后自动打开会话。
+
+改变布局不停止 writer。关闭会话仍复用“关闭并休眠”，等待最终保存和原生 writer 停止后释放归属。
+另一个 Hub 占用时保留旧窗格、显示占用信息，不恢复共享查看、订阅 broker 或控制权转移。
+打开请求按右窗格的递增意图编号管理，迟到的恢复结果不能覆盖后来的选择；原生 session-created 事件即使晚于 IPC 响应，也不能抢占左屏。
+
+## 实现
+
+- `renderer/session-split.js` 管理布局、焦点和会话选择；左屏继续使用原有主视图。
+- `renderer/split-session-view.js` 管理右屏独立的消息 Map、历史读取、滚动跟随、多选与问题导航。
+- `turn-card-renderer` 支持独立 root / container / state，卡片事件与工具详情不会跨屏重复执行，移除视图时解除监听。
+- 两屏复用 `mountFloatingInput`、原生草稿与审批控制、`session:send-prompt`；输入对象绑定 sessionId。
+- 非聚焦右屏按已有原生事件刷新；隐藏后停止消息渲染，保留必要脏标记；不轮询所有历史会话。
+- CSS 中输入栏高度限定在所在 terminal-panel，旧输入栏只能清理自己仍挂载的面板高度。
+
+## 验证入口
+
+- `node tests/unit-session-split.test.js`：选择竞争、占用拒绝、焦点、延迟恢复与取消。
+- `node tests/e2e-session-split-cdp.js`：隔离真实 Electron、真实 CDP 点击、Codex / Claude 原生 fixture、草稿、持续更新、滚动、审批与休眠恢复。
+- `node tests/e2e-session-exclusive-cdp.js`：多 Hub 独占及关闭恢复回归。
+- `node scripts/run_unit_tests.js`：项目完整单测入口。
+
+原生 fixture 验证 Hub 路由和生命周期，不代表真实供应商网络验收。

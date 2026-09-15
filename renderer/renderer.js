@@ -194,6 +194,7 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const sessions = new Map();
 const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
+let sessionSplit = null;
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
@@ -1264,6 +1265,7 @@ function unloadGpuRenderer(cached) {
 function suspendInactiveTerminalRenderers(activeId) {
   for (const [sessionId, cached] of terminalCache) {
     if (activeId && sessionId === activeId) continue;
+    if (sessionSplit?.isVisible(sessionId)) continue;
     if (cached && cached.container) cached.container.style.display = 'none';
     if (cached._ptyPresentation) { cached._ptyPresentation.dispose(); cached._ptyPresentation = null; }
     unloadGpuRenderer(cached);
@@ -1611,9 +1613,10 @@ const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
 function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
   if (!backstageButton) return;
+  const mode = sessionSplit?.isSecondaryFocused() ? sessionSplit.secondary().mode() : currentView;
   backstageButton.hidden = !visible;
-  backstageButton.setAttribute('aria-pressed', String(currentView === 'pty'));
-  backstageButton.title = currentView === 'pty' ? '返回卡片视图' : '查看后台输出';
+  backstageButton.setAttribute('aria-pressed', String(mode === 'pty'));
+  backstageButton.title = mode === 'pty' ? '返回卡片视图' : '查看后台输出';
 }
 
 const appToolbarEl = document.getElementById('app-toolbar');
@@ -1807,13 +1810,15 @@ function currentAppToolbarView() {
 // 工具栏的唯一入口：先看是不是某个非会话视图，不是才当会话视图画。
 function refreshAppToolbar() {
   if (!toolbarCrumbEl) return;
+  sessionSplit?.sync();
   const viewLabel = currentAppToolbarView();
   if (viewLabel) { paintAppToolbarForView(viewLabel); return; }
-  const session = activeSessionId ? sessions.get(activeSessionId) : null;
-  const cached = activeSessionId ? terminalCache.get(activeSessionId) : null;
+  const focusedId = sessionSplit?.focusedId() || activeSessionId;
+  const session = focusedId ? sessions.get(focusedId) : null;
+  const cached = focusedId ? terminalCache.get(focusedId) : null;
   // 会话还没建好终端时不硬画一个半成品头部，按主页处理，等 showTerminal 补上。
   if (!session || !cached) { paintAppToolbarForView('主页'); return; }
-  paintAppToolbarForSession(activeSessionId, session, cached);
+  paintAppToolbarForSession(focusedId, session, cached);
 }
 
 let _appToolbarRefreshRaf = null;
@@ -1931,7 +1936,7 @@ syncTitleBarOverlayColors();
 scheduleAppToolbarRefresh();
 
 function showTerminal(sessionId, opts = { focus: true }) {
-  for (const [sid, entry] of terminalCache) if (sid !== sessionId) entry._codexBackstage?.setVisible(false);
+  for (const [sid, entry] of terminalCache) if (sid !== sessionId && !sessionSplit?.isVisible(sid)) entry._codexBackstage?.setVisible(false);
   suspendInactiveTerminalRenderers(sessionId);
 
   const session = sessions.get(sessionId);
@@ -3150,6 +3155,7 @@ document.addEventListener('click', (e) => {
 
 // === Spec 1 v0.9.0 · D5 操作按钮 click ===
 function getTurnFromCard(cardEl) {
+  if (cardEl?.closest('[data-split-secondary]')) return sessionSplit?.secondary()?.turns.get(cardEl.dataset.turnId) || null;
   if (!cardEl || !window._sessionTurns) return null;
   return window._sessionTurns.get(cardEl.dataset.turnId);
 }
@@ -3195,7 +3201,8 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'multi-select') {
     // 微信式多选：以点中的这张卡片为起点进入，随后整片卡片区的点击都变成勾选。
-    cardMultiSelectController.enter(card.dataset.turnId);
+    if (card.closest('[data-split-secondary]')) sessionSplit?.secondary()?.multiSelect.enter(card.dataset.turnId);
+    else cardMultiSelectController.enter(card.dataset.turnId);
     return;
   }
 
@@ -3285,13 +3292,14 @@ document.addEventListener('click', async (e) => {
     // 文本填进去、用户一回车就发去了错误的 CLI。卡片不属于当前激活会话时直接
     // 拒绝，宁可少一次便利也不要串台（2026-07-28）。
     const cardSid = getCardSessionId(card);
-    const liveSid = (typeof activeSessionId !== 'undefined' && activeSessionId) || null;
+    const liveSid = card.closest('[data-split-secondary]') ? sessionSplit?.secondary()?.sessionId
+      : (typeof activeSessionId !== 'undefined' && activeSessionId) || null;
     if (cardSid && liveSid && String(cardSid) !== String(liveSid)) {
       console.warn('[edit-resend] 卡片属于会话', cardSid, '，当前激活的是', liveSid,
         '——已跳过填入，避免把内容写进别的会话的输入框');
       return;
     }
-    const inputEl = document.querySelector('.floating-input-box')
+    const inputEl = card.closest('.terminal-panel')?.querySelector('.floating-input-box')
       || document.getElementById('mr-input-box');
     if (inputEl) {
       // 2026-05-09 道雪：用户原则 — 输入框只能由"发送 / 手动编辑"改动；
@@ -3753,6 +3761,11 @@ function recoverVisibleActiveTerminalSurface() {
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('#btn-backstage');
+  if (btn && !btn.hidden && sessionSplit?.isSecondaryFocused()) {
+    sessionSplit.secondary().toggleMode();
+    btn.setAttribute('aria-pressed', String(sessionSplit.secondary().mode() === 'pty'));
+    return;
+  }
   if (btn && !btn.hidden && activeSessionId && !currentAppToolbarView()) {
     applyViewMode(currentView === 'pty' ? 'card' : 'pty');
   }
@@ -3762,7 +3775,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   const starter = e.target.closest && e.target.closest('[data-welcome-prompt]');
   if (starter) {
-    const box = document.querySelector('#terminal-panel .floating-input-box');
+    const box = starter.closest('.terminal-panel')?.querySelector('.floating-input-box');
     if (box) {
       if (!box.textContent.trim() && !box.querySelector('img, [data-file-path]')) {
         box.textContent = starter.dataset.welcomePrompt;
@@ -4106,7 +4119,7 @@ function composerSupportedEfforts(session) {
   return efforts;
 }
 
-function mountFloatingInput(sessionId, termContainer, terminal) {
+function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
   const commandFeedback = require('./codex-command-feedback').createCodexCommandFeedback(document, bar);
@@ -4229,7 +4242,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   statusAction.addEventListener('click', (event) => {
     event.stopPropagation();
     const kind = statusAction.dataset.actionKind || '';
-    if (kind === 'scroll-latest') { scrollToLatestTurn(terminal); return; }
+    if (kind === 'scroll-latest') { if (pane.history) pane.history(); else scrollToLatestTurn(terminal); return; }
     if (kind === 'reconnect') void reconnectSession(sessionId);
   });
   statusRow.append(statusDot, statusText, statusDetail, statusAction);
@@ -4404,7 +4417,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
-    isActive: () => activeSessionId === sessionId,
+    isActive: () => (sessionSplit?.focusedId() || activeSessionId) === sessionId,
   });
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
@@ -4442,7 +4455,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const contentStack = document.createElement('div');
   contentStack.className = 'fi-content-stack';
   const nativeControls = require('./claude-native-controls').createClaudeNativeControls({ sessionId, ipcRenderer,
-    onHistory: () => loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: true }),
+    onHistory: () => pane.history ? pane.history() : loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: true }),
     onRestoreDraft: record => {
       if ((record.content || []).some(block => block.type !== 'text')) throw new Error('本条含附件，请从历史核对附件后重新添加');
       if (readContenteditablePlainText(inputBox)) throw new Error('输入框已有草稿，请先保存或发送');
@@ -4638,9 +4651,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
+    if ((pane.isCard ? pane.isCard() : currentView === 'card') && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
       try {
-        mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
+        if (pane.optimistic) pane.optimistic(text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
+        else mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }
@@ -4808,7 +4822,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       voiceInput.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
-      if (panel) panel.style.setProperty('--fi-bar-h', '0px');
+      if (panel && bar.parentNode === panel) panel.style.setProperty('--fi-bar-h', '0px');
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
   };
@@ -4871,8 +4885,9 @@ function syncTerminalRuntimeStatusTicker(session) {
       return;
     }
     const now = Date.now();
-    if (target) paintTerminalRuntimeStatus(target, active, now);
+    if (target) paintTerminalRuntimeStatus(target, sessions.get(sessionSplit?.focusedId()) || active, now);
     if (bar) bar._paintComposer(active, now);
+    sessionSplit?.secondary()?.updateStatus();
   }, 1000);
 }
 
@@ -4922,6 +4937,7 @@ function updateCardSessionStatus(session) {
 }
 
 function updateFloatingBarState() {
+  sessionSplit?.sync();
   if (!activeSessionId) {
     updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
@@ -4938,7 +4954,7 @@ function updateFloatingBarState() {
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
   const status = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
-  if (status) paintTerminalRuntimeStatus(status, s);
+  if (status) paintTerminalRuntimeStatus(status, sessions.get(sessionSplit?.focusedId()) || s);
   syncTerminalRuntimeStatusTicker(s);
   updateCardSessionStatus(s);
 
@@ -5162,6 +5178,8 @@ ipcRenderer.on('session-persistence-error', (_event, error) => {
   require('./ui-feedback').showHubAlert('会话信息未保存：' + error.message);
 });
 async function selectSession(id, opts = {}) {
+  if (!opts.splitBypass && sessionSplit?.routesSelection()) return sessionSplit.route(id, undefined, opts);
+  sessionSplit?.usePrimary();
   const intent = ++sessionOpenIntent;
   if (sessions.get(id)?.status === 'dormant') {
     const opening = await ipcRenderer.invoke('session:open-status', id);
@@ -5271,6 +5289,7 @@ async function selectSession(id, opts = {}) {
   //   open + robustFit 的 rAF 链先跑完，避免被它抢焦点回去。
   setTimeout(() => {
     if (activeSessionId !== id) return; // 50ms 内用户又切走了
+    if (sessionSplit && !sessionSplit.isPrimaryFocused()) return;
     const inputBox = document.querySelector('.terminal-panel .floating-input-box');
     if (inputBox && document.activeElement !== inputBox) {
       inputBox.focus();
@@ -7519,7 +7538,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   clipboard,
   sessions,
   terminalCache,
-  getActiveSessionId: () => activeSessionId,
+  getActiveSessionId: () => sessionSplit?.focusedId() || activeSessionId,
   getCurrentFontSize: () => currentFontSize,
   selectSession,
   escapeToHome,
@@ -7842,6 +7861,10 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
       observedAt: Date.now(),
     });
   }
+  if (sessionSplit?.handlesCreated(session.id)) {
+    scheduleSessionListRender();
+    return;
+  }
   // 原生投研 PTY 由初心投研面板内嵌挂载；不抢占主终端，也不进入左栏。
   if (session.purpose === 'chuxin-research') {
     scheduleSessionListRender();
@@ -7932,6 +7955,7 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
+  sessionSplit?.closed(sessionId);
   const local = sessions.get(sessionId);
   if (!local) return;
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
@@ -8048,6 +8072,7 @@ function markSessionProcessLost(sessionId, exitInfo) {
 }
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
+  sessionSplit?.closed(sessionId);
   cardHistoryViews.drop(sessionId);
   floatingPromptDeliveries.delete(sessionId);
   const closing = sessions.get(sessionId);
@@ -8422,6 +8447,100 @@ async function resumeDormantSession(hubId, opts = {}) {
   return resumed || null;
 }
 window.resumeDormantSession = resumeDormantSession;
+
+function createSecondarySessionView(sessionId, panel) {
+  const session = sessions.get(sessionId);
+  return require('./split-session-view').createSplitSessionView({
+    document, window, sessionId, panel,
+    rendererOptions: {
+      navigator, CSS, marked, DOMPurify, formatAbsoluteTime, normalizeMarkdownPathBreaks, escapeHtml,
+      wrapPathLinksInElement, getSessionContext: id => sessions.get(id),
+      openAttachment: (target, opts) => openPathInHub(target, opts),
+      readToolResult: reference => ipcRenderer.invoke(reference.source === 'claude-stream-json' ? 'claude-native:tool-result' : reference.source === 'codex-app-server' ? 'codex-native:tool-result' : 'acp:tool-result', reference),
+      renderMathInElement: window.renderMathInElement,
+    },
+    services: {
+      ipc: ipcRenderer,
+      session: () => sessions.get(sessionId),
+      initialMode: () => selectionViewModeForSession(sessionId, session),
+      parse: payload => ipcRenderer.invoke('parse-session-transcript', payload),
+      welcome: value => require('./session-welcome').renderSessionWelcome(value, escapeHtml),
+      mountTerminal(host, pane) {
+        const cached = getOrCreateTerminal(sessionId);
+        const container = document.createElement('div'); container.className = 'terminal-container';
+        host.prepend(container); container.append(cached.container); cached.container.style.display = 'block';
+        if (!cached.opened) {
+          cached.terminal.open(cached.container); cached.opened = true;
+          setupImageHover(cached.terminal, cached.container);
+          void hydrateTerminalFromSnapshot(sessionId, cached);
+        }
+        if (cached._floatingInput) { cached._floatingInput.dispose(); cached._floatingInput = null; }
+        const input = session.readOnly ? null : mountFloatingInput(sessionId, container, cached.terminal, pane);
+        cached._floatingInput = input;
+        if (isNativeAgent(session)) {
+          cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
+            getSession: () => sessions.get(sessionId),
+            renderProse: text => DOMPurify.sanitize(marked.parse(text, { async: false }), { FORBID_TAGS: ['img', 'video', 'audio', 'iframe'] }),
+            onModeChange: mode => { cached._backstageReadable = mode !== 'legacy'; },
+            focusComposer: () => host.querySelector('.floating-input-box')?.focus(),
+          });
+          cached._codexBackstage.mount(container);
+        }
+        let shown = true, viewMode = 'card';
+        const resize = () => {
+          if (!shown || !cached.container.isConnected) return;
+          scheduleFitAndResizeTerminal(sessionId, cached);
+        };
+        const observer = new ResizeObserver(resize); observer.observe(container);
+        return {
+          resize,
+          setMode(mode, visible) {
+            viewMode = mode; shown = visible;
+            cached._codexBackstage?.setVisible(visible && mode === 'pty');
+            if (visible && mode === 'pty' && !cached._backstageReadable) loadGpuRenderer(cached); else unloadGpuRenderer(cached);
+            resize();
+          },
+          updateStatus() {
+            const current = sessions.get(sessionId);
+            const bar = host.querySelector('.floating-input-bar');
+            if (current) bar?._paintComposer?.(current);
+            if (viewMode === 'pty') cached._codexBackstage?.updateStatus();
+          },
+          dispose() {
+            observer.disconnect(); input?.dispose();
+            if (cached._floatingInput === input) cached._floatingInput = null;
+            cached._codexBackstage?.setVisible(false); unloadGpuRenderer(cached);
+            cached.container.remove();
+          },
+        };
+      },
+    },
+  });
+}
+
+sessionSplit = require('./session-split').createSessionSplit({
+  document, window, primary: terminalPanelEl, buttons: document.getElementById('session-layout-buttons'),
+  services: {
+    primaryId: () => activeSessionId,
+    sessions: () => [...sessions.values()], session: id => sessions.get(id),
+    otherView: () => currentAppToolbarView(),
+    selectPrimary: (id, opts) => selectSession(id, opts),
+    focusPrimary: () => terminalPanelEl.querySelector('.floating-input-box')?.focus(),
+    openStatus: id => ipcRenderer.invoke('session:open-status', id),
+    ensureOpen: id => resumeDormantSession(id),
+    createView: createSecondarySessionView,
+    sameIdentity: (a, b) => !!(a && b && ((a.codexSid && a.codexSid === b.codexSid) || (a.ccSessionId && a.ccSessionId === b.ccSessionId))),
+    alert: message => require('./ui-feedback').showHubAlert(message),
+    onFocus: id => {
+      ipcRenderer.send('focus-session', { sessionId: id });
+      scheduleAppToolbarRefresh();
+    },
+    resize: () => {
+      const cached = terminalCache.get(activeSessionId);
+      if (cached) scheduleFitAndResizeTerminal(activeSessionId, cached);
+    },
+  },
+});
 
 // --- Init ---
 (async () => {

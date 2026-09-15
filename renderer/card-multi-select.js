@@ -73,7 +73,7 @@ function createCardMultiSelectController(options = {}) {
   let syncScheduled = false;
 
   function overlay() {
-    return doc && doc.getElementById('msg-overlay');
+    return options.container || (doc && doc.getElementById('msg-overlay'));
   }
 
   function cardsInOrder() {
@@ -327,11 +327,11 @@ function createCardMultiSelectController(options = {}) {
 
   function init() {
     if (!doc) return false;
-    bar = doc.getElementById('card-multi-select-bar');
-    countEl = doc.getElementById('card-multi-select-count');
-    selectAllBtn = doc.getElementById('card-multi-select-all');
-    copyBtn = doc.getElementById('card-multi-select-copy');
-    exitBtn = doc.getElementById('card-multi-select-exit');
+    bar = options.elements?.bar || doc.getElementById('card-multi-select-bar');
+    countEl = options.elements?.count || doc.getElementById('card-multi-select-count');
+    selectAllBtn = options.elements?.all || doc.getElementById('card-multi-select-all');
+    copyBtn = options.elements?.copy || doc.getElementById('card-multi-select-copy');
+    exitBtn = options.elements?.exit || doc.getElementById('card-multi-select-exit');
     if (!bar || !countEl || !selectAllBtn || !copyBtn || !exitBtn) return false;
     copyBtn.dataset.defaultLabel = copyBtn.textContent || '一键复制';
     selectAllBtn.addEventListener('click', onSelectAllClick);

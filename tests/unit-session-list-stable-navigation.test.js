@@ -18,6 +18,7 @@ function targetFor(attribute, id) {
 
 function makeHarness(rows = [], activeSessionId = null, sessions = new Map(), groups = {}) {
   const listeners = new Map();
+  const documentListeners = new Map();
   const selected = [];
   const meetings = [];
   const sessionListEl = {
@@ -32,7 +33,7 @@ function makeHarness(rows = [], activeSessionId = null, sessions = new Map(), gr
   createSessionListRenderer({
     getSessions: () => sessions,
     getMeetings: () => groups,
-    document: {},
+    document: { addEventListener(type, handler) { documentListeners.set(type, handler); } },
     localStorage: { getItem() { return null; }, setItem() {} },
     sessionListEl,
     isAiKind: () => true,
@@ -49,7 +50,7 @@ function makeHarness(rows = [], activeSessionId = null, sessions = new Map(), gr
   const emit = (type, event) => {
     for (const handler of listeners.get(type) || []) handler(event);
   };
-  return { emit, selected, meetings };
+  return { emit, selected, meetings, emitDocument: (type, event) => documentListeners.get(type)?.(event) };
 }
 
 test('pointer intent survives row replacement between down and up', () => {
@@ -167,6 +168,16 @@ test('same-position double click keeps the first row intent after reordering', (
   });
 
   assert.deepEqual(harness.selected.map(entry => entry.id), ['original-row', 'original-row']);
+});
+
+test('a pane click ends sidebar double-click coalescing before selecting a reordered row', () => {
+  const h = makeHarness();
+  const press = id => {
+    h.emit('pointerdown', { button: 0, pointerId: 9, clientX: 20, clientY: 40, target: targetFor('data-session-id', id) });
+    h.emit('pointerup', { pointerId: 9, clientX: 20, clientY: 40, preventDefault() {}, stopPropagation() {} });
+  };
+  press('a'); h.emitDocument('pointerdown', { target: {} }); press('b');
+  assert.deepEqual(h.selected.map(v => v.id), ['a', 'b']);
 });
 
 test('pointer drag is cancelled and its synthetic click is suppressed', () => {

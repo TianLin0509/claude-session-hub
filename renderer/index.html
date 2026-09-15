@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="voice-input.css">
+  <link rel="stylesheet" href="session-split.css">
   <link rel="stylesheet" href="session-details.css">
   <link rel="stylesheet" href="sidebar-unread.css">
   <link rel="stylesheet" href="workspace.css">
@@ -60,6 +61,10 @@
       <div class="terminal-header-actions" id="toolbar-actions"></div>
       <button class="conversation-filter" data-conversation-filter="all" aria-pressed="false" title="显示全部消息，或暂时隐藏进展与活动记录">全部消息</button>
       <button type="button" class="backstage-toggle" id="btn-backstage" aria-pressed="false" title="查看后台输出" hidden>后台</button>
+      <div class="session-layout-buttons" id="session-layout-buttons" role="group" aria-label="会话布局" hidden>
+        <button type="button" class="session-layout-button" data-session-layout="single" title="单屏 · 保留当前聚焦会话" aria-label="切换单屏" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/></svg></button>
+        <button type="button" class="session-layout-button" data-session-layout="two" title="左右二分屏" aria-label="切换左右二分屏" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg></button>
+      </div>
       <!-- 右端给 Windows 自己画的最小化 / 最大化 / 关闭留位。宽度优先用
            env(titlebar-area-*)，取不到时回落到 138px 常量。 -->
       <div class="toolbar-window-controls" id="toolbar-window-controls" aria-hidden="true"></div>

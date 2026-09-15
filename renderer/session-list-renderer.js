@@ -411,6 +411,11 @@ function _sessionWarningText(session) {
   let pendingPointerNavigation = null;
   let lastPointerNavigationAt = 0;
   let lastPointerActivation = null;
+  // Editing another pane ends a physical double-click gesture. A later click
+  // on a reordered row must use that row, not the prior sidebar target.
+  doc.addEventListener?.('pointerdown', event => {
+    if (!sessionListEl.contains?.(event.target)) lastPointerActivation = null;
+  }, true);
 
   function navigationIntentFromTarget(target) {
     if (!target || typeof target.closest !== 'function') return null;
