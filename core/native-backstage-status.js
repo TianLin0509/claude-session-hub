@@ -3,7 +3,7 @@
 // Presentation only: elapsed time never changes execution/connection truth.
 function backstageStatus(session, now = Date.now()) {
   const r = session?.nativeRuntime || {};
-  const provider = session?.runtimeBackend === 'claude-stream-json' ? 'Claude' : 'Codex';
+  const provider = require('./native-ui-labels').nativeUiLabel(session);
   const submission = r.submission || {};
   const delivery = submission.status || submission.sendStatus;
   let state = r.state || 'unknown', title, detail, animated = false;

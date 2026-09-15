@@ -5,6 +5,27 @@ const { NativeDraftStore } = require('../core/native-draft-store');
 const { createNativeDraftController } = require('../renderer/native-draft-controller');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('flush waits for the latest queued revision before closing; unchanged disposal does not save again', async () => {
+  let finishSave;
+  const writes = [];
+  const controller = createNativeDraftController({ sessionId: 'id', invoke: (method, request) =>
+    method.endsWith(':read') ? Promise.resolve({ ok: true, record: { revision: 0, text: '' } })
+      : new Promise(resolve => { writes.push(request); finishSave = resolve; }) });
+  await controller.ready;
+  controller.change('first'); await tick();
+  controller.change('latest');
+  let flushed = false;
+  const close = controller.flush().then(() => { flushed = true; });
+  finishSave({ ok: true, record: { revision: 1, text: 'first' } });
+  await tick();
+  assert.equal(flushed, false);
+  assert.equal(writes[1].text, 'latest');
+  finishSave({ ok: true, record: { revision: 2, text: 'latest' } });
+  await close;
+  controller.change('latest'); await tick();
+  assert.equal(writes.length, 2);
+});
+
 test('two Main connections retain exact Unicode drafts across reopen and reject stale window writes', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-draft-test-'));
   const a = new NativeDraftStore(root), b = new NativeDraftStore(root);
@@ -53,6 +74,7 @@ test('save failure remains visible and never falls back to browser storage or si
   assert.equal(statuses.at(-1), 'disk full');
   controller.change('new text'); await tick();
   assert.equal(saves, 1); assert.equal(statuses.at(-1), 'disk full');
+  await assert.rejects(controller.flush(), /disk full/);
 });
 
 test('a late read cannot replace new typing or overwrite a different stored draft', async () => {

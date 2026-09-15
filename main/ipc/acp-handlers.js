@@ -10,6 +10,17 @@ function publicSettings(config) {
     apiKeySet: !!value.apiKey, providers: value.providers || {} };
 }
 function registerAcpIpc(ipcMain, {sessionManager} = {}) {
+  ipcMain.handle('acp:queue', (_event, {sessionId,id,action,epoch} = {}) => {
+    const session=sessionManager?.getNativeSession(sessionId);
+    if(!session?.promptQueue)throw new Error('ACP 会话不可用');
+    if(epoch!==session.runtime.epoch)throw new Error('待发送消息来自旧连接');
+    if(action==='read') {
+      const record=session.promptQueue.records.find(r=>r.id===id);
+      if(!record)throw new Error('消息已发送或移除');
+      return {ok:true,text:record.text};
+    }
+    return session.promptQueue.action(id,action,epoch);
+  });
   ipcMain.handle('acp:tool-result', async (_event, reference = {}) => {
     const session = sessionManager?.getNativeSession(reference.hubSessionId);
     if (!session?.readToolResult || session.options?.kind && !ACP_KINDS.includes(session.options.kind)) throw new Error('原生工具来源不可用，请重新载入会话');

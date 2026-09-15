@@ -23,6 +23,7 @@
   box-shadow: 0 8px 32px #0006; z-index: 40; font-size: 13px;
 }
 .codex-native-controls[hidden] { display: none; }
+.acp-queued-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 6px 0; }
 .codex-native-request + .codex-native-request { border-top: 1px solid #7777; margin-top: 14px; padding-top: 14px; }
 .codex-native-controls label { display: block; margin: 10px 0 6px; }
 .codex-native-controls textarea, .codex-native-controls input {

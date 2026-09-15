@@ -49,7 +49,7 @@ class PromptSubmissionReceipts {
   finish(receipt, result) {
     if (this.get(receipt.sessionId) !== receipt || receipt.resolved) return;
     // A generic PTY/activity success cannot identify this particular message.
-    receipt.status = result?.ok === false ? 'failed' : 'unconfirmed';
+    receipt.status = result?.ok === false ? 'failed' : result?.sendStatus === 'queued' ? 'queued' : 'unconfirmed';
     this.onUpdate(this.snapshot(receipt));
   }
 
