@@ -23,7 +23,11 @@ function scopeKey(options) {
   })).digest('hex');
 }
 function acquire(options) {
-  const key = scopeKey(options);
+  // A managed session must be able to retire its writer without affecting a
+  // neighbour. Codex unsubscribe acknowledges detachment, but can retain the
+  // loaded thread (and writer lock) for 30 minutes while its server stays alive.
+  // Only the legacy broker retains explicit process pooling.
+  const key = options.sharedBroker ? scopeKey(options) : scopeKey(options)+':'+randomUUID();
   let entry = pool.get(key);
   if (!entry || entry.client.closed) {
     const client = options.clientFactory ? options.clientFactory(options)
@@ -179,7 +183,7 @@ class CodexNativeSession extends EventEmitter {
         if (this.ownershipLease === lease) this.ownershipLease = null;
       }).catch(cleanup => this.emit('diagnostic','原生进程退出后的归属释放失败：'+cleanup.message));
     };
-    this.onStderr = text => this.backstage.note('App Server stderr（共享进程）', text, 'warning');
+    this.onStderr = text => this.backstage.note('App Server stderr', text, 'warning');
     this.onLateResponse = () => {
       if (this.threadId && !this.closed) this.reconcile().catch(error => this.emit('diagnostic',error.message));
     };
@@ -953,6 +957,10 @@ class CodexNativeSession extends EventEmitter {
       if (!this.threadId && this.ownershipLease && this.entry && !this.entry.client.closed) {
         await this.requestNative(this.entry.client,'thread/unsubscribe',{threadId:this.ownershipLease.threadId},3000);
         this.options.resumeId=this.ownershipLease.threadId;
+        if (this.entry.refs === 1) {
+          this.entry.client.close();
+          await this.entry.client.waitForExit();
+        }
         this.unsubscribed=true;
       }
       this.detach();
@@ -1002,6 +1010,10 @@ class CodexNativeSession extends EventEmitter {
           await this.idle(5000);
         }
         await this.requestNative(c,'thread/unsubscribe',{threadId:this.threadId},3000);
+        if (this.entry?.refs === 1) {
+          c.close();
+          await c.waitForExit();
+        }
         this.unsubscribed=true;
         finish();
       })().catch(async error=>{
@@ -1016,8 +1028,12 @@ class CodexNativeSession extends EventEmitter {
         }
         this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message);
       });
-    } else if (c?.closed) {
-      c.waitForExit().then(finish).catch(error=>{
+    } else if (c) {
+      // A failed/timed-out start can own a writer before threadId is assigned.
+      // It must obey the same exit barrier as an established session.
+      const waitForWriter = c.closed || this.entry?.refs === 1;
+      if (this.entry?.refs === 1) c.close();
+      (waitForWriter ? c.waitForExit() : Promise.resolve()).then(finish).catch(error=>{
         this.closed=false; this.sendController=new AbortController(); this.emit('action-error',error.message);
       });
     } else finish();

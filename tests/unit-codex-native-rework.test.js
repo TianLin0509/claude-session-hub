@@ -6,9 +6,9 @@ const {CodexAppServerClient}=require('../main/codex-app-server-client');
 const watcher=require('../core/group-chat-watcher');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(check){const end=Date.now()+4000;while(!check()){if(Date.now()>end)throw Error('condition timeout');await sleep(5);}}
-function fixture(){
+function fixture({sharedBroker=false}={}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'native-rework-')),trace=path.join(root,'trace.jsonl');
-  const make=id=>new CodexNativeSession({id,cwd:root,env:{CODEX_HOME:root,CLAUDE_HUB_DATA_DIR:path.join(root,'hub')},
+  const make=id=>new CodexNativeSession({id,sharedBroker,cwd:root,env:{CODEX_HOME:root,CLAUDE_HUB_DATA_DIR:path.join(root,'hub')},
     threadParams:{model:'fixture-model'},turnParams:{model:'fixture-model',effort:'max'},
     clientFactory:()=>new CodexAppServerClient({cwd:root,timeoutMs:1500,launch:{command:process.execPath,
       args:[path.join(__dirname,'fixtures/codex-app-server.js')],env:{...process.env,CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace}}})});
@@ -51,7 +51,7 @@ test('R1: current concurrent requests clear normally, duplicate resolution chang
 for(const route of ['ordinary','groupchat','compact','review'])test('R2: close cancels '+route+' queued work before interrupt completes',async()=>{
   const f=fixture(),s=f.make('closing'),other=f.make('other');
   try{
-    await Promise.all([s.start(),other.start()]);assert.equal(s.pid,other.pid);
+    await Promise.all([s.start(),other.start()]);assert.notEqual(s.pid,other.pid);
     await s.send('fixture:stop-delayed');const baseline=s.listenerCount('state');
     watcher.init({sessionManager:{getNativeCodex:()=>s}});
     const send=text=>route==='groupchat'?watcher.sendToPty('closing',text,'codex'):s.send(text);
@@ -81,7 +81,7 @@ test('R2: stop retains queue semantics and sends exactly one next turn',async()=
   }finally{await close(s);}
 });
 
-test('R2: cancellation at the stdio write boundary never breaks a pooled sibling',async()=>{
+test('R2: cancellation at the stdio write boundary retires its writer without breaking a sibling',async()=>{
   const f=fixture(),s=f.make('blocked-write'),other=f.make('sibling');let release;
   try{
     await Promise.all([s.start(),other.start()]);const client=s.entry.client;
@@ -91,12 +91,13 @@ test('R2: cancellation at the stdio write boundary never breaks a pooled sibling
     s.kill();const cancelled=await pending;assert.match(cancelled.error.message,/取消/);release();
     await until(()=>!s.entry);await other.send('fixture:empty');
     assert.equal(f.calls().filter(c=>c.method==='turn/start'&&c.params.threadId===s.threadId).length,0);
-    assert.equal(other.runtime.state,'completed');assert.equal(client.closed,false);assert.equal(client.pending.size,0);
+    assert.equal(other.runtime.state,'completed');assert.equal(client.closed,true);assert.equal(client.pending.size,0);
+    assert.notEqual(client.proc.exitCode,null);
     assert.equal(s.runtime.submission.status,'rejected','known unsent cancellation is not an ambiguous submission');
   }finally{release?.();await close(s);await close(other);}
 });
-test('R2: failed shared close never reactivates cancelled intentions',async()=>{
-  const f=fixture(),s=f.make('close-fails'),other=f.make('sibling');
+test('R2: failed legacy broker shared close never reactivates cancelled intentions',async()=>{
+  const f=fixture({sharedBroker:true}),s=f.make('close-fails'),other=f.make('sibling');
   try{
     await Promise.all([s.start(),other.start()]);await s.send('fixture:stop-failed');const baseline=s.listenerCount('state');
     const pending=s.send('must-stay-cancelled').then(()=>({ok:true}),error=>({error}));
