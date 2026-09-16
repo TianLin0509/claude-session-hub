@@ -3,7 +3,8 @@
 // writes a real file so Stop assertions measure effects, not just button state.
 const fs = require('node:fs');
 const path = require('node:path');
-const sessionId = 'cancel-race';
+// GUI cases coexist under native session ownership; each writer needs its own ID.
+let sessionId = process.env.HUB_ACP_UI_FIXTURE === '1' ? require('node:crypto').randomUUID() : 'cancel-race';
 let turn, nextRequest = 900;
 const requests = new Map();
 const emit = value => process.stdout.write(JSON.stringify({ jsonrpc:'2.0', ...value }) + '\n');
@@ -31,7 +32,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const m = JSON.parse(line);
   if (m.method === 'initialize') return result(m.id,{protocolVersion:1,agentCapabilities:{loadSession:true}});
   if (m.method === 'authenticate') return result(m.id,{});
-  if (['session/new','session/load'].includes(m.method)) return result(m.id,{sessionId,configOptions:configs});
+  if (['session/new','session/load'].includes(m.method)) {
+    if (m.method === 'session/load') sessionId = m.params.sessionId;
+    return result(m.id,{sessionId,configOptions:configs});
+  }
   if (m.method === 'session/set_config_option') {
     const option=configs.find(o=>o.id===m.params.configId);
     if(option?.options.some(o=>o.value===m.params.value))option.currentValue=m.params.value;

@@ -11,6 +11,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
   element.setAttribute('aria-label', '原生会话操作');
   let signature = '';
   const forms = new Map();
+  const queueForms = new Map();
   const node = (tag, text, className) => {
     const el = doc.createElement(tag);
     if (text != null) el.textContent = text;
@@ -207,6 +208,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       runtime?.collaborationMode,
       runtime?.cancellation,
       runtime?.emptyRecovery,
+      runtime?.queued,
     ]);
     if (signature === next) return;
     signature = next;
@@ -215,6 +217,37 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const keep = new Set(requests.map(r => JSON.stringify([runtime.epoch,r.id])));
     for (const key of forms.keys()) if (!keep.has(key)) forms.delete(key);
     const children = [];
+    const queued=runtime?.queued || [];
+    const queueKeys=new Set();
+    for(const entry of queued) {
+      const key=JSON.stringify([runtime.epoch,entry.id,entry.status,entry.reason,runtime.connection,runtime.submission?.status]);
+      queueKeys.add(key);
+      if(!queueForms.has(key)) {
+        const box=node('div',null,'codex-native-request acp-queued-prompt');box.dataset.submissionId=entry.id;
+        const error=node('div','','codex-native-error');
+        box.append(node('strong',entry.status==='held'?'消息已保留，尚未发送':'已排队 · 当前轮结束后发送'),node('p',entry.reason || entry.preview,'acp-queued-preview'));
+        const details=node('details'),summary=node('summary','查看待发送全文'),full=node('pre');details.append(summary,full);box.append(details);
+        details.addEventListener('toggle',async()=>{
+          if(!details.open || full.textContent)return;
+          try{const result=await invoke('acp:queue',{sessionId,id:entry.id,epoch:runtime.epoch,action:'read'});full.textContent=result.text;}
+          catch(err){error.textContent=err.message;}
+        });
+        const run=async action=>{
+          const buttons=[...box.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+          try{await invoke('acp:queue',{sessionId,id:entry.id,epoch:runtime.epoch,action});}
+          catch(err){error.textContent=err.message;buttons.forEach(b=>b.disabled=false);}
+        };
+        if(entry.status==='held') {
+          const resume=node('button','确认发送');resume.type='button';resume.dataset.queueAction='resume';
+          resume.disabled=runtime.connection!=='connected' || runtime.submission?.status==='unknown';
+          resume.addEventListener('click',()=>run('resume'));box.append(resume);
+        }
+        const remove=node('button','移除');remove.type='button';remove.dataset.queueAction='remove';remove.addEventListener('click',()=>run('remove'));
+        box.append(remove,error);queueForms.set(key,box);
+      }
+      children.push(queueForms.get(key));
+    }
+    for(const key of queueForms.keys())if(!queueKeys.has(key))queueForms.delete(key);
     if (runtime?.collaborationMode === 'plan') {
       const modeBox = node('div', null, 'codex-native-mode');
       modeBox.append(node('span', '计划模式 · 讨论与只读调查；后续消息沿用此模式。'));

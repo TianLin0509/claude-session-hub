@@ -5,7 +5,7 @@ const { backstageStatus } = require('../core/native-backstage-status');
 function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession, focusComposer, renderProse, onModeChange = () => {} }) {
   const make = (tag, className, text) => { const node = doc.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
   const root = make('section', 'codex-backstage');
-  const provider = getSession()?.runtimeBackend === 'claude-stream-json' ? 'Claude' : 'Codex';
+  const provider = require('../core/native-ui-labels').nativeUiLabel(getSession());
   root.setAttribute('aria-label', provider + ' 后台工作记录');
   root.addEventListener('click', event => event.stopPropagation());
   const toolbar = make('div','cb-toolbar');

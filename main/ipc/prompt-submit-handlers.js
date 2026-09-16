@@ -246,7 +246,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       } catch (error) {
         if (receipt) receipts.finish(receipt, { ok: false });
         logger.warn('[prompt-submit] send threw:', error && error.message);
-        return { ok: false, error: 'send-threw', message: error && error.message, kind };
+        return { ok: false, error: 'send-threw', message: error && error.message, kind, ...(error?.notSent ? {notSent:true} : {}) };
       }
     });
   };

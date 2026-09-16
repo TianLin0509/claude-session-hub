@@ -501,6 +501,7 @@ function saveFloatingInputDraft(sessionId, inputBox) {
   const text = readContenteditablePlainText(inputBox);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
+  if (sessions.get(sessionId)?.status === 'dormant') return;
   attachNativeDraft(sessionId, inputBox)?.change(text);
 }
 
@@ -1301,6 +1302,7 @@ function disposeCachedTerminal(sessionId) {
 
 async function closeSessionAsSleep(sessionId) {
   try {
+    await nativeDraftControllers.get(sessionId)?.flush();
     const result = await ipcRenderer.invoke('close-session', sessionId);
     if (!result || !result.ok) {
       require('./ui-feedback').showHubAlert((result && result.message) || '关闭休眠失败，请稍后重试。');
@@ -1999,7 +2001,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       engine: require('../core/native-ui-labels').nativeUiLabel(session),
       focusComposer: () => mountTarget.querySelector('.floating-input-box')?.focus(),
     });
-    if ((isNativeSession(session) && ['codex','codex-resume'].includes(session.kind)) || session.runtimeBackend === 'claude-stream-json') {
+    if ((isNativeSession(session) && ['codex','codex-resume'].includes(session.kind)) || ['claude-stream-json','acp'].includes(session.runtimeBackend)) {
       cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
         getSession:() => sessions.get(sessionId),
         renderProse:text => DOMPurify.sanitize(marked.parse(text, {async:false}), {FORBID_TAGS:['img','video','audio','iframe']}),
@@ -3812,7 +3814,7 @@ function updateFloatingPromptReceipt(receipt) {
   if (!applyPromptReceipt(state, receipt)) return;
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
-    if (state.status === 'confirmed') clearFloatingInputStuck(bar);
+    if (state.status === 'confirmed' || state.status === 'queued') clearFloatingInputStuck(bar);
     else if (!state.dismissed) {
       if (state.status === 'content-mismatch') clearFloatingInputStuck(bar);
       markFloatingInputStuck(bar, receipt.sessionId);
@@ -4507,7 +4509,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const canStop = status.canStop && composerStopAllowed(session, status.runtime);
     stopBtn.classList.toggle('visible', canStop);
     stopBtn.disabled = session.nativeRuntime?.cancellation?.status === 'pending';
-    sendBtn.hidden = canStop;
+    sendBtn.hidden = canStop && session.runtimeBackend !== 'acp';
+    sendBtn.title = canStop && session.runtimeBackend === 'acp' ? '加入待发送队列 · 当前轮结束后发送' : '发送 (Enter) · Shift+Enter 换行';
 
     const rail = buildComposerRailModel(session, {
       supportedEfforts: composerSupportedEfforts(session),
@@ -4638,7 +4641,8 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     //   有卡片视图（isTranscriptCliKind 包含它），发出去却要等 transcript 落盘才冒出气泡。
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
-    if (currentView === 'card' && cardCapableKind && typeof mountOptimisticUserCard === 'function') {
+    const acpQueueing = session?.runtimeBackend === 'acp' && ['running','waiting'].includes(session.nativeRuntime?.state);
+    if (currentView === 'card' && cardCapableKind && !acpQueueing && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
       } catch (err) {
@@ -4682,7 +4686,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
         if (result?.notSent && !readContenteditablePlainText(inputBox)) {
           replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox);
         }
-        if (result?.notSent) showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
+        if (result?.notSent) {
+          showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
+          clearFloatingInputStuck(bar);return;
+        }
       }
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
@@ -7980,6 +7987,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   clearRuntimeTruthExpiryTimer(sessionId);
   clearTerminalActivitySession(sessionId);
   disposeCachedTerminal(sessionId);
+  nativeDraftControllers.delete(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
     if (fileManagerPanel) fileManagerPanel.close();
