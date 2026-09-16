@@ -62,6 +62,8 @@ async function main() {
     await until('right directory visible', () => c.eval(`fileManagerPanel.isOpenFor(${JSON.stringify(path.join(workspace, 'claude'))}) && !!document.querySelector('.fm-node-button[data-type="file"]')`));
     await click(c, '.fm-node-button[data-type="file"]');
     await until('right file preview', () => c.eval("document.querySelector('#preview-body').innerText.includes('claude workspace')"));
+    await until('fullscreen preview hides workspace', () => c.eval("document.querySelector('.session-workspace').hidden"));
+    assert.equal(await c.eval('getActiveCompletionNotificationTarget()?.id'), ids.claude);
     await click(c, '#file-manager-close');
     await until('file manager closed', () => c.eval('!fileManagerPanel.isOpen()'));
     await click(c, '#preview-layout-split');

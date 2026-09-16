@@ -31,8 +31,9 @@ function fixture() {
     ensureOpen: async id => { rows.get(id).status = 'idle'; }, sameIdentity: () => false,
     createView: id => ({ sessionId: id, focus() {}, resize() {}, setVisible() {}, updateStatus() {}, dispose() { calls.push(['dispose', id]); } }),
   };
-  const layout = createSessionSplit({ document: { createElement: () => new Element() }, window: { ResizeObserver: class { observe() {} }, queueMicrotask }, primary: new Element(), buttons, services: s });
-  return { layout, calls, alerts, requests, rows, s, buttons };
+  const primary = new Element();
+  const layout = createSessionSplit({ document: { createElement: () => new Element() }, window: { ResizeObserver: class { observe() {} }, queueMicrotask }, primary, buttons, services: s });
+  return { layout, calls, alerts, requests, rows, s, buttons, primary };
 }
 
 test('default is single and ordinary selection never creates a second view', async () => {
@@ -50,6 +51,13 @@ test('hidden split cannot target its secondary session from another app view', a
   f.s.otherView = () => '群聊'; f.layout.sync();
   assert.equal(f.layout.focusedId(), 'a');
   assert.equal(f.layout.isSecondaryFocused(), false);
+});
+
+test('fullscreen file preview preserves its owning session context', async () => {
+  const f = fixture(); await f.layout.setLayout('two'); await f.layout.route('b');
+  f.primary.style.display = 'none'; f.layout.sync();
+  assert.equal(f.layout.focusedId(), 'b');
+  assert.equal(f.layout.isSecondaryFocused(), true);
 });
 test('late open result cannot replace the most recent right-pane choice', async () => {
   const f = fixture(); await f.layout.setLayout('two');

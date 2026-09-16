@@ -40,7 +40,9 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
     element.addEventListener('pointerdown', () => { if (focused !== side) focus(side); }, true);
     element.addEventListener('focusin', () => { if (focused !== side) focus(side); });
   }
-  function isSecondaryFocused() { return enabled && focused === 'right' && !!view && !right.hidden; }
+  // A fullscreen file preview temporarily hides the panes but still belongs
+  // to the focused session. Home/group/other app pages have their own context.
+  function isSecondaryFocused() { return enabled && focused === 'right' && !!view && !s.otherView() && !primary.classList.contains('home-active'); }
   function focusedId() { return isSecondaryFocused() ? view.sessionId : s.primaryId(); }
   function empty(message = '从上方选择会话，或点击左侧会话列表') {
     if (view) return;
@@ -153,7 +155,7 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
     usePrimary: () => focus('left'),
     secondary: () => view,
     isSecondaryFocused,
-    isPrimaryFocused: () => !enabled || focused === 'left' || right.hidden,
+    isPrimaryFocused: () => !enabled || focused === 'left' || !!s.otherView() || primary.classList.contains('home-active'),
     isVisible: id => enabled && view?.sessionId === id && !right.hidden,
     handlesCreated: id => pending.delete(id) || opening === id,
     closed(id) {
