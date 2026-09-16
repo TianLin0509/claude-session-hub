@@ -138,6 +138,19 @@ rl.on('line', async line => {
       }, 25);
       return;
     }
+    if (JSON.stringify(m.message?.content || '').includes('fixture:layout')) {
+      await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
+        message: { id: randomUUID(), role: 'assistant', stop_reason: 'tool_use',
+          content: [{ type: 'text', text: '正在检查长回答与输入区边界。' },
+            { type: 'tool_use', id: 'layout-read', name: 'Read', input: { file_path: 'layout.txt' } }] } });
+      await frame({ type: 'user', uuid: randomUUID(), session_id: sessionId,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'layout-read', content: 'layout checked' }] } });
+      const text = Array.from({ length: 42 }, (_, i) => `段落 ${i + 1}：Claude 长回答应在正文区域内滚动，标题跟随正文移动，输入框保持固定。`).join('\n\n');
+      await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
+        message: { id: randomUUID(), role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] } });
+      await result({ result: text });
+      return;
+    }
     if (mode === 'conversation') {
       for (const messageId of ['progress-one', 'progress-two']) {
         await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
