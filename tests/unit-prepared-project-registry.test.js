@@ -33,19 +33,7 @@ const registry = new PreparedProjectRegistry({ dataDir: data });
 assert.equal(registry.register(main).changed, false);
 assert.equal(registry.register(main + path.sep).changed, false);
 const alias = path.join(root, 'alias');
-// Fresh Windows fixture directories can briefly return EBUSY when creating
-// a junction. Retry only that absent fixture, never the registry operation.
-const aliasReadyDeadline = Date.now() + 2000;
-for (let attempt = 0; ; attempt++) {
-  try {
-    fs.symlinkSync(main, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    break;
-  } catch (error) {
-    if (process.platform !== 'win32' || error.code !== 'EBUSY' || Date.now() >= aliasReadyDeadline || fs.existsSync(alias)) throw error;
-    if (attempt === 0) console.warn('fixture junction temporarily busy; waiting up to 2s for readiness');
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-  }
-}
+require('../core/fs-junction').createJunctionSync(main, alias);
 assert(fs.lstatSync(alias).isSymbolicLink(), 'fixture alias must be a real junction/symlink');
 assert.equal(registry.register(alias).changed, false, 'realpath aliases do not duplicate identity');
 if (process.platform === 'win32') fs.rmdirSync(alias); else fs.unlinkSync(alias);
