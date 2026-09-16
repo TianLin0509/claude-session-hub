@@ -15,6 +15,7 @@ const path = require('path');
 
 const { CLAUDE_PROJECT_ROOT_DIRS, projectSlug } = require('./claude-transcript-locator.js');
 const { acquireLock, releaseLock } = require('./file-lock.js');
+const { createJunctionSync } = require('./fs-junction.js');
 
 function defaultHomeDir() {
   return process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -209,7 +210,7 @@ function ensureMemoryLink(cwd, opts = {}) {
           throw renameError;
         }
         try {
-          fs.symlinkSync(canonical, memoryPath, 'junction');
+          createJunctionSync(canonical, memoryPath);
         } catch (linkError) {
           let restored = false;
           try {
@@ -228,7 +229,7 @@ function ensureMemoryLink(cwd, opts = {}) {
         logger.log?.(`[memory] 回收孤岛桶 ${slug}：并入 ${moved.length} 条，冲突 ${conflicts.length} 条，去重 ${deduplicated.length} 条，原目录留底 ${path.basename(backup)}`);
         continue;
       }
-      fs.symlinkSync(canonical, memoryPath, 'junction');
+      createJunctionSync(canonical, memoryPath);
       result.linked.push(memoryPath);
     } catch (error) {
       result.errors.push(`${memoryPath}: ${error && error.message ? error.message : String(error)}`);
@@ -296,7 +297,7 @@ function mergeIslandBucket(root, slug, opts = {}) {
       throw renameError;
     }
     try {
-      fs.symlinkSync(canonical, memoryPath, 'junction');
+      createJunctionSync(canonical, memoryPath);
     } catch (linkError) {
       let restored = false;
       try { fs.renameSync(backup, memoryPath); restored = true; } catch (restoreError) {

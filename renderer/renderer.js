@@ -753,6 +753,9 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('card-multi-select-bar'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
+  // Detached composers no longer own the replacement panel's layout.
+  terminalPanelEl.style.setProperty('--fi-bar-h', '0px');
+  terminalPanelEl.style.setProperty('--term-header-h', '0px');
   preserved.forEach(el => terminalPanelEl.appendChild(el));
 }
 const btnNew = document.getElementById('btn-new');
@@ -3951,6 +3954,8 @@ function observeTerminalPanelChrome(panel, bar) {
   if (!panel) return null;
   const header = panel.querySelector('.terminal-header');
   const apply = () => {
+    // ResizeObserver can deliver an old session's callback after a switch.
+    if (bar && bar.parentNode !== panel) return;
     // offsetHeight 含 border，正是 overlay 需要让开的实际占位。
     // 输入栏 display:none（只读会话）时自然是 0，overlay 就能铺到底。
     panel.style.setProperty('--term-header-h', `${header ? header.offsetHeight : 0}px`);

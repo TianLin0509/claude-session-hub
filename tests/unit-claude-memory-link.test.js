@@ -161,7 +161,7 @@ test('a junction to the wrong store is reported and never overwritten silently',
     fs.mkdirSync(path.dirname(own), { recursive: true });
     fs.mkdirSync(alternate, { recursive: true });
     fs.writeFileSync(path.join(alternate, 'private.md'), 'PRIVATE\n', 'utf8');
-    fs.symlinkSync(alternate, own, 'junction');
+    require('../core/fs-junction').createJunctionSync(alternate, own);
 
     const result = ensureMemoryLink(cwd, { homeDir: home, logger: { warn() {}, log() {} } });
     assert.ok(result.errors.some(x => x.includes('没有指向规范库')));
