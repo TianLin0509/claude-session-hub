@@ -6,17 +6,26 @@ function createNativeDraftController({ sessionId, invoke, initialText = '', onRe
   let view = { onRestore, onStatus }, current = null, pending, saving = false, failure = null;
   let changedBeforeRead = false;
   let desired = initialText;
+  let activeSave = null;
   const status = error => view.onStatus?.(error, { saving: saving || pending !== undefined || !current });
-  async function pump() {
-    if (!current || saving || failure || pending === undefined) return;
-    const text = pending; pending = undefined; saving = true; status(null);
-    try {
-      const response = await invoke('native-draft:save', { sessionId, text, revision: current.revision });
-      if (!response?.ok) throw new Error(response?.error || '草稿未能保存');
-      current = response.record;
-    } catch (error) { failure = error; }
-    finally { saving = false; status(failure); }
-    if (!failure) await pump();
+  function pump() {
+    if (saving) return activeSave;
+    if (!current || failure || pending === undefined) return;
+    saving = true;
+    activeSave = (async () => {
+      // Publish the promise before invoking callbacks that may change the draft.
+      await Promise.resolve();
+      try {
+        while (!failure && pending !== undefined) {
+          const text = pending; pending = undefined; status(null);
+          const response = await invoke('native-draft:save', { sessionId, text, revision: current.revision });
+          if (!response?.ok) throw new Error(response?.error || '草稿未能保存');
+          current = response.record;
+        }
+      } catch (error) { failure = error; }
+      finally { saving = false; status(failure); }
+    })();
+    return activeSave;
   }
   const ready = (async () => {
     try {
@@ -37,8 +46,14 @@ function createNativeDraftController({ sessionId, invoke, initialText = '', onRe
   })();
   return {
     ready,
+    async flush() {
+      await ready;
+      while (!failure && (saving || pending !== undefined)) await pump();
+      if (failure) throw failure;
+    },
     change(text) {
       if (typeof text !== 'string') throw new TypeError('Draft must be text');
+      if (!saving && pending === undefined && !failure && current?.text === text) return;
       desired = text;
       if (!current) changedBeforeRead = true;
       pending = text; void pump(); status(failure);

@@ -1,6 +1,6 @@
 'use strict';
 const readline = require('readline');
-const sessionId = 'fixture-session';
+let sessionId = process.env.HUB_ACP_UI_FIXTURE === '1' ? require('node:crypto').randomUUID() : 'fixture-session';
 let requestId = 1000, pendingPrompt, heavyTimer;
 const output = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const result = (id, value) => output({ id, result: value });
@@ -20,7 +20,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line), p = m.params || {};
   if (m.method === 'initialize') return result(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
   if (m.method === 'authenticate') return result(m.id, {});
-  if (['session/new', 'session/load'].includes(m.method)) return result(m.id, { sessionId, configOptions: configs });
+  if (['session/new', 'session/load'].includes(m.method)) {if(p.sessionId)sessionId=p.sessionId;return result(m.id, { sessionId, configOptions: configs });}
   if (m.method === 'session/set_config_option') {
     configs.find(o=>o.id===p.configId).currentValue=p.value;
     update({sessionUpdate:'config_option_update',configOptions:configs});

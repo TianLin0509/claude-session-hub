@@ -1735,7 +1735,7 @@ if (typeof document !== 'undefined') (function () {
     // AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
-    const avatarSrc = isGroupChat ? `assets/ai-logos/${String(kind).replace(/-resume$/, '')}.svg` : _avatarBySlot(slotIdx);
+    const avatarSrc = isGroupChat ? _groupLogoSrc(kind) : _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarTitle = `打开 ${name || kind || `AI ${slotIdx + 1}`} 的 CLI 会话`;
     const avatarJumpAttrs = `data-gc-open-session="${escapeHtml(sid)}" role="button" tabindex="0" title="${escapeHtml(avatarTitle)}" aria-label="${escapeHtml(avatarTitle)}"`;
@@ -2227,7 +2227,7 @@ if (typeof document !== 'undefined') (function () {
     const avatarsHtml = sids.map((sid, idx) => {
       const slot = slots[idx] || {};
       const src = meeting && meeting.groupChat && slot.kind
-        ? `assets/ai-logos/${String(slot.kind).replace(/-resume$/, '')}.svg`
+        ? _groupLogoSrc(slot.kind)
         : _avatarBySlot(idx);
       const fb = meeting && meeting.groupChat
         ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
@@ -2370,7 +2370,8 @@ if (typeof document !== 'undefined') (function () {
 
   function _groupLogoSrc(kind) {
     // *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
-    return `assets/ai-logos/${escapeHtml(String(kind || 'claude').replace(/-resume$/, ''))}.svg`;
+    const base = String(kind || 'claude').replace(/-resume$/, '');
+    return `assets/ai-logos/${escapeHtml(['deepseek-acp','deepseek-legacy'].includes(base) ? 'deepseek' : base)}.svg`;
   }
 
   function _formatGroupChatTime(ts) {
@@ -6644,7 +6645,7 @@ if (typeof document !== 'undefined') (function () {
     const slotAvatarSrc = (idx) => {
       const slot = slotsArr[idx] || {};
       // *-resume 复用基础 kind 的 svg；此处的 <img> 无 onerror 兜底，404 会直接破图
-      return `assets/ai-logos/${escapeHtml(String(slot.kind || 'claude').replace(/-resume$/, ''))}.svg`;
+      return _groupLogoSrc(slot.kind);
     };
 
     el.innerHTML = '';

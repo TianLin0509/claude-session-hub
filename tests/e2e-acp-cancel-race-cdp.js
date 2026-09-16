@@ -14,7 +14,7 @@ const {connectFirstPage}=require('./helpers/cdp-client');
   const snap=async name=>{const s=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));};
   const enter=async text=>cdp.eval('(()=>{const box=document.querySelector(".floating-input-box");box.textContent='+JSON.stringify(text)+';box.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector(".floating-input-send").click();})()');
   try {
-    hub=await launchIsolatedHub({dataDir,port,label:'ACP cancellation race',extraEnv:{ACP_CANCEL_FIXTURE_HOLD_MS:'2000',
+    hub=await launchIsolatedHub({dataDir,port,label:'ACP cancellation race',extraEnv:{ACP_CANCEL_FIXTURE_HOLD_MS:'2000',HUB_ACP_UI_FIXTURE:'1',
       CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude')}});report.pid=hub.pid;
     cdp=await connectFirstPage(hub);await until('typeof sessions!=="undefined"','renderer');
     // The current profile confirms bypass at startup. A real question still
