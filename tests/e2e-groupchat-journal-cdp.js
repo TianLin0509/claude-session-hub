@@ -11,10 +11,24 @@ async function main(){
   const port=await new Promise((res,rej)=>{const s=net.createServer();s.on('error',rej);s.listen(0,'127.0.0.1',()=>{const n=s.address().port;s.close(()=>res(n));});});
   let hub,c,clipboard;const evidence={checks:[],passed:false};
   const until=async(expr,label)=>{const end=Date.now()+60000;while(Date.now()<end){if(await c.eval(expr))return;await pause(150);}throw Error('timeout: '+label);};
-  const click=async selector=>{const pos=await c.eval(`(()=>{const e=document.querySelector(${j(selector)});if(!e)throw Error('missing '+${j(selector)});e.scrollIntoView({block:'nearest'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',...pos});for(const type of ['mousePressed','mouseReleased'])await c.send('Input.dispatchMouseEvent',{type,...pos,button:'left',clickCount:1});await pause(120);};
+  const click=async selector=>{
+    await c.eval(`document.querySelector(${j(selector)}).scrollIntoView({block:'center',behavior:'instant'})`);
+    await until(`(()=>{const e=document.querySelector(${j(selector)});if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`,'clickable '+selector);
+    const pos=await c.eval(`(()=>{const r=document.querySelector(${j(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',...pos});for(const type of ['mousePressed','mouseReleased'])await c.send('Input.dispatchMouseEvent',{type,...pos,button:'left',clickCount:1});await pause(120);
+  };
   const shot=async name=>{await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:0,y:0});await pause(180);const s=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));};
   const check=(name,pass,detail)=>{assert(pass,name+': '+j(detail));evidence.checks.push({name,detail});console.log('PASS '+name);};
   const send=async text=>{await c.eval(`(()=>{const e=document.getElementById('mr-input-box');e.textContent=${j(text)};e.dispatchEvent(new Event('input',{bubbles:true}));e.focus();})()`);await click('#mr-send-btn');};
+  const checkHeaderScroll=async(selector,label)=>{
+    const measure=()=>c.eval(`(()=>{const card=document.querySelector(${j(selector)}),scroller=card.closest('.mr-gc-messages'),r=scroller.getBoundingClientRect();return {scroll:scroller.scrollTop,header:card.querySelector('.mr-gc-meta').getBoundingClientRect().top,avatar:card.querySelector('.mr-gc-avatar').getBoundingClientRect().top,body:card.querySelector('.gc-journal-text').getBoundingClientRect().top,x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await c.eval(`document.querySelector(${j(selector+' .mr-gc-meta')}).scrollIntoView({block:'start'})`);
+    const before=await measure();await shot(label+'-before-scroll');
+    await c.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:before.x,y:before.y,deltaX:0,deltaY:260});
+    await until(`document.querySelector('.mr-gc-messages').scrollTop>${before.scroll+150}`,'wheel scroll '+label);
+    await shot(label+'-after-scroll');const after=await measure(),delta=after.scroll-before.scroll;
+    check(label+' identity row and avatar scroll with answer instead of covering it',delta>150&&['header','avatar','body'].every(key=>Math.abs(after[key]-before[key]+delta)<3),{before,after,delta});
+  };
   try{
     hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',label:'groupchat-journal',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
     evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await c.send('Page.bringToFront');await until('typeof sessions!=="undefined" && !!window.__hubE2E','renderer');
@@ -33,6 +47,9 @@ async function main(){
     check('actions are in the header; inert raw-index button removed',await c.eval(`!document.querySelector('.mr-gc-anchor') && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-bubble-row > button').length===0 && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-meta .mr-gc-copy-btn').length===2`));
     await shot('dark-collapsed');await click(first+' .gc-journal-expand');
     check('expand complete answer',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first+' .gc-journal-text')}).clientHeight>300`));
+    await checkHeaderScroll(first,'dark-first-member');
+    const second=`[data-gc-msg-id="${ids[1]}"]`;await click(second+' .gc-journal-expand');
+    await checkHeaderScroll(second,'dark-codex2');await click(second+' .gc-journal-expand');
     await click(first+' [data-gc-copy-message]');await until('(require("electron").clipboard.readText().match(/这是同一条长回答中的验证说明/g)||[]).length===36','copy includes all 36 list items');
     check('copy full answer includes all 36 list items',true);
     await click(first+' .gc-journal-minimize');check('whole card folds',await c.eval(`getComputedStyle(document.querySelector(${j(first+' .mr-gc-bubble-row')})).display==='none'`));
@@ -44,6 +61,7 @@ async function main(){
     await click('#btn-theme');await click('#theme-menu [data-theme-id="codex"]');await until('document.documentElement.dataset.theme==="codex"','paper theme');await click('#btn-theme');
     await click(first+' .gc-journal-expand');await shot('codex-collapsed');
     await click(first+' .gc-journal-expand');
+    await checkHeaderScroll(first,'paper-first-member');
     // A second real native turn rebuilds/patches group cards while reading old text.
     await send('fixture:compact-progress\n继续记录进展，不改变我展开的上一轮。');
     await until('document.querySelectorAll(".mr-gc-msg.ai").length>=4','next round starts');
@@ -58,6 +76,7 @@ async function main(){
     await until(`!!document.querySelector(${j(first)})`,'durable answers');
     check('reload retains expansion and member identity',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first)}).dataset.journalColor===${j(initial[0].color)}`));
     await c.send('Emulation.setDeviceMetricsOverride',{width:1050,height:800,deviceScaleFactor:1,mobile:false});await shot('narrow');
+    await checkHeaderScroll(first,'narrow-first-member');
     check('narrow group has no horizontal overflow',await c.eval('document.querySelector(".mr-gc-messages").scrollWidth<=document.querySelector(".mr-gc-messages").clientWidth+1'));
     await click('#mr-btn-group-tools');await click('[data-journal-collapse-all]');
     check('bulk collapse from group tools',await c.eval('[...document.querySelectorAll(".mr-gc-msg.ai")].every(e=>e.dataset.journalExpanded==="false")'));

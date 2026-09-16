@@ -17,9 +17,10 @@
 :root[data-theme="codex"] .mr-gc-msg[data-journal-color="7"] { --journal-member:#657634; --journal-wash:#f1f5e8; }
 .mr-gc-messages { padding:24px clamp(16px,3vw,46px) 30px; }
 .mr-gc-messages .mr-gc-msg[data-journal-key] { max-width:960px; margin:0 auto 24px; gap:13px; border:0; background:transparent; box-shadow:none; }
-.mr-gc-messages .mr-gc-msg[data-journal-key] > .mr-gc-avatar { position:sticky; top:7px; width:29px; height:29px; min-width:29px; border-color:color-mix(in srgb,var(--journal-member) 30%,transparent); }
+.mr-gc-messages .mr-gc-msg[data-journal-key] > .mr-gc-avatar { width:29px; height:29px; min-width:29px; border-color:color-mix(in srgb,var(--journal-member) 30%,transparent); }
 .mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-msg-body { max-width:calc(100% - 42px); }
-.mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-meta { position:sticky; top:0; z-index:3; padding:5px 0 9px; margin:0; min-height:39px; background:var(--surface-canvas); gap:9px; }
+/* Member identity and activity belong to the answer's normal scroll flow. */
+.mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-meta { padding:5px 0 9px; margin:0; min-height:39px; background:var(--surface-canvas); gap:9px; }
 .mr-gc-msg[data-journal-key] .mr-gc-name { color:var(--journal-member); font-size:13px; font-weight:600; }
 .mr-gc-msg[data-journal-key] .mr-gc-wordcount { font-size:10px; color:var(--fg-muted); }
 .mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-bubble { border:0; border-left:2px solid color-mix(in srgb,var(--journal-member) 55%,transparent); background:var(--journal-wash); border-radius:0 8px 8px 0; padding:14px 18px; box-shadow:none; color:var(--fg-default); }
