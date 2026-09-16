@@ -46,7 +46,9 @@ function renderImageAttachments(attachments, { escapeHtml: esc, cwd } = {}) {
       + '</div></details>' : '') + '</div>';
 }
 
-function createCardDetailControls({ document: doc, window: win, clipboard, resolveTurn, resolveResult, openAttachment }) {
+function createCardDetailControls({ document: doc, window: win, clipboard, resolveTurn, resolveResult, openAttachment, root = null }) {
+  const listeners = [];
+  function listen(element, type, handler, opts) { element.addEventListener(type, handler, opts); listeners.push([element, type, handler, opts]); }
   const message = (owner, text) => {
     const root = owner?.isConnected === false ? doc.body : owner.closest('.tc-result-wrap, .turn-content') || owner;
     let notice = root.querySelector(root === doc.body ? ':scope > .card-detail-global-error' : '.card-detail-error');
@@ -152,14 +154,15 @@ function createCardDetailControls({ document: doc, window: win, clipboard, resol
       modal.append(img, source); modal.showModal();
     } catch (error) { reportError('图片预览失败：' + error.message); }
   }
-  doc.addEventListener('error', event => {
+  listen(root || doc, 'error', event => {
     const img = event.target;
     if (!img?.classList?.contains('conversation-image')) return;
     img.hidden = true;
     const info = img.closest('.conversation-image-thumb')?.querySelector('.conversation-image-error');
     if (info) info.hidden = false;
   }, true);
-  doc.addEventListener('click', event => {
+  listen(root || doc, 'click', event => {
+    if (!root && event.target.closest('[data-split-secondary]')) return;
     const currentMenu = event.target?.closest?.('.card-actions-menu');
     doc.querySelectorAll('.card-actions-menu[open]').forEach(menu => {
       if (menu !== currentMenu || event.target?.closest?.('.ta-btn')) menu.open = false;
@@ -171,7 +174,7 @@ function createCardDetailControls({ document: doc, window: win, clipboard, resol
     else if (button.dataset.action === 'tc-open-full-result') openResult(button);
     else void openImage(button);
   });
-  doc.addEventListener('keydown', event => {
+  listen(root || doc, 'keydown', event => {
     if (event.key !== 'Escape') return;
     doc.querySelectorAll('.card-actions-menu[open]').forEach(menu => {
       const restoreFocus = menu.contains(doc.activeElement);
@@ -179,6 +182,6 @@ function createCardDetailControls({ document: doc, window: win, clipboard, resol
       if (restoreFocus) menu.querySelector('summary')?.focus();
     });
   });
-  return { dialog };
+  return { dialog, dispose() { for (const [element, type, handler, opts] of listeners) element.removeEventListener(type, handler, opts); } };
 }
 module.exports = { attachmentInfo, renderImageAttachments, createCardDetailControls };

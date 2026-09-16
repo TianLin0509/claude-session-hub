@@ -64,7 +64,7 @@ test('prompt-inspect 也绑定卡片自己的会话', () => {
     'prompt-inspect 不允许直接取全局 activeSessionId');
 });
 
-test('edit-resend 在卡片不属于当前会话时拒绝填入', () => {
+test('edit-resend 校验所属会话后只查询本窗格输入框', () => {
   const start = RENDERER_SRC.indexOf("if (action === 'edit-resend')");
   assert.ok(start > 0, '找不到 edit-resend 分支');
   const block = RENDERER_SRC.slice(start, start + 1600);
@@ -72,7 +72,8 @@ test('edit-resend 在卡片不属于当前会话时拒绝填入', () => {
   assert.ok(/String\(cardSid\) !== String\(liveSid\)/.test(block),
     'edit-resend 必须比对卡片会话与当前激活会话');
   const guardIdx = block.indexOf('cardSid');
-  const queryIdx = block.indexOf("document.querySelector('.floating-input-box')");
+  const queryIdx = block.indexOf("card.closest('.terminal-panel')?.querySelector('.floating-input-box')");
+  assert.ok(!block.includes("document.querySelector('.floating-input-box')"), '禁止跨窗格取第一个输入框');
   assert.ok(guardIdx >= 0 && queryIdx >= 0 && guardIdx < queryIdx,
     '守卫必须在 querySelector 之前 —— 否则文本已经填进别的会话的输入框了');
 });

@@ -15,6 +15,11 @@ const { renderImageAttachments, createCardDetailControls } = require('./card-det
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
   const win = options.window || window;
+  const state = options.state || win;
+  const root = options.root || doc;
+  const listeners = [];
+  function listen(type, handler) { root.addEventListener(type, handler); listeners.push([type, handler]); }
+  const overlay = () => options.container || doc.getElementById('msg-overlay');
   const nav = options.navigator || (win && win.navigator) || {};
   const clipboardApi = nav.clipboard || { writeText: () => Promise.reject(new Error('剪贴板不可用')) };
   const cssApi = options.CSS || (win && win.CSS) || {};
@@ -75,13 +80,13 @@ function createTurnCardRenderer(options = {}) {
 // _sessionTurns: turnId -> turn object map. Initialized here so rerenderTurn
 // works for T5 toggle even before T10 wires real session.turns data.
 // T10 will populate this from session.turns[]; for now it's an empty map.
-if (!win._sessionTurns) win._sessionTurns = new Map();
+if (!state._sessionTurns) state._sessionTurns = new Map();
 const _fullActivityTurns = new Set();
 const detailControls = createCardDetailControls({
-  document: doc, window: win, clipboard: clipboardApi,
-  resolveTurn: card => win._sessionTurns.get(card?.dataset.turnId),
+  document: doc, window: win, clipboard: clipboardApi, root: options.root,
+  resolveTurn: card => state._sessionTurns.get(card?.dataset.turnId),
   resolveResult: element => {
-    const card = element.closest('.turn-card'), turn = win._sessionTurns.get(element.closest('[data-turn]')?.dataset.turn || card?.dataset.turnId);
+    const card = element.closest('.turn-card'), turn = state._sessionTurns.get(element.closest('[data-turn]')?.dataset.turn || card?.dataset.turnId);
     const id = element.closest('[data-activity-id]')?.dataset.activityId;
     const activity = (turn?.toolCalls || []).map(normalizeToolActivity).find(a => a.id === id);
     if (!activity) throw new Error('未找到完整工具来源，请重新载入会话');
@@ -355,9 +360,9 @@ function patchTurnCardInPlace(existing, newCard, sessionId) {
 }
 
 function rerenderTurn(turnId) {
-  const card = doc.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
-  if (!card || !win._sessionTurns) return;
-  const turn = prepareTurnForRender(card.dataset.sessionId || getActiveSessionId(), win._sessionTurns.get(turnId));
+  const card = root.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
+  if (!card || !state._sessionTurns) return;
+  const turn = prepareTurnForRender(card.dataset.sessionId || getActiveSessionId(), state._sessionTurns.get(turnId));
   if (!turn) return;
   const tmp = doc.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
@@ -553,7 +558,7 @@ function renderTurnCard(turn) {
   //   移到 .turn-body 之后（气泡下方）——气泡只含对话正文，工具/徽章作为附属信息独立成行，
   //   同时让长文本折叠只作用于正文（不再连带折叠工具簇）。所有渲染路径都走整卡重渲染，无冲突。
 }
-win._renderTurnCard = renderTurnCard;
+if (!options.root) win._renderTurnCard = renderTurnCard;
 
 // === Spec 1 v0.9.0 · 代码块强化 (D2) ===
 let _codeFoldThreshold = 30;
@@ -659,7 +664,8 @@ function postProcessLongTextFold(cardEl) {
 }
 
 // 全局 click handler: 长文本展开/折叠
-doc.addEventListener('click', (e) => {
+listen('click', (e) => {
+  if (!options.root && e.target.closest('[data-split-secondary]')) return;
   const btn = e.target.closest && e.target.closest('[data-action="body-expand"], [data-action="body-collapse"]');
   if (!btn) return;
   const card = btn.closest('.turn-card');
@@ -730,7 +736,8 @@ function postProcessToolResults(cardEl) {
 }
 
 // 全局 click handler: 👁 预览 toggle + 复制全文 + 展开/折叠超长
-doc.addEventListener('click', (e) => {
+listen('click', (e) => {
+  if (!options.root && e.target.closest('[data-split-secondary]')) return;
   const t = e.target;
   if (!t || !t.closest) return;
 
@@ -782,12 +789,12 @@ function mountTurnCard(container, turn) {
   tmp.innerHTML = renderTurnCard(turn);
   const cardEl = tmp.firstElementChild;
   container.insertBefore(cardEl, container.querySelector(':scope > .streaming-indicator'));
-  if (turn.id) win._sessionTurns.set(turn.id, turn);
+  if (turn.id) state._sessionTurns.set(turn.id, turn);
   _postProcessTurnCard(cardEl, getActiveSessionId());
   publishTurnPresentation(getActiveSessionId(), turn);
   return cardEl;
 }
-win._mountTurnCard = mountTurnCard;
+if (!options.root) win._mountTurnCard = mountTurnCard;
 
 // === Spec 2 · S4: mountSessionTurnCard ===
 // Mount a single Turn (from S1 parseClaudeTranscriptToTurns) as a card into #msg-overlay.
@@ -801,7 +808,7 @@ win._mountTurnCard = mountTurnCard;
 //     slotPokemon?, toolCalls? } and ignores unknown fields. S1 turns may
 //     additionally carry { thinking, stopReason, usage } — those are passed
 //     through harmlessly until S8 adds thinking rendering inside renderTurnCard.
-//   * win._sessionTurns: spec1 stores raw `turn` objects (not wrapped),
+//   * state._sessionTurns: spec1 stores raw `turn` objects (not wrapped),
 //     because rerenderTurn (line ~1593) and getTurnFromCard (line ~1758) both
 //     do `_sessionTurns.get(turnId)` and use the result as a turn directly.
 //     Wrapping it in `{ sessionId, turn, element }` here would break those
@@ -832,7 +839,7 @@ function _isCardOverlayAtBottom(el) {
 //   现存 optimistic 卡片，文本匹配的删掉。turn.id 用 'pending-user-' 前缀的临时 id，
 //   不进 _sessionTurns Map（不是权威 turn，避免被当作真 turn dedup-replace 链路对象）。
 function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
-  const container = doc.getElementById('msg-overlay');
+  const container = overlay();
   if (!container) return null;
   // 隐藏 placeholder 而非删除 — 后续 turn-complete-event / applyViewMode
   // 仍需通过 _cardHistoryHydratedSid 判是否需要全量重载，但保留 DOM 节点做 fallback
@@ -892,7 +899,7 @@ function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
   });
   return cardEl;
 }
-win._mountOptimisticUserCard = mountOptimisticUserCard;
+if (!options.root) win._mountOptimisticUserCard = mountOptimisticUserCard;
 
 function turnRenderSignature(turn) {
   if (!turn) return '';
@@ -938,13 +945,13 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   }
   turn = prepareTurnForRender(sessionId, turn, opts);
   // 2. resolve container
-  const container = opts.container || doc.getElementById('msg-overlay');
+  const container = opts.container || overlay();
   if (!container) {
     console.warn('[mountSessionTurnCard] container not found (msg-overlay missing)');
     return null;
   }
   // defensive init (spec1 also does this at line ~1545, but be paranoid)
-  if (!win._sessionTurns) win._sessionTurns = new Map();
+  if (!state._sessionTurns) state._sessionTurns = new Map();
 
   // optimistic user-card dedup：真 user turn 从 transcript 进来时，扫现存
   //   optimistic 占位卡，文本相同则删掉（让真卡片接替）。trim 比较两端容差。
@@ -994,11 +1001,11 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   const existing = container.querySelector(`.turn-card[data-turn-id="${cssEscape(turn.id)}"]`);
   if (existing) {
     const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
-    const prevTurn = win._sessionTurns.get(turn.id);
+    const prevTurn = state._sessionTurns.get(turn.id);
     const prevSig = _turnRenderSigs.get(turn.id) || turnRenderSignature(prevTurn);
     const nextSig = turnRenderSignature(turnForRender2);
     if (prevSig === nextSig) {
-      win._sessionTurns.set(turn.id, turnForRender2);
+      state._sessionTurns.set(turn.id, turnForRender2);
       _turnRenderSigs.set(turn.id, nextSig);
       publishTurnPresentation(sessionId, turnForRender2);
       if (typeof updateStreamingIndicator === 'function') updateStreamingIndicator(sessionId);
@@ -1016,7 +1023,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     if (!newCard) return null;
     const patchedCard = patchTurnCardInPlace(existing, newCard, sessionId);
     if (!patchedCard) return null;
-    win._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    state._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
     _turnRenderSigs.set(turn.id, nextSig);
     publishTurnPresentation(sessionId, turnForRender2);
     return patchedCard;
@@ -1064,7 +1071,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
-  win._sessionTurns.set(turn.id, turnForRender);
+  state._sessionTurns.set(turn.id, turnForRender);
   _turnRenderSigs.set(turn.id, turnRenderSignature(turnForRender));
   publishTurnPresentation(sessionId, turnForRender);
 
@@ -1086,11 +1093,12 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 10. return cardEl
   return cardEl;
 }
-win._mountSessionTurnCard = mountSessionTurnCard;
+if (!options.root) win._mountSessionTurnCard = mountSessionTurnCard;
 
 
 // click handler — code-copy + code-expand/collapse
-doc.addEventListener('click', (e) => {
+listen('click', (e) => {
+  if (!options.root && e.target.closest('[data-split-secondary]')) return;
   const responseCopy = e.target.closest('[data-action="conversation-response-copy"]');
   if (responseCopy) {
     e.preventDefault();e.stopPropagation();
@@ -1175,6 +1183,7 @@ doc.addEventListener('click', (e) => {
       postProcessCardMath(root);
       return root;
     },
+    dispose() { for (const [type, handler] of listeners) root.removeEventListener(type, handler); detailControls.dispose(); },
     renderToolCluster,
     confirmCardResend,
     renderTurnCard,

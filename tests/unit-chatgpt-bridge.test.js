@@ -275,12 +275,14 @@ test('Hub UI exposes card/company, composer pull, and selection actions without 
   assert.match(renderer, /chatgptBridgeController\.pullForInput/);
   assert.doesNotMatch(renderer, /button\.className = 'fi-preset-chip'/,
     'unused task preset buttons must not be generated');
-  assert.match(renderer, /ipcRenderer\.invoke\('get-last-assistant-text', activeSessionId\)/,
-    'PTY view must fall back to the current session transcript for latest-answer push');
+  assert.match(renderer, /getLatestAssistantText: async \(\) => \{\s*const sessionId = getFocusedSessionId\(\)/,
+    'latest-answer push binds the focused session before reading its content');
+  assert.match(renderer, /ipcRenderer\.invoke\('get-last-assistant-text', sessionId\)/,
+    'PTY view must fall back to the bound session transcript for latest-answer push');
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
   assert.match(card, /data-action="sync-chatgpt"[^>]*>同步这条消息到公司<\/button>/,
     'the card action remains available with its explicit label in the more menu');
-  assert.match(renderer, /#msg-overlay > \.turn-card:not\(\.user\)/,
-    'latest-answer push must select assistant cards, whose class is turn-card without .user');
+  assert.match(renderer, /overlay\.querySelectorAll\(':scope > \.turn-card:not\(\.user\)'\)/,
+    'latest-answer push must select assistant cards from the owning pane');
 });
