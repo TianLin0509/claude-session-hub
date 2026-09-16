@@ -31,4 +31,4 @@
 .split-empty strong { color:var(--text-primary); font-size:16px; }
 .split-load-older { display:block; margin:8px auto; padding:5px 12px; background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-secondary); cursor:pointer; border-radius:6px; }
 .session-workspace.is-split .session-welcome { max-width:100%; }
-.session-workspace.is-split .session-welcome-cards { flex-wrap:wrap; }
+.session-workspace.is-split .session-welcome-actions { grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr)); }

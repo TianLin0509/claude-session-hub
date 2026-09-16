@@ -32,8 +32,25 @@ function fixture() {
     createView: id => ({ sessionId: id, focus() {}, resize() {}, setVisible() {}, updateStatus() {}, dispose() { calls.push(['dispose', id]); } }),
   };
   const layout = createSessionSplit({ document: { createElement: () => new Element() }, window: { ResizeObserver: class { observe() {} }, queueMicrotask }, primary: new Element(), buttons, services: s });
-  return { layout, calls, alerts, requests, rows, s };
+  return { layout, calls, alerts, requests, rows, s, buttons };
 }
+
+test('default is single and ordinary selection never creates a second view', async () => {
+  const f = fixture();
+  assert.equal(f.layout.routesSelection(), false);
+  assert.equal(f.layout.secondary(), null);
+  assert.equal(f.buttons.queries['[data-session-layout="single"]'].attributes['aria-pressed'], 'true');
+  await f.layout.route('b');
+  assert.equal(f.layout.secondary(), null);
+  assert.equal(f.layout.focusedId(), 'b');
+});
+
+test('hidden split cannot target its secondary session from another app view', async () => {
+  const f = fixture(); await f.layout.setLayout('two'); await f.layout.route('b');
+  f.s.otherView = () => '群聊'; f.layout.sync();
+  assert.equal(f.layout.focusedId(), 'a');
+  assert.equal(f.layout.isSecondaryFocused(), false);
+});
 test('late open result cannot replace the most recent right-pane choice', async () => {
   const f = fixture(); await f.layout.setLayout('two');
   const pending = deferred(); f.requests.set('b', pending);
@@ -65,4 +82,21 @@ test('leaving split during open cancels mounting but still consumes late native 
   await f.layout.setLayout('two'); const opening = f.layout.route('b');
   await Promise.resolve(); await f.layout.setLayout('single'); resume.resolve(); await opening;
   assert.equal(f.layout.secondary(), null); assert.equal(f.layout.handlesCreated('b'), true);
+});
+
+test('reselecting the current right session cancels an older pending replacement', async () => {
+  const f = fixture(); await f.layout.setLayout('two'); await f.layout.route('b');
+  const pending = deferred(); f.requests.set('c', pending);
+  const opening = f.layout.route('c');
+  await f.layout.route('b'); pending.resolve({ available: true }); await opening;
+  assert.equal(f.layout.secondary().sessionId, 'b');
+});
+
+test('a right open that became the primary while awaiting cannot mount twice', async () => {
+  const f = fixture(); await f.layout.setLayout('two');
+  const pending = deferred(); f.requests.set('b', pending);
+  const opening = f.layout.route('b');
+  await f.layout.route('b', 'left'); pending.resolve({ available: true }); await opening;
+  assert.equal(f.layout.focusedId(), 'b');
+  assert.equal(f.layout.secondary(), null);
 });

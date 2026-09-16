@@ -195,6 +195,7 @@ const sessions = new Map();
 const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
 let sessionSplit = null;
+function getFocusedSessionId() { return sessionSplit?.focusedId() || activeSessionId; }
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
@@ -840,8 +841,8 @@ const memoPanel = createMemoPanel({
   baseDir: __dirname,
   clipboard,
   document,
-  getActiveSessionId: () => activeSessionId,
-  getActiveTerminal: () => activeSessionId && terminalCache.get(activeSessionId),
+  getActiveSessionId: getFocusedSessionId,
+  getActiveTerminal: () => terminalCache.get(getFocusedSessionId()),
   localStorage,
   scheduleRefit: scheduleFitAndResizeTerminal,
 });
@@ -2315,14 +2316,16 @@ const chatgptBridgeController = createChatgptBridgeController({
   document,
   window,
   ipcRenderer,
-  getActiveSessionId: () => activeSessionId,
+  getActiveSessionId: getFocusedSessionId,
   getLatestAssistantText: async () => {
-    const cards = [...document.querySelectorAll('#msg-overlay > .turn-card:not(.user)')];
+    const sessionId = getFocusedSessionId();
+    const overlay = sessionSplit?.isSecondaryFocused() ? sessionSplit.secondary().overlay : document.getElementById('msg-overlay');
+    const cards = [...overlay.querySelectorAll(':scope > .turn-card:not(.user)')];
     const card = cards[cards.length - 1];
     const visibleText = card ? extractVisibleCardText(card.querySelector('.turn-body')) : '';
     if (visibleText.trim()) return visibleText;
-    if (!activeSessionId) return '';
-    const transcriptText = await ipcRenderer.invoke('get-last-assistant-text', activeSessionId);
+    if (!sessionId) return '';
+    const transcriptText = await ipcRenderer.invoke('get-last-assistant-text', sessionId);
     return typeof transcriptText === 'string' ? transcriptText : '';
   },
 });
@@ -5686,7 +5689,8 @@ function getSessionCwd(sessionId) {
 }
 
 function getActivePreviewCwd() {
-  if (activeSessionId) return getSessionCwd(activeSessionId);
+  const focusedId = getFocusedSessionId();
+  if (focusedId) return getSessionCwd(focusedId);
   const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
   const subSessions = meeting && Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
   for (const sessionId of subSessions) {
@@ -5749,7 +5753,7 @@ const previewPanel = createPreviewPanelController({
   fs,
   marked,
   DOMPurify,
-  getActiveSessionId: () => activeSessionId,
+  getActiveSessionId: getFocusedSessionId,
   getActiveMeetingId: () => activeMeetingId,
   getActiveCwd: getActivePreviewCwd,
   openPath: (filePath, openOptions = {}) => openPathInHub(filePath, {
@@ -5776,8 +5780,9 @@ window.openPreviewPanel = openPreviewPanel;
 window.openPreviewQuickOpen = openPreviewQuickOpen;
 
 function getActiveFileManagerContext() {
-  if (activeSessionId) {
-    const session = sessions.get(activeSessionId);
+  const focusedId = getFocusedSessionId();
+  if (focusedId) {
+    const session = sessions.get(focusedId);
     return session ? { cwd: session.cwd || '', label: session.workspaceLabel || '' } : null;
   }
   const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
@@ -5807,7 +5812,7 @@ window.FileManagerPanel = fileManagerPanel;
 // 主页面，main 会阻止整页导航并把本地路径送回这里，仍按统一规则打开预览面板。
 ipcRenderer.on('preview-local-file', (_event, filePath) => {
   openPathInHub(filePath, {
-    cwd: getSessionCwd(activeSessionId),
+    cwd: getActivePreviewCwd(),
     requireExistsForRel: false,
   });
 });
@@ -5831,7 +5836,7 @@ document.addEventListener('click', (e) => {
   if (isLocalFileUrl) {
     try {
       openPathInHub(fileURLToPath(href), {
-        cwd: getSessionCwd(activeSessionId),
+        cwd: getActivePreviewCwd(),
         requireExistsForRel: false,
       });
     } catch (error) {
@@ -6566,7 +6571,7 @@ const memoryPanel = createMemoryPanel({
   ipcRenderer,
   escapeHtml,
   getActiveSessionInfo: () => {
-    const s = sessions.get(activeSessionId);
+    const s = sessions.get(getFocusedSessionId());
     return s ? {
       cwd: s.cwd,
       kind: s.kind,
@@ -7679,8 +7684,9 @@ ipcRenderer.on('escape-home', escapeToHome);
 
 const { createConfigModalController } = require('./config-modal.js');
 function getActiveCompletionNotificationTarget() {
-  if (activeSessionId) {
-    const session = sessions.get(activeSessionId);
+  const focusedId = getFocusedSessionId();
+  if (focusedId) {
+    const session = sessions.get(focusedId);
     return session ? { type: 'session', ...session } : null;
   }
   if (activeMeetingId) {
@@ -8533,6 +8539,7 @@ sessionSplit = require('./session-split').createSessionSplit({
     alert: message => require('./ui-feedback').showHubAlert(message),
     onFocus: id => {
       ipcRenderer.send('focus-session', { sessionId: id });
+      completionNotificationToggle?.refreshTarget();
       scheduleAppToolbarRefresh();
     },
     resize: () => {

@@ -40,7 +40,8 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
     element.addEventListener('pointerdown', () => { if (focused !== side) focus(side); }, true);
     element.addEventListener('focusin', () => { if (focused !== side) focus(side); });
   }
-  function focusedId() { return enabled && focused === 'right' ? view?.sessionId || s.primaryId() : s.primaryId(); }
+  function isSecondaryFocused() { return enabled && focused === 'right' && !!view && !right.hidden; }
+  function focusedId() { return isSecondaryFocused() ? view.sessionId : s.primaryId(); }
   function empty(message = '从上方选择会话，或点击左侧会话列表') {
     if (view) return;
     rightPanel.replaceChildren();
@@ -121,7 +122,7 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
       focus('left'); await s.selectPrimary(id, { ...opts, splitBypass: true }); sync(); return;
     }
     if (id === s.primaryId()) { focus('left'); s.focusPrimary(); sync(); return; }
-    if (view?.sessionId === id) { focus('right'); view.focus(); return; }
+    if (view?.sessionId === id) { intent++; opening = null; focus('right'); view.focus(); sync(); return; }
     const token = ++intent; opening = id; sync();
     try {
       const status = await s.openStatus(id);
@@ -133,7 +134,7 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
       const session = s.session(id);
       if (!session || session.status === 'dormant') throw new Error('会话未能恢复，请重试');
       // Native aliases must not mount a second editor under another Hub card.
-      if (s.sameIdentity(session, s.session(s.primaryId()))) { focus('left'); s.focusPrimary(); return; }
+      if (id === s.primaryId() || s.sameIdentity(session, s.session(s.primaryId()))) { focus('left'); s.focusPrimary(); return; }
       view?.dispose(); view = null; rightPanel.replaceChildren();
       view = s.createView(id, rightPanel); focus('right'); view.focus();
     } catch (error) {
@@ -151,8 +152,8 @@ function createSessionSplit({ document: doc, window: win, primary, buttons, serv
     routesSelection: () => enabled && !s.otherView() && primary.style.display !== 'none',
     usePrimary: () => focus('left'),
     secondary: () => view,
-    isSecondaryFocused: () => enabled && focused === 'right' && !!view,
-    isPrimaryFocused: () => !enabled || focused === 'left',
+    isSecondaryFocused,
+    isPrimaryFocused: () => !enabled || focused === 'left' || right.hidden,
     isVisible: id => enabled && view?.sessionId === id && !right.hidden,
     handlesCreated: id => pending.delete(id) || opening === id,
     closed(id) {

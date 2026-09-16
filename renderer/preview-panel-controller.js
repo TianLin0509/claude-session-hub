@@ -301,8 +301,15 @@ function createPreviewPanelController({
     );
   }
 
+  function layoutSource(id) {
+    const panel = id ? document.getElementById(id) : null;
+    // Session panes share one horizontal slot alongside the preview. Resizing
+    // its inner terminal would instead shrink that pane vertically.
+    return id === 'terminal-panel' ? panel?.closest?.('.session-workspace') || panel : panel;
+  }
+
   function applySplitWidths(ratio) {
-    const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
+    const src = layoutSource(previewSourcePanel);
     if (!ratio) {
       if (src) src.style.flex = '';
       previewPanelEl.style.flex = '';
@@ -317,7 +324,7 @@ function createPreviewPanelController({
 
   function resetPreviewLayoutEffects() {
     for (const id of ['terminal-panel', 'meeting-room-panel']) {
-      const el = document.getElementById(id);
+      const el = layoutSource(id);
       if (el) el.style.flex = '';
     }
     previewPanelEl.style.flex = '';
