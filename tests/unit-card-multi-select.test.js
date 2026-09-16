@@ -405,7 +405,19 @@ test('操作条节点存在且能挺过终端面板重建', () => {
   assert.match(html, /id="card-multi-select-bar"[^>]*hidden/);
   assert.match(html, /id="card-multi-select-copy"[\s\S]{0,40}>一键复制</);
   assert.match(html, /id="card-multi-select-all"[\s\S]{0,30}>全选</);
-  assert.match(renderer, /document\.getElementById\('card-multi-select-bar'\)[\s\S]{0,80}preserved\.forEach/);
+  const bar = { id: 'card-multi-select-bar' };
+  const panel = {
+    children: [bar], style: { setProperty() {} },
+    set innerHTML(value) { assert.equal(value, ''); this.children = []; },
+    appendChild(node) { this.children.push(node); },
+  };
+  const start = renderer.indexOf('function preserveAndClearTerminalPanel()');
+  const source = renderer.slice(start, renderer.indexOf('\nconst btnNew', start));
+  require('node:vm').runInNewContext(source + '\npreserveAndClearTerminalPanel()', {
+    document: { getElementById: id => id === bar.id ? bar : null }, terminalPanelEl: panel,
+  });
+  assert.equal(panel.children.length, 1);
+  assert.equal(panel.children[0], bar, 'panel rebuild must retain the same multi-select toolbar node');
 });
 
 test('可见性跟着卡片视图 + 激活会话走', () => {
