@@ -348,7 +348,10 @@ class SessionSearchEngine {
           processedChanges += 1;
           try {
             const stat = fs.statSync(descriptor.filePath);
-            if (descriptor.type !== 'codex' && stat.size > this.options.maxFileBytes) {
+            // Codex and Claude are streamed and skip binary/tool-output rows, so
+            // file size does not bound their memory; keep their full dialogue.
+            const streamed = descriptor.type === 'codex' || descriptor.type === 'claude';
+            if (!streamed && stat.size > this.options.maxFileBytes) {
               diagnostics.push(`${descriptor.filePath}: 文件过大，保留标题但跳过全文`);
               staleSources += 1;
               if (previous) this.index.markSourceStale(descriptor.key, descriptor.signature);
@@ -357,7 +360,7 @@ class SessionSearchEngine {
             } else {
               const limited = clipSource(parseSourceDescriptor(descriptor, collected.maps), {
                 ...this.options,
-                preserveAll: descriptor.type === 'codex',
+                preserveAll: streamed,
               });
               this.index.replaceSource(limited.source);
               activeKeys.add(descriptor.key);
