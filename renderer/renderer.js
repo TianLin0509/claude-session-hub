@@ -3163,6 +3163,8 @@ document.addEventListener('click', (e) => {
 
 // === Spec 1 v0.9.0 · D5 操作按钮 click ===
 function getTurnFromCard(cardEl) {
+  const memberView = cardEl?.closest('[data-group-member]')?._memberView;
+  if (memberView) return memberView.turns.get(cardEl.dataset.turnId) || null;
   if (cardEl?.closest('[data-split-secondary]')) return sessionSplit?.secondary()?.turns.get(cardEl.dataset.turnId) || null;
   if (!cardEl || !window._sessionTurns) return null;
   return window._sessionTurns.get(cardEl.dataset.turnId);
@@ -3209,7 +3211,8 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'multi-select') {
     // 微信式多选：以点中的这张卡片为起点进入，随后整片卡片区的点击都变成勾选。
-    if (card.closest('[data-split-secondary]')) sessionSplit?.secondary()?.multiSelect.enter(card.dataset.turnId);
+    if (card.closest('[data-group-member]')) card.closest('[data-group-member]')._memberView?.multiSelect.enter(card.dataset.turnId);
+    else if (card.closest('[data-split-secondary]')) sessionSplit?.secondary()?.multiSelect.enter(card.dataset.turnId);
     else cardMultiSelectController.enter(card.dataset.turnId);
     return;
   }
@@ -3300,7 +3303,8 @@ document.addEventListener('click', async (e) => {
     // 文本填进去、用户一回车就发去了错误的 CLI。卡片不属于当前激活会话时直接
     // 拒绝，宁可少一次便利也不要串台（2026-07-28）。
     const cardSid = getCardSessionId(card);
-    const liveSid = card.closest('[data-split-secondary]') ? sessionSplit?.secondary()?.sessionId
+    const groupMember = card.closest('[data-group-member]');
+    const liveSid = groupMember ? groupMember.dataset.groupMember : card.closest('[data-split-secondary]') ? sessionSplit?.secondary()?.sessionId
       : (typeof activeSessionId !== 'undefined' && activeSessionId) || null;
     if (cardSid && liveSid && String(cardSid) !== String(liveSid)) {
       console.warn('[edit-resend] 卡片属于会话', cardSid, '，当前激活的是', liveSid,
@@ -3317,7 +3321,11 @@ document.addEventListener('click', async (e) => {
         console.warn('[edit-resend] 输入框已有内容，跳过自动填入历史消息');
         return;
       }
-      inputEl.textContent = turn.text || '';
+      const group = groupMember ? MeetingRoom.getMeetingData(MeetingRoom.getActiveMeetingId()) : null;
+      const memberIndex = group?.subSessions.indexOf(cardSid);
+      const mention = group ? '@' + (group.slotSpecs?.[memberIndex]?.memberId || 'm' + (memberIndex + 1)) + ' ' : '';
+      inputEl.textContent = mention + (turn.text || '');
+      inputEl.dispatchEvent(new Event('input', { bubbles:true }));
       inputEl.focus();
       // Place cursor at end (contenteditable doesn't have setSelectionRange)
       try {
@@ -8467,7 +8475,7 @@ async function resumeDormantSession(hubId, opts = {}) {
 }
 window.resumeDormantSession = resumeDormantSession;
 
-function createSecondarySessionView(sessionId, panel) {
+function createSecondarySessionView(sessionId, panel, options = {}) {
   const session = sessions.get(sessionId);
   return require('./split-session-view').createSplitSessionView({
     document, window, sessionId, panel,
@@ -8481,9 +8489,9 @@ function createSecondarySessionView(sessionId, panel) {
     services: {
       ipc: ipcRenderer,
       session: () => sessions.get(sessionId),
-      initialMode: () => selectionViewModeForSession(sessionId, session),
+      initialMode: () => options.groupMember ? 'card' : selectionViewModeForSession(sessionId, session),
       parse: payload => ipcRenderer.invoke('parse-session-transcript', payload),
-      welcome: value => require('./session-welcome').renderSessionWelcome(value, escapeHtml),
+      welcome: value => options.groupMember ? '<div class="split-empty"><strong>等待成员回复</strong><p>在下方群聊输入框提问，此处显示该成员的完整记录。</p></div>' : require('./session-welcome').renderSessionWelcome(value, escapeHtml),
       mountTerminal(host, pane) {
         const cached = getOrCreateTerminal(sessionId);
         const container = document.createElement('div'); container.className = 'terminal-container';
@@ -8494,8 +8502,22 @@ function createSecondarySessionView(sessionId, panel) {
           void hydrateTerminalFromSnapshot(sessionId, cached);
         }
         if (cached._floatingInput) { cached._floatingInput.dispose(); cached._floatingInput = null; }
-        const input = session.readOnly ? null : mountFloatingInput(sessionId, container, cached.terminal, pane);
+        const input = session.readOnly || options.groupMember ? null : mountFloatingInput(sessionId, container, cached.terminal, pane);
         cached._floatingInput = input;
+        const memberControls = options.groupMember ? createCodexNativeControls({ document, sessionId,
+          invoke: (channel, payload) => ipcRenderer.invoke(channel, payload), openExternal: url => shell.openExternal(url) }) : null;
+        const memberClaudeControls = options.groupMember ? require('./claude-native-controls').createClaudeNativeControls({ sessionId, ipcRenderer,
+          onHistory: pane.history,
+          onRestoreDraft: record => {
+            if ((record.content || []).some(block => block.type !== 'text')) throw new Error('请从成员历史核对并恢复附件');
+            const box = document.getElementById('mr-input-box');
+            if (box.textContent.trim()) throw new Error('群聊输入框已有草稿，请先保存或发送');
+            const m = MeetingRoom.getMeetingData(MeetingRoom.getActiveMeetingId());
+            const index = m.subSessions.indexOf(sessionId);
+            box.textContent = '@' + (m.slotSpecs?.[index]?.memberId || 'm' + (index + 1)) + ' ' + record.text;
+            box.dispatchEvent(new Event('input', { bubbles:true })); box.focus();
+          } }) : null;
+        for (const control of [memberControls, memberClaudeControls]) if (control) { host.append(control.element); control.update(sessions.get(sessionId)); }
         if (isNativeAgent(session)) {
           cached._codexBackstage ||= createCodexBackstage({ document, ipcRenderer, sessionId,
             getSession: () => sessions.get(sessionId),
@@ -8521,12 +8543,16 @@ function createSecondarySessionView(sessionId, panel) {
           },
           updateStatus() {
             const current = sessions.get(sessionId);
+            if (current) memberControls?.update(current);
+            if (current) memberClaudeControls?.update(current);
             const bar = host.querySelector('.floating-input-bar');
             if (current) bar?._paintComposer?.(current);
             if (viewMode === 'pty') cached._codexBackstage?.updateStatus();
           },
           dispose() {
             observer.disconnect(); input?.dispose();
+            memberControls?.element.remove();
+            memberClaudeControls?.element.remove();
             if (cached._floatingInput === input) cached._floatingInput = null;
             cached._codexBackstage?.setVisible(false); unloadGpuRenderer(cached);
             cached.container.remove();

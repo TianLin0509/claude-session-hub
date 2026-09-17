@@ -8,6 +8,7 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   const state = { _sessionTurns: new Map() };
   let disposed = false, visible = true, busy = false, dirty = false, timer = null;
   let mode = s.initialMode(), limit = 8, hydrated = false;
+  let savedReading = null;
   const overlay = doc.createElement('div'); overlay.className = 'msg-overlay';
   overlay.dataset.sessionId = sessionId;
   const status = doc.createElement('div'); status.className = 'split-history-status'; status.hidden = true; status.setAttribute('role', 'status');
@@ -77,9 +78,18 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
         overlay.prepend(more);
       }
       if (!turns.length && !hydrated) overlay.innerHTML = s.welcome(session);
-      else if (turns.length) overlay.querySelector('.session-welcome')?.remove();
+      else if (turns.length) overlay.querySelector('.session-welcome, .split-empty')?.remove();
       limit = requestedLimit; hydrated = true;
       follow.restore(capture);
+      if (savedReading) {
+        const snapshot = savedReading; savedReading = null;
+        for (const [id, states] of snapshot.details || []) {
+          const card = [...overlay.children].find(el => el.dataset.turnId === id);
+          card?.querySelectorAll('details').forEach((el, i) => { if (i < states.length) el.open = states[i]; });
+        }
+        if (snapshot.scroll?.following) follow.follow();
+        else if (snapshot.scroll) { follow.pause(); follow.restore({ ...snapshot.scroll, epoch: follow.capture().epoch }); }
+      }
       follow.request();
     } catch (error) {
       if (!disposed) notice('历史读取失败：' + error.message);
@@ -118,6 +128,8 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   applyMode();
   return {
     sessionId, renderer, turns: state._sessionTurns, overlay, multiSelect,
+    captureReading: () => ({ limit: Math.max(limit, state._sessionTurns.size), scroll: follow.capture(), details: [...overlay.children].filter(el => el.dataset.turnId).map(el => [el.dataset.turnId, [...el.querySelectorAll('details')].map(d => d.open)]) }),
+    restoreReading(snapshot) { if (!snapshot) return; savedReading = snapshot; limit = Math.max(limit, snapshot.limit || 8); schedule(); },
     focus: () => panel.querySelector('.floating-input-box')?.focus(),
     resize: () => terminal.resize(), updateStatus,
     schedule,

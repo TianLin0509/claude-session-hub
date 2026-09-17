@@ -88,6 +88,54 @@ if (typeof document !== 'undefined') (function () {
 
   let activeMeetingId = null;
   let meetingData = {};
+  // Member resume pushes session-created after the room has already rendered
+  // dormant avatars. Refresh availability from that authoritative lifecycle,
+  // independently of meeting metadata and model/usage notifications.
+  for (const channel of ['session-created', 'session-updated', 'session-suspended', 'session-closed']) {
+    ipcRenderer.on(channel, (_event, payload) => {
+      const sid = payload?.session?.id || payload?.sessionId;
+      queueMicrotask(() => { if (sid) refreshSessionMetrics(sid); });
+    });
+  }
+  let memberSplit = null;
+  const overviewScroll = new Map();
+  function ensureMemberSplit() {
+    if (memberSplit) return memberSplit;
+    memberSplit = require('./group-member-split').createGroupMemberSplit({ document,
+      host: panelEl(), before: document.getElementById('mr-toolbar'),
+      services: {
+        members: meeting => _getGcSlots(meeting).filter(Boolean).map(slot => ({ ...slot, label: slot.displayLabel || slot.label || getKindLabel(slot.kind) })),
+        session: sid => sessions.get(sid), logo: kind => _groupLogoSrc(kind),
+        status: session => session?.status === 'dormant' ? '休眠' : ({ running:'正在输出', waiting:'等待确认', completed:'已完成', failed:'失败', interrupted:'已停止', idle:'待命' }[session?.nativeRuntime?.state] || session?.status || '等待连接'),
+        running: session => ['running','waiting'].includes(session?.nativeRuntime?.state) || session?.status === 'working',
+        createView: (sid, panel) => createSecondarySessionView(sid, panel, { groupMember: true }),
+        async resume(sid) { const result = await window.resumeDormantSession(sid); if (!result) throw new Error('未能恢复成员，请查看占用或连接提示'); },
+        async stop(sid) {
+          const session = sessions.get(sid);
+          if (!isNativeAgent(session)) { ipcRenderer.send('terminal-input', { sessionId: sid, data:'\x03' }); return; }
+          const result = session.runtimeBackend === 'claude-stream-json'
+            ? await ipcRenderer.invoke('claude-native:interrupt', { sessionId: sid })
+            : await ipcRenderer.invoke('codex:native-action', { sessionId: sid, action:'interrupt' });
+          if (!result?.ok) throw new Error(result?.error || result?.message || '停止未确认');
+        },
+        onMode: mode => {
+          document.querySelectorAll('[data-group-layout]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.groupLayout === mode)));
+        },
+      },
+    });
+    return memberSplit;
+  }
+  function setGroupLayout(mode, meeting) {
+    if (!meeting?.groupChat || meeting.id !== activeMeetingId) return;
+    const split = ensureMemberSplit(), panel = document.getElementById('mr-group-chat-panel');
+    if (mode === 'two' && split.mode() !== 'two') overviewScroll.set(meeting.id, _captureGroupChatScroll(panel, meeting));
+    split.setMode(mode);
+    if (mode === 'overview') {
+      _renderActivePanelFromCache(meeting);
+      _restoreGroupChatScroll(panel, overviewScroll.get(meeting.id));
+    }
+  }
+
   // IF-C1（2026-05-01）：CLI ready 状态 cache（per-sid bool），由 cli-ready-status IPC 1s 轮询填充
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
@@ -236,6 +284,7 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
+    if (meeting.id === activeMeetingId && memberSplit?.mode() === 'two') { memberSplit.refresh(meeting); return true; }
     // Pending and completed articles have different IDs. Bind disclosure to
     // the provider activity item so the same response survives that handoff.
     const activityKey = el => el.closest('.mr-gc-msg')?.dataset.sourceSid + ':'
@@ -5960,6 +6009,8 @@ if (typeof document !== 'undefined') (function () {
     const panel = panelEl();
     panel.style.display = 'flex';
 
+    if (meeting.groupChat) ensureMemberSplit().open(meeting);
+    else memberSplit?.close();
     renderHeader(meeting);
     renderTerminals(meeting);
     renderToolbar(meeting);
@@ -6008,6 +6059,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
+    memberSplit?.close();
     _inputModelUi?.closeModelPicker();
     _taskFilesMeetingId = null;
     // 离开 AI 群聊前先保存草稿，下次重新进入时恢复。
@@ -6121,6 +6173,13 @@ if (typeof document !== 'undefined') (function () {
     if (!meeting || !Array.isArray(meeting.subSessions)) return false;
     const slot = _getGcSlots(meeting).find(item => item && item.sid === sessionId);
     if (!slot) return false;
+    const avatar = document.querySelector(`.mr-free-avatar-chk[data-slot-idx="${slot.slotIndex}"]`);
+    const dormant = sessions.get(sessionId)?.status === 'dormant';
+    if (avatar && (avatar.classList.contains('disabled') !== dormant || avatar.querySelector('input')?.disabled !== dormant)) {
+      renderToolbar(meeting);
+      _updateInputPreflight(meeting);
+    }
+    memberSplit?.refresh(meeting);
     const panel = document.getElementById('mr-group-chat-panel');
     if (!panel) return false;
 
@@ -6215,10 +6274,12 @@ if (typeof document !== 'undefined') (function () {
 
     // Arch refactor 2026-05-02: 沉浸/调试切换按钮已删除。AI 群聊界面只有一种
     // 视图（永远纯卡片），shell 沉到子 session 主区。
-    // Group chat now has one unified conversation-card surface.  The old
-    // chat/card switch maintained two render and recovery paths for the same
-    // state, so group rooms deliberately expose no view toggle.
-    const viewToggleHtml = meeting.groupChat ? '' : `
+    // Group overview and member transcripts share the same group composer and
+    // running sessions. This layout selection is local to the current window.
+    const viewToggleHtml = meeting.groupChat ? `<div class="session-layout-buttons" role="group" aria-label="群聊布局">
+        <button type="button" class="session-layout-button" data-group-layout="overview" title="群聊总览" aria-label="群聊总览" aria-pressed="${memberSplit?.mode() !== 'two'}"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M5 7h10M5 10h7M5 13h10"/></svg></button>
+        <button type="button" class="session-layout-button" data-group-layout="two" title="成员双屏" aria-label="成员双屏" aria-pressed="${memberSplit?.mode() === 'two'}"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M10 3v14"/></svg></button>
+      </div>` : `
         <div class="mr-view-toggle" role="group" aria-label="Card view mode">
           <button class="mr-header-btn mr-view-btn ${!_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-parallel" title="并列显示 3 张 AI 卡片">并列</button>
           <button class="mr-header-btn mr-view-btn ${_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-tab" title="Tab 模式：主界面只显示当前 AI 卡片">Tab</button>
@@ -6255,6 +6316,8 @@ if (typeof document !== 'undefined') (function () {
       </div>
     `;
 
+    el.querySelectorAll('[data-group-layout]').forEach(button => button.addEventListener('click', () => setGroupLayout(button.dataset.groupLayout, meetingData[meeting.id] || meeting)));
+    memberSplit?.refresh(meeting);
     const focusBtn = document.getElementById('mr-btn-focus');
     const workspaceChip = document.getElementById('mr-workspace-chip');
     if (workspaceChip) {
@@ -6292,6 +6355,7 @@ if (typeof document !== 'undefined') (function () {
     const groupMembersBtn = document.getElementById('mr-btn-group-members');
     const groupToolsBtn = document.getElementById('mr-btn-group-tools');
     if (groupToolsBtn) groupToolsBtn.addEventListener('click', () => {
+      if (memberSplit?.mode() === 'two') setGroupLayout('overview', meeting);
       const open = !_gcToolsExpanded[meeting.id];
       _gcToolsExpanded[meeting.id] = open;
       const tools = document.getElementById('mr-gc-tools');
@@ -6308,6 +6372,7 @@ if (typeof document !== 'undefined') (function () {
       groupToolsBtn.classList.toggle('active', open);
     });
     if (groupMembersBtn) groupMembersBtn.addEventListener('click', () => {
+      if (memberSplit?.mode() === 'two') setGroupLayout('overview', meeting);
       _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
       renderHeader(meeting);
     });
