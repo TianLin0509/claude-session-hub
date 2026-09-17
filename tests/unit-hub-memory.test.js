@@ -17,6 +17,11 @@ function setup(t) {
     session:{key,provider:'codex',kind:'codex',title:key,cwd:cwdOverride,hubSessionId:key,updatedAt:Date.now()},
     docs:[{eventId:key+'-user',scope:'user',role:'user',ordinal:0,timestamp:Date.now(),text}]});
   add('source','用户确认：记忆页不需要会话列表。');
+  let round=0;
+  // Appends records to the source session, as a continuing conversation would.
+  const grow=(extra=1)=>{round+=extra;const docs=[{eventId:'source-user',scope:'user',role:'user',ordinal:0,timestamp:Date.now(),text:'用户确认：记忆页不需要会话列表。'}];
+    for(let i=1;i<=round;i++)docs.push({eventId:'source-new-'+i,scope:i%2?'assistant':'user',role:i%2?'assistant':'user',ordinal:i,timestamp:Date.now(),text:'后续讨论 '+i});
+    index.replaceSource({key:'source',signature:'sig-source-'+round,session:{key:'source',provider:'codex',kind:'codex',title:'source',cwd,hubSessionId:'source',updatedAt:Date.now()},docs});};
   const sessions=new Map([['normal',{id:'normal',title:'当前会话',kind:'codex',cwd,codexSid:'native-1',nativeRuntime:{state:'idle'}}]]);
   const tap=new EventEmitter();let seq=0;
   const service=new HubMemoryService({dataDir:path.join(root,'data'),homeDir:home,transcriptTap:tap,
@@ -31,7 +36,7 @@ function setup(t) {
     fs.writeFileSync(path.join(dir,'DREAM_INDEX.md'),changes.index||'# 梦境\n- [交互偏好](topics/preferences.md)：设计记忆页时读取\n','utf8');
     fs.writeFileSync(path.join(dir,'topics/preferences.md'),'不显示会话列表。来源 source / source-user。','utf8');
     fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'complete',processedFiles:j.inputFiles,summary:'保留界面偏好',...changes.result}));};
-  return {root,cwd,home,index,add,service,sessions,tap,start,output};
+  return {root,cwd,home,index,add,grow,service,sessions,tap,start,output};
 }
 
 test('history exports full stored text, provenance and project boundaries from one snapshot',t=>{
@@ -78,16 +83,16 @@ test('index receipt requires exact submitted text, covers ACP, and new versions 
   const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);
   f.sessions.get('normal').kind='deepseek-acp';let sent;
   await f.service.withIndex('normal','继续任务','deepseek-acp',{clientSubmissionId:'one'},async text=>{sent=text;return {ok:true};});
-  assert.match(sent,/<ai-hub-dream-index>/);assert.equal(f.service.snapshot('normal').receipts[0].status,'unconfirmed');
+  assert.match(sent,/<ai-hub-dream-index ref="one">/);assert.equal(f.service.snapshot('normal').receipts[0].status,'unconfirmed');
   f.tap.emit('prompt-submitted',{sessionId:'normal',text:'wrong'});assert.equal(f.service.snapshot('normal').pending,true);
   f.tap.emit('prompt-submitted',{sessionId:'normal',text:sent});assert.equal(f.service.snapshot('normal').pending,false);
   const receipt={};let next;
   await f.service.withIndex('normal','下一条','deepseek-acp',{submissionReceipt:receipt},async text=>{next=text;return {ok:true};});
   assert.equal(next,'下一条');
-  const j2=await f.start();f.output(j2);f.service.publish(j2);
+  f.grow();const j2=await f.start();f.output(j2);f.service.publish(j2);
   assert.equal(f.service.snapshot('normal').pending,true);
   await f.service.withIndex('normal','新版','deepseek-acp',{submissionReceipt:receipt},async text=>{next=text;f.tap.emit('prompt-submitted',{sessionId:'normal',text});return {ok:true};});
-  assert.match(next,/<ai-hub-dream-index>/);assert.equal(f.service.snapshot('normal').receipts[0].status,'sent');assert.ok(receipt.fingerprint);
+  assert.match(next,/<ai-hub-dream-index ref=/);assert.equal(f.service.snapshot('normal').receipts[0].status,'sent');assert.ok(receipt.fingerprint);
   for(const [sid,kind,prompt] of [['normal','codex','/compact'],['normal','powershell','echo x'],[j2.sessionId,'codex','继续整理']]) {
     await f.service.withIndex(sid,prompt,kind,{},async text=>assert.equal(text,prompt));
   }
@@ -142,7 +147,7 @@ test('recovered confirmation and a new native epoch retain truthful receipt stat
   assert.equal(f.service.snapshot('normal').pending,false);
   f.sessions.get('normal').nativeRuntime.epoch=2;assert.equal(f.service.snapshot('normal').pending,true);
   f.service.sessionManager.openOwners={owner:()=>({pid:process.pid+1})};
-  const j2=await f.start();f.output(j2);assert.throws(()=>f.service.publish(j2),/另一 Hub/);
+  f.grow();const j2=await f.start();f.output(j2);assert.throws(()=>f.service.publish(j2),/另一 Hub/);
   assert.equal(f.service.pointer(j2.project).jobId,j.id);
 });
 
@@ -158,7 +163,7 @@ test('idempotent submission retries keep the exact original index even after a n
   const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);let first,retried;
   const options={clientSubmissionId:'stable-id'};
   await f.service.withIndex('normal','任务','codex',options,async text=>{first=text;f.tap.emit('prompt-submitted',{sessionId:'normal',text});return {ok:true};});
-  const next=await f.start();f.output(next);f.service.publish(next);
+  f.grow();const next=await f.start();f.output(next);f.service.publish(next);
   await f.service.withIndex('normal','任务','codex',options,async text=>{retried=text;return {ok:true};});
   assert.equal(retried,first);assert.equal(f.service.snapshot('normal').receipts.length,1);
   await assert.rejects(f.service.withIndex('normal','不同任务','codex',options,async()=>assert.fail('must not send')),/原始消息已变化/);
@@ -170,4 +175,84 @@ test('preparation persistence errors release the claim instead of permanently bl
   await assert.rejects(f.start(),/controlled disk failure/);
   assert.equal(fs.existsSync(path.join(f.service.project(f.cwd).dir,'active.json')),false);
   f.service.saveJob=save;assert.equal((await f.start()).status,'running');
+});
+
+const readExport=j=>j.inputFiles.flatMap(n=>fs.readFileSync(path.join(j.dir,'input',n),'utf8').trim().split('\n').map(JSON.parse));
+
+test('continued sessions export only new records with a short processed lead-in',async t=>{
+  const f=setup(t);f.grow(9);const j=await f.start();f.output(j);f.service.publish(j);
+  assert.equal(readExport(j).length,10);assert.equal(readExport(j).some(r=>r.context),false);
+  const c=(await f.service.candidates('normal'))[0];assert.equal(c.processed,true);assert.equal(c.newRecords,0);
+  await assert.rejects(f.start(),/没有未整理的新记录/);
+  f.grow(2);const row=(await f.service.candidates('normal'))[0];
+  assert.equal(row.processed,false);assert.equal(row.newRecords,2);
+  const j2=await f.start(),records=readExport(j2);
+  assert.deepEqual(records.filter(r=>!r.context).map(r=>r.event_id),['source-new-10','source-new-11']);
+  assert.equal(records.filter(r=>r.context).length,6);assert.match(j2.prompt,/"context":true/);
+  f.output(j2);f.service.publish(j2);
+  const pointer=f.service.pointer(j2.project);assert.equal(pointer.processed.source.count,12);
+  assert.equal(f.service.processedIds(j2.project,pointer,'source').length,12);
+});
+
+test('failed dream does not advance incremental progress',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);
+  f.grow(3);const j2=await f.start();f.output(j2,{result:{status:'incomplete'}});
+  assert.throws(()=>f.service.publish(j2),/完整的处理清单/);
+  await f.service.abandon(j2.id);
+  assert.equal((await f.service.candidates('normal'))[0].newRecords,3);
+  const j3=await f.start();assert.equal(readExport(j3).filter(r=>!r.context).length,3);
+});
+
+test('whitespace-normalized transcripts confirm by envelope ref; unrelated text never does',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);let sent;
+  await f.service.withIndex('normal','任务 ','claude',{clientSubmissionId:'pty-1'},async text=>{sent=text;return {ok:true};});
+  f.tap.emit('prompt-submitted',{sessionId:'normal',text:'<ai-hub-dream-index ref="pty-1">伪造</ai-hub-dream-index>'});
+  assert.equal(f.service.snapshot('normal').receipts[0].status,'unconfirmed');
+  f.tap.emit('prompt-submitted',{sessionId:'normal',text:sent.trim().replace(/\n/g,'\r\n')});
+  assert.equal(f.service.snapshot('normal').receipts[0].status,'sent');
+});
+
+test('index is sent again after the runtime compacts its context',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);const s=f.sessions.get('normal');
+  const run=async prompt=>{let out;await f.service.withIndex('normal',prompt,'codex',{},async text=>{out=text;f.tap.emit('prompt-submitted',{sessionId:'normal',text});return {ok:true};});return out;};
+  s.contextUsed=1000;assert.match(await run('一'),/ai-hub-dream-index/);
+  s.contextUsed=120000;assert.equal(await run('二'),'二');
+  s.contextUsed=90000;assert.equal(await run('三'),'三');
+  s.contextUsed=20000;assert.match(await run('四'),/ai-hub-dream-index/);
+  assert.equal(f.service.snapshot('normal').receipts[0].reason,'compacted');
+  s.contextUsed=25000;assert.equal(await run('五'),'五');
+});
+
+test('receipt history is bounded',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);const s=f.sessions.get('normal');
+  for(let i=0;i<35;i++){s.nativeRuntime.epoch=i+10;await f.service.withIndex('normal','t'+i,'codex',{},async text=>{f.tap.emit('prompt-submitted',{sessionId:'normal',text});return {ok:true};});}
+  assert.equal(f.service.snapshot('normal').receipts.length,30);
+});
+
+test('dream index is stripped from search text so it never becomes dream material',()=>{
+  const {searchableUserText}=require('../core/synthetic-user-filter');
+  assert.equal(searchableUserText('真实问题\n\n<ai-hub-dream-index ref="x">\n# 索引\n- [a](topics/a.md)\n</ai-hub-dream-index>'),'真实问题');
+});
+
+test('scan stays shallow on aggregate roots, skips hidden and AppData trees, and is bounded',async t=>{
+  const f=setup(t);
+  fs.mkdirSync(path.join(f.cwd,'docs','deep'),{recursive:true});fs.writeFileSync(path.join(f.cwd,'docs','deep','note.md'),'x');
+  fs.mkdirSync(path.join(f.cwd,'.cache'));fs.writeFileSync(path.join(f.cwd,'.cache','hidden.md'),'x');
+  fs.mkdirSync(path.join(f.cwd,'AppData'));fs.writeFileSync(path.join(f.cwd,'AppData','app.md'),'x');
+  const normal=await f.service.scan('normal');
+  assert.deepEqual(normal.files.map(x=>x.label).sort(),['AGENTS.md',path.join('docs','deep','note.md')].sort());
+  fs.writeFileSync(path.join(f.home,'top.md'),'x');fs.mkdirSync(path.join(f.home,'sub'));fs.writeFileSync(path.join(f.home,'sub','inner.md'),'x');
+  f.sessions.set('home',{id:'home',kind:'codex',cwd:f.home});
+  const home=await f.service.scan('home');
+  assert.deepEqual(home.files.map(x=>x.label),['top.md']);assert.match(home.note,/聚合根/);
+  for(let i=0;i<510;i++)fs.writeFileSync(path.join(f.cwd,'docs','n'+i+'.md'),'x');
+  const many=await f.service.scan('normal');assert.equal(many.files.length,500);assert.equal(many.truncated,true);
+});
+
+test('only explicitly user-initiated sends get the index; automated sendToPty callers do not',()=>{
+  const read=(...p)=>fs.readFileSync(path.join(__dirname,'..',...p),'utf8');
+  assert.match(read('main','ipc','prompt-submit-handlers.js'),/request\.memoryIndex !== true/);
+  assert.doesNotMatch(read('core','group-chat-watcher.js'),/withIndex/);
+  assert.equal((read('renderer','renderer.js').match(/memoryIndex: true/g)||[]).length,1);
+  assert.doesNotMatch(read('renderer','meeting-room.js'),/memoryIndex/);
 });

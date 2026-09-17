@@ -6,6 +6,7 @@ const { withinProject } = require("./session-search-projects");
 
 const COVERAGE =
   "素材来自昨日之我的已保存消息正文，不是无损 wire 归档。原历史解析可能省略工具结果、附件内容或被截断；不以缺失记录证明事情没有发生。";
+const CONTEXT_RECORDS = 6;
 function candidates(index, request = {}) {
   const excluded = new Set(request.excludeSessionIds || []);
   return index.db
@@ -64,7 +65,14 @@ function exportHistory(index, request) {
     )
       throw new Error("素材已变化、没有正文或不属于当前项目，请重新选择");
     for (const [i, key] of keys.entries()) {
-      const session = { ...available.get(key), files: [], exportedRecords: 0 };
+      const done = new Set(request.processedIds?.[key] || []);
+      const session = {
+        ...available.get(key),
+        files: [],
+        exportedRecords: 0,
+        contextRecords: 0,
+        eventIds: [],
+      };
       const digest = crypto.createHash("sha256");
       let chunk = "",
         part = 0;
@@ -76,17 +84,43 @@ function exportHistory(index, request) {
         session.files.push(name);
         chunk = "";
       };
-      for (const record of records.iterate(key)) {
-        const line = JSON.stringify({ ...record, sessionKey: key }) + "\n";
+      const write = (record, context) => {
+        const line =
+          JSON.stringify({
+            ...record,
+            sessionKey: key,
+            ...(context ? { context: true } : {}),
+          }) + "\n";
         if (chunk.length + line.length > 128 * 1024) flush();
         chunk += line;
         digest.update(line);
+      };
+      // Already processed records are skipped; the few right before the
+      // first new record are kept as lead-in context.
+      let lead = [];
+      for (const record of records.iterate(key)) {
+        if (done.has(record.event_id)) {
+          if (!session.exportedRecords) {
+            lead.push(record);
+            if (lead.length > CONTEXT_RECORDS) lead.shift();
+          }
+          continue;
+        }
+        for (const old of lead) write(old, true);
+        session.contextRecords += lead.length;
+        lead = [];
+        write(record, false);
+        session.eventIds.push(record.event_id);
         session.exportedRecords++;
       }
       flush();
+      // A session with no new records still carries its refreshed signature,
+      // so publishing marks it as processed.
       session.contentHash = digest.digest("hex");
       manifest.sessions.push(session);
     }
+    if (!manifest.sessions.some((s) => s.exportedRecords))
+      throw new Error("所选会话没有未整理的新记录");
     index.db.exec("COMMIT");
   } catch (error) {
     index.db.exec("ROLLBACK");

@@ -71,7 +71,7 @@
 - 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
 - 复用昨日之我 SQLite 的消息正文，明确解析截断和附件覆盖边界，不宣称无损原始归档。选中素材导出为一次任务快照，造梦师为普通实体 session。
 - 原生 `MEMORY.md` 和规则文件只读参考；新梦境只写 Hub 数据目录的独立 `DREAM_INDEX.md` 与 `topics/*.md`。结果校验通过后原子发布，失败不推进已整理进度。
-- 索引随下一次普通任务提交，只有原生提交证据才显示已发送；磁盘可读、预计加载、已发送、正文已读取不能混称。聊天卡片折叠显示索引但不删原始正文。
+- 索引只随用户亲手发送的下一条消息提交（群聊/初心等自动 prompt 不带；上下文压缩后重发；搜索与造梦素材剥掉索引），只有原生提交证据才显示已发送；磁盘可读、预计加载、已发送、正文已读取不能混称。聊天卡片折叠显示索引但不删原始正文。
 - 旧规则沉淀 scheduler 已停止自动启动；旧数据和兼容 IPC 保留，旧“并入规范库”和写原生规则操作不在新 UI 提供。
 - 隔离验证同时设置 `CLAUDE_HUB_DATA_DIR`、`CLAUDE_HUB_HOME_DIR`、独立 CDP 端口并清空 `DEEPSEEK_API_KEY`。测试：`node --test tests/unit-hub-memory.test.js`、`node tests/e2e-memory-panel-cdp.js`；协议夹具结果不等于真实模型质量验证。
 

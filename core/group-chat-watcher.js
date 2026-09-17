@@ -338,13 +338,6 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
 async function sendToPty(sid, prompt, kind, options = {}) {
-  const memory = _deps?.sessionManager?.memoryService;
-  if (memory) return memory.withIndex(sid, prompt, kind, options,
-    text => sendToPtyRaw(sid, text, kind, options));
-  return sendToPtyRaw(sid, prompt, kind, options);
-}
-
-async function sendToPtyRaw(sid, prompt, kind, options = {}) {
   if (require('./session-speed').pendingSpeedSwitches.has(sid) && !options.localCommandObserver) {
     throw new Error('正在确认当前会话的速度设置，请完成后再发送');
   }

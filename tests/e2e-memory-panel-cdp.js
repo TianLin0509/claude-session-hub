@@ -76,7 +76,7 @@ async function main(){
     const after=(await cdp.eval('ipcRenderer.invoke("memory:snapshot",{sessionId:'+sid+'})')).data;
     assert.equal(after.receipts[0].status,'sent');assert.equal(after.pending,false);
     const trace=fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
-    assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-dream-index>'))));
+    assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-dream-index ref='))));
     await click('[data-receipt="0"]');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
     await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
     assert.equal(await cdp.eval('document.querySelector("#memory-page").hidden'),true);
@@ -102,6 +102,12 @@ async function main(){
     await click('[data-action-mp="close"]');
     await cdp.eval('(()=>{const input=document.querySelector("#mr-input-box");input.textContent="请确认记忆页偏好";input.dispatchEvent(new Event("input",{bubbles:true}));})()');
     await click('#mr-send-btn');
+    const groupStarts=()=>fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse)
+      .filter(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('请确认记忆页偏好')));
+    for(const end=Date.now()+35000;!groupStarts().length&&Date.now()<end;)await sleep(200);
+    assert.ok(groupStarts().length>0,'group dispatch reached a member');
+    assert.equal(groupStarts().some(x=>x.params.input.some(i=>i.text?.includes('ai-hub-dream-index'))),false);
+    result.checks.push('群聊自动派发的 prompt 不附带梦境索引');
     await click('[data-gc-open-session="'+meeting.subSessions[0]+'"]');
     await until('getFocusedSessionId()==='+JSON.stringify(meeting.subSessions[0])+' && !window.MeetingRoom.getActiveMeetingId()','member opened');
     await click('#btn-rail-memory');await until('!!document.querySelector(".mp-pagehead h2")','member context');

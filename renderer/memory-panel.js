@@ -26,6 +26,7 @@ function createMemoryPanel({
     timer,
     query = "",
     scanned = [],
+    scanNote = "",
     sourcePreview = "";
   let kind = "codex",
     model = DEFAULT_MODEL_BY_KIND.codex,
@@ -105,6 +106,7 @@ function createMemoryPanel({
       file = null;
       preview = "";
       scanned = [];
+      scanNote = "";
       sourcePreview = "";
       data = null;
     }
@@ -149,7 +151,7 @@ function createMemoryPanel({
         (f.label + " " + f.path).toLowerCase().includes(query.toLowerCase()),
       );
     const groups = [...new Set(all.map((f) => f.group))];
-    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>各处记忆统一浏览，原生文件保留原位。</p></div><div class="mp-actions">${button("扫描项目文档", "scan")}${button("☾ 造梦", "dream", "primary")}</div></div><div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups
+    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>各处记忆统一浏览，原生文件保留原位。</p>${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions">${button("扫描项目文档", "scan")}${button("☾ 造梦", "dream", "primary")}</div></div><div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups
       .map(
         (g) =>
           `<div class="mp-section-title">${esc(g)}</div>${all
@@ -163,7 +165,7 @@ function createMemoryPanel({
   }
   function dream() {
     const t = tuning();
-    return `<div class="mp-pagehead"><div><h2>把聊过的事，留给下一次</h2><p>选择昨日之我的对话，交给一个普通 AI session 整理。</p></div></div><div class="mp-dream-grid"><div><section class="mp-card"><div class="mp-section-title">素材 session <span>${rows.length} 个可用会话</span></div><div class="mp-sources">${rows.map((s) => `<div class="mp-source"><input type="checkbox" aria-label="选择 ${esc(s.title)}" data-source="${esc(s.key)}" ${selected.has(s.key) ? "checked" : ""}><span><strong>${esc(s.title)}</strong><small>${esc(s.provider)} · ${esc(fmt(s.updatedAt))} · ${s.records} 条记录</small><small>${s.processed ? "该版本已整理" : "有未整理记录"}${s.stale ? " · 请刷新后再整理" : ""}</small></span><button class="mp-link" data-source-preview="${esc(s.key)}">预览</button></div>`).join("") || '<p class="mp-empty">此项目暂无历史正文。点击右上角刷新，从昨日之我更新素材。</p>'}</div><div class="mp-selection">已选 ${selected.size} 个会话 · 完整导出这些会话的已保存正文</div></section><p class="mp-muted">默认勾选最近 3 个未整理会话，可自行修改。只读取历史，不打开素材 session。历史解析可能缺少工具结果或附件，不宣称无损归档。</p>${sourcePreview ? `<details open class="mp-card"><summary>素材预览（历史窗口，完整输入以导出文件为准）</summary><pre class="mp-source-preview">${esc(sourcePreview)}</pre></details>` : ""}</div><div><section class="mp-card mp-settings"><h3>造梦师</h3><label>AI<select id="mp-kind">${["codex", ...ALL_AI_KINDS.filter((v) => v !== "codex")].map((v) => `<option value="${v}" ${v === kind ? "selected" : ""}>${esc(getKindLabel(v))}</option>`).join("")}</select></label><label>模型<select id="mp-model">${!t.modelOptions.some((m) => m.id === model) ? `<option value="" selected>请选择模型（原选择不可用）</option>` : ""}${t.modelOptions.map((m) => `<option value="${esc(m.id)}" ${m.id === model ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>${t.showEffort ? `<label>思考深度<select id="mp-effort">${!t.effortOptions.some(([v]) => v === effort) ? `<option value="" selected>请选择思考深度</option>` : ""}${t.effortOptions.map(([v, l]) => `<option value="${esc(v)}" ${v === effort ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}<p class="mp-muted">复用新建 session 的模型与档位。账号跟随 Hub 当前设置。</p><button class="mp-btn primary mp-wide" data-action-mp="start" ${busy || !selected.size ? "disabled" : ""}>${busy ? "正在准备素材…" : "☾ 开始造梦"}</button></section>${data.jobs[0] ? job(data.jobs[0]) : ""}</div></div>`;
+    return `<div class="mp-pagehead"><div><h2>把聊过的事，留给下一次</h2><p>选择昨日之我的对话，交给一个普通 AI session 整理。</p></div></div><div class="mp-dream-grid"><div><section class="mp-card"><div class="mp-section-title">素材 session <span>${rows.length} 个可用会话</span></div><div class="mp-sources">${rows.map((s) => `<div class="mp-source"><input type="checkbox" aria-label="选择 ${esc(s.title)}" data-source="${esc(s.key)}" ${selected.has(s.key) ? "checked" : ""}><span><strong>${esc(s.title)}</strong><small>${esc(s.provider)} · ${esc(fmt(s.updatedAt))} · ${s.records} 条记录</small><small>${s.processed ? "该版本已整理" : s.newRecords < s.records ? `约 ${s.newRecords} 条新增，已整理部分只作上文` : "有未整理记录"}${s.stale ? " · 请刷新后再整理" : ""}</small></span><button class="mp-link" data-source-preview="${esc(s.key)}">预览</button></div>`).join("") || '<p class="mp-empty">此项目暂无历史正文。点击右上角刷新，从昨日之我更新素材。</p>'}</div><div class="mp-selection">已选 ${selected.size} 个会话 · 完整导出这些会话的已保存正文</div></section><p class="mp-muted">默认勾选最近 3 个未整理会话，可自行修改。只读取历史，不打开素材 session。历史解析可能缺少工具结果或附件，不宣称无损归档。</p>${sourcePreview ? `<details open class="mp-card"><summary>素材预览（历史窗口，完整输入以导出文件为准）</summary><pre class="mp-source-preview">${esc(sourcePreview)}</pre></details>` : ""}</div><div><section class="mp-card mp-settings"><h3>造梦师</h3><label>AI<select id="mp-kind">${["codex", ...ALL_AI_KINDS.filter((v) => v !== "codex")].map((v) => `<option value="${v}" ${v === kind ? "selected" : ""}>${esc(getKindLabel(v))}</option>`).join("")}</select></label><label>模型<select id="mp-model">${!t.modelOptions.some((m) => m.id === model) ? `<option value="" selected>请选择模型（原选择不可用）</option>` : ""}${t.modelOptions.map((m) => `<option value="${esc(m.id)}" ${m.id === model ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>${t.showEffort ? `<label>思考深度<select id="mp-effort">${!t.effortOptions.some(([v]) => v === effort) ? `<option value="" selected>请选择思考深度</option>` : ""}${t.effortOptions.map(([v, l]) => `<option value="${esc(v)}" ${v === effort ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}<p class="mp-muted">复用新建 session 的模型与档位。账号跟随 Hub 当前设置。</p><button class="mp-btn primary mp-wide" data-action-mp="start" ${busy || !selected.size ? "disabled" : ""}>${busy ? "正在准备素材…" : "☾ 开始造梦"}</button></section>${data.jobs[0] ? job(data.jobs[0]) : ""}</div></div>`;
   }
   function job(j) {
     const labels = {
@@ -250,7 +252,7 @@ function createMemoryPanel({
         if (file) await ipcRenderer.invoke("show-in-folder", file);
         return;
       case "scan":
-        scanned = (await call("scan", { sessionId: sid })).files;
+        ({ files: scanned, note: scanNote } = await call("scan", { sessionId: sid }));
         return render();
       case "dream":
       case "library":
