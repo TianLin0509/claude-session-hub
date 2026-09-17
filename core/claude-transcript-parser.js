@@ -300,22 +300,25 @@ function readTailWindowText(jsonlPath, bytes) {
 }
 
 function parseClaudeTranscriptText(raw, opts = {}) {
-  const lines = raw.split(/\r?\n/);
+  const entries = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try { entries.push(JSON.parse(trimmed)); } catch { /* 损坏行 skip */ }
+  }
+  return parseClaudeTranscriptEntries(entries, opts);
+}
+
+// 与 parseClaudeTranscriptText 同一套规则，输入是已解析的 entry。
+// 搜索索引用它流式读完整文件，不必先把整个 transcript 拼成一个字符串。
+function parseClaudeTranscriptEntries(entries, opts = {}) {
   const rawTurns = [];
   // Spec 3 · W9：tool_use_id → result 映射，用于关联 stdout 到 toolCall
   const toolResultMap = new Map();
   const excludeEntryIds = new Set(opts.excludeEntryIds || []);
   const excludeMessageIds = new Set(opts.excludeMessageIds || []);
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let entry;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue; // 损坏行 skip
-    }
+  for (const entry of entries) {
     if (!entry || typeof entry !== 'object') continue;
     if (excludeEntryIds.has(entry.uuid) || excludeMessageIds.has(entry.message?.id)) {
       // Keep the conversational boundary even when the live projection already
@@ -461,4 +464,5 @@ module.exports = {
   isToolResultEntry,
   extractToolResults,
   parseClaudeTranscriptText,
+  parseClaudeTranscriptEntries,
 };

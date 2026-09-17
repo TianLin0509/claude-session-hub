@@ -333,9 +333,13 @@ function parseCodexRolloutEntries(entries) {
   const turns = [];
   let pendingAssistant = null;
 
-  const ensurePendingAssistant = () => {
+  // sourceIndex/sourceEndIndex are rollout line numbers, so search docs built
+  // from turns share one ordering scale with per-record tool docs.
+  const ensurePendingAssistant = (index) => {
     if (!pendingAssistant) {
       pendingAssistant = {
+        sourceIndex: Number.isFinite(index) ? index : null,
+        sourceEndIndex: null,
         id: null,
         ts: null,
         tsEnd: null,
@@ -347,6 +351,7 @@ function parseCodexRolloutEntries(entries) {
         toolCalls: [],
       };
     }
+    if (Number.isFinite(index)) pendingAssistant.sourceEndIndex = index;
     return pendingAssistant;
   };
 
@@ -372,6 +377,8 @@ function parseCodexRolloutEntries(entries) {
         toolCalls: pendingAssistant.toolCalls,
         displayMessages: pendingAssistant.displayMessages,
         source: pendingAssistant.finalText ? 'codex_rollout' : 'codex_rollout_streaming',
+        sourceIndex: pendingAssistant.sourceIndex,
+        sourceEndIndex: pendingAssistant.sourceEndIndex,
       });
     }
     pendingAssistant = null;
@@ -424,7 +431,7 @@ function parseCodexRolloutEntries(entries) {
   entries.forEach(({ obj, index }, entryIndex) => {
     const toolEvent = codexToolActivityEventFromRecord(obj, index);
     if (toolEvent) {
-      const pending = ensurePendingAssistant();
+      const pending = ensurePendingAssistant(index);
       pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
       pending.ts = pending.ts || toolEvent.startedAt || toMs(obj.timestamp);
       pending.tsEnd = toolEvent.completedAt || toMs(obj.timestamp) || pending.tsEnd;
@@ -445,6 +452,7 @@ function parseCodexRolloutEntries(entries) {
             role: 'user',
             text,
             ts: userEvent.submittedAt || toMs(obj.timestamp),
+            sourceIndex: index,
           });
         }
         return;
@@ -453,14 +461,14 @@ function parseCodexRolloutEntries(entries) {
         if (pendingAssistant && (pendingAssistant.finalText || pendingAssistant.agentMessages.length)) {
           flushAssistant();
         }
-        const pending = ensurePendingAssistant();
+        const pending = ensurePendingAssistant(index);
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
         return;
       }
       const agentEvent = codexAgentMessageEventFromRecord(obj);
       if (agentEvent) {
-        const pending = ensurePendingAssistant();
+        const pending = ensurePendingAssistant(index);
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
         pending.tsEnd = agentEvent.completedAt || toMs(obj.timestamp);
@@ -494,6 +502,7 @@ function parseCodexRolloutEntries(entries) {
           role: 'user',
           text,
           ts: toMs(obj.timestamp),
+          sourceIndex: index,
         });
       }
     }
