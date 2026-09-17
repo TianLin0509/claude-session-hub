@@ -56,6 +56,7 @@ try {
   await until('both completed',()=>c.eval(`${mids}.every(id=>sessions.get(id)?.nativeRuntime?.state==='completed')`));
   for(const selector of [left,right]) await until('member transcript',()=>c.eval(`document.querySelector(${j(selector+' .msg-overlay')})?.textContent.includes('GROUP_SPLIT_BOTH')`));
   report.checks.push('shared real composer sends to both original members and each pane renders its authoritative history');
+  await until('member reply actions rendered',()=>c.eval(`!!document.querySelector(${j(right+' .turn-card.assistant .card-actions-more')})`));
   await click(c,right+' .turn-card.assistant .card-actions-more');
   await click(c,right+' .card-actions-menu[open] [data-action="multi-select"]');
   assert.equal(await c.eval(`document.querySelector(${j(right+' .msg-overlay')}).classList.contains('multi-select-active')`),true);
