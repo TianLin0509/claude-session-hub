@@ -51,8 +51,6 @@ if (typeof document !== 'undefined') (function () {
     attemptText: dispatchAttemptText,
     isDispatchCard,
   } = require('./dispatch-card.js');
-  const { resolveClaudeMemoryIndex: _resolveClaudeMemoryIndex } = require('../core/claude-memory-loader.js');
-  const _CLAUDE_MEMORY_INDEX = _resolveClaudeMemoryIndex();
   const {
     buildHeroPromptBlock: _buildHeroPromptBlock,
     getHero: _getHero,
@@ -6305,10 +6303,8 @@ if (typeof document !== 'undefined') (function () {
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
         <div class="mr-header-primary-actions">${gcMembersBtnHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
-          ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>注入记忆</button>` : ''}
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
           ${meeting.workspace ? `<button class="btn-zoom btn-file-manager-toggle" id="mr-btn-files" title="打开当前工作目录的文件管理" aria-label="打开当前工作目录的文件管理" aria-pressed="false"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg></button>` : ''}
-          <button class="btn-zoom btn-memory-toggle" id="mr-btn-memory-system" data-action="open-memory" title="打开记忆系统" aria-label="打开记忆系统"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg></button>
           <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
           <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
           <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
@@ -6389,17 +6385,6 @@ if (typeof document !== 'undefined') (function () {
       if (window.FileManagerPanel.isOpen() && _taskFilesMeetingId !== meeting.id) {
         void window.FileManagerPanel.syncContext({ cwd: meeting.workspace, label: meeting.workspaceLabel });
       }
-    }
-    // 2026-06-05 联邦记忆下线：📖 记忆按钮直接预览 Claude 主 MEMORY.md
-    const memoryBtn = document.getElementById('mr-btn-memory-preview');
-    if (memoryBtn) {
-      memoryBtn.addEventListener('click', () => {
-        if (typeof window.openPreviewPanel === 'function') {
-          window.openPreviewPanel(_CLAUDE_MEMORY_INDEX);
-        } else {
-          console.warn('[memory-preview] window.openPreviewPanel not available');
-        }
-      });
     }
     // 注：顶部 scene toggle（群聊/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。

@@ -18,6 +18,9 @@
 [data-phase="final_answer"] > .conversation-entry-head .conversation-phase,
 .turn-card[data-phase="final_answer"] .conversation-phase { color: #82cdbd; }
 .conversation-user-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; text-align: left; }
+.conversation-memory-context { margin-top: 12px; color: var(--text-muted); font-size: 12px; }
+.conversation-memory-context summary { cursor: pointer; }
+.conversation-memory-context pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
 .conversation-filter { border: 1px solid rgba(140,155,180,.25); background: transparent; color: inherit; border-radius: 7px; padding: 5px 10px; white-space: nowrap; font-size: 12px; cursor: pointer; }
 .conversation-filter[aria-pressed="true"] { border-color: #708ddd; color: #b8caff; }
 .conversation-filter:focus-visible, .conversation-long-message > summary:focus-visible { outline: 2px solid #829eff; outline-offset: 3px; }

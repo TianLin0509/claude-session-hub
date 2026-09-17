@@ -267,8 +267,7 @@
   letter-spacing: .01em;
 }
 
-.btn-file-manager-toggle.active,
-.btn-memory-toggle.active {
+.btn-file-manager-toggle.active {
   border-color: rgba(var(--rgb-info), .55);
   background: rgba(var(--rgb-info), .16);
   color: var(--accent-blue);

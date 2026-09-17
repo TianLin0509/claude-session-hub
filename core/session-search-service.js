@@ -189,6 +189,9 @@ class SessionSearchService {
     return this._request('preview', { request });
   }
 
+  memoryCandidates(request = {}) { return this._request('memory-candidates', { request }); }
+  exportMemoryHistory(request = {}) { return this._request('memory-export', { request }); }
+
   refresh(snapshot = {}, options = {}) {
     return this._request('refresh', { snapshot, force: options.force === true, immediate: options.immediate === true });
   }

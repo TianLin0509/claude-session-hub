@@ -99,6 +99,17 @@ rl.on('line',line=>{
       thread.turns.push(turn);thread.status={type:'active',activeFlags:[]};save();
       event('turn/started',{threadId:thread.id,turn:{...turn}});status(thread);
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
+      if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_DREAM === '1' && text.startsWith('你是本次项目记忆整理的造梦师。')) {
+        // Deterministic file-producing provider fixture, never a real model run.
+        answer(msg.id,{turn});
+        const path=require('path'),manifest=JSON.parse(fs.readFileSync(path.join(thread.cwd,'input','manifest.json'),'utf8'));
+        const records=manifest.files.flatMap(file=>fs.readFileSync(path.join(thread.cwd,'input',file),'utf8').trim().split('\n').map(JSON.parse));
+        const output=path.join(thread.cwd,'output');fs.mkdirSync(path.join(output,'topics'),{recursive:true});
+        fs.writeFileSync(path.join(output,'DREAM_INDEX.md'),'# 项目梦境\n- [记忆页偏好](topics/preferences.md)：设计记忆界面时读取。\n','utf8');
+        fs.writeFileSync(path.join(output,'topics/preferences.md'),'# 已确认偏好（协议夹具）\n来源：'+records.map(r=>r.sessionKey+' / '+r.event_id+'\n'+r.text).join('\n'),'utf8');
+        fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({status:'complete',processedFiles:manifest.files,summary:'协议夹具已读取素材并生成独立索引与主题'}));
+        finish(thread,turn,'completed','已完成夹具造梦，原生记忆未修改。');break;
+      }
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
       if(mode==='fixture:backstage') {
