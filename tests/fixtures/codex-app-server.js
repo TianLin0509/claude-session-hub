@@ -103,7 +103,7 @@ rl.on('line',line=>{
         // Deterministic file-producing provider fixture, never a real model run.
         answer(msg.id,{turn});
         const path=require('path'),manifest=JSON.parse(fs.readFileSync(path.join(thread.cwd,'input','manifest.json'),'utf8'));
-        const records=manifest.files.flatMap(file=>fs.readFileSync(path.join(thread.cwd,'input',file),'utf8').trim().split('\n').map(JSON.parse));
+        const records=manifest.files.flatMap(file=>[...fs.readFileSync(path.join(thread.cwd,'input',file),'utf8').matchAll(/<!-- event:(\S+) -->\n### [^\n]*\n\n([^\n]*)/g)].map(m=>({sessionKey:manifest.sessions[0].key,event_id:m[1],text:m[2]})));
         const output=path.join(thread.cwd,'output');fs.mkdirSync(path.join(output,'topics'),{recursive:true});
         fs.writeFileSync(path.join(output,'DREAM_INDEX.md'),'# 项目梦境\n- [记忆页偏好](topics/preferences.md)：设计记忆界面时读取。\n','utf8');
         fs.writeFileSync(path.join(output,'topics/preferences.md'),'# 已确认偏好（协议夹具）\n来源：'+records.map(r=>r.sessionKey+' / '+r.event_id+'\n'+r.text).join('\n'),'utf8');

@@ -11,6 +11,7 @@ function registerHubMemoryIpc(ipcMain, service) {
   handle("snapshot", (r) => service.snapshot(r.sessionId));
   handle("candidates", (r) => service.candidates(r.sessionId));
   handle("scan", (r) => service.scan(r.sessionId));
+  handle("transcript", (r) => service.transcript(r.sessionId));
   handle("start-dream", (r) => service.start(r));
   handle("finalize-dream", (r) => service.finalize(r.jobId));
   handle("abandon-dream", (r) => service.abandon(r.jobId));

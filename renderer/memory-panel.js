@@ -27,6 +27,7 @@ function createMemoryPanel({
     query = "",
     scanned = [],
     scanNote = "",
+    transcript = null,
     sourcePreview = "";
   let kind = "codex",
     model = DEFAULT_MODEL_BY_KIND.codex,
@@ -111,11 +112,13 @@ function createMemoryPanel({
       data = null;
     }
     error = "";
-    const [a, b] = await Promise.allSettled([
+    const [a, b, c] = await Promise.allSettled([
       call("snapshot", { sessionId: s.id }),
       call("candidates", { sessionId: s.id }),
+      call("transcript", { sessionId: s.id }),
     ]);
     if (version !== epoch || page.hidden) return;
+    transcript = c.status === "fulfilled" ? c.value : null;
     if (a.status === "rejected") return fail(a.reason);
     data = a.value;
     if (b.status === "fulfilled") {
@@ -142,7 +145,7 @@ function createMemoryPanel({
     return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(file ? file.split(/[\\/]/).pop() : "内容预览")}</span>${file ? button("打开所在位置", "folder") : ""}</div><pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
   }
   function context() {
-    return `<div class="mp-pagehead"><div><h2>这次对话用了哪些记忆</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">当前 session 的文件与使用证据</div>${data.nativeFiles.map(fileRow).join("")}${data.receipts.map((r, i) => `<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">DREAM_INDEX.md ${badge(r.status === "sent" ? "已发送" : r.status === "failed" ? "发送失败" : "待确认")}</span><span class="mp-meta">${esc(fmt(r.sentAt || r.createdAt))} · ${esc(r.version.slice(0, 8))}</span></button>`).join("")}${!data.nativeFiles.length && !data.receipts.length ? '<p class="mp-empty">暂未发现记忆文件或索引提交记录。</p>' : ""}</section>${previewPane()}</div>${data.pending ? '<div class="mp-note">文件库已有新版 DREAM_INDEX.md；当前 session 将在下一次正常任务提交时附带索引。已有提交快照不变。</div>' : ""}<div class="mp-note">${esc(data.nativeNote || "")}<br>只确认有证据的发送。原生文件标为预计加载或可读取；磁盘存在不代表已注入。梦境正文按需读取，Hub 暂不推测其读取状态。</div>`;
+    return `<div class="mp-pagehead"><div><h2>这次对话用了哪些记忆</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">当前 session 的文件与使用证据</div>${transcript?.path ? fileRow({ path: transcript.path, label: "聊天记录.md", owner: "本会话对话全文，可分享路径", status: transcript.exists ? "已生成" : "等待昨日之我刷新" }) : ""}${data.nativeFiles.map(fileRow).join("")}${data.receipts.map((r, i) => `<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">DREAM_INDEX.md ${badge(r.status === "sent" ? "已发送" : r.status === "failed" ? "发送失败" : "待确认")}</span><span class="mp-meta">${esc(fmt(r.sentAt || r.createdAt))} · ${esc(r.version.slice(0, 8))}</span></button>`).join("")}${!data.nativeFiles.length && !data.receipts.length ? '<p class="mp-empty">暂未发现记忆文件或索引提交记录。</p>' : ""}</section>${previewPane()}</div>${data.pending ? '<div class="mp-note">文件库已有新版 DREAM_INDEX.md；当前 session 将在下一次正常任务提交时附带索引。已有提交快照不变。</div>' : ""}<div class="mp-note">${esc(data.nativeNote || "")}<br>只确认有证据的发送。原生文件标为预计加载或可读取；磁盘存在不代表已注入。梦境正文按需读取，Hub 暂不推测其读取状态。</div>`;
   }
   function library() {
     const all = [...data.files, ...scanned]

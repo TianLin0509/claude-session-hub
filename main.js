@@ -180,6 +180,8 @@ const sessionSearchService = new SessionSearchService({
   kimiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_KIMI_ROOTS', [path.join(os.homedir(), '.kimi-code', 'sessions')]),
   geminiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_GEMINI_ROOTS', [path.join(os.homedir(), '.gemini', 'tmp')]),
   meetingDir: path.join(getHubDataDir(), 'meetings'),
+  // 每个会话一份只含对话的 md 聊天记录，供分享路径与造梦阅读；由索引派生，可重建。
+  transcriptDir: path.join(getHubDataDir(), 'transcripts'),
   refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 60_000,
   // Production warms the persistent index after the latency-sensitive boot
   // path. Isolated Hubs stay opt-in so an unrelated E2E can never scan the

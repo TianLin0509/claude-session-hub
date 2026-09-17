@@ -3,6 +3,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { withinProject } = require("./session-search-projects");
+const {
+  transcriptMdPath,
+  formatTime,
+  toolSummary,
+  quoteHeadings,
+} = require("./session-transcript-md");
 
 const COVERAGE =
   "素材来自昨日之我的已保存消息正文，不是无损 wire 归档。原历史解析可能省略工具结果、附件内容或被截断；不以缺失记录证明事情没有发生。";
@@ -26,6 +32,7 @@ function candidates(index, request = {}) {
     )
     .map((s) => ({
       key: s.key,
+      sourceKey: s.source_key,
       title: s.title,
       provider: s.provider,
       kind: s.kind,
@@ -73,24 +80,29 @@ function exportHistory(index, request) {
         contextRecords: 0,
         eventIds: [],
       };
+      const fullLog = transcriptMdPath(request.transcriptDir, session.sourceKey);
+      if (fullLog && fs.existsSync(fullLog)) session.transcriptMd = fullLog;
       const digest = crypto.createHash("sha256");
       let chunk = "",
         part = 0;
       const flush = () => {
         if (!chunk) return;
-        const name = `session-${i + 1}-${++part}.jsonl`;
-        fs.writeFileSync(path.join(request.outputDir, name), chunk, "utf8");
+        const name = `session-${i + 1}-${++part}.md`;
+        const head = `# ${String(session.title || key).replace(/\s+/g, " ")}（素材 ${i + 1} · 第 ${part} 段）\n\n- sessionKey：${key}\n\n`;
+        fs.writeFileSync(path.join(request.outputDir, name), head + chunk, "utf8");
         manifest.files.push(name);
         session.files.push(name);
         chunk = "";
       };
+      // Each record keeps its event id in a comment so topics can cite it.
       const write = (record, context) => {
+        const marker = `<!-- event:${record.event_id}${context ? " context" : ""} -->\n`;
+        const note = context ? "（上文，已整理）" : "";
+        const time = formatTime(record.timestamp);
         const line =
-          JSON.stringify({
-            ...record,
-            sessionKey: key,
-            ...(context ? { context: true } : {}),
-          }) + "\n";
+          record.scope === "tool"
+            ? `${marker}> 工具${note} · ${toolSummary(record.text)}\n\n`
+            : `${marker}### ${record.scope === "user" ? "我" : record.speaker || "AI"}${time ? " · " + time : ""}${note}\n\n${quoteHeadings(record.text).trim()}\n\n`;
         if (chunk.length + line.length > 128 * 1024) flush();
         chunk += line;
         digest.update(line);

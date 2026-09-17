@@ -66,6 +66,9 @@ async function main(){
     assert.equal(fs.readFileSync(path.join(cwd,'AGENTS.md'),'utf8'),rule);
     assert.match(fs.readFileSync(snapshot.data.indexPath,'utf8'),/topics\/preferences.md/);
     assert.equal((await cdp.eval('ipcRenderer.invoke("memory:candidates",{sessionId:'+sid+'})')).data.every(x=>x.processed),true);
+    const logs=fs.readdirSync(path.join(data,'transcripts')).filter(n=>n.endsWith('.md')).map(n=>fs.readFileSync(path.join(data,'transcripts',n),'utf8'));
+    assert.ok(logs.some(md=>md.includes('记忆页面不需要会话列表')&&md.includes('## 我')),'chat log md generated from the indexed history');
+    result.checks.push('昨日之我为会话生成只含对话的聊天记录 md');
     await snap('04-dream-completed');result.checks.push('真实按钮 → 已有历史索引完整导出 → 实体 Codex session → 原生协议回执 → 索引及主题入库；原生规则不变');
     await click('[data-job-session]');await until('document.getElementById("memory-page").hidden && getFocusedSessionId()==='+JSON.stringify(job.sessionId),'open dream session');
     await snap('05-real-dream-session');result.checks.push('打开造梦 session 返回普通会话，可用既有继续/停止/模型功能');

@@ -249,3 +249,36 @@ test('the legacy gzip cache migrates one shard at a time and avoids reparsing un
   assert.equal((await engine.search({ query: 'LEGACY_CACHE_ONLY_MARKER' })).totalSessions, 1);
   assert.equal(engine.index.getMeta('legacyCacheMigrationVersion'), 3);
 });
+
+test('indexing writes a dialogue-only chat log md per session and regenerates it when missing', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-engine-transcript-md-'));
+  const claudeRoot = path.join(root, '.claude', 'projects');
+  const transcriptPath = path.join(claudeRoot, 'C--chat', 'chat-session.jsonl');
+  const transcriptDir = path.join(root, 'transcripts');
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  const line = obj => `${JSON.stringify(obj)}\n`;
+  fs.writeFileSync(transcriptPath,
+    line({ type: 'user', uuid: 'u1', timestamp: '2026-09-17T10:00:00Z', message: { content: '# 看起来像标题的提问\n请帮我看日志' } })
+    + line({ type: 'assistant', uuid: 'a1', timestamp: '2026-09-17T10:00:05Z', message: { id: 'm1', role: 'assistant', stop_reason: 'end_turn', content: [
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cat server.log' } },
+      { type: 'text', text: '日志里没有异常。' },
+    ] } })
+    + line({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'SECRET_TOOL_OUTPUT' }] } }), 'utf8');
+  const snapshot = { sessions: [{ hubId: 'hub-chat', kind: 'claude', ccSessionId: 'chat-session', title: '日志排查', transcriptPath, cwd: 'C:\chat' }], meetings: [] };
+  const engine = new SessionSearchEngine({ databasePath: path.join(root, 'cache', 'search.sqlite'), claudeRoots: [claudeRoot], codexRoots: [], meetingDir: path.join(root, 'meetings'), transcriptDir });
+  t.after(() => { engine.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await engine.refresh(snapshot, { force: true });
+  const found = engine.transcriptFor({ hubSessionId: 'hub-chat' });
+  assert.equal(found.exists, true);
+  assert.ok(found.path.startsWith(transcriptDir));
+  const md = fs.readFileSync(found.path, 'utf8');
+  assert.match(md, /^# 日志排查/);
+  assert.match(md, /## 我 · /);
+  assert.match(md, /\# 看起来像标题的提问/);
+  assert.match(md, /日志里没有异常。/);
+  assert.match(md, /> 工具 · Bash/);
+  assert.doesNotMatch(md, /SECRET_TOOL_OUTPUT/);
+  fs.unlinkSync(found.path);
+  await engine.refresh(snapshot, { immediate: true });
+  assert.equal(fs.existsSync(found.path), true);
+});

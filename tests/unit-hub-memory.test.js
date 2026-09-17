@@ -43,8 +43,9 @@ test('history exports full stored text, provenance and project boundaries from o
   const f=setup(t),large='原始正文'.repeat(45000);f.add('large',large);f.add('foreign','不可导出',f.cwd+'-other');
   assert.deepEqual(new Set(history.candidates(f.index,{cwd:f.cwd}).map(x=>x.key)),new Set(['source','large']));
   const outputDir=path.join(f.root,'raw');const m=history.exportHistory(f.index,{cwd:f.cwd,keys:['large','source'],outputDir});
-  const lines=m.files.flatMap(n=>fs.readFileSync(path.join(outputDir,n),'utf8').trim().split('\n').map(JSON.parse));
-  assert.equal(lines.find(x=>x.sessionKey==='large').text,large);assert.equal(lines[0].event_id,'large-user');
+  const text=m.files.map(n=>fs.readFileSync(path.join(outputDir,n),'utf8')).join('');
+  assert.ok(text.includes(large));assert.match(m.files.map(n=>fs.readFileSync(path.join(outputDir,n),'utf8'))[0],/<!-- event:large-user -->/);
+  assert.ok(m.files.every(n=>n.endsWith('.md')));
   assert.equal(m.sessions[0].exportedRecords,1);assert.match(m.coverage,/不是无损/);
   assert.throws(()=>history.exportHistory(f.index,{cwd:f.cwd,keys:['foreign'],outputDir}),/不属于/);
   assert.throws(()=>history.exportHistory(f.index,{cwd:f.cwd,keys:[],outputDir}),/重新选择/);
@@ -177,7 +178,7 @@ test('preparation persistence errors release the claim instead of permanently bl
   f.service.saveJob=save;assert.equal((await f.start()).status,'running');
 });
 
-const readExport=j=>j.inputFiles.flatMap(n=>fs.readFileSync(path.join(j.dir,'input',n),'utf8').trim().split('\n').map(JSON.parse));
+const readExport=j=>j.inputFiles.flatMap(n=>[...fs.readFileSync(path.join(j.dir,'input',n),'utf8').matchAll(/<!-- event:(\S+)( context)? -->/g)].map(m=>({event_id:m[1],context:!!m[2]})));
 
 test('continued sessions export only new records with a short processed lead-in',async t=>{
   const f=setup(t);f.grow(9);const j=await f.start();f.output(j);f.service.publish(j);
@@ -188,7 +189,7 @@ test('continued sessions export only new records with a short processed lead-in'
   assert.equal(row.processed,false);assert.equal(row.newRecords,2);
   const j2=await f.start(),records=readExport(j2);
   assert.deepEqual(records.filter(r=>!r.context).map(r=>r.event_id),['source-new-10','source-new-11']);
-  assert.equal(records.filter(r=>r.context).length,6);assert.match(j2.prompt,/"context":true/);
+  assert.equal(records.filter(r=>r.context).length,6);assert.match(j2.prompt,/上文，已整理/);
   f.output(j2);f.service.publish(j2);
   const pointer=f.service.pointer(j2.project);assert.equal(pointer.processed.source.count,12);
   assert.equal(f.service.processedIds(j2.project,pointer,'source').length,12);
