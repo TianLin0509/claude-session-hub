@@ -2540,6 +2540,7 @@ async function refreshDeepSeekAccountBalanceLive() {
 
 const tokenPlanUsage = createTokenPlanUsageService({
   configDir: isIsolatedHub() ? path.join(getHubDataDir(), 'bailian') : undefined,
+  backgroundIntervalMs: Number(process.env.HUB_TOKEN_PLAN_POLL_MS) || 60_000,
 });
 
 async function refreshTokenPlanUsage(force = false) {
