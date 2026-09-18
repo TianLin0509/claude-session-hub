@@ -27,7 +27,15 @@ function createMemoryPanel({
     query = "",
     scanned = [],
     scanNote = "",
-    transcript = null,
+    catalogData = null,
+    projectId = "",
+    selectedProject = null,
+    loading = false,
+    loadedKey = "",
+    visibleFiles = 200,
+    refreshTimer,
+    refreshAgain = false,
+    previewEpoch = 0,
     sourcePreview = "";
   let kind = "codex",
     model = DEFAULT_MODEL_BY_KIND.codex,
@@ -82,93 +90,101 @@ function createMemoryPanel({
     if (before === kind) render();
   }
   async function read(p, paint = true) {
-    const version = epoch;
+    const version = epoch, request = ++previewEpoch;
     file = p;
     preview = "读取中…";
     if (paint) render();
     const r = await ipcRenderer.invoke("read-file", p);
-    if (file !== p || version !== epoch) return;
+    if (file !== p || version !== epoch || request !== previewEpoch || page.hidden) return;
     preview = r?.error ? "读取失败：" + r.error : String(r?.content || "");
     if (paint) render();
   }
-  async function refresh() {
-    const version = ++epoch,
-      s = getActiveSessionInfo();
-    if (!s?.id) {
-      sid = null;
-      data = null;
-      error = "";
-      return render();
-    }
-    const changed = sid !== s.id;
-    sid = s.id;
-    if (changed) {
-      selected.clear();
-      file = null;
-      preview = "";
-      scanned = [];
-      scanNote = "";
-      sourcePreview = "";
-      data = null;
-    }
-    error = "";
-    const [a, b, c] = await Promise.allSettled([
-      call("snapshot", { sessionId: s.id }),
-      call("candidates", { sessionId: s.id }),
-      call("transcript", { sessionId: s.id }),
-    ]);
-    if (version !== epoch || page.hidden) return;
-    transcript = c.status === "fulfilled" ? c.value : null;
-    if (a.status === "rejected") return fail(a.reason);
-    data = a.value;
-    if (b.status === "fulfilled") {
-      rows = b.value;
-      if (changed)
-        rows
-          .filter((x) => !x.processed)
-          .slice(0, 3)
-          .forEach((x) => selected.add(x.key));
-    } else {
-      rows = [];
-      error = "历史素材读取失败：" + b.reason.message;
-    }
-    if (!file) {
-      file = data.indexPath || data.files[0]?.path || null;
-      if (file) await read(file, false);
-    }
+  function resetPreview() { file = null; preview = ""; sourcePreview = ""; previewEpoch++; }
+  function scope() { return { projectId }; }
+  function activeProject() {
+    const cwd = String(getActiveSessionInfo()?.cwd || "").replace(/\\/g, "/").toLowerCase();
+    return catalogData?.projects.find(p => p.sessionIds?.includes(getActiveSessionInfo()?.id))
+      || catalogData?.projects.filter(p => cwd === p.cwd.replace(/\\/g,"/").toLowerCase()
+        || cwd.startsWith(p.cwd.replace(/\\/g,"/").toLowerCase()+"/"))
+        .sort((a,b)=>b.cwd.length-a.cwd.length)[0];
+  }
+  async function refresh(force = false) {
+    const version = ++epoch, requestedTab = tab;
+    sid = getActiveSessionInfo()?.id || null;
+    const valid = () => version === epoch && !page.hidden && requestedTab === tab;
+    const key = `${tab}:${tab === 'context' ? sid : projectId}`;
+    error = ""; loading = true;
+    if (loadedKey !== key) { data = null; loadedKey = key; }
     render();
+    try {
+      if (tab === "context") {
+        if (sid) {
+          const result = await call("context", {sessionId:sid});
+          if (!valid()) return;
+          data = result;
+          // Preview the immutable submitted snapshot, never today's disk contents.
+          if (!file && data.receipts[0]) { file = data.receipts[0].path; preview = data.receipts[0].content; }
+        }
+      } else {
+        const result = await call("library", {refresh:force});
+        if (!valid()) return;
+        catalogData = result;
+        if (projectId && !result.projects.some(p => p.id === projectId)) projectId = "";
+        if (tab === "library") data = result;
+        else {
+          if (!projectId) projectId = activeProject()?.id || result.projects[0]?.id || "";
+          if (projectId) {
+            const state = await call("dream-state", scope());
+            if (!valid()) return;
+            data = state;
+            render();
+            const candidates = await call("candidates", scope());
+            if (!valid()) return;
+            rows = candidates;
+            if (selectedProject !== projectId) {
+              selected = new Set(rows.filter(x => !x.processed && !x.stale).slice(0,3).map(x=>x.key));
+              selectedProject = projectId;
+            } else {
+              const available = new Set(rows.filter(x=>!x.stale).map(x=>x.key));
+              selected = new Set([...selected].filter(key=>available.has(key)));
+            }
+          }
+        }
+      }
+    } catch (e) { if (valid()) error = e.message || String(e); }
+    finally { if (valid()) { loading = false; render(); if (refreshAgain) { refreshAgain = false; scheduleRefresh(); } } }
+  }
+  function scheduleRefresh() {
+    if (!page || page.hidden || refreshTimer) return;
+    if (loading) { refreshAgain = true; return; }
+    refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 100);
+  }
+  function projectSelect(all) {
+    return `<label class="mp-project-label">${all ? "筛选项目" : "造梦项目"}<select id="mp-project" aria-label="项目">${all ? '<option value="">全部项目与全局记忆</option>' : ''}${(catalogData?.projects || []).map(p=>`<option value="${esc(p.id)}" ${p.id===projectId ? "selected" : ""}>${esc(p.label)} · ${esc(p.cwd)}</option>`).join("")}</select></label>`;
   }
   function fileRow(f) {
-    return `<button class="mp-file ${file === f.path ? "active" : ""}" data-file="${esc(f.path)}"><span class="mp-file-name">${esc(f.label || f.path.split(/[\\/]/).pop())}</span><span class="mp-meta">${esc(f.owner || "")} ${badge(f.status || "可读取")}</span></button>`;
+    return `<button class="mp-file ${file === f.path ? "active" : ""}" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="mp-file-name">${esc(f.label || f.path.split(/[\\/]/).pop())}</span><span class="mp-meta">${esc(f.owner || "")} ${badge(f.status || "可读取")}</span><span class="mp-file-path">${esc(f.path)}</span></button>`;
   }
   function previewPane() {
     return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(file ? file.split(/[\\/]/).pop() : "内容预览")}</span>${file ? button("打开所在位置", "folder") : ""}</div><pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
   }
   function context() {
-    return `<div class="mp-pagehead"><div><h2>这次对话用了哪些记忆</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">当前 session 的文件与使用证据</div>${transcript?.path ? fileRow({ path: transcript.path, label: "聊天记录.md", owner: "本会话对话全文，可分享路径", status: transcript.exists ? "已生成" : "等待昨日之我刷新" }) : ""}${data.nativeFiles.map(fileRow).join("")}${data.receipts.map((r, i) => `<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">DREAM_INDEX.md ${badge(r.status === "sent" ? "已发送" : r.status === "failed" ? "发送失败" : "待确认")}</span><span class="mp-meta">${esc(fmt(r.sentAt || r.createdAt))} · ${esc(r.version.slice(0, 8))}</span></button>`).join("")}${!data.nativeFiles.length && !data.receipts.length ? '<p class="mp-empty">暂未发现记忆文件或索引提交记录。</p>' : ""}</section>${previewPane()}</div>${data.pending ? '<div class="mp-note">文件库已有新版 DREAM_INDEX.md；当前 session 将在下一次正常任务提交时附带索引。已有提交快照不变。</div>' : ""}<div class="mp-note">${esc(data.nativeNote || "")}<br>只确认有证据的发送。原生文件标为预计加载或可读取；磁盘存在不代表已注入。梦境正文按需读取，Hub 暂不推测其读取状态。</div>`;
+    return `<div class="mp-pagehead"><div><h2>本会话已注入的记忆</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">已确认的上下文提交</div>${data.receipts.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">DREAM_INDEX.md ${badge("已发送")}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${esc(r.version.slice(0,8))}</span></button>`).join("")}${!data.receipts.length ? '<p class="mp-empty">尚无可确认的记忆注入记录。这不表示原生 CLI 没有加载规则。</p>' : ""}</section>${previewPane()}</div>${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
   }
   function library() {
-    const all = [...data.files, ...scanned]
-      .filter((f, i, a) => a.findIndex((x) => x.path === f.path) === i)
-      .filter((f) =>
-        (f.label + " " + f.path).toLowerCase().includes(query.toLowerCase()),
-      );
-    const groups = [...new Set(all.map((f) => f.group))];
-    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>各处记忆统一浏览，原生文件保留原位。</p>${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions">${button("扫描项目文档", "scan")}${button("☾ 造梦", "dream", "primary")}</div></div><div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups
-      .map(
-        (g) =>
-          `<div class="mp-section-title">${esc(g)}</div>${all
-            .filter((f) => f.group === g)
-            .map(fileRow)
-            .join("")}`,
-      )
-      .join(
-        "",
-      )}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}</section>${previewPane()}</div><div class="mp-note">原生 MEMORY.md 由各家 AI 自己维护。Hub 使用独立 DREAM_INDEX.md 和主题文件；允许少量重复。</div>`;
+    const seen = new Set(), q = query.toLowerCase();
+    const all = [...data.files, ...scanned].filter(f=>{
+      const key = f.path.replace(/\\/g,"/").toLowerCase();
+      if (seen.has(key)) return false; seen.add(key);
+      return (!projectId || !f.projectIds?.length || f.projectIds.includes(projectId))
+        && (f.label + " " + f.path).toLowerCase().includes(q);
+    });
+    const shown = all.slice(0, visibleFiles), groups = [...new Set(shown.map(f=>f.group))];
+    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>全局文件库 · ${all.length} 个文件 · 不依赖打开的会话</p>${projectSelect(true)}${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions"><button class="mp-btn" data-action-mp="scan" ${!projectId || busy ? "disabled" : ""}>扫描所选项目文档</button>${button("☾ 造梦", "dream", "primary")}</div></div>${data.warnings.length ? `<details class="mp-note"><summary>${data.warnings.length} 项读取问题，结果可能不完整</summary>${data.warnings.map(x=>`<p>${esc(x)}</p>`).join("")}</details>` : ""}<div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups.map(g=>`<div class="mp-section-title">${esc(g)}</div>${shown.filter(f=>f.group===g).map(fileRow).join("")}`).join("")}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}${all.length>shown.length ? button(`继续显示（剩余 ${all.length-shown.length}）`,"more") : ""}</section>${previewPane()}</div><div class="mp-note">原生记忆保留原位。文件库中存在不代表已注入；Hub 梦境使用独立索引与主题文件。</div>`;
   }
   function dream() {
     const t = tuning();
-    return `<div class="mp-pagehead"><div><h2>把聊过的事，留给下一次</h2><p>选择昨日之我的对话，交给一个普通 AI session 整理。</p></div></div><div class="mp-dream-grid"><div><section class="mp-card"><div class="mp-section-title">素材 session <span>${rows.length} 个可用会话</span></div><div class="mp-sources">${rows.map((s) => `<div class="mp-source"><input type="checkbox" aria-label="选择 ${esc(s.title)}" data-source="${esc(s.key)}" ${selected.has(s.key) ? "checked" : ""}><span><strong>${esc(s.title)}</strong><small>${esc(s.provider)} · ${esc(fmt(s.updatedAt))} · ${s.records} 条记录</small><small>${s.processed ? "该版本已整理" : s.newRecords < s.records ? `约 ${s.newRecords} 条新增，已整理部分只作上文` : "有未整理记录"}${s.stale ? " · 请刷新后再整理" : ""}</small></span><button class="mp-link" data-source-preview="${esc(s.key)}">预览</button></div>`).join("") || '<p class="mp-empty">此项目暂无历史正文。点击右上角刷新，从昨日之我更新素材。</p>'}</div><div class="mp-selection">已选 ${selected.size} 个会话 · 完整导出这些会话的已保存正文</div></section><p class="mp-muted">默认勾选最近 3 个未整理会话，可自行修改。只读取历史，不打开素材 session。历史解析可能缺少工具结果或附件，不宣称无损归档。</p>${sourcePreview ? `<details open class="mp-card"><summary>素材预览（历史窗口，完整输入以导出文件为准）</summary><pre class="mp-source-preview">${esc(sourcePreview)}</pre></details>` : ""}</div><div><section class="mp-card mp-settings"><h3>造梦师</h3><label>AI<select id="mp-kind">${["codex", ...ALL_AI_KINDS.filter((v) => v !== "codex")].map((v) => `<option value="${v}" ${v === kind ? "selected" : ""}>${esc(getKindLabel(v))}</option>`).join("")}</select></label><label>模型<select id="mp-model">${!t.modelOptions.some((m) => m.id === model) ? `<option value="" selected>请选择模型（原选择不可用）</option>` : ""}${t.modelOptions.map((m) => `<option value="${esc(m.id)}" ${m.id === model ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>${t.showEffort ? `<label>思考深度<select id="mp-effort">${!t.effortOptions.some(([v]) => v === effort) ? `<option value="" selected>请选择思考深度</option>` : ""}${t.effortOptions.map(([v, l]) => `<option value="${esc(v)}" ${v === effort ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}<p class="mp-muted">复用新建 session 的模型与档位。账号跟随 Hub 当前设置。</p><button class="mp-btn primary mp-wide" data-action-mp="start" ${busy || !selected.size ? "disabled" : ""}>${busy ? "正在准备素材…" : "☾ 开始造梦"}</button></section>${data.jobs[0] ? job(data.jobs[0]) : ""}</div></div>`;
+    return `<div class="mp-pagehead"><div><h2>把聊过的事，留给下一次</h2><p>选择昨日之我的对话，交给一个普通 AI session 整理。</p>${projectSelect(false)}</div></div><div class="mp-dream-grid"><div><section class="mp-card"><div class="mp-section-title">素材 session <span>${rows.length} 个可用会话</span></div><div class="mp-sources">${rows.map((s) => `<div class="mp-source"><input type="checkbox" aria-label="选择 ${esc(s.title)}" data-source="${esc(s.key)}" ${selected.has(s.key) ? "checked" : ""}><span><strong>${esc(s.title)}</strong><small>${esc(s.provider)} · ${esc(fmt(s.updatedAt))} · ${s.records} 条记录</small><small>${s.processed ? "该版本已整理" : s.newRecords < s.records ? `约 ${s.newRecords} 条新增，已整理部分只作上文` : "有未整理记录"}${s.stale ? " · 请刷新后再整理" : ""}</small></span><button class="mp-link" data-source-preview="${esc(s.key)}">预览</button></div>`).join("") || '<p class="mp-empty">此项目暂无历史正文。点击右上角刷新，从昨日之我更新素材。</p>'}</div><div class="mp-selection">已选 ${selected.size} 个会话 · 导出新增正文，并附少量已整理上文</div></section><p class="mp-muted">默认勾选最近 3 个未整理会话，可自行修改。只读取历史，不打开素材 session。历史解析可能缺少工具结果或附件，不宣称无损归档。</p>${sourcePreview ? `<details open class="mp-card"><summary>素材预览（历史窗口，完整输入以导出文件为准）</summary><pre class="mp-source-preview">${esc(sourcePreview)}</pre></details>` : ""}</div><div><section class="mp-card mp-settings"><h3>造梦师</h3><label>AI<select id="mp-kind">${["codex", ...ALL_AI_KINDS.filter((v) => v !== "codex")].map((v) => `<option value="${v}" ${v === kind ? "selected" : ""}>${esc(getKindLabel(v))}</option>`).join("")}</select></label><label>模型<select id="mp-model">${!t.modelOptions.some((m) => m.id === model) ? `<option value="" selected>请选择模型（原选择不可用）</option>` : ""}${t.modelOptions.map((m) => `<option value="${esc(m.id)}" ${m.id === model ? "selected" : ""}>${esc(m.label)}</option>`).join("")}</select></label>${t.showEffort ? `<label>思考深度<select id="mp-effort">${!t.effortOptions.some(([v]) => v === effort) ? `<option value="" selected>请选择思考深度</option>` : ""}${t.effortOptions.map(([v, l]) => `<option value="${esc(v)}" ${v === effort ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>` : ""}<p class="mp-muted">复用新建 session 的模型与档位。账号跟随 Hub 当前设置。</p><button class="mp-btn primary mp-wide" data-action-mp="start" ${busy || loading || !selected.size ? "disabled" : ""}>${busy ? "正在准备素材…" : "☾ 开始造梦"}</button></section>${data.jobs.slice(0,10).map(job).join("")}</div></div>`;
   }
   function job(j) {
     const labels = {
@@ -190,7 +206,7 @@ function createMemoryPanel({
   function render() {
     if (!page || page.hidden) return;
     position();
-    page.innerHTML = `<header class="mp-header"><div><span class="mp-eyebrow">AI HUB / MEMORY</span><h1>记忆</h1></div><div class="mp-actions"><span class="mp-muted">${esc(data?.project.label || "当前 session")}</span>${button("刷新", "refresh")}${button("关闭", "close")}</div></header><nav class="mp-tabs" role="tablist">${[
+    page.innerHTML = `<header class="mp-header"><div><span class="mp-eyebrow">AI HUB / MEMORY</span><h1>记忆</h1></div><div class="mp-actions"><span class="mp-muted">${esc(tab === "context" ? "当前 session" : "全局记忆")}</span>${button("刷新", "refresh")}${button("关闭", "close")}</div></header><nav class="mp-tabs" role="tablist">${[
       ["context", "当前上下文"],
       ["library", "记忆文件库"],
       ["dream", "造梦"],
@@ -201,15 +217,20 @@ function createMemoryPanel({
       )
       .join(
         "",
-      )}</nav><div class="mp-content" role="tabpanel">${error ? `<div class="mp-error" role="alert">${esc(error)}</div>` : ""}${data ? { context, library, dream }[tab]() : `<div class="mp-empty">${sid ? "正在读取当前 session…" : "请先打开一个 session。群聊可点击成员头像进入对应 session，再查看当前上下文。"}</div>`}</div>`;
+      )}</nav><div class="mp-content" role="tabpanel">${error ? `<div class="mp-error" role="alert">${esc(error)}</div>` : ""}${loading ? '<div class="mp-loading" role="status">正在读取…</div>' : ""}${data ? { context, library, dream }[tab]() : `<div class="mp-empty">${loading ? "" : tab === "context" ? "请先打开一个 session。群聊可点击成员头像进入对应 session，再查看当前上下文。" : tab === "dream" ? "暂无已知项目。文件库仍可浏览全局记忆。" : "暂未发现记忆文件。"}</div>`}</div>`;
   }
   async function action(b) {
+    const version = epoch;
+    const valid = () => version === epoch && !page.hidden;
     if (b.dataset.tab) {
       tab = b.dataset.tab;
-      return render();
+      resetPreview(); rows = [];
+      if (tab === "dream") void catalog().catch(fail);
+      return refresh();
     }
     if (b.dataset.file) return read(b.dataset.file);
     if (b.dataset.receipt !== undefined) {
+      previewEpoch++;
       const r = data.receipts[+b.dataset.receipt];
       file = r.path;
       preview = r.content;
@@ -220,9 +241,11 @@ function createMemoryPanel({
       return openSession(b.dataset.jobSession);
     }
     if (b.dataset.sourcePreview) {
+      const request = ++previewEpoch;
       const r = await ipcRenderer.invoke("get-session-search-preview", {
         sessionKey: b.dataset.sourcePreview,
       });
+      if (!valid() || request !== previewEpoch) return;
       sourcePreview =
         (r?.context || [])
           .map((x) => `${x.role || x.scope}\n${x.text || ""}`)
@@ -233,11 +256,13 @@ function createMemoryPanel({
     }
     if (b.dataset.finalize) {
       await call("finalize-dream", { jobId: b.dataset.finalize });
-      return refresh();
+      if (valid()) return refresh();
+      return;
     }
     if (b.dataset.abandon) {
       await call("abandon-dream", { jobId: b.dataset.abandon });
-      return refresh();
+      if (valid()) return refresh();
+      return;
     }
     switch (b.dataset.actionMp) {
       case "close":
@@ -247,21 +272,33 @@ function createMemoryPanel({
           const status = await ipcRenderer.invoke("refresh-session-search", {
             immediate: true,
           });
+          if (!valid()) return;
           if (!status || status.phase === "error" || status.lastError)
             throw new Error(status?.lastError || "历史索引刷新失败");
         }
-        return refresh();
+        resetPreview();
+        return refresh(true);
       case "folder":
         if (file) await ipcRenderer.invoke("show-in-folder", file);
         return;
-      case "scan":
-        ({ files: scanned, note: scanNote } = await call("scan", { sessionId: sid }));
+      case "more": visibleFiles += 200; return render();
+      case "scan": {
+        if (busy) return;
+        busy = true; render();
+        try {
+          const result = await call("scan", scope());
+          if (!valid()) return;
+          scanned = result.files.map(f=>({...f, projectIds:[projectId]})); scanNote = result.note;
+        } finally { busy = false; if (valid()) render(); }
         return render();
+      }
       case "dream":
       case "library":
-        tab = b.dataset.actionMp;
-        return render();
+        tab = b.dataset.actionMp; resetPreview();
+        if (tab === "dream") void catalog().catch(fail);
+        return refresh();
       case "start":
+        if (busy || loading) return;
         busy = true;
         error = "";
         render();
@@ -282,15 +319,15 @@ function createMemoryPanel({
             JSON.stringify({ kind, model, effort }),
           );
           await call("start-dream", {
-            sessionId: sid,
+            projectId,
             keys: [...selected],
             kind,
             opts,
           });
-          await refresh();
+          if (valid()) await refresh();
         } finally {
           busy = false;
-          render();
+          if (!page.hidden) render();
         }
         return;
     }
@@ -305,10 +342,15 @@ function createMemoryPanel({
     document.body.appendChild(page);
     page.addEventListener("click", (e) => {
       const b = e.target.closest("button");
-      if (b) void action(b).catch(fail);
+      const version = epoch;
+      if (b) void action(b).catch(error => { if (version === epoch && !page.hidden) fail(error); });
     });
     page.addEventListener("change", (e) => {
       const el = e.target;
+      if (el.id === "mp-project") {
+        projectId = el.value; rows = []; scanned = []; scanNote = ""; visibleFiles = 200;
+        resetPreview(); void refresh(); return;
+      }
       if (el.dataset.source) {
         el.checked
           ? selected.add(el.dataset.source)
@@ -331,7 +373,7 @@ function createMemoryPanel({
     page.addEventListener("input", (e) => {
       if (e.target.id === "mp-search") {
         const n = e.target.selectionStart;
-        query = e.target.value;
+        query = e.target.value; visibleFiles = 200;
         render();
         const i = page.querySelector("#mp-search");
         i.focus();
@@ -346,18 +388,21 @@ function createMemoryPanel({
     document
       .getElementById("btn-rail-memory")
       ?.setAttribute("aria-expanded", "true");
-    tab = "context";
+    tab = getActiveSessionInfo()?.id ? "context" : "library";
+    resetPreview(); data = null;
     render();
     clearInterval(timer);
     timer = setInterval(() => {
-      if (getActiveSessionInfo()?.id !== sid) void refresh().catch(fail);
+      if (tab === "context" && (getActiveSessionInfo()?.id || null) !== sid) { resetPreview(); void refresh(); }
     }, 800);
-    await Promise.all([refresh(), catalog()]);
+    await refresh();
   }
   function close() {
     if (!page) return;
     page.hidden = true;
-    epoch++;
+    epoch++; previewEpoch++;
+    refreshAgain = false;
+    clearTimeout(refreshTimer); refreshTimer = null;
     clearInterval(timer);
     document.body.classList.remove("memory-open");
     document
@@ -376,16 +421,16 @@ function createMemoryPanel({
   });
   window.addEventListener("resize", position);
   ipcRenderer.on("memory:changed", () => {
-    if (page && !page.hidden) void refresh().catch(fail);
+    if (page && !page.hidden) scheduleRefresh();
   });
   ipcRenderer.on("session-updated", (_event, { session } = {}) => {
     if (!page || page.hidden || !session) return;
-    const job = data?.jobs.find(
+    const job = data?.jobs?.find(
       (j) =>
         j.sessionId === session.id && !["done", "failed"].includes(j.status),
     );
     if (job && job.runtimeState !== (session.nativeRuntime?.state || null))
-      void refresh().catch(fail);
+      scheduleRefresh();
   });
   return { open, close };
 }

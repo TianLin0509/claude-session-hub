@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { renameWithRetrySync } = require('./claude-project-trust');
 
 function claudeSettingsPath(configDir) {
   const root = configDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -46,7 +47,7 @@ function writeJsonAtomic(filePath, value, fsModule = fs) {
   const tempPath = `${filePath}.hub-model-restore-${process.pid}-${Date.now()}.tmp`;
   try {
     fsModule.writeFileSync(tempPath, JSON.stringify(value, null, 2) + '\n', 'utf8');
-    fsModule.renameSync(tempPath, filePath);
+    renameWithRetrySync(tempPath, filePath, { fsImpl: fsModule, retries: 8, retryDelayMs: 15 });
   } catch (error) {
     try { fsModule.unlinkSync(tempPath); } catch (_) {}
     throw error;
