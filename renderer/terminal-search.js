@@ -16,7 +16,9 @@ function createTerminalSearch(deps) {
     document,
     getActiveSessionId,
     getTerminalCache,
+    getTranscriptRoot = () => null,
   } = deps;
+  const transcript = require('./transcript-search').createTranscriptSearch(document);
 
   const el = document.getElementById('terminal-search');
   const input = document.getElementById('terminal-search-input');
@@ -33,19 +35,30 @@ function createTerminalSearch(deps) {
   function open() {
     if (!el || !input) return;
     el.style.display = 'flex';
+    input.placeholder = getTranscriptRoot() ? '查找当前已加载的对话…' : '查找终端…';
     input.focus();
     input.select();
+    run(1, false);
   }
 
   function close() {
     if (!el) return;
     el.style.display = 'none';
+    transcript.clear();
     const cached = getCached();
     if (cached && cached.searchAddon) cached.searchAddon.clearDecorations();
-    if (cached) cached.terminal.focus();
+    if (cached && !getTranscriptRoot()) cached.terminal.focus();
   }
 
-  function run(direction) {
+  function run(direction, advance = true) {
+    if (!input || !count) return;
+    const root = getTranscriptRoot();
+    if (root) {
+      const result = transcript.find(root, input.value, direction, advance);
+      count.textContent = input.value ? `${result.index} / ${result.total}` : '';
+      return;
+    }
+    transcript.clear();
     const cached = getCached();
     if (!cached || !cached.searchAddon || !input || !count) return;
     const q = input.value;
@@ -62,7 +75,7 @@ function createTerminalSearch(deps) {
 
   function init() {
     if (!el || !input || !count || !prev || !next || !closeBtn) return;
-    input.addEventListener('input', () => run(1));
+    input.addEventListener('input', () => run(1, false));
     input.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter') { e.preventDefault(); run(e.shiftKey ? -1 : 1); }

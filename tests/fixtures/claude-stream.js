@@ -116,6 +116,7 @@ rl.on('line', async line => {
       if (!fs.existsSync(marker)) { fs.writeFileSync(marker, 'crashed'); return process.exit(9); }
     }
     if (mode === 'no-echo') return;
+    if (JSON.stringify(m.message?.content || '').includes('fixture:unconfirmed')) return;
     if (mode === 'old-result-first') await result({ uuid: 'old-result' });
     await frame({ ...m, session_id: sessionId, ...(mode === 'mismatch' ? { message: { ...m.message, content: 'changed text' } } : {}) });
     if (mode === 'echo-only' || mode === 'hold') return;
@@ -136,6 +137,15 @@ rl.on('line', async line => {
         clearInterval(timer);
         await result(JSON.parse(fs.readFileSync(gate, 'utf8')));
       }, 25);
+      return;
+    }
+    if (JSON.stringify(m.message?.content || '').includes('fixture:search')) {
+      const text = '融合第一处。跨格式：融**合**第二处。\n\n'
+        + Array.from({ length: 40 }, (_, i) => `段落 ${i + 1}：用于搜索滚动验证的普通内容。`).join('\n\n')
+        + '\n\n融合最后一处。';
+      await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
+        message: { id: randomUUID(), role: 'assistant', content: [{ type: 'text', text }] } });
+      await result({ result: text });
       return;
     }
     if (JSON.stringify(m.message?.content || '').includes('fixture:layout')) {

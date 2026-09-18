@@ -7130,11 +7130,12 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const preview = buildReplyReadyPreview(text, `${cardWorkingLabel(session)} 回复完成，等你继续`);
   const sig = `${turnId || ''}:${completedAt || ''}:${preview}`;
   if (session._lastTranscriptReadySig === sig) return;
-  if (isClaudeTranscriptRuntime) {
-    // Claude normally closes attention/unread through Stop. The authoritative
+  if (isClaudeTranscriptRuntime && session.runtimeBackend !== 'claude-stream-json') {
+    // Legacy PTY Claude closes attention/unread through Stop. The authoritative
     // terminal transcript is an independent runtime fallback: it must close a
     // stuck "running" state without replaying applyReplyCompleted and double
-    // counting unread when Stop arrives as well.
+    // counting unread when Stop arrives as well. Native stream-json has no Stop
+    // hook and must use the ordered completion reducer below.
     const at = normalizeEventTime(completedAt, Date.now());
     const startedAt = Number(session.runStartedAt) || Number(session.lastRunStartedAt) || 0;
     if (startedAt > 0 && at >= startedAt) {
@@ -7226,10 +7227,9 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 function onPromptSubmittedFromTranscriptEvent(payload) {
   const { hubSessionId, text, submittedAt, meetingId, kind, turnId, signalSource } = payload || {};
   if (!hubSessionId) return;
-  if (!isTranscriptCliKind(kind)) return;
-
   const session = sessions.get(hubSessionId);
   if (!session) return;
+  if (!isTranscriptCliKind(kind) && session.runtimeBackend !== 'claude-stream-json') return;
   if (session.status === 'dormant') return;
 
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
@@ -7642,8 +7642,17 @@ pathLinkContextMenu.init();
 // --- Terminal in-buffer search (Ctrl+F) ---
 const terminalSearch = createTerminalSearch({
   document,
-  getActiveSessionId: () => activeSessionId,
+  getActiveSessionId: () => sessionSplit?.focusedId() || activeSessionId,
   getTerminalCache: () => terminalCache,
+  getTranscriptRoot: () => {
+    if (activeMeetingId) return document.querySelector('#meeting-room-panel .mr-gc-messages');
+    if (sessionSplit?.isSecondaryFocused()) {
+      const pane = sessionSplit.secondary();
+      return pane.mode() === 'card' ? pane.overlay : document.querySelector('.split-secondary .cb-viewport');
+    }
+    if (!activeSessionId) return null;
+    return currentView === 'card' ? document.getElementById('msg-overlay') : document.querySelector('#terminal-panel .cb-viewport');
+  },
 });
 terminalSearch.init();
 const openTerminalSearch = terminalSearch.open;
@@ -8168,7 +8177,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     const old = local.nativeRuntime;
     const next = session.nativeRuntime;
     if (old && next && (next.epoch < old.epoch || (next.epoch === old.epoch && next.revision < old.revision))) return;
-    Object.assign(local, session);
+    // Read acknowledgement belongs to this window. Main runtime/usage snapshots
+    // still carry their initial unreadCount and must not erase a received reply.
+    const unreadCount = local.unreadCount;
+    Object.assign(local, session, { unreadCount });
     if (old?.cancellation?.status !== next?.cancellation?.status) window.MeetingRoom?.refreshNativeCancellation?.(local.id);
     if (session.nativeMigrationDraft && local._importedNativeDraft !== session.nativeMigrationDraft) {
       local._importedNativeDraft = session.nativeMigrationDraft;

@@ -200,7 +200,7 @@ function createKeyboardShortcuts({
 
     if (!e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
       e.preventDefault();
-      if (getActiveSessionId()) openTerminalSearch();
+      openTerminalSearch();
       return;
     }
 
