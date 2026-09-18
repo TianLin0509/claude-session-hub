@@ -157,7 +157,7 @@ test('legacy Chuxin research sessions stay out of the sidebar and workbench embe
   assert.doesNotMatch(list, /appendSecHeader\('投研任务'/);
 });
 
-test('Chuxin exposes one eight-item workbench nav including the native Agent League tab', () => {
+test('Chuxin exposes one eight-item workbench nav ending with the lindang agent tab', () => {
   const root = path.join(__dirname, '..');
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
@@ -169,10 +169,12 @@ test('Chuxin exposes one eight-item workbench nav including the native Agent Lea
   assert(primaryBlock, 'PRIMARY_TABS declaration is missing');
   assert.deepStrictEqual(
     [...primaryBlock[1].matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
-    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累', 'Agent 联赛'],
+    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累', '作手林铛'],
   );
   assert.match(primaryBlock[1], /id: 'market', label: '实时行情', hash: 'market'/);
-  assert.match(primaryBlock[1], /id: 'league', label: 'Agent 联赛', native: true/);
+  // 联赛被初心投研后端的单 Agent 页取代，这一格是普通 iframe Tab，不再是原生面板
+  assert.match(primaryBlock[1], /id: 'lindang', label: '作手林铛', hash: 'lindang'/);
+  assert.doesNotMatch(primaryBlock[1], /native: true/);
   assert.match(chuxin, /cx-primary-nav/);
   assert.match(chuxin, /&embed=hub#/);
   assert.doesNotMatch(primaryBlock[1], /AI群聊|英雄大厅|今日感悟/);
