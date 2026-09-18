@@ -8,7 +8,6 @@
  */
 (function () {
   const { ipcRenderer } = require('electron');
-  const { createAgentLeaguePanel } = require('./agent-league.js');
 
   let API = 'http://127.0.0.1:3004';
   let WEB = 'http://127.0.0.1:3003';
@@ -32,7 +31,9 @@
     { id: 'targets', label: '观察池', hash: 'watch' },
     { id: 'holding', label: '持仓信息', hash: 'holding' },
     { id: 'notes', label: '知识积累', hash: 'notes' },
-    { id: 'league', label: 'Agent 联赛', native: true },
+    // Agent 联赛（5 个 Agent + PTY 编排）已由初心投研后端里的「作手林铛」单 Agent 取代：
+    // 决策、报告与收益统计都在 chuxin-research 里，这里只要一个普通 iframe Tab。
+    { id: 'lindang', label: '作手林铛', hash: 'lindang' },
   ];
   const WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -60,7 +61,6 @@
     previewTimer: null,
     previewSeq: 0,
     developerTimer: null,
-    leagueController: null,
     nativeTabActive: false,
   };
 
@@ -201,19 +201,12 @@
     state.frameView.style.display = 'flex';
     state.frame = null;
 
-    // Agent 联赛是 Hub 原生视图：排行榜、Markdown 账本与普通 Session
-    // 需要直接走 Electron IPC，不能塞进 chuxin-research iframe 再复制一套会话 UI。
-    state.leagueView = el('div', 'cx-view-league');
-    state.leagueView.dataset.view = 'agent-league';
-    state.leagueView.style.display = 'none';
-    state.leagueController = createAgentLeaguePanel({ document, ipcRenderer, toast });
-    state.leagueController.mount(state.leagueView);
-
-    root.append(header, state.startErrorEl, state.tabsBar, state.frameView, state.leagueView);
+    root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
       observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
       watch: 'targets', committee: 'today', clues: 'news',
+      league: 'lindang',
     };
     const migratedTab = legacyMap[storedTab] || storedTab;
     switchTab(migratedTab);
@@ -221,22 +214,13 @@
 
   function switchTab(tabId) {
     const tab = PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0];
-    root.classList.toggle('cx-agent-league-active', tab.id === 'league');
     localStorage.setItem(TAB_KEY, tab.id);
     for (const b of state.tabsBar.children) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
       b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
-    if (tab.native && tab.id === 'league') {
-      state.nativeTabActive = true;
-      state.frameView.style.display = 'none';
-      state.leagueView.style.display = 'block';
-      state.leagueController.show().catch((error) => toast('Agent 联赛加载失败：' + error.message, true));
-      return;
-    }
     const returningFromNative = state.nativeTabActive;
     state.nativeTabActive = false;
-    state.leagueView.style.display = 'none';
     state.frameView.style.display = 'flex';
     const target = WEB + '/?api=' + encodeURIComponent(API)
       + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
