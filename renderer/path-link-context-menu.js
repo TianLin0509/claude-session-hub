@@ -33,6 +33,9 @@ function createPathLinkContextMenuController({
         right: '24px',
         bottom: '24px',
         zIndex: '12000',
+        // Text-only status must never intercept composer clicks, including
+        // after the opacity transition leaves an invisible toast in the DOM.
+        pointerEvents: 'none',
         maxWidth: '420px',
         padding: '12px 16px',
         borderRadius: '12px',

@@ -23,6 +23,9 @@ function createChatgptBridgeController(options = {}) {
         right: '24px',
         bottom: '24px',
         zIndex: '12000',
+        // This status contains no actions; keep both visible and faded notices
+        // out of hit testing in every session/group layout.
+        pointerEvents: 'none',
         maxWidth: '440px',
         padding: '12px 16px',
         borderRadius: '12px',
