@@ -328,15 +328,18 @@ class SqliteSessionSearchIndex {
         const insertDocument = (doc) => {
           const text = String(doc && doc.text || '');
           if (!text) return;
+          const scope = doc.scope || 'assistant';
           const inserted = this.insertDoc.run(
             source.key, session.key, String(doc.eventId || doc.id || `doc-${doc.ordinal || 0}`),
-            doc.scope || 'assistant', doc.role || null, doc.speaker || null, text,
-            normalizeSearchText(text), Number(doc.ordinal) || 0, Number(doc.timestamp) || 0,
+            scope, doc.role || null, doc.speaker || null, text,
+            // 工具 doc 不参与检索，规范化副本纯属重复存储（实测约占库的 12%）。
+            scope === 'tool' ? '' : normalizeSearchText(text),
+            Number(doc.ordinal) || 0, Number(doc.timestamp) || 0,
           );
           if (Number(inserted.changes) > 0) {
             documentCount += 1;
             textChars += text.length;
-            this._writeCjkAux(Number(inserted.lastInsertRowid), doc.scope || 'assistant', text);
+            this._writeCjkAux(Number(inserted.lastInsertRowid), scope, text);
           }
         };
         const insertedSyntheticTitle = !!session.title;
