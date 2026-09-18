@@ -162,7 +162,12 @@ test('oversized Codex rollouts index complete semantic history while skipping bi
   assert.equal(refreshed.staleSources, 0);
   assert.equal((await engine.search({ query: 'CODEX_EARLY_SEMANTIC_MARKER' })).totalSessions, 1);
   assert.equal((await engine.search({ query: 'CODEX_LATE_SEMANTIC_MARKER' })).totalSessions, 1);
-  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER', scopes:['tool'] })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER', scopes:['tool'] })).totalSessions, 0);
+  assert.ok(engine.index.db.prepare("SELECT count(*) n FROM docs WHERE scope='tool' AND text LIKE '%CODEX_TOOL_METADATA_MARKER%'").get().n > 0,
+    '工具调用仍以一行元信息保留，供预览与造梦阅读');
+  assert.equal(engine.index.db.prepare(`SELECT count(*) n FROM docs_fts WHERE docs_fts MATCH '"codex_tool_metadata_marker"'`).get().n, 0,
+    '工具 doc 不进全文索引');
+  assert.ok(engine.index.db.prepare("SELECT max(length(text)) n FROM docs WHERE scope='tool'").get().n <= 120);
   assert.equal((await engine.search({ query: 'CODEX_BINARY_OUTPUT_MARKER' })).totalSessions, 0);
 });
 

@@ -26,14 +26,14 @@ const DEFAULT_SEARCH_SOURCE_READ_BYTES = 4 * 1024 * 1024;
 // 单文件 JSON（群聊 timeline、Gemini）只能整读；在搜索子进程里读，64MB 以内不值得降级。
 const DEFAULT_JSON_SOURCE_READ_BYTES = 64 * 1024 * 1024;
 // v3：对话 doc 的 ordinal 改用 rollout 行号，与工具 doc 同一尺度。
-const CODEX_SEARCH_PROJECTION_VERSION = 3;
+const CODEX_SEARCH_PROJECTION_VERSION = 4;
 
 // 索引里「一条 doc 的文本长什么样」的版本号。refresh() 是按 signature 增量复用的
 // （mtime+size+元数据都没变就直接复用旧文档），所以**只改解析逻辑不改签名，
 // 已经入库的源永远不会重新解析**。2026-08-28 给 user 文档加了注入清洗，
 // 必须靠这个版本号把全量源顶掉重来。以后再改文本投影就 +1。
 // v2：Claude 由尾部 4MB 改为流式读完整文件；剥掉 Hub 附加的梦境索引。
-const SEARCH_TEXT_PROJECTION_VERSION = 2;
+const SEARCH_TEXT_PROJECTION_VERSION = 3;
 const PROJECTION_SUFFIX = `:utext-v${SEARCH_TEXT_PROJECTION_VERSION}`;
 
 function readBoundedJsonlTailText(filePath, maxBytes = DEFAULT_SEARCH_SOURCE_READ_BYTES, fsRef = fs) {
@@ -621,6 +621,15 @@ function titleOnlySourceFromDescriptor(descriptor, options = {}) {
   };
 }
 
+// 用户 2026-09-17 明确：只搜自然语言，绝不搜改动代码。工具 doc 因此只保留一行
+// 可辨认的元信息（工具名 + 命令/路径开头），既不进全文索引也不再存正文 ——
+// 实测它们此前占索引正文的 88%（2.84 亿字符，其中一半是 apply_patch 的文件内容）。
+const TOOL_META_CHARS = 120;
+function toolMetaText(value) {
+  const flat = String(value || '').replace(/\s+/g, ' ').trim();
+  return flat.length > TOOL_META_CHARS ? flat.slice(0, TOOL_META_CHARS) : flat;
+}
+
 function omitInlineBinary(value) {
   return String(value || '').replace(
     /(data:[^;,\s]+;base64,)[A-Za-z0-9+/_=-]{1024,}/gi,
@@ -636,7 +645,7 @@ function toolText(toolCall) {
     try { parts.push(omitInlineBinary(typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input))); }
     catch { parts.push(String(toolCall.input)); }
   }
-  return parts.join('\n').trim();
+  return toolMetaText(parts.join(' '));
 }
 
 function docsFromTurns(turns, title, provider) {
@@ -692,7 +701,7 @@ function codexToolDocFromRecord(record, ordinal) {
     try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
     catch { parts.push(String(value)); }
   }
-  const text = parts.join('\n').trim();
+  const text = toolMetaText(parts.join(' '));
   if (!text) return null;
   const eventId = `codex-tool-${record.timestamp || ordinal}-${shortHash(text)}`;
   return {
@@ -897,7 +906,7 @@ function parseKimiWire(filePath) {
         try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
         catch { parts.push(String(value)); }
       }
-      const text = parts.join('\n').trim();
+      const text = toolMetaText(parts.join(' '));
       if (!text) return;
       const eventId = `kimi-tool-${lineIndex}-${shortHash(text)}`;
       toolDocs.push({

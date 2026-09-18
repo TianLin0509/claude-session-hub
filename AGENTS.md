@@ -69,6 +69,7 @@
 
 - 统一入口在左侧第六个功能按钮；三个 tab 为当前上下文、记忆文件库、造梦。记忆页不放会话列表，当前上下文跟随聚焦 session；群聊先打开成员 session。
 - 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
+- 昨日之我只索引对话：工具调用只留 ≤120 字符元信息、不进全文索引，检索范围只有标题/我的提问/AI 回答（`SCHEMA_VERSION` 已升，合入后首次启动重建索引）。每个会话另有一份只含对话的聊天记录 md（Hub 数据目录 `transcripts/`），可直接分享路径。
 - 复用昨日之我 SQLite 的消息正文，明确解析截断和附件覆盖边界，不宣称无损原始归档。选中素材导出为一次任务快照，造梦师为普通实体 session。
 - 原生 `MEMORY.md` 和规则文件只读参考；新梦境只写 Hub 数据目录的独立 `DREAM_INDEX.md` 与 `topics/*.md`。结果校验通过后原子发布，失败不推进已整理进度。
 - 索引只随用户亲手发送的下一条消息提交（群聊/初心等自动 prompt 不带；上下文压缩后重发；搜索与造梦素材剥掉索引），只有原生提交证据才显示已发送；磁盘可读、预计加载、已发送、正文已读取不能混称。聊天卡片折叠显示索引但不删原始正文。

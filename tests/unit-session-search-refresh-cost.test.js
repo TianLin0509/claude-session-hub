@@ -22,7 +22,7 @@ const snapshot = () => ({sessions:[{hubId:'title-one',kind:'claude',title:'TITLE
 const rows = engine => engine.index.db.prepare('SELECT id,session_key,event_id,text,timestamp FROM docs ORDER BY id').all();
 const refresh = (engine,state) => engine.refresh(state,{immediate:true});
 
-test('opening a legacy index adds the cascade lookup index without rebuilding searchable history', t => {
+test('opening an index of the current schema adds the cascade lookup index without rebuilding history', t => {
   const f = fixture(t);
   let index = new SqliteSessionSearchIndex(f.options.databasePath);
   index.replaceSource({key:'legacy',signature:'sig',searchable:true,session:{key:'legacy',provider:'claude',title:'LEGACY_MARKER'},docs:[{id:'answer',scope:'assistant',text:'LEGACY_ANSWER_MARKER'}]});
@@ -36,7 +36,7 @@ test('opening a legacy index adds the cascade lookup index without rebuilding se
     assert.doesNotMatch(plan,/SCAN docs/);
     assert.deepEqual(index.db.prepare('SELECT id,text FROM docs ORDER BY id').all(),before);
     assert.equal(index.search({query:'LEGACY_ANSWER_MARKER'}).totalSessions,1);
-    assert.equal(index.db.prepare('PRAGMA user_version').get().user_version,1);
+    assert.equal(index.db.prepare('PRAGMA user_version').get().user_version,2);
   } finally { index.close(); }
 });
 

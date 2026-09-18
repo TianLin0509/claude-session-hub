@@ -55,7 +55,7 @@ test('2 字中文词能搜到（trigram 索引不到，必须有顺序扫描兜�
   assert.equal(hit.results[0].sessionKey, 's1');
 });
 
-test('短词默认不扫 tool，并如实告知已收窄；显式选工具页签时照常搜', (t) => {
+test('工具文本不可检索：默认与显式请求都只搜对话', (t) => {
   const index = freshIndex(t, 'short-scope');
   index.replaceSource(makeSource('s1', 'codex', '无关标题', [
     { id: 'u1', scope: 'user', text: '看看日志' },
@@ -63,17 +63,18 @@ test('短词默认不扫 tool，并如实告知已收窄；显式选工具页签
   ]));
 
   const all = index.search({ query: '归档' });
-  assert.equal(all.totalSessions, 0, '默认档不该为了两个字去扫 205MB 的工具输出');
-  assert.deepEqual(all.appliedFilters.scopes, ['assistant', 'title', 'user'],
-    '收窄了就必须告诉调用方，否则用户以为「没搜到」= 不存在');
+  assert.equal(all.totalSessions, 0, '工具文本不进索引，搜不到');
+  assert.deepEqual(all.appliedFilters.scopes, ['assistant', 'title', 'user']);
 
+  // 老请求（或旧持久化的筛选）仍可能带 tool，忽略它而不是报错。
   const toolTab = index.search({ query: '归档', scopes: ['tool'] });
-  assert.equal(toolTab.totalSessions, 1, '用户显式选「工具 / 文件」就该扫 tool');
-  assert.equal(toolTab.narrowedScopes, undefined, '显式指定了 scope 就不算收窄');
+  assert.equal(toolTab.totalSessions, 0);
+  assert.deepEqual(toolTab.appliedFilters.scopes, ['assistant', 'title', 'user']);
 
   const long = index.search({ query: '归档输出' });
-  assert.equal(long.totalSessions, 0, '长短词使用相同的默认对话范围');
-  assert.equal(index.search({query:'归档输出',scopes:['title','user','assistant','tool']}).totalSessions,1);
+  assert.equal(long.totalSessions, 0, '长词同样搜不到工具文本');
+  assert.equal(index.search({query:'归档输出',scopes:['title','user','assistant','tool']}).totalSessions,0);
+  assert.equal(index.search({query:'看看日志'}).totalSessions,1,'对话照常可搜');
 });
 
 test('scope 下推：标题档不再把整个 session 的正文捞出来再丢掉', (t) => {
@@ -150,15 +151,15 @@ test('getStats 缓存在写入后失效，不会返回过期的 session/doc 计�
 
 test('FTS 查询计划由倒排索引驱动，同时在候选预算前过滤范围', t => {
   const index=freshIndex(t,'fts-plan');
-  index.replaceSource(makeSource('s1','codex','title',[{id:'t1',scope:'tool',text:'PLANPROBE'}]));
+  index.replaceSource(makeSource('s1','codex','title',[{id:'a1',scope:'assistant',text:'PLANPROBE'}]));
   const {QuerySnapshot,normalizeRequest}=require('../core/session-search-query');
-  const snapshot=new QuerySnapshot(index,normalizeRequest({query:'PLANPROBE',scopes:['tool'],timeRange:'7d'}));
+  const snapshot=new QuerySnapshot(index,normalizeRequest({query:'PLANPROBE',scopes:['assistant'],timeRange:'7d'}));
   try {
     const {statement,args}=snapshot.makeStatement();
     const plan=snapshot.db.prepare('EXPLAIN QUERY PLAN '+statement.sourceSQL).all(...args,32);
     const drivers=plan.filter(row=>/SCAN|SEARCH/.test(row.detail));
     assert.match(drivers[0].detail,/docs_fts VIRTUAL TABLE/,JSON.stringify(plan));
-    assert.equal(index.search({query:'PLANPROBE',scopes:['tool'],timeRange:'7d'}).totalSessions,1);
+    assert.equal(index.search({query:'PLANPROBE',scopes:['assistant'],timeRange:'7d'}).totalSessions,1);
   } finally {snapshot.close();}
 });
 
@@ -169,8 +170,8 @@ test('FTS 路径 + scope 过滤：JS 侧过滤的结果必须和语义一致', (
     { id: 't1', scope: 'tool', text: 'rg SHAPEPROBE C:/somewhere' },
     { id: 'a1', scope: 'assistant', text: '回答里也有 SHAPEPROBE' },
   ]));
-  assert.equal(index.search({ query: 'SHAPEPROBE', scopes:['title','user','assistant','tool'] }).results[0].matchCount, 3, '不限 scope 时三条都算');
-  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['tool'] }).results[0].matchCount, 1);
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes:['title','user','assistant'] }).results[0].matchCount, 2, '对话里的两条都算，工具那条不进索引');
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['tool'] }).results[0].matchCount, 2, 'tool 被忽略后退回对话范围');
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user'] }).results[0].matchCount, 1);
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user', 'assistant'] }).results[0].matchCount, 2);
   assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['title'] }).totalSessions, 0);
