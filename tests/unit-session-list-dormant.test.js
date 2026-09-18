@@ -60,15 +60,15 @@ test('最近休眠挂载到独立分组，旧休眠保留归档入口，置顶�
   entry.listeners.click(); assert.deepEqual(opened, { scope: 'dormant' });
   assert.equal(h.list.children.filter(e => e.className.startsWith('session-sec-header')).length, 5);
 });
-test('旧休眠未读仍可见，唤醒与异常在活跃', () => {
+test('旧休眠未读仍可见，唤醒在活跃，休眠不因旧断连快照误报异常', () => {
   const h = harness({ items: [dormant('old', { unreadCount: 1, lastMessageTime: now - 8 * 86400000 }),
     dormant('wake', { _resumePending: true }), dormant('fresh', { unreadCount: 1 }),
     dormant('error', { connectionIssue: { type: 'stream-disconnected', message: 'lost' } })] });
   assert.match(h.section('old'), /未读/); assert.match(h.section('fresh'), /未读/);
-  for (const id of ['wake', 'error']) { assert.match(h.section(id), /活跃/); assert.equal(h.row(id).tabIndex, 0); }
+  assert.match(h.section('wake'), /活跃/); assert.match(h.section('error'), /休眠/);
   assert.match(h.row('fresh').innerHTML, /sl-dot unread/);
   assert.match(h.row('wake').innerHTML, /sl-dot start/);
-  assert.match(h.row('error').innerHTML, /sl-dot error/);
+  assert.match(h.row('error').innerHTML, /sl-dot dorm/);
 });
 test('休眠群聊未读进入未读组，已读进入休眠，成员归属和上下文保留', () => {
   const h = harness({ items: [dormant('child', { meetingId: 'group', contextPct: 38 })], meetings: { group: meetingFixture(true) } });

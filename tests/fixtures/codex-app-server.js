@@ -112,7 +112,13 @@ rl.on('line',line=>{
       }
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:backstage') {
+      if(mode==='fixture:large-image') {
+        answer(msg.id,{turn});
+        const item={id:'large-image-'+turn.id,type:'imageGeneration',status:'completed',
+          result:'iVBORw0KGgo'+'A'.repeat(34*1024*1024)};
+        turn.items.push(item);event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+        finish(thread,turn,'completed','图片生成完成，文字历史保留');
+      } else if(mode==='fixture:backstage') {
         answer(msg.id,{turn});
         const one={id:'backstage-a-'+turn.id,type:'commandExecution',command:'python verify_segments.py --all',cwd:thread.cwd,status:'inProgress',aggregatedOutput:''};
         const two={id:'backstage-b-'+turn.id,type:'commandExecution',command:'python inspect_manifest.py',status:'inProgress',aggregatedOutput:''};
