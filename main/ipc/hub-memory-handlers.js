@@ -9,8 +9,11 @@ function registerHubMemoryIpc(ipcMain, service) {
       }
     });
   handle("snapshot", (r) => service.snapshot(r.sessionId));
-  handle("candidates", (r) => service.candidates(r.sessionId));
-  handle("scan", (r) => service.scan(r.sessionId));
+  handle("context", (r) => service.context(r.sessionId));
+  handle("library", (r) => service.catalog(r.refresh === true));
+  handle("dream-state", (r) => service.dreamState(r));
+  handle("candidates", (r) => service.candidates(r));
+  handle("scan", (r) => service.scan(r));
   handle("transcript", (r) => service.transcript(r.sessionId));
   handle("start-dream", (r) => service.start(r));
   handle("finalize-dream", (r) => service.finalize(r.jobId));

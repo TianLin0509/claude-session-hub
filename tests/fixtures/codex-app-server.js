@@ -7,9 +7,15 @@ const writerDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR;
 const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
 const owned=new Set();
 const save=()=>{if(store){
+  const {acquireLock,releaseLock}=require('../../core/file-lock');
+  const lock=store+'.lock',fd=acquireLock(lock,{retries:200});
+  if(fd==null)throw Error('fixture store lock timed out');
+  try {
   const all=new Map(fs.existsSync(store)?JSON.parse(fs.readFileSync(store,'utf8')):[]);
   for(const id of owned){const t=threads.get(id);if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)all.set(id,t);else all.delete(id);}
-  fs.writeFileSync(store,JSON.stringify([...all]));
+  const tmp=store+'.'+process.pid+'.tmp';
+  fs.writeFileSync(tmp,JSON.stringify([...all]));fs.renameSync(tmp,store);
+  } finally {releaseLock(fd,lock);}
 }};
 function claimWriter(id) {
   if(writerDir){

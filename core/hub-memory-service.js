@@ -3,7 +3,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { randomUUID, createHash } = require("node:crypto");
-const inspector = require("./memory-inspector");
 const {
   projectPathKey,
   readProjectSearchRoots,
@@ -28,7 +27,6 @@ const SCAN_SKIP = new Set([
 ]);
 const SCAN_MAX_DIRS = 4000;
 const SCAN_MAX_FILES = 500;
-const OTHER_PROVIDER_LIMIT = 12;
 const RECEIPT_LIMIT = 30;
 // A context drop below half of its observed peak means the runtime compacted.
 const COMPACTION_MIN_PEAK = 40000;
@@ -219,8 +217,81 @@ class HubMemoryService {
     if (!/^[\w-]+\.json$/.test(entry.file)) throw new Error("整理进度文件无效");
     return readJSON(path.join(p.dir, "processed", entry.file), []);
   }
-  async candidates(sessionId) {
-    const p = this.sessionProject(this.session(sessionId));
+  async catalog(force = false) {
+    const sessions = [...(this.getPersistedSessions?.() || [])];
+    // Include newly opened sessions before the next state persistence.
+    for (const entry of this.sessionManager.sessions?.values() || []) {
+      const s = entry.info || entry;
+      if (s.id && !sessions.some(x => x.id === s.id)) sessions.push(s);
+    }
+    const seeds = sessions.map(({id, kind, cwd, purpose, transcriptKind, codexSessionsRoot, codexProfile}) =>
+      ({id, kind, cwd, purpose, transcriptKind, codexSessionsRoot, codexProfile}));
+    const key = hash(JSON.stringify(seeds));
+    if (this.catalogFlight) {
+      const data = await this.catalogFlight;
+      if (this.catalogCache?.key === key && this.catalogCache.data === data) return data;
+      return this.catalog(force);
+    }
+    if (!force && this.catalogCache?.key === key && Date.now() - this.catalogCache.at < 30000)
+      return this.catalogCache.data;
+    const { Worker } = require('node:worker_threads');
+    const generation = this.catalogGeneration || 0;
+    const flight = new Promise((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, 'hub-memory-catalog.js'), { workerData: {
+        homeDir: this.homeDir, workspaceRoot: this.workspaceService.getWorkspaceRoot(), memoryRoot: this.root, sessions: seeds,
+      }});
+      let settled = false;
+      const finish = (error, data) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (error) reject(error); else resolve(data);
+      };
+      const timer = setTimeout(() => { finish(new Error('记忆文件库扫描超时，请重试')); void worker.terminate(); }, 60000);
+      worker.on('message', r => finish(r.ok ? null : new Error(r.error), r.data));
+      worker.on('error', error => finish(error));
+      worker.on('exit', code => { if (!settled) finish(new Error(`记忆扫描进程提前退出 (${code})`)); });
+    });
+    this.catalogFlight = flight.then(data => {
+      if (generation === (this.catalogGeneration || 0)) this.catalogCache = {key, data, at: Date.now()};
+      return data;
+    }).finally(() => { this.catalogFlight = null; });
+    const data = await this.catalogFlight;
+    if (generation !== (this.catalogGeneration || 0)) return this.catalog(true);
+    return data;
+  }
+  async sourceFor(request) {
+    if (typeof request === 'string') return this.session(request);
+    if (request?.sessionId) return this.session(request.sessionId);
+    const catalog = await this.catalog();
+    const project = catalog.projects.find(p => p.id === request?.projectId);
+    if (!project) throw new Error('请选择一个已有项目');
+    return { cwd: project.cwd, kind: request.kind || 'codex' };
+  }
+  async context(sessionId) {
+    const s = this.session(sessionId);
+    let history;
+    try { history = JSON.parse(await fs.promises.readFile(path.join(this.root, 'context', hash(sessionId) + '.json'), 'utf8')); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; history = []; }
+    // Evidence is bound to the native session identity/epoch, never to a cwd alone.
+    const current = history.filter(r => r.identity === contextIdentity(s));
+    return {
+      session: { id: s.id, title: s.title, cwd: s.cwd, kind: s.kind },
+      receipts: current.filter(r => r.status === 'sent'),
+      unconfirmed: current.filter(r => r.status !== 'sent').length,
+      note: '这里只展示本会话已确认提交的上下文快照。原生 CLI 尚未向 Hub 提供完整的规则加载清单；未确认的 CLAUDE.md、AGENTS.md 和原生记忆可在文件库查看，不列为已注入。已发送不代表压缩后仍完整保留，也不代表索引链接的正文已读取。',
+    };
+  }
+  async dreamState(request) {
+    const p = this.sessionProject(await this.sourceFor(request));
+    return { project: p, jobs: this.allJobs(p).map(j => ({ ...j,
+      runtimeState: this.sessionManager.getSession(j.sessionId)?.nativeRuntime?.state || null,
+      model: this.sessionManager.getSession(j.sessionId)?.model || j.model,
+      effort: this.sessionManager.getSession(j.sessionId)?.effort || j.effort,
+      orphaned: !alive(j.ownerPid) && !['done','failed'].includes(j.status),
+    })) };
+  }
+  async candidates(request) {
+    const p = this.sessionProject(await this.sourceFor(request));
     const rows = await this.searchService.memoryCandidates({
       cwd: p.cwd,
       roots: p.roots,
@@ -239,93 +310,9 @@ class HubMemoryService {
       };
     });
   }
-  nativeFiles(s) {
-    const view = inspector.getSessionFiles({
-      cwd: s.cwd,
-      kind: s.kind,
-      runtimeKind: s.transcriptKind || s.kind,
-      codexSessionsRoot: s.codexSessionsRoot,
-      codexProfile: s.codexProfile,
-      meetingId: s.meetingId,
-      homeDir: this.homeDir,
-      workspaceRoot: this.workspaceService.getWorkspaceRoot(),
-    });
-    const rules = (view.files || [])
-      .filter((f) => f.exists)
-      .map((f) => ({
-        ...f,
-        label: path.basename(f.path),
-        group: "项目与全局规则",
-        status: "预计加载",
-        owner: "原生客户端 / 项目维护",
-      }));
-    let memories = (view.memoryFiles || []).map((f) => ({
-      ...f,
-      group: "原生记忆",
-      status: "可按需读取",
-      owner: s.kind + " 原生记忆",
-    }));
-    for (const bucket of view.memory || []) {
-      for (const file of plainFiles(bucket.path)) {
-        if (!memories.some((f) => f.path === file))
-          memories.push({
-            path: file,
-            label: path.basename(file),
-            group: "原生记忆",
-            status: "可按需读取",
-            owner: s.kind + " 原生记忆",
-          });
-      }
-    }
-    return { files: [...rules, ...memories], note: view.memoryNote };
-  }
   snapshot(sessionId) {
-    const s = this.session(sessionId),
-      p = this.sessionProject(s),
-      native = this.nativeFiles(s);
-    const version = this.versionDir(p);
-    const library = [...native.files];
-    // Show the other native providers for sessions of this project without merging files.
-    const known = [...(this.getPersistedSessions?.() || [])].sort(
-      (a, b) => (b.lastMessageTime || 0) - (a.lastMessageTime || 0),
-    );
-    const seen = new Set(library.map((f) => f.path));
-    const providers = new Set([
-      JSON.stringify([s.kind, s.cwd, s.codexProfile, s.codexSessionsRoot]),
-    ]);
-    // Aggregate roots can contain hundreds of sessions; inspect only the most recent providers.
-    for (const other of known) {
-      if (providers.size > OTHER_PROVIDER_LIMIT) break;
-      const provider = JSON.stringify([
-        other.kind,
-        other.cwd,
-        other.codexProfile,
-        other.codexSessionsRoot,
-      ]);
-      if (
-        other.id === s.id ||
-        !other.cwd ||
-        !p.roots.some((root) => withinProject(other.cwd, root)) ||
-        providers.has(provider)
-      )
-        continue;
-      providers.add(provider);
-      for (const f of this.nativeFiles(other).files) {
-        if (!seen.has(f.path)) {
-          seen.add(f.path);
-          library.push(f);
-        }
-      }
-    }
-    if (version)
-      for (const file of plainFiles(version))
-        library.push({
-          path: file,
-          label: path.relative(version, file),
-          group: "Hub 梦境",
-          owner: "造梦 session",
-          status: "已入库",
-        });
+    // Compatibility snapshot for existing clients; discovery belongs to catalog().
+    const s = this.session(sessionId), p = this.sessionProject(s), version = this.versionDir(p);
     const receipts = readJSON(
       path.join(this.root, "context", hash(sessionId) + ".json"),
       [],
@@ -337,9 +324,9 @@ class HubMemoryService {
     return {
       session: { id: s.id, title: s.title, cwd: s.cwd, kind: s.kind },
       project: p,
-      files: library,
-      nativeFiles: native.files,
-      nativeNote: native.note,
+      files: [],
+      nativeFiles: [],
+      nativeNote: "文件发现已移至全局文件库。",
       receipts,
       currentVersion: current?.version || null,
       indexPath: version && path.join(version, "DREAM_INDEX.md"),
@@ -374,8 +361,8 @@ class HubMemoryService {
       path.join(path.parse(os.homedir()).root, "Vibe"),
     ].some((root) => projectPathKey(root) === key);
   }
-  async scan(sessionId) {
-    const p = this.sessionProject(this.session(sessionId)),
+  async scan(request) {
+    const p = this.sessionProject(await this.sourceFor(request)),
       files = [];
     const shallow = this.isAggregateRoot(p.cwd);
     const maxDepth = shallow ? 0 : 5;
@@ -444,7 +431,7 @@ class HubMemoryService {
     this.active.delete(j.sessionId);
   }
   async start(request) {
-    const source = this.session(request.sessionId),
+    const source = await this.sourceFor(request),
       p = this.sessionProject(source);
     const baseVersion = this.pointer(p)?.version || null;
     const id = randomUUID(),
@@ -519,7 +506,9 @@ class HubMemoryService {
       const previous = this.versionDir(p);
       if (previous)
         fs.cpSync(previous, output, { recursive: true, dereference: false });
-      const native = this.nativeFiles(source).files;
+      const native = (await this.catalog()).files.filter(f => f.group !== "Hub 梦境"
+        && (!f.projectIds.length || f.projectIds.includes(p.id))
+        && /^(?:MEMORY|memory_summary|AGENTS(?:\.override)?|CLAUDE(?:\.local)?|GEMINI)\.md$/i.test(path.basename(f.path)));
       manifest.nativeMemoryPaths = native.map((f) => f.path);
       manifest.existingIndex = previous
         ? path.join(previous, "DREAM_INDEX.md")
@@ -698,6 +687,8 @@ class HubMemoryService {
     this.markPublished(j, target);
   }
   markPublished(j, target) {
+    this.catalogCache = null;
+    this.catalogGeneration = (this.catalogGeneration || 0) + 1;
     j.status = "done";
     j.completedAt = Date.now();
     j.files = plainFiles(target);
@@ -950,10 +941,16 @@ class HubMemoryService {
       }
     }
     if (!pending) return;
+    const s = this.sessionManager.getSession(sid);
+    const currentIdentity = contextIdentity(s || { id: sid });
+    // A late acknowledgement from a retired native session must not be
+    // relabelled as context in the replacement session. Initial binding may
+    // replace only the temporary Hub id, within the same runtime epoch.
+    if (pending.record.identity !== currentIdentity &&
+        pending.record.identity !== [sid, s?.nativeRuntime?.epoch || 0].join(':')) return;
     pending.record.status = "sent";
     pending.record.sentAt = Date.now();
-    const s = this.sessionManager.getSession(sid);
-    pending.record.identity = contextIdentity(s || { id: sid });
+    pending.record.identity = currentIdentity;
     try {
       const history = readJSON(pending.receiptFile, []);
       const at = history.findIndex((r) => r.id === pending.record.id);

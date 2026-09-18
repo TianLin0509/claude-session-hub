@@ -257,3 +257,60 @@ test('only explicitly user-initiated sends get the index; automated sendToPty ca
   assert.equal((read('renderer','renderer.js').match(/memoryIndex: true/g)||[]).length,1);
   assert.doesNotMatch(read('renderer','meeting-room.js'),/memoryIndex/);
 });
+
+test('context uses only confirmed current-identity receipts and never discovers files or queries history',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);
+  let body;
+  await f.service.withIndex('normal','一','codex',{clientSubmissionId:'one'},async text=>{body=text;return {ok:true};});
+  f.service.nativeFiles=()=>{throw Error('context must not scan');};
+  f.service.searchService.memoryCandidates=()=>{throw Error('context must not query history');};
+  f.service.allJobs=()=>{throw Error('context must not read dream jobs');};
+  let ctx=await f.service.context('normal');assert.equal(ctx.receipts.length,0);assert.equal(ctx.unconfirmed,1);
+  f.tap.emit('prompt-submitted',{sessionId:'normal',text:body});
+  ctx=await f.service.context('normal');assert.equal(ctx.receipts.length,1);
+  assert.equal(ctx.receipts[0].content,fs.readFileSync(ctx.receipts[0].path,'utf8'));
+  fs.writeFileSync(ctx.receipts[0].path,'后来改动的文件');
+  assert.notEqual((await f.service.context('normal')).receipts[0].content,'后来改动的文件');
+  f.sessions.get('normal').nativeRuntime.epoch=2;
+  assert.equal((await f.service.context('normal')).receipts.length,0);
+});
+
+test('global library works without an active session, deduplicates linked memory, and explicitly refreshes',async t=>{
+  const f=setup(t);const persisted=[...f.sessions.values()];f.sessions.clear();
+  f.service.getPersistedSessions=()=>persisted;
+  const memory=path.join(f.home,'.codex','memories');fs.mkdirSync(memory,{recursive:true});
+  fs.writeFileSync(path.join(memory,'MEMORY.md'),'原生记忆');
+  const shared=path.join(f.home,'shared-memory');fs.mkdirSync(shared);fs.writeFileSync(path.join(shared,'topic.md'),'共享内容');
+  for(const bucket of ['a','b']) {const parent=path.join(f.home,'.claude','projects',bucket);fs.mkdirSync(parent,{recursive:true});fs.symlinkSync(shared,path.join(parent,'memory'),'junction');}
+  const [a,b]=await Promise.all([f.service.catalog(),f.service.catalog()]);
+  assert.strictEqual(a,b,'concurrent readers share one discovery');
+  assert.ok(a.files.some(x=>x.path===path.join(memory,'MEMORY.md')));
+  assert.equal(a.files.filter(x=>x.path===path.join(shared,'topic.md')).length,1,'canonical bucket appears once');
+  assert.ok(a.files.some(x=>x.path===path.join(f.cwd,'AGENTS.md')));
+  const project=a.projects.find(p=>p.cwd===f.cwd);assert.ok(project);
+  assert.equal((await f.service.candidates({projectId:project.id})).length,1);
+  const job=await f.service.start({projectId:project.id,keys:['source'],kind:'codex'});
+  assert.equal(job.project.cwd,f.cwd,'no source session needs to be open');
+  fs.writeFileSync(path.join(memory,'new.md'),'新增');
+  assert.ok(!(await f.service.catalog()).files.some(x=>x.label==='new.md'));
+  assert.ok((await f.service.catalog(true)).files.some(x=>x.label==='new.md'));
+  await assert.rejects(f.service.candidates({projectId:'unknown'}),/请选择/);
+});
+
+test('global library exists even when Hub has no sessions',async t=>{
+  const f=setup(t);f.sessions.clear();
+  const dir=path.join(f.home,'.claude');fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(path.join(dir,'CLAUDE.md'),'全局规则');
+  const c=await f.service.catalog();
+  assert.ok(c.files.some(x=>x.label==='CLAUDE.md'));
+  assert.equal(c.projects.length,0);
+});
+
+test('a late confirmation cannot move an old injection into a new native epoch',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);let body;
+  await f.service.withIndex('normal','旧消息','codex',{},async text=>{body=text;return {ok:true};});
+  f.sessions.get('normal').nativeRuntime.epoch=2;
+  f.tap.emit('prompt-submitted',{sessionId:'normal',text:body});
+  assert.equal((await f.service.context('normal')).receipts.length,0);
+  assert.equal(f.service.snapshot('normal').receipts[0].status,'unconfirmed');
+});

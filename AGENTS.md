@@ -68,6 +68,9 @@
 ## 记忆 MVP（2026-09-17）
 
 - 统一入口在左侧第六个功能按钮；三个 tab 为当前上下文、记忆文件库、造梦。记忆页不放会话列表，当前上下文跟随聚焦 session；群聊先打开成员 session。
+- 文件库与造梦是全局入口，不依赖活动 session；从首页进入默认文件库，造梦按已知项目选择素材。只有「当前上下文」依赖聚焦 session。
+- 当前上下文只读取本原生身份/epoch 的确认提交快照；不扫文件库、不查历史、不列「预计加载」和「可按需读取」。没有原生加载证据时明确未知，不能用磁盘存在替代注入证据。
+- 文件库发现由 `core/hub-memory-catalog.js` worker 执行，目录按真实路径去重，30 秒缓存与并发请求合并；刷新可重扫。三个 tab 按需请求，过期响应不覆盖新 tab/session。
 - 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
 - 昨日之我只索引对话：工具调用只留 ≤120 字符元信息、不进全文索引，检索范围只有标题/我的提问/AI 回答（`SCHEMA_VERSION` 已升，合入后首次启动重建索引）。每个会话另有一份只含对话的聊天记录 md（Hub 数据目录 `transcripts/`），可直接分享路径。
 - 复用昨日之我 SQLite 的消息正文，明确解析截断和附件覆盖边界，不宣称无损原始归档。选中素材导出为一次任务快照，造梦师为普通实体 session。
