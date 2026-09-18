@@ -103,9 +103,12 @@ function planSessionFork({ source, siblingPool = [], meeting = null, rendererTit
     opts.codexForkSid = nativeSessionId;
   }
 
+  // overrides 里给 null 表示「这一项不要」——整群分支就靠它去掉分支标题那套：
+  // 群聊标题已经写了「（分支N）」，成员再各自叫「分支1: <源群聊名>」会全部重名。
   for (const [key, value] of Object.entries(overrides || {})) {
     if (value === undefined) continue;
-    opts[key] = value;
+    if (value === null) delete opts[key];
+    else opts[key] = value;
   }
 
   return { ok: true, kind, opts, providerFamily, needsAcpFork, nativeSessionId, branchIndex };

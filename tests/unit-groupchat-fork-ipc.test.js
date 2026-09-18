@@ -239,6 +239,13 @@ test('整群分支：成员逐个分支，记录带 sid 映射搬过去', async 
   assert.strictEqual(result.ok, true, result.message);
   assert.strictEqual(result.meeting.title, '架构群（分支1）');
   assert.deepStrictEqual(Object.keys(result.sidMap).sort(), ['src-1', 'src-2']);
+  // 成员保留原名：群聊标题已经写了「（分支1）」，成员再各自叫「分支1: 架构群」
+  // 会在分支群聊里全部重名，@ 点名和卡片都分不出谁是谁。
+  const addedOpts = h.calls.filter(c => c[0] === 'addMeetingSub').map(c => c[3]);
+  assert.deepStrictEqual(addedOpts.map(o => o.title), ['会话 src-1', '会话 src-2']);
+  assert.ok(addedOpts.every(o => !('branchSourceSessionId' in o) && !('branchIndex' in o)),
+    '整群分支的成员不走分支标题那一套，避免重启后被标题自愈改成同名');
+  assert.deepStrictEqual(addedOpts.map(o => o.memberId), ['m1', 'm2'], '成员身份跟着槽位走');
 
   const forkedOrch = groupchat.getOrchestrator(tmp, result.meeting.id);
   const state = forkedOrch.getState();

@@ -56,9 +56,17 @@ async function main() {
     const s = await c.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(s.data, 'base64'));
   };
+  // 侧栏的群聊行会展开成员行，点击未必落在行本身（可能命中成员小标签，结果打开的是
+  // 那个成员的会话）。这一步只是"进到房间里"，不是本次要验的功能，所以确认没进就用
+  // 测试钩子兜底 —— 界面入口本身由 e2e-groupchat-fork-ui-cdp.js 用真实点击覆盖。
   const openMeeting = async (meetingId) => {
     await until(`!!document.querySelector('[data-meeting-id="${meetingId}"]')`, 'sidebar ' + meetingId);
     await click(`[data-meeting-id="${meetingId}"]`);
+    try { await until(`window.__hubE2E.getActiveMeetingId()===${j(meetingId)}`, 'open by click', 5000); }
+    catch {
+      await c.eval(`window.__hubE2E.selectMeeting(${j(meetingId)})`);
+      await until(`window.__hubE2E.getActiveMeetingId()===${j(meetingId)}`, 'open by hook');
+    }
     await until('!!document.getElementById("mr-input-box")', 'composer');
   };
   const sendInRoom = async (text) => {
@@ -222,10 +230,11 @@ async function main() {
     const mixedFork = await invoke('groupchat:fork-meeting', { meetingId: mixed.id });
     check('Claude + Codex 混合群聊也能整体分支', mixedFork.ok === true
       && mixedFork.meeting.subSessions.length === 2, mixedFork.message);
-    const mixedKinds = await c.eval(`${j(mixedFork.ok ? mixedFork.meeting.subSessions : [])}.map(id=>{const s=sessions.get(id);return s?{kind:s.kind,branchOf:!!s.branchSourceSessionId}:null;})`);
-    check('两位成员各按自己的家族分支（kind 不变、都挂着来源会话）',
-      mixedKinds.length === 2 && mixedKinds.every(m => m && m.branchOf)
-      && mixedKinds.some(m => m.kind.startsWith('claude')) && mixedKinds.some(m => m.kind.startsWith('codex')),
+    const mixedKinds = await c.eval(`${j(mixedFork.ok ? mixedFork.meeting.subSessions : [])}.map(id=>{const s=sessions.get(id);return s?{kind:s.kind,title:s.title}:null;})`);
+    check('两位成员各按自己的家族分支，且名字不重（重名会让 @ 点名分不出谁是谁）',
+      mixedKinds.length === 2
+      && mixedKinds.some(m => m && m.kind.startsWith('claude')) && mixedKinds.some(m => m.kind.startsWith('codex'))
+      && new Set(mixedKinds.map(m => m && m.title)).size === 2,
       mixedKinds);
     await waitAnswers(mixedFork.meeting.id, 1, 2, '分支群聊继承的历史').catch(() => {});
     check('混合分支群聊继承了历史记录',

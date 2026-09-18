@@ -349,7 +349,18 @@ function registerGroupChatForkIpc(ipcMain, deps) {
       const memberId = (slotSpecs[index] && slotSpecs[index].memberId) || undefined;
       let result;
       if (mode === 'fork') {
-        result = await forkSessionIntoMeeting(forked.id, session, { memberId });
+        // 成员保留原名。分支标题（「分支1: X」）对单个会话是有用的身份，但整群分支时
+        // 每位成员的原名多半是「Codex 1」这类通用名，会一起回落到群聊标题上 ——
+        // 结果是分支群聊里所有人重名，@ 点名和卡片都分不出谁是谁（2026-09-17 真机验证发现）。
+        // 群聊标题已经写了「（分支N）」，成员身份就该沿用原来的那一套。
+        result = await forkSessionIntoMeeting(forked.id, session, {
+          memberId,
+          title: session.title || undefined,
+          autoTitleGenerated: true,
+          branchAutoTitlePending: null,
+          branchSourceSessionId: null,
+          branchIndex: null,
+        });
       } else {
         const opts = {
           title: session.title || undefined,
