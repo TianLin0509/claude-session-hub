@@ -94,6 +94,7 @@ async function main() {
         CODEX_HOME: home,
         CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
         CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
+        CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.join(__dirname, 'fixtures/claude-stream.js'),
       },
     });
     evidence.pid = hub.pid;
@@ -207,6 +208,28 @@ async function main() {
     check('开发群聊明确拒绝分支并给出原因', devFork.ok === false && devFork.error === 'dev-meeting-unsupported', devFork.message);
     const dup = await invoke('groupchat:add-existing-session', { meetingId: forked.meeting.id, sessionId: joined.session.id });
     check('已是成员的会话不会被重复加入', dup.ok === false && dup.error === 'already-member', dup.message);
+
+    // ── 8. 混合 provider 的整群分支（Claude + Codex 各走各的原生 fork） ──────
+    const mixed = await c.eval(`ipcRenderer.invoke('create-meeting', ${j({
+      title: '混合分支群', groupChat: true, scene: 'general', workspace: cwd,
+      slots: [
+        { kind: 'claude', memberId: 'm1', model: 'claude-opus-5[1m]', mcpProfile: 'none' },
+        { kind: 'codex', memberId: 'm2', model: 'gpt-6-astra', effort: 'high', mcpProfile: 'none', codexSpeedTier: 'standard' },
+      ],
+    })})`);
+    await invoke('groupchat:turn', { meetingId: mixed.id, userInput: '两位各说一句，好让两边都拿到原生会话 ID。' });
+    await waitAnswers(mixed.id, 1, 2, '混合群聊第一轮');
+    const mixedFork = await invoke('groupchat:fork-meeting', { meetingId: mixed.id });
+    check('Claude + Codex 混合群聊也能整体分支', mixedFork.ok === true
+      && mixedFork.meeting.subSessions.length === 2, mixedFork.message);
+    const mixedKinds = await c.eval(`${j(mixedFork.ok ? mixedFork.meeting.subSessions : [])}.map(id=>{const s=sessions.get(id);return s?{kind:s.kind,branchOf:!!s.branchSourceSessionId}:null;})`);
+    check('两位成员各按自己的家族分支（kind 不变、都挂着来源会话）',
+      mixedKinds.length === 2 && mixedKinds.every(m => m && m.branchOf)
+      && mixedKinds.some(m => m.kind.startsWith('claude')) && mixedKinds.some(m => m.kind.startsWith('codex')),
+      mixedKinds);
+    await waitAnswers(mixedFork.meeting.id, 1, 2, '分支群聊继承的历史').catch(() => {});
+    check('混合分支群聊继承了历史记录',
+      transcriptOf(mixedFork.meeting.id).includes('两位各说一句，好让两边都拿到原生会话 ID。'));
 
     evidence.passed = true;
   } catch (error) {
