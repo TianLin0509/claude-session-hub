@@ -1408,6 +1408,8 @@ function createGroupChatDispatcher(deps) {
 
       const hubDataDir = getHubDataDir();
       const orch = groupchat.getOrchestrator(hubDataDir, meetingId);
+      // md 存档的表头用群聊标题；改名后下一轮自动跟上。
+      orch.setMeetingTitle(meeting.title);
       const requestedTurnNum = Number(reuseTurnNum);
       const isReusedTurn = Number.isInteger(requestedTurnNum) && requestedTurnNum > 0;
       // 每一次逻辑派发都要有一张可追溯的卡片，身份 = run + 步骤 + 尝试 + 收件人。

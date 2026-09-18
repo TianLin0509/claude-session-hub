@@ -22,6 +22,8 @@ const {
   attemptEventMatches,
 } = require('./groupchat-attempt-protocol.js');
 const devWorkbenchFeed = require('./dev-workbench-feed');
+const transcript = require('./group-chat-transcript');
+const { remapForkedGroupState } = require('./group-chat-fork');
 
 // 过程汇报（recordProgressUpdate 写入的 `UPDATE: …`）也是一条 assistant 消息，
 //   role / turnNum / sid 与正式答复完全一样，而且落盘更早。凡是按「本轮 + 本席位」
@@ -36,6 +38,16 @@ const isProgressUpdateMessage = message => !!message && message.status === PROGR
 const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
 
 const STATE_VERSION = 4;
+// 增量注入的预算（字符）。超出就不再往 prompt 里塞更早的发言，改成给出群聊记录 md
+// 的路径 + 消息序号，让 AI 自己去读（core/group-chat-transcript.js）。
+//
+// 为什么要有上限：新成员和分支进来的成员游标是 0，「增量」等于整段历史 ——
+// 2026-09-17 之前这里没有任何上限，长群聊里加一个人，第一条 prompt 就能顶爆上下文。
+// 老成员每轮只有队友的新发言，正常远低于这个数，行为不变。
+const HISTORY_INLINE_BUDGET = 40000;
+// 单条发言的内联上限。超过只给开头，并在原地标注「全文见记录 #序号」——
+// 截断必须看得见，静默吃掉半条发言比不给更糟。
+const SINGLE_MESSAGE_INLINE_LIMIT = 16000;
 const MAX_ATTEMPT_HISTORY = 300;
 const MAX_ATTEMPT_EVENTS = 500;
 const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
@@ -75,6 +87,7 @@ function cleanup(hubDataDir, meetingId) {
   try {
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
   } catch {}
+  transcript.cleanupTranscript(hubDataDir, meetingId);
 }
 
 function rawMessageAnchor(meetingId, messageId) {
@@ -239,6 +252,9 @@ class GroupChatOrchestrator {
       aiStats: {},
     };
     this._activePrompts = {};
+    // md 存档的去重指纹与表头标题：进程内缓存，不进状态文件（它们不是事实，是投影）。
+    this._transcriptSignature = null;
+    this._meetingTitle = '';
     this._loadState();
   }
 
@@ -377,8 +393,40 @@ class GroupChatOrchestrator {
     const summary = devWorkbenchFeed.summarizeGroupState(this.state);
     this.state.devWorkbench = summary;
     atomicWriteUtf8(fp, JSON.stringify(this.state, null, 2));
+    // md 存档只是这份状态的投影。写失败不影响任何既有能力（prompt 里引用它的地方
+    // 会自己再试一次），所以只告警，绝不让它把一次正常的状态保存拖失败。
+    try { this.syncTranscriptFile(); }
+    catch (error) { console.warn(`[groupchat] transcript write failed for ${this.meetingId}:`, error && error.message); }
     devWorkbenchFeed.publishSaved(this.hubDataDir, this.meetingId, summary);
     return this.state.revision;
+  }
+
+  /** 群聊记录 md 的绝对路径。给 AI 的 prompt 里出现的就是这一条。 */
+  transcriptPath() {
+    return transcript.transcriptPath(this.hubDataDir, this.meetingId);
+  }
+
+  /**
+   * 内容真的变了才重写 md。群聊一轮要保存十几次状态（每位成员结算、每条过程汇报各一次），
+   * 盲目全量重写会把一次对话变成几十次整文件 IO。
+   */
+  syncTranscriptFile(opts = {}) {
+    const signature = transcript.transcriptSignature(this.state);
+    if (!opts.force && this._transcriptSignature === signature) return this.transcriptPath();
+    const filePath = transcript.writeTranscriptFile(this.hubDataDir, this.meetingId, this.state, {
+      title: opts.title || this._meetingTitle || '',
+      writeFile: atomicWriteUtf8,
+    });
+    this._transcriptSignature = signature;
+    return filePath;
+  }
+
+  /** 群聊标题只用于 md 表头；拿不到就不写，绝不为它去反查 meeting。 */
+  setMeetingTitle(title) {
+    const next = String(title || '').trim();
+    if (!next || next === this._meetingTitle) return;
+    this._meetingTitle = next;
+    this._transcriptSignature = null;
   }
 
   // Renderer events may need a strictly increasing revision without forcing a
@@ -476,6 +524,31 @@ class GroupChatOrchestrator {
 
   getState() {
     return _clone(this.state);
+  }
+
+  /**
+   * 用源群聊的记录初始化这个群聊（整群分支）。
+   *
+   * 只允许在还没有任何发言的新群聊上做。已经聊起来的群聊调它等于用别人的历史
+   * 覆盖自己的历史 —— 那不是分支，是数据丢失，所以直接拒绝而不是"尽力合并"。
+   */
+  importForkedState(sourceState, opts = {}) {
+    if (Array.isArray(this.state.messages) && this.state.messages.length > 0) {
+      throw new Error('目标群聊已经有发言，不能再导入分支记录');
+    }
+    const next = remapForkedGroupState(sourceState, {
+      meetingId: this.meetingId,
+      sidMap: opts.sidMap || {},
+      anchorOf: rawMessageAnchor,
+      sourceMeetingId: opts.sourceMeetingId || null,
+      sourceTitle: opts.sourceTitle || '',
+    });
+    next.schemaVersion = STATE_VERSION;
+    this.state = next;
+    this._transcriptSignature = null;
+    this._activePrompts = {};
+    this._saveState('forked_state_imported', { turnNum: next.currentTurn });
+    return this.getState();
   }
 
   // Informational, source-authored progress. Never touches turn results,
@@ -932,24 +1005,113 @@ class GroupChatOrchestrator {
     //   队友调研全文（群聊式，dispatchInternalPrompt 用）。自由聊默认 false：中间幕不灌回、只带 outcome
     //   （末轮辩论+收敛），省 token 不灌爆上下文（点6）。
     const includeCommitteeMid = opts.includeCommitteeMid === true;
-    const newMsgs = this.state.messages
-      .filter((message, index) => (Number(message && message.seq) || (index + 1)) > lastSeq)
-      .filter(m => m.role !== 'user' && m.sid !== selfSid && m.content && (includeCommitteeMid || !(m.committeeAct && !m.committeeOutcome)));
+    // 2026-09-17：用户的历史提问也要进来。原来这里一刀切掉 role==='user'，于是
+    // 「上一轮没被勾选」或「刚加进来」的成员只看到一堆队友答复，却不知道在答什么问题
+    // —— 用户报的正是这个。Hub 自己的派工卡片和自愈提示仍然不进任何人的上下文
+    // （isUserSpeech 负责分辨），中途补充由 userSupplements 账本逐条投递，这里不重复。
+    // 老状态文件里可能有没写 seq 的消息，统一用「位置 + 1」兜底，
+    // 免得它们被当成 seq=0 而永远算作「已读」。
+    const entries = this.state.messages.map((message, index) => ({
+      message,
+      seq: Number(message && message.seq) || (index + 1),
+    }));
+    const currentSeq = this._currentUserMessageSeq(entries, userInput, lastSeq, opts);
+    const ledger = this.state.userSupplements || { pendingBySid: {}, deliveredBySid: {} };
+    const trackedSupplements = new Set([
+      ...(ledger.pendingBySid[selfSid] || []),
+      ...(ledger.deliveredBySid[selfSid] || []),
+    ]);
+    const newMsgs = entries.filter(({ message, seq }) => {
+      if (!message) return false;
+      if (seq <= lastSeq || seq === currentSeq) return false;
+      if (transcript.isProgressUpdateMessage(message)) return false;
+      if (transcript.isUserSpeech(message)) return !(message.supplement && trackedSupplements.has(seq));
+      if (!transcript.isAssistantSpeech(message)) return false;
+      if (message.sid === selfSid || !message.content) return false;
+      return includeCommitteeMid || !(message.committeeAct && !message.committeeOutcome);
+    });
     void currentUserMessageAppended; // kept in the public contract for callers on old state files
+    // 投委会幕间全量注入有自己的契约（每位委员都要看到队友调研全文），不在这里砍。
+    const budget = includeCommitteeMid ? Infinity : HISTORY_INLINE_BUDGET;
+    const { lines, omitted } = this._inlineHistory(newMsgs, budget);
     const parts = [];
-    if (newMsgs.length > 0) {
-      parts.push('## 新增发言\n' + newMsgs.map(m => `${m.speaker}：${m.content}`).join('\n\n'));
+    if (lines.length > 0) {
+      const head = ['## 新增发言'];
+      if (omitted > 0) {
+        head.push(`（更早的 ${omitted} 条没有展开。完整记录：${this.syncTranscriptFile()}，按 #序号 查阅）`);
+      }
+      parts.push(head.join('\n') + '\n' + lines.join('\n\n'));
     }
     parts.push('## 用户\n' + (userInput || ''));
     parts.push('请发言。');
     return parts.join('\n\n');
   }
 
+  /**
+   * 本轮那条用户消息的 seq。它由 '## 用户' 段单独承载，不能在「新增发言」里再出现一次。
+   * 调用方能直接给就直接用；给不出来（老调用点）就按「最后一条内容一致的用户发言」认。
+   */
+  _currentUserMessageSeq(entries, userInput, lastSeq, opts = {}) {
+    if (Number.isInteger(opts.currentUserMessageSeq)) return opts.currentUserMessageSeq;
+    const text = String(userInput == null ? '' : userInput);
+    // 串行工作流会复用同一条用户消息发给下一位成员（appendUserMessage:false）。
+    // 那条消息对这位成员仍是「未读」，但它马上要以 '## 用户' 的身份出现在同一条
+    // prompt 里 —— 按内容认出来排掉，否则同一句话会在一条 prompt 里出现两次。
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const { message, seq } = entries[i];
+      if (!message || !transcript.isUserSpeech(message)) continue;
+      if (seq <= lastSeq) return null;
+      if (String(message.content == null ? '' : message.content) === text) return seq;
+    }
+    return null;
+  }
+
+  /** 从最新往回内联，装不下的留给 md。返回顺序仍是时间正序。 */
+  _inlineHistory(entries, budget) {
+    const lines = [];
+    let used = 0;
+    let omitted = 0;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const { message, seq } = entries[i];
+      let body = String(message.content == null ? '' : message.content);
+      if (Number.isFinite(budget) && body.length > SINGLE_MESSAGE_INLINE_LIMIT) {
+        body = `${body.slice(0, SINGLE_MESSAGE_INLINE_LIMIT)}\n…（这条太长，这里只给了开头；全文见群聊记录 #${seq}）`;
+      }
+      const line = `#${seq} ${transcript.speakerOf(message)}：${body}`;
+      // 最新一条无论多长都要进去 —— 没有它，这一轮就完全接不上话。
+      if (Number.isFinite(budget) && lines.length > 0 && used + line.length > budget) {
+        omitted = i + 1;
+        break;
+      }
+      used += line.length;
+      lines.unshift(line);
+    }
+    return { lines, omitted };
+  }
+
+  /**
+   * 第一次给这位成员发言时才带的开场：整套群规 + 群聊记录路径。
+   * 新成员、分支加入的成员都走这里，它们的游标是空的。
+   */
   buildFirstDelta(selfSid, userInput, systemPromptText, opts = {}) {
     if (this.state.lastDeliveredIdx[selfSid] === undefined) {
-      return String(systemPromptText || '') + '\n\n' + this.buildDelta(selfSid, userInput, opts);
+      const intro = [String(systemPromptText || ''), this._transcriptPointerBlock()]
+        .filter(part => part && part.trim())
+        .join('\n\n');
+      return intro + '\n\n' + this.buildDelta(selfSid, userInput, opts);
     }
     return this.buildDelta(selfSid, userInput, opts);
+  }
+
+  /** 群里已经有人发过言，才值得告诉新人「完整记录在哪」。空群不加这段噪声。 */
+  _transcriptPointerBlock() {
+    const hasHistory = this.state.messages.some(m => transcript.isAssistantSpeech(m) && m.content);
+    if (!hasHistory) return '';
+    return [
+      '## 群聊记录',
+      `完整记录（每轮自动更新）：${this.syncTranscriptFile()}`,
+      '下面只给了最近的发言。需要回看更早的讨论时，用你的读文件工具打开这个文件，按 `#序号` 定位；不要凭印象复述别人说过的话。',
+    ].join('\n');
   }
 
   completeTurn(turnNum, userInput, results, memberBySid, statsBySid = {}, opts = {}) {
@@ -1416,6 +1578,8 @@ module.exports = {
   buildSystemPromptText,
   normalizeDispatchMeta,
   _private: {
+    HISTORY_INLINE_BUDGET,
+    SINGLE_MESSAGE_INLINE_LIMIT,
     buildSystemPromptText,
     normalizeDispatchMeta,
     RESEARCH_SCENE_PROMPT,

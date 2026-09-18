@@ -101,20 +101,41 @@ test('buildDelta sends only user input when no other assistant messages are new'
   assert.ok(!delta.includes('raw://group/'));
 });
 
-test('buildDelta excludes user messages from added section because current user text is appended at prompt end', () => {
+// 2026-09-17：没看过的用户提问必须补给这位成员，本轮那条除外（它在 '## 用户' 段）。
+// 旧规则一刀切掉所有 role==='user'，于是刚加进来 / 上一轮没被勾选的成员只看到一堆
+// 队友答复，却不知道大家在答什么问题。
+test('buildDelta backfills unseen user questions but never repeats the current one', () => {
   const { orch } = fresh();
   orch.state.messages = [
-    { id: 'u1', role: 'user', speaker: '你', content: 'Q1: 背景问题', sid: null },
-    { id: 'a1-claude', role: 'assistant', speaker: 'Claude', content: 'R1: 回答背景问题', sid: 's-claude' },
-    { id: 'u2', role: 'user', speaker: '你', content: 'Q2: 当前追问', sid: null },
+    { id: 'u1', seq: 1, role: 'user', origin: 'user', speaker: '你', content: 'Q1: 背景问题', sid: null },
+    { id: 'a1-claude', seq: 2, role: 'assistant', speaker: 'Claude', content: 'R1: 回答背景问题', sid: 's-claude' },
+    { id: 'u2', seq: 3, role: 'user', origin: 'user', speaker: '你', content: 'Q2: 当前追问', sid: null },
   ];
 
   const delta = orch.buildDelta('s-codex', 'Q2: 当前追问');
   const beforeUser = delta.split('## 用户')[0];
-  assert.ok(!beforeUser.includes('你：Q1: 背景问题'));
+  assert.ok(beforeUser.includes('你：Q1: 背景问题'), '没看过的历史提问必须补上');
   assert.ok(beforeUser.includes('Claude：R1: 回答背景问题'));
-  assert.ok(!beforeUser.includes('Q2: 当前追问'));
+  assert.ok(!beforeUser.includes('Q2: 当前追问'), '本轮提问只出现在 ## 用户 段');
   assert.match(delta, /## 用户\nQ2: 当前追问\n\n请发言。$/);
+});
+
+// Hub 自己生成的派工卡片和自愈提示同样是 role==='user'，但它们不是维护者说的话，
+// 不能进任何成员的上下文（origin 字段就是为分辨它们而存在的）。
+test('buildDelta still keeps hub dispatch cards and system notes out of member context', () => {
+  const { orch } = fresh();
+  orch.state.messages = [
+    { id: 'u1-d0', seq: 1, role: 'user', origin: 'hub', speaker: '你', content: '阶段一：先建库',
+      dispatch: { kind: 'workflow', stepIndex: 0, attempt: 1 }, sid: null },
+    { id: 'sys1-1', seq: 2, role: 'user', origin: 'system', speaker: '系统', systemNote: true,
+      content: '循环已自愈重启', sid: null },
+    { id: 'a1-claude', seq: 3, role: 'assistant', speaker: 'Claude', content: '建库完成', sid: 's-claude' },
+  ];
+
+  const delta = orch.buildDelta('s-codex', '继续');
+  assert.ok(!delta.includes('阶段一：先建库'));
+  assert.ok(!delta.includes('循环已自愈重启'));
+  assert.ok(delta.includes('Claude：建库完成'));
 });
 
 test('buildFirstDelta prepends system prompt only before the sid is delivered', () => {
@@ -200,7 +221,8 @@ test('completeTurn can preserve prompt-time delivered index so peers see same-tu
 
   orch.beginTurn('Second question.');
   const delta = orch.buildDelta('s-claude', 'Second question.');
-  assert.match(delta, /## 新增发言\nCodex：Codex first reply\./);
+  // 每条发言带 #序号：AI 要能按序号回查群聊记录 md，所以格式是 `#12 说话人：正文`。
+  assert.match(delta, /## 新增发言\n#\d+ Codex：Codex first reply\./);
   assert.ok(!delta.includes('Claude first reply.'));
   assert.match(delta, /## 用户\nSecond question\.\n\n请发言。$/);
 });

@@ -1,13 +1,11 @@
 'use strict';
 
-const { buildBranchSessionTitle, nextBranchIndex } = require('../../core/branch-session-titles.js');
+const { planSessionFork } = require('../../core/session-fork-plan.js');
 const {
   buildSessionResumeMeta,
   nativeSessionIdentity,
   runtimeKindForSession,
   sessionModelId,
-  sessionProviderFamily,
-  supportsForkSession,
   supportsRecoverableSession,
 } = require('../../core/session-capabilities.js');
 const {
@@ -159,6 +157,15 @@ function registerSessionIpc(ipcMain, deps) {
     return session;
   }
 
+  // 分支编号要看「现存 + 已持久化」两边，否则重启后分支序号会从头再来一遍。
+  function forkSiblingPool() {
+    const persistedSessions = getPersistedSessions();
+    return [
+      ...(typeof sessionManager.getAllSessions === 'function' ? sessionManager.getAllSessions() : []),
+      ...(Array.isArray(persistedSessions) ? persistedSessions : []),
+    ];
+  }
+
   ipcMain.handle('fork-session', (_e, request) => {
     const sourceSessionId = request && typeof request === 'object'
       ? request.sourceSessionId
@@ -169,86 +176,29 @@ function registerSessionIpc(ipcMain, deps) {
     const source = typeof sourceSessionId === 'string'
       ? sessionManager.getSession(sourceSessionId)
       : null;
-    if (!source) {
-      return { ok: false, error: 'session-not-found', message: '当前会话不存在或尚未启动' };
-    }
+    const plan = planSessionFork({
+      source,
+      siblingPool: forkSiblingPool(),
+      meeting: source && source.meetingId && meetingManager && typeof meetingManager.getMeeting === 'function'
+        ? meetingManager.getMeeting(source.meetingId)
+        : null,
+      rendererTitle,
+      runtimeKind: source ? runtimeKindForSession(source) : '',
+    });
+    if (!plan.ok) return plan;
 
-    const isDeepSeek = source.kind === 'deepseek' || source.kind === 'deepseek-resume';
-    const runtimeKind = runtimeKindForSession(source);
-    const providerFamily = sessionProviderFamily(source);
-    if (!supportsForkSession(source)) {
-      return {
-        ok: false,
-        error: 'unsupported-kind',
-        message: '仅支持 Claude Code、DeepSeek 和 Codex 会话创建分支（Kimi CLI 无 fork 能力）',
-      };
-    }
-
-    const identity = nativeSessionIdentity(source);
-    const nativeSessionId = identity && identity.value;
-    if (!isSafeNativeSessionId(nativeSessionId)) {
-      return {
-        ok: false,
-        error: 'native-session-id-missing',
-        message: '当前会话尚未绑定原生会话 ID，请等待本轮回答完成后重试',
-      };
-    }
-
-    const meeting = source.meetingId && meetingManager && typeof meetingManager.getMeeting === 'function'
-      ? meetingManager.getMeeting(source.meetingId)
-      : null;
-    const persistedSessions = getPersistedSessions();
-    const siblingPool = [
-      ...(typeof sessionManager.getAllSessions === 'function' ? sessionManager.getAllSessions() : []),
-      ...(Array.isArray(persistedSessions) ? persistedSessions : []),
-    ];
-    const branchIndex = nextBranchIndex(source.id, siblingPool);
-    const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting, branchIndex });
-    const opts = {
-      ...(source.runtimeBackend === 'claude-stream-json' ? source.nativeConfig : {}),
-      title: resolvedTitle.title,
-      cwd: source.cwd,
-      branchSourceSessionId: source.id,
-      branchIndex,
-      branchAutoTitlePending: resolvedTitle.branchAutoTitlePending,
-      // Prefer the exact title visible to the user. A generic group member name
-      // (for example Codex 2) inherits the owning meeting title; a truly unnamed
-      // standalone parent stays pending and is named from the branch's first prompt.
-      autoTitleGenerated: resolvedTitle.autoTitleGenerated,
+    const { kind, opts } = plan;
+    const createFork = () => {
+      const session = sessionManager.createSession(kind, opts);
+      registerSessionForTap(session);
+      sendToRenderer('session-created', { session });
+      return { ok: true, session };
     };
-    const sourceModel = sessionModelId(source);
-    if (sourceModel) opts.model = sourceModel;
-    // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
-    if (source.effort) opts.effort = source.effort;
-    if (source.codexApprovalPolicy) opts.approvalPolicy = source.codexApprovalPolicy;
-    if (source.codexSandbox) opts.sandbox = source.codexSandbox;
-    // 同理：MCP 档位和 fast 开关也要跟着分支走，否则从 Lean/关 fast 的会话
-    // 拉出来的分支会被悄悄拉回 Full / 开 fast。
-    if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
-    if (source.fastMode === false) opts.fastMode = false;
-    if (source.codexSpeedTier) opts.codexSpeedTier = source.codexSpeedTier;
-    if (typeof source.contextMax === 'number') opts.contextMax = source.contextMax;
-
-    let kind;
-    const createFork=()=>{
-      const session=sessionManager.createSession(kind,opts);
-      registerSessionForTap(session);sendToRenderer('session-created',{session});
-      return {ok:true,session};
-    };
-    if (providerFamily === 'acp') {
-      kind = source.kind.replace(/-resume$/, '');
-      return sessionManager.getNativeSession(source.id).fork().then(fork=>{opts.acpFork=fork;return createFork();})
-        .catch(error=>({ok:false,error:'acp-fork-failed',message:error.message}));
-    } else if (providerFamily === 'claude') {
-      kind = isDeepSeek ? 'deepseek' : 'claude';
-      opts.forkCCSessionId = nativeSessionId;
-      if (runtimeKind.startsWith('deepseek-legacy')) opts.deepseekLegacyClaude = true;
-    } else {
-      kind = isDeepSeek ? 'deepseek' : 'codex';
-      if (source.codexProfile) opts.codexProfile = source.codexProfile;
-      opts.codexForkSid = nativeSessionId;
+    if (plan.needsAcpFork) {
+      return sessionManager.getNativeSession(source.id).fork()
+        .then(fork => { opts.acpFork = fork; return createFork(); })
+        .catch(error => ({ ok: false, error: 'acp-fork-failed', message: error.message }));
     }
-
     return createFork();
   });
 

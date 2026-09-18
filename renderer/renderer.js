@@ -7593,6 +7593,8 @@ const sessionContextMenu = createSessionContextMenuController({
   renderSessionList: scheduleSessionListRender,
   schedulePersist,
   wakeDormantSession: (sessionId) => resumeDormantSession(sessionId, { forceScrollBottom: true }),
+  // 群聊分支建出新群聊/新成员后，直接把用户带到那间房里。
+  selectMeeting: (meetingId) => { void selectMeeting(meetingId); },
 });
 sessionContextMenu.init();
 const openContextMenu = sessionContextMenu.open;

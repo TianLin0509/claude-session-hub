@@ -10,7 +10,10 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const IPC_SRC = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
+// 2026-09-17：分支参数的计算从 IPC 搬进 core/session-fork-plan.js（三个入口共用：
+// 单会话分支 / 加入群聊 / 整群分支）。契约还是同一套，只是换了住处。
+const IPC_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-fork-plan.js'), 'utf8');
+const HANDLER_SRC = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
 const MANAGER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
 const CAP_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-capabilities.js'), 'utf8');
 
@@ -29,7 +32,7 @@ console.log('Running fork CLI coverage tests...');
 
 test('DeepSeek fork runtime is selected from the persisted native id', () => {
   assert.match(IPC_SRC, /const isDeepSeek = source\.kind === 'deepseek' \|\| source\.kind === 'deepseek-resume'/);
-  assert.match(IPC_SRC, /const runtimeKind = runtimeKindForSession\(source\)/);
+  assert.match(HANDLER_SRC, /runtimeKind: source \? runtimeKindForSession\(source\) : ''/);
   assert.match(IPC_SRC, /const providerFamily = sessionProviderFamily\(source\)/);
   assert.match(IPC_SRC, /if \(!supportsForkSession\(source\)\)/,
     'the shared capability gate must accept current Codex and legacy Claude-backed DeepSeek sessions');
