@@ -53,7 +53,28 @@ async function main() {
     assert.equal(service.snapshot().needsLogin, false);
     assert.equal(service.snapshot().error, null);
     assert.equal(service.snapshot().observedAt, time);
-    console.log('PASS token-plan: ratios, malformed data, read-only command, coalescing, cooldown, stale retention, auth pause, account switch race');
+    const intervalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-plan-interval-'));
+    try {
+      fs.writeFileSync(path.join(intervalDir, 'config.json'), '{}');
+      let clock = 1;
+      const spawn = (opts) => {
+        let calls = 0, cb;
+        const svc = createTokenPlanUsageService({ configDir: intervalDir, cliPath: __filename,
+          now: () => clock, execute(node, args, options, c) { calls++; cb = c; }, ...opts });
+        return { svc, fire: value => cb(null, value), count: () => calls };
+      };
+      const custom = spawn({ backgroundIntervalMs: 10000 });
+      let pending = custom.svc.refresh(); custom.fire(raw); await pending;
+      clock += 9000; await custom.svc.refresh(); assert.equal(custom.count(), 1);
+      clock += 2000; pending = custom.svc.refresh(); custom.fire(raw); await pending;
+      assert.equal(custom.count(), 2);
+      const defaulted = spawn({});
+      pending = defaulted.svc.refresh(); defaulted.fire(raw); await pending;
+      clock += 60000; await defaulted.svc.refresh(); assert.equal(defaulted.count(), 1);
+      clock += 250000; pending = defaulted.svc.refresh(); defaulted.fire(raw); await pending;
+      assert.equal(defaulted.count(), 2);
+    } finally { fs.rmSync(intervalDir, { recursive: true, force: true }); }
+    console.log('PASS token-plan: ratios, malformed data, read-only command, coalescing, cooldown, stale retention, auth pause, account switch race, background interval');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

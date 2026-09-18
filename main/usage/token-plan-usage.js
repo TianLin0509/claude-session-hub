@@ -24,6 +24,7 @@ function createTokenPlanUsageService({
   configDir = process.env.BAILIAN_CONFIG_DIR || path.join(os.homedir(), '.bailian'),
   cliPath = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', 'bailian-cli', 'dist', 'bailian.mjs'),
   nodePath = process.execPath, env = process.env, now = Date.now, execute = execFile,
+  backgroundIntervalMs = 300000,
 } = {}) {
   let scope = null, value = null, error = null, lastAttempt = -Infinity, blocked = false, flight = null;
   function currentScope() {
@@ -47,7 +48,7 @@ function createTokenPlanUsageService({
   function refresh(force = false) {
     const requestedScope = syncScope();
     if (flight) return flight;
-    if ((!force && blocked) || now() - lastAttempt < (force ? 30000 : 300000)) {
+    if ((!force && blocked) || now() - lastAttempt < (force ? 30000 : backgroundIntervalMs)) {
       return error ? Promise.reject(new Error(error)) : Promise.resolve(snapshot());
     }
     lastAttempt = now();
