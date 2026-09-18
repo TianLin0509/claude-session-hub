@@ -1474,14 +1474,24 @@ function getOrCreateTerminal(sessionId) {
       }
       return true;
     }
-    // Ctrl+C — copy if there's a selection, else pass through as SIGINT
+    // Ctrl+C — copy if there's a selection, else interrupt the current turn.
     if (!e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       if (terminal.hasSelection()) {
         void clipboardController.copyText(terminal.getSelection(), { source: 'terminal' });
         e.preventDefault();
         return false;
       }
-      return true;
+      // Native Claude has no PTY to send \x03 down: terminal.onData returns
+      // early for this backend, so before this branch the key was swallowed in
+      // the renderer and Ctrl+C did nothing at all -- no interrupt, no error.
+      // Route it to the same control the ■ button uses. Codex native already
+      // does the equivalent inside its own session (codex-native-session.js).
+      if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+        e.preventDefault();
+        void interruptNativeClaudeSession(sessionId);
+        return false;
+      }
+      return true; // PTY sessions: xterm still sends it as SIGINT.
     }
     return true;
   });
@@ -4090,6 +4100,21 @@ async function reconnectSession(sessionId) {
   }
 }
 
+// Single interrupt path for native Claude seats: the ■ button, the terminal's
+// Ctrl+C and the group-member stop all have to mean the same thing. Only the
+// engine's terminal_reason confirms an interrupt, so a rejected *request* is
+// the only thing worth reporting here.
+async function interruptNativeClaudeSession(sessionId) {
+  try {
+    const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
+    if (!result?.ok) throw new Error(result?.error || result?.message || '停止请求未确认');
+    return true;
+  } catch (error) {
+    showToast('停止失败：' + error.message, 'error');
+    return false;
+  }
+}
+
 // Electron 41 起 File.path 被删，拖拽也要走 webUtils.getPathForFile。
 function droppedFilePath(file) {
   if (!file) return '';
@@ -4367,10 +4392,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   stopBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
-      try {
-        const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
-        if (!result?.ok) throw new Error(result?.error || '停止请求未确认');
-      } catch (error) { showToast('停止失败：' + error.message, 'error'); }
+      await interruptNativeClaudeSession(sessionId);
       inputBox.focus();
       return;
     }
