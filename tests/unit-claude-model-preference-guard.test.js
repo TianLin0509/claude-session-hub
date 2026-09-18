@@ -9,7 +9,27 @@ const {
   captureClaudeModelPreference,
   claudePreferenceMatchesTarget,
   restoreClaudeModelPreference,
+  writeJsonAtomic,
 } = require('../core/claude-model-preference-guard.js');
+
+test('atomic preference replacement retries temporary denial and preserves the last good file on permanent denial', () => {
+  withSettings({ model: 'opus' }, settingsPath => {
+    let calls = 0, permanent = false;
+    const denied = Object.assign(new Error('replacement denied'), { code: 'EPERM' });
+    const fsModule = { ...fs, renameSync(source, target) {
+      calls++;
+      if (permanent || calls < 3) throw denied;
+      return fs.renameSync(source, target);
+    } };
+    writeJsonAtomic(settingsPath, { model: 'sonnet' }, fsModule);
+    assert.equal(calls, 3);
+    permanent = true; calls = 0;
+    assert.throws(() => writeJsonAtomic(settingsPath, { model: 'fable' }, fsModule), error => error === denied);
+    assert.equal(calls, 9);
+    assert.equal(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).model, 'sonnet');
+    assert.deepEqual(fs.readdirSync(path.dirname(settingsPath)), ['settings.json']);
+  });
+});
 
 function withSettings(initial, fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-model-pref-'));

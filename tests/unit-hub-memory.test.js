@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const {EventEmitter}=require('node:events');
 const {SqliteSessionSearchIndex}=require('../core/session-search-sqlite-index');
-const {HubMemoryService,readJSON}=require('../core/hub-memory-service');
+const {HubMemoryService,readJSON,atomicJSON}=require('../core/hub-memory-service');
 const history=require('../core/memory-history');
 
 function setup(t) {
@@ -38,6 +38,28 @@ function setup(t) {
     fs.writeFileSync(path.join(dir,'result.json'),JSON.stringify({status:'complete',processedFiles:j.inputFiles,summary:'保留界面偏好',...changes.result}));};
   return {root,cwd,home,index,add,grow,service,sessions,tap,start,output};
 }
+
+test('atomic memory snapshots survive transient replacement denial and preserve old data on permanent failure',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-memory-atomic-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const file=path.join(root,'receipt.json');atomicJSON(file,{revision:1});
+  const rename=fs.renameSync;let calls=0,mode='transient';
+  const denied=Object.assign(new Error('replacement denied'),{code:'EPERM'});
+  const mock=t.mock.method(fs,'renameSync',(from,to)=>{
+    calls++;
+    if(mode==='permanent'||(mode==='transient'&&calls<3))throw denied;
+    if(mode==='missing')throw Object.assign(new Error('missing'),{code:'ENOENT'});
+    return rename(from,to);
+  });
+  atomicJSON(file,{revision:2});assert.equal(calls,3);assert.equal(readJSON(file).revision,2);
+  mode='permanent';calls=0;
+  assert.throws(()=>atomicJSON(file,{revision:3}),error=>error===denied);
+  assert.equal(calls,9);assert.equal(readJSON(file).revision,2);
+  assert.deepEqual(fs.readdirSync(root),['receipt.json']);
+  mode='missing';calls=0;assert.throws(()=>atomicJSON(file,{revision:4}),{code:'ENOENT'});
+  assert.equal(calls,1);assert.equal(readJSON(file).revision,2);
+  mock.mock.restore();
+});
 
 test('history exports full stored text, provenance and project boundaries from one snapshot',t=>{
   const f=setup(t),large='原始正文'.repeat(45000);f.add('large',large);f.add('foreign','不可导出',f.cwd+'-other');

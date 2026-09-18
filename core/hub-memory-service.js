@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { randomUUID, createHash } = require("node:crypto");
+const { renameWithRetrySync } = require("./claude-project-trust");
 const {
   projectPathKey,
   readProjectSearchRoots,
@@ -48,8 +49,17 @@ function readJSON(file, fallback) {
 function atomicJSON(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + "." + randomUUID() + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
+    // Windows readers can briefly deny replacement. Bound exceptional waiting
+    // to 120 ms; never unlink the last good snapshot to force a replacement.
+    renameWithRetrySync(tmp, file, { retries: 8, retryDelayMs: 15 });
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch (cleanupError) {
+      if (cleanupError.code !== "ENOENT") error.cleanupError = cleanupError;
+    }
+    throw error;
+  }
 }
 function alive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
