@@ -77,6 +77,7 @@ const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerChatgptBridgeIpc } = require('./main/ipc/chatgpt-bridge-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerPromptSubmitIpc } = require('./main/ipc/prompt-submit-handlers.js');
+const { createClaudeQuotaResume, registerClaudeQuotaIpc } = require('./main/claude-quota-resume.js');
 const { registerWorkspaceIpc } = require('./main/ipc/workspace-handlers.js');
 const { getTerminalBatchDelay, isBackgroundMember } = require('./main/terminal-output-policy.js');
 const { TerminalOutputBatcher } = require('./main/terminal-output-batcher.js');
@@ -496,6 +497,16 @@ const completionNotifier = new CompletionNotifier({
 sessionManager.workspaceService = workspaceService;
 const workspaceMigrationSessionIds = new Set();
 
+// 原生 Claude 撞到额度上限后的等待与续跑。CLI 的 REPL 以前自己干这件事，
+//   stream-json 传输下没有输入框可敲，于是等待和发送都搬到 Hub 这边来。
+//   判据全在 core/claude-quota-watchdog.js，这里只负责副作用。
+const claudeQuotaResume = createClaudeQuotaResume({
+  sessionManager,
+  statePath: path.join(getHubDataDir(), 'claude-quota-waits.json'),
+  isEnabled: () => getHubConfig().claudeQuotaAutoResume !== false,
+  logger: console,
+});
+
 sessionManager.on('session-updated', session => {
   if (session.runtimeBackend !== 'claude-stream-json') return;
   sessionUsageService.bind(session);
@@ -524,6 +535,9 @@ sessionManager.on('native-agent-lifecycle', event => {
     if (event.status === 'completed') transcriptTap.emit('turn-complete', payload);
     else if (event.status === 'interrupted') transcriptTap.emit('turn-aborted', payload);
     else transcriptTap.emit('turn-error', { ...payload, message: native.runtime.reason });
+    // 只有失败的一轮会武装等待，而且要在失败之后重读一次账号额度才作数。
+    void Promise.resolve(claudeQuotaResume.onTurnComplete(event))
+      .catch(error => console.warn('[claude-quota] arm failed:', error && error.message));
   }
 });
 
@@ -1268,6 +1282,9 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   sessionManager.emit('session-exited', { sessionId, meetingId, exitInfo: exitInfo || null });
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
+  // 会话真的关掉了，等待不该留在盘上等一个再也不会回来的席位。
+  // 休眠走 onSessionSuspended，不经过这里，所以休眠会话的等待会保留。
+  if (!isWorkspaceMigration) { try { claudeQuotaResume.forget(sessionId); } catch {} }
   // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
   try { cliReadyDetector.cleanup(sessionId); } catch {}
   // 渲染层要靠 requested 分辨“用户删/重启/迁移”和“CLI 自己崩了”；
@@ -1781,6 +1798,9 @@ registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
+// 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
+claudeQuotaResume.start();
+registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
 require('./main/ipc/acp-handlers').registerAcpIpc(ipcMain, {sessionManager});
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {

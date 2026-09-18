@@ -861,6 +861,16 @@ class ClaudeNativeSession extends EventEmitter {
     return require('./claude-native-usage').claudeAccountUsageFromControl(response);
   }
 
+  // The quota watchdog's wait rides on the runtime snapshot rather than a
+  // channel of its own, so the composer reads "等额度恢复" from the same place
+  // it reads every other state of this session (main/claude-quota-resume.js).
+  setQuotaWait(wait) {
+    if (this.closed) return;
+    const current = this.runtime.quotaWait || null;
+    if (JSON.stringify(current) === JSON.stringify(wait || null)) return;
+    this.update({ quotaWait: wait || null });
+  }
+
   historyPath() { return findNativeClaudeHistory(this.sessionId, this.options); }
 
   async refreshContext() {
