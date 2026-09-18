@@ -81,10 +81,10 @@ assert.ok(
   && /if \(!transition\.applied\) return;/.test(replyCompleteBody),
   'Codex task_complete must pass through the ordered session-state reducer',
 );
-// 唯一允许绕过 reducer 的是那条 Claude 分支，而且必须显式按运行时收口。
+// 只有旧 PTY Claude 允许绕过 reducer；原生 Claude 没有 Stop hook，必须计入未读。
 // 谁把它改成无条件早退，这里就会红 —— 那才是真的把 Codex 的收尾也吞掉了。
 assert.ok(
-  /if \(isClaudeTranscriptRuntime\) \{/.test(replyCompleteBody),
+  /if \(isClaudeTranscriptRuntime && session\.runtimeBackend !== 'claude-stream-json'\) \{/.test(replyCompleteBody),
   'the only reducer bypass must stay gated on the Claude transcript runtime',
 );
 assert.ok(

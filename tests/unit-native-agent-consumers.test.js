@@ -17,6 +17,7 @@ test('resolved native action error clears from the displayed controls while loca
     append(...nodes) { this.children.push(...nodes); }
     replaceChildren(...nodes) { this.children = nodes; }
     setAttribute() {}
+    addEventListener() {}
   }
   global.document = { createElement: () => new Element() };
   try {
@@ -26,7 +27,8 @@ test('resolved native action error clears from the displayed controls while loca
     controls.update(session);
     // Find the alert by class: the panel gains rows over time and a fixed
     // index silently starts asserting about a different element.
-    const error = controls.element.children.find(child => child.className === 'claude-native-error');
+    const descendants = node => [node, ...node.children.flatMap(descendants)];
+    const error = descendants(controls.element).find(child => child.className === 'claude-native-error');
     assert.equal(error.textContent, session.nativeActionError);
     controls.update({ ...session, nativeActionError: null });
     assert.equal(error.textContent, '', 'Main cleared the failure after reconnect');

@@ -1,6 +1,14 @@
 /* Keep the stage stable across sessions, drafts and runtime states. Longer
    drafts scroll inside two text lines; auxiliary prompts remain popovers
    without moving the transcript or directory. */
+::highlight(session-find-all) { background-color: #e3b34166; color: inherit; }
+::highlight(session-find-current) { background-color: #f0883ecc; color: #101318; }
+.native-dismissible-notice { display: flex; align-items: center; gap: 12px; }
+.native-dismissible-notice[hidden] { display: none; }
+.native-dismissible-notice > :first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.native-notice-dismiss { flex: 0 0 auto; }
+/* Keep find navigation above the question directory (z-index: 65). */
+.terminal-search { z-index: 70; }
 .terminal-panel .floating-input-bar.visible {
   --fi-layout-h: 212px;
   box-sizing: border-box;
