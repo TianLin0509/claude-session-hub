@@ -1362,7 +1362,7 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   return updated || null;
 }
 
-registerMeetingCreateIpc(ipcMain, {
+const { addMeetingSubInternal } = registerMeetingCreateIpc(ipcMain, {
   fs,
   getHookPort: () => hookPort,
   getHubDataDir,
@@ -1383,6 +1383,22 @@ registerMeetingCreateIpc(ipcMain, {
   sessionManager,
   slotIds: SLOT_IDS,
   workspaceService,
+});
+
+// 群聊分支（加入已有会话 / 从会话建群 / 整群分支）。必须排在 registerMeetingCreateIpc
+// 之后：它复用那里的 addMeetingSubInternal，成员的 MCP 注入、槽位登记都长在那个函数里。
+require('./main/ipc/groupchat-fork-handlers.js').registerGroupChatForkIpc(ipcMain, {
+  addMeetingSubInternal,
+  getHubDataDir,
+  getImmersiveByMeeting: () => _immersiveByMeeting,
+  getLastPersistedSessions: () => lastPersistedSessions,
+  getPersistedSessions: () => lastPersistedSessions,
+  groupchat,
+  meetingManager,
+  sendToRenderer,
+  sessionManager,
+  sessionStore,
+  stateStore,
 });
 
 registerMeetingIpc(ipcMain, {

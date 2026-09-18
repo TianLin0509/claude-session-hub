@@ -9,7 +9,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const HANDLER_SRC = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'workspace-handlers.js'), 'utf8');
-const SESSION_IPC_SRC = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'session-handlers.js'), 'utf8');
+// 2026-09-17：分支参数的实现搬到 core/session-fork-plan.js，见该文件头注释。
+const SESSION_IPC_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-fork-plan.js'), 'utf8');
 
 function test(name, fn) {
   try {

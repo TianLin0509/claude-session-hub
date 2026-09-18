@@ -24,19 +24,30 @@ function createSessionContextMenuController({
   notify,
   wakeDormantSession,
   confirmAction = (message, options) => require('./ui-feedback').confirmHubAction(message, { document, ...options }),
+  selectMeeting = null,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let contextMenuSessionId = null;
+  let lastContextMenuPoint = { x: 0, y: 0 };
   const showNotice = typeof notify === 'function'
     ? notify
     : (message) => {
       require('./ui-feedback').showHubAlert(message, { document });
     };
+  const forkUi = require('./groupchat-fork-ui.js').createGroupChatForkUi({
+    document,
+    ipcRenderer,
+    notify: showNotice,
+    getMeetings: () => meetings,
+    selectMeeting,
+    confirmAction,
+  });
   const roomAlreadyAsleep = meeting => meeting?.status === 'dormant'
     && !(meeting.subSessions || []).some(id => sessions.has(id) && sessions.get(id).status !== 'dormant');
 
   function open(sessionId, x, y) {
     contextMenuSessionId = sessionId;
+    lastContextMenuPoint = { x, y };
     contextMenuEl.style.display = 'block';
     contextMenuEl.style.left = `${x}px`;
     contextMenuEl.style.top = `${y}px`;
@@ -86,6 +97,16 @@ function createSessionContextMenuController({
       bottomBtn.style.display = target ? '' : 'none';
       bottomBtn.textContent = target && target.bottomed ? '取消置底' : '置底';
     }
+    // 群聊分支入口：会话看到「加入群聊…」，群聊看到「分支群聊」。能不能分支由主进程
+    // 最终判定（要有原生会话 ID），这里只做最粗的类型过滤，不在前端复制那套规则。
+    const joinGroupBtn = contextMenuEl.querySelector('[data-action="join-group"]');
+    if (joinGroupBtn) {
+      joinGroupBtn.style.display = session && !meeting && forkUi && session.purpose !== 'chuxin-research' ? '' : 'none';
+    }
+    const forkMeetingBtn = contextMenuEl.querySelector('[data-action="fork-meeting"]');
+    if (forkMeetingBtn) {
+      forkMeetingBtn.style.display = meeting && meeting.groupChat && forkUi ? '' : 'none';
+    }
   }
 
   function close() {
@@ -124,6 +145,16 @@ function createSessionContextMenuController({
           } catch (error) {
             showNotice('会议室休眠失败：' + (error?.message || String(error)));
           }
+          return;
+        }
+
+        if (action === 'fork-meeting' && meeting) {
+          await forkUi.forkMeeting(sid);
+          return;
+        }
+
+        if (action === 'join-group' && !meeting && session) {
+          await forkUi.openJoinGroupMenu(sid, lastContextMenuPoint.x, lastContextMenuPoint.y);
           return;
         }
 

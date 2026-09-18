@@ -6504,6 +6504,30 @@ if (typeof document !== 'undefined') (function () {
       menu.appendChild(item);
     }
 
+    // 从已有会话分支一个成员进来（2026-09-17）。分支而不是搬进来：MCP 是启动时注入的，
+    // 跑起来的会话改不了；分支既继承了原会话的上下文，又是一个由本群聊配置出来的新进程。
+    if (meeting.groupChat) {
+      const existing = document.createElement('button');
+      existing.className = 'mr-quote-menu-item';
+      existing.type = 'button';
+      existing.textContent = '从已有会话分支…';
+      existing.style.borderTop = '1px solid var(--border, var(--border-mid))';
+      existing.addEventListener('click', async () => {
+        menu.remove();
+        await _groupChatForkUi().addExistingSessionToMeeting(meetingId, async (result) => {
+          if (result.session && typeof sessions !== 'undefined' && sessions) {
+            sessions.set(result.session.id, result.session);
+          }
+          meetingData[meetingId] = result.meeting;
+          renderHeader(result.meeting);
+          renderToolbar(result.meeting);
+          setupInput(result.meeting);
+          await refreshGroupChatPanel(result.meeting);
+        });
+      });
+      menu.appendChild(existing);
+    }
+
     document.body.appendChild(menu);
     const dismiss = (e) => {
       if (!menu.contains(e.target)) {
@@ -6512,6 +6536,25 @@ if (typeof document !== 'undefined') (function () {
       }
     };
     setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+  }
+
+  let _gcForkUi = null;
+  function _groupChatForkUi() {
+    if (!_gcForkUi) {
+      _gcForkUi = require('./groupchat-fork-ui.js').createGroupChatForkUi({
+        document,
+        ipcRenderer,
+        // 失败必须看得见：群聊横幅不在时（弹窗独立于房间渲染）退回到对话框，
+        // 不能让一条错误消息掉进地板。
+        notify: (message, level) => {
+          const shown = _showGcEscapeNotice(message, level || 'info');
+          if (!shown && level === 'error') require('./ui-feedback').showHubAlert(message, { document });
+        },
+        getMeetings: () => meetingData,
+        selectMeeting: null,
+      });
+    }
+    return _gcForkUi;
   }
 
   // Arch refactor 2026-05-02: AI 群聊界面去 shell。子 session shell 只在主区挂载
