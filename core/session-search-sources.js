@@ -3,7 +3,8 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseClaudeTranscriptText } = require('./claude-transcript-parser.js');
+const { parseClaudeTranscriptEntries } = require('./claude-transcript-parser.js');
+const { JsonlByteScanner } = require('./jsonl-byte-scanner.js');
 const {
   parseCodexRolloutEntries,
   readCodexRolloutMeta,
@@ -22,13 +23,17 @@ function normalizePath(value) {
 }
 
 const DEFAULT_SEARCH_SOURCE_READ_BYTES = 4 * 1024 * 1024;
-const CODEX_SEARCH_PROJECTION_VERSION = 2;
+// 单文件 JSON（群聊 timeline、Gemini）只能整读；在搜索子进程里读，64MB 以内不值得降级。
+const DEFAULT_JSON_SOURCE_READ_BYTES = 64 * 1024 * 1024;
+// v3：对话 doc 的 ordinal 改用 rollout 行号，与工具 doc 同一尺度。
+const CODEX_SEARCH_PROJECTION_VERSION = 4;
 
 // 索引里「一条 doc 的文本长什么样」的版本号。refresh() 是按 signature 增量复用的
 // （mtime+size+元数据都没变就直接复用旧文档），所以**只改解析逻辑不改签名，
 // 已经入库的源永远不会重新解析**。2026-08-28 给 user 文档加了注入清洗，
 // 必须靠这个版本号把全量源顶掉重来。以后再改文本投影就 +1。
-const SEARCH_TEXT_PROJECTION_VERSION = 1;
+// v2：Claude 由尾部 4MB 改为流式读完整文件；剥掉 Hub 附加的梦境索引。
+const SEARCH_TEXT_PROJECTION_VERSION = 3;
 const PROJECTION_SUFFIX = `:utext-v${SEARCH_TEXT_PROJECTION_VERSION}`;
 
 function readBoundedJsonlTailText(filePath, maxBytes = DEFAULT_SEARCH_SOURCE_READ_BYTES, fsRef = fs) {
@@ -616,6 +621,15 @@ function titleOnlySourceFromDescriptor(descriptor, options = {}) {
   };
 }
 
+// 用户 2026-09-17 明确：只搜自然语言，绝不搜改动代码。工具 doc 因此只保留一行
+// 可辨认的元信息（工具名 + 命令/路径开头），既不进全文索引也不再存正文 ——
+// 实测它们此前占索引正文的 88%（2.84 亿字符，其中一半是 apply_patch 的文件内容）。
+const TOOL_META_CHARS = 120;
+function toolMetaText(value) {
+  const flat = String(value || '').replace(/\s+/g, ' ').trim();
+  return flat.length > TOOL_META_CHARS ? flat.slice(0, TOOL_META_CHARS) : flat;
+}
+
 function omitInlineBinary(value) {
   return String(value || '').replace(
     /(data:[^;,\s]+;base64,)[A-Za-z0-9+/_=-]{1024,}/gi,
@@ -631,7 +645,7 @@ function toolText(toolCall) {
     try { parts.push(omitInlineBinary(typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input))); }
     catch { parts.push(String(toolCall.input)); }
   }
-  return parts.join('\n').trim();
+  return toolMetaText(parts.join(' '));
 }
 
 function docsFromTurns(turns, title, provider) {
@@ -646,13 +660,16 @@ function docsFromTurns(turns, title, provider) {
     const text = isUser ? searchableUserText(turn.text) : String(turn.text);
     if (!text) return;
     const eventId = String(turn.id || `${turn.role || 'turn'}-${ordinal}`);
+    // Parsers that know source line numbers order text by its last source line.
+    const start = Number.isFinite(turn.sourceIndex) ? turn.sourceIndex : ordinal;
+    const end = Number.isFinite(turn.sourceEndIndex) ? turn.sourceEndIndex : start;
     docs.push({
       id: eventId, eventId,
       scope: isUser ? 'user' : 'assistant',
       role: isUser ? 'user' : 'assistant',
       speaker: isUser ? '我' : providerLabel(provider),
       text,
-      ordinal,
+      ordinal: end,
       timestamp: Number(turn.tsEnd || turn.ts) || 0,
     });
     if (Array.isArray(turn.toolCalls)) {
@@ -663,7 +680,7 @@ function docsFromTurns(turns, title, provider) {
           id: `${eventId}:tool:${toolIndex}`,
           eventId: `${eventId}:tool:${toolIndex}`,
           scope: 'tool', role: 'tool', speaker: providerLabel(provider),
-          text, ordinal: ordinal + (toolIndex + 1) / 100,
+          text, ordinal: start + (toolIndex + 1) / 1000,
           timestamp: Number(turn.tsEnd || turn.ts) || 0,
         });
       });
@@ -684,7 +701,7 @@ function codexToolDocFromRecord(record, ordinal) {
     try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
     catch { parts.push(String(value)); }
   }
-  const text = parts.join('\n').trim();
+  const text = toolMetaText(parts.join(' '));
   if (!text) return null;
   const eventId = `codex-tool-${record.timestamp || ordinal}-${shortHash(text)}`;
   return {
@@ -725,15 +742,42 @@ function parseCodexRolloutStreaming(filePath) {
   return { turns: parseCodexRolloutEntries(entries), toolDocs };
 }
 
+// tool_result 行是 Claude transcript 里最大的一类（命令输出、图片 Base64），搜索只
+// 索引工具调用本身，所以从信封前缀就丢掉，其余行全部解析。
+function claudeSearchLineFilter(prefix, context = {}) {
+  if (prefix.includes('"type":"tool_result"')) return false;
+  const exhausted = context.final || (Number(context.prefixBytes) || 0) >= (Number(context.maxPrefixBytes) || 0);
+  return exhausted ? true : null;
+}
+
+function streamJsonlEntriesSync(filePath, lineFilter, chunkBytes = 1024 * 1024) {
+  const entries = [];
+  const scanner = new JsonlByteScanner(record => entries.push(record), { lineFilter, maxPrefixBytes: 64 * 1024 });
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(chunkBytes);
+    let position = 0;
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) break;
+      scanner.push(bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  scanner.end({ flushFinal: true });
+  return entries;
+}
+
 function parseClaudeDescriptor(descriptor, options = {}) {
-  const bounded = readBoundedJsonlTailText(descriptor.filePath, options.maxReadBytes);
-  const turns = parseClaudeTranscriptText(bounded.raw);
+  const turns = parseClaudeTranscriptEntries(streamJsonlEntriesSync(descriptor.filePath, claudeSearchLineFilter));
   const session = sessionRecordFromDescriptor(descriptor, turns);
   const docs = docsFromTurns(turns, session.title, descriptor.provider);
   if (docs[0]) docs[0].timestamp = session.updatedAt;
   return {
     key: descriptor.key, signature: descriptor.signature, session, docs,
-    searchable: !session.meetingId, truncatedByReadGuard: bounded.truncated,
+    searchable: !session.meetingId, truncatedByReadGuard: false,
   };
 }
 
@@ -862,7 +906,7 @@ function parseKimiWire(filePath) {
         try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
         catch { parts.push(String(value)); }
       }
-      const text = parts.join('\n').trim();
+      const text = toolMetaText(parts.join(' '));
       if (!text) return;
       const eventId = `kimi-tool-${lineIndex}-${shortHash(text)}`;
       toolDocs.push({
@@ -890,7 +934,7 @@ function parseKimiDescriptor(descriptor) {
 }
 
 function parseGeminiDescriptor(descriptor, options = {}) {
-  const maxBytes = Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
+  const maxBytes = Math.max(256 * 1024, Number(options.maxJsonReadBytes) || DEFAULT_JSON_SOURCE_READ_BYTES);
   let data = null;
   try {
     const stat = fs.statSync(descriptor.filePath);
@@ -937,7 +981,7 @@ function meetingSpeakerMap(data, maps) {
 }
 
 function parseMeetingDescriptor(descriptor, maps, options = {}) {
-  const maxReadBytes = Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
+  const maxReadBytes = Math.max(256 * 1024, Number(options.maxJsonReadBytes) || DEFAULT_JSON_SOURCE_READ_BYTES);
   if (fs.statSync(descriptor.filePath).size > maxReadBytes) throw new Error('source_read_limit');
   const raw = JSON.parse(fs.readFileSync(descriptor.filePath, 'utf8'));
   const meta = { ...raw, ...(descriptor.meeting || {}) };

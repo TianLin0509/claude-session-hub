@@ -28,6 +28,7 @@ class SessionSearchService {
       kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
       geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
+      transcriptDir: options.transcriptDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 60_000,
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
@@ -188,6 +189,10 @@ class SessionSearchService {
   preview(request = {}) {
     return this._request('preview', { request });
   }
+
+  memoryCandidates(request = {}) { return this._request('memory-candidates', { request }); }
+  transcriptFor(request = {}) { return this._request('transcript', { request }); }
+  exportMemoryHistory(request = {}) { return this._request('memory-export', { request }); }
 
   refresh(snapshot = {}, options = {}) {
     return this._request('refresh', { snapshot, force: options.force === true, immediate: options.immediate === true });

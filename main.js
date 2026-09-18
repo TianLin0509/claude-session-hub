@@ -180,6 +180,8 @@ const sessionSearchService = new SessionSearchService({
   kimiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_KIMI_ROOTS', [path.join(os.homedir(), '.kimi-code', 'sessions')]),
   geminiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_GEMINI_ROOTS', [path.join(os.homedir(), '.gemini', 'tmp')]),
   meetingDir: path.join(getHubDataDir(), 'meetings'),
+  // 每个会话一份只含对话的 md 聊天记录，供分享路径与造梦阅读；由索引派生，可重建。
+  transcriptDir: path.join(getHubDataDir(), 'transcripts'),
   refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 60_000,
   // Production warms the persistent index after the latency-sensitive boot
   // path. Isolated Hubs stay opt-in so an unrelated E2E can never scan the
@@ -680,7 +682,7 @@ transcriptTap.on('prompt-submitted', (ev) => {
   completionNotifier.notePromptSubmitted(ev || {});
   if (!hubSessionId) return;
   const session = sessionManager.getSession(hubSessionId);
-  maybeAutoTitleSessionFromPrompt(ev);
+  maybeAutoTitleSessionFromPrompt({ ...ev, text: require('./core/memory-index-envelope').splitMemoryIndex(text).userText });
   try {
     sendToRenderer('prompt-submitted-event', {
       hubSessionId,
@@ -2606,17 +2608,22 @@ require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
 });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
-// IPC 为面板提供只读巡检数据与手动触发；调度器每天到点自动跑一轮沉淀。
-// 写入一律走 dream-consolidation 的快照+changelog 通道，可回溯可回滚。
+// 保留旧 IPC 兼容入口，但不再启动向原生规则写入的旧沉淀调度器。
 const { registerMemoryIpc } = require('./main/ipc/memory-handlers.js');
 registerMemoryIpc(ipcMain, { workspaceService, logger: console });
-const { startDreamScheduler } = require('./core/dream-consolidation.js');
-startDreamScheduler({
-  hubDataDir: getHubDataDir(),
-  workspaceRoot: workspaceService.getWorkspaceRoot(),
-  getHubConfig,
-  logger: console,
+// New dreams write independent project memory, never the legacy rule sections.
+const { HubMemoryService } = require('./core/hub-memory-service');
+const hubMemoryService = new HubMemoryService({
+  dataDir:getHubDataDir(), workspaceService, sessionManager, transcriptTap,
+  searchService:sessionSearchService, sendToRenderer,
+  getPersistedSessions:()=>lastPersistedSessions,
+  createSession:async(kind,opts)=>{
+    const session=sessionManager.createSession(kind,opts);
+    registerSessionForTap(session);sendToRenderer('session-created',{session});return session;
+  },
+  sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
+require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
 
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns

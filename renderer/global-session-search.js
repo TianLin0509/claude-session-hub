@@ -413,7 +413,7 @@ function createGlobalSessionSearch(options) {
     return {
       query,
       providers: activeProvider === 'all' ? [] : [activeProvider],
-      scopes: activeScope === 'all' ? ['title','user','assistant','tool']
+      scopes: activeScope === 'all' ? ['title','user','assistant']
         : ['dialogue','dormant','pinned'].includes(activeScope) ? ['title','user','assistant'] : [activeScope],
       timeRange: timeSelect.value || 'all',
       projectFilter: projectFilterFor(projectLibrary, projectSelect.value),
@@ -436,7 +436,7 @@ function createGlobalSessionSearch(options) {
   }
 
   function setScope(scope) {
-    activeScope = ['all', 'dialogue', 'title', 'user', 'assistant', 'tool', 'dormant', 'pinned'].includes(scope) ? scope : 'dialogue';
+    activeScope = ['all', 'dialogue', 'title', 'user', 'assistant', 'dormant', 'pinned'].includes(scope) ? scope : 'dialogue';
     for (const button of scopeRoot.querySelectorAll('[data-scope]')) {
       const active = button.dataset.scope === activeScope;
       button.classList.toggle('active', active);

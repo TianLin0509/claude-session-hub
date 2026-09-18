@@ -65,16 +65,26 @@
 - UI/GUI 行为改动需要真实 Hub 实例 + CDP/Playwright 或截图证据；如果不能运行，要说明原因。
 - 最终回答必须列出实际执行过的验证命令和结果；如果只做静态检查，不能说 E2E 通过。
 
-## 梦境系统与记忆面板（2026-08-01）
+## 记忆 MVP（2026-09-17）
+
+- 统一入口在左侧第六个功能按钮；三个 tab 为当前上下文、记忆文件库、造梦。记忆页不放会话列表，当前上下文跟随聚焦 session；群聊先打开成员 session。
+- 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
+- 昨日之我只索引对话：工具调用只留 ≤120 字符元信息、不进全文索引，检索范围只有标题/我的提问/AI 回答（`SCHEMA_VERSION` 已升，合入后首次启动重建索引）。每个会话另有一份只含对话的聊天记录 md（Hub 数据目录 `transcripts/`），可直接分享路径。
+- 复用昨日之我 SQLite 的消息正文，明确解析截断和附件覆盖边界，不宣称无损原始归档。选中素材导出为一次任务快照，造梦师为普通实体 session。
+- 原生 `MEMORY.md` 和规则文件只读参考；新梦境只写 Hub 数据目录的独立 `DREAM_INDEX.md` 与 `topics/*.md`。结果校验通过后原子发布，失败不推进已整理进度。
+- 索引只随用户亲手发送的下一条消息提交（群聊/初心等自动 prompt 不带；上下文压缩后重发；搜索与造梦素材剥掉索引），只有原生提交证据才显示已发送；磁盘可读、预计加载、已发送、正文已读取不能混称。聊天卡片折叠显示索引但不删原始正文。
+- 旧规则沉淀 scheduler 已停止自动启动；旧数据和兼容 IPC 保留，旧“并入规范库”和写原生规则操作不在新 UI 提供。
+- 隔离验证同时设置 `CLAUDE_HUB_DATA_DIR`、`CLAUDE_HUB_HOME_DIR`、独立 CDP 端口并清空 `DEEPSEEK_API_KEY`。测试：`node --test tests/unit-hub-memory.test.js`、`node tests/e2e-memory-panel-cdp.js`；协议夹具结果不等于真实模型质量验证。
+
+### 旧梦境兼容代码注意事项（2026-08-01）
 
 - 管线在 `core\dream-consolidation.js`（采集→蒸馏→落盘；写前快照 + changelog.jsonl 可回溯），只读巡检在 `core\memory-inspector.js`。
 - **规范库（home 桶）自身不是孤岛**：巡检、孤岛采集、`mergeIslandBucket` 三处都必须排除它——它是所有 junction 的目标，漏判会把规范库合并进自己或把已共享内容重复蒸馏（2026-08-01 三连坑）。
 - 增量去重：候选按内容指纹（excerpt sha256）跳过已蒸馏项，指纹只在上轮蒸馏成功后标记；`state.json` 的 processed 上限 500 条。
-- 孤岛桶可在面板「一键并入规范库」（`memory:merge-island` → `claude-memory-link.mergeIslandBucket`，机械合并非蒸馏），行为记 changelog。
-- IPC 在 `main\ipc\memory-handlers.js`；面板在 `renderer\memory-panel.js` / `memory-panel.css`，从用量 ticker「记忆」按钮打开。按钮监听必须挂 document 委托——ticker 每次 render 重建 innerHTML，挂在面板 DOM 里会在首次 open 前失效。
-- 自动沉淀只写目标文件末尾 `<!-- dream:begin/end -->` 托管区，手写正文区不得动；用户级四件套（kimi/claude/codex/gemini）与工作区根 AGENTS.md+CLAUDE.md+GEMINI.md 多写保持逐字一致，缺哪份不补建。
+- 旧 `memory:merge-island` → `claude-memory-link.mergeIslandBucket` 是机械合并非蒸馏，行为记 changelog；IPC 保留于 `main/ipc/memory-handlers.js`。
+- 旧沉淀仅可写文件末尾 `<!-- dream:begin/end -->` 托管区，手写正文区不得动；四家规则多写保持逐字一致，缺哪份不补建。新梦境不走此通道。
 - 隔离验证梦境/记忆功能必须同时设 `CLAUDE_HUB_HOME_DIR`（否则 memory 孤岛采集扫真实 home、写真实三件套）并清空 `DEEPSEEK_API_KEY`（env 优先于 config.json，父进程的 key 会漏进隔离实例）。
-- 测试：`node tests\unit-dream-consolidation.test.js`、`node tests\e2e-memory-panel-cdp.js`。
+- 旧兼容测试：`node tests\unit-dream-consolidation.test.js`。
 
 ## 改 Hub 一律先开 worktree，合主干要用户点头（2026-09-04）
 

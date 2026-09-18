@@ -41,8 +41,9 @@ assert.doesNotMatch(renderer, /className = 'btn-zoom btn-fork-session'/,
   'branch must not remain in the session header');
 assert.match(account, /data-action="open-memo"[\s\S]{0,100}>备忘录<\/button>/,
   'memo replaces memory in the global usage ticker');
-assert.match(renderer, /memoryBtn\.dataset\.action = 'open-memory'/,
-  'memory moves into the former header memo position');
+assert.match(html, /id="btn-rail-memory"[^>]*data-action="open-memory"/,
+  'memory has a single rail entry');
+assert.doesNotMatch(renderer, /memoryBtn\.dataset\.action/);
 // T2（2026-09-08）：header 的 📁 路径 chip 换成了面包屑第一段，入口函数改叫
 // openSessionFilePanel —— 契约不变，工作目录必须在 Hub 里打开，不复制、不拉资源管理器。
 assert.match(renderer, /function openSessionFilePanel\(session\) \{[\s\S]{0,240}fileManagerPanel\.toggle\(/,

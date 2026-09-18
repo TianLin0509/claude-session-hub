@@ -1795,14 +1795,7 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg>';
   filesBtn.addEventListener('click', () => openSessionFilePanel(session));
 
-  const memoryBtn = document.createElement('button');
-  memoryBtn.className = 'btn-zoom btn-memory-toggle';
-  memoryBtn.dataset.action = 'open-memory';
-  memoryBtn.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>';
-  memoryBtn.title = '打开记忆系统';
-  memoryBtn.setAttribute('aria-label', '打开记忆系统');
-
-  headerActions.append(filesBtn, memoryBtn, overflowWrap, closeBtn);
+  headerActions.append(filesBtn, overflowWrap, closeBtn);
 }
 
 function currentAppToolbarView() {
@@ -4689,7 +4682,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     clearFloatingInputStuck(bar);
     const delivery = nativeCommand ? null : beginPromptDelivery(clientSubmissionId);
     if (delivery) floatingPromptDeliveries.set(sessionId, delivery);
-    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
+    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId, memoryIndex: true }).then((result) => {
       if (nativeCommand) {
         if (feedbackSequence !== commandFeedbackSequence) return;
         const failed = !result?.ok || result.sendStatus === 'stuck';
@@ -6584,15 +6577,17 @@ homeWorkbench = createHomeWorkbench({
   onCreate: intent => launchCenter.open(intent),
 });
 homeWorkbench.render();
-// 记忆系统面板：会话 header 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
-// 因为 session / meeting header 每次 render 都重建 innerHTML）。
+// 记忆页由左侧第六个功能按钮打开，当前上下文跟随当前聚焦的 session。
 const memoryPanel = createMemoryPanel({
   document,
   ipcRenderer,
   escapeHtml,
+  openSession: (id) => selectSession(id, { forceScrollBottom: true }),
   getActiveSessionInfo: () => {
+    if (window.MeetingRoom?.getActiveMeetingId()) return null;
     const s = sessions.get(getFocusedSessionId());
     return s ? {
+      id: s.id,
       cwd: s.cwd,
       kind: s.kind,
       runtimeKind: s.transcriptKind || s.kind,
@@ -7906,6 +7901,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (session.purpose === 'chuxin-research') {
     scheduleSessionListRender();
     window.dispatchEvent(new CustomEvent('chuxin-session-created', { detail: session }));
+    return;
+  }
+  if (session.purpose === 'memory-dream' && !wasDormant) {
+    scheduleSessionListRender();
+    void savePreviewState({ nonBlocking: true });
     return;
   }
   // Meeting room no longer mounts embedded xterms. Keep only the lightweight

@@ -21,6 +21,7 @@ const {
   DEFAULT_MAX_SOURCES,
   sqlitePathForLegacyCache,
 } = require('./session-search-config.js');
+const { transcriptMdPath, writeTranscriptMarkdown } = require('./session-transcript-md.js');
 
 // Non-Codex adapters still materialize source text and retain conservative
 // bounds. Codex uses a byte-filtered semantic stream, so its raw rollout size
@@ -91,6 +92,7 @@ class SessionSearchEngine {
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
       maxSourceChars: Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS),
       maxDocChars: Math.max(8 * 1024, Number(options.maxDocChars) || DEFAULT_MAX_DOC_CHARS),
+      transcriptDir: options.transcriptDir || null,
     };
     this.emitStatus = emitStatus;
     this.index = new SqliteSessionSearchIndex(databasePath, options);
@@ -320,7 +322,9 @@ class SessionSearchEngine {
       const reusable = (descriptor, previous) => {
         const retry=this.retryState.get(descriptor.key);
         if(!force && retry?.signature===descriptor.signature && retry.nextAt>Date.now()) return true;
-        return !force && previous && previous.signature===descriptor.signature && !(descriptor.type==='codex' && previous.stale);
+        return !force && previous && previous.signature===descriptor.signature && !(descriptor.type==='codex' && previous.stale)
+          // A missing chat log is regenerated; stale fallbacks never had one.
+          && (previous.stale || this._transcriptPresent(descriptor.key));
       };
       // 先数清楚这一趟到底有多少来源真的要重新解析（signature 变了或之前失败过）。
       //   进度条按「要干的活」算，而不是按「扫过的目录数」算 —— 后者永远是 4000+，
@@ -348,18 +352,23 @@ class SessionSearchEngine {
           processedChanges += 1;
           try {
             const stat = fs.statSync(descriptor.filePath);
-            if (descriptor.type !== 'codex' && stat.size > this.options.maxFileBytes) {
+            // Codex and Claude are streamed and skip binary/tool-output rows, so
+            // file size does not bound their memory; keep their full dialogue.
+            const streamed = descriptor.type === 'codex' || descriptor.type === 'claude';
+            if (!streamed && stat.size > this.options.maxFileBytes) {
               diagnostics.push(`${descriptor.filePath}: 文件过大，保留标题但跳过全文`);
               staleSources += 1;
               if (previous) this.index.markSourceStale(descriptor.key, descriptor.signature);
               else this.index.replaceSource(titleOnlySourceFromDescriptor(descriptor, { stale: true }));
               activeKeys.add(descriptor.key);
             } else {
-              const limited = clipSource(parseSourceDescriptor(descriptor, collected.maps), {
+              const parsed = parseSourceDescriptor(descriptor, collected.maps);
+              const limited = clipSource(parsed, {
                 ...this.options,
-                preserveAll: descriptor.type === 'codex',
+                preserveAll: streamed,
               });
               this.index.replaceSource(limited.source);
+              this._writeTranscript(parsed, diagnostics);
               activeKeys.add(descriptor.key);
               parsedSources += 1;
               indexedChars += limited.chars;
@@ -492,6 +501,29 @@ class SessionSearchEngine {
 
   preview(request = {}) {
     return this.index.preview(request);
+  }
+
+  _transcriptPresent(key) {
+    if (!this.options.transcriptDir) return true;
+    return fs.existsSync(transcriptMdPath(this.options.transcriptDir, key));
+  }
+
+  // The chat log is a derived export: a write failure is reported but never
+  // blocks indexing.
+  _writeTranscript(source, diagnostics) {
+    if (!this.options.transcriptDir) return;
+    try { writeTranscriptMarkdown(this.options.transcriptDir, source); }
+    catch (error) { diagnostics.push(`${source.key}: 聊天记录 md 写入失败：${error.message}`); }
+  }
+
+  transcriptFor(request = {}) {
+    if (!this.options.transcriptDir) return null;
+    const row = request.key
+      ? this.index.db.prepare('SELECT key,source_key,title FROM sessions WHERE key=?').get(String(request.key))
+      : this.index.db.prepare('SELECT key,source_key,title FROM sessions WHERE hub_session_id=? ORDER BY updated_at DESC LIMIT 1').get(String(request.hubSessionId || ''));
+    if (!row) return null;
+    const file = transcriptMdPath(this.options.transcriptDir, row.source_key);
+    return { key: row.key, title: row.title, path: file, exists: fs.existsSync(file) };
   }
 
   status() {

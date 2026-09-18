@@ -59,6 +59,22 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
    **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<dompurify/@xterm/marked 等>'`；renderer 白屏/全局脚本中断（`sessions is not defined`）。
    **修复 SOP（不 kill 生产 Hub）**：主目录 `npm install` 会被运行中 electron 锁 EBUSY → 改走旁路：临时目录放 package.json+lock → `npm ci --ignore-scripts` → 只把主目录缺失的顶层包拷回（不覆盖已有、跳过 electron）→ 隔离实例 smoke 验证。
 
+## 记忆 MVP（2026-09-17）
+
+左侧第六个功能按钮是唯一记忆入口，页面内没有会话列表；三个 tab 为当前上下文、记忆文件库、造梦。当前上下文跟随聚焦 session，群聊先打开成员 session。
+
+新服务在 `core/hub-memory-service.js`，复用昨日之我 SQLite 正文并导出一次任务快照，由普通实体 session 造梦；原生 `MEMORY.md`/规则文件只读参考，产物在 Hub 数据目录独立 `DREAM_INDEX.md` + `topics/*.md`。原子发布成功后才推进整理游标，短索引只随用户亲手发送的下一条消息提交（自动派发不带，压缩后重发，搜索与造梦素材剥掉索引），只按真实回执显示已发送，不推测正文已读。旧规则沉淀 scheduler 不再自动启动，旧数据/兼容 IPC 保留但不在新 UI 提供写操作。
+
+详见 `docs/design/memory-mvp.md`。验证：`node --test tests/unit-hub-memory.test.js`、`node tests/e2e-memory-panel-cdp.js`；测试隔离 data/home、端口与 key。协议夹具验证不代表云端模型的提炼质量。
+
+## 昨日之我只检索自然语言（2026-09-17）
+
+- 用户口径：只搜自然语言，绝不搜改动代码。因此**工具调用不进全文索引**，只在 `docs` 表留一行 ≤120 字符的元信息（工具名 + 命令/路径开头），供会话预览、聊天记录 md 和造梦看「AI 做了什么」。
+- `docs_fts` 的三个触发器带 `WHEN scope <> 'tool'`；`docs_cjk` 本来就只覆盖对话。检索范围只剩标题/我的提问/AI 回答；请求里带 `tool` 一律忽略而不是报错，搜索面板不再有「工具 / 文件」页签。
+- 改口径前实测（生产库 8.5GB）：工具文本占正文 88%（2.84 亿字符，其中 apply_patch 的文件内容独占一半）；`session` 这种常用词要多扫 7.7 倍命中，555ms 对 74ms。
+- `SCHEMA_VERSION` 升到 2：老库会被丢弃重建，并在丢弃后 `VACUUM` 一次 —— 生产库 8.5GB 里有 4.2GB 是从未回收的空闲页。**合入后第一次启动会重建索引**（真实数据实测 257 秒），期间搜索结果不完整，状态栏会显示进度。
+- 真实数据实测结果：库 8523MB → 880MB，全文索引 3206MB → 154MB，常用词快 6~16 倍（`session` 267ms → 42ms）。工具 doc 连 `normalized_text` 都不存。
+
 ## 铁律：任务栏图标变 Electron 原子，别再在窗口图标那一层修
 
 **Windows 取任务栏图标的顺序是三层**：① `WM_GETICON`（`win.setIcon()` 只写这一层）→ ② 窗口类图标 `GCLP_HICONSM/HICON` → ③ 进程 exe 的图标资源。第 ① 层用 `SendMessageTimeout + SMTO_ABORTIFHUNG`，主进程一忙就超时；Explorer 崩溃重建任务栏时尤其容易踩到，然后 Windows 落到 ②/③ 并把结果缓存住。
