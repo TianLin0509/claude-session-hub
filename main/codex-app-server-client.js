@@ -2,6 +2,7 @@
 const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { StringDecoder } = require('string_decoder');
+const { JsonImageFilter } = require('../core/json-image-filter');
 
 function resolveNativeCommand(env = process.env) {
   // A test fixture is an explicit executable/script in an isolated Hub only.
@@ -27,6 +28,7 @@ class CodexAppServerClient extends EventEmitter {
     this.stderrPending = '';
     this.buffer = '';
     this.decoder = new StringDecoder('utf8');
+    this.imageFilter = new JsonImageFilter();
     this.writeTail = Promise.resolve();
   }
   async start() {
@@ -71,7 +73,8 @@ class CodexAppServerClient extends EventEmitter {
   }
   feed(bytes) {
     if (this.closed) return;
-    this.buffer += this.decoder.write(bytes);
+    try { this.buffer += this.imageFilter.feed(this.decoder.write(bytes)); }
+    catch (error) { this.fail(new Error('Codex 协议 JSON 损坏：' + error.message)); return; }
     let nl;
     while ((nl = this.buffer.indexOf('\n')) !== -1) {
       const line = this.buffer.slice(0, nl).trim();
