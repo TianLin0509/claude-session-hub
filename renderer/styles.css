@@ -41,3 +41,15 @@
 .codex-native-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .codex-native-error { color: #eeb769; white-space: pre-wrap; overflow-wrap: anywhere; }
 .codex-native-thread-list { display: flex; flex-direction: column; }
+#hub-restart-panel {
+  position: fixed; z-index: 10000; bottom: 22px; left: 72px;
+  width: min(480px, calc(100vw - 100px)); max-height: 65vh; overflow: auto;
+  padding: 18px; border: 1px solid var(--border-color, #667085);
+  border-radius: 12px; background: var(--bg-secondary, #20242c); color: var(--text-primary, #f2f4f7);
+  box-shadow: 0 8px 30px #0006; font-size: 13px;
+}
+#hub-restart-panel[hidden] { display: none; }
+#hub-restart-panel p { line-height: 1.6; margin: 10px 0; }
+#hub-restart-panel ul { padding-left: 18px; }
+#hub-restart-panel li { margin: 8px 0; overflow-wrap: anywhere; }
+#hub-restart-panel button { margin-left: 8px; padding: 4px 10px; cursor: pointer; }

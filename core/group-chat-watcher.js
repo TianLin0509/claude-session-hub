@@ -342,6 +342,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     throw new Error('正在确认当前会话的速度设置，请完成后再发送');
   }
   const { sessionManager } = _deps;
+  if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,

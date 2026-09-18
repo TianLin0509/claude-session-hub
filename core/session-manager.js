@@ -1115,7 +1115,7 @@ class SessionManager extends EventEmitter {
   }
 
   _createSession(kind = 'powershell', opts = {}) {
-    if (this._isShuttingDown) {
+    if (this._isShuttingDown || this.restartPending) {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
     const id = opts.id || uuid();

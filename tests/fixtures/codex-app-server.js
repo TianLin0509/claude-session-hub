@@ -2,11 +2,19 @@
 const readline = require('readline');
 const fs=require('fs'),{randomUUID}=require('crypto');
 const store=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE;
+// Dedicated native writers must not race read/modify/write on one fixture
+// JSON file. Multi-session restart tests use one atomic file per native ID.
+const storeDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR;
+if(storeDir){if(!process.env.CLAUDE_HUB_DATA_DIR)throw Error('fixture store requires isolation');fs.mkdirSync(storeDir,{recursive:true});}
+const threadFile=id=>require('path').join(storeDir,id+'.json');
 const trace=process.env.CLAUDE_HUB_NATIVE_FIXTURE_TRACE;
 const writerDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR;
-const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
+const threads = new Map(storeDir ? fs.readdirSync(storeDir).filter(f=>f.endsWith('.json')).map(f=>{const t=JSON.parse(fs.readFileSync(require('path').join(storeDir,f),'utf8'));return[t.id,t];})
+  : store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
 const owned=new Set();
-const save=()=>{if(store){
+const save=()=>{if(storeDir){
+  for(const id of owned){const file=threadFile(id),tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(threads.get(id)));fs.renameSync(tmp,file);}
+}else if(store){
   const all=new Map(fs.existsSync(store)?JSON.parse(fs.readFileSync(store,'utf8')):[]);
   for(const id of owned){const t=threads.get(id);if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)all.set(id,t);else all.delete(id);}
   fs.writeFileSync(store,JSON.stringify([...all]));
@@ -48,6 +56,9 @@ rl.on('line',line=>{
   const msg=JSON.parse(line);
   if(trace)fs.appendFileSync(trace,JSON.stringify(msg)+'\n');
   const p=msg.params || {};
+  if(storeDir && /^[a-f0-9-]{36}$/.test(p.threadId || '') && !owned.has(p.threadId) && fs.existsSync(threadFile(p.threadId))){
+    threads.set(p.threadId,JSON.parse(fs.readFileSync(threadFile(p.threadId),'utf8')));
+  }
   // Another session's dedicated process may have persisted newer history.
   if(store && !owned.has(p.threadId) && fs.existsSync(store)){
     const latest=new Map(JSON.parse(fs.readFileSync(store,'utf8'))).get(p.threadId);
