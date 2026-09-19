@@ -5831,11 +5831,52 @@ function getActiveFileManagerContext() {
   };
 }
 
+function addFilePathsToConversation(paths, targetId) {
+  const id = targetId || getFocusedSessionId();
+  if (!id) {
+    if (window.MeetingRoom?.appendFilePaths) return window.MeetingRoom.appendFilePaths(paths);
+    throw new Error('请先打开一个会话');
+  }
+  const bar = [...document.querySelectorAll('.floating-input-bar')].find(node => node.dataset.sessionId === id);
+  const box = bar?.querySelector('.floating-input-box');
+  if (!box || sessions.get(id)?.readOnly || box.getAttribute('contenteditable') === 'false') throw new Error('目标会话输入框不可用，请先打开会话');
+  const current = readContenteditablePlainText(box);
+  replaceContenteditableText(box, `${current}${current.trim() ? '\n\n' : ''}${paths.join('\n')}`);
+  placeCaretAtContenteditableEnd(box);
+  saveFloatingInputDraft(id, box);
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  box.focus();
+  return true;
+}
+
+// Only consume drags originating from the file manager; native file-drop routing stays intact.
+document.addEventListener('dragover', event => {
+  if (event.dataTransfer?.types.includes('application/x-hub-files') && event.target.closest('.floating-input-box, #mr-input-box')) {
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy';
+  }
+}, true);
+document.addEventListener('drop', event => {
+  const incoming = event.dataTransfer?.getData('application/x-hub-files');
+  const box = event.target.closest('.floating-input-box, #mr-input-box');
+  if (!incoming || !box) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  try {
+    const paths = JSON.parse(incoming);
+    if (!Array.isArray(paths) || !paths.length || !paths.every(value => typeof value === 'string' && path.isAbsolute(value))) throw new Error('无效的文件路径');
+    if (box.id === 'mr-input-box') window.MeetingRoom.appendFilePaths(paths);
+    else addFilePathsToConversation(paths, box.closest('.floating-input-bar').dataset.sessionId);
+  } catch (error) { chatgptBridgeController.showStatus(error.message, 'error'); }
+}, true);
+
 fileManagerPanel = createFileManagerPanel({
   document,
   window,
   ipcRenderer,
   getActiveContext: getActiveFileManagerContext,
+  addToConversation: addFilePathsToConversation,
+  listConversationTargets: () => [...document.querySelectorAll('.floating-input-bar')]
+    .map(node => sessions.get(node.dataset.sessionId)).filter(session => session && !session.readOnly)
+    .map(session => ({ id: session.id, label: session.title || session.id })),
   openPathInHub: (filePath, openOptions = {}) => openPathInHub(filePath, {
     cwd: getActivePreviewCwd(),
     requireExistsForRel: false,
