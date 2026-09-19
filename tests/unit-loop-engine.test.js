@@ -121,6 +121,21 @@ function mkSerial(opts = {}) {
 }
 
 async function main() {
+  await t('restart continues interrupted serial step at budget limit without spending a new round', async () => {
+    const m=mkSerial({steps:[['m1']],serialWorkflow:{settingsVersion:1,maxAttemptsPerStep:2}});
+    const eng=createLoopEngine(m.deps);
+    const state=await eng.runSerial(m.meeting.id,null,{runId:'restart',goal:'original task',status:'running',nextStepIndex:0,currentStepIndex:0,
+      attemptsByStep:{0:2},completedSteps:[],executedRounds:6,budgetStart:0},{restartContinuation:'重启后继续'});
+    assert.equal(state.status,'done');assert.equal(state.executedRounds,6);assert.equal(m.turnCalls.length,1);
+    assert(m.turnCalls[0].userInput.includes('重启后继续'));assert(m.turnCalls[0].userInput.includes('original task'));
+  });
+  await t('restart continues interrupted final loop attempt once then keeps normal stage prompts', async () => {
+    const m=mk(),eng=createLoopEngine(m.deps);
+    const state=await eng.runLoop('mtg',null,{runId:'restart-loop',goal:'original loop task',status:'running',round:0,currentStep:'builder',stepAttempt:2,
+      passStreak:0,history:[],consecutivePass:1,maxRounds:2},{restartContinuation:'重启后继续'});
+    assert.equal(state.status,'done');assert.equal(m.turnCalls.length,2);
+    assert(m.turnCalls[0].userInput.includes('重启后继续'));assert(!m.turnCalls[1].userInput.includes('重启后继续'));
+  });
   for (const error of [
     {code:'CLAUDE_SUBMISSION_TIMEOUT',message:'Claude 未确认本条输入，提交状态待核对'},
     {uncertain:true,message:'Codex 请求超时：turn/start；结果待核对'},

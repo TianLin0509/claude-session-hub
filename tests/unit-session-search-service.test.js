@@ -9,6 +9,20 @@ const { EventEmitter } = require('node:events');
 const { sqlitePathForLegacyCache } = require('../core/session-search-config.js');
 const { SessionSearchService } = require('../core/session-search-service.js');
 
+test('close waits for worker exit after kill request, and a failed kill remains retryable', async () => {
+  const child=new EventEmitter();let killCalls=0,exited=false,settled=false;
+  child.send=(_message,callback)=>callback(new Error('IPC closed'));
+  child.kill=()=>{killCalls++;if(killCalls===1)throw Error('kill rejected');};
+  const service=new SessionSearchService();service._child=child;
+  await assert.rejects(service.close(),/kill rejected/);
+  const closing=service.close().then(()=>{settled=true;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(killCalls,2);assert.equal(settled,false,'kill request must not release the writer exit barrier');
+  child.exitCode=0;child.emit('exit',0);await closing;exited=true;
+  assert.equal(exited,true);assert.equal(settled,true);
+  await service.close();assert.equal(killCalls,2);
+});
+
 function writeClaudeTranscript(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const rows = [

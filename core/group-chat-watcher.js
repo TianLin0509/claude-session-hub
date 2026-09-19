@@ -319,9 +319,10 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
     return nativeClaude.runtime.connection === 'connected' && !nativeClaude.unreconciled;
   }
   const start = Date.now();
+  const readyKind=isCodexCliKind(kind) ? 'codex' : isClaudeFamily(kind) ? 'claude' : String(kind).replace(/-resume$/,'');
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
-    if (cliReadyDetector.isReady(sid, kind, buf)) return true;
+    if (cliReadyDetector.isReady(sid, readyKind, buf)) return true;
     await new Promise(r => setTimeout(r, 100));
   }
   return false;
@@ -342,6 +343,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     throw new Error('正在确认当前会话的速度设置，请完成后再发送');
   }
   const { sessionManager } = _deps;
+  if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
@@ -394,6 +396,33 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       return false;
     }
     sessionManager.setGroupChatReady(sid, true);
+  }
+
+  if ((options.restartContinuation || sessionManager.restartContinuationSessions?.has(sid)) && ['kimi','kimi-resume','gemini','gemini-resume','deepseek','deepseek-resume'].includes(kind)) {
+    const receipt=require('./hub-restart-legacy').observeLegacyPrompt(_deps.transcriptTap,sid,prompt,
+      20000+Math.ceil(String(prompt).length/2048)*12+computeSettleMs(String(prompt).length));
+    const record=result=>{
+      if(result.ok){
+        sessionManager.restartContinuationReceipts ||= new Map();
+        sessionManager.restartContinuationReceipts.set(sid,{id:options.clientSubmissionId || require('crypto').randomUUID(),status:'accepted'});
+      }
+      return result;
+    };
+    try {
+      const baselineMarker=snapshotPasteMarker(sessionManager,sid);
+      const text=String(prompt);
+      if(isCodexCliKind(kind))await writeBracketedPaste(sessionManager,sid,text);
+      else for(let offset=0;offset<text.length;offset+=2048){
+        sessionManager.writeToSession(sid,text.slice(offset,offset+2048));
+        await new Promise(resolve=>setTimeout(resolve,12));
+      }
+      await waitForPasteSettled({sessionManager,sid,settleMs:computeSettleMs(text.length),baselineMarker});
+      writeSubmitSignal(sessionManager,sid,kind,0);
+      const first=await receipt.wait(7000);
+      if(first)return record(first);
+      if(!receipt.confirmed)writeSubmitSignal(sessionManager,sid,kind,1);
+      return record(await receipt.promise);
+    } finally {receipt.dispose();sessionManager.restartContinuationSessions?.delete(sid);}
   }
 
   // ===========================================================================

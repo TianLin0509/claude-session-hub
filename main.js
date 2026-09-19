@@ -1132,18 +1132,26 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     traceStartup('did-finish-load');
     sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+    if (hubRestart.bootToken && !global.__loopResumeScanned) {
+      global.__loopResumeScanned = true;
+      // Keep the scanner available for future user-created workflows, while
+      // admitting only groups restored by this restart or opened by the user.
+      global.__devFileEngine?.start({onlyIds:[]});
+    }
     // Phase 2b：boot 后由 main 循环引擎扫描未完成循环并自动续跑（main 驱动 + 自动 wake 成员）。once 守卫 + 延迟(等 session 恢复) + try，绝不影响启动。
-    if (!global.__loopResumeScanned) {
+    if (!global.__loopResumeScanned && !hubRestart.bootToken) {
       global.__loopResumeScanned = true;
       setTimeout(() => {
+        if (hubRestart.isRestarting()) return;
         try { if (global.__loopEngine) global.__loopEngine.resumePending(); }
         catch (e) { console.warn('[loop] boot resume failed:', e && e.message); }
         global.__devFileEngine?.start();
       }, 8000);
     }
-    if (!global.__groupChatRecoveryScanned) {
+    if (!global.__groupChatRecoveryScanned && !hubRestart.bootToken) {
       global.__groupChatRecoveryScanned = true;
       setTimeout(() => {
+        if (hubRestart.isRestarting()) return;
         Promise.resolve(groupChatDispatcher && groupChatDispatcher.recoverPendingAttempts())
           .then((summary) => {
             if (summary && summary.checked) console.log('[groupchat] boot attempt recovery:', summary);
@@ -2031,6 +2039,13 @@ registerPersistenceIpc(ipcMain, {
 });
 
 registerResumeSessionIpc(ipcMain, { resumeSession });
+
+const hubRestart = require('./main/ipc/hub-restart-handlers').registerHubRestartIpc(ipcMain, {
+  app, sessionManager, meetingManager, sessionStore, stateStore, getHubDataDir,
+  resumeSession, groupChatDispatcher, sendToRenderer, shutdown:beginGracefulHubShutdown, transcriptTap,
+  flushState:clean => stateStore.saveForRestart({version:1,cleanShutdown:clean,
+    sessions:lastPersistedSessions,meetings:meetingManager.getAllMeetings(),immersiveByMeeting:_immersiveByMeeting}),
+});
 
 const imageDir = path.join(getHubDataDir(), 'images');
 registerAppUtilityIpc(ipcMain, {
@@ -3241,7 +3256,10 @@ async function runFinalShutdownCleanup() {
   // 2026-05-16 道雪：清理自己的控制文件。unlinkSelf 内部已 try/catch + warn 非 ENOENT 错误，
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
   capture('hub-control', () => hubControl.unlinkSelf(getHubDataDir(), process.pid));
-  if (errors.length) console.error('[shutdown] cleanup completed with errors:', errors);
+  if (errors.length) {
+    finalShutdownCleanupDone = false;
+    console.error('[shutdown] cleanup completed with errors:', errors);
+  }
   return { clean: errors.length === 0, errors };
 }
 
@@ -3260,7 +3278,7 @@ function restoreWindowAfterFailedShutdown() {
   }
 }
 
-function beginGracefulHubShutdown(reason) {
+function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
@@ -3283,6 +3301,10 @@ function beginGracefulHubShutdown(reason) {
       }
       closeHookServerForShutdown();
       const cleanup = await runFinalShutdownCleanup();
+      if (beforeQuit) {
+        if (!cleanup.clean) throw new Error('最终保存或后台进程退出失败，已取消重启');
+        await beforeQuit();
+      }
       process.__hubShutdownCleanupClean = cleanup.clean === true;
       shutdownDrainState = 'drained';
       console.log(`[shutdown] PTY drain complete: ${result.drainedPtyCount} session(s), ${result.durationMs}ms`);
