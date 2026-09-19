@@ -277,18 +277,29 @@ class HubMemoryService {
     if (!project) throw new Error('请选择一个已有项目');
     return { cwd: project.cwd, kind: request.kind || 'codex' };
   }
-  async context(sessionId) {
-    const s = this.session(sessionId);
+  async context(sessionId, force = false) {
+    const s = { ...this.session(sessionId) };
+    const identity = contextIdentity(s);
+    this.nativeContextReader ||= new (require('./memory-native-context').NativeContextReader)();
+    const nativeTask = this.nativeContextReader.read(s, { force }).catch(error => ({ entries: [], warnings: ['原生注入记录读取失败：' + error.message] }));
+    const warnings = [];
     let history;
-    try { history = JSON.parse(await fs.promises.readFile(path.join(this.root, 'context', hash(sessionId) + '.json'), 'utf8')); }
-    catch (e) { if (e.code !== 'ENOENT') throw e; history = []; }
+    try {
+      history = JSON.parse(await fs.promises.readFile(path.join(this.root, 'context', hash(sessionId) + '.json'), 'utf8'));
+      if (!Array.isArray(history) || history.some(r => !r || typeof r !== 'object')) throw new Error('回执格式无效');
+    } catch (e) { if (e.code !== 'ENOENT') warnings.push('Hub 索引回执读取失败：' + e.message); history = []; }
     // Evidence is bound to the native session identity/epoch, never to a cwd alone.
-    const current = history.filter(r => r.identity === contextIdentity(s));
+    const current = history.filter(r => r.identity === identity);
+    const native = await nativeTask;
+    const latest = this.session(sessionId);
+    if (identity !== contextIdentity(latest) || s.transcriptPath !== latest.transcriptPath) throw new Error('当前原生会话已切换，请刷新重试');
     return {
       session: { id: s.id, title: s.title, cwd: s.cwd, kind: s.kind },
       receipts: current.filter(r => r.status === 'sent'),
+      nativeEntries: native.entries,
+      warnings: [...warnings, ...(native.warnings || [])],
       unconfirmed: current.filter(r => r.status !== 'sent').length,
-      note: '这里只展示本会话已确认提交的上下文快照。原生 CLI 尚未向 Hub 提供完整的规则加载清单；未确认的 CLAUDE.md、AGENTS.md 和原生记忆可在文件库查看，不列为已注入。已发送不代表压缩后仍完整保留，也不代表索引链接的正文已读取。',
+      note: '原生规则与记忆来自本会话实际保存的注入记录；同一项显示最近一次快照，预览不会读取磁盘上的新版本。Hub 梦境索引来自确认提交回执。这些记录不能证明上下文压缩后仍完整保留，也不代表索引链接的正文已读取。' + (native.compactedAt ? ' 本会话有压缩记录。' : ''),
     };
   }
   async dreamState(request) {

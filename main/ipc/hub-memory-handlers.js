@@ -9,7 +9,7 @@ function registerHubMemoryIpc(ipcMain, service) {
       }
     });
   handle("snapshot", (r) => service.snapshot(r.sessionId));
-  handle("context", (r) => service.context(r.sessionId));
+  handle("context", (r) => service.context(r.sessionId, r.refresh === true));
   handle("library", (r) => service.catalog(r.refresh === true));
   handle("dream-state", (r) => service.dreamState(r));
   handle("candidates", (r) => service.candidates(r));
