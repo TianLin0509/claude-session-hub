@@ -1,0 +1,48 @@
+# 账号与授权
+
+侧栏第七个「权限」入口，目标是全局登录速览和快速打开正确账号的登录入口。没有活动会话也可打开。
+
+## 页面与迁移
+
+- 账号总览：按原生 Agent、网页、API、其他服务筛选；展示证据来源、检查时间、过期状态、用途、登录与检查按钮。
+- 功能与账号：对应 Claude/Codex 会话、公司中转、网页生图等实际使用的连接。
+- 活动记录：操作结果，不保存密码、验证码、Cookie 或密钥。账号身份脱敏。
+- 接入配置：从设置迁移 Claude/Codex/Gemini/Kimi/DeepSeek 面板、Codex 默认账号和 CODEX_HOME、API 密钥及服务器 Bearer Token。继续使用既有配置格式，无凭据复制或搬家。
+- 设置保留代理、监控地址与开关、通知接收对象、聊天外观。两处只提交各自字段，避免旧表单覆盖另一处的凭据。
+- 新默认接入配置只影响新会话；不改变运行中会话身份。页面覆盖层保留普通会话与群聊成员双屏、草稿。
+
+## 状态与账号来源
+
+| 连接 | 状态来源 | 登录入口 |
+| --- | --- | --- |
+| Claude Code | `claude auth status --json` | 原 CLI `auth login` |
+| Codex 订阅账号 | 对应 CODEX_HOME 的 `codex login status` | 同一 CODEX_HOME 的原生 `login` |
+| Gemini CLI | 本机 OAuth 记录，仅显示已配置 | 官方 CLI |
+| Kimi Code | 官方用量接口成功回执 | `kimi login` |
+| DeepSeek / Gemini / ChatGPT 网页 | 专用浏览器当前页面的明确账号入口 | Chrome/Edge 官方页面 |
+| ChatGPT 生图 | 原共享队列的显式登录检查回执 | 原账号队列 `open` 控制命令 |
+| 公司中转 | 原中转浏览器可见登录状态 | 原工具 `open_login` |
+| Codex Web GPT | 服务健康，只表示工具在线 | 原固定隔离启动器 |
+| 百炼 Token Plan | 官方 CLI 用量接口回执 | `bl auth login --console` |
+| 飞书 | 未适配时明确未确认 | 通知配置选定的官方 CLI |
+| API / 监控 Token | 配置存在性，不能证明有效性 | 账号接入配置 |
+
+原生 CLI 证明的是当前本机凭据状态，不保证远端会话、额度或功能成功。五分钟以上的回执明确标记上次状态。网络/工具失败显示未确认，不冒充退出登录。Gemini CLI 与网页授权、Codex 与 ChatGPT 网页授权保持独立。
+
+## 持久化与执行边界
+
+- 受管网页目录：Hub 数据目录 `account-browsers/<provider>`，浏览器原生管理 Cookie 与登录信息。关闭后保留；不承诺永久免登录。
+- 中转、生图、Codex Web GPT 继续使用原工具目录，不复制或合并现有用户 profile。
+- 登录期间打开官方可见窗口，手机号、验证码、扫码、人机验证在官方页面完成。本次不实现短信代理，也不接管任务引擎的自动恢复。
+- `account-center` 目录只保存脱敏观测、活动记录和跨 Hub 登录等待文件。同一账号重复点击不重复启动；失败释放，确认登录后解除等待。用户关闭窗口后可手动解除等待；不会关闭浏览器或退出账号。
+- 原生检查有一分钟缓存；打开页面时只自动检查 Claude/Codex。网页不自动发送提示词，不主动开启登录窗口。
+- 生图检查进入原持久队列，排队不等于已检查；页面继续读取最终回执。查看公司中转登录状态不调用会初始化拉取游标的 `status()`。
+- 适配器只接受固定连接与命令。官方网页只连 loopback CDP，校验 provider 主机，不能把游客输入框当登录证据。
+- `CLAUDE_HUB_HOME_DIR` 隔离实例禁用真实外部工具；账号子进程 fixture 仅在隔离模式生效。
+
+## 验证入口
+
+- `node --test tests/unit-account-center.test.js`
+- `node tests/e2e-account-center-cdp.js`：真实隔离 Electron、鼠标输入、IPC、账号子进程夹具、配置落盘、普通/群聊双屏草稿、与记忆页互斥、窄窗口截图。夹具不是真实短信或网站登录 E2E。
+- `node scripts/run_unit_tests.js`：全量单元测试。Windows 环境需要 Git `bin` 中的 `sh.exe` 位于 PATH，开发流程旧测试会调用它。
+- 合并仍走 `scripts/merge_task.py`；不重启生产 Hub。

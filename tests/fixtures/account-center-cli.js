@@ -1,0 +1,13 @@
+'use strict';
+// Explicit fixture, only enabled under CLAUDE_HUB_HOME_DIR. No real browser/login.
+const fs=require('fs'),path=require('path');
+const [action,input]=process.argv.slice(2),row=JSON.parse(input||'{}');
+const root=process.env.CLAUDE_HUB_HOME_DIR;
+if(!root)throw Error('fixture requires isolated home');
+const trace=path.join(root,'account-fixture.jsonl');fs.mkdirSync(root,{recursive:true});
+fs.appendFileSync(trace,JSON.stringify({action,id:row.id})+'\n');
+let result;
+if(action==='images')result={ok:true,accounts:[{id:'primary',enabled:true,state:'unknown',workerAlive:false,observedAt:0}]};
+else if(action==='login'){fs.writeFileSync(path.join(root,'fixture-login-'+row.id),'1');result={ok:true,message:'夹具：官方登录入口已启动，完成后检查登录'};}
+else result={ok:true,state:row.id==='claude'||row.id==='codex-default'||fs.existsSync(path.join(root,'fixture-login-'+row.id))?'signed_in':'unknown',identity:'fixture@example.com',source:'原生协议夹具，不是真实账号',message:'测试状态',observedAt:Date.now()};
+process.stdout.write(JSON.stringify(result));

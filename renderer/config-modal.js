@@ -20,6 +20,7 @@ function createConfigModalController({
 
   // Config/Settings Modal (API key + proxy)
   const CONFIG_AI_META = {
+    server: {title:'服务器监控授权',hint:'仅管理 Bearer Token；监控地址和开关在设置中。',status:'访问凭据'},
     claude: {
       title: 'Claude 设置',
       hint: '使用当前本机 Claude Code 登录状态。新建 Claude 会话会走本机订阅和本机代理配置。',
@@ -127,7 +128,6 @@ function createConfigModalController({
       aliyunMonitorLabel: configEl('cfg-aliyun-label')?.value.trim() || '阿里云服务器',
       aliyunHealthUrl: configEl('cfg-aliyun-health-url')?.value.trim() || '',
       aliyunMetricsUrl: configEl('cfg-aliyun-metrics-url')?.value.trim() || '',
-      aliyunBearerToken: configEl('cfg-aliyun-token')?.value.trim() || '',
       operationsRestoreRoot: configEl('cfg-operations-restore-root')?.value.trim() || '',
     };
   }
@@ -408,9 +408,10 @@ function createConfigModalController({
       setOperationsForm(cfg);
       updateClaudeBackendControls();
       updateConfigSummaries();
-    } catch {
-      // 加载失败也显示空白面板
+    } catch (error) {
+      throw new Error("配置读取失败，未打开空白编辑器以免覆盖已有账号：" + error.message);
     }
+    if (options.accountsOnly) { showConfigDetail(options.provider || 'codex'); return; }
     showConfigMainView();
     modal.classList.remove('hidden');
     if (options && options.notificationSetup === true) {
@@ -447,11 +448,46 @@ function createConfigModalController({
     setNotificationTestStatus('');
   }
   
+  async function saveAccountConfig() {
+    const button=configEl('account-config-save'),msg=configEl('account-config-msg');
+    if (button.disabled) return;
+    button.disabled=true;msg.textContent='正在保存…';
+    try {
+      const fields={
+        aliyunBearerToken: configEl('cfg-aliyun-token')?.value.trim() || '',
+        claudeBackend: document.getElementById('cfg-claude-backend').value,
+        claudeApiKey: document.getElementById('cfg-claude-key').value.trim() || undefined,
+        claudeApiBaseUrl: document.getElementById('cfg-claude-url').value.trim() || undefined,
+        claudeApiModel: document.getElementById('cfg-claude-model').value.trim() || undefined,
+        deepseekApiKey: document.getElementById('cfg-deepseek-key').value.trim() || undefined,
+        codexBackend: document.getElementById('cfg-codex-backend').value,
+        codexSubscriptionProfile: (document.getElementById('cfg-codex-subscription-profile') && document.getElementById('cfg-codex-subscription-profile').value) || 'default',
+        codexSubscriptionProfiles: readCodexProfilesFromForm(),
+        codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
+        codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
+        codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
+      };
+      const groups={claude:['claudeBackend','claudeApiKey','claudeApiBaseUrl','claudeApiModel'],codex:['codexBackend','codexSubscriptionProfile','codexSubscriptionProfiles','codexApiKey','codexApiBaseUrl','codexApiModel'],deepseek:['deepseekApiKey'],server:['aliyunBearerToken']};
+      const newConfig=Object.fromEntries((groups[activeConfigAi]||[]).map(key=>[key,fields[key]]));
+      if(newConfig.claudeBackend==='api' && (!newConfig.claudeApiKey||!newConfig.claudeApiBaseUrl||!newConfig.claudeApiModel))throw new Error('请完整填写 Claude 中转 Key、Base URL 和模型');
+      const result=await ipcRenderer.invoke('save-hub-config',newConfig);
+      if(!result?.success)throw new Error(result?.error||'保存失败');
+      if(newConfig.claudeBackend!==undefined)providerModes.claude=newConfig.claudeBackend==='api'?'api':'subscription';
+      if(newConfig.codexBackend!==undefined)providerModes.codex=newConfig.codexBackend==='api'?'api':'subscription';
+      renderAccountUsage();updateConfigSummaries();
+      msg.textContent='已保存。仅新建会话使用新的接入配置，当前会话不变。';
+      document.dispatchEvent(new CustomEvent('hub-account-config-saved'));
+      document.dispatchEvent(new CustomEvent('hub-config-saved'));
+    } catch(error) { msg.textContent='保存失败：'+error.message; }
+    finally { button.disabled=false; }
+  }
+
   // 配置面板事件（DOM ready 后绑定）
   function initConfigModal() {
     const modal = document.getElementById('config-modal');
-    if (!modal) return;
-  
+    if (!modal || modal.dataset.configBound) return;
+    modal.dataset.configBound='true';
+    configEl('account-config-save')?.addEventListener('click',saveAccountConfig);
     document.getElementById('config-close').addEventListener('click', closeConfigModal);
     document.getElementById('config-cancel').addEventListener('click', closeConfigModal);
     const backBtn = document.getElementById('config-back');
@@ -487,29 +523,12 @@ function createConfigModalController({
       const notificationTarget = getNotificationTarget();
       const newConfig = {
         proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
-        claudeBackend: document.getElementById('cfg-claude-backend').value,
-        claudeApiKey: document.getElementById('cfg-claude-key').value.trim() || undefined,
-        claudeApiBaseUrl: document.getElementById('cfg-claude-url').value.trim() || undefined,
-        claudeApiModel: document.getElementById('cfg-claude-model').value.trim() || undefined,
-        deepseekApiKey: document.getElementById('cfg-deepseek-key').value.trim() || undefined,
-        codexBackend: document.getElementById('cfg-codex-backend').value,
-        codexSubscriptionProfile: (document.getElementById('cfg-codex-subscription-profile') && document.getElementById('cfg-codex-subscription-profile').value) || 'default',
-        codexSubscriptionProfiles: readCodexProfilesFromForm(),
-        codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
-        codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
-        codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
         ...readCardDisplayForm(),
         notificationIncludePreview: notificationForm.notificationIncludePreview,
         notificationNotifyGroupChats: notificationForm.notificationNotifyGroupChats,
         feishuTarget: notificationForm.feishuTarget,
         ...operationsForm,
       };
-      if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
-        msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
-        msg.className = 'config-save-msg error';
-        msg.style.display = 'block';
-        return;
-      }
       if (newConfig.feishuTarget && !/^(?:oc|ou)_[A-Za-z0-9_-]{6,256}$/.test(newConfig.feishuTarget)) {
         msg.textContent = '飞书接收对象 ID 必须以 oc_（会话/群聊）或 ou_（用户）开头。';
         msg.className = 'config-save-msg error';
@@ -542,8 +561,6 @@ function createConfigModalController({
               throw new Error('会话通知状态保存失败');
             }
           }
-          providerModes.claude = newConfig.claudeBackend === 'api' ? 'api' : 'subscription';
-          providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
           savedCardDisplay = setCardDisplayForm(newConfig);
           try { document.dispatchEvent(new CustomEvent('hub-config-saved', { detail: newConfig })); } catch {}
@@ -573,6 +590,8 @@ function createConfigModalController({
 
   return {
     open: openConfigModal,
+    openAccountConfig: provider => { configEl('account-config-msg').textContent=''; return openConfigModal({accountsOnly:true,provider}); },
+    saveAccountConfig,
     openNotificationSetup,
     openOperationsSetup,
     close: closeConfigModal,
