@@ -47,7 +47,16 @@ test('scan bounds are explicit and junction ancestors cannot escape', async t =>
   const result = await walkFiles(root, { maxEntries: 1 }); assert.equal(result.truncated, true);
   const target = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-fm-outside-'));
   const link = path.join(root, 'linked');
-  fs.symlinkSync(target, link, 'junction'); fs.writeFileSync(path.join(target, 'file.txt'), 'external');
+  // Windows may briefly hold a freshly created temp directory. Retry only
+  // that setup failure; never skip the junction or the escape assertions.
+  for (let attempt = 0; ; attempt++) {
+    try { fs.symlinkSync(target, link, 'junction'); break; }
+    catch (error) {
+      if (error.code !== 'EBUSY' || attempt === 4) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt));
+    }
+  }
+  fs.writeFileSync(path.join(target, 'file.txt'), 'external');
   try {
     await assert.rejects(checkedPath(root, path.join(link, 'file.txt')), /junction/);
     await assert.rejects(checkedPath(root, target), /当前目录/);
