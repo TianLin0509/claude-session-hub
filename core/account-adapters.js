@@ -29,7 +29,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  function cliEnv(row){const e={...cleanEnv};if(isolated&&row.home){const rel=path.relative(homeDir,path.resolve(row.home));if(rel.startsWith('..')||path.isAbsolute(rel))throw Error('隔离账号路径超出测试 home');}if(row.provider==='codex')e.CODEX_HOME=path.resolve(row.home);if(row.provider==='claude')e.CLAUDE_CONFIG_DIR=row.home;if(row.provider==='kimi')e.KIMI_CODE_HOME=row.home;if(isolated){e.HOME=homeDir;e.USERPROFILE=homeDir;e.BAILIAN_CONFIG_DIR=path.join(homeDir,'.bailian');}return e;}
  async function tool(tool,action,accountId){external();const root=tool==='images'?toolsRoot:bridgeRoot;if(!fs.existsSync(root))throw Error('原工具未安装');return jsonResult(await runImpl(python,[path.resolve(__dirname,'../scripts/account-tool-adapter.py'),tool,action,root,...(accountId?[accountId]:[])],cleanEnv,45000));}
  const imageAccounts=async()=>{
-  const data=await tool('images','status');return (data.accounts||[]).map(a=>({id:a.id,enabled:!!a.enabled,workerAlive:Date.now()/1000-a.heartbeat<20,
+  const data=await tool('images','status');return (data.accounts||[]).map(a=>({id:a.id,loginGroup:a.login_group||a.id,enabled:!!a.enabled,workerAlive:Date.now()/1000-a.heartbeat<20,
    state:/login_required|credential_required|account_selection_required/.test(a.state)?'login_required':a.login_confirmed?'signed_in':'unknown',
    observedAt:a.checked_at*1000||0,message:a.control_pending?'原工具正在处理账号操作，请稍后检查':a.enabled?'原工具账号记录；额度与排队单独判断':'账号在原工具已停用'}));
  };
