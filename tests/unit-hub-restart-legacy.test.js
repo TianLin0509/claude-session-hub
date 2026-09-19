@@ -55,3 +55,18 @@ test('group legacy continuation publishes a receipt only after exact transcript 
     assert.equal(writes.filter(x=>x==='\r').length,1);assert.equal(sm.restartContinuationSessions.size,0);
   }
 });
+
+test('fixture writer marker survives unsubscribe and is removed on actual exit',async t=>{
+  const fs=require('fs'),os=require('os'),path=require('path'),{spawn}=require('child_process');
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'restart-writer-marker-'));
+  const child=spawn(process.execPath,[path.resolve(__dirname,'fixtures/codex-app-server.js')],{windowsHide:true,
+    env:{...process.env,CLAUDE_HUB_DATA_DIR:root,CLAUDE_HUB_NATIVE_FIXTURE_STORE:'',CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR:path.join(root,'threads'),CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR:path.join(root,'writers')}});
+  t.after(()=>{if(child.exitCode==null)child.kill();fs.rmSync(root,{recursive:true,force:true});});
+  const replies=new Map();let id=0;
+  require('readline').createInterface({input:child.stdout}).on('line',line=>{const m=JSON.parse(line);if(m.id)replies.get(m.id)?.(m);});
+  const request=(method,params)=>new Promise(resolve=>{replies.set(++id,resolve);child.stdin.write(JSON.stringify({id,method,params})+'\n');});
+  const opened=await request('thread/start',{}),threadId=opened.result.thread.id;
+  const marker=path.join(root,'writers',threadId+'.json');assert(fs.existsSync(marker));
+  await request('thread/unsubscribe',{threadId});assert(fs.existsSync(marker));
+  child.stdin.end();await waitChildExit(child);assert.equal(fs.existsSync(marker),false);
+});
