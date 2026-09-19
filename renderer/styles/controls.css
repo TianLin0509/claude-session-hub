@@ -66,6 +66,9 @@
    computed position 仍是 static 才发现。它的 :active / :focus-visible /
    :disabled 仍然归本层管，只是不做命中区外扩。
 
+   发送按钮在可滚动的 composer 里，不能外扩：绝对定位的伪元素虽不影响
+   boundingRect，却会扩大 scrollWidth/scrollHeight，挤出两根滚动条。
+   发送按钮沿用原本的 32px 命中区；状态样式仍由本层统一。
    tests/unit-controls-layer.test.js 有一条守卫自动跑这个准入条件，
    以后往名单里加控件时会被它拦住。
    ------------------------------------------------------------------------- */
@@ -77,9 +80,7 @@
 .btn-header-tool,
 .btn-caret,
 .btn-theme,
-.hub-new-instance,
-.floating-input-send,
-.mr-send-btn {
+.hub-new-instance {
   position: relative;
 }
 
@@ -91,9 +92,7 @@
 .btn-header-tool::after,
 .btn-caret::after,
 .btn-theme::after,
-.hub-new-instance::after,
-.floating-input-send::after,
-.mr-send-btn::after {
+.hub-new-instance::after {
   content: "";
   position: absolute;
   inset: -3px;

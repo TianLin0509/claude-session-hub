@@ -92,6 +92,8 @@ async function main() {
       return s && s.conn === 'connected';
     }, '会话连上', 120000);
     check('放宽预算没有破坏正常启动：会话连上了', true);
+    check('记录实际 initialize 耗时，独立于超时预算',
+      hub.log().some(line => /initialize completed in \d+ms/.test(line)));
 
     const reply = await c.eval(`ipcRenderer.invoke('session:send-prompt', ${j({ sessionId: session.id, text: '握手预算验证：随便答一句。' })})`);
     check('发送走通（拿到受理回执）', !!(reply && (reply.ok === true || reply.sendStatus)), reply);

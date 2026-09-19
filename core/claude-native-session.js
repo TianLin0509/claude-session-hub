@@ -247,9 +247,7 @@ class ClaudeNativeSession extends EventEmitter {
       launchArgs.push('--resume', this.options.resumeSessionId);
       if (this.options.fork) launchArgs.push('--fork-session', '--session-id', this.sessionId);
     } else launchArgs.push('--session-id', this.sessionId);
-    // resume / fork 要先把父会话整段读进来才会回握手，等待预算必须跟着历史体积走。
-    // 写死 60 秒的后果见 core/claude-handshake-timeout.js 的注释：大会话必然被判成
-    // 连接失败，然后一分钟后自己连上 —— 报错和恢复都发生在用户看不懂的地方。
+    // 保留 resume / fork 的容错预算；历史体积不能证明初始化的实际耗时或阶段。
     const handshake = resolveHandshakeBudget({
       resumeSessionId: this.options.resumeSessionId,
       homeDir: this.options.homeDir,
@@ -257,7 +255,7 @@ class ClaudeNativeSession extends EventEmitter {
     if (handshake.reason) {
       this.update({ connection: 'connecting', state: 'unknown', reason: handshake.reason });
       // 放宽过的预算要留痕：出问题时第一个要回答的问题就是「当时到底等了多久」。
-      this.backstage.note('载入历史', `${handshake.reason}；握手等待放宽到 ${Math.round(handshake.timeoutMs / 1000)} 秒`);
+      this.backstage.note('连接 Claude', `${handshake.reason}；握手超时上限 ${Math.round(handshake.timeoutMs / 1000)} 秒（非预计耗时）`);
       console.log(`[claude-native] handshake budget ${Math.round(handshake.timeoutMs / 1000)}s for ${handshake.bytes} bytes of history (${this.sessionId})`);
     }
     const clientOptions = {
@@ -298,12 +296,18 @@ class ClaudeNativeSession extends EventEmitter {
       this.update({ requests, state: this.unreconciled ? 'unknown' : requests.length ? 'waiting'
         : this.active?.accepted ? 'running' : this.runtime.state });
     });
+    const handshakeStarted = performance.now();
     try {
       const starting = this.client.start();
       // Bind the exact spawned child before awaiting the protocol handshake.
       starting.catch(() => undefined);
       if (this.lease && this.pid) ownership.bindServerPid(this.lease, this.pid);
       await starting;
+      if (this.options.resumeSessionId) {
+        const elapsedMs = Math.round(performance.now() - handshakeStarted);
+        this.backstage.note('Claude 连接完成', `initialize 已确认，耗时 ${elapsedMs} ms；历史 ${handshake.bytes} bytes`);
+        console.log(`[claude-native] initialize completed in ${elapsedMs}ms (${this.sessionId})`);
+      }
     } catch (error) {
       await this.client.close();
       if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }

@@ -2,11 +2,11 @@
 
 // Claude 握手等待预算按历史体积放宽（2026-09-18 事故修复）。
 //
-// 事故还原：从 17.1 MB 的会话分支出群聊成员，`--resume … --fork-session` 要把父会话
-// 整段读进来才回握手，实测 124.6 秒；而 initialize 等待写死 60 秒 → 判连接失败 →
+// 事故记录：从 17.1 MB 的会话分支出群聊成员，初始化实测 124.6 秒（未分段归因）；
+// initialize 等待写死 60 秒 → 判连接失败 →
 // 群聊那条提交被标「待核对」、侧栏亮异常 → 一分钟后引擎其实连上并跑完了这一轮。
 //
-// 这里守三件事：全新会话行为不变、resume/fork 按体积放宽、以及界面上得说人话。
+// 守住超时容错，同时确保不把等待预算说成引擎进度或预计耗时。
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -68,14 +68,15 @@ test('真的有大历史时按文件大小放宽，并给出一句能显示的�
     assert.equal(budget.bytes, 4 * MB);
     assert.equal(budget.timeoutMs, initializeTimeoutMsForBytes(4 * MB));
     assert.ok(budget.timeoutMs > BASE_MS);
-    assert.match(budget.reason, /正在载入历史/);
+    assert.match(budget.reason, /正在连接 Claude/);
+    assert.doesNotMatch(budget.reason, /一两分钟|正在载入|秒/);
     assert.match(budget.reason, /4\.0 MB/);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
-test('启动时把算出来的预算交给引擎客户端，并先把「正在载入历史」发出去', async () => {
+test('启动时传递超时预算，但界面只说明正在连接', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-handshake-start-'));
   const projectDir = path.join(home, '.claude', 'projects', 'C--AIWork');
   fs.mkdirSync(projectDir, { recursive: true });
@@ -96,7 +97,7 @@ test('启动时把算出来的预算交给引擎客户端，并先把「正在�
     assert.ok(seen, 'clientFactory 必须拿到启动参数');
     assert.equal(seen.initializeTimeoutMs, initializeTimeoutMsForBytes(6 * MB));
     assert.ok(seen.launchArgs.includes('--fork-session'), '分支仍然走 --fork-session');
-    assert.ok(reasons.some(r => /正在载入历史/.test(String(r || ''))),
+    assert.ok(reasons.some(r => /正在连接 Claude/.test(String(r || ''))),
       '载入期必须把正在做什么发出去，而不是让界面干等「等待连接响应」');
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
@@ -117,10 +118,10 @@ test('调用方显式给了 initializeTimeoutMs 就听它的', async () => {
 test('载入期的输入框说人话，连接真断了才说断了', () => {
   const loading = {
     runtimeBackend: 'claude-stream-json',
-    nativeRuntime: { state: 'unknown', connection: 'connecting', reason: '正在载入历史（17.1 MB），大会话可能要一两分钟' },
+    nativeRuntime: { state: 'unknown', connection: 'connecting', reason: '正在连接 Claude（历史 17.1 MB）' },
   };
   const model = buildComposerStatusModel(loading, { runtime: deriveSessionRuntimeStatus(loading) });
-  assert.match(model.text, /正在载入历史/);
+  assert.match(model.text, /正在连接 Claude/);
 
   // 没有理由可说时保持原样。
   const bare = { runtimeBackend: 'claude-stream-json', nativeRuntime: { state: 'unknown', connection: 'connecting' } };
