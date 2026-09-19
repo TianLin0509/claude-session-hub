@@ -19,6 +19,36 @@ test('IPC converts errors to visible envelopes and validates ids',async()=>{cons
 test('an older failing launch cannot release the newer login admission',async t=>{let rejectOld,count=0;const {service}=setup(t,{login:()=>++count===1?new Promise((_,reject)=>{rejectOld=reject;}):Promise.resolve({})});const old=service.login('bridge');while(!rejectOld)await new Promise(r=>setImmediate(r));const failed=assert.rejects(old,/无法打开/);await service.release('bridge');await service.login('bridge');rejectOld(Error('old failure'));await failed;await service.login('bridge');assert.equal(count,2);});
 test('server token edits invalidate cached configuration and tilde profiles resolve correctly',async t=>{const {service,config,root}=setup(t);config.operations={aliyunMonitor:{bearerToken:'old'}};await service.check('server-monitor');config.operations.aliyunMonitor.bearerToken='new';assert.equal(service.read(service.scope(service.baseConnections().find(r=>r.id==='server-monitor'))),null);config.codexSubscriptionProfiles[0].home='~/.codex-other';assert.equal(service.baseConnections().find(r=>r.id==='codex-default').home,path.join(root,'.codex-other'));});
 test('Feishu user login cannot stand in for the notification bot identity',async t=>{const {root}=setup(t);let args,command;const a=createAccountAdapters({dataDir:root,env:{},getConfig:()=>({notifications:{feishuCliPath:'fixture-cli'}}),runImpl:async(c,v)=>{command=c;args=v;return {code:0,stdout:JSON.stringify({identities:{bot:{available:true},user:{available:false}}})};}});const result=await a.check({provider:'feishu'});assert.equal(result.state,'login_required');assert.match(result.message,/独立机器人身份：已配置/);assert.equal(command,'fixture-cli');assert.deepEqual(args,['auth','status','--json']);});
+test('batch validates all ids before launching and skips verified accounts',async t=>{
+ let launched=[];const {service}=setup(t,{check:async row=>({state:row.id==='claude'?'signed_in':'unknown'}),login:async row=>{launched.push(row.id);return {stage:'manual',message:'official window'};}});
+ await assert.rejects(service.loginMany(['web-doubao','api-deepseek']),/无效/);assert.equal(launched.length,0);
+ const b=await service.loginMany(['claude','web-doubao','web-doubao']);while(service.batches.get(b.id).running)await new Promise(r=>setImmediate(r));
+ assert.deepEqual(launched,['web-doubao']);assert.equal(service.batches.get(b.id).items[0].stage,'signed_in');
+});
+test('batch limits concurrency, isolates failures, and never stores the phone',async t=>{
+ let active=0,max=0;const phone='13800000000';const {service,root}=setup(t,{check:async()=>({state:'login_required'}),login:async row=>{active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,10));active--;if(row.id==='web-qwen')throw Error('failed');return {stage:'waiting_code',message:'waiting'};}});
+ const b=await service.loginMany(['web-deepseek','web-doubao','web-kimi','web-qwen','web-gemini'],{phone});while(service.batches.get(b.id).running)await new Promise(r=>setTimeout(r,5));
+ assert.equal(max,3);assert.equal(service.batches.get(b.id).items.filter(r=>r.stage==='failed').length,1);assert.ok(!JSON.stringify(await service.snapshot()).includes(phone));assert.ok(!fs.readFileSync(path.join(root,'account-center','events.jsonl'),'utf8').includes(phone));
+});
+test('verification code targets one phone-capable account and is not persisted',async t=>{
+ let received;const {service,root}=setup(t,{submitCode:async(row,code)=>{received={id:row.id,code};return {stage:'checking',message:'submitted'};}});
+ await assert.rejects(service.submitCode('claude','123456'),/官方窗口/);await service.submitCode('web-doubao','123456');assert.deepEqual(received,{id:'web-doubao',code:'123456'});assert.ok(!JSON.stringify(await service.snapshot()).includes('123456'));
+});
+test('SMS automation never retries an uncertain mutation',async t=>{
+ const {root}=setup(t);let attempts=0;const a=createAccountAdapters({dataDir:root,env:{},browser:{open:async()=>({}),command:async()=>true,preparePhone:async()=>{attempts++;throw Error('disconnected after click');}}});
+ const r=await a.login({provider:'doubao',managedBrowser:true,phoneLogin:true},{phone:'13800000000'});assert.equal(attempts,1);assert.equal(r.stage,'manual');
+});
+test('official phone form yields to CAPTCHA and submits each SMS request only once',()=>{
+ const {phoneStep}=require('../core/account-browser'),vm=require('vm');let clicks=0,challenge=false;
+ class Input {get value(){return this.current||'';}set value(v){this.current=v;}getClientRects(){return [1];}dispatchEvent(){}}
+ const input=new Input();input.placeholder='Phone number';input.dataset={};
+ const button={innerText:'Send code',getClientRects:()=>[1],getAttribute:()=>null,click:()=>clicks++};
+ const document={querySelector:()=>challenge?{}:null,querySelectorAll:s=>s==='input'?[input]:[button]};
+ const run=()=>vm.runInNewContext(`(${phoneStep.toString()})('deepseek','13800000000')`,{document,HTMLInputElement:Input,Event:class{}});
+ challenge=true;assert.equal(run().stage,'manual');assert.equal(clicks,0);assert.equal(input.value,'');
+ challenge=false;assert.equal(run().stage,'advance');assert.equal(input.value,'13800000000');assert.equal(clicks,0);
+ run();assert.equal(clicks,1);run();assert.equal(clicks,1);
+});
 test('browser checks require provider-page evidence and never infer login from a composer',async t=>{
  const {root}=setup(t),http=require('http'),{WebSocketServer}=require('ws'),{AccountBrowser}=require('../core/account-browser');
  let result={host:'chat.deepseek.com',login:false,profile:false,challenge:false};
