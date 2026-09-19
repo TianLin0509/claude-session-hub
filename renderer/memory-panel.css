@@ -82,6 +82,11 @@
   color: var(--text-secondary, #9ba4b7);
   margin: 6px 0 0;
 }
+.mp-project-label { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+.mp-project-label select { max-width: 600px; min-width: 220px; padding: 7px; color: inherit; background: var(--bg-secondary, #1e222a); border: 1px solid var(--border-color, #353944); border-radius: 5px; }
+.mp-loading { color: var(--text-secondary, #9ba4b7); padding: 8px 0 16px; }
+.mp-file-name { overflow-wrap: anywhere; }
+.mp-file-path { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px/1.5 Consolas, monospace; color: var(--text-secondary, #9ba4b7); margin-top: 4px; }
 .mp-btn {
   border: 1px solid var(--border-color, #353944);
   background: var(--bg-tertiary, #252a33);

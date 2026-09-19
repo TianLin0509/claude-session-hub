@@ -15,9 +15,15 @@ const owned=new Set();
 const save=()=>{if(storeDir){
   for(const id of owned){const file=threadFile(id),tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(threads.get(id)));fs.renameSync(tmp,file);}
 }else if(store){
+  const {acquireLock,releaseLock}=require('../../core/file-lock');
+  const lock=store+'.lock',fd=acquireLock(lock,{retries:200});
+  if(fd==null)throw Error('fixture store lock timed out');
+  try {
   const all=new Map(fs.existsSync(store)?JSON.parse(fs.readFileSync(store,'utf8')):[]);
   for(const id of owned){const t=threads.get(id);if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)all.set(id,t);else all.delete(id);}
-  fs.writeFileSync(store,JSON.stringify([...all]));
+  const tmp=store+'.'+process.pid+'.tmp';
+  fs.writeFileSync(tmp,JSON.stringify([...all]));fs.renameSync(tmp,store);
+  } finally {releaseLock(fd,lock);}
 }};
 function claimWriter(id) {
   if(writerDir){
@@ -123,7 +129,13 @@ rl.on('line',line=>{
       }
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:backstage') {
+      if(mode==='fixture:large-image') {
+        answer(msg.id,{turn});
+        const item={id:'large-image-'+turn.id,type:'imageGeneration',status:'completed',
+          result:'iVBORw0KGgo'+'A'.repeat(34*1024*1024)};
+        turn.items.push(item);event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+        finish(thread,turn,'completed','图片生成完成，文字历史保留');
+      } else if(mode==='fixture:backstage') {
         answer(msg.id,{turn});
         const one={id:'backstage-a-'+turn.id,type:'commandExecution',command:'python verify_segments.py --all',cwd:thread.cwd,status:'inProgress',aggregatedOutput:''};
         const two={id:'backstage-b-'+turn.id,type:'commandExecution',command:'python inspect_manifest.py',status:'inProgress',aggregatedOutput:''};
@@ -308,6 +320,8 @@ rl.on('line',line=>{
       event('thread/goal/updated',{threadId:thread.id,goal:thread.goal});break;
     case 'thread/goal/clear':thread.goal=null;save();answer(msg.id,{});break;
     case 'skills/list':answer(msg.id,{data:[{cwd:p.cwds?.[0],skills:[{name:'fixture-skill',path:__filename,enabled:true,description:'Fixture skill'}],errors:[]}]});break;
+    case 'mcpServerStatus/list':answer(msg.id,{data:[{name:'fixture-mcp',tools:{inspect:{name:'inspect'}},runtimeStatus:'connected',authStatus:'unsupported'}],nextCursor:null});break;
+    case 'plugin/list':answer(msg.id,{marketplaces:[{name:'fixture',plugins:[{id:'fixture-plugin@fixture',name:'fixture-plugin',installed:true,enabled:true}]}],marketplaceLoadErrors:[]});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }

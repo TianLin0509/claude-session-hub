@@ -15,10 +15,10 @@ const COVERAGE =
 const CONTEXT_RECORDS = 6;
 function candidates(index, request = {}) {
   const excluded = new Set(request.excludeSessionIds || []);
+  const count = index.db.prepare("SELECT count(*) AS n FROM docs WHERE session_key=? AND scope<>'title'");
   return index.db
     .prepare(
-      `SELECT s.*, sources.signature, sources.stale,
-    (SELECT count(*) FROM docs d WHERE d.session_key=s.key AND d.scope<>'title') AS records
+      `SELECT s.*, sources.signature, sources.stale
     FROM sessions s JOIN sources ON sources.key=s.source_key ORDER BY s.updated_at DESC`,
     )
     .all()
@@ -27,9 +27,10 @@ function candidates(index, request = {}) {
         (request.roots || [request.cwd]).some((root) =>
           withinProject(s.cwd, root),
         ) &&
-        !excluded.has(s.hub_session_id) &&
-        s.records > 0,
+        !excluded.has(s.hub_session_id),
     )
+    .map(s => ({ ...s, records: count.get(s.key).n }))
+    .filter(s => s.records > 0)
     .map((s) => ({
       key: s.key,
       sourceKey: s.source_key,

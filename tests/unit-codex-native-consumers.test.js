@@ -72,7 +72,8 @@ test('sidebar, home, composer, attention and suspension agree for the native sta
     assert.equal(sessionNeedsUserInput(s),state==='waiting');
     const home=buildHomeSnapshot({sessions:new Map([[s.id,s]]),now:9000});assert.equal(home.items[0].status,state);
     assert.equal(home.lanes.running.some(x=>x.id===s.id),state==='running');assert.equal(home.lanes.waiting.some(x=>x.id===s.id),state==='waiting');
-    const side=partitionSidebarSessions([s],{now:9000});assert.equal(side.active.some(x=>x.id===s.id),['running','waiting','failed'].includes(state),state);
+    const side=partitionSidebarSessions([s],{now:9000});assert.equal(side.active.some(x=>x.id===s.id),['running','waiting'].includes(state),state);
+    assert.equal(side.failed.some(x=>x.id===s.id),state==='failed',state);
     const manager=Object.create(SessionManager.prototype);manager.sessions=new Map([[s.id,{info:s}]]);
     const suspended=manager._evaluateSuspendEligibility(s.id,{now:9000});assert.equal(suspended.ok,['idle','completed','interrupted','failed'].includes(state),state);
   }

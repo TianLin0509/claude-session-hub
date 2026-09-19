@@ -213,3 +213,14 @@
 @media (prefers-reduced-motion: reduce) {
   #session-list .session-item.slim { transition: none; }
 }
+/* Unresolved failures outrank selection/hover polish, including light themes. */
+:root #session-list .session-sec-header.sec-failed,
+:root #session-list .sec-failed .sec-count,
+:root #session-list .sec-failed .sec-collapse { color: var(--mark-red); }
+:root #session-list .session-item.slim.runtime-error,
+:root #session-list .session-item.slim.runtime-error.selected {
+  background: rgba(248, 113, 113, .09);
+  box-shadow: inset 3px 0 0 var(--mark-red);
+}
+:root #session-list .session-item.slim.runtime-error:hover { background: rgba(248, 113, 113, .15); }
+:root #session-list .session-item.slim.runtime-error .sl-warning { color: var(--mark-red); }

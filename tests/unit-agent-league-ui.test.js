@@ -7,16 +7,17 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
-test('Agent League is a native Chuxin tab, not another iframe product', () => {
+// 2026-09-19：联赛（5 个 Agent + PTY 编排）由初心投研后端的「作手林铛」单 Agent 取代。
+// 投研 Tab 不再挂原生联赛面板，只留一个指向 chuxin-research 前端的普通 iframe Tab。
+test('Chuxin tab bar hands the league slot to the single lindang agent page', () => {
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
-  const index = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
-  assert.match(chuxin, /require\('\.\/agent-league\.js'\)/);
-  assert.match(chuxin, /id: 'league', label: 'Agent 联赛', native: true/);
-  assert.match(chuxin, /createAgentLeaguePanel/);
-  assert.match(chuxin, /state\.frameView\.style\.display = 'none'/);
-  assert.match(chuxin, /returningFromNative/);
+  assert.match(chuxin, /id: 'lindang', label: '作手林铛', hash: 'lindang'/);
+  assert.doesNotMatch(chuxin, /createAgentLeaguePanel/);
+  assert.doesNotMatch(chuxin, /require\('\.\/agent-league\.js'\)/);
+  assert.doesNotMatch(chuxin, /id: 'league'/);
+  // 老用户上次停在联赛 Tab 时，要自动落到新页面而不是空白
+  assert.match(chuxin, /league: 'lindang'/);
   assert.match(chuxin, /setTimeout\(navigate, 50\)/);
-  assert.match(index, /agent-league\.css/);
 });
 
 test('leaderboard keeps eight compact rows and opens real Session card or PTY views', () => {

@@ -1952,13 +1952,40 @@ registerArchiveIpc(ipcMain, {
 // Let the renderer and hook server finish their latency-sensitive boot path
 // before the worker starts walking transcript directories. Querying search
 // earlier still starts the same worker on demand and reports visible progress.
+//
+// 2026-09-19: five seconds landed squarely on the first prompt of a session —
+// the walk covers ~17 GB of provider transcripts, and the user feels it as the
+// window stalling just as they start typing. Nothing is lost by waiting: the
+// title layer answers from renderer memory throughout, and an explicit search
+// still starts the worker immediately.
 const sessionSearchPrewarmDelayMs = Math.max(
   250,
-  Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 5_000,
+  Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 30_000,
 );
+// The first full walk is the one heavy piece of work Hub does on its own
+// initiative, so it yields to the user rather than competing with them. A
+// prompt just sent means the model is answering and the disk is busy; the walk
+// waits for a gap. The wait is capped so a continuously busy Hub still gets its
+// index built instead of deferring forever.
+let lastPromptSubmittedAt = 0;
+const SEARCH_IDLE_GAP_MS = Math.max(0, Number(process.env.HUB_SESSION_SEARCH_IDLE_GAP_MS) || 30_000);
+const SEARCH_IDLE_MAX_WAIT_MS = Math.max(
+  SEARCH_IDLE_GAP_MS,
+  Number(process.env.HUB_SESSION_SEARCH_IDLE_MAX_WAIT_MS) || 5 * 60_000,
+);
+const delayMs = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref?.(); });
+async function waitForSearchIdle() {
+  const deadline = Date.now() + SEARCH_IDLE_MAX_WAIT_MS;
+  for (;;) {
+    const quietFor = Date.now() - lastPromptSubmittedAt;
+    if (quietFor >= SEARCH_IDLE_GAP_MS || Date.now() >= deadline) return;
+    await delayMs(Math.min(SEARCH_IDLE_GAP_MS - quietFor, 5_000, Math.max(0, deadline - Date.now())));
+  }
+}
 const sessionSearchPrewarmTimer = setTimeout(() => {
-  sessionSearchService.startMaintenance(buildSessionSearchSnapshot);
   void (async () => {
+    await waitForSearchIdle();
+    sessionSearchService.startMaintenance(buildSessionSearchSnapshot);
     const lockPath = path.join(getHubDataDir(), 'cache', 'session-search-prewarm.lock');
     try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
     const lock = await acquireLockAsync(lockPath, { retries: 0, staleMs: 30 * 60 * 1000 });
@@ -1980,6 +2007,7 @@ sessionSearchPrewarmTimer.unref?.();
 for (const event of ['turn-complete', 'prompt-submitted', 'turn-aborted', 'turn-error', 'session-bound']) {
   transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot(), payload?.hubSessionId || event));
 }
+transcriptTap.on('prompt-submitted', () => { lastPromptSubmittedAt = Date.now(); });
 
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
 //   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。
@@ -2618,6 +2646,14 @@ registerConfigIpc(ipcMain, {
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
+const accountCenterHome = process.env.CLAUDE_HUB_HOME_DIR || os.homedir();
+const accountCenter = new (require('./core/account-center').AccountCenter)({
+  dataDir: getHubDataDir(), homeDir: accountCenterHome,
+  getConfig: () => require('./core/hub-config').getConfig(),
+  adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome }),
+});
+require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
+
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,
 });
@@ -2639,6 +2675,9 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
+const { CapabilityService } = require('./core/capability-service');
+require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
+  new CapabilityService({sessionManager,dataDir:getHubDataDir()}));
 
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns

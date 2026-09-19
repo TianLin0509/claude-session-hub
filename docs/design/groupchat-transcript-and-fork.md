@@ -60,6 +60,26 @@
   一律不继承，它们指向源侧的原生 turn。分支时已退群成员的历史发言保留正文，
   但 sid 打上 `fork-orphan:` 前缀——不能让新群聊的卡片指向别人房间里活着的会话。
 
+## 三点五、分支的真实代价：Claude 要重放历史（2026-09-18 事故）
+
+两家的分支根本不同：Codex 的 `thread/fork` 在 App Server 服务端完成（实测 0.6 秒），
+Claude 只能 `claude --resume <父会话> --fork-session`，CLI 必须把父会话整段读进来再写成
+新会话文件。实测 17.1 MB / 884 条记录的父会话要 **124.6 秒**才回握手。
+
+而 Hub 的 initialize 等待原本写死 60 秒，于是必然出现「先报错、一分钟后自己好了」：
+60 秒判连接失败 → 群聊那条提交被标成 `submission_unknown` → 侧栏亮异常 →
+引擎其实连上并把这一轮跑完了。历史越大越必然踩到。
+
+修法（`core/claude-handshake-timeout.js`）：
+- 全新会话仍是 60 秒，行为不变；resume / fork 按父会话 transcript 字节数放宽
+  （基准 60 秒 + 25 秒/MB，封顶 10 分钟）。25 秒/MB 是按实测 7.3 秒/MB 留 3 倍余量。
+- 量不到父会话文件（迁过目录、provider 放在别处）就回落到基准，绝不因为量不准而启动失败。
+- 载入期界面说人话：「正在载入历史（17.1 MB），大会话可能要一两分钟」，
+  而不是和真故障共用一句「等待连接响应」。放宽后的预算同时写进 backstage 和主进程日志，
+  出问题时第一个要回答的就是「当时到底等了多久」。
+
+**所以从大历史群聊分支，Claude 成员天然要等一两分钟才开口**，这是 CLI 的代价，不是故障。
+
 ## 四、验证入口
 
 - `node tests/unit-groupchat-transcript-fork.test.js`：md 投影、预算与截断、状态迁移
@@ -68,5 +88,7 @@
 - `node tests/e2e-groupchat-fork-ui-cdp.js`：三个界面入口用真实鼠标点一遍（15 项）
 - `node tests/e2e-groupchat-fork-stress-cdp.js`：多轮 + 反复分支 + 并发 + 增删成员 + 重启（16 项，
   `GC_STRESS_ROUNDS` 可加压）
+- `node --test tests/unit-claude-handshake-timeout.test.js`：握手预算的取值、降级与文案
+- `node tests/e2e-claude-fork-handshake-cdp.js`：真实隔离 Hub 里用 12 MB 伪造历史验证预算真的放宽
 
 E2E 全部用 Codex App Server fixture 扮演成员：不花钱、不碰生产数据。
