@@ -223,7 +223,12 @@ test('search child is lowered to background priority when the platform supports 
 test('production main enables delayed prewarm while isolated Hubs remain opt-in', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   assert.match(source, /prewarmEnabled:[\s\S]{0,180}HUB_SESSION_SEARCH_PREWARM[\s\S]{0,180}!isIsolatedHub\(\)/);
-  assert.match(source, /HUB_SESSION_SEARCH_PREWARM_DELAY_MS[\s\S]{0,100}5_000/);
+  assert.match(source, /HUB_SESSION_SEARCH_PREWARM_DELAY_MS[\s\S]{0,100}30_000/);
+  // The walk also yields to a prompt in flight, and the yield is bounded so a
+  // busy Hub still gets an index rather than deferring forever.
+  assert.match(source, /await waitForSearchIdle\(\);[\s\S]{0,200}startMaintenance/);
+  assert.match(source, /transcriptTap\.on\('prompt-submitted', \(\) => \{ lastPromptSubmittedAt = Date\.now\(\); \}\)/);
+  assert.match(source, /Date\.now\(\) >= deadline\) return/);
   assert.match(source, /sessionSearchService\.prewarm\(buildSessionSearchSnapshot\(\)\)/);
   assert.match(source, /session-search-prewarm\.lock/);
   assert.match(source, /acquireLockAsync\(lockPath, \{ retries: 0, staleMs: 30 \* 60 \* 1000 \}\)/);
