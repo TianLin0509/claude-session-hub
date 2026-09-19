@@ -45,7 +45,7 @@ class AccountCenter {
       const images=await this.adapter.imageAccounts();
       if(!images.length)rows.push({id:'images',name:'ChatGPT 网页生图',type:'web',provider:'images',accountId:'primary',uses:['网页生图 MCP'],action:'login',observation:{state:'unknown',message:'尚无生图账号记录，可打开原工具的主账号登录入口',source:'生图共享池记录',observedAt:0}});
       for(const a of images) if(/^[a-z][a-z0-9_-]{0,39}$/.test(a.id)) rows.push({
-        id:'image-'+a.id,name:'ChatGPT 生图 · '+a.id,type:'web',provider:'images',accountId:a.id,uses:['网页生图 MCP'],action:'login',
+        id:'image-'+a.id,name:'ChatGPT 生图 · '+a.id,type:'web',provider:'images',accountId:a.id,loginGroup:/^[a-z][a-z0-9_-]{0,39}$/.test(a.loginGroup||'')?a.loginGroup:a.id,enabled:a.enabled!==false,uses:['网页生图 MCP'],action:'login',
         toolState:a.enabled===false?'账号已停用':a.workerAlive?'工作进程在线':'工作进程未在线',
         observation:{state:a.state || 'unknown',message:a.message || '原工具维护独立浏览器配置',observedAt:a.observedAt || 0,source:'生图共享池记录',identity:'身份由生图工具管理'},
       });
