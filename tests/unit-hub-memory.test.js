@@ -39,6 +39,25 @@ function setup(t) {
   return {root,cwd,home,index,add,grow,service,sessions,tap,start,output};
 }
 
+test('shared workspace rules are confirmed once, retried consistently, and resubmitted on change',async t=>{
+  const f=setup(t),s=f.sessions.get('normal');
+  fs.rmSync(path.join(f.cwd,'.git'),{recursive:true});
+  const scratch=path.join(f.cwd,'scratch');fs.mkdirSync(scratch);s.cwd=scratch;
+  const sent=[];
+  const send=async text=>{sent.push(text);f.service.confirmSend({sessionId:s.id,text});return {ok:true};};
+  await f.service.withWorkspaceRules(s.id,'hello','codex',{clientSubmissionId:'first'},send);
+  assert.match(sent[0],/<ai-hub-workspace-rules/);assert.match(sent[0],/手写规则/);
+  const context=await f.service.context(s.id);assert.equal(context.receipts[0].kind,'workspace');
+  await f.service.withWorkspaceRules(s.id,'next','codex',{clientSubmissionId:'second'},send);assert.equal(sent[1],'next');
+  await f.service.withWorkspaceRules(s.id,'hello','codex',{clientSubmissionId:'first'},send);assert.equal(sent[2],sent[0]);
+  await assert.rejects(f.service.withWorkspaceRules(s.id,'changed','codex',{clientSubmissionId:'first'},send),/已变化/);
+  fs.appendFileSync(path.join(f.cwd,'AGENTS.md'),'\n新规则');
+  await f.service.withWorkspaceRules(s.id,'new','codex',{clientSubmissionId:'third'},send);assert.match(sent[3],/新规则/);
+  await f.service.withWorkspaceRules(s.id,'/status','codex',{},send);assert.equal(sent[4],'/status');
+  fs.writeFileSync(path.join(f.cwd,'AGENTS.md'),'# 手写规则不能被改\n','utf8');
+  await f.service.withWorkspaceRules(s.id,'reverted','codex',{clientSubmissionId:'fourth'},send);assert.match(sent[5],/ai-hub-workspace-rules/);
+});
+
 test('atomic memory snapshots survive transient replacement denial and preserve old data on permanent failure',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-memory-atomic-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -303,7 +322,16 @@ test('global library works without an active session, deduplicates linked memory
   const memory=path.join(f.home,'.codex','memories');fs.mkdirSync(memory,{recursive:true});
   fs.writeFileSync(path.join(memory,'MEMORY.md'),'原生记忆');
   const shared=path.join(f.home,'shared-memory');fs.mkdirSync(shared);fs.writeFileSync(path.join(shared,'topic.md'),'共享内容');
-  for(const bucket of ['a','b']) {const parent=path.join(f.home,'.claude','projects',bucket);fs.mkdirSync(parent,{recursive:true});fs.symlinkSync(shared,path.join(parent,'memory'),'junction');}
+  for(const bucket of ['a','b']) {
+    const parent=path.join(f.home,'.claude','projects',bucket);fs.mkdirSync(parent,{recursive:true});
+    // Windows may briefly lock a newly created reparse-point destination.
+    // Retry only fixture creation; the actual deduplication assertions run once.
+    for(let attempt=0;;attempt++) {
+      try {fs.symlinkSync(shared,path.join(parent,'memory'),'junction');break;}
+      catch(e) {if(e.code!=='EBUSY'||attempt>=4)throw e;console.warn('junction fixture temporarily busy; retry '+(attempt+1));await new Promise(r=>setTimeout(r,25));}
+    }
+    assert.equal(fs.realpathSync(path.join(parent,'memory')),fs.realpathSync(shared));
+  }
   const [a,b]=await Promise.all([f.service.catalog(),f.service.catalog()]);
   assert.strictEqual(a,b,'concurrent readers share one discovery');
   assert.ok(a.files.some(x=>x.path===path.join(memory,'MEMORY.md')));

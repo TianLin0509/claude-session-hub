@@ -69,7 +69,8 @@
 
 - 统一入口在左侧第六个功能按钮；三个 tab 为当前上下文、记忆文件库、造梦。记忆页不放会话列表，当前上下文跟随聚焦 session；群聊先打开成员 session。
 - 文件库与造梦是全局入口，不依赖活动 session；从首页进入默认文件库，造梦按已知项目选择素材。只有「当前上下文」依赖聚焦 session。
-- 当前上下文只读取本原生身份/epoch 的确认提交快照；不扫文件库、不查历史、不列「预计加载」和「可按需读取」。没有原生加载证据时明确未知，不能用磁盘存在替代注入证据。
+- 当前上下文先读本原生身份的证据缓存与当前 epoch 的确认提交快照；不扫文件库、不查历史索引、不列「预计加载」。Codex 可在 worker 对已知原生记录路径有界补录实际指令正文；Claude InstructionsLoaded 仅作加载证据，磁盘预览不可冒充当时快照。历史加载不承诺压缩后仍保留。
+- 临时目录不自动复制 AGENTS.md、不默认 git init；未被原生链覆盖的共享工作区规则随真实消息发送并留确认回执。文件库折叠未改旧副本，手改/未知保留；只读迁移清单由 scripts/audit-memory-rules.js 输出，不批量删除原生规则。
 - 文件库发现由 `core/hub-memory-catalog.js` worker 执行，目录按真实路径去重，30 秒缓存与并发请求合并；刷新可重扫。三个 tab 按需请求，过期响应不覆盖新 tab/session。
 - 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
 - 昨日之我只索引对话：工具调用只留 ≤120 字符元信息、不进全文索引，检索范围只有标题/我的提问/AI 回答（`SCHEMA_VERSION` 已升，合入后首次启动重建索引）。每个会话另有一份只含对话的聊天记录 md（Hub 数据目录 `transcripts/`），可直接分享路径。

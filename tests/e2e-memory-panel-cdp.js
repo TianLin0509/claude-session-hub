@@ -14,6 +14,11 @@ async function main(){
   for(const p of [data,cwd,home,native,empty,out,path.join(cwd,'.git'),path.join(codexHome,'memories')])fs.mkdirSync(p,{recursive:true});
   const rule='# 项目规则\n原生文件保持原位，不覆盖。\n';
   fs.writeFileSync(path.join(cwd,'AGENTS.md'),rule,'utf8');
+  fs.writeFileSync(path.join(root,'AGENTS.md'),'# 共享工作区规则\n临时产物保持 UTF-8。\n','utf8');
+  const old=path.join(root,'old-task');fs.mkdirSync(old);
+  const oldBody='historical shared rule\n';
+  fs.writeFileSync(path.join(old,'AGENTS.md'),'<!-- 由 AI Hub 自动复制自 '+path.join(root,'AGENTS.md')+'，历史副本\nseed-sha256: '+require('crypto').createHash('sha256').update(oldBody).digest('hex').slice(0,16)+'\n-->\n\n'+oldBody);
+  fs.writeFileSync(path.join(data,'workspaces.json'),JSON.stringify({schemaVersion:1,workspaces:[{path:old,id:'old-task'}]}));
   fs.writeFileSync(path.join(codexHome,'config.toml'),'model="gpt-6-astra"\nmodel_reasoning_effort="medium"\n[features]\nmemories=true\n');
   fs.writeFileSync(path.join(codexHome,'memories','MEMORY.md'),'# Codex 原生记忆\n这是原生维护的内容。\n','utf8');
   fs.writeFileSync(path.join(cwd,'散落的项目知识.md'),'# 文档\n需要时可浏览，不自动改动。','utf8');
@@ -26,18 +31,28 @@ async function main(){
   const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+')','exists '+selector);await cdp.eval('document.querySelector('+JSON.stringify(selector)+').click()');};
   const snap=async name=>{const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
   try {
-    hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'hidden',label:'memory-mvp',extraEnv:{
+    hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'visible',label:'memory-mvp',extraEnv:{
       CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:codexHome,CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
       HUB_SESSION_SEARCH_CODEX_ROOTS:native,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_DREAM:'1',
+      CLAUDE_HUB_NATIVE_FIXTURE_RULES:'1',
       CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),
       CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
     result.pid=hub.pid;result.port=hub.port;cdp=await connectFirstPage(hub);
+    await cdp.send('Page.bringToFront');
+    // Give the isolated test window a deterministic screenshot viewport.
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     await until('typeof sessions!=="undefined" && typeof ipcRenderer!=="undefined"','renderer');
     await cdp.eval(`(()=>{const invoke=ipcRenderer.invoke.bind(ipcRenderer);window.memoryCalls=[];ipcRenderer.invoke=(name,...args)=>{if(name.startsWith('memory:'))window.memoryCalls.push(name);return invoke(name,...args);};})()`);
     await click('#btn-rail-memory');
     await until('document.querySelector("#memory-page").innerText.includes("Codex 原生记忆")','global library without session');
     assert.equal(await cdp.eval('document.querySelector("[data-tab=library]").getAttribute("aria-selected")'),'true');
+    await until('!!document.querySelector(".mp-history")','historical copies grouped');
+    assert.equal(await cdp.eval('document.querySelector(".mp-history").open'),false);
+    await click('.mp-history > summary');
+    assert.equal(await cdp.eval('document.querySelector(".mp-history").open'),true);
+    await click('.mp-history > summary');
+    result.checks.push('没有 session 时仍发现注册工作区的旧副本，默认折叠且可展开');
     await snap('00-global-library-no-session');
     await click('[data-tab="context"]');
     await until('document.querySelector("#memory-page").innerText.includes("请先打开一个 session")','context alone requires session');
@@ -58,8 +73,12 @@ async function main(){
     assert.equal(await cdp.eval('Math.abs(document.querySelector("#memory-page").getBoundingClientRect().left-document.querySelector("#scene-rail").getBoundingClientRect().right)<1'),true);
     assert.equal(await cdp.eval('document.querySelectorAll(\'[data-action="open-memory"]\').length'),1);
     result.contextOpenMs=Date.now()-contextStart;
-    assert.equal(await cdp.eval('document.querySelectorAll("#memory-page .mp-file").length'),0);
-    assert.deepEqual(await cdp.eval('window.memoryCalls'),['memory:context']);
+    await until('!!document.querySelector("#memory-page [data-native]")','native instruction evidence');
+    assert.equal(await cdp.eval('document.querySelectorAll("#memory-page [data-native]").length'),1);
+    assert.equal(await cdp.eval('window.memoryCalls.every(n=>n==="memory:context")'),true);
+    await click('[data-native="0"]');
+    await until('document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','native body snapshot');
+    result.checks.push('Codex 原生指令后台补录，展示真实正文快照且不伪造来源路径');
     assert.equal(await cdp.eval('document.querySelectorAll("#memory-page [data-file]").length'),0);
     await snap('01-current-context');result.checks.push('第六个统一入口、三个 tab、无会话列表；上下文只请求证据，不查历史或列出未注入文件');
     await click('[data-tab="library"]');
@@ -98,7 +117,14 @@ async function main(){
     assert.equal(after.receipts[0].status,'sent');assert.equal(after.pending,false);
     const trace=fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-dream-index ref='))));
+    assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-workspace-rules ref=')&&i.text.includes('临时产物保持 UTF-8'))));
+    const confirmedContext=(await cdp.eval('ipcRenderer.invoke("memory:context",{sessionId:'+sid+'})')).data;
+    assert.ok(confirmedContext.receipts.some(r=>r.kind==='workspace'&&r.status==='sent'));
+    result.checks.push('共享工作根规则随真实提交到达原生进程并确认，目录中未新增规则副本');
     await click('[data-receipt="0"]');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
+    await click('[data-native="0"]');
+    await cdp.eval('window.memoryPreviewCalls=window.memoryCalls.filter(n=>n==="memory:context").length;ipcRenderer.emit("memory:changed",{},{});');
+    await until('window.memoryCalls.filter(n=>n==="memory:context").length>window.memoryPreviewCalls && !document.querySelector(".mp-loading") && document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','native preview retained after refresh');
     await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
     assert.equal(await cdp.eval('document.querySelector("#memory-page").hidden'),true);
     assert.notEqual(await cdp.eval('getComputedStyle(document.querySelector("#session-sidebar")).visibility'),'hidden');
@@ -143,9 +169,9 @@ async function main(){
     await click('[data-tab="library"]');
     await until('typeof window.releaseMemoryLibrary==="function"','delayed library response');
     await click('[data-tab="context"]');
-    await until('document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话已注入")','context ignores library latency');
+    await until('document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的上下文记录")','context ignores library latency');
     await cdp.eval('window.releaseMemoryLibrary()');
-    await until('document.querySelector("[data-tab=context]").getAttribute("aria-selected")==="true" && document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话已注入")','stale library cannot overwrite context');
+    await until('document.querySelector("[data-tab=context]").getAttribute("aria-selected")==="true" && document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的上下文记录")','stale library cannot overwrite context');
     result.checks.push('延迟的文件库请求不阻塞当前上下文，返回后不串页');
     await cdp.eval(`(()=>{const invoke=ipcRenderer.invoke.bind(ipcRenderer);let first=true;window.contextRequests=0;window.releaseContext=null;ipcRenderer.invoke=async(name,...args)=>{if(name==='memory:context')window.contextRequests++;const value=await invoke(name,...args);if(name==='memory:context'&&first){first=false;await new Promise(resolve=>window.releaseContext=resolve);}return value;};})()`);
     await click('[data-tab="context"]');

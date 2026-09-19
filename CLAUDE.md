@@ -61,6 +61,8 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
 
 ## 记忆 MVP（2026-09-17）
 
+2026-09-19：临时目录不再自动复制 AGENTS.md 或 git init；缺少原生覆盖的共享工作区规则经统一消息入口发送并记录回执。文件库按来源折叠未改历史副本，手改/未知保留；全局规则有差异时只提示、不覆盖。当前上下文缓存实际证据：Codex worker 从当前身份已知原生记录提取指令正文，Claude InstructionsLoaded 记录加载事件。加载事件没有历史正文快照，磁盘预览须明确标注；不以文件发现替代注入。只读清单入口 scripts/audit-memory-rules.js，详见下述设计。
+
 左侧第六个功能按钮是唯一记忆入口，页面内没有会话列表；三个 tab 为当前上下文、记忆文件库、造梦。当前上下文跟随聚焦 session，群聊先打开成员 session。
 
 新服务在 `core/hub-memory-service.js`，复用昨日之我 SQLite 正文并导出一次任务快照，由普通实体 session 造梦；原生 `MEMORY.md`/规则文件只读参考，产物在 Hub 数据目录独立 `DREAM_INDEX.md` + `topics/*.md`。原子发布成功后才推进整理游标，短索引只随用户亲手发送的下一条消息提交（自动派发不带，压缩后重发，搜索与造梦素材剥掉索引），只按真实回执显示已发送，不推测正文已读。旧规则沉淀 scheduler 不再自动启动，旧数据/兼容 IPC 保留但不在新 UI 提供写操作。

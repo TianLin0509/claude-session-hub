@@ -52,6 +52,16 @@ async function runHook(event, payload) {
   }
 }
 
+test('InstructionsLoaded forwards native identity and provenance without claiming a body snapshot', async () => {
+  const result=await runHook('instructions-loaded',{session_id:'native-1',file_path:'C:\\project\\AGENTS.md',load_reason:'include',memory_type:'Project',agent_id:'child'});
+  assert.equal(result.url,'/api/hook/instructions-loaded');
+  assert.equal(result.body.claudeSessionId,'native-1');
+  assert.equal(result.body.instructionPath,'C:\\project\\AGENTS.md');
+  assert.equal(result.body.loadReason,'include');
+  assert.equal(result.body.agentId,'child');
+  assert.equal(result.body.content,undefined);
+});
+
 test('Claude Stop hook forwards bounded background task lifecycle fields', async () => {
   const result = await runHook('stop', {
     hook_event_name: 'Stop',

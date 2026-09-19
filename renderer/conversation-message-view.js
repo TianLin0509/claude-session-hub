@@ -11,7 +11,7 @@ function plainProgressText(text) {
 function renderMessageBody(text, {isUser=false, plainProgress=false, foldLong=true, escapeHtml, renderMarkdown}) {
   const memory = isUser && require('../core/memory-index-envelope').splitMemoryIndex(text);
   if (memory?.indexText) return renderMessageBody(memory.userText,{isUser,plainProgress,foldLong,escapeHtml,renderMarkdown})
-    + '<details class="conversation-memory-context"><summary>附带项目记忆索引</summary>'
+    + '<details class="conversation-memory-context"><summary>附带项目记忆索引 / 共享规则</summary>'
     + `<pre>${escapeHtml(memory.indexText)}</pre></details>`;
   const raw=plainProgress && !isUser ? plainProgressText(text) : String(text || '');
   const body=isUser ? `<div class="conversation-user-text">${escapeHtml(raw)}</div>` : renderMarkdown(raw);

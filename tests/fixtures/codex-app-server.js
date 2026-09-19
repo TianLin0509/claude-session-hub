@@ -99,6 +99,13 @@ rl.on('line',line=>{
     case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
+      if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_RULES==='1') {
+        if(!process.env.CLAUDE_HUB_DATA_DIR)throw Error('rule fixture requires isolation');
+        t.path=require('path').join(process.env.CLAUDE_HUB_DATA_DIR,t.id+'.jsonl');
+        const rule=require('path').join(t.cwd,'AGENTS.md');
+        fs.writeFileSync(t.path,[{type:'session_meta',payload:{id:t.id,cwd:t.cwd}},
+          {type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:'# AGENTS.md instructions for '+t.cwd+'\n<INSTRUCTIONS>\n'+(fs.existsSync(rule)?fs.readFileSync(rule,'utf8'):'fixture rule')+'\n</INSTRUCTIONS>'}]}}].map(JSON.stringify).join('\n')+'\n');
+      }
       const historyChars=Number(process.env.CLAUDE_HUB_NATIVE_FIXTURE_HISTORY_CHARS)||0;
       if(msg.method==='thread/start' && historyChars>0)t.turns.push({id:'history-turn',status:'completed',items:[
         {id:'history-answer',type:'agentMessage',phase:'final_answer',text:'旧'.repeat(historyChars)}]});

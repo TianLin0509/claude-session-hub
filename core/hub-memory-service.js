@@ -32,7 +32,6 @@ const RECEIPT_LIMIT = 30;
 // A context drop below half of its observed peak means the runtime compacted.
 const COMPACTION_MIN_PEAK = 40000;
 const COMPACTION_RATIO = 0.5;
-const INDEX_REF = /<ai-hub-dream-index ref="([\w-]+)">/;
 const contextIdentity = (s) =>
   [
     s.codexSid || s.ccSessionId || s.acpSid || s.id,
@@ -127,6 +126,8 @@ class HubMemoryService {
     this.active = new Map();
     this.sends = new Map();
     this.logger = deps.logger || console;
+    const {NativeMemoryEvidence}=require('./memory-native-evidence');
+    this.nativeEvidence=new NativeMemoryEvidence({root:this.root,notify:()=>this.notify(),logger:this.logger});
     this.sessionManager.memoryService = this;
     this.onComplete = (e) =>
       this.finishForSession(e).catch((error) =>
@@ -236,7 +237,11 @@ class HubMemoryService {
     }
     const seeds = sessions.map(({id, kind, cwd, purpose, transcriptKind, codexSessionsRoot, codexProfile}) =>
       ({id, kind, cwd, purpose, transcriptKind, codexSessionsRoot, codexProfile}));
-    const key = hash(JSON.stringify(seeds));
+    // Registry read is read-only and does not prune or rewrite production state.
+    const registryPath = this.workspaceService.getRegistryPath?.();
+    const workspaces = registryPath ? (await fs.promises.readFile(registryPath,'utf8')
+      .then(text=>JSON.parse(text).workspaces || []).catch(e=>{if(e.code==='ENOENT')return [];throw e;})) : [];
+    const key = hash(JSON.stringify([seeds,workspaces]));
     if (this.catalogFlight) {
       const data = await this.catalogFlight;
       if (this.catalogCache?.key === key && this.catalogCache.data === data) return data;
@@ -248,7 +253,7 @@ class HubMemoryService {
     const generation = this.catalogGeneration || 0;
     const flight = new Promise((resolve, reject) => {
       const worker = new Worker(path.join(__dirname, 'hub-memory-catalog.js'), { workerData: {
-        homeDir: this.homeDir, workspaceRoot: this.workspaceService.getWorkspaceRoot(), memoryRoot: this.root, sessions: seeds,
+        homeDir: this.homeDir, workspaceRoot: this.workspaceService.getWorkspaceRoot(), memoryRoot: this.root, sessions: seeds, workspaces,
       }});
       let settled = false;
       const finish = (error, data) => {
@@ -279,16 +284,18 @@ class HubMemoryService {
   }
   async context(sessionId) {
     const s = this.session(sessionId);
-    let history;
-    try { history = JSON.parse(await fs.promises.readFile(path.join(this.root, 'context', hash(sessionId) + '.json'), 'utf8')); }
-    catch (e) { if (e.code !== 'ENOENT') throw e; history = []; }
+    const read=async suffix=>{try{return JSON.parse(await fs.promises.readFile(path.join(this.root,'context',hash(sessionId+suffix)+'.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;return [];}};
+    const [dream,workspace,native]=await Promise.all([read(''),read(':workspace'),this.nativeEvidence.read({...s,
+      transcriptPath:s.transcriptPath || this.transcriptTap?.getCodexRolloutPath?.(sessionId)})]);
+    const history=[...workspace,...dream];
     // Evidence is bound to the native session identity/epoch, never to a cwd alone.
     const current = history.filter(r => r.identity === contextIdentity(s));
     return {
       session: { id: s.id, title: s.title, cwd: s.cwd, kind: s.kind },
       receipts: current.filter(r => r.status === 'sent'),
       unconfirmed: current.filter(r => r.status !== 'sent').length,
-      note: '这里只展示本会话已确认提交的上下文快照。原生 CLI 尚未向 Hub 提供完整的规则加载清单；未确认的 CLAUDE.md、AGENTS.md 和原生记忆可在文件库查看，不列为已注入。已发送不代表压缩后仍完整保留，也不代表索引链接的正文已读取。',
+      native,
+      note: '展示原生记录中的规则正文、规则加载事件及 Hub 已确认发送的内容。未取得证据的部分仍未知。历史加载不代表压缩后仍完整保留，索引已发送也不代表主题正文已读取。',
     };
   }
   async dreamState(request) {
@@ -866,6 +873,26 @@ class HubMemoryService {
     atomicJSON(receiptFile, this.trimReceipts(history));
     return this.submitIndex(sid, text, options, record, receiptFile, send);
   }
+  async withWorkspaceRules(sid,prompt,kind,options,send) {
+    const s=this.sessionManager.getSession(sid);
+    if(!s?.cwd || s.purpose==='memory-dream' || String(prompt).trimStart().startsWith('/') || !isAiKind(String(kind).replace(/-resume$/,'')))return send(prompt);
+    const receiptFile=path.join(this.root,'context',hash(sid+':workspace')+'.json');
+    const history=readJSON(receiptFile,[]),submissionId=options.clientSubmissionId||options.submissionReceipt?.clientSubmissionId;
+    const id='workspace-'+(submissionId||randomUUID());
+    const retry=submissionId && history.find(r=>r.id===id);
+    if(retry){if(retry.userFingerprint!==hash(prompt))throw new Error('同一提交编号的工作区规则消息已变化');return this.submitIndex(sid,prompt+retry.appendix,options,retry,receiptFile,send);}
+    const sources=require('./memory-rule-files').sharedWorkspaceRules({session:s,workspaceService:this.workspaceService,homeDir:this.homeDir});
+    if(!sources.length)return send(prompt);
+    const content=sources.map(f=>`来源：${f.path}\n${f.content}`).join('\n\n'),version=hash(content),identity=contextIdentity(s);
+    const delivered=history.find(r=>r.status==='sent'&&r.identity===identity);
+    if(delivered?.version===version&&!this.compactedSince(delivered,s,receiptFile))return send(prompt);
+    if(!/^[\w-]+$/.test(id))throw new Error('提交编号无效');
+    const appendix=`\n\n<ai-hub-workspace-rules ref="${id}">\n以下为当前工作目录适用的共享规则，保持原有路径范围，不覆盖用户本次明确要求。\n${content}\n</ai-hub-workspace-rules>`;
+    const record={id,kind:'workspace',label:'共享工作区规则',path:sources[0].path,content,version,identity,createdAt:Date.now(),status:'pending',
+      appendix,userFingerprint:hash(prompt),fingerprint:hash(prompt+appendix),reason:delivered?(delivered.version===version?'compacted':'changed'):'new'};
+    history.unshift(record);atomicJSON(receiptFile,this.trimReceipts(history));
+    return this.submitIndex(sid,prompt+appendix,options,record,receiptFile,send);
+  }
   // Runtimes compact without a shared signal; a large context drop is the
   // provider-neutral evidence that an earlier index may no longer be present.
   compactedSince(record, s, receiptFile) {
@@ -927,11 +954,15 @@ class HubMemoryService {
     atomicJSON(file, this.trimReceipts(history));
   }
   confirmSend(e) {
+    if(typeof e.text!=='string')return;
+    for(const match of e.text.matchAll(/<ai-hub-(dream-index|workspace-rules) ref="([\w-]+)">/g))
+      this.confirmOneSend(e,match[2],match[1]==='workspace-rules'?':workspace':'');
+  }
+  confirmOneSend(e,ref,suffix) {
     const sid = e.sessionId || e.hubSessionId;
     if (!sid || typeof e.text !== "string") return;
     // CLIs may normalize whitespace in their transcripts, so the envelope's
     // ref plus the index body is the evidence, not a byte-exact hash.
-    const ref = e.text.match(INDEX_REF)?.[1];
     if (!ref) return;
     const matches = (r) =>
       r.id === ref &&
@@ -941,7 +972,7 @@ class HubMemoryService {
       (p) => p.sid === sid && matches(p.record),
     );
     if (!pending) {
-      const receiptFile = path.join(this.root, "context", hash(sid) + ".json");
+      const receiptFile = path.join(this.root, "context", hash(sid+suffix) + ".json");
       try {
         const record = readJSON(receiptFile, []).find(matches);
         if (record) pending = { sid, record, receiptFile };

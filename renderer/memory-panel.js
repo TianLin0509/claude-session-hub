@@ -20,6 +20,7 @@ function createMemoryPanel({
     sid = null,
     file = null,
     preview = "",
+    previewNote = "",
     error = "",
     busy = false,
     epoch = 0,
@@ -92,6 +93,7 @@ function createMemoryPanel({
   async function read(p, paint = true) {
     const version = epoch, request = ++previewEpoch;
     file = p;
+    previewNote = tab === 'context' ? '当前磁盘内容；加载事件没有保留当时正文，不能视为注入快照。' : '';
     preview = "读取中…";
     if (paint) render();
     const r = await ipcRenderer.invoke("read-file", p);
@@ -99,7 +101,7 @@ function createMemoryPanel({
     preview = r?.error ? "读取失败：" + r.error : String(r?.content || "");
     if (paint) render();
   }
-  function resetPreview() { file = null; preview = ""; sourcePreview = ""; previewEpoch++; }
+  function resetPreview() { file = null; preview = ""; previewNote = ""; sourcePreview = ""; previewEpoch++; }
   function scope() { return { projectId }; }
   function activeProject() {
     const cwd = String(getActiveSessionInfo()?.cwd || "").replace(/\\/g, "/").toLowerCase();
@@ -123,7 +125,7 @@ function createMemoryPanel({
           if (!valid()) return;
           data = result;
           // Preview the immutable submitted snapshot, never today's disk contents.
-          if (!file && data.receipts[0]) { file = data.receipts[0].path; preview = data.receipts[0].content; }
+          if (!preview && !previewNote && data.receipts[0]) { file = data.receipts[0].path; preview = data.receipts[0].content; }
         }
       } else {
         const result = await call("library", {refresh:force});
@@ -166,10 +168,12 @@ function createMemoryPanel({
     return `<button class="mp-file ${file === f.path ? "active" : ""}" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="mp-file-name">${esc(f.label || f.path.split(/[\\/]/).pop())}</span><span class="mp-meta">${esc(f.owner || "")} ${badge(f.status || "可读取")}</span><span class="mp-file-path">${esc(f.path)}</span></button>`;
   }
   function previewPane() {
-    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(file ? file.split(/[\\/]/).pop() : "内容预览")}</span>${file ? button("打开所在位置", "folder") : ""}</div><pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
+    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(file ? file.split(/[\\/]/).pop() : "内容预览")}</span>${file ? button("打开所在位置", "folder") : ""}</div>${previewNote ? `<p class="mp-note">${esc(previewNote)}</p>` : ''}<pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
   }
   function context() {
-    return `<div class="mp-pagehead"><div><h2>本会话已注入的记忆</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">已确认的上下文提交</div>${data.receipts.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">DREAM_INDEX.md ${badge("已发送")}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${esc(r.version.slice(0,8))}</span></button>`).join("")}${!data.receipts.length ? '<p class="mp-empty">尚无可确认的记忆注入记录。这不表示原生 CLI 没有加载规则。</p>' : ""}</section>${previewPane()}</div>${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
+    const native = data.native || {rows:[],warnings:[]};
+    if(native.persistenceError && !native.warnings.includes(native.persistenceError))native.warnings=[...native.warnings,native.persistenceError];
+    return `<div class="mp-pagehead"><div><h2>本会话的上下文记录</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">原生规则加载记录</div>${native.state==='loading' ? '<p class="mp-muted">正在后台核对本会话原生记录…</p>' : ''}${native.rows.map((r,i)=>`<button class="mp-file" data-native="${i}"><span class="mp-file-name">${esc(r.label)} ${badge(r.snapshot?'正文快照':'加载事件')}</span><span class="mp-meta">${esc(r.evidence)} · ${esc(fmt(r.observedAt))}</span><span class="mp-file-path">${esc(r.path || r.scope)}</span></button>`).join('')}${(native.warnings||[]).map(w=>`<p class="mp-error">${esc(w)}</p>`).join('')}<div class="mp-section-title">Hub 已确认的上下文提交</div>${data.receipts.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">${esc(r.label || 'DREAM_INDEX.md')} ${badge("已发送")}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${esc(r.version.slice(0,8))}</span></button>`).join("")}${!data.receipts.length && !native.rows.length ? '<p class="mp-empty">尚无可确认的记忆注入记录。这不表示原生 CLI 没有加载规则。</p>' : ""}</section>${previewPane()}</div>${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
   }
   function library() {
     const seen = new Set(), q = query.toLowerCase();
@@ -179,8 +183,14 @@ function createMemoryPanel({
       return (!projectId || !f.projectIds?.length || f.projectIds.includes(projectId))
         && (f.label + " " + f.path).toLowerCase().includes(q);
     });
-    const shown = all.slice(0, visibleFiles), groups = [...new Set(shown.map(f=>f.group))];
-    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>全局文件库 · ${all.length} 个文件 · 不依赖打开的会话</p>${projectSelect(true)}${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions"><button class="mp-btn" data-action-mp="scan" ${!projectId || busy ? "disabled" : ""}>扫描所选项目文档</button>${button("☾ 造梦", "dream", "primary")}</div></div>${data.warnings.length ? `<details class="mp-note"><summary>${data.warnings.length} 项读取问题，结果可能不完整</summary>${data.warnings.map(x=>`<p>${esc(x)}</p>`).join("")}</details>` : ""}<div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups.map(g=>`<div class="mp-section-title">${esc(g)}</div>${shown.filter(f=>f.group===g).map(fileRow).join("")}`).join("")}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}${all.length>shown.length ? button(`继续显示（剩余 ${all.length-shown.length}）`,"more") : ""}</section>${previewPane()}</div><div class="mp-note">原生记忆保留原位。文件库中存在不代表已注入；Hub 梦境使用独立索引与主题文件。</div>`;
+    const historical = all.filter(f=>f.rule?.state==='unchanged');
+    const regular = all.filter(f=>f.rule?.state!=='unchanged');
+    const shown = regular.slice(0, visibleFiles), groups = [...new Set(shown.map(f=>f.group))];
+    const historyGroups = new Map();
+    for(const f of historical.slice(0, visibleFiles)) {const k=(f.rule.source||'来源未知')+'\0'+f.rule.bodyDigest; if(!historyGroups.has(k))historyGroups.set(k,[]);historyGroups.get(k).push(f);}
+    const historyHtml = historical.length ? `<details class="mp-history"><summary>历史规则副本 · ${historical.length} 份（默认折叠，文件仍保留）</summary>${[...historyGroups.values()].map(files=>`<details><summary>${esc(files[0].rule.source||'来源未知')} · ${files.length} 份</summary>${files.map(fileRow).join('')}</details>`).join('')}</details>` : '';
+    const globalHtml = data.globalRules?.length ? `<details class="mp-note"><summary>全局规则 · ${data.globalRulesAligned?'正文一致':'正文有差异或入口缺失，请核对'}</summary><p>固定入口分别供各家 AI 读取；不会随会话复制，也不会自动覆盖差异。</p>${data.globalRules.map(f=>f.exists?fileRow({...f,label:f.kind,status:'固定入口'}):`<p>${esc(f.kind)}：入口缺失</p>`).join('')}</details>` : '';
+    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>全局文件库 · ${all.length} 个文件 · 不依赖打开的会话</p>${projectSelect(true)}${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions"><button class="mp-btn" data-action-mp="scan" ${!projectId || busy ? "disabled" : ""}>扫描所选项目文档</button>${button("☾ 造梦", "dream", "primary")}</div></div>${globalHtml}${data.warnings.length ? `<details class="mp-note"><summary>${data.warnings.length} 项读取问题，结果可能不完整</summary>${data.warnings.map(x=>`<p>${esc(x)}</p>`).join("")}</details>` : ""}<div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups.map(g=>`<div class="mp-section-title">${esc(g)}</div>${shown.filter(f=>f.group===g).map(fileRow).join("")}`).join("")}${historyHtml}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}${regular.length>shown.length || historical.length>visibleFiles ? button(`继续显示（剩余 ${regular.length-shown.length + Math.max(0,historical.length-visibleFiles)}）`,"more") : ""}</section>${previewPane()}</div><div class="mp-note">原生记忆保留原位。文件库中存在不代表已注入；Hub 梦境使用独立索引与主题文件。</div>`;
   }
   function dream() {
     const t = tuning();
@@ -229,11 +239,19 @@ function createMemoryPanel({
       return refresh();
     }
     if (b.dataset.file) return read(b.dataset.file);
+    if (b.dataset.native !== undefined) {
+      const r=data.native.rows[+b.dataset.native];
+      if(!r.snapshot) return read(r.path);
+      previewEpoch++; file=null; preview=r.content;
+      previewNote='原生记录中的指令正文快照；作用范围：'+(r.scope||'未提供')+'。原生记录未逐一列出来源文件。';
+      return render();
+    }
     if (b.dataset.receipt !== undefined) {
       previewEpoch++;
       const r = data.receipts[+b.dataset.receipt];
       file = r.path;
       preview = r.content;
+      previewNote = '本次确认发送的正文快照。';
       return render();
     }
     if (b.dataset.jobSession) {
