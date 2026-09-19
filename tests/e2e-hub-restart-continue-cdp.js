@@ -20,13 +20,25 @@ async function main(){
     CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),CLAUDE_HUB_CLAUDE_FIXTURE_MODE:'gated',CLAUDE_HUB_FIXTURE_GATE_DIR:path.join(root,'gates'),
     CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR:path.join(root,'threads'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl'),
     CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR:path.join(root,'writers'),CLAUDE_HUB_FIXTURE_CONFIG_DIR:path.join(root,'configs')};
+  const entryPath=path.resolve('tests/fixtures/acp-agent.js'),bridgePath=path.join(root,'bridge');
+  fs.mkdirSync(bridgePath);fs.writeFileSync(path.join(bridgePath,'package.json'),'{}');fs.mkdirSync(dataDir,{recursive:true});
+  fs.writeFileSync(path.join(dataDir,'config.json'),JSON.stringify({acp:{nodePath:process.execPath,apiKey:'fixture-no-cloud',providers:{
+    qwen:{entryPath,model:'qwen3.8-max'},'deepseek-acp':{entryPath,bridgePath,model:'deepseek-v4-pro'},glm:{entryPath,backendPath:entryPath,model:'glm-5.2'}}}}));
+  const bin=path.join(root,'bin');fs.mkdirSync(bin);fs.mkdirSync(path.join(root,'kimi'));
+  for(const kind of ['deepseek','kimi','gemini'])fs.writeFileSync(path.join(bin,(kind==='deepseek'?'codex':kind)+'.cmd'),'@echo off\r\n"'+process.execPath+'" "'+path.resolve('tests/fixtures/restart-legacy-cli.js')+'" '+kind+' %*\r\n');
+  Object.assign(env,{HUB_ACP_UI_FIXTURE:'1',HUB_RESTART_ACP_TRACE:path.join(root,'acp-trace.jsonl'),
+    HUB_RESTART_LEGACY_ROOT:root,KIMI_CODE_HOME:path.join(root,'kimi'),KIMI_CODE_BIN:path.join(bin,'kimi.cmd'),
+    PATH:bin+path.delimiter+process.env.PATH});
   try{
     hub=await launchIsolatedHub({dataDir,port:await port(),label:'restart-origin',extraEnv:env,windowMode:'hidden'});
     c=await connectFirstPage(hub);await until('renderer ready',()=>c.eval('typeof restartController!=="undefined"'));
     await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     async function create(kind,title){
       const s=await c.eval(`ipcRenderer.invoke('create-session',${JSON.stringify({kind,opts:{cwd,title,mcpProfile:'none',...(kind==='codex'?{model:'gpt-6-astra',effort:'xhigh'}:{})}})})`);
-      assert(s.id,JSON.stringify(s));await until(title+' ready',()=>c.eval(`sessions.get(${JSON.stringify(s.id)})?.nativeRuntime?.connection==='connected'`));return s.id;
+      assert(s.id,JSON.stringify(s));
+      await until(title+' ready',()=>c.eval(['deepseek','kimi','gemini'].includes(kind)
+        ? `!!sessions.get(${JSON.stringify(s.id)})?.${kind==='kimi'?'kimiSid':kind==='deepseek'?'codexSid':'geminiChatId'}`
+        : `sessions.get(${JSON.stringify(s.id)})?.nativeRuntime?.connection==='connected'`));return s.id;
     }
     const codex=await create('codex','Codex 工作中'),claude=await create('claude','Claude 工作中'),idle=await create('codex','空闲'),waiting=await create('codex','待审批'),dormant=await create('codex','历史休眠');
     await c.eval(`ipcRenderer.invoke('suspend-session',${JSON.stringify(dormant)})`);
@@ -35,6 +47,15 @@ async function main(){
       const result=await c.eval(`ipcRenderer.invoke('session:send-prompt',${JSON.stringify({sessionId:id,text,clientSubmissionId:'original-'+id})})`);assert(result.ok,JSON.stringify(result));
     }
     await until('original tasks active',()=>c.eval(`sessions.get(${JSON.stringify(codex)}).nativeRuntime.state==='running' && sessions.get(${JSON.stringify(claude)}).nativeRuntime.state==='running' && sessions.get(${JSON.stringify(waiting)}).nativeRuntime.state==='waiting'`));
+    const matrix=[];
+    for(const kind of ['deepseek','qwen','deepseek-acp','glm','kimi','gemini']){
+      const id=await create(kind,kind+' restart coverage');matrix.push({id,kind});
+      const text=['deepseek','kimi','gemini'].includes(kind)?'restart matrix active':'cancel';
+      const result=await c.eval(`ipcRenderer.invoke('session:send-prompt',${JSON.stringify({sessionId:id,text,clientSubmissionId:'original-'+id})})`);
+      assert(result.ok,kind+': '+JSON.stringify(result));
+      if(['deepseek','kimi','gemini'].includes(kind))await until(kind+' transcript prompt',()=>fs.existsSync(path.join(root,'legacy-trace.jsonl')) && fs.readFileSync(path.join(root,'legacy-trace.jsonl'),'utf8').split('\n').filter(Boolean).map(JSON.parse).some(r=>r.kind===kind && r.event==='prompt' && r.text===text));
+      else await until(kind+' active',()=>c.eval(`sessions.get(${JSON.stringify(id)})?.nativeRuntime?.state==='running'`));
+    }
     const slot={kind:'codex',model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none'};
     const group=await c.eval(`ipcRenderer.invoke('create-meeting',${JSON.stringify({title:'重启群聊',scene:'general',workspace:cwd,slots:[slot,slot,slot]})})`);
     assert.equal(group.subSessions.length,3);
@@ -58,8 +79,8 @@ async function main(){
     await c.eval(`selectSession(${JSON.stringify(codex)})`);
     await until('composer',()=>c.eval('!!document.querySelector(".floating-input-box")'));
     await c.eval(`(()=>{const box=document.querySelector('.floating-input-box');box.textContent='未发送草稿：重启保留';box.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-    const openIds=[codex,claude,idle,waiting,...group.subSessions,...fileGroup.subSessions];
-    const before=await c.eval(`[...sessions.values()].filter(s=>${JSON.stringify(openIds)}.includes(s.id)).map(s=>({id:s.id,codexSid:s.codexSid||null,ccSessionId:s.ccSessionId||null,currentModel:s.currentModel,effort:s.effort||null}))`);
+    const openIds=[codex,claude,idle,waiting,...matrix.map(s=>s.id),...group.subSessions,...fileGroup.subSessions];
+    const before=await c.eval(`[...sessions.values()].filter(s=>${JSON.stringify(openIds)}.includes(s.id)).map(s=>({id:s.id,codexSid:s.codexSid||null,ccSessionId:s.ccSessionId||null,acpSid:s.acpSid||null,kimiSid:s.kimiSid||null,geminiChatId:s.geminiChatId||null,currentModel:s.currentModel,effort:s.effort||null}))`);
     evidence.before=before;evidence.oldPid=hub.pid;
     await click(c,'#btn-hub-restart');
     await until('old Hub exits',()=>!hub.isAlive(),65000);
@@ -76,14 +97,16 @@ async function main(){
     c=await connectFirstPage({cdpHttpBase:'http://127.0.0.1:'+control.cdpPort,label:'restart-replacement'});
     await until('restoration settles',()=>c.eval('typeof restartController!=="undefined" && restartController.current?.phase==="done"'),90000);
     const plan=await c.eval('restartController.current');evidence.plan=plan;
-    assert.equal(plan.sessions.length,9,JSON.stringify(plan));
+    assert.equal(plan.sessions.length,15,JSON.stringify(plan));
     assert.equal(plan.sessions.find(s=>s.id===codex).status,'continued',JSON.stringify(plan));
     assert.equal(plan.sessions.find(s=>s.id===claude).status,'continued',JSON.stringify(plan));
+    for(const {id,kind} of matrix)assert.equal(plan.sessions.find(s=>s.id===id).status,'continued',kind+': '+JSON.stringify(plan));
+    evidence.checks.push('all eight agent kinds continue after an actual process relaunch; delayed ACP cancellation is awaited');
     assert.equal(plan.sessions.find(s=>s.id===idle).status,'restored');
     assert.equal(plan.sessions.find(s=>s.id===waiting).status,'waiting');
     assert(['continued','completed'].includes(plan.groups.find(g=>g.id===group.id)?.status),JSON.stringify(plan));
     assert.equal(plan.groups.find(g=>g.id===fileGroup.id)?.status,'continued',JSON.stringify(plan));
-    const after=await c.eval(`JSON.stringify([...sessions.values()].filter(s=>${JSON.stringify(openIds)}.includes(s.id)).map(s=>({id:s.id,codexSid:s.codexSid||null,ccSessionId:s.ccSessionId||null,currentModel:s.currentModel,effort:s.effort||null})))`);
+    const after=await c.eval(`JSON.stringify([...sessions.values()].filter(s=>${JSON.stringify(openIds)}.includes(s.id)).map(s=>({id:s.id,codexSid:s.codexSid||null,ccSessionId:s.ccSessionId||null,acpSid:s.acpSid||null,kimiSid:s.kimiSid||null,geminiChatId:s.geminiChatId||null,currentModel:s.currentModel,effort:s.effort||null})))`);
     assert.deepEqual(JSON.parse(after).sort((a,b)=>a.id.localeCompare(b.id)),before.sort((a,b)=>a.id.localeCompare(b.id)));
     assert.equal(await c.eval(`sessions.get(${JSON.stringify(dormant)}).status`),'dormant');
     await until('draft restored',()=>c.eval('document.querySelector(".floating-input-box")?.innerText==="未发送草稿：重启保留"'));
@@ -104,6 +127,20 @@ async function main(){
     evidence.checks.push('group dispatcher continues only the two interrupted members; idle third member receives no prompt; Claude continuation also received exactly once');
     evidence.checks.push('repeated restore never replays the original prompt or duplicates the continuation');
     const shot=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'restored.png'),Buffer.from(shot.data,'base64'));
+    const acpTrace=fs.readFileSync(path.join(root,'acp-trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const legacyTrace=fs.readFileSync(path.join(root,'legacy-trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    for(const {id,kind} of matrix){
+      const old=before.find(s=>s.id===id);
+      if(old.acpSid){
+        assert.equal(acpTrace.filter(r=>r.method==='session/prompt' && r.params.sessionId===old.acpSid && r.params.prompt[0].text===require('../core/hub-restart').CONTINUE_PROMPT).length,1,kind);
+        assert.equal(acpTrace.filter(r=>r.method==='session/prompt' && r.params.sessionId===old.acpSid && r.params.prompt[0].text==='cancel').length,1,kind+' original');
+      }else if(['deepseek','kimi','gemini'].includes(kind)){
+        const nativeId=old.kimiSid||old.geminiChatId||old.codexSid;
+        assert.equal(legacyTrace.filter(r=>r.id===nativeId && r.event==='prompt' && r.text===require('../core/hub-restart').CONTINUE_PROMPT).length,1,kind);
+        assert.equal(legacyTrace.filter(r=>r.id===nativeId && r.event==='prompt' && r.text==='restart matrix active').length,1,kind+' original');
+      }else assert.equal(trace.filter(x=>x.method==='turn/start' && x.params?.clientUserMessageId==='restart:'+plan.token+':'+id).length,1,kind);
+    }
+    evidence.checks.push('all additional providers receive exactly one continuation in the original native session; no original prompt replay');
     evidence.passed=true;
   }catch(error){evidence.error=error.stack;throw error;}
   finally{

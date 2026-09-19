@@ -22,10 +22,13 @@ function restartGroupTargets(group, meeting) {
 
 function registerHubRestartIpc(ipcMain, deps) {
   const { app, sessionManager: sm, meetingManager: mm, sessionStore, stateStore, getHubDataDir,
-    resumeSession, groupChatDispatcher: dispatcher, sendToRenderer, shutdown, flushState } = deps;
+    resumeSession, groupChatDispatcher: dispatcher, sendToRenderer, shutdown, flushState, transcriptTap } = deps;
   const bootToken = restartToken();
   const native = id => sm.getNativeSession?.(id) || sm.getNativeClaude?.(id);
   let requested = false;
+  const legacy=require('../../core/hub-restart-legacy');
+  const tracker=legacy.createRestartLegacyTracker(transcriptTap,sm);
+  let oldChildren=[];
   function captureGroups(rows) {
     const groups=[];
     for (const m of mm.getAllMeetings()) {
@@ -42,7 +45,11 @@ function registerHubRestartIpc(ipcMain, deps) {
   }
   async function prepareContinuation(row) {
     const n=native(row.id);
-    if (!n) throw new Error('此提供方缺少原生执行状态，已恢复会话，请核对后继续');
+    if (!n) {
+      const session=sm.getSession(row.id);
+      if (!['kimi','gemini','deepseek'].includes(session?.kind?.replace(/-resume$/,''))) throw new Error('此提供方缺少执行状态，请核对后继续');
+      return {completed:false};
+    }
     await n.start?.();
     if (row.turnId && n.readOutcome) {
       const outcome=await n.readOutcome(row.turnId);
@@ -59,6 +66,7 @@ function registerHubRestartIpc(ipcMain, deps) {
     const m=mm.getMeeting(group.id);
     if (!m) throw new Error('原群聊不存在');
     const receipt = id => {
+      if(!native(id))return sm.restartContinuationReceipts?.get(id) || {};
       const r=native(id)?.runtime, s=r?.submission;
       return {id:s?.id || s?.submissionId,status:s?.status || s?.sendStatus};
     };
@@ -118,22 +126,26 @@ function registerHubRestartIpc(ipcMain, deps) {
     if (!finished) throw new Error('群聊恢复提交待核对，未重复派工');
     return expected.some(id=>receipt(id).id && receipt(id).id!==before.get(id)) ? {continued:true} : {completed:true};
   }
-  const service = new HubRestart({ directory:getHubDataDir(), sessions:() => sm.getAllSessions(),
+  const service = new HubRestart({ directory:getHubDataDir(), sessions:() => sm.getAllSessions().map(s=>({...s,restartLegacyState:tracker.state(s)})),
     loadSession:id => sessionStore.loadSessionFile(id,{strict:true}),
     restoreSession:async meta => {
       const s=sm.getSession(meta.hubId);
       if (s && nativeSessionIdentity(s)?.value !== nativeSessionIdentity(meta)?.value) throw new Error('已有会话身份不匹配');
       const restored=s || await resumeSession(meta);
       const n=native(meta.hubId);
+      if(!n && service.plan?.groups.some(g=>g.sessionIds.includes(meta.hubId))){
+        sm.restartContinuationSessions ||= new Set();sm.restartContinuationSessions.add(meta.hubId);
+      }
       if (n && n.runtime?.connection !== 'unstarted') await n.start();
       return restored;
     }, prepareContinuation,
     sendContinuation:(row,text,id) => require('../../core/group-chat-watcher').sendToPty(row.id,text,
-      sm.getSession(row.id)?.kind,{clientSubmissionId:id,requireReady:true}),
+      sm.getSession(row.id)?.kind,{clientSubmissionId:id,requireReady:true,restartContinuation:true}),
     captureGroups,resumeGroup,
     quiesce:async plan => {
       requested=true;
       sm.restartPending=true;
+      oldChildren=plan.sessions.map(s=>native(s.id)?.client?.proc).filter(Boolean);
       global.__devFileEngine?.dispose();
       for (const g of plan.groups) {
         if (g.kind==='file') global.__devFileEngine.stop(g.id);
@@ -143,12 +155,21 @@ function registerHubRestartIpc(ipcMain, deps) {
       // Interrupt first so providers can persist their final turn status. A
       // failed interrupt is reported; closing still waits for writer exit.
       const interrupted=await Promise.allSettled(plan.sessions.filter(s=>s.before==='working').map(async row => {
-        const n=native(row.id); if (n) await n.interrupt();
+        const n=native(row.id);
+        if (n) {
+          await n.interrupt();
+          if(sm.getSession(row.id)?.runtimeBackend==='acp')await n.idle(15000);
+        }
       }));
-      interrupted.forEach((r,i)=>{if(r.status==='rejected')console.warn('[hub-restart] interrupt pending:',r.reason?.message);});
+      const working=plan.sessions.filter(s=>s.before==='working');
+      interrupted.forEach((r,i)=>{if(r.status==='rejected'){
+        working[i].before='unknown';console.warn('[hub-restart] interrupt pending:',r.reason?.message);
+      }});
+      service.save();
     },
     flush:async () => { await stateStore.flushPending(); await flushState(false); },
     shutdown:plan => shutdown('restart-and-continue',{beforeQuit:async () => {
+      await Promise.all(oldChildren.map(child=>legacy.waitChildExit(child)));
       await flushState(true);
       service.ready();
       const args=process.argv.slice(1).filter(a=>!a.startsWith(ARG));
@@ -156,7 +177,9 @@ function registerHubRestartIpc(ipcMain, deps) {
     }}), publish:plan => sendToRenderer('hub-restart:progress',plan),
   });
   ipcMain.handle('hub-restart:request',async (_e,view={}) => {
-    try {return await service.request(view);} catch(error){requested=false;sm.restartPending=false;return {ok:false,message:error.message};}
+    try {
+      const result=await service.request(view);return result;
+    } catch(error){requested=false;sm.restartPending=false;return {ok:false,message:error.message};}
   });
   ipcMain.handle('hub-restart:status',() => service.snapshot());
   ipcMain.handle('hub-restart:restore',async () => {

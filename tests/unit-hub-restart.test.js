@@ -28,7 +28,7 @@ test('provider completion after snapshot skips continuation',async t=>{
 });
 test('dispatch checkpoint prevents replay after crash or response loss',async t=>{
   const h=await harness(t,[session('a')]);h.old.plan.phase='restoring';h.old.plan.sessions[0].status='dispatching';h.old.save();
-  const result=await h.current.restore(h.token);assert.equal(result.sessions[0].status,'uncertain');assert.equal(h.calls.length,0);
+  const result=await h.current.restore(h.token);assert.equal(result.sessions[0].status,'uncertain');assert.deepEqual(h.calls,[['restore','a']]);
 });
 test('unconfirmed send remains uncertain across reload',async t=>{
   let sends=0;const h=await harness(t,[session('a')],{sendContinuation:async()=>{sends++;return {ok:true,sendStatus:'unknown'};}});
@@ -64,10 +64,27 @@ test('unknown and nonblocking requests retain native semantics',()=>{
 });
 
 test('normalized native receipts require native acknowledgement for ok',async t=>{
-  for (const source of ['codex-app-server','claude-stream-json',null]) {
+  for (const source of ['codex-app-server','claude-stream-json','acp','kimi_wire_turn_prompt','gemini_user_message',null]) {
     const h=await harness(t,[session('a')],{sendContinuation:async()=>({ok:true,sendStatus:'ok',acknowledgementSource:source})});
     assert.equal((await h.current.restore(h.token)).sessions[0].status,source?'continued':'uncertain');
   }
+});
+
+test('new restorer reopens completed recovery without replaying continuation',async t=>{
+  const h=await harness(t,[session('work'),session('idle','idle')]);await h.current.restore(h.token);
+  const next=new HubRestart({...h.deps,pid:300});await next.restore(h.token);
+  assert.deepEqual(h.calls.filter(c=>c[0]==='restore').map(c=>c[1]),['work','idle','work','idle']);
+  assert.equal(h.calls.filter(c=>c[0]==='send').length,1);
+  assert.equal(next.plan.sessions[0].status,'uncertain');
+});
+
+test('failed reopening of a previously continued session never enables replay on retry',async t=>{
+  const h=await harness(t,[session('work')]);await h.current.restore(h.token);
+  let fail=true;
+  const next=new HubRestart({...h.deps,pid:300,restoreSession:async meta=>{if(fail)throw Error('locked');return meta;}});
+  await next.restore(h.token);assert.equal(next.plan.sessions[0].status,'error');
+  fail=false;next.plan.sessions[0].status='pending';next.plan.phase='restoring';next.save();await next.restore(h.token);
+  assert.equal(h.calls.filter(c=>c[0]==='send').length,1);assert.equal(next.plan.sessions[0].status,'uncertain');
 });
 
 test('retry after interrupted shutdown preserves original open work set',async t=>{

@@ -2042,7 +2042,7 @@ registerResumeSessionIpc(ipcMain, { resumeSession });
 
 const hubRestart = require('./main/ipc/hub-restart-handlers').registerHubRestartIpc(ipcMain, {
   app, sessionManager, meetingManager, sessionStore, stateStore, getHubDataDir,
-  resumeSession, groupChatDispatcher, sendToRenderer, shutdown:beginGracefulHubShutdown,
+  resumeSession, groupChatDispatcher, sendToRenderer, shutdown:beginGracefulHubShutdown, transcriptTap,
   flushState:clean => stateStore.saveForRestart({version:1,cleanShutdown:clean,
     sessions:lastPersistedSessions,meetings:meetingManager.getAllMeetings(),immersiveByMeeting:_immersiveByMeeting}),
 });

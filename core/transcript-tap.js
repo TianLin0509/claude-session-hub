@@ -1537,7 +1537,7 @@ class CodexTap extends EventEmitter {
 // 注意 Gemini 0.39+ 改用 JSONL，0.38 及以前是单 JSON 整覆盖。
 // JSONL 路径为主；若 chats/ 下只有 .json 不带 jsonl，退化为整文件读 + 防抖。
 
-const GEMINI_TMP_ROOT = path.join(os.homedir(), '.gemini', 'tmp');
+const GEMINI_TMP_ROOT = path.join(process.env.CLAUDE_HUB_HOME_DIR || os.homedir(), '.gemini', 'tmp');
 
 class GeminiTap extends EventEmitter {
   constructor(opts = {}) {
@@ -1866,6 +1866,12 @@ class GeminiTap extends EventEmitter {
       };
 
       const onLine = (obj) => {
+        if(obj?.type==='user' && typeof obj.content==='string') {
+          const submittedAt=typeof obj.timestamp==='number' ? obj.timestamp : Date.parse(obj.timestamp);
+          if(Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text:obj.content,submittedAt,
+            turnId:obj.id || obj.messageId || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
+          return;
+        }
         // M2.4 修复 (2026-05-03)：把 idle_timer_5s 提升为"所有路径的 catch-all 兜底"。
         //   旧版只在 line 963 分支（type:"gemini" + content + 无 tokens）schedule timer，
         //   导致以下用户血泪场景永不触发 turn-complete：
@@ -1930,8 +1936,20 @@ class GeminiTap extends EventEmitter {
             const raw = await fs.promises.readFile(sessionPath, 'utf8');
             const parsed = JSON.parse(raw);
             const msgs = parsed?.messages || [];
+            const lastUser=msgs.findLast(m=>m?.type==='user');
+            if(lastUser) {
+              const key=JSON.stringify(lastUser);
+              if(key!==boundEntry.lastUser){
+                boundEntry.lastUser=key;
+                const submittedAt=typeof lastUser.timestamp==='number' ? lastUser.timestamp : Date.parse(lastUser.timestamp);
+                const text=typeof lastUser.content==='string' ? lastUser.content : '';
+                if(text && Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text,submittedAt,
+                  turnId:lastUser.id || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
+              }
+            }
             for (let i = msgs.length - 1; i >= 0; i--) {
               const m = msgs[i];
+              if(m?.type==='user')break;
               if (m?.type === 'gemini' && typeof m.content === 'string') {
                 emitIfComplete(m.content);
                 break;

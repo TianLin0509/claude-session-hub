@@ -8437,7 +8437,8 @@ const restartController = require('./hub-restart-controller').createHubRestartCo
     await Promise.all([...nativeDraftControllers.values()].map(controller=>controller.flush()));
     await persistWorkscene(true);
   },
-  getView:() => ({activeSessionId,meetingId:MeetingRoom.getActiveMeetingId?.() || null}),
+  getView:() => ({activeSessionId,meetingId:MeetingRoom.getActiveMeetingId?.() || null,
+    waitingSessionIds:[...sessions.values()].filter(s=>getSessionRuntimeTruth(s).state===RUNTIME_WAITING).map(s=>s.id)}),
   restoreView:async view => {
     if (view.meetingId && meetings[view.meetingId]) {
       await MeetingRoom.openMeeting(view.meetingId,meetings[view.meetingId]);

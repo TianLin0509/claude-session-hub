@@ -42,10 +42,8 @@ function parseGeminiUsage(plain) {
     if (!result.model) result.model = { id: usedMatch[1], displayName: SessionManager.geminiDisplayName(usedMatch[1]) };
     result.quotaPct = parseInt(usedMatch[2], 10);
   }
-  if (!result.model) {
-    const modelMatch = plain.match(/\b(gemini[-\w.]+)\b/i);
-    if (modelMatch) result.model = { id: modelMatch[1], displayName: SessionManager.geminiDisplayName(modelMatch[1]) };
-  }
+  // PTY history includes partially echoed launch commands and assistant text.
+  // Only a provider status footer may replace the configured resume model.
   return result;
 }
 

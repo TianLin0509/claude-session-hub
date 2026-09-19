@@ -25,6 +25,7 @@ function classify(session) {
     if (['unknown', 'submitting','queued'].includes(r.submission?.status || r.submission?.sendStatus) || ['unknown','starting'].includes(r.state)) return 'unknown';
     return r.state === 'running' ? 'working' : 'idle';
   }
+  if (session.restartLegacyState) return session.restartLegacyState;
   // Legacy providers have no native submission receipts. Restore them, but do
   // not guess whether an interrupted command was accepted from terminal text.
   return session.status === 'running' ? 'unknown' : 'idle';
@@ -67,7 +68,7 @@ class HubRestart {
     } else {
     const live = this.sessions().filter(s => s.status !== 'dormant');
     const rows = live.map(s => ({ id:s.id, title:s.title || s.kind, identity:nativeSessionIdentity(s),
-      recoverable:supportsRecoverableSession(s), before:classify(s), meetingId:s.meetingId || null,
+      recoverable:supportsRecoverableSession(s), before:!s.nativeRuntime && view.waitingSessionIds?.includes(s.id) ? 'waiting' : classify(s), meetingId:s.meetingId || null,
       unstarted:s.nativeRuntime?.connection === 'unstarted' && !s.nativeRuntime?.turnId,
       turnId:s.nativeRuntime?.turnId || null, submissionId:s.nativeRuntime?.submission?.id || s.nativeRuntime?.submission?.submissionId || null,
       status:'pending', message:'' }));
@@ -100,11 +101,14 @@ class HubRestart {
     if (plan.restorerPid && plan.restorerPid !== this.pid && this.isAlive(plan.restorerPid)) throw new Error('另一 Hub 正在恢复这个现场');
     if (!['ready','restoring','done'].includes(plan.phase)) throw new Error('重启现场尚未保存完成');
     this.plan = plan;
-    if (plan.phase === 'done') return this.snapshot();
+    const newRestorer=plan.restorerPid !== this.pid;
+    if (plan.phase === 'done' && !newRestorer) return this.snapshot();
     plan.restorerPid = this.pid; plan.phase = 'restoring'; this.save();
     for (const row of plan.sessions) {
-      if (['continued','completed','waiting','uncertain','unsupported'].includes(row.status)) continue;
-      if (row.status === 'dispatching') { row.status='uncertain'; row.message='续作可能已提交，请核对历史；未自动重发'; this.save(); continue; }
+      if (row.status==='unsupported') continue;
+      if (!newRestorer && ['continued','completed','waiting','uncertain'].includes(row.status)) continue;
+      const previousStatus=row.status;
+      if(['dispatching','continued','uncertain'].includes(previousStatus))row.continuationAttempted=true;
       try {
         if (!row.recoverable || (!row.identity && !row.unstarted)) {
           row.status='unsupported'; row.message='缺少可精确恢复的原生会话身份，未新建替代会话'; this.save(); continue;
@@ -114,6 +118,10 @@ class HubRestart {
         if (!meta || identity?.family !== row.identity?.family || identity?.value !== row.identity?.value) throw new Error('原生身份已变化，未恢复其他会话');
         const session = await this.restoreSession(meta);
         if (!session || session.ok === false) throw new Error(session?.message || '会话恢复失败');
+        if (row.continuationAttempted) {
+          row.status='uncertain';row.message='续作曾提交或可能已提交，已恢复会话供核对；未自动重发';this.save();continue;
+        }
+        if (previousStatus==='completed') {row.status='completed';this.save();continue;}
         row.status='restored'; row.message='已恢复'; this.save();
         if (row.before === 'waiting' || row.before === 'unknown') {
           row.status='waiting'; row.message=row.before === 'waiting' ? '原任务等待审批或回答，请在会话中核对后继续' : '原提交状态待核对，未自动发送'; this.save();
@@ -126,6 +134,9 @@ class HubRestart {
       await this.continueRow(row);
     }
     for (const group of plan.groups) {
+      if(newRestorer && group.status==='continued'){
+        group.status='uncertain';group.message='群聊续作曾提交，已恢复成员供核对；未重复派工';this.save();
+      }
       if (['continued','completed','waiting','uncertain'].includes(group.status)) continue;
       if (group.status === 'dispatching') { group.status='uncertain'; group.message='群聊续作可能已提交，未重复派工'; this.save(); continue; }
       const members = plan.sessions.filter(s => group.sessionIds.includes(s.id));
@@ -151,10 +162,10 @@ class HubRestart {
     try {
       const outcome = await this.prepareContinuation(row);
       if (outcome?.completed) { row.status='completed'; row.message='原任务已完成，无需续作'; this.save(); return; }
-      row.status='dispatching'; this.save();
+      row.status='dispatching';row.continuationAttempted=true; this.save();
       const result = await this.sendContinuation(row, CONTINUE_PROMPT, 'restart:' + this.plan.token + ':' + row.id);
       const accepted = ['accepted','submitted','running','completed'].includes(result?.sendStatus)
-        || (result?.sendStatus === 'ok' && ['codex-app-server','claude-stream-json','acp'].includes(result.acknowledgementSource));
+        || (result?.sendStatus === 'ok' && ['codex-app-server','claude-stream-json','acp','kimi_wire_turn_prompt','gemini_user_message','user_message','item_completed_user_message'].includes(result.acknowledgementSource));
       if (!result?.ok || !accepted) throw new Error(result?.message || result?.error || '续作未得到原生提交确认，未自动重发');
       row.status='continued'; row.message='已确认提交续作';
     } catch (error) { row.status=row.status === 'dispatching' ? 'uncertain' : 'error'; row.message=error.message; }
