@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
 const { JsonlByteScanner } = require('./jsonl-byte-scanner');
 const { inspectCodexEnvelope } = require('./codex-rollout-reader');
@@ -54,36 +55,48 @@ function collectNativeContext({ file, nativeId, size, previous }) {
     },
   });
   const fd = fs.openSync(file, 'r');
-  let offset = previous?.offset || 0;
+  const fingerprint = createHash('sha256');
+  let offset = 0, prefixMatches = !previous;
   try {
     const buffer = Buffer.allocUnsafe(256 * 1024);
     while (offset < size) {
       const n = fs.readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
       if (!n) break;
-      scanner.push(buffer.subarray(0, n)); offset += n;
+      const chunk = buffer.subarray(0, n);
+      // Size growth alone does not prove an append. Verify the complete old
+      // byte prefix before reusing its extracted evidence (bounded memory).
+      if (previous && offset < previous.fingerprintBytes && offset + n >= previous.fingerprintBytes) {
+        prefixMatches = fingerprint.copy().update(chunk.subarray(0, previous.fingerprintBytes - offset)).digest('hex') === previous.fingerprint;
+      }
+      fingerprint.update(chunk);
+      const skip = Math.max(0, (previous?.offset || 0) - offset);
+      if (skip < n) scanner.push(chunk.subarray(skip));
+      offset += n;
     }
   } finally { fs.closeSync(fd); }
+  if (!prefixMatches) return collectNativeContext({ file, nativeId, size, previous: null });
   const stats = scanner.end({ flushFinal: false });
   if (observedId !== nativeId) throw new Error('原生记录的会话身份不匹配，未展示其中内容');
   if (stats.invalidRecords) warnings.push(`${stats.invalidRecords} 条原生记录无法解析，结果可能不完整`);
   if (stats.pendingLineBytes) warnings.push('原生记录末尾仍在写入，刷新后读取完整记录');
   return { entries: [...entries.values()], nativeId, offset: stats.safeOffset,
-    lineIndex: stats.nextLineIndex, compactedAt, warnings, stats };
+    lineIndex: stats.nextLineIndex, compactedAt, warnings, stats,
+    fingerprint: fingerprint.digest('hex'), fingerprintBytes: offset };
 }
 
 class NativeContextReader {
   constructor() { this.cache = new Map(); this.flights = new Map(); }
-  async read(session) {
+  async read(session, { force = false } = {}) {
     if ((session.transcriptKind || session.kind) !== 'codex') return { entries: [], warnings: ['此 AI 尚未接入原生注入记录；下方仅展示 Hub 已确认的提交。'] };
     if (!session.codexSid || !session.transcriptPath) return { entries: [], warnings: ['尚未定位本会话的原生记录，不能确认原生规则和记忆注入。'] };
     const file = path.resolve(session.transcriptPath), key = session.codexSid + ':' + file;
     const stat = await fs.promises.stat(file);
     const signature = [stat.ino, stat.birthtimeMs, stat.size, stat.mtimeMs].join(':');
     const cached = this.cache.get(key);
-    if (cached?.signature === signature) return cached.result;
-    const flightKey = key + ':' + signature;
+    if (!force && cached?.signature === signature) return cached.result;
+    const flightKey = key + ':' + signature + ':' + force;
     if (this.flights.has(flightKey)) return this.flights.get(flightKey);
-    const previous = cached && stat.ino === cached.stat.ino && stat.birthtimeMs === cached.stat.birthtimeMs
+    const previous = !force && cached && stat.ino === cached.stat.ino && stat.birthtimeMs === cached.stat.birthtimeMs
       && stat.size > cached.stat.size ? cached.result : null;
     const task = new Promise((resolve, reject) => {
       const worker = new Worker(__filename, { workerData: { file, nativeId: session.codexSid, size: stat.size, previous } });

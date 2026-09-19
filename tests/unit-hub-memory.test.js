@@ -311,6 +311,18 @@ test('current context includes native rules without any Dream and rejects a runt
   release({entries:[],warnings:[]});await assert.rejects(pending,/会话已切换/);
 });
 
+test('damaged Hub receipts cannot hide valid native injections',async t=>{
+  const f=setup(t);
+  f.service.nativeContextReader={read:async()=>({entries:[{key:'memory',content:'native evidence'}],warnings:[]})};
+  const file=path.join(f.service.root,'context',require('node:crypto').createHash('sha256').update('normal').digest('hex')+'.json');
+  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'{broken');
+  const result=await f.service.context('normal');
+  assert.equal(result.nativeEntries.length,1);assert.equal(result.receipts.length,0);
+  assert.match(result.warnings.join(),/Hub.*读取失败/);
+  fs.writeFileSync(file,'[null]');
+  assert.match((await f.service.context('normal')).warnings.join(),/回执格式无效/);
+});
+
 test('global library works without an active session, deduplicates linked memory, and explicitly refreshes',async t=>{
   const f=setup(t);const persisted=[...f.sessions.values()];f.sessions.clear();
   f.service.getPersistedSessions=()=>persisted;

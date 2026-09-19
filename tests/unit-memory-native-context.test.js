@@ -22,6 +22,8 @@ test('extracts actual native snapshots without Dream receipts or disk files, ign
   assert.doesNotMatch(result.entries[0].content, /<skills>/);
   assert.equal(result.stats.keptRecords, 2); assert.ok(result.stats.maxBufferedLineBytes <= 65536);
   assert.equal(await f.reader.read(f.session), result);
+  const refreshed = await f.reader.read(f.session, { force: true });
+  assert.notEqual(refreshed, result); assert.equal(refreshed.entries.length, 2);
 });
 test('coalesces reads, incrementally updates latest snapshots and waits for complete trailing records', async t => {
   const f = setup(t, [message('user', rules('old'))]);
@@ -46,4 +48,15 @@ test('discarded or truncated transcripts cannot retain stale cached injection', 
   const f = setup(t, [message('user', rules('old'))]); await f.reader.read(f.session);
   fs.writeFileSync(f.file, JSON.stringify({ type: 'session_meta', payload: { id: 'native-one' } }) + '\n');
   assert.equal((await f.reader.read(f.session)).entries.length, 0);
+});
+
+test('an in-place rewrite to a larger file must not retain removed injection or trust a cached native identity', async t => {
+  const f = setup(t, [message('user', rules('removed rules'))]); await f.reader.read(f.session);
+  const rewrite = id => fs.writeFileSync(f.file, [
+    { type: 'session_meta', payload: { id } }, message('user', 'ordinary message '.repeat(200)),
+  ].map(JSON.stringify).join('\n') + '\n');
+  rewrite('native-one');
+  assert.equal((await f.reader.read(f.session)).entries.length, 0);
+  rewrite('another-native-id');
+  await assert.rejects(f.reader.read(f.session), /身份不匹配/);
 });

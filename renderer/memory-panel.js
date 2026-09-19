@@ -117,7 +117,9 @@ function createMemoryPanel({
   async function refresh(force = false) {
     const version = ++epoch, requestedTab = tab;
     sid = getActiveSessionInfo()?.id || null;
-    const valid = () => version === epoch && !page.hidden && requestedTab === tab;
+    const requestedSession = sid;
+    const valid = () => version === epoch && !page.hidden && requestedTab === tab
+      && (requestedTab !== 'context' || (getActiveSessionInfo()?.id || null) === requestedSession);
     const key = `${tab}:${tab === 'context' ? sid : projectId}`;
     error = ""; loading = true;
     if (loadedKey !== key) { data = null; loadedKey = key; }
@@ -125,7 +127,7 @@ function createMemoryPanel({
     try {
       if (tab === "context") {
         if (sid) {
-          const result = await call("context", {sessionId:sid});
+          const result = await call("context", {sessionId:sid, refresh:force});
           if (!valid()) return;
           data = result;
           // Preview the immutable submitted snapshot, never today's disk contents.
@@ -287,7 +289,7 @@ function createMemoryPanel({
           if (!status || status.phase === "error" || status.lastError)
             throw new Error(status?.lastError || "历史索引刷新失败");
         }
-        resetPreview();
+        if (tab !== 'context') resetPreview();
         return refresh(true);
       case "folder":
         if (file) await ipcRenderer.invoke("show-in-folder", file);

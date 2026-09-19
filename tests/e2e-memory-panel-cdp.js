@@ -72,6 +72,18 @@ async function main(){
     assert.doesNotMatch(await cdp.eval('document.querySelector(".mp-preview-content").textContent'),/原生文件保持原位/);
     result.checks.push('没有造梦也展示原生 AGENTS.md 和 Memory；点击预览为会话注入快照，与磁盘文件不同');
     await snap('01-current-context');result.checks.push('第六个统一入口、三个 tab、无会话列表；上下文只请求证据，不查历史或列出未注入文件');
+    const boundFile=await cdp.eval('sessions.get('+sid+').transcriptPath');
+    assert.ok(boundFile.startsWith(native+path.sep));
+    fs.appendFileSync(boundFile,JSON.stringify({type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:'# AGENTS.md instructions for '+cwd+'\n\n<INSTRUCTIONS>刷新后的实际注入规则</INSTRUCTIONS>'}]}})+'\n');
+    await click('[data-action-mp="refresh"]');
+    await until('document.querySelector(".mp-preview-content")?.textContent.includes("刷新后的实际注入规则")','selected native snapshot follows refresh');
+    result.checks.push('刷新读取新增原生注入，选中项的预览同步更新');
+    const receiptDir=path.join(data,'memory','context'),receiptFile=path.join(receiptDir,require('node:crypto').createHash('sha256').update(s.id).digest('hex')+'.json');
+    assert.equal(fs.existsSync(receiptFile),false);fs.mkdirSync(receiptDir,{recursive:true});fs.writeFileSync(receiptFile,'{broken');
+    await click('[data-action-mp="refresh"]');
+    await until('document.querySelector("#memory-page").textContent.includes("Hub 索引回执读取失败")','damaged receipts are visible');
+    assert.match(await cdp.eval('document.querySelector(".mp-preview-content").textContent'),/刷新后的实际注入规则/);
+    fs.unlinkSync(receiptFile);result.checks.push('Hub 回执损坏时显示错误，同时保留有效原生记忆');
     await click('[data-tab="library"]');
     await until('document.querySelector("#mp-project")?.options.length>1','project filter');
     await cdp.eval('(()=>{const el=document.querySelector("#mp-project");el.value=[...el.options].find(o=>o.textContent.includes('+JSON.stringify(cwd)+')).value;el.dispatchEvent(new Event("change",{bubbles:true}));})()');
