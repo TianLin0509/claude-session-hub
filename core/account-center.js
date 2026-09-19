@@ -18,7 +18,7 @@ function safeObservation(raw = {}) {
 class AccountCenter {
   constructor({ dataDir, getConfig, adapter, homeDir = os.homedir(), env = process.env }) {
     Object.assign(this,{dataDir,getConfig,adapter,homeDir,env});
-    this.root=path.join(dataDir,'account-center');this.flights=new Map();
+    this.root=path.join(dataDir,'account-center');this.flights=new Map();this.batches=new Map();this.codeFlights=new Map();
   }
   baseConnections() {
     const c=this.getConfig();
@@ -30,12 +30,13 @@ class AccountCenter {
       native('kimi','Kimi Code','kimi',this.env.KIMI_CODE_HOME || path.join(this.homeDir,'.kimi-code'),['Kimi 会话']),
       {id:'bridge',name:'ChatGPT · 公司中转',type:'web',uses:['公司拉取 / 同步'],provider:'bridge',action:'login'},
       {id:'chatgpt-web',name:'ChatGPT · Codex Web GPT',type:'web',uses:['ChatGPT 会话'],provider:'chatgpt-web',action:'login'},
-      ...['deepseek','gemini','chatgpt'].map(p=>({id:'web-'+p,name:({deepseek:'DeepSeek',gemini:'Gemini',chatgpt:'ChatGPT'})[p]+' · 网页',type:'web',provider:p,uses:['专用网页登录（圆桌待接入）'],action:'login',managedBrowser:true})),
+      ...['deepseek','doubao','kimi','qwen','gemini','chatgpt'].map(p=>({id:'web-'+p,name:({deepseek:'DeepSeek',doubao:'豆包',kimi:'Kimi',qwen:'千问',gemini:'Gemini',chatgpt:'ChatGPT'})[p]+' · 网页',type:'web',provider:p,uses:['专用网页登录'],action:'login',managedBrowser:true,phoneLogin:['deepseek','doubao'].includes(p)})),
       ...['claude','codex','deepseek'].map(p=>({id:'api-'+p,name:({claude:'Claude 中转',codex:'Codex API',deepseek:'DeepSeek API'})[p],type:'api',provider:p,uses:[p+' API 会话'],action:'configure',configProvider:p,configured:!!c[p+'ApiKey']})),
       {id:'token-plan',name:'百炼 · Token Plan',type:'service',provider:'token-plan',uses:['Token Plan 用量'],action:'login'},
       {id:'feishu',name:'飞书 CLI · 用户授权',type:'service',provider:'feishu',uses:['飞书用户授权 / 通知身份检查'],action:'login'},
       {id:'server-monitor',name:'服务器监控授权',type:'service',provider:'server',uses:['工作台服务器监控'],action:'configure',configProvider:'server',configured:!!c.operations?.aliyunMonitor?.bearerToken},
     ];
+    for(const row of rows)row.loginHint=row.managedBrowser?({deepseek:'短信验证码；也可微信扫码',doubao:'短信验证码；已有豆包或飞书 App 可扫码',kimi:'官网手机号或扫码登录',qwen:'官网手机号或账号扫码登录',gemini:'Google 已有账号或官方账号验证',chatgpt:'原登录方式：Google / Apple / Microsoft / 邮箱'})[row.provider]:row.type==='api'?'配置 API Key，不能用短信替代':row.provider==='images'||row.provider==='bridge'?'复用原工具浏览器中的已记住账号':row.provider==='codex'||row.provider==='claude'?'复用本机登录；失效时打开官方授权':row.provider==='feishu'?'官方设备授权；通知机器人单独配置':'官方工具提供的登录方式';
     return rows;
   }
   async connections() {
@@ -67,7 +68,7 @@ class AccountCenter {
       const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；点击检查或登录',observedAt:0,source:'配置发现'};
       const {home,observation:unused,...safe}=row;
       return {...safe,...observation,stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending:this.leaseActive(row)};
-    }),history:this.history()};
+    }),history:this.history(),batches:[...this.batches.values()].slice(-3)};
   }
   history(){try{return fs.readFileSync(path.join(this.root,'events.jsonl'),'utf8').trim().split('\n').filter(Boolean).slice(-80).map(x=>JSON.parse(x)).reverse();}catch(e){if(e.code==='ENOENT')return [];return [{at:Date.now(),name:'活动记录',message:'记录不可读；未覆盖原文件'}];}}
   log(row,message){fs.mkdirSync(this.root,{recursive:true});fs.appendFileSync(path.join(this.root,'events.jsonl'),JSON.stringify({at:Date.now(),name:row.name,message})+'\n','utf8');}
@@ -81,6 +82,7 @@ class AccountCenter {
     const promise=(async()=>{
       try {
         const raw=await this.adapter.check(row);const result=this.save(key,raw);
+        if(result.state==='signed_in')for(const batch of this.batches.values()){const item=batch.items.find(x=>x.id===id);if(item)Object.assign(item,{stage:'signed_in',message:'已有明确登录证据'});}
         if(result.state==='signed_in')this.clearLease(key,token);
         this.log(row,result.state==='signed_in'?'检查完成：已有登录证据':result.state==='login_required'?'检查完成：需要登录':'检查完成：'+result.message);
         return result;
@@ -88,15 +90,42 @@ class AccountCenter {
       finally{this.flights.delete(key);}
     })();this.flights.set(key,promise);return promise;
   }
-  async login(id){
+  async login(id,options={}){
     const row=await this.row(id);if(row.action!=='login')throw new Error('此连接通过接入配置管理');
     fs.mkdirSync(this.root,{recursive:true});const key=this.scope(row),file=this.file(key,'login'),token=crypto.randomUUID();
     if(this.leaseActive(row))return {pending:true,message:'这个账号的登录窗口已打开；请完成验证后点“检查登录”'};
     let fd;try{fd=fs.openSync(file,'wx');}catch(e){if(e.code==='EEXIST')return {pending:true,message:'另一个 Hub 正在打开此账号的登录窗口'};throw e;}
     try{fs.writeFileSync(fd,JSON.stringify({at:Date.now(),pid:process.pid,token}));}finally{fs.closeSync(fd);}
-    try{const result=await this.adapter.login(row);this.log(row,'已打开登录入口；完成本人验证后检查状态');return {...result,pending:true,message:result.message || '已打开官方登录入口。完成验证后点“检查登录”'};}
+    try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后检查状态');return {...result,pending:true,message:result.message || '已打开官方登录入口。完成验证后点“检查登录”'};}
     catch(e){this.clearLease(key,token);this.log(row,'登录入口打开失败');throw new Error('无法打开登录入口：'+(e.message || '请检查工具安装'));}
   }
   async release(id){const row=await this.row(id);try{fs.unlinkSync(this.file(this.scope(row),'login'));}catch(e){if(e.code!=='ENOENT')throw e;}this.log(row,'结束登录等待；未退出账号、未关闭浏览器');return {ok:true};}
+  async loginMany(ids,{phone=''}={}){
+    if(!Array.isArray(ids)||ids.length<1||ids.length>24||ids.some(id=>typeof id!=='string'))throw Error('请选择 1 至 24 个登录账号');
+    if(phone&&!/^1[3-9]\d{9}$/.test(phone))throw Error('请输入有效的中国大陆手机号');
+    const rows=await this.connections(),unique=[...new Set(ids)];
+    const chosen=unique.map(id=>{const row=rows.find(r=>r.id===id);if(!row||row.action!=='login')throw Error('选择中包含无效或无需登录的连接');return row;});
+    if([...this.batches.values()].some(b=>b.running))throw Error('已有一批登录正在发起，请等待该批进入验证阶段');
+    const batch={id:crypto.randomUUID(),at:Date.now(),running:true,items:chosen.map(r=>({id:r.id,name:r.name,stage:'queued',message:'排队等待登录检查'}))};
+    this.batches.set(batch.id,batch);while(this.batches.size>3)this.batches.delete(this.batches.keys().next().value);
+    let index=0;
+    const work=async()=>{while(index<chosen.length){const n=index++,row=chosen[n],item=batch.items[n];item.stage='checking';item.message='先检查已有登录';
+      try{let proof=row.observation?.state==='signed_in'&&Date.now()-row.observation.observedAt<60000?row.observation:null;try{if(!proof)proof=await this.check(row.id);}catch{}
+        if(proof?.state==='signed_in'){Object.assign(item,{stage:'signed_in',message:'已有有效登录，已跳过'});continue;}
+        const value=await this.login(row.id,{phone:row.phoneLogin?phone:''});
+        Object.assign(item,{stage:value.stage||'manual',message:value.message||'请在官方窗口完成验证'});
+      }catch{Object.assign(item,{stage:'failed',message:'登录入口未完成，请检查原工具或单独重试'});}
+    }};
+    void Promise.all(Array.from({length:Math.min(3,chosen.length)},work)).finally(()=>{batch.running=false;phone='';});
+    return {id:batch.id,message:'已开始批量检查并登录；已有登录会跳过，最多同时发起 3 个'};
+  }
+  async submitCode(id,code){
+    if(typeof code!=='string'||!/^\d{4,8}$/.test(code))throw Error('请输入有效验证码');
+    const row=await this.row(id);if(!row.phoneLogin)throw Error('此连接请在官方窗口完成验证');
+    if(this.codeFlights.has(id))throw Error('此账号的验证码正在提交，请勿重复提交');
+    this.codeFlights.set(id,true);
+    try{const value=await this.adapter.submitCode(row,code);for(const batch of this.batches.values()){const item=batch.items.find(x=>x.id===id);if(item)Object.assign(item,{stage:value.stage,message:value.message});}return value;}
+    finally{this.codeFlights.delete(id);}
+  }
 }
 module.exports={AccountCenter,maskIdentity,safeObservation};
