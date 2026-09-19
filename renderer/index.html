@@ -42,6 +42,11 @@
   <link rel="stylesheet" href="styles/ui-polish.css">
   <link rel="stylesheet" href="styles/groupchat-journal.css">
   <link rel="stylesheet" href="styles/fixed-session-layout.css">
+  <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
+       而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
+       用独立 <link> 而不是 styles.css 里的 @import —— @import 进来的表排在
+       styles.css 自己的位置（第 10 行），压不住后面这十几张。 -->
+  <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
   <div class="app-container" id="app-container">
