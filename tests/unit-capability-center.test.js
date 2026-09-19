@@ -6,6 +6,52 @@ const {collectCapabilities,tomlFlags}=require('../core/capability-catalog');
 const {CapabilityService}=require('../core/capability-service');
 const {coverage,related}=require('../core/capability-view-model');
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'capability-unit-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const write=(rel,s)=>{const p=path.join(root,rel);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,s);return p;};return {root,write};}
+test('summaries are readable while original metadata and conservative provenance remain available',t=>{
+  const {root,write}=fixture(t);
+  write('.agents/skills/owned/SKILL.md','---\nname: owned\ndescription: 我自己维护的工具。只在明确需要时使用。\norigin: self\n---');
+  write('.agents/skills/unknown/SKILL.md','---\nname: unknown\ndescription: Local does not prove authorship.\n---');
+  write('.claude/settings.json',JSON.stringify({enabledPlugins:{'code-review@claude-plugins-official':true}}));
+  const rows=collectCapabilities({homeDir:root,dataDir:root}).rows;
+  assert.equal(rows.find(r=>r.name==='owned').origin.kind,'self');
+  assert.equal(rows.find(r=>r.name==='owned').summary,'我自己维护的工具');
+  assert.equal(rows.find(r=>r.name==='unknown').origin.kind,'unknown');
+  const plugin=rows.find(r=>r.type==='plugin');assert.equal(plugin.displayName,'code-review');
+  assert.match(plugin.summary,/审查 PR/);assert.equal(plugin.origin.kind,'external');assert.equal(plugin.description,'Claude 插件');
+  const {presentation}=require('../core/capability-presentation');
+  for(const name of ['constructor','__proto__','toString'])assert.equal(typeof presentation({name,type:'mcp',sources:[]}).summary,'string');
+});
+test('notes persist across service instances without modifying skills or client configuration',async t=>{
+  const {root,write}=fixture(t),file=write('.agents/skills/unknown/SKILL.md','---\nname: unknown\ndescription: Original.\n---');
+  const before=fs.readFileSync(file,'utf8'),opts={homeDir:root,dataDir:path.join(root,'data'),sessionManager:{getAllSessions:()=>[]}};
+  const service=new CapabilityService(opts);
+  await service.catalog();await service.updateNote({id:'skill:unknown',summary:'本机专用报告工具',origin:'self'});
+  const r=(await new CapabilityService(opts).catalog()).rows[0];
+  assert.equal(r.summary,'本机专用报告工具');assert.equal(r.origin.kind,'self');assert.match(r.origin.evidence,/你在 Hub/);
+  assert.equal(r.description,'Original.');assert.equal(fs.readFileSync(file,'utf8'),before);
+  await assert.rejects(service.updateNote({id:'skill:../../outside',summary:'bad',origin:'self'}),/不在能力库/);
+  await assert.rejects(service.updateNote({id:'skill:unknown',summary:'x'.repeat(181),origin:'self'}),/180/);
+  await assert.rejects(service.updateNote({id:'skill:unknown',summary:'x',origin:'invented'}),/来源类别/);
+  await service.updateNote({id:'skill:unknown',summary:'',origin:'auto'});
+  const restored=(await service.catalog()).rows[0];assert.equal(restored.summary,'Original.');assert.equal(restored.origin.kind,'unknown');
+});
+test('note storage errors surface, and malformed notes do not reveal their raw content',async t=>{
+  const {root,write}=fixture(t);write('.agents/skills/task/SKILL.md','---\nname: task\n---');
+  const opts={homeDir:root,dataDir:path.join(root,'data'),sessionManager:{getAllSessions:()=>[]}};
+  write('data/capability-notes','blocking file');
+  await assert.rejects(new CapabilityService(opts).updateNote({id:'skill:task',summary:'hello',origin:'self'}));
+  fs.unlinkSync(path.join(root,'data/capability-notes'));
+  const {notePath}=require('../core/capability-notes');const f=notePath(opts.dataDir,'skill:task');fs.mkdirSync(path.dirname(f));fs.writeFileSync(f,'{"token":"PRIVATE_BROKEN",bad');
+  const catalog=collectCapabilities(opts);assert.ok(catalog.warnings.some(w=>w.includes('JSON')));assert.doesNotMatch(JSON.stringify(catalog),/PRIVATE_BROKEN/);
+});
+test('MCP sharing advice preserves disabled intent and explains host-specific dependencies',()=>{
+  const {mcpSharing,presentation}=require('../core/capability-presentation');
+  assert.match(mcpSharing({name:'bailian_image',sources:[{enabled:false}]}).title,/启用/);
+  assert.match(mcpSharing({name:'arena-research',sources:[{}]}).text,/不能/);
+  assert.match(mcpSharing({name:'other',sources:[{plugin:'bundle@vendor'}]}).title,/插件依赖/);
+  assert.match(mcpSharing({name:'generic',sources:[{}]}).text,/各自进程/);
+  const row={name:'same',type:'skill',sources:[{declaredOrigin:'self'},{plugin:'bundle@vendor'}]};
+  assert.equal(presentation(row).origin.kind,'mixed');
+});
 test('plugin contents preserve parent, custom paths, disabled state and reject outside paths',t=>{
   const {root,write}=fixture(t),plugin=path.join(root,'bundle');
   write('.claude/settings.json',JSON.stringify({enabledPlugins:{'bundle@test':false}}));

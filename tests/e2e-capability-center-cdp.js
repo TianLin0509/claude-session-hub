@@ -18,8 +18,8 @@ async function main(){
   write('.gemini/settings.json',JSON.stringify({mcpServers:{'arena-research':{command:'unused'}}}));
   write('.claude/settings.json',JSON.stringify({enabledPlugins:{'frontend-design@official':true}}));
   write('.claude/plugins/installed_plugins.json',JSON.stringify({plugins:{'frontend-design@official':[{scope:'user',installPath:path.join(home,'bundle'),version:'1.0'}]}}));
-  write('bundle/.claude-plugin/plugin.json',JSON.stringify({description:'Design workflows and browser tools',skills:'./custom',mcpServers:{'design-browser':{command:'unused'}}}));
-  write('bundle/custom/visual-design/SKILL.md','---\nname: visual-design\ndescription: Create polished application interfaces\n---');
+  write('bundle/.claude-plugin/plugin.json',JSON.stringify({description:'Design workflows and browser tools',skills:'./custom',mcpServers:{'design-browser':{command:'unused',description:'检查界面布局、页面交互并保存截图'}}}));
+  write('bundle/custom/visual-design/SKILL.md','---\nname: visual-design\ndescription: 设计应用界面的布局、配色与交互细节\n---');
   const result={root,out,fixture:true,checks:[],passed:false};let hub,cdp;
   const until=async(expr,label)=>{const end=Date.now()+30000;while(Date.now()<end){if(await cdp.eval(`Boolean(${expr})`))return;await pause(100);}throw Error('timeout: '+label);};
   const click=async(selector)=>{
@@ -39,6 +39,19 @@ async function main(){
     assert.equal(await cdp.eval('getComputedStyle(document.getElementById("session-sidebar")).visibility'),'hidden');
     assert.equal(await cdp.eval('Math.abs(document.getElementById("capability-page").getBoundingClientRect().left-document.getElementById("scene-rail").getBoundingClientRect().right)<1'),true);
     await shot('01-catalog');result.checks.push('无会话也可浏览目录，新增侧栏入口、布局与隐藏会话栏正常');
+    await click('[data-cp-row="skill:channel-sim"]');await click('[data-cp-action="note-edit"]');
+    await click('#cp-note-summary');await cdp.send('Input.insertText',{text:'无线仿真实验与结果分析'});
+    await cdp.eval('document.getElementById("cp-note-origin").value="self";document.getElementById("cp-note-origin").dispatchEvent(new Event("change",{bubbles:true}))');
+    await click('#cp-note-form button[type="submit"]');await until('document.querySelector(".cp-notice")?.innerText.includes("已保存")','note saved');
+    await until('!document.querySelector("[data-cp-action=refresh]").disabled','note refresh');
+    await click('[data-cp-origin="self"]');assert.equal(await cdp.eval('document.querySelectorAll(".cp-row").length'),1);
+    assert.ok((await cdp.eval('document.querySelector(".cp-row").innerText')).includes('无线仿真实验与结果分析'));
+    await shot('11-self-filter');await click('[data-cp-action="refresh"]');await until('document.querySelector(".cp-detail .cp-description")?.innerText.includes("无线仿真")','note persisted');
+    await click('[data-cp-origin="all"]');await click('[data-cp-origin="external"]');
+    assert.ok((await cdp.eval('document.querySelector(".cp-list").innerText')).includes('frontend-design'));
+    assert.equal((await cdp.eval('document.querySelector(".cp-list").innerText')).includes('channel-sim'),false);
+    await shot('12-external-filter');await click('[data-cp-origin="all"]');
+    result.checks.push('编辑中文简述与自建来源，保存刷新后仍保留；来源筛选与外部插件分类有效');
     await click('.cp-types [data-cp-type="plugin"]');
     await click('[data-cp-row="plugin:frontend-design@official"]');
     assert.ok((await cdp.eval('document.querySelector(".cp-detail").innerText')).includes('visual-design'));
@@ -59,6 +72,8 @@ async function main(){
     await click('[data-cp-tab="catalog"]');
     await click('#cp-search');await cdp.send('Input.insertText',{text:'superran'});await until('document.querySelectorAll("#capability-page .cp-row").length===2','search');
     await click('[data-cp-row="mcp:superran"]');assert.ok((await cdp.eval('document.querySelector(".cp-detail").innerText')).includes('来源与配置'));await shot('02-search-mcp');
+    assert.ok((await cdp.eval('document.querySelector(".cp-detail").innerText')).includes('各自进程'));
+    assert.ok((await cdp.eval('document.querySelector(".cp-detail .cp-description").innerText')).includes('无线信道'));
     result.checks.push('真实鼠标和键盘搜索，Skill 与 MCP 分列，详情来源可查看');
     await cdp.eval('document.getElementById("cp-search").value="";document.getElementById("cp-search").dispatchEvent(new Event("input",{bubbles:true}))');
     await cdp.eval('document.getElementById("cp-scope").value="conflict";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
