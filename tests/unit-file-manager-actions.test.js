@@ -8,6 +8,7 @@ const { checkedPath, walkFiles, fileOperation } = require('../core/file-manager-
 const { registerFileManagerIpc } = require('../main/ipc/file-manager-handlers');
 const { listWorkspaceDirectory } = require('../core/file-manager-directory');
 const { formatSize } = require('../renderer/file-manager-features');
+const {createJunctionFixture}=require('./helpers/junction-fixture');
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-fm-actions-'));
@@ -47,7 +48,7 @@ test('scan bounds are explicit and junction ancestors cannot escape', async t =>
   const result = await walkFiles(root, { maxEntries: 1 }); assert.equal(result.truncated, true);
   const target = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-fm-outside-'));
   const link = path.join(root, 'linked');
-  fs.symlinkSync(target, link, 'junction'); fs.writeFileSync(path.join(target, 'file.txt'), 'external');
+  await createJunctionFixture(target, link); fs.writeFileSync(path.join(target, 'file.txt'), 'external');
   try {
     await assert.rejects(checkedPath(root, path.join(link, 'file.txt')), /junction/);
     await assert.rejects(checkedPath(root, target), /当前目录/);

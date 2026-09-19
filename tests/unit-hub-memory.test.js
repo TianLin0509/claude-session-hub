@@ -1,4 +1,5 @@
 'use strict';
+const {createJunctionFixture}=require('./helpers/junction-fixture');
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
@@ -303,7 +304,7 @@ test('global library works without an active session, deduplicates linked memory
   const memory=path.join(f.home,'.codex','memories');fs.mkdirSync(memory,{recursive:true});
   fs.writeFileSync(path.join(memory,'MEMORY.md'),'原生记忆');
   const shared=path.join(f.home,'shared-memory');fs.mkdirSync(shared);fs.writeFileSync(path.join(shared,'topic.md'),'共享内容');
-  for(const bucket of ['a','b']) {const parent=path.join(f.home,'.claude','projects',bucket);fs.mkdirSync(parent,{recursive:true});fs.symlinkSync(shared,path.join(parent,'memory'),'junction');}
+  for(const bucket of ['a','b']) {const parent=path.join(f.home,'.claude','projects',bucket);fs.mkdirSync(parent,{recursive:true});await createJunctionFixture(shared,path.join(parent,'memory'));}
   const [a,b]=await Promise.all([f.service.catalog(),f.service.catalog()]);
   assert.strictEqual(a,b,'concurrent readers share one discovery');
   assert.ok(a.files.some(x=>x.path===path.join(memory,'MEMORY.md')));
