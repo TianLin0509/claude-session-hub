@@ -33,7 +33,7 @@ class AccountCenter {
       ...['deepseek','gemini','chatgpt'].map(p=>({id:'web-'+p,name:({deepseek:'DeepSeek',gemini:'Gemini',chatgpt:'ChatGPT'})[p]+' · 网页',type:'web',provider:p,uses:['专用网页登录（圆桌待接入）'],action:'login',managedBrowser:true})),
       ...['claude','codex','deepseek'].map(p=>({id:'api-'+p,name:({claude:'Claude 中转',codex:'Codex API',deepseek:'DeepSeek API'})[p],type:'api',provider:p,uses:[p+' API 会话'],action:'configure',configProvider:p,configured:!!c[p+'ApiKey']})),
       {id:'token-plan',name:'百炼 · Token Plan',type:'service',provider:'token-plan',uses:['Token Plan 用量'],action:'login'},
-      {id:'feishu',name:'飞书 CLI',type:'service',provider:'feishu',uses:['回答完成通知'],action:'login'},
+      {id:'feishu',name:'飞书 CLI · 用户授权',type:'service',provider:'feishu',uses:['飞书用户授权 / 通知身份检查'],action:'login'},
       {id:'server-monitor',name:'服务器监控授权',type:'service',provider:'server',uses:['工作台服务器监控'],action:'configure',configProvider:'server',configured:!!c.operations?.aliyunMonitor?.bearerToken},
     ];
     return rows;
@@ -42,6 +42,7 @@ class AccountCenter {
     const rows=this.baseConnections();
     try {
       const images=await this.adapter.imageAccounts();
+      if(!images.length)rows.push({id:'images',name:'ChatGPT 网页生图',type:'web',provider:'images',accountId:'primary',uses:['网页生图 MCP'],action:'login',observation:{state:'unknown',message:'尚无生图账号记录，可打开原工具的主账号登录入口',source:'生图共享池记录',observedAt:0}});
       for(const a of images) if(/^[a-z][a-z0-9_-]{0,39}$/.test(a.id)) rows.push({
         id:'image-'+a.id,name:'ChatGPT 生图 · '+a.id,type:'web',provider:'images',accountId:a.id,uses:['网页生图 MCP'],action:'login',
         toolState:a.enabled===false?'账号已停用':a.workerAlive?'工作进程在线':'工作进程未在线',

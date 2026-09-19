@@ -7,7 +7,7 @@ const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.
 async function main(){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-accounts-gui-')),data=path.join(root,'data'),home=path.join(root,'home'),cwd=path.join(root,'project');
  for(const p of [data,home,cwd,path.join(root,'empty')])fs.mkdirSync(p,{recursive:true});
- fs.writeFileSync(path.join(data,'config.json'),JSON.stringify({proxy:'',providers:{codex:{backend:'subscription'}},unrelatedFixture:'preserve-me'}));
+ fs.writeFileSync(path.join(data,'config.json'),JSON.stringify({proxy:'',providers:{codex:{backend:'subscription',api_key:'fixture-codex-key',subscription_profiles:[{id:'default',label:'Main',home:path.join(home,'.codex')},{id:'second',label:'Second',home:path.join(home,'.codex-second')}]},deepseek:{api_key:'fixture-deepseek-key'}},unrelatedFixture:'preserve-me'}));
  fs.writeFileSync(path.join(data,'prepared-projects.json'),JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
  const out=path.resolve('artifacts/account-center-cdp');fs.mkdirSync(out,{recursive:true});
  const result={passed:false,boundary:'真实隔离 Hub、DOM、IPC、文件持久化与账号子进程夹具；没有真实登录、短信或模型请求',checks:[],root};let hub,cdp;
@@ -15,7 +15,7 @@ async function main(){
  const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+') && !document.querySelector('+JSON.stringify(selector)+').disabled','enabled '+selector);const box=await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...box});await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...box});};
  const snap=async name=>{const v=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
  try{
-  hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'hidden',label:'accounts-center',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
+  hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'visible',label:'accounts-center',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
    CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),
    HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty')}});
   result.pid=hub.pid;result.port=hub.port;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
@@ -48,6 +48,7 @@ async function main(){
   await cdp.eval('document.querySelector("#cfg-proxy").value="http://127.0.0.1:7890"');await click('#config-save');
   await until('document.querySelector("#config-save-msg").textContent.includes("已保存")','settings saved');
   config=JSON.parse(fs.readFileSync(path.join(data,'config.json'),'utf8'));
+  assert.equal(config.providers.codex.api_key,'fixture-codex-key');assert.equal(config.providers.deepseek.api_key,'fixture-deepseek-key');
   assert.ok(JSON.stringify(config).includes('fixture-monitor-token'));assert.ok(JSON.stringify(config).includes('验证主账号'));
   await click('#config-close');result.checks.push('服务器 Bearer Token 在权限页编辑；普通设置保存不覆盖账号/密钥');
   await click('[data-ac-tab="bindings"]');assert.ok((await cdp.eval('document.querySelector(".ac-content").innerText')).includes('公司拉取'));

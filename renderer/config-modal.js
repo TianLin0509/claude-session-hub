@@ -387,7 +387,8 @@ function createConfigModalController({
     }
     if (!modal) return;
   
-    // 加载当前配置
+    // 加载当前配置；读取失败时禁止保存旧表单。
+    configEl('config-save').disabled=true;
     try {
       const cfg = await ipcRenderer.invoke('get-hub-config-raw');
       providerModes.claude = cfg.claudeBackend === 'api' ? 'api' : 'subscription';
@@ -408,8 +409,11 @@ function createConfigModalController({
       setOperationsForm(cfg);
       updateClaudeBackendControls();
       updateConfigSummaries();
+      configEl('config-save').disabled=false;
     } catch (error) {
-      throw new Error("配置读取失败，未打开空白编辑器以免覆盖已有账号：" + error.message);
+      if(options.accountsOnly)throw new Error("配置读取失败，未打开空白编辑器以免覆盖已有账号：" + error.message);
+      configEl('config-main-view').classList.add('hidden');
+      const msg=configEl('config-save-msg');msg.textContent='配置读取失败，请关闭后重试；未修改已有账号。';msg.className='config-save-msg error';msg.style.display='block';modal.classList.remove('hidden');return;
     }
     if (options.accountsOnly) { showConfigDetail(options.provider || 'codex'); return; }
     showConfigMainView();

@@ -65,6 +65,11 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
    const svc=require('../main/usage/token-plan-usage').createTokenPlanUsageService({env:cliEnv(row),...(isolated?{configDir:path.join(homeDir,'.bailian')}:{})});
    await svc.refresh(true);return {state:'signed_in',message:'百炼官方用量接口已返回计划数据',source:'百炼 CLI 用量接口'};
   }
+  if(row.provider==='feishu'){
+   external();const command=getConfig().notifications?.feishuCliPath||require('./completion-notifier').resolveDefaultFeishuCliPath(cleanEnv);
+   const value=jsonResult(await runImpl(command,['auth','status','--json'],cleanEnv));const user=value.identities?.user,bot=value.identities?.bot;
+   return {state:user?.available===true?'signed_in':user?.available===false?'login_required':'unknown',message:'这是 CLI 用户授权。回答通知使用独立机器人身份：'+(bot?.available===true?'已配置，投递结果以通知测试为准':'未确认，请在原 CLI 配置机器人'),source:'飞书 CLI 本机身份状态'};
+  }
   return {state:'unknown',message:'此工具未提供已适配的只读登录检测；可直接打开官方登录入口',source:'官方工具'};
  },
  async login(row){
