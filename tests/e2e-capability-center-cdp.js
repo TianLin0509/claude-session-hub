@@ -17,10 +17,13 @@ async function main(){
   write('.kimi-code/mcp.json',JSON.stringify({mcpServers:{superran:{command:'unused'}}}));
   write('.gemini/settings.json',JSON.stringify({mcpServers:{'arena-research':{command:'unused'}}}));
   write('.claude/settings.json',JSON.stringify({enabledPlugins:{'frontend-design@official':true}}));
+  write('.claude/plugins/installed_plugins.json',JSON.stringify({plugins:{'frontend-design@official':[{scope:'user',installPath:path.join(home,'bundle'),version:'1.0'}]}}));
+  write('bundle/.claude-plugin/plugin.json',JSON.stringify({description:'Design workflows and browser tools',skills:'./custom',mcpServers:{'design-browser':{command:'unused'}}}));
+  write('bundle/custom/visual-design/SKILL.md','---\nname: visual-design\ndescription: Create polished application interfaces\n---');
   const result={root,out,fixture:true,checks:[],passed:false};let hub,cdp;
   const until=async(expr,label)=>{const end=Date.now()+30000;while(Date.now()<end){if(await cdp.eval(`Boolean(${expr})`))return;await pause(100);}throw Error('timeout: '+label);};
   const click=async(selector)=>{
-    await until(`document.querySelector(${JSON.stringify(selector)})`,'exists '+selector);
+    await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`,'enabled '+selector);
     const p=await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
     await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...p});await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...p});
   };
@@ -29,13 +32,31 @@ async function main(){
     hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'visible',label:'capabilities',extraEnv:{
       CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
       HUB_SESSION_SEARCH_CODEX_ROOTS:empty,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty,
-      CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
+      CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
     result.pid=hub.pid;cdp=await connectFirstPage(hub);await until('typeof ipcRenderer!=="undefined" && typeof sessions!=="undefined"','renderer ready');
     await click('#btn-rail-capabilities');await until('document.querySelectorAll("#capability-page .cp-row").length>10','catalog');
     assert.equal(await cdp.eval('document.querySelectorAll("#scene-rail [data-action=open-capabilities]").length'),1);
     assert.equal(await cdp.eval('getComputedStyle(document.getElementById("session-sidebar")).visibility'),'hidden');
     assert.equal(await cdp.eval('Math.abs(document.getElementById("capability-page").getBoundingClientRect().left-document.getElementById("scene-rail").getBoundingClientRect().right)<1'),true);
     await shot('01-catalog');result.checks.push('无会话也可浏览目录，新增侧栏入口、布局与隐藏会话栏正常');
+    await click('.cp-types [data-cp-type="plugin"]');
+    await click('[data-cp-row="plugin:frontend-design@official"]');
+    assert.ok((await cdp.eval('document.querySelector(".cp-detail").innerText')).includes('visual-design'));
+    await shot('06-plugin-components');await click('[data-cp-related="skill:visual-design"]');
+    assert.equal(await cdp.eval('document.querySelector(".cp-detail h2").textContent'),'visual-design');
+    result.checks.push('类型分类、插件组成、组件双向导航');
+    await click('[data-cp-tab="coverage"]');await until('document.querySelectorAll(".cp-matrix tbody tr").length>10','coverage');
+    assert.ok((await cdp.eval('document.querySelector(".cp-matrix").innerText')).includes('未接入盘点'));
+    await shot('07-coverage');
+    await click('[data-cp-action="share-preview"]');await until('document.querySelector("[data-cp-action=share-apply]")','sharing preview');
+    assert.equal(fs.existsSync(path.join(home,'.claude/skills/superran')),false);
+    await shot('08-share-preview');await click('[data-cp-action="share-apply"]');
+    await until('document.querySelector(".cp-notice[role=status]")?.innerText.includes("已新增")','sharing applied');
+    assert.equal(fs.realpathSync.native(path.join(home,'.claude/skills/superran')),fs.realpathSync.native(path.join(home,'.agents/skills/superran')));
+    assert.match(fs.readFileSync(path.join(home,'.claude/skills/review/SKILL.md'),'utf8'),/variant/);
+    await click('[data-cp-action="share-preview"]');await until('document.querySelector(".cp-share")?.innerText.includes("没有需要新增")','sharing idempotent');
+    await click('[data-cp-action="share-close"]');result.checks.push('补齐先预览再执行，真实 junction 写入隔离 home，保留差异且重复执行零新增');
+    await click('[data-cp-tab="catalog"]');
     await click('#cp-search');await cdp.send('Input.insertText',{text:'superran'});await until('document.querySelectorAll("#capability-page .cp-row").length===2','search');
     await click('[data-cp-row="mcp:superran"]');assert.ok((await cdp.eval('document.querySelector(".cp-detail").innerText')).includes('来源与配置'));await shot('02-search-mcp');
     result.checks.push('真实鼠标和键盘搜索，Skill 与 MCP 分列，详情来源可查看');
@@ -50,14 +71,26 @@ async function main(){
     await click('#btn-rail-capabilities');await click('[data-cp-tab="runtime"]');
     await until('document.querySelector("#capability-page").innerText.includes("fixture-mcp")','native discovery');
     assert.ok((await cdp.eval('document.querySelector("#capability-page").innerText')).includes('原生已发现'));await shot('04-native-runtime');
-    assert.ok((await cdp.eval('document.querySelector("#capability-page").innerText')).includes('fixture-plugin@fixture'));
+    assert.ok((await cdp.eval('document.querySelector("#capability-page").innerText')).includes('插件会话状态未确认'));
+    assert.equal(fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').includes('"method":"plugin/list"'),false);
     result.checks.push('真实 Hub → IPC → 当前原生协议子进程，技能与 MCP 查询成功（协议夹具，未调用模型）');
     await click('#btn-rail-memory');await until('!document.getElementById("memory-page").hidden','memory open');assert.equal(await cdp.eval('document.getElementById("capability-page").hidden'),true);
     await click('#btn-rail-capabilities');await until('document.getElementById("memory-page").hidden','memory closes');
+    await click('#btn-rail-accounts');await until('!document.getElementById("account-page").hidden','accounts opens');
+    assert.equal(await cdp.eval('document.getElementById("capability-page").hidden'),true);
+    await click('#btn-rail-capabilities');await until('document.getElementById("account-page").hidden','accounts closes');
     await click('[data-cp-tab="catalog"]');await cdp.eval('document.getElementById("cp-scope").value="all";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:860,height:800,deviceScaleFactor:1,mobile:false});await shot('05-compact');
     assert.equal(await cdp.eval('document.querySelector(".cp-scroll").scrollWidth<=document.querySelector(".cp-scroll").clientWidth+1'),true);
     result.checks.push('记忆与技能入口互斥，窄窗口无横向溢出');
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:600,height:850,deviceScaleFactor:1,mobile:false});
+    await click('[data-cp-tab="coverage"]');await until('document.querySelector(".cp-matrix")','compact matrix');
+    assert.equal(await cdp.eval('document.querySelector(".cp-scroll").scrollWidth<=document.querySelector(".cp-scroll").clientWidth+1'),true);
+    await shot('09-compact-coverage');await click('[data-cp-tab="catalog"]');
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
+    await cdp.eval('themeController.setTheme("claude")');await until('document.documentElement.getAttribute("data-theme")==="claude"','light theme');await shot('10-light');
+    await cdp.eval('themeController.setTheme("dark")');
+    result.checks.push('权限与技能页互斥，600px 对比表内部滚动，浅色主题截图');
     write('.agents/skills/newly-shared/SKILL.md','---\nname: newly-shared\ndescription: refresh detects newly installed skill\n---');
     await click('[data-cp-action="refresh"]');await until('document.querySelector("#capability-page").innerText.includes("newly-shared")','refresh new entry');
     await click('[data-cp-tab="runtime"]');await until('document.querySelector("#capability-page").innerText.includes("fixture-mcp")','runtime before close');

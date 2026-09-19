@@ -7733,7 +7733,7 @@ const configModal = createConfigModalController({
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
-  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => memoryPanel.close(),
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); },
 });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;

@@ -33,7 +33,7 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
   const rows = new Map(), warnings = [], scanned = new Set();
   const warn = (file, e) => { if (!['ENOENT', 'ENOTDIR'].includes(e.code)) warnings.push(`${file}：${e.message}`); };
   const text = file => { try { if (fs.statSync(file).size > 2 * 1024 * 1024) throw Error('文件超过 2 MB，未读取'); return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''); } catch (e) { warn(file, e); return null; } };
-  const json = file => { const s = text(file); if (s === null) return {}; try { return JSON.parse(s); } catch (e) { warn(file, e); return {}; } };
+  const json = file => { const s = text(file); if (s === null) return {}; try { const d=JSON.parse(s); if(!d || typeof d!=='object' || Array.isArray(d))throw Error(); return d; } catch { warnings.push(`${file}：JSON 格式无效，未读取内容`); return {}; } };
   const entries = dir => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter(e => !e.name.startsWith('.')); } catch (e) { warn(dir, e); return []; } };
   const real = p => { try { return fs.realpathSync.native(p); } catch (e) { warn(p, e); return p; } };
   function add(type, name, description, source) {
@@ -41,13 +41,13 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
     name = name.slice(0, 250);
     const id = `${type}:${name}`;
     const row = rows.get(id) || { id, type, name, description: String(description || '').slice(0, 2000), sources: [] };
-    if (!row.description && description) row.description = String(description).slice(0, 2000);
+    if ((!row.description || /^(Codex|Claude) 插件$/.test(row.description)) && description) row.description = String(description).slice(0, 2000);
     if (!row.sources.some(s => s.path === source.path && s.agent === source.agent && s.scope === source.scope)) row.sources.push(source);
     rows.set(id, row);
   }
-  function scanSkills(root, agents, scope, depth = 0) {
-    const key = `${root}:${agents.join(',')}:${scope}`;
-    if (scanned.has(key) || depth > 3) return;
+  function scanSkills(root, agents, scope, extra = {}) {
+    const key = `${root}:${agents.join(',')}:${scope}:${extra.plugin || ''}`;
+    if (scanned.has(key)) return;
     scanned.add(key);
     for (const entry of entries(root)) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -62,16 +62,39 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
         return (/^[>|][+-]?$/.test(m[1]) ? m[2] || '' : m[1]).trim().replace(/^(['"])([\s\S]*)\1$/, '$2').replace(/\s+/g, ' ');
       };
       const name = field('name') || entry.name;
-      for (const agent of agents) add('skill', name, field('description'), {agent,scope,path:file,realPath:real(file), enabled:true,
+      for (const agent of agents) add('skill', name, field('description'), {agent,scope,path:file,realPath:real(file), enabled:true,...extra,
         hash:createHash('sha256').update(s.replace(/\r\n/g,'\n')).digest('hex')});
     }
   }
-  function jsonMcp(file, agent, scope) {
+  function mcpEntries(d, file, agent, scope, extra = {}) {
+    const servers=d?.mcpServers || d;
+    if(!servers || typeof servers!=='object' || Array.isArray(servers))return;
+    for (const [name, c] of Object.entries(servers)) {
+      if(!c || typeof c!=='object' || Array.isArray(c)){warnings.push(`${file}：MCP 条目格式无效`);continue;}
+      add('mcp',name,'标准 MCP 服务器',{agent,scope,path:file,...extra,enabled:extra.enabled!==false && c.enabled!==false && c.disabled!==true,
+        transport:['stdio','http','sse','streamable-http'].includes(c.type)?c.type:(c.url ? 'HTTP' : 'stdio')});
+    }
+  }
+  function jsonMcp(file, agent, scope, extra = {}, bare = false) {
     const d = json(file);
-    for (const [name, c] of Object.entries(d.mcpServers || {})) add('mcp',name,'标准 MCP 服务器',{
-      agent,scope,path:file,enabled:c.enabled !== false && c.disabled !== true,
-      transport:c.type || (c.url ? 'HTTP' : 'stdio')});
+    mcpEntries(bare ? d : {mcpServers:d.mcpServers || {}},file,agent,scope,extra);
     return d;
+  }
+  function pluginContents(root, name, agent, enabled) {
+    const file=path.join(root,agent==='claude'?'.claude-plugin':'.codex-plugin','plugin.json');
+    const manifest=json(file), extra={plugin:name,enabled};
+    const inside=p=>{const rel=path.relative(real(root),real(p));return !rel.startsWith('..')&&!path.isAbsolute(rel);};
+    const locations=(v,fallback)=>[...new Set([...(fallback?[fallback]:[]),...(Array.isArray(v)?v:typeof v==='string'?[v]:[])])]
+      .filter(p=>{if(typeof p!=='string'||!inside(path.resolve(root,p))){warnings.push(`${file}：未盘点插件目录之外的组件`);return false;}return true;})
+      .map(p=>path.resolve(root,p));
+    for(const dir of locations(manifest.skills,'skills'))scanSkills(dir,[agent],'plugin',extra);
+    for(const config of locations(manifest.mcpServers,'.mcp.json'))jsonMcp(config,agent,'plugin',extra,true);
+    if(manifest.mcpServers && typeof manifest.mcpServers==='object' && !Array.isArray(manifest.mcpServers))
+      mcpEntries(manifest.mcpServers,file,agent,'plugin',extra);
+    if(manifest.apps)warnings.push(`${file}：包含账号连接器声明；账号授权与可调用状态请在原生客户端核对。`);
+    if(manifest.hooks || manifest.agents || fs.existsSync(path.join(root,'hooks')) || fs.existsSync(path.join(root,'agents')))
+      warnings.push(`${file}：含 hooks / 子代理等扩展，本页仅盘点 Skill 与 MCP 组件。`);
+    return manifest;
   }
   function codexConfig(dir, agent, scope) {
     const file = path.join(dir,'config.toml'), raw = text(file);
@@ -80,6 +103,21 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
       try { flags = tomlFlags(raw); } catch (e) {warn(file,e);}
       if (/^\s*(?:mcp_servers|plugins)\s*=|^\s*\[(?:mcp_servers|plugins)\]\s*$/m.test(raw))
         warnings.push(`${file}：含根表或内联能力声明；静态目录只解析独立命名表，完整状态请查看当前原生回执。`);
+      // Only project-independent local disable flags are applied to the user catalog.
+      // Other configuration layers remain separate evidence, not effective overrides.
+      if(raw.includes('[[skills.config]]')) {
+        if(scope!=='user')warnings.push(`${file}：含范围专用技能开关，请在当前会话核对最终生效状态。`);
+        else for(const block of raw.split(/^\s*\[\[skills\.config\]\]\s*$/m).slice(1)) {
+          const fields=block.split(/^\s*\[/m)[0];
+          const match=fields.match(/^\s*path\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*(?:#.*)?$/m);
+          if(!match || !/^\s*enabled\s*=\s*false\s*(?:#.*)?$/m.test(fields))continue;
+          let skillPath;
+          try{skillPath=match[1][0]==='"'?JSON.parse(match[1]):match[1].slice(1,-1);}catch{warnings.push(`${file}：技能开关路径格式无法解析`);continue;}
+          if(!path.isAbsolute(skillPath)){warnings.push(`${file}：技能开关使用相对路径，请核对原生状态。`);continue;}
+          for(const row of rows.values())if(row.type==='skill')for(const source of row.sources)
+            if(source.agent===agent && path.resolve(source.path).toLowerCase()===path.resolve(skillPath).toLowerCase())source.enabled=false;
+        }
+      }
     }
     for (const c of flags.mcp) add('mcp',c.name,'标准 MCP 服务器',{agent,scope,path:file,enabled:c.enabled});
     for (const c of flags.plugins) add('plugin',c.name,'Codex 插件',{agent,scope,path:file,enabled:c.enabled});
@@ -93,13 +131,9 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
       if (!versions.length) continue;
       if (versions.length > 1) warnings.push(`${base}：存在多个缓存版本；目录展示最新命名候选，实际启用版本需由原生连接确认。`);
       const root = path.join(base,versions[0].name);
-      const manifest = json(path.join(root,'.codex-plugin','plugin.json'));
       const enabled = active.get(name);
+      const manifest = pluginContents(root,name,agent,enabled);
       add('plugin',name,manifest.description,{agent,scope,path:root,enabled,version:versions[0].name});
-      if (enabled) {
-        scanSkills(path.join(root,'skills'),[agent],'plugin');
-        jsonMcp(path.join(root,'.mcp.json'),agent,'plugin');
-      }
     }
   }
   const home = (...parts) => path.join(homeDir,...parts);
@@ -120,13 +154,13 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
   const enabled = json(home('.claude','settings.json')).enabledPlugins || {};
   const installed = json(home('.claude','plugins','installed_plugins.json')).plugins || {};
   for (const name of new Set([...Object.keys(enabled),...Object.keys(installed)])) {
-    const installs = installed[name] || [];
+    const installs = Array.isArray(installed[name]) ? installed[name] : [];
     const entry = installs.find(s=>s.scope==='user');
     add('plugin',name,'Claude 插件',{agent:'claude',scope:'user',path:entry?.installPath || home('.claude','settings.json'),enabled:enabled[name] === true,
-      missing:!entry || !fs.existsSync(entry.installPath),version:entry?.version || null});
-    if (enabled[name] && entry?.installPath) {
-      scanSkills(path.join(entry.installPath,'skills'),['claude'],'plugin');
-      jsonMcp(path.join(entry.installPath,'.mcp.json'),'claude','plugin');
+      missing:!entry?.installPath || !fs.existsSync(entry.installPath),version:entry?.version || null});
+    if (typeof entry?.installPath==='string' && fs.existsSync(entry.installPath)) {
+      const manifest=pluginContents(entry.installPath,name,'claude',enabled[name]===true);
+      add('plugin',name,manifest.description,{agent:'claude',scope:'user',path:entry.installPath,enabled:enabled[name]===true,version:entry.version});
     }
   }
   // Scope discovery to open sessions supplied by Main, never crawl the home/workspace.

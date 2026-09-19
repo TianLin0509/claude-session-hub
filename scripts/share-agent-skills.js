@@ -24,8 +24,17 @@ function planSharing(homeDir){
     consumers:{'.agents/skills':['Codex','Kimi Code','Gemini','DeepSeek Codex runtime'],'.claude/skills':['Claude']},
     boundary:'Only ordinary user skills; archived/system/plugin-cache/Cat Cafe-only skills excluded. Client-specific tool dependencies are not installed by this operation. Existing variants preserved.'};
 }
-function applySharing(plan,manifest){
-  const report={...plan,created:[],errors:[]};
+async function createLink(source,target){
+  for(let attempt=0;;attempt++){
+    try{await fs.promises.symlink(source,target,'junction');return attempt;}
+    catch(e){
+      if(!['EBUSY','EPERM'].includes(e.code)||attempt>=3||exists(target))throw e;
+      await new Promise(resolve=>setTimeout(resolve,100*(attempt+1)));
+    }
+  }
+}
+async function applySharing(plan,manifest){
+  const report={...plan,created:[],errors:[],retries:[]};
   fs.mkdirSync(path.dirname(manifest),{recursive:true});
   const save=()=>fs.writeFileSync(manifest,JSON.stringify(report,null,2)+'\n','utf8');save();
   for(const op of plan.operations){
@@ -33,7 +42,8 @@ function applySharing(plan,manifest){
       if(exists(op.target))throw Error('目标已经存在，未覆盖');
       if(!fs.existsSync(path.join(op.source,'SKILL.md')))throw Error('技能来源已失效');
       fs.mkdirSync(path.dirname(op.target),{recursive:true});
-      fs.symlinkSync(op.source,op.target,'junction');
+      const retries=await createLink(op.source,op.target);
+      if(retries)report.retries.push({name:op.name,count:retries});
       report.created.push(op);save();
       if(fs.realpathSync.native(op.target).toLowerCase()!==fs.realpathSync.native(op.source).toLowerCase())throw Error('链接目标核对失败');
     }catch(e){report.errors.push({...op,error:e.message});save();break;}
@@ -46,8 +56,9 @@ if(require.main===module){
   const out=outAt>=0?path.resolve(args[outAt+1]):path.resolve('artifacts/capability-center/skill-sharing-'+Date.now()+'.json');
   const plan=planSharing(home);
   if(args.includes('--apply')){
-    const result=applySharing(plan,out);console.log(JSON.stringify({created:result.created.length,preserved:result.existing.length,errors:result.errors,manifest:out}));
-    if(result.errors.length)process.exitCode=1;
+    applySharing(plan,out).then(result=>{console.log(JSON.stringify({created:result.created.length,preserved:result.existing.length,errors:result.errors,retries:result.retries,manifest:out}));
+      if(result.errors.length)process.exitCode=1;
+    }).catch(error=>{console.error(error);process.exitCode=1;});
   }else{
     fs.mkdirSync(path.dirname(out),{recursive:true});fs.writeFileSync(out,JSON.stringify(plan,null,2)+'\n','utf8');
     console.log(JSON.stringify({planned:plan.operations.length,preserved:plan.existing.length,manifest:out}));
