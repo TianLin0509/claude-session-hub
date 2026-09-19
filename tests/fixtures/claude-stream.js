@@ -50,6 +50,14 @@ rl.on('line', async line => {
   const m = JSON.parse(line);
   if (m.type === 'control_request') {
     if (m.request.subtype === 'initialize') {
+      if (process.env.CLAUDE_HUB_FIXTURE_INIT_GATE) {
+        const fs = require('node:fs');
+        const deadline = Date.now() + 60000;
+        while (!fs.existsSync(process.env.CLAUDE_HUB_FIXTURE_INIT_GATE)) {
+          if (Date.now() > deadline) throw new Error('Fixture initialize gate timed out');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
       if (mode === 'exit-before-init') return process.exit(7);
       if (mode === 'malformed') return process.stdout.write('{broken}\n');
       if (mode === 'truncated') { process.stdout.write('{"type":'); return process.exit(8); }
