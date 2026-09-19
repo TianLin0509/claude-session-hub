@@ -385,6 +385,9 @@ function createAccountUsageController({
       }
     }, true);
     document.defaultView.addEventListener('resize', positionPopover);
+    document.addEventListener('sidebar-insights:visibility', event => {
+      if (event.detail.collapsed) setPopoverOpen(false);
+    });
     // Keep the action nodes stable across usage updates: focus and hover survive.
     refresh.addEventListener('click', () => {
       refreshUsageNow().catch(error => {

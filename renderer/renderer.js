@@ -916,6 +916,10 @@ const sessionListRenderer = createSessionListRenderer({
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
+const sidebarInsights = require('./sidebar-insights').createSidebarInsights({
+  document, storage: localStorage,
+  onExpand: () => { void refreshSystemResourceUsage(true); },
+});
 require('./resource-process-tooltip').attachResourceProcessTooltip({
   document, escapeHtml,
   request: () => ipcRenderer.invoke('get-resource-top-processes'),
@@ -1008,6 +1012,7 @@ async function refreshNetworkTransferUsage() {
   }
 }
 async function refreshSystemResourceUsage(force = false) {
+  if (sidebarInsights.isCollapsed()) return;
   if (document.hidden && force !== true) return;
   void refreshNetworkTransferUsage();
   try {

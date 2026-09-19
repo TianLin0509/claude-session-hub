@@ -378,14 +378,14 @@ function _sessionWarningText(session) {
     const network = usage.network;
     const rate = value => {
       if (network?.status !== 'ok' || !Number.isFinite(value)) return '—';
-      if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}G`;
-      if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}M`;
-      return `${Math.round(value / 1024)}K`;
+      if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}<small>GB/s</small>`;
+      if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}<small>MB/s</small>`;
+      return `${Math.round(value / 1024)}<small>KB/s</small>`;
     };
     const networkTitle = network?.status === 'ok'
       ? `本机物理网卡合计：${(network.adapters || []).join('、')}\n下行 ${(network.downloadBps / 1024).toFixed(1)} KB/s · 上行 ${(network.uploadBps / 1024).toFixed(1)} KB/s\n最近 ${(network.windowMs / 1000).toFixed(1)} 秒均值；含所有应用，非 VPN 专属流量；K/M/G 按 1024 换算`
       : network?.status === 'unavailable' ? '网速暂不可用' : network?.status === 'disconnected' ? '没有已连接的物理网卡' : '网速采样中';
-    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download">↓<b>${rate(network?.downloadBps)}</b></span><span class="strip-upload">↑<b>${rate(network?.uploadBps)}</b></span><small>/s</small></span>`;
+    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓ 下行</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑ 上行</span><b>${rate(network?.uploadBps)}</b></span></span>`;
     const location = displayRoute?.ok
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';

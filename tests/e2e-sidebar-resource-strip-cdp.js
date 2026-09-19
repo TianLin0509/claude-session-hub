@@ -97,7 +97,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
         rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
     })()`);
-    assert.ok(afterClose.rect.height >= 60 && afterClose.rect.height <= 64, JSON.stringify(afterClose));
+    assert.ok(afterClose.rect.height >= 124 && afterClose.rect.height <= 128, JSON.stringify(afterClose));
     const shot = await client.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,

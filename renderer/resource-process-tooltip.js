@@ -63,6 +63,7 @@ function attachResourceProcessTooltip({ document: doc, request, escapeHtml }) {
   strip.addEventListener('focusout', hide);
   doc.addEventListener('keydown', event => { if (event.key === 'Escape') hide(); });
   doc.addEventListener('visibilitychange', () => { if (doc.hidden) hide(); });
+  doc.addEventListener('sidebar-insights:visibility', hide);
   doc.defaultView.addEventListener('resize', hide);
 }
 

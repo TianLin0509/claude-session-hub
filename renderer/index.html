@@ -198,10 +198,18 @@
       </div>
       <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息 <span aria-hidden="true">≡</span></button><label class="session-model-filter">模型 <select id="session-model-filter" aria-label="侧栏模型"><option value="all">全部</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="other">其他</option></select></label><label class="session-project-filter">项目 <select id="session-project-filter" aria-label="侧栏项目"><option value="random">随机</option><option value="all" selected>全部</option></select></label></div><div id="session-project-filter-note" class="session-project-filter-note" role="status" hidden></div>
       <div class="session-list" id="session-list"></div>
-      <!-- 账户余量常驻侧栏底部，沿用控制器入口 id，轨道不再重复显示。 -->
-      <div class="sidebar-account-usage" id="rail-usage"></div>
-      <!-- 侧栏底部实时状态：代理出口 + 整机 CPU/内存占用 -->
-      <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
+      <section class="sidebar-insights" id="sidebar-insights" aria-label="用量与系统状态">
+        <button type="button" class="sidebar-insights-toggle" id="sidebar-insights-toggle" aria-expanded="true" aria-controls="sidebar-insights-content" title="向下收起用量与系统状态">
+          <span>用量与系统状态</span><span class="sidebar-insights-action">收起</span>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m5 7.5 5 5 5-5"/></svg>
+        </button>
+        <div class="sidebar-insights-content" id="sidebar-insights-content">
+          <div class="sidebar-insights-inner">
+            <div class="sidebar-account-usage" id="rail-usage"></div>
+            <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
+          </div>
+        </div>
+      </section>
       <div class="context-menu" id="context-menu" style="display:none">
         <button class="context-menu-item" data-action="pin">置顶</button>
         <button class="context-menu-item" data-action="restart">重启</button>

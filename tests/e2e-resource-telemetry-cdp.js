@@ -74,7 +74,7 @@ const OUT = path.resolve(__dirname, '../output/playwright/resource-telemetry');
         })()`);
         check(`no strip overflow at ${width}/${zoom}`, geometry.overflow.length === 0);
         const network = geometry.parts.slice(2);
-        check(`network labels do not overlap at ${width}/${zoom}`, network[0].right <= network[1].x + .5 && network[1].right <= network[2].x + .5);
+        check(`network labels do not overlap at ${width}/${zoom}`, network[0].right <= network[2].x + .5 && network[1].top >= Math.max(network[0].bottom, network[2].bottom));
         evidence.geometry.push({ width, zoom, ...geometry });
       }
     }
