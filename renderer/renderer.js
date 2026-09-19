@@ -916,6 +916,10 @@ const sessionListRenderer = createSessionListRenderer({
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
+require('./resource-process-tooltip').attachResourceProcessTooltip({
+  document, escapeHtml,
+  request: () => ipcRenderer.invoke('get-resource-top-processes'),
+});
 
 // 「已完成未读」组头上的「全部已读」：一次把所有会话和群聊的"答完了还没看"清掉。
 // 三层都要落，少一层就会复活：
@@ -989,12 +993,27 @@ ipcRenderer.on('desktop-notification:open-session', (_event, payload = {}) => {
   void selectSession(sessionId, { forceScrollBottom: true });
 });
 
+let networkTransferPending = false;
+async function refreshNetworkTransferUsage() {
+  if (networkTransferPending) return;
+  networkTransferPending = true;
+  try {
+    const network = await ipcRenderer.invoke('get-network-transfer-usage');
+    systemResourceUsage = { ...systemResourceUsage, network };
+  } catch {
+    systemResourceUsage = { ...systemResourceUsage, network: { status: 'unavailable' } };
+  } finally {
+    networkTransferPending = false;
+    renderSidebarStrip();
+  }
+}
 async function refreshSystemResourceUsage(force = false) {
   if (document.hidden && force !== true) return;
+  void refreshNetworkTransferUsage();
   try {
     const next = await ipcRenderer.invoke('get-system-resource-usage', { force: force === true, extended: false });
     if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
-    systemResourceUsage = next;
+    systemResourceUsage = { ...systemResourceUsage, ...next };
     renderSidebarStrip();
     if (homeWorkbench) homeWorkbench.render();
   } catch {}

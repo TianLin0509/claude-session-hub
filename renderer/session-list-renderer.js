@@ -374,7 +374,18 @@ function _sessionWarningText(session) {
     ].join('\n');
 
     const routeClass = (route, warning) => !egress ? 'pending' : warning || !route?.ok ? 'warning' : 'ok';
-    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" tabindex="0" data-resource-kind="${label === 'CPU' ? 'cpu' : 'memory'}" aria-label="${label} ${value == null ? '检测中' : value + '%'}，悬停查看占用 Top 3" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const network = usage.network;
+    const rate = value => {
+      if (network?.status !== 'ok' || !Number.isFinite(value)) return '—';
+      if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}G`;
+      if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}M`;
+      return `${Math.round(value / 1024)}K`;
+    };
+    const networkTitle = network?.status === 'ok'
+      ? `本机物理网卡合计：${(network.adapters || []).join('、')}\n下行 ${(network.downloadBps / 1024).toFixed(1)} KB/s · 上行 ${(network.uploadBps / 1024).toFixed(1)} KB/s\n最近 ${(network.windowMs / 1000).toFixed(1)} 秒均值；含所有应用，非 VPN 专属流量；K/M/G 按 1024 换算`
+      : network?.status === 'unavailable' ? '网速暂不可用' : network?.status === 'disconnected' ? '没有已连接的物理网卡' : '网速采样中';
+    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download">↓<b>${rate(network?.downloadBps)}</b></span><span class="strip-upload">↑<b>${rate(network?.uploadBps)}</b></span><small>/s</small></span>`;
     const location = displayRoute?.ok
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';
@@ -382,10 +393,24 @@ function _sessionWarningText(session) {
     const markup =
       '<div class="strip-resources">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + '</div>' +
       `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span></button>` +
-      `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
+      transfer + `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
     if (stripEl._resourceMarkup === markup) return;
     stripEl._resourceMarkup = markup;
-    stripEl.innerHTML = markup;
+    // Keep focused/hovered resource anchors alive during the telemetry heartbeat.
+    if (stripEl.querySelector('[data-resource-kind]')) {
+      const template = doc.createElement('template');
+      template.innerHTML = markup;
+      for (const kind of ['cpu', 'memory']) {
+        const current = stripEl.querySelector(`[data-resource-kind="${kind}"]`);
+        const next = template.content.querySelector(`[data-resource-kind="${kind}"]`);
+        current.className = next.className;
+        current.title = next.title;
+        current.setAttribute('aria-label', next.getAttribute('aria-label'));
+        current.querySelector('b').textContent = next.querySelector('b').textContent;
+        current.querySelector('i').style.width = next.querySelector('i').style.width;
+      }
+      stripEl.querySelector('.strip-network').innerHTML = template.content.querySelector('.strip-network').innerHTML;
+    } else stripEl.innerHTML = markup;
     stripEl.title = '';
     stripEl.style.display = 'flex';
 
