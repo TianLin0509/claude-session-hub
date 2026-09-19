@@ -46,15 +46,16 @@ const OUT = path.resolve(__dirname, '../output/playwright/resource-telemetry');
     evidence.network = await cdp.eval('systemResourceUsage.network');
     check('actual physical-adapter upload/download displayed', await cdp.eval(`document.querySelector('.strip-transfer').title.includes('本机物理网卡合计') && !document.querySelector('.strip-transfer').textContent.includes('—')`));
     await setStaticSidebarLayout(cdp, 340, 1);
+    await cdp.eval(`window.resourceEvents=[];for(const type of ['pointerover','pointerout','focusin','focusout','visibilitychange'])document.addEventListener(type,e=>window.resourceEvents.push({type,target:e.target.className,related:e.relatedTarget?.className,at:Date.now()}),true);addEventListener('resize',()=>window.resourceEvents.push({type:'resize',at:Date.now()}))`);
     await hover('cpu');
     await waitFor(cdp, `document.querySelector('#resource-process-tooltip:not([hidden]) .resource-tip-row')`);
     check('CPU hover shows 3 real processes', await cdp.eval(`document.querySelectorAll('#resource-process-tooltip .resource-tip-row').length === 3 && document.querySelector('#resource-process-tooltip').innerText.includes('CPU 占用 Top 3')`));
     evidence.cpuTooltip = await cdp.eval(`document.querySelector('#resource-process-tooltip').innerText`);
-    await screenshot('cpu-dark');
-    await waitFor(cdp, `document.querySelector('#resource-process-tooltip').innerText !== ${JSON.stringify(evidence.cpuTooltip)} && !!document.querySelector('#resource-process-tooltip .resource-tip-row')`);
+    await waitFor(cdp, `!document.querySelector('#resource-process-tooltip').hidden && document.querySelector('#resource-process-tooltip').innerText !== ${JSON.stringify(evidence.cpuTooltip)} && !!document.querySelector('#resource-process-tooltip .resource-tip-row')`);
     check('held hover refreshes process sample', true);
     await cdp.eval('refreshSystemResourceUsage(true)');
     check('tooltip stays open through resource refresh', await cdp.eval(`!document.querySelector('#resource-process-tooltip').hidden`));
+    await screenshot('cpu-dark');
     await hover('memory');
     await waitFor(cdp, `document.querySelector('#resource-process-tooltip').innerText.includes('内存占用 Top 3')`);
     evidence.memoryTooltip = await cdp.eval(`document.querySelector('#resource-process-tooltip').innerText`);
@@ -74,7 +75,7 @@ const OUT = path.resolve(__dirname, '../output/playwright/resource-telemetry');
         })()`);
         check(`no strip overflow at ${width}/${zoom}`, geometry.overflow.length === 0);
         const network = geometry.parts.slice(2);
-        check(`network labels do not overlap at ${width}/${zoom}`, network[0].right <= network[2].x + .5 && network[1].top >= Math.max(network[0].bottom, network[2].bottom));
+        check(`network labels share one row without overlap at ${width}/${zoom}`, network[0].right <= network[1].x + .5 && network[1].right <= network[2].x + .5 && Math.max(...network.map(n=>n.top)) < Math.min(...network.map(n=>n.bottom)));
         evidence.geometry.push({ width, zoom, ...geometry });
       }
     }
@@ -91,7 +92,7 @@ const OUT = path.resolve(__dirname, '../output/playwright/resource-telemetry');
     evidence.dataDir = dataDir; evidence.pid = hub.pid; evidence.cdpPort = hub.port;
     evidence.ok = true;
   } catch (error) {
-    if (cdp) evidence.failureState = await cdp.eval(`({hidden:document.hidden,tooltip:document.querySelector('#resource-process-tooltip').outerHTML,theme:document.documentElement.dataset.theme})`).catch(() => null);
+    if (cdp) evidence.failureState = await cdp.eval(`({hidden:document.hidden,tooltip:document.querySelector('#resource-process-tooltip').outerHTML,theme:document.documentElement.dataset.theme,events:window.resourceEvents})`).catch(() => null);
     evidence.error = error.stack; process.exitCode = 1; console.error(error);
     if (hub) console.error(hub.log().slice(-30).join('\n'));
   } finally {

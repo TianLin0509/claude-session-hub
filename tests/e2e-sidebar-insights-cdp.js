@@ -15,7 +15,7 @@ const OUT = path.resolve(__dirname, '../output/playwright/sidebar-insights');
   let hub; let cdp;
   const evidence = { checks: [], scope: 'Real isolated Hub + native CDP pointer/keyboard. Provider quota and egress fixtures; real Windows resources.' };
   const check = (name, value) => { assert.ok(value, name); evidence.checks.push(name); console.log('PASS', name); };
-  const settled = collapsed => waitFor(cdp, `(() => { const root=document.querySelector('#sidebar-insights'); const content=document.querySelector('#sidebar-insights-content'); return root.classList.contains('is-collapsed')===${collapsed} && !content.getAnimations().some(a=>a.playState==='running') && ${collapsed ? 'content.getBoundingClientRect().height < 1' : 'content.getBoundingClientRect().height > 200'}; })()`);
+  const settled = collapsed => waitFor(cdp, `(() => { const root=document.querySelector('#sidebar-insights'); const content=document.querySelector('#sidebar-insights-content'); return root.classList.contains('is-collapsed')===${collapsed} && ![...content.getAnimations(),...root.getAnimations()].some(a=>a.playState==='running') && ${collapsed ? 'content.getBoundingClientRect().height < 1' : 'content.getBoundingClientRect().height > 160'}; })()`);
   const geometry = () => cdp.eval(`(() => { const box=id=>{const r=document.getElementById(id).getBoundingClientRect();return {top:r.top,bottom:r.bottom,height:r.height,width:r.width};};return {root:box('sidebar-insights'),content:box('sidebar-insights-content'),list:box('session-list')}; })()`);
   const shot = async (name, full = false) => {
     const clip = await cdp.eval(`(() => {const r=document.querySelector('#sidebar-insights').getBoundingClientRect();return {x:r.x,y:Math.max(0,r.bottom-380),width:r.width,height:Math.min(r.bottom,380),scale:1};})()`);
@@ -47,32 +47,33 @@ const OUT = path.resolve(__dirname, '../output/playwright/sidebar-insights');
     await shot('expanded-dark');
     evidence.expanded = await geometry();
     const type = await cdp.eval(`({label:getComputedStyle(document.querySelector('.strip-resource')).fontSize,value:getComputedStyle(document.querySelector('.strip-resource b')).fontSize,route:getComputedStyle(document.querySelector('.strip-route-row')).fontSize})`);
-    check('resource type increased to 13px / 16px; route 12px', type.label === '13px' && type.value === '16px' && type.route === '12px');
+    check('mock A compact type: resource 11px / 12px; route 10px', type.label === '11px' && type.value === '12px' && type.route === '10px');
+    check('expanded area retains original 173px footprint', Math.abs(evidence.expanded.root.height - 173) < 1);
+    check('Codex and DeepSeek remain on one 35px row', await cdp.eval(`(() => {const a=document.querySelector('[data-provider="codex"].sidebar-quota-provider').getBoundingClientRect(),b=document.querySelector('[data-provider="deepseek"].sidebar-quota-provider').getBoundingClientRect();return a.top===b.top&&Math.abs(a.height-35)<1&&Math.abs(b.height-35)<1;})()`));
     await click(cdp, '.rail-usage-button');
     await waitFor(cdp, `!document.querySelector('#rail-usage-popover').hidden`);
     check('quota details remain visible through the wrapper', await cdp.eval(`(() => {const e=document.querySelector('#rail-usage-popover'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+20,r.y+20));})()`));
-    // Capture the real collapse transition, without disabling product animation.
-    // Slow playback through CDP so a loaded host cannot skip the entire 200ms
-    // transition between two frames. Product duration/styles remain unchanged.
+    // Freeze the real CSS transition through CDP, then inspect its midpoint.
+    // This avoids losing every intermediate frame when the host is busy.
     await cdp.send('Animation.enable');
-    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.2 });
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
     evidence.motion = await cdp.eval(`({reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,transition:getComputedStyle(document.querySelector('#sidebar-insights-content')).transition})`);
-    evidence.motion.cdpPlaybackRate = 0.2;
-    await cdp.eval(`window.insightsFrames=[]; document.querySelector('#sidebar-insights-toggle').addEventListener('click',()=>{const start=performance.now();const collect=()=>{const r=document.querySelector('#sidebar-insights').getBoundingClientRect();window.insightsFrames.push({at:performance.now()-start,top:r.top,bottom:r.bottom,height:r.height});if(performance.now()-start<1500)requestAnimationFrame(collect);};collect();},{once:true})`);
+    evidence.motion.controlledMidpointMs = 100;
     await click(cdp, '#sidebar-insights-toggle');
+    evidence.animation = await cdp.eval(`(() => {const root=document.querySelector('#sidebar-insights');getComputedStyle(root).paddingBottom;window.insightsAnimations=root.getAnimations({subtree:true});for(const a of window.insightsAnimations){a.pause();a.currentTime=100;}const r=root.getBoundingClientRect();return {count:window.insightsAnimations.length,top:r.top,bottom:r.bottom,height:r.height};})()`);
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
+    await cdp.eval(`window.insightsAnimations.forEach(a=>a.play())`);
     await settled(true);
     evidence.collapsed = await geometry();
     check('whole area collapses to a 33px bottom handle', evidence.collapsed.root.height <= 34 && evidence.collapsed.content.height < 1);
-    check('bottom stays anchored, session list reclaims the released height', Math.abs(evidence.expanded.root.bottom - evidence.collapsed.root.bottom) < 1 && Math.abs(evidence.collapsed.list.height - evidence.expanded.list.height - evidence.expanded.content.height) < 2);
+    check('bottom stays anchored, session list reclaims the released height', Math.abs(evidence.expanded.root.bottom - evidence.collapsed.root.bottom) < 1 && Math.abs(evidence.collapsed.list.height - evidence.expanded.list.height - (evidence.expanded.root.height - evidence.collapsed.root.height)) < 2);
     check('all hidden controls inert and quota popover closed', await cdp.eval(`document.querySelector('#sidebar-insights-content').inert && document.querySelector('#rail-usage-popover').hidden && document.querySelector('#sidebar-insights-toggle').getAttribute('aria-expanded')==='false'`));
     check('collapse preference persisted', await cdp.eval(`localStorage.getItem('hub.sidebarInsightsCollapsed')==='true'`));
     await shot('collapsed-dark');
     const sampleBefore = await cdp.eval('systemResourceUsage.sampledAt');
     await cdp.eval('refreshSystemResourceUsage(true)');
     check('collapsed resource panel skips polling', sampleBefore === await cdp.eval('systemResourceUsage.sampledAt'));
-    evidence.animation = await cdp.eval('window.insightsFrames');
-    check('real downward collapse animation sampled', evidence.animation.some(frame => frame.height > evidence.collapsed.root.height + 2 && frame.height < evidence.expanded.root.height - 2));
-    await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
+    check('real CSS transition midpoint preserves downward collapse', evidence.animation.count > 0 && evidence.animation.height > evidence.collapsed.root.height + 2 && evidence.animation.height < evidence.expanded.root.height - 2 && Math.abs(evidence.animation.bottom - evidence.expanded.root.bottom) < 1);
     check('toggle click was trusted', await cdp.eval('window.insightsClicks.length===1 && window.insightsClicks.every(Boolean)'));
     await cdp.send('Page.reload');
     await waitFor(cdp, `typeof sidebarInsights !== 'undefined' && !!document.querySelector('.sidebar-quota-provider')`);
@@ -94,6 +95,7 @@ const OUT = path.resolve(__dirname, '../output/playwright/sidebar-insights');
       await setStaticSidebarLayout(cdp, width, zoom);
       const quota = await measureQuota(cdp);
       check(`quota readable without overlap at ${width}/${zoom}`, !quota.overlaps.length && !quota.overflow.length);
+      check(`original footprint retained at ${width}/${zoom}`, Math.abs((await geometry()).root.height - 173) < 1);
       const layout = await cdp.eval(`(() => {const root=document.querySelector('#sidebar-strip'),r=root.getBoundingClientRect();const nodes=[...root.querySelectorAll('.strip-resource,.strip-route-row,.strip-transfer>span')];return nodes.map(e=>{const b=e.getBoundingClientRect();return {name:e.className,width:b.width,scrollWidth:e.scrollWidth,clientWidth:e.clientWidth,left:b.left,right:b.right,inside:b.left>=r.left-.5&&b.right<=r.right+.5};});})()`);
       check(`resource rows do not overflow at ${width}/${zoom}`, layout.every(row => row.inside && row.scrollWidth <= row.clientWidth + 1));
       evidence.geometry.push({ width, zoom, quota, layout });
