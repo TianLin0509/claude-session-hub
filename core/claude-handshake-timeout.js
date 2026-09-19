@@ -1,21 +1,22 @@
 'use strict';
 
 /**
- * Claude 握手（initialize）的等待预算，按要载入的历史体积给。
+ * Claude 握手（initialize）的保守超时预算，不是预计加载耗时。
  *
  * 2026-09-18 真实事故：从一个 17.1 MB / 884 条记录的会话分支出群聊成员，
- * `claude --resume <父会话> --fork-session` 必须把父会话整个读进来再写成新会话文件，
- * 实测 124.6 秒才连上。而 Hub 的 initialize 等待写死 60 秒（main/claude-stream-client.js），
+ * 当时 `claude --resume <父会话> --fork-session` 实测 124.6 秒才连上，
+ * 但未分段测量，不能把全部耗时归因于历史读取。Hub 的 initialize 等待写死 60 秒，
  * 于是：60 秒判连接失败 → 群聊那条提交被标成「待核对」→ 侧栏亮异常 →
  * 一分钟后引擎其实连上了、照常把这一轮跑完。
  *
- * 也就是说，**历史越大越必然踩**，而踩到的表现是「报错，然后自己好了」——
+ * 当初始化超出预算时，表现是「报错，然后自己好了」——
  * 最容易让人误以为功能坏了的那一种。
  *
  * 全新会话没有历史要载入，仍然是原来的 60 秒，行为不变；只有 resume / fork
  * 才按父会话 transcript 的字节数放宽。每 MB 给多少是从上面那次实测反推的：
  * 17.1 MB 需要 ≥125 秒，约 7.3 秒/MB；这里给 25 秒/MB（约 3 倍余量），
- * 因为磁盘忙、模型冷启动都会让它更慢，而**等久一点只是慢，判错则是丢状态**。
+ * 这只是容错余量，不能推导出线性的加载速度。2026-09-19 同一份 11.9 MB
+ * 历史副本在隔离配置下实测 1.37 秒完成握手；真实慢启动仍需阶段证据定位。
  */
 
 const fs = require('fs');
@@ -63,9 +64,9 @@ function resolveHandshakeBudget({ resumeSessionId = '', homeDir, statFile } = {}
     bytes = 0;
   }
   const timeoutMs = initializeTimeoutMsForBytes(bytes);
-  // 载入大历史时界面要说人话：它正在干什么、大概多少量，而不是干等「等待连接响应」。
+  // 只知道在等待 initialize，不能冒充引擎进度，也不能将超时预算当作预计耗时。
   const reason = bytes >= MB
-    ? `正在载入历史（${formatMb(bytes)}），大会话可能要一两分钟`
+    ? `正在连接 Claude（历史 ${formatMb(bytes)}）`
     : null;
   return { timeoutMs, bytes, transcriptPath, reason };
 }

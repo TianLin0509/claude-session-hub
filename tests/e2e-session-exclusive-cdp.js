@@ -62,11 +62,14 @@ async function main(){
       const id=ids[kind],key=JSON.stringify(id);
       await click(a.c,`.session-item[data-session-id="${id}"]`);
       await until(kind+' selected for sleep',()=>a.c.eval(`activeSessionId===${key} && !!document.querySelector('.btn-close-session')`));
+      // The fixture removes its marker on process exit; capture the PID while
+      // the writer is alive, then independently assert it exited after sleep.
+      const oldWriter=kind==='codex'
+        ? JSON.parse(fs.readFileSync(path.join(root,'writers',before.codex.codexSid+'.json'),'utf8')).pid : null;
       await click(a.c,'.btn-close-session');
       await until(kind+' released while Hub A stays alive',()=>a.c.eval(`sessions.get(${key})?.status==='dormant'`));
       assert.equal(await a.c.eval(`sessions.get(${JSON.stringify(neighbour.id)})?.nativeRuntime?.connection`),'connected');
       if(kind==='codex'){
-        const oldWriter=JSON.parse(fs.readFileSync(path.join(root,'writers',before.codex.codexSid+'.json'),'utf8')).pid;
         assert.throws(()=>process.kill(oldWriter,0),/ESRCH|no such process/,'old native writer must have exited before sleep completes');
       }
       await click(b.c,`.session-item[data-session-id="${id}"]`);

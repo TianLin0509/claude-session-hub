@@ -52,6 +52,12 @@ async function main() {
         const row = await c.eval(`(() => { const selectors=${j(selectors)}; return selectors.map(selector=>{const el=document.querySelector(selector),r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {selector,rect:r.toJSON(),disabled:el.disabled,hit:el.contains(document.elementFromPoint(x,y)),stack:document.elementsFromPoint(x,y).slice(0,7).map(e=>({tag:e.tagName,id:e.id,cls:e.className,position:getComputedStyle(e).position,z:getComputedStyle(e).zIndex}))};}); })()`);
         evidence.rows.push({ groupView, size, buttons: row });
         assert(row.every(button=>button.hit && !button.disabled), 'All composer buttons remain reachable');
+        if (!groupView) {
+          const rail = await c.eval(`(() => {const e=document.querySelector('#terminal-panel .composer-rail');return {client:[e.clientWidth,e.clientHeight],scroll:[e.scrollWidth,e.scrollHeight]};})()`);
+          evidence.rows.push({groupView,size,rail});
+          assert(rail.scroll[0] <= rail.client[0] && rail.scroll[1] <= rail.client[1],
+            'Composer send hit area must not introduce horizontal or vertical scrollbars: '+j(rail));
+        }
         const shot = await c.send('Page.captureScreenshot', { format: 'png' });
         fs.writeFileSync(path.join(out, `${groupView?'group':'session'}-${size[0]}.png`), Buffer.from(shot.data,'base64'));
       }
