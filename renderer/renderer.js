@@ -84,6 +84,7 @@ const {
 } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
+const { createCapabilityPanel } = require('./capability-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { speedControl } = require('../core/session-speed.js');
@@ -6622,6 +6623,8 @@ const memoryPanel = createMemoryPanel({
     } : null;
   },
 });
+const capabilityPanel = createCapabilityPanel({document,ipcRenderer,escapeHtml,
+  getActiveSessionId:()=>getFocusedSessionId()});
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 
@@ -7753,6 +7756,9 @@ const configModal = createConfigModalController({
   applyCardDisplaySettings: applyHubCardDisplaySettings,
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
+const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); },
+});
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 document.addEventListener('hub-config-saved', () => {
@@ -8333,7 +8339,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
 let persistDebounceTimer = null;
 function schedulePersist() {
   if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
-  persistDebounceTimer = setTimeout(() => {
+  persistDebounceTimer = setTimeout(() => { persistDebounceTimer=null; persistWorkscene(); }, 400);
+}
+function persistWorkscene(flush = false) {
+    if (flush && persistDebounceTimer) { clearTimeout(persistDebounceTimer);persistDebounceTimer=null; }
     const list = [];
     for (const s of sessions.values()) {
       // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
@@ -8441,11 +8450,25 @@ function schedulePersist() {
       serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
       completionNotificationEnabled: m.completionNotificationEnabled === true,
     }));
+    if (flush) return ipcRenderer.invoke('persist-sessions:flush', list, meetingList);
     ipcRenderer.send('persist-sessions', list, meetingList);
-  }, 400);
 }
 // 暴露给 meeting-room.js 等 renderer 子模块：配置变更后可主动落 state.json
 window.schedulePersist = schedulePersist;
+
+const restartController = require('./hub-restart-controller').createHubRestartController({document,ipcRenderer,
+  flush:async () => {
+    await Promise.all([...nativeDraftControllers.values()].map(controller=>controller.flush()));
+    await persistWorkscene(true);
+  },
+  getView:() => ({activeSessionId,meetingId:MeetingRoom.getActiveMeetingId?.() || null,
+    waitingSessionIds:[...sessions.values()].filter(s=>getSessionRuntimeTruth(s).state===RUNTIME_WAITING).map(s=>s.id)}),
+  restoreView:async view => {
+    if (view.meetingId && meetings[view.meetingId]) {
+      await MeetingRoom.openMeeting(view.meetingId,meetings[view.meetingId]);
+    } else if (view.activeSessionId && sessions.has(view.activeSessionId) && sessions.get(view.activeSessionId).status !== 'dormant') await selectSession(view.activeSessionId);
+  },
+});
 
 // Wake a dormant session: call main to spawn PTY with --resume, then wait for
 // session-created which will replace the dormant entry.
@@ -8805,6 +8828,7 @@ sessionSplit = require('./session-split').createSessionSplit({
   // 启动兜底默认。必须 remember:false —— 此刻可能已恢复上次的 active 会话，
   // 写记忆会把它自己记住的卡片视图抹掉。
   applyViewMode('pty', { remember: false });
+  await restartController.restore();
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that

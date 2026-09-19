@@ -7,7 +7,7 @@ const Settings = require('../../core/workflow-settings');
 function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers, isWorkflowRunning = () => false,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
-  let timer = null, directoryEvents = null;
+  let timer = null, directoryEvents = null, restartScope = null;
   const get = id => meetingManager.getMeeting(id);
   const members = m => getMembers ? getMembers(m) : getDispatcher().groupMembersForMeeting?.(m, { includeDormant: true }) || [];
   function save(id, fields) {
@@ -99,7 +99,8 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     let released = false;
     try {
       let s = status(id), m = get(id);
-      if (!s || s.error || s.done || s.limitReached || (m.serialWorkflow.settingsVersion === 1 && active.get(id)?.size) || (s.paused && !userArgs)) return { status: 'error', reason: s?.error || '任务未处于可执行阶段' };
+      const continuingStage=userArgs?.restartContinuation === true && m.serialWorkflow.fileFlow?.lastDispatch?.key===s?.key;
+      if (!s || s.error || s.done || (s.limitReached && !continuingStage) || (m.serialWorkflow.settingsVersion === 1 && active.get(id)?.size) || (s.paused && !userArgs)) return { status: 'error', reason: s?.error || '任务未处于可执行阶段' };
       if (s.phase === 'discuss') {
         return { status: 'error', reason: '尚未开题，请输入任务后点开题并发送' };
       }
@@ -110,12 +111,12 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
 
       s = status(id);
       // A stop or a rename during session wake must win over this scheduled send.
-      if (!s || s.paused || s.key !== key || s.error || s.done) return { status: 'error', reason: '现场已变化，取消本次派工' };
+      if (!s || (s.paused && !(continuingStage && s.limitReached && !stopped.has(id) && !get(id).serialWorkflow.fileFlow?.paused)) || s.key !== key || s.error || s.done) return { status: 'error', reason: '现场已变化，取消本次派工' };
       select(id, member);
       meetingManager.setParticipants(id, stageMembers.map(t => t.slot));
       m = get(id);
       const prompt = F.phasePrompt(m, s.dir, s, members(m));
-      save(id, { executedRounds: s.executedRounds + 1, lastDispatch: { key, token, memberId: member.id, memberIds: stageMembers.map(t => t.id), settled:false } });
+      save(id, { executedRounds: s.executedRounds + (continuingStage ? 0 : 1), lastDispatch: { key, token, memberId: member.id, memberIds: stageMembers.map(t => t.id), settled:false } });
       const args = { ...(userArgs || {}), userInput: userArgs ? `${userArgs.userInput}\n\n${prompt}` : prompt,
         targetMemberIds: stageMembers.map(t => t.id), appendUserMessage: true, dispatchMode: 'serial',
         turnTimeoutMs: 30 * 60_000, allowActiveExtend: true, fileHandoff: !userArgs,
@@ -155,6 +156,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
   }
   async function userTurn(id, args) {
     if (!F.enabled(get(id))) return getDispatcher().dispatchGroupChatTurn(id, args);
+    restartScope?.add(id);
     const s = status(id);
     // A user-authored kickoff is the first actual execution round. Plain
     // discussion does not spend a round or clear a previous stop.
@@ -200,6 +202,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     const records = onlyId ? [get(onlyId)].filter(Boolean) :
       (meetingManager.getDevWorkbenchRecords?.() || meetingManager.getAllMeetings());
     for (const m of records) {
+      if (restartScope && !restartScope.has(m.id)) continue;
       if (!F.enabled(m) || F.isSolo(m)) continue;
       try {
         const s = status(m.id);
@@ -257,8 +260,29 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       return { ok: true };
     });
   }
-  return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc,
-    start() { if (!timer) {
+  async function resumeAfterRestart(id, prompt) {
+    const m=get(id), s=status(id);
+    if (!s || s.error) throw new Error(s?.error || '文件工作流不可用');
+    if (s.done) return {status:'completed'};
+    if (!timer) restartScope ||= new Set();
+    restartScope?.add(id);
+    stopped.delete(id);
+    save(id,{paused:false,error:'',lastDispatch:{...m.serialWorkflow.fileFlow?.lastDispatch,settled:true}});
+    const direct = F.isSolo(m) || s.phase==='discuss';
+    // dispatchStage reads the current task files and chooses the actual phase
+    // owner, including a handoff completed immediately before shutdown.
+    const task=direct
+      ? userTurn(id,{userInput:prompt,targetMemberIds:m.serialWorkflow.fileFlow?.lastDispatch?.memberIds,appendUserMessage:true})
+      : dispatchStage(id,{userInput:prompt,restartContinuation:true});
+    if (!timer) {
+      directoryEvents=require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), mid=>tick(mid),logger);
+      timer=setInterval(()=>{directoryEvents.ensure();tick();},30_000);timer.unref?.();
+    }
+    return task;
+  }
+  return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc, resumeAfterRestart,
+    start({onlyIds=null} = {}) { if (!timer) {
+      restartScope=Array.isArray(onlyIds) ? new Set(onlyIds) : null;
       directoryEvents = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), id => tick(id), logger);
       tick(); timer = setInterval(() => { directoryEvents.ensure(); tick(); }, 30_000); timer.unref?.();
     } },

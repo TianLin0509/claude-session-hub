@@ -1132,18 +1132,26 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     traceStartup('did-finish-load');
     sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+    if (hubRestart.bootToken && !global.__loopResumeScanned) {
+      global.__loopResumeScanned = true;
+      // Keep the scanner available for future user-created workflows, while
+      // admitting only groups restored by this restart or opened by the user.
+      global.__devFileEngine?.start({onlyIds:[]});
+    }
     // Phase 2b：boot 后由 main 循环引擎扫描未完成循环并自动续跑（main 驱动 + 自动 wake 成员）。once 守卫 + 延迟(等 session 恢复) + try，绝不影响启动。
-    if (!global.__loopResumeScanned) {
+    if (!global.__loopResumeScanned && !hubRestart.bootToken) {
       global.__loopResumeScanned = true;
       setTimeout(() => {
+        if (hubRestart.isRestarting()) return;
         try { if (global.__loopEngine) global.__loopEngine.resumePending(); }
         catch (e) { console.warn('[loop] boot resume failed:', e && e.message); }
         global.__devFileEngine?.start();
       }, 8000);
     }
-    if (!global.__groupChatRecoveryScanned) {
+    if (!global.__groupChatRecoveryScanned && !hubRestart.bootToken) {
       global.__groupChatRecoveryScanned = true;
       setTimeout(() => {
+        if (hubRestart.isRestarting()) return;
         Promise.resolve(groupChatDispatcher && groupChatDispatcher.recoverPendingAttempts())
           .then((summary) => {
             if (summary && summary.checked) console.log('[groupchat] boot attempt recovery:', summary);
@@ -1944,13 +1952,40 @@ registerArchiveIpc(ipcMain, {
 // Let the renderer and hook server finish their latency-sensitive boot path
 // before the worker starts walking transcript directories. Querying search
 // earlier still starts the same worker on demand and reports visible progress.
+//
+// 2026-09-19: five seconds landed squarely on the first prompt of a session —
+// the walk covers ~17 GB of provider transcripts, and the user feels it as the
+// window stalling just as they start typing. Nothing is lost by waiting: the
+// title layer answers from renderer memory throughout, and an explicit search
+// still starts the worker immediately.
 const sessionSearchPrewarmDelayMs = Math.max(
   250,
-  Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 5_000,
+  Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 30_000,
 );
+// The first full walk is the one heavy piece of work Hub does on its own
+// initiative, so it yields to the user rather than competing with them. A
+// prompt just sent means the model is answering and the disk is busy; the walk
+// waits for a gap. The wait is capped so a continuously busy Hub still gets its
+// index built instead of deferring forever.
+let lastPromptSubmittedAt = 0;
+const SEARCH_IDLE_GAP_MS = Math.max(0, Number(process.env.HUB_SESSION_SEARCH_IDLE_GAP_MS) || 30_000);
+const SEARCH_IDLE_MAX_WAIT_MS = Math.max(
+  SEARCH_IDLE_GAP_MS,
+  Number(process.env.HUB_SESSION_SEARCH_IDLE_MAX_WAIT_MS) || 5 * 60_000,
+);
+const delayMs = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref?.(); });
+async function waitForSearchIdle() {
+  const deadline = Date.now() + SEARCH_IDLE_MAX_WAIT_MS;
+  for (;;) {
+    const quietFor = Date.now() - lastPromptSubmittedAt;
+    if (quietFor >= SEARCH_IDLE_GAP_MS || Date.now() >= deadline) return;
+    await delayMs(Math.min(SEARCH_IDLE_GAP_MS - quietFor, 5_000, Math.max(0, deadline - Date.now())));
+  }
+}
 const sessionSearchPrewarmTimer = setTimeout(() => {
-  sessionSearchService.startMaintenance(buildSessionSearchSnapshot);
   void (async () => {
+    await waitForSearchIdle();
+    sessionSearchService.startMaintenance(buildSessionSearchSnapshot);
     const lockPath = path.join(getHubDataDir(), 'cache', 'session-search-prewarm.lock');
     try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
     const lock = await acquireLockAsync(lockPath, { retries: 0, staleMs: 30 * 60 * 1000 });
@@ -1972,6 +2007,7 @@ sessionSearchPrewarmTimer.unref?.();
 for (const event of ['turn-complete', 'prompt-submitted', 'turn-aborted', 'turn-error', 'session-bound']) {
   transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot(), payload?.hubSessionId || event));
 }
+transcriptTap.on('prompt-submitted', () => { lastPromptSubmittedAt = Date.now(); });
 
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
 //   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。
@@ -2003,6 +2039,13 @@ registerPersistenceIpc(ipcMain, {
 });
 
 registerResumeSessionIpc(ipcMain, { resumeSession });
+
+const hubRestart = require('./main/ipc/hub-restart-handlers').registerHubRestartIpc(ipcMain, {
+  app, sessionManager, meetingManager, sessionStore, stateStore, getHubDataDir,
+  resumeSession, groupChatDispatcher, sendToRenderer, shutdown:beginGracefulHubShutdown, transcriptTap,
+  flushState:clean => stateStore.saveForRestart({version:1,cleanShutdown:clean,
+    sessions:lastPersistedSessions,meetings:meetingManager.getAllMeetings(),immersiveByMeeting:_immersiveByMeeting}),
+});
 
 const imageDir = path.join(getHubDataDir(), 'images');
 registerAppUtilityIpc(ipcMain, {
@@ -2603,6 +2646,14 @@ registerConfigIpc(ipcMain, {
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
+const accountCenterHome = process.env.CLAUDE_HUB_HOME_DIR || os.homedir();
+const accountCenter = new (require('./core/account-center').AccountCenter)({
+  dataDir: getHubDataDir(), homeDir: accountCenterHome,
+  getConfig: () => require('./core/hub-config').getConfig(),
+  adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome }),
+});
+require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
+
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,
 });
@@ -2624,6 +2675,9 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
+const { CapabilityService } = require('./core/capability-service');
+require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
+  new CapabilityService({sessionManager,dataDir:getHubDataDir()}));
 
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns
@@ -3202,7 +3256,10 @@ async function runFinalShutdownCleanup() {
   // 2026-05-16 道雪：清理自己的控制文件。unlinkSelf 内部已 try/catch + warn 非 ENOENT 错误，
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
   capture('hub-control', () => hubControl.unlinkSelf(getHubDataDir(), process.pid));
-  if (errors.length) console.error('[shutdown] cleanup completed with errors:', errors);
+  if (errors.length) {
+    finalShutdownCleanupDone = false;
+    console.error('[shutdown] cleanup completed with errors:', errors);
+  }
   return { clean: errors.length === 0, errors };
 }
 
@@ -3221,7 +3278,7 @@ function restoreWindowAfterFailedShutdown() {
   }
 }
 
-function beginGracefulHubShutdown(reason) {
+function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
@@ -3244,6 +3301,10 @@ function beginGracefulHubShutdown(reason) {
       }
       closeHookServerForShutdown();
       const cleanup = await runFinalShutdownCleanup();
+      if (beforeQuit) {
+        if (!cleanup.clean) throw new Error('最终保存或后台进程退出失败，已取消重启');
+        await beforeQuit();
+      }
       process.__hubShutdownCleanupClean = cleanup.clean === true;
       shutdownDrainState = 'drained';
       console.log(`[shutdown] PTY drain complete: ${result.drainedPtyCount} session(s), ${result.durationMs}ms`);

@@ -2,6 +2,7 @@
 const { EventEmitter } = require('events');
 const { randomUUID, createHash } = require('crypto');
 const { ClaudeStreamClient, protocolError } = require('../main/claude-stream-client');
+const { resolveHandshakeBudget } = require('./claude-handshake-timeout.js');
 const { claudeTranscriptTurns, tailClaudeRecords } = require('./claude-native-transcript');
 const { findNativeClaudeHistory, processExists, renameNativeClaudeHistory } = require('./claude-native-history');
 const ownership = require('./native-session-ownership');
@@ -246,10 +247,30 @@ class ClaudeNativeSession extends EventEmitter {
       launchArgs.push('--resume', this.options.resumeSessionId);
       if (this.options.fork) launchArgs.push('--fork-session', '--session-id', this.sessionId);
     } else launchArgs.push('--session-id', this.sessionId);
+    // resume / fork 要先把父会话整段读进来才会回握手，等待预算必须跟着历史体积走。
+    // 写死 60 秒的后果见 core/claude-handshake-timeout.js 的注释：大会话必然被判成
+    // 连接失败，然后一分钟后自己连上 —— 报错和恢复都发生在用户看不懂的地方。
+    const handshake = resolveHandshakeBudget({
+      resumeSessionId: this.options.resumeSessionId,
+      homeDir: this.options.homeDir,
+    });
+    if (handshake.reason) {
+      this.update({ connection: 'connecting', state: 'unknown', reason: handshake.reason });
+      // 放宽过的预算要留痕：出问题时第一个要回答的问题就是「当时到底等了多久」。
+      this.backstage.note('载入历史', `${handshake.reason}；握手等待放宽到 ${Math.round(handshake.timeoutMs / 1000)} 秒`);
+      console.log(`[claude-native] handshake budget ${Math.round(handshake.timeoutMs / 1000)}s for ${handshake.bytes} bytes of history (${this.sessionId})`);
+    }
+    const clientOptions = {
+      ...this.options,
+      launchArgs,
+      initializeTimeoutMs: Number(this.options.initializeTimeoutMs) > 0
+        ? Number(this.options.initializeTimeoutMs)
+        : handshake.timeoutMs,
+    };
     try {
       this.client = this.options.clientFactory
-        ? this.options.clientFactory({ ...this.options, launchArgs })
-        : new ClaudeStreamClient({ ...this.options, launchArgs });
+        ? this.options.clientFactory(clientOptions)
+        : new ClaudeStreamClient(clientOptions);
     } catch (error) {
       if (this.lease) { ownership.releaseThread(this.lease); this.lease = null; }
       throw error;
@@ -488,7 +509,9 @@ class ClaudeNativeSession extends EventEmitter {
     if (message.type === 'system') {
       if (message.subtype === 'init') {
         this.update({ actualModel: message.model, capabilities: {
-          tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [] } });
+          tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [],
+          skills: message.skills || [], plugins: message.plugins || [],
+          epoch: this.runtime.epoch, sessionId: this.sessionId, observedAt: Date.now() } });
       }
       if (message.subtype === 'task_started' && message.task_id) {
         const owner = this.activities.toolOwners.get(message.tool_use_id) || outputOwner;

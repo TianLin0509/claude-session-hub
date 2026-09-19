@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TextDecoder } = require('util');
+const { trimRecordForJournal } = require('./native-transcript-trim');
 
 // Compaction rewrites a journal whose history is dominated by superseded
 // snapshots. One session measured 378 MB for 397 rewrites of the same 430
@@ -9,6 +10,45 @@ const { TextDecoder } = require('util');
 const COMPACT_MIN_BYTES = 4 * 1024 * 1024;
 
 function frameKey(frame) { return frame && (frame.uuid || frame.message?.id) || null; }
+
+// A save only has to record what changed. saveAppended() already took this
+// route for late child output; this covers the remaining callers, so re-saving
+// a settled record (reset() marking pending work unknown, or the pending sweep
+// on reconnect) no longer rewrites its whole transcript.
+//
+// This is a bounded win, not the reason journals get large: in the largest
+// production journal measured (105 MB / 81 records) every identity was distinct
+// and its 2452 frames were all unique, so nothing there was a repeat. The size
+// came from tool output inside those frames — see core/native-transcript-trim.js.
+//
+// The delta is used only when replaying it provably reproduces the array the
+// caller passed: every frame keyed, no duplicate keys, and the existing frames
+// still in their original order at the head. Removals, reorderings and unkeyed
+// frames fall back to a whole snapshot instead of guessing, because mergeFrames
+// cannot express them.
+function transcriptDelta(previous, next) {
+  if (!Array.isArray(next) || !Array.isArray(previous) || !previous.length) return null;
+  if (next.length < previous.length) return null;
+  const keys = new Array(next.length);
+  const seen = new Set();
+  for (let i = 0; i < next.length; i++) {
+    const key = frameKey(next[i]);
+    if (key === null || seen.has(key)) return null;
+    seen.add(key);
+    keys[i] = key;
+  }
+  for (let i = 0; i < previous.length; i++) if (frameKey(previous[i]) !== keys[i]) return null;
+  const delta = [];
+  for (let i = 0; i < next.length; i++) {
+    if (i >= previous.length) { delta.push(next[i]); continue; }
+    // Frames are held by reference and never rewritten in place, so identity
+    // settles the common case; the encoded comparison covers frames restored
+    // from disk, which match in content but not in identity.
+    if (next[i] === previous[i]) continue;
+    if (JSON.stringify(next[i]) !== JSON.stringify(previous[i])) delta.push(next[i]);
+  }
+  return delta.length < next.length ? delta : null;
+}
 // Appended frames are merged by identity so a replayed slice never duplicates.
 function mergeFrames(previous, appended) {
   const frames = Array.isArray(previous) ? [...previous] : [];
@@ -87,14 +127,26 @@ class NativeAgentJournal {
     this.records.set(id, merged);
   }
 
+  // Callers keep passing the whole transcript; only the stored form changes.
+  asDelta(data, previous) {
+    if (!data || !Array.isArray(data.transcriptMessages) || data.transcriptAppend) return data;
+    const delta = transcriptDelta(previous?.transcriptMessages, data.transcriptMessages);
+    if (!delta) return data;
+    const { transcriptMessages, ...rest } = data;
+    return { ...rest, transcriptAppend: delta };
+  }
+
   append(type, data) {
     if (this.failure) throw this.failure;
-    const entry = { version: 1, sequence: this.entries.length + 1,
-      sessionId: this.sessionId, type, at: Date.now(), data };
     // Validate before writing. A failed append must not update in-memory truth.
     const target = type === 'activity' ? this.activities : this.records;
     const id = type === 'activity' ? data.userMessageId : data.submissionId || data.clientSubmissionId;
     const old = target.get(id);
+    // Trim before diffing: the stored form is what a later delta compares
+    // against, so diffing the untrimmed frames would never match.
+    const stored = trimRecordForJournal(data);
+    const entry = { version: 1, sequence: this.entries.length + 1,
+      sessionId: this.sessionId, type, at: Date.now(), data: this.asDelta(stored, old) };
     this.project(entry);
     if (old) target.set(id, old); else target.delete(id);
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
@@ -158,4 +210,4 @@ class NativeAgentJournal {
   list() { return [...this.records.values()].map(record => ({ ...record })); }
 }
 
-module.exports = { NativeAgentJournal, mergeFrames };
+module.exports = { NativeAgentJournal, mergeFrames, transcriptDelta };

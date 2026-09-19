@@ -337,11 +337,12 @@ function _saveImpl(state) {
   }
 }
 
-async function _saveImplAsync(state) {
+async function _saveImplAsync(state, { strict = false } = {}) {
   if (!state) return;
   _stampUpdatedAt(state);
   const handle = await acquireLockAsync(LOCK_FILE, { retries: 1200, retryDelayMs: 10 });
   if (!handle) {
+    if (strict) throw new Error('state.json 保存锁不可用');
     console.warn('[hub] async state save skipped: lock unavailable; refusing unsafe no-lock write');
     return;
   }
@@ -350,6 +351,7 @@ async function _saveImplAsync(state) {
     const merged = mergeState(disk, state, _drainRemoved());
     await _writeMergedToDiskAsync(merged);
   } catch (error) {
+    if (strict) throw error;
     console.warn('[hub] async state save failed:', error.message);
   } finally {
     await releaseLockAsync(handle, LOCK_FILE);
@@ -400,6 +402,7 @@ module.exports = {
   loadAndSelfHeal,
   save,
   flushPending,
+  saveForRestart: async state => { await flushPending(); await _saveImplAsync(state, { strict: true }); },
   mergeState,
   markRemovedSession,
   markRemovedMeeting,

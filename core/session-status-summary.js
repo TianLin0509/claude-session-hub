@@ -296,7 +296,12 @@ function buildComposerStatusModel(session, options = {}) {
     // Work in flight (starting/running) takes the shared working line, the same
     // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
     // report a result get a Claude-specific message here.
-    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : '等待连接响应',
+    // 连接中且引擎自己说了在干什么（例如「正在载入历史（17.1 MB）」），就照实说。
+    // 干等一句「等待连接响应」时，用户分不出「在读 17 MB 历史」和「卡死了」——
+    // 2026-09-18 群聊分支那次就是这么被误读成功能坏了的。
+    const connecting = snapshot.connection !== 'disconnected' && snapshot.connection !== 'connected';
+    const loadingText = connecting && snapshot.reason ? String(snapshot.reason) : '';
+    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : (loadingText || '等待连接响应'),
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
       // New composer sends recover in Main; no manual receipt-review action.
