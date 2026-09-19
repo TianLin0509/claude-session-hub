@@ -18,7 +18,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  if(isolated && env.CLAUDE_HUB_ACCOUNT_FIXTURE){
   const fixture=env.CLAUDE_HUB_ACCOUNT_FIXTURE;
   const invoke=async(action,row={})=>jsonResult(await runImpl(process.execPath,[fixture,action,JSON.stringify({id:row.id,provider:row.provider,type:row.type})],{...env,ELECTRON_RUN_AS_NODE:'1'},5000));
-  return {imageAccounts:async()=>(await invoke('images')).accounts,check:row=>invoke('check',row),login:row=>invoke('login',row)};
+  return {imageAccounts:async()=>(await invoke('images')).accounts,check:row=>invoke('check',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
  }
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
@@ -54,7 +54,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   }
   if(row.provider==='kimi'){
    if(!fs.existsSync(path.join(row.home,'credentials','kimi-code.json')))return {state:'login_required',message:'未找到 Kimi 登录凭据，请登录',source:'Kimi 凭据发现'};
-   const usage=await require('../main/usage/kimi-account-usage').readKimiAccountUsage({home:row.home,env:cliEnv(row)});
+   let usage;try{usage=await require('../main/usage/kimi-account-usage').readKimiAccountUsage({home:row.home,env:cliEnv(row)});}catch(e){if(/登录已失效|尚未登录/.test(e.message))return {state:'login_required',message:'Kimi 官方接口确认登录已失效，请重新登录',source:'Kimi 官方接口'};throw e;}
    return {state:usage?'signed_in':'unknown',message:'Kimi 官方用量接口有响应；具体额度仍在侧栏展示',source:'Kimi 用量接口'};
   }
   if(row.provider==='gemini'){
@@ -72,8 +72,9 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   }
   return {state:'unknown',message:'此工具未提供已适配的只读登录检测；可直接打开官方登录入口',source:'官方工具'};
  },
- async login(row){
-  if(row.managedBrowser)return browser.open(row.provider);
+ async submitCode(row,code){return browser.submitCode(row.provider,code);},
+ async login(row,{phone=''}={}){
+  if(row.managedBrowser){const opened=await browser.open(row.provider);if(phone&&row.phoneLogin){let ready=false;for(let i=0;i<8;i++){try{await browser.command(row.provider,'true');ready=true;break;}catch{await new Promise(r=>setTimeout(r,400));}}if(ready){try{return await browser.preparePhone(row.provider,phone);}catch{return {stage:'manual',message:'自动填写结果未确认，请查看官方窗口；不会自动重试短信请求'};}}return {stage:'manual',message:'浏览器未就绪，请在官方页面继续'};}return opened;}
   if(row.provider==='bridge'){await tool('bridge','login');return {message:'已打开原中转浏览器，完成登录后检查；未推进拉取记录'};}
   if(row.provider==='images'){await tool('images','open',row.accountId);return {message:'已交给生图共享队列打开原账号浏览器；当前图片任务不会重发'};}
   if(row.provider==='chatgpt-web'){external();return require('./chatgpt-web-integration').openWebSettings();}

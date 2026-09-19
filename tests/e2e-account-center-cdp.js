@@ -32,6 +32,18 @@ async function main(){
   assert.equal(trace().filter(x=>x.action==='login'&&x.id==='web-deepseek').length,1);
   await click('[data-ac="check"][data-id="web-deepseek"]');await until('document.querySelector("[data-ac=select][data-id=web-deepseek]").closest(".ac-row").querySelector(".signed_in")','login checked');
   result.checks.push('登录按钮走真实 IPC/子进程；重复点击不重复打开；检查后才显示已登录');
+  for(const id of ['claude','web-deepseek','web-doubao'])await click('[data-ab-select="'+id+'"]');
+  await cdp.eval('(()=>{const e=document.getElementById("ac-batch-phone");e.value="13800000000";e.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  await click('[data-ab="start"]');await until('document.querySelector(".ac-batch-results")?.textContent.includes("豆包")','batch results rendered');
+  await until('document.querySelector(".ac-batch-results")?.textContent.includes("已有有效登录，已跳过")','existing login skipped');
+  assert.equal(trace().filter(x=>x.action==='login'&&x.id==='claude').length,0);
+  await until('document.querySelector("[data-ab=code][data-id=web-doubao]")','site-scoped OTP entry');
+  await click('[data-ab="code"][data-id="web-doubao"]');await until('document.querySelector(".ac-code-dialog[open]")','code dialog opened');
+  await cdp.eval('document.querySelector(".ac-code-dialog input").value="654321"');await click('.ac-code-dialog [type="submit"]');await until('!document.querySelector(".ac-code-dialog")','code cleared after submit');
+  const batchPublic=JSON.stringify(await cdp.eval('ipcRenderer.invoke("accounts:snapshot")'));assert.ok(!batchPublic.includes('13800000000')&&!batchPublic.includes('654321'));
+  assert.equal(await cdp.eval('document.getElementById("ac-batch-phone").value'),'');
+  assert.equal(trace().filter(x=>x.action==='login'&&x.id==='web-deepseek').length,1);
+  await snap('04-batch-login');result.checks.push('真实勾选多账号并一键登录；跳过已有登录；验证码绑定豆包；手机号与验证码不出现在总览状态');
   await click('[data-ac="config"][data-id="codex"]');await until('!document.querySelector("#account-editor").hidden','account config opened');
   await until('document.querySelector("#cfg-detail-codex").classList.contains("active")','Codex form');
   await cdp.eval('document.querySelector("#cfg-codex-profile-default-label").value="验证主账号"');
