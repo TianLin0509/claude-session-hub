@@ -15,7 +15,7 @@ function createRestartLegacyTracker(tap,sm,now=Date.now()) {
   tap.on('turn-complete',event=>{
     const value=states.get(event.hubSessionId);
     if(!value || Number(event.completedAt)<value.at)return;
-    value.state=['idle_timer_5s'].includes(event.signalSource) ? 'unknown' : 'idle';
+    value.state=event.restartStillWorking ? 'working' : ['idle_timer_5s'].includes(event.signalSource) ? 'unknown' : 'idle';
   });
   tap.on('turn-started',event=>{
     const s=sm.getSession(event.hubSessionId);
@@ -44,7 +44,7 @@ function observeLegacyPrompt(tap,sessionId,text,timeoutMs=15000) {
 }
 
 async function waitChildExit(child,timeoutMs=15000) {
-  if(!child || child.exitCode!=null || child.signalCode!=null)return;
+  if(!child || child.exitCode!=null || child.signalCode!=null || child.threadId===-1)return;
   await new Promise((resolve,reject)=>{
     const done=()=>{clearTimeout(timer);resolve();};
     const timer=setTimeout(()=>{child.off('exit',done);reject(new Error('原生 Agent 进程尚未确认退出，取消重启'));},timeoutMs);

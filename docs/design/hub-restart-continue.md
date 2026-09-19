@@ -19,7 +19,7 @@
 | 千问、DeepSeek 原生、智谱 | ACP | 结构化提交回执；停止后等待终态及实际进程退出 |
 | DeepSeek 普通入口 | Codex PTY | 原生 rollout 中当前提交的完整用户消息 |
 | Kimi | Kimi PTY | wire 中当前提交的 turn.prompt |
-| Gemini | Gemini PTY | 当前会话 JSONL/JSON 中完整用户消息 |
+| Gemini | Gemini PTY | 当前会话 JSONL/JSON 中完整用户消息，含 `$set.messages` 与文本片段数组 |
 
 终端提供方在 Main 通过当前绑定的新消息/完成事件记录工作状态；历史回放、空闲计时和终端重绘不能证明新提交成功。恢复前使用真实 CLI 家族判断输入框就绪；发送正文一次，体积自适应等待后提交，仅在未确认时允许一次有界补 Enter，不重贴正文。UI 已知的等待输入状态可以否决自动续作。未知或不兼容的原生记录格式保留待核对状态，不虚报成功。
 
@@ -30,7 +30,7 @@
 `core/hub-restart.js` 管理持久化清单，`main/ipc/hub-restart-handlers.js` 对接现有原生会话、工作流及退出流程；renderer 控制按钮和进度面板。
 
 1. renderer 刷新草稿和现场保存后，Main 在 `Hub 数据目录/restart/<token>.json` 原子写入清单，才允许中断。
-2. 冻结新派工，停止文件扫描和工作流，先 interrupt，再走已有 `disposeGracefully`，最终保存和原生 writer 退出完成后才能 relaunch。历史索引子进程也必须确认 exit；kill 请求不算退出。
+2. 冻结新派工，停止文件扫描和工作流，先 interrupt，再走已有 `disposeGracefully`，最终保存和原生 writer 退出完成后才能 relaunch。历史索引子进程、ACP 进程和 node-pty 的 ConPTY 输出 worker 也必须确认 exit；kill 请求与 PTY socket 关闭均不算全部退出。
 3. 退出前严格保存 `state.json`，将清单标记为 ready，通过 `--hub-restart=<token>` 交给新的进程。普通启动不扫描并重放历史重启清单。
 4. 新进程等旧 PID 退出、按原独占规则取得归属，严格读取最新 per-session 文件并验证原生身份；失败项不影响其他会话恢复。
 5. 发送前持久化 dispatching，成功后记录 continued。掉电或回执丢失留下 dispatching 时转为 uncertain，不再猜测性补发。已完成清单重复读取不会重派。

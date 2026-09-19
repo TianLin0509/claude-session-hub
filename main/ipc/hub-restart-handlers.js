@@ -145,7 +145,11 @@ function registerHubRestartIpc(ipcMain, deps) {
     quiesce:async plan => {
       requested=true;
       sm.restartPending=true;
-      oldChildren=plan.sessions.map(s=>native(s.id)?.client?.proc).filter(Boolean);
+      // node-pty onExit closes the socket before its ConPTY worker necessarily
+      // exits. Electron must keep Node alive until that worker's exit event too.
+      oldChildren=[...new Set([...oldChildren,...plan.sessions.flatMap(s=>[
+        native(s.id)?.client?.proc,sm.sessions.get(s.id)?.pty?._agent?._conoutSocketWorker?._worker,
+      ]).filter(Boolean)])];
       global.__devFileEngine?.dispose();
       for (const g of plan.groups) {
         if (g.kind==='file') global.__devFileEngine.stop(g.id);

@@ -1,0 +1,35 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {GeminiTap}=require('../core/transcript-tap');
+const {observeLegacyPrompt,createRestartLegacyTracker}=require('../core/hub-restart-legacy');
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function until(check){const end=Date.now()+5000;while(!check()){if(Date.now()>end)throw Error('Gemini transcript event timeout');await sleep(20);}}
+test('Gemini live JSONL $set snapshots and text-part arrays confirm exactly one new prompt',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'restart-gemini-format-'));
+  const dir=path.join(root,'project','chats');fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(path.join(root,'project','.project_root'),root);
+  const file=path.join(dir,'session-fixture.jsonl');
+  fs.writeFileSync(file,JSON.stringify({sessionId:'00000000-0000-4000-8000-000000000001'})+'\n');
+  const tap=new GeminiTap({tmpRoot:root}),events=[];
+  const session={id:'s',kind:'gemini',geminiChatId:'00000000-0000-4000-8000-000000000001'};
+  const tracker=createRestartLegacyTracker(tap,{getSession:()=>session});
+  t.after(()=>{tap.unregisterSession('s');fs.rmSync(root,{recursive:true,force:true});});
+  tap.on('prompt-submitted',e=>events.push(e));
+  await tap._bindSession('s',file,true);
+  const receipt=observeLegacyPrompt(tap,'s','继续任务',5000);
+  const previous={id:'old',type:'user',timestamp:'2020-01-01T00:00:00Z',content:[{text:'历史问题'}]};
+  const user={id:'new',type:'user',timestamp:new Date().toISOString(),content:[{text:'继续'},{text:'任务'}]};
+  const snapshot={$set:{messages:[previous,{type:'gemini',content:'历史回答',tokens:{total:1}},user]}};
+  fs.appendFileSync(file,JSON.stringify(snapshot)+'\n'+JSON.stringify(snapshot)+'\n');
+  assert.equal((await receipt.promise).ok,true);
+  await until(()=>events.length===1);assert.equal(events[0].text,'继续任务');
+  assert.equal(events[0].signalSource,'gemini_user_message');
+  const next={id:'next',type:'user',timestamp:new Date().toISOString(),content:'旧版本纯文本'};
+  fs.appendFileSync(file,JSON.stringify(next)+'\n');await until(()=>events.length===2);
+  assert.equal(events[1].text,'旧版本纯文本');
+  fs.appendFileSync(file,JSON.stringify({type:'gemini',content:'执行工具',tokens:{total:5},toolCalls:[{id:'call'}]})+'\n');
+  await until(()=>tap._bound.get('s').lastText==='执行工具');assert.equal(tracker.state(session),'working');
+  fs.appendFileSync(file,JSON.stringify({type:'gemini',content:'任务完成',tokens:{total:10}})+'\n');
+  await until(()=>tracker.state(session)==='idle');
+});

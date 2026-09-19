@@ -34,7 +34,7 @@ process.stdin.on('data',chunk=>{
       append(path.join(root,'legacy-trace.jsonl'),{kind,id,event:'prompt',text});
       append(transcript,kind==='kimi'?{type:'turn.prompt',timestamp,input:[{type:'text',text}],origin:{kind:'user'}}
         :kind==='deepseek'?{type:'event_msg',timestamp:new Date(timestamp).toISOString(),payload:{type:'user_message',message:text,turn_id:randomUUID()}}
-        :{type:'user',timestamp,id:randomUUID(),content:text});
+        :{$set:{messages:[{type:'user',timestamp:new Date(timestamp).toISOString(),id:randomUUID(),content:[{text}]}],lastUpdated:new Date(timestamp).toISOString()}});
       if(kind==='deepseek')append(transcript,{type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:randomUUID()}});
       process.stdout.write('\r\nfixture task active\r\n');
     }else{buffer+=char;process.stdout.write(char);}

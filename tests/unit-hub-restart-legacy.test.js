@@ -29,6 +29,10 @@ test('relaunch barrier waits for actual child exit, not requested shutdown',asyn
   const pending=waitChildExit(child,100).then(()=>{finished=true;});
   await Promise.resolve();assert.equal(finished,false);child.emit('exit');await pending;assert.equal(finished,true);
   await assert.rejects(waitChildExit(new EventEmitter(),10),/尚未确认退出/);
+  const worker=new EventEmitter();worker.threadId=123;let workerExited=false;
+  const drained=waitChildExit(worker,100).then(()=>{workerExited=true;});
+  await Promise.resolve();assert.equal(workerExited,false);worker.threadId=-1;worker.emit('exit');await drained;
+  await waitChildExit(worker,10);
 });
 
 test('legacy resumed providers use their real CLI readiness family',async()=>{

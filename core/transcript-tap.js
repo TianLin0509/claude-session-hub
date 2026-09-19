@@ -1538,6 +1538,8 @@ class CodexTap extends EventEmitter {
 // JSONL 路径为主；若 chats/ 下只有 .json 不带 jsonl，退化为整文件读 + 防抖。
 
 const GEMINI_TMP_ROOT = path.join(process.env.CLAUDE_HUB_HOME_DIR || os.homedir(), '.gemini', 'tmp');
+const geminiMessageText=content=>typeof content==='string' ? content : Array.isArray(content)
+  ? content.filter(part=>typeof part?.text==='string').map(part=>part.text).join('') : '';
 
 class GeminiTap extends EventEmitter {
   constructor(opts = {}) {
@@ -1815,6 +1817,7 @@ class GeminiTap extends EventEmitter {
         text,
         completedAt: Date.now(),
         signalSource: meta.signalSource || 'tokens_total',
+        restartStillWorking: meta.restartStillWorking === true,
       });
     };
 
@@ -1866,9 +1869,22 @@ class GeminiTap extends EventEmitter {
       };
 
       const onLine = (obj) => {
-        if(obj?.type==='user' && typeof obj.content==='string') {
+        // Current Gemini JSONL also persists full message snapshots as $set.
+        // Only the latest turn can change runtime; older snapshots are history.
+        if(Array.isArray(obj?.$set?.messages)){
+          const messages=obj.$set.messages;
+          const lastUserIndex=messages.findLastIndex(m=>m?.type==='user');
+          for(const message of messages.slice(Math.max(0,lastUserIndex)))onLine(message);
+          return;
+        }
+        if(obj?.type==='user') {
+          const text=geminiMessageText(obj.content);
           const submittedAt=typeof obj.timestamp==='number' ? obj.timestamp : Date.parse(obj.timestamp);
-          if(Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text:obj.content,submittedAt,
+          const key=JSON.stringify([obj.id,obj.timestamp,text]);
+          if(key===boundEntry.lastUser)return;
+          boundEntry.lastUser=key;
+          clearTimeout(boundEntry._idleTimer);boundEntry._idleTimer=null;boundEntry._streamingBuf=[];
+          if(text && Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text,submittedAt,
             turnId:obj.id || obj.messageId || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
           return;
         }
@@ -1907,7 +1923,7 @@ class GeminiTap extends EventEmitter {
           //   时把数据透传给 watcher.wait() 的 result.tokens。卡片 row4 显示"本轮 X tokens"。
           this._recordTokens(hubSessionId, obj.tokens);
           _pushStreamBlock(obj.content);
-          emitIfComplete(obj.content, { signalSource: 'tokens_total' });
+          emitIfComplete(obj.content, { signalSource: 'tokens_total',restartStillWorking:!!obj.toolCalls?.length });
         } else if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null) {
           // 仅缓存 token，不触发 emit（content 为空时 token 信息仍有用：streaming 中实时更新）
           this._recordTokens(hubSessionId, obj.tokens);
@@ -1942,7 +1958,7 @@ class GeminiTap extends EventEmitter {
               if(key!==boundEntry.lastUser){
                 boundEntry.lastUser=key;
                 const submittedAt=typeof lastUser.timestamp==='number' ? lastUser.timestamp : Date.parse(lastUser.timestamp);
-                const text=typeof lastUser.content==='string' ? lastUser.content : '';
+                const text=geminiMessageText(lastUser.content);
                 if(text && Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text,submittedAt,
                   turnId:lastUser.id || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
               }
@@ -1951,7 +1967,7 @@ class GeminiTap extends EventEmitter {
               const m = msgs[i];
               if(m?.type==='user')break;
               if (m?.type === 'gemini' && typeof m.content === 'string') {
-                emitIfComplete(m.content);
+                emitIfComplete(m.content,{restartStillWorking:!!m.toolCalls?.length});
                 break;
               }
             }

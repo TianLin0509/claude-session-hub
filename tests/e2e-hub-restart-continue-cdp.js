@@ -84,7 +84,7 @@ async function main(){
     evidence.before=before;evidence.oldPid=hub.pid;
     await click(c,'#btn-hub-restart');
     await until('old Hub exits',()=>!hub.isAlive(),65000);
-    assert.equal(hub.exitCode(),0);fs.writeFileSync(path.join(out,'old-hub.log'),hub.log().join('\n'));
+    evidence.oldExitCode=hub.exitCode();fs.writeFileSync(path.join(out,'old-hub.log'),hub.log().join('\n'));
     await c.close();c=null;
     const control=await until('replacement control file',()=>{
       const dir=path.join(dataDir,'control');if(!fs.existsSync(dir))return null;
@@ -95,6 +95,7 @@ async function main(){
     },65000);
     newPid=control.pid;evidence.newPid=newPid;
     c=await connectFirstPage({cdpHttpBase:'http://127.0.0.1:'+control.cdpPort,label:'restart-replacement'});
+    assert.equal(hub.exitCode(),0,'old Hub must exit cleanly even if replacement launched');
     await until('restoration settles',()=>c.eval('typeof restartController!=="undefined" && restartController.current?.phase==="done"'),90000);
     const plan=await c.eval('restartController.current');evidence.plan=plan;
     assert.equal(plan.sessions.length,15,JSON.stringify(plan));
@@ -152,7 +153,8 @@ async function main(){
       }catch(error){evidence.cleanupError=error.message;evidence.passed=false;}
     }
     if(c)await c.close();
-    if(hub){fs.writeFileSync(path.join(out,'old-hub.log'),hub.log().join('\n'));await gracefulQuit(hub,{allowAlreadyExited:true});}
+    if(hub){fs.writeFileSync(path.join(out,'old-hub.log'),hub.log().join('\n'));
+      try{await gracefulQuit(hub,{allowAlreadyExited:true});}catch(error){evidence.cleanupError=error.message;evidence.passed=false;}}
     fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({out,passed:evidence.passed,checks:evidence.checks,error:evidence.error}));
     if(evidence.cleanupError)throw Error('Isolated cleanup failed: '+evidence.cleanupError);
   }
