@@ -25,6 +25,7 @@
   <link rel="stylesheet" href="launch-center.css">
   <link rel="stylesheet" href="memory-panel.css">
   <link rel="stylesheet" href="capability-panel.css">
+  <link rel="stylesheet" href="account-center-panel.css">
   <link rel="stylesheet" href="file-manager-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
@@ -42,6 +43,11 @@
   <link rel="stylesheet" href="styles/ui-polish.css">
   <link rel="stylesheet" href="styles/groupchat-journal.css">
   <link rel="stylesheet" href="styles/fixed-session-layout.css">
+  <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
+       而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
+       用独立 <link> 而不是 styles.css 里的 @import —— @import 进来的表排在
+       styles.css 自己的位置（第 10 行），压不住后面这十几张。 -->
+  <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -85,6 +91,7 @@
       <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a2 2 0 0 1 2 2v11l-5 5H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" fill="currentColor" fill-opacity=".14"/><path d="M15 21v-5h5M8 8h8M8 12h6"/></svg><span class="btn-label">备忘录</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-6 3 4 4 0 0 0-3 6 4 4 0 0 0 2 7 4 4 0 0 0 7 1V3Zm0 0a4 4 0 0 1 6 3 4 4 0 0 1 3 6 4 4 0 0 1-2 7 4 4 0 0 1-7 1M6 6v4h3m9-4v4h-3"/></svg><span class="btn-label">记忆</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4h2a3 3 0 1 1 0 6H3v4a2 2 0 0 0 2 2h4v-2a3 3 0 1 1 6 0v2h4a2 2 0 0 0 2-2v-4h-2a3 3 0 1 1 0-6h2V5a2 2 0 0 0-2-2h-4v2a3 3 0 1 1-6 0V3Z" fill="currentColor" fill-opacity=".12"/></svg><span class="btn-label">技能</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="权限 · 账号与授权" aria-label="权限：账号与授权" aria-expanded="false" aria-controls="account-page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 21 6v6c0 5-9 9-9 9s-9-4-9-9V6Z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v4"/></svg><span class="btn-label">权限</span><b id="accounts-attention" hidden></b></button>
       <div class="rail-spacer"></div>
       <div class="rail-theme-wrapper">
         <button type="button" class="btn-rail-theme" id="btn-theme" title="主题皮肤" aria-haspopup="true" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
@@ -560,98 +567,11 @@
   <script src="floating-input-history.js"></script>
   <script src="workspace-controller.js"></script>
   <script src="meeting-create-modal.js"></script>
-  <script src="renderer.js"></script>
-  <script src="loop-workflow.js"></script>
-  <script src="workflow-templates.js"></script>
-  <script src="meeting-room.js"></script>
-  <script src="committee-ui.js"></script>
-  <script src="workflow-config-modal.js"></script>
-  <script src="chuxin.js"></script>
-  <script src="study.js"></script>
-  <script src="dev-progress.js"></script>
-  <script src="ran.js"></script>
-
-  <div id="config-modal" class="config-modal-overlay hidden">
-    <div class="config-modal-content">
-      <div class="config-modal-header">
-        <h2>配置 · Settings</h2>
-        <button class="config-modal-close" id="config-close">✕</button>
-      </div>
-      <div class="config-modal-body">
-        <div id="config-main-view">
-          <p class="config-hint">配置全局代理和核心 AI 的接入方式；Claude、Codex、Kimi 与 DeepSeek 的状态会在新建会话时生效。</p>
-          <div class="config-field">
-            <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
-            <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
-          </div>
-          <div class="config-section-label config-operations-title">
-            <span>工作台服务器状态</span>
-            <span>阿里云 / 自建健康端点</span>
-          </div>
-          <div class="config-operations-card">
-            <label class="config-toggle-row" for="cfg-aliyun-enabled">
-              <input type="checkbox" id="cfg-aliyun-enabled">
-              <span><strong>在工作台监控服务器</strong><small>主进程按需读取健康端点；未配置时不会自动探测任何公网地址。</small></span>
-            </label>
-            <div class="config-reading-grid">
-              <div class="config-field"><label for="cfg-aliyun-label">显示名称</label><input type="text" id="cfg-aliyun-label" placeholder="阿里云服务器" maxlength="48"></div>
-              <div class="config-field"><label for="cfg-aliyun-health-url">健康检查 URL</label><input type="url" id="cfg-aliyun-health-url" placeholder="https://server.example.com/health" spellcheck="false"></div>
-            </div>
-            <div class="config-reading-grid">
-              <div class="config-field"><label for="cfg-aliyun-metrics-url">指标 URL <span class="config-label-hint">（可选）</span></label><input type="url" id="cfg-aliyun-metrics-url" placeholder="https://server.example.com/metrics" spellcheck="false"></div>
-              <div class="config-field"><label for="cfg-aliyun-token">Bearer Token <span class="config-label-hint">（可选，本机保存）</span></label><input type="password" id="cfg-aliyun-token" autocomplete="off" spellcheck="false"></div>
-            </div>
-            <div class="config-field"><label for="cfg-operations-restore-root">Checkpoint 恢复目录 <span class="config-label-hint">（可选）</span></label><input type="text" id="cfg-operations-restore-root" placeholder="C:\Vibe\Worktrees" spellcheck="false"></div>
-            <p class="config-reading-note">指标 JSON 可返回 <code>storage.totalBytes</code> / <code>usedBytes</code> / <code>usagePct</code>；保存后回到工作台刷新即可验证。</p>
-          </div>
-          <div class="config-section-label config-notification-title">
-            <span>回答完成通知</span>
-            <span>飞书 CLI</span>
-          </div>
-          <div class="config-notification-card" id="config-notification-card">
-            <label class="config-toggle-row" for="cfg-notification-enabled">
-              <input type="checkbox" id="cfg-notification-enabled">
-              <span><strong id="cfg-notification-target-title">当前会话飞书通知</strong><small id="cfg-notification-target-hint">每个会话独立设置；新会话默认关闭，顶栏可随时切换。</small></span>
-            </label>
-            <div class="config-field">
-              <label for="cfg-feishu-target">飞书接收对象 ID <span class="config-label-hint">（oc_ 会话/群聊，或 ou_ 用户）</span></label>
-              <div class="config-secret-row">
-                <input type="text" id="cfg-feishu-target" placeholder="oc_... 或 ou_..." spellcheck="false" autocomplete="off">
-                <button type="button" class="config-test-btn" id="config-notification-test">发送测试</button>
-              </div>
-            </div>
-            <div class="config-check-grid">
-              <label for="cfg-notification-group-chats"><input type="checkbox" id="cfg-notification-group-chats" checked> 当前会话为群聊时，整轮完成后推送一条</label>
-              <label for="cfg-notification-include-preview"><input type="checkbox" id="cfg-notification-include-preview"> 附带回答与成果快递（Card 2.0、HTML 预览及原文件；默认关闭）</label>
-            </div>
-            <p class="config-notification-status" id="config-notification-status" aria-live="polite"></p>
-            <p class="config-reading-note">首次使用：先完成飞书 CLI 的应用配置/授权，并确保机器人已加入目标会话。测试通知可在保存前直接发送。</p>
-          </div>
-          <div class="config-section-label config-reading-title">
-            <span>普通会话卡片</span>
-            <span>调整后立即预览</span>
-          </div>
-          <div class="config-reading-grid">
-            <div class="config-field">
-              <label for="cfg-card-font-size">正文字号 <output id="cfg-card-font-size-value">15px</output></label>
-              <input type="range" id="cfg-card-font-size" min="13" max="22" step="1" value="15">
-            </div>
-            <div class="config-field">
-              <label for="cfg-card-font-family">字体风格</label>
-              <select id="cfg-card-font-family">
-                <option value="system">系统清晰（推荐）</option>
-                <option value="yahei">微软雅黑</option>
-                <option value="serif">中文衬线</option>
-                <option value="mono">等宽技术</option>
-              </select>
-            </div>
-          </div>
-          <p class="config-reading-note">默认已从 13px 调到 15px；代码块仍使用等宽字体。公式由本地 KaTeX 离线渲染。</p>
-          <div class="config-section-label">
-            <span>AI 模型</span>
-            <span>点击进入详情</span>
-          </div>
-          <div class="config-ai-list">
+  <section id="account-page" class="ac-page" hidden aria-label="账号与授权">
+    <header class="ac-head"><div><h1>账号与授权</h1><p>速览全局登录状态，快速打开正确账号的登录入口。</p></div><div class="ac-head-actions"><button class="ac-btn" data-ac="refresh">刷新状态</button><button class="ac-btn" data-ac="config" data-id="codex">接入配置</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
+    <nav class="ac-tabs" role="tablist" aria-label="账号中心"><button role="tab" data-ac-tab="overview" aria-selected="true">账号总览</button><button role="tab" data-ac-tab="bindings" aria-selected="false">功能与账号</button><button role="tab" data-ac-tab="history" aria-selected="false">活动记录</button></nav>
+    <div class="ac-status" role="status" aria-live="polite"></div><div class="ac-content"></div>
+    <div id="account-editor" hidden>          <div class="config-ai-list">
             <button class="config-ai-row" type="button" data-ai="claude">
               <span class="config-ai-mark claude">CL</span>
               <span class="config-ai-copy">
@@ -693,11 +613,9 @@
               <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
             </button>
           </div>
-        </div>
-
         <div id="config-detail-view" class="hidden">
           <div class="config-detail-head">
-            <button class="config-back-btn" id="config-back" type="button">‹ 返回模型列表</button>
+            <button class="config-back-btn" id="config-back" type="button" hidden>‹ 返回模型列表</button>
             <span class="config-ai-status" id="cfg-detail-status">订阅</span>
           </div>
           <h3 id="cfg-detail-title">Codex 设置</h3>
@@ -785,9 +703,10 @@
               <strong>订阅 / Kimi Code CLI 登录</strong>
               <span>使用当前本机 Kimi Code 登录状态与 K3 模型。账号额度会在侧栏与 Claude、Codex 一起刷新。</span>
             </div>
-            <div class="config-note">登录或切换账号请在 Kimi PTY 中执行 /login；Hub 不保存额外的 Kimi API Key。</div>
+            <div class="config-note">登录或切换账号请返回账号总览，点击 Kimi Code 的「登录」；Hub 不保存额外的 Kimi API Key。</div>
           </div>
 
+          <div class="config-ai-detail" id="cfg-detail-server"><p class="config-note">服务器地址、监控开关仍在设置中。这里只管理访问凭据。</p><div class="config-field"><label for="cfg-aliyun-token">Bearer Token <span class="config-label-hint">（可选，本机保存）</span></label><input type="password" id="cfg-aliyun-token" autocomplete="off" spellcheck="false"></div></div>
           <div class="config-ai-detail" id="cfg-detail-deepseek">
             <div class="config-mode-card selected">
               <strong>API 模式</strong>
@@ -800,6 +719,100 @@
           </div>
 
         </div>
+
+      <div class="config-modal-actions"><button class="config-btn config-btn-save" id="account-config-save">保存此连接配置</button><button class="ac-btn" data-ac-tab="overview">返回账号总览</button></div><div id="account-config-msg" role="status"></div>
+    </div>
+  </section>
+  <script src="renderer.js"></script>
+  <script src="loop-workflow.js"></script>
+  <script src="workflow-templates.js"></script>
+  <script src="meeting-room.js"></script>
+  <script src="committee-ui.js"></script>
+  <script src="workflow-config-modal.js"></script>
+  <script src="chuxin.js"></script>
+  <script src="study.js"></script>
+  <script src="dev-progress.js"></script>
+  <script src="ran.js"></script>
+
+  <div id="config-modal" class="config-modal-overlay hidden">
+    <div class="config-modal-content">
+      <div class="config-modal-header">
+        <h2>配置 · Settings</h2>
+        <button class="config-modal-close" id="config-close">✕</button>
+      </div>
+      <div class="config-modal-body">
+        <div id="config-main-view">
+          <p class="config-hint">配置全局代理、通知与显示；账号登录和 AI 接入方式已统一移至左侧「权限」。</p>
+          <div class="config-field">
+            <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
+            <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
+          </div>
+          <div class="config-section-label config-operations-title">
+            <span>工作台服务器状态</span>
+            <span>阿里云 / 自建健康端点</span>
+          </div>
+          <div class="config-operations-card">
+            <label class="config-toggle-row" for="cfg-aliyun-enabled">
+              <input type="checkbox" id="cfg-aliyun-enabled">
+              <span><strong>在工作台监控服务器</strong><small>主进程按需读取健康端点；未配置时不会自动探测任何公网地址。</small></span>
+            </label>
+            <div class="config-reading-grid">
+              <div class="config-field"><label for="cfg-aliyun-label">显示名称</label><input type="text" id="cfg-aliyun-label" placeholder="阿里云服务器" maxlength="48"></div>
+              <div class="config-field"><label for="cfg-aliyun-health-url">健康检查 URL</label><input type="url" id="cfg-aliyun-health-url" placeholder="https://server.example.com/health" spellcheck="false"></div>
+            </div>
+            <div class="config-reading-grid">
+              <div class="config-field"><label for="cfg-aliyun-metrics-url">指标 URL <span class="config-label-hint">（可选）</span></label><input type="url" id="cfg-aliyun-metrics-url" placeholder="https://server.example.com/metrics" spellcheck="false"></div>
+              <span class="config-reading-note">Bearer Token 已移至「权限 → 服务器监控授权」。</span>
+            </div>
+            <div class="config-field"><label for="cfg-operations-restore-root">Checkpoint 恢复目录 <span class="config-label-hint">（可选）</span></label><input type="text" id="cfg-operations-restore-root" placeholder="C:\Vibe\Worktrees" spellcheck="false"></div>
+            <p class="config-reading-note">指标 JSON 可返回 <code>storage.totalBytes</code> / <code>usedBytes</code> / <code>usagePct</code>；保存后回到工作台刷新即可验证。</p>
+          </div>
+          <div class="config-section-label config-notification-title">
+            <span>回答完成通知</span>
+            <span>飞书 CLI</span>
+          </div>
+          <div class="config-notification-card" id="config-notification-card">
+            <label class="config-toggle-row" for="cfg-notification-enabled">
+              <input type="checkbox" id="cfg-notification-enabled">
+              <span><strong id="cfg-notification-target-title">当前会话飞书通知</strong><small id="cfg-notification-target-hint">每个会话独立设置；新会话默认关闭，顶栏可随时切换。</small></span>
+            </label>
+            <div class="config-field">
+              <label for="cfg-feishu-target">飞书接收对象 ID <span class="config-label-hint">（oc_ 会话/群聊，或 ou_ 用户）</span></label>
+              <div class="config-secret-row">
+                <input type="text" id="cfg-feishu-target" placeholder="oc_... 或 ou_..." spellcheck="false" autocomplete="off">
+                <button type="button" class="config-test-btn" id="config-notification-test">发送测试</button>
+              </div>
+            </div>
+            <div class="config-check-grid">
+              <label for="cfg-notification-group-chats"><input type="checkbox" id="cfg-notification-group-chats" checked> 当前会话为群聊时，整轮完成后推送一条</label>
+              <label for="cfg-notification-include-preview"><input type="checkbox" id="cfg-notification-include-preview"> 附带回答与成果快递（Card 2.0、HTML 预览及原文件；默认关闭）</label>
+            </div>
+            <p class="config-notification-status" id="config-notification-status" aria-live="polite"></p>
+            <p class="config-reading-note">首次使用：在「权限 → 飞书 CLI」完成授权，并确保机器人已加入目标会话。测试通知可在保存前直接发送。</p>
+          </div>
+          <div class="config-section-label config-reading-title">
+            <span>普通会话卡片</span>
+            <span>调整后立即预览</span>
+          </div>
+          <div class="config-reading-grid">
+            <div class="config-field">
+              <label for="cfg-card-font-size">正文字号 <output id="cfg-card-font-size-value">15px</output></label>
+              <input type="range" id="cfg-card-font-size" min="13" max="22" step="1" value="15">
+            </div>
+            <div class="config-field">
+              <label for="cfg-card-font-family">字体风格</label>
+              <select id="cfg-card-font-family">
+                <option value="system">系统清晰（推荐）</option>
+                <option value="yahei">微软雅黑</option>
+                <option value="serif">中文衬线</option>
+                <option value="mono">等宽技术</option>
+              </select>
+            </div>
+          </div>
+          <p class="config-reading-note">默认已从 13px 调到 15px；代码块仍使用等宽字体。公式由本地 KaTeX 离线渲染。</p>
+          <button type="button" class="config-btn" id="btn-config-accounts">账号登录与接入配置 → 权限</button>
+        </div>
+
         <div class="config-modal-actions">
           <button class="config-btn config-btn-save" id="config-save">保存</button>
           <button class="config-btn config-btn-cancel" id="config-cancel">取消</button>
@@ -808,5 +821,6 @@
       </div>
     </div>
   </div>
+
 </body>
 </html>

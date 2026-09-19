@@ -7732,6 +7732,9 @@ const configModal = createConfigModalController({
   applyCardDisplaySettings: applyHubCardDisplaySettings,
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
+const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => memoryPanel.close(),
+});
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 document.addEventListener('hub-config-saved', () => {

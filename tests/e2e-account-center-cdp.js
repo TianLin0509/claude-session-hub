@@ -1,0 +1,83 @@
+'use strict';
+const fs=require('fs'),path=require('path'),os=require('os'),net=require('net'),assert=require('assert/strict');
+const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
+const {connectFirstPage}=require('./helpers/cdp-client');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
+async function main(){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-accounts-gui-')),data=path.join(root,'data'),home=path.join(root,'home'),cwd=path.join(root,'project');
+ for(const p of [data,home,cwd,path.join(root,'empty')])fs.mkdirSync(p,{recursive:true});
+ fs.writeFileSync(path.join(data,'config.json'),JSON.stringify({proxy:'',providers:{codex:{backend:'subscription',api_key:'fixture-codex-key',subscription_profiles:[{id:'default',label:'Main',home:path.join(home,'.codex')},{id:'second',label:'Second',home:path.join(home,'.codex-second')}]},deepseek:{api_key:'fixture-deepseek-key'}},unrelatedFixture:'preserve-me'}));
+ fs.writeFileSync(path.join(data,'prepared-projects.json'),JSON.stringify({schemaVersion:1,projects:[],migrations:[]}));
+ const out=path.resolve('artifacts/account-center-cdp');fs.mkdirSync(out,{recursive:true});
+ const result={passed:false,boundary:'真实隔离 Hub、DOM、IPC、文件持久化与账号子进程夹具；没有真实登录、短信或模型请求',checks:[],root};let hub,cdp;
+ const until=async(expr,label)=>{for(const end=Date.now()+35000;Date.now()<end;){if(await cdp.eval('Boolean('+expr+')')){console.log('PASS '+label);return;}await sleep(120);}throw Error('timeout: '+label);};
+ const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+') && !document.querySelector('+JSON.stringify(selector)+').disabled','enabled '+selector);const box=await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...box});await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...box});};
+ const snap=async name=>{const v=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
+ try{
+  hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'visible',label:'accounts-center',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
+   CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),
+   HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty')}});
+  result.pid=hub.pid;result.port=hub.port;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
+  await until('typeof accountCenterPanel!=="undefined"','renderer initialized');
+  await click('#btn-rail-accounts');await until('document.querySelectorAll(".ac-row").length>10','global account list');
+  assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'),false);
+  await until('document.querySelector(".ac-row .signed_in")','native auth receipt');
+  assert.equal(await cdp.eval('document.querySelector("#config-modal #cfg-codex-key")'),null);
+  assert.equal(await cdp.eval('document.querySelector("#config-modal #cfg-aliyun-token")'),null);
+  result.checks.push('没有会话也能速览；原生登录通过实际账号子进程回执显示；账号与服务密钥已移出设置');await snap('01-overview');
+  await click('[data-ac="login"][data-id="web-deepseek"]');await until('document.querySelector(".ac-status").textContent.includes("入口已启动")','login acknowledged');
+  await click('[data-ac="login"][data-id="web-deepseek"]');await until('document.querySelector(".ac-status").textContent.includes("已打开")','dedup notice');
+  const trace=()=>fs.readFileSync(path.join(home,'account-fixture.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(trace().filter(x=>x.action==='login'&&x.id==='web-deepseek').length,1);
+  await click('[data-ac="check"][data-id="web-deepseek"]');await until('document.querySelector("[data-ac=select][data-id=web-deepseek]").closest(".ac-row").querySelector(".signed_in")','login checked');
+  result.checks.push('登录按钮走真实 IPC/子进程；重复点击不重复打开；检查后才显示已登录');
+  await click('[data-ac="config"][data-id="codex"]');await until('!document.querySelector("#account-editor").hidden','account config opened');
+  await until('document.querySelector("#cfg-detail-codex").classList.contains("active")','Codex form');
+  await cdp.eval('document.querySelector("#cfg-codex-profile-default-label").value="验证主账号"');
+  await click('#account-config-save');await until('document.querySelector("#account-config-msg").textContent.includes("已保存")','account config persisted');
+  let config=JSON.parse(fs.readFileSync(path.join(data,'config.json'),'utf8'));
+  assert.equal(config.unrelatedFixture,'preserve-me');assert.ok(JSON.stringify(config).includes('验证主账号'));
+  result.checks.push('账号配置真实保存到隔离 config.json，保留无关字段');await snap('02-native-config');
+  await click('[data-ac-tab="overview"]');await click('[data-ac="config"][data-id="server"]');
+  await until('document.querySelector("#cfg-detail-server").classList.contains("active")','server credentials');
+  await cdp.eval('document.querySelector("#cfg-aliyun-token").value="fixture-monitor-token"');await click('#account-config-save');
+  await until('document.querySelector("#account-config-msg").textContent.includes("已保存")','server token saved');
+  await cdp.eval('openConfigModal()');await until('!document.querySelector("#config-modal").classList.contains("hidden")','general settings');
+  // Original settings page must not overwrite account edits or the relocated token.
+  await cdp.eval('document.querySelector("#cfg-proxy").value="http://127.0.0.1:7890"');await click('#config-save');
+  await until('document.querySelector("#config-save-msg").textContent.includes("已保存")','settings saved');
+  config=JSON.parse(fs.readFileSync(path.join(data,'config.json'),'utf8'));
+  assert.equal(config.providers.codex.api_key,'fixture-codex-key');assert.equal(config.providers.deepseek.api_key,'fixture-deepseek-key');
+  assert.ok(JSON.stringify(config).includes('fixture-monitor-token'));assert.ok(JSON.stringify(config).includes('验证主账号'));
+  await click('#config-close');result.checks.push('服务器 Bearer Token 在权限页编辑；普通设置保存不覆盖账号/密钥');
+  await click('[data-ac-tab="bindings"]');assert.ok((await cdp.eval('document.querySelector(".ac-content").innerText')).includes('公司拉取'));
+  await click('[data-ac-tab="history"]');assert.ok((await cdp.eval('document.querySelector(".ac-content").innerText')).includes('已打开登录入口'));
+  const publicState=await cdp.eval('ipcRenderer.invoke("accounts:snapshot")');assert.ok(!JSON.stringify(publicState).includes('fixture-monitor-token'));
+  result.checks.push('用途与操作记录可查看，账号总览不返回密钥');
+  await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
+  assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'),true);
+  const s=await cdp.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd,model:'gpt-6-astra',effort:'medium',mcpProfile:'none'}})+')');assert.ok(s.id,JSON.stringify(s));
+  await click('.session-item[data-session-id="'+s.id+'"]');await until('!!document.querySelector(".floating-input-box")','composer');
+  await cdp.eval('document.querySelector(".floating-input-box").textContent="保留这份草稿"');
+  await click('#btn-rail-accounts');await until('!document.querySelector("#account-page").hidden','accounts during normal session');await click('[data-ac="close"]');
+  assert.equal(await cdp.eval('document.querySelector(".floating-input-box").textContent'),'保留这份草稿');
+  result.checks.push('普通会话进入/退出账号页保留草稿和会话');
+  const slot={kind:'codex',model:'gpt-6-astra',effort:'medium',mcpProfile:'none'};
+  const meeting=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'账号页群聊验证',scene:'general',groupChat:true,workspace:cwd,slots:[slot,slot]})+')');assert.equal(meeting.subSessions.length,2);
+  await cdp.eval('window.MeetingRoom.openMeeting('+JSON.stringify(meeting.id)+','+JSON.stringify(meeting)+')');
+  await until('!!document.querySelector("#mr-input-box")','group composer');
+  await click('#mr-input-box');await cdp.send('Input.insertText',{text:'群聊草稿保留'});await click('[data-group-layout="two"]');
+  await until('document.querySelectorAll(".gms-member-view:not([hidden])").length===2','two members mounted');
+  await click('#btn-rail-accounts');await until('!document.querySelector("#account-page").hidden','accounts during group');await click('[data-ac="close"]');
+  assert.equal(await cdp.eval('document.querySelector("#mr-input-box").textContent'),'群聊草稿保留');
+  assert.equal(await cdp.eval('document.querySelectorAll(".gms-member-view:not([hidden])").length'),2);
+  result.checks.push('群聊双成员视图进入/退出账号页保留共享草稿和两份成员视图');
+  await click('#btn-rail-accounts');await click('#btn-rail-memory');await until('!document.querySelector("#memory-page").hidden','memory opens');assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'),true);
+  await click('#btn-rail-accounts');await until('!document.querySelector("#account-page").hidden','accounts opens from memory');assert.equal(await cdp.eval('document.querySelector("#memory-page").hidden'),true);
+  await cdp.send('Emulation.setDeviceMetricsOverride',{width:920,height:820,deviceScaleFactor:1,mobile:false});await snap('03-narrow');
+  result.checks.push('与记忆页互斥；窄窗口真实渲染');result.passed=true;
+ }catch(e){result.error=e.stack;if(hub)result.log=hub.log();if(cdp){try{await snap('failure');result.dom=await cdp.eval('document.body.innerText');}catch{}}throw e;}finally{fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));if(cdp)await cdp.close();if(hub)await gracefulQuit(hub);}
+ console.log(JSON.stringify(result,null,2));
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

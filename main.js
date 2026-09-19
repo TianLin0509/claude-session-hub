@@ -2603,6 +2603,14 @@ registerConfigIpc(ipcMain, {
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
+const accountCenterHome = process.env.CLAUDE_HUB_HOME_DIR || os.homedir();
+const accountCenter = new (require('./core/account-center').AccountCenter)({
+  dataDir: getHubDataDir(), homeDir: accountCenterHome,
+  getConfig: () => require('./core/hub-config').getConfig(),
+  adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome }),
+});
+require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
+
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,
 });
