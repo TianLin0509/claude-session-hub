@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="styles/home-workbench.css">
   <link rel="stylesheet" href="launch-center.css">
   <link rel="stylesheet" href="memory-panel.css">
+  <link rel="stylesheet" href="capability-panel.css">
   <link rel="stylesheet" href="account-center-panel.css">
   <link rel="stylesheet" href="file-manager-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
@@ -89,6 +90,7 @@
       <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4" fill="currentColor" fill-opacity=".14"/><path d="m8 10-3 2 3 2m8-4 3 2-3 2m-3-6-2 12"/></svg><span class="btn-label">开发</span></button>
       <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a2 2 0 0 1 2 2v11l-5 5H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" fill="currentColor" fill-opacity=".14"/><path d="M15 21v-5h5M8 8h8M8 12h6"/></svg><span class="btn-label">备忘录</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-6 3 4 4 0 0 0-3 6 4 4 0 0 0 2 7 4 4 0 0 0 7 1V3Zm0 0a4 4 0 0 1 6 3 4 4 0 0 1 3 6 4 4 0 0 1-2 7 4 4 0 0 1-7 1M6 6v4h3m9-4v4h-3"/></svg><span class="btn-label">记忆</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H5a2 2 0 0 0-2 2v4h2a3 3 0 1 1 0 6H3v4a2 2 0 0 0 2 2h4v-2a3 3 0 1 1 6 0v2h4a2 2 0 0 0 2-2v-4h-2a3 3 0 1 1 0-6h2V5a2 2 0 0 0-2-2h-4v2a3 3 0 1 1-6 0V3Z" fill="currentColor" fill-opacity=".12"/></svg><span class="btn-label">技能</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="权限 · 账号与授权" aria-label="权限：账号与授权" aria-expanded="false" aria-controls="account-page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 21 6v6c0 5-9 9-9 9s-9-4-9-9V6Z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v4"/></svg><span class="btn-label">权限</span><b id="accounts-attention" hidden></b></button>
       <div class="rail-spacer"></div>
       <div class="rail-theme-wrapper">

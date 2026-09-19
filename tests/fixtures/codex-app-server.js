@@ -309,6 +309,8 @@ rl.on('line',line=>{
       event('thread/goal/updated',{threadId:thread.id,goal:thread.goal});break;
     case 'thread/goal/clear':thread.goal=null;save();answer(msg.id,{});break;
     case 'skills/list':answer(msg.id,{data:[{cwd:p.cwds?.[0],skills:[{name:'fixture-skill',path:__filename,enabled:true,description:'Fixture skill'}],errors:[]}]});break;
+    case 'mcpServerStatus/list':answer(msg.id,{data:[{name:'fixture-mcp',tools:{inspect:{name:'inspect'}},runtimeStatus:'connected',authStatus:'unsupported'}],nextCursor:null});break;
+    case 'plugin/list':answer(msg.id,{marketplaces:[{name:'fixture',plugins:[{id:'fixture-plugin@fixture',name:'fixture-plugin',installed:true,enabled:true}]}],marketplaceLoadErrors:[]});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }
