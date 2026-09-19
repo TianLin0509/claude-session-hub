@@ -28,8 +28,8 @@ async function createLink(source,target){
   for(let attempt=0;;attempt++){
     try{await fs.promises.symlink(source,target,'junction');return attempt;}
     catch(e){
-      if(!['EBUSY','EPERM'].includes(e.code)||attempt>=3||exists(target))throw e;
-      await new Promise(resolve=>setTimeout(resolve,100*(attempt+1)));
+      if(!['EBUSY','EPERM'].includes(e.code)||attempt>=5||exists(target))throw e;
+      await new Promise(resolve=>setTimeout(resolve,Math.min(1600,200*2**attempt)));
     }
   }
 }

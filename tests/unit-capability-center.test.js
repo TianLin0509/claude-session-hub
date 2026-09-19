@@ -40,9 +40,10 @@ test('Codex explicit user skill disable is retained without changing another age
 test('partial sharing failure preserves completed links and records the exact failed operation',async t=>{
   const {root,write}=fixture(t);write('.codex/skills/task/SKILL.md','---\nname: task\n---');
   const {planSharing,applySharing}=require('../scripts/share-agent-skills'), original=fs.promises.symlink;
-  let calls=0;fs.promises.symlink=async(...args)=>{if(++calls===2)throw Object.assign(Error('fixture disk failure'),{code:'EIO'});return original.apply(fs.promises,args);};
+  const plan=planSharing(root),failedTarget=plan.operations[1].target;
+  fs.promises.symlink=async(...args)=>{if(args[1]===failedTarget)throw Object.assign(Error('fixture disk failure'),{code:'EIO'});return original.apply(fs.promises,args);};
   t.after(()=>{fs.promises.symlink=original;});
-  const r=await applySharing(planSharing(root),path.join(root,'report.json'));
+  const r=await applySharing(plan,path.join(root,'report.json'));
   assert.equal(r.created.length,1);assert.equal(r.errors.length,1);assert.match(r.errors[0].error,/fixture disk failure/);
   assert.ok(fs.existsSync(path.join(r.created[0].target,'SKILL.md')));fs.unlinkSync(r.created[0].target);
 });
