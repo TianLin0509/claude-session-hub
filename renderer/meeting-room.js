@@ -7617,6 +7617,16 @@ if (typeof document !== 'undefined') (function () {
   }
 
   const meetingRoomApi = {
+    appendFilePaths(paths) {
+      const input = document.getElementById('mr-input-box');
+      if (!activeMeetingId || !input || input.getAttribute('contenteditable') === 'false') throw new Error('请先打开可编辑的群聊输入框');
+      const current = _getInputRawText();
+      _setMeetingInputText(activeMeetingId, `${current}${current.trim() ? '\n\n' : ''}${paths.join('\n')}`);
+      _saveInputDraft();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      return true;
+    },
     init,
     openMeeting,
     closeMeetingPanel,
