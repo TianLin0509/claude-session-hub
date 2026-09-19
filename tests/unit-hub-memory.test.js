@@ -297,6 +297,20 @@ test('context uses only confirmed current-identity receipts and never discovers 
   assert.equal((await f.service.context('normal')).receipts.length,0);
 });
 
+test('current context includes native rules without any Dream and rejects a runtime switch during reading',async t=>{
+  const f=setup(t),s=f.sessions.get('normal'),file=path.join(f.root,'native.jsonl');
+  fs.writeFileSync(file,[{type:'session_meta',payload:{id:s.codexSid}},
+    {type:'response_item',payload:{type:'message',role:'user',content:[{text:'# AGENTS.md instructions for C:\\project\n\n<INSTRUCTIONS>actual injected rules</INSTRUCTIONS>'}]}}].map(JSON.stringify).join('\n')+'\n');
+  s.transcriptPath=file;
+  const result=await f.service.context('normal');assert.equal(result.receipts.length,0);
+  assert.equal(result.nativeEntries.length,1);assert.match(result.nativeEntries[0].content,/actual injected rules/);
+  s.transcriptPath=file+'.missing';
+  assert.match((await f.service.context('normal')).warnings.join(),/读取失败/);
+  let release;f.service.nativeContextReader={read:()=>new Promise(resolve=>release=resolve)};
+  const pending=f.service.context('normal');s.nativeRuntime.epoch=99;
+  release({entries:[],warnings:[]});await assert.rejects(pending,/会话已切换/);
+});
+
 test('global library works without an active session, deduplicates linked memory, and explicitly refreshes',async t=>{
   const f=setup(t);const persisted=[...f.sessions.values()];f.sessions.clear();
   f.service.getPersistedSessions=()=>persisted;

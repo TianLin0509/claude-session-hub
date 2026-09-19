@@ -99,6 +99,14 @@ rl.on('line',line=>{
     case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
+      if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_CONTEXT==='1') {
+        const path=require('node:path'),dir=path.join(process.env.CODEX_HOME,'sessions');fs.mkdirSync(dir,{recursive:true});
+        t.path=path.join(dir,'rollout-'+t.id+'.jsonl');
+        const timestamp=new Date().toISOString(),message=(role,text)=>({type:'response_item',timestamp,payload:{type:'message',role,content:[{type:'input_text',text}]}});
+        fs.writeFileSync(t.path,[{type:'session_meta',timestamp,payload:{id:t.id,cwd:p.cwd}},
+          message('developer','## Memory\n原生记忆注入快照 fixture\n========= MEMORY_SUMMARY ENDS ========='),
+          message('user','# AGENTS.md instructions for '+p.cwd+'\n\n<INSTRUCTIONS>\n实际注入规则 fixture\n</INSTRUCTIONS>')].map(JSON.stringify).join('\n')+'\n');
+      }
       const historyChars=Number(process.env.CLAUDE_HUB_NATIVE_FIXTURE_HISTORY_CHARS)||0;
       if(msg.method==='thread/start' && historyChars>0)t.turns.push({id:'history-turn',status:'completed',items:[
         {id:'history-answer',type:'agentMessage',phase:'final_answer',text:'旧'.repeat(historyChars)}]});
