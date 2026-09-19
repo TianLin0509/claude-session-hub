@@ -84,6 +84,7 @@ const {
 } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
+const { createCapabilityPanel } = require('./capability-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { speedControl } = require('../core/session-speed.js');
@@ -6598,6 +6599,8 @@ const memoryPanel = createMemoryPanel({
     } : null;
   },
 });
+const capabilityPanel = createCapabilityPanel({document,ipcRenderer,escapeHtml,
+  getActiveSessionId:()=>getFocusedSessionId()});
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 

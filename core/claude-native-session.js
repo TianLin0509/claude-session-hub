@@ -509,7 +509,9 @@ class ClaudeNativeSession extends EventEmitter {
     if (message.type === 'system') {
       if (message.subtype === 'init') {
         this.update({ actualModel: message.model, capabilities: {
-          tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [] } });
+          tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [],
+          skills: message.skills || [], plugins: message.plugins || [],
+          epoch: this.runtime.epoch, sessionId: this.sessionId, observedAt: Date.now() } });
       }
       if (message.subtype === 'task_started' && message.task_id) {
         const owner = this.activities.toolOwners.get(message.tool_use_id) || outputOwner;

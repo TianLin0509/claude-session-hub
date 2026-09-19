@@ -2624,6 +2624,9 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
+const { CapabilityService } = require('./core/capability-service');
+require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
+  new CapabilityService({sessionManager,dataDir:getHubDataDir()}));
 
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns
