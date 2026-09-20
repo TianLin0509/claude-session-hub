@@ -2,6 +2,14 @@
 function createAccountBatchUI({page,call,refresh,notice,escapeHtml:esc}) {
   const chosen=new Set();let phone='',submitting=false,current;
   const stages={queued:'排队',checking:'检查中',signed_in:'已登录',waiting_code:'等待验证码',manual:'需要本人验证',failed:'未完成'};
+  function updateSelection(){
+    for(const input of page.querySelectorAll('[data-ab-select]'))input.checked=chosen.has(input.dataset.abSelect);
+    for(const input of page.querySelectorAll('[data-ab-group]')){
+      const ids=[...input.closest('.ac-family').querySelectorAll('[data-ab-select]')].map(el=>el.dataset.abSelect);
+      input.checked=!!ids.length&&ids.every(id=>chosen.has(id));input.indeterminate=ids.some(id=>chosen.has(id))&&!input.checked;
+    }
+    const b=page.querySelector('[data-ab="start"]');if(b){b.textContent=`一键登录所选（${chosen.size} 处授权）`;b.disabled=!chosen.size||submitting||!!current?.batches?.at(-1)?.running;}
+  }
   function decorate(snapshot) {
     current=snapshot;
     for(const id of chosen)if(!snapshot.connections.some(r=>r.id===id&&r.action==='login'))chosen.delete(id);
@@ -15,13 +23,20 @@ function createAccountBatchUI({page,call,refresh,notice,escapeHtml:esc}) {
       }
       const hint=page.ownerDocument.createElement('small');hint.textContent=row.loginHint||'复用原工具已记住的账号';el.firstElementChild.append(hint);
     }
+    for(const family of content.querySelectorAll('.ac-family')){
+      if(!family.querySelector('[data-ab-select]'))continue;
+      const input=page.ownerDocument.createElement('input');input.type='checkbox';input.dataset.abGroup=family.dataset.accountFamily;input.className='ac-select-account';input.setAttribute('aria-label','选择 OpenAI 的全部用途');family.querySelector('summary').prepend(input);
+    }
     const batch=snapshot.batches?.at(-1),running=batch?.running||submitting;
     const box=page.ownerDocument.createElement('section');box.className='ac-batch';
     box.innerHTML=`<div class="ac-batch-buttons"><button class="ac-btn" data-ab="select">全选当前列表</button><button class="ac-btn" data-ab="needed">选择需登录账号</button><button class="ac-btn" data-ab="clear">清空选择</button><button class="ac-btn primary" data-ab="start" ${running||!chosen.size?'disabled':''}>一键登录所选（${chosen.size}）</button></div><label>短信登录手机号 <input id="ac-batch-phone" type="tel" autocomplete="off" placeholder="可选，仅本次使用" value="${esc(phone)}" maxlength="11"></label><p class="ac-muted">已有有效登录会自动跳过，最多同时发起 3 个。填写手机号后，为支持的站点自动填入并申请验证码；验证码、人机验证或扫码按站点分别完成。手机号和验证码不保存。</p>${batch?`<div class="ac-batch-results" role="status">${batch.items.map(item=>`<div><b>${esc(item.name)}</b><span>${esc(stages[item.stage]||'待确认')} · ${esc(item.message)}</span>${item.stage!=='signed_in'&&snapshot.connections.find(r=>r.id===item.id)?.phoneLogin?`<button class="ac-btn" data-ab="code" data-id="${esc(item.id)}">输入验证码</button>`:''}<button class="ac-btn" data-ac="check" data-id="${esc(item.id)}">检查结果</button></div>`).join('')}</div>`:''}`;
-    content.prepend(box);
+    content.prepend(box);updateSelection();
   }
   function rerender(){if(!current)return;void refresh();}
-  page.addEventListener('change',e=>{if(e.target.dataset.abSelect){e.target.checked?chosen.add(e.target.dataset.abSelect):chosen.delete(e.target.dataset.abSelect);const b=page.querySelector('[data-ab="start"]');if(b){b.textContent=`一键登录所选（${chosen.size}）`;b.disabled=!chosen.size||submitting||!!current?.batches?.at(-1)?.running;}}});
+  page.addEventListener('change',e=>{
+    if(e.target.dataset.abGroup){for(const input of e.target.closest('.ac-family').querySelectorAll('[data-ab-select]'))e.target.checked?chosen.add(input.dataset.abSelect):chosen.delete(input.dataset.abSelect);updateSelection();}
+    else if(e.target.dataset.abSelect){e.target.checked?chosen.add(e.target.dataset.abSelect):chosen.delete(e.target.dataset.abSelect);updateSelection();}
+  });
   page.addEventListener('input',e=>{if(e.target.id==='ac-batch-phone')phone=e.target.value;});
   page.addEventListener('click',async e=>{
     const button=e.target.closest('[data-ab]');if(!button)return;const action=button.dataset.ab;
