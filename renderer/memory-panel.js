@@ -21,6 +21,8 @@ function createMemoryPanel({
     file = null,
     preview = "",
     previewNote = "",
+    previewLabel = "",
+    contextSelectionKey = null,
     error = "",
     busy = false,
     epoch = 0,
@@ -93,6 +95,7 @@ function createMemoryPanel({
   async function read(p, paint = true) {
     const version = epoch, request = ++previewEpoch;
     file = p;
+    previewLabel = "";
     previewNote = tab === 'context' ? '当前磁盘内容；加载事件没有保留当时正文，不能视为注入快照。' : '';
     preview = "读取中…";
     if (paint) render();
@@ -101,7 +104,17 @@ function createMemoryPanel({
     preview = r?.error ? "读取失败：" + r.error : String(r?.content || "");
     if (paint) render();
   }
-  function resetPreview() { file = null; preview = ""; previewNote = ""; sourcePreview = ""; previewEpoch++; }
+  function resetPreview() { file = null; preview = ""; previewNote = ""; previewLabel = ""; contextSelectionKey = null; sourcePreview = ""; previewEpoch++; }
+  function contextEntries() {
+    return [...(data?.nativeEntries || []), ...(data?.receipts || []).map(r => ({ ...r, key: 'hub:' + r.id, label: r.label || 'DREAM_INDEX.md', status: '已发送' }))];
+  }
+  async function selectContextEntry(entry, paint = true) {
+    contextSelectionKey = entry.key;
+    if (entry.snapshot === false) return read(entry.path, paint);
+    previewEpoch++; file = entry.path; preview = entry.content; previewLabel = entry.label;
+    previewNote = entry.source === 'native' ? '原生记录中的注入正文快照；下方路径为原始记录位置。' : '本次确认发送的正文快照。';
+    if (paint) render();
+  }
   function scope() { return { projectId }; }
   function activeProject() {
     const cwd = String(getActiveSessionInfo()?.cwd || "").replace(/\\/g, "/").toLowerCase();
@@ -113,7 +126,9 @@ function createMemoryPanel({
   async function refresh(force = false) {
     const version = ++epoch, requestedTab = tab;
     sid = getActiveSessionInfo()?.id || null;
-    const valid = () => version === epoch && !page.hidden && requestedTab === tab;
+    const requestedSession = sid;
+    const valid = () => version === epoch && !page.hidden && requestedTab === tab
+      && (requestedTab !== 'context' || (getActiveSessionInfo()?.id || null) === requestedSession);
     const key = `${tab}:${tab === 'context' ? sid : projectId}`;
     error = ""; loading = true;
     if (loadedKey !== key) { data = null; loadedKey = key; }
@@ -121,11 +136,13 @@ function createMemoryPanel({
     try {
       if (tab === "context") {
         if (sid) {
-          const result = await call("context", {sessionId:sid});
+          const result = await call("context", {sessionId:sid, refresh:force});
           if (!valid()) return;
           data = result;
           // Preview the immutable submitted snapshot, never today's disk contents.
-          if (!preview && !previewNote && data.receipts[0]) { file = data.receipts[0].path; preview = data.receipts[0].content; }
+          const entries = contextEntries(), chosen = entries.find(e => e.key === contextSelectionKey) || entries[0];
+          if (chosen) await selectContextEntry(chosen, false);
+          else resetPreview();
         }
       } else {
         const result = await call("library", {refresh:force});
@@ -168,12 +185,12 @@ function createMemoryPanel({
     return `<button class="mp-file ${file === f.path ? "active" : ""}" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="mp-file-name">${esc(f.label || f.path.split(/[\\/]/).pop())}</span><span class="mp-meta">${esc(f.owner || "")} ${badge(f.status || "可读取")}</span><span class="mp-file-path">${esc(f.path)}</span></button>`;
   }
   function previewPane() {
-    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(file ? file.split(/[\\/]/).pop() : "内容预览")}</span>${file ? button("打开所在位置", "folder") : ""}</div>${previewNote ? `<p class="mp-note">${esc(previewNote)}</p>` : ''}<pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
+    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(previewLabel || (file ? file.split(/[\\/]/).pop() : "内容预览"))}</span>${file ? button("打开所在位置", "folder") : ""}</div>${previewNote ? `<p class="mp-note">${esc(previewNote)}</p>` : ""}<pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
   }
   function context() {
-    const native = data.native || {rows:[],warnings:[]};
-    if(native.persistenceError && !native.warnings.includes(native.persistenceError))native.warnings=[...native.warnings,native.persistenceError];
-    return `<div class="mp-pagehead"><div><h2>本会话的上下文记录</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">原生规则加载记录</div>${native.state==='loading' ? '<p class="mp-muted">正在后台核对本会话原生记录…</p>' : ''}${native.rows.map((r,i)=>`<button class="mp-file" data-native="${i}"><span class="mp-file-name">${esc(r.label)} ${badge(r.snapshot?'正文快照':'加载事件')}</span><span class="mp-meta">${esc(r.evidence)} · ${esc(fmt(r.observedAt))}</span><span class="mp-file-path">${esc(r.path || r.scope)}</span></button>`).join('')}${(native.warnings||[]).map(w=>`<p class="mp-error">${esc(w)}</p>`).join('')}<div class="mp-section-title">Hub 已确认的上下文提交</div>${data.receipts.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">${esc(r.label || 'DREAM_INDEX.md')} ${badge("已发送")}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${esc(r.version.slice(0,8))}</span></button>`).join("")}${!data.receipts.length && !native.rows.length ? '<p class="mp-empty">尚无可确认的记忆注入记录。这不表示原生 CLI 没有加载规则。</p>' : ""}</section>${previewPane()}</div>${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
+    const entries = contextEntries();
+    const nativeLocation = r => esc(r.evidence || `原生记录第 ${r.line} 行`);
+    return `<div class="mp-pagehead"><div><h2>本会话的记忆注入记录</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">原生规则、记忆与 Hub 索引</div>${entries.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">${esc(r.label)} ${badge(r.status)}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${r.source === 'native' ? nativeLocation(r) : esc(r.version?.slice(0,8) || '')}</span></button>`).join("")}${!entries.length ? '<p class="mp-empty">尚未取得可展示的注入记录，并不表示本会话没有加载规则或记忆。</p>' : ""}</section>${previewPane()}</div>${(data.warnings || []).map(w=>`<p class="mp-note">${esc(w)}</p>`).join('')}${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
   }
   function library() {
     const seen = new Set(), q = query.toLowerCase();
@@ -239,20 +256,9 @@ function createMemoryPanel({
       return refresh();
     }
     if (b.dataset.file) return read(b.dataset.file);
-    if (b.dataset.native !== undefined) {
-      const r=data.native.rows[+b.dataset.native];
-      if(!r.snapshot) return read(r.path);
-      previewEpoch++; file=null; preview=r.content;
-      previewNote='原生记录中的指令正文快照；作用范围：'+(r.scope||'未提供')+'。原生记录未逐一列出来源文件。';
-      return render();
-    }
     if (b.dataset.receipt !== undefined) {
-      previewEpoch++;
-      const r = data.receipts[+b.dataset.receipt];
-      file = r.path;
-      preview = r.content;
-      previewNote = '本次确认发送的正文快照。';
-      return render();
+      const r = contextEntries()[+b.dataset.receipt];
+      return selectContextEntry(r);
     }
     if (b.dataset.jobSession) {
       close();
@@ -294,7 +300,7 @@ function createMemoryPanel({
           if (!status || status.phase === "error" || status.lastError)
             throw new Error(status?.lastError || "历史索引刷新失败");
         }
-        resetPreview();
+        if (tab !== 'context') resetPreview();
         return refresh(true);
       case "folder":
         if (file) await ipcRenderer.invoke("show-in-folder", file);

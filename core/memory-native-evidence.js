@@ -1,11 +1,10 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path');
-const {Worker}=require('node:worker_threads');
 const {createHash,randomUUID}=require('node:crypto');
 const hash=text=>createHash('sha256').update(text).digest('hex');
 class NativeMemoryEvidence {
-  constructor({root,notify,logger=console}){this.root=root;this.notify=notify;this.logger=logger;this.cache=new Map();this.flights=new Map();this.writes=new Map();}
-  identity(s){return s.codexSid ? 'codex:'+s.codexSid : s.ccSessionId ? 'claude:'+s.ccSessionId : null;}
+  constructor({root,notify,logger=console}){this.root=root;this.notify=notify;this.logger=logger;this.cache=new Map();this.writes=new Map();}
+  identity(s){return !s.codexSid && s.ccSessionId ? 'claude:'+s.ccSessionId : null;}
   location(id){return path.join(this.root,'native-context',hash(id)+'.json');}
   async read(s){
     const id=this.identity(s);if(!id)return {rows:[],state:'unavailable',warnings:[]};
@@ -16,29 +15,7 @@ class NativeMemoryEvidence {
       // Concurrent hook arrival must win over a stale disk read.
       entry=this.cache.get(id)||entry;this.cache.set(id,entry);
     }
-    if(s.codexSid && s.transcriptPath) this.refresh(s,id,entry).catch(e=>this.fail(id,e));
-    return {...entry,state:this.flights.has(id)?'loading':entry.state};
-  }
-  fail(id,error){const old=this.cache.get(id)||{rows:[]};this.cache.set(id,{...old,state:'error',warnings:[error.message]});this.logger.error('[memory] native evidence:',error);this.notify();}
-  async refresh(s,id,entry){
-    if(this.flights.has(id)||Date.now()-(entry.checkedAt||0)<2000)return;
-    entry.checkedAt=Date.now();
-    const work=(async()=>{
-      const stat=await fs.promises.stat(s.transcriptPath);
-      const signature=JSON.stringify([s.transcriptPath,stat.size,stat.mtimeMs]);
-      if(entry.signature===signature)return;
-      const data=await new Promise((resolve,reject)=>{
-        const worker=new Worker(path.join(__dirname,'memory-native-evidence-worker.js'),{workerData:{file:s.transcriptPath,nativeId:s.codexSid}});
-        let done=false;
-        const finish=(err,data)=>{if(done)return;done=true;clearTimeout(timer);void worker.terminate();err?reject(err):resolve(data);};
-        const timer=setTimeout(()=>finish(new Error('原生上下文核对超时，请稍后刷新')),30000);
-        worker.once('message',r=>finish(r.ok?null:new Error(r.error),r.data));worker.once('error',e=>finish(e));worker.once('exit',code=>{if(!done)finish(new Error('原生上下文检查异常退出：'+code));});
-      });
-      const next={identity:id,signature,checkedAt:Date.now(),rows:data.rows,warnings:data.warnings,state:'ready'};
-      this.cache.set(id,next);await this.persist(id,next);
-    })();
-    this.flights.set(id,work);
-    try{await work;}finally{this.flights.delete(id);this.notify();}
+    return entry;
   }
   async persist(id,value){
     const previous=this.writes.get(id)||Promise.resolve();

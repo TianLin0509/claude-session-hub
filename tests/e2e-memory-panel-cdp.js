@@ -27,21 +27,24 @@ async function main(){
     {type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:'记忆页面不需要会话列表，当前上下文直接对应当前 session。'}]}},
     {type:'response_item',timestamp,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'已确认：保留最左功能栏，使用独立 DREAM_INDEX.md。'}]}}].map(JSON.stringify).join('\n')+'\n','utf8');
   const result={root,out,fixture:true,boundary:'实际隔离 Hub 和原生协议子进程，模型回答为确定性夹具；未调用云端模型。',checks:[],passed:false};let hub,cdp;
+  // Hidden Electron windows may not produce CDP screenshot frames. Capture the
+  // same live webContents with Electron's stayHidden API; no product IPC is mocked.
+  const entry=path.join(root,'memory-test-entry.cjs');
+  fs.writeFileSync(entry,`require(${JSON.stringify(path.resolve('main-bootstrap.js'))});\nconst {app,ipcMain}=require('electron');\napp.on('browser-window-created',(_event,win)=>win.webContents.setBackgroundThrottling(false));\nipcMain.handle('test:memory-capture',async event=>{event.sender.invalidate();await event.sender.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');return (await event.sender.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG().toString('base64');});\n`);
   const until=async(expr,label)=>{const end=Date.now()+35000;while(Date.now()<end){if(await cdp.eval('Boolean('+expr+')'))return;await sleep(100);}throw Error('timeout: '+label);};
   const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+')','exists '+selector);await cdp.eval('document.querySelector('+JSON.stringify(selector)+').click()');};
-  const snap=async name=>{const shot=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot.data,'base64'));};
+  const snap=async name=>{const shot=await cdp.eval('ipcRenderer.invoke("test:memory-capture")');fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(shot,'base64'));};
   try {
-    hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'visible',label:'memory-mvp',extraEnv:{
+    hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'hidden',entryPath:entry,label:'memory-mvp',extraEnv:{
       CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:codexHome,CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
       HUB_SESSION_SEARCH_CODEX_ROOTS:native,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_DREAM:'1',
-      CLAUDE_HUB_NATIVE_FIXTURE_RULES:'1',
+      CLAUDE_HUB_NATIVE_FIXTURE_CONTEXT:'1',
+      CLAUDE_HUB_NATIVE_FIXTURE_INSTRUCTIONS:'1',
       CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),
       CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
     result.pid=hub.pid;result.port=hub.port;cdp=await connectFirstPage(hub);
-    await cdp.send('Page.bringToFront');
-    // Give the isolated test window a deterministic screenshot viewport.
-    await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:1600,height:1000,deviceScaleFactor:1,mobile:false});
     await until('typeof sessions!=="undefined" && typeof ipcRenderer!=="undefined"','renderer');
     await cdp.eval(`(()=>{const invoke=ipcRenderer.invoke.bind(ipcRenderer);window.memoryCalls=[];ipcRenderer.invoke=(name,...args)=>{if(name.startsWith('memory:'))window.memoryCalls.push(name);return invoke(name,...args);};})()`);
     await click('#btn-rail-memory');
@@ -73,14 +76,26 @@ async function main(){
     assert.equal(await cdp.eval('Math.abs(document.querySelector("#memory-page").getBoundingClientRect().left-document.querySelector("#scene-rail").getBoundingClientRect().right)<1'),true);
     assert.equal(await cdp.eval('document.querySelectorAll(\'[data-action="open-memory"]\').length'),1);
     result.contextOpenMs=Date.now()-contextStart;
-    await until('!!document.querySelector("#memory-page [data-native]")','native instruction evidence');
-    assert.equal(await cdp.eval('document.querySelectorAll("#memory-page [data-native]").length'),1);
-    assert.equal(await cdp.eval('window.memoryCalls.every(n=>n==="memory:context")'),true);
-    await click('[data-native="0"]');
-    await until('document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','native body snapshot');
-    result.checks.push('Codex 原生指令后台补录，展示真实正文快照且不伪造来源路径');
+    assert.equal(await cdp.eval('document.querySelectorAll("#memory-page .mp-file").length'),2);
+    assert.deepEqual(await cdp.eval('window.memoryCalls'),['memory:context']);
     assert.equal(await cdp.eval('document.querySelectorAll("#memory-page [data-file]").length'),0);
+    await click('[data-receipt="1"]');
+    assert.match(await cdp.eval('document.querySelector(".mp-preview-content").textContent'),/实际注入规则 fixture/);
+    assert.doesNotMatch(await cdp.eval('document.querySelector(".mp-preview-content").textContent'),/原生文件保持原位/);
+    result.checks.push('没有造梦也展示原生 AGENTS.md 和 Memory；点击预览为会话注入快照，与磁盘文件不同');
     await snap('01-current-context');result.checks.push('第六个统一入口、三个 tab、无会话列表；上下文只请求证据，不查历史或列出未注入文件');
+    const boundFile=await cdp.eval('sessions.get('+sid+').transcriptPath');
+    assert.ok(boundFile.startsWith(native+path.sep));
+    fs.appendFileSync(boundFile,JSON.stringify({type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:'# AGENTS.md instructions for '+cwd+'\n\n<INSTRUCTIONS>刷新后的实际注入规则</INSTRUCTIONS>'}]}})+'\n');
+    await click('[data-action-mp="refresh"]');
+    await until('document.querySelector(".mp-preview-content")?.textContent.includes("刷新后的实际注入规则")','selected native snapshot follows refresh');
+    result.checks.push('刷新读取新增原生注入，选中项的预览同步更新');
+    const receiptDir=path.join(data,'memory','context'),receiptFile=path.join(receiptDir,require('node:crypto').createHash('sha256').update(s.id).digest('hex')+'.json');
+    assert.equal(fs.existsSync(receiptFile),false);fs.mkdirSync(receiptDir,{recursive:true});fs.writeFileSync(receiptFile,'{broken');
+    await click('[data-action-mp="refresh"]');
+    await until('document.querySelector("#memory-page").textContent.includes("Hub 索引回执读取失败")','damaged receipts are visible');
+    assert.match(await cdp.eval('document.querySelector(".mp-preview-content").textContent'),/刷新后的实际注入规则/);
+    fs.unlinkSync(receiptFile);result.checks.push('Hub 回执损坏时显示错误，同时保留有效原生记忆');
     await click('[data-tab="library"]');
     await until('document.querySelector("#mp-project")?.options.length>1','project filter');
     await cdp.eval('(()=>{const el=document.querySelector("#mp-project");el.value=[...el.options].find(o=>o.textContent.includes('+JSON.stringify(cwd)+')).value;el.dispatchEvent(new Event("change",{bubbles:true}));})()');
@@ -121,10 +136,7 @@ async function main(){
     const confirmedContext=(await cdp.eval('ipcRenderer.invoke("memory:context",{sessionId:'+sid+'})')).data;
     assert.ok(confirmedContext.receipts.some(r=>r.kind==='workspace'&&r.status==='sent'));
     result.checks.push('共享工作根规则随真实提交到达原生进程并确认，目录中未新增规则副本');
-    await click('[data-receipt="0"]');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
-    await click('[data-native="0"]');
-    await cdp.eval('window.memoryPreviewCalls=window.memoryCalls.filter(n=>n==="memory:context").length;ipcRenderer.emit("memory:changed",{},{});');
-    await until('window.memoryCalls.filter(n=>n==="memory:context").length>window.memoryPreviewCalls && !document.querySelector(".mp-loading") && document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','native preview retained after refresh');
+    await cdp.eval('[...document.querySelectorAll("[data-receipt]")].find(b=>b.textContent.includes("DREAM_INDEX.md")).click()');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
     await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
     assert.equal(await cdp.eval('document.querySelector("#memory-page").hidden'),true);
     assert.notEqual(await cdp.eval('getComputedStyle(document.querySelector("#session-sidebar")).visibility'),'hidden');
@@ -139,6 +151,15 @@ async function main(){
     await cdp.eval('(()=>{const input=document.querySelector(".floating-input-box");input.textContent="Claude 请参考记忆";input.dispatchEvent(new Event("input",{bubbles:true}));})()');
     await click('.floating-input-send');await until('sessions.get('+cid+')?.nativeRuntime?.state==="completed"','Claude complete');
     assert.equal((await cdp.eval('ipcRenderer.invoke("memory:snapshot",{sessionId:'+cid+'})')).data.receipts[0].status,'sent');
+    await click('#btn-rail-memory');
+    await until('document.querySelector("#memory-page").textContent.includes("InstructionsLoaded")','Claude load hook reaches UI');
+    await cdp.eval('[...document.querySelectorAll("[data-receipt]")].find(b=>b.textContent.includes("加载事件")).click()');
+    await until('document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','Claude current disk preview');
+    assert.match(await cdp.eval('document.querySelector(".mp-preview .mp-note").textContent'),/当前磁盘内容/);
+    assert.doesNotMatch(await cdp.eval('document.querySelector("#memory-page").textContent'),/undefined/);
+    await snap('08-claude-load-event');
+    await click('[data-action-mp="close"]');
+    result.checks.push('Claude 子进程加载事件经实际 Python hook/HTTP 到页面，路径预览明确标注当前磁盘而非历史快照');
     result.checks.push('切换到 Claude 后当前上下文跟随 session；Claude 原生协议也确认索引发送');
     const slot={kind:'codex',model:'gpt-6-astra',effort:'medium',mcpProfile:'none'};
     const meeting=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'记忆群聊验证',scene:'general',workspace:cwd,slots:[slot,slot]})+')');
@@ -169,9 +190,9 @@ async function main(){
     await click('[data-tab="library"]');
     await until('typeof window.releaseMemoryLibrary==="function"','delayed library response');
     await click('[data-tab="context"]');
-    await until('document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的上下文记录")','context ignores library latency');
+    await until('document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的记忆注入")','context ignores library latency');
     await cdp.eval('window.releaseMemoryLibrary()');
-    await until('document.querySelector("[data-tab=context]").getAttribute("aria-selected")==="true" && document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的上下文记录")','stale library cannot overwrite context');
+    await until('document.querySelector("[data-tab=context]").getAttribute("aria-selected")==="true" && document.querySelector(".mp-pagehead h2")?.textContent.includes("本会话的记忆注入")','stale library cannot overwrite context');
     result.checks.push('延迟的文件库请求不阻塞当前上下文，返回后不串页');
     await cdp.eval(`(()=>{const invoke=ipcRenderer.invoke.bind(ipcRenderer);let first=true;window.contextRequests=0;window.releaseContext=null;ipcRenderer.invoke=async(name,...args)=>{if(name==='memory:context')window.contextRequests++;const value=await invoke(name,...args);if(name==='memory:context'&&first){first=false;await new Promise(resolve=>window.releaseContext=resolve);}return value;};})()`);
     await click('[data-tab="context"]');

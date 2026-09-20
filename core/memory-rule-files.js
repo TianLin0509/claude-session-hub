@@ -22,15 +22,14 @@ function globalRuleFiles(home) {
     .map(([kind,dir,name])=>({kind,path:path.join(home,dir,name)}));
 }
 // Preserve workspace-specific rules without creating another AGENTS.md in cwd.
-// Only the explicit workspace ancestry is considered; native-loaded sources win.
+// Only the explicit workspace ancestry is considered. Disk discovery is not
+// proof of native injection: duplicates are preferable to silently losing rules.
 function sharedWorkspaceRules({ session, workspaceService, homeDir }) {
   const cwd = session.cwd, root = workspaceService.getWorkspaceRoot();
   const relative = path.relative(root,cwd);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return [];
-  const kind = session.transcriptKind || session.kind;
-  const view = require('./memory-inspector').getSessionFiles({...session,kind,homeDir,workspaceRoot:root,rulesOnly:true});
   const read = file => { if(fs.statSync(file).size>65536) throw new Error('共享规则核对超过 64 KB，请先拆分：'+file); return fs.readFileSync(file,'utf8'); };
-  const bodies = (view.files || []).filter(f=>f.exists).map(f=>normalize(read(f.path)));
+  const bodies = [];
   const result=[];
   let dir=root;
   for (const part of ['', ...relative.split(path.sep).slice(0,-1)]) {

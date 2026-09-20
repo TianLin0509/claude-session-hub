@@ -193,6 +193,7 @@ const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
+const nativeSessionBootstrap = require('./native-session-bootstrap').createNativeSessionBootstrap();
 const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
 let sessionSplit = null;
@@ -5831,11 +5832,52 @@ function getActiveFileManagerContext() {
   };
 }
 
+function addFilePathsToConversation(paths, targetId) {
+  const id = targetId || getFocusedSessionId();
+  if (!id) {
+    if (window.MeetingRoom?.appendFilePaths) return window.MeetingRoom.appendFilePaths(paths);
+    throw new Error('请先打开一个会话');
+  }
+  const bar = [...document.querySelectorAll('.floating-input-bar')].find(node => node.dataset.sessionId === id);
+  const box = bar?.querySelector('.floating-input-box');
+  if (!box || sessions.get(id)?.readOnly || box.getAttribute('contenteditable') === 'false') throw new Error('目标会话输入框不可用，请先打开会话');
+  const current = readContenteditablePlainText(box);
+  replaceContenteditableText(box, `${current}${current.trim() ? '\n\n' : ''}${paths.join('\n')}`);
+  placeCaretAtContenteditableEnd(box);
+  saveFloatingInputDraft(id, box);
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  box.focus();
+  return true;
+}
+
+// Only consume drags originating from the file manager; native file-drop routing stays intact.
+document.addEventListener('dragover', event => {
+  if (event.dataTransfer?.types.includes('application/x-hub-files') && event.target.closest('.floating-input-box, #mr-input-box')) {
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy';
+  }
+}, true);
+document.addEventListener('drop', event => {
+  const incoming = event.dataTransfer?.getData('application/x-hub-files');
+  const box = event.target.closest('.floating-input-box, #mr-input-box');
+  if (!incoming || !box) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  try {
+    const paths = JSON.parse(incoming);
+    if (!Array.isArray(paths) || !paths.length || !paths.every(value => typeof value === 'string' && path.isAbsolute(value))) throw new Error('无效的文件路径');
+    if (box.id === 'mr-input-box') window.MeetingRoom.appendFilePaths(paths);
+    else addFilePathsToConversation(paths, box.closest('.floating-input-bar').dataset.sessionId);
+  } catch (error) { chatgptBridgeController.showStatus(error.message, 'error'); }
+}, true);
+
 fileManagerPanel = createFileManagerPanel({
   document,
   window,
   ipcRenderer,
   getActiveContext: getActiveFileManagerContext,
+  addToConversation: addFilePathsToConversation,
+  listConversationTargets: () => [...document.querySelectorAll('.floating-input-bar')]
+    .map(node => sessions.get(node.dataset.sessionId)).filter(session => session && !session.readOnly)
+    .map(session => ({ id: session.id, label: session.title || session.id })),
   openPathInHub: (filePath, openOptions = {}) => openPathInHub(filePath, {
     cwd: getActivePreviewCwd(),
     requireExistsForRel: false,
@@ -7885,6 +7927,7 @@ if (typeof MeetingRoom !== 'undefined') {
 const _pendingDormantResumes = new Map();
 
 ipcRenderer.on('session-created', async (_e, { session }) => {
+  nativeSessionBootstrap.record(session, { created: true });
   // When resuming a dormant session, the hubId matches an existing dormant
   // entry. Merge live PTY info on top of the dormant metadata so title /
   // preview / unread / pinned aren't wiped.
@@ -8022,6 +8065,12 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
+  const booting = nativeSessionBootstrap.remove(sessionId);
+  // An explicit suspension can also overtake the initial list. Keep its
+  // historical entry while preventing that list from reviving a live writer.
+  if (booting && session && !sessions.has(sessionId)) {
+    sessions.set(sessionId, { ...session, id: sessionId, status: 'dormant' });
+  }
   sessionSplit?.closed(sessionId);
   const local = sessions.get(sessionId);
   if (!local) return;
@@ -8140,6 +8189,7 @@ function markSessionProcessLost(sessionId, exitInfo) {
 }
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
+  nativeSessionBootstrap.remove(sessionId);
   sessionSplit?.closed(sessionId);
   cardHistoryViews.drop(sessionId);
   floatingPromptDeliveries.delete(sessionId);
@@ -8201,6 +8251,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
 });
 
 ipcRenderer.on('session-updated', (_e, { session }) => {
+  nativeSessionBootstrap.record(session);
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
   if (session.runtimeBackend === 'claude-stream-json') {
@@ -8664,7 +8715,8 @@ sessionSplit = require('./session-split').createSessionSplit({
   for (const s of existing) {
     const migrated = migrateLegacyBranchSessionMeta(s);
     if (migrated !== s) migratedLegacyBranchTitles += 1;
-    sessions.set(migrated.id, migrated);
+    const current = nativeSessionBootstrap.merge(migrated, sessions.get(migrated.id));
+    if (current) sessions.set(migrated.id, current);
   }
 
   if (persisted && Array.isArray(persisted.sessions)) {
@@ -8674,7 +8726,7 @@ sessionSplit = require('./session-split').createSessionSplit({
         Object.assign(meta, migratedMeta);
         migratedLegacyBranchTitles += 1;
       }
-      if (sessions.has(meta.hubId)) continue;
+      if (sessions.has(meta.hubId) || nativeSessionBootstrap.removed(meta.hubId)) continue;
       // 2026-05-05 dormant 加载 fallback：state.json 里历史 dormant session 的
       // currentModel 大量为 null（main.js:2694 RESUME_META_FIELDS 字段名拼错导致
       // 一旦写入 null 就永久污染，已在同次提交修）。这里给老污染数据按 kind 推断
@@ -8773,6 +8825,7 @@ sessionSplit = require('./session-split').createSessionSplit({
     }
   }
 
+  nativeSessionBootstrap.finish();
   if (migratedLegacyBranchTitles > 0 || healedUnsafeSessionModels > 0) {
     if (migratedLegacyBranchTitles > 0) {
       console.info(`[session-title] migrated ${migratedLegacyBranchTitles} legacy branch title(s)`);

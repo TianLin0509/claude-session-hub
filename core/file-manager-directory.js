@@ -76,11 +76,28 @@ async function listWorkspaceDirectory(payload = {}, deps = {}) {
     });
 
     const limit = normalizeLimit(payload.limit);
+    const visible = entries.slice(0, limit);
+    // Bound stat concurrency; vanished or inaccessible entries remain explicitly unknown.
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(16, visible.length) }, async () => {
+      while (cursor < visible.length) {
+        const entry = visible[cursor++];
+        try {
+          const info = await lstat(entry.path);
+          entry.size = info.isFile() ? info.size : null;
+          entry.mtimeMs = info.mtimeMs;
+        } catch (error) {
+          entry.size = null;
+          entry.mtimeMs = null;
+          entry.metadataError = error.code || 'stat_failed';
+        }
+      }
+    }));
     return {
       ok: true,
       root,
       directory,
-      entries: entries.slice(0, limit),
+      entries: visible,
       total: entries.length,
       truncated: entries.length > limit,
     };

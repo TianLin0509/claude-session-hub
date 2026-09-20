@@ -96,7 +96,7 @@ function runCompanyDrop(filePath, {
     const child = spawnImpl(runtime.pythonPath, [
       runtime.clientPath,
       'send',
-      filePath,
+      ...(Array.isArray(filePath) ? filePath : [filePath]),
       '--json',
       '--no-clipboard',
     ], {
@@ -121,7 +121,7 @@ function runCompanyDrop(filePath, {
       resolve(result);
     };
     const append = (target, chunk) => {
-      outputBytes += chunk.length;
+      outputBytes += Buffer.byteLength(chunk);
       if (outputBytes > maxOutputBytes) {
         child.kill();
         finish({ error: '同步程序输出异常，操作已停止。', code: 'output_limit' });
@@ -130,8 +130,8 @@ function runCompanyDrop(filePath, {
       return target + chunk.toString('utf8');
     };
 
-    if (child.stdout) child.stdout.on('data', chunk => { stdout = append(stdout, chunk); });
-    if (child.stderr) child.stderr.on('data', chunk => { stderr = append(stderr, chunk); });
+    if (child.stdout) { child.stdout.setEncoding('utf8'); child.stdout.on('data', chunk => { stdout = append(stdout, chunk); }); }
+    if (child.stderr) { child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { stderr = append(stderr, chunk); }); }
     child.on('error', error => finish({
       error: `无法启动同步程序：${String(error && error.message || error)}`,
       code: 'spawn_failed',
@@ -145,6 +145,10 @@ function runCompanyDrop(filePath, {
 }
 
 function registerPathIpc(ipcMain, deps = {}) {
+  require('./file-manager-handlers.js').registerFileManagerIpc(ipcMain, {
+    runCompanyDrop: deps.runCompanyDrop || runCompanyDrop,
+    ...deps,
+  });
   const syncRunner = deps.runCompanyDrop || runCompanyDrop;
   const previewPathSearcher = deps.searchPreviewPaths || searchPreviewPaths;
   const directoryLister = deps.listWorkspaceDirectory || listWorkspaceDirectory;

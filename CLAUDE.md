@@ -61,7 +61,7 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
 
 ## 记忆 MVP（2026-09-17）
 
-2026-09-19：临时目录不再自动复制 AGENTS.md 或 git init；缺少原生覆盖的共享工作区规则经统一消息入口发送并记录回执。文件库按来源折叠未改历史副本，手改/未知保留；全局规则有差异时只提示、不覆盖。当前上下文缓存实际证据：Codex worker 从当前身份已知原生记录提取指令正文，Claude InstructionsLoaded 记录加载事件。加载事件没有历史正文快照，磁盘预览须明确标注；不以文件发现替代注入。只读清单入口 scripts/audit-memory-rules.js，详见下述设计。
+2026-09-19：临时目录不再自动复制 AGENTS.md 或 git init；共享工作区祖先规则经统一消息入口发送并记录回执，不以磁盘存在推断已注入。文件库按来源折叠未改历史副本，手改/未知保留；全局规则有差异时只提示、不覆盖。当前上下文缓存实际证据：Codex 复用 memory-native-context worker 从当前身份已知原生记录提取 AGENTS 和 developer Memory 正文，Claude InstructionsLoaded 记录加载事件。加载事件没有历史正文快照，磁盘预览须明确标注；不以文件发现替代注入。只读清单入口 scripts/audit-memory-rules.js，详见下述设计。
 
 左侧第六个功能按钮是唯一记忆入口，页面内没有会话列表；三个 tab 为当前上下文、记忆文件库、造梦。当前上下文跟随聚焦 session，群聊先打开成员 session。
 

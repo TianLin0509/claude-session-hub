@@ -5,6 +5,7 @@ const { Worker } = require('node:worker_threads');
 const fs = require('node:fs');
 const {randomUUID,createHash} = require('node:crypto');
 const {planSharing,applySharing} = require('../scripts/share-agent-skills');
+const {validateNote,saveNote}=require('./capability-notes');
 class CapabilityService {
   constructor({sessionManager, dataDir, homeDir = process.env.CLAUDE_HUB_HOME_DIR || os.homedir()}) {
     Object.assign(this,{sessionManager,dataDir,homeDir});
@@ -13,6 +14,14 @@ class CapabilityService {
   sessions() {
     return this.sessionManager.getAllSessions().map(s=>({id:s.id,title:s.title || s.name || s.id,kind:s.kind,
       backend:s.runtimeBackend || 'pty',profile:s.mcpProfile || '未记录',cwd:s.cwd}));
+  }
+  async updateNote(input){
+    const note=validateNote(input);
+    const catalog=await this.catalog();
+    if(!catalog.rows.some(r=>r.id===input.id))throw Error('条目已不在能力库，请刷新后重试');
+    await saveNote(this.dataDir,input.id,note);
+    this.cache=null;this.catalogGeneration++;
+    return {id:input.id};
   }
   sharingFingerprint(plan) {
     return createHash('sha256').update(JSON.stringify({operations:plan.operations,existing:plan.existing,

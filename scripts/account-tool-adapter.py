@@ -17,7 +17,9 @@ def main():
             with sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True, timeout=3) as db:
                 db.row_factory = sqlite3.Row
                 rows = []
-                for a in db.execute('SELECT id,enabled,ready,state,heartbeat,updated FROM accounts ORDER BY id'):
+                columns = {c['name'] for c in db.execute('PRAGMA table_info(accounts)')}
+                group_column = 'login_group' if 'login_group' in columns else "'' AS login_group"
+                for a in db.execute('SELECT id,enabled,ready,state,heartbeat,updated,' + group_column + ' FROM accounts ORDER BY id'):
                     r = dict(a)
                     control = db.execute('SELECT action,status,result,updated FROM controls WHERE account_id=? ORDER BY created DESC LIMIT 1',(a['id'],)).fetchone()
                     if control:

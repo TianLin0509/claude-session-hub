@@ -282,20 +282,37 @@ class HubMemoryService {
     if (!project) throw new Error('请选择一个已有项目');
     return { cwd: project.cwd, kind: request.kind || 'codex' };
   }
-  async context(sessionId) {
-    const s = this.session(sessionId);
-    const read=async suffix=>{try{return JSON.parse(await fs.promises.readFile(path.join(this.root,'context',hash(sessionId+suffix)+'.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;return [];}};
-    const [dream,workspace,native]=await Promise.all([read(''),read(':workspace'),this.nativeEvidence.read({...s,
-      transcriptPath:s.transcriptPath || this.transcriptTap?.getCodexRolloutPath?.(sessionId)})]);
-    const history=[...workspace,...dream];
+  async context(sessionId, force = false) {
+    const s = { ...this.session(sessionId) };
+    const identity = contextIdentity(s);
+    this.nativeContextReader ||= new (require('./memory-native-context').NativeContextReader)();
+    const nativeTask = (s.ccSessionId && !s.codexSid
+      ? this.nativeEvidence.read(s).then(evidence => ({ entries: evidence.rows.map(row => ({
+          ...row, key: 'claude:' + row.id, source: 'native', sentAt: row.observedAt, status: '加载事件',
+        })), warnings: [...evidence.warnings, ...(evidence.persistenceError ? [evidence.persistenceError] : [])] }))
+      : this.nativeContextReader.read(s.codexSid ? { ...s, transcriptKind: 'codex' } : s, { force }))
+      .catch(error => ({ entries: [], warnings: ['原生注入记录读取失败：' + error.message] }));
+    const warnings = [];
+    const readReceipts = async (suffix, label) => {
+      try {
+        const records = JSON.parse(await fs.promises.readFile(path.join(this.root, 'context', hash(sessionId + suffix) + '.json'), 'utf8'));
+        if (!Array.isArray(records) || records.some(r => !r || typeof r !== 'object')) throw new Error('回执格式无效');
+        return records;
+      } catch (e) { if (e.code !== 'ENOENT') warnings.push(label + '读取失败：' + e.message); return []; }
+    };
+    const history = (await Promise.all([readReceipts(':workspace', 'Hub 共享规则回执'), readReceipts('', 'Hub 索引回执')])).flat();
     // Evidence is bound to the native session identity/epoch, never to a cwd alone.
-    const current = history.filter(r => r.identity === contextIdentity(s));
+    const current = history.filter(r => r.identity === identity);
+    const native = await nativeTask;
+    const latest = this.session(sessionId);
+    if (identity !== contextIdentity(latest) || s.transcriptPath !== latest.transcriptPath) throw new Error('当前原生会话已切换，请刷新重试');
     return {
       session: { id: s.id, title: s.title, cwd: s.cwd, kind: s.kind },
       receipts: current.filter(r => r.status === 'sent'),
+      nativeEntries: native.entries,
+      warnings: [...warnings, ...(native.warnings || [])],
       unconfirmed: current.filter(r => r.status !== 'sent').length,
-      native,
-      note: '展示原生记录中的规则正文、规则加载事件及 Hub 已确认发送的内容。未取得证据的部分仍未知。历史加载不代表压缩后仍完整保留，索引已发送也不代表主题正文已读取。',
+      note: '原生规则与记忆来自本会话实际记录。Codex 显示最近注入正文快照；Claude 加载事件只证明曾读取该路径，预览另行标明当前磁盘内容。Hub 共享规则与梦境索引来自确认提交回执。这些记录不能证明上下文压缩后仍完整保留，也不代表索引链接的正文已读取。' + (native.compactedAt ? ' 本会话有压缩记录。' : ''),
     };
   }
   async dreamState(request) {
@@ -880,7 +897,7 @@ class HubMemoryService {
     const history=readJSON(receiptFile,[]),submissionId=options.clientSubmissionId||options.submissionReceipt?.clientSubmissionId;
     const id='workspace-'+(submissionId||randomUUID());
     const retry=submissionId && history.find(r=>r.id===id);
-    if(retry){if(retry.userFingerprint!==hash(prompt))throw new Error('同一提交编号的工作区规则消息已变化');return this.submitIndex(sid,prompt+retry.appendix,options,retry,receiptFile,send);}
+    if(retry){if(retry.identity!==contextIdentity(s))throw new Error('同一提交编号的原生会话已变化，请重新提交');if(retry.userFingerprint!==hash(prompt))throw new Error('同一提交编号的工作区规则消息已变化');return this.submitIndex(sid,prompt+retry.appendix,options,retry,receiptFile,send);}
     const sources=require('./memory-rule-files').sharedWorkspaceRules({session:s,workspaceService:this.workspaceService,homeDir:this.homeDir});
     if(!sources.length)return send(prompt);
     const content=sources.map(f=>`来源：${f.path}\n${f.content}`).join('\n\n'),version=hash(content),identity=contextIdentity(s);
