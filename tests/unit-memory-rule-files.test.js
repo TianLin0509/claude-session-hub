@@ -40,6 +40,16 @@ test('catalog finds registered orphan copies without scanning aggregate trees an
  const result=collectCatalog({homeDir:home,workspaceRoot:root,memoryRoot:path.join(root,'memory'),sessions:[],workspaces:[{path:path.dirname(file)}]});
  assert.equal(result.files.find(f=>f.path===file).group,'历史规则副本');assert.equal(result.globalRulesAligned,false);
 });
+test('Codex workspace overrides replace base rules without altering either file',t=>{
+ const root=fixture(t),cwd=path.join(root,'..task');fs.mkdirSync(cwd);
+ const base=path.join(root,'AGENTS.md'),override=path.join(root,'AGENTS.override.md');
+ write(base,'base rule');write(override,'explicit replacement');
+ const request={session:{kind:'codex',cwd},workspaceService:{getWorkspaceRoot:()=>root}};
+ assert.deepEqual(sharedWorkspaceRules(request),[{path:override,content:'explicit replacement'}]);
+ assert.equal(fs.readFileSync(base,'utf8'),'base rule');assert.equal(fs.readFileSync(override,'utf8'),'explicit replacement');
+ assert.equal(sharedWorkspaceRules({...request,session:{kind:'claude',cwd}})[0].content,'base rule');
+ write(override,'');assert.equal(sharedWorkspaceRules(request)[0].content,'base rule');
+});
 test('Codex rules and developer memory use the same validated reader and leave historical data unchanged',async t=>{
  const root=fixture(t),file=path.join(root,'raw.jsonl');
  const raw=native('n1','历史有效经验')+JSON.stringify({type:'response_item',payload:{type:'message',role:'developer',content:[{type:'input_text',text:'## Memory\n历史提炼经验\n========= MEMORY_SUMMARY ENDS ========='}]}})+'\n';

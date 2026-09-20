@@ -27,14 +27,18 @@ function globalRuleFiles(home) {
 function sharedWorkspaceRules({ session, workspaceService, homeDir }) {
   const cwd = session.cwd, root = workspaceService.getWorkspaceRoot();
   const relative = path.relative(root,cwd);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return [];
+  if (!relative || relative === '..' || relative.startsWith('..'+path.sep) || path.isAbsolute(relative)) return [];
   const read = file => { if(fs.statSync(file).size>65536) throw new Error('共享规则核对超过 64 KB，请先拆分：'+file); return fs.readFileSync(file,'utf8'); };
   const bodies = [];
   const result=[];
   let dir=root;
   for (const part of ['', ...relative.split(path.sep).slice(0,-1)]) {
     if (part) dir=path.join(dir,part);
-    const file=path.join(dir,'AGENTS.md');
+    const override=path.join(dir,'AGENTS.override.md');
+    const codex=session.codexSid || /^codex(?:-resume)?$/.test(session.transcriptKind || session.kind);
+    // Match the provider's explicit replacement file; do not reintroduce the
+    // AGENTS.md that it deliberately overrides. Empty overrides fall through.
+    const file=codex && fs.existsSync(override) && fs.statSync(override).size>0 ? override : path.join(dir,'AGENTS.md');
     if (!fs.existsSync(file)) continue;
     const text=read(file);
     const header=text.match(/^<!--[\s\S]*?-->\r?\n\r?\n/);
