@@ -50,6 +50,7 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
 
   const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
   const managed = [
+    ['InstructionsLoaded', `python "${hookPyPath}" instructions-loaded`, '', true],
     ['Stop', `python "${hookPyPath}" stop`],
     ['StopFailure', `python "${hookPyPath}" stop-failure`],
     ['UserPromptSubmit', `python "${hookPyPath}" prompt`],

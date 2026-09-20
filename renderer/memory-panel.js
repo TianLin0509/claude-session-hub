@@ -20,6 +20,7 @@ function createMemoryPanel({
     sid = null,
     file = null,
     preview = "",
+    previewNote = "",
     previewLabel = "",
     contextSelectionKey = null,
     error = "",
@@ -95,6 +96,7 @@ function createMemoryPanel({
     const version = epoch, request = ++previewEpoch;
     file = p;
     previewLabel = "";
+    previewNote = tab === 'context' ? '当前磁盘内容；加载事件没有保留当时正文，不能视为注入快照。' : '';
     preview = "读取中…";
     if (paint) render();
     const r = await ipcRenderer.invoke("read-file", p);
@@ -102,9 +104,16 @@ function createMemoryPanel({
     preview = r?.error ? "读取失败：" + r.error : String(r?.content || "");
     if (paint) render();
   }
-  function resetPreview() { file = null; preview = ""; previewLabel = ""; contextSelectionKey = null; sourcePreview = ""; previewEpoch++; }
+  function resetPreview() { file = null; preview = ""; previewNote = ""; previewLabel = ""; contextSelectionKey = null; sourcePreview = ""; previewEpoch++; }
   function contextEntries() {
-    return [...(data?.nativeEntries || []), ...(data?.receipts || []).map(r => ({ ...r, key: 'hub:' + r.id, label: 'DREAM_INDEX.md', status: '已发送' }))];
+    return [...(data?.nativeEntries || []), ...(data?.receipts || []).map(r => ({ ...r, key: 'hub:' + r.id, label: r.label || 'DREAM_INDEX.md', status: '已发送' }))];
+  }
+  async function selectContextEntry(entry, paint = true) {
+    contextSelectionKey = entry.key;
+    if (entry.snapshot === false) return read(entry.path, paint);
+    previewEpoch++; file = entry.path; preview = entry.content; previewLabel = entry.label;
+    previewNote = entry.source === 'native' ? '原生记录中的注入正文快照；下方路径为原始记录位置。' : '本次确认发送的正文快照。';
+    if (paint) render();
   }
   function scope() { return { projectId }; }
   function activeProject() {
@@ -132,7 +141,7 @@ function createMemoryPanel({
           data = result;
           // Preview the immutable submitted snapshot, never today's disk contents.
           const entries = contextEntries(), chosen = entries.find(e => e.key === contextSelectionKey) || entries[0];
-          if (chosen) { file = chosen.path; preview = chosen.content; previewLabel = chosen.label; contextSelectionKey = chosen.key; }
+          if (chosen) await selectContextEntry(chosen, false);
           else resetPreview();
         }
       } else {
@@ -176,11 +185,12 @@ function createMemoryPanel({
     return `<button class="mp-file ${file === f.path ? "active" : ""}" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="mp-file-name">${esc(f.label || f.path.split(/[\\/]/).pop())}</span><span class="mp-meta">${esc(f.owner || "")} ${badge(f.status || "可读取")}</span><span class="mp-file-path">${esc(f.path)}</span></button>`;
   }
   function previewPane() {
-    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(previewLabel || (file ? file.split(/[\\/]/).pop() : "内容预览"))}</span>${file ? button("打开所在位置", "folder") : ""}</div><pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
+    return `<section class="mp-preview"><div class="mp-preview-head"><span>${esc(previewLabel || (file ? file.split(/[\\/]/).pop() : "内容预览"))}</span>${file ? button("打开所在位置", "folder") : ""}</div>${previewNote ? `<p class="mp-note">${esc(previewNote)}</p>` : ""}<pre class="mp-preview-content">${esc(preview || "选择文件查看内容")}</pre><div class="mp-path">${esc(file || "")}</div></section>`;
   }
   function context() {
     const entries = contextEntries();
-    return `<div class="mp-pagehead"><div><h2>本会话的记忆注入记录</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">原生规则、记忆与 Hub 索引</div>${entries.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">${esc(r.label)} ${badge(r.status)}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${r.source === 'native' ? '原生记录第 ' + r.line + ' 行' : esc(r.version?.slice(0,8) || '')}</span></button>`).join("")}${!entries.length ? '<p class="mp-empty">尚未取得可展示的注入记录，并不表示本会话没有加载规则或记忆。</p>' : ""}</section>${previewPane()}</div>${(data.warnings || []).map(w=>`<p class="mp-note">${esc(w)}</p>`).join('')}${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
+    const nativeLocation = r => esc(r.evidence || `原生记录第 ${r.line} 行`);
+    return `<div class="mp-pagehead"><div><h2>本会话的记忆注入记录</h2><p>${esc(data.session.title || "当前 session")} · ${esc(data.session.kind)}</p></div>${button("返回当前会话", "close")}</div><div class="mp-two"><section class="mp-card"><div class="mp-section-title">原生规则、记忆与 Hub 索引</div>${entries.map((r,i)=>`<button class="mp-file" data-receipt="${i}"><span class="mp-file-name">${esc(r.label)} ${badge(r.status)}</span><span class="mp-meta">${esc(fmt(r.sentAt))} · ${r.source === 'native' ? nativeLocation(r) : esc(r.version?.slice(0,8) || '')}</span></button>`).join("")}${!entries.length ? '<p class="mp-empty">尚未取得可展示的注入记录，并不表示本会话没有加载规则或记忆。</p>' : ""}</section>${previewPane()}</div>${(data.warnings || []).map(w=>`<p class="mp-note">${esc(w)}</p>`).join('')}${data.unconfirmed ? `<p class="mp-note">另有 ${data.unconfirmed} 条提交尚无发送确认，未计入已注入内容。</p>` : ""}<div class="mp-note">${esc(data.note)}</div>`;
   }
   function library() {
     const seen = new Set(), q = query.toLowerCase();
@@ -190,8 +200,14 @@ function createMemoryPanel({
       return (!projectId || !f.projectIds?.length || f.projectIds.includes(projectId))
         && (f.label + " " + f.path).toLowerCase().includes(q);
     });
-    const shown = all.slice(0, visibleFiles), groups = [...new Set(shown.map(f=>f.group))];
-    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>全局文件库 · ${all.length} 个文件 · 不依赖打开的会话</p>${projectSelect(true)}${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions"><button class="mp-btn" data-action-mp="scan" ${!projectId || busy ? "disabled" : ""}>扫描所选项目文档</button>${button("☾ 造梦", "dream", "primary")}</div></div>${data.warnings.length ? `<details class="mp-note"><summary>${data.warnings.length} 项读取问题，结果可能不完整</summary>${data.warnings.map(x=>`<p>${esc(x)}</p>`).join("")}</details>` : ""}<div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups.map(g=>`<div class="mp-section-title">${esc(g)}</div>${shown.filter(f=>f.group===g).map(fileRow).join("")}`).join("")}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}${all.length>shown.length ? button(`继续显示（剩余 ${all.length-shown.length}）`,"more") : ""}</section>${previewPane()}</div><div class="mp-note">原生记忆保留原位。文件库中存在不代表已注入；Hub 梦境使用独立索引与主题文件。</div>`;
+    const historical = all.filter(f=>f.rule?.state==='unchanged');
+    const regular = all.filter(f=>f.rule?.state!=='unchanged');
+    const shown = regular.slice(0, visibleFiles), groups = [...new Set(shown.map(f=>f.group))];
+    const historyGroups = new Map();
+    for(const f of historical.slice(0, visibleFiles)) {const k=(f.rule.source||'来源未知')+'\0'+f.rule.bodyDigest; if(!historyGroups.has(k))historyGroups.set(k,[]);historyGroups.get(k).push(f);}
+    const historyHtml = historical.length ? `<details class="mp-history"><summary>历史规则副本 · ${historical.length} 份（默认折叠，文件仍保留）</summary>${[...historyGroups.values()].map(files=>`<details><summary>${esc(files[0].rule.source||'来源未知')} · ${files.length} 份</summary>${files.map(fileRow).join('')}</details>`).join('')}</details>` : '';
+    const globalHtml = data.globalRules?.length ? `<details class="mp-note"><summary>全局规则 · ${data.globalRulesAligned?'正文一致':'正文有差异或入口缺失，请核对'}</summary><p>固定入口分别供各家 AI 读取；不会随会话复制，也不会自动覆盖差异。</p>${data.globalRules.map(f=>f.exists?fileRow({...f,label:f.kind,status:'固定入口'}):`<p>${esc(f.kind)}：入口缺失</p>`).join('')}</details>` : '';
+    return `<div class="mp-pagehead"><div><h2>记忆文件库</h2><p>全局文件库 · ${all.length} 个文件 · 不依赖打开的会话</p>${projectSelect(true)}${scanNote ? `<p class="mp-muted">${esc(scanNote)}</p>` : ""}</div><div class="mp-actions"><button class="mp-btn" data-action-mp="scan" ${!projectId || busy ? "disabled" : ""}>扫描所选项目文档</button>${button("☾ 造梦", "dream", "primary")}</div></div>${globalHtml}${data.warnings.length ? `<details class="mp-note"><summary>${data.warnings.length} 项读取问题，结果可能不完整</summary>${data.warnings.map(x=>`<p>${esc(x)}</p>`).join("")}</details>` : ""}<div class="mp-library"><section class="mp-tree"><input id="mp-search" placeholder="搜索文件名或路径" aria-label="搜索记忆文件" value="${esc(query)}">${groups.map(g=>`<div class="mp-section-title">${esc(g)}</div>${shown.filter(f=>f.group===g).map(fileRow).join("")}`).join("")}${historyHtml}${!all.length ? '<p class="mp-empty">没有匹配的文件</p>' : ""}${regular.length>shown.length || historical.length>visibleFiles ? button(`继续显示（剩余 ${regular.length-shown.length + Math.max(0,historical.length-visibleFiles)}）`,"more") : ""}</section>${previewPane()}</div><div class="mp-note">原生记忆保留原位。文件库中存在不代表已注入；Hub 梦境使用独立索引与主题文件。</div>`;
   }
   function dream() {
     const t = tuning();
@@ -241,13 +257,8 @@ function createMemoryPanel({
     }
     if (b.dataset.file) return read(b.dataset.file);
     if (b.dataset.receipt !== undefined) {
-      previewEpoch++;
       const r = contextEntries()[+b.dataset.receipt];
-      file = r.path;
-      preview = r.content;
-      previewLabel = r.label;
-      contextSelectionKey = r.key;
-      return render();
+      return selectContextEntry(r);
     }
     if (b.dataset.jobSession) {
       close();

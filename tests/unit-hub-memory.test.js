@@ -40,6 +40,28 @@ function setup(t) {
   return {root,cwd,home,index,add,grow,service,sessions,tap,start,output};
 }
 
+test('shared workspace rules are confirmed once, retried consistently, and resubmitted on change',async t=>{
+  const f=setup(t),s=f.sessions.get('normal');
+  fs.rmSync(path.join(f.cwd,'.git'),{recursive:true});
+  const scratch=path.join(f.cwd,'scratch');fs.mkdirSync(scratch);s.cwd=scratch;
+  const sent=[];
+  const send=async text=>{sent.push(text);f.service.confirmSend({sessionId:s.id,text});return {ok:true};};
+  await f.service.withWorkspaceRules(s.id,'hello','codex',{clientSubmissionId:'first'},send);
+  assert.match(sent[0],/<ai-hub-workspace-rules/);assert.match(sent[0],/手写规则/);
+  const context=await f.service.context(s.id);assert.equal(context.receipts[0].kind,'workspace');
+  await f.service.withWorkspaceRules(s.id,'next','codex',{clientSubmissionId:'second'},send);assert.equal(sent[1],'next');
+  await f.service.withWorkspaceRules(s.id,'hello','codex',{clientSubmissionId:'first'},send);assert.equal(sent[2],sent[0]);
+  await assert.rejects(f.service.withWorkspaceRules(s.id,'changed','codex',{clientSubmissionId:'first'},send),/已变化/);
+  fs.appendFileSync(path.join(f.cwd,'AGENTS.md'),'\n新规则');
+  await f.service.withWorkspaceRules(s.id,'new','codex',{clientSubmissionId:'third'},send);assert.match(sent[3],/新规则/);
+  await f.service.withWorkspaceRules(s.id,'/status','codex',{},send);assert.equal(sent[4],'/status');
+  fs.writeFileSync(path.join(f.cwd,'AGENTS.md'),'# 手写规则不能被改\n','utf8');
+  await f.service.withWorkspaceRules(s.id,'reverted','codex',{clientSubmissionId:'fourth'},send);assert.match(sent[5],/ai-hub-workspace-rules/);
+  s.nativeRuntime.epoch=1;
+  await assert.rejects(f.service.withWorkspaceRules(s.id,'hello','codex',{clientSubmissionId:'first'},send),/原生会话已变化/);
+  assert.equal(sent.length,6,'old identity retry must not reach the provider');
+});
+
 test('atomic memory snapshots survive transient replacement denial and preserve old data on permanent failure',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-memory-atomic-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -322,6 +344,23 @@ test('damaged Hub receipts cannot hide valid native injections',async t=>{
   assert.match(result.warnings.join(),/Hub.*读取失败/);
   fs.writeFileSync(file,'[null]');
   assert.match((await f.service.context('normal')).warnings.join(),/回执格式无效/);
+});
+
+test('damaged workspace receipts do not hide dream or native history, and Claude events are not body snapshots',async t=>{
+  const f=setup(t),j=await f.start();f.output(j);f.service.publish(j);
+  await f.service.withIndex('normal','retain memory','codex',{clientSubmissionId:'preserve'},async text=>{
+    f.service.confirmSend({sessionId:'normal',text});return {ok:true};
+  });
+  f.service.nativeContextReader={read:async()=>({entries:[{key:'memory',content:'native evidence'}],warnings:[]})};
+  const file=path.join(f.service.root,'context',require('node:crypto').createHash('sha256').update('normal:workspace').digest('hex')+'.json');
+  fs.writeFileSync(file,'[null]');
+  const context=await f.service.context('normal');
+  assert.equal(context.nativeEntries.length,1);assert.equal(context.receipts.length,1);assert.match(context.warnings.join(),/共享规则回执读取失败/);
+  const s=f.sessions.get('normal');delete s.codexSid;s.ccSessionId='claude-one';s.kind='claude';
+  await f.service.nativeEvidence.loaded(s,{claudeSessionId:s.ccSessionId,instructionPath:path.join(f.cwd,'AGENTS.md')});
+  const claude=await f.service.context('normal');
+  assert.equal(claude.nativeEntries.length,1);assert.equal(claude.nativeEntries[0].snapshot,false);
+  assert.equal(claude.nativeEntries[0].content,undefined);assert.equal(claude.receipts.length,0);
 });
 
 test('global library works without an active session, deduplicates linked memory, and explicitly refreshes',async t=>{

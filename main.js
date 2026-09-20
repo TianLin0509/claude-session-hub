@@ -2215,6 +2215,14 @@ const hookServer = http.createServer((req, res) => {
       res.writeHead(403); res.end('{}'); return;
     }
     const hookTargetSession = parsed.sessionId ? sessionManager.getSession(parsed.sessionId) : null;
+    // Instruction receipts are observability only, never native turn authority.
+    if(isHook && req.url==='/api/hook/instructions-loaded') {
+      try {
+        const accepted=await sessionManager.memoryService?.nativeEvidence.loaded(hookTargetSession,parsed);
+        res.writeHead(accepted?200:202,{'Content-Type':'application/json'});res.end(JSON.stringify({accepted:!!accepted}));
+      } catch(error) {console.error('[memory] instruction hook failed:',error);res.writeHead(500);res.end('{"error":"instruction-receipt-failed"}');}
+      return;
+    }
     if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
       res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;
     }

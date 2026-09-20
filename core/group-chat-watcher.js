@@ -344,6 +344,10 @@ async function sendToPty(sid, prompt, kind, options = {}) {
   }
   const { sessionManager } = _deps;
   if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
+  if (!options.workspaceRulesPrepared && sessionManager.memoryService?.withWorkspaceRules) {
+    return sessionManager.memoryService.withWorkspaceRules(sid,prompt,kind,options,
+      text=>sendToPty(sid,text,kind,{...options,workspaceRulesPrepared:true}));
+  }
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,

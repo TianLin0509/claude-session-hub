@@ -427,3 +427,6 @@
     max-height: 48vh;
   }
 }
+#memory-page .mp-history { padding: 8px; }
+#memory-page .mp-history summary { cursor: pointer; overflow-wrap: anywhere; }
+#memory-page .mp-history details { margin-top: 8px; }

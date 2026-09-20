@@ -7,8 +7,9 @@ const { createHash } = require('node:crypto');
 const inspector = require('./memory-inspector');
 const { projectRoot } = require('./hub-memory-service');
 const { projectPathKey } = require('./session-search-projects');
+const { classifyRule, globalRuleFiles } = require('./memory-rule-files');
 
-function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions }) {
+function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions, workspaces = [] }) {
   const files = new Map(), projects = new Map(), directories = new Set(), warnings = [];
   const roots = new Map();
   const warn = (p, e) => { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') warnings.push(`${p}：${e.message}`); };
@@ -29,8 +30,14 @@ function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions }) {
       if (projectId && !existing.projectIds.includes(projectId)) existing.projectIds.push(projectId);
       return;
     }
-    files.set(key, { path: canonical, label: path.basename(canonical), group,
-      projectIds: projectId ? [projectId] : [], owner: group, status: '文件库' });
+    let rule;
+    if (/^(?:AGENTS(?:\.override)?|CLAUDE(?:\.local)?|GEMINI)\.md$/i.test(path.basename(canonical))) {
+      try { rule = classifyRule(canonical); } catch (e) { warnings.push(`${canonical}：${e.message}`); }
+    }
+    if (rule?.state === 'unchanged') group = '历史规则副本';
+    else if (['modified', 'unknown'].includes(rule?.state)) group = '需要核对的规则';
+    files.set(key, { path: canonical, label: path.basename(canonical), group, rule,
+      projectIds: projectId ? [projectId] : [], owner: group, status: rule?.note || '文件库' });
   }
   function walk(dir, group, projectId = '', depth = 0) {
     const canonical = real(dir), key = projectPathKey(canonical);
@@ -47,6 +54,16 @@ function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions }) {
     }
   }
   const seeds = ['claude', 'codex', 'kimi', 'gemini'].map(kind => ({ kind, cwd: homeDir }));
+  // Read only explicit registry paths, never recursively search an aggregate root.
+  for (const w of workspaces) {
+    const cwd = w.path;
+    if (!cwd) continue;
+    for (const name of ['AGENTS.md','AGENTS.override.md','CLAUDE.md','GEMINI.md']) {
+      const file = path.join(cwd,name);
+      try { if (fs.statSync(file).isFile()) add(file,'原生规则',project(cwd)?.id); }
+      catch (e) { warn(file,e); }
+    }
+  }
   if (workspaceRoot && projectPathKey(workspaceRoot) !== projectPathKey(homeDir))
     seeds.push(...['claude', 'codex', 'kimi', 'gemini'].map(kind => ({ kind, cwd: workspaceRoot })));
   const providers = new Set(), codexHomes = new Set([path.join(homeDir, '.codex')]);
@@ -95,7 +112,13 @@ function collectCatalog({ homeDir, workspaceRoot, memoryRoot, sessions }) {
       walk(path.join(dir, 'versions', pointer.version), 'Hub 梦境', id);
     } catch (e) { warn(path.join(memoryRoot, id), e); }
   }
-  return { files: [...files.values()], projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), warnings, generatedAt: Date.now() };
+  const globalRules = globalRuleFiles(homeDir).map(f => {
+    try { return {...f, ...classifyRule(f.path), exists:true}; }
+    catch(e) { warn(f.path,e); return {...f,exists:false}; }
+  });
+  return { files: [...files.values()], globalRules,
+    globalRulesAligned: globalRules.every(f=>f.exists) && new Set(globalRules.map(f=>f.digest)).size === 1,
+    projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)), warnings, generatedAt: Date.now() };
 }
 if (!isMainThread) {
   try { parentPort.postMessage({ ok: true, data: collectCatalog(workerData) }); }

@@ -14,6 +14,11 @@ async function main(){
   for(const p of [data,cwd,home,native,empty,out,path.join(cwd,'.git'),path.join(codexHome,'memories')])fs.mkdirSync(p,{recursive:true});
   const rule='# 项目规则\n原生文件保持原位，不覆盖。\n';
   fs.writeFileSync(path.join(cwd,'AGENTS.md'),rule,'utf8');
+  fs.writeFileSync(path.join(root,'AGENTS.md'),'# 共享工作区规则\n临时产物保持 UTF-8。\n','utf8');
+  const old=path.join(root,'old-task');fs.mkdirSync(old);
+  const oldBody='historical shared rule\n';
+  fs.writeFileSync(path.join(old,'AGENTS.md'),'<!-- 由 AI Hub 自动复制自 '+path.join(root,'AGENTS.md')+'，历史副本\nseed-sha256: '+require('crypto').createHash('sha256').update(oldBody).digest('hex').slice(0,16)+'\n-->\n\n'+oldBody);
+  fs.writeFileSync(path.join(data,'workspaces.json'),JSON.stringify({schemaVersion:1,workspaces:[{path:old,id:'old-task'}]}));
   fs.writeFileSync(path.join(codexHome,'config.toml'),'model="gpt-6-astra"\nmodel_reasoning_effort="medium"\n[features]\nmemories=true\n');
   fs.writeFileSync(path.join(codexHome,'memories','MEMORY.md'),'# Codex 原生记忆\n这是原生维护的内容。\n','utf8');
   fs.writeFileSync(path.join(cwd,'散落的项目知识.md'),'# 文档\n需要时可浏览，不自动改动。','utf8');
@@ -35,6 +40,7 @@ async function main(){
       HUB_SESSION_SEARCH_CODEX_ROOTS:native,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_DREAM:'1',
       CLAUDE_HUB_NATIVE_FIXTURE_CONTEXT:'1',
+      CLAUDE_HUB_NATIVE_FIXTURE_INSTRUCTIONS:'1',
       CLAUDE_HUB_CLAUDE_STREAM_FIXTURE:path.resolve('tests/fixtures/claude-stream.js'),
       CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
     result.pid=hub.pid;result.port=hub.port;cdp=await connectFirstPage(hub);
@@ -44,6 +50,12 @@ async function main(){
     await click('#btn-rail-memory');
     await until('document.querySelector("#memory-page").innerText.includes("Codex 原生记忆")','global library without session');
     assert.equal(await cdp.eval('document.querySelector("[data-tab=library]").getAttribute("aria-selected")'),'true');
+    await until('!!document.querySelector(".mp-history")','historical copies grouped');
+    assert.equal(await cdp.eval('document.querySelector(".mp-history").open'),false);
+    await click('.mp-history > summary');
+    assert.equal(await cdp.eval('document.querySelector(".mp-history").open'),true);
+    await click('.mp-history > summary');
+    result.checks.push('没有 session 时仍发现注册工作区的旧副本，默认折叠且可展开');
     await snap('00-global-library-no-session');
     await click('[data-tab="context"]');
     await until('document.querySelector("#memory-page").innerText.includes("请先打开一个 session")','context alone requires session');
@@ -120,7 +132,11 @@ async function main(){
     assert.equal(after.receipts[0].status,'sent');assert.equal(after.pending,false);
     const trace=fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-dream-index ref='))));
-    await click('[data-receipt="2"]');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
+    assert.ok(trace.some(x=>x.method==='turn/start'&&x.params.input.some(i=>i.text?.includes('<ai-hub-workspace-rules ref=')&&i.text.includes('临时产物保持 UTF-8'))));
+    const confirmedContext=(await cdp.eval('ipcRenderer.invoke("memory:context",{sessionId:'+sid+'})')).data;
+    assert.ok(confirmedContext.receipts.some(r=>r.kind==='workspace'&&r.status==='sent'));
+    result.checks.push('共享工作根规则随真实提交到达原生进程并确认，目录中未新增规则副本');
+    await cdp.eval('[...document.querySelectorAll("[data-receipt]")].find(b=>b.textContent.includes("DREAM_INDEX.md")).click()');await snap('06-confirmed-context');result.checks.push('下一条实际任务附短索引，原生提交证据落盘显示已发送；未冒充正文已读取');
     await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape'});
     assert.equal(await cdp.eval('document.querySelector("#memory-page").hidden'),true);
     assert.notEqual(await cdp.eval('getComputedStyle(document.querySelector("#session-sidebar")).visibility'),'hidden');
@@ -135,6 +151,15 @@ async function main(){
     await cdp.eval('(()=>{const input=document.querySelector(".floating-input-box");input.textContent="Claude 请参考记忆";input.dispatchEvent(new Event("input",{bubbles:true}));})()');
     await click('.floating-input-send');await until('sessions.get('+cid+')?.nativeRuntime?.state==="completed"','Claude complete');
     assert.equal((await cdp.eval('ipcRenderer.invoke("memory:snapshot",{sessionId:'+cid+'})')).data.receipts[0].status,'sent');
+    await click('#btn-rail-memory');
+    await until('document.querySelector("#memory-page").textContent.includes("InstructionsLoaded")','Claude load hook reaches UI');
+    await cdp.eval('[...document.querySelectorAll("[data-receipt]")].find(b=>b.textContent.includes("加载事件")).click()');
+    await until('document.querySelector(".mp-preview-content")?.textContent.includes("原生文件保持原位")','Claude current disk preview');
+    assert.match(await cdp.eval('document.querySelector(".mp-preview .mp-note").textContent'),/当前磁盘内容/);
+    assert.doesNotMatch(await cdp.eval('document.querySelector("#memory-page").textContent'),/undefined/);
+    await snap('08-claude-load-event');
+    await click('[data-action-mp="close"]');
+    result.checks.push('Claude 子进程加载事件经实际 Python hook/HTTP 到页面，路径预览明确标注当前磁盘而非历史快照');
     result.checks.push('切换到 Claude 后当前上下文跟随 session；Claude 原生协议也确认索引发送');
     const slot={kind:'codex',model:'gpt-6-astra',effort:'medium',mcpProfile:'none'};
     const meeting=await cdp.eval('ipcRenderer.invoke("create-meeting",'+JSON.stringify({title:'记忆群聊验证',scene:'general',workspace:cwd,slots:[slot,slot]})+')');

@@ -54,6 +54,7 @@ last_assistant_message = None
 notification_type = None
 notification_message = None
 notification_title = None
+payload = {}
 try:
     # Read raw bytes and decode as UTF-8 explicitly. On Chinese Windows
     # sys.stdin defaults to cp936, which mangles UTF-8 Chinese characters
@@ -103,6 +104,12 @@ try:
             body['prompt'] = prompt
         if hook_event_name:
             body['hookEventName'] = str(hook_event_name)[:80]
+        if event == 'instructions-loaded':
+            body['instructionPath'] = str(payload.get('file_path') or '')[:8192]
+            body['loadReason'] = str(payload.get('load_reason') or '')[:80]
+            body['memoryType'] = str(payload.get('memory_type') or '')[:80]
+            if agent_id:
+                body['agentId'] = str(agent_id)[:180]
         if isinstance(background_tasks, list):
             body['backgroundTasks'] = [
                 {
