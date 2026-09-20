@@ -29,4 +29,11 @@ function bindingRows(rows){
  for(const row of rows){const key=row.uses.join(' / ');if(!groups.has(key))groups.set(key,{name:key,accounts:[]});groups.get(key).accounts.push(row);}
  return [...groups.values()];
 }
-module.exports={accountRows,isPrimary,bindingRows};
+// Platform grouping is not identity matching: each authorization retains its ID.
+function isOpenAI(row){return row.type==='native'&&row.provider==='codex'||['images','bridge','chatgpt-web'].includes(row.provider)||row.managedBrowser&&row.provider==='chatgpt';}
+function accountSections(rows){
+ const result=[],openai=[];
+ for(const row of rows){if(isOpenAI(row)){if(!openai.length)result.push({id:'openai',name:'OpenAI',rows:openai});openai.push(row);}else result.push({id:row.id,rows:[row]});}
+ return result;
+}
+module.exports={accountRows,isPrimary,bindingRows,isOpenAI,accountSections};
