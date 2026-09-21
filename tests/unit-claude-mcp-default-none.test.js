@@ -73,11 +73,13 @@ const wireless = buildClaudeMcpProfileArgs({
 });
 assert.deepStrictEqual(wireless.keptServers, ['superran']);
 
-// full 仍然是「完全不干预」（空 args = 继承全局）
+// full 继续继承全局，并追加 Hub 网页圆桌；不能改成 strict。
 const full = buildClaudeMcpProfileArgs({
   mcpProfile: 'full', cwd: wirelessCwd, hubDataDir: tmp, homeDir: home,
 });
-assert.strictEqual(full.args, '');
+assert.ok(full.args.includes('--mcp-config'));
+assert.ok(!full.args.includes('--strict-mcp-config'));
+assert.ok(full.keptServers.includes('web_roundtable'));
 
 // --- none 不依赖读用户配置：~/.claude.json 损坏也要照样关干净 ---
 fs.writeFileSync(path.join(home, '.claude.json'), '{ 坏掉的 json', 'utf8');

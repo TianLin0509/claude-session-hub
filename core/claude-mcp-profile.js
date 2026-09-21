@@ -35,7 +35,7 @@ const DEFAULT_CLAUDE_MCP_PROFILE = 'none';
 
 // 同一个能力在 Claude 和 Codex 的配置里叫法不一样（claude 是 superran，
 // codex 历史上写的是 superwireless），两边都列上，谁在就放行谁。
-const BROWSER_MCP_NAMES = ['playwright', 'claude-in-chrome', 'chrome-devtools', 'puppeteer'];
+const BROWSER_MCP_NAMES = ['playwright', 'claude-in-chrome', 'chrome-devtools', 'puppeteer', 'web_roundtable'];
 const WIRELESS_MCP_NAMES = ['superran', 'superwireless'];
 
 function normalizeClaudeMcpProfile(value) {
@@ -146,7 +146,6 @@ function buildClaudeMcpProfileArgs({
 } = {}) {
   const profile = normalizeClaudeMcpProfile(mcpProfile);
   const empty = { args: '', profile, keptServers: [], configPath: null };
-  if (profile === 'full') return empty;
   if (!hubDataDir) return empty;
 
   try {
@@ -154,12 +153,16 @@ function buildClaudeMcpProfileArgs({
     // 会抛异常的地方 —— 而 none 是默认档，它的失败回退方向是「全量加载」，代价最大。
     const servers = profile === 'none' ? {} : listClaudeMcpServers({ homeDir, cwd, fsModule });
     const allowed = resolveAllowedMcpNames(profile, { cwd, extraAllowed });
-    const kept = filterMcpServers(servers, allowed);
+    const kept = profile === 'full' ? {} : filterMcpServers(servers, allowed);
+    if (require('./web-roundtable/integration').enabled(profile)) {
+      const { name, ...server } = require('./web-roundtable/integration').entry(hubDataDir);
+      kept[name] = server;
+    }
     const configPath = writeClaudeMcpProfileConfig({ hubDataDir, profile, servers: kept, fsModule });
     return {
       // --strict-mcp-config 是关键：只给 --mcp-config 而不加 strict 的话，
       // CLI 会把这个文件和用户全局配置**合并**，等于什么都没省。
-      args: ` --mcp-config "${configPath.replace(/\\/g, '\\\\')}" --strict-mcp-config`,
+      args: ` --mcp-config "${configPath.replace(/\\/g, '\\\\')}"${profile === 'full' ? '' : ' --strict-mcp-config'}`,
       profile,
       keptServers: Object.keys(kept).sort(),
       configPath,

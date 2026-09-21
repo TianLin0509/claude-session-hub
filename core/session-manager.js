@@ -499,6 +499,8 @@ function buildClaudeMeetingMcpArgs({
   // Full = 继承全部用户 MCP。research/群聊通信配置仍以额外 config 合并进去，
   // 但不加 strict，否则所谓 Full 实际会把全局 MCP 全部挡掉。
   if (profile === 'full') {
+    const webPlan = buildClaudeMcpProfileArgs({ mcpProfile:profile, cwd, hubDataDir, homeDir, ...(fsModule ? { fsModule } : {}) });
+    if (webPlan.configPath) mandatoryFiles.push(webPlan.configPath);
     return {
       args: mandatoryFiles.length ? ` --mcp-config ${mandatoryFiles.map(quoteConfig).join(' ')}` : '',
       profile,
@@ -958,7 +960,7 @@ function buildNativeCodexOptions(info, opts, env) {
   if (profile !== 'none' && (profile === 'wireless' || isWirelessWorkspace(info.cwd))) {
     WIRELESS_MCP_NAMES.forEach(name => allowed.add(name));
   }
-  const entries = profile === 'none' ? [] : (opts.codexMcpEntries || []);
+  const entries = profile === 'none' ? [] : require('./web-roundtable/integration').entries(opts.codexMcpEntries, profile, getHubDataDir());
   entries.forEach(entry => allowed.add(entry.name));
   const config = {};
   if (require('./chatgpt-web-models').isChatgptWebModel(info.currentModel?.id)) {

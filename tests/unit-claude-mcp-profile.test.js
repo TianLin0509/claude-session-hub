@@ -51,13 +51,14 @@ test('档位非法值一律回落 none（默认不加载任何 MCP）', () => {
   assert.equal(normalizeClaudeMcpProfile('wireless'), 'wireless');
 });
 
-test('full 档一个 flag 都不加，行为与改动前逐字一致', () => {
+test('full 档保留全局继承，并追加 Hub 网页圆桌配置', () => {
   const h = makeHome();
   try {
     const plan = buildClaudeMcpProfileArgs({ mcpProfile: 'full', homeDir: h.home, hubDataDir: h.hubDataDir, cwd: 'C:\\work' });
-    assert.equal(plan.args, '');
-    assert.equal(plan.configPath, null);
-    assert.equal(fs.existsSync(path.join(h.hubDataDir, 'mcp-profiles')), false, 'full 档不该产生任何文件');
+    assert.match(plan.args, /--mcp-config/);
+    assert.doesNotMatch(plan.args, /--strict-mcp-config/);
+    assert.deepEqual(Object.keys(readGeneratedConfig(plan.configPath).mcpServers), ['web_roundtable']);
+    assert.equal(readGeneratedConfig(plan.configPath).mcpServers.web_roundtable.env.AI_HUB_WEB_DATA_DIR, h.hubDataDir);
   } finally { h.cleanup(); }
 });
 
@@ -77,7 +78,7 @@ test('browser 档只留浏览器类，且 server 定义是原样搬过去的', (
   const h = makeHome();
   try {
     const plan = buildClaudeMcpProfileArgs({ mcpProfile: 'browser', homeDir: h.home, hubDataDir: h.hubDataDir, cwd: 'C:\\work' });
-    assert.deepEqual(plan.keptServers, ['playwright']);
+    assert.deepEqual(plan.keptServers, ['playwright', 'web_roundtable']);
     assert.deepEqual(readGeneratedConfig(plan.configPath).mcpServers.playwright, USER_SERVERS.playwright);
   } finally { h.cleanup(); }
 });
