@@ -5809,6 +5809,7 @@ const previewPanel = createPreviewPanelController({
       document.querySelector('#meeting-room-panel .mr-gc-messages')?._cardFollowController?.follow();
       return;
     }
+    if (!key.startsWith('session:')) return;
     const sid = key.slice('session:'.length);
     const overlay = sessionSplit?.isSecondaryFocused()
       ? sessionSplit.secondary().overlay : document.getElementById('msg-overlay');
