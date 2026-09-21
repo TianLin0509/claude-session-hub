@@ -128,7 +128,7 @@ test('search close captures the focus target before clearing shared state', () =
   assert.match(SEARCH_SOURCE, /const focusTarget = returnFocusElement;[\s\S]*requestAnimationFrame\(\(\) => focusTarget\.focus\(\)\)/);
 });
 
-test('renderer contract exposes A-layout filters, local-index status and keyboard entry', () => {
+test('renderer contract exposes D focused search, on-demand reader and advanced filters', () => {
   const html = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
   const js = fs.readFileSync(path.join(ROOT, 'renderer', 'global-session-search.js'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'global-session-search.css'), 'utf8');
@@ -136,6 +136,7 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
     'btn-global-search', 'search-query', 'session-search-provider-filters',
     'session-search-scope-tabs', 'session-search-results-pane', 'session-search-preview',
     'session-search-progress', 'session-search-progress-track', 'session-search-progress-fill',
+    'session-search-reader', 'session-search-filter-toggle', 'session-search-advanced', 'session-search-suggestions',
   ]) assert.match(html, new RegExp(`id="${id}"`));
   for (const provider of ['claude', 'codex', 'meeting', 'deepseek']) {
     assert.match(html, new RegExp(`data-provider="${provider}"`));
@@ -148,7 +149,8 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
   assert.match(js, /get-session-search-preview/);
   assert.match(js, /refresh-session-search/);
   assert.match(js, /event\.shiftKey/);
-  assert.match(css, /grid-template-columns:\s*43% 57%/);
+  assert.match(css, /\.session-search-command\s*\{[^}]*830px/);
+  assert.doesNotMatch(js, /session-search-divider/);
   assert.match(css, /session-search-chip\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(css, /session-search-progress-track/);
   assert.match(css, /session-search-progress-indeterminate/);

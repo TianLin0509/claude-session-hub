@@ -10,7 +10,7 @@ const { connectFirstPage } = require('./helpers/cdp-client');
 const ROOT = path.resolve(__dirname, '..');
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-other-'));
 const DATA = path.join(TEMP, 'data'), HOME = path.join(TEMP, 'home');
-const OUT = path.join(ROOT, 'output', 'playwright', 'yesterday-ui');
+const OUT = path.join(ROOT, 'output', 'playwright', 'yesterday-d');
 const roots = Object.fromEntries(['claude','codex','kimi','gemini'].map(p => [p, path.join(HOME, p)]));
 const result = { ok: false, dataDir: DATA };
 
@@ -39,6 +39,9 @@ async function query(c, text) {
   await c.send('Input.dispatchKeyEvent', {type:'keyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
   await c.send('Input.dispatchKeyEvent', {type:'keyUp', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8});
   if (text) await c.send('Input.insertText', { text });
+}
+async function key(c, name, code) {
+  for(const type of ['keyDown','keyUp']) await c.send('Input.dispatchKeyEvent',{type,key:name,code:name,windowsVirtualKeyCode:code});
 }
 function fixtures() {
   for (const d of [DATA, OUT, ...Object.values(roots)]) fs.mkdirSync(d, {recursive:true});
@@ -84,13 +87,27 @@ async function main() {
     assert.equal(result.index.index.sessions,8);
     await click(c,'#btn-global-search');
     await query(c,'检索样本');
-    await waitFor('all results',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().totalSessions===8`));
+    await waitFor('all results',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().state==='complete' && window.__hubE2E.globalSessionSearch.state().totalSessions===8`));
+    assert.equal(await c.eval('window.__hubE2E.globalSessionSearch.state().reading'),false);
+    assert.equal(await c.eval(`document.querySelector('#session-search-preview h3')`),null,'search must not auto-load a reader');
+    const initialIndex=await c.eval('window.__hubE2E.globalSessionSearch.state().activeIndex');
+    await key(c,'ArrowDown',40);
+    await waitFor('keyboard selection without reading',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().activeIndex===${(initialIndex+1)%8} && !window.__hubE2E.globalSessionSearch.state().reading`));
+    await key(c,'Enter',13);
+    await waitFor('Enter opens reader',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().reading && !!document.querySelector('#session-search-preview h3')`));
+    assert.equal(await c.eval(`document.getElementById('session-search-home').inert`),true);
+    await key(c,'Escape',27);
+    assert.equal(await c.eval(`window.__hubE2E.globalSessionSearch.state().open && !window.__hubE2E.globalSessionSearch.state().reading && document.activeElement.id==='search-query'`),true);
     await click(c,'[data-provider="other"]');
     result.other=await waitFor('other results',()=>c.eval(`(() => {const s=window.__hubE2E.globalSessionSearch.state();return s.activeProvider==='other' && s.state==='complete' && s.totalSessions===6 ? s : null;})()`));
     assert.equal(await c.eval(`document.querySelector('[data-provider="other"] b').textContent`),'6');
     assert.deepEqual(new Set(await c.eval(`[...document.querySelectorAll('.session-search-result-provider')].map(e=>e.textContent.trim())`)),new Set(['Kimi','Gemini','DeepSeek','千问','智谱']));
     await query(c,'正文探针');
+    await waitFor('Kimi body search result',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().state==='complete' && window.__hubE2E.globalSessionSearch.state().totalSessions===1`));
+    await key(c,'Enter',13);
     result.body=await waitFor('real Kimi body and preview',()=>c.eval(`(() => {const s=window.__hubE2E.globalSessionSearch.state();return s.query==='正文探针' && s.state==='complete' && s.totalSessions===1 && document.querySelector('.session-search-preview-context')?.textContent.includes('视觉中心') ? s : null;})()`));
+    await key(c,'Escape',27);
+    await click(c,'#session-search-filter-toggle');
     await click(c,'[data-scope="dormant"]');
     await click(c,'[data-agent="study"]');
     result.archive=await waitFor('archive and agent intersection',()=>c.eval(`(() => {const s=window.__hubE2E.globalSessionSearch.state();return s.activeScope==='dormant' && s.activeAgent==='study' && s.state==='complete' && s.totalSessions===1 ? s : null;})()`));
@@ -102,6 +119,9 @@ async function main() {
     result.persisted=await c.eval(`JSON.parse(localStorage.getItem('hub.search.facets'))`);
     assert.equal(result.persisted.provider,'other');
     await waitFor('six rows',()=>c.eval(`document.querySelectorAll('.session-search-result').length===6`));
+    await click(c,'#session-search-filter-toggle');
+    const homeShot=await c.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+    fs.writeFileSync(path.join(OUT,'yesterday-d-search.png'),Buffer.from(homeShot.data,'base64'));
     const kimiSelector=await c.eval(`(() => {const a=[...document.querySelectorAll('.session-search-result')];return '.session-search-result:nth-child('+(a.findIndex(e=>e.textContent.includes('Kimi'))+1)+')';})()`);
     await click(c,kimiSelector);
     await waitFor('preview settled',()=>c.eval(`document.querySelector('.session-search-preview-context')?.textContent.includes('视觉中心')`));
@@ -111,14 +131,31 @@ async function main() {
       await c.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
       await c.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       const metrics=await c.eval(`(() => {const d=document.querySelector('.session-search-dialog'),h=document.querySelector('.session-search-header'),r=document.querySelector('.session-search-workspace-panes');return {width:innerWidth,dialogWidth:d.getBoundingClientRect().width,dialogClient:d.clientWidth,dialogScroll:d.scrollWidth,headerClient:h.clientWidth,headerScroll:h.scrollWidth,contentHeight:r.getBoundingClientRect().height,bodyWidth:document.body.scrollWidth};})()`);
-      assert.ok(metrics.dialogWidth<=width,JSON.stringify(metrics));
+      assert.ok(metrics.dialogWidth<=width+1,JSON.stringify(metrics)); // Chromium can round by a fractional CSS pixel under Hub zoom.
       assert.ok(metrics.dialogScroll<=metrics.dialogClient+1,JSON.stringify(metrics));
       assert.ok(metrics.headerScroll<=metrics.headerClient+1,JSON.stringify(metrics));
       assert.ok(metrics.contentHeight>=180,JSON.stringify(metrics));
       result.layouts.push({...metrics,theme});
+      const readerMetrics=await c.eval(`(() => {const d=document.querySelector('.session-search-reader-sheet');return {client:d.clientWidth,scroll:d.scrollWidth,rect:d.getBoundingClientRect().toJSON()};})()`);
+      assert.ok(readerMetrics.scroll<=readerMetrics.client+1,JSON.stringify(readerMetrics));
+      assert.ok(readerMetrics.rect.x>=0 && readerMetrics.rect.right<=width,JSON.stringify(readerMetrics));
       const shot=await c.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
       fs.writeFileSync(path.join(OUT,`yesterday-${width}.png`),Buffer.from(shot.data,'base64'));
+      await key(c,'Escape',27);
+      const searchShot=await c.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      fs.writeFileSync(path.join(OUT,`yesterday-search-${width}.png`),Buffer.from(searchShot.data,'base64'));
+      await key(c,'Enter',13);
+      await waitFor('reader reopened',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().reading && !!document.querySelector('#session-search-preview h3')`));
     }
+    await key(c,'Escape',27);
+    await key(c,'Escape',27);
+    assert.equal(await c.eval('window.__hubE2E.globalSessionSearch.state().open'),false);
+    await c.send('Emulation.setDeviceMetricsOverride',{width:1500,height:960,deviceScaleFactor:1,mobile:false});
+    await click(c,'#btn-global-search');
+    await waitFor('recent search suggestions',()=>c.eval(`!document.getElementById('session-search-suggestions').hidden`));
+    await query(c,'正文探针');
+    await waitFor('reopen can search',()=>c.eval(`window.__hubE2E.globalSessionSearch.state().state==='complete' && window.__hubE2E.globalSessionSearch.state().totalSessions===1`));
+    result.keyboardAndReopen=true;
     result.errors=await c.eval('window.__searchErrors');assert.deepEqual(result.errors,[]);
     result.ok=true;
   } catch(e) {result.error=e.stack;if(hub) result.log=hub.log().slice(-60);throw e;}

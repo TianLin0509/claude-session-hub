@@ -22,7 +22,6 @@ const UNUSED_PROJECT = path.join(TEMP_ROOT, 'unused-project');
 const PROJECT_MARKER = 'PROJECT_MEMBERSHIP';
 const TIME_MARKER = 'ROLLING_TIME_WINDOW';
 const FIXTURE_NOW = Date.now();
-const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'global-session-search');
 const SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-${RUN_ID}.png`);
 const RESPONSIVE_SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-responsive-${RUN_ID}.png`);
@@ -56,8 +55,8 @@ async function waitFor(label, fn, timeoutMs = 30_000) {
 }
 
 function writeClaudeFixture() {
-  const sid = 'claude-global-search-1';
-  const directory = path.join(CLAUDE_ROOT, 'C--global-search-workspace');
+  const sid = '019d3333-3333-7333-8333-333333333333';
+  const directory = path.join(CLAUDE_ROOT, path.resolve(SUBDIRECTORY).replace(/[^A-Za-z0-9]/g, '-'));
   const transcriptPath = path.join(directory, `${sid}.jsonl`);
   fs.mkdirSync(directory, { recursive: true });
   const rows = [
@@ -74,15 +73,9 @@ function writeClaudeFixture() {
     },
   ];
   rows.push({type:'user',uuid:'claude-recent',timestamp:new Date(FIXTURE_NOW-12*3600000).toISOString(),message:{content:`${TIME_MARKER} ${PROJECT_MARKER} 最近十二小时的记录`}});
-  fs.writeFileSync(transcriptPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n', 'utf8');
+  fs.writeFileSync(transcriptPath, rows.map(row => JSON.stringify({...row,sessionId:sid,cwd:SUBDIRECTORY,
+    message:{role:row.type,id:row.uuid,...row.message}})).join('\n') + '\n', 'utf8');
   return { sid, transcriptPath };
-}
-
-function writeFakeClaudeCli() {
-  fs.mkdirSync(FAKE_BIN, { recursive: true });
-  const script = path.join(FAKE_BIN, 'fake-claude.js');
-  fs.writeFileSync(script, `'use strict';\nprocess.stdout.write('FAKE_GLOBAL_SEARCH_CLAUDE_READY\\r\\n');\nprocess.stdin.resume();\nsetInterval(() => {}, 1 << 30);\n`, 'utf8');
-  fs.writeFileSync(path.join(FAKE_BIN, 'claude.cmd'), `@echo off\r\nnode "${script}" %*\r\n`, 'utf8');
 }
 
 function writeCodexFixture() {
@@ -172,6 +165,7 @@ function writeHubState(claude, codex, meetingFixture) {
 
 async function setSearch(client, query) {
   await client.eval(`(() => {
+    if (!document.getElementById('session-search-reader').hidden) document.getElementById('session-search-reader-close').click();
     const input = document.getElementById('search-query');
     input.value = ${JSON.stringify(query)};
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -201,7 +195,7 @@ function writeProjectFixtures() {
 }
 
 async function clickFilter(client, selector) {
-  await client.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  await client.eval(`if (!document.getElementById('session-search-reader').hidden) document.getElementById('session-search-reader-close').click(); document.querySelector(${JSON.stringify(selector)}).click()`);
 }
 
 async function waitSearchState(client, predicate, label) {
@@ -220,13 +214,11 @@ async function waitSearchState(client, predicate, label) {
     fs.mkdirSync(WORKSPACE, { recursive: true });
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
     writeProjectFixtures();
-    writeFakeClaudeCli();
     const claude = writeClaudeFixture();
     const codex = writeCodexFixture();
     const meetingFixture = writeMeetingFixture();
     writeHubState(claude, codex, meetingFixture);
 
-    const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'Path';
     hub = await launchIsolatedHub({
       dataDir: DATA_DIR,
       port,
@@ -245,7 +237,9 @@ async function waitSearchState(client, predicate, label) {
         HUB_SESSION_SEARCH_PREWARM: '1',
         HUB_SESSION_SEARCH_PREWARM_DELAY_MS: '250',
         CLAUDE_HUB_NO_EFFORT_MAX: '1',
-        [pathKey]: `${FAKE_BIN}${path.delimiter}${process.env[pathKey] || ''}`,
+        CLAUDE_CONFIG_DIR: path.join(FAKE_HOME, '.claude'),
+        CLAUDE_HUB_CLAUDE_STREAM_FIXTURE: path.join(ROOT, 'tests', 'fixtures', 'claude-stream.js'),
+        CLAUDE_HUB_CLAUDE_FIXTURE_MODE: 'hold',
       },
     });
     client = await waitFor('renderer CDP page', async () => {
@@ -324,10 +318,11 @@ async function waitSearchState(client, predicate, label) {
     result.providerLabels = await client.eval(`[...document.querySelectorAll('.session-search-result-provider')].map(node => node.textContent.trim())`);
     assert.deepEqual(new Set(result.providerLabels), new Set(['Claude', 'Codex', '群聊']));
     result.deepseekZeroHidden = await client.eval(`(() => {
-      const button = document.querySelector('#session-search-provider-filters [data-provider="deepseek"]');
+      const button = document.querySelector('#session-search-command [data-provider="deepseek"]');
       return button.hidden && getComputedStyle(button).display === 'none';
     })()`);
     assert.equal(result.deepseekZeroHidden, true);
+    await client.eval(`document.querySelector('.session-search-result').click()`);
     await waitFor('preview loaded', () => client.eval(`!!document.querySelector('#session-search-preview h3')`));
     result.preview = await client.eval(`({
       title: document.querySelector('#session-search-preview h3').textContent,
@@ -370,16 +365,19 @@ async function waitSearchState(client, predicate, label) {
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="codex"]');
     result.codexOnly = await waitSearchState(client, state => state.activeProvider === 'codex' && state.resultCount === 1, 'Codex-only filter');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
     result.codexPreview = await waitSearchState(client, state => /Codex/.test(state.previewTitle), 'Codex preview');
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="meeting"]');
     result.meetingOnly = await waitSearchState(client, state => state.activeProvider === 'meeting' && state.resultCount === 1, 'meeting-only filter');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
     result.meetingPreview = await waitSearchState(client, state => /群聊专项评审/.test(state.previewTitle), 'meeting preview');
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="all"]');
     await clickFilter(client, '[data-scope="assistant"]');
     await setSearch(client, 'CLAUDE_ANSWER_MARKER');
     result.answerOnly = await waitSearchState(client, state => state.activeScope === 'assistant' && state.resultCount === 1, 'answer-only filter');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
     result.answerPreview = await waitSearchState(client, state => /Claude/.test(state.previewTitle), 'answer preview');
     result.nativeCards=await client.eval(`({heading:!!document.querySelector('#session-search-preview .turn-body h2'),code:!!document.querySelector('#session-search-preview .turn-body pre'),actions:document.querySelectorAll('#session-search-preview [data-action]').length,liveIds:document.querySelectorAll('#session-search-preview [data-turn-id]').length})`);
     assert.equal(result.nativeCards.heading,true);assert.equal(result.nativeCards.code,true);
@@ -391,6 +389,7 @@ async function waitSearchState(client, predicate, label) {
     await clickFilter(client, '[data-scope="title"]');
     await setSearch(client, '群聊专项评审标题');
     result.titleOnly = await waitSearchState(client, state => state.activeScope === 'title' && state.resultCount === 1, 'title-only search');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
     result.titlePreview = await waitSearchState(client, state => /群聊专项评审标题/.test(state.previewTitle), 'title preview');
     result.titlePreviewHasDialogue=await waitFor('provisional title preview upgrades to indexed dialogue',()=>client.eval(`!!document.querySelector('#session-search-preview .session-search-native-card')`));
 
@@ -421,19 +420,16 @@ async function waitSearchState(client, predicate, label) {
 
     const desktop = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(SCREENSHOT, Buffer.from(desktop.data, 'base64'));
-    result.savedWidth=await client.eval(`(() => {document.querySelector('.session-search-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));return Number(localStorage.getItem('hub.search.resultShare'));})()`);
-    assert.equal(result.savedWidth,44);
-
     await client.send('Emulation.setDeviceMetricsOverride', { width: 760, height: 820, deviceScaleFactor: 1, mobile: false });
     await _waitMs(120);
     result.responsive = await client.eval(`({
       width: innerWidth,
-      bodyScrollWidth: document.body.scrollWidth,
+      bodyScrollWidth: document.querySelector('.session-search-home').scrollWidth,
       dialogWidth: document.querySelector('.session-search-dialog').getBoundingClientRect().width,
       visible: document.getElementById('search-modal').style.display === 'flex',
     })`);
     assert.equal(result.responsive.bodyScrollWidth, result.responsive.width);
-    assert.ok(result.responsive.dialogWidth <= result.responsive.width);
+    assert.ok(result.responsive.dialogWidth <= result.responsive.width + 1);
     assert.equal(result.responsive.visible, true);
     const responsive = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
     fs.writeFileSync(RESPONSIVE_SCREENSHOT, Buffer.from(responsive.data, 'base64'));
@@ -450,22 +446,24 @@ async function waitSearchState(client, predicate, label) {
       const progress = document.getElementById('session-search-progress').getBoundingClientRect();
       return {
         width:innerWidth,
-        bodyScrollWidth:document.body.scrollWidth,
+        bodyScrollWidth:document.querySelector('.session-search-home').scrollWidth,
         dialogWidth:dialog.width,
-        contentColumns:getComputedStyle(document.querySelector('.session-search-content')).gridTemplateColumns,
+        contentColumns:getComputedStyle(document.querySelector('.session-search-command')).width,
         progressInside:progress.left >= dialog.left && progress.right <= dialog.right + 1,
         progressWidth:progress.width,
       };
     })()`);
     assert.equal(result.mobile.bodyScrollWidth, result.mobile.width);
-    assert.ok(result.mobile.dialogWidth <= result.mobile.width);
+    assert.ok(result.mobile.dialogWidth <= result.mobile.width + 1);
     assert.equal(result.mobile.progressInside, true);
     assert.ok(result.mobile.progressWidth > 0 && result.mobile.progressWidth <= result.mobile.dialogWidth);
     await client.eval(`window.__hubE2E.globalSessionSearch.renderStatus(${JSON.stringify(result.indexStatus)})`);
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="meeting"]');
     await setSearch(client, COMMON);
-    await waitSearchState(client, state => state.activeProvider === 'meeting' && state.resultCount === 1 && /群聊专项评审/.test(state.previewTitle), 'meeting result before open');
+    await waitSearchState(client, state => state.activeProvider === 'meeting' && state.resultCount === 1, 'meeting result before open');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
+    await waitSearchState(client, state => /群聊专项评审/.test(state.previewTitle), 'meeting reader before open');
     await client.eval(`[...document.querySelectorAll('.session-search-action')].find(button => button.textContent === '打开群聊').click()`);
     result.openMeeting = await waitFor('search result opens owning meeting', async () => {
       const state = await client.eval(`({
@@ -481,24 +479,28 @@ async function waitSearchState(client, predicate, label) {
     await clickFilter(client, '#session-search-provider-filters [data-provider="claude"]');
     await clickFilter(client, '[data-scope="assistant"]');
     await setSearch(client, 'CLAUDE_ANSWER_MARKER');
-    await waitSearchState(client, state => state.activeProvider === 'claude' && state.activeScope === 'assistant' && state.resultCount === 1 && /Claude/.test(state.previewTitle), 'Claude result before precise open');
+    await waitSearchState(client, state => state.activeProvider === 'claude' && state.activeScope === 'assistant' && state.resultCount === 1, 'Claude result before precise open');
+    await client.eval(`document.querySelector('.session-search-result').click()`);
+    await waitSearchState(client, state => /Claude/.test(state.previewTitle), 'Claude reader before precise open');
     await client.eval(`[...document.querySelectorAll('.session-search-action')].find(button => button.textContent === '继续会话').click()`);
     result.openClaude = await waitFor('precise Claude result opens card at matching event', async () => {
       const state = await client.eval(`({
         modalOpen: document.getElementById('search-modal').style.display === 'flex',
-        terminalIds: window.__hubE2E.terminalCacheStats().ids,
-        matchMounted: !!document.querySelector('.turn-card[data-turn-id="claude-answer-global"]'),
-        matchFocused: !!document.querySelector('.turn-card[data-turn-id="claude-answer-global"].global-search-focus'),
+        activeSessionId,
+        nativeConnection:sessions.get(activeSessionId)?.nativeRuntime?.connection,
+        cardIds:[...document.querySelectorAll('#msg-overlay .turn-card')].map(e=>e.dataset.turnId),
+        matchMounted: !!document.querySelector('.turn-card[data-turn-id="claude-message-claude-answer-global"]'),
+        matchFocused: !!document.querySelector('.turn-card[data-turn-id="claude-message-claude-answer-global"].global-search-focus'),
       })`);
-      return !state.modalOpen && state.terminalIds.includes('hub-claude-search') && state.matchMounted ? state : null;
+      result.lastOpenClaude=state;
+      return !state.modalOpen && state.activeSessionId==='hub-claude-search' && state.nativeConnection==='connected' && state.matchMounted && state.matchFocused ? state : null;
     }, 20_000);
 
     const previousErrors=await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS || []`);
     await client.send('Page.reload');
     await waitFor('reloaded UI',()=>client.eval(`!!window.__hubE2E?.globalSessionSearch`));
     await client.eval(`window.__GLOBAL_SEARCH_CONSOLE_ERRORS=${JSON.stringify(previousErrors)};document.getElementById('btn-global-search').click()`);
-    result.reloadedPreferences=await waitFor('restored split and empty-query ordering',()=>client.eval(`(() => {const s=document.getElementById('session-search-sort');return s.value==='conversationTime' && s.querySelector('[value="relevance"]').disabled ? {share:document.querySelector('.session-search-workspace-panes').style.getPropertyValue('--search-result-share'),sort:s.value,description:s.title}:null;})()`));
-    assert.equal(result.reloadedPreferences.share,'44%');
+    result.reloadedPreferences=await waitFor('restored empty-query ordering',()=>client.eval(`(() => {const s=document.getElementById('session-search-sort');return s.value==='conversationTime' && s.querySelector('[value="relevance"]').disabled ? {sort:s.value,description:s.title}:null;})()`));
     assert.match(result.reloadedPreferences.description,/未输入关键词/);
     await setSearch(client,COMMON);
     await waitFor('nonempty relevance ordering restored',()=>client.eval(`document.getElementById('session-search-sort').value==='relevance' && !document.querySelector('#session-search-sort [value="relevance"]').disabled`));
