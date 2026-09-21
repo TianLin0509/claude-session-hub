@@ -496,12 +496,14 @@ function createGlobalSessionSearch(options) {
       projectLoadError = '';
       renderProjectLibrary();
       // Membership may change when projects/worktrees were added between opens.
-      scheduleSearch();
+      if(reader.hidden) scheduleSearch();
+      else newResults.hidden=false;
     } catch (error) {
       if (sequence !== projectLoadSequence || !isOpen()) return;
       projectLibrary = [];
       projectLoadError = `项目库读取失败：${error.message}。重新打开可重试。`;
-      scheduleSearch();
+      if(reader.hidden) scheduleSearch();
+      else newResults.hidden=false;
       renderProjectLibrary();
       announce(projectNote.textContent);
     } finally {
@@ -690,8 +692,18 @@ function createGlobalSessionSearch(options) {
     return resultScopeLabel(item.scope);
   }
 
+  async function openReaderPath(filePath, cwd) {
+    if(typeof openPath!=='function') throw new Error('文件打开功能尚未就绪');
+    const sequence=previewSequence;
+    const result=await openPath(filePath,{cwd});
+    if(result?.ok===false) throw new Error(result.error || '无法打开文件');
+    // Hub previews and file manager live underneath this modal. Reveal them
+    // only after a successful navigation; a failed open keeps the reader here.
+    if(sequence===previewSequence && isOpen() && ['preview','file-manager'].includes(result?.type)) close({restoreFocus:false});
+  }
+
   function renderPreview(hit, preview) {
-    if(!preview?.session) {
+    if(!preview?.session || preview.error) {
       previewRoot.replaceChildren(createStaticEmpty(document,{title:'暂时无法读取原文',detail:preview?.error || '原始记录可能正在写入或已被移动。',className:'error'}));return;
     }
     activePreview=preview;
@@ -714,7 +726,7 @@ function createGlobalSessionSearch(options) {
     if(previewMode==='artifacts') {
       if(!preview.artifacts?.length) context.append(createStaticEmpty(document,{title:'这段问答未发现可打开的产物',detail:'原文中的历史路径仍可在“原始对话”里查看。'}));
       for(const artifact of preview.artifacts||[]) {
-        const button=action(artifact.name||artifact.path,async()=>{try {await openPath?.(artifact.path,{cwd:preview.session.cwd});} catch(e) {announce(e.message);button.textContent='无法打开：'+e.message;}});
+        const button=action(artifact.name||artifact.path,async()=>{try {await openReaderPath(artifact.path,preview.session.cwd);} catch(e) {announce(e.message);button.textContent='无法打开：'+e.message;}});
         button.classList.add('session-search-artifact');button.title=artifact.path;context.append(button);
       }
     } else {
@@ -729,7 +741,7 @@ function createGlobalSessionSearch(options) {
         if(cardRenderer && item.scope!=='tool' && item.scope!=='title') {
           const rendered=cardRenderer.renderReadOnlyCard({id:item.eventId,role:item.role,text:item.text,ts:item.timestamp,kind:hit.provider,model:item.speaker});
           rendered.classList.add('session-search-native-card');turn.append(rendered);
-          rendered.addEventListener('click',async event=>{const link=event.target.closest('a');if(!link) return;event.preventDefault();event.stopPropagation();try {await openPath?.(link.getAttribute('href'),{cwd:preview.session.cwd});} catch(error) {announce(error.message);}});
+          rendered.addEventListener('click',async event=>{const link=event.target.closest('a');if(!link) return;event.preventDefault();event.stopPropagation();try {await openReaderPath(link.getAttribute('href'),preview.session.cwd);} catch(error) {announce(error.message);const note=document.createElement('p');note.className='session-search-notice';note.textContent='无法打开：'+error.message;rendered.append(note);}});
         } else {
           const text=document.createElement('div');text.className='session-search-preview-text';appendHighlightedText(document,text,item.text||'',queryInput.value);turn.append(text);
         }

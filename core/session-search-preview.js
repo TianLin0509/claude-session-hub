@@ -64,14 +64,16 @@ function readSearchPreview(index, request={}) {
     const offset=expanded?Math.max(0,Math.floor(Number(request.textOffset)||0)):0;
     const stored=textStatement.get(offset,max,doc.id);
     const raw=stored?.text||'', fullLength=Number(stored?.full_length)||0;
+    // SQLite length/substr offsets count Unicode code points, not UTF-16 units.
+    const textLength=Array.from(raw).length;
     if(doc.scope==='assistant') for(const artifact of discoverCompletionArtifacts(raw+'\n'+stored.tail,session.cwd,{maxArtifacts:12})) {
       const identity=artifact.path||artifact.absolutePath||artifact.url;
       if(identity && !seen.has(identity)) {seen.add(identity);artifacts.push(artifact);}
     }
     return {eventId:doc.event_id,scope:doc.scope,role:doc.role||doc.scope,speaker:doc.speaker,
       timestamp:Number(doc.timestamp)||null,ordinal:doc.ordinal,text:raw,
-      truncated:offset+raw.length<fullLength,fullLength,expanded,textOffset:offset,
-      nextTextOffset:offset+raw.length<fullLength?offset+raw.length:null,isMatch:mode==='hits' || doc.event_id===request.eventId,
+      truncated:offset+textLength<fullLength,fullLength,expanded,textOffset:offset,
+      nextTextOffset:offset+textLength<fullLength?offset+textLength:null,isMatch:mode==='hits' || doc.event_id===request.eventId,
       containsQuery:terms.some(term=>raw.normalize('NFKC').toLowerCase().includes(term))};
   });
   return {session,context,mode,targetEventId:docs[at].event_id,totalRecords:docs.length,
