@@ -258,10 +258,20 @@ function createClaudeQuotaResume(deps = {}) {
     // recent "not a quota wall" answer is reused for a short while.
     if (Number(notQuotaUntil.get(sessionId)) > now()) return;
     const reason = native.runtime?.reason || '';
+    // Stamped before the await, not after. Reading the account takes real time,
+    // and a prompt the user sends inside that window would otherwise start a
+    // turn *earlier* than `armedAt` -- which is exactly the comparison
+    // decideQuotaResume uses to notice the user spoke first. Arming on a later
+    // stamp would hide their turn and let us continue on top of it.
+    const armAt = now();
+    // Same reason: this has to be the failed turn's start, read before the
+    // await. Reading it afterwards could capture a turn the user started in
+    // the meantime and quietly raise the bar past their own work.
+    const failedTurnStartedAt = Number(native.runtime?.startedAt) || 0;
     const { usage, observedAt } = await readUsage(sessionId);
     const rearms = Number(episodes.get(sessionId)?.rearms || 0);
     const armed = armQuotaWait({
-      sessionId, reason, usage, usageObservedAt: observedAt, now: now(), rearms,
+      sessionId, reason, usage, usageObservedAt: observedAt, now: armAt, rearms,
       userMessageId: native.runtime?.userMessageId || null,
     });
     if (!armed.ok) {
@@ -284,7 +294,7 @@ function createClaudeQuotaResume(deps = {}) {
       }
       return;
     }
-    const record = { ...armed.record, baselineStartedAt: Number(native.runtime?.startedAt) || 0 };
+    const record = { ...armed.record, baselineStartedAt: failedTurnStartedAt };
     setRecord(sessionId, record);
     logger.log(`[claude-quota] ${sessionId.slice(0, 8)} armed; ${record.windowLabel} window resets at `
       + new Date(record.resetsAt).toISOString() + ` (evidence: ${record.evidence})`);

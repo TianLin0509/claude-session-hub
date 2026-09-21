@@ -342,6 +342,34 @@ async function testNonQuotaFailuresDoNotPoll() {
   console.log('PASS ordinary failures neither arm a wait nor poll the account repeatedly');
 }
 
+// Reading the account takes real time. A prompt the user sends inside that
+// window starts a turn whose startedAt must still count as "the user spoke
+// first" -- otherwise the wait arms on a later stamp, never sees their turn,
+// and continues on top of work they already resumed by hand.
+async function testUserPromptDuringArmingWins() {
+  const h = harness();
+  const armAt = T0;
+  h.clock.t = armAt;
+  h.native.readAccountUsage = async () => {
+    // The user hits Enter while we are still asking about quota.
+    h.clock.t = armAt + 4000;
+    h.native.runtime.startedAt = armAt + 2000;
+    return usageAt(100, RESET);
+  };
+  await h.controller.onTurnComplete({ sessionId: 'sid-1', status: 'failed' });
+  const record = h.controller.snapshot('sid-1');
+  assert.ok(record, 'the wait still arms; the user turn is noticed on the next tick');
+  assert.ok(record.armedAt <= armAt + 2000, 'armedAt is stamped before the account read');
+  assert.ok(record.baselineStartedAt < armAt + 2000, 'the baseline is the failed turn, not the user one');
+  record.jitterMs = 0;
+  h.clock.t = RESET + RESET_GRACE_MS + 30000;
+  h.native.readAccountUsage = async () => usageAt(4, RESET + 18000000, { observedAt: RESET + 1000 });
+  await h.controller.tick();
+  assert.equal(h.sent.length, 0, 'nothing is sent on top of the turn the user started');
+  assert.equal(h.controller.snapshot('sid-1'), null, 'the wait is cancelled, not parked');
+  console.log('PASS a prompt sent while the account is being read cancels the wait');
+}
+
 async function testDisabled() {
   const h = harness();
   const off = createClaudeQuotaResume({
@@ -366,6 +394,7 @@ async function main() {
   await testHostEpisodeAccounting();
   await testHostPersistence();
   await testNonQuotaFailuresDoNotPoll();
+  await testUserPromptDuringArmingWins();
   await testDisabled();
   console.log('\nunit-claude-quota-watchdog: all checks passed');
 }
