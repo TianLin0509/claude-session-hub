@@ -15,7 +15,7 @@
 
 .scene-rail {
   flex: none;
-  width: 52px;
+  width: 84px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -186,8 +186,8 @@
   transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 
-/* 文案留在 DOM 里（可访问名 + tooltip 的 title 都还在），只是不画出来 */
-.scene-rail .btn-label { display: none; }
+/* Labels stay visible; hover text adds the full function description. */
+.scene-rail .btn-label { display: block; font-size: 11px; line-height: 15px; font-weight: 500; white-space: nowrap; }
 
 .scene-rail .btn-icon { width: 17px; height: 17px; }
 
@@ -242,7 +242,7 @@
 /* ---- 折叠态：只折侧栏，rail 永远在 ---- */
 /* 展开按钮原来贴在 app-body 左边 8px，那正好压在 rail 的 logo 上；挪到 rail 右侧。 */
 #app-body > .btn-expand-sidebar {
-  left: 60px;
+  left: 92px;
   border-radius: var(--radius-sm);
 }
 
@@ -260,12 +260,21 @@
   .scene-rail .btn-rail-theme { transition: none; }
 }
 
-/* Compact, themed two-tone navigation artwork. */
-.scene-rail #btn-home { --rail-accent: #8199ff; }
-.scene-rail #btn-research { --rail-accent: #48bfa5; }
-.scene-rail #btn-study { --rail-accent: #b194ec; }
-.scene-rail #btn-ran { --rail-accent: #62b8e2; }
-.scene-rail #btn-rail-memo { --rail-accent: #d9ac60; }
-.scene-rail .btn-shell-nav .btn-icon { width: 22px; height: 22px; color: var(--rail-accent, var(--fg-muted)); }
-.scene-rail .btn-shell-nav:hover .btn-icon { filter: brightness(1.12); }
-.scene-rail .btn-shell-nav.active { box-shadow: inset 0 0 0 1px var(--border-subtle); }
+/* A compact labelled rail: one accent for selection, not eight competing colors. */
+.rail-logo { width: 36px; height: 36px; margin-bottom: 10px; background: var(--brand); box-shadow: none; }
+.rail-logo svg { width: 25px; height: 25px; }
+.rail-navigation { display: flex; flex-direction: column; gap: 4px; flex: 0 1 auto; min-height: 0; width: 100%; align-items: center; overflow-y: auto; scrollbar-width: thin; }
+.scene-rail .btn-shell-nav { position: relative; width: 66px; height: 54px; flex-direction: column; gap: 5px; border-radius: 10px; }
+.scene-rail .btn-shell-nav .btn-icon { width: 22px; height: 22px; color: currentColor; }
+.scene-rail #btn-rail-capabilities { color: var(--fg-muted); }
+.scene-rail .btn-shell-nav.active { color: var(--brand-text, var(--brand)); background: var(--brand-tint); }
+.scene-rail .btn-shell-nav.active::before { content: ''; position: absolute; left: 0; top: 18px; width: 3px; height: 18px; border-radius: 3px; background: var(--brand); }
+.scene-rail #btn-rail-memo { margin-top: 10px; }
+.scene-rail #btn-rail-accounts > #accounts-attention { top: 2px; right: 4px; width: auto; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 6px; font-size: 9px; line-height: 15px; }
+@media (max-height: 720px) {
+  .scene-rail { gap: 4px; padding-block: 8px; }
+  .rail-logo { margin-bottom: 4px; }
+  .scene-rail .btn-shell-nav { height: 46px; gap: 3px; }
+  .scene-rail .btn-shell-nav .btn-icon { width: 20px; height: 20px; }
+  .scene-rail #btn-rail-memo { margin-top: 6px; }
+}

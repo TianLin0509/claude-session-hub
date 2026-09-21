@@ -17,7 +17,6 @@ const {
 const {
   buildComposerRailModel,
   buildComposerStatusModel,
-  buildStageStatusSummary,
 } = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
@@ -4364,13 +4363,8 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   speedChip.addEventListener('click',event=>{
     event.stopPropagation(); void modelUi.showSpeedPicker(speedChip,sessionId);
   });
-  // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
-  const ctxRing = document.createElement('span');
-  ctxRing.className = 'composer-ctx';
-  ctxRing.hidden = true;
-  const ctxRingHole = document.createElement('i');
-  ctxRingHole.setAttribute('aria-hidden', 'true');
-  ctxRing.appendChild(ctxRingHole);
+  // Shared remaining percentage + usage ring, using the existing contextPct source.
+  const contextBudget = require('./composer-context').createComposerContext(document);
 
   const sendHint = document.createElement('span');
   sendHint.className = 'composer-hint';
@@ -4409,7 +4403,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   composerRail.className = 'composer-rail';
   composerRail.append(
     attachBtn, modelChip, thinkingChip, speedChip,
-    railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
+    railSpacer, contextBudget.element, sendHint, stopBtn, sendBtn,
   );
 
   const composerRow = document.createElement('div');
@@ -4447,10 +4441,14 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   const secondaryActions = document.createElement('div');
   secondaryActions.className = 'composer-secondary-actions';
   secondaryActions.append(bridgeToolbar, startActions);
+  const tuningControls = document.createElement('div');
+  tuningControls.className = 'composer-tuning-controls';
+  tuningControls.append(attachBtn, secondaryActions, modelChip, thinkingChip, speedChip);
+  composerRail.prepend(tuningControls);
   if (termContainer.closest('.terminal-panel') === terminalPanelEl) {
     composer.classList.add('has-backend-update-notice');
   }
-  composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
+  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -4602,13 +4600,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
     speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
 
-    ctxRing.hidden = !rail.context.visible;
-    if (rail.context.visible) {
-      ctxRing.dataset.level = rail.context.level;
-      ctxRing.style.setProperty('--composer-ctx-pct', `${rail.context.percent}%`);
-      if (ctxRing.title !== rail.context.title) ctxRing.title = rail.context.title;
-      ctxRing.setAttribute('aria-label', rail.context.ariaLabel);
-    }
+    contextBudget.update(rail.context);
 
     sendBtn.disabled = false;
     sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
@@ -4935,59 +4927,14 @@ function syncTerminalRuntimeStatusTicker(session) {
 
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
-function updateCardSessionStatus(session) {
-  const element = document.getElementById('card-session-status');
-  if (!element || !terminalPanelEl) return;
-  const summary = session ? buildStageStatusSummary(session) : null;
-  const visible = currentView === 'card' && !!summary
-    && !!(summary.compact || summary.contextText);
-  terminalPanelEl.classList.toggle('card-status-visible', visible);
-  if (!visible) {
-    element.replaceChildren();
-    element.dataset.signature = '';
-    element.removeAttribute('aria-label');
-    element.removeAttribute('title');
-    return;
-  }
-
-  const signature = JSON.stringify(summary);
-  if (element.dataset.signature === signature) return;
-  element.dataset.signature = signature;
-  element.dataset.provider = summary.kind;
-  element.replaceChildren();
-  // T2：模型名与工作目录从这条状态行撤掉 —— 模型名归 composer 底栏的 chip，
-  // 工作目录归头部面包屑。同一件事在三个地方各说一遍，就是这一版要治的病。
-  const parts = [
-    ['effort', summary.effort ? '推理 · ' + require('./ui-labels').effortLabel(summary.effort) : null],
-    ['speed', summary.speed ? '速度 · ' + require('./ui-labels').speedLabel(summary.speed) : null],
-    ['context', summary.contextText],
-  ].filter(([, value]) => value);
-  parts.forEach(([key, value], index) => {
-    if (index > 0) {
-      const separator = document.createElement('span');
-      separator.className = `card-session-status-sep card-session-status-sep-before-${key}`;
-      separator.textContent = '·';
-      element.appendChild(separator);
-    }
-    const part = document.createElement('span');
-    part.className = `card-session-status-part card-session-status-${key}`;
-    part.textContent = value;
-    element.appendChild(part);
-  });
-  element.setAttribute('aria-label', summary.ariaLabel || parts.map(([, value]) => value).join('，'));
-  element.title = parts.map(([, value]) => value).join(' · ');
-}
-
 function updateFloatingBarState() {
   sessionSplit?.sync();
   if (!activeSessionId) {
-    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   const s = sessions.get(activeSessionId);
   if (!s) {
-    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
@@ -4998,7 +4945,6 @@ function updateFloatingBarState() {
   const status = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
   if (status) paintTerminalRuntimeStatus(status, sessions.get(sessionSplit?.focusedId()) || s);
   syncTerminalRuntimeStatusTicker(s);
-  updateCardSessionStatus(s);
 
   const bar = document.querySelector('.terminal-panel .floating-input-bar');
   if (!bar) return;

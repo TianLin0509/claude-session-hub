@@ -314,6 +314,16 @@
 .composer-rail .fi-bridge-pull,
 .composer-rail .fi-bridge-fork { min-height: 24px; padding: 3px 10px; }
 
+.composer-context-budget {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.composer-context-value { font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+
 /* 上下文预算环：conic-gradient 画已用比例，中间挖空成环。 */
 .composer-ctx {
   flex: 0 0 auto;
