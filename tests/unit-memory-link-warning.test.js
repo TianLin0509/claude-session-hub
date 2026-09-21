@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { createJunctionSync } = require('../core/fs-junction');
 
 const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
 const sessionManager = read('core/session-manager.js');
@@ -96,7 +97,7 @@ check('错链场景真的产出 errors（不是只靠源码匹配）', () => {
     const elsewhere = path.join(home, 'elsewhere');
     fs.mkdirSync(bucket, { recursive: true });
     fs.mkdirSync(elsewhere, { recursive: true });
-    fs.symlinkSync(elsewhere, path.join(bucket, 'memory'), 'junction');
+    createJunctionSync(elsewhere, path.join(bucket, 'memory'));
 
     const result = ensureMemoryLink(cwd, { homeDir: home, logger: { warn() {}, log() {} } });
     assert.ok(result.errors.some(e => e.includes('没有指向规范库')),
