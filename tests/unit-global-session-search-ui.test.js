@@ -23,7 +23,7 @@ test('project library loads preserve the current selection and reject stale resp
     const context=vm.createContext({projectSelect:select,projectRail:null,projectLibrary:[{name:'A',path:'C:/A'},{name:'B',path:'C:/B'}],
       projectLoadSequence:0,projectLoadError:'',projectPathKey,projectNote:{textContent:'',hidden:true},document:{createElement:()=>({})},
       ipcRenderer:{invoke:()=>new Promise((resolve,reject)=>pending.push({resolve,reject}))},isOpen:()=>true,
-      scheduleSearch:()=>events.push('search'),announce:()=>{}});
+      scheduleSearch:()=>events.push('search'),announce:()=>{},reader:{hidden:true},newResults:{hidden:true}});
     const start=SEARCH_SOURCE.indexOf('  function renderProjectLibrary()'),end=SEARCH_SOURCE.indexOf('  function resultScopeLabel(',start);
     vm.runInContext(SEARCH_SOURCE.slice(start,end),context);
     return {context,pending,events,select};
@@ -51,6 +51,34 @@ test('project library loads preserve the current selection and reject stale resp
   const closed=fixture(),late=closed.context.loadProjectLibrary();closed.context.projectLoadSequence++;
   closed.pending[0].resolve({items:[]});await late;
   assert.equal(closed.context.projectLibrary.length,2);assert.equal(closed.events.length,0);
+
+  const reading=fixture();reading.context.reader.hidden=false;
+  const background=reading.context.loadProjectLibrary();reading.pending[0].resolve({items:[]});await background;
+  assert.equal(reading.events.length,0,'late catalogue responses must not dismiss a reader');
+  assert.equal(reading.context.newResults.hidden,false);
+});
+
+test('a stale preview with session metadata still shows the backend error',()=>{
+  const vm=require('node:vm');let rendered;
+  const context=vm.createContext({previewRoot:{replaceChildren:value=>{rendered=value;}},document:{},
+    createStaticEmpty:(_doc,model)=>model,hit:{},preview:{session:{title:'old'},state:'stale',error:'原文已变化',context:[]}});
+  const start=SEARCH_SOURCE.indexOf('  function renderPreview('),end=SEARCH_SOURCE.indexOf('  async function loadPreview(',start);
+  vm.runInContext(SEARCH_SOURCE.slice(start,end)+'\nrenderPreview(hit,preview);',context);
+  assert.equal(rendered.detail,'原文已变化');assert.equal(rendered.className,'error');
+});
+
+test('reader file navigation reveals successful Hub previews and preserves failed or superseded reads',async()=>{
+  const vm=require('node:vm');let closed=0;
+  const context=vm.createContext({previewSequence:1,isOpen:()=>true,close:()=>closed++,openPath:async()=>({ok:true,type:'preview'})});
+  const start=SEARCH_SOURCE.indexOf('  async function openReaderPath('),end=SEARCH_SOURCE.indexOf('  function renderPreview(',start);
+  vm.runInContext(SEARCH_SOURCE.slice(start,end),context);
+  await context.openReaderPath('report.html','C:/work');assert.equal(closed,1);
+  context.openPath=async()=>({ok:false,error:'missing'});
+  await assert.rejects(context.openReaderPath('missing.html'),/missing/);assert.equal(closed,1);
+  context.openPath=async()=>({ok:true,type:'external'});await context.openReaderPath('slides.pptx');assert.equal(closed,1);
+  let complete;context.openPath=()=>new Promise(resolve=>{complete=resolve;});
+  const pending=context.openReaderPath('slow.html');context.previewSequence++;
+  complete({ok:true,type:'preview'});await pending;assert.equal(closed,1);
 });
 
 test('an indexed result upgrades a selected provisional title preview',()=>{
@@ -128,7 +156,7 @@ test('search close captures the focus target before clearing shared state', () =
   assert.match(SEARCH_SOURCE, /const focusTarget = returnFocusElement;[\s\S]*requestAnimationFrame\(\(\) => focusTarget\.focus\(\)\)/);
 });
 
-test('renderer contract exposes A-layout filters, local-index status and keyboard entry', () => {
+test('renderer contract exposes D focused search, on-demand reader and advanced filters', () => {
   const html = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
   const js = fs.readFileSync(path.join(ROOT, 'renderer', 'global-session-search.js'), 'utf8');
   const css = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'global-session-search.css'), 'utf8');
@@ -136,6 +164,7 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
     'btn-global-search', 'search-query', 'session-search-provider-filters',
     'session-search-scope-tabs', 'session-search-results-pane', 'session-search-preview',
     'session-search-progress', 'session-search-progress-track', 'session-search-progress-fill',
+    'session-search-reader', 'session-search-filter-toggle', 'session-search-advanced', 'session-search-suggestions',
   ]) assert.match(html, new RegExp(`id="${id}"`));
   for (const provider of ['claude', 'codex', 'meeting', 'deepseek']) {
     assert.match(html, new RegExp(`data-provider="${provider}"`));
@@ -148,7 +177,8 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
   assert.match(js, /get-session-search-preview/);
   assert.match(js, /refresh-session-search/);
   assert.match(js, /event\.shiftKey/);
-  assert.match(css, /grid-template-columns:\s*43% 57%/);
+  assert.match(css, /\.session-search-command\s*\{[^}]*830px/);
+  assert.doesNotMatch(js, /session-search-divider/);
   assert.match(css, /session-search-chip\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(css, /session-search-progress-track/);
   assert.match(css, /session-search-progress-indeterminate/);
