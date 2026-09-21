@@ -6,7 +6,8 @@ const { normalize, termsFor, normalizeSort, documentRank, compareRank, compareRe
 const { createSnippet, isCjkAuxTerm, sinceTimestamp } = require('./session-search-index');
 const { normalizeProjectFilter, matchesProjectFilter } = require('./session-search-projects');
 const DIALOGUE = ['title', 'user', 'assistant'];
-const ALL_SCOPES = [...DIALOGUE, 'tool'];
+// 工具 doc 不在全文索引里，所以它不是一个可检索范围；老请求里的 tool 直接忽略。
+const ALL_SCOPES = [...DIALOGUE];
 const quote = value => '"' + value.replace(/"/g, '""') + '"';
 
 function normalizeRequest(request, now = Date.now()) {
@@ -17,7 +18,8 @@ function normalizeRequest(request, now = Date.now()) {
   const from = time.from != null ? Number(time.from) : sinceTimestamp(request.timeRange, now);
   const to = time.to != null ? Number(time.to) : from != null ? now : null;
   if ((from != null && !Number.isFinite(from)) || (to != null && !Number.isFinite(to)) || (from != null && to != null && from > to)) throw new Error('时间范围无效');
-  const scopes = Array.isArray(request.scopes) && request.scopes.length ? [...new Set(request.scopes)].sort() : DIALOGUE.slice().sort();
+  const requested = Array.isArray(request.scopes) ? [...new Set(request.scopes)].filter(scope => scope !== 'tool') : [];
+  const scopes = requested.length ? requested.sort() : DIALOGUE.slice().sort();
   if (scopes.some(scope=>!ALL_SCOPES.includes(scope))) throw new Error('搜索内容范围无效');
   let filter = null;
   if (request.sessionFilter != null) {

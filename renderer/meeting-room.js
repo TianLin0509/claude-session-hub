@@ -51,8 +51,6 @@ if (typeof document !== 'undefined') (function () {
     attemptText: dispatchAttemptText,
     isDispatchCard,
   } = require('./dispatch-card.js');
-  const { resolveClaudeMemoryIndex: _resolveClaudeMemoryIndex } = require('../core/claude-memory-loader.js');
-  const _CLAUDE_MEMORY_INDEX = _resolveClaudeMemoryIndex();
   const {
     buildHeroPromptBlock: _buildHeroPromptBlock,
     getHero: _getHero,
@@ -2074,10 +2072,7 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = sess && sess.currentModel ? (typeof modelShort === 'function' ? modelShort(sess.currentModel) : sess.currentModel.displayName || sess.currentModel.id || '') : '';
-      const summary = buildSessionStatusSummary(sess);
-      const compact = summary.compact || model;
-      const ctxPct = sess && typeof sess.contextPct === 'number' ? sess.contextPct : null;
-      const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
+      const compact = model;
       const st = _slotTurnStatus(state, meeting, slot, viewingTurnN);
       return `<button type="button" class="mr-card-roster-member ${selected.has(slot.slotIndex) ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
         <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
@@ -2087,7 +2082,7 @@ if (typeof document !== 'undefined') (function () {
         </span>
         <span class="mr-card-roster-side">
           <span class="mr-card-roster-status is-${_turnStatusBucket(st.status)}">${escapeHtml(st.label)}</span>
-          <span class="mr-card-roster-ctx ${ctxCls}">${ctxPct == null ? 'Ctx --' : `Ctx ${ctxPct}%`}</span>
+
         </span>
       </button>`;
     }).join('');
@@ -2801,15 +2796,7 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || 'AI';
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
-      const summary = buildSessionStatusSummary(s);
-      const compact = summary.compact || model;
-      // Match ordinary Session cards: surface context remaining, while color
-      // severity still derives from used percentage.
-      const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
-      const ctxLeft = summary.contextLeft;
-      const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
-      const ctxText = ctxLeft == null ? 'Ctx --' : `Ctx ${ctxLeft}%余`;
-      const ctxTitle = ctxLeft == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文剩余 ${ctxLeft}%`;
+      const compact = model;
       const canRemove = slots.length > 1 && mode === 'idle';
       const removeTitle = slots.length <= 1
         ? '群聊至少保留一位成员'
@@ -2823,7 +2810,7 @@ if (typeof document !== 'undefined') (function () {
               <span class="mr-gc-member-meta">@${escapeHtml(_memberIdForSlot(slot))}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
             </span>
             <span class="mr-gc-member-side">
-              <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
+
               <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
             </span>
           </button>
@@ -5172,6 +5159,8 @@ if (typeof document !== 'undefined') (function () {
           event.stopPropagation(); void _openInputTuning(speedButton,slot.sid,'speed');
         });
         pair.appendChild(speedButton);
+        pair._contextBudget = require('./composer-context').createComposerContext(document);
+        pair.appendChild(pair._contextBudget.element);
         members.appendChild(pair);
       }
     }
@@ -5203,6 +5192,7 @@ if (typeof document !== 'undefined') (function () {
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
       speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
+      pair._contextBudget.update(model.context, slot.displayLabel);
     }
   }
 
@@ -5221,7 +5211,7 @@ if (typeof document !== 'undefined') (function () {
         tuning = document.createElement('div');
         tuning.id = 'mr-input-tuning';
         tuning.className = 'composer-rail';
-        tuning.innerHTML = '<div class="mr-input-tuning-members"></div><div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div>';
+        tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
         tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
           const button = event.currentTarget, meetingId = activeMeetingId;
           event.stopPropagation();
@@ -6187,26 +6177,12 @@ if (typeof document !== 'undefined') (function () {
     const model = session && session.currentModel
       ? (typeof modelShort === 'function' ? modelShort(session.currentModel) : session.currentModel.displayName || session.currentModel.id || '')
       : '';
-    const summary = buildSessionStatusSummary(session);
-    const compact = summary.compact || model;
-    const ctxPct = session && typeof session.contextPct === 'number' ? session.contextPct : null;
-    const ctxLeft = summary.contextLeft;
-    const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
-    const ctxText = ctxLeft == null ? 'Ctx --' : `Ctx ${ctxLeft}%余`;
-    const ctxTitle = ctxLeft == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文剩余 ${ctxLeft}%`;
+    const compact = model;
     const memberLabel = `@${_memberIdForSlot(slot)}${compact ? ` · ${compact}` : ''}`;
     let changed = false;
 
     const rows = panel.querySelectorAll(`[data-gc-member-idx="${slot.slotIndex}"]`);
     rows.forEach((row) => {
-      const ctx = row.querySelector('.mr-gc-member-ctx, .mr-card-roster-ctx');
-      if (ctx) {
-        const baseClass = ctx.classList.contains('mr-card-roster-ctx') ? 'mr-card-roster-ctx' : 'mr-gc-member-ctx';
-        ctx.className = `${baseClass} ${ctxCls}`;
-        ctx.textContent = ctxText;
-        ctx.title = ctxTitle;
-        changed = true;
-      }
       const meta = row.querySelector('.mr-gc-member-meta, .mr-card-roster-meta');
       if (meta) {
         meta.textContent = memberLabel;
@@ -6305,10 +6281,8 @@ if (typeof document !== 'undefined') (function () {
         ${layoutButtonsHtml ? `<div class="mr-header-primary-actions">${layoutButtonsHtml}</div>` : ''}
         <div class="mr-header-primary-actions">${gcMembersBtnHtml}${meeting.groupChat ? `<button type="button" class="mr-header-btn${_gcToolsExpanded[meeting.id] ? ' active' : ''}" id="mr-btn-group-tools" aria-expanded="${!!_gcToolsExpanded[meeting.id]}" aria-controls="mr-gc-tools" title="展开或收起搜索与本轮进度">群聊工具</button>` : ''}${viewToggleHtml}</div>
         <div class="mr-header-secondary-actions" aria-label="会议工具">
-          ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>注入记忆</button>` : ''}
           <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
           ${meeting.workspace ? `<button class="btn-zoom btn-file-manager-toggle" id="mr-btn-files" title="打开当前工作目录的文件管理" aria-label="打开当前工作目录的文件管理" aria-pressed="false"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg></button>` : ''}
-          <button class="btn-zoom btn-memory-toggle" id="mr-btn-memory-system" data-action="open-memory" title="打开记忆系统" aria-label="打开记忆系统"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg></button>
           <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
           <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
           <button class="btn-close-session" id="mr-btn-close" title="关闭会议室" aria-label="Close meeting"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg></button>
@@ -6389,17 +6363,6 @@ if (typeof document !== 'undefined') (function () {
       if (window.FileManagerPanel.isOpen() && _taskFilesMeetingId !== meeting.id) {
         void window.FileManagerPanel.syncContext({ cwd: meeting.workspace, label: meeting.workspaceLabel });
       }
-    }
-    // 2026-06-05 联邦记忆下线：📖 记忆按钮直接预览 Claude 主 MEMORY.md
-    const memoryBtn = document.getElementById('mr-btn-memory-preview');
-    if (memoryBtn) {
-      memoryBtn.addEventListener('click', () => {
-        if (typeof window.openPreviewPanel === 'function') {
-          window.openPreviewPanel(_CLAUDE_MEMORY_INDEX);
-        } else {
-          console.warn('[memory-preview] window.openPreviewPanel not available');
-        }
-      });
     }
     // 注：顶部 scene toggle（群聊/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
@@ -6504,6 +6467,30 @@ if (typeof document !== 'undefined') (function () {
       menu.appendChild(item);
     }
 
+    // 从已有会话分支一个成员进来（2026-09-17）。分支而不是搬进来：MCP 是启动时注入的，
+    // 跑起来的会话改不了；分支既继承了原会话的上下文，又是一个由本群聊配置出来的新进程。
+    if (meeting.groupChat) {
+      const existing = document.createElement('button');
+      existing.className = 'mr-quote-menu-item';
+      existing.type = 'button';
+      existing.textContent = '从已有会话分支…';
+      existing.style.borderTop = '1px solid var(--border, var(--border-mid))';
+      existing.addEventListener('click', async () => {
+        menu.remove();
+        await _groupChatForkUi().addExistingSessionToMeeting(meetingId, async (result) => {
+          if (result.session && typeof sessions !== 'undefined' && sessions) {
+            sessions.set(result.session.id, result.session);
+          }
+          meetingData[meetingId] = result.meeting;
+          renderHeader(result.meeting);
+          renderToolbar(result.meeting);
+          setupInput(result.meeting);
+          await refreshGroupChatPanel(result.meeting);
+        });
+      });
+      menu.appendChild(existing);
+    }
+
     document.body.appendChild(menu);
     const dismiss = (e) => {
       if (!menu.contains(e.target)) {
@@ -6512,6 +6499,25 @@ if (typeof document !== 'undefined') (function () {
       }
     };
     setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+  }
+
+  let _gcForkUi = null;
+  function _groupChatForkUi() {
+    if (!_gcForkUi) {
+      _gcForkUi = require('./groupchat-fork-ui.js').createGroupChatForkUi({
+        document,
+        ipcRenderer,
+        // 失败必须看得见：群聊横幅不在时（弹窗独立于房间渲染）退回到对话框，
+        // 不能让一条错误消息掉进地板。
+        notify: (message, level) => {
+          const shown = _showGcEscapeNotice(message, level || 'info');
+          if (!shown && level === 'error') require('./ui-feedback').showHubAlert(message, { document });
+        },
+        getMeetings: () => meetingData,
+        selectMeeting: null,
+      });
+    }
+    return _gcForkUi;
   }
 
   // Arch refactor 2026-05-02: AI 群聊界面去 shell。子 session shell 只在主区挂载
@@ -7589,6 +7595,16 @@ if (typeof document !== 'undefined') (function () {
   }
 
   const meetingRoomApi = {
+    appendFilePaths(paths) {
+      const input = document.getElementById('mr-input-box');
+      if (!activeMeetingId || !input || input.getAttribute('contenteditable') === 'false') throw new Error('请先打开可编辑的群聊输入框');
+      const current = _getInputRawText();
+      _setMeetingInputText(activeMeetingId, `${current}${current.trim() ? '\n\n' : ''}${paths.join('\n')}`);
+      _saveInputDraft();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      return true;
+    },
     init,
     openMeeting,
     closeMeetingPanel,

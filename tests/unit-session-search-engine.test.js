@@ -38,23 +38,18 @@ test('storage clipping marks the source stale so the limitation survives restart
   assert.equal(limited.chars, 64 * 1024);
 });
 
-test('oversized transcripts keep a searchable title and persist the visible stale state', async (t) => {
+test('oversized non-streamed transcripts keep a searchable title and persist the visible stale state', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-engine-oversized-'));
-  const claudeRoot = path.join(root, '.claude', 'projects');
-  const transcriptPath = path.join(claudeRoot, 'C--oversized', 'oversized-session.jsonl');
+  const meetingDir = path.join(root, 'meetings');
   const databasePath = path.join(root, 'cache', 'search.sqlite');
-  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-  fs.writeFileSync(transcriptPath, `${JSON.stringify({
-    type: 'user', uuid: 'large-u1', timestamp: '2026-08-24T10:00:00Z',
-    message: { content: `UNINDEXED_CONTENT_MARKER ${'x'.repeat(1024 * 1024)}` },
-  })}\n`, 'utf8');
-  const snapshot = { sessions: [{
-    hubId: 'hub-oversized', kind: 'claude', ccSessionId: 'oversized-session',
-    title: 'OVERSIZED_TITLE_MARKER', transcriptPath, cwd: 'C:\\oversized',
-  }], meetings: [] };
+  fs.mkdirSync(meetingDir, { recursive: true });
+  fs.writeFileSync(path.join(meetingDir, 'big.json'), JSON.stringify({
+    id: 'big', title: 'OVERSIZED_TITLE_MARKER',
+    _timeline: [{ sid: 'user', idx: 0, ts: Date.now(), text: `UNINDEXED_CONTENT_MARKER ${'x'.repeat(1024 * 1024)}` }],
+  }), 'utf8');
+  const snapshot = { sessions: [], meetings: [{ id: 'big', title: 'OVERSIZED_TITLE_MARKER' }] };
   let engine = new SessionSearchEngine({
-    databasePath, claudeRoots: [claudeRoot], codexRoots: [], meetingDir: path.join(root, 'meetings'),
-    maxFileBytes: 1024 * 1024,
+    databasePath, claudeRoots: [], codexRoots: [], meetingDir, maxFileBytes: 1024 * 1024,
   });
   t.after(() => {
     engine.close();
@@ -66,14 +61,42 @@ test('oversized transcripts keep a searchable title and persist the visible stal
   assert.equal(refreshed.staleSources, 1);
   assert.equal((await engine.search({ query: 'OVERSIZED_TITLE_MARKER' })).totalSessions, 1);
   assert.equal((await engine.search({ query: 'UNINDEXED_CONTENT_MARKER' })).totalSessions, 0);
-  assert.equal(engine.index.getSourceStates().get('claude:claude:oversized-session').stale, true);
 
   engine.close();
-  engine = new SessionSearchEngine({ databasePath, claudeRoots: [claudeRoot], codexRoots: [] });
+  engine = new SessionSearchEngine({ databasePath, claudeRoots: [], codexRoots: [], meetingDir });
   const reopened = engine.status();
   assert.equal(reopened.ready, true);
   assert.equal(reopened.phase, 'ready_with_errors');
   assert.equal(reopened.staleSources, 1);
+});
+
+test('oversized Claude transcripts are streamed and fully searchable', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-engine-large-claude-'));
+  const claudeRoot = path.join(root, '.claude', 'projects');
+  const transcriptPath = path.join(claudeRoot, 'C--oversized', 'oversized-session.jsonl');
+  const databasePath = path.join(root, 'cache', 'search.sqlite');
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  const line = obj => `${JSON.stringify(obj)}\n`;
+  fs.writeFileSync(transcriptPath,
+    line({ type: 'user', uuid: 'u1', timestamp: '2026-08-24T10:00:00Z', message: { content: `EARLY_CONTENT_MARKER ${'y'.repeat(1_200_000)}` } })
+    + line({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'z'.repeat(2 * 1024 * 1024) }] } })
+    + line({ type: 'user', uuid: 'u2', timestamp: '2026-08-24T10:01:00Z', message: { content: 'LATE_CONTENT_MARKER' } }), 'utf8');
+  const snapshot = { sessions: [{
+    hubId: 'hub-oversized', kind: 'claude', ccSessionId: 'oversized-session',
+    title: 'OVERSIZED_TITLE_MARKER', transcriptPath, cwd: 'C:\\oversized',
+  }], meetings: [] };
+  const engine = new SessionSearchEngine({
+    databasePath, claudeRoots: [claudeRoot], codexRoots: [], meetingDir: path.join(root, 'meetings'),
+    maxFileBytes: 1024 * 1024,
+  });
+  t.after(() => {
+    engine.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await engine.refresh(snapshot, { force: true });
+  assert.equal((await engine.search({ query: 'EARLY_CONTENT_MARKER' })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'LATE_CONTENT_MARKER' })).totalSessions, 1);
+  assert.equal(engine.index.getSourceStates().get('claude:claude:oversized-session').stale, false);
 });
 
 test('oversized Codex rollouts index complete semantic history while skipping binary output rows', async (t) => {
@@ -139,7 +162,12 @@ test('oversized Codex rollouts index complete semantic history while skipping bi
   assert.equal(refreshed.staleSources, 0);
   assert.equal((await engine.search({ query: 'CODEX_EARLY_SEMANTIC_MARKER' })).totalSessions, 1);
   assert.equal((await engine.search({ query: 'CODEX_LATE_SEMANTIC_MARKER' })).totalSessions, 1);
-  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER', scopes:['tool'] })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER', scopes:['tool'] })).totalSessions, 0);
+  assert.ok(engine.index.db.prepare("SELECT count(*) n FROM docs WHERE scope='tool' AND text LIKE '%CODEX_TOOL_METADATA_MARKER%'").get().n > 0,
+    '工具调用仍以一行元信息保留，供预览与造梦阅读');
+  assert.equal(engine.index.db.prepare(`SELECT count(*) n FROM docs_fts WHERE docs_fts MATCH '"codex_tool_metadata_marker"'`).get().n, 0,
+    '工具 doc 不进全文索引');
+  assert.ok(engine.index.db.prepare("SELECT max(length(text)) n FROM docs WHERE scope='tool'").get().n <= 120);
   assert.equal((await engine.search({ query: 'CODEX_BINARY_OUTPUT_MARKER' })).totalSessions, 0);
 });
 
@@ -225,4 +253,37 @@ test('the legacy gzip cache migrates one shard at a time and avoids reparsing un
   assert.equal(refreshed.parsedSources, 0);
   assert.equal((await engine.search({ query: 'LEGACY_CACHE_ONLY_MARKER' })).totalSessions, 1);
   assert.equal(engine.index.getMeta('legacyCacheMigrationVersion'), 3);
+});
+
+test('indexing writes a dialogue-only chat log md per session and regenerates it when missing', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-engine-transcript-md-'));
+  const claudeRoot = path.join(root, '.claude', 'projects');
+  const transcriptPath = path.join(claudeRoot, 'C--chat', 'chat-session.jsonl');
+  const transcriptDir = path.join(root, 'transcripts');
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  const line = obj => `${JSON.stringify(obj)}\n`;
+  fs.writeFileSync(transcriptPath,
+    line({ type: 'user', uuid: 'u1', timestamp: '2026-09-17T10:00:00Z', message: { content: '# 看起来像标题的提问\n请帮我看日志' } })
+    + line({ type: 'assistant', uuid: 'a1', timestamp: '2026-09-17T10:00:05Z', message: { id: 'm1', role: 'assistant', stop_reason: 'end_turn', content: [
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cat server.log' } },
+      { type: 'text', text: '日志里没有异常。' },
+    ] } })
+    + line({ type: 'user', uuid: 'r1', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'SECRET_TOOL_OUTPUT' }] } }), 'utf8');
+  const snapshot = { sessions: [{ hubId: 'hub-chat', kind: 'claude', ccSessionId: 'chat-session', title: '日志排查', transcriptPath, cwd: 'C:\chat' }], meetings: [] };
+  const engine = new SessionSearchEngine({ databasePath: path.join(root, 'cache', 'search.sqlite'), claudeRoots: [claudeRoot], codexRoots: [], meetingDir: path.join(root, 'meetings'), transcriptDir });
+  t.after(() => { engine.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await engine.refresh(snapshot, { force: true });
+  const found = engine.transcriptFor({ hubSessionId: 'hub-chat' });
+  assert.equal(found.exists, true);
+  assert.ok(found.path.startsWith(transcriptDir));
+  const md = fs.readFileSync(found.path, 'utf8');
+  assert.match(md, /^# 日志排查/);
+  assert.match(md, /## 我 · /);
+  assert.match(md, /\# 看起来像标题的提问/);
+  assert.match(md, /日志里没有异常。/);
+  assert.match(md, /> 工具 · Bash/);
+  assert.doesNotMatch(md, /SECRET_TOOL_OUTPUT/);
+  fs.unlinkSync(found.path);
+  await engine.refresh(snapshot, { immediate: true });
+  assert.equal(fs.existsSync(found.path), true);
 });

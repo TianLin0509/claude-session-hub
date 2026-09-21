@@ -337,6 +337,11 @@ function handlePersistSessions(list, meetingList, deps) {
 }
 
 function registerPersistenceIpc(ipcMain, deps) {
+  ipcMain.handle('persist-sessions:flush', async (_e, list, meetingList) => {
+    if (!handlePersistSessions(list, meetingList, deps)) throw new Error('工作现场无效，未保存');
+    await deps.stateStore.flushPending();
+    return { ok: true };
+  });
   ipcMain.handle('get-dormant-sessions', () => ({
     sessions: deps.getLastPersistedSessions(),
     wasCleanShutdown: deps.bootWasClean,

@@ -1,6 +1,7 @@
 'use strict';
 
 const { BACKEND } = require('../core/codex-native-runtime.js');
+const { isNativeNoticeDismissed, dismissNativeNotice } = require('./native-notice-dismissal');
 
 // Each form is bound to one server request and transport epoch. A state repaint
 // never replaces typed answers, and a second click cannot reply twice.
@@ -197,6 +198,7 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
     const choices = session.nativeThreadChoices || [];
     const next = JSON.stringify([
       runtime && runtime.epoch,
+      runtime?.turnId,
       requests,
       choices,
       session.acpConfigOptions,
@@ -270,9 +272,17 @@ function createCodexNativeControls({ sessionId, invoke, document: doc = document
       box.append(restart,error);children.push(box);
     }
     if(runtime?.configurationError)children.push(node('p',runtime.configurationError,'codex-native-error'));
-    if (session.nativeActionError && !((runtime?.state === 'unknown' || runtime?.connection === 'disconnected')
+    if (session.nativeActionError && !isNativeNoticeDismissed(session, session.nativeActionError) && !((runtime?.state === 'unknown' || runtime?.connection === 'disconnected')
         && [runtime?.reason,runtime?.submission?.error].includes(session.nativeActionError))) {
-      children.push(node('p',session.nativeActionError,'codex-native-error'));
+      const row = node('div', null, 'native-dismissible-notice');
+      const dismiss = node('button', '忽略本次', 'native-notice-dismiss'); dismiss.type = 'button';
+      dismiss.title = '隐藏本次提示，保留实际状态；不会重发消息';
+      dismiss.addEventListener('click', () => {
+        dismissNativeNotice(session, session.nativeActionError);
+        signature = ''; update(session);
+      });
+      row.append(node('p', session.nativeActionError, 'codex-native-error'), dismiss);
+      children.push(row);
     }
     if (choices.length) {
       children.push(node('strong','选择要恢复的 Codex 会话'));

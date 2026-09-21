@@ -18,6 +18,7 @@ if (process.env.HUB_ACP_UI_FIXTURE === '1') {
 }
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const m = JSON.parse(line), p = m.params || {};
+  if(process.env.HUB_RESTART_ACP_TRACE) require('node:fs').appendFileSync(process.env.HUB_RESTART_ACP_TRACE,JSON.stringify({pid:process.pid,sessionId,method:m.method,params:p})+'\n');
   if (m.method === 'initialize') return result(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true } });
   if (m.method === 'authenticate') return result(m.id, {});
   if (['session/new', 'session/load'].includes(m.method)) {if(p.sessionId)sessionId=p.sessionId;return result(m.id, { sessionId, configOptions: configs });}
@@ -79,7 +80,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (m.method === 'session/cancel') {
     clearInterval(heavyTimer);heavyTimer=null;
-    if (pendingPrompt != null) result(pendingPrompt, { stopReason: 'cancelled' });
+    if (pendingPrompt != null) {
+      const pending=pendingPrompt;
+      if(process.env.HUB_RESTART_ACP_TRACE)setTimeout(()=>result(pending,{stopReason:'cancelled'}),800);
+      else result(pending, { stopReason: 'cancelled' });
+    }
     pendingPrompt = null;
     return;
   }

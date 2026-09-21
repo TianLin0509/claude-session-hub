@@ -1537,7 +1537,9 @@ class CodexTap extends EventEmitter {
 // 注意 Gemini 0.39+ 改用 JSONL，0.38 及以前是单 JSON 整覆盖。
 // JSONL 路径为主；若 chats/ 下只有 .json 不带 jsonl，退化为整文件读 + 防抖。
 
-const GEMINI_TMP_ROOT = path.join(os.homedir(), '.gemini', 'tmp');
+const GEMINI_TMP_ROOT = path.join(process.env.CLAUDE_HUB_HOME_DIR || os.homedir(), '.gemini', 'tmp');
+const geminiMessageText=content=>typeof content==='string' ? content : Array.isArray(content)
+  ? content.filter(part=>typeof part?.text==='string').map(part=>part.text).join('') : '';
 
 class GeminiTap extends EventEmitter {
   constructor(opts = {}) {
@@ -1815,6 +1817,7 @@ class GeminiTap extends EventEmitter {
         text,
         completedAt: Date.now(),
         signalSource: meta.signalSource || 'tokens_total',
+        restartStillWorking: meta.restartStillWorking === true,
       });
     };
 
@@ -1866,6 +1869,25 @@ class GeminiTap extends EventEmitter {
       };
 
       const onLine = (obj) => {
+        // Current Gemini JSONL also persists full message snapshots as $set.
+        // Only the latest turn can change runtime; older snapshots are history.
+        if(Array.isArray(obj?.$set?.messages)){
+          const messages=obj.$set.messages;
+          const lastUserIndex=messages.findLastIndex(m=>m?.type==='user');
+          for(const message of messages.slice(Math.max(0,lastUserIndex)))onLine(message);
+          return;
+        }
+        if(obj?.type==='user') {
+          const text=geminiMessageText(obj.content);
+          const submittedAt=typeof obj.timestamp==='number' ? obj.timestamp : Date.parse(obj.timestamp);
+          const key=JSON.stringify([obj.id,obj.timestamp,text]);
+          if(key===boundEntry.lastUser)return;
+          boundEntry.lastUser=key;
+          clearTimeout(boundEntry._idleTimer);boundEntry._idleTimer=null;boundEntry._streamingBuf=[];
+          if(text && Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text,submittedAt,
+            turnId:obj.id || obj.messageId || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
+          return;
+        }
         // M2.4 修复 (2026-05-03)：把 idle_timer_5s 提升为"所有路径的 catch-all 兜底"。
         //   旧版只在 line 963 分支（type:"gemini" + content + 无 tokens）schedule timer，
         //   导致以下用户血泪场景永不触发 turn-complete：
@@ -1901,7 +1923,7 @@ class GeminiTap extends EventEmitter {
           //   时把数据透传给 watcher.wait() 的 result.tokens。卡片 row4 显示"本轮 X tokens"。
           this._recordTokens(hubSessionId, obj.tokens);
           _pushStreamBlock(obj.content);
-          emitIfComplete(obj.content, { signalSource: 'tokens_total' });
+          emitIfComplete(obj.content, { signalSource: 'tokens_total',restartStillWorking:!!obj.toolCalls?.length });
         } else if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null) {
           // 仅缓存 token，不触发 emit（content 为空时 token 信息仍有用：streaming 中实时更新）
           this._recordTokens(hubSessionId, obj.tokens);
@@ -1930,10 +1952,22 @@ class GeminiTap extends EventEmitter {
             const raw = await fs.promises.readFile(sessionPath, 'utf8');
             const parsed = JSON.parse(raw);
             const msgs = parsed?.messages || [];
+            const lastUser=msgs.findLast(m=>m?.type==='user');
+            if(lastUser) {
+              const key=JSON.stringify(lastUser);
+              if(key!==boundEntry.lastUser){
+                boundEntry.lastUser=key;
+                const submittedAt=typeof lastUser.timestamp==='number' ? lastUser.timestamp : Date.parse(lastUser.timestamp);
+                const text=geminiMessageText(lastUser.content);
+                if(text && Number.isFinite(submittedAt))this.emit('prompt-submitted',{hubSessionId,text,submittedAt,
+                  turnId:lastUser.id || null,transcriptPath:sessionPath,signalSource:'gemini_user_message'});
+              }
+            }
             for (let i = msgs.length - 1; i >= 0; i--) {
               const m = msgs[i];
+              if(m?.type==='user')break;
               if (m?.type === 'gemini' && typeof m.content === 'string') {
-                emitIfComplete(m.content);
+                emitIfComplete(m.content,{restartStillWorking:!!m.toolCalls?.length});
                 break;
               }
             }

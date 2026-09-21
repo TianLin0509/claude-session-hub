@@ -50,6 +50,14 @@ rl.on('line', async line => {
   const m = JSON.parse(line);
   if (m.type === 'control_request') {
     if (m.request.subtype === 'initialize') {
+      if (process.env.CLAUDE_HUB_FIXTURE_INIT_GATE) {
+        const fs = require('node:fs');
+        const deadline = Date.now() + 60000;
+        while (!fs.existsSync(process.env.CLAUDE_HUB_FIXTURE_INIT_GATE)) {
+          if (Date.now() > deadline) throw new Error('Fixture initialize gate timed out');
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      }
       if (mode === 'exit-before-init') return process.exit(7);
       if (mode === 'malformed') return process.stdout.write('{broken}\n');
       if (mode === 'truncated') { process.stdout.write('{"type":'); return process.exit(8); }
@@ -108,6 +116,16 @@ rl.on('line', async line => {
   } else if (m.type === 'user') {
     lastUser = m;
     if (m.session_id) sessionId = m.session_id;
+    if (process.env.CLAUDE_HUB_NATIVE_FIXTURE_INSTRUCTIONS === '1') {
+      if (!process.env.CLAUDE_HUB_DATA_DIR) throw new Error('Instruction fixture requires isolated data');
+      const {spawn} = require('node:child_process');
+      await new Promise((resolve, reject) => {
+        const child = spawn('python', [require('node:path').resolve(__dirname, '../../scripts/session-hub-hook.py'), 'instructions-loaded'], {windowsHide:true});
+        child.once('error', reject);
+        child.once('close', code => code === 0 ? resolve() : reject(new Error('Instruction hook exited: ' + code)));
+        child.stdin.end(JSON.stringify({session_id:sessionId, file_path:require('node:path').join(process.cwd(),'AGENTS.md'), load_reason:'include', hook_event_name:'InstructionsLoaded'}));
+      });
+    }
     if (mode === 'crash-on-user') return process.exit(9);
     if (mode === 'crash-once') {
       const fs = require('node:fs'); const path = require('node:path');
@@ -116,6 +134,7 @@ rl.on('line', async line => {
       if (!fs.existsSync(marker)) { fs.writeFileSync(marker, 'crashed'); return process.exit(9); }
     }
     if (mode === 'no-echo') return;
+    if (JSON.stringify(m.message?.content || '').includes('fixture:unconfirmed')) return;
     if (mode === 'old-result-first') await result({ uuid: 'old-result' });
     await frame({ ...m, session_id: sessionId, ...(mode === 'mismatch' ? { message: { ...m.message, content: 'changed text' } } : {}) });
     if (mode === 'echo-only' || mode === 'hold') return;
@@ -136,6 +155,15 @@ rl.on('line', async line => {
         clearInterval(timer);
         await result(JSON.parse(fs.readFileSync(gate, 'utf8')));
       }, 25);
+      return;
+    }
+    if (JSON.stringify(m.message?.content || '').includes('fixture:search')) {
+      const text = '融合第一处。跨格式：融**合**第二处。\n\n'
+        + Array.from({ length: 40 }, (_, i) => `段落 ${i + 1}：用于搜索滚动验证的普通内容。`).join('\n\n')
+        + '\n\n融合最后一处。';
+      await frame({ type: 'assistant', uuid: randomUUID(), session_id: sessionId,
+        message: { id: randomUUID(), role: 'assistant', content: [{ type: 'text', text }] } });
+      await result({ result: text });
       return;
     }
     if (JSON.stringify(m.message?.content || '').includes('fixture:layout')) {

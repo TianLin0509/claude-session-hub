@@ -1,4 +1,5 @@
 'use strict';
+const { isNativeNoticeDismissed, dismissNativeNotice } = require('./native-notice-dismissal');
 
 function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onRestoreDraft }) {
   const element = document.createElement('section');
@@ -37,11 +38,19 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   const requests = document.createElement('div');
   const error = document.createElement('div'); error.className = 'claude-native-error';
   error.style.color = '#e88'; error.setAttribute('role', 'alert');
+  const errorRow = document.createElement('div'); errorRow.className = 'native-dismissible-notice';
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = '忽略本次';
+  dismiss.className = 'native-notice-dismiss';
+  dismiss.title = '隐藏本次提示，保留实际状态；不会重发消息';
+  errorRow.append(error, dismiss);
+  let currentSession = null;
+  dismiss.addEventListener('click', () => { dismissNativeNotice(currentSession, error.textContent); refreshVisibility(); });
   let displayedActionError = null;
-  element.append(notice, requests, error);
+  element.append(notice, requests, errorRow);
   const refreshVisibility = () => {
+    errorRow.hidden = !error.textContent || isNativeNoticeDismissed(currentSession, error.textContent);
     element.hidden = !(notice.textContent || modeBox?.isConnected || requests.childElementCount
-      || error.textContent);
+      || !errorRow.hidden);
   };
   let signature = '';
   let viewer = false;
@@ -66,6 +75,7 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
   }
   function update(session) {
     if (session?.runtimeBackend !== 'claude-stream-json') { element.hidden = true; return; }
+    currentSession = session;
     const runtime = session.nativeRuntime || {};
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
     notice.textContent = runtime.configurationChange ? '正在更新设置，等待 Claude 确认'

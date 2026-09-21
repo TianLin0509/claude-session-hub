@@ -18,7 +18,7 @@ assert.ok(
 // TranscriptTap also emits lifecycle for Gemini; all hook-less transcript CLIs
 // must share RuntimeTruth instead of falling back to raw PTY silence.
 assert.ok(
-  /if\s*\(\s*!isTranscriptCliKind\(kind\)\s*\)\s*return/.test(rendererSrc),
+  /if \(!isTranscriptCliKind\(kind\) && session\.runtimeBackend !== 'claude-stream-json'\) return/.test(rendererSrc),
   'transcript completion handler must be scoped to transcript-backed CLI variants',
 );
 assert.ok(

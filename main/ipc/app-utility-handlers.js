@@ -2,6 +2,7 @@
 
 const systemOs = require('os');
 const { createSystemTelemetry } = require('../../core/system-telemetry.js');
+const { createLiveResourceTelemetry } = require('../../core/live-resource-telemetry.js');
 
 function readCpuTotals(osApi) {
   const cpus = osApi.cpus();
@@ -80,6 +81,9 @@ function saveClipboardImage(deps) {
 function registerAppUtilityIpc(ipcMain, deps) {
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
   const systemTelemetry = deps.systemTelemetry || createSystemTelemetry();
+  const liveTelemetry = deps.liveTelemetry || createLiveResourceTelemetry();
+  ipcMain.handle('get-network-transfer-usage', () => liveTelemetry.sampleNetwork());
+  ipcMain.handle('get-resource-top-processes', () => liveTelemetry.sampleProcesses());
 
   ipcMain.handle('is-window-focused', () => {
     const mainWindow = deps.getMainWindow();

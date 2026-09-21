@@ -294,7 +294,11 @@ function createAccountUsageController({
     const view = document.defaultView;
     const anchor = ui.button.getBoundingClientRect();
     const rect = ui.popover.getBoundingClientRect();
-    ui.popover.style.left = Math.max(8, Math.min(anchor.right + 10, view.innerWidth - rect.width - 8)) + 'px';
+    // The compact collapse control shares the Claude row to the right of details.
+    // Open beside the whole sidebar so the popover does not cover that control.
+    const insights = document.getElementById('sidebar-insights');
+    const anchorRight = insights?.contains(ui.button) ? Math.max(anchor.right, insights.getBoundingClientRect().right) : anchor.right;
+    ui.popover.style.left = Math.max(8, Math.min(anchorRight + 10, view.innerWidth - rect.width - 8)) + 'px';
     const previousTop = Number.parseFloat(ui.popover.style.top);
     const top = reanchor === true || !Number.isFinite(previousTop) ? anchor.bottom - rect.height : previousTop;
     // Status text can change while hovered. Keep the top edge steady unless it
@@ -385,6 +389,9 @@ function createAccountUsageController({
       }
     }, true);
     document.defaultView.addEventListener('resize', positionPopover);
+    document.addEventListener('sidebar-insights:visibility', event => {
+      if (event.detail.collapsed) setPopoverOpen(false);
+    });
     // Keep the action nodes stable across usage updates: focus and hover survive.
     refresh.addEventListener('click', () => {
       refreshUsageNow().catch(error => {

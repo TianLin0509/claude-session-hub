@@ -75,14 +75,17 @@ test('scan continuation and result pagination retain a snapshot while the index 
   assert.deepEqual(ids,['s0','s1','s2','s3','s4']);
   assert.ok(index.search({query:'different',cursor}).error, 'cursor cannot silently ignore changed filters');
 });
-test('explicit all-content searches include short tool text, and previews return related Q/A', t => {
+test('tool lines stay readable in previews but never match a search', t => {
   const index=setup(t);
   index.replaceSource(source('qa','索引更新',[
     {scope:'user',role:'user',text:'保存之后还要重建吗？'},
-    ...Array.from({length:8},()=>({scope:'tool',role:'tool',text:'后台索引工具日志'})),
+    ...Array.from({length:8},()=>({scope:'tool',role:'tool',text:'TOOLONLYPROBE 后台日志'})),
     {text:'## 自动更新\n保存后增量处理。'},
   ]));
-  assert.equal(complete(index,{query:'工具',scopes:['title','user','assistant','tool']}).totalSessions,1);
+  assert.equal(complete(index,{query:'TOOLONLYPROBE'}).totalSessions,0);
+  assert.equal(complete(index,{query:'TOOLONLYPROBE',scopes:['title','user','assistant','tool']}).totalSessions,0);
+  assert.equal(complete(index,{query:'重建'}).totalSessions,1);
+  assert.ok(index.preview({sessionKey:'qa',eventId:'qa-2'}).context.some(x=>x.text.includes('TOOLONLYPROBE')));
   const preview=index.preview({sessionKey:'qa',eventId:'qa-8',query:'工具'});
   assert.ok(preview.context.some(x=>x.role==='user'));
   assert.ok(preview.context.some(x=>x.role==='assistant'));
@@ -146,7 +149,7 @@ test('empty-query time filtering applies to the selected message scope',t=>{
   index.replaceSource(source('old-answer','notes',[{text:'old',timestamp:now-100*day},{scope:'user',text:'today',timestamp:now}]));
   index.replaceSource(source('new-tool','notes',[{scope:'tool',text:'today',timestamp:now}]));
   assert.equal(complete(index,{query:'',timeRange:'7d',scopes:['assistant']}).totalSessions,0);
-  assert.deepEqual(complete(index,{query:'',timeRange:'7d',scopes:['tool']}).results.map(r=>r.key),['new-tool']);
+  assert.deepEqual(complete(index,{query:'',timeRange:'7d',scopes:['user']}).results.map(r=>r.key),['old-answer']);
 });
 
 test('CJK completion flag selects the auxiliary index and short scans seek by rowid',t=>{

@@ -1115,7 +1115,7 @@ class SessionManager extends EventEmitter {
   }
 
   _createSession(kind = 'powershell', opts = {}) {
-    if (this._isShuttingDown) {
+    if (this._isShuttingDown || this.restartPending) {
       throw new Error('Hub is shutting down; refusing to create a new PTY');
     }
     const id = opts.id || uuid();
@@ -1313,13 +1313,8 @@ class SessionManager extends EventEmitter {
           console.warn('[memory] ensureMemoryLink failed:', memoryLinkWarning);
         }
       }
-      // Kimi 无 .git 时只读 cwd 自己的 AGENTS.md（2026-07-29 探针实测）——给工作区内
-      // 「无 git 且无 AGENTS.md」的目录补一份根规则副本；有 git 根的目录不插手。
-      if (isKimi && this.workspaceService) {
-        try { this.workspaceService.seedUngovernedAgentsFile(spawnCwd); } catch (error) {
-          console.warn('[kimi] seedUngovernedAgentsFile failed:', error && error.message);
-        }
-      }
+      // Missing workspace rules are supplied by the shared submission path;
+      // launching Kimi must not manufacture another AGENTS.md in its cwd.
     }
 
     if (isClaude) {

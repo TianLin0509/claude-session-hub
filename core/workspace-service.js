@@ -712,9 +712,10 @@ class WorkspaceService {
     const name = `inbox-${timestampSlug(new Date(this.now()))}-${this.randomId()}`;
     const cwd = this.path.join(this.getScratchRoot(), name);
     this.fs.mkdirSync(cwd, { recursive: false });
-    this.seedScratchAgentsFile(cwd);
     let gitInitialized = false;
-    try { gitInitialized = !!this.initGit(cwd); } catch (err) {
+    // Temporary conversations are not projects. Shared rules are resolved at
+    // submission; no per-session rule copy or artificial Git root is needed.
+    try { if (meta.initGit === true) gitInitialized = !!this.initGit(cwd); } catch (err) {
       this.logger.warn('[workspace] scratch git init failed:', err && err.message);
     }
     return this.touchWorkspace(cwd, {

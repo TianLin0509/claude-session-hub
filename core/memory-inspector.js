@@ -397,6 +397,7 @@ function getSessionFiles({
   meetingId,
   homeDir = os.homedir(),
   workspaceRoot,
+  rulesOnly = false,
 }) {
   if (!cwd) return { cwd: null, files: [], memory: null };
   const resolved = path.resolve(String(cwd));
@@ -418,6 +419,7 @@ function getSessionFiles({
   if (claudeFamily) {
     const root = deepseekLegacy ? '.claude-deepseek' : '.claude';
     files = discoverClaudeFiles(resolved, path.join(homeDir, root), workspaceRoot);
+    if (rulesOnly) return { files };
     const slug = projectSlug(resolved);
     const memoryDir = path.join(homeDir, root, 'projects', slug, 'memory');
     let status = 'missing';
@@ -439,6 +441,7 @@ function getSessionFiles({
   } else if (codexFamily) {
     const discovered = discoverCodexFiles(resolved, codexHome);
     files = discovered.rows;
+    if (rulesOnly) return { files };
     const codexMemory = inspectCodexMemory(codexHome);
     const status = codexMemory.useMemories
       ? 'enabled'

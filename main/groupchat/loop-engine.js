@@ -705,7 +705,8 @@ function createLoopEngine(deps) {
         }
 
         const previousAttempts = Number(state.attemptsByStep[index]) || 0;
-        if (previousAttempts >= maxAttempts) {
+        const continuingStep = !!runOptions.restartContinuation && persistedState?.currentStepIndex === index;
+        if (previousAttempts >= maxAttempts && !continuingStep) {
           state.status = 'paused';
           state.lastError = state.lastError || { stage: 'serial', stepIndex: index, reason: 'attempts_exhausted', at: Date.now() };
           break;
@@ -724,13 +725,17 @@ function createLoopEngine(deps) {
         try {
           for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
           if (shouldNotDispatch(meetingId, entry)) { state.status = 'stopped_user'; break; }
-          if (workflow.settingsVersion === 1 && Number(state.executedRounds || 0) - Number(state.budgetStart || 0) >= 6) {
+          if (!continuingStep && workflow.settingsVersion === 1 && Number(state.executedRounds || 0) - Number(state.budgetStart || 0) >= 6) {
             state.status = 'paused'; state.lastError = {reason:'已达 6 轮执行上限，保留现场并暂停',at:Date.now()}; break;
           }
           let stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
           if (workflow.settingsVersion === 1) stepPrompt = require('../../core/workflow-settings').GENERAL + '\n\n' + stepPrompt;
+          if (runOptions.restartContinuation) {
+            stepPrompt = runOptions.restartContinuation + '\n\n' + stepPrompt;
+            runOptions = {...runOptions,restartContinuation:null};
+          }
           const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
-          state.executedRounds = Number(state.executedRounds || 0) + 1;
+          state.executedRounds = Number(state.executedRounds || 0) + (continuingStep ? 0 : 1);
           persistSerial(meetingId, state);
           dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
             userInput: stepPrompt,
@@ -881,7 +886,18 @@ function createLoopEngine(deps) {
       const reviewerTimeoutMs = Math.max(60_000, Math.min(30 * 60_000,
         Number(stepConfigs[1] && stepConfigs[1].timeoutMs) || 25 * 60_000));
 
-      const dispatcher = getDispatcher();
+      const originalDispatcher = getDispatcher();
+      let restartContinuation = runOptions.restartContinuation;
+      const dispatcher = restartContinuation ? {
+        ...originalDispatcher,
+        dispatchGroupChatTurn(id,args) {
+          if (restartContinuation) {
+            args={...args,userInput:restartContinuation+'\n\n'+args.userInput};
+            restartContinuation=null;
+          }
+          return originalDispatcher.dispatchGroupChatTurn(id,args);
+        },
+      } : originalDispatcher;
       // MD 交接只对新建的双席位开发群聊启用；老房间和极简单席位一字不改。
       const useDocs = docsEnabled(meeting, reviewerIds);
       let docsDir = null;
@@ -976,7 +992,9 @@ function createLoopEngine(deps) {
           progress({ stage: 'builder-recovered', round: state.round + 1 });
         } else {
           if (!state.currentTurnNum) state.currentTurnNum = pendingStepTurn(meetingId, state.runId, builderStepIndex) || null;
-          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
+          const restartLimit = restartContinuation && persistedLoopState?.currentStep === 'builder' && persistedLoopState.round === state.round
+            ? Math.max(2, (Number(state.stepAttempt) || 0) + 1) : 2;
+          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= restartLimit; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
             // 停止可能正好落在上一次重试的等待窗口里 —— 判断要贴着派发这一刻做（第五轮阻断）。
@@ -1136,7 +1154,9 @@ function createLoopEngine(deps) {
           rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
           progress({ stage: 'reviewer-recovered', round: state.round + 1 });
         } else {
-          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
+          const restartLimit = restartContinuation && persistedLoopState?.currentStep === 'reviewer' && persistedLoopState.round === state.round
+            ? Math.max(2, (Number(state.stepAttempt) || 0) + 1) : 2;
+          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= restartLimit; transportAttempt += 1) {
             state.stepAttempt = transportAttempt;
             if (!persistOrPause()) break;
             // 同上：等待窗口里点的停止同样算数。
@@ -1466,7 +1486,7 @@ function createLoopEngine(deps) {
           kickoff: { status: 'running', authorMemberId: authorId, runId: entry.runId, startedAt: Date.now() },
         });
         emit('kickoff-dispatch', { authorMemberId: authorId });
-        const prompt = withLocator(withDocBlock(
+        const prompt = options.restartContinuation || withLocator(withDocBlock(
           DevDiscuss.buildKickoffPrompt({ locator: '' }),
           dir, 0, [],
         ), meeting, userTaskTextOf(meetingId, options.taskText));

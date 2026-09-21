@@ -53,6 +53,7 @@ function sessionSpeedLabel(session) {
 }
 
 function sessionContextLeft(session) {
+  if (session?.contextPct == null || session.contextPct === '') return null;
   const used = Number(session && session.contextPct);
   if (!Number.isFinite(used)) return null;
   return Math.max(0, Math.min(100, Math.round(100 - used)));
@@ -113,7 +114,7 @@ const COMPOSER_CTX_DANGER_AT = 90;
 // 上下文预算环。percent 是**已用**百分比（与 status-event 下发的 contextPct 同义），
 // 与 card-session-status 的 ctx 读同一个字段，不另起一套算法。
 function composerContextRing(session) {
-  const raw = Number(session && session.contextPct);
+  const raw = session?.contextPct == null || session.contextPct === '' ? NaN : Number(session.contextPct);
   if (!Number.isFinite(raw)) {
     return { visible: false, percent: null, level: 'ok', title: '', ariaLabel: '' };
   }
@@ -312,7 +313,10 @@ function buildComposerStatusModel(session, options = {}) {
     // Work in flight (starting/running) takes the shared working line, the same
     // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
     // report a result get a Claude-specific message here.
-    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : '等待连接响应',
+    // reason 是 Hub 的连接状态说明，不代表 Claude 提供了历史读取进度。
+    const connecting = snapshot.connection !== 'disconnected' && snapshot.connection !== 'connected';
+    const loadingText = connecting && snapshot.reason ? String(snapshot.reason) : '';
+    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : (loadingText || '等待连接响应'),
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
       // New composer sends recover in Main; no manual receipt-review action.

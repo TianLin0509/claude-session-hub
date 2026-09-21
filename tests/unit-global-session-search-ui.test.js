@@ -140,9 +140,11 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
   for (const provider of ['claude', 'codex', 'meeting', 'deepseek']) {
     assert.match(html, new RegExp(`data-provider="${provider}"`));
   }
-  for (const scope of ['title', 'user', 'assistant', 'tool']) {
+  for (const scope of ['title', 'user', 'assistant']) {
     assert.match(html, new RegExp(`data-scope="${scope}"`));
   }
+  // 工具/文件不再是检索范围：它不进全文索引，留个搜不到东西的页签只会骗人。
+  assert.doesNotMatch(html, /data-scope="tool"/);
   assert.match(js, /get-session-search-preview/);
   assert.match(js, /refresh-session-search/);
   assert.match(js, /event\.shiftKey/);

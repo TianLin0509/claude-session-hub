@@ -155,3 +155,40 @@ test('source adapters unify Claude, Codex and meeting timelines with Hub titles'
   assert.equal(titleOnly[0].session.hubSessionId, 'title-only');
   assert.ok(titleOnly[0].docs.some(doc => doc.scope === 'assistant' && /最后一次回答摘要/.test(doc.text)));
 });
+
+test('Claude search reads the whole transcript and drops only tool_result rows', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-claude-full-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'session.jsonl');
+  const line = (obj) => JSON.stringify(obj) + '\n';
+  const user = (uuid, text) => line({ type: 'user', uuid, timestamp: '2026-09-17T00:00:00Z', message: { role: 'user', content: text } });
+  const assistant = (uuid, text, content) => line({ type: 'assistant', uuid, timestamp: '2026-09-17T00:00:01Z',
+    message: { id: 'm-' + uuid, role: 'assistant', stop_reason: 'end_turn', content: content || [{ type: 'text', text }] } });
+  let body = user('u1', 'EARLY_QUESTION_MARKER') + assistant('a1', 'early answer', [
+    { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'echo hi' } },
+    { type: 'text', text: 'early answer' },
+  ]);
+  body += line({ type: 'user', uuid: 'r1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'TOOL_OUTPUT_' + 'x'.repeat(5 * 1024 * 1024) }] } });
+  body += user('u2', 'LATE_QUESTION_MARKER') + assistant('a2', 'late answer');
+  fs.writeFileSync(filePath, body, 'utf8');
+  assert.ok(fs.statSync(filePath).size > 5 * 1024 * 1024);
+  const parsed = parseSourceDescriptor({ type: 'claude', key: 'claude:full', filePath, provider: 'claude' }, createMetadataMaps({ sessions: [], meetings: [] }));
+  const texts = parsed.docs.map(d => d.text).join('\n');
+  assert.match(texts, /EARLY_QUESTION_MARKER/);
+  assert.match(texts, /LATE_QUESTION_MARKER/);
+  assert.match(texts, /echo hi/);
+  assert.doesNotMatch(texts, /TOOL_OUTPUT_/);
+  assert.equal(parsed.truncatedByReadGuard, false);
+});
+
+test('docs built from turns with source line numbers share the tool doc ordering scale', () => {
+  const { docsFromTurns } = require('../core/session-search-sources.js');
+  const docs = docsFromTurns([
+    { id: 'u', role: 'user', text: '问题', sourceIndex: 10 },
+    { id: 'a', role: 'assistant', text: '回答', sourceIndex: 11, sourceEndIndex: 40, toolCalls: [{ name: 'shell', input: { cmd: 'ls' } }] },
+  ], '标题', 'codex');
+  const order = docs.filter(d => d.scope !== 'title').sort((a, b) => a.ordinal - b.ordinal).map(d => d.eventId);
+  assert.deepEqual(order, ['u', 'a:tool:0', 'a']);
+  // A supplemental per-record tool doc at line 20 sorts between the call and the final answer.
+  assert.ok(docs.find(d => d.eventId === 'a:tool:0').ordinal < 20.5 && 20.5 < docs.find(d => d.eventId === 'a').ordinal);
+});

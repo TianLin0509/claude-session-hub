@@ -28,6 +28,7 @@ class SessionSearchService {
       kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
       geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
+      transcriptDir: options.transcriptDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 60_000,
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
       maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
@@ -189,6 +190,10 @@ class SessionSearchService {
     return this._request('preview', { request });
   }
 
+  memoryCandidates(request = {}) { return this._request('memory-candidates', { request }); }
+  transcriptFor(request = {}) { return this._request('transcript', { request }); }
+  exportMemoryHistory(request = {}) { return this._request('memory-export', { request }); }
+
   refresh(snapshot = {}, options = {}) {
     return this._request('refresh', { snapshot, force: options.force === true, immediate: options.immediate === true });
   }
@@ -286,7 +291,7 @@ class SessionSearchService {
   }
 
   async close() {
-    if (this._closed) return;
+    if (this._closed && !this._closingChild) return;
     this._closed = true;
     clearInterval(this._maintenanceTimer);clearTimeout(this._queueTimer);
     for(const watcher of this._watchers.values()) watcher.close();
@@ -297,15 +302,26 @@ class SessionSearchService {
       pending.reject(error);
     }
     this._pending.clear();
-    const child = this._child;
+    const child = this._closingChild || this._child;
     this._child = null;
     if (!child) return;
-    await new Promise(resolve => {
+    this._closingChild = child;
+    if (child.exitCode !== null && child.exitCode !== undefined) { this._closingChild = null; return; }
+    await new Promise((resolve, reject) => {
       let settled = false;
-      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+      let exitTimer;
+      const finish = () => { this._closingChild = null; if (settled) return; settled = true; clearTimeout(timer); clearTimeout(exitTimer); resolve(); };
       const terminate = () => {
-        try { child.kill(); } catch {}
-        finish();
+        if (settled || exitTimer) return;
+        // A kill request is not exit confirmation. A replacement Hub must not
+        // migrate the shared search index while this writer is still alive.
+        exitTimer=setTimeout(() => {
+          if (settled) return;
+          settled=true;clearTimeout(timer);
+          reject(new Error('历史索引进程尚未确认退出，取消重启'));
+        },5000);
+        try { child.kill(); }
+        catch(error) { settled=true;clearTimeout(timer);clearTimeout(exitTimer);reject(error); }
       };
       const timer = setTimeout(() => {
         terminate();

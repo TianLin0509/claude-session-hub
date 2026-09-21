@@ -17,7 +17,6 @@ const {
 const {
   buildComposerRailModel,
   buildComposerStatusModel,
-  buildStageStatusSummary,
 } = require('../core/session-status-summary.js');
 const {
   formatAbsoluteTime,
@@ -84,6 +83,7 @@ const {
 } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
+const { createCapabilityPanel } = require('./capability-panel.js');
 const { createFileManagerPanel } = require('./file-manager-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { speedControl } = require('../core/session-speed.js');
@@ -192,6 +192,7 @@ const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
+const nativeSessionBootstrap = require('./native-session-bootstrap').createNativeSessionBootstrap();
 const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
 let sessionSplit = null;
@@ -916,6 +917,14 @@ const sessionListRenderer = createSessionListRenderer({
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
+const sidebarInsights = require('./sidebar-insights').createSidebarInsights({
+  document, storage: localStorage,
+  onExpand: () => { void refreshSystemResourceUsage(true); },
+});
+require('./resource-process-tooltip').attachResourceProcessTooltip({
+  document, escapeHtml,
+  request: () => ipcRenderer.invoke('get-resource-top-processes'),
+});
 
 // 「已完成未读」组头上的「全部已读」：一次把所有会话和群聊的"答完了还没看"清掉。
 // 三层都要落，少一层就会复活：
@@ -989,12 +998,28 @@ ipcRenderer.on('desktop-notification:open-session', (_event, payload = {}) => {
   void selectSession(sessionId, { forceScrollBottom: true });
 });
 
+let networkTransferPending = false;
+async function refreshNetworkTransferUsage() {
+  if (networkTransferPending) return;
+  networkTransferPending = true;
+  try {
+    const network = await ipcRenderer.invoke('get-network-transfer-usage');
+    systemResourceUsage = { ...systemResourceUsage, network };
+  } catch {
+    systemResourceUsage = { ...systemResourceUsage, network: { status: 'unavailable' } };
+  } finally {
+    networkTransferPending = false;
+    renderSidebarStrip();
+  }
+}
 async function refreshSystemResourceUsage(force = false) {
+  if (sidebarInsights.isCollapsed()) return;
   if (document.hidden && force !== true) return;
+  void refreshNetworkTransferUsage();
   try {
     const next = await ipcRenderer.invoke('get-system-resource-usage', { force: force === true, extended: false });
     if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
-    systemResourceUsage = next;
+    systemResourceUsage = { ...systemResourceUsage, ...next };
     renderSidebarStrip();
     if (homeWorkbench) homeWorkbench.render();
   } catch {}
@@ -1805,14 +1830,7 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   filesBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.3 1.4h5.3a1.4 1.4 0 0 1 1.4 1.4v6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4Z"/><path d="M5 7.2h6M5 9.5h4"/></svg>';
   filesBtn.addEventListener('click', () => openSessionFilePanel(session));
 
-  const memoryBtn = document.createElement('button');
-  memoryBtn.className = 'btn-zoom btn-memory-toggle';
-  memoryBtn.dataset.action = 'open-memory';
-  memoryBtn.innerHTML = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 3.1c1.8-.7 3.6-.4 5.8.9v9c-2.2-1.3-4-1.6-5.8-.9Z"/><path d="M13.8 3.1c-1.8-.7-3.6-.4-5.8.9v9c2.2-1.3 4-1.6 5.8-.9Z"/></svg>';
-  memoryBtn.title = '打开记忆系统';
-  memoryBtn.setAttribute('aria-label', '打开记忆系统');
-
-  headerActions.append(filesBtn, memoryBtn, overflowWrap, closeBtn);
+  headerActions.append(filesBtn, overflowWrap, closeBtn);
 }
 
 function currentAppToolbarView() {
@@ -4377,13 +4395,8 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   speedChip.addEventListener('click',event=>{
     event.stopPropagation(); void modelUi.showSpeedPicker(speedChip,sessionId);
   });
-  // 2026-09-07 T1：chip 改成 18px 的预算环，数据源不变（status-event 的 contextPct）。
-  const ctxRing = document.createElement('span');
-  ctxRing.className = 'composer-ctx';
-  ctxRing.hidden = true;
-  const ctxRingHole = document.createElement('i');
-  ctxRingHole.setAttribute('aria-hidden', 'true');
-  ctxRing.appendChild(ctxRingHole);
+  // Shared remaining percentage + usage ring, using the existing contextPct source.
+  const contextBudget = require('./composer-context').createComposerContext(document);
 
   const sendHint = document.createElement('span');
   sendHint.className = 'composer-hint';
@@ -4427,7 +4440,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   composerRail.className = 'composer-rail';
   composerRail.append(
     attachBtn, modelChip, thinkingChip, speedChip,
-    railSpacer, ctxRing, sendHint, stopBtn, sendBtn,
+    railSpacer, contextBudget.element, sendHint, stopBtn, sendBtn,
   );
 
   const composerRow = document.createElement('div');
@@ -4465,10 +4478,14 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   const secondaryActions = document.createElement('div');
   secondaryActions.className = 'composer-secondary-actions';
   secondaryActions.append(bridgeToolbar, startActions);
+  const tuningControls = document.createElement('div');
+  tuningControls.className = 'composer-tuning-controls';
+  tuningControls.append(attachBtn, secondaryActions, modelChip, thinkingChip, speedChip);
+  composerRail.prepend(tuningControls);
   if (termContainer.closest('.terminal-panel') === terminalPanelEl) {
     composer.classList.add('has-backend-update-notice');
   }
-  composer.append(statusRow, quickReplyRow, composerRow, composerRail, secondaryActions);
+  composer.append(statusRow, quickReplyRow, composerRow, composerRail);
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -4626,13 +4643,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
     speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
 
-    ctxRing.hidden = !rail.context.visible;
-    if (rail.context.visible) {
-      ctxRing.dataset.level = rail.context.level;
-      ctxRing.style.setProperty('--composer-ctx-pct', `${rail.context.percent}%`);
-      if (ctxRing.title !== rail.context.title) ctxRing.title = rail.context.title;
-      ctxRing.setAttribute('aria-label', rail.context.ariaLabel);
-    }
+    contextBudget.update(rail.context);
 
     sendBtn.disabled = false;
     sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
@@ -4732,7 +4743,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     clearFloatingInputStuck(bar);
     const delivery = nativeCommand ? null : beginPromptDelivery(clientSubmissionId);
     if (delivery) floatingPromptDeliveries.set(sessionId, delivery);
-    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId }).then((result) => {
+    ipcRenderer.invoke('session:send-prompt', { sessionId, text, clientSubmissionId, memoryIndex: true }).then((result) => {
       if (nativeCommand) {
         if (feedbackSequence !== commandFeedbackSequence) return;
         const failed = !result?.ok || result.sendStatus === 'stuck';
@@ -4959,59 +4970,14 @@ function syncTerminalRuntimeStatusTicker(session) {
 
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
-function updateCardSessionStatus(session) {
-  const element = document.getElementById('card-session-status');
-  if (!element || !terminalPanelEl) return;
-  const summary = session ? buildStageStatusSummary(session) : null;
-  const visible = currentView === 'card' && !!summary
-    && !!(summary.compact || summary.contextText);
-  terminalPanelEl.classList.toggle('card-status-visible', visible);
-  if (!visible) {
-    element.replaceChildren();
-    element.dataset.signature = '';
-    element.removeAttribute('aria-label');
-    element.removeAttribute('title');
-    return;
-  }
-
-  const signature = JSON.stringify(summary);
-  if (element.dataset.signature === signature) return;
-  element.dataset.signature = signature;
-  element.dataset.provider = summary.kind;
-  element.replaceChildren();
-  // T2：模型名与工作目录从这条状态行撤掉 —— 模型名归 composer 底栏的 chip，
-  // 工作目录归头部面包屑。同一件事在三个地方各说一遍，就是这一版要治的病。
-  const parts = [
-    ['effort', summary.effort ? '推理 · ' + require('./ui-labels').effortLabel(summary.effort) : null],
-    ['speed', summary.speed ? '速度 · ' + require('./ui-labels').speedLabel(summary.speed) : null],
-    ['context', summary.contextText],
-  ].filter(([, value]) => value);
-  parts.forEach(([key, value], index) => {
-    if (index > 0) {
-      const separator = document.createElement('span');
-      separator.className = `card-session-status-sep card-session-status-sep-before-${key}`;
-      separator.textContent = '·';
-      element.appendChild(separator);
-    }
-    const part = document.createElement('span');
-    part.className = `card-session-status-part card-session-status-${key}`;
-    part.textContent = value;
-    element.appendChild(part);
-  });
-  element.setAttribute('aria-label', summary.ariaLabel || parts.map(([, value]) => value).join('，'));
-  element.title = parts.map(([, value]) => value).join(' · ');
-}
-
 function updateFloatingBarState() {
   sessionSplit?.sync();
   if (!activeSessionId) {
-    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   const s = sessions.get(activeSessionId);
   if (!s) {
-    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
@@ -5022,7 +4988,6 @@ function updateFloatingBarState() {
   const status = toolbarCrumbEl && toolbarCrumbEl.querySelector('.terminal-crumb-dot');
   if (status) paintTerminalRuntimeStatus(status, sessions.get(sessionSplit?.focusedId()) || s);
   syncTerminalRuntimeStatusTicker(s);
-  updateCardSessionStatus(s);
 
   const bar = document.querySelector('.terminal-panel .floating-input-bar');
   if (!bar) return;
@@ -5826,6 +5791,26 @@ const previewPanel = createPreviewPanelController({
     ...openOptions,
   }),
   refitActiveTerminal: refitActiveTerminalFromPreview,
+  onReturnToConversation: (key) => {
+    // Resume the existing follow controller after the source becomes visible;
+    // it also owns subsequent resize/layout changes and respects manual scrolling.
+    if (key.startsWith('meeting:')) {
+      document.querySelector('#meeting-room-panel .mr-gc-messages')?._cardFollowController?.follow();
+      return;
+    }
+    if (!key.startsWith('session:')) return;
+    const sid = key.slice('session:'.length);
+    const overlay = sessionSplit?.isSecondaryFocused()
+      ? sessionSplit.secondary().overlay : document.getElementById('msg-overlay');
+    overlay?._cardFollowController?.follow();
+    const cached = terminalCache.get(sid);
+    if (cached) {
+      cached._codexFollowBottom = true;
+      cached._codexUserScrollIntentUntil = 0;
+      pinTerminalViewportToBottom(cached);
+      scheduleCodexBottomPin(sid, cached);
+    }
+  },
   onCopyFeedback: feedback => clipboardController.showFeedback(feedback),
 });
 const {
@@ -5856,11 +5841,52 @@ function getActiveFileManagerContext() {
   };
 }
 
+function addFilePathsToConversation(paths, targetId) {
+  const id = targetId || getFocusedSessionId();
+  if (!id) {
+    if (window.MeetingRoom?.appendFilePaths) return window.MeetingRoom.appendFilePaths(paths);
+    throw new Error('请先打开一个会话');
+  }
+  const bar = [...document.querySelectorAll('.floating-input-bar')].find(node => node.dataset.sessionId === id);
+  const box = bar?.querySelector('.floating-input-box');
+  if (!box || sessions.get(id)?.readOnly || box.getAttribute('contenteditable') === 'false') throw new Error('目标会话输入框不可用，请先打开会话');
+  const current = readContenteditablePlainText(box);
+  replaceContenteditableText(box, `${current}${current.trim() ? '\n\n' : ''}${paths.join('\n')}`);
+  placeCaretAtContenteditableEnd(box);
+  saveFloatingInputDraft(id, box);
+  box.dispatchEvent(new Event('input', { bubbles: true }));
+  box.focus();
+  return true;
+}
+
+// Only consume drags originating from the file manager; native file-drop routing stays intact.
+document.addEventListener('dragover', event => {
+  if (event.dataTransfer?.types.includes('application/x-hub-files') && event.target.closest('.floating-input-box, #mr-input-box')) {
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy';
+  }
+}, true);
+document.addEventListener('drop', event => {
+  const incoming = event.dataTransfer?.getData('application/x-hub-files');
+  const box = event.target.closest('.floating-input-box, #mr-input-box');
+  if (!incoming || !box) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  try {
+    const paths = JSON.parse(incoming);
+    if (!Array.isArray(paths) || !paths.length || !paths.every(value => typeof value === 'string' && path.isAbsolute(value))) throw new Error('无效的文件路径');
+    if (box.id === 'mr-input-box') window.MeetingRoom.appendFilePaths(paths);
+    else addFilePathsToConversation(paths, box.closest('.floating-input-bar').dataset.sessionId);
+  } catch (error) { chatgptBridgeController.showStatus(error.message, 'error'); }
+}, true);
+
 fileManagerPanel = createFileManagerPanel({
   document,
   window,
   ipcRenderer,
   getActiveContext: getActiveFileManagerContext,
+  addToConversation: addFilePathsToConversation,
+  listConversationTargets: () => [...document.querySelectorAll('.floating-input-bar')]
+    .map(node => sessions.get(node.dataset.sessionId)).filter(session => session && !session.readOnly)
+    .map(session => ({ id: session.id, label: session.title || session.id })),
   openPathInHub: (filePath, openOptions = {}) => openPathInHub(filePath, {
     cwd: getActivePreviewCwd(),
     requireExistsForRel: false,
@@ -6627,15 +6653,17 @@ homeWorkbench = createHomeWorkbench({
   onCreate: intent => launchCenter.open(intent),
 });
 homeWorkbench.render();
-// 记忆系统面板：会话 header 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
-// 因为 session / meeting header 每次 render 都重建 innerHTML）。
+// 记忆页由左侧第六个功能按钮打开，当前上下文跟随当前聚焦的 session。
 const memoryPanel = createMemoryPanel({
   document,
   ipcRenderer,
   escapeHtml,
+  openSession: (id) => selectSession(id, { forceScrollBottom: true }),
   getActiveSessionInfo: () => {
+    if (window.MeetingRoom?.getActiveMeetingId()) return null;
     const s = sessions.get(getFocusedSessionId());
     return s ? {
+      id: s.id,
       cwd: s.cwd,
       kind: s.kind,
       runtimeKind: s.transcriptKind || s.kind,
@@ -6646,6 +6674,8 @@ const memoryPanel = createMemoryPanel({
     } : null;
   },
 });
+const capabilityPanel = createCapabilityPanel({document,ipcRenderer,escapeHtml,
+  getActiveSessionId:()=>getFocusedSessionId()});
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 
@@ -7173,11 +7203,12 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const preview = buildReplyReadyPreview(text, `${cardWorkingLabel(session)} 回复完成，等你继续`);
   const sig = `${turnId || ''}:${completedAt || ''}:${preview}`;
   if (session._lastTranscriptReadySig === sig) return;
-  if (isClaudeTranscriptRuntime) {
-    // Claude normally closes attention/unread through Stop. The authoritative
+  if (isClaudeTranscriptRuntime && session.runtimeBackend !== 'claude-stream-json') {
+    // Legacy PTY Claude closes attention/unread through Stop. The authoritative
     // terminal transcript is an independent runtime fallback: it must close a
     // stuck "running" state without replaying applyReplyCompleted and double
-    // counting unread when Stop arrives as well.
+    // counting unread when Stop arrives as well. Native stream-json has no Stop
+    // hook and must use the ordered completion reducer below.
     const at = normalizeEventTime(completedAt, Date.now());
     const startedAt = Number(session.runStartedAt) || Number(session.lastRunStartedAt) || 0;
     if (startedAt > 0 && at >= startedAt) {
@@ -7269,10 +7300,9 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 function onPromptSubmittedFromTranscriptEvent(payload) {
   const { hubSessionId, text, submittedAt, meetingId, kind, turnId, signalSource } = payload || {};
   if (!hubSessionId) return;
-  if (!isTranscriptCliKind(kind)) return;
-
   const session = sessions.get(hubSessionId);
   if (!session) return;
+  if (!isTranscriptCliKind(kind) && session.runtimeBackend !== 'claude-stream-json') return;
   if (session.status === 'dormant') return;
 
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
@@ -7636,6 +7666,8 @@ const sessionContextMenu = createSessionContextMenuController({
   renderSessionList: scheduleSessionListRender,
   schedulePersist,
   wakeDormantSession: (sessionId) => resumeDormantSession(sessionId, { forceScrollBottom: true }),
+  // 群聊分支建出新群聊/新成员后，直接把用户带到那间房里。
+  selectMeeting: (meetingId) => { void selectMeeting(meetingId); },
 });
 sessionContextMenu.init();
 const openContextMenu = sessionContextMenu.open;
@@ -7676,6 +7708,12 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
   normalizeLocalPathForOpen: _normalizeLocalPathForOpen,
   getSessionCwd,
   getActiveSessionId: () => activeSessionId,
+  getActiveCwd: () => getActiveFileManagerContext()?.cwd || getActivePreviewCwd(),
+  openFileManager: async (target, cwd) => {
+    const stat = await fs.promises.stat(target);
+    const directory = stat.isDirectory() ? target : require('path').dirname(target);
+    return openPathInHub(directory, { cwd, requireExistsForRel: false, throwOnError: true });
+  },
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
 });
 pathLinkContextMenu.init();
@@ -7683,8 +7721,17 @@ pathLinkContextMenu.init();
 // --- Terminal in-buffer search (Ctrl+F) ---
 const terminalSearch = createTerminalSearch({
   document,
-  getActiveSessionId: () => activeSessionId,
+  getActiveSessionId: () => sessionSplit?.focusedId() || activeSessionId,
   getTerminalCache: () => terminalCache,
+  getTranscriptRoot: () => {
+    if (activeMeetingId) return document.querySelector('#meeting-room-panel .mr-gc-messages');
+    if (sessionSplit?.isSecondaryFocused()) {
+      const pane = sessionSplit.secondary();
+      return pane.mode() === 'card' ? pane.overlay : document.querySelector('.split-secondary .cb-viewport');
+    }
+    if (!activeSessionId) return null;
+    return currentView === 'card' ? document.getElementById('msg-overlay') : document.querySelector('#terminal-panel .cb-viewport');
+  },
 });
 terminalSearch.init();
 const openTerminalSearch = terminalSearch.open;
@@ -7765,6 +7812,9 @@ const configModal = createConfigModalController({
   renderAccountUsage,
   applyCardDisplaySettings: applyHubCardDisplaySettings,
   getNotificationTarget: getActiveCompletionNotificationTarget,
+});
+const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); },
 });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
@@ -7892,6 +7942,7 @@ if (typeof MeetingRoom !== 'undefined') {
 const _pendingDormantResumes = new Map();
 
 ipcRenderer.on('session-created', async (_e, { session }) => {
+  nativeSessionBootstrap.record(session, { created: true });
   // When resuming a dormant session, the hubId matches an existing dormant
   // entry. Merge live PTY info on top of the dormant metadata so title /
   // preview / unread / pinned aren't wiped.
@@ -7938,6 +7989,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (session.purpose === 'chuxin-research') {
     scheduleSessionListRender();
     window.dispatchEvent(new CustomEvent('chuxin-session-created', { detail: session }));
+    return;
+  }
+  if (session.purpose === 'memory-dream' && !wasDormant) {
+    scheduleSessionListRender();
+    void savePreviewState({ nonBlocking: true });
     return;
   }
   // Meeting room no longer mounts embedded xterms. Keep only the lightweight
@@ -8024,6 +8080,12 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
+  const booting = nativeSessionBootstrap.remove(sessionId);
+  // An explicit suspension can also overtake the initial list. Keep its
+  // historical entry while preventing that list from reviving a live writer.
+  if (booting && session && !sessions.has(sessionId)) {
+    sessions.set(sessionId, { ...session, id: sessionId, status: 'dormant' });
+  }
   sessionSplit?.closed(sessionId);
   const local = sessions.get(sessionId);
   if (!local) return;
@@ -8142,6 +8204,7 @@ function markSessionProcessLost(sessionId, exitInfo) {
 }
 
 ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
+  nativeSessionBootstrap.remove(sessionId);
   sessionSplit?.closed(sessionId);
   cardHistoryViews.drop(sessionId);
   floatingPromptDeliveries.delete(sessionId);
@@ -8203,13 +8266,17 @@ ipcRenderer.on('session-closed', (_e, { sessionId, exitInfo, requested }) => {
 });
 
 ipcRenderer.on('session-updated', (_e, { session }) => {
+  nativeSessionBootstrap.record(session);
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
   if (session.runtimeBackend === 'claude-stream-json') {
     const old = local.nativeRuntime;
     const next = session.nativeRuntime;
     if (old && next && (next.epoch < old.epoch || (next.epoch === old.epoch && next.revision < old.revision))) return;
-    Object.assign(local, session);
+    // Read acknowledgement belongs to this window. Main runtime/usage snapshots
+    // still carry their initial unreadCount and must not erase a received reply.
+    const unreadCount = local.unreadCount;
+    Object.assign(local, session, { unreadCount });
     if (old?.cancellation?.status !== next?.cancellation?.status) window.MeetingRoom?.refreshNativeCancellation?.(local.id);
     if (session.nativeMigrationDraft && local._importedNativeDraft !== session.nativeMigrationDraft) {
       local._importedNativeDraft = session.nativeMigrationDraft;
@@ -8338,7 +8405,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
 let persistDebounceTimer = null;
 function schedulePersist() {
   if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
-  persistDebounceTimer = setTimeout(() => {
+  persistDebounceTimer = setTimeout(() => { persistDebounceTimer=null; persistWorkscene(); }, 400);
+}
+function persistWorkscene(flush = false) {
+    if (flush && persistDebounceTimer) { clearTimeout(persistDebounceTimer);persistDebounceTimer=null; }
     const list = [];
     for (const s of sessions.values()) {
       // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
@@ -8446,11 +8516,25 @@ function schedulePersist() {
       serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
       completionNotificationEnabled: m.completionNotificationEnabled === true,
     }));
+    if (flush) return ipcRenderer.invoke('persist-sessions:flush', list, meetingList);
     ipcRenderer.send('persist-sessions', list, meetingList);
-  }, 400);
 }
 // 暴露给 meeting-room.js 等 renderer 子模块：配置变更后可主动落 state.json
 window.schedulePersist = schedulePersist;
+
+const restartController = require('./hub-restart-controller').createHubRestartController({document,ipcRenderer,
+  flush:async () => {
+    await Promise.all([...nativeDraftControllers.values()].map(controller=>controller.flush()));
+    await persistWorkscene(true);
+  },
+  getView:() => ({activeSessionId,meetingId:MeetingRoom.getActiveMeetingId?.() || null,
+    waitingSessionIds:[...sessions.values()].filter(s=>getSessionRuntimeTruth(s).state===RUNTIME_WAITING).map(s=>s.id)}),
+  restoreView:async view => {
+    if (view.meetingId && meetings[view.meetingId]) {
+      await MeetingRoom.openMeeting(view.meetingId,meetings[view.meetingId]);
+    } else if (view.activeSessionId && sessions.has(view.activeSessionId) && sessions.get(view.activeSessionId).status !== 'dormant') await selectSession(view.activeSessionId);
+  },
+});
 
 // Wake a dormant session: call main to spawn PTY with --resume, then wait for
 // session-created which will replace the dormant entry.
@@ -8646,7 +8730,8 @@ sessionSplit = require('./session-split').createSessionSplit({
   for (const s of existing) {
     const migrated = migrateLegacyBranchSessionMeta(s);
     if (migrated !== s) migratedLegacyBranchTitles += 1;
-    sessions.set(migrated.id, migrated);
+    const current = nativeSessionBootstrap.merge(migrated, sessions.get(migrated.id));
+    if (current) sessions.set(migrated.id, current);
   }
 
   if (persisted && Array.isArray(persisted.sessions)) {
@@ -8656,7 +8741,7 @@ sessionSplit = require('./session-split').createSessionSplit({
         Object.assign(meta, migratedMeta);
         migratedLegacyBranchTitles += 1;
       }
-      if (sessions.has(meta.hubId)) continue;
+      if (sessions.has(meta.hubId) || nativeSessionBootstrap.removed(meta.hubId)) continue;
       // 2026-05-05 dormant 加载 fallback：state.json 里历史 dormant session 的
       // currentModel 大量为 null（main.js:2694 RESUME_META_FIELDS 字段名拼错导致
       // 一旦写入 null 就永久污染，已在同次提交修）。这里给老污染数据按 kind 推断
@@ -8755,6 +8840,7 @@ sessionSplit = require('./session-split').createSessionSplit({
     }
   }
 
+  nativeSessionBootstrap.finish();
   if (migratedLegacyBranchTitles > 0 || healedUnsafeSessionModels > 0) {
     if (migratedLegacyBranchTitles > 0) {
       console.info(`[session-title] migrated ${migratedLegacyBranchTitles} legacy branch title(s)`);
@@ -8810,6 +8896,7 @@ sessionSplit = require('./session-split').createSessionSplit({
   // 启动兜底默认。必须 remember:false —— 此刻可能已恢复上次的 active 会话，
   // 写记忆会把它自己记住的卡片视图抹掉。
   applyViewMode('pty', { remember: false });
+  await restartController.restore();
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that

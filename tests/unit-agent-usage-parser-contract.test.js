@@ -24,6 +24,10 @@ assert.ok(gemini.model && gemini.model.id === 'gemini-2.5-pro',
   'Gemini model id should be detected from footer');
 
 const geminiQuota = parseGeminiUsage('gemini-2.5-flash 17% used');
+assert.strictEqual(parseGeminiUsage('PS> gemini --approval-mode yolo --model gemini-3-pro-pr').model,undefined,
+  'a partial command echo must not replace the persisted Gemini resume model');
+assert.strictEqual(parseGeminiUsage('Tool output: compare gemini-2.5-flash').model,undefined,
+  'arbitrary model mentions are not provider configuration evidence');
 assert.strictEqual(geminiQuota.quotaPct, 17,
   'Gemini quota footer should be parsed separately from context');
 

@@ -172,6 +172,15 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     return session.transcriptKind || session.kind || null;
   }
 
+  // 梦境索引只随用户亲手输入的消息附带（renderer 显式传 memoryIndex:true）；
+  //   群聊派发、会议、初心、定时任务等自动 prompt 一律原样发送。
+  function sendWithMemory(request, sessionId, text, kind, options) {
+    const memory = sessionManager.memoryService;
+    const send = body => groupChatWatcher.sendToPty(sessionId, body, kind, options);
+    if (request.memoryIndex !== true || !memory) return send(text);
+    return memory.withIndex(sessionId, text, kind, options, send);
+  }
+
   const sendPrompt = async (_event, request = {}) => {
     const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
     const text = typeof request.text === 'string' ? request.text : '';
@@ -188,7 +197,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         }
         catch (error) { return {ok:false,notSent:true,error:'native-recovery-failed',message:error.message}; }
         try {
-          return await groupChatWatcher.sendToPty(sessionId, text, kind, {
+          return await sendWithMemory(request, sessionId, text, kind, {
             clientSubmissionId: request.clientSubmissionId, attachments: request.attachments,
           });
         } catch (error) { return { ok: false, error: error.code || 'native-send-failed', message: error.message }; }
@@ -218,7 +227,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
-        const result = await groupChatWatcher.sendToPty(sessionId, text, kind, {
+        const result = await sendWithMemory(request, sessionId, text, kind, {
           requireReady: false, submissionReceipt: receipt,
           clientSubmissionId, attachments:request.attachments,
         });

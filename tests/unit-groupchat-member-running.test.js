@@ -114,7 +114,7 @@ function sectionOf(html, needle) {
   const lines = html.split('\n');
   let current = null;
   for (const line of lines) {
-    const m = line.match(/<span>(置顶|未读|活跃|今天|休眠)<\/span>/);
+    const m = line.match(/<span>(异常|置顶|未读|活跃|今天|休眠)<\/span>/);
     if (m) { current = m[1]; continue; }
     if (line.includes(needle)) return current;
   }
@@ -172,7 +172,7 @@ test('群聊成员失败会聚合到父项异常分区', () => {
   const fixture = groupChat(['idle', 'error', 'idle']);
   fixture.sessions.get('sid-codex').lastError = 'rate limited';
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '异常');
   assert.match(html, /sl-dot error/);
   assert.match(html, /sl-group-icon error/);
 });
@@ -189,7 +189,7 @@ test('只有运行异常而没有运行中时，普通会话仍显示「最近�
     lastMessageTime: Date.now(),
   });
   const html = render(fixture);
-  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '活跃');
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '异常');
   assert.strictEqual(sectionOf(html, '普通最近会话'), '今天',
     '运行异常本身也是特殊分区，后续普通项目必须重新用「最近」标题分隔');
 });

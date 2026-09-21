@@ -1,8 +1,9 @@
 'use strict';
 
 // Right-click context menu for <a class="rt-file-link"> elements.
-// 5 actions: copy-abs-path / copy-file / sync-company / show-in-folder / open-external.
-// URL links show only copy + open-external; file-only items hidden via [data-file-only].
+// Local links can open the Hub file manager; remote URLs have no local directory.
+const { fileURLToPath } = require('url');
+const { classifyLocalPathHref } = require('./path-candidates');
 
 function createPathLinkContextMenuController({
   document,
@@ -14,6 +15,8 @@ function createPathLinkContextMenuController({
   normalizeLocalPathForOpen,
   getSessionCwd,
   getActiveSessionId,
+  getActiveCwd,
+  openFileManager,
   pushToChatgpt,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
@@ -33,6 +36,9 @@ function createPathLinkContextMenuController({
         right: '24px',
         bottom: '24px',
         zIndex: '12000',
+        // Text-only status must never intercept composer clicks, including
+        // after the opacity transition leaves an invisible toast in the DOM.
+        pointerEvents: 'none',
         maxWidth: '420px',
         padding: '12px 16px',
         borderRadius: '12px',
@@ -62,22 +68,25 @@ function createPathLinkContextMenuController({
     }
   }
 
-  function resolveTarget(rawPath) {
+  function resolveTarget(rawPath, ownerCwd) {
     if (!rawPath) return null;
-    const trimmed = String(rawPath).trim();
+    let trimmed = String(rawPath).trim();
     if (!trimmed) return null;
     if (/^https?:\/\//i.test(trimmed)) {
       return { absPath: trimmed, isUrl: true };
     }
     // If already an absolute Windows path or POSIX absolute, no cwd needed.
-    const cwd = getSessionCwd(getActiveSessionId());
+    if (/^file:/i.test(trimmed)) {
+      try { trimmed = fileURLToPath(trimmed); } catch (_) { return null; }
+    }
+    const cwd = ownerCwd || getActiveCwd?.() || getSessionCwd(getActiveSessionId());
     const full = normalizeLocalPathForOpen(trimmed, cwd, false);
     if (!full) return null;
-    return { absPath: full, isUrl: false };
+    return { absPath: full, isUrl: false, cwd };
   }
 
-  function open(rawPath, x, y) {
-    const t = resolveTarget(rawPath);
+  function open(rawPath, x, y, ownerCwd) {
+    const t = resolveTarget(rawPath, ownerCwd);
     if (!t) return false;
     currentTarget = t;
 
@@ -85,6 +94,11 @@ function createPathLinkContextMenuController({
       el.style.display = t.isUrl ? 'none' : '';
     }
     const copyBtn = menuEl.querySelector('[data-action="copy-abs-path"]');
+    const managerBtn = menuEl.querySelector('[data-action="open-file-manager"]');
+    if (managerBtn) {
+      managerBtn.disabled = t.isUrl;
+      managerBtn.title = t.isUrl ? '网页 URL 没有对应的本地文件目录' : '在 Hub 右侧文件管理中打开所在目录';
+    }
     if (copyBtn) {
       copyBtn.textContent = t.isUrl
         ? (copyBtn.dataset.labelUrl || '复制 URL')
@@ -117,6 +131,11 @@ function createPathLinkContextMenuController({
         if (t.isUrl) return;
         const r = await ipcRenderer.invoke('clipboard-copy-file', t.absPath);
         if (r && r.error) console.warn('[path-link-ctx] copy-file failed:', r.error);
+      } else if (action === 'open-file-manager') {
+        if (t.isUrl) return;
+        if (typeof openFileManager !== 'function') throw new Error('文件管理尚未就绪');
+        const result = await openFileManager(t.absPath, t.cwd);
+        if (!result || result.ok !== true) throw new Error(result?.error || '文件管理打开失败');
       } else if (action === 'show-in-folder') {
         if (t.isUrl) return;
         const r = await ipcRenderer.invoke('show-in-folder', t.absPath);
@@ -160,6 +179,7 @@ function createPathLinkContextMenuController({
         }
       }
     } catch (e) {
+      if (action === 'open-file-manager') showSyncStatus(`文件管理打开失败\n${e && e.message ? e.message : '路径不可读取'}`, 'error');
       if (action === 'sync-company' || action === 'sync-chatgpt') {
         showSyncStatus(`同步失败\n${e && e.message ? e.message : '同步程序异常。'}`, 'error');
       }
@@ -171,22 +191,23 @@ function createPathLinkContextMenuController({
     document.addEventListener('contextmenu', (e) => {
       if (!e.target || !e.target.closest) return;
       let rawPath = null;
+      const ownerCwd = e.target.closest('[data-cwd]')?.dataset.cwd
+        || getSessionCwd(e.target.closest('[data-session-id]')?.dataset.sessionId);
       // Priority 1: explicit rt-file-link anchor (path-link.js wrapped)
       const rtLink = e.target.closest('a.rt-file-link');
       if (rtLink) {
         rawPath = rtLink.dataset.path;
       } else {
-        // Priority 2: fallback for marked-rendered URL anchors (autolink produces
-        // <a href="https://..."> without rt-file-link class). Skip preview-body
-        // so preview's own link navigation logic still applies.
+        // Marked anchors also include file URLs and explicit relative paths.
         const httpLink = e.target.closest('a[href]');
         if (httpLink && !httpLink.closest('#preview-body')) {
           const href = httpLink.getAttribute('href') || '';
           if (/^https?:\/\//i.test(href)) rawPath = href;
+          else rawPath = classifyLocalPathHref(href, ownerCwd || getActiveCwd?.() || getSessionCwd(getActiveSessionId()))?.openPath;
         }
       }
       if (!rawPath) return;
-      const opened = open(rawPath, e.clientX, e.clientY);
+      const opened = open(rawPath, e.clientX, e.clientY, ownerCwd);
       if (opened) {
         e.preventDefault();
         e.stopPropagation();

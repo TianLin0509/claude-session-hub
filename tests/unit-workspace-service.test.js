@@ -21,9 +21,9 @@ function run() {
 
     const scratch = service.createScratchWorkspace();
     assert(fs.statSync(scratch.path).isDirectory());
-    assert(fs.statSync(path.join(scratch.path, '.git')).isDirectory(), 'scratch workspace should be git-backed');
+    assert(!fs.existsSync(path.join(scratch.path, '.git')), 'temporary output directory is not a project');
     assert.strictEqual(scratch.draft, true);
-    assert.strictEqual(scratch.gitInitialized, true);
+    assert.strictEqual(scratch.gitInitialized, false);
 
     const named = service.updateSuggestedName(scratch.path, '修复 AI Hub 工作区入口');
     assert.strictEqual(named.label, '修复 AI Hub 工作区入口');

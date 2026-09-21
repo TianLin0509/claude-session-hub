@@ -156,6 +156,7 @@ function makeController(document, getActiveSessionId, options = {}) {
     getActiveCwd: () => 'C:\\tmp',
     openPath: async filePath => options.openedPaths && options.openedPaths.push(filePath),
     refitActiveTerminal: () => {},
+    onReturnToConversation: options.onReturnToConversation,
   });
 }
 
@@ -449,6 +450,21 @@ async function testNavigationSaveDoesNotWaitForWebviewScroll() {
 }
 
 async function main() {
+  const returned = [];
+  let active = 'return-session';
+  const doc = makeDocument();
+  const preview = makeController(doc, () => active, { onReturnToConversation: key => {
+    assert.strictEqual(doc.getElementById('terminal-panel').style.display, '');
+    returned.push(key);
+  } });
+  await preview.openPreviewPanel('C:\\tmp\\return.md');
+  preview.closePreviewPanel();
+  preview.closePreviewPanel();
+  assert.deepStrictEqual(returned, ['session:return-session'], 'only a visible preview returns to latest');
+  await preview.openPreviewPanel('C:\\tmp\\return.md');
+  active = 'other-session';
+  preview.closePreviewPanel();
+  assert.strictEqual(returned.length, 1, 'closing an old context must not scroll another session');
   await testSessionScopedBodyPreview();
   await testExplicitSplitOverride();
   await testWebviewScrollRestore();

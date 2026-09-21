@@ -6,13 +6,12 @@ const { compareLatestActivityDesc, latestActivityTime } = require('../core/sessi
 const {
   sessionHasCompletedUnread,
 } = require('../core/session-attention-state.js');
-const { hasStreamDisconnectIssue } = require('../core/stream-disconnect.js');
+const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
   RUNTIME_WAITING,
-  RUNTIME_FAILED,
   RUNTIME_DORMANT,
   RUNTIME_UNKNOWN,
   getSessionRuntimeTruth,
@@ -129,21 +128,21 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
     const fresh = now - latestActivityTime(s, now) < 86400000;
     const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
-    const error = meeting ? meeting.failed : truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(s);
+    const error = meeting ? meeting.failed : !!sessionRuntimeIssue(s, truth);
     const working = s._resumePending || (meeting ? meeting.running
       : (s.meetingId || groupMemberIds.has(s.id)) ? isSidebarMemberWorking(s, now) : sessionRuntimeIsActive(s, { now }));
     const unread = sidebarItemHasUnread(s, sessionMap);
-    states.set(s.id, meeting && working ? 'run' : waiting ? 'wait' : error ? 'error' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
-    if (unread) completed.push(s);
+    states.set(s.id, error ? 'error' : meeting && working ? 'run' : waiting ? 'wait' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
+    if (error) failed.push(s);
+    else if (unread) completed.push(s);
     else if (s.pinned) pinned.push(s);
     else if (waiting) respond.push(s);
-    else if (error) failed.push(s);
     else if (working) running.push(s);
     else if (dormant) archive.push(s);
     else if (fresh) today.push(s);
     else older.push(s);
   }
-  return { pinned, unread: completed, active: [...respond, ...failed, ...running], today, archive, older, archiveCount: archive.length, states };
+  return { pinned, unread: completed, failed, active: [...respond, ...running], today, archive, older, archiveCount: archive.length, states };
 }
 
 function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
@@ -155,8 +154,8 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
     waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
     running: meeting && !meeting.groupChat && meeting.status === 'running'
       || truths.some(item => isSidebarMemberWorking(item.session, now)),
-    disconnected: truths.some(item => hasStreamDisconnectIssue(item.session)),
-    failed: truths.some(item => item.truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(item.session)),
+    disconnected: truths.some(item => sessionRuntimeIssue(item.session, item.truth)?.label === '连接异常'),
+    failed: truths.some(item => !!sessionRuntimeIssue(item.session, item.truth)),
     truths,
   };
 }
@@ -166,7 +165,7 @@ function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
-  const sectionKeys = ['sec-pinned', 'sec-unread', 'sec-active', 'sec-today', 'sec-dormant'];
+  const sectionKeys = ['sec-failed', 'sec-pinned', 'sec-unread', 'sec-active', 'sec-today', 'sec-dormant'];
   let collapsedSections = new Set();
   let dormantDays = 1;
   let modelFilter = 'all';
@@ -322,9 +321,8 @@ function _sessionWarningText(session) {
   if (session.memoryLinkWarning) {
     warnings.push(`记忆未接入规范库：${session.memoryLinkWarning}`);
   }
-  if (hasStreamDisconnectIssue(session)) {
-    warnings.push(`网络断连：${String(session.connectionIssue.message || '连接已中断')}`);
-  }
+  const issue = sessionRuntimeIssue(session);
+  if (issue) warnings.push(`${issue.label}：${issue.message}`);
   return warnings.join('；');
 }
 
@@ -376,7 +374,18 @@ function _sessionWarningText(session) {
     ].join('\n');
 
     const routeClass = (route, warning) => !egress ? 'pending' : warning || !route?.ok ? 'warning' : 'ok';
-    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const metric = (label, value) => `<span class="strip-resource${metricClass(value)}" tabindex="0" data-resource-kind="${label === 'CPU' ? 'cpu' : 'memory'}" aria-label="${label} ${value == null ? '检测中' : value + '%'}，悬停查看占用 Top 3" title="${label} ${value == null ? '检测中' : value + '%'}">${label}<b>${value == null ? '—' : value + '%'}</b><span class="strip-mini-track"><i style="width:${value == null ? 0 : Math.max(0, Math.min(100, value))}%"></i></span></span>`;
+    const network = usage.network;
+    const rate = value => {
+      if (network?.status !== 'ok' || !Number.isFinite(value)) return '—';
+      if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}<small>G</small>`;
+      if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}<small>M</small>`;
+      return `${Math.round(value / 1024)}<small>K</small>`;
+    };
+    const networkTitle = network?.status === 'ok'
+      ? `本机物理网卡合计：${(network.adapters || []).join('、')}\n下行 ${(network.downloadBps / 1024).toFixed(1)} KB/s · 上行 ${(network.uploadBps / 1024).toFixed(1)} KB/s\n最近 ${(network.windowMs / 1000).toFixed(1)} 秒均值；含所有应用，非 VPN 专属流量；K/M/G 表示 KB/s、MB/s、GB/s，按 1024 换算`
+      : network?.status === 'unavailable' ? '网速暂不可用' : network?.status === 'disconnected' ? '没有已连接的物理网卡' : '网速采样中';
+    const transfer = `<span class="strip-transfer" title="${escapeHtml(networkTitle)}" aria-label="${escapeHtml(networkTitle)}"><span class="strip-download"><span class="strip-transfer-label">↓</span><b>${rate(network?.downloadBps)}</b></span><span class="strip-upload"><span class="strip-transfer-label">↑</span><b>${rate(network?.uploadBps)}</b></span></span>`;
     const location = displayRoute?.ok
       ? [displayRoute.countryZh || displayRoute.country || '国家未知', displayRoute.cityZh || displayRoute.city || '城市未知'].join(' ')
       : '出口未知';
@@ -384,10 +393,24 @@ function _sessionWarningText(session) {
     const markup =
       '<div class="strip-resources">' + metric('CPU', cpuPct) + metric('内存', memoryPct) + '</div>' +
       `<div class="strip-network"><button type="button" class="strip-route-row strip-route-foreign strip-proxy" title="${escapeHtml(foreignTitle)}"${ackAttr}><span class="strip-route-dot ${routeClass(displayRoute, proxyShort ? alert : null)}"></span><span>${proxyShort ? 'VPN' : '直连'}</span><span class="strip-location">${escapeHtml(location)}</span></button>` +
-      `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
+      transfer + `<span class="strip-route-row strip-route-domestic" title="${escapeHtml(domesticTitle)}"><span class="strip-route-dot ${routeClass(domestic)}"></span>${domesticLabel}</span></div>`;
     if (stripEl._resourceMarkup === markup) return;
     stripEl._resourceMarkup = markup;
-    stripEl.innerHTML = markup;
+    // Keep focused/hovered resource anchors alive during the telemetry heartbeat.
+    if (stripEl.querySelector('[data-resource-kind]')) {
+      const template = doc.createElement('template');
+      template.innerHTML = markup;
+      for (const kind of ['cpu', 'memory']) {
+        const current = stripEl.querySelector(`[data-resource-kind="${kind}"]`);
+        const next = template.content.querySelector(`[data-resource-kind="${kind}"]`);
+        current.className = next.className;
+        current.title = next.title;
+        current.setAttribute('aria-label', next.getAttribute('aria-label'));
+        current.querySelector('b').textContent = next.querySelector('b').textContent;
+        current.querySelector('i').style.width = next.querySelector('i').style.width;
+      }
+      stripEl.querySelector('.strip-network').innerHTML = template.content.querySelector('.strip-network').innerHTML;
+    } else stripEl.innerHTML = markup;
     stripEl.title = '';
     stripEl.style.display = 'flex';
 
@@ -629,7 +652,7 @@ sessionListEl.addEventListener('keydown', event => {
       _persistExpandedMeetings();
     }
     const parts = partitionSidebarSessions([item], { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    const key = parts.pinned.length ? 'sec-pinned' : parts.unread.length ? 'sec-unread' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
+    const key = parts.failed.length ? 'sec-failed' : parts.pinned.length ? 'sec-pinned' : parts.unread.length ? 'sec-unread' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
     collapsedSections.delete(key);
     savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
     renderSessionList();
@@ -727,8 +750,8 @@ sessionListEl.addEventListener('keydown', event => {
       const anySubRunning = meetingRuntime.running;
       const anySubWaiting = meetingRuntime.waiting;
       const anySubFailed = meetingRuntime.failed;
-      const anySubDisconnected = meetingRuntime.disconnected;
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
+        + (anySubFailed ? ' runtime-error' : '')
         + (anySubRunning ? ' running' : '')
         + (detailsEnabled ? ' has-session-details' : '')
         + (isActive ? ' selected' : '')
@@ -766,7 +789,7 @@ sessionListEl.addEventListener('keydown', event => {
         let statusCls = 'mini-st-ready';
         if (!sub) statusCls = 'mini-st-init';
         else if (subRuntime.state === RUNTIME_DORMANT) statusCls = 'mini-st-dormant';
-        else if (hasStreamDisconnectIssue(sub) || subRuntime.state === RUNTIME_FAILED) statusCls = 'mini-st-error';
+        else if (sessionRuntimeIssue(sub, subRuntime)) statusCls = 'mini-st-error';
         else if (subRuntime.state === RUNTIME_WAITING) statusCls = 'mini-st-waiting';
         else if (_subIsRunning(sub)) statusCls = 'mini-st-thinking';
         else if (subRuntime.state === RUNTIME_UNKNOWN) statusCls = 'mini-st-unknown';
@@ -791,7 +814,7 @@ sessionListEl.addEventListener('keydown', event => {
           </button>${ctxLabelHtml}
         </span>`;
       }).join('');
-      // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
+      // 异常先提醒；其他成员的实际运行状态仍由各成员行展示。
       const dotCls = sections.states.get(s.id) || 'idle';
       const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => _aiLogoHtml(sessionMap.get(id)?.kind)).join('');
       const answered = s._meeting.answeredThisTurn?.size || 0;
@@ -808,7 +831,7 @@ sessionListEl.addEventListener('keydown', event => {
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
         isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
-        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + (anySubFailed ? '<span class="sl-disconnect-label">异常</span>' : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
         '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
         (hasUnread ? '<span class="sl-unread-badge">' + unreadMembers.size + ' 位未读</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>') + '</div>',
         unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '',
@@ -848,13 +871,13 @@ sessionListEl.addEventListener('keydown', event => {
           const childRuntime = getSessionRuntimeTruth(sub);
           const childResumePending = sub._resumePending === true;
           const childDormantCls = childRuntime.state === RUNTIME_DORMANT ? ' dormant' : '';
-          const childDisconnected = hasStreamDisconnectIssue(sub);
+          const childIssue = sessionRuntimeIssue(sub, childRuntime);
           const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
           const childShowUnread = !isChildActive && childUnreadCount > 0;
           childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
             + (childShowUnread ? ' need-unread' : '') + childDormantCls
             + (childResumePending ? ' resuming' : '')
-            + (childDisconnected ? ' disconnected' : '');
+            + (childIssue ? ' runtime-error' : '');
           childDiv.tabIndex = 0;
           childDiv.dataset.sessionId = subId;
           childDiv.dataset.runtimeState = childRuntime.state;
@@ -869,7 +892,7 @@ sessionListEl.addEventListener('keydown', event => {
             : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
-            <span class="child-title" aria-label="${escapeHtml([sub.title, childWarning, childStateTip].filter(Boolean).join(' · '))}">${childDisconnected ? '<span class="sl-disconnect-label">断连</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
+            <span class="child-title" aria-label="${escapeHtml([sub.title, childWarning, childStateTip].filter(Boolean).join(' · '))}">${childIssue ? '<span class="sl-disconnect-label">异常</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
             ${modelLabel}
           `;
           // Use the existing selectSession path: it hides meeting-room-panel,
@@ -895,13 +918,14 @@ sessionListEl.addEventListener('keydown', event => {
     div.dataset.runtimeConfidence = runtimeTruth.confidence || '';
     const isDormant = runtimeTruth.state === RUNTIME_DORMANT;
     const isResumePending = s._resumePending === true;
-    const isDisconnected = hasStreamDisconnectIssue(s);
+    const issue = sessionRuntimeIssue(s, runtimeTruth);
+    const isDisconnected = issue?.label === '连接异常';
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
     const showUnread = sessionHasCompletedUnread(s) || unreadMemberIds.has(s.id);
-    // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
-    const dotCls = s._resumePending ? 'start' : (child
+    // 已确认异常和待核对断连优先，不能被未读或选中状态掩盖。
+    const dotCls = issue ? 'error' : s._resumePending ? 'start' : (child
       ? partitionSidebarSessions([s], { sessionMap, activeSessionId: getActiveSessionId(), groupMemberIds: new Set([s.id]) }).states.get(s.id)
       : sections.states.get(s.id)) || 'idle';
     const showRunning = dotCls === 'run' || dotCls === 'start';
@@ -909,6 +933,7 @@ sessionListEl.addEventListener('keydown', event => {
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
       + (showRunning ? ' running' : '')
       + (isResumePending ? ' resuming' : '')
+      + (issue ? ' runtime-error' : '')
       + (isDisconnected ? ' disconnected' : '');
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
     const modelTxt = s.currentModel ? modelShort(s.currentModel) : '';
@@ -922,7 +947,7 @@ sessionListEl.addEventListener('keydown', event => {
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
-      isDisconnected ? '网络断连，点击进入后可重试' : '',
+      isDisconnected ? '连接已断开，点击进入核对' : '',
       runtimeTruthSummary(runtimeTruth),
       dormantStateTip || (showWaiting
         ? (s.waitingText || '等你输入')
@@ -930,7 +955,7 @@ sessionListEl.addEventListener('keydown', event => {
     ].filter(Boolean).join(' · ');
     div.setAttribute('aria-label', accessibleSummary);
     div.innerHTML = _ringHtml(ctxPct, dotCls)
-      + '<span class="sl-title">' + (s.pinned ? PIN_SVG : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
+      + '<span class="sl-title">' + (s.pinned ? PIN_SVG : '') + (issue ? '<span class="sl-disconnect-label">异常</span>' : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
       + _sessionKindHtml(s.kind, modelTxt)
       + (showUnread ? '<span class="sl-unread-badge">新回复</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>');
     if (child) div.className += ' child';
@@ -981,6 +1006,7 @@ sessionListEl.addEventListener('keydown', event => {
     renderTarget.appendChild(h);
     if (!collapsed) for (const item of items) appendItem(item);
   }
+  if (sections.failed.length) appendSecHeader('异常', sections.failed, 'sec-failed');
   appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
   appendSecHeader('未读', sections.unread, 'sec-unread', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
   appendSecHeader('活跃', sections.active, 'sec-active');

@@ -13,7 +13,7 @@ const {
   DEFAULT_MAX_QUERY_DOCS,
 } = require('./session-search-config.js');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
 
 function isRecoverableDatabaseError(error) {
@@ -117,12 +117,20 @@ class SqliteSessionSearchIndex {
     const version = Number(this.db.prepare('PRAGMA user_version').get().user_version) || 0;
     if (version && version !== SCHEMA_VERSION) {
       this.db.exec(`
+        DROP TRIGGER IF EXISTS docs_ai;
+        DROP TRIGGER IF EXISTS docs_ad;
+        DROP TRIGGER IF EXISTS docs_au;
+        DROP TRIGGER IF EXISTS docs_cjk_ad;
         DROP TABLE IF EXISTS docs_fts;
+        DROP TABLE IF EXISTS docs_cjk;
         DROP TABLE IF EXISTS docs;
         DROP TABLE IF EXISTS sessions;
         DROP TABLE IF EXISTS sources;
         DROP TABLE IF EXISTS meta;
       `);
+      // 旧库的页不会自己还给磁盘：生产实测 8.5GB 里有 4.2GB 是空闲页。
+      // 此刻库已经空了，VACUUM 很快，重建后的索引从一个干净的小文件开始长。
+      try { this.db.exec('VACUUM;'); } catch { /* 有别的读者占着就留到下次 */ }
     }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -179,13 +187,15 @@ class SqliteSessionSearchIndex {
         content_rowid='id',
         tokenize='trigram'
       );
-      CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
+      -- 只有对话（标题/我的提问/AI 回答）进全文索引。工具 doc 只留一行元信息，
+      -- 供预览、聊天记录 md 和造梦看「AI 做了什么」，不参与检索。
+      CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs WHEN new.scope <> 'tool' BEGIN
         INSERT INTO docs_fts(rowid, normalized_text) VALUES (new.id, new.normalized_text);
       END;
-      CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs BEGIN
+      CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs WHEN old.scope <> 'tool' BEGIN
         INSERT INTO docs_fts(docs_fts, rowid, normalized_text) VALUES ('delete', old.id, old.normalized_text);
       END;
-      CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs BEGIN
+      CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs WHEN old.scope <> 'tool' OR new.scope <> 'tool' BEGIN
         INSERT INTO docs_fts(docs_fts, rowid, normalized_text) VALUES ('delete', old.id, old.normalized_text);
         INSERT INTO docs_fts(rowid, normalized_text) VALUES (new.id, new.normalized_text);
       END;
@@ -318,15 +328,18 @@ class SqliteSessionSearchIndex {
         const insertDocument = (doc) => {
           const text = String(doc && doc.text || '');
           if (!text) return;
+          const scope = doc.scope || 'assistant';
           const inserted = this.insertDoc.run(
             source.key, session.key, String(doc.eventId || doc.id || `doc-${doc.ordinal || 0}`),
-            doc.scope || 'assistant', doc.role || null, doc.speaker || null, text,
-            normalizeSearchText(text), Number(doc.ordinal) || 0, Number(doc.timestamp) || 0,
+            scope, doc.role || null, doc.speaker || null, text,
+            // 工具 doc 不参与检索，规范化副本纯属重复存储（实测约占库的 12%）。
+            scope === 'tool' ? '' : normalizeSearchText(text),
+            Number(doc.ordinal) || 0, Number(doc.timestamp) || 0,
           );
           if (Number(inserted.changes) > 0) {
             documentCount += 1;
             textChars += text.length;
-            this._writeCjkAux(Number(inserted.lastInsertRowid), doc.scope || 'assistant', text);
+            this._writeCjkAux(Number(inserted.lastInsertRowid), scope, text);
           }
         };
         const insertedSyntheticTitle = !!session.title;

@@ -61,6 +61,7 @@ function createFileManagerPanel(options = {}) {
   };
 
   const elements = {};
+  let features = null;
 
   function contextFrom(value, allowFallback = true) {
     if (typeof value === 'string') return { cwd: value, label: '' };
@@ -214,6 +215,7 @@ function createFileManagerPanel(options = {}) {
     }
     button.append(disclosure, icon, name, meta);
     row.appendChild(button);
+    if (features) features.decorateRow(row, button, entry);
     return row;
   }
 
@@ -230,8 +232,9 @@ function createFileManagerPanel(options = {}) {
       elements.tree.appendChild(makeMessageRow(record.error, depth, 'error'));
       return;
     }
-    for (const entry of record.entries) {
+    for (const entry of (features ? features.sortEntries(record.entries) : record.entries)) {
       if (!shouldShowEntry(entry, query)) continue;
+      if (features && !features.matchesType(entry)) continue;
       elements.tree.appendChild(makeTreeRow(entry, depth));
       if (entry.type === 'directory' && state.expanded.has(entry.path)) {
         appendDirectory(entry.path, depth + 1, query, nextAncestry);
@@ -250,11 +253,13 @@ function createFileManagerPanel(options = {}) {
       refreshStatusSummary();
       return;
     }
+    if (features && features.renderResults()) { features.afterRender(); return; }
     appendDirectory(state.root, 0, state.query.toLowerCase());
     if (!elements.tree.children.length) {
       elements.tree.appendChild(makeMessageRow(state.query ? '没有匹配的已加载文件' : '这个文件夹是空的'));
     }
     refreshStatusSummary();
+    if (features) features.afterRender();
   }
 
   async function loadDirectory(directory, generation = state.generation) {
@@ -284,6 +289,7 @@ function createFileManagerPanel(options = {}) {
 
   async function setRoot(context) {
     const next = contextFrom(context);
+    if (features) features.rootChanging(next.cwd);
     state.generation += 1;
     state.root = next.cwd;
     state.label = next.label;
@@ -413,6 +419,7 @@ function createFileManagerPanel(options = {}) {
   function close() {
     if (!elements.panel || elements.panel.style.display === 'none') return false;
     state.generation += 1;
+    if (features) features.close();
     elements.panel.style.display = 'none';
     elements.panel.setAttribute('aria-hidden', 'true');
     syncToggleButtons();
@@ -523,11 +530,12 @@ function createFileManagerPanel(options = {}) {
     if (!elements.panel || !elements.tree || !elements.filter) return false;
 
     elements.close.addEventListener('click', close);
-    elements.refresh.addEventListener('click', () => { if (state.root) void setRoot({ cwd: state.root, label: state.label }); });
+    elements.refresh.addEventListener('click', () => { if (state.root) void features.refresh(); });
     elements.openExternal.addEventListener('click', () => { void openRootExternal(); });
     elements.rootButton.addEventListener('click', () => { void openRootExternal(); });
     elements.filter.addEventListener('input', () => {
       state.query = elements.filter.value.trim();
+      if (features && features.searchChanged()) return;
       renderTree();
     });
     for (const name of ['keydown', 'keypress', 'keyup']) {
@@ -535,12 +543,19 @@ function createFileManagerPanel(options = {}) {
     }
     elements.tree.addEventListener('click', (event) => {
       const button = event.target.closest && event.target.closest('[data-fm-node]');
+      if (features && features.handleClick(event, button)) return;
       if (button) void activateEntry(button);
     });
     elements.tree.addEventListener('keydown', handleTreeKeyboard);
     document.addEventListener('hub-side-panel-opening', (event) => {
       if (event && event.detail && event.detail.panel !== 'files') close();
     });
+    features = require('./file-manager-features').createFileManagerFeatures({
+      document, window: windowObject, ipcRenderer, state, elements, renderTree, makeTreeRow, setStatus,
+      isOpen, setRoot, activateEntry, onLayoutChange: scheduleLayoutUpdate,
+      addToConversation: options.addToConversation, listConversationTargets: options.listConversationTargets,
+    });
+    features.init();
     renderTree();
     return true;
   }
@@ -552,7 +567,7 @@ function createFileManagerPanel(options = {}) {
     isOpenFor,
     open,
     openDirectory,
-    refresh: () => setRoot({ cwd: state.root, label: state.label }),
+    refresh: () => features.refresh(),
     syncContext,
     toggle,
   };

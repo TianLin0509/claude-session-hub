@@ -2,14 +2,37 @@
 const readline = require('readline');
 const fs=require('fs'),{randomUUID}=require('crypto');
 const store=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE;
+// Dedicated native writers must not race read/modify/write on one fixture
+// JSON file. Multi-session restart tests use one atomic file per native ID.
+const storeDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR;
+if(storeDir){if(!process.env.CLAUDE_HUB_DATA_DIR)throw Error('fixture store requires isolation');fs.mkdirSync(storeDir,{recursive:true});}
+const threadFile=id=>require('path').join(storeDir,id+'.json');
 const trace=process.env.CLAUDE_HUB_NATIVE_FIXTURE_TRACE;
 const writerDir=process.env.CLAUDE_HUB_NATIVE_FIXTURE_WRITER_DIR;
-const threads = new Map(store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
+const threads = new Map(storeDir ? fs.readdirSync(storeDir).filter(f=>f.endsWith('.json')).map(f=>{const t=JSON.parse(fs.readFileSync(require('path').join(storeDir,f),'utf8'));return[t.id,t];})
+  : store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store,'utf8')) : []);
 const owned=new Set();
-const save=()=>{if(store){
+// The exit hook runs only as this fixture writer exits, never on unsubscribe.
+// Remove its own marker so a recycled Windows PID cannot impersonate it.
+process.on('exit',()=>{
+  if(!writerDir)return;
+  for(const id of owned){
+    const file=require('path').join(writerDir,id+'.json');
+    if(fs.existsSync(file) && JSON.parse(fs.readFileSync(file,'utf8')).pid===process.pid)fs.unlinkSync(file);
+  }
+});
+const save=()=>{if(storeDir){
+  for(const id of owned){const file=threadFile(id),tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(threads.get(id)));fs.renameSync(tmp,file);}
+}else if(store){
+  const {acquireLock,releaseLock}=require('../../core/file-lock');
+  const lock=store+'.lock',fd=acquireLock(lock,{retries:200});
+  if(fd==null)throw Error('fixture store lock timed out');
+  try {
   const all=new Map(fs.existsSync(store)?JSON.parse(fs.readFileSync(store,'utf8')):[]);
   for(const id of owned){const t=threads.get(id);if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_VOLATILE_EMPTY !== '1' || t.turns.length)all.set(id,t);else all.delete(id);}
-  fs.writeFileSync(store,JSON.stringify([...all]));
+  const tmp=store+'.'+process.pid+'.tmp';
+  fs.writeFileSync(tmp,JSON.stringify([...all]));fs.renameSync(tmp,store);
+  } finally {releaseLock(fd,lock);}
 }};
 function claimWriter(id) {
   if(writerDir){
@@ -46,8 +69,11 @@ function finish(thread,turn,result='completed',text='原生回答 ✅') {
 const rl = readline.createInterface({input:process.stdin});
 rl.on('line',line=>{
   const msg=JSON.parse(line);
-  if(trace)fs.appendFileSync(trace,JSON.stringify(msg)+'\n');
+  if(trace)fs.appendFileSync(trace,JSON.stringify({...msg,fixturePid:process.pid,fixtureAt:Date.now()})+'\n');
   const p=msg.params || {};
+  if(storeDir && /^[a-f0-9-]{36}$/.test(p.threadId || '') && !owned.has(p.threadId) && fs.existsSync(threadFile(p.threadId))){
+    threads.set(p.threadId,JSON.parse(fs.readFileSync(threadFile(p.threadId),'utf8')));
+  }
   // Another session's dedicated process may have persisted newer history.
   if(store && !owned.has(p.threadId) && fs.existsSync(store)){
     const latest=new Map(JSON.parse(fs.readFileSync(store,'utf8'))).get(p.threadId);
@@ -73,6 +99,14 @@ rl.on('line',line=>{
     case 'config/read':answer(msg.id,{config:{features:{fast_mode:process.env.CLAUDE_HUB_NATIVE_FIXTURE_FAST_DISABLED!=='1'}}});break;
     case 'thread/start':case 'thread/fork': {
       const t={approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,id:randomUUID(),cwd:p.cwd,path:null,status:{type:'idle'},turns:msg.method==='thread/fork' && thread?structuredClone(thread.turns):[],model:p.model,reasoningEffort:p.config?.model_reasoning_effort || 'max'};
+      if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_CONTEXT==='1') {
+        const path=require('node:path'),dir=path.join(process.env.CODEX_HOME,'sessions');fs.mkdirSync(dir,{recursive:true});
+        t.path=path.join(dir,'rollout-'+t.id+'.jsonl');
+        const timestamp=new Date().toISOString(),message=(role,text)=>({type:'response_item',timestamp,payload:{type:'message',role,content:[{type:'input_text',text}]}});
+        fs.writeFileSync(t.path,[{type:'session_meta',timestamp,payload:{id:t.id,cwd:p.cwd}},
+          message('developer','## Memory\n原生记忆注入快照 fixture\n========= MEMORY_SUMMARY ENDS ========='),
+          message('user','# AGENTS.md instructions for '+p.cwd+'\n\n<INSTRUCTIONS>\n实际注入规则 fixture\n</INSTRUCTIONS>')].map(JSON.stringify).join('\n')+'\n');
+      }
       const historyChars=Number(process.env.CLAUDE_HUB_NATIVE_FIXTURE_HISTORY_CHARS)||0;
       if(msg.method==='thread/start' && historyChars>0)t.turns.push({id:'history-turn',status:'completed',items:[
         {id:'history-answer',type:'agentMessage',phase:'final_answer',text:'旧'.repeat(historyChars)}]});
@@ -99,9 +133,26 @@ rl.on('line',line=>{
       thread.turns.push(turn);thread.status={type:'active',activeFlags:[]};save();
       event('turn/started',{threadId:thread.id,turn:{...turn}});status(thread);
       event('item/completed',{threadId:thread.id,turnId:turn.id,item:user});
+      if(process.env.CLAUDE_HUB_NATIVE_FIXTURE_DREAM === '1' && text.startsWith('你是本次项目记忆整理的造梦师。')) {
+        // Deterministic file-producing provider fixture, never a real model run.
+        answer(msg.id,{turn});
+        const path=require('path'),manifest=JSON.parse(fs.readFileSync(path.join(thread.cwd,'input','manifest.json'),'utf8'));
+        const records=manifest.files.flatMap(file=>[...fs.readFileSync(path.join(thread.cwd,'input',file),'utf8').matchAll(/<!-- event:(\S+) -->\n### [^\n]*\n\n([^\n]*)/g)].map(m=>({sessionKey:manifest.sessions[0].key,event_id:m[1],text:m[2]})));
+        const output=path.join(thread.cwd,'output');fs.mkdirSync(path.join(output,'topics'),{recursive:true});
+        fs.writeFileSync(path.join(output,'DREAM_INDEX.md'),'# 项目梦境\n- [记忆页偏好](topics/preferences.md)：设计记忆界面时读取。\n','utf8');
+        fs.writeFileSync(path.join(output,'topics/preferences.md'),'# 已确认偏好（协议夹具）\n来源：'+records.map(r=>r.sessionKey+' / '+r.event_id+'\n'+r.text).join('\n'),'utf8');
+        fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({status:'complete',processedFiles:manifest.files,summary:'协议夹具已读取素材并生成独立索引与主题'}));
+        finish(thread,turn,'completed','已完成夹具造梦，原生记忆未修改。');break;
+      }
       if(mode==='fixture:broken'){process.stdout.write('not JSON\n');break;}
       if(mode==='fixture:crash'){process.exit(3);break;}
-      if(mode==='fixture:backstage') {
+      if(mode==='fixture:large-image') {
+        answer(msg.id,{turn});
+        const item={id:'large-image-'+turn.id,type:'imageGeneration',status:'completed',
+          result:'iVBORw0KGgo'+'A'.repeat(34*1024*1024)};
+        turn.items.push(item);event('item/completed',{threadId:thread.id,turnId:turn.id,item});
+        finish(thread,turn,'completed','图片生成完成，文字历史保留');
+      } else if(mode==='fixture:backstage') {
         answer(msg.id,{turn});
         const one={id:'backstage-a-'+turn.id,type:'commandExecution',command:'python verify_segments.py --all',cwd:thread.cwd,status:'inProgress',aggregatedOutput:''};
         const two={id:'backstage-b-'+turn.id,type:'commandExecution',command:'python inspect_manifest.py',status:'inProgress',aggregatedOutput:''};
@@ -286,6 +337,8 @@ rl.on('line',line=>{
       event('thread/goal/updated',{threadId:thread.id,goal:thread.goal});break;
     case 'thread/goal/clear':thread.goal=null;save();answer(msg.id,{});break;
     case 'skills/list':answer(msg.id,{data:[{cwd:p.cwds?.[0],skills:[{name:'fixture-skill',path:__filename,enabled:true,description:'Fixture skill'}],errors:[]}]});break;
+    case 'mcpServerStatus/list':answer(msg.id,{data:[{name:'fixture-mcp',tools:{inspect:{name:'inspect'}},runtimeStatus:'connected',authStatus:'unsupported'}],nextCursor:null});break;
+    case 'plugin/list':answer(msg.id,{marketplaces:[{name:'fixture',plugins:[{id:'fixture-plugin@fixture',name:'fixture-plugin',installed:true,enabled:true}]}],marketplaceLoadErrors:[]});break;
     case 'thread/name/set':thread.name=p.name;answer(msg.id,{});break;
     default:out({id:msg.id,error:{code:-32601,message:'unsupported '+msg.method}});
   }
