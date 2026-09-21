@@ -1,6 +1,21 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {accountRows,isPrimary,bindingRows,isOpenAI,accountSections}=require('../renderer/account-center-view');
+const {needsAttention,accountAction}=require('../renderer/account-center-view');
+test('attention badges require a human login need, not an offline browser or unknown proof',()=>{
+ for(const state of ['offline','unknown','unavailable','configured'])assert.equal(needsAttention({state}),false);
+ assert.equal(needsAttention({state:'login_required'}),true);
+ assert.equal(needsAttention({state:'login_required',enabled:false}),false);
+ assert.equal(needsAttention({state:'unknown',pending:true}),true);
+ assert.equal(needsAttention({state:'signed_in',pending:true,stale:false}),false);
+});
+test('primary actions distinguish opening webpages from starting a login and native authorization',()=>{
+ const web={id:'web-chatgpt',type:'web',action:'login',state:'signed_in'};
+ assert.equal(accountAction(web).action,'open');assert.equal(accountAction({...web,state:'unknown'}).action,'open');
+ assert.equal(accountAction({...web,state:'login_required'}).action,'login');assert.equal(accountAction({...web,pending:true}).action,'attention');
+ assert.equal(accountAction({...web,type:'native'}).action,'select');assert.equal(accountAction({...web,type:'native',state:'unknown'}).action,'login');
+ assert.deepEqual(accountAction({action:'configure',configProvider:'server'}),{action:'config',label:'接入配置',id:'server'});
+});
 function lanes(){return ['primary','secondary'].flatMap(loginGroup=>Array.from({length:4},(_,i)=>{
  const accountId=loginGroup+(i?'-'+(i+1):'');
  return {id:'image-'+accountId,accountId,loginGroup,provider:'images',type:'web',action:'login',enabled:true,state:'signed_in',stale:false,observedAt:100,uses:['网页生图 MCP']};
