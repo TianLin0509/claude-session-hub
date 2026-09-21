@@ -5802,6 +5802,26 @@ const previewPanel = createPreviewPanelController({
     ...openOptions,
   }),
   refitActiveTerminal: refitActiveTerminalFromPreview,
+  onReturnToConversation: (key) => {
+    // Resume the existing follow controller after the source becomes visible;
+    // it also owns subsequent resize/layout changes and respects manual scrolling.
+    if (key.startsWith('meeting:')) {
+      document.querySelector('#meeting-room-panel .mr-gc-messages')?._cardFollowController?.follow();
+      return;
+    }
+    if (!key.startsWith('session:')) return;
+    const sid = key.slice('session:'.length);
+    const overlay = sessionSplit?.isSecondaryFocused()
+      ? sessionSplit.secondary().overlay : document.getElementById('msg-overlay');
+    overlay?._cardFollowController?.follow();
+    const cached = terminalCache.get(sid);
+    if (cached) {
+      cached._codexFollowBottom = true;
+      cached._codexUserScrollIntentUntil = 0;
+      pinTerminalViewportToBottom(cached);
+      scheduleCodexBottomPin(sid, cached);
+    }
+  },
   onCopyFeedback: feedback => clipboardController.showFeedback(feedback),
 });
 const {
@@ -7699,6 +7719,12 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
   normalizeLocalPathForOpen: _normalizeLocalPathForOpen,
   getSessionCwd,
   getActiveSessionId: () => activeSessionId,
+  getActiveCwd: () => getActiveFileManagerContext()?.cwd || getActivePreviewCwd(),
+  openFileManager: async (target, cwd) => {
+    const stat = await fs.promises.stat(target);
+    const directory = stat.isDirectory() ? target : require('path').dirname(target);
+    return openPathInHub(directory, { cwd, requireExistsForRel: false, throwOnError: true });
+  },
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
 });
 pathLinkContextMenu.init();

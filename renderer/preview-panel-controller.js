@@ -77,6 +77,7 @@ function createPreviewPanelController({
   getActiveCwd,
   openPath,
   refitActiveTerminal,
+  onReturnToConversation,
   onCopyFeedback,
 }) {
   const previewPanelEl = document.getElementById('preview-panel');
@@ -1436,6 +1437,7 @@ function createPreviewPanelController({
   }
 
   function closePreviewPanel() {
+    const wasOpen = previewPanelEl.style.display !== 'none' && !!currentContextKey;
     clearPreviewNotice();
     previewFind.close({ restoreFocus: false, keepQuery: false });
     clearOutlineUI();
@@ -1460,6 +1462,7 @@ function createPreviewPanelController({
     syncPreviewLayoutControls();
     currentContextKey = null;
     refitActiveTerminal();
+    if (wasOpen && key === getActiveContextKey()) onReturnToConversation?.(key);
   }
 
   function dropPreviewContext(key) {
