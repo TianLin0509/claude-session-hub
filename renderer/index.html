@@ -506,14 +506,16 @@
           </div>
           <label class="session-search-box" for="search-query">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
-            <input type="search" id="search-query" placeholder="搜索标题、我的提问、AI 回答、命令或文件…" autocomplete="off" spellcheck="false">
+            <input type="search" id="search-query" aria-label="搜索历史会话" placeholder="搜索标题、我的提问或 AI 回答…" autocomplete="off" spellcheck="false">
             <span class="session-search-key">Esc</span>
           </label>
           <div class="session-search-filter-row">
             <div class="session-search-provider-filters" id="session-search-provider-filters" role="group" aria-label="按来源筛选">
+              <span class="session-search-filter-label">模型</span>
               <button type="button" class="session-search-chip active" data-provider="all" aria-pressed="true"><span class="provider-dot provider-all"></span><span>全部</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="claude" aria-pressed="false"><span class="provider-dot provider-claude"></span><span>Claude</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="codex" aria-pressed="false"><span class="provider-dot provider-codex"></span><span>Codex</span><b>0</b></button>
+              <button type="button" class="session-search-chip" data-provider="other" aria-pressed="false" title="Codex、Claude 之外的模型会话；群聊单独筛选"><span class="provider-dot provider-other"></span><span>其他</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="meeting" aria-pressed="false"><span class="provider-dot provider-meeting"></span><span>群聊</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="deepseek" aria-pressed="false" hidden><span class="provider-dot provider-deepseek"></span><span>DeepSeek</span><b>0</b></button>
               <button type="button" class="session-search-chip" data-provider="kimi" aria-pressed="false" hidden><span class="provider-dot provider-kimi"></span><span>Kimi</span><b>0</b></button>

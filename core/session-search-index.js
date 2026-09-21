@@ -1,5 +1,7 @@
 'use strict';
 
+const { matchesSearchProvider } = require('./session-search-providers');
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_QUERY_LENGTH = 512;
@@ -427,7 +429,7 @@ class SessionSearchIndex {
 
     const ranked = [];
     for (const baseGroup of validBaseGroups) {
-      if (providers && !providers.has(baseGroup.session.provider)) continue;
+      if (providers && !matchesSearchProvider(baseGroup.session.provider, [...providers])) continue;
       const matches = scopes
         ? baseGroup.matches.filter(match => scopes.has(match.doc.scope))
         : baseGroup.matches.slice();

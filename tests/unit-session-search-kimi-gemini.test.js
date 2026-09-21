@@ -189,7 +189,10 @@ test('没有 transcript 的 kimi / gemini 会话至少留下标题（否则搜�
     sessions: [
       { hubId: 'k1', kind: 'kimi', title: 'Kimi 没有 transcript', lastOutputPreview: 'KIMI_PREVIEW_MARKER' },
       { hubId: 'g1', kind: 'gemini', title: 'Gemini 记录已丢', lastOutputPreview: 'GEMINI_PREVIEW_MARKER' },
-      { hubId: 'q1', kind: 'qwen', title: '暂不支持的 CLI' },
+      { hubId: 'q1', kind: 'qwen', title: '千问标题' },
+      { hubId: 'g2', kind: 'glm', title: '智谱标题' },
+      { hubId: 'd2', kind: 'deepseek-acp', title: 'DeepSeek 原生标题' },
+      { hubId: 'shell', kind: 'powershell', title: '非 AI 终端' },
     ],
     meetings: [],
   });
@@ -197,7 +200,13 @@ test('没有 transcript 的 kimi / gemini 会话至少留下标题（否则搜�
   const keys = sources.map(s => s.key);
   assert.ok(keys.includes('hub:k1'), 'kimi 必须留标题');
   assert.ok(keys.includes('hub:g1'), 'gemini 必须留标题');
-  assert.ok(!keys.includes('hub:q1'), 'qwen 还没适配，不该凭空出现');
+  assert.ok(keys.includes('hub:q1'), '千问没有历史解析器时仍能搜索已有标题');
+  assert.ok(keys.includes('hub:g2'), '智谱保留标题');
+  assert.ok(keys.includes('hub:d2'), 'DeepSeek 原生保留标题');
+  assert.ok(!keys.includes('hub:shell'), '非 AI 终端不混入模型搜索');
+  assert.equal(sources.find(s => s.key === 'hub:q1').session.provider, 'qwen');
+  assert.equal(sources.find(s => s.key === 'hub:g2').session.provider, 'glm');
+  assert.equal(sources.find(s => s.key === 'hub:d2').session.provider, 'deepseek');
   const kimi = sources.find(s => s.key === 'hub:k1');
   assert.equal(kimi.session.provider, 'kimi');
   assert.equal(kimi.docs.some(d => d.text === 'KIMI_PREVIEW_MARKER'), true, '最后一段输出也应可搜');

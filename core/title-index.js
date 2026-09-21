@@ -1,5 +1,7 @@
 'use strict';
 
+const { matchesSearchProvider } = require('./session-search-providers');
+
 /**
  * 标题即时检索层。
  *
@@ -94,14 +96,12 @@ function searchTitles(index, query, options = {}) {
   const normalizedQuery = normalizeTitleText(query);
   const terms = titleQueryTerms(query);
   if (!terms.length) return [];
-  const providerFilter = Array.isArray(options.providers) && options.providers.length
-    ? new Set(options.providers.map(String))
-    : null;
+  const providers = Array.isArray(options.providers) ? options.providers.map(String) : [];
   const since = Number.isFinite(options.since) && options.since > 0 ? options.since : null;
 
   const hits = [];
   for (const entry of Array.isArray(index) ? index : []) {
-    if (providerFilter && !providerFilter.has(String(entry.provider))) continue;
+    if (!matchesSearchProvider(entry.provider, providers)) continue;
     const updatedAt = Number(entry.updatedAt) || 0;
     if (since !== null && updatedAt < since) continue;
     const score = scoreTitle(entry.normalizedTitle, terms, normalizedQuery);

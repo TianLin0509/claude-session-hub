@@ -1,6 +1,7 @@
 'use strict';
 
 const { recordSearch, readRecent } = require('../core/search-recent.js');
+const { isOtherSearchProvider, matchesSearchProvider } = require('../core/session-search-providers');
 const { buildTitleIndex, searchTitles, sameSession } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 const { sinceTimestamp } = require('../core/session-search-index');
@@ -20,7 +21,7 @@ function filterSearchEntries(entries, { scope = 'all', agent = 'all', providers 
   return entries.filter(entry => (scope !== 'dormant' || entry.archived === true)
     && (scope !== 'pinned' || entry.pinned === true)
     && (agent === 'all' || (entry.agentGroup || agentGroupOf(entry)) === agent)
-    && (!providers.length || providers.includes(entry.provider))
+    && matchesSearchProvider(entry.provider, providers)
     && (!project || String(entry.projectLabel || '').toLowerCase().includes(project.toLowerCase()))
     && matchesProjectFilter(entry.cwd, projectFilter)
     && (since == null || (Number(entry.updatedAt) >= since && Number(entry.updatedAt) <= now)));
@@ -44,6 +45,9 @@ const PROVIDER_META = Object.freeze({
   deepseek: { label: 'DeepSeek', className: 'provider-deepseek' },
   kimi: { label: 'Kimi', className: 'provider-kimi' },
   gemini: { label: 'Gemini', className: 'provider-gemini' },
+  other: { label: '其他', className: 'provider-other' },
+  qwen: { label: '千问', className: 'provider-other' },
+  glm: { label: '智谱', className: 'provider-other' },
   all: { label: '全部', className: 'provider-all' },
 });
 
@@ -449,7 +453,9 @@ function createGlobalSessionSearch(options) {
     const allCount = Object.values(providerCounts).reduce((sum, value) => sum + (Number(value) || 0), 0);
     for (const button of providerRoot.querySelectorAll('[data-provider]')) {
       const provider = button.dataset.provider;
-      const count = provider === 'all' ? allCount : (Number(providerCounts[provider]) || 0);
+      const count = provider === 'all' ? allCount : provider === 'other'
+        ? Object.entries(providerCounts).reduce((sum, [key, value]) => sum + (isOtherSearchProvider(key) ? Number(value) || 0 : 0), 0)
+        : (Number(providerCounts[provider]) || 0);
       const countNode = button.querySelector('b');
       if (countNode) countNode.textContent = String(count);
       if (OPTIONAL_PROVIDERS.includes(provider)) button.hidden = count === 0 && activeProvider !== provider;
