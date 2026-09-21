@@ -9,7 +9,9 @@
 3. **P2：失效原文显示空白。** 后端 `state: stale` 带 `session` 元信息和 `error`，UI 只检查 session 是否存在，漏掉了错误。现在显示后端具体错误，仍可返回结果重新搜索。
 4. **P2：项目库晚返回会关闭阅读抽屉。** 项目请求成功/失败均调用重新搜索，而 D 的重新搜索会关闭 reader。现在阅读中仅显示有更新的提示，待返回结果后刷新，不打断当前阅读。
 
-上述问题均先构造复现，再修复；复现记录保存在 `output/yesterday-review-repro.log` 和第一次审查 CDP 日志中。新增 E2E 为 `tests/e2e-yesterday-review-cdp.js`。
+上述问题均先构造复现，再修复；单测复现记录保存在 `output/yesterday-review-repro.log`，产物遮挡在本次真实 CDP 审查中复现。新增 E2E 为 `tests/e2e-yesterday-review-cdp.js`。
+
+全量门禁补充：恢复「继续检索中」进度文案，保持标题和全文检索共用的既有提示契约。Windows 门禁环境需将 Git 的 `bin` 目录加入 PATH，使开发流程测试能够执行真实 shell hooks；不修改或跳过这些测试。
 
 ## 覆盖矩阵
 

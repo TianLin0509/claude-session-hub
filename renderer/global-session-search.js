@@ -596,7 +596,7 @@ function createGlobalSessionSearch(options) {
     results=preliminary?lastTitleHits.slice():indexedResults;
     const total=Number(response.totalSessions)||results.length;
     const partial=response.state==='partial'||response.pendingFullText||response.indexing;
-    summaryRoot.firstElementChild.textContent=`${queryInput.value.trim()?'搜索结果':'最近的对话'} · ${partial?'至少 ':''}${total}${partial?' · 检索中':''}`;
+    summaryRoot.firstElementChild.textContent=`${queryInput.value.trim()?'搜索结果':'最近的对话'} · ${partial?'至少 ':''}${total}${partial?' · 继续检索中':''}`;
     summaryRoot.lastElementChild.textContent=preliminary?'标题预备结果':'';
     summaryRoot.title=`${Number(response.queryMs)||0} ms · ${preliminary?'标题预备结果':'条件已生效'}`;
     if(conditions && lastRequest) {
