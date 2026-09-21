@@ -14,7 +14,7 @@ class AccountBrowser {
  constructor({dataDir,env=process.env}){this.root=path.join(dataDir,'account-browsers');this.env=env;}
  profile(provider){if(!SITES[provider])throw Error('不支持的网页登录');return path.join(this.root,provider);}
  executable(){const candidates=[path.join(this.env.PROGRAMFILES||'C:\\Program Files','Google/Chrome/Application/chrome.exe'),path.join(this.env['PROGRAMFILES(X86)']||'C:\\Program Files (x86)','Microsoft/Edge/Application/msedge.exe'),path.join(this.env.LOCALAPPDATA||'','Google/Chrome/Application/chrome.exe')];const found=candidates.find(p=>fs.existsSync(p));if(!found)throw Error('未找到 Chrome 或 Edge 浏览器');return found;}
- async command(provider,expression){
+ async command(provider,expression,{activate=false}={}){
   const port=Number(fs.readFileSync(path.join(this.profile(provider),'DevToolsActivePort'),'utf8').split('\n')[0]);
   if(!Number.isInteger(port)||port<1024||port>65535)throw Error('浏览器地址无效');
   const response=await fetch('http://127.0.0.1:'+port+'/json/list',{signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error('浏览器未就绪');
@@ -24,8 +24,9 @@ class AccountBrowser {
   return new Promise((resolve,reject)=>{const ws=new WebSocket(url.href);let ended=false;const timer=setTimeout(()=>done(Error('页面操作超时，请检查官方窗口')),6000);
    const done=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);ws.close();error?reject(error):resolve(value);};
    ws.on('error',()=>done(Error('无法连接专用浏览器')));ws.on('close',()=>done(Error('专用浏览器已断开')));
-   ws.on('open',()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:`location.hostname===${JSON.stringify(host)}?(${expression}):({stage:'manual',message:'页面已跳转，请在官方窗口继续'})`,returnByValue:true,awaitPromise:true,userGesture:true}})));
-   ws.on('message',bytes=>{try{const value=JSON.parse(bytes);if(value.id!==1)return;if(value.error||value.result?.exceptionDetails)return done(Error('官方页面操作未完成，请人工继续'));done(null,value.result?.result?.value);}catch{done(Error('页面未返回有效状态'));}});
+   const evaluate=()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{expression:`location.hostname===${JSON.stringify(host)}?(${expression}):({stage:'manual',message:'页面已跳转，请在官方窗口继续'})`,returnByValue:true,awaitPromise:true,userGesture:true}}));
+   ws.on('open',()=>activate?ws.send(JSON.stringify({id:2,method:'Page.bringToFront'})):evaluate());
+   ws.on('message',bytes=>{try{const value=JSON.parse(bytes);if(value.id===2&&activate){if(value.error)return done(Error('无法显示账号网页'));evaluate();return;}if(value.id!==1)return;if(value.error||value.result?.exceptionDetails)return done(Error('官方页面操作未完成，请人工继续'));done(null,value.result?.result?.value);}catch{done(Error('页面未返回有效状态'));}});
   });
  }
  async preparePhone(provider,phone){
@@ -42,7 +43,7 @@ class AccountBrowser {
   if(!['deepseek','doubao'].includes(provider)||!/^\d{4,8}$/.test(code))throw Error('验证码或站点无效');
   return this.command(provider,`(${codeStep.toString()})(${JSON.stringify(provider)},${JSON.stringify(code)})`);
  }
- async open(provider){try{const existing=await this.command(provider,'({ready:true})');if(existing?.ready)return {message:'官方登录窗口已打开，请在该窗口继续',reused:true};}catch{}const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});await new Promise((resolve,reject)=>{const child=spawn(this.executable(),['--user-data-dir='+dir,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});return {message:'已打开此账号的专用浏览器；登录状态会保留。完成后检查登录。'};}
+ async open(provider){try{const existing=await this.command(provider,'({ready:true})',{activate:true});if(existing?.ready)return {message:'已显示此账号的原网页；登录状态以检查结果为准',reused:true};}catch{}const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});await new Promise((resolve,reject)=>{const child=spawn(this.executable(),['--user-data-dir='+dir,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});return {message:'已打开此账号的专用浏览器；登录资料会保留，状态以检查结果为准。'};}
  async check(provider){
   let port;try{port=Number(fs.readFileSync(path.join(this.profile(provider),'DevToolsActivePort'),'utf8').split('\n')[0]);}catch(e){if(e.code==='ENOENT')return {state:'unknown',message:'尚无运行中的专用浏览器；点击登录',source:'专用浏览器'};throw e;}
   if(!Number.isInteger(port)||port<1024||port>65535)throw Error('浏览器调试地址无效');
