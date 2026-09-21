@@ -1,8 +1,7 @@
 /* =========================================================================
    场景 rail（冷杉 B v2 · T0）
    =========================================================================
-   最左侧 52px 的常驻图标条：logo → 四个场景按钮 → 弹性空位 → 用量环占位（T5）
-   → 主题 → 选项。
+   最左侧 100px 的常驻陶瓷图标条：logo → 八个带文字入口 → 底部工具。
 
    四个场景按钮是从 .sidebar-header 原样搬过来的 .btn-shell-nav 节点，所以这里
    全部用 .scene-rail 前缀去压 launch-center.css 里那套「横排带文字」的形态：
@@ -15,7 +14,8 @@
 
 .scene-rail {
   flex: none;
-  width: 84px;
+  width: 100px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -165,7 +165,7 @@
   .usage-popover button { transition: none; }
 }
 
-/* ---- 场景按钮：横排带文字 → 34×34 纯图标 ---- */
+/* ---- 底部工具的基础尺寸，场景入口在下方单独排布 ---- */
 .scene-rail .btn-shell-nav,
 .scene-rail .btn-options,
 .scene-rail .btn-rail-theme {
@@ -242,7 +242,7 @@
 /* ---- 折叠态：只折侧栏，rail 永远在 ---- */
 /* 展开按钮原来贴在 app-body 左边 8px，那正好压在 rail 的 logo 上；挪到 rail 右侧。 */
 #app-body > .btn-expand-sidebar {
-  left: 92px;
+  left: 108px;
   border-radius: var(--radius-sm);
 }
 
@@ -260,21 +260,59 @@
   .scene-rail .btn-rail-theme { transition: none; }
 }
 
-/* A compact labelled rail: one accent for selection, not eight competing colors. */
-.rail-logo { width: 36px; height: 36px; margin-bottom: 10px; background: var(--brand); box-shadow: none; }
+/* Approved C / soft ceramic. The original generated sheet is sampled in CSS,
+   preserving the approved artwork without a font/icon dependency or remote load. */
+.rail-logo { width: 38px; height: 38px; margin-bottom: 8px; border-radius: 12px; background: #6869ef; box-shadow: none; }
 .rail-logo svg { width: 25px; height: 25px; }
-.rail-navigation { display: flex; flex-direction: column; gap: 4px; flex: 0 1 auto; min-height: 0; width: 100%; align-items: center; overflow-y: auto; scrollbar-width: thin; }
-.scene-rail .btn-shell-nav { position: relative; width: 66px; height: 54px; flex-direction: column; gap: 5px; border-radius: 10px; }
-.scene-rail .btn-shell-nav .btn-icon { width: 22px; height: 22px; color: currentColor; }
+.rail-navigation {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr)) 10px repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  flex: 0 1 514px;
+  min-height: 0;
+  width: 100%;
+  justify-items: center;
+  /* Rows shrink to the available height. This is never a scroll container. */
+  overflow: visible;
+}
+.rail-separator { width: 44px; height: 1px; align-self: center; background: var(--border-subtle); }
+.scene-rail .btn-shell-nav { position: relative; width: 82px; height: 100%; min-height: 0; flex-direction: column; gap: 2px; border-radius: 12px; }
+.scene-rail .btn-shell-nav .btn-icon {
+  display: block;
+  width: 37px;
+  height: 37px;
+  flex: none;
+  border-radius: 9px;
+  background-image: url('../assets/navigation/ceramic-navigation.png');
+  background-repeat: no-repeat;
+  background-size: 307.2px 204.8px;
+  background-position: var(--ceramic-x) -62.9px;
+}
+#btn-home { --ceramic-x: -41.5px; }
+#btn-research { --ceramic-x: -73.5px; }
+#btn-study { --ceramic-x: -105.5px; }
+#btn-ran { --ceramic-x: -137.5px; }
+#btn-rail-memo { --ceramic-x: -169.5px; }
+#btn-rail-memory { --ceramic-x: -201.5px; }
+#btn-rail-capabilities { --ceramic-x: -233.5px; }
+#btn-rail-accounts { --ceramic-x: -265.5px; }
+.scene-rail .btn-label { font-weight: 600; }
 .scene-rail #btn-rail-capabilities { color: var(--fg-muted); }
-.scene-rail .btn-shell-nav.active { color: var(--brand-text, var(--brand)); background: var(--brand-tint); }
-.scene-rail .btn-shell-nav.active::before { content: ''; position: absolute; left: 0; top: 18px; width: 3px; height: 18px; border-radius: 3px; background: var(--brand); }
-.scene-rail #btn-rail-memo { margin-top: 10px; }
-.scene-rail #btn-rail-accounts > #accounts-attention { top: 2px; right: 4px; width: auto; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 6px; font-size: 9px; line-height: 15px; }
-@media (max-height: 720px) {
-  .scene-rail { gap: 4px; padding-block: 8px; }
-  .rail-logo { margin-bottom: 4px; }
-  .scene-rail .btn-shell-nav { height: 46px; gap: 3px; }
-  .scene-rail .btn-shell-nav .btn-icon { width: 20px; height: 20px; }
-  .scene-rail #btn-rail-memo { margin-top: 6px; }
+.scene-rail .btn-shell-nav.active { color: var(--fg-default); background: var(--brand-tint); }
+.scene-rail .btn-shell-nav.active::before { content: ''; position: absolute; left: -4px; top: calc(50% - 9px); width: 3px; height: 18px; border-radius: 3px; background: var(--brand); }
+.scene-rail #btn-rail-accounts > #accounts-attention { top: 2px; right: 6px; width: auto; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 6px; background: #edc376; color: #35250c; font-size: 10px; line-height: 16px; }
+.rail-utilities { display: flex; flex: none; align-items: center; justify-content: center; gap: 1px; }
+.rail-utilities .btn-rail-theme, .rail-utilities .btn-options { width: 28px; height: 30px; }
+:root[data-theme='dark'] #scene-rail { background: #1c2028; }
+[data-theme='dark'] .scene-rail .btn-shell-nav.active { background: #373946; color: #e1e5ff; }
+/* Keep every destination visible even in short windows / enlarged UI. */
+@media (max-height: 620px) {
+  .scene-rail { gap: 4px; padding-block: 6px; }
+  .rail-logo { width: 30px; height: 30px; margin-bottom: 0; border-radius: 10px; }
+  .rail-logo svg { width: 21px; height: 21px; }
+  .rail-navigation { flex-basis: 330px; grid-template-rows: repeat(4, minmax(0, 1fr)) 6px repeat(4, minmax(0, 1fr)); }
+  .scene-rail .btn-shell-nav { flex-direction: row; justify-content: flex-start; width: 90px; gap: 0; border-radius: 8px; }
+  .scene-rail .btn-shell-nav .btn-icon { transform: scale(.76); margin: -5px -3px; }
+  .scene-rail .btn-label { font-size: 11px; }
+  .scene-rail #btn-rail-accounts > #accounts-attention { right: 0; top: 0; }
 }
