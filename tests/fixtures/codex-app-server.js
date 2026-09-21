@@ -174,6 +174,26 @@ rl.on('line',line=>{
           turn.items.push(huge);event('item/completed',{threadId:thread.id,turnId:turn.id,item:huge});
           save();finish(thread,turn,'completed','**检查完成。**\n\n- 素材清单核对通过。\n- 分段检查退出码为 `7`，原始错误和堆栈已保留，请查看失败步骤。');
         };setTimeout(tick,100);
+      } else if(mode==='fixture:feedback') {
+        answer(msg.id,{turn});
+        const command={id:'feedback-command',type:'commandExecution',command:'node --test feedback-demo',status:'inProgress',aggregatedOutput:''};
+        const message={id:'feedback-message',type:'agentMessage',phase:'commentary',text:''};
+        turn.items.push(command,message);
+        event('item/started',{threadId:thread.id,turnId:turn.id,item:command});
+        event('item/started',{threadId:thread.id,turnId:turn.id,item:message});
+        let n=0;
+        const tick=()=>{
+          if(turn.status!=='inProgress')return;
+          n++;
+          const delta=`FEEDBACK_${String(n).padStart(2,'0')}@${Date.now()}\n`;
+          message.text+=delta;
+          event('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:message.id,delta});
+          const output=`TOOL_OUTPUT_${String(n).padStart(2,'0')}\n`;
+          command.aggregatedOutput+=output;
+          event('item/commandExecution/outputDelta',{threadId:thread.id,turnId:turn.id,itemId:command.id,delta:output});
+          if(n<12)setTimeout(tick,350);else save();
+        };
+        setTimeout(tick,300);
       } else if(mode==='fixture:broker-burst') {
         answer(msg.id,{turn});
         const item={id:'burst-'+turn.id,type:'agentMessage',phase:'final_answer',text:''};

@@ -52,6 +52,8 @@ function backstageStatus(session, now = Date.now()) {
     : state === 'connecting' ? r.observedAt : r.startedAt;
   const seconds = animated && Number.isFinite(startedAt) && startedAt > 0 ? Math.max(0, Math.floor((now - startedAt) / 1000)) : null;
   const elapsed = seconds == null ? '' : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const contentAge = require('./native-feedback').nativeContentAge(session, now);
+  if (contentAge) detail = `${detail} ${contentAge}。`;
   return { state, provider, title, detail, animated, elapsed, engaged: !['idle','dormant'].includes(state) };
 }
 module.exports = { backstageStatus };

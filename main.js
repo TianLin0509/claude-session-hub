@@ -505,9 +505,9 @@ sessionManager.on('session-updated', session => {
   sendToRenderer('session-updated', { session });
 });
 sessionManager.on('native-agent-item', event => {
-  const {sessionId,source,userMessageId,clientSubmissionId}=event;
+  const {sessionId,source,userMessageId,clientSubmissionId,epoch,providerSessionId}=event;
   nativeItemNotifications.schedule(sessionId,userMessageId || clientSubmissionId || '',()=>
-    sendToRenderer('native-agent-item',{sessionId,source,userMessageId,clientSubmissionId}));
+    sendToRenderer('native-agent-item',{sessionId,source,userMessageId,clientSubmissionId,epoch,providerSessionId}));
 });
 sessionManager.on('native-agent-lifecycle', event => {
   nativeItemNotifications.flush(event.sessionId);

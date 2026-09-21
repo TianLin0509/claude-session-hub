@@ -138,6 +138,21 @@ rl.on('line', async line => {
     if (mode === 'old-result-first') await result({ uuid: 'old-result' });
     await frame({ ...m, session_id: sessionId, ...(mode === 'mismatch' ? { message: { ...m.message, content: 'changed text' } } : {}) });
     if (mode === 'echo-only' || mode === 'hold') return;
+    if (mode === 'feedback') {
+      const messageId=randomUUID();
+      await frame({type:'stream_event',session_id:sessionId,event:{type:'message_start',message:{id:messageId,role:'assistant',content:[]}}});
+      await frame({type:'stream_event',session_id:sessionId,event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+      let text='';
+      for(let i=1;i<=12;i++) {
+        await new Promise(resolve=>setTimeout(resolve,i===1?300:350));
+        if(lastUser!==m)return;
+        const delta=`FEEDBACK_${String(i).padStart(2,'0')}@${Date.now()}\n`;
+        text+=delta;
+        await frame({type:'stream_event',session_id:sessionId,event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:delta}}});
+      }
+      await frame({type:'assistant',uuid:randomUUID(),session_id:sessionId,message:{id:messageId,role:'assistant',content:[{type:'text',text}]}});
+      return;
+    }
     if (mode === 'gated') {
       const fs = require('node:fs'); const path = require('node:path');
       const directory = process.env.CLAUDE_HUB_FIXTURE_GATE_DIR;

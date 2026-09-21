@@ -42,7 +42,12 @@ function createTurnCardRenderer(options = {}) {
 
   function prepareTurnForRender(sessionId, turn, opts = {}) {
     const session = opts.session || getSessionContext(sessionId) || null;
-    if (turn?.role === 'user') return { ...turn, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd };
+    if (turn?.role === 'user') {
+      const feedback = require('../core/native-feedback');
+      const receiptAuthoritative = ['codex-app-server','claude-stream-json'].includes(turn.source);
+      return { ...turn, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
+        receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId, {authoritative: receiptAuthoritative}) };
+    }
     if (!turn || turn.role !== 'assistant') return turn;
     let toolCalls = Array.isArray(turn.toolCalls) ? turn.toolCalls : [];
     const live = session && Array.isArray(session.liveToolActivities) ? session.liveToolActivities : [];
@@ -177,10 +182,12 @@ function renderToolCluster(turnId, toolCalls, total = toolCalls?.length || 0) {
     counts.declined ? `${counts.declined} 已拒绝` : '',
   ].filter(Boolean).join(' · ');
   const items = activities.map(_renderToolRow).join('');
+  const activeOutput = [...activities].reverse().find(a => a.status === 'running' && a.name === 'commandExecution' && a.result);
+  const outputTail = activeOutput ? String(activeOutput.result).slice(-600).trim().split(/\r?\n/).slice(-2).join('\n') : '';
   return `<details class="tc-cluster turn-activity-rail${activities.length === 1 ? ' tc-cluster-single' : ''}" data-turn="${escapeHtml(turnId)}" data-activity-count="${total}">
     <summary class="tc-cluster-head"><span class="turn-activity-title">活动 ${total}</span><span class="turn-activity-breakdown">${total > activities.length ? `最近 ${activities.length} 项：` : ''}${escapeHtml(breakdown)}</span></summary>
     <div class="tc-cluster-list">${items}${total > activities.length ? '<button type="button" data-action="tc-show-all">查看全部活动</button>' : ''}</div>
-  </details>`;
+  </details>${outputTail ? `<div class="turn-active-output"><span>最近命令输出</span><pre>${escapeHtml(outputTail)}</pre></div>` : ''}`;
 }
 
 const renderDeliverySummary = delivery => require('./delivery-summary').renderDeliverySummary(delivery, escapeHtml);
@@ -533,7 +540,7 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  return `<div class="${cls}"${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
@@ -549,6 +556,7 @@ function renderTurnCard(turn) {
       ${thinkingHtml}
       <div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${attachments}
+      ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}
       ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}
@@ -847,7 +855,8 @@ function mountOptimisticUserCard(sessionId, text, kind, options = {}) {
   if (placeholder) placeholder.style.display = 'none';
 
   const optimisticId = 'pending-user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-  const turn = { id: optimisticId, role: 'user', text, ts: Date.now(), kind };
+  const turn = prepareTurnForRender(sessionId, { id: optimisticId, role: 'user', text, ts: Date.now(), kind,
+    clientSubmissionId: options.clientSubmissionId });
   let cardEl;
   try {
     const tmp = doc.createElement('div');
@@ -921,6 +930,7 @@ function turnRenderSignature(turn) {
     tsEnd: turn.tsEnd || null,
     toolCalls: Array.isArray(turn.toolCalls) ? turn.toolCalls : [],
     usage: turn.usage || null,
+    promptReceipt: turn.promptReceipt || '',
   });
   let hash = 2166136261;
   for (let i = 0; i < raw.length; i++) {

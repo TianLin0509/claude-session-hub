@@ -4,6 +4,7 @@ const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = requi
 const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
+const { recordNativeContent, promptReceipt } = require('../core/native-feedback.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const { createCodexBackstage } = require('./codex-backstage.js');
 const path = require('path');
@@ -3857,6 +3858,7 @@ function updateFloatingPromptReceipt(receipt) {
   if (!receipt?.sessionId) return;
   const state = floatingPromptDeliveries.get(receipt.sessionId);
   if (!applyPromptReceipt(state, receipt)) return;
+  paintNativePromptReceipts(receipt.sessionId);
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
     if (state.status === 'confirmed' || state.status === 'queued') clearFloatingInputStuck(bar);
@@ -3874,8 +3876,26 @@ ipcRenderer.on('session:command-updated', (_event, event) => {
 });
 
 ipcRenderer.on('native-agent-item', (_event, event) => {
-  if (event.source === 'claude-stream-json') requestCardIncrementalRefresh(event.sessionId, { reason: 'native-item' });
+  if (event.source === 'claude-stream-json') {
+    recordNativeContent(sessions.get(event.sessionId), event);
+    requestCardIncrementalRefresh(event.sessionId, { reason: 'native-item' });
+  }
 });
+
+function paintNativePromptReceipts(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!['codex-app-server', 'claude-stream-json'].includes(session?.runtimeBackend)) return;
+  const local = floatingPromptDeliveries.get(sessionId);
+  for (const card of document.querySelectorAll('.turn-card.user[data-submission-id]')) {
+    if (card.dataset.sessionId !== sessionId) continue;
+    const id = card.dataset.submissionId;
+    const target = card.querySelector('.turn-prompt-receipt');
+    if (!target) continue;
+    const text = promptReceipt(session, id, { authoritative: card.dataset.receiptAuthoritative === 'true',
+      local: local?.clientSubmissionId === id ? local : null });
+    if (target.textContent !== text) target.textContent = text;
+  }
+}
 
 function clearFloatingInputStuck(bar) {
   if (!bar) return;
@@ -4507,6 +4527,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   // ticker 都调它，所以「工作中 · 38s」这类计时文案不需要各自再算一遍。
   function paintComposer(session, now = Date.now()) {
     if (!session) return;
+    paintNativePromptReceipts(sessionId);
     attachNativeDraft(sessionId, inputBox);
     codexControls.update(session);
     nativeControls.update(session);
@@ -4522,7 +4543,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     });
     if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
     if (statusText.textContent !== status.text) statusText.textContent = status.text;
-    const detail = status.detail ? `· ${status.detail}` : '';
+    const localHealth = ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
+      && ['starting','running'].includes(session.nativeRuntime?.state)
+      ? require('./hub-feedback-health').healthText(now) : '';
+    const detailText = [localHealth, status.detail].filter(Boolean).join(' · ');
+    const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
     statusDetail.hidden = !detail;
     if (status.action) {
@@ -6419,8 +6444,14 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
 // 非 tool 行被改写成 "⋯ N lines" + xterm decoration 弹窗，长会话 buffer 滚动 +
 // Codex/Gemini 路径不一致会渲染叠字错位。所有 kind 的 terminal-data 现在统一直写。
 
-const CARD_STREAM_REFRESH_MIN_INTERVAL_MS = 1200;
 const CARD_STREAM_SETTLE_RETRY_MS = [1000, 2500, 6000];
+const nativeLocalHealth = require('./hub-feedback-health').start({
+  ping: () => ipcRenderer.invoke('hub:feedback-ping'),
+  enabled: () => !document.hidden && [...sessions.values()].some(session => session.status !== 'dormant'
+    && ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
+    && ['starting','running'].includes(session.nativeRuntime?.state)),
+});
+window.addEventListener('unload', () => nativeLocalHealth.dispose(), {once:true});
 
 function cardSessionSupportsLiveRefresh(session) {
   if (!session) return false;
@@ -6450,7 +6481,7 @@ function clearCardLiveRefreshState(sessionId) {
 }
 
 function requestCardIncrementalRefresh(sessionId, options = {}) {
-  if (sessionId !== activeSessionId || currentView !== 'card'
+  if (document.hidden || sessionId !== activeSessionId || currentView !== 'card'
       || typeof loadSessionHistoryToOverlay !== 'function') return false;
   const session = sessions.get(sessionId);
   if (!cardSessionSupportsLiveRefresh(session)) return false;
@@ -6479,16 +6510,10 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     state.pendingTimer = null;
   }
 
-  const sinceLast = Date.now() - state.lastReloadAt;
-  // ACP emits compact in-memory turn snapshots; the PTY transcript throttle
-  // otherwise holds genuine streamed updates for 1.2 seconds.
-  const acpStream = session.runtimeBackend === 'acp';
-  const delay = options.force
-    ? 0
-    : Math.max(acpStream ? 40 : 200, (acpStream ? 200 : CARD_STREAM_REFRESH_MIN_INTERVAL_MS) - sinceLast);
+  const delay = require('./native-card-refresh').refreshDelay(session, state, Date.now(), options.force);
   state.pendingTimer = setTimeout(() => {
     state.pendingTimer = null;
-    if (sessionId !== activeSessionId || currentView !== 'card') return;
+    if (document.hidden || sessionId !== activeSessionId || currentView !== 'card') return;
     if (!cardSessionSupportsLiveRefresh(sessions.get(sessionId))) return;
     if (state.inProgress) {
       state.queued = true;
@@ -6496,6 +6521,7 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     }
     state.inProgress = true;
     state.lastReloadAt = Date.now();
+    const refreshStarted = performance.now();
     const refreshOptions = {
       incremental: true,
       parseOpts: isNativeSession(sessions.get(sessionId))
@@ -6506,11 +6532,11 @@ function requestCardIncrementalRefresh(sessionId, options = {}) {
     loadSessionHistoryToOverlay(sessionId, refreshOptions)
       .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
       .finally(() => {
+        state.lastDurationMs = performance.now() - refreshStarted;
         state.inProgress = false;
         if (!state.queued) return;
         state.queued = false;
         requestCardIncrementalRefresh(sessionId, {
-          force: true,
           reason: 'queued-after-inflight',
         });
       });
@@ -6552,14 +6578,20 @@ function scheduleCardSettleRefresh(sessionId) {
 }
 
 function noteCardTerminalOutput(sessionId) {
-  if(isNativeSession(sessions.get(sessionId)))return false;
+  if(isNativeAgent(sessions.get(sessionId)))return false;
   if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
   if (isNativeSession(sessions.get(sessionId))) return true;
   scheduleCardSettleRefresh(sessionId);
   return true;
 }
 
-ipcRenderer.on('codex-content-updated', (_e, {sessionId}) => {
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && activeSessionId) requestCardIncrementalRefresh(activeSessionId, { force: true, reason: 'visible-again' });
+});
+
+ipcRenderer.on('codex-content-updated', (_e, event) => {
+  const {sessionId} = event;
+  recordNativeContent(sessions.get(sessionId), event);
   requestCardIncrementalRefresh(sessionId,{reason:'app-server-item'});
 });
 

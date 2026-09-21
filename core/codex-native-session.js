@@ -451,6 +451,14 @@ class CodexNativeSession extends EventEmitter {
       this.emit('items',this.blocks());
     } else if (type === 'item/commandExecution/outputDelta') {
       this.terminalPresentation.toolDelta(p.itemId, p.delta);
+      const item = this.items.get(p.itemId);
+      if (item && item.type === 'commandExecution' && typeof p.delta === 'string') {
+        // Keep the received output at the writer. compactCodexTools sends only
+        // a bounded tail to cards; the existing detail reader retains the text.
+        this.items.set(p.itemId, {...item, aggregatedOutput: (item.aggregatedOutput || '') + p.delta});
+        this.contentRevision++;
+        this.emit('items', this.blocks());
+      }
     } else if (type === 'thread/tokenUsage/updated') {
       this.tokenUsage = p.tokenUsage;
       this.emit('usage',p.tokenUsage);

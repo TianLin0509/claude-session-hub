@@ -63,7 +63,8 @@ function bindClaudeNativeSession(manager, id, driver) {
     if (current()) manager.emit('codex-backstage-updated', {sessionId:id, ...event});
   });
   driver.on('item', event => {
-    if (current()) manager.emit('native-agent-item', { ...event, sessionId: id, source: 'claude-stream-json' });
+    if (current()) manager.emit('native-agent-item', { ...event, sessionId: id, source: 'claude-stream-json',
+      epoch: driver.runtime.epoch, providerSessionId: driver.sessionId });
   });
   driver.on('usage', usage => {
     const entry = current();

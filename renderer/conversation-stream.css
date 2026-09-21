@@ -200,3 +200,7 @@
   .card-detail-dialog { width: calc(100vw - 20px); padding: 12px; }
   .turn-delivery-summary > summary small { max-width: 48vw; }
 }
+/* Submission acknowledgement is distinct from the assistant's task result. */
+.turn-prompt-receipt { font-size: 11px; line-height: 1.6; color: var(--text-secondary, #8895a7); margin-top: 5px; }
+.turn-active-output { margin-top: 6px; padding: 5px 9px; border-left: 2px solid var(--border, #475569); color: var(--text-secondary, #8895a7); font-size: 11px; }
+.turn-active-output pre { margin: 2px 0 0; font: 12px/1.5 var(--font-mono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 3em; overflow: hidden; }
