@@ -93,6 +93,10 @@ async function main(){
   await click('[data-ac="check"][data-id="web-deepseek"]');await until('document.querySelector("[data-ac=select][data-id=web-deepseek]").closest(".ac-row").querySelector(".signed_in")','login checked');
   result.checks.push('打开网页走独立 IPC/子进程，不启动登录、不占登录锁、不改登录状态；重复登录被去重；检查后才显示已登录');
   for(const id of ['claude','web-deepseek','web-doubao'])await click('[data-ab-select="'+id+'"]');
+  await cdp.eval('(()=>{const e=document.getElementById("ac-batch-phone");e.value="abc";e.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  await click('[data-ab="start"]');
+  await until('document.querySelector(".ac-status.error")?.textContent.includes("手机号") && !document.querySelector("[data-ab=start]").disabled','invalid phone remains visible after batch refresh');
+  assert.equal(trace().filter(x=>x.action==='login'&&x.id==='web-doubao').length,0);
   await cdp.eval('(()=>{const e=document.getElementById("ac-batch-phone");e.value="13800000000";e.dispatchEvent(new Event("input",{bubbles:true}));})()');
   await click('[data-ab="start"]');await until('document.querySelector(".ac-batch-results")?.textContent.includes("豆包")','batch results rendered');
   await until('document.querySelector(".ac-batch-results")?.textContent.includes("已有有效登录，已跳过")','existing login skipped');

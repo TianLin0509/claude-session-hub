@@ -62,9 +62,9 @@ function createAccountBatchUI({page,call,refresh,rerender,notice,escapeHtml:esc}
    renderAgain();return;
   }
   if(action==='start'){
-   if(submitting)return;const ticket=uiEpoch;submitting=true;button.disabled=true;
+   if(submitting)return;const ticket=uiEpoch;let failure='';submitting=true;button.disabled=true;
    try{const result=await call('login-many',{ids:[...chosen],phone:phone.trim()});phone='';if(ticket===uiEpoch){notice(result.message);await refresh();}}
-   catch(err){if(ticket===uiEpoch)notice(err.message,true);}finally{submitting=false;if(ticket===uiEpoch)await refresh();}return;
+   catch(err){failure=err.message;}finally{submitting=false;if(ticket===uiEpoch){await refresh();if(failure&&ticket===uiEpoch)notice(failure,true);}}return;
   }
   if(action==='code'){
    const row=current.connections.find(r=>r.id===button.dataset.id);if(!row?.phoneLogin||page.querySelector('.ac-code-dialog[open]'))return;
