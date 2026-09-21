@@ -10,12 +10,12 @@
 /* Keep find navigation above the question directory (z-index: 65). */
 .terminal-search { z-index: 70; }
 .terminal-panel .floating-input-bar.visible {
-  --fi-layout-h: 212px;
+  --fi-layout-h: 164px;
   box-sizing: border-box;
-  flex: 0 0 212px;
-  height: 212px;
-  min-height: 212px;
-  max-height: 212px;
+  flex: 0 0 164px;
+  height: 164px;
+  min-height: 164px;
+  max-height: 164px;
 }
 .terminal-panel .floating-input-bar.geometry-locked > .fi-content-stack {
   height: calc(100% - 17px);
@@ -48,30 +48,50 @@
 }
 .mr-group-composer .mr-input-box { line-height: 1.7; }
 .terminal-panel .composer-status { height: 16px; min-height: 16px; }
-.terminal-panel .composer-rail {
+.terminal-panel .composer .composer-rail {
   min-height: 32px;
   flex-wrap: nowrap;
+  overflow: visible;
+}
+.composer-tuning-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
 }
-.terminal-panel .composer-secondary-actions {
+.terminal-panel .composer .composer-secondary-actions {
+  flex: none;
   flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  gap: 4px;
+  padding: 0 6px 0 0;
+  border-top: 0;
+  border-right: 1px solid var(--border-subtle);
 }
-/* The status content may be absent for a provider, but its slot is constant. */
-.terminal-panel.card-view-active { --card-session-status-h: 31px; }
+/* Tuning and context now live in the input footer, with no duplicate slot. */
+.terminal-panel.card-view-active { --card-session-status-h: 0px; }
 
 .mr-input-row.mr-group-composer {
   box-sizing: border-box;
-  height: 212px;
-  min-height: 212px;
-  max-height: 212px;
-  grid-template-rows: 32px auto 44px;
+  height: 164px;
+  min-height: 164px;
+  max-height: 164px;
+  grid-template-rows: 28px auto 32px;
   align-content: space-between;
 }
 .mr-group-composer #mr-input-tuning {
-  height: 44px;
-  overflow: auto;
+  height: 32px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
 }
+.mr-group-composer .mr-input-tuning-members,
+.mr-group-composer .mr-input-member-tuning { flex-wrap: nowrap; flex: none; }
+.mr-group-composer .mr-input-member-tuning + .mr-input-member-tuning {
+  border-left: 1px solid var(--border-subtle); padding-left: 10px;
+}
+.mr-group-composer #mr-input-tuning > .fi-bridge-toolbar { flex: none; }

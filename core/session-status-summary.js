@@ -53,6 +53,7 @@ function sessionSpeedLabel(session) {
 }
 
 function sessionContextLeft(session) {
+  if (session?.contextPct == null || session.contextPct === '') return null;
   const used = Number(session && session.contextPct);
   if (!Number.isFinite(used)) return null;
   return Math.max(0, Math.min(100, Math.round(100 - used)));
@@ -113,7 +114,7 @@ const COMPOSER_CTX_DANGER_AT = 90;
 // 上下文预算环。percent 是**已用**百分比（与 status-event 下发的 contextPct 同义），
 // 与 card-session-status 的 ctx 读同一个字段，不另起一套算法。
 function composerContextRing(session) {
-  const raw = Number(session && session.contextPct);
+  const raw = session?.contextPct == null || session.contextPct === '' ? NaN : Number(session.contextPct);
   if (!Number.isFinite(raw)) {
     return { visible: false, percent: null, level: 'ok', title: '', ariaLabel: '' };
   }

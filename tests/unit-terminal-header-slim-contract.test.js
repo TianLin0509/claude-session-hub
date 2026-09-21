@@ -141,12 +141,8 @@ const stageStart = summary.indexOf('function buildStageStatusSummary(');
 const stageBody = summary.slice(stageStart, summary.indexOf('\n}', stageStart));
 assert.doesNotMatch(stageBody, /sessionModelLabel|session\.cwd/,
   '舞台摘要里不许出现模型名和工作目录');
-const cardStatusStart = renderer.indexOf('function updateCardSessionStatus(');
-const cardStatusBody = renderer.slice(cardStatusStart, renderer.indexOf('\n}', cardStatusStart));
-assert.doesNotMatch(cardStatusBody, /\['model'|\['cwd'/,
-  'card-session-status 只渲染实时量');
-assert.match(renderer, /buildStageStatusSummary\(session\)/,
-  '舞台读的是舞台那份摘要，不是群聊共用的那份');
+assert.doesNotMatch(renderer, /function updateCardSessionStatus/, '输入上方不再重复模型设置与 context');
+assert.doesNotMatch(read('renderer/index.html'), /id="card-session-status"/, '重复状态行不再占据 DOM 与高度');
 // 群聊成员行仍然要显示模型名，那是它唯一的落点 —— 共享函数不许被顺手削掉。
 assert.match(summary, /function buildSessionStatusSummary\(session\)[\s\S]{0,400}sessionModelLabel\(session\)/,
   '群聊用的通用摘要必须保留 model 字段');

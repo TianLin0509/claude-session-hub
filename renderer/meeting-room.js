@@ -2072,10 +2072,7 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = sess && sess.currentModel ? (typeof modelShort === 'function' ? modelShort(sess.currentModel) : sess.currentModel.displayName || sess.currentModel.id || '') : '';
-      const summary = buildSessionStatusSummary(sess);
-      const compact = summary.compact || model;
-      const ctxPct = sess && typeof sess.contextPct === 'number' ? sess.contextPct : null;
-      const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
+      const compact = model;
       const st = _slotTurnStatus(state, meeting, slot, viewingTurnN);
       return `<button type="button" class="mr-card-roster-member ${selected.has(slot.slotIndex) ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
         <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
@@ -2085,7 +2082,7 @@ if (typeof document !== 'undefined') (function () {
         </span>
         <span class="mr-card-roster-side">
           <span class="mr-card-roster-status is-${_turnStatusBucket(st.status)}">${escapeHtml(st.label)}</span>
-          <span class="mr-card-roster-ctx ${ctxCls}">${ctxPct == null ? 'Ctx --' : `Ctx ${ctxPct}%`}</span>
+
         </span>
       </button>`;
     }).join('');
@@ -2799,15 +2796,7 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || 'AI';
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
-      const summary = buildSessionStatusSummary(s);
-      const compact = summary.compact || model;
-      // Match ordinary Session cards: surface context remaining, while color
-      // severity still derives from used percentage.
-      const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
-      const ctxLeft = summary.contextLeft;
-      const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
-      const ctxText = ctxLeft == null ? 'Ctx --' : `Ctx ${ctxLeft}%余`;
-      const ctxTitle = ctxLeft == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文剩余 ${ctxLeft}%`;
+      const compact = model;
       const canRemove = slots.length > 1 && mode === 'idle';
       const removeTitle = slots.length <= 1
         ? '群聊至少保留一位成员'
@@ -2821,7 +2810,7 @@ if (typeof document !== 'undefined') (function () {
               <span class="mr-gc-member-meta">@${escapeHtml(_memberIdForSlot(slot))}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
             </span>
             <span class="mr-gc-member-side">
-              <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
+
               <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
             </span>
           </button>
@@ -5170,6 +5159,8 @@ if (typeof document !== 'undefined') (function () {
           event.stopPropagation(); void _openInputTuning(speedButton,slot.sid,'speed');
         });
         pair.appendChild(speedButton);
+        pair._contextBudget = require('./composer-context').createComposerContext(document);
+        pair.appendChild(pair._contextBudget.element);
         members.appendChild(pair);
       }
     }
@@ -5201,6 +5192,7 @@ if (typeof document !== 'undefined') (function () {
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
       speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
+      pair._contextBudget.update(model.context, slot.displayLabel);
     }
   }
 
@@ -5219,7 +5211,7 @@ if (typeof document !== 'undefined') (function () {
         tuning = document.createElement('div');
         tuning.id = 'mr-input-tuning';
         tuning.className = 'composer-rail';
-        tuning.innerHTML = '<div class="mr-input-tuning-members"></div><div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div>';
+        tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
         tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
           const button = event.currentTarget, meetingId = activeMeetingId;
           event.stopPropagation();
@@ -6185,26 +6177,12 @@ if (typeof document !== 'undefined') (function () {
     const model = session && session.currentModel
       ? (typeof modelShort === 'function' ? modelShort(session.currentModel) : session.currentModel.displayName || session.currentModel.id || '')
       : '';
-    const summary = buildSessionStatusSummary(session);
-    const compact = summary.compact || model;
-    const ctxPct = session && typeof session.contextPct === 'number' ? session.contextPct : null;
-    const ctxLeft = summary.contextLeft;
-    const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
-    const ctxText = ctxLeft == null ? 'Ctx --' : `Ctx ${ctxLeft}%余`;
-    const ctxTitle = ctxLeft == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文剩余 ${ctxLeft}%`;
+    const compact = model;
     const memberLabel = `@${_memberIdForSlot(slot)}${compact ? ` · ${compact}` : ''}`;
     let changed = false;
 
     const rows = panel.querySelectorAll(`[data-gc-member-idx="${slot.slotIndex}"]`);
     rows.forEach((row) => {
-      const ctx = row.querySelector('.mr-gc-member-ctx, .mr-card-roster-ctx');
-      if (ctx) {
-        const baseClass = ctx.classList.contains('mr-card-roster-ctx') ? 'mr-card-roster-ctx' : 'mr-gc-member-ctx';
-        ctx.className = `${baseClass} ${ctxCls}`;
-        ctx.textContent = ctxText;
-        ctx.title = ctxTitle;
-        changed = true;
-      }
       const meta = row.querySelector('.mr-gc-member-meta, .mr-card-roster-meta');
       if (meta) {
         meta.textContent = memberLabel;
