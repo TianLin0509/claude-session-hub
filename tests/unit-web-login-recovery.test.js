@@ -68,3 +68,19 @@ test('finished parent and exited workers leave no completed tasks in the recover
   store.write('finished-parent',{id:'finished-parent',kind:'roundtable',state:'succeeded',pid:2147483646});recovery.link(child.id,'finished-parent');
   assert.ok(!recovery.list(root).some(t=>t.id===child.id));
 });
+test('recovery admission rechecks completion after acquiring ownership',async()=>{
+  const old=blocked('completed-during-admission');store.write(old.id,{...old,state:'succeeded',answer:'done'});
+  let launches=0;const result=await jobs.schedule(old,'collect',async()=>launches++);assert.equal(result.state,'succeeded');assert.equal(launches,0);
+});
+test('real coordinator worker cannot lose a recovery that finishes before it publishes its pause',async()=>{
+  const {spawn}=require('child_process');
+  store.write('early-complete-child',{id:'early-complete-child',kind:'web',state:'succeeded',input:{provider:'kimi'}});
+  store.write('late-paused-parent',{id:'late-paused-parent',kind:'roundtable',state:'queued',input:{providers:['kimi'],prompt:'test'}});
+  const preload=path.join(root,'fast-recovery-preload.cjs');
+  fs.writeFileSync(preload,`require(${JSON.stringify(path.resolve(__dirname,'../core/web-roundtable/roundtable.js'))}).run=async(job,save)=>save(job.didPause?{state:'succeeded'}:{state:'needs_attention',didPause:true,pendingRecovery:[{taskId:'early-complete-child'}]});`);
+  const child=spawn(process.execPath,[path.resolve(__dirname,'../core/web-roundtable/worker.js'),'late-paused-parent'],{env:{...process.env,NODE_OPTIONS:'--require '+preload},windowsHide:true,stdio:'ignore'});
+  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(Error('worker exited '+code)));});
+  for(const end=Date.now()+10000;Date.now()<end&&store.read('late-paused-parent').state!=='succeeded';)await store.sleep(50);
+  const final=store.read('late-paused-parent');assert.equal(final.state,'succeeded');
+  for(let n=0;n<100&&store.alive(final.pid);n++)await store.sleep(30);
+});

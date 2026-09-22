@@ -32,9 +32,9 @@ async function main(){
     await until('document.querySelector("[data-ac=attention][data-id=web-deepseek]")?.textContent.includes("恢复")');
     await click('[data-ac=attention][data-id=web-deepseek]');await until('!!document.querySelector(".ac-task-dialog[open]")');
     assert.match(await cdp.eval('document.querySelector(".ac-task-dialog").textContent'),/检查并继续任务/);
-    await click('.ac-task-dialog [data-ac=check][data-id=web-deepseek]');await pause(800);assert.equal(sends().length,0);assert.equal(store.read(parent.id).state,'needs_attention');
+    await click('.ac-task-dialog [data-ac=check][data-id=web-deepseek]');await until('document.querySelector(".ac-status").textContent.includes("测试状态")');assert.equal(sends().length,0);assert.equal(store.read(parent.id).state,'needs_attention');
     result.checks.push('Unknown login evidence never resumes or sends a task');
-    await click('.ac-task-dialog [data-ac=open][data-id=web-deepseek]');await pause(400);
+    await click('.ac-task-dialog [data-ac=open][data-id=web-deepseek]');await until('document.querySelector(".ac-status").textContent.includes("原账号网页已打开")');
     fs.writeFileSync(path.join(home,'fixture-login-web-deepseek'),'1');
     fs.writeFileSync(path.join(out,'01-recovery-dialog.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
     await click('.ac-task-dialog [data-ac=check][data-id=web-deepseek]');

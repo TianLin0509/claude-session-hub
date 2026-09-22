@@ -26,7 +26,7 @@ async function ask(provider,args){adapters.get(provider);text(args.prompt);if(ar
 async function schedule(job,mode='run',launch=spawnWorker){
   let launchNeeded=false;
   const queued=await store.locked('worker-'+job.id,async()=>{
-    const current=status(job.id);if(!terminal.has(current.state))return current;
+    const current=status(job.id);if(current.state==='succeeded'||!terminal.has(current.state))return current;
     if(store.cancelled(job.id))throw Error('Cancelled tasks are not resumed');
     const value={...current,pid:null,state:'queued',updatedAt:new Date().toISOString()};store.write(job.id,value);launchNeeded=true;return value;
   });
