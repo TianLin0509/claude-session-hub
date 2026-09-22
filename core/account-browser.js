@@ -43,7 +43,13 @@ class AccountBrowser {
   if(!['deepseek','doubao'].includes(provider)||!/^\d{4,8}$/.test(code))throw Error('验证码或站点无效');
   return this.command(provider,`(${codeStep.toString()})(${JSON.stringify(provider)},${JSON.stringify(code)})`);
  }
- async open(provider){try{const existing=await this.command(provider,'({ready:true})',{activate:true});if(existing?.ready)return {message:'已显示此账号的原网页；登录状态以检查结果为准',reused:true};}catch{}const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});await new Promise((resolve,reject)=>{const child=spawn(this.executable(),['--user-data-dir='+dir,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});return {message:'已打开此账号的专用浏览器；登录资料会保留，状态以检查结果为准。'};}
+ async open(provider){
+  this.profile(provider);
+  const lease=path.join(path.dirname(this.root),'web-roundtable','browser-'+provider+'.lock','owner.json');
+  try{const owner=JSON.parse(fs.readFileSync(lease,'utf8'));if(require('./web-roundtable/store').alive(owner.pid))throw Error('此账号正在执行网页 MCP 任务。请等待任务结束或取消后，再打开可见网页；登录资料会保留。');}catch(error){if(error.code!=='ENOENT')throw error;}
+  try{const existing=await this.command(provider,'({ready:true})',{activate:true});if(existing?.ready)return {message:'已显示此账号的原网页；登录状态以检查结果为准',reused:true};}catch{}
+  const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});await new Promise((resolve,reject)=>{const child=spawn(this.executable(),['--user-data-dir='+dir,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});return {message:'已打开此账号的专用浏览器；登录资料会保留，状态以检查结果为准。'};
+ }
  async check(provider){
   let port;try{port=Number(fs.readFileSync(path.join(this.profile(provider),'DevToolsActivePort'),'utf8').split('\n')[0]);}catch(e){if(e.code==='ENOENT')return {state:'unknown',message:'尚无运行中的专用浏览器；点击登录',source:'专用浏览器'};throw e;}
   if(!Number.isInteger(port)||port<1024||port>65535)throw Error('浏览器调试地址无效');
