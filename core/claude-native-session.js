@@ -326,6 +326,17 @@ class ClaudeNativeSession extends EventEmitter {
       state: this.unreconciled ? 'unknown' : this.runtime.requests.length ? 'waiting' : 'idle',
       reason: this.unreconciled ? '上次 Claude 提交状态需要核对；不会自动重发' : null });
     this.print('\nClaude 已连接。请使用 Hub 输入框发送消息；本页显示引擎原始输出。\n');
+    // 连上之后立刻把上一轮的悬空提交核对掉。Codex 有 thread/read 可以直接问
+    // App Server「上一轮到底结束了没」，stream-json 没有对应的协议调用，所以
+    // 这里读原生 transcript —— 这是 Hub 手上唯一的证据来源。
+    // 不这么做的后果实测过：2026-09-20 17:04 那一轮被打断后，会话每次打开都
+    // 连上（2388 ms），却永远停在 unknown，只有用户亲手发一条消息才会解开。
+    // 群聊和无人值守席位不在这条路上：那里「停下来等人看一眼」是有意的关卡。
+    if (this.unreconciled && !this.options.meetingId && this.options.autonomous !== true) {
+      try { await this.reconcileFromHistory({ source: 'hub', automatic: true }); }
+      // 失败就让它看得见：状态留在「待核对」，界面上的核对按钮仍然可用。
+      catch (error) { this.emit('action-error', '上次任务自动核对未完成：' + error.message); }
+    }
     this.refreshContext().catch(error => this.emit('action-error', '上下文用量读取失败：' + error.message));
     return this.runtime;
   }
@@ -888,6 +899,16 @@ class ClaudeNativeSession extends EventEmitter {
     return require('./claude-native-usage').claudeAccountUsageFromControl(response);
   }
 
+  // The quota watchdog's wait rides on the runtime snapshot rather than a
+  // channel of its own, so the composer reads "等额度恢复" from the same place
+  // it reads every other state of this session (main/claude-quota-resume.js).
+  setQuotaWait(wait) {
+    if (this.closed) return;
+    const current = this.runtime.quotaWait || null;
+    if (JSON.stringify(current) === JSON.stringify(wait || null)) return;
+    this.update({ quotaWait: wait || null });
+  }
+
   historyPath() { return findNativeClaudeHistory(this.sessionId, this.options); }
 
   async refreshContext() {
@@ -993,15 +1014,75 @@ class ClaudeNativeSession extends EventEmitter {
     if (this.cancellation) throw new Error('正在停止，请等待结束后发送');
     // reconnect waits for this owned writer to exit before resuming the UUID.
     await this.reconnect();
+    await this.reconcileFromHistory({ source: 'hub' });
+  }
+
+  // 唯一的「拿原生历史核对上一轮」入口：自动核对、手点核对、发送前恢复都走它。
+  //
+  // 它只读 transcript，只登记 do-not-replay，既不重发旧消息，也不把旧任务改写成
+  // 成功 —— 记录状态留在 unknown，reconciliation 里存下看到的证据字串。
+  //
+  // 前置条件是这个 writer 刚由 start() 建立：start() 会先确认旧 writer 已退出
+  // （CLAUDE_WRITER_ACTIVE）并抢到归属，所以此刻没有别的进程在追加这份历史。
+  //
+  // automatic=true 是「连上就自己做」那条路，判据要严得多，因为没人在看：
+  //   · 只碰提交记录。后台活动（local_agent / workflow）的结局 transcript 根本
+  //     证明不了，自动登记等于把「不知道」洗成「看过了」。
+  //   · 只认真的读到了历史的两种证据：received（历史里有这条输入）和 not-found
+  //     （历史在、但没有这条输入）。history-missing 是连历史文件都找不到 ——
+  //     那恰恰是该人看一眼的时候，不是该自动放行的时候。
+  //   · 日志里一条待核对记录都没有、但持久化状态说「上一轮没结论」时不动它：
+  //     那是 Hub 自己丢了线索，同样该人看。
+  // 用户亲手核对（按钮）或亲手发送时，这三条都放开 —— 那是他明确决定往前走。
+  async reconcileFromHistory({ source = 'hub', automatic = false } = {}) {
+    if (this.closed) throw new Error('会话正在关闭，未核对');
+    if (this.configurationChange) throw new Error('正在更新设置，请稍后核对');
+    if (this.cancellation) throw new Error('正在停止，请等待结束后核对');
+    if (this.reconnecting || this.runtime.connection !== 'connected') throw new Error('连接尚未就绪，未核对');
+    if (!this.unreconciled) return { reconciled: 0, pending: 0, skipped: 0 };
     const epoch = this.runtime.epoch;
-    const records = this.recoveryRecords();
+    const all = this.recoveryRecords();
+    const records = automatic ? all.filter(record => !record.nativeActivity) : all;
+    if (!records.length) {
+      // 剩下的全是后台活动时，把话说准：待核对的不是「提交」。
+      if (automatic) {
+        if (this.activities.pending().length) {
+          this.update({ state: 'unknown', reason: 'Claude 后台活动结果仍待核对；不会自动重发' });
+        }
+        return { reconciled: 0, pending: all.length, skipped: all.length };
+      }
+      // 手动核对时沿用既有语义：没有待核对的记录就是没有东西要核对。
+      this.recoveryReady = true;
+      this.unreconciled = false;
+      this.update({ state: this.runtime.requests.length ? 'waiting' : 'idle', reason: null });
+      return { reconciled: 0, pending: 0, skipped: 0 };
+    }
     const evidence = await require('./claude-recovery-history').inspect(this, records);
     if (this.closed || this.runtime.epoch !== epoch || this.runtime.connection !== 'connected') {
-      throw new Error('恢复期间连接已变化，未发送');
+      throw new Error('恢复期间连接已变化，未核对；本次没有发送任何消息');
     }
-    for (const record of records) this.reconcile({ ...record, resolution: 'do-not-replay' },
-      { source: 'hub', history: evidence.get(record.userMessageId) || 'no-user-message' });
-    this.backstage.note('会话恢复', '旧任务结果保留原状；未重发旧消息，可以接收新消息。');
+    this.recoveryReady = true;
+    let reconciled = 0;
+    for (const record of records) {
+      const history = evidence.get(record.userMessageId) || 'no-user-message';
+      if (automatic && history !== 'received' && history !== 'not-found') continue;
+      this.reconcile({ ...record, resolution: 'do-not-replay' }, { source, history });
+      reconciled++;
+    }
+    const pending = this.recoveryRecords().length;
+    if (reconciled) this.backstage.note('会话恢复', '旧任务结果保留原状；未重发旧消息，可以接收新消息。');
+    // 没核对干净就说清楚还剩什么，别让界面停在一句没有下文的「待核对」。
+    // pending>0 时 unreconciled 必然已经是 true（reconcile 自己重算过，全部跳过时
+    // 则保持入口处的 true），这里只负责把原因说准。
+    if (pending) {
+      // 自动路径跳过的唯一可能就是 history-missing（evidence 只有三种取值，另两种
+      // 都会被核对掉），所以这句话是确定的，不是猜的。
+      this.update({ state: 'unknown', reason: this.activities.pending().length
+        ? 'Claude 后台活动结果仍待核对；不会自动重发'
+        : automatic && !reconciled ? '找不到原生历史，无法自动核对上次任务；不会自动重发'
+          : '还有旧提交需要核对' });
+    }
+    return { reconciled, pending, skipped: all.length - reconciled };
   }
 
   reconcile(identity, { source = 'user', history } = {}) {

@@ -67,7 +67,7 @@ function projectClaudeRecord(record) {
   const source = 'claude-stream-json';
   const id = record.userMessageId;
   const user = record.nativeActivity ? null : { id, role: 'user', text: displayUserText(record.text), ts: record.createdAt,
-    source, clientSubmissionId: record.submissionId, deliveryStatus: record.status,
+    source, clientSubmissionId: record.submissionId, deliveryStatus: record.status, receiptAccepted: record.accepted === true,
     attachments: (record.content || []).filter(block => block.type !== 'text') };
   const frames = [...(record.messages?.values() || []), ...(record.streams?.values() || [])];
   const toolCalls = new Map();

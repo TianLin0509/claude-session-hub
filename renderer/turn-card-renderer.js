@@ -44,9 +44,10 @@ function createTurnCardRenderer(options = {}) {
     const session = opts.session || getSessionContext(sessionId) || null;
     if (turn?.role === 'user') {
       const feedback = require('../core/native-feedback');
-      const receiptAuthoritative = ['codex-app-server','claude-stream-json'].includes(turn.source);
+      const receiptAuthoritative = feedback.hasNativeReceipt(turn);
       return { ...turn, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
-        receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId, {authoritative: receiptAuthoritative}) };
+        receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId,
+          {authoritative: receiptAuthoritative, deliveryStatus: turn.deliveryStatus}) };
     }
     if (!turn || turn.role !== 'assistant') return turn;
     let toolCalls = Array.isArray(turn.toolCalls) ? turn.toolCalls : [];
@@ -540,7 +541,7 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}"${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  return `<div class="${cls}"${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}" data-delivery-status="${escapeHtml(turn.deliveryStatus || '')}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">

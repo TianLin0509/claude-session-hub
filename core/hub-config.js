@@ -39,6 +39,11 @@ const DEFAULTS = {
   ui_code_fold_threshold: 30,
   ui_card_font_size: DEFAULT_CARD_FONT_SIZE,
   ui_card_font_family: DEFAULT_CARD_FONT_FAMILY,
+  // Native Claude quota auto-resume (core/claude-quota-watchdog.js). Defaults on
+  // for parity with the CLI's own behaviour before the stream-json transport --
+  // an opt-in would have to be clicked at the moment of failure, which is
+  // exactly when nobody is watching.
+  claude_quota_auto_resume: true,
 };
 
 /**
@@ -133,6 +138,10 @@ function getConfig() {
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
     cardFontSize: normalizeCardFontSize(getConfigValue('cardFontSize', 'HUB_UI_CARD_FONT_SIZE', 'ui.card_font_size', DEFAULTS.ui_card_font_size)),
     cardFontFamily: normalizeCardFontFamily(getConfigValue('cardFontFamily', 'HUB_UI_CARD_FONT_FAMILY', 'ui.card_font_family', DEFAULTS.ui_card_font_family)),
+    // Only an explicit false turns the watchdog off; an absent or malformed
+    // value keeps CLI-parity behaviour rather than silently disabling it.
+    claudeQuotaAutoResume: String(getConfigValue('claudeQuotaAutoResume', 'HUB_CLAUDE_QUOTA_AUTO_RESUME',
+      'providers.claude.quota_auto_resume', DEFAULTS.claude_quota_auto_resume)) !== 'false',
     // 回答完成通知；飞书接收对象可由 config.json 或 HUB_NOTIFY_FEISHU_TARGET 提供。
     notifications: normalizeNotificationConfig(rawConfig.notifications),
     // 梦境系统（dream-consolidation）配置段，config.json 的 consolidation 键。

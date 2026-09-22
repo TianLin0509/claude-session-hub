@@ -294,13 +294,35 @@ function buildComposerStatusModel(session, options = {}) {
   }
   if (session?.runtimeBackend === 'claude-stream-json') {
     const snapshot = session.nativeRuntime || {};
+    // A quota wait outranks the `failed` line it grew out of: the turn did fail,
+    // but what the user needs to know is that it is scheduled to continue and
+    // when. A wait nobody can see is the failure mode this feature exists to
+    // avoid, so it gets the status line and its own two buttons.
+    if (snapshot.quotaWait) {
+      const wait = require('./claude-quota-watchdog').describeQuotaWait(snapshot.quotaWait, now);
+      if (wait) {
+        // The ■ button doubles as "取消自动继续" here. Stopping something that
+        // is about to happen is the same gesture as stopping something running,
+        // and reusing it keeps one stop affordance instead of two.
+        return { state: snapshot.quotaWait.status === 'stale' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
+          text: wait.text, detail: wait.detail, quickReplies: [],
+          action: wait.canResume ? { kind: 'quota-resume-now', label: '现在继续' } : null,
+          canStop: wait.canCancel, stopIntent: 'quota-cancel', runtime };
+      }
+    }
     // Work in flight (starting/running) takes the shared working line, the same
     // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
     // report a result get a Claude-specific message here.
     // reason 是 Hub 的连接状态说明，不代表 Claude 提供了历史读取进度。
     const connecting = snapshot.connection !== 'disconnected' && snapshot.connection !== 'connected';
     const loadingText = connecting && snapshot.reason ? String(snapshot.reason) : '';
-    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开' : (loadingText || '等待连接响应'),
+    // 连上了却仍是 unknown，说的是「上一轮提交没有结论」，不是连接没回应。
+    // 2026-09-22 实测：一个 20.1 MB 的会话 2388 ms 就 initialize 完成，界面却一直
+    // 念「等待连接响应」，detail 还被清空 —— 用户只能干等一个永远不会变的字。
+    // 这里把真实原因念出来并给一个按钮，剩下的自动核对在 ClaudeNativeSession 里做。
+    const stalled = snapshot.state === 'unknown' && snapshot.connection === 'connected';
+    const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开'
+        : stalled ? '上次任务状态待核对' : (loadingText || '等待连接响应'),
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
       // New composer sends recover in Main; no manual receipt-review action.
@@ -309,9 +331,12 @@ function buildComposerStatusModel(session, options = {}) {
         text: labels[snapshot.state],
         detail: snapshot.state === 'waiting'
           ? (snapshot.requests || []).map(require('./claude-native-runtime').claudeRequestSummary).join('; ') || snapshot.reason || ''
-          : snapshot.state === 'unknown' ? '' : snapshot.reason || '',
+          : stalled ? snapshot.reason || ''
+            : snapshot.state === 'unknown' ? '' : snapshot.reason || '',
         quickReplies: [],
-        action: null,
+        // 核对只读原生历史、只做「不重发」的登记，所以可以是一个按钮；
+        // 它不会替用户重发旧消息，也不会把旧任务说成成功。
+        action: stalled ? { kind: 'claude-reconcile', label: '核对上次任务' } : null,
         canStop: snapshot.connection === 'connected' && snapshot.state === 'waiting', runtime };
     }
   }

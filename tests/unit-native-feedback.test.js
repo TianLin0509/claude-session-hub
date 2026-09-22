@@ -1,6 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {recordNativeContent,nativeContentAge,promptReceipt}=require('../core/native-feedback');
+const {recordNativeContent,nativeContentAge,promptReceipt,hasNativeReceipt}=require('../core/native-feedback');
+const {claudeTranscriptTurns}=require('../core/claude-native-transcript');
 const {refreshDelay}=require('../renderer/native-card-refresh');
 const {compactCodexTools,toolResult}=require('../core/codex-tool-details');
 const {CodexNativeSession}=require('../core/codex-native-session');
@@ -33,6 +34,19 @@ for(const backend of ['codex-app-server','claude-stream-json']) {
     assert.match(promptReceipt(s,'one',{authoritative:true}),/执行结果未确认/);
   });
 }
+test('Claude local transcript records do not claim engine receipt before acknowledgement, including historical cards',()=>{
+  const session={runtimeBackend:'claude-stream-json',nativeRuntime:{submission:{submissionId:'newer',sendStatus:'accepted'}}};
+  for(const [status,accepted,expected] of [
+    ['queued',false,'已排队 · 等待发送'],['submitting',false,'Hub 已接收 · 正在提交'],
+    ['unknown',false,'提交结果未确认'],['rejected',false,'提交失败'],['interrupted',false,'提交已中断'],
+    ['accepted',true,'引擎已收到'],['unknown',true,'引擎已收到 · 执行结果未确认']]){
+    const [turn]=claudeTranscriptTurns([{submissionId:'older',userMessageId:'u',text:'same input',status,accepted}]);
+    assert.equal(hasNativeReceipt(turn),accepted);
+    assert.equal(promptReceipt(session,turn.clientSubmissionId,{authoritative:hasNativeReceipt(turn),deliveryStatus:turn.deliveryStatus}),expected);
+  }
+  assert.equal(hasNativeReceipt({source:'claude-stream-json'}),false);
+});
+
 test('native cadence has backpressure while PTY history keeps its old cadence',()=>{
   const s={runtimeBackend:'codex-app-server'},state={lastReloadAt:1000,lastDurationMs:20};
   assert.equal(refreshDelay(s,state,1000),100);

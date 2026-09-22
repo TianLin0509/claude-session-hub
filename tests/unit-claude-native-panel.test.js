@@ -90,9 +90,29 @@ test('submission, accepted input and running work have distinct feedback without
   const running=buildComposerStatusModel(s,{runtime:deriveSessionRuntimeStatus(s,{now:5000}),now:5000});
   assert.equal(running.text,'Claude 正在工作 · 4s');
   assert.equal(running.action,null);
-  // A real uncertainty still says so.
-  const unknown = session({ state: 'unknown' });
-  assert.equal(buildComposerStatusModel(unknown, { runtime: deriveSessionRuntimeStatus(unknown) }).text, '等待连接响应');
+  // A real uncertainty still says so -- and now says which uncertainty it is.
+  const unknown = session({ state: 'unknown', reason: '上次 Claude 提交状态需要核对；不会自动重发' });
+  const stalled = buildComposerStatusModel(unknown, { runtime: deriveSessionRuntimeStatus(unknown) });
+  assert.equal(stalled.text, '上次任务状态待核对');
+  assert.notEqual(stalled.state, 'ready');
+  // 2026-09-22：实测一个 20.1 MB 的会话 2388 ms 就连上了，界面却一直念「等待连接
+  // 响应」且 detail 被清空 —— 用户只能对着一个永远不变的字干等。连上之后的
+  // unknown 说的是「上一轮没有结论」，必须把原因和出路一起给出来。
+  assert.equal(stalled.detail, '上次 Claude 提交状态需要核对；不会自动重发');
+  assert.deepEqual(stalled.action, { kind: 'claude-reconcile', label: '核对上次任务' });
+});
+
+test('连接真的没回应时才说等待连接，核对按钮不乱出现', () => {
+  const connecting = { id: 'hub', kind: 'claude', runtimeBackend: 'claude-stream-json',
+    nativeRuntime: { epoch: 1, revision: 1, requests: [], connection: 'connecting', state: 'unknown' } };
+  const model = buildComposerStatusModel(connecting, { runtime: deriveSessionRuntimeStatus(connecting) });
+  assert.equal(model.text, '等待连接响应');
+  assert.equal(model.action, null, '还没连上就没有历史可核对');
+  const dead = { id: 'hub', kind: 'claude', runtimeBackend: 'claude-stream-json',
+    nativeRuntime: { epoch: 1, revision: 1, requests: [], connection: 'disconnected', state: 'unknown' } };
+  const gone = buildComposerStatusModel(dead, { runtime: deriveSessionRuntimeStatus(dead) });
+  assert.equal(gone.text, '连接已断开');
+  assert.equal(gone.action, null, '断开时该做的是重连，不是核对');
 });
 
 test('a submission waiting for its echo is published as starting, never as unknown', async t => {

@@ -70,7 +70,7 @@ test('group Claude MCP profiles keep mandatory room config while filtering optio
       mcpConfigFile: roomConfig, mcpProfile: 'browser', homeDir, hubDataDir, cwd: root,
     });
     assert.match(browser.args, /--strict-mcp-config/);
-    assert.deepStrictEqual(browser.keptServers, ['playwright']);
+    assert.deepStrictEqual(browser.keptServers, ['playwright', 'web_roundtable']);
     assert.ok(browser.configPaths.includes(roomConfig), 'mandatory room MCP config must survive Browser');
 
     const full = _private.buildClaudeMeetingMcpArgs({
@@ -78,7 +78,9 @@ test('group Claude MCP profiles keep mandatory room config while filtering optio
     });
     assert.match(full.args, /--mcp-config/);
     assert.doesNotMatch(full.args, /--strict-mcp-config/);
-    assert.deepStrictEqual(full.configPaths, [roomConfig]);
+    assert.equal(full.configPaths[0], roomConfig);
+    assert.equal(full.configPaths.length, 2);
+    assert.ok(JSON.parse(fs.readFileSync(full.configPaths[1], 'utf8')).mcpServers.web_roundtable);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
