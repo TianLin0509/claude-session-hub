@@ -1499,14 +1499,24 @@ function getOrCreateTerminal(sessionId) {
       }
       return true;
     }
-    // Ctrl+C — copy if there's a selection, else pass through as SIGINT
+    // Ctrl+C — copy if there's a selection, else interrupt the current turn.
     if (!e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       if (terminal.hasSelection()) {
         void clipboardController.copyText(terminal.getSelection(), { source: 'terminal' });
         e.preventDefault();
         return false;
       }
-      return true;
+      // Native Claude has no PTY to send \x03 down: terminal.onData returns
+      // early for this backend, so before this branch the key was swallowed in
+      // the renderer and Ctrl+C did nothing at all -- no interrupt, no error.
+      // Route it to the same control the ■ button uses. Codex native already
+      // does the equivalent inside its own session (codex-native-session.js).
+      if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+        e.preventDefault();
+        void interruptNativeClaudeSession(sessionId);
+        return false;
+      }
+      return true; // PTY sessions: xterm still sends it as SIGINT.
     }
     return true;
   });
@@ -4108,6 +4118,21 @@ async function reconnectSession(sessionId) {
   }
 }
 
+// Single interrupt path for native Claude seats: the ■ button, the terminal's
+// Ctrl+C and the group-member stop all have to mean the same thing. Only the
+// engine's terminal_reason confirms an interrupt, so a rejected *request* is
+// the only thing worth reporting here.
+async function interruptNativeClaudeSession(sessionId) {
+  try {
+    const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
+    if (!result?.ok) throw new Error(result?.error || result?.message || '停止请求未确认');
+    return true;
+  } catch (error) {
+    showToast('停止失败：' + error.message, 'error');
+    return false;
+  }
+}
+
 // Electron 41 起 File.path 被删，拖拽也要走 webUtils.getPathForFile。
 function droppedFilePath(file) {
   if (!file) return '';
@@ -4279,7 +4304,14 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     event.stopPropagation();
     const kind = statusAction.dataset.actionKind || '';
     if (kind === 'scroll-latest') { if (pane.history) pane.history(); else scrollToLatestTurn(terminal); return; }
-    if (kind === 'reconnect') void reconnectSession(sessionId);
+    if (kind === 'reconnect') { void reconnectSession(sessionId); return; }
+    if (kind === 'quota-resume-now') {
+      statusAction.disabled = true;
+      void ipcRenderer.invoke('claude-native:quota-resume-now', { sessionId })
+        .then(result => { if (!result?.ok) showToast('继续失败：' + (result?.message || result?.error || '未确认'), 'error'); })
+        .catch(error => showToast('继续失败：' + error.message, 'error'))
+        .finally(() => { statusAction.disabled = false; });
+    }
   });
   statusRow.append(statusDot, statusText, statusDetail, statusAction);
 
@@ -4379,11 +4411,16 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   stopBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
   stopBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    // While a quota wait is armed nothing is running, so the stop button means
+    // "don't continue on your own" (see buildComposerStatusModel's stopIntent).
+    if (stopBtn.dataset.intent === 'quota-cancel') {
+      const result = await ipcRenderer.invoke('claude-native:quota-cancel', { sessionId }).catch(error => ({ ok: false, message: error.message }));
+      if (!result?.ok && result?.error !== 'no-wait') showToast('取消自动继续失败：' + (result?.message || '未确认'), 'error');
+      inputBox.focus();
+      return;
+    }
     if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
-      try {
-        const result = await ipcRenderer.invoke('claude-native:interrupt', { sessionId });
-        if (!result?.ok) throw new Error(result?.error || '停止请求未确认');
-      } catch (error) { showToast('停止失败：' + error.message, 'error'); }
+      await interruptNativeClaudeSession(sessionId);
       inputBox.focus();
       return;
     }
@@ -4552,9 +4589,15 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
 
     // 停止键沿用既有的中断按钮，判据也沿用既有那条：PTY 字节活动不足以
     // 给一个 AI 会话亮出破坏性的 Ctrl+C，必须有权威/强/语义证据。
-    const canStop = status.canStop && composerStopAllowed(session, status.runtime);
+    // A quota wait is not a running turn, so composerStopAllowed (which demands
+    // authoritative evidence of work in flight) must not gate cancelling it.
+    const quotaCancel = status.stopIntent === 'quota-cancel' && status.canStop;
+    const canStop = quotaCancel || (status.canStop && composerStopAllowed(session, status.runtime));
     stopBtn.classList.toggle('visible', canStop);
-    stopBtn.disabled = session.nativeRuntime?.cancellation?.status === 'pending';
+    stopBtn.dataset.intent = quotaCancel ? 'quota-cancel' : 'interrupt';
+    stopBtn.title = quotaCancel ? '取消额度恢复后自动继续' : '中断当前 AI';
+    stopBtn.setAttribute('aria-label', stopBtn.title);
+    stopBtn.disabled = !quotaCancel && session.nativeRuntime?.cancellation?.status === 'pending';
     sendBtn.hidden = canStop && session.runtimeBackend !== 'acp';
     sendBtn.title = canStop && session.runtimeBackend === 'acp' ? '加入待发送队列 · 当前轮结束后发送' : '发送 (Enter) · Shift+Enter 换行';
 

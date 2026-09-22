@@ -294,6 +294,22 @@ function buildComposerStatusModel(session, options = {}) {
   }
   if (session?.runtimeBackend === 'claude-stream-json') {
     const snapshot = session.nativeRuntime || {};
+    // A quota wait outranks the `failed` line it grew out of: the turn did fail,
+    // but what the user needs to know is that it is scheduled to continue and
+    // when. A wait nobody can see is the failure mode this feature exists to
+    // avoid, so it gets the status line and its own two buttons.
+    if (snapshot.quotaWait) {
+      const wait = require('./claude-quota-watchdog').describeQuotaWait(snapshot.quotaWait, now);
+      if (wait) {
+        // The ■ button doubles as "取消自动继续" here. Stopping something that
+        // is about to happen is the same gesture as stopping something running,
+        // and reusing it keeps one stop affordance instead of two.
+        return { state: snapshot.quotaWait.status === 'stale' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
+          text: wait.text, detail: wait.detail, quickReplies: [],
+          action: wait.canResume ? { kind: 'quota-resume-now', label: '现在继续' } : null,
+          canStop: wait.canCancel, stopIntent: 'quota-cancel', runtime };
+      }
+    }
     // Work in flight (starting/running) takes the shared working line, the same
     // "Claude 正在工作 · 12s" Codex shows. Only states that need the user or
     // report a result get a Claude-specific message here.
