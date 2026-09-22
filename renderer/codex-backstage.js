@@ -158,6 +158,8 @@ function createCodexBackstage({ document:doc, ipcRenderer, sessionId, getSession
   function updateStatus(){
     if(dead)return;
     const value=backstageStatus(getSession());
+    const health = value.animated ? require('./hub-feedback-health').healthText() : '';
+    if (health) value.detail = `${health} · ${value.detail}`;
     const animate=value.animated&&visible&&!doc.hidden;
     heading.dataset.state=value.state;heading.dataset.animated=String(animate);
     setText(liveLabel,`${value.provider} · ${value.title}`);setText(elapsed,value.elapsed);

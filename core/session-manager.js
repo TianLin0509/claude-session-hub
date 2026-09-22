@@ -1752,7 +1752,8 @@ class SessionManager extends EventEmitter {
         contentTimer=setTimeout(()=>{
           contentTimer=null;
           if(this.sessions.get(id)?.pty===ptyProcess)this.emit('codex-content-updated',
-            {sessionId:id,threadId:ptyProcess.threadId,turnId:ptyProcess.runtime.turnId,revision:ptyProcess.contentRevision});
+            {sessionId:id,threadId:ptyProcess.threadId,turnId:ptyProcess.runtime.turnId,
+              epoch:ptyProcess.runtime.epoch,revision:ptyProcess.contentRevision});
         },80);
         contentTimer.unref?.();
       });

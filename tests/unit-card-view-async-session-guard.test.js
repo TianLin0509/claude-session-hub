@@ -95,7 +95,7 @@ test('incremental card refresh keeps existing cards when parsing is temporarily 
 });
 
 test('active card refresh is provider-aware without requiring renderer transcript metadata', () => {
-  const start = rendererSource.indexOf('const CARD_STREAM_REFRESH_MIN_INTERVAL_MS');
+  const start = rendererSource.indexOf('const CARD_STREAM_SETTLE_RETRY_MS');
   const end = rendererSource.indexOf('// Status updates from our custom statusline script.', start);
   assert.ok(start >= 0 && end > start, 'card live-refresh scheduler block not found');
   const block = rendererSource.slice(start, end);

@@ -361,7 +361,9 @@ function buildComposerStatusModel(session, options = {}) {
     const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
     return {
       state,
-      text: elapsed ? `${provider} 正在工作 · ${elapsed}` : `${provider} 正在工作`,
+      text: truth.state === 'starting' && ['codex-app-server','claude-stream-json'].includes(session?.runtimeBackend)
+        ? `${provider} ${['accepted','confirmed'].includes(session.nativeRuntime?.submission?.status || session.nativeRuntime?.submission?.sendStatus) ? '已收到 · 等待输出' : '正在提交'}${elapsed ? ' · '+elapsed : ''}`
+        : elapsed ? `${provider} 正在工作 · ${elapsed}` : `${provider} 正在工作`,
       detail: runtime.visibleDetail || '',
       quickReplies: [],
       action: null,

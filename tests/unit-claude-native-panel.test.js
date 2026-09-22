@@ -76,12 +76,20 @@ test('questions preserve typed answers when another request arrives, and choices
   assert(controls.element.className.includes('codex-native-controls'));
 }));
 
-test('work in flight reads as working, not as an uncertain result', () => {
+test('submission, accepted input and running work have distinct feedback without recovery actions', () => {
   const s = session({ state: 'starting', reason: '正在提交给 Claude', startedAt: 1000 });
   const composer = buildComposerStatusModel(s, { runtime: deriveSessionRuntimeStatus(s, { now: 5000 }), now: 5000 });
   assert.equal(composer.state, 'working');
-  assert.match(composer.text, /正在工作/);
+  assert.equal(composer.text, 'Claude 正在提交 · 4s');
   assert.equal(composer.action, null, 'no reconnect button while a send is simply in flight');
+  s.nativeRuntime.submission={clientSubmissionId:'one',sendStatus:'accepted'};
+  const accepted=buildComposerStatusModel(s,{runtime:deriveSessionRuntimeStatus(s,{now:5000}),now:5000});
+  assert.equal(accepted.text,'Claude 已收到 · 等待输出 · 4s');
+  assert.equal(accepted.action,null);
+  s.nativeRuntime.state='running';
+  const running=buildComposerStatusModel(s,{runtime:deriveSessionRuntimeStatus(s,{now:5000}),now:5000});
+  assert.equal(running.text,'Claude 正在工作 · 4s');
+  assert.equal(running.action,null);
   // A real uncertainty still says so -- and now says which uncertainty it is.
   const unknown = session({ state: 'unknown', reason: '上次 Claude 提交状态需要核对；不会自动重发' });
   const stalled = buildComposerStatusModel(unknown, { runtime: deriveSessionRuntimeStatus(unknown) });

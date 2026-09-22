@@ -112,8 +112,13 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   }
 
   const visibleText = meta ? `${label} · ${meta}` : label;
+  const contentAge = require('../core/native-feedback').nativeContentAge(session, now);
+  if (contentAge) detail = [detail, contentAge].filter(Boolean).join(' · ');
+  const compactDetail = detail.replace(/\s+/g, ' ');
   const visibleDetail = [RUNTIME_STARTING, RUNTIME_RUNNING, RUNTIME_WAITING, RUNTIME_FAILED, RUNTIME_UNKNOWN].includes(state)
-    ? detail.replace(/\s+/g, ' ').slice(0, 180)
+    ? contentAge && compactDetail.length > 180
+      ? `${compactDetail.slice(0, 177 - contentAge.length)}… · ${contentAge}`
+      : compactDetail.slice(0, 180)
     : '';
   const ariaLabel = `${provider} ${label}`;
   const titleParts = [ariaLabel];

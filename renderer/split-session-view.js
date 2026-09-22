@@ -6,7 +6,7 @@ const { createCardFollowScroll } = require('./card-follow-scroll');
 
 function createSplitSessionView({ document: doc, window: win, sessionId, panel, services: s, rendererOptions }) {
   const state = { _sessionTurns: new Map() };
-  let disposed = false, visible = true, busy = false, dirty = false, timer = null;
+  let disposed = false, visible = true, busy = false, dirty = false, timer = null, statusTimer = null;
   let mode = s.initialMode(), limit = 8, hydrated = false;
   let savedReading = null;
   const overlay = doc.createElement('div'); overlay.className = 'msg-overlay';
@@ -42,19 +42,27 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   function updateStatus() {
     if (disposed) return;
     terminal.updateStatus();
+    clearTimeout(statusTimer); statusTimer = null;
+    if (visible && !doc.hidden && ['starting','running'].includes(s.session()?.nativeRuntime?.state)) {
+      statusTimer = setTimeout(updateStatus, 1000);
+    }
   }
   function notice(message) { status.textContent = message; status.hidden = !message; }
   async function refresh(older = false) {
-    if (disposed || !visible || mode !== 'card') { dirty = true; return; }
+    if (disposed || !visible || doc.hidden || mode !== 'card') { dirty = true; return; }
     if (busy) { dirty = true; return; }
     busy = true; dirty = false;
     const capture = follow.capture();
     const requestedLimit = older ? limit + 24 : limit;
     try {
       const session = s.session();
+      const live = hydrated && !older && ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend);
+      const opts = live ? session.runtimeBackend === 'claude-stream-json' ? {nativeLive:true}
+        : {latestTurn:true,turnId:session.nativeRuntime?.turnId,limit:Infinity}
+        : {limit:requestedLimit+1,fromTail:true,includeBranchHistory:true};
       const result = await s.parse({ hubSessionId: sessionId, kind: session.kind,
         ccSessionId: session.ccSessionId, transcriptPath: session.transcriptPath,
-        opts: { limit: requestedLimit + 1, fromTail: true, includeBranchHistory: true } });
+        opts });
       if (disposed) return;
       const turns = displayTurns(result?.turns || []);
       if (result?.error && !turns.length) {
@@ -64,15 +72,15 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
       }
       notice(result?.error ? '历史读取不完整：' + result.error : '');
       if (!hydrated) overlay.replaceChildren();
-      const shown = turns.slice(-requestedLimit);
+      const shown = live ? turns : turns.slice(-requestedLimit);
       const staging = doc.createElement('div');
       for (const turn of shown) {
         const exists = state._sessionTurns.has(turn.id);
         renderer.mountSessionTurnCard(sessionId, turn, { kind: session.kind, container: older && !exists ? staging : overlay });
       }
       if (staging.children.length) overlay.prepend(...staging.children);
-      overlay.querySelector(':scope > .split-load-older')?.remove();
-      if (turns.length > requestedLimit || (result?.turns?.length || 0) > requestedLimit) {
+      if (!live) overlay.querySelector(':scope > .split-load-older')?.remove();
+      if (!live && (turns.length > requestedLimit || (result?.turns?.length || 0) > requestedLimit)) {
         const more = doc.createElement('button'); more.className = 'split-load-older'; more.textContent = '↑ 加载更早对话';
         more.addEventListener('click', () => { more.disabled = true; void refresh(true).finally(() => { more.disabled = false; }); });
         overlay.prepend(more);
@@ -101,7 +109,7 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
   function schedule() {
     if (disposed) return;
     dirty = true; updateStatus();
-    if (timer || busy || !visible || mode !== 'card') return;
+    if (timer || busy || !visible || doc.hidden || mode !== 'card') return;
     timer = setTimeout(() => { timer = null; void refresh(); }, 150);
   }
   function applyMode() {
@@ -123,6 +131,8 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
     };
     s.ipc.on(channel, listener); return [channel, listener];
   });
+  const onVisibility = () => { if (!doc.hidden && visible) schedule(); else { clearTimeout(statusTimer); statusTimer = null; } };
+  doc.addEventListener('visibilitychange', onVisibility);
   // A visible error has a bounded, explicit retry action.
   status.addEventListener('click', schedule); status.title = '点击重新读取';
   applyMode();
@@ -138,12 +148,15 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
     setVisible(value) {
       if (visible === value) return;
       visible = value; terminal.setMode(mode, visible);
+      if (!visible) { clearTimeout(statusTimer); statusTimer = null; }
+      else updateStatus();
       multiSelect.setVisible(visible && mode === 'card');
       navigation.scheduleRefresh();
       if (visible && dirty) schedule();
     },
     dispose() {
-      disposed = true; clearTimeout(timer);
+      disposed = true; clearTimeout(timer); clearTimeout(statusTimer);
+      doc.removeEventListener('visibilitychange', onVisibility);
       for (const [channel, listener] of listeners) s.ipc.removeListener(channel, listener);
       navigation.dispose(); multiSelect.destroy(); renderer.dispose(); follow.dispose(); terminal.dispose(); panel.replaceChildren();
     },

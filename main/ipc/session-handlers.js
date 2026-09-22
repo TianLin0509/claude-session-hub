@@ -38,6 +38,7 @@ function registerSessionIpc(ipcMain, deps) {
   require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
 
   const lastResizeBySid = new Map();
+  ipcMain.handle('hub:feedback-ping', () => ({ok:true}));
   ipcMain.handle('session:open-status', (_event, sessionId) => {
     const owner = sessionManager._openOwners?.()?.owner(sessionId, true);
     if (!owner || (owner.pid === process.pid && sessionManager.getSession(sessionId))) return {available:true};

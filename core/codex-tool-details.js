@@ -18,7 +18,10 @@ function compactCodexTools(cards,{hubSessionId,threadId}={}) {
       if(Array.isArray(item?.changes))input.changes=item.changes.map(change=>({path:change.path,kind:change.kind}));
       if(Array.isArray(item?.locations))input.locations=item.locations.map(location=>({path:location.path,line:location.line}));
       const output=sourceOutput(tool);
-      compact={input,output:output==null?'':preview(output).text,originalOutput:tool.output,hasOutput:output!=null};
+      const running = ['running','inProgress'].includes(item?.status);
+      const text = running && item?.type === 'commandExecution' && typeof output === 'string'
+        ? output.slice(-2048) : output==null ? '' : preview(output).text;
+      compact={input,output:text,originalOutput:tool.output,hasOutput:output!=null};
       if(item)cached.set(item,compact);
     }
     return {...tool,input:compact.input,output:compact.output,resultTruncated:compact.hasOutput,
