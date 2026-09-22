@@ -44,7 +44,7 @@ async function runWeb(job,save,mode,runtime={}){
     save({browser:{headless:browser.headless,owned:browser.owned,pid:browser.browserPid}});
     let snap,readyEnd=Date.now()+45000,readyCount=0,loginCount=0;
     do{checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);loginCount=snap.login?loginCount+1:0;if(snap.challenge||loginCount>=4)throw Object.assign(Error('请从 Hub 权限页打开此网站，完成登录或人机验证后再处理任务'),{attention:true});readyCount=snap.ready&&!snap.login&&(!parent||snap.answers.at(-1)?.done)?readyCount+1:0;if(readyCount>=3)break;await adapters.dismissPromo(browser.page,provider);await store.sleep(300);}while(Date.now()<readyEnd);
-    if(!snap.ready)throw Error('Official composer not ready; website layout or network needs attention');
+    if(readyCount<3)throw Error('Official composer not ready; website layout or network needs attention');
     if(mode!=='collect'){
       if(parent&&snap.answers.at(-1)?.text!==parent.answer)throw Error('Conversation changed since reply_to; refusing to send into another branch');
       if(snap.answers.length&&!parent)throw Error('New conversation unexpectedly contains messages');

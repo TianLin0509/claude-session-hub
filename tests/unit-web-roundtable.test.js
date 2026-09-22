@@ -106,3 +106,29 @@ test('refresh incorporates a collected child into the roundtable without asking 
   store.write('refresh-me',{id:'refresh-me',kind:'roundtable',createdAt:'now',input:{providers:['kimi'],rounds:1,synthesizer:null,prompt:'question'},state:'partial',rounds:[{results:[{id:child.id,provider:'kimi',state:'needs_attention'}]}]});
   const refreshed=await roundtable.refresh('refresh-me');assert.equal(refreshed.state,'succeeded');assert.equal(refreshed.rounds[0].results[0].answer,'Recovered answer');assert.match(fs.readFileSync(refreshed.reportPath,'utf8'),/Recovered answer/);
 });
+test('invalid JSON-RPC values do not terminate the MCP server',async()=>{
+  const c=await new Client([path.resolve(__dirname,'../core/web-roundtable/provider-server.js'),'deepseek']).init();
+  try{
+    const lines=require('readline').createInterface({input:c.child.stdout});
+    try{for(const value of ['null','[]','42']){
+      const invalid=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('No invalid-request response')),2000);lines.once('line',line=>{clearTimeout(timer);resolve(JSON.parse(line));});});
+      c.child.stdin.write(value+'\n');assert.equal((await invalid).error.code,-32600);
+    }assert.deepEqual(await c.request('ping'),{});}finally{lines.close();}
+  }
+  finally{c.close();if(c.child.exitCode===null)await new Promise(r=>c.child.once('exit',r));}
+});
+test('a composer visible at the readiness deadline does not permit premature submission',async()=>{
+  const now=Date.now;let elapsed=0,focused=0;Date.now=()=>now()+elapsed;
+  const job={id:'readiness-timeout',input:{provider:'deepseek',prompt:'test'}};
+  try{await jobs.runWeb(job,p=>Object.assign(job,p),'run',{
+    open:async()=>({page:{},close:async()=>{}}),
+    adapters:{get:()=>({url:'https://chat.deepseek.com/'}),snapshot:async()=>{elapsed=50000;return {ready:true,login:false,answers:[],echo:0,url:'https://chat.deepseek.com/'};},dismissPromo:async()=>{},focus:async()=>{focused++;throw Error('must not enter editor');}}
+  });}finally{Date.now=now;}
+  assert.equal(focused,0);assert.equal(job.submissionAttempted,undefined);assert.match(job.error,/not ready/);
+});
+test('an abandoned reaper marker fails explicitly without stealing its lock',()=>{
+  const dir=path.join(store.root(),'abandoned-reaper.lock'),reap=dir+'.reap';
+  fs.mkdirSync(dir);fs.writeFileSync(reap,'');const old=new Date(Date.now()-60000);fs.utimesSync(reap,old,old);
+  try{assert.throws(()=>store.acquire('abandoned-reaper'),/Lock recovery blocked/);assert.ok(fs.existsSync(reap));}
+  finally{fs.unlinkSync(reap);fs.rmSync(dir,{recursive:true});}
+});

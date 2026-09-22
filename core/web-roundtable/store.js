@@ -20,7 +20,14 @@ function acquire(key) {
     // Serialize stale-owner inspection as well as removal. Two stale readers
     // must not rename a third process's newly acquired live lock.
     const reap = dir + '.reap';
-    let handle;try{handle=fs.openSync(reap,'wx');}catch(err){if(err.code==='EEXIST')return null;throw err;}
+    let handle;try{handle=fs.openSync(reap,'wx');}catch(err){
+      if(err.code!=='EEXIST')throw err;
+      // An interrupted reaper cannot be safely stolen based on age alone.
+      // Surface the exact marker for inspection instead of queueing forever.
+      let age;try{age=Date.now()-fs.statSync(reap).mtimeMs;}catch(missing){if(missing.code!=='ENOENT')throw missing;return null;}
+      if(age>30000)throw Error('Lock recovery blocked; inspect owner processes before removing '+reap);
+      return null;
+    }
     let dead=false;
     try {
       try { const owner = JSON.parse(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')); dead = !alive(owner.pid); }

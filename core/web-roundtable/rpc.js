@@ -10,6 +10,9 @@ function serve(name, tools, call) {
     let m;
     try { if (Buffer.byteLength(line) > 2 * 1024 * 1024) throw Error('Message too large'); m = JSON.parse(line); }
     catch { send({ jsonrpc:'2.0', id:null, error:{ code:-32700, message:'Invalid JSON message' } }); return; }
+    if (!m || typeof m !== 'object' || Array.isArray(m)) {
+      send({jsonrpc:'2.0',id:null,error:{code:-32600,message:'Invalid request'}}); return;
+    }
     if (m.id === undefined) return;
     try {
       if (m.jsonrpc !== '2.0' || typeof m.method !== 'string') throw Object.assign(Error('Invalid request'), { code:-32600 });
