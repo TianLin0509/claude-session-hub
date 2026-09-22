@@ -125,13 +125,16 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     });
   }
 
-  for (const action of ['reconnect', 'inspect-recovery', 'reconcile']) {
+  for (const action of ['reconnect', 'inspect-recovery', 'reconcile', 'reconcile-history']) {
     ipcMain.handle('claude-native:' + action, async (_event, request = {}) => {
       const native = sessionManager.getNativeClaude?.(request.sessionId);
       if (!native) return { ok: false, error: 'Claude 原生连接不存在' };
       try {
         if (action === 'reconnect') await native.reconnect();
         if (action === 'reconcile') await native.reconcile(request.identity || {});
+        // 输入框上那个「核对上次任务」按钮：和连上后的自动核对同一条路，
+        // 只读原生历史、只登记不重发。群聊席位的人工关卡就靠这一条解开。
+        if (action === 'reconcile-history') await native.reconcileFromHistory({ source: 'user' });
         return { ok: true, runtime: native.runtime, records: native.recoveryRecords() };
       } catch (error) { return { ok: false, error: error.message }; }
     });
