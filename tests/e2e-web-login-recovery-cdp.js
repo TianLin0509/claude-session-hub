@@ -27,7 +27,7 @@ async function main(){
       CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),HUB_SESSION_SEARCH_CODEX_ROOTS:empty,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty}});
     result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     const until=async(expr)=>{for(const end=Date.now()+35000;Date.now()<end;){if(await cdp.eval(expr))return;await pause(120);}throw Error('timeout: '+expr);};
-    const click=async selector=>{await until(`!!document.querySelector(${JSON.stringify(selector)})`);await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);};
+    const click=async selector=>{await until(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);};
     await until('typeof accountCenterPanel!=="undefined"');await click('#btn-rail-accounts');
     await until('document.querySelector("[data-ac=attention][data-id=web-deepseek]")?.textContent.includes("恢复")');
     await click('[data-ac=attention][data-id=web-deepseek]');await until('!!document.querySelector(".ac-task-dialog[open]")');

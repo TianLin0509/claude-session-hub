@@ -5,7 +5,7 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  let snapshot={connections:[],history:[],batches:[]},selected='',selectedGroup='',filter='primary',statusFilter='all',query='',tab='overview',layout='list';
  let epoch=0,viewEpoch=0,error='',notice='',loading=false,busy=new Set(),timer,previousFocus,showOther=false,familyOpen=false;
  const expandedGroups=new Set();
- const batchUI=require('./account-batch-ui').createAccountBatchUI({page,call,refresh,rerender:()=>render(),escapeHtml:esc,notice:(message,failed=false)=>{if(failed)error=message;else notice=message;render();}});
+ const batchUI=require('./account-batch-ui').createAccountBatchUI({page,call,refresh,rerender:()=>render(),escapeHtml:esc,isBusy:id=>busy.has(id),notice:(message,failed=false)=>{if(failed)error=message;else notice=message;render();}});
  const labels={signed_in:'已登录',login_required:'需要登录',configured:'已配置',unknown:'尚未确认',offline:'未在线',unavailable:'工具不可用',opening:'等待验证'};
  const marks={claude:'CL',codex:'CX',chatgpt:'AI',images:'AI',bridge:'AI','chatgpt-web':'AI',deepseek:'D',doubao:'豆',kimi:'K',qwen:'Q',gemini:'G'};
  const when=t=>t?new Date(t).toLocaleString('zh-CN',{hour12:false}):'尚未检查';
