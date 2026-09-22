@@ -79,7 +79,14 @@ async function main(){
     result.passed=true;
   }finally{
     clearInterval(focusTimer);
-    if(c){try{result.finalText=await c.eval('document.body.innerText.slice(-3500)');await c.close();}catch(e){result.captureError=e.message;}}
+    if(c){try{
+      result.finalText=await c.eval('document.body.innerText.slice(-3500)');
+      if(!result.passed){
+        result.diagnostic=await c.eval(`({hidden:document.hidden,focus:document.hasFocus(),samples:window.feedbackSamples,
+          sessions:[...sessions.values()].map(s=>({id:s.id,runtime:s.nativeRuntime,feedback:s.nativeFeedback}))})`);
+        await shot('failed');
+      }
+      await c.close();}catch(e){result.captureError=e.message;}}
     if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));result.exit=await gracefulQuit(hub);}
     fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));
     console.log(JSON.stringify({out,passed:result.passed,providers:result.providers.map(p=>({kind:p.kind,p95:p.p95,max:p.max,parseCount:p.parseCount})),exit:result.exit}));

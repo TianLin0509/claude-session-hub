@@ -2,6 +2,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const {recordNativeContent,nativeContentAge,promptReceipt,hasNativeReceipt}=require('../core/native-feedback');
 const {claudeTranscriptTurns}=require('../core/claude-native-transcript');
+const {ClaudeNativeSession,digest}=require('../core/claude-native-session');
 const {refreshDelay}=require('../renderer/native-card-refresh');
 const {compactCodexTools,toolResult}=require('../core/codex-tool-details');
 const {CodexNativeSession}=require('../core/codex-native-session');
@@ -45,6 +46,17 @@ test('Claude local transcript records do not claim engine receipt before acknowl
     assert.equal(promptReceipt(session,turn.clientSubmissionId,{authoritative:hasNativeReceipt(turn),deliveryStatus:turn.deliveryStatus}),expected);
   }
   assert.equal(hasNativeReceipt({source:'claude-stream-json'}),false);
+});
+
+test('reopening a cancelled unsent Claude submission preserves the explicit lack of engine acknowledgement',()=>{
+  const id='11111111-2222-4333-8444-555555555555',content=[{type:'text',text:'cancelled before send'}];
+  const promptFingerprint=digest(content);
+  const native=new ClaudeNativeSession({sessionId:id,restoredRecords:[{submissionId:'cancelled',userMessageId:'u',
+    providerSessionId:id,content,text:'cancelled before send',promptFingerprint,status:'interrupted',accepted:false}]});
+  const [turn]=claudeTranscriptTurns([...native.records.values()]);
+  assert.equal(hasNativeReceipt(turn),false);
+  assert.equal(promptReceipt({runtimeBackend:'claude-stream-json'},turn.clientSubmissionId,
+    {authoritative:hasNativeReceipt(turn),deliveryStatus:turn.deliveryStatus}),'提交已中断');
 });
 
 test('native cadence has backpressure while PTY history keeps its old cadence',()=>{

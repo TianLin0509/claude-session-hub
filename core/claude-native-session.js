@@ -78,7 +78,7 @@ class ClaudeNativeSession extends EventEmitter {
       const terminal = TERMINAL.has(savedStatus);
       const status = terminal ? savedStatus : 'unknown';
       this.records.set(saved.submissionId, { ...saved, fingerprint: saved.promptFingerprint, status,
-        accepted: saved.accepted === true || terminal, started: terminal, durable: true,
+        accepted: saved.accepted === true || (saved.accepted == null && terminal), started: terminal, durable: true,
         messages: new Map((saved.transcriptMessages || []).map(frame => [frame.uuid || frame.message?.id, frame])),
         resolve() {}, reject() {}, ack: Promise.resolve(null) });
       if (!terminal && !saved.reconciliation) this.unreconciled = true;
