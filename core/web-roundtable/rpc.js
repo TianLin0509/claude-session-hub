@@ -52,5 +52,5 @@ class Client {
   async call(name, args={}) { const result = await this.request('tools/call',{name,arguments:args}); if (result.isError) throw Error(result.content?.[0]?.text || 'MCP tool failed'); return result.structuredContent || JSON.parse(result.content[0].text); }
   close() { this.child.stdin.end(); }
 }
-function providerClient(provider) { return new Client([path.join(__dirname,'provider-server.js'), provider]); }
+function providerClient(provider, options) { return new Client([path.join(__dirname,'provider-server.js'), provider], options); }
 module.exports = { serve, Client, providerClient };

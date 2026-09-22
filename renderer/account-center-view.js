@@ -37,10 +37,11 @@ function accountSections(rows){
  return result;
 }
 function needsAttention(row){
- return row.enabled!==false&&(row.state==='login_required'||!!row.pending&&!(row.state==='signed_in'&&!row.stale));
+ return row.enabled!==false&&(row.webRecovery?.some(t=>t.canResume)||row.state==='login_required'||!!row.pending&&!(row.state==='signed_in'&&!row.stale));
 }
 function accountAction(row){
  if(row.action!=='login')return {action:'config',label:'接入配置',id:row.configProvider};
+ if(row.webRecovery?.some(t=>t.canResume))return {action:'attention',label:'恢复任务',id:row.id};
  if(row.pending)return {action:'attention',label:'继续验证',id:row.id};
  if(row.state==='login_required')return {action:'login',label:'登录账号',id:row.id};
  if(row.type==='web')return {action:'open',label:'打开网页',id:row.id};
