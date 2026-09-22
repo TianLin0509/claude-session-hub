@@ -5473,6 +5473,11 @@ function focusOrdinarySearchHit(hit, preview) {
   if (eventId && eventId !== 'title') {
     try { card = overlay.querySelector(`.turn-card[data-turn-id="${CSS.escape(String(eventId))}"]`); }
     catch {}
+    // Claude history exposes each assistant message under the parser's display
+    // ID, while the search index retains the underlying transcript entry ID.
+    if (!card && hit.nativeFamily === 'claude') {
+      card = overlay.querySelector(`.turn-card[data-turn-id="${CSS.escape('claude-message-' + String(eventId))}"]`);
+    }
   }
   if (card) {
     cardFollowScroll.pause();

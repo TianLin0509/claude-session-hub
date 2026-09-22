@@ -98,7 +98,7 @@ test('搬家保留了 data-* 入口与可访问名', () => {
   assert.match(rail, /id="btn-research"[^>]*data-chuxin-entry/);
   assert.match(rail, /id="btn-study"[^>]*data-study-entry/);
   assert.match(rail, /id="btn-ran"[^>]*data-ran-entry/);
-  // 文案留在 DOM 里（由 rail.css 收掉），tooltip 用原 title
+  // 文案常驻显示，tooltip 用原 title
   for (const [id, label] of [['btn-home', '工作台'], ['btn-research', '投研'], ['btn-study', '学习'], ['btn-ran', '开发看板']]) {
     assert.ok(rail.includes('<span class="btn-label">' + label + '</span>'), id + ' 的 btn-label 应当保留');
   }
@@ -124,10 +124,10 @@ test('账户余量迁到侧栏底部且只保留一个控制器挂载点', () =>
   assert.ok(sidebar.indexOf('id="sidebar-strip"') > sidebar.indexOf('id="rail-usage"'));
 });
 
-test('rail 样式表已经挂进清单，且 rail 是 84px / 按钮 34px', () => {
+test('rail 样式表已经挂进清单，且 rail 是 100px / 工具基础尺寸 34px', () => {
   assert.match(stylesManifest, /@import url\('\.\/styles\/rail\.css'\);/);
   assert.match(stylesManifest, /@import url\('\.\/styles\/sidebar-v2\.css'\);/);
-  assert.match(railCss, /\.scene-rail\s*\{[^}]*width:\s*84px/);
+  assert.match(railCss, /\.scene-rail\s*\{[^}]*width:\s*100px/);
   assert.match(railCss, /width:\s*34px;\s*\n\s*height:\s*34px/);
 });
 
@@ -135,7 +135,7 @@ test('折叠只作用在侧栏：rail 没有任何 sidebar-collapsed 的隐藏�
   assert.ok(!/sidebar-collapsed[^{]*\.scene-rail/.test(railCss),
     'rail 不该跟着侧栏一起折叠');
   // 展开按钮要让开 rail（原来贴在 app-body 左边 8px，正压在 logo 上）
-  assert.match(railCss, /#app-body > \.btn-expand-sidebar\s*\{[^}]*left:\s*92px/);
+  assert.match(railCss, /#app-body > \.btn-expand-sidebar\s*\{[^}]*left:\s*108px/);
 });
 
 console.log('Running scene rail DOM contract tests...');

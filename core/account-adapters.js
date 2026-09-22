@@ -18,7 +18,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  if(isolated && env.CLAUDE_HUB_ACCOUNT_FIXTURE){
   const fixture=env.CLAUDE_HUB_ACCOUNT_FIXTURE;
   const invoke=async(action,row={})=>jsonResult(await runImpl(process.execPath,[fixture,action,JSON.stringify({id:row.id,provider:row.provider,type:row.type})],{...env,ELECTRON_RUN_AS_NODE:'1'},5000));
-  return {imageAccounts:async()=>(await invoke('images')).accounts,check:row=>invoke('check',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
+  return {imageAccounts:async()=>(await invoke('images')).accounts,check:row=>invoke('check',row),open:row=>invoke('open',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
  }
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
@@ -34,6 +34,14 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
    observedAt:a.checked_at*1000||0,message:a.control_pending?'原工具正在处理账号操作，请稍后检查':a.enabled?'原工具账号记录；额度与排队单独判断':'账号在原工具已停用'}));
  };
  return {imageAccounts,
+ async open(row){
+  external();
+  if(row.managedBrowser)return browser.open(row.provider);
+  if(row.provider==='images'){await tool('images','open',row.accountId);return {message:'已请求原生图工具打开此账号网页；不会重新提交图片任务'};}
+  if(row.provider==='bridge'){await tool('bridge','login');return {message:'已打开原中转账号网页；未推进拉取记录'};}
+  if(row.provider==='chatgpt-web')return require('./chatgpt-web-integration').openWebSettings();
+  throw Error('此连接没有已适配的网页入口');
+ },
  async check(row){
   if(row.managedBrowser)return browser.check(row.provider);
   if(row.action==='configure')return {state:row.configured?'configured':'unknown',message:row.configured?'密钥已配置；有效性和余额通过原服务入口验证':'尚未配置密钥',source:'本机配置'};

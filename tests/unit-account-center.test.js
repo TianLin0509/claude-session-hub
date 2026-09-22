@@ -6,6 +6,23 @@ const {createAccountAdapters,quotePS,jsonResult}=require('../core/account-adapte
 const {registerAccountCenterIpc}=require('../main/ipc/account-center-handlers');
 function setup(t,overrides={}){const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-accounts-unit-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const config={codexSubscriptionProfiles:[{id:'default',label:'Main',home:path.join(root,'codex')}],deepseekApiKey:'secret-key-DO-NOT-EXPOSE'};const adapter={imageAccounts:async()=>[],check:async()=>({state:'signed_in',identity:'alice@example.com',message:'原生确认',source:'fixture'}),login:async()=>({}),...overrides};const service=new AccountCenter({dataDir:root,homeDir:root,env:{},getConfig:()=>config,adapter});return {root,config,adapter,service};}
 test('snapshot keeps credential presence separate from auth and never serializes secrets or homes',async t=>{const {service,root}=setup(t);const s=await service.snapshot();const api=s.connections.find(r=>r.id==='api-deepseek');assert.equal(api.state,'configured');assert.equal(s.connections.find(r=>r.id==='claude').state,'signed_in');assert.equal(s.connections.find(r=>r.id==='claude').identity,'a•••@example.com');assert.ok(!JSON.stringify(s).includes('secret-key'));assert.ok(!JSON.stringify(s).includes(root));assert.equal(s.connections.find(r=>r.id==='bridge').state,'unknown');});
+
+test('opening a webpage coalesces and preserves both auth observation and login lease',async t=>{
+ let opens=0,logins=0;const {service}=setup(t,{open:async()=>{opens++;await new Promise(r=>setTimeout(r,10));return {message:'opened'};},login:async()=>{logins++;return {};}});
+ const row=await service.row('web-deepseek'),key=service.scope(row);await service.check(row.id);const before=service.read(key);
+ await Promise.all([service.open(row.id),service.open(row.id)]);assert.equal(opens,1);assert.equal(logins,0);assert.equal(service.leaseActive(row),false);assert.deepEqual(service.read(key),before);
+ await service.login(row.id);const token=service.leaseToken(key);await service.open(row.id);assert.equal(service.leaseToken(key),token);assert.equal(logins,1);assert.deepEqual(service.read(key),before);
+ await assert.rejects(service.open('codex-default'),/没有网页/);await assert.rejects(service.open('../../secret'),/不存在/);
+});
+test('failed and synchronous webpage opens propagate without poisoning the next attempt',async t=>{
+ let calls=0;const {service}=setup(t,{open:()=>{calls++;throw Error('private-secret');}});
+ await assert.rejects(service.open('bridge'),/无法打开/);await assert.rejects(service.open('bridge'),/无法打开/);assert.equal(calls,2);assert.equal(service.openFlights.size,0);assert.ok(!JSON.stringify(service.history()).includes('private-secret'));
+});
+test('managed webpage open cannot request SMS, and isolated adapters reject real opens',async t=>{
+ const {root}=setup(t);let opened=0;const browser={open:async provider=>{assert.equal(provider,'doubao');opened++;return {};},preparePhone:()=>assert.fail('SMS must not run')};
+ const adapter=createAccountAdapters({dataDir:root,env:{},browser});await adapter.open({managedBrowser:true,provider:'doubao'});assert.equal(opened,1);
+ const isolated=createAccountAdapters({dataDir:root,env:{CLAUDE_HUB_HOME_DIR:root},browser});await assert.rejects(isolated.open({managedBrowser:true,provider:'doubao'}),/隔离/);assert.equal(opened,1);
+});
 test('two Hub services share one login admission; explicit release permits reopen',async t=>{let count=0;const s=setup(t,{login:async()=>{count++;await new Promise(r=>setTimeout(r,15));return {};}});const second=new AccountCenter({dataDir:s.root,homeDir:s.root,env:{},getConfig:()=>s.config,adapter:s.adapter});await Promise.all([s.service.login('web-deepseek'),second.login('web-deepseek')]);assert.equal(count,1);await second.release('web-deepseek');await s.service.login('web-deepseek');assert.equal(count,2);});
 test('failed login releases admission and exposes failure, not success',async t=>{let count=0;const {service}=setup(t,{login:async()=>{count++;throw Error('missing tool');}});await assert.rejects(service.login('bridge'),/无法打开/);await assert.rejects(service.login('bridge'),/无法打开/);assert.equal(count,2);});
 test('same account checks coalesce and failures are unknown rather than signed out',async t=>{let count=0;const {service}=setup(t,{check:async()=>{count++;await new Promise(r=>setTimeout(r,15));throw Error('network secret');}});const r=await Promise.allSettled([service.check('bridge'),service.check('bridge')]);assert.equal(count,1);assert.equal(r[0].status,'rejected');const row=(await service.snapshot()).connections.find(r=>r.id==='bridge');assert.equal(row.state,'unknown');assert.ok(!JSON.stringify(service.history()).includes('network secret'));});
@@ -59,4 +76,13 @@ test('browser checks require provider-page evidence and never infer login from a
  assert.equal((await browser.check('deepseek')).state,'unknown');result.profile=true;assert.equal((await browser.check('deepseek')).state,'signed_in');
  result.login=true;assert.equal((await browser.check('deepseek')).state,'login_required');result.challenge=true;assert.equal((await browser.check('deepseek')).state,'unknown');
  result.host='other.example';await assert.rejects(browser.check('deepseek'),/页面已切换/);assert.throws(()=>browser.profile('../../arbitrary'),/不支持/);
+});
+
+test('opening a running managed browser activates the existing site tab before reporting reuse',async t=>{
+ const {root}=setup(t),http=require('http'),{WebSocketServer}=require('ws'),{AccountBrowser}=require('../core/account-browser');const methods=[];
+ const server=http.createServer((_req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify([{type:'page',url:'https://chat.deepseek.com/',webSocketDebuggerUrl:'ws://127.0.0.1:'+server.address().port+'/page'}]));});
+ const wss=new WebSocketServer({server});wss.on('connection',ws=>ws.on('message',data=>{const q=JSON.parse(data);methods.push(q.method);ws.send(JSON.stringify({id:q.id,result:q.method==='Page.bringToFront'?{}:{result:{value:{ready:true}}}}));}));
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(async()=>{for(const c of wss.clients)c.terminate();await new Promise(r=>wss.close(r));await new Promise(r=>server.close(r));});
+ const browser=new AccountBrowser({dataDir:root});browser.executable=()=>assert.fail('must reuse the running browser');fs.mkdirSync(browser.profile('deepseek'),{recursive:true});fs.writeFileSync(path.join(browser.profile('deepseek'),'DevToolsActivePort'),String(server.address().port));
+ assert.equal((await browser.open('deepseek')).reused,true);assert.deepEqual(methods,['Page.bringToFront','Runtime.evaluate']);
 });

@@ -18,7 +18,7 @@ function safeObservation(raw = {}) {
 class AccountCenter {
   constructor({ dataDir, getConfig, adapter, homeDir = os.homedir(), env = process.env }) {
     Object.assign(this,{dataDir,getConfig,adapter,homeDir,env});
-    this.root=path.join(dataDir,'account-center');this.flights=new Map();this.batches=new Map();this.codeFlights=new Map();
+    this.root=path.join(dataDir,'account-center');this.flights=new Map();this.batches=new Map();this.codeFlights=new Map();this.openFlights=new Map();
   }
   baseConnections() {
     const c=this.getConfig();
@@ -98,6 +98,23 @@ class AccountCenter {
     try{fs.writeFileSync(fd,JSON.stringify({at:Date.now(),pid:process.pid,token}));}finally{fs.closeSync(fd);}
     try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后检查状态');return {...result,pending:true,message:result.message || '已打开官方登录入口。完成验证后点“检查登录”'};}
     catch(e){this.clearLease(key,token);this.log(row,'登录入口打开失败');throw new Error('无法打开登录入口：'+(e.message || '请检查工具安装'));}
+  }
+  async open(id){
+    const row=await this.row(id);
+    if(row.type!=='web')throw Error('此连接没有网页入口，请使用官方登录或接入配置');
+    const key=this.scope(row);
+    if(this.openFlights.has(key))return this.openFlights.get(key);
+    const flight=Promise.resolve().then(async()=>{
+      try{
+        const result=await this.adapter.open(row);
+        this.log(row,'已请求打开原账号网页；登录状态仍以检查结果为准');
+        return {...result,message:result?.message||'已打开原账号网页；未重新发起登录或短信'};
+      }catch{
+        this.log(row,'网页入口打开失败；原登录资料保留');
+        throw Error('无法打开账号网页，请检查浏览器或原工具后重试');
+      }finally{this.openFlights.delete(key);}
+    });
+    this.openFlights.set(key,flight);return flight;
   }
   async release(id){const row=await this.row(id);try{fs.unlinkSync(this.file(this.scope(row),'login'));}catch(e){if(e.code!=='ENOENT')throw e;}this.log(row,'结束登录等待；未退出账号、未关闭浏览器');return {ok:true};}
   async loginMany(ids,{phone=''}={}){

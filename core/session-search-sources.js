@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { isAiKind, getKindLabel } = require('./ai-kinds');
 const { parseClaudeTranscriptEntries } = require('./claude-transcript-parser.js');
 const { JsonlByteScanner } = require('./jsonl-byte-scanner.js');
 const {
@@ -82,12 +83,12 @@ function baseKind(kind) {
 function providerForHubSession(session) {
   if (!session || session.meetingId) return session && session.meetingId ? 'meeting' : 'unknown';
   const kind = baseKind(session.kind);
-  if (kind === 'deepseek' || kind === 'deepseek-legacy') return 'deepseek';
+  if (kind === 'deepseek' || kind === 'deepseek-legacy' || kind === 'deepseek-acp') return 'deepseek';
   if (kind === 'codex') return 'codex';
   if (kind === 'claude') return 'claude';
   if (kind === 'kimi') return 'kimi';
   if (kind === 'gemini') return 'gemini';
-  return 'unknown';
+  return isAiKind(kind) ? kind : 'unknown';
 }
 
 function providerForClaudeRoot(root) {
@@ -101,7 +102,7 @@ function providerLabel(provider) {
   if (provider === 'meeting') return '群聊';
   if (provider === 'kimi') return 'Kimi';
   if (provider === 'gemini') return 'Gemini';
-  return 'AI';
+  return isAiKind(provider) ? getKindLabel(provider) : 'AI';
 }
 
 function sessionUpdatedAt(session) {
@@ -1046,9 +1047,9 @@ function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
     const hubId = hubIdOf(session);
     const provider = providerForHubSession(session);
     if (!hubId || representedHubIds.has(hubId) || session.meetingId) continue;
-    // kimi / gemini 现在也有自己的适配器；即使某条会话的 transcript 找不到，
-    // 至少要留下标题 + 最后一段输出，否则它在搜索里完全不存在。
-    if (!['claude', 'codex', 'deepseek', 'kimi', 'gemini'].includes(provider)) continue;
+    // 已支持的 AI 即使没有历史解析器，也保留标题和已有末段摘要。
+    // 这不是完整正文索引；PowerShell 等非 AI 类型不进入模型筛选。
+    if (!isAiKind(provider)) continue;
     const title = String(session.title || providerLabel(provider));
     const updatedAt = sessionUpdatedAt(session);
     const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }];

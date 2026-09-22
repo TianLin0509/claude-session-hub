@@ -181,3 +181,15 @@ test('preview hit positions keep scope/time filters and report missing anchors',
   assert.equal(index.preview({sessionKey:'positions',eventId:'deleted-event'}).state,'stale');
   assert.equal(index.preview({sessionKey:'positions',mode:'conversation',afterEventId:'deleted-page'}).state,'stale');
 });
+
+test('expanded Unicode text pages neither skip code points nor stop early',t=>{
+  const index=setup(t),text='🙂汉'.repeat(50000)+'UNICODE_END';
+  index.replaceSource(source('unicode','long text',[{text}]));
+  let offset=0,joined='',steps=0;
+  do {
+    const preview=index.preview({sessionKey:'unicode',eventId:'unicode-0',expandEventId:'unicode-0',textOffset:offset});
+    const item=preview.context[0];joined+=item.text;offset=item.nextTextOffset;
+    assert.ok(++steps<10);
+  } while(offset!==null);
+  assert.equal(joined,text);
+});

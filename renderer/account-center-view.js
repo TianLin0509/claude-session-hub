@@ -36,4 +36,14 @@ function accountSections(rows){
  for(const row of rows){if(isOpenAI(row)){if(!openai.length)result.push({id:'openai',name:'OpenAI',rows:openai});openai.push(row);}else result.push({id:row.id,rows:[row]});}
  return result;
 }
-module.exports={accountRows,isPrimary,bindingRows,isOpenAI,accountSections};
+function needsAttention(row){
+ return row.enabled!==false&&(row.state==='login_required'||!!row.pending&&!(row.state==='signed_in'&&!row.stale));
+}
+function accountAction(row){
+ if(row.action!=='login')return {action:'config',label:'接入配置',id:row.configProvider};
+ if(row.pending)return {action:'attention',label:'继续验证',id:row.id};
+ if(row.state==='login_required')return {action:'login',label:'登录账号',id:row.id};
+ if(row.type==='web')return {action:'open',label:'打开网页',id:row.id};
+ return row.state==='signed_in'&&!row.stale?{action:'select',label:'查看授权',id:row.id}:{action:'login',label:'登录账号',id:row.id};
+}
+module.exports={accountRows,isPrimary,bindingRows,isOpenAI,accountSections,needsAttention,accountAction};

@@ -1,6 +1,7 @@
 'use strict';
 
 const { recordSearch, readRecent } = require('../core/search-recent.js');
+const { isOtherSearchProvider, matchesSearchProvider } = require('../core/session-search-providers');
 const { buildTitleIndex, searchTitles, sameSession } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 const { sinceTimestamp } = require('../core/session-search-index');
@@ -20,7 +21,7 @@ function filterSearchEntries(entries, { scope = 'all', agent = 'all', providers 
   return entries.filter(entry => (scope !== 'dormant' || entry.archived === true)
     && (scope !== 'pinned' || entry.pinned === true)
     && (agent === 'all' || (entry.agentGroup || agentGroupOf(entry)) === agent)
-    && (!providers.length || providers.includes(entry.provider))
+    && matchesSearchProvider(entry.provider, providers)
     && (!project || String(entry.projectLabel || '').toLowerCase().includes(project.toLowerCase()))
     && matchesProjectFilter(entry.cwd, projectFilter)
     && (since == null || (Number(entry.updatedAt) >= since && Number(entry.updatedAt) <= now)));
@@ -44,6 +45,9 @@ const PROVIDER_META = Object.freeze({
   deepseek: { label: 'DeepSeek', className: 'provider-deepseek' },
   kimi: { label: 'Kimi', className: 'provider-kimi' },
   gemini: { label: 'Gemini', className: 'provider-gemini' },
+  other: { label: '其他', className: 'provider-other' },
+  qwen: { label: '千问', className: 'provider-other' },
+  glm: { label: '智谱', className: 'provider-other' },
   all: { label: '全部', className: 'provider-all' },
 });
 
@@ -186,7 +190,13 @@ function createGlobalSessionSearch(options) {
   const resultsRoot = document.getElementById('search-results');
   const previewRoot = document.getElementById('session-search-preview');
   const summaryRoot = document.getElementById('session-search-result-summary');
-  const providerRoot = document.getElementById('session-search-provider-filters');
+  const providerRoot = document.getElementById('session-search-command');
+  const home = document.getElementById('session-search-home');
+  const reader = document.getElementById('session-search-reader');
+  const readerClose = document.getElementById('session-search-reader-close');
+  const advanced = document.getElementById('session-search-advanced');
+  const filterToggle = document.getElementById('session-search-filter-toggle');
+  const suggestions = document.getElementById('session-search-suggestions');
   const scopeRoot = document.getElementById('session-search-scope-tabs');
   const timeSelect = document.getElementById('session-search-time');
   const projectSelect = document.getElementById('session-search-project');
@@ -247,28 +257,11 @@ function createGlobalSessionSearch(options) {
     sortSelect.title=empty?'未输入关键词，按字段浏览；输入后恢复上次搜索排序。':'';
     directionSelect.disabled=sortSelect.value==='relevance';
   }
-  const recentList=document.createElement('datalist');recentList.id='session-search-recent';queryInput.setAttribute('list',recentList.id);queryInput.after(recentList);
   const newResults = document.createElement('button');
   newResults.type='button';newResults.className='session-search-new-results';newResults.hidden=true;
   newResults.textContent='内容已更新 · 刷新结果';
   newResults.addEventListener('click',()=>{newResults.hidden=true;void performSearch({immediate:true});});
-  conditions?.after(newResults);
-  const panes=overlay.querySelector('.session-search-workspace-panes');
-  const divider=document.createElement('div');divider.className='session-search-divider';divider.tabIndex=0;
-  divider.setAttribute('role','separator');divider.setAttribute('aria-label','调整结果与预览宽度');divider.setAttribute('aria-orientation','vertical');
-  let resultShare=42;
-  const resizeShare=value=>{resultShare=Math.max(30,Math.min(62,value));panes.style.setProperty('--search-result-share',resultShare+'%');divider.setAttribute('aria-valuenow',String(Math.round(resultShare)));};
-  const saveResultShare=()=>{try {window.localStorage.setItem('hub.search.resultShare',String(resultShare));} catch { /* Optional UI preference. */ }};
-  divider.setAttribute('aria-valuemin','30');divider.setAttribute('aria-valuemax','62');
-  if(panes) {
-    panes.append(divider);
-    let savedShare=42;try {const saved=Number(window.localStorage.getItem('hub.search.resultShare'));if(saved>=30 && saved<=62) savedShare=saved;} catch { /* Optional UI preference. */ }
-    resizeShare(savedShare);
-  }
-  divider.addEventListener('pointerdown',event=>{event.preventDefault();divider.setPointerCapture(event.pointerId);});
-  divider.addEventListener('pointermove',event=>{if(!divider.hasPointerCapture(event.pointerId)) return;const rect=panes.getBoundingClientRect();resizeShare(100*(event.clientX-rect.left)/rect.width);});
-  divider.addEventListener('pointerup',event=>{if(divider.hasPointerCapture(event.pointerId)) {divider.releasePointerCapture(event.pointerId);saveResultShare();}});
-  divider.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();resizeShare(resultShare+(event.key==='ArrowRight'?2:-2));saveResultShare();}});
+  summaryRoot.after(newResults);
 
   const agentRoot = document.createElement('div');
   agentRoot.id = 'session-search-agent-filters';
@@ -284,7 +277,7 @@ function createGlobalSessionSearch(options) {
     button.dataset.agent = group.key; button.textContent = group.label;
     agentRoot.appendChild(button);
   }
-  providerRoot.after(agentRoot);
+  document.getElementById('session-search-agent-slot').append(agentRoot);
   for (const [key, label] of [['dormant', '归档'], ['pinned', '置顶管理']]) {
     const button = document.createElement('button');
     button.type = 'button'; button.dataset.scope = key; button.textContent = label;
@@ -449,7 +442,9 @@ function createGlobalSessionSearch(options) {
     const allCount = Object.values(providerCounts).reduce((sum, value) => sum + (Number(value) || 0), 0);
     for (const button of providerRoot.querySelectorAll('[data-provider]')) {
       const provider = button.dataset.provider;
-      const count = provider === 'all' ? allCount : (Number(providerCounts[provider]) || 0);
+      const count = provider === 'all' ? allCount : provider === 'other'
+        ? Object.entries(providerCounts).reduce((sum, [key, value]) => sum + (isOtherSearchProvider(key) ? Number(value) || 0 : 0), 0)
+        : (Number(providerCounts[provider]) || 0);
       const countNode = button.querySelector('b');
       if (countNode) countNode.textContent = String(count);
       if (OPTIONAL_PROVIDERS.includes(provider)) button.hidden = count === 0 && activeProvider !== provider;
@@ -501,12 +496,14 @@ function createGlobalSessionSearch(options) {
       projectLoadError = '';
       renderProjectLibrary();
       // Membership may change when projects/worktrees were added between opens.
-      scheduleSearch();
+      if(reader.hidden) scheduleSearch();
+      else newResults.hidden=false;
     } catch (error) {
       if (sequence !== projectLoadSequence || !isOpen()) return;
       projectLibrary = [];
       projectLoadError = `项目库读取失败：${error.message}。重新打开可重试。`;
-      scheduleSearch();
+      if(reader.hidden) scheduleSearch();
+      else newResults.hidden=false;
       renderProjectLibrary();
       announce(projectNote.textContent);
     } finally {
@@ -536,18 +533,20 @@ function createGlobalSessionSearch(options) {
     const time = document.createElement('time');
     time.className = 'session-search-result-time';
     const timestamp=lastRequest?.sort==='conversationTime'?hit.lastConversationAt:hit.newestMatchedEventAt;
-    time.textContent = `${lastRequest?.sort==='conversationTime'?'对话':'命中'} · ${timestamp?formatSearchTime(timestamp):'标题'}`;
+    time.textContent = timestamp ? formatSearchTime(timestamp) : '标题记录';
     time.title = timestamp ? new Date(timestamp).toLocaleString('zh-CN') : '标题没有命中消息时间';
     line.append(provider, time);
 
     const title = document.createElement('div');
     title.className = 'session-search-result-title';
-    title.textContent = hit.title || '未命名会话';
+    appendHighlightedText(document, title, hit.title || '未命名会话', queryInput.value);
     const snippet = document.createElement('div');
     snippet.className = 'session-search-result-snippet';
     appendHighlightedText(document, snippet, hit.bestMatch && hit.bestMatch.text || '', queryInput.value);
     const question=document.createElement('div');question.className='session-search-result-question';
-    appendHighlightedText(document,question,hit.questionExcerpt?'问：'+hit.questionExcerpt:'标题：'+hit.title,queryInput.value);
+    const project=projectForCwd(projectLibrary, hit.cwd)?.name || hit.cwd?.split(/[\\/]/).filter(Boolean).pop();
+    if(project) {const tag=document.createElement('span');tag.className='session-search-result-project';tag.textContent=project+' · ';question.append(tag);}
+    appendHighlightedText(document,question,hit.questionExcerpt || hit.bestMatch?.text || '打开阅读完整对话',queryInput.value);
     if(hit.answerExcerpt) {snippet.replaceChildren();appendHighlightedText(document,snippet,'答：'+hit.answerExcerpt,queryInput.value);}
     const metaRow = document.createElement('div');
     metaRow.className = 'session-search-result-meta';
@@ -563,9 +562,14 @@ function createGlobalSessionSearch(options) {
       chip.title = text;
       metaRow.appendChild(chip);
     }
-    button.append(line, title, question, snippet, metaRow);
-    button.addEventListener('click', () => {overlay.classList.add('reading');void selectResult(index, { focusRow: false });});
-    button.addEventListener('dblclick', () => openSelectedHit({ focus: true }));
+    const icon=document.createElement('span');icon.className='session-search-result-icon';icon.setAttribute('aria-hidden','true');
+    icon.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h4"/></svg>';
+    const body=document.createElement('div');body.className='session-search-result-body';body.append(title,question);
+    if(hit.answerExcerpt && queryInput.value.trim()) body.append(snippet);
+    const enter=document.createElement('span');enter.className='session-search-result-enter';enter.textContent='↵';enter.setAttribute('aria-hidden','true');
+    button.title=[hit.title, ...[...metaRow.children].map(el=>el.textContent)].filter(Boolean).join(' · ');
+    button.append(icon,body,line,enter);
+    button.addEventListener('click', () => {void selectResult(index, { read: true });});
     button.addEventListener('keydown', (event) => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -574,8 +578,8 @@ function createGlobalSessionSearch(options) {
         void selectResult(next, { focusRow: true });
       } else if (event.key === 'Enter') {
         event.preventDefault();
-        if (event.ctrlKey || event.metaKey) void openSelectedHit({ focus: true });
-        else void selectResult(index, { focusRow: false });
+        if (event.ctrlKey || event.metaKey) {void selectResult(index);void openSelectedHit({ focus: true });}
+        else void selectResult(index, { read: true });
       }
     });
     return button;
@@ -592,8 +596,9 @@ function createGlobalSessionSearch(options) {
     results=preliminary?lastTitleHits.slice():indexedResults;
     const total=Number(response.totalSessions)||results.length;
     const partial=response.state==='partial'||response.pendingFullText||response.indexing;
-    summaryRoot.firstElementChild.textContent=`${partial?'至少 ':''}${total} 个会话${partial?' · 继续检索中':''}`;
-    summaryRoot.lastElementChild.textContent=`${Number(response.queryMs)||0} ms · ${preliminary?'标题预备结果':'条件已生效'}`;
+    summaryRoot.firstElementChild.textContent=`${queryInput.value.trim()?'搜索结果':'最近的对话'} · ${partial?'至少 ':''}${total}${partial?' · 继续检索中':''}`;
+    summaryRoot.lastElementChild.textContent=preliminary?'标题预备结果':'';
+    summaryRoot.title=`${Number(response.queryMs)||0} ms · ${preliminary?'标题预备结果':'条件已生效'}`;
     if(conditions && lastRequest) {
       const r=lastRequest;
       const date=r.time.from==null?'不限时间':`${new Date(r.time.from).toLocaleString('zh-CN')} — ${new Date(r.time.to).toLocaleString('zh-CN')}`;
@@ -687,8 +692,18 @@ function createGlobalSessionSearch(options) {
     return resultScopeLabel(item.scope);
   }
 
+  async function openReaderPath(filePath, cwd) {
+    if(typeof openPath!=='function') throw new Error('文件打开功能尚未就绪');
+    const sequence=previewSequence;
+    const result=await openPath(filePath,{cwd});
+    if(result?.ok===false) throw new Error(result.error || '无法打开文件');
+    // Hub previews and file manager live underneath this modal. Reveal them
+    // only after a successful navigation; a failed open keeps the reader here.
+    if(sequence===previewSequence && isOpen() && ['preview','file-manager'].includes(result?.type)) close({restoreFocus:false});
+  }
+
   function renderPreview(hit, preview) {
-    if(!preview?.session) {
+    if(!preview?.session || preview.error) {
       previewRoot.replaceChildren(createStaticEmpty(document,{title:'暂时无法读取原文',detail:preview?.error || '原始记录可能正在写入或已被移动。',className:'error'}));return;
     }
     activePreview=preview;
@@ -711,7 +726,7 @@ function createGlobalSessionSearch(options) {
     if(previewMode==='artifacts') {
       if(!preview.artifacts?.length) context.append(createStaticEmpty(document,{title:'这段问答未发现可打开的产物',detail:'原文中的历史路径仍可在“原始对话”里查看。'}));
       for(const artifact of preview.artifacts||[]) {
-        const button=action(artifact.name||artifact.path,async()=>{try {await openPath?.(artifact.path,{cwd:preview.session.cwd});} catch(e) {announce(e.message);button.textContent='无法打开：'+e.message;}});
+        const button=action(artifact.name||artifact.path,async()=>{try {await openReaderPath(artifact.path,preview.session.cwd);} catch(e) {announce(e.message);button.textContent='无法打开：'+e.message;}});
         button.classList.add('session-search-artifact');button.title=artifact.path;context.append(button);
       }
     } else {
@@ -726,7 +741,7 @@ function createGlobalSessionSearch(options) {
         if(cardRenderer && item.scope!=='tool' && item.scope!=='title') {
           const rendered=cardRenderer.renderReadOnlyCard({id:item.eventId,role:item.role,text:item.text,ts:item.timestamp,kind:hit.provider,model:item.speaker});
           rendered.classList.add('session-search-native-card');turn.append(rendered);
-          rendered.addEventListener('click',async event=>{const link=event.target.closest('a');if(!link) return;event.preventDefault();event.stopPropagation();try {await openPath?.(link.getAttribute('href'),{cwd:preview.session.cwd});} catch(error) {announce(error.message);}});
+          rendered.addEventListener('click',async event=>{const link=event.target.closest('a');if(!link) return;event.preventDefault();event.stopPropagation();try {await openReaderPath(link.getAttribute('href'),preview.session.cwd);} catch(error) {announce(error.message);const note=document.createElement('p');note.className='session-search-notice';note.textContent='无法打开：'+error.message;rendered.append(note);}});
         } else {
           const text=document.createElement('div');text.className='session-search-preview-text';appendHighlightedText(document,text,item.text||'',queryInput.value);turn.append(text);
         }
@@ -737,8 +752,7 @@ function createGlobalSessionSearch(options) {
       if(preview.omittedRecords) context.append(action(`本轮另有 ${preview.omittedRecords} 条记录 · 查看全部`,()=>{previewMode='conversation';void loadPreview(hit);}));
       if(preview.afterCursor) context.append(action('加载后面的原文',()=>loadPreview(hit,{afterEventId:preview.afterCursor})));
     }
-    const back=action('← 返回结果',()=>overlay.classList.remove('reading'));back.classList.add('session-search-back');
-    previewRoot.replaceChildren(back,header,tabs,context);
+    previewRoot.replaceChildren(header,tabs,context);
   }
 
   async function loadPreview(hit,extra={}) {
@@ -751,16 +765,53 @@ function createGlobalSessionSearch(options) {
     } catch(error) {if(seq===previewSequence && isOpen()) renderPreview(hit,{error:error.message});}
   }
 
-  async function selectResult(index, { focusRow = false } = {}) {
+  async function selectResult(index, { focusRow = false, read = false } = {}) {
     if(!Number.isInteger(index) || index<0 || index>=results.length) return;
     activeIndex=index;activePreview=null;previewMode='overview';previewPage={};
     for(const row of resultsRoot.querySelectorAll('.session-search-result')) {
       const active=Number(row.dataset.resultIndex)===index;
       row.classList.toggle('active',active);row.setAttribute('aria-selected',String(active));
-      if(active && focusRow) {row.scrollIntoView({block:'nearest'});row.focus();}
+      if(active) {row.scrollIntoView({block:'nearest'});if(focusRow) row.focus();}
     }
-    if(focusRow || document.activeElement?.closest('.session-search-result')) overlay.classList.add('reading');
-    await loadPreview(results[index]);
+    if(read) {
+      reader.hidden=false;
+      overlay.classList.add('reading');
+      readerClose.focus();
+      home.inert=true;
+      previewRoot.replaceChildren(createStaticEmpty(document,{title:'正在读取对话',detail:'读取已保存的历史记录…',busy:true}));
+      await loadPreview(results[index]);
+    }
+  }
+
+  function closeReader({ restoreFocus = true } = {}) {
+    previewSequence += 1;
+    reader.hidden=true;
+    home.inert=false;
+    overlay.classList.remove('reading');
+    activePreview=null;
+    previewRoot.replaceChildren();
+    if(restoreFocus) queryInput.focus();
+  }
+
+  function updateAdvancedFilters() {
+    const count=Number(activeAgent!=='all')+Number(activeScope!=='dialogue')+Number(timeField.value!=='eventTime')+
+      Number(sortSelect.value!==(queryInput.value.trim()?'relevance':'conversationTime'))+
+      Number(OPTIONAL_PROVIDERS.includes(activeProvider));
+    filterToggle.textContent=count?`筛选 · ${count}`:'筛选';
+    filterToggle.classList.toggle('active',count>0);
+  }
+
+  function renderRecentSearches() {
+    suggestions.replaceChildren();
+    const recent=readRecent(window.localStorage).slice(0,4);
+    suggestions.hidden=!recent.length;
+    if(!recent.length) return;
+    const label=document.createElement('span');label.textContent='最近找过';suggestions.append(label);
+    for(const entry of recent) {
+      const button=document.createElement('button');button.type='button';button.textContent=entry.query;
+      button.title=entry.query;button.addEventListener('click',()=>{queryInput.value=entry.query;scheduleSearch();queryInput.focus();});
+      suggestions.append(button);
+    }
   }
 
   async function copyReference(hit, preview, button) {
@@ -795,6 +846,7 @@ function createGlobalSessionSearch(options) {
   }
 
   function scheduleSearch() {
+    closeReader({restoreFocus:false});
     // A previous IPC response may already be in flight when the user changes
     // provider/scope/query. Invalidate it immediately, not 160 ms later when
     // the debounced replacement request starts, or stale Codex results can
@@ -809,6 +861,7 @@ function createGlobalSessionSearch(options) {
     // 现在 performSearch 会**同步**先把标题层结果画出来，再去跑全文，
     // 所以不需要这个中间态 —— 转圈本身就是用户抱怨的「感觉很慢」。
     void performSearch({ immediate: false });
+    updateAdvancedFilters();
   }
 
   function showIndexDetails() {
@@ -848,9 +901,10 @@ function createGlobalSessionSearch(options) {
       ? document.activeElement
       : launchButton;
     overlay.style.display = 'flex';
-    overlay.classList.remove('reading');newResults.hidden=true;
-    recentList.replaceChildren();
-    for(const entry of readRecent(window.localStorage).slice(0,10)) {const option=document.createElement('option');option.value=entry.query;recentList.append(option);}
+    closeReader({restoreFocus:false});newResults.hidden=true;
+    advanced.hidden=!(scope==='dormant' || scope==='pinned');
+    filterToggle.setAttribute('aria-expanded',String(!advanced.hidden));
+    renderRecentSearches();
     // 每次打开重建一次即时标题索引：期间可能新建/改名/关闭过会话。
     // 682 条实测亚毫秒，放在同步路径上不影响弹窗打开。
     refreshTitleIndex();
@@ -858,6 +912,7 @@ function createGlobalSessionSearch(options) {
     void loadProjectLibrary();
     void refreshStatus({ repeat: true });
     void performSearch({ immediate: true });
+    updateAdvancedFilters();
     window.requestAnimationFrame(() => {
       queryInput.focus();
       queryInput.select();
@@ -866,6 +921,7 @@ function createGlobalSessionSearch(options) {
 
   function close({ restoreFocus = true } = {}) {
     if (!overlay) return;
+    closeReader({restoreFocus:false});
     overlay.style.display = 'none';
     projectLoadSequence += 1;
     searchSequence += 1;
@@ -893,7 +949,7 @@ function createGlobalSessionSearch(options) {
     if (event.key === 'Enter' && results.length) {
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) void openSelectedHit({ focus: true });
-      else void selectResult(activeIndex < 0 ? 0 : activeIndex, { focusRow: true });
+      else void selectResult(activeIndex < 0 ? 0 : activeIndex, { read: true });
     }
   });
   providerRoot.addEventListener('click', (event) => {
@@ -923,6 +979,12 @@ function createGlobalSessionSearch(options) {
   closeButton.addEventListener('click', close);
   if (launchButton) launchButton.addEventListener('click', open);
   statusButton.addEventListener('click', showIndexDetails);
+  readerClose.addEventListener('click',()=>closeReader());
+  document.getElementById('session-search-reader-scrim').addEventListener('click',()=>closeReader());
+  filterToggle.addEventListener('click',()=>{
+    advanced.hidden=!advanced.hidden;
+    filterToggle.setAttribute('aria-expanded',String(!advanced.hidden));
+  });
   overlay.addEventListener('mousedown', event => { if (event.target === overlay) close(); });
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && String(event.key).toLowerCase() === 'f') {
@@ -935,13 +997,14 @@ function createGlobalSessionSearch(options) {
     if (event.key === 'Escape' && isOpen()) {
       event.preventDefault();
       event.stopImmediatePropagation?.();
-      close();
+      if(!reader.hidden) closeReader();
+      else close();
       return;
     }
     if (event.key === 'Tab' && isOpen()) {
-      const focusable = [...overlay.querySelectorAll(
-        'button:not([disabled]):not([hidden]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )].filter(element => element.offsetParent !== null);
+      const focusable = [...(reader.hidden?overlay:reader).querySelectorAll(
+        'button:not([disabled]):not([hidden]), input:not([disabled]), select:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])',
+      )].filter(element => element.offsetParent !== null && element.tabIndex >= 0);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
@@ -973,6 +1036,7 @@ function createGlobalSessionSearch(options) {
         selectedSessionKey:results[activeIndex]?.sessionKey,
         resultCount: results.length,
         activeIndex,
+        reading:!reader.hidden,
         totalSessions: lastResponse && lastResponse.totalSessions || 0,
         totalMatches: lastResponse && lastResponse.totalMatches || 0,
         previewTitle: previewRoot.querySelector('h3')?.textContent || '',

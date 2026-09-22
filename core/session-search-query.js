@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { normalize, termsFor, normalizeSort, documentRank, compareRank, compareResults, rankReason, RANK_VERSION } = require('./session-search-ranking');
 const { createSnippet, isCjkAuxTerm, sinceTimestamp } = require('./session-search-index');
 const { normalizeProjectFilter, matchesProjectFilter } = require('./session-search-projects');
+const { matchesSearchProvider } = require('./session-search-providers');
 const DIALOGUE = ['title', 'user', 'assistant'];
 // 工具 doc 不在全文索引里，所以它不是一个可检索范围；老请求里的 tool 直接忽略。
 const ALL_SCOPES = [...DIALOGUE];
@@ -67,7 +68,7 @@ class QuerySnapshot {
       this.timed = from != null || to != null;
       this.rangeSessions = this.timed ? new Set(this.db.prepare(`SELECT DISTINCT session_key FROM docs WHERE scope IN ('user','assistant') AND event_id<>'last-output-preview' AND timestamp>0 AND timestamp>=? AND timestamp<=?`).all(from ?? 0,to ?? Number.MAX_SAFE_INTEGER).map(r=>r.session_key)) : null;
       this.allowed = new Set([...this.sessions.values()].filter(s=>
-        (!request.providers.length || request.providers.includes(s.provider))
+        matchesSearchProvider(s.provider, request.providers)
         && (!request.project || normalize(`${s.projectLabel||''} ${s.cwd||''}`).includes(request.project))
         && matchesProjectFilter(s.cwd, request.projectFilter)
         && (!request.sessionFilter || request.sessionFilter.hubSessionIds.includes(s.hubSessionId) || request.sessionFilter.meetingIds.includes(s.meetingId))
