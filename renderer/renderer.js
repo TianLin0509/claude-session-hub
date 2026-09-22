@@ -4311,6 +4311,16 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
         .then(result => { if (!result?.ok) showToast('继续失败：' + (result?.message || result?.error || '未确认'), 'error'); })
         .catch(error => showToast('继续失败：' + error.message, 'error'))
         .finally(() => { statusAction.disabled = false; });
+      return;
+    }
+    // 「核对上次任务」：只读原生历史，登记「不重发」。旧任务不会被重发，
+    // 也不会被说成成功；失败就弹出来，不允许静默。
+    if (kind === 'claude-reconcile') {
+      statusAction.disabled = true;
+      void ipcRenderer.invoke('claude-native:reconcile-history', { sessionId })
+        .then(result => { if (!result?.ok) showToast('核对失败：' + (result?.message || result?.error || '未确认'), 'error'); })
+        .catch(error => showToast('核对失败：' + error.message, 'error'))
+        .finally(() => { statusAction.disabled = false; });
     }
   });
   statusRow.append(statusDot, statusText, statusDetail, statusAction);
