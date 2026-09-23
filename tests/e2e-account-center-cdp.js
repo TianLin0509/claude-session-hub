@@ -29,9 +29,57 @@ async function main(){
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-family").length'),1);
   assert.equal(await cdp.eval('document.querySelector(".ac-family").open'),false);
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-account-list>.ac-row,.ac-account-list>.ac-family").length'),7);
+  // Observe two real polling cycles: unchanged data must not replace controls or lose focus.
+  await cdp.eval(`(()=>{
+   const body=document.querySelector('.ac-content'),button=body.querySelector('[data-ac="open"][data-id="web-gemini"]');
+   button.focus({preventScroll:true});body.scrollTop=180;
+   window.accountRefreshProbe={button,top:body.scrollTop,replacements:0};
+   window.accountRefreshObserver=new MutationObserver(records=>{accountRefreshProbe.replacements+=records.filter(r=>r.target===body&&r.removedNodes.length).length;});
+   accountRefreshObserver.observe(body,{childList:true});
+  })()`);
+  await sleep(11000);
+  const polling=await cdp.eval(`(()=>{accountRefreshObserver.disconnect();return {replacements:accountRefreshProbe.replacements,sameButton:accountRefreshProbe.button.isConnected,focusRetained:document.activeElement===accountRefreshProbe.button,scrollBefore:accountRefreshProbe.top,scrollAfter:document.querySelector('.ac-content').scrollTop};})()`);
+  fs.writeFileSync(path.join(out,'polling.json'),JSON.stringify(polling,null,2));
+  assert.equal(polling.replacements,0,'unchanged polling must not rebuild the account page');
+  assert.equal(polling.sameButton,true);assert.equal(polling.focusRetained,true);assert.equal(polling.scrollAfter,polling.scrollBefore);
+  result.checks.push('跨两次真实定时刷新，未变化的账号页面零整页替换，按钮焦点和滚动位置保留');
+  await click('.ac-family>summary');await click('[data-ab-select="web-gemini"]');
+  await cdp.eval(`(()=>{document.querySelector('.ac-row [data-ac="open"][data-id="web-gemini"]').focus({preventScroll:true});document.querySelector('.ac-content').scrollTop=180;})()`);
+  // An external caller updates a receipt through the real IPC; the normal timer must show it.
+  await cdp.eval('ipcRenderer.invoke("accounts:check",{id:"web-gemini"})');
+  await until('document.querySelector(".ac-name[data-id=web-gemini]").closest(".ac-row").querySelector(".ac-row-status small").textContent!=="尚未检查"','changed receipt appears through polling');
+  assert.equal(await cdp.eval('document.querySelector(".ac-family").open'),true);
+  assert.equal(await cdp.eval('document.querySelector("[data-ab-select=web-gemini]").checked'),true);
+  assert.equal(await cdp.eval('document.activeElement.dataset.id'), 'web-gemini');
+  assert.equal(await cdp.eval('document.querySelector(".ac-content").scrollTop'),180);
+  await click('[data-ab="clear"]');await click('.ac-family>summary');
+  result.checks.push('实际 IPC 更新回执后定时刷新可见；展开、勾选、焦点与滚动保持');
+  // Delay delivery of one real IPC response to exercise typing during a pending poll.
+  await cdp.eval(`(()=>{
+   window.accountOriginalInvoke=ipcRenderer.invoke;window.accountSnapshotCalls=0;
+   ipcRenderer.invoke=function(channel,...args){
+    const response=accountOriginalInvoke.call(this,channel,...args);
+    if(channel!=='accounts:snapshot')return response;
+    accountSnapshotCalls++;
+    window.accountSnapshotDelivered=response.then(value=>new Promise(resolve=>{window.accountSnapshotRelease=()=>resolve(value);}));
+    return accountSnapshotDelivered;
+   };
+  })()`);
+  await until('typeof accountSnapshotRelease==="function"','background response held');
+  await click('#ac-search');await cdp.send('Input.insertText',{text:'Gemini'});
+  await cdp.eval('window.accountSearchField=document.querySelector("#ac-search")');
+  await sleep(5500);
+  assert.equal(await cdp.eval('accountSnapshotCalls'),1,'polls do not overlap');
+  await cdp.eval('(async()=>{ipcRenderer.invoke=accountOriginalInvoke;accountSnapshotRelease();await accountSnapshotDelivered;})()');
+  assert.equal(await cdp.eval('accountSearchField.isConnected&&document.activeElement===accountSearchField&&accountSearchField.value==="Gemini"'),true,'late response must not interrupt typing');
+  await cdp.eval('(()=>{const e=document.querySelector("#ac-search");e.value="";e.dispatchEvent(new Event("input",{bubbles:true}));document.activeElement.blur();})()');
+  result.checks.push('延迟真实 IPC 回执的竞态验证：后台请求不重叠，返回时开始搜索也不打断输入');
   await click('[data-ac="attention"]');await until('document.querySelector(".ac-task-dialog[open]")','consolidated verification dialog');
   assert.ok((await cdp.eval('document.querySelector(".ac-task-list").textContent')).includes('生图'));
   assert.equal(await cdp.eval('(()=>{const r=document.querySelector(".ac-task-dialog").getBoundingClientRect();return Math.abs(r.x+r.width/2-innerWidth/2)<3&&Math.abs(r.y+r.height/2-innerHeight/2)<3;})()'),true,'verification dialog remains centered despite global CSS reset');
+  await cdp.eval('window.accountTaskButton=document.querySelector(".ac-task-list button");accountTaskButton.focus()');
+  await cdp.eval('accountCenterPanel.refresh()');
+  assert.equal(await cdp.eval('accountTaskButton.isConnected&&document.activeElement===accountTaskButton'),true,'unchanged verification dialog retains its controls');
   await snap('07-consolidated-verification');
   await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});

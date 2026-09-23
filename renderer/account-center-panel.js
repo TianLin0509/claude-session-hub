@@ -14,6 +14,28 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  const btn=(title,action,id,cls='')=>`<button class="ac-btn ${cls}" data-ac="${action}" data-id="${esc(id||'')}" ${busy.has(id)?'disabled':''}>${esc(title)}</button>`;
  const mark=r=>`<span class="ac-avatar ac-avatar-${esc(isOpenAI(r)?'openai':r.provider)}" aria-hidden="true">${esc(marks[r.provider]||'·')}</span>`;
  async function call(action,args){const r=await ipcRenderer.invoke('accounts:'+action,args);if(!r?.ok)throw Error(r?.error||'账号服务未响应');return r.data;}
+ function editing(){return !!page.querySelector('.ac-code-dialog[open]')||page.contains(document.activeElement)&&document.activeElement.matches('input:not([type="checkbox"]),textarea,select,[contenteditable="true"]');}
+ function renderStatus(){
+  const status=page.querySelector('.ac-status'),text=error||notice||(loading?'正在读取账号状态…':'');
+  if(status.textContent!==text)status.textContent=text;
+  status.classList.toggle('error',!!error);
+  batchUI.setNotice(error||notice);
+ }
+ function renderPreservingView(){
+  const top=body.scrollTop,left=body.scrollLeft,active=document.activeElement;
+  const scope=active?.closest('.ac-detail,.ac-row,.ac-task-dialog'),scopeClass=scope?.classList.contains('ac-detail')?'.ac-detail':scope?.classList.contains('ac-row')?'.ac-row':scope?'.ac-task-dialog':'';
+  const focus=page.contains(active)?{tag:active.tagName,id:active.id,data:{...active.dataset}}:null;
+  const details=['.ac-family','.ac-members','.ac-batch-progress','.ac-recovery details'].map(selector=>({selector,open:body.querySelector(selector)?.open}));
+  const scrolls=['.ac-batch-results','.ac-task-dialog'].map(selector=>({selector,top:page.querySelector(selector)?.scrollTop}));
+  render();
+  for(const {selector,open} of details)if(open!==undefined){const el=body.querySelector(selector);if(el)el.open=open;}
+  if(focus&&!active.isConnected){
+   const replacement=[...page.querySelectorAll((scopeClass?scopeClass+' ':'')+focus.tag)].find(el=>el.id===focus.id&&Object.keys(focus.data).length>0&&Object.entries(focus.data).every(([key,value])=>el.dataset[key]===value));
+   replacement?.focus({preventScroll:true});
+  }
+  for(const {selector,top:scrollTop} of scrolls)if(scrollTop!==undefined){const el=page.querySelector(selector);if(el)el.scrollTop=scrollTop;}
+  body.scrollTop=top;body.scrollLeft=left;
+ }
  function position(){const rail=document.getElementById('scene-rail')?.getBoundingClientRect();if(rail){page.style.left=rail.right+'px';page.style.top=rail.top+'px';}}
  function rowHtml(r){
   const action=accountAction(r);
@@ -37,8 +59,8 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   page.querySelectorAll('[data-ac-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.acTab===tab);b.setAttribute('aria-selected',String(b.dataset.acTab===tab));});
   page.dataset.layout=layout;
   const editor=document.getElementById('account-editor');editor.hidden=tab!=='config';body.hidden=tab==='config';
-  page.querySelector('.ac-status').textContent=error||notice||(loading?'正在读取账号状态…':'');page.querySelector('.ac-status').classList.toggle('error',!!error);
-  batchUI.update({...snapshot,connections:all});batchUI.setNotice(error||notice);
+  renderStatus();
+  batchUI.update({...snapshot,connections:all});
   if(tab==='config')return;
   if(tab==='history'){body.innerHTML=`<h2>最近活动</h2><p class="ac-muted">仅记录操作结果，不保存验证码或密钥。</p>${snapshot.history.length?snapshot.history.map(x=>`<div class="ac-log"><time>${esc(when(x.at))}</time><strong>${esc(x.name)}</strong><span>${esc(x.message)}</span></div>`).join(''):'<p class="ac-empty">暂无账号操作记录</p>'}`;return;}
   if(tab==='bindings'){
@@ -51,12 +73,22 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   body.innerHTML=`<div class="ac-summary"><span><b>${accountSections(primary).length}</b>主要入口</span><span><b>${all.filter(r=>r.state==='signed_in'&&!r.stale&&r.enabled!==false).length}</b>已确认授权</span><span class="ac-summary-warn"><b>${attention.length}</b>需处理</span><span class="ac-muted">状态以实际检查结果为准</span></div>${attention.length?`<div class="ac-attention"><div><strong>${attention.length} 处授权需要你处理</strong><p>${esc(attention.slice(0,3).map(r=>r.name).join(' · '))}${attention.length>3?' 等':''}</p></div>${btn('集中处理 →','attention')}</div>`:''}<div class="ac-filters">${[['primary','主要账号'],['other',`其他接入（${otherCount}）`],['all','全部']].map(([id,name])=>btn(name,'filter',id,filter===id?'active':'')).join('')}<span class="ac-filter-divider"></span>${btn('需处理','status-filter','attention',statusFilter==='attention'?'active':'')}${btn('已登录','status-filter','signed_in',statusFilter==='signed_in'?'active':'')}<input id="ac-search" aria-label="搜索账号或用途" placeholder="搜索账号 / 用途" value="${esc(query)}"><div class="ac-layout-switch" aria-label="列表布局">${btn('列表','layout','list',layout==='list'?'active':'')}${btn('卡片','layout','cards',layout==='cards'?'active':'')}</div></div><div class="ac-grid"><div class="ac-list-area"><div class="ac-list-caption"><span>账号与用途</span><small>按已知身份收拢，不重复列生图通道</small></div><div class="ac-account-list">${list.length?listHtml(list):`<div class="ac-empty">没有匹配的账号${btn('清除筛选','clear-filter')}</div>`}</div><div class="ac-other-entry"><span>API 密钥、其他 CLI 与服务接入</span>${btn('管理 →','filter','other','ac-link')}</div><p class="ac-muted">网页圆桌复用对应网站的专用浏览器；生图与中转仍沿用原工具资料。</p></div><aside class="ac-detail">${detailHtml(row)}</aside></div>`;
   batchUI.decorate({...snapshot,connections:all});
  }
- async function refresh(){const ticket=++epoch;loading=true;render();try{const value=await call('snapshot');if(ticket!==epoch||page.hidden)return;snapshot=value;error='';}catch(e){if(ticket===epoch)error=e.message;}finally{if(ticket===epoch){loading=false;render();}}}
+ async function refresh({background=false}={}){
+  if(background&&(loading||editing()))return;
+  const ticket=++epoch;loading=true;let changed=false;
+  if(!background)renderStatus();
+  try{
+   const value=await call('snapshot');
+   if(ticket!==epoch||page.hidden||background&&(editing()||busy.size||tab==='config'))return;
+   changed=JSON.stringify(value)!==JSON.stringify(snapshot);snapshot=value;error='';
+  }catch(e){if(ticket===epoch)error=e.message;}
+  finally{if(ticket===epoch){loading=false;if(!page.hidden){if(changed||!background)renderPreservingView();else renderStatus();}}}
+ }
  async function operate(action,id){if(busy.has(id))return;busy.add(id);error='';notice='';render();const ticket=viewEpoch;try{const result=await call(action,{id});if(page.hidden||ticket!==viewEpoch)return;notice=result?.message||(action==='release'?'已结束等待，没有退出账号。':'检查完成。');await refresh();}catch(e){if(!page.hidden&&ticket===viewEpoch){error=e.message;render();}}finally{busy.delete(id);render();}}
  async function configure(provider='codex'){const ticket=viewEpoch;try{batchUI.closeAttention();await configModal.openAccountConfig(provider);if(page.hidden||ticket!==viewEpoch)return;tab='config';render();}catch(e){error=e.message;render();}}
  function allRow(id){return accountRows(snapshot.connections).find(r=>r.id===id)||{};}
- function close(){if(page.hidden)return;page.hidden=true;batchUI.clear();epoch++;viewEpoch++;clearInterval(timer);document.body.classList.remove('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','false');if(previousFocus?.isConnected)previousFocus.focus();}
- async function open(provider){closeOtherPanels();configModal.close();previousFocus=document.activeElement;page.hidden=false;document.body.classList.add('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','true');tab='overview';error='';notice='';render();await refresh();clearInterval(timer);timer=setInterval(()=>{if(!page.hidden&&tab!=='config'&&busy.size===0&&!page.querySelector('.ac-code-dialog[open]')&&!['ac-batch-phone','ac-search'].includes(document.activeElement?.id))void refresh();},5000);if(provider)await configure(provider);}
+ function close(){if(page.hidden)return;page.hidden=true;batchUI.clear();epoch++;viewEpoch++;loading=false;clearInterval(timer);document.body.classList.remove('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','false');if(previousFocus?.isConnected)previousFocus.focus();}
+ async function open(provider){closeOtherPanels();configModal.close();const ticket=++viewEpoch;clearInterval(timer);previousFocus=document.activeElement;page.hidden=false;document.body.classList.add('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','true');tab='overview';error='';notice='';render();await refresh();if(page.hidden||ticket!==viewEpoch)return;timer=setInterval(()=>{if(!page.hidden&&tab!=='config'&&busy.size===0)void refresh({background:true});},5000);if(provider)await configure(provider);}
  page.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b)return;if(b.dataset.acTab){tab=b.dataset.acTab;render();return;}
   const action=b.dataset.ac,id=b.dataset.id;
