@@ -8,6 +8,10 @@
     DEFAULT_MODEL_BY_KIND,
     setRuntimeModelOptions,
   } = require('../core/model-options.js');
+  const {
+    isDefaultModel,
+    resolveDefaultModel,
+  } = require('../core/default-model-preference.js');
   const { defaultCodexContextWindow } = require('../core/codex-context-window.js');
 
   const KIND_LABELS = {
@@ -154,15 +158,35 @@
     return options;
   }
 
+  // 用户在新建会话面板点过「设为默认」的 per-CLI 模型。由 main 从 config.json
+  // 读来，空表示沿用 model-options.js 的出厂默认值。
+  let hubDefaultModels = {};
+
+  function defaultModelConfig() {
+    return { defaultModels: hubDefaultModels };
+  }
+
+  // 读一次用户设过的默认模型。读不到就保持空表、回落出厂默认值 —— 这条路径
+  // 决定的只是"预选哪个"，失败不该挡住新建会话。
+  async function loadHubDefaultModels() {
+    try {
+      const config = await ipcRenderer.invoke('get-hub-config');
+      hubDefaultModels = (config && config.defaultModels) || {};
+    } catch (_) {
+      hubDefaultModels = {};
+    }
+    return hubDefaultModels;
+  }
+
   // 新建 Session 与群聊成员共用这一份纯计算结果。群聊不能复制一套静态枚举：
   // Codex 的 effort / fast 支持会随模型目录变化，复制后迟早与单会话弹窗漂移。
   function resolveSessionTuning(kind, modelId, selection = {}) {
     const modelOptions = modelOptionsFor(kind);
+    // 用户设过默认就用它，否则才回落出厂值；两者都不在当前可选清单里时取第一项。
+    // 群聊成员走的也是这里，所以「设为默认」对群聊同样生效。
     const model = modelOptions.some(option => option.id === modelId)
       ? modelId
-      : ((DEFAULT_MODEL_BY_KIND[kind] && modelOptions.some(option => option.id === DEFAULT_MODEL_BY_KIND[kind]))
-        ? DEFAULT_MODEL_BY_KIND[kind]
-        : (modelOptions[0] ? modelOptions[0].id : ''));
+      : resolveDefaultModel(kind, defaultModelConfig(), modelOptions.map(option => option.id));
     const effortOptions = EFFORT_KINDS.has(kind) ? effortOptionsFor(kind, model) : [];
     const kindDefaultEffort = defaultEffortFor(kind);
     const fallbackEffort = effortOptions.some(([value]) => value === kindDefaultEffort)
@@ -830,6 +854,22 @@
     });
   }
 
+  // 「设为默认」按钮的三种状态：已是默认（禁用，用来回答"当前默认是不是它"）、
+  // 可设为默认、以及 chatgpt 这种没有稳定模型 id 的 kind（整个隐藏）。
+  function paintDefaultModelButton() {
+    const button = document.getElementById('new-session-model-default');
+    if (!button) return;
+    const supported = !!selectedModel && selectedKind !== 'chatgpt';
+    button.hidden = !supported;
+    if (!supported) return;
+    const already = isDefaultModel(selectedKind, selectedModel, defaultModelConfig());
+    button.disabled = already;
+    button.textContent = already ? '默认 ✓' : '设为默认';
+    button.title = already
+      ? `新建 ${selectedKind} 会话时默认就用这个模型`
+      : `把 ${selectedModel} 设为新建 ${selectedKind} 会话的默认模型`;
+  }
+
   function paintTuning() {
     const label = document.getElementById('new-session-tuning-label');
     const grid = document.getElementById('new-session-tuning');
@@ -864,7 +904,8 @@
 
     if (!options.some(option => option.id === selectedModel)) {
       selectedModel = selectedKind === 'chatgpt' && selectedModel.startsWith('chatgpt-web/')
-        ? selectedModel : DEFAULT_MODEL_BY_KIND[selectedKind] || options[0].id;
+        ? selectedModel
+        : resolveDefaultModel(selectedKind, defaultModelConfig(), options.map(option => option.id));
     }
     const wanted = options.map(option => `${option.id}\u0000${option.label}`).join('|');
     if (modelSelect.dataset.builtFor !== wanted) {
@@ -883,6 +924,7 @@
       modelSelect.appendChild(unavailable);
     }
     modelSelect.value = selectedModel;
+    paintDefaultModelButton();
 
     const effortLabel = document.getElementById('new-session-effort-label');
     const fastField = document.getElementById('new-session-fast-field');
@@ -1112,8 +1154,19 @@
     existingWorkspace = requestedWorkspace;
     void loadPreparedProjects();
     submitting = false;
-    selectedModel = selectedKind === 'chatgpt' ? 'chatgpt-web/high' : DEFAULT_MODEL_BY_KIND[selectedKind] || '';
+    selectedModel = selectedKind === 'chatgpt'
+      ? 'chatgpt-web/high'
+      : resolveDefaultModel(selectedKind, defaultModelConfig());
     applyTuningMemory(selectedKind);
+    // 配置可能在别处被改过（设置面板、手改 config.json）。重读一次，回来后
+    // 若预选值还停在出厂默认就换成用户设的那个。
+    void loadHubDefaultModels().then(() => {
+      if (selectedKind !== 'chatgpt'
+        && selectedModel === (DEFAULT_MODEL_BY_KIND[selectedKind] || '')) {
+        selectedModel = resolveDefaultModel(selectedKind, defaultModelConfig());
+      }
+      paint();
+    }).catch(() => {});
     setError('');
     renderRecommendations();
     renderRecent();
@@ -1329,6 +1382,27 @@
     if (modelSelect) {
       modelSelect.addEventListener('change', () => {
         selectedModel = modelSelect.value;
+        paint();
+      });
+    }
+    const defaultModelButton = document.getElementById('new-session-model-default');
+    if (defaultModelButton) {
+      defaultModelButton.addEventListener('click', async event => {
+        // 按钮嵌在 <label for="new-session-model"> 里，不拦住就会连带聚焦并展开下拉。
+        event.preventDefault();
+        event.stopPropagation();
+        if (defaultModelButton.disabled) return;
+        const kind = selectedKind;
+        const model = selectedModel;
+        defaultModelButton.disabled = true;
+        try {
+          const result = await ipcRenderer.invoke('session:set-default-model', { kind, model });
+          if (!result || !result.ok) throw new Error((result && result.error) || '保存失败');
+          hubDefaultModels = result.defaultModels || {};
+          setError('');
+        } catch (error) {
+          setError(`设为默认失败：${error && error.message ? error.message : error}`);
+        }
         paint();
       });
     }

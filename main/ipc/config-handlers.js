@@ -12,6 +12,7 @@ const {
   normalizeCardFontSize,
   normalizeCardFontFamily,
 } = require('../../core/card-display-config.js');
+const { withDefaultModelInJson } = require('../../core/default-model-preference.js');
 const {
   isUsableFeishuTarget,
   normalizeNotificationConfig,
@@ -45,6 +46,8 @@ function toMaskedConfig(config) {
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
+    // 新建会话面板要靠它决定预选哪个模型，不含敏感信息，原样透出。
+    defaultModels: config.defaultModels || {},
     notificationEnabled: notifications.enabled,
     notificationIncludePreview: notifications.includePreview,
     notificationNotifyGroupChats: notifications.notifyGroupChats,
@@ -330,6 +333,33 @@ function registerConfigIpc(ipcMain, deps) {
     }
     sendToRenderer('completion-notification-target-changed', state);
     return { ok: true, status: 'saved', ...state };
+  });
+
+  // 新建会话面板的「设为默认」。刻意不复用 save-hub-config：那条路要求 renderer
+  // 提交一份完整表单，而这里只想改一个字段；走读-改-写并只替换 models.defaults，
+  // 别的字段一律原样带过去。model 传空表示恢复出厂默认值。
+  ipcMain.handle('session:set-default-model', (_e, payload = {}) => {
+    const configPath = getConfigPath();
+    let existing = {};
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (e) {
+      // 同 save-hub-config：只有「文件还不存在」才能当成空配置继续，
+      // 其它读取失败必须中止，否则会把别的字段静默抹掉。
+      if (!e || e.code !== 'ENOENT') {
+        console.error('[config] set-default-model: 读取现有配置失败，已中止:', e && e.message);
+        return { ok: false, error: 'config_read_failed' };
+      }
+    }
+    let merged;
+    try {
+      merged = withDefaultModelInJson(existing, payload.kind, payload.model);
+    } catch (error) {
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+    saveConfig(merged);
+    clearSessionManagerConfigCache();
+    return { ok: true, defaultModels: (merged.models && merged.models.defaults) || {} };
   });
 
   ipcMain.handle('save-hub-config', (_e, newConfig) => {

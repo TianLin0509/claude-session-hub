@@ -133,6 +133,32 @@
 .session-tuning-field { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .session-tuning-field[hidden] { display: none; }
 .session-tuning-field > span { color: var(--text-muted); font-size: 10px; letter-spacing: .04em; }
+/* 「设为默认」贴在「模型」标签那一行的右端：不占额外高度，相邻的「思考强度」
+   下拉才不会因为这一列多了一行而错位。 */
+.session-tuning-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 14px;
+}
+.tuning-default-btn {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: rgba(var(--rgb-info), .85);
+  cursor: pointer;
+  font: 10px inherit;
+  letter-spacing: .04em;
+  padding: 1px 5px;
+}
+.tuning-default-btn:hover:not(:disabled) {
+  border-color: rgba(var(--rgb-info), .45);
+  color: rgb(var(--rgb-info));
+}
+.tuning-default-btn[hidden] { display: none; }
+/* 已经是默认值时按钮留在原地但不可点，用来回答「当前默认是不是它」。 */
+.tuning-default-btn:disabled { color: var(--text-muted); cursor: default; }
 .session-tuning-field select {
   width: 100%;
   box-sizing: border-box;
