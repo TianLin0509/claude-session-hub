@@ -7,6 +7,8 @@ const {
 } = require('../core/model-options.js');
 // 档位说明文案复用 Codex 模型目录那份，不在 UI 层再拄一份。
 const { EFFORT_DESCRIPTIONS } = require('../core/codex-model-catalog.js');
+// 版本比较同样复用发现模块那份，避免 UI 层自己写一个会把 2.1.9 判成大于 2.1.280 的比较。
+const { compareCliVersions } = require('../core/claude-model-discovery.js');
 const { speedControl } = require('../core/session-speed.js');
 
 // Map a model id to a CSS family class for badge coloring.
@@ -326,25 +328,45 @@ function createModelUiController({
         + (session.runtimeBackend === 'codex-app-server' ? '选择后由 Codex 确认模型和思考档，再更新显示。'
           : '将打开原生模型与推理档位面板；Hub 确认终端回执后再更新徽标。'));
     } else {
+      const official = options.some(option => option.source === 'official-catalog');
       const accountCache = options.some(option => option.source === 'claude-cli-cache');
-      menuNote(menu, `${accountCache ? '当前账号模型缓存' : 'Claude CLI 兼容目录'} · `
+      const sourceName = official ? '官方模型目录'
+        : (accountCache ? '当前账号模型缓存' : 'Claude CLI 兼容目录');
+      menuNote(menu, `${sourceName} · `
         + '支持会话内切换；“最新可用版本”由 CLI 按当前账号解析。');
+      // 被 CLI 版本挡住的模型自己就是「该升级了」的信号，不需要另开数据通道。
+      // 这条提醒正是 Opus 5.5 那次缺失的东西：既说清有什么新模型，也说清怎么办。
+      const blocked = options.filter(option => option.disabled && option.upgradeTo);
+      if (blocked.length) {
+        const names = [...new Set(blocked.map(option => option.label.replace(/\s*\(1M context\)$/, '')))];
+        const target = blocked
+          .map(option => option.upgradeTo)
+          .sort((a, b) => compareCliVersions(a, b))[0];
+        menuNote(menu, `${names.join('、')} 需要 Claude Code ${target}+，先在终端运行 claude update 再重开会话。`, 'warning');
+      }
     }
 
     options.forEach((opt) => {
       const item = document.createElement('div');
       item.className = 'model-picker-item';
       if (!strategy) item.classList.add('disabled');
+      // 官方目录说这个模型要求更高的 CLI 版本：列出来但不让点。隐藏它等于让
+      // 用户完全无从知道新模型的存在 —— 那正是要修的毛病。
+      if (opt.disabled) item.classList.add('disabled');
       item.dataset.modelId = opt.id;
       const current = String(currentId).toLowerCase() === String(opt.id).toLowerCase()
         || (!hasExactCurrent && modelSelectionMatches(currentId, opt.id));
       if (current) item.classList.add('current');
       if (session && session._modelSwitchPending) item.classList.add('disabled');
-      item.title = opt.description || opt.id;
+      item.title = opt.disabled && opt.upgradeTo
+        ? `${opt.description || opt.id} · 需要 Claude Code ${opt.upgradeTo}+`
+        : (opt.description || opt.id);
       item.innerHTML = `<span class="model-picker-check">${current ? '✓' : ''}</span>`
         + `<span class="model-picker-label">${escapeHtml(opt.label)}</span>`
-        + `<span class="model-picker-id">${escapeHtml(opt.id)}</span>`;
-      if (strategy && !(session && session._modelSwitchPending)) {
+        + `<span class="model-picker-id">${escapeHtml(
+          opt.disabled && opt.upgradeTo ? `需 ${opt.upgradeTo}+` : opt.id,
+        )}</span>`;
+      if (strategy && !opt.disabled && !(session && session._modelSwitchPending)) {
         item.addEventListener('click', (event) => {
           event.stopPropagation();
           if (current) { closeModelPicker(); return; }
