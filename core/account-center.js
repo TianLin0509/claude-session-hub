@@ -38,6 +38,7 @@ class AccountCenter {
       {id:'server-monitor',name:'服务器监控授权',type:'service',provider:'server',uses:['工作台服务器监控'],action:'configure',configProvider:'server',configured:!!c.operations?.aliyunMonitor?.bearerToken},
     ];
     for(const row of rows)row.loginHint=row.managedBrowser?({deepseek:'短信验证码；也可微信扫码',doubao:'短信验证码；已有豆包或飞书 App 可扫码',kimi:'官网手机号或扫码登录',qwen:'官网手机号或账号扫码登录',gemini:'Google 已有账号或官方账号验证',chatgpt:'原登录方式：Google / Apple / Microsoft / 邮箱'})[row.provider]:row.type==='api'?'配置 API Key，不能用短信替代':row.provider==='images'||row.provider==='bridge'?'复用原工具浏览器中的已记住账号':row.provider==='codex'||row.provider==='claude'?'复用本机登录；失效时打开官方授权':row.provider==='feishu'?'官方设备授权；通知机器人单独配置':'官方工具提供的登录方式';
+    for(const row of rows)if(row.managedBrowser&&row.provider==='gemini')row.loginHint='普通 Chrome 中手动登录 Google；完成后关闭该网站专用窗口，再点检查登录';
     return rows;
   }
   async connections() {

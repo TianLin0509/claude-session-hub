@@ -15,7 +15,9 @@ const PROBE=`(()=>{const visible=e=>!!e&&e.getClientRects().length>0;
  const challenge=/challenges.cloudflare.com/.test(location.hostname)||!!document.querySelector('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal');
  return {login,profile,challenge,host:location.hostname};})()`;
 class AccountBrowser {
- constructor({dataDir,env=process.env}){this.root=path.join(dataDir,'account-browsers');this.env=env;}
+ constructor({dataDir,env=process.env,spawnImpl=spawn}){this.root=path.join(dataDir,'account-browsers');this.env=env;this.spawn=spawnImpl;}
+ profileOwners(provider){return require('./account-browser-processes').profileOwners(this.profile(provider));}
+ openProbe(provider,url,options){return require('./web-roundtable/cdp').open(provider,url,options);}
  profile(provider){if(!SITES[provider])throw Error('不支持的网页登录');return path.join(this.root,provider);}
  executable(){const candidates=[path.join(this.env.PROGRAMFILES||'C:\\Program Files','Google/Chrome/Application/chrome.exe'),path.join(this.env['PROGRAMFILES(X86)']||'C:\\Program Files (x86)','Microsoft/Edge/Application/msedge.exe'),path.join(this.env.LOCALAPPDATA||'','Google/Chrome/Application/chrome.exe')];const found=candidates.find(p=>fs.existsSync(p));if(!found)throw Error('未找到 Chrome 或 Edge 浏览器');return found;}
  async command(provider,expression,{activate=false}={}){
@@ -49,12 +51,14 @@ class AccountBrowser {
  }
  async open(provider){
   this.profile(provider);
+  if(provider==='gemini')return this.openManual(provider);
   const lease=path.join(path.dirname(this.root),'web-roundtable','browser-'+provider+'.lock','owner.json');
   try{const owner=JSON.parse(fs.readFileSync(lease,'utf8'));if(require('./web-roundtable/store').alive(owner.pid))throw Error('此账号正在执行网页 MCP 任务。请等待任务结束或取消后，再打开可见网页；登录资料会保留。');}catch(error){if(error.code!=='ENOENT')throw error;}
   try{const existing=await this.command(provider,'({ready:true})',{activate:true});if(existing?.ready)return {message:'已显示此账号的原网页；登录状态以检查结果为准',reused:true};}catch{}
   const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});await new Promise((resolve,reject)=>{const child=spawn(this.executable(),['--user-data-dir='+dir,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});return {message:'已打开此账号的专用浏览器；登录资料会保留，状态以检查结果为准。'};
  }
  async check(provider){
+  if(provider==='gemini')return this.checkManual(provider);
   let port;try{port=Number(fs.readFileSync(path.join(this.profile(provider),'DevToolsActivePort'),'utf8').split('\n')[0]);}catch(e){if(e.code==='ENOENT')return {state:'unknown',message:'尚无运行中的专用浏览器；点击登录',source:'专用浏览器'};throw e;}
   if(!Number.isInteger(port)||port<1024||port>65535)throw Error('浏览器调试地址无效');
   let tabs;try{const response=await fetch('http://127.0.0.1:'+port+'/json/list',{signal:AbortSignal.timeout(3000)});if(!response.ok)throw Error('CDP unavailable');tabs=await response.json();}catch{return {state:'offline',message:'浏览器未在线；本地登录配置仍保留，打开后再检查',source:'专用浏览器'};}
@@ -72,6 +76,44 @@ class AccountBrowser {
   if(result?.host!==host)throw Error('网页身份检查期间页面已切换');
   return {state:result.challenge?'unknown':result.login?'login_required':result.profile?'signed_in':'unknown',
    message:result.challenge?'请在官方页面完成人机验证':result.login?'网站显示登录入口':result.profile?'当前官方页面显示账号入口；具体功能额度另行确认':'未取得明确登录证据；请查看官方页面，不能仅凭输入框判断',source:'官方网页可见状态'};
+ }
+ async openManual(provider){
+  const release=require('./web-roundtable/store').acquire('browser-'+provider,path.join(path.dirname(this.root),'web-roundtable'));
+  if(!release)return {stage:'manual',message:'此账号正在检查或执行任务，请稍后再打开登录窗口。'};
+  try{
+   const owners=await this.profileOwners(provider);
+   if(owners.some(p=>p.automated))return {stage:'manual',message:'请先关闭此网站的旧专用浏览器窗口，再点“打开网页”，以普通 Chrome 完成 Google 登录；原登录资料会保留。'};
+   const dir=this.profile(provider);fs.mkdirSync(dir,{recursive:true});
+   await new Promise((resolve,reject)=>{const child=this.spawn(this.executable(),['--user-data-dir='+dir,'--no-first-run','--no-default-browser-check','--new-window',SITES[provider]],{env:this.env,windowsHide:false,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});});
+   return {stage:'manual',message:'已打开普通 Chrome 登录窗口。请在官网完成 Google 验证，然后关闭此网站的全部专用窗口，返回 Hub 点“检查登录”；登录资料会保留。'};
+  }finally{release();}
+ }
+ async checkManual(provider){
+  const unknown=message=>({state:'unknown',message,source:'官方手动登录窗口'});
+  const release=require('./web-roundtable/store').acquire('browser-'+provider,path.join(path.dirname(this.root),'web-roundtable'));
+  if(!release)return unknown('此账号正在检查或执行任务，请稍后重试');
+  try{
+   const owners=await this.profileOwners(provider);
+   if(owners.length)return unknown(owners.some(p=>p.automated)?'请关闭此网站的旧专用浏览器，再点“打开网页”使用普通 Chrome 登录。':'请先在官方窗口完成登录，然后关闭此网站的全部专用窗口，再点“检查登录”；不会在输入密码时接管浏览器。');
+   if(!fs.existsSync(path.join(this.profile(provider),'Default')))return unknown('尚无登录记录；点击登录，在普通 Chrome 中完成 Google 验证');
+   return await this.probeClosedManual(provider);
+  }finally{release();}
+ }
+ async probeClosedManual(provider){
+  const browser=await this.openProbe(provider,SITES[provider],{dataDir:path.dirname(this.root)}),host=new URL(SITES[provider]).hostname;
+  try{
+   for(const end=Date.now()+15000;Date.now()<end;){
+    const result=await browser.page.evaluate(PROBE);
+    if(result?.host==='accounts.google.com')return {state:'login_required',message:'Google 仍要求登录，请打开普通 Chrome 完成本人验证；程序不会填写 Google 登录表单。',source:'官方网页跳转'};
+    if(result?.host===host){
+     if(result.challenge)return {state:'unknown',message:'请打开官方窗口完成人机验证',source:'官方网页可见状态'};
+     if(result.login)return {state:'login_required',message:'网站显示登录入口，请在普通 Chrome 登录',source:'官方网页可见状态'};
+     if(result.profile)return {state:'signed_in',message:'官方网页已确认登录；资料保留在原专用浏览器，额度另行确认。',source:'官方网页可见状态'};
+    }
+    await new Promise(r=>setTimeout(r,250));
+   }
+   return {state:'unknown',message:'未取得明确登录证据；请打开官方网页核对',source:'官方网页可见状态'};
+  }finally{await browser.close();}
  }
 }
 // Fixed selectors inspected on the official login pages. Never solve challenges or retry SMS.
