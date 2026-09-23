@@ -160,7 +160,13 @@
 
   // 用户在新建会话面板点过「设为默认」的 per-CLI 模型。由 main 从 config.json
   // 读来，空表示沿用 model-options.js 的出厂默认值。
+  //
+  // 模块加载时就拉一次，不能只在打开新建会话面板时拉：群聊/圆桌成员走的是
+  // resolveSessionTuning，它不经过那个面板，晚加载的话成员会一律回落出厂默认。
   let hubDefaultModels = {};
+  // 本轮面板里用户有没有亲手动过模型下拉。异步回读配置后靠它决定能不能覆盖
+  // 当前选择，避免把用户刚选的值改掉。
+  let modelTouchedByUser = false;
 
   function defaultModelConfig() {
     return { defaultModels: hubDefaultModels };
@@ -1157,13 +1163,21 @@
     selectedModel = selectedKind === 'chatgpt'
       ? 'chatgpt-web/high'
       : resolveDefaultModel(selectedKind, defaultModelConfig());
+    modelTouchedByUser = false;
     applyTuningMemory(selectedKind);
-    // 配置可能在别处被改过（设置面板、手改 config.json）。重读一次，回来后
-    // 若预选值还停在出厂默认就换成用户设的那个。
+    // 配置可能在别处被改过（设置面板、手改 config.json）。重读一次再决定预选值。
+    //
+    // 判据只能是「用户这轮有没有亲手动过模型下拉」，不能拿「当前值是否等于出厂
+    // 默认」来推断：同步那次 paint 可能已经把值换成了 options[0]（出厂默认不在
+    // 当前清单里时就会这样），判据直接落空、用户设的默认值被丢掉；反过来，用户
+    // 手选的模型若恰好等于出厂默认，又会被这次回读悄悄改掉。
     void loadHubDefaultModels().then(() => {
-      if (selectedKind !== 'chatgpt'
-        && selectedModel === (DEFAULT_MODEL_BY_KIND[selectedKind] || '')) {
-        selectedModel = resolveDefaultModel(selectedKind, defaultModelConfig());
+      if (!modelTouchedByUser && selectedKind !== 'chatgpt') {
+        selectedModel = resolveDefaultModel(
+          selectedKind,
+          defaultModelConfig(),
+          modelOptionsFor(selectedKind).map(option => option.id),
+        );
       }
       paint();
     }).catch(() => {});
@@ -1382,6 +1396,7 @@
     if (modelSelect) {
       modelSelect.addEventListener('change', () => {
         selectedModel = modelSelect.value;
+        modelTouchedByUser = true;
         paint();
       });
     }
@@ -1396,7 +1411,13 @@
         const model = selectedModel;
         defaultModelButton.disabled = true;
         try {
-          const result = await ipcRenderer.invoke('session:set-default-model', { kind, model });
+          const result = await ipcRenderer.invoke('session:set-default-model', {
+            kind,
+            model,
+            // 把下拉里真正能选的清单一并带上：ACP 那几个 kind 会有用户自配的
+            // 模型，main 侧的静态清单认不出来。
+            available: modelOptionsFor(kind).map(option => option.id),
+          });
           if (!result || !result.ok) throw new Error((result && result.error) || '保存失败');
           hubDefaultModels = result.defaultModels || {};
           setError('');
@@ -1443,6 +1464,9 @@
       if (button) button.addEventListener('click', closeNewSessionModal);
     }
     paint();
+    // 默认模型要在这里就拉起来：群聊成员走 resolveSessionTuning，不经过新建
+    // 会话面板，等到面板打开才加载的话成员会一律回落出厂默认。
+    void loadHubDefaultModels().then(paint).catch(() => {});
     // 预热工作区信息：workspaceTierLabel() 要靠 flatWorkRoot 才能把工作根显示成
     // 「工作根」而不是「组织根·不可用」，而侧边栏 / 会话 header 的 chip 可能在
     // 启动中心第一次打开之前就调用它。不预热就会先闪一次错误标签。

@@ -127,6 +127,46 @@ async function main() {
     assert.ok(codexModel.startsWith('gpt-'), 'Codex 应保持自己的模型，实际：' + codexModel);
     checks.push('切到 Codex 时模型仍是 Codex 自己的 ' + codexModel);
 
+    // ⑦ 打开面板后立刻手选，异步回读配置不得把用户的选择改掉。
+    //    （审查发现的竞态：原实现拿「当前值是否等于出厂默认」当判据，用户手选的
+    //     模型若恰好等于出厂默认就会被悄悄改写。）
+    await cdp.eval('window.WorkspaceController.openNewSessionModal({kind:"claude"})');
+    await until('!!document.getElementById("new-session-model")?.options.length', 'claude options');
+    await cdp.eval('(()=>{const s=' + sel + ';s.value="claude-opus-5[1m]";'
+      + 's.dispatchEvent(new Event("change",{bubbles:true}));})()');
+    await sleep(700);  // 盖过异步回读 + paint
+    assert.equal(await cdp.eval(`${sel}.value`), 'claude-opus-5[1m]',
+      '异步回读配置不得覆盖用户刚手选的模型');
+    checks.push('打开面板后手选的模型不被异步回读覆盖');
+
+    // ⑧ 重启 Hub，**完全不打开新建会话面板**，直接问 resolveSessionTuning ——
+    //    群聊/圆桌成员走的就是它。默认模型如果只在打开面板时才加载，这里拿到的
+    //    会是出厂默认，成员就享受不到用户设的默认值。必须重启验证，因为上面那些
+    //    步骤已经把配置加载过了，在同一个实例里测不出这个缺陷。
+    await gracefulQuit(hub);
+    hub = await launchIsolatedHub({
+      dataDir,
+      port: await freePort(),
+      windowMode: 'hidden',
+      label: 'default-model-restart',
+      extraEnv: { CLAUDE_CONFIG_DIR: path.join(root, 'claude') },
+    });
+    cdp = await connectFirstPage(hub);
+    await until("typeof ipcRenderer !== 'undefined' && !!window.WorkspaceController", 'renderer restart');
+    // 装个探针证明这一段确实没打开过面板。不能拿「下拉有没有选项」当判据 ——
+    // 那个 select 是 index.html 里的静态元素，启动时的 paint() 就把它填好了，
+    // 跟面板开没开无关。
+    await cdp.eval('(()=>{window.__panelOpened=false;'
+      + 'const original=window.WorkspaceController.openNewSessionModal;'
+      + 'window.WorkspaceController.openNewSessionModal=function(...args){'
+      + 'window.__panelOpened=true;return original.apply(this,args);};})()');
+    // 等模块加载时那次拉取落定，但全程不碰新建会话面板。
+    await until('window.WorkspaceController.resolveSessionTuning("claude","",{}).model === '
+      + JSON.stringify(target), '群聊路径拿到用户设的默认模型', 15000);
+    assert.equal(await cdp.eval('window.__panelOpened'), false,
+      '本段不应打开过新建会话面板，否则证明不了「面板之外也生效」');
+    checks.push('重启后未开面板，群聊走的 resolveSessionTuning 直接拿到 ' + target);
+
     console.log('\n通过的检查项：');
     for (const c of checks) console.log('  ✔ ' + c);
     console.log('\nE2E PASS');

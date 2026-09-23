@@ -47,9 +47,13 @@ test('claude 认得静态清单里还没有的新模型（官方目录刚发现�
   assert.ok(isModelValidForKind('claude', 'claude-opus-9-9[1m]'));
 });
 
-test('已知清单之外的 kind 走白名单校验', () => {
+test('ACP 类 kind：清单内的必然放行，清单外按「不是别家 CLI 的」放行', () => {
   assert.ok(isModelValidForKind('qwen', require('../core/model-options.js').MODEL_OPTIONS_BY_KIND.qwen[0].id));
-  assert.strictEqual(isModelValidForKind('qwen', 'not-a-real-qwen-model'), false);
+  // 有意的权衡：ACP 的下拉会追加用户自配模型，core 侧无法区分「用户自配」和
+  // 「打错字」，所以这里放行，由 UI 那一层的 availableIds 兜底（打错字的模型
+  // 根本不会出现在下拉里，也就点不到「设为默认」）。安全白名单不受影响。
+  assert.ok(isModelValidForKind('qwen', 'qwen-some-new-preview'));
+  assert.strictEqual(isModelValidForKind('qwen', 'qwen-x; rm -rf /'), false);
   assert.strictEqual(isModelValidForKind('', 'claude-opus-5'), false);
 });
 
@@ -131,6 +135,46 @@ test('首次写入（config.json 还不存在，传空对象）也能建出结�
   assert.deepStrictEqual(after.models.defaults, { claude: 'claude-opus-5-5[1m]' });
   assert.deepStrictEqual(withDefaultModelInJson(undefined, 'codex', 'gpt-6-astra').models.defaults,
     { codex: 'gpt-6-astra' });
+});
+
+// —— 审查发现的回归用例 ——
+
+test('ACP 用户自配模型：下拉里选得到，就必须存得进去也读得回来', () => {
+  // acpModelOptions(kind, configuredModel) 会把用户配置里的模型追加进下拉，
+  // 静态清单认不出它。只按静态清单校验会出现「选得到却存不进去」的死路。
+  const custom = 'qwen3.9-max-preview';
+  assert.ok(isModelValidForKind('qwen', custom), '自配 ACP 模型应被接受');
+  // 存得进去
+  const after = withDefaultModelInJson({}, 'qwen', custom);
+  assert.strictEqual(after.models.defaults.qwen, custom);
+  // 读得回来（否则存了也白存）
+  assert.deepStrictEqual(readDefaultModels({ defaultModels: { qwen: custom } }), { qwen: custom });
+  assert.strictEqual(resolveDefaultModel('qwen', { defaultModels: { qwen: custom } }), custom);
+  // 放行的边界仍然是「不能是别家 CLI 的模型」
+  assert.strictEqual(isModelValidForKind('qwen', 'claude-opus-5-5'), false);
+  assert.strictEqual(isModelValidForKind('qwen', 'gpt-6-astra'), false);
+  // 没有模型概念的 kind 不受影响
+  assert.strictEqual(isModelValidForKind('powershell', 'anything'), false);
+});
+
+test('availableIds 放行调用方清单内的模型，但安全白名单仍独立把关', () => {
+  const custom = 'glm-custom-build-7';
+  // 不给清单时静态校验也会放行（上一条已覆盖），这里验证给了清单的路径。
+  assert.strictEqual(
+    withDefaultModelInJson({}, 'glm', custom, { availableIds: [custom] }).models.defaults.glm,
+    custom,
+  );
+  // 不在清单里 → 拒绝
+  assert.throws(
+    () => withDefaultModelInJson({}, 'glm', 'not-offered', { availableIds: [custom] }),
+    /不是 glm 可用的模型/,
+  );
+  // 清单里混进危险串也不得放行 —— 清单只负责放行，不负责安全。
+  const evil = 'glm-4; rm -rf /';
+  assert.throws(
+    () => withDefaultModelInJson({}, 'glm', evil, { availableIds: [evil] }),
+    /不是 glm 可用的模型/,
+  );
 });
 
 test('isDefaultModel 驱动按钮的「默认 ✓ / 设为默认」两态', () => {

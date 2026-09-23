@@ -65,6 +65,26 @@ function loadConfigJson() {
 }
 
 /**
+ * 供「读-改-写」使用的配置读取。
+ *
+ * 和上面的 loadConfigJson 的区别在错误语义：那个吞掉一切错误返回 {}，只读场景
+ * 够用；但读-改-写里把「读不到」当成「空配置」会导致整份写回时静默抹掉其它字段
+ * （API key 之类）。所以这里只把 ENOENT（首次运行）当成空对象，其它错误一律抛给
+ * 调用方去中止本次保存。
+ *
+ * BOM 必须剥：Windows 上用记事本手改过 config.json 就会带 ﻿，
+ * 直接 JSON.parse 会抛 Unexpected token，让调用方误判成「配置读不到」。
+ */
+function readConfigJsonForUpdate() {
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), 'utf8').replace(/^﻿/, ''));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+/**
  * 获取配置值（优先级：env > config.json > default）
  */
 function getConfigValue(key, envKey, configPath, defaultValue) {
@@ -205,6 +225,7 @@ module.exports = {
   clearConfigCache,
   saveConfig,
   getConfigPath,
+  readConfigJsonForUpdate,
   checkMissingConfig,
   DEFAULTS,
 };

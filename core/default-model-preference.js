@@ -42,8 +42,16 @@ function isModelValidForKind(kind, modelId) {
   if (base === 'codex') return isCodexConversationModelId(value);
   if (base === 'chatgpt') return value.startsWith('chatgpt-web/');
   const known = MODEL_OPTIONS_BY_KIND[base];
+  // 该 kind 压根没有模型概念（powershell 之类）→ 一律拒绝。
   if (!Array.isArray(known) || !known.length) return false;
-  return known.some(option => String(option.id).toLowerCase() === value.toLowerCase());
+  if (known.some(option => String(option.id).toLowerCase() === value.toLowerCase())) return true;
+  // 清单之外还要放行一种情况：ACP 那几个 kind（qwen / deepseek-acp / glm）的下拉
+  // 由 acpModelOptions(kind, configuredModel) 生成，会把用户在配置里自定义的模型
+  // 追加进去。只认静态清单的话，那种模型在下拉里选得到、却存不进去也读不回来。
+  // 放行的边界是「不能是别家 CLI 的模型」，跨 CLI 误设仍然被挡住。
+  return !isClaudeModelSelection(value)
+    && !isCodexConversationModelId(value)
+    && !value.startsWith('chatgpt-web/');
 }
 
 // 从配置里读出 per-kind 的默认模型表，顺手扔掉不合法的条目 ——
@@ -78,7 +86,7 @@ function resolveDefaultModel(kind, config, availableIds = null) {
 // 在 config.json 的原始结构上落一个默认模型，返回**完整的新 json**（不落盘，
 // 保存交给调用方，这样 main 侧可以在同一次读-改-写里避免覆盖其它字段）。
 // modelId 传空表示「取消自定义默认值，回到出厂设置」。
-function withDefaultModelInJson(rawJson, kind, modelId) {
+function withDefaultModelInJson(rawJson, kind, modelId, options = {}) {
   const base = String(kind || '').replace(/-resume$/, '');
   if (!base) throw new Error('未指定 CLI 类型');
   const source = rawJson && typeof rawJson === 'object' ? rawJson : {};
@@ -87,7 +95,17 @@ function withDefaultModelInJson(rawJson, kind, modelId) {
   const next = { ...(typeof current === 'object' && !Array.isArray(current) ? current : {}) };
   const value = String(modelId || '').trim();
   if (value) {
-    if (!isModelValidForKind(base, value)) {
+    // availableIds 是调用方给的「当前下拉里真能选到的模型」。给了就以它为准：
+    // ACP 那几个 kind 的下拉会追加用户自配的模型（acpModelOptions 第二参数），
+    // 静态清单认不出来，只按静态清单校验会出现「选得到却存不进去」。
+    // 安全白名单不受影响，仍然独立把关，所以放行清单不等于放行任意字符串。
+    const available = Array.isArray(options.availableIds) && options.availableIds.length
+      ? options.availableIds.map(id => String(id).toLowerCase())
+      : null;
+    const allowed = available
+      ? (isSafeModelId(value) && available.includes(value.toLowerCase()))
+      : isModelValidForKind(base, value);
+    if (!allowed) {
       throw new Error(`模型 ${value} 不是 ${base} 可用的模型`);
     }
     next[base] = value;
