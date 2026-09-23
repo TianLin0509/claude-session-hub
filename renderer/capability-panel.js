@@ -1,6 +1,6 @@
 'use strict';
 const {ALL_AI_KINDS,getKindLabel}=require('../core/ai-kinds');
-const {coverage,related}=require('../core/capability-view-model');
+const {coverage,related,isActive}=require('../core/capability-view-model');
 const {presentation,mcpSharing,ORIGINS}=require('../core/capability-presentation');
 const TYPE_LABEL={skill:'技能',mcp:'MCP 连接',plugin:'插件',command:'命令',tool:'工具'};
 const ICON={skill:'<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.4l6.1-.9Z"/>',
@@ -9,12 +9,13 @@ const ICON={skill:'<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-
   command:'<path d="m5 6 6 6-6 6m8 0h6"/>',tool:'<path d="m4 20 9-9m-2-7a6 6 0 0 0 9 9l-4-2-1-3 2-4a6 6 0 0 0-6 0Z"/>'};
 const svg=(type)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[type] || ICON.plugin}</svg>`;
 function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSessionId}) {
-  let page,catalog=null,runtime=null,tab='catalog',agent='all',type='all',query='',scope='all',selected='',sessionId='',busy=false,error='',epoch=0;
+  let page,catalog=null,runtime=null,tab='catalog',agent='all',type='all',query='',scope='active',selected='',sessionId='',busy=false,error='',epoch=0;
   let sharing=null,shareBusy=false,notice='',origin='all',noteEdit=null,noteBusy=false;
   const label=id=>getKindLabel(id) || id;
   const button=(text,attrs,cls='')=>`<button type="button" class="cp-button ${cls}" ${attrs}>${text}</button>`;
   const badge=(text,cls='')=>`<span class="cp-badge ${cls}">${esc(text)}</span>`;
   function position(){const rail=document.getElementById('scene-rail')?.getBoundingClientRect();if(page&&rail){page.style.left=rail.right+'px';page.style.top=rail.top+'px';}}
+  const inScope=r=>scope==='all'||scope==='active'&&isActive(r)||scope==='shared'&&r.shared||scope==='conflict'&&r.conflict||scope==='disabled'&&r.sources.some(s=>s.enabled===false||s.missing);
   function rows(){
     let result=tab==='runtime'?(runtime?.rows || []):(catalog?.rows || []);
     if(tab==='runtime')result=result.map(r=>{
@@ -22,7 +23,7 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
       const display=known||presentation(r);
       return {...r,displayName:display.displayName,summary:display.summary,summarySource:display.summarySource,origin:display.origin};
     });
-    if(tab!=='runtime')result=result.filter(r=>(agent==='all'||tab==='coverage'||r.agents.includes(agent)) && (scope==='all'||scope==='shared'&&r.shared||scope==='conflict'&&r.conflict||scope==='disabled'&&r.sources.some(s=>s.enabled===false||s.missing)));
+    if(tab!=='runtime')result=result.filter(r=>(agent==='all'||tab==='coverage'||r.agents.includes(agent)) && inScope(r));
     return result.filter(r=>(type==='all'||r.type===type)&&(tab==='runtime'||origin==='all'||r.origin?.kind===origin)&&(!query||`${r.name} ${r.description} ${r.summary}`.toLowerCase().includes(query.toLowerCase())));
   }
   const originBadge=r=>badge(r.origin?.label||'来源待确认','cp-origin-'+(r.origin?.kind||'unknown'));
@@ -63,17 +64,18 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
     if(!page)return;
     const visible=rows(),all=catalog?.rows || [],active=visible.find(r=>r.id===selected) || visible[0];
     if(active)selected=active.id;
-    const counts=t=>(tab==='runtime'?(runtime?.rows || []):all).filter(r=>r.type===t).length;
+    const counts=t=>(tab==='runtime'?(runtime?.rows || []):all.filter(isActive)).filter(r=>r.type===t).length;
+    const inactive=t=>tab==='runtime'?0:all.filter(r=>r.type===t&&!isActive(r)).length;
     const oldScroll=page.querySelector('.cp-scroll')?.scrollTop || 0;
     const oldMatrixScroll=page.querySelector('.cp-matrix-wrap')?.scrollLeft || 0;
     page.innerHTML=`<header class="cp-header"><div><div class="cp-eyebrow">AI HUB / CAPABILITIES</div><h1>技能与工具 <span>找到能力，看清每个 AI 的准备情况</span></h1></div><div class="cp-actions">${button('补齐共享技能','data-cp-action="share-preview" '+(shareBusy?'disabled':''))}${button(busy?'读取中…':'刷新','data-cp-action="refresh" '+(busy?'disabled':''))}${button('返回','data-cp-action="close"')}</div></header>
-      <div class="cp-scroll"><div class="cp-summary"><div class="cp-summary-intro"><span class="cp-summary-symbol">${svg('plugin')}</span><div><strong>能力中心</strong><p>公共资源，各有专长。<br>从安装来源到会话回执，都有据可查。</p></div></div>${[['skill',counts('skill'),'工作流与专业知识'],['mcp',counts('mcp'),'连接工具与外部服务'],['plugin',counts('plugin'),'成套扩展与集成']].map(([t,n,sub])=>`<button type="button" class="cp-stat" data-cp-type="${t}"><span>${svg(t)}${TYPE_LABEL[t]}</span><strong>${n}</strong><small>${sub}</small></button>`).join('')}</div>
+      <div class="cp-scroll"><div class="cp-summary"><div class="cp-summary-intro"><span class="cp-summary-symbol">${svg('plugin')}</span><div><strong>能力中心</strong><p>公共资源，各有专长。<br>从安装来源到会话回执，都有据可查。</p></div></div>${[['skill',counts('skill'),'工作流与专业知识'],['mcp',counts('mcp'),'连接工具与外部服务'],['plugin',counts('plugin'),'成套扩展与集成']].map(([t,n,sub])=>`<button type="button" class="cp-stat" data-cp-type="${t}"><span>${svg(t)}${TYPE_LABEL[t]}</span><strong>${n}</strong><small>${inactive(t)?`${sub} · 另有 ${inactive(t)} 项已停用`:sub}</small></button>`).join('')}</div>
       <nav class="cp-tabs" aria-label="能力视图">${[['catalog','能力库'],['coverage','AI 覆盖对比'],['runtime','当前会话']].map(([id,name])=>button(name,`data-cp-tab="${id}" aria-pressed="${tab===id}"`,tab===id?'selected':'')).join('')}<span>${catalog?`扫描于 ${esc(new Date(catalog.generatedAt).toLocaleTimeString())}`:'尚未扫描'}</span></nav>
       ${sharingView()}${notice?`<div class="cp-notice" role="status">${esc(notice)}</div>`:''}
       <div class="cp-types" aria-label="能力类型">${[['all','全部'],...Object.entries(TYPE_LABEL).filter(([k])=>tab==='runtime'||['skill','mcp','plugin'].includes(k))].map(([id,name])=>button(`${id==='all'?'':svg(id)}${esc(name)}`,`data-cp-type="${id}" aria-pressed="${type===id}"`,type===id?'selected':'')).join('')}</div>
-      ${tab==='catalog'?`<div class="cp-agents" aria-label="按 AI 筛选">${[['all','全部 AI'],...ALL_AI_KINDS.map(a=>[a,label(a)])].map(([id,name])=>button(`<span class="cp-agent-dot ${id}">${id==='all'?'◈':esc(name.slice(0,1))}</span>${esc(name)}<small>${id==='all'?all.length:all.filter(r=>r.agents.includes(id)).length}</small>`,`data-cp-agent="${id}" aria-pressed="${agent===id}"`,agent===id?'selected':'')).join('')}</div>`:
+      ${tab==='catalog'?`<div class="cp-agents" aria-label="按 AI 筛选">${[['all','全部 AI'],...ALL_AI_KINDS.map(a=>[a,label(a)])].map(([id,name])=>button(`<span class="cp-agent-dot ${id}">${id==='all'?'◈':esc(name.slice(0,1))}</span>${esc(name)}<small>${all.filter(r=>inScope(r)&&(id==='all'||r.agents.includes(id))).length}</small>`,`data-cp-agent="${id}" aria-pressed="${agent===id}"`,agent===id?'selected':'')).join('')}</div>`:
       tab==='runtime'?`<div class="cp-session"><label for="cp-session">查看会话</label><select id="cp-session"><option value="">选择一个已打开的会话</option>${(catalog?.sessions || []).map(s=>`<option value="${esc(s.id)}" ${sessionId===s.id?'selected':''}>${esc(label(s.kind)+' · '+s.title)}</option>`).join('')}</select><span>MCP 档位 <b>${esc(runtime?.profile || '未确认')}</b></span></div>`:''}
-      <div class="cp-toolbar"><label class="cp-search"><span aria-hidden="true">⌕</span><input id="cp-search" type="search" placeholder="搜索名称或功能…" aria-label="搜索能力" value="${esc(query)}"></label>${tab!=='runtime'?`<select id="cp-scope" aria-label="范围">${[['all','全部范围'],['shared','公共技能'],['conflict','同名差异'],['disabled','禁用 / 待核对']].map(([k,v])=>`<option value="${k}" ${scope===k?'selected':''}>${v}</option>`).join('')}</select>`:''}<span>${visible.length} 项</span></div>
+      <div class="cp-toolbar"><label class="cp-search"><span aria-hidden="true">⌕</span><input id="cp-search" type="search" placeholder="搜索名称或功能…" aria-label="搜索能力" value="${esc(query)}"></label>${tab!=='runtime'?`<select id="cp-scope" aria-label="范围">${[['active','已启用'],['all','全部（含停用）'],['shared','公共技能'],['conflict','同名差异'],['disabled','禁用 / 待核对']].map(([k,v])=>`<option value="${k}" ${scope===k?'selected':''}>${v}</option>`).join('')}</select>`:''}<span>${visible.length} 项</span></div>
       ${tab!=='runtime'?`<nav class="cp-origins" aria-label="按创建来源筛选">${[['all','全部来源'],...Object.entries(ORIGINS)].map(([id,name])=>button(esc(name),`data-cp-origin="${id}" aria-pressed="${origin===id}"`,origin===id?'selected':'')).join('')}<span>自建与外部导入按来源区分，和是否共享无关</span></nav>`:''}
       ${error?`<div class="cp-notice warn" role="alert">${esc(error)}</div>`:''}${busy?'<div class="cp-progress" role="status">正在读取能力信息…</div>':''}
       ${tab==='runtime' && (!sessionId||runtime?.unknown)?`<div class="cp-notice">${esc(runtime?.unknown || '选择已打开的会话查看确认回执。此操作不会创建会话或启动 AI。')}</div>`:''}
@@ -141,7 +143,7 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
         if(b.dataset.cpAction==='share-close'){sharing=null;render();return;}
         if(b.dataset.cpAction==='accounts'){close();document.getElementById('btn-rail-accounts')?.click();return;}
         if(b.dataset.cpRelated){tab='catalog';type='all';agent='all';scope='all';origin='all';noteEdit=null;query='';selected=b.dataset.cpRelated;render();return;}
-        if(b.dataset.cpTab){tab=b.dataset.cpTab;origin='all';noteEdit=null;type='all';query='';scope='all';selected='';runtime=null;sessionId=getActiveSessionId() || catalog?.sessions[0]?.id || '';void refresh();return;}
+        if(b.dataset.cpTab){tab=b.dataset.cpTab;origin='all';noteEdit=null;type='all';query='';scope='active';selected='';runtime=null;sessionId=getActiveSessionId() || catalog?.sessions[0]?.id || '';void refresh();return;}
         if(b.dataset.cpAction==='note-edit'){const r=rows().find(r=>r.id===selected);if(r)noteEdit={id:r.id,summary:r.note?.summary||'',origin:r.note?.origin||'auto'};render();return;}
         if(b.dataset.cpAction==='note-cancel'){noteEdit=null;render();return;}
         if(b.dataset.cpOrigin){origin=b.dataset.cpOrigin;selected='';noteEdit=null;render();return;}
