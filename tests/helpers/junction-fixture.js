@@ -12,4 +12,14 @@ async function createJunctionFixture(source,target,{symlink=fs.promises.symlink,
     }
   }
 }
-module.exports={createJunctionFixture};
+function createJunctionFixtureSync(source,target,{symlink=fs.symlinkSync,wait=ms=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms)}={}){
+  for(let attempt=0;;attempt++){
+    try{symlink(source,target,'junction');return;}
+    catch(error){
+      if(!['EBUSY','EPERM'].includes(error.code)||attempt>=5)throw error;
+      try{fs.lstatSync(target);throw error;}catch(check){if(check.code!=='ENOENT')throw check;}
+      wait(Math.min(1600,200*2**attempt));
+    }
+  }
+}
+module.exports={createJunctionFixture,createJunctionFixtureSync};

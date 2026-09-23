@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {createJunctionFixtureSync} = require('./helpers/junction-fixture');
 
 const PI = require('../core/prompt-inspect.js');
 const PROMPT_INSPECTOR_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'prompt-inspector.js'), 'utf8');
@@ -232,7 +233,7 @@ test('Prompt 检视把指错目标的 memory junction 报成真错误', () => {
       fs.mkdirSync(path.dirname(memoryDir), { recursive: true });
       fs.mkdirSync(alternate, { recursive: true });
       fs.writeFileSync(path.join(alternate, 'MEMORY.md'), '# Wrong target\n', 'utf8');
-      fs.symlinkSync(alternate, memoryDir, 'junction');
+      createJunctionFixtureSync(alternate, memoryDir);
 
       const insp = PI.buildInspection({ cwd: proj, kind: 'claude' });
       assert.strictEqual(insp.memory.state, 'WRONG_LINK');

@@ -5,9 +5,13 @@ const WebSocket=require('ws');
 const SITES={deepseek:'https://chat.deepseek.com/',doubao:'https://www.doubao.com/chat/',kimi:'https://www.kimi.com/',qwen:'https://www.qianwen.com/',gemini:'https://gemini.google.com/app',chatgpt:'https://chatgpt.com/'};
 // Read visible UI only. A guest composer is deliberately insufficient evidence.
 const PROBE=`(()=>{const visible=e=>!!e&&e.getClientRects().length>0;
- const labels=[...document.querySelectorAll('button,a')].filter(visible).map(e=>(e.innerText||e.getAttribute('aria-label')||'').trim());
+ const labels=[...document.querySelectorAll('button,a,[role="button"]')].filter(visible).map(e=>(e.innerText||e.getAttribute('aria-label')||'').trim());
  const login=labels.some(t=>/^(log in|sign in|登录|登入|登录帐号|登录账号)$/i.test(t));
- const profile=[...document.querySelectorAll('[data-testid="accounts-profile-button"],[aria-label*="Google Account"],[aria-label*="Google 帐号"],[aria-label*="Google 账号"],[data-testid="user-avatar"]')].some(visible)||(location.hostname==='www.doubao.com'&&[...document.querySelectorAll('nav [data-slot="dropdown-menu-trigger"]')].some(e=>visible(e)&&e.textContent.trim()&&!/登录/.test(e.textContent))&&labels.includes('设置'));
+ const named=selector=>[...document.querySelectorAll(selector)].some(e=>visible(e)&&e.textContent.trim()&&!/登录|sign in|log in/i.test(e.textContent));
+ const profile=[...document.querySelectorAll('[data-testid="accounts-profile-button"],[aria-label*="Google Account"],[aria-label*="Google 帐号"],[aria-label*="Google 账号"],[data-testid="user-avatar"]')].some(visible)||(location.hostname==='www.doubao.com'&&named('nav [data-slot="dropdown-menu-trigger"]')&&labels.includes('设置'))
+  ||(location.hostname==='chat.deepseek.com'&&[...document.querySelectorAll('.ede5bc47 > img.fdf01f38')].some(visible))
+  ||(location.hostname==='www.kimi.com'&&named('[data-testid="sidebar-user-menu-trigger"] .user-name'))
+  ||(location.hostname==='www.qianwen.com'&&named('[class~="bg-pc-sidebar"][class~="pt-3"] > button.text-left'));
  const challenge=/challenges.cloudflare.com/.test(location.hostname)||!!document.querySelector('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal');
  return {login,profile,challenge,host:location.hostname};})()`;
 class AccountBrowser {

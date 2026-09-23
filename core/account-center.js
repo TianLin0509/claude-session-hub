@@ -16,9 +16,10 @@ function safeObservation(raw = {}) {
     source:String(raw.source || '连接检查').slice(0,80) };
 }
 class AccountCenter {
-  constructor({ dataDir, getConfig, adapter, homeDir = os.homedir(), env = process.env }) {
+  constructor({ dataDir, getConfig, adapter, homeDir = os.homedir(), env = process.env, recovery }) {
     Object.assign(this,{dataDir,getConfig,adapter,homeDir,env});
     this.root=path.join(dataDir,'account-center');this.flights=new Map();this.batches=new Map();this.codeFlights=new Map();this.openFlights=new Map();
+    this.recovery=recovery||new(require('./web-roundtable/recovery').AccountRecovery)({dataDir});
   }
   baseConnections() {
     const c=this.getConfig();
@@ -58,6 +59,7 @@ class AccountCenter {
   scope(row){const c=this.getConfig();const credential=row.provider==='server'?c.operations?.aliyunMonitor?.bearerToken:row.type==='api'?c[row.provider+'ApiKey']:'';return row.id+':'+(row.home || '')+':'+(credential?crypto.createHash('sha256').update(String(credential)).digest('hex'):'');}
   async snapshot(){
     const rows=await this.connections();
+    const webTasks=this.recovery.list();
     await Promise.allSettled(rows.filter(r=>r.type==='native'&&['claude','codex'].includes(r.provider)).map(async row=>{
       const key=this.scope(row),cached=this.read(key);if(cached?.observedAt&&Date.now()-cached.observedAt<60000)return;
       if(this.flights.has(key))return this.flights.get(key);
@@ -67,7 +69,7 @@ class AccountCenter {
       const cached=this.read(this.scope(row));
       const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；点击检查或登录',observedAt:0,source:'配置发现'};
       const {home,observation:unused,...safe}=row;
-      return {...safe,...observation,stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending:this.leaseActive(row)};
+      return {...safe,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending:this.leaseActive(row)};
     }),history:this.history(),batches:[...this.batches.values()].slice(-3)};
   }
   history(){try{return fs.readFileSync(path.join(this.root,'events.jsonl'),'utf8').trim().split('\n').filter(Boolean).slice(-80).map(x=>JSON.parse(x)).reverse();}catch(e){if(e.code==='ENOENT')return [];return [{at:Date.now(),name:'活动记录',message:'记录不可读；未覆盖原文件'}];}}
@@ -85,6 +87,12 @@ class AccountCenter {
         if(result.state==='signed_in')for(const batch of this.batches.values()){const item=batch.items.find(x=>x.id===id);if(item)Object.assign(item,{stage:'signed_in',message:'已有明确登录证据'});}
         if(result.state==='signed_in')this.clearLease(key,token);
         this.log(row,result.state==='signed_in'?'检查完成：已有登录证据':result.state==='login_required'?'检查完成：需要登录':'检查完成：'+result.message);
+        if(result.state==='signed_in'&&row.managedBrowser){
+          try{
+            const resumed=await this.recovery.resume(row);result.recovery=resumed;
+            if(resumed.started||resumed.errors.length){result.message=`登录已确认；已安排 ${resumed.started} 项原任务继续${resumed.errors.length?'，'+resumed.errors.length+' 项仍需处理：'+resumed.errors[0].message:'，已发送的问题只补收。'}`;this.log(row,`登录后恢复：${resumed.started} 项已安排，${resumed.errors.length} 项未完成`);}
+          }catch(e){result.message='登录已确认，但任务恢复未完成：'+e.message;result.recovery={started:0,errors:[{message:e.message}]};this.log(row,'登录已确认，任务恢复失败；可再次检查重试');}
+        }
         return result;
       }catch(e){this.save(key,{state:'unknown',message:'检查未完成；未将网络或工具错误判为未登录',source:'连接检查'});this.log(row,'检查失败，请重试或打开原工具');throw new Error('检查失败：'+(e.code==='ENOENT'?'未找到所需工具':'工具未返回有效状态，请在原工具检查'));}
       finally{this.flights.delete(key);}
