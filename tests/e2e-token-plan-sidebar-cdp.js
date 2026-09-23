@@ -22,12 +22,12 @@ async function run() {
   fs.mkdirSync(path.dirname(cli), { recursive: true });
   fs.writeFileSync(cli, `import fs from 'node:fs';
     const args=process.argv.slice(2);
-    if(args.join(' ')!=='usage token-plan --output json --console-region cn-beijing --console-site domestic --timeout 15')process.exit(99);
+    if(args.join(' ')!=='console call --api zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage --data {} --output json --console-region cn-beijing --console-site domestic --timeout 15')process.exit(99);
     fs.appendFileSync(${JSON.stringify(control + '.calls')},'quota-only\\n');
     const c=JSON.parse(fs.readFileSync(${JSON.stringify(control)},'utf8'));
     if(c.code)process.exit(c.code);
     console.error('harmless CLI warning');
-    console.log(JSON.stringify({per1WeekPercentage:c.ratio,per1WeekResetTime:1789754700000}));`);
+    console.log(JSON.stringify({code:'200',successResponse:true,data:{success:true,DataV2:{data:{code:'SUCCESS',data:{per1WeekPercentage:c.ratio,per1WeekResetTime:1789754700000}}}}}));`);
   let hub, cdp;
   const result = { dataDir, checks: [], modelCalls: 0, fixture: 'Controlled CLI at real executable boundary; actual isolated Hub, service, IPC and UI' };
   const check = (name, passed) => { assert(passed, name); result.checks.push(name); console.log('PASS', name); };

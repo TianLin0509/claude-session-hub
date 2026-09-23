@@ -6,16 +6,38 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 
+const TOKEN_PLAN_USAGE_API = 'zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage';
+
+function parseTokenPlanWindow(raw, pctKey, resetKey) {
+  const ratio = raw?.[pctKey];
+  if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) return null;
+  const reset = raw?.[resetKey];
+  return { pct: ratio * 100,
+    resetsAt: Number.isFinite(reset) && reset > 0 && reset < 8.64e15 ? reset : null };
+}
+
+// 套餐额度窗口由服务端决定：历史上是周窗口，2026-09-22 起个人版改返回月窗口，
+// 两者都收，缺哪个少显示哪个，全缺才算无效数据。
+// 入参兼容两种形状：console call 的网关信封（data.DataV2.data.data）与旧的扁平 stdout。
+// 走 console call 而非 usage token-plan：CLI 自身的解包只认周字段，月窗口会被它丢成 {}。
+function unwrapGatewayPayload(raw) {
+  const nested = raw?.data?.DataV2?.data?.data;
+  if (nested && typeof nested === 'object') return nested;
+  const flat = raw?.data?.data;
+  if (flat && typeof flat === 'object') return flat;
+  return raw || {};
+}
+
 function parseTokenPlanUsage(text, observedAt) {
   let raw;
   try { raw = JSON.parse(text); } catch { throw new Error('百炼返回的用量数据无法解析'); }
-  const ratio = raw?.per1WeekPercentage;
-  if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
-    throw new Error('百炼未返回有效的周额度，请在控制台核实套餐');
+  const inner = unwrapGatewayPayload(raw);
+  const usage7d = parseTokenPlanWindow(inner, 'per1WeekPercentage', 'per1WeekResetTime');
+  const usage30d = parseTokenPlanWindow(inner, 'per1MonthPercentage', 'per1MonthResetTime');
+  if (!usage7d && !usage30d) {
+    throw new Error('百炼未返回有效的周/月额度，请在控制台核实套餐');
   }
-  const reset = raw.per1WeekResetTime;
-  return { usage7d: { pct: ratio * 100,
-    resetsAt: Number.isFinite(reset) && reset > 0 && reset < 8.64e15 ? reset : null },
+  return { ...(usage7d ? { usage7d } : null), ...(usage30d ? { usage30d } : null),
   observedAt, source: 'bailian-cli', profileLabel: '百炼中国站 · 当前 CLI 账号' };
 }
 
@@ -53,8 +75,8 @@ function createTokenPlanUsageService({
     }
     lastAttempt = now();
     flight = new Promise((resolve, reject) => {
-      execute(nodePath, [cliPath, 'usage', 'token-plan', '--output', 'json',
-        '--console-region', 'cn-beijing', '--console-site', 'domestic', '--timeout', '15'], {
+      execute(nodePath, [cliPath, 'console', 'call', '--api', TOKEN_PLAN_USAGE_API, '--data', '{}',
+        '--output', 'json', '--console-region', 'cn-beijing', '--console-site', 'domestic', '--timeout', '15'], {
         windowsHide: true, timeout: 20000, maxBuffer: 256 * 1024,
         env: { ...env, ELECTRON_RUN_AS_NODE: '1', BAILIAN_CONFIG_DIR: configDir },
       }, (failure, stdout) => {

@@ -114,6 +114,8 @@ async function main() {
   assert.deepStrictEqual(values, ['90%', '—', '60%', '¥0.00', '—']);
   view.render({ tokenPlan: { usage7d: { pct: 45.3284435 }, lastSeen: 200 } }, {});
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '54.67%');
+  view.render({ tokenPlan: { usage30d: { pct: 10, resetsAt: 1791820800000 }, lastSeen: 200 } }, {});
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '90.00%');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');

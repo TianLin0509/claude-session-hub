@@ -13,6 +13,19 @@ async function main() {
   }
   assert.throws(() => parseTokenPlanUsage('{', 1));
   for (const ratio of [0, 1]) assert.equal(parseTokenPlanUsage(JSON.stringify({ per1WeekPercentage: ratio }), 1).usage7d.pct, ratio * 100);
+  const month = parseTokenPlanUsage(JSON.stringify({ per1MonthPercentage: 0.005811098666666666, per1MonthResetTime: 1791820800000 }), 7);
+  assert.equal(month.usage30d.pct.toFixed(4), '0.5811');
+  assert.equal(month.usage30d.resetsAt, 1791820800000);
+  assert.equal(month.usage7d, undefined);
+  const both = parseTokenPlanUsage(JSON.stringify({ per1WeekPercentage: 0.5, per1MonthPercentage: 0.25 }), 8);
+  assert.equal(both.usage7d.pct, 50);
+  assert.equal(both.usage30d.pct, 25);
+  for (const bad of [{}, { per1WeekPercentage: 'x' }, { per1MonthPercentage: 2 }, { per1WeekPercentage: -0.1, per1MonthPercentage: 'x' }]) {
+    assert.throws(() => parseTokenPlanUsage(JSON.stringify(bad), 1));
+  }
+  const envelope = JSON.stringify({ code: '200', successResponse: true,
+    data: { success: true, DataV2: { data: { code: 'SUCCESS', data: { per1MonthPercentage: 0.25, per1MonthResetTime: 1791820800000 } } } } });
+  assert.equal(parseTokenPlanUsage(envelope, 9).usage30d.pct, 25);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'token-plan-unit-'));
   try {
     fs.writeFileSync(path.join(dir, 'config.json'), '{}');
@@ -21,7 +34,8 @@ async function main() {
       execute(node, args, options, cb) {
         calls++; callback = cb;
         assert.equal(args[0], __filename);
-        assert.deepEqual(args.slice(1, 3), ['usage', 'token-plan']);
+        assert.deepEqual(args.slice(1, 3), ['console', 'call']);
+        assert(args.includes('zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage'));
         // The executable path may itself contain "chat" (for example a
         // chatgpt worktree); only CLI arguments describe requested actions.
         assert(!args.slice(1).some(a => /chat|api-key|mcp/.test(a)));
