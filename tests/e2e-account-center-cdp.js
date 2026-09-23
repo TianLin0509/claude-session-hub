@@ -29,6 +29,9 @@ async function main(){
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-family").length'),1);
   assert.equal(await cdp.eval('document.querySelector(".ac-family").open'),false);
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-account-list>.ac-row,.ac-account-list>.ac-family").length'),7);
+  // Native details.toggle is queued: a second action can render before it fires.
+  assert.equal(await cdp.eval(`(()=>{document.querySelector('.ac-family>summary').click();document.querySelector('[data-ab="clear"]').click();return document.querySelector('.ac-family').open;})()`),true,'immediate action after expanding must preserve OpenAI disclosure');
+  await click('.ac-family>summary');await until('!document.querySelector(".ac-family").open','disclosure race reset');
   // Observe two real polling cycles: unchanged data must not replace controls or lose focus.
   await cdp.eval(`(()=>{
    const body=document.querySelector('.ac-content'),button=body.querySelector('[data-ac="open"][data-id="web-gemini"]');
@@ -110,7 +113,8 @@ async function main(){
   assert.equal(await cdp.eval(`document.querySelectorAll('.ac-row .ac-name[data-id^="image-"]').length`),2);
   assert.equal(await cdp.eval(`!!document.querySelector('.ac-row .ac-name[data-id="api-deepseek"]')`),false);
   assert.ok((await cdp.eval(`document.querySelector('.ac-row .ac-name[data-id="image-secondary-3"]').closest('.ac-row').innerText`)).includes('需要登录'));
-  await click('[data-ac="select"][data-id="image-primary"]');await click('.ac-members summary');
+  await click('[data-ac="select"][data-id="image-primary"]');
+  assert.equal(await cdp.eval(`(()=>{document.querySelector('.ac-members>summary').click();document.querySelector('[data-ab="clear"]').click();return document.querySelector('.ac-members').open;})()`),true,'immediate action must preserve member disclosure');
   await until('document.querySelector(".ac-members").open','group details expanded');
   await click('.ac-members [data-ac="check"][data-id="image-primary-2"]');
   await until('document.querySelector(".ac-status").textContent.includes("测试状态")','exact child check completed');

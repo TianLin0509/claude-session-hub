@@ -90,6 +90,14 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  function close(){if(page.hidden)return;page.hidden=true;batchUI.clear();epoch++;viewEpoch++;loading=false;clearInterval(timer);document.body.classList.remove('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','false');if(previousFocus?.isConnected)previousFocus.focus();}
  async function open(provider){closeOtherPanels();configModal.close();const ticket=++viewEpoch;clearInterval(timer);previousFocus=document.activeElement;page.hidden=false;document.body.classList.add('accounts-open');document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded','true');tab='overview';error='';notice='';render();await refresh();if(page.hidden||ticket!==viewEpoch)return;timer=setInterval(()=>{if(!page.hidden&&tab!=='config'&&busy.size===0)void refresh({background:true});},5000);if(provider)await configure(provider);}
  page.addEventListener('click',e=>{
+  const summary=e.target.closest('.ac-family>summary,.ac-members>summary');
+  if(summary&&!e.target.closest('input,button,a')){
+   // The native toggle event is queued; save the click intent before another
+   // action can replace this details element and discard that queued event.
+   const details=summary.parentElement;
+   if(details.matches('.ac-family')&&!query.trim()&&statusFilter==='all')familyOpen=!details.open;
+   if(details.matches('.ac-members'))details.open?expandedGroups.delete(details.dataset.group):expandedGroups.add(details.dataset.group);
+  }
   const b=e.target.closest('button');if(!b)return;if(b.dataset.acTab){tab=b.dataset.acTab;render();return;}
   const action=b.dataset.ac,id=b.dataset.id;
   if(action==='close')close();else if(action==='refresh')void refresh();
