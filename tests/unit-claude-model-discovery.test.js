@@ -11,6 +11,7 @@ const path = require('path');
 const {
   cliUpdateNotice,
   compareCliVersions,
+  noteSessionStart,
   discoveredModelOptions,
   isCacheFresh,
   isValidCliVersion,
@@ -269,4 +270,52 @@ test('没有缓存时 readClaudeModelDiscovery 安全降级：loaded=false、sta
   assert.strictEqual(snapshot.stale, true);
   assert.deepStrictEqual(snapshot.options, []);
   assert.strictEqual(snapshot.notice, null);
+});
+
+test('记下的 CLI 版本会被后续读取当作默认 localVersion', () => {
+  const cachePath = tempCachePath();
+  writeDiscoveryCache({
+    fetchedAt: Date.now(),
+    models: normalizeCatalogModels(CATALOG_FIXTURE),
+  }, { cachePath });
+  // 没记版本之前，无从判断谁被挡住，不该瞎标 disabled。
+  const before = readClaudeModelDiscovery({ cachePath });
+  assert.strictEqual(before.notice, null);
+  assert.strictEqual(
+    before.options.find(option => option.id === 'claude-opus-5-5[1m]').disabled,
+    undefined,
+  );
+  // init 帧报上来之后，同一份缓存就能得出正确结论。
+  noteSessionStart('2.1.269', { cachePath });
+  const after = readClaudeModelDiscovery({ cachePath });
+  assert.strictEqual(after.notice.kind, 'model-blocked');
+  assert.strictEqual(
+    after.options.find(option => option.id === 'claude-opus-5-5[1m]').upgradeTo,
+    '2.1.280',
+  );
+});
+
+test('noteSessionStart 在缓存新鲜时不打网络', () => {
+  const cachePath = tempCachePath();
+  writeDiscoveryCache({ fetchedAt: Date.now(), models: [] }, { cachePath });
+  let called = 0;
+  noteSessionStart('2.1.280', { cachePath, fetchImpl: async () => { called += 1; throw new Error('不该被调用'); } });
+  assert.strictEqual(called, 0, '缓存还新鲜就不该触发刷新');
+});
+
+test('noteSessionStart 同步返回、不抛，且网络失败不会冒出未捕获拒绝', async () => {
+  const cachePath = tempCachePath();
+  let called = 0;
+  // 缓存过期 → 应触发后台刷新；刷新必然失败，但绝不能抛到调用方。
+  writeDiscoveryCache({ fetchedAt: Date.now() - 24 * 60 * 60 * 1000, models: [] }, { cachePath });
+  assert.strictEqual(noteSessionStart('2.1.280', {
+    cachePath,
+    fetchImpl: async () => { called += 1; throw new Error('ENOTFOUND'); },
+  }), undefined);
+  // 版本号非法也必须安全吞掉（init 帧字段缺失时会走到这里）。
+  assert.doesNotThrow(() => noteSessionStart('', { cachePath }));
+  assert.doesNotThrow(() => noteSessionStart(undefined, { cachePath }));
+  // 给后台 Promise 一个 tick 去 reject，验证没有 unhandled rejection 逃逸。
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(called > 0, '缓存过期时应当触发过刷新');
 });

@@ -315,6 +315,17 @@ async function refreshClaudeModelDiscovery(options = {}) {
   }
 }
 
+// 会话启动时调一次：记下本地 CLI 版本，并在缓存过期时顺手刷新官方目录。
+// 整个过程不返回 Promise 给调用方、不抛异常、不等网络——会话启动路径上
+// 任何一点阻塞都是不可接受的。6 小时 TTL 决定了它实际很少真的打网络。
+function noteSessionStart(cliVersion, options = {}) {
+  try { recordLocalCliVersion(cliVersion, options); } catch (_) {}
+  try {
+    if (isCacheFresh(readDiscoveryCache(options), options)) return;
+    Promise.resolve(refreshClaudeModelDiscovery(options)).catch(() => {});
+  } catch (_) {}
+}
+
 // 会话启动路径调用的就是这个：只读缓存，同步返回，永不等网络。
 // stale 为 true 时调用方应触发一次后台 refresh。
 function readClaudeModelDiscovery(options = {}) {
@@ -354,6 +365,7 @@ module.exports = {
   normalizeCatalogModels,
   readClaudeModelDiscovery,
   readDiscoveryCache,
+  noteSessionStart,
   recordLocalCliVersion,
   resolveFetchImpl,
   refreshClaudeModelDiscovery,
