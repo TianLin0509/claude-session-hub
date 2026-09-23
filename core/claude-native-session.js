@@ -8,6 +8,7 @@ const { findNativeClaudeHistory, processExists, renameNativeClaudeHistory } = re
 const ownership = require('./native-session-ownership');
 const { ClaudeNativeActivities } = require('./claude-native-activities');
 const { NATIVE_CONFIRMATION_MS } = require('./native-confirmation-policy');
+const { recordLocalCliVersion } = require('./claude-model-discovery');
 
 const BACKEND = 'claude-stream-json';
 const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
@@ -526,7 +527,11 @@ class ClaudeNativeSession extends EventEmitter {
         this.update({ actualModel: message.model, capabilities: {
           tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [],
           skills: message.skills || [], plugins: message.plugins || [],
+          cliVersion: message.claude_code_version || '',
           epoch: this.runtime.epoch, sessionId: this.sessionId, observedAt: Date.now() } });
+        // init 帧是本地 CLI 版本唯一可靠的来源，模型下拉靠它判断哪些新模型被
+        // 版本挡住。写缓存失败不影响会话，吞掉即可。
+        try { recordLocalCliVersion(message.claude_code_version); } catch (_) {}
       }
       if (message.subtype === 'task_started' && message.task_id) {
         const owner = this.activities.toolOwners.get(message.tool_use_id) || outputOwner;
