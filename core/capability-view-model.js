@@ -16,9 +16,14 @@ function coverage(row, agent) {
     return {state: 'shared', label: '共享入口', tone: 'shared'};
   return {state: 'registered', label: row.type === 'skill' ? '独立入口' : '已登记', tone: ''};
 }
+// Headline counts and the default list only include rows with at least one installed, enabled entry;
+// disabled leftovers and flag-only plugins stay reachable through the explicit scope filters.
+function isActive(row) {
+  return (row.sources || []).some(s => !s.missing && s.enabled !== false);
+}
 function related(rows, row) {
   if (row.type === 'plugin') return rows.filter(r => r.sources?.some(s => s.plugin === row.name && row.agents.includes(s.agent)));
   const parents = new Set((row.sources || []).map(s => s.plugin).filter(Boolean));
   return rows.filter(r => r.type === 'plugin' && parents.has(r.name));
 }
-module.exports = {coverage, related};
+module.exports = {coverage, related, isActive};

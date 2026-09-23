@@ -39,6 +39,12 @@ async function main(){
     assert.equal(await cdp.eval('getComputedStyle(document.getElementById("session-sidebar")).visibility'),'hidden');
     assert.equal(await cdp.eval('Math.abs(document.getElementById("capability-page").getBoundingClientRect().left-document.getElementById("scene-rail").getBoundingClientRect().right)<1'),true);
     await shot('01-catalog');result.checks.push('无会话也可浏览目录，新增侧栏入口、布局与隐藏会话栏正常');
+    const mcpStat=await cdp.eval('document.querySelector(".cp-stat[data-cp-type=mcp]").innerText');
+    assert.match(mcpStat,/另有 1 项已停用/);assert.equal(await cdp.eval('Boolean(document.querySelector("[data-cp-row=\\"mcp:bailian_image\\"]"))'),false);
+    await cdp.eval('document.getElementById("cp-scope").value="all";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
+    await until('document.querySelector("[data-cp-row=\\"mcp:bailian_image\\"]")','disabled row under all scope');
+    await cdp.eval('document.getElementById("cp-scope").value="active";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
+    result.checks.push('顶部数字与默认列表只计启用项，停用项标注数量并可在“全部（含停用）”中查看');
     await click('[data-cp-row="skill:channel-sim"]');await click('[data-cp-action="note-edit"]');
     await click('#cp-note-summary');await cdp.send('Input.insertText',{text:'无线仿真实验与结果分析'});
     await cdp.eval('document.getElementById("cp-note-origin").value="self";document.getElementById("cp-note-origin").dispatchEvent(new Event("change",{bubbles:true}))');

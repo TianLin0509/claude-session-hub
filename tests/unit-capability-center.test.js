@@ -77,6 +77,22 @@ test('coverage distinguishes real shared target, body variants, disabled and uns
   assert.equal(coverage(r,'claude').state,'shared');assert.equal(coverage(r,'qwen').label,'未发现');assert.equal(coverage(r,'glm').label,'未接入盘点');
   r.sources.push({agent:'claude',realPath:'/other',hash:'two'});assert.equal(coverage(r,'claude').state,'variant');
 });
+test('headline counts exclude disabled leftovers, flag-only plugins and skills of disabled plugins',t=>{
+  const {isActive}=require('../core/capability-view-model');
+  assert.equal(isActive({sources:[{enabled:false}]}),false);
+  assert.equal(isActive({sources:[{enabled:true,missing:true}]}),false);
+  assert.equal(isActive({sources:[{enabled:false},{agent:'codex'}]}),true);
+  assert.equal(isActive({sources:[]}),false);
+  const {root,write}=fixture(t),plugin=path.join(root,'bundle');
+  write('.codex/config.toml','[mcp_servers.live]\ncommand="x"\n[mcp_servers.bailian_image]\nenabled=false\n');
+  write('.claude/settings.json',JSON.stringify({enabledPlugins:{'bundle@test':false,'flag-only@gone':true}}));
+  write('.claude/plugins/installed_plugins.json',JSON.stringify({plugins:{'bundle@test':[{scope:'user',installPath:plugin}]}}));
+  write('bundle/.claude-plugin/plugin.json',JSON.stringify({skills:'./skills'}));
+  write('bundle/skills/leftover/SKILL.md','---\nname: leftover\n---');
+  write('.agents/skills/live-skill/SKILL.md','---\nname: live-skill\n---');
+  const active=collectCapabilities({homeDir:root,dataDir:root}).rows.filter(isActive).map(r=>r.id).sort();
+  assert.deepEqual(active,['mcp:live','skill:live-skill']);
+});
 test('Codex explicit user skill disable is retained without changing another agent shared source',t=>{
   const {root,write}=fixture(t),file=write('.agents/skills/task/SKILL.md','---\nname: task\n---');
   write('.codex/config.toml','[[skills.config]]\npath = '+JSON.stringify(file)+'\nenabled = false\n');
