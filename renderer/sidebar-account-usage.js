@@ -65,7 +65,7 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
         row.dataset.freshness = provider === 'tokenPlan' && data.lastSeen
           ? (Date.now() - data.lastSeen > 600000 || state.error ? 'stale' : 'fresh') : freshness(data.lastSeen);
         const age = formatAge(data.lastSeen);
-        const tokenReset = provider === 'tokenPlan' && data.usage7d?.resetsAt;
+        const tokenReset = provider === 'tokenPlan' && (data.usage7d || data.usage30d)?.resetsAt;
         const resetTip = tokenReset ? '重置：' + new Date(tokenReset).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 北京时间' : '';
         const status = state.inFlight ? '刷新中…' : state.error ? '刷新失败：' + state.error
           : state.result ? state.result.fresh ? '已取得新数据' : '未取得新数据，保留旧值' : '';
@@ -83,15 +83,19 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
             cell.cell.title = '余额 · ' + age + ((data.balance || data).available === false ? ' · 当前不可用' : '')
               + ' · 点击刷新 ' + NAMES[provider] + (status ? ' · ' + status : '');
           } else {
-            const pct = remainingPercent(data['usage' + window]);
+            // Token Plan 单格自适应：服务端给周窗口就用周，改给月窗口就跟随月。
+            const observation = provider === 'tokenPlan'
+              ? (data.usage7d || data.usage30d || null) : data['usage' + window];
+            const windowLabel = provider === 'tokenPlan'
+              ? (data.usage7d ? '7d' : data.usage30d ? '30d' : window) : window;
+            const pct = remainingPercent(observation);
             cell.value.textContent = pct === null ? (provider === 'tokenPlan' && data.needsLogin ? '需登录' : '—')
               : (provider === 'tokenPlan' ? pct.toFixed(2) : Math.round(pct)) + '%';
             cell.fill.style.width = (pct ?? 0) + '%';
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
-            const observation = data['usage' + window];
             cell.period.textContent = formatResetCountdown(observation?.resetsAt, nowFn());
             const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : 0;
-            cell.cell.title = window + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
+            cell.cell.title = windowLabel + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
               + (reset && reset <= nowFn() ? ' · 上次记录，等待刷新' : reset ? ' · 距离额度重置 ' + cell.period.textContent : ' · 重置时间未知')
               + ' · 点击刷新 ' + NAMES[provider] + (status ? ' · ' + status : '');
           }
