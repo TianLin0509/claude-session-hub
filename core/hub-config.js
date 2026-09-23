@@ -35,6 +35,11 @@ const DEFAULTS = {
   codex_api_base_url: 'https://www.packyapi.com/v1',
   codex_api_model: DEFAULT_MODEL_BY_KIND.codex,
   codex_api_provider: 'packycode',
+  // 用户在新建会话面板点「设为默认」存下来的 per-CLI 默认模型，形如
+  // { claude: 'claude-opus-5-5[1m]', codex: 'gpt-6-astra' }。空表示沿用
+  // model-options.js 里的出厂默认值。config.json 里落在 models.defaults，
+  // 校验与解析见 core/default-model-preference.js。
+  models_defaults: {},
   ui_tool_fold_threshold: 15,
   ui_code_fold_threshold: 30,
   ui_card_font_size: DEFAULT_CARD_FONT_SIZE,
@@ -56,6 +61,26 @@ function loadConfigJson() {
     return JSON.parse(raw);
   } catch {
     return {};
+  }
+}
+
+/**
+ * 供「读-改-写」使用的配置读取。
+ *
+ * 和上面的 loadConfigJson 的区别在错误语义：那个吞掉一切错误返回 {}，只读场景
+ * 够用；但读-改-写里把「读不到」当成「空配置」会导致整份写回时静默抹掉其它字段
+ * （API key 之类）。所以这里只把 ENOENT（首次运行）当成空对象，其它错误一律抛给
+ * 调用方去中止本次保存。
+ *
+ * BOM 必须剥：Windows 上用记事本手改过 config.json 就会带 ﻿，
+ * 直接 JSON.parse 会抛 Unexpected token，让调用方误判成「配置读不到」。
+ */
+function readConfigJsonForUpdate() {
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), 'utf8').replace(/^﻿/, ''));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return {};
+    throw error;
   }
 }
 
@@ -134,6 +159,8 @@ function getConfig() {
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
     codexApiModel: getConfigValue('codexApiModel', 'HUB_CODEX_API_MODEL', 'providers.codex.model', DEFAULTS.codex_api_model),
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
+    // 每个 CLI 的默认模型。对象类型，不走 getConfigValue（那条路是给标量用的）。
+    defaultModels: (rawConfig.models && rawConfig.models.defaults) || DEFAULTS.models_defaults,
     uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
     cardFontSize: normalizeCardFontSize(getConfigValue('cardFontSize', 'HUB_UI_CARD_FONT_SIZE', 'ui.card_font_size', DEFAULTS.ui_card_font_size)),
@@ -198,6 +225,7 @@ module.exports = {
   clearConfigCache,
   saveConfig,
   getConfigPath,
+  readConfigJsonForUpdate,
   checkMissingConfig,
   DEFAULTS,
 };

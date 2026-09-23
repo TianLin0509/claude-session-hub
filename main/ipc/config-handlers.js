@@ -6,12 +6,14 @@ const {
   saveConfig,
   checkMissingConfig,
   getConfigPath,
+  readConfigJsonForUpdate,
   DEFAULTS,
 } = require('../../core/hub-config.js');
 const {
   normalizeCardFontSize,
   normalizeCardFontFamily,
 } = require('../../core/card-display-config.js');
+const { withDefaultModelInJson } = require('../../core/default-model-preference.js');
 const {
   isUsableFeishuTarget,
   normalizeNotificationConfig,
@@ -45,6 +47,8 @@ function toMaskedConfig(config) {
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
+    // 新建会话面板要靠它决定预选哪个模型，不含敏感信息，原样透出。
+    defaultModels: config.defaultModels || {},
     notificationEnabled: notifications.enabled,
     notificationIncludePreview: notifications.includePreview,
     notificationNotifyGroupChats: notifications.notifyGroupChats,
@@ -332,21 +336,50 @@ function registerConfigIpc(ipcMain, deps) {
     return { ok: true, status: 'saved', ...state };
   });
 
-  ipcMain.handle('save-hub-config', (_e, newConfig) => {
-    const configPath = getConfigPath();
-    let existing = {};
+  // 新建会话面板的「设为默认」。刻意不复用 save-hub-config：那条路要求 renderer
+  // 提交一份完整表单，而这里只想改一个字段；走读-改-写并只替换 models.defaults，
+  // 别的字段一律原样带过去。model 传空表示恢复出厂默认值。
+  ipcMain.handle('session:set-default-model', (_e, payload = {}) => {
+    let existing;
     try {
-      const raw = fs.readFileSync(configPath, 'utf8');
-      existing = JSON.parse(raw);
+      // readConfigJsonForUpdate 只把「文件还不存在」当成空配置，其它读取失败会抛
+      // 出来，由这里中止——否则整份写回会把别的字段静默抹掉。它同时剥 BOM，
+      // 记事本改过 config.json 的机器才不会一直报 config_read_failed。
+      existing = readConfigJsonForUpdate();
     } catch (e) {
-      // ENOENT = 配置文件还不存在（首次运行），existing={} 合法，继续保存。
+      console.error('[config] set-default-model: 读取现有配置失败，已中止:', e && e.message);
+      return { ok: false, error: 'config_read_failed' };
+    }
+    let merged;
+    try {
+      merged = withDefaultModelInJson(existing, payload.kind, payload.model, {
+        // renderer 传来的是当前下拉里真正能选的清单。ACP 那几个 kind 的下拉会
+        // 追加用户在配置里自定义的模型（acpModelOptions 的第二个参数），静态
+        // 清单认不出来——下拉里选得到却存不进去就成了死路。清单只负责放行，
+        // 命令行安全白名单仍然照样把关。
+        availableIds: Array.isArray(payload.available) ? payload.available : null,
+      });
+    } catch (error) {
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+    saveConfig(merged);
+    clearSessionManagerConfigCache();
+    return { ok: true, defaultModels: (merged.models && merged.models.defaults) || {} };
+  });
+
+  ipcMain.handle('save-hub-config', (_e, newConfig) => {
+    let existing;
+    try {
+      // ENOENT = 配置文件还不存在（首次运行），当成空配置继续保存。
       // 其它错误（文件被锁 EBUSY/EPERM、JSON 损坏等）说明现有配置确实读不到——
       // 此时若用空对象合并，部分字段提交（如 Meridian 弹窗只发 3 个字段）会静默
       // 抹掉其它 provider 的已存 API key。宁可中止本次保存，也不能静默覆盖。
-      if (!e || e.code !== 'ENOENT') {
-        console.error('[config] save-hub-config: 读取现有配置失败，已中止保存以防覆盖其它字段:', e && e.message);
-        return { success: false, error: 'config_read_failed' };
-      }
+      // 这两种语义连同 BOM 剥离都收在 readConfigJsonForUpdate 里（旧代码漏了
+      // 剥 BOM，记事本改过 config.json 的机器会一直存不进去）。
+      existing = readConfigJsonForUpdate();
+    } catch (e) {
+      console.error('[config] save-hub-config: 读取现有配置失败，已中止保存以防覆盖其它字段:', e && e.message);
+      return { success: false, error: 'config_read_failed' };
     }
 
     const merged = buildConfigJsonUpdate(existing, newConfig);
