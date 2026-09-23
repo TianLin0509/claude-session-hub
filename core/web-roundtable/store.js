@@ -13,8 +13,9 @@ function write(key, value) { const target = file(key), tmp = target + '.' + rand
 function alive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } }
 // Exclusive mkdir, with owner liveness rather than an expiring lease. A slow browser
 // must never lose its lock to another sender. Unpublished owner gets a grace period.
-function acquire(key) {
-  const dir = path.join(root(), id(key) + '.lock'), token = randomUUID();
+function acquire(key,lockRoot=root()) {
+  fs.mkdirSync(lockRoot,{recursive:true});
+  const dir = path.join(lockRoot, id(key) + '.lock'), token = randomUUID();
   try { fs.mkdirSync(dir); } catch (e) {
     if (e.code !== 'EEXIST') throw e;
     // Serialize stale-owner inspection as well as removal. Two stale readers
@@ -39,7 +40,7 @@ function acquire(key) {
       const stale = dir + '.stale-' + token;
       try { fs.renameSync(dir, stale); fs.rmSync(stale, { recursive:true }); } catch (err) { if (err.code!=='ENOENT') throw err; }
     } finally {fs.closeSync(handle);fs.unlinkSync(reap);}
-    return acquire(key);
+    return acquire(key,lockRoot);
   }
   fs.writeFileSync(path.join(dir, 'owner.tmp'), JSON.stringify({ pid:process.pid, token }), 'utf8');
   fs.renameSync(path.join(dir,'owner.tmp'),path.join(dir,'owner.json'));

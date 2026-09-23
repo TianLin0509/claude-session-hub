@@ -1,7 +1,7 @@
 'use strict';
 const {needsAttention}=require('./account-center-view');
 function createAccountBatchUI({page,call,refresh,rerender,notice,escapeHtml:esc,isBusy=()=>false}) {
- const chosen=new Set();let phone='',submitting=false,current,attentionDialog,attentionIds,uiEpoch=0;
+ const chosen=new Set();let phone='',submitting=false,current,attentionDialog,attentionIds,attentionHtml='',uiEpoch=0;
  const stages={queued:'排队',checking:'检查中',signed_in:'已登录',waiting_code:'等待验证码',manual:'需要本人验证',failed:'未完成'};
  const doc=page.ownerDocument;
  function updateSelection(){
@@ -31,7 +31,7 @@ function createAccountBatchUI({page,call,refresh,rerender,notice,escapeHtml:esc,
   content.querySelector('.ac-list-area').append(box);updateSelection();
  }
  function renderAgain(){if(rerender)rerender();else void refresh();}
- function closeAttention(){if(attentionDialog){attentionDialog.close();attentionDialog.remove();attentionDialog=null;}attentionIds=undefined;}
+ function closeAttention(){if(attentionDialog){attentionDialog.close();attentionDialog.remove();attentionDialog=null;}attentionIds=undefined;attentionHtml='';}
  function attention(ids){
   closeAttention();attentionIds=ids;
   attentionDialog=doc.createElement('dialog');attentionDialog.className='ac-task-dialog';attentionDialog.setAttribute('aria-labelledby','ac-task-title');
@@ -42,11 +42,12 @@ function createAccountBatchUI({page,call,refresh,rerender,notice,escapeHtml:esc,
   if(!attentionDialog||!current)return;
   const rows=current.connections.filter(r=>attentionIds?attentionIds.includes(r.id):needsAttention(r));
   const latest=current.batches?.at(-1);
-  attentionDialog.querySelector('.ac-task-list').innerHTML=rows.length?rows.map(row=>{
+  const html=rows.length?rows.map(row=>{
    const recovery=row.webRecovery||[];
    const item=latest?.items.find(i=>i.id===row.id),confirmed=row.state==='signed_in'&&!row.stale,code=row.phoneLogin&&row.pending;
    return `<div class="ac-task-item"><div><strong>${esc(row.name)}</strong><p>${esc(row.identity||'身份未确认')} · ${esc(recovery.length?recovery.length+' 项网页任务等待恢复':confirmed?'已登录':item?stages[item.stage]||'待确认':row.pending?'等待本人验证':'需要登录')}</p></div><div>${recovery.length?`<button class="ac-btn primary" data-ac="open" data-id="${esc(row.id)}">打开验证窗口</button>`:confirmed?'':code?`<button class="ac-btn primary" data-ab="code" data-id="${esc(row.id)}">输入验证码</button>`:`<button class="ac-btn primary" data-ac="${row.type==='web'&&row.pending?'open':'login'}" data-id="${esc(row.id)}">${row.pending?(row.type==='web'?'打开验证窗口':'查看登录提示'):'登录账号'}</button>`}${recovery.length?'<p class="ac-muted">补登后继续原任务；已发送的问题只补收，不重复提问。</p>':''}${code?`<button class="ac-btn" data-ac="open" data-id="${esc(row.id)}">官方窗口</button>`:''}<button class="ac-btn" data-ac="check" data-id="${esc(row.id)}">${recovery.length?'检查并继续任务':'检查登录'}</button>${row.pending?`<button class="ac-btn ac-link" data-ac="release" data-id="${esc(row.id)}">解除等待</button>`:''}</div></div>`;
   }).join(''):'<div class="ac-empty">当前没有需要处理的授权。登录未确认的账号仍可在总览中检查。</div>';
+  if(html!==attentionHtml){attentionDialog.querySelector('.ac-task-list').innerHTML=html;attentionHtml=html;}
   for(const button of attentionDialog.querySelectorAll('[data-ac],[data-ab="code"]'))button.disabled=isBusy(button.dataset.id);
  }
  page.addEventListener('change',e=>{

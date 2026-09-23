@@ -24,8 +24,8 @@ async function endpoint(profile) {
   try { const r=await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(1500)}); if(!r.ok)return null; const value=await r.json(); if(new URL(value.webSocketDebuggerUrl).pathname!==text[1]?.trim())throw Error('Profile CDP identity mismatch'); return {port,...value}; }
   catch(e){if(e.message==='Profile CDP identity mismatch')throw e;return null;}
 }
-async function open(provider, url) {
-  const accounts=new AccountBrowser({dataDir:dataDir()}), profile=accounts.profile(provider); fs.mkdirSync(profile,{recursive:true});
+async function open(provider, url, options={}) {
+  const accounts=new AccountBrowser({dataDir:options.dataDir||dataDir()}), profile=accounts.profile(provider); fs.mkdirSync(profile,{recursive:true});
   let info=await endpoint(profile), owned=false, child, launchError;
   if(!info){
     owned=true; child=spawn(accounts.executable(),['--headless=new','--user-data-dir='+profile,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','about:blank'],{windowsHide:true,stdio:'ignore'});
