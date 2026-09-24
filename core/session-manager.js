@@ -1002,6 +1002,7 @@ function buildNativeCodexOptions(info, opts, env) {
     turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort),
       ...(tier && tier !== 'inherit' ? {serviceTier:tier === 'standard' ? 'default' : tier} : {})},
     resumeId:(opts.useResume || info.kind === 'codex-resume') ? opts.codexSid : null,
+    resumePath:opts.resumeTranscriptPath || null,
     forkId:opts.codexForkSid || null,
     picker:!opts.lazyStart && !opts.codexSid && (info.kind === 'codex-resume' || opts.codexResumePicker),
     resumeLatest:!opts.lazyStart && opts.useResume && !opts.codexSid,
@@ -1011,6 +1012,23 @@ function buildNativeCodexOptions(info, opts, env) {
 function sharedCodexRuntimeEnabled() { return false; }
 
 class SessionManager extends EventEmitter {
+  async _syncCodexAccount(driver,info) {
+    if (!driver.options.resolveAccount || driver.closed) return null;
+    if (driver.accountSyncRequest) return driver.accountSyncRequest;
+    driver.accountSyncRequest = driver.enqueueSend(intent=>driver.followGlobalAccount(intent));
+    try {
+      await driver.accountSyncRequest;
+      const target=driver.options.resolveAccount();
+      return {sessionId:info.id,profile:driver.options.accountId,pending:target.id!==driver.options.accountId};
+    } finally { driver.accountSyncRequest=null; }
+  }
+  async syncCodexAccounts() {
+    const entries=[...this.sessions.values()].filter(s=>s.pty?.options?.resolveAccount && !s.pty.closed);
+    return Promise.all(entries.map(async ({pty,info})=>{
+      try { return await this._syncCodexAccount(pty,info); }
+      catch(error){pty.emit('action-error','账号切换未完成：'+error.message);return {sessionId:info.id,error:error.message};}
+    }));
+  }
   sessions = new Map();
   focusedSessionId = null;
   claudeCounter = 0;
@@ -1131,6 +1149,15 @@ class SessionManager extends EventEmitter {
     const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
     const isCodex = kind === 'codex' || kind === 'codex-resume';
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
+    const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
+    let globalAccount = null;
+    if (followsGlobalAccount) {
+      const accounts=require('./codex-global-account');
+      const launch = accounts.prepareLaunch(opts,accounts.currentConfig());
+      clearSessionManagerConfigCache();
+      opts = launch.opts;
+      globalAccount = launch.account;
+    }
     if (webRoute) {
       require('./chatgpt-web-integration').requireWebTools(opts.model);
       if (opts.effort && opts.effort !== webRoute.effort) throw new Error('ChatGPT 模型与思考档不匹配');
@@ -1334,7 +1361,7 @@ class SessionManager extends EventEmitter {
       codexProfile = { id: 'deepseek-api', label: 'DeepSeek API · Codex' };
     } else if (isCodex) {
       const cv = getConfigValues();
-      const selectedSubscriptionProfile = codexProfile
+      const selectedSubscriptionProfile = globalAccount ? { ...globalAccount,home:globalAccount.home } : codexProfile
         || (!opts.meetingId ? resolveCodexSubscriptionProfile(cv, opts.codexProfile) : null);
       const isolatedDataDir = process.env.CLAUDE_HUB_DATA_DIR || '';
       const selectedProfileHome = selectedSubscriptionProfile && selectedSubscriptionProfile.home;
@@ -1386,6 +1413,7 @@ class SessionManager extends EventEmitter {
     }
 
     const isNativeClaude = isClaude || isDeepSeekLegacy;
+    if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
     if (isCodex) {
 
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
@@ -1399,6 +1427,11 @@ class SessionManager extends EventEmitter {
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isCodex
       ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
+        ...(followsGlobalAccount ? {accountId:globalAccount.id,ownershipHome:opts.codexHistoryHome,
+          resolveAccount:()=>{
+            const accounts=require('./codex-global-account');
+            return accounts.resolveAccount(accounts.currentConfig());
+          }} : {}),
         hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
         lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
@@ -1709,6 +1742,11 @@ class SessionManager extends EventEmitter {
 
     if (isCodex || isAcp) {
       if (isCodex) Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
+      if (followsGlobalAccount) ptyProcess.options.accountOptions = (_target,env) => {
+        ensureCodexCwdTrusted(info.cwd,env.CODEX_HOME);
+        const next=buildNativeCodexOptions(info,opts,env);
+        return {processArgs:next.processArgs,threadParams:next.threadParams,turnParams:next.turnParams};
+      };
       const publish = () => {
         if (this.sessions.get(id)?.pty !== ptyProcess) return;
         this.emit('codex-session-updated', this._toPublic(info));
@@ -1720,6 +1758,16 @@ class SessionManager extends EventEmitter {
         const entry = this.sessions.get(id);
         if (entry) entry.groupChatReady = runtime.connection === 'connected';
         if (runtime.completedAt) info.lastCompletedAt = runtime.completedAt;
+        publish();
+        if (followsGlobalAccount && !ptyProcess.accountSwitch && (runtime.state === 'idle' || ['completed','failed','interrupted'].includes(runtime.state))) {
+          setImmediate(() => {
+            if (!ptyProcess.closed) this._syncCodexAccount(ptyProcess,info).catch(error=>ptyProcess.emit('action-error',error.message));
+          });
+        }
+      });
+      ptyProcess.on('account-changed', account => {
+        info.codexProfile=account.id;info.codexProfileLabel=account.label;info.nativeActionError=null;
+        if (!info.codexSid && !info.transcriptPath) info.codexSessionsRoot=path.join(account.home,'sessions');
         publish();
       });
       ptyProcess.on('bound', bound => {

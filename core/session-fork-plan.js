@@ -100,6 +100,8 @@ function planSessionFork({ source, siblingPool = [], meeting = null, rendererTit
   } else {
     kind = isDeepSeek ? 'deepseek' : 'codex';
     if (source.codexProfile) opts.codexProfile = source.codexProfile;
+    if (source.codexSessionsRoot) opts.codexSessionsRoot = source.codexSessionsRoot;
+    if (source.transcriptPath) opts.resumeTranscriptPath = source.transcriptPath;
     opts.codexForkSid = nativeSessionId;
   }
 

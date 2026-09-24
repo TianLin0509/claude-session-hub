@@ -113,7 +113,7 @@ function nativeKeys(kind, opts, env = process.env) {
   const home = value => path.resolve(value).toLowerCase();
   const os = require('os');
   const keys = [];
-  if (opts.codexSid && !opts.codexForkSid) keys.push('codex:' + home(env.CODEX_HOME || path.join(os.homedir(), '.codex')) + ':' + opts.codexSid);
+  if (opts.codexSid && !opts.codexForkSid) keys.push('codex:' + home(opts.codexHistoryHome || (opts.codexSessionsRoot && path.dirname(opts.codexSessionsRoot)) || env.CODEX_HOME || path.join(os.homedir(), '.codex')) + ':' + opts.codexSid);
   if (opts.resumeCCSessionId && !opts.forkCCSessionId) keys.push('claude:' + home(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')) + ':' + opts.resumeCCSessionId);
   for (const field of ['acpSid','kimiSid','geminiChatId']) if (opts[field]) keys.push(kind.replace(/-resume$/, '') + ':' + field + ':' + opts[field]);
   return keys;

@@ -115,7 +115,7 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  page.addEventListener('input',e=>{if(e.target.id==='ac-search'){const pos=e.target.selectionStart;query=e.target.value;render();const field=page.querySelector('#ac-search');field.focus();field.setSelectionRange(pos,pos);}});
  document.addEventListener('click',e=>{if(e.target.closest('#btn-rail-accounts')){if(page.hidden)void open();else close();}else if(e.target.closest('#scene-rail button')&&!page.hidden)close();if(e.target.closest('#btn-config-accounts'))void open();});
  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!page.hidden&&!page.querySelector('dialog[open]')){e.preventDefault();close();}});
- document.addEventListener('hub-account-config-saved',()=>{notice='账号接入配置已保存，仅影响新会话。';void refresh();});
+ document.addEventListener('hub-account-config-saved',()=>{notice='账号配置已保存；Codex 全局账号对新建、恢复和重启生效，进行中的会话在本轮结束后切换。';void refresh();});
  window.addEventListener('resize',position);
  return {open,close,refresh};
 }

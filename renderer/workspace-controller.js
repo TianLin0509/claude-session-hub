@@ -72,7 +72,15 @@
   let chatgptCatalog = null;
   let codexTuningCatalog = null;
   let claudeModelCatalog = null;
-  let codexCatalogInFlight = null;
+  const codexCatalogInFlight = new Map();
+  let codexAccounts = [];
+  let codexAccountId = '';
+  let codexBackend = 'subscription';
+  let accountSaving = false;
+  let pendingAccountId = '';
+  let accountReadError = '';
+  let accountNotice = '';
+  let configReadRevision = 0;
   let claudeCatalogInFlight = null;
   // 2026-08-29 起三家统一默认 none：一个 MCP 都不加载，要用哪个当场选。
   // 起因是 superran 这个 MCP 每个进程恒定提交 2.66 GB（实占只有 20–30 MB），
@@ -175,11 +183,19 @@
   // 读一次用户设过的默认模型。读不到就保持空表、回落出厂默认值 —— 这条路径
   // 决定的只是"预选哪个"，失败不该挡住新建会话。
   async function loadHubDefaultModels() {
+    const revision=++configReadRevision;
     try {
       const config = await ipcRenderer.invoke('get-hub-config');
       hubDefaultModels = (config && config.defaultModels) || {};
-    } catch (_) {
+      if (!accountSaving && revision===configReadRevision) {
+        codexAccounts=config.codexSubscriptionProfiles || [];
+        codexAccountId=config.codexSubscriptionProfile || '';
+        codexBackend=config.codexBackend;
+        accountReadError='';
+      }
+    } catch (error) {
       hubDefaultModels = {};
+      accountReadError='账号配置读取失败：'+error.message;
     }
     return hubDefaultModels;
   }
@@ -877,6 +893,25 @@
   }
 
   function paintTuning() {
+    const accountField=document.getElementById('new-session-account-field');
+    const accountSelect=document.getElementById('new-session-account');
+    const accountNote=document.getElementById('new-session-account-note');
+    const showAccount=selectedKind === 'codex' && codexBackend !== 'api';
+    if (accountField) accountField.hidden=!showAccount;
+    if (accountNote) {
+      accountNote.hidden=!showAccount;
+      accountNote.textContent=accountReadError || (accountSaving ? '正在切换全局账号…' : accountNotice)
+        || '选择后立即设为全局账号。新建、恢复和重启都跟随；正在回答的会话在本轮结束后切换。';
+    }
+    if (accountSelect) {
+      const signature=JSON.stringify(codexAccounts);
+      if (accountSelect.dataset.accounts !== signature) {
+        accountSelect.innerHTML=codexAccounts.map(p=>`<option value="${escapeHtml(p.id)}">${escapeHtml(p.label || p.id)}</option>`).join('');
+        accountSelect.dataset.accounts=signature;
+      }
+      accountSelect.value=pendingAccountId || codexAccountId;
+      accountSelect.disabled=accountSaving || submitting || !codexAccounts.length || !!accountReadError;
+    }
     const label = document.getElementById('new-session-tuning-label');
     const grid = document.getElementById('new-session-tuning');
     const modelSelect = document.getElementById('new-session-model');
@@ -1084,7 +1119,7 @@
       summary.title = summaryTitle();
     }
     const submit = document.getElementById('new-session-submit');
-    if (submit) submit.disabled = submitting || (workspaceMode === 'existing' && !existingWorkspace);
+    if (submit) submit.disabled = submitting || accountSaving || (selectedKind === 'codex' && !!accountReadError) || (workspaceMode === 'existing' && !existingWorkspace);
   }
 
   // The footer states where the session will actually land, so a mis-set
@@ -1109,6 +1144,7 @@
 
   function summaryText() {
     const parts = [KIND_LABELS[selectedKind] || selectedKind];
+    if (selectedKind === 'codex' && codexBackend !== 'api') parts.push(codexAccounts.find(p=>p.id===codexAccountId)?.label || '读取账号中');
     const tuning = tuningTag();
     if (tuning) {
       if (selectedKind === 'chatgpt') parts[0] = tuning;
@@ -1171,7 +1207,8 @@
     // 默认」来推断：同步那次 paint 可能已经把值换成了 options[0]（出厂默认不在
     // 当前清单里时就会这样），判据直接落空、用户设的默认值被丢掉；反过来，用户
     // 手选的模型若恰好等于出厂默认，又会被这次回读悄悄改掉。
-    void loadHubDefaultModels().then(() => {
+    void loadHubDefaultModels().then(async () => {
+      if (selectedKind === 'codex') await loadCodexTuningCatalog();
       if (!modelTouchedByUser && selectedKind !== 'chatgpt') {
         selectedModel = resolveDefaultModel(
           selectedKind,
@@ -1228,13 +1265,15 @@
   // Main 优先调用 codex app-server model/list；失败再读 models_cache.json。
   // renderer 不做永久缓存，main 的短 TTL 既避免频繁拉进程，又能在 CLI 更新目录后自动刷新。
   async function loadCodexTuningCatalog(options = {}) {
-    if (codexCatalogInFlight) return codexCatalogInFlight;
-    codexCatalogInFlight = (async () => {
+    const profileId=options.codexProfile || codexAccountId;
+    if (codexCatalogInFlight.has(profileId)) return codexCatalogInFlight.get(profileId);
+    const task = (async () => {
       try {
         const result = await ipcRenderer.invoke('codex:tuning-catalog', {
           force: options.force === true,
-          codexProfile: options.codexProfile || undefined,
+          codexProfile: profileId || undefined,
         });
+        if (profileId !== codexAccountId) return result;
         if (result && result.ok) {
           codexTuningCatalog = result;
           if (Array.isArray(result.models) && result.models.length) {
@@ -1242,6 +1281,7 @@
           }
         }
       } catch (error) {
+        if (profileId !== codexAccountId) throw error;
         codexTuningCatalog = {
           ok: false,
           refreshError: error && error.message ? error.message : String(error),
@@ -1249,8 +1289,9 @@
         };
       }
       return codexTuningCatalog;
-    })().finally(() => { codexCatalogInFlight = null; });
-    return codexCatalogInFlight;
+    })().finally(() => { codexCatalogInFlight.delete(profileId); });
+    codexCatalogInFlight.set(profileId,task);
+    return task;
   }
 
   async function loadClaudeModelCatalog() {
@@ -1320,7 +1361,7 @@
   }
 
   async function submitNewSession() {
-    if (submitting) return null;
+    if (submitting || accountSaving || (selectedKind === 'codex' && accountReadError)) return null;
     setError('');
     let workspace = existingWorkspace;
     if (workspaceMode === 'existing' && !workspace) {
@@ -1355,6 +1396,28 @@
   function init() {
     menuEl = document.getElementById('new-session-menu');
     if (!menuEl) return;
+
+    document.getElementById('new-session-account')?.addEventListener('change', async event => {
+      if (accountSaving) return;
+      const profileId=event.target.value;
+      accountSaving=true;pendingAccountId=profileId;configReadRevision++;accountNotice='';setError('');paint();
+      try {
+        const result=await ipcRenderer.invoke('codex:set-global-account',{profileId});
+        if (!result?.ok) throw new Error(result?.error || '账号切换失败');
+        codexAccountId=result.profileId;
+        const failed=(result.sessions || []).filter(s=>s?.error).length;
+        const pending=(result.sessions || []).filter(s=>s?.pending).length;
+        accountNotice=failed ? `全局账号已保存；${failed} 个会话切换失败，请查看会话提示并重试恢复。`
+          : pending ? `全局账号已切换；${pending} 个进行中的会话将在本轮结束后切换。` : '全局账号已切换，新建、恢复和重启会话均跟随。';
+        codexTuningCatalog=null;
+        await loadCodexTuningCatalog({force:true});
+      } catch(error) { setError(error.message); }
+      finally { accountSaving=false;pendingAccountId='';paint(); }
+    });
+    ipcRenderer.on('codex-global-account-changed',()=>{
+      if (accountSaving) return;
+      void loadHubDefaultModels().then(()=>loadCodexTuningCatalog()).then(paint).catch(error=>setError(error.message));
+    });
 
     document.getElementById('chatgpt-web-settings')?.addEventListener('click', async () => {
       try { await ipcRenderer.invoke('chatgpt-web:settings'); } catch (error) { setError(error.message); }

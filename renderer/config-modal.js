@@ -35,7 +35,7 @@ function createConfigModalController({
     },
     codex: {
       title: 'Codex 设置',
-      hint: '全 Hub 新建 Codex 会话统一生效。API 模式会使用隔离 CODEX_HOME，不污染本机订阅配置。',
+      hint: 'Codex 订阅账号对新建、恢复和重启统一生效，进行中的会话在本轮结束后切换。API 模式使用独立账号配置。',
     },
     kimi: {
       title: 'Kimi Code 设置',

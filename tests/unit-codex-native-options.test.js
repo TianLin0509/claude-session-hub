@@ -48,7 +48,9 @@ test('SessionManager preserves account scopes including group members and API se
   try{
     reset();const opts={cwd:root,model:'gpt-6-astra',effort:'xhigh',mcpProfile:'none',codexSpeedTier:'standard'};
     const launch=async(extra)=>{const s=manager.createSession('codex',{...opts,...extra}),d=manager.getNativeCodex(s.id);drivers.push(d);await d.start();return d;};
-    const a=await launch({codexProfile:'default'}),a2=await launch({codexProfile:'default'}),b=await launch({codexProfile:'second',meetingId:'test-group'});
+    const a=await launch({codexProfile:'default'}),a2=await launch({codexProfile:'default'});
+    process.env.HUB_CODEX_PROFILE='second';reset();
+    const b=await launch({codexProfile:'default',meetingId:'test-group'});
     assert.equal(a.options.env.CODEX_HOME,aHome);assert.equal(b.options.env.CODEX_HOME,bHome);assert.notEqual(a.pid,a2.pid);assert.notEqual(a.pid,b.pid);
     const originalConfig=fs.readFileSync(path.join(aHome,'config.toml'),'utf8');
     const web=await launch({model:'chatgpt-web/high',effort:'high'});
