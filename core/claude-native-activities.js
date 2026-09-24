@@ -22,6 +22,23 @@ class ClaudeNativeActivities {
     }
   }
   pending() { return [...this.records.values()].filter(r => !END.has(r.status) && !r.reconciliation); }
+  // pending 是「还需要一个结论」，live 是「引擎此刻真的在跑它」。判成 unknown 的
+  // 活动属于前者不属于后者：它要人核对，但不该继续占着发送队列，也不该让卡片
+  // 一直亮「工作中」。两者混用过一次，代价是会话被锁死好几个小时。
+  live() { return this.pending().filter(r => r.status === 'running'); }
+  // 引擎一次只跑一轮。新的注入回合开始，就证明上一条还没结局的注入回合不会再有
+  // 结局了 —— 留着它等于永远等一个不会来的 result。这里只判 unknown（待核对），
+  // 绝不编造成功，也不丢弃它已经收下的正文。
+  abandonStale() {
+    const stale = this.pending().filter(r => !r.provisional && r.status === 'running');
+    if (!stale.length) return stale;
+    // 段内的帧就是它自己的输出。判 unknown 之前先落回它名下，否则紧接着的
+    // deferSegment 会把已经收下的正文撤销，只剩一条空壳记录。
+    if (this.current && stale.includes(this.current) && this.segment.length) this.resolveSegment(this.current);
+    for (const record of stale) { this.save({ ...record, status: 'unknown' }); record.status = 'unknown'; }
+    if (stale.includes(this.current)) this.current = null;
+    return stale;
+  }
   save(record) {
     const { messages, streams, ...data } = record;
     const saved = this.options.persistActivity?.({ ...data, transcriptMessages: [...(messages?.values() || [])] });
@@ -119,9 +136,11 @@ class ClaudeNativeActivities {
     }
   }
   finish(frame) {
-    const exact = this.pending().filter(r => !r.provisional && originKey(r.origin) === originKey(frame.origin));
+    // 候选只能是还在跑的那些。已经判成 unknown 的活动在等人核对，不再是这条
+    // result 的可能归属 —— 把它算进来会让同来源的第二条通知永远报「归属歧义」。
+    const exact = this.live().filter(r => !r.provisional && originKey(r.origin) === originKey(frame.origin));
     if (exact.length > 1) throw new Error('Claude injected result has ambiguous origin; no activity was settled');
-    const provisional = exact.length ? [] : this.pending().filter(r => r.provisional);
+    const provisional = exact.length ? [] : this.live().filter(r => r.provisional);
     const matches = exact.length ? exact : provisional;
     // Some CLI event types omit a replayed user frame. Keep that result as a
     // standalone activity; never borrow the active human's output or identity.

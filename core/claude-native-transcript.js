@@ -182,4 +182,4 @@ function claudeDisplayMessages(record) {
     .filter(m => m.role === 'assistant' && (m.text || m.toolCalls?.length || m.thinking)) : [];
 }
 
-module.exports = { captureClaudeMessage, claudeTranscriptTurns, claudeDisplayMessages, groupClaudeRecords, tailClaudeRecords };
+module.exports = { CONTINUATION_ORIGINS, captureClaudeMessage, claudeTranscriptTurns, claudeDisplayMessages, groupClaudeRecords, tailClaudeRecords };
