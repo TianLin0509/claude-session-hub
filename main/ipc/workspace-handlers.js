@@ -242,7 +242,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
       });
       return {
         ...snapshot,
-        configuredServiceTier: readCodexConfiguredServiceTier(),
+        configuredServiceTier: readCodexConfiguredServiceTier(configuredCodexHome(config, request && request.codexProfile)),
       };
     } catch (error) {
       // 目录读不到不该让弹窗打不开 —— renderer 侧有静态兜底档位。

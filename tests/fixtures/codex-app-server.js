@@ -69,7 +69,7 @@ function finish(thread,turn,result='completed',text='原生回答 ✅') {
 const rl = readline.createInterface({input:process.stdin});
 rl.on('line',line=>{
   const msg=JSON.parse(line);
-  if(trace)fs.appendFileSync(trace,JSON.stringify({...msg,fixturePid:process.pid,fixtureAt:Date.now()})+'\n');
+  if(trace)fs.appendFileSync(trace,JSON.stringify({...msg,fixturePid:process.pid,fixtureHome:process.env.CODEX_HOME,fixtureAt:Date.now()})+'\n');
   const p=msg.params || {};
   if(storeDir && /^[a-f0-9-]{36}$/.test(p.threadId || '') && !owned.has(p.threadId) && fs.existsSync(threadFile(p.threadId))){
     threads.set(p.threadId,JSON.parse(fs.readFileSync(threadFile(p.threadId),'utf8')));

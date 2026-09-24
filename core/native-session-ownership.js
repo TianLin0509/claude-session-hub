@@ -7,7 +7,7 @@ function alive(pid){if(!Number.isInteger(pid)||pid<=0)return false;try{process.k
 function ownerDirectory(options){
   const root=options.nativeProvider==='claude'
     ? options.env?.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
-    : options.env?.CODEX_HOME || path.join(os.homedir(),'.codex');
+    : options.ownershipHome || options.env?.CODEX_HOME || path.join(os.homedir(),'.codex');
   return path.join(root,'.hub-native-owners');
 }
 function ownershipDatabase(options){

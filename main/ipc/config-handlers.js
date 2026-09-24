@@ -279,6 +279,21 @@ function registerConfigIpc(ipcMain, deps) {
 
   ipcMain.handle('get-hub-config-raw', () => toEditableConfig(getConfig()));
 
+  ipcMain.handle('codex:set-global-account', async (_e, payload = {}) => {
+    try {
+      const merged = require('../../core/codex-global-account').withGlobalAccount(
+        readConfigJsonForUpdate(),getConfig(),payload.profileId);
+      saveConfig(merged);
+      clearSessionManagerConfigCache();
+      const scope=currentCodexUsageScope();
+      clearCodexJsonlCache();
+      sendToRenderer('agent-usage',{codex:attachCodexUsageScope({usage5h:null,usage7d:null,unavailable:true},scope)});
+      sendToRenderer('codex-global-account-changed',{profileId:payload.profileId});
+      const sessions=await sessionManager.syncCodexAccounts();
+      return {ok:true,profileId:payload.profileId,sessions};
+    } catch(error) { return {ok:false,error:error.message}; }
+  });
+
   ipcMain.handle('get-completion-notification-health', () => (
     typeof getCompletionNotificationHealth === 'function'
       ? getCompletionNotificationHealth()
@@ -387,6 +402,11 @@ function registerConfigIpc(ipcMain, deps) {
     clearSessionManagerConfigCache();
     if (NOTIFICATION_UPDATE_FIELDS.some(key => Object.prototype.hasOwnProperty.call(newConfig, key))) {
       sendToRenderer('completion-notification-config-changed', completionNotificationState());
+    }
+
+    if (newConfig.codexSubscriptionProfile !== undefined || newConfig.codexSubscriptionProfiles !== undefined) {
+      sendToRenderer('codex-global-account-changed',{profileId:getConfig().codexSubscriptionProfile});
+      sessionManager?.syncCodexAccounts?.().catch(error=>console.error('[config] Codex account switch:',error.message));
     }
 
     if (newConfig.codexBackend !== undefined || newConfig.codexSubscriptionProfile !== undefined) {

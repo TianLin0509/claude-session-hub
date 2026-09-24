@@ -282,6 +282,7 @@ function createResumeSessionHandler(deps) {
       ...(meta.codexApprovalPolicy ? {approvalPolicy:meta.codexApprovalPolicy} : {}),
       ...(meta.codexSandbox ? {sandbox:meta.codexSandbox} : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,
+      ...(isCodexRuntime ? {codexSessionsRoot:effectiveCodexSessionsRoot} : {}),
       // MCP 档位现在 Claude 家族也有（core/claude-mcp-profile.js），不能再只给
       // codex runtime 继承 —— 否则 resume 出来的 Claude 会话会从用户选的 Lean
       // 悄悄变回 Full，一次多起七个 MCP 进程。
