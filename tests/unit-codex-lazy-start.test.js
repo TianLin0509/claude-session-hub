@@ -22,7 +22,9 @@ function harness() {
 async function close(s) {
   const client=s.entry?.client;
   s.kill();
-  for(let i=0;i<100 && s.entry;i++)await delay(10);
+  // kill() is async: thread/unsubscribe alone has a 3 s budget before the child
+  // exits. A 1 s poll failed under the 16-way merge gate (2026-09-24, twice).
+  for(let i=0;i<1000 && s.entry;i++)await delay(10);
   assert.equal(s.entry,null);
   if(client)await client.waitForExit();
 }

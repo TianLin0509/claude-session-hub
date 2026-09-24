@@ -321,23 +321,30 @@ function buildComposerStatusModel(session, options = {}) {
     // 念「等待连接响应」，detail 还被清空 —— 用户只能干等一个永远不会变的字。
     // 这里把真实原因念出来并给一个按钮，剩下的自动核对在 ClaudeNativeSession 里做。
     const stalled = snapshot.state === 'unknown' && snapshot.connection === 'connected';
+    // 一条提交拿不到「收到」证据、写入者却还活着：直接发下一条，Main 会自动恢复，
+    // 用不着人核对（2026-09-24 用户决定不再为此弹提示）。只说事实，不给按钮、不亮警示色。
+    const unconfirmedSend = stalled && !snapshot.cancellation
+      && (snapshot.submission?.sendStatus || snapshot.submission?.status) === 'unknown';
     const labels = { unknown: snapshot.connection === 'disconnected' ? '连接已断开'
+        : unconfirmedSend ? 'Claude 未确认收到上一条，可直接继续发送'
         : stalled ? '上次任务状态待核对' : (loadingText || '等待连接响应'),
       waiting: 'Claude 在等你回答', failed: '本轮执行失败', interrupted: '已停止' };
     if (labels[snapshot.state]) {
       // New composer sends recover in Main; no manual receipt-review action.
-      return { state: snapshot.state === 'interrupted' ? COMPOSER_STATUS_READY
+      return { state: snapshot.state === 'interrupted' || unconfirmedSend ? COMPOSER_STATUS_READY
           : snapshot.state === 'failed' ? COMPOSER_STATUS_DEAD : COMPOSER_STATUS_WAITING,
         text: labels[snapshot.state],
         detail: snapshot.state === 'waiting'
           ? (snapshot.requests || []).map(require('./claude-native-runtime').claudeRequestSummary).join('; ') || snapshot.reason || ''
+          : unconfirmedSend ? ''
           : stalled ? snapshot.reason || ''
             : snapshot.state === 'unknown' ? '' : snapshot.reason || '',
         quickReplies: [],
         // 核对只读原生历史、只做「不重发」的登记，所以可以是一个按钮；
-        // 它不会替用户重发旧消息，也不会把旧任务说成成功。
-        action: stalled ? { kind: 'claude-reconcile', label: '核对上次任务' } : null,
-        canStop: snapshot.connection === 'connected' && snapshot.state === 'waiting', runtime };
+        // 它不会替用户重发旧消息，也不会把旧任务说成成功。剩下需要它的只有
+        // 群聊/无人值守席位的关卡和一次没确认的停止。
+        action: stalled && !unconfirmedSend ? { kind: 'claude-reconcile', label: '核对上次任务' } : null,
+        canStop: snapshot.connection === 'connected' && (snapshot.state === 'waiting' || unconfirmedSend), runtime };
     }
   }
   const liveQuestion = !native && session?.runtimeBackend !== 'claude-stream-json' && options.liveQuestion && options.liveQuestion.waiting
@@ -359,9 +366,16 @@ function buildComposerStatusModel(session, options = {}) {
     };
     const startedAt = composerRunStartedAt(session, truth);
     const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
+    const apiRetry = session?.runtimeBackend === 'claude-stream-json'
+      ? require('./claude-native-runtime').claudeApiRetrySummary(session.nativeRuntime) : '';
+    // Before the model streams there is no startedAt; the wait the user feels
+    // runs from the send, so count from there.
+    const submittedAt = Number(session?.nativeRuntime?.submission?.submittedAt) || 0;
+    const waited = apiRetry && !elapsed && submittedAt > 0 && now >= submittedAt ? formatRuntimeSeconds(now - submittedAt) : '';
     return {
       state,
-      text: truth.state === 'starting' && ['codex-app-server','claude-stream-json'].includes(session?.runtimeBackend)
+      text: apiRetry ? `${apiRetry}${elapsed || waited ? ' · 已等 '+(elapsed || waited) : ''}`
+        : truth.state === 'starting' && ['codex-app-server','claude-stream-json'].includes(session?.runtimeBackend)
         ? `${provider} ${['accepted','confirmed'].includes(session.nativeRuntime?.submission?.status || session.nativeRuntime?.submission?.sendStatus) ? '已收到 · 等待输出' : '正在提交'}${elapsed ? ' · '+elapsed : ''}`
         : elapsed ? `${provider} 正在工作 · ${elapsed}` : `${provider} 正在工作`,
       detail: runtime.visibleDetail || '',

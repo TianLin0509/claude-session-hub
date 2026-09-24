@@ -133,6 +133,29 @@ rl.on('line', async line => {
       const marker = path.join(process.env.CLAUDE_CONFIG_DIR, 'fixture-crashed');
       if (!fs.existsSync(marker)) { fs.writeFileSync(marker, 'crashed'); return process.exit(9); }
     }
+    if (mode === 'overloaded') {
+      // Claude Code 2.1.280 under a 529 storm (2026-09-24): the input lands in
+      // the transcript at once; the stdout echo waits for the first streamed byte.
+      const fs = require('node:fs'); const path = require('node:path');
+      if (!process.env.CLAUDE_CONFIG_DIR) throw new Error('Overload fixture requires isolated config');
+      const directory = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', path.resolve(process.cwd()).replace(/[^A-Za-z0-9]/g, '-'));
+      fs.mkdirSync(directory, { recursive: true });
+      if (process.env.CLAUDE_HUB_FIXTURE_TRANSCRIPT !== 'off') {
+        fs.appendFileSync(path.join(directory, sessionId + '.jsonl'), JSON.stringify({ type: 'user', uuid: m.uuid,
+          sessionId, message: m.message, origin: m.origin }) + '\n');
+      }
+      await frame({ type: 'system', subtype: 'status', status: 'requesting', session_id: sessionId, uuid: randomUUID() });
+      const retries = Number(process.env.CLAUDE_HUB_FIXTURE_RETRIES || 3);
+      const gap = Number(process.env.CLAUDE_HUB_FIXTURE_RETRY_MS || 100);
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, gap));
+        await frame({ type: 'system', subtype: 'api_retry', attempt, max_retries: Math.max(10, retries), retry_delay_ms: gap,
+          error_status: 529, error: 'overloaded', session_id: sessionId, uuid: randomUUID() });
+      }
+      await new Promise(resolve => setTimeout(resolve, gap));
+      await frame({ ...m, session_id: sessionId });
+      return complete();
+    }
     if (mode === 'no-echo') return;
     if (JSON.stringify(m.message?.content || '').includes('fixture:unconfirmed')) return;
     if (mode === 'old-result-first') await result({ uuid: 'old-result' });

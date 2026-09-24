@@ -4799,8 +4799,8 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (result && result.ok && result.sendStatus !== 'stuck') return;
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
-      updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok ? 'unconfirmed' : 'failed' });
-      if (isNativeAgent(session) && !result?.ok) {
+      updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok || result?.unconfirmed ? 'unconfirmed' : 'failed' });
+      if (isNativeAgent(session) && !result?.ok && !result?.unconfirmed) {
         // A failed new send remains actionable, without a manual-reconciliation
         // panel. Only an explicitly unsent prompt can safely return to draft.
         if (result?.notSent && !readContenteditablePlainText(inputBox)) {

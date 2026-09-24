@@ -137,24 +137,22 @@ test('历史里是别人的消息就拒绝核对，绝不当成同一条', async
   assert.ok(errors.some(m => /身份不一致/.test(m)), JSON.stringify(errors));
 });
 
-test('找不到原生历史时不许自动解锁 —— 那正是该人看一眼的时候', async t => {
+test('找不到原生历史时也自动登记不重发，不再停下来等人点按钮', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-reconcile-nohistory-'));
   const { session } = restored(directory);
   t.after(() => session.close());
-  // 一个字节的历史都没有：Hub 手上零证据。
+  // 一个字节的历史都没有。2026-09-24 以前这里停在「待核对」等人点按钮，但按钮能做的
+  // 也只是同一个登记；用户决定不要再弹这个提示。旧 writer 已确认退出，旧提交不可能还在跑。
   await session.start();
-  assert.equal(session.unreconciled, true);
-  assert.equal(session.runtime.state, 'unknown');
-  // 界面要能说清卡在哪儿，不能只留一句没有下文的「待核对」。
-  assert.equal(session.runtime.reason, '找不到原生历史，无法自动核对上次任务；不会自动重发');
-  assert.equal(session.records.get('old').reconciliation, undefined, '零证据不许留下核对记录');
-  // 用户亲手核对是另一回事：那是他明确决定往前走。
-  await session.reconcileFromHistory({ source: 'user' });
   assert.equal(session.unreconciled, false);
-  assert.equal(session.records.get('old').reconciliation.history, 'history-missing');
+  assert.equal(session.runtime.state, 'idle');
+  const old = session.records.get('old');
+  assert.equal(old.status, 'unknown', '不追认成功');
+  assert.equal(old.reconciliation.history, 'history-missing', '零证据如实记下');
+  assert.equal(old.reconciliation.source, 'hub');
 });
 
-test('日志里没有待核对记录、只有一个持久化的运行态时，也不许自动解锁', async t => {
+test('日志里没有待核对记录、只有一个持久化的运行态时，连上就回到空闲', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-reconcile-empty-'));
   const session = new ClaudeNativeSession({ id: 'hub', kind: 'claude', cwd: __dirname,
     executable: process.execPath, commandArgs: [fixture, '--fixture=hold'],
@@ -164,15 +162,12 @@ test('日志里没有待核对记录、只有一个持久化的运行态时，�
   t.after(() => session.close());
   assert.equal(session.unreconciled, true, '持久化的非终态状态本身就算待核对');
   await session.start();
-  // Hub 自己丢了线索（状态说在跑，日志里却没有对应记录），自动路径不碰它。
-  assert.equal(session.unreconciled, true);
-  assert.equal(session.runtime.state, 'unknown');
-  await session.reconcileFromHistory({ source: 'user' });
+  // 没有任何一条记录可核对：没有东西要人看，直接空闲。
   assert.equal(session.unreconciled, false);
   assert.equal(session.runtime.state, 'idle');
 });
 
-test('后台活动的结局 transcript 证明不了，自动路径不许替它做决定', async t => {
+test('后台活动的结局 transcript 证明不了：记为未知，但不再要人核对', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-reconcile-activity-'));
   const { content, record } = interrupted();
   const activity = { userMessageId: '12341234-1234-4234-8234-123412341234', nativeActivity: true,
@@ -186,13 +181,15 @@ test('后台活动的结局 transcript 证明不了，自动路径不许替它�
   t.after(() => session.close());
   writeHistory(directory, content);
   await session.start();
-  // 提交有确凿证据，核对掉；后台活动没有，留着。
+  // 提交按证据核对；后台活动是引擎自己的续跑，结局证明不了，但也不需要人核对：
+  // 记 unknown + engine-internal，不编造成功，也不挡住会话。
   assert.equal(session.records.get('old').reconciliation.history, 'received');
-  assert.equal(session.unreconciled, true);
-  assert.equal(session.runtime.state, 'unknown');
-  assert.equal(session.runtime.reason, 'Claude 后台活动结果仍待核对；不会自动重发');
-  assert.equal(session.recoveryRecords().length, 1);
-  assert.equal(session.recoveryRecords()[0].nativeActivity, true);
+  const saved = session.activities.records.get(activity.userMessageId);
+  assert.equal(saved.status, 'unknown');
+  assert.equal(saved.reconciliation.history, 'engine-internal');
+  assert.equal(session.unreconciled, false);
+  assert.equal(session.runtime.state, 'idle');
+  assert.equal(session.recoveryRecords().length, 0);
 });
 
 test('输入框上那个按钮真的走到核对，失败也如实报回去', async t => {
@@ -232,7 +229,7 @@ test('核对按钮的 kind 在状态模型、renderer 和 main 三处必须一�
   const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
   // 判据全部用字面量包含，不拼动态正则：那既读不懂也容易被转义坑掉。
   const model = read('core/session-status-summary.js');
-  const declared = /action: stalled \? \{ kind: '([a-z-]+)', label: '([^']+)' \}/.exec(model);
+  const declared = /action: stalled(?: && !unconfirmedSend)? \? \{ kind: '([a-z-]+)', label: '([^']+)' \}/.exec(model);
   assert.ok(declared, '状态模型里找不到待核对时的按钮定义');
   const [, kind, label] = declared;
   assert.equal(kind, 'claude-reconcile');

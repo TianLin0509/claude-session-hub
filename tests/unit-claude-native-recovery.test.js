@@ -37,8 +37,10 @@ test('explicit recovery preserves unknown identity, rejects stale UI, and never 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'native-reconcile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const journal = new NativeAgentJournal({ directory, sessionId: 'hub' });
+  // A group-chat seat keeps the manual gate (ordinary sessions settle on connect),
+  // which is what lets this test pin the stale-identity and no-replay invariants.
   const s = new ClaudeNativeSession({ executable: process.execPath, commandArgs: [fixture, '--fixture=crash-on-user'],
-    persistSubmission: row => journal.saveSubmission(row), persistLifecycle: row => journal.saveLifecycle(row) });
+    meetingId: 'gate', persistSubmission: row => journal.saveSubmission(row), persistLifecycle: row => journal.saveLifecycle(row) });
   t.after(() => s.close());
   await assert.rejects(s.submit('原文\n  不丢失', { submissionId: 'old' }));
   const oldClient = s.client; const oldIdentity = s.recoveryRecords()[0];

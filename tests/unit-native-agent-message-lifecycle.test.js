@@ -129,12 +129,18 @@ test('crashed process leaves an unconfirmed submission unknown', async t => {
   assert.equal(s.active.status, 'unknown');
 });
 
-test('restored unfinished state is not silently replayed or marked idle', async t => {
-  const s = session('normal', { restoredRuntime: { epoch: 4, state: 'running' } });
-  t.after(() => s.close()); await s.start();
-  assert.equal(s.runtime.epoch, 5);
-  assert.equal(s.runtime.state, 'unknown');
-  await assert.rejects(s.submit('new'), { code: 'CLAUDE_SUBMISSION_UNKNOWN' });
+test('restored unfinished state is never replayed; a gated seat stays unknown, an ordinary session settles', async t => {
+  const gated = session('normal', { restoredRuntime: { epoch: 4, state: 'running' }, meetingId: 'gate' });
+  t.after(() => gated.close()); await gated.start();
+  assert.equal(gated.runtime.epoch, 5);
+  assert.equal(gated.runtime.state, 'unknown');
+  await assert.rejects(gated.submit('new'), { code: 'CLAUDE_SUBMISSION_UNKNOWN' });
+  // 2026-09-24: an ordinary session has nothing left to check (no record, old
+  // writer gone), so it is ready at once instead of asking for a click.
+  const plain = session('normal', { restoredRuntime: { epoch: 4, state: 'running' } });
+  t.after(() => plain.close()); await plain.start();
+  assert.equal(plain.runtime.state, 'idle');
+  assert.equal(plain.records.size, 0, 'nothing was replayed');
 });
 
 test('queued receipt is durable before returning to the caller', async t => {

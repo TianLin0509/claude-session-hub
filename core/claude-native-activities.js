@@ -41,6 +41,29 @@ class ClaudeNativeActivities {
     if (stale.includes(this.current)) this.current = null;
     return stale;
   }
+  // 注入回合（任务通知、Monitor 事件、Hub 恢复出来的后台任务）是引擎自己的续跑，
+  // 不是用户发的消息，没有「重发」这回事；原生 transcript 也证明不了它的结局。
+  // 让用户去「核对」它只能换来一次点按钮 —— 2026-09-17~24 生产日志里待核对的 Claude
+  // 记录 86 条，83 条是它。这里直接登记 do-not-replay：状态仍是 unknown，不编造成功，
+  // 只是不再要人确认。
+  // persist=false 用在构造时：那时还没确认会话归属，不能写日志（会话独占），
+  // 由 _start 拿到归属后调 saveUnsavedSettlements 补写。
+  settleUnknown(source = 'hub', { persist = true } = {}) {
+    const settled = [...this.records.values()].filter(r => r.status === 'unknown' && !r.reconciliation);
+    const reconciliation = { source, resolution: 'do-not-replay', at: Date.now(), history: 'engine-internal' };
+    for (const record of settled) {
+      record.reconciliation = reconciliation;
+      if (persist) this.save(record); else record.unsavedSettlement = true;
+    }
+    return settled;
+  }
+  saveUnsavedSettlements() {
+    for (const record of this.records.values()) {
+      if (!record.unsavedSettlement) continue;
+      delete record.unsavedSettlement;
+      this.save(record);
+    }
+  }
   // 段的作用是「结局到来前先别定归属」。现在判定这些活动不会再有结局了，就把
   // 每一帧还给它当初被记在的那条记录：既不整段丢掉，也不整段改嫁。
   settleSegment() {
