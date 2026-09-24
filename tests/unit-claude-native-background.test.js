@@ -85,17 +85,16 @@ test('background permission remains pending when the human result arrives', asyn
   assert.equal(s.runtime.state, 'waiting');
 });
 
-test('unknown background activity requires explicit reconciliation and is never replayed', async t => {
+test('an unfinished background activity stays unknown across reconnect but never asks for a check or a replay', async t => {
   const s = create(t); await s.start(); inject(s, 'channel');
   s.disconnect(new Error('controlled disconnect'));
   await s.reconnect();
-  assert.equal(s.runtime.state, 'unknown');
-  const pending = s.recoveryRecords();
-  assert.equal(pending.length, 1); assert.equal(pending[0].nativeActivity, true);
-  await assert.rejects(s.submit('new'), { code: 'CLAUDE_SUBMISSION_UNKNOWN' });
-  s.reconcile({ ...pending[0], resolution: 'do-not-replay' });
-  assert.equal(s.runtime.state, 'idle');
-  assert.equal(s.activities.records.values().next().value.status, 'unknown');
+  // 2026-09-24: engine-internal turns are settled as do-not-replay on the spot.
+  const activity = s.activities.records.values().next().value;
+  assert.equal(activity.status, 'unknown');
+  assert.equal(activity.reconciliation.history, 'engine-internal');
+  assert.equal(s.recoveryRecords().length, 0);
+  assert.notEqual(s.runtime.state, 'unknown');
   assert.equal((await s.submit('new')).sendStatus, 'accepted');
 });
 
@@ -120,10 +119,13 @@ test('a completed user receipt does not erase an unfinished task on Hub restart'
     sessionId: s.sessionId, restoredRuntime: snapshot, closeTimeoutMs: 300 });
   t.after(() => recovered.close());
   await recovered.start();
-  assert.equal(recovered.runtime.state, 'unknown');
-  assert.equal(recovered.recoveryRecords().length, 1);
-  await recovered.reconnect();
-  recovered.reconcile({ ...recovered.recoveryRecords()[0], resolution: 'do-not-replay' });
+  // The task is kept as its own unknown record, not erased and not called finished;
+  // it died with the old writer, so nobody is asked to check it.
+  const task = [...recovered.activities.records.values()].find(r => r.nativeTask);
+  assert.equal(task.taskId, 'still-running');
+  assert.equal(task.status, 'unknown');
+  assert.equal(task.reconciliation.history, 'engine-internal');
+  assert.equal(recovered.recoveryRecords().length, 0);
   assert.equal(recovered.runtime.state, 'idle');
 });
 

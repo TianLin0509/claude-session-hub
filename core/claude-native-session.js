@@ -103,6 +103,7 @@ class ClaudeNativeSession extends EventEmitter {
     this.tasks = new Map();
     this.activities = new ClaudeNativeActivities(options);
     this.activities.recoverTasks(options.restoredRuntime?.backgroundTasks || [], this.runtime.epoch - 1, false);
+    this.activities.settleUnknown();
     for (const record of this.records.values()) this.activities.rememberTools(record);
     if (this.activities.pending().length) this.unreconciled = true;
     this.completedResultIds = new Set([...this.records.values(), ...this.activities.records.values()]
@@ -349,8 +350,11 @@ class ClaudeNativeSession extends EventEmitter {
     // 不这么做的后果实测过：2026-09-20 17:04 那一轮被打断后，会话每次打开都
     // 连上（2388 ms），却永远停在 unknown，只有用户亲手发一条消息才会解开。
     // 群聊和无人值守席位不在这条路上：那里「停下来等人看一眼」是有意的关卡。
+    // 普通会话用的是和「核对上次任务」按钮完全相同的语义（2026-09-24 用户决定：
+    // 不要再弹这个提示）。此刻 start() 已确认旧 writer 退出、新进程刚起，旧提交
+    // 不可能还在跑；按钮能做的也只是登记「不重发、不追认成功」，让人去点毫无增益。
     if (this.unreconciled && !this.options.meetingId && this.options.autonomous !== true) {
-      try { await this.reconcileFromHistory({ source: 'hub', automatic: true }); }
+      try { await this.reconcileFromHistory({ source: 'hub' }); }
       // 失败就让它看得见：状态留在「待核对」，界面上的核对按钮仍然可用。
       catch (error) { this.emit('action-error', '上次任务自动核对未完成：' + error.message); }
     }
@@ -531,7 +535,11 @@ class ClaudeNativeSession extends EventEmitter {
       state: 'unknown', requests: [], reason: error.message,
       ...(this.runtime.cancellation ? {cancellation:{...this.runtime.cancellation,status:'unknown'}} : {}),
       submission: record ? this.receipt(record) : this.runtime.submission });
-    this.emit('action-error', error.message);
+    // A missing receipt is a state, already shown by the composer, and a late
+    // echo or transcript row may still clear it. As an action error it lingered
+    // in red after that recovery -- only a reconnect cleared it.
+    if (error.code === 'CLAUDE_SUBMISSION_TIMEOUT') this.backstage.note('提交确认', error.message, 'warning');
+    else this.emit('action-error', error.message);
   }
 
   message(message) {
@@ -585,7 +593,8 @@ class ClaudeNativeSession extends EventEmitter {
         const abandoned = this.activities.abandonStale();
         const activity = this.activities.inject(message);
         if (abandoned.length) {
-          this.emit('action-error', '上一条 Claude 后台活动没有收到结果，已标为待核对；不会自动重发');
+          this.activities.settleUnknown();
+          this.backstage.note('后台活动', `${abandoned.length} 条后台活动没有收到结果，已记为结果未知；不会重发`);
         }
         this.update({});
         this.emit('item', { message, userMessageId: activity.userMessageId });
@@ -1095,6 +1104,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.activities.recoverTasks(this.tasks.values(), this.runtime.epoch);
       this.queue = []; this.active = null; this.seen.clear(); this.tasks.clear();
       this.activities.reset();
+      this.activities.settleUnknown();
       this.runtime = initialRuntime(this.sessionId, this.runtime);
       this.options = { ...this.options, restoredRuntime: null, fork: false,
         resumeSessionId: this.historyPath() ? this.sessionId : undefined };
@@ -1138,47 +1148,34 @@ class ClaudeNativeSession extends EventEmitter {
     await this.reconcileFromHistory({ source: 'hub' });
   }
 
-  // 唯一的「拿原生历史核对上一轮」入口：自动核对、手点核对、发送前恢复都走它。
+  // 唯一的「拿原生历史核对上一轮」入口：连上时的自动核对、手点核对、发送前恢复都走它。
   //
   // 它只读 transcript，只登记 do-not-replay，既不重发旧消息，也不把旧任务改写成
-  // 成功 —— 记录状态留在 unknown，reconciliation 里存下看到的证据字串。
+  // 成功 —— 记录状态留在 unknown，reconciliation 里存下看到的证据字串
+  // （received / not-found / history-missing）。
   //
   // 前置条件是这个 writer 刚由 start() 建立：start() 会先确认旧 writer 已退出
-  // （CLAUDE_WRITER_ACTIVE）并抢到归属，所以此刻没有别的进程在追加这份历史。
+  // （CLAUDE_WRITER_ACTIVE）并抢到归属，所以此刻没有别的进程在追加这份历史，
+  // 旧提交也不可能还在跑。
   //
-  // automatic=true 是「连上就自己做」那条路，判据要严得多，因为没人在看：
-  //   · 只碰提交记录。后台活动（local_agent / workflow）的结局 transcript 根本
-  //     证明不了，自动登记等于把「不知道」洗成「看过了」。
-  //   · 只认真的读到了历史的两种证据：received（历史里有这条输入）和 not-found
-  //     （历史在、但没有这条输入）。history-missing 是连历史文件都找不到 ——
-  //     那恰恰是该人看一眼的时候，不是该自动放行的时候。
-  //   · 日志里一条待核对记录都没有、但持久化状态说「上一轮没结论」时不动它：
-  //     那是 Hub 自己丢了线索，同样该人看。
-  // 用户亲手核对（按钮）或亲手发送时，这三条都放开 —— 那是他明确决定往前走。
-  async reconcileFromHistory({ source = 'hub', automatic = false } = {}) {
+  // 2026-09-24 以前，连上时的自动路径更严：找不到历史、或只剩后台活动时停下来
+  // 等人点「核对上次任务」。那个按钮能做的也只是同样的登记，用户明确说这种提示
+  // 很蠢、不要再弹，所以普通会话自动走完整语义。群聊 / 无人值守席位在 _start 里
+  // 根本不自动核对，那里停下来防重复派工的关卡不变。
+  async reconcileFromHistory({ source = 'hub' } = {}) {
     if (this.closed) throw new Error('会话正在关闭，未核对');
     if (this.configurationChange) throw new Error('正在更新设置，请稍后核对');
     // 停止还在期限内就等它确认；已经超时的那一条本身就是「结果待核对」，
     // 再用它去挡核对，就是用问题挡住问题唯一的出路。
     if (this.cancellation && !this.cancellation.unresolved) throw new Error('正在停止，请等待结束后核对');
     if (this.reconnecting || this.runtime.connection !== 'connected') throw new Error('连接尚未就绪，未核对');
-    // unreconciled 只是自动核对的闸门标志。后台活动挂住时它恰好是 false，
-    // 而那正是用户最需要手动核对的时候，所以手动路径按真实待核对清单判断。
-    if (!this.unreconciled && (automatic || !(this.recoveryRecords().length || this.cancellation))) {
+    if (!this.unreconciled && !(this.recoveryRecords().length || this.cancellation)) {
       return { reconciled: 0, pending: 0, skipped: 0 };
     }
     const epoch = this.runtime.epoch;
-    const all = this.recoveryRecords();
-    const records = automatic ? all.filter(record => !record.nativeActivity) : all;
+    const records = this.recoveryRecords();
     if (!records.length) {
-      // 剩下的全是后台活动时，把话说准：待核对的不是「提交」。
-      if (automatic) {
-        if (this.activities.pending().length) {
-          this.update({ state: 'unknown', reason: 'Claude 后台活动结果仍待核对；不会自动重发' });
-        }
-        return { reconciled: 0, pending: all.length, skipped: all.length };
-      }
-      // 手动核对时沿用既有语义：没有待核对的记录就是没有东西要核对。
+      // 没有待核对的记录（例如只剩一个持久化的「上一轮没结论」）就是没有东西要核对。
       this.recoveryReady = true;
       this.unreconciled = false;
       this.clearUnresolvedStop();
@@ -1190,30 +1187,15 @@ class ClaudeNativeSession extends EventEmitter {
       throw new Error('恢复期间连接已变化，未核对；本次没有发送任何消息');
     }
     this.recoveryReady = true;
-    // 用户亲手核对就是这次没确认的停止的结论：不重发、也不追认成功。先解掉它，
+    // 核对就是这次没确认的停止的结论：不重发、也不追认成功。先解掉它，
     // 后面每一次 update 才能发布真实状态而不是继续念「停止结果待核对」。
-    if (!automatic) this.clearUnresolvedStop();
-    let reconciled = 0;
+    this.clearUnresolvedStop();
     for (const record of records) {
       const history = evidence.get(record.userMessageId) || 'no-user-message';
-      if (automatic && history !== 'received' && history !== 'not-found') continue;
       this.reconcile({ ...record, resolution: 'do-not-replay' }, { source, history });
-      reconciled++;
     }
-    const pending = this.recoveryRecords().length;
-    if (reconciled) this.backstage.note('会话恢复', '旧任务结果保留原状；未重发旧消息，可以接收新消息。');
-    // 没核对干净就说清楚还剩什么，别让界面停在一句没有下文的「待核对」。
-    // pending>0 时 unreconciled 必然已经是 true（reconcile 自己重算过，全部跳过时
-    // 则保持入口处的 true），这里只负责把原因说准。
-    if (pending) {
-      // 自动路径跳过的唯一可能就是 history-missing（evidence 只有三种取值，另两种
-      // 都会被核对掉），所以这句话是确定的，不是猜的。
-      this.update({ state: 'unknown', reason: this.activities.pending().length
-        ? 'Claude 后台活动结果仍待核对；不会自动重发'
-        : automatic && !reconciled ? '找不到原生历史，无法自动核对上次任务；不会自动重发'
-          : '还有旧提交需要核对' });
-    }
-    return { reconciled, pending, skipped: all.length - reconciled };
+    this.backstage.note('会话恢复', '旧任务结果保留原状；未重发旧消息，可以接收新消息。');
+    return { reconciled: records.length, pending: this.recoveryRecords().length, skipped: 0 };
   }
 
   reconcile(identity, { source = 'user', history } = {}) {

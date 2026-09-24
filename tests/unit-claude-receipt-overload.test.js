@@ -155,3 +155,19 @@ test('the composer names an engine retry instead of a silent working line', () =
   const model = buildComposerStatusModel(session, { runtime: { state: 'running', provider: 'Claude' } });
   assert.match(model.text, /^Claude 服务繁忙（529），引擎自动重试第 3\/10 次/);
 });
+
+test('an unconfirmed send with a live writer is stated calmly: no 待核对, no button, not a warning', () => {
+  const { buildComposerStatusModel } = require('../core/session-status-summary');
+  const { deriveSessionRuntimeStatus } = require('../renderer/session-runtime-status');
+  const session = { id: 's', kind: 'claude', runtimeBackend: 'claude-stream-json', status: 'running',
+    nativeRuntime: { state: 'unknown', connection: 'connected', requests: [], reason: 'Claude 未确认本条输入，提交状态待核对',
+      submission: { sendStatus: 'unknown', submissionId: 'x' } } };
+  const model = buildComposerStatusModel(session, { runtime: deriveSessionRuntimeStatus(session) });
+  assert.equal(model.text, 'Claude 未确认收到上一条，可直接继续发送');
+  assert.equal(model.action, null);
+  assert.equal(model.state, 'ready');
+  assert.doesNotMatch(model.text + model.detail, /待核对/);
+  // An unconfirmed stop is different: sending is gated, so the button stays.
+  const stop = { ...session, nativeRuntime: { ...session.nativeRuntime, submission: null, cancellation: { status: 'unknown' } } };
+  assert.equal(buildComposerStatusModel(stop, { runtime: deriveSessionRuntimeStatus(stop) }).action?.kind, 'claude-reconcile');
+});

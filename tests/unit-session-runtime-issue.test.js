@@ -23,7 +23,11 @@ for (const [kind,runtimeBackend] of [['codex','codex-app-server'],['claude','cla
 test('unknown submission/cancellation requires attention but plain startup unknown does not',()=>{
   const s={kind:'claude',runtimeBackend:'claude-stream-json',nativeRuntime:{state:'unknown',connection:'connected',requests:[]}};
   assert.equal(sessionRuntimeIssue(s),null);
-  s.nativeRuntime.submission={status:'unknown'};assert(sessionRuntimeIssue(s));
+  // A connected Claude writer with an unconfirmed send: the next send recovers,
+  // so the sidebar stays quiet (2026-09-24). Disconnected or Codex still flag it.
+  s.nativeRuntime.submission={status:'unknown'};assert.equal(sessionRuntimeIssue(s),null);
+  assert(sessionRuntimeIssue({...s,runtimeBackend:'codex-app-server',kind:'codex'}));
+  assert(sessionRuntimeIssue({...s,nativeRuntime:{...s.nativeRuntime,connection:'disconnected'}}));
   s.nativeRuntime.submission=null;s.nativeRuntime.cancellation={status:'unknown'};assert(sessionRuntimeIssue(s));
 });
 test('mixed group keeps its running member, unread and pin while showing one exceptional group',()=>{

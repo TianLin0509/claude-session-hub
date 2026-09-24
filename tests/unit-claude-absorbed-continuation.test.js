@@ -81,13 +81,12 @@ test('注入回合没有结局就开下一轮时，判它待核对而不是永�
   assert.equal(abandoned[0].messages.size, 1, '它已经收下的正文不会被撤销');
   assert.equal(s.activities.live().length, 1, '同一时刻最多只有一条在跑的注入回合');
   result(s, { kind: 'task-notification' }, '第二条后台输出');
-  // 结果待核对，所以状态是 unknown（卡片上出现「核对上次任务」按钮），
-  // 不是「工作中」—— 后者会把唯一的出口挡掉。
-  assert.equal(s.runtime.state, 'unknown');
-  assert.match(s.runtime.reason, /需要核对/);
-  assert.equal(s.recoveryRecords().length, 1);
-  await s.reconcileFromHistory({ source: 'user' });
-  assert.equal(s.runtime.state, 'idle');
+  // 2026-09-24 用户决定：注入回合是引擎自己的续跑，不再要人核对。结果仍记 unknown
+  // （不编造成功），但当场登记 do-not-replay —— 不亮「待核对」，也不挡发送。
+  assert.equal(abandoned[0].status, 'unknown');
+  assert.equal(abandoned[0].reconciliation?.history, 'engine-internal');
+  assert.notEqual(s.runtime.state, 'unknown');
+  assert.equal(s.recoveryRecords().length, 0);
   assert.equal(s.activities.pending().length, 0);
   assert.equal((await s.submit('继续')).sendStatus, 'accepted');
 });
