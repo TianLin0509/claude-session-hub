@@ -79,6 +79,8 @@ function createClaudeNativeControls({ sessionId, ipcRenderer, onHistory, onResto
     const runtime = session.nativeRuntime || {};
     viewer = require('../core/session-observer-policy').isSessionViewer(session);
     notice.textContent = runtime.configurationChange ? '正在更新设置，等待 Claude 确认'
+      // 超时之后再说「等待 Claude 确认」就是在骗人：没有人还在等，需要的是核对。
+      : runtime.cancellation?.status === 'unknown' ? '停止结果未确认，请核对上次任务；不会自动重发'
       : runtime.cancellation ? '正在停止，等待 Claude 确认'
       : runtime.connection === 'unstarted' ? '尚未开始，收到消息后启动。' : '';
     if (runtime.permissionMode === 'plan') mountModeBox(runtime);
