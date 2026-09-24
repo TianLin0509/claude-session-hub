@@ -38,7 +38,7 @@ class AccountCenter {
       {id:'server-monitor',name:'服务器监控授权',type:'service',provider:'server',uses:['工作台服务器监控'],action:'configure',configProvider:'server',configured:!!c.operations?.aliyunMonitor?.bearerToken},
     ];
     for(const row of rows)row.loginHint=row.managedBrowser?({deepseek:'短信验证码；也可微信扫码',doubao:'短信验证码；已有豆包或飞书 App 可扫码',kimi:'官网手机号或扫码登录',qwen:'官网手机号或账号扫码登录',gemini:'Google 已有账号或官方账号验证',chatgpt:'原登录方式：Google / Apple / Microsoft / 邮箱'})[row.provider]:row.type==='api'?'配置 API Key，不能用短信替代':row.provider==='images'||row.provider==='bridge'?'复用原工具浏览器中的已记住账号':row.provider==='codex'||row.provider==='claude'?'复用本机登录；失效时打开官方授权':row.provider==='feishu'?'官方设备授权；通知机器人单独配置':'官方工具提供的登录方式';
-    for(const row of rows)if(row.managedBrowser&&row.provider==='gemini')row.loginHint='普通 Chrome 中手动登录 Google；完成后关闭该网站专用窗口，再点检查登录';
+    for(const row of rows)if(row.managedBrowser&&row.provider==='gemini')row.loginHint='普通 Chrome 中手动登录 Google；完成后关闭该网站专用窗口，状态会自动确认';
     return rows;
   }
   async connections() {
@@ -58,19 +58,37 @@ class AccountCenter {
   read(id){try{return JSON.parse(fs.readFileSync(this.file(id),'utf8'));}catch(e){if(e.code==='ENOENT')return null;return {state:'unknown',message:'账号状态记录不可读，请重新检查',observedAt:0,source:'状态记录'};}}
   save(id,raw){fs.mkdirSync(this.root,{recursive:true});const value=safeObservation(raw);const file=this.file(id),tmp=file+'.'+process.pid+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),'utf8');fs.renameSync(tmp,file);return value;}
   scope(row){const c=this.getConfig();const credential=row.provider==='server'?c.operations?.aliyunMonitor?.bearerToken:row.type==='api'?c[row.provider+'ApiKey']:'';return row.id+':'+(row.home || '')+':'+(credential?crypto.createHash('sha256').update(String(credential)).digest('hex'):'');}
+  // Cheap local probes, plus anything with a login window currently open: while the user is
+  // finishing an official login we poll that one connection so nobody has to press a check button.
+  autoCheck(row){return !!row.managedBrowser||row.type==='native'&&['claude','codex'].includes(row.provider)||row.provider!=='images'&&row.action==='login'&&this.leaseActive(row);}
+  async checkAll(){
+    const rows=await this.connections();
+    let done=0,failed=0,index=0;
+    const work=async()=>{while(index<rows.length){const row=rows[index++];try{await this.check(row.id,{quiet:true});done++;}catch{failed++;}}};
+    await Promise.all(Array.from({length:Math.min(6,rows.length)},work));
+    this.log({name:'刷新状态'},`检查 ${rows.length} 项：${done} 项有结果，${failed} 项未确认`);
+    return {checked:done,failed,message:failed?`已刷新 ${done} 项；${failed} 项未取得明确状态，可打开对应工具后再试。`:`已刷新 ${done} 项账号状态。`};
+  }
   async snapshot(){
     const rows=await this.connections();
     const webTasks=this.recovery.list();
-    await Promise.allSettled(rows.filter(r=>r.type==='native'&&['claude','codex'].includes(r.provider)).map(async row=>{
-      const key=this.scope(row),cached=this.read(key);if(cached?.observedAt&&Date.now()-cached.observedAt<60000)return;
-      if(this.flights.has(key))return this.flights.get(key);
-      const flight=(async()=>{try{this.save(key,await this.adapter.check(row));}catch{this.save(key,{state:'unknown',message:'自动检测未完成；可打开官方登录入口后重新检查',source:'本机 CLI 检测'});}finally{this.flights.delete(key);}})();this.flights.set(key,flight);return flight;
+    await Promise.allSettled(rows.filter(row=>this.autoCheck(row)).map(async row=>{
+      const key=this.scope(row),cached=this.read(key),waiting=this.leaseActive(row);
+      // A pending login window is rechecked sooner so the user never has to press a check button.
+      if(cached?.observedAt&&Date.now()-cached.observedAt<(waiting?8000:60000))return;
+      // Same path as an explicit check, so a finished login clears its own lease. Web tasks
+      // only continue when the Hub itself opened that login window.
+      return this.check(row.id,{quiet:true,resume:waiting});
     }));
     return {connections:rows.map(row=>{
-      const cached=this.read(this.scope(row));
-      const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；点击检查或登录',observedAt:0,source:'配置发现'};
+      const key=this.scope(row),cached=this.read(key);
+      const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；可点登录或刷新状态',observedAt:0,source:'配置发现'};
+      // Once the owning tool reports a login there is nothing left to wait for, even when the
+      // proof came from its own listing instead of our check — drop the admission we took.
+      let pending=this.leaseActive(row);
+      if(pending&&observation.state==='signed_in'){this.clearLease(key,this.leaseToken(key));pending=false;}
       const {home,observation:unused,...safe}=row;
-      return {...safe,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending:this.leaseActive(row)};
+      return {...safe,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending};
     }),history:this.history(),batches:[...this.batches.values()].slice(-3)};
   }
   history(){try{return fs.readFileSync(path.join(this.root,'events.jsonl'),'utf8').trim().split('\n').filter(Boolean).slice(-80).map(x=>JSON.parse(x)).reverse();}catch(e){if(e.code==='ENOENT')return [];return [{at:Date.now(),name:'活动记录',message:'记录不可读；未覆盖原文件'}];}}
@@ -79,33 +97,36 @@ class AccountCenter {
   leaseToken(key){try{return JSON.parse(fs.readFileSync(this.file(key,'login'),'utf8')).token;}catch(e){if(e.code==='ENOENT')return null;throw e;}}
   clearLease(key,token){if(!token||this.leaseToken(key)!==token)return;try{fs.unlinkSync(this.file(key,'login'));}catch(e){if(e.code!=='ENOENT')throw e;}}
   async row(id){const row=(await this.connections()).find(r=>r.id===id);if(!row)throw new Error('连接不存在，请刷新账号列表');return row;}
-  async check(id){
+  // An explicit check still resumes the tasks that were waiting for this login. Only the
+  // background poll passes resume:false, so it can never restart web tasks on its own.
+  async check(id,{quiet=false,resume=true}={}){
     const row=await this.row(id),key=this.scope(row),token=this.leaseToken(key);
+    const mayResume=resume!==false;
     if(this.flights.has(key))return this.flights.get(key);
     const promise=(async()=>{
       try {
         const raw=await this.adapter.check(row);const result=this.save(key,raw);
         if(result.state==='signed_in')for(const batch of this.batches.values()){const item=batch.items.find(x=>x.id===id);if(item)Object.assign(item,{stage:'signed_in',message:'已有明确登录证据'});}
         if(result.state==='signed_in')this.clearLease(key,token);
-        this.log(row,result.state==='signed_in'?'检查完成：已有登录证据':result.state==='login_required'?'检查完成：需要登录':'检查完成：'+result.message);
-        if(result.state==='signed_in'&&row.managedBrowser){
+        if(!quiet)this.log(row,result.state==='signed_in'?'检查完成：已有登录证据':result.state==='login_required'?'检查完成：需要登录':'检查完成：'+result.message);
+        if(result.state==='signed_in'&&row.managedBrowser&&mayResume){
           try{
             const resumed=await this.recovery.resume(row);result.recovery=resumed;
             if(resumed.started||resumed.errors.length){result.message=`登录已确认；已安排 ${resumed.started} 项原任务继续${resumed.errors.length?'，'+resumed.errors.length+' 项仍需处理：'+resumed.errors[0].message:'，已发送的问题只补收。'}`;this.log(row,`登录后恢复：${resumed.started} 项已安排，${resumed.errors.length} 项未完成`);}
           }catch(e){result.message='登录已确认，但任务恢复未完成：'+e.message;result.recovery={started:0,errors:[{message:e.message}]};this.log(row,'登录已确认，任务恢复失败；可再次检查重试');}
         }
         return result;
-      }catch(e){this.save(key,{state:'unknown',message:'检查未完成；未将网络或工具错误判为未登录',source:'连接检查'});this.log(row,'检查失败，请重试或打开原工具');throw new Error('检查失败：'+(e.code==='ENOENT'?'未找到所需工具':'工具未返回有效状态，请在原工具检查'));}
+      }catch(e){this.save(key,{state:'unknown',message:'检查未完成；未将网络或工具错误判为未登录',source:'连接检查'});if(!quiet)this.log(row,'检查失败，请重试或打开原工具');throw new Error('检查失败：'+(e.code==='ENOENT'?'未找到所需工具':'工具未返回有效状态，请在原工具检查'));}
       finally{this.flights.delete(key);}
     })();this.flights.set(key,promise);return promise;
   }
   async login(id,options={}){
     const row=await this.row(id);if(row.action!=='login')throw new Error('此连接通过接入配置管理');
     fs.mkdirSync(this.root,{recursive:true});const key=this.scope(row),file=this.file(key,'login'),token=crypto.randomUUID();
-    if(this.leaseActive(row))return {pending:true,message:'这个账号的登录窗口已打开；请完成验证后点“检查登录”'};
+    if(this.leaseActive(row))return {pending:true,message:'这个账号的登录窗口已打开；完成验证后这里会自动确认'};
     let fd;try{fd=fs.openSync(file,'wx');}catch(e){if(e.code==='EEXIST')return {pending:true,message:'另一个 Hub 正在打开此账号的登录窗口'};throw e;}
     try{fs.writeFileSync(fd,JSON.stringify({at:Date.now(),pid:process.pid,token}));}finally{fs.closeSync(fd);}
-    try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后检查状态');return {...result,pending:true,message:result.message || '已打开官方登录入口。完成验证后点“检查登录”'};}
+    try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后自动确认');return {...result,pending:true,message:result.message || '已打开官方登录入口；完成验证后这里会自动确认'};}
     catch(e){this.clearLease(key,token);this.log(row,'登录入口打开失败');throw new Error('无法打开登录入口：'+(e.message || '请检查工具安装'));}
   }
   async open(id){
@@ -136,7 +157,7 @@ class AccountCenter {
     this.batches.set(batch.id,batch);while(this.batches.size>3)this.batches.delete(this.batches.keys().next().value);
     let index=0;
     const work=async()=>{while(index<chosen.length){const n=index++,row=chosen[n],item=batch.items[n];item.stage='checking';item.message='先检查已有登录';
-      try{let proof=row.observation?.state==='signed_in'&&Date.now()-row.observation.observedAt<60000?row.observation:null;try{if(!proof)proof=await this.check(row.id);}catch{}
+      try{let proof=row.observation?.state==='signed_in'&&Date.now()-row.observation.observedAt<60000?row.observation:null;try{if(!proof)proof=await this.check(row.id,{quiet:true});}catch{}
         if(proof?.state==='signed_in'){Object.assign(item,{stage:'signed_in',message:'已有有效登录，已跳过'});continue;}
         const value=await this.login(row.id,{phone:row.phoneLogin?phone:''});
         Object.assign(item,{stage:value.stage||'manual',message:value.message||'请在官方窗口完成验证'});

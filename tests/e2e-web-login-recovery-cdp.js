@@ -29,28 +29,27 @@ async function main(){
     const until=async(expr)=>{for(const end=Date.now()+35000;Date.now()<end;){if(await cdp.eval(expr))return;await pause(120);}throw Error('timeout: '+expr);};
     const click=async selector=>{await until(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);};
     await until('typeof accountCenterPanel!=="undefined"');await click('#btn-rail-accounts');
-    await until('document.querySelector("[data-ac=attention][data-id=web-deepseek]")?.textContent.includes("恢复")');
-    await click('[data-ac=attention][data-id=web-deepseek]');await until('!!document.querySelector(".ac-task-dialog[open]")');
-    assert.match(await cdp.eval('document.querySelector(".ac-task-dialog").textContent'),/检查并继续任务/);
-    await click('.ac-task-dialog [data-ac=check][data-id=web-deepseek]');await until('document.querySelector(".ac-status").textContent.includes("测试状态")');assert.equal(sends().length,0);assert.equal(store.read(parent.id).state,'needs_attention');
-    result.checks.push('Unknown login evidence never resumes or sends a task');
-    await click('.ac-task-dialog [data-ac=open][data-id=web-deepseek]');await until('document.querySelector(".ac-status").textContent.includes("原账号网页已打开")');
-    fs.writeFileSync(path.join(home,'fixture-login-web-deepseek'),'1');
-    fs.writeFileSync(path.join(out,'01-recovery-dialog.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
-    await click('.ac-task-dialog [data-ac=check][data-id=web-deepseek]');
+    const feature=id=>'.ac-feature[data-feature='+id+']';
+    await until(`document.querySelector('${feature('web-deepseek')} .ac-feature-state')?.textContent.includes('等登录后继续')`);
+    // The page probes managed browsers by itself; unknown evidence must still resume nothing.
+    await pause(9000);
+    assert.equal(sends().length,0);assert.equal(store.read(parent.id).state,'needs_attention');
+    result.checks.push('Unknown login evidence never resumes or sends a task, not even from the automatic status poll');
+    fs.writeFileSync(path.join(out,'01-recovery-panel.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
+    await click(feature('web-deepseek')+' button');
+    await until('document.querySelector(".ac-status").textContent.includes("登录")');
     const ds=parent.inFlight.deepseek.task_id,ki=parent.inFlight.kimi.task_id;
     for(const end=Date.now()+20000;Date.now()<end&&store.read(ds).state!=='succeeded';)await pause(150);
     assert.equal(store.read(ds).state,'succeeded');assert.equal(sends().filter(s=>s.id===ds).length,1);
     result.checks.push('Fresh positive login proof resumes original unsent task once via child MCP');
-    await click('[data-ab=close-attention]');await cdp.eval('accountCenterPanel.refresh()');await click('[data-ac=attention][data-id=web-kimi]');
-    fs.writeFileSync(path.join(home,'fixture-login-web-kimi'),'1');await click('.ac-task-dialog [data-ac=check][data-id=web-kimi]');
+    await click(feature('web-kimi')+' button');
     for(const end=Date.now()+45000;Date.now()<end&&store.read(parent.id).state!=='succeeded';)await pause(200);
     const final=store.read(parent.id);assert.equal(final.state,'succeeded',JSON.stringify(final));assert.equal(sends().filter(s=>s.id===ki).length,0);
     assert.equal(sends().length,5);assert.equal(final.rounds.length,2);assert.equal(final.rounds[0].results.find(r=>r.provider==='qwen').answer,'Original Qwen answer');assert.ok(fs.existsSync(final.reportPath));
     result.checks.push('Submitted task only collects; original parent automatically completes remaining debate and synthesis with peer answer preserved');
     result.sends=sends();result.roundtable=final.id;result.report=final.reportPath;
     for(const id of [final.id,...final.rounds.flatMap(r=>r.results.map(x=>x.id)),final.synthesis.id]){for(const end=Date.now()+10000;Date.now()<end&&store.alive(store.read(id).pid||2147483646);)await pause(100);}
-    await click('[data-ab=close-attention]');await cdp.eval('accountCenterPanel.refresh()');
+    await cdp.eval('accountCenterPanel.refresh()');
     assert.equal(recovery.list(data).length,0);result.passed=true;
     fs.writeFileSync(path.join(out,'02-recovered.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
   }catch(e){result.error=e.stack;throw e;}

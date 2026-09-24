@@ -93,7 +93,7 @@
       <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">备忘录</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">记忆</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">工具</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号与授权 · 管理登录、授权与接入" aria-label="账号与授权" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
       </div>
       <div class="rail-spacer"></div>
       <div class="rail-utilities">
@@ -566,10 +566,9 @@
   <script src="floating-input-history.js"></script>
   <script src="workspace-controller.js"></script>
   <script src="meeting-create-modal.js"></script>
-  <section id="account-page" class="ac-page" hidden aria-label="账号与授权">
-    <header class="ac-head"><div><h1>账号与授权</h1><p>集中查看登录状态，快速打开网页和完成验证。</p></div><div class="ac-head-actions"><button class="ac-btn" data-ac="refresh">刷新状态</button><button class="ac-btn primary" data-ac="config" data-id="codex">接入配置</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
-    <nav class="ac-tabs" role="tablist" aria-label="账号中心"><button role="tab" data-ac-tab="overview" aria-selected="true">账号总览</button><button role="tab" data-ac-tab="bindings" aria-selected="false">功能与账号</button><button role="tab" data-ac-tab="history" aria-selected="false">活动记录</button></nav>
-    <div class="ac-status" role="status" aria-live="polite"></div><div class="ac-content"></div>
+  <section id="account-page" class="ac-page" hidden aria-label="账号">
+    <header class="ac-head"><div><h1>账号</h1><p>每个账号一张卡片，显示它下面各项功能的登录状态。需要时打开官方登录窗口，状态自动确认。</p></div><div class="ac-head-actions"><button class="ac-btn" data-ac="back" hidden>← 返回账号</button><button class="ac-btn" data-ac="refresh">刷新状态</button><button class="ac-btn" data-ac="config" data-id="codex">接入配置</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
+    <div class="ac-status" role="status" aria-live="polite" hidden></div><div class="ac-content"></div>
     <div id="account-editor" hidden>          <div class="config-ai-list">
             <button class="config-ai-row" type="button" data-ai="claude">
               <span class="config-ai-mark claude">CL</span>
@@ -719,7 +718,7 @@
 
         </div>
 
-      <div class="config-modal-actions"><button class="config-btn config-btn-save" id="account-config-save">保存此连接配置</button><button class="ac-btn" data-ac-tab="overview">返回账号总览</button></div><div id="account-config-msg" role="status"></div>
+      <div class="config-modal-actions"><button class="config-btn config-btn-save" id="account-config-save">保存此连接配置</button><button class="ac-btn" data-ac="back">返回账号列表</button></div><div id="account-config-msg" role="status"></div>
     </div>
   </section>
   <script src="renderer.js"></script>
