@@ -152,3 +152,56 @@ test('a background status poll never restarts web tasks on its own',async t=>{
  await service.check('web-deepseek');
  assert.equal(resumed,1,'the explicit continue-tasks action still resumes');
 });
+
+test('an abandoned login admission expires instead of pinning the row to "window open" forever',async t=>{
+ // The reported bug: clicked 登录, nobody watched, the row claimed a login window was
+ // open for the rest of the day and could never reach 已登录.
+ const {service}=setup(t,{check:async()=>({state:'unknown'})});
+ await service.login('web-deepseek');
+ const row=await service.row('web-deepseek'),file=service.file(service.scope(row),'login');
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='web-deepseek').pending,true);
+ const held=JSON.parse(fs.readFileSync(file,'utf8'));
+ fs.writeFileSync(file,JSON.stringify({...held,at:Date.now()-11*60*1000}));
+ assert.equal(service.leaseActive(row),false,'an admission older than the TTL is not a live window');
+ assert.equal(fs.existsSync(file),false,'and it cleans itself up, so login can be retried');
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='web-deepseek').pending,false);
+ assert.equal((await service.login('web-deepseek')).pending,true);
+});
+test('the last confirmed login survives a later offline check so a closed browser is not "signed out"',async t=>{
+ let state='signed_in';
+ const {service}=setup(t,{check:async()=>({state})});
+ await service.check('web-deepseek');
+ const proof=(await service.snapshot()).connections.find(r=>r.id==='web-deepseek');
+ assert.equal(proof.state,'signed_in');assert.ok(proof.signedInAt>0);
+ state='offline';
+ await service.check('web-deepseek');
+ const closed=(await service.snapshot()).connections.find(r=>r.id==='web-deepseek');
+ assert.equal(closed.state,'offline','the current reading is still reported honestly');
+ assert.equal(closed.signedInAt,proof.signedInAt,'but the proof we did have is not thrown away');
+ // A connection that was never proved must not inherit one.
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='bridge').signedInAt,0);
+});
+test('an open login window keeps being confirmed even when no page is watching',async t=>{
+ let state='unknown';
+ const {service}=setup(t,{check:async()=>({state})});
+ t.after(()=>service.stopPump());
+ await service.login('web-deepseek');
+ assert.ok(service.pumpTimer,'the Hub itself keeps the promise of 自动确认');
+ state='signed_in';
+ await service.snapshot();
+ assert.equal(service.leaseActive(await service.row('web-deepseek')),false);
+ await service.snapshot();
+ assert.equal(service.pumpTimer,null,'and it stops once nothing is pending');
+});
+
+test('reading an admission that another Hub is still writing neither throws nor steals it',async t=>{
+ const {service}=setup(t);
+ const row=await service.row('bridge'),file=service.file(service.scope(row),'login');
+ fs.mkdirSync(service.root,{recursive:true});
+ fs.writeFileSync(file,'');                       // created, not yet written
+ assert.equal(service.leaseActive(row),true,'an unreadable admission is still an admission');
+ assert.equal(fs.existsSync(file),true,'and must not be deleted out from under its owner');
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='bridge').pending,true);
+ fs.writeFileSync(file,JSON.stringify({at:Date.now(),pid:process.pid,token:'t'}));
+ assert.equal(service.leaseActive(row),true);
+});

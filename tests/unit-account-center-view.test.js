@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,statusText,tone}=require('../renderer/account-center-view');
+const {accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,describe,confirmed}=require('../renderer/account-center-view');
 
 test('attention badges require a human login need, not an offline browser or unknown proof',()=>{
  for(const state of ['offline','unknown','unavailable','configured'])assert.equal(needsAttention({state}),false);
@@ -19,16 +19,32 @@ test('row actions separate opening a website, starting a login, reopening a stuc
  assert.equal(featureAction({...web,type:'native',state:'unknown'}).action,'login');
  assert.deepEqual(featureAction({action:'configure',configProvider:'server'}),{action:'config',label:'配置',id:'server'});
 });
-test('status wording never turns a stale or offline record into a fresh login',()=>{
- assert.equal(statusText({state:'signed_in',stale:true}),'上次已登录');
- assert.equal(statusText({state:'signed_in'}),'已登录');
- assert.equal(statusText({state:'offline'}),'浏览器未在线');
- assert.equal(statusText({state:'unknown',pending:true}),'登录窗口已打开，完成后自动确认');
- assert.equal(statusText({state:'signed_in',enabled:false}),'已停用');
- assert.equal(statusText({state:'signed_in',webRecovery:[{id:'t1'}]}),'1 项网页任务等登录后继续');
- assert.equal(tone({state:'signed_in',stale:true}),'idle');
- assert.equal(tone({state:'signed_in'}),'ok');
- assert.equal(tone({state:'login_required'}),'warn');
+const NOW=Date.UTC(2026,8,24,12,0,0),MIN=60000,DAY=24*60*MIN;
+test('a closed browser reports the login it still holds instead of looking signed out',()=>{
+ // The complaint this fixes: the site is logged in, the Hub said nothing was.
+ const closed={state:'offline',signedInAt:NOW-30*MIN,observedAt:NOW};
+ assert.deepEqual(describe(closed,NOW),{tone:'rest',text:'已登录 · 浏览器已关闭（30 分钟前确认）'});
+ assert.equal(confirmed(closed,NOW),true,'nothing to log in again — just open it');
+ assert.equal(featureAction({...closed,id:'web-qwen',type:'web',action:'login'}).label,'打开');
+ // Never seen logged in: stay honestly unknown rather than guess either way.
+ assert.deepEqual(describe({state:'offline',observedAt:NOW},NOW),{tone:'idle',text:'浏览器未开，登录状态未知'});
+ // Week-old proof is not proof: web sessions expire, so stop vouching for it.
+ const old={state:'offline',signedInAt:NOW-8*DAY,observedAt:NOW};
+ assert.equal(describe(old,NOW).tone,'idle');
+ assert.equal(confirmed(old,NOW),false);
+ assert.match(describe(old,NOW).text,/8 天前确认/);
+});
+test('a login window that is gone stops claiming it is open',()=>{
+ assert.deepEqual(describe({state:'offline',pending:true},NOW),{tone:'warn',text:'登录窗口已关闭，未确认登录'});
+ assert.deepEqual(describe({state:'unknown',pending:true},NOW),{tone:'warn',text:'登录窗口已打开，完成后自动确认'});
+});
+test('live proof, ageing proof and plain unknown stay distinguishable',()=>{
+ assert.deepEqual(describe({state:'signed_in',observedAt:NOW-30000},NOW),{tone:'ok',text:'已登录 · 刚刚确认'});
+ assert.deepEqual(describe({state:'signed_in',stale:true,observedAt:NOW-3*60*MIN},NOW),{tone:'rest',text:'已登录 · 3 小时前确认'});
+ assert.deepEqual(describe({state:'login_required'},NOW),{tone:'warn',text:'需要登录'});
+ assert.deepEqual(describe({state:'signed_in',enabled:false},NOW),{tone:'idle',text:'已停用'});
+ assert.deepEqual(describe({state:'signed_in',webRecovery:[{id:'t1'}]},NOW),{tone:'warn',text:'1 项网页任务等登录后继续'});
+ assert.equal(describe({state:'unknown',observedAt:NOW-5*MIN},NOW).text,'尚未确认 · 5 分钟前检查');
 });
 
 function lanes(){return ['primary','secondary'].flatMap(loginGroup=>Array.from({length:4},(_,i)=>{

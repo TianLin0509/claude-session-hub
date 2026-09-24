@@ -72,6 +72,8 @@
 .ac-dot{width:8px;height:8px;flex-shrink:0;border-radius:50%;background:var(--fg-faint,#484f58)}
 .ac-dot.ok{background:var(--status-success,#3fb950);box-shadow:0 0 0 3px var(--status-success-tint,rgba(63,185,80,.14))}
 .ac-dot.warn{background:var(--status-warning,#f0883e);box-shadow:0 0 0 3px var(--status-warning-tint,rgba(210,153,34,.14))}
+/* Proved earlier, nothing has contradicted it — readable as good, distinct from live proof. */
+.ac-dot.rest{background:transparent;border:2px solid var(--status-success,#3fb950);opacity:.75}
 
 .ac-extra{max-width:880px;margin-top:18px}
 .ac-extra-head{display:flex;align-items:center;gap:10px;width:100%;padding:11px 4px;cursor:pointer;

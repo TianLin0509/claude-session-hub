@@ -1,5 +1,5 @@
 'use strict';
-const {accountRows,accountCards,featureName,featureAction,cardAction,needsAttention,statusText,tone}=require('./account-center-view');
+const {accountRows,accountCards,featureName,featureAction,cardAction,needsAttention,describe}=require('./account-center-view');
 function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configModal,closeOtherPanels=()=>{}}){
  const page=document.getElementById('account-page'),body=page.querySelector('.ac-content');
  let snapshot={connections:[],history:[]},view='list',error='',notice='',loading=false,timer,previousFocus;
@@ -7,14 +7,6 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  const busy=new Set();
  const marks={claude:'CL',codex:'CX',chatgpt:'AI',images:'AI',bridge:'AI','chatgpt-web':'AI',deepseek:'D',doubao:'豆',kimi:'K',qwen:'Q',gemini:'G','token-plan':'百',feishu:'飞',server:'服'};
  async function call(action,args){const r=await ipcRenderer.invoke('accounts:'+action,args);if(!r?.ok)throw Error(r?.error||'账号服务未响应');return r.data;}
- function ago(at){
-  if(!at)return '';
-  const minutes=Math.floor((Date.now()-at)/60000);
-  if(minutes<1)return '刚刚检查';
-  if(minutes<60)return minutes+' 分钟前检查';
-  if(minutes<1440)return Math.floor(minutes/60)+' 小时前检查';
-  return new Date(at).toLocaleDateString('zh-CN');
- }
  function editing(){return page.contains(document.activeElement)&&document.activeElement.matches('input:not([type="checkbox"]),textarea,select,[contenteditable="true"]');}
  const btn=(label,action,id,cls='')=>`<button class="ac-btn ${cls}" data-ac="${action}" data-id="${esc(id||'')}" ${busy.has(id)?'disabled':''}>${esc(label)}</button>`;
  function renderStatus(){
@@ -25,19 +17,19 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   page.querySelector('[data-ac="refresh"]').disabled=sweeping;
  }
  function featureHtml(row,showMark){
-  const act=featureAction(row),name=featureName(row);
-  const detail=[statusText(row),row.groupNote,ago(row.observedAt)].filter(Boolean).join(' · ');
-  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${tone(row)}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span><span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
+  const act=featureAction(row),name=featureName(row),state=describe(row);
+  const detail=[state.text,row.groupNote].filter(Boolean).join(' · ');
+  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${state.tone}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span><span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
  }
  // A single-use account is one line: repeating its name as a sub-row would say nothing new.
  function soloHtml(card){
-  const row=card.features[0],act=featureAction(row);
-  const detail=[statusText(row),row.groupNote,ago(row.observedAt)].filter(Boolean).join(' · ');
+  const row=card.features[0],act=featureAction(row),state=describe(row);
+  const detail=[state.text,row.groupNote].filter(Boolean).join(' · ');
   const sub=[featureName(row),card.identity].filter(Boolean).join(' · ');
   return `<article class="ac-card solo ${card.attention?'attention':''}" data-card="${esc(card.key)}">
   <div class="ac-feature ac-card-head" data-feature="${esc(row.id)}"><span class="ac-avatar ac-avatar-${esc(card.platform)}" aria-hidden="true">${esc(card.mark)}</span>
   <div class="ac-card-title"><strong>${esc(card.name)}</strong><small>${esc(sub)}</small></div>
-  <span class="ac-dot ${tone(row)}" aria-hidden="true"></span><span class="ac-feature-state">${esc(detail)}</span>
+  <span class="ac-dot ${state.tone}" aria-hidden="true"></span><span class="ac-feature-state">${esc(detail)}</span>
   ${btn(act.label,act.action,act.id,'ghost')}</div></article>`;
  }
  function cardHtml(card){

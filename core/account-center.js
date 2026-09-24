@@ -10,9 +10,17 @@ function maskIdentity(value) {
   if (s.includes('@')) { const [name,domain] = s.split('@'); return name.slice(0,1)+'•••@'+domain; }
   return s ? s.slice(0,2)+'•••'+s.slice(-4) : '身份未确认';
 }
-function safeObservation(raw = {}) {
-  return { state:STATES.has(raw.state)?raw.state:'unknown', identity:raw.identity ? maskIdentity(raw.identity) : '身份未确认',
-    message:String(raw.message || '').slice(0,240), observedAt:Number(raw.observedAt)||Date.now(),
+// A login window is only ever open for minutes. An admission older than this was abandoned
+// (Hub closed, browser closed, user walked away) and must stop claiming a window is open.
+const LEASE_TTL = 10 * 60 * 1000;
+function safeObservation(raw = {}, previous = null) {
+  const state = STATES.has(raw.state) ? raw.state : 'unknown';
+  const observedAt = Number(raw.observedAt) || Date.now();
+  return { state, identity:raw.identity ? maskIdentity(raw.identity) : '身份未确认',
+    message:String(raw.message || '').slice(0,240), observedAt,
+    // Remembering when we last saw real proof is what lets a closed browser say
+    // "signed in, window closed" instead of the flatly wrong "not signed in".
+    signedInAt: state === 'signed_in' ? observedAt : Number(previous?.signedInAt) || 0,
     source:String(raw.source || '连接检查').slice(0,80) };
 }
 class AccountCenter {
@@ -56,7 +64,7 @@ class AccountCenter {
   }
   file(id,suffix='json'){return path.join(this.root,crypto.createHash('sha256').update(id).digest('hex')+'.'+suffix);}
   read(id){try{return JSON.parse(fs.readFileSync(this.file(id),'utf8'));}catch(e){if(e.code==='ENOENT')return null;return {state:'unknown',message:'账号状态记录不可读，请重新检查',observedAt:0,source:'状态记录'};}}
-  save(id,raw){fs.mkdirSync(this.root,{recursive:true});const value=safeObservation(raw);const file=this.file(id),tmp=file+'.'+process.pid+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),'utf8');fs.renameSync(tmp,file);return value;}
+  save(id,raw){fs.mkdirSync(this.root,{recursive:true});const value=safeObservation(raw,this.read(id));const file=this.file(id),tmp=file+'.'+process.pid+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),'utf8');fs.renameSync(tmp,file);return value;}
   scope(row){const c=this.getConfig();const credential=row.provider==='server'?c.operations?.aliyunMonitor?.bearerToken:row.type==='api'?c[row.provider+'ApiKey']:'';return row.id+':'+(row.home || '')+':'+(credential?crypto.createHash('sha256').update(String(credential)).digest('hex'):'');}
   // Cheap local probes, plus anything with a login window currently open: while the user is
   // finishing an official login we poll that one connection so nobody has to press a check button.
@@ -80,7 +88,7 @@ class AccountCenter {
       // only continue when the Hub itself opened that login window.
       return this.check(row.id,{quiet:true,resume:waiting});
     }));
-    return {connections:rows.map(row=>{
+    const connections=rows.map(row=>{
       const key=this.scope(row),cached=this.read(key);
       const observation=(row.observation && (!cached || row.observation.observedAt>cached.observedAt) ? row.observation : cached) || row.observation || {state:row.configured?'configured':'unknown',message:row.action==='configure'?(row.configured?'密钥已配置，尚未验证有效性':row.provider==='server'?'尚未配置密钥；公开监控端点可以不需要授权':'尚未配置密钥'):'尚未检查；可点登录或刷新状态',observedAt:0,source:'配置发现'};
       // Once the owning tool reports a login there is nothing left to wait for, even when the
@@ -88,12 +96,25 @@ class AccountCenter {
       let pending=this.leaseActive(row);
       if(pending&&observation.state==='signed_in'){this.clearLease(key,this.leaseToken(key));pending=false;}
       const {home,observation:unused,...safe}=row;
-      return {...safe,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending};
-    }),history:this.history(),batches:[...this.batches.values()].slice(-3)};
+      return {...safe,signedInAt:0,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending};
+    });
+    // Whoever produced a snapshot with nothing pending has answered the pump's only question.
+    if(this.pumpTimer&&!connections.some(r=>r.pending))this.stopPump();
+    return {connections,history:this.history(),batches:[...this.batches.values()].slice(-3)};
   }
   history(){try{return fs.readFileSync(path.join(this.root,'events.jsonl'),'utf8').trim().split('\n').filter(Boolean).slice(-80).map(x=>JSON.parse(x)).reverse();}catch(e){if(e.code==='ENOENT')return [];return [{at:Date.now(),name:'活动记录',message:'记录不可读；未覆盖原文件'}];}}
   log(row,message){fs.mkdirSync(this.root,{recursive:true});fs.appendFileSync(path.join(this.root,'events.jsonl'),JSON.stringify({at:Date.now(),name:row.name,message})+'\n','utf8');}
-  leaseActive(row){return fs.existsSync(this.file(this.scope(row),'login'));}
+  // Never throws and never deletes an admission it cannot read: an unreadable file normally
+  // means another Hub is between creating and writing it, and status code must not race that.
+  leaseActive(row){
+    const file=this.file(this.scope(row),'login');
+    let raw;
+    try{raw=JSON.parse(fs.readFileSync(file,'utf8'));}
+    catch(e){return e.code!=='ENOENT';}
+    if(Date.now()-(Number(raw?.at)||0)<LEASE_TTL)return true;
+    try{fs.unlinkSync(file);}catch{}
+    return false;
+  }
   leaseToken(key){try{return JSON.parse(fs.readFileSync(this.file(key,'login'),'utf8')).token;}catch(e){if(e.code==='ENOENT')return null;throw e;}}
   clearLease(key,token){if(!token||this.leaseToken(key)!==token)return;try{fs.unlinkSync(this.file(key,'login'));}catch(e){if(e.code!=='ENOENT')throw e;}}
   async row(id){const row=(await this.connections()).find(r=>r.id===id);if(!row)throw new Error('连接不存在，请刷新账号列表');return row;}
@@ -120,13 +141,23 @@ class AccountCenter {
       finally{this.flights.delete(key);}
     })();this.flights.set(key,promise);return promise;
   }
+  // "完成后自动确认" has to hold even when nobody is looking at the account page: the panel's
+  // own polling dies with the page. While any login window is open, keep taking snapshots —
+  // that one call refreshes the tool listings, rechecks the leased rows and releases the
+  // admission the moment there is proof. It stops itself once no admission is left.
+  pump(){
+    if(this.pumpTimer)return;
+    this.pumpTimer=setInterval(()=>{this.snapshot().catch(()=>{});},15000);
+    this.pumpTimer.unref?.();
+  }
+  stopPump(){if(this.pumpTimer){clearInterval(this.pumpTimer);this.pumpTimer=null;}}
   async login(id,options={}){
     const row=await this.row(id);if(row.action!=='login')throw new Error('此连接通过接入配置管理');
     fs.mkdirSync(this.root,{recursive:true});const key=this.scope(row),file=this.file(key,'login'),token=crypto.randomUUID();
     if(this.leaseActive(row))return {pending:true,message:'这个账号的登录窗口已打开；完成验证后这里会自动确认'};
     let fd;try{fd=fs.openSync(file,'wx');}catch(e){if(e.code==='EEXIST')return {pending:true,message:'另一个 Hub 正在打开此账号的登录窗口'};throw e;}
     try{fs.writeFileSync(fd,JSON.stringify({at:Date.now(),pid:process.pid,token}));}finally{fs.closeSync(fd);}
-    try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后自动确认');return {...result,pending:true,message:result.message || '已打开官方登录入口；完成验证后这里会自动确认'};}
+    try{const result=await this.adapter.login(row,options);this.log(row,'已打开登录入口；完成本人验证后自动确认');this.pump();return {...result,pending:true,message:result.message || '已打开官方登录入口；完成验证后这里会自动确认'};}
     catch(e){this.clearLease(key,token);this.log(row,'登录入口打开失败');throw new Error('无法打开登录入口：'+(e.message || '请检查工具安装'));}
   }
   async open(id){

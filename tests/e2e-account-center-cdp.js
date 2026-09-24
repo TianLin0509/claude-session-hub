@@ -15,7 +15,25 @@ async function main(){
  const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+') && !document.querySelector('+JSON.stringify(selector)+').disabled','enabled '+selector);const box=await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...box});await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...box});};
  const snap=async name=>{const v=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
  const trace=()=>{try{return fs.readFileSync(path.join(home,'account-fixture.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);}catch(e){if(e.code==='ENOENT')return [];throw e;}};
+ let sweeps=0;
+ // Wait on the button's own busy state: the "已刷新" notice from a previous sweep would
+ // otherwise satisfy the wait before this sweep has actually run.
+ const refresh=async label=>{
+  await click('[data-ac=refresh]');sweeps++;
+  await sleep(300);
+  await until('document.querySelector("[data-ac=refresh]").disabled===false && document.querySelector(".ac-status").textContent.includes("已刷新")',label);
+ };
  const text=selector=>cdp.eval(`document.querySelector(${JSON.stringify(selector)}).innerText`);
+ // Disclosure toggles are driven to a state, not blindly clicked: a background re-render can
+ // land between reading the button's box and dispatching, and a blind retry would undo itself.
+ const setToggle=async(action,want,label)=>{
+  const sel='[data-ac='+action+']';
+  for(let i=0;i<4;i++){
+   if(await cdp.eval(`document.querySelector('${sel}').getAttribute('aria-expanded')==='${want}'`)){console.log('PASS '+label);return;}
+   await click(sel);await sleep(400);
+  }
+  throw Error('toggle never reached '+want+': '+label);
+ };
  try{
   hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'visible',label:'accounts-center',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
    CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),
@@ -112,21 +130,30 @@ async function main(){
   await until(`document.querySelector('.ac-card[data-card="deepseek"] .ac-dot').classList.contains('ok')`,'single account confirmed itself');
   result.checks.push('单一用途的账号走单连接登录 IPC，完成后同样自行确认');
 
+  // The reported bug: a browser that is merely closed must not read as "not signed in".
+  fs.writeFileSync(path.join(home,'fixture-offline-web-deepseek'),'1');
+  await refresh('offline sweep finished');
+  const closed='.ac-card[data-card="deepseek"] .ac-feature[data-feature=web-deepseek]';
+  await until(`document.querySelector('${closed} .ac-dot').classList.contains('rest')`,'closed browser keeps its login');
+  assert.match(await text(closed+' .ac-feature-state'),/已登录 · 浏览器已关闭/);
+  assert.equal(await cdp.eval(`document.querySelector('${closed} button').textContent`),'打开','nothing to log in again — just reopen it');
+  fs.unlinkSync(path.join(home,'fixture-offline-web-deepseek'));
+  result.checks.push('专用浏览器关掉后仍显示"已登录 · 浏览器已关闭"并给"打开"，不再谎报未登录');
+
   // Refreshing asks every connection once, and keeps that sweep out of the activity list.
   const before=trace().filter(x=>x.action==='check').length;
-  await click('[data-ac=refresh]');
-  await until('document.querySelector(".ac-status").textContent.includes("已刷新")','refresh finished');
+  await refresh('refresh finished');
   assert.ok(trace().filter(x=>x.action==='check').length>before+5,'refresh must reach the tools that are not probed automatically');
-  await click('[data-ac=toggle-history]');await until('!!document.querySelector(".ac-log")','activity list');
+  await setToggle('toggle-history',true,'activity list open');await until('!!document.querySelector(".ac-log")','activity list');
   await until(`document.querySelector('.ac-log').innerText.includes('刷新状态')`,'refresh recorded once');
   assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('检查完成')).length`),0,'a status sweep must not bury the real actions');
-  assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('刷新状态')).length`),1);
-  await click('[data-ac=toggle-history]');
+  assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('刷新状态')).length`),sweeps,'one summary line per sweep, not one per connection');
+  await setToggle('toggle-history',false,'activity list closed');
   result.checks.push('"刷新状态"一次覆盖全部连接（含不自动探测的中转、生图与服务），活动记录只留一行汇总');
 
   // API keys and service tokens stay out of the account cards.
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-card .ac-feature[data-feature^=api-]").length'),0);
-  await click('[data-ac=toggle-others]');await until('!!document.querySelector(".ac-features.plain")','other integrations');
+  await setToggle('toggle-others',true,'other integrations open');await until('!!document.querySelector(".ac-features.plain")','other integrations');
   const others=await cdp.eval(`[...document.querySelectorAll('.ac-features.plain .ac-feature')].map(el=>el.dataset.feature)`);
   assert.deepEqual(others.sort(),['api-claude','api-codex','api-deepseek','feishu','server-monitor','token-plan']);
   await snap('03-other-integrations');

@@ -51,22 +51,38 @@ function featureName(row){
  if(row.managedBrowser)return '网页对话（专用浏览器）';
  return FEATURE[row.provider]||row.name;
 }
-function confirmed(row){return row.state==='signed_in'&&!row.stale;}
+// A closed browser still holds the login it was given. Beyond a week we stop vouching for it,
+// because web sessions do expire and a stale promise is worse than an honest "unknown".
+const REST_TTL=7*24*60*60*1000;
+function resting(row,now=Date.now()){return row.state==='offline'&&!!row.signedInAt&&now-row.signedInAt<REST_TTL;}
+function confirmed(row,now=Date.now()){return row.state==='signed_in'&&!row.stale||resting(row,now);}
 function needsAttention(row){
  return row.enabled!==false&&(row.webRecovery?.some(t=>t.canResume)||row.state==='login_required'||!!row.pending&&!confirmed(row));
 }
-const STATE={signed_in:'已登录',login_required:'需要登录',configured:'已配置',unknown:'尚未确认',offline:'浏览器未在线',unavailable:'工具不可用',opening:'等待验证'};
-function statusText(row){
- if(row.enabled===false)return '已停用';
- if(row.webRecovery?.length)return row.webRecovery.length+' 项网页任务等登录后继续';
- if(row.pending)return '登录窗口已打开，完成后自动确认';
- if(row.stale&&row.state==='signed_in')return '上次已登录';
- return STATE[row.state]||'尚未确认';
+const STATE={login_required:'需要登录',configured:'已配置',unknown:'尚未确认',unavailable:'工具不可用',opening:'等待验证'};
+function ago(at,now=Date.now()){
+ if(!at)return '';
+ const minutes=Math.floor((now-at)/60000);
+ if(minutes<1)return '刚刚';
+ if(minutes<60)return minutes+' 分钟前';
+ if(minutes<1440)return Math.floor(minutes/60)+' 小时前';
+ return Math.floor(minutes/1440)+' 天前';
 }
-function tone(row){
- if(row.enabled===false)return 'idle';
- if(needsAttention(row))return 'warn';
- return confirmed(row)||row.state==='configured'?'ok':'idle';
+// tone: ok = proved just now, rest = proved earlier and nothing has contradicted it,
+// warn = needs you, idle = we genuinely do not know.
+function describe(row,now=Date.now()){
+ if(row.enabled===false)return {tone:'idle',text:'已停用'};
+ if(row.webRecovery?.length)return {tone:'warn',text:row.webRecovery.length+' 项网页任务等登录后继续'};
+ if(row.pending)return row.state==='offline'
+  ?{tone:'warn',text:'登录窗口已关闭，未确认登录'}
+  :{tone:'warn',text:'登录窗口已打开，完成后自动确认'};
+ if(row.state==='offline')return row.signedInAt
+  ?{tone:resting(row,now)?'rest':'idle',text:`已登录 · 浏览器已关闭（${ago(row.signedInAt,now)}确认）`}
+  :{tone:'idle',text:'浏览器未开，登录状态未知'};
+ if(row.state==='signed_in')return {tone:row.stale?'rest':'ok',text:'已登录 · '+ago(row.observedAt,now)+'确认'};
+ if(row.state==='configured')return {tone:'ok',text:'已配置'};
+ if(row.state==='login_required')return {tone:'warn',text:'需要登录'};
+ return {tone:'idle',text:(STATE[row.state]||'尚未确认')+(row.observedAt?' · '+ago(row.observedAt,now)+'检查':'')};
 }
 function featureAction(row){
  if(row.action!=='login')return {action:'config',label:'配置',id:row.configProvider};
@@ -98,9 +114,9 @@ function accountCards(rows){
   return {...card,alt,mark:base.mark,note:alt?'':base.note||'',
    name:alt?(lead.provider==='images'?'ChatGPT 生图 · '+(lead.groupLabel||lead.loginGroup):lead.name):base.name,
    identity:card.features.map(r=>r.identity).find(v=>v&&v!=='身份未确认')||'',
-   total:active.length,signedIn:active.filter(confirmed).length,attention:active.filter(needsAttention).length};
+   total:active.length,signedIn:active.filter(r=>confirmed(r)).length,attention:active.filter(needsAttention).length};
  });
  const weight=c=>{const i=ORDER.indexOf(c.platform);return (i<0?ORDER.length:i)*2+(c.alt?1:0);};
  return {cards:cards.sort((a,b)=>weight(a)-weight(b)),others};
 }
-module.exports={accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,statusText,tone,confirmed,PLATFORM};
+module.exports={accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,describe,ago,confirmed,resting,PLATFORM};
