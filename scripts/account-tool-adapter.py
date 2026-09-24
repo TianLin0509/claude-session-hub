@@ -5,6 +5,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
+def _account_name(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return str(json.load(handle).get('account_name') or '')[:80]
+    except Exception:
+        return ''
+
+
 def main():
     tool, action, root = sys.argv[1:4]
     sys.path.insert(0, root)
@@ -21,6 +29,8 @@ def main():
                 group_column = 'login_group' if 'login_group' in columns else "'' AS login_group"
                 for a in db.execute('SELECT id,enabled,ready,state,heartbeat,updated,' + group_column + ' FROM accounts ORDER BY id'):
                     r = dict(a)
+                    # Display label the tool already stores in plaintext; never a credential.
+                    r['account_name'] = _account_name(pool_root() / 'accounts' / str(a['id']) / 'config' / 'settings.json')
                     control = db.execute('SELECT action,status,result,updated FROM controls WHERE account_id=? ORDER BY created DESC LIMIT 1',(a['id'],)).fetchone()
                     if control:
                         value = json.loads(control['result'] or '{}')
@@ -49,7 +59,8 @@ def main():
             raise ValueError('invalid account observation')
         return {'ok': True, 'logged_in': value.get('logged_in') is True,
                 'login_required': value.get('login_visible') is True,
-                'challenge': value.get('challenge') is True}
+                'challenge': value.get('challenge') is True,
+                'account_name': str(cfg.get('account_name') or '')[:80]}
     raise ValueError('unsupported tool')
 
 if __name__ == '__main__':

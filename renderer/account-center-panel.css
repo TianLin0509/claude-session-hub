@@ -63,8 +63,12 @@
 .ac-feature{display:flex;align-items:center;gap:11px;padding:10px 17px;min-height:42px}
 .ac-feature+.ac-feature{border-top:1px solid rgba(var(--rgb-neutral,139,148,158),.1)}
 .ac-feature-name{flex-shrink:0;color:var(--fg-default,#c9d1d9)}
-.ac-feature-state{flex:1;min-width:0;text-align:right;font-size:11.5px;color:var(--fg-muted,#8b949e);
+.ac-feature-account{flex:1;min-width:0;font-size:11.5px;color:var(--fg-muted,#8b949e);
  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-feature-account.none{color:var(--fg-faint,#6b7280);font-style:italic}
+.ac-feature-state{flex-shrink:0;text-align:right;font-size:11.5px;color:var(--fg-muted,#8b949e);
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-card.solo .ac-feature-account{flex:0 1 auto}
 .ac-feature .ac-btn{flex-shrink:0;min-width:58px}
 .ac-card.solo .ac-feature{padding:13px 17px;border-top:0}
 .ac-card.solo .ac-feature-state{flex:0 1 auto}

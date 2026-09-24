@@ -21,7 +21,17 @@ function safeObservation(raw = {}, previous = null) {
     // Remembering when we last saw real proof is what lets a closed browser say
     // "signed in, window closed" instead of the flatly wrong "not signed in".
     signedInAt: state === 'signed_in' ? observedAt : Number(previous?.signedInAt) || 0,
+    // Which account this connection belongs to. Unlike `identity` (a masked observation)
+    // this is the label the owning tool already keeps in plaintext next to its profile,
+    // and it is what the UI shows — "同一个平台" is useless when two accounts share a card.
+    accountLabel:String(raw.accountLabel || previous?.accountLabel || '').slice(0,120),
     source:String(raw.source || '连接检查').slice(0,80) };
+}
+// Reads only the display name/email the official CLI already wrote next to its own profile.
+// Local file, no subprocess, no token value — and no proof of anything: a label is not a login.
+function codexAccountLabel(home){
+  try{const info=require('./codex-usage-scope').readCodexAuthInfo(home);return info.accountEmail||info.accountName||'';}
+  catch{return '';}
 }
 class AccountCenter {
   constructor({ dataDir, getConfig, adapter, homeDir = os.homedir(), env = process.env, recovery }) {
@@ -34,7 +44,7 @@ class AccountCenter {
     const profiles=c.codexSubscriptionProfiles?.length?c.codexSubscriptionProfiles:[{id:'default',label:'主账号',home:''}];
     const native=(id,name,provider,home,uses)=>({id,name,provider,home:path.resolve(require('./codex-usage-scope').expandHomePath(home,this.homeDir)),type:'native',uses,action:'login',configProvider:provider});
     const rows=[native('claude','Claude Code','claude',this.env.CLAUDE_CONFIG_DIR || path.join(this.homeDir,'.claude'),['Claude 会话','开发群聊']),
-      ...profiles.filter(p=>/^[\w-]{1,64}$/.test(p.id)).map(p=>({...native('codex-'+p.id,'Codex · '+p.label,'codex',p.home || this.env.CODEX_HOME || path.join(this.homeDir,'.codex'),['Codex 会话','开发群聊']),isDefault:p.id===(c.codexSubscriptionProfile || 'default')})),
+      ...profiles.filter(p=>/^[\w-]{1,64}$/.test(p.id)).map(p=>{const row=native('codex-'+p.id,'Codex · '+p.label,'codex',p.home || this.env.CODEX_HOME || path.join(this.homeDir,'.codex'),['Codex 会话','开发群聊']);return {...row,isDefault:p.id===(c.codexSubscriptionProfile || 'default'),accountLabel:codexAccountLabel(row.home)};}),
       native('gemini-cli','Gemini CLI','gemini',path.join(this.homeDir,'.gemini'),['Gemini 会话']),
       native('kimi','Kimi Code','kimi',this.env.KIMI_CODE_HOME || path.join(this.homeDir,'.kimi-code'),['Kimi 会话']),
       {id:'bridge',name:'ChatGPT · 公司中转',type:'web',uses:['公司拉取 / 同步'],provider:'bridge',action:'login'},
@@ -55,7 +65,7 @@ class AccountCenter {
       const images=await this.adapter.imageAccounts();
       if(!images.length)rows.push({id:'images',name:'ChatGPT 网页生图',type:'web',provider:'images',accountId:'primary',uses:['网页生图 MCP'],action:'login',observation:{state:'unknown',message:'尚无生图账号记录，可打开原工具的主账号登录入口',source:'生图共享池记录',observedAt:0}});
       for(const a of images) if(/^[a-z][a-z0-9_-]{0,39}$/.test(a.id)) rows.push({
-        id:'image-'+a.id,name:'ChatGPT 生图 · '+a.id,type:'web',provider:'images',accountId:a.id,loginGroup:/^[a-z][a-z0-9_-]{0,39}$/.test(a.loginGroup||'')?a.loginGroup:a.id,enabled:a.enabled!==false,uses:['网页生图 MCP'],action:'login',
+        id:'image-'+a.id,name:'ChatGPT 生图 · '+a.id,type:'web',provider:'images',accountId:a.id,accountLabel:a.accountLabel || '',loginGroup:/^[a-z][a-z0-9_-]{0,39}$/.test(a.loginGroup||'')?a.loginGroup:a.id,enabled:a.enabled!==false,uses:['网页生图 MCP'],action:'login',
         toolState:a.enabled===false?'账号已停用':a.workerAlive?'工作进程在线':'工作进程未在线',
         observation:{state:a.state || 'unknown',message:a.message || '原工具维护独立浏览器配置',observedAt:a.observedAt || 0,source:'生图共享池记录',identity:'身份由生图工具管理'},
       });
@@ -96,7 +106,7 @@ class AccountCenter {
       let pending=this.leaseActive(row);
       if(pending&&observation.state==='signed_in'){this.clearLease(key,this.leaseToken(key));pending=false;}
       const {home,observation:unused,...safe}=row;
-      return {...safe,signedInAt:0,...observation,webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending};
+      return {...safe,signedInAt:0,accountLabel:'',...observation,...(row.accountLabel?{accountLabel:row.accountLabel}:{}),webRecovery:row.managedBrowser?webTasks.filter(t=>t.accountId===row.id):[],stale:!!observation.observedAt&&Date.now()-observation.observedAt>300000,pending};
     });
     // Whoever produced a snapshot with nothing pending has answered the pump's only question.
     if(this.pumpTimer&&!connections.some(r=>r.pending))this.stopPump();
@@ -206,4 +216,4 @@ class AccountCenter {
     finally{this.codeFlights.delete(id);}
   }
 }
-module.exports={AccountCenter,maskIdentity,safeObservation};
+module.exports={AccountCenter,maskIdentity,safeObservation,codexAccountLabel};

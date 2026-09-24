@@ -16,10 +16,14 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   status.hidden=!text;
   page.querySelector('[data-ac="refresh"]').disabled=sweeping;
  }
- function featureHtml(row,showMark){
+ // `ambiguous` = some sibling use in this card runs on a named account. Only then is a blank
+ // worth calling out; on a card that holds one login it would be pure noise.
+ function featureHtml(row,showMark,ambiguous){
   const act=featureAction(row),name=featureName(row),state=describe(row);
   const detail=[state.text,row.groupNote].filter(Boolean).join(' · ');
-  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${state.tone}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span><span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
+  const who=row.accountLabel?`<span class="ac-feature-account" title="${esc(row.accountLabel)}">${esc(row.accountLabel)}</span>`
+   :ambiguous?'<span class="ac-feature-account none">账号未标注</span>':'<span class="ac-feature-account"></span>';
+  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${state.tone}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span>${who}<span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
  }
  // A single-use account is one line: repeating its name as a sub-row would say nothing new.
  function soloHtml(card){
@@ -42,7 +46,7 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   ${card.attention?`<span class="ac-pill warn">${card.attention} 项待登录</span>`:card.signedIn===card.total?'<span class="ac-pill ok">全部已登录</span>':''}
   <button class="ac-btn ${act.primary?'primary':'ghost'}" data-ac="card-login" data-card="${esc(card.key)}" ${act.ids.some(id=>busy.has(id))?'disabled':''}>${esc(act.label)}</button></div>
   ${card.note?`<p class="ac-card-note">${esc(card.note)}</p>`:''}
-  <ul class="ac-features">${card.features.map(r=>featureHtml(r,false)).join('')}</ul></article>`;
+  <ul class="ac-features">${card.features.map(r=>featureHtml(r,false,!!card.accounts.length)).join('')}</ul></article>`;
  }
  function render(){
   if(page.hidden)return;position();
@@ -56,7 +60,7 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   renderStatus();
   if(view==='config')return;
   body.innerHTML=`<div class="ac-cards">${cards.map(cardHtml).join('')}</div>
-  <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-others" aria-expanded="${showOthers}"><span>其他接入</span><small>API 密钥、服务授权 ${others.length} 项</small><i aria-hidden="true">${showOthers?'▾':'▸'}</i></button>${showOthers?`<ul class="ac-features plain">${others.map(r=>featureHtml(r,true)).join('')}</ul>`:''}</section>
+  <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-others" aria-expanded="${showOthers}"><span>其他接入</span><small>API 密钥、服务授权 ${others.length} 项</small><i aria-hidden="true">${showOthers?'▾':'▸'}</i></button>${showOthers?`<ul class="ac-features plain">${others.map(r=>featureHtml(r,true,false)).join('')}</ul>`:''}</section>
   <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-history" aria-expanded="${showHistory}"><span>最近活动</span><small>只记录操作结果，不保存验证码或密钥</small><i aria-hidden="true">${showHistory?'▾':'▸'}</i></button>${showHistory?(snapshot.history.length?`<ul class="ac-log">${snapshot.history.map(x=>`<li><time>${esc(new Date(x.at).toLocaleString('zh-CN',{hour12:false}))}</time><strong>${esc(x.name)}</strong><span>${esc(x.message)}</span></li>`).join('')}</ul>`:'<p class="ac-empty">暂无账号操作记录</p>'):''}</section>`;
  }
  function renderPreservingView(){

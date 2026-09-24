@@ -205,3 +205,19 @@ test('reading an admission that another Hub is still writing neither throws nor 
  fs.writeFileSync(file,JSON.stringify({at:Date.now(),pid:process.pid,token:'t'}));
  assert.equal(service.leaseActive(row),true);
 });
+
+test('a live check cannot erase the account label the owning tool already knows',async t=>{
+ const {service}=setup(t,{
+  imageAccounts:async()=>[{id:'primary',loginGroup:'primary',enabled:true,state:'signed_in',observedAt:1,accountLabel:'POOL OWNER'}],
+  check:async row=>({state:'unknown',accountLabel:row.provider==='bridge'?'BRIDGE OWNER':''})});
+ // The pool listing is older than any check, but it is the authority on whose account this is.
+ await service.check('image-primary');
+ const rows=(await service.snapshot()).connections;
+ assert.equal(rows.find(r=>r.id==='image-primary').accountLabel,'POOL OWNER');
+ // A label only a check can discover is kept once discovered.
+ assert.equal(rows.find(r=>r.id==='bridge').accountLabel,'');
+ await service.check('bridge');
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='bridge').accountLabel,'BRIDGE OWNER');
+ // And a connection nobody labelled stays blank rather than inheriting a neighbour's.
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='web-qwen').accountLabel,'');
+});

@@ -43,6 +43,13 @@ function toMaskedConfig(config) {
     codexBackend: config.codexBackend,
     codexSubscriptionProfile: config.codexSubscriptionProfile,
     codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
+    // Display-only, read fresh from each profile's own auth.json. Kept out of the profile
+    // objects themselves so the account form cannot round-trip it back into config.json.
+    codexProfileIdentities: Object.fromEntries((config.codexSubscriptionProfiles || []).map(p => [p.id,
+      require('../../core/account-center').codexAccountLabel(
+        require('path').resolve(require('../../core/codex-usage-scope').expandHomePath(
+          p.home || process.env.CODEX_HOME || require('path').join(require('os').homedir(), '.codex'),
+          require('os').homedir())))])),
     codexApiKey: config.codexApiKey ? '***' + config.codexApiKey.slice(-4) : '',
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
@@ -77,6 +84,13 @@ function toEditableConfig(config) {
     codexBackend: config.codexBackend,
     codexSubscriptionProfile: config.codexSubscriptionProfile,
     codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
+    // Display-only, read fresh from each profile's own auth.json. Kept out of the profile
+    // objects themselves so the account form cannot round-trip it back into config.json.
+    codexProfileIdentities: Object.fromEntries((config.codexSubscriptionProfiles || []).map(p => [p.id,
+      require('../../core/account-center').codexAccountLabel(
+        require('path').resolve(require('../../core/codex-usage-scope').expandHomePath(
+          p.home || process.env.CODEX_HOME || require('path').join(require('os').homedir(), '.codex'),
+          require('os').homedir())))])),
     codexApiKey: config.codexApiKey || '',
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,

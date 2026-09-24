@@ -60,6 +60,10 @@ async function main(){
   await until(`document.querySelector('${openai} .ac-feature[data-feature=codex-default] .ac-dot').classList.contains('ok')`,'native receipt inside the card');
   assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=bridge] .ac-dot').classList.contains('ok')`),false,'one confirmed use must not vouch for the others');
   assert.ok((await text(openai+' .ac-card-title')).includes('已登录'));
+  // Which account each use runs on is the question the platform grouping made hard to answer.
+  await until(`document.querySelector('${openai} .ac-feature[data-feature=codex-default] .ac-feature-account').textContent==='fixture-main@example.com'`,'client row names its account');
+  assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=image-primary] .ac-feature-account').textContent`),'FIXTURE POOL');
+  assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=chatgpt-web] .ac-feature-account').textContent`),'账号未标注','an unlabelled use says so instead of borrowing a neighbour’s account');
   // A different Codex profile and the backup image account are separate accounts, not sub-features.
   assert.ok((await text('.ac-card[data-card="openai#codex-second"] .ac-card-title')).includes('Second'));
   assert.ok((await text('.ac-card[data-card="openai#secondary"]')).includes('需要登录'));
@@ -149,6 +153,9 @@ async function main(){
   assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('检查完成')).length`),0,'a status sweep must not bury the real actions');
   assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('刷新状态')).length`),sweeps,'one summary line per sweep, not one per connection');
   await setToggle('toggle-history',false,'activity list closed');
+  await until(`document.querySelector('${openai} .ac-feature[data-feature=bridge] .ac-feature-account').textContent==='fixture-bridge@example.com'`,'bridge names its own account');
+  assert.match(await text(openai+' .ac-card-title'),/3 个账号/,'one platform card holding three logins must say three');
+  result.checks.push('每项用途显示它自己所属的账号（含公司中转与生图池的标注），未标注就直说；一张卡里有几个账号在标题写清楚');
   result.checks.push('"刷新状态"一次覆盖全部连接（含不自动探测的中转、生图与服务），活动记录只留一行汇总');
 
   // API keys and service tokens stay out of the account cards.

@@ -19,6 +19,7 @@ function accountRows(connections) {
   return {...representative,name:'ChatGPT 生图 · '+label,members:item,enabled:!!enabled.length,
    stale:members.some(r=>r.stale),observedAt:Math.min(...members.map(r=>r.observedAt||0)),
    connectionCount:members.length,loginHint:'沿用生图工具的账号登录',groupLabel:label,
+   accountLabel:members.map(r=>r.accountLabel).find(Boolean)||'',
    groupNote:item.length>1?`${item.length} 个浏览器共用此账号`:''};
  });
 }
@@ -100,6 +101,14 @@ function cardAction(card){
   ?{label:missing.length>1?`登录（${missing.length} 项）`:'登录',ids:missing.map(r=>r.id),primary:true}
   :{label:'重新登录',ids:open.map(r=>r.id),primary:false};
 }
+// One platform card can legitimately hold two different accounts (a Codex client on one
+// login, the image pool and the company bridge on another). Say so rather than picking one.
+function accountsOf(features){return [...new Set(features.map(r=>r.accountLabel).filter(Boolean))];}
+function accountSummary(features){
+ const names=accountsOf(features);
+ if(!names.length)return '';
+ return names.length===1?names[0]:`${names.length} 个账号 · ${names.join(' / ')}`;
+}
 function accountCards(rows){
  const map=new Map(),others=[];
  for(const row of rows){
@@ -113,10 +122,10 @@ function accountCards(rows){
   const lead=card.features[0],active=card.features.filter(r=>r.enabled!==false);
   return {...card,alt,mark:base.mark,note:alt?'':base.note||'',
    name:alt?(lead.provider==='images'?'ChatGPT 生图 · '+(lead.groupLabel||lead.loginGroup):lead.name):base.name,
-   identity:card.features.map(r=>r.identity).find(v=>v&&v!=='身份未确认')||'',
+   identity:accountSummary(card.features),accounts:accountsOf(card.features),
    total:active.length,signedIn:active.filter(r=>confirmed(r)).length,attention:active.filter(needsAttention).length};
  });
  const weight=c=>{const i=ORDER.indexOf(c.platform);return (i<0?ORDER.length:i)*2+(c.alt?1:0);};
  return {cards:cards.sort((a,b)=>weight(a)-weight(b)),others};
 }
-module.exports={accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,describe,ago,confirmed,resting,PLATFORM};
+module.exports={accountRows,accountCards,accountsOf,accountSummary,cardKey,featureName,featureAction,cardAction,needsAttention,describe,ago,confirmed,resting,PLATFORM};

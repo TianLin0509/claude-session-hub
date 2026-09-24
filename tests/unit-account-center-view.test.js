@@ -74,7 +74,7 @@ test('no name-suffix or masked-email guessing; legacy records stay separate',()=
 
 function fleet(){return [
  {id:'claude',name:'Claude Code',provider:'claude',type:'native',action:'login',state:'signed_in',identity:'c•••@example.com'},
- {id:'codex-default',name:'Codex · 主账号',provider:'codex',type:'native',action:'login',isDefault:true,state:'signed_in',identity:'l•••@gmail.com'},
+ {id:'codex-default',name:'Codex · 主账号',provider:'codex',type:'native',action:'login',isDefault:true,state:'signed_in',identity:'l•••@gmail.com',accountLabel:'lintian0509@gmail.com'},
  {id:'codex-second',name:'Codex · 第二账号',provider:'codex',type:'native',action:'login',state:'login_required',identity:'w•••@gmail.com'},
  {id:'gemini-cli',name:'Gemini CLI',provider:'gemini',type:'native',action:'login',state:'configured'},
  {id:'kimi',name:'Kimi Code',provider:'kimi',type:'native',action:'login',state:'signed_in'},
@@ -92,7 +92,7 @@ test('one ChatGPT account holds its feature list; a second ChatGPT login stays a
  const openai=cards.find(c=>c.key==='openai');
  assert.deepEqual(openai.features.map(r=>r.id),['codex-default','bridge','chatgpt-web','web-chatgpt','image-primary']);
  assert.deepEqual(openai.features.map(featureName),['Codex 客户端','公司拉取 / 同步','Codex Web GPT','网页对话（专用浏览器）','网页生图']);
- assert.equal(openai.identity,'l•••@gmail.com');
+ assert.equal(openai.identity,'lintian0509@gmail.com','the card names the account, not a masked observation');
  assert.equal(openai.name,'ChatGPT / OpenAI');
  // A distinct Codex profile and the backup image account are distinct logins, not sub-features.
  assert.deepEqual(cards.filter(c=>c.alt).map(c=>[c.key,c.name]),[['openai#codex-second','Codex · 第二账号'],['openai#secondary','ChatGPT 生图 · 备用账号']]);
@@ -134,4 +134,18 @@ test('a web task waiting on a login offers to continue only once that login is p
  assert.deepEqual(featureAction({...row,state:'signed_in'}),{action:'resume',label:'继续任务',id:'web-deepseek'});
  assert.equal(featureAction({...row,state:'signed_in',pending:true}).action,'relogin');
  assert.equal(featureAction({...row,state:'signed_in',webRecovery:[{id:'t1',canResume:false}]}).action,'open');
+});
+
+test('a platform card names the accounts its uses actually run on, and admits when it cannot',()=>{
+ const rows=[
+  {id:'codex-default',name:'Codex · 主账号',provider:'codex',type:'native',action:'login',isDefault:true,state:'signed_in',accountLabel:'a@gmail.com'},
+  {id:'bridge',name:'ChatGPT · 公司中转',provider:'bridge',type:'web',action:'login',state:'signed_in',accountLabel:'TIAN LIN'},
+  {id:'chatgpt-web',name:'ChatGPT · Codex Web GPT',provider:'chatgpt-web',type:'web',action:'login',state:'unknown'},
+ ];
+ const {cards}=accountCards(rows),openai=cards.find(c=>c.key==='openai');
+ assert.deepEqual(openai.accounts,['a@gmail.com','TIAN LIN']);
+ assert.equal(openai.identity,'2 个账号 · a@gmail.com / TIAN LIN','one card, two logins — never pick one and imply the rest');
+ const single=accountCards(rows.slice(0,1)).cards[0];
+ assert.equal(single.identity,'a@gmail.com');
+ assert.equal(accountCards(rows.slice(2)).cards[0].identity,'','no label is reported as no label, not as someone else’s');
 });
