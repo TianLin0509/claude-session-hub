@@ -51,17 +51,21 @@ function ipcFor(native) {
 
 test('a prompt the engine recorded is confirmed from its transcript while the API keeps answering 529', async t => {
   const { session, retryLines, accepted } = overloaded(t, { retries: 5, gapMs: 100, timeoutMs: 200 });
+  const states = [];
+  session.on('state', runtime => states.push(runtime.state));
   const send = ipcFor(session);
   const receipt = await send({}, { sessionId: 'hub', text: '过载也不许说成失败', clientSubmissionId: 'A' });
-  // Confirmed from the first engine frame: long before the echo (≈600 ms)
-  // and before the 200 ms deadline.
+  // Confirmed from the transcript, i.e. before the echo (≈600 ms): had the echo
+  // come first the source would read 'echo'. No wall-clock bound -- under the
+  // 16-way merge gate the first probe alone measured 268 ms; whichever of the
+  // frame probe or the deadline probe lands it, the input never turns unknown.
   const record = session.records.get('A');
   assert.equal(receipt.ok, true); assert.equal(record.status, 'accepted');
   assert.equal(record.receiptSource, 'history');
-  assert.ok(record.acceptedAt - record.submittedAt < 200, `accepted after ${record.acceptedAt - record.submittedAt} ms`);
   const done = await createClaudeNativeWatcher(session, { sid: 'hub', submissionId: 'A' }).wait();
   assert.equal(done.status, 'completed');
   assert.equal(session.unreconciled, false);
+  assert.equal(states.includes('unknown'), false, 'never 待核对: ' + states.join(','));
   // The late echo re-confirms silently: one receipt, not two.
   assert.deepEqual(accepted, ['A']);
   // The retries were visible while they lasted, then cleared.
@@ -71,7 +75,7 @@ test('a prompt the engine recorded is confirmed from its transcript while the AP
 });
 
 test('without transcript evidence the deadline still reports unknown, and the send is unconfirmed rather than failed', async t => {
-  const { session } = overloaded(t, { transcript: 'off', retries: 3, gapMs: 150, timeoutMs: 150 });
+  const { session } = overloaded(t, { transcript: 'off', retries: 3, gapMs: 300, timeoutMs: 150 });
   const send = ipcFor(session);
   const result = await send({}, { sessionId: 'hub', text: '没有证据就不猜', clientSubmissionId: 'B' });
   assert.equal(result.ok, false); assert.equal(result.error, 'CLAUDE_SUBMISSION_TIMEOUT');
@@ -83,7 +87,7 @@ test('without transcript evidence the deadline still reports unknown, and the se
 });
 
 test('sending again after a timeout confirms the recorded prompt instead of killing its writer', async t => {
-  const { session, directory } = overloaded(t, { transcript: 'off', retries: 20, gapMs: 100, timeoutMs: 150 });
+  const { session, directory } = overloaded(t, { transcript: 'off', retries: 20, gapMs: 200, timeoutMs: 150 });
   await assert.rejects(session.submit('第一条', { clientSubmissionId: 'first' }), { code: 'CLAUDE_SUBMISSION_TIMEOUT' });
   assert.equal(session.unreconciled, true);
   const pid = session.pid; const epoch = session.runtime.epoch;
@@ -127,7 +131,7 @@ test('transcript probe: exact identity and content only, tail window never guess
 });
 
 test('a mismatched transcript row neither confirms nor raises a content alarm', async t => {
-  const { session, directory } = overloaded(t, { transcript: 'off', retries: 20, gapMs: 100, timeoutMs: 150 });
+  const { session, directory } = overloaded(t, { transcript: 'off', retries: 20, gapMs: 200, timeoutMs: 150 });
   const pending = session.submit('原文', { clientSubmissionId: 'M' });
   await until(() => session.records.get('M')?.writeStarted);
   const record = session.records.get('M');
