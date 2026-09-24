@@ -32,12 +32,30 @@ class ClaudeNativeActivities {
   abandonStale() {
     const stale = this.pending().filter(r => !r.provisional && r.status === 'running');
     if (!stale.length) return stale;
-    // 段内的帧就是它自己的输出。判 unknown 之前先落回它名下，否则紧接着的
-    // deferSegment 会把已经收下的正文撤销，只剩一条空壳记录。
-    if (this.current && stale.includes(this.current) && this.segment.length) this.resolveSegment(this.current);
+    // 判 unknown 之前必须先把段关掉，否则紧接着的 deferSegment 会把已经收下的
+    // 正文撤销，只剩一条空壳记录。关段只能按帧各归各家 —— 段里可能同时躺着还在
+    // 跑的人类回合的帧（channel 这类注入不会并轮），整段改嫁给被放弃的活动就是
+    // 把用户这一轮的回答偷走。
+    this.settleSegment();
     for (const record of stale) { this.save({ ...record, status: 'unknown' }); record.status = 'unknown'; }
     if (stale.includes(this.current)) this.current = null;
     return stale;
+  }
+  // 段的作用是「结局到来前先别定归属」。现在判定这些活动不会再有结局了，就把
+  // 每一帧还给它当初被记在的那条记录：既不整段丢掉，也不整段改嫁。
+  settleSegment() {
+    if (!this.segment.length) { this.ambiguous = false; return; }
+    this.unprojectSegment();
+    for (const { record, frame } of this.segment) {
+      captureClaudeMessage(record, frame);
+      for (const block of frame.message?.content || []) {
+        if (block.type === 'tool_use' && block.id) this.toolOwners.set(block.id, record);
+      }
+      if (frame.type === 'assistant' && !frame.parent_tool_use_id) {
+        record.finalText = (frame.message?.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      }
+    }
+    this.segment = []; this.ambiguous = false;
   }
   save(record) {
     const { messages, streams, ...data } = record;

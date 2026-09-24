@@ -174,7 +174,10 @@ class ClaudeNativeSession extends EventEmitter {
   }
 
   update(patch) {
-    if (this.cancellation?.hadWork && !this.active && !this.activities.live().length && !this.tasks.size) {
+    // 这里清的是一次**还在期限内**的停止，所以判据必须是正面证据：所有活儿都
+    // 拿到了终局回执。判成 unknown 不是证据 —— 用它清停止等于替 Claude 说「停好了」。
+    // 超时之后那条另有出路（clearUnresolvedStop），不靠这里放宽。
+    if (this.cancellation?.hadWork && !this.active && !this.activities.pending().length && !this.tasks.size) {
       clearTimeout(this.cancellation.timer); this.cancellation = null;
       patch = { ...patch, cancellation:null };
     }
@@ -758,7 +761,7 @@ class ClaudeNativeSession extends EventEmitter {
     }
     const client=this.client, epoch=this.runtime.epoch, requestedAt=Date.now();
     const cancellation={epoch,requestedAt,deadlineAt:requestedAt+(this.options.cancelTimeoutMs || NATIVE_CONFIRMATION_MS),
-      hadWork:!!(this.active || this.activities.live().length || this.tasks.size)};
+      hadWork:!!(this.active || this.activities.pending().length || this.tasks.size)};
     this.cancellation=cancellation;
     const requests=this.runtime.requests;
     this.update({requests:[],cancellation:{status:'pending',userMessageId:this.active?.userMessageId || null,

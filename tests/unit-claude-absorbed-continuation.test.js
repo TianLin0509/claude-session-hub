@@ -92,6 +92,24 @@ test('注入回合没有结局就开下一轮时，判它待核对而不是永�
   assert.equal((await s.submit('继续')).sendStatus, 'accepted');
 });
 
+test('放弃上一条注入回合时，不许顺手把人类回合的正文一起改嫁过去', async t => {
+  const s = create(t);
+  await s.submit('A', { submissionId: 'A' });
+  answer(s, '人类回合的前半段');
+  // channel 是另一场对话，不并轮 —— 所以它会和还在跑的人类回合同时存在。
+  frame(s, { type: 'user', origin: { kind: 'channel' }, message: { role: 'user', content: '远端提问一' } });
+  answer(s, '远端回答一');
+  // 第二条 channel 注入会放弃第一条。此刻 segment 里同时躺着人类回合和第一条
+  // 注入的帧，整段改嫁就等于把用户这一轮的回答算到被放弃的活动名下。
+  frame(s, { type: 'user', origin: { kind: 'channel' }, message: { role: 'user', content: '远端提问二' } });
+  const [first] = [...s.activities.records.values()];
+  assert.equal(first.status, 'unknown');
+  assert.deepEqual([...s.records.get('A').messages.values()].map(m => m.message.content[0].text),
+    ['人类回合的前半段'], '人类回合的帧仍然只属于人类回合');
+  assert.deepEqual([...first.messages.values()].map(m => m.message.content[0].text),
+    ['远端回答一'], '被放弃的注入回合保留自己的正文，不多不少');
+});
+
 test('停止超时之后是「结果待核对」，核对这条出路不许被它自己挡住', async t => {
   const s = create(t, { cancelTimeoutMs: 60 });
   await s.start();
