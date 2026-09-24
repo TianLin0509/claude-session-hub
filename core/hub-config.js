@@ -221,6 +221,7 @@ function checkMissingConfig() {
 }
 
 module.exports = {
+  normalizeCodexSubscriptionProfiles,
   getConfig,
   clearConfigCache,
   saveConfig,

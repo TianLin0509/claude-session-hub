@@ -275,14 +275,14 @@ function registerConfigIpc(ipcMain, deps) {
     testCompletionNotification,
   } = deps;
 
-  ipcMain.handle('get-hub-config', () => toMaskedConfig(getConfig()));
+  ipcMain.handle('get-hub-config', () => toMaskedConfig(require('../../core/codex-global-account').currentConfig()));
 
-  ipcMain.handle('get-hub-config-raw', () => toEditableConfig(getConfig()));
+  ipcMain.handle('get-hub-config-raw', () => toEditableConfig(require('../../core/codex-global-account').currentConfig()));
 
   ipcMain.handle('codex:set-global-account', async (_e, payload = {}) => {
     try {
       const merged = require('../../core/codex-global-account').withGlobalAccount(
-        readConfigJsonForUpdate(),getConfig(),payload.profileId);
+        readConfigJsonForUpdate(),require('../../core/codex-global-account').currentConfig(),payload.profileId);
       saveConfig(merged);
       clearSessionManagerConfigCache();
       const scope=currentCodexUsageScope();

@@ -3,6 +3,22 @@ const path = require('path');
 const os = require('os');
 const {expandHomePath} = require('./codex-usage-scope');
 
+function currentConfig() {
+  const hub=require('./hub-config');
+  // Another Hub can update the choice while this process keeps an older config
+  // cache. Read only the account routing fields at launch/send/resume boundaries.
+  // Corrupt/unreadable config must block routing, never silently select default.
+  const raw=hub.readConfigJsonForUpdate();
+  const codex=raw.providers?.codex || {};
+  const routing={
+    codexSubscriptionProfile:process.env.HUB_CODEX_PROFILE || codex.subscription_profile || hub.DEFAULTS.codex_subscription_profile,
+    codexSubscriptionProfiles:hub.normalizeCodexSubscriptionProfiles(codex.subscription_profiles)};
+  const cached=hub.getConfig();
+  if (cached.codexSubscriptionProfile!==routing.codexSubscriptionProfile
+      || JSON.stringify(cached.codexSubscriptionProfiles)!==JSON.stringify(routing.codexSubscriptionProfiles)) hub.clearConfigCache();
+  return {...hub.getConfig(),...routing};
+}
+
 function resolveAccount(config, env = process.env) {
   const id = config.codexSubscriptionProfile;
   const profile = config.codexSubscriptionProfiles.find(p => p.id === id);
@@ -48,4 +64,4 @@ function prepareLaunch(opts, config, env = process.env) {
     codexHistoryHome:opts.codexSid ? historyHome : account.home,
     codexSessionsRoot:opts.codexSid ? path.join(historyHome,'sessions') : path.join(account.home,'sessions')}};
 }
-module.exports = {resolveAccount,withGlobalAccount,prepareLaunch};
+module.exports = {resolveAccount,withGlobalAccount,prepareLaunch,currentConfig};

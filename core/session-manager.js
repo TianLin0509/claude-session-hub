@@ -1152,7 +1152,9 @@ class SessionManager extends EventEmitter {
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
     if (followsGlobalAccount) {
-      const launch = require('./codex-global-account').prepareLaunch(opts,getConfig());
+      const accounts=require('./codex-global-account');
+      const launch = accounts.prepareLaunch(opts,accounts.currentConfig());
+      clearSessionManagerConfigCache();
       opts = launch.opts;
       globalAccount = launch.account;
     }
@@ -1426,7 +1428,10 @@ class SessionManager extends EventEmitter {
       : isCodex
       ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
         ...(followsGlobalAccount ? {accountId:globalAccount.id,ownershipHome:opts.codexHistoryHome,
-          resolveAccount:()=>require('./codex-global-account').resolveAccount(getConfig())} : {}),
+          resolveAccount:()=>{
+            const accounts=require('./codex-global-account');
+            return accounts.resolveAccount(accounts.currentConfig());
+          }} : {}),
         hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
         lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)

@@ -16,6 +16,20 @@ function setup(){
 }
 async function until(fn){const end=Date.now()+7000;while(!fn()){if(Date.now()>end)throw Error('timeout');await new Promise(r=>setTimeout(r,10));}}
 async function close(s){if(s.closed && !s.entry)return;await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('close timeout')),7000);s.once('exit',()=>{clearTimeout(t);resolve();});s.kill();});}
+test('another Hub account change bypasses stale routing cache and malformed config blocks routing',()=>{
+ const {root,a,b}=setup(),data=path.join(root,'data');fs.mkdirSync(data);
+ const before={CLAUDE_HUB_DATA_DIR:process.env.CLAUDE_HUB_DATA_DIR,HUB_CODEX_PROFILE:process.env.HUB_CODEX_PROFILE};
+ const hub=require('../core/hub-config'),{currentConfig}=require('../core/codex-global-account');
+ try{
+  process.env.CLAUDE_HUB_DATA_DIR=data;delete process.env.HUB_CODEX_PROFILE;hub.clearConfigCache();
+  const file=path.join(data,'config.json'),raw={providers:{codex:{subscription_profile:'default',subscription_profiles:[{id:'default',home:a},{id:'second',home:b}]}}};
+  fs.writeFileSync(file,JSON.stringify(raw));assert.equal(hub.getConfig().codexSubscriptionProfile,'default');
+  raw.providers.codex.subscription_profile='second';fs.writeFileSync(file,JSON.stringify(raw));
+  assert.equal(hub.getConfig().codexSubscriptionProfile,'default');
+  assert.equal(currentConfig().codexSubscriptionProfile,'second');
+  fs.writeFileSync(file,'broken json');assert.throws(()=>currentConfig());
+ }finally{for(const [key,value] of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}hub.clearConfigCache();}
+});
 test('global selection preserves unrelated config, rejects unknown IDs and environment conflicts',()=>{
  const {config,env,b}=setup(),existing={custom:42,providers:{claude:{secret:'keep'},codex:{subscription_profile:'default',api_key:'keep-too'}}};
  const merged=withGlobalAccount(existing,config,'second',env);
