@@ -171,3 +171,23 @@ test('an unconfirmed send with a live writer is stated calmly: no 待核对, no 
   const stop = { ...session, nativeRuntime: { ...session.nativeRuntime, submission: null, cancellation: { status: 'unknown' } } };
   assert.equal(buildComposerStatusModel(stop, { runtime: deriveSessionRuntimeStatus(stop) }).action?.kind, 'claude-reconcile');
 });
+
+test('leftover background activities are settled in memory first and written only after ownership', async t => {
+  const writes = [];
+  const activity = { userMessageId: randomUUID(), nativeActivity: true, origin: { kind: 'task-notification' },
+    status: 'running', content: '<task-notification>旧通知</task-notification>', createdAt: 1 };
+  const session = new ClaudeNativeSession({ id: 'hub', executable: process.execPath,
+    commandArgs: [fixture, '--fixture=hold'], restoredActivities: [activity],
+    persistActivity: data => { writes.push({ ...data }); } });
+  t.after(() => session.close());
+  // Before start() nobody has proven this Hub owns the session: no journal write.
+  assert.equal(writes.length, 0);
+  assert.equal(session.unreconciled, false, 'an engine-internal leftover does not gate the session');
+  await session.start();
+  const saved = writes.find(row => row.userMessageId === activity.userMessageId);
+  assert.ok(saved, 'settlement is persisted once the writer is owned');
+  assert.equal(saved.status, 'unknown');
+  assert.equal(saved.reconciliation.history, 'engine-internal');
+  assert.equal('unsavedSettlement' in saved, false);
+  assert.equal(session.runtime.state, 'idle');
+});

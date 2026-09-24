@@ -103,7 +103,7 @@ class ClaudeNativeSession extends EventEmitter {
     this.tasks = new Map();
     this.activities = new ClaudeNativeActivities(options);
     this.activities.recoverTasks(options.restoredRuntime?.backgroundTasks || [], this.runtime.epoch - 1, false);
-    this.activities.settleUnknown();
+    this.activities.settleUnknown('hub', { persist: false });
     for (const record of this.records.values()) this.activities.rememberTools(record);
     if (this.activities.pending().length) this.unreconciled = true;
     this.completedResultIds = new Set([...this.records.values(), ...this.activities.records.values()]
@@ -333,6 +333,7 @@ class ClaudeNativeSession extends EventEmitter {
     }
     if (this.closed) throw protocolError('Claude session closed during startup', 'CLAUDE_CLOSED');
     for (const activity of this.activities.pending()) this.activities.save(activity);
+    this.activities.saveUnsavedSettlements();
     // The engine reports whether Fast is actually serving this session and why
     // not. That is the only honest source for the speed chip: the launch
     // overlay is a request, and a subscription or model can refuse it.

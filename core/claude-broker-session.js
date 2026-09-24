@@ -6,7 +6,7 @@ const { NativeAgentJournal } = require('./native-agent-journal');
 const END = new Set(['completed','failed','interrupted']);
 
 function recordSnapshot(record) {
-  const {timer,ack,resolve,reject,messages,streams,...fields}=record;
+  const {timer,ack,resolve,reject,historyProbe,messages,streams,...fields}=record;
   return {...fields,messages:[...(messages || [])],streams:[...(streams || [])]};
 }
 function restoreRecord(record, previous) {
