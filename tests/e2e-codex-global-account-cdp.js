@@ -59,12 +59,48 @@ const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.
   await until(`sessions.get(${JSON.stringify(idle.id)}).nativeRuntime.connection==='connected'`,'full restart resume');
   const again=await cdp.eval(`JSON.parse(JSON.stringify(sessions.get(${JSON.stringify(idle.id)})))`);
   assert.equal(again.codexProfile,'second');assert.equal(again.codexSid,idle.codexSid);
+  assert.equal(again.nativeRuntime.sqliteHome,a);
+  const sent=await invoke('session:send-prompt',{sessionId:idle.id,text:'continue after account switch and restart',clientSubmissionId:idle.id+'-after-restart'});
+  assert(sent.ok,JSON.stringify(sent));
+  await until(`sessions.get(${JSON.stringify(idle.id)}).nativeRuntime.state==='completed'`,'continued original thread');
+  result.checks.push('same original thread accepts one new prompt after account switch and full restart; SQLite home remains A');
+  await stop();
+  const threadFile=path.join(root,'threads',idle.codexSid+'.json'),parked=threadFile+'.unavailable';
+  fs.renameSync(threadFile,parked);
+  const timestamp=new Date().toISOString();
+  fs.appendFileSync(idle.transcriptPath,[
+   {type:'event_msg',payload:{type:'task_started',turn_id:'saved-offline-turn'}},
+   {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'Show saved offline history'}]}},
+   {type:'response_item',payload:{type:'message',role:'assistant',phase:'final_answer',
+    content:[{type:'output_text',text:'Saved history remains visible while the account is disconnected.'}]}},
+   {type:'event_msg',payload:{type:'task_complete',turn_id:'saved-offline-turn',
+    last_agent_message:'Saved history remains visible while the account is disconnected.'}},
+  ].map(record=>JSON.stringify({timestamp,...record})).join('\n')+'\n');
+  try{
+   await start();await until(`sessions.has(${JSON.stringify(idle.id)})`,'failed-resume card');
+   await cdp.eval(`selectSession(${JSON.stringify(idle.id)})`);
+   await until(`sessions.get(${JSON.stringify(idle.id)}).nativeRuntime.connection==='disconnected'`,'resume failure');
+   await cdp.eval(`applyViewMode('card')`);
+   await until(`document.querySelector('#msg-overlay')?.innerText.includes('Saved history remains visible')`,'saved history fallback');
+   assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(idle.id)}).codexSid`),idle.codexSid);
+   const historyShot=await cdp.send('Page.captureScreenshot',{format:'png'});
+   fs.writeFileSync(path.join(out,'20260924-disconnected-history-codex1.png'),Buffer.from(historyShot.data,'base64'));
+   result.checks.push('failed native resume keeps original identity and displays saved history in real card UI');
+  }finally{fs.renameSync(parked,threadFile);}
+  await stop();await start();await until(`sessions.has(${JSON.stringify(idle.id)})`,'retry card');
+  await cdp.eval(`selectSession(${JSON.stringify(idle.id)})`);
+  await until(`sessions.get(${JSON.stringify(idle.id)}).nativeRuntime.connection==='connected'`,'restart after failure');
+  assert.equal(await cdp.eval(`sessions.get(${JSON.stringify(idle.id)}).codexSid`),idle.codexSid);
+  result.checks.push('one Hub restart recovers failed resume without replacing the original thread');
   const trace=fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
   const oldResumes=trace.filter(r=>r.method==='thread/resume' && r.params.threadId===idle.codexSid);
   assert(oldResumes.length>=2);assert(oldResumes.every(r=>r.fixtureHome===b && r.params.path===idle.transcriptPath));
   assert.equal(trace.filter(r=>r.method==='turn/start' && r.params.clientUserMessageId===idle.id+'-once').length,1);
+  assert.equal(trace.filter(r=>r.method==='turn/start' && r.params.clientUserMessageId===idle.id+'-after-restart').length,1);
   result.checks.push('full Hub restart retains B, original history path and ID; earlier prompt is never resent');
   result.passed=true;
- }catch(error){result.error=error.stack;process.exitCode=1;}
+ }catch(error){result.error=error.stack;process.exitCode=1;
+  if(cdp)try{result.ui=await cdp.eval(`({view:currentView,active:activeSessionId,history:document.querySelector('#msg-overlay')?.innerText?.slice(0,1500)})`);}catch{}
+ }
  finally{await stop();fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result));}
 })();

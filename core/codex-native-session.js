@@ -23,6 +23,8 @@ function scopeKey(options) {
   })).digest('hex');
 }
 function acquire(options) {
+  if (options.sqliteHome) options = {...options,
+    processArgs:[...(options.processArgs || []),'-c','sqlite_home='+JSON.stringify(options.sqliteHome)]};
   // A managed session must be able to retire its writer without affecting a
   // neighbour. Codex unsubscribe acknowledges detachment, but can retain the
   // loaded thread (and writer lock) for 30 minutes while its server stays alive.
@@ -138,6 +140,18 @@ class CodexNativeSession extends EventEmitter {
   }
   async _start() {
     if (this.closed) throw new Error('Codex 会话已关闭，不能启动');
+    if (this.options.resolveAccount) {
+      try {
+        const sqliteHome=await require('./codex-global-account').resolveHistorySqliteHome(this.options,this.runtime.sqliteHome);
+        if (this.closed) return;
+        this.options.sqliteHome=sqliteHome;
+        this.options.env={...this.options.env,CODEX_SQLITE_HOME:sqliteHome};
+        this.apply({type:'history-storage',sqliteHome});
+      } catch(error) {
+        if (!this.closed) this.apply({type:'disconnect',reason:error.message});
+        throw error;
+      }
+    }
     if (isUnstartedRuntime(this.runtime)) this.apply({type:'connect',epoch:this.runtime.epoch});
     this.entry = acquire(this.options);
     const client = this.entry.client;
@@ -1032,7 +1046,13 @@ class CodexNativeSession extends EventEmitter {
       this.detach();
       const options = this.options;
       if (empty) { this.resetEmptyIdentity(id);id=null;options.ownershipHome=target.home; }
-      if (!id) options.ownershipHome=target.home;
+      if (!id) {
+        options.ownershipHome=target.home;
+        options.historyStorageHome=target.home;
+        options.sqliteHome=null;
+        delete nextEnv.CODEX_SQLITE_HOME;
+        this.apply({type:'history-storage',sqliteHome:null});
+      }
       options.env = nextEnv;
       options.accountId = target.id;
       options.resumeId = id;
