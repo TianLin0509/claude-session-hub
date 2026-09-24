@@ -359,9 +359,16 @@ function buildComposerStatusModel(session, options = {}) {
     };
     const startedAt = composerRunStartedAt(session, truth);
     const elapsed = startedAt > 0 && now >= startedAt ? formatRuntimeSeconds(now - startedAt) : '';
+    const apiRetry = session?.runtimeBackend === 'claude-stream-json'
+      ? require('./claude-native-runtime').claudeApiRetrySummary(session.nativeRuntime) : '';
+    // Before the model streams there is no startedAt; the wait the user feels
+    // runs from the send, so count from there.
+    const submittedAt = Number(session?.nativeRuntime?.submission?.submittedAt) || 0;
+    const waited = apiRetry && !elapsed && submittedAt > 0 && now >= submittedAt ? formatRuntimeSeconds(now - submittedAt) : '';
     return {
       state,
-      text: truth.state === 'starting' && ['codex-app-server','claude-stream-json'].includes(session?.runtimeBackend)
+      text: apiRetry ? `${apiRetry}${elapsed || waited ? ' · 已等 '+(elapsed || waited) : ''}`
+        : truth.state === 'starting' && ['codex-app-server','claude-stream-json'].includes(session?.runtimeBackend)
         ? `${provider} ${['accepted','confirmed'].includes(session.nativeRuntime?.submission?.status || session.nativeRuntime?.submission?.sendStatus) ? '已收到 · 等待输出' : '正在提交'}${elapsed ? ' · '+elapsed : ''}`
         : elapsed ? `${provider} 正在工作 · ${elapsed}` : `${provider} 正在工作`,
       detail: runtime.visibleDetail || '',

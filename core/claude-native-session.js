@@ -8,6 +8,7 @@ const { findNativeClaudeHistory, processExists, renameNativeClaudeHistory } = re
 const ownership = require('./native-session-ownership');
 const { ClaudeNativeActivities } = require('./claude-native-activities');
 const { NATIVE_CONFIRMATION_MS } = require('./native-confirmation-policy');
+const { probeSubmissionReceipt } = require('./claude-receipt-probe');
 const { noteSessionStart } = require('./claude-model-discovery');
 
 const BACKEND = 'claude-stream-json';
@@ -420,7 +421,7 @@ class ClaudeNativeSession extends EventEmitter {
     // reconnect button. A crash here still leaves a non-idle snapshot, so a
     // restore continues to demand reconciliation; disconnect() still marks the
     // record unknown when the outcome really is unknown.
-    this.update({ state: 'starting', reason: '正在提交给 Claude', turnId: record.userMessageId,
+    this.update({ state: 'starting', reason: '正在提交给 Claude', turnId: record.userMessageId, apiRetry: null,
       userMessageId: record.userMessageId, submission: this.receipt(record), requests: [], startedAt: 0, completedAt: 0 });
     // Integration must persist this identity before handing bytes to the engine.
     try {
@@ -441,14 +442,66 @@ class ClaudeNativeSession extends EventEmitter {
       return;
     }
     record.timer = setTimeout(() => {
-      if (record.accepted || this.active !== record) return;
-      this.disconnect(protocolError('Claude 未确认本条输入，提交状态待核对', 'CLAUDE_SUBMISSION_TIMEOUT'));
+      this.receiptDeadline(record).catch(error => this.disconnect(error));
     }, this.options.submissionTimeoutMs || NATIVE_CONFIRMATION_MS);
     try {
       record.writeStarted = true;
       await this.client.write({ type: 'user', uuid: record.userMessageId, session_id: this.sessionId,
         parent_tool_use_id: null, message: { role: 'user', content: record.content }, origin: { kind: 'human' } });
     } catch (error) { this.disconnect(error); }
+  }
+
+  // The deadline asks the engine's own transcript before calling the input
+  // unknown: an API outage delays the echo, not the receipt.
+  async receiptDeadline(record) {
+    if (record.accepted || this.active !== record) return;
+    if (await this.confirmFromHistory(record)) return;
+    if (record.accepted || this.active !== record || this.closed) return;
+    this.disconnect(protocolError('Claude 未确认本条输入，提交状态待核对', 'CLAUDE_SUBMISSION_TIMEOUT'));
+  }
+
+  // Receipt from the transcript row the engine wrote under this exact UUID and
+  // content (see claude-receipt-probe). Only the same live writer and epoch may
+  // use it; it never replays and never settles the turn's outcome.
+  confirmFromHistory(record) {
+    if (record.accepted) return Promise.resolve(true);
+    if (this.active !== record || !record.writeStarted || this.closed) return Promise.resolve(false);
+    if (record.historyProbe) return record.historyProbe;
+    const client = this.client, epoch = this.runtime.epoch;
+    record.historyProbe = (async () => {
+      let verdict;
+      try {
+        verdict = await probeSubmissionReceipt(this.historyPath(), { sessionId: this.sessionId,
+          userMessageId: record.userMessageId, matches: row => this.echoMatches(row, record) });
+      } catch (error) {
+        this.emit('diagnostic', { type: 'receipt-probe-failed', message: error.message });
+        return false;
+      }
+      if (record.accepted) return true;
+      if (verdict !== 'received' || this.closed || this.active !== record || this.client !== client
+          || this.runtime.epoch !== epoch || client?.failure || this.reconnecting || this.reconnectPending) return false;
+      this.acceptSubmission(record, 'history');
+      return true;
+    })().finally(() => { record.historyProbe = null; record.historyProbedAt = Date.now(); });
+    return record.historyProbe;
+  }
+
+  acceptSubmission(record, source) {
+    clearTimeout(record.timer);
+    const recovery=this.lateAckRecovery;
+    const confirmedLateAck=recovery?.record === record && recovery.client === this.client
+      && recovery.epoch === this.runtime.epoch && this.runtime.connection === 'connected'
+      && !this.client.failure && !this.reconnecting && !this.reconnectPending;
+    record.accepted = true; record.status = 'accepted'; record.acceptedAt = Date.now(); record.receiptSource = source;
+    this.lifecycle('submission-accepted', record, { status: 'accepted', accepted: true, acceptedAt: record.acceptedAt }, () => {
+      // Exact receipt from the same live writer proves delivery even after the
+      // local acknowledgement deadline. It cannot clear other failures.
+      if (confirmedLateAck) {this.unreconciled=false;this.lateAckRecovery=null;}
+      this.update({ state: this.unreconciled ? 'unknown' : 'starting', submission: this.receipt(record),
+        reason: this.unreconciled ? 'Claude 已确认收到输入，但连接或历史状态仍需核对' : 'Claude 已收到输入，等待执行' });
+    });
+    if (source === 'history') this.backstage.note('提交确认', 'Claude 原生历史已记录这条输入；等待模型开始输出');
+    record.resolve(this.receipt(record));
   }
 
   cancelBeforeSend(record) {
@@ -546,23 +599,24 @@ class ClaudeNativeSession extends EventEmitter {
         record.status = 'content-mismatch';
         this.update({ submission: this.receipt(record) }); return;
       }
-      clearTimeout(record.timer);
-      const recovery=this.lateAckRecovery;
-      const confirmedLateAck=recovery?.record === record && recovery.client === this.client
-        && recovery.epoch === this.runtime.epoch && this.runtime.connection === 'connected'
-        && !this.client.failure && !this.reconnecting && !this.reconnectPending;
-      record.accepted = true; record.status = 'accepted'; record.acceptedAt = Date.now();
-      this.lifecycle('submission-accepted', record, { status: 'accepted', accepted: true, acceptedAt: record.acceptedAt }, () => {
-        // An exact echo from the same live writer proves receipt even after
-        // the local acknowledgement deadline. It cannot clear other failures.
-        if (confirmedLateAck) {this.unreconciled=false;this.lateAckRecovery=null;}
-        this.update({ state: this.unreconciled ? 'unknown' : 'starting', submission: this.receipt(record),
-          reason: this.unreconciled ? 'Claude 已确认收到输入，但连接或历史状态仍需核对' : 'Claude 已收到输入，等待执行' });
-      });
-      record.resolve(this.receipt(record));
+      // Already accepted from the transcript: the echo only confirms it again.
+      if (record.accepted) { clearTimeout(record.timer); return; }
+      this.acceptSubmission(record, 'echo');
       return;
     }
     if (message.type === 'system') {
+      // Every engine frame while the input is unconfirmed is a cheap moment to
+      // look for the transcript row -- the first ones (init, status=requesting)
+      // arrive within half a second, long before a slow API lets the echo out.
+      if (record && !record.accepted && record.writeStarted && !record.historyProbe
+          && Date.now() - (record.historyProbedAt || 0) >= 2000) {
+        this.confirmFromHistory(record).catch(error => this.emit('diagnostic', { type: 'receipt-probe-failed', message: error.message }));
+      }
+      if (message.subtype === 'api_retry' && record) {
+        this.update({ apiRetry: { attempt: Number(message.attempt) || 0, maxRetries: Number(message.max_retries) || 0,
+          status: Number(message.error_status) || null, error: message.error || null,
+          delayMs: Number(message.retry_delay_ms) || 0, at: Date.now(), userMessageId: record.userMessageId } });
+      }
       if (message.subtype === 'init') {
         this.update({ actualModel: message.model, capabilities: {
           tools: message.tools || [], commands: message.slash_commands || [], mcpServers: message.mcp_servers || [],
@@ -615,6 +669,7 @@ class ClaudeNativeSession extends EventEmitter {
       this.emit('diagnostic', { type: 'unassociated-event', messageType: message.type }); return;
     }
     if (message.type === 'assistant' || message.type === 'stream_event') {
+      if (this.runtime.apiRetry) this.update({ apiRetry: null });
       this.activities.capture(outputOwner, message);
       if (message.type === 'assistant') this.persistLateOutput(outputOwner, message);
       if (outputOwner === record && !record.started && !message.parent_tool_use_id && !this.activities.ambiguous) {
@@ -663,7 +718,7 @@ class ClaudeNativeSession extends EventEmitter {
       record.completedAt = completedAt;
       if (message.uuid) this.completedResultIds.add(message.uuid);
       this.active = null;
-      this.update({ state: status, completedAt,
+      this.update({ state: status, completedAt, apiRetry: null,
         requests: this.runtime.requests.filter(r => r.submissionId !== record.submissionId), reason,
         submission: this.receipt(record), resultId: message.uuid });
     });
@@ -1071,6 +1126,13 @@ class ClaudeNativeSession extends EventEmitter {
     if (!this.unreconciled && this.runtime.connection !== 'disconnected') return;
     if (this.configurationChange) throw new Error('正在更新设置，请稍后发送');
     if (this.cancellation) throw new Error('正在停止，请等待结束后发送');
+    // A timed-out input the live writer did record is still being worked on
+    // (2026-09-24: 529 retries). Reconnecting here killed it mid-retry and the
+    // engine resumed with "No response requested."; confirm it instead and let
+    // the new prompt queue behind it.
+    const late = this.lateAckRecovery;
+    if (late?.client === this.client && late.record === this.active && this.runtime.connection === 'connected'
+        && await this.confirmFromHistory(late.record) && !this.unreconciled) return;
     // reconnect waits for this owned writer to exit before resuming the UUID.
     await this.reconnect();
     await this.reconcileFromHistory({ source: 'hub' });

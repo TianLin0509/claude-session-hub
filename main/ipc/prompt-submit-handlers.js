@@ -203,7 +203,14 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           return await sendWithMemory(request, sessionId, text, kind, {
             clientSubmissionId: request.clientSubmissionId, attachments: request.attachments,
           });
-        } catch (error) { return { ok: false, error: error.code || 'native-send-failed', message: error.message }; }
+        } catch (error) {
+          // A write that reached the engine but lost its confirmation is not a
+          // failed send: it may be running, and Main publishes the late receipt.
+          const record = request.clientSubmissionId ? native.records?.get(request.clientSubmissionId) : null;
+          const unconfirmed = record?.writeStarted === true && !['rejected', 'content-mismatch'].includes(record.status);
+          return { ok: false, error: error.code || 'native-send-failed', message: error.message,
+            ...(unconfirmed ? { unconfirmed: true } : {}) };
+        }
       });
     }
 
