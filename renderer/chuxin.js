@@ -243,6 +243,40 @@
     else navigate();
   }
 
+  // ---------- 作手林铛：把一次决策开成左侧栏里的普通会话 ----------
+  //
+  // 投研页面是个跨源 iframe，拿不到 Hub 的 IPC，所以它 postMessage 上来，这里转成 IPC。
+  // 只认自己那个 iframe 的 window，并且只认一种消息类型——别把这里做成通用桥。
+  async function openLindangSession(runId) {
+    if (!runId) return;
+    try {
+      // 先刷一遍：把 chuxin 后端最新的运行（含会话身份）收进注册表
+      await ipcRenderer.invoke('chuxin:lindang-sessions');
+      const opened = await ipcRenderer.invoke('chuxin:open-lindang-session', { runId });
+      if (!opened || !opened.ok) {
+        toast((opened && opened.message) || '这次决策的会话打不开', true);
+        return;
+      }
+      const bridge = window.__chuxinSessionBridge;
+      if (!bridge) { toast('会话已启动，请在左侧栏打开。', true); return; }
+      for (let i = 0; i < 40 && !bridge.get(opened.session.id); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      // card 视图就是用户要的「卡片视图」：一问一答分开看，而不是一屏终端流水。
+      const result = await bridge.open(opened.session.id, 'card', opened.session);
+      if (!result || !result.ok) toast('会话已启动，但界面还没收到它，请在左侧栏打开。', true);
+    } catch (error) {
+      toast('打开决策会话失败：' + error.message, true);
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    if (!state.frame || event.source !== state.frame.contentWindow) return;
+    const data = event.data;
+    if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
+    if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
+  });
+
   // ---------- 状态检测 / 启动 ----------
   async function refreshStatus() {
     try {

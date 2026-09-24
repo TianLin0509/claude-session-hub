@@ -225,15 +225,16 @@ function registerChuxinIpc(ipcMain, deps = {}) {
     return options;
   }
 
-  function createNativeSession({ researchSessionId, provider, kind, model, title, heroIds, taskId, policyVersion, resume = null }) {
+  function createNativeSession({ researchSessionId, provider, kind, model, title, heroIds, taskId, policyVersion, resume = null,
+    purpose = 'chuxin-research', hiddenFromSidebar = true }) {
     if (!sessionManager) throw new Error('session-manager-unavailable');
     const options = {
       cwd: CHUXIN_DIR,
       title,
       model,
       userRenamed: true,
-      purpose: 'chuxin-research',
-      hiddenFromSidebar: true,
+      purpose,
+      hiddenFromSidebar,
       researchSessionId,
       chuxinTaskId: taskId || '',
       heroIds,
@@ -351,6 +352,100 @@ function registerChuxinIpc(ipcMain, deps = {}) {
       };
     } catch (error) {
       return { started: false, already_running: false, healthy: false, error: error.message };
+    }
+  });
+
+  // ---------------------------------------------------------------- 作手林铛的每日决策会话
+  //
+  // 林铛每天 08:30 的决策本来就跑在一个真实的 Claude 会话里（chuxin 后端自己起的，
+  // 不依赖 Hub 在不在）。以前这个会话既没被记录也没被展示，看上去像不存在。
+  // 现在 chuxin 的 /api/lindang/status 会把会话身份透出来，这里把它收进注册表，
+  // 用户点一下就恢复成一个**普通的、可见于左侧栏的**会话，可以直接接着追问。
+  //
+  // 刻意不做的事：不预先把它们全部拉起来。一个会话就是一个 claude 进程，
+  // 为了让侧边栏好看而常驻七个进程不划算——点开才起，这也是 Hub 对休眠会话的既有做法。
+  const LINDANG_PURPOSE = 'lindang-decision';
+
+  function lindangRegistryId(runId) {
+    return `lindang-${String(runId || '').replace(/[^A-Za-z0-9-]/g, '')}`.slice(0, 64);
+  }
+
+  async function lindangRuns() {
+    const status = await httpGetJson(`${API_BASE}/api/lindang/status`, 4000);
+    if (!status.ok || !status.body) return { ok: false, error: status.error || `HTTP ${status.status}` };
+    const runs = Array.isArray(status.body.runs) ? status.body.runs : [];
+    return { ok: true, runs };
+  }
+
+  function adoptLindangRun(run) {
+    const session = run && run.session ? run.session : null;
+    const ccSessionId = session && String(session.session_id || '');
+    if (!ccSessionId) return null;
+    const started = String(run.started_at || '');
+    const day = started.slice(0, 10) || String(run.run_id || '').slice(0, 8);
+    const registryId = lindangRegistryId(run.run_id);
+    return registry.upsert(registryId, {
+      provider: String(session.provider || 'claude-cli'),
+      kind: String(session.provider || '').startsWith('codex') ? 'codex' : 'claude',
+      model: String(run.model || ''),
+      title: `作手林铛 · ${day}`,
+      purpose: LINDANG_PURPOSE,
+      lindangRunId: String(run.run_id || ''),
+      lindangStatus: String(run.status || ''),
+      lindangSummary: String(run.summary || ''),
+      nativeSession: { ccSessionId, transcriptPath: String(session.transcript || '') },
+    });
+  }
+
+  ipcMain.handle('chuxin:lindang-sessions', async () => {
+    const outcome = await lindangRuns();
+    if (!outcome.ok) return { ok: false, error: outcome.error };
+    const rows = [];
+    for (const run of outcome.runs) {
+      const record = adoptLindangRun(run);
+      if (record) rows.push(publicSession(record));
+    }
+    return { ok: true, sessions: rows };
+  });
+
+  ipcMain.handle('chuxin:open-lindang-session', (_event, input = {}) => {
+    try {
+      const registryId = lindangRegistryId(String(input.runId || ''));
+      const record = registry.get(registryId);
+      if (!record) return { ok: false, error: 'not-found', message: '还没采纳这次决策的会话，先刷新一下列表。' };
+      const live = findLiveResearchSession(record.researchSessionId);
+      if (live) return { ok: true, session: live, reused: true };
+      const resume = resumeOptions(record);
+      if (!resume) return { ok: false, error: 'no-native-session', message: '这次决策没有留下可恢复的原生会话。' };
+      const ownership = claimOwnership(record.researchSessionId);
+      if (!ownership.ok) {
+        return { ok: false, error: 'session-busy', message: '这个决策会话正在另一个 Hub 里打开。' };
+      }
+      let session;
+      try {
+        session = createNativeSession({
+          researchSessionId: record.researchSessionId,
+          provider: record.provider,
+          kind: record.kind,
+          model: record.model,
+          title: record.title,
+          heroIds: [],
+          taskId: '',
+          policyVersion: '',
+          resume,
+          purpose: LINDANG_PURPOSE,
+          hiddenFromSidebar: false,   // 这一条就是「出现在左侧栏」
+        });
+      } catch (error) {
+        if (ownership.leaseTimer) clearInterval(ownership.leaseTimer);
+        registry.release(record.researchSessionId, ownership.token);
+        throw error;
+      }
+      bindOwnership(session.id, record.researchSessionId, ownership);
+      registry.upsert(record.researchSessionId, { hubSessionId: session.id, status: 'idle', ownerPid: process.pid });
+      return { ok: true, session, reused: false };
+    } catch (error) {
+      return { ok: false, error: 'open-failed', message: error.message };
     }
   });
 
