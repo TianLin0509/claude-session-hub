@@ -1009,6 +1009,9 @@ class CodexNativeSession extends EventEmitter {
       try { await this.ready; }
       catch(error) { this.emit('diagnostic','原连接启动失败，将按原始历史核对账号切换：'+error.message); }
     }
+    // reconnect is also callable outside the send queue. A competing switch
+    // may have acquired the writer while we awaited the shared startup above.
+    if (this.accountSwitch) { await this.accountSwitch; return false; }
     if (this.runtime.submission?.status === 'unknown' || this.runtime.submission?.status === 'submitting'
         || this.runtime.requests?.length || ['running','waiting'].includes(this.runtime.state)) return false;
     if (this.runtime.state === 'unknown' && this.entry && !this.entry.client.closed) {

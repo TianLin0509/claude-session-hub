@@ -115,3 +115,16 @@ test('history identity is checked before the native resume request can touch the
   assert.equal(s.options.resumePath,wrong);assert.equal(s.runtime.connection,'connected');
  }finally{await close(s);}
 });
+test('simultaneous reconnect and account sync share one writer replacement',async()=>{
+ const {s,config}=setup();let closes=0,starts=0;
+ // Both entry points can arrive while the same startup promise is resolving.
+ // Stub transport only: exercise the real account-switch concurrency boundary.
+ s.ready=Promise.resolve();s.threadId='existing-thread';s.options.resumePath='known-history';
+ Object.assign(s.runtime,{state:'idle',connection:'connected'});
+ s.entry={refs:1,client:{close(){closes++;},async waitForExit(){}}};
+ s.detach=()=>{s.entry=null;};
+ s.start=async()=>{starts++;};
+ config.codexSubscriptionProfile='second';
+ await Promise.all([s.followGlobalAccount(),s.followGlobalAccount()]);
+ assert.equal(closes,1,'one old writer retirement');assert.equal(starts,1,'one replacement writer');
+});
