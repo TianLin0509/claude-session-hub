@@ -1,6 +1,7 @@
 'use strict';
-// Presentation only: each action keeps an original connection id. Never infer identity
-// from a suffix, a masked email, or a shared website.
+// Presentation only: every action keeps its original connection id. Grouping by
+// platform is a display convenience, never identity matching — each authorization
+// keeps its own state, credentials and login entry.
 function accountRows(connections) {
  const groups=new Map(),rows=[];
  for(const row of connections){
@@ -17,34 +18,89 @@ function accountRows(connections) {
   const label=({primary:'主账号',secondary:'备用账号'})[leader.loginGroup]||leader.loginGroup;
   return {...representative,name:'ChatGPT 生图 · '+label,members:item,enabled:!!enabled.length,
    stale:members.some(r=>r.stale),observedAt:Math.min(...members.map(r=>r.observedAt||0)),
-   connectionCount:members.length,loginHint:'沿用生图工具的账号登录',
-   groupNote:item.length>1?`${item.length} 个浏览器共用此账号；按需展开连接详情。`:''};
+   connectionCount:members.length,loginHint:'沿用生图工具的账号登录',groupLabel:label,
+   groupNote:item.length>1?`${item.length} 个浏览器共用此账号`:''};
  });
 }
-function isPrimary(row){
- return row.managedBrowser || row.type==='native'&&['claude','codex'].includes(row.provider) || row.provider==='bridge' || row.provider==='images'&&row.enabled!==false;
+const PLATFORM={
+ openai:{name:'ChatGPT / OpenAI',mark:'AI',note:'同一个 ChatGPT 账号可以用于下面几项；各项仍在自己的浏览器或客户端里单独保存登录资料。'},
+ anthropic:{name:'Claude',mark:'CL'},
+ google:{name:'Gemini',mark:'G'},
+ moonshot:{name:'Kimi',mark:'K'},
+ deepseek:{name:'DeepSeek',mark:'D'},
+ doubao:{name:'豆包',mark:'豆'},
+ qwen:{name:'千问',mark:'Q'},
+};
+const ORDER=['openai','anthropic','google','moonshot','deepseek','doubao','qwen'];
+const FEATURE={claude:'Claude Code 客户端',codex:'Codex 客户端',gemini:'Gemini CLI',kimi:'Kimi Code 客户端',
+ bridge:'公司拉取 / 同步','chatgpt-web':'Codex Web GPT'};
+// An empty key means "not a login account" — API keys and service tokens are listed apart.
+function cardKey(row){
+ if(row.type==='api'||row.type==='service')return '';
+ if(row.provider==='images')return row.loginGroup&&row.loginGroup!=='primary'?'openai#'+row.loginGroup:'openai';
+ if(row.type==='native'&&row.provider==='codex')return row.isDefault?'openai':'openai#'+row.id;
+ if(['bridge','chatgpt-web','chatgpt'].includes(row.provider))return 'openai';
+ if(row.provider==='claude')return 'anthropic';
+ if(row.provider==='gemini')return 'google';
+ if(row.provider==='kimi')return 'moonshot';
+ return row.provider;
 }
-function bindingRows(rows){
- const groups=new Map();
- for(const row of rows){const key=row.uses.join(' / ');if(!groups.has(key))groups.set(key,{name:key,accounts:[]});groups.get(key).accounts.push(row);}
- return [...groups.values()];
+function featureName(row){
+ if(row.type==='api'||row.type==='service')return row.name;
+ if(row.provider==='images')return '网页生图';
+ if(row.managedBrowser)return '网页对话（专用浏览器）';
+ return FEATURE[row.provider]||row.name;
 }
-// Platform grouping is not identity matching: each authorization retains its ID.
-function isOpenAI(row){return row.type==='native'&&row.provider==='codex'||['images','bridge','chatgpt-web'].includes(row.provider)||row.managedBrowser&&row.provider==='chatgpt';}
-function accountSections(rows){
- const result=[],openai=[];
- for(const row of rows){if(isOpenAI(row)){if(!openai.length)result.push({id:'openai',name:'OpenAI',rows:openai});openai.push(row);}else result.push({id:row.id,rows:[row]});}
- return result;
-}
+function confirmed(row){return row.state==='signed_in'&&!row.stale;}
 function needsAttention(row){
- return row.enabled!==false&&(row.webRecovery?.some(t=>t.canResume)||row.state==='login_required'||!!row.pending&&!(row.state==='signed_in'&&!row.stale));
+ return row.enabled!==false&&(row.webRecovery?.some(t=>t.canResume)||row.state==='login_required'||!!row.pending&&!confirmed(row));
 }
-function accountAction(row){
- if(row.action!=='login')return {action:'config',label:'接入配置',id:row.configProvider};
- if(row.webRecovery?.some(t=>t.canResume))return {action:'attention',label:'恢复任务',id:row.id};
- if(row.pending)return {action:'attention',label:'继续验证',id:row.id};
- if(row.state==='login_required')return {action:'login',label:'登录账号',id:row.id};
- if(row.type==='web')return {action:'open',label:'打开网页',id:row.id};
- return row.state==='signed_in'&&!row.stale?{action:'select',label:'查看授权',id:row.id}:{action:'login',label:'登录账号',id:row.id};
+const STATE={signed_in:'已登录',login_required:'需要登录',configured:'已配置',unknown:'尚未确认',offline:'浏览器未在线',unavailable:'工具不可用',opening:'等待验证'};
+function statusText(row){
+ if(row.enabled===false)return '已停用';
+ if(row.webRecovery?.length)return row.webRecovery.length+' 项网页任务等登录后继续';
+ if(row.pending)return '登录窗口已打开，完成后自动确认';
+ if(row.stale&&row.state==='signed_in')return '上次已登录';
+ return STATE[row.state]||'尚未确认';
 }
-module.exports={accountRows,isPrimary,bindingRows,isOpenAI,accountSections,needsAttention,accountAction};
+function tone(row){
+ if(row.enabled===false)return 'idle';
+ if(needsAttention(row))return 'warn';
+ return confirmed(row)||row.state==='configured'?'ok':'idle';
+}
+function featureAction(row){
+ if(row.action!=='login')return {action:'config',label:'配置',id:row.configProvider};
+ if(row.pending)return {action:'relogin',label:'重新打开',id:row.id};
+ // A login restored outside the Hub still needs one deliberate click to continue its tasks.
+ if(confirmed(row)&&row.webRecovery?.some(t=>t.canResume))return {action:'resume',label:'继续任务',id:row.id};
+ if(confirmed(row))return row.type==='web'?{action:'open',label:'打开',id:row.id}:{action:'relogin',label:'重新登录',id:row.id};
+ return {action:'login',label:'登录',id:row.id};
+}
+// The card button fans out to each real connection id; it never invents a group id.
+function cardAction(card){
+ const open=card.features.filter(r=>r.action==='login'&&r.enabled!==false);
+ const missing=open.filter(r=>!confirmed(r));
+ return missing.length
+  ?{label:missing.length>1?`登录（${missing.length} 项）`:'登录',ids:missing.map(r=>r.id),primary:true}
+  :{label:'重新登录',ids:open.map(r=>r.id),primary:false};
+}
+function accountCards(rows){
+ const map=new Map(),others=[];
+ for(const row of rows){
+  const key=cardKey(row);
+  if(!key){others.push(row);continue;}
+  if(!map.has(key))map.set(key,{key,platform:key.split('#')[0],features:[]});
+  map.get(key).features.push(row);
+ }
+ const cards=[...map.values()].map(card=>{
+  const base=PLATFORM[card.platform]||{name:card.features[0].name,mark:'·'},alt=card.key.includes('#');
+  const lead=card.features[0],active=card.features.filter(r=>r.enabled!==false);
+  return {...card,alt,mark:base.mark,note:alt?'':base.note||'',
+   name:alt?(lead.provider==='images'?'ChatGPT 生图 · '+(lead.groupLabel||lead.loginGroup):lead.name):base.name,
+   identity:card.features.map(r=>r.identity).find(v=>v&&v!=='身份未确认')||'',
+   total:active.length,signedIn:active.filter(confirmed).length,attention:active.filter(needsAttention).length};
+ });
+ const weight=c=>{const i=ORDER.indexOf(c.platform);return (i<0?ORDER.length:i)*2+(c.alt?1:0);};
+ return {cards:cards.sort((a,b)=>weight(a)-weight(b)),others};
+}
+module.exports={accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,statusText,tone,confirmed,PLATFORM};

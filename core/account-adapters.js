@@ -10,7 +10,7 @@ function jsonResult(result){const lines=String(result.stdout).trim().split('\n')
 function quotePS(s){return "'"+String(s).replace(/'/g,"''")+"'";}
 function openTerminal(command,args,env){
  // Fixed argv, quoted as PowerShell literals; no credential values in the command.
- const text='& '+[command,...args].map(quotePS).join(' ')+'; Write-Host "完成登录后返回 AI Hub，点击检查登录。"';
+ const text='& '+[command,...args].map(quotePS).join(' ')+'; Write-Host "完成登录后返回 AI Hub，状态会自动确认。"';
  return new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoLogo','-NoProfile','-NoExit','-EncodedCommand',Buffer.from(text,'utf16le').toString('base64')],{env,windowsHide:false,detached:true,stdio:'ignore'});p.once('error',reject);p.once('spawn',()=>{p.unref();resolve({});});});
 }
 function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,runImpl=run,terminal=openTerminal,browser=new AccountBrowser({dataDir,env}),getConfig=()=>require('./hub-config').getConfig()}={}){

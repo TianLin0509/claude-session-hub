@@ -86,3 +86,69 @@ test('opening a running managed browser activates the existing site tab before r
  const browser=new AccountBrowser({dataDir:root});browser.executable=()=>assert.fail('must reuse the running browser');fs.mkdirSync(browser.profile('deepseek'),{recursive:true});fs.writeFileSync(path.join(browser.profile('deepseek'),'DevToolsActivePort'),String(server.address().port));
  assert.equal((await browser.open('deepseek')).reused,true);assert.deepEqual(methods,['Page.bringToFront','Runtime.evaluate']);
 });
+
+test('managed browsers refresh on their own through the path that clears the lease and resumes tasks',async t=>{
+ let checks=0,resumed=0,state='login_required';
+ const {service,root}=setup(t,{check:async()=>({state,message:(checks++,'fixture'),source:'fixture'})});
+ service.recovery={list:()=>[],resume:async()=>{resumed++;return {started:1,errors:[]};}};
+ await service.login('web-deepseek');
+ const row=await service.row('web-deepseek'),key=service.scope(row);
+ assert.equal(service.leaseActive(row),true);
+ await service.snapshot();
+ assert.ok(checks>0,'a managed browser must not wait for a manual check');
+ assert.equal(service.leaseActive(row),true,'no login evidence keeps the pending window visible');
+ state='signed_in';service.save(key,{state:'login_required',message:'stale',observedAt:Date.now()-9000});
+ await service.snapshot();
+ assert.equal(service.leaseActive(row),false,'a finished login releases its own lease');
+ assert.equal(resumed,1,'tasks waiting for that login resume without a button');
+ // Background refreshes stay out of the activity log; only real user actions are recorded.
+ assert.ok(!fs.readFileSync(path.join(root,'account-center','events.jsonl'),'utf8').includes('检查完成'));
+});
+test('refreshing everything checks each connection once, reports failures and logs one line',async t=>{
+ const seen=[];const {service,root}=setup(t,{check:async row=>{seen.push(row.id);if(row.id==='bridge')throw Error('tool secret');return {state:'signed_in'};}});
+ const result=await service.checkAll();
+ const rows=await service.connections();
+ assert.deepEqual(seen.sort(),rows.map(r=>r.id).sort());
+ assert.equal(result.failed,1);assert.equal(result.checked,rows.length-1);
+ const log=fs.readFileSync(path.join(root,'account-center','events.jsonl'),'utf8').trim().split('\n');
+ assert.equal(log.length,1);assert.match(JSON.parse(log[0]).message,/未确认/);
+ assert.ok(!log.join('').includes('tool secret'));
+});
+
+test('an open login window keeps that one connection polled until the tool reports a login',async t=>{
+ let checks=0,state='unknown';
+ const {service}=setup(t,{check:async row=>{if(row.id==='bridge')checks++;return {state:row.id==='bridge'?state:'unknown'};}});
+ await service.snapshot();
+ assert.equal(checks,0,'a helper-process tool is not probed on every poll');
+ await service.login('bridge');
+ await service.snapshot();
+ assert.equal(checks,1,'while its login window is open the page confirms by itself');
+ state='signed_in';
+ service.save(service.scope(await service.row('bridge')),{state:'unknown',observedAt:Date.now()-9000});
+ const row=(await service.snapshot()).connections.find(r=>r.id==='bridge');
+ assert.equal(checks,2);assert.equal(row.state,'signed_in');assert.equal(row.pending,false);
+ await service.snapshot();
+ assert.equal(checks,2,'a confirmed login drops back out of the polling set');
+});
+test('an image account proved by its own pool listing stops waiting, without re-queuing checks',async t=>{
+ let state='unknown',queued=0;
+ const {service}=setup(t,{imageAccounts:async()=>[{id:'primary',loginGroup:'primary',enabled:true,state,observedAt:Date.now()}],
+  check:async row=>{if(row.provider==='images')queued++;return {state:'unknown',message:'排队中'};}});
+ await service.login('image-primary');
+ assert.equal((await service.snapshot()).connections.find(r=>r.id==='image-primary').pending,true);
+ assert.equal(queued,0,'the shared image queue is never polled behind the user’s back');
+ state='signed_in';
+ const row=(await service.snapshot()).connections.find(r=>r.id==='image-primary');
+ assert.equal(row.state,'signed_in');assert.equal(row.pending,false);
+ assert.equal(service.leaseActive(await service.row('image-primary')),false);
+});
+
+test('a background status poll never restarts web tasks on its own',async t=>{
+ let resumed=0;
+ const {service}=setup(t,{check:async()=>({state:'signed_in'})});
+ service.recovery={list:()=>[],resume:async()=>{resumed++;return {started:1,errors:[]};}};
+ await service.snapshot();
+ assert.equal(resumed,0,'without a login the Hub opened, nobody asked it to continue anything');
+ await service.check('web-deepseek');
+ assert.equal(resumed,1,'the explicit continue-tasks action still resumes');
+});
