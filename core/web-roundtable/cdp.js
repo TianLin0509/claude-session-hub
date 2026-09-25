@@ -1,9 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const WebSocket = require('ws');
-const { AccountBrowser } = require('../account-browser');
 const { dataDir, sleep } = require('./store');
 class CDP {
   constructor(ws) { this.ws=ws; this.next=0; this.pending=new Map();this.networkErrors=[];
@@ -24,28 +22,19 @@ async function endpoint(profile) {
   try { const r=await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(1500)}); if(!r.ok)return null; const value=await r.json(); if(new URL(value.webSocketDebuggerUrl).pathname!==text[1]?.trim())throw Error('Profile CDP identity mismatch'); return {port,...value}; }
   catch(e){if(e.message==='Profile CDP identity mismatch')throw e;return null;}
 }
+// Every website task runs as a tab in the Hub's one Chrome, in the identity that holds the
+// login (the main one unless told otherwise). No per-site browser is started any more, and
+// closing the task closes only its tab.
 async function open(provider, url, options={}) {
-  const accounts=new AccountBrowser({dataDir:options.dataDir||dataDir()}), profile=accounts.profile(provider); fs.mkdirSync(profile,{recursive:true});
-  let info=await endpoint(profile), owned=false, child, launchError;
-  if(!info){
-    owned=true; child=spawn(accounts.executable(),['--headless=new','--user-data-dir='+profile,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','about:blank'],{windowsHide:true,stdio:'ignore'});
-    child.on('error',e=>{launchError=e;});
-    const end=Date.now()+20000;
-    while(!info&&Date.now()<end){if(launchError)throw launchError;if(child.exitCode!==null)throw Error('Browser profile busy or browser failed to start');await sleep(200); info=await endpoint(profile);}
-    if(!info){if(child.exitCode===null)child.kill();throw Error('Browser did not expose its profile CDP endpoint');}
-  }
-  const browser=await CDP.connect(info.webSocketDebuggerUrl,info.port);
-  let targetId,page;
+  const { HubChrome } = require('../hub-chrome');
+  const hub=options.hubChrome||new HubChrome({env:options.env||process.env});
+  // Open blank first so Network is enabled before the site's own first requests.
+  const {targetId}=await hub.openTab(options.identity||'main','about:blank');
+  let page;
   try {
-    // Chrome may hand a concurrent launch to an already running profile owner.
-    // Only close a browser whose main PID is the exact child we spawned.
-    let browserPid=null;
-    if(owned){owned=false;const processes=await browser.call('SystemInfo.getProcessInfo');browserPid=processes.processInfo?.find(p=>p.type==='browser')?.id;owned=browserPid===child.pid;if(!owned)child.unref();}
-    ({targetId}=await browser.call('Target.createTarget',{url:'about:blank'}));
-    const tabs=await (await fetch(`http://127.0.0.1:${info.port}/json/list`,{signal:AbortSignal.timeout(3000)})).json();
-    const tab=tabs.find(t=>t.id===targetId); if(!tab)throw Error('New browser tab missing');
-    page=await CDP.connect(tab.webSocketDebuggerUrl,info.port); await page.call('Page.enable');await page.call('Network.enable');await page.call('Page.navigate',{url});
-    return {page,targetId,owned,browserPid,headless:/HeadlessChrome/.test(info['User-Agent']||''),async close(){page.close();try{if(owned){await browser.call('Browser.close');}else await browser.call('Target.closeTarget',{targetId});}finally{browser.close();if(owned&&child.exitCode===null)await Promise.race([new Promise(r=>child.once('exit',r)),sleep(5000)]);}}};
-  } catch(e){page?.close();try{if(owned)await browser.call('Browser.close');else if(targetId)await browser.call('Target.closeTarget',{targetId});}catch(cleanup){e.message+='; cleanup: '+cleanup.message;}browser.close();throw e;}
+    page=await hub.page(targetId);
+    await page.call('Page.enable');await page.call('Network.enable');await page.call('Page.navigate',{url});
+    return {page,targetId,owned:false,browserPid:null,headless:false,async close(){page.close();await hub.closeTab(targetId);}};
+  } catch(e){page?.close();await hub.closeTab(targetId);throw e;}
 }
 module.exports={CDP,endpoint,open};
