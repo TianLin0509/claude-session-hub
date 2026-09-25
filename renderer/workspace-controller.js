@@ -188,7 +188,7 @@
       const config = await ipcRenderer.invoke('get-hub-config');
       hubDefaultModels = (config && config.defaultModels) || {};
       if (!accountSaving && revision===configReadRevision) {
-        codexAccounts=config.codexSubscriptionProfiles || [];
+        codexAccounts=(config.codexSubscriptionProfiles || []).map(p=>({...p,email:config.codexProfileIdentities?.[p.id] || ''}));
         codexAccountId=config.codexSubscriptionProfile || '';
         codexBackend=config.codexBackend;
         accountReadError='';
@@ -906,7 +906,9 @@
     if (accountSelect) {
       const signature=JSON.stringify(codexAccounts);
       if (accountSelect.dataset.accounts !== signature) {
-        accountSelect.innerHTML=codexAccounts.map(p=>`<option value="${escapeHtml(p.id)}">${escapeHtml(p.label || p.id)}</option>`).join('');
+        // The hand-typed label has been wrong before; lead with the account the profile is
+        // actually logged into and keep the label as the secondary hint.
+        accountSelect.innerHTML=codexAccounts.map(p=>`<option value="${escapeHtml(p.id)}">${escapeHtml(p.email ? `${p.email}（${p.label || p.id}）` : `${p.label || p.id} · 账号未确认`)}</option>`).join('');
         accountSelect.dataset.accounts=signature;
       }
       accountSelect.value=pendingAccountId || codexAccountId;
@@ -1144,7 +1146,7 @@
 
   function summaryText() {
     const parts = [KIND_LABELS[selectedKind] || selectedKind];
-    if (selectedKind === 'codex' && codexBackend !== 'api') parts.push(codexAccounts.find(p=>p.id===codexAccountId)?.label || '读取账号中');
+    if (selectedKind === 'codex' && codexBackend !== 'api') {const p=codexAccounts.find(x=>x.id===codexAccountId);parts.push(p?(p.email||p.label||p.id):'读取账号中');}
     const tuning = tuningTag();
     if (tuning) {
       if (selectedKind === 'chatgpt') parts[0] = tuning;

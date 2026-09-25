@@ -18,7 +18,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  if(isolated && env.CLAUDE_HUB_ACCOUNT_FIXTURE){
   const fixture=env.CLAUDE_HUB_ACCOUNT_FIXTURE;
   const invoke=async(action,row={})=>jsonResult(await runImpl(process.execPath,[fixture,action,JSON.stringify({id:row.id,provider:row.provider,type:row.type})],{...env,ELECTRON_RUN_AS_NODE:'1'},5000));
-  return {imageAccounts:async()=>(await invoke('images')).accounts,check:row=>invoke('check',row),open:row=>invoke('open',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
+  return {imageAccounts:async()=>(await invoke('images')).accounts.map(a=>({...a,accountLabel:a.account_name||''})),check:row=>invoke('check',row),open:row=>invoke('open',row),login:row=>invoke('login',row),submitCode:async()=>({stage:'checking',message:'夹具已接收验证码'})};
  }
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
@@ -29,7 +29,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  function cliEnv(row){const e={...cleanEnv};if(isolated&&row.home){const rel=path.relative(homeDir,path.resolve(row.home));if(rel.startsWith('..')||path.isAbsolute(rel))throw Error('隔离账号路径超出测试 home');}if(row.provider==='codex')e.CODEX_HOME=path.resolve(row.home);if(row.provider==='claude')e.CLAUDE_CONFIG_DIR=row.home;if(row.provider==='kimi')e.KIMI_CODE_HOME=row.home;if(isolated){e.HOME=homeDir;e.USERPROFILE=homeDir;e.BAILIAN_CONFIG_DIR=path.join(homeDir,'.bailian');}return e;}
  async function tool(tool,action,accountId){external();const root=tool==='images'?toolsRoot:bridgeRoot;if(!fs.existsSync(root))throw Error('原工具未安装');return jsonResult(await runImpl(python,[path.resolve(__dirname,'../scripts/account-tool-adapter.py'),tool,action,root,...(accountId?[accountId]:[])],cleanEnv,45000));}
  const imageAccounts=async()=>{
-  const data=await tool('images','status');return (data.accounts||[]).map(a=>({id:a.id,loginGroup:a.login_group||a.id,enabled:!!a.enabled,workerAlive:Date.now()/1000-a.heartbeat<20,
+  const data=await tool('images','status');return (data.accounts||[]).map(a=>({id:a.id,loginGroup:a.login_group||a.id,enabled:!!a.enabled,workerAlive:Date.now()/1000-a.heartbeat<20,accountLabel:String(a.account_name||'').slice(0,80),
    state:/login_required|credential_required|account_selection_required/.test(a.state)?'login_required':a.login_confirmed?'signed_in':'unknown',
    observedAt:a.checked_at*1000||0,message:a.control_pending?'原工具正在处理账号操作，请稍后检查':a.enabled?'原工具账号记录；额度与排队单独判断':'账号在原工具已停用'}));
  };
@@ -37,7 +37,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  async open(row){
   external();
   if(row.managedBrowser)return browser.open(row.provider);
-  if(row.provider==='images'){await tool('images','open',row.accountId);return {message:'已请求原生图工具打开此账号网页；不会重新提交图片任务'};}
+  if(row.provider==='images'){const v=await tool('images','open',row.accountId);return {message:(v.started_workers?'已唤醒生图池的工作进程并请求打开此账号网页；':'已请求原生图工具打开此账号网页；')+'不会重新提交图片任务'};}
   if(row.provider==='bridge'){await tool('bridge','login');return {message:'已打开原中转账号网页；未推进拉取记录'};}
   if(row.provider==='chatgpt-web')return require('./chatgpt-web-integration').openWebSettings();
   throw Error('此连接没有已适配的网页入口');
@@ -45,18 +45,18 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  async check(row){
   if(row.managedBrowser)return browser.check(row.provider);
   if(row.action==='configure')return {state:row.configured?'configured':'unknown',message:row.configured?'密钥已配置；有效性和余额通过原服务入口验证':'尚未配置密钥',source:'本机配置'};
-  if(row.provider==='images'){await tool('images','check',row.accountId);return {state:'unknown',message:'已在生图共享队列提交登录检查，请稍后刷新；未重新提交图片任务',source:'生图共享队列'};}
-  if(row.provider==='bridge'){const v=await tool('bridge','check');return {state:v.logged_in?'signed_in':v.login_required?'login_required':'unknown',message:v.logged_in?'中转官方页面已确认登录；未读取或推进拉取游标':'请在原中转窗口完成验证',source:'中转浏览器'};}
+  if(row.provider==='images'){const v=await tool('images','check',row.accountId);return {state:'unknown',message:v.asleep?'这条生图车道没在运行；状态按生图池自己的记录显示，未为了检查而启动浏览器':'已在生图共享队列提交登录检查，请稍后刷新；未重新提交图片任务',source:'生图共享队列'};}
+  if(row.provider==='bridge'){const v=await tool('bridge','check');return {state:v.logged_in?'signed_in':v.login_required?'login_required':'unknown',accountLabel:String(v.account_name||''),message:v.logged_in?'中转官方页面已确认登录；未读取或推进拉取游标':'请在原中转窗口完成验证',source:'中转浏览器'};}
   if(row.provider==='chatgpt-web'){external();const v=await require('./chatgpt-web-integration').webStatus();return {state:v.connected?'configured':'offline',message:v.connected?'原工具服务在线；网页登录须在原工具确认':v.message,source:'Codex Web GPT 服务健康，不是登录证明'};}
   if(row.provider==='claude'){
    const r=await runImpl('claude.exe',['auth','status','--json'],cliEnv(row));let v;try{v=JSON.parse(r.stdout);}catch{throw Error('Claude 状态无效');}
    if(typeof v.loggedIn!=='boolean'||(r.code!==0&&v.loggedIn))throw Error('Claude 状态缺少登录证据');
-   return {state:v.loggedIn?'signed_in':'login_required',identity:v.email,message:v.loggedIn?'Claude 官方 CLI 已确认本机登录；会话仍保留启动身份':'Claude 官方 CLI 报告尚未登录',source:'claude auth status'};
+   return {state:v.loggedIn?'signed_in':'login_required',identity:v.email,accountLabel:typeof v.email==='string'?v.email:'',message:v.loggedIn?'Claude 官方 CLI 已确认本机登录；会话仍保留启动身份':'Claude 官方 CLI 报告尚未登录',source:'claude auth status'};
   }
   if(row.provider==='codex'){
    const e=cliEnv(row),cmd=require('../main/codex-windows-command').resolveWindowsCodex(e);
    const r=await runImpl(cmd.command,[...cmd.args,'login','status'],cmd.env);const text=r.stdout+'\n'+r.stderr;
-   if(r.code===0&&/logged in/i.test(text)&&!/not logged in/i.test(text))return {state:'signed_in',identity:require('./codex-usage-scope').readCodexAuthInfo(row.home).accountEmail,message:'Codex 官方 CLI 已确认本机登录；网页 ChatGPT 另行管理',source:'codex login status'};
+   if(r.code===0&&/logged in/i.test(text)&&!/not logged in/i.test(text)){const auth=require('./codex-usage-scope').readCodexAuthInfo(row.home);return {state:'signed_in',identity:auth.accountEmail,accountLabel:auth.accountEmail||auth.accountName,message:'Codex 官方 CLI 已确认本机登录；网页 ChatGPT 另行管理',source:'codex login status'};}
    if(/not logged in/i.test(text))return {state:'login_required',message:'Codex 官方 CLI 报告尚未登录',source:'codex login status'};
    throw Error('Codex 状态未确认');
   }

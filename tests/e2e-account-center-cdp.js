@@ -15,7 +15,25 @@ async function main(){
  const click=async selector=>{await until('!!document.querySelector('+JSON.stringify(selector)+') && !document.querySelector('+JSON.stringify(selector)+').disabled','enabled '+selector);const box=await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await cdp.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...box});await cdp.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...box});};
  const snap=async name=>{const v=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(v.data,'base64'));};
  const trace=()=>{try{return fs.readFileSync(path.join(home,'account-fixture.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);}catch(e){if(e.code==='ENOENT')return [];throw e;}};
+ let sweeps=0;
+ // Wait on the button's own busy state: the "已刷新" notice from a previous sweep would
+ // otherwise satisfy the wait before this sweep has actually run.
+ const refresh=async label=>{
+  await click('[data-ac=refresh]');sweeps++;
+  await sleep(300);
+  await until('document.querySelector("[data-ac=refresh]").disabled===false && document.querySelector(".ac-status").textContent.includes("已刷新")',label);
+ };
  const text=selector=>cdp.eval(`document.querySelector(${JSON.stringify(selector)}).innerText`);
+ // Disclosure toggles are driven to a state, not blindly clicked: a background re-render can
+ // land between reading the button's box and dispatching, and a blind retry would undo itself.
+ const setToggle=async(action,want,label)=>{
+  const sel='[data-ac='+action+']';
+  for(let i=0;i<4;i++){
+   if(await cdp.eval(`document.querySelector('${sel}').getAttribute('aria-expanded')==='${want}'`)){console.log('PASS '+label);return;}
+   await click(sel);await sleep(400);
+  }
+  throw Error('toggle never reached '+want+': '+label);
+ };
  try{
   hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'visible',label:'accounts-center',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
    CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),
@@ -41,7 +59,13 @@ async function main(){
    ['Codex 客户端','公司拉取 / 同步','Codex Web GPT','网页对话（专用浏览器）','网页生图']);
   await until(`document.querySelector('${openai} .ac-feature[data-feature=codex-default] .ac-dot').classList.contains('ok')`,'native receipt inside the card');
   assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=bridge] .ac-dot').classList.contains('ok')`),false,'one confirmed use must not vouch for the others');
-  assert.ok((await text(openai+' .ac-card-title')).includes('已登录'));
+  // The reusable answer: one verdict per account, not one "account status" per entry.
+  await until(`document.querySelector('${openai} .ac-verdict[data-account="fixture-main@example.com"] .ac-verdict-text').textContent.startsWith('账号有效')`,'account verdict is reusable');
+  assert.ok((await text(openai+' .ac-verdict[data-account="fixture-main@example.com"]')).includes('处入口在线'));
+  // Which account each use runs on is the question the platform grouping made hard to answer.
+  await until(`document.querySelector('${openai} .ac-feature[data-feature=codex-default] .ac-feature-account').textContent==='fixture-main@example.com'`,'client row names its account');
+  assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=image-primary] .ac-feature-account').textContent`),'FIXTURE POOL');
+  assert.equal(await cdp.eval(`document.querySelector('${openai} .ac-feature[data-feature=chatgpt-web] .ac-feature-account').textContent`),'账号未标注','an unlabelled use says so instead of borrowing a neighbour’s account');
   // A different Codex profile and the backup image account are separate accounts, not sub-features.
   assert.ok((await text('.ac-card[data-card="openai#codex-second"] .ac-card-title')).includes('Second'));
   assert.ok((await text('.ac-card[data-card="openai#secondary"]')).includes('需要登录'));
@@ -100,7 +124,8 @@ async function main(){
 
   // A finished login is confirmed by the page itself, with no check button to press.
   await until(`document.querySelector('${openai} .ac-feature[data-feature=bridge] .ac-dot').classList.contains('ok')`,'login confirmed automatically');
-  assert.ok((await text(openai+' .ac-card-title')).includes('5/5'));
+  await until(`[...document.querySelectorAll('${openai} .ac-verdict-text')].every(el=>el.textContent.startsWith('账号有效'))`,'every account in the card reads usable');
+  assert.equal(await cdp.eval(`[...document.querySelectorAll('${openai} .ac-verdict-text')].filter(el=>el.textContent.includes('/')&&!/^账号有效/.test(el.textContent)).length`),0);
   assert.equal(await cdp.eval(`document.querySelector('${openai} [data-ac=card-login]').textContent`),'重新登录');
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-card[data-card=anthropic] [data-ac=card-login]").length'),0,'a one-use account shows one button, not two');
   result.checks.push('登录完成后页面自行确认，无需点任何"检查"按钮；卡片计数与主按钮随之变化');await snap('02-confirmed');
@@ -112,21 +137,40 @@ async function main(){
   await until(`document.querySelector('.ac-card[data-card="deepseek"] .ac-dot').classList.contains('ok')`,'single account confirmed itself');
   result.checks.push('单一用途的账号走单连接登录 IPC，完成后同样自行确认');
 
+  // The reported bug: a browser that is merely closed must not read as "not signed in".
+  fs.writeFileSync(path.join(home,'fixture-offline-web-deepseek'),'1');
+  await refresh('offline sweep finished');
+  const closed='.ac-card[data-card="deepseek"] .ac-feature[data-feature=web-deepseek]';
+  await until(`document.querySelector('${closed} .ac-dot').classList.contains('rest')`,'closed browser keeps its login');
+  assert.match(await text(closed+' .ac-feature-state'),/已登录 · 浏览器已关闭/);
+  assert.equal(await cdp.eval(`document.querySelector('${closed} button').textContent`),'打开','nothing to log in again — just reopen it');
+  fs.unlinkSync(path.join(home,'fixture-offline-web-deepseek'));
+  result.checks.push('专用浏览器关掉后仍显示"已登录 · 浏览器已关闭"并给"打开"，不再谎报未登录');
+
   // Refreshing asks every connection once, and keeps that sweep out of the activity list.
-  const before=trace().filter(x=>x.action==='check').length;
-  await click('[data-ac=refresh]');
-  await until('document.querySelector(".ac-status").textContent.includes("已刷新")','refresh finished');
-  assert.ok(trace().filter(x=>x.action==='check').length>before+5,'refresh must reach the tools that are not probed automatically');
-  await click('[data-ac=toggle-history]');await until('!!document.querySelector(".ac-log")','activity list');
+  const before=trace().length;
+  await refresh('refresh finished');
+  const sweep=trace().slice(before);
+  assert.ok(sweep.filter(x=>x.action==='check').length>5,'refresh must reach the tools that are not probed automatically');
+  // The whole point: a refresh must not start a browser. Waking one image lane starts them all.
+  assert.equal(sweep.filter(x=>x.action==='check'&&String(x.id||'').startsWith('image-')).length,0,'a refresh must not poke the image pool');
+  assert.equal(sweep.filter(x=>x.action==='check'&&x.id==='bridge').length,0,'a refresh must not launch the bridge browser');
+  assert.match(await text('.ac-status'),/按工具自己的记录显示/);
+  await setToggle('toggle-history',true,'activity list open');await until('!!document.querySelector(".ac-log")','activity list');
   await until(`document.querySelector('.ac-log').innerText.includes('刷新状态')`,'refresh recorded once');
   assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('检查完成')).length`),0,'a status sweep must not bury the real actions');
-  assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('刷新状态')).length`),1);
-  await click('[data-ac=toggle-history]');
-  result.checks.push('"刷新状态"一次覆盖全部连接（含不自动探测的中转、生图与服务），活动记录只留一行汇总');
+  assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('刷新状态')).length`),sweeps,'one summary line per sweep, not one per connection');
+  await setToggle('toggle-history',false,'activity list closed');
+  await until(`document.querySelector('${openai} .ac-feature[data-feature=bridge] .ac-feature-account').textContent==='fixture-bridge@example.com'`,'bridge names its own account');
+  const verdicts=await cdp.eval(`[...document.querySelectorAll('${openai} .ac-verdict')].map(el=>el.dataset.account)`);
+  assert.deepEqual(verdicts.slice().sort(),['','FIXTURE POOL','fixture-bridge@example.com','fixture-main@example.com'],'one verdict per account, including the entries nobody labelled');
+  assert.match(await text(openai+' .ac-verdict[data-account=""]'),/账号未标注/);
+  result.checks.push('每项用途显示它自己所属的账号（含公司中转与生图池的标注），未标注就直说；一张卡里有几个账号在标题写清楚');
+  result.checks.push('"刷新状态"只读免费信号：绝不唤醒生图池、不启动中转浏览器，其余连接一次覆盖，活动记录只留一行汇总');
 
   // API keys and service tokens stay out of the account cards.
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-card .ac-feature[data-feature^=api-]").length'),0);
-  await click('[data-ac=toggle-others]');await until('!!document.querySelector(".ac-features.plain")','other integrations');
+  await setToggle('toggle-others',true,'other integrations open');await until('!!document.querySelector(".ac-features.plain")','other integrations');
   const others=await cdp.eval(`[...document.querySelectorAll('.ac-features.plain .ac-feature')].map(el=>el.dataset.feature)`);
   assert.deepEqual(others.sort(),['api-claude','api-codex','api-deepseek','feishu','server-monitor','token-plan']);
   await snap('03-other-integrations');
