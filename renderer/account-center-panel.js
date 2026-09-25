@@ -1,5 +1,5 @@
 'use strict';
-const {accountRows,accountCards,featureName,featureAction,cardAction,needsAttention,statusText,tone}=require('./account-center-view');
+const {accountRows,accountCards,featureName,featureAction,cardAction,needsAttention,describe}=require('./account-center-view');
 function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configModal,closeOtherPanels=()=>{}}){
  const page=document.getElementById('account-page'),body=page.querySelector('.ac-content');
  let snapshot={connections:[],history:[]},view='list',error='',notice='',loading=false,timer,previousFocus;
@@ -7,14 +7,6 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
  const busy=new Set();
  const marks={claude:'CL',codex:'CX',chatgpt:'AI',images:'AI',bridge:'AI','chatgpt-web':'AI',deepseek:'D',doubao:'豆',kimi:'K',qwen:'Q',gemini:'G','token-plan':'百',feishu:'飞',server:'服'};
  async function call(action,args){const r=await ipcRenderer.invoke('accounts:'+action,args);if(!r?.ok)throw Error(r?.error||'账号服务未响应');return r.data;}
- function ago(at){
-  if(!at)return '';
-  const minutes=Math.floor((Date.now()-at)/60000);
-  if(minutes<1)return '刚刚检查';
-  if(minutes<60)return minutes+' 分钟前检查';
-  if(minutes<1440)return Math.floor(minutes/60)+' 小时前检查';
-  return new Date(at).toLocaleDateString('zh-CN');
- }
  function editing(){return page.contains(document.activeElement)&&document.activeElement.matches('input:not([type="checkbox"]),textarea,select,[contenteditable="true"]');}
  const btn=(label,action,id,cls='')=>`<button class="ac-btn ${cls}" data-ac="${action}" data-id="${esc(id||'')}" ${busy.has(id)?'disabled':''}>${esc(label)}</button>`;
  function renderStatus(){
@@ -24,33 +16,40 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   status.hidden=!text;
   page.querySelector('[data-ac="refresh"]').disabled=sweeping;
  }
- function featureHtml(row,showMark){
-  const act=featureAction(row),name=featureName(row);
-  const detail=[statusText(row),row.groupNote,ago(row.observedAt)].filter(Boolean).join(' · ');
-  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${tone(row)}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span><span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
+ // `ambiguous` = some sibling use in this card runs on a named account. Only then is a blank
+ // worth calling out; on a card that holds one login it would be pure noise.
+ function featureHtml(row,showMark,ambiguous){
+  const act=featureAction(row),name=featureName(row),state=describe(row);
+  const detail=[state.text,row.groupNote].filter(Boolean).join(' · ');
+  const who=row.accountLabel?`<span class="ac-feature-account" title="${esc(row.accountLabel)}">${esc(row.accountLabel)}</span>`
+   :ambiguous?'<span class="ac-feature-account none">账号未标注</span>':'<span class="ac-feature-account"></span>';
+  return `<li class="ac-feature" data-feature="${esc(row.id)}">${showMark?`<span class="ac-avatar small ac-avatar-${esc(row.provider)}" aria-hidden="true">${esc(marks[row.provider]||'·')}</span>`:`<span class="ac-dot ${state.tone}" aria-hidden="true"></span>`}<span class="ac-feature-name">${esc(name)}</span>${who}<span class="ac-feature-state">${esc(detail)}</span>${btn(act.label,act.action,act.id,'ghost')}</li>`;
  }
  // A single-use account is one line: repeating its name as a sub-row would say nothing new.
  function soloHtml(card){
-  const row=card.features[0],act=featureAction(row);
-  const detail=[statusText(row),row.groupNote,ago(row.observedAt)].filter(Boolean).join(' · ');
+  const row=card.features[0],act=featureAction(row),state=describe(row);
+  const detail=[state.text,row.groupNote].filter(Boolean).join(' · ');
   const sub=[featureName(row),card.identity].filter(Boolean).join(' · ');
   return `<article class="ac-card solo ${card.attention?'attention':''}" data-card="${esc(card.key)}">
   <div class="ac-feature ac-card-head" data-feature="${esc(row.id)}"><span class="ac-avatar ac-avatar-${esc(card.platform)}" aria-hidden="true">${esc(card.mark)}</span>
   <div class="ac-card-title"><strong>${esc(card.name)}</strong><small>${esc(sub)}</small></div>
-  <span class="ac-dot ${tone(row)}" aria-hidden="true"></span><span class="ac-feature-state">${esc(detail)}</span>
+  <span class="ac-dot ${state.tone}" aria-hidden="true"></span><span class="ac-feature-state">${esc(detail)}</span>
   ${btn(act.label,act.action,act.id,'ghost')}</div></article>`;
+ }
+ // The account verdict is the one answer that is genuinely reusable across every entry below.
+ function verdictHtml(v){
+  return `<li class="ac-verdict" data-account="${esc(v.account)}"><span class="ac-dot ${v.tone}" aria-hidden="true"></span><span class="ac-verdict-name">${esc(v.account||'账号未标注')}</span><span class="ac-verdict-text">${esc(v.text)}</span></li>`;
  }
  function cardHtml(card){
   if(card.features.length===1)return soloHtml(card);
   const act=cardAction(card);
-  const summary=[card.identity,`${card.signedIn}/${card.total} 项已登录`].filter(Boolean).join(' · ');
   return `<article class="ac-card ${card.attention?'attention':''}" data-card="${esc(card.key)}">
   <div class="ac-card-head"><span class="ac-avatar ac-avatar-${esc(card.platform)}" aria-hidden="true">${esc(card.mark)}</span>
-  <div class="ac-card-title"><strong>${esc(card.name)}</strong><small>${esc(summary)}</small></div>
-  ${card.attention?`<span class="ac-pill warn">${card.attention} 项待登录</span>`:card.signedIn===card.total?'<span class="ac-pill ok">全部已登录</span>':''}
+  <div class="ac-card-title"><strong>${esc(card.name)}</strong></div>
   <button class="ac-btn ${act.primary?'primary':'ghost'}" data-ac="card-login" data-card="${esc(card.key)}" ${act.ids.some(id=>busy.has(id))?'disabled':''}>${esc(act.label)}</button></div>
+  <ul class="ac-verdicts">${card.verdicts.map(verdictHtml).join('')}</ul>
   ${card.note?`<p class="ac-card-note">${esc(card.note)}</p>`:''}
-  <ul class="ac-features">${card.features.map(r=>featureHtml(r,false)).join('')}</ul></article>`;
+  <ul class="ac-features">${card.features.map(r=>featureHtml(r,false,!!card.accounts.length)).join('')}</ul></article>`;
  }
  function render(){
   if(page.hidden)return;position();
@@ -64,7 +63,7 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   renderStatus();
   if(view==='config')return;
   body.innerHTML=`<div class="ac-cards">${cards.map(cardHtml).join('')}</div>
-  <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-others" aria-expanded="${showOthers}"><span>其他接入</span><small>API 密钥、服务授权 ${others.length} 项</small><i aria-hidden="true">${showOthers?'▾':'▸'}</i></button>${showOthers?`<ul class="ac-features plain">${others.map(r=>featureHtml(r,true)).join('')}</ul>`:''}</section>
+  <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-others" aria-expanded="${showOthers}"><span>其他接入</span><small>API 密钥、服务授权 ${others.length} 项</small><i aria-hidden="true">${showOthers?'▾':'▸'}</i></button>${showOthers?`<ul class="ac-features plain">${others.map(r=>featureHtml(r,true,false)).join('')}</ul>`:''}</section>
   <section class="ac-extra"><button class="ac-extra-head" data-ac="toggle-history" aria-expanded="${showHistory}"><span>最近活动</span><small>只记录操作结果，不保存验证码或密钥</small><i aria-hidden="true">${showHistory?'▾':'▸'}</i></button>${showHistory?(snapshot.history.length?`<ul class="ac-log">${snapshot.history.map(x=>`<li><time>${esc(new Date(x.at).toLocaleString('zh-CN',{hour12:false}))}</time><strong>${esc(x.name)}</strong><span>${esc(x.message)}</span></li>`).join('')}</ul>`:'<p class="ac-empty">暂无账号操作记录</p>'):''}</section>`;
  }
  function renderPreservingView(){

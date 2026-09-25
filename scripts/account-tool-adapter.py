@@ -3,7 +3,16 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
+
+def _account_name(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return str(json.load(handle).get('account_name') or '')[:80]
+    except Exception:
+        return ''
+
 
 def main():
     tool, action, root = sys.argv[1:4]
@@ -21,6 +30,8 @@ def main():
                 group_column = 'login_group' if 'login_group' in columns else "'' AS login_group"
                 for a in db.execute('SELECT id,enabled,ready,state,heartbeat,updated,' + group_column + ' FROM accounts ORDER BY id'):
                     r = dict(a)
+                    # Display label the tool already stores in plaintext; never a credential.
+                    r['account_name'] = _account_name(pool_root() / 'accounts' / str(a['id']) / 'config' / 'settings.json')
                     control = db.execute('SELECT action,status,result,updated FROM controls WHERE account_id=? ORDER BY created DESC LIMIT 1',(a['id'],)).fetchone()
                     if control:
                         value = json.loads(control['result'] or '{}')
@@ -34,11 +45,19 @@ def main():
             raise ValueError('unsupported action')
         from image_pool import Pool
         pool = Pool()
-        result = pool.control(sys.argv[4], action)
-        failures = pool.ensure_workers()
-        if failures:
-            raise RuntimeError('worker_start_failed')
-        return {'ok': result.get('ok', False), 'queued': True}
+        account_id = sys.argv[4]
+        awake = time.time() - pool.account(account_id)['heartbeat'] < 20
+        if action == 'check' and not awake:
+            # Checking must never wake the pool: ensure_workers() starts *every* lane, and each
+            # lane is a full browser. Status comes from the pool's own records instead.
+            return {'ok': True, 'queued': False, 'asleep': True}
+        result = pool.control(account_id, action)
+        if not awake:
+            # Only an explicit "open" is allowed to start workers, and the caller is told.
+            failures = pool.ensure_workers()
+            if failures:
+                raise RuntimeError('worker_start_failed')
+        return {'ok': result.get('ok', False), 'queued': True, 'started_workers': not awake}
     if tool == 'bridge':
         import bridge
         cfg = bridge.load_config()
@@ -49,7 +68,8 @@ def main():
             raise ValueError('invalid account observation')
         return {'ok': True, 'logged_in': value.get('logged_in') is True,
                 'login_required': value.get('login_visible') is True,
-                'challenge': value.get('challenge') is True}
+                'challenge': value.get('challenge') is True,
+                'account_name': str(cfg.get('account_name') or '')[:80]}
     raise ValueError('unsupported tool')
 
 if __name__ == '__main__':
