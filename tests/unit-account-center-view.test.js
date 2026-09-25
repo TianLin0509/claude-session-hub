@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,describe,confirmed}=require('../renderer/account-center-view');
+const {accountRows,accountCards,cardKey,featureName,featureAction,cardAction,needsAttention,describe,confirmed,accountVerdicts}=require('../renderer/account-center-view');
 
 test('attention badges require a human login need, not an offline browser or unknown proof',()=>{
  for(const state of ['offline','unknown','unavailable','configured'])assert.equal(needsAttention({state}),false);
@@ -148,4 +148,30 @@ test('a platform card names the accounts its uses actually run on, and admits wh
  const single=accountCards(rows.slice(0,1)).cards[0];
  assert.equal(single.identity,'a@gmail.com');
  assert.equal(accountCards(rows.slice(2)).cards[0].identity,'','no label is reported as no label, not as someone else’s');
+});
+
+test('the account verdict is one reusable answer, not one per entry',()=>{
+ const T=Date.UTC(2026,8,25,8,0,0);
+ const web=(id,state,accountLabel,extra={})=>({id,type:'web',action:'login',state,accountLabel,observedAt:T,...extra});
+ const features=[
+  web('bridge','signed_in','lintian0509@gmail.com'),
+  web('image-primary','signed_in','lintian0509@gmail.com'),
+  web('web-chatgpt','login_required','lintian0509@gmail.com'),
+  web('codex-default','signed_in','d@gmail.com',{type:'native'}),
+ ];
+ const [main,other]=accountVerdicts(features,T);
+ // Three entries, one account: a single live session already proves the account is usable.
+ assert.equal(main.account,'lintian0509@gmail.com');
+ assert.equal(main.text,'账号有效 · 2/3 处入口在线');
+ assert.equal(main.tone,'ok','one entry needing a re-login is not an account problem');
+ assert.deepEqual([other.account,other.text],['d@gmail.com','账号有效 · 1/1 处入口在线']);
+ // With no live session anywhere we must not claim the account is fine.
+ const dark=accountVerdicts(features.slice(2,3),T)[0];
+ assert.equal(dark.text,'账号未确认 · 0/1 处入口在线');
+ assert.equal(dark.tone,'warn');
+ // A browser that is merely closed still counts as proof the account works.
+ const closed=accountVerdicts([web('bridge','offline','a@b.c',{signedInAt:T-3600000})],T)[0];
+ assert.equal(closed.text,'账号有效 · 1/1 处入口在线');
+ // Disabled lanes are not entries.
+ assert.equal(accountVerdicts([web('x','signed_in','a@b.c'),web('y','login_required','a@b.c',{enabled:false})],T)[0].total,1);
 });

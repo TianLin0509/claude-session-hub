@@ -58,6 +58,11 @@
 .ac-pill.ok{background:var(--status-success-tint,rgba(63,185,80,.14));color:var(--mark-green,#7ee787)}
 .ac-pill.warn{background:var(--status-warning-tint,rgba(210,153,34,.14));color:var(--mark-amber-soft,#f0ad4e)}
 
+.ac-verdicts{list-style:none;margin:0;padding:0 17px 13px 66px}
+.ac-verdict{display:flex;align-items:center;gap:10px;padding:3px 0;font-size:12px}
+.ac-verdict-name{flex-shrink:0;color:var(--fg-default,#c9d1d9);font-weight:500}
+.ac-verdict-text{color:var(--fg-muted,#8b949e)}
+.ac-card-head+.ac-verdicts{margin-top:-8px}
 .ac-features{list-style:none;margin:0;padding:0;border-top:1px solid var(--border-subtle,#21262d)}
 .ac-features.plain{border-top:0;margin-top:6px}
 .ac-feature{display:flex;align-items:center;gap:11px;padding:10px 17px;min-height:42px}

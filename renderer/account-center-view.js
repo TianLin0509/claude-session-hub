@@ -109,6 +109,27 @@ function accountSummary(features){
  if(!names.length)return '';
  return names.length===1?names[0]:`${names.length} 个账号 · ${names.join(' / ')}`;
 }
+// Two different questions were being answered by the same row, which made one account look
+// like four account problems:
+//   "is this account itself usable?"  — one answer, reusable; any live session proves it.
+//   "is this entry's own session fresh?" — per entry, and mostly nobody's problem.
+// The verdict below is the first question. The rows underneath are the second one.
+function accountVerdicts(features,now=Date.now()){
+ const groups=new Map();
+ for(const row of features){
+  if(row.enabled===false)continue;
+  const key=row.accountLabel||'';
+  if(!groups.has(key))groups.set(key,[]);
+  groups.get(key).push(row);
+ }
+ return [...groups.entries()].map(([account,rows])=>{
+  const online=rows.filter(r=>confirmed(r,now)).length;
+  const entries=`${online}/${rows.length} 处入口在线`;
+  return {account,total:rows.length,online,
+   ...(online?{tone:'ok',text:`账号有效 · ${entries}`}
+      :{tone:rows.some(needsAttention)?'warn':'idle',text:`账号未确认 · ${entries}`})};
+ });
+}
 function accountCards(rows){
  const map=new Map(),others=[];
  for(const row of rows){
@@ -122,10 +143,10 @@ function accountCards(rows){
   const lead=card.features[0],active=card.features.filter(r=>r.enabled!==false);
   return {...card,alt,mark:base.mark,note:alt?'':base.note||'',
    name:alt?(lead.provider==='images'?'ChatGPT 生图 · '+(lead.groupLabel||lead.loginGroup):lead.name):base.name,
-   identity:accountSummary(card.features),accounts:accountsOf(card.features),
+   identity:accountSummary(card.features),accounts:accountsOf(card.features),verdicts:accountVerdicts(card.features),
    total:active.length,signedIn:active.filter(r=>confirmed(r)).length,attention:active.filter(needsAttention).length};
  });
  const weight=c=>{const i=ORDER.indexOf(c.platform);return (i<0?ORDER.length:i)*2+(c.alt?1:0);};
  return {cards:cards.sort((a,b)=>weight(a)-weight(b)),others};
 }
-module.exports={accountRows,accountCards,accountsOf,accountSummary,cardKey,featureName,featureAction,cardAction,needsAttention,describe,ago,confirmed,resting,PLATFORM};
+module.exports={accountRows,accountCards,accountsOf,accountSummary,accountVerdicts,cardKey,featureName,featureAction,cardAction,needsAttention,describe,ago,confirmed,resting,PLATFORM};

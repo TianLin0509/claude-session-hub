@@ -36,15 +36,18 @@ function createAccountCenterPanel({document,ipcRenderer,escapeHtml:esc,configMod
   <span class="ac-dot ${state.tone}" aria-hidden="true"></span><span class="ac-feature-state">${esc(detail)}</span>
   ${btn(act.label,act.action,act.id,'ghost')}</div></article>`;
  }
+ // The account verdict is the one answer that is genuinely reusable across every entry below.
+ function verdictHtml(v){
+  return `<li class="ac-verdict" data-account="${esc(v.account)}"><span class="ac-dot ${v.tone}" aria-hidden="true"></span><span class="ac-verdict-name">${esc(v.account||'账号未标注')}</span><span class="ac-verdict-text">${esc(v.text)}</span></li>`;
+ }
  function cardHtml(card){
   if(card.features.length===1)return soloHtml(card);
   const act=cardAction(card);
-  const summary=[card.identity,`${card.signedIn}/${card.total} 项已登录`].filter(Boolean).join(' · ');
   return `<article class="ac-card ${card.attention?'attention':''}" data-card="${esc(card.key)}">
   <div class="ac-card-head"><span class="ac-avatar ac-avatar-${esc(card.platform)}" aria-hidden="true">${esc(card.mark)}</span>
-  <div class="ac-card-title"><strong>${esc(card.name)}</strong><small>${esc(summary)}</small></div>
-  ${card.attention?`<span class="ac-pill warn">${card.attention} 项待登录</span>`:card.signedIn===card.total?'<span class="ac-pill ok">全部已登录</span>':''}
+  <div class="ac-card-title"><strong>${esc(card.name)}</strong></div>
   <button class="ac-btn ${act.primary?'primary':'ghost'}" data-ac="card-login" data-card="${esc(card.key)}" ${act.ids.some(id=>busy.has(id))?'disabled':''}>${esc(act.label)}</button></div>
+  <ul class="ac-verdicts">${card.verdicts.map(verdictHtml).join('')}</ul>
   ${card.note?`<p class="ac-card-note">${esc(card.note)}</p>`:''}
   <ul class="ac-features">${card.features.map(r=>featureHtml(r,false,!!card.accounts.length)).join('')}</ul></article>`;
  }
