@@ -79,13 +79,18 @@ class AccountCenter {
   // Cheap local probes, plus anything with a login window currently open: while the user is
   // finishing an official login we poll that one connection so nobody has to press a check button.
   autoCheck(row){return !!row.managedBrowser||row.type==='native'&&['claude','codex'].includes(row.provider)||row.provider!=='images'&&row.action==='login'&&this.leaseActive(row);}
+  // Asking these costs a browser: the bridge launches one to read the page, and the image
+  // pool's check can only be serviced by a running lane. Their own records already say what
+  // we would learn, so a status refresh reads those instead of starting anything.
+  heavyProbe(row){return row.provider==='bridge'||row.provider==='images';}
   async checkAll(){
-    const rows=await this.connections();
+    const rows=await this.connections(),cheap=rows.filter(r=>!this.heavyProbe(r)),skipped=rows.length-cheap.length;
     let done=0,failed=0,index=0;
-    const work=async()=>{while(index<rows.length){const row=rows[index++];try{await this.check(row.id,{quiet:true});done++;}catch{failed++;}}};
-    await Promise.all(Array.from({length:Math.min(6,rows.length)},work));
-    this.log({name:'刷新状态'},`检查 ${rows.length} 项：${done} 项有结果，${failed} 项未确认`);
-    return {checked:done,failed,message:failed?`已刷新 ${done} 项；${failed} 项未取得明确状态，可打开对应工具后再试。`:`已刷新 ${done} 项账号状态。`};
+    const work=async()=>{while(index<cheap.length){const row=cheap[index++];try{await this.check(row.id,{quiet:true});done++;}catch{failed++;}}};
+    await Promise.all(Array.from({length:Math.min(6,cheap.length)},work));
+    this.log({name:'刷新状态'},`检查 ${cheap.length} 项：${done} 项有结果，${failed} 项未确认；${skipped} 项按工具自己的记录显示`);
+    const tail=skipped?`；另有 ${skipped} 项（公司中转、网页生图）按工具自己的记录显示，刷新不会为此启动浏览器。`:'。';
+    return {checked:done,failed,skipped,message:(failed?`已刷新 ${done} 项；${failed} 项未取得明确状态`:`已刷新 ${done} 项账号状态`)+tail};
   }
   async snapshot(){
     const rows=await this.connections();

@@ -148,9 +148,14 @@ async function main(){
   result.checks.push('专用浏览器关掉后仍显示"已登录 · 浏览器已关闭"并给"打开"，不再谎报未登录');
 
   // Refreshing asks every connection once, and keeps that sweep out of the activity list.
-  const before=trace().filter(x=>x.action==='check').length;
+  const before=trace().length;
   await refresh('refresh finished');
-  assert.ok(trace().filter(x=>x.action==='check').length>before+5,'refresh must reach the tools that are not probed automatically');
+  const sweep=trace().slice(before);
+  assert.ok(sweep.filter(x=>x.action==='check').length>5,'refresh must reach the tools that are not probed automatically');
+  // The whole point: a refresh must not start a browser. Waking one image lane starts them all.
+  assert.equal(sweep.filter(x=>x.action==='check'&&String(x.id||'').startsWith('image-')).length,0,'a refresh must not poke the image pool');
+  assert.equal(sweep.filter(x=>x.action==='check'&&x.id==='bridge').length,0,'a refresh must not launch the bridge browser');
+  assert.match(await text('.ac-status'),/按工具自己的记录显示/);
   await setToggle('toggle-history',true,'activity list open');await until('!!document.querySelector(".ac-log")','activity list');
   await until(`document.querySelector('.ac-log').innerText.includes('刷新状态')`,'refresh recorded once');
   assert.equal(await cdp.eval(`[...document.querySelectorAll('.ac-log li')].filter(el=>el.innerText.includes('检查完成')).length`),0,'a status sweep must not bury the real actions');
@@ -161,7 +166,7 @@ async function main(){
   assert.deepEqual(verdicts.slice().sort(),['','FIXTURE POOL','fixture-bridge@example.com','fixture-main@example.com'],'one verdict per account, including the entries nobody labelled');
   assert.match(await text(openai+' .ac-verdict[data-account=""]'),/账号未标注/);
   result.checks.push('每项用途显示它自己所属的账号（含公司中转与生图池的标注），未标注就直说；一张卡里有几个账号在标题写清楚');
-  result.checks.push('"刷新状态"一次覆盖全部连接（含不自动探测的中转、生图与服务），活动记录只留一行汇总');
+  result.checks.push('"刷新状态"只读免费信号：绝不唤醒生图池、不启动中转浏览器，其余连接一次覆盖，活动记录只留一行汇总');
 
   // API keys and service tokens stay out of the account cards.
   assert.equal(await cdp.eval('document.querySelectorAll(".ac-card .ac-feature[data-feature^=api-]").length'),0);

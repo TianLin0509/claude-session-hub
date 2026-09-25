@@ -37,7 +37,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  async open(row){
   external();
   if(row.managedBrowser)return browser.open(row.provider);
-  if(row.provider==='images'){await tool('images','open',row.accountId);return {message:'已请求原生图工具打开此账号网页；不会重新提交图片任务'};}
+  if(row.provider==='images'){const v=await tool('images','open',row.accountId);return {message:(v.started_workers?'已唤醒生图池的工作进程并请求打开此账号网页；':'已请求原生图工具打开此账号网页；')+'不会重新提交图片任务'};}
   if(row.provider==='bridge'){await tool('bridge','login');return {message:'已打开原中转账号网页；未推进拉取记录'};}
   if(row.provider==='chatgpt-web')return require('./chatgpt-web-integration').openWebSettings();
   throw Error('此连接没有已适配的网页入口');
@@ -45,7 +45,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  async check(row){
   if(row.managedBrowser)return browser.check(row.provider);
   if(row.action==='configure')return {state:row.configured?'configured':'unknown',message:row.configured?'密钥已配置；有效性和余额通过原服务入口验证':'尚未配置密钥',source:'本机配置'};
-  if(row.provider==='images'){await tool('images','check',row.accountId);return {state:'unknown',message:'已在生图共享队列提交登录检查，请稍后刷新；未重新提交图片任务',source:'生图共享队列'};}
+  if(row.provider==='images'){const v=await tool('images','check',row.accountId);return {state:'unknown',message:v.asleep?'这条生图车道没在运行；状态按生图池自己的记录显示，未为了检查而启动浏览器':'已在生图共享队列提交登录检查，请稍后刷新；未重新提交图片任务',source:'生图共享队列'};}
   if(row.provider==='bridge'){const v=await tool('bridge','check');return {state:v.logged_in?'signed_in':v.login_required?'login_required':'unknown',accountLabel:String(v.account_name||''),message:v.logged_in?'中转官方页面已确认登录；未读取或推进拉取游标':'请在原中转窗口完成验证',source:'中转浏览器'};}
   if(row.provider==='chatgpt-web'){external();const v=await require('./chatgpt-web-integration').webStatus();return {state:v.connected?'configured':'offline',message:v.connected?'原工具服务在线；网页登录须在原工具确认':v.message,source:'Codex Web GPT 服务健康，不是登录证明'};}
   if(row.provider==='claude'){

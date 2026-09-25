@@ -104,12 +104,21 @@ test('managed browsers refresh on their own through the path that clears the lea
  // Background refreshes stay out of the activity log; only real user actions are recorded.
  assert.ok(!fs.readFileSync(path.join(root,'account-center','events.jsonl'),'utf8').includes('检查完成'));
 });
-test('refreshing everything checks each connection once, reports failures and logs one line',async t=>{
- const seen=[];const {service,root}=setup(t,{check:async row=>{seen.push(row.id);if(row.id==='bridge')throw Error('tool secret');return {state:'signed_in'};}});
+test('a status refresh never starts a browser, and still logs one line for the whole sweep',async t=>{
+ const seen=[];
+ const {service,root}=setup(t,{
+  imageAccounts:async()=>[{id:'primary',loginGroup:'primary',enabled:true,state:'signed_in',observedAt:1}],
+  check:async row=>{seen.push(row.id);if(row.id==='web-qwen')throw Error('tool secret');return {state:'signed_in'};}});
  const result=await service.checkAll();
  const rows=await service.connections();
- assert.deepEqual(seen.sort(),rows.map(r=>r.id).sort());
- assert.equal(result.failed,1);assert.equal(result.checked,rows.length-1);
+ // Waking the image pool starts every lane, and the bridge launches its own browser. Their
+ // own records already say what a check would learn, so a refresh must not pay for that.
+ assert.ok(!seen.includes('bridge'),'the bridge must not be launched by a refresh');
+ assert.ok(!seen.some(id=>id.startsWith('image-')),'the image pool must not be woken by a refresh');
+ assert.equal(result.skipped,rows.filter(r=>['bridge','images'].includes(r.provider)).length);
+ assert.deepEqual(seen.sort(),rows.filter(r=>!['bridge','images'].includes(r.provider)).map(r=>r.id).sort());
+ assert.equal(result.failed,1);assert.equal(result.checked,seen.length-1);
+ assert.match(result.message,/按工具自己的记录显示/);
  const log=fs.readFileSync(path.join(root,'account-center','events.jsonl'),'utf8').trim().split('\n');
  assert.equal(log.length,1);assert.match(JSON.parse(log[0]).message,/未确认/);
  assert.ok(!log.join('').includes('tool secret'));

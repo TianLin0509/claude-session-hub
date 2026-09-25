@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 def _account_name(path):
@@ -44,11 +45,19 @@ def main():
             raise ValueError('unsupported action')
         from image_pool import Pool
         pool = Pool()
-        result = pool.control(sys.argv[4], action)
-        failures = pool.ensure_workers()
-        if failures:
-            raise RuntimeError('worker_start_failed')
-        return {'ok': result.get('ok', False), 'queued': True}
+        account_id = sys.argv[4]
+        awake = time.time() - pool.account(account_id)['heartbeat'] < 20
+        if action == 'check' and not awake:
+            # Checking must never wake the pool: ensure_workers() starts *every* lane, and each
+            # lane is a full browser. Status comes from the pool's own records instead.
+            return {'ok': True, 'queued': False, 'asleep': True}
+        result = pool.control(account_id, action)
+        if not awake:
+            # Only an explicit "open" is allowed to start workers, and the caller is told.
+            failures = pool.ensure_workers()
+            if failures:
+                raise RuntimeError('worker_start_failed')
+        return {'ok': result.get('ok', False), 'queued': True, 'started_workers': not awake}
     if tool == 'bridge':
         import bridge
         cfg = bridge.load_config()
