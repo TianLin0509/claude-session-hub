@@ -119,6 +119,10 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
       options: { baseURL, apiKey: key }, models: { [model]: { name: model } },
     } } });
   }
+  // Credentials/history remain isolated; personal rules use the same source.
+  require('./agent-user-context').syncNativeUserContext({kind,
+    nativeHome:path.join(home,{qwen:'.qwen','deepseek-acp':'.dsh',glm:'.zcode'}[kind]),
+    env:baseEnv,dataDir});
   return { id: opts.id, kind, cwd: opts.cwd, profileId, model, effort: opts.effort,mcpServers,
     permissionPolicy: 'bypass',
     defaultMode: {qwen:'yolo','deepseek-acp':'danger-full-access',glm:'yolo'}[kind],
