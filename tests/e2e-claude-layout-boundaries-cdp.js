@@ -42,7 +42,9 @@ async function main(){
       await click('#terminal-panel .floating-input-box');await c.send('Input.insertText',{text:Array.from({length:12},(_,i)=>'草稿 '+i).join('\n')});await frames();
       const after=await probe();
       check('Claude fixed composer and clipped stage '+width+'@'+zoom,{before,after},
-        Math.abs(after.bar.height-212)<2&&Math.abs(after.overlay.bottom-before.overlay.bottom)<2&&
+        // Fixed means "typing never grows it" -- the pixel height itself is a
+        // style decision (212 until 4ced644 made it 164 on 2026-09-21).
+        after.bar.height>0&&Math.abs(after.bar.height-before.bar.height)<2&&Math.abs(after.overlay.bottom-before.overlay.bottom)<2&&
         after.overlay.bottom<=after.bar.top+1&&after.overlay.bottom<=after.composer.top+1&&
         after.nav.bottom<=after.bar.top+1&&after.inputScroll>after.inputClient&&after.hit);
       // Scroll the actual transcript all the way down; the complete last card must be visible.

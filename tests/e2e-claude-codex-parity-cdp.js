@@ -76,7 +76,8 @@ const j=JSON.stringify,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
     assert.match(await c.eval('document.querySelector("#msg-overlay .pill-ctx").textContent'),/1% ctx/);
     assert.match(await c.eval('document.querySelector("#msg-overlay .pill-time").textContent'),/7.8s/);
     await shot('claude-card-metrics');
-    assert.equal(await c.eval('document.querySelector(".card-session-status-speed").textContent'),'速度 · 标准');
+    // The card-level speed status moved into the composer chip row (4ced644, 2026-09-21).
+    assert.equal(await c.eval('document.querySelector(".floating-input-bar .composer-speed").textContent'),'速度 · 标准');
     report.checks.push('one final card shows 100k cumulative input, separately observed 1% context and 7.8s duration from native result');
     assert.equal(await c.eval('document.querySelector(".floating-input-box").textContent'),'草稿保留，不要发送');
     assert.equal(await c.eval('__parity.details'),0);
