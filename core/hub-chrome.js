@@ -219,7 +219,11 @@ class HubChrome {
       '--profile-directory=' + identityId,
       ...(debug ? ['--remote-debugging-port=0'] : []),
       '--no-first-run', '--no-default-browser-check',
-      ...(visible ? [] : ['--window-position=-32000,-32000', '--window-size=1280,900']),
+      // Always say where: left unset, Chrome restores the profile's last window placement,
+      // and the Hub parks its work windows off screen — so a login window came up at the
+      // screen edge where nobody could use it (2026-09-25).
+      ...(visible ? [`--window-position=${ONSCREEN.left},${ONSCREEN.top}`, `--window-size=${ONSCREEN.width},${ONSCREEN.height}`]
+        : ['--window-position=-32000,-32000', '--window-size=1280,900']),
       '--new-window', ...(urls && urls.length ? urls : [url || this.markerUrl(identityId)]),
     ];
   }

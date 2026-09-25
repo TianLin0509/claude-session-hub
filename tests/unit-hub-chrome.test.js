@@ -99,3 +99,11 @@ test('the scripted-login seam is ignored outside an isolated home', t => {
   const isolated = new HubAccounts({ hubChrome: new HubChrome({ root: os.tmpdir() }), env: { HUB_ACCOUNTS_FIXTURE: file, CLAUDE_HUB_HOME_DIR: os.tmpdir() } });
   assert.equal(isolated.fixture().running, true);
 });
+
+test('a login window is always placed on screen, never left to the position Chrome remembers', () => {
+  const hub = new HubChrome({ root: path.join(os.tmpdir(), 'hub-args') });
+  const login = hub.launchArgs('main', { debug: false, visible: true, urls: ['https://www.kimi.com/'] });
+  assert.ok(login.includes('--window-position=120,80'), 'the Hub parks work windows off screen; Chrome would restore that');
+  assert.ok(!login.some(a => a.startsWith('--remote-debugging')), 'and no debugging port, or Google refuses the login');
+  assert.ok(hub.launchArgs('main').includes('--window-position=-32000,-32000'), 'work windows stay off screen');
+});
