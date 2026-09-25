@@ -109,6 +109,12 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 - **没有正文的 `task_complete` 也要收尾**，例如 `/compact`。收尾走 turn-aborted：不出卡，不加未读。
 - **Claude 的 Esc 中断没有 Stop hook**，唯一证据是 transcript 里的 `[Request interrupted by user…`。
 - **Codex 同一轮会先后写 final_answer 和 task_complete**，完成与未读都只能算一次。
+- **Stop hook 的状态行不能重开已结束的一轮**（第 3 轮 R4）。Claude 执行 Stop hook 时，屏幕会显示「running Stop hook」，而 Hub 自己的 Stop hook 就在这批 hook 里，所以 Stop 到达时这行几乎必然在屏幕上。
+  - transcript 已权威结束这一轮时，Stop 不再凭画面保留运行（`ptyTurnClosedAuthoritatively`，与屏幕观察共用同一条规则）。
+  - Stop 先于 transcript 到达、hook 确实在跑时，保留运行，但每秒复查一次：画面不再有运行标记连续两次就收尾；运行状态行文字 30 秒纹丝不动（真在跑时秒数每秒都会变）就判为停住的旧帧并收尾。遇到新一轮边界立即退场。
+  - 旧帧判定不能看 `_lastOutputTs`：周期巡检每重读一次同一帧，都会刷新这个时间戳。
+- **Claude 2.1.28x 的底栏随权限模式变化**：默认模式是「⏸ manual mode on · ← for agents」，没有 shift+tab 提示。分类器漏认它，就绪帧就一直是 ambiguous，「就绪即收尾」的出口永远不触发。
+- **E2E 的 Codex 凭据要取 Hub 实际在用的订阅账号**（`REAL_CODEX_AUTH_SOURCE`）。`~/.codex` 可能早已不再刷新，全部 401。
 
 ## 已知边界
 
