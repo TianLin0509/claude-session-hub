@@ -66,12 +66,27 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 - Codex：rollout 解析器照旧，它本来就输出 commentary / final 分段和工具结果。
 - 视图：PTY 会话默认打开终端；用户切到卡片后按会话记住，下次打开仍停在卡片。
 
+## 真机逼出来的规则（2026-09-25 状态矩阵）
+
+以下几条都是单测过了、真机上才暴露的问题，改动相关代码前先读：
+
+- **启动选择框会吞掉首条消息**，随后的回车还会替用户选中默认项。已经见过的两个：Codex 的模型退役迁移提示（`gpt-5.5` → `gpt-5.6-sol`），以及联网时第二个 default 权限 Claude 会话弹出的 Chrome 扩展提示。就绪检测把"Enter to confirm · Esc to …"、"press enter to confirm"、"Use ↑/↓ to move"当作阻断；新会话的第一条消息撞上选择框时 Hub 拒发，原文回到输入框，并提示去终端处理，**绝不替用户选**。
+- **就绪检测要先把 ConPTY 字节还原成文字**。ConPTY 用光标右移（`ESC[nC`）代替单词间的空格；TUI 空闲时也会不停重画同一屏，所以稳定性按"画面末尾文字不变"判断，不能看字节长度。Codex 0.153 新会话没有 `Context` 底栏，输入行标记是 `› <占位>`，`› 1.` 是选项菜单，要排除。
+- **权威终态不能被屏幕推翻**。Codex 内联界面的旧"• Working … esc to interrupt"行会残留在缓冲区里；一轮一旦由 hook 或 transcript 判定结束，屏幕识别不能单独把它拽回运行，新一轮只能由 UserPromptSubmit 或 task_started 开启。
+- **权威完成与中断以"收到时刻"作为观察时刻**。完成事件要经过 400ms 防抖才送到，期间终端输出会记下时间更晚的"运行"观察，按事件时刻比较会把它判成过期丢掉。旧的轮次仍由 attention 的轮次与时间校验挡住。
+- **没有正文的 `task_complete` 也要收尾**，例如 `/compact`。收尾走 turn-aborted：不出卡，不加未读。
+- **Claude 的 Esc 中断没有 Stop hook**，唯一证据是 transcript 里的 `[Request interrupted by user…`。
+- **Codex 同一轮会先后写 final_answer 和 task_complete**，完成与未读都只能算一次。
+
 ## 已知边界
 
 - 卡片按段落刷新，不逐字流动；要逐字看，就看终端本体。
 - Claude TUI 里 `/clear` 会换会话 id。Hub 目前没有部署 Claude 的 SessionStart hook，之后的事件会被当作外来事件忽略，卡片停在旧会话。重开会话即可恢复。
 - 本机 Codex 0.153.4 没有 Interrupt hook，Esc 中断靠 rollout 的 `turn_aborted`。
 - 群聊派发依然走 PTY 闭环：偶发 `stuck` 时显示「补发」按钮。
+- Codex 的斜杠命令不触发 UserPromptSubmit，闭环拿不到确认，可能亮「补发」。状态本身不会卡住：`/compact` 由空正文的 task_complete 收尾。
+- 选择框挂着时，群聊自动派发会因"CLI 未就绪"而不发送，需要有人在终端里处理。
+- Claude fast 模式的交互会话是否写 transcript，这次没有在 Opus 上重测（只用 haiku 省额度，而 fast 只对 Opus 生效）。
 
 ## 验证入口
 
