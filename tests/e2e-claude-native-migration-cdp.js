@@ -69,16 +69,25 @@ async function main() {
     result.checks.push('actual old Hub holds the history; new Hub starts no Claude writer and imports the unsent draft');
     await oldClient.close(); oldClient = null;
     result.oldExit = await gracefulQuit(oldHub); oldHub = null;
-    await client.eval('document.querySelector(".claude-reconnect").click()');
+    // Since 2026-09-15 (c8dcc94, docs/20260915-native-quiet-recovery.md) there is
+    // no manual reconnect button: the next composer send makes Main wait for the
+    // old writer, resume the same native identity, then deliver that message.
+    // The user's real next step here is sending the draft carried over from the
+    // old window, so that is what this drives.
+    await client.eval('document.querySelector(".floating-input-box").focus()');
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await until(client, `sessions.get(${sid}).nativeRuntime.connection==='connected'`, 'new ownership after old exit');
-    assert.ok(!(await client.eval('document.querySelector(".claude-native-controls")?.innerText')).includes('原 Hub 仍持有'), 'resolved ownership error must disappear after successful reconnect');
+    await until(client, `sessions.get(${sid}).nativeRuntime.state==='completed'`, 'carried-over draft delivered and answered');
+    assert.ok(!(await client.eval('document.querySelector(".claude-native-controls")?.innerText || ""')).includes('原 Hub 仍持有'), 'resolved ownership error must disappear after recovery');
     const restored = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${sid}})`);
-    assert.ok(restored.turns.some(turn => turn.text.includes('保留的历史回答')));
+    assert.ok(restored.turns.some(turn => turn.text.includes('保留的历史回答')), 'old history kept');
+    assert.ok(restored.turns.some(turn => turn.role === 'user' && turn.text === '旧窗口尚未发送的草稿'), 'the carried-over draft was sent once');
+    assert.equal(restored.turns.filter(turn => turn.role === 'user' && turn.text === '旧窗口尚未发送的草稿').length, 1);
     assert.equal(await client.eval(`sessions.get(${sid}).ccSessionId`), providerId);
-    assert.equal(await client.eval('readContenteditablePlainText(document.querySelector(".floating-input-box"))'), '旧窗口尚未发送的草稿');
     assert.ok(fs.readFileSync(file, 'utf8').startsWith(history));
     await shot('native-resumed');
-    result.checks.push('explicit reconnect after old Hub exit keeps the exact history identity and unsent draft');
+    result.checks.push('sending the carried-over draft after the old Hub exits recovers the exact history identity and delivers it once');
     if (process.argv.includes('--rollback')) {
       await client.eval('document.querySelector(".floating-input-box").focus()');
       await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
