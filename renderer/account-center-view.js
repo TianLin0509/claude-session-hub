@@ -15,6 +15,7 @@ function siteChip(site, now = Date.now(), running = false) {
       return { tone: soon ? 'warn' : 'ok', text: site.name + (site.expiresAt ? ` · 至 ${day(site.expiresAt)}` : ''), action: soon ? 'login' : '' };
     case 'signed_out': return { tone: 'warn', text: `${site.name} · 需登录`, action: 'login' };
     case 'needs_attention': return { tone: 'warn', text: `${site.name} · 需人机验证`, action: 'login' };
+    case 'login_open': return { tone: 'idle', text: `${site.name} · 登录窗口开着`, action: '' };
     case 'needs_browser': return { tone: 'idle', text: `${site.name} · ${running ? '点「检查登录」确认' : '浏览器开着时可确认'}`, action: 'login' };
     default: return { tone: 'idle', text: `${site.name} · 未确认`, action: 'login' };
   }

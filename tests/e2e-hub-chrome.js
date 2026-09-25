@@ -57,11 +57,6 @@ async function browserCdp(hub) { const ep = await hub.endpoint(); return CDP.con
     await hub.closeTab(targetId);
     checks.push('工具标签开在指定身份里，窗口在屏幕外且不是最小化（不会被节流）');
 
-    const login = await hub.openLogin('main', 'chatgpt');
-    const lw = await cdp.call('Browser.getWindowForTarget', { targetId: login.targetId });
-    const lb = (await cdp.call('Browser.getWindowBounds', { windowId: lw.windowId })).bounds;
-    assert.ok(lb.left >= 0 && lb.top >= 0, 'a login window is on screen: ' + JSON.stringify(lb));
-    checks.push('「登录」打开的窗口在屏幕内');
     cdp.close();
 
     await hub.close();

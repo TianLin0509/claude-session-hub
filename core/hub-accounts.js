@@ -73,7 +73,8 @@ class HubAccounts {
     if (live) this.writeCache(cache);
     const clis = cliAuthStatus({ env: this.env, config: this.getConfig(), now: this.now() }).map(cli => ({ ...cli, identity: this.owner(cli, identities) }));
     if (live) await this.resumeWaiting(identities);
-    return { chrome: { running, root: this.chrome.root }, identities, clis, checkedAt: live ? this.now() : cache.checkedAt || 0 };
+    const loginOpen = !running && !fixture && this.chrome.profileHeld();
+    return { chrome: { running, loginOpen, root: this.chrome.root }, identities, clis, checkedAt: live ? this.now() : cache.checkedAt || 0 };
   }
   // A CLI belongs under the identity that holds the web login it is authorised from. Codex is
   // matched by account because the same site (ChatGPT) is signed in twice.

@@ -93,7 +93,13 @@ class HubChrome {
     if (!fs.existsSync(db)) return null;
     // Chrome may hold the file open; read a private copy so a running browser is never touched.
     const copy = path.join(os.tmpdir(), `hub-chrome-cookies-${process.pid}-${crypto.randomUUID()}.db`);
-    fs.copyFileSync(db, copy);
+    try { fs.copyFileSync(db, copy); }
+    catch (e) {
+      // Only a running Chrome holds this file; with no debugging endpoint that is the
+      // ordinary-mode window opened for a login.
+      if (e.code === 'EBUSY' || e.code === 'EPERM') throw Object.assign(new Error('登录窗口开着'), { loginOpen: true });
+      throw e;
+    }
     try {
       const { DatabaseSync } = require('node:sqlite');
       const conn = new DatabaseSync(copy, { readOnly: true });
@@ -125,7 +131,13 @@ class HubChrome {
   async loginStatus(identityId, { live = true } = {}) {
     const identity = this.identity(identityId);
     const running = await this.running();
-    const rows = running ? await this.liveCookieRows(identity) : this.cookieRows(identity);
+    const loginOpen = () => ({ identity: identity.id, running: false, loginOpen: true, sites: Object.fromEntries(identity.sites.map(k => [k, { state: 'login_open' }])) });
+    // A Chrome holds the profile but offers no debugging port: that is the login window.
+    // Its cookies cannot be read until the person closes it.
+    if (!running && this.profileHeld()) return loginOpen();
+    let rows;
+    try { rows = running ? await this.liveCookieRows(identity) : this.cookieRows(identity); }
+    catch (e) { if (e.loginOpen) return loginOpen(); throw e; }
     const status = { ...this.statusFromRows(identity, rows), running };
     if (running && live) {
       const pending = Object.entries(status.sites).filter(([, v]) => v.state === 'needs_browser').map(([k]) => k);
@@ -219,11 +231,30 @@ class HubChrome {
       child.once('spawn', () => { child.unref(); resolve(); });
     });
   }
+  // Chrome holds <profile>/lockfile exclusively for as long as it runs, so a failed open
+  // answers "is a Chrome on this profile" without scanning processes (a scan also fails
+  // whenever any unrelated chrome.exe hides its command line). Whether that Chrome is ours in
+  // debugging mode or an ordinary login window is told by the debugging endpoint.
+  profileHeld() {
+    // Chrome lets others read the file but not write it; only a write open reveals the hold.
+    try { fs.closeSync(fs.openSync(path.join(this.root, 'lockfile'), 'r+')); return false; }
+    catch (e) {
+      if (e.code === 'ENOENT') return false;
+      if (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES') return true;
+      throw e;
+    }
+  }
+  async owners() {
+    if (!this.profileHeld()) return [];
+    return [{ automated: !!(await this.endpoint()) }];
+  }
   async ensure() {
     const existing = await this.endpoint();
     if (existing) return existing;
     if (!this.starting) {
       this.starting = (async () => {
+        // A launch would be handed to that ordinary window and never expose a debugging port.
+        if ((await this.owners()).some(o => !o.automated)) throw new Error('Hub 浏览器正开着登录窗口；关掉那个窗口后，网页工具就能继续用它');
         this.contexts.clear();
         await this.launch(this.identities[0].id);
         for (const end = Date.now() + 20000; Date.now() < end;) {
@@ -319,23 +350,42 @@ class HubChrome {
     if (!ep) return;
     await fetch(`http://127.0.0.1:${ep.port}/json/close/${encodeURIComponent(targetId)}`, { signal: AbortSignal.timeout(3000) }).catch(() => {});
   }
-  // 登录: one ordinary Chrome window in that identity, one tab per site. Nothing attaches to
-  // these pages, so each site sees a plain browser tab while the user signs in.
+  // 登录 always happens in an ordinary Chrome on the same profile. Google refuses to sign in
+  // (and so does every site using "Continue with Google") while the browser runs with a
+  // debugging port — observed 2026-09-25 in this Hub Chrome, as the Gemini flow found before.
+  // Cookies live in the profile, so the next debugging-mode start sees the login.
   async openLogin(identityId, siteKeys) {
     const identity = this.identity(identityId);
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
     for (const k of keys) if (!identity.sites.includes(k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
     const urls = keys.map(k => this.site(k).url);
-    if (urls.length === 1) return this.openTab(identityId, urls[0], { visible: true });
-    const { cdp } = await this.browser();
+    if ((await this.owners()).some(o => o.automated)) {
+      const busy = await this.workTabs();
+      if (busy > 0) throw new Error(`有 ${busy} 个网页任务正在用 Hub 浏览器，等它们结束再登录（Google 不允许在被程序控制的浏览器里登录）`);
+      await this.close();
+      for (let i = 0; i < 40 && (await this.owners()).length; i++) await sleep(250);
+      if ((await this.owners()).length) throw new Error('Hub 浏览器没能及时退出，请稍后再点登录');
+    }
+    await this.launch(identityId, { debug: false, visible: true, urls });
+    return { identity: identity.id, sites: keys, mode: 'ordinary' };
+  }
+  // Tools park their tabs off screen; a page on screen is a person's. Counting the former
+  // tells whether closing the browser would cut a task short.
+  async workTabs() {
+    const ep = await this.endpoint();
+    if (!ep) return 0;
+    const { CDP } = require('./web-roundtable/cdp');
+    const cdp = await CDP.connect(ep.ws, ep.port);
     try {
-      const ctx = await this.context(identityId, cdp);
-      const before = new Set((await this.pagesIn(cdp, ctx)).map(t => t.targetId));
-      await this.launch(identityId, { visible: true, urls });
-      const first = await this.waitNewPage(cdp, ctx, before, urls[0]);
-      await this.place(cdp, first.targetId, ONSCREEN).catch(() => {});
-      await cdp.call('Target.activateTarget', { targetId: first.targetId }).catch(() => {});
-      return { targetId: first.targetId, browserContextId: ctx, sites: keys };
+      const markers = new Set(this.identities.map(i => this.markerUrl(i.id)));
+      const pages = (await cdp.call('Target.getTargets')).targetInfos.filter(t => t.type === 'page' && !markers.has(t.url));
+      let n = 0;
+      for (const p of pages) {
+        const { windowId } = await cdp.call('Browser.getWindowForTarget', { targetId: p.targetId });
+        const { bounds } = await cdp.call('Browser.getWindowBounds', { windowId });
+        if (bounds.left < -1000) n++;
+      }
+      return n;
     } finally { cdp.close(); }
   }
   // Sites that keep their login in localStorage can only be read from a live page.

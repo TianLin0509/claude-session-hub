@@ -46,7 +46,9 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (view === 'config') return;
     if (!state) { body.innerHTML = '<p class="ac-empty">正在读取…</p>'; return; }
     const unplaced = unplacedClis(state);
-    body.innerHTML = `<p class="ac-chrome">Hub 浏览器 · ${state.chrome.running ? '运行中' : '未运行（点「登录」时自动启动；检查登录不会启动它）'}</p>
+    const chromeLine = state.chrome.loginOpen ? '登录窗口开着 —— 登好后关掉它，这里会自动更新'
+      : state.chrome.running ? '运行中' : '未运行（点「登录」会打开它；检查登录不会启动它）';
+    body.innerHTML = `<p class="ac-chrome">Hub 浏览器 · ${chromeLine}</p>
     <div class="ac-ids">${identityCards(state).map(cardHtml).join('')}</div>
     ${unplaced.length ? `<section class="ac-unplaced"><span class="ac-id-k">命令行</span><div class="ac-chips">${unplaced.map(c => chip(c, '', 'cli')).join('')}</div><small>点一次「检查登录」后，会按 ChatGPT 账号归到对应身份下。</small></section>` : ''}`;
   }
@@ -82,7 +84,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     const ticket = epoch;
     try {
       await call('login', { identity, ...(site ? { site } : {}) });
-      if (ticket === epoch) notice = '已在 Hub 浏览器打开登录窗口。登好后回到这里，状态会自动更新。';
+      if (ticket === epoch) notice = '已打开 Hub 浏览器的登录窗口（普通模式，Google 才允许登录）。登好后关掉那个窗口，这里会自动更新。';
       await refresh();
     } catch (e) { if (ticket === epoch) error = e.message; }
     finally { if (ticket === epoch) renderStatus(); }
