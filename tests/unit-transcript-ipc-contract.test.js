@@ -231,6 +231,21 @@ async function main() {
     );
   });
 
+  await test('failed native connection still displays identity-checked saved Codex history', async () => {
+    const deps=createDeps();
+    const session=deps.sessionManager.getSession('codex');
+    Object.assign(session,{runtimeBackend:'codex-app-server',transcriptPath:'saved-rollout.jsonl'});
+    const runtime={connection:'disconnected',threadId:'codex-sid'};
+    deps.sessionManager.getNativeCodex=()=>({runtime,async start(){throw Error('no rollout found');}});
+    deps.isUsableCodexRolloutPath=(file,id)=>file==='saved-rollout.jsonl' && id==='codex-sid';
+    const result=await parseSessionTranscript({hubSessionId:'codex',opts:{limit:12}},deps);
+    assert.equal(result.error,null);assert.equal(result.source,'codex-rollout');
+    assert.equal(result.connectionError,'no rollout found');assert.equal(result.turns[0].text,'codex answer');
+    assert.equal(runtime.connection,'disconnected','history never claims a live connection');
+    deps.isUsableCodexRolloutPath=()=>false;
+    const missing=await parseSessionTranscript({hubSessionId:'codex'},deps);
+    assert.equal(missing.error,'no rollout found');assert.equal(missing.turns.length,0);
+  });
   console.log('All transcript IPC contract tests passed.');
 }
 

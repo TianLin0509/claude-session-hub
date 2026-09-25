@@ -131,7 +131,22 @@ async function parseProviderTranscript(args = {}, deps) {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const nativeCodex = hubSessionId && (sessionManager.getNativeSession?.(hubSessionId) || sessionManager.getNativeCodex?.(hubSessionId));
     if (nativeCodex) {
-      if (!require('../../core/codex-native-runtime').isUnstartedRuntime(nativeCodex.runtime)) await nativeCodex.start();
+      try {
+        if (!require('../../core/codex-native-runtime').isUnstartedRuntime(nativeCodex.runtime)) await nativeCodex.start();
+      } catch (error) {
+        // A failed connection must not hide saved Codex history. Only read the
+        // bound, identity-checked file; this is not a reconnect or turn replay.
+        const sid=session?.codexSid || nativeCodex.runtime?.threadId;
+        const saved=session?.transcriptPath || nativeCodex.options?.resumePath;
+        if (session?.runtimeBackend !== 'codex-app-server' || !sid || !saved
+            || !validateCodexRolloutPath(saved,sid)) throw error;
+        transcriptPath=saved;
+        const parseOpts={limit:50,fromTail:true,...opts};
+        const parsed=await runTranscriptParser(deps,'codex',saved,parseOpts,parseCodexRolloutToTurns);
+        return {turns:await withInheritedBranchTurns(args,deps,session,parsed.turns,parseOpts,saved),
+          transcriptPath:saved,source:'codex-rollout',error:null,connectionError:error.message,
+          parseMs:parsed.meta.parseMs,parseCacheHit:!!parsed.meta.cacheHit};
+      }
       const refreshIds=session?.runtimeBackend==='codex-app-server' && Array.isArray(opts?.refreshTurnIds)
         ? [...new Set(opts.refreshTurnIds.filter(id=>typeof id==='string' && id.length<=256))].slice(0,128) : [];
       const displayIds=new Set(Array.isArray(opts?.refreshDisplayIds)?opts.refreshDisplayIds.filter(id=>typeof id==='string' && id.length<=512).slice(0,4096):[]);

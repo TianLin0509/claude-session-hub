@@ -138,6 +138,7 @@ function reduceNativeRuntime(previous, event, label = 'Codex') {
   };
   if (event.type === 'fresh-thread') {
     n = { ...createNativeRuntime(p.epoch), lazyStart:p.lazyStart,
+      ...(p.sqliteHome ? {sqliteHome:p.sqliteHome} : {}),
       replacedThreadId:p.threadId || event.previousThreadId || null };
   } else if (event.type === 'connect') {
     if (event.epoch < p.epoch) return p;
@@ -151,6 +152,8 @@ function reduceNativeRuntime(previous, event, label = 'Codex') {
     n.reason = event.reason || label+' 连接已断开，状态待核对';
     if (!TERMINAL.has(n.state)) n.state = 'unknown';
     n.requests = []; n.waitingFlags = [];
+  } else if (event.type === 'history-storage') {
+    n.sqliteHome = event.sqliteHome;
   } else if (event.type === 'submission') {
     n.submission = event.submission;
   } else if (event.type === 'empty-recovery') {
