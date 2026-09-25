@@ -2871,7 +2871,8 @@ class SessionManager extends EventEmitter {
         ...(info.codexSharedControl ? {codexSharedControl:info.codexSharedControl} : {}),
         ...(info.nativeSharedControl ? {nativeSharedControl:info.nativeSharedControl} : {})} : {}),
       // PTY 会话显式带空值：renderer 按 {...旧, ...新} 合并，缺字段会让原生时代的后端残留下来。
-      ...(info.agentRuntime === 'pty' ? {agentRuntime:'pty',runtimeBackend:null,nativeRuntime:null} : {}),
+      ...(info.agentRuntime === 'pty' ? {agentRuntime:'pty',runtimeBackend:null,nativeRuntime:null,
+        hookIntegrationWarning:info.hookIntegrationWarning || null} : {}),
       id: info.id,
       meetingId: info.meetingId || null,
       title: info.title,

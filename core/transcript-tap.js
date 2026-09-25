@@ -266,6 +266,26 @@ class ClaudeTap extends EventEmitter {
     // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式
     if (!entry._tail) {
       const onLine = (obj) => {
+        // Esc 中断时 Claude 不发 Stop hook，只在 transcript 里写一条
+        // "[Request interrupted by user…]" 的 user 记录。这是中断唯一的语义证据，
+        // 漏掉它会让 Hub 一直显示「正在工作」。
+        if (obj?.type === 'user' && !obj.isSidechain) {
+          const content = obj.message?.content;
+          const text = typeof content === 'string' ? content
+            : Array.isArray(content) ? content.filter(block => block && block.type === 'text').map(block => block.text || '').join('\n') : '';
+          if (String(text).trimStart().startsWith('[Request interrupted by user')) {
+            this._cancelIdleEmit(hubSessionId);
+            this._cancelStopReasonEmit(hubSessionId);
+            this.emit('turn-aborted', {
+              hubSessionId,
+              transcriptPath: entry.transcriptPath,
+              abortedAt: timestampToMs(obj.timestamp) || Date.now(),
+              turnId: entry.currentTurnId || null,
+              signalSource: 'claude-interrupt-marker',
+            });
+          }
+          return;
+        }
         if (obj?.type !== 'assistant' || !obj.message?.content) return;
         const content = obj.message.content;
         if (!Array.isArray(content)) return;
@@ -1486,6 +1506,7 @@ class CodexTap extends EventEmitter {
       // 新 task 开始 → 取消 pending emit（视为"还在进行"，丢弃上一次的 pendingText）
       if (eventType === 'task_started') {
         if (eventTurnId) entry._currentTurnId = eventTurnId;
+        entry._lastCompletedTurnId = null;
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingEmitTimer = null;
         entry._pendingText = null;
@@ -1514,7 +1535,15 @@ class CodexTap extends EventEmitter {
         }
       }
 
-      const completedAgent = codexAgentMessageEventFromRecord(obj);
+      let completedAgent = codexAgentMessageEventFromRecord(obj);
+      // /compact 等没有回答的任务：task_complete 的 last_agent_message 为空，解析器返回 null。
+      // 仍然要收尾这一轮，否则状态永远停在运行中（2026-09-25 真机 Codex /compact）。
+      if (!completedAgent && eventType === 'task_complete') {
+        const payloadDuration = Number(obj.payload && obj.payload.duration_ms);
+        completedAgent = { text: '', phase: 'final_answer', completed: true, signalSource: 'task_complete',
+          completedAt: timestampToMs(obj.timestamp) || Date.now(), turnId: eventTurnId || null,
+          durationMs: Number.isFinite(payloadDuration) ? payloadDuration : null };
+      }
       if (completedAgent && completedAgent.completedAt >= entry._liveBoundaryAt) {
         const liveTags = devLiveTags(completedAgent.text);
         if (liveTags.length) { const liveTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
@@ -1530,7 +1559,10 @@ class CodexTap extends EventEmitter {
           || timestampToMs(obj.timestamp)
           || 0;
         if (completionAt && completionAt + 5000 < entry._liveBoundaryAt) return;
-        const text = completedAgent.text;
+        const completedTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
+        // 同一轮先到的 final_answer 正文不能被随后 last_agent_message 为空的 task_complete 冲掉。
+        const text = completedAgent.text
+          || (entry._pendingTurnId && entry._pendingTurnId === completedTurnId ? entry._pendingText : null);
         // Legacy task_complete and 0.147 final_answer share one debounce path.
         // If several terminal records arrive, the last authoritative text wins.
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
@@ -1551,7 +1583,22 @@ class CodexTap extends EventEmitter {
           entry._pendingCompletedAt = null;
           entry._pendingTurnId = null;
           entry._pendingSignalSource = null;
-          if (!finalText) return;
+          if (!finalText) {
+            // /compact 这类没有回答的任务也会写 task_complete（last_agent_message 为空）。
+            // 它不是新回答（不出卡、不加未读），但这一轮确实结束了：不发信号，Hub 会一直显示运行中。
+            this.emit('turn-aborted', {
+              hubSessionId,
+              transcriptPath: entry.rolloutPath,
+              abortedAt: finalCompletedAt || Date.now(),
+              turnId: finalTurnId,
+              signalSource: 'task_complete_without_answer',
+            });
+            return;
+          }
+          // final_answer 与随后约一秒的 task_complete 属于同一轮：只报一次完成。
+          // 新的 task_started 会重置 _lastCompletedTurnId。
+          if (finalTurnId && entry._lastCompletedTurnId === finalTurnId && entry.lastText === finalText) return;
+          entry._lastCompletedTurnId = finalTurnId || null;
           entry.lastText = finalText;
           this.emit('turn-complete', {
             hubSessionId,

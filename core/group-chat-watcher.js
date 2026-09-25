@@ -391,6 +391,26 @@ async function sendToPty(sid, prompt, kind, options = {}) {
   const PRE_PROMPT_QUIET_MS = 1500;     // 至少 1.5s PTY 无新字符
   const PRE_PROMPT_MAX_WAIT_MS = 8000;  // 上限：避免持续 spinner 死等
 
+  // 普通会话的第一条（2026-09-25 真机实测）：CLI 刚画出提示符、输入还没真正就绪时粘贴，
+  //   Codex 只收到最后一个字，Claude 整条丢失。requireReady=false 的调用方也要在
+  //   **第一次**发送前等一次就绪；最多 20s，超时照旧发送并留痕（闭环会把没提交如实报 stuck）。
+  //   只对刚启动一分钟内的会话生效：早已在跑的会话，输入框就摆在用户面前，不能再让人干等。
+  const createdAt = Number(sessionManager.getSession?.(sid)?.createdAt) || 0;
+  const freshlySpawned = createdAt > 0 && Date.now() - createdAt < 60000;
+  if (!requireReady && freshlySpawned && !sessionManager.getGroupChatReady(sid)
+      && (isClaudeFamily(kind) || isCodexCliKind(kind)) && _deps.cliReadyDetector) {
+    if (await waitCliReady(sid, kind, Number(_deps.firstPromptReadyMs) || 20000)) sessionManager.setGroupChatReady(sid, true);
+    else {
+      const readyKind = isCodexCliKind(kind) ? 'codex' : 'claude';
+      // 选择框还挂着时粘贴会被吞掉，回车还会替用户选默认项：宁可不发，也不能替人做选择。
+      if (_deps.cliReadyDetector.isChoiceDialogVisible?.(readyKind, sessionManager.getSessionBuffer(sid) || '')) {
+        throw Object.assign(new Error('CLI 正在等你在终端里做选择（例如启动提示），消息未发送；处理完后再发送'),
+          { notSent: true, code: 'cli-choice-pending' });
+      }
+      console.warn(`[group-chat] ${kind}(${sid.slice(0, 8)}) first prompt: CLI ready markers not seen in 20s; sending anyway`);
+    }
+  }
+
   // 冷启动：仅首次或 ready 被重置后（requireReady=false 的调用方整段跳过）
   if (requireReady && !sessionManager.getGroupChatReady(sid)) {
     const ready = await waitCliReady(sid, kind, 60000);

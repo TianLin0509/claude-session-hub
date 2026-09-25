@@ -2898,17 +2898,27 @@ ipcRenderer.on('turn-started-event', (_event, payload) => {
 
 ipcRenderer.on('turn-aborted-event', (_event, payload) => {
   const { hubSessionId, abortedAt, turnId, kind } = payload || {};
-  if (!hubSessionId || !isTranscriptCliKind(kind)) return;
   const session = sessions.get(hubSessionId);
+  // PTY Claude 的 Esc 中断只能从 transcript 的中断标记得知（没有 Stop hook）。
+  const ptyClaude = !!session && isClaudeRuntimeSession(session) && session.runtimeBackend !== 'claude-stream-json';
+  if (!hubSessionId || (!isTranscriptCliKind(kind) && !ptyClaude)) return;
   if (!session || session.status === 'dormant') return;
   const transition = applyTurnAborted(session, { abortedAt, turnId });
   if (!transition.applied) return;
   clearCodexCardWorking(hubSessionId);
+  if (ptyClaude) {
+    session._agentWorking = null;
+    session._runSource = null;
+    session._claudeBackgroundTasks = [];
+    session.currentCardActivity = null;
+    disarmPtyBurstFallback(session, transition.at);
+  }
   observeSessionRuntime(session, {
     state: RUNTIME_IDLE,
     source: 'codex-turn-aborted',
     confidence: CONFIDENCE_AUTHORITATIVE,
-    observedAt: transition.at,
+    // 观察时刻取收到事件的时间：事件本身的时刻常早于终端输出触发的弱观察，按它算会被判成过期。
+    observedAt: Math.max(transition.at, Date.now()),
     turnId,
     reason: 'turn-aborted',
   });
@@ -4600,7 +4610,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     const localHealth = ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
       && ['starting','running'].includes(session.nativeRuntime?.state)
       ? require('./hub-feedback-health').healthText(now) : '';
-    const detailText = [localHealth, status.detail].filter(Boolean).join(' · ');
+    // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
+    const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
+    const detailText = [localHealth, status.detail, hookWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
     statusDetail.hidden = !detail;
@@ -4752,11 +4764,23 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
     const clientSubmissionId = require('node:crypto').randomUUID();
-    if (!nativeCommand) {
+    // PTY 会话里的斜杠命令（/compact、/model…）是 CLI 本地命令，不一定开新的一轮，
+    // 也就没有完成信号来收尾。乐观地标「运行中」会一直挂着（2026-09-25 真机：Codex /compact
+    // 卡运行 3 分钟）。真开了一轮时 hook / rollout 会自己把状态推到运行。
+    const ptyCommand = !nativeCommand && session?.agentRuntime === 'pty' && text.trimStart().startsWith('/');
+    if (!nativeCommand && !ptyCommand) {
       clearSessionWaitingState(sessionId);
       armPtyBurstFallback(sessionId);
     }
-    if (!nativeCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    // PTY Claude 与 Codex 对齐：点下发送就显示「开始」。首条消息要先等 CLI 就绪才粘贴，
+    // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
+    else if (!nativeCommand && !ptyCommand && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
+      const submittedAt = Date.now();
+      observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
+        confidence: CONFIDENCE_SEMANTIC, observedAt: submittedAt, startedAt: submittedAt });
+      scheduleSessionListRender();
+    }
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
@@ -4806,7 +4830,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok || result?.unconfirmed ? 'unconfirmed' : 'failed' });
-      if (isNativeAgent(session) && !result?.ok && !result?.unconfirmed) {
+      // PTY 会话也可能明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框，
+      // 提示原因，不亮「补发」——补发会把同一段文字塞进同一个选择框。
+      if ((isNativeAgent(session) || session?.agentRuntime === 'pty') && !result?.ok && !result?.unconfirmed) {
         // A failed new send remains actionable, without a manual-reconciliation
         // panel. Only an explicitly unsent prompt can safely return to draft.
         if (result?.notSent && !readContenteditablePlainText(inputBox)) {
@@ -6105,6 +6131,16 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   const fallbackArmed = canUsePtyBurstFallback(session, at);
   let changed = false;
 
+  if (runtime.state === 'running' && session.agentRuntime === 'pty'
+      && [RUNTIME_COMPLETED, RUNTIME_IDLE, 'interrupted', RUNTIME_FAILED].includes(truthBefore.state)
+      && truthBefore.confidence === CONFIDENCE_AUTHORITATIVE) {
+    // PTY 跑的 Claude / Codex 有 hook 与 transcript 作为权威生命周期：一轮由它们判定结束后，
+    // 屏幕上残留的旧状态行（Codex 内联界面的旧帧留在缓冲区里）不能把会话拽回「运行中」。
+    // 新一轮必须由 UserPromptSubmit / task_started 这类新的边界开启（2026-09-25 真机：
+    // 每次完成约一秒后都被 codex-interrupt-footer 改回运行）。
+    clearPtyRunningAnimationCandidate(session);
+    return false;
+  }
   if (runtime.state === 'running') {
     // Do not let an idle TUI animation start a task from nothing. A local Enter
     // arms the PTY fallback, while hook/rollout lifecycle events set running
@@ -7185,7 +7221,8 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
   });
   else if (event === 'permission-request') onClaudeNeedsInput(sessionId, eventAt, {
     reason: 'claude-permission-request',
-    text: toolName ? `等待授权：${toolName}` : 'Claude Code 等待权限确认',
+    text: ptyPermissionEvidence(s, toolName, toolInput)
+      || (payload.provider === 'codex' ? 'Codex 等待权限确认' : 'Claude Code 等待权限确认'),
   });
   else if (event === 'notification') onClaudeNotification(sessionId, eventAt, {
     notificationType,
@@ -7215,6 +7252,25 @@ function ptyToolQuestionText(toolName, toolInput) {
       .filter(Boolean).join('\n');
   }).filter(Boolean);
   return lines.join('\n\n') || '请在终端回答问题';
+}
+
+// PermissionRequest 不带工具参数（hook 边界的既有约定）；同一次调用的 PreToolUse
+// 刚刚把有界参数带了过来，从那条运行中的活动里取「批的是什么」。
+function ptyPermissionEvidence(session, toolName, toolInput) {
+  const pending = session && Array.isArray(session.liveToolActivities)
+    ? [...session.liveToolActivities].reverse().find(item => item && item.status === 'running' && item.name === toolName) : null;
+  const input = toolInput ?? (pending ? pending.input : null);
+  return ptyToolQuestionText(toolName, input) || ptyPermissionText(toolName, input);
+}
+
+// 授权提示带上具体要做的事：命令、文件或地址，用户不用切到终端就知道在批什么。
+function ptyPermissionText(toolName, toolInput) {
+  if (!toolName) return '';
+  let input = toolInput;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = { command: input }; } }
+  const target = input && (input.command || input.cmd || input.file_path || input.path || input.url || input.pattern);
+  const detail = Array.isArray(target) ? target.join(' ') : String(target || '').trim();
+  return `等待授权：${toolName}` + (detail ? '\n' + (detail.length > 400 ? detail.slice(0, 398) + '…' : detail) : '');
 }
 
 function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
@@ -7315,7 +7371,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
       state: RUNTIME_COMPLETED,
       source: 'claude-transcript-complete',
       confidence: CONFIDENCE_AUTHORITATIVE,
-      observedAt: at,
+      observedAt: Math.max(at, Date.now()),
       completedAt: at,
       startedAt: session.lastRunStartedAt || 0,
       turnId,
@@ -7359,7 +7415,9 @@ function onReplyCompleteFromTranscriptEvent(payload) {
           ? 'gemini'
           : 'codex'}-turn-complete`,
       confidence: CONFIDENCE_AUTHORITATIVE,
-      observedAt: transition.at,
+      // 完成事件经 400ms 防抖才到；期间终端输出记下的「运行」观察时间更晚，
+      // 用完成时刻当观察时刻会让这条权威结论被当成过期丢掉（2026-09-25 真机）。
+      observedAt: Math.max(transition.at, Date.now()),
       completedAt: transition.at,
       startedAt: session.lastRunStartedAt || 0,
       turnId,
@@ -7671,6 +7729,14 @@ function onClaudeNotification(sessionId, observedAt = Date.now(), options = {}) 
   const type = String(options.notificationType || '');
   const text = [options.title, options.message].filter(Boolean).join('：') || type;
   if (['permission_prompt', 'agent_needs_input', 'elicitation_dialog', 'elicitation_url_dialog', 'quota_auto_resume_stale'].includes(type)) {
+    // PermissionRequest / 提问工具先到时已经带着具体的工具和命令；随后这条通用通知
+    // （"Claude needs your permission"）不能把它冲掉。
+    const current = sessions.get(sessionId);
+    const truth = current ? getSessionRuntimeTruth(current) : null;
+    if (truth && truth.state === RUNTIME_WAITING
+        && ['claude-permission-request', 'pty-ask-user'].includes(truth.source) && truth.evidence) {
+      return false;
+    }
     return onClaudeNeedsInput(sessionId, observedAt, {
       reason: `claude-notification-${type}`,
       text,

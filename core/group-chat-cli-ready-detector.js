@@ -19,20 +19,29 @@ const MARKERS = {
   // Claude Code TUI 输入框就绪后状态栏稳定含 'shift+tab to cycle' 字符串
   // Newer Claude-family TUI can render
   // "? for shortcuts" without the old shift+tab footer in the ring buffer.
-  claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  // 2.1.28x 的底栏是 "manual mode on · ← for agents" / "bypass permissions on"，
+  // 空输入框占位是 `Try "how does <filepath> work?"`（2026-09-25 真机截图）。
+  claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "', 'mode on', 'for agents'],
   gemini: ['Type your message', 'YOLO', 'gemini-'],
   // Do not use model ids such as "gpt-5.6-sol" here: the PowerShell launch
   // command itself contains "--model gpt-5.6-sol", which can falsely mark Codex
   // ready before the TUI input box exists.
-  codex: ['Context '],
+  // 0.153 新会话的底栏不再有 "Context N% left"（首轮之后才出现），输入行是
+  // `› <占位建议>`。选项菜单也用 `› 1. …`，所以提示符后面跟「数字.」的不算。
+  codex: ['Context ', /(?:^|\n)\s*›\s+(?!\d+\.\s)\S/],
   deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
   // Kimi Code 官方 TUI 状态栏稳定显示小写 `context:`。不能设为强 marker：
   // 未登录启动也会短暂渲染状态栏，随后才显示 OAuth login expired。
   kimi: ['context:'],
 };
 
+// 启动时的选择框（模型迁移提示、更新提示……）会把第一条粘贴吞掉，随后的回车还会
+// 替用户选中默认项（2026-09-25 真机：GPT-5.5 退役提示被回车选成「换新模型」）。
+const CHOICE_DIALOG_BLOCKERS = [/press enter to confirm/i, /Use ↑\/↓ to move/i, /Enter to confirm · Esc to cancel/i];
+
 const BLOCKERS = {
-  codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i],
+  claude: [...CHOICE_DIALOG_BLOCKERS],
+  codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i, ...CHOICE_DIALOG_BLOCKERS],
   kimi: [
     /OAuth login expired/i,
     /No active session\. Send \/login to login/i,
@@ -49,8 +58,21 @@ const BLOCKERS = {
 // 其余阻断词（Kimi 未登录、Codex 的信任弹窗）是**终态**：它们不会自己好，
 // 而且登录页上本来就同时渲染着状态栏 marker —— 用「谁更新」判会直接放行，所以不许过期。
 const STALEABLE_BLOCKERS = {
-  codex: [/Booting MCP server/i, /esc to interrupt/i],
+  // 选择框答完就消失：之后出现的输入行标记说明它已被新画面盖掉。
+  claude: [...CHOICE_DIALOG_BLOCKERS],
+  codex: [/Booting MCP server/i, /esc to interrupt/i, ...CHOICE_DIALOG_BLOCKERS],
 };
+
+// ConPTY 用光标右移（ESC[nC）代替单词间的空格，并夹着大量颜色 / 光标序列；
+// 直接在原始字节上找 "manual mode on" 这类多词标记永远找不到。先还原成可读文字。
+function terminalText(buf) {
+  return String(buf || '')
+    .replace(/\x1b\[(\d*)C/g, (_m, n) => ' '.repeat(Math.min(Number(n) || 1, 200)))
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .replace(/\x1b[@-_]/g, '')
+    .replace(/\r/g, '');
+}
 
 const MIN_BUF_LEN = 500;
 const STABLE_MS = 1500;
@@ -77,7 +99,7 @@ function isReady(sessionId, kind, buf) {
   if (_onceTrue.has(sessionId)) return true;
   const need = MARKERS[kind];
   if (!need) return true; // 未注册 kind（如 powershell）默认 ready
-  buf = buf || '';
+  buf = terminalText(buf);
   const blockers = BLOCKERS[kind] || [];
   // 2026-09-08：PTY 是**追加**的字节流，清屏只是一个控制序列 —— 早先那句
   // `Booting MCP server` / `esc to interrupt` 会一直留在 buffer 里。原来按
@@ -105,20 +127,32 @@ function isReady(sessionId, kind, buf) {
     _onceTrue.add(sessionId);
     return true;
   }
+  // 稳定 = 画面末尾的文字不再变化。TUI 空闲时也会重画同一屏（光标闪烁、同步刷新），
+  // 字节长度一直在涨，用长度判稳定对 Claude / Codex 永远不成立。
+  const signature = buf.slice(-240).replace(/\s+/g, ' ');
   let st = _stableState.get(sessionId);
   if (!st) {
-    _stableState.set(sessionId, { lastBufLen: buf.length, lastChangeTs: Date.now() });
+    _stableState.set(sessionId, { signature, lastChangeTs: Date.now() });
     return false;
   }
-  if (buf.length === st.lastBufLen) {
+  if (signature === st.signature) {
     const ready = (Date.now() - st.lastChangeTs) >= STABLE_MS;
     if (ready) _onceTrue.add(sessionId);
     return ready;
   } else {
-    st.lastBufLen = buf.length;
+    st.signature = signature;
     st.lastChangeTs = Date.now();
     return false;
   }
+}
+
+/** 选择框是否正挂在屏幕上（出现在最后一个输入行标记之后）。 */
+function isChoiceDialogVisible(kind, buf) {
+  const text = terminalText(buf);
+  const dialogAt = _lastMatchIndex(text, CHOICE_DIALOG_BLOCKERS);
+  if (dialogAt < 0) return false;
+  const need = MARKERS[kind] || [];
+  return !(_lastIncludesIndex(text, need) > dialogAt);
 }
 
 /** 这些正则里，最后一次匹配落在哪个位置；一个都不匹配返回 -1。 */
@@ -139,7 +173,9 @@ function _lastMatchIndex(buf, regexes) {
 /** 这些固定字串里，最后一次出现落在哪个位置；一个都没有返回 -1。 */
 function _lastIncludesIndex(buf, needles) {
   let last = -1;
-  for (const needle of needles) last = Math.max(last, buf.lastIndexOf(needle));
+  for (const needle of needles) {
+    last = Math.max(last, needle instanceof RegExp ? _lastMatchIndex(buf, [needle]) : buf.lastIndexOf(needle));
+  }
   return last;
 }
 
@@ -159,6 +195,8 @@ function cleanup(sessionId) {
 
 module.exports = {
   isReady,
+  isChoiceDialogVisible,
+  terminalText,
   markReady,
   cleanup,
   MARKERS,

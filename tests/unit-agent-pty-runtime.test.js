@@ -81,3 +81,11 @@ test('PTY Codex keeps Hub hook identity in env and enables hooks on the command 
   // 原生回退仍然不能让 hook 拿到 Hub 身份：App Server 自己是状态来源。
   assert.match(source, /isNativeCodex\n?\s*\? new CodexSessionClass/);
 });
+
+test('screen evidence cannot drag a PTY turn that hooks/transcripts already settled back to running', () => {
+  // 2026-09-25 真机：Codex 内联界面的旧「• Working … esc to interrupt」行留在缓冲区里，
+  // 每次完成约一秒后都被屏幕识别改回运行。新一轮只能由 hook / task_started 开启。
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const fn = source.slice(source.indexOf('function applyPtyRuntimeObservation('));
+  assert.match(fn.slice(0, 2500), /runtime\.state === 'running' && session\.agentRuntime === 'pty'[\s\S]{0,200}truthBefore\.confidence === CONFIDENCE_AUTHORITATIVE\)[\s\S]{0,400}return false;/);
+});

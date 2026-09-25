@@ -58,3 +58,32 @@ test('an existing file binds immediately; rebind replaces a wrong guess only whe
   assert.equal(tap.getRolloutPath('hub-1'), second.rolloutPath);
   await first.cleanup?.(); await second.cleanup?.();
 });
+
+// 2026-09-25 真机：Codex /compact 写 task_started 与 last_agent_message 为空的 task_complete，
+// 旧逻辑只在有正文时收尾，Hub 于是一直显示运行中。
+test('a task_complete without an answer settles the turn without reporting a reply', async t => {
+  const { sessionsRoot, cwd, tap } = setup(t);
+  const rollout = new FakeCodexRollout({ sessionsRoot, cwd, sid: '019eeeee-0000-7000-8000-00000000000e' });
+  await rollout.start();
+  tap.registerSession('hub-1', { cwd });
+  assert.equal(await tap.bindFromHook('hub-1', { codexSid: rollout.sid, transcriptPath: rollout.rolloutPath }), true);
+  const completes = [], aborts = [];
+  tap.on('turn-complete', ev => completes.push(ev));
+  tap.on('turn-aborted', ev => aborts.push(ev));
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_started', turn_id: 'compact-1' } });
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_complete', turn_id: 'compact-1', last_agent_message: null } });
+  assert.ok(await waitFor(() => aborts.length === 1), 'the empty completion settles the turn');
+  assert.equal(aborts[0].signalSource, 'task_complete_without_answer');
+  assert.equal(aborts[0].turnId, 'compact-1');
+  assert.equal(completes.length, 0, 'no reply card / unread for a turn without an answer');
+  // 正常的一轮：final_answer 之后的空 task_complete 不能冲掉正文。
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } });
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'item_completed', turn_id: 'turn-2',
+    item: { type: 'AgentMessage', phase: 'final_answer', content: [{ type: 'Text', text: 'ANSWER' }] } } });
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-2', last_agent_message: null } });
+  assert.ok(await waitFor(() => completes.length === 1));
+  assert.equal(completes[0].text, 'ANSWER');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  assert.equal(completes.length, 1, 'reported once');
+  await rollout.cleanup?.();
+});
