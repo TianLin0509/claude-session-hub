@@ -10,7 +10,8 @@ const { ensureClaudeHookIntegration } = require('../core/claude-hook-integration
 const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
 const ONLY = process.argv.slice(2).find(a => a.startsWith('--only='))?.slice(7) || null;
 const CLAUDE_MODEL = process.env.REAL_CLAUDE_MODEL || 'claude-haiku-4-5-20251001';
-const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.5';
+// gpt-5.5 已进入退役期，启动会弹迁移选择框；用当前模型。
+const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.6-sol';
 const port = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject);
   s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');

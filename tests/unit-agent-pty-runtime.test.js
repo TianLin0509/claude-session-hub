@@ -89,3 +89,9 @@ test('screen evidence cannot drag a PTY turn that hooks/transcripts already sett
   const fn = source.slice(source.indexOf('function applyPtyRuntimeObservation('));
   assert.match(fn.slice(0, 2500), /runtime\.state === 'running' && session\.agentRuntime === 'pty'[\s\S]{0,200}truthBefore\.confidence === CONFIDENCE_AUTHORITATIVE\)[\s\S]{0,400}return false;/);
 });
+
+test('renderer defines the showToast helper its error paths call', () => {
+  // 2026-09-25：14 处调用、零处定义，「消息未发送」的提示路径一执行就 ReferenceError。
+  const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  assert.match(source, /\nfunction showToast\(message, level\) \{/);
+});

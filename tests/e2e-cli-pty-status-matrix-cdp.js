@@ -66,6 +66,16 @@ async function main() {
   const send = async text => c.eval(`(()=>{const box=document.querySelector('.floating-input-bar[data-session-id="'+activeSessionId+'"] .floating-input-box');box.textContent=${j(text)};box.dispatchEvent(new Event("input",{bubbles:true}));box.closest(".floating-input-bar").querySelector(".floating-input-send").click();return Date.now();})()`);
   const key = (sid, data) => c.eval(`ipcRenderer.send('terminal-input',{sessionId:${j(sid)},data:${j(data)}})`);
   const view = mode => c.eval(`applyViewMode(${j(mode)})`);
+  const screenText = sid => c.eval(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return '';const b=t.buffer.active;const l=[];for(let i=0;i<b.length;i++)l.push(b.getLine(i).translateToString(true));return l.join('\\n');})()`);
+  // 隔离配置是全新的：联网时 default 权限模式的 Claude 会先问要不要用 Chrome 扩展。
+  // 真实用户早已答过；这里像人一样按 Esc（「不用浏览器工具」），不替用户选「用」。
+  const dismissClaudeStartupPrompt = async sid => {
+    if (!/Esc to keep browser tools off/.test(await screenText(sid))) return false;
+    await key(sid, String.fromCharCode(27));
+    await until(`!/Esc to keep browser tools off/.test((()=>{const t=terminalCache.get(${j(sid)})?.terminal;const b=t.buffer.active;const l=[];for(let i=Math.max(0,b.length-15);i<b.length;i++)l.push(b.getLine(i).translateToString(true));return l.join(' ');})())`, 'chrome prompt dismissed', 15000);
+    await sleep(1500);
+    return true;
+  };
   const status = sid => c.eval(`(()=>{const s=sessions.get(${j(sid)});if(!s)return null;
     const t=getSessionRuntimeTruth(s);const d=deriveSessionRuntimeStatus(s,{isRunning:isSessionCardWorking(s)});
     return {truth:t.state,shown:d.state,detail:d.detail||'',unread:s.unreadCount||0,attention:s.attentionState||null,
@@ -77,6 +87,8 @@ async function main() {
 
   // 一个场景：提交 → 记录时间线 → 等真值结束 → 判定。
   async function scenario(name, sid, fn) {
+    // PTY_SCENARIOS=claude-permission,group-chat：只跑点名的场景，省额度。
+    if (process.env.PTY_SCENARIOS && !process.env.PTY_SCENARIOS.split(',').includes(name)) return;
     const record = { name, sid, ok: false, checks: [] };
     result.scenarios.push(record);
     const t0 = Date.now();
@@ -132,6 +144,7 @@ async function main() {
       // Claude TUI 起来 = 输入框就绪（❯ 提示符）。
       await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯|>\\s*$/m.test(s) && /claude|Claude/i.test(s);})()`, 'claude tui ready', 90000);
       await sleep(1500);
+      result.claudeStartupPrompt = await dismissClaudeStartupPrompt(sid);
       await snap('claude-tui');
       const initial = await status(sid);
       assert.equal(initial.agentRuntime, 'pty'); assert.equal(initial.backend, null);
@@ -252,6 +265,7 @@ async function main() {
         await open(psid); await view('pty');
         await until(`(()=>{const t=terminalCache.get(${j(psid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'perm tui ready', 90000);
         await sleep(1500);
+        r.startupPrompt = await dismissClaudeStartupPrompt(psid);
         const at = await send('用 Bash 工具运行 `powershell -NoProfile -Command "Start-Sleep 5; echo PERM_OK"`，然后只回复 PERM_DONE。');
         await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='waiting'`, 'waiting for permission', 90000);
         r.waitLatencyMs = Date.now() - at;
@@ -388,8 +402,11 @@ async function main() {
       r.turn = await c.eval('window.__gt');
       const state = await c.eval(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}})`);
       r.answers = (state.messages || []).filter(m => m.role === 'assistant').map(m => ({ speaker: m.speaker || m.memberId, text: String(m.content || '').slice(0, 80), status: m.status }));
-      assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator');
-      for (const id of group.subSessions) assert.ok(!isRunningState((await status(id)).truth), 'member settled');
+      // 只看群聊成员自己的输入框：别的会话遗留的提示不算。
+      for (const id of group.subSessions) {
+        assert.equal(await c.eval(`!!document.querySelector('.floating-input-bar[data-session-id="${id}"] .fi-stuck:not([hidden])')`), false, 'no stuck submit indicator on member');
+        assert.ok(!isRunningState((await status(id)).truth), 'member settled');
+      }
       await c.eval(`document.querySelector('[data-meeting-id=${j(group.id)}]')?.click()`);
       await sleep(1500); await snap('group-chat');
     });

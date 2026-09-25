@@ -34,7 +34,8 @@ const CLAUDE_ACTIVE_STATUS_RE = /^\s*[\u2722\u2731-\u273d\u00b7*]\s+[A-Za-z][A-Z
 const CLAUDE_ACTIVE_TOOL_RE = /^\s*[\u25cf\u23fa]\s+(?:Reading|Running|Searching|Writing|Editing|Fetching|Calling|Thinking|Exploring|Generating)\b.*(?:\u2026|\.\.\.)/i;
 
 const WAITING_PATTERNS = [
-  /Enter to confirm\s*[\u00b7|]\s*Esc to cancel/i,
+  // \u7ed3\u5c3e\u4e0d\u4e00\u5b9a\u662f "cancel"\uff1aClaude \u7684 Chrome \u6269\u5c55\u63d0\u793a\u662f "Esc to keep browser tools off"\u3002
+  /Enter to confirm\s*[\u00b7|]\s*Esc to\b/i,
   /\[(?:y\/N|Y\/n)\]/,
   /Press Enter to confirm/i,
 ];

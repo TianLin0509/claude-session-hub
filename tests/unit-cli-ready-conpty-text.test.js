@@ -42,3 +42,10 @@ test('a startup choice dialog blocks readiness until the input row is back', asy
   await sleep(ready.STABLE_MS + 100);
   assert.equal(ready.isReady(sid, 'codex', after), true);
 });
+
+test('Claude startup prompts that end in something other than "Esc to cancel" still block the first prompt', () => {
+  const dialog = 'x'.repeat(600) + '\nClaude in Chrome extension detected\n❯ No, keep browser tools off\n  Yes, use my browser\nEnter to confirm · Esc to keep browser tools off';
+  assert.equal(ready.isChoiceDialogVisible('claude', dialog), true);
+  const { classifyTerminalRuntime } = require('../core/terminal-runtime-state');
+  assert.equal(classifyTerminalRuntime('claude', dialog.split('\n')).state, 'waiting');
+});

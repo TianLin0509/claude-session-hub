@@ -26,11 +26,11 @@ async function main() {
   try {
     hub = await launchIsolatedHub({ dataDir: path.join(root, 'data'), port: await port(), windowMode: 'hidden', label: 'first send',
       extraEnv: { CLAUDE_CONFIG_DIR: claudeHome, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '',
-        CLAUDE_PROXY: 'http://127.0.0.1:9' } });
+        ...(process.env.PROBE_LIVE_NETWORK === '1' ? {} : { CLAUDE_PROXY: 'http://127.0.0.1:9' }) } });
     c = await connectFirstPage(hub);
     await until('typeof sessions!=="undefined"', 'renderer');
     await c.eval(`window.__hooks=[];ipcRenderer.on('hook-event',(_e,p)=>window.__hooks.push({at:Date.now(),sid:p.sessionId,event:p.event,msg:p.latestUserMessage||null}));true`);
-    for (const [label, permissionMode] of [['A', 'bypassPermissions'], ['B', 'default'], ['C', 'default']]) {
+    for (const [label, permissionMode] of (process.env.PROBE_ONLY_B === '1' ? [['B', 'default']] : process.env.PROBE_LIVE_NETWORK === '1' ? [['A', 'bypassPermissions'], ['B', 'default']] : [['A', 'bypassPermissions'], ['B', 'default'], ['C', 'default']])) {
       const s = await c.eval(`ipcRenderer.invoke('create-session',${j({ kind: 'claude', opts: { cwd, model: 'claude-haiku-4-5-20251001', effort: 'low', mcpProfile: 'none', fastMode: false, permissionMode } })})`);
       const sid = s.id;
       await until(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`, 'row');
@@ -39,17 +39,21 @@ async function main() {
       await c.eval(`applyViewMode('pty')`);
       await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'tui', 90000);
       await sleep(1500);
+      await c.eval(`window.__stuckLog=[];if(!window.__origMark){window.__origMark=markFloatingInputStuck;markFloatingInputStuck=function(bar,sid){window.__stuckLog.push({t:Date.now(),stack:new Error().stack.split(String.fromCharCode(10)).slice(2,5).join(' | '),del:JSON.stringify(floatingPromptDeliveries.get(sid))});return window.__origMark.apply(this,arguments);};}true`);
       const text = `FIRST_SEND_${label}`;
       const sentAt = await c.eval(`(()=>{const box=document.querySelector('.floating-input-bar[data-session-id="${sid}"] .floating-input-box');box.textContent=${j(text)};box.dispatchEvent(new Event("input",{bubbles:true}));box.closest(".floating-input-bar").querySelector(".floating-input-send").click();return Date.now();})()`);
       let prompted = false;
       try { await until(`window.__hooks.some(h=>h.sid===${j(sid)}&&h.event==='prompt')`, 'prompt hook', 40000); prompted = true; } catch {}
       const buffer = await c.eval(`ipcRenderer.invoke('debug:get-session-buffer',${j(sid)})`);
       const screen = await c.eval(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;const b=t.buffer.active;const l=[];for(let i=0;i<b.length;i++)l.push(b.getLine(i).translateToString(true));return l.filter(x=>x.trim()).slice(-14).join('\\n');})()`);
-      const stuck = await c.eval(`!!document.querySelector('.floating-input-bar[data-session-id="${sid}"] .fi-stuck:not([hidden])')`);
-      const row = { label, permissionMode, sid, prompted, promptLatencyMs: prompted ? (await c.eval(`window.__hooks.find(h=>h.sid===${j(sid)}&&h.event==='prompt').at`)) - sentAt : null, stuck, screen };
+      const stuck = await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${sid}"] .fi-stuck')?.innerText||false`);
+      const draft = await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${sid}"] .floating-input-box')?.textContent||''`);
+      const probeState = await c.eval(`({agentRuntime: sessions.get(${JSON.stringify(sid)})?.agentRuntime, toasts: [...document.querySelectorAll('.toast, .hub-toast, [class*=toast]')].map(e=>e.innerText).filter(Boolean).slice(-3)})`);
+      const stuckLog = await c.eval('window.__stuckLog');
+      const row = { label, permissionMode, sid, draft, probeState, stuckLog, prompted, promptLatencyMs: prompted ? (await c.eval(`window.__hooks.find(h=>h.sid===${j(sid)}&&h.event==='prompt').at`)) - sentAt : null, stuck, screen };
       fs.writeFileSync(path.join(out, `buffer-${label}.txt`), typeof buffer === 'string' ? buffer : JSON.stringify(buffer));
       result.sessions.push(row);
-      console.log(`[first-send] ${label} ${permissionMode} prompted=${prompted} latency=${row.promptLatencyMs} stuck=${stuck}`);
+      console.log(`[first-send] ${label} ${permissionMode} prompted=${prompted} latency=${row.promptLatencyMs} stuck=${stuck} draft=${JSON.stringify(draft)} state=${JSON.stringify(probeState)}`);
     }
   } catch (error) { result.error = error.stack; process.exitCode = 1; }
   finally {

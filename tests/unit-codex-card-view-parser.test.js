@@ -293,3 +293,26 @@ main().then(() => {
   console.error(err && err.stack || err);
   process.exit(1);
 });
+
+// 2026-09-25 卡片一致性对比：PTY Codex 卡片缺 nativeOutcome（原生是 completed），
+// 卡片据此显示「本轮已完成 / 已中断」。
+require('node:test')('rollout turns carry the same outcome field as native cards', () => {
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const { parseCodexRolloutToTurns } = require('../core/codex-transcript-parser');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'codex-outcome-')), 'rollout-x.jsonl');
+  const at = s => new Date(Date.UTC(2026, 8, 25, 2, 0, s)).toISOString();
+  const rows = [
+    { timestamp: at(0), type: 'session_meta', payload: { id: 'x', cwd: 'C:\w', timestamp: at(0) } },
+    { timestamp: at(1), type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+    { timestamp: at(1), type: 'event_msg', payload: { type: 'user_message', message: 'q1' } },
+    { timestamp: at(2), type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1', last_agent_message: 'a1' } },
+    { timestamp: at(3), type: 'event_msg', payload: { type: 'task_started', turn_id: 't2' } },
+    { timestamp: at(3), type: 'event_msg', payload: { type: 'user_message', message: 'q2' } },
+    { timestamp: at(4), type: 'event_msg', payload: { type: 'agent_message', message: 'working on it' } },
+    { timestamp: at(5), type: 'event_msg', payload: { type: 'turn_aborted', turn_id: 't2', reason: 'interrupted' } },
+  ];
+  fs.writeFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const turns = parseCodexRolloutToTurns(file, {}).filter(t => t.role === 'assistant');
+  assert.deepEqual(turns.map(t => t.nativeOutcome), ['completed', 'interrupted']);
+});

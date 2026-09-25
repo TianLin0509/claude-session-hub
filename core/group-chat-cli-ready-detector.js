@@ -37,7 +37,9 @@ const MARKERS = {
 
 // 启动时的选择框（模型迁移提示、更新提示……）会把第一条粘贴吞掉，随后的回车还会
 // 替用户选中默认项（2026-09-25 真机：GPT-5.5 退役提示被回车选成「换新模型」）。
-const CHOICE_DIALOG_BLOCKERS = [/press enter to confirm/i, /Use ↑\/↓ to move/i, /Enter to confirm · Esc to cancel/i];
+// Claude 的 Chrome 扩展提示结尾是 "Enter to confirm · Esc to keep browser tools off"，
+// 不是 "Esc to cancel"（2026-09-25 真机），所以只认前半句的固定结构。
+const CHOICE_DIALOG_BLOCKERS = [/press enter to confirm/i, /Use ↑\/↓ to move/i, /Enter to confirm\s*[·|]\s*Esc to\b/i];
 
 const BLOCKERS = {
   claude: [...CHOICE_DIALOG_BLOCKERS],

@@ -4827,8 +4827,24 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
+      // PTY 会话明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框、说明原因，
+      // 不亮「补发」——补发只会把同一段文字塞进同一个选择框。主进程的失败回执可能
+      // 比这里先到、已在本会话的各个输入栏亮起提示，这里一并清掉。
+      if (!result?.ok && result?.notSent && session?.agentRuntime === 'pty') {
+        delivery.dismissed = true;
+        updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
+        if (!readContenteditablePlainText(inputBox)) { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
+        showToast('消息未发送：' + (result.message || 'CLI 暂时不能接收输入'), 'error');
+        for (const other of document.querySelectorAll('.floating-input-bar')) {
+          if (other.dataset.sessionId === sessionId) clearFloatingInputStuck(other);
+        }
+        return;
+      }
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
+      // 明确「未发送」：先标成已处理，否则下面这条失败回执会在同一会话的所有输入栏
+      // （含分屏里的另一栏）点亮「补发」——没发出去的东西不存在补发。
+      if (result?.notSent && (isNativeAgent(session) || session?.agentRuntime === 'pty')) delivery.dismissed = true;
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok || result?.unconfirmed ? 'unconfirmed' : 'failed' });
       // PTY 会话也可能明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框，
       // 提示原因，不亮「补发」——补发会把同一段文字塞进同一个选择框。
@@ -4840,7 +4856,10 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
         }
         if (result?.notSent) {
           showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
-          clearFloatingInputStuck(bar);return;
+          for (const other of document.querySelectorAll('.floating-input-bar')) {
+            if (other.dataset.sessionId === sessionId) clearFloatingInputStuck(other);
+          }
+          return;
         }
       }
       markFloatingInputStuck(bar, sessionId);
@@ -7252,6 +7271,12 @@ function ptyToolQuestionText(toolName, toolInput) {
       .filter(Boolean).join('\n');
   }).filter(Boolean);
   return lines.join('\n\n') || '请在终端回答问题';
+}
+
+// renderer 里有 14 处调用 showToast，却一直没有定义（调用即 ReferenceError，
+// 之前只在少见的原生分支里，没人撞上）。复用群聊分叉已有的轻提示。
+function showToast(message, level) {
+  require('./groupchat-fork-ui.js').showForkToast(document, String(message || ''), level === 'error' ? 'error' : 'info');
 }
 
 // PermissionRequest 不带工具参数（hook 边界的既有约定）；同一次调用的 PreToolUse
