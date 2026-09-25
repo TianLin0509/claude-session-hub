@@ -20,6 +20,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const childProcess = require('child_process');
+const { scanTomlStatements, tomlKey, simpleStringValue, samePath, isPrefix } = require('./toml-statements');
 
 const MARKER = 'session-hub-hook';
 const TIMEOUT_SEC = 5;
@@ -99,52 +101,105 @@ function copyHookScript(codexHome, sourceScript) {
   return target;
 }
 
-// TOML literal key：Windows 路径里没有单引号时可原样放进 '...'。
-function tomlStateHeader(key) {
-  if (key.includes("'") || /[\r\n]/.test(key)) return null;
-  return `[hooks.state.'${key}']`;
-}
-
-// 只增改 Hub 自己的 [hooks.state.'<key>'] 表，其余文本逐字保留。
+// 只增改 Hub 自己的 [hooks.state.<key>] 表里的 trusted_hash，其余文本逐字保留。
+//
+// 表和键按 TOML 语义识别：'单引号'、"双引号"（含转义）、点号两侧空白、行尾注释
+// 都是同一个表。Hub 只改两种形状：独立的 [hooks.state.<key>] 表，或者完全没有
+// 这个条目（在文末追加）。条目若以点号键或内联表的形式写在别处，就不动它，
+// 记进 skipped —— 猜着改最容易写出重复定义。扫描不了的文本整体不改。
 function upsertTrustedHashes(configText, entries) {
-  const eol = configText.includes('\r\n') ? '\r\n' : '\n';
-  const lines = configText.length ? configText.split(/\r?\n/) : [];
-  let changed = false;
+  const text = String(configText || '');
+  let scan;
+  try { scan = scanTomlStatements(text); }
+  catch (error) { return { changed: false, text, skipped: entries.map(e => e.key), error: `config.toml 无法识别：${error.message}` }; }
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.length ? text.split(/\r?\n/) : [];
+  const edits = [];
   const appended = [];
+  const skipped = [];
   for (const { key, hash } of entries) {
-    const header = tomlStateHeader(key);
-    if (!header) continue;
-    const at = lines.findIndex(line => line.trim() === header);
-    if (at < 0) {
-      appended.push('', header, `trusted_hash = "${hash}"`);
-      changed = true;
+    const target = ['hooks', 'state', key];
+    const wanted = `trusted_hash = "${hash}"`;
+    const tableAt = scan.statements.findIndex(s => s.kind === 'table' && samePath(s.path, target));
+    if (tableAt >= 0) {
+      const own = [];
+      for (let i = tableAt + 1; i < scan.statements.length && scan.statements[i].kind === 'kv'; i += 1) own.push(scan.statements[i]);
+      const hashStmt = own.find(s => samePath(s.key, ['trusted_hash']));
+      if (!hashStmt) edits.push({ at: scan.statements[tableAt].endLine + 1, remove: 0, insert: [wanted] });
+      else if (simpleStringValue(hashStmt.valueText) !== hash) {
+        const line = lines[hashStmt.startLine];
+        const indent = /^[ \t]*/.exec(line)[0];
+        let tail = '';
+        if (hashStmt.startLine === hashStmt.endLine) {
+          const at = line.indexOf(hashStmt.valueText, line.indexOf('='));
+          tail = line.slice(at + hashStmt.valueText.length); // 保留行尾注释
+        }
+        edits.push({ at: hashStmt.startLine, remove: hashStmt.endLine - hashStmt.startLine + 1, insert: [indent + wanted + tail] });
+      }
+      // 用户显式禁用过的条目尊重用户：保留 enabled = false，不替他打开。
       continue;
     }
-    let end = at + 1;
-    while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1;
-    const hashLine = lines.slice(at + 1, end).findIndex(line => /^\s*trusted_hash\s*=/.test(line));
-    const wanted = `trusted_hash = "${hash}"`;
-    if (hashLine < 0) { lines.splice(at + 1, 0, wanted); changed = true; }
-    else if (lines[at + 1 + hashLine].trim() !== wanted) { lines[at + 1 + hashLine] = wanted; changed = true; }
-    // 用户显式禁用过的条目尊重用户：保留 enabled = false，不替他打开。
+    // 条目（或它的上级）以别的形状存在：点号键、内联表、数组表。不改，交给语义校验之外的人工处理。
+    const elsewhere = scan.statements.some(s => (s.kind === 'kv' && (isPrefix(target, s.path) || isPrefix(s.path, target)))
+      || (s.kind !== 'kv' && s.kind !== 'table' && (isPrefix(target, s.path) || isPrefix(s.path, target)))
+      || (s.kind === 'table' && isPrefix(target, s.path)));
+    if (elsewhere) { skipped.push(key); continue; }
+    appended.push('', `[hooks.state.${tomlKey(key)}]`, wanted);
   }
-  if (!changed) return { changed: false, text: configText };
-  let text = lines.join(eol);
+  if (!edits.length && !appended.length) return { changed: false, text, skipped };
+  for (const edit of edits.sort((a, b) => b.at - a.at)) lines.splice(edit.at, edit.remove, ...edit.insert);
+  let next = lines.join(eol);
   if (appended.length) {
-    if (text.length && !text.endsWith(eol)) text += eol;
-    if (!/\[hooks\.state\]/.test(text)) appended.unshift('', '[hooks.state]');
-    text += appended.join(eol) + eol;
+    if (next.length && !next.endsWith(eol)) next += eol;
+    next += appended.join(eol) + eol;
   }
-  return { changed: true, text };
+  return { changed: true, text: next, skipped };
+}
+
+// 用 Python 标准库 tomllib 读出整份配置的语义（hook 本身就靠 python 运行）。
+function parseTomlWithPython(text) {
+  const result = childProcess.spawnSync('python', ['-c',
+    'import sys,json,tomllib;print(json.dumps(tomllib.loads(sys.stdin.read()),default=str,sort_keys=True))'], {
+    input: text, encoding: 'utf8', windowsHide: true, timeout: 15000,
+    env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+  });
+  if (result.error) throw new Error(`无法运行 python 校验 config.toml：${result.error.message}`);
+  if (result.status !== 0) throw new Error(String(result.stderr || '').trim().split(/\r?\n/).pop() || `python 退出码 ${result.status}`);
+  return JSON.parse(result.stdout);
+}
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+}
+
+// 写盘前的闸门：旧文本必须能解析；新文本除 Hub 条目的 trusted_hash 之外语义完全不变。
+function verifyTrustEdit(before, after, entries, parse) {
+  let oldDoc;
+  try { oldDoc = parse(before); }
+  catch (error) { throw new Error(`现有 config.toml 解析失败，不改动：${error.message}`); }
+  let newDoc;
+  try { newDoc = parse(after); }
+  catch (error) { throw new Error(`改写后的 config.toml 解析失败，已放弃写入：${error.message}`); }
+  const expected = JSON.parse(JSON.stringify(oldDoc));
+  for (const { key, hash } of entries) {
+    if (!expected.hooks || typeof expected.hooks !== 'object') expected.hooks = {};
+    if (!expected.hooks.state || typeof expected.hooks.state !== 'object') expected.hooks.state = {};
+    if (!expected.hooks.state[key] || typeof expected.hooks.state[key] !== 'object') expected.hooks.state[key] = {};
+    expected.hooks.state[key].trusted_hash = hash;
+  }
+  if (!deepEqual(newDoc, expected)) throw new Error('改写后的 config.toml 语义与预期不一致，已放弃写入');
 }
 
 /**
  * 保证指定 CODEX_HOME 下 Hub 的 Codex hook 已部署且受信任。幂等；
  * 失败只返回 errors，由调用方显示降级，不抛出去拦住会话启动。
  */
-function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, logger = console } = {}) {
+function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, logger = console, parseToml = parseTomlWithPython } = {}) {
   const home = path.resolve(codexHome || defaultCodexHome());
-  const result = { codexHome: home, hooksChanged: false, trustChanged: false, trusted: [], errors: [] };
+  const result = { codexHome: home, hooksChanged: false, trustChanged: false, trusted: [], untrusted: [], errors: [] };
   const script = sourceScript || path.join(__dirname, '..', 'scripts', 'session-hub-hook.py')
     .replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
   const hooksPath = path.join(home, 'hooks.json');
@@ -179,8 +234,17 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
     let configText = '';
     try { configText = fs.readFileSync(configPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const next = upsertTrustedHashes(configText, trust);
-    if (next.changed) { writeAtomic(configPath, next.text); result.trustChanged = true; }
-    result.trusted = trust.map(entry => entry.key);
+    if (next.error) throw new Error(next.error);
+    result.untrusted = next.skipped || [];
+    if (result.untrusted.length) {
+      result.errors.push(`config.toml 里有 ${result.untrusted.length} 条 Hub hook 的信任记录写法无法安全改写，请在 Codex /hooks 中手动信任`);
+    }
+    if (next.changed) {
+      verifyTrustEdit(configText, next.text, trust.filter(entry => !result.untrusted.includes(entry.key)), parseToml);
+      writeAtomic(configPath, next.text);
+      result.trustChanged = true;
+    }
+    result.trusted = trust.map(entry => entry.key).filter(key => !result.untrusted.includes(key));
     if (result.hooksChanged || result.trustChanged) logger.log?.(`[codex-hooks] Hub hook 已部署并信任：${home}`);
   } catch (error) {
     result.errors.push(error.message);
@@ -189,4 +253,7 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
   return result;
 }
 
-module.exports = { HUB_CODEX_HOOKS, codexHookTrustHash, upsertTrustedHashes, ensureCodexHookIntegration, hookArg };
+module.exports = {
+  HUB_CODEX_HOOKS, codexHookTrustHash, upsertTrustedHashes, ensureCodexHookIntegration, hookArg,
+  parseTomlWithPython, verifyTrustEdit,
+};

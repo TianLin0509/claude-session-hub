@@ -80,3 +80,107 @@ test('a malformed hooks.json is reported, never overwritten', t => {
   assert.equal(result.errors.length, 1);
   assert.equal(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8'), '{ not json');
 });
+
+// ---- TOML 语义（返工 R3）：同一个表的等价写法必须认出来，不能重复声明、不能写坏配置 ----
+const { parseTomlWithPython } = require('../core/codex-hook-integration');
+const { scanTomlStatements } = require('../core/toml-statements');
+
+test('reviewer repro: a basic-quoted header Codex may write is the same table; redeploy keeps TOML valid', t => {
+  const home = tempHome(t);
+  const script = fakeScript(home);
+  ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {} });
+  const file = path.join(home, 'config.toml');
+  const basic = fs.readFileSync(file, 'utf8').replace(/\[hooks\.state\.'([^']+)'\]/g, (_, key) => '[hooks.state.' + JSON.stringify(key) + ']');
+  fs.writeFileSync(file, basic);
+  const before = parseTomlWithPython(basic);
+  const again = ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {} });
+  assert.deepEqual(again.errors, []);
+  assert.equal(again.trustChanged, false, 'equivalent header recognised, nothing rewritten');
+  assert.equal(fs.readFileSync(file, 'utf8'), basic);
+  assert.deepEqual(parseTomlWithPython(fs.readFileSync(file, 'utf8')), before);
+});
+
+test('spaces around dots, escapes, comments: stale hash is updated in place and the comment survives', () => {
+  const key = 'C:\\h\\hooks.json:stop:0:0';
+  const text = [
+    'model = "x" # 用户注释',
+    '[ hooks . state . "C:\\\\h\\\\hooks.json:stop:0:0" ]  # Codex 写的',
+    'enabled = false',
+    'trusted_hash = "sha256:old" # 旧值',
+    '',
+    '[hooks.state."C:\\\\h\\\\hooks.json:prompt:0:0"]',
+    'trusted_hash = "sha256:keep"',
+    '',
+  ].join('\n');
+  const next = upsertTrustedHashes(text, [{ key, hash: 'sha256:new' }, { key: 'C:\\h\\hooks.json:prompt:0:0', hash: 'sha256:keep' }]);
+  assert.equal(next.changed, true);
+  assert.deepEqual(next.skipped, []);
+  assert.ok(next.text.includes('trusted_hash = "sha256:new" # 旧值'));
+  const doc = parseTomlWithPython(next.text);
+  assert.deepEqual(doc.hooks.state[key], { enabled: false, trusted_hash: 'sha256:new' });
+  assert.equal(doc.hooks.state['C:\\h\\hooks.json:prompt:0:0'].trusted_hash, 'sha256:keep');
+  assert.equal(doc.model, 'x');
+});
+
+test('entries written as dotted keys or inline tables are left alone and reported, never duplicated', t => {
+  const home = tempHome(t);
+  const script = fakeScript(home);
+  const hooksPath = path.join(home, 'hooks.json');
+  ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {} });
+  const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8')).hooks;
+  const stopKey = `${hooksPath}:stop:0:0`;
+  const stopHash = codexHookTrustHash('stop', undefined, hooks.Stop[0].hooks[0]);
+  // 同一份信任用点号键写在 [hooks.state] 下（合法 TOML），其余条目也改成点号写法但值过期。
+  const others = HUB_CODEX_HOOKS.filter(([name]) => name !== 'Stop')
+    .map(([name, label]) => `${JSON.stringify(`${hooksPath}:${label}:0:0`)}.trusted_hash = "sha256:stale-${name}"`);
+  const text = `[hooks.state]\n${JSON.stringify(stopKey)}.trusted_hash = "${stopHash}"\n${others.join('\n')}\n`;
+  fs.writeFileSync(path.join(home, 'config.toml'), text);
+  const result = ensureCodexHookIntegration({ codexHome: home, sourceScript: script, logger: {} });
+  assert.equal(result.trustChanged, false);
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), text, 'file untouched');
+  assert.equal(result.untrusted.length, HUB_CODEX_HOOKS.length);
+  assert.match(result.errors.join(), /手动信任/);
+  parseTomlWithPython(text);
+});
+
+test('an unparsable config.toml is never rewritten', t => {
+  const home = tempHome(t);
+  const bad = '[hooks.state\ntrusted_hash = 1\n';
+  fs.writeFileSync(path.join(home, 'config.toml'), bad);
+  const result = ensureCodexHookIntegration({ codexHome: home, sourceScript: fakeScript(home), logger: {} });
+  assert.equal(result.errors.length, 1);
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), bad);
+});
+
+test('the write is gated on a semantic diff: any unexpected change aborts the write', t => {
+  const home = tempHome(t);
+  const original = 'model = "x"\n';
+  fs.writeFileSync(path.join(home, 'config.toml'), original);
+  let calls = 0;
+  const lyingParser = text => { calls += 1; const doc = parseTomlWithPython(text); if (calls === 2) doc.model = 'changed'; return doc; };
+  const result = ensureCodexHookIntegration({ codexHome: home, sourceScript: fakeScript(home), logger: {}, parseToml: lyingParser });
+  assert.equal(result.trustChanged, false);
+  assert.match(result.errors.join(), /语义与预期不一致/);
+  assert.equal(fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), original);
+});
+
+test('scanner skips values that look like headers: multi-line strings and arrays', () => {
+  const text = [
+    'notes = """',
+    '[hooks.state.\'fake\']',
+    'trusted_hash = "x"',
+    '"""',
+    'arr = [',
+    '  [1, 2], # nested',
+    '  "]",',
+    ']',
+    "[hooks.state.'real']",
+    'trusted_hash = "y"',
+  ].join('\r\n');
+  const tables = scanTomlStatements(text).statements.filter(s => s.kind === 'table');
+  assert.deepEqual(tables.map(s => s.path), [['hooks', 'state', 'real']]);
+  const next = upsertTrustedHashes(text, [{ key: 'fake', hash: 'sha256:z' }]);
+  const doc = parseTomlWithPython(next.text);
+  assert.equal(doc.notes.includes("[hooks.state.'fake']"), true, 'string content untouched');
+  assert.equal(doc.hooks.state.fake.trusted_hash, 'sha256:z');
+});
