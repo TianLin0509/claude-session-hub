@@ -88,7 +88,7 @@ function writeAtomic(file, text) {
 }
 
 function copyHookScript(codexHome, sourceScript) {
-  const target = path.join(codexHome, 'hub-scripts', 'session-hub-hook.py');
+  const target = hubHookScriptPath(codexHome);
   const source = fs.readFileSync(sourceScript);
   let current = null;
   try { current = fs.readFileSync(target); } catch {}
@@ -99,6 +99,32 @@ function copyHookScript(codexHome, sourceScript) {
     fs.renameSync(temporary, target);
   }
   return target;
+}
+
+function hubHookScriptPath(codexHome) {
+  return path.join(codexHome, 'hub-scripts', 'session-hub-hook.py');
+}
+
+// 在一份 hooks.json 内容上补齐 Hub 的事件，原有条目（包括别处已部署的
+// session-hub-hook 同名事件）原样保留、不重复。纯函数：个人规则同步
+// （agent-user-context）写 hooks.json 时也用它，两边的期望内容才会一致。
+function mergeHubCodexHooks(hooksFile, targetScript) {
+  const next = hooksFile && typeof hooksFile === 'object' && !Array.isArray(hooksFile)
+    ? JSON.parse(JSON.stringify(hooksFile)) : {};
+  if (!next.hooks || typeof next.hooks !== 'object' || Array.isArray(next.hooks)) next.hooks = {};
+  const hooks = next.hooks;
+  let changed = false;
+  for (const [eventName, , arg, asyncHook] of HUB_CODEX_HOOKS) {
+    if (!Array.isArray(hooks[eventName])) hooks[eventName] = [];
+    const present = hooks[eventName].some(group => Array.isArray(group && group.hooks)
+      && group.hooks.some(handler => String(handler && handler.command || '').includes(MARKER)
+        && hookArg(handler.command) === arg));
+    if (present) continue;
+    hooks[eventName].push({ hooks: [{ type: 'command', command: `python "${targetScript}" ${arg}`,
+      timeout: TIMEOUT_SEC, ...(asyncHook ? { async: true } : {}) }] });
+    changed = true;
+  }
+  return { changed, hooksFile: next };
 }
 
 // 只增改 Hub 自己的 [hooks.state.<key>] 表里的 trusted_hash，其余文本逐字保留。
@@ -206,19 +232,10 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
   const configPath = path.join(home, 'config.toml');
   try {
     const target = copyHookScript(home, script);
-    const hooksFile = readJson(hooksPath);
-    if (!hooksFile.hooks || typeof hooksFile.hooks !== 'object' || Array.isArray(hooksFile.hooks)) hooksFile.hooks = {};
+    const merged = mergeHubCodexHooks(readJson(hooksPath), target);
+    const hooksFile = merged.hooksFile;
     const hooks = hooksFile.hooks;
-    for (const [eventName, , arg, asyncHook] of HUB_CODEX_HOOKS) {
-      if (!Array.isArray(hooks[eventName])) hooks[eventName] = [];
-      const present = hooks[eventName].some(group => Array.isArray(group && group.hooks)
-        && group.hooks.some(handler => String(handler && handler.command || '').includes(MARKER)
-          && hookArg(handler.command) === arg));
-      if (present) continue;
-      hooks[eventName].push({ hooks: [{ type: 'command', command: `python "${target}" ${arg}`,
-        timeout: TIMEOUT_SEC, ...(asyncHook ? { async: true } : {}) }] });
-      result.hooksChanged = true;
-    }
+    result.hooksChanged = merged.changed;
     if (result.hooksChanged) writeAtomic(hooksPath, JSON.stringify(hooksFile, null, 2) + '\n');
 
     const trust = [];
@@ -255,5 +272,6 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
 
 module.exports = {
   HUB_CODEX_HOOKS, codexHookTrustHash, upsertTrustedHashes, ensureCodexHookIntegration, hookArg,
+  mergeHubCodexHooks, hubHookScriptPath,
   parseTomlWithPython, verifyTrustEdit,
 };

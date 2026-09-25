@@ -8,7 +8,7 @@ test('native launch preserves explicit tuning, policy, cwd, instructions and res
   const info={kind:'codex',cwd:home,currentModel:{id:'gpt-6-astra'},effort:'xhigh',contextMax:400000,mcpProfile:'none',codexSpeedTier:'standard'};
   const opts={useResume:true,codexSid:'native-id',approvalPolicy:'on-request',sandbox:'read-only',codexInstructionFile:path.join(home,'rules.md')};
   const o=buildNativeCodexOptions(info,opts,{CODEX_HOME:home});
-  assert.deepEqual(o.threadParams,{cwd:home,model:'gpt-6-astra',approvalPolicy:'on-request',sandbox:'read-only',config:{model_reasoning_effort:'xhigh','windows.sandbox':'unelevated','notice.hide_full_access_warning':true,model_context_window:400000,model_instructions_file:opts.codexInstructionFile}});
+  assert.deepEqual(o.threadParams,{cwd:home,model:'gpt-6-astra',approvalPolicy:'on-request',sandbox:'read-only',config:{project_root_markers:['.git','.vibe-root'],model_reasoning_effort:'xhigh','windows.sandbox':'unelevated','notice.hide_full_access_warning':true,model_context_window:400000,model_instructions_file:opts.codexInstructionFile}});
   assert.deepEqual(o.turnParams,{model:'gpt-6-astra',effort:'xhigh',serviceTier:'default'});assert.equal(o.resumeId,'native-id');assert.equal(o.picker,false);
   const lazy=buildNativeCodexOptions({...info,kind:'codex-resume'},{lazyStart:true,useResume:true,codexResumePicker:true},{CODEX_HOME:home});
   assert.equal(lazy.picker,false);assert.equal(lazy.resumeLatest,false);

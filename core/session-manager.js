@@ -264,7 +264,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   if (!legacy && shouldUseClaudeFastSettings(cv, opts)) settings.push(resolveAsarUnpacked('claude-subscription-fast-settings.json'));
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
-    overrides: { fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts) },
+    overrides: { ...require('./agent-user-context').claudeSharedConfig(env,hubDataDir),fastMode: !legacy && shouldUseClaudeFastSettings(cv, opts) },
   });
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
     effort: legacy || process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
@@ -1010,7 +1010,8 @@ function ensureCodexMcpEntries(configDir, entries, managedNames = []) {
 function buildNativeCodexOptions(info, opts, env) {
   const home = env.CODEX_HOME || path.join(os.homedir(), '.codex');
   const profile = info.mcpProfile;
-  const configuredNames = listCodexMcpServerNames(home);
+  const sharedConfig = require('./agent-user-context').codexSharedConfig(env,getHubDataDir());
+  const configuredNames = [...new Set([...listCodexMcpServerNames(home),...Object.keys(sharedConfig.mcp_servers||{})])];
   const allowed = new Set(profile === 'full' ? configuredNames.filter(name=>!CODEX_MANAGED_MCP_NAMES.includes(name)) : []);
   if (profile === 'browser') allowed.add('playwright');
   if (profile !== 'none' && (profile === 'wireless' || isWirelessWorkspace(info.cwd))) {
@@ -1018,7 +1019,7 @@ function buildNativeCodexOptions(info, opts, env) {
   }
   const entries = profile === 'none' ? [] : require('./web-roundtable/integration').entries(opts.codexMcpEntries, profile, getHubDataDir());
   entries.forEach(entry => allowed.add(entry.name));
-  const config = {};
+  const config = {...sharedConfig};
   if (require('./chatgpt-web-models').isChatgptWebModel(info.currentModel?.id)) {
     const web = require('./chatgpt-web-integration').requireWebTools(info.currentModel.id);
     config.model_provider = 'openai';
@@ -1045,7 +1046,8 @@ function buildNativeCodexOptions(info, opts, env) {
     config['features.fast_mode'] = true;
     config.service_tier = tier === 'standard' ? 'default' : tier;
   }
-  const threadConfig = { model_reasoning_effort:normalizeCodexEffort(info.effort),
+  const threadConfig = { project_root_markers:['.git','.vibe-root'],
+    model_reasoning_effort:normalizeCodexEffort(info.effort),
     'windows.sandbox':'unelevated', 'notice.hide_full_access_warning':true };
   if (info.contextMax) threadConfig.model_context_window = info.contextMax;
   if (opts.codexInstructionFile) threadConfig.model_instructions_file = opts.codexInstructionFile;
@@ -1053,7 +1055,7 @@ function buildNativeCodexOptions(info, opts, env) {
   const sandbox = opts.sandbox || 'danger-full-access';
   return {
     mcpProfile:profile,
-    processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+JSON.stringify(value)]),
+    processArgs:Object.entries(config).flatMap(([key,value]) => ['-c',key+'='+require('./agent-user-context').codexTomlValue(value)]),
     threadParams:{cwd:info.cwd,model:info.currentModel.id,approvalPolicy,sandbox,config:threadConfig},
     turnParams:{model:info.currentModel.id,effort:normalizeCodexEffort(info.effort),
       ...(tier && tier !== 'inherit' ? {serviceTier:tier === 'standard' ? 'default' : tier} : {})},
@@ -1473,6 +1475,14 @@ class SessionManager extends EventEmitter {
     }
 
     const isNativeClaude = (isClaude && nativeAgentRuntime) || isDeepSeekLegacy;
+    // 个人规则同步与运行时无关：PTY 与原生的 Claude 都读同一个 CLAUDE_CONFIG_DIR。
+    const contextKind = isCodexRuntime ? 'codex' : (isClaude || isDeepSeekLegacy) ? 'claude' : isKimi ? 'kimi' : isGemini ? 'gemini' : null;
+    if (contextKind) {
+      const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
+        : contextKind === 'claude' ? sessionEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
+        : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(os.homedir(),'.gemini');
+      require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
+    }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
     if (isCodex) {
 
@@ -1693,6 +1703,10 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, {
       info,
       pty: ptyProcess,
+      nativeRuleCoverage: require('./native-rule-coverage').captureNativeRuleCoverage({
+        kind:isNativeClaude?'claude':isCodexRuntime?'codex':kind.replace(/-resume$/,''),cwd:spawnCwd,
+        env:isAcp?ptyProcess.options.launch.env:sessionEnv,
+        claudeSettingsFile:isNativeClaude?ptyProcess.options.settingsFile:null,settingSources:opts.settingSources}),
       codexMcpEntries: effectiveCodexMcpProfile !== 'none' && Array.isArray(opts.codexMcpEntries)
         ? opts.codexMcpEntries.map((entry) => ({ ...entry, env: { ...(entry.env || {}) } }))
         : [],
@@ -1825,6 +1839,7 @@ class SessionManager extends EventEmitter {
     if (isNativeCodex || isAcp) {
       if (isNativeCodex) Object.assign(ptyProcess.options, buildNativeCodexOptions(info, opts, sessionEnv));
       if (followsGlobalAccount) ptyProcess.options.accountOptions = (_target,env) => {
+        require('./agent-user-context').syncNativeUserContext({kind:'codex',nativeHome:env.CODEX_HOME,env,dataDir:getHubDataDir()});
         ensureCodexCwdTrusted(info.cwd,env.CODEX_HOME);
         const next=buildNativeCodexOptions(info,opts,env);
         return {processArgs:next.processArgs,threadParams:next.threadParams,turnParams:next.turnParams};

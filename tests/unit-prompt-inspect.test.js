@@ -135,16 +135,28 @@ test('Codex 的 project root 由 markers 决定，且不越过它', () => {
     fs.writeFileSync(path.join(root, 'AGENTS.md'), 'ROOT', 'utf8');
     fs.writeFileSync(path.join(inner, 'AGENTS.md'), 'WS', 'utf8');
 
-    // 直接验证纯函数逻辑：用 .vibe-root 当 marker 时 root 应上浮到 root
-    const cx = PI.discoverCodexChain(inner);
-    const projectEntries = cx.entries.filter(e => e.source === 'project');
-    if (cx.markers.includes('.vibe-root')) {
-      assert.strictEqual(cx.projectRoot, root, 'root 应上浮到 .vibe-root 所在层');
-      assert.strictEqual(projectEntries.length, 2, '应收集 root + ws 两份');
-    } else {
-      // 未配置 .vibe-root 时退回 .git，root 落在 ws 自己
-      assert.strictEqual(cx.projectRoot, inner);
-      assert.strictEqual(projectEntries.length, 1);
+    // Control the fixture home: this test must not depend on the user's live
+    // marker settings. With both markers enabled, the nearest one wins.
+    const fakeHome = path.join(root, 'home');
+    fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+    const previous = process.env.USERPROFILE;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      for (const [markers, expectedRoot, count] of [
+        [['.vibe-root'], root, 2],
+        [['.git'], inner, 1],
+        [['.git', '.vibe-root'], inner, 1],
+      ]) {
+        fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'),
+          'project_root_markers = ' + JSON.stringify(markers) + '\n');
+        const cx = PI.discoverCodexChain(inner);
+        assert.deepStrictEqual(cx.markers, markers);
+        assert.strictEqual(cx.projectRoot, expectedRoot, 'nearest enabled marker determines root');
+        assert.strictEqual(cx.entries.filter(e => e.source === 'project').length, count);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previous;
     }
   });
 });
