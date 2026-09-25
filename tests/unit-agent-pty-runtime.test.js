@@ -86,8 +86,11 @@ test('screen evidence cannot drag a PTY turn that hooks/transcripts already sett
   // 2026-09-25 真机：Codex 内联界面的旧「• Working … esc to interrupt」行留在缓冲区里，
   // 每次完成约一秒后都被屏幕识别改回运行。新一轮只能由 hook / task_started 开启。
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  // 规则抽成 ptyTurnClosedAuthoritatively，屏幕观察与 Stop 路径共用（第 3 轮 R4）。
+  const helper = source.slice(source.indexOf('function ptyTurnClosedAuthoritatively('));
+  assert.match(helper.slice(0, 600), /session\.agentRuntime === 'pty'[\s\S]{0,200}truth\.confidence === CONFIDENCE_AUTHORITATIVE/);
   const fn = source.slice(source.indexOf('function applyPtyRuntimeObservation('));
-  assert.match(fn.slice(0, 2500), /runtime\.state === 'running' && session\.agentRuntime === 'pty'[\s\S]{0,200}truthBefore\.confidence === CONFIDENCE_AUTHORITATIVE\)[\s\S]{0,400}return false;/);
+  assert.match(fn.slice(0, 2500), /runtime\.state === 'running' && ptyTurnClosedAuthoritatively\(session, truthBefore\)\)[\s\S]{0,700}return false;/);
 });
 
 test('renderer defines the showToast helper its error paths call', () => {
