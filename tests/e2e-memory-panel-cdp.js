@@ -71,7 +71,7 @@ async function main(){
     await click('#btn-rail-memory');
     await until('document.querySelector("#memory-page .mp-pagehead h2")','context content');
     assert.equal(await cdp.eval('document.querySelectorAll("#memory-page [role=tab]").length'),3);
-    assert.equal(await cdp.eval('[...document.querySelectorAll("#scene-rail > .btn-shell-nav")].indexOf(document.getElementById("btn-rail-memory"))'),5);
+    assert.equal(await cdp.eval('[...document.querySelectorAll("#scene-rail .btn-shell-nav")].indexOf(document.getElementById("btn-rail-memory"))'),5);
     assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#session-sidebar")).visibility'),'hidden');
     assert.equal(await cdp.eval('Math.abs(document.querySelector("#memory-page").getBoundingClientRect().left-document.querySelector("#scene-rail").getBoundingClientRect().right)<1'),true);
     assert.equal(await cdp.eval('document.querySelectorAll(\'[data-action="open-memory"]\').length'),1);
