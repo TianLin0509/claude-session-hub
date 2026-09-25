@@ -1428,6 +1428,7 @@ class SessionManager extends EventEmitter {
       : isCodex
       ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
         ...(followsGlobalAccount ? {accountId:globalAccount.id,ownershipHome:opts.codexHistoryHome,
+          historyStorageHome:opts.codexHistoryStorageHome,
           resolveAccount:()=>{
             const accounts=require('./codex-global-account');
             return accounts.resolveAccount(accounts.currentConfig());

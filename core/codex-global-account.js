@@ -61,7 +61,31 @@ function prepareLaunch(opts, config, env = process.env) {
     throw new Error('未找到旧 Codex 会话的原始历史，无法换账号恢复；未新建替代会话');
   }
   return {account,opts:{...opts,codexProfile:account.id,resumeTranscriptPath:resumePath,
+    codexHistoryStorageHome:historyHome,
     codexHistoryHome:opts.codexSid ? historyHome : account.home,
     codexSessionsRoot:opts.codexSid ? path.join(historyHome,'sessions') : path.join(account.home,'sessions')}};
 }
-module.exports = {resolveAccount,withGlobalAccount,prepareLaunch,currentConfig};
+// Paginated rollouts need their original SQLite thread index as well as the
+// JSONL path. Resolve the source config with Codex itself (including TOML and
+// project overrides), without opening a thread or copying credentials.
+async function resolveHistorySqliteHome(options, persistedHome) {
+  let sqliteHome = options.sqliteHome || persistedHome;
+  if (!sqliteHome) {
+    const historyHome = options.historyStorageHome || options.ownershipHome || options.env.CODEX_HOME;
+    const {CodexAppServerClient} = require('../main/codex-app-server-client');
+    const probe = new CodexAppServerClient({cwd:options.cwd,
+      env:{...options.env,CODEX_HOME:historyHome},args:[]});
+    try {
+      await probe.start();
+      const response = await probe.request('config/read',{includeLayers:false});
+      sqliteHome = response.config?.sqlite_home || options.env.CODEX_SQLITE_HOME || historyHome;
+    } finally { probe.close(); await probe.waitForExit(); }
+  }
+  sqliteHome = path.resolve(options.cwd,sqliteHome);
+  if (options.env.CLAUDE_HUB_DATA_DIR) {
+    const relative=path.relative(path.dirname(path.resolve(options.env.CLAUDE_HUB_DATA_DIR)),sqliteHome);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Codex 历史数据库不在隔离目录内，未启动会话');
+  }
+  return sqliteHome;
+}
+module.exports = {resolveAccount,withGlobalAccount,prepareLaunch,currentConfig,resolveHistorySqliteHome};

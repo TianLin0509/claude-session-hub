@@ -50,6 +50,10 @@ test('global account migration retires old writer, retains thread/history/policy
   config.codexSubscriptionProfile='second';
   await s.send('second',{clientSubmissionId:'second'});await until(()=>s.runtime.state==='completed');
   assert.equal(s.threadId,id);assert.equal(s.options.resumePath,file);assert.equal(s.options.env.CODEX_HOME,b);
+  assert.equal(s.options.env.CODEX_SQLITE_HOME,a);
+  assert.equal(s.runtime.sqliteHome,a);
+  assert.equal(require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime}).sqliteHome,a);
+  assert(s.entry.client.options.args.includes('sqlite_home='+JSON.stringify(a)));
   assert.notEqual(s.entry.client,old);assert(old.proc.exitCode!==null || old.proc.signalCode!==null);
   assert.equal(s.ownershipLease.file,lease);assert(lease.startsWith(a));
   const thread=(await s.entry.client.request('thread/read',{threadId:id,includeTurns:true})).thread;
@@ -87,8 +91,24 @@ test('an unsubmitted empty session changes account without inventing history or 
   await s.start();const oldId=s.threadId;config.codexSubscriptionProfile='second';
   await s.send('first ever');await until(()=>s.runtime.state==='completed');
   assert.notEqual(s.threadId,oldId);assert.equal(s.options.ownershipHome,b);assert.equal(s.options.env.CODEX_HOME,b);
+  assert.equal(s.runtime.sqliteHome,b);
   assert.equal((await s.entry.client.request('thread/read',{threadId:s.threadId})).thread.turns.length,1);
  }finally{await close(s);}
+});
+test('saved SQLite location survives cold resume and is checked against test isolation',async()=>{
+ const {s,config,a,b}=setup();let restored;
+ try {
+  await s.start();await s.send('persisted database');await until(()=>s.runtime.state==='completed');
+  const id=s.threadId,file=s.options.resumePath;
+  const runtime=require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});
+  await close(s);config.codexSubscriptionProfile='second';
+  restored=new CodexNativeSession({...s.options,env:{...s.options.env,CODEX_HOME:b},sqliteHome:undefined,
+   accountId:'second',resumeId:id,resumePath:file,restoredRuntime:runtime});
+  await restored.start();assert.equal(restored.threadId,id);assert.equal(restored.runtime.sqliteHome,a);
+  assert.equal(restored.options.env.CODEX_HOME,b);assert.equal(restored.options.env.CODEX_SQLITE_HOME,a);
+  const {resolveHistorySqliteHome}=require('../core/codex-global-account');
+  await assert.rejects(resolveHistorySqliteHome({...s.options,sqliteHome:path.dirname(path.dirname(a))}),/隔离目录/);
+ }finally{if(restored)await close(restored);await close(s);}
 });
 test('rejected new-account resume cannot fall back or send a duplicate and explicit reconnect can retry',async()=>{
  const {s,config,b}=setup();const {CodexAppServerClient}=require('../main/codex-app-server-client');let fail=true;
