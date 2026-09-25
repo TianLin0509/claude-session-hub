@@ -50,6 +50,7 @@ async function main() {
   try {
     hub = await launchIsolatedHub({ dataDir: data, port: await port(), windowMode: 'visible', label: 'accounts-center', extraEnv: { CLAUDE_HUB_HOME_DIR: home, CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'), AI_HUB_WORKSPACE_ROOT: root,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.resolve('tests/fixtures/codex-app-server.js'), CLAUDE_HUB_NATIVE_FIXTURE_STORE: path.join(root, 'threads.json'),
+      CLAUDE_HUB_ACCOUNT_FIXTURE: path.resolve('tests/fixtures/account-center-cli.js'),
       HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_KIMI_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_GEMINI_ROOTS: path.join(root, 'empty') } });
     result.pid = hub.pid; cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
@@ -58,29 +59,34 @@ async function main() {
     await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-id").length===2', 'two identities');
     // Only two actions exist on the page (plus navigation and API-key configuration).
     const actions = await cdp.eval(`[...new Set([...document.querySelectorAll('#account-page [data-ac]')].map(b=>b.dataset.ac))].sort()`);
-    assert.deepEqual(actions, ['back', 'check', 'close', 'config', 'login']);
+    assert.deepEqual(actions, ['authorize', 'back', 'check', 'close', 'config', 'login']);
     assert.match(await text('.ac-chrome'), /未运行/);
     const main = '.ac-id[data-identity="main"]';
     assert.match(await text(main + ' .ac-id-title'), /main@example\.com/);
     const chips = await cdp.eval(`[...document.querySelectorAll('${main} .ac-id-row:first-of-type .ac-chip')].map(c=>c.className.replace('ac-chip ','')+'|'+c.textContent)`);
-    assert.ok(chips.some(c => /^ok\|ChatGPT · 至 \d+\/\d+$/.test(c)), 'ChatGPT read from the cookie file with its expiry: ' + chips);
+    assert.ok(chips.includes('idle|ChatGPT · 有登录记录'), 'cookie presence never claims verified login: ' + chips);
     assert.ok(chips.includes('warn|Google · 需登录') && chips.includes('warn|千问 · 需登录') === false, 'cookie sites without a login ask for one; localStorage sites do not guess: ' + chips);
-    assert.ok(chips.includes('idle|千问 · 浏览器开着时可确认'));
-    result.checks.push('只有「登录」「检查登录」两个动作；网页登录从磁盘 cookie 读出（含到期日），读不出的站点如实说"浏览器开着时可确认"');
+    assert.ok(chips.includes('idle|千问 · 待检查'));
+    result.checks.push('网页提供登录/检查，CLI 提供独立授权；Cookie 只显示有记录，未知站点可点检查');
 
     // CLIs sit under the identity whose ChatGPT account they use; tokens never reach the page.
     const cli = sel => cdp.eval(`[...document.querySelectorAll('${sel} .ac-id-row:nth-of-type(2) .ac-chip')].map(c=>c.textContent)`);
-    assert.deepEqual((await cli(main)).sort(), ['Claude Code · 需重新授权', 'Codex CLI（主账号）', 'Gemini CLI', 'Kimi Code · 未授权'].sort());
-    assert.deepEqual(await cli('.ac-id[data-identity="alt"]'), ['Codex CLI（副账号）']);
+    assert.deepEqual(await cli(main), ['Codex CLI（主账号） · 已配置 · 授权']);
+    assert.ok((await text('.ac-unplaced')).includes('Codex CLI（副账号）'), 'signed-out web identity cannot borrow a cached email to place CLI');
     const publicState = JSON.stringify(await cdp.eval('ipcRenderer.invoke("hub-accounts:state")'));
     assert.ok(!/SECRET|fixture-codex-key|fixture-deepseek-key/.test(publicState), 'no token or key in what the page receives');
-    result.checks.push('命令行授权按 ChatGPT 账号归到对应身份：Codex 主账号在「主」、副账号在「副」；页面拿到的数据里没有任何令牌或密钥');
+    result.checks.push('Codex 按已知邮箱归属；退出登录的网页不借用旧邮箱，未匹配 CLI 独立展示；页面无令牌或密钥');
     await snap('01-overview');
+    await click('[data-ac="authorize"][data-id="kimi"]');
+    await until('document.querySelector(".ac-status").textContent.includes("官方登录入口已启动")', 'CLI authorization routed');
+    assert.ok(fs.existsSync(path.join(home, 'fixture-login-kimi')), 'Kimi button reaches its registered native connection');
+    result.checks.push('CLI 授权按钮经过真实 IPC 到达对应原工具适配器（授权动作使用隔离夹具）');
 
     // 检查登录 must not start the browser.
-    await click('[data-ac="check"]'); await until('document.querySelector(".ac-status").textContent.includes("已检查")', 'check finished');
-    assert.equal(await chrome.running(), false, 'checking never starts the Hub Chrome');
-    result.checks.push('浏览器没开时点「检查登录」，不会启动浏览器');
+    await click('[data-ac="check"]'); await until('document.querySelector(".ac-status").textContent.includes("已检查")', 'check finished', 90000);
+    for (let i = 0; i < 40 && await chrome.running(); i++) await sleep(250);
+    assert.equal(await chrome.running(), false, 'explicit check releases its temporary Chrome');
+    result.checks.push('页面打开不启动浏览器；明确检查可临时打开一个共享 Chrome，结束后释放');
 
     // A login opens one ordinary window, in the right identity, at the site asked for.
     await click(`${main} .ac-chip[data-site="google"]`);

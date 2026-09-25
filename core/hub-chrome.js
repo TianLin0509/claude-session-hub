@@ -1,8 +1,8 @@
 'use strict';
 // The Hub's one Chrome. It is the only place any web login lives: one profile per account
 // identity (a person's login, e.g. 主 / 副), holding every site that person uses. Web tools
-// open tabs in it instead of starting browsers of their own, and "检查登录" reads its cookie
-// store — no page load, no extra process.
+// open pages in it instead of starting browsers of their own. Passive refresh reads only
+// existing records; an explicit website check is orchestrated by HubAccounts.
 //
 // Measured on this machine (2026-09-25): 4 ChatGPT pages as 4 Chromes = 2,749 MB / 40
 // processes; as 4 tabs of one Chrome = 1,199 MB / 14 processes. One process with one
@@ -86,6 +86,22 @@ class HubChrome {
     if (!SITES[key]) throw new Error('未知的网站：' + key);
     return SITES[key];
   }
+  async lifecycle(fn) {
+    const { acquire } = require('./web-roundtable/store');
+    for (const end = Date.now() + 45000; ; ) {
+      const release = acquire('lifecycle', path.join(this.root, 'locks'));
+      if (release) { try { return await fn(); } finally { release(); } }
+      if (Date.now() > end) throw Error('Hub 浏览器正在切换模式，请稍后重试');
+      await sleep(100);
+    }
+  }
+  async closeIfIdle() {
+    return this.lifecycle(async () => {
+      if (await this.workTabs()) return false;
+      await this.close();
+      return true;
+    });
+  }
 
   // ---- offline: answer "is this identity logged in to that site" from disk alone ----
   cookieRows(identity) {
@@ -113,11 +129,16 @@ class HubChrome {
   }
   // While Chrome runs it holds the cookie file exclusively, so ask the identity's own marker
   // page instead: Network.getCookies from a page returns that profile's cookies, httpOnly too.
-  async liveCookieRows(identity) {
-    const { cdp } = await this.browser();
+  async liveCookieRows(identity, { allowOpen = false } = {}) {
+    const ep = await this.endpoint();
+    if (!ep) throw Error('浏览器已关闭，稍后刷新');
+    const { CDP } = require('./web-roundtable/cdp');
+    const cdp = await CDP.connect(ep.ws, ep.port);
     let page;
     try {
-      const mark = await this.marker(identity.id, cdp);
+      const mark = allowOpen ? await this.marker(identity.id, cdp)
+        : (await cdp.call('Target.getTargets')).targetInfos.find(t => t.url === this.markerUrl(identity.id));
+      if (!mark) return this.cookieRows(identity);
       page = await this.page(mark.targetId);
       const urls = [...new Set(identity.sites.map(k => this.site(k)).map(s => s.cookie ? 'https://' + s.cookie.host : s.url))];
       const { cookies } = await page.call('Network.getCookies', { urls });
@@ -136,16 +157,17 @@ class HubChrome {
     // Its cookies cannot be read until the person closes it.
     if (!running && this.profileHeld()) return loginOpen();
     let rows;
-    try { rows = running ? await this.liveCookieRows(identity) : this.cookieRows(identity); }
+    try { rows = running ? await this.liveCookieRows(identity, { allowOpen: live }) : this.cookieRows(identity); }
     catch (e) { if (e.loginOpen) return loginOpen(); throw e; }
     const status = { ...this.statusFromRows(identity, rows), running };
     if (running && live) {
-      const pending = Object.entries(status.sites).filter(([, v]) => v.state === 'needs_browser').map(([k]) => k);
+      const pending = Object.entries(status.sites).filter(([k, v]) => k !== 'chatgpt' && ['needs_browser', 'cookie_present'].includes(v.state)).map(([k]) => k);
       const results = await Promise.all(pending.map(k => this.liveStatus(identityId, k).catch(() => ({ state: 'unknown' }))));
       pending.forEach((k, i) => { status.sites[k] = { ...results[i], live: true }; });
     }
-    if (running && status.sites.chatgpt?.state === 'signed_in') {
+    if (running && live && status.sites.chatgpt?.state === 'cookie_present') {
       status.account = await this.chatgptAccount(identityId).catch(() => '');
+      status.sites.chatgpt = { ...status.sites.chatgpt, state: status.account ? 'signed_in' : 'unknown', live: true };
     }
     return status;
   }
@@ -176,7 +198,7 @@ class HubChrome {
       if (!rule) { sites[key] = { state: 'needs_browser' }; continue; }
       const hits = (rows || []).filter(r => hostMatches(r.host, rule.host) && rule.name.test(r.name) && (!r.expiresAt || r.expiresAt > now));
       sites[key] = hits.length
-        ? { state: 'signed_in', expiresAt: hits.some(r => !r.expiresAt) ? 0 : Math.max(...hits.map(r => r.expiresAt)) }
+        ? { state: 'cookie_present', expiresAt: hits.some(r => !r.expiresAt) ? 0 : Math.max(...hits.map(r => r.expiresAt)) }
         : { state: 'signed_out' };
     }
     return { identity: identity.id, profileExists: rows !== null, sites };
@@ -186,7 +208,7 @@ class HubChrome {
   async endpoint() {
     let lines;
     try { lines = fs.readFileSync(path.join(this.root, 'DevToolsActivePort'), 'utf8').trim().split('\n'); }
-    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    catch (e) { if (['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(e.code)) return null; throw e; }
     const port = Number(lines[0]);
     if (!Number.isInteger(port) || port < 1024 || port > 65535) return null;
     try {
@@ -311,7 +333,7 @@ class HubChrome {
   async waitNewPage(cdp, browserContextId, before, url) {
     for (const end = Date.now() + 15000; Date.now() < end;) {
       const fresh = (await this.pagesIn(cdp, browserContextId)).filter(t => !before.has(t.targetId));
-      const hit = fresh.find(t => t.url === url || t.url.startsWith(url)) || fresh[0];
+      const hit = fresh.find(t => t.url === url);
       if (hit) return hit;
       await sleep(200);
     }
@@ -321,20 +343,32 @@ class HubChrome {
   // front, opened by Chrome's own "open in this profile" path. Otherwise the tab gets a window
   // of its own parked off screen — its own window so it stays the active, unthrottled tab.
   async openTab(identityId, url, { visible = false } = {}) {
+    return this.lifecycle(() => this._openTab(identityId, url, { visible }));
+  }
+  async _openTab(identityId, url, { visible = false } = {}) {
     const { ep, cdp } = await this.browser();
     try {
       const mark = await this.marker(identityId, cdp);
       const ctx = mark.browserContextId;
       const before = new Set((await this.pagesIn(cdp, ctx)).map(t => t.targetId));
+      // A unique local URL correlates this request even across processes opening the same
+      // website concurrently. Never select an arbitrary newly observed page.
+      const ticketUrl = this.markerUrl(identityId) + '#task-' + crypto.randomUUID();
       if (visible) {
-        await this.launch(identityId, { visible: true, url });
+        await this.launch(identityId, { visible: true, url: ticketUrl });
       } else {
         const page = await this.page(mark.targetId);
         try {
-          await page.call('Runtime.evaluate', { expression: `window.open(${JSON.stringify(url)},'_blank','popup=1,noopener');true`, userGesture: true, returnByValue: true });
+          await page.call('Runtime.evaluate', { expression: `window.open(${JSON.stringify(ticketUrl)},'_blank','popup=1,noopener');true`, userGesture: true, returnByValue: true });
         } finally { page.close(); }
       }
-      const target = await this.waitNewPage(cdp, ctx, before, url);
+      const target = await this.waitNewPage(cdp, ctx, before, ticketUrl);
+      let tab;
+      try {
+        tab = await this.page(target.targetId);
+        await tab.call('Page.navigate', { url });
+      } catch (e) { await this.closeTab(target.targetId); throw e; }
+      finally { tab?.close(); }
       await this.place(cdp, target.targetId, visible ? ONSCREEN : OFFSCREEN).catch(() => {});
       if (visible) await cdp.call('Target.activateTarget', { targetId: target.targetId }).catch(() => {});
       return { targetId: target.targetId, port: ep.port, browserContextId: ctx };
@@ -359,6 +393,9 @@ class HubChrome {
   // debugging port — observed 2026-09-25 in this Hub Chrome, as the Gemini flow found before.
   // Cookies live in the profile, so the next debugging-mode start sees the login.
   async openLogin(identityId, siteKeys) {
+    return this.lifecycle(() => this._openLogin(identityId, siteKeys));
+  }
+  async _openLogin(identityId, siteKeys) {
     const identity = this.identity(identityId);
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
     for (const k of keys) if (!identity.sites.includes(k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
@@ -373,8 +410,7 @@ class HubChrome {
     await this.launch(identityId, { debug: false, visible: true, urls });
     return { identity: identity.id, sites: keys, mode: 'ordinary' };
   }
-  // Tools park their tabs off screen; a page on screen is a person's. Counting the former
-  // tells whether closing the browser would cut a task short.
+  // Any non-marker page may still belong to a task or the user, irrespective of placement.
   async workTabs() {
     const ep = await this.endpoint();
     if (!ep) return 0;
@@ -383,13 +419,9 @@ class HubChrome {
     try {
       const markers = new Set(this.identities.map(i => this.markerUrl(i.id)));
       const pages = (await cdp.call('Target.getTargets')).targetInfos.filter(t => t.type === 'page' && !markers.has(t.url));
-      let n = 0;
-      for (const p of pages) {
-        const { windowId } = await cdp.call('Browser.getWindowForTarget', { targetId: p.targetId });
-        const { bounds } = await cdp.call('Browser.getWindowBounds', { windowId });
-        if (bounds.left < -1000) n++;
-      }
-      return n;
+      // Visible pages may also own a task (the image tool exposes its window for a
+      // challenge). Window position is not evidence that it is safe to close one.
+      return pages.length;
     } finally { cdp.close(); }
   }
   // Sites that keep their login in localStorage can only be read from a live page.
@@ -422,7 +454,21 @@ class HubChrome {
     if (!ep) return;
     const { CDP } = require('./web-roundtable/cdp');
     const cdp = await CDP.connect(ep.ws, ep.port);
-    try { await cdp.call('Browser.close'); } catch { /* the socket drops as the browser exits */ } finally { cdp.close(); }
+    let pid;
+    try {
+      pid = (await cdp.call('SystemInfo.getProcessInfo')).processInfo.find(p => p.type === 'browser')?.id;
+      await cdp.call('Browser.close');
+    } catch (e) { if (!pid) throw e; /* the socket drops as the browser exits */ }
+    finally { cdp.close(); }
+    // DevTools disappears before Chrome releases all singleton/profile resources. A new
+    // ordinary launch during that gap may still be handed to the exiting debug process.
+    if (pid) {
+      const { alive } = require('./web-roundtable/store');
+      for (const end = Date.now() + 15000; alive(pid); ) {
+        if (Date.now() >= end) throw Error('Hub 浏览器仍在退出，请稍后重试');
+        await sleep(100);
+      }
+    }
     this.contexts.clear();
   }
 }

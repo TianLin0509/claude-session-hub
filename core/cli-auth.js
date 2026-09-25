@@ -32,12 +32,13 @@ function cliAuthStatus({ env = process.env, config = {}, now = Date.now() } = {}
     });
   }
   const claudeDir = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
-  const creds = readJson(path.join(claudeDir, '.credentials.json'))?.claudeAiOauth;
+  const claudeFile = readJson(path.join(claudeDir, '.credentials.json'));
+  const creds = claudeFile?.claudeAiOauth;
   const claudeMeta = readJson(path.join(home, '.claude.json'));
   const refreshUntil = Number(creds?.refreshTokenExpiresAt) || 0;
   out.push({
     id: 'claude', kind: 'claude', name: 'Claude Code', site: 'claude', account: claudeMeta?.oauthAccount?.emailAddress || '',
-    state: !creds ? 'missing' : creds.refreshToken && (!refreshUntil || refreshUntil > now) ? 'authorized' : 'expired',
+    state: claudeFile?.__unreadable ? 'unreadable' : !creds ? 'missing' : creds.refreshToken && (!refreshUntil || refreshUntil > now) ? 'authorized' : 'expired',
     ...(refreshUntil ? { expiresAt: refreshUntil } : {}),
   });
   const gemini = readJson(path.join(home, '.gemini', 'oauth_creds.json'));
@@ -45,10 +46,10 @@ function cliAuthStatus({ env = process.env, config = {}, now = Date.now() } = {}
     id: 'gemini', kind: 'gemini', name: 'Gemini CLI', site: 'google',
     account: readJson(path.join(home, '.gemini', 'google_accounts.json'))?.active || '',
     // The access token expires hourly by design; the refresh token is what keeps it signed in.
-    state: gemini?.refresh_token ? 'authorized' : gemini ? 'expired' : 'missing',
+    state: gemini?.__unreadable ? 'unreadable' : gemini?.refresh_token ? 'authorized' : gemini ? 'expired' : 'missing',
   });
   const kimi = readJson(path.join(env.KIMI_CODE_HOME || path.join(home, '.kimi-code'), 'credentials', 'kimi-code.json'));
-  out.push({ id: 'kimi', kind: 'kimi', name: 'Kimi Code', site: 'kimi', account: '', state: kimi?.refresh_token ? 'authorized' : kimi ? 'expired' : 'missing' });
+  out.push({ id: 'kimi', kind: 'kimi', name: 'Kimi Code', site: 'kimi', account: '', state: kimi?.__unreadable ? 'unreadable' : kimi?.refresh_token ? 'authorized' : kimi ? 'expired' : 'missing' });
   return out;
 }
 

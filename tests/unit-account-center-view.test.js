@@ -4,17 +4,18 @@ const { siteChip, cliChip, identityCards, unplacedClis, attentionCount } = requi
 const NOW = Date.UTC(2026, 8, 25, 8), DAY = 86400000;
 
 test('a site chip says what the user can do about it, and only then offers the login', () => {
-  assert.deepEqual(siteChip({ name: 'ChatGPT', state: 'signed_in', expiresAt: NOW + 90 * DAY }, NOW), { tone: 'ok', text: 'ChatGPT · 至 12/24', action: '' });
+  assert.deepEqual(siteChip({ name: 'ChatGPT', state: 'signed_in', expiresAt: NOW + 90 * DAY }, NOW), { tone: 'ok', text: 'ChatGPT · 已确认', action: '' });
   assert.deepEqual(siteChip({ name: '千问', state: 'signed_out' }, NOW), { tone: 'warn', text: '千问 · 需登录', action: 'login' });
   assert.equal(siteChip({ name: 'DeepSeek', state: 'needs_browser' }, NOW).tone, 'idle', 'unknown is not the same as signed out');
-  assert.equal(siteChip({ name: 'DeepSeek', state: 'needs_browser' }, NOW, true).text, 'DeepSeek · 点「检查登录」确认', 'with the browser up, say how to find out');
+  assert.equal(siteChip({ name: 'DeepSeek', state: 'needs_browser' }, NOW, true).text, 'DeepSeek · 待检查', 'unknown sites offer a check, not another login');
   assert.equal(siteChip({ name: 'X', state: 'needs_attention' }, NOW).text, 'X · 需人机验证');
   // A login about to lapse is worth renewing before a tool fails on it.
-  assert.deepEqual(siteChip({ name: '豆包', state: 'signed_in', expiresAt: NOW + 3 * DAY }, NOW), { tone: 'warn', text: '豆包 · 至 9/28', action: 'login' });
-  assert.equal(siteChip({ name: 'Claude', state: 'signed_in', expiresAt: 0 }, NOW).text, 'Claude', 'a session cookie has no date to show');
+  assert.deepEqual(siteChip({ name: '豆包', state: 'signed_in', expiresAt: NOW + 3 * DAY }, NOW), { tone: 'ok', text: '豆包 · 已确认', action: '' });
+  assert.equal(siteChip({ name: 'Claude', state: 'cookie_present', expiresAt: 0 }, NOW).text, 'Claude · 有登录记录', 'cookie presence is not website verification');
+  assert.equal(siteChip({ name: 'Claude', state: 'signed_in', stale: true }, NOW).tone, 'idle');
 });
 test('a CLI chip names the Codex profile, and never shows a token', () => {
-  assert.deepEqual(cliChip({ kind: 'codex', name: 'Codex CLI', label: '主账号', state: 'authorized', account: 'a@b.c' }), { tone: 'ok', text: 'Codex CLI（主账号）', title: 'a@b.c' });
+  assert.deepEqual(cliChip({ kind: 'codex', name: 'Codex CLI', label: '主账号', state: 'authorized', account: 'a@b.c' }), { tone: 'idle', text: 'Codex CLI（主账号） · 已配置', title: 'a@b.c' });
   assert.equal(cliChip({ kind: 'claude', name: 'Claude Code', state: 'expired' }).text, 'Claude Code · 需重新授权');
   assert.equal(cliChip({ kind: 'kimi', name: 'Kimi Code', state: 'missing' }).tone, 'warn');
 });

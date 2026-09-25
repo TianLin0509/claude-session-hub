@@ -42,9 +42,9 @@ test('"检查登录" answers from the cookie file alone: present, expired, missi
   ]);
   const hub = new HubChrome({ root, now: () => now });
   const s = hub.offlineStatus('main');
-  assert.deepEqual(s.sites.chatgpt, { state: 'signed_in', expiresAt: now + 90 * 86400000 });
+  assert.deepEqual(s.sites.chatgpt, { state: 'cookie_present', expiresAt: now + 90 * 86400000 });
   assert.deepEqual(s.sites.google, { state: 'signed_out' }, 'an expired login is not a login');
-  assert.deepEqual(s.sites.doubao, { state: 'signed_in', expiresAt: 0 });
+  assert.deepEqual(s.sites.doubao, { state: 'cookie_present', expiresAt: 0 });
   assert.deepEqual(s.sites.claude, { state: 'signed_out' });
   assert.deepEqual(s.sites.deepseek, { state: 'needs_browser' }, 'localStorage sites say so instead of guessing');
   assert.deepEqual(hub.offlineStatus('alt').sites, { chatgpt: { state: 'signed_out' } }, 'a profile never used has no login');
@@ -79,14 +79,15 @@ test('a CLI sits under the identity that holds its web login; Codex is matched b
   ];
   assert.equal(acc.owner({ kind: 'codex', site: 'chatgpt', account: 'D@gmail.com' }, identities), 'alt');
   assert.equal(acc.owner({ kind: 'codex', site: 'chatgpt', account: 'x@y.z' }, identities), '', 'an unknown account is not guessed');
-  assert.equal(acc.owner({ kind: 'claude', site: 'claude' }, identities), 'main');
+  assert.equal(acc.owner({ kind: 'claude', site: 'claude' }, identities), '', 'a common provider is not identity evidence');
+  assert.equal(acc.owner({ kind: 'claude', site: 'claude', account: 'lintian0509@gmail.com' }, identities), 'main');
 });
 
 test('only logins in the identity roundtable tasks run in can release them', async () => {
   const resumed = [];
   const acc = new HubAccounts({ hubChrome: new HubChrome({ root: os.tmpdir() }), recovery: { resume: async row => { resumed.push(row.provider); } } });
   await acc.resumeWaiting([
-    { id: 'main', sites: [{ key: 'deepseek', state: 'signed_in' }, { key: 'google', state: 'signed_in' }, { key: 'kimi', state: 'signed_out' }, { key: 'claude', state: 'signed_in' }] },
+    { id: 'main', sites: [{ key: 'deepseek', state: 'signed_in', live: true }, { key: 'google', state: 'signed_in', live: true }, { key: 'kimi', state: 'signed_out' }, { key: 'claude', state: 'signed_in' }] },
     { id: 'alt', sites: [{ key: 'chatgpt', state: 'signed_in' }] },
   ]);
   assert.deepEqual(resumed, ['deepseek', 'gemini'], 'Google is Gemini to the roundtable; alt and non-roundtable sites release nothing');

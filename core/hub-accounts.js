@@ -1,6 +1,6 @@
 'use strict';
-// Everything the account page shows, from two sources only: the Hub Chrome's cookie store
-// (web logins) and the CLIs' own token files. Two actions: 登录 and 检查登录.
+// Website observations and CLI credential metadata remain separate. Reading the page is
+// passive; explicit checks may briefly open one shared Chrome, never the image worker pool.
 const fs = require('fs');
 const path = require('path');
 const { HubChrome, SITES } = require('./hub-chrome');
@@ -21,21 +21,34 @@ class HubAccounts {
   }
   cacheFile() { return path.join(this.chrome.root, 'last-check.json'); }
   readCache() {
-    try { return JSON.parse(fs.readFileSync(this.cacheFile(), 'utf8')); } catch { return { identities: {} }; }
+    try { const value = JSON.parse(fs.readFileSync(this.cacheFile(), 'utf8')); return value && value.identities && typeof value.identities === 'object' ? value : { identities: {} }; } catch { return { identities: {} }; }
   }
   writeCache(cache) {
     fs.mkdirSync(this.chrome.root, { recursive: true });
-    const file = this.cacheFile(), tmp = file + '.' + process.pid + '.tmp';
+    const file = this.cacheFile(), tmp = file + '.' + require('crypto').randomUUID() + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(cache), 'utf8');
     fs.renameSync(tmp, file);
   }
   // Opening the page costs nothing: cookies from disk (or from the running browser), plus
   // whatever the last explicit check learned about sites that need a live page.
-  async state() { return this.compose(false); }
-  // 检查登录: the same, plus a live look at localStorage sites and each identity's ChatGPT
-  // account — only when the browser is already running. It never starts Chrome.
+  async state() {
+    if (this.checking) return this.checking;
+    if (!this.reading) this.reading = this.compose(false).finally(() => { this.reading = null; });
+    return this.reading;
+  }
+  // A user-requested check can inspect live-only sites even after the login window closes.
+  // Its temporary browser is released only if no other task has opened a business page.
   async check() {
-    if (!this.checking) this.checking = this.compose(true).finally(() => { this.checking = null; });
+    if (!this.checking) this.checking = (async () => {
+      const fixture = this.fixture();
+      const started = !fixture && !(await this.chrome.running()) && !this.chrome.profileHeld();
+      try {
+        if (started) await this.chrome.lifecycle(() => this.chrome.ensure());
+        return await this.compose(true);
+      } finally {
+        if (started) await this.chrome.closeIfIdle();
+      }
+    })().finally(() => { this.checking = null; });
     return this.checking;
   }
   // Isolated test Hubs may script the web half of a check (which sites a browser would show
@@ -43,7 +56,7 @@ class HubAccounts {
   fixture() {
     const file = this.env.CLAUDE_HUB_HOME_DIR && this.env.HUB_ACCOUNTS_FIXTURE;
     if (!file) return null;
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return e.code === 'ENOENT' ? null : {}; }
   }
   async compose(live) {
     const cache = this.readCache();
@@ -62,26 +75,29 @@ class HubAccounts {
       const sites = identity.sites.map(key => {
         let s = status.sites[key];
         // A live-only site keeps its last live answer until a new check replaces it.
-        if (s.state === 'needs_browser' && prev.sites?.[key]?.checkedAt) s = { ...prev.sites[key], stale: true };
-        if (s.live || s.state === 'signed_in' || s.state === 'signed_out') s = { ...s, checkedAt: s.checkedAt || this.now() };
+        if (['needs_browser', 'cookie_present'].includes(s.state) && prev.sites?.[key]?.checkedAt && prev.sites[key].verified) {
+          s = { ...prev.sites[key], expiresAt: s.expiresAt, stale: true, live: false };
+        }
+        if (s.live) s = { ...s, checkedAt: this.now(), stale: false, verified: true };
         return { key, name: SITES[key].name, url: SITES[key].url, ...s };
       });
-      const account = status.account || prev.account || '';
-      identities.push({ id: identity.id, label: identity.label, account, sites });
+      const chatgpt = sites.find(s => s.key === 'chatgpt');
+      const account = chatgpt?.state === 'signed_out' ? '' : status.account || prev.account || '';
+      identities.push({ id: identity.id, label: identity.label, account, accountStale: !status.account && !!account, sites });
       cache.identities[identity.id] = { account, sites: Object.fromEntries(sites.map(s => [s.key, s])) };
     }
-    if (live) this.writeCache(cache);
+    if (live) { cache.checkedAt = this.now(); this.writeCache(cache); }
     const clis = cliAuthStatus({ env: this.env, config: this.getConfig(), now: this.now() }).map(cli => ({ ...cli, identity: this.owner(cli, identities) }));
     if (live) await this.resumeWaiting(identities);
     const loginOpen = !running && !fixture && this.chrome.profileHeld();
-    return { chrome: { running, loginOpen, root: this.chrome.root }, identities, clis, checkedAt: live ? this.now() : cache.checkedAt || 0 };
+    const tools = require('./hub-browser-tool').integrationStatus(this.chrome.root);
+    return { chrome: { running, loginOpen, root: this.chrome.root }, identities, clis, tools, checkedAt: live ? this.now() : cache.checkedAt || 0 };
   }
-  // A CLI belongs under the identity that holds the web login it is authorised from. Codex is
-  // matched by account because the same site (ChatGPT) is signed in twice.
+  // Match a unique full email; a provider name or a single available identity is not proof.
   owner(cli, identities) {
-    if (cli.kind === 'codex') return identities.find(i => i.account && cli.account && i.account.toLowerCase() === cli.account.toLowerCase())?.id || '';
-    const holding = identities.filter(i => i.sites.some(s => s.key === cli.site));
-    return (holding.find(i => i.sites.find(s => s.key === cli.site)?.state === 'signed_in') || holding[0])?.id || '';
+    if (!cli.account) return '';
+    const matches = identities.filter(i => i.account && i.account.toLowerCase() === cli.account.toLowerCase());
+    return matches.length === 1 ? matches[0].id : '';
   }
   // Roundtable tasks run in the main identity, so only its logins can release them.
   async resumeWaiting(identities) {
@@ -89,7 +105,7 @@ class HubAccounts {
     for (const identity of identities.filter(i => i.id === this.chrome.identities[0].id)) {
       for (const site of identity.sites) {
         const provider = ROUNDTABLE_PROVIDER[site.key];
-        if (!provider || site.state !== 'signed_in') continue;
+        if (!provider || site.state !== 'signed_in' || !site.live || site.stale) continue;
         try { await this.recovery.resume({ managedBrowser: true, provider }); } catch { /* shown on the task itself */ }
       }
     }
@@ -101,7 +117,7 @@ class HubAccounts {
     let sites = site ? [site] : undefined;
     if (!sites) {
       const st = await this.chrome.loginStatus(id.id, { live: false }).catch(() => null);
-      const missing = st ? id.sites.filter(k => st.sites[k]?.state !== 'signed_in') : [];
+      const missing = st ? id.sites.filter(k => !['signed_in', 'cookie_present'].includes(st.sites[k]?.state)) : [];
       sites = missing.length ? missing : id.sites;
     }
     await this.chrome.openLogin(id.id, sites);

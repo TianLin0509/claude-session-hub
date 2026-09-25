@@ -63,9 +63,9 @@ async function browserCdp(hub) { const ep = await hub.endpoint(); return CDP.con
     for (let i = 0; i < 40 && (await hub.running()); i++) await new Promise(r => setTimeout(r, 250));
     assert.equal(await hub.running(), false);
     const main = hub.offlineStatus('main'), alt = hub.offlineStatus('alt');
-    assert.equal(main.sites.chatgpt.state, 'signed_in');
+    assert.equal(main.sites.chatgpt.state, 'cookie_present');
     assert.ok(Math.abs(main.sites.chatgpt.expiresAt - in30d * 1000) < 2000, 'expiry read from disk');
-    assert.equal(main.sites.google.state, 'signed_in');
+    assert.equal(main.sites.google.state, 'cookie_present');
     assert.equal(main.sites.deepseek.state, 'needs_browser', 'localStorage sites say so instead of guessing');
     assert.equal(alt.sites.chatgpt.state, 'signed_out');
     checks.push('浏览器关闭后，直接读磁盘就能答出各站登录状态与到期时间');

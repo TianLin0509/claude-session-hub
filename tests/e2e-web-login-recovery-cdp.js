@@ -31,7 +31,7 @@ async function main(){
     // "The user logged in to a site" = the Hub Chrome shows it logged in (account page view)
     // and the website itself lets the task through (preload page simulation).
     const accountsFixture=path.join(home,'accounts-fixture.json');
-    const loggedIn=sites=>{fs.writeFileSync(accountsFixture,JSON.stringify({running:true,main:{sites:Object.fromEntries(sites.map(k=>[k,{state:'signed_in'}]))}}));for(const k of sites)fs.writeFileSync(path.join(home,'fixture-login-web-'+k),'1');};
+    const loggedIn=sites=>{fs.writeFileSync(accountsFixture,JSON.stringify({running:true,main:{sites:Object.fromEntries(sites.map(k=>[k,{state:'signed_in',live:true}]))}}));for(const k of sites)fs.writeFileSync(path.join(home,'fixture-login-web-'+k),'1');};
     const check=async()=>{await click('[data-ac="check"]');await until('document.querySelector(".ac-status").textContent.includes("已检查")');await cdp.eval('document.querySelector(".ac-status").textContent=""');};
     loggedIn(['qwen']);
     await until('typeof accountCenterPanel!=="undefined"');await click('#btn-rail-accounts');
@@ -46,7 +46,9 @@ async function main(){
     assert.equal(store.read(ds).state,'succeeded');assert.equal(sends().filter(s=>s.id===ds).length,1);
     result.checks.push('在 Hub 浏览器登好 DeepSeek 后点一次「检查登录」，原来未发送的任务恰好续发一次');
     loggedIn(['qwen','deepseek','kimi']);await check();
-    for(const end=Date.now()+45000;Date.now()<end&&store.read(parent.id).state!=='succeeded';)await pause(200);
+    // The worker publishes state first, then its HTML in finally. Wait for the complete
+    // persisted result rather than racing the two writes under a busy test machine.
+    for(const end=Date.now()+45000;Date.now()<end;){const value=store.read(parent.id);if(value.state==='succeeded'&&value.reportPath&&fs.existsSync(value.reportPath))break;await pause(200);}
     const final=store.read(parent.id);assert.equal(final.state,'succeeded',JSON.stringify(final));assert.equal(sends().filter(s=>s.id===ki).length,0);
     assert.equal(sends().length,5);assert.equal(final.rounds.length,2);assert.equal(final.rounds[0].results.find(r=>r.provider==='qwen').answer,'Original Qwen answer');assert.ok(fs.existsSync(final.reportPath));
     result.checks.push('已提交过的 Kimi 任务只补收不重发；原圆桌自动跑完后续辩论与总结，千问原答案保留');

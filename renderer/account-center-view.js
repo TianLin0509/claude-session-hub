@@ -3,34 +3,31 @@
 // account that needs its own login on the same site), the sites logged in there, and the
 // command-line tools authorised from those logins. Nothing here decides anything.
 
-function day(ms) {
-  const d = new Date(ms);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
 // tone: ok = logged in, warn = needs you, idle = cannot tell right now.
 function siteChip(site, now = Date.now(), running = false) {
-  const soon = site.expiresAt && site.expiresAt - now < 7 * 86400000;
+  if (site.stale) return { tone: 'idle', text: `${site.name} · 上次${site.state === 'signed_in' ? '已登录' : '未确认'}`, action: '' };
   switch (site.state) {
     case 'signed_in':
-      return { tone: soon ? 'warn' : 'ok', text: site.name + (site.expiresAt ? ` · 至 ${day(site.expiresAt)}` : ''), action: soon ? 'login' : '' };
+      return { tone: 'ok', text: `${site.name} · 已确认`, action: '' };
+    case 'cookie_present': return { tone: 'idle', text: `${site.name} · 有登录记录`, action: '' };
     case 'signed_out': return { tone: 'warn', text: `${site.name} · 需登录`, action: 'login' };
     case 'needs_attention': return { tone: 'warn', text: `${site.name} · 需人机验证`, action: 'login' };
     case 'login_open': return { tone: 'idle', text: `${site.name} · 登录窗口开着`, action: '' };
-    case 'needs_browser': return { tone: 'idle', text: `${site.name} · ${running ? '点「检查登录」确认' : '浏览器开着时可确认'}`, action: 'login' };
-    default: return { tone: 'idle', text: `${site.name} · 未确认`, action: 'login' };
+    case 'needs_browser': return { tone: 'idle', text: `${site.name} · 待检查`, action: 'check' };
+    default: return { tone: 'idle', text: `${site.name} · 未确认`, action: 'check' };
   }
 }
-const CLI_STATE = { authorized: '', missing: ' · 未授权', expired: ' · 需重新授权', unreadable: ' · 凭据不可读', api_key: ' · 使用 API Key' };
+const CLI_STATE = { authorized: ' · 已配置', missing: ' · 未授权', expired: ' · 需重新授权', unreadable: ' · 凭据不可读', api_key: ' · 使用 API Key' };
 function cliChip(cli) {
   const name = cli.kind === 'codex' ? `${cli.name}（${cli.label}）` : cli.name;
-  const tone = cli.state === 'authorized' || cli.state === 'api_key' ? 'ok' : 'warn';
+  const tone = cli.state === 'authorized' || cli.state === 'api_key' ? 'idle' : 'warn';
   return { tone, text: name + (CLI_STATE[cli.state] ?? ''), title: cli.account || '' };
 }
 function identityCards(state, now = Date.now()) {
   return (state.identities || []).map(identity => {
     const sites = identity.sites.map(s => ({ key: s.key, ...siteChip(s, now, !!state.chrome?.running) }));
     const clis = (state.clis || []).filter(c => c.identity === identity.id).map(c => ({ id: c.id, ...cliChip(c) }));
-    return { id: identity.id, label: identity.label, account: identity.account || '', sites, clis,
+    return { id: identity.id, label: identity.label, account: identity.account || '', accountStale: !!identity.accountStale, sites, clis,
       attention: sites.filter(s => s.tone === 'warn').length + clis.filter(c => c.tone === 'warn').length };
   });
 }
