@@ -164,7 +164,8 @@ async function main() {
       await assertTiming('waiting');
       await shot('waiting');
       if (MODE === 'question') {
-        await click('.claude-native-controls input');
+        // Non-secret answers are a <textarea> (multi-line); only secret ones are <input>.
+        await click('.claude-native-controls label textarea');
         await client.send('Input.insertText', { text: '甲' });
         await click('.claude-native-controls button[type=submit]');
       } else await click('.claude-native-controls button[type=button]');
@@ -176,18 +177,43 @@ async function main() {
     await waitFor('visible answer card', async () => (await state()).card?.includes('完成 🧪'));
     const transcript = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`);
     assert.equal(transcript.turns.find(turn => turn.role === 'user').text, prompt);
-    assert.ok(transcript.turns.some(turn => turn.role === 'assistant' && turn.text.includes('完成')));
+    // A continued card keeps the human answer as a progress row (see below), so
+    // look at every visible row, not only the card's final text.
+    const rowsOf = turn => [turn.text, ...(turn.displayMessages || []).map(message => message.text)].join('\n');
+    assert.ok(transcript.turns.some(turn => turn.role === 'assistant' && rowsOf(turn).includes('完成')));
     await shot('completed');
     checks.push('native transcript retains 600 lines and final answer');
     const orderedRoles = await client.eval("[...document.querySelectorAll('#msg-overlay > .turn-card')].map(e=>e.classList.contains('user')?'user':'assistant')");
     if (MODE === 'background' || MODE === 'interleaved') {
-      await waitFor('separate visible background card', async () => (await state()).card?.includes('后台任务独立回答 🧩'));
-      const fresh = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`);
-      assert.equal(fresh.turns.filter(turn => turn.role === 'user').length, 1);
-      assert.equal(fresh.turns.filter(turn => turn.nativeActivity).length, 1);
-      assert.equal(fresh.turns.find(turn => !turn.nativeActivity && turn.role === 'assistant').text, '完成 🧪');
+      // Since 2026-09-13 (f6e5fd9, docs/20260913-claude-codex-card-parity.md) a
+      // task-notification turn continues the settled human card as progress rows,
+      // Codex's card shape, instead of opening its own "后台活动" card. Since
+      // 2026-09-23 (300e5f2) a notification arriving mid-turn is absorbed by that
+      // turn, so the interleaved order lands on the same shape. This test was
+      // written 09-10 for separate cards and had been failing since 09-13.
+      const continued = turns => {
+        assert.equal(turns.filter(turn => turn.role === 'user').length, 1, 'one human receipt');
+        assert.equal(turns.filter(turn => turn.nativeActivity).length, 0, 'no standalone background card');
+        const cards = turns.filter(turn => turn.role === 'assistant');
+        assert.equal(cards.length, 1, 'one card for the human turn and its continuation');
+        assert.equal(cards[0].continuations?.length, 1);
+        assert.equal(cards[0].text, '后台任务独立回答 🧩');
+        assert.ok(cards[0].displayMessages.some(message => message.text === '完成 🧪' && message.phase === 'commentary'),
+          'the human answer stays visible as a progress row');
+      };
+      await waitFor('continuation in the same card', async () => (await state()).card?.includes('后台任务独立回答 🧩'));
+      continued((await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`)).turns);
+      const visible = (await state()).card;
+      assert.ok(visible.includes('完成 🧪') && visible.includes('后台任务独立回答 🧩'), 'both rows are on screen');
+      // The renderer splits one answer into several .turn-card nodes (progress
+      // rows, result); every node after the first carries
+      // .conversation-response-continuation. One card = one node without it.
+      // The "后台" chip only appears on a standalone engine-initiated card.
+      assert.equal(await client.eval("document.querySelectorAll('#msg-overlay > .turn-card:not(.user):not(.conversation-response-continuation)').length"), 1);
+      assert.ok(await client.eval("document.querySelectorAll('#msg-overlay > .turn-card.conversation-response-continuation').length") >= 1);
+      assert.equal(await client.eval("document.querySelectorAll('#msg-overlay .turn-native-chip').length"), 0);
       await shot('background-completed');
-      checks.push('human answer and injected continuation have separate visible cards and one human receipt');
+      checks.push('background continuation joins the settled human card (Codex shape); the human answer stays a visible row');
       await client.close(); client = null;
       await gracefulQuit(hub); fs.writeFileSync(path.join(OUT, 'first-hub.log'), hub.log().join('\n'), 'utf8'); hub = null;
       hub = await launchIsolatedHub({ ...launchOptions, port: await freePort(), label: RUN + '-restart' });
@@ -196,11 +222,9 @@ async function main() {
       await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
       await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(sid)}, {forceScrollBottom:true})`);
       await waitFor('restored background answer', async () => (await state()).card?.includes('后台任务独立回答 🧩'));
-      const after = await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`);
-      assert.equal(after.turns.filter(turn => turn.role === 'user').length, 1);
-      assert.equal(after.turns.filter(turn => turn.nativeActivity).length, 1);
+      continued((await client.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${JSON.stringify(sid)}})`)).turns);
       await shot('background-restored');
-      checks.push('whole Hub restart retains the background activity without replaying it as a user prompt');
+      checks.push('whole Hub restart keeps the same single card without replaying the notification as a user prompt');
     } else if (MODE === 'recovery') assert.equal(transcript.turns.filter(turn => turn.role === 'user').length, 2);
     else if (MODE === 'conversation') {
       assert.deepEqual(orderedRoles, ['user', 'assistant', 'assistant', 'assistant']);
