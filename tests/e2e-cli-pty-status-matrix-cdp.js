@@ -442,7 +442,13 @@ async function main() {
       // groupchat:turn 要等整轮派发结束才返回，超过 CDP 单次求值上限：先发起、再轮询。
       await c.eval(`window.__gt=null;ipcRenderer.invoke('groupchat:turn',${j({ meetingId: group.id, userInput: '请每位成员只回复自己的名字加 GROUP_OK，不要调用任何工具。' })}).then(t=>{window.__gt=t;},e=>{window.__gt={error:String(e)};});true`);
       await until(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}}).then(s=>s&&s.currentMode==='idle'&&(s.messages||[]).filter(m=>m.role==='assistant'&&/GROUP_OK/.test(m.content||'')).length>=2)`,
-        'both members answered', 300000);
+        'both members answered', 300000).catch(async error => {
+        r.debug = await c.eval(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}}).then(s=>({mode:s&&s.currentMode,messages:(s&&s.messages||[]).map(m=>({role:m.role,speaker:m.speaker||m.memberId||null,status:m.status||null,text:String(m.content||'').slice(0,120)}))}))`);
+        r.debug.turn = await c.eval('window.__gt');
+        r.debug.members = [];
+        for (const id of group.subSessions) r.debug.members.push({ id, ...(await status(id)), screen: (await screenText(id)).trim().slice(-600) });
+        throw error;
+      });
       r.turn = await c.eval('window.__gt');
       const state = await c.eval(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}})`);
       r.answers = (state.messages || []).filter(m => m.role === 'assistant').map(m => ({ speaker: m.speaker || m.memberId, text: String(m.content || '').slice(0, 80), status: m.status }));
@@ -462,7 +468,6 @@ async function main() {
     if (c) try { result.ui = await c.eval('document.body.innerText.slice(-3000)'); await snap('fatal'); } catch (e) { result.captureError = e.message; }
   } finally {
     try { if (c) result.hookEvents = await c.eval('(window.__hookEvents||[]).slice(-400)'); } catch {}
-    try { if (c) result.hookEvents = (await c.eval('window.__hookEvents||[]')).slice(-300); } catch {}
     try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|hook|codex-tap|claude-tap|cli-ready|transcript/i.test(line)).slice(-200); } catch {}
     try { if (hub) await gracefulQuit(hub); } catch (e) { result.quitError = e.message; }
     for (const [file, key] of [[path.join(claudeHome, '.credentials.json'), 'claude'], [path.join(codexHome, 'auth.json'), 'codex']]) {

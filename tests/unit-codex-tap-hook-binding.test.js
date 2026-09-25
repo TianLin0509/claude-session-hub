@@ -87,3 +87,22 @@ test('a task_complete without an answer settles the turn without reporting a rep
   assert.equal(completes.length, 1, 'reported once');
   await rollout.cleanup?.();
 });
+
+test('a pinned path binds by itself even when the directory scanner is stalled', async t => {
+  // 终轮矩阵：扫描器在高负载下反复 heartbeat stale，群聊的 Codex 成员答完了却没绑上。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hook-bind-stall-'));
+  const sessionsRoot = path.join(root, 'sessions'), cwd = path.join(root, 'work');
+  fs.mkdirSync(cwd, { recursive: true });
+  const tap = new CodexTap({ sessionsRoot, pollIntervalMs: 10 * 60_000 });
+  tap._ensureWatcherAlive = () => {}; // 扫描器完全停摆
+  t.after(() => { tap.unregisterSession('hub-1'); fs.rmSync(root, { recursive: true, force: true }); });
+  tap.registerSession('hub-1', { cwd });
+  const real = new FakeCodexRollout({ sessionsRoot, cwd, sid: '019eeeee-0000-7000-8000-00000000000e' });
+  const decoy = new FakeCodexRollout({ sessionsRoot, cwd, sid: '019effff-0000-7000-8000-00000000000f' });
+  assert.equal(await tap.bindFromHook('hub-1', { codexSid: real.sid, transcriptPath: real.rolloutPath }), false);
+  await decoy.start();
+  await real.start();
+  assert.ok(await waitFor(() => tap.getRolloutPath('hub-1') === real.rolloutPath, 3000), 'bound without the scanner');
+  assert.equal(tap._expectedPolls.has('hub-1'), false, 'the per-path poll stops once bound');
+  await decoy.cleanup?.(); await real.cleanup?.();
+});

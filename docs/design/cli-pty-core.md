@@ -68,6 +68,7 @@ Claude 的身份在启动时就定了，但 TUI 里的 `/clear`、`/resume`，�
 - 带 `agent_id` 的事件、rollout 元数据标为 subagent 的事件：一律忽略。
 - 已绑定线程之后，来了不同的 `session_id`：只有 `SessionStart` 且来源是 `clear` / `resume` / `fork`，或者来源是 `startup` 且终端已回到宿主 shell（CLI 退出后被重新拉起），才允许改绑。其余情况视为 CLI 里嵌套跑的另一个 codex，直接忽略。
 - `CodexTap.bindFromHook()`：文件已存在就立即绑定；还没落盘就把期望路径钉在 pending 上。扫描器看到这个文件时直接绑定，同时这条会话不再参与 cwd + 时间窗的猜测。
+- 钉住路径后还会每 250ms 单独查一次这个文件（最长 10 分钟，下一个 hook 会重新开始），不依赖全目录扫描器。终轮矩阵里扫描器在高负载下反复 heartbeat stale，群聊的 Codex 成员答完了也迟迟绑不上。绑定后 tail 会回放已写内容，所以晚绑不会漏掉这一轮的完成。
 
 ## 状态
 

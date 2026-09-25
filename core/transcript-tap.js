@@ -686,6 +686,9 @@ const TRY_BIND_TIMEOUT_MS = 15_000;
 const SCAN_STUCK_RESET_MS = 45_000;
 // 看门狗巡检间隔。只比时间戳，开销可忽略；比扫描间隔慢一个量级即可。
 const WATCHDOG_INTERVAL_MS = 15_000;
+// hook 报来 rollout 路径但文件还没落盘时，单独盯这一个文件的间隔与上限。
+const EXPECTED_ROLLOUT_POLL_MS = 250;
+const EXPECTED_ROLLOUT_POLL_MAX_MS = 10 * 60_000;
 
 function withTimeout(promise, ms) {
   let timer = null;
@@ -807,6 +810,7 @@ class CodexTap extends EventEmitter {
       this._pending.set(hubSessionId, pending);
       this._ensureWatcherAlive();
       this._ensureWatchdog();
+      this._pollExpectedRollout(hubSessionId, { codexSid, transcriptPath, sessionsRoot });
       return false;
     }
     const pending = this._pending.get(hubSessionId);
@@ -817,6 +821,31 @@ class CodexTap extends EventEmitter {
       this._markSeen(transcriptPath, 'bound_by_hook');
     }
     return ok;
+  }
+
+  // hook 报来的 rollout 路径是确定的，只是 Codex 首轮开始后才落盘。只盯这一个文件，
+  // 不再依赖全目录扫描器：终轮矩阵里扫描器在高负载下反复「heartbeat stale」，群聊的
+  // Codex 成员答完了却迟迟没绑上，完成事件就一直等不到。绑定后 tail 会回放已写内容，
+  // 晚绑也不漏这一轮的完成。
+  _pollExpectedRollout(hubSessionId, options) {
+    this._expectedPolls ||= new Map();
+    const previous = this._expectedPolls.get(hubSessionId);
+    if (previous) clearInterval(previous);
+    const wanted = normalizePathForCompare(options.transcriptPath);
+    const startedAt = Date.now();
+    const stop = () => { clearInterval(timer); if (this._expectedPolls.get(hubSessionId) === timer) this._expectedPolls.delete(hubSessionId); };
+    const timer = setInterval(() => {
+      const pending = this._pending.get(hubSessionId);
+      if (this._bound.has(hubSessionId) || !pending || pending.expectedRolloutPath !== wanted
+          || Date.now() - startedAt > EXPECTED_ROLLOUT_POLL_MAX_MS) { stop(); return; }
+      let exists = false;
+      try { exists = fs.statSync(options.transcriptPath).isFile(); } catch {}
+      if (!exists) return;
+      stop();
+      this.bindFromHook(hubSessionId, options).catch(error => console.warn('[codex-tap] expected rollout bind failed:', error.message));
+    }, EXPECTED_ROLLOUT_POLL_MS);
+    timer.unref?.();
+    this._expectedPolls.set(hubSessionId, timer);
   }
 
   _dropBinding(hubSessionId) {
