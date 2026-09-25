@@ -898,7 +898,8 @@ class HubMemoryService {
     const id='workspace-'+(submissionId||randomUUID());
     const retry=submissionId && history.find(r=>r.id===id);
     if(retry){if(retry.identity!==contextIdentity(s))throw new Error('同一提交编号的原生会话已变化，请重新提交');if(retry.userFingerprint!==hash(prompt))throw new Error('同一提交编号的工作区规则消息已变化');return this.submitIndex(sid,prompt+retry.appendix,options,retry,receiptFile,send);}
-    const sources=require('./memory-rule-files').sharedWorkspaceRules({session:s,workspaceService:this.workspaceService,homeDir:this.homeDir});
+    const nativeCoverage=this.sessionManager.sessions?.get(sid)?.nativeRuleCoverage || [];
+    const sources=require('./memory-rule-files').sharedWorkspaceRules({session:s,workspaceService:this.workspaceService,homeDir:this.homeDir,nativeCoverage});
     if(!sources.length)return send(prompt);
     const content=sources.map(f=>`来源：${f.path}\n${f.content}`).join('\n\n'),version=hash(content),identity=contextIdentity(s);
     const delivered=history.find(r=>r.status==='sent'&&r.identity===identity);
