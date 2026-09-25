@@ -762,6 +762,51 @@ class CodexTap extends EventEmitter {
     return this._pending.has(hubSessionId) || this._bound.has(hubSessionId);
   }
 
+  // Codex hook 上报的 session_id + transcript_path 是这条会话的权威身份，
+  // 比 cwd + 时间窗推断可靠，可覆盖扫描器的猜测（rebind 仅用于 SessionStart：
+  // 同一个终端里 /new、重新启动 Codex 会换成新线程）。
+  // Codex 在首个 turn 才落盘 rollout：文件还不存在时先把期望路径钉在 pending 上，
+  // 扫描器看到它就直接绑定，并且不再为这条会话猜别的文件。
+  async bindFromHook(hubSessionId, { codexSid = null, transcriptPath = null, sessionsRoot = null, rebind = false } = {}) {
+    if (!hubSessionId || !transcriptPath) return false;
+    const wanted = normalizePathForCompare(transcriptPath);
+    const current = this._bound.get(hubSessionId);
+    if (current && normalizePathForCompare(current.rolloutPath) === wanted) return true;
+    if (current && !rebind) return false;
+    if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
+    let exists = false;
+    try { exists = fs.statSync(transcriptPath).isFile(); } catch {}
+    if (current) this._dropBinding(hubSessionId);
+    if (!exists) {
+      const pending = this._pending.get(hubSessionId) || {
+        cwd: null, spawnTime: Date.now(), allowMtimeFallback: false, requirePromptMatch: false,
+        expectedPrompt: null, expectedPromptAt: null,
+      };
+      pending.expectedRolloutPath = wanted;
+      pending.expectedCodexSid = codexSid || null;
+      this._pending.set(hubSessionId, pending);
+      this._ensureWatcherAlive();
+      this._ensureWatchdog();
+      return false;
+    }
+    const pending = this._pending.get(hubSessionId);
+    if (pending) { pending.expectedRolloutPath = wanted; pending.expectedCodexSid = codexSid || null; }
+    const ok = await this._bindRolloutToHubSession(hubSessionId, transcriptPath, codexSid || null);
+    if (ok) {
+      this._pending.delete(hubSessionId);
+      this._markSeen(transcriptPath, 'bound_by_hook');
+    }
+    return ok;
+  }
+
+  _dropBinding(hubSessionId) {
+    const bound = this._bound.get(hubSessionId);
+    if (!bound) return;
+    try { bound.tail?.close(); } catch {}
+    if (bound._pendingEmitTimer) { try { clearTimeout(bound._pendingEmitTimer); } catch {} }
+    this._bound.delete(hubSessionId);
+  }
+
   notePrompt(hubSessionId, prompt) {
     if (!hubSessionId || typeof prompt !== 'string') return;
     const entry = this._pending.get(hubSessionId);
@@ -1152,6 +1197,17 @@ class CodexTap extends EventEmitter {
       return;
     }
 
+    // hook 已经告诉了我们确切的文件：命中就直接绑定，其余会话不参与猜测。
+    const wantedPath = normalizePathForCompare(rolloutPath);
+    for (const [hubSessionId, entry] of this._pending) {
+      if (entry.expectedRolloutPath !== wantedPath) continue;
+      if (await this._bindRolloutToHubSession(hubSessionId, rolloutPath, entry.expectedCodexSid || null)) {
+        this._pending.delete(hubSessionId);
+        this._markSeen(rolloutPath, 'bound_by_hook_path');
+      }
+      return;
+    }
+
     const metaCwd = normalizePathForCompare(meta.cwd || '');
     const metaTs = Date.parse(meta.timestamp || '');
     if (!metaCwd) { console.warn(`[codex-tap] rollout has no cwd: ${rolloutPath}`); return; }
@@ -1168,6 +1224,7 @@ class CodexTap extends EventEmitter {
     let sawMatchingPendingCwd = false;
     const rejects = [];
     for (const [hubSessionId, entry] of this._pending) {
+      if (entry.expectedRolloutPath) continue;
       if (entry.cwd !== metaCwd) {
         rejects.push({ sid: hubSessionId.slice(0, 8), why: 'cwd_mismatch', want: metaCwd, got: entry.cwd });
         continue;
@@ -2167,6 +2224,14 @@ class TranscriptTap extends EventEmitter {
 
   getCodexRolloutPath(hubSessionId) {
     return this._codex.getRolloutPath(hubSessionId);
+  }
+
+  async bindCodexFromHook(hubSessionId, options = {}) {
+    try { return await this._codex.bindFromHook(hubSessionId, options); }
+    catch (e) {
+      console.warn('[transcript-tap] bindCodexFromHook failed:', e.message);
+      return false;
+    }
   }
 
   async hasCodexUserMessageSince(hubSessionId, sincePromptTs = 0) {

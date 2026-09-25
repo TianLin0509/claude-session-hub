@@ -353,8 +353,9 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     ...options, clientSubmissionId:options.clientSubmissionId || options.submissionReceipt?.clientSubmissionId,
   });
   const session = sessionManager.getSession?.(sid);
-  if (session && (session.kind === 'codex' || session.kind === 'codex-resume')) {
-    throw new Error('旧 Codex 会话尚未接管，未发送新消息');
+  // 原生 Codex 断了连接时不能退回 PTY 粘贴；PTY Codex 正常走下面的提交闭环。
+  if (session && session.runtimeBackend === 'codex-app-server') {
+    throw new Error('Codex 原生连接不可用，消息未发送');
   }
   const nativeClaude = sessionManager.getNativeClaude?.(sid);
   if (nativeClaude) {

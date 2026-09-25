@@ -104,6 +104,10 @@ try:
             body['prompt'] = prompt
         if hook_event_name:
             body['hookEventName'] = str(hook_event_name)[:80]
+        # SessionStart 的来源（startup / resume / clear / compact / fork）决定
+        # Hub 是否允许把会话改绑到新线程。
+        if event == 'session-start' and payload.get('source'):
+            body['source'] = str(payload.get('source'))[:40]
         if event == 'instructions-loaded':
             body['instructionPath'] = str(payload.get('file_path') or '')[:8192]
             body['loadReason'] = str(payload.get('load_reason') or '')[:80]

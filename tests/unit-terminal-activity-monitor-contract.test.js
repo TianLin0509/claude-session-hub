@@ -429,8 +429,9 @@ test('an input-ready frame can defer burst settlement until the provider running
   monitor.clearSession('s1');
 });
 
-test('Codex never schedules screen probes, including an unarmed PTY chunk storm', async () => {
-  const session = { id: 's1', kind: 'codex', status: 'idle' };
+// 2026-09-25：只有 App Server 后端完全不看屏幕；PTY 跑的 Codex 屏幕识别是补充信号。
+test('App Server Codex never schedules screen probes, including an unarmed PTY chunk storm', async () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle', runtimeBackend: 'codex-app-server' };
   const sessions = new Map([['s1', session]]);
   let classifyCount = 0;
   const monitor = createTerminalActivityMonitor({

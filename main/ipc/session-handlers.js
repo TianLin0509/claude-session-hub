@@ -484,8 +484,10 @@ function registerSessionIpc(ipcMain, deps) {
     if (!old) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
-    if (old.purpose !== 'chuxin-research' && (old.kind === 'codex' || old.kind === 'codex-resume')) {
-      const native = (sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId));
+    const nativeCodex = sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId);
+    // PTY 跑的 Codex 与 Claude 一样按原生会话 id 恢复；只有 App Server 会话在这里重连。
+    if (old.purpose !== 'chuxin-research' && (old.runtimeBackend === 'codex-app-server' || nativeCodex)) {
+      const native = nativeCodex;
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
       return native.reconnect().then(()=>sessionManager.getSession(sessionId))
         .catch(error=>({ok:false,message:error.message}));

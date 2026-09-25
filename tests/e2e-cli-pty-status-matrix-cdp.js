@@ -1,0 +1,347 @@
+'use strict';
+// 真实 Hub + 真实 CLI（PTY 模式）状态矩阵。
+//
+// 隔离：独立 Hub 数据目录、独立 Claude 配置目录与 Codex home（只拷入登录凭据，
+// 结束即删并核对生产凭据未变），不碰生产 Hub。
+//
+// 每个场景记录 Hub 显示的状态时间线，与场景的真值比对：
+//   · 提交后 ≤2s 显示运行（或开始）；
+//   · CLI 真正结束后 ≤3s 显示完成（真值取 transcript / rollout 里最后一条记录的时间）；
+//   · 最终状态必须正确；失焦完成的会话未读恰好 +1。
+// 用法：node tests/e2e-cli-pty-status-matrix-cdp.js [--only=claude|codex] [--skip-long]
+const fs = require('fs'), path = require('path'), os = require('os'), net = require('net'), crypto = require('crypto');
+const assert = require('assert/strict');
+const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
+const { connectFirstPage } = require('./helpers/cdp-client');
+const { ensureClaudeHookIntegration } = require('../core/claude-hook-integration');
+
+const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
+const args = new Set(process.argv.slice(2));
+const ONLY = [...args].find(a => a.startsWith('--only='))?.slice(7) || null;
+const SKIP_LONG = args.has('--skip-long');
+const CLAUDE_MODEL = process.env.REAL_CLAUDE_MODEL || 'claude-haiku-4-5-20251001';
+const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.5';
+const LONG_SECONDS = Number(process.env.PTY_LONG_SECONDS || 130);
+const port = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject);
+  s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+
+async function main() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-pty-matrix-'));
+  const out = path.resolve('artifacts/cli-pty-core/status-matrix-' + Date.now());
+  fs.mkdirSync(out, { recursive: true });
+  const claudeSource = path.join(os.homedir(), '.claude'), claudeAuth = path.join(claudeSource, '.credentials.json');
+  const codexSource = path.join(os.homedir(), '.codex'), codexAuth = path.join(codexSource, 'auth.json');
+  const before = { claude: hash(claudeAuth), codex: hash(codexAuth) };
+  const claudeHome = path.join(root, 'claude'), codexHome = path.join(root, 'codex'), cwd = path.join(root, 'workspace');
+  for (const d of [claudeHome, codexHome, cwd]) fs.mkdirSync(d, { recursive: true });
+  // Claude：只拷凭据；onboarding / bypass 警告 / 信任预置好，hook 按生产同一套部署到隔离配置目录。
+  fs.copyFileSync(claudeAuth, path.join(claudeHome, '.credentials.json'));
+  fs.writeFileSync(path.join(claudeHome, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true, theme: 'dark',
+    bypassPermissionsModeAccepted: true, skipDangerousModePermissionPrompt: true, projects: {} }, null, 2));
+  const hookDeploy = ensureClaudeHookIntegration({ claudeDir: claudeHome, sourceScriptsDir: path.join(__dirname, '..', 'scripts'), logger: {} });
+  // Codex：只拷凭据和模型目录；Hub 启动 PTY Codex 时自己部署 hook 并写信任。
+  fs.copyFileSync(codexAuth, path.join(codexHome, 'auth.json'));
+  if (fs.existsSync(path.join(codexSource, 'models_cache.json'))) fs.copyFileSync(path.join(codexSource, 'models_cache.json'), path.join(codexHome, 'models_cache.json'));
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model = ' + j(CODEX_MODEL) + '\nmodel_reasoning_effort = "low"\n');
+
+  const result = { root, out, claudeModel: CLAUDE_MODEL, codexModel: CODEX_MODEL, hookDeployErrors: hookDeploy.errors,
+    scenarios: [], passed: false };
+  let hub, c;
+  const until = async (expr, label, ms = 120000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (await c.eval(expr)) return Date.now(); await sleep(150); }
+    throw Error('timeout: ' + label + ' :: ' + expr.slice(0, 200));
+  };
+  const snap = async name => { const shot = await c.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64')); };
+  const open = async sid => { await c.eval(`document.querySelector('.session-item[data-session-id="${sid}"]').click()`);
+    await until('!!document.querySelector(".floating-input-box")', 'composer'); await sleep(300); };
+  const send = async text => c.eval(`(()=>{const box=document.querySelector(".floating-input-box");box.textContent=${j(text)};box.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector(".floating-input-send").click();return Date.now();})()`);
+  const key = (sid, data) => c.eval(`ipcRenderer.send('terminal-input',{sessionId:${j(sid)},data:${j(data)}})`);
+  const view = mode => c.eval(`applyViewMode(${j(mode)})`);
+  const status = sid => c.eval(`(()=>{const s=sessions.get(${j(sid)});if(!s)return null;
+    const t=getSessionRuntimeTruth(s);const d=deriveSessionRuntimeStatus(s,{isRunning:isSessionCardWorking(s)});
+    return {truth:t.state,shown:d.state,detail:d.detail||'',unread:s.unreadCount||0,attention:s.attentionState||null,
+      codexSid:s.codexSid||null,cc:s.ccSessionId||null,transcript:s.transcriptPath||null,backend:s.runtimeBackend||null,agentRuntime:s.agentRuntime||null};})()`);
+  const cards = sid => c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)},opts:{limit:6,fromTail:true}}).then(r=>({error:r.error,turns:(r.turns||[]).map(t=>({role:t.role,text:String(t.text||'').slice(0,160),outcome:t.nativeOutcome||t.stopReason||null,phases:(t.displayMessages||[]).map(m=>m.phase),tools:(t.toolCalls||[]).map(x=>({name:x.name,status:x.status||null,ms:x.durationMs||null}))}))}))`);
+  const timeline = sid => c.eval(`(window.__ptyLog&&window.__ptyLog[${j(sid)}])||[]`);
+  const resetTimeline = sid => c.eval(`(window.__ptyLog||(window.__ptyLog={}))[${j(sid)}]=[]`);
+  const isRunningState = s => ['running', 'starting'].includes(s);
+
+  // 一个场景：提交 → 记录时间线 → 等真值结束 → 判定。
+  async function scenario(name, sid, fn) {
+    const record = { name, sid, ok: false, checks: [] };
+    result.scenarios.push(record);
+    const t0 = Date.now();
+    try {
+      await resetTimeline(sid);
+      await fn(record);
+      record.ok = true;
+    } catch (error) {
+      record.error = String(error && error.stack || error).slice(0, 2000);
+      try { await snap('fail-' + name); } catch {}
+      try { record.ui = await c.eval('document.querySelector("#msg-overlay")?.innerText.slice(-1500)||""'); } catch {}
+    } finally {
+      record.elapsedMs = Date.now() - t0;
+      try { record.timeline = await timeline(sid); } catch {}
+      try { record.final = await status(sid); } catch {}
+      console.log(`[matrix] ${record.ok ? 'PASS' : 'FAIL'} ${name} (${Math.round(record.elapsedMs / 1000)}s)` + (record.error ? ' :: ' + record.error.split('\n')[0] : ''));
+    }
+  }
+  // 从提交时刻起多久显示运行；结束后多久显示完成。
+  async function expectRunsThenSettles(record, sid, submittedAt, { settle = 'completed', ms = 240000, runWithinMs = 2000 } = {}) {
+    const runAt = await until(`(()=>{const s=sessions.get(${j(sid)});const t=getSessionRuntimeTruth(s).state;return ['running','starting','waiting'].includes(t);})()`, 'running', 15000);
+    record.runLatencyMs = runAt - submittedAt;
+    assert.ok(record.runLatencyMs <= runWithinMs + 400, `running shown ${record.runLatencyMs}ms after submit (budget ${runWithinMs}ms)`);
+    const doneAt = await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state===${j(settle)}`, settle, ms);
+    record.settledAt = doneAt;
+  }
+
+  try {
+    hub = await launchIsolatedHub({ dataDir: path.join(root, 'data'), port: await port(), windowMode: 'hidden', label: 'pty matrix',
+      extraEnv: { CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome, CLAUDE_HUB_HOME_DIR: path.join(root, 'home'), DEEPSEEK_API_KEY: '' } });
+    c = await connectFirstPage(hub);
+    await c.send('Page.bringToFront');
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await until('typeof sessions!=="undefined" && typeof getSessionRuntimeTruth==="function"', 'renderer');
+    // 时间线探针：每 150ms 记录一次，只在变化时落一行。
+    await c.eval(`(()=>{window.__ptyLog={};window.__hookEvents=[];
+      ipcRenderer.on('hook-event',(_e,p)=>window.__hookEvents.push({at:Date.now(),sid:p.sessionId,event:p.event,provider:p.provider||'claude',tool:p.toolName||null}));
+      setInterval(()=>{for(const [id,s] of sessions){if(!window.__ptyLog[id])continue;const t=getSessionRuntimeTruth(s);
+        const d=deriveSessionRuntimeStatus(s,{isRunning:isSessionCardWorking(s)});const row=[t.state,d.state,s.unreadCount||0,s.attentionState||''];
+        const log=window.__ptyLog[id];const last=log[log.length-1];if(!last||last.s.join()!==row.join())log.push({at:Date.now(),s:row,src:t.source||''});}},150);})()`);
+    const shell = await c.eval(`ipcRenderer.invoke('create-session',{kind:'powershell',opts:{cwd:${j(cwd)}}})`);
+
+    if (!ONLY || ONLY === 'claude') {
+      const cs = await c.eval(`ipcRenderer.invoke('create-session',${j({ kind: 'claude', opts: { cwd, model: CLAUDE_MODEL, effort: 'low', mcpProfile: 'none', fastMode: false } })})`);
+      const sid = cs.id; result.claudeSession = sid;
+      await until(`!!sessions.get(${j(sid)})`, 'claude session');
+      await open(sid);
+      await view('pty');
+      // Claude TUI 起来 = 输入框就绪（❯ 提示符）。
+      await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯|>\\s*$/m.test(s) && /claude|Claude/i.test(s);})()`, 'claude tui ready', 90000);
+      await sleep(1500);
+      await snap('claude-tui');
+      const initial = await status(sid);
+      assert.equal(initial.agentRuntime, 'pty'); assert.equal(initial.backend, null);
+      assert.match(String(initial.cc || ''), /^[0-9a-f-]{36}$/, 'Claude identity fixed before the first prompt');
+      result.checks = ['Claude PTY session identity fixed at launch: ' + initial.cc];
+
+      await scenario('claude-reply', sid, async r => {
+        const at = await send('只回复 PTY_OK_1，不要调用任何工具。');
+        await expectRunsThenSettles(r, sid, at);
+        const st = await status(sid);
+        assert.ok(st.transcript && st.transcript.includes(st.cc), 'transcript bound by the launch identity');
+        await view('card');
+        await until(`document.querySelector('#msg-overlay').innerText.includes('PTY_OK_1')`, 'card shows answer', 20000);
+        const turns = (await cards(sid)).turns; r.cards = turns;
+        const last = turns.filter(t => t.role === 'assistant').at(-1);
+        assert.equal(last.outcome, 'completed'); assert.ok(last.phases.includes('final_answer'));
+        await snap('claude-reply-card');
+        await view('pty');
+      });
+
+      await scenario('claude-unread', sid, async r => {
+        const at = await send('只回复 PTY_OK_2，不要调用任何工具。');
+        await open(shell.id);
+        await expectRunsThenSettles(r, sid, at);
+        await sleep(3000);
+        const st = await status(sid); r.unread = st.unread;
+        assert.equal(st.unread, 1, 'exactly one unread for one background completion');
+        await open(sid);
+        assert.equal((await status(sid)).unread, 0, 'opening clears unread');
+        await view('pty');
+      });
+
+      await scenario('claude-multi-tool', sid, async r => {
+        const at = await send('用 Bash 工具分两次调用，依次运行 `echo ALPHA` 和 `echo BETA`，然后只回复 TOOLS_DONE。');
+        await expectRunsThenSettles(r, sid, at);
+        const turns = (await cards(sid)).turns; r.cards = turns;
+        const last = turns.filter(t => t.role === 'assistant').at(-1);
+        assert.ok(last.tools.length >= 2, 'tool rows present'); assert.ok(last.tools.every(t => t.status === 'completed'), 'tool rows completed');
+        assert.ok(/TOOLS_DONE/.test(last.text));
+        await view('card'); await sleep(800); await snap('claude-tools-card'); await view('pty');
+      });
+
+      await scenario('claude-question', sid, async r => {
+        const at = await send('请调用 AskUserQuestion 工具问我一个单选问题：“选哪个颜色？”，选项只有“红”和“蓝”。拿到我的回答后，只回复 COLOR=<我的选择>。');
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='waiting'`, 'waiting', 90000);
+        r.waitLatencyMs = Date.now() - at;
+        await view('card'); await sleep(600);
+        assert.equal(await c.eval(`!!document.querySelector('.pty-attention-controls:not([hidden])')`), true, 'attention strip visible in cards');
+        r.attentionText = await c.eval(`document.querySelector('.pty-attention-controls .pty-attention-detail')?.textContent||''`);
+        await snap('claude-question-card');
+        await c.eval(`document.querySelector('.pty-attention-controls button').click()`);
+        await sleep(800); await snap('claude-question-terminal');
+        await key(sid, '\r');
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`, 'completed after answer', 90000);
+        const last = (await cards(sid)).turns.filter(t => t.role === 'assistant').at(-1); r.answer = last.text;
+        assert.match(last.text, /COLOR=/);
+      });
+
+      await scenario('claude-interrupt', sid, async r => {
+        const at = await send('用 Bash 工具在前台运行 `powershell -NoProfile -Command Start-Sleep 60`（不要后台运行），结束后回复 SLEPT。');
+        await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`, 'tool started', 60000);
+        await sleep(2500);
+        assert.ok(isRunningState((await status(sid)).truth), 'running while the tool runs');
+        const escAt = Date.now(); await key(sid, '\x1b');
+        const leftAt = await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'left running after Esc', 20000);
+        r.interruptLatencyMs = leftAt - escAt;
+        await sleep(5000);
+        const st = await status(sid); r.after = st;
+        assert.ok(!isRunningState(st.truth), 'not stuck running after interrupt');
+      });
+
+      await scenario('claude-background', sid, async r => {
+        const at = await send('用 Bash 工具以 run_in_background=true 启动命令 `powershell -NoProfile -Command "Start-Sleep 15; echo BG_READY"`，启动后立刻只回复 BG_STARTED；等后台任务完成的通知到达后，再只回复 BG_FINAL。');
+        await until(`document.querySelector('#msg-overlay')&&true`, 'x', 1000).catch(() => {});
+        await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='stop'&&e.at>${at})`, 'first stop', 120000).catch(() => {});
+        const mid = await status(sid); r.afterFirstStop = mid;
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed' && document.querySelector('#msg-overlay').innerText.includes('BG_FINAL')`, 'bg final', 180000)
+          .catch(async error => { await view('card'); await until(`document.querySelector('#msg-overlay').innerText.includes('BG_FINAL')`, 'bg final card', 60000); });
+        const last = (await cards(sid)).turns.filter(t => t.role === 'assistant').at(-1); r.last = last;
+        assert.match(last.text, /BG_FINAL/);
+        await view('pty');
+      });
+
+      if (!SKIP_LONG) await scenario('claude-long', sid, async r => {
+        const at = await send(`用 Bash 工具在前台运行 \`powershell -NoProfile -Command Start-Sleep ${LONG_SECONDS}\`，完成后只回复 LONG_DONE。`);
+        await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`, 'long tool start', 60000);
+        const falseDone = [];
+        const end = Date.now() + (LONG_SECONDS - 10) * 1000;
+        while (Date.now() < end) { const st = await status(sid); if (!isRunningState(st.truth)) falseDone.push({ at: Date.now(), st }); await sleep(2000); }
+        r.falseDone = falseDone.slice(0, 5);
+        assert.equal(falseDone.length, 0, 'never left running during the long tool');
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`, 'long done', 120000);
+      });
+
+      await scenario('claude-compact', sid, async r => {
+        await send('/compact');
+        await sleep(3000);
+        await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'compact settles', 180000);
+        await sleep(3000);
+        r.after = await status(sid);
+        assert.ok(!isRunningState(r.after.truth), 'not stuck running after /compact');
+        assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator');
+      });
+      await snap('claude-final');
+    }
+
+    if (!ONLY || ONLY === 'codex') {
+      const xs = await c.eval(`ipcRenderer.invoke('create-session',${j({ kind: 'codex', opts: { cwd, model: CODEX_MODEL, effort: 'low', mcpProfile: 'none', codexSpeedTier: 'inherit' } })})`);
+      const sid = xs.id; result.codexSession = sid;
+      await until(`!!sessions.get(${j(sid)})`, 'codex session');
+      await open(sid); await view('pty');
+      await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /›|context left|Context/i.test(s);})()`, 'codex tui ready', 90000);
+      await sleep(1500); await snap('codex-tui');
+      const hooks = JSON.parse(fs.readFileSync(path.join(codexHome, 'hooks.json'), 'utf8')).hooks;
+      const config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+      result.codexHooks = Object.keys(hooks);
+      assert.ok(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Stop'].every(k => hooks[k]?.length), 'Hub hooks deployed');
+      assert.ok((config.match(/trusted_hash/g) || []).length >= 6, 'Hub hooks trusted');
+
+      await scenario('codex-reply', sid, async r => {
+        const at = await send('不要调用任何工具，只回复 CODEX_OK_1。');
+        await expectRunsThenSettles(r, sid, at);
+        const st = await status(sid); r.status = st;
+        assert.match(String(st.codexSid || ''), /^[0-9a-f-]{36}$/, 'codexSid bound');
+        assert.ok(st.transcript && st.transcript.includes(st.codexSid), 'rollout bound to the hook-reported thread');
+        r.codexHookEvents = await c.eval(`(window.__hookEvents||[]).filter(e=>e.sid===${j(sid)}).map(e=>e.event)`);
+        assert.ok(r.codexHookEvents.includes('prompt'), 'Codex UserPromptSubmit hook reached the Hub');
+        await view('card');
+        await until(`document.querySelector('#msg-overlay').innerText.includes('CODEX_OK_1')`, 'codex card', 30000);
+        await snap('codex-reply-card'); await view('pty');
+      });
+
+      await scenario('codex-unread', sid, async r => {
+        const at = await send('不要调用任何工具，只回复 CODEX_OK_2。');
+        await open(shell.id);
+        await expectRunsThenSettles(r, sid, at);
+        await sleep(3000);
+        const st = await status(sid); r.unread = st.unread;
+        assert.equal(st.unread, 1, 'exactly one unread');
+        await open(sid); await view('pty');
+      });
+
+      await scenario('codex-multi-tool', sid, async r => {
+        const at = await send('分两次执行 shell 命令：先 `echo ALPHA`，再 `echo BETA`，然后只回复 TOOLS_DONE。');
+        await expectRunsThenSettles(r, sid, at);
+        const turns = (await cards(sid)).turns; r.cards = turns;
+        const last = turns.filter(t => t.role === 'assistant').at(-1);
+        assert.ok(last.tools.length >= 1, 'tool rows present'); assert.ok(/TOOLS_DONE/.test(last.text));
+        r.toolEvents = await c.eval(`(window.__hookEvents||[]).filter(e=>e.sid===${j(sid)}&&e.at>${at}).map(e=>e.event+':'+(e.tool||''))`);
+        await view('card'); await sleep(800); await snap('codex-tools-card'); await view('pty');
+      });
+
+      await scenario('codex-interrupt', sid, async r => {
+        const at = await send('执行 shell 命令 `powershell -NoProfile -Command Start-Sleep 60`（前台等待它结束），然后回复 SLEPT。');
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='running'`, 'running', 30000);
+        await sleep(8000);
+        const escAt = Date.now(); await key(sid, '\x1b');
+        const leftAt = await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'left running after Esc', 20000);
+        r.interruptLatencyMs = leftAt - escAt;
+        await sleep(5000); r.after = await status(sid);
+        assert.ok(!isRunningState(r.after.truth), 'not stuck running');
+      });
+
+      if (!SKIP_LONG) await scenario('codex-long', sid, async r => {
+        const at = await send(`执行 shell 命令 \`powershell -NoProfile -Command Start-Sleep ${LONG_SECONDS}\`（前台等待它结束），完成后只回复 LONG_DONE。`);
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='running'`, 'running', 30000);
+        await sleep(15000);
+        const falseDone = [];
+        const end = Date.now() + (LONG_SECONDS - 25) * 1000;
+        while (Date.now() < end) { const st = await status(sid); if (!isRunningState(st.truth)) falseDone.push({ at: Date.now(), st }); await sleep(2000); }
+        r.falseDone = falseDone.slice(0, 5);
+        assert.equal(falseDone.length, 0, 'never left running during the long command');
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`, 'long done', 180000);
+      });
+
+      await scenario('codex-compact', sid, async r => {
+        await send('/compact');
+        await sleep(3000);
+        await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'compact settles', 180000);
+        await sleep(3000); r.after = await status(sid);
+        assert.ok(!isRunningState(r.after.truth));
+      });
+
+      // 串线：同 cwd 同时起两个 Codex，各自的卡片只能是自己的回答。
+      await scenario('codex-no-crosswire', sid, async r => {
+        const make = () => c.eval(`ipcRenderer.invoke('create-session',${j({ kind: 'codex', opts: { cwd, model: CODEX_MODEL, effort: 'low', mcpProfile: 'none', codexSpeedTier: 'inherit' } })})`);
+        const [a, b] = [await make(), await make()];
+        for (const s of [a, b]) {
+          await open(s.id); await view('pty');
+          await until(`(()=>{const t=terminalCache.get(${j(s.id)})?.terminal;if(!t)return false;const b=t.buffer.active;let x='';for(let i=0;i<b.length;i++){x+=b.getLine(i)?.translateToString(true)+'\\n';}return /›|context left|Context/i.test(x);})()`, 'codex ready', 90000);
+        }
+        await open(a.id); await send('不要调用工具，只回复 TWIN_A。');
+        await open(b.id); await send('不要调用工具，只回复 TWIN_B。');
+        for (const [s, word] of [[a, 'TWIN_A'], [b, 'TWIN_B']]) {
+          await until(`getSessionRuntimeTruth(sessions.get(${j(s.id)})).state==='completed'`, word + ' done', 120000);
+          const turns = (await cards(s.id)).turns;
+          const text = turns.map(t => t.text).join(' ');
+          r[word] = { codexSid: (await status(s.id)).codexSid, text: text.slice(0, 200) };
+          assert.ok(text.includes(word), word + ' in its own card');
+          assert.ok(!text.includes(word === 'TWIN_A' ? 'TWIN_B' : 'TWIN_A'), 'no crosswire');
+        }
+        assert.notEqual(r.TWIN_A.codexSid, r.TWIN_B.codexSid);
+      });
+      await snap('codex-final');
+    }
+    result.passed = result.scenarios.every(s => s.ok);
+    if (!result.passed) process.exitCode = 1;
+  } catch (error) {
+    result.error = error.stack; process.exitCode = 1;
+    if (c) try { result.ui = await c.eval('document.body.innerText.slice(-3000)'); await snap('fatal'); } catch (e) { result.captureError = e.message; }
+  } finally {
+    try { if (c) result.hookEvents = await c.eval('(window.__hookEvents||[]).slice(-400)'); } catch {}
+    try { if (hub) await gracefulQuit(hub); } catch (e) { result.quitError = e.message; }
+    for (const [file, key] of [[path.join(claudeHome, '.credentials.json'), 'claude'], [path.join(codexHome, 'auth.json'), 'codex']]) {
+      try { fs.unlinkSync(file); } catch {}
+      result[key + 'CredentialsUntouched'] = hash(key === 'claude' ? claudeAuth : codexAuth) === before[key];
+    }
+    fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ passed: result.passed, out, error: result.error,
+      scenarios: result.scenarios.map(s => ({ name: s.name, ok: s.ok, run: s.runLatencyMs, error: s.error && s.error.split('\n')[0] })) }, null, 2));
+  }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

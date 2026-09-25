@@ -1362,6 +1362,19 @@ function registerSessionForTap(session) {
   }
 }
 
+const { isPtyCodexSession, createCodexPtyHookHandler } = require('./main/codex-pty-hook.js');
+// 函数声明会提升；handler 在第一次 hook 到达时才创建，届时依赖都已就绪。
+let _codexPtyHookHandler = null;
+function handleCodexPtyHook(session, event, parsed) {
+  if (!_codexPtyHookHandler) {
+    _codexPtyHookHandler = createCodexPtyHookHandler({
+      sessionManager, transcriptTap, sendToRenderer, maybeAutoTitleSessionFromPrompt, readCodexRolloutMeta,
+      isCodexTopLevelRolloutMeta: require('./core/codex-transcript-parser.js').isCodexTopLevelRolloutMeta,
+    });
+  }
+  return _codexPtyHookHandler(session, event, parsed);
+}
+
 function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   if (!hubSessionId) return null;
   const next = {};
@@ -1761,6 +1774,7 @@ registerTranscriptIpc(ipcMain, {
   isCodexCliKind,
   isUsableCodexRolloutPath,
   parseClaudeTranscriptToTurns,
+  parseClaudeTranscriptToNativeTurns: require('./core/claude-disk-transcript.js').parseClaudeTranscriptToNativeTurns,
   parseCodexRolloutToTurns,
   sessionManager,
   transcriptTap,
@@ -2242,6 +2256,15 @@ const hookServer = http.createServer((req, res) => {
         res.writeHead(accepted?200:202,{'Content-Type':'application/json'});res.end(JSON.stringify({accepted:!!accepted}));
       } catch(error) {console.error('[memory] instruction hook failed:',error);res.writeHead(500);res.end('{"error":"instruction-receipt-failed"}');}
       return;
+    }
+    if (isHook && hookTargetSession && isPtyCodexSession(hookTargetSession)) {
+      let outcome;
+      try { outcome = await handleCodexPtyHook(hookTargetSession, req.url.slice('/api/hook/'.length), parsed); }
+      catch (error) {
+        console.error('[codex hook] handling failed:', error);
+        res.writeHead(500); res.end('{"error":"codex-hook-failed"}'); return;
+      }
+      res.writeHead(outcome && outcome.ignored ? 202 : 200); res.end(JSON.stringify(outcome || {})); return;
     }
     if (hookTargetSession && require('./core/codex-native-runtime').isCodexSession(hookTargetSession)) {
       res.writeHead(202); res.end('{"ignored":"codex-native-only"}'); return;

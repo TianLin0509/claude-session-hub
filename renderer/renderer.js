@@ -3391,7 +3391,8 @@ function selectionViewModeForSession(sessionId, session) {
     writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
   }
   const cardCapable = !!session && session.kind !== 'powershell';
-  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable });
+  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable,
+    rememberChoice: session?.agentRuntime === 'pty' });
 }
 function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
@@ -4566,7 +4567,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       saveFloatingInputDraft(sessionId, inputBox); inputBox.focus();
     },
   });
-  contentStack.append(nativeControls.element, composer);
+  // PTY 会话等人操作时的提示条：只指路，不代答。
+  const ptyAttention = require('./pty-attention-controls').createPtyAttentionControls({
+    onOpenTerminal: () => { if (activeSessionId === sessionId) applyViewMode('pty'); },
+  });
+  contentStack.append(nativeControls.element, ptyAttention.element, composer);
   bar.append(contentStack);
   bar.classList.add('visible');
 
@@ -4589,6 +4594,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       runtime,
       liveQuestion: detectComposerLiveQuestion(session, runtime),
     });
+    ptyAttention.update(session, runtime);
     if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
     if (statusText.textContent !== status.text) statusText.textContent = status.text;
     const localHealth = ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
@@ -7149,7 +7155,16 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
       event, eventAt, toolName, toolCallId, turnId, toolInput, toolResult,
       error, errorDetails, agentId, agentType, taskId, taskSubject,
     });
-    if (activity && event.endsWith('-start') && activity.status === 'running') {
+    const questionText = event === 'tool-start' && !isLateStartAfterTerminal ? ptyToolQuestionText(toolName, toolInput) : '';
+    if (questionText) {
+      // 提问类工具一开始就是在等人：PTY 会话没有结构化请求，只能靠 PreToolUse 知道。
+      onClaudeNeedsInput(sessionId, eventAt, { reason: 'pty-ask-user', text: questionText });
+    } else if (s && event === 'tool-complete' && isPtyQuestionTool(toolName)) {
+      // 用户已在终端里答完，CLI 继续往下跑。
+      clearSessionWaitingState(sessionId);
+      observeSessionRuntime(s, { state: RUNTIME_RUNNING, source: 'pty-question-answered',
+        confidence: CONFIDENCE_AUTHORITATIVE, observedAt: eventAt, turnId, evidence: null });
+    } else if (activity && event.endsWith('-start') && activity.status === 'running') {
       observeSessionRuntime(s, {
         state: RUNTIME_RUNNING,
         source: `claude-${event}`,
@@ -7178,6 +7193,29 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     title,
   });
 });
+
+// Claude AskUserQuestion / ExitPlanMode、Codex request_user_input：工具一开始就在等人。
+const PTY_QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
+function isPtyQuestionTool(toolName) {
+  return PTY_QUESTION_TOOLS.has(String(toolName || ''));
+}
+function ptyToolQuestionText(toolName, toolInput) {
+  if (!isPtyQuestionTool(toolName)) return '';
+  let input = toolInput;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = null; } }
+  if (toolName === 'ExitPlanMode') {
+    const plan = String(input && input.plan || '').trim();
+    return '确认计划后继续' + (plan ? '：\n' + (plan.length > 600 ? plan.slice(0, 598) + '…' : plan) : '');
+  }
+  const questions = Array.isArray(input && input.questions) ? input.questions : [];
+  const lines = questions.map(question => {
+    const options = (Array.isArray(question && question.options) ? question.options : [])
+      .map(option => option && (option.label || option)).filter(value => typeof value === 'string' && value);
+    return [question && (question.question || question.header) || '', options.length ? '选项：' + options.join(' / ') : '']
+      .filter(Boolean).join('\n');
+  }).filter(Boolean);
+  return lines.join('\n\n') || '请在终端回答问题';
+}
 
 function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   const session = sessions.get(sessionId);
