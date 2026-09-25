@@ -11,7 +11,9 @@ const crypto = require('crypto');
 const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 // Codex 只有绑定了原生会话 ID 才允许关闭交接（08-08 起的休眠闸门）；为此要真实登录并跑一轮最短回答。
 const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.6-sol';
-const codexAuth = path.join(os.homedir(), '.codex', 'auth.json');
+// Codex 凭据来源：默认 ~/.codex；用 REAL_CODEX_AUTH_SOURCE 指定 Hub 实际在用的订阅账号目录。
+const codexSource = process.env.REAL_CODEX_AUTH_SOURCE || path.join(os.homedir(), '.codex');
+const codexAuth = path.join(codexSource, 'auth.json');
 
 const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
 const ONLY = process.argv.slice(2).find(a => a.startsWith('--only='))?.slice(7) || null;
@@ -35,7 +37,7 @@ async function main() {
       fs.writeFileSync(path.join(claudeDir, '.claude.json'), j({ hasCompletedOnboarding: true, projects: {} }));
       if (provider === 'codex') {
         fs.copyFileSync(codexAuth, path.join(codexHome, 'auth.json')); copiedCredentials.push(path.join(codexHome, 'auth.json'));
-        const cache = path.join(os.homedir(), '.codex', 'models_cache.json');
+        const cache = path.join(codexSource, 'models_cache.json');
         if (fs.existsSync(cache)) fs.copyFileSync(cache, path.join(codexHome, 'models_cache.json'));
         fs.writeFileSync(path.join(codexHome, 'config.toml'), `model = ${j(CODEX_MODEL)}
 model_reasoning_effort = "low"

@@ -96,7 +96,9 @@ async function main() {
   const out = path.resolve('artifacts/cli-pty-core/card-parity-' + Date.now());
   fs.mkdirSync(out, { recursive: true });
   const claudeAuth = path.join(os.homedir(), '.claude', '.credentials.json');
-  const codexSource = path.join(os.homedir(), '.codex'), codexAuth = path.join(codexSource, 'auth.json');
+  // Codex 凭据来源：默认 ~/.codex；Hub 实际在用的订阅账号可能在别处（如 ~/.codex-profiles/second），
+  // 用 REAL_CODEX_AUTH_SOURCE 指定。只拷进临时目录，测完删除并核对原文件 hash。
+  const codexSource = process.env.REAL_CODEX_AUTH_SOURCE || path.join(os.homedir(), '.codex'), codexAuth = path.join(codexSource, 'auth.json');
   const before = { claude: hash(claudeAuth), codex: hash(codexAuth) };
   const claudeHome = path.join(root, 'claude'), codexHome = path.join(root, 'codex'), cwd = path.join(root, 'workspace');
   for (const d of [claudeHome, codexHome, cwd]) fs.mkdirSync(d, { recursive: true });

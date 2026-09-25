@@ -33,7 +33,9 @@ async function main() {
   const out = path.resolve('artifacts/cli-pty-core/status-matrix-' + Date.now());
   fs.mkdirSync(out, { recursive: true });
   const claudeSource = path.join(os.homedir(), '.claude'), claudeAuth = path.join(claudeSource, '.credentials.json');
-  const codexSource = path.join(os.homedir(), '.codex'), codexAuth = path.join(codexSource, 'auth.json');
+  // Codex 凭据来源：默认 ~/.codex；Hub 实际在用的订阅账号可能在别处（如 ~/.codex-profiles/second），
+  // 用 REAL_CODEX_AUTH_SOURCE 指定。只拷进临时目录，测完删除并核对原文件 hash。
+  const codexSource = process.env.REAL_CODEX_AUTH_SOURCE || path.join(os.homedir(), '.codex'), codexAuth = path.join(codexSource, 'auth.json');
   const before = { claude: hash(claudeAuth), codex: hash(codexAuth) };
   const claudeHome = path.join(root, 'claude'), codexHome = path.join(root, 'codex'), cwd = path.join(root, 'workspace');
   for (const d of [claudeHome, codexHome, cwd]) fs.mkdirSync(d, { recursive: true });
@@ -487,6 +489,9 @@ async function main() {
     try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|hook|codex-tap|claude-tap|cli-ready|transcript/i.test(line)).slice(-200); } catch {}
     try { if (hub) await gracefulQuit(hub); } catch (e) { result.quitError = e.message; }
     for (const [file, key] of [[path.join(claudeHome, '.credentials.json'), 'claude'], [path.join(codexHome, 'auth.json'), 'codex']]) {
+      // 副本被 CLI 改写 = 测试期间刷新过令牌。刷新令牌可能轮换，届时原账号的旧令牌会失效，
+      // 必须如实上报，不能只看原文件 hash 没变就当作无影响。
+      try { result[key + 'CopyRewrittenByCli'] = hash(file) !== before[key]; } catch { result[key + 'CopyRewrittenByCli'] = null; }
       try { fs.unlinkSync(file); } catch {}
       result[key + 'CredentialsUntouched'] = hash(key === 'claude' ? claudeAuth : codexAuth) === before[key];
     }
