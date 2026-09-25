@@ -249,13 +249,15 @@ async function main() {
       });
 
       await scenario('claude-compact', sid, async r => {
-        await send('/compact');
+        const sentAt = await send('/compact');
         await sleep(3000);
         await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'compact settles', 180000);
         await sleep(3000);
         r.after = await status(sid);
         assert.ok(!isRunningState(r.after.truth), 'not stuck running after /compact');
-        assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator');
+        // 提交闭环最长要等 9s + 6s 才会判「未确认」；看满这个窗口，别在它出结果之前就下结论。
+        await sleep(Math.max(0, sentAt + 20000 - Date.now()));
+        assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator after the full acknowledgement window');
       });
 
       // /clear 换原生身份：Hub 必须跟随（SessionEnd(旧, clear) → SessionStart(新, clear)），

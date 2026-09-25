@@ -74,3 +74,21 @@ test('/clear submission is acknowledged by the identity switch, not by a turn st
   assert.equal(miss.ok, false);
   silent.dispose();
 });
+
+test('/compact is acknowledged by the compaction signal; only clear/compact are treated as local commands', async () => {
+  const { EventEmitter } = require('node:events');
+  const { observeClaudeLocalCommand, claudeLocalCommand } = require('../core/claude-identity-switch');
+  assert.equal(claudeLocalCommand('/compact'), 'compact');
+  assert.equal(claudeLocalCommand('  /clear  '), 'clear');
+  assert.equal(claudeLocalCommand('/compact 保留测试结论'), 'compact');
+  assert.equal(claudeLocalCommand('/clearly not a command'), null);
+  assert.equal(claudeLocalCommand('/model haiku'), null);
+  assert.equal(claudeLocalCommand('请 /compact'), null);
+  const manager = new EventEmitter();
+  const observer = observeClaudeLocalCommand(manager, 'hub', 'compact');
+  setTimeout(() => manager.emit('claude-local-command-ack', { sessionId: 'hub', command: 'other' }), 10);
+  setTimeout(() => manager.emit('claude-local-command-ack', { sessionId: 'hub', command: 'compact' }), 30);
+  assert.deepEqual(await observer.wait(2000), { ok: true });
+  observer.dispose();
+  assert.equal(manager.listenerCount('claude-local-command-ack'), 0);
+});

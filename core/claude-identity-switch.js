@@ -49,20 +49,44 @@ function createClaudeIdentitySwitch({ now = () => Date.now(), windowMs = SWITCH_
   };
 }
 
-// /clear 不触发 UserPromptSubmit，提交闭环等不到「开工」确认，会补回车再报 stuck。
-// 它真正的确认是 Hub 跟随到了新身份（main.js 在改绑成功时 emit 这个事件）。
-function observeClaudeClearCommand(manager, sessionId) {
+// /clear、/compact 不触发 UserPromptSubmit，提交闭环等不到「开工」确认，会补回车再报
+// stuck（界面亮「消息发送失败 / 补发」）。它们各有自己的确认，main.js 收到时 emit：
+//   /clear   → claude-identity-switched（Hub 已跟随到新身份）
+//   /compact → claude-local-command-ack {command:'compact'}（PreCompact hook，
+//              或压缩完成后 source=compact 的 SessionStart）
+const LOCAL_COMMANDS = {
+  clear: { event: 'claude-identity-switched', missing: '未收到 Claude /clear 后的新会话身份，请检查终端' },
+  compact: { event: 'claude-local-command-ack', missing: '未收到 Claude /compact 开始压缩的确认，请检查终端' },
+};
+
+function claudeLocalCommand(text) {
+  const match = /^\/(clear|compact)(?:\s|$)/i.exec(String(text || '').trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+function observeClaudeLocalCommand(manager, sessionId, command) {
+  const spec = LOCAL_COMMANDS[command];
+  if (!spec) throw new Error('unsupported Claude local command: ' + command);
   let result = null;
-  const listener = event => { if (event && event.sessionId === sessionId) result = { ok: true }; };
-  manager.on('claude-identity-switched', listener);
+  const listener = event => {
+    if (!event || event.sessionId !== sessionId) return;
+    if (event.command && event.command !== command) return;
+    result = { ok: true };
+  };
+  manager.on(spec.event, listener);
   return {
     async wait(timeoutMs = 15000) {
       const deadline = Date.now() + timeoutMs;
       while (!result && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
-      return result || { ok: false, message: '未收到 Claude /clear 后的新会话身份，请检查终端' };
+      return result || { ok: false, message: spec.missing };
     },
-    dispose() { manager.removeListener('claude-identity-switched', listener); },
+    dispose() { manager.removeListener(spec.event, listener); },
   };
 }
 
-module.exports = { createClaudeIdentitySwitch, observeClaudeClearCommand, SWITCH_WINDOW_MS, EXIT_REASONS };
+const observeClaudeClearCommand = (manager, sessionId) => observeClaudeLocalCommand(manager, sessionId, 'clear');
+
+module.exports = {
+  createClaudeIdentitySwitch, claudeLocalCommand, observeClaudeLocalCommand, observeClaudeClearCommand,
+  SWITCH_WINDOW_MS, EXIT_REASONS,
+};

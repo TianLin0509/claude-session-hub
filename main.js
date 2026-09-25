@@ -2297,6 +2297,13 @@ const hookServer = http.createServer((req, res) => {
         // PTY Claude 的身份生命周期：/clear、/resume、退出后重启都会换 session_id。
         // 只有当前绑定的会话先发出 SessionEnd，随后的新 SessionStart 才允许改绑；
         // 其余不同 id 的事件照旧按嵌套进程/子代理拒收（core/claude-identity-switch.js）。
+        // /compact 的提交确认：压缩开始（PreCompact）或完成（source=compact 的同 id SessionStart）。
+        // 只认当前绑定的会话，不转给 renderer —— 它们不是一轮的开始或结束。
+        const compactSignal = hookTargetSession.agentRuntime === 'pty' && !parsed.agentId
+          && (event === 'pre-compact' || (event === 'session-start' && parsed.source === 'compact'))
+          && (!boundClaudeSessionId || incomingClaudeSessionId === boundClaudeSessionId);
+        if (compactSignal) sessionManager.emit('claude-local-command-ack', { sessionId: parsed.sessionId, command: 'compact' });
+        if (event === 'pre-compact') { res.writeHead(200); res.end('{"ok":true}'); return; }
         if ((event === 'session-start' || event === 'session-end') && hookTargetSession.agentRuntime === 'pty') {
           const verdict = claudeIdentitySwitch.observe(parsed.sessionId, {
             event, boundId: boundClaudeSessionId, incomingId: incomingClaudeSessionId,

@@ -55,6 +55,8 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     // 同步执行，保证 SessionEnd 先于随后的 SessionStart 到达。
     ['SessionStart', `python "${hookPyPath}" session-start`],
     ['SessionEnd', `python "${hookPyPath}" session-end`],
+    // /compact 不触发 UserPromptSubmit；压缩开始的这条信号是它提交成功的确认。
+    ['PreCompact', `python "${hookPyPath}" pre-compact`, '', true],
     ['Stop', `python "${hookPyPath}" stop`],
     ['StopFailure', `python "${hookPyPath}" stop-failure`],
     ['UserPromptSubmit', `python "${hookPyPath}" prompt`],
