@@ -24,7 +24,10 @@ const CODEX_RUNNING_RE = /^\s*[\u2022\u23fa\u25cf\u25c9\u25d0-\u25d5]\s*(?:Worki
 const CODEX_PROMPT_RE = /^\s*[\u203a>]\s*(?:$|\S)/;
 const CODEX_CONTEXT_RE = /\bContext\s+(?:\d+(?:\.\d+)?%\s*(?:left)?|window|left)/i;
 
-const CLAUDE_FOOTER_RE = /shift\+tab to cycle|\? for shortcuts|bypass permissions on/i;
+// Claude 2.1.28x 的底栏随权限模式变化：默认模式是「⏸ manual mode on · ← for agents」，
+// 不再带 shift+tab 提示。漏认它，就绪画面就一直是 ambiguous，Stop 时留下的旧运行帧
+// 永远收不了尾（2026-09-25 审查现场：Stop 后 182 秒仍显示运行中）。
+const CLAUDE_FOOTER_RE = /shift\+tab to cycle|\? for shortcuts|bypass permissions on|\b(?:manual|plan|auto) mode on\b|accept edits on|← for agents/i;
 // Claude 2.1.251 may render either an empty prompt, a “Try …” placeholder, or
 // the literal `<no suggestion>` after a completed turn.  All three are input
 // ready when paired with the persistent footer; running markers still win

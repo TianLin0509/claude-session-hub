@@ -114,10 +114,14 @@ async function main() {
     assert.ok(record.runLatencyMs <= runWithinMs + 400, `running shown ${record.runLatencyMs}ms after submit (budget ${runWithinMs}ms)`);
     const doneAt = await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state===${j(settle)}`, settle, ms);
     record.settledAt = doneAt;
-    // 终态必须站得住：屏幕上残留的旧状态行不能在一两秒后把它拽回运行。
-    await sleep(3000);
-    const after = await status(sid);
-    assert.equal(after.truth, settle, `state stayed ${settle} 3s after settling (got ${after.truth})`);
+    // 终态必须站得住：屏幕上残留的旧状态行（含 Stop hook 执行中的状态行）不能把它拽回运行。
+    // 8 秒内每 250ms 采样一次，任何一次离开终态都算失败（R4：不只看最后一眼）。
+    const stayUntil = Date.now() + 8000;
+    while (Date.now() < stayUntil) {
+      const after = await status(sid);
+      assert.equal(after.truth, settle, `state stayed ${settle} for 8s after settling (got ${after.truth} after ${Date.now() - doneAt}ms, source ${JSON.stringify(after.detail)})`);
+      await sleep(250);
+    }
   }
 
   try {
@@ -321,7 +325,19 @@ async function main() {
         const approvedAt = Date.now(); await key(psid, String.fromCharCode(13));
         const runAt = await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='running'`, 'running after approval', 20000);
         r.resumeLatencyMs = runAt - approvedAt;
-        await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='completed'`, 'completed after approval', 120000);
+        // R4：授权后立刻切走，不靠用户点回来收尾；默认权限模式的底栏是 manual mode。
+        await open(shell.id);
+        const doneAt = await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='completed'`, 'completed after approval', 120000);
+        r.completedAfterApprovalMs = doneAt - approvedAt;
+        const stableUntil = Date.now() + 60000;
+        while (Date.now() < stableUntil) {
+          const st = await status(psid);
+          assert.equal(st.truth, 'completed', `stays completed 60s after finishing while unfocused (got ${st.truth} after ${Date.now() - doneAt}ms: ${st.detail})`);
+          await sleep(1000);
+        }
+        const settled = await status(psid);
+        assert.equal(settled.unread, 1, 'exactly one unread for the unfocused completion');
+        r.settled = settled;
         r.timeline = await timeline(psid);
       });
       await snap('claude-final');

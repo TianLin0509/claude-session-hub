@@ -4780,6 +4780,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
     else if (!nativeCommand && !ptyCommand && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
       const submittedAt = Date.now();
+      notePtyTurnBoundary(session);
       observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
         confidence: CONFIDENCE_SEMANTIC, observedAt: submittedAt, startedAt: submittedAt });
       scheduleSessionListRender();
@@ -6141,6 +6142,90 @@ function noteStreamDisconnect(sessionId, data) {
   return raiseStreamDisconnectFailure(sessionId, tracked.issue);
 }
 
+// PTY 跑的 Claude / Codex：这一轮是否已被 hook / transcript / rollout 权威地结束。
+// 所有「凭终端画面写运行中」的入口都先问它：结束了的一轮，只能由 UserPromptSubmit、
+// task_started 这类新的边界重新开启，屏幕上的旧帧（包括 Stop hook 运行时的状态行）不行。
+function ptyTurnClosedAuthoritatively(session, truth = getSessionRuntimeTruth(session)) {
+  return !!session && session.agentRuntime === 'pty' && !!truth
+    && [RUNTIME_COMPLETED, RUNTIME_IDLE, 'interrupted', RUNTIME_FAILED].includes(truth.state)
+    && truth.confidence === CONFIDENCE_AUTHORITATIVE;
+}
+
+// Stop 先于 transcript 终态到达、画面又确实在跑 Stop hook 时，运行状态暂时保留，
+// 但必须有能结束它的真实证据（2026-09-25 审查：旧帧让会话 182 秒停在运行中）：
+//   · transcript 终态到达 → 权威完成覆盖（不经过这里）；
+//   · 画面不再有运行标记，连续两次确认 → 收尾；
+//   · 运行标记还在，但那一行文字 30 秒没变 → 那是停住的旧帧（Claude 真在跑 hook 时
+//     状态行的秒数每秒都在刷新），收尾。
+// 不依赖用户切回这个会话，也不依赖终端再有新输出。
+const CLAUDE_STOP_HOOK_RESOLVE_MS = 1000;
+// 新一轮的边界：本地提交或 UserPromptSubmit。Stop hook 收尾检查只认挂起时的那一轮。
+function notePtyTurnBoundary(session) {
+  if (!session) return;
+  session._ptyTurnSeq = (session._ptyTurnSeq || 0) + 1;
+  session._claudeStopHookHold = null;
+}
+const CLAUDE_STOP_HOOK_STALE_FRAME_MS = 30 * 1000;
+function scheduleClaudeStopHookResolution(sessionId, stopAt) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (session._claudeStopHookTimer) clearTimeout(session._claudeStopHookTimer);
+  const hold = { stopAt, quietChecks: 0, turnSeq: session._ptyTurnSeq || 0 };
+  session._claudeStopHookHold = hold;
+  const tick = () => {
+    const latest = sessions.get(sessionId);
+    if (!latest || latest._claudeStopHookHold !== hold) return;
+    latest._claudeStopHookTimer = null;
+    const truth = getSessionRuntimeTruth(latest);
+    // 已经不在运行、已由语义事件接管，或者 Stop 之后已经开始了新一轮：都不归这里管。
+    if (latest.status === 'dormant' || ![RUNTIME_RUNNING, RUNTIME_STARTING].includes(truth.state)
+        || !String(truth.source || '').startsWith('pty-')
+        || (latest._ptyTurnSeq || 0) !== hold.turnSeq) {
+      latest._claudeStopHookHold = null;
+      return;
+    }
+    let frame = null;
+    try { frame = classifySessionRuntimeFrame(latest, terminalActivityMonitor.extractLiveScreenLines(sessionId)); } catch {}
+    const now = Date.now();
+    let finished = null;
+    if (frame && frame.state === 'running') {
+      hold.quietChecks = 0;
+      // 真在跑 hook 时，状态行里的秒数每秒都在变。同一行文字 30 秒纹丝不动，就是停住的
+      // 旧帧。不看 _lastOutputTs：周期巡检每次重读同一帧都会把它刷新，旧帧就能无限续命。
+      const evidence = String(frame.evidence || '');
+      if (evidence !== hold.evidence) { hold.evidence = evidence; hold.evidenceSince = now; }
+      if (now - (hold.evidenceSince || now) >= CLAUDE_STOP_HOOK_STALE_FRAME_MS) finished = 'claude-stop-hooks-stale-frame';
+    } else {
+      hold.quietChecks += 1;
+      if (hold.quietChecks >= 2) finished = 'claude-stop-hooks-finished';
+    }
+    if (!finished) {
+      latest._claudeStopHookTimer = setTimeout(tick, CLAUDE_STOP_HOOK_RESOLVE_MS);
+      return;
+    }
+    latest._claudeStopHookHold = null;
+    latest._agentWorking = null;
+    latest._runSource = null;
+    latest.runStartedAt = null;
+    disarmPtyBurstFallback(latest, now);
+    // Stop 本身就是这一轮的权威结束，这里只是补上当时被 Stop hook 推迟的那一步。
+    observeSessionRuntime(latest, {
+      state: RUNTIME_COMPLETED,
+      source: finished,
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: now,
+      completedAt: now,
+      startedAt: latest.lastRunStartedAt || 0,
+      evidence: frame && frame.evidence || null,
+    });
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+    updateFloatingBarState();
+    scheduleSessionListRender();
+    schedulePersist();
+  };
+  session._claudeStopHookTimer = setTimeout(tick, CLAUDE_STOP_HOOK_RESOLVE_MS);
+}
+
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   if (isNativeSession(session)) return false;
   if (!session || !runtime || session.status === 'dormant') return false;
@@ -6153,9 +6238,7 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   const fallbackArmed = canUsePtyBurstFallback(session, at);
   let changed = false;
 
-  if (runtime.state === 'running' && session.agentRuntime === 'pty'
-      && [RUNTIME_COMPLETED, RUNTIME_IDLE, 'interrupted', RUNTIME_FAILED].includes(truthBefore.state)
-      && truthBefore.confidence === CONFIDENCE_AUTHORITATIVE) {
+  if (runtime.state === 'running' && ptyTurnClosedAuthoritatively(session, truthBefore)) {
     // PTY 跑的 Claude / Codex 有 hook 与 transcript 作为权威生命周期：一轮由它们判定结束后，
     // 屏幕上残留的旧状态行（Codex 内联界面的旧帧留在缓冲区里）不能把会话拽回「运行中」。
     // 新一轮必须由 UserPromptSubmit / task_started 这类新的边界开启（2026-09-25 真机：
@@ -7304,6 +7387,7 @@ function ptyPermissionText(toolName, toolInput) {
 function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  notePtyTurnBoundary(session);
   const transition = applyPromptSubmitted(session, { submittedAt });
   if (!transition.applied) return;
   session.currentCardActivity = null;
@@ -7615,8 +7699,11 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = 
   // Stop fires while Claude is still executing Stop hooks. If the current PTY
   // frame says “running stop hooks…”, that live strong evidence must beat the
   // foreground-response completion until the input-ready frame appears.
+  // PTY：transcript 已经权威结束这一轮时，Stop hook 的状态行只是这轮的尾声，不能把它
+  // 重新打开（审查 R4：多工具「完成 → 运行 → 完成」闪烁、授权场景 182 秒停在运行中）。
   const stopHooksActive = !needsInput && !backgroundActive
-    && liveRuntime && liveRuntime.state === 'running';
+    && liveRuntime && liveRuntime.state === 'running'
+    && !ptyTurnClosedAuthoritatively(session);
   const keepRuntimeActive = backgroundActive || stopHooksActive;
   const transition = applyReplyCompleted(session, {
     completedAt,
@@ -7668,6 +7755,7 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = 
       startedAt: session.runStartedAt || session.lastRunStartedAt || transition.at,
       evidence: liveRuntime.evidence || 'Claude Code is still running Stop hooks',
     });
+    if (session.agentRuntime === 'pty') scheduleClaudeStopHookResolution(sessionId, transition.at);
   } else {
     // Official Stop is the authoritative end of the foreground turn.
     session._agentWorking = null;
