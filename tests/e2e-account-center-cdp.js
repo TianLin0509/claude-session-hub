@@ -84,20 +84,18 @@ async function main() {
 
     // A login opens one ordinary window, in the right identity, at the site asked for.
     await click(`${main} .ac-chip[data-site="google"]`);
-    await until('document.querySelector(".ac-status").textContent.includes("已在 Hub 浏览器打开登录窗口")', 'login acknowledged');
-    const ep = await chrome.endpoint(); assert.ok(ep, 'the login started the Hub Chrome');
-    const { CDP } = require('../core/web-roundtable/cdp');
-    const b = await CDP.connect(ep.ws, ep.port);
-    const pages = (await b.call('Target.getTargets')).targetInfos.filter(t => t.type === 'page');
-    const mainCtx = pages.find(t => t.url.endsWith('identity-main.html'))?.browserContextId;
-    const login = pages.find(t => t.url.includes('google.com'));
-    assert.ok(login, 'a Google tab was opened: ' + pages.map(p => p.url).join(', '));
-    assert.equal(login.browserContextId, mainCtx, 'in the main identity');
-    const bounds = (await b.call('Browser.getWindowBounds', { windowId: (await b.call('Browser.getWindowForTarget', { targetId: login.targetId })).windowId })).bounds;
-    assert.ok(bounds.left >= 0 && bounds.top >= 0, 'on screen');
-    b.close();
-    await until('document.querySelector(".ac-chrome").textContent.includes("运行中")', 'page notices the browser');
-    result.checks.push('点某个站点即在 Hub 浏览器的对应身份里、屏幕可见处打开该站登录页');
+    await until('document.querySelector(".ac-status").textContent.includes("已打开 Hub 浏览器的登录窗口")', 'login acknowledged');
+    // Google refuses sign-in in a browser with a debugging port, so a login is an ordinary
+    // Chrome on the same profile: the profile is held, no debugging endpoint is offered, and
+    // the launched command names the right identity and the site asked for.
+    for (let i = 0; i < 40 && !chrome.profileHeld(); i++) await sleep(250);
+    assert.equal(chrome.profileHeld(), true, 'the login started a Chrome on the Hub profile');
+    assert.equal(await chrome.endpoint(), null, 'without a debugging port');
+    const cmd = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'"|Where-Object{$_.CommandLine -like '*${path.basename(root)}*' -and $_.CommandLine -notlike '*--type=*'}|Select-Object -First 1).CommandLine`], { encoding: 'utf8' });
+    assert.match(cmd, /--profile-directory=main/); assert.match(cmd, /gemini\.google\.com/); assert.match(cmd, /--window-position=120,80/);
+    assert.doesNotMatch(cmd, /remote-debugging/);
+    await until('document.querySelector(".ac-chrome").textContent.includes("登录窗口开着")', 'page notices the login window');
+    result.checks.push('点某个站点即以普通模式（无调试端口，Google 才允许登录）在对应身份、屏幕内打开该站登录页；页面如实显示"登录窗口开着"');
     await snap('02-login-opened');
 
     // API keys still have a home, and the general settings page does not overwrite them.
