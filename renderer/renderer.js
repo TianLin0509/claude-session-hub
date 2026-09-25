@@ -4,6 +4,9 @@ const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = requi
 const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
+const { isPtyAgentSession } = require('../core/agent-runtime-mode.js');
+// 草稿写进 Main 的草稿库：原生会话和 PTY 的 Claude/Codex 会话都算（同一个 Hub 会话 id）。
+const hasDurableDraft = session => isNativeAgent(session) || isPtyAgentSession(session);
 const { recordNativeContent, promptReceipt } = require('../core/native-feedback.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const { createCodexBackstage } = require('./codex-backstage.js');
@@ -466,7 +469,7 @@ function isCaretAtContenteditableStart(el) {
 }
 
 function attachNativeDraft(sessionId, inputBox) {
-  if (!isNativeAgent(sessions.get(sessionId))) return null;
+  if (!hasDurableDraft(sessions.get(sessionId))) return null;
   if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
   const view = {
     onRestore(text) {
@@ -512,7 +515,7 @@ function saveFloatingInputDraft(sessionId, inputBox) {
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
   nativeDraftControllers.get(sessionId)?.change('');
-  if (sessionId && isNativeSession(sessions.get(sessionId))) {
+  if (sessionId && (isNativeSession(sessions.get(sessionId)) || isPtyAgentSession(sessions.get(sessionId)))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
   }
@@ -4250,11 +4253,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
   inputBox.setAttribute('data-placeholder', '输入消息…');
-  if (isNativeSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
+  if ((isNativeSession(sessions.get(sessionId)) || isPtyAgentSession(sessions.get(sessionId))) && !floatingInputDrafts.has(sessionId)) {
     try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
     catch(error){console.warn('[codex-draft] read failed:',error.message);}
   }
-  if (!floatingInputDrafts.has(sessionId) && sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+  if (!floatingInputDrafts.has(sessionId) && (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json' || isPtyAgentSession(sessions.get(sessionId)))) {
     try {
       const saved = localStorage.getItem('hub.claude-native.draft.v1:' + sessionId);
       if (saved) floatingInputDrafts.set(sessionId, saved);

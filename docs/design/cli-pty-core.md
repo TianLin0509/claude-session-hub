@@ -37,7 +37,29 @@ Codex 0.153 只执行「已信任」的 hook，信任记录存在 `config.toml` 
 2. 在 `hooks.json` 里补齐缺的事件。已有的 session-hub-hook 条目原样复用，不重复部署；
 3. 为命令里带 `session-hub-hook` 的条目写 `trusted_hash`。这等价于用户在 `/hooks` 里点了一次信任，Hub 绝不替用户信任别的 hook。
 
+写 `config.toml` 按 TOML 语义来，不按字符串（`core/toml-statements.js`）：
+- 同一张表的单引号、双引号（含转义）、点号两侧空白、行尾注释，都认作同一张表；
+- 只改两种形状：独立的 `[hooks.state.<key>]` 表，或者完全没有这个条目（在文末追加）；
+- 条目若以点号键或内联表的形式写在别处，就不动它，提示用户在 `/hooks` 里手动信任；
+- 写盘前用 Python `tomllib` 解析改前、改后两份文本：改前解析不了就不改；改后除 Hub 条目的 `trusted_hash` 之外，语义必须与改前完全一致，否则放弃写入。
+
 hash 算法取自 Codex 源码 `hooks/src/engine/discovery.rs::hook_hash` 和 `config/src/fingerprint.rs::version_for_toml`：`{event_name, matcher?, hooks:[归一化 handler]}` 转成 JSON、键排序、紧凑序列化后取 sha256。单测用本机 Codex 自己写下的两个 hash 做回归。Codex 升级后如果改了算法，单测不会报警；这时 hook 被静默跳过，状态退回只靠 rollout 与屏幕识别。所以 E2E 必须断言 hook 真的到达。
+
+## 身份跟随（Claude）
+
+Claude 的身份在启动时就定了，但 TUI 里的 `/clear`、`/resume`，以及退出后在同一个 shell 里重新启动，都会换新的 session_id。嵌套进程（模型在 Bash 工具里跑的 `claude -p`）也会继承 Hub 环境，带着别的 id 打进 hook。只看 SessionStart 分不开这两种情况。
+
+真机实测的事件顺序（`tests/probe-claude-session-hooks.js`）：
+- `/clear`：先 `SessionEnd(旧 id, reason=clear)`，约 0.6 秒后 `SessionStart(新 id, source=clear)`；
+- `/exit`：`SessionEnd(旧 id, reason=prompt_input_exit)`。
+
+判据（`core/claude-identity-switch.js`）：只有当前绑定的会话先宣布结束，随后的新 SessionStart 才允许改绑。
+- source 为 `clear` / `resume`：要求那条 SessionEnd 在 30 秒之内；
+- source 为 `startup`：要求那条 SessionEnd 是真正退出的原因。
+
+嵌套进程或子代理不可能替已绑定的会话发出 SessionEnd，所以串线照旧被拒。改绑会更新持久化的 ccSessionId 和 transcriptPath，并刷新归属；卡片随之重新加载，下一次提问时 tail 切到新文件。关闭再打开时，用新身份 `--resume`。
+
+`/clear` 不触发 UserPromptSubmit。提交闭环以「Hub 已跟随新身份」作为这条命令的确认，不再补回车、不亮「补发」。
 
 ## 绑定（Codex）
 
@@ -66,6 +88,15 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 - Codex：rollout 解析器照旧，它本来就输出 commentary / final 分段和工具结果。
 - 视图：PTY 会话默认打开终端；用户切到卡片后按会话记住，下次打开仍停在卡片。
 
+## 草稿与恢复
+
+- 草稿库（`native-input-drafts.sqlite`）按 Hub 会话 id 存。PTY 的 Claude/Codex 会话与原生会话共用这一份（`agent-runtime-mode.isPtyAgentSession`），所以原生时代存下的草稿改走 PTY 后照样读得回来。revision 冲突检测、两个输入栏共用一个控制器、关闭前 flush，全部沿用原生那套。
+- 一轮都没跑过的 Codex 会话，恢复时不走 `codex resume`（那只会停在「Resume a previous session」选择框，还会吞掉第一条消息），而是用同一个 Hub id 新开。
+  - 判定只认正面证据：原生快照没有任何轮次，Hub 从没记录过开始、完成或记录路径，且 sid 缺失或它的 rollout 不存在。
+  - 跑过但没绑上 id 的老会话仍走选择框，那是绑定失败时唯一不丢历史的兜底。
+  - 用户主动选的「Codex Resume」本来就要选择框，不受影响。
+- Codex 会话在绑定原生 id 之前不能关闭（08-08 起的休眠闸门）。开了没聊就想关，会提示先等本轮完成。
+
 ## 真机逼出来的规则（2026-09-25 状态矩阵）
 
 以下几条都是单测过了、真机上才暴露的问题，改动相关代码前先读：
@@ -81,7 +112,6 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 ## 已知边界
 
 - 卡片按段落刷新，不逐字流动；要逐字看，就看终端本体。
-- Claude TUI 里 `/clear` 会换会话 id。Hub 目前没有部署 Claude 的 SessionStart hook，之后的事件会被当作外来事件忽略，卡片停在旧会话。重开会话即可恢复。
 - 本机 Codex 0.153.4 没有 Interrupt hook，Esc 中断靠 rollout 的 `turn_aborted`。
 - 群聊派发依然走 PTY 闭环：偶发 `stuck` 时显示「补发」按钮。
 - Codex 的斜杠命令不触发 UserPromptSubmit，闭环拿不到确认，可能亮「补发」。状态本身不会卡住：`/compact` 由空正文的 task_complete 收尾。
@@ -90,5 +120,6 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 
 ## 验证入口
 
-- 单测：`tests/unit-agent-pty-runtime.test.js`、`unit-codex-hook-integration`、`unit-codex-pty-hook`、`unit-codex-tap-hook-binding`、`unit-claude-disk-transcript`，以及全量 `node scripts/run_unit_tests.js`。
+- 单测：`tests/unit-agent-pty-runtime.test.js`、`unit-codex-hook-integration`、`unit-codex-pty-hook`、`unit-codex-tap-hook-binding`、`unit-claude-disk-transcript`、`unit-claude-identity-switch`、`unit-pty-draft-and-fresh-resume`，以及全量 `node scripts/run_unit_tests.js`。
+- 草稿：`node tests/e2e-cli-pty-draft-persistence-cdp.js`（Claude/Codex × 迁移、重启、跨 Hub 接续）。
 - GUI：隔离 Hub + 真实 CLI 的状态矩阵，脚本与报告见实现手册。

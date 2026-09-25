@@ -191,6 +191,8 @@ const sessionSearchService = new SessionSearchService({
     || (process.env.HUB_SESSION_SEARCH_PREWARM !== '0' && !isIsolatedHub()),
 });
 const transcriptTap = new TranscriptTap({ parserService: transcriptParserService });
+// PTY Claude 在 /clear、/resume、重启后跟随新的原生身份；判据见 core/claude-identity-switch.js。
+const claudeIdentitySwitch = require('./core/claude-identity-switch').createClaudeIdentitySwitch();
 // AIGroupChatHub.exe is a branded copy of Electron's default-app host. Electron
 // 41 reports app.isPackaged=true solely because the exe was renamed, while
 // process.defaultApp remains true and argv still contains this source tree.
@@ -2291,6 +2293,35 @@ const hookServer = http.createServer((req, res) => {
             initialTranscriptBucketMismatch = path.basename(path.dirname(parsed.transcriptPath)).toLowerCase()
               !== projectSlug(hookTargetSession.cwd).toLowerCase();
           } catch {}
+        }
+        // PTY Claude 的身份生命周期：/clear、/resume、退出后重启都会换 session_id。
+        // 只有当前绑定的会话先发出 SessionEnd，随后的新 SessionStart 才允许改绑；
+        // 其余不同 id 的事件照旧按嵌套进程/子代理拒收（core/claude-identity-switch.js）。
+        if ((event === 'session-start' || event === 'session-end') && hookTargetSession.agentRuntime === 'pty') {
+          const verdict = claudeIdentitySwitch.observe(parsed.sessionId, {
+            event, boundId: boundClaudeSessionId, incomingId: incomingClaudeSessionId,
+            source: parsed.source || null, reason: parsed.reason || null, agentId: parsed.agentId || null,
+          });
+          if (verdict.action === 'rebind') {
+            const updated = updateSessionTranscriptBinding(parsed.sessionId, {
+              ccSessionId: incomingClaudeSessionId, transcriptPath: parsed.transcriptPath, cwd: parsed.cwd,
+            });
+            if (updated && updated.ccSessionId === incomingClaudeSessionId) {
+              console.log(`[claude hook] ${parsed.sessionId.slice(0, 8)} follows CLI identity `
+                + `${boundClaudeSessionId.slice(0, 8)} -> ${incomingClaudeSessionId.slice(0, 8)} (${parsed.source})`);
+              sessionManager.emit('claude-identity-switched', { sessionId: parsed.sessionId, to: incomingClaudeSessionId });
+              sendToRenderer('claude-identity-switched', {
+                sessionId: parsed.sessionId, from: boundClaudeSessionId, to: incomingClaudeSessionId,
+                source: parsed.source || null, transcriptPath: parsed.transcriptPath || null, at: eventAt,
+              });
+            } else {
+              verdict.action = 'ignore';
+              verdict.why = 'rebind-rejected';
+            }
+          } else if (verdict.action === 'ignore' && verdict.why !== 'no-identity') {
+            console.warn(`[claude hook] ignored ${event} for ${parsed.sessionId.slice(0, 8)}: ${verdict.why}`);
+          }
+          res.writeHead(200); res.end(JSON.stringify({ ok: true, identity: verdict.action })); return;
         }
         if ((boundClaudeSessionId && incomingClaudeSessionId
               && boundClaudeSessionId !== incomingClaudeSessionId)

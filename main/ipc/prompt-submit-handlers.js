@@ -61,8 +61,11 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   for (const operation of ['read', 'save']) {
     ipcMain.handle('native-draft:' + operation, (_event, request = {}) => {
       const session = sessionManager.getSession(request.sessionId);
-      if (!['claude-stream-json', 'codex-app-server', 'acp'].includes(session?.runtimeBackend)) {
-        return { ok: false, error: '当前会话不是原生会话' };
+      // 草稿按 Hub 会话 id 持久化：原生会话与 PTY 的 Claude/Codex 会话共用同一份，
+      // 原生时代存下的草稿在改走 PTY 后照样读得回来。
+      if (!['claude-stream-json', 'codex-app-server', 'acp'].includes(session?.runtimeBackend)
+          && !require('../../core/agent-runtime-mode').isPtyAgentSession(session)) {
+        return { ok: false, error: '当前会话不支持草稿持久化' };
       }
       try {
         nativeDraftStore ||= new (require('../../core/native-draft-store').NativeDraftStore)();
@@ -234,12 +237,17 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       catch (error) { return { ok:false, notSent:true, error:error.code || 'native-recovery-failed', message:error.message }; }
       const receipt = clientSubmissionId && supportsMessageReceipt(kind, text)
         ? receipts.begin(sessionId, clientSubmissionId, text, Date.now(), {nativeOnly:!!(sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId))}) : null;
+      // PTY Claude 的 /clear：以「Hub 跟随到新身份」为确认，而不是等一个永远不会来的开工信号。
+      const clearObserver = /^claude/.test(String(kind)) && /^\/clear(?:\s|$)/i.test(text.trim())
+        && require('../../core/agent-runtime-mode').isPtyAgentSession(sessionManager.getSession(sessionId))
+        ? require('../../core/claude-identity-switch').observeClaudeClearCommand(sessionManager, sessionId) : null;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
         const result = await sendWithMemory(request, sessionId, text, kind, {
           requireReady: false, submissionReceipt: receipt,
           clientSubmissionId, attachments:request.attachments,
+          ...(clearObserver ? { localCommandObserver: clearObserver } : {}),
         });
         if (receipt) receipts.finish(receipt, result || { ok: false });
         if (!result || result === false) {
@@ -266,6 +274,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         if (receipt) receipts.finish(receipt, { ok: false });
         logger.warn('[prompt-submit] send threw:', error && error.message);
         return { ok: false, error: 'send-threw', message: error && error.message, kind, ...(error?.notSent ? {notSent:true} : {}) };
+      } finally {
+        clearObserver?.dispose();
       }
     });
   };

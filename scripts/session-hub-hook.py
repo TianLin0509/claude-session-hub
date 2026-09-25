@@ -108,6 +108,12 @@ try:
         # Hub 是否允许把会话改绑到新线程。
         if event == 'session-start' and payload.get('source'):
             body['source'] = str(payload.get('source'))[:40]
+        # SessionEnd 的原因（clear / prompt_input_exit / logout …）：只有已绑定的会话
+        # 自己宣布结束之后，Hub 才接受随后的新身份（见 core/claude-identity-switch.js）。
+        if event == 'session-end' and payload.get('reason'):
+            body['reason'] = str(payload.get('reason'))[:40]
+        if event in ('session-start', 'session-end') and agent_id:
+            body['agentId'] = str(agent_id)[:180]
         if event == 'instructions-loaded':
             body['instructionPath'] = str(payload.get('file_path') or '')[:8192]
             body['loadReason'] = str(payload.get('load_reason') or '')[:80]

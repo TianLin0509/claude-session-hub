@@ -34,4 +34,9 @@ function usesPtyAgentRuntime(kind, config) {
   return AGENT_KINDS.has(kind) && agentRuntimeMode(config) === PTY;
 }
 
-module.exports = { PTY, NATIVE, agentRuntimeMode, usesNativeAgentRuntime, usesPtyAgentRuntime };
+// 这一条已经按 PTY 启动的 Claude / Codex 会话（看会话自己的标记，不看当前开关）。
+function isPtyAgentSession(session) {
+  return !!session && session.agentRuntime === PTY && !session.runtimeBackend;
+}
+
+module.exports = { PTY, NATIVE, AGENT_KINDS, agentRuntimeMode, usesNativeAgentRuntime, usesPtyAgentRuntime, isPtyAgentSession };

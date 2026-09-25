@@ -257,6 +257,48 @@ async function main() {
         assert.ok(!isRunningState(r.after.truth), 'not stuck running after /compact');
         assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator');
       });
+
+      // /clear 换原生身份：Hub 必须跟随（SessionEnd(旧, clear) → SessionStart(新, clear)），
+      // 新问答进卡片；关闭再打开仍停在新身份上。返工 R2。
+      await scenario('claude-clear', sid, async r => {
+        r.before = await status(sid);
+        await send('/clear');
+        await until(`(sessions.get(${j(sid)})?.ccSessionId||'')!==${j(r.before.cc)}`, 'Hub follows the new identity after /clear', 30000);
+        r.afterClear = await status(sid);
+        assert.match(String(r.afterClear.cc || ''), /^[0-9a-f-]{36}$/);
+        await sleep(2000);
+        assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, '/clear is acknowledged by the identity switch, no resend offered');
+        assert.ok(!isRunningState((await status(sid)).truth), '/clear does not leave the session running');
+        assert.ok(String(r.afterClear.transcript || '').includes(r.afterClear.cc), 'transcript path follows the new identity');
+        await sleep(1500);
+        const at = await send('不要调用任何工具，只回复 AFTER_CLEAR_OK。');
+        await expectRunsThenSettles(r, sid, at);
+        // 真值来自 CLI 自己写的新 JSONL，而不是 Hub 的状态。
+        const onDisk = fs.readFileSync(r.afterClear.transcript, 'utf8');
+        assert.ok(onDisk.includes('AFTER_CLEAR_OK'), 'the new transcript holds the answer');
+        assert.ok(!fs.readFileSync(r.before.transcript, 'utf8').includes('AFTER_CLEAR_OK'), 'old transcript untouched by the new turn');
+        await view('card');
+        await until(`document.querySelector('#msg-overlay').innerText.includes('AFTER_CLEAR_OK')`, 'card shows the post-clear answer', 20000);
+        const turns = (await cards(sid)).turns; r.cards = turns;
+        const last = turns.filter(t => t.role === 'assistant').at(-1);
+        assert.match(last.text, /AFTER_CLEAR_OK/); assert.equal(last.outcome, 'completed');
+        await snap('claude-clear-card');
+        await view('pty');
+        await snap('claude-clear-terminal');
+        // 关闭再打开：从持久化记录恢复，必须 --resume 新身份。
+        await c.eval(`document.querySelector('.btn-close-session')?.click()`);
+        await until(`sessions.get(${j(sid)})?.status==='dormant'`, 'closed', 30000);
+        await open(sid);
+        await until(`sessions.get(${j(sid)})?.status!=='dormant'`, 'reopened', 60000);
+        await until(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'claude tui back', 90000);
+        await dismissClaudeStartupPrompt(sid);
+        r.reopened = await status(sid);
+        assert.equal(r.reopened.cc, r.afterClear.cc, 'reopen resumes the post-clear identity');
+        await view('card');
+        await until(`document.querySelector('#msg-overlay').innerText.includes('AFTER_CLEAR_OK')`, 'card after reopen', 30000);
+        await snap('claude-clear-reopened-card');
+        await view('pty');
+      });
       // 权限确认：默认权限模式的新会话，命令要授权 → 显示等待并点名工具 → 在终端批准 → 回到运行 → 完成。
       await scenario('claude-permission', 'perm', async r => {
         const ps = await c.eval(`ipcRenderer.invoke('create-session',${j({ kind: 'claude', opts: { cwd, model: CLAUDE_MODEL, effort: 'low', mcpProfile: 'none', fastMode: false, permissionMode: 'default' } })})`);
@@ -418,7 +460,8 @@ async function main() {
     if (c) try { result.ui = await c.eval('document.body.innerText.slice(-3000)'); await snap('fatal'); } catch (e) { result.captureError = e.message; }
   } finally {
     try { if (c) result.hookEvents = await c.eval('(window.__hookEvents||[]).slice(-400)'); } catch {}
-    try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|codex hook|claude hook|codex-tap|codex-hooks|cli-ready/.test(line)).slice(-200); } catch {}
+    try { if (c) result.hookEvents = (await c.eval('window.__hookEvents||[]')).slice(-300); } catch {}
+    try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|hook|codex-tap|claude-tap|cli-ready|transcript/i.test(line)).slice(-200); } catch {}
     try { if (hub) await gracefulQuit(hub); } catch (e) { result.quitError = e.message; }
     for (const [file, key] of [[path.join(claudeHome, '.credentials.json'), 'claude'], [path.join(codexHome, 'auth.json'), 'codex']]) {
       try { fs.unlinkSync(file); } catch {}
