@@ -88,4 +88,33 @@ async function resolveHistorySqliteHome(options, persistedHome) {
   }
   return sqliteHome;
 }
-module.exports = {resolveAccount,withGlobalAccount,prepareLaunch,currentConfig,resolveHistorySqliteHome};
+// PTY Codex has no thread/resume{path}: the TUI finds a rollout only by id in
+// the thread index under sqlite_home (default: CODEX_HOME). After the global
+// account changes, CODEX_HOME carries the new credentials, so the index must be
+// pointed back at the original history, the same split the native app-server
+// uses. Resolved synchronously from the history home's own config.toml; a
+// sqlite_home written in a form we cannot read blocks the resume instead of
+// guessing another database.
+function historySqliteHomeSync(historyHome, persistedHome, env = process.env) {
+  let sqliteHome = persistedHome || null;
+  if (!sqliteHome) {
+    const {scanTomlStatements,simpleStringValue,samePath} = require('./toml-statements');
+    let text = '';
+    try { text = require('fs').readFileSync(path.join(historyHome,'config.toml'),'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw new Error('旧 Codex 账号配置无法读取，未恢复：'+error.message); }
+    let statements;
+    try { statements = scanTomlStatements(text).statements; }
+    catch (error) { throw new Error('旧 Codex 账号 config.toml 无法识别，未恢复：'+error.message); }
+    const stmt = statements.find(s => s.kind === 'kv' && samePath(s.path,['sqlite_home']));
+    const value = stmt ? simpleStringValue(stmt.valueText) : null;
+    if (stmt && !value) throw new Error('旧 Codex 账号的 sqlite_home 写法无法识别，未恢复');
+    sqliteHome = value ? path.resolve(historyHome,expandHomePath(value)) : historyHome;
+  }
+  sqliteHome = path.resolve(sqliteHome);
+  if (env.CLAUDE_HUB_DATA_DIR) {
+    const relative=path.relative(path.dirname(path.resolve(env.CLAUDE_HUB_DATA_DIR)),sqliteHome);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Codex 历史数据库不在隔离目录内，未启动会话');
+  }
+  return sqliteHome;
+}
+module.exports = {resolveAccount,withGlobalAccount,prepareLaunch,currentConfig,resolveHistorySqliteHome,historySqliteHomeSync};

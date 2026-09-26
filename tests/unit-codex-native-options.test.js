@@ -1,4 +1,6 @@
 'use strict';
+// 本文件验证 Codex App Server 后端；2026-09-25 起它只是回退开关，需要显式打开。
+process.env.CLAUDE_HUB_AGENT_RUNTIME = 'native';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),path=require('path'),os=require('os');
 const {buildNativeCodexOptions}=require('../core/session-manager')._private;
 test('native launch preserves explicit tuning, policy, cwd, instructions and resume identity',()=>{

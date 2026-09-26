@@ -115,8 +115,8 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
 
 ## 铁律：往 CLI 输入框发 prompt，只走闭环，永远不许盲发回车
 
-- **原生会话优先（2026-09-10）**：Hub 管理的 Codex 走 App Server，Claude 走双向 stream-json。统一入口 `session:send-prompt` / `groupChatWatcher.sendToPty` 按后端路由结构化消息；它们不进入下面的 PTY 粘贴、输入框探测或补 Enter 闭环。状态只取 Main 按会话、提交、原生身份及 epoch/revision 维护的快照；没有确认就保留未知，不猜成功、不自动重发。
-- 原生审批、提问、停止、恢复、模型切换均走对应控制接口；禁止用 TUI 命令补未实现能力。未知提交须核对原生历史；接管前确认旧 writer 已释放，不强杀其他 Hub。下列粘贴规则仅约束仍使用 PTY 的其他 provider，不能重新套到原生会话上。
+- **CLI 为核心（2026-09-25，用户拍板，取代 09-10 的「原生会话优先」）**：Claude / Codex 默认在 PTY 里跑真实 TUI，提交一律走下面的闭环。状态以 CLI hook 为权威（Claude settings.json、Codex `<CODEX_HOME>/hooks.json`，Codex 条目由 `core/codex-hook-integration.js` 部署并写 trusted_hash），落盘 transcript / rollout 为强信号，屏幕识别只能推向「运行中 / 等待」、不能判完成。卡片读 CLI 自己的落盘记录，Claude 走与原生同一投影（`core/claude-disk-transcript.js`）。会话身份靠 `--session-id` 与 hook 上报的 session_id + transcript_path 精确绑定，禁止再按 cwd + 时间窗推断。设计与验收见 `docs/design/cli-pty-core.md`。
+- 原生后端（Codex App Server / Claude stream-json）只是回退开关：`CLAUDE_HUB_AGENT_RUNTIME=native` 或 config.json `runtime.agent = "native"`，UI 不暴露。开着它时原生会话仍按原规则走结构化控制接口，不进入 PTY 粘贴闭环；未知提交核对原生历史、不自动重发。
 
 **从 2026-04-30 到 06-18 至少返工过 6 次的同一个 bug**：内容进了 CLI 输入框，折叠成
 `[Pasted text +N lines]` / `[[Pasted Content N chars]]`，**就是不提交**，也没有任何提示，

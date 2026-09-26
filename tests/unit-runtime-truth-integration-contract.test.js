@@ -29,7 +29,8 @@ test('Claude official lifecycle hooks reach the renderer with bounded evidence',
   assert.match(main, /!isSubagentContext && \(parsed\.claudeSessionId \|\| parsed\.transcriptPath\)/,
     'subagent hooks must never replace the parent transcript binding');
   assert.match(renderer, /event === 'stop-failure'\)[\s\S]{0,160}onClaudeStopFailure/);
-  assert.match(renderer, /event === 'permission-request'\)[\s\S]{0,180}onClaudeNeedsInput/);
+  // 第 4 轮 R5：迟到的 PermissionRequest 不能把已关闭的一轮改成等待。
+  assert.match(renderer, /event === 'permission-request' && !hookTurnClosed\(s\)\)[\s\S]{0,180}onClaudeNeedsInput/);
   assert.match(renderer, /event === 'notification'\)[\s\S]{0,180}onClaudeNotification/);
   assert.match(renderer,
     /onReplyCompleteFromHook[\s\S]{0,5000}extractLiveScreenLines\(sessionId\)[\s\S]{0,800}stopHooksActive/,
@@ -62,4 +63,32 @@ test('sidebar, card header and home workbench consume the shared truth', () => {
 test('unknown is retained as an honest state when evidence expires', () => {
   assert.match(renderer, /state: RUNTIME_UNKNOWN,[\s\S]{0,180}observation-expired/);
   assert.match(sidebar, /truth\?\.state === RUNTIME_UNKNOWN/);
+});
+
+// 返工 R4（2026-09-25）：Stop hook 的运行帧曾把已被 transcript 结束的一轮重新打开，
+// 且没有任何出口，会话 182 秒停在运行中。行为由 tests/e2e-claude-stop-hook-order-cdp.js
+// 在真实 renderer + xterm 里验证；这里守住三处结构，防止回退。
+test('a PTY turn closed authoritatively cannot be reopened by a Stop-hook frame, and a deferred Stop always resolves', () => {
+  assert.match(renderer, /function ptyTurnClosedAuthoritatively\(/);
+  assert.match(renderer,
+    /const stopHooksActive = [\s\S]{0,260}!ptyTurnClosedAuthoritatively\(session\)/,
+    'Stop must not defer completion for a turn the transcript already closed');
+  assert.match(renderer,
+    /else if \(stopHooksActive\)[\s\S]{0,900}scheduleClaudeStopHookResolution\(sessionId/,
+    'a deferred Stop must schedule its own resolution');
+  assert.match(renderer, /runtime\.state === 'running' && ptyTurnClosedAuthoritatively\(session, truthBefore\)/,
+    'screen observations share the same terminal-state rule');
+  assert.doesNotMatch(renderer.slice(renderer.indexOf('function scheduleClaudeStopHookResolution'),
+    renderer.indexOf('function applyPtyRuntimeObservation')), /\w\._lastOutputTs/,
+    'stale-frame detection must not trust _lastOutputTs (re-reading an old frame refreshes it)');
+});
+
+// 第 4 轮 R5（2026-09-26 审查现场）：Codex Esc 中断后 0.4s，迟到的 PreToolUse 把权威 IDLE
+// 改回运行。行为由 tests/e2e-pty-late-hook-events-cdp.js 在真实 renderer 里验证；这里守结构。
+test('late hook events cannot reopen a closed turn, including an interrupted (authoritative idle) one', () => {
+  const helper = renderer.slice(renderer.indexOf('function hookTurnClosed('));
+  assert.match(helper.slice(0, 400), /RUNTIME_COMPLETED, RUNTIME_FAILED, 'interrupted'/);
+  assert.match(helper.slice(0, 400), /truth\.state === RUNTIME_IDLE && truth\.confidence === CONFIDENCE_AUTHORITATIVE/);
+  assert.match(renderer, /const isLateStartAfterTerminal = event\.endsWith\('-start'\) && turnClosed;/);
+  assert.match(renderer, /event === 'tool-complete' && isPtyQuestionTool\(toolName\) && !turnClosed\)/);
 });

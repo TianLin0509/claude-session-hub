@@ -266,6 +266,26 @@ class ClaudeTap extends EventEmitter {
     // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式
     if (!entry._tail) {
       const onLine = (obj) => {
+        // Esc 中断时 Claude 不发 Stop hook，只在 transcript 里写一条
+        // "[Request interrupted by user…]" 的 user 记录。这是中断唯一的语义证据，
+        // 漏掉它会让 Hub 一直显示「正在工作」。
+        if (obj?.type === 'user' && !obj.isSidechain) {
+          const content = obj.message?.content;
+          const text = typeof content === 'string' ? content
+            : Array.isArray(content) ? content.filter(block => block && block.type === 'text').map(block => block.text || '').join('\n') : '';
+          if (String(text).trimStart().startsWith('[Request interrupted by user')) {
+            this._cancelIdleEmit(hubSessionId);
+            this._cancelStopReasonEmit(hubSessionId);
+            this.emit('turn-aborted', {
+              hubSessionId,
+              transcriptPath: entry.transcriptPath,
+              abortedAt: timestampToMs(obj.timestamp) || Date.now(),
+              turnId: entry.currentTurnId || null,
+              signalSource: 'claude-interrupt-marker',
+            });
+          }
+          return;
+        }
         if (obj?.type !== 'assistant' || !obj.message?.content) return;
         const content = obj.message.content;
         if (!Array.isArray(content)) return;
@@ -666,6 +686,9 @@ const TRY_BIND_TIMEOUT_MS = 15_000;
 const SCAN_STUCK_RESET_MS = 45_000;
 // 看门狗巡检间隔。只比时间戳，开销可忽略；比扫描间隔慢一个量级即可。
 const WATCHDOG_INTERVAL_MS = 15_000;
+// hook 报来 rollout 路径但文件还没落盘时，单独盯这一个文件的间隔与上限。
+const EXPECTED_ROLLOUT_POLL_MS = 250;
+const EXPECTED_ROLLOUT_POLL_MAX_MS = 10 * 60_000;
 
 function withTimeout(promise, ms) {
   let timer = null;
@@ -760,6 +783,77 @@ class CodexTap extends EventEmitter {
 
   hasSession(hubSessionId) {
     return this._pending.has(hubSessionId) || this._bound.has(hubSessionId);
+  }
+
+  // Codex hook 上报的 session_id + transcript_path 是这条会话的权威身份，
+  // 比 cwd + 时间窗推断可靠，可覆盖扫描器的猜测（rebind 仅用于 SessionStart：
+  // 同一个终端里 /new、重新启动 Codex 会换成新线程）。
+  // Codex 在首个 turn 才落盘 rollout：文件还不存在时先把期望路径钉在 pending 上，
+  // 扫描器看到它就直接绑定，并且不再为这条会话猜别的文件。
+  async bindFromHook(hubSessionId, { codexSid = null, transcriptPath = null, sessionsRoot = null, rebind = false } = {}) {
+    if (!hubSessionId || !transcriptPath) return false;
+    const wanted = normalizePathForCompare(transcriptPath);
+    const current = this._bound.get(hubSessionId);
+    if (current && normalizePathForCompare(current.rolloutPath) === wanted) return true;
+    if (current && !rebind) return false;
+    if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
+    let exists = false;
+    try { exists = fs.statSync(transcriptPath).isFile(); } catch {}
+    if (current) this._dropBinding(hubSessionId);
+    if (!exists) {
+      const pending = this._pending.get(hubSessionId) || {
+        cwd: null, spawnTime: Date.now(), allowMtimeFallback: false, requirePromptMatch: false,
+        expectedPrompt: null, expectedPromptAt: null,
+      };
+      pending.expectedRolloutPath = wanted;
+      pending.expectedCodexSid = codexSid || null;
+      this._pending.set(hubSessionId, pending);
+      this._ensureWatcherAlive();
+      this._ensureWatchdog();
+      this._pollExpectedRollout(hubSessionId, { codexSid, transcriptPath, sessionsRoot });
+      return false;
+    }
+    const pending = this._pending.get(hubSessionId);
+    if (pending) { pending.expectedRolloutPath = wanted; pending.expectedCodexSid = codexSid || null; }
+    const ok = await this._bindRolloutToHubSession(hubSessionId, transcriptPath, codexSid || null);
+    if (ok) {
+      this._pending.delete(hubSessionId);
+      this._markSeen(transcriptPath, 'bound_by_hook');
+    }
+    return ok;
+  }
+
+  // hook 报来的 rollout 路径是确定的，只是 Codex 首轮开始后才落盘。只盯这一个文件，
+  // 不再依赖全目录扫描器：终轮矩阵里扫描器在高负载下反复「heartbeat stale」，群聊的
+  // Codex 成员答完了却迟迟没绑上，完成事件就一直等不到。绑定后 tail 会回放已写内容，
+  // 晚绑也不漏这一轮的完成。
+  _pollExpectedRollout(hubSessionId, options) {
+    this._expectedPolls ||= new Map();
+    const previous = this._expectedPolls.get(hubSessionId);
+    if (previous) clearInterval(previous);
+    const wanted = normalizePathForCompare(options.transcriptPath);
+    const startedAt = Date.now();
+    const stop = () => { clearInterval(timer); if (this._expectedPolls.get(hubSessionId) === timer) this._expectedPolls.delete(hubSessionId); };
+    const timer = setInterval(() => {
+      const pending = this._pending.get(hubSessionId);
+      if (this._bound.has(hubSessionId) || !pending || pending.expectedRolloutPath !== wanted
+          || Date.now() - startedAt > EXPECTED_ROLLOUT_POLL_MAX_MS) { stop(); return; }
+      let exists = false;
+      try { exists = fs.statSync(options.transcriptPath).isFile(); } catch {}
+      if (!exists) return;
+      stop();
+      this.bindFromHook(hubSessionId, options).catch(error => console.warn('[codex-tap] expected rollout bind failed:', error.message));
+    }, EXPECTED_ROLLOUT_POLL_MS);
+    timer.unref?.();
+    this._expectedPolls.set(hubSessionId, timer);
+  }
+
+  _dropBinding(hubSessionId) {
+    const bound = this._bound.get(hubSessionId);
+    if (!bound) return;
+    try { bound.tail?.close(); } catch {}
+    if (bound._pendingEmitTimer) { try { clearTimeout(bound._pendingEmitTimer); } catch {} }
+    this._bound.delete(hubSessionId);
   }
 
   notePrompt(hubSessionId, prompt) {
@@ -1152,6 +1246,17 @@ class CodexTap extends EventEmitter {
       return;
     }
 
+    // hook 已经告诉了我们确切的文件：命中就直接绑定，其余会话不参与猜测。
+    const wantedPath = normalizePathForCompare(rolloutPath);
+    for (const [hubSessionId, entry] of this._pending) {
+      if (entry.expectedRolloutPath !== wantedPath) continue;
+      if (await this._bindRolloutToHubSession(hubSessionId, rolloutPath, entry.expectedCodexSid || null)) {
+        this._pending.delete(hubSessionId);
+        this._markSeen(rolloutPath, 'bound_by_hook_path');
+      }
+      return;
+    }
+
     const metaCwd = normalizePathForCompare(meta.cwd || '');
     const metaTs = Date.parse(meta.timestamp || '');
     if (!metaCwd) { console.warn(`[codex-tap] rollout has no cwd: ${rolloutPath}`); return; }
@@ -1168,6 +1273,7 @@ class CodexTap extends EventEmitter {
     let sawMatchingPendingCwd = false;
     const rejects = [];
     for (const [hubSessionId, entry] of this._pending) {
+      if (entry.expectedRolloutPath) continue;
       if (entry.cwd !== metaCwd) {
         rejects.push({ sid: hubSessionId.slice(0, 8), why: 'cwd_mismatch', want: metaCwd, got: entry.cwd });
         continue;
@@ -1429,6 +1535,7 @@ class CodexTap extends EventEmitter {
       // 新 task 开始 → 取消 pending emit（视为"还在进行"，丢弃上一次的 pendingText）
       if (eventType === 'task_started') {
         if (eventTurnId) entry._currentTurnId = eventTurnId;
+        entry._lastCompletedTurnId = null;
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingEmitTimer = null;
         entry._pendingText = null;
@@ -1457,7 +1564,15 @@ class CodexTap extends EventEmitter {
         }
       }
 
-      const completedAgent = codexAgentMessageEventFromRecord(obj);
+      let completedAgent = codexAgentMessageEventFromRecord(obj);
+      // /compact 等没有回答的任务：task_complete 的 last_agent_message 为空，解析器返回 null。
+      // 仍然要收尾这一轮，否则状态永远停在运行中（2026-09-25 真机 Codex /compact）。
+      if (!completedAgent && eventType === 'task_complete') {
+        const payloadDuration = Number(obj.payload && obj.payload.duration_ms);
+        completedAgent = { text: '', phase: 'final_answer', completed: true, signalSource: 'task_complete',
+          completedAt: timestampToMs(obj.timestamp) || Date.now(), turnId: eventTurnId || null,
+          durationMs: Number.isFinite(payloadDuration) ? payloadDuration : null };
+      }
       if (completedAgent && completedAgent.completedAt >= entry._liveBoundaryAt) {
         const liveTags = devLiveTags(completedAgent.text);
         if (liveTags.length) { const liveTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
@@ -1473,7 +1588,10 @@ class CodexTap extends EventEmitter {
           || timestampToMs(obj.timestamp)
           || 0;
         if (completionAt && completionAt + 5000 < entry._liveBoundaryAt) return;
-        const text = completedAgent.text;
+        const completedTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
+        // 同一轮先到的 final_answer 正文不能被随后 last_agent_message 为空的 task_complete 冲掉。
+        const text = completedAgent.text
+          || (entry._pendingTurnId && entry._pendingTurnId === completedTurnId ? entry._pendingText : null);
         // Legacy task_complete and 0.147 final_answer share one debounce path.
         // If several terminal records arrive, the last authoritative text wins.
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
@@ -1494,7 +1612,22 @@ class CodexTap extends EventEmitter {
           entry._pendingCompletedAt = null;
           entry._pendingTurnId = null;
           entry._pendingSignalSource = null;
-          if (!finalText) return;
+          if (!finalText) {
+            // /compact 这类没有回答的任务也会写 task_complete（last_agent_message 为空）。
+            // 它不是新回答（不出卡、不加未读），但这一轮确实结束了：不发信号，Hub 会一直显示运行中。
+            this.emit('turn-aborted', {
+              hubSessionId,
+              transcriptPath: entry.rolloutPath,
+              abortedAt: finalCompletedAt || Date.now(),
+              turnId: finalTurnId,
+              signalSource: 'task_complete_without_answer',
+            });
+            return;
+          }
+          // final_answer 与随后约一秒的 task_complete 属于同一轮：只报一次完成。
+          // 新的 task_started 会重置 _lastCompletedTurnId。
+          if (finalTurnId && entry._lastCompletedTurnId === finalTurnId && entry.lastText === finalText) return;
+          entry._lastCompletedTurnId = finalTurnId || null;
           entry.lastText = finalText;
           this.emit('turn-complete', {
             hubSessionId,
@@ -2167,6 +2300,14 @@ class TranscriptTap extends EventEmitter {
 
   getCodexRolloutPath(hubSessionId) {
     return this._codex.getRolloutPath(hubSessionId);
+  }
+
+  async bindCodexFromHook(hubSessionId, options = {}) {
+    try { return await this._codex.bindFromHook(hubSessionId, options); }
+    catch (e) {
+      console.warn('[transcript-tap] bindCodexFromHook failed:', e.message);
+      return false;
+    }
   }
 
   async hasCodexUserMessageSince(hubSessionId, sincePromptTs = 0) {

@@ -153,3 +153,22 @@ test('Claude tool hooks forward bounded activity identity, input and result', as
   assert.ok(Buffer.byteLength(JSON.stringify(unicodeHeavy.body), 'utf8') < 16384,
     'bounded hook evidence must stay below the Hub HTTP body limit in UTF-8 bytes');
 });
+
+// 第 5 轮 R7：/compact 的确认按参数与执行周期归属。字段取自真机 PreCompact 输入
+// （trigger / custom_instructions / prompt_id，Claude Code 2.1.283）。
+test('PreCompact forwards trigger, custom instructions and the cycle prompt id; session lifecycle forwards prompt id', async () => {
+  const pre = await runHook('pre-compact', {
+    session_id: 'claude-native-1', hook_event_name: 'PreCompact', trigger: 'manual',
+    custom_instructions: 'keep alpha notes', prompt_id: 'cycle-1',
+  });
+  assert.equal(pre.url, '/api/hook/pre-compact');
+  assert.equal(pre.body.trigger, 'manual');
+  assert.equal(pre.body.customInstructions, 'keep alpha notes');
+  assert.equal(pre.body.promptId, 'cycle-1');
+  const start = await runHook('session-start', { session_id: 'claude-native-1', source: 'compact', prompt_id: 'cycle-1' });
+  assert.equal(start.body.source, 'compact');
+  assert.equal(start.body.promptId, 'cycle-1');
+  const end = await runHook('session-end', { session_id: 'claude-native-1', reason: 'clear', prompt_id: 'cycle-2' });
+  assert.equal(end.body.reason, 'clear');
+  assert.equal(end.body.promptId, 'cycle-2');
+});

@@ -51,6 +51,12 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
   const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
   const managed = [
     ['InstructionsLoaded', `python "${hookPyPath}" instructions-loaded`, '', true],
+    // PTY 模式下 /clear、/resume、重启会换原生身份；这两条是 Hub 跟随切换的证据。
+    // 同步执行，保证 SessionEnd 先于随后的 SessionStart 到达。
+    ['SessionStart', `python "${hookPyPath}" session-start`],
+    ['SessionEnd', `python "${hookPyPath}" session-end`],
+    // /compact 不触发 UserPromptSubmit；压缩开始的这条信号是它提交成功的确认。
+    ['PreCompact', `python "${hookPyPath}" pre-compact`, '', true],
     ['Stop', `python "${hookPyPath}" stop`],
     ['StopFailure', `python "${hookPyPath}" stop-failure`],
     ['UserPromptSubmit', `python "${hookPyPath}" prompt`],

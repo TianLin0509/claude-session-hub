@@ -1,4 +1,6 @@
 'use strict';
+// 本文件验证 Codex App Server 后端；2026-09-25 起它只是回退开关，需要显式打开。
+process.env.CLAUDE_HUB_AGENT_RUNTIME = 'native';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),path=require('path'),os=require('os');
 const {resolveAccount,withGlobalAccount,prepareLaunch}=require('../core/codex-global-account');
 const {CodexNativeSession}=require('../core/codex-native-session');
@@ -52,7 +54,7 @@ test('global account migration retires old writer, retains thread/history/policy
   assert.equal(s.threadId,id);assert.equal(s.options.resumePath,file);assert.equal(s.options.env.CODEX_HOME,b);
   assert.equal(s.options.env.CODEX_SQLITE_HOME,a);
   assert.equal(s.runtime.sqliteHome,a);
-  assert.equal(require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime}).sqliteHome,a);
+  assert.equal(require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime}).sqliteHome,a);
   assert(s.entry.client.options.args.includes('sqlite_home='+JSON.stringify(a)));
   assert.notEqual(s.entry.client,old);assert(old.proc.exitCode!==null || old.proc.signalCode!==null);
   assert.equal(s.ownershipLease.file,lease);assert(lease.startsWith(a));
@@ -100,7 +102,7 @@ test('saved SQLite location survives cold resume and is checked against test iso
  try {
   await s.start();await s.send('persisted database');await until(()=>s.runtime.state==='completed');
   const id=s.threadId,file=s.options.resumePath;
-  const runtime=require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});
+  const runtime=require('../core/codex-native-runtime').persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});
   await close(s);config.codexSubscriptionProfile='second';
   restored=new CodexNativeSession({...s.options,env:{...s.options.env,CODEX_HOME:b},sqliteHome:undefined,
    accountId:'second',resumeId:id,resumePath:file,restoredRuntime:runtime});
