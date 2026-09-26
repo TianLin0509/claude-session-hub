@@ -1,0 +1,25 @@
+'use strict';
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const pty=require('node-pty');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-qwen-tui-probe-'));
+const data=path.join(root,'data'),cwd=path.join(root,'workspace');fs.mkdirSync(cwd);
+const config=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
+process.env.CLAUDE_HUB_DATA_DIR=data;process.env.CLAUDE_HUB_HOME_DIR=path.join(root,'home');
+const options=require('../core/acp-profiles').buildAcpOptions('qwen',{id:'probe',cwd},config,data);
+const out=path.resolve('artifacts/qwen-tui-probe/'+Date.now());fs.mkdirSync(out,{recursive:true});
+const events=path.join(out,'events.jsonl'),input=path.join(root,'input.jsonl');fs.writeFileSync(input,'');
+const hooks=path.join(out,'hooks.jsonl');
+options.launch.env.AI_HUB_PROVIDER_HOOK_LOG=hooks;
+const settingsPath=path.join(options.home,'.qwen/settings.json');
+const settings=JSON.parse(fs.readFileSync(settingsPath,'utf8'));
+settings.hooks=Object.fromEntries(['SessionStart','UserPromptSubmit','Stop','StopFailure','SessionEnd'].map(event=>[event,[{hooks:[{type:'command',shell:'powershell',command:'& "'+config.acp.nodePath+'" "'+path.resolve('scripts/provider-cli-hook.js')+'"',timeout:10000}]}]]));
+fs.writeFileSync(settingsPath,JSON.stringify(settings));
+const args=[config.acp.providers.qwen.entryPath,'--auth-type','openai','--approval-mode','yolo','--model',config.acp.providers.qwen.model,'--json-file',events,'--input-file',input];
+let raw='',proc,done=false,sent=false;
+console.log(JSON.stringify({root,out}));
+function finish(error){if(done)return;done=true;clearInterval(poll);clearTimeout(timeout);fs.writeFileSync(path.join(out,'terminal.txt'),raw);proc?.kill();console.log(error||'completed');process.exitCode=error?1:0;}
+const poll=setInterval(()=>{if(!fs.existsSync(events))return;const rows=fs.readFileSync(events,'utf8').split('\n').filter(Boolean).flatMap(l=>{try{return[JSON.parse(l)];}catch{return[];}});if(!sent&&rows.some(e=>e.type==='system'&&e.subtype==='session_start')){sent=true;console.log('TUI session started');fs.appendFileSync(input,JSON.stringify({type:'submit',text:'只回复 QWEN_TUI_PROBE_OK'})+'\n');}if(rows.some(e=>e.type==='result'))finish();},500);
+const timeout=setTimeout(()=>finish(fs.existsSync(hooks)&&fs.readFileSync(hooks,'utf8').includes('"hook_event_name":"Stop"')?null:'timeout'),30000);
+proc=pty.spawn(config.acp.nodePath,args,{cwd,env:options.launch.env,cols:120,rows:35,useConpty:true,conptyInheritCursor:false});
+proc.onData(chunk=>{raw+=chunk;fs.writeFileSync(path.join(out,'terminal.txt'),raw);});
+proc.onExit(e=>{if(!done)finish('CLI exited '+e.exitCode);});

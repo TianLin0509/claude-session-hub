@@ -1,0 +1,113 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path');
+const {randomUUID,createHash}=require('node:crypto');
+const {AcpSession}=require('./acp-session');
+const {JsonlTail}=require('./jsonl-tail');
+// Reuse only the existing event-to-card projection and durable history. The
+// terminal client is the sole controller; this adapter has no ACP client.
+class MarttyCliSession extends AcpSession {
+  constructor(options){super(options);this.isCliProvider=true;this.source='provider-cli';this.requests=new Map();
+    this.promptQueue={records:[],hold(){},schedule(){},restore(){},snapshot(){return[];}};
+    this.directory=path.join(options.home,'.martty','hub-cli',randomUUID());fs.mkdirSync(this.directory,{recursive:true});
+    this.events=path.join(this.directory,'events.jsonl');fs.writeFileSync(this.events,'');this.buffer='';
+  }
+  get pid(){return this.pty?.pid||null;}
+  print(){} // Never duplicate protocol text into the real TUI's output.
+  lifecycle(type,extra={}){super.lifecycle(type==='turn-start'?'turn-started':type,{...extra,signalSource:this.source});}
+  async _start(){
+    this.loadHistory();this.currentModel=this.options.model;
+    const martty=require.resolve('martty/package.json',{paths:[path.dirname(this.options.launch.args[0])]});
+    const args=[path.join(path.dirname(martty),'bin/martty.js'),'--agent',this.options.launch.command,
+      '--agent-arg',path.join(__dirname,'../scripts/provider-cli-tap.js'),'--workspace',this.options.cwd,
+      '--model',this.options.model];
+    if(this.options.kind==='deepseek-acp')args.push('--provider','bailian-tpp');
+    const resume=this.options.resumeId||this.saved?.sessionId;
+    if(resume)args.push('--session-id',resume);
+    const env={...this.options.launch.env,MARTTY_HOME:path.join(this.options.home,'.martty'),
+      AI_HUB_CLI_EVENT_LOG:this.events,AI_HUB_CLI_AGENT_LAUNCH:JSON.stringify({command:this.options.launch.command,args:this.options.launch.args,cwd:this.options.cwd})};
+    this.tail=new JsonlTail(this.events,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
+    await this.tail.start();
+    const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
+    this.startTimer=setTimeout(()=>this.fail(new Error('终端启动未确认，请查看 CLI')),60000);
+    this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:120,rows:30,
+      name:'xterm-256color',useConpty:true,conptyInheritCursor:false});
+    this.pty.onData(data=>{this.buffer=(this.buffer+data).slice(-100000);this.emit('data',data);});
+    this.pty.onExit(info=>{this.closed=true;this.dispose();this.emit('exit',info);});
+    return ready;
+  }
+  fail(error){this.readyReject?.(error);clearTimeout(this.startTimer);
+    if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(error);this.pending=null;}
+    this.apply({type:'disconnect',reason:error.message});this.emit('action-error',error.message);}
+  observe({direction,at,message:m}){
+    if(this.closed)return;
+    if(direction==='client' && m.method && m.id!==undefined){this.requests.set(m.id,m);
+      if(m.method==='session/prompt')this.begin(m,at);
+      return;
+    }
+    if(direction!=='agent')return;
+    const request=this.requests.get(m.id);
+    if(request){this.requests.delete(m.id);
+      if(m.error){if(request.method==='session/prompt'&&this.active)super.finish(this.active,'failed',m.error.message,m);else this.fail(new Error(m.error.message));return;}
+      if(request.method==='initialize'){this.capabilities=m.result.agentCapabilities;return;}
+      if(['session/new','session/load','session/resume'].includes(request.method)){
+        const sid=m.result?.sessionId||request.params?.sessionId;
+        if(!sid)throw new Error('CLI 未返回会话身份');
+        if(!this.threadId&&this.options.resumeId&&sid!==this.options.resumeId)throw new Error('CLI 恢复身份不一致');
+        if(this.threadId&&sid!==this.threadId){this.history.clear();this.items.clear();this.runtime=require('./codex-native-runtime').createNativeRuntime(this.runtime.epoch+1);}
+        this.threadId=sid;this.configOptions=m.result.configOptions||[];
+        this.apply({type:'snapshot',thread:{id:sid,status:{type:'idle'},turns:[]}});
+        this.emit('bound',{threadId:sid,cwd:this.options.cwd,model:this.currentModel,
+          capabilities:{loadSession:true},configOptions:this.configOptions});
+        this.persist();clearTimeout(this.startTimer);this.readyResolve?.();return;
+      }
+      if(request.method==='session/prompt'&&this.active&&this.active.requestId===m.id){
+        this.acknowledge();const reason=m.result?.stopReason;
+        super.finish(this.active,reason==='end_turn'?'completed':reason==='cancelled'?'interrupted':'failed',
+          ['end_turn','cancelled'].includes(reason)?null:'CLI 已停止：'+reason,m.result);return;
+      }
+    }
+    if(m.method==='session/request_permission'){
+      this.apply({type:'request',threadId:this.threadId,request:{...m,params:{...m.params,turnId:this.active?.turnId}}});return;
+    }
+    if(m.method==='session/update')super.notification(m);
+  }
+  begin(message,at){
+    if(message.params?.sessionId!==this.threadId)throw new Error('CLI prompt 身份与卡片不一致');
+    const content=message.params.prompt||[],text=content.filter(c=>c.type==='text').map(c=>c.text).join('\n');
+    const pending=this.pending?.text===text?this.pending:null;
+    const turnId=randomUUID(),id=pending?.id||randomUUID();
+    this.items=new Map([[turnId+':user',{id:turnId+':user',type:'userMessage',content,hubStartedAt:at}]]);
+    this.segment=0;this.history.set(turnId,{id:turnId,status:'inProgress',model:this.currentModel,hubStartedAt:at,items:[...this.items.values()]});
+    this.active={id,text,turnId,at,requestId:message.id,digest:createHash('sha256').update(text).digest('hex'),
+      resolve:result=>{if(pending){clearTimeout(pending.timer);pending.resolve({...result,mode:this.source,acknowledgementSource:this.source});if(this.pending===pending)this.pending=null;}},
+      reject:error=>{if(pending){clearTimeout(pending.timer);pending.reject(error);if(this.pending===pending)this.pending=null;}}};
+    this.apply({type:'submission',submission:{id,submittedAt:at,status:'submitting'}});
+    this.apply({type:'started',threadId:this.threadId,turn:{id:turnId}});this.changed();
+  }
+  async send(text,options={}){
+    await this.start();
+    if(this.closed||this.runtime.connection!=='connected'||this.active||this.pending)throw Object.assign(new Error('CLI 尚未就绪或仍在执行，消息未发送'),{notSent:true});
+    if(options.attachments?.length)throw Object.assign(new Error('请在终端中添加附件'),{notSent:true});
+    let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
+    this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
+      timer:setTimeout(()=>{this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},20000)};
+    options.beforeStart?.();
+    const paste=require('./pty-prompt-submit');
+    const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};
+    try{const baselineMarker=paste.snapshotPasteMarker(manager,this.options.id);
+      await paste.writeBracketedPaste(manager,this.options.id,text);
+      await paste.waitForPasteSettled(manager,this.options.id,{settleMs:paste.computeSettleMs(text.length),baselineMarker});
+      this.write('\r');
+    }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}
+    return promise;
+  }
+  write(data){if(this.closed)throw new Error('CLI 已退出');this.pty?.write(data);}
+  resize(cols,rows){this.pty?.resize(cols,rows);}
+  readTranscript(options){return super.readTranscript(options).map(c=>({...c,source:this.source}));}
+  async interrupt(){if(!this.active||this.interruptAt&&Date.now()-this.interruptAt<1500)return;this.interruptAt=Date.now();this.write('\x1b');}
+  async fork(){throw new Error('请在 CLI 中使用原生分支命令；Hub 尚未接入此终端的分支回执');}
+  dispose(){clearTimeout(this.startTimer);this.tail?.close();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}
+    this.backstage.close();this._historyStore?.close();this._historyStore=null;}
+  kill(){this.persist();this.closed=true;this.dispose();this.pty?.kill();}
+}
+module.exports={MarttyCliSession};

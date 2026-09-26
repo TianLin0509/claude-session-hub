@@ -1,0 +1,24 @@
+'use strict';
+// Transparent ACP pipe under a real terminal client. Only the client controls
+// the agent; Hub observes its exact requests/responses and never opens a writer.
+const fs=require('node:fs');
+const {spawn}=require('node:child_process');
+const {Transform,pipeline}=require('node:stream');
+const {StringDecoder}=require('node:string_decoder');
+const launch=JSON.parse(process.env.AI_HUB_CLI_AGENT_LAUNCH);
+const log=process.env.AI_HUB_CLI_EVENT_LOG;
+const child=spawn(launch.command,launch.args,{cwd:launch.cwd,env:process.env,windowsHide:true,stdio:['pipe','pipe','inherit']});
+function tap(direction){let pending='';const decoder=new StringDecoder('utf8');return new Transform({transform(chunk,_encoding,callback){
+  try{pending+=decoder.write(chunk);let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);
+    if(line.trim()){const message=JSON.parse(line);if(message.method==='authenticate')message.params={methodId:message.params?.methodId};
+      fs.appendFileSync(log,JSON.stringify({direction,at:Date.now(),message})+'\n',{mode:0o600});}}
+    callback(null,chunk);
+  }catch(error){callback(error);}
+}});}
+let failed=false;
+function fail(error){if(failed)return;failed=true;console.error('[hub-cli-tap]',error.message);child.kill();process.exitCode=1;}
+child.on('error',fail);
+pipeline(process.stdin,tap('client'),child.stdin,error=>{if(error&&error.code!=='ERR_STREAM_PREMATURE_CLOSE')fail(error);});
+pipeline(child.stdout,tap('agent'),process.stdout,error=>{if(error)fail(error);});
+child.on('exit',(code)=>{if(code)process.exitCode=code;process.stdin.destroy();});
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>child.kill());

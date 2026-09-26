@@ -159,7 +159,7 @@ async function parseProviderTranscript(args = {}, deps) {
         });
       return {turns:nativeCodex.readTranscript({...opts,toolPreviews:true}),
         refreshedTurns,transcriptPath:session?.transcriptPath || null,
-        error:null,source:nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
+        error:null,source:nativeCodex.isCliProvider ? 'provider-cli' : nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
     if (native) {

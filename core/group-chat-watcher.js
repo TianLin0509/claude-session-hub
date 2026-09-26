@@ -845,7 +845,7 @@ function extractStreamingText(sid, _kind) {
   const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     const blocks = native.blocks();
-    return {source:native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+    return {source:native.isCliProvider ? 'provider-cli' : native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
   const nativeClaude = _deps.sessionManager?.getNativeClaude?.(sid);

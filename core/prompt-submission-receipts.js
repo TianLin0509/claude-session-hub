@@ -55,7 +55,7 @@ class PromptSubmissionReceipts {
 
   observe(event = {}) {
     if (event.signalSource && !['user_message', 'item_completed_user_message',
-      'claude-user-prompt-submit', 'prompt-submitted', 'codex-app-server', 'acp'].includes(event.signalSource)) return false;
+      'claude-user-prompt-submit', 'prompt-submitted', 'codex-app-server', 'acp', 'qwen-cli', 'provider-cli'].includes(event.signalSource)) return false;
     const sessionId = event.sessionId || event.hubSessionId;
     if (!this.get(sessionId) || typeof event.text !== 'string' || !event.text.trim()) return false;
     const submittedAt = Number(event.submittedAt || event.observedAt);

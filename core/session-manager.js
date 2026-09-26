@@ -1216,6 +1216,7 @@ class SessionManager extends EventEmitter {
     }
     const id = opts.id || uuid();
     const isAcp = isAcpKind(kind);
+    const isProviderCli = isAcp && require('./agent-runtime-mode').agentRuntimeMode() !== 'native';
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
@@ -1227,7 +1228,7 @@ class SessionManager extends EventEmitter {
     // Claude / Codex 默认跑 PTY 里的真实 CLI；原生后端只在回退开关打开时使用。
     const nativeAgentRuntime = require('./agent-runtime-mode').usesNativeAgentRuntime(kind);
     const isNativeCodex = isCodex && nativeAgentRuntime;
-    const isPtyAgent = ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
+    const isPtyAgent = isProviderCli || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
@@ -1542,7 +1543,7 @@ class SessionManager extends EventEmitter {
     const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
     const ptyProcess = isAcp
-      ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
+      ? new (isProviderCli ? (kind.replace(/-resume$/, '') === 'qwen' ? require('./qwen-cli-session').QwenCliSession : require('./martty-cli-session').MarttyCliSession) : require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isNativeCodex
       ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
@@ -1888,7 +1889,7 @@ class SessionManager extends EventEmitter {
         this.emit('codex-session-updated', this._toPublic(info));
       };
       ptyProcess.on('state', (runtime) => {
-        info.nativeRuntime = runtime;
+        if (!isProviderCli) info.nativeRuntime = runtime;
         info.status = ['running','waiting'].includes(runtime.state) ? 'running' : 'idle';
         info.connectionIssue = null;
         const entry = this.sessions.get(id);
@@ -2732,7 +2733,7 @@ class SessionManager extends EventEmitter {
 
   getNativeSession(sessionId) {
     const session = this.sessions.get(sessionId);
-    return session && ['codex-app-server','acp'].includes(session.info.runtimeBackend) ? session.pty : null;
+    return session && (session.pty?.isCliProvider || ['codex-app-server','acp'].includes(session.info.runtimeBackend)) ? session.pty : null;
   }
 
   // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
@@ -2968,7 +2969,7 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
-      ...(info.runtimeBackend === 'acp' ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
+      ...(isAcpKind(info.kind) ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
         acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
         nativeConfig:info.nativeConfig,
