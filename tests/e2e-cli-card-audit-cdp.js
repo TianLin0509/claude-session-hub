@@ -38,6 +38,16 @@ async function main() {
     report.checks.push('real CLI first prompt, native transcript, completion');
     await send(s.id,'/new');
     await until(`!document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-send').disabled`,'new submitted');
+    // A task may still be running its Stop hook after its final answer. The
+    // specified behavior is an explicit rejection + restored draft after one
+    // bounded retry, not a guarantee that /new always succeeds immediately.
+    const rejectedDraft=await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-box').textContent`);
+    if(rejectedDraft==='/new'){
+      assert.equal(await c.eval(`sessions.get(${j(s.id)}).codexSid`),old.codexSid);
+      report.checks.push('busy /new rejection preserves the old identity and restores the original command');
+      await sleep(5000);await send(s.id,'/new');
+    }
+    await until(`sessions.get(${j(s.id)}).codexSid!==${j(old.codexSid)}`,'new thread identity');
     await send(s.id,'只回复 AUDIT_NEW'); await response(s.id,'AUDIT_NEW');
     const fresh = await c.eval(`sessions.get(${j(s.id)}).codexSid`);
     assert.notEqual(fresh,old.codexSid); report.checks.push('real /new rebind and next prompt');
