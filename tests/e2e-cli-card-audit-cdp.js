@@ -36,13 +36,14 @@ async function main() {
     await send(s.id,'只回复 AUDIT_INITIAL'); await response(s.id,'AUDIT_INITIAL');
     const old = await c.eval(`({...sessions.get(${j(s.id)})})`);
     report.checks.push('real CLI first prompt, native transcript, completion');
+    const newCommandResult=`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:20}});const t=(r.turns||[]).filter(t=>t.source==='hub-command'&&t.text==='/new').at(-1);return t?.clientSubmissionId===floatingPromptDeliveries.get(${j(s.id)})?.clientSubmissionId?t?.commandResult:null;})()`;
     await send(s.id,'/new');
-    await until(`['confirmed','failed'].includes(floatingPromptDeliveries.get(${j(s.id)})?.status)`,'new acknowledged or explicitly rejected');
+    await until(newCommandResult,'new acknowledged or explicitly rejected');
     // A task may still be running its Stop hook after its final answer. The
     // specified behavior is an explicit rejection + restored draft after one
     // bounded retry, not a guarantee that /new always succeeds immediately.
-    const rejectedDraft=await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-box').textContent`);
-    if(rejectedDraft==='/new'){
+    if((await c.eval(newCommandResult)).notSent){
+      await until(`document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-box').textContent==='/new'`,'rejected command restored');
       assert.equal(await c.eval(`floatingPromptDeliveries.get(${j(s.id)}).status`),'failed');
       assert.equal(await c.eval(`sessions.get(${j(s.id)}).codexSid`),old.codexSid);
       report.checks.push('busy /new rejection preserves the old identity and restores the original command');
@@ -50,7 +51,8 @@ async function main() {
     }
     // Codex confirms /new by its thread-ended output. It creates the next
     // native thread lazily, when the following real user prompt is submitted.
-    await until(`floatingPromptDeliveries.get(${j(s.id)})?.status==='confirmed'`,'new command confirmed');
+    await until(newCommandResult,'new command result');
+    assert.equal((await c.eval(newCommandResult)).acknowledgementSource,'codex-thread-switch');
     await send(s.id,'只回复 AUDIT_NEW'); await response(s.id,'AUDIT_NEW');
     const fresh = await c.eval(`sessions.get(${j(s.id)}).codexSid`);
     assert.notEqual(fresh,old.codexSid); report.checks.push('real /new rebind and next prompt');
