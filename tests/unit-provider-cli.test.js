@@ -36,7 +36,15 @@ test('Qwen native history renders text and tools; only matching root hooks finis
     s.observe({hook_event_name:'Stop',session_id:'thread',cwd:root,last_assistant_message:'answer',timestamp:new Date(2000).toISOString()});
     const cards=s.readTranscript({turnId:s.runtime.turnId});assert.equal(cards.length,2);
     assert.equal(cards[1].text,'answer');assert.equal(cards[1].toolCalls[0].status,'completed');assert.equal(cards[1].providerTurnId,s.runtime.turnId);
+    assert.equal(cards[1].displayMessages[0].providerTurnId,s.runtime.turnId);
+    assert.equal(cards[1].toolCalls[0].providerTurnId,s.runtime.turnId);
     assert.equal(events.filter(e=>e.type==='turn-complete').length,1);
+    s.observe({hook_event_name:'UserPromptSubmit',session_id:'thread',cwd:root,prompt:'next',timestamp:new Date(3000).toISOString()});
+    s.observe({hook_event_name:'Stop',session_id:'thread',cwd:root,last_assistant_message:'next answer',timestamp:new Date(4000).toISOString()});
+    assert.equal(s.records[0].finalText,'answer','an early Stop must not overwrite the preceding turn');
+    fs.appendFileSync(file,JSON.stringify({sessionId:'thread',uuid:'u2',type:'user',provenance:'real_user',timestamp:new Date(3100).toISOString(),message:{parts:[{text:'next'}]}})+'\n');
+    await s.transcriptTail._drain();await new Promise(r=>setTimeout(r,30));
+    assert.equal(s.readTranscript({turnId:s.runtime.turnId})[1].text,'next answer','late disk rows retain their own completion');
   }finally{s.kill();fs.rmSync(root,{recursive:true,force:true});}
 });
 test('CLI tap preserves split UTF-8 messages and redacts credentials only in its observation log',async()=>{

@@ -48,6 +48,9 @@ async function main(){
     }
     report.passed=true;
   }catch(error){report.error=error.stack;if(c)await screenshot('failure').catch(()=>{});throw error;}
-  finally{if(c)await c.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));await gracefulQuit(hub);}fs.rmSync(path.join(data,'config.json'),{force:true});fs.writeFileSync(path.join(out,'result.json'),j(report));console.log(j(report));}
+  finally{if(c)await c.close();fs.rmSync(path.join(data,'config.json'),{force:true});
+    try{if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));await gracefulQuit(hub);}}
+    catch(error){report.teardownError=error.stack;report.passed=false;process.exitCode=1;}
+    fs.writeFileSync(path.join(out,'result.json'),j(report));console.log(j(report));}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

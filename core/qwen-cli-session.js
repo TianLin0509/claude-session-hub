@@ -12,7 +12,7 @@ class QwenCliSession extends EventEmitter {
   constructor(options) {
     super(); this.options=options; this.isCliProvider=true; this.closed=false;
     this.runtime={connection:'starting',state:'starting',epoch:1,turnId:null};
-    this.threadId=null;this.records=[];this.contentRevision=0;
+    this.threadId=null;this.records=[];this.hookTurns=[];this.contentRevision=0;
     this.directory=path.join(options.home,'.qwen','hub-cli',randomUUID());
     fs.mkdirSync(this.directory,{recursive:true});
     this.hookFile=path.join(this.directory,'hooks.jsonl');
@@ -81,7 +81,8 @@ class QwenCliSession extends EventEmitter {
     if(name==='UserPromptSubmit') {
       const at=Date.parse(event.timestamp)||Date.now(),text=event.submitted_prompt||event.prompt||'';
       this.hookTurn={id:randomUUID(),at,text,submissionId:this.pending?.text===text?this.pending.id:null};
-      const record=this.records.at(-1);if(record&&record.text===text&&record.status==='running'){record.turnId=this.hookTurn.id;record.submissionId=this.hookTurn.submissionId;}
+      this.hookTurns.push(this.hookTurn);
+      this.bindRecord(this.records.at(-1));
       this.apply({state:'running',turnId:this.hookTurn.id});
       this.lifecycle('prompt-submitted',{text,submittedAt:at,clientSubmissionId:this.pending?.text===text?this.pending.id:null});
       this.lifecycle('turn-started',{startedAt:at});
@@ -95,10 +96,21 @@ class QwenCliSession extends EventEmitter {
         signalSource:'qwen-cli',text:event.last_assistant_message||'',completedAt,finality:'provider_final',
         status:name==='Stop'?'completed':'failed'};
       this.apply({state:this.lastOutcome.status,completedAt});
-      const record=this.records.at(-1);if(record){record.status=this.lastOutcome.status;record.completedAt=completedAt;record.finalText=this.lastOutcome.text;}
+      this.hookTurn.outcome=this.lastOutcome;
+      for(const record of this.records)this.bindRecord(record);
       this.lifecycle(name==='Stop'?'turn-complete':'turn-error',this.lastOutcome);
       this.hookTurn=null;this.changed();
     }
+  }
+  bindRecord(record){
+    if(!record)return;
+    // Native Qwen emits UserPromptSubmit before persisting the real_user row.
+    // Keep the hook even after Stop: the disk watcher may deliver that row later.
+    const turn=this.hookTurns.findLast(t=>t.at<=record.createdAt);
+    if(!turn||turn.text!==record.text)return;
+    record.turnId=turn.id;record.submissionId=turn.submissionId;
+    if(turn.outcome)Object.assign(record,{status:turn.outcome.status,
+      completedAt:turn.outcome.completedAt,finalText:turn.outcome.text});
   }
   loadTranscript(file){
     if(!file || !path.resolve(file).startsWith(path.resolve(this.options.home)+path.sep))throw new Error('千问记录路径越界');
@@ -109,7 +121,7 @@ class QwenCliSession extends EventEmitter {
       if(row.type==='user' && row.provenance==='real_user')this.records.push({userMessageId:row.uuid,
         text:parts.filter(p=>p.text).map(p=>p.text).join('\n'),createdAt:Date.parse(row.timestamp),status:'running',accepted:true});
       const record=this.records.at(-1);if(!record)return;
-      if(this.hookTurn?.text===record.text&&!record.turnId){record.turnId=this.hookTurn.id;record.submissionId=this.hookTurn.submissionId;}
+      this.bindRecord(record);
       if(row.type==='assistant'&&row.model&&row.model!==this.currentModel){this.currentModel=row.model;this.emit('bound',{threadId:this.threadId,model:row.model});}
       if(row.type==='assistant' || row.type==='user')captureClaudeMessage(record,{...row,message:{...row.message,
         content:parts.map(p=>p.functionCall?{type:'tool_use',id:p.functionCall.id,name:p.functionCall.name,input:p.functionCall.args}
@@ -138,7 +150,13 @@ class QwenCliSession extends EventEmitter {
   }
   readTranscript(options={}){
     const records=options.turnId?this.records.filter(r=>r.turnId===options.turnId):this.records;
-    const cards=claudeTranscriptTurns(options.latestTurn?records.slice(-1):records).map(card=>({...card,source:'qwen-cli',kind:'qwen',providerTurnId:records.find(r=>r.userMessageId===(card.userMessageId||card.id))?.turnId||null}));
+    const cards=claudeTranscriptTurns(options.latestTurn?records.slice(-1):records).map(card=>{
+      const record=records.find(r=>r.userMessageId===(card.userMessageId||card.id));
+      const identity={providerTurnId:record?.turnId||null,clientSubmissionId:record?.submissionId||null};
+      return {...card,...identity,source:'qwen-cli',kind:'qwen',
+        ...(card.displayMessages?{displayMessages:card.displayMessages.map(m=>({...m,...identity}))}:{}),
+        ...(card.toolCalls?{toolCalls:card.toolCalls.map(t=>({...t,...identity}))}:{})};
+    });
     return Number.isFinite(options.limit)?options.fromTail===false?cards.slice(0,options.limit):cards.slice(-options.limit):cards;
   }
   blocks(){return this.readTranscript().filter(c=>c.role==='assistant').slice(-1).map(c=>({type:'text',text:c.text||''}));}
