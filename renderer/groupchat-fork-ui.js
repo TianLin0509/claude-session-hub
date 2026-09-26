@@ -91,7 +91,7 @@ function openFloatingMenu({ document, id, x, y, items, emptyLabel = '（没有�
 }
 
 /** 会话选择弹窗：带过滤框的列表，选中即回调。 */
-function openSessionPicker({ document, rows, title, hint, onPick }) {
+function openSessionPicker({ document, rows, title, hint, onPick, emptyLabel }) {
   _closeFloating(document, 'gc-fork-picker');
   const overlay = document.createElement('div');
   overlay.id = 'gc-fork-picker';
@@ -133,7 +133,7 @@ function openSessionPicker({ document, rows, title, hint, onPick }) {
       empty.className = 'modal-empty';
       empty.textContent = rows.length
         ? '没有匹配的会话'
-        : '没有可分支的会话：会话至少要完成过一轮对话，才有原生会话 ID 可以分支。';
+        : (emptyLabel || '没有可分支的会话：会话至少要完成过一轮对话，才有原生会话 ID 可以分支。');
       body.appendChild(empty);
       return;
     }
