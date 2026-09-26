@@ -11,8 +11,9 @@ const secrets=JSON.parse(process.env.AI_HUB_CLI_REDACT||'[]').filter(Boolean);
 const child=spawn(launch.command,launch.args,{cwd:launch.cwd,env:process.env,windowsHide:true,stdio:['pipe','pipe','inherit']});
 function tap(direction){let pending='';const decoder=new StringDecoder('utf8');return new Transform({transform(chunk,_encoding,callback){
   try{pending+=decoder.write(chunk);let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);
-    if(line.trim()){const message=direction==='client'?require('../core/provider-cli-protocol').normalizeProviderCwd(JSON.parse(line)):JSON.parse(line);
-      const observed=message.method==='authenticate'?{...message,params:{methodId:message.params?.methodId}}:message;
+    if(line.trim()){const message=direction==='client'?require('../core/provider-cli-protocol').normalizeProviderCwd(JSON.parse(line),launch.mcpServers):JSON.parse(line);
+      const observed=message.method==='authenticate'?{...message,params:{methodId:message.params?.methodId}}
+        :message.params?.mcpServers?{...message,params:{...message.params,mcpServers:message.params.mcpServers.map(s=>({name:s.name,type:s.type}))}}:message;
       let record=JSON.stringify({direction,at:Date.now(),message:observed});
       for(const secret of secrets)record=record.split(JSON.stringify(secret).slice(1,-1)).join('[redacted]');
       fs.appendFileSync(log,record+'\n',{mode:0o600});

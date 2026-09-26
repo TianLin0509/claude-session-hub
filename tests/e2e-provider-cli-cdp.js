@@ -23,7 +23,8 @@ async function main(){
     const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
     hub=await launchIsolatedHub({dataDir:data,port,extraEnv:{CLAUDE_HUB_HOME_DIR:path.join(root,'home')}});c=await connectFirstPage(hub);
     await until('typeof sessions!=="undefined"','renderer');await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
-    for(const kind of process.argv.slice(2).length?process.argv.slice(2):['qwen','glm','deepseek']){
+    const selected=process.argv.slice(2).filter(a=>!a.startsWith('--'));
+    for(const kind of selected.length?selected:['qwen','glm','deepseek']){
       const s=await invoke('create-session',{kind,opts:{cwd,...(kind==='deepseek'?{model:'deepseek-v4-flash',effort:'low',mcpProfile:'none'}:{})}});assert(s.id,j(s));assert.equal(s.agentRuntime,'pty');assert.equal(s.runtimeBackend,null);
       const marker=kind.toUpperCase().replace(/-/g,'_')+'_CLI_OK';await send(s.id,'Reply only '+marker);await response(s.id,marker);
       check(kind+' real UI prompt + CLI output + cards + completion');
@@ -31,6 +32,13 @@ async function main(){
       const restarted=await invoke('restart-session',s.id);assert(restarted.id||restarted.session?.id,j(restarted));
       await send(s.id,'Reply only '+marker+'_RESTART');await response(s.id,marker+'_RESTART');
       assert.equal(await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`),sid);check(kind+' restart retains native identity and historical cards');
+      if(process.argv.includes('--interrupt')){
+        await send(s.id,'Use the shell tool to run node -e "setTimeout(()=>console.log(123),30000)" in the foreground. Then reply TOOL_FINISHED.');
+        await until(`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:2}});return (r.turns||[]).some(t=>(t.toolCalls||[]).some(c=>['running','inProgress'].includes(c.status)));})()`,'tool starts');
+        await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-stop').click()`);
+        await until(`!['running','starting','waiting'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'stop settles',45000);
+        await send(s.id,'Reply only '+marker+'_AFTER_STOP');await response(s.id,marker+'_AFTER_STOP');check(kind+' real tool interrupt and next prompt');
+      }
       await c.eval(`applyViewMode('card')`);await screenshot(kind+'-cards');
     }
     report.passed=true;

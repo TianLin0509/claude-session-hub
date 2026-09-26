@@ -67,6 +67,14 @@ async function main() {
     await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar');floatingPromptDeliveries.set(${j(s.id)},{status:'stuck'});markFloatingInputStuck(b,${j(s.id)});})()`);
     assert.equal(await c.eval(`!!document.querySelector('.fi-stuck')`),false);
     await shot('cards-without-submit-banner'); report.checks.push('isolated UI receipt injection: no unconfirmed banner or resend button');
+    await send(history.id,'/quit');
+    await until(`(async()=>require('../core/host-shell-detector').detectHostShellTakeover(await ipcRenderer.invoke('debug:get-session-buffer',${j(history.id)})))()`,'CLI exits to host shell');
+    const shellText='Write-Output AUDIT_MUST_NOT_EXECUTE';
+    await send(history.id,shellText);
+    await until(`document.querySelector('.floating-input-bar[data-session-id="${history.id}"] .floating-input-box')?.textContent===${j(shellText)}`,'rejected text restored');
+    const buffer=await invoke('debug:get-session-buffer',history.id);
+    assert(!buffer.includes('AUDIT_MUST_NOT_EXECUTE'),'card prompt must not enter the host shell');
+    report.checks.push('real CLI exit: card prompt rejected before shell write and restored to composer');
     report.passed=true;
   } catch(error) { report.error=error.stack; if(c) await shot('failure').catch(()=>{}); throw error; }
   finally {

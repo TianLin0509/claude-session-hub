@@ -24,7 +24,7 @@ class MarttyCliSession extends AcpSession {
     const resume=this.options.resumeId||this.saved?.sessionId;
     if(resume)args.push('--session-id',resume);
     const env={...this.options.launch.env,MARTTY_HOME:path.join(this.options.home,'.martty'),
-      AI_HUB_CLI_EVENT_LOG:this.events,AI_HUB_CLI_REDACT:JSON.stringify(this.options.launch.secrets||[]),AI_HUB_CLI_AGENT_LAUNCH:JSON.stringify({command:this.options.launch.command,args:this.options.launch.args,cwd:this.options.cwd})};
+      AI_HUB_CLI_EVENT_LOG:this.events,AI_HUB_CLI_REDACT:JSON.stringify(this.options.launch.secrets||[]),AI_HUB_CLI_AGENT_LAUNCH:JSON.stringify({command:this.options.launch.command,args:this.options.launch.args,cwd:this.options.cwd,mcpServers:this.options.mcpServers||[]})};
     if(resume&&this.options.kind==='glm')env.ZCODE_ACP_RESUME_SESSION=resume;
     this.tail=new JsonlTail(this.events,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.tail.start();

@@ -26,6 +26,9 @@ class QwenCliSession extends EventEmitter {
     settings.hooks=Object.fromEntries(['SessionStart','UserPromptSubmit','Stop','StopFailure','PreToolUse','PostToolUse','PermissionRequest']
       .map(name=>[name,[{hooks:[hook]}]]));
     settings.general={...settings.general,enableAutoUpdate:false};
+    settings.mcpServers=Object.fromEntries((options.mcpServers||[]).map(server=>[server.name,
+      !server.type||server.type==='stdio'?{command:server.command,args:server.args,env:Object.fromEntries((server.env||[]).map(e=>[e.name,e.value]))}
+        :{[server.type==='http'?'httpUrl':'url']:server.url,headers:Object.fromEntries((server.headers||[]).map(e=>[e.name,e.value]))}]));
     fs.writeFileSync(settingsPath,JSON.stringify(settings,null,2));
     this.manifest=path.join(options.home,'.qwen','hub-cli-history.json');
     if(!options.forkCli && fs.existsSync(this.manifest)) {
