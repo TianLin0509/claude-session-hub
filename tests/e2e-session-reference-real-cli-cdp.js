@@ -12,7 +12,8 @@ const j = JSON.stringify, sleep = ms => new Promise(r => setTimeout(r, ms));
 const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const hash = p => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 const CLAUDE_MODEL = process.env.REAL_CLAUDE_MODEL || 'claude-haiku-4-5-20251001';
-const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.5';
+// gpt-5.5 已进入退役期，PTY 启动会弹迁移选择框（同 e2e-cli-pty-card-parity-cdp.js）。
+const CODEX_MODEL = process.env.REAL_CODEX_MODEL || 'gpt-5.6-sol';
 const CODEX_SECRET = 'LAPIS-7731';
 const CLAUDE_SECRET = 'CORAL-4452';
 const CODEX_SOURCE = 'hub-ref-real-codex-source';
@@ -82,10 +83,27 @@ async function main() {
     const created = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind, opts })})`);
     const sid = created.id, q = j(sid);
     run.sessionId = sid;
-    await until(`sessions.get(${q})?.nativeRuntime?.connection === 'connected'`, label + ' connected');
-    run.runtime = await c.eval(`(() => { const s = sessions.get(${q}); return { backend: s.runtimeBackend, permissionMode: s.nativeRuntime?.permissionMode || null, sandbox: s.nativeRuntime?.sandbox || s.codexSandbox || null }; })()`);
+    await until(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`, label + ' row', 20000);
     await c.eval(`document.querySelector('.session-item[data-session-id="${sid}"]').click()`);
-    await until(`!!document.querySelector('.floating-input-bar[data-session-id="${sid}"] .fi-bridge-reference') || !!document.querySelector('.fi-bridge-reference')`, label + ' composer');
+    await until(`!!document.querySelector('.fi-bridge-reference')`, label + ' composer');
+    run.runtime = await c.eval(`(() => { const s = sessions.get(${q}); return { agentRuntime: s.agentRuntime || null, backend: s.runtimeBackend || null }; })()`);
+    const pty = !run.runtime.backend;
+    if (pty) {
+      // 默认 PTY：等真实 TUI 出提示符；PowerShell 里敲下的启动命令留在缓冲区，顺带取证 --add-dir。
+      await c.eval(`applyViewMode('pty')`);
+      const screenText = `(() => { const t = terminalCache.get(${q})?.terminal; if (!t) return ''; const b = t.buffer.active; let x = ''; for (let i = 0; i < b.length; i++) x += (b.getLine(i)?.translateToString(true) || '') + '\\n'; return x; })()`;
+      await until(`(${screenText}).match(${kind === 'claude' ? '/❯/' : '/›|context left|Context/i'})`, label + ' tui ready', 120000);
+      await sleep(1500);
+      run.launchHasAddDir = (await c.eval(screenText)).replace(/\s+/g, '').includes('--add-dir');
+      if (kind === 'claude') {
+        assert.ok(run.launchHasAddDir, 'PTY Claude launch must carry --add-dir for the transcript directory');
+        run.bypassBanner = /bypass permissions/i.test(await c.eval(screenText));
+        assert.equal(run.bypassBanner, false, 'Claude must run in its default permission mode for this test to mean anything');
+      }
+      await c.eval(`applyViewMode('card')`);
+    } else {
+      await until(`sessions.get(${q})?.nativeRuntime?.connection === 'connected'`, label + ' connected');
+    }
 
     const btn = await centerOf("document.querySelector('.fi-bridge-reference')");
     await click(btn.x, btn.y);
@@ -105,7 +123,9 @@ async function main() {
     await c.send('Input.insertText', { text: '只回复这份记录里约定的暗号本身，不要做别的事，不要改任何文件。' });
     const send = await centerOf("document.querySelector('.floating-input-send')");
     await click(send.x, send.y);
-    await until(`(() => { const s = sessions.get(${q}); const t = document.querySelector('#msg-overlay')?.innerText || ''; return s?.nativeRuntime?.state === 'completed' && t.includes(${j(secret)}); })()`, label + ' answered with secret', 240000);
+    // 完成以统一的运行时真相为准（PTY 靠 CLI hook，原生靠结构化事件）；答案从卡片读。
+    await until(`getSessionRuntimeTruth(sessions.get(${q})).state === 'completed'`, label + ' completed', 240000);
+    await until(`(document.querySelector('#msg-overlay')?.innerText || '').includes(${j(secret)})`, label + ' answered with secret', 60000);
     run.answerHasSecret = true;
     const shot = await c.send('Page.captureScreenshot', { format: 'png' });
     run.screenshot = path.join(out, `${Date.now()}-${kind}.png`);
@@ -114,6 +134,16 @@ async function main() {
 
   try {
     fs.copyFileSync(claudeAuth, path.join(claudeHome, '.credentials.json'));
+    // PTY 的真实 TUI：跳过首次引导（否则停在登录页），部署 Hub 的 hook（PTY 靠它判断一轮结束）。
+    fs.writeFileSync(path.join(claudeHome, '.claude.json'), j({ hasCompletedOnboarding: true, theme: 'dark', projects: {} }));
+    const { ensureClaudeHookIntegration } = require('../core/claude-hook-integration');
+    ensureClaudeHookIntegration({ claudeDir: claudeHome, sourceScriptsDir: path.join(__dirname, '..', 'scripts'), logger: {} });
+    // 但保持 Claude 的默认权限模式：去掉部署时顺手写入的旁路字段，否则测不出 Read 审批。
+    const settingsPath = path.join(claudeHome, 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    delete settings.permissionMode;
+    if (settings.permissions) delete settings.permissions.defaultMode;
+    fs.writeFileSync(settingsPath, j(settings, null, 2));
     fs.copyFileSync(codexAuth, path.join(codexHome, 'auth.json'));
     hub = await launchIsolatedHub({
       dataDir, port: await freePort(), windowMode: 'hidden', label: 'reference real cli', extraEnv: {
@@ -132,6 +162,16 @@ async function main() {
     result.passed = true;
   } catch (error) {
     result.error = error && error.stack || String(error);
+    const last = result.runs[result.runs.length - 1];
+    if (c && last && last.sessionId) {
+      const grab = async (key, expr) => { try { last[key] = await c.eval(expr); } catch (e) { last[key] = 'ERR ' + (e && e.message); } };
+      await grab('runtimeTruth', `(() => { try { return JSON.parse(JSON.stringify(getSessionRuntimeTruth(sessions.get(${j(last.sessionId)})))); } catch (e) { return 'ERR ' + e.message; } })()`);
+      await grab('sessionState', `(() => { const s = sessions.get(${j(last.sessionId)}); return s ? { status: s.status, agentRuntime: s.agentRuntime, ptyTurn: s.ptyTurn || null, lastHook: s.lastHookEvent || null } : null; })()`);
+      await grab('overlayText', `(document.querySelector('#msg-overlay')?.innerText || '').slice(-600)`);
+      await c.eval(`applyViewMode('pty')`).catch(() => {});
+      await sleep(800);
+      await grab('terminalTail', `(() => { const t = terminalCache.get(${j(last.sessionId)})?.terminal; if (!t) return 'NO TERMINAL'; const b = t.buffer.active; const lines = []; for (let i = 0; i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) || ''); return lines.filter(l => l.trim()).slice(-40).join(String.fromCharCode(10)); })()`);
+    }
     if (c) { try { const shot = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, `${Date.now()}-fail.png`), Buffer.from(shot.data, 'base64')); } catch {} }
   } finally {
     if (c) { try { c.close(); } catch {} }

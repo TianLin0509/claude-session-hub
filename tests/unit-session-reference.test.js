@@ -160,6 +160,23 @@ async function main() {
   assert.match(sessionManager, /function claudeNativeAddDirs[\s\S]{0,400}getHubTranscriptDir\(\)/);
   const { getHubTranscriptDir, getHubDataDir } = require('../core/data-dir.js');
   assert.strictEqual(getHubTranscriptDir(), path.join(getHubDataDir(), 'transcripts'));
+  // 2026-09-25 起默认是 PTY：PTY 启动与 PTY 内重启（relaunchCli）也必须带上 --add-dir。
+  assert.match(sessionManager, /const addDirFlag = claudeNativeAddDirs\(\[\]\)[\s\S]{0,200}\$\{addDirFlag\}/);
+  const previousDataDir = process.env.CLAUDE_HUB_DATA_DIR;
+  const isolatedDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ref-pty-launch-'));
+  process.env.CLAUDE_HUB_DATA_DIR = isolatedDataDir;
+  try {
+    const { _private } = require('../core/session-manager.js');
+    const launch = _private.buildClaudePtyLaunch('hub-ref-unit', 'claude',
+      { model: 'claude-haiku-4-5-20251001', effort: 'low', mcpProfile: 'none', addDirs: [path.join(isolatedDataDir, 'transcripts')] },
+      isolatedDataDir, {}, {});
+    const addDirs = launch.cmd.split(' --add-dir ').length - 1;
+    assert.ok(launch.cmd.includes(`--add-dir ${path.join(isolatedDataDir, 'transcripts')}`), launch.cmd);
+    assert.strictEqual(addDirs, 1, 'a persisted transcripts --add-dir must not be duplicated on resume');
+  } finally {
+    if (previousDataDir === undefined) delete process.env.CLAUDE_HUB_DATA_DIR; else process.env.CLAUDE_HUB_DATA_DIR = previousDataDir;
+    fs.rmSync(isolatedDataDir, { recursive: true, force: true });
+  }
 
   console.log('unit-session-reference: all passed');
 }
