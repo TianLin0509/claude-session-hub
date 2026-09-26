@@ -576,6 +576,7 @@ sessionManager.on('native-agent-lifecycle', event => {
 // meeting's timeline (if the sub-session belongs to a meeting).
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
+  sessionManager.noteAgentTurnFinished(hubSessionId, ev || {});
   const completionAt = normalizeEventTime(completedAt, Date.now());
   let session = sessionManager.getSession(hubSessionId);
   // Persist reply recency in main as well as renderer. This closes the gap where
@@ -674,6 +675,7 @@ transcriptTap.on('turn-started', (ev) => {
 
 transcriptTap.on('turn-aborted', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  sessionManager.noteAgentTurnFinished(ev.hubSessionId, ev);
   completionNotifier.noteTurnAborted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
@@ -696,6 +698,7 @@ transcriptTap.on('turn-aborted', (ev) => {
 // full-screen TUI can redraw an old error line during every later turn.
 transcriptTap.on('turn-error', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  sessionManager.noteAgentTurnFinished(ev.hubSessionId, ev);
   completionNotifier.noteTurnFailed(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {

@@ -1149,10 +1149,10 @@ class SessionManager extends EventEmitter {
     return this.openOwners ||= new (require('./session-open-ownership').SessionOpenOwnership)();
   }
 
-  _claimNativeOpenIdentity(id, kind, opts, env) {
+  _claimNativeOpenIdentity(id, kind, opts, env, replaceNative = false) {
     const lease = this.openLeases?.get(id);
     if (!lease) return;
-    this.openOwners.add(lease, require('./session-open-ownership').nativeKeys(kind, opts, env));
+    this.openOwners.add(lease, require('./session-open-ownership').nativeKeys(kind, opts, env), { replaceNative });
     lease.env = env;
     if (opts.codexForkSid || opts.forkCCSessionId) lease.forkSource = opts.codexForkSid || opts.forkCCSessionId;
   }
@@ -1163,7 +1163,7 @@ class SessionManager extends EventEmitter {
     const info = entry.info;
     this._claimNativeOpenIdentity(id, info.kind, {...info,
       codexSid:info.codexSid === lease.forkSource ? null : info.codexSid,
-      resumeCCSessionId:info.ccSessionId === lease.forkSource ? null : info.ccSessionId}, lease.env);
+      resumeCCSessionId:info.ccSessionId === lease.forkSource ? null : info.ccSessionId}, lease.env, info.agentRuntime === 'pty');
     this.openOwners.bindPid(lease, entry.pty?.pid);
   }
 
@@ -1227,7 +1227,7 @@ class SessionManager extends EventEmitter {
     // Claude / Codex 默认跑 PTY 里的真实 CLI；原生后端只在回退开关打开时使用。
     const nativeAgentRuntime = require('./agent-runtime-mode').usesNativeAgentRuntime(kind);
     const isNativeCodex = isCodex && nativeAgentRuntime;
-    const isPtyAgent = (isClaude || isCodex) && !nativeAgentRuntime;
+    const isPtyAgent = ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
@@ -1516,7 +1516,7 @@ class SessionManager extends EventEmitter {
       require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
     }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
-    if (isCodex) {
+    if (isCodexRuntime) {
 
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
@@ -2119,7 +2119,7 @@ class SessionManager extends EventEmitter {
         mcpProfile: effectiveCodexMcpProfile,
         allowedNames: allowedGroupMcpNames,
       });
-      if (isCodex) {
+      if (isCodexRuntime) {
         // hook 是 PTY Codex 的身份与状态来源；部署失败不拦启动，但要在会话上留痕。
         const hookResult = require('./codex-hook-integration').ensureCodexHookIntegration({
           codexHome: sessionEnv.CODEX_HOME || null,
@@ -2338,6 +2338,10 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (session.info.agentRuntime === 'pty' && session.agentTurnActive
+        && (options.reason === 'meeting-room-complete' || Number(options.minIdleMs) > 0)) {
+      return { ok:false, error:'pty-turn-unfinished', message:'CLI 仍在执行或等待操作，已跳过自动休眠' };
     }
     if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
@@ -2814,6 +2818,8 @@ class SessionManager extends EventEmitter {
     const observedAt = Number(event.observedAt || event.startedAt) || Date.now();
     s.agentTurnStartSeq = (s.agentTurnStartSeq || 0) + 1;
     s.agentTurnStartedAt = observedAt;
+    s.agentTurnActive = true;
+    s.agentTurnId = event.turnId || null;
     s.agentTurnStartSource = event.signalSource || event.source || 'provider_lifecycle';
     const payload = {
       sessionId,
@@ -2825,6 +2831,16 @@ class SessionManager extends EventEmitter {
     };
     this.emit('agent-turn-started', payload);
     return payload;
+  }
+
+  noteAgentTurnFinished(sessionId, event = {}) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.agentTurnActive) return false;
+    if (s.agentTurnId && event.turnId && s.agentTurnId !== event.turnId) return false;
+    const at = Number(event.completedAt || event.abortedAt || event.failedAt) || Date.now();
+    if (at < s.agentTurnStartedAt) return false;
+    s.agentTurnActive = false;
+    return true;
   }
 
   // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。

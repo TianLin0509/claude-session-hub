@@ -75,4 +75,7 @@ test('only PTY Codex sessions take this path', () => {
   assert.equal(isPtyCodexSession({ kind: 'codex', agentRuntime: 'pty', runtimeBackend: null }), true);
   assert.equal(isPtyCodexSession({ kind: 'codex', runtimeBackend: 'codex-app-server' }), false);
   assert.equal(isPtyCodexSession({ kind: 'claude', agentRuntime: 'pty' }), false);
+  assert.equal(isPtyCodexSession({ kind: 'deepseek', agentRuntime: 'pty' }), true);
+  assert.equal(isPtyCodexSession({ kind: 'deepseek-resume', agentRuntime: 'pty' }), true);
+  assert.equal(isPtyCodexSession({ kind: 'deepseek', transcriptKind: 'deepseek-legacy', agentRuntime: 'pty' }), false);
 });

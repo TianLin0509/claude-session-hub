@@ -3412,28 +3412,18 @@ document.addEventListener('click', async (e) => {
       if (!confirmed) return;
       if (!sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
     }
-    if (sid && isNativeSession(sessions.get(sid))) {
-      const original=btn.textContent;
-      let error=card.querySelector('.native-card-send-error');
-      if (!error) { error=document.createElement('div');error.className='native-card-send-error';error.setAttribute('role','alert');card.append(error); }
-      error.textContent='';btn.disabled=true;btn.textContent='提交中';
-      ipcRenderer.invoke('session:send-prompt',{sessionId:sid,text:promptText,clientSubmissionId:require('node:crypto').randomUUID()})
-        .then(result=>{if(!result?.ok)throw new Error(result?.message || 'Codex 未确认提交，请核对会话状态');})
-        .catch(problem=>{error.textContent=problem.message;})
-        .finally(()=>{btn.disabled=false;btn.textContent=original;});
-      return;
-    }
-    if (sid && typeof ipcRenderer !== 'undefined') {
-      armPtyBurstFallback(sid);
-      // 2026-09-03：这里原本是 `promptText + '\r'` 一次写完 —— 连 bracketed paste
-      //   和延迟都没有，重发一条稍长的历史消息几乎必然被 TUI 当粘贴吞掉换行。
-      //   与浮动输入框走同一条闭环。
-      ipcRenderer.invoke('session:send-prompt', { sessionId: sid, text: promptText })
-        .catch(err => console.warn('[card-resend] send-prompt failed:', err && err.message));
-    }
-    const orig = btn.textContent;
-    btn.textContent = '↺';
-    setTimeout(() => { btn.textContent = orig; }, 1500);
+    if (!sid || !sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
+    const original = btn.textContent;
+    let error = card.querySelector('.native-card-send-error');
+    if (!error) { error = document.createElement('div'); error.className = 'native-card-send-error'; error.setAttribute('role', 'alert'); card.append(error); }
+    error.textContent = ''; btn.disabled = true; btn.textContent = '提交中';
+    if (!isNativeSession(sessions.get(sid))) armPtyBurstFallback(sid);
+    ipcRenderer.invoke('session:send-prompt', { sessionId: sid, text: promptText, clientSubmissionId: require('node:crypto').randomUUID() })
+      .then(result => {
+        if (!result?.ok || result?.notSent) throw new Error(result?.message || '消息未能发送，请查看终端后重试');
+      })
+      .catch(problem => { error.textContent = problem.message; })
+      .finally(() => { btn.disabled = false; btn.textContent = original; });
     return;
   }
 
@@ -4029,88 +4019,10 @@ function clearFloatingInputStuck(bar) {
   if (existing) existing.remove();
 }
 
+// 用户 2026-09-26 决定直接查看 CLI，不再展示未确认横幅或补发按钮。
+// 提交回执仍由 main 保存；这里只清理旧节点，不把未知结果改成成功。
 function markFloatingInputStuck(bar, sessionId) {
-  if (!bar || bar.querySelector('.fi-stuck')) return;
-  const delivery = floatingPromptDeliveries.get(sessionId);
-  const native = isNativeAgent(sessions.get(sessionId));
-  // Native recovery belongs to Main; do not add a second manual-check banner.
-  if (native) { clearFloatingInputStuck(bar); return; }
-  if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
-  const stack = bar.querySelector('.fi-content-stack') || bar;
-  const row = document.createElement('div');
-  row.className = 'fi-stuck';
-
-  const label = document.createElement('span');
-  label.className = 'fi-stuck-label';
-  label.textContent = native ? '消息提交结果待核对；不会自动重发。'
-    : delivery?.status === 'content-mismatch'
-    ? '⚠ 检测到正文相同但换行或空白不同的提交，请核对终端；已停止补发'
-    : delivery?.status === 'failed'
-    ? '⚠ 消息发送失败，请检查终端后重试'
-    : '⚠ 暂未确认消息提交，请查看终端；收到确认后此提示会自动消失';
-
-  const resendBtn = document.createElement('button');
-  resendBtn.type = 'button';
-  resendBtn.className = 'fi-stuck-resend';
-  resendBtn.textContent = native ? '核对' : '补发';
-  if (delivery?.status === 'content-mismatch') {
-    resendBtn.disabled = true;
-    resendBtn.textContent = '需核对';
-  }
-  resendBtn.title = native ? '从原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
-  resendBtn.addEventListener('click', async (event) => {
-    event.stopPropagation();
-    resendBtn.disabled = true;
-    if (native) {
-      try {
-        // Each native backend owns its own reconciliation entry point; the
-        // Codex action channel cannot answer for a Claude transport.
-        const claudeNative = sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json';
-        const result = claudeNative
-          ? await ipcRenderer.invoke('claude-native:reconnect', {sessionId})
-          : await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
-        label.textContent = result?.ok ? '已核对连接；请查看上一轮内容，确认后再决定是否重新发送。'
-          : '核对失败：'+(result?.message || result?.error || '连接不可用');
-      } catch (error) { label.textContent = '核对失败：'+error.message; }
-      resendBtn.disabled = false;
-      return;
-    }
-    resendBtn.textContent = '补发中…';
-    try {
-      const result = await ipcRenderer.invoke('session:resend-prompt', {
-        sessionId, clientSubmissionId: delivery?.clientSubmissionId,
-      });
-      // A newer send owns the current bar; an old retry must not touch it.
-      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
-      if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
-      if (result && result.ok) {
-        clearFloatingInputStuck(bar);
-        return;
-      }
-      label.textContent = /^input-state-/.test(result?.reason || '')
-        ? '⚠ 无法确认原文仍在输入框，请查看终端后手动提交'
-        : '⚠ 补发尚未确认，请查看终端；收到确认后此提示会自动消失';
-    } catch (err) {
-      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
-      label.textContent = `⚠ 补发失败：${err && err.message}`;
-    }
-    resendBtn.disabled = false;
-    resendBtn.textContent = '重试';
-  });
-
-  const dismissBtn = document.createElement('button');
-  dismissBtn.type = 'button';
-  dismissBtn.className = 'fi-stuck-dismiss';
-  dismissBtn.textContent = '忽略';
-  dismissBtn.title = '关掉这条提示（不影响会话）';
-  dismissBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (delivery) delivery.dismissed = true;
-    clearFloatingInputStuck(bar);
-  });
-
-  row.append(label, resendBtn, dismissBtn);
-  stack.insertBefore(row, stack.firstChild);
+  clearFloatingInputStuck(bar);
 }
 
 function lockFloatingInputBarGeometry(bar) {
@@ -4743,7 +4655,10 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   });
   // PTY 会话等人操作时的提示条：只指路，不代答。
   const ptyAttention = require('./pty-attention-controls').createPtyAttentionControls({
-    onOpenTerminal: () => { if (activeSessionId === sessionId) applyViewMode('pty'); },
+    onOpenTerminal: () => {
+      if (pane.openTerminal) pane.openTerminal();
+      else if (activeSessionId === sessionId) applyViewMode('pty');
+    },
   });
   contentStack.append(nativeControls.element, ptyAttention.element, composer);
   bar.append(contentStack);
@@ -5396,11 +5311,8 @@ function flashPromptLine(terminal, lineNumber) {
   highlight.style.animation = 'prompt-flash 0.8s ease-out forwards';
 }
 
-// Hub → Claude /rename sync. Only fires for Claude sessions after the user
-// renames in the Hub UI. We inject the /rename command into the PTY; to keep
-// it clean we require the session to be idle (prompt is empty). If the user
-// is mid-reply we stash it and flush on the next Stop hook. Title is sanitized
-// to strip newlines and cap length so a pasted string can't inject extra input.
+// Hub → Claude /rename uses the same serialized submission path as the composer.
+// A busy session keeps only the latest name; completion rechecks its live state.
 function syncRenameToClaude(sessionId, title) {
   const session = sessions.get(sessionId);
   if (!session) return;
@@ -5410,12 +5322,21 @@ function syncRenameToClaude(sessionId, title) {
   }
   const clean = String(title).replace(/[\r\n]/g, ' ').trim().slice(0, 80);
   if (!clean) return;
-  if (session.status === 'idle') {
-    ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + clean + '\r' });
-    session._pendingRename = null;
-  } else {
-    session._pendingRename = clean;
-  }
+  session._pendingRename = clean;
+  flushRenameToClaude(sessionId);
+}
+
+function flushRenameToClaude(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session?._pendingRename || session.runtimeBackend || session.status === 'dormant') return;
+  if (['running', 'starting', 'waiting'].includes(getSessionRuntimeTruth(session).state)) return;
+  const title = session._pendingRename;
+  session._pendingRename = null;
+  ipcRenderer.invoke('session:send-prompt', { sessionId, text: '/rename ' + title })
+    .then(result => {
+      if (!result?.ok || result.notSent) throw new Error(result?.message || 'CLI 未接受改名');
+    })
+    .catch(error => showPreviewNotice('Hub 名称已保存，CLI 名称未同步：' + error.message, 'error'));
 }
 
 // --- Inline rename ---
@@ -7456,16 +7377,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
       sessionCrons,
       lastAssistantMessage,
     });
-    // Flush any queued /rename now that Claude is idle. Small delay so the
-    // prompt fully re-renders before we inject the command.
-    const s = sessions.get(sessionId);
-    if (outcome && outcome.completed && s && s._pendingRename && s.runtimeBackend !== 'claude-stream-json') {
-      const pending = s._pendingRename;
-      s._pendingRename = null;
-      setTimeout(() => {
-        ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + pending + '\r' });
-      }, 400);
-    }
+    if (outcome?.completed) flushRenameToClaude(sessionId);
     // A new turn landed — ask minimap to rescan for any new prompt ticks.
     const cached = terminalCache.get(sessionId);
     if (cached && cached._minimap) cached._minimap.invalidate();
