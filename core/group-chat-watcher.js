@@ -648,6 +648,9 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       //   循环结束后用它把"确认迟到"和"真的卡住"分开。
       let observedRunningWithClearInput = false;
       for (let attempt = 0; !acknowledgement && attempt < retryMax;) {
+        // A slash command or CLI crash can return to PowerShell during the
+        // acknowledgement wait. Recovery Enter must never reach that shell.
+        if (require('./host-shell-detector').detectHostShellTakeover(sessionManager.getSessionBuffer(sid))) break;
         if (turnStart.started || turnStart.resolved) {
           acknowledgement = turnStart.acknowledgement;
           break;

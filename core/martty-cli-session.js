@@ -103,7 +103,8 @@ class MarttyCliSession extends AcpSession {
     const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};
     try{const baselineMarker=paste.snapshotPasteMarker(manager,this.options.id);
       await paste.writeBracketedPaste(manager,this.options.id,text);
-      await paste.waitForPasteSettled(manager,this.options.id,{settleMs:paste.computeSettleMs(text.length),baselineMarker});
+      await paste.waitForPasteSettled({sessionManager:manager,sid:this.options.id,
+        settleMs:paste.computeSettleMs(text.length),baselineMarker});
       this.write('\r');
       if(text.trimStart().startsWith('/')){clearTimeout(this.pending?.timer);this.pending=null;return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};}
     }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}

@@ -128,7 +128,7 @@ class QwenCliSession extends EventEmitter {
       signalSource:'qwen-cli',text:'',completedAt,finality:'provider_final',status:'interrupted'};
     this.hookTurn.outcome=this.lastOutcome;
     for(const record of this.records)this.bindRecord(record);
-    this.apply({state:'interrupted',completedAt});this.lifecycle('turn-interrupted',this.lastOutcome);
+    this.apply({state:'interrupted',completedAt});this.lifecycle('turn-aborted',this.lastOutcome);
     this.hookTurn=null;this.changed();
   }
   loadTranscript(file){
