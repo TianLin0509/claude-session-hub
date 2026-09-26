@@ -355,3 +355,33 @@ test('an unresponsive child is terminated after an inactivity timeout', async ()
     await service.close();
   }
 });
+
+test('background syncs coalesce file events, build the snapshot once per sync, and keep a minimum interval', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  const service = new SessionSearchService({ syncMinIntervalMs: 10_000 });
+  const syncs = []; let snapshots = 0;
+  service.refresh = async snapshot => { syncs.push({ at: Date.now(), snapshot }); return { phase: 'ready' }; };
+  const getSnapshot = () => { snapshots += 1; return { sessions: [], meetings: [], n: snapshots }; };
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+
+  for (let i = 0; i < 50; i++) service.queueRefresh(getSnapshot, `event-${i}`);
+  assert.equal(snapshots, 0, 'file events must not build snapshots');
+  t.mock.timers.tick(400); await settle();
+  assert.equal(syncs.length, 1); assert.equal(snapshots, 1);
+
+  // A save right after a sync waits out the interval instead of starting another full walk.
+  service.queueRefresh(getSnapshot, 'next');
+  t.mock.timers.tick(5_000); await settle();
+  assert.equal(syncs.length, 1);
+  t.mock.timers.tick(5_000); await settle();
+  assert.equal(syncs.length, 2);
+  assert.equal(syncs[1].at - syncs[0].at, 10_000);
+  assert.equal(syncs[1].snapshot.n, 2, 'snapshot is taken when the sync starts');
+
+  // After a quiet period an isolated save is still picked up quickly.
+  t.mock.timers.tick(60_000);
+  service.queueRefresh({ sessions: [], meetings: [] }, 'quiet-save');
+  t.mock.timers.tick(400); await settle();
+  assert.equal(syncs.length, 3);
+  service._closed = true;
+});

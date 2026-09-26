@@ -249,6 +249,9 @@ function registerPathIpc(ipcMain, deps = {}) {
       return { error: 'file not found' };
     }
 
+    const fakeClipboard = require('../../core/e2e-desktop-sandbox').activeFakeClipboard();
+    if (fakeClipboard) { fakeClipboard.writeFiles([filePath]); return { success: true }; }
+
     if (process.platform !== 'win32') {
       return { error: 'platform not supported' };
     }

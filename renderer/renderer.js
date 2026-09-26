@@ -1,6 +1,10 @@
 // webUtils.getPathForFile 是 Electron 32+ 取代 File.path 的唯一入口（41 里 File.path
 // 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
+// Isolated E2E only: keep test copies/pastes off the user's system clipboard.
+if (process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD_ACTIVE === '1') {
+  require('./e2e-fake-clipboard.js').installRendererFakeClipboard({ electron: require('electron'), navigator });
+}
 const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
@@ -418,6 +422,14 @@ function readContenteditableRawText(el) {
 // 输入框里「用户真正要发的文字」：粘贴块展开成原文。发送、草稿、历史都读这个。
 function readContenteditablePlainText(el) {
   return pasteChips.expandPasteMarkers(readContenteditableRawText(el));
+}
+
+// Emptiness only. innerText is layout-dependent, so reading it forces a
+// synchronous style+layout pass over the whole window; textContent does not.
+// paintComposer runs on every session update and keydown runs per keystroke,
+// so these checks used to force layout while cards were streaming.
+function contenteditableHasText(el) {
+  return !!el && /\S/.test(el.textContent || '');
 }
 
 // contenteditable 的撤销栈只认 execCommand / 用户输入这类"编辑动作"。
@@ -966,7 +978,10 @@ const sessionListRenderer = createSessionListRenderer({
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   markAllSessionsRead: () => markAllSessionsRead(),
   markMeetingRead: id => markMeetingRead(id),
-  afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
+  // The sidebar DOM was just rebuilt; painting the composer here read layout
+  // (panelIsVisible) and forced a full synchronous relayout after every
+  // sidebar render. In the next frame that layout is shared with the paint.
+  afterRender: () => { scheduleFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
@@ -1036,7 +1051,9 @@ function renderSessionSurfacesNow() {
   renderSessionListNow();
   if (homeWorkbench) homeWorkbench.render();
 }
-const sidebarRenderCoalescer = createRenderCoalescer(renderSessionSurfacesNow, { delayMs: 75 });
+// 150 ms still reads as live, and halves full sidebar rebuilds while many
+// agents stream status at once.
+const sidebarRenderCoalescer = createRenderCoalescer(renderSessionSurfacesNow, { delayMs: 150 });
 function renderSessionList() {
   sidebarRenderCoalescer.cancel();
   renderSessionSurfacesNow();
@@ -4839,13 +4856,13 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     contextBudget.update(rail.context);
 
     sendBtn.disabled = false;
-    sendHint.hidden = canStop || !readContenteditablePlainText(inputBox).trim();
+    sendHint.hidden = canStop || !contenteditableHasText(inputBox);
   }
   bar._paintComposer = paintComposer;
   paintComposer(sessions.get(sessionId));
   inputBox.addEventListener('input', () => {
     sendHint.hidden = bar.dataset.sharedRole === 'viewer' || stopBtn.classList.contains('visible')
-      || !readContenteditablePlainText(inputBox).trim();
+      || !contenteditableHasText(inputBox);
   });
 
   const panel = termContainer.closest('.terminal-panel');
@@ -5033,7 +5050,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
         key: e.key,
         hasModifier,
         isBrowsing: historyCursor.isBrowsing(),
-        isEmpty: !readContenteditablePlainText(inputBox).trim(),
+        isEmpty: !contenteditableHasText(inputBox),
         caretAtStart: isCaretAtContenteditableStart(inputBox),
       };
       const hit = historyApi.shouldRecallOlder(ctx)
@@ -5199,6 +5216,18 @@ function syncTerminalRuntimeStatusTicker(session) {
 
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
+// session-updated arrives several times a second for every running agent, yet
+// only the focused composer is painted, and each paint re-syncs the split
+// selector over all sessions. Paint at most once per frame for those events.
+let floatingBarStateFrame = null;
+function scheduleFloatingBarState() {
+  if (floatingBarStateFrame) return;
+  floatingBarStateFrame = requestAnimationFrame(() => {
+    floatingBarStateFrame = null;
+    updateFloatingBarState();
+  });
+}
+
 function updateFloatingBarState() {
   sessionSplit?.sync();
   if (!activeSessionId) {
@@ -8710,7 +8739,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     local.gcWorking = false;
     _updateStreamingIndicator(local.id);
     scheduleSessionListRender();
-    updateFloatingBarState();
+    scheduleFloatingBarState();
     window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
     return;
   }
@@ -8732,7 +8761,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     clearRuntimeTruthExpiryTimer(local.id);
     clearPtyRunningAnimationCandidate(local);
     _updateStreamingIndicator(local.id);
-    updateFloatingBarState();
+    scheduleFloatingBarState();
   }
   if (local.purpose === 'chuxin-research' || session.purpose === 'chuxin-research') {
     Object.assign(local, session);
@@ -8818,13 +8847,23 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
 // Provider-native AI sessions persist across app restarts; PowerShell remains
 // ephemeral. Dormant cards have no PTY and wake through the shared exact-resume
 // contract (`ccSessionId`, `codexSid`, `geminiChatId` or `kimiSid`).
+// The payload is every kept session (1400+ in real use, ~2.8 MB structured
+// clone) and Main deep-compares all of it on arrival. While agents stream,
+// something changes every second, so send 400 ms after the first change and
+// then at most every 2 s. The timer reads the live sessions Map when it fires,
+// so the newest state always goes out; flush callers bypass the wait.
+const PERSIST_DELAY_MS = 400;
+const PERSIST_MIN_INTERVAL_MS = 2000;
 let persistDebounceTimer = null;
+let lastPersistSentAt = 0;
 function schedulePersist() {
-  if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
-  persistDebounceTimer = setTimeout(() => { persistDebounceTimer=null; persistWorkscene(); }, 400);
+  if (persistDebounceTimer) return;
+  const delay = Math.max(PERSIST_DELAY_MS, lastPersistSentAt + PERSIST_MIN_INTERVAL_MS - Date.now());
+  persistDebounceTimer = setTimeout(() => { persistDebounceTimer=null; persistWorkscene(); }, delay);
 }
 function persistWorkscene(flush = false) {
     if (flush && persistDebounceTimer) { clearTimeout(persistDebounceTimer);persistDebounceTimer=null; }
+    lastPersistSentAt = Date.now();
     const list = [];
     for (const s of sessions.values()) {
       // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
@@ -8937,6 +8976,15 @@ function persistWorkscene(flush = false) {
 }
 // 暴露给 meeting-room.js 等 renderer 子模块：配置变更后可主动落 state.json
 window.schedulePersist = schedulePersist;
+// Hub shutdown: send the newest workscene immediately instead of waiting out
+// the persist throttle, so the final save carries the last few seconds.
+// The ack goes out after persist-sessions on the same channel order, so Main
+// knows the workscene arrived before it runs the final save.
+ipcRenderer.on('hub:flush-workscene', (_event, { requestId } = {}) => {
+  if (persistDebounceTimer) { clearTimeout(persistDebounceTimer); persistDebounceTimer = null; }
+  try { persistWorkscene(); }
+  finally { ipcRenderer.send('hub:flush-workscene:done', requestId); }
+});
 
 const restartController = require('./hub-restart-controller').createHubRestartController({document,ipcRenderer,
   flush:async () => {

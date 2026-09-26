@@ -35,6 +35,7 @@
 - 禁止 `npx electron`；必须直调 `<hub-dir>\node_modules\electron\dist\electron.exe`。
 - 禁止传 `--user-data-dir` 造成路径语义混乱；隔离只通过 `CLAUDE_HUB_DATA_DIR`。
 - 创建 junction 后必须检查 return code；失败要立即停止验证并说明。
+- 测试窗口不打断用户（2026-09-26）：`tests/helpers/hub-launcher.js` 默认 `background`（屏幕外、不激活、不进任务栏、照常渲染），写 `visible` 的也按后台跑，`HUB_E2E_SHOW_WINDOWS=1` 才真正可见。`background`/`hidden` 实例默认用内存剪贴板；页面内原生复制（Ctrl+C、`webContents.copy`）仍会写系统剪贴板，这类测试设 `CLAUDE_HUB_E2E_REAL_CLIPBOARD=1`。测试 Hub 与单测入口以低于正常优先级运行（`HUB_TEST_PRIORITY=normal` 可恢复；合并闸门固定正常优先级）。实现见 `core/e2e-desktop-sandbox.js`。
 
 ## UI 和终端风险区
 

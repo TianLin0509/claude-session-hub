@@ -39,6 +39,11 @@ class SessionSearchService {
     };
     this._childMemoryLimitMb = Math.max(256, Number(options.childMemoryLimitMb) || 768);
     this._requestTimeoutMs = Math.max(50, Number(options.requestTimeoutMs) || 180_000);
+    // Background syncs start at most this often. Every live agent appends to
+    // its transcript several times a second, and each sync walks every source
+    // root and re-parses each changed transcript in full; unthrottled, the
+    // child ran one sync after another and held a core plus the disk forever.
+    this._syncMinIntervalMs = Math.max(0, Number(options.syncMinIntervalMs ?? 10_000));
     this._child = null;
     this._stderrTail = [];
     this._nextId = 0;
@@ -47,6 +52,7 @@ class SessionSearchService {
     this._watchers = new Map();
     this._queuedSources = new Set();
     this._queuedSnapshot = null;
+    this._lastSyncStartedAt = 0;
     this._maintenanceTimer = null;
     this._queueTimer = null;
     this._maintenanceBusy = false;
@@ -198,24 +204,30 @@ class SessionSearchService {
     return this._request('refresh', { snapshot, force: options.force === true, immediate: options.immediate === true });
   }
 
+  // `snapshot` may be a getter: it is only called when a sync actually starts,
+  // not on each of the many file events that coalesce into that sync.
   queueRefresh(snapshot = {}, source = 'reconcile') {
     if(this._closed) return;
     this._queuedSnapshot = snapshot;
     this._queuedSources.add(String(source || 'reconcile'));
     if(this._queueTimer || this._maintenanceBusy) return;
-    this._queueTimer = setTimeout(()=>{
-      this._queueTimer=null;
-      void this._flushRefreshQueue();
-    },400);
+    this._scheduleQueueFlush(400);
+  }
+
+  _scheduleQueueFlush(minDelayMs) {
+    const delay=Math.max(minDelayMs,this._lastSyncStartedAt+this._syncMinIntervalMs-Date.now());
+    this._queueTimer=setTimeout(()=>{this._queueTimer=null;void this._flushRefreshQueue();},delay);
     this._queueTimer.unref?.();
   }
 
   async _flushRefreshQueue() {
     if(this._closed || this._maintenanceBusy || !this._queuedSnapshot) return;
     this._maintenanceBusy=true;
-    const snapshot=this._queuedSnapshot;this._queuedSnapshot=null;this._queuedSources.clear();
-    let retry=false;
+    this._lastSyncStartedAt=Date.now();
+    const queued=this._queuedSnapshot;this._queuedSnapshot=null;this._queuedSources.clear();
+    let snapshot=queued,retry=false;
     try {
+      if(typeof queued==='function') snapshot=queued();
       const status=await this.refresh(snapshot,{immediate:true});
       retry=status?.phase==='waiting_writer';
     } catch(error) {
@@ -224,11 +236,8 @@ class SessionSearchService {
       console.warn('[session-search] background sync failed:',error.message);
     } finally {
       this._maintenanceBusy=false;
-      if(retry && !this._queuedSnapshot) this._queuedSnapshot=snapshot;
-      if(!this._closed && this._queuedSnapshot) {
-        this._queueTimer=setTimeout(()=>{this._queueTimer=null;void this._flushRefreshQueue();},retry?2000:400);
-        this._queueTimer.unref?.();
-      }
+      if(retry && !this._queuedSnapshot) this._queuedSnapshot=queued;
+      if(!this._closed && this._queuedSnapshot) this._scheduleQueueFlush(retry?2000:400);
     }
   }
 
@@ -240,7 +249,7 @@ class SessionSearchService {
         if(this._watchers.has(root) || !fs.existsSync(root)) continue;
         try {
           const watcher=fs.watch(root,{recursive:true,persistent:false},(_event,file)=>{
-            if(!file || /\.(jsonl|json)$/i.test(String(file))) this.queueRefresh(getSnapshot(),path.join(root,String(file||'')));
+            if(!file || /\.(jsonl|json)$/i.test(String(file))) this.queueRefresh(getSnapshot,path.join(root,String(file||'')));
           });
           watcher.on('error',error=>{
             watcher.close();this._watchers.delete(root);
@@ -250,7 +259,7 @@ class SessionSearchService {
           this._watchers.set(root,watcher);
         } catch(error) {this._status={...this._status,watchError:error.message};console.warn('[session-search] watch unavailable:',error.message);}
       }
-      this.queueRefresh(getSnapshot());
+      this.queueRefresh(getSnapshot);
     };
     this._maintenanceTimer=setInterval(reconcile,60000);this._maintenanceTimer.unref?.();
     reconcile();

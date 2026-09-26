@@ -335,7 +335,10 @@ def main():
             say(f"④ 跑测试（{len(tests)} 条）")
             for i, t in enumerate(tests, 1):
                 say(f"   [{i}/{len(tests)}] {t}")
-                r = run(t, check=False, capture=False)
+                # 合并闸门按正常优先级跑：单测入口平时降到低于正常、给正在打字的人
+                # 让 CPU，但机器上常驻正常优先级负载时，带秒级超时的测试会被饿住而
+                # 误报失败（2026-09-26 连续两次把合并回滚）。闸门要的是可靠，不是让路。
+                r = run(t, check=False, capture=False, env={"HUB_TEST_PRIORITY": "normal"})
                 if r.returncode != 0:
                     raise RuntimeError(f"测试没过：{t}")
             say("   全部通过")

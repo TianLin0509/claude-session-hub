@@ -188,6 +188,9 @@ async function main() {
         HUB_CODEX_BACKEND: 'subscription',
         HUB_CODEX_PROFILE: 'e2e',
         HUB_SESSION_SEARCH_PREWARM: '0',
+        // The real-clipboard mode pastes what the guard put on the system
+        // clipboard, so the isolated Hub must not swap in its in-memory one.
+        ...(REAL_CLIPBOARD ? { CLAUDE_HUB_E2E_REAL_CLIPBOARD: '1' } : {}),
       },
     });
     await _waitMs(1000);

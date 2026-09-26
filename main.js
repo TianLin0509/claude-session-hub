@@ -239,6 +239,28 @@ const HIDDEN_E2E_DATA_DIR_SAFE = isIsolatedHub()
 if (HIDDEN_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
   throw new Error('hidden E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
 }
+// Background E2E: the window renders like a visible one but sits off-screen,
+// never activates and stays out of the taskbar, so a test run cannot steal the
+// keyboard from someone typing in the production Hub.
+const BACKGROUND_E2E_WINDOW_REQUESTED = process.env.CLAUDE_HUB_E2E_WINDOW_MODE === 'background';
+if (BACKGROUND_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
+  throw new Error('background E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
+}
+const e2eDesktopSandbox = require('./core/e2e-desktop-sandbox.js');
+if (BACKGROUND_E2E_WINDOW_REQUESTED) {
+  e2eDesktopSandbox.prepareBackgroundChromium(app);
+  app.on('browser-window-created', (_event, win) => e2eDesktopSandbox.keepWindowInBackground(win));
+}
+// Isolated E2E runs (background or hidden) keep their own in-memory clipboard;
+// a test that must check the real one opts in with CLAUDE_HUB_E2E_REAL_CLIPBOARD=1.
+if (HIDDEN_E2E_DATA_DIR_SAFE
+    && ['background', 'hidden'].includes(process.env.CLAUDE_HUB_E2E_WINDOW_MODE)
+    && process.env.CLAUDE_HUB_E2E_REAL_CLIPBOARD !== '1') {
+  e2eDesktopSandbox.installFakeClipboard({ clipboard, nativeImage, ipcMain });
+  process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD_ACTIVE = '1';
+  console.log('[e2e] in-memory clipboard active. Native copies (Ctrl+C in pages, webContents.copy) still reach the system '
+    + 'clipboard and are not visible here; a test that checks them sets CLAUDE_HUB_E2E_REAL_CLIPBOARD=1.');
+}
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.
@@ -2047,7 +2069,7 @@ sessionSearchPrewarmTimer.unref?.();
 // Persistent source watchers cover external CLI saves too. Semantic events
 // coalesce into the same background queue; the engine owns the shared writer lease.
 for (const event of ['turn-complete', 'prompt-submitted', 'turn-aborted', 'turn-error', 'session-bound']) {
-  transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot(), payload?.hubSessionId || event));
+  transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot, payload?.hubSessionId || event));
 }
 transcriptTap.on('prompt-submitted', () => { lastPromptSubmittedAt = Date.now(); });
 
@@ -3388,6 +3410,33 @@ function restoreWindowAfterFailedShutdown() {
   }
 }
 
+// The renderer throttles persist-sessions (up to 2 s), so its newest workscene
+// may not have reached Main yet. Ask for it and wait for the acknowledgement:
+// the renderer sends persist-sessions first and the ack second, and Main
+// handles one renderer's messages in order, so the ack proves the workscene
+// is in lastPersistedSessions. Without waiting, a close with no live PTY
+// drained at once and the final save could beat the reply.
+function flushRendererWorkscene(timeoutMs = 1500) {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  const requestId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise(resolve => {
+    let timer = null;
+    const onAck = (_event, ackId) => { if (ackId === requestId) finish(true); };
+    const finish = ok => {
+      clearTimeout(timer);
+      ipcMain.removeListener('hub:flush-workscene:done', onAck);
+      resolve(ok);
+    };
+    timer = setTimeout(() => {
+      console.warn('[shutdown] renderer did not confirm the final workscene; saving the last one received');
+      finish(false);
+    }, timeoutMs);
+    ipcMain.on('hub:flush-workscene:done', onAck);
+    try { mainWindow.webContents.send('hub:flush-workscene', { requestId }); }
+    catch { finish(false); }
+  });
+}
+
 function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
@@ -3400,7 +3449,8 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
     try { agentLeagueBridge.beginHandoff(reason); }
     catch (error) { console.warn('[shutdown] agent league handoff preparation failed:', error && error.message); }
   }
-  shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 })
+  shutdownDrainPromise = flushRendererWorkscene()
+    .then(() => sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 }))
     .then(async (result) => {
       if (!result || result.safeToQuit !== true) {
         shutdownDrainState = 'idle';

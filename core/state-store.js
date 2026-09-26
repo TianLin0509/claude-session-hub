@@ -237,11 +237,39 @@ function mergeState(diskState, memState, removed = { sessions: [], meetings: [] 
   };
 }
 
+// state.json carries every session the Hub has ever kept (1400+ in real use,
+// ~5 MB indented) and is rewritten every couple of seconds while agents run.
+// Indentation doubled the stringify cost on Main's thread (52 ms -> 17 ms
+// compact on real data) and nothing reads the file by eye.
+function _serializeState(state) {
+  return JSON.stringify(state);
+}
+
+// What this process last wrote, keyed by the file identity it produced. While
+// no other Hub has replaced the file since, the next save merges against this
+// instead of reading and parsing the whole file again on Main's thread.
+let _diskCache = null;
+
+async function _statDiskAsync() {
+  try {
+    const stat = await fs.promises.stat(STATE_FILE);
+    return { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino };
+  } catch {
+    return null;
+  }
+}
+
+function _sameDiskIdentity(left, right) {
+  return !!left && !!right
+    && left.mtimeMs === right.mtimeMs && left.size === right.size && left.ino === right.ino;
+}
+
 function _writeMergedToDisk(state) {
+  _diskCache = null;
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.writeFileSync(tmp, _serializeState(state));
     _renameWithRetrySync(tmp, STATE_FILE);
   } finally {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
@@ -252,7 +280,7 @@ async function _writeMergedToDiskAsync(state) {
   await fs.promises.mkdir(STATE_DIR, { recursive: true });
   const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await fs.promises.writeFile(tmp, JSON.stringify(state, null, 2));
+    await fs.promises.writeFile(tmp, _serializeState(state));
     await _renameWithRetryAsync(tmp, STATE_FILE);
   } finally {
     try { await fs.promises.unlink(tmp); } catch {}
@@ -347,9 +375,16 @@ async function _saveImplAsync(state, { strict = false } = {}) {
     return;
   }
   try {
-    const disk = await _readDiskStateAsync();
+    const cached = _diskCache;
+    _diskCache = null;
+    const disk = cached && _sameDiskIdentity(cached.identity, await _statDiskAsync())
+      ? cached.state
+      : await _readDiskStateAsync();
     const merged = mergeState(disk, state, _drainRemoved());
     await _writeMergedToDiskAsync(merged);
+    // Still under the lock, so this identity is the file we just renamed in.
+    const identity = await _statDiskAsync();
+    if (identity) _diskCache = { identity, state: merged };
   } catch (error) {
     if (strict) throw error;
     console.warn('[hub] async state save failed:', error.message);
@@ -358,7 +393,15 @@ async function _saveImplAsync(state, { strict = false } = {}) {
   }
 }
 
+// A save lands SAVE_DELAY_MS after the first change of a burst, then at most
+// once per SAVE_MIN_INTERVAL_MS. Running agents change session metadata every
+// second or so; a plain debounce either never fired under that stream or, at
+// 500 ms, rewrote the whole file on nearly every change. Each timer always
+// writes the newest pending state, and flushPending() bypasses the wait.
+const SAVE_DELAY_MS = 500;
+const SAVE_MIN_INTERVAL_MS = 2000;
 let saveDebounceTimer = null;
+let _lastSaveStartedAt = 0;
 let _pendingState = null;
 let _saveQueue = Promise.resolve();
 
@@ -377,13 +420,15 @@ function save(state, { sync = false } = {}) {
     _pendingState = null;
     return;
   }
-  if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+  if (saveDebounceTimer) return;
+  const delay = Math.max(SAVE_DELAY_MS, _lastSaveStartedAt + SAVE_MIN_INTERVAL_MS - Date.now());
   saveDebounceTimer = setTimeout(() => {
     const s = _pendingState;
     _pendingState = null;
     saveDebounceTimer = null;
+    _lastSaveStartedAt = Date.now();
     _enqueueSave(s);
-  }, 500);
+  }, delay);
 }
 
 async function flushPending() {

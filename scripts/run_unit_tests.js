@@ -27,6 +27,14 @@ const os = require('os');
 const REPO = path.resolve(__dirname, '..');
 const TESTS = path.join(REPO, 'tests');
 
+// 16 parallel workers on the machine the user is typing on: run below normal
+// priority so the production Hub and the user's apps win every CPU contest.
+// On Windows every worker inherits this priority class. Assertions and time
+// budgets are unchanged; HUB_TEST_PRIORITY=normal restores the old behaviour.
+if (process.env.HUB_TEST_PRIORITY !== 'normal' && os.constants.priority) {
+  try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
+}
+
 const argv = process.argv.slice(2);
 // The merge entrypoint invokes this runner without CLI flags. Allow callers
 // on a shared Windows host to limit workers without skipping any tests or

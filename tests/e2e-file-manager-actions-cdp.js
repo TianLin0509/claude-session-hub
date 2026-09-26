@@ -41,6 +41,9 @@ async function main() {
       CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.join(__dirname, 'fixtures/codex-app-server.js'),
       COMPANY_DROP_CLIENT: company,
+      // This test checks the native file-drop list with Get-Clipboard, so it
+      // needs the real system clipboard instead of the isolated in-memory one.
+      CLAUDE_HUB_E2E_REAL_CLIPBOARD: '1',
     } });
     cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 960, deviceScaleFactor: 1, mobile: false });
