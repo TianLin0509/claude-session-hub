@@ -93,10 +93,15 @@ async function main() {
     report.passed=true;
   } catch(error) { report.error=error.stack; if(c) await shot('failure').catch(()=>{}); throw error; }
   finally {
-    if(c)await c.close();
-    if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));await gracefulQuit(hub);}
-    fs.rmSync(path.join(home,'auth.json'),{force:true});
-    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(report,null,2)); console.log(JSON.stringify(report,null,2));
+    try {
+      if(c)await c.close();
+      if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));await gracefulQuit(hub);}
+    } catch(error) {
+      report.teardownError=error.stack; report.passed=false; process.exitCode=1;
+    } finally {
+      fs.rmSync(path.join(home,'auth.json'),{force:true});
+      fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(report,null,2)); console.log(JSON.stringify(report,null,2));
+    }
   }
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

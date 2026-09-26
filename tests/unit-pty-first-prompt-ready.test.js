@@ -68,6 +68,16 @@ test('a startup choice dialog keeps the first prompt unsent instead of feeding i
   assert.deepEqual(writes, [], 'nothing typed into the dialog');
 });
 
+test('Windows Codex flushes pending slash text before Enter without executing the command', () => {
+  const {flushCodexPasteInput}=require('../core/codex-pty-input');
+  const writes=[], manager={writeToSession:(id,text)=>writes.push([id,text])};
+  assert.equal(flushCodexPasteInput(manager,'s','codex','/new','win32'),true);
+  assert.deepEqual(writes,[['s','\x1b[F']]);
+  assert.equal(flushCodexPasteInput(manager,'s','claude','/new','win32'),false);
+  assert.equal(flushCodexPasteInput(manager,'s','codex','/new','linux'),false);
+  assert.equal(writes.length,1);
+});
+
 test('a returned host shell never receives the card prompt, even with cached readiness', async () => {
   const h = harness({createdAt:Date.now()-120000, readyAfterChecks:0});
   h.sessionManager.setGroupChatReady('sid', true);

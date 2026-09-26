@@ -6,7 +6,7 @@ const {isCodexCliKind}=require('./ai-kinds');
 // bytes in the same PTY queue; no wall-clock delay can provide this boundary.
 // Verified against openai/codex rust-v0.153.0 bottom_pane/chat_composer.rs.
 function flushCodexPasteInput(sessionManager,sid,kind,prompt,platform=process.platform){
-  if(platform!=='win32'||!isCodexCliKind(kind)||String(prompt).trimStart().startsWith('/'))return false;
+  if(platform!=='win32'||!isCodexCliKind(kind))return false;
   sessionManager.writeToSession(sid,'\x1b[F');
   return true;
 }
