@@ -36,7 +36,7 @@ class QwenCliSession extends EventEmitter {
   get pid(){return this.pty?.pid || null;}
   onData(fn){this.on('data',fn);return{dispose:()=>this.off('data',fn)};}
   onExit(fn){this.on('exit',fn);return{dispose:()=>this.off('exit',fn)};}
-  resize(cols,rows){this.pty?.resize(cols,rows);}
+  resize(cols,rows){this.cols=cols;this.rows=rows;this.pty?.resize(cols,rows);}
   write(data){if(this.closed)throw new Error('CLI 已退出');this.pty?.write(data);}
   apply(patch){this.runtime={...this.runtime,...patch};this.emit('state',this.runtime);}
   lifecycle(type,extra={}){this.emit('lifecycle',{type,hubSessionId:this.options.id,kind:this.options.kind,
@@ -44,7 +44,7 @@ class QwenCliSession extends EventEmitter {
   changed(){this.contentRevision++;this.emit('items');}
   start(){return this.ready ||= this.launch();}
   async launch(){
-    this.hookTail=new JsonlTail(this.hookFile,event=>this.observe(event),{onError:error=>this.fail(error)});
+    this.hookTail=new JsonlTail(this.hookFile,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.hookTail.start();
     const args=[this.options.launch.args[0],'--auth-type','openai','--approval-mode','yolo',
       '--model',this.options.model,'--json-file',this.outputFile,'--input-file',this.inputFile];
@@ -53,7 +53,7 @@ class QwenCliSession extends EventEmitter {
     const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     this.startTimer=setTimeout(()=>this.fail(new Error('千问 CLI 启动未确认，请查看终端')),60000);
     this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,
-      env:{...this.options.launch.env,AI_HUB_PROVIDER_HOOK_LOG:this.hookFile},cols:120,rows:30,
+      env:{...this.options.launch.env,AI_HUB_PROVIDER_HOOK_LOG:this.hookFile},cols:this.cols||120,rows:this.rows||30,
       name:'xterm-256color',useConpty:true,conptyInheritCursor:false});
     this.pty.onData(data=>this.emit('data',data));
     this.pty.onExit(info=>{this.closed=true;this.dispose();this.fail(new Error('千问 CLI 已退出'));
@@ -78,10 +78,11 @@ class QwenCliSession extends EventEmitter {
     if(name==='UserPromptSubmit') {
       const at=Date.parse(event.timestamp)||Date.now(),text=event.submitted_prompt||event.prompt||'';
       this.hookTurn={id:randomUUID(),at,text};
+      const record=this.records.at(-1);if(record&&record.text===text&&record.status==='running')record.turnId=this.hookTurn.id;
       this.apply({state:'running',turnId:this.hookTurn.id});
       this.lifecycle('prompt-submitted',{text,submittedAt:at,clientSubmissionId:this.pending?.text===text?this.pending.id:null});
       this.lifecycle('turn-started',{startedAt:at});
-      if(this.pending?.text===text){clearTimeout(this.pending.timer);this.pending.resolve({ok:true,sendStatus:'ok',acknowledgementSource:'qwen-cli'});this.pending=null;}
+      if(this.pending?.text===text){clearTimeout(this.pending.timer);this.pending.resolve({ok:true,sendStatus:'ok',acknowledgementSource:'qwen-cli',threadId:this.threadId,turnId:this.runtime.turnId,clientSubmissionId:this.pending.id});this.pending=null;}
     } else if(name==='PermissionRequest')this.apply({state:'waiting'});
     else if(name==='Stop' || name==='StopFailure') {
       if(!this.hookTurn)return;
@@ -105,6 +106,8 @@ class QwenCliSession extends EventEmitter {
       if(row.type==='user' && row.provenance==='real_user')this.records.push({userMessageId:row.uuid,
         text:parts.filter(p=>p.text).map(p=>p.text).join('\n'),createdAt:Date.parse(row.timestamp),status:'running',accepted:true});
       const record=this.records.at(-1);if(!record)return;
+      if(this.hookTurn?.text===record.text&&!record.turnId)record.turnId=this.hookTurn.id;
+      if(row.type==='assistant'&&row.model&&row.model!==this.currentModel){this.currentModel=row.model;this.emit('bound',{threadId:this.threadId,model:row.model});}
       if(row.type==='assistant' || row.type==='user')captureClaudeMessage(record,{...row,message:{...row.message,
         content:parts.map(p=>p.functionCall?{type:'tool_use',id:p.functionCall.id,name:p.functionCall.name,input:p.functionCall.args}
           :p.functionResponse?{type:'tool_result',tool_use_id:p.functionResponse.id,content:JSON.stringify(p.functionResponse.response)}
@@ -118,19 +121,26 @@ class QwenCliSession extends EventEmitter {
     if(this.closed||this.runtime.connection!=='connected')throw Object.assign(new Error('千问 CLI 未连接，消息未发送'),{notSent:true});
     if(this.pending||['running','waiting'].includes(this.runtime.state))throw Object.assign(new Error('千问仍在执行，请在终端处理或等待完成'),{notSent:true});
     if(options.attachments?.length)throw Object.assign(new Error('请在千问终端中添加附件'),{notSent:true});
+    if(text.trimStart().startsWith('/')){
+      fs.appendFileSync(this.inputFile,JSON.stringify({type:'submit',text})+'\n');
+      return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};
+    }
     const id=options.clientSubmissionId||randomUUID();
     const promise=new Promise((resolve,reject)=>{this.pending={id,text,resolve,reject,
-      timer:setTimeout(()=>{this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},15000)};});
+      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},15000)};});
     options.beforeStart?.();
     try{fs.appendFileSync(this.inputFile,JSON.stringify({type:'submit',text})+'\n');}
     catch(error){clearTimeout(this.pending.timer);this.pending=null;throw Object.assign(error,{notSent:true});}
     return promise;
   }
   readTranscript(options={}){
-    const cards=claudeTranscriptTurns(this.records).map(card=>({...card,source:'qwen-cli',kind:'qwen'}));
+    const records=options.turnId?this.records.filter(r=>r.turnId===options.turnId):this.records;
+    const cards=claudeTranscriptTurns(options.latestTurn?records.slice(-1):records).map(card=>({...card,source:'qwen-cli',kind:'qwen',providerTurnId:records.find(r=>r.userMessageId===(card.userMessageId||card.id))?.turnId||null}));
     return Number.isFinite(options.limit)?options.fromTail===false?cards.slice(0,options.limit):cards.slice(-options.limit):cards;
   }
   blocks(){return this.readTranscript().filter(c=>c.role==='assistant').slice(-1).map(c=>({type:'text',text:c.text||''}));}
+  finalText(){return this.blocks().map(b=>b.text).join('\n');}
+  async configure(){throw new Error('请在千问 CLI 中使用 /model 或 /settings；卡片会从原生回答同步实际模型');}
   async readOutcome(turnId){return this.lastOutcome?.turnId===turnId?this.lastOutcome:null;}
   async interrupt(){if(!['running','waiting'].includes(this.runtime.state)||this.interruptAt&&Date.now()-this.interruptAt<1500)return;
     this.interruptAt=Date.now();this.write('\x1b');}

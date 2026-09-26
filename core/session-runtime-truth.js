@@ -317,6 +317,12 @@ function legacyRuntimeTruth(session, now = Date.now()) {
 }
 
 function getSessionRuntimeTruth(session, options = {}) {
+  if (session?.agentRuntime === 'pty' && session.cliRuntime && session.status !== 'dormant') {
+    const r=session.cliRuntime;
+    return { ...r, state:r.connection==='disconnected'?'unknown':r.state,
+      confidence:r.connection==='connected'?'authoritative':'none',source:'provider-cli',expiresAt:0,
+      evidence:r.reason||null,requests:r.requests||[] };
+  }
   if (isNativeSession(session)) return nativeRuntimeTruth(session);
   if (require('./claude-native-runtime').isNativeClaude(session)) {
     return require('./claude-native-runtime').claudeRuntimeTruth(session);

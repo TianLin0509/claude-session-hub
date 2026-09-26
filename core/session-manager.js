@@ -1890,6 +1890,7 @@ class SessionManager extends EventEmitter {
       };
       ptyProcess.on('state', (runtime) => {
         if (!isProviderCli) info.nativeRuntime = runtime;
+        else info.cliRuntime = { ...runtime, source:'provider-cli', observedAt:Date.now() };
         info.status = ['running','waiting'].includes(runtime.state) ? 'running' : 'idle';
         info.connectionIssue = null;
         const entry = this.sessions.get(id);
@@ -2969,6 +2970,7 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
+      ...(info.cliRuntime ? {cliRuntime:info.cliRuntime} : {}),
       ...(isAcpKind(info.kind) ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
         acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,

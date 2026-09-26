@@ -65,7 +65,7 @@ class PromptSubmissionReceipts {
     // Claude hooks can be timestamped on arrival. Repeated "continue" sends
     // must consume the oldest unresolved matching attempt, never the newest.
     const pending = this.unresolved.get(sessionId) || [];
-    const native = ['codex-app-server','acp'].includes(event.signalSource);
+    const native = ['codex-app-server','acp','qwen-cli','provider-cli'].includes(event.signalSource);
     if (native && (!event.clientSubmissionId || !event.threadId || !event.turnId)) return false;
     const receipt = pending.find(item => (!item.nativeOnly || native)
       && (!native || item.clientSubmissionId === event.clientSubmissionId)

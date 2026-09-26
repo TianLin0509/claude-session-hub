@@ -61,7 +61,7 @@ function registerHubRestartIpc(ipcMain, deps) {
       if (outcome?.status === 'completed') return {completed:true};
     }
     await n.prepareForNewPrompt?.();
-    if (row.submissionId && n.records?.get(row.submissionId)?.status === 'completed') return {completed:true};
+    if (row.submissionId && n.records?.get?.(row.submissionId)?.status === 'completed') return {completed:true};
     const r=n.runtime;
     if (r?.state === 'waiting' || ['unknown','submitting','queued'].includes(r?.submission?.status || r?.submission?.sendStatus)) throw new Error('原生会话仍待核对或审批，未自动发送');
     if (r?.state === 'running') throw new Error('原生会话仍报告执行中，未叠加发送续作');

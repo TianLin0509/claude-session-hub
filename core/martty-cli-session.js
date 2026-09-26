@@ -25,11 +25,12 @@ class MarttyCliSession extends AcpSession {
     if(resume)args.push('--session-id',resume);
     const env={...this.options.launch.env,MARTTY_HOME:path.join(this.options.home,'.martty'),
       AI_HUB_CLI_EVENT_LOG:this.events,AI_HUB_CLI_AGENT_LAUNCH:JSON.stringify({command:this.options.launch.command,args:this.options.launch.args,cwd:this.options.cwd})};
+    if(resume&&this.options.kind==='glm')env.ZCODE_ACP_RESUME_SESSION=resume;
     this.tail=new JsonlTail(this.events,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.tail.start();
     const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     this.startTimer=setTimeout(()=>this.fail(new Error('终端启动未确认，请查看 CLI')),60000);
-    this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:120,rows:30,
+    this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:this.cols||120,rows:this.rows||30,
       name:'xterm-256color',useConpty:true,conptyInheritCursor:false});
     this.pty.onData(data=>{this.buffer=(this.buffer+data).slice(-100000);this.emit('data',data);});
     this.pty.onExit(info=>{this.closed=true;this.dispose();this.emit('exit',info);});
@@ -69,7 +70,13 @@ class MarttyCliSession extends AcpSession {
     if(m.method==='session/request_permission'){
       this.apply({type:'request',threadId:this.threadId,request:{...m,params:{...m.params,turnId:this.active?.turnId}}});return;
     }
-    if(m.method==='session/update')super.notification(m);
+    if(m.method==='session/update'){
+      if(m.params?.update?.sessionUpdate==='config_option_update'){
+        const model=m.params.update.configOptions?.find(o=>o.category==='model')?.currentValue;
+        if(model){this.currentModel=model.split(/[\\/]/).at(-1);this.emit('bound',{threadId:this.threadId,model:this.currentModel});}
+      }
+      super.notification(m);
+    }
   }
   begin(message,at){
     if(message.params?.sessionId!==this.threadId)throw new Error('CLI prompt 身份与卡片不一致');
@@ -90,7 +97,7 @@ class MarttyCliSession extends AcpSession {
     if(options.attachments?.length)throw Object.assign(new Error('请在终端中添加附件'),{notSent:true});
     let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
     this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
-      timer:setTimeout(()=>{this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},20000)};
+      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},20000)};
     options.beforeStart?.();
     const paste=require('./pty-prompt-submit');
     const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};
@@ -98,14 +105,16 @@ class MarttyCliSession extends AcpSession {
       await paste.writeBracketedPaste(manager,this.options.id,text);
       await paste.waitForPasteSettled(manager,this.options.id,{settleMs:paste.computeSettleMs(text.length),baselineMarker});
       this.write('\r');
+      if(text.trimStart().startsWith('/')){clearTimeout(this.pending?.timer);this.pending=null;return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};}
     }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}
     return promise;
   }
   write(data){if(this.closed)throw new Error('CLI 已退出');this.pty?.write(data);}
-  resize(cols,rows){this.pty?.resize(cols,rows);}
+  resize(cols,rows){this.cols=cols;this.rows=rows;this.pty?.resize(cols,rows);}
   readTranscript(options){return super.readTranscript(options).map(c=>({...c,source:this.source}));}
   async interrupt(){if(!this.active||this.interruptAt&&Date.now()-this.interruptAt<1500)return;this.interruptAt=Date.now();this.write('\x1b');}
   async fork(){throw new Error('请在 CLI 中使用原生分支命令；Hub 尚未接入此终端的分支回执');}
+  async configure(){throw new Error('请在 CLI 中使用 /model；卡片会同步原生模型变更回执');}
   dispose(){clearTimeout(this.startTimer);this.tail?.close();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}
     this.backstage.close();this._historyStore?.close();this._historyStore=null;}
   kill(){this.persist();this.closed=true;this.dispose();this.pty?.kill();}
