@@ -14,7 +14,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { detectHostShellTakeover } = require('./host-shell-detector.js');
+const { detectHostShellTakeover, detectCodexThreadEnded } = require('./host-shell-detector.js');
 const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
 const { stripAnsi } = require('./ansi-utils.js');
 const {
@@ -225,6 +225,7 @@ function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
       const runtime = classifyTerminalRuntime(kind, lines);
       probeState.lastLiveRuntime = runtime;
       probeState.lastLiveLines = lines.slice(-12);
+      probeState.lastLiveScreen = lines;
       const advanced = advanceRunningAnimationCandidate(probeState.liveCandidate, runtime, Date.now());
       probeState.liveCandidate = advanced.candidate;
       if (!advanced.confirmed || runtime.state !== RUNTIME_RUNNING) return null;
@@ -267,6 +268,58 @@ async function waitForAgentWorkStart(observer, sessionManager, sid, kind, timeou
     || probeStrongPtyWorkStart(sessionManager, sid, kind, probeState);
   if (observer && (observer.started || observer.resolved)) return observer.acknowledgement;
   return observer?.clientSubmissionId ? null : pty;
+}
+
+// Codex 的「任务进行中，命令被禁用」提示。TUI 重绘会把旧提示再画一遍，所以不看输出流，
+// 只数可见屏幕上的条数：提交后比提交前多了，才是这一次被拒。
+const CODEX_BUSY_REJECTION_RE = /is disabled while a task is in progress/i;
+async function visibleBusyRejections(livePtyObserver) {
+  if (!livePtyObserver) return 0;
+  const state = { liveCandidate: null, ringCandidate: null };
+  await livePtyObserver.probe(state);
+  return (state.lastLiveScreen || []).filter(line => CODEX_BUSY_REJECTION_RE.test(line)).length;
+}
+async function codexRejectedBusyCommand(livePtyObserver, baseline, waitMs = 1200) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    if (await visibleBusyRejections(livePtyObserver) > baseline) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+// /new、/clear（可带参数）在 Codex 里都是结束当前线程、开一条新线程。
+const CODEX_THREAD_SWITCH_COMMAND_RE = /^\s*\/(?:new|clear)(?:\s|$)/i;
+// Codex 在 /new 时不报任何 hook（新线程要到第一次提问才发 SessionStart），CLI 自己的执行
+// 证据是它打印的「To continue this session … (<刚结束的线程 id>)」。确认时把结论记在会话上，
+// 等新线程的 SessionStart 迟到时，改绑判定不必再从已经滚远的缓冲区里找这句话。
+async function waitCodexThreadSwitch(sessionManager, sid, sidBefore, livePtyObserver, busyBaseline, fromLength, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const now = sessionManager.getSession?.(sid)?.codexSid || null;
+    if (now && now !== sidBefore) return 'switched';
+    const raw = String(sessionManager.getSessionBuffer?.(sid) || '');
+    if (sidBefore && detectCodexThreadEnded(raw.length >= fromLength ? raw.slice(fromLength) : raw, sidBefore)) {
+      sessionManager.noteCodexThreadEnded?.(sid, sidBefore);
+      return 'switched';
+    }
+    if (await visibleBusyRejections(livePtyObserver) > busyBaseline) return 'rejected';
+    if (Date.now() >= deadline) return 'timeout';
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+}
+
+// 画面上不再有带动画的工作行持续一小段时间，才算收尾结束；最多等 20 秒。
+async function waitCodexSettled(livePtyObserver, { quietMs = 1500, maxMs = 20000 } = {}) {
+  if (!livePtyObserver) { await new Promise(resolve => setTimeout(resolve, quietMs)); return; }
+  const start = Date.now();
+  let lastBusyAt = Date.now();
+  const state = { liveCandidate: null, ringCandidate: null };
+  while (Date.now() - start < maxMs) {
+    if (await livePtyObserver.probe(state)) lastBusyAt = Date.now();
+    if (Date.now() - lastBusyAt >= quietMs) return;
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
 }
 
 async function clearCodexInputLine(sessionManager, sid, kind) {
@@ -469,6 +522,10 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     const turnStart = options.submissionReceipt || observeAgentTurnStart(sessionManager, sid, kind);
     const livePtyObserver = createLivePtyRuntimeObserver(sessionManager, sid, kind);
     try {
+    const codexBusyBaseline = isCodexCliKind(kind) && /^\s*\//.test(String(prompt || ''))
+      ? await visibleBusyRejections(livePtyObserver) : 0;
+    const codexThreadSwitch = isCodexCliKind(kind) && CODEX_THREAD_SWITCH_COMMAND_RE.test(String(prompt || ''));
+    const codexSidBefore = codexThreadSwitch ? (sessionManager.getSession?.(sid)?.codexSid || null) : null;
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
@@ -509,6 +566,27 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       const confirmation = await options.localCommandObserver.wait();
       return {ok:confirmation.ok,sendStatus:confirmation.ok ? 'ok' : 'stuck',
         message:confirmation.message,enterAttempts,acknowledgementSource:'local-command'};
+    }
+    // Codex 的 /new、/clear 不触发提交 hook，也不开工；它的确认就是「Hub 跟上了新线程」
+    // （新线程的 SessionStart 改绑了 codexSid）。不等开工信号、不补回车，否则既白等十几秒，
+    // 又会亮出「补发」——一点就再开一条线程。明确被拒则等空闲后只再提交一次。
+    if (codexThreadSwitch) {
+      const outcome = await waitCodexThreadSwitch(sessionManager, sid, codexSidBefore, livePtyObserver, codexBusyBaseline, beforeBufferLength);
+      if (outcome === 'switched') {
+        return { ok: true, sendStatus: 'ok', enterAttempts, acknowledgementSource: 'codex-thread-switch',
+          acknowledgementObservedAt: Date.now(), acknowledgementTurnId: null };
+      }
+      if (outcome === 'rejected') {
+        if (!options.retriedAfterBusyReject) {
+          console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected ${String(prompt).trim()} while its previous task was still finishing; submitting once more after it settles`);
+          await waitCodexSettled(livePtyObserver);
+          return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+        }
+        return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
+          message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
+      }
+      console.warn(`[group-chat] codex(${sid.slice(0, 8)}) ${String(prompt).trim()} not confirmed by a thread switch`);
+      return { ok: true, sendStatus: 'stuck', enterAttempts, acknowledgementSource: null };
     }
 
     // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
@@ -606,6 +684,19 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       if (sessionManager.getGroupChatLastActivity(sid) === beforeWrite) sendStatus = 'stuck';
     }
     if (options.submissionReceipt?.status === 'content-mismatch') sendStatus = 'content-mismatch';
+    // Codex 写完 task_complete 后还要收尾（Stop hook 等），这段时间 TUI 仍算「任务进行中」：
+    // 普通提问会被排队，斜杠命令却被直接拒绝（'/new' is disabled while a task is in progress），
+    // 而收尾中的工作行又会被上面当成「已开工」。明确被拒 = 没有执行，等空闲后只再提交一次。
+    if (isCodexCliKind(kind) && /^\s*\//.test(String(prompt || ''))
+        && await codexRejectedBusyCommand(livePtyObserver, codexBusyBaseline)) {
+      if (!options.retriedAfterBusyReject) {
+        console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected a slash command while its previous task was still finishing; submitting once more after it settles`);
+        await waitCodexSettled(livePtyObserver);
+        return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+      }
+      return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
+        message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
+    }
     return {
       ok: sendStatus !== 'content-mismatch',
       sendStatus,

@@ -66,7 +66,10 @@ Claude 的身份在启动时就定了，但 TUI 里的 `/clear`、`/resume`，�
 `main/codex-pty-hook.js` 的规则：
 
 - 带 `agent_id` 的事件、rollout 元数据标为 subagent 的事件：一律忽略。
-- 已绑定线程之后，来了不同的 `session_id`：只有 `SessionStart` 且来源是 `clear` / `resume` / `fork`，或者来源是 `startup` 且终端已回到宿主 shell（CLI 退出后被重新拉起），才允许改绑。其余情况视为 CLI 里嵌套跑的另一个 codex，直接忽略。
+- 已绑定线程之后，来了不同的 `session_id`：只有 `SessionStart` 且来源是 `clear` / `resume` / `fork`，或者来源是 `startup` 且满足下面任一条件，才允许改绑。其余情况视为 CLI 里嵌套跑的另一个 codex，直接忽略。
+  - 终端已回到宿主 shell（CLI 退出后被重新拉起）；
+  - TUI 自己结束了已绑定的线程。2026-09-26 真机（0.153.4）：`/new` 先打印「To continue this session … (<旧线程 id>)」，新线程**要到第一次提问才**报 SessionStart，来源是 `startup` 而不是 `clear`。Hub 提交的 `/new` 在确认时把「线程已结束」记在会话上（`noteCodexThreadEnded`），用户直接在终端里敲的则扫整个缓冲区里最后一次这句提示，且必须带当前绑定的 id。
+- 分支（`codex fork`）开的是新线程：分支会话不预设源会话的记录路径，由新线程的第一个 hook 绑定。源路径只作为原生 `thread/fork` 的参数。
 - `CodexTap.bindFromHook()`：文件已存在就立即绑定；还没落盘就把期望路径钉在 pending 上。扫描器看到这个文件时直接绑定，同时这条会话不再参与 cwd + 时间窗的猜测。
 - 钉住路径后还会每 250ms 单独查一次这个文件（最长 10 分钟，下一个 hook 会重新开始），不依赖全目录扫描器。终轮矩阵里扫描器在高负载下反复 heartbeat stale，群聊的 Codex 成员答完了也迟迟绑不上。绑定后 tail 会回放已写内容，所以晚绑不会漏掉这一轮的完成。
 
@@ -134,7 +137,8 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 - 卡片按段落刷新，不逐字流动；要逐字看，就看终端本体。
 - 本机 Codex 0.153.4 没有 Interrupt hook，Esc 中断靠 rollout 的 `turn_aborted`。
 - 群聊派发依然走 PTY 闭环：偶发 `stuck` 时显示「补发」按钮。
-- Codex 的斜杠命令不触发 UserPromptSubmit，闭环拿不到确认，可能亮「补发」。状态本身不会卡住：`/compact` 由空正文的 task_complete 收尾。
+- Codex 的斜杠命令不触发 UserPromptSubmit，闭环拿不到确认，可能亮「补发」。状态本身不会卡住：`/compact` 由空正文的 task_complete 收尾。`/new`、`/clear` 例外：以「TUI 结束了旧线程」确认（`codex-thread-switch`）。
+- Codex 写完 task_complete 后还要收尾（Stop hook 等），这段时间斜杠命令会被拒绝（`'/new' is disabled while a task is in progress`），普通提问则被排队。被拒 = 没执行：等画面静下来只再提交一次，仍被拒就如实报「未发送」并把原文退回输入框。判定比较可见屏幕上拒绝提示的条数，因为重绘会把旧提示再画一遍。
 - 选择框挂着时，群聊自动派发会因"CLI 未就绪"而不发送，需要有人在终端里处理。
 - Claude fast 模式的交互会话是否写 transcript，这次没有在 Opus 上重测（只用 haiku 省额度，而 fast 只对 Opus 生效）。
 

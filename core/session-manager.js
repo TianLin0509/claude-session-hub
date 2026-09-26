@@ -29,7 +29,7 @@ const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filt
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
 const { compareLatestReplyDesc } = require('./session-recency.js');
-const { detectHostShellTakeover } = require('./host-shell-detector.js');
+const { detectHostShellTakeover, detectCodexThreadEnded } = require('./host-shell-detector.js');
 const {
   DEFAULT_CLAUDE_MCP_PROFILE,
   WIRELESS_MCP_NAMES,
@@ -2748,6 +2748,19 @@ class SessionManager extends EventEmitter {
   isHostShellActive(sessionId) {
     const s = this.sessions.get(sessionId);
     return !!(s && detectHostShellTakeover(s.ringBuffer));
+  }
+
+  // TUI 里的 /new 结束了这条已绑定的线程（屏幕上有带它 id 的「To continue this session」）。
+  // Codex 要等新线程第一次提问才报 SessionStart，那时这句可能早已滚远：Hub 自己提交的
+  // /new 在确认时就把结论记在会话上；用户直接在终端里敲的，再回头扫整个缓冲区。
+  noteCodexThreadEnded(sessionId, threadSid) {
+    const s = this.sessions.get(sessionId);
+    if (s && threadSid) s.codexEndedThreadSid = String(threadSid);
+  }
+  isCodexThreadEnded(sessionId, boundSid) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !boundSid) return false;
+    return s.codexEndedThreadSid === String(boundSid) || detectCodexThreadEnded(s.ringBuffer, boundSid);
   }
 
   noteAgentTurnStarted(sessionId, event = {}) {
