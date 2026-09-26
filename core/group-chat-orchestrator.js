@@ -118,6 +118,10 @@ function normalizeDispatchMeta(dispatch) {
       attempt: Number(dispatch.attempt) > 0 ? Number(dispatch.attempt) : 1,
       runId: dispatch.runId ? String(dispatch.runId) : null,
       role: dispatch.role ? String(dispatch.role) : '',
+      ...(dispatch.kind==='delivery' ? {
+        goal:typeof dispatch.goal==='string'?dispatch.goal:'',
+        stageName:typeof dispatch.stageName==='string'?dispatch.stageName:'',
+      } : {}),
     },
     toMemberIds: memberIds,
     toLabels: labels,

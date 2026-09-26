@@ -1300,6 +1300,7 @@ function createGroupChatDispatcher(deps) {
     appendUserMessage,
     reuseTurnNum,
     dispatchMode,
+    dispatchPresentation,
     workflowRun,
     clientMessageId,
     _dispatchSeq,
@@ -1435,6 +1436,9 @@ function createGroupChatDispatcher(deps) {
             runId: workflowRun.runId || null,
             toMemberIds: targetMembers.map(m => m.memberId).filter(Boolean),
             toLabels: targetMembers.map(m => m.displayName).filter(Boolean),
+            ...(workflowRun.kind==='delivery' && dispatchPresentation ? {
+              goal:dispatchPresentation.goal,stageName:dispatchPresentation.stageName,
+            } : {}),
           }
         : null;
       const begin = orch.beginTurn(userInput || '', {

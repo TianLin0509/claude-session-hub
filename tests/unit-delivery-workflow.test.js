@@ -25,6 +25,8 @@ function fixture(preset='custom',extra={}) {
 async function filesDriveTheBarrier() {
   const f=fixture();try{
     await f.e.start(f.m.id,'goal');assert.equal(f.calls.length,1);assert.equal(f.calls[0].turnTimeoutMs,0);
+    assert.deepEqual(f.calls[0].dispatchPresentation,{goal:'goal',stageName:'first'});
+    assert.deepEqual(f.e.status(f.m.id).stageNames,['first','second']);assert.equal(f.e.status(f.m.id).stageIndex,0);
     assert.deepEqual(f.m.participants,[0,1]);f.m.participants=[2];await f.advance();assert.deepEqual(f.m.participants,[2],'same step never resets manual avatar selection');
     f.pending[0]({status:'completed',results:[{sid:'sa',status:'completed',text:'tests still running'}]});await flush();await f.advance();
     assert.equal(f.calls.length,1,'chat final never advances');

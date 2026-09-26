@@ -2404,9 +2404,9 @@ if (typeof document !== 'undefined') (function () {
     // meta 文字
     if (metaEl) {
       const parts = [];
-      if (turnsCount > 0) parts.push(`已 ${turnsCount} 轮`);
+      if (turnsCount > 0 && !Delivery.enabled(meeting)) parts.push(`已 ${turnsCount} 轮`);
       if (totalSecTxt) parts.push(`⏱ ${totalSecTxt}`);
-      if (mode && mode !== 'idle' && total > 0) {
+      if (mode && mode !== 'idle' && total > 0 && !Delivery.enabled(meeting)) {
         parts.push(`<span class="mr-header-meta-active">本轮 ${done}/${total}</span>`);
       }
       metaEl.innerHTML = parts.length ? '· ' + parts.join(' · ') : '';
@@ -2497,7 +2497,7 @@ if (typeof document !== 'undefined') (function () {
     const isUser = message.role === 'user';
     const slot = isUser ? null : memberBySid[message.sid];
     const slotCls = slot ? ` slot-${(slot.slotIndex || 0) + 1}` : '';
-    const label = isUser ? '我' : (message.speaker || (slot && slot.displayLabel) || 'AI');
+    const label = isUser ? (isDispatchCard(message)?'工作流':'我') : (message.speaker || (slot && slot.displayLabel) || 'AI');
     // 投委会发言（committeeAct）：幕次 badge + 气泡左侧色条标识（折叠交给通用「长回答折叠」，不重复做）
     const cAct = message.committeeAct || '';
     let actBadge = '';
@@ -2592,6 +2592,8 @@ if (typeof document !== 'undefined') (function () {
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
+    } else if (isUser && isDispatchCard(message) && message.dispatch?.kind==='delivery') {
+      body=require('./delivery-dispatch-view').render(message,escapeHtml);
     } else if (isUser && isDispatchCard(message)) {
       // 派发卡片：每轮重复的角色抬头默认折叠，本轮真正要看的内容直接展开。
       // 只折显示，不改一个字的下发内容（prompt 由 loop-workflow 负责，这里碰不到）。
@@ -5456,6 +5458,7 @@ if (typeof document !== 'undefined') (function () {
     const row = _ensureInputPreflightRow();
     if (!row) return;
     const current = meeting || meetingData[activeMeetingId];
+    row.dataset.deliveryMeeting=current?.id || '';
     if (!current) {
       row.style.display = 'none';
       return;
@@ -6319,9 +6322,8 @@ if (typeof document !== 'undefined') (function () {
     // header 不在群聊委托容器内，故下方单独绑定点击事件（不能依赖 data-gc-side-toggle 委托）。
     const gcMembersBtnHtml = meeting.groupChat ? (() => {
       const gcSlots = _getGcSlots(meeting).filter(Boolean);
-      const gcSel = Array.isArray(meeting.participants) ? meeting.participants.length : gcSlots.length;
       const collapsed = _getGroupSideCollapsed();
-      return `<button class="mr-header-btn mr-view-btn ${collapsed ? '' : 'active'}" id="mr-btn-group-members" title="${collapsed ? '展开群成员栏' : '收起群成员栏'}">群成员 ${gcSel}/${gcSlots.length}</button>`;
+      return `<button class="mr-header-btn mr-view-btn ${collapsed ? '' : 'active'}" id="mr-btn-group-members" title="${collapsed ? '展开群成员栏' : '收起群成员栏'}">群成员 ${gcSlots.length}</button>`;
     })() : '';
 
     el.innerHTML = `
@@ -6776,7 +6778,7 @@ if (typeof document !== 'undefined') (function () {
     el.innerHTML = '';
     const avatarsRow = document.getElementById('mr-free-avatars-row');
     if (avatarsRow) {
-      const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
+      const participants = Array.isArray(meeting.participants) ? meeting.participants : participantIndexes;
       const partSet = new Set(participants);
       avatarsRow.innerHTML = participantIndexes.map(idx => {
         const checked = partSet.has(idx);
@@ -6793,6 +6795,7 @@ if (typeof document !== 'undefined') (function () {
         const runningHint = (inProgress && !isDormant0) ? '（正在执行，也可接收补充；勾选决定下一条消息发给谁）' : '（勾选决定下一条消息发给谁）';
         return `
           <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}${isDormant0 ? ' dormant' : ''}"
+                 role="checkbox" tabindex="${isDormant0?'-1':'0'}" aria-label="发送给 ${escapeHtml(label)}" aria-checked="${checked}" aria-disabled="${isDormant0}"
                  data-slot-idx="${idx}" title="${escapeHtml(label)}${isDormant0 ? '（休眠中，先在侧栏唤醒）' : runningHint}">
             <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
             <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
@@ -6804,12 +6807,16 @@ if (typeof document !== 'undefined') (function () {
 
     let updating = false;
     document.querySelectorAll('.mr-free-avatar-chk[data-slot-idx]').forEach(label => {
+      label.addEventListener('keydown',ev=>{
+        if(ev.key===' ' || ev.key==='Enter'){ev.preventDefault();label.click();}
+      });
       label.addEventListener('click', async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         if (label.classList.contains('disabled') || updating) return;
         updating = true;
         const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
+        const restoreFocus=document.activeElement===label;
         const latestMeeting = meetingData[meeting.id] || meeting;
         const allIndexes = Array.isArray(latestMeeting.subSessions)
           ? latestMeeting.subSessions.map((_sid, index) => index)
@@ -6821,6 +6828,7 @@ if (typeof document !== 'undefined') (function () {
         try {
           const updated = await _setMeetingParticipants(latestMeeting, next);
           renderToolbar(updated);
+          if(restoreFocus)document.querySelector(`.mr-free-avatar-chk[data-slot-idx="${slotIdx}"]`)?.focus();
           _updateInputPreflight(updated);
         } catch (err) {
           console.error('[set-participants] failed:', err);

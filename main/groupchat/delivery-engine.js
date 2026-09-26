@@ -33,6 +33,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     return {meetingId:id,runId:r?.id,status:r?.status || 'idle',running:r?.status==='running',paused:r?.status==='paused',done:r?.status==='done',
       finished:terminal(r),recoveryPending:!!r && !terminal(r) && !watching.has(id),
       dir:r?path.join(base(id),r.id):base(id),round:s?.number || 0,name:s?r.stages[s.index].name:'尚未开始',error:r?.error || '',
+      stageIndex:s?.index ?? 0,stageNames:(r?.stages || meeting(id).serialWorkflow.deliveryStages || []).map(stage=>stage.name),
       missing:s?s.members.filter(m=>!s.deliveries[m]).map(m=>names.find(n=>n.memberId===m)?.displayName || m):[],
       delivered:s?Object.keys(s.deliveries).length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],
       label:!r?'输入任务，按流程执行':r.status==='cancelled'?'本次任务已结束，交付记录已保留':r.status==='done'?'全部步骤已交付':`${r.stages[s.index].name} · ${Object.keys(s.deliveries).length}/${s.members.length} 位已交付`};
@@ -63,6 +64,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     step=run.steps.at(-1);const d=step.dispatches.find(x=>x.id===dispatchId);d.state='sending';save(id,run);
     let promise;activeDispatches.add(dispatchId);
     try{promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)))].filter(Boolean).join('\n\n'),
+      dispatchPresentation:{goal:run.goal,stageName:run.stages[step.index].name},
       targetMemberIds:targets,appendUserMessage:true,dispatchMode:'serial',fileHandoff:true,turnTimeoutMs:0,
       workflowRun:{runId:run.id,kind:'delivery',stepIndex:step.number-1,attempt:step.dispatches.length},
       onSubmission:item=>receipt(id,run.id,step.id,dispatchId,item),
