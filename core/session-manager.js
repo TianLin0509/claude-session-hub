@@ -247,6 +247,19 @@ function claudePermissionModeArg(opts = {}) {
   return CLAUDE_PERMISSION_MODES.has(requested) ? ` --permission-mode ${requested}` : '';
 }
 
+// Hub 的聊天记录目录始终作为附加目录：「引用会话」让 Claude 读别的会话的记录 md，
+// 它在工作目录之外，默认权限模式下每次都会弹 Read 审批（2026-09-26 真实 haiku 实测）。
+// --add-dir 只让读取免审批，写入仍按原权限模式；恢复时会带回已持久化的 addDirs，所以去重。
+// PTY（默认）、原生（回退）和 PTY 内重启三条启动路径都要带上。
+function claudeNativeAddDirs(requested) {
+  const dirs = Array.isArray(requested) ? requested.filter(Boolean).map(String) : [];
+  const transcriptDir = require('./data-dir').getHubTranscriptDir();
+  try { fs.mkdirSync(transcriptDir, { recursive: true }); } catch {}
+  const seen = new Set(dirs.map(dir => path.resolve(dir).toLowerCase()));
+  if (!seen.has(path.resolve(transcriptDir).toLowerCase())) dirs.push(transcriptDir);
+  return dirs;
+}
+
 function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const { ClaudeNativeSession } = require('./claude-native-session');
   const { NativeAgentJournal } = require('./native-agent-journal');
@@ -271,7 +284,7 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
       : (opts.effort || 'max'),
     permissionMode: opts.permissionMode || (opts.autonomous === true || legacy ? 'bypassPermissions' : undefined),
     appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
-    addDirs: opts.addDirs, settingSources: opts.settingSources,
+    addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
   const journal = new NativeAgentJournal({ directory: path.join(hubDataDir, 'native-agent-submissions'), sessionId: id });
   const fixture = process.env.CLAUDE_HUB_CLAUDE_STREAM_FIXTURE;
@@ -328,7 +341,7 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
       : (CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : 'max'),
     permissionMode: opts.permissionMode || (opts.autonomous === true ? 'bypassPermissions' : undefined),
     appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
-    addDirs: opts.addDirs, settingSources: opts.settingSources,
+    addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
   const { findNativeClaudeHistory } = require('./claude-native-history');
   const isUuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
@@ -2858,7 +2871,8 @@ class SessionManager extends EventEmitter {
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
       const relaunchPermissionFlag = claudePermissionModeArg({ autonomous });
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
+      const addDirFlag = claudeNativeAddDirs([]).map(dir => ` --add-dir "${dir}"`).join('');
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${addDirFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,

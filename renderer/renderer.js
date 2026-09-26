@@ -556,11 +556,8 @@ function attachNativeDraft(sessionId, inputBox) {
 function restoreComposerText(sessionId, inputBox, text) {
   if (readContenteditablePlainText(inputBox) === text) return;
   const raw = rawComposerDrafts.get(sessionId);
-  if (raw && raw.text === text && pasteChips.hasPasteMarkers(raw.raw)) {
-    pasteChips.renderRawComposerText(inputBox, raw.raw, { document });
-  } else {
-    inputBox.textContent = text;
-  }
+  // 没有原始记录（例如重启后）且草稿够大时，整段收成一个块，别把几千行铺回 DOM。
+  pasteChips.renderComposerValue(inputBox, raw && raw.text === text ? raw.raw : text, { document });
 }
 
 function saveFloatingInputDraft(sessionId, inputBox) {

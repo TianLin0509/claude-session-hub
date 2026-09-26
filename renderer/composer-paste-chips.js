@@ -242,6 +242,16 @@ function show(chip, { document, window }) {
   el.style.top = `${Math.round(Math.max(8, top))}px`;
 }
 
+/**
+ * 把一段文字放进输入框：含标记的按标记还原块；不含标记但足以卡顿的大段纯文本
+ * （发送失败退回、历史召回、重启后恢复的长草稿）整段收成一个块，不再铺满 DOM。
+ */
+function renderComposerValue(inputEl, value, { document }) {
+  let raw = String(value || '');
+  if (!hasPasteMarkers(raw) && shouldCollapseReplace(raw)) raw = MARK_START + registerPaste(raw) + MARK_END;
+  renderRawComposerText(inputEl, raw, { document });
+}
+
 function selectionTextWithin(inputEl, window) {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount < 1 || selection.isCollapsed) return '';
@@ -296,6 +306,7 @@ module.exports = {
   insertPasteChip,
   pasteEntry,
   registerPaste,
+  renderComposerValue,
   renderRawComposerText,
   shouldCollapsePaste,
   shouldCollapseReplace,

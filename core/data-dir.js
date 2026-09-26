@@ -20,12 +20,19 @@ function isIsolatedHub() {
   return !!(process.env.CLAUDE_HUB_DATA_DIR && process.env.CLAUDE_HUB_DATA_DIR.trim());
 }
 
+// 每个会话一份只含对话的聊天记录 md（会话搜索索引派生，见 core/session-transcript-md.js）。
+// 「引用会话」把这里的文件路径发给别的会话读，所以 Claude 原生会话要把它加进 --add-dir。
+function getHubTranscriptDir() {
+  return path.join(getHubDataDir(), 'transcripts');
+}
+
 function getMeetingWorkspaceDir(meetingId) {
   return path.join(getHubDataDir(), 'workspaces', meetingId);
 }
 
 module.exports = {
   getHubDataDir,
+  getHubTranscriptDir,
   isIsolatedHub,
   getMeetingWorkspaceDir,
 };
