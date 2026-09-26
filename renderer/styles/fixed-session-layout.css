@@ -82,6 +82,12 @@
   grid-template-rows: 28px auto 32px;
   align-content: space-between;
 }
+/* File delivery needs a visible progress/error block and wrapped controls. */
+.mr-input-row.mr-group-composer:has(.mr-delivery-flow) {
+  height: auto;
+  max-height: 55vh;
+  grid-template-rows: minmax(0, auto) 60px 32px;
+}
 .mr-group-composer #mr-input-tuning {
   height: 32px;
   flex-wrap: nowrap;
