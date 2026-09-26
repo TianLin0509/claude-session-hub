@@ -8,6 +8,11 @@ const MANAGED_SCRIPT_FILES = [
   'claude-hub-statusline.js',
   'deepseek_repl.py',
 ];
+// 用户自己在 settings.json 里挂的 Hub 周边脚本：Hub 不负责安装或注册，
+// 只在目标目录已经有这份脚本时把它更新到仓库版本（修复随 Hub 发布）。
+const UPGRADE_ONLY_SCRIPT_FILES = [
+  'file-scope-guard.py',
+];
 const MANAGED_HOOK_MARKER = 'session-hub-hook';
 
 function hasManagedHook(settings, eventName, expectedMatcher = null) {
@@ -138,11 +143,13 @@ function ensureClaudeHookIntegration({
   }
 
   const scriptsDir = path.join(claudeDir, 'scripts');
-  for (const file of MANAGED_SCRIPT_FILES) {
+  const upgradeOnly = new Set(UPGRADE_ONLY_SCRIPT_FILES);
+  for (const file of [...MANAGED_SCRIPT_FILES, ...UPGRADE_ONLY_SCRIPT_FILES]) {
     const src = path.join(sourceScriptsDir, file);
     const dest = path.join(scriptsDir, file);
     try {
       if (!fsModule.existsSync(src)) continue;
+      if (upgradeOnly.has(file) && !fsModule.existsSync(dest)) continue;
       fsModule.mkdirSync(scriptsDir, { recursive: true });
       let needsCopy = !fsModule.existsSync(dest);
       if (!needsCopy) {
@@ -216,6 +223,7 @@ function startClaudeHookIntegrationWatchdog({
 
 module.exports = {
   MANAGED_SCRIPT_FILES,
+  UPGRADE_ONLY_SCRIPT_FILES,
   MANAGED_HOOK_MARKER,
   hasManagedHook,
   ensureManagedSettings,

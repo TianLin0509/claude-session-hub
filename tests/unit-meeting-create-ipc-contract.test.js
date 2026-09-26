@@ -326,9 +326,11 @@ test('Codex None profile suppresses both group communication and research MCP en
   assert.equal(result.session.opts.contextMax, 1_000_000);
 });
 
-test('DeepSeek group members use Codex instructions and MCP entries', async () => {
+test('DeepSeek group members get the same context as others (no extra MEMORY.md) plus MCP entries', async () => {
+  let injected = 0;
   const addSub = createMeetingSubAdder(createBaseDeps({
-    ensureDeepSeekInstructionFile: () => 'C:\\hub\\deepseek-memory.md',
+    // 旧注入入口即使还被传进来，也不应再被调用。
+    ensureDeepSeekInstructionFile: () => { injected += 1; return 'C:\\hub\\deepseek-memory.md'; },
     meetingManager: (() => {
       const manager = createFakeMeetingManager();
       manager.setMeeting({ id: 'm-ds', groupChat: true, scene: 'research', subSessions: [] });
@@ -338,7 +340,8 @@ test('DeepSeek group members use Codex instructions and MCP entries', async () =
 
   const result = await addSub('m-ds', 'deepseek', {});
 
-  assert.strictEqual(result.session.opts.codexInstructionFile, 'C:\\hub\\deepseek-memory.md');
+  assert.strictEqual(result.session.opts.codexInstructionFile, undefined);
+  assert.strictEqual(injected, 0);
   assert.strictEqual(result.session.opts.mcpConfigFile, undefined);
   assert.strictEqual(result.session.opts.codexBypassApprovals, true);
   assert.deepStrictEqual(result.session.opts.codexMcpEntries, [

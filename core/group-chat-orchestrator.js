@@ -24,6 +24,63 @@ const {
 const devWorkbenchFeed = require('./dev-workbench-feed');
 const transcript = require('./group-chat-transcript');
 const { remapForkedGroupState } = require('./group-chat-fork');
+const { checkCompaction } = require('./context-compaction');
+
+// 「已读」游标只能由真正送进 CLI 的 prompt 推进（2026-09-26）。
+// 缺席（dormant/不可达）和发送失败的成员这一轮什么都没收到：以前 completeTurn 把它们的
+// 游标一并推到末尾，结果它们永远收不到漏掉的那段发言；首次参与就失败的成员还会被当成
+// 老成员，从此拿不到群规则和群聊记录路径。没带 promptDelivered 的老调用方保持原样。
+function wasPromptDelivered(result) {
+  if (!result || !result.sid) return false;
+  if (result.promptDelivered === false) return false;
+  return result.status !== 'absent';
+}
+
+// 群成员名单只写「名字 + CLI/模型」，不写角色、职责或立场（用户明确反对给 AI 预设角色）。
+function normalizeRoster(roster) {
+  if (!Array.isArray(roster)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const item of roster) {
+    if (!item || !item.sid) continue;
+    const sid = String(item.sid);
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    out.push({
+      sid,
+      name: String(item.name || item.displayName || item.kind || 'AI'),
+      cli: item.kind || item.cli ? String(item.kind || item.cli) : '',
+      model: item.model ? String(item.model) : '',
+    });
+  }
+  return out;
+}
+
+function rosterMemberLabel(entry) {
+  const detail = [entry.cli, entry.model].filter(Boolean).join(' / ');
+  return detail ? `${entry.name}（${detail}）` : entry.name;
+}
+
+function buildRosterBlock(roster, selfSid) {
+  if (!roster || roster.length === 0) return '';
+  const lines = roster.map(entry => `- ${rosterMemberLabel(entry)}${entry.sid === selfSid ? '（你）' : ''}`);
+  return ['## 群成员', ...lines].join('\n');
+}
+
+/** 名单增减时给老成员的一行提示；没有增减返回空串。 */
+function buildRosterChangeLine(previous, roster, selfSid) {
+  if (!Array.isArray(previous) || !roster) return '';
+  const before = new Set(previous.map(entry => entry && String(entry.sid)));
+  const now = new Set(roster.map(entry => entry.sid));
+  const joined = roster.filter(entry => !before.has(entry.sid) && entry.sid !== selfSid);
+  const left = previous.filter(entry => entry && !now.has(String(entry.sid)) && String(entry.sid) !== selfSid);
+  if (joined.length === 0 && left.length === 0) return '';
+  const parts = [];
+  if (joined.length) parts.push(`新加入 ${joined.map(rosterMemberLabel).join('、')}`);
+  if (left.length) parts.push(`已离开 ${left.map(entry => rosterMemberLabel({ name: 'AI', ...entry })).join('、')}`);
+  const current = roster.map(entry => entry.name).join('、');
+  return `（群成员变更：${parts.join('；')}。当前成员：${current}）`;
+}
 
 // 过程汇报（recordProgressUpdate 写入的 `UPDATE: …`）也是一条 assistant 消息，
 //   role / turnNum / sid 与正式答复完全一样，而且落盘更早。凡是按「本轮 + 本席位」
@@ -248,6 +305,11 @@ class GroupChatOrchestrator {
       pendingPrompts: {},
       // 真实用户补充（群聊插话）的逐成员投递账本。见 appendUserSupplement 的注释。
       userSupplements: { pendingBySid: {}, deliveredBySid: {} },
+      // 群规则 / 成员名单的逐成员送达回执：{ peakContext, roster, rulesDeliveredAt }。
+      // 压缩检测（已用上下文跌破峰值一半）后重发一次群规则；名单增减时附一行变更。
+      groupContextBySid: {},
+      // buildFirstDelta 准备好、尚未确认送达的部分；送达后才并入上面的回执。
+      groupContextPendingBySid: {},
       turns: [],
       aiStats: {},
     };
@@ -287,6 +349,9 @@ class GroupChatOrchestrator {
           activeRun: raw.activeRun && typeof raw.activeRun === 'object' ? raw.activeRun : null,
           pendingPrompts: raw.pendingPrompts && typeof raw.pendingPrompts === 'object' ? raw.pendingPrompts : {},
           userSupplements: normalizeSupplementLedger(raw.userSupplements),
+          groupContextBySid: raw.groupContextBySid && typeof raw.groupContextBySid === 'object' ? raw.groupContextBySid : {},
+          groupContextPendingBySid: raw.groupContextPendingBySid && typeof raw.groupContextPendingBySid === 'object'
+            ? raw.groupContextPendingBySid : {},
         };
         let nextMessageSeq = 1;
         for (const message of this.state.messages) {
@@ -505,6 +570,9 @@ class GroupChatOrchestrator {
       resultTextLength: String(result.text || '').length,
       reason: result.reason || null,
       failure: result.failure || null,
+      // 重启续作会从 attempt 还原结果再 completeTurn；没送达的标记要跟着留下来，
+      // 否则续作会把发送失败者的游标推过去。
+      ...(result.promptDelivered === false ? { promptDelivered: false } : {}),
     }, 'attempt_settled', options);
   }
 
@@ -1093,14 +1161,85 @@ class GroupChatOrchestrator {
    * 第一次给这位成员发言时才带的开场：整套群规 + 群聊记录路径。
    * 新成员、分支加入的成员都走这里，它们的游标是空的。
    */
+  //
+  // opts.roster：当前群成员 [{ sid, name, kind, model }]。首轮随群规则给全量名单；
+  //   之后名单有增减，只给一行变更。不传就完全不碰名单（投委会等内部编排）。
+  // opts.contextUsed：该成员 CLI 当前已用上下文。与梦境索引 / 工作区规则共用同一个
+  //   压缩判据（core/context-compaction.js）：跌破送达后峰值的一半，就把群规则重发一次。
+  // 这里只登记「准备发了什么」，真正送达后由 _advanceDeliveryCursors 提交回执；
+  // 没送达就什么都不记，下一轮照样重发。
   buildFirstDelta(selfSid, userInput, systemPromptText, opts = {}) {
-    if (this.state.lastDeliveredIdx[selfSid] === undefined) {
-      const intro = [String(systemPromptText || ''), this._transcriptPointerBlock()]
+    const roster = normalizeRoster(opts.roster);
+    const firstTime = this.state.lastDeliveredIdx[selfSid] === undefined;
+    if (!this.state.groupContextBySid || typeof this.state.groupContextBySid !== 'object') this.state.groupContextBySid = {};
+    if (!this.state.groupContextPendingBySid || typeof this.state.groupContextPendingBySid !== 'object') {
+      this.state.groupContextPendingBySid = {};
+    }
+    const receipt = this.state.groupContextBySid[selfSid] || null;
+    let includeRules = firstTime;
+    let compacted = false;
+    if (!firstTime && receipt) {
+      const check = checkCompaction(receipt.peakContext, opts.contextUsed);
+      if (check.compacted) {
+        includeRules = true;
+        compacted = true;
+      } else {
+        receipt.peakContext = check.peak;
+      }
+    }
+    this.state.groupContextPendingBySid[selfSid] = {
+      rules: includeRules,
+      ...(compacted ? { reason: 'compacted' } : {}),
+      ...(roster ? { roster } : {}),
+    };
+    const delta = this.buildDelta(selfSid, userInput, opts);
+    if (includeRules) {
+      const intro = [String(systemPromptText || ''), buildRosterBlock(roster, selfSid), this._transcriptPointerBlock()]
         .filter(part => part && part.trim())
         .join('\n\n');
-      return intro + '\n\n' + this.buildDelta(selfSid, userInput, opts);
+      return intro + '\n\n' + delta;
     }
-    return this.buildDelta(selfSid, userInput, opts);
+    if (roster) {
+      // 老成员：回执里没有名单（本功能上线前加入的）就补一次全量，之后只报增减。
+      const rosterPart = receipt && Array.isArray(receipt.roster)
+        ? buildRosterChangeLine(receipt.roster, roster, selfSid)
+        : buildRosterBlock(roster, selfSid);
+      if (rosterPart) return rosterPart + '\n\n' + delta;
+    }
+    return delta;
+  }
+
+  /** 送达后才把 buildFirstDelta 登记的群规则 / 名单并入回执。 */
+  _commitGroupContext(sid) {
+    if (!this.state.groupContextBySid || typeof this.state.groupContextBySid !== 'object') this.state.groupContextBySid = {};
+    const pendingTable = this.state.groupContextPendingBySid || {};
+    const pending = pendingTable[sid] || null;
+    const existing = this.state.groupContextBySid[sid];
+    const receipt = existing && typeof existing === 'object' ? existing : {};
+    if (!existing || (pending && pending.rules)) {
+      // 规则刚送达（首次或压缩后重发）：峰值从零重新观测。
+      receipt.peakContext = 0;
+      if (pending && pending.rules) receipt.rulesDeliveredAt = Date.now();
+    }
+    if (pending && Array.isArray(pending.roster)) receipt.roster = pending.roster;
+    this.state.groupContextBySid[sid] = receipt;
+    if (pending) delete pendingTable[sid];
+  }
+
+  /** 只推进真正送达者的游标；缺席、发送失败的保持原位，下一轮补上漏掉的内容。 */
+  _advanceDeliveryCursors(results) {
+    const lastIdx = this.state.messages.length - 1;
+    for (const r of results || []) {
+      if (!wasPromptDelivered(r)) continue;
+      this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
+      const deliveredMessage = Number.isInteger(r.deliveredSeq)
+        ? null
+        : this.state.messages[Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx];
+      this.state.lastDeliveredSeq[r.sid] = Number.isInteger(r.deliveredSeq)
+        ? r.deliveredSeq
+        : (deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0);
+      this._commitGroupContext(r.sid);
+    }
   }
 
   /** 群里已经有人发过言，才值得告诉新人「完整记录在哪」。空群不加这段噪声。 */
@@ -1332,16 +1471,7 @@ class GroupChatOrchestrator {
     }
     if (activeRunMatches) delete this._activePrompts[turnNum];
     this._clearPendingPromptsForRun(turnNum, runId);
-    const lastIdx = this.state.messages.length - 1;
-    for (const r of results) {
-      this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
-      const deliveredMessage = Number.isInteger(r.deliveredSeq)
-        ? null
-        : this.state.messages[Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx];
-      this.state.lastDeliveredSeq[r.sid] = Number.isInteger(r.deliveredSeq)
-        ? r.deliveredSeq
-        : (deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0);
-    }
+    this._advanceDeliveryCursors(results);
     this._saveState('run_completed', { runId, turnNum, status: runStatus });
     return turn;
   }
@@ -1349,18 +1479,9 @@ class GroupChatOrchestrator {
   // silent 内部编排（投委会五幕）每幕后调：标记这些委员已收到 systemPrompt 并对齐到当前 messages
   // 末尾，使后续幕 buildFirstDelta 走增量、不再每幕全量重发规则（点2 上下文污染根因）。故意不写
   // messages（silent 不污染自由聊 transcript）——委员靠各自持久 CLI 会话记忆延续上下文。
+  // 发送失败的委员同样不推进：它没收到这一幕的规则与增量。
   markDeliveredSilent(results) {
-    const lastIdx = this.state.messages.length - 1;
-    for (const r of results || []) {
-      if (!r || !r.sid) continue;
-      this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
-      const deliveredMessage = Number.isInteger(r.deliveredSeq)
-        ? null
-        : this.state.messages[Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx];
-      this.state.lastDeliveredSeq[r.sid] = Number.isInteger(r.deliveredSeq)
-        ? r.deliveredSeq
-        : (deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0);
-    }
+    this._advanceDeliveryCursors(results);
     this._saveState('silent_delivery_advanced');
   }
 
@@ -1577,7 +1698,11 @@ module.exports = {
   rawMessageAnchor,
   buildSystemPromptText,
   normalizeDispatchMeta,
+  wasPromptDelivered,
   _private: {
+    buildRosterBlock,
+    buildRosterChangeLine,
+    normalizeRoster,
     HISTORY_INLINE_BUDGET,
     SINGLE_MESSAGE_INLINE_LIMIT,
     buildSystemPromptText,
