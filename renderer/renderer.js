@@ -4608,6 +4608,14 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       inputBox.focus();
       return;
     }
+    const stopTarget = sessions.get(sessionId);
+    if (stopTarget?.agentRuntime === 'pty' && (isClaudeFamily(stopTarget.kind) || isCodexKind(stopTarget.kind))) {
+      // Ctrl+C 连点会让 CLI 退出；PTY Claude / Codex 用 Esc，只在运行时发一次（见 pty-interrupt.js）。
+      require('./pty-interrupt').sendPtyAgentInterrupt(stopTarget, { state: getSessionRuntimeTruth(stopTarget).state,
+        send: data => ipcRenderer.send('terminal-input', { sessionId, data }) });
+      terminal.focus();
+      return;
+    }
     ipcRenderer.send('terminal-input', { sessionId, data: '\x03' });
     terminal.focus();
   });

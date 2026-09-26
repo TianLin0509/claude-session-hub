@@ -336,7 +336,12 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
   let identity;
   if (opts.forkCCSessionId) {
     sessionId = require('crypto').randomUUID();
-    identity = ['--resume', opts.forkCCSessionId, '--fork-session', '--session-id', sessionId];
+    // PTY Claude 启动前就预分配了 id，「一轮都没聊过」的源会话也带着 ccSessionId。没有可分支的
+    // 对话时 `--resume <源> --fork-session` 报 No conversation found 并退回 shell（2026-09-26 实测），
+    // Hub 却显示分支已建好。分支一个空对话就是新开一个。
+    identity = findNativeClaudeHistory(opts.forkCCSessionId, { cwd, env })
+      ? ['--resume', opts.forkCCSessionId, '--fork-session', '--session-id', sessionId]
+      : ['--session-id', sessionId];
   } else if (opts.resumeCCSessionId && isUuid(opts.resumeCCSessionId)) {
     sessionId = opts.resumeCCSessionId;
     identity = findNativeClaudeHistory(sessionId, { cwd, env })
