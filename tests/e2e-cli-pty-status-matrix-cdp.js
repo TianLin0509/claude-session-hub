@@ -361,6 +361,10 @@ async function main() {
       // R7：连续两条参数不同的 /compact。CLI 依次执行两次压缩，每条提交只能被自己那一周期、
       // 参数相符的 PreCompact 确认；一次确认不能把两条都标成成功。
       await scenario('claude-double-compact', sid, async r => {
+        // 前置条件：先有一轮新对话，第一条 /compact 才有东西可压（紧跟在上一次压缩之后会回
+        // 「Not enough messages to compact」，那样就测不到真实压缩周期）。
+        const preAt = await send('不要调用任何工具，只回复 PRE_DOUBLE_OK。');
+        await expectRunsThenSettles(r, sid, preAt);
         const t0 = Date.now(), logFrom = hub.log().length, short = sid.slice(0, 8);
         await send('/compact keep first marker');
         await sleep(1200);
