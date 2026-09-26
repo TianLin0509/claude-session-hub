@@ -215,6 +215,32 @@ async function main() {
       assert.match(String(initial.cc || ''), /^[0-9a-f-]{36}$/, 'Claude identity fixed before the first prompt');
       result.checks = ['Claude PTY session identity fixed at launch: ' + initial.cc];
 
+      if(args.has('--audit-extras')) {
+        await scenario('audit-busy-rename',sid,async r=>{
+          const at=await send('用 Bash 在前台执行 node -e "setTimeout(()=>console.log(123),10000)"，然后回复 RENAME_READY。');
+          await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`,'rename while tool runs');
+          await c.eval(`document.querySelector('#terminal-panel .terminal-title').click()`);
+          await c.eval(`(()=>{const i=document.querySelector('.terminal-title-input');i.value='AUDIT_BUSY_RENAME';i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
+          await until(`sessions.get(${j(sid)})._pendingRename==='AUDIT_BUSY_RENAME'`,'rename queued');
+          await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`,'tool completes');
+          const file=(await status(sid)).transcript;
+          await until(`require('fs').readFileSync(${j(file)},'utf8').includes('"customTitle":"AUDIT_BUSY_RENAME"')`,'native rename persisted',30000);
+          r.nativeTitlePersisted=true;await snap('audit-busy-rename');
+        });
+        await scenario('audit-right-pane-terminal',sid,async r=>{
+          await send('调用 AskUserQuestion 问我选红还是蓝，等我选择后只回复 COLOR_OK。');
+          await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='waiting'`,'question waiting',90000);
+          await open(shell.id);await c.eval(`document.querySelector('[data-session-layout="two"]').click()`);
+          await c.eval(`(()=>{const s=document.querySelector('select[aria-label="右屏会话"]');s.value=${j(sid)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+          await until(`!!document.querySelector('.split-secondary .pty-attention-controls:not([hidden]) button')`,'right pane attention');
+          await c.eval(`document.querySelector('.split-secondary .pty-attention-controls button').click()`);
+          assert.equal(await c.eval(`document.querySelector('.split-secondary').classList.contains('card-view-active')`),false);
+          await key(sid,'\r');await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`,'question answered');
+          r.nativeQuestionAnswered=true;await snap('audit-right-pane-terminal');
+          await c.eval(`document.querySelector('[data-session-layout="single"]').click()`);
+        });
+      }
+
       await scenario('claude-reply', sid, async r => {
         const at = await send('只回复 PTY_OK_1，不要调用任何工具。');
         await expectRunsThenSettles(r, sid, at);
