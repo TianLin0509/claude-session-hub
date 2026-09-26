@@ -59,7 +59,8 @@ c7d25d6 已在 master，无需重复合并。复核了身份持久化、重启�
 - DeepSeek 最终产品代码真实复测：实施工作树 `artifacts/provider-cli/1790452292989/result.json`，3 项通过，包括重启后可见原生回答。
 - Codex 5d860e2：final 工作树 `artifacts/cli-card-audit/1790453103085/result.json`，9 项全部通过；截图已读取。其中明确标注的 2 项是 UI 故障/回执注入，其余为真实 CLI 场景。
 - `node --test tests/unit-pty-first-prompt-ready.test.js tests/unit-groupchat-redundant-enter-guard.test.js` 在 5d860e2 的修改上通过 11 项，覆盖 Windows 斜杠输入缓冲和不增加 Enter。
-- 全量 592 文件固定在 0b802963c2bb09e3633a1e81645dab8c85af18ea 上运行；它不包含最后的斜杠缓冲修正。不得把该全量结果标成 5d860e2，后者由上述定向单测与真实界面回归覆盖。最终结果见交付报告。
+- 一轮全量 592 文件固定在 0b802963c2bb09e3633a1e81645dab8c85af18ea 上运行；它不包含最后的斜杠缓冲修正。最终完整候选另跑全量，结果与 SHA 见交付报告。
+- 该轮的旧压力测试把新增 End 按键拼进正文，单独复现为 `bracketed paste frame broken for stress-0`。修正测试，分别检查按键仅一次且位于完整粘贴后、Enter 前，再逐字校验正文；5/5 通过，没有减少并发、放宽超时或跳过断言。
 - `/new` 验收脚本曾错误地等待按钮禁用、立即生成新会话 ID，或普通 prompt 的确认状态。Codex 本地命令应以本次 command history 回执为准；下一条真实提问才懒创建新线程。旧失败记录仍保留。另一次失败现场明确显示 `/new` 留在 CLI 输入框，属于第 13 项修复，不能全部归咎测试脚本。
 
 ### 失败保留
