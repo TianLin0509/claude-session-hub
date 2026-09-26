@@ -32,6 +32,14 @@ async function main(){
       const restarted=await invoke('restart-session',s.id);assert(restarted.id||restarted.session?.id,j(restarted));
       await send(s.id,'Reply only '+marker+'_RESTART');await response(s.id,marker+'_RESTART');
       assert.equal(await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`),sid);check(kind+' restart retains native identity and historical cards');
+      if(process.argv.includes('--long')){
+        const longMarker=marker+'_LONG';
+        const prompt=Array.from({length:120},(_,i)=>`reference ${i}: `+'x'.repeat(100)).join('\n')+'\nReply only '+longMarker;
+        await send(s.id,prompt);await response(s.id,longMarker);
+        const turns=(await invoke('parse-session-transcript',{hubSessionId:s.id,opts:{limit:20}})).turns||[];
+        assert.equal(turns.filter(t=>t.role==='user'&&String(t.text||'').includes('Reply only '+longMarker)).length,1);
+        check(kind+' 120-line prompt delivered once and answered');
+      }
       if(process.argv.includes('--interrupt')){
         await send(s.id,'Use the shell tool to run node -e "setTimeout(()=>console.log(123),30000)" in the foreground. Then reply TOOL_FINISHED.');
         await until(`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:2}});return (r.turns||[]).some(t=>(t.toolCalls||[]).some(c=>['running','inProgress'].includes(c.status)));})()`,'tool starts');
