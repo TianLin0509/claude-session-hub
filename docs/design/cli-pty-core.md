@@ -113,6 +113,13 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
   - transcript 已权威结束这一轮时，Stop 不再凭画面保留运行（`ptyTurnClosedAuthoritatively`，与屏幕观察共用同一条规则）。
   - Stop 先于 transcript 到达、hook 确实在跑时，保留运行，但每秒复查一次：画面不再有运行标记连续两次就收尾；运行状态行文字 30 秒纹丝不动（真在跑时秒数每秒都会变）就判为停住的旧帧并收尾。遇到新一轮边界立即退场。
   - 旧帧判定不能看 `_lastOutputTs`：周期巡检每重读一次同一帧，都会刷新这个时间戳。
+- **hook 子进程乱序完成，迟到事件不能重开已关闭的一轮**（第 4 轮 R5）。已关闭包括：完成、失败、中断，以及权威 IDLE（中断就记成这个）；刚建好的会话处于空闲，不算关闭。关闭之后到达的以下三类事件只保留为历史，不改状态（`hookTurnClosed`）：
+  - 工具 / 子代理 / 任务的 -start；
+  - 提问工具的 PostToolUse；
+  - PermissionRequest。
+  新一轮必须先经过 UserPromptSubmit、本地提交或 task_started。
+- **`/clear`、`/compact` 的确认可能迟到**（第 4 轮 R6）：`/compact` 期间提交的 `/clear` 要排到压缩结束后才执行。15 秒内没确认，就如实报"未确认"；观察者继续监听最长 10 分钟，确认到了只为这一条 `clientSubmissionId` 补发 confirmed 回执，并更新命令历史。从不重发。
+- **E2E 的工具命令用 `node -e "setTimeout(...)"`**：Claude Code 会拦下前台的长 `sleep`，并把 `sleep` / `echo` 当作安全命令免授权；部分环境的 Bash 工具里没有 `powershell`。工具有没有真的跑、跑了多久，只看 CLI 自己的记录（`verifyToolRun`）。
 - **Claude 2.1.28x 的底栏随权限模式变化**：默认模式是「⏸ manual mode on · ← for agents」，没有 shift+tab 提示。分类器漏认它，就绪帧就一直是 ambiguous，「就绪即收尾」的出口永远不触发。
 - **E2E 的 Codex 凭据要取 Hub 实际在用的订阅账号**（`REAL_CODEX_AUTH_SOURCE`）。`~/.codex` 可能早已不再刷新，全部 401。
 

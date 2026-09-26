@@ -93,6 +93,18 @@ async function main() {
   // 输出，输出里要有标记、不能是「找不到命令」、退出码为 0，调用到输出的真实耗时不少于要求。
   const readJsonl = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
   const BAD_TOOL_OUTPUT = /command not found|is not recognized|not recognized as|No such file|exit code:? ?(?!0\b)\d+|exit_code\\*"?:\s*(?!0\b)\d+/i;
+  // CLI 自己的记录里，某时刻之后是否开始了新一轮：Claude 新写入的用户消息（含后台任务
+  // 完成通知），或 Codex rollout 的 task_started。
+  function cliStartedNewTurnSince(st, since) {
+    if (!st || !st.transcript || !fs.existsSync(st.transcript)) return null;
+    for (const e of readJsonl(st.transcript)) {
+      const at = Date.parse(e.timestamp || '') || 0;
+      if (at <= since) continue;
+      if (e.type === 'user' && typeof e.message?.content === 'string') return { kind: 'claude-user-message', at: e.timestamp, text: e.message.content.slice(0, 160) };
+      if (e.type === 'event_msg' && e.payload?.type === 'task_started') return { kind: 'codex-task-started', at: e.timestamp };
+    }
+    return null;
+  }
   async function verifyToolRun(sid, marker, minSeconds) {
     const st = await status(sid);
     const file = st.transcript || (st.codexSid ? await c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)},opts:{limit:1,fromTail:true}}).then(r=>r.transcriptPath||null)`) : null);
@@ -156,7 +168,13 @@ async function main() {
     const stayUntil = Date.now() + 8000;
     while (Date.now() < stayUntil) {
       const after = await status(sid);
-      assert.equal(after.truth, settle, `state stayed ${settle} for 8s after settling (got ${after.truth} after ${Date.now() - doneAt}ms, source ${JSON.stringify(after.detail)})`);
+      if (after.truth !== settle) {
+        // 唯一合法的离开：CLI 自己开始了新一轮（例如 Claude 处理后台任务完成通知），
+        // 证据取 CLI 自己的记录，而不是 Hub 的状态。
+        const newTurn = cliStartedNewTurnSince(after, doneAt - 1000);
+        if (newTurn) { record.cliNewTurnAfterSettle = newTurn; break; }
+        assert.fail(`state stayed ${settle} for 8s after settling (got ${after.truth} after ${Date.now() - doneAt}ms, source ${JSON.stringify(after.detail)}), with no new turn in the CLI record`);
+      }
       await sleep(250);
     }
   }
@@ -267,7 +285,7 @@ async function main() {
         r.statesAfterInterrupt = [...seen];
         assert.ok(r.statesAfterInterrupt.every(s => !isRunningState(s)), 'stays closed for 65s after Esc: ' + r.statesAfterInterrupt);
         // 新一轮里的工具照常驱动运行，没有被「已关闭」拦住。
-        const nextAt = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('AFTER_INTERRUPT_MARK'),3000)"\`，然后只回复 AFTER_INTERRUPT_DONE。`);
+        const nextAt = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('AFTER_INTERRUPT_MARK'),3000)"\`（在前台运行，不要使用 run_in_background），然后只回复 AFTER_INTERRUPT_DONE。`);
         await expectRunsThenSettles(r, sid, nextAt);
         r.nextTool = await verifyToolRun(sid, 'AFTER_INTERRUPT_MARK', 2.5);
       });
@@ -281,15 +299,28 @@ async function main() {
           .catch(async error => { await view('card'); await until(`document.querySelector('#msg-overlay').innerText.includes('BG_FINAL')`, 'bg final card', 60000); });
         const last = (await cards(sid)).turns.filter(t => t.role === 'assistant').at(-1); r.last = last;
         assert.match(last.text, /BG_FINAL/);
-        // 后台命令真的跑完了：CLI 记录里有 BG_READY_MARK 的输出，不能只是一条失败通知。
-        const bgRecord = readJsonl((await status(sid)).transcript).map(e => JSON.stringify(e));
-        r.bgOutputSeen = bgRecord.some(s => s.includes('BG_READY_MARK') && !s.includes('run_in_background') && !/command not found/i.test(s));
-        assert.ok(r.bgOutputSeen, 'the background command really produced BG_READY_MARK');
+        // 后台命令真的跑完了（不能只是一条失败通知）：Claude 不把后台输出写进 transcript，
+        // 而是发一条 <task-notification>，带状态、退出码和输出文件。按工具调用 id 对上号再核对。
+        const entries = readJsonl((await status(sid)).transcript);
+        const call = entries.find(e => e.type === 'assistant' && (e.message?.content || []).some(b => b.type === 'tool_use' && JSON.stringify(b.input || {}).includes('BG_READY_MARK')));
+        const toolUse = call && call.message.content.find(b => b.type === 'tool_use');
+        assert.ok(toolUse, 'the background Bash call was recorded');
+        const note = entries.find(e => e.type === 'user' && typeof e.message?.content === 'string'
+          && e.message.content.includes('<task-notification>') && e.message.content.includes(toolUse.id));
+        assert.ok(note, 'a completion notification for that exact tool call arrived');
+        const body = note.message.content;
+        assert.match(body, /<status>completed<\/status>/, 'background task completed: ' + body);
+        assert.match(body, /exit code 0/, 'background task exited 0: ' + body);
+        const outputFile = (/<output-file>([^<]+)<\/output-file>/.exec(body) || [])[1];
+        r.bgOutput = outputFile && fs.existsSync(outputFile) ? fs.readFileSync(outputFile, 'utf8').slice(0, 200) : null;
+        assert.match(String(r.bgOutput || ''), /BG_READY_MARK/, 'the background command really printed BG_READY_MARK');
+        r.bgSeconds = (Date.parse(note.timestamp) - Date.parse(call.timestamp)) / 1000;
+        assert.ok(r.bgSeconds >= 14, `background command really ran ~15s (recorded ${r.bgSeconds}s)`);
         await view('pty');
       });
 
       if (!SKIP_LONG) await scenario('claude-long', sid, async r => {
-        const at = await send(`用 Bash 工具在前台运行 \`node -e "setTimeout(()=>console.log('LONG_MARK'),${LONG_SECONDS * 1000})"\`（timeout 设为 300000），完成后只回复 LONG_DONE。`);
+        const at = await send(`用 Bash 工具在前台运行 \`node -e "setTimeout(()=>console.log('LONG_MARK'),${LONG_SECONDS * 1000})"\`（在前台运行，不要使用 run_in_background，timeout 设为 300000），完成后只回复 LONG_DONE。`);
         await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`, 'long tool start', 60000);
         const falseDone = [];
         const end = Date.now() + (LONG_SECONDS - 10) * 1000;
@@ -392,7 +423,7 @@ async function main() {
         await until(`(()=>{const t=terminalCache.get(${j(psid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'perm tui ready', 90000);
         await sleep(1500);
         r.startupPrompt = await dismissClaudeStartupPrompt(psid);
-        const at = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('PERM_OK_MARK'),5000)"\`，然后只回复 PERM_DONE。`);
+        const at = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('PERM_OK_MARK'),5000)"\`（在前台运行，不要使用 run_in_background），然后只回复 PERM_DONE。`);
         await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='waiting'`, 'waiting for permission', 90000);
         r.waitLatencyMs = Date.now() - at;
         const st = await status(psid); r.waiting = st;
