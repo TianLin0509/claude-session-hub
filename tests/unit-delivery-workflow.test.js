@@ -100,4 +100,21 @@ async function completionContinuationAndDormancy(){
     const other=createDeliveryEngine({meetingManager:{getMeeting:()=>g.m},getHubDataDir:()=>g.dir,getDispatcher:()=>({})});try{assert.equal(other.stop(g.m.id),true,'writer drain releases workflow lease');}finally{other.dispose();}
   }finally{g.close();}
 }
-(async()=>{for(const fn of [filesDriveTheBarrier,pauseAndRestart,malformedAndEditedDeliveries,developmentBudget,unknownAndWakeRace,ownerAndEmptyFile,cancellationAndFailures,completionContinuationAndDormancy]){await fn();console.log('PASS '+fn.name);}})().catch(error=>{console.error(error);process.exitCode=1;});
+async function controlWinsOverResume(){
+  for(const method of ['stop','cancel','retire']){
+    const f=fixture();try{await f.e.start(f.m.id,'goal');f.e.stop(f.m.id);const resuming=f.e.resume(f.m.id);f.e[method](f.m.id);await resuming;
+      assert.equal(f.read().status,method==='cancel'?'cancelled':'paused',method+' must win over an earlier resume');assert.equal(f.calls.length,1);
+    }finally{f.close();}
+  }
+}
+async function reconcileFinishedDispatchAfterRestart(){
+  let proof=false,wrong=false;const f=fixture('custom',{getAttemptEvidence:(_id,_attemptId,expected)=>proof?{attempt:{attemptId:'saved-'+expected.memberId,sid:'s'+expected.memberId,memberId:expected.memberId,status:'completed',workflowRun:{...expected,kind:'delivery',runId:wrong?'other-run':expected.runId}}}:null});
+  try{await f.e.start(f.m.id,'goal');f.restart();await f.e.resume(f.m.id);
+    await assert.rejects(f.e.continueWork(f.m.id),/提交待核对/);assert.equal(f.calls.length,1,'idle alone never authorizes replay');
+    proof=true;wrong=true;await assert.rejects(f.e.continueWork(f.m.id),/提交待核对/);assert.equal(f.calls.length,1,'other run evidence is rejected');
+    wrong=false;await f.e.resume(f.m.id);assert.equal(f.calls.length,1,'matching ended attempts only reconcile, never auto-replay');
+    assert.equal(f.read().steps[0].dispatches[0].chatStatus,'reconciled');await f.e.continueWork(f.m.id);assert.equal(f.calls.length,2,'explicit continuation can fill missing deliveries after restart');
+    await assert.rejects(f.e.continueWork(f.m.id),/提交待核对/);assert.equal(f.calls.length,2,'live local Promise cannot be reconciled early');
+  }finally{f.close();}
+}
+(async()=>{for(const fn of [filesDriveTheBarrier,pauseAndRestart,malformedAndEditedDeliveries,developmentBudget,unknownAndWakeRace,ownerAndEmptyFile,cancellationAndFailures,completionContinuationAndDormancy,controlWinsOverResume,reconcileFinishedDispatchAfterRestart]){await fn();console.log('PASS '+fn.name);}})().catch(error=>{console.error(error);process.exitCode=1;});

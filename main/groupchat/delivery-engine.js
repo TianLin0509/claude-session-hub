@@ -4,8 +4,8 @@ const D=require('../../core/delivery-workflow');
 const {getSessionRuntimeTruth}=require('../../core/session-runtime-truth');
 const {SessionOpenOwnership}=require('../../core/session-open-ownership');
 const terminal=r=>['done','cancelled'].includes(r?.status);
-function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],sendToRenderer=()=>{},logger=console}) {
-  const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map();let timer=null,events=null,suspended=false,ownership=null;
+function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},logger=console}) {
+  const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set();let timer=null,events=null,suspended=false,ownership=null;
   async function action(id,fn){if(actions.has(id))throw new Error('正在处理本群的工作流操作，请稍后查看');actions.add(id);try{return await fn();}finally{actions.delete(id);}}
   const meeting=id=>meetingManager.getMeeting(id);
   const base=id=>D.directory(getHubDataDir(),id);
@@ -55,11 +55,12 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     catch(error){notSent();throw error;}
     const prepared=current(id,run.id,step.id);if(!prepared || prepared.status!=='running' || suspended){notSent();return;}run=prepared;
     step=run.steps.at(-1);const d=step.dispatches.find(x=>x.id===dispatchId);d.state='sending';save(id,run);
-    const promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)))].filter(Boolean).join('\n\n'),
+    let promise;activeDispatches.add(dispatchId);
+    try{promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)))].filter(Boolean).join('\n\n'),
       targetMemberIds:targets,appendUserMessage:true,dispatchMode:'serial',fileHandoff:true,turnTimeoutMs:0,
       workflowRun:{runId:run.id,kind:'delivery',stepIndex:step.number-1,attempt:step.dispatches.length},
       onSubmission:item=>receipt(id,run.id,step.id,dispatchId,item),
-      shouldDispatch:()=>{const now=current(id,run.id,step.id);return !suspended && meeting(id)?.status!=='dormant' && now?.status==='running';}});
+      shouldDispatch:()=>{const now=current(id,run.id,step.id);return !suspended && meeting(id)?.status!=='dormant' && now?.status==='running';}});}catch(error){activeDispatches.delete(dispatchId);throw error;}
     Promise.resolve(promise).then(result=>{
       const now=current(id,run.id,step.id);if(!now || terminal(now))return;
       const attempt=now.steps.at(-1).dispatches.find(x=>x.id===dispatchId);attempt.state='settled';
@@ -68,7 +69,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       if(result?.status==='error' || result?.status==='no_subs' || failure){now.error=String(failure?.reason || result.reason || result.status);now.status='paused';}
       // Completion changes diagnostics only. Files decide advancement, even after errors.
       save(id,now);tick(id);
-    },error=>{const now=current(id,run.id,step.id);if(!now || terminal(now))return;now.error=error.message;now.status='paused';save(id,now);logger.error('[delivery] dispatch failed:',error);}).catch(error=>{
+    },error=>{const now=current(id,run.id,step.id);if(!now || terminal(now))return;now.error=error.message;now.status='paused';save(id,now);logger.error('[delivery] dispatch failed:',error);}).finally(()=>activeDispatches.delete(dispatchId)).catch(error=>{
       logger.error('[delivery] completion persistence failed:',error);
       sendToRenderer('delivery:changed',{meetingId:id,paused:true,error:error.message,label:'交付状态保存失败，请核对'});
     });
@@ -81,6 +82,18 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       expectedRun=r.id;
       if(!D.enabled(meeting(id)) || meeting(id).status==='dormant'){r.status='paused';r.error='群聊已关闭、休眠或配置改变，核对交付后再接续';save(id,r);return;}
       const step=r.steps.at(-1);let changed=false;
+      // After restart there is no old Promise to settle this record. Reconcile
+      // only exact persisted attempts; an idle session alone proves nothing.
+      for(const [index,d] of step.dispatches.entries()){if(d.state==='settled' || activeDispatches.has(d.id))continue;
+        if(d.targets.every(member=>{
+          const receipt=d.receipts[member];
+          const evidence=getAttemptEvidence(id,receipt?.attemptId,{runId:r.id,stepIndex:step.number-1,attempt:index+1,memberId:member}),a=evidence?.attempt;
+          return !!a && (!receipt?.attemptId || (a.attemptId===receipt.attemptId && a.sid===receipt.sid)) && a.memberId===member
+            && a.workflowRun?.runId===r.id && a.workflowRun?.stepIndex===step.number-1
+            && a.workflowRun?.kind==='delivery' && a.workflowRun?.attempt===index+1
+            && (a.status==='completed' || a.status==='interrupted' || !!evidence.sourceCompletedAt);
+        })){d.state='settled';d.chatStatus='reconciled';changed=true;}
+      }
       for(const member of step.members){const found=D.readDelivery(base(id),r,step,member),old=step.deliveries[member];
         if(old && (!found || found.hash!==old.hash))throw new Error(`${member} 已接纳的交付被修改或移除`);
         if(found && !old){step.deliveries[member]=found;changed=true;}}
@@ -121,14 +134,17 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     const dir=path.join(base(id),r.id);fs.writeFileSync(path.join(dir,'任务约定.md'),`# 本次目标\n\n${r.goal}\n\n项目：${r.workspace || '待核实'}\n\n${r.stages.map((s,i)=>`## ${i+1}. ${s.name}\n成员：${s.members.join('、')}；接续：${s.after}\n\n${s.prompt}`).join('\n\n')}`,'utf8');
     save(id,r);watching.add(id);await advance(id);return status(id);
   }
-  function stop(id,{interrupt=false}={}){if(!D.enabled(meeting(id)))return false;own(id);const r=read(id);if(r && !terminal(r)){r.status='paused';r.error='用户已暂停，晚到交付只记录，不自动接续';save(id,r);}if(interrupt)getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return true;}
-  function cancel(id){own(id);const r=read(id);if(r && !terminal(r)){r.status='cancelled';r.error='';save(id,r);}getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return status(id);}
+  function stop(id,{interrupt=false}={}){if(!D.enabled(meeting(id)))return false;own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='paused';r.error='用户已暂停，晚到交付只记录，不自动接续';save(id,r);}if(interrupt)getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return true;}
+  function cancel(id){own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error='';save(id,r);}getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return status(id);}
   async function resume(id) {
     if(busy.has(id))throw new Error('正在准备派工，请稍后核对');
     own(id);retiring.delete(id);watching.add(id);let r=read(id);if(!r || terminal(r))throw new Error('没有待继续的任务');
     // First collect late files under pause. Never replay before reconciling.
+    const expectedRun=r.id,revision=r.controlRevision || 0;
     r.status='paused';save(id,r);
-    await advance(id);r=read(id);const step=r.steps.at(-1);
+    await advance(id);r=read(id);
+    if(!r || r.id!==expectedRun || terminal(r) || (r.controlRevision || 0)!==revision || suspended || retiring.has(id))return status(id);
+    const step=r.steps.at(-1);
     if(Object.values(step.deliveries).some(d=>d.outcome==='blocked'))throw new Error('本轮已有阻塞交付，请保留记录；解决阻塞后新建任务，不能覆盖已交付结果');
     r.status='running';r.error='';if(r.steps.length-r.budgetStart>=D.LIMIT)r.budgetStart=r.steps.length;
     save(id,r);await advance(id);return status(id);

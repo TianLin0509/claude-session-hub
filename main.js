@@ -1538,6 +1538,13 @@ try {
     getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
+    getAttemptEvidence: (id,attemptId,expected) => {
+      const orch=groupchat.getOrchestrator(getHubDataDir(),id);
+      const matches=attemptId ? [orch.getAttempt(attemptId)].filter(Boolean) : Object.values(orch.state.attempts || {}).filter(a=>
+        a.memberId===expected.memberId && a.workflowRun?.runId===expected.runId && a.workflowRun?.stepIndex===expected.stepIndex && a.workflowRun?.attempt===expected.attempt);
+      if(matches.length!==1)return null;
+      const attempt=matches[0];return {attempt,sourceCompletedAt:orch.state.devChatHistory?.receipts?.[attempt.attemptId]?.sourceCompletedAt};
+    },
     sendToRenderer,
   });
   global.__deliveryEngine.registerIpc(ipcMain);
