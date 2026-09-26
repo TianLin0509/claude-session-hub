@@ -20,6 +20,9 @@ function tap(direction){let pending='';const decoder=new StringDecoder('utf8');r
       this.push(JSON.stringify(message)+'\n');}}
     callback();
   }catch(error){callback(error);}
+},flush(callback){
+  pending+=decoder.end();
+  callback(pending.trim()?new Error('CLI protocol ended with an incomplete JSON message'):null);
 }});}
 let failed=false;
 function fail(error){if(failed)return;failed=true;console.error('[hub-cli-tap]',error.message);child.kill();process.exitCode=1;}

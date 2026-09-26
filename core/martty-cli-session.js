@@ -30,8 +30,9 @@ class MarttyCliSession extends AcpSession {
     await this.tail.start();
     const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     this.startTimer=setTimeout(()=>this.fail(new Error('终端启动未确认，请查看 CLI')),60000);
-    this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:this.cols||120,rows:this.rows||30,
+    try{this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:this.cols||120,rows:this.rows||30,
       name:'xterm-256color',useConpty:true,conptyInheritCursor:false});
+    }catch(error){this.dispose();this.readyReject(error);return ready;}
     this.pty.onData(data=>{this.buffer=(this.buffer+data).slice(-100000);this.emit('data',data);});
     this.pty.onExit(info=>{this.closed=true;this.fail(new Error('CLI 已退出'));this.dispose();this.emit('exit',info);});
     return ready;
@@ -123,6 +124,6 @@ class MarttyCliSession extends AcpSession {
   async reply(){throw new Error('请到 CLI 终端中回答或授权');}
   dispose(){clearTimeout(this.startTimer);this.tail?.close();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}
     this.backstage.close();this._historyStore?.close();this._historyStore=null;}
-  kill(){this.persist();this.closed=true;this.dispose();this.pty?.kill();}
+  kill(){this.persist();this.closed=true;this.readyReject?.(new Error('CLI 已关闭'));this.dispose();this.pty?.kill();}
 }
 module.exports={MarttyCliSession};

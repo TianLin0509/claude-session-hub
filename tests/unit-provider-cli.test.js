@@ -83,3 +83,12 @@ test('CLI tap preserves split UTF-8 messages and redacts credentials only in its
   try{assert.equal(code,0,stderr);assert.equal(output,line);const records=fs.readFileSync(log,'utf8');assert(!records.includes('test-secret'));assert(records.includes('中文🙂[redacted]'));}
   finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('CLI tap reports truncated protocol output instead of accepting a clean agent exit',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-cli-truncated-')),agent=path.join(root,'agent.js');
+  fs.writeFileSync(agent,"process.stdout.write('{\"jsonrpc\":');process.exitCode=0;");
+  const proc=require('node:child_process').spawn(process.execPath,[path.resolve(__dirname,'../scripts/provider-cli-tap.js')],{
+    windowsHide:true,env:{...process.env,AI_HUB_CLI_AGENT_LAUNCH:JSON.stringify({command:process.execPath,args:[agent],cwd:root}),AI_HUB_CLI_EVENT_LOG:path.join(root,'events')},stdio:['pipe','pipe','pipe']});
+  let error='';proc.stdout.resume();proc.stderr.on('data',s=>error+=s);proc.stdin.end();
+  try{const code=await new Promise((resolve,reject)=>{proc.on('error',reject);proc.on('close',resolve);});assert.notEqual(code,0);assert.match(error,/incomplete JSON/);}
+  finally{fs.rmSync(root,{recursive:true,force:true});}
+});

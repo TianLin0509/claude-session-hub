@@ -61,9 +61,10 @@ class QwenCliSession extends EventEmitter {
     if(this.options.forkCli)args.push('--fork-session');
     const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     this.startTimer=setTimeout(()=>this.fail(new Error('千问 CLI 启动未确认，请查看终端')),60000);
-    this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,
+    try{this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,
       env:{...this.options.launch.env,AI_HUB_PROVIDER_HOOK_LOG:this.hookFile},cols:this.cols||120,rows:this.rows||30,
       name:'xterm-256color',useConpty:true,conptyInheritCursor:false});
+    }catch(error){this.dispose();this.readyReject(error);return ready;}
     this.pty.onData(data=>this.emit('data',data));
     this.pty.onExit(info=>{this.closed=true;this.dispose();this.fail(new Error('千问 CLI 已退出'));
       this.emit('exit',info);});
@@ -188,6 +189,6 @@ class QwenCliSession extends EventEmitter {
     this.interruptedTurn=this.runtime.turnId;this.interruptAt=Date.now();this.write('\x03');}
   async fork(){await this.start();if(this.pending||['running','waiting'].includes(this.runtime.state))throw new Error('请等当前轮结束后再分支');return{home:this.options.home,sessionId:this.threadId,forkCli:true};}
   dispose(){clearTimeout(this.startTimer);this.hookTail?.close();this.transcriptTail?.close();this.telemetryTail?.close();}
-  kill(){this.closed=true;this.dispose();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}this.pty?.kill();}
+  kill(){this.closed=true;this.readyReject?.(new Error('CLI 已关闭'));this.dispose();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}this.pty?.kill();}
 }
 module.exports={QwenCliSession};
