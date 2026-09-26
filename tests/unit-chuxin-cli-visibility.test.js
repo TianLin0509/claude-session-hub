@@ -176,7 +176,13 @@ test('Chuxin exposes one eight-item workbench nav ending with the lindang agent 
   assert.match(primaryBlock[1], /id: 'lindang', label: '作手林铛', hash: 'lindang'/);
   assert.doesNotMatch(primaryBlock[1], /native: true/);
   assert.match(chuxin, /cx-primary-nav/);
-  assert.match(chuxin, /&embed=hub#/);
+  assert.match(chuxin, /&embed=hub&nav=inner#/);
+  // 初心顶栏接管导航：Hub 的左侧菜单收起、在线时标题行收起，页面内切页回报给 Hub 记住
+  assert.match(chuxin, /classList\.add\('cx-inner-nav'\)/);
+  assert.match(chuxin, /classList\.toggle\('cx-online', state\.online\)/);
+  assert.match(chuxin, /data\.type === 'chuxin-view'/);
+  assert.match(styles, /#chuxin-panel\.cx-inner-nav \.cx-primary-nav \{ display: none; \}/);
+  assert.match(styles, /#chuxin-panel\.cx-inner-nav\.cx-online \.cx-header \{ display: none; \}/);
   assert.doesNotMatch(primaryBlock[1], /AI群聊|英雄大厅|今日感悟/);
   assert.doesNotMatch(chuxin, /className = 'cx-tabs'/);
   assert.doesNotMatch(chuxin, /label: '开发者'/);
