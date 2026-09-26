@@ -10,9 +10,11 @@ const log=process.env.AI_HUB_CLI_EVENT_LOG;
 const child=spawn(launch.command,launch.args,{cwd:launch.cwd,env:process.env,windowsHide:true,stdio:['pipe','pipe','inherit']});
 function tap(direction){let pending='';const decoder=new StringDecoder('utf8');return new Transform({transform(chunk,_encoding,callback){
   try{pending+=decoder.write(chunk);let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);
-    if(line.trim()){const message=JSON.parse(line);if(message.method==='authenticate')message.params={methodId:message.params?.methodId};
-      fs.appendFileSync(log,JSON.stringify({direction,at:Date.now(),message})+'\n',{mode:0o600});}}
-    callback(null,chunk);
+    if(line.trim()){const message=direction==='client'?require('../core/provider-cli-protocol').normalizeProviderCwd(JSON.parse(line)):JSON.parse(line);
+      const observed=message.method==='authenticate'?{...message,params:{methodId:message.params?.methodId}}:message;
+      fs.appendFileSync(log,JSON.stringify({direction,at:Date.now(),message:observed})+'\n',{mode:0o600});
+      this.push(JSON.stringify(message)+'\n');}}
+    callback();
   }catch(error){callback(error);}
 }});}
 let failed=false;
