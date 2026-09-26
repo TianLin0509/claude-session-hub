@@ -38,6 +38,8 @@ test('Qwen native history renders text and tools; only matching root hooks finis
     assert.equal(cards[1].text,'answer');assert.equal(cards[1].toolCalls[0].status,'completed');assert.equal(cards[1].providerTurnId,s.runtime.turnId);
     assert.equal(cards[1].displayMessages[0].providerTurnId,s.runtime.turnId);
     assert.equal(cards[1].toolCalls[0].providerTurnId,s.runtime.turnId);
+    const captured=require('../core/conversation-capture').captureConversationMessages({native:s,providerTurnId:s.runtime.turnId});
+    assert(captured.some(m=>m.text==='answer'),'group capture retains the native answer');
     assert.equal(events.filter(e=>e.type==='turn-complete').length,1);
     s.observe({hook_event_name:'UserPromptSubmit',session_id:'thread',cwd:root,prompt:'next',timestamp:new Date(3000).toISOString()});
     s.observe({hook_event_name:'Stop',session_id:'thread',cwd:root,last_assistant_message:'next answer',timestamp:new Date(4000).toISOString()});
@@ -45,7 +47,22 @@ test('Qwen native history renders text and tools; only matching root hooks finis
     fs.appendFileSync(file,JSON.stringify({sessionId:'thread',uuid:'u2',type:'user',provenance:'real_user',timestamp:new Date(3100).toISOString(),message:{parts:[{text:'next'}]}})+'\n');
     await s.transcriptTail._drain();await new Promise(r=>setTimeout(r,30));
     assert.equal(s.readTranscript({turnId:s.runtime.turnId})[1].text,'next answer','late disk rows retain their own completion');
+    s.observe({hook_event_name:'UserPromptSubmit',session_id:'thread',cwd:root,prompt:'cancel me',timestamp:new Date(5000).toISOString()});
+    const cancellation={attributes:{'session.id':'other','event.name':'qwen-code.api_cancel','event.timestamp':new Date(5100).toISOString()}};
+    s.observeTelemetry(cancellation);assert.equal(s.runtime.state,'running');
+    cancellation.attributes['session.id']='thread';s.observeTelemetry(cancellation);
+    assert.equal(s.runtime.state,'interrupted');assert.equal(events.at(-1).type,'turn-aborted');
   }finally{s.kill();fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('Qwen local telemetry parses partial pretty JSON and escaped braces without losing Unicode',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-qwen-telemetry-')),file=path.join(root,'events');fs.writeFileSync(file,'');
+  const seen=[],errors=[];
+  const tail=new(require('../core/qwen-cli-telemetry').QwenTelemetryTail)(file,e=>seen.push(e),e=>errors.push(e));
+  const text=JSON.stringify({attributes:{'session.id':'thread'},text:'中文🙂\n}\n'},null,2)+'\n';
+  try{const bytes=Buffer.from(text);for(let i=0;i<bytes.length;i+=7){fs.appendFileSync(file,bytes.subarray(i,i+7));await tail.drain();}
+    assert.deepEqual(errors,[]);assert.deepEqual(seen,[JSON.parse(text)]);
+  }finally{tail.close();fs.rmSync(root,{recursive:true,force:true});}
 });
 test('CLI tap preserves split UTF-8 messages and redacts credentials only in its observation log',async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-cli-tap-unit-'));
