@@ -193,7 +193,7 @@ C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\t
 用户在生产 Hub 里打字时，测试 Hub、浏览器、命令行窗口一闪就会抢走键盘，测试还改写过系统剪贴板。
 - `tests/helpers/hub-launcher.js` 默认 `windowMode: 'background'`：窗口在屏幕外、`setFocusable(false)`、不进任务栏，关闭遮挡节流照常出帧，CDP 焦点模拟让页面认为自己有焦点。写 `visible` 的老测试也按后台跑；要看着它跑设 `HUB_E2E_SHOW_WINDOWS=1`。
 - `background`/`hidden` 实例默认内存剪贴板（Main 与渲染器共用，`navigator.clipboard` 与文件复制也接入）。页面内原生复制（Ctrl+C、`webContents.copy`）拦不住、仍到系统剪贴板，这类测试设 `CLAUDE_HUB_E2E_REAL_CLIPBOARD=1`。
-- 测试 Hub 与 `scripts/run_unit_tests.js` 以低于正常优先级运行，子进程继承；`HUB_TEST_PRIORITY=normal` 恢复。
+- 测试 Hub 与 `scripts/run_unit_tests.js` 以低于正常优先级运行，子进程继承；`HUB_TEST_PRIORITY=normal` 恢复。合并闸门（`scripts/merge_task.py`）固定用正常优先级，避免带秒级超时的测试被常驻负载饿住而误回滚。
 - 实现与单测：`core/e2e-desktop-sandbox.js`、`tests/unit-e2e-desktop-sandbox.test.js`。
 
 ### 硬性规则
