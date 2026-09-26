@@ -40,14 +40,14 @@ const freePort=()=>new Promise((resolve,reject)=>{const s=net.createServer();s.o
   await fill('#wf-prompt-1','验收补充：必须验证用户首次打开路径，保留文件流交接。');
   await click('.wf-save');await wait(`document.querySelector('#workflow-config-modal').style.display==='none'`);
   let saved=await cdp.eval(`require('electron').ipcRenderer.invoke('get-meetings').then(ms=>ms.find(m=>m.id===${JSON.stringify(id)}).serialWorkflow)`);
-  ok('save IPC preserves full file protocol and edited prompt',saved.fileFlowVersion===2&&saved.fileStages[1].prompt.includes('首次打开')&&saved.steps.length===2);
+  ok('save IPC preserves full file protocol and edited prompt',saved.deliveryVersion===1&&saved.deliveryStages[1].prompt.includes('首次打开')&&saved.steps.length===3);
   await click('#mr-workflow-btn');ok('reopen retains edited prompt',await cdp.eval(`document.querySelector('#wf-prompt-1').value.includes('首次打开')`));
-  await click('[data-wf="protocol"]');ok('full send instructions use current task paths',await cdp.eval(`document.querySelector('#wf-protocol').textContent.includes('已完成-开题报告.md')&&document.querySelector('#wf-protocol').textContent.includes('首次打开')`));
+  await click('[data-wf="protocol"]');ok('full send instructions use current task paths',await cdp.eval(`document.querySelector('#wf-protocol').textContent.includes('UTF-8')&&document.querySelector('#wf-protocol').textContent.includes('首次打开')`));
   await click('[data-wf="task-preset"][data-task-preset="research"]');
   ok('research has three rounds',await cdp.eval(`document.querySelectorAll('#workflow-config-modal .wf-step-row').length===3 && document.querySelector('#wf-prompt-0').value.includes('支持证据')`));
   await click('.wf-save');await wait(`document.querySelector('#workflow-config-modal').style.display==='none'`);
   saved=await cdp.eval(`require('electron').ipcRenderer.invoke('get-meetings').then(ms=>ms.find(m=>m.id===${JSON.stringify(id)}).serialWorkflow)`);
-  ok('switching to research uses serial engine with six-round cap',!saved.fileFlowVersion&&saved.settingsPreset==='research'&&saved.executionLimit===6&&saved.steps.length===3);
+  ok('switching to research uses delivery engine with six-round cap',saved.deliveryVersion===1&&!saved.fileFlowVersion&&saved.settingsPreset==='research'&&saved.executionLimit===6&&saved.steps.length===3);
   await click('#mr-workflow-btn');await click('[data-task-preset="custom"]');await click('.wf-save');
   ok('invalid save stays open with actionable message',await cdp.eval(`document.querySelector('#wf-error').textContent.includes('不能为空')&&document.querySelector('#workflow-config-modal').style.display==='flex'`));
   await fill('#wf-prompt-0','给出当前问题的结论。');

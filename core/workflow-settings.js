@@ -38,6 +38,7 @@ function createPreset(id, members) {
 }
 function fromConfig(config, members) {
   const c = config || {};
+  if (c.deliveryVersion === 1) return {enabled:!!c.enabled,kind:c.deliveryKind,presetId:c.settingsPreset || 'custom',rounds:clone(c.deliveryStages)};
   if (c.fileFlowVersion === 2 && !c.soloDevelopment) {
     const fallback = DEV.map((s, i) => ({ ...s, members: [...(c.steps?.[i === 2 ? 1 : 0] || [])], after: i === 2 ? 'review' : 'next' }));
     return { enabled: true, kind: 'file', presetId: 'development', rounds: clone(c.fileStages || fallback) };
@@ -85,4 +86,15 @@ function toConfig(previous, d, memberIds) {
   }
   return c;
 }
-module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig };
+function toDeliveryConfig(previous, draft, memberIds) {
+  const c=toConfig(previous,draft,memberIds);
+  if(previous?.deliveryVersion!==1 && (previous?.serialRunState || previous?.loopState || previous?.fileFlow)) {
+    c.legacyExecution={serialRunState:previous.serialRunState,loopState:previous.loopState,fileFlow:previous.fileFlow};
+  }
+  for(const key of ['serialRunState','loopState','fileFlow','fileFlowVersion','fileStages','mdHandoff','devPhase']) delete c[key];
+  c.deliveryVersion=1;c.deliveryKind=draft.kind;c.deliveryStages=clone(draft.rounds);
+  c.steps=draft.rounds.map(r=>[...r.members]);
+  c.stepConfigs=draft.rounds.map(r=>({name:r.name,prompt:r.prompt,after:r.after}));
+  return c;
+}
+module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig, toDeliveryConfig };

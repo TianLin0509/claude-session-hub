@@ -204,6 +204,7 @@ function registerMeetingIpc(ipcMain, deps) {
   ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId } = {}) => editMembers([sessionId], () => {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting) return { ok: false, reason: 'meeting_not_found' };
+    if(global.__deliveryEngine?.handles(meetingId) && global.__deliveryEngine.isBusy(meetingId))return {ok:false,reason:'当前交付任务尚未结束，请结束任务后再移除成员'};
     const subSessions = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
     const removedIndex = subSessions.indexOf(sessionId);
     if (removedIndex < 0) return { ok: false, reason: 'not_member' };
@@ -273,6 +274,8 @@ function registerMeetingIpc(ipcMain, deps) {
 
   ipcMain.handle('suspend-meeting', (_e, meetingId) => {
     if (!isValidMeetingId(meetingId)) return { ok: false, error: 'invalid-meeting-id', message: '缺少有效会议室 ID' };
+    try{if(global.__deliveryEngine?.handles(meetingId))global.__deliveryEngine.retire(meetingId);}
+    catch(error){return {ok:false,error:'delivery-stop-failed',message:error.message};}
     return suspendMeetingRoom(meetingId, {
       meetingManager, sessionManager, sendToRenderer, reason: 'user-suspend-meeting',
     });
@@ -280,6 +283,7 @@ function registerMeetingIpc(ipcMain, deps) {
 
   ipcMain.handle('close-meeting', (_e, meetingId) => editMembers(
     meetingManager.getMeeting(meetingId)?.subSessions || [], () => {
+    if(global.__deliveryEngine?.handles(meetingId))global.__deliveryEngine.retire(meetingId);
     const subIds = meetingManager.closeMeeting(meetingId);
     if (!subIds) return false;
     for (const sid of subIds) {

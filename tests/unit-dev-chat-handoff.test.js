@@ -49,3 +49,19 @@ test('real dispatcher: cross-seat handoff, same-seat queue, late final and stop'
   assert.equal(orch.state.messages.filter(m=>m.sourceMessage && m.attemptId===old.attemptId).length,2);
   dispatcher.interruptMeetingTurn('m');const stopped=await third;assert.equal(stopped.results[0].status,'interrupted');
 });
+test('final delivery arriving before send acknowledgement settles the late watcher',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'delivery-final-race-'));
+  const meeting={id:'final',groupChat:true,serialWorkflow:{deliveryVersion:1},subSessions:['s1'],slotSpecs:[{kind:'gemini',memberId:'m1'}],participants:[0]};
+  const tap=new EventEmitter();Object.assign(tap,{clearLastTokens(){},getLastTokens(){return null;},getStreamingText(){return[];},clearStreamingBuf(){},extractLatestTurn:async()=>({text:''})});
+  let acknowledge;
+  watcher.sendToPty=()=>new Promise(resolve=>acknowledge=()=>resolve({ok:true,sendStatus:'ok'}));
+  const dispatcher=createGroupChatDispatcher({getHubDataDir:()=>root,groupchat:gc,transcriptTap:tap,
+    cliReadyDetector:{},isCodexBaseKind:()=>false,kindLabels:{gemini:'Gemini'},logger:{log(){},warn(){}},
+    maybeAutoTitleMeetingFromPrompt(){},meetingManager:{getMeeting:()=>meeting},sendToRenderer(){},
+    sessionManager:{getSession:sid=>({id:sid,kind:'gemini',status:'active',title:sid}),getSessionBuffer:()=>'',getGroupChatLastActivity:()=>0,getGroupChatReady:()=>true,setGroupChatReady(){},clearStreamingBuf(){}}});
+  const turn=dispatcher.dispatchGroupChatTurn('final',{userInput:'last stage',targetMemberIds:['m1'],fileHandoff:true,turnTimeoutMs:0});
+  await until(()=>!!acknowledge);assert.equal(dispatcher.getActiveWatchers().size,0);
+  dispatcher.handoffMeetingTurn('final');acknowledge();
+  let result;turn.then(r=>result=r);await until(()=>!!result);
+  assert.equal(result.results[0].status,'handed_off');assert.equal(dispatcher.getActiveWatchers().size,0);
+});

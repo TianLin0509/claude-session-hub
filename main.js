@@ -1487,7 +1487,7 @@ registerGroupchatTurnIpc(ipcMain, {
   interruptGroupChatTurn: (meetingId, options) => groupChatDispatcher.interruptMeetingTurn(meetingId, {
     ...options, targetSids: global.__devFileEngine?.interruptSids(meetingId) || [],
   }),
-  stopLoop: (meetingId, options) => global.__devFileEngine?.stop(meetingId)
+  stopLoop: (meetingId, options) => global.__deliveryEngine?.stop(meetingId) || global.__devFileEngine?.stop(meetingId)
     || (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
 });
 
@@ -1529,13 +1529,25 @@ try {
     },
     logger: console,
   });
-  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
+  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine, deliveryEngine:()=>global.__deliveryEngine });
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
+
+try {
+  global.__deliveryEngine = require('./main/groupchat/delivery-engine').createDeliveryEngine({
+    meetingManager, sessionManager, getHubDataDir,
+    getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
+    getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
+    sendToRenderer,
+  });
+  global.__deliveryEngine.registerIpc(ipcMain);
+  global.__deliveryEngine.startWatching();
+} catch (error) { console.error('[delivery] initialization failed:', error); }
 
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
     meetingManager, sessionManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
-    isWorkflowRunning: id => !!global.__loopEngine?.isRunning(id),
+    isWorkflowRunning: id => !!global.__loopEngine?.isRunning(id), deliveryEngine: global.__deliveryEngine,
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,
@@ -1545,7 +1557,7 @@ try {
 
 try {
   devWorkbench = require('./main/groupchat/dev-workbench.js').createDevWorkbench({
-    meetingManager, sessionManager, loopEngine: global.__loopEngine, fileEngine: global.__devFileEngine, getHubDataDir, sendToRenderer, logger: console,
+    meetingManager, sessionManager, loopEngine: global.__loopEngine, fileEngine: global.__devFileEngine, deliveryEngine: global.__deliveryEngine, getHubDataDir, sendToRenderer, logger: console,
   });
   devWorkbench.registerIpc(ipcMain);
 } catch (error) { console.error('[dev-workbench] initialization failed:', error.message); }
@@ -1557,7 +1569,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
 function watchDevChatHistory(session, sourcePath) {
   if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
-  if(!require('./core/dev-file-workflow').enabled(meeting))return;
+  if(!require('./core/dev-file-workflow').enabled(meeting) && !require('./core/delivery-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
   const paths=new Set([sourcePath || session.transcriptPath || transcriptTap.getCodexRolloutPath(session.id),
     ...Object.values(orch.state.devChatHistory?.receipts || {})
@@ -3392,6 +3404,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
+  global.__deliveryEngine?.freeze();
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
@@ -3407,10 +3420,12 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
         shutdownDrainPromise = null;
         console.error('[shutdown] PTY drain did not reach a safe state; close was cancelled and may be retried', result);
         restoreWindowAfterFailedShutdown();
+        global.__deliveryEngine?.startWatching();
         return result;
       }
       closeHookServerForShutdown();
       const cleanup = await runFinalShutdownCleanup();
+      global.__deliveryEngine?.dispose();
       if (beforeQuit) {
         if (!cleanup.clean) throw new Error('最终保存或后台进程退出失败，已取消重启');
         await beforeQuit();
@@ -3429,6 +3444,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
       shutdownDrainPromise = null;
       console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
       restoreWindowAfterFailedShutdown();
+      global.__deliveryEngine?.startWatching();
       return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
     });
   return shutdownDrainPromise;

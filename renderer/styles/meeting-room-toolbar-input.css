@@ -81,6 +81,13 @@
 .mr-composer-head .mr-file-error { display: inline; margin-left: 6px; }
 .mr-composer-head .mr-file-actions { flex: none; flex-wrap: nowrap; gap: 6px; }
 .mr-composer-head .mr-file-actions button { white-space: nowrap; padding: 4px 9px; }
+.mr-composer-head:has(.mr-delivery-flow) { flex-wrap: wrap; overflow-x: hidden; }
+.mr-composer-head:has(.mr-delivery-flow) .mr-input-preflight { flex-basis: 100%; }
+.mr-composer-head .mr-delivery-flow { flex-direction: column; align-items: stretch; gap: 6px; }
+.mr-composer-head .mr-delivery-flow .mr-file-detail { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.mr-composer-head .mr-delivery-flow .mr-file-detail small,
+.mr-composer-head .mr-delivery-flow .mr-file-detail span { display: block; margin: 3px 0 0; }
+.mr-composer-head .mr-delivery-flow .mr-file-actions { flex-wrap: wrap; }
 .mr-composer-head .mr-input-battle-detail { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .mr-composer-head .mr-input-battle-chips { flex-wrap: nowrap; }
 .mr-composer-head .mr-next-actions { flex-wrap: nowrap; white-space: nowrap; }

@@ -60,6 +60,8 @@ if (typeof document !== 'undefined') (function () {
   // 开发群聊「先讨论再开工」的阶段判断与收敛文本，和主进程 dispatcher 共用同一份。
   const DevDiscuss = require('../core/dev-discuss.js');
   const DevFile = require('../core/dev-file-workflow.js');
+  const Delivery = require('../core/delivery-workflow.js');
+  const DeliveryControls = require('./delivery-workflow-controls.js');
   const _devFileStates = {}, _devFileRequests = new Set();
   ipcRenderer.on('dev-file:changed', (_e, state) => {
     if (!state?.meetingId) return;
@@ -5436,6 +5438,11 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
     row.style.display = '';
+    if (Delivery.enabled(current) && current.serialWorkflow.enabled) {
+      DeliveryControls.render(row,current,id=>{if(activeMeetingId===id)_updateInputPreflight(meetingData[id]);},message=>_showGcEscapeNotice(message,'error'));
+      _updateInputHistoryButton(current);
+      return;
+    }
     if (DevFile.enabled(current)) {
       _renderDevFileControls(row, current);
       _updateInputHistoryButton(current);
@@ -7210,7 +7217,12 @@ if (typeof document !== 'undefined') (function () {
     // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
     function _dispatchMeetingInput(m, finalText, heroIdBySid) {
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
-      if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {
+      if (Delivery.enabled(m) && m.serialWorkflow.enabled) {
+        void DeliveryControls.submit(m,finalText).catch(error=>{
+          _restoreQuestionAndPreserveDraft(m.id,finalText);
+          _showGcEscapeNotice(error.message,'error');
+        });
+      } else if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {
         handleMeetingSend(finalText, m, { heroIdBySid });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
@@ -7345,10 +7357,12 @@ if (typeof document !== 'undefined') (function () {
           config: m.serialWorkflow || null,
           meeting: m,
           taskDir: _devFileStates[m.id]?.dir,
+          legacyTaskFiles: !!_devFileStates[m.id]?.files?.length,
           onSave: async (_config, draft) => {
             const result = await ipcRenderer.invoke('workflow:configure', { meetingId: m.id, draft, expectedRevision: settingsRevision });
             if (!result?.ok) throw new Error(result?.reason || '工作流设置未保存');
             m.serialWorkflow = result.config;
+            DeliveryControls.clear(m.id);
             _updateWorkflowBtnState(m);
             _updateInputPreflight(m);
             // 主动落 state.json（boot 恢复源），不赌 schedulePersist 时机
