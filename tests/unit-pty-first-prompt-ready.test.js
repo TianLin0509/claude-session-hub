@@ -70,4 +70,8 @@ test('a returned host shell never receives the card prompt, even with cached rea
   await assert.rejects(watcher.sendToPty('sid', 'do something', 'codex', {requireReady:false}),
     error => error.notSent === true && error.code === 'cli-exited');
   assert.deepEqual(h.writes, []);
+  h.sessionManager.getSessionBuffer=()=> 'PS C:\\workspace> \r\n>> ';
+  await assert.rejects(watcher.sendToPty('sid','do something','codex',{requireReady:false}),
+    error=>error.notSent===true&&error.code==='cli-exited');
+  assert.deepEqual(h.writes,[]);
 });

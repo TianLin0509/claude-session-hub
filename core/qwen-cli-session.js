@@ -18,6 +18,7 @@ class QwenCliSession extends EventEmitter {
     this.hookFile=path.join(this.directory,'hooks.jsonl');
     this.inputFile=path.join(this.directory,'input.jsonl');
     this.outputFile=path.join(this.directory,'output.jsonl');
+    this.telemetryFile=path.join(this.directory,'lifecycle.json');
     for(const file of [this.hookFile,this.inputFile,this.outputFile])fs.writeFileSync(file,'');
     const settingsPath=path.join(options.home,'.qwen/settings.json');
     const settings=JSON.parse(fs.readFileSync(settingsPath,'utf8'));
@@ -26,6 +27,8 @@ class QwenCliSession extends EventEmitter {
     settings.hooks=Object.fromEntries(['SessionStart','UserPromptSubmit','Stop','StopFailure','PreToolUse','PostToolUse','PermissionRequest']
       .map(name=>[name,[{hooks:[hook]}]]));
     settings.general={...settings.general,enableAutoUpdate:false};
+    settings.telemetry={enabled:true,target:'local',outfile:this.telemetryFile,
+      logPrompts:false,includeSensitiveSpanAttributes:false};
     settings.mcpServers=Object.fromEntries((options.mcpServers||[]).map(server=>[server.name,
       !server.type||server.type==='stdio'?{command:server.command,args:server.args,env:Object.fromEntries((server.env||[]).map(e=>[e.name,e.value]))}
         :{[server.type==='http'?'httpUrl':'url']:server.url,headers:Object.fromEntries((server.headers||[]).map(e=>[e.name,e.value]))}]));
@@ -49,6 +52,9 @@ class QwenCliSession extends EventEmitter {
   async launch(){
     this.hookTail=new JsonlTail(this.hookFile,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.hookTail.start();
+    this.telemetryTail=new (require('./qwen-cli-telemetry').QwenTelemetryTail)(this.telemetryFile,
+      event=>this.observeTelemetry(event),error=>this.fail(error));
+    await this.telemetryTail.start();
     const args=[this.options.launch.args[0],'--auth-type','openai','--approval-mode','yolo',
       '--model',this.options.model,'--json-file',this.outputFile,'--input-file',this.inputFile];
     if(this.options.resumeId)args.push('--resume',this.options.resumeId);
@@ -112,6 +118,19 @@ class QwenCliSession extends EventEmitter {
     if(turn.outcome)Object.assign(record,{status:turn.outcome.status,
       completedAt:turn.outcome.completedAt,finalText:turn.outcome.text});
   }
+  observeTelemetry(event){
+    const a=event.attributes;
+    if(this.closed||!this.hookTurn||a?.['session.id']!==this.threadId
+      ||a['event.name']!=='qwen-code.api_cancel')return;
+    const completedAt=Date.parse(a['event.timestamp']);
+    if(!Number.isFinite(completedAt)||completedAt<this.hookTurn.at)return;
+    this.lastOutcome={hubSessionId:this.options.id,threadId:this.threadId,turnId:this.hookTurn.id,
+      signalSource:'qwen-cli',text:'',completedAt,finality:'provider_final',status:'interrupted'};
+    this.hookTurn.outcome=this.lastOutcome;
+    for(const record of this.records)this.bindRecord(record);
+    this.apply({state:'interrupted',completedAt});this.lifecycle('turn-interrupted',this.lastOutcome);
+    this.hookTurn=null;this.changed();
+  }
   loadTranscript(file){
     if(!file || !path.resolve(file).startsWith(path.resolve(this.options.home)+path.sep))throw new Error('千问记录路径越界');
     this.transcriptTail?.close();this.records=[];this.transcriptPath=file;
@@ -167,7 +186,7 @@ class QwenCliSession extends EventEmitter {
   async interrupt(){if(!['running','waiting'].includes(this.runtime.state)||this.interruptAt&&Date.now()-this.interruptAt<1500)return;
     this.interruptAt=Date.now();this.write('\x1b');}
   async fork(){await this.start();if(this.pending||['running','waiting'].includes(this.runtime.state))throw new Error('请等当前轮结束后再分支');return{home:this.options.home,sessionId:this.threadId,forkCli:true};}
-  dispose(){clearTimeout(this.startTimer);this.hookTail?.close();this.transcriptTail?.close();}
+  dispose(){clearTimeout(this.startTimer);this.hookTail?.close();this.transcriptTail?.close();this.telemetryTail?.close();}
   kill(){this.closed=true;this.dispose();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}this.pty?.kill();}
 }
 module.exports={QwenCliSession};

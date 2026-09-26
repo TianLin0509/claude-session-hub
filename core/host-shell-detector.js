@@ -14,7 +14,7 @@
 //   - cmd:       `C:\Users\xxx>`
 //   - bash:      `user@host:~$`、`$`
 //   都要求出现在行首、tail 末尾结束（^/(?:\n|^) 锚 + $\s*$ 锚）
-const HOST_SHELL_PROMPT_RE = /(?:^|\n)\s*(?:PS [A-Za-z]:\\[^\n]*?>\s*$|[\w-]+@[^\s]+:[^\s]*?\$\s*$|\$\s*$|[A-Za-z]:\\[^\n]*?>\s*$)/;
+const HOST_SHELL_PROMPT_RE = /(?:^|\n)\s*(?:PS [A-Za-z]:\\[^\n]*?>\s*(?:\n\s*>>\s*)*$|[\w-]+@[^\s]+:[^\s]*?\$\s*$|\$\s*$|[A-Za-z]:\\[^\n]*?>\s*$)/;
 
 function stripAnsi(buf) {
   return String(buf || '')
