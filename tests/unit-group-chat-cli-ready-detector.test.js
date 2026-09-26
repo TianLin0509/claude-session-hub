@@ -8,11 +8,14 @@ function sleep(ms) {
 }
 
 (async () => {
-  assert.deepStrictEqual(
-    ready.MARKERS.codex,
-    ['Context '],
+  assert.ok(
+    ready.MARKERS.codex.every(marker => typeof marker !== 'string' || !/gpt-|send/i.test(marker)),
     'Codex ready markers must not include model ids or generic send text'
   );
+  // 0.153 新会话：没有 Context 底栏，只有 `› <占位建议>` 输入行；`› 1. …` 是选项菜单不是输入行。
+  const inputRow = ready.MARKERS.codex.find(marker => marker instanceof RegExp);
+  assert.ok(inputRow.test('\n› Ask Codex to do anything'));
+  assert.ok(!inputRow.test('\n› 1. Try new model'));
   assert.ok(
     ready.BLOCKERS.codex.some(re => re.test('Booting MCP server: playwright (0s - esc to interrupt)')),
     'Codex ready detector should block while MCP servers are still booting'

@@ -1,4 +1,6 @@
 'use strict';
+// 本文件验证 Codex App Server 后端；2026-09-25 起它只是回退开关，需要显式打开。
+process.env.CLAUDE_HUB_AGENT_RUNTIME = 'native';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
@@ -28,7 +30,7 @@ test('native plan command creates no turn, preserves model/effort, and default r
   await native.send('test plan', { clientSubmissionId: 'a' }); await until(() => native.runtime.state === 'completed');
   let params = calls().findLast(c => c.method === 'turn/start').params;
   assert.deepEqual(params.collaborationMode, { mode: 'plan', settings: { model: 'fixture-model', reasoning_effort: 'max', developer_instructions: null } });
-  const restored = persistNativeRuntime({ kind: 'codex', nativeRuntime: native.runtime });
+  const restored = persistNativeRuntime({ kind: 'codex', runtimeBackend: 'codex-app-server', nativeRuntime: native.runtime });
   assert.equal(turnCollaborationMode({ runtime: restored, options: native.options }).collaborationMode.mode, 'plan');
   await native.send('/plan off');
   await native.send('test default', { clientSubmissionId: 'b' }); await until(() => native.runtime.state === 'completed');

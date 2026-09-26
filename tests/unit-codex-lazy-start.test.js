@@ -1,4 +1,6 @@
 'use strict';
+// 本文件验证 Codex App Server 后端；2026-09-25 起它只是回退开关，需要显式打开。
+process.env.CLAUDE_HUB_AGENT_RUNTIME = 'native';
 const test = require('node:test'), assert = require('node:assert/strict');
 const { CodexNativeSession } = require('../core/codex-native-session');
 const { nativeRuntimeTruth, persistNativeRuntime } = require('../core/codex-native-runtime');
@@ -34,9 +36,9 @@ test('an unused development seat survives persistence without becoming a resume 
   assert.equal(session.entry, null);
   assert.equal(session.runtime.connection, 'unstarted');
   session.kill(); // Hub shutdown must not turn an unused seat into a broken connection.
-  const stored = persistNativeRuntime({ kind: 'codex', nativeRuntime: session.runtime });
+  const stored = persistNativeRuntime({ kind: 'codex', runtimeBackend: 'codex-app-server', nativeRuntime: session.runtime });
   assert.equal(stored.connection, 'unstarted');
-  assert.equal(nativeRuntimeTruth({ kind: 'codex', nativeRuntime: stored }).state, 'idle');
+  assert.equal(nativeRuntimeTruth({ kind: 'codex', runtimeBackend: 'codex-app-server', nativeRuntime: stored }).state, 'idle');
   assert.equal(stored.threadId, null);
 });
 test('explicit Fast on an unused seat enables the capability without launching',async()=>{
@@ -74,9 +76,9 @@ test('configuration and reading do not start a seat; first send starts exactly o
 test('unused seat survives backend restart; safe empty thread gets one replacement',async()=>{
   const h=harness();let s=h.make();
   try {
-    const untouched=persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});await close(s);
+    const untouched=persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});await close(s);
     s=h.make({restoredRuntime:untouched});assert.equal(s.runtime.connection,'unstarted');assert.equal(h.calls().length,0);
-    await s.start();const old=s.threadId,stored=persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});
+    await s.start();const old=s.threadId,stored=persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});
     assert.equal(journal.provesUnsubmitted(s.options,old),true);await close(s);
     s=h.make({resumeId:old,restoredRuntime:stored});await s.start();
     assert.notEqual(s.threadId,old);assert.equal(s.runtime.replacedThreadId,old);
@@ -91,7 +93,7 @@ test('submitted history resumes exact identity and missing history never becomes
   const h=harness();let s=h.make();
   try {
     await s.send('already used',{clientSubmissionId:'old'});await s.idle();
-    const id=s.threadId,stored=persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});await close(s);
+    const id=s.threadId,stored=persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});await close(s);
     s=h.make({resumeId:id,restoredRuntime:stored});await s.start();assert.equal(s.threadId,id);await close(s);
     fs.writeFileSync(h.store,'[]');s=h.make({resumeId:id,restoredRuntime:stored});
     await assert.rejects(s.start(),/no rollout/);
@@ -103,7 +105,7 @@ test('submitted history resumes exact identity and missing history never becomes
 test('a legacy missing empty thread requires explicit bound confirmation; no resend',async()=>{
   const h=harness();let s=h.make();
   try {
-    await s.start();const id=s.threadId,stored=persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});
+    await s.start();const id=s.threadId,stored=persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});
     const file=journal.identity(s.options,id).file;await close(s);fs.unlinkSync(file);
     s=h.make({resumeId:id,restoredRuntime:stored});await assert.rejects(s.start(),/no rollout/);
     const recovery=s.runtime.emptyRecovery;assert.equal(recovery.threadId,id);
@@ -137,7 +139,7 @@ test('stop cancels queued first messages without starting an unused seat',async(
 test('submission proof stays true even when the local snapshot lost the acceptance',async()=>{
   const h=harness();let s=h.make();
   try {
-    await s.start();const id=s.threadId,old=persistNativeRuntime({kind:'codex',nativeRuntime:s.runtime});
+    await s.start();const id=s.threadId,old=persistNativeRuntime({kind:'codex',runtimeBackend:'codex-app-server',nativeRuntime:s.runtime});
     journal.write(s.options,id,true,{submissionId:'receipt-not-yet-saved'});await close(s);
     s=h.make({resumeId:id,restoredRuntime:old});await assert.rejects(s.start(),/no rollout/);
     assert.equal(s.runtime.emptyRecovery,undefined);

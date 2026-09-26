@@ -173,3 +173,31 @@ test('an old trust confirmation row above a completed Claude frame cannot leak i
   ]);
   assert.equal(result.state, RUNTIME_IDLE);
 });
+
+// 返工 R4（2026-09-25 审查现场，Claude Code 2.1.283，默认权限模式）：底栏是
+// "⏸ manual mode on · ← for agents"，旧规则不认识，就绪画面一直判为 ambiguous，
+// Stop 时写下的「running Stop hook」旧帧因此 182 秒都收不了尾。
+test('Claude input-ready frame under the new mode footers (manual / plan / accept edits)', () => {
+  const frame = footer => [
+    '❯ 用 Bash 工具运行 powershell -NoProfile -Command "Start-Sleep 5; echo PERM_OK"，然后只回复 PERM_DONE。',
+    '  Ran 1 shell command',
+    '● PERM_DONE',
+    '✻ Cooked for 18s · done 3:45 PM',
+    '',
+    '──────────────────────────────────────────────',
+    '❯ ',
+    '──────────────────────────────────────────────',
+    footer,
+  ];
+  for (const footer of ['  ⏸ manual mode on · ← for agents', '  ⏸ plan mode on (shift+tab to cycle)',
+    '  ⏵⏵ accept edits on · ← for agents', '  ← for agents']) {
+    const result = classifyTerminalRuntime('claude', frame(footer));
+    assert.equal(result.state, RUNTIME_IDLE, footer);
+    assert.equal(result.reason, 'claude-input-ready', footer);
+  }
+  // 运行标记仍然优先：同一底栏下 Stop hook 还在跑就是 running。
+  const running = classifyTerminalRuntime('claude', [
+    '● PERM_DONE', '✶ Inferring… (running Stop hook · 18s · ↓ 594 tokens · thinking)', '', '❯ ', '  ⏸ manual mode on · ← for agents',
+  ]);
+  assert.equal(running.state, RUNTIME_RUNNING);
+});

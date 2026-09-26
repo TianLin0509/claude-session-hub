@@ -13,6 +13,8 @@ const TURN_EVENT_TYPES = new Set([
   'task_started',
   'agent_message',
   'task_complete',
+  // 卡片要显示「本轮已中断」，与原生卡片的 nativeOutcome 对齐。
+  'turn_aborted',
 ]);
 const LIVE_EVENT_TYPES = new Set([
   ...TURN_EVENT_TYPES,

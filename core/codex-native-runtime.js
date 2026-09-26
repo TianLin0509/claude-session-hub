@@ -3,9 +3,14 @@
 // Main owns this snapshot. Renderer consumers may project it, never vote on it.
 const BACKEND = 'codex-app-server';
 const TERMINAL = new Set(['completed', 'interrupted', 'failed']);
+// Codex 默认跑 PTY（2026-09-25），kind 为 codex 不再意味着 App Server。
+// 判据：显式的后端；或者没有声明后端、却带着 App Server 快照的旧记录。
+// PTY 会话总是带 agentRuntime:'pty' 且 nativeRuntime 为空，不会被误认。
 function isCodexSession(session) {
-  return !!session && (session.kind === 'codex' || session.kind === 'codex-resume'
-    || session.runtimeBackend === BACKEND);
+  if (!session) return false;
+  if (session.runtimeBackend === BACKEND) return true;
+  return !session.runtimeBackend && session.agentRuntime !== 'pty' && !!session.nativeRuntime
+    && (session.kind === 'codex' || session.kind === 'codex-resume');
 }
 function isNativeSession(session) { return isCodexSession(session) || session?.runtimeBackend === 'acp'; }
 function createNativeRuntime(epoch = 1, label = 'Codex') {

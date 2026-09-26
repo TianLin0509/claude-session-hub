@@ -8,6 +8,9 @@ if (process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD_ACTIVE === '1') {
 const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
+const { isPtyAgentSession } = require('../core/agent-runtime-mode.js');
+// 草稿写进 Main 的草稿库：原生会话和 PTY 的 Claude/Codex 会话都算（同一个 Hub 会话 id）。
+const hasDurableDraft = session => isNativeAgent(session) || isPtyAgentSession(session);
 const { recordNativeContent, promptReceipt } = require('../core/native-feedback.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
 const pasteChips = require('./composer-paste-chips.js');
@@ -514,7 +517,7 @@ function isCaretAtContenteditableStart(el) {
 }
 
 function attachNativeDraft(sessionId, inputBox) {
-  if (!isNativeAgent(sessions.get(sessionId))) return null;
+  if (!hasDurableDraft(sessions.get(sessionId))) return null;
   if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
   const view = {
     onRestore(text) {
@@ -576,7 +579,7 @@ function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
   if (sessionId) rawComposerDrafts.delete(sessionId);
   nativeDraftControllers.get(sessionId)?.change('');
-  if (sessionId && isNativeSession(sessions.get(sessionId))) {
+  if (sessionId && (isNativeSession(sessions.get(sessionId)) || isPtyAgentSession(sessions.get(sessionId)))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
     catch(error){console.warn('[codex-draft] clear failed:',error.message);}
   }
@@ -2534,7 +2537,25 @@ function scheduleCodexHistoryRetry(sessionId, attempt = 0, opts = {}) {
 //   * Falls back to ipcRenderer.invoke even if `sessions.get` returns null;
 //     main.js handler does its own session lookup and returns
 //     'transcript not found' for unknown ids — we display that as the error.
+// 2026-09-26：全量加载先把卡片挂进离屏 staging（分批让出主线程），最后才整体插入；
+// 增量刷新只在页面容器里查重，看不到 staging。PTY 会话一打开，CLI 恢复时的终端输出
+// 就会触发增量刷新，把最新一整轮再挂一遍 → 同一批卡两份、结果夹在进展中间。
+// 同一会话的增量 / 更早页一律排在进行中的全量之后，与全量互斥。
 async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
+  if (!window._cardFullLoadBySid) window._cardFullLoadBySid = new Map();
+  const fullLoads = window._cardFullLoadBySid;
+  if (opts.incremental === true || opts.older) {
+    const pending = fullLoads.get(sessionId);
+    if (pending) await pending.catch(() => {});
+    return loadSessionHistoryToOverlayUnserialized(sessionId, opts);
+  }
+  const run = loadSessionHistoryToOverlayUnserialized(sessionId, opts);
+  fullLoads.set(sessionId, run);
+  try { return await run; }
+  finally { if (fullLoads.get(sessionId) === run) fullLoads.delete(sessionId); }
+}
+
+async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
   // Spec 3 · B1 增量 mount：opts.incremental=true 时不清 container/Map，
   // 依赖 mountSessionTurnCard 内的 turnId dedup 自动跳过已 mount 的 turn。
   // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
@@ -2618,6 +2639,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const loadSeqs = previousLoadSeqs && typeof previousLoadSeqs === 'object'
     ? { ...previousLoadSeqs }
     : {};
+  // 在本次之后开始的全量加载会清空容器、重建权威快照；在它之前发出的增量 /
+  // 更早页结果已经过期，再挂就会落在它的 staging 之外，成为重复卡。
+  const fullSeqAtStart = loadSeqs.full;
   loadSeqs[loadLane] = loadSeq;
   window._cardLoadSeqBySid.set(sessionId, loadSeqs);
   const isStaleLoad = () => (
@@ -2625,6 +2649,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     || currentView !== 'card'
     || !window._cardLoadSeqBySid.get(sessionId)
     || window._cardLoadSeqBySid.get(sessionId)[loadLane] !== loadSeq
+    || (loadLane !== 'full' && window._cardLoadSeqBySid.get(sessionId).full !== fullSeqAtStart)
   );
   if (!incremental) {
     container.innerHTML = require('./card-history-views').loadingMarkup();
@@ -2809,6 +2834,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   let lastCardEl = null;
   let batchStarted = performance.now();
   const turnsBeforeMount = new Map(window._sessionTurns);
+  const cardIdsBeforeMount = incremental && !opts.older
+    ? new Set(Array.from(container.querySelectorAll(':scope > .turn-card'), card => card.dataset.turnId))
+    : null;
   const staging = !incremental || opts.older ? document.createElement('div') : null;
   const mountTurns = turns;
   for (const turn of mountTurns) {
@@ -2906,6 +2934,14 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     }
   }
 
+  // 2026-09-26：首屏只挂一轮的最后几张卡（最近几条进展 + 结果），实时刷新拿回的是
+  // 整轮。本轮更早的进展是新卡，一律追加就会落到结果下面。新卡按快照顺序插到
+  // 下一张已在页面上的卡之前；只有真正更新的卡才留在末尾。已有卡的位置不动。
+  if (cardIdsBeforeMount && cardIdsBeforeMount.size && turns.length) {
+    require('./card-snapshot-order').placeNewCardsInSnapshotOrder(container, turns.map(turn => turn && turn.id),
+      cardIdsBeforeMount, id => container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(id)}"]`));
+  }
+
   require('./conversation-message-view').syncResponseGroups(container);
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
   // — 仅当 batch 开始前用户在底部才滚(scroll-respect-user)
@@ -2964,17 +3000,27 @@ ipcRenderer.on('turn-started-event', (_event, payload) => {
 
 ipcRenderer.on('turn-aborted-event', (_event, payload) => {
   const { hubSessionId, abortedAt, turnId, kind } = payload || {};
-  if (!hubSessionId || !isTranscriptCliKind(kind)) return;
   const session = sessions.get(hubSessionId);
+  // PTY Claude 的 Esc 中断只能从 transcript 的中断标记得知（没有 Stop hook）。
+  const ptyClaude = !!session && isClaudeRuntimeSession(session) && session.runtimeBackend !== 'claude-stream-json';
+  if (!hubSessionId || (!isTranscriptCliKind(kind) && !ptyClaude)) return;
   if (!session || session.status === 'dormant') return;
   const transition = applyTurnAborted(session, { abortedAt, turnId });
   if (!transition.applied) return;
   clearCodexCardWorking(hubSessionId);
+  if (ptyClaude) {
+    session._agentWorking = null;
+    session._runSource = null;
+    session._claudeBackgroundTasks = [];
+    session.currentCardActivity = null;
+    disarmPtyBurstFallback(session, transition.at);
+  }
   observeSessionRuntime(session, {
     state: RUNTIME_IDLE,
     source: 'codex-turn-aborted',
     confidence: CONFIDENCE_AUTHORITATIVE,
-    observedAt: transition.at,
+    // 观察时刻取收到事件的时间：事件本身的时刻常早于终端输出触发的弱观察，按它算会被判成过期。
+    observedAt: Math.max(transition.at, Date.now()),
     turnId,
     reason: 'turn-aborted',
   });
@@ -3122,6 +3168,8 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       opts: { limit: 1, fromTail: true },
     });
     if (hubSessionId !== activeSessionId || currentView !== 'card') return;
+    // 全量加载还挂在离屏 staging 里时，直接挂卡看不到它们；交给排队的增量回填。
+    if (window._cardFullLoadBySid?.has(hubSessionId)) { scheduleBackfill(); return; }
 
     if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
       // got the structured turn from S1 parser
@@ -3457,7 +3505,8 @@ function selectionViewModeForSession(sessionId, session) {
     writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
   }
   const cardCapable = !!session && session.kind !== 'powershell';
-  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable });
+  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable,
+    rememberChoice: session?.agentRuntime === 'pty' });
 }
 function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
@@ -4347,11 +4396,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
   inputBox.setAttribute('data-placeholder', '输入消息…');
-  if (isNativeSession(sessions.get(sessionId)) && !floatingInputDrafts.has(sessionId)) {
+  if ((isNativeSession(sessions.get(sessionId)) || isPtyAgentSession(sessions.get(sessionId))) && !floatingInputDrafts.has(sessionId)) {
     try { const saved=localStorage.getItem('codex-native-draft:'+sessionId);if(saved)floatingInputDrafts.set(sessionId,saved); }
     catch(error){console.warn('[codex-draft] read failed:',error.message);}
   }
-  if (!floatingInputDrafts.has(sessionId) && sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') {
+  if (!floatingInputDrafts.has(sessionId) && (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json' || isPtyAgentSession(sessions.get(sessionId)))) {
     try {
       const saved = localStorage.getItem('hub.claude-native.draft.v1:' + sessionId);
       if (saved) floatingInputDrafts.set(sessionId, saved);
@@ -4684,7 +4733,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       saveFloatingInputDraft(sessionId, inputBox); inputBox.focus();
     },
   });
-  contentStack.append(nativeControls.element, composer);
+  // PTY 会话等人操作时的提示条：只指路，不代答。
+  const ptyAttention = require('./pty-attention-controls').createPtyAttentionControls({
+    onOpenTerminal: () => { if (activeSessionId === sessionId) applyViewMode('pty'); },
+  });
+  contentStack.append(nativeControls.element, ptyAttention.element, composer);
   bar.append(contentStack);
   bar.classList.add('visible');
 
@@ -4707,12 +4760,15 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       runtime,
       liveQuestion: detectComposerLiveQuestion(session, runtime),
     });
+    ptyAttention.update(session, runtime);
     if (composer.dataset.state !== status.state) composer.dataset.state = status.state;
     if (statusText.textContent !== status.text) statusText.textContent = status.text;
     const localHealth = ['codex-app-server','claude-stream-json'].includes(session.runtimeBackend)
       && ['starting','running'].includes(session.nativeRuntime?.state)
       ? require('./hub-feedback-health').healthText(now) : '';
-    const detailText = [localHealth, status.detail].filter(Boolean).join(' · ');
+    // hook 部署失败时状态只能靠落盘记录和屏幕，必须让用户看见，而不是静默降级。
+    const hookWarning = session.hookIntegrationWarning ? '状态信号降级（hook 未部署）：' + session.hookIntegrationWarning : '';
+    const detailText = [localHealth, status.detail, hookWarning].filter(Boolean).join(' · ');
     const detail = detailText ? `· ${detailText}` : '';
     if (statusDetail.textContent !== detail) statusDetail.textContent = detail;
     statusDetail.hidden = !detail;
@@ -4864,11 +4920,24 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
     const clientSubmissionId = require('node:crypto').randomUUID();
-    if (!nativeCommand) {
+    // PTY 会话里的斜杠命令（/compact、/model…）是 CLI 本地命令，不一定开新的一轮，
+    // 也就没有完成信号来收尾。乐观地标「运行中」会一直挂着（2026-09-25 真机：Codex /compact
+    // 卡运行 3 分钟）。真开了一轮时 hook / rollout 会自己把状态推到运行。
+    const ptyCommand = !nativeCommand && session?.agentRuntime === 'pty' && text.trimStart().startsWith('/');
+    if (!nativeCommand && !ptyCommand) {
       clearSessionWaitingState(sessionId);
       armPtyBurstFallback(sessionId);
     }
-    if (!nativeCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    // PTY Claude 与 Codex 对齐：点下发送就显示「开始」。首条消息要先等 CLI 就绪才粘贴，
+    // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
+    else if (!nativeCommand && !ptyCommand && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
+      const submittedAt = Date.now();
+      notePtyTurnBoundary(session);
+      observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
+        confidence: CONFIDENCE_SEMANTIC, observedAt: submittedAt, startedAt: submittedAt });
+      scheduleSessionListRender();
+    }
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
@@ -4915,10 +4984,28 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
+      // PTY 会话明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框、说明原因，
+      // 不亮「补发」——补发只会把同一段文字塞进同一个选择框。主进程的失败回执可能
+      // 比这里先到、已在本会话的各个输入栏亮起提示，这里一并清掉。
+      if (!result?.ok && result?.notSent && session?.agentRuntime === 'pty') {
+        delivery.dismissed = true;
+        updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
+        if (!readContenteditablePlainText(inputBox)) { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
+        showToast('消息未发送：' + (result.message || 'CLI 暂时不能接收输入'), 'error');
+        for (const other of document.querySelectorAll('.floating-input-bar')) {
+          if (other.dataset.sessionId === sessionId) clearFloatingInputStuck(other);
+        }
+        return;
+      }
       const reason = result && result.ok ? 'no-ack' : (result && result.error) || 'send-failed';
       console.warn(`[floating-input] prompt not acknowledged for ${sessionId.slice(0, 8)}: ${reason}`);
+      // 明确「未发送」：先标成已处理，否则下面这条失败回执会在同一会话的所有输入栏
+      // （含分屏里的另一栏）点亮「补发」——没发出去的东西不存在补发。
+      if (result?.notSent && (isNativeAgent(session) || session?.agentRuntime === 'pty')) delivery.dismissed = true;
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: result?.ok || result?.unconfirmed ? 'unconfirmed' : 'failed' });
-      if (isNativeAgent(session) && !result?.ok && !result?.unconfirmed) {
+      // PTY 会话也可能明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框，
+      // 提示原因，不亮「补发」——补发会把同一段文字塞进同一个选择框。
+      if ((isNativeAgent(session) || session?.agentRuntime === 'pty') && !result?.ok && !result?.unconfirmed) {
         // A failed new send remains actionable, without a manual-reconciliation
         // panel. Only an explicitly unsent prompt can safely return to draft.
         if (result?.notSent && !readContenteditablePlainText(inputBox)) {
@@ -4926,7 +5013,10 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
         }
         if (result?.notSent) {
           showToast('消息未发送：' + (result.message || '连接暂不可用'), 'error');
-          clearFloatingInputStuck(bar);return;
+          for (const other of document.querySelectorAll('.floating-input-bar')) {
+            if (other.dataset.sessionId === sessionId) clearFloatingInputStuck(other);
+          }
+          return;
         }
       }
       markFloatingInputStuck(bar, sessionId);
@@ -6219,6 +6309,102 @@ function noteStreamDisconnect(sessionId, data) {
   return raiseStreamDisconnectFailure(sessionId, tracked.issue);
 }
 
+// PTY 跑的 Claude / Codex：这一轮是否已被 hook / transcript / rollout 权威地结束。
+// 所有「凭终端画面写运行中」的入口都先问它：结束了的一轮，只能由 UserPromptSubmit、
+// task_started 这类新的边界重新开启，屏幕上的旧帧（包括 Stop hook 运行时的状态行）不行。
+function ptyTurnClosedAuthoritatively(session, truth = getSessionRuntimeTruth(session)) {
+  return !!session && session.agentRuntime === 'pty' && !!truth
+    && [RUNTIME_COMPLETED, RUNTIME_IDLE, 'interrupted', RUNTIME_FAILED].includes(truth.state)
+    && truth.confidence === CONFIDENCE_AUTHORITATIVE;
+}
+
+// hook 子进程是各自独立完成的，到达顺序不保证：一轮已经关闭后，还可能收到它的
+// PreToolUse / SubagentStart、提问工具的 PostToolUse、PermissionRequest。这些迟到事件
+// 只能留作历史，不能把关闭的一轮重新打开（审查 R5：Codex Esc 中断 0.4s 后被迟到的
+// tool-start 改回运行，60s 不收尾）。中断在 renderer 里记为权威 IDLE
+// （codex-turn-aborted / claude 中断标记），会话刚建好时的空闲不是权威的，不算关闭。
+// 新一轮一定先经过 UserPromptSubmit / 本地提交 / task_started，此后状态不再是关闭态。
+function hookTurnClosed(session, truth = session ? getSessionRuntimeTruth(session) : null) {
+  if (!session || !truth || sessionRuntimeIsActive(session)) return false;
+  if ([RUNTIME_COMPLETED, RUNTIME_FAILED, 'interrupted'].includes(truth.state)) return true;
+  return truth.state === RUNTIME_IDLE && truth.confidence === CONFIDENCE_AUTHORITATIVE;
+}
+
+// Stop 先于 transcript 终态到达、画面又确实在跑 Stop hook 时，运行状态暂时保留，
+// 但必须有能结束它的真实证据（2026-09-25 审查：旧帧让会话 182 秒停在运行中）：
+//   · transcript 终态到达 → 权威完成覆盖（不经过这里）；
+//   · 画面不再有运行标记，连续两次确认 → 收尾；
+//   · 运行标记还在，但那一行文字 30 秒没变 → 那是停住的旧帧（Claude 真在跑 hook 时
+//     状态行的秒数每秒都在刷新），收尾。
+// 不依赖用户切回这个会话，也不依赖终端再有新输出。
+const CLAUDE_STOP_HOOK_RESOLVE_MS = 1000;
+// 新一轮的边界：本地提交或 UserPromptSubmit。Stop hook 收尾检查只认挂起时的那一轮。
+function notePtyTurnBoundary(session) {
+  if (!session) return;
+  session._ptyTurnSeq = (session._ptyTurnSeq || 0) + 1;
+  session._claudeStopHookHold = null;
+}
+const CLAUDE_STOP_HOOK_STALE_FRAME_MS = 30 * 1000;
+function scheduleClaudeStopHookResolution(sessionId, stopAt) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (session._claudeStopHookTimer) clearTimeout(session._claudeStopHookTimer);
+  const hold = { stopAt, quietChecks: 0, turnSeq: session._ptyTurnSeq || 0 };
+  session._claudeStopHookHold = hold;
+  const tick = () => {
+    const latest = sessions.get(sessionId);
+    if (!latest || latest._claudeStopHookHold !== hold) return;
+    latest._claudeStopHookTimer = null;
+    const truth = getSessionRuntimeTruth(latest);
+    // 已经不在运行、已由语义事件接管，或者 Stop 之后已经开始了新一轮：都不归这里管。
+    if (latest.status === 'dormant' || ![RUNTIME_RUNNING, RUNTIME_STARTING].includes(truth.state)
+        || !String(truth.source || '').startsWith('pty-')
+        || (latest._ptyTurnSeq || 0) !== hold.turnSeq) {
+      latest._claudeStopHookHold = null;
+      return;
+    }
+    let frame = null;
+    try { frame = classifySessionRuntimeFrame(latest, terminalActivityMonitor.extractLiveScreenLines(sessionId)); } catch {}
+    const now = Date.now();
+    let finished = null;
+    if (frame && frame.state === 'running') {
+      hold.quietChecks = 0;
+      // 真在跑 hook 时，状态行里的秒数每秒都在变。同一行文字 30 秒纹丝不动，就是停住的
+      // 旧帧。不看 _lastOutputTs：周期巡检每次重读同一帧都会把它刷新，旧帧就能无限续命。
+      const evidence = String(frame.evidence || '');
+      if (evidence !== hold.evidence) { hold.evidence = evidence; hold.evidenceSince = now; }
+      if (now - (hold.evidenceSince || now) >= CLAUDE_STOP_HOOK_STALE_FRAME_MS) finished = 'claude-stop-hooks-stale-frame';
+    } else {
+      hold.quietChecks += 1;
+      if (hold.quietChecks >= 2) finished = 'claude-stop-hooks-finished';
+    }
+    if (!finished) {
+      latest._claudeStopHookTimer = setTimeout(tick, CLAUDE_STOP_HOOK_RESOLVE_MS);
+      return;
+    }
+    latest._claudeStopHookHold = null;
+    latest._agentWorking = null;
+    latest._runSource = null;
+    latest.runStartedAt = null;
+    disarmPtyBurstFallback(latest, now);
+    // Stop 本身就是这一轮的权威结束，这里只是补上当时被 Stop hook 推迟的那一步。
+    observeSessionRuntime(latest, {
+      state: RUNTIME_COMPLETED,
+      source: finished,
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: now,
+      completedAt: now,
+      startedAt: latest.lastRunStartedAt || 0,
+      evidence: frame && frame.evidence || null,
+    });
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+    updateFloatingBarState();
+    scheduleSessionListRender();
+    schedulePersist();
+  };
+  session._claudeStopHookTimer = setTimeout(tick, CLAUDE_STOP_HOOK_RESOLVE_MS);
+}
+
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   if (isNativeSession(session)) return false;
   if (!session || !runtime || session.status === 'dormant') return false;
@@ -6231,6 +6417,14 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   const fallbackArmed = canUsePtyBurstFallback(session, at);
   let changed = false;
 
+  if (runtime.state === 'running' && ptyTurnClosedAuthoritatively(session, truthBefore)) {
+    // PTY 跑的 Claude / Codex 有 hook 与 transcript 作为权威生命周期：一轮由它们判定结束后，
+    // 屏幕上残留的旧状态行（Codex 内联界面的旧帧留在缓冲区里）不能把会话拽回「运行中」。
+    // 新一轮必须由 UserPromptSubmit / task_started 这类新的边界开启（2026-09-25 真机：
+    // 每次完成约一秒后都被 codex-interrupt-footer 改回运行）。
+    clearPtyRunningAnimationCandidate(session);
+    return false;
+  }
   if (runtime.state === 'running') {
     // Do not let an idle TUI animation start a task from nothing. A local Enter
     // arms the PTY fallback, while hook/rollout lifecycle events set running
@@ -7270,10 +7464,8 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
   }
   else if (['tool-start', 'tool-complete', 'tool-failed', 'subagent-start', 'subagent-stop', 'task-start', 'task-complete'].includes(event)) {
     const truthBeforeActivity = s ? getSessionRuntimeTruth(s) : null;
-    const isLateStartAfterTerminal = event.endsWith('-start')
-      && truthBeforeActivity
-      && [RUNTIME_COMPLETED, RUNTIME_FAILED].includes(truthBeforeActivity.state)
-      && !sessionRuntimeIsActive(s);
+    const turnClosed = hookTurnClosed(s, truthBeforeActivity);
+    const isLateStartAfterTerminal = event.endsWith('-start') && turnClosed;
     // Hook subprocesses can finish out of order. A late PreToolUse/SubagentStart
     // from the closed turn must not resurrect an already completed/failed card;
     // the next real turn is armed by UserPromptSubmit before its tools run.
@@ -7281,7 +7473,16 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
       event, eventAt, toolName, toolCallId, turnId, toolInput, toolResult,
       error, errorDetails, agentId, agentType, taskId, taskSubject,
     });
-    if (activity && event.endsWith('-start') && activity.status === 'running') {
+    const questionText = event === 'tool-start' && !isLateStartAfterTerminal ? ptyToolQuestionText(toolName, toolInput) : '';
+    if (questionText) {
+      // 提问类工具一开始就是在等人：PTY 会话没有结构化请求，只能靠 PreToolUse 知道。
+      onClaudeNeedsInput(sessionId, eventAt, { reason: 'pty-ask-user', text: questionText });
+    } else if (s && event === 'tool-complete' && isPtyQuestionTool(toolName) && !turnClosed) {
+      // 用户已在终端里答完，CLI 继续往下跑。
+      clearSessionWaitingState(sessionId);
+      observeSessionRuntime(s, { state: RUNTIME_RUNNING, source: 'pty-question-answered',
+        confidence: CONFIDENCE_AUTHORITATIVE, observedAt: eventAt, turnId, evidence: null });
+    } else if (activity && event.endsWith('-start') && activity.status === 'running') {
       observeSessionRuntime(s, {
         state: RUNTIME_RUNNING,
         source: `claude-${event}`,
@@ -7300,9 +7501,10 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     errorDetails,
     lastAssistantMessage,
   });
-  else if (event === 'permission-request') onClaudeNeedsInput(sessionId, eventAt, {
+  else if (event === 'permission-request' && !hookTurnClosed(s)) onClaudeNeedsInput(sessionId, eventAt, {
     reason: 'claude-permission-request',
-    text: toolName ? `等待授权：${toolName}` : 'Claude Code 等待权限确认',
+    text: ptyPermissionEvidence(s, toolName, toolInput)
+      || (payload.provider === 'codex' ? 'Codex 等待权限确认' : 'Claude Code 等待权限确认'),
   });
   else if (event === 'notification') onClaudeNotification(sessionId, eventAt, {
     notificationType,
@@ -7311,9 +7513,58 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
   });
 });
 
+// Claude AskUserQuestion / ExitPlanMode、Codex request_user_input：工具一开始就在等人。
+const PTY_QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
+function isPtyQuestionTool(toolName) {
+  return PTY_QUESTION_TOOLS.has(String(toolName || ''));
+}
+function ptyToolQuestionText(toolName, toolInput) {
+  if (!isPtyQuestionTool(toolName)) return '';
+  let input = toolInput;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = null; } }
+  if (toolName === 'ExitPlanMode') {
+    const plan = String(input && input.plan || '').trim();
+    return '确认计划后继续' + (plan ? '：\n' + (plan.length > 600 ? plan.slice(0, 598) + '…' : plan) : '');
+  }
+  const questions = Array.isArray(input && input.questions) ? input.questions : [];
+  const lines = questions.map(question => {
+    const options = (Array.isArray(question && question.options) ? question.options : [])
+      .map(option => option && (option.label || option)).filter(value => typeof value === 'string' && value);
+    return [question && (question.question || question.header) || '', options.length ? '选项：' + options.join(' / ') : '']
+      .filter(Boolean).join('\n');
+  }).filter(Boolean);
+  return lines.join('\n\n') || '请在终端回答问题';
+}
+
+// renderer 里有 14 处调用 showToast，却一直没有定义（调用即 ReferenceError，
+// 之前只在少见的原生分支里，没人撞上）。复用群聊分叉已有的轻提示。
+function showToast(message, level) {
+  require('./groupchat-fork-ui.js').showForkToast(document, String(message || ''), level === 'error' ? 'error' : 'info');
+}
+
+// PermissionRequest 不带工具参数（hook 边界的既有约定）；同一次调用的 PreToolUse
+// 刚刚把有界参数带了过来，从那条运行中的活动里取「批的是什么」。
+function ptyPermissionEvidence(session, toolName, toolInput) {
+  const pending = session && Array.isArray(session.liveToolActivities)
+    ? [...session.liveToolActivities].reverse().find(item => item && item.status === 'running' && item.name === toolName) : null;
+  const input = toolInput ?? (pending ? pending.input : null);
+  return ptyToolQuestionText(toolName, input) || ptyPermissionText(toolName, input);
+}
+
+// 授权提示带上具体要做的事：命令、文件或地址，用户不用切到终端就知道在批什么。
+function ptyPermissionText(toolName, toolInput) {
+  if (!toolName) return '';
+  let input = toolInput;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = { command: input }; } }
+  const target = input && (input.command || input.cmd || input.file_path || input.path || input.url || input.pattern);
+  const detail = Array.isArray(target) ? target.join(' ') : String(target || '').trim();
+  return `等待授权：${toolName}` + (detail ? '\n' + (detail.length > 400 ? detail.slice(0, 398) + '…' : detail) : '');
+}
+
 function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  notePtyTurnBoundary(session);
   const transition = applyPromptSubmitted(session, { submittedAt });
   if (!transition.applied) return;
   session.currentCardActivity = null;
@@ -7409,7 +7660,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
       state: RUNTIME_COMPLETED,
       source: 'claude-transcript-complete',
       confidence: CONFIDENCE_AUTHORITATIVE,
-      observedAt: at,
+      observedAt: Math.max(at, Date.now()),
       completedAt: at,
       startedAt: session.lastRunStartedAt || 0,
       turnId,
@@ -7453,7 +7704,9 @@ function onReplyCompleteFromTranscriptEvent(payload) {
           ? 'gemini'
           : 'codex'}-turn-complete`,
       confidence: CONFIDENCE_AUTHORITATIVE,
-      observedAt: transition.at,
+      // 完成事件经 400ms 防抖才到；期间终端输出记下的「运行」观察时间更晚，
+      // 用完成时刻当观察时刻会让这条权威结论被当成过期丢掉（2026-09-25 真机）。
+      observedAt: Math.max(transition.at, Date.now()),
       completedAt: transition.at,
       startedAt: session.lastRunStartedAt || 0,
       turnId,
@@ -7623,8 +7876,11 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = 
   // Stop fires while Claude is still executing Stop hooks. If the current PTY
   // frame says “running stop hooks…”, that live strong evidence must beat the
   // foreground-response completion until the input-ready frame appears.
+  // PTY：transcript 已经权威结束这一轮时，Stop hook 的状态行只是这轮的尾声，不能把它
+  // 重新打开（审查 R4：多工具「完成 → 运行 → 完成」闪烁、授权场景 182 秒停在运行中）。
   const stopHooksActive = !needsInput && !backgroundActive
-    && liveRuntime && liveRuntime.state === 'running';
+    && liveRuntime && liveRuntime.state === 'running'
+    && !ptyTurnClosedAuthoritatively(session);
   const keepRuntimeActive = backgroundActive || stopHooksActive;
   const transition = applyReplyCompleted(session, {
     completedAt,
@@ -7676,6 +7932,7 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = 
       startedAt: session.runStartedAt || session.lastRunStartedAt || transition.at,
       evidence: liveRuntime.evidence || 'Claude Code is still running Stop hooks',
     });
+    if (session.agentRuntime === 'pty') scheduleClaudeStopHookResolution(sessionId, transition.at);
   } else {
     // Official Stop is the authoritative end of the foreground turn.
     session._agentWorking = null;
@@ -7765,6 +8022,14 @@ function onClaudeNotification(sessionId, observedAt = Date.now(), options = {}) 
   const type = String(options.notificationType || '');
   const text = [options.title, options.message].filter(Boolean).join('：') || type;
   if (['permission_prompt', 'agent_needs_input', 'elicitation_dialog', 'elicitation_url_dialog', 'quota_auto_resume_stale'].includes(type)) {
+    // PermissionRequest / 提问工具先到时已经带着具体的工具和命令；随后这条通用通知
+    // （"Claude needs your permission"）不能把它冲掉。
+    const current = sessions.get(sessionId);
+    const truth = current ? getSessionRuntimeTruth(current) : null;
+    if (truth && truth.state === RUNTIME_WAITING
+        && ['claude-permission-request', 'pty-ask-user'].includes(truth.source) && truth.evidence) {
+      return false;
+    }
     return onClaudeNeedsInput(sessionId, observedAt, {
       reason: `claude-notification-${type}`,
       text,

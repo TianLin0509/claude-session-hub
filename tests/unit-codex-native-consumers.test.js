@@ -32,9 +32,15 @@ test('Codex waiting is unfinished for scheduling, with one native source for eve
   const runtime=deriveSessionRuntimeStatus(s,{now:9000});
   assert.equal(buildComposerStatusModel(s,{runtime,now:9000}).state,'waiting');
 });
-test('Codex without a managed snapshot is unknown, and legacy fields cannot certify idle or success',()=>{
-  const s={id:'legacy',kind:'codex',status:'idle',lastCompletedAt:9000};
+test('App Server Codex without a managed snapshot is unknown, and legacy fields cannot certify idle or success',()=>{
+  const s={id:'legacy',kind:'codex',runtimeBackend:'codex-app-server',status:'idle',lastCompletedAt:9000};
   assert.equal(getSessionRuntimeTruth(s,{now:10000}).state,'unknown');
+});
+// 2026-09-25：Codex 默认跑 PTY。没有原生后端的 Codex 会话走与 Claude PTY 相同的 hook / rollout 协议。
+test('PTY Codex follows the hook and transcript protocol instead of the App Server snapshot',()=>{
+  const s={id:'pty',kind:'codex',agentRuntime:'pty',runtimeBackend:null,nativeRuntime:null,status:'idle'};
+  assert.equal(applySessionRuntimeObservation(s,{state:'running',source:'codex-user-prompt-submit',observedAt:1000}).applied,true);
+  assert.equal(getSessionRuntimeTruth(s,{now:1000}).state,'running');
 });
 test('non-Codex consumers retain their established protocol',()=>{
   const s={kind:'claude',status:'idle'};

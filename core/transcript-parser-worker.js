@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const { parentPort, threadId } = require('node:worker_threads');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser.js');
+const { parseClaudeTranscriptToNativeTurns } = require('./claude-disk-transcript.js');
 const { parseCodexRolloutToTurns } = require('./codex-transcript-parser.js');
 const { parseKimiWireToTurns } = require('./kimi-transcript-parser.js');
 
@@ -11,6 +12,7 @@ const cache = new Map();
 
 function parserForKind(kind) {
   if (kind === 'claude') return parseClaudeTranscriptToTurns;
+  if (kind === 'claude-native') return parseClaudeTranscriptToNativeTurns;
   if (kind === 'codex') return parseCodexRolloutToTurns;
   if (kind === 'kimi') return parseKimiWireToTurns;
   throw new Error(`Unsupported transcript parser kind: ${kind}`);

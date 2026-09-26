@@ -276,7 +276,13 @@ async function parseProviderTranscript(args = {}, deps) {
     }
     const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
     const parseStartedAt = Date.now();
-    const parsed = await runTranscriptParser(deps, 'claude', transcriptPath, parseOpts, parseClaudeTranscriptToTurns);
+    // Claude 卡片与原生会话走同一套投影（claude-disk-transcript）：过程/结果分段、
+    // 工具状态与耗时都对齐。旧 DeepSeek-Claude 兼容会话保持原解析器。
+    const nativeProjection = typeof deps.parseClaudeTranscriptToNativeTurns === 'function'
+      && !/^deepseek-legacy/.test(String(runtimeKind || ''));
+    const parsed = nativeProjection
+      ? await runTranscriptParser(deps, 'claude-native', transcriptPath, parseOpts, deps.parseClaudeTranscriptToNativeTurns)
+      : await runTranscriptParser(deps, 'claude', transcriptPath, parseOpts, parseClaudeTranscriptToTurns);
     return {
       turns: await withInheritedBranchTurns(args, deps, session, parsed.turns, parseOpts, transcriptPath),
       transcriptPath,
