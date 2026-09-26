@@ -1472,6 +1472,15 @@ class SessionManager extends EventEmitter {
           ensureCodexCwdTrusted(spawnCwd);
         }
       }
+      // 换账号后恢复/分叉旧会话：凭据跟新账号，线程索引留在原历史所在的账号，
+      // 否则 `codex resume <sid>` 在新账号里报 "No saved session found"。
+      const historyHome = opts.codexHistoryStorageHome;
+      const liveHome = sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex');
+      if (isPtyAgent && followsGlobalAccount && historyHome && (opts.codexForkSid || (opts.useResume && opts.codexSid))
+          && path.toNamespacedPath(path.resolve(historyHome)).toLowerCase() !== path.toNamespacedPath(path.resolve(liveHome)).toLowerCase()) {
+        sessionEnv.CODEX_SQLITE_HOME = require('./codex-global-account')
+          .historySqliteHomeSync(historyHome, opts.nativeRuntime && opts.nativeRuntime.sqliteHome, sessionEnv);
+      }
     }
 
     const isNativeClaude = (isClaude && nativeAgentRuntime) || isDeepSeekLegacy;
