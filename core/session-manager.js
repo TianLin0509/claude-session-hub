@@ -1216,7 +1216,7 @@ class SessionManager extends EventEmitter {
     }
     const id = opts.id || uuid();
     const isAcp = isAcpKind(kind);
-    const isProviderCli = isAcp && require('./agent-runtime-mode').agentRuntimeMode() !== 'native';
+    const isProviderCli = ['qwen','glm'].includes(kind.replace(/-resume$/, '')) && require('./agent-runtime-mode').agentRuntimeMode() !== 'native';
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';

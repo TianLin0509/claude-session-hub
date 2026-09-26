@@ -499,7 +499,7 @@ function registerSessionIpc(ipcMain, deps) {
     }
     const nativeCodex = sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId);
     // PTY 跑的 Codex 与 Claude 一样按原生会话 id 恢复；只有 App Server 会话在这里重连。
-    if (old.purpose !== 'chuxin-research' && (old.runtimeBackend === 'codex-app-server' || nativeCodex)) {
+    if (old.purpose !== 'chuxin-research' && (old.runtimeBackend === 'codex-app-server' || (nativeCodex && !nativeCodex.isCliProvider))) {
       const native = nativeCodex;
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
       return native.reconnect().then(()=>sessionManager.getSession(sessionId))
