@@ -597,6 +597,9 @@ async function main() {
       if(args.has('--audit-extras'))await scenario('codex-long-prompt',sid,async r=>{
         const prompt=Array.from({length:120},(_,i)=>`reference ${i}: 中文🙂 `+'x'.repeat(100)).join('\n')+'\nReply only CODEX_LONG_PROMPT_OK';
         await send(prompt);
+        if(process.env.PTY_PROBE_WIN32_ENTER==='1'){
+          await sleep(20000);await key(sid,'\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_');r.diagnosticWin32Enter=true;
+        }
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`,'long prompt completes',120000);
         const turns=(await c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)},opts:{limit:20}})`)).turns||[];
         assert(turns.some(t=>t.role==='assistant'&&String(t.text||'').includes('CODEX_LONG_PROMPT_OK')));
