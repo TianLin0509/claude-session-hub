@@ -36,6 +36,11 @@ test('a freshly spawned CLI is not typed into before it reports ready', async ()
   assert.ok(h.checks() >= 4, 'waited for the ready detector');
   assert.equal(h.writes[0].at >= 4, true, 'nothing was written before ready');
   assert.equal(h.ready(), true, 'readiness is remembered for later sends');
+  if(process.platform==='win32'){
+    const data=h.writes.map(w=>w.data),body=data.findIndex(s=>s.includes('\x1b[201~'));
+    assert(data.indexOf('\x1b[F')>body,'Codex flushes its paste burst after the complete payload');
+    assert(data.indexOf('\x1b[F')<data.indexOf('\r'),'flush precedes submit, without another Enter');
+  }
 });
 
 test('a long-running session sends immediately even if it was never marked ready', async () => {
