@@ -52,6 +52,8 @@ function createClipboardController({
   clearTimeoutFn = clearTimeout,
   onFeedback = null,
   renderFeedback = true,
+  // 选区文字的最后一道转换：会话输入框的粘贴块在 DOM 里是内部标记，复制时要换回原文。
+  expandText = text => text,
 } = {}) {
   const delays = Array.from(retryDelaysMs || DEFAULT_RETRY_DELAYS_MS)
     .map(value => Math.max(0, Number(value) || 0));
@@ -173,7 +175,7 @@ function createClipboardController({
     // xterm deliberately keeps bare Ctrl+C as SIGINT when it has no selection.
     // Its selected-text path calls copyText() directly from renderer.js.
     if (isTerminalTarget(event.target)) return false;
-    const text = readSelectedText(event.target, window);
+    const text = expandText(readSelectedText(event.target, window));
     if (!text) return false;
     event.preventDefault?.();
     event.stopImmediatePropagation?.();
@@ -187,7 +189,7 @@ function createClipboardController({
     // Let Chromium preserve rich formats first, then verify plain text and repair
     // only if the native clipboard write was lost.
     if (!event || event.defaultPrevented) return;
-    const text = readSelectedText(event.target, window);
+    const text = expandText(readSelectedText(event.target, window));
     if (!text) return;
     setTimeoutFn(() => {
       try {

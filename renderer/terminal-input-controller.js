@@ -128,9 +128,12 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
 
   // Text paste is normalized to text/plain; image-only paste still inserts a
   // saved local image path. Keep the public name for existing callers.
-  function attachContenteditablePasteImage(inputEl) {
+  // options.collapseLongText：长文本收成 CLI 式粘贴块（见 composer-paste-chips.js）。
+  // 只有会话输入框打开——群聊输入框有十几处直接读 innerText，接入前得先把它们收口。
+  function attachContenteditablePasteImage(inputEl, options = {}) {
     if (!inputEl || inputEl.dataset.imgPasteBound === '1') return;
     inputEl.dataset.imgPasteBound = '1';
+    const collapseLongText = options.collapseLongText === true;
     inputEl.addEventListener('paste', async (e) => {
       // 文件优先于文本和图片：复制一个文件时 text/plain 本来就是空的，而图片文件
       // 若先被图片分支接走，会被另存成一张新截图、丢掉用户真正想引用的那条路径。
@@ -145,6 +148,12 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
       const plainText = getPastePlainText(e);
       if (plainText) {
         e.preventDefault();
+        const chips = collapseLongText ? require('./composer-paste-chips.js') : null;
+        if (chips && chips.shouldCollapsePaste(plainText)) {
+          chips.insertPasteChip(inputEl, plainText.replace(/\r\n?/g, '\n'), { document, window });
+          inputEl.dispatchEvent(new EventCtor('input', { bubbles: true }));
+          return;
+        }
         insertContenteditableText(inputEl, plainText);
         return;
       }

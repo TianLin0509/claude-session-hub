@@ -6,6 +6,7 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { recordNativeContent, promptReceipt } = require('../core/native-feedback.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
+const pasteChips = require('./composer-paste-chips.js');
 const { createCodexBackstage } = require('./codex-backstage.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -217,7 +218,7 @@ const cardHistoryViews = require('./card-history-views').createCardHistoryViews(
 });
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
-const clipboardController = createClipboardController({ document, window, clipboard });
+const clipboardController = createClipboardController({ document, window, clipboard, expandText: pasteChips.expandPasteMarkers });
 clipboardController.init();
 // xterms are created lazily, then live for exactly as long as their live Hub
 // sessions. Switching sessions must not dispose a still-running CLI: doing so
@@ -241,6 +242,9 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
+// sessionId -> { raw, text }：含粘贴块标记的原始草稿。重挂输入框时若草稿没变，按原样把块还原回来，
+// 而不是把几千行原文重新铺进 DOM。持久化的草稿仍是展开后的原文（标记跨重启无意义）。
+const rawComposerDrafts = new Map();
 const nativeDraftControllers = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
@@ -402,9 +406,15 @@ function trackPtyPromptInput(sessionId, data) {
   }
 }
 
-function readContenteditablePlainText(el) {
+// 原始内容：粘贴块在这里是 id 标记（见 composer-paste-chips.js）。
+function readContenteditableRawText(el) {
   if (!el) return '';
   return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+}
+
+// 输入框里「用户真正要发的文字」：粘贴块展开成原文。发送、草稿、历史都读这个。
+function readContenteditablePlainText(el) {
+  return pasteChips.expandPasteMarkers(readContenteditableRawText(el));
 }
 
 // contenteditable 的撤销栈只认 execCommand / 用户输入这类"编辑动作"。
@@ -423,9 +433,16 @@ function replaceContenteditableText(el, text) {
     range.selectNodeContents(el);
     selection.removeAllRanges();
     selection.addRange(range);
-    applied = next
-      ? document.execCommand('insertText', false, next)
-      : document.execCommand('delete');
+    // 大文本（历史召回、恢复未发送的长消息）逐行进 DOM 会卡几十秒，收成一个粘贴块。
+    if (next && el.dataset.pasteChipsBound === '1' && pasteChips.shouldCollapseReplace(next)) {
+      document.execCommand('delete');
+      pasteChips.insertPasteChip(el, next, { document, window });
+      applied = true;
+    } else {
+      applied = next
+        ? document.execCommand('insertText', false, next)
+        : document.execCommand('delete');
+    }
   } catch {
     applied = false;
   }
@@ -470,7 +487,7 @@ function attachNativeDraft(sessionId, inputBox) {
   if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
   const view = {
     onRestore(text) {
-      inputBox.textContent = text;
+      restoreComposerText(sessionId, inputBox, text);
       if (text) floatingInputDrafts.set(sessionId, text); else floatingInputDrafts.delete(sessionId);
       if (document.activeElement === inputBox) placeCaretAtContenteditableEnd(inputBox);
     },
@@ -500,9 +517,24 @@ function attachNativeDraft(sessionId, inputBox) {
   return controller;
 }
 
+// 把草稿放回输入框。框里已经是这份内容就不动（别把粘贴块冲成原文、也别挪光标）；
+// 草稿与上次记下的原始内容一致时按原样还原粘贴块。
+function restoreComposerText(sessionId, inputBox, text) {
+  if (readContenteditablePlainText(inputBox) === text) return;
+  const raw = rawComposerDrafts.get(sessionId);
+  if (raw && raw.text === text && pasteChips.hasPasteMarkers(raw.raw)) {
+    pasteChips.renderRawComposerText(inputBox, raw.raw, { document });
+  } else {
+    inputBox.textContent = text;
+  }
+}
+
 function saveFloatingInputDraft(sessionId, inputBox) {
   if (!sessionId || !inputBox) return;
-  const text = readContenteditablePlainText(inputBox);
+  const raw = readContenteditableRawText(inputBox);
+  const text = pasteChips.expandPasteMarkers(raw);
+  if (pasteChips.hasPasteMarkers(raw)) rawComposerDrafts.set(sessionId, { raw, text });
+  else rawComposerDrafts.delete(sessionId);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
   if (sessions.get(sessionId)?.status === 'dormant') return;
@@ -511,6 +543,7 @@ function saveFloatingInputDraft(sessionId, inputBox) {
 
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
+  if (sessionId) rawComposerDrafts.delete(sessionId);
   nativeDraftControllers.get(sessionId)?.change('');
   if (sessionId && isNativeSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
@@ -4295,7 +4328,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     } catch (error) { showToast('草稿读取失败：' + error.message, 'error'); }
   }
   if (floatingInputDrafts.has(sessionId)) {
-    inputBox.textContent = floatingInputDrafts.get(sessionId);
+    restoreComposerText(sessionId, inputBox, floatingInputDrafts.get(sessionId));
   }
 
   // 用户实际工作流只保留一个入口：把公司 ChatGPT 的新内容拉到输入框。
@@ -4939,7 +4972,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   // 卡片优化（2026-05-03）：粘贴图片到浮动输入框 → save-clipboard-image
   //   IPC 取得绝对路径 → execCommand('insertText') 插入到 caret 位置。
   //   语义与 xterm 的 handlePasteForSession 一致（用户粘图后路径文字流到 PTY）。
-  attachContenteditablePasteImage(inputBox);
+  attachContenteditablePasteImage(inputBox, { collapseLongText: true });
+  // 长文本粘贴块：悬停预览原文，复制/剪切时写出原文。
+  pasteChips.attachPasteChipBehaviors(inputBox, { document, window });
 
   sendBtn.addEventListener('click', (e) => {
     e.stopPropagation();
