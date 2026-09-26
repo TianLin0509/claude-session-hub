@@ -3410,17 +3410,38 @@ function restoreWindowAfterFailedShutdown() {
   }
 }
 
+// The renderer throttles persist-sessions (up to 2 s), so its newest workscene
+// may not have reached Main yet. Ask for it and wait for the acknowledgement:
+// the renderer sends persist-sessions first and the ack second, and Main
+// handles one renderer's messages in order, so the ack proves the workscene
+// is in lastPersistedSessions. Without waiting, a close with no live PTY
+// drained at once and the final save could beat the reply.
+function flushRendererWorkscene(timeoutMs = 1500) {
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  const requestId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise(resolve => {
+    let timer = null;
+    const onAck = (_event, ackId) => { if (ackId === requestId) finish(true); };
+    const finish = ok => {
+      clearTimeout(timer);
+      ipcMain.removeListener('hub:flush-workscene:done', onAck);
+      resolve(ok);
+    };
+    timer = setTimeout(() => {
+      console.warn('[shutdown] renderer did not confirm the final workscene; saving the last one received');
+      finish(false);
+    }, timeoutMs);
+    ipcMain.on('hub:flush-workscene:done', onAck);
+    try { mainWindow.webContents.send('hub:flush-workscene', { requestId }); }
+    catch { finish(false); }
+  });
+}
+
 function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
-  // The renderer throttles persist-sessions (up to 2 s). Ask it for the newest
-  // workscene now; its reply is queued ahead of the final sync save, which
-  // only runs after every PTY has drained.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    try { mainWindow.webContents.send('hub:flush-workscene'); } catch {}
-  }
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
   // released by final cleanup after every PTY exit callback has settled.
@@ -3428,7 +3449,8 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
     try { agentLeagueBridge.beginHandoff(reason); }
     catch (error) { console.warn('[shutdown] agent league handoff preparation failed:', error && error.message); }
   }
-  shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 })
+  shutdownDrainPromise = flushRendererWorkscene()
+    .then(() => sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 }))
     .then(async (result) => {
       if (!result || result.safeToQuit !== true) {
         shutdownDrainState = 'idle';

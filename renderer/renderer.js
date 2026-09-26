@@ -8978,9 +8978,12 @@ function persistWorkscene(flush = false) {
 window.schedulePersist = schedulePersist;
 // Hub shutdown: send the newest workscene immediately instead of waiting out
 // the persist throttle, so the final save carries the last few seconds.
-ipcRenderer.on('hub:flush-workscene', () => {
+// The ack goes out after persist-sessions on the same channel order, so Main
+// knows the workscene arrived before it runs the final save.
+ipcRenderer.on('hub:flush-workscene', (_event, { requestId } = {}) => {
   if (persistDebounceTimer) { clearTimeout(persistDebounceTimer); persistDebounceTimer = null; }
-  persistWorkscene();
+  try { persistWorkscene(); }
+  finally { ipcRenderer.send('hub:flush-workscene:done', requestId); }
 });
 
 const restartController = require('./hub-restart-controller').createHubRestartController({document,ipcRenderer,
