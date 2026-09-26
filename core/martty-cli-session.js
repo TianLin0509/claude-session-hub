@@ -95,17 +95,20 @@ class MarttyCliSession extends AcpSession {
     await this.start();
     if(this.closed||this.runtime.connection!=='connected'||this.active||this.pending)throw Object.assign(new Error('CLI 尚未就绪或仍在执行，消息未发送'),{notSent:true});
     if(options.attachments?.length)throw Object.assign(new Error('请在终端中添加附件'),{notSent:true});
+    const input=require('./martty-prompt-input');
+    const encoded=input.encodeMarttyPrompt(text);text=encoded.text;
     let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
     this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
-      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},20000)};
+      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
     options.beforeStart?.();
     const paste=require('./pty-prompt-submit');
     const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};
     try{const baselineMarker=paste.snapshotPasteMarker(manager,this.options.id);
-      await paste.writeBracketedPaste(manager,this.options.id,text);
+      await input.writeMarttyPrompt(data=>this.write(data),encoded.payload);
       await paste.waitForPasteSettled({sessionManager:manager,sid:this.options.id,
-        settleMs:paste.computeSettleMs(text.length),baselineMarker});
-      this.write('\r');
+        settleMs:paste.computeSettleMs(encoded.payload.length),baselineMarker});
+      // Explicit unmodified Enter avoids inheriting a Shift modifier in ConPTY.
+      this.write('\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_');
       if(text.trimStart().startsWith('/')){clearTimeout(this.pending?.timer);this.pending=null;return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};}
     }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}
     return promise;
@@ -116,6 +119,8 @@ class MarttyCliSession extends AcpSession {
   async interrupt(){if(!this.active||this.interruptAt&&Date.now()-this.interruptAt<1500)return;this.interruptAt=Date.now();this.write('\x1b');}
   async fork(){throw new Error('请在 CLI 中使用原生分支命令；Hub 尚未接入此终端的分支回执');}
   async configure(){throw new Error('请在 CLI 中使用 /model；卡片会同步原生模型变更回执');}
+  async reconnect(){throw new Error('请使用「重启会话」恢复 CLI，必须先停止旧终端');}
+  async reply(){throw new Error('请到 CLI 终端中回答或授权');}
   dispose(){clearTimeout(this.startTimer);this.tail?.close();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}
     this.backstage.close();this._historyStore?.close();this._historyStore=null;}
   kill(){this.persist();this.closed=true;this.dispose();this.pty?.kill();}

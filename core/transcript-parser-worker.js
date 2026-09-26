@@ -15,6 +15,7 @@ function parserForKind(kind) {
   if (kind === 'claude-native') return parseClaudeTranscriptToNativeTurns;
   if (kind === 'codex') return parseCodexRolloutToTurns;
   if (kind === 'kimi') return parseKimiWireToTurns;
+  if (kind === 'gemini') return require('./gemini-transcript-parser').parseGeminiTranscriptToTurns;
   throw new Error(`Unsupported transcript parser kind: ${kind}`);
 }
 

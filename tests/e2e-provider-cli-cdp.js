@@ -50,7 +50,8 @@ async function main(){
         await send(s.id,'Reply only '+marker+'_AFTER_STOP');await response(s.id,marker+'_AFTER_STOP');check(kind+' real tool interrupt and next prompt');
       }
       await c.eval(`applyViewMode('card')`);
-      await until(`Array.from(document.querySelectorAll('#msg-overlay .turn-card.assistant')).some(e=>e.textContent.includes(${j(marker+'_RESTART')}))`,'visible historical assistant card');
+      const lastMarker=marker+(process.argv.includes('--interrupt')?'_AFTER_STOP':process.argv.includes('--long')?'_LONG':'_RESTART');
+      await until(`Array.from(document.querySelectorAll('#msg-overlay .turn-card.assistant')).some(e=>e.textContent.includes(${j(lastMarker)}))`,'visible historical assistant card');
       await screenshot(kind+'-cards');check(kind+' real visible card renders native answer after restart');
       if(kind==='qwen'&&process.argv.includes('--fork')){
         const fork=await invoke('fork-session',{sourceSessionId:s.id});assert(fork.session?.id,j(fork));

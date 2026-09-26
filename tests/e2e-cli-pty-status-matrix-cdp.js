@@ -217,9 +217,9 @@ async function main() {
 
       if(args.has('--audit-extras')) {
         await scenario('audit-busy-rename',sid,async r=>{
-          const at=await send('用 Bash 在前台执行 node -e "setTimeout(()=>console.log(123),10000)"，然后回复 RENAME_READY。');
+          const at=await send('用 Bash 在前台执行 node -e "setTimeout(()=>console.log(123),20000)"，然后回复 RENAME_READY。');
           await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`,'rename while tool runs');
-          await c.eval(`document.querySelector('#terminal-panel .terminal-title').click()`);
+          await c.eval(`document.querySelector('.terminal-title').click()`);
           await c.eval(`(()=>{const i=document.querySelector('.terminal-title-input');i.value='AUDIT_BUSY_RENAME';i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()`);
           await until(`sessions.get(${j(sid)})._pendingRename==='AUDIT_BUSY_RENAME'`,'rename queued');
           await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`,'tool completes');

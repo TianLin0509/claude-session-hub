@@ -817,6 +817,7 @@ transcriptTap.on('session-bound', (ev) => {
       if (ev.geminiChatId) patch.geminiChatId = ev.geminiChatId;
       if (ev.geminiProjectHash) patch.geminiProjectHash = ev.geminiProjectHash;
       if (ev.geminiProjectRoot) patch.geminiProjectRoot = ev.geminiProjectRoot;
+      if (ev.sessionPath) patch.transcriptPath = ev.sessionPath;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       const patch = {};

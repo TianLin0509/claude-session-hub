@@ -3,6 +3,12 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {normalizeProviderCwd}=require('../core/provider-cli-protocol');
 const {PromptSubmissionReceipts}=require('../core/prompt-submission-receipts');
+test('Martty multiline input never contains a submit key and rejects unsupported control characters before writing',()=>{
+  const {encodeMarttyPrompt}=require('../core/martty-prompt-input');
+  const encoded=encodeMarttyPrompt('one\r\n中文🙂\ntwo','win32');
+  assert.equal(encoded.text,'one\n中文🙂\ntwo');assert(!/[\r\n]/.test(encoded.payload));
+  for(const text of ['a\tb','a\x1bb'])assert.throws(()=>encodeMarttyPrompt(text,'win32'),e=>e.notSent===true);
+});
 test('Windows canonical paths preserve workspace identity without changing prompt text',()=>{
   for(const [cwd,expected]of [['\\\\?\\C:\\work\\x','C:\\work\\x'],['\\\\?\\UNC\\server\\share','\\\\server\\share'],['C:\\work','C:\\work']]){
     assert.equal(normalizeProviderCwd({method:'session/new',params:{cwd}}).params.cwd,expected);
