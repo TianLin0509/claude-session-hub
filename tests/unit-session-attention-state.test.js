@@ -176,3 +176,20 @@ test('全部已读只清「答完未看」，不动真的在等用户输入的�
   assert.equal(clearSessionCompletedUnread(clean), false, '本来就没未读时应报告"没变化"');
   assert.equal(clearSessionCompletedUnread(null), false);
 });
+
+// 2026-09-25 真机状态矩阵：Codex 同一轮先写 final_answer、约一秒后再写 task_complete，
+// 未读被加了两次。同一个 turnId、中间没有新提问，第二条终态只能是重复。
+test('the second terminal record of the same turn does not add another unread', () => {
+  const session = { status: 'running', unreadCount: 0 };
+  applyPromptSubmitted(session, { submittedAt: 1000 });
+  assert.equal(applyReplyCompleted(session, { completedAt: 2000, turnId: 'turn-1', text: 'OK', seenByUser: false }).applied, true);
+  const second = applyReplyCompleted(session, { completedAt: 3100, turnId: 'turn-1', text: 'OK', seenByUser: false });
+  assert.equal(second.applied, false);
+  assert.equal(second.reason, 'duplicate-turn-completion');
+  assert.equal(session.unreadCount, 1);
+  // 下一次提问之后，同一个 turnId（例如续写）再完成是新的回答。
+  applyPromptSubmitted(session, { submittedAt: 4000 });
+  assert.equal(applyReplyCompleted(session, { completedAt: 5000, turnId: 'turn-2', text: 'OK2', seenByUser: false }).applied, true);
+  // 新提问本身会把上一条回答视为已读，所以这里是新的 1 条。
+  assert.equal(session.unreadCount, 1);
+});

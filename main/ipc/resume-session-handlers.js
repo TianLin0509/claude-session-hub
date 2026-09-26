@@ -191,6 +191,24 @@ function createResumeSessionHandler(deps) {
         if (discovered) resumeTranscriptPath = discovered;
       } catch {}
     }
+    // 一轮都没跑过的 Codex 会话（原生时代建的，或 PTY 下开了没聊），改走 PTY 恢复时
+    // 没有任何可恢复的历史：要么没有 thread id，要么 App Server 只建了 thread、rollout
+    // 从未落盘。此时 `codex resume` 只会停在「Resume a previous session」选择框，还会
+    // 吞掉第一条消息。同一个 Hub id 直接新开；跑出第一轮后 hook 会绑定原生身份。
+    // 只认正面证据：原生快照没有任何轮次，且 Hub 从未记录过开始/完成/记录路径。
+    // 跑过但没绑上 id 的老会话仍走选择框，那是绑定失败时唯一不丢历史的兜底。
+    // 用户主动选的「Codex Resume」（kind=codex-resume）本来就要选择框，不受影响。
+    const nativeSnapshot = meta.nativeRuntime;
+    const codexNeverRan = isCodexRuntime && !isDeepSeek && (meta.kind || 'codex') === 'codex'
+      && require('../../core/agent-runtime-mode').usesPtyAgentRuntime('codex')
+      && (!nativeSnapshot || (!nativeSnapshot.turnId && !nativeSnapshot.submission && !nativeSnapshot.startedAt
+        && !(nativeSnapshot.endedTurns || []).length))
+      && !meta.lastRunStartedAt && !meta.lastCompletedAt && !meta.transcriptPath
+      && (!effectiveCodexSid || !resumeTranscriptPath);
+    if (codexNeverRan) {
+      logger.log(`[resume-session] Codex session ${String(meta.hubId).slice(0, 8)} never ran a turn; starting fresh under PTY`);
+      effectiveCodexSid = null;
+    }
     const codexMissingSid = (isCodexRuntime && !effectiveCodexSid);
     // A persisted Agent League shell may not have completed its first provider
     // turn yet. In that state there is no native conversation to resume. Every
@@ -209,7 +227,7 @@ function createResumeSessionHandler(deps) {
       && (isDevSeat || meta.nativeRuntime?.connection === 'unstarted');
     const isFileFlowMember = require('../../core/dev-file-workflow').enabled(managedMeeting)
       && managedMeeting.subSessions?.includes(meta.hubId);
-    const freshUnboundAgentLeague = unstartedCodex || (isAgentLeague || isFileFlowMember) && (
+    const freshUnboundAgentLeague = unstartedCodex || codexNeverRan || (isAgentLeague || isFileFlowMember) && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)

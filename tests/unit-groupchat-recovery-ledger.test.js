@@ -17,7 +17,7 @@ function make(extractResult) {
   };
   const sessionManager = new EventEmitter();
   sessionManager.getSession = sid => sid === 's1'
-    ? { id: 's1', kind: 'codex', transcriptKind: 'codex', title: 'Codex 1', meetingId: 'm1' }
+    ? { id: 's1', kind: 'codex', transcriptKind: 'codex', title: 'Codex 1', meetingId: 'm1', runtimeBackend: 'codex-app-server' }
     : null;
   sessionManager.getNativeCodex = () => ({start:async()=>{},readOutcome:async turnId=>
     extractResult.source==='codex-app-server' && extractResult.turnId===turnId

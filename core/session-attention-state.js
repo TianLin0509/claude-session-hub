@@ -201,6 +201,12 @@ function applyReplyCompleted(session, event = {}) {
   if (clock.lastCompletionKey === completionKey) {
     return { applied: false, reason: 'duplicate-completion', at, turnId };
   }
+  // 同一轮的第二条终态记录（Codex 先写 final_answer、约一秒后再写 task_complete）
+  // 时间和正文都可能不同，但它不是新的回答：中间没有新提问就不再算一次未读。
+  if (turnId && clock.lastCompletedTurnId === turnId
+      && !(clock.lastPromptAt > (clock.lastCompletionAt || 0))) {
+    return { applied: false, reason: 'duplicate-turn-completion', at, turnId };
+  }
   if (clock.lastPromptAt > 0 && at < clock.lastPromptAt) {
     return { applied: false, reason: 'stale-completion-time', at, turnId };
   }

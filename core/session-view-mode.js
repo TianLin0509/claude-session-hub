@@ -68,7 +68,10 @@ function forgetViewMode(set, sessionId) {
  * 普通 AI 会话每次打开都从卡片开始。后台是当前查看期间的显式操作，不跨点击、
  * resume 或页面恢复继承。PowerShell 没有结构化卡片，因此仍进入 PTY。
  */
-function selectionViewModeFor(_set, _sessionId, { cardCapable = false } = {}) {
+function selectionViewModeFor(set, sessionId, { cardCapable = false, rememberChoice = false } = {}) {
+  // 2026-09-25 回到「CLI 为核心」：PTY 跑的 Claude / Codex 默认看终端，
+  // 用户切到卡片后按会话记住，下次点开仍停在卡片。
+  if (rememberChoice) return cardCapable ? viewModeFor(set, sessionId) : PTY;
   return cardCapable ? CARD : PTY;
 }
 

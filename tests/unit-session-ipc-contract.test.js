@@ -577,7 +577,8 @@ testAsync('restart-session refuses an unbound Codex session without killing it',
 
   const result = await ipc.handlers.get('restart-session')(null, 'codex-unbound');
   assert.strictEqual(result.ok, false);
-  assert.strictEqual(result.error, 'unmanaged-codex');
+  // 2026-09-25：PTY Codex 没有绑定原生 id 时与 Claude 同一条拒绝路径。
+  assert.strictEqual(result.error, 'native-session-id-missing');
   assert.strictEqual(resumed, false);
   assert.deepStrictEqual(
     sessionManager.calls.filter(call => call[0] === 'closeSession'),

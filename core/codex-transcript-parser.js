@@ -373,6 +373,8 @@ function parseCodexRolloutEntries(entries) {
         ts: pendingAssistant.ts,
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
         stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
+        // 与原生卡片同一字段：卡片据此显示「本轮已完成 / 已中断」。仍在进行的一轮留空。
+        nativeOutcome: pendingAssistant.finalText ? 'completed' : pendingAssistant.aborted ? 'interrupted' : null,
         durationMs: pendingAssistant.durationMs || undefined,
         toolCalls: pendingAssistant.toolCalls,
         displayMessages: pendingAssistant.displayMessages,
@@ -464,6 +466,10 @@ function parseCodexRolloutEntries(entries) {
         const pending = ensurePendingAssistant(index);
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
+        return;
+      }
+      if (eventType === 'turn_aborted') {
+        if (pendingAssistant) pendingAssistant.aborted = true;
         return;
       }
       const agentEvent = codexAgentMessageEventFromRecord(obj);

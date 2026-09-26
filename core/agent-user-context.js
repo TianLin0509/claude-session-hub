@@ -59,13 +59,23 @@ function syncNativeUserContext({kind, nativeHome, env=process.env, dataDir}) {
   const serialized=JSON.stringify(record,null,2)+'\n';
   if(!fs.existsSync(receipt)||fs.readFileSync(receipt,'utf8')!==serialized) writeAtomic(receipt,serialized);
   if(kind==='codex'){
-    const hooks=readPolicy(env,dataDir)?.codexHooks;
+    const policyHooks=readPolicy(env,dataDir)?.codexHooks;
+    // PTY 模式下 Hub 自己的 hook 是 Codex 状态与卡片绑定的来源（codex-hook-integration）。
+    // 期望内容 = 个人策略 + 补齐的 Hub 条目；否则两边轮流改写 hooks.json，
+    // 下一次启动这里会把 Hub 的补充当成「独立修改」而拒绝启动。
+    const hooks=policyHooks && require('./agent-runtime-mode').usesPtyAgentRuntime('codex')
+      ? require('./codex-hook-integration').mergeHubCodexHooks(policyHooks,require('./codex-hook-integration').hubHookScriptPath(nativeHome)).hooksFile
+      : policyHooks;
     if(hooks){
       const hookFile=path.join(nativeHome,'hooks.json'),hookReceipt=path.join(nativeHome,'.hub-shared-hooks.json');
       const next=JSON.stringify(hooks,null,2)+'\n';
       const current=fs.existsSync(hookFile)?fs.readFileSync(hookFile,'utf8'):null;
       const previous=fs.existsSync(hookReceipt)?JSON.parse(fs.readFileSync(hookReceipt,'utf8')):null;
-      if(current!==null&&JSON.stringify(JSON.parse(current.replace(/^\uFEFF/,'')))!==JSON.stringify(hooks)&&hash(current)!==previous?.digest)throw new Error('Codex hooks 存在独立修改，未覆盖：'+hookFile);
+      // 现有内容若就是策略原样（个人同步脚本写的、没有 Hub 收据），不是「独立修改」，可以升级为
+      // 策略 + Hub 条目（2026-09-26 生产现场：second 账号因此所有 Codex 会话都恢复不了）。
+      const currentJson=current!==null?JSON.stringify(JSON.parse(current.replace(/^\uFEFF/,''))):null;
+      const knownContent=currentJson===JSON.stringify(hooks)||(!!policyHooks&&currentJson===JSON.stringify(policyHooks));
+      if(current!==null&&!knownContent&&hash(current)!==previous?.digest)throw new Error('Codex hooks 存在独立修改，未覆盖：'+hookFile);
       if(current!==next)writeAtomic(hookFile,next);
       const saved=JSON.stringify({digest:hash(next)})+'\n';
       if(!fs.existsSync(hookReceipt)||fs.readFileSync(hookReceipt,'utf8')!==saved)writeAtomic(hookReceipt,saved);

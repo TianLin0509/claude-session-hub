@@ -243,9 +243,10 @@ test('休眠或错误是硬终态，不会被延迟到达的新鲜心跳重新�
   }
 });
 
-test('Codex 未接管时不会由 gcWorking 冒充运行', () => {
+test('App Server Codex 未接管时不会由 gcWorking 冒充运行', () => {
   const sessions = new Map();
-  sessions.set('sid-codex', { id: 'sid-codex', title: 'AI-codex', kind: 'codex', gcWorking: true });
+  sessions.set('sid-codex', { id: 'sid-codex', title: 'AI-codex', kind: 'codex', gcWorking: true,
+    runtimeBackend: 'codex-app-server' });
   const meetings = {
     m1: {
       id: 'm1', title: '群聊X', subSessions: ['sid-codex'], groupChat: true,

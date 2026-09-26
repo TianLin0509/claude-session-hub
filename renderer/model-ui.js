@@ -449,7 +449,6 @@ function createModelUiController({
       if (!response || !response.ok) throw new Error(response && response.message || 'Codex 未确认模型切换');
       return response.result;
     }
-    if (session.kind === 'codex' || session.kind === 'codex-resume') throw new Error('旧 Codex 会话尚未接管，请结束后恢复');
     if (isSessionBusy(session)) throw new Error('当前回答仍在运行，请结束后再切换模型');
     if (!terminalAcceptsModelCommand(getTerminalScreenText(sessionId), 'codex-picker')) {
       throw new Error('Codex 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
