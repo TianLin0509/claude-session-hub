@@ -36,14 +36,16 @@ assert.notStrictEqual(second, id);
 assert.strictEqual(chips.expandPasteMarkers(raw + chips.MARK_START + second + chips.MARK_END), `前${original}后第二段`);
 
 // 接线契约：发送/草稿走展开后的文字；只有会话输入框开启收块；复制经过展开。
-const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+// 生产检出是 CRLF（autocrlf），worktree 是 LF：源码统一成 LF 再做文本断言。
+const readSource = (...parts) => fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8').replace(/\r\n/g, '\n');
+const renderer = readSource('renderer', 'renderer.js');
 assert.match(renderer, /function readContenteditablePlainText\(el\) \{\n\s+return pasteChips\.expandPasteMarkers\(readContenteditableRawText\(el\)\);/);
 assert.match(renderer, /attachContenteditablePasteImage\(inputBox, \{ collapseLongText: true \}\)/);
 assert.match(renderer, /createClipboardController\(\{[^}]*expandText: pasteChips\.expandPasteMarkers/);
 const sendStart = renderer.indexOf('function sendInput()');
 assert.ok(sendStart > 0);
 assert.match(renderer.slice(sendStart, sendStart + 200), /const userText = readContenteditablePlainText\(inputBox\);/);
-const meetingRoom = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-room.js'), 'utf8');
+const meetingRoom = readSource('renderer', 'meeting-room.js');
 assert.ok(!/collapseLongText/.test(meetingRoom), 'group chat composer reads innerText directly; it must not get chips yet');
 
 console.log('unit-composer-paste-chips: all passed');

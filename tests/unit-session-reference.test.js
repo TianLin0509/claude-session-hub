@@ -136,17 +136,21 @@ async function main() {
   assert.strictEqual((await bare.handlers.get('session-reference:resolve')(null, { sessionId: 'a' })).error, 'search-unavailable');
 
   // ── 界面接线契约：按钮在「分支」之后、只填输入框不发送、失败可见
-  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  // 生产检出是 CRLF（autocrlf），worktree 是 LF：源码统一成 LF 再做文本断言。
+  const readSource = (...parts) => fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8').replace(/\r\n/g, '\n');
+  const renderer = readSource('renderer', 'renderer.js');
   assert.match(renderer, /referenceBtn\.className = 'fi-bridge-reference'/);
   assert.match(renderer, /referenceBtn\.textContent = '引用会话'/);
   assert.ok(renderer.indexOf('bridgeToolbar.appendChild(referenceBtn)') > renderer.indexOf('bridgeToolbar.appendChild(branchBtn)'));
   const fnStart = renderer.indexOf('async function referenceSessionIntoInput(');
   assert.ok(fnStart > 0, 'referenceSessionIntoInput must exist');
-  const fnBody = renderer.slice(fnStart, renderer.indexOf('\n}\n', fnStart));
+  const fnEnd = renderer.indexOf('\n}\n', fnStart);
+  assert.ok(fnEnd > fnStart, 'referenceSessionIntoInput body end not found');
+  const fnBody = renderer.slice(fnStart, fnEnd);
   assert.ok(!/send-prompt|terminal-input|sendBtn\.click/.test(fnBody), 'reference must never auto-send');
   assert.ok(!/showToast\(/.test(fnBody), 'showToast is not defined in renderer; failures must use showHubAlert');
   assert.match(fnBody, /showHubAlert/);
-  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const mainSource = readSource('main.js');
   assert.match(mainSource, /registerSessionReferenceIpc\(ipcMain, \{/);
 
   console.log('unit-session-reference: all passed');
