@@ -135,28 +135,32 @@ test('Codex 的 project root 由 markers 决定，且不越过它', () => {
     fs.writeFileSync(path.join(root, 'AGENTS.md'), 'ROOT', 'utf8');
     fs.writeFileSync(path.join(inner, 'AGENTS.md'), 'WS', 'utf8');
 
-    // Control the fixture home: this test must not depend on the user's live
-    // marker settings. With both markers enabled, the nearest one wins.
+    // Pin every marker case to a fixture home; unconfigured uses Codex's .git default.
     const fakeHome = path.join(root, 'home');
     fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
-    const previous = process.env.USERPROFILE;
+    const config = path.join(fakeHome, '.codex', 'config.toml');
+    const previous = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
     process.env.USERPROFILE = fakeHome;
+    process.env.HOME = fakeHome;
     try {
       for (const [markers, expectedRoot, count] of [
+        [null, inner, 1],
         [['.vibe-root'], root, 2],
         [['.git'], inner, 1],
         [['.git', '.vibe-root'], inner, 1],
       ]) {
-        fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'),
-          'project_root_markers = ' + JSON.stringify(markers) + '\n');
+        if (markers) fs.writeFileSync(config, 'project_root_markers = ' + JSON.stringify(markers) + '\n');
+        else fs.rmSync(config, { force: true });
         const cx = PI.discoverCodexChain(inner);
-        assert.deepStrictEqual(cx.markers, markers);
+        assert.deepStrictEqual(cx.markers, markers || ['.git']);
         assert.strictEqual(cx.projectRoot, expectedRoot, 'nearest enabled marker determines root');
         assert.strictEqual(cx.entries.filter(e => e.source === 'project').length, count);
       }
     } finally {
-      if (previous === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = previous;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 });

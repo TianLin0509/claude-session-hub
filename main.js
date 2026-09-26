@@ -2742,6 +2742,10 @@ const accountCenter = new (require('./core/account-center').AccountCenter)({
   adapter: require('./core/account-adapters').createAccountAdapters({ dataDir:getHubDataDir(),homeDir:accountCenterHome }),
 });
 require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
+// The account page: one Hub Chrome holds every web login; CLIs report their own token files.
+require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, new (require('./core/hub-accounts').HubAccounts)({
+  recovery: new (require('./core/web-roundtable/recovery').AccountRecovery)({ dataDir: getHubDataDir() }),
+}));
 
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,

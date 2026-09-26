@@ -14,6 +14,15 @@ const path = require('node:path');
 const { WorkspaceService } = require('../core/workspace-service.js');
 const PI = require('../core/prompt-inspect.js');
 
+// Codex's root markers come from ~/.codex/config.toml. Pin them here instead of reading the
+// user's real config: on 2026-09-25 that file was rewritten (key quoted, ".git" added) and
+// this test started failing on a clean master for reasons that had nothing to do with code.
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-codexroot-home-'));
+fs.mkdirSync(path.join(fakeHome, '.codex'));
+fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'project_root_markers = [".git", ".vibe-root"]\n', 'utf8');
+process.env.USERPROFILE = fakeHome; process.env.HOME = fakeHome;
+process.on('exit', () => fs.rmSync(fakeHome, { recursive: true, force: true }));
+
 let failed = 0;
 function test(name, fn) {
   try { fn(); console.log(`  OK ${name}`); }

@@ -1,4 +1,4 @@
-/* Account page: one card per account, its features listed underneath. */
+/* Account page: the identities of the Hub Chrome, their sites and the CLIs authorised from them. */
 .ac-page{position:fixed;inset:60px 0 0 78px;z-index:950;display:flex;flex-direction:column;overflow:hidden;
  background:var(--surface-canvas,#0d1117);color:var(--fg-default,#c9d1d9);font-size:13px}
 .ac-page[hidden],.ac-page [hidden]{display:none!important}
@@ -10,94 +10,50 @@
 
 .ac-head{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;padding:26px 32px 14px}
 .ac-head h1{margin:0;font-size:23px;letter-spacing:.5px;color:var(--fg-strong,#f0f6fc)}
-.ac-head p{margin:7px 0 0;max-width:620px;line-height:1.7;color:var(--fg-muted,#8b949e);font-size:12px}
+.ac-head p{margin:7px 0 0;max-width:640px;line-height:1.7;color:var(--fg-muted,#8b949e);font-size:12px}
 .ac-head-actions{display:flex;gap:8px;flex-shrink:0}
 
 .ac-btn{border:1px solid var(--border-mid,#30363d);border-radius:var(--radius-sm,8px);padding:7px 13px;cursor:pointer;
- font:inherit;font-size:12px;background:var(--surface-raised,#161b22);color:var(--fg-default,#c9d1d9);
- transition:background .12s,border-color .12s,color .12s;white-space:nowrap}
+ font:inherit;font-size:12px;background:var(--surface-raised,#161b22);color:var(--fg-default,#c9d1d9);white-space:nowrap}
 .ac-btn:hover:not(:disabled){border-color:var(--border-strong,#484f58);background:var(--surface-overlay,#1c2128);color:var(--fg-strong,#f0f6fc)}
 .ac-btn.primary{background:var(--brand,#8b5cf6);border-color:var(--brand,#8b5cf6);color:var(--brand-ink,#fff)}
 .ac-btn.primary:hover:not(:disabled){background:var(--brand-hover,#a78bfa);border-color:var(--brand-hover,#a78bfa)}
-.ac-btn.ghost{background:transparent;border-color:transparent;color:var(--fg-muted,#8b949e);padding:6px 10px}
-.ac-btn.ghost:hover:not(:disabled){background:var(--surface-hover,rgba(240,246,252,.06));border-color:var(--border-mid,#30363d)}
 .ac-btn:disabled{opacity:.5;cursor:progress}
 .ac-page button:focus-visible{outline:2px solid var(--brand-hover,#a78bfa);outline-offset:2px}
 
 .ac-status{margin:0 32px;padding:9px 13px;border-radius:var(--radius-sm,8px);line-height:1.6;
  background:var(--surface-raised,#161b22);border:1px solid var(--border-subtle,#21262d);color:var(--fg-muted,#8b949e)}
-.ac-status.error{color:var(--status-danger,#e74c3c);border-color:rgba(var(--rgb-danger,248,81,73),.4);
- background:var(--status-danger-tint,rgba(248,81,73,.1))}
+.ac-status.error{color:var(--status-danger,#e74c3c);border-color:rgba(var(--rgb-danger,248,81,73),.4);background:var(--status-danger-tint,rgba(248,81,73,.1))}
 
-.ac-content{flex:1;min-height:0;overflow:auto;padding:16px 32px 40px}
-.ac-cards{display:grid;gap:14px;max-width:880px}
+.ac-content{flex:1;min-height:0;overflow:auto;padding:14px 32px 40px}
+.ac-chrome{margin:0 0 14px;font-size:12px;color:var(--fg-muted,#8b949e)}
+.ac-empty{color:var(--fg-muted,#8b949e)}
+.ac-ids{display:grid;gap:14px;max-width:880px}
 
-.ac-card{border:1px solid var(--border-subtle,#21262d);border-radius:var(--radius-md,12px);
- background:var(--surface-card,#1c1d23);overflow:hidden}
-.ac-card.attention{border-color:rgba(var(--rgb-warning,210,153,34),.45)}
-.ac-card-head{display:flex;align-items:center;gap:13px;padding:15px 17px}
-.ac-card-title{flex:1;min-width:0}
-.ac-card-title strong{display:block;font-size:15px;font-weight:600;color:var(--fg-strong,#f0f6fc)}
-.ac-card-title small{display:block;margin-top:3px;font-size:11.5px;color:var(--fg-muted,#8b949e);
- overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ac-card-note{margin:-6px 17px 12px 66px;font-size:11.5px;line-height:1.7;color:var(--fg-faint,#6b7280)}
+.ac-id{border:1px solid var(--border-subtle,#21262d);border-radius:var(--radius-md,12px);background:var(--surface-card,#1c1d23);padding:16px 18px}
+.ac-id.attention{border-color:rgba(var(--rgb-warning,210,153,34),.45)}
+.ac-id-head{display:flex;align-items:center;gap:13px;margin-bottom:12px}
+.ac-id-badge{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border-radius:10px;font-size:14px;font-weight:700;
+ background:rgba(var(--rgb-brand,139,92,246),.16);color:var(--brand-text,#c4b5fd)}
+.ac-id-title{flex:1;min-width:0}
+.ac-id-title strong{display:block;font-size:15px;font-weight:600;color:var(--fg-strong,#f0f6fc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-id-title small{display:block;margin-top:2px;font-size:11.5px;color:var(--fg-muted,#8b949e)}
+.ac-id-row{display:flex;align-items:flex-start;gap:12px;padding:6px 0 0 49px}
+.ac-id-k{flex-shrink:0;width:42px;padding-top:4px;font-size:11.5px;color:var(--fg-muted,#8b949e)}
+.ac-chips{display:flex;flex-wrap:wrap;gap:7px}
+.ac-chip{border:1px solid var(--border-mid,#30363d);border-radius:var(--radius-pill,999px);padding:3px 11px;font:inherit;font-size:12px;
+ background:transparent;color:var(--fg-default,#c9d1d9);white-space:nowrap}
+.ac-chip.ok{border-color:rgba(var(--rgb-success,63,185,80),.45);color:var(--mark-green,#7ee787)}
+.ac-chip.warn{border-color:rgba(var(--rgb-warning,210,153,34),.55);color:var(--mark-amber-soft,#f0ad4e)}
+.ac-chip.idle{color:var(--fg-muted,#8b949e)}
+button.ac-chip{cursor:pointer}
+button.ac-chip:hover{background:var(--surface-hover,rgba(240,246,252,.06))}
 
-.ac-avatar{display:grid;place-items:center;width:36px;height:36px;flex-shrink:0;border-radius:10px;
- font-size:12px;font-weight:700;letter-spacing:.5px;background:var(--surface-overlay,#1c2128);color:var(--fg-default,#c9d1d9)}
-.ac-avatar.small{width:22px;height:22px;border-radius:7px;font-size:10px;font-weight:600}
-.ac-avatar-openai{background:rgba(var(--rgb-teal,95,212,208),.16);color:var(--mark-teal,#5fd4d0)}
-.ac-avatar-anthropic,.ac-avatar-claude{background:rgba(var(--rgb-orange,240,136,62),.16);color:var(--mark-feature,#f0ad4e)}
-.ac-avatar-google,.ac-avatar-gemini{background:rgba(var(--rgb-info,88,166,255),.16);color:var(--mark-blue,#79b8ff)}
-.ac-avatar-moonshot,.ac-avatar-kimi{background:rgba(var(--rgb-brand,139,92,246),.18);color:var(--brand-text,#c4b5fd)}
-.ac-avatar-deepseek{background:rgba(var(--rgb-info,88,166,255),.14);color:var(--mark-indigo,#6366f1)}
-.ac-avatar-doubao{background:rgba(var(--rgb-danger,248,81,73),.14);color:var(--mark-red,#ff7b72)}
-.ac-avatar-qwen{background:rgba(var(--rgb-brand-soft,167,139,250),.16);color:var(--mark-indigo,#6366f1)}
-.ac-avatar-codex,.ac-avatar-chatgpt,.ac-avatar-images,.ac-avatar-bridge{background:rgba(var(--rgb-teal,95,212,208),.14);color:var(--mark-teal,#5fd4d0)}
-
-.ac-pill{flex-shrink:0;padding:3px 9px;border-radius:var(--radius-pill,999px);font-size:11px;font-weight:600}
-.ac-pill.ok{background:var(--status-success-tint,rgba(63,185,80,.14));color:var(--mark-green,#7ee787)}
-.ac-pill.warn{background:var(--status-warning-tint,rgba(210,153,34,.14));color:var(--mark-amber-soft,#f0ad4e)}
-
-.ac-verdicts{list-style:none;margin:0;padding:0 17px 13px 66px}
-.ac-verdict{display:flex;align-items:center;gap:10px;padding:3px 0;font-size:12px}
-.ac-verdict-name{flex-shrink:0;color:var(--fg-default,#c9d1d9);font-weight:500}
-.ac-verdict-text{color:var(--fg-muted,#8b949e)}
-.ac-card-head+.ac-verdicts{margin-top:-8px}
-.ac-features{list-style:none;margin:0;padding:0;border-top:1px solid var(--border-subtle,#21262d)}
-.ac-features.plain{border-top:0;margin-top:6px}
-.ac-feature{display:flex;align-items:center;gap:11px;padding:10px 17px;min-height:42px}
-.ac-feature+.ac-feature{border-top:1px solid rgba(var(--rgb-neutral,139,148,158),.1)}
-.ac-feature-name{flex-shrink:0;color:var(--fg-default,#c9d1d9)}
-.ac-feature-account{flex:1;min-width:0;font-size:11.5px;color:var(--fg-muted,#8b949e);
- overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ac-feature-account.none{color:var(--fg-faint,#6b7280);font-style:italic}
-.ac-feature-state{flex-shrink:0;text-align:right;font-size:11.5px;color:var(--fg-muted,#8b949e);
- overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ac-card.solo .ac-feature-account{flex:0 1 auto}
-.ac-feature .ac-btn{flex-shrink:0;min-width:58px}
-.ac-card.solo .ac-feature{padding:13px 17px;border-top:0}
-.ac-card.solo .ac-feature-state{flex:0 1 auto}
-
-.ac-dot{width:8px;height:8px;flex-shrink:0;border-radius:50%;background:var(--fg-faint,#484f58)}
-.ac-dot.ok{background:var(--status-success,#3fb950);box-shadow:0 0 0 3px var(--status-success-tint,rgba(63,185,80,.14))}
-.ac-dot.warn{background:var(--status-warning,#f0883e);box-shadow:0 0 0 3px var(--status-warning-tint,rgba(210,153,34,.14))}
-/* Proved earlier, nothing has contradicted it — readable as good, distinct from live proof. */
-.ac-dot.rest{background:transparent;border:2px solid var(--status-success,#3fb950);opacity:.75}
-
-.ac-extra{max-width:880px;margin-top:18px}
-.ac-extra-head{display:flex;align-items:center;gap:10px;width:100%;padding:11px 4px;cursor:pointer;
- background:none;border:0;border-top:1px solid var(--border-subtle,#21262d);color:var(--fg-default,#c9d1d9);font:inherit;text-align:left}
-.ac-extra-head:hover{color:var(--fg-strong,#f0f6fc)}
-.ac-extra-head small{flex:1;font-size:11.5px;color:var(--fg-muted,#8b949e)}
-.ac-extra-head i{font-style:normal;color:var(--fg-muted,#8b949e)}
-
-.ac-log{list-style:none;margin:0;padding:0 4px}
-.ac-log li{display:flex;gap:12px;align-items:baseline;padding:7px 0;font-size:11.5px;color:var(--fg-muted,#8b949e);
- border-bottom:1px solid rgba(var(--rgb-neutral,139,148,158),.08)}
-.ac-log time{flex-shrink:0;width:150px;font-variant-numeric:tabular-nums}
-.ac-log strong{flex-shrink:0;width:170px;font-weight:600;color:var(--fg-default,#c9d1d9);
- overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ac-empty{padding:14px 4px;color:var(--fg-muted,#8b949e)}
+.ac-unplaced{display:flex;flex-wrap:wrap;align-items:center;gap:10px;max-width:880px;margin-top:16px;padding-top:14px;border-top:1px solid var(--border-subtle,#21262d)}
+.ac-unplaced small{flex-basis:100%;color:var(--fg-muted,#8b949e);font-size:11.5px}
+.ac-tools{max-width:880px;margin:20px 0 12px;padding-top:16px;border-top:1px solid var(--border-subtle,#21262d)}
+.ac-tools strong{display:block;margin-bottom:10px;font-size:12px;color:var(--fg-muted,#8b949e)}
+.ac-evidence{max-width:880px;line-height:1.8}
 
 #account-editor{flex:1;min-height:0;overflow:auto;padding:14px 32px 32px}
 #account-editor #config-detail-view{display:block}
@@ -110,6 +66,5 @@
  .ac-head{flex-direction:column;padding:20px 20px 12px}
  .ac-status{margin:0 20px}
  .ac-content,#account-editor{padding-left:20px;padding-right:20px}
- .ac-feature{flex-wrap:wrap;row-gap:4px}
- .ac-feature-state{text-align:left;flex-basis:100%;order:3;padding-left:19px}
+ .ac-id-row{padding-left:0}
 }
