@@ -177,6 +177,71 @@ function renderRawComposerText(inputEl, raw, { document }) {
   if (last < value.length) inputEl.appendChild(document.createTextNode(value.slice(last)));
 }
 
+// 预览浮层全局只有一个，状态也只能有一份：绑在某个输入框闭包里的话，那个输入框销毁后，
+// 别的输入框里「移进预览滚动」会被旧计时器收起。
+let hideTimer = null;
+let activeChip = null;
+function cancelHide() { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }
+function popover(document) {
+  let el = document.querySelector('.fi-paste-preview');
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'fi-paste-preview';
+  el.setAttribute('role', 'tooltip');
+  el.hidden = true;
+  const head = document.createElement('div');
+  head.className = 'fi-paste-preview-head';
+  const title = document.createElement('strong');
+  const meta = document.createElement('span');
+  head.append(title, meta);
+  const body = document.createElement('pre');
+  body.className = 'fi-paste-preview-body';
+  const foot = document.createElement('div');
+  foot.className = 'fi-paste-preview-foot';
+  el.append(head, body, foot);
+  // 允许把鼠标移进预览里滚动查看；离开预览再收起。
+  el.addEventListener('mouseenter', cancelHide);
+  el.addEventListener('mouseleave', () => scheduleHide(document));
+  document.body.appendChild(el);
+  return el;
+}
+function hide(document) {
+  cancelHide();
+  activeChip = null;
+  const el = document.querySelector('.fi-paste-preview');
+  if (el) el.hidden = true;
+}
+function scheduleHide(document) {
+  cancelHide();
+  hideTimer = setTimeout(() => hide(document), 180);
+}
+function show(chip, { document, window }) {
+  cancelHide();
+  if (activeChip === chip) return;
+  const entry = pasteEntry(chip.dataset.pasteId);
+  if (!entry) return;
+  activeChip = chip;
+  const el = popover(document);
+  el.querySelector('.fi-paste-preview-head strong').textContent = `粘贴文本 #${chip.dataset.pasteIndex || '?'}`;
+  el.querySelector('.fi-paste-preview-head span').textContent = `${entry.lines} 行 · ${entry.chars.toLocaleString()} 字`;
+  const shown = entry.text.length > PREVIEW_MAX_CHARS ? entry.text.slice(0, PREVIEW_MAX_CHARS) : entry.text;
+  el.querySelector('.fi-paste-preview-body').textContent = shown;
+  const hiddenLines = entry.lines - countLines(shown);
+  el.querySelector('.fi-paste-preview-foot').textContent = (hiddenLines > 0 ? `… 另有 ${hiddenLines} 行未显示 · ` : '')
+    + '发送时自动展开为原文 · 退格可整块删除';
+  el.hidden = false;
+  el.scrollTop = 0;
+  el.querySelector('.fi-paste-preview-body').scrollTop = 0;
+  // 输入框在窗口底部：预览放在块的上方，左右夹在视口内。
+  const rect = chip.getBoundingClientRect();
+  const box = el.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - box.width - 8));
+  const above = rect.top - box.height - 8;
+  const top = above >= 8 ? above : Math.min(rect.bottom + 8, window.innerHeight - box.height - 8);
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(Math.max(8, top))}px`;
+}
+
 function selectionTextWithin(inputEl, window) {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount < 1 || selection.isCollapsed) return '';
@@ -204,82 +269,20 @@ function attachPasteChipBehaviors(inputEl, { document, window }) {
   inputEl.addEventListener('copy', onCopyOrCut);
   inputEl.addEventListener('cut', onCopyOrCut);
 
-  let hideTimer = null;
-  let activeChip = null;
-  const cancelHide = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
-  const popover = () => {
-    let el = document.querySelector('.fi-paste-preview');
-    if (el) return el;
-    el = document.createElement('div');
-    el.className = 'fi-paste-preview';
-    el.setAttribute('role', 'tooltip');
-    el.hidden = true;
-    const head = document.createElement('div');
-    head.className = 'fi-paste-preview-head';
-    const title = document.createElement('strong');
-    const meta = document.createElement('span');
-    head.append(title, meta);
-    const body = document.createElement('pre');
-    body.className = 'fi-paste-preview-body';
-    const foot = document.createElement('div');
-    foot.className = 'fi-paste-preview-foot';
-    el.append(head, body, foot);
-    // 允许把鼠标移进预览里滚动查看；离开预览再收起。
-    el.addEventListener('mouseenter', cancelHide);
-    el.addEventListener('mouseleave', () => scheduleHide());
-    document.body.appendChild(el);
-    return el;
-  };
-  function hide() {
-    cancelHide();
-    activeChip = null;
-    const el = document.querySelector('.fi-paste-preview');
-    if (el) el.hidden = true;
-  }
-  function scheduleHide() {
-    cancelHide();
-    hideTimer = setTimeout(hide, 180);
-  }
-  function show(chip) {
-    cancelHide();
-    if (activeChip === chip) return;
-    const entry = pasteEntry(chip.dataset.pasteId);
-    if (!entry) return;
-    activeChip = chip;
-    const el = popover();
-    el.querySelector('.fi-paste-preview-head strong').textContent = `粘贴文本 #${chip.dataset.pasteIndex || '?'}`;
-    el.querySelector('.fi-paste-preview-head span').textContent = `${entry.lines} 行 · ${entry.chars.toLocaleString()} 字`;
-    const shown = entry.text.length > PREVIEW_MAX_CHARS ? entry.text.slice(0, PREVIEW_MAX_CHARS) : entry.text;
-    el.querySelector('.fi-paste-preview-body').textContent = shown;
-    const hiddenLines = entry.lines - countLines(shown);
-    el.querySelector('.fi-paste-preview-foot').textContent = (hiddenLines > 0 ? `… 另有 ${hiddenLines} 行未显示 · ` : '')
-      + '发送时自动展开为原文 · 退格可整块删除';
-    el.hidden = false;
-    el.scrollTop = 0;
-    el.querySelector('.fi-paste-preview-body').scrollTop = 0;
-    // 输入框在窗口底部：预览放在块的上方，左右夹在视口内。
-    const rect = chip.getBoundingClientRect();
-    const box = el.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - box.width - 8));
-    const above = rect.top - box.height - 8;
-    const top = above >= 8 ? above : Math.min(rect.bottom + 8, window.innerHeight - box.height - 8);
-    el.style.left = `${Math.round(left)}px`;
-    el.style.top = `${Math.round(Math.max(8, top))}px`;
-  }
   inputEl.addEventListener('mouseover', (event) => {
     const chip = event.target && event.target.closest ? event.target.closest('.fi-paste-chip') : null;
-    if (chip && inputEl.contains(chip)) show(chip);
+    if (chip && inputEl.contains(chip)) show(chip, { document, window });
   });
   inputEl.addEventListener('mouseout', (event) => {
     const chip = event.target && event.target.closest ? event.target.closest('.fi-paste-chip') : null;
     if (!chip) return;
     const to = event.relatedTarget;
     if (to && (chip.contains(to) || (to.closest && to.closest('.fi-paste-preview')))) return;
-    scheduleHide();
+    scheduleHide(document);
   });
   // 块被删掉、输入框被清空或发送后，别留一个悬空的预览。
   inputEl.addEventListener('input', () => {
-    if (activeChip && !inputEl.contains(activeChip)) hide();
+    if (activeChip && !activeChip.isConnected) hide(document);
   });
 }
 

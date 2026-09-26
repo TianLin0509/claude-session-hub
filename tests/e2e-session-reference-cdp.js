@@ -184,6 +184,17 @@ async function main() {
     assert.equal(button.topmost, true, 'reference button must not be covered');
     result.toolbarOrder = await client.eval(`Array.from(document.querySelector('.fi-bridge-toolbar').children).map(el => el.textContent.trim())`);
 
+    // 输入框里先有一个长文本粘贴块：引用只能在末尾追加，不能把块展开或把整框收成新块。
+    const PASTED = Array.from({ length: 50 }, (_, i) => `粘贴行 ${i + 1}`).join('\n');
+    await client.eval(`(() => {
+      const box = document.querySelector('.floating-input-box');
+      box.focus();
+      const dt = new DataTransfer();
+      dt.setData('text/plain', ${JSON.stringify(PASTED)});
+      box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    })()`);
+    assert.equal(await client.eval("document.querySelectorAll('.floating-input-box .fi-paste-chip').length"), 1);
+
     console.log('[step] click 引用会话');
     await clickPoint(client, button.x, button.y);
     const row = await waitFor('Codex row in picker', () => locate(client,
@@ -204,6 +215,15 @@ async function main() {
     })()`), 30000);
     result.pickToInsertMs = Date.now() - pickedAt;
     result.inputText = inserted;
+    result.chipPreserved = await client.eval(`(() => {
+      const box = document.querySelector('.floating-input-box');
+      const full = readContenteditablePlainText(box);
+      // Chromium 在不可编辑的行内块后插换行会多出一个空行，只校验「原文 + 空白 + 引用行」。
+      const pasted = ${JSON.stringify(PASTED)};
+      return { chips: box.querySelectorAll('.fi-paste-chip').length,
+        startsWithPaste: full.startsWith(pasted) && /^\\s+【引用会话】/.test(full.slice(pasted.length)) };
+    })()`);
+    assert.deepEqual(result.chipPreserved, { chips: 1, startsWithPaste: true }, 'reference must append after the existing paste chip');
     assert.ok(inserted.includes(`Codex 会话「${SOURCE_TITLE}」`), inserted);
     const mdPath = (inserted.match(/聊天记录：(.+?\.md)/) || [])[1];
     assert.ok(mdPath, 'reference line must contain a .md path');

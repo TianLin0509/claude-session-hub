@@ -452,6 +452,25 @@ function replaceContenteditableText(el, text) {
   if (!applied || wrong) el.textContent = next;
 }
 
+// 在输入框末尾另起一段追加文字。只追加、不整框替换：已有的粘贴块保持原样（整框替换会先把它们
+// 展开成原文再写回），撤销栈也保留。追加的内容本身够长时同样收成粘贴块。
+function appendToContenteditable(el, text) {
+  const incoming = String(text || '');
+  if (!el || !incoming) return;
+  const current = readContenteditablePlainText(el);
+  const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
+  el.focus();
+  placeCaretAtContenteditableEnd(el);
+  if (el.dataset.pasteChipsBound === '1' && pasteChips.shouldCollapsePaste(incoming)) {
+    if (separator) document.execCommand('insertText', false, separator);
+    pasteChips.insertPasteChip(el, incoming, { document, window });
+    return;
+  }
+  if (!document.execCommand('insertText', false, separator + incoming)) {
+    el.appendChild(document.createTextNode(separator + incoming));
+  }
+}
+
 function placeCaretAtContenteditableEnd(el) {
   if (!el) return;
   try {
@@ -4198,10 +4217,7 @@ async function referenceSessionIntoInput(sessionId, inputBox, button) {
         if (!result?.ok) { alertError('引用失败：' + (result?.message || result?.error || '未知原因')); return; }
         if (!inputBox.isConnected) return;
         const line = buildReferenceText({ title: row.title || result.title, kind: row.kind, path: result.path });
-        const current = readContenteditablePlainText(inputBox);
-        const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
-        replaceContenteditableText(inputBox, `${current}${separator}${line}\n`);
-        placeCaretAtContenteditableEnd(inputBox);
+        appendToContenteditable(inputBox, `${line}\n`);
         saveFloatingInputDraft(sessionId, inputBox);
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
@@ -4351,10 +4367,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       await chatgptBridgeController.pullForInput(async (content) => {
         const incoming = String(content || '').trim();
         if (!incoming) return false;
-        const current = readContenteditablePlainText(inputBox);
-        const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
-        replaceContenteditableText(inputBox, `${current}${separator}${incoming}`);
-        placeCaretAtContenteditableEnd(inputBox);
+        appendToContenteditable(inputBox, incoming);
         saveFloatingInputDraft(sessionId, inputBox);
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
