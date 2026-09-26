@@ -6,6 +6,7 @@ const { Worker } = require('node:worker_threads');
 const Feed = require('../../core/dev-workbench-feed');
 const DP = require('../../renderer/dev-progress');
 const FileFlow = require('../../core/dev-file-workflow');
+const Delivery = require('../../core/delivery-workflow');
 const TaskView = require('../../core/dev-task-view');
 const Runtime = require('../../core/session-runtime-truth');
 const { createTaskReader } = require('./dev-task-reader');
@@ -90,8 +91,8 @@ function createDevWorkbench(deps) {
     return '';
   }
   function makeRow(m) {
-    if (FileFlow.enabled(m)) {
-      const file = deps.fileEngine?.status(m.id);
+    if (FileFlow.enabled(m) || Delivery.enabled(m)) {
+      const file = Delivery.enabled(m) ? deps.deliveryEngine?.status(m.id) : deps.fileEngine?.status(m.id);
       const error = file?.error || file?.dispatchError || (!file ? '文件工作流不可用' : '');
       return { id: m.id, title: Feed.clean(m.title, 240) || '开发群聊', workspace: m.workspace,
         project: projectNameOf(m.workspace, Feed.clean), createdAt: m.createdAt, activityAt: m.lastMessageTime || m.createdAt,
@@ -172,6 +173,11 @@ function createDevWorkbench(deps) {
   }
   function safeRow(m) {
     try {
+      if(Delivery.enabled(m)){
+        const row=makeRow(m),file=deps.deliveryEngine?.status(m.id);
+        return {...row,scope:file?.finished?'history':'current',mode:'文件交付',notice:row.lastError || '',basis:'逐成员交付文件与持久化执行记录',
+          source:{name:'文件交付记录'},runtime:taskRuntime(m),quality:file?'fresh':'stale'};
+      }
       if (FileFlow.enabled(m)) {
         const flow=m.serialWorkflow?.fileFlow || {};
         const row = TaskView.projectFileRow(m, taskReader.get(m), taskRuntime(m), { paused:flow.paused, dispatchError:flow.error });
@@ -270,7 +276,7 @@ function createDevWorkbench(deps) {
     const devs = meetings.filter(DP.isDevMeeting);
     for (const m of devs) {
       if (retryErrors && summaries.get(m.id)?.error) summaries.delete(m.id);
-      if (!FileFlow.enabled(m)) queue(m.id);
+      if (!FileFlow.enabled(m) && !Delivery.enabled(m)) queue(m.id);
     }
     pump();
     return { ok: true, epoch, sequence, rows: devs.map(safeRow) };
@@ -282,12 +288,12 @@ function createDevWorkbench(deps) {
       if(sid) for(const m of allMeetings()) if(m.subSessions?.includes(sid)) changed(m.id);
       return;
     }
-    const channels = ['loop:progress', 'workflow:progress', 'meeting-created', 'meeting-updated', 'meeting-closed', 'meeting-created-with-errors'];
+    const channels = ['delivery:changed', 'loop:progress', 'workflow:progress', 'meeting-created', 'meeting-updated', 'meeting-closed', 'meeting-created-with-errors'];
     if (!channels.includes(channel)) return;
     const id = data.meetingId || data.meeting?.id;
     if (!validId(id)) return;
     const m=meeting(id);if(FileFlow.enabled(m))taskReader.enqueue(m);
-    if (DP.isDevMeeting(m) && !FileFlow.enabled(m)) { queue(id); pump(); }
+    if (DP.isDevMeeting(m) && !FileFlow.enabled(m) && !Delivery.enabled(m)) { queue(id); pump(); }
     changed(id);
   }
 

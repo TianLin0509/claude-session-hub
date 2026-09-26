@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const F = require('../../core/dev-file-workflow');
 const Settings = require('../../core/workflow-settings');
 
-function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers, isWorkflowRunning = () => false,
+function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers, deliveryEngine, isWorkflowRunning = () => false,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
   const preparing = new Set(), active = new Map(), snapshots = new Map(), stopped = new Set();
   let timer = null, directoryEvents = null, restartScope = null;
@@ -235,11 +235,13 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
         const m = get(meetingId);
         if (!m?.groupChat) throw new Error('群聊不存在');
         const wf = m.serialWorkflow || {}, fileStatus = status(meetingId);
+        if (deliveryEngine?.isBusy(meetingId)) throw new Error('当前任务尚未结束，请先完成或结束任务，再修改工作流');
         if (fileStatus?.error) throw new Error('任务目录状态无法确认，保留原设置：'+fileStatus.error);
         if (isWorkflowRunning(meetingId) || preparing.has(meetingId) || active.get(meetingId)?.size || wf.loopState?.status === 'running' || wf.serialRunState?.status === 'running') throw new Error('工作流运行中，停止并等待本轮结束后再修改');
         if ((wf.settingsRevision || 0) !== expectedRevision) throw new Error('设置已被更新，请关闭后重新打开');
         const ids = (m.slotSpecs || []).map((p,i)=>p.memberId || `m${i+1}`);
-        const next = Settings.toConfig(wf,draft,ids);
+        // Existing delivered legacy tasks keep their original protocol and paths.
+        const next = fileStatus?.files?.length ? Settings.toConfig(wf,draft,ids) : Settings.toDeliveryConfig(wf,draft,ids);
         if (fileStatus?.files?.length && (draft.kind !== 'file' || JSON.stringify(next.steps) !== JSON.stringify(wf.steps))) throw new Error('已有任务文件，不能切换协议或负责人；请为新任务创建群聊');
         next.settingsRevision = (wf.settingsRevision || 0) + 1;
         meetingManager.updateMeeting(meetingId,{serialWorkflow:next});
