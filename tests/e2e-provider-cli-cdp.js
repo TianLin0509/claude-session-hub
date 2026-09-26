@@ -27,7 +27,7 @@ async function main(){
     for(const kind of selected.length?selected:['qwen','glm','deepseek']){
       const s=await invoke('create-session',{kind,opts:{cwd,...(kind==='deepseek'?{model:'deepseek-v4-flash',effort:'low',mcpProfile:'none'}:{})}});assert(s.id,j(s));assert.equal(s.agentRuntime,'pty');assert.equal(s.runtimeBackend,null);
       const marker=kind.toUpperCase().replace(/-/g,'_')+'_CLI_OK';await send(s.id,'Reply only '+marker);await response(s.id,marker);
-      check(kind+' real UI prompt + CLI output + cards + completion');
+      check(kind+' real UI prompt + CLI output + parsed history + completion');
       const sid=await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`);assert(sid);
       const restarted=await invoke('restart-session',s.id);assert(restarted.id||restarted.session?.id,j(restarted));
       await send(s.id,'Reply only '+marker+'_RESTART');await response(s.id,marker+'_RESTART');
@@ -49,7 +49,9 @@ async function main(){
         await until(`!['running','starting','waiting'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'stop settles',45000);
         await send(s.id,'Reply only '+marker+'_AFTER_STOP');await response(s.id,marker+'_AFTER_STOP');check(kind+' real tool interrupt and next prompt');
       }
-      await c.eval(`applyViewMode('card')`);await screenshot(kind+'-cards');
+      await c.eval(`applyViewMode('card')`);
+      await until(`Array.from(document.querySelectorAll('#msg-overlay .turn-card.assistant')).some(e=>e.textContent.includes(${j(marker+'_RESTART')}))`,'visible historical assistant card');
+      await screenshot(kind+'-cards');check(kind+' real visible card renders native answer after restart');
       if(kind==='qwen'&&process.argv.includes('--fork')){
         const fork=await invoke('fork-session',{sourceSessionId:s.id});assert(fork.session?.id,j(fork));
         await send(fork.session.id,'Reply only QWEN_FORK_OK');await response(fork.session.id,'QWEN_FORK_OK');

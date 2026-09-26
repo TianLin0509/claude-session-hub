@@ -2616,7 +2616,7 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — all transcript-backed coding CLIs share the card experience.
-  const supportsCardHistory = kind && (isNativeSession(session) || isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind));
+  const supportsCardHistory = kind && (isNativeSession(session) || isClaudeFamily(kind) || isTranscriptCliKind(kind));
   if (kind && !supportsCardHistory) {
     showPlaceholder(
       '该会话没有结构化历史 — '
