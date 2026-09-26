@@ -62,7 +62,13 @@ if (typeof document !== 'undefined') (function () {
   const DevFile = require('../core/dev-file-workflow.js');
   const Delivery = require('../core/delivery-workflow.js');
   const DeliveryControls = require('./delivery-workflow-controls.js');
+  const Recipients = require('../core/groupchat-recipients.js');
+  const SourceFinal = require('../core/groupchat-source-final.js');
   const _devFileStates = {}, _devFileRequests = new Set();
+  ipcRenderer.on('groupchat-user-supplement',(_e,event)=>{
+    const m=meetingData[event?.meetingId];
+    if(m && m.id===activeMeetingId)void refreshGroupChatPanel(m);
+  });
   ipcRenderer.on('dev-file:changed', (_e, state) => {
     if (!state?.meetingId) return;
     _devFileStates[state.meetingId] = state;
@@ -2398,9 +2404,9 @@ if (typeof document !== 'undefined') (function () {
     // meta 文字
     if (metaEl) {
       const parts = [];
-      if (turnsCount > 0) parts.push(`已 ${turnsCount} 轮`);
+      if (turnsCount > 0 && !Delivery.enabled(meeting)) parts.push(`已 ${turnsCount} 轮`);
       if (totalSecTxt) parts.push(`⏱ ${totalSecTxt}`);
-      if (mode && mode !== 'idle' && total > 0) {
+      if (mode && mode !== 'idle' && total > 0 && !Delivery.enabled(meeting)) {
         parts.push(`<span class="mr-header-meta-active">本轮 ${done}/${total}</span>`);
       }
       metaEl.innerHTML = parts.length ? '· ' + parts.join(' · ') : '';
@@ -2491,7 +2497,7 @@ if (typeof document !== 'undefined') (function () {
     const isUser = message.role === 'user';
     const slot = isUser ? null : memberBySid[message.sid];
     const slotCls = slot ? ` slot-${(slot.slotIndex || 0) + 1}` : '';
-    const label = isUser ? '我' : (message.speaker || (slot && slot.displayLabel) || 'AI');
+    const label = isUser ? (isDispatchCard(message)?'工作流':'我') : (message.speaker || (slot && slot.displayLabel) || 'AI');
     // 投委会发言（committeeAct）：幕次 badge + 气泡左侧色条标识（折叠交给通用「长回答折叠」，不重复做）
     const cAct = message.committeeAct || '';
     let actBadge = '';
@@ -2586,6 +2592,8 @@ if (typeof document !== 'undefined') (function () {
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
+    } else if (isUser && isDispatchCard(message) && message.dispatch?.kind==='delivery') {
+      body=require('./delivery-dispatch-view').render(message,escapeHtml);
     } else if (isUser && isDispatchCard(message)) {
       // 派发卡片：每轮重复的角色抬头默认折叠，本轮真正要看的内容直接展开。
       // 只折显示，不改一个字的下发内容（prompt 由 loop-workflow 负责，这里碰不到）。
@@ -2648,10 +2656,11 @@ if (typeof document !== 'undefined') (function () {
     const attemptLabel = isUser ? dispatchAttemptText(message) : '';
     const activityHeader = !isUser ? require('./conversation-message-view').renderSequenceActivity(message.displayMessages, escapeHtml) : '';
     const recipientBadge = recipient ? `<span class="mr-gc-to-badge">${escapeHtml(recipient)}</span>` : '';
+    const supplementReceipt = isUser && message.supplementDelivery ? `<span class="mr-supplement-receipt">${escapeHtml(require('./supplement-receipt').format(message.supplementDelivery))}</span>` : '';
     const attemptBadge = attemptLabel ? `<span class="mr-gc-to-badge is-retry">${escapeHtml(attemptLabel)}</span>` : '';
     const journal = require('./groupchat-journal');
     const journalActions = !isUser ? journal.actions({copy:copyAction,prompt:promptAction,attempt:attemptAction,resync:resyncAction,retry:retryParticipantAction,submit:submitAgainAction}) : '';
-    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}${journalActions}</div>`;
+    const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${supplementReceipt}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}${journalActions}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
@@ -2693,6 +2702,7 @@ if (typeof document !== 'undefined') (function () {
         : isSlotParticipatingThisTurn(meeting, slot.slotIndex);
       if (!partial && !participating) continue;
       const text = partial && partial.text ? partial.text : '';
+      if (SourceFinal.matches(state?.messages,{sid:slot.sid,attemptId:partial?.attemptId,providerTurnId:partial?.providerTurnId,content:text},state?.attempts)) continue;
       const status = partial && partial.status ? partial.status : (participating ? 'thinking' : 'idle');
       const empty = !text && status !== 'errored';
       // 2026-07-12 道雪：errored/absent 等已 settle 态不再算 pending（旧逻辑显示
@@ -2733,12 +2743,10 @@ if (typeof document !== 'undefined') (function () {
     const sideCollapsed = _getGroupSideCollapsed();
     // The source collector may recover an old canonical placeholder's final
     // answer after its progress cards. Render that source final once in order.
-    const sourceFinals = new Set(messages.filter(m => m.sourceMessage && m.phase === 'final')
-      .map(m => JSON.stringify([m.attemptId, m.content])));
-    const renderMessages = meeting.scene === 'dev'
+    const renderMessages = meeting.scene === 'dev' || Delivery.enabled(meeting)
       ? messages.filter(m => m.sourceMessage || m.status === 'progress_update' ? !state.displayMessagesByAttempt?.[m.attemptId]?.length : m.role !== 'assistant'
         || m.displayMessages?.length
-        || !sourceFinals.has(JSON.stringify([m.attemptId, m.content])))
+        || !SourceFinal.matches(messages,m,state.attempts))
       : messages.slice();
     // 本地那条 pending 提问什么时候可以撤掉：等服务端把**同一条**消息写进权威历史。
     //
@@ -3102,6 +3110,11 @@ if (typeof document !== 'undefined') (function () {
     if (!messagesEl) return false;
     const articleEl = messagesEl.querySelector(`.mr-gc-msg[data-gc-msg-id="pending-${CSS.escape(sid)}"]`);
     if (!articleEl) return false;
+    if(SourceFinal.matches(state.messages,{sid,attemptId:partial.attemptId,providerTurnId:partial.providerTurnId,content:partial.text},state.attempts)) {
+      // The source final may only be in the new snapshot, not yet in the DOM.
+      // Render that snapshot before dropping its temporary mirror.
+      const scroll=_captureGroupChatScroll(panel,meeting);_renderGcPanelInto(panel,meeting,state,{scroll});return true;
+    }
     const memberBySid = _groupMemberMap(meeting);
     const slot = memberBySid[sid];
     if (!slot) return false;
@@ -4380,6 +4393,7 @@ if (typeof document !== 'undefined') (function () {
       meetingId: meeting.id,
       userInput: opts.userInput || '',
       heroIdBySid: opts.heroIdBySid || {},
+      recipientSids: opts.recipientSids,
       // 本次发送的身份。服务端把它写进权威 user 消息，渲染层据此撤掉本地那条 pending
       // 气泡 —— 内容和时间都认不出「是不是同一条」，只有这个 id 能（见
       // core/groupchat-pending-claim.js 顶部两次被推翻的判据）。
@@ -4920,7 +4934,7 @@ if (typeof document !== 'undefined') (function () {
   ipcRenderer.on('dev-workbench:progress', (_e, payload = {}) => {
     if (!_acceptGcPush(payload)) return;
     const meeting = meetingData[payload.meetingId];
-    if (meeting && payload.meetingId === activeMeetingId && meeting.scene === 'dev') {
+    if (meeting && payload.meetingId === activeMeetingId && (meeting.scene === 'dev' || Delivery.enabled(meeting))) {
       refreshGroupChatPanel(meeting).catch(error => console.warn('[dev-workbench] group progress refresh failed:', error.message));
     }
   });
@@ -5444,6 +5458,7 @@ if (typeof document !== 'undefined') (function () {
     const row = _ensureInputPreflightRow();
     if (!row) return;
     const current = meeting || meetingData[activeMeetingId];
+    row.dataset.deliveryMeeting=current?.id || '';
     if (!current) {
       row.style.display = 'none';
       return;
@@ -6307,9 +6322,8 @@ if (typeof document !== 'undefined') (function () {
     // header 不在群聊委托容器内，故下方单独绑定点击事件（不能依赖 data-gc-side-toggle 委托）。
     const gcMembersBtnHtml = meeting.groupChat ? (() => {
       const gcSlots = _getGcSlots(meeting).filter(Boolean);
-      const gcSel = Array.isArray(meeting.participants) ? meeting.participants.length : gcSlots.length;
       const collapsed = _getGroupSideCollapsed();
-      return `<button class="mr-header-btn mr-view-btn ${collapsed ? '' : 'active'}" id="mr-btn-group-members" title="${collapsed ? '展开群成员栏' : '收起群成员栏'}">群成员 ${gcSel}/${gcSlots.length}</button>`;
+      return `<button class="mr-header-btn mr-view-btn ${collapsed ? '' : 'active'}" id="mr-btn-group-members" title="${collapsed ? '展开群成员栏' : '收起群成员栏'}">群成员 ${gcSlots.length}</button>`;
     })() : '';
 
     el.innerHTML = `
@@ -6764,7 +6778,7 @@ if (typeof document !== 'undefined') (function () {
     el.innerHTML = '';
     const avatarsRow = document.getElementById('mr-free-avatars-row');
     if (avatarsRow) {
-      const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
+      const participants = Array.isArray(meeting.participants) ? meeting.participants : participantIndexes;
       const partSet = new Set(participants);
       avatarsRow.innerHTML = participantIndexes.map(idx => {
         const checked = partSet.has(idx);
@@ -6778,9 +6792,10 @@ if (typeof document !== 'undefined') (function () {
         const isDormant0 = !!(sess0 && sess0.status === 'dormant');
         const disabledAttr = isDormant0 ? 'disabled' : '';
         const label = slotDisplayLabel(idx);
-        const runningHint = (inProgress && !isDormant0) ? '（本轮进行中，改选只影响下一轮）' : '';
+        const runningHint = (inProgress && !isDormant0) ? '（正在执行，也可接收补充；勾选决定下一条消息发给谁）' : '（勾选决定下一条消息发给谁）';
         return `
           <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}${isDormant0 ? ' dormant' : ''}"
+                 role="checkbox" tabindex="${isDormant0?'-1':'0'}" aria-label="发送给 ${escapeHtml(label)}" aria-checked="${checked}" aria-disabled="${isDormant0}"
                  data-slot-idx="${idx}" title="${escapeHtml(label)}${isDormant0 ? '（休眠中，先在侧栏唤醒）' : runningHint}">
             <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
             <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
@@ -6792,12 +6807,16 @@ if (typeof document !== 'undefined') (function () {
 
     let updating = false;
     document.querySelectorAll('.mr-free-avatar-chk[data-slot-idx]').forEach(label => {
+      label.addEventListener('keydown',ev=>{
+        if(ev.key===' ' || ev.key==='Enter'){ev.preventDefault();label.click();}
+      });
       label.addEventListener('click', async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         if (label.classList.contains('disabled') || updating) return;
         updating = true;
         const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
+        const restoreFocus=document.activeElement===label;
         const latestMeeting = meetingData[meeting.id] || meeting;
         const allIndexes = Array.isArray(latestMeeting.subSessions)
           ? latestMeeting.subSessions.map((_sid, index) => index)
@@ -6809,6 +6828,7 @@ if (typeof document !== 'undefined') (function () {
         try {
           const updated = await _setMeetingParticipants(latestMeeting, next);
           renderToolbar(updated);
+          if(restoreFocus)document.querySelector(`.mr-free-avatar-chk[data-slot-idx="${slotIdx}"]`)?.focus();
           _updateInputPreflight(updated);
         } catch (err) {
           console.error('[set-participants] failed:', err);
@@ -7096,8 +7116,8 @@ if (typeof document !== 'undefined') (function () {
     }
     if (meeting.scene && meeting.groupChat) {
       inputBox.dataset.placeholder = zeroParticipantsSelected
-        ? 'AI 群聊：请勾选成员，或用 @成员名 / @m1 / @all 指定发言人'
-        : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
+        ? 'AI 群聊：请先点亮至少一位成员头像'
+        : 'AI 群聊：发送给点亮头像的成员，执行中也可补充';
     }
     if (DevFile.enabled(meeting)) {
       inputBox.dataset.placeholder = DevFile.isSolo(meeting)
@@ -7106,6 +7126,7 @@ if (typeof document !== 'undefined') (function () {
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
+    if(Delivery.enabled(meeting))inputBox.dataset.placeholder='发送给点亮头像的成员；任务运行中可直接补充要求';
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');
@@ -7184,6 +7205,11 @@ if (typeof document !== 'undefined') (function () {
       const m = meetingData[mid];
       if (!m) return;
       const heroIdBySid = _snapshotHeroAssignments(m);
+      let recipientSids;
+      if(m.groupChat){
+        try{recipientSids=Recipients.resolveRecipients(m);}
+        catch(error){_showGcEscapeNotice(error.message,'error');return;}
+      }
       // free-mode（2026-05-04）：0 人勾选时拒绝发送
       // CSS readonly 对 contenteditable 无效，必须 JS 二次防御，防 race 导致按钮意外还原
       if (m.mode === 'free' && !m.groupChat) {
@@ -7212,7 +7238,7 @@ if (typeof document !== 'undefined') (function () {
           ? `${quoteSection}\n\n用户问题: ${userText}`
           : `${quoteSection}\n\n(请就以上引用展开评论或继续讨论)`;
       }
-      _dispatchMeetingInput(m, finalText, heroIdBySid);
+      _dispatchMeetingInput(m, finalText, heroIdBySid, recipientSids);
       // 一次性语义：点击发送后立即清空；普通群聊若主进程拒绝本轮，
       // triggerGroupChat.restoreFailedSend 会把同一份快照恢复回来。
       if (Object.keys(heroIdBySid).length) _clearHeroAssignments(m);
@@ -7226,34 +7252,36 @@ if (typeof document !== 'undefined') (function () {
     // 发送三岔路。抽成独立函数是为了让「开工」弹窗能带着任务说明走完全相同的一条路，
     // 而不是往输入框里塞文本再模拟点击。
     // 开发群聊处于讨论阶段时，循环配置虽然在，也只走普通群聊 —— 这是「先讨论再开工」的全部机制。
-    function _dispatchMeetingInput(m, finalText, heroIdBySid) {
+    function _dispatchMeetingInput(m, finalText, heroIdBySid, recipientSids=Recipients.selectedSids(m)) {
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
       if (Delivery.enabled(m) && m.serialWorkflow.enabled) {
-        void DeliveryControls.submit(m,finalText).catch(error=>{
+        void DeliveryControls.submit(m,finalText,recipientSids).then(result=>{
+          if(result.supplement)return _presentUserSupplement(m,result);
+        }).catch(error=>{
           _restoreQuestionAndPreserveDraft(m.id,finalText);
           _showGcEscapeNotice(error.message,'error');
         });
       } else if (DevFile.enabled(m) || DevDiscuss.isDiscussing(m)) {
-        handleMeetingSend(finalText, m, { heroIdBySid });
+        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.loop && m.serialWorkflow.loop.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         // 循环已经在跑时，这句话的语义是「给当前任务补一句」，不是「开一个新任务」。
         // 以前这里照样调 loop:start，主进程以 already_running 拒绝，消息被退回输入框 ——
         // 用户以为说了，其实一个字都没送出去。现在先问主进程「循环在跑吗」（不信 renderer
         // 缓存），在跑就走插话闭环：落盘 + 当前执行者即时收到 + 待命者记账下次补。
-        void _routeLoopInput(m, finalText, heroIdBySid);
+        void _routeLoopInput(m, finalText, heroIdBySid, recipientSids);
       } else if (m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
-        void _routeSerialInput(m, finalText, heroIdBySid);
+        void _routeSerialInput(m, finalText, heroIdBySid, recipientSids);
       } else {
-        handleMeetingSend(finalText, m, { heroIdBySid });
+        handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
       }
     }
 
-    async function _routeSerialInput(m, finalText, heroIdBySid) {
+    async function _routeSerialInput(m, finalText, heroIdBySid, recipientSids) {
       try {
         const status = await ipcRenderer.invoke('loop:status', {meetingId:m.id});
-        if (status?.running) await _sendUserSupplement(m, finalText);
+        if (status?.running) await _sendUserSupplement(m, finalText, recipientSids);
         else runSerialWorkflow(m, finalText, {heroIdBySid});
       } catch (error) {
         _restoreQuestionAndPreserveDraft(m.id, finalText);
@@ -7261,7 +7289,7 @@ if (typeof document !== 'undefined') (function () {
       }
     }
 
-    async function _routeLoopInput(m, finalText, heroIdBySid) {
+    async function _routeLoopInput(m, finalText, heroIdBySid, recipientSids) {
       let running = false;
       try {
         const status = await ipcRenderer.invoke('loop:status', { meetingId: m.id });
@@ -7269,17 +7297,17 @@ if (typeof document !== 'undefined') (function () {
       } catch (e) {
         console.warn('[loop] status probe failed, treating as not running:', e && e.message);
       }
-      if (running) { await _sendUserSupplement(m, finalText); return; }
+      if (running) { await _sendUserSupplement(m, finalText, recipientSids); return; }
       _startLoopWithGoal(m, finalText, heroIdBySid);
     }
 
     // 插话：不开新一轮、不抢占当前步骤、不重置返工预算。
     // 主进程返回「谁即时收到了、谁要等下次运行」，这里如实说给用户听 ——
     // 待命者没收到不是失败，但真发不出去必须让用户看见。
-    async function _sendUserSupplement(m, finalText) {
+    async function _sendUserSupplement(m, finalText, recipientSids) {
       let result = null;
       try {
-        result = await ipcRenderer.invoke('groupchat:user-supplement', { meetingId: m.id, text: finalText });
+        result = await ipcRenderer.invoke('groupchat:user-supplement', { meetingId: m.id, text: finalText, recipientSids });
       } catch (e) {
         console.error('[loop] supplement IPC failed:', e && e.message);
       }
@@ -7289,21 +7317,24 @@ if (typeof document !== 'undefined') (function () {
         _showGcEscapeNotice('这句话没能送出去：' + ((result && result.reason) || '未知') + tail, 'error');
         return;
       }
+      await _presentUserSupplement(m,result);
+    }
+    async function _presentUserSupplement(m,result) {
       const nowCount = (result.deliveredNow || []).length;
       const queuedCount = (result.queuedSids || []).length;
       const waitCount = (result.pendingSids || []).length;
       const failed = (result.failures || []).length;
       const parts = [];
-      if (nowCount) parts.push(`${nowCount} 位正在执行的已即时收到`);
+      if (nowCount) parts.push(`${nowCount} 位已确认收到`);
       if (queuedCount) parts.push(`${queuedCount} 位已排队，当前任务结束后处理`);
-      if (waitCount) parts.push(`${waitCount} 位待命，下次轮到它时补上原文`);
-      if (failed) parts.push(`${failed} 位没送达，仍在待确认`);
+      if (waitCount) parts.push(`${waitCount} 位待送达，下次派工时补送`);
+      if (failed) parts.push(`${failed} 位发送未确认，请查看成员会话，不会自动重发`);
       const refreshed = meetingData[m.id];
       if (refreshed && refreshed.id === activeMeetingId) {
         await refreshGroupChatPanel(refreshed);
         // Refresh rebuilds the banner node: publish the delivery notice after
         // that render, otherwise the confirmation vanishes in the same tick.
-        if (activeMeetingId === m.id) _showGcEscapeNotice('已记下这句话：' + (parts.join('；') || '已保存'), failed ? 'error' : 'info');
+        if (activeMeetingId === m.id) _showGcEscapeNotice('发给 '+(result.toLabels || []).join('、')+'：' + (parts.join('；') || '已保存'), failed ? 'error' : 'info');
       }
     }
 
@@ -7431,6 +7462,7 @@ if (typeof document !== 'undefined') (function () {
         userInput: text,
         pendingClientId: pendingUser && pendingUser.clientId,
         heroIdBySid: opts.heroIdBySid || {},
+        recipientSids: opts.recipientSids,
       });
       return;
     }

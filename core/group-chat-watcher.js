@@ -394,7 +394,21 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 // options.requireReady=false：跳过冷启动 waitCliReady（2026-09-03）。
 //   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
+const promptSubmissionQueues = new Map();
 async function sendToPty(sid, prompt, kind, options = {}) {
+  // Serialize submission, not the model's answer. Workflow dispatch and user
+  // interjections share this boundary so their paste chunks cannot interleave.
+  const previous=promptSubmissionQueues.get(sid);
+  // Enter the first submission synchronously so native cancellation registers
+  // its intent before a caller can close the session in this same tick.
+  const task=previous ? previous.catch(()=>{}).then(()=>sendToPtyImpl(sid,prompt,kind,options))
+    : sendToPtyImpl(sid,prompt,kind,options);
+  promptSubmissionQueues.set(sid,task);
+  try{return await task;}
+  finally{if(promptSubmissionQueues.get(sid)===task)promptSubmissionQueues.delete(sid);}
+}
+async function sendToPtyImpl(sid, prompt, kind, options = {}) {
+  if(options.shouldSubmit && !options.shouldSubmit())return {ok:false,notSent:true,reason:'派工已暂停或取消，本条未发送'};
   if (require('./session-speed').pendingSpeedSwitches.has(sid) && !options.localCommandObserver) {
     throw new Error('正在确认当前会话的速度设置，请完成后再发送');
   }
@@ -402,7 +416,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
   if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
   if (!options.workspaceRulesPrepared && sessionManager.memoryService?.withWorkspaceRules) {
     return sessionManager.memoryService.withWorkspaceRules(sid,prompt,kind,options,
-      text=>sendToPty(sid,text,kind,{...options,workspaceRulesPrepared:true}));
+      text=>sendToPtyImpl(sid,text,kind,{...options,workspaceRulesPrepared:true}));
   }
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
@@ -584,7 +598,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         if (!options.retriedAfterBusyReject) {
           console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected ${String(prompt).trim()} while its previous task was still finishing; submitting once more after it settles`);
           await waitCodexSettled(livePtyObserver);
-          return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+          return await sendToPtyImpl(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
         }
         return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
           message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
@@ -696,7 +710,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       if (!options.retriedAfterBusyReject) {
         console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected a slash command while its previous task was still finishing; submitting once more after it settles`);
         await waitCodexSettled(livePtyObserver);
-        return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+        return await sendToPtyImpl(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
       }
       return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
         message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };

@@ -17,7 +17,7 @@ function createGroupConversationCollector() {
       }
       return changed;
     }
-    const attempts=Object.values(orch.state.attempts || {}).filter(a=>a.sid===sid
+    const attempts=Object.values(orch.state.attempts || {}).filter(a=>a.sid===sid && !a.supplementAliasOf
       && a.providerThreadId===native.threadId && a.providerTurnId);
     const signature=`${native.contentRevision}:${native.runtime.revision}:${attempts.length}`;
     if(seen.get(native)===signature)return false;

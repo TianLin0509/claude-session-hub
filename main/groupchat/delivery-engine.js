@@ -33,11 +33,18 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     return {meetingId:id,runId:r?.id,status:r?.status || 'idle',running:r?.status==='running',paused:r?.status==='paused',done:r?.status==='done',
       finished:terminal(r),recoveryPending:!!r && !terminal(r) && !watching.has(id),
       dir:r?path.join(base(id),r.id):base(id),round:s?.number || 0,name:s?r.stages[s.index].name:'尚未开始',error:r?.error || '',
+      stageIndex:s?.index ?? 0,stageNames:(r?.stages || meeting(id).serialWorkflow.deliveryStages || []).map(stage=>stage.name),
       missing:s?s.members.filter(m=>!s.deliveries[m]).map(m=>names.find(n=>n.memberId===m)?.displayName || m):[],
       delivered:s?Object.keys(s.deliveries).length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],
       label:!r?'输入任务，按流程执行':r.status==='cancelled'?'本次任务已结束，交付记录已保留':r.status==='done'?'全部步骤已交付':`${r.stages[s.index].name} · ${Object.keys(s.deliveries).length}/${s.members.length} 位已交付`};
   }
   function emit(id){sendToRenderer('delivery:changed',status(id));}
+  function selectStep(id,step) {
+    const m=meeting(id),indexes=step.members.map(member=>(m.slotSpecs || []).findIndex((s,i)=>(s.memberId || `m${i+1}`)===member));
+    if(indexes.some(i=>i<0))throw new Error('工作流成员缺失，请核对成员设置');
+    meetingManager.setParticipants(id,indexes);
+    sendToRenderer('meeting-updated',{meeting:meeting(id)});
+  }
   function current(id,runId,stepId) {if(!owners.has(id))return null;const r=read(id);return r?.id===runId && r.steps.at(-1)?.id===stepId?r:null;}
   function receipt(id,runId,stepId,dispatchId,item) {
     const r=current(id,runId,stepId);if(!r || terminal(r))return;
@@ -57,6 +64,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     step=run.steps.at(-1);const d=step.dispatches.find(x=>x.id===dispatchId);d.state='sending';save(id,run);
     let promise;activeDispatches.add(dispatchId);
     try{promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)))].filter(Boolean).join('\n\n'),
+      dispatchPresentation:{goal:run.goal,stageName:run.stages[step.index].name},
       targetMemberIds:targets,appendUserMessage:true,dispatchMode:'serial',fileHandoff:true,turnTimeoutMs:0,
       workflowRun:{runId:run.id,kind:'delivery',stepIndex:step.number-1,attempt:step.dispatches.length},
       onSubmission:item=>receipt(id,run.id,step.id,dispatchId,item),
@@ -108,6 +116,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
         if(next===null || next>=r.stages.length){r.status='done';r.error='';save(id,r);getDispatcher().handoffMeetingTurn?.(id);return;}
         if(r.steps.length-r.budgetStart>=D.LIMIT){r.status='paused';r.error='已达 6 轮，保留交付；明确继续后授予新预算';save(id,r);return;}
         r.steps.push(D.newStep(r,next));D.prepare(base(id),r,r.steps.at(-1));save(id,r);
+        selectStep(id,r.steps.at(-1));
         await dispatch(id,r,r.steps.at(-1));return;
       }
       if(!step.dispatches.length)await dispatch(id,r,step);
@@ -122,8 +131,12 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     }}
     if(id){if(watching.has(id))void advance(id);return;}for(const mid of watching)void advance(mid);
   }
-  async function start(id,goal) {
+  async function start(id,goal,recipientSids) {
     if(!D.enabled(meeting(id)) || !meeting(id).serialWorkflow.enabled)throw new Error('文件交付工作流未启用');
+    if(recipientSids!==undefined){
+      const selected=require('../../core/groupchat-recipients').memberIds(meeting(id),recipientSids),first=meeting(id).serialWorkflow.deliveryStages[0].members;
+      if(selected.length!==first.length || first.some(m=>!selected.includes(m)))throw new Error('收件头像与工作流首步不一致，请核对后发送');
+    }
     if(!String(goal || '').trim())throw new Error('请输入本次任务');
     own(id);const old=read(id);if(old && !terminal(old))throw new Error('本次任务尚未交付，请继续或结束当前任务');
     if(old)fs.writeFileSync(path.join(base(id),old.id,'已结束运行.json'),JSON.stringify(old,null,2),'utf8');
@@ -132,7 +145,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       stages:JSON.parse(JSON.stringify(cfg.deliveryStages)),steps:[],status:'running',budgetStart:0,createdAt:Date.now(),error:''};
     r.steps.push(D.newStep(r,0));D.prepare(base(id),r,r.steps[0]);
     const dir=path.join(base(id),r.id);fs.writeFileSync(path.join(dir,'任务约定.md'),`# 本次目标\n\n${r.goal}\n\n项目：${r.workspace || '待核实'}\n\n${r.stages.map((s,i)=>`## ${i+1}. ${s.name}\n成员：${s.members.join('、')}；接续：${s.after}\n\n${s.prompt}`).join('\n\n')}`,'utf8');
-    save(id,r);watching.add(id);await advance(id);return status(id);
+    save(id,r);selectStep(id,r.steps[0]);watching.add(id);await advance(id);return status(id);
   }
   function stop(id,{interrupt=false}={}){if(!D.enabled(meeting(id)))return false;own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='paused';r.error='用户已暂停，晚到交付只记录，不自动接续';save(id,r);}if(interrupt)getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return true;}
   function cancel(id){own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error='';save(id,r);}getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return status(id);}
@@ -166,7 +179,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     busy.add(id);try{await dispatch(id,r,step,text || '继续当前任务，复用已有成果，补齐本轮交付。');}finally{busy.delete(id);}return status(id);
   }
   function registerIpc(ipcMain){
-    for(const [name,fn] of Object.entries({'delivery:status':id=>status(id),'delivery:start':(id,a)=>start(id,a.userInput),'delivery:resume':id=>resume(id),'delivery:continue':(id,a)=>continueWork(id,a.userInput),'delivery:cancel':id=>cancel(id),'delivery:stop':id=>({ok:stop(id,{interrupt:true})})}))
+    for(const [name,fn] of Object.entries({'delivery:status':id=>status(id),'delivery:start':(id,a)=>start(id,a.userInput,a.recipientSids),'delivery:resume':id=>resume(id),'delivery:continue':(id,a)=>continueWork(id,a.userInput),'delivery:cancel':id=>cancel(id),'delivery:stop':id=>({ok:stop(id,{interrupt:true})})}))
       ipcMain.handle(name,async(_e,a={})=>{try{return {ok:true,...await (['delivery:start','delivery:resume','delivery:continue'].includes(name)?action(a.meetingId,()=>fn(a.meetingId,a)):fn(a.meetingId,a))};}catch(error){return {ok:false,error:error.message};}});
   }
   function startWatching(){suspended=false;if(timer)return;events=require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(),id=>tick(id),logger);timer=setInterval(()=>tick(),2000);timer.unref?.();}

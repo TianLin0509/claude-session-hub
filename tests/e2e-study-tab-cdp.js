@@ -2,15 +2,15 @@
 // tests/e2e-study-tab-cdp.js
 //
 // 学习 Tab 的真环境接线验证：拉起一个**隔离数据目录 + 独立 CDP 端口**的 Hub，
-// 点开「学习」按钮，检查仪表盘、侧栏 Agent 收纳、IPC 是否都通。
+// 点开「学习」按钮，检查仪表盘、教练会话入口、IPC 是否都通。
 //
 //   node tests/e2e-study-tab-cdp.js
 //
 // 刻意不碰生产 Hub：CLAUDE_HUB_DATA_DIR 走临时目录，端口另开，
 // 结束后 gracefulQuit 只关自己 spawn 的那个进程。
 //
-// 这里**不真的调用 CLI**（不烧 token、不依赖网络）。真实 CLI 编排由
-// tests/study-orchestration.test.js 用替身覆盖；这里验证渲染进程接线。
+// 创建真实教练会话但不发送 prompt；覆盖启动与 UI 接线，
+// 不代表真实模型回答或学习内容质量验证。
 //
 // 2026-09-02 改版后的面板是**全景仪表盘**，不再有材料 iframe 和 Agent 对话栏：
 // 材料交给 Hub 已有的预览面板，教练交给左侧会话列表。所以断言也换成了
@@ -31,6 +31,12 @@ function check(name, cond, detail) {
 async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'study-e2e-'));
   const studyRoot = path.join(dataDir, 'agent-study');
+  const codexHome = path.join(dataDir, 'codex');
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ providers: { codex: {
+    backend: 'subscription', subscription_profile: 'study-e2e',
+    subscription_profiles: [{ id: 'study-e2e', label: 'Study E2E', home: codexHome }],
+  } } }), 'utf8');
   fs.mkdirSync(path.join(studyRoot, 'days'), { recursive: true });
   fs.writeFileSync(path.join(studyRoot, 'PLAN.md'),
     ['| # | 主题 |', '|---|---|', '| L1 | 冒烟用课程 |', '| L2 | 第二课 |'].join('\n'), 'utf8');
@@ -52,11 +58,14 @@ async function main() {
   try {
     hub = await launchIsolatedHub({
       dataDir, port: PORT, label: 'study-e2e',
-      extraEnv: { AGENT_STUDY_DIR: studyRoot, CLAUDE_HUB_E2E: '1' },
+      extraEnv: { AGENT_STUDY_DIR: studyRoot, CLAUDE_HUB_E2E: '1', CODEX_HOME: codexHome,
+        HUB_CODEX_PROFILE: 'study-e2e', HUB_CODEX_BACKEND: 'subscription' },
       windowMode: 'visible',
     });
     page = await connectFirstPage(hub);
     await page.eval('new Promise(r=>setTimeout(r,2500))');
+
+    await page.eval(`window.__studyE2EErrors=[];window.addEventListener('error', e=>window.__studyE2EErrors.push(String(e.message)));window.addEventListener('unhandledrejection', e=>window.__studyE2EErrors.push(String(e.reason)));true`);
 
     // ---- nav 入口 ----
     const navText = await page.eval(`(() => {
@@ -141,89 +150,29 @@ async function main() {
     check('无答题回流时术语块显示「已出题」而不是「已掌握」',
       termTile && /已出题/.test(termTile.k), JSON.stringify(termTile));
 
-    // ---- 侧栏 Agent 收纳 ----
-    const groupRow = await page.eval(`(() => {
-      const el = document.getElementById('session-agent-groups');
-      if (!el) return 'missing';
-      return { display: getComputedStyle(el).display, chips: el.querySelectorAll('.sag-chip').length };
-    })()`);
-    check('侧栏存在 Agent 收纳行容器', groupRow !== 'missing', JSON.stringify(groupRow));
-    check('没有 Agent 会话时整行隐藏', groupRow && groupRow.display === 'none' && groupRow.chips === 0,
-      JSON.stringify(groupRow));
-
-    // ---- 侧栏 Agent 收纳：真的建两个学习会话再验开关 ----
-    // 只创建会话、不发 prompt，所以不烧 token；这一步验的是分组、默认收起和开关行为。
+    // 2026-09-08 三段侧栏取代收纳芯片（d76c610）：检查身份、可达性与面板互斥。
+    const ids = [];
     for (const role of ['author', 'reviewer']) {
-      await page.eval(`require('electron').ipcRenderer.invoke('study:ensure-session', ${JSON.stringify({ role })})`);
-    }
-    await page.eval('new Promise(r=>setTimeout(r,2500))');
-
-    const withAgents = await page.eval(`(() => {
-      const el = document.getElementById('session-agent-groups');
-      const chip = el && el.querySelector('.sag-chip[data-agent-group="study"]');
-      const rows = document.querySelectorAll('#session-list [data-session-id]').length;
-      const titles = Array.from(document.querySelectorAll('#session-list')).map(n => n.textContent).join(' ');
-      return {
-        display: el ? getComputedStyle(el).display : 'missing',
-        chips: el ? el.querySelectorAll('.sag-chip').length : 0,
-        chipText: chip ? chip.textContent.replace(/\s+/g, '') : '',
-        chipOn: chip ? chip.classList.contains('on') : null,
-        studyVisible: /学习 · 主笔/.test(titles),
-        rows,
-      };
-    })()`);
-    check('有 Agent 会话后收纳行出现', withAgents.display !== 'none' && withAgents.chips >= 1,
-      JSON.stringify(withAgents));
-    check('芯片显示分组名与条数（学习 2）', /学习2/.test(withAgents.chipText),
-      `实际 ${withAgents.chipText}`);
-    check('默认未勾选 → 学习会话被收起', withAgents.chipOn === false && withAgents.studyVisible === false,
-      JSON.stringify(withAgents));
-
-    // 建会话会直接亮出终端面板；主区是 flex，学习面板若没被隐藏就会和终端并排各占一半。
-    const bothVisible = await page.eval(`(() => ({
-      study: getComputedStyle(document.getElementById('study-panel')).display,
-      terminal: getComputedStyle(document.getElementById('terminal-panel')).display,
-    }))()`);
-    check('建会话后学习面板自动让位，不与终端并排',
-      bothVisible.study === 'none', JSON.stringify(bothVisible));
-
-    // 重新打开面板，继续验开关
-    await page.eval(`document.getElementById('btn-study').click()`);
-    await page.eval('new Promise(r=>setTimeout(r,800))');
-
-    const afterToggle = await page.eval(`(() => {
-      const chip = document.querySelector('.sag-chip[data-agent-group="study"]');
-      if (!chip) return 'no-chip';
-      chip.click();
-      const titles = Array.from(document.querySelectorAll('#session-list')).map(n => n.textContent).join(' ');
-      const again = document.querySelector('.sag-chip[data-agent-group="study"]');
-      const gh = document.querySelector('#session-list .session-sec-header.sec-agent-group');
-      // 组头之后、下一个组头之前的条目 = 这一组的成员
-      let members = 0;
-      if (gh) {
-        let n = gh.nextElementSibling;
-        while (n && !n.classList.contains('session-sec-header')
-                 && !n.classList.contains('session-time-group-header')) {
-          if (n.dataset && n.dataset.sessionId) members += 1;
-          n = n.nextElementSibling;
-        }
+      const created = await page.eval(`require('electron').ipcRenderer.invoke('study:ensure-session', ${JSON.stringify({ role })})`);
+      check(`${role} 教练创建成功`, created && created.ok && created.sessionId, JSON.stringify(created));
+      if (!created || !created.ok || !created.sessionId) continue;
+      ids.push(created.sessionId);
+      const reused = await page.eval(`require('electron').ipcRenderer.invoke('study:ensure-session', ${JSON.stringify({ role })})`);
+      check(`${role} 重复打开复用原会话`, reused && reused.ok && reused.sessionId === created.sessionId, JSON.stringify(reused));
+      await page.eval('new Promise(r=>setTimeout(r,1200))');
+      const row = `#session-list [data-session-id="${created.sessionId}"]`;
+      const visible = await page.eval(`(() => { const e=document.querySelector(${JSON.stringify(row)}); return e && e.getClientRects().length > 0; })()`);
+      check(`${role} 教练在现行侧栏可达`, visible, created.sessionId);
+      if (visible) {
+        await page.eval(`document.querySelector(${JSON.stringify(row + ' .sl-title')}).click()`);
+        await page.eval('new Promise(r=>setTimeout(r,500))');
+        const view = await page.eval(`({study:getComputedStyle(document.getElementById('study-panel')).display,terminal:getComputedStyle(document.getElementById('terminal-panel')).display,selected:document.querySelector(${JSON.stringify(row)}).classList.contains('selected')})`);
+        check(`${role} 点击教练进入独立会话`, view.selected && view.terminal !== 'none' && view.study === 'none', JSON.stringify(view));
       }
-      return {
-        on: again.classList.contains('on'),
-        studyVisible: /学习 · 主笔/.test(titles),
-        groupHeader: gh ? gh.textContent.replace(/\s+/g, '') : '',
-        members,
-      };
-    })()`);
-    check('勾选后学习会话显示出来', afterToggle && afterToggle.on === true && afterToggle.studyVisible === true,
-      JSON.stringify(afterToggle));
-    check('学习会话作为独立分组出现（有组头）', /学习2/.test(afterToggle.groupHeader || ''),
-      `组头文本：${afterToggle && afterToggle.groupHeader}`);
-    check('组内两个会话都在组头下面', afterToggle && afterToggle.members === 2,
-      `实际 ${afterToggle && afterToggle.members} 个`);
-
-    const persisted = await page.eval(`localStorage.getItem('hubSessionAgentGroups')`);
-    check('开关状态落盘（重开 Hub 保持）', /study/.test(String(persisted || '')), `实际 ${persisted}`);
+    }
+    check('两位教练身份不同', ids.length === 2 && new Set(ids).size === 2, JSON.stringify(ids));
+    await page.eval(`document.getElementById('btn-study').click()`);
+    await page.eval('new Promise(r=>setTimeout(r,500))');
 
     // ---- 与投研面板互斥 ----
     const exclusive = await page.eval(`(() => {
