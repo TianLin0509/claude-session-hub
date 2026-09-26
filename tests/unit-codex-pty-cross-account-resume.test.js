@@ -53,12 +53,16 @@ test('test isolation rejects a history index outside the test root', t => {
   assert.throws(() => historySqliteHomeSync(home, path.join(os.homedir(), '.codex'), env), /不在隔离目录内/);
 });
 
-test('PTY Codex resume/fork across accounts points CODEX_SQLITE_HOME back at the history account', () => {
+test('PTY Codex resume/fork across accounts passes the history index on that one command only', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  const at = src.indexOf('sessionEnv.CODEX_SQLITE_HOME = require(\'./codex-global-account\')');
-  assert.ok(at > 0, 'PTY path must set CODEX_SQLITE_HOME');
+  const at = src.indexOf('codexPtySqliteHome = require(\'./codex-global-account\')');
+  assert.ok(at > 0, 'PTY path must resolve the history index');
   const guard = src.slice(src.lastIndexOf('if (isPtyAgent && followsGlobalAccount', at), at);
   assert.match(guard, /opts\.codexForkSid \|\| \(opts\.useResume && opts\.codexSid\)/, 'only exact resume / fork need the old index');
   assert.match(guard, /toLowerCase\(\) !== /, 'same-account launches keep Codex defaults');
-  assert.ok(at < src.indexOf('const ptyProcess = isAcp'), 'env must be complete before the PTY spawns');
+  // 审查发现：写进 sessionEnv 会留在整个 PowerShell 里，CLI 退出后同一终端新开的 codex
+  // 会把新会话登记进旧账号的索引。
+  assert.doesNotMatch(src, /sessionEnv\.CODEX_SQLITE_HOME\s*=/, 'the old index must not leak into the PTY shell environment');
+  assert.match(src, /if \(codexPtySqliteHome\) cmd \+= ` -c "sqlite_home='\$\{codexPtySqliteHome\}'"`;/, 'passed as a TOML literal on the resume/fork command');
+  assert.match(src, /\/\['"`\$\\r\\n\]\/\.test\(codexPtySqliteHome\)/, 'paths that cannot cross PowerShell + TOML quoting are rejected');
 });

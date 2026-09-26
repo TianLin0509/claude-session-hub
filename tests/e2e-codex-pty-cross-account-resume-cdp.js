@@ -90,9 +90,12 @@ async function main() {
     report.checks.push('same native ID; credentials follow A; history root stays in B');
     if (fs.existsSync(path.join(b, 'thread-writer-locks', sid + '.lock')) === false && !fs.existsSync(path.join(a, 'thread-writer-locks', sid + '.lock')))
       throw Error('no Codex writer lock for the resumed thread');
-    const aState = path.join(a, 'state_5.sqlite');
-    report.accountAHasStateDb = fs.existsSync(aState);
     report.checks.push('resumed thread holds a Codex writer lock');
+    const { DatabaseSync } = require('node:sqlite');
+    const indexed = home => { const f = path.join(home, 'state_5.sqlite'); if (!fs.existsSync(f)) return 0;
+      const db = new DatabaseSync(f, { readOnly: true }); try { return db.prepare('select count(*) n from threads where id=?').get(sid).n; } catch { return 0; } finally { db.close(); } };
+    if (indexed(b) !== 1 || indexed(a) !== 0) throw Error(`thread index moved: B=${indexed(b)} A=${indexed(a)}`);
+    report.checks.push('thread index stays in account B; account A gains no entry for it');
     report.passed = true;
   } catch (error) {
     report.error = error.stack; process.exitCode = 1;

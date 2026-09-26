@@ -1414,6 +1414,7 @@ class SessionManager extends EventEmitter {
     }
 
     let codexSessionsRoot = null;
+    let codexPtySqliteHome = null;
     if (webRoute) {
       codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
     } else if (isDeepSeek && !isDeepSeekLegacy) {
@@ -1474,12 +1475,16 @@ class SessionManager extends EventEmitter {
       }
       // 换账号后恢复/分叉旧会话：凭据跟新账号，线程索引留在原历史所在的账号，
       // 否则 `codex resume <sid>` 在新账号里报 "No saved session found"。
+      // 只作用于这一条 resume/fork 命令（-c sqlite_home），不写进 PTY 的 shell 环境：
+      // CLI 退出后在同一终端里新开的 codex 必须回到当前账号自己的索引。
       const historyHome = opts.codexHistoryStorageHome;
       const liveHome = sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex');
       if (isPtyAgent && followsGlobalAccount && historyHome && (opts.codexForkSid || (opts.useResume && opts.codexSid))
           && path.toNamespacedPath(path.resolve(historyHome)).toLowerCase() !== path.toNamespacedPath(path.resolve(liveHome)).toLowerCase()) {
-        sessionEnv.CODEX_SQLITE_HOME = require('./codex-global-account')
+        codexPtySqliteHome = require('./codex-global-account')
           .historySqliteHomeSync(historyHome, opts.nativeRuntime && opts.nativeRuntime.sqliteHome, sessionEnv);
+        // 以 PowerShell 双引号包 TOML 字面量字符串传参；这些字符无法无歧义地穿过两层引用。
+        if (/['"`$\r\n]/.test(codexPtySqliteHome)) throw new Error('旧 Codex 历史目录含引号或 $，无法安全传给 CLI，未恢复');
       }
     }
 
@@ -2073,6 +2078,7 @@ class SessionManager extends EventEmitter {
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
       }
+      if (codexPtySqliteHome) cmd += ` -c "sqlite_home='${codexPtySqliteHome}'"`;
       if (codexInstructionFile) {
         cmd += ` -c "model_instructions_file=${codexInstructionFile.replace(/\\/g, '\\\\')}"`;
       }
