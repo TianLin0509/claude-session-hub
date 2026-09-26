@@ -32,6 +32,43 @@ const MEASURE_ONLY = process.env.HUB_PASTE_E2E_MODE === 'measure';
 const SESSION_ID = 'hub-claude-paste-target';
 const CLAUDE_SID = '55555555-5555-4555-8555-555555555555';
 const LINES = Number(process.env.HUB_PASTE_E2E_LINES) || 3000;
+// HUB_PASTE_E2E_REAL_CLIPBOARD=1：用系统剪贴板 + 真实 Ctrl+V 按键，而不是构造 paste 事件。
+const REAL_CLIPBOARD = process.env.HUB_PASTE_E2E_REAL_CLIPBOARD === '1';
+const CLIPBOARD_GUARD = path.join(__dirname, 'helpers', 'clipboard-guard.ps1');
+
+function clipboardGuard(action, dir, textFile) {
+  const args = ['-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', CLIPBOARD_GUARD, action, dir];
+  if (textFile) args.push('-TextFile', textFile);
+  const run = require('node:child_process').spawnSync('powershell', args, { encoding: 'utf8', windowsHide: true });
+  return { code: run.status, out: String(run.stdout || '').trim() + String(run.stderr || '').trim() };
+}
+
+// 这个测试会写系统剪贴板，而且不止真实 Ctrl+V 一处：「复制输入框内容」那步派发的 copy 事件
+// 会触发 Hub 全局的复制兜底（clipboard-controller 的 handleNativeCopy），把选区真实写进剪贴板。
+// 所以整个测试开始前先备份用户剪贴板，结束时恢复并逐格式核对。备份失败（有无法原样恢复的
+// 格式）就不跑；恢复时剪贴板若已不是测试写入的任何一份文字（用户中途复制了别的），则不覆盖。
+const CLIPBOARD_DIR = path.join(TEMP_ROOT, 'clipboard-backup');
+const PASTE_TEXT_FILE = path.join(TEMP_ROOT, 'clipboard-paste-text.txt');
+const COPIED_TEXT_FILE = path.join(TEMP_ROOT, 'clipboard-copied-text.txt');
+
+function backupUserClipboard() {
+  const backup = clipboardGuard('backup', CLIPBOARD_DIR);
+  if (backup.code !== 0) throw new Error(`用户剪贴板无法安全备份，测试不运行（会写系统剪贴板）：${backup.out}`);
+  return backup.out;
+}
+
+function restoreUserClipboard(candidateFiles) {
+  const restore = clipboardGuard('restore', CLIPBOARD_DIR, candidateFiles.join(';'));
+  const report = { restore: restore.out };
+  if (/^RESTORED/.test(restore.out)) {
+    const verify = clipboardGuard('verify', CLIPBOARD_DIR);
+    report.verify = verify.out;
+    if (verify.code !== 0) console.error(`⚠ 剪贴板恢复后核对不一致：${verify.out}；原始内容备份在 ${CLIPBOARD_DIR}`);
+  }
+  report.ok = /^(VERIFIED|SKIPPED)/.test(report.verify || report.restore);
+  console.log(`[clipboard] ${report.restore}${report.verify ? ' / ' + report.verify : ''}`);
+  return report;
+}
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -129,9 +166,15 @@ async function typeKeys(client, text) {
 async function main() {
   writeFixtures();
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+  const pasteText = Array.from({ length: LINES }, (_, i) => `第 ${i + 1} 行：链路自适应 BLER 目标与 MCS 选择的仿真日志 value=${(i * 0.37).toFixed(2)} ok`).join('\n');
+  const composedText = '请看这段：' + pasteText + '，帮我分析一下异常点短短一行';
+  fs.writeFileSync(PASTE_TEXT_FILE, pasteText, 'utf8');
+  fs.writeFileSync(COPIED_TEXT_FILE, composedText, 'utf8');
+  // 只有真实剪贴板模式（任务就是验证剪贴板）才碰系统剪贴板；默认模式全程不写。
+  const clipboardBackup = REAL_CLIPBOARD ? backupUserClipboard() : null;
   const port = Number(process.env.HUB_PASTE_E2E_PORT) || await reservePort();
   const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'Path';
-  const result = { runId: RUN_ID, mode: MEASURE_ONLY ? 'measure' : 'assert', lines: LINES };
+  const result = { runId: RUN_ID, mode: MEASURE_ONLY ? 'measure' : 'assert', lines: LINES, realClipboard: REAL_CLIPBOARD, clipboardBackup };
   let hub = null;
   let client = null;
   try {
@@ -157,17 +200,35 @@ async function main() {
     await settle(client);
 
     await typeKeys(client, '请看这段：');
-    const pasteText = Array.from({ length: LINES }, (_, i) => `第 ${i + 1} 行：链路自适应 BLER 目标与 MCS 选择的仿真日志 value=${(i * 0.37).toFixed(2)} ok`).join('\n');
     result.pasteChars = pasteText.length;
 
-    result.paste = await measure(client, 'paste', () => client.eval(`(() => {
-      const box = document.querySelector('.floating-input-box');
-      box.focus();
-      const dt = new DataTransfer();
-      dt.setData('text/plain', ${JSON.stringify(pasteText)});
-      box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      return true;
-    })()`));
+    if (REAL_CLIPBOARD) {
+      // 真实路径：文字先进系统剪贴板（模拟从别的程序复制），再按 Ctrl+V，
+      // 由 Chromium 自己读系统剪贴板、派发真实 paste 事件。用户原剪贴板测完原样恢复。
+      // 占用剪贴板的窗口尽量短：写入 → 按键 → 立刻恢复。
+      const set = clipboardGuard('settext', CLIPBOARD_DIR, PASTE_TEXT_FILE);
+      if (set.code !== 0) throw new Error(`写入测试文字失败：${set.out}`);
+      try {
+        await client.eval("document.querySelector('.floating-input-box').focus()");
+        result.paste = await measure(client, 'paste (real Ctrl+V)', async () => {
+          await client.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 });
+          await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 });
+          await waitFor('chip from real paste', () => client.eval("document.querySelectorAll('.floating-input-box .fi-paste-chip').length === 1"), 10000);
+        });
+      } finally {
+        result.clipboardAfterPaste = restoreUserClipboard([PASTE_TEXT_FILE]);
+      }
+    } else {
+      result.paste = await measure(client, 'paste', () => client.eval(`(() => {
+        const box = document.querySelector('.floating-input-box');
+        box.focus();
+        const dt = new DataTransfer();
+        dt.setData('text/plain', ${JSON.stringify(pasteText)});
+        box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+        return true;
+      })()`));
+    }
+    if (REAL_CLIPBOARD) assert.ok(result.clipboardAfterPaste.ok, `user clipboard must be restored intact: ${JSON.stringify(result.clipboardAfterPaste)}`);
     result.typeAfterPaste = await measure(client, 'type 10 chars after paste', () => typeKeys(client, '，帮我分析一下异常点'));
 
     result.dom = await client.eval(`(() => {
@@ -262,20 +323,48 @@ async function main() {
       assert.equal(result.afterUndo.chips, 1, 'undo restores the chip');
       assert.equal(result.afterUndo.length, ('请看这段：' + pasteText + '，帮我分析一下异常点短短一行').length);
 
-      // 复制输入框里的块：剪贴板拿到的是原文，而不是块的内部标记
-      result.copyOut = await client.eval(`(() => {
-        const box = document.querySelector('.floating-input-box');
-        const range = document.createRange(); range.selectNodeContents(box);
-        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
-        const dt = new DataTransfer();
-        const event = new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true });
-        box.dispatchEvent(event);
-        const text = dt.getData('text/plain');
-        return { prevented: event.defaultPrevented, length: text.length, hasMarker: /[\\uE000\\uE001]/.test(text) };
+      // 复制输入框里的块：剪贴板拿到的是原文，而不是块的内部标记。
+      // 这一步会触发 Hub 全局的复制兜底（clipboard-controller.handleNativeCopy），它会真实写系统
+      // 剪贴板。测试期间把 electron.clipboard 的读写换成内存替身（替换失败就不派发事件），
+      // 顺带记下兜底本来要写的内容 —— Ctrl+C 走的就是这条全局路径。
+      result.copyOut = await client.eval(`(async () => {
+        const { clipboard } = require('electron');
+        const original = { writeText: clipboard.writeText, readText: clipboard.readText };
+        const writes = [];
+        let fake = '';
+        const fakeWrite = text => { writes.push(String(text)); fake = String(text); };
+        const fakeRead = () => fake;
+        clipboard.writeText = fakeWrite;
+        clipboard.readText = fakeRead;
+        if (clipboard.writeText !== fakeWrite || clipboard.readText !== fakeRead) {
+          return { stubFailed: true };
+        }
+        try {
+          const box = document.querySelector('.floating-input-box');
+          const range = document.createRange(); range.selectNodeContents(box);
+          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+          const dt = new DataTransfer();
+          const event = new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true });
+          box.dispatchEvent(event);
+          const text = dt.getData('text/plain');
+          await new Promise(resolve => setTimeout(resolve, 1000)); // 兜底的重试最长约 400ms
+          return {
+            prevented: event.defaultPrevented, length: text.length, hasMarker: /[\\uE000\\uE001]/.test(text),
+            globalWrites: writes.map(w => ({ length: w.length, hasMarker: /[\\uE000\\uE001]/.test(w) })),
+          };
+        } finally {
+          clipboard.writeText = original.writeText;
+          clipboard.readText = original.readText;
+        }
       })()`);
+      assert.notEqual(result.copyOut.stubFailed, true, 'could not stub the clipboard; refusing to touch the system clipboard');
       assert.equal(result.copyOut.prevented, true);
       assert.equal(result.copyOut.hasMarker, false);
       assert.equal(result.copyOut.length, result.afterUndo.length);
+      for (const w of result.copyOut.globalWrites) {
+        assert.equal(w.hasMarker, false, 'the global copy path (Ctrl+C) must also write the expanded text');
+        assert.equal(w.length, result.afterUndo.length);
+      }
 
       // 发送：拦截 send-prompt，确认发出去的是完整原文，输入框清空
       await client.eval(`(() => {
@@ -315,6 +404,15 @@ async function main() {
   } finally {
     if (client) { try { client.close(); } catch {} }
     if (hub) await gracefulQuit(hub);
+    // 真实剪贴板模式的兜底还原：不论测试成败，剪贴板若仍是测试写入的文字就恢复用户原内容。
+    if (REAL_CLIPBOARD) {
+      result.clipboardAtEnd = restoreUserClipboard([PASTE_TEXT_FILE, COPIED_TEXT_FILE]);
+      if (!result.clipboardAtEnd.ok) {
+        console.error(`✗ 用户剪贴板未能原样恢复，原始内容备份在 ${CLIPBOARD_DIR}`);
+        process.exitCode = 1;
+      }
+    }
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
   }
 }
 
