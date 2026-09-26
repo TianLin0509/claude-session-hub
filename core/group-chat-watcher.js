@@ -293,13 +293,16 @@ const CODEX_THREAD_SWITCH_COMMAND_RE = /^\s*\/(?:new|clear)(?:\s|$)/i;
 // Codex 在 /new 时不报任何 hook（新线程要到第一次提问才发 SessionStart），CLI 自己的执行
 // 证据是它打印的「To continue this session … (<刚结束的线程 id>)」。确认时把结论记在会话上，
 // 等新线程的 SessionStart 迟到时，改绑判定不必再从已经滚远的缓冲区里找这句话。
-async function waitCodexThreadSwitch(sessionManager, sid, sidBefore, livePtyObserver, busyBaseline, fromLength, timeoutMs = 12000) {
+async function waitCodexThreadSwitch(sessionManager, sid, sidBefore, livePtyObserver, busyBaseline, fromMark, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const now = sessionManager.getSession?.(sid)?.codexSid || null;
     if (now && now !== sidBefore) return 'switched';
-    const raw = String(sessionManager.getSessionBuffer?.(sid) || '');
-    if (sidBefore && detectCodexThreadEnded(raw.length >= fromLength ? raw.slice(fromLength) : raw, sidBefore)) {
+    // 缓冲区写满 1MB 后长度不再增长，按长度截取永远是空串：用累计输出标记取新输出。
+    const fresh = typeof sessionManager.getSessionOutputSince === 'function'
+      ? sessionManager.getSessionOutputSince(sid, fromMark)
+      : String(sessionManager.getSessionBuffer?.(sid) || '');
+    if (sidBefore && detectCodexThreadEnded(fresh, sidBefore)) {
       sessionManager.noteCodexThreadEnded?.(sid, sidBefore);
       return 'switched';
     }
@@ -526,6 +529,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       ? await visibleBusyRejections(livePtyObserver) : 0;
     const codexThreadSwitch = isCodexCliKind(kind) && CODEX_THREAD_SWITCH_COMMAND_RE.test(String(prompt || ''));
     const codexSidBefore = codexThreadSwitch ? (sessionManager.getSession?.(sid)?.codexSid || null) : null;
+    const outputMarkBefore = typeof sessionManager.getSessionOutputMark === 'function' ? sessionManager.getSessionOutputMark(sid) : 0;
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
@@ -571,7 +575,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     // （新线程的 SessionStart 改绑了 codexSid）。不等开工信号、不补回车，否则既白等十几秒，
     // 又会亮出「补发」——一点就再开一条线程。明确被拒则等空闲后只再提交一次。
     if (codexThreadSwitch) {
-      const outcome = await waitCodexThreadSwitch(sessionManager, sid, codexSidBefore, livePtyObserver, codexBusyBaseline, beforeBufferLength);
+      const outcome = await waitCodexThreadSwitch(sessionManager, sid, codexSidBefore, livePtyObserver, codexBusyBaseline, outputMarkBefore);
       if (outcome === 'switched') {
         return { ok: true, sendStatus: 'ok', enterAttempts, acknowledgementSource: 'codex-thread-switch',
           acknowledgementObservedAt: Date.now(), acknowledgementTurnId: null };

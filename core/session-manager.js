@@ -1723,7 +1723,8 @@ class SessionManager extends EventEmitter {
       ...(opts.resumeTranscriptPath && !ptyCodexForkLaunch ? { transcriptPath: opts.resumeTranscriptPath } : {}),
       // 恢复时 renderer 会把旧会话元数据与新会话合并；原生时代留下的后端与
       // 快照必须显式清空，否则 PTY 会话会被当成原生会话去读状态。
-      ...(isPtyAgent ? { runtimeBackend: null, nativeRuntime: null, agentRuntime: 'pty' } : {}),
+      // 非 PTY 会话显式写空：agentRuntime 会落盘，原生回退模式下恢复时不能从休眠卡片上继承 'pty'。
+      ...(isPtyAgent ? { runtimeBackend: null, nativeRuntime: null, agentRuntime: 'pty' } : { agentRuntime: null }),
     };
 
     const pendingTimers = [];
@@ -2773,16 +2774,38 @@ class SessionManager extends EventEmitter {
 
   // TUI 里的 /new 结束了这条已绑定的线程（屏幕上有带它 id 的「To continue this session」）。
   // Codex 要等新线程第一次提问才报 SessionStart，那时这句可能早已滚远：Hub 自己提交的
-  // /new 在确认时就把结论记在会话上；用户直接在终端里敲的，再回头扫整个缓冲区。
+  // /new 在确认时就把结论记在会话上；用户直接在终端里敲的，扫最近一次改绑之后的输出。
   noteCodexThreadEnded(sessionId, threadSid) {
     const s = this.sessions.get(sessionId);
     if (s && threadSid) s.codexEndedThreadSid = String(threadSid);
   }
+  getSessionOutputMark(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? Number(s.outputChars) || 0 : 0;
+  }
+  // 标记之后产生、且仍在缓冲区里的输出（缓冲区已截断掉一部分时，取剩下的那段）。
+  getSessionOutputSince(sessionId, mark) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return '';
+    const buffer = s.ringBuffer || '';
+    const fresh = Math.max(0, (Number(s.outputChars) || 0) - (Number(mark) || 0));
+    return fresh >= buffer.length ? buffer : buffer.slice(buffer.length - fresh);
+  }
+  // 改绑到新线程后旧证据作废：/resume 回到那条线程时，它已不再是「已结束」。
+  noteCodexThreadBound(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    s.codexEndedThreadSid = null;
+    s.codexBoundOutputMark = Number(s.outputChars) || 0;
+  }
   isCodexThreadEnded(sessionId, boundSid) {
     const s = this.sessions.get(sessionId);
     if (!s || !boundSid) return false;
-    return s.codexEndedThreadSid === String(boundSid) || detectCodexThreadEnded(s.ringBuffer, boundSid);
+    if (s.codexEndedThreadSid === String(boundSid)) return true;
+    // 用户直接在终端里敲的 /new：只看最近一次改绑之后的输出。
+    return detectCodexThreadEnded(this.getSessionOutputSince(sessionId, s.codexBoundOutputMark || 0), boundSid);
   }
+
 
   noteAgentTurnStarted(sessionId, event = {}) {
     const s = this.sessions.get(sessionId);
@@ -2940,7 +2963,7 @@ class SessionManager extends EventEmitter {
         ...(info.nativeSharedControl ? {nativeSharedControl:info.nativeSharedControl} : {})} : {}),
       // PTY 会话显式带空值：renderer 按 {...旧, ...新} 合并，缺字段会让原生时代的后端残留下来。
       ...(info.agentRuntime === 'pty' ? {agentRuntime:'pty',runtimeBackend:null,nativeRuntime:null,
-        hookIntegrationWarning:info.hookIntegrationWarning || null} : {}),
+        hookIntegrationWarning:info.hookIntegrationWarning || null} : {agentRuntime:null}),
       id: info.id,
       meetingId: info.meetingId || null,
       title: info.title,
@@ -3035,6 +3058,8 @@ class SessionManager extends EventEmitter {
   _appendToRingBuffer(id, data) {
     const s = this.sessions.get(id);
     if (!s) return;
+    // 累计输出字符数：缓冲区截断后长度不再增长，「某时刻之后的新输出」只能靠它来定位。
+    s.outputChars = (Number(s.outputChars) || 0) + String(data || '').length;
     let rb = (s.ringBuffer || '') + data;
     const ringLimit = Number(s.ringBufferLimit || RING_BUFFER_BYTES);
     if (rb.length > ringLimit) {

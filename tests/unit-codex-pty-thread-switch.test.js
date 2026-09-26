@@ -74,7 +74,8 @@ test('the Hub records the ended thread when it confirms /new, and busy rejection
   // 重绘会把旧提示再画一遍：比较的是可见屏幕上的条数，而不是输出流里出现过没有。
   assert.match(src, /visibleBusyRejections\(livePtyObserver\) > busyBaseline/);
   const sm = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
-  assert.match(sm, /s\.codexEndedThreadSid === String\(boundSid\) \|\| detectCodexThreadEnded\(s\.ringBuffer, boundSid\)/);
+  assert.match(sm, /if \(s\.codexEndedThreadSid === String\(boundSid\)\) return true;/);
+  assert.match(sm, /detectCodexThreadEnded\(this\.getSessionOutputSince\(sessionId, s\.codexBoundOutputMark \|\| 0\), boundSid\)/);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'main', 'codex-pty-hook.js'), 'utf8'),
     /source === 'startup' && \(!!sessionManager\.isHostShellActive\?\.\(hubSessionId\)\s*\|\| !!sessionManager\.isCodexThreadEnded\?\.\(hubSessionId, boundSid\)\)/);
 });

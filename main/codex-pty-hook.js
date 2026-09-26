@@ -50,6 +50,7 @@ function createCodexPtyHookHandler({
     if (incomingSid && rolloutPath) {
       if (incomingSid !== boundSid || session.transcriptPath !== rolloutPath) {
         const updated = sessionManager.updateSessionMeta(hubSessionId, { codexSid: incomingSid, transcriptPath: rolloutPath });
+        if (incomingSid !== boundSid) sessionManager.noteCodexThreadBound?.(hubSessionId);
         if (updated) {
           sendToRenderer('session-updated', { session: updated });
           sendToRenderer('session-meta-updated', { hubSessionId, codexSid: incomingSid, transcriptPath: rolloutPath });
