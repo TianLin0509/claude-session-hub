@@ -7,7 +7,7 @@ const j=JSON.stringify,sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function main(){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-provider-cli-')),data=path.join(root,'data'),cwd=path.join(root,'work');fs.mkdirSync(data);fs.mkdirSync(cwd);
   const config=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
-  fs.writeFileSync(path.join(data,'config.json'),j({acp:config.acp}));
+  fs.writeFileSync(path.join(data,'config.json'),j({acp:config.acp,providers:{deepseek:config.providers?.deepseek}}));
   const out=path.resolve('artifacts/provider-cli/'+Date.now());fs.mkdirSync(out,{recursive:true});
   const report={root,out,checks:[],passed:false};let hub,c;
   const check=text=>{report.checks.push(text);console.log('[provider]',text);};
@@ -23,14 +23,14 @@ async function main(){
     const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
     hub=await launchIsolatedHub({dataDir:data,port,extraEnv:{CLAUDE_HUB_HOME_DIR:path.join(root,'home')}});c=await connectFirstPage(hub);
     await until('typeof sessions!=="undefined"','renderer');await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
-    for(const kind of process.argv.slice(2).length?process.argv.slice(2):['qwen','glm','deepseek-acp']){
-      const s=await invoke('create-session',{kind,opts:{cwd}});assert(s.id,j(s));assert.equal(s.agentRuntime,'pty');assert.equal(s.runtimeBackend,null);
+    for(const kind of process.argv.slice(2).length?process.argv.slice(2):['qwen','glm','deepseek']){
+      const s=await invoke('create-session',{kind,opts:{cwd,...(kind==='deepseek'?{model:'deepseek-v4-flash',effort:'low',mcpProfile:'none'}:{})}});assert(s.id,j(s));assert.equal(s.agentRuntime,'pty');assert.equal(s.runtimeBackend,null);
       const marker=kind.toUpperCase().replace(/-/g,'_')+'_CLI_OK';await send(s.id,'Reply only '+marker);await response(s.id,marker);
       check(kind+' real UI prompt + CLI output + cards + completion');
-      const sid=await c.eval(`sessions.get(${j(s.id)}).acpSid`);assert(sid);
+      const sid=await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`);assert(sid);
       const restarted=await invoke('restart-session',s.id);assert(restarted.id||restarted.session?.id,j(restarted));
       await send(s.id,'Reply only '+marker+'_RESTART');await response(s.id,marker+'_RESTART');
-      assert.equal(await c.eval(`sessions.get(${j(s.id)}).acpSid`),sid);check(kind+' restart retains native identity and historical cards');
+      assert.equal(await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`),sid);check(kind+' restart retains native identity and historical cards');
       await c.eval(`applyViewMode('card')`);await screenshot(kind+'-cards');
     }
     report.passed=true;

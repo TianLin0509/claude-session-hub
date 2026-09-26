@@ -7,12 +7,15 @@ const {Transform,pipeline}=require('node:stream');
 const {StringDecoder}=require('node:string_decoder');
 const launch=JSON.parse(process.env.AI_HUB_CLI_AGENT_LAUNCH);
 const log=process.env.AI_HUB_CLI_EVENT_LOG;
+const secrets=JSON.parse(process.env.AI_HUB_CLI_REDACT||'[]').filter(Boolean);
 const child=spawn(launch.command,launch.args,{cwd:launch.cwd,env:process.env,windowsHide:true,stdio:['pipe','pipe','inherit']});
 function tap(direction){let pending='';const decoder=new StringDecoder('utf8');return new Transform({transform(chunk,_encoding,callback){
   try{pending+=decoder.write(chunk);let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);
     if(line.trim()){const message=direction==='client'?require('../core/provider-cli-protocol').normalizeProviderCwd(JSON.parse(line)):JSON.parse(line);
       const observed=message.method==='authenticate'?{...message,params:{methodId:message.params?.methodId}}:message;
-      fs.appendFileSync(log,JSON.stringify({direction,at:Date.now(),message:observed})+'\n',{mode:0o600});
+      let record=JSON.stringify({direction,at:Date.now(),message:observed});
+      for(const secret of secrets)record=record.split(JSON.stringify(secret).slice(1,-1)).join('[redacted]');
+      fs.appendFileSync(log,record+'\n',{mode:0o600});
       this.push(JSON.stringify(message)+'\n');}}
     callback();
   }catch(error){callback(error);}
