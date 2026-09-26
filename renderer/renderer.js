@@ -2523,7 +2523,25 @@ function scheduleCodexHistoryRetry(sessionId, attempt = 0, opts = {}) {
 //   * Falls back to ipcRenderer.invoke even if `sessions.get` returns null;
 //     main.js handler does its own session lookup and returns
 //     'transcript not found' for unknown ids — we display that as the error.
+// 2026-09-26：全量加载先把卡片挂进离屏 staging（分批让出主线程），最后才整体插入；
+// 增量刷新只在页面容器里查重，看不到 staging。PTY 会话一打开，CLI 恢复时的终端输出
+// 就会触发增量刷新，把最新一整轮再挂一遍 → 同一批卡两份、结果夹在进展中间。
+// 同一会话的增量 / 更早页一律排在进行中的全量之后，与全量互斥。
 async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
+  if (!window._cardFullLoadBySid) window._cardFullLoadBySid = new Map();
+  const fullLoads = window._cardFullLoadBySid;
+  if (opts.incremental === true || opts.older) {
+    const pending = fullLoads.get(sessionId);
+    if (pending) await pending.catch(() => {});
+    return loadSessionHistoryToOverlayUnserialized(sessionId, opts);
+  }
+  const run = loadSessionHistoryToOverlayUnserialized(sessionId, opts);
+  fullLoads.set(sessionId, run);
+  try { return await run; }
+  finally { if (fullLoads.get(sessionId) === run) fullLoads.delete(sessionId); }
+}
+
+async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
   // Spec 3 · B1 增量 mount：opts.incremental=true 时不清 container/Map，
   // 依赖 mountSessionTurnCard 内的 turnId dedup 自动跳过已 mount 的 turn。
   // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
@@ -2607,6 +2625,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const loadSeqs = previousLoadSeqs && typeof previousLoadSeqs === 'object'
     ? { ...previousLoadSeqs }
     : {};
+  // 在本次之后开始的全量加载会清空容器、重建权威快照；在它之前发出的增量 /
+  // 更早页结果已经过期，再挂就会落在它的 staging 之外，成为重复卡。
+  const fullSeqAtStart = loadSeqs.full;
   loadSeqs[loadLane] = loadSeq;
   window._cardLoadSeqBySid.set(sessionId, loadSeqs);
   const isStaleLoad = () => (
@@ -2614,6 +2635,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     || currentView !== 'card'
     || !window._cardLoadSeqBySid.get(sessionId)
     || window._cardLoadSeqBySid.get(sessionId)[loadLane] !== loadSeq
+    || (loadLane !== 'full' && window._cardLoadSeqBySid.get(sessionId).full !== fullSeqAtStart)
   );
   if (!incremental) {
     container.innerHTML = require('./card-history-views').loadingMarkup();
@@ -2798,6 +2820,9 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   let lastCardEl = null;
   let batchStarted = performance.now();
   const turnsBeforeMount = new Map(window._sessionTurns);
+  const cardIdsBeforeMount = incremental && !opts.older
+    ? new Set(Array.from(container.querySelectorAll(':scope > .turn-card'), card => card.dataset.turnId))
+    : null;
   const staging = !incremental || opts.older ? document.createElement('div') : null;
   const mountTurns = turns;
   for (const turn of mountTurns) {
@@ -2893,6 +2918,14 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       for(const card of ordered)container.insertBefore(card,tail);
       if(saved && saved.a.isConnected && saved.f.isConnected)selection.setBaseAndExtent(saved.a,saved.ao,saved.f,saved.fo);
     }
+  }
+
+  // 2026-09-26：首屏只挂一轮的最后几张卡（最近几条进展 + 结果），实时刷新拿回的是
+  // 整轮。本轮更早的进展是新卡，一律追加就会落到结果下面。新卡按快照顺序插到
+  // 下一张已在页面上的卡之前；只有真正更新的卡才留在末尾。已有卡的位置不动。
+  if (cardIdsBeforeMount && cardIdsBeforeMount.size && turns.length) {
+    require('./card-snapshot-order').placeNewCardsInSnapshotOrder(container, turns.map(turn => turn && turn.id),
+      cardIdsBeforeMount, id => container.querySelector(`:scope > .turn-card[data-turn-id="${CSS.escape(id)}"]`));
   }
 
   require('./conversation-message-view').syncResponseGroups(container);
@@ -3121,6 +3154,8 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       opts: { limit: 1, fromTail: true },
     });
     if (hubSessionId !== activeSessionId || currentView !== 'card') return;
+    // 全量加载还挂在离屏 staging 里时，直接挂卡看不到它们；交给排队的增量回填。
+    if (window._cardFullLoadBySid?.has(hubSessionId)) { scheduleBackfill(); return; }
 
     if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
       // got the structured turn from S1 parser
