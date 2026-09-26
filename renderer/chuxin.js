@@ -202,6 +202,10 @@
     state.frame = null;
 
     root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
+    // 2026-09-26 初心改版：导航交给初心自己的顶栏（iframe 带 nav=inner），这里的标题行和左侧菜单
+    // 在后端在线时都收起，整块面板留给内容；离线时标题行还在，用来显示「启动投研后端」。
+    // 左侧菜单只是隐藏，不删：Tab 记忆、外部跳转仍走 switchTab。
+    root.classList.add('cx-inner-nav');
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
       observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
@@ -223,7 +227,7 @@
     state.nativeTabActive = false;
     state.frameView.style.display = 'flex';
     const target = WEB + '/?api=' + encodeURIComponent(API)
-      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
+      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub&nav=inner#' + tab.hash;
     if (!state.frame) {
       state.frame = document.createElement('iframe');
       state.frame.className = 'cx-frame';
@@ -275,7 +279,22 @@
     const data = event.data;
     if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
     if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
+    if (data.type === 'chuxin-view') rememberInnerView(String(data.hash || ''));
   });
+
+  // 初心顶栏里切页（含页面内跳转，比如林铛工作台点「打开档案」）后，记住当前页：下次打开投研回到这里。
+  // 只记，不导航——iframe 已经在那一页了，再设 src 会整页重载。
+  const HASH_TO_TAB = { watch: 'targets', bingdian: 'lindang' };
+  function rememberInnerView(hash) {
+    const tabId = HASH_TO_TAB[hash] || hash;
+    const tab = PRIMARY_TABS.find((row) => row.id === tabId);
+    if (!tab || !state.tabsBar) return;
+    localStorage.setItem(TAB_KEY, tab.id);
+    for (const b of state.tabsBar.children) {
+      b.classList.toggle('active', b.dataset.tab === tab.id);
+      b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
+    }
+  }
 
   // ---------- 状态检测 / 启动 ----------
   async function refreshStatus() {
@@ -284,6 +303,7 @@
       if (s && s.api_base) API = s.api_base;
       if (s && s.web_base) WEB = s.web_base;
       state.online = !!s.online;
+      if (root) root.classList.toggle('cx-online', state.online);
       if (state.online) {
         state.startErrorEl.style.display = 'none';
         state.startErrorEl.textContent = '';

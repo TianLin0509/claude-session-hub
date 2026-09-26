@@ -12,6 +12,13 @@
 }
 #chuxin-panel[hidden], #chuxin-panel[style*="none"] { display: none; }
 
+/* 2026-09-26 初心改版：初心自己的顶栏当唯一导航（iframe 带 nav=inner）。
+   左侧 216px 菜单收起；后端在线时标题行也收起，整块面板给内容。离线时标题行留着显示「启动投研后端」。 */
+#chuxin-panel.cx-inner-nav { grid-template-columns: minmax(0, 1fr); }
+#chuxin-panel.cx-inner-nav .cx-primary-nav { display: none; }
+#chuxin-panel.cx-inner-nav .cx-view-frame { grid-column: 1; }
+#chuxin-panel.cx-inner-nav.cx-online .cx-header { display: none; }
+
 /* 工作台左栏：与 mock 一致，只放数据与记录，不复制 AI 产品入口。 */
 .cx-primary-nav {
   grid-column: 1; grid-row: 3;
