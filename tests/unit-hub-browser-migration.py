@@ -20,6 +20,9 @@ entry = Path(__file__).resolve().parents[1] / 'scripts' / 'configure-hub-browser
 spec = importlib.util.spec_from_file_location('migration', entry)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+setup_spec = importlib.util.spec_from_file_location('browser_setup', entry.with_name('hub-browser-setup.py'))
+setup = importlib.util.module_from_spec(setup_spec)
+setup_spec.loader.exec_module(setup)
 
 
 class MigrationTest(unittest.TestCase):
@@ -83,6 +86,35 @@ class MigrationTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'changed after planning'):
             m.apply(self.spec, changes)
         self.assertEqual(m.read(self.config)['unrelated'], 'new')
+
+    def test_setup_discovers_groups_and_applies_explicit_binding_with_originals_preserved(self):
+        with connect(self.db) as db:
+            db.execute('ALTER TABLE accounts ADD COLUMN login_group TEXT')
+            db.execute("UPDATE accounts SET login_group='primary'")
+        old_entry = self.root / 'old-cli.js'
+        old_entry.write_text('process.stdout.write("closed own fixture page");')
+        data = self.root / 'data'
+        data.mkdir()
+        self.config.write_text(json.dumps(dict(self.original, cli_entry=str(old_entry))), encoding='utf-8')
+        bridge = self.root / 'absent-bridge.json'
+        groups, tools = setup.discover(self.db.parent, bridge)
+        self.assertEqual(groups[0]['id'], 'images:primary')
+        self.assertEqual(groups[0]['lanes'], 1)
+        result = setup.bind(Path(self.spec['root']), entry.parents[1], self.db.parent, bridge, Path(self.spec['playwright']), {'images:primary': 'alt'})
+        self.assertTrue(Path(result['backup']).is_dir())
+        self.assertFalse((self.db.parent / 'stop-primary').exists())
+        self.assertEqual(m.read(Path(self.spec['root']) / 'tool-bindings.json')['tools'][0]['identity'], 'alt')
+        self.assertEqual(m.read(self.config)['data_dir'], str(data))
+
+    def test_setup_busy_queue_changes_neither_config_nor_worker_stop_marker(self):
+        with connect(self.db) as db:
+            db.execute('ALTER TABLE accounts ADD COLUMN login_group TEXT')
+            db.execute("UPDATE accounts SET login_group='primary'")
+            db.execute("INSERT INTO jobs VALUES('running')")
+        with self.assertRaisesRegex(RuntimeError, '在途任务'):
+            setup.bind(Path(self.spec['root']), entry.parents[1], self.db.parent, self.root / 'absent.json', Path(self.spec['playwright']), {'images:primary': 'main'})
+        self.assertEqual(m.read(self.config), self.original)
+        self.assertFalse((self.db.parent / 'stop-primary').exists())
 
 
 if __name__ == '__main__':

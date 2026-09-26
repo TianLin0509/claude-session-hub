@@ -12,7 +12,12 @@ function service(t, site, previous = {}) {
     lifecycle: fn => fn(), ensure: async () => { starts++; running = true; },
     closeIfIdle: async () => { closes++; running = false; },
     loginStatus: async () => ({ sites: { chatgpt: { state: 'cookie_present' }, deepseek: site } }) };
-  const acc = new HubAccounts({ hubChrome: chrome, env: { CLAUDE_HUB_HOME_DIR: root }, getConfig: () => ({}), now: () => 5000 });
+  const inspect = async ({ items, onStage, onResult }) => {
+    starts++; running = true;
+    try { for (const item of items) { onStage(item, '正在确认官网账号'); await onResult(item, item.site === 'deepseek' ? site : { state: 'unknown' }); } }
+    finally { closes++; running = false; }
+  };
+  const acc = new HubAccounts({ hubChrome: chrome, env: { CLAUDE_HUB_HOME_DIR: root }, getConfig: () => ({}), now: () => 5000, inspect });
   acc.writeCache({ identities: { main: { account: 'old@example.com', sites: { deepseek: previous } } } });
   return { acc, chrome, stats: () => ({ starts, closes }) };
 }
@@ -39,7 +44,7 @@ test('old website proof stays visibly old and cannot release a waiting task', as
   assert.deepEqual(stats(), { starts: 1, closes: 1 });
   const again = await acc.state();
   assert.equal(again.checkedAt, 5000);
-  assert.equal(again.identities[0].sites.find(s => s.key === 'deepseek').checkedAt, 1000);
+  assert.equal(again.identities[0].sites.find(s => s.key === 'deepseek').checkedAt, 5000, 'a new inconclusive attempt replaces stale success evidence');
 });
 test('explicit checks coalesce and fresh proof alone resumes a waiting task', async t => {
   const { acc, stats } = service(t, { state: 'signed_in', live: true });

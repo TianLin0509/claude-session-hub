@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('fs'),path=require('path'),os=require('os');
 const {execFile,spawn}=require('child_process');
-const {AccountBrowser}=require('./account-browser');
+const {HubAccountBrowser:AccountBrowser}=require('./hub-account-browser');
 function run(command,args,env,timeout=15000){return new Promise((resolve,reject)=>execFile(command,args,{env,windowsHide:true,timeout,maxBuffer:1024*1024,encoding:'utf8'},(error,stdout,stderr)=>{
  if(error&&(!Number.isInteger(error.code)||error.killed))return reject(error);
  resolve({code:error?.code||0,stdout,stderr});

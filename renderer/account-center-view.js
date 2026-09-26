@@ -39,4 +39,22 @@ function unplacedClis(state) {
 function attentionCount(state, now = Date.now()) {
   return identityCards(state, now).reduce((n, c) => n + c.attention, 0) + unplacedClis(state).filter(c => c.tone === 'warn').length;
 }
-module.exports = { siteChip, cliChip, identityCards, unplacedClis, attentionCount };
+function companyCards(state) {
+  return require('../core/hub-account-catalog').COMPANIES.map((company, index) => ({
+    ...company, shortcut: index + 1,
+    accounts: (state.identities || []).flatMap(identity => {
+      const site = identity.sites.find(s => s.key === company.site);
+      if (!site) return [];
+      const pending = state.progress?.status === 'running' && state.progress.items.find(i => i.identity === identity.id && i.site === company.site);
+      let status = site.stale ? '上次' + (site.state === 'signed_in' ? '已登录' : '检查未确认') : ({ signed_in: '已登录', signed_out: '需要登录', needs_attention: '需要你完成验证', cookie_present: '有登录记录', login_open: '网页窗口使用中', needs_browser: '待检查' }[site.state] || '未确认');
+      if (pending?.state === 'queued') status = '等待检查';
+      if (pending?.state === 'checking') status = '检查中…';
+      const account = site.account || (company.site === 'chatgpt' ? identity.account : '') || '账号待确认';
+      return [{ ...site, identity: identity.id, account, label: identity.id === 'main' ? '账号 1' : '账号 2', status,
+        preferred: (state.preferences?.sites?.[company.site]?.preferred || 'main') === identity.id,
+        tone: pending?.state === 'checking' ? 'checking' : pending?.state === 'queued' || site.stale ? 'idle' : site.state === 'signed_in' ? 'ok' : ['signed_out', 'needs_attention'].includes(site.state) ? 'warn' : 'idle' }];
+    }),
+    clis: (state.clis || []).filter(cli => cli.site === company.site).map(cli => ({ ...cli, ...cliChip(cli) })),
+  }));
+}
+module.exports = { siteChip, cliChip, identityCards, unplacedClis, attentionCount, companyCards };
