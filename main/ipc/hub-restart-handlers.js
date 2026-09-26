@@ -47,7 +47,12 @@ function registerHubRestartIpc(ipcMain, deps) {
     const n=native(row.id);
     if (!n) {
       const session=sm.getSession(row.id);
-      if (!['kimi','gemini','deepseek'].includes(session?.kind?.replace(/-resume$/,''))) throw new Error('此提供方缺少执行状态，请核对后继续');
+      const base=session?.kind?.replace(/-resume$/,'');
+      // 2026-09-26：PTY 成为默认后，Claude / Codex 也走这里。只放行老式 CLI 会让每个正在干活的
+      // PTY 会话重启后都报「缺少执行状态」而不续作（真机：Codex 计划 before=working → error）。
+      // 续作提示自己要求先核对上一步的实际结果，已完成就只报告，不会重复执行。
+      const ptyAgent=session?.agentRuntime === 'pty' && ['claude','codex'].includes(base);
+      if (!ptyAgent && !['kimi','gemini','deepseek'].includes(base)) throw new Error('此提供方缺少执行状态，请核对后继续');
       return {completed:false};
     }
     await n.start?.();
