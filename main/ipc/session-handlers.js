@@ -24,6 +24,19 @@ function isSafeNativeSessionId(value) {
   return typeof value === 'string' && NATIVE_SESSION_ID_RE.test(value);
 }
 
+// 旧 PTY 的退出回调把会话从 SessionManager 里删掉，才算收尾完成（归属已释放）。
+function waitForSessionGone(sessionManager, sessionId, { timeoutMs = 15000, intervalMs = 50 } = {}) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (!sessionManager.getSession(sessionId)) return resolve(true);
+      if (Date.now() >= deadline) return resolve(false);
+      setTimeout(check, intervalMs);
+    };
+    check();
+  });
+}
+
 function registerSessionIpc(ipcMain, deps) {
   const {
     registerSessionForTap = () => {},
@@ -516,10 +529,21 @@ function registerSessionIpc(ipcMain, deps) {
 
       const resumeMeta = buildSessionResumeMeta(old);
       lastResizeBySid.delete(sessionId);
-      sessionManager.closeSession(sessionId);
-      return Promise.resolve(resumeSession(resumeMeta)).then((fresh) => (
-        fresh || { ok: false, error: 'resume-failed', message: '原生会话恢复失败' }
-      )).catch((error) => ({
+      // 2026-09-26：kill 只是发信号，旧 PTY 的收尾（保存记录、停 writer、释放归属）在
+      // 退出回调里。以前 close 后立刻 resume，撞上「该会话已在本 Hub 打开」而失败；
+      // 随后旧进程退出又按「用户关闭」发出 session-closed，会话连卡片带记录一起被抹掉。
+      // 改走休眠：群聊成员身份与卡片都保留，等收尾完成再按原会话恢复。
+      const suspended = sessionManager.suspendSession(sessionId, { reason: 'restart' });
+      if (!suspended || !suspended.ok) {
+        return { ok: false, error: suspended?.error || 'restart-suspend-failed',
+          message: `会话重启失败：${suspended?.message || '无法停止旧进程'}` };
+      }
+      return waitForSessionGone(sessionManager, sessionId).then((gone) => {
+        if (!gone) return { ok: false, error: 'restart-exit-timeout', message: '会话重启失败：旧进程迟迟未退出，稍后可从休眠恢复' };
+        return Promise.resolve(resumeSession(resumeMeta)).then((fresh) => (
+          fresh || { ok: false, error: 'resume-failed', message: '原生会话恢复失败' }
+        ));
+      }).catch((error) => ({
         ok: false,
         error: 'resume-failed',
         message: `会话重启失败：${error && error.message ? error.message : String(error)}`,
@@ -558,5 +582,6 @@ function registerSessionIpc(ipcMain, deps) {
 
 module.exports = {
   isSafeNativeSessionId,
+  waitForSessionGone,
   registerSessionIpc,
 };

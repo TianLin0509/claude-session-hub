@@ -1696,7 +1696,10 @@ class SessionManager extends EventEmitter {
       // _toPublic 的 `info.ccSessionId !== undefined` 检查会跳过该字段，行为不变。
       ...(opts.resumeCCSessionId ? { ccSessionId: opts.resumeCCSessionId } : {}),
       ...(claudePtyLaunch && claudePtyLaunch.sessionId ? { ccSessionId: claudePtyLaunch.sessionId } : {}),
-      ...(opts.resumeTranscriptPath ? { transcriptPath: opts.resumeTranscriptPath } : {}),
+      // 分支的 resumeTranscriptPath 是「源会话」的记录，只给原生 thread/fork 当参数用。
+      // 终端里的 `codex fork` 会开一条新线程：预先写上源路径，CodexTap 就把分支绑到
+      // 源 rollout、登记源的线程 id，新线程的 hook 全被当成外来会话丢弃（2026-09-26 实测）。
+      ...(opts.resumeTranscriptPath && !(opts.codexForkSid && !isNativeCodex) ? { transcriptPath: opts.resumeTranscriptPath } : {}),
       // 恢复时 renderer 会把旧会话元数据与新会话合并；原生时代留下的后端与
       // 快照必须显式清空，否则 PTY 会话会被当成原生会话去读状态。
       ...(isPtyAgent ? { runtimeBackend: null, nativeRuntime: null, agentRuntime: 'pty' } : {}),

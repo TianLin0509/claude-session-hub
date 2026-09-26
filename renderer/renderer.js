@@ -8890,6 +8890,8 @@ function persistWorkscene(flush = false) {
         acpSid:s.acpSid || null,acpProfileId:s.acpProfileId || null,acpCapabilities:s.acpCapabilities || null,
         runtimeBackend: s.runtimeBackend || null,
         nativeRuntime: s.nativeRuntime || null,
+        // PTY 会话的原生后端与快照是故意置空的；带上标记，落盘时才不会继承原生时代的旧值。
+        agentRuntime: s.agentRuntime === 'pty' ? 'pty' : null,
         codexApprovalPolicy: s.codexApprovalPolicy || null,
         codexSandbox: s.codexSandbox || null,
         codexSessionsRoot: s.codexSessionsRoot || null,

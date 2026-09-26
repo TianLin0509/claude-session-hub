@@ -92,6 +92,9 @@ function _buildSessionPayload(hubId, data) {
     acpCapabilities: data.acpCapabilities || null,
     runtimeBackend: data.runtimeBackend || null,
     nativeRuntime: require('./native-agent-runtime.js').persistNativeRuntime(data),
+    // 重启后仍要知道这是 PTY 会话：isCodexSession 只看后端与快照，缺了这个标记，
+    // 残留的原生字段就会让休眠记录被当成原生会话。
+    agentRuntime: data.agentRuntime === 'pty' ? 'pty' : null,
     codexApprovalPolicy: data.codexApprovalPolicy || null,
     codexSandbox: data.codexSandbox || null,
     codexSessionsRoot: data.codexSessionsRoot || null,
