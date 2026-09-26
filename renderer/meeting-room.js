@@ -97,6 +97,9 @@ if (typeof document !== 'undefined') (function () {
   }
   let memberSplit = null;
   const overviewScroll = new Map();
+  const memberRuntimeState = session => session?.agentRuntime === 'pty'
+    ? require('../core/session-runtime-truth.js').getSessionRuntimeTruth(session).state
+    : session?.nativeRuntime?.state;
   function ensureMemberSplit() {
     if (memberSplit) return memberSplit;
     memberSplit = require('./group-member-split').createGroupMemberSplit({ document,
@@ -104,12 +107,20 @@ if (typeof document !== 'undefined') (function () {
       services: {
         members: meeting => _getGcSlots(meeting).filter(Boolean).map(slot => ({ ...slot, label: slot.displayLabel || slot.label || getKindLabel(slot.kind) })),
         session: sid => sessions.get(sid), logo: kind => _groupLogoSrc(kind),
-        status: session => session?.status === 'dormant' ? '休眠' : ({ running:'正在输出', waiting:'等待确认', completed:'已完成', failed:'失败', interrupted:'已停止', idle:'待命' }[session?.nativeRuntime?.state] || session?.status || '等待连接'),
-        running: session => ['running','waiting'].includes(session?.nativeRuntime?.state) || session?.status === 'working',
+        // PTY 成员没有原生快照：状态与「是否在跑」取权威状态，否则停止按钮永远灰着、状态显示英文原值。
+        status: session => session?.status === 'dormant' ? '休眠' : ({ running:'正在输出', starting:'正在开始', waiting:'等待确认', completed:'已完成', failed:'失败', interrupted:'已停止', idle:'待命' }[memberRuntimeState(session)]
+          || (session?.agentRuntime === 'pty' ? '待命' : session?.status) || '等待连接'),
+        running: session => ['running','waiting'].includes(memberRuntimeState(session)) || session?.status === 'working'
+          || (session?.agentRuntime === 'pty' && memberRuntimeState(session) === 'starting'),
         createView: (sid, panel) => createSecondarySessionView(sid, panel, { groupMember: true }),
         async resume(sid) { const result = await window.resumeDormantSession(sid); if (!result) throw new Error('未能恢复成员，请查看占用或连接提示'); },
         async stop(sid) {
           const session = sessions.get(sid);
+          if (session?.agentRuntime === 'pty') {
+            require('./pty-interrupt').sendPtyAgentInterrupt(session, { state: memberRuntimeState(session),
+              send: data => ipcRenderer.send('terminal-input', { sessionId: sid, data }) });
+            return;
+          }
           if (!isNativeAgent(session)) { ipcRenderer.send('terminal-input', { sessionId: sid, data:'\x03' }); return; }
           const result = session.runtimeBackend === 'claude-stream-json'
             ? await ipcRenderer.invoke('claude-native:interrupt', { sessionId: sid })

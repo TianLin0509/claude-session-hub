@@ -278,6 +278,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           ...(typeof result.commandOutput === 'string' ? { commandOutput: result.commandOutput } : {}),
           ...(result.message ? {message:result.message} : {}),
           ...(result.error ? {error:result.error} : {}),
+          // 明确没执行（例如 Codex 收尾中拒绝斜杠命令）：渲染层据此退回原文、不亮「补发」。
+          ...(result.notSent ? {notSent:true} : {}),
           ...(result.threadId ? {threadId:result.threadId,turnId:result.turnId} : {}),
           ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };

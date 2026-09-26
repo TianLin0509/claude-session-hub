@@ -22,6 +22,14 @@ function createRestartLegacyTracker(tap,sm,now=Date.now()) {
     if(!s || s.nativeRuntime || event.signalSource!=='task_started' || !(Number(event.startedAt)>=now))return;
     states.set(s.id,{state:'working',at:Number(event.startedAt),identity:nativeSessionIdentity(s)?.value});
   });
+  // PTY Claude 不产生上面任何一种事件（它的开工来自 UserPromptSubmit hook），重启计划就一律
+  // 记成空闲：重启时被直接中断，回来后也收不到续作提示。PTY Claude / Codex 的 hook 开工都经
+  // sessionManager 的 agent-turn-started 汇合，完成仍由上面的 turn-complete 收尾。
+  if(typeof sm.on==='function')sm.on('agent-turn-started',event=>{
+    const s=sm.getSession(event.sessionId);
+    if(!s || s.nativeRuntime || s.agentRuntime!=='pty' || !(Number(event.observedAt)>=now))return;
+    states.set(s.id,{state:'working',at:Number(event.observedAt),identity:nativeSessionIdentity(s)?.value});
+  });
   for(const eventName of ['turn-aborted','turn-error'])tap.on(eventName,event=>{
     const value=states.get(event.hubSessionId);if(value)value.state='unknown';
   });

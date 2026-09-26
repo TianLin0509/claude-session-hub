@@ -36,11 +36,13 @@ function createCodexPtyHookHandler({
       if (meta && !isCodexTopLevelRolloutMeta(meta)) return { ignored: 'subagent' };
     }
     // 同一个终端里换线程只有三种正当来源：/new（clear）、/resume、fork；
-    // startup 只在 CLI 已退回宿主 shell 后重新拉起时才算，否则就是 CLI 里嵌套跑的另一个 codex。
+    // startup 只在 CLI 已退回宿主 shell 后重新拉起，或 TUI 自己刚结束了已绑定线程
+    // （Codex 0.153 的 /new 报的是 startup）时才算，否则就是 CLI 里嵌套跑的另一个 codex。
     const source = String(parsed.source || '');
     const newThread = event === 'session-start' && !!boundSid && !!incomingSid && boundSid !== incomingSid
       && (['clear', 'resume', 'fork'].includes(source)
-        || (source === 'startup' && !!sessionManager.isHostShellActive?.(hubSessionId)));
+        || (source === 'startup' && (!!sessionManager.isHostShellActive?.(hubSessionId)
+          || !!sessionManager.isCodexThreadEnded?.(hubSessionId, boundSid))));
     if (boundSid && incomingSid && boundSid !== incomingSid && !newThread) {
       logger.warn?.(`[codex hook] ignored foreign ${event} for ${String(hubSessionId).slice(0, 8)} (${source || 'no-source'})`);
       return { ignored: 'foreign-session' };
@@ -48,6 +50,7 @@ function createCodexPtyHookHandler({
     if (incomingSid && rolloutPath) {
       if (incomingSid !== boundSid || session.transcriptPath !== rolloutPath) {
         const updated = sessionManager.updateSessionMeta(hubSessionId, { codexSid: incomingSid, transcriptPath: rolloutPath });
+        if (incomingSid !== boundSid) sessionManager.noteCodexThreadBound?.(hubSessionId);
         if (updated) {
           sendToRenderer('session-updated', { session: updated });
           sendToRenderer('session-meta-updated', { hubSessionId, codexSid: incomingSid, transcriptPath: rolloutPath });

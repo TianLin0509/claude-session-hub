@@ -389,7 +389,13 @@ async function main() {
           .map(e => (/<command-args>([\s\S]*?)<\/command-args>/.exec(e.message.content) || [])[1] || '');
         const confirmedOrder = r.acks.map(line => (/"([^"]+)"/.exec(line) || [])[1]);
         r.cycleEvidence = { executed, confirmedOrder };
-        assert.deepEqual(executed.slice(0, 2), ['keep first marker', 'keep second marker'], 'the CLI executed both /compact commands: ' + JSON.stringify(executed));
+        // 第二次压缩若真的发生，CLI 会把此前的记录（含第二条命令本身）改写进压缩边界，jsonl 里
+        // 就只剩第一条（2026-09-26 深潜矩阵实测）。确认本身来自 CLI 的 PreCompact hook，带着
+        // 这条命令的原文参数和独立的执行周期，同样是 CLI 自己的执行证据。
+        assert.equal(executed[0], 'keep first marker', 'the CLI recorded the first /compact: ' + JSON.stringify(executed));
+        r.secondEvidence = executed[1] === 'keep second marker' ? 'transcript'
+          : (confirmedOrder[1] === 'keep second marker' && cycles[1] && cycles[1] !== cycles[0] ? 'precompact-hook' : null);
+        assert.ok(r.secondEvidence, 'the CLI executed the second /compact: ' + JSON.stringify({ executed, confirmedOrder, cycles }));
         assert.deepEqual(confirmedOrder, ['keep first marker', 'keep second marker'], 'confirmations follow the execution order, one per command');
         r.boundaries = entries.filter(e => e.subtype === 'compact_boundary' && Date.parse(e.timestamp || '') >= t0 - 1000).length;
         assert.ok(r.boundaries >= 1, 'at least one real compaction happened');
