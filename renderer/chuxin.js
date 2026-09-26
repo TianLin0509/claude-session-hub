@@ -206,6 +206,7 @@
     // 在后端在线时都收起，整块面板留给内容；离线时标题行还在，用来显示「启动投研后端」。
     // 左侧菜单只是隐藏，不删：Tab 记忆、外部跳转仍走 switchTab。
     root.classList.add('cx-inner-nav');
+    state.innerNavConfirmed = false;
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
       observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
@@ -238,6 +239,7 @@
       if (state.frame.dataset.hash !== tab.hash || state.frame.src !== target) {
         state.frame.dataset.hash = tab.hash;
         state.frame.src = target;
+        armInnerNavFallback();
       }
     };
     // Chromium may keep an OOP iframe document.hidden=true when navigation is
@@ -279,8 +281,24 @@
     const data = event.data;
     if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
     if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
+    if (data.type === 'chuxin-ready' || data.type === 'chuxin-view') confirmInnerNav();
     if (data.type === 'chuxin-view') rememberInnerView(String(data.hash || ''));
   });
+
+  // 左侧菜单先按「初心会自带顶栏」收起，但要初心亲口确认（启动即发 chuxin-ready）。
+  // 初心和 Hub 是分开部署的：万一跑的是不认 nav=inner 的旧版，6 秒没回音就把菜单还回来，免得无路可走。
+  function confirmInnerNav() {
+    state.innerNavConfirmed = true;
+    clearTimeout(state.innerNavTimer);
+    if (root) root.classList.add('cx-inner-nav');
+  }
+  function armInnerNavFallback() {
+    if (state.innerNavConfirmed) return;
+    clearTimeout(state.innerNavTimer);
+    state.innerNavTimer = setTimeout(() => {
+      if (!state.innerNavConfirmed && root) root.classList.remove('cx-inner-nav');
+    }, 6000);
+  }
 
   // 初心顶栏里切页（含页面内跳转，比如林铛工作台点「打开档案」）后，记住当前页：下次打开投研回到这里。
   // 只记，不导航——iframe 已经在那一页了，再设 src 会整页重载。
@@ -887,6 +905,9 @@
       if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
       refreshStatus();
     }
+    // 在线时标题行是收起的；后端中途挂了要让「启动投研后端」自己回来，所以面板开着就定时查一次
+    clearInterval(state.statusTimer);
+    state.statusTimer = visible ? setInterval(refreshStatus, 20000) : null;
   }
 
   function bindEntry() {

@@ -87,6 +87,21 @@ async function screenshot(client, name) {
       document.getElementById('btn-research').click();
     })()`);
     await waitEval(client, 'document.querySelector("#chuxin-panel.cx-online")', 'online research panel');
+    if (process.env.CHUXIN_E2E_EXPECT_LEGACY === '1') {
+      // 指向不认 nav=inner 的旧版初心：6 秒没握手，Hub 必须把左侧菜单还回来，不能让人无路可走
+      await _waitMs(7000);
+      const legacy = await client.eval(`({
+        nav: getComputedStyle(document.querySelector('.cx-primary-nav')).display,
+        header: getComputedStyle(document.querySelector('.cx-header')).display,
+        innerNav: document.getElementById('chuxin-panel').classList.contains('cx-inner-nav'),
+      })`);
+      console.log('legacy', JSON.stringify(legacy));
+      assert.notStrictEqual(legacy.nav, 'none', '旧版初心没握手，左侧菜单应当恢复');
+      assert.notStrictEqual(legacy.header, 'none', '旧版初心没握手，标题行应当恢复');
+      await screenshot(client, '00-legacy-fallback.png');
+      console.log('PASS e2e-chuxin-inner-nav (legacy fallback)');
+      return;
+    }
     // iframe 在状态查询回来之前就按默认地址（3003）建好了；指向隔离实例时重新导航一次。
     // 菜单虽然隐藏，按钮仍在，程序化点击走的就是 switchTab。
     await client.eval(`document.querySelector('.cx-primary-tab[data-tab="today"]').click()`);
