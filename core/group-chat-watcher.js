@@ -26,7 +26,8 @@ const {
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
-//   Claude family 与当前 Codex 都支持；DeepSeek 迁移到 Codex 后也走 Codex 分支。
+//   Windows Codex 还会经过按键粘贴缓冲，正文后用非文本键结束缓冲，再提交。
+//   DeepSeek 迁移到 Codex 后也走 Codex 分支。
 //   marker 常量与分块/settle 原语都在 core/pty-prompt-submit.js，普通会话走同一套。
 //   本文件不再直接拼 BP 帧（writeBracketedPaste 负责），所以只引原语不引常量。
 const {
@@ -506,6 +507,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         sessionManager.writeToSession(sid,text.slice(offset,offset+2048));
         await new Promise(resolve=>setTimeout(resolve,12));
       }
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,text);
       await waitForPasteSettled({sessionManager,sid,settleMs:computeSettleMs(text.length),baselineMarker});
       writeSubmitSignal(sessionManager,sid,kind,0);
       const first=await receipt.wait(7000);
@@ -1012,6 +1014,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       //   它自己再踩一次同一个坑就毫无意义，所以改走与主路径同一套分块 + 自适应 settle。
       const baselineMarker = snapshotPasteMarker(sessionManager, sid);
       await writeBracketedPaste(sessionManager, sid, prompt);
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
       noteSubmittedPrompt(sid, kind, prompt);
       await waitForPasteSettled({
         sessionManager,
