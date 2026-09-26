@@ -26,14 +26,14 @@ console.log('groupchat 插话闭环契约');
 test('循环在跑时输入框不再调 loop:start，改走插话路径', () => {
   const branch = room.slice(room.indexOf('async function _routeLoopInput'), room.indexOf('function _startLoopWithGoal'));
   assert(/invoke\('loop:status'/.test(branch), '在不在跑要问主进程，不能信 renderer 缓存');
-  assert(/_sendUserSupplement\(m, finalText\)/.test(branch), '在跑 → 插话');
+  assert(/_sendUserSupplement\(m, finalText, recipientSids\)/.test(branch), '在跑 → 按头像快照插话');
   assert(/_startLoopWithGoal\(m, finalText, heroIdBySid\)/.test(branch), '没在跑 → 才是新任务');
   assert(!/loop:start/.test(branch), '插话路径里不许再出现 loop:start');
 });
 test('普通串行执行期间的新输入也走插话，查询失败保留原文', () => {
   const branch=room.slice(room.indexOf('async function _routeSerialInput'),room.indexOf('async function _routeLoopInput'));
   assert(/invoke\('loop:status'/.test(branch));
-  assert(/status\?\.running/.test(branch));assert(/_sendUserSupplement\(m, finalText\)/.test(branch));
+  assert(/status\?\.running/.test(branch));assert(/_sendUserSupplement\(m, finalText, recipientSids\)/.test(branch));
   assert(/_restoreQuestionAndPreserveDraft/.test(branch));
 });
 
@@ -63,7 +63,7 @@ test('「谁在跑」不能只看内存里的活跃 watcher', () => {
 
 test('送达确认之后才标已读；失败走另一条分支，账本原样留着', () => {
   const okBranch = dispatcher.slice(dispatcher.indexOf('if (ok) {'), dispatcher.indexOf('} else {', dispatcher.indexOf('if (ok) {')));
-  assert(/markUserSupplementsDelivered\(t\.sid, t\.supplementSeqs\)/.test(okBranch),
+  assert(/markUserSupplementsDelivered\(t\.sid, t\.supplementSeqs, \{queued:sendStatus==='queued'\}\)/.test(okBranch),
     '标已读必须在发送成功分支里');
   assert(/orch\.markUserSupplementsDelivered\(sid, \[added\.seq\]\)/.test(handler));
   const failBlock = handler.slice(handler.indexOf('} else {', handler.indexOf('sendToPty')));

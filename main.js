@@ -1798,6 +1798,7 @@ registerGroupchatSupplementIpc(ipcMain, {
   meetingManager,
   sendToRenderer,
   sessionManager,
+  transcriptTap,
 });
 registerCliStatusIpc(ipcMain, {
   cliReadyDetector,

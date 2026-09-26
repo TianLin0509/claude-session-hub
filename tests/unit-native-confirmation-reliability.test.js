@@ -107,7 +107,7 @@ test('a queued group supplement is not presented as immediate delivery or dispat
   });
   const result=await handlers.get('groupchat:user-supplement')(null,{meetingId:'m',text:'same instruction'});
   assert.deepEqual(result.deliveredNow,['codex']);assert.deepEqual(result.queuedSids,['claude']);assert.deepEqual(result.pendingSids,['dormant']);
-  assert.equal(marked.length,2);assert.deepEqual(events[0][1].queuedSids,['claude']);
+  assert.equal(marked.length,2);assert.deepEqual(events.at(-1)[1].queuedSids,['claude']);
 });
 test('Claude stderr reaches the same paged backstage diagnostic store',async t=>{
   const path=require('node:path'),fs=require('node:fs'),os=require('node:os');

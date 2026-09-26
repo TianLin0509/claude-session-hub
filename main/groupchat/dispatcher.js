@@ -1293,6 +1293,7 @@ function createGroupChatDispatcher(deps) {
     userInput,
     turnTimeoutMs,
     targetMemberIds,
+    recipientSids,
     heroIdBySid,
     silent,
     allowActiveExtend,
@@ -1331,6 +1332,7 @@ function createGroupChatDispatcher(deps) {
         members.map(member => member.sid)
       );
 
+      if(recipientSids!==undefined)targetMemberIds=require('../../core/groupchat-recipients').memberIds(meeting,recipientSids);
       const explicitTargetIds = Array.isArray(targetMemberIds)
         ? targetMemberIds.map(x => String(x || '').toLowerCase()).filter(Boolean)
         : [];
@@ -1534,6 +1536,7 @@ function createGroupChatDispatcher(deps) {
           }
           const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
             clientSubmissionId: t.attemptId, metadata: { attemptId: t.attemptId, runId, meetingId, turnNum },
+            shouldSubmit:()=>!interruptedSinceStart() && (!shouldDispatch || shouldDispatch()),
           });
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
@@ -1586,7 +1589,7 @@ function createGroupChatDispatcher(deps) {
             }
             // 送达确认了才记「这位收到过这几条插话」。发送失败走 else 分支，账本原样留着。
             if (t.supplementSeqs && t.supplementSeqs.length) {
-              try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs); }
+              try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs, {queued:sendStatus==='queued'}); }
               catch (e) { warn('[groupchat] mark user supplement delivered failed:', e && e.message); }
             }
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
