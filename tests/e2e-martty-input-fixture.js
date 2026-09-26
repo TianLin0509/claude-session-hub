@@ -20,6 +20,12 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   assert.equal(records().filter(x=>x.method==='session/prompt').length,0,'draft must not submit');
   p.write('\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_');deadline=Date.now()+60000;while(Date.now()<deadline&&!records().some(x=>x.method==='session/prompt'))await sleep(100);
   const prompts=records().filter(x=>x.method==='session/prompt');assert.equal(prompts.length,1);assert.equal(prompts[0].params.prompt[0].text,text);
+  await sleep(2000);p.write('cancel');await sleep(500);p.write('\r');
+  deadline=Date.now()+20000;while(Date.now()<deadline&&records().filter(x=>x.method==='session/prompt').length<2)await sleep(100);
+  assert.equal(records().filter(x=>x.method==='session/prompt').length,2);
+  p.write('\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_');
+  deadline=Date.now()+10000;while(Date.now()<deadline&&!records().some(x=>x.method==='session/cancel'))await sleep(100);
+  assert(records().some(x=>x.method==='session/cancel'),'Escape must cancel the active native request');
   console.log(JSON.stringify({passed:true,lines:120,exactUnicodeAndNewlines:true,root}));
  }finally{fs.writeFileSync(path.join(root,'screen.txt'),output);p.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1});

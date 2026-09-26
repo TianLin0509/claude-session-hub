@@ -8,6 +8,10 @@ test('Martty multiline input never contains a submit key and rejects unsupported
   const encoded=encodeMarttyPrompt('one\r\n中文🙂\ntwo','win32');
   assert.equal(encoded.text,'one\n中文🙂\ntwo');assert(!/[\r\n]/.test(encoded.payload));
   for(const text of ['a\tb','a\x1bb'])assert.throws(()=>encodeMarttyPrompt(text,'win32'),e=>e.notSent===true);
+  const {translateMarttyInput,ENTER,ESCAPE}=require('../core/martty-prompt-input');
+  assert.equal(translateMarttyInput('\x1b'),ESCAPE);assert.equal(translateMarttyInput('\r'),ENTER);
+  assert.equal(translateMarttyInput('\x1b[200~one\r\n中文🙂\ntwo\x1b[201~'),encoded.payload);
+  assert.equal(translateMarttyInput('one\r中文🙂\rtwo'),encoded.payload);
 });
 test('Windows canonical paths preserve workspace identity without changing prompt text',()=>{
   for(const [cwd,expected]of [['\\\\?\\C:\\work\\x','C:\\work\\x'],['\\\\?\\UNC\\server\\share','\\\\server\\share'],['C:\\work','C:\\work']]){

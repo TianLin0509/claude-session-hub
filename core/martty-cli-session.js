@@ -109,12 +109,15 @@ class MarttyCliSession extends AcpSession {
       await paste.waitForPasteSettled({sessionManager:manager,sid:this.options.id,
         settleMs:paste.computeSettleMs(encoded.payload.length),baselineMarker});
       // Explicit unmodified Enter avoids inheriting a Shift modifier in ConPTY.
-      this.write('\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_');
+      this.write(input.ENTER);
       if(text.trimStart().startsWith('/')){clearTimeout(this.pending?.timer);this.pending=null;return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};}
     }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}
     return promise;
   }
-  write(data){if(this.closed)throw new Error('CLI 已退出');this.pty?.write(data);}
+  write(data){if(this.closed)throw new Error('CLI 已退出');
+    try{data=require('./martty-prompt-input').translateMarttyInput(data);}
+    catch(error){this.emit('action-error',error.message);return;}
+    this.pty?.write(data);}
   resize(cols,rows){this.cols=cols;this.rows=rows;this.pty?.resize(cols,rows);}
   readTranscript(options){return super.readTranscript(options).map(c=>({...c,source:this.source}));}
   async interrupt(){if(!this.active||this.interruptAt&&Date.now()-this.interruptAt<1500)return;this.interruptAt=Date.now();this.write('\x1b');}
