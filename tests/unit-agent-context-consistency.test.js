@@ -108,3 +108,20 @@ test('personal hook policy and Hub PTY hook deployment converge instead of rejec
  assert.equal(final.PreToolUse[0].hooks[0].command,'python guard.py');
  assert.equal(final.UserPromptSubmit.length,1,'the policy prompt hook is reused, not duplicated');
 });
+test('a hooks.json that is exactly the personal policy (written by the user sync, no Hub receipt) is upgraded, not rejected',t=>{
+ // 2026-09-26 生产现场：~/.codex-profiles/second/hooks.json 由个人同步脚本按策略原样写入，没有 Hub 收据；
+ // PTY 模式期望「策略 + Hub 条目」，旧判定把它当成独立修改而拒绝，所有 Codex 会话都恢复不了。
+ const home=fixture(t),dataDir=path.join(home,'.claude-session-hub'),env={USERPROFILE:home};
+ const hooks={hooks:{Stop:[{hooks:[{type:'command',command:'python guard.py --release',timeout:5}]}]}};
+ write(path.join(home,'.agents/USER_CONTEXT.md'),'same user');
+ write(path.join(home,'.agents/context-policy.json'),JSON.stringify({version:1,codexHooks:hooks}));
+ const nativeHome=path.join(home,'second');
+ write(path.join(nativeHome,'hooks.json'),JSON.stringify(hooks,null,2)+'\n');
+ syncNativeUserContext({kind:'codex',nativeHome,env,dataDir});
+ const {mergeHubCodexHooks,hubHookScriptPath}=require('../core/codex-hook-integration');
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(nativeHome,'hooks.json'),'utf8')),mergeHubCodexHooks(hooks,hubHookScriptPath(nativeHome)).hooksFile);
+ // 真正被人手改过（既不是策略原样、也不是 Hub 合成内容、也没有收据）仍然拒绝覆盖。
+ const other=path.join(home,'third');
+ write(path.join(other,'hooks.json'),JSON.stringify({hooks:{Stop:[{hooks:[{type:'command',command:'python my-own.py'}]}]}}));
+ assert.throws(()=>syncNativeUserContext({kind:'codex',nativeHome:other,env,dataDir}),/独立修改/);
+});
