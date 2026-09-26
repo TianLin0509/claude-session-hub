@@ -64,7 +64,8 @@ test('restart of a recoverable session suspends and waits for reaping before res
 // 新线程的 hook 全被当成外来会话丢弃，提交一直「未确认」。
 test('PTY Codex fork does not start out bound to the source rollout', () => {
   const src = read('core/session-manager.js');
-  assert.match(src, /\.\.\.\(opts\.resumeTranscriptPath && !\(opts\.codexForkSid && !isNativeCodex\) \? \{ transcriptPath: opts\.resumeTranscriptPath \} : \{\}\),/);
+  assert.match(src, /const ptyCodexForkLaunch = !!opts\.codexForkSid && !isNativeCodex;/);
+  assert.match(src, /\.\.\.\(opts\.resumeTranscriptPath && !ptyCodexForkLaunch \? \{ transcriptPath: opts\.resumeTranscriptPath \} : \{\}\),/);
   // 原生 thread/fork 仍然拿到源路径作为参数。
   assert.match(src, /resumePath:opts\.resumeTranscriptPath \|\| null,/);
 });
