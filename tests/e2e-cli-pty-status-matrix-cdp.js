@@ -375,17 +375,18 @@ async function main() {
           'each submission confirmed by its own arguments: ' + r.acks.join(' | '));
         const cycles = r.acks.map(l => (/by cycle (\S+)/.exec(l) || [])[1]);
         assert.notEqual(cycles[0], cycles[1], 'two different execution cycles');
-        // 真值在 CLI 自己的记录里：确认所用的周期（prompt_id）就是那条命令本身的记录。
-        // 第二次压缩可能因「Not enough messages to compact」不产生新的 compact_boundary，
-        // 但命令照样被 CLI 接收并处理，并触发了 PreCompact。
+        // 真值在 CLI 自己的记录里：每个确认的参数都对应一条真实执行的 /compact 命令记录，且确认
+        // 顺序与命令执行顺序一致。不比 prompt_id：真正发生压缩时，CLI 会重写这段记录，命令记录
+        // 换上压缩后的新 prompt_id（与 PreCompact 报来的不同）；没压缩（Not enough messages）时则一致。
         const entries = readJsonl(file);
-        r.cycleEvidence = r.acks.map(line => {
-          const cycle = (/by cycle (\S+)/.exec(line) || [])[1];
-          const args = (/"([^"]+)"/.exec(line) || [])[1];
-          const own = entries.filter(e => e.promptId === cycle).map(e => JSON.stringify(e));
-          return { cycle, args, recorded: own.some(s => s.includes('/compact') && s.includes(args)) };
-        });
-        assert.ok(r.cycleEvidence.every(x => x.recorded), 'each confirming cycle is that very /compact in the CLI record: ' + JSON.stringify(r.cycleEvidence));
+        const executed = entries.filter(e => e.type === 'user' && typeof e.message?.content === 'string'
+          && e.message.content.includes('<command-name>/compact</command-name>') && Date.parse(e.timestamp || '') >= t0 - 1000)
+          .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+          .map(e => (/<command-args>([\s\S]*?)<\/command-args>/.exec(e.message.content) || [])[1] || '');
+        const confirmedOrder = r.acks.map(line => (/"([^"]+)"/.exec(line) || [])[1]);
+        r.cycleEvidence = { executed, confirmedOrder };
+        assert.deepEqual(executed.slice(0, 2), ['keep first marker', 'keep second marker'], 'the CLI executed both /compact commands: ' + JSON.stringify(executed));
+        assert.deepEqual(confirmedOrder, ['keep first marker', 'keep second marker'], 'confirmations follow the execution order, one per command');
         r.boundaries = entries.filter(e => e.subtype === 'compact_boundary' && Date.parse(e.timestamp || '') >= t0 - 1000).length;
         assert.ok(r.boundaries >= 1, 'at least one real compaction happened');
         await sleep(3000);
