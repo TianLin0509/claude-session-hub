@@ -152,6 +152,14 @@ async function main() {
   assert.match(fnBody, /showHubAlert/);
   const mainSource = readSource('main.js');
   assert.match(mainSource, /registerSessionReferenceIpc\(ipcMain, \{/);
+  // 被引用的 md 在工作目录之外：Claude 默认权限模式下必须把它加进 --add-dir，否则每次引用都弹 Read 审批
+  // （2026-09-26 真实 haiku 实测，见 tests/e2e-session-reference-real-cli-cdp.js）。索引写的目录与加进去的必须是同一个。
+  assert.match(mainSource, /transcriptDir: require\('\.\/core\/data-dir'\)\.getHubTranscriptDir\(\)/);
+  const sessionManager = readSource('core', 'session-manager.js');
+  assert.match(sessionManager, /addDirs: claudeNativeAddDirs\(opts\.addDirs\)/);
+  assert.match(sessionManager, /function claudeNativeAddDirs[\s\S]{0,400}getHubTranscriptDir\(\)/);
+  const { getHubTranscriptDir, getHubDataDir } = require('../core/data-dir.js');
+  assert.strictEqual(getHubTranscriptDir(), path.join(getHubDataDir(), 'transcripts'));
 
   console.log('unit-session-reference: all passed');
 }
