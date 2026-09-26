@@ -62,3 +62,12 @@ test('a startup choice dialog keeps the first prompt unsent instead of feeding i
     error => error.notSent === true && error.code === 'cli-choice-pending');
   assert.deepEqual(writes, [], 'nothing typed into the dialog');
 });
+
+test('a returned host shell never receives the card prompt, even with cached readiness', async () => {
+  const h = harness({createdAt:Date.now()-120000, readyAfterChecks:0});
+  h.sessionManager.setGroupChatReady('sid', true);
+  h.sessionManager.getSessionBuffer = () => 'Error: Failed to resume session\r\nPS\x1b[1CC:\\workspace> ';
+  await assert.rejects(watcher.sendToPty('sid', 'do something', 'codex', {requireReady:false}),
+    error => error.notSent === true && error.code === 'cli-exited');
+  assert.deepEqual(h.writes, []);
+});

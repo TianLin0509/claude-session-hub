@@ -16,6 +16,7 @@ async function main() {
   const model = process.env.REAL_CODEX_MODEL || 'gpt-5.6-sol';
   fs.writeFileSync(path.join(home,'config.toml'), `model = ${j(model)}\nmodel_reasoning_effort = "low"\n[tui.model_availability_nux]\n${j(model)} = 4\n`);
   const report = { root,out,checks:[],passed:false }; let hub,c;
+  report.checks.push = function(...items) { console.log('[audit] '+items.join('; ')); return Array.prototype.push.apply(this,items); };
   const until = async (expr,label,timeout=120000) => { const end=Date.now()+timeout; while(Date.now()<end) { if(await c.eval(expr))return; await sleep(200); } throw Error('timeout '+label); };
   const invoke = (channel,arg) => c.eval(`ipcRenderer.invoke(${j(channel)},${j(arg)})`);
   const shot = async name => { const r=await c.send('Page.captureScreenshot',{format:'png'}); fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64')); };
@@ -40,11 +41,9 @@ async function main() {
     await send(s.id,'只回复 AUDIT_NEW'); await response(s.id,'AUDIT_NEW');
     const fresh = await c.eval(`sessions.get(${j(s.id)}).codexSid`);
     assert.notEqual(fresh,old.codexSid); report.checks.push('real /new rebind and next prompt');
-    const history = await invoke('create-session',{kind:'codex',opts:{cwd,model,effort:'low',mcpProfile:'none',useResume:true,codexSid:old.codexSid,codexSessionsRoot:old.codexSessionsRoot,resumeTranscriptPath:old.transcriptPath}});
-    assert(history.id,JSON.stringify(history));
-    await send(history.id,'只回复 AUDIT_OLD_REOPEN'); await response(history.id,'AUDIT_OLD_REOPEN');
-    assert.equal(await c.eval(`sessions.get(${j(s.id)}).codexSid`),fresh);
-    report.checks.push('old history can reopen after thread switch without stealing current thread');
+    const historyRequest = {kind:'codex',opts:{cwd,model,effort:'low',mcpProfile:'none',useResume:true,codexSid:old.codexSid,codexSessionsRoot:old.codexSessionsRoot,resumeTranscriptPath:old.transcriptPath}};
+    await assert.rejects(invoke('create-session',historyRequest), /已在 AI HUB/);
+    report.checks.push('old history remains locked while original Codex process owns its writer');
     const fork = await invoke('fork-session',{sourceSessionId:s.id});
     const forkId = fork.session?.id || fork.id; assert(forkId,JSON.stringify(fork));
     await send(forkId,'只回复 AUDIT_FORK'); await response(forkId,'AUDIT_FORK');
@@ -54,6 +53,10 @@ async function main() {
     await send(s.id,'只回复 AUDIT_RESTART'); await response(s.id,'AUDIT_RESTART');
     assert.equal(await c.eval(`sessions.get(${j(s.id)}).codexSid`),fresh);
     report.checks.push('real session restart retains identity, sidebar and history');
+    const history = await invoke('create-session',historyRequest); assert(history.id,JSON.stringify(history));
+    await send(history.id,'只回复 AUDIT_OLD_REOPEN'); await response(history.id,'AUDIT_OLD_REOPEN');
+    report.checks.push('old history reopens after original process has released its writer');
+    await open(s.id);
     await c.eval(`applyViewMode('card')`);
     await until(`!!document.querySelector('#msg-overlay [data-action="resend"]')`,'card resend');
     // Deliberate failed response: proves the actual click handler shows failure, not backend E2E.

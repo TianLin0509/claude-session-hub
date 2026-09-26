@@ -479,6 +479,15 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     sessionManager.setGroupChatReady(sid, true);
   }
 
+  // The TUI can exit after readiness was cached (for example a failed resume).
+  // A normal card prompt must never become a PowerShell command.
+  if (require('./ai-kinds').isAiKind(String(kind).replace(/-resume$/, ''))
+      && detectHostShellTakeover(sessionManager.getSessionBuffer(sid) || '')) {
+    sessionManager.setGroupChatReady(sid, false);
+    throw Object.assign(new Error('CLI 已退出到系统终端，消息未发送；请先重启会话'),
+      { notSent:true, code:'cli-exited' });
+  }
+
   if ((options.restartContinuation || sessionManager.restartContinuationSessions?.has(sid)) && ['kimi','kimi-resume','gemini','gemini-resume','deepseek','deepseek-resume'].includes(kind)) {
     const receipt=require('./hub-restart-legacy').observeLegacyPrompt(_deps.transcriptTap,sid,prompt,
       20000+Math.ceil(String(prompt).length/2048)*12+computeSettleMs(String(prompt).length));

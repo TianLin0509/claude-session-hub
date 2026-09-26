@@ -1149,10 +1149,10 @@ class SessionManager extends EventEmitter {
     return this.openOwners ||= new (require('./session-open-ownership').SessionOpenOwnership)();
   }
 
-  _claimNativeOpenIdentity(id, kind, opts, env, replaceNative = false) {
+  _claimNativeOpenIdentity(id, kind, opts, env) {
     const lease = this.openLeases?.get(id);
     if (!lease) return;
-    this.openOwners.add(lease, require('./session-open-ownership').nativeKeys(kind, opts, env), { replaceNative });
+    this.openOwners.add(lease, require('./session-open-ownership').nativeKeys(kind, opts, env));
     lease.env = env;
     if (opts.codexForkSid || opts.forkCCSessionId) lease.forkSource = opts.codexForkSid || opts.forkCCSessionId;
   }
@@ -1163,7 +1163,7 @@ class SessionManager extends EventEmitter {
     const info = entry.info;
     this._claimNativeOpenIdentity(id, info.kind, {...info,
       codexSid:info.codexSid === lease.forkSource ? null : info.codexSid,
-      resumeCCSessionId:info.ccSessionId === lease.forkSource ? null : info.ccSessionId}, lease.env, info.agentRuntime === 'pty');
+      resumeCCSessionId:info.ccSessionId === lease.forkSource ? null : info.ccSessionId}, lease.env);
     this.openOwners.bindPid(lease, entry.pty?.pid);
   }
 

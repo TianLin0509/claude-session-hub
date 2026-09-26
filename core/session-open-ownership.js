@@ -71,24 +71,19 @@ class SessionOpenOwnership {
     this.add(lease, ['hub:' + sessionId, ...keys]);
     return lease;
   }
-  add(lease, keys, { replaceNative = false } = {}) {
+  add(lease, keys) {
     const pending=[...new Set(keys)].filter(key=>!lease.keys?.has(key));
-    const wanted = new Set(['hub:' + lease.sessionId, ...keys]);
-    const retired = replaceNative ? [...(lease.keys || [])].filter(key => !wanted.has(key)) : [];
-    if(!pending.length && !retired.length)return;
+    if(!pending.length)return;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const key of pending) {
         const old = this.db.prepare('SELECT * FROM open_owners WHERE key=?').get(key);
         if (old?.nonce === lease.nonce) continue;
         if (this.live(old,true)) throw occupied(old);
-        this.db.prepare('INSERT OR REPLACE INTO open_owners VALUES (?,?,?,?,?,?,?)').run(key, lease.sessionId, this.pid, this.version, lease.nonce, lease.serverPid || null, Date.now());
+        this.db.prepare('INSERT OR REPLACE INTO open_owners VALUES (?,?,?,?,?,NULL,?)').run(key, lease.sessionId, this.pid, this.version, lease.nonce, Date.now());
       }
-      // Acquire the new identity before releasing the ended one, in one transaction.
-      for (const key of retired) this.db.prepare('DELETE FROM open_owners WHERE key=? AND nonce=?').run(key, lease.nonce);
       this.db.exec('COMMIT');
       lease.keys ||= new Set();for(const key of pending)lease.keys.add(key);
-      for (const key of retired) lease.keys.delete(key);
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   bindPid(lease, pid) {

@@ -18,6 +18,7 @@ const HOST_SHELL_PROMPT_RE = /(?:^|\n)\s*(?:PS [A-Za-z]:\\[^\n]*?>\s*$|[\w-]+@[^
 
 function stripAnsi(buf) {
   return String(buf || '')
+    .replace(/\x1b\[(\d*)C/g, (_match, count) => ' '.repeat(Math.min(Number(count) || 1, 200)))
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .replace(/\x1b\][^\x07]*\x07/g, '')
     .replace(/\x1b[()][0-9A-Za-z]/g, '')

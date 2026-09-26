@@ -5,7 +5,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { SessionManager } = require('../core/session-manager');
 const { SessionOpenOwnership, nativeKeys } = require('../core/session-open-ownership');
 
-test('switching CLI threads releases the ended identity while keeping the live thread exclusive', () => {
+test('Codex /new retains the previous writer lock until the CLI process exits', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-pty-lease-'));
   const owners = new SessionOpenOwnership({directory:root});
   try {
@@ -17,8 +17,9 @@ test('switching CLI threads releases the ended identity while keeping the live t
     const info = {id:'card',kind:'codex',agentRuntime:'pty',codexSid:'new'};
     sm.sessions.set('card', {info,pty:{pid:process.pid}});
     sm._refreshOpenIdentity('card');
-    const old = owners.claim('history', nativeKeys('codex', {codexSid:'old'}, env));
+    assert.throws(() => owners.claim('history', nativeKeys('codex', {codexSid:'old'}, env)), /已在 AI HUB/);
     assert.throws(() => owners.claim('conflict', nativeKeys('codex', {codexSid:'new'}, env)), /已在 AI HUB/);
-    owners.release(old); owners.release(lease);
+    owners.release(lease);
+    owners.release(owners.claim('history', nativeKeys('codex', {codexSid:'old'}, env)));
   } finally { owners.close(); }
 });
