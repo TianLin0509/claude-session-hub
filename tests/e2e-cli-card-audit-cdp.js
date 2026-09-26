@@ -37,7 +37,7 @@ async function main() {
     const old = await c.eval(`({...sessions.get(${j(s.id)})})`);
     report.checks.push('real CLI first prompt, native transcript, completion');
     await send(s.id,'/new');
-    await until(`sessions.get(${j(s.id)}).codexSid!==${j(old.codexSid)}||floatingPromptDeliveries.get(${j(s.id)})?.status==='failed'`,'new acknowledged or explicitly rejected');
+    await until(`['confirmed','failed'].includes(floatingPromptDeliveries.get(${j(s.id)})?.status)`,'new acknowledged or explicitly rejected');
     // A task may still be running its Stop hook after its final answer. The
     // specified behavior is an explicit rejection + restored draft after one
     // bounded retry, not a guarantee that /new always succeeds immediately.
@@ -48,7 +48,9 @@ async function main() {
       report.checks.push('busy /new rejection preserves the old identity and restores the original command');
       await sleep(5000);await send(s.id,'/new');
     }
-    await until(`sessions.get(${j(s.id)}).codexSid!==${j(old.codexSid)}`,'new thread identity');
+    // Codex confirms /new by its thread-ended output. It creates the next
+    // native thread lazily, when the following real user prompt is submitted.
+    await until(`floatingPromptDeliveries.get(${j(s.id)})?.status==='confirmed'`,'new command confirmed');
     await send(s.id,'只回复 AUDIT_NEW'); await response(s.id,'AUDIT_NEW');
     const fresh = await c.eval(`sessions.get(${j(s.id)}).codexSid`);
     assert.notEqual(fresh,old.codexSid); report.checks.push('real /new rebind and next prompt');
