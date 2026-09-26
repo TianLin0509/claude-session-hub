@@ -35,7 +35,9 @@ async function main(){
       if(process.argv.includes('--interrupt')){
         await send(s.id,'Use the shell tool to run node -e "setTimeout(()=>console.log(123),30000)" in the foreground. Then reply TOOL_FINISHED.');
         await until(`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:2}});return (r.turns||[]).some(t=>(t.toolCalls||[]).some(c=>['running','inProgress'].includes(c.status)));})()`,'tool starts');
+        await until(`(()=>{const b=document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-stop');return b&&!b.disabled&&getComputedStyle(b).display!=='none';})()`,'stop button available');
         await c.eval(`document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-stop').click()`);
+        report.stop=await c.eval(`({sentAt:sessions.get(${j(s.id)})._ptyStopSentAt,truth:getSessionRuntimeTruth(sessions.get(${j(s.id)}))})`);
         await until(`!['running','starting','waiting'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'stop settles',45000);
         await send(s.id,'Reply only '+marker+'_AFTER_STOP');await response(s.id,marker+'_AFTER_STOP');check(kind+' real tool interrupt and next prompt');
       }

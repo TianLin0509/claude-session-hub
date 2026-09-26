@@ -184,7 +184,8 @@ class QwenCliSession extends EventEmitter {
   async reconcile(){if(this.runtime.connection!=='connected')throw new Error('请先恢复 CLI 连接');return this.runtime;}
   async readOutcome(turnId){return this.lastOutcome?.turnId===turnId?this.lastOutcome:null;}
   async interrupt(){if(!['running','waiting'].includes(this.runtime.state)||this.interruptAt&&Date.now()-this.interruptAt<1500)return;
-    this.interruptAt=Date.now();this.write('\x1b');}
+    if(this.interruptedTurn===this.runtime.turnId)return;
+    this.interruptedTurn=this.runtime.turnId;this.interruptAt=Date.now();this.write('\x03');}
   async fork(){await this.start();if(this.pending||['running','waiting'].includes(this.runtime.state))throw new Error('请等当前轮结束后再分支');return{home:this.options.home,sessionId:this.threadId,forkCli:true};}
   dispose(){clearTimeout(this.startTimer);this.hookTail?.close();this.transcriptTail?.close();this.telemetryTail?.close();}
   kill(){this.closed=true;this.dispose();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}this.pty?.kill();}
