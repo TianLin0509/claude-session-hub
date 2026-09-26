@@ -17,7 +17,7 @@ async function main(){
   const send=async(id,text)=>{await until(`!!document.querySelector('.session-item[data-session-id="${id}"]')`,'sidebar');await c.eval(`document.querySelector('.session-item[data-session-id="${id}"]').click()`);
     await until(`!!document.querySelector('.floating-input-bar[data-session-id="${id}"] .floating-input-box')`,'composer');
     await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar[data-session-id="${id}"]');const i=b.querySelector('.floating-input-box');i.textContent=${j(text)};i.dispatchEvent(new Event('input',{bubbles:true}));b.querySelector('.floating-input-send').click();})()`);};
-  const response=async(id,text)=>{await until(`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(id)},opts:{limit:20}});return (r.turns||[]).some(t=>t.role==='assistant'&&String(t.text||'').includes(${j(text)}));})()`,text);
+  const response=async(id,text)=>{await until(`(async()=>{const s=sessions.get(${j(id)});if(s?.cliRuntime&&s.cliRuntime.connection!=='connected')return false;const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(id)},opts:{limit:20}});return (r.turns||[]).some(t=>t.role==='assistant'&&String(t.text||'').includes(${j(text)}));})()`,text);
     await until(`['completed','idle'].includes(getSessionRuntimeTruth(sessions.get(${j(id)})).state)`,'completion '+text);};
   try{
     const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
@@ -40,6 +40,11 @@ async function main(){
         await send(s.id,'Reply only '+marker+'_AFTER_STOP');await response(s.id,marker+'_AFTER_STOP');check(kind+' real tool interrupt and next prompt');
       }
       await c.eval(`applyViewMode('card')`);await screenshot(kind+'-cards');
+      if(kind==='qwen'&&process.argv.includes('--fork')){
+        const fork=await invoke('fork-session',{sourceSessionId:s.id});assert(fork.session?.id,j(fork));
+        await send(fork.session.id,'Reply only QWEN_FORK_OK');await response(fork.session.id,'QWEN_FORK_OK');
+        assert.notEqual(await c.eval(`sessions.get(${j(fork.session.id)}).acpSid`),sid);check('qwen real CLI fork binds a distinct identity');
+      }
     }
     report.passed=true;
   }catch(error){report.error=error.stack;if(c)await screenshot('failure').catch(()=>{});throw error;}

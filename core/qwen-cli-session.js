@@ -80,8 +80,8 @@ class QwenCliSession extends EventEmitter {
     if(event.session_id!==this.threadId)return;
     if(name==='UserPromptSubmit') {
       const at=Date.parse(event.timestamp)||Date.now(),text=event.submitted_prompt||event.prompt||'';
-      this.hookTurn={id:randomUUID(),at,text};
-      const record=this.records.at(-1);if(record&&record.text===text&&record.status==='running')record.turnId=this.hookTurn.id;
+      this.hookTurn={id:randomUUID(),at,text,submissionId:this.pending?.text===text?this.pending.id:null};
+      const record=this.records.at(-1);if(record&&record.text===text&&record.status==='running'){record.turnId=this.hookTurn.id;record.submissionId=this.hookTurn.submissionId;}
       this.apply({state:'running',turnId:this.hookTurn.id});
       this.lifecycle('prompt-submitted',{text,submittedAt:at,clientSubmissionId:this.pending?.text===text?this.pending.id:null});
       this.lifecycle('turn-started',{startedAt:at});
@@ -109,7 +109,7 @@ class QwenCliSession extends EventEmitter {
       if(row.type==='user' && row.provenance==='real_user')this.records.push({userMessageId:row.uuid,
         text:parts.filter(p=>p.text).map(p=>p.text).join('\n'),createdAt:Date.parse(row.timestamp),status:'running',accepted:true});
       const record=this.records.at(-1);if(!record)return;
-      if(this.hookTurn?.text===record.text&&!record.turnId)record.turnId=this.hookTurn.id;
+      if(this.hookTurn?.text===record.text&&!record.turnId){record.turnId=this.hookTurn.id;record.submissionId=this.hookTurn.submissionId;}
       if(row.type==='assistant'&&row.model&&row.model!==this.currentModel){this.currentModel=row.model;this.emit('bound',{threadId:this.threadId,model:row.model});}
       if(row.type==='assistant' || row.type==='user')captureClaudeMessage(record,{...row,message:{...row.message,
         content:parts.map(p=>p.functionCall?{type:'tool_use',id:p.functionCall.id,name:p.functionCall.name,input:p.functionCall.args}
@@ -144,10 +144,11 @@ class QwenCliSession extends EventEmitter {
   blocks(){return this.readTranscript().filter(c=>c.role==='assistant').slice(-1).map(c=>({type:'text',text:c.text||''}));}
   finalText(){return this.blocks().map(b=>b.text).join('\n');}
   async configure(){throw new Error('请在千问 CLI 中使用 /model 或 /settings；卡片会从原生回答同步实际模型');}
+  async reconcile(){if(this.runtime.connection!=='connected')throw new Error('请先恢复 CLI 连接');return this.runtime;}
   async readOutcome(turnId){return this.lastOutcome?.turnId===turnId?this.lastOutcome:null;}
   async interrupt(){if(!['running','waiting'].includes(this.runtime.state)||this.interruptAt&&Date.now()-this.interruptAt<1500)return;
     this.interruptAt=Date.now();this.write('\x1b');}
-  async fork(){await this.start();return{home:this.options.home,sessionId:this.threadId,forkCli:true};}
+  async fork(){await this.start();if(this.pending||['running','waiting'].includes(this.runtime.state))throw new Error('请等当前轮结束后再分支');return{home:this.options.home,sessionId:this.threadId,forkCli:true};}
   dispose(){clearTimeout(this.startTimer);this.hookTail?.close();this.transcriptTail?.close();}
   kill(){this.closed=true;this.dispose();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}this.pty?.kill();}
 }

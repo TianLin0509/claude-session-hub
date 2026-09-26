@@ -1630,6 +1630,7 @@ class SessionManager extends EventEmitter {
       ...(isNativeCodex ? {runtimeBackend:'codex-app-server',nativeRuntime:ptyProcess.runtime,
         codexApprovalPolicy:opts.approvalPolicy || 'never',codexSandbox:opts.sandbox || 'danger-full-access'} : {}),
       ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
+        cliRuntime:isProviderCli?{...ptyProcess.runtime,source:'provider-cli',observedAt:Date.now()}:null,
         acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
@@ -2970,7 +2971,7 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
-      ...(info.cliRuntime ? {cliRuntime:info.cliRuntime} : {}),
+      ...(isAcpKind(info.kind) ? {cliRuntime:info.cliRuntime||null} : {}),
       ...(isAcpKind(info.kind) ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
         acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
