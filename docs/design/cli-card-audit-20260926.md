@@ -28,6 +28,7 @@ c7d25d6 已在 master，无需重复合并。复核了身份持久化、重启�
 10. 千问、GLM 的历史解析虽能返回数据，旧卡片入口却拒绝显示。已修入口，并把验收改成检查界面里真实可见的回答。Gemini 同样缺少入口和原生解析器；新增 JSON / JSONL 投影、身份校验与绑定路径持久化。
 11. CLI 启动取消不再留下悬空等待；协议输出在半个 JSON 处结束会报错，不把进程正常退出当成完整回执。
 12. Codex 120 行中文、emoji 首次真实提交卡在粘贴块。核对 0.153.0 源码：Windows 使用按键粘贴缓冲，Enter 会被抑制。正文之后加入不改正文的 End 键，先清空该缓冲再按原流程提交；保留唯一有界补 Enter 与语义回执。正常提交、继续、恢复重写共用此边界。
+13. 最后补测发现短 `/new` 同样可能停在 CLI 输入框。将相同输入缓冲边界覆盖到斜杠命令；5d860e2 上真实 `/new`、分支、重启、历史重开和退出防护全部通过，没有增加自动重发。测试退出失败也会保存原始错误与结果，并清理临时鉴权副本。
 
 ### 不成立的初步判断
 
@@ -52,6 +53,14 @@ c7d25d6 已在 master，无需重复合并。复核了身份持久化、重启�
 - `node --test tests/unit-pty-first-prompt-ready.test.js tests/unit-groupchat-redundant-enter-guard.test.js`：就绪、shell 防护、补 Enter 边界通过。
 
 测试工作树：`C:/AIWork/20260926-cli-card-test-codex1`。这些是分阶段证据；集成后的全量闸门与新增场景结果在交付报告补充，不把前一提交的结果冒称最终候选结果。
+
+### 最后补测
+
+- DeepSeek 最终产品代码真实复测：实施工作树 `artifacts/provider-cli/1790452292989/result.json`，3 项通过，包括重启后可见原生回答。
+- Codex 5d860e2：final 工作树 `artifacts/cli-card-audit/1790453103085/result.json`，9 项全部通过；截图已读取。其中明确标注的 2 项是 UI 故障/回执注入，其余为真实 CLI 场景。
+- `node --test tests/unit-pty-first-prompt-ready.test.js tests/unit-groupchat-redundant-enter-guard.test.js` 在 5d860e2 的修改上通过 11 项，覆盖 Windows 斜杠输入缓冲和不增加 Enter。
+- 全量 592 文件固定在 0b802963c2bb09e3633a1e81645dab8c85af18ea 上运行；它不包含最后的斜杠缓冲修正。不得把该全量结果标成 5d860e2，后者由上述定向单测与真实界面回归覆盖。最终结果见交付报告。
+- `/new` 验收脚本曾错误地等待按钮禁用、立即生成新会话 ID，或普通 prompt 的确认状态。Codex 本地命令应以本次 command history 回执为准；下一条真实提问才懒创建新线程。旧失败记录仍保留。另一次失败现场明确显示 `/new` 留在 CLI 输入框，属于第 13 项修复，不能全部归咎测试脚本。
 
 ### 失败保留
 
