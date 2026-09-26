@@ -170,7 +170,8 @@ async function main() {
   const composedText = '请看这段：' + pasteText + '，帮我分析一下异常点短短一行';
   fs.writeFileSync(PASTE_TEXT_FILE, pasteText, 'utf8');
   fs.writeFileSync(COPIED_TEXT_FILE, composedText, 'utf8');
-  const clipboardBackup = backupUserClipboard();
+  // 只有真实剪贴板模式（任务就是验证剪贴板）才碰系统剪贴板；默认模式全程不写。
+  const clipboardBackup = REAL_CLIPBOARD ? backupUserClipboard() : null;
   const port = Number(process.env.HUB_PASTE_E2E_PORT) || await reservePort();
   const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'Path';
   const result = { runId: RUN_ID, mode: MEASURE_ONLY ? 'measure' : 'assert', lines: LINES, realClipboard: REAL_CLIPBOARD, clipboardBackup };
@@ -322,20 +323,48 @@ async function main() {
       assert.equal(result.afterUndo.chips, 1, 'undo restores the chip');
       assert.equal(result.afterUndo.length, ('请看这段：' + pasteText + '，帮我分析一下异常点短短一行').length);
 
-      // 复制输入框里的块：剪贴板拿到的是原文，而不是块的内部标记
-      result.copyOut = await client.eval(`(() => {
-        const box = document.querySelector('.floating-input-box');
-        const range = document.createRange(); range.selectNodeContents(box);
-        const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
-        const dt = new DataTransfer();
-        const event = new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true });
-        box.dispatchEvent(event);
-        const text = dt.getData('text/plain');
-        return { prevented: event.defaultPrevented, length: text.length, hasMarker: /[\\uE000\\uE001]/.test(text) };
+      // 复制输入框里的块：剪贴板拿到的是原文，而不是块的内部标记。
+      // 这一步会触发 Hub 全局的复制兜底（clipboard-controller.handleNativeCopy），它会真实写系统
+      // 剪贴板。测试期间把 electron.clipboard 的读写换成内存替身（替换失败就不派发事件），
+      // 顺带记下兜底本来要写的内容 —— Ctrl+C 走的就是这条全局路径。
+      result.copyOut = await client.eval(`(async () => {
+        const { clipboard } = require('electron');
+        const original = { writeText: clipboard.writeText, readText: clipboard.readText };
+        const writes = [];
+        let fake = '';
+        const fakeWrite = text => { writes.push(String(text)); fake = String(text); };
+        const fakeRead = () => fake;
+        clipboard.writeText = fakeWrite;
+        clipboard.readText = fakeRead;
+        if (clipboard.writeText !== fakeWrite || clipboard.readText !== fakeRead) {
+          return { stubFailed: true };
+        }
+        try {
+          const box = document.querySelector('.floating-input-box');
+          const range = document.createRange(); range.selectNodeContents(box);
+          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+          const dt = new DataTransfer();
+          const event = new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true });
+          box.dispatchEvent(event);
+          const text = dt.getData('text/plain');
+          await new Promise(resolve => setTimeout(resolve, 1000)); // 兜底的重试最长约 400ms
+          return {
+            prevented: event.defaultPrevented, length: text.length, hasMarker: /[\\uE000\\uE001]/.test(text),
+            globalWrites: writes.map(w => ({ length: w.length, hasMarker: /[\\uE000\\uE001]/.test(w) })),
+          };
+        } finally {
+          clipboard.writeText = original.writeText;
+          clipboard.readText = original.readText;
+        }
       })()`);
+      assert.notEqual(result.copyOut.stubFailed, true, 'could not stub the clipboard; refusing to touch the system clipboard');
       assert.equal(result.copyOut.prevented, true);
       assert.equal(result.copyOut.hasMarker, false);
       assert.equal(result.copyOut.length, result.afterUndo.length);
+      for (const w of result.copyOut.globalWrites) {
+        assert.equal(w.hasMarker, false, 'the global copy path (Ctrl+C) must also write the expanded text');
+        assert.equal(w.length, result.afterUndo.length);
+      }
 
       // 发送：拦截 send-prompt，确认发出去的是完整原文，输入框清空
       await client.eval(`(() => {
@@ -375,13 +404,15 @@ async function main() {
   } finally {
     if (client) { try { client.close(); } catch {} }
     if (hub) await gracefulQuit(hub);
-    // 复制那步会经 Hub 的全局复制兜底真实写剪贴板；不论测试成败都在这里还原。
-    result.clipboardAtEnd = restoreUserClipboard([PASTE_TEXT_FILE, COPIED_TEXT_FILE]);
-    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
-    if (!result.clipboardAtEnd.ok) {
-      console.error(`✗ 用户剪贴板未能原样恢复，原始内容备份在 ${CLIPBOARD_DIR}`);
-      process.exitCode = 1;
+    // 真实剪贴板模式的兜底还原：不论测试成败，剪贴板若仍是测试写入的文字就恢复用户原内容。
+    if (REAL_CLIPBOARD) {
+      result.clipboardAtEnd = restoreUserClipboard([PASTE_TEXT_FILE, COPIED_TEXT_FILE]);
+      if (!result.clipboardAtEnd.ok) {
+        console.error(`✗ 用户剪贴板未能原样恢复，原始内容备份在 ${CLIPBOARD_DIR}`);
+        process.exitCode = 1;
+      }
     }
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
   }
 }
 
