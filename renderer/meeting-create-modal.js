@@ -325,7 +325,7 @@ function _slotHtml(i, spec, isGroup) {
       </div>
       <div class="mcm-slot-fields">
         <label><span class="mcm-slot-field-name">AI</span><select class="mcm-ai-select">${aiOptions}</select></label>
-        ${['deepseek','deepseek-acp'].includes(def.kind) ? `<label><span class="mcm-slot-field-name">DeepSeek 接入</span><select class="mcm-deepseek-route"><option value="deepseek-acp"${def.kind === 'deepseek-acp' ? ' selected' : ''}>Token Plan</option><option value="deepseek"${def.kind === 'deepseek' ? ' selected' : ''}>API</option></select></label>` : ''}
+        ${['deepseek','deepseek-acp'].includes(def.kind) ? `<label><span class="mcm-slot-field-name">DeepSeek 接入</span><select class="mcm-deepseek-route"><option value="deepseek"${def.kind === 'deepseek' ? ' selected' : ''}>Codex CLI · DeepSeek API</option><option value="deepseek-acp"${def.kind === 'deepseek-acp' ? ' selected' : ''}>Token Plan · 旧 Harness</option></select></label>` : ''}
         <label><span class="mcm-slot-field-name">模型</span><select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
         ${effortField}
         ${mcpField}
@@ -344,7 +344,7 @@ function _readSlotSpec(el, i, { strict = true } = {}) {
     return _groupSlots[i] ? _normalizeSlotSpec(_groupSlots[i]) : null;
   }
   const spec = {
-    kind: aiSelect.value === 'deepseek' ? (el.querySelector('.mcm-deepseek-route')?.value || 'deepseek-acp') : aiSelect.value,
+    kind: aiSelect.value === 'deepseek' ? (el.querySelector('.mcm-deepseek-route')?.value || 'deepseek') : aiSelect.value,
     model: modelSelect ? modelSelect.value : '',
   };
   const effort = el.querySelector('.mcm-effort-select');
@@ -384,7 +384,7 @@ function _renderSlots() {
     slotEl.querySelector('.mcm-ai-select').addEventListener('change', () => {
       const i = Number(slotEl.getAttribute('data-slot'));
       const selected = slotEl.querySelector('.mcm-ai-select').value;
-      const kind = selected === 'deepseek' ? 'deepseek-acp' : selected;
+      const kind = selected;
       _groupSlots[i] = _normalizeSlotSpec({ kind, model: DEFAULT_MODEL_BY_KIND[kind] });
       _renderSlots();
     });
