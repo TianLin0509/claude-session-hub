@@ -23,7 +23,7 @@ fs.writeFileSync(recorder, [
   `open(${JSON.stringify(log)}, "a", encoding="utf-8").write(json.dumps(data, ensure_ascii=False) + "\\n")`,
 ].join('\n'));
 const hook = name => [{ hooks: [{ type: 'command', command: `python "${recorder}" ${name}` }] }];
-fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ hooks: { SessionStart: hook('SessionStart'), SessionEnd: hook('SessionEnd') } }, null, 2));
+fs.writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ hooks: { SessionStart: hook('SessionStart'), SessionEnd: hook('SessionEnd'), PreCompact: hook('PreCompact') } }, null, 2));
 
 async function main() {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: config };
@@ -39,6 +39,12 @@ async function main() {
     result.ready = await waitFor(/❯|Try "/, 60000);
     await sleep(2500);
     result.steps.push({ step: 'startup', events: events().length });
+    if (process.argv.includes('--compact')) {
+      // 需要一轮对话才能压缩：一条极短的 haiku 回答，然后带参数的 /compact。
+      p.write('只回复 OK'); await sleep(600); p.write('\r'); await sleep(15000);
+      p.write('/compact keep alpha notes'); await sleep(600); p.write('\r'); await sleep(35000);
+      result.steps.push({ step: 'after /compact', events: events().length });
+    }
     p.write('/clear'); await sleep(600); p.write('\r'); await sleep(6000);
     result.steps.push({ step: 'after /clear', events: events().length });
     p.write('/exit'); await sleep(600); p.write('\r'); await sleep(6000);
@@ -49,7 +55,7 @@ async function main() {
     try { fs.unlinkSync(path.join(config, '.credentials.json')); } catch {}
     result.credentialsUntouched = hash(credentials) === before;
     result.copiedCredentialsRemoved = !fs.existsSync(path.join(config, '.credentials.json'));
-    result.events = events().map(e => ({ event: e._event, at: e._at, ppid: e._ppid, session_id: e.session_id, source: e.source, reason: e.reason,
+    result.events = events().map(e => ({ event: e._event, at: e._at, ppid: e._ppid, session_id: e.session_id, source: e.source, reason: e.reason, trigger: e.trigger, custom_instructions: e.custom_instructions,
       transcript: e.transcript_path && path.basename(e.transcript_path), agent_id: e.agent_id || null, keys: Object.keys(e).filter(k => !k.startsWith('_')) }));
     const out = path.resolve('artifacts/cli-pty-core/probe-claude-session-hooks-' + Date.now() + '.json');
     fs.mkdirSync(path.dirname(out), { recursive: true });

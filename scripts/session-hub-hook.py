@@ -114,6 +114,15 @@ try:
             body['reason'] = str(payload.get('reason'))[:40]
         if event in ('session-start', 'session-end') and agent_id:
             body['agentId'] = str(agent_id)[:180]
+        # /clear、/compact 的确认归属（core/claude-local-command-acks.js）：prompt_id 标识执行周期，
+        # PreCompact 的 trigger（manual / auto）与 custom_instructions（/compact 的参数）决定确认哪条提交。
+        if event in ('session-start', 'session-end', 'pre-compact') and payload.get('prompt_id'):
+            body['promptId'] = str(payload.get('prompt_id'))[:120]
+        if event == 'pre-compact':
+            if payload.get('trigger'):
+                body['trigger'] = str(payload.get('trigger'))[:20]
+            if isinstance(payload.get('custom_instructions'), str):
+                body['customInstructions'] = payload.get('custom_instructions')[:2000]
         if event == 'instructions-loaded':
             body['instructionPath'] = str(payload.get('file_path') or '')[:8192]
             body['loadReason'] = str(payload.get('load_reason') or '')[:80]

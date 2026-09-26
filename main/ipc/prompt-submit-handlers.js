@@ -244,7 +244,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       const localCommand = /^claude/.test(String(kind)) ? identitySwitch.claudeLocalCommand(text) : null;
       const clearObserver = localCommand
         && require('../../core/agent-runtime-mode').isPtyAgentSession(sessionManager.getSession(sessionId))
-        ? identitySwitch.observeClaudeLocalCommand(sessionManager, sessionId, localCommand) : null;
+        ? identitySwitch.observeClaudeLocalCommand(sessionManager, sessionId, localCommand,
+          require('../../core/claude-local-command-acks').parseLocalCommand(text).args) : null;
       let awaitLateLocalAck = false;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；

@@ -2297,17 +2297,27 @@ const hookServer = http.createServer((req, res) => {
         // PTY Claude 的身份生命周期：/clear、/resume、退出后重启都会换 session_id。
         // 只有当前绑定的会话先发出 SessionEnd，随后的新 SessionStart 才允许改绑；
         // 其余不同 id 的事件照旧按嵌套进程/子代理拒收（core/claude-identity-switch.js）。
-        // /compact 的提交确认：压缩开始（PreCompact）或完成（source=compact 的同 id SessionStart）。
-        // 只认当前绑定的会话，不转给 renderer —— 它们不是一轮的开始或结束。
+        // /compact 的提交确认。PreCompact 是周期开始，带 trigger、custom_instructions（/compact 的参数）
+        // 和 prompt_id；压缩完成后的 SessionStart(source=compact) 是同一周期（同一 prompt_id）的结束。
+        // 谁被确认由 core/claude-local-command-acks 按参数与周期决定（R7）。不转给 renderer。
         const compactSignal = hookTargetSession.agentRuntime === 'pty' && !parsed.agentId
           && (event === 'pre-compact' || (event === 'session-start' && parsed.source === 'compact'))
           && (!boundClaudeSessionId || incomingClaudeSessionId === boundClaudeSessionId);
-        if (compactSignal) sessionManager.emit('claude-local-command-ack', { sessionId: parsed.sessionId, command: 'compact' });
+        if (compactSignal) {
+          sessionManager.emit('claude-local-command-ack', {
+            sessionId: parsed.sessionId, command: 'compact',
+            phase: event === 'pre-compact' ? 'start' : 'end',
+            cycleId: parsed.promptId || null,
+            args: event === 'pre-compact' && typeof parsed.customInstructions === 'string' ? parsed.customInstructions : null,
+            trigger: parsed.trigger || null,
+          });
+        }
         if (event === 'pre-compact') { res.writeHead(200); res.end('{"ok":true}'); return; }
         if ((event === 'session-start' || event === 'session-end') && hookTargetSession.agentRuntime === 'pty') {
           const verdict = claudeIdentitySwitch.observe(parsed.sessionId, {
             event, boundId: boundClaudeSessionId, incomingId: incomingClaudeSessionId,
             source: parsed.source || null, reason: parsed.reason || null, agentId: parsed.agentId || null,
+            promptId: parsed.promptId || null,
           });
           if (verdict.action === 'rebind') {
             const updated = updateSessionTranscriptBinding(parsed.sessionId, {
@@ -2316,7 +2326,8 @@ const hookServer = http.createServer((req, res) => {
             if (updated && updated.ccSessionId === incomingClaudeSessionId) {
               console.log(`[claude hook] ${parsed.sessionId.slice(0, 8)} follows CLI identity `
                 + `${boundClaudeSessionId.slice(0, 8)} -> ${incomingClaudeSessionId.slice(0, 8)} (${parsed.source})`);
-              sessionManager.emit('claude-identity-switched', { sessionId: parsed.sessionId, to: incomingClaudeSessionId });
+              sessionManager.emit('claude-identity-switched', { sessionId: parsed.sessionId, to: incomingClaudeSessionId,
+                source: parsed.source || null, cycleId: verdict.cycleId || null });
               sendToRenderer('claude-identity-switched', {
                 sessionId: parsed.sessionId, from: boundClaudeSessionId, to: incomingClaudeSessionId,
                 source: parsed.source || null, transcriptPath: parsed.transcriptPath || null, at: eventAt,

@@ -68,7 +68,7 @@ test('/clear submission is acknowledged by the identity switch, not by a turn st
   setTimeout(() => manager.emit('claude-identity-switched', { sessionId: 'hub', to: 'new' }), 30);
   assert.deepEqual(await observer.wait(2000), { ok: true });
   observer.dispose();
-  assert.equal(manager.listenerCount('claude-identity-switched'), 0);
+  assert.deepEqual(require('../core/claude-local-command-acks').localCommandAcksFor(manager).pending('hub', 'clear'), [], 'confirmed ticket leaves the queue');
   const silent = observeClaudeClearCommand(manager, 'hub');
   const miss = await silent.wait(100);
   assert.equal(miss.ok, false);
@@ -90,5 +90,5 @@ test('/compact is acknowledged by the compaction signal; only clear/compact are 
   setTimeout(() => manager.emit('claude-local-command-ack', { sessionId: 'hub', command: 'compact' }), 30);
   assert.deepEqual(await observer.wait(2000), { ok: true });
   observer.dispose();
-  assert.equal(manager.listenerCount('claude-local-command-ack'), 0);
+  assert.deepEqual(require('../core/claude-local-command-acks').localCommandAcksFor(manager).pending('hub', 'compact'), [], 'confirmed ticket leaves the queue');
 });

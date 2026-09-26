@@ -119,6 +119,12 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
   - PermissionRequest。
   新一轮必须先经过 UserPromptSubmit、本地提交或 task_started。
 - **`/clear`、`/compact` 的确认可能迟到**（第 4 轮 R6）：`/compact` 期间提交的 `/clear` 要排到压缩结束后才执行。15 秒内没确认，就如实报"未确认"；观察者继续监听最长 10 分钟，确认到了只为这一条 `clientSubmissionId` 补发 confirmed 回执，并更新命令历史。从不重发。
+- **一次确认只收敛一条提交**（第 5 轮 R7）：`core/claude-local-command-acks.js` 按会话、命令、提交顺序排队，一个执行周期只确认一条。
+  - 周期标识是 hook 里的 `prompt_id`：PreCompact 与随后的 SessionStart(compact) 共用同一个值；`/clear` 的周期取 SessionEnd 的值。
+  - `/compact` 用 PreCompact 的 `custom_instructions` 对应到参数相同的提交；参数对不上就不确认。
+  - `trigger=auto` 的自动压缩不确认任何提交；只有结束信号、没有开始信号时，证据不足，也不确认。
+  - `/resume` 触发的身份切换不确认 `/clear`。
+  - 第二次 `/compact` 可能因"Not enough messages to compact"而不产生新的压缩记录，但它照样被 CLI 处理，并触发 PreCompact。
 - **E2E 的工具命令用 `node -e "setTimeout(...)"`**：Claude Code 会拦下前台的长 `sleep`，并把 `sleep` / `echo` 当作安全命令免授权；部分环境的 Bash 工具里没有 `powershell`。工具有没有真的跑、跑了多久，只看 CLI 自己的记录（`verifyToolRun`）。
 - **Claude 2.1.28x 的底栏随权限模式变化**：默认模式是「⏸ manual mode on · ← for agents」，没有 shift+tab 提示。分类器漏认它，就绪帧就一直是 ambiguous，「就绪即收尾」的出口永远不触发。
 - **E2E 的 Codex 凭据要取 Hub 实际在用的订阅账号**（`REAL_CODEX_AUTH_SOURCE`）。`~/.codex` 可能早已不再刷新，全部 401。

@@ -24,12 +24,12 @@ function createClaudeIdentitySwitch({ now = () => Date.now(), windowMs = SWITCH_
     /**
      * @returns {{action:'record-end'|'rebind'|'same'|'ignore', why?:string}}
      */
-    observe(hubSessionId, { event, boundId, incomingId, source = null, reason = null, agentId = null } = {}) {
+    observe(hubSessionId, { event, boundId, incomingId, source = null, reason = null, agentId = null, promptId = null } = {}) {
       if (!hubSessionId || !incomingId) return { action: 'ignore', why: 'no-identity' };
       if (agentId) return { action: 'ignore', why: 'subagent' };
       if (event === 'session-end') {
         if (!boundId || incomingId !== boundId) return { action: 'ignore', why: 'foreign-end' };
-        ended.set(hubSessionId, { id: boundId, reason: reason || null, at: now() });
+        ended.set(hubSessionId, { id: boundId, reason: reason || null, at: now(), promptId: promptId || null });
         return { action: 'record-end' };
       }
       if (event !== 'session-start') return { action: 'ignore', why: 'not-lifecycle' };
@@ -42,56 +42,26 @@ function createClaudeIdentitySwitch({ now = () => Date.now(), windowMs = SWITCH_
         : src === 'startup' && EXIT_REASONS.has(String(end.reason || ''));
       if (!accepted) return { action: 'ignore', why: `unproven-${src || 'unknown'}-after-${end.reason || 'end'}` };
       ended.delete(hubSessionId);
-      return { action: 'rebind' };
+      // SessionEnd 的 prompt_id 标识这次 /clear 的执行周期（R7：一个周期只确认一条提交）。
+      return { action: 'rebind', cycleId: end.promptId || null };
     },
     forget(hubSessionId) { ended.delete(hubSessionId); },
     _ended: ended,
   };
 }
 
-// /clear、/compact 不触发 UserPromptSubmit，提交闭环等不到「开工」确认，会补回车再报
-// stuck（界面亮「消息发送失败 / 补发」）。它们各有自己的确认，main.js 收到时 emit：
-//   /clear   → claude-identity-switched（Hub 已跟随到新身份）
-//   /compact → claude-local-command-ack {command:'compact'}（PreCompact hook，
-//              或压缩完成后 source=compact 的 SessionStart）
-const LOCAL_COMMANDS = {
-  clear: { event: 'claude-identity-switched', missing: '未收到 Claude /clear 后的新会话身份，请检查终端' },
-  compact: { event: 'claude-local-command-ack', missing: '未收到 Claude /compact 开始压缩的确认，请检查终端' },
-};
+// /clear、/compact 的提交确认：谁该被哪个信号确认，由 claude-local-command-acks 决定
+// （按会话、命令、提交顺序、执行周期归属；第 5 轮 R7）。这里保留旧入口名。
+const { localCommandAcksFor, parseLocalCommand } = require('./claude-local-command-acks');
 
 function claudeLocalCommand(text) {
-  const match = /^\/(clear|compact)(?:\s|$)/i.exec(String(text || '').trim());
-  return match ? match[1].toLowerCase() : null;
+  const parsed = parseLocalCommand(text);
+  return parsed ? parsed.command : null;
 }
 
-function observeClaudeLocalCommand(manager, sessionId, command) {
-  const spec = LOCAL_COMMANDS[command];
-  if (!spec) throw new Error('unsupported Claude local command: ' + command);
-  let result = null;
-  let onLate = null;
-  const listener = event => {
-    if (!event || event.sessionId !== sessionId) return;
-    if (event.command && event.command !== command) return;
-    if (result) return;
-    result = { ok: true };
-    if (onLate) { const cb = onLate; onLate = null; cb(); }
-  };
-  manager.on(spec.event, listener);
-  return {
-    // 期限默认 15s；CLAUDE_HUB_LOCAL_COMMAND_ACK_MS 只给测试用来稳定触发「迟到确认」。
-    async wait(timeoutMs = Number(process.env.CLAUDE_HUB_LOCAL_COMMAND_ACK_MS) || 15000) {
-      const deadline = Date.now() + timeoutMs;
-      while (!result && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
-      return result || { ok: false, message: spec.missing };
-    },
-    // 超时后继续等同一条命令的确认（/compact 期间提交的 /clear 要排到压缩结束后才执行）。
-    // 已经确认过就立刻回调；只回调一次。
-    onConfirm(cb) {
-      if (result) { cb(); return; }
-      onLate = cb;
-    },
-    dispose() { onLate = null; manager.removeListener(spec.event, listener); },
-  };
+function observeClaudeLocalCommand(manager, sessionId, command, args = '') {
+  if (!['clear', 'compact'].includes(command)) throw new Error('unsupported Claude local command: ' + command);
+  return localCommandAcksFor(manager).register(sessionId, command, args);
 }
 
 const observeClaudeClearCommand = (manager, sessionId) => observeClaudeLocalCommand(manager, sessionId, 'clear');

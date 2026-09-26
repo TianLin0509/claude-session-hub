@@ -171,7 +171,12 @@ async function main() {
       if (after.truth !== settle) {
         // 唯一合法的离开：CLI 自己开始了新一轮（例如 Claude 处理后台任务完成通知），
         // 证据取 CLI 自己的记录，而不是 Hub 的状态。
-        const newTurn = cliStartedNewTurnSince(after, doneAt - 1000);
+        // 通知可能比 Hub 的状态晚一点落盘（审查第 4 轮：先断言「没有新一轮」为时过早），最多等 6s。
+        let newTurn = null;
+        for (let waited = 0; !newTurn && waited <= 6000; waited += 500) {
+          newTurn = cliStartedNewTurnSince(await status(sid), doneAt - 1000);
+          if (!newTurn) await sleep(500);
+        }
         if (newTurn) { record.cliNewTurnAfterSettle = newTurn; break; }
         assert.fail(`state stayed ${settle} for 8s after settling (got ${after.truth} after ${Date.now() - doneAt}ms, source ${JSON.stringify(after.detail)}), with no new turn in the CLI record`);
       }
@@ -285,7 +290,7 @@ async function main() {
         r.statesAfterInterrupt = [...seen];
         assert.ok(r.statesAfterInterrupt.every(s => !isRunningState(s)), 'stays closed for 65s after Esc: ' + r.statesAfterInterrupt);
         // 新一轮里的工具照常驱动运行，没有被「已关闭」拦住。
-        const nextAt = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('AFTER_INTERRUPT_MARK'),3000)"\`（在前台运行，不要使用 run_in_background），然后只回复 AFTER_INTERRUPT_DONE。`);
+        const nextAt = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('AFTER_INTERRUPT_MARK'),3000)"\`（在前台运行，不要使用 run_in_background，工具 timeout 设为 60000），然后只回复 AFTER_INTERRUPT_DONE。`);
         await expectRunsThenSettles(r, sid, nextAt);
         r.nextTool = await verifyToolRun(sid, 'AFTER_INTERRUPT_MARK', 2.5);
       });
@@ -353,6 +358,41 @@ async function main() {
 
       // R6：/compact 还在处理时提交 /clear（CLI 会把 /clear 排到压缩结束后才执行，确认常晚于期限）。
       // 身份切换后，对应的「补发」提示必须收回；新身份的回答进卡片。
+      // R7：连续两条参数不同的 /compact。CLI 依次执行两次压缩，每条提交只能被自己那一周期、
+      // 参数相符的 PreCompact 确认；一次确认不能把两条都标成成功。
+      await scenario('claude-double-compact', sid, async r => {
+        const t0 = Date.now(), logFrom = hub.log().length, short = sid.slice(0, 8);
+        await send('/compact keep first marker');
+        await sleep(1200);
+        await send('/compact keep second marker');
+        const file = (await status(sid)).transcript;
+        const ackLines = () => hub.log().slice(logFrom).filter(l => l.includes('[local-command-ack]') && l.includes(short));
+        const ackDeadline = Date.now() + 240000;
+        while (Date.now() < ackDeadline && ackLines().length < 2) await sleep(1000);
+        r.acks = ackLines();
+        assert.equal(r.acks.length, 2, 'exactly two confirmations: ' + r.acks.join(' | '));
+        assert.ok(r.acks.some(l => l.includes('"keep first marker"')) && r.acks.some(l => l.includes('"keep second marker"')),
+          'each submission confirmed by its own arguments: ' + r.acks.join(' | '));
+        const cycles = r.acks.map(l => (/by cycle (\S+)/.exec(l) || [])[1]);
+        assert.notEqual(cycles[0], cycles[1], 'two different execution cycles');
+        // 真值在 CLI 自己的记录里：确认所用的周期（prompt_id）就是那条命令本身的记录。
+        // 第二次压缩可能因「Not enough messages to compact」不产生新的 compact_boundary，
+        // 但命令照样被 CLI 接收并处理，并触发了 PreCompact。
+        const entries = readJsonl(file);
+        r.cycleEvidence = r.acks.map(line => {
+          const cycle = (/by cycle (\S+)/.exec(line) || [])[1];
+          const args = (/"([^"]+)"/.exec(line) || [])[1];
+          const own = entries.filter(e => e.promptId === cycle).map(e => JSON.stringify(e));
+          return { cycle, args, recorded: own.some(s => s.includes('/compact') && s.includes(args)) };
+        });
+        assert.ok(r.cycleEvidence.every(x => x.recorded), 'each confirming cycle is that very /compact in the CLI record: ' + JSON.stringify(r.cycleEvidence));
+        r.boundaries = entries.filter(e => e.subtype === 'compact_boundary' && Date.parse(e.timestamp || '') >= t0 - 1000).length;
+        assert.ok(r.boundaries >= 1, 'at least one real compaction happened');
+        await sleep(3000);
+        assert.equal(await c.eval(`document.querySelectorAll('.floating-input-bar[data-session-id="${sid}"] .fi-stuck').length`), 0, 'no resend prompt left');
+        assert.ok(!isRunningState((await status(sid)).truth), 'settled after both compactions');
+      });
+
       await scenario('claude-clear-during-compact', sid, async r => {
         r.before = await status(sid);
         await send('/compact');
@@ -582,7 +622,7 @@ async function main() {
       r.meetingId = group.id; r.members = group.subSessions;
       for (const id of group.subSessions) await until(`sessions.get(${j(id)})?.agentRuntime==='pty'`, 'member pty ' + id, 30000);
       // groupchat:turn 要等整轮派发结束才返回，超过 CDP 单次求值上限：先发起、再轮询。
-      await c.eval(`window.__gt=null;ipcRenderer.invoke('groupchat:turn',${j({ meetingId: group.id, userInput: '请每位成员只回复自己的名字加 GROUP_OK，不要调用任何工具。' })}).then(t=>{window.__gt=t;},e=>{window.__gt={error:String(e)};});true`);
+      await c.eval(`window.__gt=null;ipcRenderer.invoke('groupchat:turn',${j({ meetingId: group.id, userInput: '请每位成员只回复一行：自己的名字加 GROUP_OK（例如「Claude 1 GROUP_OK」）。不要提问、不要确认场景、不要调用任何工具。' })}).then(t=>{window.__gt=t;},e=>{window.__gt={error:String(e)};});true`);
       await until(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}}).then(s=>s&&s.currentMode==='idle'&&(s.messages||[]).filter(m=>m.role==='assistant'&&/GROUP_OK/.test(m.content||'')).length>=2)`,
         'both members answered', 300000).catch(async error => {
         r.debug = await c.eval(`ipcRenderer.invoke('groupchat:get-state',{meetingId:${j(group.id)}}).then(s=>({mode:s&&s.currentMode,messages:(s&&s.messages||[]).map(m=>({role:m.role,speaker:m.speaker||m.memberId||null,status:m.status||null,text:String(m.content||'').slice(0,120)}))}))`);
@@ -610,7 +650,7 @@ async function main() {
     if (c) try { result.ui = await c.eval('document.body.innerText.slice(-3000)'); await snap('fatal'); } catch (e) { result.captureError = e.message; }
   } finally {
     try { if (c) result.hookEvents = await c.eval('(window.__hookEvents||[]).slice(-400)'); } catch {}
-    try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|hook|codex-tap|claude-tap|cli-ready|transcript/i.test(line)).slice(-200); } catch {}
+    try { if (hub) result.hubLog = hub.log().filter(line => /group-chat|prompt-submit|hook|codex-tap|claude-tap|cli-ready|transcript|local-command-ack/i.test(line)).slice(-200); } catch {}
     try { if (hub) await gracefulQuit(hub); } catch (e) { result.quitError = e.message; }
     for (const [file, key] of [[path.join(claudeHome, '.credentials.json'), 'claude'], [path.join(codexHome, 'auth.json'), 'codex']]) {
       // 副本被 CLI 改写 = 测试期间刷新过令牌。刷新令牌可能轮换，届时原账号的旧令牌会失效，
