@@ -23,8 +23,9 @@ function globalRuleFiles(home) {
 }
 // Preserve workspace-specific rules without creating another AGENTS.md in cwd.
 // Only the explicit workspace ancestry is considered. Disk discovery is not
-// proof of native injection: duplicates are preferable to silently losing rules.
-function sharedWorkspaceRules({ session, workspaceService, homeDir }) {
+// proof of native injection. A separate launch contract suppresses equivalent
+// native-covered bodies; unknown coverage keeps the existing supplementation.
+function sharedWorkspaceRules({ session, workspaceService, homeDir, nativeCoverage = [] }) {
   const cwd = session.cwd, root = workspaceService.getWorkspaceRoot();
   const relative = path.relative(root,cwd);
   if (!relative || relative === '..' || relative.startsWith('..'+path.sep) || path.isAbsolute(relative)) return [];
@@ -43,8 +44,10 @@ function sharedWorkspaceRules({ session, workspaceService, homeDir }) {
     const text=read(file);
     const header=text.match(/^<!--[\s\S]*?-->\r?\n\r?\n/);
     const content=header && /由 AI Hub/.test(header[0]) ? text.slice(header[0].length) : text;
-    const body=normalize(content);
+    const coverage=require('./native-rule-coverage');
+    const body=coverage.normalize(content);
     if (!body || bodies.some(b=>b===body || b.includes(body))) continue;
+    if (coverage.stillCovered(content,nativeCoverage)) continue;
     if (Buffer.byteLength(content)>65536) throw new Error('工作区共享规则超过 64 KB，请先拆分：'+file);
     result.push({path:file,content}); bodies.push(body);
   }

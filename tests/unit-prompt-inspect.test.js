@@ -135,24 +135,33 @@ test('Codex 的 project root 由 markers 决定，且不越过它', () => {
     fs.writeFileSync(path.join(root, 'AGENTS.md'), 'ROOT', 'utf8');
     fs.writeFileSync(path.join(inner, 'AGENTS.md'), 'WS', 'utf8');
 
-    // Each marker setting is pinned in a fake home instead of whatever the user's real
-    // ~/.codex/config.toml says today (it was rewritten on 2026-09-25 and broke this test).
-    // Codex stops at the FIRST ancestor holding ANY marker, so:
-    const chainWith = markers => {
-      const home = path.join(root, 'home-' + markers.length + markers.join('').length);
-      fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
-      if (markers.length) fs.writeFileSync(path.join(home, '.codex', 'config.toml'), `project_root_markers = [${markers.map(m => JSON.stringify(m)).join(', ')}]\n`, 'utf8');
-      const prev = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
-      process.env.USERPROFILE = home; process.env.HOME = home;
-      try { const cx = PI.discoverCodexChain(inner); return { root: cx.projectRoot, n: cx.entries.filter(e => e.source === 'project').length }; }
-      finally { Object.assign(process.env, prev); }
-    };
-    // only .vibe-root: the .git inside ws is not a marker, so the root floats up to .vibe-root
-    assert.deepStrictEqual(chainWith(['.vibe-root']), { root, n: 2 }, 'root 应上浮到 .vibe-root 所在层，收集 root + ws 两份');
-    // unconfigured: Codex default [".git"] stops at ws itself
-    assert.deepStrictEqual(chainWith([]), { root: inner, n: 1 });
-    // both: ws already holds .git, the first marker found going up — so it stops at ws
-    assert.deepStrictEqual(chainWith(['.git', '.vibe-root']), { root: inner, n: 1 }, '任一标记先命中即停，不会越过 ws 的 .git');
+    // Pin every marker case to a fixture home; unconfigured uses Codex's .git default.
+    const fakeHome = path.join(root, 'home');
+    fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+    const config = path.join(fakeHome, '.codex', 'config.toml');
+    const previous = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+    process.env.USERPROFILE = fakeHome;
+    process.env.HOME = fakeHome;
+    try {
+      for (const [markers, expectedRoot, count] of [
+        [null, inner, 1],
+        [['.vibe-root'], root, 2],
+        [['.git'], inner, 1],
+        [['.git', '.vibe-root'], inner, 1],
+      ]) {
+        if (markers) fs.writeFileSync(config, 'project_root_markers = ' + JSON.stringify(markers) + '\n');
+        else fs.rmSync(config, { force: true });
+        const cx = PI.discoverCodexChain(inner);
+        assert.deepStrictEqual(cx.markers, markers || ['.git']);
+        assert.strictEqual(cx.projectRoot, expectedRoot, 'nearest enabled marker determines root');
+        assert.strictEqual(cx.entries.filter(e => e.source === 'project').length, count);
+      }
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });
 
