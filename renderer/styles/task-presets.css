@@ -45,7 +45,8 @@
 }
 .fi-bridge-pull:disabled { cursor: wait; opacity: .58; }
 
-.fi-bridge-fork {
+.fi-bridge-fork,
+.fi-bridge-reference {
   min-height: 24px;
   padding: 3px 11px;
   border: 1px solid var(--border);
@@ -60,12 +61,15 @@
   transition: color .15s ease, border-color .15s ease, background .15s ease;
 }
 .fi-bridge-fork:hover,
-.fi-bridge-fork:focus-visible {
+.fi-bridge-fork:focus-visible,
+.fi-bridge-reference:hover,
+.fi-bridge-reference:focus-visible {
   color: var(--text-primary);
   border-color: var(--text-secondary);
   background: var(--bg-tertiary);
   outline: none;
 }
+.fi-bridge-reference:disabled { cursor: wait; opacity: .58; }
 
 /* Keep the CLI terminal geometry independent from the external composer.
    The collapsed bar keeps a stable flex footprint; multiline drafts and task

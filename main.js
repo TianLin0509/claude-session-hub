@@ -162,6 +162,7 @@ const {
   readCodexRolloutMeta,
 } = require('./core/codex-transcript-parser.js');
 const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
+const { registerSessionReferenceIpc } = require('./main/ipc/session-reference-handlers.js');
 const { SessionSearchService } = require('./core/session-search-service.js');
 const transcriptParserService = new TranscriptParserService();
 const codexJsonlUsageService = new CodexJsonlUsageService();
@@ -1984,6 +1985,11 @@ function buildSessionSearchSnapshot() {
 registerArchiveIpc(ipcMain, {
   searchService: sessionSearchService,
   getSearchSnapshot: buildSessionSearchSnapshot,
+});
+registerSessionReferenceIpc(ipcMain, {
+  searchService: sessionSearchService,
+  getSearchSnapshot: buildSessionSearchSnapshot,
+  getMeeting: meetingId => meetingManager.getMeeting(meetingId),
 });
 // Let the renderer and hook server finish their latency-sensitive boot path
 // before the worker starts walking transcript directories. Querying search
