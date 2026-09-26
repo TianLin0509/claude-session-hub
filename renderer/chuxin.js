@@ -202,10 +202,10 @@
     state.frame = null;
 
     root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
-    // 2026-09-26 初心改版：导航交给初心自己的顶栏（iframe 带 nav=inner），这里的标题行和左侧菜单
-    // 在后端在线时都收起，整块面板留给内容；离线时标题行还在，用来显示「启动投研后端」。
+    // 2026-09-26 初心改版：当前文档确认自带导航后再收起外层菜单；
+    // 后端在线时同时收起标题，离线或状态查询失败时恢复启动入口。
     // 左侧菜单只是隐藏，不删：Tab 记忆、外部跳转仍走 switchTab。
-    root.classList.add('cx-inner-nav');
+    // Keep the Hub navigation reachable until this document confirms its own.
     state.innerNavConfirmed = false;
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
@@ -232,6 +232,7 @@
     if (!state.frame) {
       state.frame = document.createElement('iframe');
       state.frame.className = 'cx-frame';
+      state.frame.name = 'hub-chuxin';
       state.frame.setAttribute('allow', 'clipboard-read; clipboard-write');
       state.frameView.append(state.frame);
     }
@@ -278,6 +279,7 @@
 
   window.addEventListener('message', (event) => {
     if (!state.frame || event.source !== state.frame.contentWindow) return;
+    if (event.origin !== new URL(WEB).origin) return;
     const data = event.data;
     if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
     if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
@@ -285,8 +287,14 @@
     if (data.type === 'chuxin-view') rememberInnerView(String(data.hash || ''));
   });
 
-  // 左侧菜单先按「初心会自带顶栏」收起，但要初心亲口确认（启动即发 chuxin-ready）。
-  // 初心和 Hub 是分开部署的：万一跑的是不认 nav=inner 的旧版，6 秒没回音就把菜单还回来，免得无路可走。
+  ipcRenderer.on('chuxin:frame-navigating', () => {
+    state.innerNavConfirmed = false;
+    if (root) root.classList.remove('cx-inner-nav');
+    armInnerNavFallback();
+  });
+
+  // 只有当前文档亲口确认才收起外层菜单；主进程在整页导航前撤销旧确认，hash 切页不重置。
+  // 初心和 Hub 分开部署；旧版或加载失败时保留 Hub 菜单，不依赖上一份文档的能力。
   function confirmInnerNav() {
     state.innerNavConfirmed = true;
     clearTimeout(state.innerNavTimer);
@@ -335,6 +343,8 @@
         if (state.providerEl) state.providerEl.textContent = s.error || '';
       }
     } catch (e) {
+      state.online = false;
+      if (root) root.classList.remove('cx-online');
       state.statusEl.className = 'cx-status offline';
       state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">状态检测失败</span>';
       state.startBtn.style.display = '';
