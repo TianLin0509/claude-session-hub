@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { promisify } = require('util');
 const os = require('os');
 
@@ -18,6 +18,30 @@ Start-Sleep -Milliseconds 700
 $after = Snapshot
 @{ before=$before.rows; after=$after.rows; windowMs=1000.0*($after.at-$before.at)/[Diagnostics.Stopwatch]::Frequency } | ConvertTo-Json -Compress -Depth 5
 `;
+
+// One long-lived sampler answers a line per request instead of a new
+// powershell.exe every tick: on Windows each spawn blocked Main's thread for
+// 60-80 ms (typing included) and cost ~300 ms of CPU. It exits on its own once
+// stdin closes, which happens after NETWORK_IDLE_MS without a request.
+const NETWORK_STREAM_SCRIPT = `
+$ids = @(); $discoveredAt = [DateTime]::MinValue
+while ($null -ne [Console]::In.ReadLine()) {
+  if (([DateTime]::UtcNow - $discoveredAt).TotalSeconds -ge 60) {
+    $ids = @(Get-NetAdapter -Physical -ErrorAction Stop | ForEach-Object { $_.InterfaceGuid.ToString().Trim("{}").ToLowerInvariant() })
+    $discoveredAt = [DateTime]::UtcNow
+  }
+  $rows = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' -and $ids -contains $_.Id.Trim('{}').ToLowerInvariant() } | ForEach-Object {
+    $stats = $_.GetIPv4Statistics()
+    @{ id=$_.Id; name=$_.Name; received=$stats.BytesReceived; sent=$stats.BytesSent }
+  })
+  [Console]::Out.WriteLine((@{ ids=$ids; adapters=$rows; at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress -Depth 4))
+  [Console]::Out.Flush()
+}
+`;
+const NETWORK_IDLE_MS = 30000;
+const NETWORK_REQUEST_TIMEOUT_MS = 8000;
+const POWERSHELL_PREFIX = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;\n";
+const encodedCommand = script => Buffer.from(POWERSHELL_PREFIX + script, 'utf16le').toString('base64');
 
 function rankProcesses(sample, cpuCount) {
   if (!Array.isArray(sample.before) || !Array.isArray(sample.after) || !(sample.windowMs > 0)) {
@@ -59,20 +83,69 @@ function networkDelta(previous, current) {
 
 function createLiveResourceTelemetry(options = {}) {
   const run = options.execFile || promisify(execFile);
+  const spawnProcess = options.spawn || spawn;
   const now = options.now || Date.now;
   const platform = options.platform || process.platform;
   const cpuCount = options.cpuCount || os.cpus().length;
-  let physicalIds = null; let discoveredAt = 0; let baseline = null;
+  let baseline = null;
   let networkCache = null; let networkPending = null;
   let processCache = null; let processPending = null;
 
   async function powershell(script) {
     if (platform !== 'win32') throw new Error('Windows telemetry unavailable');
-    const prefix = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;\n";
-    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(prefix + script, 'utf16le').toString('base64')], {
+    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand(script)], {
       windowsHide: true, timeout: 8000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8',
     });
     return JSON.parse(result.stdout.replace(/^\uFEFF/, '').trim());
+  }
+
+  let sampler = null;
+  function stopSampler(target = sampler, error = new Error('network sampler stopped'), { kill = false } = {}) {
+    if (!target) return;
+    if (sampler === target) sampler = null;
+    clearTimeout(target.idleTimer);
+    for (const waiter of target.waiters.splice(0)) { clearTimeout(waiter.timer); waiter.reject(error); }
+    try { target.child.stdin.end(); } catch {}
+    if (kill) { try { target.child.kill(); } catch {} }
+  }
+  function startSampler() {
+    const child = spawnProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand(NETWORK_STREAM_SCRIPT)], {
+      windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    const target = { child, waiters: [], buffer: '', idleTimer: null };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      target.buffer += chunk;
+      let newline;
+      while ((newline = target.buffer.indexOf('\n')) >= 0) {
+        const line = target.buffer.slice(0, newline).replace(/^\uFEFF/, '').trim();
+        target.buffer = target.buffer.slice(newline + 1);
+        const waiter = line && target.waiters.shift();
+        if (!waiter) continue;
+        clearTimeout(waiter.timer);
+        try { waiter.resolve(JSON.parse(line)); } catch (error) { waiter.reject(error); }
+      }
+    });
+    const fail = error => stopSampler(target, error);
+    child.on('error', fail);
+    child.on('exit', code => fail(new Error(`network sampler exited (${code})`)));
+    child.stdin.on('error', fail);
+    return target;
+  }
+  function requestNetworkSample() {
+    if (platform !== 'win32') return Promise.reject(new Error('Windows telemetry unavailable'));
+    if (!sampler) sampler = startSampler();
+    const target = sampler;
+    clearTimeout(target.idleTimer);
+    target.idleTimer = setTimeout(() => stopSampler(target), NETWORK_IDLE_MS);
+    target.idleTimer.unref?.();
+    return new Promise((resolve, reject) => {
+      const waiter = { resolve, reject, timer: null };
+      waiter.timer = setTimeout(() => stopSampler(target, new Error('network sampler timed out'), { kill: true }), NETWORK_REQUEST_TIMEOUT_MS);
+      waiter.timer.unref?.();
+      target.waiters.push(waiter);
+      target.child.stdin.write('\n');
+    });
   }
 
   function sampleNetwork() {
@@ -80,23 +153,13 @@ function createLiveResourceTelemetry(options = {}) {
     if (networkCache && now() - networkCache.sampledAt < 2500) return Promise.resolve(networkCache);
     networkPending = (async () => {
       try {
-        // Discover physical adapters slowly; use cheap .NET byte counters on each tick.
-        // TUN/VPN virtual adapters are excluded to avoid counting the same bytes twice.
-        const discover = !physicalIds || now() - discoveredAt > 60000;
-        const idsScript = discover
-          ? '$ids = @(Get-NetAdapter -Physical -ErrorAction Stop | ForEach-Object { $_.InterfaceGuid.ToString().Trim("{}").ToLowerInvariant() })'
-          : `$ids = @('${physicalIds.join("','")}')`;
-        const value = await powershell(`${idsScript}
-$rows = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object { $_.OperationalStatus -eq 'Up' -and $ids -contains $_.Id.Trim('{}').ToLowerInvariant() } | ForEach-Object {
-  $stats = $_.GetIPv4Statistics()
-  @{ id=$_.Id; name=$_.Name; received=$stats.BytesReceived; sent=$stats.BytesSent }
-})
-@{ ids=$ids; adapters=$rows; at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress -Depth 4`);
+        // The sampler rediscovers physical adapters every 60 s and reads cheap
+        // .NET byte counters per request. TUN/VPN virtual adapters are excluded
+        // to avoid counting the same bytes twice.
+        const value = await requestNetworkSample();
         if (!Array.isArray(value.adapters) || !Array.isArray(value.ids)
             || value.ids.some(id => !/^[a-f0-9-]+$/i.test(id))
             || value.adapters.some(row => !Number.isFinite(row.received) || !Number.isFinite(row.sent))) throw new Error('Invalid network sample');
-        physicalIds = value.ids;
-        if (discover) discoveredAt = now();
         networkCache = { ...networkDelta(baseline, value), sampledAt: now(), adapters: value.adapters.map(row => row.name), scope: 'physical' };
         if (!value.adapters.length) networkCache.status = 'disconnected';
         baseline = value;
@@ -123,7 +186,7 @@ $rows = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
     })().finally(() => { processPending = null; });
     return processPending;
   }
-  return { sampleNetwork, sampleProcesses };
+  return { sampleNetwork, sampleProcesses, dispose: () => stopSampler() };
 }
 
 module.exports = { createLiveResourceTelemetry, rankProcesses, networkDelta };

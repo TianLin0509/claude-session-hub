@@ -9,7 +9,12 @@ class NativeDraftStore {
     fs.mkdirSync(root, { recursive: true });
     this.db = new DatabaseSync(path.join(root, 'native-input-drafts.sqlite'));
     try {
-      this.db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+      // Every keystroke in a native composer commits here on Main's thread.
+      // FULL fsyncs each commit (5 ms idle, 100 ms measured under transcript
+      // I/O) and stalls all IPC, typing included. WAL+NORMAL still keeps every
+      // commit across a Hub crash; only an OS crash or power loss can drop the
+      // last few keystrokes of a draft.
+      this.db.exec('PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
       this.db.exec('CREATE TABLE IF NOT EXISTS drafts (session_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL)');
     } catch (error) { this.db.close(); throw error; }
   }

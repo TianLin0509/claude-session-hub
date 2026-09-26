@@ -2025,7 +2025,7 @@ sessionSearchPrewarmTimer.unref?.();
 // Persistent source watchers cover external CLI saves too. Semantic events
 // coalesce into the same background queue; the engine owns the shared writer lease.
 for (const event of ['turn-complete', 'prompt-submitted', 'turn-aborted', 'turn-error', 'session-bound']) {
-  transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot(), payload?.hubSessionId || event));
+  transcriptTap.on(event, payload => sessionSearchService.queueRefresh(buildSessionSearchSnapshot, payload?.hubSessionId || event));
 }
 transcriptTap.on('prompt-submitted', () => { lastPromptSubmittedAt = Date.now(); });
 
@@ -3315,6 +3315,12 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
 
   shutdownDrainState = 'draining';
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
+  // The renderer throttles persist-sessions (up to 2 s). Ask it for the newest
+  // workscene now; its reply is queued ahead of the final sync save, which
+  // only runs after every PTY has drained.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('hub:flush-workscene'); } catch {}
+  }
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
   // released by final cleanup after every PTY exit callback has settled.
