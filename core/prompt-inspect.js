@@ -239,7 +239,9 @@ function findOrphanAgentsMd(cwd, chain) {
 // ---------- Codex 侧 ----------
 function readCodexRootMarkers() {
   const cfg = readText(path.join(homeDir(), '.codex', 'config.toml'), 65536) || '';
-  const m = cfg.match(/^\s*project_root_markers\s*=\s*\[([^\]]*)\]/m);
+  // TOML allows the key bare or quoted; a rewrite of config.toml on 2026-09-25 switched it to
+  // "project_root_markers", and a bare-only match silently fell back to [".git"].
+  const m = cfg.match(/^\s*(?:project_root_markers|"project_root_markers"|'project_root_markers')\s*=\s*\[([^\]]*)\]/m);
   if (!m) return { markers: ['.git'], configured: false };
   const markers = m[1].split(',')
     .map(s => s.trim().replace(/^["']|["']$/g, ''))
