@@ -978,7 +978,10 @@ const sessionListRenderer = createSessionListRenderer({
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   markAllSessionsRead: () => markAllSessionsRead(),
   markMeetingRead: id => markMeetingRead(id),
-  afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
+  // The sidebar DOM was just rebuilt; painting the composer here read layout
+  // (panelIsVisible) and forced a full synchronous relayout after every
+  // sidebar render. In the next frame that layout is shared with the paint.
+  afterRender: () => { scheduleFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
