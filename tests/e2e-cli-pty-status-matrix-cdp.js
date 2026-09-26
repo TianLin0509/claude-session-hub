@@ -594,6 +594,15 @@ async function main() {
         r.nextTool = await verifyToolRun(sid, 'CODEX_AFTER_ABORT_MARK', 2.5);
       });
 
+      if(args.has('--audit-extras'))await scenario('codex-long-prompt',sid,async r=>{
+        const prompt=Array.from({length:120},(_,i)=>`reference ${i}: 中文🙂 `+'x'.repeat(100)).join('\n')+'\nReply only CODEX_LONG_PROMPT_OK';
+        await send(prompt);
+        await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`,'long prompt completes',120000);
+        const turns=(await c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)},opts:{limit:20}})`)).turns||[];
+        assert(turns.some(t=>t.role==='assistant'&&String(t.text||'').includes('CODEX_LONG_PROMPT_OK')));
+        assert.equal(turns.filter(t=>t.role==='user'&&String(t.text||'').includes('reference 119:')).length,1);
+        assert(turns.some(t=>t.role==='user'&&String(t.text||'')===prompt));r.exactSingleSubmission=true;
+      });
       if (!SKIP_LONG) await scenario('codex-long', sid, async r => {
         const at = await send(`执行 shell 命令 \`node -e "setTimeout(()=>console.log('CODEX_LONG_MARK'),${LONG_SECONDS * 1000})"\`（前台等待它结束，超时设为 300 秒），完成后只回复 LONG_DONE。`);
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='running'`, 'running', 30000);
