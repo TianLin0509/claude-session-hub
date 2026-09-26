@@ -98,6 +98,7 @@
 :root:is([data-theme='dark'],[data-theme='codex']) .composer-secondary-actions { border-top:1px solid var(--border-subtle); }
 :root:is([data-theme='dark'],[data-theme='codex']) .composer-secondary-actions .fi-bridge-pull,
 :root:is([data-theme='dark'],[data-theme='codex']) .composer-secondary-actions .fi-bridge-fork,
+:root:is([data-theme='dark'],[data-theme='codex']) .composer-secondary-actions .fi-bridge-reference,
 :root:is([data-theme='dark'],[data-theme='codex']) .mr-group-composer .fi-bridge-pull,
 :root:is([data-theme='dark'],[data-theme='codex']) .composer-one-click-start {
   border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--fg-muted); padding:3px 7px; min-height:26px; font:11px/1.5 var(--font-sans); box-shadow:none;

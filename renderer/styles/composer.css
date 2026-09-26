@@ -312,7 +312,8 @@
 /* 拉取 / 分支从旧输入栏原样搬进底栏，行为不变，只是不再独占一行。 */
 .composer-rail .fi-bridge-toolbar { min-height: 24px; gap: 6px; }
 .composer-rail .fi-bridge-pull,
-.composer-rail .fi-bridge-fork { min-height: 24px; padding: 3px 10px; }
+.composer-rail .fi-bridge-fork,
+.composer-rail .fi-bridge-reference { min-height: 24px; padding: 3px 10px; }
 
 .composer-context-budget {
   display: inline-flex;
