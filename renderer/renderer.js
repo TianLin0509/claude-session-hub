@@ -1,6 +1,10 @@
 // webUtils.getPathForFile 是 Electron 32+ 取代 File.path 的唯一入口（41 里 File.path
 // 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
+// Isolated E2E only: keep test copies/pastes off the user's system clipboard.
+if (process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD_ACTIVE === '1') {
+  require('./e2e-fake-clipboard.js').installRendererFakeClipboard({ electron: require('electron'), navigator });
+}
 const fs = require('fs');
 const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../core/codex-native-runtime.js');
 const { isNativeAgent } = require('../core/native-agent-runtime.js');

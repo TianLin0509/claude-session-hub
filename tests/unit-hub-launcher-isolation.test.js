@@ -72,7 +72,17 @@ test('hidden E2E window mode is explicit and forces E2E isolation', () => {
   assert.equal(env.CLAUDE_HUB_E2E, '1');
   assert.equal(env.CLAUDE_HUB_E2E_WINDOW_MODE, 'hidden');
   assert.throws(() => buildIsolatedHubEnv(dataDir, {}, {}, { windowMode: 'minimized' }),
-    /windowMode must be visible or hidden/);
+    /windowMode must be background, visible or hidden/);
+});
+
+test('test Hubs default to a background window; a visible one needs HUB_E2E_SHOW_WINDOWS=1', () => {
+  const dataDir = path.join(os.tmpdir(), 'hub-launcher-unit', 'background-window');
+  assert.equal(buildIsolatedHubEnv(dataDir, {}, {}).CLAUDE_HUB_E2E_WINDOW_MODE, 'background');
+  // Older tests ask for 'visible'; they must not steal the user's keyboard either.
+  assert.equal(buildIsolatedHubEnv(dataDir, {}, {}, { windowMode: 'visible' }).CLAUDE_HUB_E2E_WINDOW_MODE, 'background');
+  assert.equal(buildIsolatedHubEnv(dataDir, {}, { HUB_E2E_SHOW_WINDOWS: '1' }, { windowMode: 'visible' }).CLAUDE_HUB_E2E_WINDOW_MODE, 'visible');
+  // Background mode does not switch on the separate CLAUDE_HUB_E2E fixture behaviour.
+  assert.equal(buildIsolatedHubEnv(dataDir, {}, {}).CLAUDE_HUB_E2E, undefined);
 });
 
 test('isolated Hub strips parent CLI and Hub routing variables', () => {

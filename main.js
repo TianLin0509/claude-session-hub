@@ -237,6 +237,28 @@ const HIDDEN_E2E_DATA_DIR_SAFE = isIsolatedHub()
 if (HIDDEN_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
   throw new Error('hidden E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
 }
+// Background E2E: the window renders like a visible one but sits off-screen,
+// never activates and stays out of the taskbar, so a test run cannot steal the
+// keyboard from someone typing in the production Hub.
+const BACKGROUND_E2E_WINDOW_REQUESTED = process.env.CLAUDE_HUB_E2E_WINDOW_MODE === 'background';
+if (BACKGROUND_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
+  throw new Error('background E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
+}
+const e2eDesktopSandbox = require('./core/e2e-desktop-sandbox.js');
+if (BACKGROUND_E2E_WINDOW_REQUESTED) {
+  e2eDesktopSandbox.prepareBackgroundChromium(app);
+  app.on('browser-window-created', (_event, win) => e2eDesktopSandbox.keepWindowInBackground(win));
+}
+// Isolated E2E runs (background or hidden) keep their own in-memory clipboard;
+// a test that must check the real one opts in with CLAUDE_HUB_E2E_REAL_CLIPBOARD=1.
+if (HIDDEN_E2E_DATA_DIR_SAFE
+    && ['background', 'hidden'].includes(process.env.CLAUDE_HUB_E2E_WINDOW_MODE)
+    && process.env.CLAUDE_HUB_E2E_REAL_CLIPBOARD !== '1') {
+  e2eDesktopSandbox.installFakeClipboard({ clipboard, nativeImage, ipcMain });
+  process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD_ACTIVE = '1';
+  console.log('[e2e] in-memory clipboard active. Native copies (Ctrl+C in pages, webContents.copy) still reach the system '
+    + 'clipboard and are not visible here; a test that checks them sets CLAUDE_HUB_E2E_REAL_CLIPBOARD=1.');
+}
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.

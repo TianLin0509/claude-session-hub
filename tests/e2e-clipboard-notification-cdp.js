@@ -133,6 +133,9 @@ async function main() {
         CLAUDE_HUB_HOME_DIR: HOME_DIR,
         DEEPSEEK_API_KEY: '',
         CLAUDE_HUB_E2E: '1',
+        // Native Ctrl+C inside the preview webview writes the system clipboard
+        // directly, and Hub verifies the copy by reading it back.
+        CLAUDE_HUB_E2E_REAL_CLIPBOARD: '1',
         CLAUDE_HUB_E2E_SHOW_NOTIFICATION: '1',
       },
     });

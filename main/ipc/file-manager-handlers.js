@@ -33,6 +33,8 @@ function registerFileManagerIpc(ipcMain, deps = {}) {
   handle('copy', async p => {
     const paths = await pathsFrom(p);
     if (p.kind === 'files') {
+      const fakeClipboard = require('../../core/e2e-desktop-sandbox').activeFakeClipboard();
+      if (fakeClipboard) { fakeClipboard.writeFiles(paths); return { ok: true }; }
       if (process.platform !== 'win32') throw new Error('文件剪贴板当前仅支持 Windows');
       const literals = paths.map(value => `'${value.replace(/'/g, "''")}'`).join(',');
       await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; Set-Clipboard -LiteralPath @(${literals})`], { windowsHide: true, timeout: 15000 });
