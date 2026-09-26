@@ -6,6 +6,7 @@ const { isCodexSession, isNativeSession, acceptNativeSnapshot } = require('../co
 const { isNativeAgent } = require('../core/native-agent-runtime.js');
 const { recordNativeContent, promptReceipt } = require('../core/native-feedback.js');
 const { createCodexNativeControls } = require('./codex-native-controls.js');
+const pasteChips = require('./composer-paste-chips.js');
 const { createCodexBackstage } = require('./codex-backstage.js');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -217,7 +218,7 @@ const cardHistoryViews = require('./card-history-views').createCardHistoryViews(
 });
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
-const clipboardController = createClipboardController({ document, window, clipboard });
+const clipboardController = createClipboardController({ document, window, clipboard, expandText: pasteChips.expandPasteMarkers });
 clipboardController.init();
 // xterms are created lazily, then live for exactly as long as their live Hub
 // sessions. Switching sessions must not dispose a still-running CLI: doing so
@@ -241,6 +242,9 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
+// sessionId -> { raw, text }：含粘贴块标记的原始草稿。重挂输入框时若草稿没变，按原样把块还原回来，
+// 而不是把几千行原文重新铺进 DOM。持久化的草稿仍是展开后的原文（标记跨重启无意义）。
+const rawComposerDrafts = new Map();
 const nativeDraftControllers = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
@@ -402,9 +406,15 @@ function trackPtyPromptInput(sessionId, data) {
   }
 }
 
-function readContenteditablePlainText(el) {
+// 原始内容：粘贴块在这里是 id 标记（见 composer-paste-chips.js）。
+function readContenteditableRawText(el) {
   if (!el) return '';
   return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+}
+
+// 输入框里「用户真正要发的文字」：粘贴块展开成原文。发送、草稿、历史都读这个。
+function readContenteditablePlainText(el) {
+  return pasteChips.expandPasteMarkers(readContenteditableRawText(el));
 }
 
 // Emptiness only. innerText is layout-dependent, so reading it forces a
@@ -431,9 +441,16 @@ function replaceContenteditableText(el, text) {
     range.selectNodeContents(el);
     selection.removeAllRanges();
     selection.addRange(range);
-    applied = next
-      ? document.execCommand('insertText', false, next)
-      : document.execCommand('delete');
+    // 大文本（历史召回、恢复未发送的长消息）逐行进 DOM 会卡几十秒，收成一个粘贴块。
+    if (next && el.dataset.pasteChipsBound === '1' && pasteChips.shouldCollapseReplace(next)) {
+      document.execCommand('delete');
+      pasteChips.insertPasteChip(el, next, { document, window });
+      applied = true;
+    } else {
+      applied = next
+        ? document.execCommand('insertText', false, next)
+        : document.execCommand('delete');
+    }
   } catch {
     applied = false;
   }
@@ -441,6 +458,25 @@ function replaceContenteditableText(el, text) {
   const after = readContenteditablePlainText(el);
   const wrong = next === '' ? after !== '' : after.trim() !== next.trim();
   if (!applied || wrong) el.textContent = next;
+}
+
+// 在输入框末尾另起一段追加文字。只追加、不整框替换：已有的粘贴块保持原样（整框替换会先把它们
+// 展开成原文再写回），撤销栈也保留。追加的内容本身够长时同样收成粘贴块。
+function appendToContenteditable(el, text) {
+  const incoming = String(text || '');
+  if (!el || !incoming) return;
+  const current = readContenteditablePlainText(el);
+  const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
+  el.focus();
+  placeCaretAtContenteditableEnd(el);
+  if (el.dataset.pasteChipsBound === '1' && pasteChips.shouldCollapsePaste(incoming)) {
+    if (separator) document.execCommand('insertText', false, separator);
+    pasteChips.insertPasteChip(el, incoming, { document, window });
+    return;
+  }
+  if (!document.execCommand('insertText', false, separator + incoming)) {
+    el.appendChild(document.createTextNode(separator + incoming));
+  }
 }
 
 function placeCaretAtContenteditableEnd(el) {
@@ -478,7 +514,7 @@ function attachNativeDraft(sessionId, inputBox) {
   if (inputBox._nativeDraftController) return inputBox._nativeDraftController;
   const view = {
     onRestore(text) {
-      inputBox.textContent = text;
+      restoreComposerText(sessionId, inputBox, text);
       if (text) floatingInputDrafts.set(sessionId, text); else floatingInputDrafts.delete(sessionId);
       if (document.activeElement === inputBox) placeCaretAtContenteditableEnd(inputBox);
     },
@@ -508,9 +544,24 @@ function attachNativeDraft(sessionId, inputBox) {
   return controller;
 }
 
+// 把草稿放回输入框。框里已经是这份内容就不动（别把粘贴块冲成原文、也别挪光标）；
+// 草稿与上次记下的原始内容一致时按原样还原粘贴块。
+function restoreComposerText(sessionId, inputBox, text) {
+  if (readContenteditablePlainText(inputBox) === text) return;
+  const raw = rawComposerDrafts.get(sessionId);
+  if (raw && raw.text === text && pasteChips.hasPasteMarkers(raw.raw)) {
+    pasteChips.renderRawComposerText(inputBox, raw.raw, { document });
+  } else {
+    inputBox.textContent = text;
+  }
+}
+
 function saveFloatingInputDraft(sessionId, inputBox) {
   if (!sessionId || !inputBox) return;
-  const text = readContenteditablePlainText(inputBox);
+  const raw = readContenteditableRawText(inputBox);
+  const text = pasteChips.expandPasteMarkers(raw);
+  if (pasteChips.hasPasteMarkers(raw)) rawComposerDrafts.set(sessionId, { raw, text });
+  else rawComposerDrafts.delete(sessionId);
   if (text) floatingInputDrafts.set(sessionId, text);
   else floatingInputDrafts.delete(sessionId);
   if (sessions.get(sessionId)?.status === 'dormant') return;
@@ -519,6 +570,7 @@ function saveFloatingInputDraft(sessionId, inputBox) {
 
 function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
+  if (sessionId) rawComposerDrafts.delete(sessionId);
   nativeDraftControllers.get(sessionId)?.change('');
   if (sessionId && isNativeSession(sessions.get(sessionId))) {
     try { localStorage.removeItem('codex-native-draft:'+sessionId); }
@@ -4149,6 +4201,48 @@ async function reconnectSession(sessionId) {
   }
 }
 
+// 「引用会话」：选会话 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
+// 失败走 showHubAlert 挡住人，不能静默；成功只给轻提示，且绝不替用户按发送。
+async function referenceSessionIntoInput(sessionId, inputBox, button) {
+  const { openSessionPicker, showForkToast } = require('./groupchat-fork-ui.js');
+  const { buildReferenceText } = require('../core/session-reference.js');
+  const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
+  let rows;
+  try {
+    rows = await ipcRenderer.invoke('session-reference:list', { excludeSessionId: sessionId });
+  } catch (error) {
+    alertError('读取会话清单失败：' + error.message);
+    return;
+  }
+  openSessionPicker({
+    document,
+    rows: Array.isArray(rows) ? rows : [],
+    title: '引用会话',
+    hint: '把所选会话的聊天记录路径插入输入框，当前 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
+    emptyLabel: '没有其他会话可引用。',
+    onPick: async (row) => {
+      if (button) { button.disabled = true; button.textContent = '引用中…'; }
+      try {
+        const result = await ipcRenderer.invoke('session-reference:resolve', { sessionId: row.id });
+        if (!result?.ok) { alertError('引用失败：' + (result?.message || result?.error || '未知原因')); return; }
+        if (!inputBox.isConnected) return;
+        const line = buildReferenceText({ title: row.title || result.title, kind: row.kind, path: result.path });
+        appendToContenteditable(inputBox, `${line}\n`);
+        saveFloatingInputDraft(sessionId, inputBox);
+        inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+        inputBox.focus();
+        showForkToast(document, result.fresh
+          ? `已引用「${row.title || result.title || '未命名会话'}」，补充你的要求后发送`
+          : '已引用；源会话最新的内容可能还没写进记录（例如正在回答中）');
+      } catch (error) {
+        alertError('引用失败：' + error.message);
+      } finally {
+        if (button) { button.disabled = false; button.textContent = '引用会话'; }
+      }
+    },
+  });
+}
+
 // Single interrupt path for native Claude seats: the ■ button, the terminal's
 // Ctrl+C and the group-member stop all have to mean the same thing. Only the
 // engine's terminal_reason confirms an interrupt, so a rejected *request* is
@@ -4260,7 +4354,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     } catch (error) { showToast('草稿读取失败：' + error.message, 'error'); }
   }
   if (floatingInputDrafts.has(sessionId)) {
-    inputBox.textContent = floatingInputDrafts.get(sessionId);
+    restoreComposerText(sessionId, inputBox, floatingInputDrafts.get(sessionId));
   }
 
   // 用户实际工作流只保留一个入口：把公司 ChatGPT 的新内容拉到输入框。
@@ -4283,10 +4377,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       await chatgptBridgeController.pullForInput(async (content) => {
         const incoming = String(content || '').trim();
         if (!incoming) return false;
-        const current = readContenteditablePlainText(inputBox);
-        const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
-        replaceContenteditableText(inputBox, `${current}${separator}${incoming}`);
-        placeCaretAtContenteditableEnd(inputBox);
+        appendToContenteditable(inputBox, incoming);
         saveFloatingInputDraft(sessionId, inputBox);
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
@@ -4312,6 +4403,19 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     });
     bridgeToolbar.appendChild(branchBtn);
   }
+  // 引用会话：跨 CLI（Claude ↔ Codex）拿另一个会话的上下文。只往输入框写一行
+  // 聊天记录 md 的路径，由目标 agent 自己去读；不自动发送。见 core/session-reference.js。
+  const referenceBtn = document.createElement('button');
+  referenceBtn.type = 'button';
+  referenceBtn.className = 'fi-bridge-reference';
+  referenceBtn.textContent = '引用会话';
+  referenceBtn.title = '选一个会话，把它的聊天记录路径插入输入框，让当前 AI 读取其上下文（可跨 Claude / Codex）';
+  referenceBtn.setAttribute('aria-label', '引用其他会话的上下文');
+  referenceBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void referenceSessionIntoInput(sessionId, inputBox, referenceBtn);
+  });
+  bridgeToolbar.appendChild(referenceBtn);
 
   // ── T1 冷杉 v2 · composer 状态行 ─────────────────────────────────────────
   // 舞台头部的状态徽章和这一行说的是同一件事，所以两者共用
@@ -4891,7 +4995,9 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   // 卡片优化（2026-05-03）：粘贴图片到浮动输入框 → save-clipboard-image
   //   IPC 取得绝对路径 → execCommand('insertText') 插入到 caret 位置。
   //   语义与 xterm 的 handlePasteForSession 一致（用户粘图后路径文字流到 PTY）。
-  attachContenteditablePasteImage(inputBox);
+  attachContenteditablePasteImage(inputBox, { collapseLongText: true });
+  // 长文本粘贴块：悬停预览原文，复制/剪切时写出原文。
+  pasteChips.attachPasteChipBehaviors(inputBox, { document, window });
 
   sendBtn.addEventListener('click', (e) => {
     e.stopPropagation();

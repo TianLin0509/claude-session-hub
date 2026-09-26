@@ -312,7 +312,8 @@
 /* 拉取 / 分支从旧输入栏原样搬进底栏，行为不变，只是不再独占一行。 */
 .composer-rail .fi-bridge-toolbar { min-height: 24px; gap: 6px; }
 .composer-rail .fi-bridge-pull,
-.composer-rail .fi-bridge-fork { min-height: 24px; padding: 3px 10px; }
+.composer-rail .fi-bridge-fork,
+.composer-rail .fi-bridge-reference { min-height: 24px; padding: 3px 10px; }
 
 .composer-context-budget {
   display: inline-flex;
@@ -418,3 +419,70 @@
 .speed-picker-menu button { width: 100%; color: var(--text-primary); background: transparent; border: 0; text-align: left; font: inherit; }
 .speed-picker-menu button:hover:not(:disabled) { background: var(--surface-hover); }
 .speed-picker-menu button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* 长文本粘贴块（composer-paste-chips.js）：DOM 里的文字是内部标记，font-size:0 藏起来，
+   看到的标签来自 data-label。不可编辑，退格整块删除。 */
+.floating-input-box .fi-paste-chip {
+  display: inline-block;
+  font-size: 0;
+  line-height: 0;
+  vertical-align: baseline;
+  margin: 0 2px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-tertiary, rgba(127,127,127,.12));
+  color: var(--text-secondary);
+  cursor: default;
+  user-select: all;
+  white-space: nowrap;
+}
+.floating-input-box .fi-paste-chip::before {
+  content: attr(data-label);
+  font: 12px/1.6 var(--font-sans, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif);
+}
+.floating-input-box .fi-paste-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.fi-paste-preview {
+  position: fixed;
+  z-index: 100001;
+  width: min(760px, calc(100vw - 16px));
+  max-height: min(52vh, 460px);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg-secondary, #1e1f24);
+  color: var(--text-primary);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .38);
+}
+.fi-paste-preview[hidden] { display: none; }
+.fi-paste-preview-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  font: 12px/1.5 var(--font-sans, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif);
+}
+.fi-paste-preview-head span { color: var(--text-secondary); }
+.fi-paste-preview-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.55 'Cascadia Code', Consolas, 'Courier New', monospace;
+}
+.fi-paste-preview-foot {
+  padding: 5px 12px 7px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+  color: var(--text-secondary);
+  font: 11px/1.5 var(--font-sans, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif);
+}
