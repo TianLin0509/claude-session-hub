@@ -68,19 +68,29 @@ function observeClaudeLocalCommand(manager, sessionId, command) {
   const spec = LOCAL_COMMANDS[command];
   if (!spec) throw new Error('unsupported Claude local command: ' + command);
   let result = null;
+  let onLate = null;
   const listener = event => {
     if (!event || event.sessionId !== sessionId) return;
     if (event.command && event.command !== command) return;
+    if (result) return;
     result = { ok: true };
+    if (onLate) { const cb = onLate; onLate = null; cb(); }
   };
   manager.on(spec.event, listener);
   return {
-    async wait(timeoutMs = 15000) {
+    // 期限默认 15s；CLAUDE_HUB_LOCAL_COMMAND_ACK_MS 只给测试用来稳定触发「迟到确认」。
+    async wait(timeoutMs = Number(process.env.CLAUDE_HUB_LOCAL_COMMAND_ACK_MS) || 15000) {
       const deadline = Date.now() + timeoutMs;
       while (!result && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 60));
       return result || { ok: false, message: spec.missing };
     },
-    dispose() { manager.removeListener(spec.event, listener); },
+    // 超时后继续等同一条命令的确认（/compact 期间提交的 /clear 要排到压缩结束后才执行）。
+    // 已经确认过就立刻回调；只回调一次。
+    onConfirm(cb) {
+      if (result) { cb(); return; }
+      onLate = cb;
+    },
+    dispose() { onLate = null; manager.removeListener(spec.event, listener); },
   };
 }
 

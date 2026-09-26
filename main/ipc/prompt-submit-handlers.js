@@ -49,6 +49,8 @@ function supportsMessageReceipt(kind, text) {
   return (isClaudeFamily(kind) || isCodexCliKind(kind) || require('../../core/acp-profiles').isAcpKind(kind)) && !String(text).trimStart().startsWith('/');
 }
 
+const LATE_LOCAL_ACK_MAX_MS = 10 * 60 * 1000;
+
 function registerPromptSubmitIpc(ipcMain, deps) {
   const {
     sessionManager,
@@ -243,6 +245,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
       const clearObserver = localCommand
         && require('../../core/agent-runtime-mode').isPtyAgentSession(sessionManager.getSession(sessionId))
         ? identitySwitch.observeClaudeLocalCommand(sessionManager, sessionId, localCommand) : null;
+      let awaitLateLocalAck = false;
       try {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
@@ -256,10 +259,15 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           return { ok: false, error: 'send-failed', kind };
         }
         const sendStatus = (result && result.sendStatus) || 'ok';
+        // /clear、/compact 的确认在期限内没来：回车已经写进去了，结果是「未知」而不是「失败」。
+        // 观察者不销毁，转入迟到确认：/compact 期间提交的 /clear 要等压缩结束才执行。
+        const localAckPending = !!clearObserver && result.acknowledgementSource === 'local-command' && result.ok === false;
+        awaitLateLocalAck = localAckPending && !!clientSubmissionId;
         if (sendStatus === 'stuck') {
           logger.warn(`[prompt-submit] ${kind}(${sessionId.slice(0, 8)}) prompt not acknowledged; renderer will offer manual resend`);
         }
         return {
+          ...(localAckPending ? { unconfirmed: true } : {}),
           ok: result.ok !== false && sendStatus !== 'content-mismatch',
           kind,
           sendStatus,
@@ -277,10 +285,30 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         logger.warn('[prompt-submit] send threw:', error && error.message);
         return { ok: false, error: 'send-threw', message: error && error.message, kind, ...(error?.notSent ? {notSent:true} : {}) };
       } finally {
-        clearObserver?.dispose();
+        if (awaitLateLocalAck) armLateLocalCommandAck(clearObserver, sessionId, clientSubmissionId, localCommand);
+        else clearObserver?.dispose();
       }
     });
   };
+
+  // 迟到确认只收敛这一条提交：renderer 按 clientSubmissionId 匹配回执，之后另一条真正
+  // 失败的提交不受影响。从不自动重发。最长等 10 分钟。
+  function armLateLocalCommandAck(observer, sessionId, clientSubmissionId, command) {
+    const expire = setTimeout(() => observer.dispose(), LATE_LOCAL_ACK_MAX_MS);
+    expire.unref?.();
+    observer.onConfirm(() => setTimeout(() => {
+      clearTimeout(expire);
+      observer.dispose();
+      logger.log?.(`[prompt-submit] late /${command} confirmation for ${sessionId.slice(0, 8)}; clearing its resend prompt`);
+      try { sendToRenderer('session:prompt-receipt', { sessionId, clientSubmissionId, status: 'confirmed', source: 'late-local-command-ack' }); }
+      catch (error) { logger.warn('[prompt-submit] late receipt broadcast failed:', error && error.message); }
+      try {
+        const store = deps.commandTranscriptStore || require('../../core/command-transcript-store').commandTranscriptStore();
+        store.finish(sessionId, clientSubmissionId, { ok: true, sendStatus: 'ok', mode: 'closed-loop', acknowledgementSource: 'late-local-command' });
+        sendToRenderer('session:command-updated', { sessionId });
+      } catch (error) { logger.warn('[prompt-submit] late command history update failed:', error && error.message); }
+    }, 0));
+  }
 
   ipcMain.handle('session:send-prompt', async (event, request = {}) => {
     const session = sessionManager.getSession(request.sessionId);

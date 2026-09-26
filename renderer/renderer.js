@@ -6151,6 +6151,18 @@ function ptyTurnClosedAuthoritatively(session, truth = getSessionRuntimeTruth(se
     && truth.confidence === CONFIDENCE_AUTHORITATIVE;
 }
 
+// hook 子进程是各自独立完成的，到达顺序不保证：一轮已经关闭后，还可能收到它的
+// PreToolUse / SubagentStart、提问工具的 PostToolUse、PermissionRequest。这些迟到事件
+// 只能留作历史，不能把关闭的一轮重新打开（审查 R5：Codex Esc 中断 0.4s 后被迟到的
+// tool-start 改回运行，60s 不收尾）。中断在 renderer 里记为权威 IDLE
+// （codex-turn-aborted / claude 中断标记），会话刚建好时的空闲不是权威的，不算关闭。
+// 新一轮一定先经过 UserPromptSubmit / 本地提交 / task_started，此后状态不再是关闭态。
+function hookTurnClosed(session, truth = session ? getSessionRuntimeTruth(session) : null) {
+  if (!session || !truth || sessionRuntimeIsActive(session)) return false;
+  if ([RUNTIME_COMPLETED, RUNTIME_FAILED, 'interrupted'].includes(truth.state)) return true;
+  return truth.state === RUNTIME_IDLE && truth.confidence === CONFIDENCE_AUTHORITATIVE;
+}
+
 // Stop 先于 transcript 终态到达、画面又确实在跑 Stop hook 时，运行状态暂时保留，
 // 但必须有能结束它的真实证据（2026-09-25 审查：旧帧让会话 182 秒停在运行中）：
 //   · transcript 终态到达 → 权威完成覆盖（不经过这里）；
@@ -7285,10 +7297,8 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
   }
   else if (['tool-start', 'tool-complete', 'tool-failed', 'subagent-start', 'subagent-stop', 'task-start', 'task-complete'].includes(event)) {
     const truthBeforeActivity = s ? getSessionRuntimeTruth(s) : null;
-    const isLateStartAfterTerminal = event.endsWith('-start')
-      && truthBeforeActivity
-      && [RUNTIME_COMPLETED, RUNTIME_FAILED].includes(truthBeforeActivity.state)
-      && !sessionRuntimeIsActive(s);
+    const turnClosed = hookTurnClosed(s, truthBeforeActivity);
+    const isLateStartAfterTerminal = event.endsWith('-start') && turnClosed;
     // Hook subprocesses can finish out of order. A late PreToolUse/SubagentStart
     // from the closed turn must not resurrect an already completed/failed card;
     // the next real turn is armed by UserPromptSubmit before its tools run.
@@ -7300,7 +7310,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     if (questionText) {
       // 提问类工具一开始就是在等人：PTY 会话没有结构化请求，只能靠 PreToolUse 知道。
       onClaudeNeedsInput(sessionId, eventAt, { reason: 'pty-ask-user', text: questionText });
-    } else if (s && event === 'tool-complete' && isPtyQuestionTool(toolName)) {
+    } else if (s && event === 'tool-complete' && isPtyQuestionTool(toolName) && !turnClosed) {
       // 用户已在终端里答完，CLI 继续往下跑。
       clearSessionWaitingState(sessionId);
       observeSessionRuntime(s, { state: RUNTIME_RUNNING, source: 'pty-question-answered',
@@ -7324,7 +7334,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     errorDetails,
     lastAssistantMessage,
   });
-  else if (event === 'permission-request') onClaudeNeedsInput(sessionId, eventAt, {
+  else if (event === 'permission-request' && !hookTurnClosed(s)) onClaudeNeedsInput(sessionId, eventAt, {
     reason: 'claude-permission-request',
     text: ptyPermissionEvidence(s, toolName, toolInput)
       || (payload.provider === 'codex' ? 'Codex 等待权限确认' : 'Claude Code 等待权限确认'),

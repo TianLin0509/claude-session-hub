@@ -86,6 +86,41 @@ async function main() {
   const timeline = sid => c.eval(`(window.__ptyLog&&window.__ptyLog[${j(sid)}])||[]`);
   const resetTimeline = sid => c.eval(`(window.__ptyLog||(window.__ptyLog={}))[${j(sid)}]=[]`);
   const isRunningState = s => ['running', 'starting'].includes(s);
+  // 命令一律用 node -e "setTimeout(...)"：Claude Code 会拦下前台长 sleep、把 sleep/echo 当安全命令免授权，
+  // powershell 在部分环境的 Bash 工具里不存在；node 在两家 CLI 的 shell 里都可用。
+  // 审查（第 3 轮）：长任务里的 powershell 在 Claude 的 Bash 工具中 command not found，模型照样
+  // 回复 LONG_DONE。工具到底有没有真跑、跑了多久，只看 CLI 自己写的记录：带标记的调用与它的
+  // 输出，输出里要有标记、不能是「找不到命令」、退出码为 0，调用到输出的真实耗时不少于要求。
+  const readJsonl = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
+  const BAD_TOOL_OUTPUT = /command not found|is not recognized|not recognized as|No such file|exit code:? ?(?!0\b)\d+|exit_code\\*"?:\s*(?!0\b)\d+/i;
+  async function verifyToolRun(sid, marker, minSeconds) {
+    const st = await status(sid);
+    const file = st.transcript || (st.codexSid ? await c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(sid)},opts:{limit:1,fromTail:true}}).then(r=>r.transcriptPath||null)`) : null);
+    assert.ok(file && fs.existsSync(file), 'native record available for ' + sid);
+    const entries = readJsonl(file);
+    const tsOf = e => Date.parse(e.timestamp || e.payload?.timestamp || '') || 0;
+    // 按记录结构识别调用与输出；用户提问本身也含这条命令，不能当成调用。
+    const blocks = e => Array.isArray(e.message?.content) ? e.message.content : [];
+    const isCall = e => (e.type === 'assistant' && blocks(e).some(b => b.type === 'tool_use' && JSON.stringify(b.input || {}).includes(marker)))
+      || (e.type === 'response_item' && ['function_call', 'custom_tool_call', 'local_shell_call'].includes(e.payload?.type) && JSON.stringify(e.payload).includes(marker));
+    const isOutput = e => (e.type === 'user' && blocks(e).some(b => b.type === 'tool_result' && JSON.stringify(b).includes(marker)))
+      || (e.type === 'response_item' && ['function_call_output', 'custom_tool_call_output'].includes(e.payload?.type) && JSON.stringify(e.payload).includes(marker));
+    let call = null, output = null;
+    for (const e of entries) {
+      if (!call && isCall(e)) call = e;
+      else if (call && !output && isOutput(e)) output = { e, s: JSON.stringify(e) };
+    }
+    if (output && output.e.type === 'user') {
+      const result = blocks(output.e).find(b => b.type === 'tool_result');
+      assert.notEqual(result && result.is_error, true, 'Claude marked the tool result as an error: ' + output.s.slice(0, 300));
+    }
+    assert.ok(call, `a tool call carrying ${marker} was recorded`);
+    assert.ok(output, `the tool output carrying ${marker} was recorded`);
+    assert.ok(!BAD_TOOL_OUTPUT.test(output.s), `tool actually succeeded (no not-found / non-zero exit): ${output.s.slice(0, 300)}`);
+    const seconds = (tsOf(output.e) - tsOf(call)) / 1000;
+    assert.ok(seconds >= minSeconds, `tool really ran for >= ${minSeconds}s (recorded ${seconds.toFixed(1)}s)`);
+    return { file, seconds };
+  }
 
   // 一个场景：提交 → 记录时间线 → 等真值结束 → 判定。
   async function scenario(name, sid, fn) {
@@ -210,7 +245,7 @@ async function main() {
       });
 
       await scenario('claude-interrupt', sid, async r => {
-        const at = await send('用 Bash 工具在前台运行 `powershell -NoProfile -Command Start-Sleep 60`（不要后台运行），结束后回复 SLEPT。');
+        const at = await send(`用 Bash 工具在前台运行 \`node -e "setTimeout(()=>console.log('SLEPT_MARK'),60000)"\`（不要后台运行），结束后回复 SLEPT。`);
         await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`, 'tool started', 60000);
         await sleep(2500);
         // Claude 可能先要授权这条命令：这就是「权限确认」场景，必须显示等待而不是运行或完成。
@@ -226,13 +261,19 @@ async function main() {
         const escAt = Date.now(); await key(sid, '\x1b');
         const leftAt = await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'left running after Esc', 20000);
         r.interruptLatencyMs = leftAt - escAt;
-        await sleep(5000);
-        const st = await status(sid); r.after = st;
-        assert.ok(!isRunningState(st.truth), 'not stuck running after interrupt');
+        // R5：中断后看满 65s（覆盖被中断的 60s 旧工具结束的时刻），迟到的 hook 不能把它拉回运行。
+        const watchUntil = escAt + 65000; const seen = new Set();
+        while (Date.now() < watchUntil) { const st = await status(sid); seen.add(st.truth); await sleep(1000); }
+        r.statesAfterInterrupt = [...seen];
+        assert.ok(r.statesAfterInterrupt.every(s => !isRunningState(s)), 'stays closed for 65s after Esc: ' + r.statesAfterInterrupt);
+        // 新一轮里的工具照常驱动运行，没有被「已关闭」拦住。
+        const nextAt = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('AFTER_INTERRUPT_MARK'),3000)"\`，然后只回复 AFTER_INTERRUPT_DONE。`);
+        await expectRunsThenSettles(r, sid, nextAt);
+        r.nextTool = await verifyToolRun(sid, 'AFTER_INTERRUPT_MARK', 2.5);
       });
 
       await scenario('claude-background', sid, async r => {
-        const at = await send('用 Bash 工具以 run_in_background=true 启动命令 `powershell -NoProfile -Command "Start-Sleep 15; echo BG_READY"`，启动后立刻只回复 BG_STARTED；等后台任务完成的通知到达后，再只回复 BG_FINAL。');
+        const at = await send(`用 Bash 工具以 run_in_background=true 启动命令 \`node -e "setTimeout(()=>console.log('BG_READY_MARK'),15000)"\`，启动后立刻只回复 BG_STARTED；等后台任务完成的通知到达后，再只回复 BG_FINAL。`);
         await until(`document.querySelector('#msg-overlay')&&true`, 'x', 1000).catch(() => {});
         await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='stop'&&e.at>${at})`, 'first stop', 120000).catch(() => {});
         const mid = await status(sid); r.afterFirstStop = mid;
@@ -240,11 +281,15 @@ async function main() {
           .catch(async error => { await view('card'); await until(`document.querySelector('#msg-overlay').innerText.includes('BG_FINAL')`, 'bg final card', 60000); });
         const last = (await cards(sid)).turns.filter(t => t.role === 'assistant').at(-1); r.last = last;
         assert.match(last.text, /BG_FINAL/);
+        // 后台命令真的跑完了：CLI 记录里有 BG_READY_MARK 的输出，不能只是一条失败通知。
+        const bgRecord = readJsonl((await status(sid)).transcript).map(e => JSON.stringify(e));
+        r.bgOutputSeen = bgRecord.some(s => s.includes('BG_READY_MARK') && !s.includes('run_in_background') && !/command not found/i.test(s));
+        assert.ok(r.bgOutputSeen, 'the background command really produced BG_READY_MARK');
         await view('pty');
       });
 
       if (!SKIP_LONG) await scenario('claude-long', sid, async r => {
-        const at = await send(`用 Bash 工具在前台运行 \`powershell -NoProfile -Command Start-Sleep ${LONG_SECONDS}\`，完成后只回复 LONG_DONE。`);
+        const at = await send(`用 Bash 工具在前台运行 \`node -e "setTimeout(()=>console.log('LONG_MARK'),${LONG_SECONDS * 1000})"\`（timeout 设为 300000），完成后只回复 LONG_DONE。`);
         await until(`(window.__hookEvents||[]).some(e=>e.sid===${j(sid)}&&e.event==='tool-start'&&e.at>${at})`, 'long tool start', 60000);
         const falseDone = [];
         const end = Date.now() + (LONG_SECONDS - 10) * 1000;
@@ -252,6 +297,7 @@ async function main() {
         r.falseDone = falseDone.slice(0, 5);
         assert.equal(falseDone.length, 0, 'never left running during the long tool');
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`, 'long done', 120000);
+        r.tool = await verifyToolRun(sid, 'LONG_MARK', LONG_SECONDS - 2);
       });
 
       await scenario('claude-compact', sid, async r => {
@@ -264,6 +310,36 @@ async function main() {
         // 提交闭环最长要等 9s + 6s 才会判「未确认」；看满这个窗口，别在它出结果之前就下结论。
         await sleep(Math.max(0, sentAt + 20000 - Date.now()));
         assert.equal(await c.eval('document.querySelectorAll(".fi-stuck").length'), 0, 'no stuck submit indicator after the full acknowledgement window');
+        // 压缩真的做完了（审查：不能只看状态回落）：CLI 在记录里写下 compact_boundary。
+        const compactFile = (await status(sid)).transcript;
+        const compactDeadline = Date.now() + 180000;
+        while (Date.now() < compactDeadline && !readJsonl(compactFile).some(e => e.subtype === 'compact_boundary' && Date.parse(e.timestamp || '') >= sentAt - 1000)) await sleep(1000);
+        r.compactBoundary = readJsonl(compactFile).some(e => e.subtype === 'compact_boundary' && Date.parse(e.timestamp || '') >= sentAt - 1000);
+        assert.ok(r.compactBoundary, 'Claude recorded a compact_boundary for this /compact');
+        const afterCompact = await status(sid);
+        assert.ok(!isRunningState(afterCompact.truth), 'settled after the real compaction finished: ' + afterCompact.truth);
+      });
+
+      // R6：/compact 还在处理时提交 /clear（CLI 会把 /clear 排到压缩结束后才执行，确认常晚于期限）。
+      // 身份切换后，对应的「补发」提示必须收回；新身份的回答进卡片。
+      await scenario('claude-clear-during-compact', sid, async r => {
+        r.before = await status(sid);
+        await send('/compact');
+        await sleep(1500);
+        const clearAt = await send('/clear');
+        await until(`(sessions.get(${j(sid)})?.ccSessionId||'')!==${j(r.before.cc)}`, 'identity follows the queued /clear', 240000);
+        r.identitySwitchMs = Date.now() - clearAt;
+        r.afterClear = await status(sid);
+        await sleep(3000);
+        assert.equal(await c.eval(`document.querySelectorAll('.floating-input-bar[data-session-id="${sid}"] .fi-stuck').length`), 0,
+          `no resend prompt once the late /clear is confirmed (switch took ${r.identitySwitchMs}ms)`);
+        const at = await send('不要调用任何工具，只回复 AFTER_QUEUED_CLEAR_OK。');
+        await expectRunsThenSettles(r, sid, at);
+        await view('card');
+        await until(`document.querySelector('#msg-overlay').innerText.includes('AFTER_QUEUED_CLEAR_OK')`, 'card shows the post-clear answer', 20000);
+        assert.ok(fs.readFileSync(r.afterClear.transcript, 'utf8').includes('AFTER_QUEUED_CLEAR_OK'), 'answer lives in the new transcript');
+        await snap('claude-clear-during-compact-card');
+        await view('pty');
       });
 
       // /clear 换原生身份：Hub 必须跟随（SessionEnd(旧, clear) → SessionStart(新, clear)），
@@ -316,7 +392,7 @@ async function main() {
         await until(`(()=>{const t=terminalCache.get(${j(psid)})?.terminal;if(!t)return false;const b=t.buffer.active;let s='';for(let i=0;i<b.length;i++){s+=b.getLine(i)?.translateToString(true)+'\\n';}return /❯/.test(s);})()`, 'perm tui ready', 90000);
         await sleep(1500);
         r.startupPrompt = await dismissClaudeStartupPrompt(psid);
-        const at = await send('用 Bash 工具运行 `powershell -NoProfile -Command "Start-Sleep 5; echo PERM_OK"`，然后只回复 PERM_DONE。');
+        const at = await send(`用 Bash 工具运行 \`node -e "setTimeout(()=>console.log('PERM_OK_MARK'),5000)"\`，然后只回复 PERM_DONE。`);
         await until(`getSessionRuntimeTruth(sessions.get(${j(psid)})).state==='waiting'`, 'waiting for permission', 90000);
         r.waitLatencyMs = Date.now() - at;
         const st = await status(psid); r.waiting = st;
@@ -340,6 +416,7 @@ async function main() {
         const settled = await status(psid);
         assert.equal(settled.unread, 1, 'exactly one unread for the unfocused completion');
         r.settled = settled;
+        r.tool = await verifyToolRun(psid, 'PERM_OK_MARK', 4);
         r.timeline = await timeline(psid);
       });
       await snap('claude-final');
@@ -392,18 +469,25 @@ async function main() {
       });
 
       await scenario('codex-interrupt', sid, async r => {
-        const at = await send('执行 shell 命令 `powershell -NoProfile -Command Start-Sleep 60`（前台等待它结束），然后回复 SLEPT。');
+        const at = await send(`执行 shell 命令 \`node -e "setTimeout(()=>console.log('CODEX_SLEPT_MARK'),60000)"\`（前台等待它结束），然后回复 SLEPT。`);
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='running'`, 'running', 30000);
         await sleep(8000);
         const escAt = Date.now(); await key(sid, '\x1b');
         const leftAt = await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'left running after Esc', 20000);
         r.interruptLatencyMs = leftAt - escAt;
-        await sleep(5000); r.after = await status(sid);
-        assert.ok(!isRunningState(r.after.truth), 'not stuck running');
+        // R5：中断后看满 65s（覆盖被中断的 60s 旧命令结束、迟到的 tool-start / tool-complete），不能复活。
+        const watchUntil = escAt + 65000; const seen = new Set();
+        while (Date.now() < watchUntil) { const st = await status(sid); seen.add(st.truth); await sleep(1000); }
+        r.statesAfterInterrupt = [...seen]; r.after = await status(sid);
+        assert.ok(r.statesAfterInterrupt.every(x => !isRunningState(x)), 'stays closed for 65s after Esc: ' + r.statesAfterInterrupt);
+        // 新一轮里的命令照常驱动运行。
+        const nextAt = await send(`执行 shell 命令 \`node -e "setTimeout(()=>console.log('CODEX_AFTER_ABORT_MARK'),3000)"\`，然后只回复 AFTER_ABORT_DONE。`);
+        await expectRunsThenSettles(r, sid, nextAt);
+        r.nextTool = await verifyToolRun(sid, 'CODEX_AFTER_ABORT_MARK', 2.5);
       });
 
       if (!SKIP_LONG) await scenario('codex-long', sid, async r => {
-        const at = await send(`执行 shell 命令 \`powershell -NoProfile -Command Start-Sleep ${LONG_SECONDS}\`（前台等待它结束），完成后只回复 LONG_DONE。`);
+        const at = await send(`执行 shell 命令 \`node -e "setTimeout(()=>console.log('CODEX_LONG_MARK'),${LONG_SECONDS * 1000})"\`（前台等待它结束，超时设为 300 秒），完成后只回复 LONG_DONE。`);
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='running'`, 'running', 30000);
         await sleep(15000);
         const falseDone = [];
@@ -412,14 +496,23 @@ async function main() {
         r.falseDone = falseDone.slice(0, 5);
         assert.equal(falseDone.length, 0, 'never left running during the long command');
         await until(`getSessionRuntimeTruth(sessions.get(${j(sid)})).state==='completed'`, 'long done', 180000);
+        r.tool = await verifyToolRun(sid, 'CODEX_LONG_MARK', LONG_SECONDS - 2);
       });
 
       await scenario('codex-compact', sid, async r => {
-        await send('/compact');
+        const sentAt = await send('/compact');
         await sleep(3000);
         await until(`!['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(sid)})).state)`, 'compact settles', 180000);
         await sleep(3000); r.after = await status(sid);
         assert.ok(!isRunningState(r.after.truth));
+        // 压缩真的做完了：rollout 里有这次 /compact 之后的压缩记录。
+        const rollout = r.after.transcript;
+        const isCompacted = e => (e.type === 'compacted' || e.payload?.type === 'context_compacted' || e.payload?.type === 'compacted') && Date.parse(e.timestamp || '') >= sentAt - 1000;
+        const deadline = Date.now() + 120000;
+        while (Date.now() < deadline && !readJsonl(rollout).some(isCompacted)) await sleep(1000);
+        r.compactedRecord = readJsonl(rollout).some(isCompacted);
+        r.rolloutTypes = [...new Set(readJsonl(rollout).filter(e => Date.parse(e.timestamp || '') >= sentAt - 1000).map(e => e.type + ':' + (e.payload?.type || '')))];
+        assert.ok(r.compactedRecord, 'Codex recorded the compaction: ' + r.rolloutTypes);
       });
 
       // 串线：同 cwd 同时起两个 Codex，各自的卡片只能是自己的回答。
