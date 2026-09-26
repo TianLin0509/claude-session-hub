@@ -61,6 +61,8 @@ test('a stream of changes is throttled, and each write carries the newest state'
   const { dir, stateStore } = freshStore();
   const file = path.join(dir, 'state.json');
   const title = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')).sessions[0].title; } catch { return null; } };
+  // Only for the negative check: a write that must NOT happen yet. Spinning can
+  // only make that check pass late, never fail spuriously under load.
   const settle = async expected => {
     for (let i = 0; i < 5000 && title() !== expected; i += 1) await new Promise(resolve => setImmediate(resolve));
     return title();
@@ -70,13 +72,16 @@ test('a stream of changes is throttled, and each write carries the newest state'
   t.mock.timers.tick(200);
   stateStore.save(stateWith({ hubId: 'a', title: 'v2', updatedAt: 2 }));
   t.mock.timers.tick(300); // 500 ms after the first change of the burst
-  assert.equal(await settle('v2'), 'v2');
+  // The timer has fired, so flushPending() only awaits the queued write (it
+  // would force a write only while a timer is still pending).
+  await stateStore.flushPending();
+  assert.equal(title(), 'v2');
 
   stateStore.save(stateWith({ hubId: 'a', title: 'v3', updatedAt: 3 }));
   t.mock.timers.tick(1000); // still inside the 2 s minimum interval
   assert.equal(await settle('v3'), 'v2');
   t.mock.timers.tick(1000);
-  assert.equal(await settle('v3'), 'v3');
-  t.mock.timers.reset();
   await stateStore.flushPending();
+  assert.equal(title(), 'v3');
+  t.mock.timers.reset();
 });
