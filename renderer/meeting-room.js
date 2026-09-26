@@ -1250,7 +1250,7 @@ if (typeof document !== 'undefined') (function () {
   function _setMeetingInputText(meetingId, text) {
     const input = document.getElementById('mr-input-box');
     if (!input) return;
-    input.textContent = text || '';
+    _renderComposerRaw(input, text || '');
     _setInputDraft(meetingId, text || '');
     _updateInputPreflight(meetingData[meetingId]);
     input.focus();
@@ -3409,8 +3409,8 @@ if (typeof document !== 'undefined') (function () {
         const fullLabel = (labelEl?.textContent || f2Kind || '').trim();
         const cleanLabel = fullLabel.replace(/^[^A-Za-z0-9_一-鿿]+/, '');
         const shortLabel = cleanLabel.split(/[·\s]/)[0] || f2Kind || '';
-        const cur = input.textContent || '';
-        input.textContent = (cur && !cur.endsWith(' ') ? cur + ' ' : cur) + `@${shortLabel} `;
+        const cur = input.innerText || '';
+        _renderComposerRaw(input, (cur && !cur.endsWith(' ') ? cur + ' ' : cur) + `@${shortLabel} `);
         input.focus();
         if (typeof _placeCaretAtEnd === 'function') _placeCaretAtEnd(input);
       }
@@ -4995,9 +4995,28 @@ if (typeof document !== 'undefined') (function () {
 
   // 2026-07-20 道雪 [修#10]：草稿落盘 debounce 500ms——此前每击键全量 JSON.stringify 写 localStorage
   const _inputDraftWriteTimers = {};
+
+  // 群聊输入框的长文本粘贴块（与会话输入框同一套，见 composer-paste-chips.js）。
+  // 「原始文本」= 输入框 innerText，粘贴块在里面是内部标记；写回输入框一律走 _renderComposerRaw
+  // 把标记还原成块 —— 直接赋 textContent 会把块变成一串可见的 id。发送和交给外部的文字才展开。
+  // 持久化草稿存展开后的原文（标记跨重启无意义）；内存里另记原始文本，切回群聊时按原样还原块。
+  const _pasteChips = require('./composer-paste-chips.js');
+  const _rawDraftByMeeting = {};
+  function _renderComposerRaw(el, raw) {
+    _pasteChips.renderComposerValue(el, raw, { document });
+  }
+  function _restoreDraftIntoInput(meetingId, inp) {
+    const text = _inputDraftByMeeting[meetingId] || '';
+    const raw = _rawDraftByMeeting[meetingId];
+    _renderComposerRaw(inp, raw && raw.text === text ? raw.raw : text);
+  }
+
   function _setInputDraft(meetingId, text) {
     if (!meetingId) return;
-    const normalized = String(text || '');
+    const raw = String(text || '');
+    const normalized = _pasteChips.expandPasteMarkers(raw);
+    if (_pasteChips.hasPasteMarkers(raw)) _rawDraftByMeeting[meetingId] = { raw, text: normalized };
+    else delete _rawDraftByMeeting[meetingId];
     if (normalized.trim()) _inputDraftByMeeting[meetingId] = normalized;
     else delete _inputDraftByMeeting[meetingId];
     clearTimeout(_inputDraftWriteTimers[meetingId]);
@@ -5012,6 +5031,7 @@ if (typeof document !== 'undefined') (function () {
     clearTimeout(_inputDraftWriteTimers[meetingId]);
     delete _inputDraftWriteTimers[meetingId];
     delete _inputDraftByMeeting[meetingId];
+    delete _rawDraftByMeeting[meetingId];
     _writeJsonStorage(_INPUT_DRAFTS_STORAGE_KEY, _inputDraftByMeeting);
   }
 
@@ -5233,10 +5253,9 @@ if (typeof document !== 'undefined') (function () {
               if (activeMeetingId !== meetingId || !inputBox.isConnected) return false;
               const incoming = String(content || '').trim();
               if (!incoming) return false;
-              const current = readContenteditablePlainText(inputBox);
-              const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
-              replaceContenteditableText(inputBox, `${current}${separator}${incoming}`);
-              _setInputDraft(meetingId, readContenteditablePlainText(inputBox));
+              // 末尾追加而非整框替换：已有粘贴块保持原样（见 renderer.js appendToContenteditable）。
+              appendToContenteditable(inputBox, incoming);
+              _setInputDraft(meetingId, inputBox.innerText || '');
               inputBox.dispatchEvent(new Event('input', { bubbles: true }));
               inputBox.focus(); placeCaretAtContenteditableEnd(inputBox);
               return true;
@@ -5298,9 +5317,14 @@ if (typeof document !== 'undefined') (function () {
     btn.title = count ? `最近输入 (${count})` : '最近输入为空';
   }
 
+  // 原始文本：粘贴块是内部标记，用于改写后再经 _renderComposerRaw 写回（保住块）。
   function _getInputRawText() {
     const input = document.getElementById('mr-input-box');
     return input ? (input.innerText || input.textContent || '') : '';
+  }
+  // 展开后的原文：字数统计、放大编辑这类面向「内容本身」的地方用它。
+  function _getInputText() {
+    return _pasteChips.expandPasteMarkers(_getInputRawText());
   }
 
   function _renderInputChip(label, value, cls = '') {
@@ -5370,7 +5394,7 @@ if (typeof document !== 'undefined') (function () {
     row.querySelector('[data-file-prep]')?.addEventListener('click', () => {
       const box = document.getElementById('mr-input-box');
       if (!box || activeMeetingId !== current.id) return;
-      box.textContent = DevFile.appendProjectPrep(box.innerText);
+      _renderComposerRaw(box, DevFile.appendProjectPrep(box.innerText));
       _setInputDraft(current.id, box.innerText);
       box.dispatchEvent(new Event('input', { bubbles: true }));
       box.focus();
@@ -5400,7 +5424,7 @@ if (typeof document !== 'undefined') (function () {
         const fresh = await _setMeetingParticipants(meetingData[current.id] || current, [preset.slot]);
         const box = document.getElementById('mr-input-box');
         if (!box || activeMeetingId !== current.id) return;
-        box.textContent = DevFile.appendKickoff(box.innerText, preset.prompt);
+        _renderComposerRaw(box, DevFile.appendKickoff(box.innerText, preset.prompt));
         _setInputDraft(current.id, box.innerText);
         box.dispatchEvent(new Event('input', { bubbles: true }));
         renderToolbar(fresh);
@@ -5428,7 +5452,7 @@ if (typeof document !== 'undefined') (function () {
       _updateInputHistoryButton(current);
       return;
     }
-    const raw = _getInputRawText();
+    const raw = _getInputText();
     const charCount = raw.length;
     const chips = [];
     let panelTitle = '发送检查';
@@ -5833,7 +5857,7 @@ if (typeof document !== 'undefined') (function () {
     const onKeydown = (ev) => {
       if (ev.key === 'Escape') close();
     };
-    textarea.value = _getInputRawText();
+    textarea.value = _getInputText();
     updateCount();
     textarea.addEventListener('input', updateCount);
     overlay.querySelectorAll('[data-action]').forEach(btn => {
@@ -5962,7 +5986,7 @@ if (typeof document !== 'undefined') (function () {
     const merged = mergedWithDraft ? `${restoredText}\n\n${existingDraft}` : (existingDraft || restoredText);
     _setInputDraft(meetingId, merged);
     if (inp) {
-      inp.textContent = merged;
+      _renderComposerRaw(inp, merged);
       _placeCaretAtEnd(inp);
     }
     return { restored: true, mergedWithDraft };
@@ -5978,7 +6002,7 @@ if (typeof document !== 'undefined') (function () {
   function _restoreInputDraft(meetingId) {
     const inp = document.getElementById('mr-input-box');
     if (!inp) return;
-    inp.textContent = _inputDraftByMeeting[meetingId] || '';
+    _restoreDraftIntoInput(meetingId, inp);
     _updateInputPreflight(meetingData[meetingId]);
   }
 
@@ -6925,7 +6949,8 @@ if (typeof document !== 'undefined') (function () {
     const suffix = match.text.slice(match.caret);
     const spacer = suffix.startsWith(' ') || suffix.length === 0 ? '' : ' ';
     const inserted = `${item.value} `;
-    inputBox.textContent = match.text.slice(0, match.start) + inserted + spacer + suffix;
+    if (inputBox.id === 'mr-input-box') _renderComposerRaw(inputBox, match.text.slice(0, match.start) + inserted + spacer + suffix);
+    else inputBox.textContent = match.text.slice(0, match.start) + inserted + spacer + suffix;
     inputBox.focus();
     _placeCaretAtTextOffset(inputBox, match.start + inserted.length);
     _hideGcMentionMenu();
@@ -7091,8 +7116,10 @@ if (typeof document !== 'undefined') (function () {
     // 卡片优化（2026-05-03 道雪）：粘贴图片支持。绑一次（idempotent guard 在 helper 内）。
     //   helper 由 renderer.js 暴露为 window.attachContenteditablePasteImage（先于 meeting-room.js 加载）。
     if (typeof window.attachContenteditablePasteImage === 'function') {
-      window.attachContenteditablePasteImage(inputBox);
+      // 长文本收成粘贴块：本文件读写输入框的地方已按「原始文本 / 展开原文」收口。
+      window.attachContenteditablePasteImage(inputBox, { collapseLongText: true });
     }
+    _pasteChips.attachPasteChipBehaviors(inputBox, { document, window });
     _ensureInputPreflightRow();
     _ensureInputTools(meeting);
     _renderHeroDock(meeting);
@@ -7125,7 +7152,7 @@ if (typeof document !== 'undefined') (function () {
     _inputBound = true;
     // IF-C2：仅首次绑定时设内容（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）。
     // 2026-05-05 道雪：从清空改为按 meeting.id 恢复草稿 — 切换不同 AI 群聊时各自独立。
-    inputBox.textContent = _inputDraftByMeeting[meeting.id] || '';
+    _restoreDraftIntoInput(meeting.id, inputBox);
     _updateInputPreflight(meeting);
 
     if (targetSelect) {
@@ -7142,7 +7169,8 @@ if (typeof document !== 'undefined') (function () {
 
     const doSend = () => {
       const box = document.getElementById('mr-input-box');
-      const userText = box ? box.innerText.trim() : '';
+      // 粘贴块在这里展开成原文：发给 AI 的必须是完整内容。
+      const userText = box ? readContenteditablePlainText(box).trim() : '';
       // F6 Phase 3: 既无 text 又无 quote chips → 不发
       if (!userText && _gcQuoteChips.length === 0) return;
       const mid = activeMeetingId;
