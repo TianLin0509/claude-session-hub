@@ -45,7 +45,51 @@ assert.match(renderer, /createClipboardController\(\{[^}]*expandText: pasteChips
 const sendStart = renderer.indexOf('function sendInput()');
 assert.ok(sendStart > 0);
 assert.match(renderer.slice(sendStart, sendStart + 200), /const userText = readContenteditablePlainText\(inputBox\);/);
+// 群聊输入框也开启了粘贴块（2026-09-26）。它的前提是：发送读展开后的原文，写回输入框一律经
+// _renderComposerRaw（直接赋 textContent 会把块变成一串可见的 id）。
 const meetingRoom = readSource('renderer', 'meeting-room.js');
-assert.ok(!/collapseLongText/.test(meetingRoom), 'group chat composer reads innerText directly; it must not get chips yet');
+assert.match(meetingRoom, /attachContenteditablePasteImage\(inputBox, \{ collapseLongText: true \}\)/);
+assert.match(meetingRoom, /const userText = box \? readContenteditablePlainText\(box\)\.trim\(\) : '';/, 'group send must expand chips');
+const rawWrites = meetingRoom.split('\n').filter(line => /\b(input|inp|box|inputBox)\.textContent = (?!''|q;)/.test(line));
+assert.deepStrictEqual(rawWrites.map(line => line.trim()),
+  ["else inputBox.textContent = match.text.slice(0, match.start) + inserted + spacer + suffix;"],
+  'only the non-group mention path may assign textContent directly; group composer writes go through _renderComposerRaw');
+
+// renderComposerValue：标记还原成块；大段纯文本整段收块；小段纯文本原样。用最小 DOM 替身验证。
+function fakeDocument() {
+  const make = (tag, text) => {
+    const node = { tagName: tag, nodeType: tag ? 1 : 3, children: [], dataset: {}, className: '', contentEditable: 'inherit',
+      appendChild(child) { this.children.push(child); return child; } };
+    Object.defineProperty(node, 'textContent', {
+      get() { return tag ? this.children.map(c => c.textContent).join('') : text; },
+      set(value) { if (tag) { this.children = value ? [make(null, String(value))] : []; } else { text = String(value); } },
+    });
+    return node;
+  };
+  return { createElement: tag => make(tag.toUpperCase()), createTextNode: text => make(null, text), make };
+}
+{
+  const document = fakeDocument();
+  const box = document.createElement('div');
+  const idA = chips.registerPaste('甲\n乙');
+  chips.renderComposerValue(box, `前${chips.MARK_START}${idA}${chips.MARK_END}后`, { document });
+  assert.deepStrictEqual(box.children.map(c => c.tagName || 'text'), ['text', 'SPAN', 'text']);
+  assert.strictEqual(box.children[1].className, 'fi-paste-chip');
+  assert.strictEqual(box.children[1].contentEditable, 'false');
+  assert.strictEqual(chips.expandPasteMarkers(box.textContent), '前甲\n乙后');
+
+  const big = Array(250).fill('长行').join('\n');
+  chips.renderComposerValue(box, big, { document });
+  assert.deepStrictEqual(box.children.map(c => c.tagName || 'text'), ['SPAN'], 'large plain text becomes one chip');
+  assert.strictEqual(chips.expandPasteMarkers(box.textContent), big, 'and still expands to the exact text');
+  assert.match(box.children[0].dataset.label, /250 行/);
+
+  chips.renderComposerValue(box, '短句\n第二行', { document });
+  assert.deepStrictEqual(box.children.map(c => c.tagName || 'text'), ['text'], 'small plain text stays editable text');
+  assert.strictEqual(box.textContent, '短句\n第二行');
+
+  chips.renderComposerValue(box, `${chips.MARK_START}pgone${chips.MARK_END}`, { document });
+  assert.strictEqual(box.textContent, '[粘贴内容已丢失]', 'a lost chip renders visibly');
+}
 
 console.log('unit-composer-paste-chips: all passed');
