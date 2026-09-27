@@ -154,6 +154,8 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
   jsonMcp(home('.kimi-code','mcp.json'),'kimi','user');
   jsonMcp(home('.gemini','settings.json'),'gemini','user');
   jsonMcp(home('.qwen','settings.json'),'qwen','user');
+  // Skill-invoked MCPs are real dependencies too, even when no native CLI loads them.
+  jsonMcp(home('.mcporter','mcporter.json'),'external','user');
   const enabled = json(home('.claude','settings.json')).enabledPlugins || {};
   const installed = json(home('.claude','plugins','installed_plugins.json')).plugins || {};
   for (const name of new Set([...Object.keys(enabled),...Object.keys(installed)])) {
@@ -188,7 +190,9 @@ function collectCapabilities({ homeDir, dataDir, projects = [] }) {
       }
     }
   }
-  const decorated=[...rows.values()].map(r=>presentation({...r,
+  const allRows = [...rows.values()];
+  const decorated=allRows.map(r=>presentation({...r,
+    accountDependency: require('./tool-account-catalog').dependencyFor(r, allRows),
     shared:r.sources.some(s=>s.scope==='shared'), conflict:r.type==='skill' && new Set(r.sources.map(s=>s.hash).filter(Boolean)).size>1,
     agents:[...new Set(r.sources.map(s=>s.agent))]},json(notePath(dataDir,r.id))));
   return {generatedAt:Date.now(),warnings:[...new Set(warnings)],agents:ALL_AI_KINDS.map(id=>({id,label:getKindLabel(id)})),rows:decorated.sort((a,b)=>a.name.localeCompare(b.name))};

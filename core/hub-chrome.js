@@ -82,8 +82,10 @@ class HubChrome {
     return found;
   }
   site(key) {
-    if (!SITES[key]) throw new Error('未知的网站：' + key);
-    return SITES[key];
+    if (Object.hasOwn(SITES, key)) return SITES[key];
+    const { EXTERNAL_SITES, externalSite } = require('./external-accounts');
+    if (Object.hasOwn(EXTERNAL_SITES, key)) return externalSite(key);
+    throw new Error('未知的网站：' + key);
   }
   async lifecycle(fn) {
     const { acquire } = require('./web-roundtable/store');
@@ -448,7 +450,7 @@ class HubChrome {
     this.assertAvailable();
     const identity = this.identity(identityId);
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
-    for (const k of keys) if (!identity.sites.includes(k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
+    for (const k of keys) if (!identity.sites.includes(k) && !Object.hasOwn(require('./external-accounts').EXTERNAL_SITES, k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
     const urls = keys.map(k => this.site(k).url);
     if ((await this.owners()).some(o => o.automated)) {
       const busy = await this.workTabs();

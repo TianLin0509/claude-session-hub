@@ -1,9 +1,11 @@
 'use strict';
 const { companyCards, attentionCount } = require('./account-center-view');
+const { toolAccountsHtml } = require('./tool-accounts-view');
 function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, configModal, closeOtherPanels = () => {} }) {
   const page = document.getElementById('account-page'), body = page.querySelector('.ac-content');
   let state = null, signature = '', view = 'list', error = '', notice = '', busy = '', timer, previousFocus, epoch = 0, request = 0;
   let toolGroups = null;
+  let toolAccounts = null, toolAccountsError = '', toolAccountsFlight = null;
   const toolChoices = {};
   const checking = () => state?.progress?.status === 'running';
   async function call(action, args) {
@@ -14,7 +16,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   function renderStatus() {
     const el = page.querySelector('.ac-status'), text = error || notice;
     el.textContent = text; el.hidden = !text; el.classList.toggle('error', !!error);
-    for (const b of page.querySelectorAll('[data-ac="check"],[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"]')) b.disabled = !!busy || checking() || state?.setupProgress?.status === 'running';
+    for (const b of page.querySelectorAll('[data-ac="check"],[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"],[data-ac="external"]')) b.disabled = !!busy || checking() || state?.setupProgress?.status === 'running';
     const b = page.querySelector('.ac-head-actions [data-ac="check"]');
     b.textContent = checking() ? '正在检查…' : '检查全部登录';
   }
@@ -72,7 +74,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     ${progressHtml()}<div class="ac-section-heading"><h2>AI 公司与账号</h2><span>选账号，直接打开网页 <span class="ac-key-hint">· Alt + 1–7</span></span></div>
     <div class="ac-companies">${companyCards(state).map(cardHtml).join('')}</div>
     <section class="ac-tools"><div><h2>网页工具连接</h2><p>登录资料统一保留在专属 Chrome，各工具使用自己的任务页面。</p></div><div class="ac-tool-list"><span>网页圆桌 <b>共用专属 Chrome</b></span>${(state.tools || []).map(t => `<span>${esc(t.name)} <b class="${t.state === 'connected' ? '' : 'warn'}">${t.state === 'connected' ? '已接入' : t.state === 'changed' ? '接入配置已变化' : '待接入'}</b></span>`).join('')}</div><p class="ac-tool-help">待接入的工具需完成浏览器绑定，避免在另一份浏览器里重复登录。</p></section>
-    ${toolsHtml()}<p class="ac-evidence">“有登录记录”与“上次已登录”来自本机记录；本次官网确认后才显示“已登录”。快捷键仅在此页生效。</p>`;
+    ${toolsHtml()}<section class="ac-tool-account-section">${toolAccountsHtml(toolAccounts, esc, toolAccountsError)}</section><p class="ac-evidence">“有登录记录”与“上次已登录”来自本机记录；本次官网确认后才显示“已登录”。快捷键仅在此页生效。</p>`;
     for (const d of body.querySelectorAll('details')) d.open = expanded.includes(d.dataset.details);
     renderStatus();
   }
@@ -82,6 +84,12 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     const top = body.scrollTop, focus = page.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
     state = next; signature = sig; render();
     if (focus && Object.keys(focus).length) [...page.querySelectorAll('button')].find(b => Object.entries(focus).every(([k, v]) => b.dataset[k] === v))?.focus({ preventScroll: true });
+    body.scrollTop = top;
+  }
+  function renderTools() {
+    const top = body.scrollTop, focus = page.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+    render();
+    if (focus && Object.keys(focus).length) [...page.querySelectorAll('button,select')].find(b => Object.entries(focus).every(([k, v]) => b.dataset[k] === v))?.focus({ preventScroll: true });
     body.scrollTop = top;
   }
   function position() {
@@ -94,19 +102,34 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   }
   async function refresh() {
     const ticket = epoch, seq = ++request;
-    try { const next = await call('state'); if (ticket === epoch && seq === request && !page.hidden) apply(next); }
+    try { const next = await call('state'); if (ticket === epoch && seq === request && !page.hidden) {
+      const newlyConnected = next.setupProgress?.status === 'complete' && state?.setupProgress?.status !== 'complete';
+      apply(next); if (newlyConnected) void refreshToolAccounts();
+    } }
     catch (e) { if (ticket === epoch && !page.hidden) { error = e.message; renderStatus(); } }
     finally { schedule(); }
+  }
+  async function refreshToolAccounts(force = false) {
+    if (toolAccountsFlight) return toolAccountsFlight;
+    const ticket = epoch;
+    toolAccountsError = '';
+    toolAccountsFlight = call('tool-accounts', { refresh: force }).then(data => {
+      if (ticket === epoch && !page.hidden) { toolAccounts = data; renderTools(); }
+    }).catch(e => { if (ticket === epoch && !page.hidden) { toolAccountsError = e.message; renderTools(); } })
+      .finally(() => { toolAccountsFlight = null; if (ticket !== epoch && !page.hidden) void refreshToolAccounts(); });
+    return toolAccountsFlight;
   }
   async function action(name, args) {
     if (busy) return;
     busy = name; error = ''; notice = ''; renderStatus();
+    if (name === 'external') { notice = args.action === 'check' ? '正在联系 GitHub 检查授权…' : '正在打开官方入口…'; renderStatus(); }
     const ticket = epoch; ++request;
     try {
       const result = await call(name, args);
       if (ticket !== epoch) return;
       if (name === 'tools') { toolGroups = result.groups; if (!toolGroups.length) notice = '未发现需要接入的生图或中转工具'; render(); }
       else if (name === 'tools-connect') { state.setupProgress = result; render(); }
+      else if (name === 'external') { notice = result.message; await refreshToolAccounts(); }
       else if (name === 'open' || name === 'login') { notice = result.message; await refresh(); }
       else apply(result);
     } catch (e) { if (ticket === epoch) error = e.message; }
@@ -141,6 +164,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     page.hidden = false; document.body.classList.add('accounts-open');
     document.getElementById('btn-rail-accounts')?.setAttribute('aria-expanded', 'true');
     view = 'list'; error = ''; notice = ''; render(); await refresh();
+    void refreshToolAccounts();
     if (provider && !page.hidden) await configure(provider);
   }
   page.addEventListener('click', e => {
@@ -156,6 +180,8 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'authorize') void authorize(b.dataset.id);
     else if (a === 'config') void configure(b.dataset.id);
     else if (a === 'tools') void action('tools');
+    else if (a === 'external') void action('external', { service: b.dataset.service, action: b.dataset.operation });
+    else if (a === 'tool-accounts-refresh') void refreshToolAccounts(true);
     else if (a === 'tools-connect') {
       const choices = Object.fromEntries(Object.entries(toolChoices).filter(([, value]) => value));
       if (!Object.keys(choices).length) { error = '请先选择工具对应的 ChatGPT 账号'; renderStatus(); }

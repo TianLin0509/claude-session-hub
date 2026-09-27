@@ -38,6 +38,8 @@ test('MCP initialize, discovery, provider isolation and tool errors run over rea
   const c=await new Client([path.resolve(__dirname,'../core/web-roundtable/provider-server.js'),'deepseek']).init();try{
     const listed=await c.request('tools/list');assert.ok(listed.tools.some(t=>t.name==='web_ask'));assert.ok(listed.tools.some(t=>t.name==='web_collect'));
     const status=await c.call('web_status');assert.equal(status.provider,'deepseek');assert.equal(status.authentication,'not_checked');
+    assert.equal(status.identity,'main');assert.equal(status.loginSource,'ai-hub-accounts');
+    assert.equal(status.profile,path.join(require('../core/hub-chrome').defaultRoot(),'main'));
     store.write('foreign',{kind:'web',state:'succeeded',input:{provider:'kimi'}});await assert.rejects(c.call('web_get',{task_id:'foreign'}),/another MCP/);
     await assert.rejects(c.call('web_ask',{request_id:'bad',prompt:''}),/1\.\.40000/);
   }finally{c.close();await new Promise(r=>c.child.once('exit',r));}

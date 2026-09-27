@@ -4,6 +4,8 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+import subprocess
+import sys
 from contextlib import contextmanager
 
 
@@ -26,6 +28,22 @@ setup_spec.loader.exec_module(setup)
 
 
 class MigrationTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows byte locks')
+    def test_zero_byte_worker_lock_is_busy_without_writing_into_owned_range(self):
+        file = self.root / 'worker-empty.lock'
+        script = "import msvcrt,sys; f=open(sys.argv[1],'a+b'); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); print('ready',flush=True); sys.stdin.readline(); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()"
+        child = subprocess.Popen([sys.executable, '-c', script, str(file)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), 'ready')
+            with self.assertRaisesRegex(RuntimeError, 'Tool is still running'):
+                with m.lock(file):
+                    self.fail('must not acquire a live worker lock')
+            self.assertEqual(file.stat().st_size, 0)
+        finally:
+            child.communicate('\n', timeout=5)
+        with m.lock(file):
+            self.assertEqual(file.stat().st_size, 0)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='hub-tool-migration-')
         self.addCleanup(self.tmp.cleanup)

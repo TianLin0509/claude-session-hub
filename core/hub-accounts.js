@@ -7,13 +7,42 @@ const { inspectAccounts } = require('./hub-login-check');
 const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'deepseek', doubao: 'doubao', kimi: 'kimi', qwen: 'qwen' };
 
 class HubAccounts {
-  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts } = {}) {
+  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts, getToolCatalog } = {}) {
     this.chrome = hubChrome || new HubChrome({ env });
-    Object.assign(this, { getConfig, env, recovery, now, inspect });
+    Object.assign(this, { getConfig, env, recovery, now, inspect, getToolCatalog });
     this.checking = null; this.progress = null; this.lastState = null;
     this.setup = new (require('./hub-browser-setup').HubBrowserSetup)({ root: this.chrome.root, env });
   }
   cacheFile() { return path.join(this.chrome.root, 'last-check.json'); }
+  async toolAccounts(refresh = false) {
+    if (!this.getToolCatalog) throw Error('工具目录服务未连接，请重新打开新版 Hub');
+    const catalog = await this.getToolCatalog(refresh);
+    return require('./tool-accounts').buildToolAccounts(catalog, { root: this.chrome.root,
+      homeDir: this.env.CLAUDE_HUB_HOME_DIR || require('os').homedir(), env: this.env });
+  }
+  async external({ service, action }) {
+    if (!['github', 'yuque'].includes(service)) throw Error('外部服务标识无效');
+    const external = require('./external-accounts'); external.externalSite(service);
+    if (!['open', 'check', 'authorize'].includes(action)) throw Error('外部账号操作无效');
+    if (this.checking || this.startingCheck || this.setup.flight) throw Error('请等待账号检查或工具接入完成');
+    if (action !== 'open' && service !== 'github') throw Error('此服务请在专属 Chrome 中确认登录');
+    const fixture = this.fixture();
+    if (fixture?.recordOpens) {
+      fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'external-open.jsonl'), JSON.stringify({ service, action, identity: 'main' }) + '\n');
+      if (action === 'check') external.writeExternalState(this.chrome.root, service, { state: 'signed_in', account: 'fixture-github', source: 'fixture', checkedAt: this.now() });
+    } else if (action === 'open') await this.chrome.openWebsite('main', service);
+    else if (action === 'check') {
+      const isolated = this.env.CLAUDE_HUB_HOME_DIR || this.env.CLAUDE_HUB_DATA_DIR;
+      if (isolated) throw Error('隔离实例不会核对或修改真实 GitHub 授权');
+      external.writeExternalState(this.chrome.root, service, await external.githubStatus(this.env));
+    } else {
+      if (this.env.CLAUDE_HUB_HOME_DIR || this.env.CLAUDE_HUB_DATA_DIR) throw Error('隔离实例不会启动真实 GitHub 授权');
+      const browser = '"' + process.execPath + '" "' + path.resolve(__dirname, '../scripts/open-hub-github-auth.js') + '"';
+      await require('./account-adapters').openTerminal(external.githubCommand(this.env), ['auth', 'login', '--hostname', 'github.com', '--web', '--git-protocol', 'https', '--skip-ssh-key'],
+        { ...this.env, GH_BROWSER: browser, ELECTRON_RUN_AS_NODE: '1' });
+    }
+    return { message: action === 'check' ? 'GitHub 授权检查已完成，结果显示在外部服务中' : action === 'authorize' ? '已打开 GitHub 官方授权窗口，请按提示完成授权后检查' : '已在专属 Chrome 打开 ' + external.externalSite(service).name };
+  }
   readCache() {
     try {
       const value = JSON.parse(fs.readFileSync(this.cacheFile(), 'utf8'));

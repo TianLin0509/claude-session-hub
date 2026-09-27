@@ -79,3 +79,17 @@
 .ac-tool-setup p{font-size:12px;line-height:1.7;color:var(--fg-muted,#969ba8)}
 .ac-tool-setup label{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:16px 0;font-size:12px}.ac-tool-setup small{display:block;color:var(--fg-muted,#969ba8);margin-top:4px}
 .ac-tool-setup select{max-width:55%;padding:8px 10px;border:1px solid var(--border-mid,#373b44);border-radius:6px;background:var(--surface-canvas,#17191d);color:var(--fg-default,#d9dce2)}
+.ac-tool-account-section { margin-top: 28px; }
+.ac-tool-accounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 14px; }
+.ac-tool-account { padding: 18px; border: 1px solid var(--border, #3c4149); border-radius: 12px; min-width: 0; }
+.ac-tool-account header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ac-tool-account p { line-height: 1.65; margin: 12px 0; }
+.ac-tool-account small { opacity: .72; }
+.ac-tool-account details { margin: 14px 0; }
+.ac-tool-account summary { cursor: pointer; }
+.ac-tool-account details div { margin: 8px 0; overflow-wrap: anywhere; }
+.ac-tool-account-section .ac-tool-help { overflow-wrap: anywhere; }
+.ac-service-group { margin: 24px 0; }
+.ac-service-group h3 { margin: 0; font-size: 16px; }
+.ac-external-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.ac-native-status small { display: block; margin-top: 4px; }
