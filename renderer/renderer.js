@@ -79,8 +79,6 @@ const { createPathLinkContextMenuController } = require('./path-link-context-men
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
-const nativeTerminalAppearance = process.platform === 'win32'
-  ? require('../core/windows-terminal-appearance').readWindowsTerminalAppearance() : null;
 const {
   forgetViewMode,
   readCardViewSessions,
@@ -91,6 +89,9 @@ const {
 const {
   createTerminalInputController,
   formatPastedFilePaths,
+  isTerminalProtocolReply,
+  isCodexOwnedTranscript,
+  navigateCodexTranscript,
 } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
@@ -872,7 +873,7 @@ function setFontSize(size) {
   // 写到 :root（documentElement），让 AI 群聊（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
   for (const [sid, c] of terminalCache) {
-    c.terminal.options.fontSize = size * (c.nativeFontScale || 1);
+    c.terminal.options.fontSize = size;
     if (c.opened) {
       scheduleFitAndResizeTerminal(sid, c, { force: true });
     }
@@ -1417,15 +1418,12 @@ function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) {
     return terminalCache.get(sessionId);
   }
-  const terminalSession = sessions.get(sessionId);
-  const nativeAppearance = nativeTerminalAppearance && terminalSession && isCodexKind(terminalSession.kind)
-    && !isNativeAgent(terminalSession) ? nativeTerminalAppearance : null;
   const terminal = new Terminal({
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
-    theme: nativeAppearance?.theme || resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
-    fontSize: currentFontSize * (nativeAppearance?.fontScale || 1),
+    theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
+    fontSize: currentFontSize,
     lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1,
-    fontFamily: nativeAppearance?.fontFamily || "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
     allowProposedApi: true,
@@ -1454,8 +1452,10 @@ function getOrCreateTerminal(sessionId) {
 
   terminal.onData((data) => {
     if (sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json') return;
-    if (data) clearSessionWaitingState(sessionId);
-    trackPtyPromptInput(sessionId, data);
+    if (!isTerminalProtocolReply(data)) {
+      if (data) clearSessionWaitingState(sessionId);
+      trackPtyPromptInput(sessionId, data);
+    }
     ipcRenderer.send('terminal-input', { sessionId, data });
   });
   terminal.onBinary((data) => {
@@ -1547,6 +1547,7 @@ function getOrCreateTerminal(sessionId) {
     if (!e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const c = terminalCache.get(sessionId);
       if (!c || !c._minimap) return true;
+      if (isCodexOwnedTranscript(sessions.get(sessionId), terminal)) return true;
       const moved = e.key === 'ArrowUp' ? c._minimap.navPrev() : c._minimap.navNext();
       if (moved) {
         e.preventDefault();
@@ -1695,8 +1696,6 @@ function getOrCreateTerminal(sessionId) {
   });
 
   const cached = {
-    nativeTheme: nativeAppearance?.theme || null,
-    nativeFontScale: nativeAppearance?.fontScale || 1,
     terminal, fitAddon, searchAddon, container, opened: false,
     _codexFollowBottom: true,
     _hydrated: false,
@@ -1708,7 +1707,6 @@ function getOrCreateTerminal(sessionId) {
     _deferredResizeSig: null,
     _needsPtyRedraw: false,
   };
-  if (nativeAppearance) container.style.background = nativeAppearance.theme.background;
   terminalCache.set(sessionId, cached);
   return cached;
 }
@@ -2308,6 +2306,8 @@ const { createTerminalMinimapFactory } = require('./terminal-minimap.js');
 const terminalMinimapFactory = createTerminalMinimapFactory({
   document,
   getTerminalCache: (sessionId) => terminalCache.get(sessionId),
+  ownsTranscript: (sessionId, terminal) => isCodexOwnedTranscript(sessions.get(sessionId), terminal),
+  navigateTranscript: (sessionId, terminal, direction) => navigateCodexTranscript(sessions.get(sessionId), terminal, direction),
   promptLineRe: PROMPT_LINE_RE,
   aiMarkersRe: AI_MARKERS_RE,
   flashPromptLine: (terminal, lineNumber) => flashPromptLine(terminal, lineNumber),
@@ -4147,6 +4147,7 @@ function scrollToLatestTurn(terminal) {
     }
   }
   if (terminal && typeof terminal.scrollToBottom === 'function') {
+    if (navigateCodexTranscript(sessions.get(activeSessionId), terminal, 'bottom')) return true;
     terminal.scrollToBottom();
     return true;
   }
@@ -5064,9 +5065,16 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
 
     e.preventDefault();
     markCodexUserScrollIntent(sessionId, cached, { detachFromBottom: e.deltaY < 0 });
+    // The floating composer is outside the native screen. Codex fullscreen
+    // routes wheel input by coordinates; a synthetic event at (0,0) hits its
+    // sticky heading and does nothing. Forward over the transcript instead.
+    const screen = cached.terminal.element?.querySelector('.xterm-screen') || vp;
+    const rect = screen.getBoundingClientRect();
     vp.dispatchEvent(new WheelEvent('wheel', {
       bubbles: true,
       cancelable: true,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
       deltaX: e.deltaX,
       deltaY: e.deltaY,
       deltaMode: e.deltaMode,
@@ -6367,6 +6375,15 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
 
   const at = Number(observedAt) || Date.now();
   const truthBefore = getSessionRuntimeTruth(session, { now: at });
+  // Codex keeps the composer visible while a task runs, and its fullscreen
+  // history view can hide Working entirely. Input-ready pixels do not close a
+  // native turn: task_complete / turn_aborted / failure own that transition.
+  if (session.agentRuntime === 'pty' && isCodexKind(session.kind)
+      && (runtime.state === 'idle' || (runtime.state === 'running'
+        && truthBefore.state === RUNTIME_RUNNING && truthBefore.confidence === CONFIDENCE_AUTHORITATIVE))) {
+    clearPtyInputReadyCandidate(session);
+    return false;
+  }
   const wasRunning = [RUNTIME_STARTING, RUNTIME_RUNNING].includes(truthBefore.state)
     || session.status === 'running';
   const fallbackArmed = canUsePtyBurstFallback(session, at);
@@ -7401,7 +7418,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     } else if (activity && event.endsWith('-start') && activity.status === 'running') {
       observeSessionRuntime(s, {
         state: RUNTIME_RUNNING,
-        source: `claude-${event}`,
+        source: `${payload.provider === 'codex' ? 'codex' : 'claude'}-${event}`,
         confidence: CONFIDENCE_AUTHORITATIVE,
         observedAt: eventAt,
         turnId,
@@ -7411,7 +7428,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
     updateFloatingBarState();
     scheduleSessionListRender();
   }
-  else if (event === 'prompt') onPromptSubmittedFromHook(sessionId, eventAt);
+  else if (event === 'prompt') onPromptSubmittedFromHook(sessionId, eventAt, { provider: payload.provider, turnId });
   else if (event === 'stop-failure') onClaudeStopFailure(sessionId, eventAt, {
     error,
     errorDetails,
@@ -7477,11 +7494,11 @@ function ptyPermissionText(toolName, toolInput) {
   return `等待授权：${toolName}` + (detail ? '\n' + (detail.length > 400 ? detail.slice(0, 398) + '…' : detail) : '');
 }
 
-function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
+function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now(), options = {}) {
   const session = sessions.get(sessionId);
   if (!session) return;
   notePtyTurnBoundary(session);
-  const transition = applyPromptSubmitted(session, { submittedAt });
+  const transition = applyPromptSubmitted(session, { submittedAt, turnId: options.turnId });
   if (!transition.applied) return;
   session.currentCardActivity = null;
   session.liveToolActivities = [];
@@ -7496,10 +7513,11 @@ function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   session._claudeBackgroundTasks = [];
   observeSessionRuntime(session, {
     state: RUNTIME_STARTING,
-    source: 'claude-user-prompt-submit',
+    source: options.provider === 'codex' ? 'codex-user-prompt-submit' : 'claude-user-prompt-submit',
     confidence: CONFIDENCE_SEMANTIC,
     observedAt: transition.at,
     startedAt: transition.at,
+    turnId: options.turnId,
   });
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   scheduleSessionListRender();

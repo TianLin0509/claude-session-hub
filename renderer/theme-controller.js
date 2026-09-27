@@ -155,7 +155,7 @@ function createThemeController({ document, localStorage, terminalCache, openConf
 
     const xtermTheme = resolveXtermTheme(currentTheme);
     for (const [, cached] of terminalCache) {
-      cached.terminal.options.theme = cached.nativeTheme || xtermTheme;
+      cached.terminal.options.theme = xtermTheme;
     }
 
     syncPicker();

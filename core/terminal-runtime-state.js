@@ -21,6 +21,9 @@ const RUNNING_ANIMATION_CONFIRM_MAX_MS = 3000;
 // session incorrectly. The active row is rendered with a provider marker and
 // a small, known family of work verbs.
 const CODEX_RUNNING_RE = /^\s*[\u2022\u23fa\u25cf\u25c9\u25d0-\u25d5]\s*(?:Working|Thinking|Running|Searching|Reading|Writing|Editing|Exploring|Generating|Pursuing\s+goal)\b.*\besc to interrupt\b/i;
+// 0.157 fullscreen renders the status without a leading bullet. Require its
+// elapsed timer and interrupt hint together, so ordinary prose is not work.
+const CODEX_FULLSCREEN_RUNNING_RE = /^\s*(?:Working|Thinking|Running|Searching|Reading|Writing|Editing|Exploring|Generating|Pursuing\s+goal)\s+\((?:\d+[hms]\s*)+[•·]\s*esc to interrupt\)(?:\s+·.*)?\s*$/i;
 const CODEX_PROMPT_RE = /^\s*[\u203a>]\s*(?:$|\S)/;
 const CODEX_CONTEXT_RE = /\bContext\s+(?:\d+(?:\.\d+)?%\s*(?:left)?|window|left)/i;
 
@@ -86,7 +89,8 @@ function classifyCodex(lines) {
   const waiting = waitingObservation(lines);
   if (waiting) return waiting;
 
-  const runningLine = firstMatchingLine(lines.slice(-12), CODEX_RUNNING_RE);
+  const runningLine = firstMatchingLine(lines.slice(-12), CODEX_RUNNING_RE)
+    || firstMatchingLine(lines.slice(-12), CODEX_FULLSCREEN_RUNNING_RE);
   if (runningLine) return observation(RUNTIME_RUNNING, 'codex-interrupt-footer', runningLine);
 
   const promptLine = firstMatchingLine(lines, CODEX_PROMPT_RE);

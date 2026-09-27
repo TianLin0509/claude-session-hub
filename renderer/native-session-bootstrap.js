@@ -8,6 +8,9 @@ function createNativeSessionBootstrap() {
   const updates = new Map();
   const removed = new Set();
   function newer(left, right) {
+    if (right?.agentRuntime === 'pty' && right.runtimeTruth && !left?.nativeRuntime) {
+      return !left?.runtimeTruth || right.runtimeTruth.observedAt >= left.runtimeTruth.observedAt ? right : left;
+    }
     const a = left?.nativeRuntime, b = right?.nativeRuntime;
     if (!b) return left;
     if (!a || b.epoch > a.epoch || (b.epoch === a.epoch && b.revision >= a.revision)) return right;
@@ -17,7 +20,8 @@ function createNativeSessionBootstrap() {
     record(session, { created = false } = {}) {
       if (!loading || !session?.id) return;
       if (created) removed.delete(session.id);
-      if (removed.has(session.id) || !session.runtimeBackend || !session.nativeRuntime) return;
+      if (removed.has(session.id)) return;
+      if (!(session.runtimeBackend && session.nativeRuntime) && !(session.agentRuntime === 'pty' && session.runtimeTruth)) return;
       updates.set(session.id, newer(updates.get(session.id), session));
     },
     remove(id) {

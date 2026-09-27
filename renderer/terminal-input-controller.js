@@ -2,6 +2,26 @@
 
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
 
+// xterm sends capability/color replies through onData too. These bytes must
+// reach the PTY, but are not edits to the user's draft or approval answers.
+function isTerminalProtocolReply(data) {
+  return typeof data === 'string' && /^(?:\x1b\](?:10|11|12);rgb:[0-9a-f/]+(?:\x07|\x1b\\)|\x1b\[[?>]?[\d;]*c|\x1b\[\d+;\d+R|\x1b\[[IO])+$/.test(data);
+}
+
+function isCodexOwnedTranscript(session, terminal) {
+  return !!(require('../core/ai-kinds').isCodexCliKind(session?.kind)
+    && terminal?.buffer?.active?.type === 'alternate' && terminal.modes?.mouseTrackingMode
+    && terminal.modes.mouseTrackingMode !== 'none');
+}
+
+function navigateCodexTranscript(session, terminal, direction) {
+  if (!isCodexOwnedTranscript(session, terminal)) return false;
+  const key = { up:'\x1b[5~', down:'\x1b[6~', top:'\x1b[1;5H', bottom:'\x1b[1;5F' }[direction];
+  if (!key) return false;
+  terminal.input(key, true);
+  return true;
+}
+
 // 剪贴板里「复制的文件」在 Windows 上是 CF_HDROP。2026-08-28 用真 Electron 41 实测
 // 三条事实，决定了下面两条读取路径：
 //   1. 复制文件后 clipboard.availableFormats() 只有 ['text/uri-list']，readText() 是
@@ -329,6 +349,9 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
 }
 
 module.exports = {
+  isTerminalProtocolReply,
+  isCodexOwnedTranscript,
+  navigateCodexTranscript,
   clipboardFilePathFromNative,
   clipboardFilePathsFromPasteEvent,
   createTerminalInputController,

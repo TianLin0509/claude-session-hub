@@ -24,7 +24,7 @@ test('Codex 0.147 running frame wins even though the input placeholder and conte
   assert.equal(result.reason, 'codex-interrupt-footer');
 });
 
-test('Codex input-ready frame settles after esc-to-interrupt disappears', () => {
+test('Codex input-ready screen is classified separately from native turn completion', () => {
   const result = classifyTerminalRuntime('codex', [
     '• Ran Start-Sleep -Seconds 4',
     '• PTY_STATE_DONE',
@@ -33,6 +33,15 @@ test('Codex input-ready frame settles after esc-to-interrupt disappears', () => 
   ]);
   assert.equal(result.state, RUNTIME_IDLE);
   assert.equal(result.reason, 'codex-input-ready');
+});
+
+test('Codex 0.157 fullscreen Working has no bullet and still outranks its composer', () => {
+  for (const status of ['Working (21s • esc to interrupt)', 'Working (1m 25s • esc to interrupt) · Running hook']) {
+    assert.equal(classifyTerminalRuntime('codex', [
+      status, '› Ask Codex to do anything', 'GPT-6-Astra low · Context 97% left',
+    ]).state, RUNTIME_RUNNING);
+  }
+  assert.equal(classifyTerminalRuntime('codex', ['Working through this task (esc to interrupt)']).state, RUNTIME_UNKNOWN);
 });
 
 test('Codex running evidence must be a structured current status row, not quoted prose', () => {

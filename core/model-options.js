@@ -125,7 +125,11 @@ function isCodexConversationModelId(modelId) {
 
 function normalizeCodexSessionModel(modelId) {
   const raw = String(modelId || '').trim();
-  return isCodexConversationModelId(raw) ? raw : DEFAULT_MODEL_BY_KIND.codex;
+  // The TUI footer uses display casing (GPT-6-Astra). OpenAI's request model
+  // identifiers are case-sensitive. Keep display labels out of saved launch
+  // parameters, including old snapshots already contaminated by the footer.
+  if (isChatgptWebModel(raw)) return raw;
+  return isCodexConversationModelId(raw) ? raw.toLowerCase() : DEFAULT_MODEL_BY_KIND.codex;
 }
 
 // Migration-only default. It is deliberately separate from the new-session

@@ -356,7 +356,11 @@ function buildComposerStatusModel(session, options = {}) {
   // liveQuestion 是同一件事的第二个证据来源，两者取或。
   const needsRespond = sessionNeedsUserInput(session) || !!liveQuestion;
   const disconnected = native ? truth.state === 'unknown' || truth.connection === 'disconnected' : hasStreamDisconnectIssue(session);
-  const state = native && truth.state === 'failed' && !disconnected
+  // A failed provider turn does not terminate a PTY. Its prompt remains usable;
+  // only process loss / a transport issue warrants a reconnect action.
+  const livePtyFailure = session?.agentRuntime === 'pty' && !session._processLost
+    && session.status !== 'dormant' && truth.state === 'failed';
+  const state = (native || livePtyFailure) && truth.state === 'failed' && !disconnected
     ? COMPOSER_STATUS_READY : composerStateFor(runtime.state, { needsRespond, disconnected });
   const provider = runtime.provider || 'AI';
 
@@ -452,9 +456,9 @@ function buildComposerStatusModel(session, options = {}) {
   return {
     state: COMPOSER_STATUS_READY,
     text: native && truth.state === 'interrupted' ? '上一轮已中断 · 可继续发送'
-      : native && truth.state === 'failed' ? '上一轮执行失败 · 可继续发送'
+      : (native || livePtyFailure) && truth.state === 'failed' ? '上一轮执行失败 · 可继续发送'
       : age ? `已就绪 · ${age}完成上一轮` : '已就绪',
-    detail: native && truth.state === 'failed' ? truth.evidence || '' : '',
+    detail: (native || livePtyFailure) && truth.state === 'failed' ? truth.evidence || session.lastError || '' : '',
     quickReplies: [],
     action: age ? { kind: 'scroll-latest', label: '查看上一轮 ↑' } : null,
     canStop: false,

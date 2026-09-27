@@ -7,8 +7,7 @@ const {
 } = require('./ai-kinds.js');
 const { isStableSessionTitle } = require('./session-title-guards.js');
 const {
-  DEFAULT_MODEL_BY_KIND,
-  isCodexConversationModelId,
+  normalizeCodexSessionModel,
   normalizeDeepSeekModel,
 } = require('./model-options.js');
 
@@ -87,9 +86,7 @@ function sessionModelId(session) {
   }
   if (!candidate) return null;
   const kind = baseKind(session.kind);
-  if (kind === 'codex' && !isCodexConversationModelId(candidate)) {
-    return DEFAULT_MODEL_BY_KIND.codex;
-  }
+  if (kind === 'codex') return normalizeCodexSessionModel(candidate);
   if (kind === 'deepseek' && sessionProviderFamily(session) === 'codex') {
     return normalizeDeepSeekModel(candidate);
   }

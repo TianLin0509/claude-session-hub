@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const { SessionManager } = require('../../core/session-manager.js');
-const { isCodexConversationModelId } = require('../../core/model-options.js');
+const { isCodexConversationModelId, normalizeCodexSessionModel } = require('../../core/model-options.js');
 
 const DEFAULT_RATE_LIMIT_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_RATE_LIMIT_SCAN_BYTES = 8 * 1024 * 1024;
@@ -79,8 +79,7 @@ function parseCodexUsage(plain) {
   collectModelCandidates(/(?:^|\n)[^\n]*?\b(gpt-[\w.-]+|o\d[\w.-]*)\b[^\n]{0,160}\bContext\s+\d+%\s+(?:left|remaining)\b/gim);
   const modelMatch = modelCandidates.sort((a, b) => b.index - a.index)[0] || null;
   if (modelMatch) {
-    const id = modelMatch.id;
-    result.model = { id, displayName: id };
+    result.model = { id: normalizeCodexSessionModel(modelMatch.id), displayName: modelMatch.id };
   }
   const tokenMatch = plain.match(/Token usage:\s*total=([\d,]+)/i);
   if (tokenMatch) result.tokensUsed = parseInt(tokenMatch[1].replace(/,/g, ''), 10);

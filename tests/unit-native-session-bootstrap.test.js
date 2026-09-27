@@ -5,6 +5,15 @@ const {createNativeSessionBootstrap} = require('../renderer/native-session-boots
 const row = (epoch, revision, connection, extras = {}) => ({id:'a',runtimeBackend:'claude-stream-json',
   nativeRuntime:{epoch,revision,connection}, ...extras});
 
+test('Codex PTY lifecycle arriving during initial load wins over the earlier running snapshot', () => {
+  const boot=createNativeSessionBootstrap();
+  const pty=(state,observedAt)=>({id:'p',agentRuntime:'pty',runtimeTruth:{state,observedAt}});
+  boot.record(pty('completed',300));
+  boot.record(pty('running',200));
+  assert.equal(boot.merge(pty('running',100)).runtimeTruth.state,'completed');
+  assert.equal(boot.merge(pty('running',100),pty('failed',400)).runtimeTruth.state,'failed');
+});
+
 test('ready event before the initial list replaces its stale connecting snapshot', () => {
   const boot=createNativeSessionBootstrap();
   boot.record(row(3,2,'connected'));

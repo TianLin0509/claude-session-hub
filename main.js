@@ -535,6 +535,10 @@ const claudeQuotaResume = createClaudeQuotaResume({
 });
 
 sessionManager.on('session-updated', session => {
+  if (session.agentRuntime === 'pty' && isCodexCliKind(session.kind) && session.runtimeTruth) {
+    sendToRenderer('session-updated', { session });
+    return;
+  }
   if (session.runtimeBackend !== 'claude-stream-json') return;
   sessionUsageService.bind(session);
   if(!isSessionViewer(session))sessionStore.markDirty(session.id, sessionManager.getSession(session.id));
