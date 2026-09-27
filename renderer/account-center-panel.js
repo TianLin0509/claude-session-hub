@@ -54,7 +54,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     renderStatus();
   }
   function apply(next) {
-    const sig = JSON.stringify(next);
+    const sig = Math.floor(Date.now() / 60000) + ':' + JSON.stringify(next);
     if (sig === signature) return renderStatus();
     const top = body.scrollTop, focus = page.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
     state = next; signature = sig; render();

@@ -13,13 +13,13 @@ function relativeTime(at, now = Date.now()) {
 }
 function usage(activity, now) {
   if (!activity) return { text: '暂无使用记录', tone: 'idle', login: false };
-  const labels = { opened: '打开过网页', success: activity.source === 'images' ? '生图成功' : '使用成功', using: '正在使用',
+  const labels = { opened: '打开过网页', success: activity.source === 'images' ? '生图成功' : '使用成功', using: '发起过生图',
     login_required: '需要登录', verification_required: '需要验证', rate_limited: '服务限流', failed: '上次使用未完成' };
   return { text: (relativeTime(activity.at, now) + ' · ' + (labels[activity.outcome] || '使用过')).trim(),
     tone: activity.outcome === 'success' ? 'ok' : ['failed', 'login_required', 'verification_required', 'rate_limited'].includes(activity.outcome) ? 'warn' : 'idle',
     login: ['login_required', 'verification_required'].includes(activity.outcome),
     note: activity.lastSuccessAt && activity.outcome !== 'success' ? '上次成功：' + relativeTime(activity.lastSuccessAt, now) : '',
-    title: new Date(activity.at).toLocaleString('zh-CN') };
+    title: ({ images: '生图 MCP', roundtable: '网页圆桌', website: '网页入口' }[activity.source] || '使用记录') + ' · ' + new Date(activity.at).toLocaleString('zh-CN') };
 }
 const matches = (values, query) => !query || values.join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 function usageHtml(value, esc) {
