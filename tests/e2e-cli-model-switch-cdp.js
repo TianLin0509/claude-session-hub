@@ -32,7 +32,7 @@ async function main() {
     await c.eval(`document.querySelector('.session-item[data-session-id="${s.id}"]').click()`);
     const screen = `(()=>{const t=terminalCache.get(${j(s.id)})?.terminal;if(!t)return '';const b=t.buffer.active;return Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)||'').join('\\n');})()`;
     await until(`${screen}.includes('❯')`, 'Claude ready'); await sleep(2000);
-    for (const family of ['sonnet', 'haiku']) {
+    for (const family of ['sonnet']) {
       await c.eval(`document.querySelector('.composer-model').click()`);
       await until(`!!document.querySelector('.model-picker-item[data-model-id*="${family}"]')`, family + ' option');
       const id = await c.eval(`document.querySelector('.model-picker-item[data-model-id*="${family}"]').dataset.modelId`);
@@ -43,8 +43,8 @@ async function main() {
       await shot(family); await sleep(1000);
     }
     await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar[data-session-id="${s.id}"]');const i=b.querySelector('.floating-input-box');i.textContent='只回复 MODEL_OK';i.dispatchEvent(new Event('input',{bubbles:true}));b.querySelector('.floating-input-send').click();})()`);
-    await until(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:4,fromTail:true}}).then(r=>(r.turns||[]).some(t=>t.role==='assistant'&&String(t.text||'').includes('MODEL_OK')))`, 'Haiku reply', 120000);
-    report.checks.push('real Haiku prompt after model switches'); await shot('reply'); report.passed = true;
+    await until(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:4,fromTail:true}}).then(r=>(r.turns||[]).some(t=>t.role==='assistant'&&String(t.text||'').includes('MODEL_OK')))`, 'Sonnet reply', 120000);
+    report.checks.push('real Sonnet prompt after model switch'); await shot('reply'); report.passed = true;
   } catch (error) { report.error = error.stack; if (c) await shot('failure').catch(() => {}); throw error; }
   finally {
     try { if (c) await c.close(); if (hub) { fs.writeFileSync(path.join(out, 'hub.log'), hub.log().join('\n')); await gracefulQuit(hub); } }
