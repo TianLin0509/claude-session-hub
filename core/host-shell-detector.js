@@ -39,13 +39,21 @@ function detectHostShellTakeover(rawBuffer) {
 // 「当前绑定线程 id」的这句提示：模型在工具里嵌套跑的 codex 不会把父线程 id 画到这个终端上。
 // ConPTY 用光标移动代替空格、长 id 会折行，所以去掉控制序列与全部空白后再比对。
 // 只看最后一次这样的提示，它必须指向当前绑定的线程。
-const CODEX_THREAD_END_TAIL_CHARS = 6000;
 function detectCodexThreadEnded(rawBuffer, boundSid) {
   const sid = String(boundSid || '').replace(/\s+/g, '');
   if (!rawBuffer || !sid) return false;
   const compact = stripAnsi(rawBuffer).replace(/\s+/g, '');
   const at = compact.lastIndexOf('Tocontinuethissession');
-  return at >= 0 && compact.indexOf(`(${sid})`, at) > at;
+  if (at < 0) return false;
+  const hint = compact.slice(at);
+  // 0.157.1 prints the executable resume command directly, without the old
+  // title + parenthesized id. Match the UUID in that command, not arbitrary
+  // occurrences of the bound id elsewhere in a newer thread's output.
+  const direct = /^Tocontinuethissession,runcodexresume([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])/i.exec(hint);
+  if (direct) return direct[1] === sid;
+  const parenthesized = /^Tocontinuethissession,runcodexresume\(([^)]+)\)/.exec(hint);
+  if (parenthesized) return parenthesized[1] === sid;
+  return hint.startsWith('Tocontinuethissession,runcodexresume,thenselect') && hint.includes(`(${sid})`);
 }
 
 // ---------------------------------------------------------------------------

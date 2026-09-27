@@ -4,6 +4,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
 
+test('a PTY unknown execution state is not displayed as ready', () => {
+  const session = { kind: 'codex', agentRuntime: 'pty', status: 'idle',
+    runtimeTruth: { state: 'unknown', source: 'expired:codex-rollout_user_message', confidence: 'none', observedAt: Date.now() } };
+  const runtime = require('../renderer/session-runtime-status').deriveSessionRuntimeStatus(session);
+  const result = require('../core/session-status-summary').buildComposerStatusModel(session, { runtime });
+  assert.equal(result.state, 'unknown');
+  assert.equal(result.text, '状态未知');
+  assert.equal(result.canStop, false);
+});
+
 test('Codex card footer mirrors model, effort, fast tier, context left and cwd', () => {
   assert.deepEqual(buildSessionStatusSummary({
     kind: 'codex',

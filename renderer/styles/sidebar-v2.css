@@ -89,6 +89,7 @@
 #session-list .sl-dot.start { animation-delay: var(--sidebar-work-phase, 0ms); }
 #session-list .sl-dot.idle { background: #3b82f6; border: none; }
 #session-list .sl-dot.dorm { background: var(--fg-faint); border: none; }
+#session-list .sl-dot.unknown { background: transparent; border: 2px solid var(--status-warning); }
 #session-list .sl-dot.unread { background: var(--brand); }
 #session-list .session-item.slim.meeting { display: block; }
 #session-list .session-item.slim.meeting .sl-line1 {

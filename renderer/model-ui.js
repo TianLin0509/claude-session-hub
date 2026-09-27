@@ -427,18 +427,19 @@ function createModelUiController({
     ipcRenderer.send('terminal-input', { sessionId, data });
   }
 
-  async function submitSlashCommand(sessionId, command, strategy) {
-    if (strategy === 'claude-inline') {
-      writeTerminal(sessionId, `\x1b[200~${command}\x1b[201~`);
-      await sleep(700);
-    } else {
-      writeTerminal(sessionId, command);
-      await sleep(600);
+  function dismissOwnedCodexPicker(sessionId, pending) {
+    if (!pending?.ownsCodexPicker) return;
+    const screen = getTerminalScreenText(sessionId);
+    if (parseCodexModelPicker(screen) || parseCodexReasoningPicker(screen) || parseCodexAdvancedReasoningPicker(screen)) {
+      writeTerminal(sessionId, '\x1b');
     }
-    // Text and Enter must be separate writes. Sending them in one chunk lets
-    // Codex/Claude paste detection consume CR as pasted text, leaving `/model`
-    // visibly stuck in the prompt instead of executing it.
-    writeTerminal(sessionId, '\r');
+  }
+
+  async function submitSlashCommand(sessionId, command, strategy) {
+    const result = await ipcRenderer.invoke('session:send-prompt', { sessionId, text: command });
+    if (!result?.ok || result.notSent || result.sendStatus === 'stuck') {
+      throw new Error(result?.message || 'CLI 尚未确认模型命令，请查看终端');
+    }
   }
 
   async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
@@ -455,9 +456,9 @@ function createModelUiController({
     }
     await submitSlashCommand(sessionId, '/model', 'codex-picker');
     const modelStep = await waitForScreen(sessionId, screen => parseCodexModelPicker(screen), '等待 Codex 模型面板');
+    if (session._modelSwitchPending) session._modelSwitchPending.ownsCodexPicker = true;
     const target = modelStep.value.entries.find(entry => entry.value.toLowerCase() === option.id.toLowerCase());
     if (!target) {
-      writeTerminal(sessionId, '\x1b');
       throw new Error('Codex 原生面板未列出该模型，目录可能刚刚变化，请重新打开后重试');
     }
     writeTerminal(sessionId, pickerNavigationInput(modelStep.value.highlighted.number, target.number) + '\r');
@@ -628,10 +629,13 @@ function createModelUiController({
           console.warn('[model-switch] Claude preference cleanup failed:', restoreError && restoreError.message);
         }
       }
+      const codexPickerPending = session._modelSwitchPending;
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[model-switch] failed:', error && (error.stack || error.message));
-      if (strategy === 'codex-picker' && session.runtimeBackend !== 'codex-app-server') writeTerminal(sessionId, '\x1b');
+      // Only dismiss a picker this operation actually opened. A busy/draft
+      // rejection must never send Escape to the user's running turn.
+      if (strategy === 'codex-picker') dismissOwnedCodexPicker(sessionId, codexPickerPending);
       if (openModelPicker && openModelPicker.el === menu) {
         renderModelPicker(menu, badgeEl, sessionId, {
           text: `切换失败：${error && error.message ? error.message : String(error)}${cleanupWarning}`,
@@ -763,10 +767,11 @@ function createModelUiController({
       if (openModelPicker && openModelPicker.el === menu) closeModelPicker();
       return { ok: true, effort: session.effort };
     } catch (error) {
+      const codexPickerPending = session._modelSwitchPending;
       delete session._modelSwitchPending;
       updateActiveModelChip();
       console.warn('[effort-switch] failed:', error && (error.stack || error.message));
-      if (!['codex-app-server','acp'].includes(session.runtimeBackend)) writeTerminal(sessionId, '\x1b');
+      dismissOwnedCodexPicker(sessionId, codexPickerPending);
       if (openModelPicker && openModelPicker.el === menu) {
         renderEffortPicker(menu, anchorEl, sessionId, efforts, {
           text: `切换失败：${error && error.message ? error.message : String(error)}`,
