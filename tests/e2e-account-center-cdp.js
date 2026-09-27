@@ -25,6 +25,7 @@ async function main() {
     deepseek: { api_key: 'fixture-deepseek-key' } }, unrelatedFixture: 'preserve-me' });
   write(path.join(data, 'prepared-projects.json'), { schemaVersion: 1, projects: [], migrations: [] });
   write(path.join(home, '.agents/skills/bailian-gen/SKILL.md'), '---\nname: bailian-gen\ndescription: fixture\n---\n');
+  write(path.join(home, '.agents/skills/agent-reach/SKILL.md'), '---\nname: agent-reach\ndescription: fixture\n---\n');
   write(path.join(home, '.bailian/config.json'), { api_key: 'ACCOUNT-SECRET-FIXTURE' });
   write(path.join(home, '.claude.json'), { mcpServers: { 'chatgpt-web-images': { command: 'unused-fixture' } } });
   write(path.join(home, '.mcporter/mcporter.json'), { mcpServers: { douyin: { command: 'unused', env: { DASHSCOPE_API_KEY: 'ACCOUNT-SECRET-FIXTURE' } } } });
@@ -51,7 +52,7 @@ async function main() {
   queue.exec('CREATE TABLE accounts (id TEXT, config_dir TEXT, login_group TEXT); CREATE TABLE jobs (account_id TEXT, status TEXT, updated REAL, error TEXT, result TEXT)');
   queue.prepare('INSERT INTO accounts VALUES (?,?,?)').run('primary', laneConfig, 'primary'); queue.close();
   const out = path.resolve('artifacts/account-center-cdp'); fs.mkdirSync(out, { recursive: true });
-  const result = { passed: false, boundary: '真实隔离 Hub、鼠标键盘、DOM、IPC、磁盘记录；官网响应和打开网页使用显式夹具；真实无头 Chrome 另见 e2e-hub-accounts-headless', checks: [], root };
+  const result = { passed: false, boundary: '真实隔离 Hub、鼠标键盘、DOM、IPC、磁盘记录；网页打开、CLI 授权及工具使用结果采用显式夹具，未调用真实网站', checks: [], root };
   let hub, cdp;
   const until = async (expr, label, ms = 35000) => { for (const end = Date.now() + ms; Date.now() < end;) { if (await cdp.eval('Boolean(' + expr + ')')) { console.log('PASS ' + label); return; } await sleep(150); } throw Error('timeout: ' + label); };
   const click = async selector => { await until('!!document.querySelector(' + JSON.stringify(selector) + ') && !document.querySelector(' + JSON.stringify(selector) + ').disabled', 'enabled ' + selector); const box = await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`); await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...box }); await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...box }); };
