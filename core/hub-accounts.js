@@ -7,13 +7,19 @@ const { inspectAccounts } = require('./hub-login-check');
 const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'deepseek', doubao: 'doubao', kimi: 'kimi', qwen: 'qwen' };
 
 class HubAccounts {
-  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts } = {}) {
+  constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts, getToolCatalog } = {}) {
     this.chrome = hubChrome || new HubChrome({ env });
-    Object.assign(this, { getConfig, env, recovery, now, inspect });
+    Object.assign(this, { getConfig, env, recovery, now, inspect, getToolCatalog });
     this.checking = null; this.progress = null; this.lastState = null;
     this.setup = new (require('./hub-browser-setup').HubBrowserSetup)({ root: this.chrome.root, env });
   }
   cacheFile() { return path.join(this.chrome.root, 'last-check.json'); }
+  async toolAccounts(refresh = false) {
+    if (!this.getToolCatalog) throw Error('工具目录服务未连接，请重新打开新版 Hub');
+    const catalog = await this.getToolCatalog(refresh);
+    return require('./tool-accounts').buildToolAccounts(catalog, { root: this.chrome.root,
+      homeDir: this.env.CLAUDE_HUB_HOME_DIR || require('os').homedir(), env: this.env });
+  }
   readCache() {
     try {
       const value = JSON.parse(fs.readFileSync(this.cacheFile(), 'utf8'));

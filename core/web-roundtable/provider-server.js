@@ -11,7 +11,7 @@ const tools=[
   {name:'web_cancel',description:'Stop local waiting/queued work. Cannot guarantee stopping generation already running on the website.',inputSchema:taskSchema},
 ];
 serve('ai-hub-web-'+provider,tools,async(name,args)=>{
-  if(name==='web_status')return {provider,name:get(provider).name,profile:require('path').join(store.dataDir(),'account-browsers',provider),authentication:'not_checked',capabilities:['ask','same_conversation_followup','collect','cancel'],mode:'headless unless reusing an open Hub browser'};
+  if(name==='web_status')return {provider,name:get(provider).name,profile:require('path').join(require('../hub-chrome').defaultRoot(),'main'),identity:'main',loginSource:'ai-hub-accounts',authentication:'not_checked',capabilities:['ask','same_conversation_followup','collect','cancel'],mode:'shared Hub Chrome; account checks use headless inspection'};
   if(name==='web_ask')return jobs.ask(provider,args);
   const job=jobs.status(args.task_id);if(job.kind!=='web'||job.input.provider!==provider)throw Error('Task belongs to another MCP/provider');
   if(name==='web_get')return job;

@@ -2799,6 +2799,7 @@ registerConfigIpc(ipcMain, {
 });
 
 const accountCenterHome = process.env.CLAUDE_HUB_HOME_DIR || os.homedir();
+const capabilityService = new (require('./core/capability-service').CapabilityService)({ sessionManager, dataDir: getHubDataDir() });
 const accountCenter = new (require('./core/account-center').AccountCenter)({
   dataDir: getHubDataDir(), homeDir: accountCenterHome,
   getConfig: () => require('./core/hub-config').getConfig(),
@@ -2807,6 +2808,7 @@ const accountCenter = new (require('./core/account-center').AccountCenter)({
 require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
 // The account page: one Hub Chrome holds every web login; CLIs report their own token files.
 require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, new (require('./core/hub-accounts').HubAccounts)({
+  getToolCatalog: refresh => capabilityService.catalog(refresh),
   recovery: new (require('./core/web-roundtable/recovery').AccountRecovery)({ dataDir: getHubDataDir() }),
 }));
 
@@ -2831,9 +2833,8 @@ const hubMemoryService = new HubMemoryService({
   sendPrompt:(...args)=>require('./core/group-chat-watcher').sendToPty(...args),
 });
 require('./main/ipc/hub-memory-handlers').registerHubMemoryIpc(ipcMain,hubMemoryService);
-const { CapabilityService } = require('./core/capability-service');
 require('./main/ipc/capability-handlers').registerCapabilityIpc(ipcMain,
-  new CapabilityService({sessionManager,dataDir:getHubDataDir()}));
+  capabilityService);
 
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns

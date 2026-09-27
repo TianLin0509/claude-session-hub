@@ -2,6 +2,7 @@
 const {ALL_AI_KINDS,getKindLabel}=require('../core/ai-kinds');
 const {coverage,related,isActive}=require('../core/capability-view-model');
 const {presentation,mcpSharing,ORIGINS}=require('../core/capability-presentation');
+const { SERVICES } = require('../core/tool-account-catalog');
 const TYPE_LABEL={skill:'技能',mcp:'MCP 连接',plugin:'插件',command:'命令',tool:'工具'};
 const ICON={skill:'<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.4l6.1-.9Z"/>',
   mcp:'<rect x="7" y="7" width="10" height="10" rx="3"/><path d="M9 3v4m6-4v4M9 17v4m6-4v4M3 9h4m-4 6h4m10-6h4m-4 6h4"/>',
@@ -55,9 +56,11 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
   function detail(r){
     if(!r)return '<div class="cp-placeholder">'+svg('plugin')+'<h3>探索你的 AI 能力</h3><p>选择左侧条目，查看来源、覆盖范围和状态。</p></div>';
     const sources=r.sources || [];
+    const deps = r.accountDependency;
+    const accountInfo = deps ? `<div class="cp-sharing-hint"><h4>账号与登录</h4><p>${esc(deps.services.map(id => SERVICES[id]?.name || id).join('、') || (deps.state === 'unknown' ? '账号依赖待核对' : '此工具本身无需额外登录'))}</p>${deps.services.length || deps.state === 'unknown' ? button('在账号页查看接入状态', 'data-cp-action="accounts"') : ''}<small>本机登记不等于授权有效；共享登录状态在账号页核对。</small></div>` : '';
     return `<div class="cp-detail-head"><span class="cp-glyph ${r.type}">${svg(r.type)}</span>${badge(TYPE_LABEL[r.type] || r.type)}${status(r)}${originBadge(r)}</div><h2>${esc(r.displayName||r.name)}</h2><p class="cp-description">${esc(r.summary || '尚无用途说明')}</p><p class="cp-caption">${esc(r.summarySource||'')}</p>
       ${tab!=='runtime'?`<div class="cp-origin-detail"><strong>${esc(r.origin?.label||'来源待确认')}</strong><p>${esc(r.origin?.evidence||'未提供来源信息')}</p>${noteForm(r)}</div><details class="cp-original"><summary>原始名称与说明</summary><code>${esc(r.name)}</code><p>${esc(r.description||'原条目未提供说明')}</p></details>${r.type==='mcp'?`<div class="cp-sharing-hint"><h4>${esc(mcpSharing(r).title)}</h4><p>${esc(mcpSharing(r).text)}</p><small>此处为共享建议，未向其他 AI 写入连接配置。</small></div>`:''}`:''}
-      ${r.conflict?'<div class="cp-notice warn">同名入口的正文不同。可能是专用适配，请核对后再统一。</div>':''}
+      ${accountInfo}${r.conflict?'<div class="cp-notice warn">同名入口的正文不同。可能是专用适配，请核对后再统一。</div>':''}
       ${tab!=='runtime'?`<h4>AI 覆盖</h4><div class="cp-chips">${r.agents.map(a=>{const c=coverage(r,a);return badge(label(a)+' · '+c.label,c.tone);}).join('')}</div><p class="cp-fine">按本地目录和配置发现；不代表正在运行的会话已加载。</p>${connections(r)}<details class="cp-sources"><summary>来源与配置 · ${sources.length} 处</summary>${sources.map(s=>`<div class="cp-source"><div><strong>${esc(label(s.agent))}</strong>${badge(s.enabled===false?'已禁用':s.missing?'未找到安装记录':'已登记',s.missing?'warn':'')}</div><small>${esc(s.scope==='shared'?'公共技能目录':s.scope==='user'?'用户目录':s.scope==='system'?'系统技能':s.scope==='plugin'?'插件提供':s.scope)}</small><code>${esc(s.path)}</code>${s.realPath&&s.realPath!==s.path?`<small>指向</small><code>${esc(s.realPath)}</code>`:''}${s.version?`<small>版本 ${esc(s.version)}</small>`:''}${s.transport?`<small>连接方式 ${esc(s.transport)}</small>`:''}</div>`).join('')}</details><div class="cp-next"><h4>如何使用</h4><p>${r.type==='skill'?'在支持此入口的 AI 中描述任务，或明确点名技能。技能正文通常按需读取。':r.type==='mcp'?'在对应客户端完成连接和授权，再到“当前会话”核对连接状态。':'在对应客户端的插件管理中启用；安装与授权分别生效。'}</p>${r.type==='mcp'?button('查看账号与权限','data-cp-action="accounts"'):''}</div>`:`<div class="cp-notice">${esc(runtime?.note || '当前原生连接报告的能力。')}</div><h4>确认时间</h4><p>${esc(new Date(runtime?.observedAt || Date.now()).toLocaleString())}</p>`}`;
   }
   function render(){

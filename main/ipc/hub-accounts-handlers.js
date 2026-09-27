@@ -16,6 +16,7 @@ function registerHubAccountsIpc(ipcMain, accounts) {
   ipcMain.handle('hub-accounts:check-start', wrap(p => accounts.startCheck(selection(p))));
   ipcMain.handle('hub-accounts:check-cancel', wrap(() => accounts.cancelCheck()));
   ipcMain.handle('hub-accounts:tools', wrap(() => accounts.setup.discover()));
+  ipcMain.handle('hub-accounts:tool-accounts', wrap(p => accounts.toolAccounts(p.refresh === true)));
   ipcMain.handle('hub-accounts:tools-connect', wrap(p => {
     if (accounts.checking || accounts.startingCheck) throw Error('请等待登录检查结束后接入工具');
     accounts.lastState = null;
