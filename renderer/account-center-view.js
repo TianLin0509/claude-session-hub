@@ -46,12 +46,13 @@ function companyCards(state) {
       const site = identity.sites.find(s => s.key === company.site);
       if (!site) return [];
       const pending = state.progress?.status === 'running' && state.progress.items.find(i => i.identity === identity.id && i.site === company.site);
-      let status = site.stale ? '上次' + (site.state === 'signed_in' ? '已登录' : '检查未确认') : ({ signed_in: '已登录', signed_out: '需要登录', needs_attention: '需要你完成验证', cookie_present: '有登录记录', login_open: '网页窗口使用中', needs_browser: '待检查' }[site.state] || '未确认');
+      const restricted = site.reason === 'headless_challenge';
+      let status = restricted ? '后台检查受网站验证限制' : site.stale ? '上次' + (site.state === 'signed_in' ? '已登录' : '检查未确认') : ({ signed_in: '已登录', signed_out: '需要登录', needs_attention: '需要你完成验证', cookie_present: '有登录记录', login_open: '网页窗口使用中', needs_browser: '待检查' }[site.state] || '未确认');
       if (pending?.state === 'queued') status = '等待检查';
       if (pending?.state === 'checking') status = '检查中…';
       const account = site.account || (company.site === 'chatgpt' ? identity.account : '') || '账号待确认';
       const accountStale = !!site.account ? !!site.stale : company.site === 'chatgpt' && !!identity.account && !!identity.accountStale;
-      return [{ ...site, identity: identity.id, account, accountStale, label: identity.id === 'main' ? '账号 1' : '账号 2', status,
+      return [{ ...site, identity: identity.id, account, accountStale, restricted, label: identity.id === 'main' ? '账号 1' : '账号 2', status,
         preferred: (state.preferences?.sites?.[company.site]?.preferred || 'main') === identity.id,
         tone: pending?.state === 'checking' ? 'checking' : pending?.state === 'queued' || site.stale ? 'idle' : site.state === 'signed_in' ? 'ok' : ['signed_out', 'needs_attention'].includes(site.state) ? 'warn' : 'idle' }];
     }),

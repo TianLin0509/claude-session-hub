@@ -27,7 +27,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
       <div class="ac-account-title"><span>${esc(a.label)}</span>${a.preferred ? '<span class="ac-default">默认打开</span>' : `<button class="ac-text-btn" data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认</button>`}</div>
       <div class="ac-account-email" title="${esc(a.account)}">${esc(a.account)}</div>
       ${a.accountStale ? '<small class="ac-time">上次识别的账号</small>' : ''}
-      <div class="ac-account-bottom"><span class="ac-state ${a.tone}">${esc(a.status)}</span><button class="ac-text-btn" data-ac="${a.tone === 'warn' ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${a.tone === 'warn' ? '去登录' : '打开'} ↗</button></div>
+      <div class="ac-account-bottom"><span class="ac-state ${a.tone}">${esc(a.status)}</span><button class="ac-text-btn" data-ac="${a.tone === 'warn' && !a.restricted ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${a.restricted ? '打开确认' : a.tone === 'warn' ? '去登录' : '打开'} ↗</button></div>
       ${a.checkedAt ? `<small class="ac-time">${esc(timeText(a.checkedAt))}</small>` : ''}
       ${a.error ? `<small class="ac-item-error">${esc(a.error)}</small>` : ''}</div>`).join('');
     const cli = card.clis.length ? `<details class="ac-cli" data-details="${card.site}"><summary>命令行授权 <span>${card.clis.length}</span></summary><p>CLI 凭据由原工具保管，网页登录与授权分别确认。</p>${card.clis.map(c => `<div class="ac-cli-row"><span>${esc(c.text)}${c.account ? '<small>' + esc(c.account) + '</small>' : ''}</span><button class="ac-text-btn" data-ac="authorize" data-id="${esc(c.id)}">授权</button></div>`).join('')}</details>` : '';
@@ -43,8 +43,9 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     const current = card ? card.company + ' / ' + (p.current.identity === 'main' ? '账号 1' : '账号 2') : '';
     const unknown = p.items.filter(i => i.state === 'unknown').length;
     const signedOut = p.items.filter(i => i.state === 'signed_out').length;
-    const challenges = p.items.filter(i => i.state === 'needs_attention').length;
-    const summary = [unknown ? unknown + ' 项暂未确认（不代表退出登录）' : '', signedOut ? signedOut + ' 项需要登录' : '', challenges ? challenges + ' 项需要验证' : ''].filter(Boolean).join('；') || '结果已保留';
+    const restricted = p.items.filter(i => i.reason === 'headless_challenge').length;
+    const challenges = p.items.filter(i => i.state === 'needs_attention' && i.reason !== 'headless_challenge').length;
+    const summary = [unknown ? unknown + ' 项暂未确认（不代表退出登录）' : '', restricted ? restricted + ' 项后台检查受网站验证限制' : '', signedOut ? signedOut + ' 项需要登录' : '', challenges ? challenges + ' 项需要验证' : ''].filter(Boolean).join('；') || '结果已保留';
     return `<section class="ac-progress" data-check-id="${esc(p.id)}" aria-label="登录检查进度"><div class="ac-progress-heading"><strong>${p.status === 'running' ? '后台检查' : esc(p.stage)} <span>${p.done} / ${p.total}</span></strong>${p.status === 'running' ? '<button class="ac-text-btn" data-ac="cancel">取消检查</button>' : ''}</div>
     <progress value="${p.done}" max="${p.total}" aria-label="已检查账号数"></progress><div class="ac-progress-copy"><span>${esc(current ? current + ' · ' + p.stage : p.error || summary)}</span><small>串行检查 · 无头运行 · 不打扰当前窗口</small></div>
     ${p.warnings?.length ? '<p class="ac-item-error">' + esc(p.warnings.join('；')) + '</p>' : ''}</section>`;

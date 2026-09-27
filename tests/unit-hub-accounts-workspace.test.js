@@ -136,3 +136,16 @@ test('an aborted later check cannot resume websites from a previous successful c
   await acc.check(); assert.deepEqual(resumed, ['kimi']);
   await acc.check(); assert.deepEqual(resumed, ['kimi']);
 });
+
+test('website security gates are reported as restricted background checks, not sign-outs', async t => {
+  const { chrome } = setup(t), results = [];
+  const inspector = { ensure: async () => ({ ws: 'owned', headless: true }), endpoint: async () => ({ ws: 'owned', headless: true }),
+    chatgptAccount: async () => { throw Object.assign(Error('gate'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' }); },
+    liveStatus: async () => ({ state: 'needs_attention', reason: 'challenge' }), close: async () => {} };
+  await inspectAccounts({ chrome, items: [{ identity: 'main', site: 'chatgpt' }, { identity: 'main', site: 'claude' }],
+    signal: new AbortController().signal, createInspector: () => inspector, onStage() {}, onResult: async (_item, result) => results.push(result) });
+  for (const result of results) {
+    assert.equal(result.state, 'needs_attention'); assert.equal(result.reason, 'headless_challenge');
+    assert.match(result.error, /不代表登录失效/);
+  }
+});

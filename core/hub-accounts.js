@@ -95,7 +95,7 @@ class HubAccounts {
           const at = row.sites.findIndex(s => s.key === item.site);
           row.sites[at] = { key: item.site, name: SITES[item.site].name, url: SITES[item.site].url, ...checked };
           if (item.site === 'chatgpt') { row.account = entry.account || ''; row.accountStale = !!row.account && !checked.account; }
-          item.state = checked.state; item.error = checked.error || ''; progress.done++;
+          item.state = checked.state; item.reason = checked.reason || ''; item.error = checked.error || ''; progress.done++;
           this.lastState.checkedAt = cache.checkedAt;
         },
       })).then(async () => {

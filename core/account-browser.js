@@ -14,7 +14,10 @@ const PROBE=`(()=>{const visible=e=>!!e&&e.getClientRects().length>0;
   ||(location.hostname==='chat.deepseek.com'&&[...document.querySelectorAll('.ede5bc47 > img.fdf01f38')].some(visible))
   ||(location.hostname==='www.kimi.com'&&named('[data-testid="sidebar-user-menu-trigger"] .user-name'))
   ||(location.hostname==='www.qianwen.com'&&named('[class~="bg-pc-sidebar"][class~="pt-3"] > button.text-left'));
- const challenge=/challenges.cloudflare.com/.test(location.hostname)||!!document.querySelector('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal');
+ // Observed on ChatGPT and Claude in the Hub's headless profiles, 2026-09-27:
+ // the top-level Cloudflare gate has no iframe. A title alone is not enough proof.
+ const challenge=/challenges.cloudflare.com/.test(location.hostname)||!!document.querySelector('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal')
+  ||(document.title==='Just a moment...'&&(typeof window._cf_chl_opt==='object'||!!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]')));
  return {login,profile,challenge,host:location.hostname};})()`;
 class AccountBrowser {
  constructor({dataDir,env=process.env,spawnImpl=spawn}){this.root=path.join(dataDir,'account-browsers');this.env=env;this.spawn=spawnImpl;}

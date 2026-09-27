@@ -107,6 +107,19 @@ async function main() {
     assert.match(await text('.ac-progress'), /不代表退出登录/);
     await snap('03b-unconfirmed');
     result.checks.push('检查未确认时保留历史邮箱，明确说明未确认不代表退出登录');
+    const restrictedFixture = JSON.parse(JSON.stringify(successfulFixture));
+    for (const [identity, site] of [['main', 'chatgpt'], ['main', 'claude'], ['alt', 'chatgpt']]) {
+      restrictedFixture[identity].sites[site] = { state: 'needs_attention', reason: 'headless_challenge', error: '官网安全验证拦截了后台检查，不代表登录失效。' };
+    }
+    write(fixture, restrictedFixture);
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'restricted check finished');
+    assert.match(await text('.ac-progress'), /3 项后台检查受网站验证限制/);
+    assert.match(await text(main), /后台检查受网站验证限制/);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account [data-ac=login]").length'), 0);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account [data-ac=open]").length'), 2);
+    await snap('03c-restricted');
+    result.checks.push('网站验证拦截单独显示，三个账号提示打开确认，不误导重新登录');
     write(fixture, successfulFixture);
     await click('.ac-head-actions [data-ac="check"]');
     await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'successful recheck');

@@ -186,7 +186,15 @@ class HubChrome {
       page = await this.page(targetId);
       for (const end = Date.now() + 15000; Date.now() < end;) {
         if (signal?.aborted) throw Error('检查已取消');
-        const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include'});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(() => '');
+        let probe;
+        try { probe = await page.evaluate(require('./account-browser').PROBE); }
+        catch (e) { if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e; }
+        if (probe?.challenge) throw Object.assign(Error('网站安全验证拦截了后台检查'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' });
+        if (probe?.host === 'chatgpt.com' && probe.login) return '';
+        const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include',signal:AbortSignal.timeout(4000)});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(e => {
+          if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
+          return '';
+        });
         if (email) return String(email).slice(0, 120);
         await sleep(800);
       }

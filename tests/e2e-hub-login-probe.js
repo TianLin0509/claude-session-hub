@@ -33,6 +33,12 @@ try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch {}
     await set('<button aria-label="Open profile menu" style="display:none">Profile</button>');
     assert.equal((await probe('chatgpt.com')).profile, false, 'hidden old menu does not prove login');
     result.checks.push('current ChatGPT profile menu, guest and hidden menu, host boundary');
+    await set('<title>Just a moment...</title><script>window._cf_chl_opt={};</script>');
+    assert.equal((await probe('chatgpt.com')).challenge, true);
+    assert.equal((await probe('claude.ai')).challenge, true);
+    await page.evaluate('delete window._cf_chl_opt');
+    assert.equal((await probe('claude.ai')).challenge, false, 'a page title alone does not prove a security gate');
+    result.checks.push('observed top-level Cloudflare gate on ChatGPT and Claude without an iframe');
     await hub.place(cdp, targetId, { windowState: 'maximized' });
     assert.equal((await cdp.call('Browser.getWindowForTarget', { targetId })).bounds.windowState, 'maximized');
     result.checks.push('Chrome confirms maximized window bounds without a visible window');

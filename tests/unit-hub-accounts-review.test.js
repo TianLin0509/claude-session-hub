@@ -96,3 +96,13 @@ test('a browser navigation error is reported and the newly created inspection ta
   await assert.rejects(hub._openTab('main', 'https://chatgpt.com/'), /ERR_CONNECTION_RESET/);
   assert.deepEqual(closed, ['own-new-tab']);
 });
+
+test('ChatGPT security gate stops session requests immediately and releases its page', async t => {
+  const hub = chrome(t); let probes = 0, closed = false;
+  hub.openTab = async () => ({ targetId: 'probe' });
+  hub.page = async () => ({ evaluate: async () => { probes++; return { host: 'chatgpt.com', challenge: true }; }, close() {} });
+  hub.closeTab = async () => { closed = true; };
+  await assert.rejects(hub.chatgptAccount('main'), e => e.code === 'HUB_LOGIN_CHECK_RESTRICTED');
+  assert.equal(probes, 1, 'no session request or 15-second retry on a known security gate');
+  assert.equal(closed, true);
+});
