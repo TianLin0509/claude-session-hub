@@ -15,6 +15,7 @@ class MarttyCliSession extends AcpSession {
   print(){} // Never duplicate protocol text into the real TUI's output.
   lifecycle(type,extra={}){super.lifecycle(type==='turn-start'?'turn-started':type,{...extra,signalSource:this.source});}
   async _start(){
+    if(this.closed)throw new Error('CLI 已关闭');
     this.loadHistory();this.currentModel=this.options.model;
     const martty=require.resolve('martty/package.json',{paths:[path.dirname(this.options.launch.args[0])]});
     const args=[path.join(path.dirname(martty),'bin/martty.js'),'--agent',this.options.launch.command,
@@ -28,6 +29,7 @@ class MarttyCliSession extends AcpSession {
     if(resume&&this.options.kind==='glm')env.ZCODE_ACP_RESUME_SESSION=resume;
     this.tail=new JsonlTail(this.events,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.tail.start();
+    if(this.closed)throw new Error('CLI 已关闭');
     const ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     this.startTimer=setTimeout(()=>this.fail(new Error('终端启动未确认，请查看 CLI')),60000);
     try{this.pty=require('node-pty').spawn(this.options.launch.command,args,{cwd:this.options.cwd,env,cols:this.cols||120,rows:this.rows||30,
@@ -49,13 +51,24 @@ class MarttyCliSession extends AcpSession {
     if(direction!=='agent')return;
     const request=this.requests.get(m.id);
     if(request){this.requests.delete(m.id);
-      if(m.error){if(request.method==='session/prompt'&&this.active)super.finish(this.active,'failed',m.error.message,m);else this.fail(new Error(m.error.message));return;}
+      if(m.error){
+        if(request.method==='session/prompt'){
+          if(this.active?.requestId===m.id)super.finish(this.active,'failed',m.error.message,m);
+        }else this.fail(new Error(m.error.message));
+        return;
+      }
       if(request.method==='initialize'){this.capabilities=m.result.agentCapabilities;return;}
       if(['session/new','session/load','session/resume'].includes(request.method)){
         const sid=m.result?.sessionId||request.params?.sessionId;
         if(!sid)throw new Error('CLI 未返回会话身份');
         if(!this.threadId&&this.options.resumeId&&sid!==this.options.resumeId)throw new Error('CLI 恢复身份不一致');
-        if(this.threadId&&sid!==this.threadId){this.history.clear();this.items.clear();this.runtime=require('./codex-native-runtime').createNativeRuntime(this.runtime.epoch+1);}
+        if(this.threadId&&sid!==this.threadId){
+          const error=new Error('CLI 已切换会话，旧提交未确认');
+          this.active?.reject(error);this.active=null;
+          if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(error);this.pending=null;}
+          this.requests.clear();this.history.clear();this.items.clear();
+          this.runtime=require('./codex-native-runtime').createNativeRuntime(this.runtime.epoch+1);
+        }
         this.threadId=sid;this.configOptions=m.result.configOptions||[];
         this.apply({type:'snapshot',thread:{id:sid,status:{type:'idle'},turns:[]}});
         this.emit('bound',{threadId:sid,cwd:this.options.cwd,model:this.currentModel,
@@ -69,9 +82,11 @@ class MarttyCliSession extends AcpSession {
       }
     }
     if(m.method==='session/request_permission'){
+      if(m.params?.sessionId!==this.threadId||!this.active)return;
       this.apply({type:'request',threadId:this.threadId,request:{...m,params:{...m.params,turnId:this.active?.turnId}}});return;
     }
     if(m.method==='session/update'){
+      if(m.params?.sessionId!==this.threadId)return;
       if(m.params?.update?.sessionUpdate==='config_option_update'){
         const model=m.params.update.configOptions?.find(o=>o.category==='model')?.currentValue;
         if(model){this.currentModel=model.split(/[\\/]/).at(-1);this.emit('bound',{threadId:this.threadId,model:this.currentModel});}
@@ -99,20 +114,28 @@ class MarttyCliSession extends AcpSession {
     const input=require('./martty-prompt-input');
     const encoded=input.encodeMarttyPrompt(text);text=encoded.text;
     let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
+    // Own the acknowledgement rejection immediately: the PTY may exit while
+    // this method is still awaiting chunk writes. Propagate it below.
+    const acknowledgement=promise.then(value=>({value}),error=>({error}));
     this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
       timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
-    options.beforeStart?.();
     const paste=require('./pty-prompt-submit');
-    const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};
-    try{const baselineMarker=paste.snapshotPasteMarker(manager,this.options.id);
-      await input.writeMarttyPrompt(data=>this.write(data),encoded.payload);
+    const write=data=>{
+      if(this.closed||this.runtime.connection!=='connected')throw new Error(this.runtime.reason||'CLI 已断开，提交未确认');
+      this.write(data);
+    };
+    const manager={writeToSession:(_,data)=>write(data),getSessionBuffer:()=>this.buffer};
+    try{options.beforeStart?.();const baselineMarker=paste.snapshotPasteMarker(manager,this.options.id);
+      await input.writeMarttyPrompt(write,encoded.payload);
       await paste.waitForPasteSettled({sessionManager:manager,sid:this.options.id,
         settleMs:paste.computeSettleMs(encoded.payload.length),baselineMarker});
       // Explicit unmodified Enter avoids inheriting a Shift modifier in ConPTY.
-      this.write(input.ENTER);
+      write(input.ENTER);
       if(text.trimStart().startsWith('/')){clearTimeout(this.pending?.timer);this.pending=null;return {ok:true,sendStatus:'dispatched',commandOutput:'已送入 CLI，请在终端查看执行结果'};}
     }catch(error){clearTimeout(this.pending?.timer);this.pending=null;throw error;}
-    return promise;
+    const outcome=await acknowledgement;
+    if(outcome.error)throw outcome.error;
+    return outcome.value;
   }
   write(data){if(this.closed)throw new Error('CLI 已退出');
     try{data=require('./martty-prompt-input').translateMarttyInput(data);}
@@ -127,6 +150,12 @@ class MarttyCliSession extends AcpSession {
   async reply(){throw new Error('请到 CLI 终端中回答或授权');}
   dispose(){clearTimeout(this.startTimer);this.tail?.close();if(this.pending){clearTimeout(this.pending.timer);this.pending.reject(new Error('CLI 已关闭'));this.pending=null;}
     this.backstage.close();this._historyStore?.close();this._historyStore=null;}
-  kill(){this.persist();this.closed=true;this.readyReject?.(new Error('CLI 已关闭'));this.dispose();this.pty?.kill();}
+  kill(){
+    try{this.persist();}
+    finally{
+      this.closed=true;this.readyReject?.(new Error('CLI 已关闭'));
+      try{this.dispose();}finally{this.pty?.kill();}
+    }
+  }
 }
 module.exports={MarttyCliSession};

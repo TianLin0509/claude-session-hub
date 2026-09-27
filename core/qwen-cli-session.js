@@ -50,11 +50,14 @@ class QwenCliSession extends EventEmitter {
   changed(){this.contentRevision++;this.emit('items');}
   start(){return this.ready ||= this.launch();}
   async launch(){
+    if(this.closed)throw new Error('千问 CLI 已关闭');
     this.hookTail=new JsonlTail(this.hookFile,event=>{try{this.observe(event);}catch(error){this.fail(error);}},{onError:error=>this.fail(error)});
     await this.hookTail.start();
+    if(this.closed)throw new Error('千问 CLI 已关闭');
     this.telemetryTail=new (require('./qwen-cli-telemetry').QwenTelemetryTail)(this.telemetryFile,
       event=>this.observeTelemetry(event),error=>this.fail(error));
     await this.telemetryTail.start();
+    if(this.closed)throw new Error('千问 CLI 已关闭');
     const args=[this.options.launch.args[0],'--auth-type','openai','--approval-mode','yolo',
       '--model',this.options.model,'--json-file',this.outputFile,'--input-file',this.inputFile];
     if(this.options.resumeId)args.push('--resume',this.options.resumeId);
@@ -163,8 +166,7 @@ class QwenCliSession extends EventEmitter {
     const id=options.clientSubmissionId||randomUUID();
     const promise=new Promise((resolve,reject)=>{this.pending={id,text,resolve,reject,
       timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},15000)};});
-    options.beforeStart?.();
-    try{fs.appendFileSync(this.inputFile,JSON.stringify({type:'submit',text})+'\n');}
+    try{options.beforeStart?.();fs.appendFileSync(this.inputFile,JSON.stringify({type:'submit',text})+'\n');}
     catch(error){clearTimeout(this.pending.timer);this.pending=null;throw Object.assign(error,{notSent:true});}
     return promise;
   }
