@@ -53,7 +53,7 @@ async function main() {
     await until(`sessions.get(${j(s.id)}).effort==='high'&&!sessions.get(${j(s.id)})._modelSwitchPending`,'real effort switch',30000);
     report.checks.push('real UI model picker changes reasoning to high');
     await send(s.id, 'Run exactly one shell command: node -e "setTimeout(()=>console.log(123),15000)". Then reply ADAPT_DONE. Do not run other commands.');
-    await until(`getSessionRuntimeTruth(sessions.get(${j(s.id)})).state==='running'`,'busy');
+    await until(`window.__auditHooks.some(h=>h.sessionId===${j(s.id)}&&h.event==='tool-start')`,'real task tool started');
     await c.eval(`document.querySelector('.composer-thinking').click()`);
     await until(`!!document.querySelector('.effort-picker-menu [data-effort="low"]')`,'busy effort option');
     await c.eval(`document.querySelector('.effort-picker-menu [data-effort="low"]').click()`);
