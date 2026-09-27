@@ -106,6 +106,8 @@ test('a login window is always placed on screen, never left to the position Chro
   const hub = new HubChrome({ root: path.join(os.tmpdir(), 'hub-args') });
   const login = hub.launchArgs('main', { debug: false, visible: true, urls: ['https://www.kimi.com/'] });
   assert.ok(login.includes('--window-position=120,80'), 'the Hub parks work windows off screen; Chrome would restore that');
+  assert.ok(login.includes('--start-maximized'), 'websites fill the screen by default');
+  assert.ok(!login.some(a => a.startsWith('--window-size=')), 'a fixed size must not override maximization');
   assert.ok(!login.some(a => a.startsWith('--remote-debugging')), 'and no debugging port, or Google refuses the login');
   assert.ok(hub.launchArgs('main').includes('--window-position=-32000,-32000'), 'work windows stay off screen');
 });

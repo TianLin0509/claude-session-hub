@@ -59,6 +59,21 @@ test('inspection failure has a visible terminal state and does not overwrite old
   assert.equal(state.progress.status, 'failed'); assert.equal(state.progress.error, 'browser busy');
   assert.equal(acc.readCache().identities.main.sites.kimi.checkedAt, 123);
 });
+
+test('an inconclusive check retains the last known email as historical, without releasing tasks', async t => {
+  let outcome = { state: 'unknown', error: '页面未就绪', live: true, verified: false };
+  const { acc } = setup(t, async ({ items, onResult }) => { await onResult(items[0], outcome); });
+  acc.writeCache({ identities: { main: { account: 'known@example.com', sites: {} } } });
+  const resumed = []; acc.recovery = { resume: async r => resumed.push(r) };
+  const state = await acc.check({ identity: 'main', site: 'chatgpt' });
+  assert.equal(state.identities[0].account, 'known@example.com');
+  assert.equal(state.identities[0].accountStale, true);
+  assert.equal(state.identities[0].sites[0].state, 'unknown');
+  assert.deepEqual(resumed, []);
+  assert.equal(acc.readCache().identities.main.account, 'known@example.com');
+  outcome = { state: 'signed_out', live: true, verified: true };
+  assert.equal((await acc.check({ identity: 'main', site: 'chatgpt' })).identities[0].account, '');
+});
 test('corrupt preferences and cache are reported, never silently overwritten', async t => {
   const { root, acc } = setup(t);
   fs.writeFileSync(path.join(root, 'accounts.json'), '{');

@@ -60,3 +60,39 @@ test('idle tool cleanup cannot close a browser reserved by a login inspector', a
   assert.equal(await hub.closeIfIdle(), true);
   assert.equal(closed, 2);
 });
+
+test('a headless tab in another profile is closed before it can visit an account website', async t => {
+  const hub = chrome(t), closed = [], calls = [];
+  hub.browser = async () => ({ ep: { headless: true, port: 1234 }, cdp: {
+    async call(method, args) {
+      calls.push({ method, args });
+      if (method === 'Target.createTarget') return { targetId: 'own-new-tab' };
+      if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'own-new-tab', browserContextId: 'wrong-profile' } };
+      throw Error('unexpected ' + method);
+    }, close() {},
+  } });
+  hub.marker = async () => ({ targetId: 'marker', browserContextId: 'correct-profile' });
+  hub.pagesIn = async () => [{ targetId: 'other-task' }];
+  hub.page = async () => { assert.fail('must not access a page in the wrong profile'); };
+  hub.closeTab = async id => closed.push(id);
+  await assert.rejects(hub._openTab('main', 'https://chatgpt.com/'), /账号隔离校验失败/);
+  assert.deepEqual(closed, ['own-new-tab']);
+  assert.match(calls[0].args.url, /^file:.*identity-main\.html#task-/);
+});
+
+test('a browser navigation error is reported and the newly created inspection tab is released', async t => {
+  const hub = chrome(t), closed = [];
+  hub.browser = async () => ({ ep: { headless: true, port: 1234 }, cdp: {
+    async call(method) {
+      if (method === 'Target.createTarget') return { targetId: 'own-new-tab' };
+      if (method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'own-new-tab', browserContextId: 'main' } };
+      throw Error('unexpected ' + method);
+    }, close() {},
+  } });
+  hub.marker = async () => ({ targetId: 'marker', browserContextId: 'main' });
+  hub.pagesIn = async () => [];
+  hub.page = async () => ({ call: async () => ({ errorText: 'net::ERR_CONNECTION_RESET' }), close() {} });
+  hub.closeTab = async id => closed.push(id);
+  await assert.rejects(hub._openTab('main', 'https://chatgpt.com/'), /ERR_CONNECTION_RESET/);
+  assert.deepEqual(closed, ['own-new-tab']);
+});

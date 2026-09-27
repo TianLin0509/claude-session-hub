@@ -50,7 +50,8 @@ function companyCards(state) {
       if (pending?.state === 'queued') status = '等待检查';
       if (pending?.state === 'checking') status = '检查中…';
       const account = site.account || (company.site === 'chatgpt' ? identity.account : '') || '账号待确认';
-      return [{ ...site, identity: identity.id, account, label: identity.id === 'main' ? '账号 1' : '账号 2', status,
+      const accountStale = !!site.account ? !!site.stale : company.site === 'chatgpt' && !!identity.account && !!identity.accountStale;
+      return [{ ...site, identity: identity.id, account, accountStale, label: identity.id === 'main' ? '账号 1' : '账号 2', status,
         preferred: (state.preferences?.sites?.[company.site]?.preferred || 'main') === identity.id,
         tone: pending?.state === 'checking' ? 'checking' : pending?.state === 'queued' || site.stale ? 'idle' : site.state === 'signed_in' ? 'ok' : ['signed_out', 'needs_attention'].includes(site.state) ? 'warn' : 'idle' }];
     }),
