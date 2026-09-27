@@ -175,10 +175,20 @@ function applyProxyEnv(env, proxy) {
  * Codex 0.151 treats that contradictory value as an interactive startup gate,
  * so normalize the child environment to the terminal we actually provide.
  */
-function applyInteractiveTerminalEnv(env) {
+function applyInteractiveTerminalEnv(env, { truecolor = false } = {}) {
   if (!env || typeof env !== 'object') return null;
   const term = String(env.TERM || '').trim().toLowerCase();
   if (!term || term === 'dumb') env.TERM = 'xterm-256color';
+  if (!truecolor) return env.TERM;
+  // xterm.js renders 24-bit RGB. Without this, Codex's diff palette falls back
+  // to saturated indexed colors (or loses its backgrounds on newer versions).
+  env.COLORTERM = 'truecolor';
+  // supports-color on Windows classifies the console as ANSI-16 before it
+  // consults COLORTERM. FORCE_COLOR=3 is its explicit truecolor declaration.
+  // Preserve intentional user overrides, including monochrome output.
+  if (process.platform === 'win32' && env.FORCE_COLOR === undefined && env.NO_COLOR === undefined) {
+    env.FORCE_COLOR = '3';
+  }
   return env.TERM;
 }
 
@@ -1282,7 +1292,7 @@ class SessionManager extends EventEmitter {
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
-    applyInteractiveTerminalEnv(sessionEnv);
+    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isCodexRuntime });
     let codexProfile = null;
 
     if (isClaude) {

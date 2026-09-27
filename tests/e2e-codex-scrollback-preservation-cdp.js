@@ -145,6 +145,7 @@ async function main() {
       port,
       label: 'codex-scrollback-preservation',
       extraEnv: {
+        CODEX_HOME: path.join(TEMP_ROOT, 'codex-home'),
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_NO_EFFORT_MAX: '1',
         AI_HUB_WORKSPACE_ROOT: WORKSPACE_ROOT,
