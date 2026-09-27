@@ -56,10 +56,14 @@ function createHistoryReader({ orch, sid, kind, sourcePath, speaker = 'Agent', o
     const receipts=Object.values(ledger(orch).receipts).filter(r=>r.sid===sid);
     let found=receipts.find(r=>r.sourcePath===sourcePath && r.sourceUserKey===key);
     if (!found) {
-      const candidates=receipts.filter(r=>(r.promptHash===promptFingerprint(text)
-          || (turnId && orch.state.attempts[r.attemptId]?.providerTurnId===turnId))
-        && (!r.sourceUserKey || (turnId && r.sourcePath===sourcePath && r.sourceTurnId===turnId))
+      const eligible=receipts.filter(r=>(!r.sourceUserKey || (turnId && r.sourcePath===sourcePath && r.sourceTurnId===turnId))
+        && (!turnId || !orch.state.attempts[r.attemptId]?.providerTurnId || orch.state.attempts[r.attemptId].providerTurnId===turnId)
         && (!at || !r.dispatchAt || r.dispatchAt <= at+1000));
+      // A steer adds another user message to the same provider turn. Exact
+      // submitted text identifies that supplement; turn ID alone also matches
+      // the original request and must only be a fallback.
+      const exact=eligible.filter(r=>r.promptHash===promptFingerprint(text));
+      const candidates=exact.length?exact:eligible.filter(r=>turnId && orch.state.attempts[r.attemptId]?.providerTurnId===turnId);
       if(candidates.length!==1) { if(candidates.length>1)error('无法确定这条发言对应的任务轮次，未将其填入当前轮。'); return null; }
       found=candidates[0]; found.sourcePath=sourcePath; found.sourceUserKey=key; found.sourceTurnId=turnId || key;
       found.sourcePromptMatched=found.promptHash===promptFingerprint(text);
@@ -99,7 +103,7 @@ function createHistoryReader({ orch, sid, kind, sourcePath, speaker = 'Agent', o
     if(done && body) receipt.finalText=body;
     const attempt=orch.state.attempts[receipt.attemptId];
     if(done && attempt) attempt.sourceCompletedAt=receipt.sourceCompletedAt;
-    const canonical=orch.state.messages.find(m=>m.role==='assistant' && m.status!=='progress_update'
+    const canonical=orch.state.messages.find(m=>m.role==='assistant' && !m.supplementReply && m.status!=='progress_update'
       && m.sid===sid && m.turnNum===receipt.turnNum);
     if(done && body && ['handed_off','superseded'].includes(attempt?.status)
       && (!canonical || canonical.attemptId===receipt.attemptId)) {
@@ -149,9 +153,28 @@ function createHistoryReader({ orch, sid, kind, sourcePath, speaker = 'Agent', o
       // task_complete repeats the last agent message; keep the actual message
       // card and use this event only as an end receipt when text already exists.
       const previous=p.type==='task_complete' && receipt && !receipt.unresolved
-        && orch.state.messages.findLast(m=>m.sourceMessage && m.attemptId===receipt.attemptId);
+        && orch.state.messages.filter(m=>m.sourceMessage && m.sourcePath===sourcePath && m.sid===sid
+          && (m.attemptId===receipt.attemptId || (tid && m.providerTurnId===tid)))
+          .reduce((last,m)=>!last || m.createdAt>=last.createdAt ? m : last,null);
       const mirror=previous && previous.content===message.text ? previous : null;
-      save(receipt,message.text,mirror?mirror.sourceKey:rawKey,at,final?'final':'commentary',final);
+      // A steer can move the final to a supplement attempt while a replayed
+      // end receipt is still bound to the original request in the same turn.
+      // task_complete repeats that final; reuse its actual source identity.
+      const owner=mirror ? ledger(orch).receipts[mirror.attemptId] || receipt : receipt;
+      save(owner,message.text,mirror?mirror.sourceKey:rawKey,at,final?'final':'commentary',final);
+      if(p.type==='task_complete' && tid){
+        let changed=false;
+        // One native turn can contain the workflow request and several steers.
+        // Reusing its last message must not lose the original dispatch's end
+        // receipt, which gates later reuse of that CLI after file handoff.
+        for(const r of Object.values(ledger(orch).receipts)){
+          if(r.sid!==sid || r.sourcePath!==sourcePath || r.sourceTurnId!==tid || r.sourceCompletedAt)continue;
+          r.sourceCompletedAt=at || Date.now();
+          const attempt=orch.state.attempts[r.attemptId];if(attempt)attempt.sourceCompletedAt=r.sourceCompletedAt;
+          changed=true;
+        }
+        if(changed){orch._saveState('dev_chat_turn_completed',{sid,turnId:tid});onChanged();}
+      }
     } else if(obj.type==='event_msg' && ['turn_aborted','task_complete'].includes(p.type)) {
       const failure=p.type==='turn_aborted' ? '本轮 CLI 已中断，已收录的消息仍保留。' : textBlocks(p.error?.message || p.error?.text);
       save(tid?turns.get(tid):current,failure,rawKey,at,failure?'error':'terminal',true);

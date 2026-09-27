@@ -28,8 +28,8 @@ assert.ok(!/const disabledAttr = \(inProgress \|\| isDormant0\) \? 'disabled' : 
   '成员勾选不得再因「本轮进行中」而禁用（这正是用户说的"UI 都是灰的"）');
 assert.ok(/const disabledAttr = isDormant0 \? 'disabled' : ''/.test(rendererSrc),
   '成员勾选只对休眠成员禁用（后端本就跳过 dormant）');
-assert.ok(/改选只影响下一轮/.test(rendererSrc),
-  '运行中勾选应给出「只影响下一轮」的提示，而不是禁用');
+assert.ok(/正在执行，也可接收补充；勾选决定下一条消息发给谁/.test(rendererSrc),
+  '运行中勾选应说明下一条消息的收件人，不再误称只能影响下一轮');
 
 // --- 2. 运行中不拦截发送 -----------------------------------------------------
 const doSendBody = rendererSrc.slice(rendererSrc.indexOf('const doSend = () => {'));

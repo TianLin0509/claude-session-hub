@@ -1242,6 +1242,13 @@ function createWindow() {
   };
   mainWindow.webContents.on('will-navigate', interceptNavigate);
   mainWindow.webContents.on('will-redirect', interceptNavigate);
+  // A frame's WindowProxy survives reloads. Invalidate the research navigation
+  // handshake before the new document can announce its capabilities.
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame && !details.isSameDocument && details.frame?.name === 'hub-chuxin') {
+      sendToRenderer('chuxin:frame-navigating');
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     routeBlockedMainNavigation(url);
     return { action: 'deny' };
@@ -1802,6 +1809,7 @@ registerGroupchatSupplementIpc(ipcMain, {
   meetingManager,
   sendToRenderer,
   sessionManager,
+  transcriptTap,
 });
 registerCliStatusIpc(ipcMain, {
   cliReadyDetector,

@@ -83,11 +83,23 @@
 .mr-composer-head .mr-file-actions button { white-space: nowrap; padding: 4px 9px; }
 .mr-composer-head:has(.mr-delivery-flow) { flex-wrap: wrap; overflow-x: hidden; }
 .mr-composer-head:has(.mr-delivery-flow) .mr-input-preflight { flex-basis: 100%; }
-.mr-composer-head .mr-delivery-flow { flex-direction: column; align-items: stretch; gap: 6px; }
+.mr-composer-head .mr-delivery-flow { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mr-composer-head .mr-delivery-flow .mr-file-detail { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .mr-composer-head .mr-delivery-flow .mr-file-detail small,
 .mr-composer-head .mr-delivery-flow .mr-file-detail span { display: block; margin: 3px 0 0; }
 .mr-composer-head .mr-delivery-flow .mr-file-actions { flex-wrap: wrap; }
+.mr-composer-head .mr-delivery-flow > .mr-file-detail { flex: 1 1 160px; }
+.mr-composer-head .mr-delivery-flow > .mr-file-error,
+.mr-delivery-recipients, .mr-delivery-details { flex-basis: 100%; min-width: 0; }
+.mr-delivery-recipients { color: var(--fg-muted); font-size: 11px; }
+.mr-delivery-details[hidden] { display: none; }
+.mr-delivery-details { padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+.mr-delivery-details p { margin: 6px 0; color: var(--fg-muted); font-size: 12px; }
+.mr-delivery-stages { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; padding-left: 20px; color: var(--fg-muted); font-size: 12px; }
+.mr-delivery-stages [aria-current="step"] { color: var(--accent, var(--mark-indigo)); font-weight: 600; }
+.mr-delivery-flow button:focus-visible, .mr-gc-dispatch-details summary:focus-visible { outline: 2px solid var(--accent, var(--mark-indigo)); outline-offset: 2px; }
+.mr-gc-dispatch-details { margin-top: 8px; border-top: 1px solid var(--border-subtle); padding-top: 6px; }
+.mr-gc-dispatch-details summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; }
 .mr-composer-head .mr-input-battle-detail { max-width: 180px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .mr-composer-head .mr-input-battle-chips { flex-wrap: nowrap; }
 .mr-composer-head .mr-next-actions { flex-wrap: nowrap; white-space: nowrap; }
@@ -432,6 +444,7 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
 .mr-free-avatar-chk.disabled {
   cursor: not-allowed; opacity: 0.5;
 }
+.mr-free-avatar-chk:focus-visible { outline: 2px solid var(--accent, var(--mark-indigo)); outline-offset: 2px; }
 
 /* 2026-07-20 道雪 [修#10]：模式 dropdown 死样式已删（功能早移除，原 125 行） */
 

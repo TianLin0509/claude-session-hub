@@ -10,7 +10,7 @@ function fixture(preset='custom',extra={}) {
   if(preset==='custom')draft.rounds=[{name:'first',members:['a','b'],prompt:'propose',after:'next'},{name:'second',members:['c'],prompt:'review',after:'end'}];
   const m={id:'meeting',groupChat:true,subSessions:['sa','sb','sc'],slotSpecs:people,serialWorkflow:S.toDeliveryConfig({},draft,['a','b','c'])};
   const calls=[],pending=[],events=[],errors=[];
-  const deps={meetingManager:{getMeeting:()=>m},sessionManager:{getSession:()=>({status:'idle'})},getHubDataDir:()=>dir,getMembers:()=>people,
+  const deps={meetingManager:{getMeeting:()=>m,setParticipants:(_id,parts)=>{m.participants=[...parts];}},sessionManager:{getSession:()=>({status:'idle'})},getHubDataDir:()=>dir,getMembers:()=>people,
     ensureMemberReady:async()=>{},sendToRenderer:(name,state)=>events.push(state),logger:{error:(...args)=>errors.push(args)},
     getDispatcher:()=>({dispatchGroupChatTurn:(_id,args)=>{calls.push(args);args.targetMemberIds.forEach(memberId=>args.onSubmission({memberId,ok:true,sendStatus:'submitted'}));return new Promise(resolve=>pending.push(resolve));}}),...extra};
   let e=createDeliveryEngine(deps);
@@ -25,10 +25,14 @@ function fixture(preset='custom',extra={}) {
 async function filesDriveTheBarrier() {
   const f=fixture();try{
     await f.e.start(f.m.id,'goal');assert.equal(f.calls.length,1);assert.equal(f.calls[0].turnTimeoutMs,0);
+    assert.deepEqual(f.calls[0].dispatchPresentation,{goal:'goal',stageName:'first'});
+    assert.deepEqual(f.e.status(f.m.id).stageNames,['first','second']);assert.equal(f.e.status(f.m.id).stageIndex,0);
+    assert.deepEqual(f.m.participants,[0,1]);f.m.participants=[2];await f.advance();assert.deepEqual(f.m.participants,[2],'same step never resets manual avatar selection');
     f.pending[0]({status:'completed',results:[{sid:'sa',status:'completed',text:'tests still running'}]});await flush();await f.advance();
     assert.equal(f.calls.length,1,'chat final never advances');
     f.deliver('a');await f.advance();assert.equal(f.calls.length,1,'must wait for b');
     f.deliver('b');await f.advance();assert.equal(f.calls.length,2);assert.deepEqual(f.calls[1].targetMemberIds,['c']);
+    assert.deepEqual(f.m.participants,[2],'next step selects its members');
     await f.advance();assert.equal(f.calls.length,2,'scanner deduplicates');
     f.deliver('c');await f.advance();assert.equal(f.e.status(f.m.id).done,true);
     assert.equal(f.calls.length,2,'pending second chat did not block file completion');

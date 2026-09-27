@@ -245,6 +245,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
         if (fileStatus?.files?.length && (draft.kind !== 'file' || JSON.stringify(next.steps) !== JSON.stringify(wf.steps))) throw new Error('已有任务文件，不能切换协议或负责人；请为新任务创建群聊');
         next.settingsRevision = (wf.settingsRevision || 0) + 1;
         meetingManager.updateMeeting(meetingId,{serialWorkflow:next});
+        if(next.deliveryVersion===1 && next.enabled)meetingManager.setParticipants(meetingId,next.deliveryStages[0].members.map(id=>ids.indexOf(id)));
         sendToRenderer('meeting-updated',{meeting:get(meetingId)});
         emit(meetingId);
         return {ok:true,config:next};
