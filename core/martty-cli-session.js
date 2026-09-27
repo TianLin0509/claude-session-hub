@@ -117,8 +117,10 @@ class MarttyCliSession extends AcpSession {
     // Own the acknowledgement rejection immediately: the PTY may exit while
     // this method is still awaiting chunk writes. Propagate it below.
     const acknowledgement=promise.then(value=>({value}),error=>({error}));
-    this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
-      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
+    // 超时如实报未确认，同时释放这一条的占位：否则之后每次发送都报「仍在执行」，只能重启 CLI。
+    const pendingId=options.clientSubmissionId||randomUUID();
+    this.pending={id:pendingId,text,resolve,reject,
+      timer:setTimeout(()=>{if(this.pending?.id===pendingId)this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
     const paste=require('./pty-prompt-submit');
     const write=data=>{
       if(this.closed||this.runtime.connection!=='connected')throw new Error(this.runtime.reason||'CLI 已断开，提交未确认');
