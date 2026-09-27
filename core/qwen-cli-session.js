@@ -162,7 +162,9 @@ class QwenCliSession extends EventEmitter {
     }
     const id=options.clientSubmissionId||randomUUID();
     const promise=new Promise((resolve,reject)=>{this.pending={id,text,resolve,reject,
-      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},15000)};});
+      // 超时如实报未确认，同时释放这一条的占位：否则之后每次发送都被「仍在执行」挡住，
+      // 只能重启 CLI。真在运行时 runtime.state 的检查照样拦得住。
+      timer:setTimeout(()=>{if(this.pending?.id===id)this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},15000)};});
     options.beforeStart?.();
     try{fs.appendFileSync(this.inputFile,JSON.stringify({type:'submit',text})+'\n');}
     catch(error){clearTimeout(this.pending.timer);this.pending=null;throw Object.assign(error,{notSent:true});}

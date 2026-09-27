@@ -280,6 +280,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
           ...(result.error ? {error:result.error} : {}),
           // 明确没执行（例如 Codex 收尾中拒绝斜杠命令）：渲染层据此退回原文、不亮「补发」。
           ...(result.notSent ? {notSent:true} : {}),
+          // 千问 / GLM 超时报 {ok:false,unconfirmed:true}：结果未知，不能被渲染层当成失败。
+          ...(result.unconfirmed ? {unconfirmed:true} : {}),
           ...(result.threadId ? {threadId:result.threadId,turnId:result.turnId} : {}),
           ...(receipt ? { receipt: receipts.snapshot(receipt) } : {}),
         };

@@ -99,8 +99,10 @@ class MarttyCliSession extends AcpSession {
     const input=require('./martty-prompt-input');
     const encoded=input.encodeMarttyPrompt(text);text=encoded.text;
     let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});
-    this.pending={id:options.clientSubmissionId||randomUUID(),text,resolve,reject,
-      timer:setTimeout(()=>{resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
+    // 超时如实报未确认，同时释放这一条的占位：否则之后每次发送都报「仍在执行」，只能重启 CLI。
+    const pendingId=options.clientSubmissionId||randomUUID();
+    this.pending={id:pendingId,text,resolve,reject,
+      timer:setTimeout(()=>{if(this.pending?.id===pendingId)this.pending=null;resolve({ok:false,sendStatus:'stuck',unconfirmed:true});},Math.min(180000,20000+text.length*5))};
     options.beforeStart?.();
     const paste=require('./pty-prompt-submit');
     const manager={writeToSession:(_,data)=>this.write(data),getSessionBuffer:()=>this.buffer};

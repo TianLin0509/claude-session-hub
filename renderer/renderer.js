@@ -3974,6 +3974,7 @@ function updateFloatingPromptReceipt(receipt) {
   const state = floatingPromptDeliveries.get(receipt.sessionId);
   if (!applyPromptReceipt(state, receipt)) return;
   paintNativePromptReceipts(receipt.sessionId);
+  if (state.status === 'content-mismatch' && !state.dismissed) notifyPromptContentMismatch(state);
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
     if (state.status === 'confirmed' || state.status === 'queued') clearFloatingInputStuck(bar);
@@ -4023,6 +4024,19 @@ function clearFloatingInputStuck(bar) {
 // 提交回执仍由 main 保存；这里只清理旧节点，不把未知结果改成成功。
 function markFloatingInputStuck(bar, sessionId) {
   clearFloatingInputStuck(bar);
+}
+
+// 去掉的只是「未确认」横幅；明确失败仍要看得见（「可以失败，不能无声」）。
+function reportFloatingSendFailure(sessionId, inputBox, text, reason) {
+  const restored = !!inputBox && !readContenteditablePlainText(inputBox) && !!text;
+  if (restored) { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
+  showToast(`发送失败：${reason}。${restored ? '原文已放回输入框；' : ''}请先在终端核对是否已收到，再决定是否重发`, 'error');
+}
+
+function notifyPromptContentMismatch(delivery) {
+  if (!delivery || delivery._mismatchNotified) return;
+  delivery._mismatchNotified = true;
+  showToast('终端收到的内容与原文在换行或空白上不一致，请在终端核对；不会自动补发', 'error');
 }
 
 function lockFloatingInputBarGeometry(bar) {
@@ -4907,6 +4921,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
+      if (result?.sendStatus === 'content-mismatch') { notifyPromptContentMismatch(delivery); return; }
       // PTY 会话明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框、说明原因，
       // 不亮「补发」——补发只会把同一段文字塞进同一个选择框。主进程的失败回执可能
       // 比这里先到、已在本会话的各个输入栏亮起提示，这里一并清掉。
@@ -4942,6 +4957,12 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           return;
         }
       }
+      // 未确认横幅按用户决定去掉了，但明确的失败不能跟着变成无声：输入框在发送前已清空，
+      // 这里说明原因并把原文放回（可能已部分写进终端，所以提示先核对，不自动重发）。
+      if (!result?.ok && !result?.unconfirmed) {
+        reportFloatingSendFailure(sessionId, inputBox, text, result?.message || result?.error || '发送失败');
+        return;
+      }
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
       if (nativeCommand) {
@@ -4952,6 +4973,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
       if (isNativeAgent(session)) showToast('发送未完成：' + err.message, 'error');
+      else reportFloatingSendFailure(sessionId, inputBox, text, err && err.message || '发送通道异常');
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
     });
