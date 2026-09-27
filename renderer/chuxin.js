@@ -30,7 +30,7 @@
     { id: 'news', label: '消息雷达', hash: 'news' },
     { id: 'targets', label: '观察池', hash: 'watch' },
     { id: 'holding', label: '持仓信息', hash: 'holding' },
-    { id: 'notes', label: '知识积累', hash: 'notes' },
+    { id: 'notes', label: '知识库', hash: 'notes' },
     // Agent 联赛（5 个 Agent + PTY 编排）已由初心投研后端里的「作手林铛」单 Agent 取代：
     // 决策、报告与收益统计都在 chuxin-research 里，这里只要一个普通 iframe Tab。
     { id: 'lindang', label: '作手林铛', hash: 'lindang' },
@@ -163,35 +163,61 @@
   }
 
   // ---------- 面板骨架 ----------
+  // 2026-09-27 田哥选定方案 D（牛牛风格，再简单些）：投研面板只有左侧这一列 tab，
+  // 每项「单色图标 + 名称 + 计数」；后端状态和「启动投研后端」放在 tab 列底部，不再单独占一行标题。
+  const TAB_ICONS = {
+    today: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+    market: '<path d="M3 17l5-6 4 4 8-9"/><path d="M15 6h5v5"/>',
+    technical: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.5"/>',
+    news: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 9h8M8 13h8M8 16h5"/>',
+    targets: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+    holding: '<path d="M12 3v9l7 4"/><circle cx="12" cy="12" r="9"/>',
+    notes: '<path d="M5 4h11l3 3v13H5z"/><path d="M9 9h6M9 13h6M9 17h4"/>',
+    lindang: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9 16h6"/>',
+  };
+  function tabIcon(id) {
+    return '<svg class="cx-tab-icon" viewBox="0 0 24 24" aria-hidden="true">' + (TAB_ICONS[id] || '') + '</svg>';
+  }
+
   let root = null;
   function buildSkeleton() {
     root = document.getElementById('chuxin-panel');
     if (!root) return;
     root.innerHTML = '';
-    const header = el('div', 'cx-header');
-    const title = el('div', 'cx-title');
-    title.innerHTML = '初心投研<small>量化信息、持仓与长期记录工作台</small>';
+
+    state.tabsBar = el('nav', 'cx-primary-nav');
+    state.tabsBar.setAttribute('aria-label', '初心投研主要功能');
+    const brand = el('div', 'cx-brand');
+    brand.innerHTML = '<span class="cx-brand-dot"></span>初心投研';
+    const list = el('div', 'cx-tab-list');
+    state.badges = {};
+    state.tabButtons = [];  // 高亮只作用在 tab 按钮上（tab 列里还有品牌行和底部状态）
+    for (const t of PRIMARY_TABS) {
+      const b = el('button', 'cx-primary-tab');
+      b.dataset.tab = t.id;
+      b.type = 'button';
+      b.innerHTML = tabIcon(t.id) + '<span class="cx-tab-label">' + esc(t.label) + '</span>';
+      const badge = el('span', 'cx-tab-badge');
+      state.badges[t.id] = badge;
+      b.append(badge);
+      b.addEventListener('click', () => switchTab(t.id));
+      list.append(b);
+      state.tabButtons.push(b);
+    }
+    // 后端状态、启动按钮和启动失败说明：都在 tab 列底部
+    const foot = el('div', 'cx-nav-foot');
     state.statusEl = el('span', 'cx-status unknown');
     state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">检测中…</span>';
+    state.asofEl = el('span', 'cx-asof');
     state.startBtn = el('button', 'cx-btn', '启动投研后端');
     state.startBtn.id = 'cx-start-service';
     state.startBtn.style.display = 'none';
     state.startBtn.addEventListener('click', startService);
     state.providerEl = el('span', 'cx-provider');
-    header.append(title, state.statusEl, state.startBtn, state.providerEl);
     state.startErrorEl = el('div', 'cx-start-error');
     state.startErrorEl.style.display = 'none';
-
-    // 唯一工作台导航；所有内容由同一个 chuxin-research 前端承载。
-    state.tabsBar = el('nav', 'cx-primary-nav');
-    state.tabsBar.setAttribute('aria-label', '初心投研主要功能');
-    for (const t of PRIMARY_TABS) {
-      const b = el('button', 'cx-primary-tab', t.label);
-      b.dataset.tab = t.id;
-      b.type = 'button';
-      b.addEventListener('click', () => switchTab(t.id));
-      state.tabsBar.append(b);
-    }
+    foot.append(state.statusEl, state.asofEl, state.startBtn, state.providerEl, state.startErrorEl);
+    state.tabsBar.append(brand, list, foot);
 
     // 所有 Tab 必须共用一个 iframe。旧实现为每个 Tab 各建一份前端状态，
     // 在技术雷达加入观察后，观察池 iframe 仍停留在旧快照，产生“已在观察，
@@ -201,12 +227,7 @@
     state.frameView.style.display = 'flex';
     state.frame = null;
 
-    root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
-    // 2026-09-26 初心改版：当前文档确认自带导航后再收起外层菜单；
-    // 后端在线时同时收起标题，离线或状态查询失败时恢复启动入口。
-    // 左侧菜单只是隐藏，不删：Tab 记忆、外部跳转仍走 switchTab。
-    // Keep the Hub navigation reachable until this document confirms its own.
-    state.innerNavConfirmed = false;
+    root.append(state.tabsBar, state.frameView);
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
       observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
@@ -217,10 +238,47 @@
     switchTab(migratedTab);
   }
 
+  // tab 上的计数：技术候选、消息事件、观察池、持仓、知识库篇数、林铛目标仓位。
+  // 只读几个现成接口，失败就留空，不影响切页；一分钟最多刷一次。
+  function setBadge(id, text, tone) {
+    const badge = state.badges && state.badges[id];
+    if (!badge) return;
+    badge.textContent = text == null ? '' : String(text);
+    badge.className = 'cx-tab-badge' + (tone ? ' ' + tone : '');
+  }
+  async function refreshBadges(force) {
+    if (!state.online || (!force && Date.now() - (state.badgesAt || 0) < 60000)) return;
+    state.badgesAt = Date.now();
+    const [overview, holdings, knowledge, desk] = await Promise.allSettled([
+      apiGet('/api/observe/overview'), apiGet('/api/holdings'), apiGet('/api/knowledge'), apiGet('/api/lindang/desk'),
+    ]);
+    if (overview.status === 'fulfilled') {
+      const header = overview.value.header || {};
+      const counts = header.counts || {};
+      setBadge('technical', counts.technical);
+      setBadge('news', counts.news_events);
+      setBadge('targets', counts.watching);
+      if (state.asofEl) state.asofEl.textContent = header.data_asof ? '数据截至 ' + header.data_asof : '';
+    }
+    if (holdings.status === 'fulfilled') {
+      const rows = (holdings.value.positions || []).length;
+      if (holdings.value.broker_snapshot_at) setBadge('holding', rows);
+      else setBadge('holding', '未同步', 'warn');
+    }
+    if (knowledge.status === 'fulfilled') {
+      const counts = knowledge.value.counts || {};
+      setBadge('notes', Object.values(counts).reduce((sum, value) => sum + (Number(value) || 0), 0));
+    }
+    if (desk.status === 'fulfilled') {
+      const exposure = ((desk.value.account || {}).target || {}).exposure;
+      setBadge('lindang', exposure == null ? '' : Math.round(Number(exposure) * 100) + '%', 'accent');
+    }
+  }
+
   function switchTab(tabId) {
     const tab = PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0];
     localStorage.setItem(TAB_KEY, tab.id);
-    for (const b of state.tabsBar.children) {
+    for (const b of state.tabButtons || []) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
       b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
@@ -228,7 +286,7 @@
     state.nativeTabActive = false;
     state.frameView.style.display = 'flex';
     const target = WEB + '/?api=' + encodeURIComponent(API)
-      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub&nav=inner#' + tab.hash;
+      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
     if (!state.frame) {
       state.frame = document.createElement('iframe');
       state.frame.className = 'cx-frame';
@@ -240,7 +298,6 @@
       if (state.frame.dataset.hash !== tab.hash || state.frame.src !== target) {
         state.frame.dataset.hash = tab.hash;
         state.frame.src = target;
-        armInnerNavFallback();
       }
     };
     // Chromium may keep an OOP iframe document.hidden=true when navigation is
@@ -283,32 +340,10 @@
     const data = event.data;
     if (!data || typeof data !== 'object' || data.source !== 'chuxin') return;
     if (data.type === 'open-lindang-session') void openLindangSession(String(data.runId || ''));
-    if (data.type === 'chuxin-ready' || data.type === 'chuxin-view') confirmInnerNav();
     if (data.type === 'chuxin-view') rememberInnerView(String(data.hash || ''));
   });
 
-  ipcRenderer.on('chuxin:frame-navigating', () => {
-    state.innerNavConfirmed = false;
-    if (root) root.classList.remove('cx-inner-nav');
-    armInnerNavFallback();
-  });
-
-  // 只有当前文档亲口确认才收起外层菜单；主进程在整页导航前撤销旧确认，hash 切页不重置。
-  // 初心和 Hub 分开部署；旧版或加载失败时保留 Hub 菜单，不依赖上一份文档的能力。
-  function confirmInnerNav() {
-    state.innerNavConfirmed = true;
-    clearTimeout(state.innerNavTimer);
-    if (root) root.classList.add('cx-inner-nav');
-  }
-  function armInnerNavFallback() {
-    if (state.innerNavConfirmed) return;
-    clearTimeout(state.innerNavTimer);
-    state.innerNavTimer = setTimeout(() => {
-      if (!state.innerNavConfirmed && root) root.classList.remove('cx-inner-nav');
-    }, 6000);
-  }
-
-  // 初心顶栏里切页（含页面内跳转，比如林铛工作台点「打开档案」）后，记住当前页：下次打开投研回到这里。
+  // 初心页面内跳转（比如林铛工作台点「打开档案」跳到知识库）后，tab 高亮跟过去，并记住当前页。
   // 只记，不导航——iframe 已经在那一页了，再设 src 会整页重载。
   const HASH_TO_TAB = { watch: 'targets', bingdian: 'lindang' };
   function rememberInnerView(hash) {
@@ -316,7 +351,7 @@
     const tab = PRIMARY_TABS.find((row) => row.id === tabId);
     if (!tab || !state.tabsBar) return;
     localStorage.setItem(TAB_KEY, tab.id);
-    for (const b of state.tabsBar.children) {
+    for (const b of state.tabButtons || []) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
       b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
@@ -334,8 +369,10 @@
         state.startErrorEl.style.display = 'none';
         state.startErrorEl.textContent = '';
         state.statusEl.className = 'cx-status online';
-        state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端在线 · ' + esc(API.replace(/^https?:\/\//, '')) + '</span>';
+        state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">后端在线</span>';
+        state.statusEl.title = '投研后端 ' + API.replace(/^https?:\/\//, '');
         state.startBtn.style.display = 'none';
+        void refreshBadges(false);
       } else {
         state.statusEl.className = 'cx-status offline';
         state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端未启动</span>';
@@ -913,9 +950,13 @@
       // 2026-09-01：学习面板是主区第四视图，同样要互斥，否则两块会叠在一起
       if (window.__studyHide) window.__studyHide();
       if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
+      if (window.__hubSidebar) window.__hubSidebar.collapseForPanel();
+      state.badgesAt = 0;
       refreshStatus();
+    } else if (window.__hubSidebar) {
+      window.__hubSidebar.restore();
     }
-    // 在线时标题行是收起的；后端中途挂了要让「启动投研后端」自己回来，所以面板开着就定时查一次
+    // 后端中途挂了要让 tab 列底部的「启动投研后端」自己回来，所以面板开着就定时查一次
     clearInterval(state.statusTimer);
     state.statusTimer = visible ? setInterval(refreshStatus, 20000) : null;
   }

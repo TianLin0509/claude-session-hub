@@ -12,12 +12,30 @@
 }
 #chuxin-panel[hidden], #chuxin-panel[style*="none"] { display: none; }
 
-/* 2026-09-26 初心改版：初心自己的顶栏当唯一导航（iframe 带 nav=inner）。
-   左侧 216px 菜单收起；后端在线时标题行也收起，整块面板给内容。离线时标题行留着显示「启动投研后端」。 */
-#chuxin-panel.cx-inner-nav { grid-template-columns: minmax(0, 1fr); }
-#chuxin-panel.cx-inner-nav .cx-primary-nav { display: none; }
-#chuxin-panel.cx-inner-nav .cx-view-frame { grid-column: 1; }
-#chuxin-panel.cx-inner-nav.cx-online .cx-header { display: none; }
+/* 2026-09-27 方案 D（简化）：投研面板只有左侧这一列 tab；后端状态与启动按钮在 tab 列底部。 */
+#chuxin-panel { grid-template-columns: 176px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); background: #0d1829; }
+#chuxin-panel .cx-primary-nav { grid-column: 1; grid-row: 1; gap: 2px; padding: 14px 10px 10px; border-right: 1px solid #22344f; background: #0b1626; }
+#chuxin-panel .cx-view-frame { grid-column: 2; grid-row: 1; }
+#chuxin-panel .cx-frame { background: #0d1829; }
+.cx-brand { display: flex; align-items: center; gap: 8px; padding: 2px 8px 12px; color: #e4ebf5; font-size: 13.5px; font-weight: 700; letter-spacing: .02em; }
+.cx-brand-dot { width: 8px; height: 8px; border-radius: 2px; background: #3d8bff; }
+.cx-tab-list { display: flex; flex-direction: column; gap: 2px; }
+#chuxin-panel .cx-primary-tab { display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 0 8px 0 10px; border: 0; border-radius: 18px; color: #a5b4ca; font-size: 13.5px; font-weight: 500; }
+#chuxin-panel .cx-primary-tab:hover { color: #e4ebf5; background: rgba(61, 139, 255, .08); }
+#chuxin-panel .cx-primary-tab.active { color: #e4ebf5; background: rgba(61, 139, 255, .16); box-shadow: none; font-weight: 650; }
+.cx-tab-icon { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+#chuxin-panel .cx-primary-tab.active .cx-tab-icon { color: #6aa6ff; opacity: 1; }
+.cx-tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.cx-tab-badge { flex: none; min-width: 22px; padding: 0 7px; border-radius: 10px; background: #15233a; color: #7589a5; font-size: 11.5px; font-variant-numeric: tabular-nums; line-height: 19px; text-align: center; }
+.cx-tab-badge:empty { display: none; }
+.cx-tab-badge.warn { background: rgba(240, 169, 59, .14); color: #f0a93b; }
+.cx-tab-badge.accent, #chuxin-panel .cx-primary-tab.active .cx-tab-badge { background: #3d8bff; color: #fff; }
+.cx-nav-foot { display: flex; flex-direction: column; gap: 6px; margin-top: auto; padding: 10px 6px 2px; border-top: 1px solid #22344f; color: #7589a5; font-size: 12px; }
+.cx-nav-foot .cx-status { width: fit-content; padding: 0; border: 0; font-size: 12px; font-weight: 600; }
+.cx-nav-foot .cx-asof:empty { display: none; }
+.cx-nav-foot .cx-btn { width: 100%; }
+.cx-nav-foot .cx-provider { margin-left: 0; white-space: normal; }
+.cx-nav-foot .cx-start-error { margin: 0; }
 
 /* 工作台左栏：与 mock 一致，只放数据与记录，不复制 AI 产品入口。 */
 .cx-primary-nav {

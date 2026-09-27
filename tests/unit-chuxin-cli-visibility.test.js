@@ -169,20 +169,25 @@ test('Chuxin exposes one eight-item workbench nav ending with the lindang agent 
   assert(primaryBlock, 'PRIMARY_TABS declaration is missing');
   assert.deepStrictEqual(
     [...primaryBlock[1].matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
-    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累', '作手林铛'],
+    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识库', '作手林铛'],
   );
   assert.match(primaryBlock[1], /id: 'market', label: '实时行情', hash: 'market'/);
   // 联赛被初心投研后端的单 Agent 页取代，这一格是普通 iframe Tab，不再是原生面板
   assert.match(primaryBlock[1], /id: 'lindang', label: '作手林铛', hash: 'lindang'/);
   assert.doesNotMatch(primaryBlock[1], /native: true/);
   assert.match(chuxin, /cx-primary-nav/);
-  assert.match(chuxin, /&embed=hub&nav=inner#/);
-  // 初心顶栏接管导航：Hub 的左侧菜单收起、在线时标题行收起，页面内切页回报给 Hub 记住
-  assert.match(chuxin, /classList\.add\('cx-inner-nav'\)/);
-  assert.match(chuxin, /classList\.toggle\('cx-online', state\.online\)/);
+  // 2026-09-27 方案 D：导航只在这里的左侧 tab 列（初心页面不带自己的顶栏），iframe 不再带 nav=inner
+  assert.match(chuxin, /&embed=hub#/);
+  assert.doesNotMatch(chuxin, /nav=inner|cx-inner-nav/);
+  // tab 带计数；后端状态与启动按钮在 tab 列底部；页面内跳转回报给 Hub 高亮对应 tab
+  assert.match(chuxin, /cx-tab-badge/);
+  assert.match(chuxin, /cx-nav-foot/);
   assert.match(chuxin, /data\.type === 'chuxin-view'/);
-  assert.match(styles, /#chuxin-panel\.cx-inner-nav \.cx-primary-nav \{ display: none; \}/);
-  assert.match(styles, /#chuxin-panel\.cx-inner-nav\.cx-online \.cx-header \{ display: none; \}/);
+  // 打开投研时临时折叠 session 列表，离开时恢复你自己的设置
+  assert.match(chuxin, /__hubSidebar\.collapseForPanel\(\)/);
+  assert.match(chuxin, /__hubSidebar\.restore\(\)/);
+  const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+  assert.match(rendererSrc, /window\.__hubSidebar = \{/);
   assert.doesNotMatch(primaryBlock[1], /AI群聊|英雄大厅|今日感悟/);
   assert.doesNotMatch(chuxin, /className = 'cx-tabs'/);
   assert.doesNotMatch(chuxin, /label: '开发者'/);
