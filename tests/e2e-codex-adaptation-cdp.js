@@ -30,6 +30,7 @@ async function main() {
     hub = await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_HOME_DIR:path.join(root,'home')}});
     c = await connectFirstPage(hub);
     await until('typeof sessions!=="undefined"','renderer');
+    await c.eval(`window.__auditHooks=[];ipcRenderer.on('hook-event',(_event,payload)=>{if(payload.provider==='codex')window.__auditHooks.push({event:payload.event,sessionId:payload.sessionId});})`);
     await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     const s = await invoke('create-session',{kind:'codex',opts:{cwd,model,effort:'low',mcpProfile:'none'}});
     assert(s.id); report.sessionId=s.id;
@@ -40,6 +41,10 @@ async function main() {
     await open(s.id);await sleep(4000);await snapshot('new-idle');
     await send(s.id,'只回复 AUDIT_INITIAL'); await response(s.id,'AUDIT_INITIAL');
     await snapshot('after-reply'); const old = await c.eval(`({...sessions.get(${j(s.id)})})`);
+    const meta = fs.readFileSync(old.transcriptPath,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line)).find(r=>r.type==='session_meta');
+    report.cliVersion = meta?.payload?.cli_version;
+    assert(report.cliVersion, 'native rollout must identify the actual CLI version');
+    await until(`window.__auditHooks.some(h=>h.sessionId===${j(s.id)}&&h.event==='prompt')`,'real Codex prompt hook',15000);
     report.checks.push('real CLI first prompt, native transcript, completion');
     await sleep(1500);
     await c.eval(`document.querySelector('.composer-thinking').click()`);
@@ -55,6 +60,8 @@ async function main() {
     await until(`document.querySelector('.effort-picker-menu')?.textContent.includes('\u5207\u6362\u5931\u8d25')`,'visible busy rejection');
     await sleep(1000);assert.equal(await c.eval(`getSessionRuntimeTruth(sessions.get(${j(s.id)})).state`),'running');
     await c.eval(`document.body.click()`);await response(s.id,'ADAPT_DONE');
+    report.hooks = await c.eval('window.__auditHooks');
+    assert(report.hooks.some(h=>h.sessionId===s.id&&h.event==='tool-start'), 'real tool hook must reach Hub');
     report.checks.push('busy settings rejection leaves the real task running and completing');
     await sleep(1500);await c.close();c=null;await gracefulQuit(hub);hub=null;
     const shift = 2*60*60*1000;
@@ -70,6 +77,7 @@ async function main() {
     report.checks.push('old completed history restores blue ready without replaying running flags');
     await c.eval(`observeSessionRuntime(${j(s.id)},{state:'unknown',source:'audit-injection',confidence:'none',observedAt:Date.now()});scheduleSessionListRender();scheduleFloatingBarState()`);
     await until(`document.querySelector('.session-item[data-session-id="${s.id}"] .sl-dot')?.classList.contains('unknown')`,'unknown dot');
+    await until(`document.querySelector('.fi-status-text')?.textContent.includes('状态未知')`,'unknown composer status');
     assert.equal(await c.eval(`document.querySelector('.session-item[data-session-id="${s.id}"] .sl-dot')&&getComputedStyle(document.querySelector('.session-item[data-session-id="${s.id}"] .sl-dot')).backgroundColor`),'rgba(0, 0, 0, 0)');
     report.checks.push('isolated UI injection: unknown status has a distinct hollow dot');
     await c.eval(`observeSessionRuntime(${j(s.id)},{state:'idle',source:'audit-restore',confidence:'authoritative',observedAt:Date.now()});scheduleSessionListRender();scheduleFloatingBarState()`);
