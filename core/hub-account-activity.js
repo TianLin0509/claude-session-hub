@@ -21,8 +21,11 @@ function combine(rows) {
     if (!row || !['main', 'alt'].includes(row.identity) || !SITES.has(row.site) || !Number.isFinite(row.at)) continue;
     const key = row.identity + ':' + row.site, previous = entries[key];
     const chosen = previous?.at > row.at ? previous : row;
+    const lastSuccessAt = Math.max(previous?.lastSuccessAt || 0, row.lastSuccessAt || (row.outcome === 'success' ? row.at : 0));
+    const rowIssue = ['login_required', 'verification_required'].includes(row.outcome) ? { outcome: row.outcome, at: row.at } : null;
+    const issue = (rowIssue?.at || 0) > (previous?.issue?.at || 0) ? rowIssue : previous?.issue;
     entries[key] = { identity: chosen.identity, site: chosen.site, source: chosen.source, outcome: chosen.outcome, at: chosen.at,
-      lastSuccessAt: Math.max(previous?.lastSuccessAt || 0, row.lastSuccessAt || (row.outcome === 'success' ? row.at : 0)) };
+      lastSuccessAt, ...(issue && issue.at > lastSuccessAt ? { issue } : {}) };
   }
   return entries;
 }

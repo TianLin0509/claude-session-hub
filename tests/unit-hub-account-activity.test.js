@@ -21,6 +21,12 @@ test('opening is only opening; successful use survives a later login failure, wi
   value = readActivity(root, env).entries['main:chatgpt'];
   assert.equal(value.at, 3000); assert.equal(value.lastSuccessAt, 2000); assert.equal(usage(value).login, true);
   assert.equal(combine([{ ...value, prompt: 'SECRET' }])['main:chatgpt'].prompt, undefined);
+  recordActivity(root, { site: 'chatgpt', outcome: 'opened', at: 4000 });
+  value = readActivity(root, env).entries['main:chatgpt'];
+  assert.equal(value.outcome, 'opened'); assert.equal(usage(value).login, true);
+  assert.match(usage(value).note, /最近调用需要登录/);
+  recordActivity(root, { site: 'chatgpt', source: 'roundtable', outcome: 'success', at: 5000 });
+  assert.equal(usage(readActivity(root, env).entries['main:chatgpt']).login, false);
   assert.deepEqual(combine([null, {}]), {});
   assert.throws(() => recordActivity(root, { site: '../../escape', outcome: 'opened' }));
   fs.writeFileSync(path.join(root, 'account-activity/main-chatgpt-website.json'), '{');
