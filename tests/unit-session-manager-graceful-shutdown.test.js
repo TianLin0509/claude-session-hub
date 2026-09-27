@@ -24,7 +24,7 @@ function attachFakePty(manager, sessionId) {
     pty,
     pendingTimers: new Set(),
     terminalSnapshot: snapshot,
-    terminalOutputFlushTimer: null,
+    outputDelivery: null,
   });
   // Simulate the one native onExit subscription installed by createSession().
   pty.onExit(exitInfo => manager._handlePtyExit(sessionId, pty, exitInfo));

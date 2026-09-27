@@ -67,7 +67,9 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
   let truth = getSessionRuntimeTruth(session, { now });
-  if (!native && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+  const closedPtyTurn = session?.agentRuntime === 'pty' && truth.confidence === 'authoritative'
+    && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_FAILED, 'interrupted'].includes(truth.state);
+  if (!native && !closedPtyTurn && options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
     truth = {
       ...truth,
       state: RUNTIME_RUNNING,

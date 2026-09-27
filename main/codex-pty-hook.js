@@ -79,6 +79,7 @@ function createCodexPtyHookHandler({
       return { ok: true };
     }
     if (!['prompt', 'tool-start', 'tool-complete', 'permission-request'].includes(event)) return { ok: true };
+    sessionManager.noteCodexHookActivity?.(hubSessionId, event, parsed, eventAt);
     sendToRenderer('hook-event', {
       event, eventAt, sessionId: hubSessionId, provider: 'codex',
       // 不带 claudeSessionId：renderer 会把它当 Claude 会话 id 落盘。

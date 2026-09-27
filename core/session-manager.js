@@ -16,6 +16,7 @@ const {
 const {
   normalizeDeepSeekModel,
   normalizeCodexSessionModel,
+  isCodexConversationModelId,
   deepseekDisplayName,
   normalizeLegacyDeepSeekClaudeModel,
   legacyDeepSeekClaudeDisplayName,
@@ -28,6 +29,7 @@ const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
+const { PtyOutputDelivery } = require('./pty-output-delivery.js');
 const { compareLatestReplyDesc } = require('./session-recency.js');
 const { detectHostShellTakeover, detectCodexThreadEnded } = require('./host-shell-detector.js');
 const {
@@ -56,10 +58,6 @@ const {
 // 取 1MB 是给带 ANSI 色彩的 TUI 输出留余量（同样内容字节数可达纯文本数倍）。
 // 代价很小：每会话一个字符串，远低于多留一个 xterm + WebGL 实例。
 const RING_BUFFER_BYTES = 1024 * 1024;
-// A synchronized ConPTY repaint normally completes in the same burst. If a
-// malformed/truncated frame does not, fail open quickly so preservation logic
-// can never make the CLI appear frozen.
-const TERMINAL_REWRITER_FLUSH_MS = 50;
 
 // 试过两种"起点对齐"，都已放弃，记在这里免得有人再走一遍：
 //   1) 对齐到最后一次 \x1b[2J 全屏清屏 —— 实测是**倒退**。Codex/Kimi 每次重绘都清屏，
@@ -1255,7 +1253,7 @@ class SessionManager extends EventEmitter {
       opts = { ...opts, effort: webRoute.effort, codexSpeedTier: 'inherit' };
     }
     if (isCodex) {
-      if (opts.model && normalizeCodexSessionModel(opts.model) !== String(opts.model).trim()) throw new Error('Codex 模型名称无效，未替换成默认模型');
+      if (opts.model && !isCodexConversationModelId(opts.model)) throw new Error('Codex 模型名称无效，未替换成默认模型');
       if (opts.effort && !CODEX_EFFORT_LEVELS.has(opts.effort)) throw new Error('Codex 思考档无效，未降低精度');
       if (opts.mcpProfile && !CODEX_MCP_PROFILES.has(opts.mcpProfile)) throw new Error('Codex MCP 配置档无效');
       if (opts.codexSpeedTier && !CODEX_SPEED_TIERS.has(opts.codexSpeedTier)) throw new Error('Codex 服务通道无效');
@@ -1789,7 +1787,7 @@ class SessionManager extends EventEmitter {
         // The rewriter handles that serialized form as well as raw VT streams.
         conptySerialized: process.platform === 'win32',
       }) : null,
-      terminalOutputFlushTimer: null,
+      outputDelivery: null,
       lastOutputSeq: 0,
       groupChatReady: false,
       groupChatLastActivity: 0,
@@ -1825,21 +1823,11 @@ class SessionManager extends EventEmitter {
       this.emit('output', { sessionId: id, seq, data: terminalData });
     };
 
-    const scheduleTerminalOutputFlush = (entry) => {
-      if (!entry || !entry.terminalOutputRewriter || !entry.terminalOutputRewriter.hasPending()) return;
-      entry.terminalOutputFlushTimer = setTimeout(() => {
-        const current = this.sessions.get(id);
-        if (!current || current.pty !== ptyProcess || !current.terminalOutputRewriter) return;
-        current.terminalOutputFlushTimer = null;
-        try {
-          deliverTerminalData(current.terminalOutputRewriter.flush());
-        } catch (error) {
-          // Timed fail-open is best-effort; never let preservation affect PTY
-          // liveness even if a future rewriter implementation regresses.
-          console.warn('[codex-scrollback] pending output flush failed:', error && error.message);
-        }
-      }, TERMINAL_REWRITER_FLUSH_MS);
-    };
+    this.sessions.get(id).outputDelivery = new PtyOutputDelivery({
+      emit: deliverTerminalData,
+      rewriter: this.sessions.get(id).terminalOutputRewriter,
+      onError: error => console.warn('[pty-output] terminal adapter failed:', error.message),
+    });
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
@@ -1858,25 +1846,7 @@ class SessionManager extends EventEmitter {
       entry.groupChatLastActivity = Date.now();
       entry.groupChatOutputBytes += Buffer.byteLength(String(data || ''), 'utf8');
       entry.lastOutputAt = entry.groupChatLastActivity;
-      if (entry.terminalOutputFlushTimer) {
-        clearTimeout(entry.terminalOutputFlushTimer);
-        entry.terminalOutputFlushTimer = null;
-      }
-      let terminalData = data;
-      if (entry.terminalOutputRewriter) {
-        try {
-          terminalData = entry.terminalOutputRewriter.write(data);
-        } catch (error) {
-          // Display preservation must never be allowed to interrupt the PTY.
-          console.warn('[codex-scrollback] rewrite failed, passing raw output:', error && error.message);
-          let pending = '';
-          try { pending = entry.terminalOutputRewriter.flush(); } catch {}
-          entry.terminalOutputRewriter = null;
-          terminalData = pending + data;
-        }
-      }
-      deliverTerminalData(terminalData);
-      scheduleTerminalOutputFlush(entry);
+      entry.outputDelivery.write(data);
     });
 
     ptyProcess.onExit((exitInfo) => {
@@ -1886,13 +1856,7 @@ class SessionManager extends EventEmitter {
         return;
       }
       const entry = this.sessions.get(id);
-      if (entry && entry.pty === ptyProcess && entry.terminalOutputFlushTimer) {
-        clearTimeout(entry.terminalOutputFlushTimer);
-        entry.terminalOutputFlushTimer = null;
-      }
-      if (entry && entry.pty === ptyProcess && entry.terminalOutputRewriter) {
-        try { deliverTerminalData(entry.terminalOutputRewriter.flush()); } catch {}
-      }
+      if (entry && entry.pty === ptyProcess) entry.outputDelivery?.close();
       Promise.resolve(this._handlePtyExit(id, ptyProcess, exitInfo)).catch(error => {
         console.error('[session-release] history flush failed; ownership retained:', error);
         ptyProcess.emit?.('action-error', '历史保存失败，尚未释放会话：' + error.message);
@@ -2855,6 +2819,11 @@ class SessionManager extends EventEmitter {
     s.agentTurnActive = true;
     s.agentTurnId = event.turnId || null;
     s.agentTurnStartSource = event.signalSource || event.source || 'provider_lifecycle';
+    const runtimeChanged = require('./codex-pty-runtime').observeCodexPtyRuntime(s, {
+      state: 'running', source: s.agentTurnStartSource, startedAt: observedAt,
+      turnId: s.agentTurnId,
+    });
+    if (runtimeChanged) this.emit('session-updated', this._toPublic(s.info));
     const payload = {
       sessionId,
       seq: s.agentTurnStartSeq,
@@ -2874,7 +2843,21 @@ class SessionManager extends EventEmitter {
     const at = Number(event.completedAt || event.abortedAt || event.failedAt) || Date.now();
     if (at < s.agentTurnStartedAt) return false;
     s.agentTurnActive = false;
+    const runtimeChanged = require('./codex-pty-runtime').observeCodexPtyRuntime(s, {
+      state: event.failedAt ? 'failed' : event.abortedAt ? 'interrupted' : 'completed',
+      source: event.failedAt ? 'codex-turn-failed' : event.abortedAt ? 'codex-turn-aborted' : 'codex-turn-complete',
+      completedAt: at, turnId: event.turnId || s.agentTurnId,
+      evidence: event.message || null,
+    });
+    if (runtimeChanged) this.emit('session-updated', this._toPublic(s.info));
     return true;
+  }
+
+  noteCodexHookActivity(sessionId, event, parsed, observedAt = Date.now()) {
+    const entry = this.sessions.get(sessionId);
+    const changed = require('./codex-pty-runtime').observeCodexHookActivity(entry, event, parsed, observedAt);
+    if (changed) this.emit('session-updated', this._toPublic(entry.info));
+    return changed;
   }
 
   // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。
@@ -3014,6 +2997,7 @@ class SessionManager extends EventEmitter {
         ...(info.nativeSharedControl ? {nativeSharedControl:info.nativeSharedControl} : {})} : {}),
       // PTY 会话显式带空值：renderer 按 {...旧, ...新} 合并，缺字段会让原生时代的后端残留下来。
       ...(info.agentRuntime === 'pty' ? {agentRuntime:'pty',runtimeBackend:null,nativeRuntime:null,
+        ...(info.runtimeTruth ? {runtimeTruth:info.runtimeTruth} : {}),
         hookIntegrationWarning:info.hookIntegrationWarning || null} : {agentRuntime:null}),
       id: info.id,
       meetingId: info.meetingId || null,
@@ -3163,7 +3147,7 @@ class SessionManager extends EventEmitter {
   dispose() {
     for (const s of this.sessions.values()) {
       for (const t of s.pendingTimers) clearTimeout(t);
-      if (s.terminalOutputFlushTimer) clearTimeout(s.terminalOutputFlushTimer);
+      s.outputDelivery?.close();
       if (s.terminalSnapshot) s.terminalSnapshot.dispose();
       if (s.pty) {
         s.pty.kill();
@@ -3202,10 +3186,7 @@ class SessionManager extends EventEmitter {
       // and waiter registration.
       for (const [sessionId, session] of entries) {
         for (const timer of session.pendingTimers || []) clearTimeout(timer);
-        if (session.terminalOutputFlushTimer) {
-          clearTimeout(session.terminalOutputFlushTimer);
-          session.terminalOutputFlushTimer = null;
-        }
+        session.outputDelivery?.flush();
         if (!session.pty) {
           if (session.terminalSnapshot) session.terminalSnapshot.dispose();
           this._releaseOpenSession(sessionId, session.info);

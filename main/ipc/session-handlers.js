@@ -385,7 +385,7 @@ function registerSessionIpc(ipcMain, deps) {
   // failed picker interaction from making Hub claim a model that never became active.
   ipcMain.handle('confirm-session-model-switch', async (_event, payload = {}) => {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
-    const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+    let modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
     const session = sessionId ? sessionManager.getSession(sessionId) : null;
     if (!session) return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     if (['codex-app-server','acp'].includes(session.runtimeBackend)) {
@@ -402,6 +402,7 @@ function registerSessionIpc(ipcMain, deps) {
         ? isClaudeModelSelection(modelId)
         : false;
     if (!valid) return { ok: false, error: 'invalid-model', message: '该模型不属于当前 CLI 的会话模型目录' };
+    if (kind === 'codex') modelId = require('../../core/model-options').normalizeCodexSessionModel(modelId);
 
     const displayName = String(payload.displayName || modelId)
       .replace(/[\0\r\n]+/g, ' ')

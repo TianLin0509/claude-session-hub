@@ -1,6 +1,8 @@
 function createTerminalMinimapFactory(options = {}) {
   const doc = options.document || document;
   const getTerminalCache = typeof options.getTerminalCache === 'function' ? options.getTerminalCache : () => null;
+  const ownsTranscript = options.ownsTranscript || (() => false);
+  const navigateTranscript = options.navigateTranscript || (() => false);
   const PROMPT_LINE_RE = options.promptLineRe;
   const AI_MARKERS_RE = options.aiMarkersRe;
   const flashPromptLine = typeof options.flashPromptLine === 'function' ? options.flashPromptLine : () => {};
@@ -86,6 +88,13 @@ function mountMinimap(sessionId, termContainer, terminal) {
 
   function render() {
     if (disposed) return;
+    const native = ownsTranscript(sessionId, terminal);
+    strip.hidden = native;
+    if (promptMarkerLayer) promptMarkerLayer.hidden = native;
+    if (native) {
+      getTerminalCache(sessionId)?._navButtons?.refreshState();
+      return;
+    }
     const buf = terminal.buffer.active;
     const total = Math.max(1, buf.length);
     const stripH = strip.clientHeight || 1;
@@ -189,6 +198,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
   }
 
   function navTo(direction) {
+    if (navigateTranscript(sessionId, terminal, direction)) return true;
     const target = findNavTarget(direction);
     if (!target) return false;
     try { terminal.scrollToLine(target.line); } catch {}
@@ -214,8 +224,9 @@ function mountMinimap(sessionId, termContainer, terminal) {
     },
     navPrev() { return navTo('up'); },
     navNext() { return navTo('down'); },
-    canNavPrev() { return findNavTarget('up') !== null; },
-    canNavNext() { return findNavTarget('down') !== null; },
+    ownsTranscript() { return ownsTranscript(sessionId, terminal); },
+    canNavPrev() { return ownsTranscript(sessionId, terminal) || findNavTarget('up') !== null; },
+    canNavNext() { return ownsTranscript(sessionId, terminal) || findNavTarget('down') !== null; },
     dispose() {
       disposed = true;
       if (scanTimer) clearTimeout(scanTimer);
@@ -256,6 +267,8 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   termContainer.appendChild(wrap);
 
   function refreshState() {
+    btnUp.title = minimap.ownsTranscript?.() ? '上翻一页 (PageUp)' : '上一个问题 (Ctrl+↑)';
+    btnDown.title = minimap.ownsTranscript?.() ? '下翻一页 (PageDown)' : '下一个问题 (Ctrl+↓)';
     btnUp.disabled = !minimap.canNavPrev();
     btnDown.disabled = !minimap.canNavNext();
   }

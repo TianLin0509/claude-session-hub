@@ -293,6 +293,10 @@ class CodexXtermScrollbackRewriter {
   _rewriteConptyFrames(data) {
     let input = this._conptyCarry + data;
     this._conptyCarry = '';
+    // Fullscreen Codex owns its history and mouse input. There is no terminal
+    // scrollback to rescue. Waiting for a cursor-show/home repaint here holds
+    // its partial animation frames until the CLI becomes idle.
+    if (this._alternateScreen) return input;
     let output = '';
 
     while (input) {
@@ -360,7 +364,7 @@ class CodexXtermScrollbackRewriter {
   }
 
   flush() {
-    const pending = this._conptyCarry + this._csiCarry;
+    const pending = this.pendingText();
     this._conptyCarry = '';
     this._csiCarry = '';
     if (this._conptySerialized) this._observeConptyOutput(pending);
@@ -369,6 +373,10 @@ class CodexXtermScrollbackRewriter {
 
   hasPending() {
     return this._csiCarry.length > 0 || this._conptyCarry.length > 0;
+  }
+
+  pendingText() {
+    return this._conptyCarry + this._csiCarry;
   }
 
   stats() {
