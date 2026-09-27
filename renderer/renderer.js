@@ -79,6 +79,8 @@ const { createPathLinkContextMenuController } = require('./path-link-context-men
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
+const nativeTerminalAppearance = process.platform === 'win32'
+  ? require('../core/windows-terminal-appearance').readWindowsTerminalAppearance() : null;
 const {
   forgetViewMode,
   readCardViewSessions,
@@ -870,7 +872,7 @@ function setFontSize(size) {
   // 写到 :root（documentElement），让 AI 群聊（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
   for (const [sid, c] of terminalCache) {
-    c.terminal.options.fontSize = size;
+    c.terminal.options.fontSize = size * (c.nativeFontScale || 1);
     if (c.opened) {
       scheduleFitAndResizeTerminal(sid, c, { force: true });
     }
@@ -1390,10 +1392,6 @@ function disposeCachedTerminal(sessionId) {
     try { cached._localPathLinkProvider.dispose(); } catch {}
     cached._localPathLinkProvider = null;
   }
-  if (typeof _cursorDebounce !== 'undefined' && _cursorDebounce.has(sessionId)) {
-    clearTimeout(_cursorDebounce.get(sessionId));
-    _cursorDebounce.delete(sessionId);
-  }
   unloadGpuRenderer(cached);
   try { cached.terminal.dispose(); } catch {}
   try { cached.container.remove(); } catch {}
@@ -1419,12 +1417,15 @@ function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) {
     return terminalCache.get(sessionId);
   }
+  const terminalSession = sessions.get(sessionId);
+  const nativeAppearance = nativeTerminalAppearance && terminalSession && isCodexKind(terminalSession.kind)
+    && !isNativeAgent(terminalSession) ? nativeTerminalAppearance : null;
   const terminal = new Terminal({
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
-    theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
-    fontSize: currentFontSize,
+    theme: nativeAppearance?.theme || resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
+    fontSize: currentFontSize * (nativeAppearance?.fontScale || 1),
     lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1,
-    fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    fontFamily: nativeAppearance?.fontFamily || "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
     allowProposedApi: true,
@@ -1694,6 +1695,8 @@ function getOrCreateTerminal(sessionId) {
   });
 
   const cached = {
+    nativeTheme: nativeAppearance?.theme || null,
+    nativeFontScale: nativeAppearance?.fontScale || 1,
     terminal, fitAddon, searchAddon, container, opened: false,
     _codexFollowBottom: true,
     _hydrated: false,
@@ -1705,6 +1708,7 @@ function getOrCreateTerminal(sessionId) {
     _deferredResizeSig: null,
     _needsPtyRedraw: false,
   };
+  if (nativeAppearance) container.style.background = nativeAppearance.theme.background;
   terminalCache.set(sessionId, cached);
   return cached;
 }
@@ -6595,38 +6599,14 @@ const {
   clearSession: clearTerminalActivitySession,
 } = terminalActivityMonitor;
 // --- IPC event handlers ---
-const _cursorDebounce = new Map();
-
-// Codex TUI placeholder filter — the interactive TUI repeatedly redraws
-// "› Improve documentation in @filename" as input placeholder text. Due to
-// PTY/xterm size mismatch during startup, cursor positioning fails and the
-// placeholder leaks into scrollback.  Regex is ANSI-tolerant (handles color
-// codes between words).
-const _A = '(?:\\x1b\\[[0-9;]*[a-zA-Z])*';
-const CODEX_PLACEHOLDER_RE = new RegExp(
-  `[›> ]*${_A}I?m?prove${_A}\\s?${_A}documentation${_A}\\s?${_A}in${_A}\\s?${_A}@[^\\s]*`, 'g'
-);
-
 function writeTerminalChunk(sessionId, cached, data) {
   if (!cached || !data) return;
   const sess = sessions.get(sessionId);
   if (sess && isCodexKind(sess.kind)) {
     const pinAfterWrite = shouldAutoPinCodexTerminal(sessionId, cached);
-    // Native output is literal provider text, not an interactive CLI frame.
-    if (sess.runtimeBackend === 'codex-app-server' || sess.runtimeBackend === 'acp') {
-      cached.terminal.write(data);
-      if (pinAfterWrite) scheduleCodexBottomPin(sessionId, cached);
-      return;
-    }
-    let filtered = data;
-    if (filtered.includes('prove documentation')) {
-      filtered = filtered.replace(CODEX_PLACEHOLDER_RE, '');
-    }
-    cached.terminal.write(filtered + '\x1b[?25l');
-    clearTimeout(_cursorDebounce.get(sessionId));
-    _cursorDebounce.set(sessionId, setTimeout(() => {
-      cached.terminal.write('\x1b[?25h');
-    }, 150));
+    // Preserve native text and cursor visibility, including user text which
+    // happens to match a historical placeholder. The CLI owns its TUI frames.
+    cached.terminal.write(data);
     if (pinAfterWrite) scheduleCodexBottomPin(sessionId, cached);
   } else {
     cached.terminal.write(data);
@@ -6731,13 +6711,7 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
     for (const item of pending) {
       const itemSeq = Number(item.seq);
       if (Number.isFinite(itemSeq) && itemSeq <= cached._hydratedSeq) continue;
-      let data = String(item.data || '');
-      const sess = sessions.get(sessionId);
-      if (sess && isCodexKind(sess.kind)
-          && sess.runtimeBackend !== 'codex-app-server' && sess.runtimeBackend !== 'acp'
-          && data.includes('prove documentation')) {
-        data = data.replace(CODEX_PLACEHOLDER_RE, '');
-      }
+      const data = String(item.data || '');
       await writeXtermAndWait(cached.terminal, data);
       if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
       onTerminalOutput(sessionId, String(item.data || '').length);

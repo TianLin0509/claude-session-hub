@@ -473,8 +473,8 @@ test('Codex terminal chunk rendering coalesces bottom pinning per frame', () => 
   assert.match(schedule, /if \(cached\._codexBottomPinRaf\) return;/);
   assert.match(schedule, /cached\._codexBottomPinRaf = requestAnimationFrame/);
   assert.match(src, /cancelAnimationFrame\(cached\._codexBottomPinRaf\)/);
-  assert.match(write, /cached\.terminal\.write\(filtered \+ '\\x1b\[\?25l'\)/);
-  assert.doesNotMatch(write, /cached\.terminal\.write\('\\x1b\[\?25l'\)/);
+  assert.match(write, /cached\.terminal\.write\(data\)/);
+  assert.doesNotMatch(write, /\\x1b\[\?25[lh]/, 'the native CLI owns cursor visibility');
 });
 
 test('card path linking parses each text node only once', () => {

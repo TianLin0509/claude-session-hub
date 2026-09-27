@@ -194,17 +194,13 @@ function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
       } : {}),
     });
   } catch { return null; }
-  let queue = Promise.resolve();
   let disposed = false;
-  let writeErrorLogged = false;
+  const queue = new (require('./terminal-write-queue').TerminalWriteQueue)(terminal, error => {
+    console.warn('[group-chat] live PTY runtime probe write failed:', error && error.message);
+  });
   const enqueue = (data) => {
     if (disposed || !data) return;
-    queue = queue.then(() => new Promise(resolve => terminal.write(String(data), resolve))).catch(error => {
-      if (!writeErrorLogged) {
-        writeErrorLogged = true;
-        console.warn('[group-chat] live PTY runtime probe write failed:', error && error.message);
-      }
-    });
+    queue.enqueue(data);
   };
   const listener = (event = {}) => {
     if (event.sessionId === sid) enqueue(event.data);
@@ -214,7 +210,8 @@ function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
   return {
     async probe(probeState) {
       if (disposed) return null;
-      await queue;
+      try { await queue.drain(); } catch { return null; }
+      if (disposed) return null;
       const buffer = terminal.buffer && terminal.buffer.active;
       if (!buffer) return null;
       const lines = [];
@@ -241,6 +238,7 @@ function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
       if (disposed) return;
       disposed = true;
       sessionManager.removeListener('output', listener);
+      queue.dispose();
       try { terminal.dispose(); } catch {}
     },
   };
@@ -567,7 +565,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
       gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
     });
-    require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
+    const codexPasteFlushed = require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // BP_END 紧贴 \r 时 Ink 把 \r 当 paste 尾巴忽略，所以必须隔开再发。
     //   隔多久以前写死 500ms —— 短 prompt 够用，长 prompt 必然还在消化窗口内，
@@ -578,7 +576,10 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     const configuredSettleMs = Number(_deps && _deps.bracketedPasteSettleMs);
     const pasteSettleMs = Number.isFinite(configuredSettleMs) && configuredSettleMs > 0
       ? configuredSettleMs
-      : computeSettleMs(String(prompt || '').length, {
+      // On Windows Codex, End flushes the native paste state before the Enter
+      // queued behind it. The ordered key boundary replaces a guessed delay;
+      // the task-start acknowledgement and bounded recovery below still apply.
+      : codexPasteFlushed ? 0 : computeSettleMs(String(prompt || '').length, {
         minMs: Number(_deps && _deps.bracketedPasteSettleMinMs) || undefined,
         maxMs: Number(_deps && _deps.bracketedPasteSettleMaxMs) || undefined,
       });

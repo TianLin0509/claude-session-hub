@@ -76,6 +76,7 @@ async function main() {
       port,
       label: 'codex-manual-scroll',
       extraEnv: {
+        CODEX_HOME: path.join(DATA_DIR, 'codex-home'),
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_NO_EFFORT_MAX: '1',
         [pathKey]: `${FAKE_BIN}${path.delimiter}${process.env[pathKey] || ''}`,
