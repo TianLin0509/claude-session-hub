@@ -34,6 +34,8 @@
     // Agent 联赛（5 个 Agent + PTY 编排）已由初心投研后端里的「作手林铛」单 Agent 取代：
     // 决策、报告与收益统计都在 chuxin-research 里，这里只要一个普通 iframe Tab。
     { id: 'lindang', label: '作手林铛', hash: 'lindang' },
+    // 数据底座：每个数据源能不能用、要不要登录、谁在用（2026-09-28）
+    { id: 'data', label: '账号数据', hash: 'data' },
   ];
   const WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -174,6 +176,7 @@
     holding: '<path d="M12 3v9l7 4"/><circle cx="12" cy="12" r="9"/>',
     notes: '<path d="M5 4h11l3 3v13H5z"/><path d="M9 9h6M9 13h6M9 17h4"/>',
     lindang: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9 16h6"/>',
+    data: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
   };
   function tabIcon(id) {
     return '<svg class="cx-tab-icon" viewBox="0 0 24 24" aria-hidden="true">' + (TAB_ICONS[id] || '') + '</svg>';
@@ -249,8 +252,9 @@
   async function refreshBadges(force) {
     if (!state.online || (!force && Date.now() - (state.badgesAt || 0) < 60000)) return;
     state.badgesAt = Date.now();
-    const [overview, holdings, knowledge, desk] = await Promise.allSettled([
+    const [overview, holdings, knowledge, desk, sources] = await Promise.allSettled([
       apiGet('/api/observe/overview'), apiGet('/api/holdings'), apiGet('/api/knowledge'), apiGet('/api/lindang/desk'),
+      apiGet('/api/data-sources/summary'),
     ]);
     if (overview.status === 'fulfilled') {
       const header = overview.value.header || {};
@@ -272,6 +276,11 @@
     if (desk.status === 'fulfilled') {
       const exposure = ((desk.value.account || {}).target || {}).exposure;
       setBadge('lindang', exposure == null ? '' : Math.round(Number(exposure) * 100) + '%', 'accent');
+    }
+    // 账号数据：只在有源失败或待登录时亮一个橙色数字，全部正常就不打扰
+    if (sources.status === 'fulfilled') {
+      const attention = Number(sources.value.attention) || 0;
+      setBadge('data', attention ? attention : '', 'warn');
     }
   }
 

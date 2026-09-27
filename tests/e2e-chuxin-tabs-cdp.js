@@ -112,7 +112,7 @@ async function screenshot(client, name) {
     console.log('opened', JSON.stringify(opened));
     assert.strictEqual(opened.collapsed, true, '打开投研时 session 列表应当折叠');
     assert.strictEqual(opened.pref, before.pref, '临时折叠不能改写你的折叠偏好');
-    assert.deepStrictEqual(opened.tabs, ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识库', '作手林铛']);
+    assert.deepStrictEqual(opened.tabs, ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识库', '作手林铛', '账号数据']);
     assert(opened.navVisible, '左侧 tab 列应当可见');
     assert(!opened.src.includes('nav=inner'), 'iframe 不应再带 nav=inner');
 
@@ -134,6 +134,12 @@ async function screenshot(client, name) {
     await waitEval(client, `document.querySelector('.cx-view-frame iframe').src.endsWith('#lindang')`, 'lindang route');
     await _waitMs(3000);
     await screenshot(client, '03-lindang.png');
+    // 3b) 账号数据：第 9 格能打开，页面里的数据源卡片渲染出来
+    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="data"]').click()`);
+    await waitEval(client, `document.querySelector('.cx-view-frame iframe').src.endsWith('#data')`, 'data route');
+    assert.strictEqual(await client.eval(`document.querySelector('.cx-primary-tab.active')?.dataset.tab`), 'data');
+    await _waitMs(3500);
+    await screenshot(client, '03c-data.png');
 
     // 4) 初心页面内跳转：tab 高亮跟过去
     const target = (await listCdpTargets(hub)).find((row) => (row.url || '').startsWith(WEB_BASE));
