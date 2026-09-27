@@ -97,9 +97,15 @@ class HubChrome {
   }
   async closeIfIdle() {
     return this.lifecycle(async () => {
-      if (await this.workTabs()) return false;
-      await this.close();
-      return true;
+      // A tool may finish closing its page just as an inspector reserves Chrome.
+      // Idle cleanup is optional: leave the inspector's browser to its owner.
+      const release = this.inspectionOwner ? null : require('./web-roundtable/store').acquire('account-check', path.join(this.root, 'locks'));
+      if (!this.inspectionOwner && !release) return false;
+      try {
+        if (await this.workTabs()) return false;
+        await this.close();
+        return true;
+      } finally { release?.(); }
     });
   }
 
@@ -460,7 +466,13 @@ class HubChrome {
       const host = new URL(site.url).hostname;
       for (const end = Date.now() + timeoutMs; Date.now() < end;) {
         if (signal?.aborted) throw Error('检查已取消');
-        const r = await page.evaluate(PROBE);
+        let r;
+        try { r = await page.evaluate(PROBE); }
+        catch (e) {
+          // Page.navigate returns before redirects finish. Retry only this short
+          // loss of the JavaScript context; real probe/connection errors stay visible.
+          if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
+        }
         if (r?.challenge) return { state: 'needs_attention', reason: 'challenge' };
         if (siteKey === 'google' && r?.host === 'accounts.google.com') return { state: 'signed_out' };
         if (r && r.host === host) {
