@@ -17,6 +17,15 @@ const SID = '01a0dd92-e239-7101-99bc-a34e5914fe81';
 const conpty = text => text.replace(/ /g, '\x1b[1C');
 const ended = sid => conpty(`Token usage: total=17,529\r\nTo continue this session, run codex resume, then select 只回复 READY (${sid.slice(0, 9)}\r\n${sid.slice(9)})\r\n`);
 
+test('Codex 0.157.1 direct resume hint binds only the exact most recent thread', () => {
+  const direct = sid => conpty(`To continue this session, run codex resume ${sid.slice(0, 12)}\r\n${sid.slice(12)}\r\n`);
+  assert.equal(detectCodexThreadEnded(direct(SID), SID), true);
+  assert.equal(detectCodexThreadEnded(direct(SID), SID.slice(0, -1)), false);
+  assert.equal(detectCodexThreadEnded(direct(SID), '01a0ffff-0000-7000-8000-000000000000'), false);
+  assert.equal(detectCodexThreadEnded(ended(SID) + direct('01a0ffff-0000-7000-8000-000000000000'), SID), false);
+  assert.equal(detectCodexThreadEnded(`To continue this session, run codex resume something else ${SID}`, SID), false);
+});
+
 test('thread-ended evidence survives ConPTY spacing and wrapping, and must name the bound thread', () => {
   assert.equal(detectCodexThreadEnded('\x1b[?25l' + ended(SID) + '\x1b[2K› Ask Codex to do anything', SID), true);
   assert.equal(detectCodexThreadEnded(ended(SID), 'other-thread'), false);
