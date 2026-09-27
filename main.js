@@ -702,14 +702,17 @@ transcriptTap.on('turn-aborted', (ev) => {
 // full-screen TUI can redraw an old error line during every later turn.
 transcriptTap.on('turn-error', (ev) => {
   if (!ev || !ev.hubSessionId) return;
-  sessionManager.noteAgentTurnFinished(ev.hubSessionId, ev);
+  // Rollout errors carry completedAt. Label the terminal event before main
+  // retains it, so renderer reload cannot turn a failed request into success.
+  const failedAt = ev.failedAt != null ? ev.failedAt : ev.completedAt != null ? ev.completedAt : Date.now();
+  sessionManager.noteAgentTurnFinished(ev.hubSessionId, { ...ev, failedAt });
   completionNotifier.noteTurnFailed(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-failed-event', {
       hubSessionId: ev.hubSessionId,
       transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
-      failedAt: ev.completedAt != null ? ev.completedAt : Date.now(),
+      failedAt,
       meetingId: session ? session.meetingId : null,
       kind: session ? session.kind : null,
       signalSource: ev.signalSource || 'task_complete_error',

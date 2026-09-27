@@ -286,6 +286,19 @@ async function main() {
     await until(async()=>/上一轮执行失败/.test((await state()).composer),'failure displayed');
     report.rejection=await state();await capture('provider-error');
     check('request-error-keeps-live-session',!/重连|已断开/.test(report.rejection.composer)&&report.rejection.status!=='dormant',report.rejection.composer);
+    await client.send('Page.reload');
+    await until(()=>client.eval(`typeof sessions!=='undefined'&&sessions.has(${j(sid)})`),'failed renderer reload');
+    await until(()=>client.eval(`!!document.querySelector('.session-item[data-session-id="${sid}"]')`),'failed reloaded row');
+    await client.eval(`document.querySelector('.session-item[data-session-id="${sid}"]').click()`);
+    await until(async()=>!!(await state())?.hydrated,'failed rehydrated terminal');
+    report.reloadedRejection=await state();await capture('provider-error-reloaded');
+    report.mainRejection=await client.eval(`ipcRenderer.invoke('get-sessions').then(rows=>rows.find(s=>s.id===${j(sid)})?.runtimeTruth)`);
+    // Opening a failed session acknowledges its badge under the existing UI
+    // contract. Main must retain the actual failure, never a completed turn.
+    const reloadedTruth=report.reloadedRejection.truth;
+    check('request-error-survives-renderer-reload',report.mainRejection?.state==='failed'
+      && /gpt-parity-invalid/.test(report.mainRejection.evidence)
+      && (reloadedTruth.state==='failed' || (reloadedTruth.state==='idle' && reloadedTruth.source==='user-acknowledged-failure')));
     if(process.env.ACTIVITY_INTERACTION_AUDIT){
       sid=codexId;
       await client.eval(`document.querySelector('.session-item[data-session-id="${sid}"]').click()`);
