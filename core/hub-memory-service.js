@@ -30,8 +30,8 @@ const SCAN_MAX_DIRS = 4000;
 const SCAN_MAX_FILES = 500;
 const RECEIPT_LIMIT = 30;
 // A context drop below half of its observed peak means the runtime compacted.
-const COMPACTION_MIN_PEAK = 40000;
-const COMPACTION_RATIO = 0.5;
+// The same judgement is shared with group-chat rules (core/context-compaction.js).
+const { checkCompaction } = require("./context-compaction");
 const contextIdentity = (s) =>
   [
     s.codexSid || s.ccSessionId || s.acpSid || s.id,
@@ -914,13 +914,11 @@ class HubMemoryService {
   // Runtimes compact without a shared signal; a large context drop is the
   // provider-neutral evidence that an earlier index may no longer be present.
   compactedSince(record, s, receiptFile) {
-    const used = typeof s.contextUsed === "number" ? s.contextUsed : null;
-    if (used === null) return false;
-    const peak = record.peakContext || 0;
-    if (peak >= COMPACTION_MIN_PEAK && used < peak * COMPACTION_RATIO)
-      return true;
-    if (used > peak) {
-      record.peakContext = used;
+    const previous = record.peakContext || 0;
+    const { compacted, peak } = checkCompaction(previous, s.contextUsed);
+    if (compacted) return true;
+    if (peak > previous) {
+      record.peakContext = peak;
       this.saveReceipt(receiptFile, record);
     }
     return false;

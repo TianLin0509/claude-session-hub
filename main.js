@@ -46,6 +46,7 @@ const {
   ensureClaudeHookIntegration,
   startClaudeHookIntegrationWatchdog,
 } = require('./core/claude-hook-integration.js');
+const { cleanupFileClaimsTmp } = require('./core/file-claims-tmp-cleanup.js');
 const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -3270,6 +3271,14 @@ app.whenReady().then(async () => {
     });
   }
   traceStartup('deploy hooks done');
+  // file-scope-guard hook 被中断/硬杀留下的 file-claims.json.tmp.<pid> 孤儿（只收 1 小时前的）。
+  try {
+    const tmpCleanup = cleanupFileClaimsTmp(getHubDataDir());
+    if (tmpCleanup.removed) console.log(`[群聊] 清理 file-claims 临时文件孤儿 ${tmpCleanup.removed} 个`);
+    if (tmpCleanup.errors.length) console.warn(`[群聊] file-claims 临时文件清理部分失败：${tmpCleanup.errors.slice(0, 3).join('；')}`);
+  } catch (error) {
+    console.warn('[群聊] file-claims 临时文件清理失败:', error && error.message);
+  }
   traceStartup('codex config start');
   ensureCodexContextConfig();
   traceStartup('codex config done');

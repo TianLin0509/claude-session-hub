@@ -74,7 +74,8 @@ function extractGroupChatUserInput(text) {
   while ((m = marker.exec(t)) !== null) last = m;
   if (!last) return null;
   // 只在确认是群聊脚手架时才动手，避免误伤正文里恰好写了 "## 用户" 的普通提问
-  if (!/(^|\n)##[ \t]*规则/.test(t) && !/(^|\n)##[ \t]*新增发言/.test(t)) return null;
+  // 「## 群成员」：首轮群规则之后的成员名单；老成员补发名单时它可能是唯一的外壳标记。
+  if (!/(^|\n)##[ \t]*(?:规则|新增发言|群成员)/.test(t)) return null;
   let body = t.slice(last.index + last[0].length);
   body = body.replace(/\r?\n+[ \t]*请发言。[ \t]*\r?\n*$/, '');
   return body.trim();

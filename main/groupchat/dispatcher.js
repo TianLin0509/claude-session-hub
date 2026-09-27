@@ -935,6 +935,12 @@ function createGroupChatDispatcher(deps) {
     });
   }
 
+  // 与梦境索引/工作区规则的压缩检测同源：session 上由 statusline / rollout 维护的已用上下文。
+  function memberContextUsed(sid) {
+    const s = sessionManager.getSession(sid);
+    return s && typeof s.contextUsed === 'number' ? s.contextUsed : null;
+  }
+
   function groupMembersForMeeting(meeting, { includeDormant = false } = {}) {
     const subSids = Array.isArray(meeting && meeting.subSessions) ? meeting.subSessions : [];
     const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
@@ -1006,7 +1012,11 @@ function createGroupChatDispatcher(deps) {
         runId,
         // 点2：首次带 systemPrompt(整套规则)、之后只发增量。[全量注入] includeCommitteeMid:true —— 把
         //   上一幕委员发言全文注入本幕，每个 AI 看到队友调研全文（点评看建库、辩论看点评），不再瞎猜。
-        prompt: _orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, { currentUserMessageAppended: false, includeCommitteeMid: true }),
+        prompt: _orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
+          currentUserMessageAppended: false,
+          includeCommitteeMid: true,
+          contextUsed: memberContextUsed(member.sid),
+        }),
       };
     });
     for (const target of targets) {
@@ -1049,6 +1059,7 @@ function createGroupChatDispatcher(deps) {
             sid: t.sid, label: t.label, status: 'errored', text: '',
             reason: failure.code, failure, runId, attemptId: t.attemptId,
             deliveredIdx: t.deliveredIdx, deliveredSeq: t.deliveredSeq,
+            promptDelivered: false,
           }, t);
           if (t.attemptId) _orch.settleAttempt(t.attemptId, result);
           sendFailures.push(result);
@@ -1059,6 +1070,7 @@ function createGroupChatDispatcher(deps) {
           sid: t.sid, label: t.label, status: 'errored', text: '',
           reason: failure.code, failure, runId, attemptId: t.attemptId,
           deliveredIdx: t.deliveredIdx, deliveredSeq: t.deliveredSeq,
+          promptDelivered: false,
         }, t);
         if (t.attemptId) _orch.settleAttempt(t.attemptId, result);
         sendFailures.push(result);
@@ -1403,7 +1415,7 @@ function createGroupChatDispatcher(deps) {
           .filter(({ sid, idx }) => checkedIdx.has(idx) && !targetSidSet.has(sid))
           .map(({ sid, idx }) => {
             const s = sessionManager.getSession(sid);
-            return { sid, label: (s && (s.title || s.kind)) || `AI ${idx + 1}`, status: 'absent', text: '', reason: 'session_not_ready', deliveredIdx: null };
+            return { sid, label: (s && (s.title || s.kind)) || `AI ${idx + 1}`, status: 'absent', text: '', reason: 'session_not_ready', deliveredIdx: null, promptDelivered: false };
           });
       }
       if (targetMembers.length === 0 && absentMembers.length === 0) {
@@ -1463,6 +1475,10 @@ function createGroupChatDispatcher(deps) {
       const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
       const fileMembers = DevFile.enabled(meeting) ? groupMembersForMeeting(meeting, { includeDormant: true }) : [];
       const fileProtocolKey = DevFile.enabled(meeting) ? DevFile.protocolKey(meeting, fileMembers) : null;
+      // 群成员名单按群聊成员身份算（含暂时 dormant 的），只给名字 + CLI/模型。
+      // 用「本轮是否在线」算会让成员一休眠就被报成「已离开」。
+      const roster = groupMembersForMeeting(meeting, { includeDormant: true })
+        .map(m => ({ sid: m.sid, name: m.displayName, kind: m.kind, model: m.model }));
       const targets = targetMembers.map(member => {
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
@@ -1476,6 +1492,8 @@ function createGroupChatDispatcher(deps) {
         const basePrompt = DevDiscuss.appendDiscussBlock(
           orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
             currentUserMessageAppended: begin.didAppendUserMessage,
+            roster,
+            contextUsed: memberContextUsed(member.sid),
           }),
           DevFile.enabled(meeting)
             ? (needsFileProtocol ? DevFile.common(meeting, DevFile.directory(getHubDataDir(), meeting.id), fileMembers) : '')
@@ -1621,6 +1639,8 @@ function createGroupChatDispatcher(deps) {
               reason: sendResult && sendResult.reason || 'cli_not_ready',
               deliveredIdx: t.deliveredIdx,
               deliveredSeq: t.deliveredSeq,
+              // 没送进 CLI：completeTurn 不得推进它的已读游标（下一轮要补上这段）。
+              promptDelivered: false,
               runId,
               attemptId: t.attemptId,
               failure: classifyProviderFailure({
@@ -1646,6 +1666,7 @@ function createGroupChatDispatcher(deps) {
             reason: e && e.message || 'send_exception',
             deliveredIdx: t.deliveredIdx,
             deliveredSeq: t.deliveredSeq,
+            promptDelivered: false,
             runId,
             attemptId: t.attemptId,
             failure: classifyProviderFailure({ code:e?.code, uncertain:e?.uncertain, reason: e && e.message || 'send_exception', force: true }),
@@ -1840,6 +1861,7 @@ function createGroupChatDispatcher(deps) {
       runId: attempt.runId,
       providerTurnId: attempt.providerTurnId || null,
       completedAt: attempt.completedAt || Date.now(),
+      ...(attempt.promptDelivered === false ? { promptDelivered: false } : {}),
     };
   }
 

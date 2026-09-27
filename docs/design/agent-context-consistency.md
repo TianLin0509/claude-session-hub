@@ -19,7 +19,7 @@
 - 项目根同时识别 `.git` 与 `.vibe-root`。不会把根规则复制进每个临时项目。
 - 显式迁移脚本统一两份订阅配置的默认模型、工具配置、功能设置和项目信任集合。冲突的项目信任必须人工审视，不取最宽权限。
 - TOML 序列化保留旧 Hub 可识别的 `[projects.'路径']` 与 `[mcp_servers.名称]` 表头，避免运行中的旧版本重复追加同一项目。迁移回归测试验证该兼容性与重复执行不再写入。
-- 本轮迁移采用统一人工维护的基础上下文：`features.memories=true` 保留原生记忆能力，`memories.use_memories=false` 让账号分别生成的摘要不在启动时叠加。现有原生历史库和摘要保留按需检索，生成设置不靠关闭功能来规避差异。Claude 的共同短索引仍原生加载。
+- 基础上下文统一人工维护：`features.memories=true` 保留原生记忆能力。2026-09-25 迁移时曾设 `memories.use_memories=false`，不让各账号分别生成的摘要在启动时叠加；2026-09-26 用户要求开启，现 `~/.agents/context-policy.json` 的 `codexDefaults.memories.use_memories=true`，Codex 启动时加载记忆摘要。原生历史库和摘要仍可按需检索。Claude 的共同短索引仍原生加载。
 
 ## 去重：原生加载合同与 Hub 补发
 
