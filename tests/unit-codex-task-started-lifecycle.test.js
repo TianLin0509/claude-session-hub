@@ -25,7 +25,6 @@ test('Codex task_started emits a running lifecycle event without user_message', 
   const hubSessionId = 'hub-goal-continuation';
   const codexSid = '019ff492-0e1b-7bf2-ab10-b58b4b7bd6b5';
   const turnId = 'c894ebe0-04c5-444c-9878-9e8df7e241d9';
-  const startedAt = new Date('2026-08-12T06:07:10.127Z');
   const tap = new CodexTap({ sessionsRoot, pollIntervalMs: 30 });
   const rollout = new FakeCodexRollout({ sessionsRoot, cwd, sid: codexSid });
   const started = [];
@@ -45,6 +44,9 @@ test('Codex task_started emits a running lifecycle event without user_message', 
       transcriptPath: rollout.rolloutPath,
     });
     await bound;
+    // This case appends a live event. An August fixture timestamp now belongs
+    // to the historical suffix and is deliberately excluded from live state.
+    const startedAt = new Date();
     await rollout.writeRaw({
       timestamp: startedAt.toISOString(),
       type: 'event_msg',
