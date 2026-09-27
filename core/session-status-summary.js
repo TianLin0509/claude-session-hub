@@ -7,6 +7,7 @@ const {
   RUNTIME_RUNNING,
   RUNTIME_STARTING,
   RUNTIME_WAITING,
+  RUNTIME_UNKNOWN,
   getSessionRuntimeTruth,
 } = require('./session-runtime-truth.js');
 const { hasStreamDisconnectIssue } = require('./stream-disconnect.js');
@@ -442,6 +443,10 @@ function buildComposerStatusModel(session, options = {}) {
     };
   }
 
+  if (runtime.state === RUNTIME_UNKNOWN) return {
+    state: 'unknown', text: '状态未知', detail: '', quickReplies: [],
+    action: null, canStop: false, runtime,
+  };
   // 就绪：runtime.meta 在 COMPLETED 下就是 formatCompletionAge 的结果（「2 分钟前」）。
   const age = runtime.state === RUNTIME_COMPLETED ? String(runtime.meta || '').trim() : '';
   return {

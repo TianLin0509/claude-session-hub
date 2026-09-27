@@ -1413,6 +1413,16 @@ class CodexTap extends EventEmitter {
         }
         return;
       }
+      // Resume hydrates an old suffix. Fence the entire lifecycle, not only
+      // completions: replaying an old start while suppressing its end leaves
+      // renderer/group scheduling working until their expiry turns it unknown.
+      // Context/usage above/below remain useful metadata; cards read history
+      // independently. New events retain the existing short bind grace.
+      const liveEntry = this._bound.get(hubSessionId);
+      const recordAt = timestampToMs(obj?.timestamp);
+      if (liveEntry && recordAt && recordAt + 5000 < liveEntry._liveBoundaryAt
+          && (obj?.type === 'turn_aborted'
+            || (obj?.type === 'event_msg' && obj.payload?.type !== 'token_count'))) return;
       // Codex 0.147 writes aborts as event_msg(payload.type=turn_aborted).
       // Older/fixture rollouts may use a top-level turn_aborted record, so keep
       // both shapes. Missing the event_msg form leaves the Hub stuck running

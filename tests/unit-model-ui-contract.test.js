@@ -57,7 +57,8 @@ async function main() {
   };
   const ui = createModelUiController({
     document,
-    ipcRenderer: { send(channel, payload) { sent.push({ channel, payload }); } },
+    ipcRenderer: { send(channel, payload) { sent.push({ channel, payload }); },
+      async invoke(channel, payload) { sent.push({ channel, payload }); return { ok: true, sendStatus: 'ok' }; } },
     sessions,
     terminalPanelEl,
     getActiveSessionId: () => 's1',
@@ -84,8 +85,10 @@ async function main() {
   const clickable = menu.children.find(child => child.dataset && child.dataset.modelId);
   assert.ok(clickable, 'expected at least one model option');
   clickable._listeners.click[0]({ stopPropagation() {} });
-  assert.strictEqual(sent[0].channel, 'terminal-input');
-  assert.ok(sent[0].payload.data.includes('/model '));
+  await new Promise(resolve => setImmediate(resolve));
+  const submission = sent.find(call => call.channel === 'session:send-prompt');
+  assert.ok(submission.payload.text.startsWith('/model '));
+  assert.equal(sent.some(call => call.channel === 'terminal-input'), false);
 
   console.log('unit-model-ui-contract OK');
 }

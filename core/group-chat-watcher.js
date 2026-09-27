@@ -590,6 +590,29 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     // empty submissions after a prompt already started.
     sessionManager.writeToSession(sid, '\r');
     let enterAttempts = 1;
+    const modelCommand = require('./cli-model-command').modelCommandType(kind, String(prompt || ''));
+    if (modelCommand) {
+      const deadline = Date.now() + 12000;
+      const probe = {};
+      while (Date.now() < deadline) {
+        await livePtyObserver?.probe(probe);
+        const fresh = stripAnsi(sessionManager.getSessionOutputSince?.(sid, outputMarkBefore) || '');
+        if (require('./cli-model-command').modelCommandAcknowledged(modelCommand, (probe.lastLiveScreen || []).join('\n'), fresh)) {
+          return { ok: true, sendStatus: 'ok', enterAttempts, acknowledgementSource: 'cli-model-command' };
+        }
+        if (require('./host-shell-detector').detectHostShellTakeover(sessionManager.getSessionBuffer(sid))) {
+          return { ok: false, notSent: true, sendStatus: 'rejected', enterAttempts, message: 'CLI 已退出，请重启会话后再切换模型' };
+        }
+        if (modelCommand === 'codex-picker' && await codexRejectedBusyCommand(livePtyObserver, codexBusyBaseline)) {
+          return { ok: false, notSent: true, sendStatus: 'rejected', enterAttempts, message: 'Codex 仍在处理上一轮，模型命令未执行' };
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      // A local menu never starts a model turn. An extra Enter could select
+      // its highlighted model, so uncertainty cannot trigger Enter recovery.
+      return { ok: true, sendStatus: 'stuck', enterAttempts, acknowledgementSource: null,
+        message: '模型命令尚未确认，请查看终端；未自动补发回车' };
+    }
     // Local settings commands do not start an agent turn. Their own explicit
     // acknowledgement must decide success; a TUI repaint is not confirmation.
     if (options.localCommandObserver) {

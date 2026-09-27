@@ -28,6 +28,32 @@ function setup(t) {
   return { sessionsRoot, cwd, tap };
 }
 
+test('resuming history does not replay old starts, prompts or interrupts into the live lifecycle', async t => {
+  const { sessionsRoot, cwd, tap } = setup(t);
+  const rollout = new FakeCodexRollout({ sessionsRoot, cwd, sid: '019eaaaa-0000-7000-8000-000000000099' });
+  await rollout.start();
+  const timestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  for (const payload of [
+    { type: 'task_started', turn_id: 'old-turn' },
+    { type: 'user_message', message: 'old prompt', turn_id: 'old-turn' },
+    { type: 'turn_aborted', turn_id: 'old-turn' },
+    { type: 'task_started', turn_id: 'old-finished' },
+    { type: 'task_complete', turn_id: 'old-finished', last_agent_message: 'old answer' },
+  ]) await rollout.writeRaw({ timestamp, type: 'event_msg', payload });
+  const events = [];
+  for (const name of ['turn-started', 'prompt-submitted', 'turn-aborted', 'turn-complete']) {
+    tap.on(name, event => events.push({ name, turnId: event.turnId }));
+  }
+  tap.registerSession('hub-1', { cwd });
+  assert.equal(await tap.bindFromHook('hub-1', { codexSid: rollout.sid, transcriptPath: rollout.rolloutPath }), true);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual(events, [], 'historical lifecycle must not arm live timers or cancel a current task');
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_started', turn_id: 'live' } });
+  await rollout.writeRaw({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_complete', turn_id: 'live', last_agent_message: 'new answer' } });
+  assert.ok(await waitFor(() => events.some(event => event.name === 'turn-complete')));
+  assert.deepEqual(events.map(event => [event.name, event.turnId]), [['turn-started', 'live'], ['turn-complete', 'live']]);
+});
+
 test('a pinned hook path wins over a same-cwd decoy that appears first', async t => {
   const { sessionsRoot, cwd, tap } = setup(t);
   tap.registerSession('hub-1', { cwd });
