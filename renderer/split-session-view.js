@@ -38,6 +38,7 @@ function createSplitSessionView({ document: doc, window: win, sessionId, panel, 
     history: () => { follow.follow(); schedule(); },
     optimistic: (text, kind, options) => renderer.mountOptimisticUserCard(sessionId, text, kind, options),
     isCard: () => mode === 'card',
+    openTerminal: () => { mode = 'pty'; applyMode(); },
   });
   function updateStatus() {
     if (disposed) return;

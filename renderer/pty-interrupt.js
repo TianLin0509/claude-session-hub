@@ -13,7 +13,14 @@ function sendPtyAgentInterrupt(session, { state, send, now = Date.now() } = {}) 
   const last = Number(session._ptyStopSentAt) || 0;
   if (last && now - last < PTY_INTERRUPT_THROTTLE_MS) return false;
   session._ptyStopSentAt = now;
-  send('\x1b');
+  // Qwen ignores Escape while its composer has a draft; Ctrl+C invokes its
+  // cancel action first. Never repeat it within the same authoritative turn.
+  const qwen=String(session.kind||'').replace(/-resume$/,'')==='qwen';
+  if(qwen&&session.cliRuntime?.turnId){
+    if(session._qwenStopTurn===session.cliRuntime.turnId)return false;
+    session._qwenStopTurn=session.cliRuntime.turnId;
+  }
+  send(qwen?'\x03':'\x1b');
   return true;
 }
 

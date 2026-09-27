@@ -10,7 +10,7 @@
 
 function isPtyCodexSession(session) {
   return !!session && session.agentRuntime === 'pty' && !session.runtimeBackend
-    && (session.kind === 'codex' || session.kind === 'codex-resume');
+    && require('../core/ai-kinds').isCodexCliKind(session.transcriptKind || session.kind);
 }
 
 function createCodexPtyHookHandler({

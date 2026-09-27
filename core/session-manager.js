@@ -1216,6 +1216,7 @@ class SessionManager extends EventEmitter {
     }
     const id = opts.id || uuid();
     const isAcp = isAcpKind(kind);
+    const isProviderCli = ['qwen','glm'].includes(kind.replace(/-resume$/, '')) && require('./agent-runtime-mode').agentRuntimeMode() !== 'native';
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
@@ -1227,7 +1228,7 @@ class SessionManager extends EventEmitter {
     // Claude / Codex 默认跑 PTY 里的真实 CLI；原生后端只在回退开关打开时使用。
     const nativeAgentRuntime = require('./agent-runtime-mode').usesNativeAgentRuntime(kind);
     const isNativeCodex = isCodex && nativeAgentRuntime;
-    const isPtyAgent = (isClaude || isCodex) && !nativeAgentRuntime;
+    const isPtyAgent = isProviderCli || ((isClaude || isCodex) && !nativeAgentRuntime) || (isDeepSeek && !isDeepSeekLegacy);
     const webRoute = isCodex && require('./chatgpt-web-models').chatgptWebRoute(opts.model);
     const followsGlobalAccount = isCodex && !webRoute && !isCodexApiBackend(getConfigValues());
     let globalAccount = null;
@@ -1516,7 +1517,7 @@ class SessionManager extends EventEmitter {
       require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
     }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
-    if (isCodex) {
+    if (isCodexRuntime) {
 
       for (const key of ['CODEX_THREAD_ID','CODEX_SESSION_ID','CLAUDE_HUB_SESSION_ID',
         'CLAUDE_HUB_PORT','CLAUDE_HUB_TOKEN','AI_TEAM_HUB_CALLBACK_URL']) delete sessionEnv[key];
@@ -1542,7 +1543,7 @@ class SessionManager extends EventEmitter {
     const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
     const ptyProcess = isAcp
-      ? new (require('./acp-session').AcpSession)(buildAcpOptions(kind,
+      ? new (isProviderCli ? (kind.replace(/-resume$/, '') === 'qwen' ? require('./qwen-cli-session').QwenCliSession : require('./martty-cli-session').MarttyCliSession) : require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isNativeCodex
       ? new CodexSessionClass({id,cwd:spawnCwd,env:sessionEnv,exclusiveSession:true,restoredRuntime:opts.nativeRuntime,
@@ -1629,6 +1630,7 @@ class SessionManager extends EventEmitter {
       ...(isNativeCodex ? {runtimeBackend:'codex-app-server',nativeRuntime:ptyProcess.runtime,
         codexApprovalPolicy:opts.approvalPolicy || 'never',codexSandbox:opts.sandbox || 'danger-full-access'} : {}),
       ...(isAcp ? {runtimeBackend:'acp',nativeRuntime:ptyProcess.runtime,acpSid:opts.acpSid || null,
+        cliRuntime:isProviderCli?{...ptyProcess.runtime,source:'provider-cli',observedAt:Date.now()}:null,
         acpProfileId:ptyProcess.options.profileId,acpCapabilities:{},acpConfigOptions:[]} : {}),
       connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
@@ -1888,7 +1890,8 @@ class SessionManager extends EventEmitter {
         this.emit('codex-session-updated', this._toPublic(info));
       };
       ptyProcess.on('state', (runtime) => {
-        info.nativeRuntime = runtime;
+        if (!isProviderCli) info.nativeRuntime = runtime;
+        else info.cliRuntime = { ...runtime, source:'provider-cli', observedAt:Date.now() };
         info.status = ['running','waiting'].includes(runtime.state) ? 'running' : 'idle';
         info.connectionIssue = null;
         const entry = this.sessions.get(id);
@@ -2119,7 +2122,7 @@ class SessionManager extends EventEmitter {
         mcpProfile: effectiveCodexMcpProfile,
         allowedNames: allowedGroupMcpNames,
       });
-      if (isCodex) {
+      if (isCodexRuntime) {
         // hook 是 PTY Codex 的身份与状态来源；部署失败不拦启动，但要在会话上留痕。
         const hookResult = require('./codex-hook-integration').ensureCodexHookIntegration({
           codexHome: sessionEnv.CODEX_HOME || null,
@@ -2338,6 +2341,10 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (session.info.agentRuntime === 'pty' && session.agentTurnActive
+        && (options.reason === 'meeting-room-complete' || Number(options.minIdleMs) > 0)) {
+      return { ok:false, error:'pty-turn-unfinished', message:'CLI 仍在执行或等待操作，已跳过自动休眠' };
     }
     if (['codex-app-server','acp','claude-stream-json'].includes(session.info.runtimeBackend)) {
       const runtime = session.info.nativeRuntime;
@@ -2728,7 +2735,7 @@ class SessionManager extends EventEmitter {
 
   getNativeSession(sessionId) {
     const session = this.sessions.get(sessionId);
-    return session && ['codex-app-server','acp'].includes(session.info.runtimeBackend) ? session.pty : null;
+    return session && (session.pty?.isCliProvider || ['codex-app-server','acp'].includes(session.info.runtimeBackend)) ? session.pty : null;
   }
 
   // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
@@ -2814,6 +2821,8 @@ class SessionManager extends EventEmitter {
     const observedAt = Number(event.observedAt || event.startedAt) || Date.now();
     s.agentTurnStartSeq = (s.agentTurnStartSeq || 0) + 1;
     s.agentTurnStartedAt = observedAt;
+    s.agentTurnActive = true;
+    s.agentTurnId = event.turnId || null;
     s.agentTurnStartSource = event.signalSource || event.source || 'provider_lifecycle';
     const payload = {
       sessionId,
@@ -2825,6 +2834,16 @@ class SessionManager extends EventEmitter {
     };
     this.emit('agent-turn-started', payload);
     return payload;
+  }
+
+  noteAgentTurnFinished(sessionId, event = {}) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.agentTurnActive) return false;
+    if (s.agentTurnId && event.turnId && s.agentTurnId !== event.turnId) return false;
+    const at = Number(event.completedAt || event.abortedAt || event.failedAt) || Date.now();
+    if (at < s.agentTurnStartedAt) return false;
+    s.agentTurnActive = false;
+    return true;
   }
 
   // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。
@@ -2952,7 +2971,8 @@ class SessionManager extends EventEmitter {
   // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
-      ...(info.runtimeBackend === 'acp' ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
+      ...(isAcpKind(info.kind) ? {cliRuntime:info.cliRuntime||null} : {}),
+      ...(isAcpKind(info.kind) ? {acpSid:info.acpSid,acpProfileId:info.acpProfileId,
         acpCapabilities:info.acpCapabilities,acpConfigOptions:info.acpConfigOptions} : {}),
       ...(info.runtimeBackend ? {runtimeBackend:info.runtimeBackend,nativeRuntime:info.nativeRuntime,
         nativeConfig:info.nativeConfig,

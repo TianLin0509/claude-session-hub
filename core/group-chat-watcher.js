@@ -26,7 +26,8 @@ const {
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
-//   Claude family 与当前 Codex 都支持；DeepSeek 迁移到 Codex 后也走 Codex 分支。
+//   Windows Codex 还会经过按键粘贴缓冲，正文后用非文本键结束缓冲，再提交。
+//   DeepSeek 迁移到 Codex 后也走 Codex 分支。
 //   marker 常量与分块/settle 原语都在 core/pty-prompt-submit.js，普通会话走同一套。
 //   本文件不再直接拼 BP 帧（writeBracketedPaste 负责），所以只引原语不引常量。
 const {
@@ -493,6 +494,15 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     sessionManager.setGroupChatReady(sid, true);
   }
 
+  // The TUI can exit after readiness was cached (for example a failed resume).
+  // A normal card prompt must never become a PowerShell command.
+  if (require('./ai-kinds').isAiKind(String(kind).replace(/-resume$/, ''))
+      && detectHostShellTakeover(sessionManager.getSessionBuffer(sid) || '')) {
+    sessionManager.setGroupChatReady(sid, false);
+    throw Object.assign(new Error('CLI 已退出到系统终端，消息未发送；请先重启会话'),
+      { notSent:true, code:'cli-exited' });
+  }
+
   if ((options.restartContinuation || sessionManager.restartContinuationSessions?.has(sid)) && ['kimi','kimi-resume','gemini','gemini-resume','deepseek','deepseek-resume'].includes(kind)) {
     const receipt=require('./hub-restart-legacy').observeLegacyPrompt(_deps.transcriptTap,sid,prompt,
       20000+Math.ceil(String(prompt).length/2048)*12+computeSettleMs(String(prompt).length));
@@ -511,6 +521,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
         sessionManager.writeToSession(sid,text.slice(offset,offset+2048));
         await new Promise(resolve=>setTimeout(resolve,12));
       }
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,text);
       await waitForPasteSettled({sessionManager,sid,settleMs:computeSettleMs(text.length),baselineMarker});
       writeSubmitSignal(sessionManager,sid,kind,0);
       const first=await receipt.wait(7000);
@@ -556,6 +567,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
       gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
     });
+    require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // BP_END 紧贴 \r 时 Ink 把 \r 当 paste 尾巴忽略，所以必须隔开再发。
     //   隔多久以前写死 500ms —— 短 prompt 够用，长 prompt 必然还在消化窗口内，
@@ -653,6 +665,9 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
       //   循环结束后用它把"确认迟到"和"真的卡住"分开。
       let observedRunningWithClearInput = false;
       for (let attempt = 0; !acknowledgement && attempt < retryMax;) {
+        // A slash command or CLI crash can return to PowerShell during the
+        // acknowledgement wait. Recovery Enter must never reach that shell.
+        if (require('./host-shell-detector').detectHostShellTakeover(sessionManager.getSessionBuffer(sid))) break;
         if (turnStart.started || turnStart.resolved) {
           acknowledgement = turnStart.acknowledgement;
           break;
@@ -850,7 +865,7 @@ function extractStreamingText(sid, _kind) {
   const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     const blocks = native.blocks();
-    return {source:native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+    return {source:native.isCliProvider ? 'provider-cli' : native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
   const nativeClaude = _deps.sessionManager?.getNativeClaude?.(sid);
@@ -1013,6 +1028,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       //   它自己再踩一次同一个坑就毫无意义，所以改走与主路径同一套分块 + 自适应 settle。
       const baselineMarker = snapshotPasteMarker(sessionManager, sid);
       await writeBracketedPaste(sessionManager, sid, prompt);
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
       noteSubmittedPrompt(sid, kind, prompt);
       await waitForPasteSettled({
         sessionManager,

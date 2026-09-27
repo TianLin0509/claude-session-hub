@@ -36,6 +36,11 @@ test('a freshly spawned CLI is not typed into before it reports ready', async ()
   assert.ok(h.checks() >= 4, 'waited for the ready detector');
   assert.equal(h.writes[0].at >= 4, true, 'nothing was written before ready');
   assert.equal(h.ready(), true, 'readiness is remembered for later sends');
+  if(process.platform==='win32'){
+    const data=h.writes.map(w=>w.data),body=data.findIndex(s=>s.includes('\x1b[201~'));
+    assert(data.indexOf('\x1b[F')>body,'Codex flushes its paste burst after the complete payload');
+    assert(data.indexOf('\x1b[F')<data.indexOf('\r'),'flush precedes submit, without another Enter');
+  }
 });
 
 test('a long-running session sends immediately even if it was never marked ready', async () => {
@@ -61,4 +66,27 @@ test('a startup choice dialog keeps the first prompt unsent instead of feeding i
   await assert.rejects(watcher.sendToPty('sid-dialog', '第一条', 'codex', { requireReady: false }),
     error => error.notSent === true && error.code === 'cli-choice-pending');
   assert.deepEqual(writes, [], 'nothing typed into the dialog');
+});
+
+test('Windows Codex flushes pending slash text before Enter without executing the command', () => {
+  const {flushCodexPasteInput}=require('../core/codex-pty-input');
+  const writes=[], manager={writeToSession:(id,text)=>writes.push([id,text])};
+  assert.equal(flushCodexPasteInput(manager,'s','codex','/new','win32'),true);
+  assert.deepEqual(writes,[['s','\x1b[F']]);
+  assert.equal(flushCodexPasteInput(manager,'s','claude','/new','win32'),false);
+  assert.equal(flushCodexPasteInput(manager,'s','codex','/new','linux'),false);
+  assert.equal(writes.length,1);
+});
+
+test('a returned host shell never receives the card prompt, even with cached readiness', async () => {
+  const h = harness({createdAt:Date.now()-120000, readyAfterChecks:0});
+  h.sessionManager.setGroupChatReady('sid', true);
+  h.sessionManager.getSessionBuffer = () => 'Error: Failed to resume session\r\nPS\x1b[1CC:\\workspace> ';
+  await assert.rejects(watcher.sendToPty('sid', 'do something', 'codex', {requireReady:false}),
+    error => error.notSent === true && error.code === 'cli-exited');
+  assert.deepEqual(h.writes, []);
+  h.sessionManager.getSessionBuffer=()=> 'PS C:\\workspace> \r\n>> ';
+  await assert.rejects(watcher.sendToPty('sid','do something','codex',{requireReady:false}),
+    error=>error.notSent===true&&error.code==='cli-exited');
+  assert.deepEqual(h.writes,[]);
 });

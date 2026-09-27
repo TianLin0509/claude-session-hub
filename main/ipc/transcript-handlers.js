@@ -159,7 +159,7 @@ async function parseProviderTranscript(args = {}, deps) {
         });
       return {turns:nativeCodex.readTranscript({...opts,toolPreviews:true}),
         refreshedTurns,transcriptPath:session?.transcriptPath || null,
-        error:null,source:nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
+        error:null,source:nativeCodex.isCliProvider ? 'provider-cli' : nativeCodex.options?.kind && require('../../core/acp-profiles').isAcpKind(nativeCodex.options.kind) ? 'acp' : 'codex-app-server'};
     }
     const native = hubSessionId && sessionManager.getNativeClaude?.(hubSessionId);
     if (native) {
@@ -188,6 +188,16 @@ async function parseProviderTranscript(args = {}, deps) {
       && !(session && session.codexSid);
     const runtimeKind = (session && session.transcriptKind)
       || (isLegacyDeepSeek ? 'deepseek-legacy' : kind);
+
+    if(/^gemini(?:-resume)?$/.test(String(runtimeKind||''))){
+      const bound=session||(hubSessionId?lookupSessionRecord(hubSessionId,deps)?.record:null);
+      transcriptPath=bound?.transcriptPath||inPath||null;
+      if(!transcriptPath)return {turns:[],transcriptPath:null,error:'Gemini 原生记录尚未绑定，请等待 CLI 启动'};
+      const parseOpts={limit:50,fromTail:true,...opts,expectedSessionId:bound?.geminiChatId};
+      const parsed=await runTranscriptParser(deps,'gemini',transcriptPath,parseOpts,
+        require('../../core/gemini-transcript-parser').parseGeminiTranscriptToTurns);
+      return {turns:parsed.turns,transcriptPath,error:null,source:'gemini-cli'};
+    }
 
     if (isCodexCliKind(runtimeKind)) {
       const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;

@@ -195,7 +195,16 @@ test('long-prompt submit watchdog survives 80 mixed first/second-Enter acknowled
     // 长 payload 现在是分块投喂的（core/pty-prompt-submit.js），所以不能再指望
     //   "某一次 write 里含完整 prompt"。改成把提交信号以外的写入重组回来校验：
     //   既确认分块无损，也确认 BP 帧头尾完整、prompt 一字不差。
-    const pasted = writes.get(sid).filter(data => !['\r', '\n', '\r\n', '\x15'].includes(data)).join('');
+    const input = writes.get(sid);
+    // End is an input-buffer boundary, not part of the pasted document.
+    // Assert its position separately so filtering it cannot hide a broken frame.
+    const flush = input.indexOf('\x1b[F');
+    if (process.platform === 'win32') {
+      assert.equal(input.filter(data => data === '\x1b[F').length, 1, sid);
+      assert(flush > input.findIndex(data => data.includes('\x1b[201~')), sid);
+      assert(flush < input.indexOf('\r'), sid);
+    } else assert.equal(flush, -1, sid);
+    const pasted = input.filter(data => !['\r', '\n', '\r\n', '\x15', '\x1b[F'].includes(data)).join('');
     assert.ok(pasted.startsWith('\x1b[200~') && pasted.endsWith('\x1b[201~'), `bracketed paste frame broken for ${sid}`);
     assert.equal(pasted.slice('\x1b[200~'.length, -'\x1b[201~'.length), prompt, `chunked prompt not byte-identical for ${sid}`);
     assert.ok(writes.get(sid).length > 2, `long prompt should be chunked for ${sid}`);

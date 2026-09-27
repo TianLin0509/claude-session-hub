@@ -46,16 +46,23 @@ assert.ok(
   'renderer must import centralized Codex session kind detection',
 );
 assert.ok(
-  rendererSrc.includes('isClaudeFamily(kind) || isCodexKind(kind)'),
-  'renderer card history gate must preserve Claude support and add Codex variants',
+  rendererSrc.includes('isClaudeFamily(kind) || isTranscriptCliKind(kind)'),
+  'renderer card history gate must preserve Claude support and share transcript-backed CLI capabilities',
 );
 // 2026-07-27：卡片视图从 Claude+Codex 扩到 Claude+Codex+Kimi。占位文案必须与
 // supportsCardHistory 的真实 gate 一致，否则用户会被告知一个不存在的限制。
 assert.ok(
-  /supportsCardHistory = kind && \(isNativeSession\(session\) \|\| isClaudeFamily\(kind\) \|\| isCodexKind\(kind\) \|\| isKimiCliKind\(kind\)\)/
+  /supportsCardHistory = kind && \(isNativeSession\(session\) \|\| isClaudeFamily\(kind\) \|\| isTranscriptCliKind\(kind\)\)/
     .test(rendererSrc),
-  'card history gate must cover native ACP, Claude, Codex and Kimi',
+  'card history gate must cover native backends and all transcript-backed CLIs',
 );
+const kindSource=rendererSrc.match(/function isTranscriptCliKind\(kind\) \{[\s\S]*?\n\}/)[0];
+const kinds=require('../core/ai-kinds');
+const supportsCli=new Function('require','isCodexKind','isKimiCliKind',kindSource+';return isTranscriptCliKind;')(
+  require,kinds.isCodexSessionKind,kinds.isKimiCliKind);
+for(const kind of ['codex','codex-resume','deepseek','qwen','glm','gemini','kimi'])
+  assert.equal(supportsCli(kind),true,kind+' must have native history cards');
+for(const kind of ['powershell','cmd','ssh'])assert.equal(supportsCli(kind),false,kind+' must not invent history support');
 assert.ok(
   rendererSrc.includes('该会话没有结构化历史')
     && !rendererSrc.includes('卡片视图当前仅支持 Claude session')
