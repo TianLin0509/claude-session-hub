@@ -41,7 +41,10 @@ class HubAccounts {
       await require('./account-adapters').openTerminal(external.githubCommand(this.env), ['auth', 'login', '--hostname', 'github.com', '--web', '--git-protocol', 'https', '--skip-ssh-key'],
         { ...this.env, GH_BROWSER: browser, ELECTRON_RUN_AS_NODE: '1' });
     }
-    return { message: action === 'check' ? 'GitHub 授权检查已完成，结果显示在外部服务中' : action === 'authorize' ? '已打开 GitHub 官方授权窗口，请按提示完成授权后检查' : '已在专属 Chrome 打开 ' + external.externalSite(service).name };
+    let usageWarning = '';
+    if (action === 'open') try { require('./hub-account-activity').recordActivity(this.chrome.root, { site: service, outcome: 'opened', at: this.now() }); }
+    catch { usageWarning = '；使用记录未保存'; }
+    return { message: (action === 'check' ? 'GitHub 授权检查已完成，结果显示在外部服务中' : action === 'authorize' ? '已打开 GitHub 官方授权窗口，请按提示完成授权后检查' : '已在专属 Chrome 打开 ' + external.externalSite(service).name) + usageWarning };
   }
   readCache() {
     try {
@@ -68,6 +71,7 @@ class HubAccounts {
   }
   publicState() { return JSON.parse(JSON.stringify({ ...this.lastState,
     ...(this.setup.progress?.status === 'complete' ? { tools: require('./hub-browser-tool').integrationStatus(this.chrome.root) } : {}),
+    activity: require('./hub-account-activity').readActivity(this.chrome.root, this.env),
     progress: this.progress, setupProgress: this.setup.progress })); }
   async compose() {
     const cache = this.readCache(), preferences = readPreferences(this.chrome.root);
@@ -176,7 +180,10 @@ class HubAccounts {
     } else if (login) await this.chrome.openLogin(identity, [site]);
     else await this.chrome.openWebsite(identity, site);
     this.lastState = null;
-    return { identity, site, message: '已在 AI Hub 专属 Chrome 打开 ' + SITES[site].name };
+    let usageWarning = '';
+    try { require('./hub-account-activity').recordActivity(this.chrome.root, { identity, site, outcome: 'opened', at: this.now() }); }
+    catch { usageWarning = '；使用记录未保存'; }
+    return { identity, site, message: '已在 AI Hub 专属 Chrome 打开 ' + SITES[site].name + usageWarning };
   }
   async login({ identity = 'main', site } = {}) {
     if (site) return this.open({ identity, site, login: true });
