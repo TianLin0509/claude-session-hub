@@ -51,6 +51,8 @@ function detectCodexThreadEnded(rawBuffer, boundSid) {
   // occurrences of the bound id elsewhere in a newer thread's output.
   const direct = /^Tocontinuethissession,runcodexresume([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])/i.exec(hint);
   if (direct) return direct[1] === sid;
+  const parenthesized = /^Tocontinuethissession,runcodexresume\(([^)]+)\)/.exec(hint);
+  if (parenthesized) return parenthesized[1] === sid;
   return hint.startsWith('Tocontinuethissession,runcodexresume,thenselect') && hint.includes(`(${sid})`);
 }
 

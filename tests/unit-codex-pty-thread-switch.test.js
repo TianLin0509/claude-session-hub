@@ -20,6 +20,7 @@ const ended = sid => conpty(`Token usage: total=17,529\r\nTo continue this sessi
 test('Codex 0.157.1 direct resume hint binds only the exact most recent thread', () => {
   const direct = sid => conpty(`To continue this session, run codex resume ${sid.slice(0, 12)}\r\n${sid.slice(12)}\r\n`);
   assert.equal(detectCodexThreadEnded(direct(SID), SID), true);
+  assert.equal(detectCodexThreadEnded(conpty(`To continue this session, run codex resume (${SID})`), SID), true);
   assert.equal(detectCodexThreadEnded(direct(SID), SID.slice(0, -1)), false);
   assert.equal(detectCodexThreadEnded(direct(SID), '01a0ffff-0000-7000-8000-000000000000'), false);
   assert.equal(detectCodexThreadEnded(ended(SID) + direct('01a0ffff-0000-7000-8000-000000000000'), SID), false);
