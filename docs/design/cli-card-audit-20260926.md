@@ -80,7 +80,19 @@ c7d25d6 已在 master，无需重复合并。复核了身份持久化、重启�
 - 旧 ACP 历史的批量迁移、跨 Hub 竞争、大型多成员长循环以及用户中途手动修改 CLI 内部设置，没有覆盖全部组合。
 - 本次没有外部第二位 agent 审查；使用结构检查与真实运行两遍复核，不能称独立审查。
 
-## 调研来源
+## 合入前复审（用户追加授权：审核、修复、合入并推送）
+
+在最新主干 b23afca 上集成后，另修复 5 类生命周期问题，先用故障注入测试复现失败，再修复：
+
+- 千问与 GLM 在等待异步日志初始化期间关闭，仍可能继续创建 PTY。每个异步启动边界检查关闭状态，关闭后不再创建终端。
+- 发送前保存回调抛错，会留下待提交状态与定时器；现在清理并把错误交回调用者，允许用户重试。
+- GLM 写入长文期间断开，内部回执可能提前拒绝而触发未捕获异常。现在立即接管回执错误；连接断开后停止后续写入与 Enter，并向外报告失败。
+- GLM 原生线程切换后旧 active/request 残留；现在清理旧轮与旧请求，迟到的模型、权限、错误消息不能改变新线程状态。
+- GLM 历史保存失败会阻止关闭 PTY；现在保留报错，同时在 finally 中结束本会话拥有的终端与监听。
+
+验证：`node --test tests/unit-provider-cli-lifecycle.test.js tests/unit-provider-cli.test.js`，14/14 通过；其中 7 项为上述异常路径测试，不等同真实云端故障。真实 CLI 复测与最终合并闸门结果在交付记录中给出。
+
+## 调研链接
 
 - Qwen 官方 dual output：<https://qwenlm.github.io/qwen-code-docs/en/users/features/dual-output/>
 - Qwen 官方 hooks：<https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/>
