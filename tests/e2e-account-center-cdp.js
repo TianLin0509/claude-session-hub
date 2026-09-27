@@ -1,8 +1,5 @@
 'use strict';
-// The account page end to end in an isolated Hub: real Electron UI and IPC, real cookie
-// store read from disk, real CLI token files, and a real (isolated) Hub Chrome launched by
-// 登录. Proves the page's promises: two actions, checking never starts a browser, a login
-// opens a window in the right identity, and nothing else on the page can start one.
+// Real isolated Hub GUI and IPC; website checks and opening use explicit fixtures.
 const fs = require('fs'), path = require('path'), os = require('os'), net = require('net'), assert = require('assert/strict');
 const { execFileSync } = require('child_process');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -39,8 +36,19 @@ async function main() {
   // Pretend an earlier check learned which ChatGPT account each identity holds.
   write(path.join(chromeRoot, 'last-check.json'), { identities: { main: { account: 'main@example.com', sites: {} }, alt: { account: 'alt@example.com', sites: {} } } });
 
+  const fixture = path.join(root, 'accounts-fixture.json');
+  write(fixture, { recordOpens: true, delayMs: 500, main: { account: 'main@example.com', sites: { chatgpt: { state: 'signed_in' }, google: { state: 'needs_attention' }, deepseek: { state: 'signed_in' } } }, alt: { account: 'alt@example.com', sites: { chatgpt: { state: 'signed_in' } } } });
+  const toolsRoot = path.join(chromeRoot, 'tool-fixtures'), pool = path.join(toolsRoot, 'ChatGPTWebImagesPool');
+  const laneConfig = path.join(pool, 'accounts/primary/config'), laneData = path.join(toolsRoot, 'old-browser');
+  fs.mkdirSync(laneData, { recursive: true });
+  const oldCli = path.join(toolsRoot, 'old-cli.cjs'); write(oldCli, 'process.stdout.write("closed fixture browser");');
+  write(path.join(laneConfig, 'settings.json'), { data_dir: laneData, cli_entry: oldCli, account_name: 'main@example.com' });
+  const { DatabaseSync } = require('node:sqlite');
+  const queue = new DatabaseSync(path.join(pool, 'queue.sqlite3'));
+  queue.exec('CREATE TABLE accounts (id TEXT, config_dir TEXT, login_group TEXT); CREATE TABLE jobs (status TEXT)');
+  queue.prepare('INSERT INTO accounts VALUES (?,?,?)').run('primary', laneConfig, 'primary'); queue.close();
   const out = path.resolve('artifacts/account-center-cdp'); fs.mkdirSync(out, { recursive: true });
-  const result = { passed: false, boundary: '真实隔离 Hub、DOM、IPC、磁盘 cookie 与 CLI 令牌文件；登录会在隔离目录启动一个真实 Chrome 并加载 1 个官网页面；不做任何真实登录', checks: [], root };
+  const result = { passed: false, boundary: '真实隔离 Hub、鼠标键盘、DOM、IPC、磁盘记录；官网响应和打开网页使用显式夹具；真实无头 Chrome 另见 e2e-hub-accounts-headless', checks: [], root };
   let hub, cdp;
   const until = async (expr, label, ms = 35000) => { for (const end = Date.now() + ms; Date.now() < end;) { if (await cdp.eval('Boolean(' + expr + ')')) { console.log('PASS ' + label); return; } await sleep(150); } throw Error('timeout: ' + label); };
   const click = async selector => { await until('!!document.querySelector(' + JSON.stringify(selector) + ') && !document.querySelector(' + JSON.stringify(selector) + ').disabled', 'enabled ' + selector); const box = await cdp.eval(`(()=>{const el=document.querySelector(${JSON.stringify(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`); await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...box }); await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...box }); };
@@ -48,7 +56,7 @@ async function main() {
   const text = sel => cdp.eval(`document.querySelector(${JSON.stringify(sel)})?.innerText||''`);
   const chrome = new HubChrome({ root: chromeRoot });
   try {
-    hub = await launchIsolatedHub({ dataDir: data, port: await port(), windowMode: 'visible', label: 'accounts-center', extraEnv: { CLAUDE_HUB_HOME_DIR: home, CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'), AI_HUB_WORKSPACE_ROOT: root,
+    hub = await launchIsolatedHub({ dataDir: data, port: await port(), windowMode: 'background', label: 'accounts-center', extraEnv: { CLAUDE_HUB_HOME_DIR: home, HUB_ACCOUNTS_FIXTURE: fixture, DEEPSEEK_API_KEY: '', CODEX_SQLITE_HOME: '', CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'), AI_HUB_WORKSPACE_ROOT: root,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.resolve('tests/fixtures/codex-app-server.js'), CLAUDE_HUB_NATIVE_FIXTURE_STORE: path.join(root, 'threads.json'),
       CLAUDE_HUB_ACCOUNT_FIXTURE: path.resolve('tests/fixtures/account-center-cli.js'),
       HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_KIMI_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_GEMINI_ROOTS: path.join(root, 'empty') } });
@@ -56,54 +64,44 @@ async function main() {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
 
-    await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-id").length===2', 'two identities');
-    // Only two actions exist on the page (plus navigation and API-key configuration).
-    const actions = await cdp.eval(`[...new Set([...document.querySelectorAll('#account-page [data-ac]')].map(b=>b.dataset.ac))].sort()`);
-    assert.deepEqual(actions, ['authorize', 'back', 'check', 'close', 'config', 'login']);
-    assert.match(await text('.ac-chrome'), /未运行/);
-    const main = '.ac-id[data-identity="main"]';
-    assert.match(await text(main + ' .ac-id-title'), /main@example\.com/);
-    const chips = await cdp.eval(`[...document.querySelectorAll('${main} .ac-id-row:first-of-type .ac-chip')].map(c=>c.className.replace('ac-chip ','')+'|'+c.textContent)`);
-    assert.ok(chips.includes('idle|ChatGPT · 有登录记录'), 'cookie presence never claims verified login: ' + chips);
-    assert.ok(chips.includes('warn|Google · 需登录') && chips.includes('warn|千问 · 需登录') === false, 'cookie sites without a login ask for one; localStorage sites do not guess: ' + chips);
-    assert.ok(chips.includes('idle|千问 · 待检查'));
-    result.checks.push('网页提供登录/检查，CLI 提供独立授权；Cookie 只显示有记录，未知站点可点检查');
-
-    // CLIs sit under the identity whose ChatGPT account they use; tokens never reach the page.
-    const cli = sel => cdp.eval(`[...document.querySelectorAll('${sel} .ac-id-row:nth-of-type(2) .ac-chip')].map(c=>c.textContent)`);
-    assert.deepEqual(await cli(main), ['Codex CLI（主账号） · 已配置 · 授权']);
-    assert.ok((await text('.ac-unplaced')).includes('Codex CLI（副账号）'), 'signed-out web identity cannot borrow a cached email to place CLI');
-    const publicState = JSON.stringify(await cdp.eval('ipcRenderer.invoke("hub-accounts:state")'));
-    assert.ok(!/SECRET|fixture-codex-key|fixture-deepseek-key/.test(publicState), 'no token or key in what the page receives');
-    result.checks.push('Codex 按已知邮箱归属；退出登录的网页不借用旧邮箱，未匹配 CLI 独立展示；页面无令牌或密钥');
+    await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-company").length===7', 'seven companies');
+    assert.equal(await chrome.running(), false, 'opening the page is passive');
+    const main = '.ac-company[data-site="chatgpt"]';
+    assert.match(await text(main), /main@example\.com/);
+    assert.match(await text(main), /有登录记录/);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-launch").length'), 7);
+    result.checks.push('公司分组、网页入口和账号信息；进入页面不启动浏览器');
     await snap('01-overview');
+    await click('.ac-company[data-site="claude"] [data-ac="add"]');
+    await until('document.querySelectorAll(".ac-company[data-site=claude] .ac-account").length===2', 'second Claude account');
+    await click('.ac-company[data-site="claude"] [data-ac="preferred"][data-identity="alt"]');
+    await until('document.querySelector(".ac-company[data-site=claude] [data-identity=alt] .ac-default")', 'default persisted');
+    const prefs = JSON.parse(fs.readFileSync(path.join(chromeRoot, 'accounts.json'), 'utf8'));
+    assert.equal(prefs.sites.claude.preferred, 'alt');
+    await click('.ac-company[data-site="claude"] .ac-launch');
+    await until('document.querySelector(".ac-status").textContent.includes("已在 AI Hub")', 'website open acknowledged');
+    const opened = fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(opened[0], { site: 'claude', identity: 'alt', url: 'https://claude.ai/' });
+    result.checks.push('添加第二账号、设为默认、打开网页：实际点击和 IPC 确认正确公司及身份（打开动作夹具）');
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress progress")?.value > 0 && document.querySelector("[data-ac=cancel]")', 'incremental progress');
+    await snap('02-progress');
+    await click('[data-ac="cancel"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("已取消")', 'cancelled with retained results');
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'full check finished');
+    assert.match(await text('.ac-company[data-site="google"]'), /需要你完成验证/);
+    assert.match(await text(main), /已登录/);
+    assert.equal(await chrome.running(), false);
+    result.checks.push('逐项进度、取消和结果保留；官网夹具的已登录和待验证状态如实展示');
+    await snap('03-checked');
+    const publicState = JSON.stringify(await cdp.eval('ipcRenderer.invoke("hub-accounts:state")'));
+    assert.ok(!/SECRET|fixture-codex-key|fixture-deepseek-key/.test(publicState));
+    await click('.ac-company[data-site="kimi"] summary');
     await click('[data-ac="authorize"][data-id="kimi"]');
     await until('document.querySelector(".ac-status").textContent.includes("官方登录入口已启动")', 'CLI authorization routed');
-    assert.ok(fs.existsSync(path.join(home, 'fixture-login-kimi')), 'Kimi button reaches its registered native connection');
-    result.checks.push('CLI 授权按钮经过真实 IPC 到达对应原工具适配器（授权动作使用隔离夹具）');
-
-    // 检查登录 must not start the browser.
-    await click('[data-ac="check"]'); await until('document.querySelector(".ac-status").textContent.includes("已检查")', 'check finished', 90000);
-    for (let i = 0; i < 40 && await chrome.running(); i++) await sleep(250);
-    assert.equal(await chrome.running(), false, 'explicit check releases its temporary Chrome');
-    result.checks.push('页面打开不启动浏览器；明确检查可临时打开一个共享 Chrome，结束后释放');
-
-    // A login opens one ordinary window, in the right identity, at the site asked for.
-    await click(`${main} .ac-chip[data-site="google"]`);
-    await until('document.querySelector(".ac-status").textContent.includes("已打开 Hub 浏览器的登录窗口")', 'login acknowledged');
-    // Google refuses sign-in in a browser with a debugging port, so a login is an ordinary
-    // Chrome on the same profile: the profile is held, no debugging endpoint is offered, and
-    // the launched command names the right identity and the site asked for.
-    for (let i = 0; i < 40 && !chrome.profileHeld(); i++) await sleep(250);
-    assert.equal(chrome.profileHeld(), true, 'the login started a Chrome on the Hub profile');
-    assert.equal(await chrome.endpoint(), null, 'without a debugging port');
-    const cmd = execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'"|Where-Object{$_.CommandLine -like '*${path.basename(root)}*' -and $_.CommandLine -notlike '*--type=*'}|Select-Object -First 1).CommandLine`], { encoding: 'utf8' });
-    assert.match(cmd, /--profile-directory=main/); assert.match(cmd, /gemini\.google\.com/); assert.match(cmd, /--window-position=120,80/);
-    assert.doesNotMatch(cmd, /remote-debugging/);
-    await until('document.querySelector(".ac-chrome").textContent.includes("登录窗口开着")', 'page notices the login window');
-    result.checks.push('点某个站点即以普通模式（无调试端口，Google 才允许登录）在对应身份、屏幕内打开该站登录页；页面如实显示"登录窗口开着"');
-    await snap('02-login-opened');
-
+    assert.ok(fs.existsSync(path.join(home, 'fixture-login-kimi')));
+    result.checks.push('CLI 授权按公司保留原入口；公开状态不含令牌');
     // API keys still have a home, and the general settings page does not overwrite them.
     await click('[data-ac="config"][data-id="codex"]'); await until('!document.querySelector("#account-editor").hidden', 'account config opened');
     await until('document.querySelector("#cfg-detail-codex").classList.contains("active")', 'Codex form');
@@ -111,8 +109,31 @@ async function main() {
     await click('#account-config-save'); await until('document.querySelector("#account-config-msg").textContent.includes("已保存")', 'config saved');
     const config = JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8'));
     assert.equal(config.unrelatedFixture, 'preserve-me'); assert.ok(JSON.stringify(config).includes('副账号·改'));
-    await click('[data-ac="back"]'); await until('!!document.querySelector(".ac-id")', 'back to accounts');
+    await click('[data-ac="back"]'); await until('!!document.querySelector(".ac-company")', 'back to accounts');
     result.checks.push('接入配置（API Key 等）仍可编辑并真实保存，不影响其他配置项');
+
+    // Keyboard shortcut uses the same selected-account open path.
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: '1', code: 'Digit1', modifiers: 1, windowsVirtualKeyCode: 49 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: '1', code: 'Digit1', modifiers: 1, windowsVirtualKeyCode: 49 });
+    await until('document.querySelector(".ac-status").textContent.includes("ChatGPT")', 'Alt+1 opens ChatGPT');
+    const keyOpen = fs.readFileSync(path.join(home, 'accounts-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(keyOpen.site, 'chatgpt'); assert.equal(keyOpen.identity, 'main');
+    await click('[data-ac="tools"]');
+    await until('document.querySelector("[data-tool-choice]")', 'tool bindings discovered');
+    // Native select driven by keyboard, not a backend bypass.
+    await cdp.eval('document.querySelector("[data-tool-choice]").focus()');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 });
+    await until('document.querySelector("[data-tool-choice]").value==="main"', 'selected shared ChatGPT identity');
+    await click('[data-ac="tools-connect"]');
+    await until('document.querySelector(".ac-tool-setup").textContent.includes("已统一接入")', 'tools bound', 60000);
+    await until('document.querySelector(".ac-tool-list").textContent.includes("已接入")', 'actual tool connection badge updated');
+    const bindings = JSON.parse(fs.readFileSync(path.join(chromeRoot, 'tool-bindings.json'), 'utf8'));
+    assert.equal(bindings.tools[0].identity, 'main');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(laneConfig, 'settings.json'), 'utf8')).cli_entry, bindings.tools[0].entry);
+    assert.equal(fs.existsSync(path.join(pool, 'stop-primary')), false);
+    result.checks.push('Alt+1 键盘打开；真实选择工具账号并接入：配置、备份、绑定落盘（旧浏览器关闭为夹具）');
+    await snap('04-tools-connected');
 
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'), true);
@@ -125,13 +146,14 @@ async function main() {
     assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'), true);
     result.checks.push('进出账号页保留会话草稿；与记忆页互斥');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 920, height: 820, deviceScaleFactor: 1, mobile: false });
-    await click('#btn-rail-accounts'); await until('!!document.querySelector(".ac-id")', 'narrow'); await snap('03-narrow');
+    await click('#btn-rail-accounts'); await until('!!document.querySelector(".ac-company")', 'narrow');
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 700, y: 350, deltaY: -4000, deltaX: 0 });
+    await sleep(300); await snap('05-narrow');
     result.passed = true;
   } catch (e) { result.error = e.stack; if (cdp) { try { await snap('failure'); result.dom = await cdp.eval('document.body.innerText'); } catch {} } throw e; }
   finally {
     fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify(result, null, 2));
     try { await chrome.close(); } catch {}
-    try { execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'"|Where-Object{$_.CommandLine -like '*${path.basename(root)}*'}|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue}`]); } catch {}
     if (cdp) await cdp.close(); if (hub) await gracefulQuit(hub);
   }
   console.log(JSON.stringify(result, null, 2));

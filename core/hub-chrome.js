@@ -30,7 +30,7 @@ const ALL_SITES = Object.keys(SITES);
 // second identity. Everything else belongs in the main one.
 const DEFAULT_IDENTITIES = [
   { id: 'main', label: '主', sites: ALL_SITES },
-  { id: 'alt', label: '副', sites: ['chatgpt'] },
+  { id: 'alt', label: '副', sites: ALL_SITES },
 ];
 const OFFSCREEN = { left: -32000, top: -32000, width: 1280, height: 900 };
 const ONSCREEN = { left: 120, top: 80, width: 1280, height: 900 };
@@ -97,9 +97,15 @@ class HubChrome {
   }
   async closeIfIdle() {
     return this.lifecycle(async () => {
-      if (await this.workTabs()) return false;
-      await this.close();
-      return true;
+      // A tool may finish closing its page just as an inspector reserves Chrome.
+      // Idle cleanup is optional: leave the inspector's browser to its owner.
+      const release = this.inspectionOwner ? null : require('./web-roundtable/store').acquire('account-check', path.join(this.root, 'locks'));
+      if (!this.inspectionOwner && !release) return false;
+      try {
+        if (await this.workTabs()) return false;
+        await this.close();
+        return true;
+      } finally { release?.(); }
     });
   }
 
@@ -173,12 +179,13 @@ class HubChrome {
   }
   // Which ChatGPT account this identity is signed in as, from the site's own session
   // endpoint. Only the email leaves the page; the session's token is never read here.
-  async chatgptAccount(identityId) {
+  async chatgptAccount(identityId, { signal } = {}) {
     const { targetId } = await this.openTab(identityId, 'https://chatgpt.com/');
     let page;
     try {
       page = await this.page(targetId);
       for (const end = Date.now() + 15000; Date.now() < end;) {
+        if (signal?.aborted) throw Error('检查已取消');
         const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include'});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(() => '');
         if (email) return String(email).slice(0, 120);
         await sleep(800);
@@ -217,7 +224,7 @@ class HubChrome {
       const info = await r.json();
       // The port file outlives the browser; only trust it if the socket path matches too.
       if (new URL(info.webSocketDebuggerUrl).pathname !== String(lines[1] || '').trim()) return null;
-      return { port, ws: info.webSocketDebuggerUrl };
+      return { port, ws: info.webSocketDebuggerUrl, headless: /HeadlessChrome/.test(info['User-Agent'] || '') };
     } catch { return null; }
   }
   // Chrome drops about:/data: URLs given on its command line, so each identity's marker is
@@ -235,11 +242,12 @@ class HubChrome {
       + `Hub 的网页工具都在这里工作，请不要关闭这个窗口。</body>`;
     if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== html) fs.writeFileSync(file, html, 'utf8');
   }
-  launchArgs(identityId, { debug = true, visible = false, url, urls } = {}) {
+  launchArgs(identityId, { debug = true, visible = false, headless = false, url, urls } = {}) {
     return [
       '--user-data-dir=' + this.root,
       '--profile-directory=' + identityId,
       ...(debug ? ['--remote-debugging-port=0'] : []),
+      ...(headless ? ['--headless=new'] : []),
       '--no-first-run', '--no-default-browser-check',
       // Always say where: left unset, Chrome restores the profile's last window placement,
       // and the Hub parks its work windows off screen — so a login window came up at the
@@ -252,9 +260,9 @@ class HubChrome {
   launch(identityId, options) {
     this.writeMarker(identityId);
     return new Promise((resolve, reject) => {
-      const child = this.spawn(this.executable(), this.launchArgs(identityId, options), { env: this.env, detached: true, stdio: 'ignore', windowsHide: false });
+      const child = this.spawn(this.executable(), this.launchArgs(identityId, options), { env: this.env, detached: true, stdio: 'ignore', windowsHide: !options?.visible });
       child.once('error', reject);
-      child.once('spawn', () => { child.unref(); resolve(); });
+      child.once('spawn', () => { this.lastLaunchPid = child.pid; child.unref(); resolve(); });
     });
   }
   // Chrome holds <profile>/lockfile exclusively for as long as it runs, so a failed open
@@ -274,15 +282,26 @@ class HubChrome {
     if (!this.profileHeld()) return [];
     return [{ automated: !!(await this.endpoint()) }];
   }
-  async ensure() {
+  assertAvailable() {
+    if (this.inspectionOwner) return;
+    const { acquire } = require('./web-roundtable/store');
+    const release = acquire('account-check', path.join(this.root, 'locks'));
+    if (!release) throw Error('正在后台检查登录，请等待检查结束或在账号页取消检查');
+    release();
+  }
+  async ensure({ headless = false, identityId = this.identities[0].id } = {}) {
+    this.assertAvailable();
     const existing = await this.endpoint();
-    if (existing) return existing;
+    if (existing) {
+      if (headless && !existing.headless) throw Error('专属 Chrome 正在使用中，请关闭网页窗口后检查');
+      return existing;
+    }
     if (!this.starting) {
       this.starting = (async () => {
         // A launch would be handed to that ordinary window and never expose a debugging port.
         if ((await this.owners()).some(o => !o.automated)) throw new Error('Hub 浏览器正开着登录窗口；关掉那个窗口后，网页工具就能继续用它');
         this.contexts.clear();
-        await this.launch(this.identities[0].id);
+        await this.launch(identityId, { headless });
         for (const end = Date.now() + 20000; Date.now() < end;) {
           const ep = await this.endpoint();
           if (ep) return ep;
@@ -395,7 +414,18 @@ class HubChrome {
   async openLogin(identityId, siteKeys) {
     return this.lifecycle(() => this._openLogin(identityId, siteKeys));
   }
+  async openWebsite(identityId, siteKey) {
+    return this.lifecycle(async () => {
+      this.assertAvailable();
+      this.identity(identityId);
+      const site = this.site(siteKey), ep = await this.endpoint();
+      if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
+      if (ep) return this._openTab(identityId, site.url, { visible: true });
+      return this._openLogin(identityId, [siteKey]);
+    });
+  }
   async _openLogin(identityId, siteKeys) {
+    this.assertAvailable();
     const identity = this.identity(identityId);
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
     for (const k of keys) if (!identity.sites.includes(k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
@@ -425,7 +455,7 @@ class HubChrome {
     } finally { cdp.close(); }
   }
   // Sites that keep their login in localStorage can only be read from a live page.
-  async liveStatus(identityId, siteKey, { timeoutMs = 15000 } = {}) {
+  async liveStatus(identityId, siteKey, { timeoutMs = 15000, signal } = {}) {
     if (!(await this.running())) return { state: 'needs_browser' };
     const site = this.site(siteKey);
     const { PROBE } = require('./account-browser');
@@ -435,7 +465,16 @@ class HubChrome {
       page = await this.page(targetId);
       const host = new URL(site.url).hostname;
       for (const end = Date.now() + timeoutMs; Date.now() < end;) {
-        const r = await page.evaluate(PROBE).catch(() => null);
+        if (signal?.aborted) throw Error('检查已取消');
+        let r;
+        try { r = await page.evaluate(PROBE); }
+        catch (e) {
+          // Page.navigate returns before redirects finish. Retry only this short
+          // loss of the JavaScript context; real probe/connection errors stay visible.
+          if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
+        }
+        if (r?.challenge) return { state: 'needs_attention', reason: 'challenge' };
+        if (siteKey === 'google' && r?.host === 'accounts.google.com') return { state: 'signed_out' };
         if (r && r.host === host) {
           if (r.challenge) return { state: 'needs_attention', reason: 'challenge' };
           if (r.login) return { state: 'signed_out' };

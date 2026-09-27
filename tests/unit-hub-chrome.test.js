@@ -47,11 +47,12 @@ test('"检查登录" answers from the cookie file alone: present, expired, missi
   assert.deepEqual(s.sites.doubao, { state: 'cookie_present', expiresAt: 0 });
   assert.deepEqual(s.sites.claude, { state: 'signed_out' });
   assert.deepEqual(s.sites.deepseek, { state: 'needs_browser' }, 'localStorage sites say so instead of guessing');
-  assert.deepEqual(hub.offlineStatus('alt').sites, { chatgpt: { state: 'signed_out' } }, 'a profile never used has no login');
+  assert.equal(hub.offlineStatus('alt').sites.chatgpt.state, 'signed_out', 'a profile never used has no login');
+  assert.equal(hub.offlineStatus('alt').sites.qwen.state, 'needs_browser', 'every company supports an isolated second login');
 });
-test('login refuses a site the identity does not hold, and unknown identities', async () => {
+test('login refuses unknown sites and identities before launching anything', async () => {
   const hub = new HubChrome({ root: os.tmpdir() });
-  await assert.rejects(hub.openLogin('alt', 'qwen'), /不负责/);
+  await assert.rejects(hub.openLogin('alt', 'not-a-site'), /未知的网站/);
   assert.throws(() => hub.identity('nope'), /未知的账号身份/);
 });
 test('CLI status reads token files only, reports the account, and never returns a token', t => {
@@ -80,7 +81,7 @@ test('a CLI sits under the identity that holds its web login; Codex is matched b
   assert.equal(acc.owner({ kind: 'codex', site: 'chatgpt', account: 'D@gmail.com' }, identities), 'alt');
   assert.equal(acc.owner({ kind: 'codex', site: 'chatgpt', account: 'x@y.z' }, identities), '', 'an unknown account is not guessed');
   assert.equal(acc.owner({ kind: 'claude', site: 'claude' }, identities), '', 'a common provider is not identity evidence');
-  assert.equal(acc.owner({ kind: 'claude', site: 'claude', account: 'lintian0509@gmail.com' }, identities), 'main');
+  assert.equal(acc.owner({ kind: 'claude', site: 'claude', account: 'lintian0509@gmail.com' }, identities), '', 'a ChatGPT email is not Claude identity evidence');
 });
 
 test('only logins in the identity roundtable tasks run in can release them', async () => {

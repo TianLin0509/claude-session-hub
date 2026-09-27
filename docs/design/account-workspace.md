@@ -1,0 +1,48 @@
+# 账号与 AI 网页 · 2026-09-26
+
+本文件取代 `account-center.md` 中 2026-09-25 的主／副身份卡片布局。源需求：按公司展示 1～2 个账号，复用用户最近登录的 AI Hub 专属 Chrome，提供 AI 网页快捷入口；登录检查真正无头、低开销、有进度。
+
+## 用户操作
+
+- 七家公司：OpenAI、Anthropic、Google、字节跳动、DeepSeek、月之暗面、阿里巴巴。公司卡片内显示网页产品、账号、状态、打开网页按钮。命令行授权按公司折叠保留，凭据仍由各 CLI 自己保管。
+- 每家默认一个账号，ChatGPT 保留已有两个。可添加第二个账号，选择默认打开账号；不删除、覆盖或搬动原 profile。`main`、`alt` 继续复用既有 Chrome 目录，每个网站各自确定身份，不用 ChatGPT 邮箱给其他网站认人。
+- 网页按钮和账号页内的 Alt+1～7 走同一入口。输入框、配置页、其他会话、组合输入期间不截获快捷键。明确需要登录的账号走普通 Chrome 登录入口；已有受管 Chrome 中的日常网页可独立打开，不关闭工具页面。
+- 普通模式的 Chrome 正在使用资料时，不能同时以无头方式占用同一资料目录。检查会明确提示先关闭专属网页窗口；不强关窗口、不复制 Cookie、不悄悄改用屏幕外有头检查。受管工具占用期间同样如实提示。
+- 登录检查串行执行，至多一个 Chrome 主进程、一个检查页面。每个 profile 检查结束即释放，再检查另一个 profile。当前网站、账号、阶段、已完成数可实时读取；取消后保存已完成项，清理完成才报告已取消。
+- 开页与定时刷新只读取状态；页面隐藏即停止轮询。检查中每 500 ms 读取进度，闲置时 15 秒读取本机状态。Cookie 和历史结果不作为新鲜官网登录证明；官网无法确认时显示未知或需人工验证。
+
+## 网页工具统一接入
+
+账号页的「统一接入专属 Chrome」发现已安装生图队列和中转配置，只读取标签与配置路径。用户显式选择每组工具对应的 ChatGPT 账号。空标签不猜；同一组的并发车道按组绑定。
+
+接入沿用 `configure-hub-browser-tools.py` 的事务入口：核查无在途任务 → 给指定 worker 写原工具支持的停止标记并等待正常退出 → 持有 worker、队列与操作锁 → 关闭工具自己的旧页面 → 原子替换浏览器入口并保留备份 → 撤回本次创建的停止标记。保留已有停止标记，不取消任务、不重发 prompt、不复制凭据、不改中转游标。
+
+生产工具入口必须指向稳定主目录。未合入的 worktree 拒绝绑定真实工具；隔离验证使用 root 内的 `tool-fixtures`。合入后从账号页完成实际账号选择与接入。原生 CLI 与其他外部客户端自己的令牌不搬入 Chrome，网页登录与 CLI 授权分别确认。
+
+## 模块与边界
+
+- `hub-account-catalog`：公司和产品目录；`hub-account-preferences`：启用第二账号和默认网页账号。
+- `hub-accounts`：公开状态、检查任务、身份证据、任务恢复；`hub-login-check`：串行无头探测与资源归属。
+- `hub-chrome`：Chrome/profile/页面与生命周期互斥；`hub-account-browser`：旧账号 IPC 的共享浏览器兼容入口。
+- `hub-browser-setup` + `scripts/hub-browser-setup.py`：安装工具发现、实时接入进度与旧入口迁移；原 `hub-browser-tool` 负责实际页面传输。
+- renderer 只展示状态与发送选择；IPC 校验公司和账号，不能从页面提交任意 URL、路径或执行命令。
+
+网页圆桌仍沿用 main 身份；本次默认账号选择只影响日常网页快捷入口，不改正在执行的圆桌或生图任务身份。检查只用本次取得的新鲜证明恢复等待任务，并在检查浏览器退出后恢复；旧证明不能触发续发。恢复失败保留登录结果并单独显示原因。
+
+## 验证入口
+
+- `node --test tests/unit-hub-accounts-workspace.test.js tests/unit-hub-chrome.test.js tests/unit-hub-account-evidence.test.js tests/unit-hub-browser-migration.test.js`
+- `node tests/e2e-account-center-cdp.js`：真实隔离 Electron 的点击、键盘、配置保存、进度、取消、工具绑定、草稿与窄屏；官网响应和旧浏览器退出是夹具。
+- `node tests/e2e-hub-accounts-headless.js`：真实 Chrome 的 headless UA、主副资料隔离、页面探测与释放；网页为本机 HTTP 夹具。
+- `node tests/e2e-hub-browser-tools.js`：真实 Chrome/Playwright，多页面共用进程、身份隔离、页面归属及关闭边界。
+- `node tests/e2e-web-login-recovery-cdp.js`：真实 Hub/MCP/worker 与网站夹具，确认未发送任务续发一次、已发送任务只补收。
+- `node scripts/run_unit_tests.js --jobs 2`：仓库全量单元验证。首次并发 4 运行出现三个既有测试失败，独立诊断复测通过；降低并发正式重跑，保留原日志，不使用宽松放行。
+
+## 重构审查记录
+
+- 2026-09-26：上述四项隔离端到端验证通过；专项 23 项 Node 测试与 6 项 Python 测试通过；全量并发 2 正式复跑 588 个文件全部通过，退出码 0。17 个变更 JavaScript 文件语法检查、3 个 Python 文件编译与 `git diff --check` 通过。原始日志和截图保存在工作树 `artifacts/`，没有放宽断言或超时。
+- 结构与契约遍：核对新 IPC 与 renderer 调用、旧账号接口兼容、公司与网站映射、检查状态结构和 Python 迁移回调。旧恢复 E2E 的身份卡片选择器已同步为公司卡片；旧展示 helper 仍被提醒计数使用，予以保留。没有删除模块。
+- 运行时风险遍：重新核对取消、并发检查、工具迁移互斥、异常和资源归属。修复取消后误用旧登录证明恢复任务、接入启动同步异常、接入后徽标滞后、网站弹窗残留与检查器构造失败时未释放锁的问题。
+- 两遍均由当前 agent 在本地执行。界面证据来自真实隔离 Electron，检查与共享浏览器证据来自真实 Chrome；网页内容使用夹具，不冒充真实账号端到端验证。
+
+上述验证不能证明每家真实网站当日均能通过无头检查。Cloudflare、Google 或站点改版可能返回需要人工验证；不绕过验证、不宣称登录永久有效。生产账号迁移、原三张 ChatGPT 效果图恢复、真实网站端到端与驻留内存测量仍需在用户批准合入后进行。

@@ -72,7 +72,7 @@ def prepare(spec):
     return changes
 
 
-def apply(spec, changes, restore_manifest=None):
+def apply(spec, changes, restore_manifest=None, before_apply=None):
     root = Path(spec["root"])
     root.mkdir(parents=True, exist_ok=True)
     with contextlib.ExitStack() as stack:
@@ -102,6 +102,8 @@ def apply(spec, changes, restore_manifest=None):
                 stack.enter_context(lock(c["config"].with_suffix(".operation.lock")))
             if c["config"].read_bytes() != c["before"]:
                 raise RuntimeError("Configuration changed after planning")
+        if before_apply:
+            before_apply(changes)
         backup = root / "tool-backups" / str(time.time_ns())
         backup.mkdir(parents=True)
         manifest = root / "tool-bindings.json"

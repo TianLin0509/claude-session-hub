@@ -24,18 +24,18 @@ async function main(){
   const sends=()=>{try{return fs.readFileSync(path.join(home,'web-sends.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);}catch(e){if(e.code==='ENOENT')return [];throw e;}};
   try{
     hub=await launchIsolatedHub({dataDir:data,port,windowMode:'hidden',entryPath:entry,label:'web-login-recovery',extraEnv:{AI_HUB_WEB_DATA_DIR:data,CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
-      HUB_ACCOUNTS_FIXTURE:path.join(home,'accounts-fixture.json'),HUB_SESSION_SEARCH_CODEX_ROOTS:empty,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty}});
+      DEEPSEEK_API_KEY:'',CODEX_SQLITE_HOME:'',HUB_ACCOUNTS_FIXTURE:path.join(home,'accounts-fixture.json'),HUB_SESSION_SEARCH_CODEX_ROOTS:empty,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty}});
     result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     const until=async(expr)=>{for(const end=Date.now()+35000;Date.now()<end;){if(await cdp.eval(expr))return;await pause(120);}throw Error('timeout: '+expr);};
-    const click=async selector=>{await until(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);};
+    const click=async selector=>{await until(`!!document.querySelector(${JSON.stringify(selector)}) && !document.querySelector(${JSON.stringify(selector)}).disabled`);const pos=await cdp.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,button:'left',clickCount:1,...pos});};
     // "The user logged in to a site" = the Hub Chrome shows it logged in (account page view)
     // and the website itself lets the task through (preload page simulation).
     const accountsFixture=path.join(home,'accounts-fixture.json');
     const loggedIn=sites=>{fs.writeFileSync(accountsFixture,JSON.stringify({running:true,main:{sites:Object.fromEntries(sites.map(k=>[k,{state:'signed_in',live:true}]))}}));for(const k of sites)fs.writeFileSync(path.join(home,'fixture-login-web-'+k),'1');};
-    const check=async()=>{await click('[data-ac="check"]');await until('document.querySelector(".ac-status").textContent.includes("已检查")');await cdp.eval('document.querySelector(".ac-status").textContent=""');};
+    const check=async()=>{const previous=await cdp.eval('document.querySelector(".ac-progress")?.dataset.checkId||""');await click('[data-ac="check"]');await until(`document.querySelector('.ac-progress')?.dataset.checkId!==${JSON.stringify(previous)} && document.querySelector('.ac-progress')?.textContent.includes('检查完成')`);};
     loggedIn(['qwen']);
     await until('typeof accountCenterPanel!=="undefined"');await click('#btn-rail-accounts');
-    await until('document.querySelectorAll(".ac-id").length===2');
+    await until('document.querySelectorAll(".ac-company").length===7');
     await check();await pause(6000);
     const ds=parent.inFlight.deepseek.task_id,ki=parent.inFlight.kimi.task_id;
     assert.equal(sends().filter(s=>s.id===ds).length,0);assert.notEqual(store.read(ds).state,'succeeded');
