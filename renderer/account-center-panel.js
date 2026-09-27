@@ -143,7 +143,10 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (provider && !page.hidden) await configure(provider);
   }
   page.addEventListener('click', e => {
+    const currentMenu = e.target.closest('.ac-more');
+    for (const menu of page.querySelectorAll('.ac-more[open]')) if (menu !== currentMenu) menu.open = false;
     const b = e.target.closest('button'); if (!b || b.disabled) return;
+    if (currentMenu) currentMenu.open = false;
     const a = b.dataset.ac, args = { site: b.dataset.site, identity: b.dataset.identity };
     if (a === 'close') close();
     else if (a === 'back') { view = 'list'; render(); void refresh(); }
