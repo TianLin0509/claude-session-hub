@@ -1428,7 +1428,7 @@
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       button.addEventListener('click', () => {
         rememberTuning(selectedKind);
-        selectedKind = button.dataset.kind === 'deepseek' ? (document.getElementById('new-session-deepseek-route')?.value || 'deepseek-acp') : button.dataset.kind || 'claude';
+        selectedKind = button.dataset.kind === 'deepseek' ? (document.getElementById('new-session-deepseek-route')?.value || 'deepseek') : button.dataset.kind || 'claude';
         applyTuningMemory(selectedKind);
         setError('');
         paint();

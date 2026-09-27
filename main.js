@@ -576,6 +576,7 @@ sessionManager.on('native-agent-lifecycle', event => {
 // meeting's timeline (if the sub-session belongs to a meeting).
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
+  sessionManager.noteAgentTurnFinished(hubSessionId, ev || {});
   const completionAt = normalizeEventTime(completedAt, Date.now());
   let session = sessionManager.getSession(hubSessionId);
   // Persist reply recency in main as well as renderer. This closes the gap where
@@ -674,6 +675,7 @@ transcriptTap.on('turn-started', (ev) => {
 
 transcriptTap.on('turn-aborted', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  sessionManager.noteAgentTurnFinished(ev.hubSessionId, ev);
   completionNotifier.noteTurnAborted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
@@ -696,6 +698,7 @@ transcriptTap.on('turn-aborted', (ev) => {
 // full-screen TUI can redraw an old error line during every later turn.
 transcriptTap.on('turn-error', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  sessionManager.noteAgentTurnFinished(ev.hubSessionId, ev);
   completionNotifier.noteTurnFailed(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
@@ -814,6 +817,7 @@ transcriptTap.on('session-bound', (ev) => {
       if (ev.geminiChatId) patch.geminiChatId = ev.geminiChatId;
       if (ev.geminiProjectHash) patch.geminiProjectHash = ev.geminiProjectHash;
       if (ev.geminiProjectRoot) patch.geminiProjectRoot = ev.geminiProjectRoot;
+      if (ev.sessionPath) patch.transcriptPath = ev.sessionPath;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       const patch = {};
@@ -1238,6 +1242,13 @@ function createWindow() {
   };
   mainWindow.webContents.on('will-navigate', interceptNavigate);
   mainWindow.webContents.on('will-redirect', interceptNavigate);
+  // A frame's WindowProxy survives reloads. Invalidate the research navigation
+  // handshake before the new document can announce its capabilities.
+  mainWindow.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame && !details.isSameDocument && details.frame?.name === 'hub-chuxin') {
+      sendToRenderer('chuxin:frame-navigating');
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     routeBlockedMainNavigation(url);
     return { action: 'deny' };
@@ -1509,7 +1520,7 @@ registerGroupchatTurnIpc(ipcMain, {
   interruptGroupChatTurn: (meetingId, options) => groupChatDispatcher.interruptMeetingTurn(meetingId, {
     ...options, targetSids: global.__devFileEngine?.interruptSids(meetingId) || [],
   }),
-  stopLoop: (meetingId, options) => global.__devFileEngine?.stop(meetingId)
+  stopLoop: (meetingId, options) => global.__deliveryEngine?.stop(meetingId) || global.__devFileEngine?.stop(meetingId)
     || (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
 });
 
@@ -1551,13 +1562,32 @@ try {
     },
     logger: console,
   });
-  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
+  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine, deliveryEngine:()=>global.__deliveryEngine });
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
+
+try {
+  global.__deliveryEngine = require('./main/groupchat/delivery-engine').createDeliveryEngine({
+    meetingManager, sessionManager, getHubDataDir,
+    getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
+    ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
+    getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
+    getAttemptEvidence: (id,attemptId,expected) => {
+      const orch=groupchat.getOrchestrator(getHubDataDir(),id);
+      const matches=attemptId ? [orch.getAttempt(attemptId)].filter(Boolean) : Object.values(orch.state.attempts || {}).filter(a=>
+        a.memberId===expected.memberId && a.workflowRun?.runId===expected.runId && a.workflowRun?.stepIndex===expected.stepIndex && a.workflowRun?.attempt===expected.attempt);
+      if(matches.length!==1)return null;
+      const attempt=matches[0];return {attempt,sourceCompletedAt:orch.state.devChatHistory?.receipts?.[attempt.attemptId]?.sourceCompletedAt};
+    },
+    sendToRenderer,
+  });
+  global.__deliveryEngine.registerIpc(ipcMain);
+  global.__deliveryEngine.startWatching();
+} catch (error) { console.error('[delivery] initialization failed:', error); }
 
 try {
   global.__devFileEngine = require('./main/groupchat/dev-file-engine').createDevFileEngine({
     meetingManager, sessionManager, getHubDataDir, getDispatcher: () => (__testHooks ? __testHooks.dispatcher : groupChatDispatcher),
-    isWorkflowRunning: id => !!global.__loopEngine?.isRunning(id),
+    isWorkflowRunning: id => !!global.__loopEngine?.isRunning(id), deliveryEngine: global.__deliveryEngine,
     getMembers: meeting => groupChatDispatcher.groupMembersForMeeting(meeting, { includeDormant: true }),
     ensureMemberReady: (meeting, memberId) => global.__loopEngine.ensureMemberReady(meeting, memberId),
     sendToRenderer, onChanged: (id) => devWorkbench?.changed?.(id), logger: console,
@@ -1567,7 +1597,7 @@ try {
 
 try {
   devWorkbench = require('./main/groupchat/dev-workbench.js').createDevWorkbench({
-    meetingManager, sessionManager, loopEngine: global.__loopEngine, fileEngine: global.__devFileEngine, getHubDataDir, sendToRenderer, logger: console,
+    meetingManager, sessionManager, loopEngine: global.__loopEngine, fileEngine: global.__devFileEngine, deliveryEngine: global.__deliveryEngine, getHubDataDir, sendToRenderer, logger: console,
   });
   devWorkbench.registerIpc(ipcMain);
 } catch (error) { console.error('[dev-workbench] initialization failed:', error.message); }
@@ -1579,7 +1609,7 @@ const devChatHistory = require('./core/dev-chat-history').createHistoryService({
 function watchDevChatHistory(session, sourcePath) {
   if (['codex-app-server','acp','claude-stream-json'].includes(session?.runtimeBackend)) return;
   const meeting=session?.meetingId && meetingManager.getMeeting(session.meetingId);
-  if(!require('./core/dev-file-workflow').enabled(meeting))return;
+  if(!require('./core/dev-file-workflow').enabled(meeting) && !require('./core/delivery-workflow').enabled(meeting))return;
   const orch=groupchat.getOrchestrator(getHubDataDir(),meeting.id);
   const paths=new Set([sourcePath || session.transcriptPath || transcriptTap.getCodexRolloutPath(session.id),
     ...Object.values(orch.state.devChatHistory?.receipts || {})
@@ -1779,6 +1809,7 @@ registerGroupchatSupplementIpc(ipcMain, {
   meetingManager,
   sendToRenderer,
   sessionManager,
+  transcriptTap,
 });
 registerCliStatusIpc(ipcMain, {
   cliReadyDetector,
@@ -3441,6 +3472,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
+  global.__deliveryEngine?.freeze();
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
@@ -3457,10 +3489,12 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
         shutdownDrainPromise = null;
         console.error('[shutdown] PTY drain did not reach a safe state; close was cancelled and may be retried', result);
         restoreWindowAfterFailedShutdown();
+        global.__deliveryEngine?.startWatching();
         return result;
       }
       closeHookServerForShutdown();
       const cleanup = await runFinalShutdownCleanup();
+      global.__deliveryEngine?.dispose();
       if (beforeQuit) {
         if (!cleanup.clean) throw new Error('最终保存或后台进程退出失败，已取消重启');
         await beforeQuit();
@@ -3479,6 +3513,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
       shutdownDrainPromise = null;
       console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
       restoreWindowAfterFailedShutdown();
+      global.__deliveryEngine?.startWatching();
       return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
     });
   return shutdownDrainPromise;

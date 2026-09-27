@@ -1,0 +1,440 @@
+# Agent 规则背景资料
+
+现行规则在仓库根目录的 `AGENTS.md`（Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导入同一份）。本文件不会自动加载，只保存各条规则的来历、事故经过、排查数据和完整操作步骤，供需要时查阅；两处冲突时以 `AGENTS.md` 为准。
+
+2026-09-26 规则瘦身前，Claude 读的 `CLAUDE.md`（约 31KB）和 Codex 读的 `AGENTS.md`（约 15KB）内容不一致。瘦身时两份合并为一份 `AGENTS.md`，原文逐字保留在下面。
+
+## 瘦身前的 CLAUDE.md 原文
+
+### Claude Session Hub 项目规范
+
+#### 会话独占（2026-09-14）
+
+- 同一个 session 同时只能在一个 Hub 打开；其他 Hub 显示占用者 PID/版本并拒绝打开。不得恢复共享查看、控制权转移或后台 broker 订阅。
+- 关闭会话或窗口必须先保存最终记录并停止原生 writer，再释放归属；另一 Hub 从最新持久化记录恢复同一个原生会话、历史和草稿。窗口关闭后不隐藏驻留托盘。
+- 未打开的会话是历史入口，不订阅实时状态、不启动用量监听、不反复回写旧快照。跨 Hub 仍保留原生单 writer、持久化事务锁和定时任务去重。
+- 实现契约与验证入口见 `docs/design/session-exclusive-ownership.md`。
+
+#### 铁律：Hub 依赖完整性（node_modules 不容许半坏）
+
+**Hub 反复出现"桌面图标点开报错无法打开"，几乎每次根因都是 `node_modules` 缺了传递依赖（典型：`Cannot find module 'dijkstrajs'` — `qrcode` 的依赖）。`main.js` 顶部 `require('qrcode')` 一挂，整个 Electron 启动链终止。防止这种事反复发生，规则如下：**
+
+**触发场景**（以下任一都算"node_modules 风险操作"）：
+- `npm install` / `npm ci` / `npm prune` / `npm run dist`（electron-builder 会对源 `node_modules` 做 rebuild + prune）
+- `git checkout` 切到 `package.json` 或 `package-lock.json` 不同的分支
+- `git pull` 拉进了修改 lock 文件的 commit
+- 任何手工删除/移动 `node_modules/` 子目录
+- 被 Windows EBUSY 打断的 npm 操作（`debug.log` / native 模块被 electron.exe 锁住）
+
+**硬性规则**：
+
+1. **`npm run dist` 禁止在主工作目录跑**。必须在独立 worktree（如 `git worktree add ../hub-dist master` 新开目录）里打包，避免 electron-builder 的 rebuild/prune 污染源 `node_modules`。主工作目录只用于开发和启动 Hub。
+
+2. **任何 node_modules 风险操作后，必须 smoke test 启动**：
+   ```bash
+   timeout 6 ./node_modules/electron/dist/electron.exe . 2>&1 | head -20
+   ```
+   看到 `[群聊] hook server listening on 127.0.0.1:...` 才算通过（日志前缀是 `[群聊]` 不是 `[hub]`，`main.js` 里搜 `hook server listening` 可确认；照 `[hub]` 字面比对会把启动成功误判成失败）。端口被占用时会自动 fallback（3456→3460），日志里出现 `bind failed ... EADDRINUSE` 后跟着一行 listening 属正常。看到 `App threw an error during load: Cannot find module 'XXX'` 就是依赖缺失，立即 `npm install` 重对齐。**smoke test 未通过之前，绝不告诉用户"已修复/已完成"。**
+
+3. **Hub 启动报 "Cannot find module"，第一反应执行 `npm install`**（按 `package-lock.json` 补齐），不要去怀疑代码或改 main.js。只有 `npm install` 后仍报同名模块错误，才深入查。
+
+4. **`dist/*.exe` NSIS 安装器绝不能双击启动测试**。它是独立安装流程，装到别的目录，与源开发环境脱节。测试只走桌面快捷方式 `claudeWX.lnk`（指向 `node_modules/electron/dist/electron.exe` + 源工作目录）或 `start.bat`。
+
+5. **Windows EBUSY 处理**：`npm install` 报 `EBUSY rename node_modules/electron/dist/debug.log` → 一定有 electron.exe 进程锁着该文件。先 `Get-Process electron | Where-Object { $_.StartTime -gt (Get-Date).AddMinutes(-N) }` 筛出近期自己启动的进程（禁止动用户生产 Hub），`Stop-Process` 后再重试 install。
+
+6. **多 worktree 并存时**：每个 worktree 有独立 `node_modules`，严禁 symlink 或共享。在 worktree A 里的 npm 操作不应影响 worktree B。
+
+**血泪案例**：2026-04-19 用户桌面图标启动 Hub 报 `Cannot find module 'dijkstrajs'`，node_modules 被大规模清空（`npm install` 补回 182 个包）。推断起因是 04-16 `npm run dist` 在主工作目录跑 + 分支反复切换期间 npm 操作被 EBUSY 打断，留下长期半坏状态。用户明确表示已反复遇到同一问题。
+
+**血泪案例 2**（2026-04-30）：worktree 清理时主 `node_modules` 再次半坏，桌面 Hub 启动报 `Cannot find module 'body-parser'`（express 的传递依赖被部分删除）。根因：清理脚本用了
+```powershell
+cmd /c rmdir "$wt\node_modules"          # 删 junction（Windows 下异步,1s 不够刷新）
+Start-Sleep -Seconds 1
+Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删除目标内容
+```
+**Windows PowerShell 5.1 的 `Remove-Item -Recurse` 对 reparse point/junction 的处理 bug**：如果 junction 在 `Remove-Item` 启动前未完全消失，`-Recurse` 会跟随进入 junction 目标删除内容（PS 7+ 已修，5.1 仍带 bug）。结果是 worktree 共享的主 `claude-session-hub\node_modules` 被部分删除——express/qrcode 等顶层包还在但传递依赖（body-parser、dijkstrajs 等）丢失。
+
+7. **清理 worktree 含 node_modules junction 时,严禁混用 PowerShell `Remove-Item -Recurse`**。必须用 `cmd /c rmdir` 系列全程处理:
+   ```powershell
+   $wt = "C:\Users\lintian\AppData\Local\Temp\hub-XXX"
+   if (Test-Path "$wt\node_modules") { cmd /c rmdir "$wt\node_modules" }
+   # 验证 junction 真的消失了再继续(异步删除可能未完成)
+   while (Test-Path "$wt\node_modules") { Start-Sleep -Seconds 1 }
+   cmd /c rmdir /S /Q "$wt"   # 用 cmd 的 rmdir /S/Q,不用 PS Remove-Item -Recurse
+   ```
+   **严禁 `git worktree remove --force`（2026-07-12 血泪实锤）**：git 在 Windows 上同样会穿透 junction 递归删除——实测它在报 "Invalid argument" 失败前已按字母序删掉真 `node_modules` 的 @* 至 d* 共 136 个顶层包（electron 因被运行中 Hub 锁住而幸存）。唯一安全序列就是上面的 `cmd /c rmdir` 三步：先摘 junction → 轮询确认消失 → `rmdir /S /Q` 删目录 → 最后 `git worktree prune` 清理登记。
+   **触发场景**：feature 分支合并完成后清理 worktree、`git worktree prune`、手工 rm worktree 目录、CI 自动化测试结束清理。
+   **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<dompurify/@xterm/marked 等>'`；renderer 白屏/全局脚本中断（`sessions is not defined`）。
+   **修复 SOP（不 kill 生产 Hub）**：主目录 `npm install` 会被运行中 electron 锁 EBUSY → 改走旁路：临时目录放 package.json+lock → `npm ci --ignore-scripts` → 只把主目录缺失的顶层包拷回（不覆盖已有、跳过 electron）→ 隔离实例 smoke 验证。
+
+#### 记忆 MVP（2026-09-17）
+
+2026-09-19：临时目录不再自动复制 AGENTS.md 或 git init；共享工作区祖先规则经统一消息入口发送并记录回执，不以磁盘存在推断已注入。文件库按来源折叠未改历史副本，手改/未知保留；全局规则有差异时只提示、不覆盖。当前上下文缓存实际证据：Codex 复用 memory-native-context worker 从当前身份已知原生记录提取 AGENTS 和 developer Memory 正文，Claude InstructionsLoaded 记录加载事件。加载事件没有历史正文快照，磁盘预览须明确标注；不以文件发现替代注入。只读清单入口 scripts/audit-memory-rules.js，详见下述设计。
+
+左侧第六个功能按钮是唯一记忆入口，页面内没有会话列表；三个 tab 为当前上下文、记忆文件库、造梦。当前上下文跟随聚焦 session，群聊先打开成员 session。
+
+新服务在 `core/hub-memory-service.js`，复用昨日之我 SQLite 正文并导出一次任务快照，由普通实体 session 造梦；原生 `MEMORY.md`/规则文件只读参考，产物在 Hub 数据目录独立 `DREAM_INDEX.md` + `topics/*.md`。原子发布成功后才推进整理游标，短索引只随用户亲手发送的下一条消息提交（自动派发不带，压缩后重发，搜索与造梦素材剥掉索引），只按真实回执显示已发送，不推测正文已读。旧规则沉淀 scheduler 不再自动启动，旧数据/兼容 IPC 保留但不在新 UI 提供写操作。
+
+详见 `docs/design/memory-mvp.md`。验证：`node --test tests/unit-hub-memory.test.js`、`node tests/e2e-memory-panel-cdp.js`；测试隔离 data/home、端口与 key。协议夹具验证不代表云端模型的提炼质量。
+
+
+#### 昨日之我只检索自然语言（2026-09-17）
+
+- 用户口径：只搜自然语言，绝不搜改动代码。因此**工具调用不进全文索引**，只在 `docs` 表留一行 ≤120 字符的元信息（工具名 + 命令/路径开头），供会话预览、聊天记录 md 和造梦看「AI 做了什么」。
+- `docs_fts` 的三个触发器带 `WHEN scope <> 'tool'`；`docs_cjk` 本来就只覆盖对话。检索范围只剩标题/我的提问/AI 回答；请求里带 `tool` 一律忽略而不是报错，搜索面板不再有「工具 / 文件」页签。
+- 改口径前实测（生产库 8.5GB）：工具文本占正文 88%（2.84 亿字符，其中 apply_patch 的文件内容独占一半）；`session` 这种常用词要多扫 7.7 倍命中，555ms 对 74ms。
+- `SCHEMA_VERSION` 升到 2：老库会被丢弃重建，并在丢弃后 `VACUUM` 一次 —— 生产库 8.5GB 里有 4.2GB 是从未回收的空闲页。**合入后第一次启动会重建索引**（真实数据实测 257 秒），期间搜索结果不完整，状态栏会显示进度。
+- 真实数据实测结果：库 8523MB → 880MB，全文索引 3206MB → 154MB，常用词快 6~16 倍（`session` 267ms → 42ms）。工具 doc 连 `normalized_text` 都不存。
+
+#### 铁律：任务栏图标变 Electron 原子，别再在窗口图标那一层修
+
+**Windows 取任务栏图标的顺序是三层**：① `WM_GETICON`（`win.setIcon()` 只写这一层）→ ② 窗口类图标 `GCLP_HICONSM/HICON` → ③ 进程 exe 的图标资源。第 ① 层用 `SendMessageTimeout + SMTO_ABORTIFHUNG`，主进程一忙就超时；Explorer 崩溃重建任务栏时尤其容易踩到，然后 Windows 落到 ②/③ 并把结果缓存住。
+
+**②③ 两层来自宿主 exe 的资源**。源码模式跑的是原装 `electron.exe`，里面就是 Electron 原子 —— 2026-08-15 实测：运行中的 Hub 窗口 `WM_GETICON` 是橙色 logo，`GCLP_HICON` 是原子。b4fd5d5（挂 show/restore）和 2f7425d（挂 watchdog onTick）都只在第 ① 层反复重贴，所以图标每隔一阵就变回去。
+
+**根治**：`core/hub-exe-branding.js` 把 `electron.exe` 复制成同目录的 `AIGroupChatHub.exe`，用 `resedit`（纯 JS，electron-builder 的传递依赖）换掉图标资源和版本信息，快捷方式全部改指副本。**永不改写 `electron.exe` 本体** —— 本仓库的历史事故都是 node_modules 被写坏，副本坏了删掉即可，下次启动自动重建。
+
+规则：
+1. 再遇到"图标变原子"，先量三层再动手：`Get-ClassLongPtr(hwnd, -14)` 导出成 PNG 看一眼，别默认是窗口图标丢了。
+2. `npm install` / `npm ci` 换过 Electron 会把整个 `node_modules/electron/dist` 重建，副本随之消失，桌面快捷方式会指向不存在的文件。修复一条命令：
+   ```powershell
+   .\node_modules\electron\dist\electron.exe .\scripts\repair-windows-shell-integration.js
+   ```
+   它会补副本 + 重指所有快捷方式。救急入口是桌面 `救Hub.lnk` 和 `start.bat`（都直调 electron.exe，不依赖副本）。
+3. `.ico` 里**不能有 512 的条目**：ICO 目录项的宽高各只有 1 字节，0 表示 256，没法表达 512。老 `create-shortcut.ps1` 写过一个 512，和真 256 项一样标成 `0x0`，同一文件里两个都自称 256×256。用 `-IconOnly` 只重生成图标、不动快捷方式。
+4. `package.json` 的 `build.win.signAndEditExecutable` 不要再设 `false` —— 它会连 rcedit 一起跳过，打包出来的 exe 同样是原子图标（公司发布版 v1.4.0 就是这么来的）。它跟 VS Build Tools 无关，native rebuild 由 `npmRebuild:false` 管。
+
+#### 铁律：CLI 能力必须实测，且新功能要平等覆盖所有 CLI
+
+**每加一个"给 Claude 的选项"，同一轮就要回答"codex / gemini / kimi 的对应能力是什么"。** codex 是日常主力，只做 Claude 等于半个功能。
+
+**断言某个 CLI「没有某能力」之前必须实测**，来源按可信度排序：
+
+1. **CLI 自己缓存的能力清单**。codex 是 `~/.codex/models_cache.json`，每个模型带 `supported_reasoning_levels` / `additional_speed_tiers` / `service_tiers`。
+2. **不发 API 请求的子命令探枚举松紧**。`codex doctor --summary -c <k>=<v>` 的退出码：`approval_policy="banana"` → 1（严格枚举），`service_tier="banana"` → 0（**不校验**）。不校验的键 Hub 必须自己把关，别把乱值拼进命令行。
+3. 二进制字符串表兜底（`codex.exe` 里搜 `service_tier` 附近）。
+4. **用户自己的配置文件就是权威证据** —— 先读 `~/.codex/config.toml` 再下结论。
+
+**血泪案例（2026-08-15/16）**：给新建会话加 fast 开关时，凭记忆断言"Codex 没有 fast 模式"，只给 Claude 做了开关。实测后发现 Codex 的 fast 就是 `service_tier`（模型目录写着 `{id:"priority", name:"Fast", description:"1.5x speed, increased usage"}`），**用户 config.toml 里早就全局写着 `service_tier = "fast"`**。同一轮还错误断言"xhigh 是 Claude `--effort` 专属、Codex 用了会报错"，实测每个 Codex 模型都支持 xhigh，5.6-sol/terra 还有比 max 更高的 `ultra`。
+
+由此定下的两条实现口径：
+
+- **Codex 思考强度按模型取**（`core/codex-model-catalog.js`）：gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh。写死一份必然给某些模型多出或少掉档位。
+- **`service_tier` 只提供实测有效值**（`core/codex-speed-tier.js`）：`inherit`(不覆盖) / `fast` / `flex`。**没有"关闭"这一档** —— 二进制里只匹配 `fast|flex|priority`，模型目录的 `default_service_tier` 是 null，即"不 fast"的表示是**键不存在**；而 `-c` 只能覆盖不能删键（TOML 没有 null）。想长期关掉改全局 config.toml，那才是 Codex 给的机制。别为了凑一个"关"字去猜字面量。
+
+#### 铁律：往 CLI 输入框发 prompt，只走闭环，永远不许盲发回车
+
+- **CLI 为核心（2026-09-25，用户拍板，取代 09-10 的「原生会话优先」）**：Claude / Codex 默认在 PTY 里跑真实 TUI，提交一律走下面的闭环。状态以 CLI hook 为权威（Claude settings.json、Codex `<CODEX_HOME>/hooks.json`，Codex 条目由 `core/codex-hook-integration.js` 部署并写 trusted_hash），落盘 transcript / rollout 为强信号，屏幕识别只能推向「运行中 / 等待」、不能判完成。卡片读 CLI 自己的落盘记录，Claude 走与原生同一投影（`core/claude-disk-transcript.js`）。会话身份靠 `--session-id` 与 hook 上报的 session_id + transcript_path 精确绑定，禁止再按 cwd + 时间窗推断。设计与验收见 `docs/design/cli-pty-core.md`。
+- 原生后端（Codex App Server / Claude stream-json）只是回退开关：`CLAUDE_HUB_AGENT_RUNTIME=native` 或 config.json `runtime.agent = "native"`，UI 不暴露。开着它时原生会话仍按原规则走结构化控制接口，不进入 PTY 粘贴闭环；未知提交核对原生历史、不自动重发。
+
+**从 2026-04-30 到 06-18 至少返工过 6 次的同一个 bug**：内容进了 CLI 输入框，折叠成
+`[Pasted text +N lines]` / `[[Pasted Content N chars]]`，**就是不提交**，也没有任何提示，
+用户干等几十秒。每次都被当成"再多发几个 \r / 再多等 200ms"的调参问题，于是每次都复发。
+
+**根因不是延时不够，是延时这个思路本身错了。** node-pty 在 Windows 上是
+`this._agent.inSocket.write(data)`（named pipe 上的 `net.Socket`，有内部队列、异步排空）。
+几十 KB 的 payload 写下去之后再 `write('\r')`，这个 `\r` 被追加进同一条队列，很可能与
+`BP_END` 一起落进 CLI 的**同一个 stdin chunk**，被 Ink 当粘贴尾巴丢掉。
+**任何固定毫秒数都必然在某个 payload 体积上失效** —— 这就是"越长越容易卡"。
+
+规则：
+
+1. **禁止任何形式的 `setTimeout(..., '\r')` 盲发**，也禁止 `text + '\r'` 合并成一次 write。
+   曾经踩过的四处：浮动输入框（700/900/1100ms 三连发）、卡片重发（零延迟合并写）、
+   会议普通模式（sizeDelay 封顶 500ms）、群聊快路径（写死 500ms）。
+2. **一律走 `session:send-prompt`**（`main/ipc/prompt-submit-handlers.js`）
+   或直接 `groupChatWatcher.sendToPty`。裸 `terminal-input` IPC 只用于真·按键
+   （ESC / Ctrl+C / 方向键）和宿主 shell 的短命令。
+3. 闭环的四个必要环节，缺一不可：**分块投喂**（socket 队列不积压）→
+   **体积自适应 settle + 等折叠标记这个正向信号**（`core/pty-prompt-submit.js`）→
+   **等语义确认**（Claude `UserPromptSubmit` / Codex `task_started`，两者都汇到
+   `sessionManager` 的 `agent-turn-started`）→ **缺确认才补一次有界回车**。
+4. **失败必须可见。** 确认拿不到就如实报 `stuck`，前端亮「补发」按钮
+   （`.fi-stuck`）。可以偶尔失败，不能失败得无声无息 —— 静默卡死才是用户真正的损失。
+5. 补发路径自己也必须走闭环。它是这个 bug 的恢复路径，再踩一次同一个坑毫无意义。
+6. 分块切片**不许劈开 UTF-16 代理对**，否则 emoji 会被切成两段无效 UTF-8。
+7. 契约测试 `tests\unit-prompt-submit-ui-contract.test.js` 用源码 grep 守住以上各条，
+   改动前先读它。
+
+**顺带的教训**：`core/paste-trapped-detector.js` 的折叠标记正则曾经漏掉现版 Claude 的
+`[Pasted text #1 +120 lines]`（多了粘贴槽位号），**等于群聊的 paste 巡检对 Claude 一直是瞎的，
+而没人发现**。加 CLI 输出的模式匹配时，必须拿真实样本核对，别照着记忆里的格式写。
+
+#### 铁律：并行测试 Hub 实例（多 MCP / E2E 测试）
+
+**Hub 原生支持 `CLAUDE_HUB_DATA_DIR` env var 实现运行时状态隔离。所有并行测试必须走这条路径，不得 copy 整个 node_modules 或忽略状态隔离——历史上那种做法已经造成 35+ 条防火墙规则污染 + 数 GB 磁盘垃圾 + 测试互相干扰。**
+
+##### 隔离契约
+
+- **env 未设 → 生产行为**：数据目录 `~/.claude-session-hub/`，行为完全不变
+- **env 设为 `<dir>` → 隔离生效**：`state.json`/`mobile-devices.json`/`images/`/`statusline-cache.json` 全部写入 `<dir>`；Chromium userData 由 `main.js` 自动 `app.setPath('userData', <dir>/electron-userdata)`；Hub 把 env 透传给 spawned Claude CLI 会话，statusline 脚本也命中同一隔离路径
+- 代码入口：`core/data-dir.js` 的 `getHubDataDir()`（commit `aee5eb8` 引入）
+
+##### 启动模板 A — 同代码跑 N 个并行测试实例（最常见）
+
+无需 worktree，从主目录直接起 N 个：
+
+```powershell
+# 实例 A
+$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-A"
+.\node_modules\electron\dist\electron.exe . --remote-debugging-port=9221
+
+# 实例 B（另一个 PS 窗口或 subprocess）
+$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-B"
+.\node_modules\electron\dist\electron.exe . --remote-debugging-port=9222
+```
+
+端口会自动 fallback（hook 3456-3460、mobile 3470+），5 个以内并行无冲突。
+
+##### 启动模板 B — 不同分支代码并行测试
+
+需要 worktree，但 `node_modules` 必须用 junction 复用，不许 `npm install`：
+
+```powershell
+git worktree add C:\temp\hub-feat-X HEAD   # HEAD 不是 master
+cmd /c mklink /J "C:\temp\hub-feat-X\node_modules" "C:\Users\lintian\claude-session-hub\node_modules"
+$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-feat-X-data"
+C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\temp\hub-feat-X --remote-debugging-port=9223
+```
+
+##### 测试窗口不打断用户（2026-09-26）
+
+用户在生产 Hub 里打字时，测试 Hub、浏览器、命令行窗口一闪就会抢走键盘，测试还改写过系统剪贴板。
+- `tests/helpers/hub-launcher.js` 默认 `windowMode: 'background'`：窗口在屏幕外、`setFocusable(false)`、不进任务栏，关闭遮挡节流照常出帧，CDP 焦点模拟让页面认为自己有焦点。写 `visible` 的老测试也按后台跑；要看着它跑设 `HUB_E2E_SHOW_WINDOWS=1`。
+- `background`/`hidden` 实例默认内存剪贴板（Main 与渲染器共用，`navigator.clipboard` 与文件复制也接入）。页面内原生复制（Ctrl+C、`webContents.copy`）拦不住、仍到系统剪贴板，这类测试设 `CLAUDE_HUB_E2E_REAL_CLIPBOARD=1`。
+- 测试 Hub 与 `scripts/run_unit_tests.js` 以低于正常优先级运行，子进程继承；`HUB_TEST_PRIORITY=normal` 恢复。合并闸门（`scripts/merge_task.py`）固定用正常优先级，避免带秒级超时的测试被常驻负载饿住而误回滚。
+- 实现与单测：`core/e2e-desktop-sandbox.js`、`tests/unit-e2e-desktop-sandbox.test.js`。
+
+##### 硬性规则
+
+0. **从 Claude Code 会话里 spawn 测试 Hub 必须先剥离嵌套 env**（血泪 2026-06-11，排查 1.5h）：
+   ```powershell
+   Remove-Item env:CLAUDECODE, env:CLAUDE_CODE_CHILD_SESSION, env:CLAUDE_CODE_ENTRYPOINT, `
+     env:CLAUDE_CODE_SESSION_ID, env:CLAUDE_HUB_PORT, env:CLAUDE_HUB_TOKEN, env:CLAUDE_HUB_SESSION_ID -ErrorAction SilentlyContinue
+   ```
+   否则测试 Hub spawn 的 claude 继承 `CLAUDECODE=1` 自认嵌套子会话 → **不写 transcript jsonl**（/exit 都不 flush）→
+   transcript-tap 拿不到 turn 文本 → 手机 PWA / 远程模式收不到回复；且 `CLAUDE_HUB_PORT` 残留会让 stop hook 投给错误的 Hub。
+   生产 Hub 从桌面快捷方式启动无此问题。
+
+1. **禁止 `npx electron`**：junction 目录下 npx 会绕到全局 npm 的 electron 安装，抛 "Electron failed to install correctly"。必须直调 `<hub-dir>/node_modules/electron/dist/electron.exe`
+
+2. **禁止 `npm install` 在测试副本里**：每次装 742MB 纯浪费。唯一正解是 `cmd /c mklink /J <worktree>/node_modules <main>/node_modules`。副作用：稳定路径让 Windows 防火墙/Defender 不会把每次测试的 electron.exe 当新未知程序
+
+3. **禁止传 `--user-data-dir` CLI 参数**：`main.js` 检测到 env 后用 `app.setPath` 覆盖 userData，CLI 参数会被 shadow 掉——两套不一致路径只会让问题难排查。只设 env 即可
+
+4. **worktree 必须 `git worktree add HEAD`**（不是 `master`）：测的是当前分支改动。前提是相关代码已 commit，否则 HEAD 拿的是上次 commit 版本
+
+5. **`mklink /J` 必须 check returncode**：`subprocess.run(...).returncode != 0` 时立即 `pytest.fail`。否则留下没 node_modules 的空 worktree，下游 electron 启动失败报错晦涩
+
+6. **pytest fixture 参考实现**：`C:\Users\lintian\.ai-team\tests\test_e2e_critical.py::_setup_hub_worktree` + `_start_hub`（commit `cacb791` 及之后）是唯一正确模板。禁止回退到老的 `npm install` + `npx electron` 写法
+
+7. **测梦境/记忆功能必须额外隔离 home 与 key**（血泪 2026-08-01）：`CLAUDE_HUB_DATA_DIR` 只隔 Hub 自身状态，`memory-handlers` / `dream-consolidation` 的 home 仍指真实用户目录——隔离实例跑 `consolidation:run-now` 会扫真实 memory 孤岛并把蒸馏结果写进真实三件套；且 `DEEPSEEK_API_KEY` env 优先级高于 config.json，父进程的 key 会漏进隔离实例触发真实 LLM 调用。测这类功能必须同时设 `CLAUDE_HUB_HOME_DIR=<临时目录>` 与 `DEEPSEEK_API_KEY=`（空），参考 `tests\e2e-memory-panel-cdp.js`
+
+##### 血泪案例
+
+- 2026-04-19 四路代码审查发现：`main.js` 的 `ensureHooksDeployed()` 原本只在目标不存在时复制脚本，导致老用户机器永远拿不到新 statusline 的 env-dir 支持，隔离链条断掉（已修为内容比对覆盖，commit `5dd5dfe`）
+- 同日清理 pytest 垃圾：`AppData\Local\Temp\pytest-of-lintian\pytest-NNN\hub-e2e\node_modules\electron\dist\electron.exe` 因每次是新路径 → 35+ 条防火墙 Allow 规则累积 + 约 3GB 磁盘占用
+- 老测试 fixture `npm install --prefer-offline` 每次 120 秒 + 742MB；junction 后 <1 秒 + 0 字节
+
+#### 铁律：主工作目录就是生产，agent 一律先在 worktree 改，合入主干要用户点头
+
+用户 2026-09-04 定的规矩：**「后续不再区分生产分支和主分支，生产分支就是主分支；
+agent 改 AI HUB 时优先在工作树上操作，等我同意后再合入主干」**。
+
+**先说清楚一件常被误解的事**：这个仓库**从来就只有 `master` 一条线**，没有
+production / prod / release 分支。所以"生产分支 = 主分支"不是要做的改造，它本来就成立。
+
+**真正的风险不在分支，在目录**：生产 Hub 跑的就是 `C:\Users\lintian\claude-session-hub`
+这个工作目录本身（桌面快捷方式指向它，`main-bootstrap.js` 不装单实例锁）。
+在这里直接改代码 = 直接改生产 —— 哪怕改到一半、哪怕还没 commit，
+**下一次重启 Hub 就生效**。这才是"老是容易改错地方"的根源。
+
+规则：
+
+1. **默认在 worktree 里改，不在主工作目录改。**
+   ```powershell
+   git worktree add C:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支名>
+   cmd /c mklink /J C:\AIWork\<...>\node_modules C:\Users\lintian\claude-session-hub\node_modules
+   ```
+   席位标识（`-claude1` / `-codex1`）必须带上：多 agent 并发时这是唯一能区分谁改了什么的信号。
+
+2. **worktree 里绝对不许 `npm install` / `npm ci` / `npm run dist`。**
+   node_modules 是 junction，指向主目录那一份；在里面装包会直接写坏生产依赖。
+   需要改依赖 → 停下来问用户。
+   （与前面第 6 条"每个 worktree 有独立 node_modules"的关系：那条针对**要动依赖**的
+   打包/依赖实验 worktree，此时必须自带副本；本条针对**只改源码**的日常开发 worktree，
+   junction 复用即可，代价是绝不能在里面碰 npm。判据是"这次会不会动 node_modules"。）
+
+3. **合入 master 必须用户明确同意。** agent 不得自行 `git merge` 进主干，
+   也不得直接在主工作目录 commit 功能改动。做完在 worktree 里提交，
+   然后**报告改了什么、测了什么，等用户点头**再合。
+
+4. **例外，无需逐次确认**：纯文档改动；用户在当前请求里明说"直接在主干改"的小修；
+   以及紧急修复（但事后要说明）。
+
+5. **合入后清理 worktree 走既有铁律**（`cmd /c rmdir` 摘 junction → 轮询确认 →
+   `rd /s /q` → `git worktree prune`），严禁 `git worktree remove --force`。
+
+6. **主工作目录的干净度是有意义的信号**：`git status` 在主目录出现未提交的功能改动，
+   基本可以判定是有人违反了本条。发现时先查清是谁的在途工作，**不要顺手 `git add -A`
+   扫进自己的提交**，也不要 `git checkout --` 冲掉。
+
+**为什么值得单列一条**：2026-09-03 那次统一合并里，主工作目录同时躺着三拨人的未提交改动
+（提交可靠性修复、research MCP 情绪周期、agent 联赛理念），彼此看不见。
+靠人工逐个文件甄别才没有互相覆盖 —— 这种甄别不该每次都做一遍。
+
+#### 铁律：每次改动 Hub 都要升版本号，但**由合并脚本抬，不由分支抬**
+
+用户 2026-08-29 定的规矩：**「以后所有对 AI HUB 的改动，完成后都要同步改动 AI HUB 的版本号」**。
+2026-09-06 调整了执行方式：**版本号由 `scripts/merge_task.py` 在合并那一刻自动抬**，分支一行都不要改。
+原因是那三行是所有并行分支都要改的同三行 —— 两个开发群聊同时开工，第二个合进来的必然遇到
+「数值和主干重复」或「package.json/package-lock.json 合并冲突」二选一，而每次打回都是一整轮
+实现 + 一整轮全量单测的代价（实测一周内主干上留下 3 条纯粹为此存在的提交）。
+合并是排队的（脚本自带锁），所以这件事挪到那里，冲突就不可能再发生。
+
+**为什么这条重要**：Hub 是源码模式跑的（`node_modules\electron\dist\AIGroupChatHub.exe "C:\Users\lintian\claude-session-hub"`），而且 `main-bootstrap.js` 明确不装单实例锁 —— 桌面上会长期同时存在多个实例，每个持有它启动那一刻的代码。窗口标题是 `AI 群聊 Hub：PID <pid> v<version>`（`main.js` 的 `_hubTitle` 动态读 `package.json`），**版本号是唯一能一眼分辨"这个窗口跑的是不是我刚改的代码"的信号**。不升版本，重启后就无法确认改动是否生效。
+
+规则：
+1. **分支/worktree 里不要改版本号。** `scripts/merge_task.py` 会在合并成功、跑测试之前执行
+   `node scripts/bump-version.js` 把 patch 位 +1，落进那个合并提交里。哪几个文件、跑什么命令，
+   都读 `.agents/project.json` 的 `versionFiles` / `versionBump`，Hub 之外的项目留空即可关掉。
+   要动 minor/major 是人的决定：`node scripts/bump-version.js --set 1.7.0`，且要用户点头。
+2. 版本号有 **3 处**必须同步：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。`node tests\unit-hub-version-sync.test.js` 守这个一致性（现在守的是自动抬升的结果）。
+3. **不要**去改 `tests\unit-hub-exe-branding.test.js` 和 `tests\unit-process-lifecycle-journal.test.js` 里出现的版本字面量 —— 那些是自洽的 fixture 输入和 `app.getVersion` mock，跟生产版本号无关，跟着改反而制造假耦合。
+4. 升版本会让品牌 stamp 失配，下次启动重新生成 `AIGroupChatHub.exe`。这条路径**已经**处理了"副本正被运行中的 Hub 占用"：`core\hub-exe-branding.js` 先把旧副本 rename 成 `.stale-*` 腾位再替换（Windows 允许 rename 正在执行的映像，但不允许 delete），失败也只是回落 electron.exe 图标。**不需要为了升版本去关生产实例。**
+5. 验证：重启后看窗口标题里的 `v<version>` 是否等于 `package.json` 里的值。
+
+#### 文件工作流的授权与项目合同（2026-09-09）
+
+- 新版双席位开发群聊中，用户亲自发送开题提示词，即授权在开题范围内实现，并由独立合并位验证通过后按项目入口合并；用户另有范围、禁止或审批要求时以其要求为准。普通会话仍遵守先在 worktree 交付、用户同意后合入主干的约定。
+- 文件工作流的阶段、改名交付和无 ASK 规则由 Hub 提示词维护；`.agents/AUTHOR.md`、`.agents/MERGER.md` 只放本项目的环境、验证与合并入口。
+- `AGENTS.md` 与 `CLAUDE.md` 的版本策略一致：实现分支不提前升版本，合并脚本统一抬升。
+
+## 瘦身前的 AGENTS.md 原文
+
+### Hub Codex Rules
+
+#### 会话独占（2026-09-14）
+
+- 同一个 session 同时只能在一个 Hub 打开；其他 Hub 显示占用者 PID/版本并拒绝打开。不得恢复共享查看、控制权转移或后台 broker 订阅。
+- 关闭会话或窗口必须先保存最终记录并停止原生 writer，再释放归属；另一 Hub 从最新持久化记录恢复同一个原生会话、历史和草稿。窗口关闭后不隐藏驻留托盘。
+- 未打开的会话是历史入口，不订阅实时状态、不启动用量监听、不反复回写旧快照。跨 Hub 仍保留原生单 writer、持久化事务锁和定时任务去重。
+- 实现契约与验证入口见 `docs/design/session-exclusive-ownership.md`。
+
+#### 基本规则
+
+- 默认用中文回答；交付 HTML、MD、截图、日志等本地产物时必须给绝对路径。
+- 先读原始需求和相关设计文档，再判断 UI 或功能是否真的完成；AC 通过不等于功能完整。
+- Bug 修复必须先找根因：复现、看日志、追调用链、确认根因、再改代码。不要猜测式补丁。
+- 默认做窄改动、低风险、行为保持型修复；不要顺手重构无关模块。
+
+#### 生产 Hub 保护
+
+- 禁止随意操作用户正在使用的生产 Electron/Hub 进程，包括 `npm start`、`electron .`、直接 kill `electron.exe`、改生产 `state.json`、改生产 Hub 配置，除非用户明确要求。
+- 需要运行 Hub 做验证时，必须使用隔离数据目录，例如设置 `CLAUDE_HUB_DATA_DIR` 到临时目录，并使用独立 remote debugging port。
+- Playwright/CDP 可以操作测试 Hub 窗口，但不能把脚本绕过真实 Hub 行为当作 E2E 结果。
+
+#### node_modules 完整性
+
+- `npm install`、`npm ci`、`npm prune`、`npm run dist`、切换修改 `package.json` / `package-lock.json` 的分支，都属于 node_modules 风险操作。
+- `npm run dist` 禁止在主工作目录直接跑；如需打包，应在独立 worktree 中执行，避免 electron-builder rebuild/prune 污染源目录。
+- 风险操作后必须 smoke test Hub 启动。看到 hook server 正常监听才算通过；如果报 `Cannot find module`，优先按 `package-lock.json` 执行 `npm install` 补齐依赖。
+- `dist/*.exe` NSIS 安装器不是开发启动验证方式；测试源环境应走 `node_modules\electron\dist\electron.exe` 或项目约定的启动脚本。
+- 遇到 Windows `EBUSY` 时，先确认是否是自己启动的近期测试 `electron.exe` 锁文件；禁止误杀用户生产 Hub。
+
+#### 隔离测试模板
+
+- 单代码多实例测试：从主目录启动，但每个实例使用不同 `CLAUDE_HUB_DATA_DIR` 和 remote debugging port。
+- 分支并行测试：使用 `git worktree add <dir> HEAD`，并通过 junction 复用主目录 `node_modules`；不要在测试副本里重复 `npm install`。
+- 禁止 `npx electron`；必须直调 `<hub-dir>\node_modules\electron\dist\electron.exe`。
+- 禁止传 `--user-data-dir` 造成路径语义混乱；隔离只通过 `CLAUDE_HUB_DATA_DIR`。
+- 创建 junction 后必须检查 return code；失败要立即停止验证并说明。
+- 测试窗口不打断用户（2026-09-26）：`tests/helpers/hub-launcher.js` 默认 `background`（屏幕外、不激活、不进任务栏、照常渲染），写 `visible` 的也按后台跑，`HUB_E2E_SHOW_WINDOWS=1` 才真正可见。`background`/`hidden` 实例默认用内存剪贴板；页面内原生复制（Ctrl+C、`webContents.copy`）仍会写系统剪贴板，这类测试设 `CLAUDE_HUB_E2E_REAL_CLIPBOARD=1`。测试 Hub 与单测入口以低于正常优先级运行（`HUB_TEST_PRIORITY=normal` 可恢复；合并闸门固定正常优先级）。实现见 `core/e2e-desktop-sandbox.js`。
+
+#### UI 和终端风险区
+
+- 主要 UI shell 在 `renderer\index.html`；普通 session 终端、侧边栏、preview、resize 逻辑主要在 `renderer\renderer.js` 和 `renderer\styles.css`。
+- meeting room 专属 UI 主要在 `renderer\meeting-room.js` 和 `renderer\meeting-room.css`。
+- 普通 session 输出链路应保持单写入：PTY data -> main -> renderer -> xterm。看到“重复回答”时，先排查 TUI 整屏重绘、resize/reflow、terminal reopen，而不是直接认定模型重复输出。
+- 终端 resize 相关改动要特别谨慎；`ResizeObserver`、sidebar collapse、preview splitter、zoom、show terminal 都可能触发重绘。
+
+#### 往 CLI 输入框发 prompt（2026-09-03）
+
+- **CLI 为核心（2026-09-25，用户拍板，取代 09-10 的「原生会话优先」）**：Claude / Codex 默认在 PTY 里跑真实 TUI，提交一律走下面的闭环。状态以 CLI hook 为权威（Claude settings.json、Codex `<CODEX_HOME>/hooks.json`，Codex 条目由 `core/codex-hook-integration.js` 部署并写 trusted_hash），落盘 transcript / rollout 为强信号，屏幕识别只能推向「运行中 / 等待」、不能判完成。卡片读 CLI 自己的落盘记录，Claude 走与原生同一投影（`core/claude-disk-transcript.js`）。会话身份靠 `--session-id` 与 hook 上报的 session_id + transcript_path 精确绑定，禁止再按 cwd + 时间窗推断。设计与验收见 `docs/design/cli-pty-core.md`。
+- 原生后端（Codex App Server / Claude stream-json）只是回退开关：`CLAUDE_HUB_AGENT_RUNTIME=native` 或 config.json `runtime.agent = "native"`，UI 不暴露。开着它时原生会话仍按原规则走结构化控制接口，不进入 PTY 粘贴闭环；未知提交核对原生历史、不自动重发。
+
+- **禁止盲发回车**：任何 `setTimeout(..., '\r')` 或 `text + '\r'` 合并单写都不许再出现。
+  node-pty 在 Windows 上写的是有内部队列的 named pipe socket，长 payload 没排空时那个 `\r`
+  会与 `BP_END` 落进同一个 stdin chunk 被 TUI 当粘贴尾巴吃掉 —— 固定毫秒数必然在某个体积上失效。
+- 发 prompt 一律走 `session:send-prompt`（`main\ipc\prompt-submit-handlers.js`）或
+  `groupChatWatcher.sendToPty`。裸 `terminal-input` 只留给真·按键和宿主 shell 短命令。
+- 闭环四环节缺一不可：分块投喂 → 体积自适应 settle + 等折叠标记 → 等语义确认
+  （`agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认要如实报 `stuck` 并在 UI 上亮出来。
+- 契约测试 `tests\unit-prompt-submit-ui-contract.test.js` 守住以上各条，改动前先读。
+- 加 CLI 输出的模式匹配时必须拿真实样本核对：折叠标记正则曾漏掉现版 Claude 的
+  `[Pasted text #1 +120 lines]`，导致 paste 巡检对 Claude 长期失效而无人察觉。
+
+#### 验证要求
+
+- 语法级改动至少跑对应 `node --check` 或项目已有单测。
+- UI/GUI 行为改动需要真实 Hub 实例 + CDP/Playwright 或截图证据；如果不能运行，要说明原因。
+- 最终回答必须列出实际执行过的验证命令和结果；如果只做静态检查，不能说 E2E 通过。
+
+#### 记忆 MVP（2026-09-17）
+
+- 临时目录不自动复制 AGENTS.md、不默认 git init；共享工作区祖先规则随真实消息发送并留确认回执，不以磁盘存在推断已经注入。文件库折叠未改旧副本，手改/未知保留；只读清单由 scripts/audit-memory-rules.js 输出，不批量删除原生规则。
+- Claude InstructionsLoaded 只作加载路径证据，磁盘预览不可冒充当时快照。
+
+- 统一入口在左侧第六个功能按钮；三个 tab 为当前上下文、记忆文件库、造梦。记忆页不放会话列表，当前上下文跟随聚焦 session；群聊先打开成员 session。
+- 文件库与造梦是全局入口，不依赖活动 session；从首页进入默认文件库，造梦按已知项目选择素材。只有「当前上下文」依赖聚焦 session。
+- 当前上下文展示原生记录中的规则/记忆注入快照，以及本原生身份/epoch 的 Hub 确认提交快照；不扫文件库、不查历史搜索库、不列「预计加载」和「可按需读取」。没有原生加载证据时明确未知，不能用磁盘存在替代注入证据。
+- Codex 原生注入由 `core/memory-native-context.js` worker 读取会话绑定的 rollout，校验 native ID，仅提取 AGENTS 指令和 developer Memory 块；缓存并增量读追加记录。显示最近记录的注入原文，不代表压缩后的完整模型上下文。未接入的 provider 明示未知。
+- 文件库发现由 `core/hub-memory-catalog.js` worker 执行，目录按真实路径去重，30 秒缓存与并发请求合并；刷新可重扫。三个 tab 按需请求，过期响应不覆盖新 tab/session。
+- 主服务 `core/hub-memory-service.js`，历史导出 `core/memory-history.js`，IPC `main/ipc/hub-memory-handlers.js`，页面 `renderer/memory-panel.js` / `.css`；设计与数据契约见 `docs/design/memory-mvp.md`。
+- 昨日之我只索引对话：工具调用只留 ≤120 字符元信息、不进全文索引，检索范围只有标题/我的提问/AI 回答（`SCHEMA_VERSION` 已升，合入后首次启动重建索引）。每个会话另有一份只含对话的聊天记录 md（Hub 数据目录 `transcripts/`），可直接分享路径。
+- 复用昨日之我 SQLite 的消息正文，明确解析截断和附件覆盖边界，不宣称无损原始归档。选中素材导出为一次任务快照，造梦师为普通实体 session。
+- 原生 `MEMORY.md` 和规则文件只读参考；新梦境只写 Hub 数据目录的独立 `DREAM_INDEX.md` 与 `topics/*.md`。结果校验通过后原子发布，失败不推进已整理进度。
+- 索引只随用户亲手发送的下一条消息提交（群聊/初心等自动 prompt 不带；上下文压缩后重发；搜索与造梦素材剥掉索引），只有原生提交证据才显示已发送；磁盘可读、预计加载、已发送、正文已读取不能混称。聊天卡片折叠显示索引但不删原始正文。
+- 旧规则沉淀 scheduler 已停止自动启动；旧数据和兼容 IPC 保留，旧“并入规范库”和写原生规则操作不在新 UI 提供。
+- 隔离验证同时设置 `CLAUDE_HUB_DATA_DIR`、`CLAUDE_HUB_HOME_DIR`、独立 CDP 端口并清空 `DEEPSEEK_API_KEY`。测试：`node --test tests/unit-hub-memory.test.js`、`node tests/e2e-memory-panel-cdp.js`；协议夹具结果不等于真实模型质量验证。
+
+##### 旧梦境兼容代码注意事项（2026-08-01）
+
+- 管线在 `core\dream-consolidation.js`（采集→蒸馏→落盘；写前快照 + changelog.jsonl 可回溯），只读巡检在 `core\memory-inspector.js`。
+- **规范库（home 桶）自身不是孤岛**：巡检、孤岛采集、`mergeIslandBucket` 三处都必须排除它——它是所有 junction 的目标，漏判会把规范库合并进自己或把已共享内容重复蒸馏（2026-08-01 三连坑）。
+- 增量去重：候选按内容指纹（excerpt sha256）跳过已蒸馏项，指纹只在上轮蒸馏成功后标记；`state.json` 的 processed 上限 500 条。
+- 旧 `memory:merge-island` → `claude-memory-link.mergeIslandBucket` 是机械合并非蒸馏，行为记 changelog；IPC 保留于 `main/ipc/memory-handlers.js`。
+- 旧沉淀仅可写文件末尾 `<!-- dream:begin/end -->` 托管区，手写正文区不得动；四家规则多写保持逐字一致，缺哪份不补建。新梦境不走此通道。
+- 隔离验证梦境/记忆功能必须同时设 `CLAUDE_HUB_HOME_DIR`（否则 memory 孤岛采集扫真实 home、写真实三件套）并清空 `DEEPSEEK_API_KEY`（env 优先于 config.json，父进程的 key 会漏进隔离实例）。
+- 旧兼容测试：`node tests\unit-dream-consolidation.test.js`。
+
+#### 改 Hub 一律先开 worktree，合主干要用户点头（2026-09-04）
+
+- 用户规矩：**不再区分生产分支和主分支（本来也只有 `master` 一条线，没有 production/release 分支）；
+  agent 改 Hub 优先在工作树上操作，等用户同意后再合入主干。**
+- 真正的风险不在分支在目录：**生产 Hub 跑的就是 `C:\Users\lintian\claude-session-hub` 这个工作目录本身**。
+  在这里改代码 = 直接改生产，哪怕没 commit，下次重启就生效。
+- 默认动作：`git worktree add C:\AIWork\<YYYYMMDD>-<任务>-<席位> -b <分支>`，
+  再 `cmd /c mklink /J <worktree>\node_modules <主目录>\node_modules`。席位标识必须带（`-codex1` / `-claude1`）。
+- **worktree 里禁止 `npm install` / `npm ci` / `npm run dist`**：node_modules 是 junction，
+  装包会写坏生产依赖。要动依赖先问用户，并改用自带副本的 worktree。
+- **不得自行 merge 进 master**，也不得直接在主工作目录 commit 功能改动。
+  做完在 worktree 里提交 → 报告改了什么、测了什么 → 用户同意后再合。
+- 例外：纯文档；用户在当前请求里明说"直接在主干改"；紧急修复（事后说明）。
+- 清理 worktree 走 node_modules 那节的 `cmd /c rmdir` 三步，严禁 `git worktree remove --force`。
+- 主目录 `git status` 出现别人的未提交改动时：先查清归属，**不要 `git add -A` 扫进自己的提交，
+  也不要 `git checkout --` 冲掉**（2026-09-03 主目录曾同时躺着三拨人的在途改动）。
+
+#### 版本号（2026-08-29）
+
+- 用户规矩：所有对 Hub 的功能改动完成后升版本号；由 `scripts/merge_task.py` 在合并时同步抬升，实现分支不提前修改。纯文档/纯测试可不动。
+- 理由：Hub 源码模式运行且没有单实例锁，桌面上常年并存多个实例各持不同时刻的代码。窗口标题 `AI 群聊 Hub：PID <pid> v<version>` 动态读 `package.json`，版本号是唯一能一眼确认"这个窗口跑的是不是新代码"的信号。
+- 同步 3 处：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。用 `node tests\unit-hub-version-sync.test.js` 守。
+- 不要动 `tests\unit-hub-exe-branding.test.js` / `tests\unit-process-lifecycle-journal.test.js` 里的版本字面量——那是 fixture 输入和 `app.getVersion` mock，不是生产版本号。
+- 升版本会触发 `core\hub-exe-branding.js` 重建 `AIGroupChatHub.exe`；该路径已处理"副本被运行中的 Hub 占用"（先 rename 成 `.stale-*` 再替换），**不要为此关生产实例**。
+
+#### 文件工作流的授权与项目合同（2026-09-09）
+
+- 新版双席位开发群聊中，用户亲自发送开题提示词，即授权在开题范围内实现，并由独立合并位验证通过后按项目入口合并；用户另有范围、禁止或审批要求时以其要求为准。普通会话仍遵守先在 worktree 交付、用户同意后合入主干的约定。
+- 文件工作流的阶段、改名交付和无 ASK 规则由 Hub 提示词维护；`.agents/AUTHOR.md`、`.agents/MERGER.md` 只放本项目的环境、验证与合并入口。
+- `AGENTS.md` 与 `CLAUDE.md` 的版本策略一致：实现分支不提前升版本，合并脚本统一抬升。

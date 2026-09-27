@@ -30,7 +30,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms)),j=JSON.stringify;
     await send('fixture:hold 请两位持续执行当前任务。');
     await until('both member prompts accepted',()=>c.eval(`${j(meeting.subSessions)}.every(sid=>['accepted','ok'].includes(sessions.get(sid)?.nativeRuntime?.submission?.status || sessions.get(sid)?.nativeRuntime?.submission?.sendStatus))`));
     await send('补充要求：保留完整结果，不要重新开始。');
-    await until('truthful mixed supplement notice',()=>c.eval(`document.body.innerText.includes('1 位已排队，当前任务结束后处理') && document.body.innerText.includes('1 位正在执行的已即时收到')`));
+    await until('truthful mixed supplement notice',()=>c.eval(`document.body.innerText.includes('1 位已排队，当前任务结束后处理') && document.body.innerText.includes('1 位已确认收到')`));
     const requests=fs.readFileSync(trace,'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(requests.filter(r=>r.method==='turn/start').length,1);
     assert.equal(requests.filter(r=>r.method==='turn/steer').length,1);

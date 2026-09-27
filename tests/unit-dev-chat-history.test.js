@@ -60,6 +60,48 @@ test('unknown prompt/turn cannot be assigned to current attempt',t=>{
   row({type:'item_completed',turn_id:'other',item:{type:'AgentMessage',id:'x',phase:'final_answer',text:'wrong'}});
   assert.equal(orch.state.messages.filter(m=>m.sourceMessage).length,0);
 });
+
+test('exact supplement text wins over the original request sharing its provider turn',t=>{
+  const {orch,row,makeTurn}=setup(t);const original=makeTurn('original');
+  orch.updateAttempt(original.attemptId,{providerTurnId:'same'},'test_bound');
+  row({type:'task_started',turn_id:'same'});row({type:'user_message',message:'original'});
+  row({type:'item_completed',turn_id:'same',item:{id:'before',type:'AgentMessage',phase:'commentary',text:'original progress'}});
+  const supplement=orch.recordSupplementPrompt('s','exact extra',{seq:2,kind:'codex',memberId:'m1'});
+  rememberPrompt(orch,'s',supplement);
+  row({type:'user_message',message:'exact extra',turn_id:'same'});
+  row({type:'item_completed',turn_id:'same',item:{id:'after',type:'AgentMessage',phase:'final_answer',text:'supplement reply'}});
+  assert.equal(orch.state.messages.find(m=>m.content==='original progress').attemptId,original.attemptId);
+  assert.equal(orch.state.messages.find(m=>m.content==='supplement reply').attemptId,supplement.attemptId);
+  assert.equal(orch.state.devChatHistory.errors.s,undefined);
+});
+
+test('a known conflicting provider turn excludes an old exact-text match',t=>{
+  const {orch,row,makeTurn}=setup(t);const old=makeTurn('first\nline');
+  orch.updateAttempt(old.attemptId,{providerTurnId:'old'},'test_bound');
+  const current=makeTurn('first\n\nline');orch.updateAttempt(current.attemptId,{providerTurnId:'new'},'test_bound');
+  row({type:'task_started',turn_id:'new'});row({type:'user_message',message:'first\nline'});
+  row({type:'item_completed',turn_id:'new',item:{id:'answer',type:'AgentMessage',phase:'final_answer',text:'new answer'}});
+  assert.equal(orch.state.messages.find(m=>m.content==='new answer').attemptId,current.attemptId);
+  assert.equal(orch.state.devChatHistory.receipts[old.attemptId].sourceUserKey,undefined);
+});
+
+test('task_complete mirrors the same native final across original and supplement attempts',t=>{
+  const {orch,row,makeTurn}=setup(t);const original=makeTurn('original');
+  row({type:'task_started',turn_id:'same'});row({type:'user_message',message:'original'});
+  const supplement=orch.recordSupplementPrompt('s','extra',{seq:2,kind:'codex',memberId:'m1'});
+  rememberPrompt(orch,'s',supplement);
+  row({type:'user_message',message:'extra',turn_id:'same'});
+  row({type:'item_completed',turn_id:'same',item:{id:'actual-final',type:'AgentMessage',phase:'final_answer',text:'answer'}});
+  // The original request is rebound during source replay before its end event.
+  row({type:'user_message',message:'original',turn_id:'same'});
+  row({type:'task_complete',turn_id:'same',last_agent_message:'answer'});
+  const source=orch.state.messages.filter(m=>m.sourceMessage && m.content==='answer');
+  assert.equal(source.length,1);assert.equal(source[0].attemptId,supplement.attemptId);
+  for(const id of [original.attemptId,supplement.attemptId]){
+    assert(orch.state.devChatHistory.receipts[id].sourceCompletedAt);
+    assert(orch.state.attempts[id].sourceCompletedAt);
+  }
+});
 test('provider identity recovers early text despite TUI whitespace change, without fuzzy prompt matching',t=>{
   const {orch,reader,row,makeTurn}=setup(t);const a=makeTurn('first\n\nline');
   row({type:'task_started',turn_id:'provider-owned'});

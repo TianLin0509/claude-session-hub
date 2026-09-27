@@ -12,6 +12,7 @@ function publicSettings(config) {
 function registerAcpIpc(ipcMain, {sessionManager} = {}) {
   ipcMain.handle('acp:queue', (_event, {sessionId,id,action,epoch} = {}) => {
     const session=sessionManager?.getNativeSession(sessionId);
+    if(session?.isCliProvider)throw new Error('请在 CLI 中管理待发送消息');
     if(!session?.promptQueue)throw new Error('ACP 会话不可用');
     if(epoch!==session.runtime.epoch)throw new Error('待发送消息来自旧连接');
     if(action==='read') {

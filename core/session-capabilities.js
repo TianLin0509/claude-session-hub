@@ -31,6 +31,7 @@ function runtimeKindForSession(session) {
 }
 
 function sessionProviderFamily(session) {
+  if (session?.agentRuntime === 'pty' && require('./acp-profiles').isAcpKind(session.kind)) return 'acp';
   if (session?.runtimeBackend === 'acp') return 'acp';
   const runtimeKind = runtimeKindForSession(session);
   if (isClaudeFamily(runtimeKind)) return 'claude';
@@ -44,7 +45,7 @@ function sessionProviderFamily(session) {
 
 function nativeSessionIdentity(session) {
   if (!session || typeof session !== 'object') return null;
-  if (session.runtimeBackend === 'acp') return session.acpSid ? {family:'acp',field:'acpSid',value:session.acpSid} : null;
+  if (sessionProviderFamily(session) === 'acp') return session.acpSid ? {family:'acp',field:'acpSid',value:session.acpSid} : null;
   const family = sessionProviderFamily(session);
   const field = family === 'claude'
     ? 'ccSessionId'
@@ -62,12 +63,14 @@ function nativeSessionIdentity(session) {
 
 function supportsRecoverableSession(session) {
   if (!session) return false;
+  if (session.agentRuntime === 'pty' && sessionProviderFamily(session) === 'acp') return true;
   if (session.runtimeBackend === 'acp') return !!(session.acpCapabilities?.loadSession || session.acpCapabilities?.sessionCapabilities?.resume);
   return ['claude', 'codex', 'gemini', 'kimi'].includes(sessionProviderFamily(session));
 }
 
 function supportsForkSession(session) {
   if (!session || session.purpose === 'chuxin-research') return false;
+  if (session.agentRuntime === 'pty' && sessionProviderFamily(session) === 'acp') return session.kind.replace(/-resume$/, '') === 'qwen';
   if (session.runtimeBackend === 'acp') return session.kind === 'qwen' || !!session.acpCapabilities?.sessionCapabilities?.fork;
   return ['claude', 'codex'].includes(sessionProviderFamily(session));
 }

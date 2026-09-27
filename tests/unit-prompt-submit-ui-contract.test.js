@@ -161,9 +161,10 @@ const orchestratorSrc = read('core', 'group-chat-orchestrator.js');
 assert.ok(/clientMessageId \? \{ clientMessageId \} : \{\}/.test(orchestratorSrc),
   'orchestrator 要把 id 写进权威 user 消息，且没有 id 时不留空字段');
 
-// --- 10. stuck 提示条的样式必须在 -------------------------------------------
-for (const cls of ['.fi-stuck', '.fi-stuck-label', '.fi-stuck-resend', '.fi-stuck-dismiss']) {
-  assert.ok(cssSrc.includes(cls), `stuck 提示条缺样式：${cls}（没样式等于没提示）`);
-}
+// 用户 2026-09-26 指定去掉未确认提醒；提交闭环保持原有行为。
+const markStuck = rendererSrc.match(/function markFloatingInputStuck\([^)]*\) \{([^}]+)\}/)?.[1];
+assert.ok(markStuck, '找到横幅清理入口');
+assert.ok(!/createElement|session:resend-prompt/.test(markStuck), '不得再创建未确认横幅或补发按钮');
+assert.ok(/clearFloatingInputStuck/.test(markStuck), '旧横幅节点应清理');
 
 console.log('Prompt submit reliability contract: ok');

@@ -347,7 +347,7 @@ function createLoopEngine(deps) {
     const sid = sidOf(meeting, memberId);
     if (!sid || !sessionManager) throw new Error(`workflow member ${memberId} is missing`);
     let session = sessionManager.getSession(sid);
-    if (!session && require('../../core/dev-file-workflow').enabled(meeting) && typeof deps.loadSessionMeta === 'function') {
+    if (!session && (require('../../core/dev-file-workflow').enabled(meeting) || require('../../core/delivery-workflow').enabled(meeting)) && typeof deps.loadSessionMeta === 'function') {
       const meta = deps.loadSessionMeta(sid);
       if (meta && meta.hubId === sid && meta.meetingId === meeting.id) {
         if (typeof resumeSession !== 'function' || !await resumeSession(meta)) throw new Error(`workflow member ${memberId} could not restore its saved session`);

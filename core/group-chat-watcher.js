@@ -26,7 +26,8 @@ const {
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
-//   Claude family 与当前 Codex 都支持；DeepSeek 迁移到 Codex 后也走 Codex 分支。
+//   Windows Codex 还会经过按键粘贴缓冲，正文后用非文本键结束缓冲，再提交。
+//   DeepSeek 迁移到 Codex 后也走 Codex 分支。
 //   marker 常量与分块/settle 原语都在 core/pty-prompt-submit.js，普通会话走同一套。
 //   本文件不再直接拼 BP 帧（writeBracketedPaste 负责），所以只引原语不引常量。
 const {
@@ -394,7 +395,21 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 // options.requireReady=false：跳过冷启动 waitCliReady（2026-09-03）。
 //   普通会话的输入框就摆在用户面前，CLI 显然已经在跑；再等一次 60s 的 ready 轮询
 //   只会把"打完字立刻发出去"变成有时要等几十秒。群聊派发默认仍为 true。
+const promptSubmissionQueues = new Map();
 async function sendToPty(sid, prompt, kind, options = {}) {
+  // Serialize submission, not the model's answer. Workflow dispatch and user
+  // interjections share this boundary so their paste chunks cannot interleave.
+  const previous=promptSubmissionQueues.get(sid);
+  // Enter the first submission synchronously so native cancellation registers
+  // its intent before a caller can close the session in this same tick.
+  const task=previous ? previous.catch(()=>{}).then(()=>sendToPtyImpl(sid,prompt,kind,options))
+    : sendToPtyImpl(sid,prompt,kind,options);
+  promptSubmissionQueues.set(sid,task);
+  try{return await task;}
+  finally{if(promptSubmissionQueues.get(sid)===task)promptSubmissionQueues.delete(sid);}
+}
+async function sendToPtyImpl(sid, prompt, kind, options = {}) {
+  if(options.shouldSubmit && !options.shouldSubmit())return {ok:false,notSent:true,reason:'派工已暂停或取消，本条未发送'};
   if (require('./session-speed').pendingSpeedSwitches.has(sid) && !options.localCommandObserver) {
     throw new Error('正在确认当前会话的速度设置，请完成后再发送');
   }
@@ -402,7 +417,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
   if (sessionManager.restartPending) throw Object.assign(new Error('Hub 正在重启，未发送新任务'), {notSent:true});
   if (!options.workspaceRulesPrepared && sessionManager.memoryService?.withWorkspaceRules) {
     return sessionManager.memoryService.withWorkspaceRules(sid,prompt,kind,options,
-      text=>sendToPty(sid,text,kind,{...options,workspaceRulesPrepared:true}));
+      text=>sendToPtyImpl(sid,text,kind,{...options,workspaceRulesPrepared:true}));
   }
   const native = (sessionManager.getNativeSession?.(sid) || sessionManager.getNativeCodex?.(sid));
   if (native) return native.send(prompt, {
@@ -479,6 +494,15 @@ async function sendToPty(sid, prompt, kind, options = {}) {
     sessionManager.setGroupChatReady(sid, true);
   }
 
+  // The TUI can exit after readiness was cached (for example a failed resume).
+  // A normal card prompt must never become a PowerShell command.
+  if (require('./ai-kinds').isAiKind(String(kind).replace(/-resume$/, ''))
+      && detectHostShellTakeover(sessionManager.getSessionBuffer(sid) || '')) {
+    sessionManager.setGroupChatReady(sid, false);
+    throw Object.assign(new Error('CLI 已退出到系统终端，消息未发送；请先重启会话'),
+      { notSent:true, code:'cli-exited' });
+  }
+
   if ((options.restartContinuation || sessionManager.restartContinuationSessions?.has(sid)) && ['kimi','kimi-resume','gemini','gemini-resume','deepseek','deepseek-resume'].includes(kind)) {
     const receipt=require('./hub-restart-legacy').observeLegacyPrompt(_deps.transcriptTap,sid,prompt,
       20000+Math.ceil(String(prompt).length/2048)*12+computeSettleMs(String(prompt).length));
@@ -497,6 +521,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         sessionManager.writeToSession(sid,text.slice(offset,offset+2048));
         await new Promise(resolve=>setTimeout(resolve,12));
       }
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,text);
       await waitForPasteSettled({sessionManager,sid,settleMs:computeSettleMs(text.length),baselineMarker});
       writeSubmitSignal(sessionManager,sid,kind,0);
       const first=await receipt.wait(7000);
@@ -542,6 +567,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
       gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
     });
+    require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // BP_END 紧贴 \r 时 Ink 把 \r 当 paste 尾巴忽略，所以必须隔开再发。
     //   隔多久以前写死 500ms —— 短 prompt 够用，长 prompt 必然还在消化窗口内，
@@ -584,7 +610,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         if (!options.retriedAfterBusyReject) {
           console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected ${String(prompt).trim()} while its previous task was still finishing; submitting once more after it settles`);
           await waitCodexSettled(livePtyObserver);
-          return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+          return await sendToPtyImpl(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
         }
         return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
           message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
@@ -638,7 +664,11 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       // 记下「看到屏幕在跑、且输入框里没有未提交的折叠粘贴」这个观察，
       //   循环结束后用它把"确认迟到"和"真的卡住"分开。
       let observedRunningWithClearInput = false;
+      let cliExitedDuringAck = false;
       for (let attempt = 0; !acknowledgement && attempt < retryMax;) {
+        // A slash command or CLI crash can return to PowerShell during the
+        // acknowledgement wait. Recovery Enter must never reach that shell.
+        if (require('./host-shell-detector').detectHostShellTakeover(sessionManager.getSessionBuffer(sid))) { cliExitedDuringAck = true; break; }
         if (turnStart.started || turnStart.resolved) {
           acknowledgement = turnStart.acknowledgement;
           break;
@@ -674,6 +704,11 @@ async function sendToPty(sid, prompt, kind, options = {}) {
         console.warn(`[group-chat] ${kind} prompt has no lifecycle acknowledgement for ${sid.slice(0, 8)}, but the screen ran with a clear input box; treating it as submitted`);
         acknowledgement = { source: 'pty-running-input-clear', observedAt: Date.now(), turnId: null };
       }
+      // 等确认期间 CLI 退回了命令行：明确报失败（不是 notSent，退出前正文可能已写进 CLI）。
+      if (!acknowledgement && cliExitedDuringAck) {
+        return { ok: false, sendStatus: 'cli-exited', error: 'cli-exited', enterAttempts, acknowledgementSource: null,
+          message: 'CLI 已退出到命令行，消息可能没有被接收，未补回车' };
+      }
       if (!acknowledgement) {
         console.warn(`[group-chat] ${kind} prompt submission not acknowledged for ${sid.slice(0, 8)} after late Enter recovery`);
         sendStatus = 'stuck';
@@ -696,7 +731,7 @@ async function sendToPty(sid, prompt, kind, options = {}) {
       if (!options.retriedAfterBusyReject) {
         console.warn(`[group-chat] codex(${sid.slice(0, 8)}) rejected a slash command while its previous task was still finishing; submitting once more after it settles`);
         await waitCodexSettled(livePtyObserver);
-        return await sendToPty(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
+        return await sendToPtyImpl(sid, prompt, kind, { ...options, retriedAfterBusyReject: true, workspaceRulesPrepared: true });
       }
       return { ok: false, notSent: true, sendStatus: 'rejected', error: 'cli-busy-rejected', enterAttempts, acknowledgementSource: null,
         message: 'Codex 仍在处理上一轮，命令被拒绝、没有执行；请稍后再发' };
@@ -836,7 +871,7 @@ function extractStreamingText(sid, _kind) {
   const native = (_deps.sessionManager.getNativeSession?.(sid) || _deps.sessionManager.getNativeCodex?.(sid));
   if (native) {
     const blocks = native.blocks();
-    return {source:native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
+    return {source:native.isCliProvider ? 'provider-cli' : native.options?.kind && require('./acp-profiles').isAcpKind(native.options.kind) ? 'acp' : 'codex-app-server',blocks,text:blocks.map(b=>b.text).join('').slice(-500)};
   }
   const { transcriptTap } = _deps;
   const nativeClaude = _deps.sessionManager?.getNativeClaude?.(sid);
@@ -999,6 +1034,7 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing, al
       //   它自己再踩一次同一个坑就毫无意义，所以改走与主路径同一套分块 + 自适应 settle。
       const baselineMarker = snapshotPasteMarker(sessionManager, sid);
       await writeBracketedPaste(sessionManager, sid, prompt);
+      require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
       noteSubmittedPrompt(sid, kind, prompt);
       await waitForPasteSettled({
         sessionManager,

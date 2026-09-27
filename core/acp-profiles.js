@@ -70,12 +70,14 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
       QWEN_CODE_DISABLE_AUTO_UPDATE: '1', NO_COLOR: '1' });
     authMethod = 'openai';
     writeJson(path.join(home, '.qwen/settings.json'), {
+      general: { enableAutoUpdate: false },
       modelProviders: { openai: models.map(({id}) => ({ id, name: id, baseUrl: baseURL, envKey: 'OPENAI_API_KEY' })) },
     });
   } else if (kind === 'deepseek-acp') {
     if(!entry.bridgePath)throw new Error('DeepSeek 完整交互需要配置 ACP 扩展包目录');
     env.DSH_HOME = path.join(home, '.dsh');
     env.BAILIAN_API_KEY = key;
+    env.BAILIAN_TPP_API_KEY = key;
     const settings = {
       'agent-default-model': { provider: 'bailian-tpp', model },
       'llm-pi-ai': { providers: { 'bailian-tpp': { api: 'openai-completions', baseURL,
@@ -126,7 +128,7 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
   return { id: opts.id, kind, cwd: opts.cwd, profileId, model, effort: opts.effort,mcpServers,
     permissionPolicy: 'bypass',
     defaultMode: {qwen:'yolo','deepseek-acp':'danger-full-access',glm:'yolo'}[kind],
-    resumeId: opts.acpFork?.sessionId || opts.acpSid, restoredRuntime: opts.nativeRuntime, forkHistory: opts.acpFork?.history,
+    resumeId: opts.acpFork?.sessionId || opts.acpSid, forkCli:opts.acpFork?.forkCli===true, restoredRuntime: opts.nativeRuntime, forkHistory: opts.acpFork?.history,
     storeDir: path.join(dataDir, 'acp-history'), home, authMethod, authMeta,
     launch: { command: profile.nodePath, args, cwd: opts.cwd, env, secrets: [key] } };
 }

@@ -118,6 +118,10 @@ function normalizeDispatchMeta(dispatch) {
       attempt: Number(dispatch.attempt) > 0 ? Number(dispatch.attempt) : 1,
       runId: dispatch.runId ? String(dispatch.runId) : null,
       role: dispatch.role ? String(dispatch.role) : '',
+      ...(dispatch.kind==='delivery' ? {
+        goal:typeof dispatch.goal==='string'?dispatch.goal:'',
+        stageName:typeof dispatch.stageName==='string'?dispatch.stageName:'',
+      } : {}),
     },
     toMemberIds: memberIds,
     toLabels: labels,
@@ -569,7 +573,12 @@ class GroupChatOrchestrator {
     for(const m of safe)merged.set(m.id,m);
     const next=[...merged.values()];
     if(JSON.stringify(previous)===JSON.stringify(next))return false;
-    byAttempt[attemptId]=next;
+      byAttempt[attemptId]=next;
+      if(attempt.supplementSeq){
+        const message=this.state.messages.find(m=>m.id==='supp-'+attemptId);
+        const last=next.findLast(m=>m.phase==='final_answer');
+        if(message && last){message.content=last.text;message.status='completed';attempt.status='completed';}
+      }
     try { this._saveState('conversation_items_saved',{attemptId}); }
     catch(error) {
       // Do not let in-memory equality suppress the next durable write retry.
@@ -742,6 +751,8 @@ class GroupChatOrchestrator {
       origin: ORIGIN_USER,
       supplement: true,
       supplementSource: String(opts.source || 'input-box'),
+      toSids: recipients,
+      toLabels: Array.isArray(opts.toLabels) ? [...opts.toLabels] : [],
       runId: (this.state.activeRun && this.state.activeRun.runId) || null,
     });
     if (!this.state.userSupplements) this.state.userSupplements = { pendingBySid: {}, deliveredBySid: {} };
@@ -766,6 +777,7 @@ class GroupChatOrchestrator {
     if (!key) return [];
     const ledger = this.state.userSupplements || { pendingBySid: {} };
     const pending = new Set(ledger.pendingBySid[key] || []);
+    for(const seq of ledger.uncertainBySid?.[key] || [])pending.delete(seq);
     if (!pending.size) return [];
     return this.listUserSupplements().filter(item => pending.has(item.seq));
   }
@@ -774,7 +786,7 @@ class GroupChatOrchestrator {
    * 确认送达。**只在实际发送返回成功之后调**——发送失败或确认不明时不要调它，
    * 那种情况要保留待确认，不能提前标已读，也不要盲目重发（任务书 C06）。
    */
-  markUserSupplementsDelivered(sid, seqs) {
+  markUserSupplementsDelivered(sid, seqs, {queued=false}={}) {
     const key = String(sid || '');
     const list = _seqList(seqs);
     if (!key || !list.length) return [];
@@ -786,8 +798,64 @@ class GroupChatOrchestrator {
     if (pending.size) ledger.pendingBySid[key] = _seqList([...pending]);
     else delete ledger.pendingBySid[key];
     ledger.deliveredBySid[key] = _seqList([...(ledger.deliveredBySid[key] || []), ...list]);
+    if(ledger.uncertainBySid?.[key])ledger.uncertainBySid[key]=ledger.uncertainBySid[key].filter(seq=>!list.includes(seq));
+    for(const message of this.state.messages){
+      const d=message.supplementDelivery;if(!message.supplement || !list.includes(message.seq) || !d)continue;
+      for(const field of ['pendingSids','uncertainSids','deliveredNow','queuedSids'])d[field]=(d[field] || []).filter(s=>s!==sid);
+      d[queued?'queuedSids':'deliveredNow'].push(sid);
+    }
     if (moved.length) this._saveState('user_supplement_delivered', { sid: key, count: moved.length });
     return moved;
+  }
+
+  // An unconfirmed write may already be in the CLI. Do not replay it as part
+  // of a later automatic workflow prompt; keep the original visible record.
+  markUserSupplementsUncertain(sid, seqs) {
+    const ledger=this.state.userSupplements;
+    if(!ledger)return;
+    ledger.uncertainBySid ||= {};
+    ledger.uncertainBySid[sid]=_seqList([...(ledger.uncertainBySid[sid] || []),...seqs]);
+    this._saveState('user_supplement_uncertain',{sid,seqs});
+  }
+
+  releaseUserSupplementsUnsent(sid, seqs) {
+    const ledger=this.state.userSupplements;
+    if(!ledger?.uncertainBySid?.[sid])return;
+    ledger.uncertainBySid[sid]=ledger.uncertainBySid[sid].filter(seq=>!seqs.includes(seq));
+    this._saveState('user_supplement_unsent',{sid,seqs});
+  }
+
+  recordSupplementPrompt(sid, prompt, details) {
+    const runId=this.state.activeRun?.runId || createRunId(this.meetingId,this.state.currentTurn || 0);
+    const attemptId=createAttemptId(runId,details.memberId || sid),at=Date.now();
+    const attempt={attemptId,runId,sid,memberId:details.memberId,kind:details.kind,turnNum:this.state.currentTurn || 0,
+      mode:'group',status:'submitting',supplementSeq:details.seq,promptHash:promptFingerprint(prompt),dispatchAt:at,createdAt:at,updatedAt:at};
+    this.state.attempts ||= {};this.state.attempts[attemptId]=attempt;
+    // Native projection needs an anchor; PTY history appends source messages.
+    // Neither path replaces the workflow's pending prompt or active attempt.
+    if(details.native)this._appendMessage({id:'supp-'+attemptId,role:'assistant',sid,speaker:details.label,
+      turnNum:attempt.turnNum,runId,attemptId,content:'',status:'running',supplementReply:true});
+    this._saveState('supplement_prompt_recorded',{attemptId});
+    return {attemptId,prompt,promptHash:attempt.promptHash};
+  }
+
+  finishSupplementPrompt(attemptId,result={}) {
+    const attempt=this.state.attempts?.[attemptId];if(!attempt?.supplementSeq)return;
+    const prior=Object.values(this.state.attempts).find(a=>a.attemptId!==attemptId && !a.supplementAliasOf && a.sid===attempt.sid
+      && result.threadId && a.providerThreadId===result.threadId && result.turnId && a.providerTurnId===result.turnId);
+    Object.assign(attempt,{status:result.ok?(attempt.status==='completed'?'completed':'accepted'):'submission_unknown',updatedAt:Date.now(),
+      providerThreadId:result.threadId || null,providerTurnId:result.turnId || null,userMessageId:result.userMessageId || null});
+    if(prior){attempt.supplementAliasOf=prior.attemptId;this.state.messages=this.state.messages.filter(m=>m.id!=='supp-'+attemptId);}
+    const message=this.state.messages.find(m=>m.id==='supp-'+attemptId);
+    if(message && !result.ok){message.status='submission_unknown';message.failureReason=result.reason || result.error || '补充提交待核对';}
+    this._saveState('supplement_prompt_receipt',{attemptId});
+  }
+
+  recordUserSupplementDelivery(seq, result) {
+    const message=this.state.messages.find(m=>m.supplement && m.seq===seq);
+    if(!message)return;
+    message.supplementDelivery=result;
+    this._saveState('supplement_delivery_saved',{seq});
   }
 
   /**
@@ -1133,7 +1201,7 @@ class GroupChatOrchestrator {
         if (!m || m.role !== 'assistant' || Number(m.turnNum) !== Number(turnNum) || !m.sid) continue;
         // 过程汇报只是半路进展，不是答案：拿它当合并基线会把「本轮跑空」记成
         //   by[sid] = 'UPDATE: …'，这一轮的答复就被一句中途汇报顶掉了。
-        if (isProgressUpdateMessage(m)) continue;
+        if (isProgressUpdateMessage(m) || m.supplementReply) continue;
         if (m.content && String(m.content).trim()) by[m.sid] = m.content;
         if (m.status) byStatus[m.sid] = m.status;
         if (typeof m.thinkSec === 'number') thinkSecBy[m.sid] = m.thinkSec;
@@ -1163,7 +1231,7 @@ class GroupChatOrchestrator {
       const _writeContent = !!(r.text && String(r.text).trim().length);
       const _prevStatus = byStatus[sid];
       const _existingMsg = this.state.messages.find(m => m && m.role === 'assistant'
-        && Number(m.turnNum) === Number(turnNum) && m.sid === sid && !isProgressUpdateMessage(m));
+        && Number(m.turnNum) === Number(turnNum) && m.sid === sid && !m.supplementReply && !isProgressUpdateMessage(m));
       const _hasManualResult = _prevStatus === 'manual_extracted'
         && !!(by[sid] && String(by[sid]).trim().length);
       const _incomingIsManual = _rStatus === 'manual_extracted';
@@ -1436,7 +1504,7 @@ class GroupChatOrchestrator {
     const providerTurnIdBy = pending ? {} : (turn.providerTurnIdBy = turn.providerTurnIdBy || {});
     const failureBy = pending ? {} : (turn.failureBy = turn.failureBy || {});
     let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum)
-      && m.role === 'assistant' && m.sid === sid && !isProgressUpdateMessage(m));
+      && m.role === 'assistant' && m.sid === sid && !m.supplementReply && !isProgressUpdateMessage(m));
     if (status === 'handed_off' && !String(text || '').trim()
         && msg?.status === 'completed' && msg.finality === 'provider_final'
         && msg.attemptId === attemptId && String(msg.content || '').trim()) return msg;

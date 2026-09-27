@@ -5,6 +5,7 @@
  */
 function registerLoopIpc(ipcMain, deps) {
   const { loopEngine, logger = console } = deps || {};
+  const delivery = () => typeof deps.deliveryEngine === 'function' ? deps.deliveryEngine() : deps.deliveryEngine;
   if (!ipcMain || !loopEngine) return;
 
   // 停止意图是落盘的（引擎里 stopRequested），所以只有用户**明确要求继续**才能清掉它。
@@ -131,8 +132,9 @@ function registerLoopIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('loop:status', async (_e, args = {}) => {
-    try { return loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : { running: loopEngine.isRunning(args.meetingId) }; }
-    catch (err) { return { running: false }; }
+    try { if(delivery()?.handles(args.meetingId))return {...delivery().status(args.meetingId),mode:'delivery'};
+      return loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : { running: loopEngine.isRunning(args.meetingId) }; }
+    catch (err) { return { running: false,error:err.message }; }
   });
 
   ipcMain.handle('loop:resume', async (_e, args = {}) => {
@@ -160,6 +162,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('serial:start', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      if(delivery()?.handles(args.meetingId))return {ok:true,state:await delivery().start(args.meetingId,args.userInput)};
       resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const validation = typeof loopEngine.validateSerial === 'function'
@@ -178,6 +181,7 @@ function registerLoopIpc(ipcMain, deps) {
   ipcMain.handle('serial:resume', async (_e, args = {}) => {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
+      if(delivery()?.handles(args.meetingId))return {ok:true,state:await delivery().resume(args.meetingId)};
       resumeByUser(args.meetingId);
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
       const status = loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : null;
@@ -203,13 +207,15 @@ function registerLoopIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('workflow:stop', async (_e, args = {}) => {
-    try { return { ok: loopEngine.stopLoop(args.meetingId, { interrupt: true }) }; }
+    try { if(delivery()?.handles(args.meetingId))return {ok:delivery().stop(args.meetingId,{interrupt:true})};
+      return { ok: loopEngine.stopLoop(args.meetingId, { interrupt: true }) }; }
     catch (err) { return { ok: false, reason: (err && err.message) || 'internal_error' }; }
   });
 
   ipcMain.handle('workflow:status', async (_e, args = {}) => {
-    try { return loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : { running: loopEngine.isRunning(args.meetingId) }; }
-    catch { return { running: false }; }
+    try { if(delivery()?.handles(args.meetingId))return {...delivery().status(args.meetingId),mode:'delivery'};
+      return loopEngine.getStatus ? loopEngine.getStatus(args.meetingId) : { running: loopEngine.isRunning(args.meetingId) }; }
+    catch (err) { return { running: false,error:err.message }; }
   });
 }
 

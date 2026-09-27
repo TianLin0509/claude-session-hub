@@ -704,7 +704,7 @@ function createGroupChatDispatcher(deps) {
           if (watcher.isSettled() || codexPromptSubmitted) return;
           // File workflows are continued by the user. Missing output never
           // authorizes another prompt submission or a timed recovery action.
-          if (DevFile.enabled(meetingManager.getMeeting(meetingId))) return;
+          if (DevFile.enabled(meetingManager.getMeeting(meetingId)) || require('../../core/delivery-workflow').enabled(meetingManager.getMeeting(meetingId))) return;
           const currentWaitSession = sessionManager.getSession(sid) || waitSession;
           const boundNow = hasBoundCodexTranscript(currentWaitSession);
           if (!boundNow) {
@@ -1133,6 +1133,15 @@ function createGroupChatDispatcher(deps) {
     return count;
   }
 
+  function handoffMeetingTurn(meetingId) {
+    const key=String(meetingId || ''),seq=(meetingDispatchSeq.get(key) || 0)+1;
+    meetingDispatchSeq.set(key,seq);
+    meetingHandoffSeq.set(key,seq);
+    // Files can arrive while sendToPty is still awaiting acceptance. Advancing
+    // the generation also hands off watchers registered after this call.
+    return supersedeActiveWatchersForMeeting(meetingId,true);
+  }
+
   // 运行中中断（2026-07-29 道雪）：把「用户在单 session 里按 ESC」这件事批量下发给
   //   本轮所有在跑的成员。顺序刻意是「先结算、再发 ESC」：
   //     ① 先 watcher.interrupt(partialText) —— 状态机立刻收敛到确定态（interrupted），
@@ -1266,7 +1275,7 @@ function createGroupChatDispatcher(deps) {
     if (!args.silent) {
       dispatchSeq = (meetingDispatchSeq.get(key) || 0) + 1;
       meetingDispatchSeq.set(key, dispatchSeq);
-      const fileHandoff=args.fileHandoff === true && DevFile.enabled(meetingManager.getMeeting(meetingId));
+      const fileHandoff=args.fileHandoff === true && (DevFile.enabled(meetingManager.getMeeting(meetingId)) || require('../../core/delivery-workflow').enabled(meetingManager.getMeeting(meetingId)));
       if(fileHandoff)meetingHandoffSeq.set(key,dispatchSeq);else meetingHandoffSeq.delete(key);
       try { supersedeActiveWatchersForMeeting(meetingId, fileHandoff); }
       catch (e) { warn('[groupchat] preempt supersede threw:', e && e.message); }
@@ -1284,16 +1293,19 @@ function createGroupChatDispatcher(deps) {
     userInput,
     turnTimeoutMs,
     targetMemberIds,
+    recipientSids,
     heroIdBySid,
     silent,
     allowActiveExtend,
     appendUserMessage,
     reuseTurnNum,
     dispatchMode,
+    dispatchPresentation,
     workflowRun,
     clientMessageId,
     _dispatchSeq,
     shouldDispatch,
+    onSubmission,
   } = {}) {
     if (shouldDispatch && !shouldDispatch()) return { status: 'error', reason: '文件进度已变化或用户已停止', turnNum: null };
     const turnStartedAt = Date.now();
@@ -1321,6 +1333,7 @@ function createGroupChatDispatcher(deps) {
         members.map(member => member.sid)
       );
 
+      if(recipientSids!==undefined)targetMemberIds=require('../../core/groupchat-recipients').memberIds(meeting,recipientSids);
       const explicitTargetIds = Array.isArray(targetMemberIds)
         ? targetMemberIds.map(x => String(x || '').toLowerCase()).filter(Boolean)
         : [];
@@ -1331,7 +1344,7 @@ function createGroupChatDispatcher(deps) {
           }
         : parseGroupTargets(userInput || '', members, meeting.participants);
       const targetMembers = routed.targets || [];
-      if (DevFile.enabled(meeting)) {
+      if (DevFile.enabled(meeting) || require('../../core/delivery-workflow').enabled(meeting)) {
         const historyOrch=groupchat.getOrchestrator(getHubDataDir(),meetingId);
         const waiting=()=>{
           const receipts=Object.values(historyOrch.state.devChatHistory?.receipts || {});
@@ -1423,6 +1436,9 @@ function createGroupChatDispatcher(deps) {
             runId: workflowRun.runId || null,
             toMemberIds: targetMembers.map(m => m.memberId).filter(Boolean),
             toLabels: targetMembers.map(m => m.displayName).filter(Boolean),
+            ...(workflowRun.kind==='delivery' && dispatchPresentation ? {
+              goal:dispatchPresentation.goal,stageName:dispatchPresentation.stageName,
+            } : {}),
           }
         : null;
       const begin = orch.beginTurn(userInput || '', {
@@ -1502,7 +1518,7 @@ function createGroupChatDispatcher(deps) {
             dispatchAt: turnStartedAt,
           });
           t.attemptId = receipt && receipt.attemptId;
-          if (DevFile.enabled(meeting)) require('../../core/dev-chat-history').rememberPrompt(orch,t.sid,receipt);
+          if (DevFile.enabled(meeting) || require('../../core/delivery-workflow').enabled(meeting)) require('../../core/dev-chat-history').rememberPrompt(orch,t.sid,receipt);
           t.attempt = t.attemptId ? orch.getAttempt(t.attemptId) : null;
           if (t.attempt && !silent) publishAttempt(meetingId, orch, t.attempt);
         }
@@ -1524,9 +1540,11 @@ function createGroupChatDispatcher(deps) {
           }
           const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
             clientSubmissionId: t.attemptId, metadata: { attemptId: t.attemptId, runId, meetingId, turnNum },
+            shouldSubmit:()=>!interruptedSinceStart() && (!shouldDispatch || shouldDispatch()),
           });
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
+          if (onSubmission) onSubmission({memberId:t.member.memberId,sid:t.sid,attemptId:t.attemptId,ok:!!ok && sendStatus!=='stuck',sendStatus,reason:sendResult?.reason,at:Date.now()});
           try {
             orch.setSendStatus(turnNum, t.sid, sendStatus || (ok ? 'submitted' : 'send_failed'), {
               acknowledgementSource: sendResult && sendResult.acknowledgementSource,
@@ -1575,7 +1593,7 @@ function createGroupChatDispatcher(deps) {
             }
             // 送达确认了才记「这位收到过这几条插话」。发送失败走 else 分支，账本原样留着。
             if (t.supplementSeqs && t.supplementSeqs.length) {
-              try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs); }
+              try { orch.markUserSupplementsDelivered(t.sid, t.supplementSeqs, {queued:sendStatus==='queued'}); }
               catch (e) { warn('[groupchat] mark user supplement delivered failed:', e && e.message); }
             }
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
@@ -2036,6 +2054,7 @@ function createGroupChatDispatcher(deps) {
 
   return {
     dispatchGroupChatTurn,
+    handoffMeetingTurn,
     interruptMeetingTurn,
     groupMembersForMeeting,
     getActiveWatchers: () => activeWatchers,

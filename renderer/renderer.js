@@ -2616,7 +2616,7 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — all transcript-backed coding CLIs share the card experience.
-  const supportsCardHistory = kind && (isNativeSession(session) || isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind));
+  const supportsCardHistory = kind && (isNativeSession(session) || isClaudeFamily(kind) || isTranscriptCliKind(kind));
   if (kind && !supportsCardHistory) {
     showPlaceholder(
       '该会话没有结构化历史 — '
@@ -3412,28 +3412,18 @@ document.addEventListener('click', async (e) => {
       if (!confirmed) return;
       if (!sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
     }
-    if (sid && isNativeSession(sessions.get(sid))) {
-      const original=btn.textContent;
-      let error=card.querySelector('.native-card-send-error');
-      if (!error) { error=document.createElement('div');error.className='native-card-send-error';error.setAttribute('role','alert');card.append(error); }
-      error.textContent='';btn.disabled=true;btn.textContent='提交中';
-      ipcRenderer.invoke('session:send-prompt',{sessionId:sid,text:promptText,clientSubmissionId:require('node:crypto').randomUUID()})
-        .then(result=>{if(!result?.ok)throw new Error(result?.message || 'Codex 未确认提交，请核对会话状态');})
-        .catch(problem=>{error.textContent=problem.message;})
-        .finally(()=>{btn.disabled=false;btn.textContent=original;});
-      return;
-    }
-    if (sid && typeof ipcRenderer !== 'undefined') {
-      armPtyBurstFallback(sid);
-      // 2026-09-03：这里原本是 `promptText + '\r'` 一次写完 —— 连 bracketed paste
-      //   和延迟都没有，重发一条稍长的历史消息几乎必然被 TUI 当粘贴吞掉换行。
-      //   与浮动输入框走同一条闭环。
-      ipcRenderer.invoke('session:send-prompt', { sessionId: sid, text: promptText })
-        .catch(err => console.warn('[card-resend] send-prompt failed:', err && err.message));
-    }
-    const orig = btn.textContent;
-    btn.textContent = '↺';
-    setTimeout(() => { btn.textContent = orig; }, 1500);
+    if (!sid || !sessions.has(sid)) { showPreviewNotice('目标会话已关闭，未重发。', 'error'); return; }
+    const original = btn.textContent;
+    let error = card.querySelector('.native-card-send-error');
+    if (!error) { error = document.createElement('div'); error.className = 'native-card-send-error'; error.setAttribute('role', 'alert'); card.append(error); }
+    error.textContent = ''; btn.disabled = true; btn.textContent = '提交中';
+    if (!isNativeSession(sessions.get(sid))) armPtyBurstFallback(sid);
+    ipcRenderer.invoke('session:send-prompt', { sessionId: sid, text: promptText, clientSubmissionId: require('node:crypto').randomUUID() })
+      .then(result => {
+        if (!result?.ok || result?.notSent) throw new Error(result?.message || '消息未能发送，请查看终端后重试');
+      })
+      .catch(problem => { error.textContent = problem.message; })
+      .finally(() => { btn.disabled = false; btn.textContent = original; });
     return;
   }
 
@@ -3984,6 +3974,7 @@ function updateFloatingPromptReceipt(receipt) {
   const state = floatingPromptDeliveries.get(receipt.sessionId);
   if (!applyPromptReceipt(state, receipt)) return;
   paintNativePromptReceipts(receipt.sessionId);
+  if (state.status === 'content-mismatch' && !state.dismissed) notifyPromptContentMismatch(state);
   for (const bar of document.querySelectorAll('.floating-input-bar')) {
     if (bar.dataset.sessionId !== receipt.sessionId) continue;
     if (state.status === 'confirmed' || state.status === 'queued') clearFloatingInputStuck(bar);
@@ -4029,88 +4020,23 @@ function clearFloatingInputStuck(bar) {
   if (existing) existing.remove();
 }
 
+// 用户 2026-09-26 决定直接查看 CLI，不再展示未确认横幅或补发按钮。
+// 提交回执仍由 main 保存；这里只清理旧节点，不把未知结果改成成功。
 function markFloatingInputStuck(bar, sessionId) {
-  if (!bar || bar.querySelector('.fi-stuck')) return;
-  const delivery = floatingPromptDeliveries.get(sessionId);
-  const native = isNativeAgent(sessions.get(sessionId));
-  // Native recovery belongs to Main; do not add a second manual-check banner.
-  if (native) { clearFloatingInputStuck(bar); return; }
-  if (delivery?.status === 'confirmed' || delivery?.dismissed) return;
-  const stack = bar.querySelector('.fi-content-stack') || bar;
-  const row = document.createElement('div');
-  row.className = 'fi-stuck';
+  clearFloatingInputStuck(bar);
+}
 
-  const label = document.createElement('span');
-  label.className = 'fi-stuck-label';
-  label.textContent = native ? '消息提交结果待核对；不会自动重发。'
-    : delivery?.status === 'content-mismatch'
-    ? '⚠ 检测到正文相同但换行或空白不同的提交，请核对终端；已停止补发'
-    : delivery?.status === 'failed'
-    ? '⚠ 消息发送失败，请检查终端后重试'
-    : '⚠ 暂未确认消息提交，请查看终端；收到确认后此提示会自动消失';
+// 去掉的只是「未确认」横幅；明确失败仍要看得见（「可以失败，不能无声」）。
+function reportFloatingSendFailure(sessionId, inputBox, text, reason) {
+  const restored = !!inputBox && !readContenteditablePlainText(inputBox) && !!text;
+  if (restored) { replaceContenteditableText(inputBox, text); saveFloatingInputDraft(sessionId, inputBox); }
+  showToast(`发送失败：${reason}。${restored ? '原文已放回输入框；' : ''}请先在终端核对是否已收到，再决定是否重发`, 'error');
+}
 
-  const resendBtn = document.createElement('button');
-  resendBtn.type = 'button';
-  resendBtn.className = 'fi-stuck-resend';
-  resendBtn.textContent = native ? '核对' : '补发';
-  if (delivery?.status === 'content-mismatch') {
-    resendBtn.disabled = true;
-    resendBtn.textContent = '需核对';
-  }
-  resendBtn.title = native ? '从原生记录核对上一条消息，不会重新发送' : '检查上一条消息；已确认则不重复提交，能核对原文时补回车';
-  resendBtn.addEventListener('click', async (event) => {
-    event.stopPropagation();
-    resendBtn.disabled = true;
-    if (native) {
-      try {
-        // Each native backend owns its own reconciliation entry point; the
-        // Codex action channel cannot answer for a Claude transport.
-        const claudeNative = sessions.get(sessionId)?.runtimeBackend === 'claude-stream-json';
-        const result = claudeNative
-          ? await ipcRenderer.invoke('claude-native:reconnect', {sessionId})
-          : await ipcRenderer.invoke('codex:native-action', {sessionId,action:'reconnect'});
-        label.textContent = result?.ok ? '已核对连接；请查看上一轮内容，确认后再决定是否重新发送。'
-          : '核对失败：'+(result?.message || result?.error || '连接不可用');
-      } catch (error) { label.textContent = '核对失败：'+error.message; }
-      resendBtn.disabled = false;
-      return;
-    }
-    resendBtn.textContent = '补发中…';
-    try {
-      const result = await ipcRenderer.invoke('session:resend-prompt', {
-        sessionId, clientSubmissionId: delivery?.clientSubmissionId,
-      });
-      // A newer send owns the current bar; an old retry must not touch it.
-      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
-      if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
-      if (result && result.ok) {
-        clearFloatingInputStuck(bar);
-        return;
-      }
-      label.textContent = /^input-state-/.test(result?.reason || '')
-        ? '⚠ 无法确认原文仍在输入框，请查看终端后手动提交'
-        : '⚠ 补发尚未确认，请查看终端；收到确认后此提示会自动消失';
-    } catch (err) {
-      if (floatingPromptDeliveries.get(sessionId) !== delivery) return;
-      label.textContent = `⚠ 补发失败：${err && err.message}`;
-    }
-    resendBtn.disabled = false;
-    resendBtn.textContent = '重试';
-  });
-
-  const dismissBtn = document.createElement('button');
-  dismissBtn.type = 'button';
-  dismissBtn.className = 'fi-stuck-dismiss';
-  dismissBtn.textContent = '忽略';
-  dismissBtn.title = '关掉这条提示（不影响会话）';
-  dismissBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    if (delivery) delivery.dismissed = true;
-    clearFloatingInputStuck(bar);
-  });
-
-  row.append(label, resendBtn, dismissBtn);
-  stack.insertBefore(row, stack.firstChild);
+function notifyPromptContentMismatch(delivery) {
+  if (!delivery || delivery._mismatchNotified) return;
+  delivery._mismatchNotified = true;
+  showToast('终端收到的内容与原文在换行或空白上不一致，请在终端核对；不会自动补发', 'error');
 }
 
 function lockFloatingInputBarGeometry(bar) {
@@ -4623,7 +4549,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       return;
     }
     const stopTarget = sessions.get(sessionId);
-    if (stopTarget?.agentRuntime === 'pty' && (isClaudeFamily(stopTarget.kind) || isCodexKind(stopTarget.kind))) {
+    if (stopTarget?.agentRuntime === 'pty' && (isClaudeFamily(stopTarget.kind) || isCodexKind(stopTarget.kind) || require('../core/acp-profiles').isAcpKind(stopTarget.kind))) {
       // Ctrl+C 连点会让 CLI 退出；PTY Claude / Codex 用 Esc，只在运行时发一次（见 pty-interrupt.js）。
       require('./pty-interrupt').sendPtyAgentInterrupt(stopTarget, { state: getSessionRuntimeTruth(stopTarget).state,
         send: data => ipcRenderer.send('terminal-input', { sessionId, data }) });
@@ -4743,7 +4669,10 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   });
   // PTY 会话等人操作时的提示条：只指路，不代答。
   const ptyAttention = require('./pty-attention-controls').createPtyAttentionControls({
-    onOpenTerminal: () => { if (activeSessionId === sessionId) applyViewMode('pty'); },
+    onOpenTerminal: () => {
+      if (pane.openTerminal) pane.openTerminal();
+      else if (activeSessionId === sessionId) applyViewMode('pty');
+    },
   });
   contentStack.append(nativeControls.element, ptyAttention.element, composer);
   bar.append(contentStack);
@@ -4992,6 +4921,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       if (result?.receipt) updateFloatingPromptReceipt(result.receipt);
       if (delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       if (result && result.ok && result.sendStatus !== 'stuck') return;
+      if (result?.sendStatus === 'content-mismatch') { notifyPromptContentMismatch(delivery); return; }
       // PTY 会话明确「未发送」（例如 CLI 启动选择框还挂着）：原文放回输入框、说明原因，
       // 不亮「补发」——补发只会把同一段文字塞进同一个选择框。主进程的失败回执可能
       // 比这里先到、已在本会话的各个输入栏亮起提示，这里一并清掉。
@@ -5027,6 +4957,12 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           return;
         }
       }
+      // 未确认横幅按用户决定去掉了，但明确的失败不能跟着变成无声：输入框在发送前已清空，
+      // 这里说明原因并把原文放回（可能已部分写进终端，所以提示先核对，不自动重发）。
+      if (!result?.ok && !result?.unconfirmed) {
+        reportFloatingSendFailure(sessionId, inputBox, text, result?.message || result?.error || '发送失败');
+        return;
+      }
       markFloatingInputStuck(bar, sessionId);
     }).catch((err) => {
       if (nativeCommand) {
@@ -5037,6 +4973,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
           || delivery.status === 'confirmed' || delivery.status === 'content-mismatch') return;
       console.warn('[floating-input] send-prompt IPC failed:', err && err.message);
       if (isNativeAgent(session)) showToast('发送未完成：' + err.message, 'error');
+      else reportFloatingSendFailure(sessionId, inputBox, text, err && err.message || '发送通道异常');
       updateFloatingPromptReceipt({ sessionId, clientSubmissionId, status: 'failed' });
       markFloatingInputStuck(bar, sessionId);
     });
@@ -5396,11 +5333,8 @@ function flashPromptLine(terminal, lineNumber) {
   highlight.style.animation = 'prompt-flash 0.8s ease-out forwards';
 }
 
-// Hub → Claude /rename sync. Only fires for Claude sessions after the user
-// renames in the Hub UI. We inject the /rename command into the PTY; to keep
-// it clean we require the session to be idle (prompt is empty). If the user
-// is mid-reply we stash it and flush on the next Stop hook. Title is sanitized
-// to strip newlines and cap length so a pasted string can't inject extra input.
+// Hub → Claude /rename uses the same serialized submission path as the composer.
+// A busy session keeps only the latest name; completion rechecks its live state.
 function syncRenameToClaude(sessionId, title) {
   const session = sessions.get(sessionId);
   if (!session) return;
@@ -5410,12 +5344,21 @@ function syncRenameToClaude(sessionId, title) {
   }
   const clean = String(title).replace(/[\r\n]/g, ' ').trim().slice(0, 80);
   if (!clean) return;
-  if (session.status === 'idle') {
-    ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + clean + '\r' });
-    session._pendingRename = null;
-  } else {
-    session._pendingRename = clean;
-  }
+  session._pendingRename = clean;
+  flushRenameToClaude(sessionId);
+}
+
+function flushRenameToClaude(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session?._pendingRename || session.runtimeBackend || session.status === 'dormant') return;
+  if (['running', 'starting', 'waiting'].includes(getSessionRuntimeTruth(session).state)) return;
+  const title = session._pendingRename;
+  session._pendingRename = null;
+  ipcRenderer.invoke('session:send-prompt', { sessionId, text: '/rename ' + title })
+    .then(result => {
+      if (!result?.ok || result.notSent) throw new Error(result?.message || 'CLI 未接受改名');
+    })
+    .catch(error => showPreviewNotice('Hub 名称已保存，CLI 名称未同步：' + error.message, 'error'));
 }
 
 // --- Inline rename ---
@@ -7456,16 +7399,7 @@ ipcRenderer.on('hook-event', (_e, payload = {}) => {
       sessionCrons,
       lastAssistantMessage,
     });
-    // Flush any queued /rename now that Claude is idle. Small delay so the
-    // prompt fully re-renders before we inject the command.
-    const s = sessions.get(sessionId);
-    if (outcome && outcome.completed && s && s._pendingRename && s.runtimeBackend !== 'claude-stream-json') {
-      const pending = s._pendingRename;
-      s._pendingRename = null;
-      setTimeout(() => {
-        ipcRenderer.send('terminal-input', { sessionId, data: '/rename ' + pending + '\r' });
-      }, 400);
-    }
+    if (outcome?.completed) flushRenameToClaude(sessionId);
     // A new turn landed — ask minimap to rescan for any new prompt ticks.
     const cached = terminalCache.get(sessionId);
     if (cached && cached._minimap) cached._minimap.invalidate();
@@ -8783,6 +8717,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
   if (session.codexSid) local.codexSid = session.codexSid;
+  if (session.acpSid) local.acpSid = session.acpSid;
+  if (session.acpProfileId) local.acpProfileId = session.acpProfileId;
+  if (session.acpCapabilities) local.acpCapabilities = session.acpCapabilities;
+  if (Object.hasOwn(session,'cliRuntime')) local.cliRuntime = session.cliRuntime;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.codexProfile) local.codexProfile = session.codexProfile;

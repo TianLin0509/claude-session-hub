@@ -34,7 +34,10 @@ function openOwnershipDatabase(filename) {
       // mode's locks before another initializer can finish switching to WAL.
       try { db?.close(); } catch (closeError) { error.closeError = closeError; throw error; }
       if (error.code !== 'ERR_SQLITE_ERROR' || (error.errcode & 255) !== 5) throw error;
-      deadline ??= performance.now() + 1000;
+      // 1 秒在机器满载时不够：32 路并发压测里 11/32 次初始化报 database is locked
+      // （2026-09-26，合并闸门也因此失败过）。每次尝试都立即失败并释放连接，放宽窗口不会造成
+      // 互等；正常情况下几毫秒内就会完成。
+      deadline ??= performance.now() + 3000;
       if (performance.now() >= deadline) throw error;
       Atomics.wait(pause, 0, 0, 10);
     }

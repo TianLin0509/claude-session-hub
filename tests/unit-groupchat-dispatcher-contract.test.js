@@ -73,7 +73,7 @@ assert.ok(/function supersedeActiveWatchersForMeeting\(meetingId(?:,[^)]*)?\)/.t
 
 assert.ok(/if\s*\(!args\.silent\)\s*\{[\s\S]*meetingDispatchSeq\.set\(key,\s*dispatchSeq\)[\s\S]*supersedeActiveWatchersForMeeting\(meetingId[,)]/.test(dispatcherSrc),
   'real user sends (non-silent) should bump the dispatch sequence and preempt the prior turn');
-assert.ok(/args\.fileHandoff === true && DevFile\.enabled/.test(dispatcherSrc) && /watcher\.handoff\(\)/.test(dispatcherSrc),
+assert.ok(/args\.fileHandoff === true && \(DevFile\.enabled[\s\S]*?delivery-workflow'\)\.enabled/.test(dispatcherSrc) && /watcher\.handoff\(\)/.test(dispatcherSrc),
   'only explicit file-workflow handoffs may retain the prior source collection');
 
 assert.ok(/wasSuperseded\s*=\s*_dispatchSeq\s*!=\s*null\s*&&\s*meetingDispatchSeq\.get\(String\(meetingId\s*\|\|\s*''\)\)\s*!==\s*_dispatchSeq/.test(dispatcherSrc) &&
