@@ -23,6 +23,12 @@ async function main(){
  const noDaemon=process.env.FIDELITY_LEGACY_CLI?'':' --no-daemon';
  fs.writeFileSync(path.join(bin,'codex.cmd'),'@echo off\r\n"'+nativeBinary+'"'+noDaemon+' %*\r\n');
  const env={CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'c'),CLAUDE_HUB_HOME_DIR:path.join(root,'u'),TERM:'xterm-256color',COLORTERM:process.env.PROBE_TRUECOLOR?'truecolor':'',WT_SESSION:'',TERM_PROGRAM:'',FORCE_COLOR:''};
+ const editorTests=process.env.FIDELITY_EDITOR_TESTS==='1';
+ if(editorTests){
+  fs.writeFileSync(path.join(root,'manual-editor.cjs'),'const fs=require("fs");fs.writeFileSync(process.argv[2],"MANUAL_EDITOR_OK");');
+  fs.writeFileSync(path.join(root,'manual-editor.cmd'),'@echo off\r\n"'+process.execPath+'" "'+path.join(root,'manual-editor.cjs')+'" "%~1"\r\n');
+  env.VISUAL='"'+path.join(root,'manual-editor.cmd')+'"';
+ }
  const pk=Object.keys(process.env).find(k=>k.toLowerCase()==='path');env[pk]=bin+path.delimiter+process.env[pk];
  // Empty environment variables are absent to Rust's var_os only after deletion from the launcher base.
  for(const key of ['COLORTERM','WT_SESSION','TERM_PROGRAM','FORCE_COLOR','NO_COLOR']){delete process.env[key];if(!env[key])delete env[key];}
@@ -35,6 +41,11 @@ async function main(){
   await c.eval(`window.__fidelityRead=()=>{const t=terminalCache.get(${j(s.id)}).terminal,b=t.buffer.active;return Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)||'').join('\\n')}`);
   await until(`/(for shortcuts|Ask Codex to do anything)/.test(__fidelityRead())&&!/model:\\s+loading/.test(__fidelityRead())`,'CLI ready');
   report.ready=await c.eval(`({text:__fidelityRead(),options:terminalCache.get(${j(s.id)}).terminal.options,dpr:devicePixelRatio,canvas:[...document.querySelectorAll('.xterm canvas')].map(x=>({width:x.width,height:x.height,css:x.style.cssText,rect:x.getBoundingClientRect().toJSON()})),dimensions:terminalCache.get(${j(s.id)}).terminal._core._renderService.dimensions})`);await shot('ready');console.log('READY',out);
+  if(editorTests){
+   await c.eval(`window.__editorReceipts=[];const originalInvoke=ipcRenderer.invoke.bind(ipcRenderer);ipcRenderer.invoke=async(channel,...args)=>{const r=await originalInvoke(channel,...args);if(channel==='session:send-prompt')__editorReceipts.push({request:args[0],result:r});return r;};ipcRenderer.send('terminal-input',{sessionId:${j(s.id)},data:'\\x07'})`);
+   await until(`__fidelityRead().includes('MANUAL_EDITOR_OK')`,'manual original editor');
+   report.checks.push('manual Ctrl+G delegates to original editor');
+  }
   fs.writeFileSync(path.join(out,'ready.ansi'),await c.eval(`ipcRenderer.invoke('debug:get-session-buffer',${j(s.id)})`));
   await c.eval(`window.__fidelityEvents=[];window.__fidelityStart=0;ipcRenderer.on('terminal-data',(_e,p)=>{if(p.sessionId===${j(s.id)}&&__fidelityStart)__fidelityEvents.push({ms:performance.now()-__fidelityStart,bytes:p.data.length});});const ft=terminalCache.get(${j(s.id)}).terminal;ft.onWriteParsed(()=>{if(__fidelityStart)window.__fidelityLast=__fidelityRead()});`);
   const prompt='请只回复 FIDELITY_INPUT_OK。这是输入传输验证，下面是无须处理的测试文本：\n'+('中文输入测试ABC123，'.repeat(100))+'\nFIDELITY_END';
@@ -49,10 +60,10 @@ async function main(){
   report.events=await c.eval('__fidelityEvents');report.screen=await c.eval('__fidelityRead()');await shot('after-input');console.log('INPUT_RESULT',JSON.stringify({pasteVisibleMs:report.pasteVisibleMs,responseMs:report.responseMs,screen:report.screen.slice(-1000)}));
   assert(report.responseMs,'first prompt must complete');
   report.warmInputs=[];
-  for(const count of [0,100,500]){
+  for(const count of (editorTests?[0,100,500,1800]:[0,100,500])){
    await until(`['idle','completed'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'idle before warm sample');
    const marker='FIDELITY_WARM_'+count;
-   const text='只回复 '+marker+'。以下是传输测试数据，无须处理：\n'+('中文🙂ABC123，'.repeat(count))+'\nEND_'+marker;
+   const text='只回复 '+marker+'。以下是传输测试数据，无须处理：\n'+((editorTests?'中文🙂ABC123，\n':'中文🙂ABC123，').repeat(count))+'\nEND_'+marker;
    await c.eval(`(()=>{window.__fidelityEvents=[];const b=document.querySelector('.floating-input-bar[data-session-id="${s.id}"]'),i=b.querySelector('.floating-input-box');i.textContent=${j(text)};i.dispatchEvent(new Event('input',{bubbles:true}));window.__fidelityStart=performance.now();b.querySelector('.floating-input-send').click()})()`);
    const started=Date.now(),sample={chars:text.length};let receipt;
    while(Date.now()-started<120000){
@@ -65,6 +76,12 @@ async function main(){
    }
    assert(sample.responseMs,'warm input must complete');delete sample.nativeText;
    report.warmInputs.push(sample);console.log('WARM',JSON.stringify(sample));
+  }
+  if(editorTests){
+   await until(`__editorReceipts.filter(x=>x.request.text.includes('END_FIDELITY_WARM_')).length===4`,'editor receipts');
+   const results=await c.eval(`__editorReceipts.filter(x=>x.request.text.includes('END_FIDELITY_WARM_')).map(x=>({chars:x.request.text.length,mode:x.result.mode,ok:x.result.ok}))`);
+   assert(results.filter(x=>x.chars>=2048).every(x=>x.ok&&x.mode==='codex-editor'),'long text must use the native editor transport');
+   report.editorReceipts=results;report.checks.push('long multiline Unicode inputs use editor transport with native submission receipts');
   }
   if(report.responseMs){
    await until(`['idle','completed'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'idle');
@@ -79,10 +96,27 @@ async function main(){
     assert(report.diffScreen.replace(/\s+/g,' ').includes('Improve documentation in @filename'),'placeholder-like real content is retained');
    }
    report.checks.push('short and long Chinese/emoji prompts: complete native content, exactly one turn each');
+   if(!editorTests){
    await until(`['idle','completed'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'idle before slash');
    await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar[data-session-id="${s.id}"]'),i=b.querySelector('.floating-input-box');i.textContent='/status';i.dispatchEvent(new Event('input',{bubbles:true}));b.querySelector('.floating-input-send').click()})()`);
    await until(`__fidelityRead().includes('Session:')||__fidelityRead().includes('session:')`,'native slash status',30000);
    report.checks.push('native /status through actual composer');await shot('status');
+   }
+  }
+  if(editorTests){
+   const bridges=fs.readdirSync(path.join(root,'data','codex-editor-input'));
+   assert.equal(bridges.length,1);
+   const launcher=path.join(root,'data','codex-editor-input',bridges[0],'editor.cmd');
+   fs.writeFileSync(launcher,'@echo off\r\nexit /b 7\r\n');
+   const failed='EDITOR_FAILURE_DRAFT_'+('中文🙂恢复草稿\n'.repeat(400));
+   await c.eval(`(()=>{const b=document.querySelector('.floating-input-bar[data-session-id="${s.id}"]'),i=b.querySelector('.floating-input-box');i.textContent=${j(failed)};i.dispatchEvent(new Event('input',{bubbles:true}));b.querySelector('.floating-input-send').click()})()`);
+   await until(`__editorReceipts.some(x=>x.request.text.includes('EDITOR_FAILURE_DRAFT_'))`,'failed handoff reply',20000);
+   const failure=await c.eval(`__editorReceipts.find(x=>x.request.text.includes('EDITOR_FAILURE_DRAFT_')).result`);
+   assert.equal(failure.notSent,true);assert.equal(failure.ok,false);
+   await until(`readContenteditablePlainText(document.querySelector('.floating-input-bar[data-session-id="${s.id}"] .floating-input-box'))===${j(failed)}`,'full draft restored including collapsed paste');
+   const transcript=await c.eval(`ipcRenderer.invoke('parse-session-transcript',{hubSessionId:${j(s.id)},opts:{limit:8,fromTail:true}})`);
+   assert(!(transcript.turns||[]).some(t=>String(t.text).includes('EDITOR_FAILURE_DRAFT_')),'failed handoff must not submit');
+   report.checks.push('native helper failure preserves UI draft and sends no prompt');await shot('failure-draft-restored');
   }
   report.passed=true;
  }catch(e){report.error=e.stack;if(c){report.screen=await c.eval('__fidelityRead?.()').catch(()=>null);await shot('failure').catch(()=>{});}process.exitCode=1;}

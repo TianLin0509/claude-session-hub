@@ -1552,7 +1552,15 @@ class SessionManager extends EventEmitter {
     // Every native driver is owned directly by this Hub; no cross-Hub broker.
     const CodexSessionClass = require('./codex-native-session').CodexNativeSession;
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
-    const ptyProcess = isAcp
+    let codexEditorInput = null;
+    if (isCodexRuntime && !isNativeCodex && !isAcp) {
+      try {
+        codexEditorInput = require('./codex-editor-input').configureCodexEditorInput(sessionEnv,
+          { dataDir: getHubDataDir(), cwd: spawnCwd });
+      } catch (error) { console.warn('[codex-editor-input] unavailable, retaining PTY paste:', error.message); }
+    }
+    let ptyProcess;
+    try { ptyProcess = isAcp
       ? new (isProviderCli ? (kind.replace(/-resume$/, '') === 'qwen' ? require('./qwen-cli-session').QwenCliSession : require('./martty-cli-session').MarttyCliSession) : require('./acp-session').AcpSession)(buildAcpOptions(kind,
         {...opts,id,cwd:spawnCwd},getConfig(),getHubDataDir(),sessionEnv))
       : isNativeCodex
@@ -1581,6 +1589,7 @@ class SessionManager extends EventEmitter {
       // cursor makes Windows ConPTY more prone to transient cursor ghosts.
       conptyInheritCursor: (isCodexRuntime || isKimi) ? false : !opts.noInheritCursor,
     });
+    } catch (error) { codexEditorInput?.dispose(); throw error; }
 
     let currentModel = null;
     if (isClaude) {
@@ -1754,6 +1763,7 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, {
       info,
       pty: ptyProcess,
+      codexEditorInput,
       nativeRuleCoverage: require('./native-rule-coverage').captureNativeRuleCoverage({
         kind:isNativeClaude?'claude':isCodexRuntime?'codex':kind.replace(/-resume$/,''),cwd:spawnCwd,
         env:isAcp?ptyProcess.options.launch.env:sessionEnv,
@@ -1844,6 +1854,7 @@ class SessionManager extends EventEmitter {
       // Match the exit-path id-reuse guard: late bytes from an old PTY must
       // never mutate the replacement session's rewriter or terminal state.
       if (!entry || entry.pty !== ptyProcess) return;
+      entry.codexEditorInput?.onOutput(data);
       entry.groupChatLastActivity = Date.now();
       entry.groupChatOutputBytes += Buffer.byteLength(String(data || ''), 'utf8');
       entry.lastOutputAt = entry.groupChatLastActivity;
@@ -1869,6 +1880,7 @@ class SessionManager extends EventEmitter {
     });
 
     ptyProcess.onExit((exitInfo) => {
+      codexEditorInput?.dispose();
       if (isNativeClaude && !ptyProcess.closed) {
         // Keep the managed session and its unknown receipt available for explicit recovery.
         return;
@@ -2731,6 +2743,15 @@ class SessionManager extends EventEmitter {
   getSession(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? { ...s.info } : undefined;
+  }
+
+  async tryLoadCodexEditorInput(sessionId, text, options = {}) {
+    const entry = this.sessions.get(sessionId);
+    if (!entry?.codexEditorInput) return false;
+    return entry.codexEditorInput.load(text, data => {
+      if (this.sessions.get(sessionId) !== entry) throw Object.assign(new Error('会话已变化，未提交'), {notSent:true});
+      this.writeToSession(sessionId, data);
+    }, options);
   }
 
   getNativeCodex(sessionId) {

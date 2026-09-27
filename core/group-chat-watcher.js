@@ -553,7 +553,12 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     const codexThreadSwitch = isCodexCliKind(kind) && CODEX_THREAD_SWITCH_COMMAND_RE.test(String(prompt || ''));
     const codexSidBefore = codexThreadSwitch ? (sessionManager.getSession?.(sid)?.codexSid || null) : null;
     const outputMarkBefore = typeof sessionManager.getSessionOutputMark === 'function' ? sessionManager.getSessionOutputMark(sid) : 0;
-    await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
+    if (options.submissionReceipt?.resolved) return alreadySubmitted();
+    // The native editor replaces the entire draft and preserves multi-line
+    // content. Do not clear first: a failed editor handoff must keep the draft.
+    const usedCodexEditorInput = isCodexCliKind(kind)
+      && await sessionManager.tryLoadCodexEditorInput?.(sid, prompt, { attachments: options.attachments || [] });
+    if (!usedCodexEditorInput) await clearCodexInputLine(sessionManager, sid, kind);
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
     const beforeBufferLength = String(sessionManager.getSessionBuffer(sid) || '').length;
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
@@ -561,11 +566,11 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     //   随后那个 \r 被追加进同一条队列，很可能与 BP_END 落进 CLI 的同一个 stdin chunk
     //   被当粘贴尾巴吃掉。分片写让队列在最后一片写完时接近空，\r 才可能独立成块。
     const baselineMarker = snapshotPasteMarker(sessionManager, sid);
-    await writeBracketedPaste(sessionManager, sid, prompt, {
+    if (!usedCodexEditorInput) await writeBracketedPaste(sessionManager, sid, prompt, {
       chunkSize: Number(_deps && _deps.bracketedPasteChunkSize) || undefined,
       gapMs: Number(_deps && _deps.bracketedPasteChunkGapMs) || undefined,
     });
-    const codexPasteFlushed = require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
+    const codexPasteFlushed = usedCodexEditorInput || require('./codex-pty-input').flushCodexPasteInput(sessionManager,sid,kind,prompt);
     noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // BP_END 紧贴 \r 时 Ink 把 \r 当 paste 尾巴忽略，所以必须隔开再发。
     //   隔多久以前写死 500ms —— 短 prompt 够用，长 prompt 必然还在消化窗口内，
@@ -584,6 +589,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
         maxMs: Number(_deps && _deps.bracketedPasteSettleMaxMs) || undefined,
       });
     await waitForPasteSettled({ sessionManager, sid, settleMs: pasteSettleMs, baselineMarker });
+    if (options.shouldSubmit && !options.shouldSubmit()) return {ok:false,notSent:true,reason:'派工已暂停或取消，本条未提交'};
     if (options.submissionReceipt?.resolved) return alreadySubmitted();
     // One Enter first.  Extra Enters are conditional on the absence of a
     // semantic work-start acknowledgement, rather than being fired blindly.
@@ -763,6 +769,7 @@ async function sendToPtyImpl(sid, prompt, kind, options = {}) {
     return {
       ok: sendStatus !== 'content-mismatch',
       sendStatus,
+      ...(usedCodexEditorInput ? { mode: 'codex-editor' } : {}),
       acknowledgementSource: acknowledgement && acknowledgement.source || null,
       acknowledgementObservedAt: acknowledgement && acknowledgement.observedAt || null,
       acknowledgementTurnId: acknowledgement && acknowledgement.turnId || null,
