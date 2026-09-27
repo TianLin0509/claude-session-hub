@@ -69,7 +69,8 @@ async function main() {
     fs.writeFileSync(file,fs.readFileSync(file,'utf8').split('\n').map(line=>{if(!line.trim())return line;const r=JSON.parse(line);if(r.timestamp)r.timestamp=new Date(Date.parse(r.timestamp)-shift).toISOString();return JSON.stringify(r);}).join('\n'));
     const stateFile=path.join(root,'data','state.json');const state=JSON.parse(fs.readFileSync(stateFile,'utf8'));for(const x of state.sessions||[])for(const k of ['lastMessageTime','lastCompletedAt','lastRunStartedAt','runStartedAt'])if(x[k])x[k]-=shift;fs.writeFileSync(stateFile,JSON.stringify(state));
     hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await port(),extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_HOME_DIR:path.join(root,'home')}});
-    c=await connectFirstPage(hub);await until('typeof sessions!=="undefined"','renderer restart');await open(s.id);await sleep(6000);await snapshot('after-old-history-reopen');
+    // Cover the 60-second stale-working sweep, not just the initial render.
+    c=await connectFirstPage(hub);await until('typeof sessions!=="undefined"','renderer restart');await open(s.id);await sleep(70000);await snapshot('after-old-history-reopen');
     report.flags=await c.eval(`(()=>{const x=sessions.get(${j(s.id)});return {cardWorkingSince:x.cardWorkingSince,cardWorkingSource:x.cardWorkingSource,agentWorking:x._agentWorking,runStartedAt:x.runStartedAt};})()`);
     assert.equal(report['after-old-history-reopen'].status,'idle');
     assert.equal(report['after-old-history-reopen'].color,'rgb(59, 130, 246)');
