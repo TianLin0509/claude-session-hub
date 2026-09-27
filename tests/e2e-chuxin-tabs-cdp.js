@@ -151,6 +151,24 @@ async function screenshot(client, name) {
       throw error;
     }
 
+    // 4b) 窄窗口（≤760px）：tab 列改成底部横排，不能挤在左边把内容压扁（审核发现的优先级问题）。
+    //     这里只量 Hub 自己主框架的布局，用设备模拟即可（模拟只对跨源 iframe 里的内容失真）。
+    await client.send('Emulation.setDeviceMetricsOverride', { width: 740, height: 900, deviceScaleFactor: 1, mobile: false });
+    await _waitMs(800);
+    const narrow = await client.eval(`(() => {
+      const nav = document.querySelector('.cx-primary-nav').getBoundingClientRect();
+      const frame = document.querySelector('.cx-view-frame').getBoundingClientRect();
+      const panel = document.getElementById('chuxin-panel').getBoundingClientRect();
+      const tabs = [...document.querySelectorAll('.cx-primary-tab')].map((b) => Math.round(b.getBoundingClientRect().top));
+      return { navTop: Math.round(nav.top), frameBottom: Math.round(frame.bottom), frameWidth: Math.round(frame.width), panelWidth: Math.round(panel.width), sameRow: new Set(tabs).size === 1 };
+    })()`);
+    console.log('narrow', JSON.stringify(narrow));
+    await screenshot(client, '03b-narrow.png');
+    assert(narrow.navTop >= narrow.frameBottom - 1, '窄窗口时 tab 列应在内容下方');
+    assert(narrow.frameWidth >= narrow.panelWidth - 2, '窄窗口时内容应占满面板宽度');
+    assert(narrow.sameRow, '窄窗口时 tab 应排成一行');
+    await client.send('Emulation.clearDeviceMetricsOverride');
+    await _waitMs(600);
     // 5) 离开投研：session 列表恢复成你原来的样子
     await client.eval(`document.getElementById('btn-home').click()`);
     await waitEval(client, `getComputedStyle(document.getElementById('chuxin-panel')).display === 'none'`, 'research hidden');
