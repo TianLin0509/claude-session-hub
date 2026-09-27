@@ -83,7 +83,9 @@ class HubChrome {
   }
   site(key) {
     if (Object.hasOwn(SITES, key)) return SITES[key];
-    return require('./external-accounts').externalSite(key);
+    const { EXTERNAL_SITES, externalSite } = require('./external-accounts');
+    if (Object.hasOwn(EXTERNAL_SITES, key)) return externalSite(key);
+    throw new Error('未知的网站：' + key);
   }
   async lifecycle(fn) {
     const { acquire } = require('./web-roundtable/store');
