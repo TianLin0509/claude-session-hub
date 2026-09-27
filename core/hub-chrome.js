@@ -33,7 +33,6 @@ const DEFAULT_IDENTITIES = [
   { id: 'alt', label: '副', sites: ALL_SITES },
 ];
 const OFFSCREEN = { left: -32000, top: -32000, width: 1280, height: 900 };
-const ONSCREEN = { left: 120, top: 80, width: 1280, height: 900 };
 
 function defaultRoot(env = process.env) {
   if (env.HUB_CHROME_ROOT) return path.resolve(env.HUB_CHROME_ROOT);
@@ -257,10 +256,10 @@ class HubChrome {
       ...(debug ? ['--remote-debugging-port=0'] : []),
       ...(headless ? ['--headless=new'] : []),
       '--no-first-run', '--no-default-browser-check',
-      // Always say where: left unset, Chrome restores the profile's last window placement,
-      // and the Hub parks its work windows off screen — so a login window came up at the
-      // screen edge where nobody could use it (2026-09-25).
-      ...(visible ? [`--window-position=${ONSCREEN.left},${ONSCREEN.top}`, '--start-maximized']
+      // Set an explicit visible state instead of restoring a parked off-screen window.
+      // Measured on Windows Chrome: --window-position overrides --start-maximized,
+      // for both the first launch and a new window in an already running browser.
+      ...(visible ? ['--start-maximized']
         : ['--window-position=-32000,-32000', '--window-size=1280,900']),
       '--new-window', ...(urls && urls.length ? urls : [url || this.markerUrl(identityId)]),
     ];
