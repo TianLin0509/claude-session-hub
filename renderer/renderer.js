@@ -8144,6 +8144,12 @@ function toggleSidebar() {
   applySidebarCollapsed(next);
 }
 btnExpandEl.addEventListener('click', toggleSidebar);
+// 整区面板（投研）打开时临时折叠 session 列表、离开时恢复：只改外观，不写 localStorage，
+// 所以不会改掉你自己设的「折叠 / 展开」偏好（2026-09-27 田哥：打开投研时左侧 session 列表应当折叠）。
+window.__hubSidebar = {
+  collapseForPanel: () => applySidebarCollapsed(true),
+  restore: () => applySidebarCollapsed(localStorage.getItem(SIDEBAR_KEY) === '1'),
+};
 
 const shellController = createShellController({
   document,
