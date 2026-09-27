@@ -84,6 +84,18 @@ async function main() {
     await until('document.querySelector("[data-account-service=bailian]")?.textContent.includes("尚未验证")', 'native credential not reported as live login');
     await snap('00-tool-account-inventory');
     result.checks.push('工具账号依赖、刷新、原生授权和网页登录分开；秘密不进入 DOM');
+    assert.equal(await cdp.eval('document.querySelector("[data-account-service=github]").closest("[data-account-group]").dataset.accountGroup'), 'external');
+    assert.equal(await cdp.eval('document.querySelector("[data-account-service=images]").closest("[data-account-group]").dataset.accountGroup'), 'ai');
+    await click('[data-ac="external"][data-service="github"][data-operation="check"]');
+    await until('document.querySelector("[data-account-service=github]").textContent.includes("fixture-github")', 'GitHub authorization result shown');
+    for (const service of ['github', 'yuque']) {
+      await click('[data-ac="external"][data-service="' + service + '"][data-operation="open"]');
+      await until('document.querySelector(".ac-status").textContent.includes("已在专属 Chrome")', 'external website acknowledged');
+    }
+    assert.deepEqual(fs.readFileSync(path.join(home, 'external-open.jsonl'), 'utf8').trim().split('\n').map(JSON.parse), [
+      { service: 'github', action: 'check', identity: 'main' }, { service: 'github', action: 'open', identity: 'main' }, { service: 'yuque', action: 'open', identity: 'main' }]);
+    await snap('00b-external-services');
+    result.checks.push('外部服务独立分组；真实点击 GitHub 授权检查、GitHub 与语雀专属浏览器入口（外部动作夹具）');
     await snap('01-overview');
     await click('.ac-company[data-site="claude"] [data-ac="add"]');
     await until('document.querySelectorAll(".ac-company[data-site=claude] .ac-account").length===2', 'second Claude account');

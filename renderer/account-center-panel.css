@@ -89,3 +89,7 @@
 .ac-tool-account summary { cursor: pointer; }
 .ac-tool-account details div { margin: 8px 0; overflow-wrap: anywhere; }
 .ac-tool-account-section .ac-tool-help { overflow-wrap: anywhere; }
+.ac-service-group { margin: 24px 0; }
+.ac-service-group h3 { margin: 0; font-size: 16px; }
+.ac-external-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.ac-native-status small { display: block; margin-top: 4px; }

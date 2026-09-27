@@ -30,9 +30,9 @@ def lock(file):
     """Use the tools' own byte locks, released by the OS on process exit."""
     import msvcrt
     with Path(file).open("a+b") as handle:
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
+        # The original image workers lock byte zero of an EMPTY file. Windows
+        # allows locking past EOF; seeding it first writes into their locked range
+        # and raises PermissionError before the busy-worker retry can handle it.
         handle.seek(0)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)

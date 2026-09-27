@@ -16,7 +16,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   function renderStatus() {
     const el = page.querySelector('.ac-status'), text = error || notice;
     el.textContent = text; el.hidden = !text; el.classList.toggle('error', !!error);
-    for (const b of page.querySelectorAll('[data-ac="check"],[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"]')) b.disabled = !!busy || checking() || state?.setupProgress?.status === 'running';
+    for (const b of page.querySelectorAll('[data-ac="check"],[data-ac="open"],[data-ac="login"],[data-ac="add"],[data-ac="preferred"],[data-ac="authorize"],[data-ac="tools"],[data-ac="tools-connect"],[data-ac="external"]')) b.disabled = !!busy || checking() || state?.setupProgress?.status === 'running';
     const b = page.querySelector('.ac-head-actions [data-ac="check"]');
     b.textContent = checking() ? '正在检查…' : '检查全部登录';
   }
@@ -122,12 +122,14 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   async function action(name, args) {
     if (busy) return;
     busy = name; error = ''; notice = ''; renderStatus();
+    if (name === 'external') { notice = args.action === 'check' ? '正在联系 GitHub 检查授权…' : '正在打开官方入口…'; renderStatus(); }
     const ticket = epoch; ++request;
     try {
       const result = await call(name, args);
       if (ticket !== epoch) return;
       if (name === 'tools') { toolGroups = result.groups; if (!toolGroups.length) notice = '未发现需要接入的生图或中转工具'; render(); }
       else if (name === 'tools-connect') { state.setupProgress = result; render(); }
+      else if (name === 'external') { notice = result.message; await refreshToolAccounts(); }
       else if (name === 'open' || name === 'login') { notice = result.message; await refresh(); }
       else apply(result);
     } catch (e) { if (ticket === epoch) error = e.message; }
@@ -178,6 +180,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     else if (a === 'authorize') void authorize(b.dataset.id);
     else if (a === 'config') void configure(b.dataset.id);
     else if (a === 'tools') void action('tools');
+    else if (a === 'external') void action('external', { service: b.dataset.service, action: b.dataset.operation });
     else if (a === 'tool-accounts-refresh') void refreshToolAccounts(true);
     else if (a === 'tools-connect') {
       const choices = Object.fromEntries(Object.entries(toolChoices).filter(([, value]) => value));

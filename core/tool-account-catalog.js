@@ -27,6 +27,9 @@ const DEPENDENCIES = {
   imagegen: ['hostImage', 'openaiApi'], 'huawei-ppt': ['hostImage'], 'gen-ppt-image': ['hostImage'],
   'skill-installer': ['github'], 'commit-commands': ['github'], 'superran-lead': ['github'], 'superran-member-task': ['github'],
 };
+const AI_SERVICES = new Set(['images', 'bridge', 'roundtable', 'hostImage', 'bailian', 'openaiApi']);
+const SERVICE_GROUPS = [{ id: 'ai', name: 'AI 工具账号', help: '生图保留两个账号，中转使用其原会话所属账号。' },
+  { id: 'external', name: '外部服务', help: 'GitHub、语雀与其他工具授权单独管理。' }];
 const LOCAL = new Set(('channel-sim chinese-tech-writing claude-md-improver claude-md-management code-review content-research-writer design-review documents feature-dev frontend-design grill-me grilling humanizer-zh img2ppt-lite kongkou-video openai-docs plugin-creator plugin-management post-refactor-verify ppt-templates-gen presentations project-prep pyright-lsp review review-agent skill-creator spreadsheets superran arena-research tiange-voice ui-ux-pro-max brainstorming diagnosing-superpowers dispatching-parallel-agents executing-plans finishing-a-development-branch receiving-code-review requesting-code-review subagent-driven-development superpowers systematic-debugging test-driven-development using-git-worktrees using-superpowers verification-before-completion writing-plans writing-skills').split(' '));
 function dependencyFor(row, rows = [], seen = new Set()) {
   if (seen.has(row.id)) return { state: 'unknown', services: [] };
@@ -42,4 +45,4 @@ function dependencyFor(row, rows = [], seen = new Set()) {
   }
   return { state: LOCAL.has(name) ? 'reviewed' : 'unknown', services: [] };
 }
-module.exports = { SERVICES, dependencyFor };
+module.exports = { SERVICES, dependencyFor, AI_SERVICES, SERVICE_GROUPS };

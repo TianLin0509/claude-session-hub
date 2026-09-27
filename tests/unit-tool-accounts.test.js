@@ -40,7 +40,7 @@ test('unknown and disabled capabilities remain explicit; plugins inherit child d
   assert.deepEqual(dependencyFor(plugin, [plugin, child]), { state: 'reviewed', services: ['images'] });
   assert.equal(dependencyFor(row('future-unreviewed')).state, 'unknown');
   const result = buildToolAccounts({ rows: [row('future-unreviewed'), row('yuque', 'skill', { sources: [{ enabled: false }] })] }, f.options);
-  assert.equal(result.counts.unknown, 1); assert.ok(!result.services.some(s => s.id === 'yuque'));
+  assert.equal(result.counts.unknown, 1); assert.equal(result.services.find(s => s.id === 'yuque').consumers.length, 0);
 });
 test('mcporter MCPs participate without exposing commands, API keys or environment values', t => {
   const f = fixture(t);
