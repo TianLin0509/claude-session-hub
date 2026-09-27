@@ -95,6 +95,34 @@ async function main() {
     assert.equal(await chrome.running(), false);
     result.checks.push('逐项进度、取消和结果保留；官网夹具的已登录和待验证状态如实展示');
     await snap('03-checked');
+    const successfulFixture = JSON.parse(fs.readFileSync(fixture, 'utf8'));
+    const inconclusiveFixture = JSON.parse(JSON.stringify(successfulFixture));
+    inconclusiveFixture.main.sites.chatgpt = { state: 'unknown', error: '后台暂未识别到账号状态，已有登录未被修改' };
+    write(fixture, inconclusiveFixture);
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'inconclusive check finished');
+    assert.match(await text(main), /main@example\.com/);
+    assert.match(await text(main), /上次识别的账号/);
+    assert.match(await text(main), /已有登录未被修改/);
+    assert.match(await text('.ac-progress'), /不代表退出登录/);
+    await snap('03b-unconfirmed');
+    result.checks.push('检查未确认时保留历史邮箱，明确说明未确认不代表退出登录');
+    const restrictedFixture = JSON.parse(JSON.stringify(successfulFixture));
+    for (const [identity, site] of [['main', 'chatgpt'], ['main', 'claude'], ['alt', 'chatgpt']]) {
+      restrictedFixture[identity].sites[site] = { state: 'needs_attention', reason: 'headless_challenge', error: '官网安全验证拦截了后台检查，不代表登录失效。' };
+    }
+    write(fixture, restrictedFixture);
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'restricted check finished');
+    assert.match(await text('.ac-progress'), /3 项后台检查受网站验证限制/);
+    assert.match(await text(main), /后台检查受网站验证限制/);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account [data-ac=login]").length'), 0);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account [data-ac=open]").length'), 2);
+    await snap('03c-restricted');
+    result.checks.push('网站验证拦截单独显示，三个账号提示打开确认，不误导重新登录');
+    write(fixture, successfulFixture);
+    await click('.ac-head-actions [data-ac="check"]');
+    await until('document.querySelector(".ac-progress")?.textContent.includes("检查完成")', 'successful recheck');
     const publicState = JSON.stringify(await cdp.eval('ipcRenderer.invoke("hub-accounts:state")'));
     assert.ok(!/SECRET|fixture-codex-key|fixture-deepseek-key/.test(publicState));
     await click('.ac-company[data-site="kimi"] summary');

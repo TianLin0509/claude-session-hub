@@ -86,13 +86,16 @@ class HubAccounts {
           const cache = this.readCache();
           const entry = cache.identities[item.identity] ||= { sites: {} };
           entry.sites ||= {}; entry.sites[item.site] = checked;
-          if (item.site === 'chatgpt') entry.account = checked.state === 'signed_in' ? checked.account || '' : '';
+          if (item.site === 'chatgpt') {
+            if (checked.state === 'signed_out') entry.account = '';
+            else if (checked.account) entry.account = checked.account;
+          }
           cache.checkedAt = this.now(); this.writeCache(cache);
           const row = this.lastState.identities.find(i => i.id === item.identity);
           const at = row.sites.findIndex(s => s.key === item.site);
           row.sites[at] = { key: item.site, name: SITES[item.site].name, url: SITES[item.site].url, ...checked };
-          if (item.site === 'chatgpt') { row.account = entry.account; row.accountStale = false; }
-          item.state = checked.state; item.error = checked.error || ''; progress.done++;
+          if (item.site === 'chatgpt') { row.account = entry.account || ''; row.accountStale = !!row.account && !checked.account; }
+          item.state = checked.state; item.reason = checked.reason || ''; item.error = checked.error || ''; progress.done++;
           this.lastState.checkedAt = cache.checkedAt;
         },
       })).then(async () => {

@@ -2,6 +2,8 @@
 const path = require('path');
 const { HubChrome } = require('./hub-chrome');
 const { acquire } = require('./web-roundtable/store');
+const restrictedCheck = () => ({ state: 'needs_attention', reason: 'headless_challenge',
+  error: '官网安全验证拦截了后台检查，不代表登录失效。可打开网页确认，无需因此重新登录。' });
 
 // Own the shared profile exclusively, inspecting one profile and one page at a time.
 // An ordinary/user browser is never closed or repurposed for a background check.
@@ -40,8 +42,9 @@ async function inspectAccounts({ chrome, items, signal, onStage, onResult, fixtu
             } else result = await inspector.liveStatus(identity, item.site, { signal });
           } catch (e) {
             if (signal.aborted) break;
-            result = { state: 'unknown', error: e.message };
+            result = e.code === 'HUB_LOGIN_CHECK_RESTRICTED' ? restrictedCheck() : { state: 'unknown', error: e.message };
           }
+          if (result?.state === 'needs_attention' && result.reason === 'challenge') result = restrictedCheck();
           if (!signal.aborted) await onResult(item, { ...result, live: true, verified: ['signed_in', 'signed_out', 'needs_attention'].includes(result.state), checkedAt: Date.now(), stale: false });
         }
       } finally {

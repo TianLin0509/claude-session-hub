@@ -33,7 +33,6 @@ const DEFAULT_IDENTITIES = [
   { id: 'alt', label: '副', sites: ALL_SITES },
 ];
 const OFFSCREEN = { left: -32000, top: -32000, width: 1280, height: 900 };
-const ONSCREEN = { left: 120, top: 80, width: 1280, height: 900 };
 
 function defaultRoot(env = process.env) {
   if (env.HUB_CHROME_ROOT) return path.resolve(env.HUB_CHROME_ROOT);
@@ -186,7 +185,15 @@ class HubChrome {
       page = await this.page(targetId);
       for (const end = Date.now() + 15000; Date.now() < end;) {
         if (signal?.aborted) throw Error('检查已取消');
-        const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include'});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(() => '');
+        let probe;
+        try { probe = await page.evaluate(require('./account-browser').PROBE); }
+        catch (e) { if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e; }
+        if (probe?.challenge) throw Object.assign(Error('网站安全验证拦截了后台检查'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' });
+        if (probe?.host === 'chatgpt.com' && probe.login) return '';
+        const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include',signal:AbortSignal.timeout(4000)});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(e => {
+          if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
+          return '';
+        });
         if (email) return String(email).slice(0, 120);
         await sleep(800);
       }
@@ -249,10 +256,10 @@ class HubChrome {
       ...(debug ? ['--remote-debugging-port=0'] : []),
       ...(headless ? ['--headless=new'] : []),
       '--no-first-run', '--no-default-browser-check',
-      // Always say where: left unset, Chrome restores the profile's last window placement,
-      // and the Hub parks its work windows off screen — so a login window came up at the
-      // screen edge where nobody could use it (2026-09-25).
-      ...(visible ? [`--window-position=${ONSCREEN.left},${ONSCREEN.top}`, `--window-size=${ONSCREEN.width},${ONSCREEN.height}`]
+      // Set an explicit visible state instead of restoring a parked off-screen window.
+      // Measured on Windows Chrome: --window-position overrides --start-maximized,
+      // for both the first launch and a new window in an already running browser.
+      ...(visible ? ['--start-maximized']
         : ['--window-position=-32000,-32000', '--window-size=1280,900']),
       '--new-window', ...(urls && urls.length ? urls : [url || this.markerUrl(identityId)]),
     ];
@@ -322,8 +329,9 @@ class HubChrome {
   // Each profile appears to CDP as its own browser context, but Target.createTarget can
   // only place a tab in whichever profile Chrome currently treats as default (the one used
   // last) — naming any other profile fails, omitting it lands in the wrong identity. So a
-  // tab is always opened *from inside* its identity: every identity keeps one marker page,
-  // parked off screen, and new tabs are window.open()ed by that page.
+  // headed tab is opened *from inside* its identity: every identity keeps one marker page,
+  // parked off screen, and new tabs are window.open()ed by that page. The serial headless
+  // inspector uses createTarget and verifies the returned context before navigation.
   async marker(identityId, cdp) {
     this.identity(identityId);
     const find = async () => {
@@ -373,22 +381,34 @@ class HubChrome {
       // A unique local URL correlates this request even across processes opening the same
       // website concurrently. Never select an arbitrary newly observed page.
       const ticketUrl = this.markerUrl(identityId) + '#task-' + crypto.randomUUID();
-      if (visible) {
+      let target;
+      if (ep.headless) {
+        // The inspector runs one profile at a time. Create its page through Chrome,
+        // independent of marker document readiness and popup handling. Chrome may pick
+        // a default profile: verify the context before navigating to any account website.
+        const { targetId } = await cdp.call('Target.createTarget', { url: ticketUrl, newWindow: true });
+        try {
+          target = (await cdp.call('Target.getTargetInfo', { targetId })).targetInfo;
+          if (target.browserContextId !== ctx) throw Error('检查标签页的账号隔离校验失败，未访问网站');
+        } catch (e) { await this.closeTab(targetId); throw e; }
+      } else if (visible) {
         await this.launch(identityId, { visible: true, url: ticketUrl });
       } else {
         const page = await this.page(mark.targetId);
         try {
-          await page.call('Runtime.evaluate', { expression: `window.open(${JSON.stringify(ticketUrl)},'_blank','popup=1,noopener');true`, userGesture: true, returnByValue: true });
+          const result = await page.call('Runtime.evaluate', { expression: `window.open(${JSON.stringify(ticketUrl)},'_blank','popup=1,noopener');true`, userGesture: true, returnByValue: true });
+          if (result.exceptionDetails) throw Error('Hub 浏览器创建标签页失败：' + (result.exceptionDetails.exception?.description || result.exceptionDetails.text));
         } finally { page.close(); }
       }
-      const target = await this.waitNewPage(cdp, ctx, before, ticketUrl);
+      target ||= await this.waitNewPage(cdp, ctx, before, ticketUrl);
       let tab;
       try {
         tab = await this.page(target.targetId);
-        await tab.call('Page.navigate', { url });
+        const navigation = await tab.call('Page.navigate', { url });
+        if (navigation.errorText) throw Error('网页未能打开：' + navigation.errorText);
+        await this.place(cdp, target.targetId, visible ? { windowState: 'maximized' } : OFFSCREEN);
       } catch (e) { await this.closeTab(target.targetId); throw e; }
       finally { tab?.close(); }
-      await this.place(cdp, target.targetId, visible ? ONSCREEN : OFFSCREEN).catch(() => {});
       if (visible) await cdp.call('Target.activateTarget', { targetId: target.targetId }).catch(() => {});
       return { targetId: target.targetId, port: ep.port, browserContextId: ctx };
     } finally { cdp.close(); }
@@ -482,7 +502,7 @@ class HubChrome {
         }
         await sleep(400);
       }
-      return { state: 'unknown' };
+      return { state: 'unknown', reason: 'unrecognized_page', error: '后台暂未识别到账号状态，已有登录未被修改；可打开网页确认后重试。' };
     } finally {
       page?.close();
       await this.closeTab(targetId);
