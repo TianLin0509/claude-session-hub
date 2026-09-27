@@ -46,6 +46,9 @@ const KIND_LABELS = {
   glm: '智谱',
 };
 
+// Initial titles used by provider harnesses, shared with auto-title eligibility.
+const HARNESS_LABELS = { qwen: '千问 · Qwen Code', 'deepseek-acp': 'DeepSeek · 原生 Harness', glm: '智谱 · ZCode' };
+
 // ---------------------------------------------------------------------------
 // Claude 家族（共享 Claude Code CLI 引擎）：
 //   - claude         主 Claude（~/.claude）
@@ -202,6 +205,7 @@ module.exports = {
   CLAUDE_WEB_KINDS,
   CODEX_WEB_KINDS,
   KIND_LABELS,
+  HARNESS_LABELS,
   CLAUDE_FAMILY,
   CLAUDE_HOOK_BACKED,
   PASTE_SENSITIVE_KINDS,

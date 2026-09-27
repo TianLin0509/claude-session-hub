@@ -5,7 +5,7 @@ const { createHash } = require('node:crypto');
 
 const ACP_KINDS = ['qwen', 'deepseek-acp', 'glm'];
 const PLAN_BASE_URL = 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
-const LABELS = { qwen: '千问 · Qwen Code', 'deepseek-acp': 'DeepSeek · 原生 Harness', glm: '智谱 · ZCode' };
+const { HARNESS_LABELS: LABELS } = require('./ai-kinds');
 function isAcpKind(kind) { return ACP_KINDS.includes(String(kind).replace(/-resume$/, '')); }
 function writeJson(file, object) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

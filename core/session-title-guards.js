@@ -1,6 +1,6 @@
 'use strict';
 
-const { KIND_LABELS } = require('./ai-kinds.js');
+const { KIND_LABELS, HARNESS_LABELS } = require('./ai-kinds.js');
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -83,6 +83,7 @@ function isClaudeCodePlaceholderTitle(title) {
 function isGenericAutoSessionTitle(title, kindLabels = KIND_LABELS) {
   const clean = normalizeTitle(title);
   return !clean
+    || Object.values(HARNESS_LABELS).includes(clean)
     || isClaudeCodePlaceholderTitle(clean)
     || buildGenericSessionTitleRe(kindLabels).test(clean);
 }
