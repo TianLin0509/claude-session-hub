@@ -28,6 +28,27 @@ async function main(){
       const s=await invoke('create-session',{kind,opts:{cwd,...(kind==='deepseek'?{model:'deepseek-v4-flash',effort:'low',mcpProfile:'none'}:{})}});assert(s.id,j(s));assert.equal(s.agentRuntime,'pty');assert.equal(s.runtimeBackend,null);
       const marker=kind.toUpperCase().replace(/-/g,'_')+'_CLI_OK';await send(s.id,'Reply only '+marker);await response(s.id,marker);
       check(kind+' real UI prompt + CLI output + parsed history + completion');
+      if(process.argv.includes('--title-pin')) {
+        await until(`sessions.get(${j(s.id)})?.autoTitleGenerated===true`,'DeepSeek title');
+        const title=await c.eval(`sessions.get(${j(s.id)}).title`);
+        assert(!require('../core/session-title-guards').isGenericAutoSessionTitle(title));
+        assert(!title.startsWith(require('../core/ai-kinds').KIND_LABELS[kind]+' · '),'must be AI title, not fallback');
+        check(kind+' DeepSeek API auto-title: '+title);
+        await c.eval(`document.querySelector('.session-item[data-session-id="${s.id}"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:100,clientY:180}));`);
+        await until(`!!document.querySelector('.context-menu-item[data-action="pin"]')`,'pin menu');
+        await c.eval(`document.querySelector('.context-menu-item[data-action="pin"]').click()`);
+        await until(`sessions.get(${j(s.id)})?.pinned===true`,'pinned');
+        const sectionExpr=`(()=>{let n=document.querySelector('.session-item[data-session-id="${s.id}"]');while(n&&n.parentElement.id!=='session-list')n=n.parentElement;while(n&&!n.classList.contains('session-sec-header'))n=n.previousElementSibling;return n?.className||'';})()`;
+        await until(`(${sectionExpr}).includes('sec-pinned')`,'idle pinned section');
+        await send(s.id,'Use your shell tool to run node -e "setTimeout(()=>console.log(123),10000)" in the foreground. Then reply only PIN_DONE.');
+        await until(`['running','starting'].includes(getSessionRuntimeTruth(sessions.get(${j(s.id)})).state)`,'pinned active');
+        await until(`(${sectionExpr}).includes('sec-active')`,'active section despite pin');
+        await screenshot(kind+'-pinned-active');
+        await response(s.id,'PIN_DONE');
+        await until(`(${sectionExpr}).includes('sec-pinned')`,'completed returns to pin');
+        assert.equal(await c.eval(`sessions.get(${j(s.id)}).pinned`),true);
+        check(kind+' pinned session enters active while working and returns after completion');
+      }
       const sid=await c.eval(`sessions.get(${j(s.id)}).acpSid||sessions.get(${j(s.id)}).codexSid`);assert(sid);
       const restarted=await invoke('restart-session',s.id);assert(restarted.id||restarted.session?.id,j(restarted));
       await send(s.id,'Reply only '+marker+'_RESTART');await response(s.id,marker+'_RESTART');

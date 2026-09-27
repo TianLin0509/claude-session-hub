@@ -27,8 +27,8 @@ test('异常独立分组，活跃按等待、运行排序，今天严格小于 2
     item('wait', { status: 'idle', attentionState: 'needs-input' }), item('pin', { pinned: true, status: 'idle', attentionState: 'needs-input' }),
     item('archive', { status: 'dormant' }), item('boundary', { lastMessageTime: now - DAY })];
   const p = partitionSidebarSessions(rows, { now });
-  assert.deepEqual(ids(p.pinned), ['pin']);
-  assert.deepEqual(ids(p.active), ['wait', 'run']);
+  assert.deepEqual(ids(p.pinned), []);
+  assert.deepEqual(ids(p.active), ['pin', 'wait', 'run']);
   assert.deepEqual(ids(p.failed), ['error']);
   assert.deepEqual(ids(p.unread), ['read']);
   assert.deepEqual(ids(p.today), ['today']);
@@ -63,6 +63,22 @@ test('700 多条休眠只贡献归档计数，输入不被修改', () => {
   const p = partitionSidebarSessions(Object.freeze(rows), { now });
   assert.equal(p.archiveCount, 712);
   assert.equal(p.pinned.length + p.active.length + p.today.length, 0);
+});
+
+test('置顶保留标记，工作及等待进活跃，结束后回置顶；群聊同样适用', () => {
+  const s = item('pin', { pinned: true, status: 'running', unreadCount: 1 });
+  let p = partitionSidebarSessions([s], { now });
+  assert.deepEqual(ids(p.active), ['pin']);
+  assert.equal(p.pinned.length + p.unread.length, 0);
+  assert.equal(s.pinned, true);
+  s.status = 'idle'; s.unreadCount = 0;
+  p = partitionSidebarSessions([s], { now });
+  assert.deepEqual(ids(p.pinned), ['pin']);
+  const member = item('member', { status: 'running' });
+  const group = item('group', { pinned: true, _isMeeting: true, _meeting: { subSessions: ['member'] } });
+  p = partitionSidebarSessions([group], { now, sessionMap: new Map([['member', member]]) });
+  assert.deepEqual(ids(p.active), ['group']);
+  assert.equal(group.pinned, true);
 });
 
 test('群聊任意成员未读优先分组，同时保留其他成员运行/等待状态', () => {

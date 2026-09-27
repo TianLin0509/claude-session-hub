@@ -127,19 +127,27 @@ function createAutoTitleManager(deps) {
     const session = sessionManager.getSession(hubSessionId);
     if (!session || session.meetingId || session.userRenamed) return;
     if (!isAutoTitleSessionKind(session.kind)) return;
-    if (session.autoTitleGenerated) return;
+    // Older resume paths incorrectly marked harness placeholders as named.
+    if (session.autoTitleGenerated && !isGenericAutoSessionTitle(session.title)) return;
     if (!session.branchAutoTitlePending && !isGenericAutoSessionTitle(session.title)) return;
     autoTitleInFlight.add(hubSessionId);
     setTimeout(async () => {
       try {
         const latest = sessionManager.getSession(hubSessionId);
-        if (!latest || latest.userRenamed || latest.autoTitleGenerated || latest.meetingId) return;
+        if (!latest || latest.userRenamed || latest.meetingId) return;
+        if (latest.autoTitleGenerated && !isGenericAutoSessionTitle(latest.title)) return;
         if (!isAutoTitleSessionKind(latest.kind)
             || (!latest.branchAutoTitlePending && !isGenericAutoSessionTitle(latest.title))) return;
+        const originalTitle = latest.title;
+        const originalKind = latest.kind;
         let title = '';
         try { title = await generateSessionTitleFromPrompt(text); } catch (e) {
           console.warn('[auto-title] AI title failed:', e && e.message);
         }
+        // The network request yields: a user rename/close must win meanwhile.
+        const current = sessionManager.getSession(hubSessionId);
+        if (!current || current.userRenamed || current.meetingId
+            || current.title !== originalTitle || current.kind !== originalKind) return;
         if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
         if (!title) return;
         const wasPendingBranch = !!latest.branchAutoTitlePending;
@@ -182,10 +190,13 @@ function createAutoTitleManager(deps) {
         const latest = meetingManager.getMeeting(meetingId);
         if (!latest || latest.userRenamed || latest.autoTitleGenerated) return;
         if (!latest.autoTitlePending && !isGenericAutoMeetingTitle(latest.title)) return;
+        const originalTitle = latest.title;
         let title = '';
         try { title = await generateSessionTitleFromPrompt(text, 'meeting'); } catch (e) {
           console.warn('[auto-title] meeting AI title failed:', e && e.message);
         }
+        const current = meetingManager.getMeeting(meetingId);
+        if (!current || current.userRenamed || current.autoTitleGenerated || current.title !== originalTitle) return;
         if (!title) title = fallbackMeetingTitleFromPrompt(text, latest);
         if (!title) return;
         const updated = meetingManager.updateMeeting(meetingId, {

@@ -134,10 +134,11 @@ function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Ma
     const unread = sidebarItemHasUnread(s, sessionMap);
     states.set(s.id, error ? 'error' : meeting && working ? 'run' : waiting ? 'wait' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
     if (error) failed.push(s);
+    else if (s.pinned && (waiting || working)) (waiting ? respond : running).push(s);
     else if (unread) completed.push(s);
-    else if (s.pinned) pinned.push(s);
     else if (waiting) respond.push(s);
     else if (working) running.push(s);
+    else if (s.pinned) pinned.push(s);
     else if (dormant) archive.push(s);
     else if (fresh) today.push(s);
     else older.push(s);
