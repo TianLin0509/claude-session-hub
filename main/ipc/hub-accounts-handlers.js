@@ -1,11 +1,11 @@
 'use strict';
-// The account page's whole surface: read the state, 检查登录, 登录.
+// Passive account workspace, with legacy check IPC retained for existing callers.
 function registerHubAccountsIpc(ipcMain, accounts) {
   const wrap = fn => async (_event, payload = {}) => {
     try { return { ok: true, data: await fn(payload) }; }
     catch (e) { return { ok: false, error: e.message || '账号操作失败' }; }
   };
-  ipcMain.handle('hub-accounts:state', wrap(() => accounts.state()));
+  ipcMain.handle('hub-accounts:state', wrap(() => accounts.passiveState()));
   ipcMain.handle('hub-accounts:check', wrap(() => accounts.check()));
   const selection = p => {
     if (!p || typeof p !== 'object' || Array.isArray(p)) throw Error('账号参数无效');

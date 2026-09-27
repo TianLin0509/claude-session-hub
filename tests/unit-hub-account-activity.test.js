@@ -10,6 +10,25 @@ function fixture(t) {
   return { root, env: { CLAUDE_HUB_DATA_DIR: root } };
 }
 function write(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value)); }
+test('account page state does not inspect Chrome, copy cookies or call the login checker', async t => {
+  const { root, env } = fixture(t);
+  const { HubChrome } = require('../core/hub-chrome'), { HubAccounts } = require('../core/hub-accounts');
+  const chrome = new HubChrome({ root, env });
+  const unexpected = () => { throw Error('passive account page must not inspect browser'); };
+  chrome.running = chrome.profileHeld = chrome.loginStatus = chrome.cookieRows = chrome.liveCookieRows = unexpected;
+  write(path.join(root, 'last-check.json'), { identities: { main: { account: 'known@example.com', sites: {} } } });
+  recordActivity(root, { site: 'chatgpt', outcome: 'opened', at: 1000 });
+  const acc = new HubAccounts({ hubChrome: chrome, env, getConfig: () => ({}), inspect: unexpected });
+  const routes = {};
+  require('../main/ipc/hub-accounts-handlers').registerHubAccountsIpc({ handle: (name, fn) => { routes[name] = fn; } }, acc);
+  const result = await routes['hub-accounts:state'](null, {});
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.data.chrome.running, null);
+  assert.equal(result.data.identities[0].account, 'known@example.com');
+  assert.equal(result.data.activity.entries['main:chatgpt'].outcome, 'opened');
+  const preferred = await acc.preference({ site: 'claude', identity: 'alt', add: true });
+  assert.equal(preferred.identities[0].account, 'known@example.com');
+});
 test('opening is only opening; successful use survives a later login failure, without prompt leakage', t => {
   const { root, env } = fixture(t);
   recordActivity(root, { site: 'chatgpt', outcome: 'opened', at: 1000 });

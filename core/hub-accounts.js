@@ -69,16 +69,17 @@ class HubAccounts {
     if (!this.reading) this.reading = this.compose().then(value => { this.lastState = value; return this.publicState(); }).finally(() => { this.reading = null; });
     return this.reading;
   }
-  publicState() { return JSON.parse(JSON.stringify({ ...this.lastState,
+  async passiveState() { return this.publicState(await this.compose({ passive: true })); }
+  publicState(value = this.lastState) { return JSON.parse(JSON.stringify({ ...value,
     ...(this.setup.progress?.status === 'complete' ? { tools: require('./hub-browser-tool').integrationStatus(this.chrome.root) } : {}),
     activity: require('./hub-account-activity').readActivity(this.chrome.root, this.env),
     progress: this.progress, setupProgress: this.setup.progress })); }
-  async compose() {
+  async compose({ passive = false } = {}) {
     const cache = this.readCache(), preferences = readPreferences(this.chrome.root);
-    const running = await this.chrome.running(), identities = [];
+    const running = passive ? null : await this.chrome.running(), identities = [];
     for (const identity of this.chrome.identities) {
       let status;
-      try { status = await this.chrome.loginStatus(identity.id, { live: false }); }
+      try { status = passive ? { sites: {} } : await this.chrome.loginStatus(identity.id, { live: false }); }
       catch (e) { status = { sites: {}, error: e.message }; }
       const prev = cache.identities[identity.id] || {};
       const sites = identity.sites.filter(key => identity.id === 'main' || preferences.sites[key]?.secondary).map(key => {
@@ -92,7 +93,7 @@ class HubAccounts {
       identities.push({ id: identity.id, label: identity.label, account, accountStale: !status.account && !!account, sites });
     }
     const clis = cliAuthStatus({ env: this.env, config: this.getConfig(), now: this.now() }).map(cli => ({ ...cli, identity: this.owner(cli, identities) }));
-    return { chrome: { running, loginOpen: !running && this.chrome.profileHeld(), root: this.chrome.root }, identities, clis, preferences,
+    return { chrome: { running, loginOpen: passive ? null : !running && this.chrome.profileHeld(), root: this.chrome.root }, identities, clis, preferences,
       tools: require('./hub-browser-tool').integrationStatus(this.chrome.root), checkedAt: cache.checkedAt || 0 };
   }
   async startCheck({ identity, site } = {}) {
@@ -165,7 +166,7 @@ class HubAccounts {
     if (this.checking) throw Error('请等检查结束再调整账号');
     await this.chrome.lifecycle(() => updatePreferences(this.chrome.root, options));
     this.lastState = null;
-    return this.state();
+    return this.passiveState();
   }
   async open({ identity, site, login = false }) {
     if (this.checking || this.startingCheck) throw Error('请等待检查结束或取消检查后打开网页');
