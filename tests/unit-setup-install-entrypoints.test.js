@@ -72,9 +72,16 @@ function makeShims(dir, shims) {
  * 必须是 .exe 而不是 .cmd：批处理调用另一个 .cmd 不加 call 就不会把控制权交还，
  * 用 .cmd 替身会把"下载完有没有真的启动它"测成假绿（轮次2 踩过）。
  */
-function compileShimExe(exePath) {
-  fs.mkdirSync(path.dirname(exePath), { recursive: true });
-  const srcPath = `${exePath}.cs`;
+// 编译一次就够：Add-Type 每次都要拉起 PowerShell + csc，在闸门默认并发 16 下
+// 编译五遍足以把同批别的测试饿到超时（2026-09-28 实测：8 个无关文件首次失败、
+// 串行复测全过，耗时差 7-20 倍）。所以本文件只编译一个模板，之后都是复制。
+let _shimTemplate = null;
+
+function buildShimTemplate() {
+  if (_shimTemplate && fs.existsSync(_shimTemplate)) return _shimTemplate;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-shim-template-'));
+  const exePath = path.join(dir, 'shim-template.exe');
+  const srcPath = path.join(dir, 'shim.cs');
   fs.writeFileSync(srcPath, `
 using System; using System.IO; using System.Text;
 public class Shim {
@@ -94,7 +101,21 @@ public class Shim {
   const build = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `Add-Type -TypeDefinition (Get-Content -Raw '${srcPath}') -OutputType ConsoleApplication -OutputAssembly '${exePath}'`],
     { encoding: 'utf8', windowsHide: true, timeout: 120000 });
-  assert.ok(fs.existsSync(exePath), `编译替身 ${exePath} 失败：\n${build.stdout}${build.stderr}`);
+  assert.ok(fs.existsSync(exePath), `编译替身模板失败：\n${build.stdout}${build.stderr}`);
+  _shimTemplate = exePath;
+  return exePath;
+}
+
+/**
+ * 放一个最小的 .exe 替身到指定位置。它把自己的名字、收到的参数和运行时看到的
+ * CLAUDE_HUB_DATA_DIR 追加到 SHIM_LOG，并按 SHIM_DROP_FILE 造出"下载好"的文件。
+ *
+ * 必须是 .exe 而不是 .cmd：批处理调用另一个 .cmd 不加 call 就不会把控制权交还，
+ * 用 .cmd 替身会把"下载完有没有真的启动它"测成假绿（轮次2 踩过）。
+ */
+function compileShimExe(exePath) {
+  fs.mkdirSync(path.dirname(exePath), { recursive: true });
+  fs.copyFileSync(buildShimTemplate(), exePath);
   return exePath;
 }
 
