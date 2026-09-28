@@ -32,19 +32,20 @@ async function main(){
     // and the website itself lets the task through (preload page simulation).
     const accountsFixture=path.join(home,'accounts-fixture.json');
     const loggedIn=sites=>{fs.writeFileSync(accountsFixture,JSON.stringify({running:true,main:{sites:Object.fromEntries(sites.map(k=>[k,{state:'signed_in',live:true}]))}}));for(const k of sites)fs.writeFileSync(path.join(home,'fixture-login-web-'+k),'1');};
-    const check=async()=>{const previous=await cdp.eval('document.querySelector(".ac-progress")?.dataset.checkId||""');await click('[data-ac="check"]');await until(`document.querySelector('.ac-progress')?.dataset.checkId!==${JSON.stringify(previous)} && document.querySelector('.ac-progress')?.textContent.includes('检查完成')`);};
+    // Legacy recovery API compatibility only. The new account UI has no active check action.
+    const check=async()=>{assert.equal(await cdp.eval('!!document.querySelector("[data-ac=check]")'),false);const r=await cdp.eval('ipcRenderer.invoke("hub-accounts:check",{})');assert.equal(r.ok,true,JSON.stringify(r));};
     loggedIn(['qwen']);
     await until('typeof accountCenterPanel!=="undefined"');await click('#btn-rail-accounts');
     await until('document.querySelectorAll(".ac-company").length===7');
     await check();await pause(6000);
     const ds=parent.inFlight.deepseek.task_id,ki=parent.inFlight.kimi.task_id;
     assert.equal(sends().filter(s=>s.id===ds).length,0);assert.notEqual(store.read(ds).state,'succeeded');
-    result.checks.push('检查登录时 DeepSeek 仍未登录：原任务不续跑、不发送');
+    result.checks.push('旧检查 IPC 兼容：DeepSeek 未登录时不续跑、不发送；页面无检查按钮');
     fs.writeFileSync(path.join(out,'01-recovery-panel.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
     loggedIn(['qwen','deepseek']);await check();
     for(const end=Date.now()+20000;Date.now()<end&&store.read(ds).state!=='succeeded';)await pause(150);
     assert.equal(store.read(ds).state,'succeeded');assert.equal(sends().filter(s=>s.id===ds).length,1);
-    result.checks.push('在 Hub 浏览器登好 DeepSeek 后点一次「检查登录」，原来未发送的任务恰好续发一次');
+    result.checks.push('旧检查 IPC 兼容：夹具登录成立后，原来未发送的任务恰好续发一次；不是 UI 检查验收');
     loggedIn(['qwen','deepseek','kimi']);await check();
     // The worker publishes state first, then its HTML in finally. Wait for the complete
     // persisted result rather than racing the two writes under a busy test machine.
@@ -59,6 +60,6 @@ async function main(){
     fs.writeFileSync(path.join(out,'02-recovered.png'),Buffer.from(await cdp.eval('ipcRenderer.invoke("test:recovery-capture")'),'base64'));
   }catch(e){result.error=e.stack;throw e;}
   finally{if(cdp)await cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'),'utf8');result.exit=await gracefulQuit(hub);}fs.writeFileSync(path.join(out,'verification.json'),JSON.stringify(result,null,2),'utf8');}
-  console.log('PASS: permission UI -> fresh login proof -> child MCP resume/collect -> original roundtable debate/synthesis/HTML; no duplicate submissions');
+  console.log('PASS: legacy check IPC -> fixture login proof -> child MCP resume/collect -> original roundtable; UI stays passive');
 }
 main().catch(e=>{console.error(e.stack,e.logTail||'');process.exitCode=1;});

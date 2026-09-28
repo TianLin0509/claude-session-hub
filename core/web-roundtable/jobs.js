@@ -87,7 +87,7 @@ async function runWeb(job,save,mode,runtime={}){
       await store.sleep(700);
     }while(Date.now()<end);
     throw Object.assign(Error('No verified complete answer before deadline. Use web_collect on the same task; never resend blindly.'),{attention:true});
-  }catch(e){save({state:e.cancelled?'cancelled':job.submissionAttempted||e.attention?'needs_attention':'failed',error:e.message,...(e.recovery?{recovery:{reason:e.recovery,accountId:'web-'+provider,instruction:'在 AI Hub 权限页打开此账号，完成验证后点击「检查并继续任务」；原任务 ID 保留，已发送问题只补收。'}}:{}),...(browser?.page.networkErrors?.length?{networkErrors:browser.page.networkErrors}:{})});}
+  }catch(e){save({state:e.cancelled?'cancelled':job.submissionAttempted||e.attention?'needs_attention':'failed',error:e.message,...(e.recovery?{recovery:{reason:e.recovery,accountId:'web-'+provider,instruction:'在 AI Hub 账号页打开此账号，完成验证后让原工具继续此任务；原任务 ID 保留，已发送问题只补收。'}}:{}),...(browser?.page.networkErrors?.length?{networkErrors:browser.page.networkErrors}:{})});}
   finally{if(browser)try{await browser.close();}catch(e){save({cleanupError:e.message});}if(release)release();}
 }
 module.exports={terminal,text,status,create,ask,collect,resumeWeb,spawnWorker,runWeb,schedule};

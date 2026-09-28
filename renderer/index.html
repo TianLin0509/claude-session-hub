@@ -567,8 +567,9 @@
   <script src="workspace-controller.js"></script>
   <script src="meeting-create-modal.js"></script>
   <section id="account-page" class="ac-page" hidden aria-label="账号">
-    <header class="ac-head"><div><h1>账号与 AI 网页</h1><p>各家 AI，一个入口。选择账号，继续你的工作。</p></div><div class="ac-head-actions"><button class="ac-btn" data-ac="back" hidden>← 返回账号</button><button class="ac-btn primary" data-ac="check">检查全部登录</button><button class="ac-btn" data-ac="config" data-id="codex">接入配置</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
-    <div class="ac-status" role="status" aria-live="polite" hidden></div><div class="ac-content"></div>
+      <header class="ac-head"><div><h1>账号</h1><p>统一打开账号，记录最近使用。</p></div><div class="ac-head-actions"><input class="ac-search" type="search" placeholder="搜索平台或账号" aria-label="搜索当前分类的平台或账号"><button class="ac-btn" data-ac="back" hidden>← 返回账号</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
+      <nav class="ac-tabs" role="tablist" aria-label="账号分类"></nav>
+      <div class="ac-status" role="status" aria-live="polite" hidden></div><div class="ac-content" id="ac-list-panel" role="tabpanel"></div>
     <div id="account-editor" hidden>          <div class="config-ai-list">
             <button class="config-ai-row" type="button" data-ai="claude">
               <span class="config-ai-mark claude">CL</span>
