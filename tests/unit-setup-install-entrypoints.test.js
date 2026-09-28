@@ -20,6 +20,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { placeShimExe, readShimLog, shimRecords } = require('./helpers/shim-exe');
 
 const ROOT = path.join(__dirname, '..');
 const WINDOWS = process.platform === 'win32';
@@ -72,61 +73,14 @@ function makeShims(dir, shims) {
  * 必须是 .exe 而不是 .cmd：批处理调用另一个 .cmd 不加 call 就不会把控制权交还，
  * 用 .cmd 替身会把"下载完有没有真的启动它"测成假绿（轮次2 踩过）。
  */
-// 编译一次就够：Add-Type 每次都要拉起 PowerShell + csc，在闸门默认并发 16 下
-// 编译五遍足以把同批别的测试饿到超时（2026-09-28 实测：8 个无关文件首次失败、
-// 串行复测全过，耗时差 7-20 倍）。所以本文件只编译一个模板，之后都是复制。
-let _shimTemplate = null;
+// 替身的编译与日志解析在 tests/helpers/shim-exe.js，与
+// tests/e2e-setup-shortcut-launch-cdp.js 共用一份，避免两边各存一份再漂移。
+const compileShimExe = placeShimExe;
 
-function buildShimTemplate() {
-  if (_shimTemplate && fs.existsSync(_shimTemplate)) return _shimTemplate;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-shim-template-'));
-  const exePath = path.join(dir, 'shim-template.exe');
-  const srcPath = path.join(dir, 'shim.cs');
-  // argv 必须逐项记录。用空格把参数拼回一个字符串，正好会把"路径被拆成两段"
-  // 这种缺陷重新粘合成原样 —— 轮次4 的 P1 就是这么被测成假绿的。
-  // \u001F(US) 作分隔符：Windows 路径里不可能出现。
-  fs.writeFileSync(srcPath, `
-using System; using System.IO; using System.Text;
-public class Shim {
-  public static int Main(string[] args) {
-    string log = Environment.GetEnvironmentVariable("SHIM_LOG");
-    if (!String.IsNullOrEmpty(log)) {
-      string self = Path.GetFileName(Environment.GetCommandLineArgs()[0]);
-      string dd = Environment.GetEnvironmentVariable("CLAUDE_HUB_DATA_DIR");
-      File.AppendAllText(log, self + "|ARGC=" + args.Length
-        + "|" + String.Join("\\u001F", args)
-        + "|CLAUDE_HUB_DATA_DIR=" + (dd == null ? "(unset)" : dd) + Environment.NewLine, Encoding.UTF8);
-    }
-    string drop = Environment.GetEnvironmentVariable("SHIM_DROP_FILE");
-    if (!String.IsNullOrEmpty(drop) && !File.Exists(drop)) File.WriteAllText(drop, "# downloaded");
-    return 0;
-  }
-}`, 'utf8');
-  const build = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `Add-Type -TypeDefinition (Get-Content -Raw '${srcPath}') -OutputType ConsoleApplication -OutputAssembly '${exePath}'`],
-    { encoding: 'utf8', windowsHide: true, timeout: 120000 });
-  assert.ok(fs.existsSync(exePath), `编译替身模板失败：\n${build.stdout}${build.stderr}`);
-  _shimTemplate = exePath;
-  return exePath;
-}
-
-/**
- * 放一个最小的 .exe 替身到指定位置。它把自己的名字、收到的参数和运行时看到的
- * CLAUDE_HUB_DATA_DIR 追加到 SHIM_LOG，并按 SHIM_DROP_FILE 造出"下载好"的文件。
- *
- * 必须是 .exe 而不是 .cmd：批处理调用另一个 .cmd 不加 call 就不会把控制权交还，
- * 用 .cmd 替身会把"下载完有没有真的启动它"测成假绿（轮次2 踩过）。
- */
-function compileShimExe(exePath) {
-  fs.mkdirSync(path.dirname(exePath), { recursive: true });
-  fs.copyFileSync(buildShimTemplate(), exePath);
-  return exePath;
-}
-
-/** 编译 powershell.exe 替身，返回可前置到 PATH 的目录。 */
+/** 放一个 powershell.exe 替身，返回可前置到 PATH 的目录。 */
 function compilePowerShellShim(dir) {
   const binDir = path.join(dir, 'shim-exe');
-  compileShimExe(path.join(binDir, 'powershell.exe'));
+  placeShimExe(path.join(binDir, 'powershell.exe'));
   return binDir;
 }
 
@@ -401,12 +355,25 @@ function makeInstallSandbox(tag, { hubName = 'hub', homeName = 'home' } = {}) {
   };
 }
 
+/**
+ * 读 .lnk 的目标与参数。
+ * 用 Shell.Application 而不是 WScript.Shell：后者整条路径走 ANSI，快捷方式放在
+ * 中文目录下时连读都读不出来（返回空），本轮踩过 —— 和 setup.ps1 里必须换掉
+ * WScript.Shell 是同一个原因。
+ */
 function readLnkTarget(lnkPath) {
+  const dir = path.dirname(lnkPath);
+  const leaf = path.basename(lnkPath);
   const res = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnkPath}'); `
-    + `[pscustomobject]@{Target=$s.TargetPath;Arguments=$s.Arguments} | ConvertTo-Json -Compress`],
+    `[Console]::OutputEncoding=[Text.Encoding]::UTF8; `
+    + `$sh = New-Object -ComObject Shell.Application; `
+    + `$item = $sh.Namespace(${psLit(dir)}).ParseName(${psLit(leaf)}); `
+    + `$l = $item.GetLink; `
+    + `[pscustomobject]@{Target=$l.Path;Arguments=$l.Arguments} | ConvertTo-Json -Compress`],
     { encoding: 'utf8', windowsHide: true, timeout: 60000 });
-  return JSON.parse((res.stdout || '').replace(/^﻿/, ''));
+  const text = (res.stdout || '').replace(/^﻿/, '').trim();
+  assert.ok(text, `读不到快捷方式 ${lnkPath}：\n${res.stdout}${res.stderr}`);
+  return JSON.parse(text);
 }
 
 const backendsOf = (cfgPath) => {
@@ -551,31 +518,8 @@ function launchViaShortcut(lnkPath, logPath, env) {
     { env: { ...process.env, ...env }, encoding: 'utf8', windowsHide: true, timeout: 120000 });
 }
 
-const readShimLog = (logPath) => (fs.existsSync(logPath)
-  ? fs.readFileSync(logPath, 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean)
-  : []);
 
-/**
- * 解析替身写的一行：`<exe>|ARGC=n|<arg0>\u001F<arg1>...|CLAUDE_HUB_DATA_DIR=<dir>`
- * 返回逐项 argv，绝不把它们拼回一个字符串 —— 那样就分不出
- * 「一个带空格的参数」和「两个参数」。
- */
-function parseShimLine(line) {
-  const m = line.match(/^([^|]+)\|ARGC=(\d+)\|([\s\S]*)\|CLAUDE_HUB_DATA_DIR=([\s\S]*)$/);
-  assert.ok(m, `替身日志格式不对：${JSON.stringify(line)}`);
-  const argc = Number(m[2]);
-  const argv = argc === 0 ? [] : m[3].split('\u001F');
-  assert.equal(argv.length, argc, `ARGC 与实际参数数量不符：${JSON.stringify(line)}`);
-  return { exe: m[1], argv, dataDir: m[4] };
-}
-
-// argv[0] 取决于调用方怎么写的：bat 里是 `powershell`，Start-Process 给的是全路径，
-// 所以比较时统一去掉 .exe 后缀。
-const baseName = (s) => s.replace(/\.exe$/i, '').toLowerCase();
-const shimRecords = (logPath, exe) => readShimLog(logPath)
-  .map(parseShimLine).filter((r) => baseName(r.exe) === baseName(exe));
-
-test('中文 + 空格路径：桌面快捷方式实际启动时拿到的仍是原路径', { skip: !WINDOWS }, (t) => {
+test('中文 + 空格路径：启动器和快捷方式都不能弄坏路径', { skip: !WINDOWS }, (t) => {
   // 源码目录、用户目录、数据目录三处都带中文，再加空格。
   const sb = makeInstallSandbox('unicode', { hubName: 'Hub 源码目录', homeName: '用户 张三' });
   t.after(() => cleanup(sb.root));
@@ -586,34 +530,34 @@ test('中文 + 空格路径：桌面快捷方式实际启动时拿到的仍是�
 
   const install = runPowerShell(sb.setup, ['-DataDir', customData, '-NoLaunch'],
     { cwd: sb.hub, env: sb.env });
-  assert.equal(install.code, 0, `安装应成功：\n${install.out}`);
+  assert.equal(install.code, 0, `安装应成功：
+${install.out}`);
 
-  // 1) 启动器文件里的路径逐字正确（?? 就是当初的症状）
+  // 1) 启动器里的路径逐字正确（?? 就是当初的症状）
   const launcher = path.join(sb.hub, 'launch-hub.ps1');
-  assert.ok(fs.existsSync(launcher), `应生成启动器：\n${install.out}`);
+  assert.ok(fs.existsSync(launcher), `应生成启动器：
+${install.out}`);
   const launcherText = fs.readFileSync(launcher, 'utf8').replace(/^﻿/, '');
-  assert.ok(launcherText.includes(customData),
-    `启动器里的数据目录被写坏了：\n${launcherText}`);
+  assert.ok(launcherText.includes(customData), `启动器里的数据目录被写坏了：
+${launcherText}`);
   assert.ok(launcherText.includes(sb.hub), '源码目录同样不能被写坏');
   assert.doesNotMatch(launcherText, /\?\?/, '出现 ?? 说明又用了装不下中文的编码');
 
-  // 2) 真的按快捷方式启动一次，看进程拿到什么
-  const beforeCount = shimRecords(sb.log, 'electron.exe').length;
-  const launched = launchViaShortcut(sb.lnk, sb.log, sb.env);
-  assert.equal(launched.status, 0, `${launched.stdout}${launched.stderr}`);
+  // 2) -ArgumentList 必须带内层双引号：Start-Process 不替你加，
+  //    漏了就会把带空格的路径拆成两个参数（轮次4 的 P1）。
+  //    真实启动后逐项比对 argv 的验收在
+  //    tests/e2e-setup-shortcut-launch-cdp.js，那里不占闸门的并发预算。
+  assert.ok(launcherText.includes(`-ArgumentList '"${sb.hub}"'`),
+    `-ArgumentList 没有把路径用内层双引号包住：
+${launcherText}`);
 
-  const records = shimRecords(sb.log, 'electron.exe').slice(beforeCount);
-  assert.ok(records.length >= 1,
-    `双击快捷方式应当真的把 Hub 拉起来：\n${launched.stdout}${launched.stderr}\n${readShimLog(sb.log).join('\n')}`);
-  for (const rec of records) {
-    assert.equal(rec.dataDir, customData, '快捷方式启动后 Hub 看到的目录不对');
-    // 重点是参数数量：被空格拆成两段的路径，拼回去正好等于原路径，
-    // 所以只能逐项比对 —— 轮次4 的 P1 就是被"拼回去再 includes"放过的。
-    assert.deepEqual(rec.argv, [sb.hub],
-      `源码目录被空格拆开了，实际：${JSON.stringify(rec.argv)}`);
-  }
+  // 3) 快捷方式经由启动器，且路径完整
+  const lnk = readLnkTarget(sb.lnk);
+  assert.match(lnk.Target.toLowerCase(), /powershell\.exe$/);
+  assert.ok(lnk.Arguments.includes(`"${launcher}"`),
+    `快捷方式里的启动器路径要被引号包住：${lnk.Arguments}`);
 
-  // 3) 默认目录仍旧没被碰
+  // 4) 默认目录仍旧没被碰
   assert.equal(fs.readFileSync(sentinel, 'utf8'), '默认目录不该被碰');
   assert.ok(!fs.existsSync(path.join(sb.defaultDataDir, 'config.json')));
 });
@@ -637,29 +581,4 @@ test('中文数据目录：写进去的配置能被 Hub 的配置加载器读回
   // 收尾汇总里打印的目录也必须是原样的中文，组员要照着它排查问题。
   assert.ok(install.out.includes(customData),
     `收尾汇总里的数据目录被写坏了：\n${install.out}`);
-});
-
-test('纯英文但带空格的安装路径：快捷方式启动同样不能把路径拆开', { skip: !WINDOWS }, (t) => {
-  // 中文只是把问题放大了；真正的根因是参数边界，纯 ASCII 带空格照样中招。
-  const sb = makeInstallSandbox('spaces', { hubName: 'Hub With Spaces', homeName: 'User Name' });
-  t.after(() => cleanup(sb.root));
-
-  const customData = path.join(sb.root, 'My Hub Data');
-  const install = runPowerShell(sb.setup, ['-DataDir', customData, '-NoLaunch'],
-    { cwd: sb.hub, env: sb.env });
-  assert.equal(install.code, 0, install.out);
-
-  const beforeCount = shimRecords(sb.log, 'electron.exe').length;
-  const launched = launchViaShortcut(sb.lnk, sb.log, sb.env);
-  assert.equal(launched.status, 0, `${launched.stdout}${launched.stderr}`);
-
-  const records = shimRecords(sb.log, 'electron.exe').slice(beforeCount);
-  assert.ok(records.length >= 1,
-    `快捷方式没把 Hub 拉起来：\n${launched.stdout}${launched.stderr}\n${readShimLog(sb.log).join('\n')}`);
-  for (const rec of records) {
-    assert.equal(rec.argv.length, 1,
-      `应用路径必须是一个参数，实际 ${rec.argv.length} 个：${JSON.stringify(rec.argv)}`);
-    assert.equal(rec.argv[0], sb.hub);
-    assert.equal(rec.dataDir, customData);
-  }
 });

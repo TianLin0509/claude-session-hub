@@ -17,8 +17,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const net = require('node:net');
 const { spawnSync } = require('node:child_process');
+const { placeShimExe, readShimLog, shimRecords } = require('./helpers/shim-exe');
 
 const ROOT = path.resolve(__dirname, '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,6 +42,67 @@ function findSandboxElectron(hubDir) {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
+/**
+ * 用记录用替身顶掉 electron，走一遍「安装 -> 由外壳启动 .lnk」，逐项核对 argv。
+ * 这一段从单元测试挪过来：它要起好几个 PowerShell，留在默认闸门里会把同批
+ * 时序敏感的测试饿到超时（实测让闸门多花 70 秒并挤垮 4 个无关文件）。
+ * 覆盖中文和纯英文两种带空格的安装路径 —— 根因是参数边界，纯 ASCII 照样中招。
+ */
+function verifyArgvWithShim(label, { hubName, homeName, dataName }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-lnk-argv-'));
+  try {
+    const hub = path.join(root, hubName);
+    const home = path.join(root, homeName);
+    const dataDir = path.join(root, dataName);
+    const binDir = path.join(root, 'bin');
+    const log = path.join(root, 'shim.log');
+
+    fs.mkdirSync(path.join(hub, 'core'), { recursive: true });
+    fs.writeFileSync(path.join(hub, 'package.json'), JSON.stringify({ name: 'hub', version: '9.9.9' }));
+    fs.writeFileSync(path.join(hub, 'main.js'), '// fixture\n');
+    fs.writeFileSync(path.join(hub, 'core', 'placeholder.js'), '// fixture\n');
+    fs.copyFileSync(path.join(ROOT, 'setup.ps1'), path.join(hub, 'setup.ps1'));
+    fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'npm.cmd'), '@echo off\r\nexit /b 0\r\n', 'ascii');
+    fs.writeFileSync(path.join(binDir, 'claude.cmd'), '@echo off\r\nexit /b 0\r\n', 'ascii');
+    placeShimExe(path.join(hub, 'node_modules', 'electron', 'dist', 'electron.exe'));
+
+    const env = {
+      USERPROFILE: home, SHIM_LOG: log,
+      PATH: `${binDir};${process.env.PATH}`,
+      CLAUDE_HUB_E2E_WINDOW_MODE: 'background',
+    };
+    const install = ps(`& ${psLit(path.join(hub, 'setup.ps1'))} -DataDir ${psLit(dataDir)} -NoLaunch; exit $LASTEXITCODE`, { env });
+    assert.equal(install.status, 0, `[${label}] 安装失败：\n${install.stdout}${install.stderr}`);
+
+    const lnk = path.join(home, 'Desktop', 'AI Hub.lnk');
+    assert.ok(fs.existsSync(lnk), `[${label}] 快捷方式没建出来`);
+
+    const launch = ps([
+      `Start-Process -FilePath ${psLit(lnk)}`,
+      '$deadline = (Get-Date).AddSeconds(25)',
+      'while ((Get-Date) -lt $deadline) {',
+      `  if ((Test-Path ${psLit(log)}) -and (Select-String -Path ${psLit(log)} -Pattern 'electron' -SimpleMatch -Quiet)) { break }`,
+      '  Start-Sleep -Milliseconds 200',
+      '}',
+    ].join('; '), { env });
+    assert.equal(launch.status, 0, `[${label}] ${launch.stdout}${launch.stderr}`);
+
+    const records = shimRecords(log, 'electron.exe');
+    assert.ok(records.length, `[${label}] 快捷方式没能启动：\n${readShimLog(log).join('\n')}`);
+    for (const rec of records) {
+      // 重点是参数数量：拆成两段的路径拼回去正好等于原路径，只能逐项比。
+      assert.deepEqual(rec.argv, [hub],
+        `[${label}] 源码路径被拆开了：${JSON.stringify(rec.argv)}`);
+      assert.equal(rec.dataDir, dataDir, `[${label}] 数据目录不对`);
+    }
+    return { label, hub, dataDir, argv: records[0].argv };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+}
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-lnk-e2e-'));
   // 中文 + 空格：两种坑一次覆盖。
@@ -53,6 +114,17 @@ async function main() {
   const started = [];
 
   try {
+    // 第一阶段：替身验 argv，两种带空格路径各走一遍（快，不起真 Hub）
+    result.argvChecks = [
+      verifyArgvWithShim('中文+空格', {
+        hubName: 'Hub 源码目录', homeName: '用户 张三', dataName: 'data-中文资料 带空格',
+      }),
+      verifyArgvWithShim('纯英文+空格', {
+        hubName: 'Hub With Spaces', homeName: 'User Name', dataName: 'My Hub Data',
+      }),
+    ];
+    result.checks.push('两种带空格安装路径下，桌面入口传给应用的 argv 都是完整一项');
+
     fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true });
     fs.mkdirSync(binDir, { recursive: true });
 
