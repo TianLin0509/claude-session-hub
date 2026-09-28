@@ -48,6 +48,9 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     if (!state) { body.innerHTML = '<p class="ac-empty">正在读取账号…</p>'; return renderStatus(); }
     const expanded = [...body.querySelectorAll('details[open]')].map(d => d.dataset.details);
     body.innerHTML = tab === 'ai' ? aiHtml(state, search.value, esc) : tab === 'cli' ? cliHtml(state, search.value, esc) : servicesHtml(toolAccounts, tab, search.value, state, esc, toolAccountsError);
+    if (tab === 'ai' && state.tools?.some(tool => tool.tool === 'images' && tool.state === 'changed')) {
+      body.innerHTML = '<p class="ac-connection-notice" role="status">生图工具连接配置已变化，生图记录暂不能归入共享账号。请在下方「工具连接」核对。</p>' + body.innerHTML;
+    }
     if (tab === 'ai' && !search.value) body.innerHTML += footerHtml();
     if (state.activity?.warnings?.length) body.innerHTML += `<p class="ac-item-error">${esc(state.activity.warnings.join(' / '))}</p>`;
     for (const d of body.querySelectorAll('details')) d.open = expanded.includes(d.dataset.details);

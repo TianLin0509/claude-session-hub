@@ -4,6 +4,11 @@ const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台
 const GROUP = { github: 'work', yuque: 'work', xueqiu: 'research', jiuyan: 'research', iwencai: 'research', social: 'content', mediaPublish: 'content' };
 const NATIVE = { signed_in: ['已登录', 'ok'], signed_out: ['未登录', 'warn'], unknown: ['登录状态未确认', 'idle'] };
 const BINDING = { shared: '共享专属 Chrome', bound: '已连接', changed: '连接配置已变化', pending: '尚未共享登录', native: '独立授权', host: '客户端授权' };
+const LOGOS = { chatgpt: 'codex', claude: 'claude', google: 'gemini', deepseek: 'deepseek', kimi: 'kimi', qwen: 'qwen' };
+function brandIcon(card, esc, row = false) {
+  const logo = LOGOS[card.site];
+  return `<span class="ac-company-mark${row ? ' ac-product-mark' : ''}" style="--ac-mark:${card.color}" aria-hidden="true">${logo ? `<img src="assets/ai-logos/${logo}.svg" alt="">` : esc(card.mark)}</span>`;
+}
 function relativeTime(at, now = Date.now()) {
   if (!Number.isFinite(at) || at <= 0) return '';
   const minutes = Math.max(0, Math.floor((now - at) / 60000));
@@ -13,15 +18,15 @@ function relativeTime(at, now = Date.now()) {
   return new Date(at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
 }
 function usage(activity, now) {
-  if (!activity) return { text: '暂无使用记录', tone: 'idle', login: false };
-  const labels = { opened: '打开过网页', success: activity.source === 'images' ? '生图成功' : '使用成功', using: '发起过生图',
+  if (!activity) return { text: '尚无访问或工具使用记录', tone: 'idle', login: false };
+  const labels = { opened: '打开过网页', visited: '访问过网页', success: activity.source === 'images' ? '生图成功' : '使用成功', using: '发起过生图',
     login_required: '需要登录', verification_required: '需要验证', rate_limited: '服务限流', failed: '上次使用未完成' };
   const unresolved = activity.issue?.outcome;
   return { text: (relativeTime(activity.at, now) + ' · ' + (labels[activity.outcome] || '使用过')).trim(),
     tone: unresolved ? 'warn' : activity.outcome === 'success' ? 'ok' : ['failed', 'login_required', 'verification_required', 'rate_limited'].includes(activity.outcome) ? 'warn' : 'idle',
     login: !!unresolved || ['login_required', 'verification_required'].includes(activity.outcome),
     note: unresolved && unresolved !== activity.outcome ? '最近调用' + labels[unresolved] : activity.lastSuccessAt && activity.outcome !== 'success' ? '上次成功：' + relativeTime(activity.lastSuccessAt, now) : '',
-    title: ({ images: '生图 MCP', roundtable: '网页圆桌', website: '网页入口' }[activity.source] || '使用记录') + ' · ' + new Date(activity.at).toLocaleString('zh-CN') };
+    title: ({ images: '生图 MCP', roundtable: '网页圆桌', website: '网页入口', history: '专属 Chrome 访问记录；不代表当前仍已登录' }[activity.source] || '使用记录') + ' · ' + new Date(activity.at).toLocaleString('zh-CN') };
 }
 const matches = (values, query) => !query || values.join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
 function usageHtml(value, esc) {
@@ -31,10 +36,10 @@ function aiHtml(state, query, esc, now = Date.now()) {
   return companyCards(state).map(card => {
     const accounts = card.accounts.filter(a => matches([card.company, card.product, a.label, a.account], query));
     if (!accounts.length) return '';
-    return `<article class="ac-company" data-site="${card.site}"><header><span class="ac-company-mark" style="--ac-mark:${card.color}">${esc(card.mark)}</span><h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>
+    return `<article class="ac-company" data-site="${card.site}"><header>${brandIcon(card, esc)}<h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>
       ${accounts.map(a => {
         const activity = usage(state.activity?.entries?.[a.identity + ':' + card.site], now);
-        return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title"><strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
+        return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
           ${usageHtml(activity, esc)}<div class="ac-row-actions"><button class="ac-open" data-ac="${activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${activity.login ? '去登录' : '打开'} ↗</button>
           <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : '<span>当前默认账号</span>'}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;

@@ -52,6 +52,34 @@ test('opening is only opening; successful use survives a later login failure, wi
   assert.equal(readActivity(root, env).warnings.length, 1);
   assert.throws(() => recordActivity(root, { site: 'chatgpt', outcome: 'opened' }), /无法读取/);
 });
+test('existing managed Chrome history is passive visit evidence for the right profile, never a login claim', t => {
+  const { root, env } = fixture(t);
+  const { DatabaseSync } = require('node:sqlite');
+  const at = Date.now() - 60000;
+  for (const identity of ['main', 'alt']) {
+    const file = path.join(root, identity, 'History'); fs.mkdirSync(path.dirname(file), { recursive: true });
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE urls (url TEXT, last_visit_time INTEGER)');
+    const add = db.prepare('INSERT INTO urls VALUES (?,?)');
+    if (identity === 'main') {
+      add.run('https://chatgpt.com/c/private-conversation', BigInt(at + 11644473600000) * 1000n);
+      add.run('https://fakechatgpt.com/', BigInt(at + 11644473600000) * 1000n);
+      add.run('https://claude.ai/new', BigInt(at - 1000 + 11644473600000) * 1000n);
+    } else add.run('https://chatgpt.com/', BigInt(at - 2000 + 11644473600000) * 1000n);
+    db.close();
+  }
+  const result = readActivity(root, env);
+  assert.equal(result.entries['main:chatgpt'].source, 'history');
+  assert.equal(result.entries['main:chatgpt'].outcome, 'visited');
+  assert.equal(result.entries['alt:chatgpt'].source, 'history');
+  assert.equal(result.entries['main:claude'].source, 'history');
+  assert.equal(result.entries['alt:claude'], undefined);
+  assert.equal(usage(result.entries['main:chatgpt']).login, false);
+  assert.match(usage(result.entries['main:chatgpt']).text, /访问过网页/);
+  assert.doesNotMatch(JSON.stringify(result), /private-conversation|fakechatgpt|已登录/);
+  recordActivity(root, { site: 'chatgpt', source: 'roundtable', outcome: 'success', at: at + 1000 });
+  assert.equal(readActivity(root, env).entries['main:chatgpt'].outcome, 'success');
+});
 test('image records are read-only and follow verified bindings for each identity', t => {
   const { root, env } = fixture(t), pool = path.join(root, 'tool-fixtures/ChatGPTWebImagesPool');
   fs.mkdirSync(pool, { recursive: true });
