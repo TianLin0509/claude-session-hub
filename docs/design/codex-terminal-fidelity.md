@@ -7,6 +7,7 @@
 - Windows 的 Codex PTY 声明真彩色：`COLORTERM=truecolor`；没有显式 `FORCE_COLOR` / `NO_COLOR` 时使用 `FORCE_COLOR=3`。Codex 0.153.4 / 0.157.1 的原生 diff 深绿为 `#213a2b`；256 色回退为索引 22（`#005f00`）。不修改 CLI 自身主题与 RGB 输出。
 - Claude/Codex PTY 共用 `currentFontSize`、Cascadia Code/Consolas 字体栈、1 倍行高和 Hub 主题。删除之前专门读取 Windows Terminal 配置及 point/CSS 换算的模块；不再出现同一个 Hub 字号下 Codex 大一圈的问题。CLI 显式输出的真彩色仍按原字节显示。
 - 原生全屏模式的历史、菜单、滚轮由 Codex 管理。浮动输入区向 xterm 转发滚轮时，坐标必须落在正文区域：缺坐标会被映射到标题区，新版 CLI 因此忽略上滚。普通终端 scrollback 保留现有滚动锁定逻辑。
+- 2026-09-28：不能把「屏幕中点」当作正文。真实 0.157.1 在 17 行窗口里执行工具时，中点第 9 行属于 Working 状态区，正文与 Hub 输入区的上滚均可无效。`renderer/codex-transcript-wheel.js` 仅在普通空输入框及快捷键页脚均被识别时，把标题/状态/页脚上的滚轮转给正文第 2 行；正文自身坐标、菜单、确认框、非空原生草稿及组合键保持原生行为。仍由 xterm 编码鼠标事件、Codex 执行滚动。
 - 全屏模式下 ▲▼ 改为原生 PageUp/PageDown 并更新提示；回到最新、Ctrl+Home/End 转给原生历史。旧版普通 buffer 保留问题定位。不得扫描当前屏幕的提示符冒充整个历史索引，或重复发送已经被 xterm 处理的按键。
 - `PtyOutputDelivery` 独立管理输出提交与关闭刷新。未完成的兼容帧最多保留 16ms，后续输出不能无限续期；全屏模式立即透传，旧 inline 模式保留必要的滚屏兼容。适配器异常记录错误，并原样发出尚未提交的片段，不静默丢字。
 - 模型显示名与请求 ID 分开。原生页脚的 `GPT-6-Astra` 只作显示，状态、重新启动和恢复参数统一为 `gpt-6-astra`。旧保存记录在恢复边界归一化，保持原会话 ID 和转录路径。
@@ -24,6 +25,7 @@
 
 - `node scripts/run_unit_tests.js --jobs 4 --strict`
 - `node tests/e2e-codex-pty-lifecycle-cdp.js`：真实 CLI/provider，70 行历史的正文/浮动输入区滚轮、运行中上滚、同 ID 恢复、切会话后滚动、原生菜单、尺寸变化、Claude 字体主题对照、真实请求拒绝状态。测试从原生 assistant 转录确认回答，动画只比较 Working 字母颜色，不把秒表变化当动画。
+- `node --test tests/unit-codex-transcript-wheel.test.js` 与 `node tests/e2e-codex-short-viewport-wheel-cdp.js`：17 行小窗口、真实工具运行时，在正文/屏幕中点/Hub 输入区上滚；只以带编号历史正文的变化证明滚动，Working 秒数变化不能算通过。
 - 设置 `ACTIVITY_AUDIT=1` 增加 70 秒真实工具等待，连续核对回看历史、失焦与界面重载后的活跃状态；`ACTIVITY_INTERACTION_AUDIT=1` 增加原生 Esc 中断和 request_user_input 回答闭环。修复前实测捕获 `completed:pty-codex-input-ready`，工具仍在执行。
 - 设置 `BOOTSTRAP_AUDIT_ONLY=1` 验证真实任务在重载初始化期间完成，新完成回执不能被较早的运行中列表回复覆盖。
 - `node tests/e2e-pty-attention-cdp.js`：隔离 GUI 夹具验证主窗口和分屏的卡片/终端提示可见性，不调用 provider。
