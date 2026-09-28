@@ -1,7 +1,8 @@
 'use strict';
 const { companyCards, cliChip } = require('./account-center-view');
-const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
-const GROUP = { github: 'work', yuque: 'work', social: 'content', mediaPublish: 'content' };
+const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'research', name: '投研数据' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
+const GROUP = { github: 'work', yuque: 'work', xueqiu: 'research', jiuyan: 'research', iwencai: 'research', social: 'content', mediaPublish: 'content' };
+const NATIVE = { signed_in: ['已登录', 'ok'], signed_out: ['未登录', 'warn'], unknown: ['登录状态未确认', 'idle'] };
 const BINDING = { shared: '共享专属 Chrome', bound: '已连接', changed: '连接配置已变化', pending: '尚未共享登录', native: '独立授权', host: '客户端授权' };
 function relativeTime(at, now = Date.now()) {
   if (!Number.isFinite(at) || at <= 0) return '';
@@ -46,7 +47,11 @@ function cliHtml(state, query, esc) {
 function serviceHtml(service, state, esc, now) {
   const value = usage(state.activity?.entries?.['main:' + service.id], now);
   const evidence = service.credential === 'read_error' ? '授权记录读取失败' : service.credential === 'record_found' ? '已有配置记录' : '由原工具管理';
-  return `<article class="ac-service" data-account-service="${esc(service.id)}"><div class="ac-account"><div class="ac-account-title"><strong>${esc(service.name)}</strong></div>${service.website ? usageHtml(value, esc) : `<div class="ac-usage idle">${esc(evidence)}</div>`}<div class="ac-row-actions">${service.website ? `<button class="ac-open" data-ac="external" data-service="${esc(service.id)}" data-operation="open">打开 ↗</button>` : ''}<details class="ac-more" data-details="service-${esc(service.id)}"><summary aria-label="${esc(service.name)}详情">···</summary><div><span>${esc(BINDING[service.status] || '')}</span><p>${esc(service.help)}</p>${service.canAuthorize ? `<button data-ac="external" data-service="${esc(service.id)}" data-operation="authorize">授权 GitHub CLI ↗</button>` : ''}${(service.consumers || []).map(c => `<span>${esc(c.name)}</span>`).join('')}</div></details></div></div></article>`;
+  // 投研数据：显示专属 Chrome 里的登录状态，并能一键检查（2026-09-28）
+  const research = GROUP[service.id] === 'research';
+  const native = research && service.nativeStatus ? NATIVE[service.nativeStatus.state] : null;
+  const nativeHtml = research ? `<div class="ac-usage ${native ? native[1] : 'idle'}" title="${esc(service.nativeStatus?.message || '')}"><span>${esc(native ? native[0] : '还没检查登录')}</span>${service.nativeStatus?.checkedAt ? `<small>${esc(relativeTime(service.nativeStatus.checkedAt, now))}检查</small>` : ''}</div>` : '';
+  return `<article class="ac-service" data-account-service="${esc(service.id)}"><div class="ac-account"><div class="ac-account-title"><strong>${esc(service.name)}</strong></div>${research ? nativeHtml : service.website ? usageHtml(value, esc) : `<div class="ac-usage idle">${esc(evidence)}</div>`}<div class="ac-row-actions">${service.website ? `<button class="ac-open" data-ac="external" data-service="${esc(service.id)}" data-operation="open">${research ? '登录 ↗' : '打开 ↗'}</button>` : ''}${research ? `<button class="ac-open" data-ac="external" data-service="${esc(service.id)}" data-operation="check">检查登录</button>` : ''}<details class="ac-more" data-details="service-${esc(service.id)}"><summary aria-label="${esc(service.name)}详情">···</summary><div><span>${esc(BINDING[service.status] || '')}</span><p>${esc(service.help)}</p>${service.canAuthorize ? `<button data-ac="external" data-service="${esc(service.id)}" data-operation="authorize">授权 GitHub CLI ↗</button>` : ''}${(service.consumers || []).map(c => `<span>${esc(c.name)}</span>`).join('')}</div></details></div></div></article>`;
 }
 function servicesHtml(data, tab, query, state, esc, error, now = Date.now()) {
   if (error) return `<p class="ac-item-error" role="alert">${esc(error)} <button class="ac-text-btn" data-ac="tool-accounts-refresh">重试</button></p>`;
