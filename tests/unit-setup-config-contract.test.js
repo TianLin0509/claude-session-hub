@@ -353,3 +353,104 @@ test('read-mode 遇到损坏配置报 error，而不是谎称走自己账号', (
   assert.ok(parsed.error, 'read-mode 把损坏配置读成了空配置，收尾汇总就会显示成"自己账号"');
   assert.equal(parsed.claude, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// 嵌套 provider 的类型也要校验，不能只看根。
+//
+// Codex 2 轮次3 审查复现：`{"providers":[]}` / `{"providers":"wrong-type"}` 跑
+// write-gateway 会退出 0 并打印 written，但读回来 Claude/Codex 都不是 api 后端。
+// 原因是这段代码不在 strict 模式：给字符串属性赋值静默无效，给数组挂命名属性
+// 又会被 JSON.stringify 丢掉。于是"配置成功"和"根本没配上"同时成立。
+//
+// 约定：undefined / null = 还没配过，按首次配置初始化（两者都不含用户数据）；
+//       数组 / 字符串 / 数字 / 布尔 = 结构损坏，非零退出且原字节不变。
+// ---------------------------------------------------------------------------
+
+const BAD_SLOT_VALUES = [
+  ['数组', '[]'],
+  ['字符串', '"wrong-type"'],
+  ['数字', '123'],
+  ['布尔', 'true'],
+];
+
+for (const [label, literal] of BAD_SLOT_VALUES) {
+  test(`providers 是${label}：write-gateway 必须失败且不动原文件`, (t) => {
+    const { dataDir, cfgPath } = seedRawConfig(`{"providers":${literal}}`);
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const before = fs.readFileSync(cfgPath);
+
+    const res = runConfigTool(dataDir,
+      ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+    assert.notEqual(res.code, 0, `退出 0 就意味着"写成功了但其实没写上"：\n${res.stdout}${res.stderr}`);
+    assert.match(`${res.stderr}${res.stdout}`, /providers must be a JSON object/);
+    assert.deepEqual(fs.readFileSync(cfgPath), before, '原文件必须原样保留');
+  });
+
+  test(`providers.claude 是${label}：write-gateway 必须失败，不能只配上 Codex`, (t) => {
+    const { dataDir, cfgPath } = seedRawConfig(
+      `{"providers":{"claude":${literal},"codex":{"api_key":"old"}}}`);
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const before = fs.readFileSync(cfgPath);
+
+    const res = runConfigTool(dataDir,
+      ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+    assert.notEqual(res.code, 0, 'Claude 配不上却整体报成功，正是轮次3 的 P2 缺陷');
+    assert.match(`${res.stderr}${res.stdout}`, /providers\.claude must be a JSON object/);
+    assert.deepEqual(fs.readFileSync(cfgPath), before);
+  });
+
+  test(`providers.codex 是${label}：use-own-account 也要失败`, (t) => {
+    const { dataDir, cfgPath } = seedRawConfig(
+      `{"providers":{"claude":{"backend":"api","api_key":"k"},"codex":${literal}}}`);
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const before = fs.readFileSync(cfgPath);
+
+    const res = runConfigTool(dataDir, ['use-own-account', cfgPath]);
+    assert.notEqual(res.code, 0);
+    assert.match(`${res.stderr}${res.stdout}`, /providers\.codex must be a JSON object/);
+    assert.deepEqual(fs.readFileSync(cfgPath), before, '别把 claude 切了却留下半截状态');
+  });
+
+  test(`read-mode 遇到 providers 是${label}：报 error 而不是"自己账号"`, (t) => {
+    const { dataDir, cfgPath } = seedRawConfig(`{"providers":${literal}}`);
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+    const res = runConfigTool(dataDir, ['read-mode', cfgPath]);
+    assert.equal(res.code, 0, 'read-mode 只用于展示，不该让安装挂掉');
+    const parsed = JSON.parse(res.stdout);
+    assert.ok(parsed.error, '读成"没配过"就会在收尾汇总里谎报成走自己账号');
+    assert.equal(parsed.claude, undefined);
+  });
+}
+
+test('providers 缺失或为 null：按首次配置初始化，写得进去', (t) => {
+  for (const seed of ['{}', '{"providers":null}', '{"providers":{"claude":null}}']) {
+    const { dataDir, cfgPath } = seedRawConfig(seed);
+    try {
+      const res = runConfigTool(dataDir,
+        ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+      assert.equal(res.code, 0, `${seed} 应当可初始化：\n${res.stdout}${res.stderr}`);
+      const cfg = readHubConfig(dataDir);
+      assert.equal(cfg.claudeBackend, 'api', seed);
+      assert.equal(cfg.codexBackend, 'api', seed);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('providers 里无关的键保持原样，即使它们不是对象', (t) => {
+  const { dataDir, cfgPath } = seedRawConfig(JSON.stringify({
+    providers: { claude: { note: 'keep' }, some_flag: 'a string is fine here' },
+  }, null, 2));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const res = runConfigTool(dataDir,
+    ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+  assert.equal(res.code, 0, `只校验要写的那几层，别牵连别人：\n${res.stdout}${res.stderr}`);
+
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(cfg.providers.some_flag, 'a string is fine here');
+  assert.equal(cfg.providers.claude.note, 'keep', '同一个块里原有的字段不该被抹掉');
+  assert.equal(cfg.providers.claude.backend, 'api');
+});

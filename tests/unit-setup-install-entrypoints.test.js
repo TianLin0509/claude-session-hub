@@ -337,11 +337,14 @@ test('解压出来的 zip（没有 .git）仍走离线复制，并说明它无�
 // 不会碰到真实桌面或生产 ~/.claude-session-hub。
 // ---------------------------------------------------------------------------
 
-/** 搭一个能跑完整条 setup.ps1 的沙箱：假 Hub 源码 + 假 HOME + npm/claude/electron 替身。 */
-function makeInstallSandbox(tag) {
+/**
+ * 搭一个能跑完整条 setup.ps1 的沙箱：假 Hub 源码 + 假 HOME + npm/claude/electron 替身。
+ * hubName / homeName 可以带中文和空格，用来验证安装器不会在路径上丢字符。
+ */
+function makeInstallSandbox(tag, { hubName = 'hub', homeName = 'home' } = {}) {
   const root = tmpdir(tag);
-  const hub = path.join(root, 'hub');
-  const home = path.join(root, 'home');
+  const hub = path.join(root, hubName);
+  const home = path.join(root, homeName);
   const binDir = path.join(root, 'bin');
   const log = path.join(root, 'shim.log');
 
@@ -429,14 +432,15 @@ test('自定义 -DataDir 贯穿回退命令、快捷方式与启动，默认目�
     `Hub 启动时看到的数据目录不对：\n${launches.join('\n')}`);
 
   // 4) 桌面快捷方式经由启动器带上同一个目录
-  const launcher = path.join(sb.hub, 'launch-hub.cmd');
+  const launcher = path.join(sb.hub, 'launch-hub.ps1');
   assert.ok(fs.existsSync(launcher), '自定义数据目录需要一个能设环境变量的启动器');
-  const launcherText = fs.readFileSync(launcher, 'utf8');
-  assert.match(launcherText, /CLAUDE_HUB_DATA_DIR=/);
+  const launcherText = fs.readFileSync(launcher, 'utf8').replace(/^﻿/, '');
+  assert.match(launcherText, /CLAUDE_HUB_DATA_DIR/);
   assert.ok(launcherText.includes(customData));
   const lnk = readLnkTarget(sb.lnk);
-  assert.equal(lnk.Target.toLowerCase(), launcher.toLowerCase(),
-    '快捷方式还是直指 electron.exe 的话，双击启动就会读回默认目录');
+  assert.match(lnk.Target.toLowerCase(), /powershell\.exe$/,
+    '快捷方式要经由 PowerShell 启动器，直指 electron.exe 就会读回默认目录');
+  assert.ok(lnk.Arguments.includes(launcher), `快捷方式没指向启动器：${lnk.Arguments}`);
 });
 
 test('默认数据目录时快捷方式仍直指 electron.exe，不多造启动器', { skip: !WINDOWS }, (t) => {
@@ -446,7 +450,7 @@ test('默认数据目录时快捷方式仍直指 electron.exe，不多造启动�
   const install = runPowerShell(sb.setup, ['-NoLaunch'], { cwd: sb.hub, env: sb.env });
   assert.equal(install.code, 0, install.out);
 
-  assert.ok(!fs.existsSync(path.join(sb.hub, 'launch-hub.cmd')),
+  assert.ok(!fs.existsSync(path.join(sb.hub, 'launch-hub.ps1')),
     '默认安装不该多出启动器（会白白闪一个控制台窗口）');
   const lnk = readLnkTarget(sb.lnk);
   assert.equal(lnk.Target.toLowerCase(),
@@ -467,4 +471,113 @@ test('损坏的 config.json 会让安装明确失败，而不是打印 SETUP COM
   assert.doesNotMatch(res.out, /SETUP COMPLETE/,
     '配置没改成却报成功 —— 这正是轮次2 的 P1 缺陷');
   assert.equal(fs.readFileSync(cfgPath, 'utf8'), damaged, '原配置必须原样保留');
+});
+
+// ---------------------------------------------------------------------------
+// 桌面入口必须原样带住路径里的中文。
+//
+// Codex 2 轮次3 在真实安装里复现：`-DataDir <...>\data-中文资料` 装完退出 0，
+// 但生成的 launch-hub.cmd 里写着 `data-????` —— 中文已不可逆丢失。当时的启动器
+// 是用 ASCIIEncoding 写的 .cmd，而 .cmd 本身还要按控制台代码页解释，双重不靠谱。
+// 于是安装当场看着正常，以后双击桌面图标却打开了一个不存在的目录。
+//
+// 这条用例不看文件内容就下结论：它把 .lnk 交给 Windows 外壳真正执行一遍，
+// 再看 electron 进程实际拿到的 CLAUDE_HUB_DATA_DIR 是否与中文路径逐字相等。
+// ---------------------------------------------------------------------------
+
+/** PowerShell 单引号字面量：只有 ' 需要转义，反斜杠原样（别用 JSON.stringify）。 */
+const psLit = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+/**
+ * 跑 setup.ps1 并按 UTF-8 收集输出。PowerShell 5.1 的控制台默认不是 UTF-8，
+ * 直接用 -File 拿到的中文是乱码，没法断言“打印出来的路径还是原样”。
+ * 开关（-Foo）不能加引号，否则会被当成位置参数的值。
+ */
+function runPowerShellUtf8(scriptPath, args, { cwd, env } = {}) {
+  const argLine = args.map((a) => (String(a).startsWith('-') ? String(a) : psLit(a))).join(' ');
+  const cmd = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; `
+    + `& ${psLit(scriptPath)} ${argLine}; exit $LASTEXITCODE`;
+  const res = spawnSync('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd],
+    { cwd, env: { ...process.env, ...env }, encoding: 'utf8', windowsHide: true, timeout: 180000 });
+  return { code: res.status, out: `${res.stdout || ''}${res.stderr || ''}` };
+}
+
+/** 让 Windows 外壳按快捷方式定义启动它，并等到 electron 替身落日志为止。 */
+function launchViaShortcut(lnkPath, logPath, env) {
+  const ps = [
+    `Start-Process -FilePath ${psLit(lnkPath)}`,
+    '$deadline = (Get-Date).AddSeconds(25)',
+    'while ((Get-Date) -lt $deadline) {',
+    `  if ((Test-Path ${psLit(logPath)}) -and `
+      + `(Select-String -Path ${psLit(logPath)} -Pattern 'electron.exe' -SimpleMatch -Quiet)) { break }`,
+    '  Start-Sleep -Milliseconds 200',
+    '}',
+  ].join('; ');
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+    { env: { ...process.env, ...env }, encoding: 'utf8', windowsHide: true, timeout: 120000 });
+}
+
+const readShimLog = (logPath) => (fs.existsSync(logPath)
+  ? fs.readFileSync(logPath, 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean)
+  : []);
+
+test('中文 + 空格路径：桌面快捷方式实际启动时拿到的仍是原路径', { skip: !WINDOWS }, (t) => {
+  // 源码目录、用户目录、数据目录三处都带中文，再加空格。
+  const sb = makeInstallSandbox('unicode', { hubName: 'Hub 源码目录', homeName: '用户 张三' });
+  t.after(() => cleanup(sb.root));
+
+  const sentinel = path.join(sb.defaultDataDir, 'sentinel.txt');
+  fs.writeFileSync(sentinel, '默认目录不该被碰', 'utf8');
+  const customData = path.join(sb.root, 'data-中文资料 带空格');
+
+  const install = runPowerShell(sb.setup, ['-DataDir', customData, '-NoLaunch'],
+    { cwd: sb.hub, env: sb.env });
+  assert.equal(install.code, 0, `安装应成功：\n${install.out}`);
+
+  // 1) 启动器文件里的路径逐字正确（?? 就是当初的症状）
+  const launcher = path.join(sb.hub, 'launch-hub.ps1');
+  assert.ok(fs.existsSync(launcher), `应生成启动器：\n${install.out}`);
+  const launcherText = fs.readFileSync(launcher, 'utf8').replace(/^﻿/, '');
+  assert.ok(launcherText.includes(customData),
+    `启动器里的数据目录被写坏了：\n${launcherText}`);
+  assert.ok(launcherText.includes(sb.hub), '源码目录同样不能被写坏');
+  assert.doesNotMatch(launcherText, /\?\?/, '出现 ?? 说明又用了装不下中文的编码');
+
+  // 2) 真的按快捷方式启动一次，看进程拿到什么
+  const before = readShimLog(sb.log).length;
+  const launched = launchViaShortcut(sb.lnk, sb.log, sb.env);
+  assert.equal(launched.status, 0, `${launched.stdout}${launched.stderr}`);
+
+  const lines = readShimLog(sb.log).slice(before).filter((l) => l.startsWith('electron.exe|'));
+  assert.ok(lines.length >= 1,
+    `双击快捷方式应当真的把 Hub 拉起来：\n${launched.stdout}${launched.stderr}\n${readShimLog(sb.log).join('\n')}`);
+  assert.ok(lines.every((l) => l.endsWith(`|CLAUDE_HUB_DATA_DIR=${customData}`)),
+    `快捷方式启动后 Hub 看到的目录不对：\n${lines.join('\n')}`);
+  assert.ok(lines.every((l) => l.includes(sb.hub)), '传给 Hub 的源码目录也要完整');
+
+  // 3) 默认目录仍旧没被碰
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), '默认目录不该被碰');
+  assert.ok(!fs.existsSync(path.join(sb.defaultDataDir, 'config.json')));
+});
+
+test('中文数据目录：写进去的配置能被 Hub 的配置加载器读回来', { skip: !WINDOWS }, (t) => {
+  const sb = makeInstallSandbox('unicode-cfg', { homeName: '用户 李四' });
+  t.after(() => cleanup(sb.root));
+
+  const customData = path.join(sb.root, '数据目录 中文');
+  const install = runPowerShellUtf8(sb.setup,
+    ['-Token', TOKEN, '-DataDir', customData, '-SkipHealthCheck', '-NoLaunch'],
+    { cwd: sb.hub, env: sb.env });
+  assert.equal(install.code, 0, install.out);
+
+  const cfgPath = path.join(customData, 'config.json');
+  assert.ok(fs.existsSync(cfgPath), `配置应落在中文目录里：\n${install.out}`);
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(cfg.providers.claude.backend, 'api');
+  assert.equal(cfg.providers.claude.api_key, TOKEN);
+
+  // 收尾汇总里打印的目录也必须是原样的中文，组员要照着它排查问题。
+  assert.ok(install.out.includes(customData),
+    `收尾汇总里的数据目录被写坏了：\n${install.out}`);
 });

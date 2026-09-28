@@ -123,6 +123,26 @@ function readConfig(cfgPath) {
   return cfg;
 }
 
+// Every slot we are about to write into must really be a plain object.
+// Validating only the root is not enough: JS is not in strict mode here, so
+// assigning a property to a string silently does nothing, and properties added
+// to an array are dropped by JSON.stringify. Either way write-gateway used to
+// print "written" while the Hub ended up with no usable config at all.
+//
+// undefined / null both mean "never configured" and are initialised - neither
+// carries user data, so nothing can be lost. Arrays, strings, numbers and
+// booleans are corruption: abort and leave the file alone.
+function requireObjectSlot(parent, key, cfgPath, label) {
+  const value = parent[key];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(cfgPath + ": " + label + " must be a JSON object, found "
+      + (Array.isArray(value) ? "an array" : typeof value)
+      + ". Nothing was written - fix or move that file, then re-run.");
+  }
+  return value;
+}
+
 function writeConfig(cfgPath, cfg) {
   const json = JSON.stringify(cfg, null, 2);
   JSON.parse(json); // never hand out something we cannot read back
@@ -138,20 +158,19 @@ const [cmd, cfgPath, ...rest] = process.argv.slice(2);
 if (cmd === "read-mode") {
   // Display only: never fatal, but an unreadable config must show up as
   // unknown rather than quietly as "your own account".
-  let cfg;
+  let claude, codex;
   try {
-    cfg = readConfig(cfgPath);
+    const cfg = readConfig(cfgPath);
+    const providers = requireObjectSlot(cfg, "providers", cfgPath, "providers");
+    claude = requireObjectSlot(providers, "claude", cfgPath, "providers.claude");
+    codex = requireObjectSlot(providers, "codex", cfgPath, "providers.codex");
   } catch (e) {
     console.log(JSON.stringify({ error: e.message }));
     process.exit(0);
   }
-  const providers = cfg.providers || {};
-  const one = (k) => {
-    const v = providers[k] || {};
-    // core/session-manager.js: backend must be "api" AND a key must exist.
-    return { api: v.backend === "api" && !!v.api_key, baseUrl: v.base_url || "", model: v.model || "" };
-  };
-  console.log(JSON.stringify({ claude: one("claude"), codex: one("codex") }));
+  // core/session-manager.js: backend must be "api" AND a key must exist.
+  const one = (v) => ({ api: v.backend === "api" && !!v.api_key, baseUrl: v.base_url || "", model: v.model || "" });
+  console.log(JSON.stringify({ claude: one(claude), codex: one(codex) }));
   process.exit(0);
 }
 
@@ -160,22 +179,25 @@ const cfg = readConfig(cfgPath);
 if (cmd === "write-gateway") {
   const [url, token, claudeModel, codexModel] = rest;
   const base = url.replace(/\/+$/, "");
-  cfg.providers = cfg.providers || {};
+  // Validate the whole path we are about to write through, before touching
+  // anything - otherwise half of it lands and the script still reports success.
+  const providers = requireObjectSlot(cfg, "providers", cfgPath, "providers");
+  const cl = requireObjectSlot(providers, "claude", cfgPath, "providers.claude");
+  const cx = requireObjectSlot(providers, "codex", cfgPath, "providers.codex");
+  cfg.providers = providers;
   // Provenance only - the Hub does not read this block.
-  cfg.providers.meridian = { url: url, enabled: true };
-  const cl = cfg.providers.claude || {};
+  providers.meridian = { url: url, enabled: true };
   cl.backend = "api";
   cl.base_url = base;
   cl.api_key = token;
   if (claudeModel) cl.model = claudeModel;
-  cfg.providers.claude = cl;
-  const cx = cfg.providers.codex || {};
+  providers.claude = cl;
   cx.backend = "api";
   cx.base_url = base + "/codex/v1";
   cx.api_key = token;
   if (codexModel) cx.model = codexModel;
   cx.provider = "meridian";
-  cfg.providers.codex = cx;
+  providers.codex = cx;
   writeConfig(cfgPath, cfg);
   console.log("written: " + cfgPath);
   process.exit(0);
@@ -184,11 +206,15 @@ if (cmd === "write-gateway") {
 if (cmd === "use-own-account") {
   // Keeps base_url / api_key in place so the gateway can be re-enabled later
   // without re-issuing anything - only the backend switch moves.
-  cfg.providers = cfg.providers || {};
+  const providers = requireObjectSlot(cfg, "providers", cfgPath, "providers");
+  const slots = {
+    claude: requireObjectSlot(providers, "claude", cfgPath, "providers.claude"),
+    codex: requireObjectSlot(providers, "codex", cfgPath, "providers.codex"),
+  };
+  cfg.providers = providers;
   const changed = [];
   for (const k of ["claude", "codex"]) {
-    const p = cfg.providers[k];
-    if (p && p.backend === "api") { p.backend = "subscription"; changed.push(k); }
+    if (slots[k].backend === "api") { slots[k].backend = "subscription"; changed.push(k); }
   }
   writeConfig(cfgPath, cfg);
   console.log(changed.length ? "switched: " + changed.join(",") : "switched: none");
@@ -455,38 +481,116 @@ $ElectronExe = "$HubDir\node_modules\electron\dist\electron.exe"
 # tiny launcher in between. The default install keeps pointing straight at
 # electron.exe: no stray console window, and ~/.claude-session-hub is exactly
 # what the Hub falls back to anyway.
-$LauncherPath = Join-Path $HubDir "launch-hub.cmd"
+#
+# The launcher is PowerShell, not a .cmd, because it has to carry file paths
+# verbatim. A .cmd is interpreted in the console's code page, and the first
+# version of this wrote it as ASCII outright - a data directory named
+# `data-中文资料` came back as `data-????`, so double-clicking the desktop
+# icon opened the Hub against a directory that does not exist. A UTF-8 .ps1
+# with a BOM is decoded correctly regardless of code page, and the .lnk fields
+# that point at it are Unicode to begin with.
+$LauncherPath = Join-Path $HubDir "launch-hub.ps1"
+# Single-quoted PowerShell literals: only ' needs escaping, and no $ or
+# backtick in a path can be interpreted.
+function Quote-PsLiteral([string]$s) { return "'" + $s.Replace("'", "''") + "'" }
+
 if ($IsCustomDataDir) {
   Step "Writing launcher for custom data dir -> $LauncherPath"
   $launcher = @(
-    '@echo off',
-    'rem Generated by setup.ps1 - starts the Hub against the data directory',
-    'rem this machine was installed with. Editing the path here changes where',
-    'rem the Hub keeps its sessions and config.',
-    "set `"CLAUDE_HUB_DATA_DIR=$DataDir`"",
-    "start `"`" `"$ElectronExe`" `"$HubDir`""
+    '# Generated by setup.ps1 - starts the Hub against the data directory this',
+    '# machine was installed with. Changing the path here changes where the Hub',
+    '# keeps its sessions and config.',
+    "`$env:CLAUDE_HUB_DATA_DIR = $(Quote-PsLiteral $DataDir)",
+    "Start-Process -FilePath $(Quote-PsLiteral $ElectronExe) -ArgumentList $(Quote-PsLiteral $HubDir) -WorkingDirectory $(Quote-PsLiteral $HubDir)"
   ) -join "`r`n"
-  [System.IO.File]::WriteAllText($LauncherPath, $launcher + "`r`n", (New-Object System.Text.ASCIIEncoding))
+  # UTF8Encoding($true) = with BOM, so PowerShell decodes it as UTF-8 on any
+  # locale instead of guessing the ANSI code page.
+  [System.IO.File]::WriteAllText($LauncherPath, $launcher + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
   Ok "launcher written (data dir $DataDir)"
 }
 
+# WScript.Shell cannot be used here. Its IWshShortcut::Save goes through ANSI,
+# so on a machine whose user name contains non-ANSI characters it fails outright
+# with `Unable to save shortcut "...\?? ??\Desktop\AI Hub.lnk"` - the path is
+# already mangled in the error message. That hits any teammate whose Windows
+# account is named in Chinese, and it only warns, so the install still claims
+# success while leaving no desktop icon. IShellLinkW + IPersistFile::Save are
+# Unicode all the way.
+$ShellLinkSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+internal class ShellLinkCoClass { }
+
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IShellLinkW {
+  void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, int fFlags);
+  void GetIDList(out IntPtr ppidl);
+  void SetIDList(IntPtr pidl);
+  void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+  void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+  void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+  void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+  void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+  void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+  void GetHotkey(out short pwHotkey);
+  void SetHotkey(short wHotkey);
+  void GetShowCmd(out int piShowCmd);
+  void SetShowCmd(int iShowCmd);
+  void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+  void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+  void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, int dwReserved);
+  void Resolve(IntPtr hwnd, int fFlags);
+  void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+}
+
+[ComImport, Guid("0000010b-0000-0000-C000-000000000046"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IPersistFile {
+  void GetClassID(out Guid pClassID);
+  [PreserveSig] int IsDirty();
+  void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, int dwMode);
+  void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+  void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+  void GetCurFile([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder ppszFileName);
+}
+
+public static class HubShortcut {
+  public static void Create(string lnkPath, string target, string args, string workDir, int showCmd) {
+    IShellLinkW link = (IShellLinkW)new ShellLinkCoClass();
+    link.SetPath(target);
+    if (!String.IsNullOrEmpty(args)) link.SetArguments(args);
+    if (!String.IsNullOrEmpty(workDir)) link.SetWorkingDirectory(workDir);
+    link.SetShowCmd(showCmd);
+    ((IPersistFile)link).Save(lnkPath, true);
+  }
+}
+'@
+
 Step "Creating desktop shortcut"
 try {
-  $ws = New-Object -ComObject WScript.Shell
-  $lnk = $ws.CreateShortcut("$env:USERPROFILE\Desktop\AI Hub.lnk")
+  if (-not ("HubShortcut" -as [type])) { Add-Type -TypeDefinition $ShellLinkSource -ErrorAction Stop }
+  $lnkPath = Join-Path $env:USERPROFILE "Desktop\AI Hub.lnk"
   if ($IsCustomDataDir) {
-    $lnk.TargetPath = $LauncherPath
-    $lnk.Arguments = ""
-    $lnk.WindowStyle = 7   # minimised: the launcher exits immediately
+    # -WindowStyle Hidden keeps the console out of sight; SW_SHOWMINNOACTIVE (7)
+    # avoids a flash even before PowerShell gets that far.
+    [HubShortcut]::Create($lnkPath, (Get-Command powershell.exe).Source,
+      "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`"", $HubDir, 7)
   } else {
-    $lnk.TargetPath = $ElectronExe
-    $lnk.Arguments = "`"$HubDir`""
+    [HubShortcut]::Create($lnkPath, $ElectronExe, "`"$HubDir`"", $HubDir, 1)
   }
-  $lnk.WorkingDirectory = $HubDir
-  $lnk.Save()
+  if (-not (Test-Path $lnkPath)) { throw "shortcut file was not created at $lnkPath" }
   Ok "Desktop\AI Hub.lnk"
 } catch {
   Warn "shortcut creation failed ($($_.Exception.Message)) - not fatal"
+  if ($IsCustomDataDir) {
+    Warn "start the Hub with: powershell -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`""
+  } else {
+    Warn "start the Hub with: & `"$ElectronExe`" `"$HubDir`""
+  }
 }
 
 $installedVersion = "unknown"
@@ -504,7 +608,7 @@ if ($IsCustomDataDir) {
   # Must set the variable too, otherwise this command silently starts the Hub
   # against the default directory instead of the one just configured.
   Write-Host "     `$env:CLAUDE_HUB_DATA_DIR = `"$DataDir`"; & `"$ElectronExe`" `"$HubDir`""
-  Write-Host "     (or just run $LauncherPath)"
+  Write-Host "     (the desktop icon runs $LauncherPath, which does the same)"
 } else {
   Write-Host "     & `"$ElectronExe`" `"$HubDir`""
 }

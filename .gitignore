@@ -50,4 +50,7 @@ tests/.timing-baseline.json
 tests/.load-related-failures.json
 
 # setup.ps1 在使用自定义 -DataDir 安装时生成的启动器（带 CLAUDE_HUB_DATA_DIR）
-launch-hub.cmd
+launch-hub.ps1
+
+# 在仓库目录里跑 PowerShell 会生成的模块缓存，不是项目产物
+Microsoft/
