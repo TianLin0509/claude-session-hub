@@ -37,6 +37,20 @@ async function main() {
   // Web logins as Chrome stores them: main holds ChatGPT until well after today, nothing else.
   const chromeRoot = path.join(data, 'hub-chrome'), in90 = Date.now() + 90 * 86400000;
   seedCookies(chromeRoot, 'main', [{ host: '.chatgpt.com', name: '__Secure-next-auth.session-token', expiresMs: in90 }]);
+  const { DatabaseSync } = require('node:sqlite');
+  const visits = {
+    main: [['https://chatgpt.com/c/fixture', 2], ['https://claude.ai/new', 15], ['https://gemini.google.com/app', 20],
+      ['https://www.doubao.com/chat/', 45], ['https://chat.deepseek.com/', 60], ['https://www.kimi.com/', 120], ['https://www.qianwen.com/', 240]],
+    alt: [['https://chatgpt.com/', 30]],
+  };
+  for (const [identity, items] of Object.entries(visits)) {
+    const historyFile = path.join(chromeRoot, identity, 'History'); fs.mkdirSync(path.dirname(historyFile), { recursive: true });
+    const history = new DatabaseSync(historyFile);
+    history.exec('CREATE TABLE urls (url TEXT, last_visit_time INTEGER)');
+    const insert = history.prepare('INSERT INTO urls VALUES (?,?)');
+    for (const [url, minutesAgo] of items) insert.run(url, BigInt(Date.now() - minutesAgo * 60000 + 11644473600000) * 1000n);
+    history.close();
+  }
   // Pretend an earlier check learned which ChatGPT account each identity holds.
   write(path.join(chromeRoot, 'last-check.json'), { identities: { main: { account: 'main@example.com', sites: {} }, alt: { account: 'alt@example.com', sites: {} } } });
 
@@ -47,7 +61,6 @@ async function main() {
   fs.mkdirSync(laneData, { recursive: true });
   const oldCli = path.join(toolsRoot, 'old-cli.cjs'); write(oldCli, 'process.stdout.write("closed fixture browser");');
   write(path.join(laneConfig, 'settings.json'), { data_dir: laneData, cli_entry: oldCli, account_name: 'main@example.com' });
-  const { DatabaseSync } = require('node:sqlite');
   const queue = new DatabaseSync(path.join(pool, 'queue.sqlite3'));
   queue.exec('CREATE TABLE accounts (id TEXT, config_dir TEXT, login_group TEXT); CREATE TABLE jobs (account_id TEXT, status TEXT, updated REAL, error TEXT, result TEXT)');
   queue.prepare('INSERT INTO accounts VALUES (?,?,?)').run('primary', laneConfig, 'primary'); queue.close();
@@ -72,13 +85,18 @@ async function main() {
     assert.equal(await chrome.running(), false, 'opening the page is passive');
     const main = '.ac-company[data-site="chatgpt"]';
     assert.match(await text(main), /main@example\.com/);
-    assert.match(await text(main), /暂无使用记录/);
-    assert.equal(await cdp.eval('document.querySelectorAll(".ac-tabs [role=tab]").length'), 5);
-    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(255, 255, 255)');
+    assert.match(await text(main), /访问过网页/);
+    assert.equal(await cdp.eval('document.querySelectorAll(".ac-tabs [role=tab]").length'), 6);
+    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(251, 252, 255)');
     assert.equal(await cdp.eval('document.querySelectorAll("[data-ac=check],[data-ac=cancel],.ac-progress").length'), 0);
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account").length'), 2);
     await snap('01-clear-white');
-    result.checks.push('白色五分类界面、七家公司和双 ChatGPT；进入页面不启动浏览器，无主动检查入口');
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 2560, height: 960, deviceScaleFactor: 1, mobile: false });
+    const wide = await cdp.eval('(()=>{const page=document.querySelector("#account-page").getBoundingClientRect(), card=document.querySelector(".ac-company").getBoundingClientRect(), rail=document.querySelector("#scene-rail").getBoundingClientRect();return {pageWidth:page.width,cardWidth:card.width,left:card.left-page.left,right:page.right-card.right,railWidth:rail.width,pageLeft:page.left,railRight:rail.right}})()');
+    assert.ok(wide.pageWidth > 2000 && wide.cardWidth <= 1290 && Math.abs(wide.left - wide.right) < 40 && wide.railWidth >= 180 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
+    await snap('01-clear-white-wide');
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+    result.checks.push('白色六分类界面、七家公司和双 ChatGPT；进入页面不启动浏览器，无主动检查入口');
     await click('.ac-search'); await cdp.send('Input.insertText', { text: 'Claude' });
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-company").length'), 1);
     await click('[data-tab="work"]');

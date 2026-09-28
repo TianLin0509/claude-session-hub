@@ -3,6 +3,47 @@
 const fs = require('fs'), path = require('path');
 const SITES = new Set([...require('./hub-account-catalog').COMPANIES.map(c => c.site), 'github', 'yuque']);
 const SOURCES = new Set(['website', 'roundtable']);
+const HISTORY_HOSTS = { chatgpt: ['chatgpt.com'], claude: ['claude.ai'], google: ['gemini.google.com'],
+  doubao: ['doubao.com'], deepseek: ['chat.deepseek.com'], kimi: ['kimi.com'], qwen: ['qianwen.com'],
+  github: ['github.com'], yuque: ['yuque.com'] };
+const historyCache = new Map();
+function historyActivity(root, now = Date.now()) {
+  const rows = [];
+  for (const identity of ['main', 'alt']) {
+    const file = path.join(root, identity, 'History');
+    let stat;
+    try { stat = fs.statSync(file); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    const cached = historyCache.get(file);
+    if (cached && now - cached.readAt < 30000 && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      rows.push(...cached.rows); continue;
+    }
+    // Chrome locks History while running. Read a private snapshot; never ask Chrome to open a page.
+    const copy = path.join(require('os').tmpdir(), `hub-history-${process.pid}-${require('crypto').randomUUID()}.db`);
+    let db;
+    try {
+      fs.copyFileSync(file, copy);
+      const { DatabaseSync } = require('node:sqlite');
+      db = new DatabaseSync(copy, { readOnly: true });
+      const latest = new Map();
+      for (const visit of db.prepare('SELECT url, last_visit_time / 1000 AS time FROM urls WHERE last_visit_time > 0 ORDER BY last_visit_time DESC LIMIT 10000').all()) {
+        let host;
+        try { host = new URL(visit.url).hostname.toLowerCase(); } catch { continue; }
+        for (const [site, hosts] of Object.entries(HISTORY_HOSTS)) {
+          if (latest.has(site) || !hosts.some(h => host === h || host.endsWith('.' + h))) continue;
+          const at = Number(visit.time) - 11644473600000;
+          if (Number.isFinite(at) && at > 0 && at <= now + 60000) latest.set(site, { identity, site, source: 'history', outcome: 'visited', at });
+        }
+        if (latest.size === Object.keys(HISTORY_HOSTS).length) break;
+      }
+      const found = [...latest.values()];
+      historyCache.set(file, { readAt: now, mtimeMs: stat.mtimeMs, size: stat.size, rows: found });
+      rows.push(...found);
+    } finally {
+      try { db?.close(); } finally { try { fs.unlinkSync(copy); } catch { /* private snapshot only */ } }
+    }
+  }
+  return rows;
+}
 function recordActivity(root, { identity = 'main', site, source = 'website', outcome, at = Date.now() }) {
   if (!['main', 'alt'].includes(identity) || !SITES.has(site) || !SOURCES.has(source)
       || !['opened', 'success', 'failed', 'login_required', 'verification_required'].includes(outcome) || !Number.isFinite(at)) throw Error('账号使用记录无效');
@@ -70,6 +111,7 @@ function readActivity(root, env = process.env) {
     try { rows.push(JSON.parse(fs.readFileSync(path.join(dir, `${identity}-${site}-${source}.json`), 'utf8'))); }
     catch (e) { if (e.code !== 'ENOENT' && !warnings.includes('部分使用记录无法读取')) warnings.push('部分使用记录无法读取'); }
   }
+  try { rows.push(...historyActivity(root)); } catch { warnings.push('专属 Chrome 访问记录暂时无法读取'); }
   try { rows.push(...imageActivity(root, env)); } catch { warnings.push('生图使用记录暂时无法读取'); }
   return { entries: combine(rows), warnings };
 }
@@ -81,4 +123,4 @@ function recordWebJob(job, env = process.env) {
     : job.recovery?.reason === 'human_verification' ? 'verification_required' : 'failed';
   recordActivity(defaultRoot(env), { site, source: 'roundtable', outcome, at: Date.parse(job.updatedAt) });
 }
-module.exports = { recordActivity, readActivity, combine, imageActivity, recordWebJob };
+module.exports = { recordActivity, readActivity, combine, imageActivity, historyActivity, recordWebJob };
