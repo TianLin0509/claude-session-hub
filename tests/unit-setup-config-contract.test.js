@@ -31,12 +31,18 @@ const TOKEN = 'a'.repeat(64);
 const CLAUDE_MODEL = 'claude-sonnet-4-5';
 const CODEX_MODEL = 'gpt-5.5';
 
-/** 把 setup.ps1 里 `$mergeJs = @'...'@` 这段 here-string 原样抠出来。 */
-function extractMergeJs() {
+/** 把 setup.ps1 里 `$<名字> = @'...'@` 这段 here-string 原样抠出来。 */
+function extractSnippet(varName) {
   const ps1 = fs.readFileSync(SETUP_PS1, 'utf8');
-  const m = ps1.match(/\$mergeJs\s*=\s*@'\r?\n([\s\S]*?)\r?\n'@/);
-  assert.ok(m, 'setup.ps1 里找不到 $mergeJs 这段内嵌的写配置脚本（结构变了就更新本测试）');
-  return m[1];
+  // 字符串切分而不是正则：here-string 的定界符里全是正则元字符，转义一层层叠
+  // 上去只会把测试自己搞坏（本轮已经踩过一次）。
+  const marker = `$${varName} = @'`;
+  const start = ps1.indexOf(marker);
+  assert.ok(start >= 0, `setup.ps1 里找不到 $${varName} 这段内嵌脚本（结构变了就更新本测试）`);
+  const bodyStart = ps1.indexOf('\n', start) + 1;
+  const end = ps1.indexOf("\n'@", bodyStart);
+  assert.ok(end > bodyStart, `$${varName} 的 here-string 没有闭合`);
+  return ps1.slice(bodyStart, end);
 }
 
 /**
@@ -49,7 +55,7 @@ function runMergeScript({ seedConfig } = {}) {
   if (seedConfig) fs.writeFileSync(cfgPath, JSON.stringify(seedConfig, null, 2), 'utf8');
 
   const jsPath = path.join(dataDir, 'merge.js');
-  fs.writeFileSync(jsPath, extractMergeJs(), 'utf8');
+  fs.writeFileSync(jsPath, extractSnippet('JsWriteGateway'), 'utf8');
   execFileSync(process.execPath, [jsPath, cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL], {
     stdio: 'pipe',
   });
@@ -168,4 +174,69 @@ test('setup.ps1 不再把 Claude 凭据写进 Hub 不读的 providers.meridian',
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 网关失败 → 切回自己账号。Codex 2 在轮次1 审查里复现的问题：脚本嘴上说
+// "own-account mode"，config.json 里两路 backend 仍是 api，Hub 照样往死掉的
+// 网关发请求。切换必须真的落到 Hub 读得到的那个开关上。
+// ---------------------------------------------------------------------------
+
+/** 跑 setup.ps1 里 $JsUseOwnAccount 那段，把已有配置切回自己账号。 */
+function runOwnAccountScript(dataDir) {
+  const cfgPath = path.join(dataDir, 'config.json');
+  const jsPath = path.join(dataDir, 'own-account.js');
+  fs.writeFileSync(jsPath, extractSnippet('JsUseOwnAccount'), 'utf8');
+  const stdout = execFileSync(process.execPath, [jsPath, cfgPath], { stdio: 'pipe' }).toString();
+  return { stdout, config: JSON.parse(fs.readFileSync(cfgPath, 'utf8')) };
+}
+
+test('-UseOwnAccount 真的把 Hub 读到的后端从 api 切回 subscription', (t) => {
+  const { dataDir } = runMergeScript();               // 先装成网关模式
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const before = readHubConfig(dataDir);
+  assert.equal(before.claudeBackend, 'api', '前置条件：先是网关模式');
+  assert.equal(before.codexBackend, 'api');
+
+  const { stdout, config } = runOwnAccountScript(dataDir);
+  assert.match(stdout, /switched: claude,codex/);
+
+  const after = readHubConfig(dataDir);
+  assert.equal(after.claudeBackend, 'subscription',
+    '切换后 Hub 仍读到 api，就等于嘴上说个人账号、实际还在打网关');
+  assert.equal(after.codexBackend, 'subscription', 'Codex 也要一起切，不能只切 Claude');
+
+  // 凭据留在盘上，方便将来 -Token 一键切回去；但后端开关必须已经移走。
+  assert.equal(config.providers.claude.api_key, TOKEN, '不应删除凭据，只移后端开关');
+  assert.equal(config.providers.claude.base_url, GATEWAY_URL.replace(/\/+$/, ''));
+
+  const { _private } = require(path.join(ROOT, 'core', 'session-manager.js'));
+  const cv = {
+    CLAUDE_BACKEND: after.claudeBackend,
+    CLAUDE_API_KEY: after.claudeApiKey,
+    CLAUDE_API_BASE_URL: after.claudeApiBaseUrl,
+    CODEX_BACKEND: after.codexBackend,
+    CODEX_API_KEY: after.codexApiKey,
+  };
+  assert.equal(_private.isClaudeApiBackend(cv), false);
+  assert.equal(_private.isCodexApiBackend(cv), false);
+
+  const sessionEnv = { ANTHROPIC_BASE_URL: 'stale', ANTHROPIC_AUTH_TOKEN: 'stale' };
+  const mode = _private.applyClaudeSessionEnv(sessionEnv, cv);
+  assert.notEqual(mode, 'api');
+  assert.equal(sessionEnv.ANTHROPIC_BASE_URL, undefined,
+    '切回自己账号后不能再往 CLI 注入网关地址');
+  assert.equal(sessionEnv.ANTHROPIC_AUTH_TOKEN, undefined);
+});
+
+test('没有 api 配置时切换是安全的空操作', (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-own-account-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dataDir, 'config.json'),
+    JSON.stringify({ providers: { deepseek: { api_key: 'keep-me' } } }, null, 2), 'utf8');
+
+  const { stdout, config } = runOwnAccountScript(dataDir);
+  assert.match(stdout, /switched: none/);
+  assert.equal(config.providers.deepseek.api_key, 'keep-me', '不得殃及其它 provider');
 });

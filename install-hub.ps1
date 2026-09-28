@@ -1,8 +1,12 @@
 ﻿param(
   [string]$Token = "",
+  [switch]$UseOwnAccount,
   [string]$HubDir,
   [string]$DataDir,
   [string]$MeridianUrl,
+  [string]$ClaudeModel,
+  [string]$CodexModel,
+  [string]$LocalSource,
   [switch]$NoLaunch,
   [switch]$SkipHealthCheck
 )
@@ -53,11 +57,14 @@ if (-not $Token) {
 # 3. Run the real installer. Forward optional params BY NAME (hashtable splat -
 # array splat would pass them positionally and break -HubDir/-DataDir).
 $fwd = @{}
-foreach ($k in 'HubDir', 'DataDir', 'MeridianUrl') {
+foreach ($k in 'HubDir', 'DataDir', 'MeridianUrl', 'ClaudeModel', 'CodexModel', 'LocalSource') {
   if ($PSBoundParameters.ContainsKey($k)) { $fwd[$k] = $PSBoundParameters[$k] }
 }
 if ($NoLaunch) { $fwd['NoLaunch'] = $true }
 if ($SkipHealthCheck) { $fwd['SkipHealthCheck'] = $true }
+if ($UseOwnAccount) { $fwd['UseOwnAccount'] = $true }
+# $Token may come from the GUI box rather than the command line, so it is added
+# from the variable, not from $PSBoundParameters.
 if ($Token) { $fwd['Token'] = $Token }
 & $setup @fwd
 $code = $LASTEXITCODE

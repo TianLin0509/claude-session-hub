@@ -12,13 +12,27 @@
     this filename in an old clone or an old chat log. Rather than half-install
     the Hub the old way, forward to the real installer.
 
+    Parameters are declared explicitly and forwarded with $PSBoundParameters
+    (a HASHTABLE splat, passing by name). An array splat - @args style - would
+    pass them positionally, so `-Token <64-hex>` arrives as Token="-Token" and
+    the real token lands in the next positional parameter. That is not
+    theoretical: it shipped, and a valid token was reported as "length 6".
+
     Real entry points:
       setup.ps1          one command, unattended, what everyone should use
       install-hub.bat    double-click wrapper with a token input box
 #>
 param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]]$Forward
+  [string]$Token,
+  [switch]$UseOwnAccount,
+  [string]$MeridianUrl,
+  [string]$ClaudeModel,
+  [string]$CodexModel,
+  [string]$HubDir,
+  [string]$DataDir,
+  [string]$LocalSource,
+  [switch]$NoLaunch,
+  [switch]$SkipHealthCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,5 +51,6 @@ if (-not (Test-Path $setup)) {
   exit 1
 }
 
-& $setup @Forward
+# Only forward what the caller actually passed, by name.
+& $setup @PSBoundParameters
 exit $LASTEXITCODE

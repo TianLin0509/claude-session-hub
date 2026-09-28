@@ -53,7 +53,15 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\hub-setup.ps1"
 
 - 红色 `FAIL:` = 装不下去了，脚本已退出。停下，把那一行原样报给用户。
 - 黄色 `WARN:` = 提醒，安装继续。**不要因为 WARN 重跑或改参数**。
-  最常见的是网关不通 —— Hub 已经装好了，让用户用自己的账号登录即可。
+  最常见的是网关不通。这时 Hub 已经装好了，但 `config.json` 里 Claude / Codex 仍然
+  指着网关 —— 光让用户去登录自己的账号没有用，必须先扳回开关：
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\claude-session-hub\setup.ps1" -UseOwnAccount
+  ```
+
+  脚本结尾的 **Accounts** 那几行是从 `config.json` 读回来的真实状态，以它为准，
+  不要按"用户有没有给 Token"来推断。
 
 **失败处理**：
 
@@ -110,7 +118,8 @@ Hub 窗口出现后，让用户（或你用 Computer Use）：
 | Hub 配置（网关模式下含 token） | `%USERPROFILE%\.claude-session-hub\config.json` |
 | 组员上手文档 | `%USERPROFILE%\claude-session-hub\docs\team-onboarding.md` |
 | 启动 | 桌面 `AI Hub.lnk`，或 `& "$env:USERPROFILE\claude-session-hub\node_modules\electron\dist\electron.exe" "$env:USERPROFILE\claude-session-hub"` |
-| 更新 | 重跑 setup.ps1（推荐），或 `git pull origin master` 后重启 Hub |
+| 更新 | 重跑 setup.ps1（推荐；仅对 git clone 装的有效，ZIP 装的会黄字提示无法更新） |
+| 换回自己的账号 | `setup.ps1 -UseOwnAccount`（只改后端开关，保留网关 url/key） |
 
 > **网关配置只由 setup.ps1 写入 config.json，UI 里没有对应入口。**
 > 不要去 Hub 菜单里找"Meridian 代理"之类的选项 —— 那是早期版本的入口，已经没有了。

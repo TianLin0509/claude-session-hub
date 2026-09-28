@@ -25,7 +25,8 @@ Claude / Codex 账号就行。
 
 ### 路线 2 · 双击装
 
-1. 下载 `install-hub.bat` 和 `setup.ps1` 到同一个文件夹（或者直接 clone 整个仓库）
+1. **只下载 `install-hub.bat` 这一个文件**就行（它会自己把需要的 `install-hub.ps1`、
+   `setup.ps1` 拉下来）。当然，clone 整个仓库再双击也一样
 2. 双击 `install-hub.bat`
 3. 弹出输入框：有 Token 就粘进去；**没有就直接留空点确定**，再点「是」继续
 4. 看到绿色 `安装结束：成功` 就好了。中途可能弹 1-2 次 UAC 窗，点「是」
@@ -59,12 +60,28 @@ powershell -ExecutionPolicy Bypass -File $dst
 
 ### 登录 AI 账号
 
-如果管理员给了你 Token 且安装时填了，Claude 和 Codex 已经配好，直接跳到第三节。
+安装脚本跑完时会打印一段 **Accounts**，那是**从配置文件读回来的真实状态**，照它做就行：
 
-否则用你自己的账号：点左边 **「账号」** 看各个 CLI 的登录状态。没登录的，
+```
+Accounts (read back from ...\.claude-session-hub\config.json):
+  Claude  -> team gateway https://...      # 走团队网关，不用自己登录
+  Claude  -> your own account              # 需要你自己登录
+```
+
+**要自己登录时**：点左边 **「账号」** 看各个 CLI 的登录状态。没登录的，
 在 Hub 里新建一个该 CLI 的会话，按它自己的提示登录一次即可
 （Claude Code 是在会话里输入 `/login`；Codex CLI 是 `codex login`）。
 登录信息存在 CLI 自己的配置里，Hub 不碰。
+
+**装的时候填了 Token，但网关连不上怎么办**：安装会照常完成，但配置里
+Claude / Codex 仍然指着网关，这时候光去登录自己的账号是不够的 —— 得先把开关扳回来：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\claude-session-hub\setup.ps1" -UseOwnAccount
+```
+
+这条只改「走网关还是走自己账号」这一个开关，网关地址和 Token 还留在配置里，
+以后网关修好了，重跑一次带 `-Token` 的安装命令就能切回去。
 
 ---
 
@@ -101,8 +118,18 @@ Hub 比直接开命令行强的地方就在群聊。别只发个「你好」就�
 | 事情 | 怎么做 |
 |---|---|
 | 启动 | 双击桌面「AI Hub」图标 |
-| 更新到最新版 | 重跑安装时那条命令 / 重新双击 `install-hub.bat`，幂等，不会弄坏配置 |
+| 更新到最新版 | 重跑安装时那条命令（幂等，不会弄坏配置，也不会动你自己放在目录里的文件） |
 | 确认自己是不是最新版 | 看窗口顶部的 `v1.6.x`，和管理员对一下 |
+| 换成自己的账号 / 换回团队网关 | `setup.ps1 -UseOwnAccount` / 重跑带 `-Token` 的命令 |
+
+> **只有 git 装的才能靠重跑更新。** 路线 1、2、3 装出来的都是 git clone，重跑就会
+> `git pull` 到最新，脚本会打印 `updated <旧> -> <新>`。
+> 但如果你是**下载 ZIP 解压**装的（下面那条离线路线），那个目录没有 git，重跑只会原地
+> 重装同一份代码 —— 脚本会黄字提醒你这一点。想以后能一键更新，就重新用 git 装一次：
+>
+> ```powershell
+> git clone https://github.com/TianLin0509/claude-session-hub.git "$env:USERPROFILE\claude-session-hub"
+> ```
 
 ---
 
