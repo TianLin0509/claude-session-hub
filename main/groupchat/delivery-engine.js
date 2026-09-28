@@ -114,7 +114,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
         const stage=r.stages[step.index],rework=Object.values(step.deliveries).some(d=>d.outcome==='rework');
         const next=stage.after==='review'?(rework?1:null):stage.after==='end'?null:step.index+1;
         if(next===null || next>=r.stages.length){r.status='done';r.error='';save(id,r);getDispatcher().handoffMeetingTurn?.(id);return;}
-        if(r.steps.length-r.budgetStart>=D.LIMIT){r.status='paused';r.error='已达 6 轮，保留交付；明确继续后授予新预算';save(id,r);return;}
+        if(rework && D.reviewsInBudget(r)>=D.REVIEW_LIMIT){r.status='paused';r.error=`已完成 ${D.REVIEW_LIMIT} 轮审查仍需返工，交付已保留；点继续再给 ${D.REVIEW_LIMIT} 轮审查`;save(id,r);return;}
         r.steps.push(D.newStep(r,next));D.prepare(base(id),r,r.steps.at(-1));save(id,r);
         selectStep(id,r.steps.at(-1));
         await dispatch(id,r,r.steps.at(-1));return;
@@ -159,7 +159,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(!r || r.id!==expectedRun || terminal(r) || (r.controlRevision || 0)!==revision || suspended || retiring.has(id))return status(id);
     const step=r.steps.at(-1);
     if(Object.values(step.deliveries).some(d=>d.outcome==='blocked'))throw new Error('本轮已有阻塞交付，请保留记录；解决阻塞后新建任务，不能覆盖已交付结果');
-    r.status='running';r.error='';if(r.steps.length-r.budgetStart>=D.LIMIT)r.budgetStart=r.steps.length;
+    r.status='running';r.error='';if(D.reviewsInBudget(r)>=D.REVIEW_LIMIT)r.budgetStart=r.steps.length;
     save(id,r);await advance(id);return status(id);
   }
   // Explicit user continuation is separate from reconciliation. It never starts a new run.

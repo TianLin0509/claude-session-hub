@@ -10,7 +10,10 @@ const PROJECT_PREP_PROMPT = '用 project-prep 整理当前仓库，接入 AI HUB
   + '把占位路径替换为实际主目录；登记成功才完成 Hub 接入。不要登记 worktree 或验证副本。';
 const SOLO_START = '【AI HUB 独立开工提示词】';
 const SOLO_END = '【独立开工提示词结束】';
-const PROMPT_VERSION = 3;
+const PROMPT_VERSION = 4;
+// One automatic budget covers this many independent reviews. Kickoff and
+// builds are free: every build is always followed by its review.
+const REVIEW_LIMIT = 3;
 const HUMAN_REPORT = '用大白话、言简意赅地向用户汇报关键进展、结果或阻碍，不用固定英文标签，不复述文件全文。复杂内容必要时制作 HTML，给出准确路径；不为每一步都写报告。';
 const isSolo = m => enabled(m) && m.serialWorkflow.soloDevelopment === true;
 const currentProjectLocator = meeting => require('./prepared-project-registry').projectLocator(meeting);
@@ -99,6 +102,12 @@ function fromNames(input) {
     else s = spec('build', s.round + 1);
   }
 }
+// Reviews already finished before the current phase; the budget unit.
+function completedReviews(s) {
+  if (!s) return 0;
+  if (s.done) return Number(s.round) || 0;
+  return ['build', 'merge'].includes(s.phase) ? Math.max(0, (Number(s.round) || 0) - 1) : 0;
+}
 function scan(dir) {
   try { return fromNames(fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile()).map(e => e.name)); }
   catch (error) {
@@ -130,7 +139,7 @@ function common(meeting, dir, members = []) {
     '执行前读指定输入并核对阶段文件；已有交付件则核实报告，不重建草稿。否则先创建或接续指定草稿，记录必要进展和证据。',
     '交付时 UTF-8 保存、回读，同目录原子改名；确认目标存在、草稿消失后结束当前阶段。不得自创文件名、跳轮、覆盖交付件或用聊天代替落盘。',
     'Hub 只按文件名接续；输入缺失、状态冲突或客观阻塞保留现状并报告，不伪造完成。用户手动继续仍接续同一任务，不另开分支或重复已完成步骤。',
-    '每次自动执行最多 6 轮，开题和每次返工派工都计入，同轮 1–3 位成员只计 1 轮。完成提前结束；达到上限保留现场并暂停，不自动派第 7 轮。仅用户明确继续后才获得新的执行预算。',
+    `每次自动执行最多 ${REVIEW_LIMIT} 轮独立审查；开题和实现不计轮数，每轮实现都会交给审查。完成提前结束；第 ${REVIEW_LIMIT} 轮审查仍需返工时保留现场并暂停，不自动派下一轮实现。用户点继续后再获得 ${REVIEW_LIMIT} 轮审查额度。`,
     '同轮每位成员收到相同职责说明；只执行自己分工。指定负责人是唯一交接文档写入者，其余协作成员只交付建议，不代写交接文件、不代替负责人实现、独立审查或合并。同轮全部交付后再接续下一阶段。',
     require('./dev-task-view').recordInstruction(meeting),
     HUMAN_REPORT,
@@ -167,6 +176,6 @@ function phasePrompt(meeting, dir, state, members = []) {
   if (stage) base.push(`本轮参与者：${stage.members.map(id => members.find(m => m.memberId === id)?.displayName || id).join('、')}。唯一文件交付负责人：${s.phase === 'merge' ? merger.name : author.name}。`, '本轮共享 Prompt（补充要求不取消以上文件交付条件）：', stage.prompt);
   return base.filter(Boolean).join('\n');
 }
-module.exports = { VERSION, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt,
+module.exports = { VERSION, REVIEW_LIMIT, completedReviews, enabled, directory, spec, fromNames, scan, isResume, appendKickoff, appendProjectPrep, PRESET_START, PRESET_END, common, phasePrompt,
   PROJECT_PREP_PROMPT, isSolo, soloCommon, independentPrompt, appendIndependent, SOLO_START, SOLO_END,
   PROMPT_VERSION, HUMAN_REPORT, roles, protocolKey };

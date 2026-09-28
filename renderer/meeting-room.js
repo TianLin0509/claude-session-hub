@@ -5391,7 +5391,11 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     const s = state || { phase: 'discuss', label: '读取文件进度…' };
-    if (s.limitReached && !s.done && !s.running) s.label = '已达 6 轮上限 · 保留现场，尚未完成';
+    if (s.limitReached && !s.done && !s.running) s.label = `已完成 ${s.reviewLimit || 3} 轮审查仍需返工 · 现场已保留`;
+    // Hub decides the next owner from the task files; the button only asks it to continue.
+    const canContinue = !!s.paused && !s.running && !s.done && !s.error && !!s.next && !s.next.error;
+    const continueTitle = s.next?.error ? `无法继续：${s.next.error}`
+      : s.next ? `交给 ${s.next.label}${s.limitReached ? `；再给 ${s.reviewLimit || 3} 轮审查额度` : ''}。已交付的不重做` : '';
     const solo = DevFile.isSolo(current);
     const phases = solo ? [] : [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
     const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
@@ -5399,11 +5403,12 @@ if (typeof document !== 'undefined') (function () {
     const running = !!s.running || _isGroupTurnRunning(current);
     row.innerHTML = `<div class="mr-file-flow" data-file-phase="${escapeHtml(s.phase || '')}">
       <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
-      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，输入“继续”接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
+      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，点「继续」由 Hub 接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停' : s.done ? ' · 本任务已完成' : ''}
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
         ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并选择负责开题的成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${canContinue ? `<button type="button" class="continue" data-file-continue title="${escapeHtml(continueTitle)}">继续<small>${escapeHtml(s.next.label)}</small></button>` : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
       </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
@@ -5431,6 +5436,17 @@ if (typeof document !== 'undefined') (function () {
       } catch (error) { _showGcEscapeNotice('打开任务文件失败：' + error.message, 'error'); }
     });
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
+    row.querySelector('[data-file-continue]')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.classList.add('is-busy');
+      try {
+        const result = await ipcRenderer.invoke('dev-file:continue', { meetingId: current.id });
+        if (!result?.ok) throw new Error(result?.error || '继续失败');
+        if (result.status) _devFileStates[current.id] = result.status;
+      } catch (error) { _showGcEscapeNotice('继续失败：' + error.message, 'error'); }
+      finally { if (activeMeetingId === current.id) _updateInputPreflight(meetingData[current.id]); }
+    });
     row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -7122,7 +7138,7 @@ if (typeof document !== 'undefined') (function () {
     if (DevFile.enabled(meeting)) {
       inputBox.dataset.placeholder = DevFile.isSolo(meeting)
         ? '输入任务；点“独立开工”填入提示词，检查后 Enter 发送。'
-        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
+        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。暂停后点上方「继续」接续。';
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }

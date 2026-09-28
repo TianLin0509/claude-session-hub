@@ -15,7 +15,7 @@ function render(row,meeting,onRefresh,onError) {
   row.dataset.deliveryMeeting=id;
   const active=!!s?.runId && !s.finished,paused=s?.paused || s?.recoveryPending;
   const title=!s?'读取交付进度…':s.error && !s.runId?'状态读取失败':s.finished?s.label:!s.runId?'工作流已就绪':`${paused?'已暂停 · ':''}${s.name}`;
-  const primary=active?(paused?'<button type="button" data-delivery="resume" title="核对已交付文件后接续，不重复派发已确认任务">核对并接续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
+  const primary=active?(paused?'<button type="button" class="continue" data-delivery="resume" title="由 Hub 核对已交付文件，判断下一步交给谁；不重复派发已确认任务">继续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
   const status=s?.runId&&!s.finished?`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`:s?.finished?'记录和交付文件已保留':'输入目标后按配置的步骤执行';
   row.innerHTML=`<section class="mr-file-flow mr-delivery-flow" aria-label="工作流进度" data-delivery-status="${esc(s?.status || 'loading')}" aria-busy="${busy.has(id)}">
     <div class="mr-file-detail"><strong>${esc(title)}</strong><small>${esc(status)}</small></div>

@@ -3,6 +3,16 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const F = require('../../core/dev-file-workflow');
 const Settings = require('../../core/workflow-settings');
+const { getSessionRuntimeTruth } = require('../../core/session-runtime-truth');
+
+const CONTINUE_NOTE = '继续：接续当前阶段，复用已有成果，已交付的不重做。';
+// Budgets written before 2026-09-28 counted execution rounds (kickoff, every
+// build and every review). Convert once to the reviews finished at that grant.
+function reviewBudgetStart(runtime) {
+  if (Number.isSafeInteger(runtime.reviewBudgetStart)) return runtime.reviewBudgetStart;
+  const old = Number(runtime.budgetStart) || 0;
+  return old > 0 ? Math.floor((old - 1) / 2) : 0;
+}
 
 function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, getDispatcher, ensureMemberReady, getMembers, deliveryEngine, isWorkflowRunning = () => false,
   sendToRenderer = () => {}, onChanged = () => {}, logger = console }) {
@@ -23,10 +33,26 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     const progress = F.isSolo(m) ? { phase: 'discuss', key: 'solo', label: '独立开发 · 同一位负责实现与合并', done: false, error: null } : F.scan(dir);
     const inferred = progress.done ? progress.round * 2 + 1 : progress.phase === 'build' ? progress.round * 2 - 1 : progress.phase === 'merge' ? progress.round * 2 : progress.phase === 'kickoff' ? 1 : 0;
     const executedRounds = Math.max(Number(runtime.executedRounds) || 0, inferred);
-    const limitReached = !F.isSolo(m) && !progress.done && executedRounds - (Number(runtime.budgetStart) || 0) >= Settings.LIMIT;
+    // Only a rework build is gated: every build still gets its review.
+    const reviews = F.completedReviews(progress), budgetStart = reviewBudgetStart(runtime);
+    const limitReached = !F.isSolo(m) && !progress.done && progress.phase === 'build' && progress.round > 1
+      && reviews - budgetStart >= F.REVIEW_LIMIT && runtime.lastDispatch?.key !== progress.key;
     const recovering = m.serialWorkflow.settingsVersion === 1 && runtime.lastDispatch?.settled === false && !preparing.has(id) && !active.get(id)?.size;
-    return { ...progress, dir, executedRounds, limitReached, recovering, paused: stopped.has(id) || !!runtime.paused || recovering || (limitReached && !active.get(id)?.size), dispatchError: runtime.error || (recovering ? '上次派工回执尚未确认，请核对现场后明确继续' : ''),
-      running: preparing.has(id) || !!active.get(id)?.size, participants: m.participants };
+    const running = preparing.has(id) || !!active.get(id)?.size;
+    const paused = stopped.has(id) || !!runtime.paused || recovering || (limitReached && !active.get(id)?.size);
+    return { ...progress, dir, executedRounds, reviews, reviewLimit: F.REVIEW_LIMIT, reviewBudgetStart: budgetStart, limitReached, recovering, paused,
+      dispatchError: runtime.error || (recovering ? '上次派工回执尚未确认，请核对现场后点继续' : ''),
+      running, participants: m.participants, next: paused && !running ? nextStep(m, progress) : null };
+  }
+  // Who the Hub itself would hand the current phase to; shown on the continue button.
+  function nextStep(m, s) {
+    if (s.done || s.error || (s.phase === 'discuss' && !F.isSolo(m))) return null;
+    try {
+      const names = members(m), owners = F.isSolo(m) ? [executor(m, F.spec('kickoff'))] : targets(m, s);
+      const phase = F.isSolo(m) ? '独立开发' : { kickoff: '开题', build: '实现', merge: '审查与合并' }[s.phase];
+      return { phase: s.phase, round: s.round || 0, memberIds: owners.map(t => t.id),
+        label: `${owners.map(t => names.find(x => x.memberId === t.id)?.displayName || t.id).join('、')} · ${phase}${s.round ? ` · 第 ${s.round} 轮` : ''}` };
+    } catch (error) { return { error: error.message }; }
   }
   function emit(id, s = status(id)) {
     const json = JSON.stringify(s);
@@ -117,7 +143,10 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       m = get(id);
       const prompt = F.phasePrompt(m, s.dir, s, members(m));
       save(id, { executedRounds: s.executedRounds + (continuingStage ? 0 : 1), lastDispatch: { key, token, memberId: member.id, memberIds: stageMembers.map(t => t.id), settled:false } });
-      const args = { ...(userArgs || {}), userInput: userArgs ? `${userArgs.userInput}\n\n${prompt}` : prompt,
+      // The phase owner comes from the task files. The composer's lit avatars
+      // must not override it (the dispatcher prefers recipientSids over member ids).
+      const { recipientSids: _selected, targetSids: _explicit, ...extra } = userArgs || {};
+      const args = { ...extra, userInput: userArgs ? `${userArgs.userInput}\n\n${prompt}` : prompt,
         targetMemberIds: stageMembers.map(t => t.id), appendUserMessage: true, dispatchMode: 'serial',
         turnTimeoutMs: 30 * 60_000, allowActiveExtend: true, fileHandoff: !userArgs,
         shouldDispatch: () => { const now = status(id); return !!now && !stopped.has(id) && !get(id)?.serialWorkflow.fileFlow?.paused && !now.error && !now.done && now.key === key; },
@@ -163,10 +192,8 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     const kickoff = !F.isSolo(get(id)) && String(args.userInput || '').includes(F.PRESET_START) && ['discuss','kickoff'].includes(s.phase);
     if (kickoff && (active.get(id)?.size || preparing.has(id))) return {status:'error',reason:'当前轮次尚未交付'};
     if (F.isResume(args.userInput) && !s.error && !F.isSolo(get(id)) && get(id).serialWorkflow.settingsVersion === 1) {
-      if (active.get(id)?.size || preparing.has(id)) return {status:'error',reason:'当前轮次仍在执行'};
-      stopped.delete(id);
-      save(id, { paused:false, error:'', ...(s.limitReached ? {budgetStart:s.executedRounds} : {}) });
-      return dispatchStage(id,args);
+      try { return await continueFlow(id, args.userInput); }
+      catch (error) { return { status: 'error', reason: error.message }; }
     }
     if (kickoff) preparing.add(id);
     try {
@@ -177,16 +204,17 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       // of recipient. Latch this phase so the scanner cannot race it with
       // automatic dispatch; only a later file handoff advances the workflow.
       const m = get(id), selected = (m.participants || [0])[0];
-      save(id, { paused: false, error: '', ...(!F.isSolo(m) ? {executedRounds:s.executedRounds+1,...(s.limitReached?{budgetStart:s.executedRounds}:{})} : {}), lastDispatch: { key: s.key, token: crypto.randomUUID(),
+      save(id, { paused: false, error: '', ...(!F.isSolo(m) ? {executedRounds:s.executedRounds+1,...(s.limitReached?{budgetStart:s.executedRounds,reviewBudgetStart:s.reviews}:{})} : {}), lastDispatch: { key: s.key, token: crypto.randomUUID(),
         memberId: args.targetMemberIds?.[0] || m.slotSpecs?.[selected]?.memberId || `m${selected + 1}` } });
       stopped.delete(id);
     }
     // A normal question is still a normal group message; it must not clear stop intent.
     const token = crypto.randomUUID();
     if (kickoff) {
-      if (s.limitReached) return {status:'error',reason:'已达 6 轮，请明确继续当前任务'};
+      if (s.limitReached) return {status:'error',reason:'已达审查轮次上限，请点继续接续当前任务'};
       const m = get(id), stageMembers = targets(m,F.spec('kickoff'));
-      args = {...args,targetMemberIds:stageMembers.map(t=>t.id)};
+      const { recipientSids: _selected, targetSids: _explicit, ...rest } = args; // kickoff owner is bound, not the lit avatar
+      args = {...rest,targetMemberIds:stageMembers.map(t=>t.id)};
       save(id,{executedRounds:s.executedRounds + (s.phase === 'kickoff' && !m.serialWorkflow.fileFlow?.executedRounds ? 0 : 1),lastDispatch:{key:'kickoff:0',token,memberId:stageMembers[0].id,memberIds:stageMembers.map(t=>t.id),settled:false}});
     }
       const promise = getDispatcher().dispatchGroupChatTurn(id, args);
@@ -197,6 +225,28 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
 
       throw error;
     } finally { if (kickoff) {preparing.delete(id);  if(F.enabled(get(id)))emit(id);} }
+  }
+  // Explicit user continuation: the Hub reads the task files, picks the phase
+  // owner and grants a fresh review budget when the previous one is spent.
+  async function continueFlow(id, text = '') {
+    const m = get(id);
+    if (!F.enabled(m)) throw new Error('文件工作流不可用');
+    const s = status(id), note = String(text || '').trim() || CONTINUE_NOTE;
+    if (s.error) throw new Error('任务文件状态需要核对：' + s.error);
+    if (s.done) throw new Error('本任务已完成，无需继续');
+    if (s.phase === 'discuss' && !F.isSolo(m)) throw new Error('尚未开题，请输入任务后点开题并发送');
+    if (s.running) throw new Error('当前轮次仍在执行，无需继续');
+    const owners = F.isSolo(m) ? [executor(m, F.spec('kickoff'))] : targets(m, s);
+    // Never stack a second prompt onto a member that is still working.
+    const busy = owners.filter(t => {
+      const session = sessionManager?.getSession?.(m.subSessions[t.slot]);
+      return !!session && ['starting', 'running', 'waiting'].includes(getSessionRuntimeTruth(session).state);
+    });
+    if (busy.length) throw new Error(`${busy.map(t => members(m).find(x => x.memberId === t.id)?.displayName || t.id).join('、')} 仍在运行或等待确认，请等它结束或先停止本轮`);
+    if (F.isSolo(m)) return userTurn(id, { userInput: F.isResume(note) ? note : `${CONTINUE_NOTE}\n\n${note}`, targetMemberIds: owners.map(t => t.id), appendUserMessage: true });
+    stopped.delete(id);
+    save(id, { paused: false, error: '', ...(s.limitReached ? { reviewBudgetStart: s.reviews } : {}) });
+    return dispatchStage(id, { userInput: note, appendUserMessage: true });
   }
   function tick(onlyId = null) {
     const records = onlyId ? [get(onlyId)].filter(Boolean) :
@@ -252,6 +302,17 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
       } catch(error) { return {ok:false,reason:error.message}; }
     });
     ipcMain.handle('dev-file:status', (_e, { meetingId }) => status(meetingId));
+    ipcMain.handle('dev-file:continue', async (_e, { meetingId } = {}) => {
+      try {
+        const result = continueFlow(meetingId).then(value => ({ value }), error => ({ error }));
+        // Report the handoff, not the whole agent turn; later failures arrive via dev-file:changed.
+        const first = await Promise.race([result, new Promise(r => setTimeout(() => r(null), 1500))]);
+        if (!first) result.then(late => late.error && logger.error('[dev-file] continue:', late.error));
+        if (first?.error) return { ok: false, error: first.error.message };
+        if (first?.value?.status === 'error') return { ok: false, error: first.value.reason || '继续失败' };
+        return { ok: true, status: status(meetingId) };
+      } catch (error) { return { ok: false, error: error.message }; }
+    });
     ipcMain.handle('dev-file:kickoff-preset', (_e, { meetingId }) => kickoffPreset(meetingId));
     ipcMain.handle('dev-file:independent-preset', (_e, { meetingId }) => independentPreset(meetingId));
     ipcMain.handle('dev-file:open-docs', async (_e, { meetingId }) => {
@@ -283,7 +344,7 @@ function createDevFileEngine({ meetingManager, sessionManager, getHubDataDir, ge
     }
     return task;
   }
-  return { status, userTurn, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc, resumeAfterRestart,
+  return { status, userTurn, continueFlow, stop, interruptSids, tick, kickoffPreset, independentPreset, registerIpc, resumeAfterRestart,
     start({onlyIds=null} = {}) { if (!timer) {
       restartScope=Array.isArray(onlyIds) ? new Set(onlyIds) : null;
       directoryEvents = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), id => tick(id), logger);

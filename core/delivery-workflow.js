@@ -6,6 +6,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const VERSION = 1;
 const LIMIT = 6;
+// Automatic budget: independent reviews, not steps. Only review -> rework
+// loops, so other stages need no cap; every build still gets its review.
+const REVIEW_LIMIT = 3;
 const MAX_BYTES = 2 * 1024 * 1024;
 const enabled = m => !!(m?.groupChat && m.serialWorkflow?.deliveryVersion === VERSION);
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
@@ -38,6 +41,9 @@ function readDelivery(base, run, step, member) {
   if (outcome==='rework' && run.stages[step.index].after!=='review') throw new Error('此步骤未配置返工接续，请交付结果或记录阻塞');
   return {memberId:member,outcome,path:file,hash:hash(text),acceptedAt:Date.now()};
 }
+function reviewsInBudget(run) {
+  return run.steps.slice(run.budgetStart || 0).filter(s=>run.stages[s.index]?.after==='review' && s.members.every(m=>s.deliveries?.[m])).length;
+}
 function newStep(run,index) {
   const number=run.steps.length+1;
   const inputs=run.steps.flatMap(s=>Object.values(s.deliveries || {})).map(d=>({path:d.path,hash:d.hash,outcome:d.outcome}));
@@ -68,4 +74,4 @@ function prepare(base,run,step) {
     catch(error) { if(error.code!=='EEXIST')throw error; }
   }
 }
-module.exports={VERSION,LIMIT,enabled,hash,directory,paths,ticket,header,readDelivery,newStep,prompt,prepare,protocol};
+module.exports={VERSION,LIMIT,REVIEW_LIMIT,reviewsInBudget,enabled,hash,directory,paths,ticket,header,readDelivery,newStep,prompt,prepare,protocol};
