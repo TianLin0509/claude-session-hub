@@ -1596,7 +1596,13 @@ function getOrCreateTerminal(sessionId) {
   const container = document.createElement('div');
   container.style.cssText = 'width:100%;height:100%;display:none';
 
+  const routeCodexTranscriptWheel = require('./codex-transcript-wheel').createCodexTranscriptWheelRouter({
+    terminal,
+    ownsTranscript: () => isCodexOwnedTranscript(sessions.get(sessionId), terminal),
+    WheelEvent: window.WheelEvent,
+  });
   terminal.attachCustomWheelEventHandler((event) => {
+    if (routeCodexTranscriptWheel(event)) return false;
     if (!isNativeAgent(sessions.get(sessionId)) || event.ctrlKey || event.metaKey) return true;
     const viewport = terminal._core?.viewport;
     if (!viewport?.getLinesScrolled) return true;
