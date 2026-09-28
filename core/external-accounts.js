@@ -5,21 +5,31 @@ const EXTERNAL_SITES = Object.freeze({
   github: { name: 'GitHub', url: 'https://github.com/login' },
   yuque: { name: '语雀', url: 'https://www.yuque.com/login' },
   githubDevice: { name: 'GitHub 授权', url: 'https://github.com/login/device' },
+  // 初心投研「账号数据」用的投研站点：登录在这个专属 Chrome 里做，初心通过本机接口取 cookie（2026-09-28）
+  xueqiu: { name: '雪球', url: 'https://xueqiu.com/', cookie: { host: 'xueqiu.com', name: /^xq_is_login$/ } },
+  jiuyan: { name: '韭研公社', url: 'https://www.jiuyangongshe.com/', cookie: { host: 'jiuyangongshe.com', name: /^SESSION$/ } },
+  iwencai: { name: '同花顺问财', url: 'https://www.iwencai.com/unifiedwap/home/index', cookie: { host: 'iwencai.com', name: /^(userid|u_name|ticket)$/ } },
 });
+// 只有这几个站点的 cookie 可以交给本机的初心投研；AI 网站的登录永远不导出。
+const RESEARCH_SITES = Object.freeze(['xueqiu', 'jiuyan', 'iwencai']);
 function externalSite(id) {
   if (!Object.hasOwn(EXTERNAL_SITES, id)) throw Error('外部服务标识无效');
   return EXTERNAL_SITES[id];
 }
-function publicStatus(value) {
+// message 只给投研站点（Hub 自己写的固定提示）；GitHub 等由外部工具产生的文字一律不外露。
+function publicStatus(value, source = 'GitHub CLI', withMessage = false) {
   if (!value || !['signed_in', 'signed_out', 'unknown'].includes(value.state)) return null;
   return { state: value.state, account: typeof value.account === 'string' && /^[\w-]{1,39}$/.test(value.account) ? value.account : '',
-    source: 'GitHub CLI', checkedAt: Number.isFinite(value.checkedAt) ? value.checkedAt : 0 };
+    source, checkedAt: Number.isFinite(value.checkedAt) ? value.checkedAt : 0,
+    ...(withMessage && typeof value.message === 'string' ? { message: value.message.slice(0, 120) } : {}) };
 }
 function readExternalState(root) {
   try {
     const d = JSON.parse(fs.readFileSync(path.join(root, 'external-accounts.json'), 'utf8'));
     if (!d || typeof d !== 'object' || Array.isArray(d)) throw Error('invalid');
-    return { github: publicStatus(d.github) };
+    const out = { github: publicStatus(d.github) };
+    for (const key of RESEARCH_SITES) out[key] = publicStatus(d[key], 'Hub 专属 Chrome', true);
+    return out;
   }
   catch (e) { if (e.code === 'ENOENT') return {}; throw Error('外部账号检查记录无法读取，未覆盖原文件'); }
 }
@@ -50,4 +60,4 @@ function githubStatus(env = process.env, run = execFile) {
       });
   });
 }
-module.exports = { EXTERNAL_SITES, externalSite, readExternalState, writeExternalState, githubStatus, githubCommand };
+module.exports = { EXTERNAL_SITES, RESEARCH_SITES, externalSite, readExternalState, writeExternalState, githubStatus, githubCommand };

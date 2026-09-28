@@ -2183,12 +2183,15 @@ registerChatgptBridgeIpc(ipcMain, { sessionManager });
 // fires lifecycle hooks. Forwards compact observations to the renderer's
 // RuntimeTruth reducer; the hook request never blocks on transcript parsing
 // except for the final Stop preview fallback.
+// 本机初心投研经这个接口复用专属 Chrome 的投研站点登录（雪球、韭研公社、问财）；在账号服务创建后赋值
+let hubAccountsService = null;
 const hookServer = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isNativeOwnership = req.method === 'POST' && req.url === '/api/native-ownership';
+  const isResearchAccount = req.method === 'POST' && ['/api/accounts/research-open', '/api/accounts/research-cookies'].includes(req.url);
   // 2026-05-16 道雪：防卡死 — 外部 HTTP 救援入口，tools/hub-escape.ps1 调
   const isEscapeHome = req.method === 'POST' && req.url === '/api/escape-home';
   // Plan 2: 3 个新聚合 endpoint（走 research-mcp/query.py 而非 LinDangAgent.data_query.py）
@@ -2201,7 +2204,7 @@ const hookServer = http.createServer((req, res) => {
   const isResearchFetch = isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
     || isResearchKlineSimilarity;
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
-  if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome && !isNativeOwnership) {
+  if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome && !isNativeOwnership && !isResearchAccount) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -2217,6 +2220,21 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    if (isResearchAccount) {
+      // 令牌来自 Hub 控制文件，只有本机同一用户能读；只许投研站点，AI 网站的登录永不导出
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      if (!hubAccountsService) { res.writeHead(503); res.end(JSON.stringify({ error: 'Hub 账号服务还没就绪' })); return; }
+      try {
+        const site = String(parsed.site || '');
+        const result = req.url === '/api/accounts/research-open'
+          ? await hubAccountsService.external({ service: site, action: 'open' })
+          : await hubAccountsService.exportResearchCookies(site);
+        res.writeHead(200); res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(e && e.loginOpen ? 409 : 400); res.end(JSON.stringify({ error: String((e && e.message) || e), loginOpen: !!(e && e.loginOpen) }));
+      }
+      return;
+    }
     if (isNativeOwnership) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
       // Main owns these identities. A restore must not wake every other
@@ -2815,10 +2833,11 @@ const accountCenter = new (require('./core/account-center').AccountCenter)({
 });
 require('./main/ipc/account-center-handlers').registerAccountCenterIpc(ipcMain,accountCenter);
 // The account page: one Hub Chrome holds every web login; CLIs report their own token files.
-require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, new (require('./core/hub-accounts').HubAccounts)({
+hubAccountsService = new (require('./core/hub-accounts').HubAccounts)({
   getToolCatalog: refresh => capabilityService.catalog(refresh),
   recovery: new (require('./core/web-roundtable/recovery').AccountRecovery)({ dataDir: getHubDataDir() }),
-}));
+});
+require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, hubAccountsService);
 
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,

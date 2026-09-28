@@ -28,13 +28,15 @@ function buildToolAccounts(catalog, { root, homeDir, env = process.env }) {
     enabled: r.sources.some(s => s.enabled !== false && !s.missing), ...dependencyFor(r, catalog.rows) }));
   // This MCP is supplied at session launch, not necessarily in user config files.
   if (!tools.some(t => t.id === 'mcp:web_roundtable')) tools.push({ id: 'mcp:web_roundtable', name: 'AI 网页圆桌（Hub 内置）', type: 'mcp', enabled: true, state: 'reviewed', services: ['roundtable'] });
-  const services = Object.entries(SERVICES).filter(([id]) => ['github', 'yuque'].includes(id) || tools.some(t => t.enabled && t.services.includes(id))).map(([id, service]) => {
+  const { RESEARCH_SITES } = require('./external-accounts');
+  const always = ['github', 'yuque', ...RESEARCH_SITES];
+  const services = Object.entries(SERVICES).filter(([id]) => always.includes(id) || tools.some(t => t.enabled && t.services.includes(id))).map(([id, service]) => {
     const evidence = credentialEvidence(service, homeDir, env);
     const binding = bindings.find(b => b.tool === service.binding);
     const status = id === 'roundtable' ? 'shared' : service.binding ? (binding?.state === 'connected' ? 'bound' : binding?.state === 'changed' ? 'changed' : 'pending')
       : service.kind === 'browser' ? 'pending' : service.kind === 'host' ? 'host' : 'native';
     return { id, group: AI_SERVICES.has(id) ? 'ai' : 'external', name: service.name, kind: service.kind, help: service.help, site: service.site, sites: service.sites,
-      website: ['github', 'yuque'].includes(id), canCheck: id === 'github', canAuthorize: id === 'github', nativeStatus: externalState[id] || null,
+      website: always.includes(id), canCheck: id === 'github' || RESEARCH_SITES.includes(id), canAuthorize: id === 'github', nativeStatus: externalState[id] || null,
       status, identities: id === 'roundtable' ? [{ identity: 'main' }] : binding?.identities || [],
       credential: evidence.error ? 'read_error' : evidence.present ? 'record_found' : 'not_checked',
       authentication: 'not_checked', consumers: tools.filter(t => t.enabled && t.services.includes(id)).map(t => ({ id: t.id, name: t.name, type: t.type })) };

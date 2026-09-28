@@ -152,6 +152,47 @@ class HubChrome {
       return cookies.map(c => ({ host: c.domain, name: c.name, expiresAt: c.expires > 0 ? Math.round(c.expires * 1000) : 0 }));
     } finally { page?.close(); cdp.close(); }
   }
+  // 初心投研的投研站点（雪球、韭研公社、问财）：登录态只看那一个登录 cookie。
+  // 浏览器关着时读磁盘上的 cookie 名与过期时间（不启动浏览器）；开着时问浏览器本身。
+  async siteCookieStatus(siteKey, identityId = 'main') {
+    const site = this.site(siteKey), identity = this.identity(identityId);
+    if (!site.cookie) throw Error(site.name + ' 没有登记登录 cookie');
+    const running = await this.running();
+    if (!running && this.profileHeld()) return { state: 'unknown', message: '专属 Chrome 的登录窗口还开着；登录完成后关掉它再检查' };
+    let rows;
+    try { rows = running ? await this.liveCookieRows({ ...identity, sites: [siteKey] }) : this.cookieRows(identity); }
+    catch (e) { if (e.loginOpen) return { state: 'unknown', message: '专属 Chrome 的登录窗口还开着；登录完成后关掉它再检查' }; throw e; }
+    const now = this.now();
+    const hit = (rows || []).find(r => hostMatches(r.host, site.cookie.host) && site.cookie.name.test(r.name) && (!r.expiresAt || r.expiresAt > now));
+    return hit ? { state: 'signed_in', message: '专属 Chrome 里已登录' } : { state: 'signed_out', message: '专属 Chrome 里还没登录' };
+  }
+  // 把某个投研站点在该身份里的 cookie（含值）交给本机的初心投研。只允许 RESEARCH_SITES，
+  // AI 网站的登录永远不导出。浏览器没开就在后台起一个无头实例读完即关；登录窗口开着就如实报告。
+  async exportCookies(siteKey, identityId = 'main') {
+    const { RESEARCH_SITES } = require('./external-accounts');
+    if (!RESEARCH_SITES.includes(siteKey)) throw Error('这个网站的登录不允许导出');
+    const site = this.site(siteKey), identity = this.identity(identityId);
+    return this.lifecycle(async () => {
+      this.assertAvailable();
+      const wasRunning = await this.running();
+      if (!wasRunning && this.profileHeld()) throw Object.assign(Error('专属 Chrome 的登录窗口还开着：登录完成后关掉那个窗口，再同步'), { loginOpen: true });
+      const ep = wasRunning ? await this.endpoint() : await this.ensure({ headless: true, identityId });
+      const { CDP } = require('./web-roundtable/cdp');
+      const cdp = await CDP.connect(ep.ws, ep.port);
+      let page;
+      try {
+        const mark = await this.marker(identity.id, cdp);
+        page = await this.page(mark.targetId);
+        const { cookies } = await page.call('Network.getCookies', { urls: ['https://' + site.cookie.host + '/', site.url] });
+        return cookies.filter(c => hostMatches(c.domain, site.cookie.host)).map(c => ({
+          name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires, httpOnly: !!c.httpOnly, secure: !!c.secure, sameSite: c.sameSite || '',
+        }));
+      } finally {
+        page?.close(); cdp.close();
+        if (!wasRunning && !(await this.workTabs().catch(() => 1))) await this.close().catch(() => {});
+      }
+    });
+  }
   // The one "检查登录". Reads the file when Chrome is closed (no process started at all) and
   // the live store when it is open; the answer has the same shape either way.
   // Sites without a login cookie get a quick look in a background tab, but only when Chrome

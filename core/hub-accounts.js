@@ -21,10 +21,18 @@ class HubAccounts {
       homeDir: this.env.CLAUDE_HUB_HOME_DIR || require('os').homedir(), env: this.env });
   }
   async external({ service, action }) {
-    if (!['github', 'yuque'].includes(service)) throw Error('外部服务标识无效');
-    const external = require('./external-accounts'); external.externalSite(service);
+    const external = require('./external-accounts');
+    const research = external.RESEARCH_SITES.includes(service);
+    if (!['github', 'yuque'].includes(service) && !research) throw Error('外部服务标识无效');
+    external.externalSite(service);
     if (!['open', 'check', 'authorize'].includes(action)) throw Error('外部账号操作无效');
     if (this.checking || this.startingCheck || this.setup.flight) throw Error('请等待账号检查或工具接入完成');
+    // 初心投研的投研站点：检查登录看专属 Chrome 里那一个登录 cookie
+    if (research && action === 'check') {
+      const status = await this.chrome.siteCookieStatus(service, 'main');
+      external.writeExternalState(this.chrome.root, service, { ...status, checkedAt: this.now() });
+      return { message: external.externalSite(service).name + '：' + status.message };
+    }
     if (action !== 'open' && service !== 'github') throw Error('此服务请在专属 Chrome 中确认登录');
     const fixture = this.fixture();
     if (fixture?.recordOpens) {
@@ -45,6 +53,18 @@ class HubAccounts {
     if (action === 'open') try { require('./hub-account-activity').recordActivity(this.chrome.root, { site: service, outcome: 'opened', at: this.now() }); }
     catch { usageWarning = '；使用记录未保存'; }
     return { message: (action === 'check' ? 'GitHub 授权检查已完成，结果显示在外部服务中' : action === 'authorize' ? '已打开 GitHub 官方授权窗口，请按提示完成授权后检查' : '已在专属 Chrome 打开 ' + external.externalSite(service).name) + usageWarning };
+  }
+  // 本机初心投研取投研站点的 cookie（经 Hub 本机接口、带令牌）。只允许 RESEARCH_SITES。
+  async exportResearchCookies(service) {
+    const external = require('./external-accounts');
+    if (!external.RESEARCH_SITES.includes(service)) throw Error('这个网站的登录不允许导出');
+    if (this.checking || this.startingCheck) throw Error('Hub 正在检查账号登录，稍后再同步');
+    const cookies = await this.chrome.exportCookies(service, 'main');
+    const site = external.externalSite(service);
+    const signed = cookies.some(c => site.cookie.name.test(c.name) && c.value);
+    external.writeExternalState(this.chrome.root, service, { state: signed ? 'signed_in' : 'signed_out',
+      message: signed ? '专属 Chrome 里已登录' : '专属 Chrome 里还没登录', checkedAt: this.now() });
+    return { site: service, signedIn: signed, cookies };
   }
   readCache() {
     try {
