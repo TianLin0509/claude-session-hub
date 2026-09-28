@@ -494,6 +494,17 @@ $LauncherPath = Join-Path $HubDir "launch-hub.ps1"
 # backtick in a path can be interpreted.
 function Quote-PsLiteral([string]$s) { return "'" + $s.Replace("'", "''") + "'" }
 
+# Two layers of quoting are needed, and they protect different things:
+#   Quote-PsLiteral  -> survives PowerShell parsing the launcher script
+#   the inner "..."  -> survives Windows splitting the child process command
+#                       line on spaces
+# -ArgumentList does NOT quote for you: it joins the list with spaces and hands
+# the result to CreateProcess as-is. Without the inner quotes, a Hub installed
+# in `...\Hub 源码目录` reaches Electron as argc=2 ("...\Hub" and "源码目录"),
+# so the desktop icon opens the wrong thing while the installer reports success.
+# The direct launch further down already did this correctly; the launcher did not.
+function Quote-PsArgument([string]$s) { return Quote-PsLiteral ('"' + $s + '"') }
+
 if ($IsCustomDataDir) {
   Step "Writing launcher for custom data dir -> $LauncherPath"
   $launcher = @(
@@ -501,7 +512,7 @@ if ($IsCustomDataDir) {
     '# machine was installed with. Changing the path here changes where the Hub',
     '# keeps its sessions and config.',
     "`$env:CLAUDE_HUB_DATA_DIR = $(Quote-PsLiteral $DataDir)",
-    "Start-Process -FilePath $(Quote-PsLiteral $ElectronExe) -ArgumentList $(Quote-PsLiteral $HubDir) -WorkingDirectory $(Quote-PsLiteral $HubDir)"
+    "Start-Process -FilePath $(Quote-PsLiteral $ElectronExe) -ArgumentList $(Quote-PsArgument $HubDir) -WorkingDirectory $(Quote-PsLiteral $HubDir)"
   ) -join "`r`n"
   # UTF8Encoding($true) = with BOM, so PowerShell decodes it as UTF-8 on any
   # locale instead of guessing the ANSI code page.

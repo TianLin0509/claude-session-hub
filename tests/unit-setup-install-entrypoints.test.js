@@ -82,6 +82,9 @@ function buildShimTemplate() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-shim-template-'));
   const exePath = path.join(dir, 'shim-template.exe');
   const srcPath = path.join(dir, 'shim.cs');
+  // argv 必须逐项记录。用空格把参数拼回一个字符串，正好会把"路径被拆成两段"
+  // 这种缺陷重新粘合成原样 —— 轮次4 的 P1 就是这么被测成假绿的。
+  // \u001F(US) 作分隔符：Windows 路径里不可能出现。
   fs.writeFileSync(srcPath, `
 using System; using System.IO; using System.Text;
 public class Shim {
@@ -90,7 +93,8 @@ public class Shim {
     if (!String.IsNullOrEmpty(log)) {
       string self = Path.GetFileName(Environment.GetCommandLineArgs()[0]);
       string dd = Environment.GetEnvironmentVariable("CLAUDE_HUB_DATA_DIR");
-      File.AppendAllText(log, self + "|" + String.Join(" ", args)
+      File.AppendAllText(log, self + "|ARGC=" + args.Length
+        + "|" + String.Join("\\u001F", args)
         + "|CLAUDE_HUB_DATA_DIR=" + (dd == null ? "(unset)" : dd) + Environment.NewLine, Encoding.UTF8);
     }
     string drop = Environment.GetEnvironmentVariable("SHIM_DROP_FILE");
@@ -219,12 +223,19 @@ test('只下载 install-hub.bat 时，它会自己去取 install-hub.ps1', { ski
   });
   assert.equal(res.status, 0, `${res.stdout}${res.stderr}`);
 
-  const calls = fs.readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean);
-  assert.ok(calls.length >= 2, `应先下载再执行，实际调用：\n${calls.join('\n')}`);
-  assert.match(calls[0], /raw\.githubusercontent\.com/, '第一次调用应该是去取 install-hub.ps1');
-  assert.match(calls[0], /install-hub\.ps1/);
-  assert.match(calls[calls.length - 1], /-File .*install-hub\.ps1/i,
-    '下载完要真的执行它，而不是继续指向那个不存在的同目录路径');
+  const calls = shimRecords(log, 'powershell.exe');
+  assert.ok(calls.length >= 2,
+    `应先下载再执行，实际调用：\n${readShimLog(log).join('\n')}`);
+  assert.match(calls[0].argv.join(' '), /raw\.githubusercontent\.com/,
+    '第一次调用应该是去取 install-hub.ps1');
+
+  // 逐项取 -File 的下一个参数：脚本路径必须是完整的一个参数。
+  const last = calls[calls.length - 1];
+  const fileIdx = last.argv.findIndex((a) => /^-File$/i.test(a));
+  assert.ok(fileIdx >= 0 && fileIdx + 1 < last.argv.length,
+    `下载完要真的执行它，实际参数：${JSON.stringify(last.argv)}`);
+  assert.match(last.argv[fileIdx + 1], /install-hub\.ps1$/i,
+    `应执行下载下来的那个脚本，实际：${JSON.stringify(last.argv)}`);
 });
 
 test('clone 前发现目标目录已有内容：明确失败，绝不删除', { skip: !WINDOWS }, (t) => {
@@ -444,13 +455,14 @@ test('自定义 -DataDir 贯穿回退命令、快捷方式与启动，默认目�
   assert.ok(!fs.existsSync(path.join(sb.defaultDataDir, 'config.json')),
     '回退命令仍然不该动默认目录');
 
-  // 3) 启动时 Hub 真的拿到了这个目录
-  // C# 的 File.AppendAllText(Encoding.UTF8) 会在首行前写 BOM。
-  const launches = fs.readFileSync(sb.log, 'utf8').replace(/^﻿/, '').split(/\r?\n/)
-    .filter((l) => l.startsWith('electron.exe|'));
-  assert.ok(launches.length >= 1, `应当启动过 electron 替身：\n${fs.readFileSync(sb.log, 'utf8')}`);
-  assert.ok(launches.every((l) => l.endsWith(`|CLAUDE_HUB_DATA_DIR=${customData}`)),
-    `Hub 启动时看到的数据目录不对：\n${launches.join('\n')}`);
+  // 3) 启动时 Hub 真的拿到了这个目录，且源码路径是完整的一个参数
+  const launches = shimRecords(sb.log, 'electron.exe');
+  assert.ok(launches.length >= 1, `应当启动过 electron 替身：\n${readShimLog(sb.log).join('\n')}`);
+  for (const rec of launches) {
+    assert.equal(rec.dataDir, customData, 'Hub 启动时看到的数据目录不对');
+    assert.deepEqual(rec.argv, [sb.hub],
+      `源码目录必须是完整的一个参数，实际：${JSON.stringify(rec.argv)}`);
+  }
 
   // 4) 桌面快捷方式经由启动器带上同一个目录
   const launcher = path.join(sb.hub, 'launch-hub.ps1');
@@ -543,6 +555,26 @@ const readShimLog = (logPath) => (fs.existsSync(logPath)
   ? fs.readFileSync(logPath, 'utf8').replace(/^﻿/, '').split(/\r?\n/).filter(Boolean)
   : []);
 
+/**
+ * 解析替身写的一行：`<exe>|ARGC=n|<arg0>\u001F<arg1>...|CLAUDE_HUB_DATA_DIR=<dir>`
+ * 返回逐项 argv，绝不把它们拼回一个字符串 —— 那样就分不出
+ * 「一个带空格的参数」和「两个参数」。
+ */
+function parseShimLine(line) {
+  const m = line.match(/^([^|]+)\|ARGC=(\d+)\|([\s\S]*)\|CLAUDE_HUB_DATA_DIR=([\s\S]*)$/);
+  assert.ok(m, `替身日志格式不对：${JSON.stringify(line)}`);
+  const argc = Number(m[2]);
+  const argv = argc === 0 ? [] : m[3].split('\u001F');
+  assert.equal(argv.length, argc, `ARGC 与实际参数数量不符：${JSON.stringify(line)}`);
+  return { exe: m[1], argv, dataDir: m[4] };
+}
+
+// argv[0] 取决于调用方怎么写的：bat 里是 `powershell`，Start-Process 给的是全路径，
+// 所以比较时统一去掉 .exe 后缀。
+const baseName = (s) => s.replace(/\.exe$/i, '').toLowerCase();
+const shimRecords = (logPath, exe) => readShimLog(logPath)
+  .map(parseShimLine).filter((r) => baseName(r.exe) === baseName(exe));
+
 test('中文 + 空格路径：桌面快捷方式实际启动时拿到的仍是原路径', { skip: !WINDOWS }, (t) => {
   // 源码目录、用户目录、数据目录三处都带中文，再加空格。
   const sb = makeInstallSandbox('unicode', { hubName: 'Hub 源码目录', homeName: '用户 张三' });
@@ -566,16 +598,20 @@ test('中文 + 空格路径：桌面快捷方式实际启动时拿到的仍是�
   assert.doesNotMatch(launcherText, /\?\?/, '出现 ?? 说明又用了装不下中文的编码');
 
   // 2) 真的按快捷方式启动一次，看进程拿到什么
-  const before = readShimLog(sb.log).length;
+  const beforeCount = shimRecords(sb.log, 'electron.exe').length;
   const launched = launchViaShortcut(sb.lnk, sb.log, sb.env);
   assert.equal(launched.status, 0, `${launched.stdout}${launched.stderr}`);
 
-  const lines = readShimLog(sb.log).slice(before).filter((l) => l.startsWith('electron.exe|'));
-  assert.ok(lines.length >= 1,
+  const records = shimRecords(sb.log, 'electron.exe').slice(beforeCount);
+  assert.ok(records.length >= 1,
     `双击快捷方式应当真的把 Hub 拉起来：\n${launched.stdout}${launched.stderr}\n${readShimLog(sb.log).join('\n')}`);
-  assert.ok(lines.every((l) => l.endsWith(`|CLAUDE_HUB_DATA_DIR=${customData}`)),
-    `快捷方式启动后 Hub 看到的目录不对：\n${lines.join('\n')}`);
-  assert.ok(lines.every((l) => l.includes(sb.hub)), '传给 Hub 的源码目录也要完整');
+  for (const rec of records) {
+    assert.equal(rec.dataDir, customData, '快捷方式启动后 Hub 看到的目录不对');
+    // 重点是参数数量：被空格拆成两段的路径，拼回去正好等于原路径，
+    // 所以只能逐项比对 —— 轮次4 的 P1 就是被"拼回去再 includes"放过的。
+    assert.deepEqual(rec.argv, [sb.hub],
+      `源码目录被空格拆开了，实际：${JSON.stringify(rec.argv)}`);
+  }
 
   // 3) 默认目录仍旧没被碰
   assert.equal(fs.readFileSync(sentinel, 'utf8'), '默认目录不该被碰');
@@ -601,4 +637,29 @@ test('中文数据目录：写进去的配置能被 Hub 的配置加载器读回
   // 收尾汇总里打印的目录也必须是原样的中文，组员要照着它排查问题。
   assert.ok(install.out.includes(customData),
     `收尾汇总里的数据目录被写坏了：\n${install.out}`);
+});
+
+test('纯英文但带空格的安装路径：快捷方式启动同样不能把路径拆开', { skip: !WINDOWS }, (t) => {
+  // 中文只是把问题放大了；真正的根因是参数边界，纯 ASCII 带空格照样中招。
+  const sb = makeInstallSandbox('spaces', { hubName: 'Hub With Spaces', homeName: 'User Name' });
+  t.after(() => cleanup(sb.root));
+
+  const customData = path.join(sb.root, 'My Hub Data');
+  const install = runPowerShell(sb.setup, ['-DataDir', customData, '-NoLaunch'],
+    { cwd: sb.hub, env: sb.env });
+  assert.equal(install.code, 0, install.out);
+
+  const beforeCount = shimRecords(sb.log, 'electron.exe').length;
+  const launched = launchViaShortcut(sb.lnk, sb.log, sb.env);
+  assert.equal(launched.status, 0, `${launched.stdout}${launched.stderr}`);
+
+  const records = shimRecords(sb.log, 'electron.exe').slice(beforeCount);
+  assert.ok(records.length >= 1,
+    `快捷方式没把 Hub 拉起来：\n${launched.stdout}${launched.stderr}\n${readShimLog(sb.log).join('\n')}`);
+  for (const rec of records) {
+    assert.equal(rec.argv.length, 1,
+      `应用路径必须是一个参数，实际 ${rec.argv.length} 个：${JSON.stringify(rec.argv)}`);
+    assert.equal(rec.argv[0], sb.hub);
+    assert.equal(rec.dataDir, customData);
+  }
 });
