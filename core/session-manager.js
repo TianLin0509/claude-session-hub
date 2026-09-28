@@ -3407,6 +3407,7 @@ module.exports = {
     applyProxyEnv,
     applyInteractiveTerminalEnv,
     isClaudeApiBackend,
+    isCodexApiBackend,
     shouldUseClaudeFastSettings,
     claudePermissionModeArg,
     buildClaudePtyLaunch,

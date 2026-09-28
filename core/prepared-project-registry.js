@@ -52,8 +52,12 @@ class PreparedProjectRegistry {
       throw new Error(`正式项目库读取失败：${error.code === 'ENOENT' ? '尚未登记，请完成 project-prep 登记或旧项目迁移' : error.message}`);
     }
   }
-  list({ searchRoots = false, candidates = [] } = {}) {
-    const registry = this.read();
+  // allowMissing 只放行「这台机器还没登记过任何项目」这一种情况（ENOENT）：全新
+  // 用户首次打开 Hub 时本就没有 prepared-projects.json，四处 UI（侧栏项目筛选、
+  // 全局搜索、群聊创建弹窗、工作区面板）同时弹红字，是把正常初始状态当成故障。
+  // 库存在但内容损坏 / 指向已改 仍然照常抛错 —— 那才是真的需要看见的失败。
+  list({ searchRoots = false, candidates = [], allowMissing = false } = {}) {
+    const registry = this.read({ allowMissing });
     const seen = new Set();
     const items = registry.projects.map(entry => {
       const info = prepared(entry.path); // Fail visibly; do not substitute a clone or an empty list.
