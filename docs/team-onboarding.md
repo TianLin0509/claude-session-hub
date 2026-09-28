@@ -74,7 +74,10 @@ Accounts (read back from ...\.claude-session-hub\config.json):
 登录信息存在 CLI 自己的配置里，Hub 不碰。
 
 **装的时候填了 Token，但网关连不上怎么办**：安装会照常完成，但配置里
-Claude / Codex 仍然指着网关，这时候光去登录自己的账号是不够的 —— 得先把开关扳回来：
+Claude / Codex 仍然指着网关，这时候光去登录自己的账号是不够的 —— 得先把开关扳回来。
+
+安装结束时脚本会打印一行 `Switch -> ...`，**直接复制那一整行执行**就行（它已经带好了
+你这台机器实际用的目录，路径有空格也能直接粘）。标准安装下长这样：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\claude-session-hub\setup.ps1" -UseOwnAccount
@@ -82,6 +85,10 @@ powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\claude-session-hub\se
 
 这条只改「走网关还是走自己账号」这一个开关，网关地址和 Token 还留在配置里，
 以后网关修好了，重跑一次带 `-Token` 的安装命令就能切回去。
+
+> 另外：如果配置文件坏了（手改出错、磁盘写到一半），脚本会**停下来报错并保持原文件不动**，
+> 不会假装成功。照提示修好或把文件挪走再重跑即可；上一份内容还留在同目录的
+> `config.json.backup` 里。
 
 ---
 

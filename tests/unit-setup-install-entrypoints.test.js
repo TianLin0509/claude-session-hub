@@ -25,6 +25,16 @@ const ROOT = path.join(__dirname, '..');
 const WINDOWS = process.platform === 'win32';
 const TOKEN = 'a'.repeat(64);
 
+/**
+ * 容错清理：刚被 Start-Process 拉起来的替身进程可能还攥着文件句柄，
+ * 直接 rmSync 会 EPERM。重试几次，实在删不掉就留给系统的临时目录清理。
+ */
+function cleanup(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch { /* 临时目录残留无害，不让清理失败盖掉真正的断言结果 */ }
+}
+
 function tmpdir(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `hub-entry-${tag}-`));
 }
@@ -56,31 +66,42 @@ function makeShims(dir, shims) {
 }
 
 /**
- * 编译一个最小的 powershell.exe 替身，返回可前置到 PATH 的目录。
- * 它把收到的参数追加到 SHIM_LOG，并按 SHIM_DROP_FILE 造出"下载好"的文件。
- * 用 .exe 而不是 .cmd，是因为批处理调用 .cmd 不加 call 就不会把控制权交还。
+ * 编译一个最小的 .exe 替身。它把自己的名字、收到的参数和运行时看到的
+ * CLAUDE_HUB_DATA_DIR 追加到 SHIM_LOG，并按 SHIM_DROP_FILE 造出"下载好"的文件。
+ *
+ * 必须是 .exe 而不是 .cmd：批处理调用另一个 .cmd 不加 call 就不会把控制权交还，
+ * 用 .cmd 替身会把"下载完有没有真的启动它"测成假绿（轮次2 踩过）。
  */
-function compilePowerShellShim(dir) {
-  const binDir = path.join(dir, 'shim-exe');
-  fs.mkdirSync(binDir, { recursive: true });
-  const csharp = `
+function compileShimExe(exePath) {
+  fs.mkdirSync(path.dirname(exePath), { recursive: true });
+  const srcPath = `${exePath}.cs`;
+  fs.writeFileSync(srcPath, `
 using System; using System.IO; using System.Text;
 public class Shim {
   public static int Main(string[] args) {
     string log = Environment.GetEnvironmentVariable("SHIM_LOG");
-    if (!String.IsNullOrEmpty(log)) File.AppendAllText(log, String.Join(" ", args) + Environment.NewLine, Encoding.UTF8);
+    if (!String.IsNullOrEmpty(log)) {
+      string self = Path.GetFileName(Environment.GetCommandLineArgs()[0]);
+      string dd = Environment.GetEnvironmentVariable("CLAUDE_HUB_DATA_DIR");
+      File.AppendAllText(log, self + "|" + String.Join(" ", args)
+        + "|CLAUDE_HUB_DATA_DIR=" + (dd == null ? "(unset)" : dd) + Environment.NewLine, Encoding.UTF8);
+    }
     string drop = Environment.GetEnvironmentVariable("SHIM_DROP_FILE");
     if (!String.IsNullOrEmpty(drop) && !File.Exists(drop)) File.WriteAllText(drop, "# downloaded");
     return 0;
   }
-}`;
-  const srcPath = path.join(binDir, 'shim.cs');
-  fs.writeFileSync(srcPath, csharp, 'utf8');
-  const exePath = path.join(binDir, 'powershell.exe');
+}`, 'utf8');
   const build = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     `Add-Type -TypeDefinition (Get-Content -Raw '${srcPath}') -OutputType ConsoleApplication -OutputAssembly '${exePath}'`],
     { encoding: 'utf8', windowsHide: true, timeout: 120000 });
-  assert.ok(fs.existsSync(exePath), `编译 powershell 替身失败：\n${build.stdout}${build.stderr}`);
+  assert.ok(fs.existsSync(exePath), `编译替身 ${exePath} 失败：\n${build.stdout}${build.stderr}`);
+  return exePath;
+}
+
+/** 编译 powershell.exe 替身，返回可前置到 PATH 的目录。 */
+function compilePowerShellShim(dir) {
+  const binDir = path.join(dir, 'shim-exe');
+  compileShimExe(path.join(binDir, 'powershell.exe'));
   return binDir;
 }
 
@@ -96,7 +117,7 @@ const LOGGING_NPM = `@echo off\r\n>>"%SHIM_LOG%" echo npm %*\r\nexit /b 1\r\n`;
 
 test('install.ps1 按名透传参数，64 位 Token 不会被当成参数名', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('forward');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   fs.copyFileSync(path.join(ROOT, 'install.ps1'), path.join(dir, 'install.ps1'));
   // 替身 setup.ps1：参数签名与真品一致，把绑定结果写成 JSON。
@@ -135,7 +156,7 @@ test('install.ps1 按名透传参数，64 位 Token 不会被当成参数名', {
 
 test('install-hub.bat 调用同目录的 install-hub.ps1 并透传参数', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('bat-local');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   fs.copyFileSync(path.join(ROOT, 'install-hub.bat'), path.join(dir, 'install-hub.bat'));
   const probe = path.join(dir, 'probe.txt');
@@ -153,7 +174,7 @@ test('install-hub.bat 调用同目录的 install-hub.ps1 并透传参数', { ski
 
 test('只下载 install-hub.bat 时，它会自己去取 install-hub.ps1', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('bat-boot');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   // 目录里只有文档让下载的那一个文件 —— 这正是轮次1 直接失败的场景。
   fs.copyFileSync(path.join(ROOT, 'install-hub.bat'), path.join(dir, 'install-hub.bat'));
@@ -187,7 +208,7 @@ test('只下载 install-hub.bat 时，它会自己去取 install-hub.ps1', { ski
 
 test('clone 前发现目标目录已有内容：明确失败，绝不删除', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('no-delete');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   fs.copyFileSync(path.join(ROOT, 'setup.ps1'), path.join(dir, 'setup.ps1'));
   const hubDir = path.join(dir, 'my-stuff');
@@ -204,7 +225,7 @@ test('clone 前发现目标目录已有内容：明确失败，绝不删除', { 
 
 test('镜像全部失败时，不删除本来就存在的空目录', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('empty-keep');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   fs.copyFileSync(path.join(ROOT, 'setup.ps1'), path.join(dir, 'setup.ps1'));
   const hubDir = path.join(dir, 'reserved-empty');
@@ -232,7 +253,7 @@ test('镜像全部失败时，不删除本来就存在的空目录', { skip: !WI
 
 test('在已有 git clone 里重跑安装：真的 pull 到新提交，未跟踪文件保留', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('update');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   const git = (args, cwd) => execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
   const bare = path.join(dir, 'remote.git');
@@ -286,7 +307,7 @@ test('在已有 git clone 里重跑安装：真的 pull 到新提交，未跟踪
 
 test('解压出来的 zip（没有 .git）仍走离线复制，并说明它无法自我更新', { skip: !WINDOWS }, (t) => {
   const dir = tmpdir('zip');
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => cleanup(dir));
 
   const unzipped = path.join(dir, 'claude-session-hub-master');
   fs.mkdirSync(unzipped);
@@ -300,4 +321,150 @@ test('解压出来的 zip（没有 .git）仍走离线复制，并说明它无�
   assert.match(res.out, /using local copy/, res.out);
   assert.match(res.out, /cannot update it/,
     'zip 安装无法靠重跑更新，必须明说，不能让人以为重跑就是最新版');
+});
+
+// ---------------------------------------------------------------------------
+// 自定义 -DataDir 必须贯穿整条链路。
+//
+// Codex 2 轮次2 审查复现：用 -DataDir D 装完并写了网关配置后，
+//   - 脚本打印的"切回个人账号"命令里没有 -DataDir，照着敲会在默认目录新建配置，
+//     D 里仍然是 api 模式；
+//   - Start-Process 不设 CLAUDE_HUB_DATA_DIR，桌面快捷方式也只带源码目录，
+//     于是 Hub 启动后读的是默认目录 —— 写 A 读 B。
+// core/data-dir.js 只认 CLAUDE_HUB_DATA_DIR，所以每一个出口都得把它带上。
+//
+// 这组用例把 USERPROFILE 也指到临时目录，因此默认数据目录和"桌面"都在沙箱里，
+// 不会碰到真实桌面或生产 ~/.claude-session-hub。
+// ---------------------------------------------------------------------------
+
+/** 搭一个能跑完整条 setup.ps1 的沙箱：假 Hub 源码 + 假 HOME + npm/claude/electron 替身。 */
+function makeInstallSandbox(tag) {
+  const root = tmpdir(tag);
+  const hub = path.join(root, 'hub');
+  const home = path.join(root, 'home');
+  const binDir = path.join(root, 'bin');
+  const log = path.join(root, 'shim.log');
+
+  // 没有 .git 的源码树 = 解压 zip 的场景，setup.ps1 会就地安装，不需要 git 远端。
+  seedHubTree(hub);
+  fs.copyFileSync(path.join(ROOT, 'setup.ps1'), path.join(hub, 'setup.ps1'));
+  fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.claude-session-hub'), { recursive: true });
+
+  // npm / claude 只要"存在且成功"；electron 是 exe 替身，负责记录它看到的数据目录。
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'npm.cmd'), '@echo off\r\nexit /b 0\r\n', 'ascii');
+  fs.writeFileSync(path.join(binDir, 'claude.cmd'), '@echo off\r\nexit /b 0\r\n', 'ascii');
+  compileShimExe(path.join(hub, 'node_modules', 'electron', 'dist', 'electron.exe'));
+
+  return {
+    root, hub, home, log,
+    setup: path.join(hub, 'setup.ps1'),
+    env: { USERPROFILE: home, SHIM_LOG: log, PATH: `${binDir};${process.env.PATH}` },
+    defaultDataDir: path.join(home, '.claude-session-hub'),
+    lnk: path.join(home, 'Desktop', 'AI Hub.lnk'),
+  };
+}
+
+function readLnkTarget(lnkPath) {
+  const res = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnkPath}'); `
+    + `[pscustomobject]@{Target=$s.TargetPath;Arguments=$s.Arguments} | ConvertTo-Json -Compress`],
+    { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  return JSON.parse((res.stdout || '').replace(/^﻿/, ''));
+}
+
+const backendsOf = (cfgPath) => {
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  return `claude=${cfg.providers.claude.backend},codex=${cfg.providers.codex.backend}`;
+};
+
+test('自定义 -DataDir 贯穿回退命令、快捷方式与启动，默认目录不受影响', { skip: !WINDOWS }, (t) => {
+  const sb = makeInstallSandbox('datadir');
+  t.after(() => cleanup(sb.root));
+
+  // 默认目录里放个哨兵，安装结束时它必须原封不动，也不该多出 config.json。
+  const sentinel = path.join(sb.defaultDataDir, 'sentinel.txt');
+  fs.writeFileSync(sentinel, '默认目录不该被碰', 'utf8');
+  // 路径带空格：脚本打印的命令必须能直接粘贴执行。
+  const customData = path.join(sb.root, 'my data dir');
+
+  // 127.0.0.1:1 必然连不上 -> 走"网关探测失败"分支，正是要检查的那段提示。
+  const install = runPowerShell(sb.setup,
+    ['-Token', TOKEN, '-DataDir', customData, '-MeridianUrl', 'http://127.0.0.1:1'],
+    { cwd: sb.hub, env: sb.env });
+  assert.equal(install.code, 0, `安装应成功完成：\n${install.out}`);
+
+  // 1) 配置写在自定义目录，默认目录纹丝不动
+  const customCfg = path.join(customData, 'config.json');
+  assert.ok(fs.existsSync(customCfg), `配置没写进 -DataDir：\n${install.out}`);
+  assert.equal(backendsOf(customCfg), 'claude=api,codex=api');
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), '默认目录不该被碰');
+  assert.ok(!fs.existsSync(path.join(sb.defaultDataDir, 'config.json')),
+    '不该在默认目录凭空造一份配置');
+
+  // 2) 提示里的回退命令必须带 -DataDir，而且照抄能用
+  const fallback = install.out.split(/\r?\n/)
+    .map((l) => l.trim().replace(/^WARN:\s*/, ''))
+    .find((l) => /^powershell .*-UseOwnAccount/.test(l));
+  assert.ok(fallback, `网关失败时应打印可执行的回退命令：\n${install.out}`);
+  assert.match(fallback, /-DataDir/, '回退命令漏了 -DataDir —— 照做只会在默认目录另建一份');
+  assert.ok(fallback.includes(customData), '回退命令里的路径要是安装时那一个');
+
+  const switched = spawnSync('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', fallback],
+    { cwd: sb.hub, env: { ...process.env, ...sb.env }, encoding: 'utf8', windowsHide: true, timeout: 120000 });
+  assert.equal(switched.status, 0, `${switched.stdout}${switched.stderr}`);
+  assert.equal(backendsOf(customCfg), 'claude=subscription,codex=subscription',
+    '照着提示执行后，自定义目录里的后端必须真的切过来');
+  assert.ok(!fs.existsSync(path.join(sb.defaultDataDir, 'config.json')),
+    '回退命令仍然不该动默认目录');
+
+  // 3) 启动时 Hub 真的拿到了这个目录
+  // C# 的 File.AppendAllText(Encoding.UTF8) 会在首行前写 BOM。
+  const launches = fs.readFileSync(sb.log, 'utf8').replace(/^﻿/, '').split(/\r?\n/)
+    .filter((l) => l.startsWith('electron.exe|'));
+  assert.ok(launches.length >= 1, `应当启动过 electron 替身：\n${fs.readFileSync(sb.log, 'utf8')}`);
+  assert.ok(launches.every((l) => l.endsWith(`|CLAUDE_HUB_DATA_DIR=${customData}`)),
+    `Hub 启动时看到的数据目录不对：\n${launches.join('\n')}`);
+
+  // 4) 桌面快捷方式经由启动器带上同一个目录
+  const launcher = path.join(sb.hub, 'launch-hub.cmd');
+  assert.ok(fs.existsSync(launcher), '自定义数据目录需要一个能设环境变量的启动器');
+  const launcherText = fs.readFileSync(launcher, 'utf8');
+  assert.match(launcherText, /CLAUDE_HUB_DATA_DIR=/);
+  assert.ok(launcherText.includes(customData));
+  const lnk = readLnkTarget(sb.lnk);
+  assert.equal(lnk.Target.toLowerCase(), launcher.toLowerCase(),
+    '快捷方式还是直指 electron.exe 的话，双击启动就会读回默认目录');
+});
+
+test('默认数据目录时快捷方式仍直指 electron.exe，不多造启动器', { skip: !WINDOWS }, (t) => {
+  const sb = makeInstallSandbox('datadir-default');
+  t.after(() => cleanup(sb.root));
+
+  const install = runPowerShell(sb.setup, ['-NoLaunch'], { cwd: sb.hub, env: sb.env });
+  assert.equal(install.code, 0, install.out);
+
+  assert.ok(!fs.existsSync(path.join(sb.hub, 'launch-hub.cmd')),
+    '默认安装不该多出启动器（会白白闪一个控制台窗口）');
+  const lnk = readLnkTarget(sb.lnk);
+  assert.equal(lnk.Target.toLowerCase(),
+    path.join(sb.hub, 'node_modules', 'electron', 'dist', 'electron.exe').toLowerCase());
+  assert.ok(lnk.Arguments.includes(sb.hub));
+});
+
+test('损坏的 config.json 会让安装明确失败，而不是打印 SETUP COMPLETE', { skip: !WINDOWS }, (t) => {
+  const sb = makeInstallSandbox('broken-cfg');
+  t.after(() => cleanup(sb.root));
+
+  const cfgPath = path.join(sb.defaultDataDir, 'config.json');
+  const damaged = '{"providers":{"claude":{"backend":"api","api_key":"REAL-KEY"';
+  fs.writeFileSync(cfgPath, damaged, 'utf8');
+
+  const res = runPowerShell(sb.setup, ['-UseOwnAccount', '-NoLaunch'], { cwd: sb.hub, env: sb.env });
+  assert.notEqual(res.code, 0, `必须失败退出：\n${res.out}`);
+  assert.doesNotMatch(res.out, /SETUP COMPLETE/,
+    '配置没改成却报成功 —— 这正是轮次2 的 P1 缺陷');
+  assert.equal(fs.readFileSync(cfgPath, 'utf8'), damaged, '原配置必须原样保留');
 });

@@ -21,7 +21,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const SETUP_PS1 = path.join(ROOT, 'setup.ps1');
@@ -45,6 +45,21 @@ function extractSnippet(varName) {
   return ps1.slice(bodyStart, end);
 }
 
+/** 把 setup.ps1 内嵌的配置工具落到磁盘，返回它的路径。 */
+function materializeConfigTool(dir) {
+  const jsPath = path.join(dir, 'hub-config-tool.js');
+  fs.writeFileSync(jsPath, extractSnippet('JsConfigTool'), 'utf8');
+  return jsPath;
+}
+
+/** 按子命令跑一次配置工具；不抛，把退出码和输出都交给调用方断言。 */
+function runConfigTool(dir, args) {
+  const res = spawnSync(process.execPath, [materializeConfigTool(dir), ...args], {
+    encoding: 'utf8', windowsHide: true,
+  });
+  return { code: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
+}
+
 /**
  * 在隔离数据目录里跑一遍 setup.ps1 的写配置逻辑，返回 config.json 的解析结果和目录。
  * 调用方负责清理。
@@ -54,11 +69,9 @@ function runMergeScript({ seedConfig } = {}) {
   const cfgPath = path.join(dataDir, 'config.json');
   if (seedConfig) fs.writeFileSync(cfgPath, JSON.stringify(seedConfig, null, 2), 'utf8');
 
-  const jsPath = path.join(dataDir, 'merge.js');
-  fs.writeFileSync(jsPath, extractSnippet('JsWriteGateway'), 'utf8');
-  execFileSync(process.execPath, [jsPath, cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL], {
-    stdio: 'pipe',
-  });
+  execFileSync(process.execPath,
+    [materializeConfigTool(dataDir), 'write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL],
+    { stdio: 'pipe' });
 
   return { dataDir, cfgPath, config: JSON.parse(fs.readFileSync(cfgPath, 'utf8')) };
 }
@@ -182,12 +195,11 @@ test('setup.ps1 不再把 Claude 凭据写进 Hub 不读的 providers.meridian',
 // 网关发请求。切换必须真的落到 Hub 读得到的那个开关上。
 // ---------------------------------------------------------------------------
 
-/** 跑 setup.ps1 里 $JsUseOwnAccount 那段，把已有配置切回自己账号。 */
+/** 跑配置工具的 use-own-account 子命令，把已有配置切回自己账号。 */
 function runOwnAccountScript(dataDir) {
   const cfgPath = path.join(dataDir, 'config.json');
-  const jsPath = path.join(dataDir, 'own-account.js');
-  fs.writeFileSync(jsPath, extractSnippet('JsUseOwnAccount'), 'utf8');
-  const stdout = execFileSync(process.execPath, [jsPath, cfgPath], { stdio: 'pipe' }).toString();
+  const stdout = execFileSync(process.execPath,
+    [materializeConfigTool(dataDir), 'use-own-account', cfgPath], { stdio: 'pipe' }).toString();
   return { stdout, config: JSON.parse(fs.readFileSync(cfgPath, 'utf8')) };
 }
 
@@ -239,4 +251,105 @@ test('没有 api 配置时切换是安全的空操作', (t) => {
   const { stdout, config } = runOwnAccountScript(dataDir);
   assert.match(stdout, /switched: none/);
   assert.equal(config.providers.deepseek.api_key, 'keep-me', '不得殃及其它 provider');
+});
+
+// ---------------------------------------------------------------------------
+// 损坏的 config.json 必须明确失败，且原文件一个字节都不许动。
+//
+// Codex 2 轮次2 审查复现：原来三段脚本各自 `try{...}catch(e){}` 吞掉解析错误，
+// 然后拿 {} 覆盖写回 —— 用户的网关凭据和其它配置被抹平，安装器还照常打印
+// `switched: none` 和 SETUP COMPLETE。core/hub-config.js 的
+// readConfigJsonForUpdate 注释里写着同样的教训，这个脚本照犯不误。
+//
+// 规则：ENOENT（首次安装）是唯一可以当成空配置的情况。
+// ---------------------------------------------------------------------------
+
+/** 造一个隔离数据目录，写入指定的原始字节。 */
+function seedRawConfig(raw) {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-config-guard-'));
+  const cfgPath = path.join(dataDir, 'config.json');
+  if (raw !== undefined) fs.writeFileSync(cfgPath, raw, 'utf8');
+  return { dataDir, cfgPath };
+}
+
+const DAMAGED_CASES = [
+  ['截断的 JSON（磁盘写到一半 / 手改坏了）',
+    '{"providers":{"claude":{"backend":"api","api_key":"REAL-KEY","base_url":"https://gw"'],
+  ['根不是对象', '["not", "an", "object"]'],
+  ['纯文本', 'this is not json at all'],
+];
+
+for (const [label, raw] of DAMAGED_CASES) {
+  for (const cmd of ['write-gateway', 'use-own-account']) {
+    test(`${cmd} 遇到${label}：非零退出且原文件字节不变`, (t) => {
+      const { dataDir, cfgPath } = seedRawConfig(raw);
+      t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+      const before = fs.readFileSync(cfgPath);
+      const args = cmd === 'write-gateway'
+        ? [cmd, cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]
+        : [cmd, cfgPath];
+      const res = runConfigTool(dataDir, args);
+
+      assert.notEqual(res.code, 0,
+        `${cmd} 必须失败退出，否则 setup.ps1 会继续打印成功`);
+      assert.match(`${res.stderr}${res.stdout}`, /Nothing was written/,
+        '错误信息要让人知道文件没被动过');
+      assert.deepEqual(fs.readFileSync(cfgPath), before,
+        '原配置被改写了 —— 这正是轮次2 的 P1 缺陷');
+      assert.ok(!fs.existsSync(`${cfgPath}.tmp-${process.pid}`), '不该留下临时文件');
+    });
+  }
+}
+
+test('config.json 不存在时照常初始化（ENOENT 是唯一可当空配置的情况）', (t) => {
+  const { dataDir, cfgPath } = seedRawConfig(undefined);
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const res = runConfigTool(dataDir, ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+  assert.equal(res.code, 0, `${res.stderr}${res.stdout}`);
+
+  const cfg = readHubConfig(dataDir);
+  assert.equal(cfg.claudeBackend, 'api');
+  assert.equal(cfg.claudeApiKey, TOKEN);
+});
+
+test('空文件也当成首次安装，不算损坏', (t) => {
+  const { dataDir, cfgPath } = seedRawConfig('   \n');
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const res = runConfigTool(dataDir, ['use-own-account', cfgPath]);
+  assert.equal(res.code, 0, `${res.stderr}${res.stdout}`);
+  assert.match(res.stdout, /switched: none/);
+});
+
+test('写入前会备份旧文件，且正常字段一个不丢', (t) => {
+  const { dataDir, cfgPath } = seedRawConfig(JSON.stringify({
+    providers: { deepseek: { api_key: 'keep-me' } },
+    ui: { tool_fold_threshold: 42 },
+  }, null, 2));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const before = fs.readFileSync(cfgPath, 'utf8');
+  const res = runConfigTool(dataDir, ['write-gateway', cfgPath, GATEWAY_URL, TOKEN, CLAUDE_MODEL, CODEX_MODEL]);
+  assert.equal(res.code, 0, `${res.stderr}${res.stdout}`);
+
+  const after = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  assert.equal(after.providers.deepseek.api_key, 'keep-me');
+  assert.equal(after.ui.tool_fold_threshold, 42);
+  assert.equal(after.providers.claude.backend, 'api');
+  assert.equal(fs.readFileSync(`${cfgPath}.backup`, 'utf8'), before,
+    '写坏时得有东西可以还原');
+});
+
+test('read-mode 遇到损坏配置报 error，而不是谎称走自己账号', (t) => {
+  const { dataDir, cfgPath } = seedRawConfig('{"providers": broken');
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+  const res = runConfigTool(dataDir, ['read-mode', cfgPath]);
+  // 只是展示用，不该让安装挂掉；但必须说不知道。
+  assert.equal(res.code, 0);
+  const parsed = JSON.parse(res.stdout);
+  assert.ok(parsed.error, 'read-mode 把损坏配置读成了空配置，收尾汇总就会显示成"自己账号"');
+  assert.equal(parsed.claude, undefined);
 });

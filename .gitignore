@@ -48,3 +48,6 @@ artifacts/
 # 单测运行器的本机校准产物：耗时基线 + 负载相关失败留档（每台机器不同，不入库）
 tests/.timing-baseline.json
 tests/.load-related-failures.json
+
+# setup.ps1 在使用自定义 -DataDir 安装时生成的启动器（带 CLAUDE_HUB_DATA_DIR）
+launch-hub.cmd

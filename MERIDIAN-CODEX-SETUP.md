@@ -54,14 +54,18 @@ powershell -ExecutionPolicy Bypass -File "$env:TEMP\hub-setup.ps1"
 - 红色 `FAIL:` = 装不下去了，脚本已退出。停下，把那一行原样报给用户。
 - 黄色 `WARN:` = 提醒，安装继续。**不要因为 WARN 重跑或改参数**。
   最常见的是网关不通。这时 Hub 已经装好了，但 `config.json` 里 Claude / Codex 仍然
-  指着网关 —— 光让用户去登录自己的账号没有用，必须先扳回开关：
+  指着网关 —— 光让用户去登录自己的账号没有用，必须先扳回开关。
+
+  **不要自己拼这条命令**：脚本已经打印了一行 `Switch -> ...`（网关失败时在 WARN 里也有），
+  里面带着这台机器实际使用的数据目录，直接原样执行。标准安装下等价于：
 
   ```powershell
   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\claude-session-hub\setup.ps1" -UseOwnAccount
   ```
 
-  脚本结尾的 **Accounts** 那几行是从 `config.json` 读回来的真实状态，以它为准，
-  不要按"用户有没有给 Token"来推断。
+  脚本结尾的 **Data** 和 **Accounts** 那几行是从实际使用的目录 / `config.json` 读回来的
+  真实状态，以它们为准，不要按"用户有没有给 Token"来推断。若 Accounts 显示
+  `UNKNOWN - ...`，说明配置文件读不了，按那条错误信息处理，别当成"走自己账号"。
 
 **失败处理**：
 

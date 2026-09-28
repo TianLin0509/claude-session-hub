@@ -61,97 +61,161 @@ $RepoGitHub = "https://github.com/TianLin0509/claude-session-hub.git"
 $RepoGitee  = "https://gitee.com/lt17210720082/claude-session-hub.git"
 $ConfigPath = Join-Path $DataDir "config.json"
 
-# The key names here are a contract with core/hub-config.js, which reads
+# core/data-dir.js reads CLAUDE_HUB_DATA_DIR, falling back to
+# ~/.claude-session-hub. So a custom -DataDir is only real if every later step
+# - the suggested fallback command, the launch, the desktop shortcut - carries
+# it along. Otherwise the installer writes A and the Hub reads B.
+$DefaultDataDir = Join-Path $env:USERPROFILE ".claude-session-hub"
+$IsCustomDataDir = ($DataDir.TrimEnd('\') -ne $DefaultDataDir.TrimEnd('\'))
+
+# Quoted so paths with spaces can be pasted straight into a shell.
+function Get-SetupCommand([string]$extraArgs) {
+  $cmd = "powershell -ExecutionPolicy Bypass -File `"$HubDir\setup.ps1`" $extraArgs"
+  if ($IsCustomDataDir) { $cmd += " -DataDir `"$DataDir`"" }
+  return $cmd
+}
+
+# One small node tool with three subcommands, rather than three separate
+# snippets that each re-implement reading and writing config.json. The key
+# names are a contract with core/hub-config.js, which reads
 # providers.claude.{backend,api_key,base_url,model} and the matching
 # providers.codex.* keys. Anything written under a different key is silently
 # ignored by the Hub - exactly how the old providers.meridian block ended up
-# doing nothing. tests/unit-setup-config-contract.test.js executes these very
-# snippets and asserts the Hub reads them back; keep them in sync.
-$JsWriteGateway = @'
+# doing nothing. tests/unit-setup-config-contract.test.js runs this very tool
+# and asserts the Hub reads it back; keep them in sync.
+#
+# Read/write rules, learned the hard way (core/hub-config.js's
+# readConfigJsonForUpdate carries the same warning, and this script violated it
+# anyway until Codex 2's round-2 review caught it):
+#   - ENOENT is the ONLY condition that may be treated as "empty config". It
+#     means first install.
+#   - A parse error, a read error or a non-object root must ABORT with a
+#     non-zero exit and leave the file byte-for-byte untouched. Swallowing the
+#     error and writing `{}` back silently destroys whatever the user had, and
+#     the installer cheerfully prints SETUP COMPLETE on top of it.
+#   - Writes go through a validated temp file + atomic rename, with a .backup
+#     copy of the previous contents, so an interrupted write cannot truncate a
+#     good config either.
+$JsConfigTool = @'
 const fs = require("fs"), path = require("path");
-const [cfgPath, url, token, claudeModel, codexModel] = process.argv.slice(2);
-let cfg = {};
-try {
-  let raw = fs.readFileSync(cfgPath, "utf8");
-  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-  cfg = JSON.parse(raw);
-} catch (e) {}
-const base = url.replace(/\/+$/, "");
-cfg.providers = cfg.providers || {};
-// Provenance only - the Hub does not read this block.
-cfg.providers.meridian = { url: url, enabled: true };
-const cl = cfg.providers.claude || {};
-cl.backend = "api";
-cl.base_url = base;
-cl.api_key = token;
-if (claudeModel) cl.model = claudeModel;
-cfg.providers.claude = cl;
-const cx = cfg.providers.codex || {};
-cx.backend = "api";
-cx.base_url = base + "/codex/v1";
-cx.api_key = token;
-if (codexModel) cx.model = codexModel;
-cx.provider = "meridian";
-cfg.providers.codex = cx;
-fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-console.log("written: " + cfgPath);
-'@
 
-# Flip Claude/Codex back to their own subscription login. Deliberately keeps
-# base_url / api_key in place so the gateway can be re-enabled later without
-# re-issuing anything - only the backend switch moves.
-$JsUseOwnAccount = @'
-const fs = require("fs"), path = require("path");
-const cfgPath = process.argv[2];
-let cfg = {};
-try {
-  let raw = fs.readFileSync(cfgPath, "utf8");
+function readConfig(cfgPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(cfgPath, "utf8");
+  } catch (e) {
+    // First install is the only case where "no config" is a valid start.
+    if (e.code === "ENOENT") return {};
+    throw new Error("cannot read " + cfgPath + " (" + e.message + "). Nothing was written.");
+  }
   if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-  cfg = JSON.parse(raw);
-} catch (e) {}
-cfg.providers = cfg.providers || {};
-const changed = [];
-for (const k of ["claude", "codex"]) {
-  const p = cfg.providers[k];
-  if (p && p.backend === "api") { p.backend = "subscription"; changed.push(k); }
+  if (!raw.trim()) return {};
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(cfgPath + " is not valid JSON (" + e.message
+      + "). Nothing was written - fix or move that file, then re-run.");
+  }
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+    throw new Error(cfgPath + " does not contain a JSON object. Nothing was written.");
+  }
+  return cfg;
 }
-fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-console.log(changed.length ? "switched: " + changed.join(",") : "switched: none");
+
+function writeConfig(cfgPath, cfg) {
+  const json = JSON.stringify(cfg, null, 2);
+  JSON.parse(json); // never hand out something we cannot read back
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  if (fs.existsSync(cfgPath)) fs.copyFileSync(cfgPath, cfgPath + ".backup");
+  const tmp = cfgPath + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, json, "utf8");
+  fs.renameSync(tmp, cfgPath);
+}
+
+const [cmd, cfgPath, ...rest] = process.argv.slice(2);
+
+if (cmd === "read-mode") {
+  // Display only: never fatal, but an unreadable config must show up as
+  // unknown rather than quietly as "your own account".
+  let cfg;
+  try {
+    cfg = readConfig(cfgPath);
+  } catch (e) {
+    console.log(JSON.stringify({ error: e.message }));
+    process.exit(0);
+  }
+  const providers = cfg.providers || {};
+  const one = (k) => {
+    const v = providers[k] || {};
+    // core/session-manager.js: backend must be "api" AND a key must exist.
+    return { api: v.backend === "api" && !!v.api_key, baseUrl: v.base_url || "", model: v.model || "" };
+  };
+  console.log(JSON.stringify({ claude: one("claude"), codex: one("codex") }));
+  process.exit(0);
+}
+
+const cfg = readConfig(cfgPath);
+
+if (cmd === "write-gateway") {
+  const [url, token, claudeModel, codexModel] = rest;
+  const base = url.replace(/\/+$/, "");
+  cfg.providers = cfg.providers || {};
+  // Provenance only - the Hub does not read this block.
+  cfg.providers.meridian = { url: url, enabled: true };
+  const cl = cfg.providers.claude || {};
+  cl.backend = "api";
+  cl.base_url = base;
+  cl.api_key = token;
+  if (claudeModel) cl.model = claudeModel;
+  cfg.providers.claude = cl;
+  const cx = cfg.providers.codex || {};
+  cx.backend = "api";
+  cx.base_url = base + "/codex/v1";
+  cx.api_key = token;
+  if (codexModel) cx.model = codexModel;
+  cx.provider = "meridian";
+  cfg.providers.codex = cx;
+  writeConfig(cfgPath, cfg);
+  console.log("written: " + cfgPath);
+  process.exit(0);
+}
+
+if (cmd === "use-own-account") {
+  // Keeps base_url / api_key in place so the gateway can be re-enabled later
+  // without re-issuing anything - only the backend switch moves.
+  cfg.providers = cfg.providers || {};
+  const changed = [];
+  for (const k of ["claude", "codex"]) {
+    const p = cfg.providers[k];
+    if (p && p.backend === "api") { p.backend = "subscription"; changed.push(k); }
+  }
+  writeConfig(cfgPath, cfg);
+  console.log(changed.length ? "switched: " + changed.join(",") : "switched: none");
+  process.exit(0);
+}
+
+throw new Error("unknown subcommand: " + cmd);
 '@
 
-# Report what the Hub will ACTUALLY do, read back from config.json. Every
-# "your account / the gateway" line printed below comes from here rather than
-# from which flags were passed, so the summary cannot drift from reality.
-$JsReadMode = @'
-const fs = require("fs");
-let cfg = {};
-try {
-  let raw = fs.readFileSync(process.argv[2], "utf8");
-  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-  cfg = JSON.parse(raw);
-} catch (e) {}
-const providers = cfg.providers || {};
-const one = (k) => {
-  const v = providers[k] || {};
-  // core/session-manager.js: backend must be "api" AND a key must exist.
-  const api = v.backend === "api" && !!v.api_key;
-  return { api, baseUrl: v.base_url || "", model: v.model || "" };
-};
-console.log(JSON.stringify({ claude: one("claude"), codex: one("codex") }));
-'@
+function Invoke-ConfigTool([string[]]$toolArgs) {
+  return Invoke-NodeSnippet "hub-config-tool.js" $JsConfigTool $toolArgs
+}
 
 function Get-HubAccountMode {
   try {
-    $raw = Invoke-NodeSnippet "hub-read-mode.js" $JsReadMode @($ConfigPath)
+    $raw = Invoke-ConfigTool @("read-mode", $ConfigPath)
     if ($LASTEXITCODE -ne 0) { return $null }
     return ($raw | ConvertFrom-Json)
   } catch { return $null }
 }
 
 function Show-AccountMode([object]$mode, [string]$prefix = "    ") {
-  if (-not $mode) { Write-Host "$prefix(could not read $ConfigPath)"; return }
+  if (-not $mode) { Write-Host "$prefix(could not read $ConfigPath)" -ForegroundColor Yellow; return }
+  if ($mode.error) {
+    Write-Host "$prefixUNKNOWN - $($mode.error)" -ForegroundColor Yellow
+    return
+  }
   foreach ($cli in @(@('Claude', $mode.claude), @('Codex', $mode.codex))) {
     $name = $cli[0]; $m = $cli[1]
     if ($m.api) { Write-Host "$prefix$name  -> team gateway $($m.baseUrl)" }
@@ -327,14 +391,15 @@ Ok "claude CLI present"
 # ---------- 6. account configuration ----------
 if ($UseGateway) {
   Step "Writing gateway config -> $ConfigPath"
-  Invoke-NodeSnippet "hub-merge-config.js" $JsWriteGateway `
-    @($ConfigPath, $MeridianUrl, $Token, $ClaudeModel, $CodexModel) | Out-Null
-  if ($LASTEXITCODE -ne 0) { Fail "failed to write config.json" }
+  $written = Invoke-ConfigTool @("write-gateway", $ConfigPath, $MeridianUrl, $Token, $ClaudeModel, $CodexModel)
+  # The tool aborts without touching the file when the existing config.json is
+  # unreadable. Never paper over that with a green line.
+  if ($LASTEXITCODE -ne 0) { Fail "could not write $ConfigPath - see the error above. Your existing file was left untouched." }
   Ok "Claude ($ClaudeModel) and Codex ($CodexModel) both pointed at the team gateway"
 } elseif ($UseOwnAccount) {
   Step "Switching Claude / Codex back to your own account -> $ConfigPath"
-  $switched = Invoke-NodeSnippet "hub-own-account.js" $JsUseOwnAccount @($ConfigPath)
-  if ($LASTEXITCODE -ne 0) { Fail "failed to update config.json" }
+  $switched = Invoke-ConfigTool @("use-own-account", $ConfigPath)
+  if ($LASTEXITCODE -ne 0) { Fail "could not update $ConfigPath - see the error above. Your existing file was left untouched." }
   Ok "$switched (gateway url/key kept on disk, so -Token can re-enable it later)"
 } else {
   Step "Leaving account configuration untouched"
@@ -378,18 +443,45 @@ if ($UseGateway -and -not $SkipHealthCheck) {
   if (-not $gatewayOk) {
     Warn "The Hub is installed and config.json still points Claude / Codex at the gateway."
     Warn "To use your own Claude / Codex login instead, run:"
-    Warn "  powershell -ExecutionPolicy Bypass -File `"$HubDir\setup.ps1`" -UseOwnAccount"
+    Warn "  $(Get-SetupCommand '-UseOwnAccount')"
     Warn "(That only flips the backend switch; the gateway url/key stay on disk.)"
   }
 }
 
 # ---------- 8. desktop shortcut + launch ----------
+$ElectronExe = "$HubDir\node_modules\electron\dist\electron.exe"
+
+# A .lnk cannot carry an environment variable, so a custom data dir needs a
+# tiny launcher in between. The default install keeps pointing straight at
+# electron.exe: no stray console window, and ~/.claude-session-hub is exactly
+# what the Hub falls back to anyway.
+$LauncherPath = Join-Path $HubDir "launch-hub.cmd"
+if ($IsCustomDataDir) {
+  Step "Writing launcher for custom data dir -> $LauncherPath"
+  $launcher = @(
+    '@echo off',
+    'rem Generated by setup.ps1 - starts the Hub against the data directory',
+    'rem this machine was installed with. Editing the path here changes where',
+    'rem the Hub keeps its sessions and config.',
+    "set `"CLAUDE_HUB_DATA_DIR=$DataDir`"",
+    "start `"`" `"$ElectronExe`" `"$HubDir`""
+  ) -join "`r`n"
+  [System.IO.File]::WriteAllText($LauncherPath, $launcher + "`r`n", (New-Object System.Text.ASCIIEncoding))
+  Ok "launcher written (data dir $DataDir)"
+}
+
 Step "Creating desktop shortcut"
 try {
   $ws = New-Object -ComObject WScript.Shell
   $lnk = $ws.CreateShortcut("$env:USERPROFILE\Desktop\AI Hub.lnk")
-  $lnk.TargetPath = "$HubDir\node_modules\electron\dist\electron.exe"
-  $lnk.Arguments = "`"$HubDir`""
+  if ($IsCustomDataDir) {
+    $lnk.TargetPath = $LauncherPath
+    $lnk.Arguments = ""
+    $lnk.WindowStyle = 7   # minimised: the launcher exits immediately
+  } else {
+    $lnk.TargetPath = $ElectronExe
+    $lnk.Arguments = "`"$HubDir`""
+  }
   $lnk.WorkingDirectory = $HubDir
   $lnk.Save()
   Ok "Desktop\AI Hub.lnk"
@@ -404,16 +496,28 @@ Write-Host ""
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host " SETUP COMPLETE" -ForegroundColor Green
 Write-Host "   Version -> v$installedVersion (the Hub window title shows this too)"
+Write-Host "   Data    -> $DataDir"
 Write-Host "   Accounts (read back from $ConfigPath):"
 Show-AccountMode (Get-HubAccountMode) "     "
 Write-Host "   Launch  -> double-click 'AI Hub' on Desktop, or:"
-Write-Host "     & `"$HubDir\node_modules\electron\dist\electron.exe`" `"$HubDir`""
+if ($IsCustomDataDir) {
+  # Must set the variable too, otherwise this command silently starts the Hub
+  # against the default directory instead of the one just configured.
+  Write-Host "     `$env:CLAUDE_HUB_DATA_DIR = `"$DataDir`"; & `"$ElectronExe`" `"$HubDir`""
+  Write-Host "     (or just run $LauncherPath)"
+} else {
+  Write-Host "     & `"$ElectronExe`" `"$HubDir`""
+}
+Write-Host "   Switch  -> $(Get-SetupCommand '-UseOwnAccount')"
 Write-Host "   Try it  -> click 'New session' -> 'Claude Code' -> type anything"
 Write-Host "   Guide   -> $HubDir\docs\team-onboarding.md (first 5 minutes)"
 Write-Host "============================================================" -ForegroundColor Green
 
 if (-not $NoLaunch) {
   Step "Launching Hub"
-  Start-Process -FilePath "$HubDir\node_modules\electron\dist\electron.exe" -ArgumentList "`"$HubDir`"" -WorkingDirectory $HubDir
-  Ok "Hub window should appear in a few seconds"
+  # Set it explicitly rather than trusting whatever the caller happened to
+  # have: this install has a data directory and the Hub must use that one.
+  $env:CLAUDE_HUB_DATA_DIR = $DataDir
+  Start-Process -FilePath $ElectronExe -ArgumentList "`"$HubDir`"" -WorkingDirectory $HubDir
+  Ok "Hub window should appear in a few seconds (data dir $DataDir)"
 }
