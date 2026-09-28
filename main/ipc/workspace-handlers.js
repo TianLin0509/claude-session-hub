@@ -222,7 +222,9 @@ function registerWorkspaceIpc(ipcMain, deps) {
         path: m.workspace, activeAt: Math.max(Number(m.updatedAt) || 0, Number(m.createdAt) || 0),
       });
     }
-    return registry.list({ searchRoots: request?.searchRoots === true, candidates });
+    // 这条 IPC 的四个 renderer 调用方都只是「把已登记项目列出来给人看」，
+    // 尚未登记 = 空列表，不是故障；库损坏仍然抛给 UI 显示。
+    return registry.list({ searchRoots: request?.searchRoots === true, candidates, allowMissing: true });
   });
 
   // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型

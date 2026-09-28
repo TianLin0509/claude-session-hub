@@ -5,3 +5,8 @@ tests/fixtures/*.txt -text -diff
 # 于是 `#!/bin/sh\r` 变成坏解释器，钩子静默失效 —— 而钩子静默失效
 # 恰恰是最危险的失败方式（你以为装了闸门，其实门框是空的）。
 .githooks/* text eol=lf
+
+# Windows 批处理固定 CRLF。install-hub.bat 靠 goto/label 分流"先下载还是直接启动"，
+# 而 cmd 对 LF-only 文件的标签解析在部分 Windows 版本上不可靠 —— 一旦踩中，双击
+# 安装会静默地只做一半（下载完就结束，从不启动安装），和本轮修掉的那个 bug 一模一样。
+*.bat text eol=crlf

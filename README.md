@@ -2,61 +2,73 @@
 
 本地 Electron 工作台，把 Claude / Gemini / Codex / DeepSeek / GLM / 千问等多个 AI CLI 聚到一个窗口，并支持把多位 AI 成员组织进同一个群聊房间里协作。
 
-## 🚀 团队成员一键安装（推荐 · 有团队 Token 就用这个）
+## 🚀 团队成员一键安装（推荐）
 
-挑一条最顺手的，三选一，都装到同一个可用状态：
+挑一条最顺手的，四选一，都装到同一个可用状态。
+
+> **Token 是可选的。** 管理员发了团队 Token 就加上，Claude / Codex 直接走团队网关；
+> 没有 Token 也能完整装完，装好后在 Hub 里登录你自己的 Claude / Codex 账号即可。
+>
+> 装完先读一遍 [组员上手（5 分钟）](docs/team-onboarding.md) —— 怎么开第一个群聊、
+> 怎么更新、出问题报哪三样，都在那。
 
 ### 方式 A · 双击安装（最省心，不碰命令行）
 
-1. 下载这两个文件到同一个文件夹（或直接 `git clone` 本仓库）：[`install-hub.bat`](./install-hub.bat) 和 [`setup.ps1`](./setup.ps1)（`install-hub.bat` 找不到 `setup.ps1` 时会自己联网下载，所以只下 `.bat` 也行）
+1. **只下载 [`install-hub.bat`](./install-hub.bat) 这一个文件**（它会自动把 `install-hub.ps1` 和 `setup.ps1` 拉下来）。直接 `git clone` 本仓库再双击也可以
 2. **双击 `install-hub.bat`**
-3. 弹出输入框 → 粘贴团队管理员发的 **64 位 Token** → 确定
+3. 弹出输入框 → 有 Token 就粘进去；**没有就直接留空点确定**，再点「是」继续
 4. 全自动装完，看到绿色 `安装结束：成功` 即可。中途可能弹 1-2 次 UAC 窗，点"是"
 
 ### 方式 B · 让 AI Agent 代办（你什么都不用做）
 
 把这句话发给你的 Codex / Claude / 任意助手即可：
 
-> 帮我装一个工具。仓库 https://github.com/TianLin0509/claude-session-hub ，按它 README 的"团队成员一键安装"章节操作，跑到打印 `SETUP COMPLETE` 为止。我的团队 Token 是 `<把这里换成64位Token>`，中途弹 UAC 窗我会点"是"。
+> 帮我装一个工具。仓库 https://github.com/TianLin0509/claude-session-hub ，按它 README 的"团队成员一键安装"章节操作，跑到打印 `SETUP COMPLETE` 为止。中途弹 UAC 窗我会点"是"。
 
-> **🤖 Agent 注意**：不要点任何 GUI，直接用下面方式 C 的命令。看到红色 `FAIL: <原因>` 就停下并把那行报给用户，不要瞎试。
+（有 Token 就在后面补一句：我的团队 Token 是 `<把这里换成64位Token>`。）
+
+> **🤖 Agent 注意**：不要点任何 GUI，直接用下面方式 C 的命令。看到红色 `FAIL: <原因>` 就停下并把那行报给用户，不要瞎试。黄色 `WARN:` 不是失败，继续跑完。
 
 ### 方式 C · 一条命令（适合自己跑或 Agent 执行）
-
-下面这段会**优先从 Gitee 拉脚本（国内/公司内网友好）、失败自动回退 GitHub**：
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
 $dst = "$env:TEMP\hub-setup.ps1"
-foreach ($s in @(
-  'https://gitee.com/lt17210720082/claude-session-hub/raw/master/setup.ps1',
-  'https://raw.githubusercontent.com/TianLin0509/claude-session-hub/master/setup.ps1')) {
-  try { iwr -useb $s -OutFile $dst; break } catch {}
-}
-powershell -ExecutionPolicy Bypass -File $dst -Token <把这里换成64位Token>
+iwr -useb https://raw.githubusercontent.com/TianLin0509/claude-session-hub/master/setup.ps1 -OutFile $dst
+powershell -ExecutionPolicy Bypass -File $dst
 ```
 
-脚本自动完成：装 Git/Node（已装则跳过）→ **clone 本仓库（Gitee 优先，GitHub 兜底）** → `npm install` → 装 Claude CLI → 写入 Meridian 配置（**Claude 和 Codex 同时走团队共享订阅，零手工配置**）→ 用真实请求在线验证 Token → 桌面快捷方式 → 启动 Hub。
+有团队 Token 就在最后一行加 `-Token <把这里换成64位Token>`。
+
+脚本自动完成：装 Git/Node（已装则跳过）→ **clone 本仓库（GitHub 优先，Gitee 兜底）** → `npm install` → 装 Claude CLI → 有 Token 时写入网关配置（Claude + Codex 都指向团队网关）→ 探测网关 → 桌面快捷方式 → 启动 Hub。
 
 - 中途可能弹 1-2 次 UAC 管理员确认窗（winget 装 Git/Node），点"是"即可
-- 任何一步失败脚本会停下并打出红色 `FAIL: <原因>`，把那一行发给团队管理员即可
-- 镜像仓库：GitHub `https://github.com/TianLin0509/claude-session-hub` · Gitee `https://gitee.com/lt17210720082/claude-session-hub`（管理员双推保持一致，两者代码同步）
-- 装好后日常启动：双击桌面 **AI Hub** 图标；更新版本：重跑同一条命令即可（幂等）
+- 红色 `FAIL: <原因>` 才是装不下去了，把那一行发给团队管理员；黄色 `WARN:` 只是提醒，安装会继续
+- **网关探测不再阻断安装**：网关挂了或你的网络到不了，Hub 照样装完，改用自己的账号即可
+- 镜像仓库：GitHub `https://github.com/TianLin0509/claude-session-hub`（**以这个为准**）· Gitee `https://gitee.com/lt17210720082/claude-session-hub`（镜像，可能滞后，仅在连不上 GitHub 时用）
+- 装好后日常启动：双击桌面 **AI Hub** 图标；更新版本：重跑同一条命令即可（幂等，`git pull` 到最新并打印 `updated <旧> -> <新>`，不动你放在目录里的文件）
+- 装的是不是最新版，看 Hub 窗口顶部的 `v1.6.x`
+- 网关连不上、想改用自己的账号：`setup.ps1 -UseOwnAccount`（只扳后端开关，网关地址和 Token 留在配置里，以后带 `-Token` 重跑即可切回）
+- 目标目录已存在且非空又没有 `.git` 时，脚本会直接报错退出而**不会删除**它；想装到那里请先改名或换 `-HubDir`
 
 ### 方式 D · 离线源安装（公司网封 git / 连不上 GitHub 时）
 
 如果 `git clone` 通不了（公司代理常允许浏览器访问但封 git 协议），改用"先下整包、再离线装"：
 
-1. 用浏览器下载**完整源码 zip**（任选其一，都行）：
-   - GitHub：仓库页绿色 **Code → Download ZIP**，或任一 Release 的 **Source code (zip)**
-   - Gitee：`https://gitee.com/lt17210720082/claude-session-hub` → **克隆/下载 → 下载ZIP**
+1. 用浏览器下载**完整源码 zip**：
+   - GitHub（优先）：仓库页绿色 **Code → Download ZIP**，或任一 Release 的 **Source code (zip)**
+   - Gitee（连不上 GitHub 时）：`https://gitee.com/lt17210720082/claude-session-hub` → **克隆/下载 → 下载ZIP**；这是镜像，可能比 GitHub 旧
 2. 解压到一个**你会长期保留的文件夹**（别放临时目录/下载文件夹，装好后 Hub 就住在这）
-3. 进解压出来的文件夹，**双击 `install-hub.bat`** → 弹框粘 Token → 确定
+3. 进解压出来的文件夹，**双击 `install-hub.bat`** → 有 Token 就粘，没有就留空确定
 
 `setup.ps1` 会**自动识别自己就在源码里 → 跳过 git clone、直接用本地文件**装，全程不碰 GitHub。
-（仍需要能访问 npm 源装依赖 + 能连 Meridian VPS 验证 Token，这两个都是下行，一般没问题。）
+（仍需要能访问 npm 源装依赖；网关探测失败不影响安装。）
 
-> 命令行等价写法（在解压文件夹里）：`powershell -ExecutionPolicy Bypass -File setup.ps1 -Token <Token>`
+> ⚠️ **ZIP 装出来的目录没有 git，重跑 `setup.ps1` 不能更新版本**（脚本会黄字提醒）。
+> 想以后一键更新，等网络方便时用 git 重装一次：
+> `git clone https://github.com/TianLin0509/claude-session-hub.git "$env:USERPROFILE\claude-session-hub"`
+
+> 命令行等价写法（在解压文件夹里）：`powershell -ExecutionPolicy Bypass -File setup.ps1`（有 Token 就补 `-Token <Token>`）
 
 ## 下载安装（无团队 Token 的公网用户）
 

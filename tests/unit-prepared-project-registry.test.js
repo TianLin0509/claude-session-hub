@@ -85,6 +85,27 @@ assert.throws(() => registry.list(), /name/);
 fs.writeFileSync(path.join(main, '.agents/project.json'), cfg);
 assert.throws(() => new PreparedProjectRegistry({ dataDir: path.join(root, 'absent') }).list(), /尚未登记/);
 
+// 全新用户：还没登记过任何项目不是故障。显式 allowMissing 的调用方（列给人看的
+// 那几处 UI）拿到空列表，默认调用方仍然抛错 —— 上一行守的就是默认行为。
+const freshDir = path.join(root, 'fresh-install');
+assert.deepEqual(new PreparedProjectRegistry({ dataDir: freshDir }).list({ allowMissing: true }),
+  { items: [], schemaVersion: 1 }, '首次启动应得到空项目库，而不是报错');
+const freshHandlers = new Map();
+registerWorkspaceIpc({ handle: (name, fn) => freshHandlers.set(name, fn) }, {
+  workspaceService: { getRegistryPath: () => path.join(freshDir, 'workspaces.json'), getWorkspaceRoot: () => root,
+    listWorkspaces: () => ({ items: [] }) },
+  sessionManager: { getAllSessions: () => [] }, meetingManager: { getAllMeetings: () => [] },
+});
+assert.deepEqual(freshHandlers.get('workspace:prepared-projects')(null, { searchRoots: true }).items, [],
+  '首次启动时 workspace:prepared-projects 不应抛错，否则侧栏/搜索/群聊弹窗同时弹红字');
+// 但库真的损坏时照旧抛给 UI。
+fs.mkdirSync(freshDir, { recursive: true });
+fs.writeFileSync(path.join(freshDir, 'prepared-projects.json'), '{ not json');
+assert.throws(() => freshHandlers.get('workspace:prepared-projects')(null, { searchRoots: true }), /读取失败/,
+  '损坏的项目库必须继续报错');
+fs.unlinkSync(path.join(freshDir, 'prepared-projects.json'));
+console.log('fresh install shows an empty project library, corruption still fails loudly: PASS');
+
 // Actual independent CLI processes must serialize read-modify-write.
 async function concurrent() {
   const dirs = Array.from({ length: 6 }, (_, i) => project('parallel-' + i));

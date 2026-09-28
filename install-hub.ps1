@@ -1,8 +1,12 @@
 ﻿param(
   [string]$Token = "",
+  [switch]$UseOwnAccount,
   [string]$HubDir,
   [string]$DataDir,
   [string]$MeridianUrl,
+  [string]$ClaudeModel,
+  [string]$CodexModel,
+  [string]$LocalSource,
   [switch]$NoLaunch,
   [switch]$SkipHealthCheck
 )
@@ -24,29 +28,45 @@ if (-not (Test-Path $setup)) {
 }
 
 # 2. Get the token: from -Token if passed, else a GUI input box.
+# The token is optional - without it the Hub still installs completely and the
+# user signs in to their own Claude / Codex account on first use. An empty box
+# therefore must not abort the install, only ask for confirmation.
 if (-not $Token) {
   Add-Type -AssemblyName Microsoft.VisualBasic
   $Token = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请粘贴团队管理员发你的 64 位 Token（类似 f63f5fb3...357d）：",
-    "AI Hub - 团队一键安装",
+    "请粘贴团队管理员发你的 64 位 Token（类似 f63f5fb3...357d）。`r`n`r`n没有 Token 也能装：直接留空点确定，装好后在 Hub 里登录你自己的 Claude / Codex 账号。",
+    "AI Hub - 一键安装",
     "")
 }
 $Token = ("$Token").Trim()
 if (-not $Token) {
-  Write-Host "未输入 Token，已取消安装。"
-  Read-Host "按回车关闭"
-  exit 1
+  Add-Type -AssemblyName System.Windows.Forms | Out-Null
+  $answer = [System.Windows.Forms.MessageBox]::Show(
+    "没有填 Token。`r`n`r`n点「是」：继续安装，装好后用你自己的 Claude / Codex 账号登录。`r`n点「否」：取消安装。",
+    "AI Hub - 没有 Token",
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Question)
+  if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
+    Write-Host "已取消安装。"
+    Read-Host "按回车关闭"
+    exit 1
+  }
+  Write-Host "未提供 Token：按「自己账号」模式继续安装。"
 }
 
 # 3. Run the real installer. Forward optional params BY NAME (hashtable splat -
 # array splat would pass them positionally and break -HubDir/-DataDir).
 $fwd = @{}
-foreach ($k in 'HubDir', 'DataDir', 'MeridianUrl') {
+foreach ($k in 'HubDir', 'DataDir', 'MeridianUrl', 'ClaudeModel', 'CodexModel', 'LocalSource') {
   if ($PSBoundParameters.ContainsKey($k)) { $fwd[$k] = $PSBoundParameters[$k] }
 }
 if ($NoLaunch) { $fwd['NoLaunch'] = $true }
 if ($SkipHealthCheck) { $fwd['SkipHealthCheck'] = $true }
-& $setup -Token $Token @fwd
+if ($UseOwnAccount) { $fwd['UseOwnAccount'] = $true }
+# $Token may come from the GUI box rather than the command line, so it is added
+# from the variable, not from $PSBoundParameters.
+if ($Token) { $fwd['Token'] = $Token }
+& $setup @fwd
 $code = $LASTEXITCODE
 
 Write-Host ""
