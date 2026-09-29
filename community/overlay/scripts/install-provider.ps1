@@ -41,6 +41,10 @@ try {
   if (-not $command) { throw 'Installer exited but the CLI could not be found. Reopen the terminal and verify the official installation; not counted as success.' }
   & $command --version
   if ($LASTEXITCODE -ne 0) { throw 'CLI was found but its version check failed.' }
+  if ($Provider -eq 'claude') {
+    $bash = @("$env:ProgramFiles\Git\bin\bash.exe", "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $bash) { Write-Warning 'Claude Code on Windows needs Git for Windows (Git Bash) to run tools: https://git-scm.com/download/win' }
+  }
   Write-Host 'CLI installation verified. In AI Hub click Refresh, then Accounts to sign in. Model access has not been checked.'
   exit 0
 } catch { Write-Error $_ -ErrorAction Continue; exit 1 }
