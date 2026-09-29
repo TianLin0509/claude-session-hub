@@ -39,18 +39,15 @@
   --session-waiting: #1b2b3d;
 }
 
-.d4-h-mark,
+.rail-logo img,
 .scene-rail .btn-shell-nav .btn-icon svg { display: none; }
 
 :root[data-theme='dark'] .app-toolbar {
   background: #0a1929;
   border-bottom-color: #2b4056;
 }
-:root[data-theme='dark'] .hub-new-instance img,
 :root[data-theme='dark'] .rail-logo .legacy-h-mark { display: none; }
-:root[data-theme='dark'] .hub-new-instance .d4-h-mark,
-:root[data-theme='dark'] .rail-logo .d4-h-mark { display: block; color: #e3be85; }
-:root[data-theme='dark'] .hub-new-instance .d4-h-mark { width: 22px; height: 24px; }
+:root[data-theme='dark'] .rail-logo img { display: block; width: 28px; height: 28px; object-fit: contain; flex: none; }
 :root[data-theme='dark'] .hub-identity strong { color: #f3f5f7; font-size: 15px; letter-spacing: .025em; }
 :root[data-theme='dark'] #hub-version { border-color: #314861; background: #102238; color: #b6c5d4; }
 :root[data-theme='dark'] .backstage-toggle[aria-pressed='true'] {
@@ -76,7 +73,6 @@
   background: transparent;
   box-shadow: none;
 }
-:root[data-theme='dark'] .rail-logo .d4-h-mark { width: 25px; height: 29px; flex: none; }
 :root[data-theme='dark'] .rail-logo::after {
   content: 'AI Hub'; color: #f3f5f7; font: 650 15px/1 var(--font-sans); white-space: nowrap;
 }

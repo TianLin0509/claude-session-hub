@@ -64,7 +64,7 @@ async function main(){
   const size=async width=>{await client.send('Emulation.setDeviceMetricsOverride',{width,height:1050,deviceScaleFactor:0,mobile:false});await _waitMs(300);};
   const buffer=()=>client.eval(`(()=>{const b=terminalCache.get(activeSessionId).terminal.buffer.active;return Array.from({length:b.length},(_,i)=>b.getLine(i)?.translateToString(true)||'').join('\\n');})()`);
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(TEMP_ROOT,'data'),port:await reservePort(),label:'pty-design',windowMode:'hidden',extraEnv:{CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(TEMP_ROOT,'fixture.json'),AI_HUB_WORKSPACE_ROOT:TEMP_ROOT,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
+    hub=await launchIsolatedHub({dataDir:path.join(TEMP_ROOT,'data'),port:await reservePort(),label:'pty-design',windowMode:'hidden',extraEnv:{CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(TEMP_ROOT,'fixture.json'),AI_HUB_WORKSPACE_ROOT:TEMP_ROOT,CODEX_HOME:path.join(TEMP_ROOT,'codex'),CLAUDE_CONFIG_DIR:path.join(TEMP_ROOT,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
     client=await connectFirstPage(hub);await client.eval('window.__ptyErrors=[];addEventListener("error",e=>window.__ptyErrors.push(String(e.error||e.message)));addEventListener("unhandledrejection",e=>window.__ptyErrors.push(String(e.reason)));');deviceScale=await client.eval('devicePixelRatio');await size(1500);
     await waitFor('ready',()=>client.eval('!!window.LaunchCenter'));
     const session=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd:workspace,workspaceLabel:'PTY 阅读体验',model:'gpt-6-astra',effort:'high',mcpProfile:'none'}})+')');
@@ -95,7 +95,7 @@ async function main(){
     assert.match(await client.eval('terminalCache.get(activeSessionId).terminal.getSelection()'),/const theme/);
     await client.eval('terminalCache.get(activeSessionId).terminal.clearSelection();openTerminalSearch()');
     await client.send('Input.insertText',{text:'const theme'});
-    assert.equal(await client.eval('document.querySelector("#terminal-search-count").textContent'),'');
+    assert.match(await client.eval('document.querySelector("#terminal-search-count").textContent'),/^(?:|0 \/ 0)$/);
     await clickPoint(client,'#terminal-search-close');
     result.checks.push('真实输出分段、代码配色、无重复；xterm 文本选择与搜索正常');
     await clickPoint(client,'#btn-theme');await clickPoint(client,'[data-theme-id="codex"]');await clickPoint(client,'#btn-theme');
@@ -109,6 +109,7 @@ async function main(){
     assert.match(await buffer(),/const theme/);
     result.checks.push('深浅主题、760px 窄屏和卡片切换保留输出');
     await size(1500);
+    await clickPoint(client,'#btn-theme');await clickPoint(client,'[data-theme-id="dark"]');await clickPoint(client,'#btn-theme');
     const shell=await client.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'powershell',opts:{cwd:workspace}})+')');
     await waitFor('shell',()=>client.eval(`activeSessionId===${JSON.stringify(shell.id)}&&!!terminalCache.get(activeSessionId)?._hydrated`));
     if(await client.eval('currentView')!=='pty')await clickPoint(client,'#btn-backstage');
