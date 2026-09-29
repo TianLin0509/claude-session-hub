@@ -90,9 +90,9 @@ async function run() {
       },
     });
     c = await connectFirstPage(hub);
-    // Keep the machine's real DPR. Forcing 1 makes xterm's canvas appear half-size
-    // in CDP screenshots on a scaled Windows desktop, although the UI itself is fine.
-    await c.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 0, mobile: false });
+    // Keep a scaled xterm canvas while staying below Chromium's screenshot
+    // texture limit on monitors whose native DPR exceeds 3.
+    await c.send('Emulation.setDeviceMetricsOverride', { width: 1672, height: 941, deviceScaleFactor: 2.25, mobile: false });
     await until('typeof sessions !== "undefined" && !!document.querySelector("#btn-home")', 'renderer ready');
     assert.equal(await c.eval('document.documentElement.dataset.theme'), 'dark');
     assert.equal(await c.eval('getComputedStyle(document.querySelector(".rail-logo img")).display'), 'block');
@@ -113,7 +113,7 @@ async function run() {
       await c.eval("applyViewMode('pty')");
       await until(`(${terminalText(sid)}).match(${spec.ready})`, spec.kind + ' real TUI', 120000);
       record.ready = true;
-      const prompt = `请只回复 ${spec.marker}，不要调用工具。`;
+      const prompt = `请用两行回复。第一行只写 ${spec.marker}。第二行写“界面可用”。不要调用工具。`;
       await c.eval('document.querySelector(".floating-input-box").focus()');
       await c.send('Input.insertText', { text: prompt });
       await click('.floating-input-send');
