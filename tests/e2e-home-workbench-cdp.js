@@ -67,6 +67,13 @@ async function run() {
     await click(`#session-list [data-session-id="${sid}"]`);
     await until('document.querySelector(".floating-input-box").getBoundingClientRect().height>0');
     check('侧栏仍可回到已有会话',await cdp.eval('!document.getElementById("empty-state") || document.getElementById("empty-state").style.display==="none"'));
+    const d4Style = await cdp.eval(`(()=>{
+      const root=document.documentElement,icon=document.querySelector('#btn-home .btn-icon'),svg=icon.querySelector('svg');
+      const launch=document.querySelector('#new-session-wrapper .launch-split');
+      return {theme:root.dataset.theme,icon:getComputedStyle(icon).backgroundImage,svg:getComputedStyle(svg).display,launch:getComputedStyle(launch).backgroundColor};
+    })()`);
+    check('D4 深色主题显示矢量导航与暖色启动按钮', d4Style.theme==='dark' && d4Style.icon==='none' && d4Style.svg!=='none' && d4Style.launch==='rgb(234, 216, 201)');
+    await shot('d4-session-desktop');
     await click('#btn-home');
     await click('#home-create-group');
     await until('document.querySelectorAll(".mcm-slot").length===2');
@@ -75,6 +82,7 @@ async function run() {
     for (const theme of ['dark','claude','codex','hub','slate','frost']) {
       await cdp.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
       check('主题 '+theme+' 无横向溢出',await cdp.eval('document.getElementById("empty-state").scrollWidth<=document.getElementById("empty-state").clientWidth'));
+      if(theme==='frost')check('非 D4 主题保留原导航贴图',await cdp.eval(`(()=>{const e=document.querySelector('#btn-home .btn-icon');return getComputedStyle(e).backgroundImage.includes('ceramic-navigation.png')&&getComputedStyle(e.querySelector('svg')).display==='none';})()`));
       if(theme==='hub')await shot('20260912-welcome-b-light-codex1');
     }
     await cdp.eval('document.documentElement.dataset.theme="dark"');

@@ -19,8 +19,19 @@ const GITHUB_DARK = {
   brightCyan: '#56d364', brightWhite: '#ffffff',
 };
 
+// Deep-sea D4 changes the terminal surface and default ANSI tones only. CLI
+// truecolor output remains owned by the real PTY application.
+const DEEP_SEA_DARK = {
+  ...GITHUB_DARK,
+  background: '#081420', foreground: '#dce5ee', cursor: '#e3be85',
+  cursorAccent: '#081420', selectionBackground: 'rgba(227, 190, 133, 0.28)',
+  black: '#3c5065', white: '#dce5ee', brightBlack: '#8293a6',
+  brightWhite: '#f3f5f7', yellow: '#d7ad6d', brightYellow: '#f0d2a5',
+};
+
 /**
- * 终端在所有主题下都用同一套深色调色板（方案 T1「深色终端岛」）。
+ * 终端在所有主题下保持深色底（方案 T1「深色终端岛」）；D4 默认主题
+ * 调整背景、光标和默认 ANSI 色，其余主题沿用原有 GitHub Dark 调色板。
  *
  * 不给浅色皮肤另配 light ANSI 的原因：xterm 里跑的是 Claude Code / Codex /
  * Gemini / Kimi 的 TUI，它们用 dim 灰自绘框线和分隔符，浅底下几乎看不见，
@@ -32,7 +43,7 @@ const GITHUB_DARK = {
  * 调用方不用改。
  */
 const XTERM_THEMES = THEMES.reduce((acc, t) => {
-  acc[t.id] = GITHUB_DARK;
+  acc[t.id] = t.id === 'dark' ? DEEP_SEA_DARK : GITHUB_DARK;
   return acc;
 }, {});
 

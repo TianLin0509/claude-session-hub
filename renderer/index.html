@@ -43,6 +43,7 @@
   <link rel="stylesheet" href="styles/ui-polish.css">
   <link rel="stylesheet" href="styles/groupchat-journal.css">
   <link rel="stylesheet" href="styles/fixed-session-layout.css">
+  <link rel="stylesheet" href="styles/d4-workspace.css">
   <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
        而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
        用独立 <link> 而不是 styles.css 里的 @import —— @import 进来的表排在
@@ -63,7 +64,7 @@
       <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
       <div class="terminal-crumb" id="toolbar-crumb"></div>
       <div class="hub-identity" id="hub-identity" aria-label="AI Hub 运行实例">
-        <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><img src="../claude-wx.ico" alt="" width="24" height="24"></button>
+        <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><img src="../claude-wx.ico" alt="" width="24" height="24"><svg class="d4-h-mark" viewBox="0 0 28 32" aria-hidden="true"><path d="M3 5 9 1v12l10 4V5l6-4v26l-6 4V21L9 17v10l-6 4V5Z" fill="currentColor"/></svg></button>
         <strong>AI Hub</strong><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
@@ -83,17 +84,17 @@
     <!-- 场景 rail（冷杉 v2 T0）：四个场景按钮是从 .sidebar-header 原样搬过来的节点，
          id / data-* / 事件接线一律不变；label 常驻显示，tooltip 补充完整用途。 -->
     <nav class="scene-rail" id="scene-rail" aria-label="场景">
-      <div class="rail-logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 5v14M18 9v10M6 12h12"/><circle cx="18" cy="5" r="2" fill="currentColor" stroke="none"/></svg></div>
+      <div class="rail-logo" aria-hidden="true"><svg class="legacy-h-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 5v14M18 9v10M6 12h12"/><circle cx="18" cy="5" r="2" fill="currentColor" stroke="none"/></svg><svg class="d4-h-mark" viewBox="0 0 28 32"><path d="M3 5 9 1v12l10 4V5l6-4v26l-6 4V21L9 17v10l-6 4V5Z" fill="currentColor"/></svg></div>
       <div class="rail-navigation">
-      <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">工作台</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">投研</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">学习</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">开发看板</span></button>
+      <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V10Z"/><path d="M9 21v-8h6v8"/></svg></span><span class="btn-label">工作台</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 16l5-5 4 3 5-7"/><path d="M16 7h3v3"/></svg></span><span class="btn-label">投研</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6C9 4 6 4 3 5v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1ZM12 6v14"/></svg></span><span class="btn-label">学习</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M10 10v10"/></svg></span><span class="btn-label">开发看板</span></button>
       <div class="rail-separator" aria-hidden="true"></div>
-      <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">备忘录</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">记忆</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">工具</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
+      <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span><span class="btn-label">备忘录</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 4 6v6l8 4 8-4V6l-8-4ZM4 12v6l8 4 8-4v-6M12 16v6"/></svg></span><span class="btn-label">工具</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2H4Z"/></svg></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
       </div>
       <div class="rail-spacer"></div>
       <div class="rail-utilities">
