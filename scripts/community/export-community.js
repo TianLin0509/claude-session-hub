@@ -81,13 +81,15 @@ function collectSource(ref, staging) {
     return { commit: git(['rev-parse', 'HEAD']).trim(), dirty: git(['status', '--porcelain', '--untracked-files=no']).trim() !== '' };
   }
   const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).trim();
-  const tarPath = path.join(os.tmpdir(), `ai-hub-community-${process.pid}-${Date.now()}.tar`);
+  // 用一份临时 index 把该提交检出到暂存目录：只用 git 自己，不依赖 tar（Git Bash 里的
+  // GNU tar 会把 C: 当成远程主机）；仓库自己的 index、HEAD 和工作区都不受影响。
+  const indexFile = path.join(os.tmpdir(), `ai-hub-community-${process.pid}-${Date.now()}.index`);
   try {
-    git(['archive', '--format=tar', '-o', tarPath, commit]);
-    const result = spawnSync('tar', ['-xf', tarPath, '-C', staging], { encoding: 'utf8', windowsHide: true });
-    if (result.status !== 0) throw new Error(`解包失败：${result.stderr || result.error}`);
+    execFileSync('git', ['--work-tree', staging, 'checkout', commit, '--', '.'], {
+      cwd: ROOT, env: { ...process.env, GIT_INDEX_FILE: indexFile }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+    });
   } finally {
-    fs.rmSync(tarPath, { force: true });
+    fs.rmSync(indexFile, { force: true });
   }
   return { commit, dirty: false };
 }
