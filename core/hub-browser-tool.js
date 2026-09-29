@@ -40,7 +40,11 @@ function integrationStatus(root) {
       const config = read(t.config);
       return config?.cli_entry === t.entry && fs.existsSync(t.entry);
     });
+    // @community-strip 中转工具
     return { tool, name: tool === 'images' ? '网页生图' : '公司中转', state: connected.length && connected.length === entries.length ? 'connected' : entries.length ? 'changed' : 'pending',
+    // @community-else
+    //   return { tool, name: tool === 'images' ? '网页生图' : '中转工具', state: connected.length && connected.length === entries.length ? 'connected' : entries.length ? 'changed' : 'pending',
+    // @community-end
       identities: ['main', 'alt'].map(identity => ({ identity, count: connected.filter(t => t.identity === identity).length })).filter(i => i.count) };
   });
 }

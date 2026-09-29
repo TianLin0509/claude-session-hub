@@ -140,6 +140,7 @@ function createPathLinkContextMenuController({
         if (t.isUrl) return;
         const r = await ipcRenderer.invoke('show-in-folder', t.absPath);
         if (r && r.error) console.warn('[path-link-ctx] show-in-folder failed:', r.error);
+      // @community-strip 公司中转
       } else if (action === 'sync-company') {
         if (t.isUrl) return;
         const displayName = t.absPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || t.absPath;
@@ -169,6 +170,7 @@ function createPathLinkContextMenuController({
         }
         const result = await pushToChatgpt(text, displayName);
         if (!result || result.ok !== true) return;
+      // @community-end
       } else if (action === 'open-external') {
         if (t.isUrl) {
           const r = await ipcRenderer.invoke('open-external-url', t.absPath);
@@ -180,9 +182,11 @@ function createPathLinkContextMenuController({
       }
     } catch (e) {
       if (action === 'open-file-manager') showSyncStatus(`文件管理打开失败\n${e && e.message ? e.message : '路径不可读取'}`, 'error');
+      // @community-strip 公司中转
       if (action === 'sync-company' || action === 'sync-chatgpt') {
         showSyncStatus(`同步失败\n${e && e.message ? e.message : '同步程序异常。'}`, 'error');
       }
+      // @community-end
       console.warn('[path-link-ctx] action failed:', action, e && e.message);
     }
   }

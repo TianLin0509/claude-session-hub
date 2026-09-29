@@ -329,8 +329,12 @@ class MeetingRoomManager {
         //   字段写残 state.json，重启后所有 AI 群聊退化为 general（含投研，丢 LinDangAgent MCP）。
         //   schedulePersist 已修但既有 state.json 字段已丢，按 title 前缀推断兜底。
         //   匹配新前缀 "投研" / "开发" / "通用" 与历史前缀。
+        // @community-strip 投研场景
         if (meetingData.title.includes('投研')) scene = 'research';
         else if (meetingData.title.includes('开发')) scene = 'dev';
+        // @community-else
+        //   if (meetingData.title.includes('开发')) scene = 'dev';
+        // @community-end
         else scene = 'general';
       } else {
         scene = 'general';
@@ -341,8 +345,12 @@ class MeetingRoomManager {
       //   兜底救不到。补一道：scene='general' 但 title 含 '投研'/'开发' 视为旧版数据迁移
       //   遗留的不一致 → 强制按 title 修正。新建 AI 群聊不会触发（title 由 createMeeting 按
       //   scene 一致生成）；用户极罕见地把通用群聊起名"投研笔记"会被误判，但权衡正确率优先。
+      // @community-strip 投研场景
       if (meetingData.title.includes('投研')) scene = 'research';
       else if (meetingData.title.includes('开发')) scene = 'dev';
+      // @community-else
+      // if (meetingData.title.includes('开发')) scene = 'dev';
+      // @community-end
     }
     // 标记 mutate 入参，让调用方（main.js boot 时 stateStore.save(bootMeetings)）写盘的
     //   meetings 数组也带上修正后的 scene —— 否则 boot 时 save 用原始 bootMeetings 会把

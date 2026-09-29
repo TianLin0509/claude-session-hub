@@ -22,7 +22,11 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  }
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
+ // @community-strip 公司中转
  const bridgeRoot=path.join(homeDir,'tools/chatgpt_bridge');
+ // @community-else
+ // const bridgeRoot=null;
+ // @community-end
  const cleanEnv={...env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'};
  for(const key of ['CLAUDECODE','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY'])delete cleanEnv[key];
  function external(){if(isolated)throw Error('隔离 Hub 不访问真实工具账号');}

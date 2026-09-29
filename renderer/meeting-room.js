@@ -2845,9 +2845,11 @@ if (typeof document !== 'undefined') (function () {
       ${softBanner}
       <section class="mr-gc-shell ${sideCollapsed ? 'side-collapsed' : ''}" aria-label="AI 群聊">
         <main class="mr-gc-thread">
+          <!-- @community-strip 投委会入口 -->
           <!-- 2026-06-28 道雪：群聊精简 — 删 topbar(标题/统计/卡片视图)、摘要提示条、本轮进度、内联操作按钮行。
                群成员按钮移到 header；操作按钮(综合共识等)移到作战面板；research 场景保留精简 topbar 只放投委会入口。 -->
           ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="开投委会：手输股票，自动跑五幕出双榜">⚖️ 开投委会</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="过往投委会：回看历史五幕发言+双榜+主席报告">📋 过往投委会</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="技术初筛=独立趋势龙雷达，与投委会解耦">📊 技术初筛</button></div></div>` : ''}
+          <!-- @community-end -->
 
           <div class="mr-gc-tools" id="mr-gc-tools" ${_gcToolsExpanded[meeting.id] ? '' : 'hidden'}>
             <button type="button" class="gc-journal-collapse-all" data-journal-collapse-all>收起全部长回答</button>
@@ -5258,6 +5260,7 @@ if (typeof document !== 'undefined') (function () {
         tuning = document.createElement('div');
         tuning.id = 'mr-input-tuning';
         tuning.className = 'composer-rail';
+        // @community-strip 公司中转
         tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
         tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
           const button = event.currentTarget, meetingId = activeMeetingId;
@@ -5279,6 +5282,9 @@ if (typeof document !== 'undefined') (function () {
           } catch (error) { _showGcEscapeNotice('拉取失败：' + error.message, 'error'); }
           finally { button.disabled = false; button.textContent = '拉取'; }
         });
+        // @community-else
+        // tuning.innerHTML = '<div class="mr-input-tuning-members"></div>';
+        // @community-end
         row.appendChild(tuning);
       }
       _updateInputTuning(meeting);
@@ -6894,6 +6900,7 @@ if (typeof document !== 'undefined') (function () {
     }
     if (isGroupChat) {
       items.unshift({ value: '@all', label: '@all · 全体成员', hint: 'group target' });
+      // @community-strip 投研场景
       if (meeting && meeting.scene === 'research') {
         items.unshift(
           { value: '@英灵', label: '英灵议事 · 按任务自动选择', hint: '统一 Lens Packet' },
@@ -6901,6 +6908,7 @@ if (typeof document !== 'undefined') (function () {
           { value: '@英灵 利弗莫尔', label: '利弗莫尔 · 右侧趋势镜头', hint: 'trend lens' },
         );
       }
+      // @community-end
     } else {
     }
     return items;

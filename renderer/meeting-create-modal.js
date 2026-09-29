@@ -25,7 +25,9 @@ const SLOT_NAMES = ['一号位', '二号位', '三号位'];
 const SCENES = [
   { id: 'dev', label: '开发', placeholder: '例如：实现这个需求，完成验证与合并' },
   { id: 'general',  label: '通用', placeholder: '例如：帮我拆解这个问题，给出可执行方案' },
+  // @community-strip 投研场景
   { id: 'research', label: '投研', placeholder: '例如：分析这只股票后续走势和操作计划' },
+  // @community-end
 ];
 
 let _modalEl = null;

@@ -463,7 +463,11 @@ function renderCardActions(turn) {
   const multi = '<button class="ta-btn ta-multi" data-action="multi-select">多选</button>';
   const secondary = user
     ? '<button class="ta-btn" data-action="resend">重发这条消息</button><button class="ta-btn" data-action="edit-resend">编辑重发</button><button class="ta-btn" data-action="prompt-inspect">查看完整 Prompt</button>'
+    // @community-strip 公司中转
     : (activity ? '' : '<button class="ta-btn ta-company" data-action="sync-chatgpt">同步这条消息到公司</button>')
+    // @community-else
+    //   : ''
+    // @community-end
       + (!activity && turn.phase !== 'commentary' ? '<button class="ta-btn" data-action="regen" title="先查看待重发正文">重新生成…</button>' : '');
   return copy + '<details class="card-actions-menu"><summary class="card-actions-more" aria-label="更多消息操作">更多</summary>'
     + '<div class="card-actions-popover">' + multi + secondary + '</div></details>';

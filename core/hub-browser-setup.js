@@ -5,10 +5,18 @@ class HubBrowserSetup {
   constructor({ root, env = process.env }) { this.root = root; this.env = env; this.progress = null; this.flight = null; }
   args() {
     const isolated = this.env.CLAUDE_HUB_HOME_DIR || this.env.CLAUDE_HUB_DATA_DIR;
+    // @community-strip 本机工具池
     const base = isolated ? path.join(this.root, 'tool-fixtures') : 'C:/VibeData';
     const pool = isolated ? path.join(base, 'ChatGPTWebImagesPool') : this.env.CHATGPT_WEB_IMAGES_POOL || path.join(base, 'ChatGPTWebImagesPool');
     const bridge = isolated ? path.join(base, 'ChatGPTBridge/config.json') : this.env.CHATGPT_BRIDGE_CONFIG || path.join(base, 'ChatGPTBridge/config.json');
     const playwright = require.resolve('playwright', { paths: ['C:/DevTools/playwright-cli-0.1.19/node_modules'] });
+    // @community-else
+    // if (!isolated) throw new Error('社区版未附带本机生图与中转工具，可在账号中心直接登录网页');
+    // const base = path.join(this.root, 'tool-fixtures');
+    // const pool = path.join(base, 'ChatGPTWebImagesPool');
+    // const bridge = path.join(base, 'ChatGPTBridge/config.json');
+    // const playwright = require.resolve('playwright');
+    // @community-end
     return [path.resolve(__dirname, '../scripts/hub-browser-setup.py'), '--root', this.root, '--repo', path.resolve(__dirname, '..'), '--pool', pool, '--bridge', bridge, '--playwright', playwright];
   }
   run(choices) {

@@ -7,7 +7,15 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const crypto = require('crypto');
 const { checkedPath, walkFiles, fileOperation } = require('../../core/file-manager-service');
+// @community-strip 中转工具
 const { runChatgptBridge, resolveChatgptBridgeRuntime, parseBridgeOutput } = require('./chatgpt-bridge-handlers');
+// @community-else
+// // 社区版不附带中转工具；交付目标保留同一接口，调用时如实报告不可用。
+// const unavailable = { ok: false, error: '社区版未包含这个交付工具' };
+// const runChatgptBridge = async () => unavailable;
+// const resolveChatgptBridgeRuntime = () => ({ error: unavailable.error });
+// const parseBridgeOutput = () => unavailable;
+// @community-end
 
 function registerFileManagerIpc(ipcMain, deps = {}) {
   const electron = deps.electron || require('electron');

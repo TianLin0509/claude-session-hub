@@ -3,15 +3,23 @@ const fs = require('fs'), path = require('path');
 const { execFile } = require('child_process');
 const EXTERNAL_SITES = Object.freeze({
   github: { name: 'GitHub', url: 'https://github.com/login' },
+  // @community-strip 个人工具站点
   yuque: { name: '语雀', url: 'https://www.yuque.com/login' },
+  // @community-end
   githubDevice: { name: 'GitHub 授权', url: 'https://github.com/login/device' },
+  // @community-strip 投研站点
   // 初心投研「账号数据」用的投研站点：登录在这个专属 Chrome 里做，初心通过本机接口取 cookie（2026-09-28）
   xueqiu: { name: '雪球', url: 'https://xueqiu.com/', cookie: { host: 'xueqiu.com', name: /^xq_is_login$/ } },
   jiuyan: { name: '韭研公社', url: 'https://www.jiuyangongshe.com/', cookie: { host: 'jiuyangongshe.com', name: /^SESSION$/ } },
   iwencai: { name: '同花顺问财', url: 'https://www.iwencai.com/unifiedwap/home/index', cookie: { host: 'iwencai.com', name: /^(userid|u_name|ticket)$/ } },
+  // @community-end
 });
+// @community-strip 投研站点
 // 只有这几个站点的 cookie 可以交给本机的初心投研；AI 网站的登录永远不导出。
 const RESEARCH_SITES = Object.freeze(['xueqiu', 'jiuyan', 'iwencai']);
+// @community-else
+// const RESEARCH_SITES = Object.freeze([]);
+// @community-end
 function externalSite(id) {
   if (!Object.hasOwn(EXTERNAL_SITES, id)) throw Error('外部服务标识无效');
   return EXTERNAL_SITES[id];

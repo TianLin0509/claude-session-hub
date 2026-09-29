@@ -52,7 +52,12 @@ async function webStatus(env = process.env) {
   } catch (error) { return { ok: false, models: [], online: false, full: false, message: error.message }; }
 }
 async function openWebSettings({ background = false, env: sourceEnv = process.env } = {}) {
+  // @community-strip 本机专用程序
   const launcher = 'C:\\DevTools\\CodexWebGPT-AIHub\\Codex Web GPT.exe';
+  // @community-else
+  // const launcher = String(sourceEnv.AI_HUB_CHATGPT_WEB_LAUNCHER || '');
+  // if (!launcher) throw new Error('社区版未附带网页 ChatGPT 启动器');
+  // @community-end
   const env = launcherEnvironment(sourceEnv);
   const marker = path.join(path.dirname(launcher), 'ai-hub-isolation-install.json');
   if (!fs.existsSync(marker)) throw new Error('未安装 AI Hub 专用隔离启动器');
