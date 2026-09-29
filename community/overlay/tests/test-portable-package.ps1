@@ -1,7 +1,9 @@
 param([string]$Version)
 $ErrorActionPreference='Stop'
 if(-not $Version){$Version=(Get-Content (Join-Path $PSScriptRoot '..\package.json') -Raw | ConvertFrom-Json).version}
-$root=Join-Path ([IO.Path]::GetTempPath()) ('hub portable acceptance '+[guid]::NewGuid())
+# Short root with a space: the installer adds its own staging folders, and the whole
+# unpacked tree must stay under the classic 260-character Windows path limit.
+$root=Join-Path ([IO.Path]::GetTempPath()) ('hub pa '+([guid]::NewGuid().ToString('N').Substring(0,8)))
 New-Item -ItemType Directory -Path $root | Out-Null
 $archive=(Resolve-Path (Join-Path $PSScriptRoot "..\dist\AIHubCommunity-$Version-win-x64.zip")).Path
 $checksum=Join-Path $root 'SHA256SUMS.txt'

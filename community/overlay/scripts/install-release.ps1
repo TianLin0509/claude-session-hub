@@ -82,10 +82,14 @@ try {
     $unpacked = Join-Path $stage 'app'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    $longest = 0
     try { foreach ($entry in $zip.Entries) {
       $name = $entry.FullName.Replace('\','/')
+      if ($name.Length -gt $longest) { $longest = $name.Length }
       if ($name.StartsWith('/') -or $name.Contains(':') -or ($name.Split('/') -contains '..') -or (($entry.ExternalAttributes -shr 16) -band 0xF000) -eq 0xA000) { throw "Unsafe archive entry: $name" }
     } } finally { $zip.Dispose() }
+    # Windows PowerShell extraction is limited to 260-character paths; say so before extracting.
+    if (($unpacked.Length + 1 + $longest) -ge 260) { throw "Installation path is too long for Windows ($($unpacked.Length + 1 + $longest) characters). Choose a shorter -Destination." }
     Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
     $exe = Join-Path $unpacked 'AI Hub Community.exe'
     $asar = Join-Path $unpacked 'resources\app.asar'

@@ -182,6 +182,10 @@ function updatePackage(outDir, manifest, versions) {
     }
   }
   if (Array.isArray(pkg.build.files) && !pkg.build.files.includes('community-edition.json')) pkg.build.files.push('community-edition.json');
+  // 追加的打包过滤（例如排除依赖自带的构建源码，缩短解压后的路径）。
+  for (const pattern of meta.buildFilesAppend || []) {
+    if (Array.isArray(pkg.build.files) && !pkg.build.files.includes(pattern)) pkg.build.files.push(pattern);
+  }
   delete pkg.author;
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
   const lockPath = path.join(outDir, 'package-lock.json');
