@@ -1432,7 +1432,7 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
-    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1,
+    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1.12,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
     scrollback: 10000,
