@@ -6,8 +6,10 @@
 //   node scripts/community/export-community.js --out <空目录> [--ref <提交|WORKTREE>] [--version 0.2.0]
 //
 // 流程（任何一步失败都不留半成品在目标目录里当作可用结果）：
-//   1. 取源：默认 `git archive <ref>`，只含已提交内容，不会带出工作区里未提交或未跟踪的文件。
-//      --ref WORKTREE 只用于开发迭代：取已跟踪文件与未忽略的新文件的当前内容。
+//   1. 取源：默认把 <ref> 这个提交检出到暂存目录，只含已提交内容。之后的清单、覆盖文件
+//      全部从暂存目录读取，不读当前工作区，所以同一个完整 SHA 永远导出同一份内容。
+//      --ref WORKTREE 只用于开发迭代：取已跟踪文件与未忽略的新文件的当前内容，
+//      有任何未提交改动（含未跟踪文件）都如实标记 upstreamDirty。
 //   2. 按 community/manifest.json 的 include 取文件，再按 drop 删掉私人模块。
 //   3. 处理剥离标记：`@community-strip … @community-end` 整段删除，
 //      其中 `@community-else` 之后的注释行去掉注释符保留（私人版里它们只是注释）。
@@ -25,7 +27,14 @@ const { applyStripMarkers } = require('./strip-markers');
 const { scanTree } = require('./leak-rules');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const COMMUNITY_DIR = path.join(ROOT, 'community');
+// 导出程序本身（这三个文件）按当前运行的版本执行；报告里写明它们是否与被导出的提交一致。
+const EXPORTER_FILES = ['scripts/community/export-community.js', 'scripts/community/strip-markers.js', 'scripts/community/leak-rules.js'];
+// 覆盖文件里的版本占位符，导出时替换成本次发行版本（安装器默认版本、文档里的安装命令）。
+const VERSION_TOKENS = {
+  '@@COMMUNITY_TAG@@': v => `v${v.edition}`,
+  '@@COMMUNITY_VERSION@@': v => v.edition,
+  '@@UPSTREAM_VERSION@@': v => v.upstream,
+};
 const TEXT_EXT = new Set(['.js', '.cjs', '.mjs', '.json', '.html', '.css', '.md', '.ps1', '.bat', '.cmd', '.py', '.yml', '.yaml', '.txt', '.svg', '.toml']);
 
 function parseArgs(argv) {
@@ -42,8 +51,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function git(args, options = {}) {
-  return execFileSync('git', args, { cwd: ROOT, encoding: options.encoding || 'utf8', maxBuffer: 1 << 30, windowsHide: true });
+function git(args, root = ROOT) {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 1 << 30, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 function toPosix(p) { return p.split(path.sep).join('/'); }
@@ -66,11 +75,11 @@ function matcher(patterns) {
   return file => regs.some(re => re.test(file));
 }
 
-function collectSource(ref, staging) {
+function collectSource(ref, staging, root = ROOT) {
   if (ref === 'WORKTREE') {
-    const files = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean);
+    const files = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'], root).split('\0').filter(Boolean);
     for (const file of files) {
-      const source = path.join(ROOT, file);
+      const source = path.join(root, file);
       let stat;
       try { stat = fs.lstatSync(source); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
       if (!stat.isFile()) continue;
@@ -78,15 +87,16 @@ function collectSource(ref, staging) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(source, target);
     }
-    return { commit: git(['rev-parse', 'HEAD']).trim(), dirty: git(['status', '--porcelain', '--untracked-files=no']).trim() !== '' };
+    // 未跟踪文件同样会进入导出，所以脏状态必须把它们算进去。
+    return { commit: git(['rev-parse', 'HEAD'], root).trim(), dirty: git(['status', '--porcelain', '--untracked-files=normal'], root).trim() !== '' };
   }
-  const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).trim();
+  const commit = git(['rev-parse', '--verify', `${ref}^{commit}`], root).trim();
   // 用一份临时 index 把该提交检出到暂存目录：只用 git 自己，不依赖 tar（Git Bash 里的
   // GNU tar 会把 C: 当成远程主机）；仓库自己的 index、HEAD 和工作区都不受影响。
   const indexFile = path.join(os.tmpdir(), `ai-hub-community-${process.pid}-${Date.now()}.index`);
   try {
     execFileSync('git', ['--work-tree', staging, 'checkout', commit, '--', '.'], {
-      cwd: ROOT, env: { ...process.env, GIT_INDEX_FILE: indexFile }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+      cwd: root, env: { ...process.env, GIT_INDEX_FILE: indexFile }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
     });
   } finally {
     fs.rmSync(indexFile, { force: true });
@@ -203,14 +213,38 @@ function updatePackage(outDir, manifest, versions) {
   }
 }
 
-function exportCommunity({ ref = 'HEAD', out, version = null, log = console.log } = {}) {
+// 导出程序文件与被导出提交里的同名文件是否一致。不一致说明是用别的版本的规则导出的，
+// 报告里写明，由维护者判断；WORKTREE 模式下没有可比对的提交，记为 null。
+function exporterProvenance(ref, commit, root) {
+  if (ref === 'WORKTREE' || path.resolve(root) !== ROOT) return { matchesExportedCommit: null, differs: [] };
+  const differs = [];
+  for (const rel of EXPORTER_FILES) {
+    let committed = null;
+    try { committed = git(['show', `${commit}:${rel}`], root); } catch {}
+    const running = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (committed === null || committed.replace(/\r\n/g, '\n') !== running.replace(/\r\n/g, '\n')) differs.push(rel);
+  }
+  return { matchesExportedCommit: differs.length === 0, differs };
+}
+
+function applyVersionTokens(text, versions) {
+  let out = text;
+  for (const [token, value] of Object.entries(VERSION_TOKENS)) out = out.split(token).join(value(versions));
+  return out;
+}
+
+function exportCommunity({ ref = 'HEAD', out, version = null, root = ROOT } = {}) {
   if (!out) throw new Error('需要 --out <目录>');
   const outDir = path.resolve(out);
   if (fs.existsSync(outDir) && fs.readdirSync(outDir).length) throw new Error(`目标目录不是空的：${outDir}（导出从不覆盖已有内容）`);
-  const manifest = JSON.parse(fs.readFileSync(path.join(COMMUNITY_DIR, 'manifest.json'), 'utf8'));
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-hub-community-src-'));
   try {
-    const source = collectSource(ref, staging);
+    const source = collectSource(ref, staging, root);
+    // 清单和覆盖文件都来自被导出的快照本身，不读当前工作区。
+    const communityDir = path.join(staging, 'community');
+    const manifestPath = path.join(communityDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) throw new Error(`被导出的提交里没有 community/manifest.json：${source.commit}`);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     const upstreamVersion = JSON.parse(fs.readFileSync(path.join(staging, 'package.json'), 'utf8')).version;
     const versions = { edition: version || manifest.version, upstream: upstreamVersion };
     if (!versions.edition) throw new Error('缺少社区版版本号（manifest.version 或 --version）');
@@ -232,9 +266,14 @@ function exportCommunity({ ref = 'HEAD', out, version = null, log = console.log 
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, text, 'utf8');
     }
-    const overlayDir = path.join(COMMUNITY_DIR, 'overlay');
+    const overlayDir = path.join(communityDir, 'overlay');
     const overlay = fs.existsSync(overlayDir) ? listFiles(overlayDir) : [];
-    for (const file of overlay) copyFileInto(overlayDir, file, outDir);
+    for (const file of overlay) {
+      if (!isText(file)) { copyFileInto(overlayDir, file, outDir); continue; }
+      const target = path.join(outDir, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, applyVersionTokens(fs.readFileSync(path.join(overlayDir, file), 'utf8'), versions), 'utf8');
+    }
 
     fs.writeFileSync(path.join(outDir, 'community-edition.json'), JSON.stringify({
       edition: 'community', version: versions.edition, upstreamVersion: versions.upstream,
@@ -243,7 +282,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, log = console.log 
     updatePackage(outDir, manifest, versions);
 
     const files = listFiles(outDir);
-    const leftover = files.filter(isText).filter(file => /@community-(?:strip|else|end)\b/.test(fs.readFileSync(path.join(outDir, file), 'utf8')));
+    const leftover = files.filter(isText).filter(file => /@community-(?:strip|else|end)\b|@@COMMUNITY_[A-Z]+@@/.test(fs.readFileSync(path.join(outDir, file), 'utf8')));
     const references = checkReferences(outDir, files);
     const syntax = checkSyntax(outDir, files);
     const hits = scanTree(outDir, files);
@@ -258,6 +297,7 @@ function exportCommunity({ ref = 'HEAD', out, version = null, log = console.log 
     const report = {
       ok: !leftover.length && !references.length && !syntax.length && !leaks.length && publicAudit.ok === true,
       out: outDir, ref, upstreamCommit: source.commit, upstreamDirty: source.dirty,
+      exporter: exporterProvenance(ref, source.commit, root),
       edition: versions.edition, upstreamVersion: versions.upstream,
       counts: { upstreamFiles: all.length, exported: files.length, dropped: dropped.length, overlay: overlay.length, strippedFiles: stripReport.length },
       leftoverMarkers: leftover, unresolvedReferences: references, syntaxErrors: syntax, leaks,

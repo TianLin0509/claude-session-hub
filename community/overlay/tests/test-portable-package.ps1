@@ -9,10 +9,14 @@ $archive=(Resolve-Path (Join-Path $PSScriptRoot "..\dist\AIHubCommunity-$Version
 $checksum=Join-Path $root 'SHA256SUMS.txt'
 [IO.File]::WriteAllText($checksum,((Get-FileHash -LiteralPath $archive).Hash+'  '+[IO.Path]::GetFileName($archive)))
 $receipt=Join-Path $root 'result.json'
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\scripts\install-release.ps1') -Version $Version -PackagePath $archive -ChecksumPath $checksum -Destination (Join-Path $root 'installed') -NoLaunch -NoShortcut -ResultPath $receipt
+# No -Version on purpose: users download install-release.ps1 from the Release and run it
+# as-is, so its built-in default must be this release.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\scripts\install-release.ps1') -PackagePath $archive -ChecksumPath $checksum -Destination (Join-Path $root 'installed') -NoLaunch -NoShortcut -ResultPath $receipt
 if($LASTEXITCODE -ne 0){throw 'Portable installer failed'}
 $result=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
 if(-not $result.ok){throw 'Portable receipt not successful'}
+if($result.version -ne ('v'+$Version)){throw "Installer default installed $($result.version), expected v$Version"}
+Write-Host "PASS: installer without -Version installed v$Version."
 & node.exe (Join-Path $PSScriptRoot 'e2e-community-cdp.js') --executable $result.executable
 if($LASTEXITCODE -ne 0){throw 'Installed ZIP user journey failed'}
 Write-Host 'PASS: actual ZIP installed in spaced path and its executable completed isolated UI user journeys.'

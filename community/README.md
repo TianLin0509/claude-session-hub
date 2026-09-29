@@ -18,6 +18,8 @@ npm ci; npm test; node scripts/audit-public.js; node tests/e2e-community-cdp.js
 ## 给主仓库开发者的约定
 
 - 私人模块（投研、学习、投委会、联赛、公司中转、本机专用工具）的新接线点，用成对注释包起来：`// @community-strip <原因>` … `// @community-end`；社区版需要替代实现时，在中间加 `// @community-else`，其后每行都写成注释。HTML 用 `<!-- -->`，CSS 用 `/* */`；写在模板字符串里时只能用 HTML 注释形式。
+- 覆盖文件里的发行版本一律写占位符：`@@COMMUNITY_TAG@@`（如 v0.2.0）、`@@COMMUNITY_VERSION@@`（如 0.2.0）、`@@UPSTREAM_VERSION@@`，导出时按 `manifest.json` 的 `version` 与上游版本填入；安装器的默认版本也靠它与发行版本绑定。
+- 导出指定提交时，清单与覆盖文件都取自该提交本身；工作区里未提交的改动一律不进入，只有 `--ref WORKTREE` 会读取并标记 `upstreamDirty`。报告里的 `exporter.matchesExportedCommit` 说明导出程序本身是否与该提交一致。
 - 整个文件都是私人模块时，把它加进 `manifest.json` 的 `drop`；需要保留接口的，在 `overlay/` 放同名同接口的替代文件。
 - 注释里的名字、本机目录、私人项目名由 `manifest.json` 的 `scrub` 统一替换；新的私人服务地址或关键词加进 `leak-rules.js`。
 - `tests/unit-community-export.test.js` 在合并闸门里对当前树做一次完整导出，上述约定漏了会直接红。

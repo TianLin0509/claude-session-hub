@@ -10,6 +10,11 @@ for(const file of ['community-gui/report.json','community-packaged-gui/report.js
 const sha=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 for(const name of [`AIHubCommunity-${version}-win-x64.zip`,`AIHubCommunity-Setup-${version}.exe`])if(!fs.existsSync(path.join(dist,name)))throw Error('Missing release asset: '+name);
 execFileSync('git',['archive','--format=zip','-o',path.join(dist,`AIHubCommunity-source-${version}.zip`),'HEAD'],{cwd:root});
+// The published installer must install this release when run without -Version.
+const installer=fs.readFileSync(path.join(root,'scripts/install-release.ps1'),'utf8');
+const defaultVersion=(/\[string\]\$Version\s*=\s*'([^']+)'/.exec(installer)||[])[1];
+if(defaultVersion!==`v${version}`)throw Error(`install-release.ps1 defaults to ${defaultVersion}, expected v${version}`);
+if(process.env.RELEASE_TAG&&process.env.RELEASE_TAG!==`v${version}`)throw Error(`Tag ${process.env.RELEASE_TAG} does not match package version v${version}`);
 fs.copyFileSync(path.join(root,'scripts/install-release.ps1'),path.join(dist,'install-release.ps1'));
 const names=[`AIHubCommunity-${version}-win-x64.zip`,`AIHubCommunity-Setup-${version}.exe`,`AIHubCommunity-source-${version}.zip`,'install-release.ps1'];
 const assets=names.map(name=>({name,bytes:fs.statSync(path.join(dist,name)).size,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(dist,name))).digest('hex')}));

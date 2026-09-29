@@ -2,7 +2,7 @@
 
 把你自己的 Claude Code、Codex、Gemini CLI、Kimi 等 AI 放进一个 Windows 桌面工作台：单独对话、多 AI 群聊、开发分工看板、历史检索、文件预览、记忆文件库与能力管理。
 
-这是 AI Hub 的公开发行版，当前 **v0.2.0**，同步自上游 **1.6.257**（具体提交见 `community-edition.json`）。它不附带任何人的账号、聊天记录、私人模块或私人服务。MIT 开源；AI 服务的账号、订阅和用量由你自己提供。
+这是 AI Hub 的公开发行版，当前 **@@COMMUNITY_TAG@@**，同步自上游 **@@UPSTREAM_VERSION@@**（具体提交见 `community-edition.json`）。它不附带任何人的账号、聊天记录、私人模块或私人服务。MIT 开源；AI 服务的账号、订阅和用量由你自己提供。
 
 ## 一段命令安装（推荐）
 
@@ -10,19 +10,19 @@ Windows 10/11 x64，在 PowerShell 粘贴执行。Hub 自带运行时，**不需
 
 ```powershell
 $setup = Join-Path $env:TEMP ('ai-hub-install-' + [guid]::NewGuid() + '.ps1')
-Invoke-WebRequest -UseBasicParsing 'https://github.com/TianLin0509/ai-hub-community/releases/download/v0.2.0/install-release.ps1' -OutFile $setup
-powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Version v0.2.0
+Invoke-WebRequest -UseBasicParsing 'https://github.com/TianLin0509/ai-hub-community/releases/download/@@COMMUNITY_TAG@@/install-release.ps1' -OutFile $setup
+powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Version @@COMMUNITY_TAG@@
 ```
 
 脚本下载并校验便携 ZIP，按版本安装、创建桌面入口并启动。重复执行会复用已验证的版本，旧版本和用户数据都保留。电脑上还没有 AI CLI 时，在最后一行加 `-Provider codex` 或 `-Provider claude`，脚本会调用官方原生安装器；已有 CLI 不会重复安装。**登录授权和模型使用权仍由你本人提供。**
 
-窗口标题会显示 `AI Hub Community v0.2.0（上游 1.6.257）`，报告问题时请带上这一行。
+窗口标题会显示 `AI Hub Community @@COMMUNITY_TAG@@（上游 @@UPSTREAM_VERSION@@）`，报告问题时请带上这一行。
 
 ## 让 AI 助手帮你装
 
 把这段话发给你的 AI 编码助手：
 
-> 请安装 https://github.com/TianLin0509/ai-hub-community 的 v0.2.0。先读 AGENTS.md 和 docs/AGENT-QUICKSTART.md，走免 Node/Git/Python 的便携安装路线，校验下载并保留本机已有的 Hub 和 CLI。复用已有 CLI，缺少时按我的选择补装。打开官方登录让我本人授权，不读取或索取密钥。确认首次消息、群聊和重启恢复，报告实际验证结果。
+> 请安装 https://github.com/TianLin0509/ai-hub-community 的 @@COMMUNITY_TAG@@。先读 AGENTS.md 和 docs/AGENT-QUICKSTART.md，走免 Node/Git/Python 的便携安装路线，校验下载并保留本机已有的 Hub 和 CLI。复用已有 CLI，缺少时按我的选择补装。打开官方登录让我本人授权，不读取或索取密钥。确认首次消息、群聊和重启恢复，报告实际验证结果。
 
 完整 [Agent 安装手册](docs/AGENT-QUICKSTART.md) · [公司定制指南](docs/CUSTOMIZE.md) · [架构与复用地图](docs/ARCHITECTURE.md)。安装包的 `resources/guides` 里也有这些说明，离线可读。
 

@@ -23,6 +23,12 @@ test('edition marker enables the community edition and records the upstream vers
   assert.equal(pkg.version, marker.version);
   assert.equal(pkg.build.productName, 'AI Hub Community');
   assert.ok(pkg.build.files.includes('community-edition.json'));
+  // Run without -Version, the published installer must install this release.
+  const installer = read('scripts/install-release.ps1');
+  assert.equal(/\[string\]\$Version\s*=\s*'([^']+)'/.exec(installer)?.[1], `v${pkg.version}`);
+  for (const doc of ['README.md', 'INSTALL.md', 'docs/AGENT-QUICKSTART.md', 'scripts/install-release.ps1']) {
+    assert.doesNotMatch(read(doc), /@@COMMUNITY_|@@UPSTREAM_/, doc);
+  }
 });
 
 test('private module entry points are absent from the page and the tree', () => {
