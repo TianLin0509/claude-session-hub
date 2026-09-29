@@ -250,7 +250,7 @@ function _paintSceneHint() {
   const hint = _modalEl && _modalEl.querySelector('#mcm-scene-hint');
   if (!hint) return;
   if (_currentMode === 'dev') {
-    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员，点「开题」后由第一位实现、第二位验证与合并。单人开发请使用普通会话的「一键开工」。';
+    hint.textContent = '从「项目库」选择项目，或选择已有文件夹。至少保留两位成员。建好后直接输入任务，Hub 安排第一位开题与实现、第二位独立审查与合并。单人开发请使用普通会话的「一键开工」。';
     hint.style.display = '';
   } else {
     hint.textContent = '';
@@ -665,10 +665,16 @@ function _buildDefaultDevWorkflow(scene, slots, workspaceHint = {}) {
     devPhase: 'discuss',
   });
   if (!config) throw new Error('无法生成默认开发工作流，请重试创建');
-  config.templateId = templateId;
+  // 2026-09-28: new rooms run on the delivery engine only; the legacy template
+  // above is used just for its project-locator fields.
+  const delivery = require('../core/workflow-settings').createDeliveryConfig('development', members, {
+    ...(config.projectLocator ? { projectLocator: config.projectLocator } : {}),
+    ...(config.projectLibrary ? { projectLibrary: config.projectLibrary } : {}),
+    workRoot: !!config.workRoot,
+  });
   // Submit with create-meeting: the first creation event and response must
   // already contain the workflow, before the room constructs its controls.
-  return config;
+  return delivery;
 }
 
 function _showError(text) {

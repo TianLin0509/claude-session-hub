@@ -46,12 +46,13 @@ function reviewsInBudget(run) {
 }
 function newStep(run,index) {
   const number=run.steps.length+1;
-  const inputs=run.steps.flatMap(s=>Object.values(s.deliveries || {})).map(d=>({path:d.path,hash:d.hash,outcome:d.outcome}));
+  // Hub notes (e.g. a failed test gate) are pinned inputs like member deliveries.
+  const inputs=run.steps.flatMap(s=>[...Object.values(s.deliveries || {}),...(s.hubNotes || [])]).map(d=>({path:d.path,hash:d.hash,outcome:d.outcome}));
   return {id:crypto.randomUUID(),number,index,inputHash:hash(JSON.stringify([run.goal,run.stages,inputs])),inputs,
     members:[...run.stages[index].members],deliveries:{},dispatches:[],createdAt:Date.now()};
 }
 function protocol() { return '按文件交付推进：每位成员只写自己的结果；完成本轮职责及必要验证后，UTF-8 保存并回读，再在同目录将草稿原子改名为已交付文件。聊天回答、CLI 空闲和超时不算交付。不得修改文件头、覆盖已交付结果或代交其他成员的文件。后台验证未结束时保留草稿。阻塞要写清原因，不伪造完成。'; }
-function prompt(base,run,step,members=[]) {
+function prompt(base,run,step,members=[],extras={}) {
   const stage=run.stages[step.index], name=id=>members.find(m=>m.memberId===id)?.displayName || members.find(m=>m.memberId===id)?.title || id;
   const lines=[`【文件交付工作流 · 第 ${step.number} 轮 · ${stage.name}】`,`本次目标：${run.goal}`,`项目：${run.workspace || '先核实任务项目'}`,run.projectLocator || '',protocol(),
     '本轮共享职责：',stage.prompt,'本轮每位成员各有交付文件；同轮全部交付后才接续。只处理自己的分工，其他成员的文件只读。',
@@ -62,6 +63,7 @@ function prompt(base,run,step,members=[]) {
     '开发交付规则：开题只核实目标、范围、验收和项目，不改代码；实现使用独立 worktree，交付完整 SHA、实际验证与风险；审查者独立验证，不采信自报通过。',
     '每轮第一位是阶段负责人，其他成员只交付分工建议。实现负责人不得自行合并。审查负责人只有在本任务已获授权且真实合并及后置检查成功后才交付完成；缺陷交付需返工，环境或审批阻碍交付阻塞。项目既有审批条件优先。',
     '用户明确按本开发流程开工即授权开题范围内实现和独立验证通过后的项目合并；不从一般讨论或非开发模板推导合并权限。');
+  if(run.kind==='file')lines.push(...require('./delivery-dev-guidance').lines(run,step,extras));
   if(run.kind==='file' && stage.after==='review' && step.members.length>1)lines.push(`本轮审查负责人 ${name(step.members[0])} 必须先等其他审查成员交付并读取本轮文件；有任何返工或阻塞意见则不合并，逐项核实后交付需返工或阻塞。其他成员先独立交付，不等待负责人。`);
   lines.push('已有交付文件先核对，不覆盖不重做；收到继续时复用已完成工作。交付后不再修改该候选，后续变更另轮处理。聊天中简短汇报结果与文件位置，不重复全文。');
   return lines.join('\n\n');

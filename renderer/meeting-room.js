@@ -7142,7 +7142,7 @@ if (typeof document !== 'undefined') (function () {
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
-    if(Delivery.enabled(meeting))inputBox.dataset.placeholder='发送给点亮头像的成员；任务运行中可直接补充要求';
+    if(Delivery.enabled(meeting))inputBox.dataset.placeholder='输入任务，Hub 按工作流安排各步骤成员推进；运行中可补充要求，暂停后点上方「继续」';
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');

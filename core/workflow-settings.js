@@ -97,4 +97,10 @@ function toDeliveryConfig(previous, draft, memberIds) {
   c.stepConfigs=draft.rounds.map(r=>({name:r.name,prompt:r.prompt,after:r.after}));
   return c;
 }
-module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig, toDeliveryConfig };
+// New rooms start on the delivery engine directly. extra carries room-level
+// fields such as projectLocator / projectLibrary / workRoot.
+function createDeliveryConfig(presetId, members, extra = {}) {
+  const draft = createPreset(presetId, members);
+  return toDeliveryConfig({ ...extra }, draft, members.map(m => m.memberId));
+}
+module.exports = { LIMIT, PRESETS, GENERAL, DEV, createPreset, fromConfig, validate, toConfig, toDeliveryConfig, createDeliveryConfig };

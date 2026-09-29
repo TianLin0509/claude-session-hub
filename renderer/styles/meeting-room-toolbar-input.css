@@ -87,7 +87,8 @@
 .mr-composer-head .mr-delivery-flow .mr-file-detail { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .mr-composer-head .mr-delivery-flow .mr-file-detail small,
 .mr-composer-head .mr-delivery-flow .mr-file-detail span { display: block; margin: 3px 0 0; }
-.mr-composer-head .mr-delivery-flow .mr-file-actions { flex-wrap: wrap; }
+/* The action group may shrink and wrap, so narrow panes never push buttons out of view. */
+.mr-composer-head .mr-delivery-flow .mr-file-actions { flex: 0 1 auto; min-width: 0; max-width: 100%; flex-wrap: wrap; }
 .mr-composer-head .mr-delivery-flow > .mr-file-detail { flex: 1 1 160px; }
 .mr-composer-head .mr-delivery-flow > .mr-file-error,
 .mr-delivery-recipients, .mr-delivery-details { flex-basis: 100%; min-width: 0; }

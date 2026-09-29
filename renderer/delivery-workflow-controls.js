@@ -16,7 +16,7 @@ function render(row,meeting,onRefresh,onError) {
   const active=!!s?.runId && !s.finished,paused=s?.paused || s?.recoveryPending;
   const title=!s?'读取交付进度…':s.error && !s.runId?'状态读取失败':s.finished?s.label:!s.runId?'工作流已就绪':`${paused?'已暂停 · ':''}${s.name}`;
   const primary=active?(paused?'<button type="button" class="continue" data-delivery="resume" title="由 Hub 核对已交付文件，判断下一步交给谁；不重复派发已确认任务">继续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
-  const status=s?.runId&&!s.finished?`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`:s?.finished?'记录和交付文件已保留':'输入目标后按配置的步骤执行';
+  const status=s?.runId&&!s.finished?(s.gate==='running'?`Hub 正在跑测试闸门 · 第 ${s.round} 轮`:`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`):s?.finished?'记录和交付文件已保留':'输入任务，Hub 按工作流安排成员推进';
   row.innerHTML=`<section class="mr-file-flow mr-delivery-flow" aria-label="工作流进度" data-delivery-status="${esc(s?.status || 'loading')}" aria-busy="${busy.has(id)}">
     <div class="mr-file-detail"><strong>${esc(title)}</strong><small>${esc(status)}</small></div>
     <div class="mr-file-actions">${primary}${s?.error&&!s.runId?'<button type="button" data-delivery="refresh">重试读取</button>':''}<button type="button" data-delivery="files">交付文件</button>
@@ -53,16 +53,21 @@ function render(row,meeting,onRefresh,onError) {
   }));
   if(busy.has(id))row.querySelectorAll('[data-delivery]').forEach(button=>button.disabled=true);
 }
+const BARE_CONTINUE=/^(?:继续(?:执行|施工|任务)?|接着做|恢复执行)[。！!\s]*$/u;
 async function submit(meeting,text,recipientSids) {
-  const targets=Recipients.resolveRecipients(meeting,recipientSids);
   const s=await ipcRenderer.invoke('delivery:status',{meetingId:meeting.id});if(!s.ok)throw new Error(s.error);
+  // A typed "继续" on a paused run means the same as the continue button;
+  // any extra words after it are then sent as a supplement, never dropped.
+  if(s.runId && !s.finished && (s.paused || s.recoveryPending) && require('../core/dev-file-workflow').isResume(text)){
+    const r=await ipcRenderer.invoke('delivery:resume',{meetingId:meeting.id});if(!r.ok)throw new Error(r.error);
+    if(BARE_CONTINUE.test(String(text).trim()))return {...r,resumed:true};
+  }
   if(s.runId && !s.finished){
+    const targets=Recipients.resolveRecipients(meeting,recipientSids);
     const r=await ipcRenderer.invoke('groupchat:user-supplement',{meetingId:meeting.id,text,recipientSids:targets});
     if(!r.ok)throw new Error(r.reason || r.error);return {...r,supplement:true};
   }
-  const first=meeting.serialWorkflow.deliveryStages[0].members;
-  const chosen=Recipients.memberIds(meeting,targets);
-  if(first.length!==chosen.length || first.some(id=>!chosen.includes(id)))throw new Error('启动工作流需选中首步成员：'+first.map(id=>meeting.slotSpecs.find(m=>m.memberId===id)?.title || id).join('、')+'；本条未发送');
-  const r=await ipcRenderer.invoke('delivery:start',{meetingId:meeting.id,userInput:text,recipientSids:targets});if(!r.ok)throw new Error(r.error);return r;
+  // The workflow picks each step's members; the user only types the task.
+  const r=await ipcRenderer.invoke('delivery:start',{meetingId:meeting.id,userInput:text});if(!r.ok)throw new Error(r.error);return r;
 }
 module.exports={render,submit,clear:id=>{versions.set(id,(versions.get(id)||0)+1);states.delete(id);}};

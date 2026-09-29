@@ -31,9 +31,29 @@
 - 自动预算按审查计（2026-09-28）：每段最多 3 轮审查，其他步骤不计；每轮实现都会送审，第 3 轮审查仍需返工才暂停。只有用户点继续才授予下一段 3 轮审查预算。无固定聊天超时，不以超时判断成功，也不无限自动重试。
 - 普通重启不会自行唤醒历史任务。“重启并继续”识别新协议并核对交付，保留用户暂停；待核对提交在群聊显式处理。
 
+## 唯一引擎与迁移（2026-09-28）
+
+- 新建开发群直接生成 `deliveryVersion: 1`（`workflow-settings.createDeliveryConfig`）。用户只输入任务；启动不再要求点亮首步成员，由各步骤配置决定谁执行。任务暂停时手打“继续”等同于点「继续」。
+- Hub 启动时 `core/delivery-migration.js` 把旧协议群（开发文件流、单 Agent 文件流、旧循环、旧串行）一次性迁到本引擎：旧配置完整存于 `serialWorkflow.migratedFrom.previous`，旧任务文件原地保留，结果追加到数据目录 `workflow-migration.jsonl`。7 天内仍有未完成旧任务的群暂留旧引擎，结束后下次启动再迁。旧引擎代码仅为这些群保留，全部迁完后删除。
+
+## 开发流：Hub 注入的推进规则（用户不感知）
+
+- 开题报告须含「失败模式清单」（最可能出错的场景 + 检验方法）；实现交付前逐条执行并记录。
+- 审查分级：P1＝主功能不成立、数据损坏、安全或生产保护、测试或集成失败；P2＝其余。第 1 轮一次列全；第 2 轮起先复核上轮返工项与回归，新 P1 仍返工，新 P2 记入遗留清单不阻断合并。
+- 与主干的机械性冲突（相邻行、导入顺序、版本号、文档、改名跟随）由审查者在候选分支上直接解决并继续；只有改变实现逻辑或取舍的冲突才返工。
+- 项目教训：`<数据目录>/project-lessons/<项目目录名>.md`。开题与实现先读；审查者在真实合并后、且本任务曾返工时追加「场景 → 怎么检验」，同类合并，上限 30 条。
+- 在途冲突提示：派工时列出同一仓库其他未完成任务候选改动的文件（`main/groupchat/delivery-overlap.js`），只提示不阻断。
+
+## Hub 测试闸门
+
+- 实现交付须含 `CANDIDATE: <worktree 绝对路径> <完整 SHA>`。Hub 核对该目录 HEAD 等于 SHA 且无未提交改动后，按候选里的 `.agents/project.json` `test` 逐条执行（低优先级、隐藏窗口、40 分钟超时，剥离 Hub 控制与数据目录环境变量），日志写入 `step-N/hub-gate.log`（`main/groupchat/delivery-gate.js`）。
+- 通过：派审查，提示词附带闸门结果，审查者不必另外单独重跑全量测试。失败：写 `Hub测试闸门未通过.md` 作为固定输入，直接新开一轮实现，不占审查额度；连续 3 次失败暂停，点继续再给机会。缺候选行、候选不一致或项目未声明测试时跳过闸门，并告知审查者自行验证。
+- Hub 退出时终止运行中的闸门；重启后对未出结果的闸门重跑。
+
 ## 文件与集成
 
-- 协议/校验：`core/delivery-workflow.js`
+- 协议/校验：`core/delivery-workflow.js`；开发流注入规则：`core/delivery-dev-guidance.js`；迁移：`core/delivery-migration.js`
+- 测试闸门：`main/groupchat/delivery-gate.js`；在途冲突：`main/groupchat/delivery-overlap.js`
 - 持久执行/租约/恢复：`main/groupchat/delivery-engine.js`
 - 设置：`core/workflow-settings.js`、`renderer/workflow-config-modal.js`
 - 进度控制：`renderer/delivery-workflow-controls.js`

@@ -1,11 +1,15 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const D=require('../../core/delivery-workflow');
+const Guidance=require('../../core/delivery-dev-guidance');
+const Gate=require('./delivery-gate'),Overlap=require('./delivery-overlap');
+// Consecutive failed Hub gates before asking the user; reviews are not spent on them.
+const GATE_LIMIT=3;
 const {getSessionRuntimeTruth}=require('../../core/session-runtime-truth');
 const {SessionOpenOwnership}=require('../../core/session-open-ownership');
 const terminal=r=>['done','cancelled'].includes(r?.status);
 function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDispatcher,ensureMemberReady,getMembers=()=>[],getAttemptEvidence=()=>null,sendToRenderer=()=>{},logger=console}) {
-  const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set();let timer=null,events=null,suspended=false,ownership=null;
+  const owners=new Map(),busy=new Set(),watching=new Set(),actions=new Set(),retiring=new Map(),activeDispatches=new Set(),gates=new Map();let timer=null,events=null,suspended=false,ownership=null;
   async function action(id,fn){if(actions.has(id))throw new Error('正在处理本群的工作流操作，请稍后查看');actions.add(id);try{return await fn();}finally{actions.delete(id);}}
   const meeting=id=>meetingManager.getMeeting(id);
   const base=id=>D.directory(getHubDataDir(),id);
@@ -35,8 +39,9 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       dir:r?path.join(base(id),r.id):base(id),round:s?.number || 0,name:s?r.stages[s.index].name:'尚未开始',error:r?.error || '',
       stageIndex:s?.index ?? 0,stageNames:(r?.stages || meeting(id).serialWorkflow.deliveryStages || []).map(stage=>stage.name),
       missing:s?s.members.filter(m=>!s.deliveries[m]).map(m=>names.find(n=>n.memberId===m)?.displayName || m):[],
-      delivered:s?Object.keys(s.deliveries).length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],
-      label:!r?'输入任务，按流程执行':r.status==='cancelled'?'本次任务已结束，交付记录已保留':r.status==='done'?'全部步骤已交付':`${r.stages[s.index].name} · ${Object.keys(s.deliveries).length}/${s.members.length} 位已交付`};
+      delivered:s?Object.keys(s.deliveries).length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],gate:s?.gate?.state || '',
+      label:!r?'输入任务，按流程执行':r.status==='cancelled'?'本次任务已结束，交付记录已保留':r.status==='done'?'全部步骤已交付'
+        :s.gate?.state==='running'?`${r.stages[s.index].name} · Hub 正在跑测试闸门`:`${r.stages[s.index].name} · ${Object.keys(s.deliveries).length}/${s.members.length} 位已交付`};
   }
   function emit(id){sendToRenderer('delivery:changed',status(id));}
   function selectStep(id,step) {
@@ -53,6 +58,43 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(!item.ok){r.error=`${item.memberId} 提交未确认：${item.reason || item.sendStatus || '请核对原生记录'}`;r.status='paused';}
     save(id,r);
   }
+  // Development runs get Hub-owned context: lessons, the preceding gate result
+  // and other in-flight tasks touching the same repository.
+  function promptExtras(id,run,step) {
+    if(run.kind!=='file')return {};
+    const prev=run.steps[step.number-2],out={lessonsDir:Guidance.lessonsDir(getHubDataDir())};
+    if(prev?.gate && run.stages[step.index].after==='review')out.gate=prev.gate;
+    if(prev?.gate?.state==='failed' && prev.hubNotes?.length)out.gateFailure=prev.hubNotes[0].path;
+    try{
+      const others=(meetingManager.getAllMeetings?.() || []).filter(m=>m.id!==id && D.enabled(m)).map(m=>({title:m.title || m.id,run:read(m.id)})).filter(o=>o.run && !terminal(o.run));
+      out.overlaps=Overlap.overlaps({own:Overlap.latestCandidate(run),workspace:run.workspace,others});
+    }catch(error){logger.warn?.('[delivery] overlap check skipped:',error.message);}
+    return out;
+  }
+  function gateStreak(r) {
+    let n=0;for(const s of r.steps.slice(r.gateStreakFrom || 0).reverse()){if(r.stages[s.index]?.phase!=='build')continue;if(s.gate?.state!=='failed')break;n++;}return n;
+  }
+  // Decides the Hub gate for a completed build step: 'wait' | 'proceed' | 'rework'.
+  function gateStep(id,r,step) {
+    const g=step.gate;
+    if(g?.state==='passed' || g?.state==='skipped')return 'proceed';
+    if(g?.state==='failed')return 'rework';
+    if(g?.state==='running' && gates.has(step.id))return 'wait';
+    let candidate=null;
+    try{candidate=Gate.parseCandidate(fs.readFileSync(step.deliveries[step.members[0]].path,'utf8'));}catch{}
+    const pre=Gate.preflight(candidate);
+    if(pre.skipped){step.gate={state:'skipped',reason:pre.skipped,sha:candidate?.sha || ''};save(id,r);return 'proceed';}
+    step.gate={state:'running',sha:candidate.sha,startedAt:Date.now()};save(id,r);
+    const controller=new AbortController(),runId=r.id,stepId=step.id,dir=path.join(base(id),r.id,`step-${step.number}`);
+    gates.set(stepId,{controller,meetingId:id});
+    Gate.runGate({candidate,commands:pre.commands,logPath:path.join(dir,'hub-gate.log'),signal:controller.signal}).then(result=>{
+      if(result.state==='cancelled')return;
+      const now=read(id),s=now?.id===runId?now.steps.find(x=>x.id===stepId):null;if(!s || terminal(now))return;
+      s.gate=result;if(result.state==='failed')s.hubNotes=[Gate.writeFailureNote(path.join(dir,'Hub测试闸门未通过.md'),result)];
+      save(id,now);
+    }).catch(error=>logger.error('[delivery] test gate:',error)).finally(()=>{gates.delete(stepId);tick(id);});
+    return 'wait';
+  }
   async function dispatch(id,run,step,continuation='') {
     const targets=step.members.filter(m=>!step.deliveries[m]);if(!targets.length)return;
     const dispatchId=crypto.randomUUID();step.dispatches.push({id:dispatchId,targets,receipts:{},state:'intent',at:Date.now()});save(id,run);
@@ -63,7 +105,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     const prepared=current(id,run.id,step.id);if(!prepared || prepared.status!=='running' || suspended){notSent();return;}run=prepared;
     step=run.steps.at(-1);const d=step.dispatches.find(x=>x.id===dispatchId);d.state='sending';save(id,run);
     let promise;activeDispatches.add(dispatchId);
-    try{promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)))].filter(Boolean).join('\n\n'),
+    try{promise=getDispatcher().dispatchGroupChatTurn(id,{userInput:[continuation,D.prompt(base(id),run,step,getMembers(meeting(id)),promptExtras(id,run,step))].filter(Boolean).join('\n\n'),
       dispatchPresentation:{goal:run.goal,stageName:run.stages[step.index].name},
       targetMemberIds:targets,appendUserMessage:true,dispatchMode:'serial',fileHandoff:true,turnTimeoutMs:0,
       workflowRun:{runId:run.id,kind:'delivery',stepIndex:step.number-1,attempt:step.dispatches.length},
@@ -112,8 +154,17 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       if(Object.values(step.deliveries).some(d=>d.outcome==='blocked')){r.status='paused';r.error='成员报告阻塞，请查看任务文件；可结束本次任务，保留记录后调整目标重开';save(id,r);return;}
       if(step.members.every(m=>step.deliveries[m])) {
         const stage=r.stages[step.index],rework=Object.values(step.deliveries).some(d=>d.outcome==='rework');
-        const next=stage.after==='review'?(rework?1:null):stage.after==='end'?null:step.index+1;
+        let next=stage.after==='review'?(rework?1:null):stage.after==='end'?null:step.index+1;
         if(next===null || next>=r.stages.length){r.status='done';r.error='';save(id,r);getDispatcher().handoffMeetingTurn?.(id);return;}
+        // A build is tested by the Hub before a reviewer sees it.
+        if(r.kind==='file' && stage.phase==='build' && r.stages[next]?.after==='review'){
+          const decision=gateStep(id,r,step);
+          if(decision==='wait')return;
+          if(decision==='rework'){
+            if(gateStreak(r)>=GATE_LIMIT){r.status='paused';r.error=`候选连续 ${GATE_LIMIT} 次未通过 Hub 测试闸门，日志已保留；点继续再试`;save(id,r);return;}
+            next=step.index;
+          }
+        }
         if(rework && D.reviewsInBudget(r)>=D.REVIEW_LIMIT){r.status='paused';r.error=`已完成 ${D.REVIEW_LIMIT} 轮审查仍需返工，交付已保留；点继续再给 ${D.REVIEW_LIMIT} 轮审查`;save(id,r);return;}
         r.steps.push(D.newStep(r,next));D.prepare(base(id),r,r.steps.at(-1));save(id,r);
         selectStep(id,r.steps.at(-1));
@@ -133,10 +184,8 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
   }
   async function start(id,goal,recipientSids) {
     if(!D.enabled(meeting(id)) || !meeting(id).serialWorkflow.enabled)throw new Error('文件交付工作流未启用');
-    if(recipientSids!==undefined){
-      const selected=require('../../core/groupchat-recipients').memberIds(meeting(id),recipientSids),first=meeting(id).serialWorkflow.deliveryStages[0].members;
-      if(selected.length!==first.length || first.some(m=>!selected.includes(m)))throw new Error('收件头像与工作流首步不一致，请核对后发送');
-    }
+    // The workflow assigns each step's members; lit avatars never pick who starts.
+    void recipientSids;
     if(!String(goal || '').trim())throw new Error('请输入本次任务');
     own(id);const old=read(id);if(old && !terminal(old))throw new Error('本次任务尚未交付，请继续或结束当前任务');
     if(old)fs.writeFileSync(path.join(base(id),old.id,'已结束运行.json'),JSON.stringify(old,null,2),'utf8');
@@ -148,7 +197,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     save(id,r);selectStep(id,r.steps[0]);watching.add(id);await advance(id);return status(id);
   }
   function stop(id,{interrupt=false}={}){if(!D.enabled(meeting(id)))return false;own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='paused';r.error='用户已暂停，晚到交付只记录，不自动接续';save(id,r);}if(interrupt)getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return true;}
-  function cancel(id){own(id);const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error='';save(id,r);}getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return status(id);}
+  function cancel(id){own(id);for(const g of gates.values())if(g.meetingId===id)g.controller.abort();const r=read(id);if(r && !terminal(r)){r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error='';save(id,r);}getDispatcher().interruptMeetingTurn?.(id,{reason:'user_interrupt',targetSids:meeting(id).subSessions});return status(id);}
   async function resume(id) {
     if(busy.has(id))throw new Error('正在准备派工，请稍后核对');
     own(id);retiring.delete(id);watching.add(id);let r=read(id);if(!r || terminal(r))throw new Error('没有待继续的任务');
@@ -160,6 +209,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     const step=r.steps.at(-1);
     if(Object.values(step.deliveries).some(d=>d.outcome==='blocked'))throw new Error('本轮已有阻塞交付，请保留记录；解决阻塞后新建任务，不能覆盖已交付结果');
     r.status='running';r.error='';if(D.reviewsInBudget(r)>=D.REVIEW_LIMIT)r.budgetStart=r.steps.length;
+    if(gateStreak(r)>=GATE_LIMIT)r.gateStreakFrom=r.steps.length;
     save(id,r);await advance(id);return status(id);
   }
   // Explicit user continuation is separate from reconciliation. It never starts a new run.
@@ -184,7 +234,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
   }
   function startWatching(){suspended=false;if(timer)return;events=require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(),id=>tick(id),logger);timer=setInterval(()=>tick(),2000);timer.unref?.();}
   function freeze(){suspended=true;clearInterval(timer);timer=null;events?.dispose();events=null;}
-  function dispose(){freeze();for(const id of owners.keys()){try{release(id);}catch(e){logger.error('[delivery] release owner:',e);}}owners.clear();watching.clear();retiring.clear();ownership?.close();ownership=null;}
+  function dispose(){freeze();for(const g of gates.values())g.controller.abort();gates.clear();for(const id of owners.keys()){try{release(id);}catch(e){logger.error('[delivery] release owner:',e);}}owners.clear();watching.clear();retiring.clear();ownership?.close();ownership=null;}
   return {start:(id,goal)=>action(id,()=>start(id,goal)),status,stop,cancel,retire,resume:id=>action(id,()=>resume(id)),continueWork:(id,text)=>action(id,()=>continueWork(id,text)),tick,registerIpc,startWatching,freeze,dispose,handles:id=>D.enabled(meeting(id)),isBusy:id=>{const r=read(id);return !!r && !terminal(r);}};
 }
 module.exports={createDeliveryEngine};

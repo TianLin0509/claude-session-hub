@@ -2012,6 +2012,10 @@ let lastPersistedMeetings = bootMeetings;
 for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
+// 2026-09-28: one workflow engine. Idle legacy rooms move to the delivery
+// engine once; rooms with a recent unfinished legacy task stay until it ends.
+try { require('./core/delivery-migration').migrateAll({ meetingManager, dataDir: getHubDataDir(), logger: console }); }
+catch (error) { console.error('[workflow-migration] failed:', error); }
 
 registerMeetingTimelineIpc(ipcMain, {
   meetingManager,
