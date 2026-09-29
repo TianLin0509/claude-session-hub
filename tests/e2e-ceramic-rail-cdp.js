@@ -36,7 +36,7 @@ async function run() {
         buttons:buttons.map(e=>{const r=rect(e),l=e.querySelector('.btn-label'),i=e.querySelector('.btn-icon');return{id:e.id,...r,hit:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),label:l?rect(l):null,icon:i?rect(i):null};})};
     })()`);
     evidence.layouts.push({label,...result});
-    const expectedWidth=label.startsWith('dark')?148:100;
+    const expectedWidth=label.startsWith('dark')?(result.viewport[0]>1360?170:result.viewport[0]>1060?138:104):100;
     ok(label+' no scroll or hidden destinations', result.width===expectedWidth && result.navScroll<=1 && result.railScroll<=1 && !['auto','scroll'].includes(result.overflow) && result.buttons.length===11 && result.buttons.every(b=>b.hit&&b.y>=0&&b.bottom<=result.viewport[1]+1&&b.height>=28&&(!b.label||(b.label.x>=b.x&&b.label.right<=b.right+1&&b.label.y>=b.y&&b.label.bottom<=b.bottom+1))));
   };
   try {
@@ -45,6 +45,12 @@ async function run() {
     cdp=await connectFirstPage(hub);
     await wait('!!window.WorkspaceController');
     await resize(1450,950);
+    const sidebarToggleHit=await cdp.eval(`(()=>{const e=document.querySelector('#btn-expand-sidebar'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`);
+    ok('top sidebar toggle stays clickable beside fixed brand',sidebarToggleHit);
+    await click('#btn-expand-sidebar');
+    ok('top sidebar toggle collapses the session list',await cdp.eval('document.querySelector("#app-container").classList.contains("sidebar-collapsed")'));
+    await click('#btn-expand-sidebar');
+    ok('top sidebar toggle restores the session list',await cdp.eval('!document.querySelector("#app-container").classList.contains("sidebar-collapsed")'));
     ok('D4 uses eight visible vector icons with accessible names',await cdp.eval(`(()=>{const b=[...document.querySelectorAll('.rail-navigation button')];return b.length===8&&b.every(e=>e.querySelector('.btn-icon svg')&&getComputedStyle(e.querySelector('.btn-icon svg')).display!=='none'&&e.querySelector('.btn-label').textContent.trim()&&(e.title||e.getAttribute('aria-label')));})()`));
     for(const theme of ['dark','codex']) {
       await cdp.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
