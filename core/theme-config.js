@@ -15,8 +15,8 @@ const THEMES = Object.freeze([
   Object.freeze({
     id: 'dark',
     label: '深色',
-    hint: '石墨 · 克制精密 · 默认',
-    swatch: Object.freeze(['#17191e', '#23272f', '#abb8ff']),
+    hint: '深海夜幕 · 微暖钛金 · 默认',
+    swatch: Object.freeze(['#081522', '#102238', '#e3be85']),
   }),
   Object.freeze({
     id: 'frost',
