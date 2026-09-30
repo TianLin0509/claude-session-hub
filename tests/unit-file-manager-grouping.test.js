@@ -43,11 +43,11 @@ test('each group shows top 5 with a toggle; expanded shows all and offers collap
   const [f, d] = planDirectoryGroups([...folders, ...files], { limit: 5 });
   assert.deepEqual(f.visible.map(e => e.name), ['f0.md', 'f1.md', 'f2.md', 'f3.md', 'f4.md']);
   assert.equal(f.hiddenCount, 3); assert.equal(f.showToggle, true);
-  assert.equal(groupToggleLabel(f), '显示全部 8 个文件（还有 3 个）');
-  assert.equal(d.visible.length, 5); assert.equal(groupToggleLabel(d), '显示全部 6 个文件夹（还有 1 个）');
+  assert.equal(groupToggleLabel(f), '显示全部 8 个文件');
+  assert.equal(d.visible.length, 5); assert.equal(groupToggleLabel(d), '显示全部 6 个文件夹');
   const [open] = planDirectoryGroups(files, { limit: 5, isExpanded: g => g === 'files' });
   assert.equal(open.visible.length, 8); assert.equal(open.showToggle, true);
-  assert.equal(groupToggleLabel(open), '收起文件，只显示前 5 个');
+  assert.equal(groupToggleLabel(open), '收起文件');
   const [small] = planDirectoryGroups(files.slice(0, 5), { limit: 5 });
   assert.equal(small.showToggle, false); assert.equal(groupToggleLabel(small), '');
   const [all] = planDirectoryGroups(files, { limit: Infinity });

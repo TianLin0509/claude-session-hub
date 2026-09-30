@@ -6,6 +6,12 @@
 const DEFAULT_GROUP_LIMIT = 5;
 const GROUP_ORDER = Object.freeze(['files', 'folders']);
 const GROUP_LABELS = Object.freeze({ files: '文件', folders: '文件夹' });
+// 噪声目录降权：不占文件夹前 N 名额，统一排在文件夹组末尾；本身照常可见、可展开。
+const NOISE_FOLDERS = new Set(['.git', 'node_modules', '__pycache__', '.pytest_cache']);
+
+function isNoiseFolder(entry) {
+  return !!(entry && entry.type === 'directory' && NOISE_FOLDERS.has(entry.name));
+}
 
 // 链接 / other 与文件同组：它们不能在树里展开。
 function entryGroup(entry) {
@@ -22,6 +28,9 @@ function planDirectoryGroups(entries, options = {}) {
   const isPinned = typeof options.isPinned === 'function' ? options.isPinned : () => false;
   const buckets = { files: [], folders: [] };
   for (const entry of entries || []) buckets[entryGroup(entry)].push(entry);
+  if (options.demoteNoise !== false) {
+    buckets.folders = [...buckets.folders.filter(e => !isNoiseFolder(e)), ...buckets.folders.filter(isNoiseFolder)];
+  }
   return GROUP_ORDER.filter(group => buckets[group].length).map((group) => {
     const all = buckets[group];
     const expanded = !!isExpanded(group);
@@ -44,15 +53,17 @@ function planDirectoryGroups(entries, options = {}) {
 
 function groupToggleLabel(plan) {
   if (!plan || !plan.showToggle) return '';
-  if (plan.expanded) return `收起${plan.label}，只显示前 ${plan.limit} 个`;
-  return `显示全部 ${plan.total} 个${plan.label}（还有 ${plan.hiddenCount} 个）`;
+  if (plan.expanded) return `收起${plan.label}`;
+  return `显示全部 ${plan.total} 个${plan.label}`;
 }
 
 module.exports = {
   DEFAULT_GROUP_LIMIT,
   GROUP_LABELS,
   GROUP_ORDER,
+  NOISE_FOLDERS,
   entryGroup,
+  isNoiseFolder,
   groupStateKey,
   groupToggleLabel,
   planDirectoryGroups,

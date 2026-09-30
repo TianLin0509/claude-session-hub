@@ -35,7 +35,13 @@ function registerFileManagerIpc(ipcMain, deps = {}) {
   }
   handle('scan', async p => {
     const result = await walkFiles(p.root, { query: String(p.query || '') });
+    // since：只回传该时刻之后修改的文件（「本会话改动」），避免把整棵树搬过 IPC。
+    if (Number.isFinite(p.since) && p.since > 0) result.entries = result.entries.filter(entry => entry.mtimeMs >= p.since);
     if (p.recent) result.entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (Number.isInteger(p.limit) && p.limit > 0 && result.entries.length > p.limit) {
+      result.entries = result.entries.slice(0, p.limit);
+      result.truncated = true;
+    }
     return result;
   });
   const folderActivity = deps.folderActivity || createFolderActivityService();

@@ -56,13 +56,18 @@ function createFolderActivityTracker(options = {}) {
         if (run !== version) return;
         const byDirectory = new Map((response && Array.isArray(response.results) ? response.results : [])
           .map(item => [key(item.directory), item]));
+        let changed = false;
         for (const directory of chunk) {
           const item = byDirectory.get(key(directory))
             || { ok: false, directory, error: response && response.error || '子树活动查询失败' };
+          const previous = results.get(key(directory));
+          if (!previous || previous.ok !== item.ok || previous.latestMs !== item.latestMs
+            || previous.latestPath !== item.latestPath || previous.incomplete !== item.incomplete) changed = true;
           results.set(key(directory), { ...item, at: now() });
           pending.delete(key(directory));
         }
-        onUpdate();
+        // TTL 到期重查但结果不变时不重绘，避免打断悬停与菜单。
+        if (changed) onUpdate();
       }
     } finally {
       if (run === version) todo.forEach(directory => pending.delete(key(directory)));

@@ -3059,6 +3059,8 @@ class SessionManager extends EventEmitter {
       cwd: info.cwd,
       unreadCount: info.unreadCount,
       lastMessageTime: info.lastMessageTime,
+      // 本次进程启动（新建或恢复）的时刻；文件面板据此列出「本会话改动」。
+      ...(Number.isFinite(info.createdAt) ? { spawnedAt: info.createdAt } : {}),
       ...(typeof info.lastCompletedAt === 'number' ? { lastCompletedAt: info.lastCompletedAt } : {}),
       lastOutputPreview: info.lastOutputPreview,
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),

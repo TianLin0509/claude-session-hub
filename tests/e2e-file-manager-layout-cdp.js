@@ -230,7 +230,7 @@ async function main() {
     assert.equal(result.tree.names[4], 'docs');
     assert.equal(result.tree.rootName, 'AIWork E2E');
     assert.equal(result.tree.rootPath, WORK_DIR);
-    assert.match(result.tree.rootTitle, /资源管理器/);
+    assert.match(result.tree.rootTitle, /切换目录/);
     assert.ok(result.tree.width >= 292 && result.tree.width <= 360, `unexpected panel width ${result.tree.width}`);
     await screenshot(client, TREE_SCREENSHOT);
 
