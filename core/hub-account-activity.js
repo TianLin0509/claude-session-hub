@@ -1,11 +1,19 @@
 'use strict';
 // Passive metadata only: no browser, prompts or credentials in the public result.
 const fs = require('fs'), path = require('path');
+// @community-strip 个人工具站点
 const SITES = new Set([...require('./hub-account-catalog').COMPANIES.map(c => c.site), 'github', 'yuque']);
+// @community-else
+// const SITES = new Set([...require('./hub-account-catalog').COMPANIES.map(c => c.site), 'github']);
+// @community-end
 const SOURCES = new Set(['website', 'roundtable']);
 const HISTORY_HOSTS = { chatgpt: ['chatgpt.com'], claude: ['claude.ai'], google: ['gemini.google.com'],
   doubao: ['doubao.com'], deepseek: ['chat.deepseek.com'], kimi: ['kimi.com'], qwen: ['qianwen.com'],
+  // @community-strip 个人工具站点
   github: ['github.com'], yuque: ['yuque.com'] };
+  // @community-else
+  //   github: ['github.com'] };
+  // @community-end
 const historyCache = new Map();
 function historyActivity(root, now = Date.now()) {
   const rows = [];

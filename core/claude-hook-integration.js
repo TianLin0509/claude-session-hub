@@ -2,9 +2,20 @@
 
 const fs = require('fs');
 const path = require('path');
+const { hookRunner, hookCommand } = require('./hook-runner');
+const { community } = require('./distribution');
+
+// 状态栏脚本由 node 执行；社区版的机器上不一定有 Node，找不到就不登记状态栏。
+function nodeOnPath(env = process.env) {
+  const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') || 'PATH';
+  const names = process.platform === 'win32' ? ['node.exe', 'node.cmd'] : ['node'];
+  return String(env[pathKey] || '').split(path.delimiter).filter(Boolean)
+    .some(dir => names.some(name => fs.existsSync(path.join(dir.replace(/^"|"$/g, ''), name))));
+}
 
 const MANAGED_SCRIPT_FILES = [
   'session-hub-hook.py',
+  'session-hub-hook.ps1',
   'claude-hub-statusline.js',
   'deepseek_repl.py',
 ];
@@ -48,27 +59,29 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     changed = true;
   }
 
-  const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
+  const runner = hookRunner();
+  const hookScriptPath = path.join(scriptsDir, runner.script).replace(/\\/g, '\\\\');
+  const hook = arg => hookCommand(runner, hookScriptPath, arg);
   const managed = [
-    ['InstructionsLoaded', `python "${hookPyPath}" instructions-loaded`, '', true],
+    ['InstructionsLoaded', hook('instructions-loaded'), '', true],
     // PTY 模式下 /clear、/resume、重启会换原生身份；这两条是 Hub 跟随切换的证据。
     // 同步执行，保证 SessionEnd 先于随后的 SessionStart 到达。
-    ['SessionStart', `python "${hookPyPath}" session-start`],
-    ['SessionEnd', `python "${hookPyPath}" session-end`],
+    ['SessionStart', hook('session-start')],
+    ['SessionEnd', hook('session-end')],
     // /compact 不触发 UserPromptSubmit；压缩开始的这条信号是它提交成功的确认。
-    ['PreCompact', `python "${hookPyPath}" pre-compact`, '', true],
-    ['Stop', `python "${hookPyPath}" stop`],
-    ['StopFailure', `python "${hookPyPath}" stop-failure`],
-    ['UserPromptSubmit', `python "${hookPyPath}" prompt`],
-    ['PermissionRequest', `python "${hookPyPath}" permission-request`],
-    ['PreToolUse', `python "${hookPyPath}" tool-start`, '', true],
-    ['PostToolUse', `python "${hookPyPath}" tool-complete`, '', true],
-    ['PostToolUseFailure', `python "${hookPyPath}" tool-failed`, '', true],
-    ['SubagentStart', `python "${hookPyPath}" subagent-start`, '', true],
-    ['SubagentStop', `python "${hookPyPath}" subagent-stop`, '', true],
-    ['TaskCreated', `python "${hookPyPath}" task-start`, '', true],
-    ['TaskCompleted', `python "${hookPyPath}" task-complete`, '', true],
-    ['Notification', `python "${hookPyPath}" notification`,
+    ['PreCompact', hook('pre-compact'), '', true],
+    ['Stop', hook('stop')],
+    ['StopFailure', hook('stop-failure')],
+    ['UserPromptSubmit', hook('prompt')],
+    ['PermissionRequest', hook('permission-request')],
+    ['PreToolUse', hook('tool-start'), '', true],
+    ['PostToolUse', hook('tool-complete'), '', true],
+    ['PostToolUseFailure', hook('tool-failed'), '', true],
+    ['SubagentStart', hook('subagent-start'), '', true],
+    ['SubagentStop', hook('subagent-stop'), '', true],
+    ['TaskCreated', hook('task-start'), '', true],
+    ['TaskCompleted', hook('task-complete'), '', true],
+    ['Notification', hook('notification'),
       'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'],
   ];
   for (const [eventName, command, matcher = '', asyncHook = false] of managed) {
@@ -99,7 +112,10 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
   }
 
   const statusJsPath = path.join(scriptsDir, 'claude-hub-statusline.js').replace(/\\/g, '/');
-  if (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline')) {
+  // 社区版不覆盖用户已有的状态栏，也不改全局权限模式：Hub 启动的会话各自带
+  // --permission-mode（session-manager.js），用户在终端里单独跑的 Claude 保持原样。
+  const mayOwnStatusLine = !community || (!settings.statusLine && nodeOnPath());
+  if (mayOwnStatusLine && (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline'))) {
     settings.statusLine = {
       type: 'command',
       command: `node "${statusJsPath}"`,
@@ -107,7 +123,7 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
     changed = true;
   }
 
-  if (settings.permissionMode !== 'bypassPermissions') {
+  if (!community && settings.permissionMode !== 'bypassPermissions') {
     settings.permissionMode = 'bypassPermissions';
     changed = true;
   }

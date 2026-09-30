@@ -116,12 +116,14 @@
 .mr-input-member-tuning .composer-model { max-width: 230px; }
 .mr-input-member-tuning .composer-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mr-input-member-tuning .composer-thinking:disabled { opacity: .65; cursor: default; }
+/* @community-strip 中转工具 */
 /* The bridge status is text-only; in a group it must not cover the send key. */
 body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgpt-bridge-status {
   top: 64px;
   bottom: auto !important;
   pointer-events: none;
 }
+/* @community-end */
 
 .mr-input-preflight {
   display: flex;

@@ -29,7 +29,11 @@ function buildToolAccounts(catalog, { root, homeDir, env = process.env }) {
   // This MCP is supplied at session launch, not necessarily in user config files.
   if (!tools.some(t => t.id === 'mcp:web_roundtable')) tools.push({ id: 'mcp:web_roundtable', name: 'AI 网页圆桌（Hub 内置）', type: 'mcp', enabled: true, state: 'reviewed', services: ['roundtable'] });
   const { RESEARCH_SITES } = require('./external-accounts');
+  // @community-strip 个人工具站点
   const always = ['github', 'yuque', ...RESEARCH_SITES];
+  // @community-else
+  // const always = ['github', ...RESEARCH_SITES];
+  // @community-end
   const services = Object.entries(SERVICES).filter(([id]) => always.includes(id) || tools.some(t => t.enabled && t.services.includes(id))).map(([id, service]) => {
     const evidence = credentialEvidence(service, homeDir, env);
     const binding = bindings.find(b => b.tool === service.binding);

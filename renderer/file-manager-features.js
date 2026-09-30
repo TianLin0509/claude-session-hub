@@ -250,12 +250,14 @@ function createFileManagerFeatures(o) {
       if (!o.addToConversation) throw new Error('当前没有可用输入框');
       await o.addToConversation(paths, target); o.setStatus('文件路径已加入对话草稿，尚未发送', 'success'); return;
     }
+    // @community-strip 中转工具
     if (name === 'company' || name === 'chatgpt') {
       const answer = await dialog(name === 'company' ? '同步到公司' : '准备 ChatGPT 附件', [],
         `${paths.join('\n')}\n\n${name === 'company' ? '目标：固定公司收件箱。多个文件会打包交付。' : '目标：固定 ChatGPT 中转会话。最多 10 个文件，每个不超过 20 MiB；准备后在 ChatGPT 窗口确认发送。'}`, name === 'company' ? '开始同步' : '准备附件');
       if (!answer) return;
       await invoke('transfer', { ...p, target: name }); jobsOpen = true; nodes.jobs.hidden = false; await loadJobs(); return;
     }
+    // @community-end
     if (name === 'favorite') {
       for (const file of paths) { const existing = favorites.findIndex(f => f.path === file); if (existing >= 0) favorites.splice(existing, 1); else favorites.push({ path: file, type: entries.get(file)?.type || 'directory' }); }
       remember(); renderFavorites(); return;
@@ -296,7 +298,9 @@ function createFileManagerFeatures(o) {
     if (single && TYPE_GROUPS.image.test(paths[0])) add('copy-image', '复制图片');
     group('对话与交付');
     add('conversation', '添加到当前对话（路径）'); add('target-conversation', '添加到指定会话…');
+    // @community-strip 中转工具
     add('chatgpt', '发送到 ChatGPT：准备附件…'); add('company', '同步到公司…');
+    // @community-end
     group('整理');
     add('favorite', '收藏 / 取消收藏'); add('rename', '重命名…', single);
     add('mkdir', '新建文件夹…', single && entry?.type === 'directory');

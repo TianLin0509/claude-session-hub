@@ -89,7 +89,9 @@
     claude: [
       ['none', 'None · 默认，不加载任何 MCP'],
       ['browser', 'Browser · 只留 Playwright / Chrome'],
+      // @community-strip 私人 MCP
       ['wireless', 'Wireless · 只留 superran'],
+      // @community-end
       ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
       ['full', 'Full · 继承全部全局 MCP（最占内存）'],
     ],
@@ -97,7 +99,9 @@
       ['none', 'None · 默认，不加载任何 MCP'],
       ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
       ['browser', 'Browser · 只留 Playwright'],
+      // @community-strip 私人 MCP
       ['wireless', 'Wireless · 只留 superran'],
+      // @community-end
       ['full', 'Full · 全部全局 MCP'],
     ],
   };

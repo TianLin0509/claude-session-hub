@@ -23,16 +23,22 @@ class HubAccounts {
   async external({ service, action }) {
     const external = require('./external-accounts');
     const research = external.RESEARCH_SITES.includes(service);
+    // @community-strip 个人工具站点
     if (!['github', 'yuque'].includes(service) && !research) throw Error('外部服务标识无效');
+    // @community-else
+    // if (service !== 'github') throw Error('外部服务标识无效');
+    // @community-end
     external.externalSite(service);
     if (!['open', 'check', 'authorize'].includes(action)) throw Error('外部账号操作无效');
     if (this.checking || this.startingCheck || this.setup.flight) throw Error('请等待账号检查或工具接入完成');
+    // @community-strip 投研站点
     // 初心投研的投研站点：检查登录看专属 Chrome 里那一个登录 cookie
     if (research && action === 'check') {
       const status = await this.chrome.siteCookieStatus(service, 'main');
       external.writeExternalState(this.chrome.root, service, { ...status, checkedAt: this.now() });
       return { message: external.externalSite(service).name + '：' + status.message };
     }
+    // @community-end
     if (action !== 'open' && service !== 'github') throw Error('此服务请在专属 Chrome 中确认登录');
     const fixture = this.fixture();
     if (fixture?.recordOpens) {
@@ -54,6 +60,7 @@ class HubAccounts {
     catch { usageWarning = '；使用记录未保存'; }
     return { message: (action === 'check' ? 'GitHub 授权检查已完成，结果显示在外部服务中' : action === 'authorize' ? '已打开 GitHub 官方授权窗口，请按提示完成授权后检查' : '已在专属 Chrome 打开 ' + external.externalSite(service).name) + usageWarning };
   }
+  // @community-strip 投研站点
   // 本机初心投研取投研站点的 cookie（经 Hub 本机接口、带令牌）。只允许 RESEARCH_SITES。
   async exportResearchCookies(service) {
     const external = require('./external-accounts');
@@ -66,6 +73,7 @@ class HubAccounts {
       message: signed ? '专属 Chrome 里已登录' : '专属 Chrome 里还没登录', checkedAt: this.now() });
     return { site: service, signedIn: signed, cookies };
   }
+  // @community-end
   readCache() {
     try {
       const value = JSON.parse(fs.readFileSync(this.cacheFile(), 'utf8'));

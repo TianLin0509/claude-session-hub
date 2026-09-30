@@ -47,8 +47,10 @@ class AccountCenter {
       ...profiles.filter(p=>/^[\w-]{1,64}$/.test(p.id)).map(p=>{const row=native('codex-'+p.id,'Codex · '+p.label,'codex',p.home || this.env.CODEX_HOME || path.join(this.homeDir,'.codex'),['Codex 会话','开发群聊']);return {...row,isDefault:p.id===(c.codexSubscriptionProfile || 'default'),accountLabel:codexAccountLabel(row.home)};}),
       native('gemini-cli','Gemini CLI','gemini',path.join(this.homeDir,'.gemini'),['Gemini 会话']),
       native('kimi','Kimi Code','kimi',this.env.KIMI_CODE_HOME || path.join(this.homeDir,'.kimi-code'),['Kimi 会话']),
+      // @community-strip 公司中转与本机专用 ChatGPT 工具
       {id:'bridge',name:'ChatGPT · 公司中转',type:'web',uses:['公司拉取 / 同步'],provider:'bridge',action:'login'},
       {id:'chatgpt-web',name:'ChatGPT · Codex Web GPT',type:'web',uses:['ChatGPT 会话'],provider:'chatgpt-web',action:'login'},
+      // @community-end
       ...['deepseek','doubao','kimi','qwen','gemini','chatgpt'].map(p=>({id:'web-'+p,name:({deepseek:'DeepSeek',doubao:'豆包',kimi:'Kimi',qwen:'千问',gemini:'Gemini',chatgpt:'ChatGPT'})[p]+' · 网页',type:'web',provider:p,uses:['专用网页登录'],action:'login',managedBrowser:true,phoneLogin:['deepseek','doubao'].includes(p)})),
       ...['claude','codex','deepseek'].map(p=>({id:'api-'+p,name:({claude:'Claude 中转',codex:'Codex API',deepseek:'DeepSeek API'})[p],type:'api',provider:p,uses:[p+' API 会话'],action:'configure',configProvider:p,configured:!!c[p+'ApiKey']})),
       {id:'token-plan',name:'百炼 · Token Plan',type:'service',provider:'token-plan',uses:['Token Plan 用量'],action:'login'},
@@ -61,6 +63,7 @@ class AccountCenter {
   }
   async connections() {
     const rows=this.baseConnections();
+    // @community-strip 本机生图共享池
     try {
       const images=await this.adapter.imageAccounts();
       if(!images.length)rows.push({id:'images',name:'ChatGPT 网页生图',type:'web',provider:'images',accountId:'primary',uses:['网页生图 MCP'],action:'login',observation:{state:'unknown',message:'尚无生图账号记录，可打开原工具的主账号登录入口',source:'生图共享池记录',observedAt:0}});
@@ -70,6 +73,7 @@ class AccountCenter {
         observation:{state:a.state || 'unknown',message:a.message || '原工具维护独立浏览器配置',observedAt:a.observedAt || 0,source:'生图共享池记录',identity:'身份由生图工具管理'},
       });
     } catch { rows.push({id:'images',name:'ChatGPT 网页生图',type:'web',provider:'images',accountId:'primary',uses:['网页生图 MCP'],action:'login',observation:{state:'unavailable',message:'未能读取生图账号列表，请检查原工具安装',source:'本机工具发现',observedAt:Date.now()}}); }
+    // @community-end
     return rows;
   }
   file(id,suffix='json'){return path.join(this.root,crypto.createHash('sha256').update(id).digest('hex')+'.'+suffix);}
@@ -89,7 +93,11 @@ class AccountCenter {
     const work=async()=>{while(index<cheap.length){const row=cheap[index++];try{await this.check(row.id,{quiet:true});done++;}catch{failed++;}}};
     await Promise.all(Array.from({length:Math.min(6,cheap.length)},work));
     this.log({name:'刷新状态'},`检查 ${cheap.length} 项：${done} 项有结果，${failed} 项未确认；${skipped} 项按工具自己的记录显示`);
+    // @community-strip 公司中转
     const tail=skipped?`；另有 ${skipped} 项（公司中转、网页生图）按工具自己的记录显示，刷新不会为此启动浏览器。`:'。';
+    // @community-else
+    // const tail=skipped?`；另有 ${skipped} 项按工具自己的记录显示，刷新不会为此启动浏览器。`:'。';
+    // @community-end
     return {checked:done,failed,skipped,message:(failed?`已刷新 ${done} 项；${failed} 项未取得明确状态`:`已刷新 ${done} 项账号状态`)+tail};
   }
   async snapshot(){

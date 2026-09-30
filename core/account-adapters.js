@@ -13,6 +13,14 @@ function openTerminal(command,args,env){
  const text='& '+[command,...args].map(quotePS).join(' ')+'; Write-Host "完成登录后返回 AI Hub，状态会自动确认。"';
  return new Promise((resolve,reject)=>{const p=spawn('powershell.exe',['-NoLogo','-NoProfile','-NoExit','-EncodedCommand',Buffer.from(text,'utf16le').toString('base64')],{env,windowsHide:false,detached:true,stdio:'ignore'});p.once('error',reject);p.once('spawn',()=>{p.unref();resolve({});});});
 }
+// The official Claude installer puts claude.exe in ~/.local/bin; a Hub started before the
+// install may not have that folder on PATH yet. PATH wins when it already has claude.exe.
+function resolveClaudeExe(env){
+ const key=Object.keys(env).find(k=>k.toLowerCase()==='path')||'PATH';
+ for(const dir of String(env[key]||'').split(path.delimiter).filter(Boolean)){const f=path.join(dir.replace(/^"|"$/g,''),'claude.exe');if(fs.existsSync(f))return f;}
+ const local=path.join(env.USERPROFILE||os.homedir(),'.local','bin','claude.exe');
+ return fs.existsSync(local)?local:'claude.exe';
+}
 function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,runImpl=run,terminal=openTerminal,browser=new AccountBrowser({dataDir,env}),getConfig=()=>require('./hub-config').getConfig()}={}){
  const isolated=!!env.CLAUDE_HUB_HOME_DIR;const py=path.join(env.LOCALAPPDATA||'','Programs/Python/Python312/python.exe');
  if(isolated && env.CLAUDE_HUB_ACCOUNT_FIXTURE){
@@ -22,7 +30,11 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
  }
  const python=fs.existsSync(py)?py:'python';
  const toolsRoot=path.join(homeDir,'plugins/chatgpt-web-images/scripts');
+ // @community-strip 公司中转
  const bridgeRoot=path.join(homeDir,'tools/chatgpt_bridge');
+ // @community-else
+ // const bridgeRoot=null;
+ // @community-end
  const cleanEnv={...env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'};
  for(const key of ['CLAUDECODE','ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_BASE_URL','OPENAI_API_KEY','OPENAI_BASE_URL','CODEX_API_KEY'])delete cleanEnv[key];
  function external(){if(isolated)throw Error('隔离 Hub 不访问真实工具账号');}
@@ -49,7 +61,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   if(row.provider==='bridge'){const v=await tool('bridge','check');return {state:v.logged_in?'signed_in':v.login_required?'login_required':'unknown',accountLabel:String(v.account_name||''),message:v.logged_in?'中转官方页面已确认登录；未读取或推进拉取游标':'请在原中转窗口完成验证',source:'中转浏览器'};}
   if(row.provider==='chatgpt-web'){external();const v=await require('./chatgpt-web-integration').webStatus();return {state:v.connected?'configured':'offline',message:v.connected?'原工具服务在线；网页登录须在原工具确认':v.message,source:'Codex Web GPT 服务健康，不是登录证明'};}
   if(row.provider==='claude'){
-   const r=await runImpl('claude.exe',['auth','status','--json'],cliEnv(row));let v;try{v=JSON.parse(r.stdout);}catch{throw Error('Claude 状态无效');}
+   const r=await runImpl(resolveClaudeExe(cliEnv(row)),['auth','status','--json'],cliEnv(row));let v;try{v=JSON.parse(r.stdout);}catch{throw Error('Claude 状态无效');}
    if(typeof v.loggedIn!=='boolean'||(r.code!==0&&v.loggedIn))throw Error('Claude 状态缺少登录证据');
    return {state:v.loggedIn?'signed_in':'login_required',identity:v.email,accountLabel:typeof v.email==='string'?v.email:'',message:v.loggedIn?'Claude 官方 CLI 已确认本机登录；会话仍保留启动身份':'Claude 官方 CLI 报告尚未登录',source:'claude auth status'};
   }
@@ -88,7 +100,7 @@ function createAccountAdapters({dataDir,homeDir=os.homedir(),env=process.env,run
   if(row.provider==='chatgpt-web'){external();return require('./chatgpt-web-integration').openWebSettings();}
   let e=cliEnv(row),command,args;
   if(row.provider==='codex'){const cmd=require('../main/codex-windows-command').resolveWindowsCodex(e);command=cmd.command;args=[...cmd.args,'login'];e=cmd.env;}
-  else if(row.provider==='claude'){command='claude.exe';args=['auth','login'];}
+  else if(row.provider==='claude'){command=resolveClaudeExe(e);args=['auth','login'];}
   else if(row.provider==='kimi'){command='kimi.exe';args=['login'];}
   else if(row.provider==='gemini'){command='gemini';args=[];}
   else if(row.provider==='token-plan'){command='bl';args=['auth','login','--console'];}

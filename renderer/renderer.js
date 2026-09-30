@@ -77,7 +77,17 @@ const {
 } = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
+// @community-strip 公司中转
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
+// @community-else
+// // 中转工具不随社区版发行；保留同一接口，状态提示改走普通 toast。
+// const createChatgptBridgeController = () => ({
+//   init() {},
+//   pushText: async () => ({ ok: false }),
+//   pullForInput: async () => false,
+//   showStatus: (message, tone) => showToast(message, tone),
+// });
+// @community-end
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const {
   forgetViewMode,
@@ -3370,6 +3380,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  // @community-strip 公司中转
   if (action === 'sync-chatgpt') {
     const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
     const original = btn.textContent;
@@ -3380,6 +3391,7 @@ document.addEventListener('click', async (e) => {
     });
     return;
   }
+  // @community-end
 
   if (action === 'prompt-inspect') {
     const sid = getCardSessionId(card);
@@ -4347,6 +4359,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     restoreComposerText(sessionId, inputBox, floatingInputDrafts.get(sessionId));
   }
 
+  // @community-strip 公司中转
   // 用户实际工作流只保留一个入口：把公司 ChatGPT 的新内容拉到输入框。
   // 文本原样追加；附件由 bridge 落盘后以绝对路径追加。写入成功后才 ack，
   // 因此渲染失败不会吞掉公司任务。
@@ -4379,6 +4392,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     }
   });
   bridgeToolbar.appendChild(bridgePullBtn);
+  // @community-else
+  // const bridgeToolbar = document.createElement('div');
+  // bridgeToolbar.className = 'fi-bridge-toolbar';
+  // bridgeToolbar.setAttribute('aria-label', '会话工具');
+  // @community-end
   const toolbarSession = sessions.get(sessionId);
   if (toolbarSession && supportsForkSession(toolbarSession)) {
     const branchBtn = document.createElement('button');
@@ -8068,7 +8086,9 @@ const terminalContextMenu = createTerminalContextMenuController({
   }).catch((error) => {
     showPreviewNotice(`预览失败：${String(error && error.message || error)}`, 'error');
   }),
+  // @community-strip 公司中转
   syncSelection: (selection) => chatgptBridgeController.pushText(selection, '终端选中文字'),
+  // @community-end
 });
 terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
@@ -8079,7 +8099,9 @@ const cardSelectionContextMenu = createCardSelectionContextMenuController({
   window,
   menuEl: document.getElementById('card-selection-context-menu'),
   clipboard,
+  // @community-strip 公司中转
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
+  // @community-end
 });
 cardSelectionContextMenu.init();
 
@@ -8099,7 +8121,9 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
     const directory = stat.isDirectory() ? target : require('path').dirname(target);
     return openPathInHub(directory, { cwd, requireExistsForRel: false, throwOnError: true });
   },
+  // @community-strip 公司中转
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
+  // @community-end
 });
 pathLinkContextMenu.init();
 

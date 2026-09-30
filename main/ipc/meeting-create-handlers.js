@@ -167,6 +167,7 @@ function createMeetingSubAdder(deps) {
       addCodexMcpEntry(sessionOpts, scenes.buildAiTeamMcpEntryForCodex(meetingId, kind));
     }
 
+    // @community-strip 投研场景工具
     const needsResearchMcp = meeting && meeting.groupChat && meeting.scene === 'research';
     if (needsResearchMcp && hookPort) {
       const hubDataDir = getHubDataDir();
@@ -195,6 +196,7 @@ function createMeetingSubAdder(deps) {
     } else if (needsResearchMcp && !hookPort) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
+    // @community-end
 
     // Dev seats hold identity without an engine until they are given work. Both
     // native backends support it, so a Claude seat does not spawn a process the
@@ -263,6 +265,12 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     const safe = { ...(opts || {}) };
     safe.groupChat = true;
     const devSlots = Array.isArray(safe.slots) ? safe.slots : safe.slotSpecs;
+    // @community-strip 社区版：建群前先确认每位成员的 CLI 都在，缺一个就一个都不启动
+    // @community-else
+    // for (const slot of (Array.isArray(devSlots) ? devSlots : [])) {
+    //   require('../../core/community-provider').assertProviderAvailable(slot && slot.kind);
+    // }
+    // @community-end
     if (safe.serialWorkflow?.soloDevelopment || safe.serialWorkflow?.templateId === 'dev-task-solo'
       || (safe.mode === 'dev' && (!Array.isArray(devSlots) || devSlots.length < 2))) {
       throw new Error('开发群聊至少需要两位成员；单人开发请使用普通会话的“一键开工”。');

@@ -40,7 +40,11 @@ function defaultRoot(env = process.env) {
   if (env.CLAUDE_HUB_DATA_DIR || env.CLAUDE_HUB_HOME_DIR) {
     return path.join(path.resolve(env.CLAUDE_HUB_DATA_DIR || env.CLAUDE_HUB_HOME_DIR), 'hub-chrome');
   }
+  // @community-strip 本机目录
   return 'C:\\VibeData\\HubChrome';
+  // @community-else
+  // return path.join(require('./data-dir').getHubDataDir(), 'hub-chrome');
+  // @community-end
 }
 function chromeExecutable(env = process.env) {
   const candidates = [
@@ -152,6 +156,7 @@ class HubChrome {
       return cookies.map(c => ({ host: c.domain, name: c.name, expiresAt: c.expires > 0 ? Math.round(c.expires * 1000) : 0 }));
     } finally { page?.close(); cdp.close(); }
   }
+  // @community-strip 投研站点
   // 初心投研的投研站点（雪球、韭研公社、问财）：登录态只看那一个登录 cookie。
   // 浏览器关着时读磁盘上的 cookie 名与过期时间（不启动浏览器）；开着时问浏览器本身。
   async siteCookieStatus(siteKey, identityId = 'main') {
@@ -166,6 +171,8 @@ class HubChrome {
     const hit = (rows || []).find(r => hostMatches(r.host, site.cookie.host) && site.cookie.name.test(r.name) && (!r.expiresAt || r.expiresAt > now));
     return hit ? { state: 'signed_in', message: '专属 Chrome 里已登录' } : { state: 'signed_out', message: '专属 Chrome 里还没登录' };
   }
+  // @community-end
+  // @community-strip 投研站点
   // 把某个投研站点在该身份里的 cookie（含值）交给本机的初心投研。只允许 RESEARCH_SITES，
   // AI 网站的登录永远不导出。浏览器没开就在后台起一个无头实例读完即关；登录窗口开着就如实报告。
   async exportCookies(siteKey, identityId = 'main') {
@@ -193,6 +200,7 @@ class HubChrome {
       }
     });
   }
+  // @community-end
   // The one "检查登录". Reads the file when Chrome is closed (no process started at all) and
   // the live store when it is open; the answer has the same shape either way.
   // Sites without a login cookie get a quick look in a background tab, but only when Chrome

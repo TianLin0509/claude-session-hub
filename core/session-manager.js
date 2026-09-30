@@ -119,7 +119,11 @@ function _loadConfigValues() {
     CODEX_API_KEY: config.codexApiKey,
     CODEX_API_BASE_URL: config.codexApiBaseUrl,
     CODEX_API_MODEL: config.codexApiModel,
+    // @community-strip 私人网关
     CODEX_API_PROVIDER: config.codexApiProvider || 'packycode',
+    // @community-else
+    // CODEX_API_PROVIDER: config.codexApiProvider || 'openai-api',
+    // @community-end
   };
 }
 // 惰性求值：首次使用时加载，之后缓存
@@ -137,6 +141,13 @@ function clearSessionManagerConfigCache() {
  * 必须清干净大小写两套——Hub 进程继承的可能是 Clash/Mihomo 设的 7890，
  * 走代理时长流式请求可能被 60s idle TCP 切断。
  */
+// @community-strip 社区版会话终端的 PowerShell 绝对路径
+// @community-else
+// function windowsPowerShellPath() {
+//   const candidate = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+//   return fs.existsSync(candidate) ? candidate : 'powershell.exe';
+// }
+// @community-end
 function clearProxyEnv(env) {
   delete env.HTTP_PROXY;
   delete env.HTTPS_PROXY;
@@ -155,6 +166,10 @@ function clearProxyEnv(env) {
  * 实际仍可能拾取父进程的另一个代理。
  */
 function applyProxyEnv(env, proxy) {
+  // @community-strip 社区版默认不设代理：留空时沿用用户自己环境里的代理，而不是清掉
+  // @community-else
+  // if (!String(proxy || '').trim()) return false;
+  // @community-end
   clearProxyEnv(env);
   const value = String(proxy || '').trim();
   if (!value) return false;
@@ -290,7 +305,11 @@ function createNativeClaudeDriver(id, kind, opts, cwd, env, legacy) {
   const launchArgs = buildClaudeNativeArgs({ model: legacy ? normalizeLegacyDeepSeekClaudeModel(opts.model) : opts.model,
     effort: legacy || process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
       : (opts.effort || 'max'),
+    // @community-strip 社区版不改全局权限模式，改为只给 Hub 启动的会话带同样的档位
     permissionMode: opts.permissionMode || (opts.autonomous === true || legacy ? 'bypassPermissions' : undefined),
+    // @community-else
+    // permissionMode: opts.permissionMode || 'bypassPermissions',
+    // @community-end
     appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
     addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
@@ -342,12 +361,20 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
   const { buildClaudeNativeArgs, prepareClaudeSettingsOverlay } = require('./claude-native-launch');
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
+    // @community-strip 社区版：自动执行档位只在 Hub 启动的会话里生效，免确认也只写进这一份会话配置
     overrides: { fastMode: fast },
+    // @community-else
+    // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true },
+    // @community-end
   });
   const args = buildClaudeNativeArgs({ model: opts.model,
     effort: process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? null
       : (CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : 'max'),
+    // @community-strip 社区版不改全局权限模式，改为只给 Hub 启动的会话带同样的档位
     permissionMode: opts.permissionMode || (opts.autonomous === true ? 'bypassPermissions' : undefined),
+    // @community-else
+    // permissionMode: opts.permissionMode || 'bypassPermissions',
+    // @community-end
     appendSystemPromptFile: opts.appendSystemPromptFile, settingsFile,
     addDirs: claudeNativeAddDirs(opts.addDirs), settingSources: opts.settingSources,
     mcpConfigPaths: mcp.configPaths || [], strictMcpConfig: mcp.profile !== 'full' });
@@ -765,8 +792,13 @@ function getCodexApiHome() {
 
 function ensureCodexApiProfile(cv, projectDir) {
   const codexHome = getCodexApiHome();
+  // @community-strip 私人网关
   const provider = cv.CODEX_API_PROVIDER || 'packycode';
   const baseUrl = cv.CODEX_API_BASE_URL || 'https://www.packyapi.com/v1';
+  // @community-else
+  // const provider = cv.CODEX_API_PROVIDER || 'openai-api';
+  // const baseUrl = cv.CODEX_API_BASE_URL || 'https://api.openai.com/v1';
+  // @community-end
   const model = cv.CODEX_API_MODEL || DEFAULT_MODEL_BY_KIND.codex;
   const projectKey = path.resolve(projectDir || os.homedir());
 
@@ -909,7 +941,11 @@ function isPathInside(candidate, root) {
 }
 
 function isWirelessWorkspace(cwd) {
+  // @community-strip 本机目录
   const wirelessRoot = process.env.AI_HUB_WIRELESS_ROOT || 'C:\\Vibe\\Wireless';
+  // @community-else
+  // const wirelessRoot = process.env.AI_HUB_WIRELESS_ROOT || '';
+  // @community-end
   return isPathInside(cwd, wirelessRoot);
 }
 
@@ -1209,6 +1245,10 @@ class SessionManager extends EventEmitter {
     const lease = this.openLeases?.get(id);
     try {
       if (lease) require('./session-store').resumeSessionWrites(id);
+      // @community-strip 社区版：缺少 CLI 时在创建前给出明确提示
+      // @community-else
+      // require('./community-provider').assertProviderAvailable(kind);
+      // @community-end
       return this._createSession(kind, {...opts, id});
     }
     catch (error) {
@@ -1328,7 +1368,11 @@ class SessionManager extends EventEmitter {
     } else if (isGemini || isCodex) {
       const cv = getConfigValues();
       if (isCodex && isCodexApiBackend(cv)) {
+        // @community-strip 私人网关
         // Codex API 模式走 PackyAPI，必须直连，否则代理 60s idle 切长任务
+        // @community-else
+        //   // Codex API 模式必须直连，否则代理 60s idle 切长任务
+        // @community-end
         clearProxyEnv(sessionEnv);
         sessionEnv.CODEX_HOME = getCodexApiHome();
       } else {
@@ -1552,6 +1596,11 @@ class SessionManager extends EventEmitter {
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
     let codexEditorInput = null;
     if (isCodexRuntime && !isNativeCodex && !isAcp) {
+      // 只装了官方原生 Codex、它的目录还没进入本进程 PATH 时，给这个会话补上，终端里输入 codex 才找得到。
+      if (process.platform === 'win32') {
+        try { require('../main/codex-windows-command').ensureCodexOnSessionPath(sessionEnv); }
+        catch (error) { console.warn('[codex-path] could not check the Codex install folder:', error.message); }
+      }
       try {
         codexEditorInput = require('./codex-editor-input').configureCodexEditorInput(sessionEnv,
           { dataDir: getHubDataDir(), cwd: spawnCwd });
@@ -1572,7 +1621,11 @@ class SessionManager extends EventEmitter {
         hubDataDir:getHubDataDir(),hubPid:process.pid,hubVersion:require('../package.json').version,
         lazyStart:opts.lazyStart === true, resumeId:opts.useResume ? opts.codexSid : null, forkId:opts.codexForkSid})
       : isNativeClaude ? createNativeClaudeDriver(id, kind, opts, spawnCwd, sessionEnv, isDeepSeekLegacy)
+      // @community-strip 社区版用绝对路径启动 PowerShell：node-pty 查 PATH 时会漏掉最后一项
       : pty.spawn('powershell.exe', shellArgs, {
+      // @community-else
+      // : pty.spawn(windowsPowerShellPath(), shellArgs, {
+      // @community-end
       name: 'xterm-256color',
       cols: 120,
       rows: 30,

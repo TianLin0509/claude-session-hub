@@ -2,7 +2,11 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+// @community-strip 本机目录
 const DEFAULT_ROOT = 'C:\\VibeData\\CodexChatGPTWeb\\ai-hub-isolated';
+// @community-else
+// const DEFAULT_ROOT = path.join(os.homedir(), '.ai-hub-community', 'chatgpt-web');
+// @community-end
 
 function isolatedPaths(env = process.env) {
   const root = path.resolve(env.AI_HUB_CHATGPT_ROOT || DEFAULT_ROOT);

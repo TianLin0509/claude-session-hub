@@ -59,7 +59,9 @@ const { createUsageFilter } = require('./core/usage-filter.js');
 const scenes = require('./core/group-chat-scenes.js');
 const groupchat = require('./core/group-chat-orchestrator.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
+// @community-strip 投研数据桥
 const lindangBridge = require('./core/lindang-bridge.js');
+// @community-end
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const {
   createFixtureProbe: createNetworkEgressFixtureProbe,
@@ -75,7 +77,9 @@ const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
 const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
+// @community-strip 公司 ChatGPT 中转
 const { registerChatgptBridgeIpc } = require('./main/ipc/chatgpt-bridge-handlers.js');
+// @community-end
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerPromptSubmitIpc } = require('./main/ipc/prompt-submit-handlers.js');
 const { createClaudeQuotaResume, registerClaudeQuotaIpc } = require('./main/claude-quota-resume.js');
@@ -98,15 +102,17 @@ const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handle
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatSupplementIpc } = require('./main/ipc/groupchat-supplement-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
+// @community-strip 投委会
 const { registerCommitteeIpc } = require('./main/ipc/committee-handlers.js');
+const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
+const committeeHistory = require('./core/committee-history.js');
+// @community-end
 const { createResumeSessionHandler, registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
-const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
 const {
   collectProtectedSessionIds,
   createSessionAutoSuspendScheduler,
 } = require('./main/session-auto-suspend.js');
-const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
 const {
   parseCodexUsage,
@@ -322,6 +328,7 @@ function ensureCodexContextConfig() {
   }
 }
 
+// @community-strip 投研 MCP 只属于私人版；社区版不改用户的 ~/.gemini
 // Ensure Gemini CLI has arena-research MCP server registered. Gemini reads
 // ~/.gemini/settings.json and auto-launches mcpServers entries on startup.
 // We register the server with stdio transport, NO env field — the server
@@ -362,6 +369,9 @@ function ensureGeminiMcpInstalled() {
     console.warn('[群聊] gemini mcp install failed:', e.message);
   }
 }
+// @community-else
+// function ensureGeminiMcpInstalled() {}
+// @community-end
 
 // Read the last user message text from a Claude Code transcript JSONL file.
 // Reads the trailing chunk(s) only (not the whole file) — long sessions can be
@@ -1088,7 +1098,13 @@ function createWindow() {
   })();
   // 2026-05-03 道雪：标题带 PID，方便桌面同时存在多个 Hub 窗口（生产+测试）时
   //   一眼区分哪个对应哪个 PID — 调试时不再需要 Get-Process 反查。
+  // @community-strip 社区版标题带上游版本
   const _hubTitle = `AI 群聊 Hub：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
+  // @community-else
+  // // 社区版标题同时写出社区版本与所基于的上游版本，用户报问题时一眼可见。
+  // const _upstreamVersion = require('./core/distribution').upstreamVersion;
+  // const _hubTitle = `AI Hub Community v${_pkgVersion}${_upstreamVersion ? `（上游 ${_upstreamVersion}）` : ''}：PID ${process.pid}`;
+  // @community-end
   // T6 冷杉 v2：隐藏原生标题栏，让渲染层那条 44px 工具栏直接顶到窗口顶边。
   // 三个系统窗口按钮仍由 Windows 自己画（titleBarOverlay），所以最大化 / 还原 /
   // 关闭的行为、Snap Layouts、右键系统菜单全部保持原生，不需要 Hub 自己复刻一套。
@@ -1703,6 +1719,7 @@ registerAutoSuspendIpc(ipcMain, {
   logger: console,
 });
 
+// @community-strip 投委会、初心投研、投资联赛、学习 Tab
 // 投委会五幕编排（task#5）：叠加在 research 群聊之上，复用 dispatcher 的并行发言 + 委员解析。
 const committeeConductor = createCommitteeConductor({
   dispatchTurn: groupChatDispatcher.dispatchGroupChatTurn,
@@ -1783,6 +1800,9 @@ try {
 } catch (e) {
   console.warn('[study] 学习 Tab 初始化失败：', e && e.message);
 }
+// @community-else
+// const chuxinBridge = null;
+// @community-end
 
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
@@ -2176,24 +2196,42 @@ registerWorkbenchOperationsIpc(ipcMain, {
 });
 
 registerPathIpc(ipcMain);
+// @community-strip 社区版首页的安装检测
+// @community-else
+// ipcMain.handle('community:setup', () => require('./core/community-setup').inspectSetupAsync({ packaged: app.isPackaged }));
+// @community-end
+// @community-strip 公司 ChatGPT 中转
 registerChatgptBridgeIpc(ipcMain, { sessionManager });
+// @community-end
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
 // fires lifecycle hooks. Forwards compact observations to the renderer's
 // RuntimeTruth reducer; the hook request never blocks on transcript parsing
 // except for the final Stop preview fallback.
+// @community-strip 投研站点
 // 本机初心投研经这个接口复用专属 Chrome 的投研站点登录（雪球、韭研公社、问财）；在账号服务创建后赋值
+// @community-end
 let hubAccountsService = null;
 const hookServer = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
+  // 社区版的 hook 由 PowerShell 原样转发 CLI 的载荷（scripts/session-hub-hook.ps1），
+  // 字段提取在这里做（core/hook-payload.js），之后与 Python 版走同一条处理路径。
+  const rawHookEvent = req.method === 'POST' && /^\/api\/hook-raw\/[a-z-]+$/.test(req.url)
+    ? req.url.slice('/api/hook-raw/'.length) : null;
+  if (rawHookEvent) req.url = '/api/hook/' + rawHookEvent;
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isNativeOwnership = req.method === 'POST' && req.url === '/api/native-ownership';
+  // @community-strip 投研站点账号接口
   const isResearchAccount = req.method === 'POST' && ['/api/accounts/research-open', '/api/accounts/research-cookies'].includes(req.url);
+  // @community-else
+  // const isResearchAccount = false;
+  // @community-end
   // 2026-05-16 道雪：防卡死 — 外部 HTTP 救援入口，tools/hub-escape.ps1 调
   const isEscapeHome = req.method === 'POST' && req.url === '/api/escape-home';
+  // @community-strip 投研数据接口
   // Plan 2: 3 个新聚合 endpoint（走 research-mcp/query.py 而非 LinDangAgent.data_query.py）
   const isResearchStockStatic = req.method === 'POST' && req.url === '/api/research/stock-static';
   const isResearchStockMarket = req.method === 'POST' && req.url === '/api/research/stock-market';
@@ -2203,23 +2241,48 @@ const hookServer = http.createServer((req, res) => {
   const isResearchKlineSimilarity = req.method === 'POST' && req.url === '/api/research/kline-similarity';
   const isResearchFetch = isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
     || isResearchKlineSimilarity;
+  // @community-else
+  // const isResearchFetch = false;
+  // @community-end
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
   if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome && !isNativeOwnership && !isResearchAccount) {
     res.writeHead(404); res.end('{}'); return;
   }
 
-  // Cap body size at 16KB — statusline payloads are tiny, hooks tinier
+  // Cap body size at 16KB — statusline payloads are tiny, hooks tinier.
+  // Raw hook payloads are untruncated CLI JSON (tool output included), so they
+  // get a larger cap and are decoded once, after all chunks arrive.
+  if (rawHookEvent && String(req.headers['x-hub-token'] || '') !== HOOK_TOKEN) {
+    res.writeHead(403); res.end('{}'); req.resume(); return;
+  }
   let body = '';
+  const rawChunks = [];
+  let rawBytes = 0;
   let tooBig = false;
   req.on('data', (c) => {
     if (tooBig) return;
+    if (rawHookEvent) {
+      rawBytes += c.length;
+      if (rawBytes > 8 * 1024 * 1024) { tooBig = true; return; }
+      rawChunks.push(c);
+      return;
+    }
     if (body.length + c.length > 16384) { tooBig = true; return; }
     body += c;
   });
   req.on('end', async () => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
-    try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    if (rawHookEvent) {
+      parsed = require('./core/hook-payload').normalizeHookPayload(rawHookEvent, Buffer.concat(rawChunks), {
+        sessionId: String(req.headers['x-hub-session'] || ''),
+        token: String(req.headers['x-hub-token'] || ''),
+      });
+      if (!parsed) { res.writeHead(200); res.end('{}'); return; }
+    } else {
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    }
+    // @community-strip 投研站点账号接口
     if (isResearchAccount) {
       // 令牌来自 Hub 控制文件，只有本机同一用户能读；只许投研站点，AI 网站的登录永不导出
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
@@ -2235,6 +2298,7 @@ const hookServer = http.createServer((req, res) => {
       }
       return;
     }
+    // @community-end
     if (isNativeOwnership) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
       // Main owns these identities. A restore must not wake every other
@@ -2280,6 +2344,7 @@ const hookServer = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, pid: process.pid }));
       return;
     }
+    // @community-strip 投研数据接口
     // Research mode MCP callbacks (loopback)：stock_static / stock_market / stock_news / scan_* 系列。
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
@@ -2325,6 +2390,7 @@ const hookServer = http.createServer((req, res) => {
       res.end(JSON.stringify(result));
       return;
     }
+    // @community-end
     if (parsed.token !== HOOK_TOKEN) {
       res.writeHead(403); res.end('{}'); return;
     }
@@ -3264,9 +3330,19 @@ app.whenReady().then(async () => {
   // Isolated E2E must not mutate or poll production ~/.claude settings. Real
   // Claude integration tests provide their own config explicitly; ordinary
   // renderer/PTY tests need no hook deployment at all.
+  // @community-strip 社区版不凭空创建 DeepSeek 专用配置目录
   const claudeDirs = isIsolatedHub()
     ? []
     : ['.claude', '.claude-deepseek'].map(dir => path.join(_home, dir));
+  // @community-else
+  // // 端到端测试可以在完全伪造的 home 里部署 hook（CLAUDE_HUB_HOME_DIR 必须就是当前 home）。
+  // const e2eFakeHome = process.env.CLAUDE_HUB_E2E_FAKE_HOME === '1' && !!process.env.CLAUDE_HUB_HOME_DIR
+  //   && path.resolve(process.env.CLAUDE_HUB_HOME_DIR).toLowerCase() === path.resolve(_home).toLowerCase();
+  // const claudeDirs = isIsolatedHub() && !e2eFakeHome
+  //   ? []
+  //   : ['.claude', '.claude-deepseek'].map(dir => path.join(_home, dir))
+  //     .filter((dir, index) => index === 0 || fs.existsSync(dir));
+  // @community-end
   const hookSourceScriptsDir = HUB_IS_PACKAGED
     ? path.join(process.resourcesPath, 'scripts')
     : path.join(__dirname, 'scripts');

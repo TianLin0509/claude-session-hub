@@ -1,0 +1,223 @@
+{
+  "$comment": "社区版导出清单。include 取文件，drop 删私人模块，scrub 做注释与文案脱敏，overlay/ 目录的文件最后覆盖进去。改动后跑 node scripts/community/export-community.js 与 tests/unit-community-export.test.js。",
+  "version": "0.2.0",
+  "include": [
+    "main.js",
+    "main-bootstrap.js",
+    "package.json",
+    "package-lock.json",
+    "LICENSE",
+    "claude-wx.ico",
+    "core/**",
+    "main/**",
+    "renderer/**",
+    "scripts/brand-hub-exe.js",
+    "scripts/claude-hub-statusline.js",
+    "scripts/deepseek_repl.py",
+    "scripts/firewall-whitelist-electron.ps1",
+    "scripts/open-hub-github-auth.js",
+    "scripts/prepared-projects.js",
+    "scripts/provider-cli-hook.js",
+    "scripts/provider-cli-tap.js",
+    "scripts/repair-claude-hook-integration.js",
+    "scripts/repair-windows-shell-integration.js",
+    "scripts/session-hub-hook.ps1",
+    "scripts/session-hub-hook.py",
+    "scripts/share-agent-skills.js",
+    "tools/hub-escape.ps1",
+    "tools/hub-escape-foreground.ps1",
+    "tests/helpers/hub-launcher.js",
+    "tests/helpers/cdp-client.js"
+  ],
+  "drop": [
+    "core/chuxin*",
+    "core/lindang-bridge.js",
+    "core/research-mcp-server.js",
+    "core/screener-score.js",
+    "core/spirit-registry.js",
+    "core/hero-prompts.js",
+    "core/committee-*",
+    "core/agent-league-*",
+    "core/league-keepalive-policy.js",
+    "core/study-*",
+    "main/ipc/chuxin-handlers.js",
+    "main/ipc/committee-handlers.js",
+    "main/ipc/agent-league-handlers.js",
+    "main/ipc/study-handlers.js",
+    "main/ipc/chatgpt-bridge-handlers.js",
+    "main/groupchat/committee-conductor.js",
+    "renderer/chuxin*",
+    "renderer/study*",
+    "renderer/committee-ui*",
+    "renderer/agent-league*",
+    "renderer/chatgpt-bridge-controller.js"
+  ],
+  "scrub": [
+    {
+      "pattern": "立花道雪",
+      "replace": "maintainer"
+    },
+    {
+      "pattern": "道雪",
+      "replace": "maintainer"
+    },
+    {
+      "pattern": "田哥",
+      "replace": "用户"
+    },
+    {
+      "pattern": "林田",
+      "replace": "用户"
+    },
+    {
+      "pattern": "C:\\\\\\\\Users\\\\\\\\lintian",
+      "replace": "C:\\\\Users\\\\you"
+    },
+    {
+      "pattern": "C:\\\\Users\\\\lintian",
+      "replace": "C:\\Users\\you"
+    },
+    {
+      "pattern": "C:/Users/lintian",
+      "replace": "C:/Users/you"
+    },
+    {
+      "pattern": "C--Users-lintian",
+      "replace": "C--Users-you"
+    },
+    {
+      "pattern": "初心投研",
+      "replace": "扩展投研"
+    },
+    {
+      "pattern": "初心",
+      "replace": "扩展投研"
+    },
+    {
+      "pattern": "LinDangAgent",
+      "replace": "ResearchAgent"
+    },
+    {
+      "pattern": "LinDang",
+      "replace": "ResearchAgent"
+    },
+    {
+      "pattern": "lindang",
+      "replace": "researchagent"
+    },
+    {
+      "pattern": "CHUXIN",
+      "replace": "XRESEARCH"
+    },
+    {
+      "pattern": "Chuxin",
+      "replace": "Xresearch"
+    },
+    {
+      "pattern": "chuxin",
+      "replace": "xresearch"
+    },
+    {
+      "pattern": "C:(\\\\\\\\|\\\\|/)VibeData",
+      "replace": "C:$1AppData"
+    },
+    {
+      "pattern": "VibeData",
+      "replace": "AppData"
+    },
+    {
+      "pattern": "C:(\\\\\\\\|\\\\|/)Vibe(?![A-Za-z])",
+      "replace": "C:$1Workspace"
+    },
+    {
+      "pattern": "C:(\\\\\\\\|\\\\|/)DevTools",
+      "replace": "C:$1Tools"
+    },
+    {
+      "pattern": "C:(\\\\\\\\|\\\\|/)AIWork",
+      "replace": "C:$1Work"
+    },
+    {
+      "pattern": "CodexWebGPT",
+      "replace": "WebGPT"
+    },
+    {
+      "pattern": "Meridian",
+      "replace": "网关"
+    },
+    {
+      "pattern": "lintian",
+      "replace": "you"
+    },
+    {
+      "pattern": "[Ss]uper(?:RAN|ran)",
+      "replace": "wireless-sim"
+    },
+    {
+      "pattern": "chatgpt-bridge",
+      "replace": "relay-tool"
+    },
+    {
+      "pattern": "\\.claude-session-hub",
+      "replace": ".ai-hub-community"
+    },
+    {
+      "pattern": "AI 群聊 Hub",
+      "replace": "AI Hub Community"
+    },
+    {
+      "pattern": "com\\.ai-group-chat-hub",
+      "replace": "com.ai-hub.community"
+    },
+    {
+      "pattern": "AIGroupChatHub",
+      "replace": "AIHubCommunity"
+    }
+  ],
+  "package": {
+    "name": "ai-hub-community",
+    "description": "Local multi-agent desktop workspace using your own AI accounts",
+    "license": "MIT",
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/TianLin0509/ai-hub-community.git"
+    },
+    "engines": {
+      "node": ">=22"
+    },
+    "scripts": {
+      "start": "electron .",
+      "test": "node --test tests/unit-community.test.js tests/unit-community-onboarding.test.js tests/unit-community-hooks.test.js",
+      "dist": "electron-builder --win --publish never",
+      "doctor": "node scripts/doctor.js",
+      "audit": "node scripts/audit-public.js"
+    },
+    "build": {
+      "appId": "com.ai-hub.community",
+      "productName": "AI Hub Community",
+      "win": {
+        "target": [
+          "nsis",
+          "zip"
+        ],
+        "icon": "claude-wx.ico",
+        "artifactName": "AIHubCommunity-${version}-win-${arch}.${ext}"
+      },
+      "nsis": {
+        "artifactName": "AIHubCommunity-Setup-${version}.${ext}",
+        "oneClick": false,
+        "allowToChangeInstallationDirectory": true,
+        "installerIcon": "claude-wx.ico",
+        "uninstallerIcon": "claude-wx.ico",
+        "createDesktopShortcut": true
+      }
+    },
+    "buildFilesAppend": [
+      "!node_modules/node-pty/deps/**",
+      "!node_modules/node-pty/src/**",
+      "!node_modules/node-pty/scripts/**",
+      "!node_modules/node-pty/typings/**",
+      "!node_modules/node-pty/binding.gyp"
+    ]
+  }
+}

@@ -1,7 +1,15 @@
 'use strict';
 const { companyCards, cliChip } = require('./account-center-view');
+// @community-strip 投研站点
 const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'research', name: '投研数据' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
+// @community-else
+// const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
+// @community-end
+// @community-strip 投研站点
 const GROUP = { github: 'work', yuque: 'work', xueqiu: 'research', jiuyan: 'research', iwencai: 'research', social: 'content', mediaPublish: 'content' };
+// @community-else
+// const GROUP = { github: 'work', social: 'content', mediaPublish: 'content' };
+// @community-end
 const NATIVE = { signed_in: ['已登录', 'ok'], signed_out: ['未登录', 'warn'], unknown: ['登录状态未确认', 'idle'] };
 const BINDING = { shared: '共享专属 Chrome', bound: '已连接', changed: '连接配置已变化', pending: '尚未共享登录', native: '独立授权', host: '客户端授权' };
 const LOGOS = { chatgpt: 'codex', claude: 'claude', google: 'gemini', deepseek: 'deepseek', kimi: 'kimi', qwen: 'qwen' };
