@@ -19,14 +19,17 @@ const GITHUB_DARK = {
   brightCyan: '#56d364', brightWhite: '#ffffff',
 };
 
-// Deep-sea D4 changes the terminal surface and default ANSI tones only. CLI
-// truecolor output remains owned by the real PTY application.
+// Warm gold for the real PTY: the terminal supplies ANSI/default colors while
+// Claude, Codex and other TUIs still own their truecolor rendering and input.
 const DEEP_SEA_DARK = {
   ...GITHUB_DARK,
-  background: '#081420', foreground: '#dce5ee', cursor: '#e3be85',
-  cursorAccent: '#081420', selectionBackground: 'rgba(227, 190, 133, 0.28)',
-  black: '#3c5065', white: '#dce5ee', brightBlack: '#8293a6',
-  brightWhite: '#f3f5f7', yellow: '#d7ad6d', brightYellow: '#f0d2a5',
+  background: '#081420', foreground: '#e8e3d8', cursor: '#e6bb7c',
+  cursorAccent: '#081420', selectionBackground: 'rgba(230, 187, 124, 0.3)',
+  black: '#3a4b5c', red: '#dc8585', green: '#86cda5', yellow: '#ddb575',
+  blue: '#92bad5', magenta: '#c4a4ce', cyan: '#80c6c1', white: '#e8e3d8',
+  brightBlack: '#8b9fb1', brightRed: '#f0a6a0', brightGreen: '#a9deb8',
+  brightYellow: '#f2d29b', brightBlue: '#b0d2e9', brightMagenta: '#dcc0e1',
+  brightCyan: '#a6dcd3', brightWhite: '#fff7eb',
 };
 
 /**

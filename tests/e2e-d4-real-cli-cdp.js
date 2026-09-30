@@ -96,11 +96,12 @@ async function run() {
     await until('typeof sessions !== "undefined" && !!document.querySelector("#btn-home")', 'renderer ready');
     assert.equal(await c.eval('document.documentElement.dataset.theme'), 'dark');
     assert.equal(await c.eval('getComputedStyle(document.querySelector(".rail-logo img")).display'), 'block');
+    if (process.env.HUB_REAL_CLI_KIND) assert.ok(['claude', 'codex'].includes(process.env.HUB_REAL_CLI_KIND));
 
     for (const spec of [
       { kind: 'claude', model: claudeModel, marker: 'D4_CLAUDE_OK', ready: '/❯/' },
       { kind: 'codex', model: codexModel, marker: 'D4_CODEX_OK', ready: '/›|context left|Context/i' },
-    ]) {
+    ].filter(spec => !process.env.HUB_REAL_CLI_KIND || process.env.HUB_REAL_CLI_KIND === spec.kind)) {
       const created = await c.eval(`ipcRenderer.invoke('create-session', ${j({ kind: spec.kind, opts: {
         cwd, model: spec.model, effort: 'low', mcpProfile: 'none', codexSpeedTier: 'inherit',
       } })})`);
@@ -113,7 +114,9 @@ async function run() {
       await c.eval("applyViewMode('pty')");
       await until(`(${terminalText(sid)}).match(${spec.ready})`, spec.kind + ' real TUI', 120000);
       record.ready = true;
-      const prompt = `请用两行回复。第一行只写 ${spec.marker}。第二行写“界面可用”。不要调用工具。`;
+      const prompt = process.env.HUB_CLI_RICH_PREVIEW === '1'
+        ? `请先写 ${spec.marker}。然后用简短中文写一个小标题、一段两句的正文和两条列表建议；最后给出一个 JavaScript 代码块（包含函数名、字符串与注释）和一个 diff 代码块（各有新增、删除一行）。这是终端色彩预览，不调用工具、不修改文件。`
+        : `请用两行回复。第一行只写 ${spec.marker}。第二行写“界面可用”。不要调用工具。`;
       await c.eval('document.querySelector(".floating-input-box").focus()');
       await c.send('Input.insertText', { text: prompt });
       await click('.floating-input-send');
@@ -130,6 +133,30 @@ async function run() {
       record.terminalTail = (await c.eval(terminalText(sid))).split('\n').filter(Boolean).slice(-22).join('\n');
       record.screenshot = await screenshot(spec.kind + '-terminal');
       assert.equal(await c.eval('!!document.querySelector(".fi-stuck")'), false);
+      if (spec.kind === 'codex') {
+        record.answerAccent = await c.eval(`(() => {
+          const layer = terminalCache.get(${q}).terminal.element.querySelector('.codex-answer-accent-layer');
+          return { bands: layer?.querySelectorAll('.codex-answer-accent-band').length || 0,
+            tintedRows: Number(layer?.dataset.tintedRows || 0),
+            pointerEvents: layer ? getComputedStyle(layer).pointerEvents : null };
+        })()`);
+        assert.ok(record.answerAccent.bands > 0 && record.answerAccent.tintedRows > 0
+          && record.answerAccent.pointerEvents === 'none');
+      }
+      if (spec.kind === 'codex' && process.env.HUB_CLI_CAPTURE_WARNINGS === '1') {
+        await click('.xterm-screen');
+        for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', {
+          type, key: 'F2', code: 'F2', windowsVirtualKeyCode: 113, nativeVirtualKeyCode: 113,
+        });
+        await sleep(500);
+        record.warningsText = (await c.eval(terminalText(sid))).split('\n').filter(Boolean).slice(-30).join('\n');
+        record.warningsScreenshot = await screenshot('codex-warnings');
+        for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', {
+          type, key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39,
+        });
+        await sleep(300);
+        record.nextWarningText = (await c.eval(terminalText(sid))).split('\n').filter(Boolean).slice(-16).join('\n');
+      }
     }
     evidence.passed = true;
   } catch (error) {

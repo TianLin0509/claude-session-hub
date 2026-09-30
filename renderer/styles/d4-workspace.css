@@ -212,6 +212,17 @@
 :root[data-theme='dark'] .terminal-panel { background: #081420; }
 :root[data-theme='dark'] .terminal-container { background: #081420; }
 :root[data-theme='dark'] .terminal-container.pty-surface { border-color: #30445a; box-shadow: inset 0 1px #ffffff0a, 0 8px 28px #0002; }
+.codex-answer-accent-layer { display: none; position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 4; }
+:root[data-theme='dark'] .codex-answer-accent-layer { display: block; }
+:root[data-theme='dark'] .codex-answer-accent-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: linear-gradient(90deg, rgba(230, 187, 124, .065), rgba(230, 187, 124, .018) 45%, transparent 90%);
+  box-shadow: inset 2px 0 rgba(230, 187, 124, .65);
+  border-radius: 2px;
+}
+.codex-answer-line-tint { position: absolute; left: 0; right: 0; }
 :root[data-theme='dark'] .pty-output-heading { height: 44px; padding-inline: 24px; background: linear-gradient(180deg, #14273b, #0e1e30); border-bottom-color: #3a5068; color: #d7e3ef; font-size: 13px; }
 :root[data-theme='dark'] .pty-output-heading::after { content: ''; position: absolute; left: 24px; bottom: -1px; width: 106px; height: 2px; border-radius: 2px; background: #e8bd7e; box-shadow: 0 0 12px #dfb77955; }
 :root[data-theme='dark'] .pty-output-symbol { color: #efc78f; }

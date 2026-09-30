@@ -78,6 +78,18 @@ test('activity and restored delivery both default closed, retain existing UI com
  assert(!/<details[^>]*class="turn-delivery-summary"[^>]*\sopen(?:\s|>)/.test(html));
  assert(!/<details[^>]*class="[^"]*tc-cluster[^"]*"[^>]*\sopen(?:\s|>)/.test(r.renderToolCluster('t',[{name:'Bash',result:'ok'}])));
 });
+test('E2 result glance reports only recorded categories and never turns failed checks into success',()=>{
+ const r=renderer(),final=displayTurns(native(1)).find(t=>t.phase==='final_answer');
+ const html=r.renderTurnCard(final);
+ assert.match(html,/<div class="turn-primary has-glance">/);
+ assert.match(html,/<aside class="turn-result-glance"/);
+ assert.match(html,/<strong>1<\/strong><span>变更文件<\/span>/);
+ assert.match(html,/<strong>1<\/strong><span>验证记录<\/span>/);
+ assert(!html.includes('通过验证'));
+ assert(!html.includes('交付产物'));
+ const progress=displayTurns(native(1)).find(t=>t.phase==='commentary');
+ assert(!r.renderTurnCard(progress).includes('turn-result-glance'));
+});
 test('message-specific actions retain existing functions without regenerate on progress/activity',()=>{
  const r=renderer(),cards=displayTurns(native());
  for(const phase of ['commentary','activity']){

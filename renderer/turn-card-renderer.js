@@ -192,6 +192,7 @@ function renderToolCluster(turnId, toolCalls, total = toolCalls?.length || 0) {
 }
 
 const renderDeliverySummary = delivery => require('./delivery-summary').renderDeliverySummary(delivery, escapeHtml);
+const renderDeliveryGlance = delivery => require('./delivery-summary').renderDeliveryGlance(delivery, escapeHtml);
 
 function _disclosureKey(element, index) {
   if (!element) return `details:${index}`;
@@ -525,6 +526,13 @@ function renderTurnCard(turn) {
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', _fullActivityTurns.has(turn.id) ? turn.toolCalls : presentation.activities, presentation.activityCount);
   const deliveryHtml = !isUser && turn.phase !== 'commentary' && turn.phase !== 'activity' ? renderDeliverySummary(presentation.delivery) : '';
+  const glanceHtml = deliveryHtml ? renderDeliveryGlance(presentation.delivery) : '';
+  const bodyHtml = `<div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+      ${attachments}
+      ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}`;
+  const primaryHtml = !isUser && !isProgress && turn.phase !== 'activity'
+    ? `<div class="turn-primary${glanceHtml ? ' has-glance' : ''}"><div class="turn-primary-copy">${bodyHtml}</div>${glanceHtml}</div>`
+    : bodyHtml;
 
   // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
   // S1 parser exposes turn.thinking as multi-block joined string (or null).
@@ -559,9 +567,7 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
-      ${attachments}
-      ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}
+      ${primaryHtml}
       ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}

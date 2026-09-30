@@ -137,7 +137,9 @@ async function main() {
   assert.strictEqual(resolveXtermTheme('banana'), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(resolveXtermTheme(null), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(XTERM_THEMES.dark.background, '#081420');
-  assert.strictEqual(XTERM_THEMES.dark.cursor, '#e3be85');
+  assert.strictEqual(XTERM_THEMES.dark.cursor, '#e6bb7c');
+  assert.strictEqual(XTERM_THEMES.dark.foreground, '#e8e3d8');
+  assert.strictEqual(XTERM_THEMES.dark.green, '#86cda5');
 
   // --- 默认：没存过就是冷杉 ---
   {

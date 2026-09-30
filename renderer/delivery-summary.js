@@ -7,6 +7,23 @@ function _deliveryStatusIcon(status) {
   return { completed: '✓', failed: '×', running: '↻', pending: '·', cancelled: '—', unknown: '?' }[status] || '?';
 }
 
+function renderDeliveryGlance(delivery, escapeHtml) {
+  if (!delivery || !delivery.hasContent) return '';
+  const files = Array.isArray(delivery.changedFiles) ? delivery.changedFiles : [];
+  const checks = Array.isArray(delivery.checks) ? delivery.checks : [];
+  const artifacts = Array.isArray(delivery.artifacts) ? delivery.artifacts : [];
+  const rows = [
+    files.length && { count: files.length, label: files.some(item => item.status !== 'completed' || item.failedAttempts) ? '文件记录' : '变更文件' },
+    checks.length && { count: checks.length, label: '验证记录' },
+    artifacts.length && { count: artifacts.length, label: '交付产物' },
+  ].filter(Boolean);
+  if (!rows.length) return '';
+  return `<aside class="turn-result-glance" aria-label="本轮结果概览">
+    <span class="turn-result-glance-title">本轮结果</span>
+    ${rows.map(row => `<div class="turn-result-glance-row"><strong>${escapeHtml(row.count)}</strong><span>${escapeHtml(row.label)}</span></div>`).join('')}
+  </aside>`;
+}
+
 function renderDeliverySummary(delivery, escapeHtml) {
   if (!delivery || !delivery.hasContent) return '';
   const files = Array.isArray(delivery.changedFiles) ? delivery.changedFiles : [];
@@ -34,4 +51,4 @@ function renderDeliverySummary(delivery, escapeHtml) {
   </details>`;
 }
 
-module.exports = { renderDeliverySummary };
+module.exports = { renderDeliverySummary, renderDeliveryGlance };

@@ -359,12 +359,15 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
   if (opts.meetingId || opts.autonomous === true) settings.push(ensureGroupChatSettings(hubDataDir));
   if (fast) settings.push(resolveAsarUnpacked('claude-subscription-fast-settings.json'));
   const { buildClaudeNativeArgs, prepareClaudeSettingsOverlay } = require('./claude-native-launch');
+  let cliTheme = null;
+  try { cliTheme = require('./cli-warm-gold-theme').ensureClaudeWarmGoldTheme(env); }
+  catch (error) { console.warn('[CLI theme] Claude:', error.message); }
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
     // @community-strip 社区版：自动执行档位只在 Hub 启动的会话里生效，免确认也只写进这一份会话配置
-    overrides: { fastMode: fast },
+    overrides: { fastMode: fast, ...(cliTheme ? { theme: cliTheme } : {}) },
     // @community-else
-    // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true },
+    // overrides: { fastMode: fast, skipDangerousModePermissionPrompt: true, ...(cliTheme ? { theme: cliTheme } : {}) },
     // @community-end
   });
   const args = buildClaudeNativeArgs({ model: opts.model,
@@ -1330,7 +1333,7 @@ class SessionManager extends EventEmitter {
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
-    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isCodexRuntime });
+    applyInteractiveTerminalEnv(sessionEnv, { truecolor: isPtyAgent && (isClaude || isCodexRuntime) });
     let codexProfile = null;
 
     if (isClaude) {
@@ -2168,6 +2171,10 @@ class SessionManager extends EventEmitter {
         });
         info.hookIntegrationWarning = hookResult.errors.length ? hookResult.errors.join('；') : null;
         cmd += ` -c features.hooks=true`;
+        try {
+          const cliTheme = require('./cli-warm-gold-theme').ensureCodexWarmGoldTheme(sessionEnv);
+          cmd += ` -c tui.theme=${cliTheme}`;
+        } catch (error) { console.warn('[CLI theme] Codex:', error.message); }
       }
       cmd += '\r\n';
       let sent = false;
