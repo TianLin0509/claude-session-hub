@@ -55,10 +55,24 @@ async function runWeb(job,save,mode,runtime={}){
     }
     const url=mode==='collect'?job.url:parent?.url||p.url;
     if(url!==p.url&&!adapters.validUrl(provider,url))throw Error('Invalid stored conversation URL');
+    // Shared Hub rules: wait while a person has the browser; never revisit a site that just
+    // challenged automation (the person clears it from the account page).
+    // The record belongs to the browser actually opened: the Hub Chrome for the real opener, or
+    // whatever root a caller names together with its own opener.
+    const hubRoot=runtime.hubRoot||(runtime.open?null:require('../hub-chrome').defaultRoot(process.env)),guard=hubRoot&&(runtime.guard||require('../web-risk-guard'));
+    for(;guard;){
+      try{guard.assertAutomationAllowed(hubRoot,{identity:'main',url});break;}
+      catch(e){
+        if(e.code==='HUB_SITE_CHALLENGED')throw Object.assign(Error('此网站刚遇到人机验证，自动化已暂停；请从 Hub 账号页打开此网站完成验证后再处理任务'),{attention:true,recovery:'human_verification'});
+        if(e.code!=='HUB_HUMAN_HANDOFF')throw e;
+        checkCancel();if(Date.now()>queuedUntil)throw Error('Hub browser stayed with a person for ten minutes');await store.sleep(1000);
+      }
+    }
     browser=await open(provider,url);
     save({browser:{headless:browser.headless,owned:browser.owned,pid:browser.browserPid}});
     let snap,readyEnd=Date.now()+45000,readyCount=0,loginCount=0;
-    do{checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);loginCount=snap.login?loginCount+1:0;if(snap.challenge||loginCount>=4)throw Object.assign(Error('请从 Hub 权限页打开此网站，完成登录或人机验证后再处理任务'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});readyCount=snap.ready&&!snap.login&&(!parent||snap.answers.at(-1)?.done)?readyCount+1:0;if(readyCount>=3)break;await adapters.dismissPromo(browser.page,provider);await store.sleep(300);}while(Date.now()<readyEnd);
+    const challenged=()=>guard&&guard.recordChallenge(hubRoot,{identity:'main',site:guard.siteOf(p.url),kind:'probe',source:'roundtable-'+provider});
+    do{checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);loginCount=snap.login?loginCount+1:0;if(snap.challenge)challenged();if(snap.challenge||loginCount>=4)throw Object.assign(Error('请从 Hub 权限页打开此网站，完成登录或人机验证后再处理任务'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});readyCount=snap.ready&&!snap.login&&(!parent||snap.answers.at(-1)?.done)?readyCount+1:0;if(readyCount>=3)break;await adapters.dismissPromo(browser.page,provider);await store.sleep(300);}while(Date.now()<readyEnd);
     if(readyCount<3)throw Error('Official composer not ready; website layout or network needs attention');
     if(mode!=='collect'){
       if(parent&&snap.answers.at(-1)?.text!==parent.answer)throw Error('Conversation changed since reply_to; refusing to send into another branch');
@@ -77,6 +91,7 @@ async function runWeb(job,save,mode,runtime={}){
       checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);
       if(adapters.validUrl(provider,snap.url)&&snap.url!==job.url)save({url:snap.url});
       loginCount=snap.login?loginCount+1:0;
+      if(snap.challenge)challenged();
       if(loginCount>=4||snap.challenge)throw Object.assign(Error('Official website requires login or human verification after submission; not resending'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});
       const answer=snap.answers.at(-1),baseline=job.baseline;
       const changed=answer&& (snap.answers.length>baseline.count || (answer.key&&answer.key!==baseline.last?.key));
