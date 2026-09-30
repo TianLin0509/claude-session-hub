@@ -98,7 +98,15 @@ class HubAccounts {
     return this.reading;
   }
   async passiveState() { return this.publicState(await this.compose({ passive: true })); }
-  publicState(value = this.lastState) { return JSON.parse(JSON.stringify({ ...value,
+  // Paused sites and a person's handoff, for the account page. Reading is file-only; while a
+  // handoff runs, a browser-level target listing ends it once the person closed the window.
+  riskState() {
+    const guard = require('./web-risk-guard'), now = this.now(), risk = guard.read(this.chrome.root);
+    if (guard.handoff(this.chrome.root, now)) guard.settleHandoff(this.chrome).catch(() => {});
+    return { handoff: guard.handoff(this.chrome.root, now),
+      sites: Object.fromEntries(Object.entries(risk.sites).filter(([, e]) => e.until > now).map(([k, e]) => [k, { until: e.until, strikes: e.strikes, kind: e.kind }])) };
+  }
+  publicState(value = this.lastState) { return JSON.parse(JSON.stringify({ ...value, risk: this.riskState(),
     ...(this.setup.progress?.status === 'complete' ? { tools: require('./hub-browser-tool').integrationStatus(this.chrome.root) } : {}),
     activity: require('./hub-account-activity').readActivity(this.chrome.root, this.env),
     progress: this.progress, setupProgress: this.setup.progress })); }
@@ -204,15 +212,17 @@ class HubAccounts {
     if (identity === 'alt' && !prefs.secondary) throw Error('请先添加第二个账号');
     this.chrome.identity(identity);
     const fixture = this.fixture();
+    let opened;
     if (fixture?.recordOpens) {
       fs.appendFileSync(path.join(this.env.CLAUDE_HUB_HOME_DIR, 'accounts-open.jsonl'), JSON.stringify({ identity, site, url: SITES[site].url }) + '\n');
     } else if (login) await this.chrome.openLogin(identity, [site]);
-    else await this.chrome.openWebsite(identity, site);
+    else opened = await this.chrome.openWebsite(identity, site);
     this.lastState = null;
     let usageWarning = '';
     try { require('./hub-account-activity').recordActivity(this.chrome.root, { identity, site, outcome: 'opened', at: this.now() }); }
     catch { usageWarning = '；使用记录未保存'; }
-    return { identity, site, message: '已在 AI Hub 专属 Chrome 打开 ' + SITES[site].name + usageWarning };
+    const handoff = opened?.handoff ? '。网页工具已暂停并断开，你关掉这个窗口后自动恢复（最多 15 分钟）' : '';
+    return { identity, site, message: '已在 AI Hub 专属 Chrome 打开 ' + SITES[site].name + handoff + usageWarning };
   }
   async login({ identity = 'main', site } = {}) {
     if (site) return this.open({ identity, site, login: true });

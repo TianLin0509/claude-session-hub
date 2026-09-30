@@ -42,7 +42,7 @@ async function inspectAccounts({ chrome, items, signal, onStage, onResult, fixtu
             } else result = await inspector.liveStatus(identity, item.site, { signal });
           } catch (e) {
             if (signal.aborted) break;
-            result = e.code === 'HUB_LOGIN_CHECK_RESTRICTED' ? restrictedCheck() : { state: 'unknown', error: e.message };
+            result = ['HUB_LOGIN_CHECK_RESTRICTED', 'HUB_SITE_CHALLENGED'].includes(e.code) ? restrictedCheck() : { state: 'unknown', error: e.message };
           }
           if (result?.state === 'needs_attention' && result.reason === 'challenge') result = restrictedCheck();
           if (!signal.aborted) await onResult(item, { ...result, live: true, verified: ['signed_in', 'signed_out', 'needs_attention'].includes(result.state), checkedAt: Date.now(), stale: false });

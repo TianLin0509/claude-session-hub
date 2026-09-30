@@ -14,7 +14,9 @@ function inspectPage(p, prompt='') {
   const normalize=s=>String(s||'').replace(/\s+/g,' ').trim();
   const controls=[...document.querySelectorAll('button,a,[role="button"]')].filter(visible);
   const labels=controls.map(e=>(e.getAttribute('aria-label')||e.innerText||'').trim());
-  const challenge=!![...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal,[class*="captcha_verify_container"]')].find(visible);
+  // A top-level Cloudflare gate has no iframe; its title plus Cloudflare's own script is the proof.
+  const gate=/^(Just a moment|请稍候|請稍候)/.test(document.title)&&(typeof window._cf_chl_opt==='object'||!!document.querySelector('script[src*="/cdn-cgi/challenge-platform/"]'));
+  const challenge=gate||!![...document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],.ds-shumei-captcha-modal,[class*="captcha_verify_container"]')].find(visible);
   const login=labels.some(t=>/^(log in|sign in|登录|登入|登录账号|登录帐号)$/i.test(t)) || /\/sign_in|\/login|from_logout/.test(location.href);
   const composer=[...document.querySelectorAll(p.composer)].find(visible);
   const answers=[...document.querySelectorAll(p.answer)].map(e=>{

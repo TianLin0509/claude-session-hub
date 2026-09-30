@@ -149,3 +149,25 @@ test('website security gates are reported as restricted background checks, not s
     assert.match(result.error, /不代表登录失效/);
   }
 });
+test('paused sites and a person handoff reach the account page and turn the row into 去验证', async t => {
+  const { root, acc } = setup(t);
+  const guard = require('../core/web-risk-guard');
+  guard.recordChallenge(root, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
+  guard.recordChallenge(root, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
+  const lease = guard.startHandoff(root, { identity: 'alt', site: 'chatgpt' });
+  const state = await acc.passiveState();
+  assert.equal(state.risk.handoff.id, lease.id);
+  assert.equal(state.risk.sites['alt:chatgpt'].strikes, 2);
+  assert.equal(state.risk.sites['main:chatgpt'], undefined);
+  await acc.preference({ site: 'chatgpt', identity: 'alt', add: true });
+  const { aiHtml } = require('../renderer/account-workspace-view');
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const html = aiHtml(await acc.passiveState(), '', esc);
+  assert.match(html, /网页工具已暂停并断开/);
+  assert.match(html, /自动化已暂停到/);
+  assert.match(html, /第 2 次/);
+  assert.match(html, /data-ac="open" data-site="chatgpt" data-identity="alt"[^>]*>去验证/);
+  assert.doesNotMatch(html, /data-identity="main"[^>]*>去验证/);
+  guard.endHandoff(root, lease.id); guard.clearSite(root, 'alt', 'chatgpt');
+  assert.doesNotMatch(aiHtml(await acc.passiveState(), '', esc), /自动化已暂停|网页工具已暂停/);
+});

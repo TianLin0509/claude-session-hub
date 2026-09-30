@@ -33,6 +33,7 @@ const DEFAULT_IDENTITIES = [
   { id: 'alt', label: '副', sites: ALL_SITES },
 ];
 const OFFSCREEN = { left: -32000, top: -32000, width: 1280, height: 900 };
+const ONSCREEN = { left: 60, top: 40, width: 1280, height: 860 };
 
 function defaultRoot(env = process.env) {
   if (env.HUB_CHROME_ROOT) return path.resolve(env.HUB_CHROME_ROOT);
@@ -239,7 +240,10 @@ class HubChrome {
         let probe;
         try { probe = await page.evaluate(require('./account-browser').PROBE); }
         catch (e) { if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e; }
-        if (probe?.challenge) throw Object.assign(Error('网站安全验证拦截了后台检查'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' });
+        if (probe?.challenge) {
+          require('./web-risk-guard').recordChallenge(this.root, { identity: identityId, site: 'chatgpt', kind: 'cloudflare', source: 'account-check' });
+          throw Object.assign(Error('网站安全验证拦截了后台检查'), { code: 'HUB_LOGIN_CHECK_RESTRICTED' });
+        }
         if (probe?.host === 'chatgpt.com' && probe.login) return '';
         const email = await page.evaluate(`(async()=>{if(location.hostname!=='chatgpt.com')return '';try{const r=await fetch('/api/auth/session',{credentials:'include',signal:AbortSignal.timeout(4000)});if(!r.ok)return '';const j=await r.json();return (j&&j.user&&j.user.email)||'';}catch{return ''}})()`).catch(e => {
           if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
@@ -417,6 +421,30 @@ class HubChrome {
     }
     throw new Error('Hub 浏览器没有打开新标签页');
   }
+  // A person's window in a running Hub Chrome: Chrome opens it from its own command line, so
+  // no debugger ever attaches to that page, and it is placed with browser-level window calls
+  // only. Observed 2026-09-29: such a window inherited the parked off-screen position
+  // (-14564,-14564) despite --window-position, so the person saw nothing when clicking it.
+  async openVisible(identityId, url) { return this.lifecycle(() => this._openVisible(identityId, url)); }
+  async _openVisible(identityId, url) {
+    const { cdp } = await this.browser();
+    try {
+      const mark = await this.marker(identityId, cdp);
+      const before = new Set((await this.pagesIn(cdp, mark.browserContextId)).map(t => t.targetId));
+      await this.launch(identityId, { visible: true, url });
+      let target;
+      for (const end = Date.now() + 15000; !target && Date.now() < end;) {
+        target = (await this.pagesIn(cdp, mark.browserContextId)).find(t => !before.has(t.targetId));
+        if (!target) await sleep(200);
+      }
+      if (!target) throw new Error('Hub 浏览器没有打开网页窗口');
+      await this.place(cdp, target.targetId, ONSCREEN);
+      const { windowId } = await cdp.call('Browser.getWindowForTarget', { targetId: target.targetId });
+      await cdp.call('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
+      await cdp.call('Target.activateTarget', { targetId: target.targetId }).catch(() => {});
+      return { targetId: target.targetId };
+    } finally { cdp.close(); }
+  }
   // A tab in the given identity. `visible` is a login: a normal Chrome window on screen and in
   // front, opened by Chrome's own "open in this profile" path. Otherwise the tab gets a window
   // of its own parked off screen — its own window so it stays the active, unthrottled tab.
@@ -424,6 +452,7 @@ class HubChrome {
     return this.lifecycle(() => this._openTab(identityId, url, { visible }));
   }
   async _openTab(identityId, url, { visible = false } = {}) {
+    if (!visible) require('./web-risk-guard').assertAutomationAllowed(this.root, { identity: identityId, url });
     const { ep, cdp } = await this.browser();
     try {
       const mark = await this.marker(identityId, cdp);
@@ -491,7 +520,12 @@ class HubChrome {
       this.identity(identityId);
       const site = this.site(siteKey), ep = await this.endpoint();
       if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
-      if (ep) return this._openTab(identityId, site.url, { visible: true });
+      // The person gets the browser to themselves: every automation transport pauses and
+      // detaches, stale challenge counters are reset, and the window has no debugger on it.
+      if (ep) {
+        const { lease, cleared } = await require('./web-risk-guard').openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
+        return { targetId: lease.targetId, handoff: true, until: lease.until, cleared };
+      }
       return this._openLogin(identityId, [siteKey]);
     });
   }
@@ -528,7 +562,9 @@ class HubChrome {
   // Sites that keep their login in localStorage can only be read from a live page.
   async liveStatus(identityId, siteKey, { timeoutMs = 15000, signal } = {}) {
     if (!(await this.running())) return { state: 'needs_browser' };
-    const site = this.site(siteKey);
+    const site = this.site(siteKey), guard = require('./web-risk-guard');
+    // A site that just challenged automation is not visited again until its pause ends.
+    if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) return { state: 'needs_attention', reason: 'challenge' };
     const { PROBE } = require('./account-browser');
     const { targetId } = await this.openTab(identityId, site.url);
     let page;
@@ -544,10 +580,12 @@ class HubChrome {
           // loss of the JavaScript context; real probe/connection errors stay visible.
           if (!/Execution context was destroyed|Cannot find context with specified id/i.test(e.message || '')) throw e;
         }
-        if (r?.challenge) return { state: 'needs_attention', reason: 'challenge' };
+        if (r?.challenge) {
+          guard.recordChallenge(this.root, { identity: identityId, site: guard.siteOf(site.url) || siteKey, kind: 'probe', source: 'account-check' });
+          return { state: 'needs_attention', reason: 'challenge' };
+        }
         if (siteKey === 'google' && r?.host === 'accounts.google.com') return { state: 'signed_out' };
         if (r && r.host === host) {
-          if (r.challenge) return { state: 'needs_attention', reason: 'challenge' };
           if (r.login) return { state: 'signed_out' };
           if (r.profile) return { state: 'signed_in' };
         }
