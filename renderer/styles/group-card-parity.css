@@ -1,0 +1,53 @@
+/* Shared reading rhythm with ordinary E2 cards; group identity stays explicit. */
+.mr-gc-messages { padding:22px clamp(16px,2.2vw,36px) 28px; }
+.mr-gc-messages .mr-gc-msg,
+.mr-gc-messages .mr-gc-msg[data-journal-key] {
+  box-sizing:border-box; width:min(100%,1280px); max-width:1280px;
+  margin:0 auto 20px; padding:22px clamp(18px,2vw,30px); gap:18px;
+  border:1px solid var(--border-mid); border-radius:15px;
+  background:var(--surface-card); box-shadow:0 12px 34px rgba(0,0,0,.11);
+}
+.mr-gc-messages .mr-gc-msg.mine { flex-direction:row; background:var(--surface-overlay); }
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble-row { justify-content:flex-start; }
+.mr-gc-messages .mr-gc-msg > .mr-gc-avatar,
+.mr-gc-messages .mr-gc-msg[data-journal-key] > .mr-gc-avatar {
+  width:38px; height:38px; min-width:38px; border-radius:10px;
+}
+.mr-gc-messages .mr-gc-msg.mine > .mr-gc-avatar-user { display:flex; order:-1; }
+.mr-gc-messages .mr-gc-msg .mr-gc-msg-body { flex:1; min-width:0; width:auto; max-width:calc(100% - 56px); align-items:stretch; }
+.mr-gc-messages .mr-gc-msg .mr-gc-meta,
+.mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-meta {
+  justify-content:flex-start; flex-direction:row; gap:10px; min-height:28px;
+  margin:0 0 16px; padding:0; background:transparent; font-size:11px;
+}
+.mr-gc-messages .mr-gc-name { font-size:14px; font-weight:700; }
+.mr-gc-messages .mr-gc-msg .mr-gc-bubble,
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble,
+.mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-bubble {
+  padding:0; margin:0; border:0; border-radius:0; background:transparent; box-shadow:none;
+  color:var(--fg-strong); line-height:1.78; font-size:var(--card-content-font-size,15px);
+}
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble::before,
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble::after { display:none; }
+.mr-gc-messages .mr-gc-msg[data-journal-key] { border-left:3px solid var(--journal-member); }
+.mr-gc-messages .mr-gc-msg[data-phase="commentary"] { padding-block:13px; background:var(--surface-raised); box-shadow:none; }
+.mr-gc-msg .gc-journal-actions { --journal-member:var(--fg-muted); }
+.mr-gc-msg .gc-journal-actions > .mr-gc-copy-btn,
+.mr-gc-msg .gc-journal-menu > summary { width:auto; min-width:36px; padding:3px 6px; font:inherit; font-size:12px; white-space:nowrap; flex-shrink:0; }
+.gc-journal-long .gc-journal-reading { border:1px solid rgba(137,154,180,.18); border-radius:8px; padding:12px 15px; min-width:0; }
+.gc-journal-expand { margin:0 0 12px; padding:0; color:var(--link,#a8bbd8); text-align:left; font-size:12px; }
+.gc-journal-long[data-journal-expanded="false"] .gc-journal-text::after { background:linear-gradient(transparent,var(--surface-card)); }
+.mr-gc-messages .turn-delivery-summary { border:0; border-top:1px solid var(--border-mid); border-radius:0; margin-top:20px; background:transparent; }
+.mr-gc-messages .turn-delivery-summary > summary { min-height:46px; padding:10px 3px; }
+.gc-multi-select-bar { position:static; transform:none; left:auto; bottom:auto; align-self:center; flex-shrink:0; margin:0 14px; border-radius:8px; }
+.multi-select-active .mr-gc-msg[role="checkbox"] { cursor:pointer; position:relative; }
+.multi-select-active .mr-gc-msg[role="checkbox"]::before { content:'○'; color:var(--fg-muted); font-size:22px; align-self:flex-start; }
+.multi-select-active .mr-gc-msg.multi-selected { outline:2px solid var(--brand); outline-offset:-2px; }
+.multi-select-active .mr-gc-msg.multi-selected::before { content:'✓'; color:var(--brand); }
+.multi-select-active .mr-gc-msg .gc-journal-actions { visibility:hidden; }
+@media(max-width:1000px) {
+  .mr-gc-messages { padding:16px 12px 24px; }
+  .mr-gc-messages .mr-gc-msg,.mr-gc-messages .mr-gc-msg[data-journal-key] { padding:14px; gap:10px; }
+  .mr-gc-messages .mr-gc-msg > .mr-gc-avatar,.mr-gc-messages .mr-gc-msg[data-journal-key] > .mr-gc-avatar { width:28px; height:28px; min-width:28px; }
+  .mr-gc-messages .mr-gc-msg .mr-gc-msg-body { max-width:calc(100% - 38px); }
+}

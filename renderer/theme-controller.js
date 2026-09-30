@@ -19,8 +19,22 @@ const GITHUB_DARK = {
   brightCyan: '#56d364', brightWhite: '#ffffff',
 };
 
+// Warm gold for the real PTY: the terminal supplies ANSI/default colors while
+// Claude, Codex and other TUIs still own their truecolor rendering and input.
+const DEEP_SEA_DARK = {
+  ...GITHUB_DARK,
+  background: '#081420', foreground: '#e8e3d8', cursor: '#e6bb7c',
+  cursorAccent: '#081420', selectionBackground: 'rgba(230, 187, 124, 0.3)',
+  black: '#3a4b5c', red: '#dc8585', green: '#86cda5', yellow: '#ddb575',
+  blue: '#92bad5', magenta: '#c4a4ce', cyan: '#80c6c1', white: '#e8e3d8',
+  brightBlack: '#8b9fb1', brightRed: '#f0a6a0', brightGreen: '#a9deb8',
+  brightYellow: '#f2d29b', brightBlue: '#b0d2e9', brightMagenta: '#dcc0e1',
+  brightCyan: '#a6dcd3', brightWhite: '#fff7eb',
+};
+
 /**
- * 终端在所有主题下都用同一套深色调色板（方案 T1「深色终端岛」）。
+ * 终端在所有主题下保持深色底（方案 T1「深色终端岛」）；D4 默认主题
+ * 调整背景、光标和默认 ANSI 色，其余主题沿用原有 GitHub Dark 调色板。
  *
  * 不给浅色皮肤另配 light ANSI 的原因：xterm 里跑的是 Claude Code / Codex /
  * Gemini / Kimi 的 TUI，它们用 dim 灰自绘框线和分隔符，浅底下几乎看不见，
@@ -32,7 +46,7 @@ const GITHUB_DARK = {
  * 调用方不用改。
  */
 const XTERM_THEMES = THEMES.reduce((acc, t) => {
-  acc[t.id] = GITHUB_DARK;
+  acc[t.id] = t.id === 'dark' ? DEEP_SEA_DARK : GITHUB_DARK;
   return acc;
 }, {});
 

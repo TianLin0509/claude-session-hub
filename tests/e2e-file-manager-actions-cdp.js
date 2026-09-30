@@ -30,12 +30,18 @@ async function main() {
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...p, button: mouseButton, clickCount: 1 });
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...p, button: mouseButton, clickCount: 1 });
   }
-  const file = name => `Array.from(document.querySelectorAll('[data-fm-node]')).find(e=>e.querySelector('.fm-node-name').textContent===${JSON.stringify(name)})`;
+  // 「本会话改动」区会重复列出会话启动后改过的文件，这里只取目录树里的那一行。
+  const file = name => `Array.from(document.querySelectorAll('.fm-node:not(.fm-change-row) [data-fm-node]')).find(e=>e.querySelector('.fm-node-name').textContent===${JSON.stringify(name)})`;
   const menu = id => `document.querySelector('[data-fm-action="${id}"]')`;
   async function capture(name) {
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(output, name + '.png'), Buffer.from(shot.data, 'base64'));
   }
-  async function selectValue(label, value) { await cdp.eval(`(()=>{const s=document.querySelector('select[aria-label="${label}"]');s.value=${JSON.stringify(value)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`); }
+  // 浏览范围 / 排序等收进了「筛选」弹出菜单：打开菜单后点对应选项。
+  async function selectValue(key, value) {
+    if (!(await cdp.eval(`!!document.querySelector('.fm-view-menu')`))) await click(`document.getElementById('file-manager-view-menu')`);
+    await until(`!!document.querySelector('.fm-view-menu [data-fm-option="${key}"][data-value="${value}"]')`);
+    await click(`document.querySelector('.fm-view-menu [data-fm-option="${key}"][data-value="${value}"]')`);
+  }
   try {
     hub = await launchIsolatedHub({ dataDir: path.join(root, 'data'), port: await port(), label: 'file-manager-actions', windowMode: 'hidden', extraEnv: {
       CODEX_HOME: home, CLAUDE_CONFIG_DIR: path.join(root, 'claude'),
@@ -53,7 +59,7 @@ async function main() {
     await click(`document.querySelector('.session-item[data-session-id="${session.id}"]')`);
     await until('!!document.querySelector(".floating-input-box")');
     await cdp.eval(`window.FileManagerPanel.open(${JSON.stringify({ cwd: workspace, label: '中文 workspace' })})`);
-    await until('document.querySelectorAll(".fm-node-name").length === 4');
+    await until('document.querySelectorAll(".fm-node:not(.fm-change-row) .fm-node-name").length === 4');
     assert.ok((await cdp.eval(`[...document.querySelectorAll('.fm-file-size')].map(e=>e.textContent)`)).includes('2.9 KB'));
     assert.ok(await cdp.eval(`Array.from(document.querySelectorAll('.fm-file-time')).every(e=>e.textContent!=='—')`));
     result.checks.push('real IPC lists sizes/timestamps');
@@ -70,7 +76,7 @@ async function main() {
     const clipboard = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; @(Get-Clipboard -Format FileDropList).FullName | ConvertTo-Json -Compress"], { encoding: 'utf8', windowsHide: true });
     assert.equal(JSON.parse(clipboard.trim()), path.join(workspace, 'report.md'));
     result.checks.push('native Windows FileDropList verified');
-    await click(file('docs')); await until('document.querySelectorAll(".fm-node-name").length === 5');
+    await click(file('docs')); await until('document.querySelectorAll(".fm-node:not(.fm-change-row) .fm-node-name").length === 5');
     fs.writeFileSync(path.join(workspace, 'fresh.md'), '# new');
     await until(`[...document.querySelectorAll('.fm-node-name')].some(e=>e.textContent==='fresh.md')`, 'auto refresh');
     assert.ok(await cdp.eval(`[...document.querySelectorAll('.fm-node-name')].some(e=>e.textContent==='未展开也可找到.md')`));
@@ -90,16 +96,18 @@ async function main() {
     await until(`document.getElementById('file-manager-status').textContent==='已复制'`);
     const multi = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; @(Get-Clipboard -Format FileDropList).FullName | ConvertTo-Json -Compress"], { encoding: 'utf8', windowsHide: true });
     assert.equal(JSON.parse(multi.trim()).length, 2); result.checks.push('checkbox multiselect produces two native clipboard files');
-    await selectValue('浏览范围', 'recent');
-    await until('document.querySelectorAll(".fm-relative").length >= 4');
-    assert.equal(await cdp.eval('document.querySelector("select[aria-label=排序]").value'), 'mtime');
+    await selectValue('mode', 'recent');
+    await until('document.querySelectorAll("#file-manager-tree .fm-node").length >= 4 && document.querySelectorAll("#file-manager-tree .fm-group-header").length === 0');
+    assert.equal(await cdp.eval(`document.querySelector('.fm-view-menu [data-fm-option="sort"][aria-checked="true"]').dataset.value`), 'mtime');
     result.checks.push('recent view sorts scanned files by modification time');
-    await selectValue('浏览范围', 'search');
+    await selectValue('mode', 'search');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp.eval(`(()=>{const input=document.getElementById('file-manager-filter');input.value='未展开';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await until('document.querySelectorAll(".fm-node-name").length === 1');
     assert.equal(await cdp.eval('document.querySelector(".fm-node-name").textContent'), '未展开也可找到.md'); result.checks.push('project search reaches nested files');
     await cdp.eval(`(()=>{const input=document.getElementById('file-manager-filter');input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-    await selectValue('浏览范围', 'tree');
+    await selectValue('mode', 'tree');
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await click(file('renamed.md'));
     await until(`document.getElementById('preview-panel').style.display==='flex'`);
     await click('document.getElementById("preview-close")');

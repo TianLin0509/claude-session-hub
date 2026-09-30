@@ -15,12 +15,18 @@
   <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
+  <!-- @community-strip 投委会 -->
   <link rel="stylesheet" href="committee-ui.css">
+  <!-- @community-end -->
   <link rel="stylesheet" href="workflow-config-modal.css">
+  <!-- @community-strip 初心投研、学习 -->
   <link rel="stylesheet" href="chuxin.css">
   <link rel="stylesheet" href="study.css">
+  <!-- @community-end -->
   <link rel="stylesheet" href="dev-workbench.css">
+  <!-- @community-strip 投资联赛 -->
   <link rel="stylesheet" href="agent-league.css">
+  <!-- @community-end -->
   <link rel="stylesheet" href="styles/home-workbench.css">
   <link rel="stylesheet" href="launch-center.css">
   <link rel="stylesheet" href="memory-panel.css">
@@ -43,6 +49,9 @@
   <link rel="stylesheet" href="styles/ui-polish.css">
   <link rel="stylesheet" href="styles/groupchat-journal.css">
   <link rel="stylesheet" href="styles/fixed-session-layout.css">
+  <link rel="stylesheet" href="styles/d4-workspace.css">
+  <link rel="stylesheet" href="styles/card-view-e2.css">
+  <link rel="stylesheet" href="styles/group-card-parity.css">
   <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
        而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
        用独立 <link> 而不是 styles.css 里的 @import —— @import 进来的表排在
@@ -83,17 +92,19 @@
     <!-- 场景 rail（冷杉 v2 T0）：四个场景按钮是从 .sidebar-header 原样搬过来的节点，
          id / data-* / 事件接线一律不变；label 常驻显示，tooltip 补充完整用途。 -->
     <nav class="scene-rail" id="scene-rail" aria-label="场景">
-      <div class="rail-logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 5v14M18 9v10M6 12h12"/><circle cx="18" cy="5" r="2" fill="currentColor" stroke="none"/></svg></div>
+      <div class="rail-logo" aria-hidden="true"><svg class="legacy-h-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 5v14M18 9v10M6 12h12"/><circle cx="18" cy="5" r="2" fill="currentColor" stroke="none"/></svg><img src="../claude-wx.ico" alt="" width="28" height="28"></div>
       <div class="rail-navigation">
-      <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">工作台</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">投研</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">学习</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">开发看板</span></button>
+      <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V10Z"/><path d="M9 21v-8h6v8"/></svg></span><span class="btn-label">工作台</span></button>
+      <!-- @community-strip 投研、学习入口 -->
+      <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 16l5-5 4 3 5-7"/><path d="M16 7h3v3"/></svg></span><span class="btn-label">投研</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6C9 4 6 4 3 5v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1ZM12 6v14"/></svg></span><span class="btn-label">学习</span></button>
+      <!-- @community-end -->
+      <button type="button" class="btn-shell-nav" id="btn-ran" data-ran-entry title="开发看板 · 各任务走到哪一步了"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M10 10v10"/></svg></span><span class="btn-label">开发看板</span></button>
       <div class="rail-separator" aria-hidden="true"></div>
-      <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">备忘录</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">记忆</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">工具</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
+      <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-rail-memo" data-action="open-memo" title="备忘录" aria-label="备忘录" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span><span class="btn-label">备忘录</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 4 6v6l8 4 8-4V6l-8-4ZM4 12v6l8 4 8-4v-6M12 16v6"/></svg></span><span class="btn-label">工具</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2H4Z"/></svg></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
       </div>
       <div class="rail-spacer"></div>
       <div class="rail-utilities">
@@ -145,7 +156,9 @@
                     <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
                       <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
                       <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+                      <!-- @community-strip Codex Web GPT 依赖本机专用程序 -->
                       <button class="new-session-option" data-kind="chatgpt" aria-pressed="false"><span class="ai-logo logo-codex"></span>ChatGPT</button>
+                      <!-- @community-end -->
                       <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
                       <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
                       <button class="new-session-option" data-kind="qwen" aria-pressed="false"><span class="ai-logo logo-qwen"></span>千问 · Qwen Code</button>
@@ -153,7 +166,9 @@
                       <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
                       <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
                     </div>
+                    <!-- @community-strip Codex Web GPT 依赖本机专用程序 -->
                     <div id="chatgpt-web-panel" hidden><p id="chatgpt-web-status" role="status"></p><button id="chatgpt-web-settings" type="button">打开 Codex Web GPT 设置</button><button id="chatgpt-web-refresh" type="button">刷新状态与模型</button></div>
+                    <!-- @community-end -->
                     <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
                     <label class="session-tuning-field" id="new-session-deepseek-route-field" hidden><span>DeepSeek 接入</span><select id="new-session-deepseek-route"><option value="deepseek">Codex CLI · DeepSeek API</option><option value="deepseek-acp">Token Plan · 旧 Harness</option></select></label>
                     <div class="session-tuning-grid" id="new-session-tuning">
@@ -238,18 +253,24 @@
       </div>
       <div class="context-menu" id="terminal-context-menu" style="display:none">
         <button class="context-menu-item" data-action="preview">预览</button>
+        <!-- @community-strip 公司中转 -->
         <button class="context-menu-item" data-action="sync-chatgpt">同步选中文字到公司 ChatGPT</button>
+        <!-- @community-end -->
       </div>
       <div class="context-menu" id="card-selection-context-menu" style="display:none">
         <button class="context-menu-item" data-action="copy">复制</button>
+        <!-- @community-strip 公司中转 -->
         <button class="context-menu-item" data-action="sync-chatgpt">同步到公司 ChatGPT</button>
+        <!-- @community-end -->
       </div>
       <div class="context-menu" id="path-link-context-menu" style="display:none">
         <button class="context-menu-item" data-action="copy-abs-path"
                 data-label-file="复制绝对路径" data-label-url="复制 URL">复制绝对路径</button>
         <button class="context-menu-item" data-action="copy-file" data-file-only>复制对应文件</button>
+        <!-- @community-strip 公司中转 -->
         <button class="context-menu-item" data-action="sync-company" data-file-only>同步到公司</button>
         <button class="context-menu-item" data-action="sync-chatgpt">同步内容到公司 ChatGPT</button>
+        <!-- @community-end -->
         <div class="context-menu-separator" data-file-only></div>
         <button class="context-menu-item" data-action="show-in-folder" data-file-only>打开上一级文件夹</button>
         <button class="context-menu-item" data-action="open-file-manager">打开文件管理</button>
@@ -344,11 +365,13 @@
         <button class="mr-send-btn" id="mr-send-btn" title="发送" aria-label="发送"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z"/></svg></button>
       </div>
     </div>
+    <!-- @community-strip 投研、学习面板 -->
     <!-- 2026-07-23 Kimi 移植：初心投研面板（第三主区视图，与 terminal/mr 平级互斥）。
          骨架由 renderer/chuxin.js 自构建，数据来自本机 chuxin-research API。 -->
     <div class="chuxin-panel" id="chuxin-panel" style="display:none"></div>
     <!-- 学习面板：Hub 第四主区视图。骨架由 renderer/study.js 自构建。 -->
     <div id="study-panel"></div>
+    <!-- @community-end -->
     <!-- 开发看板：Hub 第五主区视图。一个群聊=一个任务，数据全部推导自 Hub 自己的会议列表，骨架由 renderer/ran.js 自构建。 -->
     <div id="ran-panel"></div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
@@ -434,28 +457,26 @@
     </div>
     <aside class="file-manager-panel" id="file-manager-panel" style="display:none" aria-label="文件管理" aria-hidden="true">
       <header class="file-manager-header">
-        <div class="file-manager-title">
+        <button class="file-manager-root" id="file-manager-root" type="button" disabled aria-haspopup="menu" aria-expanded="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.8A1.8 1.8 0 0 1 4.8 5h4l1.7 1.8h8.7A1.8 1.8 0 0 1 21 8.6v8.6a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2Z"/></svg>
-          <span>文件管理</span>
-        </div>
+          <strong id="file-manager-root-name">未选择目录</strong>
+          <svg class="file-manager-root-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
         <div class="file-manager-actions">
-          <button class="file-manager-icon-button" id="file-manager-refresh" type="button" title="刷新文件树" aria-label="刷新文件树"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
-          <button class="file-manager-icon-button" id="file-manager-open-external" type="button" title="在资源管理器中打开" aria-label="在资源管理器中打开"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="m14 12 4 3-4 3"/></svg></button>
+          <button class="file-manager-icon-button" id="file-manager-view-menu" type="button" title="浏览范围、排序与筛选" aria-label="浏览范围、排序与筛选" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16l-6 7.5V19l-4 1.5v-8Z"/></svg></button>
+          <button class="file-manager-icon-button" id="file-manager-refresh" type="button" title="刷新（并重算文件夹最近改动）" aria-label="刷新文件树"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+          <button class="file-manager-icon-button" id="file-manager-open-external" type="button" title="在资源管理器中打开" aria-label="在资源管理器中打开"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
           <button class="file-manager-icon-button" id="file-manager-close" type="button" title="关闭文件管理" aria-label="关闭文件管理"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </div>
       </header>
-      <button class="file-manager-root" id="file-manager-root" type="button" disabled>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.8A1.8 1.8 0 0 1 4.8 5h4l1.7 1.8h8.7A1.8 1.8 0 0 1 21 8.6v8.6a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2Z"/></svg>
-        <span class="file-manager-root-copy"><strong id="file-manager-root-name">未选择目录</strong><small id="file-manager-root-path">当前会话没有工作目录</small></span>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></svg>
-      </button>
+      <button class="file-manager-path" id="file-manager-root-path" type="button" title="点击复制路径">当前会话没有工作目录</button>
       <label class="file-manager-filter-wrap" for="file-manager-filter">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input class="file-manager-filter" id="file-manager-filter" type="search" autocomplete="off" spellcheck="false" placeholder="筛选已加载的文件…" aria-label="筛选已加载的文件">
+        <input class="file-manager-filter" id="file-manager-filter" type="search" autocomplete="off" spellcheck="false" placeholder="筛选文件…" aria-label="筛选文件">
+        <kbd class="file-manager-kbd" title="焦点在文件面板内时按 Ctrl+P 聚焦这里">Ctrl P</kbd>
       </label>
-      <div class="file-manager-status" id="file-manager-status" role="status" aria-live="polite"></div>
       <div class="file-manager-tree" id="file-manager-tree" role="tree" aria-label="当前工作目录文件"></div>
-      <footer class="file-manager-footer">文件夹单击展开 · 可预览文件留在 Hub · 其他文件系统打开</footer>
+      <footer class="file-manager-footer"><span class="fm-live-dot" aria-hidden="true"></span><span class="file-manager-status" id="file-manager-status" role="status" aria-live="polite"></span></footer>
     </aside>
     <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->
     <div class="memo-panel" id="memo-panel" style="display:none">
@@ -643,7 +664,11 @@
             </div>
             <div class="config-field">
               <label>中转 Base URL</label>
+              <!-- @community-strip 私人网关示例 -->
               <input type="text" id="cfg-claude-url" placeholder="http://3.142.133.116:8080" spellcheck="false">
+              <!-- @community-else -->
+              <!-- <input type="text" id="cfg-claude-url" placeholder="https://api.anthropic.com" spellcheck="false"> -->
+              <!-- @community-end -->
             </div>
             <div class="config-field">
               <label>中转模型 <span class="config-label-hint">（Fable 5 · 1M）</span></label>
@@ -680,7 +705,7 @@
             </div>
             <div class="config-field">
               <label>新账号 CODEX_HOME</label>
-              <input type="text" id="cfg-codex-profile-second-home" placeholder="C:\Users\lintian\.codex-profiles\second" spellcheck="false">
+              <input type="text" id="cfg-codex-profile-second-home" placeholder="%USERPROFILE%\.codex-profiles\second" spellcheck="false">
             </div>
             <div class="config-note">API 模式仍以 gpt-5.6-sol、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
             <div class="config-field">
@@ -689,7 +714,11 @@
             </div>
             <div class="config-field">
               <label>Codex API Base URL</label>
+              <!-- @community-strip 私人网关示例 -->
               <input type="text" id="cfg-codex-url" placeholder="https://www.packyapi.com/v1" spellcheck="false">
+              <!-- @community-else -->
+              <!-- <input type="text" id="cfg-codex-url" placeholder="https://api.openai.com/v1" spellcheck="false"> -->
+              <!-- @community-end -->
             </div>
             <div class="config-field">
               <label>Codex API Model</label>
@@ -726,10 +755,16 @@
   <script src="loop-workflow.js"></script>
   <script src="workflow-templates.js"></script>
   <script src="meeting-room.js"></script>
+  <!-- @community-strip 投委会 -->
   <script src="committee-ui.js"></script>
+  <!-- @community-end -->
   <script src="workflow-config-modal.js"></script>
+  <!-- @community-strip 初心投研、学习 -->
   <script src="chuxin.js"></script>
   <script src="study.js"></script>
+  <!-- @community-else -->
+  <!-- <script src="community-welcome.js"></script> -->
+  <!-- @community-end -->
   <script src="dev-progress.js"></script>
   <script src="ran.js"></script>
 

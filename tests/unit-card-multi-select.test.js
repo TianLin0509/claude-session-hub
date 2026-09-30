@@ -143,6 +143,16 @@ test('全空选择不产生剪贴板文本', () => {
   assert.equal(formatSelectedMessages([{ role: 'user', text: '   ' }]).copiedCount, 0);
 });
 
+test('group forwarding retains distinct same-provider member names and source rounds', () => {
+  const result = formatSelectedMessages([
+    { role: 'assistant', sender: 'Codex 1', text: 'first answer', time: 'round 1' },
+    { role: 'assistant', sender: 'Codex 2', text: 'second answer', time: 'round 2' },
+  ]);
+  assert.equal(result.copiedCount, 2);
+  assert.match(result.text, /Codex 1 · round 1\nfirst answer/);
+  assert.match(result.text, /Codex 2 · round 2\nsecond answer/);
+});
+
 test('没时间戳时不留下孤零零的分隔点', () => {
   const result = formatSelectedMessages([{ role: 'user', text: '问题' }]);
   assert.match(result.text, /【1】我\n问题/);

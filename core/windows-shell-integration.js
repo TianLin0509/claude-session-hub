@@ -287,7 +287,11 @@ function ensureWindowsShellIntegration({
   // Older development launches created an English-named Desktop shortcut.
   // Keep a working user-customized link untouched; repair only this exact
   // Hub-owned filename when its executable, cwd, or icon no longer exists.
+  // @community-strip 社区版不接管旧 Hub 留在桌面上的英文快捷方式
   if (fsModule.existsSync(desktopLegacyPath)) {
+  // @community-else
+  // if (false) {
+  // @community-end
     try {
       let desktopShortcut = null;
       try { desktopShortcut = shell.readShortcutLink(desktopLegacyPath); } catch {}
@@ -302,7 +306,11 @@ function ensureWindowsShellIntegration({
           result.desktopShortcutUpdated = true;
           result.desktopBackupPath = backupPath;
         } catch (error) {
-          if (fsModule.existsSync(desktopLegacyPath)) {
+          // @community-strip 社区版不接管旧 Hub 留在桌面上的英文快捷方式
+  if (fsModule.existsSync(desktopLegacyPath)) {
+  // @community-else
+  // if (false) {
+  // @community-end
             fsModule.rmSync(desktopLegacyPath, { force: true });
           }
           if (fsModule.existsSync(backupPath)) {

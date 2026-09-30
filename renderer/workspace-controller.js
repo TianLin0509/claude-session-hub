@@ -89,7 +89,9 @@
     claude: [
       ['none', 'None · 默认，不加载任何 MCP'],
       ['browser', 'Browser · 只留 Playwright / Chrome'],
+      // @community-strip 私人 MCP
       ['wireless', 'Wireless · 只留 superran'],
+      // @community-end
       ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
       ['full', 'Full · 继承全部全局 MCP（最占内存）'],
     ],
@@ -97,7 +99,9 @@
       ['none', 'None · 默认，不加载任何 MCP'],
       ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
       ['browser', 'Browser · 只留 Playwright'],
+      // @community-strip 私人 MCP
       ['wireless', 'Wireless · 只留 superran'],
+      // @community-end
       ['full', 'Full · 全部全局 MCP'],
     ],
   };
@@ -1210,7 +1214,7 @@
     // 当前清单里时就会这样），判据直接落空、用户设的默认值被丢掉；反过来，用户
     // 手选的模型若恰好等于出厂默认，又会被这次回读悄悄改掉。
     void loadHubDefaultModels().then(async () => {
-      if (selectedKind === 'codex') await loadCodexTuningCatalog();
+      await loadModelCatalog(selectedKind);
       if (!modelTouchedByUser && selectedKind !== 'chatgpt') {
         selectedModel = resolveDefaultModel(
           selectedKind,
@@ -1573,6 +1577,7 @@
     loadCodexTuningCatalog,
     loadModelCatalog,
     loadPrimaryModelCatalogs,
+    loadSessionDefaults: () => Promise.all([loadHubDefaultModels(), loadPrimaryModelCatalogs()]),
     workspaceTierLabel,
   };
 

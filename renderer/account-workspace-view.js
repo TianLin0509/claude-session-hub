@@ -1,7 +1,15 @@
 'use strict';
 const { companyCards, cliChip } = require('./account-center-view');
+// @community-strip 投研站点
 const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'research', name: '投研数据' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
+// @community-else
+// const TABS = [{ id: 'ai', name: 'AI 网页' }, { id: 'work', name: '工作平台' }, { id: 'content', name: '内容平台' }, { id: 'cli', name: '命令行授权' }, { id: 'api', name: 'API 与服务' }];
+// @community-end
+// @community-strip 投研站点
 const GROUP = { github: 'work', yuque: 'work', xueqiu: 'research', jiuyan: 'research', iwencai: 'research', social: 'content', mediaPublish: 'content' };
+// @community-else
+// const GROUP = { github: 'work', social: 'content', mediaPublish: 'content' };
+// @community-end
 const NATIVE = { signed_in: ['已登录', 'ok'], signed_out: ['未登录', 'warn'], unknown: ['登录状态未确认', 'idle'] };
 const BINDING = { shared: '共享专属 Chrome', bound: '已连接', changed: '连接配置已变化', pending: '尚未共享登录', native: '独立授权', host: '客户端授权' };
 const LOGOS = { chatgpt: 'codex', claude: 'claude', google: 'gemini', deepseek: 'deepseek', kimi: 'kimi', qwen: 'qwen' };
@@ -32,18 +40,33 @@ const matches = (values, query) => !query || values.join(' ').toLocaleLowerCase(
 function usageHtml(value, esc) {
   return `<div class="ac-usage ${value.tone}" title="${esc(value.title || '')}"><span>${esc(value.text)}</span>${value.note ? `<small>${esc(value.note)}</small>` : ''}</div>`;
 }
+// A site that challenged automation is paused (core/web-risk-guard.js); a person's handoff
+// pauses every web tool. Both are shown so nobody wonders why a tool is waiting.
+function riskHtml(entry, esc) {
+  if (!entry) return '';
+  const until = new Date(entry.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  return `<div class="ac-usage warn ac-risk" title="网站要求人机验证，自动化不再重试，避免累积失败次数"><span>${esc('自动化已暂停到 ' + until)}</span><small>${esc('网站要求人机验证' + (entry.strikes > 1 ? '（第 ' + entry.strikes + ' 次）' : '') + '，点「去验证」')}</small></div>`;
+}
+function handoffHtml(risk, esc) {
+  const lease = risk?.handoff;
+  if (!lease) return '';
+  const until = new Date(lease.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  return `<p class="ac-connection-notice ac-handoff" role="status">${esc('网页工具已暂停并断开，你正在专属 Chrome 里验证或登录；关掉那个窗口即恢复（最迟 ' + until + '）')}</p>`;
+}
 function aiHtml(state, query, esc, now = Date.now()) {
-  return companyCards(state).map(card => {
+  return handoffHtml(state.risk, esc) + (companyCards(state).map(card => {
     const accounts = card.accounts.filter(a => matches([card.company, card.product, a.label, a.account], query));
     if (!accounts.length) return '';
     return `<article class="ac-company" data-site="${card.site}"><header>${brandIcon(card, esc)}<h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>
       ${accounts.map(a => {
         const activity = usage(state.activity?.entries?.[a.identity + ':' + card.site], now);
+        const paused = state.risk?.sites?.[a.identity + ':' + card.site];
+        if (paused) activity.login = true;
         return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
-          ${usageHtml(activity, esc)}<div class="ac-row-actions"><button class="ac-open" data-ac="${activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${activity.login ? '去登录' : '打开'} ↗</button>
+          ${paused ? riskHtml(paused, esc) : usageHtml(activity, esc)}<div class="ac-row-actions"><button class="ac-open" data-ac="${paused ? 'open' : activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${paused ? '去验证' : activity.login ? '去登录' : '打开'} ↗</button>
           <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : '<span>当前默认账号</span>'}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;
-  }).join('') || '<p class="ac-empty">没有匹配的账号</p>';
+  }).join('') || '<p class="ac-empty">没有匹配的账号</p>');
 }
 function cliHtml(state, query, esc) {
   const rows = (state.clis || []).filter(c => matches([c.name, c.label, c.account], query));

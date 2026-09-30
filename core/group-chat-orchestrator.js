@@ -229,6 +229,7 @@ function _memberLabel(member) {
   return member.displayName || member.alias || KIND_LABELS[member.kind] || member.kind || member.memberId || 'AI';
 }
 
+// @community-strip 投研场景与个人交易偏好
 const RESEARCH_SCENE_PROMPT = [
   '## 投研场景',
   '优先补充他人未覆盖的角度、证据缺口或反例。在评价已知材料的基础上，尽量挖掘新线索、变量或解释路径，为讨论带回新信息、方向。涉及股票、板块、消息和近期行情时，尽量查证；事实和数字标来源，未查证就说明不确定。不要只顺着已有倾向，主动指出风险或证伪信号。若信息不足或判断分叉，先问用户 1-2 个会改变结论的问题。',
@@ -253,6 +254,7 @@ const COMMITTEE_DISCIPLINE = [
   '否决线（命中即降级到观察/风险隔离，不进买入）：趋势破位 · 题材不正宗(蹭概念/相关营收占比极低) · 量价背离 · 高位假强势 · 基本面证伪。',
   '每条信息都想一层：它对「追涨」更有价值，还是对「低吸」更有价值？给出倾向。选股看：睡得着 · 预期差 · 催化剂 · 资金利用效率。**宁可错过，不可做错**。',
 ].join('\n');
+// @community-end
 
 // 2026-06-05 联邦记忆下线：原 MEMORY_DISCIPLINE_PROMPT 教各家 AI 写 memory 的指令段已删除。
 // 记忆维护完全交给 Claude/Codex 各自原生 auto-memory 能力，群聊 prompt 不再越俎代庖。
@@ -279,9 +281,11 @@ function buildSystemPromptText(displayName, scene, opts = {}) {
     '## 输出',
     artifactsInstruction(opts.workspace),
   ];
+  // @community-strip 投研场景与个人交易偏好
   if (scene === 'research') {
     parts.push('', RESEARCH_SCENE_PROMPT, '', COMMITTEE_DISCIPLINE);
   }
+  // @community-end
   return parts.join('\n');
 }
 
@@ -1815,8 +1819,10 @@ module.exports = {
     SINGLE_MESSAGE_INLINE_LIMIT,
     buildSystemPromptText,
     normalizeDispatchMeta,
+    // @community-strip 投研场景与个人交易偏好
     RESEARCH_SCENE_PROMPT,
     COMMITTEE_DISCIPLINE,
+    // @community-end
     GroupChatOrchestrator,
     resetCache: () => _cache.clear(),
   },

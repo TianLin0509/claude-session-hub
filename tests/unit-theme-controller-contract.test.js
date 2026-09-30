@@ -129,14 +129,17 @@ async function main() {
     assert.ok(markup.includes(t.label));
   }
 
-  // --- T1：所有主题共用同一套深色终端调色板 ---
-  // 这条是故意的。将来真给浅色配了 light ANSI，必须逐个 CLI 实测过再来改这里。
+  // --- T1：终端都保持深色。D4 默认主题单独采用深海底色与暖色光标。 ---
   assert.deepStrictEqual(Object.keys(XTERM_THEMES), THEME_IDS.slice());
-  for (const id of THEME_IDS) assert.strictEqual(XTERM_THEMES[id], XTERM_THEMES.dark);
-  assert.strictEqual(resolveXtermTheme('codex'), XTERM_THEMES.dark);
+  for (const id of THEME_IDS.filter(id => id !== 'dark')) assert.strictEqual(XTERM_THEMES[id], XTERM_THEMES.frost);
+  assert.notStrictEqual(XTERM_THEMES.dark, XTERM_THEMES.frost);
+  assert.strictEqual(resolveXtermTheme('codex'), XTERM_THEMES.frost);
   assert.strictEqual(resolveXtermTheme('banana'), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(resolveXtermTheme(null), XTERM_THEMES[DEFAULT_THEME]);
-  assert.strictEqual(XTERM_THEMES.dark.background, '#0d1117');
+  assert.strictEqual(XTERM_THEMES.dark.background, '#081420');
+  assert.strictEqual(XTERM_THEMES.dark.cursor, '#e6bb7c');
+  assert.strictEqual(XTERM_THEMES.dark.foreground, '#e8e3d8');
+  assert.strictEqual(XTERM_THEMES.dark.green, '#86cda5');
 
   // --- 默认：没存过就是冷杉 ---
   {

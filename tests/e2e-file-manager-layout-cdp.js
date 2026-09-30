@@ -225,10 +225,12 @@ async function main() {
       };
     })()`);
     assert.equal(result.tree.open, true);
-    assert.deepEqual(result.tree.names, ['docs', 'dashboard.html', 'data.json', 'external-demo.zip', 'README.md']);
+    // 默认按修改时间降序、文件组在前；同批写入的文件 mtime 可能相同，只断言分组与集合。
+    assert.deepEqual(result.tree.names.slice(0, 4).sort(), ['README.md', 'dashboard.html', 'data.json', 'external-demo.zip'].sort());
+    assert.equal(result.tree.names[4], 'docs');
     assert.equal(result.tree.rootName, 'AIWork E2E');
     assert.equal(result.tree.rootPath, WORK_DIR);
-    assert.match(result.tree.rootTitle, /资源管理器/);
+    assert.match(result.tree.rootTitle, /切换目录/);
     assert.ok(result.tree.width >= 292 && result.tree.width <= 360, `unexpected panel width ${result.tree.width}`);
     await screenshot(client, TREE_SCREENSHOT);
 

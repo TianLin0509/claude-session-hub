@@ -10,6 +10,7 @@ function arenaPromptsDir(hubDataDir) {
   return path.join(hubDataDir, 'arena-prompts');
 }
 
+// @community-strip 投研场景工具与本机 ai-team
 function spiritRegistryRoot() {
   return process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry');
 }
@@ -52,6 +53,8 @@ function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKi
  * 给 Codex 启动命令的 MCP entry（codex toml 中 key 不能含 -）。
  */
 function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDir = '', options = {}) {
+// @community-end
+  // @community-strip 投研场景工具与本机 ai-team
   const mcpServerPath = path.resolve(__dirname, 'research-mcp-server.js');
   return {
     name: 'arena_research',
@@ -88,9 +91,12 @@ function buildAiTeamMcpEntryForCodex(meetingId, characterId = 'codex') {
     },
   };
 }
+  // @community-end
 
 module.exports = {
+  // @community-strip 投研场景工具与本机 ai-team
   writeResearchMcpConfig,
   buildResearchMcpEntryForCodex,
   buildAiTeamMcpEntryForCodex,
+  // @community-end
 };

@@ -36,7 +36,8 @@ async function run() {
         buttons:buttons.map(e=>{const r=rect(e),l=e.querySelector('.btn-label'),i=e.querySelector('.btn-icon');return{id:e.id,...r,hit:e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)),label:l?rect(l):null,icon:i?rect(i):null};})};
     })()`);
     evidence.layouts.push({label,...result});
-    ok(label+' no scroll or hidden destinations', result.width===100 && result.navScroll<=1 && result.railScroll<=1 && !['auto','scroll'].includes(result.overflow) && result.buttons.length===11 && result.buttons.every(b=>b.hit&&b.y>=0&&b.bottom<=result.viewport[1]+1&&b.height>=28&&(!b.label||(b.label.x>=b.x&&b.label.right<=b.right+1&&b.label.y>=b.y&&b.label.bottom<=b.bottom+1))));
+    const expectedWidth=label.startsWith('dark')?(result.viewport[0]>1360?170:result.viewport[0]>1060?138:104):100;
+    ok(label+' no scroll or hidden destinations', result.width===expectedWidth && result.navScroll<=1 && result.railScroll<=1 && !['auto','scroll'].includes(result.overflow) && result.buttons.length===11 && result.buttons.every(b=>b.hit&&b.y>=0&&b.bottom<=result.viewport[1]+1&&b.height>=28&&(!b.label||(b.label.x>=b.x&&b.label.right<=b.right+1&&b.label.y>=b.y&&b.label.bottom<=b.bottom+1))));
   };
   try {
     const port=await new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
@@ -44,10 +45,16 @@ async function run() {
     cdp=await connectFirstPage(hub);
     await wait('!!window.WorkspaceController');
     await resize(1450,950);
-    ok('approved local bitmap decodes',await cdp.eval(`new Promise(resolve=>{const e=document.querySelector('#btn-home .btn-icon'),s=getComputedStyle(e).backgroundImage,img=new Image();img.onload=()=>resolve(img.naturalWidth===1536&&img.naturalHeight===1024);img.onerror=()=>resolve(false);img.src=s.slice(5,-2);})`));
-    ok('eight unique ceramic samples retain text and accessible names',await cdp.eval(`(()=>{const b=[...document.querySelectorAll('.rail-navigation button')];return b.length===8&&new Set(b.map(e=>getComputedStyle(e.querySelector('.btn-icon')).backgroundPosition)).size===8&&b.every(e=>e.querySelector('.btn-label').textContent.trim()&&(e.title||e.getAttribute('aria-label')));})()`));
+    const sidebarToggleHit=await cdp.eval(`(()=>{const e=document.querySelector('#btn-expand-sidebar'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`);
+    ok('top sidebar toggle stays clickable beside fixed brand',sidebarToggleHit);
+    await click('#btn-expand-sidebar');
+    ok('top sidebar toggle collapses the session list',await cdp.eval('document.querySelector("#app-container").classList.contains("sidebar-collapsed")'));
+    await click('#btn-expand-sidebar');
+    ok('top sidebar toggle restores the session list',await cdp.eval('!document.querySelector("#app-container").classList.contains("sidebar-collapsed")'));
+    ok('D4 uses eight visible vector icons with accessible names',await cdp.eval(`(()=>{const b=[...document.querySelectorAll('.rail-navigation button')];return b.length===8&&b.every(e=>e.querySelector('.btn-icon svg')&&getComputedStyle(e.querySelector('.btn-icon svg')).display!=='none'&&e.querySelector('.btn-label').textContent.trim()&&(e.title||e.getAttribute('aria-label')));})()`));
     for(const theme of ['dark','codex']) {
       await cdp.eval(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
+      if(theme==='codex')ok('other skin retains ceramic icon sheet',await cdp.eval(`new Promise(resolve=>{const e=document.querySelector('#btn-home .btn-icon'),s=getComputedStyle(e).backgroundImage,img=new Image();img.onload=()=>resolve(img.naturalWidth===1536&&img.naturalHeight===1024&&getComputedStyle(e.querySelector('svg')).display==='none');img.onerror=()=>resolve(false);img.src=s.slice(5,-2);})`));
       for(const [width,height] of [[1450,950],[1100,720],[900,640],[900,600],[900,480]]) {
         await resize(width,height);await layout(theme+' '+width+'x'+height);
         if(height===950||height===480)await shot(theme+'-'+height);
@@ -61,7 +68,7 @@ async function run() {
     await resize(900,480);
     for(const [button,panel] of [['#btn-rail-accounts','#account-page'],['#btn-rail-capabilities','#capability-page'],['#btn-rail-memory','#memory-page']]) {
       await click(button);await wait(`!!document.querySelector(${JSON.stringify(panel)})&&!document.querySelector(${JSON.stringify(panel)}).hidden`);
-      ok(button+' opens beside rail',await cdp.eval(`document.querySelector(${JSON.stringify(panel)}).getBoundingClientRect().left>=100`));
+      ok(button+' opens beside rail',await cdp.eval(`document.querySelector(${JSON.stringify(panel)}).getBoundingClientRect().left>=document.querySelector('#scene-rail').getBoundingClientRect().right`));
       await click(button);
     }
     for(const [button,menu] of [['#btn-theme','#theme-menu'],['#btn-options','#options-menu']]) {

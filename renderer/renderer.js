@@ -77,7 +77,17 @@ const {
 } = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
+// @community-strip 公司中转
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
+// @community-else
+// // 中转工具不随社区版发行；保留同一接口，状态提示改走普通 toast。
+// const createChatgptBridgeController = () => ({
+//   init() {},
+//   pushText: async () => ({ ok: false }),
+//   pullForInput: async () => false,
+//   showStatus: (message, tone) => showToast(message, tone),
+// });
+// @community-end
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const {
   forgetViewMode,
@@ -1387,6 +1397,7 @@ function disposeCachedTerminal(sessionId) {
   if (cached._surfaceRecoveryRaf) cancelAnimationFrame(cached._surfaceRecoveryRaf);
   if (cached._codexBottomPinRaf) cancelAnimationFrame(cached._codexBottomPinRaf);
   if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+  if (cached._codexAnswerAccent) { cached._codexAnswerAccent.dispose(); cached._codexAnswerAccent = null; }
   if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
   if (cached._localPathLinkProvider) {
@@ -1422,8 +1433,10 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
-    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1,
+    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3
+      : isCodexKind(sessions.get(sessionId)?.kind) ? 1.18 : 1.12,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    fontWeight: isCodexKind(sessions.get(sessionId)?.kind) ? '500' : 'normal',
     cursorBlink: true,
     scrollback: 10000,
     allowProposedApi: true,
@@ -1596,7 +1609,13 @@ function getOrCreateTerminal(sessionId) {
   const container = document.createElement('div');
   container.style.cssText = 'width:100%;height:100%;display:none';
 
+  const routeCodexTranscriptWheel = require('./codex-transcript-wheel').createCodexTranscriptWheelRouter({
+    terminal,
+    ownsTranscript: () => isCodexOwnedTranscript(sessions.get(sessionId), terminal),
+    WheelEvent: window.WheelEvent,
+  });
   terminal.attachCustomWheelEventHandler((event) => {
+    if (routeCodexTranscriptWheel(event)) return false;
     if (!isNativeAgent(sessions.get(sessionId)) || event.ctrlKey || event.metaKey) return true;
     const viewport = terminal._core?.viewport;
     if (!viewport?.getLinesScrolled) return true;
@@ -2085,7 +2104,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   mountTarget.append(metricsOverlay, termContainer);
   if (!embedded && fileManagerPanel) {
-    void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel });
+    void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel, sessionStartedAt: Number(session.spawnedAt) || 0 });
   }
   if (!embedded) emptyStateEl.style.display = 'none';
 
@@ -2101,6 +2120,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
   loadGpuRenderer(cached);
+  if (isCodexKind(session.kind) && !isNativeAgent(session)) {
+    cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
+    cached._codexAnswerAccent.refresh();
+  }
   setupCodexViewportScrollTracker(sessionId, cached);
 
   if (!embedded) {
@@ -3364,6 +3387,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  // @community-strip 公司中转
   if (action === 'sync-chatgpt') {
     const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
     const original = btn.textContent;
@@ -3374,6 +3398,7 @@ document.addEventListener('click', async (e) => {
     });
     return;
   }
+  // @community-end
 
   if (action === 'prompt-inspect') {
     const sid = getCardSessionId(card);
@@ -4187,7 +4212,9 @@ async function reconnectSession(sessionId) {
 
 // 「引用会话」：选会话 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
 // 失败走 showHubAlert 挡住人，不能静默；成功只给轻提示，且绝不替用户按发送。
-async function referenceSessionIntoInput(sessionId, inputBox, button) {
+async function referenceSessionIntoInput(sessionId, inputBox, button, options = {}) {
+  const isCurrent = options.isCurrent || (() => inputBox.isConnected);
+  const saveDraft = options.saveDraft || (() => saveFloatingInputDraft(sessionId, inputBox));
   const { openSessionPicker, showForkToast } = require('./groupchat-fork-ui.js');
   const { buildReferenceText } = require('../core/session-reference.js');
   const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
@@ -4198,21 +4225,23 @@ async function referenceSessionIntoInput(sessionId, inputBox, button) {
     alertError('读取会话清单失败：' + error.message);
     return;
   }
+  if (!isCurrent()) return;
   openSessionPicker({
     document,
     rows: Array.isArray(rows) ? rows : [],
     title: '引用会话',
-    hint: '把所选会话的聊天记录路径插入输入框，当前 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
+    hint: '把所选会话的聊天记录路径插入输入框，接收消息的 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
     emptyLabel: '没有其他会话可引用。',
     onPick: async (row) => {
+      if (!isCurrent()) return;
       if (button) { button.disabled = true; button.textContent = '引用中…'; }
       try {
         const result = await ipcRenderer.invoke('session-reference:resolve', { sessionId: row.id });
         if (!result?.ok) { alertError('引用失败：' + (result?.message || result?.error || '未知原因')); return; }
-        if (!inputBox.isConnected) return;
+        if (!inputBox.isConnected || !isCurrent()) return;
         const line = buildReferenceText({ title: row.title || result.title, kind: row.kind, path: result.path });
         appendToContenteditable(inputBox, `${line}\n`);
-        saveFloatingInputDraft(sessionId, inputBox);
+        saveDraft();
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
         showForkToast(document, result.fresh
@@ -4341,6 +4370,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     restoreComposerText(sessionId, inputBox, floatingInputDrafts.get(sessionId));
   }
 
+  // @community-strip 公司中转
   // 用户实际工作流只保留一个入口：把公司 ChatGPT 的新内容拉到输入框。
   // 文本原样追加；附件由 bridge 落盘后以绝对路径追加。写入成功后才 ack，
   // 因此渲染失败不会吞掉公司任务。
@@ -4373,6 +4403,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     }
   });
   bridgeToolbar.appendChild(bridgePullBtn);
+  // @community-else
+  // const bridgeToolbar = document.createElement('div');
+  // bridgeToolbar.className = 'fi-bridge-toolbar';
+  // bridgeToolbar.setAttribute('aria-label', '会话工具');
+  // @community-end
   const toolbarSession = sessions.get(sessionId);
   if (toolbarSession && supportsForkSession(toolbarSession)) {
     const branchBtn = document.createElement('button');
@@ -6057,7 +6092,12 @@ function getActiveFileManagerContext() {
   const focusedId = getFocusedSessionId();
   if (focusedId) {
     const session = sessions.get(focusedId);
-    return session ? { cwd: session.cwd || '', label: session.workspaceLabel || '' } : null;
+    // sessionStartedAt 供文件面板「本会话改动」使用；取不到时为 0，面板不显示该区。
+    return session ? {
+      cwd: session.cwd || '',
+      label: session.workspaceLabel || '',
+      sessionStartedAt: Number(session.spawnedAt) || 0,
+    } : null;
   }
   const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
   if (!meeting) return null;
@@ -7136,7 +7176,7 @@ const CRUMB_ARCHIVE_HINT_TITLE = '这个任务还在临时区 · 点击归档到
 
 function openSessionFilePanel(session) {
   if (!session || !fileManagerPanel) return;
-  void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel });
+  void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel, sessionStartedAt: Number(session.spawnedAt) || 0 });
 }
 
 function crumbWorkspaceLabel(session) {
@@ -8062,7 +8102,9 @@ const terminalContextMenu = createTerminalContextMenuController({
   }).catch((error) => {
     showPreviewNotice(`预览失败：${String(error && error.message || error)}`, 'error');
   }),
+  // @community-strip 公司中转
   syncSelection: (selection) => chatgptBridgeController.pushText(selection, '终端选中文字'),
+  // @community-end
 });
 terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
@@ -8073,7 +8115,9 @@ const cardSelectionContextMenu = createCardSelectionContextMenuController({
   window,
   menuEl: document.getElementById('card-selection-context-menu'),
   clipboard,
+  // @community-strip 公司中转
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
+  // @community-end
 });
 cardSelectionContextMenu.init();
 
@@ -8093,7 +8137,9 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
     const directory = stat.isDirectory() ? target : require('path').dirname(target);
     return openPathInHub(directory, { cwd, requireExistsForRel: false, throwOnError: true });
   },
+  // @community-strip 公司中转
   pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
+  // @community-end
 });
 pathLinkContextMenu.init();
 

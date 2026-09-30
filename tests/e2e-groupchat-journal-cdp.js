@@ -30,8 +30,8 @@ async function main(){
     check(label+' identity row and avatar scroll with answer instead of covering it',delta>150&&['header','avatar','body'].every(key=>Math.abs(after[key]-before[key]+delta)<3),{before,after,delta});
   };
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'hidden',label:'groupchat-journal',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
-    evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await c.send('Page.bringToFront');await until('typeof sessions!=="undefined" && !!window.__hubE2E','renderer');
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'background',label:'groupchat-journal',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
+    evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await until('typeof sessions!=="undefined" && !!window.MeetingRoom','renderer');
     clipboard=await c.eval('require("electron").clipboard.readText()');
     await c.eval('require("electron").webFrame.setZoomFactor(1)');await c.send('Emulation.setDeviceMetricsOverride',{width:1550,height:1080,deviceScaleFactor:1,mobile:false});
     const opts={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none',codexSpeedTier:'standard'};
@@ -42,9 +42,14 @@ async function main(){
     await until('document.querySelectorAll(".mr-gc-messages .gc-journal-long").length===2','long answer measurement');
     const ids=await c.eval('[...document.querySelectorAll(".mr-gc-msg.ai")].map(e=>e.dataset.gcMsgId)');
     const first=`[data-gc-msg-id="${ids[0]}"]`;
-    const initial=await c.eval(`(()=>{const a=[...document.querySelectorAll('.mr-gc-msg.ai')];return a.map(e=>({color:e.dataset.journalColor,bg:getComputedStyle(e.querySelector('.mr-gc-bubble')).backgroundColor,height:e.querySelector('.gc-journal-text').clientHeight,full:e.querySelector('.gc-journal-text').scrollHeight,nested:e.querySelectorAll('.conversation-long-message').length}));})()`);
-    check('same-provider members have distinct color; complete source is clipped once',new Set(initial.map(x=>x.bg)).size===2&&initial.every(x=>x.height<=240&&x.full>300&&x.nested===0),initial);
+    const initial=await c.eval(`(()=>{const a=[...document.querySelectorAll('.mr-gc-msg.ai')];return a.map(e=>({color:e.dataset.journalColor,bg:getComputedStyle(e).borderLeftColor,height:e.querySelector('.gc-journal-text').clientHeight,full:e.querySelector('.gc-journal-text').scrollHeight,nested:e.querySelectorAll('.conversation-long-message').length}));})()`);
+    check('same-provider members have distinct identity borders; complete source is clipped once',new Set(initial.map(x=>x.bg)).size===2&&initial.every(x=>x.height<=240&&x.full>300&&x.nested===0),initial);
     check('actions are in the header; inert raw-index button removed',await c.eval(`!document.querySelector('.mr-gc-anchor') && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-bubble-row > button').length===0 && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-meta .mr-gc-copy-btn').length===2`));
+    check('full-text disclosure is above the answer, aligned to its left edge',await c.eval(`(()=>{const a=document.querySelector(${j(first)}),b=a.querySelector('.gc-journal-expand').getBoundingClientRect(),t=a.querySelector('.gc-journal-text').getBoundingClientRect();return b.bottom<=t.top && Math.abs(b.left-t.left)<2;})()`));
+    check('copy and more use ordinary-session wording',await c.eval(`document.querySelector(${j(first+' .mr-gc-copy-btn')}).textContent==='复制' && document.querySelector(${j(first+' .gc-journal-menu > summary')}).textContent==='更多'`));
+    check('short user prompt body aligns with its header',await c.eval(`(()=>{const card=document.querySelector('.mr-gc-msg.mine'),body=card.querySelector('.mr-gc-bubble').getBoundingClientRect(),head=card.querySelector('.mr-gc-name').getBoundingClientRect();return Math.abs(body.left-head.left)<2;})()`));
+    check('user card does not retain the old right-side bubble arrow',await c.eval(`getComputedStyle(document.querySelector('.mr-gc-msg.mine .mr-gc-bubble'),'::after').display==='none'`));
+    await c.eval(`document.querySelector('.mr-gc-messages').scrollTop=0`);
     await shot('dark-collapsed');await click(first+' .gc-journal-expand');
     check('expand complete answer',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first+' .gc-journal-text')}).clientHeight>300`));
     await checkHeaderScroll(first,'dark-first-member');
@@ -72,6 +77,35 @@ async function main(){
     await until('document.querySelectorAll(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]").length===4','second real round complete');
     const finalTop=await c.eval('document.querySelector(".mr-gc-messages").scrollTop');
     check('stream updates preserve old disclosure and reading position',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true'`)&&Math.abs(finalTop-oldTop)<5,{oldTop,finalTop});
+    // Multiple complete answers: same-provider seats must retain distinct names.
+    await click(first+' .gc-journal-menu > summary');await click(first+' [data-gc-multi-select]');
+    await click(second+' .mr-gc-name');
+    check('multi-select counts two distinct messages',await c.eval(`document.querySelector('.gc-multi-select-bar .cms-count').textContent==='已选 2 条'`));
+    await click('.gc-multi-select-bar [data-multi-copy]');
+    await until(`require('electron').clipboard.readText().startsWith('===== 转发 2 条消息 =====')`,'multi copy');
+    const copied=await c.eval(`require('electron').clipboard.readText()`);
+    check('multi-copy includes both member names and complete folded sources',copied.includes('Codex 1')&&copied.includes('Codex 2')&&(copied.match(/这是同一条长回答中的验证说明/g)||[]).length===72);
+    await shot('multi-select');
+    await click('.gc-multi-select-bar [data-multi-exit]');
+    // Select a passage on round 1 while round 2 is current: quote must retain its origin.
+    const selectedText=await c.eval(`(()=>{const body=document.querySelector(${j(first+' .gc-journal-text')}),r=document.createRange();r.selectNodeContents(body);const s=getSelection();s.removeAllRanges();s.addRange(r);body.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));return s.toString().trim();})()`);
+    await click('#mr-gc-quote-float-btn');
+    const quote=await c.eval(`document.querySelector('.mr-gc-quote-chip')?.innerText`);
+    check('selected passage quote keeps the historical round',quote&&quote.includes('第1轮'));
+    // A refresh replaces child DOM, not the independent selected message IDs.
+    await click(first+' .gc-journal-menu > summary');await click(first+' [data-gc-multi-select]');
+    await send('fixture:compact-progress\n刷新时保留已选择的历史卡片。');
+    await until('document.querySelectorAll(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]").length===6','third round');
+    check('stream refresh preserves the selected historical card',await c.eval(`document.querySelector(${j(first)}).classList.contains('multi-selected') && document.querySelector('.gc-multi-select-bar .cms-count').textContent==='已选 1 条'`));
+    await click('.gc-multi-select-bar [data-multi-exit]');
+    const latestId=await c.eval(`[...document.querySelectorAll('.mr-gc-msg.ai')].at(-1).dataset.gcMsgId`);
+    const latest=`[data-gc-msg-id="${latestId}"]`;
+    await click(latest+' .gc-journal-menu > summary');await click(latest+' [data-gc-view-prompt]');
+    await until('!!document.querySelector(".mr-gc-prompt-modal-body")','quoted archived prompt');
+    await click('.mr-gc-prompt-modal-copy');
+    const archivedPrompt=await c.eval(`require('electron').clipboard.readText()`);
+    check('long selected passage reaches the archived dispatched prompt without truncation',selectedText.length>500&&archivedPrompt.includes(selectedText),{characters:selectedText.length});
+    await click('.mr-gc-prompt-modal-close');
     await c.send('Page.reload');await until('typeof window.MeetingRoom!=="undefined"','reload');await open();
     await until(`!!document.querySelector(${j(first)})`,'durable answers');
     check('reload retains expansion and member identity',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first)}).dataset.journalColor===${j(initial[0].color)}`));
@@ -80,11 +114,15 @@ async function main(){
     check('narrow group has no horizontal overflow',await c.eval('document.querySelector(".mr-gc-messages").scrollWidth<=document.querySelector(".mr-gc-messages").clientWidth+1'));
     await click('#mr-btn-group-tools');await click('[data-journal-collapse-all]');
     check('bulk collapse from group tools',await c.eval('[...document.querySelectorAll(".mr-gc-msg.ai")].every(e=>e.dataset.journalExpanded==="false")'));
-    await click(first+' [data-gc-open-session]');await until('!!document.querySelector(".floating-input-box")','member session');
+    await click(first+' .gc-journal-menu > summary');await click(first+' [data-gc-multi-select]');
+    await c.eval(`selectSession(${j(group.subSessions[0])})`);
+    check('leaving the group exits multi-select',await c.eval(`document.querySelector('.gc-multi-select-bar')?.hidden !== false`));
+    await until('!!document.querySelector(".floating-input-box")','member session');
     check('ordinary member view remains separate',await c.eval('document.querySelectorAll("#msg-overlay [data-journal-key]").length===0'));
     const dev=await c.eval(`ipcRenderer.invoke('create-meeting',${j({title:'线性手记 · 开发群聊',groupChat:true,mode:'dev',workspace:cwd,slots:[opts,opts]})})`);
     check('development group created with the real dev scene',dev.scene==='dev',dev.scene);
     await until(`!!document.querySelector('[data-meeting-id="${dev.id}"]')`,'dev sidebar');await click(`[data-meeting-id="${dev.id}"]`);await send('fixture:compact-progress\n核对开发群聊的整卡折叠。');
+    check('another group does not inherit selection state',await c.eval(`document.querySelector('.gc-multi-select-bar').hidden && !document.querySelector('.mr-gc-msg.multi-selected')`));
     await until('!!document.querySelector(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]")','dev final');await shot('dev-journal');
     check('development group uses journal without exposing forbidden retry',await c.eval('!!document.querySelector(".gc-journal-long") && !document.querySelector("[data-gc-retry-answer]")'));
     evidence.passed=true;

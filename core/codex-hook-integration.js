@@ -3,7 +3,8 @@
 // PTY 模式下 Codex 的状态与卡片绑定靠 Codex 自己的 hook（0.153 起支持）。
 //
 // 这里只管 Hub 自己的那几条 hook：
-//   1. 把 session-hub-hook.py 复制到 <CODEX_HOME>/hub-scripts/，路径稳定；
+//   1. 把 hook 脚本（私人版 session-hub-hook.py，社区版 .ps1，见 hook-runner.js）
+//      复制到 <CODEX_HOME>/hub-scripts/，路径稳定；
 //   2. 在 <CODEX_HOME>/hooks.json 里补齐缺的事件，已有的 session-hub-hook 条目原样保留；
 //   3. 在 <CODEX_HOME>/config.toml 的 [hooks.state] 里为这些条目写 trusted_hash。
 //
@@ -22,6 +23,7 @@ const os = require('os');
 const crypto = require('crypto');
 const childProcess = require('child_process');
 const { scanTomlStatements, tomlKey, simpleStringValue, samePath, isPrefix } = require('./toml-statements');
+const { hookRunner, hookCommand } = require('./hook-runner');
 
 const MARKER = 'session-hub-hook';
 const TIMEOUT_SEC = 5;
@@ -66,7 +68,7 @@ function codexHookTrustHash(eventLabel, matcher, handler) {
 }
 
 function hookArg(command) {
-  const match = /session-hub-hook(?:\.py)?"?\s+([a-z-]+)\s*$/i.exec(String(command || ''));
+  const match = /session-hub-hook(?:\.(?:py|ps1))?"?\s+([a-z-]+)\s*$/i.exec(String(command || ''));
   return match ? match[1] : null;
 }
 
@@ -87,8 +89,8 @@ function writeAtomic(file, text) {
   fs.renameSync(temporary, file);
 }
 
-function copyHookScript(codexHome, sourceScript) {
-  const target = hubHookScriptPath(codexHome);
+function copyHookScript(codexHome, sourceScript, runner) {
+  const target = hubHookScriptPath(codexHome, runner);
   const source = fs.readFileSync(sourceScript);
   let current = null;
   try { current = fs.readFileSync(target); } catch {}
@@ -101,14 +103,14 @@ function copyHookScript(codexHome, sourceScript) {
   return target;
 }
 
-function hubHookScriptPath(codexHome) {
-  return path.join(codexHome, 'hub-scripts', 'session-hub-hook.py');
+function hubHookScriptPath(codexHome, runner = hookRunner()) {
+  return path.join(codexHome, 'hub-scripts', runner.script);
 }
 
 // 在一份 hooks.json 内容上补齐 Hub 的事件，原有条目（包括别处已部署的
 // session-hub-hook 同名事件）原样保留、不重复。纯函数：个人规则同步
 // （agent-user-context）写 hooks.json 时也用它，两边的期望内容才会一致。
-function mergeHubCodexHooks(hooksFile, targetScript) {
+function mergeHubCodexHooks(hooksFile, targetScript, runner = hookRunner()) {
   const next = hooksFile && typeof hooksFile === 'object' && !Array.isArray(hooksFile)
     ? JSON.parse(JSON.stringify(hooksFile)) : {};
   if (!next.hooks || typeof next.hooks !== 'object' || Array.isArray(next.hooks)) next.hooks = {};
@@ -120,7 +122,7 @@ function mergeHubCodexHooks(hooksFile, targetScript) {
       && group.hooks.some(handler => String(handler && handler.command || '').includes(MARKER)
         && hookArg(handler.command) === arg));
     if (present) continue;
-    hooks[eventName].push({ hooks: [{ type: 'command', command: `python "${targetScript}" ${arg}`,
+    hooks[eventName].push({ hooks: [{ type: 'command', command: hookCommand(runner, targetScript, arg),
       timeout: TIMEOUT_SEC, ...(asyncHook ? { async: true } : {}) }] });
     changed = true;
   }
@@ -194,6 +196,51 @@ function parseTomlWithPython(text) {
   return JSON.parse(result.stdout);
 }
 
+// 没有 Python 时的结构级解析（社区版）：用 toml-statements 扫描器把每条键值落到
+// 对应路径，值保留原文（简单字符串取内容）。它不求值，但足以判断「除 Hub 的
+// trusted_hash 之外，其余表、键和值的原文都没变」，这正是 verifyTrustEdit 要守的。
+function parseTomlStructural(text) {
+  const { statements } = scanTomlStatements(text);
+  const root = {};
+  const descend = (node, keys) => {
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(node, key)) node[key] = {};
+      node = node[key];
+      if (Array.isArray(node)) node = node[node.length - 1];
+      if (!node || typeof node !== 'object') throw new Error(`键 ${keys.join('.')} 与已有的值冲突`);
+    }
+    return node;
+  };
+  let current = root;
+  for (const statement of statements) {
+    if (statement.kind === 'table') { current = descend(root, statement.path); continue; }
+    if (statement.kind === 'array-table') {
+      const parent = descend(root, statement.path.slice(0, -1));
+      const last = statement.path[statement.path.length - 1];
+      if (!Array.isArray(parent[last])) parent[last] = [];
+      parent[last].push({});
+      current = parent[last][parent[last].length - 1];
+      continue;
+    }
+    const holder = descend(current, statement.key.slice(0, -1));
+    const simple = simpleStringValue(statement.valueText);
+    holder[statement.key[statement.key.length - 1]] = simple !== null ? simple : `\u0000toml:${statement.valueText.trim()}`;
+  }
+  return root;
+}
+
+// 源码运行时脚本就在仓库 scripts/；打包后 scripts 作为 extraResources 放在
+// resources/scripts（Claude 一侧的部署也从这里取），不在 app.asar 里。
+function defaultHookSource(runner) {
+  const inAsar = /[\\/]app\.asar[\\/]/.test(__dirname);
+  if (inAsar && process.resourcesPath) return path.join(process.resourcesPath, 'scripts', runner.script);
+  return path.join(__dirname, '..', 'scripts', runner.script);
+}
+
+function defaultParseToml(runner) {
+  return runner.name === 'python' ? parseTomlWithPython : parseTomlStructural;
+}
+
 function deepEqual(a, b) {
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
@@ -223,16 +270,17 @@ function verifyTrustEdit(before, after, entries, parse) {
  * 保证指定 CODEX_HOME 下 Hub 的 Codex hook 已部署且受信任。幂等；
  * 失败只返回 errors，由调用方显示降级，不抛出去拦住会话启动。
  */
-function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, logger = console, parseToml = parseTomlWithPython } = {}) {
+function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, logger = console, parseToml = null,
+  runner = hookRunner() } = {}) {
   const home = path.resolve(codexHome || defaultCodexHome());
+  const parse = parseToml || defaultParseToml(runner);
   const result = { codexHome: home, hooksChanged: false, trustChanged: false, trusted: [], untrusted: [], errors: [] };
-  const script = sourceScript || path.join(__dirname, '..', 'scripts', 'session-hub-hook.py')
-    .replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
+  const script = sourceScript || defaultHookSource(runner);
   const hooksPath = path.join(home, 'hooks.json');
   const configPath = path.join(home, 'config.toml');
   try {
-    const target = copyHookScript(home, script);
-    const merged = mergeHubCodexHooks(readJson(hooksPath), target);
+    const target = copyHookScript(home, script, runner);
+    const merged = mergeHubCodexHooks(readJson(hooksPath), target, runner);
     const hooksFile = merged.hooksFile;
     const hooks = hooksFile.hooks;
     result.hooksChanged = merged.changed;
@@ -257,7 +305,7 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
       result.errors.push(`config.toml 里有 ${result.untrusted.length} 条 Hub hook 的信任记录写法无法安全改写，请在 Codex /hooks 中手动信任`);
     }
     if (next.changed) {
-      verifyTrustEdit(configText, next.text, trust.filter(entry => !result.untrusted.includes(entry.key)), parseToml);
+      verifyTrustEdit(configText, next.text, trust.filter(entry => !result.untrusted.includes(entry.key)), parse);
       writeAtomic(configPath, next.text);
       result.trustChanged = true;
     }
@@ -273,5 +321,5 @@ function ensureCodexHookIntegration({ codexHome = null, sourceScript = null, log
 module.exports = {
   HUB_CODEX_HOOKS, codexHookTrustHash, upsertTrustedHashes, ensureCodexHookIntegration, hookArg,
   mergeHubCodexHooks, hubHookScriptPath,
-  parseTomlWithPython, verifyTrustEdit,
+  parseTomlWithPython, parseTomlStructural, verifyTrustEdit,
 };

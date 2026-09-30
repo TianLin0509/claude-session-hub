@@ -8,8 +8,10 @@ const { shell } = require('electron');
 const { searchPreviewPaths } = require('../../core/preview-path-search.js');
 const { listWorkspaceDirectory } = require('../../core/file-manager-directory.js');
 
+// @community-strip 公司文件中转
 const COMPANY_DROP_TIMEOUT_MS = 15 * 60 * 1000;
 const COMPANY_DROP_MAX_OUTPUT_BYTES = 1024 * 1024;
+// @community-end
 
 const READ_FILE_EXTS = new Set([
   '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
@@ -20,6 +22,7 @@ const READ_FILE_EXTS = new Set([
   '.swift', '.kt', '.lua', '.zig', '.asm', '.css', '.scss', '.less',
 ]);
 
+// @community-strip 公司文件中转
 function resolveCompanyDropRuntime({
   env = process.env,
   homeDir = os.homedir(),
@@ -143,6 +146,10 @@ function runCompanyDrop(filePath, {
     }, timeoutMs);
   });
 }
+// @community-else
+// // 社区版不附带公司文件中转；交付入口在界面上已移除，这里保留同名函数只为接口不变。
+// const runCompanyDrop = async () => ({ error: '社区版未包含这个交付工具', code: 'unavailable' });
+// @community-end
 
 function registerPathIpc(ipcMain, deps = {}) {
   require('./file-manager-handlers.js').registerFileManagerIpc(ipcMain, {
@@ -152,7 +159,9 @@ function registerPathIpc(ipcMain, deps = {}) {
   const syncRunner = deps.runCompanyDrop || runCompanyDrop;
   const previewPathSearcher = deps.searchPreviewPaths || searchPreviewPaths;
   const directoryLister = deps.listWorkspaceDirectory || listWorkspaceDirectory;
+  // @community-strip 公司文件中转
   const companyDropInFlight = new Set();
+  // @community-end
   ipcMain.handle('open-path', async (_e, filePath) => {
     if (typeof filePath !== 'string' || !filePath.trim()) return 'empty path';
     try {
@@ -275,6 +284,7 @@ function registerPathIpc(ipcMain, deps = {}) {
     });
   });
 
+  // @community-strip 公司文件中转
   ipcMain.handle('sync-path-to-company', async (_e, filePath) => {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
       return { error: '路径无效。', code: 'invalid_path' };
@@ -305,14 +315,21 @@ function registerPathIpc(ipcMain, deps = {}) {
       companyDropInFlight.delete(inFlightKey);
     }
   });
+  // @community-end
 }
 
 module.exports = {
+  // @community-strip 公司文件中转
   COMPANY_DROP_MAX_OUTPUT_BYTES,
   COMPANY_DROP_TIMEOUT_MS,
+  // @community-end
   READ_FILE_EXTS,
+  // @community-strip 公司文件中转
   parseCompanyDropOutput,
+  // @community-end
   registerPathIpc,
+  // @community-strip 公司文件中转
   resolveCompanyDropRuntime,
+  // @community-end
   runCompanyDrop,
 };

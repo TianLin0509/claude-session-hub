@@ -86,7 +86,11 @@ function isPathInside(candidate, root) {
 }
 
 function isWirelessWorkspace(cwd) {
+  // @community-strip 本机目录
   return isPathInside(cwd, process.env.AI_HUB_WIRELESS_ROOT || 'C:\\Vibe\\Wireless');
+  // @community-else
+  // return isPathInside(cwd, process.env.AI_HUB_WIRELESS_ROOT || '');
+  // @community-end
 }
 
 /**

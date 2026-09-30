@@ -24,11 +24,11 @@ const {
 } = require('../core/model-options.js');
 
 test('modal model lists cover the five core AI kinds including Kimi K3', () => {
-  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'kimi']) {
+  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'kimi', 'qwen', 'glm', 'deepseek-acp']) {
     assert.ok(Array.isArray(MODEL_OPTIONS_BY_KIND[k]) && MODEL_OPTIONS_BY_KIND[k].length > 0,
       `MODEL_OPTIONS_BY_KIND.${k} missing`);
   }
-  for (const removed of ['glm', 'gpt', 'qwen']) {
+  for (const removed of ['gpt']) {
     assert.ok(!Object.prototype.hasOwnProperty.call(MODEL_OPTIONS_BY_KIND, removed),
       `${removed} models should be removed`);
   }
@@ -52,11 +52,11 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.ok(MODEL_OPTIONS_BY_KIND.codex.some(option => option.id === DEFAULT_MODEL_BY_KIND.codex),
     'Codex 默认模型必须出现在静态候选表里');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
-  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
-  assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
-  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*\}/);
   assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
-  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek'\]/);
+  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek',\s*'qwen',\s*'deepseek-acp',\s*'glm'\]/);
 });
 
 test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {
@@ -236,7 +236,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session dynamic tuning definitions');
   assert.match(MODAL_JS, /WorkspaceController\.buildSessionTuningOpts/,
     'group modal must reuse new-session provider-specific payload rules');
-  assert.match(MODAL_JS, /WorkspaceController\.loadPrimaryModelCatalogs/,
+  assert.match(MODAL_JS, /WorkspaceController\.loadSessionDefaults/,
     'Claude and Codex options must refresh from their current CLI catalogs');
   assert.match(MODAL_JS, /开发群聊第一位实现、第二位独立验证与合并/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);

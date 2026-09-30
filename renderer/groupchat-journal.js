@@ -35,8 +35,6 @@ function memberColor(meeting, sid) {
   return list.indexOf(sid) % 8;
 }
 const paths = {
-  copy:'<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
-  more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   fold:'<path d="m7 9 5-5 5 5M7 15l5 5 5-5"/>',
 };
 function icon(name) { return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`; }
@@ -44,14 +42,14 @@ function attributes(meeting, message, escapeHtml) {
   const id = key(meeting,message), p = preference(id);
   return `data-journal-key="${escapeHtml(id)}" data-journal-color="${memberColor(meeting,message.sid)}" data-journal-expanded="${!!p.expanded}" data-journal-minimized="${!!p.minimized}"`;
 }
-function actions({copy, prompt, attempt, resync, retry, submit}) {
-  const secondary = prompt + retry;
+function actions({copy = '', prompt = '', attempt = '', resync = '', retry = '', submit = '', minimize = true}) {
+  const secondary = '<button type="button" data-gc-multi-select>多选</button>' + prompt + retry;
   const diagnostic = attempt + resync;
-  return `<div class="gc-journal-actions" data-copy-exclude>${copy.replace('📋',icon('copy'))}`
-    + ((secondary || diagnostic) ? `<details class="gc-journal-menu"><summary aria-label="更多回答操作" title="更多回答操作">${icon('more')}</summary><div class="gc-journal-menu-body">${secondary}${diagnostic ? `<div class="gc-journal-menu-label">运行诊断</div>${diagnostic}` : ''}</div></details>` : '')
-    + submit + `<button type="button" class="gc-journal-minimize" data-journal-action="minimize" aria-label="折叠整张回答" title="折叠整张回答">${icon('fold')}</button></div>`;
+  return `<div class="gc-journal-actions" data-copy-exclude>${copy.replace('📋','复制')}`
+    + ((secondary || diagnostic) ? `<details class="gc-journal-menu"><summary aria-label="更多回答操作" title="更多回答操作">更多</summary><div class="gc-journal-menu-body">${secondary}${diagnostic ? `<div class="gc-journal-menu-label">运行诊断</div>${diagnostic}` : ''}</div></details>` : '')
+    + submit + (minimize ? `<button type="button" class="gc-journal-minimize" data-journal-action="minimize" aria-label="折叠整张回答" title="折叠整张回答">${icon('fold')}</button>` : '') + '</div>';
 }
-function footer() { return '<button type="button" class="gc-journal-expand" data-journal-action="expand" aria-expanded="false">展开全文 ↓</button>'; }
+function disclosure() { return '<button type="button" class="gc-journal-expand" data-copy-exclude data-journal-action="expand" aria-expanded="false" hidden>展开全文</button>'; }
 function enhance(panel) {
   if (!panel) return;
   for (const article of panel.querySelectorAll('[data-journal-key]')) {
@@ -64,7 +62,7 @@ function enhance(panel) {
     const long = text.scrollHeight > 260;
     article.classList.toggle('gc-journal-long', long);
     const expand = article.querySelector('.gc-journal-expand');
-    if (expand) { expand.hidden = !long; expand.textContent = p.expanded ? '收起全文 ↑' : '展开全文 ↓'; expand.setAttribute('aria-expanded',String(!!p.expanded)); }
+    if (expand) { expand.hidden = !long; expand.textContent = p.expanded ? '收起全文' : `长消息 · ${(text.textContent || '').length.toLocaleString('zh-CN')} 字 · 展开全文`; expand.setAttribute('aria-expanded',String(!!p.expanded)); }
     const minimize = article.querySelector('.gc-journal-minimize');
     if (minimize) { const label=p.minimized ? '展开回答卡片' : '折叠整张回答'; minimize.title=label; minimize.setAttribute('aria-label',label); minimize.setAttribute('aria-expanded',String(!p.minimized)); }
   }
@@ -124,4 +122,4 @@ function handle(event,panel) {
   if(scroll){scroll.scrollTop=oldTop+article.getBoundingClientRect().top-before;if(article.getBoundingClientRect().bottom<scroll.getBoundingClientRect().top+50)article.scrollIntoView({block:'start'});}
   return true;
 }
-module.exports={attributes,actions,footer,enhance,handle};
+module.exports={attributes,actions,disclosure,enhance,handle};

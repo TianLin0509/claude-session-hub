@@ -22,7 +22,11 @@ const fs = require('fs');
 const path = require('path');
 
 /** 聚合根：这些目录本身不是项目，也不许在里面递归乱翻。 */
+// @community-strip 本机目录
 const AGGREGATE_ROOTS = ['C:\\Users\\lintian', 'C:\\Vibe'];
+// @community-else
+// const AGGREGATE_ROOTS = [require('os').homedir()];
+// @community-end
 
 function isAggregateRoot(dir) {
   const resolved = path.resolve(String(dir || '')).toLowerCase();
@@ -160,7 +164,11 @@ function buildLocatorBlock(opts = {}) {
   lines.push(
     '任务里出现的路径可能只是**例子或引用**，不能当成目标；拿不准就把它当引用。',
     '判断一个目录是不是有效现场时，`.git` 是文件（git worktree）同样算数，不要因为它不是目录就丢掉。',
+    // @community-strip 本机目录
     '不许全盘搜索，不许递归扫描 C:\\Users\\lintian、C:\\Vibe 这类聚合根，也不许自动 git init 造一个新仓库。',
+    // @community-else
+    //   '不许全盘搜索，不许递归扫描用户主目录这类聚合根，也不许自动 git init 造一个新仓库。',
+    // @community-end
   );
   return lines.join('\n');
 }

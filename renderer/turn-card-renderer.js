@@ -192,6 +192,7 @@ function renderToolCluster(turnId, toolCalls, total = toolCalls?.length || 0) {
 }
 
 const renderDeliverySummary = delivery => require('./delivery-summary').renderDeliverySummary(delivery, escapeHtml);
+const renderDeliveryGlance = delivery => require('./delivery-summary').renderDeliveryGlance(delivery, escapeHtml);
 
 function _disclosureKey(element, index) {
   if (!element) return `details:${index}`;
@@ -463,7 +464,11 @@ function renderCardActions(turn) {
   const multi = '<button class="ta-btn ta-multi" data-action="multi-select">多选</button>';
   const secondary = user
     ? '<button class="ta-btn" data-action="resend">重发这条消息</button><button class="ta-btn" data-action="edit-resend">编辑重发</button><button class="ta-btn" data-action="prompt-inspect">查看完整 Prompt</button>'
+    // @community-strip 公司中转
     : (activity ? '' : '<button class="ta-btn ta-company" data-action="sync-chatgpt">同步这条消息到公司</button>')
+    // @community-else
+    //   : ''
+    // @community-end
       + (!activity && turn.phase !== 'commentary' ? '<button class="ta-btn" data-action="regen" title="先查看待重发正文">重新生成…</button>' : '');
   return copy + '<details class="card-actions-menu"><summary class="card-actions-more" aria-label="更多消息操作">更多</summary>'
     + '<div class="card-actions-popover">' + multi + secondary + '</div></details>';
@@ -521,6 +526,13 @@ function renderTurnCard(turn) {
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', _fullActivityTurns.has(turn.id) ? turn.toolCalls : presentation.activities, presentation.activityCount);
   const deliveryHtml = !isUser && turn.phase !== 'commentary' && turn.phase !== 'activity' ? renderDeliverySummary(presentation.delivery) : '';
+  const glanceHtml = deliveryHtml ? renderDeliveryGlance(presentation.delivery) : '';
+  const bodyHtml = `<div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+      ${attachments}
+      ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}`;
+  const primaryHtml = !isUser && !isProgress && turn.phase !== 'activity'
+    ? `<div class="turn-primary${glanceHtml ? ' has-glance' : ''}"><div class="turn-primary-copy">${bodyHtml}</div>${glanceHtml}</div>`
+    : bodyHtml;
 
   // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
   // S1 parser exposes turn.thinking as multi-block joined string (or null).
@@ -555,9 +567,7 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
-      ${attachments}
-      ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}
+      ${primaryHtml}
       ${deliveryHtml}
       ${toolHtml}
       ${_renderMetaPills(turn)}

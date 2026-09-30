@@ -2,6 +2,19 @@
 
 const path = require('path');
 const { isPathInsideRoot } = require('../core/file-manager-directory.js');
+const {
+  DEFAULT_GROUP_LIMIT,
+  groupStateKey,
+  groupToggleLabel,
+  isNoiseFolder,
+  planDirectoryGroups,
+} = require('./file-manager-grouping.js');
+const { createFolderActivityTracker } = require('./file-manager-activity.js');
+const { createSessionChangesTracker } = require('./file-manager-session-changes.js');
+
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg>';
+const FLASH_MS = 1600;
+const NAV_SELECTOR = '[data-fm-node], [data-fm-group-toggle], [data-fm-section-toggle]';
 
 const PREVIEWABLE_EXTENSIONS = new Set([
   '.html', '.htm', '.md', '.markdown', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.pdf',
@@ -55,6 +68,12 @@ function createFileManagerPanel(options = {}) {
     generation: 0,
     cache: new Map(),
     expanded: new Set(),
+    expandedGroups: new Set(),
+    // 根层分区（本会话改动 / 文件 / 文件夹）的折叠状态，跨根目录保留。
+    collapsedSections: new Set(),
+    // path -> 高亮开始时间；重渲染时用负 animation-delay 接续，不会重播。
+    flash: new Map(),
+    sessionStartedAt: 0,
     selectedPath: '',
     query: '',
     statusTimer: null,
@@ -62,6 +81,17 @@ function createFileManagerPanel(options = {}) {
 
   const elements = {};
   let features = null;
+  const folderActivity = createFolderActivityTracker({
+    ipcRenderer,
+    getRoot: () => state.root,
+    onUpdate: () => { if (isOpen()) rerenderPreservingView(); },
+  });
+  const sessionChanges = createSessionChangesTracker({
+    ipcRenderer,
+    getRoot: () => state.root,
+    getSince: () => state.sessionStartedAt,
+    onUpdate: () => { if (isOpen()) rerenderPreservingView(); },
+  });
 
   function contextFrom(value, allowFallback = true) {
     if (typeof value === 'string') return { cwd: value, label: '' };
@@ -69,9 +99,17 @@ function createFileManagerPanel(options = {}) {
       return {
         cwd: String(value.cwd || value.root || '').trim(),
         label: String(value.label || value.workspaceLabel || '').trim(),
+        sessionStartedAt: Number(value.sessionStartedAt) || 0,
       };
     }
-    return allowFallback ? contextFrom(getActiveContext(), false) : { cwd: '', label: '' };
+    return allowFallback ? contextFrom(getActiveContext(), false) : { cwd: '', label: '', sessionStartedAt: 0 };
+  }
+
+  // 「本会话改动」的起点：显式传入的，或当前会话（同一工作目录）的启动时间；取不到就不显示该区。
+  function sessionStartFor(context) {
+    if (context.sessionStartedAt > 0) return context.sessionStartedAt;
+    const active = contextFrom(getActiveContext(), false);
+    return active.cwd && context.cwd && pathKey(active.cwd) === pathKey(context.cwd) ? active.sessionStartedAt : 0;
   }
 
   function pathKey(value) {
@@ -131,7 +169,7 @@ function createFileManagerPanel(options = {}) {
     }
     const suffix = record.truncated ? ` · 仅显示前 ${record.entries.length} 项` : '';
     const filter = state.query ? ` · 筛选“${state.query}”` : '';
-    setStatus(`${record.total} 项${suffix}${filter}`, record.truncated ? 'warning' : '', { sticky: true });
+    setStatus(`${record.total} 项 · 自动刷新${suffix}${filter}`, record.truncated ? 'warning' : '', { sticky: true });
   }
 
   function iconSvg(kind, className = '') {
@@ -166,9 +204,14 @@ function createFileManagerPanel(options = {}) {
       && descendantMatches(entry.path, query);
   }
 
-  function makeTreeRow(entry, depth) {
+  function makeTreeRow(entry, depth, rowOptions = {}) {
     const row = document.createElement('div');
-    row.className = `fm-node fm-node-${entry.type}${entry.hidden ? ' is-hidden' : ''}`;
+    row.className = `fm-node fm-node-${entry.type}${entry.hidden ? ' is-hidden' : ''}${isNoiseFolder(entry) ? ' is-noise' : ''}${rowOptions.variant === 'change' ? ' fm-change-row' : ''}`;
+    const flashedAt = state.flash.get(entry.path);
+    if (flashedAt && Date.now() - flashedAt < FLASH_MS) {
+      row.classList.add('fm-flash');
+      row.style.animationDelay = `-${Date.now() - flashedAt}ms`;
+    }
     row.setAttribute('role', 'none');
     row.style.setProperty('--fm-depth', String(depth));
 
@@ -192,7 +235,7 @@ function createFileManagerPanel(options = {}) {
     const disclosure = document.createElement('span');
     disclosure.className = 'fm-disclosure';
     if (entry.type === 'directory') {
-      disclosure.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg>';
+      disclosure.innerHTML = CHEVRON_SVG;
       disclosure.classList.toggle('expanded', state.expanded.has(entry.path));
     }
 
@@ -210,13 +253,163 @@ function createFileManagerPanel(options = {}) {
       if (child && !child.loading && !child.error) meta.textContent = String(child.total);
     } else if (entry.type === 'link') {
       meta.textContent = '链接';
-    } else {
-      meta.textContent = entry.extension ? entry.extension.slice(1).toUpperCase() : '';
     }
     button.append(disclosure, icon, name, meta);
     row.appendChild(button);
-    if (features) features.decorateRow(row, button, entry);
+    if (features) features.decorateRow(row, button, entry, rowOptions);
     return row;
+  }
+
+  // 根层分区标题：可折叠、吸顶；右侧显示当前排序，点击切换升降序。
+  function makeSectionHeader({ key, label, count, note = '', sortText = '' }) {
+    const collapsed = state.collapsedSections.has(key);
+    const header = document.createElement('div');
+    header.className = `fm-group-header${collapsed ? ' collapsed' : ''}`;
+    header.setAttribute('role', 'presentation');
+    header.dataset.group = key;
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'fm-section-toggle';
+    toggle.dataset.fmSectionToggle = key;
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.title = collapsed ? `展开${label}` : `折叠${label}`;
+    const chevron = document.createElement('span');
+    chevron.className = 'fm-section-chevron';
+    chevron.innerHTML = CHEVRON_SVG;
+    const text = document.createElement('span');
+    text.className = 'fm-section-label';
+    text.textContent = label;
+    const counter = document.createElement('span');
+    counter.className = 'fm-group-count';
+    counter.textContent = String(count);
+    toggle.append(chevron, text, counter);
+    if (note) {
+      const small = document.createElement('span');
+      small.className = 'fm-section-note';
+      small.textContent = note;
+      toggle.append(small);
+    }
+    header.append(toggle);
+    if (sortText) {
+      const sort = document.createElement('button');
+      sort.type = 'button';
+      sort.className = 'fm-group-sort';
+      sort.dataset.fmSort = key;
+      sort.title = '切换升序 / 降序（更多排序在筛选菜单）';
+      sort.textContent = sortText;
+      header.append(sort);
+    }
+    return header;
+  }
+
+  function makeGroupHeader(group) {
+    const sortText = features ? features.sortLabel().replace('修改时间', group.group === 'folders' ? '最近改动' : '修改时间') : '';
+    return makeSectionHeader({ key: group.group, label: group.label, count: group.total, sortText });
+  }
+
+  function toggleSection(key) {
+    if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
+    else state.collapsedSections.add(key);
+    rerenderPreservingView({ focusSection: key });
+  }
+
+  const pad2 = value => String(value).padStart(2, '0');
+
+  // 「本会话改动」区：会话启动后工作区里修改过的文件，默认最多 5 条。
+  function appendSessionChanges(query) {
+    if (!state.sessionStartedAt || (features && features.mode() !== 'tree')) return;
+    const result = sessionChanges.get();
+    const started = new Date(state.sessionStartedAt);
+    const note = `${pad2(started.getHours())}:${pad2(started.getMinutes())} 启动后`;
+    if (!result) {
+      elements.tree.appendChild(makeSectionHeader({ key: 'changes', label: '本会话改动', count: '…', note }));
+      return;
+    }
+    const list = result.entries.filter(entry => (!query || entry.name.toLowerCase().includes(query))
+      && (!features || features.matchesType(entry)));
+    elements.tree.appendChild(makeSectionHeader({ key: 'changes', label: '本会话改动', count: list.length, note }));
+    if (state.collapsedSections.has('changes')) return;
+    if (result.error) { elements.tree.appendChild(makeMessageRow(`改动扫描失败：${result.error}`, 0, 'error')); return; }
+    if (!list.length) {
+      if (result.truncated) elements.tree.appendChild(makeMessageRow('扫描达到上限，未找到改动，但可能有遗漏', 0, 'warning'));
+      else elements.tree.appendChild(makeMessageRow(query ? '没有匹配的改动' : '会话启动后还没有文件改动', 0));
+      return;
+    }
+    const key = groupStateKey(state.root, 'changes');
+    const [plan] = planDirectoryGroups(list, {
+      limit: query ? Infinity : DEFAULT_GROUP_LIMIT,
+      isExpanded: () => state.expandedGroups.has(key),
+      demoteNoise: false,
+    });
+    for (const entry of plan.visible) elements.tree.appendChild(makeTreeRow(entry, 0, { variant: 'change' }));
+    if (plan.showToggle) {
+      elements.tree.appendChild(makeGroupToggle(state.root, { ...plan, group: 'changes', label: '改动文件' }, 0));
+    }
+    if (result.truncated) elements.tree.appendChild(makeMessageRow('扫描达到上限，改动列表可能不完整', 0, 'warning'));
+  }
+
+  function makeGroupToggle(directory, group, depth) {
+    const row = document.createElement('div');
+    row.className = 'fm-group-toggle-row';
+    row.setAttribute('role', 'none');
+    row.style.setProperty('--fm-depth', String(depth));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'fm-group-toggle';
+    button.dataset.fmGroupToggle = groupStateKey(directory, group.group);
+    button.dataset.group = group.group;
+    button.setAttribute('role', 'treeitem');
+    button.setAttribute('aria-level', String(depth + 1));
+    button.setAttribute('aria-expanded', String(group.expanded));
+    button.textContent = groupToggleLabel(group);
+    row.appendChild(button);
+    return row;
+  }
+
+  function toggleGroup(key) {
+    if (!key) return;
+    if (state.expandedGroups.has(key)) state.expandedGroups.delete(key);
+    else state.expandedGroups.add(key);
+    rerenderPreservingView({ focusToggle: key });
+  }
+
+  // 重排（子树活动算完、展开组）时保留滚动位置和键盘焦点。
+  function rerenderPreservingView({ focusToggle = '', focusSection = '' } = {}) {
+    if (!elements.tree) return;
+    const scroll = elements.tree.scrollTop;
+    const active = document.activeElement;
+    const inTree = !!(active && elements.tree.contains(active));
+    const data = inTree && active.dataset ? active.dataset : {};
+    const focusedPath = data.path || '';
+    const focusedToggle = focusToggle || data.fmGroupToggle || '';
+    const focusedSection = focusSection || data.fmSectionToggle || '';
+    // 同一路径可能同时出现在「本会话改动」和目录树里，按所在分区区分。
+    const focusedChange = !!(inTree && active.closest && active.closest('.fm-change-row'));
+    renderTree();
+    elements.tree.scrollTop = scroll;
+    if (!inTree && !focusToggle && !focusSection) return;
+    const target = Array.from(elements.tree.querySelectorAll(NAV_SELECTOR))
+      .find(node => (focusedToggle && node.dataset.fmGroupToggle === focusedToggle)
+        || (focusedSection && node.dataset.fmSectionToggle === focusedSection)
+        || (focusedPath && node.dataset.path === focusedPath && !!node.closest('.fm-change-row') === focusedChange));
+    if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+  }
+
+  function directoryEntriesOf(directories) {
+    const result = [];
+    for (const directory of directories) {
+      const record = state.cache.get(directory);
+      if (!record || record.loading || record.error) continue;
+      for (const entry of record.entries) if (entry.type === 'directory') result.push(entry.path);
+    }
+    return result;
+  }
+
+  // 只查已显示层级里的文件夹（含被前 N 截掉的，排序需要它们）。
+  function requestVisibleActivity({ force = false } = {}) {
+    if (!state.root) return Promise.resolve();
+    const shown = [state.root, ...Array.from(state.expanded).filter(dir => dir !== state.root)];
+    return folderActivity.request(directoryEntriesOf(shown), { force });
   }
 
   function appendDirectory(directory, depth, query, ancestry = new Set()) {
@@ -232,13 +425,27 @@ function createFileManagerPanel(options = {}) {
       elements.tree.appendChild(makeMessageRow(record.error, depth, 'error'));
       return;
     }
-    for (const entry of (features ? features.sortEntries(record.entries) : record.entries)) {
-      if (!shouldShowEntry(entry, query)) continue;
-      if (features && !features.matchesType(entry)) continue;
-      elements.tree.appendChild(makeTreeRow(entry, depth));
-      if (entry.type === 'directory' && state.expanded.has(entry.path)) {
-        appendDirectory(entry.path, depth + 1, query, nextAncestry);
+    const shown = (features ? features.sortEntries(record.entries) : record.entries)
+      .filter(entry => shouldShowEntry(entry, query) && (!features || features.matchesType(entry)));
+    const groups = planDirectoryGroups(shown, {
+      // 有筛选词时显示全部匹配，不截断。
+      limit: query ? Infinity : DEFAULT_GROUP_LIMIT,
+      isExpanded: group => state.expandedGroups.has(groupStateKey(directory, group)),
+      isPinned: entry => entry.path === state.selectedPath
+        || (entry.type === 'directory' && state.expanded.has(entry.path)),
+    });
+    for (const group of groups) {
+      if (depth === 0) {
+        elements.tree.appendChild(makeGroupHeader(group));
+        if (state.collapsedSections.has(group.group)) continue;
       }
+      for (const entry of group.visible) {
+        elements.tree.appendChild(makeTreeRow(entry, depth));
+        if (entry.type === 'directory' && state.expanded.has(entry.path)) {
+          appendDirectory(entry.path, depth + 1, query, nextAncestry);
+        }
+      }
+      if (group.showToggle) elements.tree.appendChild(makeGroupToggle(directory, group, depth));
     }
     if (record.truncated) {
       elements.tree.appendChild(makeMessageRow(`此目录共 ${record.total} 项，仅显示前 ${record.entries.length} 项`, depth, 'warning'));
@@ -254,10 +461,13 @@ function createFileManagerPanel(options = {}) {
       return;
     }
     if (features && features.renderResults()) { features.afterRender(); return; }
+    appendSessionChanges(state.query.toLowerCase());
+    const before = elements.tree.children.length;
     appendDirectory(state.root, 0, state.query.toLowerCase());
-    if (!elements.tree.children.length) {
+    if (elements.tree.children.length === before) {
       elements.tree.appendChild(makeMessageRow(state.query ? '没有匹配的已加载文件' : '这个文件夹是空的'));
     }
+    for (const [key, at] of state.flash) if (Date.now() - at >= FLASH_MS) state.flash.delete(key);
     refreshStatusSummary();
     if (features) features.afterRender();
   }
@@ -284,6 +494,7 @@ function createFileManagerPanel(options = {}) {
       error: result && result.ok === true ? '' : String(result && result.error || '目录读取失败'),
     });
     renderTree();
+    if (result && result.ok === true) void folderActivity.request(directoryEntriesOf([directory]));
     return result;
   }
 
@@ -295,14 +506,22 @@ function createFileManagerPanel(options = {}) {
     state.label = next.label;
     state.cache.clear();
     state.expanded.clear();
+    state.expandedGroups.clear();
+    state.flash.clear();
+    state.sessionStartedAt = sessionStartFor(next);
+    folderActivity.clear();
+    sessionChanges.clear();
     state.selectedPath = '';
     state.query = '';
     if (elements.filter) elements.filter.value = '';
     if (elements.rootName) elements.rootName.textContent = next.label || (next.cwd ? next.cwd.split(/[\\/]/).filter(Boolean).pop() : '未选择目录');
-    if (elements.rootPath) elements.rootPath.textContent = next.cwd || '当前会话没有工作目录';
+    if (elements.rootPath) {
+      elements.rootPath.textContent = next.cwd || '当前会话没有工作目录';
+      elements.rootPath.disabled = !next.cwd;
+    }
     if (elements.rootButton) {
       elements.rootButton.disabled = !next.cwd;
-      elements.rootButton.title = next.cwd ? `在资源管理器中打开 · ${next.cwd}` : '当前会话没有工作目录';
+      elements.rootButton.title = next.cwd ? `切换目录、收藏与产物目录 · ${next.cwd}` : '当前会话没有工作目录';
     }
     if (!next.cwd) {
       renderTree();
@@ -311,6 +530,7 @@ function createFileManagerPanel(options = {}) {
     }
     state.expanded.add(next.cwd);
     syncToggleButtons();
+    void sessionChanges.refresh({ force: true });
     return loadDirectory(next.cwd, state.generation);
   }
 
@@ -443,6 +663,14 @@ function createFileManagerPanel(options = {}) {
     }
     const next = contextFrom(context);
     if (next.cwd.toLowerCase() === state.root.toLowerCase()) {
+      // 同一工作目录切换到另一个会话：只更新「本会话改动」的起点。
+      const startedAt = sessionStartFor(next);
+      if (startedAt !== state.sessionStartedAt) {
+        state.sessionStartedAt = startedAt;
+        sessionChanges.clear();
+        void sessionChanges.refresh({ force: true });
+        rerenderPreservingView();
+      }
       syncToggleButtons();
       return Promise.resolve(false);
     }
@@ -457,19 +685,36 @@ function createFileManagerPanel(options = {}) {
     setStatus(error ? `打开失败：${error}` : '已在资源管理器中打开', error ? 'error' : 'success');
   }
 
+  async function copyRootPath() {
+    if (!state.root) return;
+    let result;
+    try { result = await ipcRenderer.invoke('file-manager:copy', { root: state.root, paths: [state.root], kind: 'path' }); }
+    catch (error) { result = { ok: false, error: String(error && error.message || error) }; }
+    setStatus(result && result.ok ? '已复制路径' : `复制失败：${result && result.error || '未知错误'}`, result && result.ok ? 'success' : 'error');
+  }
+
   async function activateEntry(button) {
     const targetPath = String(button.dataset.path || '');
     const type = String(button.dataset.type || 'file');
     if (!targetPath) return;
+    // 重渲染会替换 DOM；把键盘焦点还给同一分区里的同一行，Ctrl+P / 方向键才能接着用。
+    const inChange = !!button.closest('.fm-change-row');
+    const refocus = () => {
+      const node = Array.from(elements.tree.querySelectorAll('[data-fm-node]'))
+        .find(item => item.dataset.path === targetPath && !!item.closest('.fm-change-row') === inChange);
+      if (node && typeof node.focus === 'function') node.focus({ preventScroll: true });
+    };
     if (type === 'directory') {
       if (state.expanded.has(targetPath)) {
         state.expanded.delete(targetPath);
         renderTree();
+        refocus();
         return;
       }
       state.expanded.add(targetPath);
       if (!state.cache.has(targetPath)) await loadDirectory(targetPath);
       else renderTree();
+      refocus();
       return;
     }
     if (type === 'link' || type === 'other') {
@@ -481,6 +726,7 @@ function createFileManagerPanel(options = {}) {
     }
     state.selectedPath = targetPath;
     renderTree();
+    refocus();
     let result;
     try {
       result = await openPathInHub(targetPath, { cwd: state.root, preview: true });
@@ -496,9 +742,9 @@ function createFileManagerPanel(options = {}) {
   }
 
   function handleTreeKeyboard(event) {
-    const current = event.target && event.target.closest && event.target.closest('[data-fm-node]');
+    const current = event.target && event.target.closest && event.target.closest(NAV_SELECTOR);
     if (!current) return;
-    const buttons = Array.from(elements.tree.querySelectorAll('[data-fm-node]'));
+    const buttons = Array.from(elements.tree.querySelectorAll(NAV_SELECTOR));
     const index = buttons.indexOf(current);
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -524,15 +770,24 @@ function createFileManagerPanel(options = {}) {
     elements.rootButton = document.getElementById('file-manager-root');
     elements.rootName = document.getElementById('file-manager-root-name');
     elements.rootPath = document.getElementById('file-manager-root-path');
+    elements.viewMenu = document.getElementById('file-manager-view-menu');
     elements.close = document.getElementById('file-manager-close');
     elements.refresh = document.getElementById('file-manager-refresh');
     elements.openExternal = document.getElementById('file-manager-open-external');
     if (!elements.panel || !elements.tree || !elements.filter) return false;
 
     elements.close.addEventListener('click', close);
-    elements.refresh.addEventListener('click', () => { if (state.root) void features.refresh(); });
+    elements.refresh.addEventListener('click', () => { if (state.root) void features.refresh({ force: true }); });
     elements.openExternal.addEventListener('click', () => { void openRootExternal(); });
-    elements.rootButton.addEventListener('click', () => { void openRootExternal(); });
+    elements.rootPath.addEventListener('click', () => { void copyRootPath(); });
+    // Ctrl+P 聚焦筛选框：只在焦点位于文件面板内时生效，不抢终端 / CLI 自己的 Ctrl+P。
+    elements.panel.addEventListener('keydown', (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || String(event.key).toLowerCase() !== 'p') return;
+      event.preventDefault();
+      event.stopPropagation();
+      elements.filter.focus();
+      elements.filter.select();
+    }, true);
     elements.filter.addEventListener('input', () => {
       state.query = elements.filter.value.trim();
       if (features && features.searchChanged()) return;
@@ -542,6 +797,11 @@ function createFileManagerPanel(options = {}) {
       elements.filter.addEventListener(name, event => event.stopPropagation());
     }
     elements.tree.addEventListener('click', (event) => {
+      const groupToggle = event.target.closest && event.target.closest('[data-fm-group-toggle]');
+      if (groupToggle) { toggleGroup(groupToggle.dataset.fmGroupToggle); return; }
+      const sectionToggle = event.target.closest && event.target.closest('[data-fm-section-toggle]');
+      if (sectionToggle) { toggleSection(sectionToggle.dataset.fmSectionToggle); return; }
+      if (event.target.closest && event.target.closest('[data-fm-sort]')) { features.toggleSortDirection(); return; }
       const button = event.target.closest && event.target.closest('[data-fm-node]');
       if (features && features.handleClick(event, button)) return;
       if (button) void activateEntry(button);
@@ -554,6 +814,8 @@ function createFileManagerPanel(options = {}) {
       document, window: windowObject, ipcRenderer, state, elements, renderTree, makeTreeRow, setStatus,
       isOpen, setRoot, activateEntry, onLayoutChange: scheduleLayoutUpdate,
       addToConversation: options.addToConversation, listConversationTargets: options.listConversationTargets,
+      folderActivity, requestVisibleActivity, isPreviewableFile, openRootExternal,
+      refreshSessionChanges: refreshOptions => sessionChanges.refresh(refreshOptions),
     });
     features.init();
     renderTree();

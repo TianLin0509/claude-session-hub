@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { HubChrome, defaultRoot } = require('./hub-chrome');
+const guard = require('./web-risk-guard');
 
 function argumentsOf(argv) {
   const args = [...argv];
@@ -40,7 +41,11 @@ function integrationStatus(root) {
       const config = read(t.config);
       return config?.cli_entry === t.entry && fs.existsSync(t.entry);
     });
+    // @community-strip 中转工具
     return { tool, name: tool === 'images' ? '网页生图' : '公司中转', state: connected.length && connected.length === entries.length ? 'connected' : entries.length ? 'changed' : 'pending',
+    // @community-else
+    //   return { tool, name: tool === 'images' ? '网页生图' : '中转工具', state: connected.length && connected.length === entries.length ? 'connected' : entries.length ? 'changed' : 'pending',
+    // @community-end
       identities: ['main', 'alt'].map(identity => ({ identity, count: connected.filter(t => t.identity === identity).length })).filter(i => i.count) };
   });
 }
@@ -54,7 +59,11 @@ class BrowserTool {
     this.file = path.join(binding.root, 'tool-pages', binding.id + '.json');
   }
   async target() {
-    const record = read(this.file), ep = await this.hub.endpoint();
+    const record = read(this.file);
+    if (!record) return null;
+    // A busy local CDP endpoint can miss its short health deadline while Chrome
+    // and the owned tab still exist. Recheck once before declaring the page gone.
+    const ep = await this.hub.endpoint() || await this.hub.endpoint();
     if (!record || !ep || record.browserWs !== ep.ws || record.identity !== this.binding.identity) return null;
     const { CDP } = require('./web-roundtable/cdp');
     const cdp = await CDP.connect(ep.ws, ep.port);
@@ -69,32 +78,60 @@ class BrowserTool {
     const existing = await this.target();
     if (existing) return { targetId: existing.targetId, reused: true };
     const tab = await this.hub.openTab(this.binding.identity, url);
-    const ep = await this.hub.endpoint();
+    const ep = await this.hub.endpoint() || await this.hub.endpoint();
     try { save(this.file, { targetId: tab.targetId, browserWs: ep.ws, identity: this.binding.identity }); }
     catch (e) { await this.hub.closeTab(tab.targetId); throw e; }
     return { targetId: tab.targetId, reused: false };
   }
-  async withPage(fn) {
+  async withPage(fn, { downloads = false } = {}) {
     const target = await this.target();
     if (!target) throw Error('No browser session: owned Hub page is not open');
+    // This attach reaches every page of the browser; a person verifying must have it alone.
+    guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity });
     const chromium = this.chromium || require(this.binding.playwright).chromium;
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${target.ep.port}`);
+    // Attaching must not simulate focus in every user/tool tab. ChatGPT refetches
+    // on focus, so a short-lived connection per queue poll otherwise causes a
+    // browser-wide request burst (and HTTP 429) unrelated to this owned page.
+    const relay = downloads ? await require('./passive-cdp-connection').passiveDownloadConnection(target.ep) : null;
+    let browser;
     try {
+      browser = await chromium.connectOverCDP(relay?.endpoint || `http://127.0.0.1:${target.ep.port}`, { noDefaults: !downloads });
       for (const context of browser.contexts()) for (const page of context.pages()) {
         const cdp = await context.newCDPSession(page);
         let info;
         try { info = await cdp.send('Target.getTargetInfo'); } finally { await cdp.detach(); }
-        if (info.targetInfo.targetId === target.targetId) return await fn(page);
+        if (info.targetInfo.targetId === target.targetId) {
+          guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: page.url() });
+          return await fn(page);
+        }
       }
       throw Error('No browser session: owned Hub page is not visible to the runtime');
     } finally {
       // For a CDP connection Playwright close disconnects its transport, not Chrome.
-      await browser.close();
+      try { await browser?.close(); } finally { await relay?.close(); }
     }
   }
   async execute(argv) {
     const [command, ...args] = argumentsOf(argv);
-    if (command === 'open') return this.open(args.find(a => !a.startsWith('--')) || 'about:blank');
+    const root = this.binding.root, identity = this.binding.identity;
+    if (guard.handoff(root)) await guard.settleHandoff(this.hub).catch(() => {});
+    // A person asked to verify or sign in: the browser is theirs until they finish or 15 min pass.
+    if (command === 'human-open') {
+      const url = args.find(a => !a.startsWith('--')) || 'https://chatgpt.com/';
+      const { lease, cleared, site } = await this.hub.lifecycle(() => guard.openForHuman(this.hub, { identity, url, by: this.binding.id }));
+      return { handoff: true, until: lease.until, site, cleared };
+    }
+    if (command === 'human-done') {
+      const site = guard.siteOf(args.find(a => !a.startsWith('--')) || 'https://chatgpt.com/');
+      const lease = guard.handoff(root);
+      if (lease && lease.identity === identity) guard.endHandoff(root, lease.id);
+      if (site) guard.releaseSite(root, identity, site);
+      return { handoff: false, site };
+    }
+    if (command === 'open') {
+      guard.assertAutomationAllowed(root, { identity });
+      return this.open(args.find(a => !a.startsWith('--')) || 'about:blank');
+    }
     if (command === 'close') {
       const target = await this.target();
       if (target) await this.hub.closeTab(target.targetId);
@@ -113,14 +150,30 @@ class BrowserTool {
       }
       return { managedBy: 'hub-chrome', exported: false };
     }
-    if (command === 'goto') return this.withPage(async page => { await page.goto(args[0], { waitUntil: 'domcontentloaded' }); return { url: page.url() }; });
+    if (command === 'goto') return this.withPage(async page => {
+      guard.assertAutomationAllowed(root, { identity, url: args[0] });
+      await page.goto(args[0], { waitUntil: 'domcontentloaded' });
+      if (await guard.inspectAndLeave(root, { identity, page, url: args[0], source: this.binding.id }))
+        throw Error('Site challenged: the page asked for human verification; left it and paused this site');
+      return { url: page.url() };
+    });
     if (command === 'run-code') {
       const at = args.indexOf('--filename');
       if (at < 0 || !args[at + 1]) throw Error('run-code requires a local filename');
       const source = require('./chatgpt-selector-compat').adaptSource(fs.readFileSync(args[at + 1], 'utf8'));
       // Trusted local tool code, identical authority to the original Playwright CLI.
       const fn = new Function('return (' + source + '\n)')();
-      return this.withPage(fn);
+      return this.withPage(async page => {
+        const result = await fn(page);
+        // Tool code that reports a human check (the image tool's login state does) gets the
+        // same treatment as a navigation that met one: record it and leave the page.
+        if (result && typeof result === 'object' && result.challenge === true) {
+          const site = guard.siteOf(page.url()) || 'unknown';
+          await page.goto('about:blank').catch(() => {});  // leave first; recording may fail
+          try { guard.recordChallenge(root, { identity, site, kind: 'reported', source: this.binding.id }); } catch {}
+        }
+        return result;
+      }, { downloads: /\bwaitForEvent\s*\(\s*['"]download['"]/.test(source) });
     }
     throw Error('Unsupported Hub browser command: ' + command);
   }
@@ -129,7 +182,10 @@ async function main(binding, argv = process.argv.slice(2)) {
   try { const result = await new BrowserTool(binding).execute(argv); process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n'); }
   catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
-    const category = /No browser session/.test(e.message) ? 'No browser session'
+    const category = /^Unsupported Hub browser command/.test(e.message) ? 'Unsupported command'
+      : /^Human handoff/.test(e.message) ? 'Human handoff'
+      : /^Site challenged/.test(e.message) ? 'Site challenged'
+      : /No browser session/.test(e.message) ? 'No browser session'
       : /IMAGE_TOOL_UNAVAILABLE/.test(e.message) ? 'IMAGE_TOOL_UNAVAILABLE'
       : /strict mode violation/.test(e.message) ? 'strict mode violation'
       : /Target.*closed/.test(e.message) ? 'Target closed'

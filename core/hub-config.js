@@ -24,17 +24,34 @@ const {
 
 // 默认值
 const DEFAULTS = {
+  // @community-strip 本机代理
   proxy: 'http://127.0.0.1:7890',
+  // @community-else
+  // proxy: '',
+  // @community-end
   claude_backend: 'subscription',
+  // @community-strip 私人网关
   // 同事提供的 Claude-compatible Fable 网关。只预置连接参数；
   // backend 仍默认 subscription，未显式切换时绝不会使用该网关。
   claude_api_base_url: 'http://3.142.133.116:8080',
+  // @community-else
+  // // API 模式默认指向官方地址；订阅登录仍是默认后端。
+  // claude_api_base_url: 'https://api.anthropic.com',
+  // @community-end
   claude_api_model: 'claude-fable-5',
   codex_backend: 'subscription',
   codex_subscription_profile: 'default',
+  // @community-strip 私人网关
   codex_api_base_url: 'https://www.packyapi.com/v1',
+  // @community-else
+  // codex_api_base_url: 'https://api.openai.com/v1',
+  // @community-end
   codex_api_model: DEFAULT_MODEL_BY_KIND.codex,
+  // @community-strip 私人网关
   codex_api_provider: 'packycode',
+  // @community-else
+  // codex_api_provider: 'openai-api',
+  // @community-end
   // 用户在新建会话面板点「设为默认」存下来的 per-CLI 默认模型，形如
   // { claude: 'claude-opus-5-5[1m]', codex: 'gpt-6-astra' }。空表示沿用
   // model-options.js 里的出厂默认值。config.json 里落在 models.defaults，

@@ -4,7 +4,9 @@ const store=require('../core/web-roundtable/store'),jobs=require('../core/web-ro
 const {Client}=require('../core/web-roundtable/rpc');
 const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'hub-web-roundtable-'));
 const previous=process.env.AI_HUB_WEB_DATA_DIR;process.env.AI_HUB_WEB_DATA_DIR=temporary;
-test.after(()=>{if(previous===undefined)delete process.env.AI_HUB_WEB_DATA_DIR;else process.env.AI_HUB_WEB_DATA_DIR=previous;fs.rmSync(temporary,{recursive:true,force:true});});
+// The shared challenge/handoff record lives beside the Hub Chrome; never the production one here.
+const previousChrome=process.env.HUB_CHROME_ROOT;process.env.HUB_CHROME_ROOT=path.join(temporary,'hub-chrome');
+test.after(()=>{if(previous===undefined)delete process.env.AI_HUB_WEB_DATA_DIR;else process.env.AI_HUB_WEB_DATA_DIR=previous;if(previousChrome===undefined)delete process.env.HUB_CHROME_ROOT;else process.env.HUB_CHROME_ROOT=previousChrome;fs.rmSync(temporary,{recursive:true,force:true});});
 test('concurrent requests deduplicate, differing payloads cannot silently reuse a request ID',async()=>{
   let sends=0;const input={provider:'deepseek',prompt:'test',reply_to:null};
   const results=await Promise.all(Array.from({length:12},()=>jobs.create('web','same-request',input,{launch:async()=>{sends++;await store.sleep(10);}})));
@@ -133,4 +135,25 @@ test('an abandoned reaper marker fails explicitly without stealing its lock',()=
   fs.mkdirSync(dir);fs.writeFileSync(reap,'');const old=new Date(Date.now()-60000);fs.utimesSync(reap,old,old);
   try{assert.throws(()=>store.acquire('abandoned-reaper'),/Lock recovery blocked/);assert.ok(fs.existsSync(reap));}
   finally{fs.unlinkSync(reap);fs.rmSync(dir,{recursive:true});}
+});
+test('a challenge pauses the site for later tasks, which never open a page for it',async()=>{
+  const guard=require('../core/web-risk-guard'),hubRoot=process.env.HUB_CHROME_ROOT;let opens=0,closed=0;
+  const adapters={get:()=>({url:'https://www.kimi.com/'}),snapshot:async()=>({challenge:true,ready:false,login:false,answers:[],echo:0,url:'https://www.kimi.com/'}),dismissPromo:async()=>{}};
+  const first={id:'challenged-first',input:{provider:'kimi',prompt:'q'}};
+  await jobs.runWeb(first,p=>Object.assign(first,p),'run',{adapters,hubRoot,open:async()=>{opens++;return {page:{},close:async()=>{closed++;}};}});
+  assert.equal(first.state,'needs_attention');assert.equal(first.recovery.reason,'human_verification');assert.equal(closed,1,'the challenged tab is closed, not left retrying');
+  assert.ok(guard.blocked(hubRoot,'main','kimi'));
+  const second={id:'challenged-second',input:{provider:'kimi',prompt:'q'}};
+  await jobs.runWeb(second,p=>Object.assign(second,p),'run',{adapters,hubRoot,open:async()=>{opens++;throw Error('must not open');}});
+  assert.equal(opens,1);assert.equal(second.state,'needs_attention');assert.match(second.error,/暂停/);
+  guard.clearSite(hubRoot,'main','kimi');
+});
+test('a task waits while a person has the Hub browser and runs after the handoff ends',async()=>{
+  const guard=require('../core/web-risk-guard'),hubRoot=process.env.HUB_CHROME_ROOT;let opened=0;
+  const lease=guard.startHandoff(hubRoot,{identity:'alt',site:'chatgpt'});
+  setTimeout(()=>guard.endHandoff(hubRoot,lease.id),1500);
+  const job={id:'handoff-wait',input:{provider:'deepseek',prompt:'q'}};
+  const started=Date.now();
+  await jobs.runWeb(job,p=>Object.assign(job,p),'run',{hubRoot,open:async()=>{opened=Date.now();throw Error('opened');}});
+  assert.ok(opened-started>=1000,'no page was opened during the handoff');assert.match(job.error,/opened/);
 });

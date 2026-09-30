@@ -330,6 +330,7 @@ if (typeof document !== 'undefined') (function () {
     _setupQuestionDirectory(panel, meeting);
     _enhanceGroupCardContent(panel);
     _enhanceCodeBlocks(panel);
+    panel._groupSelection?.sync();
     _setupGcSearch(panel);
     _renderHeroDock(meeting);
     if (opts.scroll) {
@@ -418,7 +419,7 @@ if (typeof document !== 'undefined') (function () {
     _updateInputPreflight(meetingData[activeMeetingId]);
   }
 
-  function _addQuoteChip(meeting, sid, text) {
+  function _addQuoteChip(meeting, sid, text, sourceTurn = null) {
     if (!sid || !text || !text.trim()) return;
     if (_gcQuoteChips.length >= 5) return;  // 最多 5 条引用 (避免 prompt 爆炸)
     const slots = _getGcSlots(meeting);
@@ -427,12 +428,12 @@ if (typeof document !== 'undefined') (function () {
     if (!slot) return;
     const cached = _gcPanelState[meeting.id];
     const turnsArr = (cached && Array.isArray(cached.turns)) ? cached.turns : [];
-    const turnN = turnsArr.length > 0 ? (turnsArr[turnsArr.length - 1].n || turnsArr.length) : 1;
+    const turnN = Number(sourceTurn) || (turnsArr.length > 0 ? (turnsArr[turnsArr.length - 1].n || turnsArr.length) : 1);
     _gcQuoteChips.push({
       sid, slotIndex,
       slotLabel: slot.label || sid.slice(0, 8),
       turnN,
-      text: text.trim().slice(0, 500),  // 单条最长 500 字符
+      text: text.trim(),  // Preserve the complete passage selected by the user.
     });
     _renderQuoteChips();
   }
@@ -446,7 +447,7 @@ if (typeof document !== 'undefined') (function () {
   // mouseup 选区检测 + 浮按钮 (IIFE 顶层一次性挂)
   document.addEventListener('mouseup', function _gcQuoteSelHandler(ev) {
     if (!ev.target || typeof ev.target.closest !== 'function') return;
-    const card = ev.target.closest('.mr-ft[data-ft-sid]');
+    const card = ev.target.closest('.mr-gc-msg.ai[data-source-sid], .mr-ft[data-ft-sid]');
     const hideBtn = () => { if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none'; };
     if (!card) { hideBtn(); return; }
     const sel = window.getSelection();
@@ -454,8 +455,10 @@ if (typeof document !== 'undefined') (function () {
     if (!selText || selText.length < 2) { hideBtn(); return; }
     // 选区起点必须在卡片 bottom 区(.mr-ft-bottom)内 — 排除 row1/row2 状态文本被误选
     const anchorEl = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
-    if (!anchorEl || !anchorEl.closest('.mr-ft-bottom')) { hideBtn(); return; }
-    const sid = card.getAttribute('data-ft-sid');
+    const body = card.querySelector('.gc-journal-text, .mr-ft-bottom');
+    const focusEl = sel.focusNode && (sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement);
+    if (!body || !body.contains(anchorEl) || !body.contains(focusEl)) { hideBtn(); return; }
+    const sid = card.dataset.sourceSid || card.getAttribute('data-ft-sid');
     if (!sid) { hideBtn(); return; }
     let range; try { range = sel.getRangeAt(0); } catch { hideBtn(); return; }
     const rect = range.getBoundingClientRect();
@@ -474,17 +477,21 @@ if (typeof document !== 'undefined') (function () {
         const fText = _gcQuoteFloatBtn.dataset.text;
         const mid = activeMeetingId;
         const meeting = meetingData[mid];
-        if (fSid && fText && meeting) _addQuoteChip(meeting, fSid, fText);
+        if (fSid && fText && meeting && _gcQuoteFloatBtn.dataset.meetingId === mid) {
+          _addQuoteChip(meeting, fSid, fText, _gcQuoteFloatBtn.dataset.turn);
+        }
         _gcQuoteFloatBtn.style.display = 'none';
         try { window.getSelection().removeAllRanges(); } catch {}
       });
     }
+    _gcQuoteFloatBtn.dataset.meetingId = activeMeetingId;
+    _gcQuoteFloatBtn.dataset.turn = card.dataset.readTurn || String(_gcViewingTurnN[activeMeetingId] || "");
     _gcQuoteFloatBtn.dataset.sid = sid;
     _gcQuoteFloatBtn.dataset.text = selText;
     _gcQuoteFloatBtn.style.display = 'inline-flex';
     // 选区右上方 + window scroll 偏移
-    _gcQuoteFloatBtn.style.top = `${rect.top + window.scrollY - 34}px`;
-    _gcQuoteFloatBtn.style.left = `${rect.right + window.scrollX - 90}px`;
+    _gcQuoteFloatBtn.style.top = `${Math.max(8, rect.top + window.scrollY - 34)}px`;
+    _gcQuoteFloatBtn.style.left = `${Math.max(8, Math.min(window.innerWidth - 120, rect.right + window.scrollX - 90))}px`;
   });
 
   // F0 + F3 Phase 1/2 + Phase 5: 全局 Esc — 退出聚焦/对比/时光机。IIFE 顶层挂载, 只挂一次。
@@ -888,11 +895,17 @@ if (typeof document !== 'undefined') (function () {
         if (mrPanel) mrPanel.appendChild(panel);
       }
     }
+    if (!panel._groupSelection) panel._groupSelection = require('./group-card-selection').mountGroupCardSelection({
+      panel, getMeetingId: () => activeMeetingId,
+      extractText: extractVisibleCardText,
+      copyText: (text, options) => clipboardController.copyText(text, options),
+    });
     return panel;
   }
 
   function _removeGcPanel() {
     const p = document.getElementById('mr-group-chat-panel');
+    p?._groupSelection?.destroy();
     if (p && p.parentElement) p.remove();
   }
 
@@ -2643,7 +2656,7 @@ if (typeof document !== 'undefined') (function () {
       body = `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(contentStr,
         {isUser,escapeHtml,renderMarkdown,foldLong:isUser,plainProgress:DevFile.enabled(meeting) && (message.phase==='commentary' || message.status==='progress_update')})}</div>`;
     }
-    if (!isUser) body = `<div class="gc-journal-text">${body}</div>`;
+    if (!isUser) body = `<div class="gc-journal-reading">${require('./groupchat-journal').disclosure()}<div class="gc-journal-text">${body}</div></div>`;
     const sequence = message.displayMessages || [];
     const hasFinal = sequence.some(m=>['final','final_answer'].includes(m.phase));
     if (!isUser && !isPending && (hasFinal || ['completed','manual_extracted'].includes(status))
@@ -2679,7 +2692,7 @@ if (typeof document !== 'undefined') (function () {
     // 派发卡片是流程自己发的，不给「作为新一轮重发/放回输入框」——那两个按钮的语义是
     // 「把我提的问题再问一遍」，对着评审指令按下去只会凭空多出一轮。
     const userTurnActions = (isUser && !isDispatchCard(message))
-      ? `<button type="button" class="mr-gc-turn-action" data-gc-resend-turn="${anchorId}" title="把这条问题作为新一轮重发">↻</button><button type="button" class="mr-gc-turn-action" data-gc-edit-turn="${anchorId}" title="放回输入框编辑后再发">✏</button>`
+      ? `<button type="button" class="mr-gc-turn-action" data-gc-resend-turn="${anchorId}" title="把这条问题作为新一轮重发">重发这条消息</button><button type="button" class="mr-gc-turn-action" data-gc-edit-turn="${anchorId}" title="放回输入框编辑后再发">编辑重发</button>`
       : '';
     // 2026-06-28 道雪 [改进3]：回答字数标签（仅 AI）；[改进5]：AI 名字按 kind 上品牌色（.ai-name-<kind>）
     const kindCls = (!isUser && slot && slot.kind) ? ` ai-name-${slot.kind}` : '';
@@ -2693,7 +2706,7 @@ if (typeof document !== 'undefined') (function () {
     const supplementReceipt = isUser && message.supplementDelivery ? `<span class="mr-supplement-receipt">${escapeHtml(require('./supplement-receipt').format(message.supplementDelivery))}</span>` : '';
     const attemptBadge = attemptLabel ? `<span class="mr-gc-to-badge is-retry">${escapeHtml(attemptLabel)}</span>` : '';
     const journal = require('./groupchat-journal');
-    const journalActions = !isUser ? journal.actions({copy:copyAction,prompt:promptAction,attempt:attemptAction,resync:resyncAction,retry:retryParticipantAction,submit:submitAgainAction}) : '';
+    const journalActions = journal.actions({copy:copyAction,prompt:isUser ? userTurnActions : promptAction,attempt:attemptAction,resync:resyncAction,retry:retryParticipantAction,submit:submitAgainAction,minimize:!isUser});
     const meta = `<div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(label)}</span>${activityHeader}${recipientBadge}${supplementReceipt}${attemptBadge}${actBadge}${time ? `<span>${escapeHtml(time)}</span>` : ''}${isUser && message.interruptedNote ? '<span class="mr-gc-interrupted-note" title="本轮进行中 Hub 重启，回答已被打断">已被重启打断</span>' : ''}${wordChip}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}${journalActions}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
@@ -2705,10 +2718,8 @@ if (typeof document !== 'undefined') (function () {
         <div class="mr-gc-msg-body">
           ${meta}
           <div class="mr-gc-bubble-row">
-            ${isUser ? userTurnActions + copyAction : ''}
             <div class="mr-gc-bubble">${body}${isPending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
           </div>
-          ${!isUser ? journal.footer() : ''}
         </div>
         ${isUser ? _renderGroupAvatar(null, true) : ''}
       </article>
@@ -2892,9 +2903,11 @@ if (typeof document !== 'undefined') (function () {
       ${softBanner}
       <section class="mr-gc-shell ${sideCollapsed ? 'side-collapsed' : ''}" aria-label="AI 群聊">
         <main class="mr-gc-thread">
+          <!-- @community-strip 投委会入口 -->
           <!-- 2026-06-28 道雪：群聊精简 — 删 topbar(标题/统计/卡片视图)、摘要提示条、本轮进度、内联操作按钮行。
                群成员按钮移到 header；操作按钮(综合共识等)移到作战面板；research 场景保留精简 topbar 只放投委会入口。 -->
           ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="开投委会：手输股票，自动跑五幕出双榜">⚖️ 开投委会</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="过往投委会：回看历史五幕发言+双榜+主席报告">📋 过往投委会</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="技术初筛=独立趋势龙雷达，与投委会解耦">📊 技术初筛</button></div></div>` : ''}
+          <!-- @community-end -->
 
           <div class="mr-gc-tools" id="mr-gc-tools" ${_gcToolsExpanded[meeting.id] ? '' : 'hidden'}>
             <button type="button" class="gc-journal-collapse-all" data-journal-collapse-all>收起全部长回答</button>
@@ -3503,7 +3516,8 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
     try {
-      await navigator.clipboard.writeText(text);
+      const result = await clipboardController.copyText(text, { source: 'group-card', silent: true });
+      if (result?.ok === false) throw new Error(result.reason || 'clipboard-write-failed');
       btn.textContent = '✓';
       btn.classList.add('copied');
       setTimeout(() => {
@@ -3593,9 +3607,9 @@ if (typeof document !== 'undefined') (function () {
     const closeBtn = overlay.querySelector('.mr-gc-prompt-modal-close');
     if (closeBtn) closeBtn.addEventListener('click', close);
     const copyBtn = overlay.querySelector('.mr-gc-prompt-modal-copy');
-    if (copyBtn) copyBtn.addEventListener('click', () => {
-      try { if (navigator.clipboard) navigator.clipboard.writeText(prompt || ''); } catch {}
-      copyBtn.textContent = '已复制 ✓';
+    if (copyBtn) copyBtn.addEventListener('click', async () => {
+      const result = await clipboardController.copyText(prompt || '', { source: 'group-prompt', silent: true });
+      copyBtn.textContent = result?.ok ? '已复制 ✓' : '复制失败';
       setTimeout(() => { try { copyBtn.textContent = '复制'; } catch {} }, 1200);
     });
     document.addEventListener('keydown', onKey);
@@ -5314,6 +5328,7 @@ if (typeof document !== 'undefined') (function () {
         tuning = document.createElement('div');
         tuning.id = 'mr-input-tuning';
         tuning.className = 'composer-rail';
+        // @community-strip 公司中转
         tuning.innerHTML = '<div class="fi-bridge-toolbar"><button type="button" class="fi-bridge-pull" title="从公司 ChatGPT 拉取文本或文件路径到输入框">拉取</button></div><div class="mr-input-tuning-members"></div>';
         tuning.querySelector('.fi-bridge-pull').addEventListener('click', async event => {
           const button = event.currentTarget, meetingId = activeMeetingId;
@@ -5334,6 +5349,19 @@ if (typeof document !== 'undefined') (function () {
             });
           } catch (error) { _showGcEscapeNotice('拉取失败：' + error.message, 'error'); }
           finally { button.disabled = false; button.textContent = '拉取'; }
+        });
+        // @community-else
+        // tuning.innerHTML = '<div class="fi-bridge-toolbar"></div><div class="mr-input-tuning-members"></div>';
+        // @community-end
+        require('./group-composer-tools').mountGroupComposerTools({
+          toolbar: tuning.querySelector('.fi-bridge-toolbar'), input: inputBox,
+          getMeeting: () => meetingData[activeMeetingId],
+          referenceSession: referenceSessionIntoInput,
+          appendText: appendToContenteditable, droppedFilePath,
+          formatFilePaths: formatPastedFilePaths,
+          onDraft: id => _setInputDraft(id, inputBox.innerText || ''),
+          onHistory: button => _togglePromptHistoryMenu(button, meetingData[activeMeetingId]),
+          onExpand: () => _openLongInputEditor(meetingData[activeMeetingId]),
         });
         row.appendChild(tuning);
       }
@@ -5726,7 +5754,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _handlePromptHistoryOutside(ev) {
-    const btn = document.getElementById('mr-input-history-btn');
+    const btn = document.querySelector('.mr-composer-history') || document.getElementById('mr-input-history-btn');
     if (_inputHistoryMenuEl && !_inputHistoryMenuEl.contains(ev.target) && ev.target !== btn) {
       _closePromptHistoryMenu();
     }
@@ -6106,6 +6134,10 @@ if (typeof document !== 'undefined') (function () {
 
   function openMeeting(meetingId, meeting, opts = {}) {
     if (activeMeetingId !== meetingId) {
+      document.getElementById('mr-group-chat-panel')?._groupSelection?.hide();
+      if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none';
+      _closePromptHistoryMenu();
+      document.querySelector('#mr-input-editor-overlay [data-action="apply"]')?.click();
       _inputModelUi?.closeModelPicker();
       _taskFilesMeetingId = null;
     }
@@ -6178,6 +6210,10 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
+    document.getElementById('mr-group-chat-panel')?._groupSelection?.hide();
+    if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none';
+    _closePromptHistoryMenu();
+    document.querySelector('#mr-input-editor-overlay [data-action="apply"]')?.click();
     memberSplit?.close();
     _inputModelUi?.closeModelPicker();
     _taskFilesMeetingId = null;
@@ -6573,15 +6609,20 @@ if (typeof document !== 'undefined') (function () {
       const item = document.createElement('button');
       item.className = 'mr-quote-menu-item';
       item.textContent = label;
+      item.dataset.addKind = kind;
       item.addEventListener('click', async () => {
         menu.remove();
         try {
-          const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind });
+          _showGcEscapeNotice('正在添加成员…');
+          await window.WorkspaceController.loadSessionDefaults();
+          const opts = window.WorkspaceController.buildSessionTuningOpts(kind);
+          const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind, opts });
           if (!result || !result.meeting) throw new Error('新成员会话创建失败');
           if (result.session && typeof sessions !== 'undefined' && sessions) {
             sessions.set(result.session.id, result.session);
           }
           meetingData[meetingId] = result.meeting;
+          if (activeMeetingId !== meetingId) return;
           renderHeader(result.meeting);
           renderTerminals(result.meeting);
           renderToolbar(result.meeting);
@@ -6966,6 +7007,7 @@ if (typeof document !== 'undefined') (function () {
     }
     if (isGroupChat) {
       items.unshift({ value: '@all', label: '@all · 全体成员', hint: 'group target' });
+      // @community-strip 投研场景
       if (meeting && meeting.scene === 'research') {
         items.unshift(
           { value: '@英灵', label: '英灵议事 · 按任务自动选择', hint: '统一 Lens Packet' },
@@ -6973,6 +7015,7 @@ if (typeof document !== 'undefined') (function () {
           { value: '@英灵 利弗莫尔', label: '利弗莫尔 · 右侧趋势镜头', hint: 'trend lens' },
         );
       }
+      // @community-end
     } else {
     }
     return items;

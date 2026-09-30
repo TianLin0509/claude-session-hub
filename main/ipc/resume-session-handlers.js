@@ -69,6 +69,7 @@ function createResumeSessionHandler(deps) {
       effectiveCodexSessionsRoot = defaultCodexSessionsRoot;
     }
     const hookPort = getHookPort();
+    // @community-strip 投资联赛
     const isAgentLeague = meta.purpose === 'agent-league' || meta.purpose === 'agent-league-virtual';
 
     let resumeOpts = {};
@@ -93,6 +94,9 @@ function createResumeSessionHandler(deps) {
         logger.warn('[agent-league] resume without hookPort; Chuxin MCP is unavailable');
       }
     }
+    // @community-else
+    // let resumeOpts = {};
+    // @community-end
     if (meta.meetingId) {
       const meeting = meetingManager.getMeeting(meta.meetingId);
       if (meeting && meeting.groupChat) resumeOpts.noInheritCursor = true;
@@ -122,6 +126,7 @@ function createResumeSessionHandler(deps) {
       if (meeting && meeting.groupChat && isCodexRuntime && codexMcpEnabled && scenes.buildAiTeamMcpEntryForCodex) {
         addCodexMcpEntry(resumeOpts, scenes.buildAiTeamMcpEntryForCodex(meta.meetingId, meta.kind || 'codex'));
       }
+      // @community-strip 投研场景工具
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
         const hubDataDir = getHubDataDir();
         if (isClaudeCliResumable) {
@@ -149,6 +154,7 @@ function createResumeSessionHandler(deps) {
       } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
         logger.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
       }
+      // @community-end
     }
 
     let resumeTranscriptPath = meta.transcriptPath || null;

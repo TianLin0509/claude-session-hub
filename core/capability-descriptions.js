@@ -17,7 +17,9 @@ const SKILLS = {
   'figma-use':'读取和编辑 Figma 设计稿',
   'figma-generate-design':'把网页或应用界面转换成 Figma 设计稿',
   'gen-ppt-image':'生成技术报告的 PPT 视觉候选图，选定后再制作幻灯片',
+  // @community-strip 私人技能
   'huawei-ppt':'制作华为风格的单页技术汇报与可编辑 PPT',
+  // @community-end
   'hybrid-image-to-ppt':'将幻灯片图片重建为可编辑 PPT，并对照原图验证',
   'imag2ppt':'将幻灯片图片还原为可编辑 PPT 元素',
   'imag2ppt-v2':'识别幻灯片图片文字，重建可编辑 PPT',
@@ -37,10 +39,14 @@ const SKILLS = {
   'skill-creator':'创建或更新技能说明、脚本与参考资料',
   'skill-installer':'从技能目录或 GitHub 安装 Codex 技能',
   'smart-ocr':'识别图片和扫描件中的文字',
+  // @community-strip 私人技能
   'superran-lead':'统筹 SuperRAN 开发任务、审阅与合并',
   'superran-member-task':'完成 SuperRAN 实现、验证和交付流程',
+  // @community-end
   'ui-ux-pro-max':'查询界面设计方案、配色、字体和交互规范',
+  // @community-strip 私人技能
   'xiaobei-skill-image-to-vba':'将学术图表或幻灯片重建为可编辑 Office 图形',
+  // @community-end
   'brainstorming':'澄清目标并探索实现方案',
   'dispatching-parallel-agents':'将互不依赖的任务分配给多个 Agent',
   'executing-plans':'按既定计划分步实施，并在检查点核对结果',
@@ -92,10 +98,14 @@ const PLUGINS = {
   'browser-use':'在 Codex 内置浏览器中浏览、操作和验证页面'
 };
 const MCP = {
+  // @community-strip 私人 MCP
   'superran':'调用本机 SuperRAN，运行无线信道仿真与实验',
+  // @community-end
   'playwright':'自动操作浏览器，检查网页、点击流程与截图',
   'chatgpt-web-images':'通过 ChatGPT 网页生成图片，并下载生成结果',
+  // @community-strip 私人 MCP
   'arena-research':'为 AI Hub 的研究任务提供资料检索工具',
+  // @community-end
   'bailian_image':'调用百炼图像生成服务',
   'bailian_video':'调用百炼视频生成服务',
   'bailian_code_interpreter':'调用百炼代码执行与计算服务',
