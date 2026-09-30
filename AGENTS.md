@@ -40,13 +40,18 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 
 ## 往 CLI 输入框发 prompt
 
-- CLI 为核心（2026-09-25 用户拍板）：Claude / Codex 默认在 PTY 里跑真实 TUI。状态以 CLI hook 为权威（Claude `settings.json`；Codex `<CODEX_HOME>/hooks.json`，由 `core/codex-hook-integration.js` 部署并写 trusted_hash），落盘 transcript / rollout 是强信号，屏幕识别只能推向「运行中 / 等待」，不能判完成。卡片读 CLI 自己的落盘记录（Claude 走 `core/claude-disk-transcript.js`）。会话身份靠 `--session-id` 与 hook 上报的 session_id + transcript_path 精确绑定，不按 cwd + 时间窗推断。设计见 `docs/design/cli-pty-core.md`。
+- CLI 为核心（2026-09-25 用户拍板）：Claude / Codex 默认在 PTY 里跑真实 TUI。状态以 CLI hook 为权威（Claude `settings.json`；Codex `<CODEX_HOME>/hooks.json`，由 `core/codex-hook-integration.js` 部署并写 trusted_hash），落盘 transcript / rollout 是强信号，屏幕识别只能推向「运行中 / 等待」，不能判完成。单会话卡片读 CLI 自己的落盘记录（Claude 走 `core/claude-disk-transcript.js`）；群聊卡片只读成员写的回答文件（2026-09-30 用户拍板，见下节）。会话身份靠 `--session-id` 与 hook 上报的 session_id + transcript_path 精确绑定，不按 cwd + 时间窗推断。设计见 `docs/design/cli-pty-core.md`。
 - 原生后端（Codex App Server / Claude stream-json）只是回退开关：`CLAUDE_HUB_AGENT_RUNTIME=native` 或 config.json `runtime.agent = "native"`，UI 不暴露；开启时走结构化控制接口，未知提交先核对原生历史，不自动重发。
 - 发 prompt 一律走 `session:send-prompt`（`main/ipc/prompt-submit-handlers.js`）或 `groupChatWatcher.sendToPty`；裸 `terminal-input` 只用于真按键（ESC、Ctrl+C、方向键）和宿主 shell 短命令。
 - 不用固定延时发回车，也不把 `text + '\r'` 合成一次写入。原因：Windows 上 node-pty 写的是带内部队列的 named pipe，长 payload 未排空时 `\r` 会与粘贴结束符落进同一个 stdin chunk，被 TUI 当粘贴尾巴吞掉；任何固定毫秒数都会在某个体积上失效（2026-04 到 06 返工 6 次）。
 - 提交闭环四环节缺一不可（`core/pty-prompt-submit.js`）：分块投喂（不劈开 UTF-16 代理对）→ 体积自适应 settle 并等折叠标记 → 等语义确认（Claude `UserPromptSubmit` / Codex `task_started`，汇到 `agent-turn-started`）→ 缺确认才补一次有界回车。拿不到确认就如实报 `stuck` 并在 UI 亮出「补发」（`.fi-stuck`）；补发也走同一闭环。
 - 契约测试 `tests/unit-prompt-submit-ui-contract.test.js` 守住以上各条，改动前先读。
 - 新增对 CLI 输出的模式匹配时，拿真实样本核对：`core/paste-trapped-detector.js` 的折叠标记正则曾漏掉现版 Claude 的 `[Pasted text #1 +120 lines]`，paste 巡检因此长期失效无人察觉。
+
+## 群聊：Hub 只和 Markdown 交互（2026-09-30）
+
+- 群聊卡片内容只来自成员写的文件，不从 transcript 提取：普通群聊每轮 `task-docs/<群>/answers/turn-<n>/<成员>/回答.md`，工作流轮次用该步交付文件（草稿显示「草稿」）。卡片只有「有内容 / 还没交」，异常看左侧栏会话状态。模块 `core/group-answer-files.js`、`main/groupchat/answer-file-monitor.js`，设计见 `docs/design/group-answer-files.md`。
+- 文件随时更新随时生效（中断前后、Hub 未派发的补救、Hub 关闭期间），打开群聊时也会核对。对话提取只留给旧协议群；`meeting.answerSource = 'transcript'` 是不进界面的单群逃生开关，也供提取机制的单测使用。
 
 ## CLI 能力：实测，并平等覆盖
 

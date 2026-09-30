@@ -75,7 +75,7 @@ test('source final hides only its identical temporary answer, preserving other a
  const source=fs.readFileSync(path.join(__dirname,'../renderer/meeting-room.js'),'utf8');
  const fn=source.slice(source.indexOf('function _renderGroupChatPending('),source.indexOf('function _renderGroupChatView(')).trim();
  const render=require('node:vm').runInNewContext('('+fn+')',{
-  SourceFinal:require('../core/groupchat-source-final'),
+  SourceFinal:require('../core/groupchat-source-final'),GroupAnswers:require('../core/group-answer-files'),
   _getGcSlots:()=>[{sid:'s',slotIndex:0}],_isGcSettledStatus:()=>false,
   _gcActiveSids:{},isSlotParticipatingThisTurn:()=>true,_renderGroupChatMessage:()=>'<answer>',
  });

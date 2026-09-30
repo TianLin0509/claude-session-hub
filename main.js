@@ -1784,10 +1784,18 @@ try {
   console.warn('[study] 学习 Tab 初始化失败：', e && e.message);
 }
 
+// Group chat cards come from members' Markdown answer files (2026-09-30).
+const answerFileMonitor = require('./main/groupchat/answer-file-monitor').createAnswerFileMonitor({
+  getHubDataDir, meetingManager, sendToRenderer, logger: console,
+  getOrchestrator: id => groupchat.getOrchestrator(getHubDataDir(), id),
+});
+answerFileMonitor.start();
+
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
   groupchat,
   transcriptTap,
+  reconcileAnswers: id => answerFileMonitor.reconcile(id),
 });
 
 registerGroupchatRecoveryIpc(ipcMain, {

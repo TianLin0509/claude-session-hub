@@ -257,7 +257,7 @@ function harness(sids) {
   sessionManager.setGroupChatReady = () => {};
   sessionManager.writeToSession = () => {};
   const meeting = {
-    id: 'meeting', groupChat: true, scene: 'general',
+    id: 'meeting', groupChat: true, scene: 'general', answerSource: 'transcript', // tests the transcript pipeline
     subSessions: sids.slice(),
     slotSpecs: sids.map((_, index) => ({ kind: 'codex', memberId: `m${index + 1}` })),
     participants: sids.map((_, index) => index),

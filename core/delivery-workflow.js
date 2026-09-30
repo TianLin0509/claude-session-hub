@@ -47,7 +47,7 @@ function reviewsInBudget(run) {
 function newStep(run,index) {
   const number=run.steps.length+1;
   // Hub notes (e.g. a failed test gate) are pinned inputs like member deliveries.
-  const inputs=run.steps.flatMap(s=>[...Object.values(s.deliveries || {}),...(s.hubNotes || [])]).map(d=>({path:d.path,hash:d.hash,outcome:d.outcome}));
+  const inputs=run.steps.flatMap(s=>[...Object.values(s.deliveries || {}),...(s.hubNotes || [])]).filter(d=>d.path).map(d=>({path:d.path,hash:d.hash,outcome:d.outcome}));
   return {id:crypto.randomUUID(),number,index,inputHash:hash(JSON.stringify([run.goal,run.stages,inputs])),inputs,
     members:[...run.stages[index].members],deliveries:{},dispatches:[],createdAt:Date.now()};
 }
@@ -57,6 +57,7 @@ function prompt(base,run,step,members=[],extras={}) {
   const lines=[`【文件交付工作流 · 第 ${step.number} 轮 · ${stage.name}】`,`本次目标：${run.goal}`,`项目：${run.workspace || '先核实任务项目'}`,run.projectLocator || '',protocol(),
     '本轮共享职责：',stage.prompt,'本轮每位成员各有交付文件；同轮全部交付后才接续。只处理自己的分工，其他成员的文件只读。',
     ...step.inputs.map(d=>`前序输入（固定交付版本）：${d.path}（sha256 ${d.hash}）`),
+    ...run.steps.slice(0,step.number-1).flatMap(s=>Object.values(s.deliveries || {}).filter(d=>d.outcome==='skipped').map(d=>`前序第 ${s.number} 轮：${name(d.memberId)} 被用户跳过，没有交付。`)),
     ...step.members.flatMap(id=>{const p=paths(base,run,step,id);return [`${name(id)} [${id}]：`,`草稿：${p.draft}`,`完成后改名为：${p.ready}`,`客观阻塞改名为：${p.blocked}`,...(stage.after==='review'?[`确有需返工问题改名为：${p.rework}`]:[]),`文件第一行必须原样保留：${header(run,step,id)}`];})];
   if (run.kind==='file') lines.push(
     '先读真实项目根的 AGENTS.md、.agents/project.json；开题和实现负责人读 .agents/AUTHOR.md，独立审查负责人读 .agents/MERGER.md。核实项目验证、版本、合并入口及后置检查要求，不自行换入口。',

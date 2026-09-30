@@ -25,6 +25,8 @@ function render(row,meeting,onRefresh,onError) {
     <div id="mr-delivery-details" class="mr-delivery-details" ${expanded.has(id)?'':'hidden'}>
       <ol class="mr-delivery-stages">${(s?.stageNames || meeting.serialWorkflow.deliveryStages.map(stage=>stage.name)).map((name,i)=>`<li ${active&&s.stageIndex===i?'aria-current="step"':''}>${esc(name)}</li>`).join('')}</ol>
       <p>${s?.missing?.length?'待交付：'+esc(s.missing.join('、')):'每位成员交付结果后接续；聊天结束不会提前交棒'}</p>
+      ${active && s.missingIds?.length ? `<div class="mr-file-actions">${s.missingIds.map((mid,i)=>{const ends=s.kind==='file' && mid===s.ownerId;
+        return `<button type="button" data-delivery-skip="${esc(mid)}" data-skip-ends="${ends}" title="${ends?'这位是本步负责人：跳过后本次任务结束，不合并':'跳过这位成员，其他成员的交付照常接续'}">${ends?'跳过并结束任务':'跳过'} ${esc(s.missing[i])}</button>`;}).join('')}</div>` : ''}
       ${active?`<div class="mr-file-actions">${!paused?'<button type="button" data-delivery="resume" title="只核对交付，不重复发送任务">重新核对交付</button><button type="button" data-delivery="continue" title="只向尚未交付且已空闲的成员补发继续指令">提醒未交付成员</button>':''}<button type="button" data-delivery="cancel" title="保留记录，结束本次任务后才能启动新目标">结束任务</button></div>`:''}
     </div><small class="mr-delivery-recipients">${esc(recipients.length?'发送给 '+recipients.join('、'):'请点亮至少一位成员头像')}</small></section>`;
   row.querySelector('[data-delivery-details]').addEventListener('click',()=>{
@@ -50,6 +52,13 @@ function render(row,meeting,onRefresh,onError) {
       if(row.isConnected && row.getClientRects().length && row.dataset.deliveryMeeting===id)onError(e.message);
       else console.warn('[delivery-controls] previous group operation failed:',id,e.message);
     }finally{busy.delete(id);onRefresh(id);}
+  }));
+  row.querySelectorAll('[data-delivery-skip]').forEach(b=>b.addEventListener('click',async()=>{
+    if(busy.has(id))return;
+    if(b.dataset.skipEnds==='true' && !window.confirm('跳过本步负责人会结束本次任务，不会合并。已交付的文件保留。确定吗？'))return;
+    busy.add(id);b.disabled=true;
+    try{const r=await ipcRenderer.invoke('delivery:skip',{meetingId:id,memberId:b.dataset.deliverySkip});if(!r.ok)throw new Error(r.error || '跳过失败');states.delete(id);}
+    catch(e){onError(e.message);}finally{busy.delete(id);onRefresh(id);}
   }));
   if(busy.has(id))row.querySelectorAll('[data-delivery]').forEach(button=>button.disabled=true);
 }

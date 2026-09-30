@@ -7,6 +7,7 @@ const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js')
 const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 const DevDiscuss = require('../../core/dev-discuss.js');
 const DevFile = require('../../core/dev-file-workflow');
+const GroupAnswers = require('../../core/group-answer-files');
 const { isNativeSession, nativeTurnHasEnded } = require('../../core/codex-native-runtime');
 const { isClaudeFamily } = require('../../core/ai-kinds.js');
 const { nativeUnknownOutcome } = require('../../core/native-groupchat-outcome');
@@ -1471,8 +1472,8 @@ function createGroupChatDispatcher(deps) {
       // deliveredIdx 必须在补卡之后取：它是「这位成员已经看到这里」的游标，
       // 补卡是 role==='user'（buildDelta 会过滤掉），游标越过它不改变任何人看到的内容。
       const deliveredIdx = orch.state.messages.length - 1;
-      const deliveredMessage = orch.state.messages[deliveredIdx];
-      const deliveredSeq = deliveredMessage && Number.isInteger(deliveredMessage.seq) ? deliveredMessage.seq : 0;
+      // Max, not last: a message renumbered by a changed answer file may sit earlier in the list.
+      const deliveredSeq = orch.state.messages.reduce((max, m) => Number.isInteger(m && m.seq) && m.seq > max ? m.seq : max, 0);
       const fileMembers = DevFile.enabled(meeting) ? groupMembersForMeeting(meeting, { includeDormant: true }) : [];
       const fileProtocolKey = DevFile.enabled(meeting) ? DevFile.protocolKey(meeting, fileMembers) : null;
       // 群成员名单按群聊成员身份算（含暂时 dormant 的），只给名字 + CLI/模型。
@@ -1523,6 +1524,19 @@ function createGroupChatDispatcher(deps) {
           ),
         };
       });
+
+      // Markdown answers: the card shows what each member writes to its file.
+      if (!silent && GroupAnswers.enabled(meeting)) {
+        for (const t of targets) {
+          try {
+            const entry = GroupAnswers.entryFor({ dataDir: getHubDataDir(), meetingId, turnNum, memberId: t.member?.memberId || t.sid, speaker: t.label, workflowRun });
+            require('node:fs').mkdirSync(entry.dir, { recursive: true });
+            orch.registerAnswerFile(turnNum, t.sid, entry);
+            const note = GroupAnswers.instruction(entry);
+            if (note) t.prompt = `${t.prompt}\n\n${note}`;
+          } catch (e) { warn('[groupchat] answer file registration failed:', e && e.message); }
+        }
+      }
 
       for (const t of targets) {
         cancelPatchListenersForSid(t.sid);

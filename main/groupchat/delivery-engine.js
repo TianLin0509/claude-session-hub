@@ -39,7 +39,8 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
       dir:r?path.join(base(id),r.id):base(id),round:s?.number || 0,name:s?r.stages[s.index].name:'尚未开始',error:r?.error || '',
       stageIndex:s?.index ?? 0,stageNames:(r?.stages || meeting(id).serialWorkflow.deliveryStages || []).map(stage=>stage.name),
       missing:s?s.members.filter(m=>!s.deliveries[m]).map(m=>names.find(n=>n.memberId===m)?.displayName || m):[],
-      delivered:s?Object.keys(s.deliveries).length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],gate:s?.gate?.state || '',
+      missingIds:s?s.members.filter(m=>!s.deliveries[m]):[],ownerId:s?.members[0] || '',kind:r?.kind || '',
+      delivered:s?Object.values(s.deliveries).filter(d=>d.outcome!=='skipped').length:0,total:s?.members.length || 0,dispatches:s?.dispatches || [],gate:s?.gate?.state || '',
       label:!r?'输入任务，按流程执行':r.status==='cancelled'?'本次任务已结束，交付记录已保留':r.status==='done'?'全部步骤已交付'
         :s.gate?.state==='running'?`${r.stages[s.index].name} · Hub 正在跑测试闸门`:`${r.stages[s.index].name} · ${Object.keys(s.deliveries).length}/${s.members.length} 位已交付`};
   }
@@ -144,7 +145,7 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
             && (a.status==='completed' || a.status==='interrupted' || !!evidence.sourceCompletedAt);
         })){d.state='settled';d.chatStatus='reconciled';changed=true;}
       }
-      for(const member of step.members){const found=D.readDelivery(base(id),r,step,member),old=step.deliveries[member];
+      for(const member of step.members){if(step.deliveries[member]?.outcome==='skipped')continue;const found=D.readDelivery(base(id),r,step,member),old=step.deliveries[member];
         if(old && (!found || found.hash!==old.hash))throw new Error(`${member} 已接纳的交付被修改或移除`);
         if(found && !old){step.deliveries[member]=found;changed=true;}}
       // Revalidate pinned inputs before dispatching downstream work.
@@ -212,6 +213,21 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(gateStreak(r)>=GATE_LIMIT)r.gateStreakFrom=r.steps.length;
     save(id,r);await advance(id);return status(id);
   }
+  // Escape hatch: the user skips a member who has not delivered. The Hub records
+  // the skip itself (never a forged delivery). Skipping a development step's
+  // owner ends the run without merging; skipping a helper lets the step go on.
+  async function skip(id,memberId) {
+    own(id);const r=read(id);if(!r || terminal(r))throw new Error('没有进行中的任务');
+    const step=r.steps.at(-1);
+    if(!step.members.includes(memberId))throw new Error('该成员不在当前步骤');
+    if(step.deliveries[memberId])throw new Error('该成员已交付，无需跳过');
+    const who=getMembers(meeting(id)).find(n=>n.memberId===memberId)?.displayName || memberId;
+    if(r.kind==='file' && step.members[0]===memberId){
+      r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error=`已跳过 ${who}：本次任务结束，未合并`;save(id,r);return status(id);
+    }
+    step.deliveries[memberId]={memberId,outcome:'skipped',path:null,hash:null,acceptedAt:Date.now()};
+    save(id,r);await advance(id);return status(id);
+  }
   // Explicit user continuation is separate from reconciliation. It never starts a new run.
   async function continueWork(id,text) {
     const before=read(id)?.steps.at(-1);
@@ -229,12 +245,12 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     busy.add(id);try{await dispatch(id,r,step,text || '继续当前任务，复用已有成果，补齐本轮交付。');}finally{busy.delete(id);}return status(id);
   }
   function registerIpc(ipcMain){
-    for(const [name,fn] of Object.entries({'delivery:status':id=>status(id),'delivery:start':(id,a)=>start(id,a.userInput,a.recipientSids),'delivery:resume':id=>resume(id),'delivery:continue':(id,a)=>continueWork(id,a.userInput),'delivery:cancel':id=>cancel(id),'delivery:stop':id=>({ok:stop(id,{interrupt:true})})}))
-      ipcMain.handle(name,async(_e,a={})=>{try{return {ok:true,...await (['delivery:start','delivery:resume','delivery:continue'].includes(name)?action(a.meetingId,()=>fn(a.meetingId,a)):fn(a.meetingId,a))};}catch(error){return {ok:false,error:error.message};}});
+    for(const [name,fn] of Object.entries({'delivery:status':id=>status(id),'delivery:start':(id,a)=>start(id,a.userInput,a.recipientSids),'delivery:resume':id=>resume(id),'delivery:continue':(id,a)=>continueWork(id,a.userInput),'delivery:cancel':id=>cancel(id),'delivery:skip':(id,a)=>skip(id,a.memberId),'delivery:stop':id=>({ok:stop(id,{interrupt:true})})}))
+      ipcMain.handle(name,async(_e,a={})=>{try{return {ok:true,...await (['delivery:start','delivery:resume','delivery:continue','delivery:skip'].includes(name)?action(a.meetingId,()=>fn(a.meetingId,a)):fn(a.meetingId,a))};}catch(error){return {ok:false,error:error.message};}});
   }
   function startWatching(){suspended=false;if(timer)return;events=require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(),id=>tick(id),logger);timer=setInterval(()=>tick(),2000);timer.unref?.();}
   function freeze(){suspended=true;clearInterval(timer);timer=null;events?.dispose();events=null;}
   function dispose(){freeze();for(const g of gates.values())g.controller.abort();gates.clear();for(const id of owners.keys()){try{release(id);}catch(e){logger.error('[delivery] release owner:',e);}}owners.clear();watching.clear();retiring.clear();ownership?.close();ownership=null;}
-  return {start:(id,goal)=>action(id,()=>start(id,goal)),status,stop,cancel,retire,resume:id=>action(id,()=>resume(id)),continueWork:(id,text)=>action(id,()=>continueWork(id,text)),tick,registerIpc,startWatching,freeze,dispose,handles:id=>D.enabled(meeting(id)),isBusy:id=>{const r=read(id);return !!r && !terminal(r);}};
+  return {skip:(id,memberId)=>action(id,()=>skip(id,memberId)),start:(id,goal)=>action(id,()=>start(id,goal)),status,stop,cancel,retire,resume:id=>action(id,()=>resume(id)),continueWork:(id,text)=>action(id,()=>continueWork(id,text)),tick,registerIpc,startWatching,freeze,dispose,handles:id=>D.enabled(meeting(id)),isBusy:id=>{const r=read(id);return !!r && !terminal(r);}};
 }
 module.exports={createDeliveryEngine};

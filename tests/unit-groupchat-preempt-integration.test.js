@@ -40,7 +40,7 @@ async function main() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gc-preempt-'));
   const meetingId = 'mtg-preempt';
   const meeting = {
-    id: meetingId, groupChat: true,
+    id: meetingId, groupChat: true, answerSource: 'transcript', // tests the transcript pipeline
     subSessions: ['s1', 's2'],
     slotSpecs: [{ kind: 'gemini' }, { kind: 'gemini' }],
     participants: [0, 1],
