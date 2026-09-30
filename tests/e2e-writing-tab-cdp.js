@@ -90,6 +90,7 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
       extraEnv: {
         CLAUDE_HUB_HOME_DIR: home, CLAUDE_HUB_WRITING_ROOT: writingRoot,
         CLAUDE_HUB_WRITING_MEMBERS: 'claude:haiku', CLAUDE_HUB_WRITING_EVOLVE_MODEL: 'haiku', CLAUDE_HUB_WRITING_CLAUDE_MODEL: 'haiku',
+        CLAUDE_HUB_WRITING_EVOLVE_SETTLE_MS: '0', // 真实使用时定稿稳定两分钟才优化，测试不等
       },
     });
     cdp = await connectFirstPage(hub);

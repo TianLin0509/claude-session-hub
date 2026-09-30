@@ -151,6 +151,8 @@ function runProcess(cmd, args, { cwd, env, stdin, timeoutMs = 20 * 60 * 1000, si
     child.stderr.on('data', (d) => { err += d.toString('utf8'); });
     child.on('error', (e) => finish({ code: -3, out, err: e.message }));
     child.on('close', (code) => finish({ code, out, err }));
+    // 子进程提前退出（参数不认、登录失效）时写 stdin 会 EPIPE；没有监听就是主进程未捕获异常
+    child.stdin.on('error', () => { /* 结果以退出码和 stderr 为准 */ });
     if (stdin != null) { child.stdin.write(stdin, 'utf8'); }
     child.stdin.end();
   });

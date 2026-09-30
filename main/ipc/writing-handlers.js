@@ -58,7 +58,7 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = 
     changelog: voice.changelog(),
     editRatios: voice.readState().editRatios || [],
   }));
-  handle('writing:voice-source-save', async ({ name, text }) => voice.saveSource(name || 'SKILL.md', text, `田哥手动修改 ${name || 'SKILL.md'}`));
+  handle('writing:voice-source-save', async ({ name, text, base }) => voice.saveSource(name || 'SKILL.md', text, `田哥手动修改 ${name || 'SKILL.md'}`, base));
   handle('writing:voice-undo', async () => voice.undo());
   handle('writing:voice-open-dir', async () => { if (shell && shell.openPath) await shell.openPath(paths.voiceDir); return {}; });
 
@@ -83,11 +83,19 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = 
 
   const queue = [];
   let running = null;
+  // 定稿写完后等它稳定一会儿再优化：AI 汇总改定常常连着写几次 final.md，每次都跑一遍既浪费又重复计数
+  const settleMs = () => {
+    const v = Number(process.env.CLAUDE_HUB_WRITING_EVOLVE_SETTLE_MS);
+    return Number.isFinite(v) && v >= 0 ? v : 2 * 60 * 1000;
+  };
 
   function needsEvolution(a) {
     if (!a.hasFinal) return false;
+    if (queue.includes(a.dir) || running === a.dir) return false;
+    if (Date.now() - a.finalMtime < settleMs()) return false;
     const v = a.voice || {};
-    if (v.status === 'running' || v.status === 'queued') return false;
+    // 队列只在内存里：piece.json 里残留的 queued / running 是上次 Hub 退出时没跑完的，重新排上
+    if (v.status === 'running' || v.status === 'queued') return true;
     return v.finalMtime !== a.finalMtime;
   }
 
@@ -110,24 +118,39 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = 
     if (running || !queue.length) return;
     running = queue.shift();
     const dir = running;
-    const finalMtime = pieces.summary(dir).finalMtime;
-    pieces.mutate(dir, (m) => { m.voice = { ...(m.voice || {}), status: 'running', at: new Date().toISOString() }; });
-    emit({ type: 'voice-evolve', dir, status: 'running' });
-    let result;
     try {
-      result = await evolveVoiceFromPiece({
-        dir, pieces, voice, paths, hubDataDir: hubDataDir(),
-        model: process.env.CLAUDE_HUB_WRITING_EVOLVE_MODEL || 'opus',
-      });
+      const finalMtime = pieces.summary(dir).finalMtime;
+      const prev = (pieces.readMeta(dir) || {}).voice || {};
+      pieces.mutate(dir, (m) => { m.voice = { ...(m.voice || {}), status: 'running', at: new Date().toISOString() }; });
+      emit({ type: 'voice-evolve', dir, status: 'running' });
+      let result;
+      try {
+        result = await evolveVoiceFromPiece({
+          dir, pieces, voice, paths, hubDataDir: hubDataDir(),
+          model: process.env.CLAUDE_HUB_WRITING_EVOLVE_MODEL || 'opus',
+        });
+      } catch (err) {
+        result = { status: 'failed', error: String(err && err.message || err).slice(0, 300) };
+      }
+      // 没跑成（失败 / 未通过检查）时保留上次已用过的点评条数
+      const userCount = result.userCount != null ? result.userCount : prev.userCount;
+      pieces.mutate(dir, (m) => { m.voice = { ...result, userCount, finalMtime, at: new Date().toISOString() }; });
+      try { library.build(); } catch { /* 作品库下次打开时再建 */ }
+      emit({ type: 'voice-evolve', dir, status: result.status });
     } catch (err) {
-      result = { status: 'failed', error: String(err && err.message || err).slice(0, 300) };
+      // 文章目录被删、piece.json 被占用等：这一篇放弃，队列照常往下走
+      console.warn('[writing] 文风优化记录写入失败：', dir, err && err.message);
+    } finally {
+      running = null;
+      setImmediate(pump);
     }
-    pieces.mutate(dir, (m) => { m.voice = { ...result, finalMtime, at: new Date().toISOString() }; });
-    library.build();
-    emit({ type: 'voice-evolve', dir, status: result.status });
-    running = null;
-    pump();
   }
+
+  // 不打开写作 Tab 也要能自动优化：主进程每分钟看一眼有没有新定稿
+  const scanTimer = setInterval(() => {
+    try { scheduleEvolution(pieces.list()); } catch { /* 写作目录暂时读不到 */ }
+  }, 60 * 1000);
+  if (scanTimer.unref) scanTimer.unref();
 
   return { library, voice, pieces };
 }

@@ -11,8 +11,9 @@
 //   - Codex：目前没有不加载 CODEX_HOME/AGENTS.md 的开关；文章目录里放 .vibe-root，
 //     让它把文章目录当项目根，不再往上读 C:\AIWork 的规则。格式由写作群规则压住。
 
+// deepseek-legacy 走的也是 Claude CLI（core/ai-kinds.js 的 CLAUDE_FAMILY），同样要关掉 CLAUDE.md
 function isClaudeKind(kind) {
-  return /^claude(?:$|-)/.test(String(kind || ''));
+  return /^(claude|deepseek-legacy)(?:$|-)/.test(String(kind || ''));
 }
 
 function withWritingMemberOpts(kind, opts = {}) {

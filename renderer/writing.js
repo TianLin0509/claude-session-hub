@@ -135,6 +135,10 @@
   async function loadStudio() {
     await guarded(async () => {
       const r = await call('writing:article-list');
+      // 8 秒一轮的轮询：列表没变就不重画，免得正在看的定稿被刷回「加载定稿…」、滚动位置丢掉
+      const sig = JSON.stringify([r.articles, r.articles.map((a) => meetingExists(a.meetingId))]);
+      if (sig === S.studio.sig && document.querySelector('#wr-view-studio .wr-articles')) return;
+      S.studio.sig = sig;
       S.studio.articles = r.articles;
       renderStudio();
     });
@@ -186,6 +190,7 @@
       toast(`新文章没有建成：${e.message || e}`, true);
     } finally {
       S.studio.creating = false;
+      S.studio.sig = null; // 建失败时列表没变，也要把按钮从「正在建…」画回来
       if (S.opened) loadStudio();
     }
   }
@@ -215,7 +220,8 @@
           h('div', { class: 't' }, a.title || '新文章', ' ', status),
           h('div', { class: 'm', text: [when(a.createdAt), exists ? '' : '（群聊已不在）'].filter(Boolean).join(' · ') }),
           a.drafts.length ? h('div', { class: 'd' }, ...a.drafts.map((d) => h('span', { class: 'wr-pill', text: `${d.name}${d.chars ? ` · ${d.chars} 字` : ''}`, title: d.title || '' }))) : null,
-          a.voice ? h('div', { class: 'v' }, voiceBadge(a.voice), a.voice.summary ? h('span', { class: 'wr-muted', text: a.voice.summary }) : null, a.voice.error ? h('span', { class: 'wr-muted', text: a.voice.error }) : null) : null),
+          a.voice ? h('div', { class: 'v' }, voiceBadge(a.voice), a.voice.summary ? h('span', { class: 'wr-muted', text: a.voice.summary }) : null, a.voice.error ? h('span', { class: 'wr-muted', text: a.voice.error }) : null)
+            : a.hasFinal ? h('div', { class: 'v' }, h('span', { class: 'wr-pill', text: '定稿停笔两分钟后，AI 自动据此优化文风' })) : null),
         h('div', { class: 'wr-article-actions' },
           h('button', { class: 'wr-btn small', disabled: !exists, text: '打开群聊', onclick: () => openMeeting(a.meetingId) }),
           a.hasFinal ? h('button', { class: 'wr-btn small', text: st.finalOf === a.dir ? '收起定稿' : '看定稿', onclick: () => { st.finalOf = st.finalOf === a.dir ? null : a.dir; renderStudio(); } }) : null,
@@ -366,7 +372,7 @@
       const ta = h('textarea', { class: 'wr-voice-editor', spellcheck: 'false' });
       ta.value = v.text;
       const save = () => guarded(async () => {
-        const r = await call('writing:voice-source-save', { name: S.voice.file, text: ta.value });
+        const r = await call('writing:voice-source-save', { name: S.voice.file, text: ta.value, base: v.text });
         S.voice.editing = false;
         toast(r.unchanged ? '内容没有变化' : `已保存 ${S.voice.file}（改前已备份，可回退）`);
         await loadVoice();

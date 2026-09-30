@@ -106,6 +106,40 @@ test('文风：只放行三份源文件；保存前备份、记变更日志；�
   assert.strictEqual(v.read('SKILL.md'), SKILL);
 });
 
+test('文风：编辑期间文件被 AI 改过就不覆盖；只保护田哥真正动过的写法条目', () => {
+  const p = fixturePaths();
+  const v = new VoiceStore(p);
+  const edited = SKILL.replace('2. **自问自答往前推。** 替读者问。', '2. **自问自答往前推。** 替读者把疑问问出来。');
+  assert.throws(() => v.saveSource('SKILL.md', edited, '田哥手动修改 SKILL.md', SKILL.replace('类比。', '类比，AI 刚改的。')), /编辑期间/);
+  v.saveSource('SKILL.md', edited, '田哥手动修改 SKILL.md', SKILL);
+  assert.deepStrictEqual(v.protectedRules(), ['2. **自问自答往前推。** 替读者把疑问问出来。']);
+  // AI 可以照常改第 3 条，但不能改田哥手改的第 2 条
+  assert.strictEqual(evolve.validate(edited, edited.replace('类比。', '类比要真的参与推理。'), v.protectedRules()), '');
+  assert.match(evolve.validate(edited, edited.replace('替读者把疑问问出来。', '替读者问。'), v.protectedRules()), /手动确认/);
+});
+
+test('文风回退：同一次优化写的两份文件一起退；同一秒内的先后顺序不乱', () => {
+  const p = fixturePaths();
+  const v = new VoiceStore(p);
+  const learned = v.read('learned-from-edits.md');
+  v.writeWithBackup('exemplars.md', '# 范文\n\n先改的\n', '手动');
+  const batch = v.newBatch();
+  v.writeWithBackup('SKILL.md', SKILL.replace('类比。', '类比二。'), 'AI 根据', batch);
+  v.writeWithBackup('learned-from-edits.md', '# 规则\n\n新\n', '同一次', batch);
+  const r = v.undo();
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(v.read('SKILL.md'), SKILL);
+  assert.strictEqual(v.read('learned-from-edits.md'), learned);
+  assert.ok(v.read('exemplars.md').includes('先改的'), '更早的另一批不受影响');
+  // 旧格式备份（毫秒没补零）也能按时间排对
+  const bd = path.join(p.voiceDir, 'backups');
+  for (const f of fs.readdirSync(bd)) fs.unlinkSync(path.join(bd, f));
+  fs.writeFileSync(path.join(bd, '20260930-101010-95-SKILL.md'), 'A');
+  fs.writeFileSync(path.join(bd, '20260930-101010-130-SKILL.md'), 'B');
+  v.undo();
+  assert.strictEqual(v.read('SKILL.md'), 'B');
+});
+
 /* ── 文章目录 ── */
 
 test('写作台：新文章不要标题；目录里有 .vibe-root；标题从稿件第一行读', () => {
@@ -228,6 +262,46 @@ test('自动优化：只改了改稿规则时，变更日志同样记下 AI 这�
   assert.strictEqual(voice.read('SKILL.md'), skill, 'SKILL.md 没动');
   assert.ok(voice.read('learned-from-edits.md').includes('具体场景起笔'));
   assert.ok(/AI 根据《开头别像讲义》的写作过程优化文风.*改稿规则/.test(voice.changelog()[0]), voice.changelog()[0]);
+});
+
+test('自动优化：模型运行期间田哥手动改了文件，就不拿旧快照覆盖；改稿规则被截断也不写回', async () => {
+  const p = fixturePaths();
+  const voice = new VoiceStore(p);
+  const pieces = new PieceStore(p);
+  const dir = pieces.create();
+  fs.writeFileSync(path.join(dir, 'final.md'), '# 并发\n\n正文。');
+  const manual = SKILL.replace('类比。', '类比，田哥刚改。');
+  const racing = async () => {
+    voice.saveSource('SKILL.md', manual, '田哥手动修改 SKILL.md');
+    return { text: JSON.stringify({ changed: true, summary: 's', skill_md: SKILL.replace('写在哪。', '写在哪，AI 改。'), learned_md: '' }) };
+  };
+  const r1 = await evolve.evolveVoiceFromPiece({ dir, pieces, voice, paths: p, hubDataDir: tmp('hub'), model: 'x', runner: racing });
+  assert.strictEqual(r1.status, 'rejected');
+  assert.strictEqual(voice.read('SKILL.md'), manual, '田哥的手动修改保住了');
+  const longLearned = `# 规则\n\n${'已有的一条改稿规则。\n'.repeat(30)}`;
+  fs.writeFileSync(path.join(p.voiceDir, 'learned-from-edits.md'), longLearned);
+  const truncating = async () => ({ text: JSON.stringify({ changed: true, summary: 's', skill_md: '', learned_md: '# 规则' }) });
+  const r2 = await evolve.evolveVoiceFromPiece({ dir, pieces, voice, paths: p, hubDataDir: tmp('hub'), model: 'x', runner: truncating });
+  assert.strictEqual(r2.status, 'rejected');
+  assert.strictEqual(voice.read('learned-from-edits.md'), longLearned);
+});
+
+test('自动优化：同一篇定稿再改，群里没有新点评就不再跑模型', async () => {
+  const p = fixturePaths();
+  const voice = new VoiceStore(p);
+  const pieces = new PieceStore(p);
+  const dir = pieces.create();
+  fs.writeFileSync(path.join(dir, 'final.md'), '# 再改\n\n正文。');
+  const hub = tmp('hub');
+  fs.mkdirSync(path.join(hub, 'arena-prompts'), { recursive: true });
+  fs.writeFileSync(path.join(hub, 'arena-prompts', 'm1-groupchat.json'), JSON.stringify({ messages: [{ role: 'user', sid: 'user', content: '开头太像讲义' }] }));
+  pieces.mutate(dir, (m) => { m.meetingId = 'm1'; m.voice = { status: 'queued', userCount: 1 }; });
+  let calls = 0;
+  const counting = async () => { calls++; return { text: '{"changed": false, "summary": "x"}' }; };
+  const r = await evolve.evolveVoiceFromPiece({ dir, pieces, voice, paths: p, hubDataDir: hub, model: 'x', runner: counting });
+  assert.strictEqual(r.status, 'done');
+  assert.strictEqual(r.changed, false);
+  assert.strictEqual(calls, 0);
 });
 
 /* ── 起草配方（文风优化用的后台调用） ── */

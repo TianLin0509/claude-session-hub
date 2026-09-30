@@ -7,15 +7,15 @@
 // 材料：这篇写作群里田哥的全部点评原话、各位 AI 的稿、汇总定稿、当前 SKILL.md 与改稿规则。
 // 做法：交给干净上下文的 Claude，只在有依据时小步修改；结果过几道闸才写回：
 //   结构完整（画像 + 十条写法）、写法不超过十条、篇幅不剧烈变化、不带标签腔；
-//   田哥手动改过的条目（变更日志里「田哥手动修改」之后）不允许被改掉。
-// 写回前备份，改了什么写进 CHANGELOG，文风页直接展示。
+//   田哥手动新增或改写过的条目不允许被改掉；模型运行期间文件被手动改过则不覆盖。
+// 写回前备份（两份文件同批，回退一起退），改了什么写进 CHANGELOG，文风页直接展示。
+// 同一篇定稿后再改，只有群里有了新点评才再跑，旧点评不重复计数。
 
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { runModel } = require('./draft-runner.js');
-
-const RULE_LINE = /^(\d+)\. \*\*(.+?)\*\*/gm;
+const { rulesOf } = require('./voice-store.js');
 
 function readText(file) { try { return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'); } catch { return ''; } }
 function clip(s, n) { const t = String(s || ''); return t.length > n ? `${t.slice(0, n)}\n……（后略）` : t; }
@@ -38,8 +38,11 @@ function runDiffRatio(script, before, after) {
   return new Promise((resolve) => {
     const out = path.join(path.dirname(after), `.diff-${path.basename(before)}`);
     const child = spawn('python', [script, '--before', before, '--after', after, '--out', out], { windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-    child.on('error', () => resolve(null));
+    // python 卡住会堵住整条优化队列：一分钟没算完就放弃这份稿的比例
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } }, 60000);
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
     child.on('close', () => {
+      clearTimeout(timer);
       const text = readText(out);
       try { fs.unlinkSync(out); } catch { /* 临时文件 */ }
       const m = text.match(/改动比例[^：]*：(\d+)%/);
@@ -48,28 +51,17 @@ function runDiffRatio(script, before, after) {
   });
 }
 
-// 只数「## 十条写法」这一节里的编号条目：「写技术段落」等别的小节也有加粗编号步骤，不算写法
-function rulesOf(skill) {
-  const start = skill.indexOf('## 十条写法');
-  if (start < 0) return [];
-  const rest = skill.slice(start + 1);
-  const next = rest.search(/\n## /);
-  const section = next < 0 ? skill.slice(start) : skill.slice(start, start + 1 + next);
-  const out = [];
-  let m;
-  RULE_LINE.lastIndex = 0;
-  while ((m = RULE_LINE.exec(section))) {
-    const end = section.indexOf('\n', m.index);
-    out.push({ n: Number(m[1]), title: m[2], line: section.slice(m.index, end < 0 ? undefined : end) });
-  }
-  return out;
+// 田哥手动新增或改写过的写法条目（保存时由 VoiceStore 记下），AI 不得删改
+function protectedRuleLines(voice) {
+  return voice.protectedRules();
 }
 
-// 田哥手动改过 SKILL.md 之后，那一刻的写法条目视为田哥认可的版本，AI 不得删改
-function protectedRuleLines(voice) {
-  const log = voice.read('CHANGELOG.md');
-  if (!/田哥手动修改 SKILL\.md/.test(log)) return [];
-  return rulesOf(voice.read('SKILL.md')).map((r) => r.line);
+// 改稿规则文件的闸：不能被截断成空壳，也不能带标签腔
+function validateLearned(oldText, next) {
+  if (!next.trim()) return '改稿规则为空';
+  if (oldText.trim().length > 200 && next.length < oldText.trim().length * 0.5) return `改稿规则篇幅缩水过多（${Math.round((next.length / oldText.trim().length) * 100)}%）`;
+  if (/【(推断|坐实|事实|工程推断)】/.test(next)) return '改稿规则里出现了标签腔';
+  return '';
 }
 
 function validate(oldSkill, next, protectedLines) {
@@ -86,7 +78,7 @@ function validate(oldSkill, next, protectedLines) {
   return '';
 }
 
-function buildPrompt({ skill, learned, userMessages, drafts, final, title }) {
+function buildPrompt({ skill, learned, userMessages, drafts, final, title, usedCount = 0 }) {
   const system = [
     '你负责维护田哥的中文文风 skill。田哥刚在写作群里和几位 AI 写完一篇文章。请根据这次写作过程，小步优化文风文件。',
     '',
@@ -105,7 +97,8 @@ function buildPrompt({ skill, learned, userMessages, drafts, final, title }) {
     `# 这篇文章：${title || '（未命名）'}`,
     '',
     '## 田哥在写作群里的全部发言（按时间顺序）',
-    userMessages.length ? userMessages.map((m, i) => `${i + 1}. ${clip(m, 1500)}`).join('\n\n') : '（没有读到田哥的发言）',
+    usedCount > 0 ? `（这篇之前优化过一次：前 ${usedCount} 条已经用过，只作上下文；这次的依据只看第 ${usedCount + 1} 条起的新发言，同一句点评不要重复计数。）` : '',
+    userMessages.length ? userMessages.map((m, i) => `${i + 1}. ${i < usedCount ? '（已用过）' : ''}${clip(m, 1500)}`).join('\n\n') : '（没有读到田哥的发言）',
     '',
     '## 各位 AI 的稿',
     drafts.map((d) => `### ${d.name}\n\n${clip(d.text, 5000)}`).join('\n\n') || '（没有稿）',
@@ -138,6 +131,13 @@ async function evolveVoiceFromPiece({ dir, pieces, voice, paths, hubDataDir, mod
   if (!final.trim()) return { status: 'skipped', reason: '还没有定稿' };
   const drafts = pieces.drafts(dir);
   const userMessages = userMessagesOf(hubDataDir, meta.meetingId);
+  const title = summaryInfo.title || path.basename(dir);
+  // 同一篇定稿后又改过：只有群里出现了新的点评才值得再优化一次，旧点评不重复计数
+  // userCount 只在成功跑完时更新，排队、运行、失败都原样保留（见 writing-handlers 的 pump）
+  const usedCount = Number(meta.voice && meta.voice.userCount) || 0;
+  if (usedCount > 0 && userMessages.length <= usedCount) {
+    return { status: 'done', changed: false, userCount: usedCount, summary: '定稿有更新，但群里没有新的点评，文风不用再改' };
+  }
 
   // 改动比例：定稿相对最接近的那份稿改了多少
   let ratio = null;
@@ -149,30 +149,36 @@ async function evolveVoiceFromPiece({ dir, pieces, voice, paths, hubDataDir, mod
 
   const skill = voice.read('SKILL.md');
   const learned = voice.read('learned-from-edits.md');
-  const { system, user } = buildPrompt({ skill, learned, userMessages, drafts, final, title: summaryInfo.title });
+  const { system, user } = buildPrompt({ skill, learned, userMessages, drafts, final, title: summaryInfo.title, usedCount });
   const r = await runner('claude', { system, user, model, hubDataDir });
   const out = parseResult(r.text);
   if (!out) return { status: 'failed', ratio, error: '模型输出不是可解析的 JSON' };
+  const userCount = userMessages.length;
   if (!out.changed) {
-    voice.log(`AI 读完《${summaryInfo.title || path.basename(dir)}》的写作过程，没有需要改的地方：${String(out.summary || '').slice(0, 200)}`);
-    return { status: 'done', changed: false, ratio, summary: out.summary || '没有需要改的地方' };
+    voice.log(`AI 读完《${title}》的写作过程，没有需要改的地方：${String(out.summary || '').slice(0, 200)}`);
+    return { status: 'done', changed: false, ratio, userCount, summary: out.summary || '没有需要改的地方' };
   }
   const nextSkill = String(out.skill_md || '').trim() ? String(out.skill_md).replace(/\r\n/g, '\n') : skill;
-  const problem = validate(skill, nextSkill, protectedRuleLines(voice));
-  if (problem) {
-    voice.log(`AI 对《${summaryInfo.title || path.basename(dir)}》提出的文风修改没有通过检查，未写回：${problem}`);
-    return { status: 'rejected', ratio, error: problem, summary: out.summary || '' };
-  }
-  const title = summaryInfo.title || path.basename(dir);
-  const reason = `AI 根据《${title}》的写作过程优化文风：${String(out.summary || '').slice(0, 300)}`;
+  const nextLearned = String(out.learned_md || '').trim() ? `${String(out.learned_md).replace(/\r\n/g, '\n').trim()}\n` : '';
   const skillChanged = nextSkill !== skill;
-  const nextLearned = String(out.learned_md || '').trim();
-  const learnedChanged = !!nextLearned && nextLearned !== learned.trim();
-  // 主说明记在先写回的那个文件上；两个都写时第二条只注明文件
-  if (skillChanged) voice.writeWithBackup('SKILL.md', nextSkill.endsWith('\n') ? nextSkill : `${nextSkill}\n`, `${reason}（改了 SKILL.md）`);
-  if (learnedChanged) voice.writeWithBackup('learned-from-edits.md', `${nextLearned}\n`, skillChanged ? `同一次优化还更新了改稿规则（《${title}》）` : `${reason}（改了改稿规则）`);
+  const learnedChanged = !!nextLearned && nextLearned.trim() !== learned.trim();
+  const reject = (problem) => {
+    voice.log(`AI 对《${title}》提出的文风修改没有通过检查，未写回：${problem}`);
+    return { status: 'rejected', ratio, error: problem, summary: out.summary || '' };
+  };
+  const problem = (skillChanged && validate(skill, nextSkill, protectedRuleLines(voice))) || (learnedChanged && validateLearned(learned, nextLearned)) || '';
+  if (problem) return reject(problem);
+  // 模型要跑几分钟；这期间田哥手动保存过的话，拿旧快照改出来的全文不能覆盖他的改动
+  if ((skillChanged && voice.read('SKILL.md') !== skill) || (learnedChanged && voice.read('learned-from-edits.md') !== learned)) {
+    return reject('文风文件在优化期间被手动改过，这次不覆盖；可以点「重新优化文风」再跑一次');
+  }
+  const reason = `AI 根据《${title}》的写作过程优化文风：${String(out.summary || '').slice(0, 300)}`;
+  const batch = voice.newBatch();
+  // 主说明记在先写回的那个文件上；两个都写时第二条只注明文件。两份共用一个备份批次，回退一起退
+  if (skillChanged) voice.writeWithBackup('SKILL.md', nextSkill.endsWith('\n') ? nextSkill : `${nextSkill}\n`, `${reason}（改了 SKILL.md）`, batch);
+  if (learnedChanged) voice.writeWithBackup('learned-from-edits.md', nextLearned, skillChanged ? `同一次优化还更新了改稿规则（《${title}》）` : `${reason}（改了改稿规则）`, batch);
   if (!skillChanged && !learnedChanged) voice.log(`${reason}（给出的内容与现有文件一致，未改动）`);
-  return { status: 'done', changed: skillChanged || learnedChanged, ratio, summary: out.summary || '' };
+  return { status: 'done', changed: skillChanged || learnedChanged, ratio, userCount, summary: out.summary || '' };
 }
 
-module.exports = { evolveVoiceFromPiece, validate, rulesOf, userMessagesOf, buildPrompt, parseResult };
+module.exports = { evolveVoiceFromPiece, validate, validateLearned, rulesOf, userMessagesOf, buildPrompt, parseResult };
