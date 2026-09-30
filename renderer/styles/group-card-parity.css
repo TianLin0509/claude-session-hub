@@ -22,10 +22,12 @@
 }
 .mr-gc-messages .mr-gc-name { font-size:14px; font-weight:700; }
 .mr-gc-messages .mr-gc-msg .mr-gc-bubble,
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble,
 .mr-gc-messages .mr-gc-msg[data-journal-key] .mr-gc-bubble {
-  padding:0; margin:0; border:0; border-radius:0; background:transparent;
+  padding:0; margin:0; border:0; border-radius:0; background:transparent; box-shadow:none;
   color:var(--fg-strong); line-height:1.78; font-size:var(--card-content-font-size,15px);
 }
+.mr-gc-messages .mr-gc-msg.mine .mr-gc-bubble::before { display:none; }
 .mr-gc-messages .mr-gc-msg[data-journal-key] { border-left:3px solid var(--journal-member); }
 .mr-gc-messages .mr-gc-msg[data-phase="commentary"] { padding-block:13px; background:var(--surface-raised); box-shadow:none; }
 .mr-gc-msg .gc-journal-actions { --journal-member:var(--fg-muted); }
