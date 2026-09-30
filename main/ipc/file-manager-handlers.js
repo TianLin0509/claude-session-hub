@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const crypto = require('crypto');
 const { checkedPath, walkFiles, fileOperation } = require('../../core/file-manager-service');
+const { createFolderActivityService } = require('../../core/file-manager-activity');
 // @community-strip 中转工具
 const { runChatgptBridge, resolveChatgptBridgeRuntime, parseBridgeOutput } = require('./chatgpt-bridge-handlers');
 // @community-else
@@ -37,6 +38,8 @@ function registerFileManagerIpc(ipcMain, deps = {}) {
     if (p.recent) result.entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
     return result;
   });
+  const folderActivity = deps.folderActivity || createFolderActivityService();
+  handle('folder-activity', p => folderActivity.lookup(p));
   handle('operation', p => fileOperation(p, electron.shell));
   handle('copy', async p => {
     const paths = await pathsFrom(p);

@@ -69,4 +69,12 @@ assert.equal(isPreviewableFile('external-demo.zip'), false);
 assert.equal(fileVisualKind('plot.png'), 'image');
 assert.equal(fileVisualKind('src', 'directory'), 'folder');
 
+const features = read('renderer/file-manager-features.js');
+assert.match(features, /let sort = 'mtime';\s+let descending = true;/,
+  'without a saved preference the tree defaults to newest-first');
+assert.match(panel, /planDirectoryGroups\(/,
+  'tree levels split into files-first groups with a top-N cut');
+assert.match(panel, /features\.refresh\(\{ force: true \}\)/,
+  'the manual refresh button must force a subtree activity rescan');
+
 console.log('file manager UI contract ok');

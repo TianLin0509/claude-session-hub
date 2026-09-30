@@ -296,6 +296,35 @@
   opacity: .7;
 }
 
+/* 目录树分组：文件在前、文件夹在后，各自默认只露出前 5 个。 */
+.fm-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 9px 12px 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  user-select: none;
+}
+.fm-group-header:first-child { padding-top: 4px; }
+.fm-group-count { font: 9.5px/1 "Cascadia Code", Consolas, monospace; font-weight: 400; opacity: .75; }
+.fm-group-toggle-row { display: flex; padding-left: calc(41px + (var(--fm-depth, 0) * 15px)); }
+.fm-group-toggle {
+  min-height: 26px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent-blue);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.fm-group-toggle:hover { background: var(--bg-tertiary); border-color: var(--border); }
+.fm-group-toggle:focus-visible { outline: 2px solid rgba(var(--rgb-info), .72); outline-offset: -2px; }
+
 .fm-tree-message {
   min-height: 28px;
   padding: 7px 8px 7px calc(23px + (var(--fm-depth, 0) * 15px));

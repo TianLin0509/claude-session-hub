@@ -2,6 +2,13 @@
 
 const path = require('path');
 const { isPathInsideRoot } = require('../core/file-manager-directory.js');
+const {
+  DEFAULT_GROUP_LIMIT,
+  groupStateKey,
+  groupToggleLabel,
+  planDirectoryGroups,
+} = require('./file-manager-grouping.js');
+const { createFolderActivityTracker } = require('./file-manager-activity.js');
 
 const PREVIEWABLE_EXTENSIONS = new Set([
   '.html', '.htm', '.md', '.markdown', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.pdf',
@@ -55,6 +62,7 @@ function createFileManagerPanel(options = {}) {
     generation: 0,
     cache: new Map(),
     expanded: new Set(),
+    expandedGroups: new Set(),
     selectedPath: '',
     query: '',
     statusTimer: null,
@@ -62,6 +70,11 @@ function createFileManagerPanel(options = {}) {
 
   const elements = {};
   let features = null;
+  const folderActivity = createFolderActivityTracker({
+    ipcRenderer,
+    getRoot: () => state.root,
+    onUpdate: () => { if (isOpen()) rerenderPreservingView(); },
+  });
 
   function contextFrom(value, allowFallback = true) {
     if (typeof value === 'string') return { cwd: value, label: '' };
@@ -219,6 +232,79 @@ function createFileManagerPanel(options = {}) {
     return row;
   }
 
+  function makeGroupHeader(group) {
+    const header = document.createElement('div');
+    header.className = 'fm-group-header';
+    header.setAttribute('role', 'presentation');
+    header.dataset.group = group.group;
+    const label = document.createElement('span');
+    label.textContent = group.label;
+    const count = document.createElement('span');
+    count.className = 'fm-group-count';
+    count.textContent = String(group.total);
+    header.append(label, count);
+    return header;
+  }
+
+  function makeGroupToggle(directory, group, depth) {
+    const row = document.createElement('div');
+    row.className = 'fm-group-toggle-row';
+    row.setAttribute('role', 'none');
+    row.style.setProperty('--fm-depth', String(depth));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'fm-group-toggle';
+    button.dataset.fmGroupToggle = groupStateKey(directory, group.group);
+    button.dataset.group = group.group;
+    button.setAttribute('role', 'treeitem');
+    button.setAttribute('aria-level', String(depth + 1));
+    button.setAttribute('aria-expanded', String(group.expanded));
+    button.textContent = groupToggleLabel(group);
+    row.appendChild(button);
+    return row;
+  }
+
+  function toggleGroup(key) {
+    if (!key) return;
+    if (state.expandedGroups.has(key)) state.expandedGroups.delete(key);
+    else state.expandedGroups.add(key);
+    rerenderPreservingView({ focusToggle: key });
+  }
+
+  // 重排（子树活动算完、展开组）时保留滚动位置和键盘焦点。
+  function rerenderPreservingView({ focusToggle = '' } = {}) {
+    if (!elements.tree) return;
+    const scroll = elements.tree.scrollTop;
+    const active = document.activeElement;
+    const inTree = !!(active && elements.tree.contains(active));
+    const focusedPath = inTree && active.dataset ? active.dataset.path : '';
+    const focusedToggle = focusToggle || (inTree && active.dataset ? active.dataset.fmGroupToggle : '');
+    renderTree();
+    elements.tree.scrollTop = scroll;
+    if (!inTree && !focusToggle) return;
+    const target = Array.from(elements.tree.querySelectorAll('[data-fm-node], [data-fm-group-toggle]'))
+      .find(node => (focusedToggle && node.dataset.fmGroupToggle === focusedToggle)
+        || (focusedPath && node.dataset.path === focusedPath));
+    if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+  }
+
+  function directoryEntriesOf(directories) {
+    const result = [];
+    for (const directory of directories) {
+      const record = state.cache.get(directory);
+      if (!record || record.loading || record.error) continue;
+      for (const entry of record.entries) if (entry.type === 'directory') result.push(entry.path);
+    }
+    return result;
+  }
+
+  // 只查已显示层级里的文件夹（含被前 N 截掉的，排序需要它们）。
+  function requestVisibleActivity({ force = false } = {}) {
+    if (!state.root) return Promise.resolve();
+    const shown = [state.root, ...Array.from(state.expanded).filter(dir => dir !== state.root)];
+    return folderActivity.request(directoryEntriesOf(shown), { force });
+  }
+
   function appendDirectory(directory, depth, query, ancestry = new Set()) {
     if (ancestry.has(directory)) return;
     const nextAncestry = new Set(ancestry);
@@ -232,13 +318,24 @@ function createFileManagerPanel(options = {}) {
       elements.tree.appendChild(makeMessageRow(record.error, depth, 'error'));
       return;
     }
-    for (const entry of (features ? features.sortEntries(record.entries) : record.entries)) {
-      if (!shouldShowEntry(entry, query)) continue;
-      if (features && !features.matchesType(entry)) continue;
-      elements.tree.appendChild(makeTreeRow(entry, depth));
-      if (entry.type === 'directory' && state.expanded.has(entry.path)) {
-        appendDirectory(entry.path, depth + 1, query, nextAncestry);
+    const shown = (features ? features.sortEntries(record.entries) : record.entries)
+      .filter(entry => shouldShowEntry(entry, query) && (!features || features.matchesType(entry)));
+    const groups = planDirectoryGroups(shown, {
+      // 有筛选词时显示全部匹配，不截断。
+      limit: query ? Infinity : DEFAULT_GROUP_LIMIT,
+      isExpanded: group => state.expandedGroups.has(groupStateKey(directory, group)),
+      isPinned: entry => entry.path === state.selectedPath
+        || (entry.type === 'directory' && state.expanded.has(entry.path)),
+    });
+    for (const group of groups) {
+      if (depth === 0) elements.tree.appendChild(makeGroupHeader(group));
+      for (const entry of group.visible) {
+        elements.tree.appendChild(makeTreeRow(entry, depth));
+        if (entry.type === 'directory' && state.expanded.has(entry.path)) {
+          appendDirectory(entry.path, depth + 1, query, nextAncestry);
+        }
       }
+      if (group.showToggle) elements.tree.appendChild(makeGroupToggle(directory, group, depth));
     }
     if (record.truncated) {
       elements.tree.appendChild(makeMessageRow(`此目录共 ${record.total} 项，仅显示前 ${record.entries.length} 项`, depth, 'warning'));
@@ -284,6 +381,7 @@ function createFileManagerPanel(options = {}) {
       error: result && result.ok === true ? '' : String(result && result.error || '目录读取失败'),
     });
     renderTree();
+    if (result && result.ok === true) void folderActivity.request(directoryEntriesOf([directory]));
     return result;
   }
 
@@ -295,6 +393,8 @@ function createFileManagerPanel(options = {}) {
     state.label = next.label;
     state.cache.clear();
     state.expanded.clear();
+    state.expandedGroups.clear();
+    folderActivity.clear();
     state.selectedPath = '';
     state.query = '';
     if (elements.filter) elements.filter.value = '';
@@ -496,9 +596,9 @@ function createFileManagerPanel(options = {}) {
   }
 
   function handleTreeKeyboard(event) {
-    const current = event.target && event.target.closest && event.target.closest('[data-fm-node]');
+    const current = event.target && event.target.closest && event.target.closest('[data-fm-node], [data-fm-group-toggle]');
     if (!current) return;
-    const buttons = Array.from(elements.tree.querySelectorAll('[data-fm-node]'));
+    const buttons = Array.from(elements.tree.querySelectorAll('[data-fm-node], [data-fm-group-toggle]'));
     const index = buttons.indexOf(current);
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -530,7 +630,7 @@ function createFileManagerPanel(options = {}) {
     if (!elements.panel || !elements.tree || !elements.filter) return false;
 
     elements.close.addEventListener('click', close);
-    elements.refresh.addEventListener('click', () => { if (state.root) void features.refresh(); });
+    elements.refresh.addEventListener('click', () => { if (state.root) void features.refresh({ force: true }); });
     elements.openExternal.addEventListener('click', () => { void openRootExternal(); });
     elements.rootButton.addEventListener('click', () => { void openRootExternal(); });
     elements.filter.addEventListener('input', () => {
@@ -542,6 +642,8 @@ function createFileManagerPanel(options = {}) {
       elements.filter.addEventListener(name, event => event.stopPropagation());
     }
     elements.tree.addEventListener('click', (event) => {
+      const groupToggle = event.target.closest && event.target.closest('[data-fm-group-toggle]');
+      if (groupToggle) { toggleGroup(groupToggle.dataset.fmGroupToggle); return; }
       const button = event.target.closest && event.target.closest('[data-fm-node]');
       if (features && features.handleClick(event, button)) return;
       if (button) void activateEntry(button);
@@ -554,6 +656,7 @@ function createFileManagerPanel(options = {}) {
       document, window: windowObject, ipcRenderer, state, elements, renderTree, makeTreeRow, setStatus,
       isOpen, setRoot, activateEntry, onLayoutChange: scheduleLayoutUpdate,
       addToConversation: options.addToConversation, listConversationTargets: options.listConversationTargets,
+      folderActivity, requestVisibleActivity,
     });
     features.init();
     renderTree();

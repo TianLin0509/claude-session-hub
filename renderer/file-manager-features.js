@@ -17,8 +17,9 @@ function createFileManagerFeatures(o) {
   const entries = new Map();
   let anchor = '';
   let mode = 'tree';
-  let sort = 'name';
-  let descending = false;
+  // 默认按修改时间降序；只有 localStorage 里已有用户选择时才沿用保存值。
+  let sort = 'mtime';
+  let descending = true;
   let type = 'all';
   let showHidden = true;
   let thumbnails = false;
@@ -60,11 +61,15 @@ function createFileManagerFeatures(o) {
   function matchesType(entry) {
     return (showHidden || !entry.hidden) && (entry.type === 'directory' || type === 'all' || TYPE_GROUPS[type]?.test(entry.name));
   }
+  function mtimeOf(entry) {
+    const value = o.folderActivity ? o.folderActivity.effectiveMtime(entry) : entry.mtimeMs;
+    return Number.isFinite(value) ? value : -1;
+  }
   function sortEntries(list) {
     return [...list].sort((a, b) => {
       const dir = Number(b.type === 'directory') - Number(a.type === 'directory');
       if (dir) return dir;
-      const n = sort === 'size' ? (a.size ?? -1) - (b.size ?? -1) : sort === 'mtime' ? (a.mtimeMs ?? -1) - (b.mtimeMs ?? -1) : a.name.localeCompare(b.name, undefined, { numeric: true });
+      const n = sort === 'size' ? (a.size ?? -1) - (b.size ?? -1) : sort === 'mtime' ? mtimeOf(a) - mtimeOf(b) : a.name.localeCompare(b.name, undefined, { numeric: true });
       return (descending ? -1 : 1) * (n || a.name.localeCompare(b.name));
     });
   }
@@ -86,8 +91,11 @@ function createFileManagerFeatures(o) {
     }
     const detail = element('span', 'fm-file-details');
     const size = element('span', 'fm-file-size', formatSize(entry.size));
-    const time = element('time', 'fm-file-time', entry.mtimeMs ? new Date(entry.mtimeMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—');
-    time.title = entry.mtimeMs ? new Date(entry.mtimeMs).toLocaleString('zh-CN') : entry.metadataError || '修改时间未知';
+    const shownMs = mtimeOf(entry) > 0 ? mtimeOf(entry) : null;
+    const time = element('time', 'fm-file-time', shownMs ? new Date(shownMs).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—');
+    const activityNote = entry.type === 'directory' && o.folderActivity ? o.folderActivity.describe(entry) : '';
+    time.title = [shownMs ? new Date(shownMs).toLocaleString('zh-CN') : entry.metadataError || '修改时间未知', activityNote].filter(Boolean).join('\n');
+    if (activityNote) time.dataset.activity = activityNote;
     detail.append(size, time); node.append(detail);
     const check = element('input', 'fm-select'); check.type = 'checkbox'; check.checked = selected.has(entry.path);
     check.setAttribute('aria-label', `选择 ${entry.name}`); check.dataset.filePath = entry.path;
@@ -145,13 +153,17 @@ function createFileManagerFeatures(o) {
     ++scanVersion;
     w.clearTimeout(searchTimer); searchTimer = w.setTimeout(() => { void scan(); }, 250); return true;
   }
-  async function refresh() {
-    if (refreshing || !state.root || !o.isOpen()) return;
+  async function refresh({ force = false } = {}) {
+    if (!state.root || !o.isOpen()) return;
+    // 手动刷新强制重算子树活动；4 秒自动刷新只补查过期或新出现的文件夹。
+    if (force && mode === 'tree' && o.requestVisibleActivity) void o.requestVisibleActivity({ force: true });
+    if (refreshing) return;
     if (mode !== 'tree') { await scan(); return; }
     refreshing = true;
     const generation = state.generation; const root = state.root;
     const scroll = el.tree.scrollTop;
     const focusedPath = d.activeElement?.closest('[data-fm-node]')?.dataset.path;
+    const focusedToggle = d.activeElement?.closest('[data-fm-group-toggle]')?.dataset.fmGroupToggle;
     try {
       const dirs = [root, ...state.expanded];
       let changed = false;
@@ -167,8 +179,10 @@ function createFileManagerFeatures(o) {
         for (const p of selected) if (!available.has(p)) selected.delete(p);
         o.renderTree();
         if (focusedPath) [...el.tree.querySelectorAll('[data-fm-node]')].find(n => n.dataset.path === focusedPath)?.focus({ preventScroll: true });
+        if (focusedToggle) [...el.tree.querySelectorAll('[data-fm-group-toggle]')].find(n => n.dataset.fmGroupToggle === focusedToggle)?.focus({ preventScroll: true });
         el.tree.scrollTop = scroll;
       }
+      if (o.requestVisibleActivity) void o.requestVisibleActivity();
     } catch (error) { report(error); }
     finally { refreshing = false; }
   }
@@ -350,7 +364,7 @@ function createFileManagerFeatures(o) {
   function init() {
     try {
       const saved = JSON.parse(w.localStorage.getItem(storageKey) || '{}');
-      sort = ['name', 'mtime', 'size'].includes(saved.sort) ? saved.sort : 'name'; descending = !!saved.descending;
+      if (['name', 'mtime', 'size'].includes(saved.sort)) { sort = saved.sort; descending = !!saved.descending; }
       type = saved.type === 'all' || TYPE_GROUPS[saved.type] ? saved.type : 'all';
       favorites = Array.isArray(saved.favorites) ? saved.favorites.filter(f => f && path.isAbsolute(f.path || '')) : [];
       showHidden = saved.showHidden !== false; thumbnails = !!saved.thumbnails;
