@@ -4212,7 +4212,9 @@ async function reconnectSession(sessionId) {
 
 // 「引用会话」：选会话 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
 // 失败走 showHubAlert 挡住人，不能静默；成功只给轻提示，且绝不替用户按发送。
-async function referenceSessionIntoInput(sessionId, inputBox, button) {
+async function referenceSessionIntoInput(sessionId, inputBox, button, options = {}) {
+  const isCurrent = options.isCurrent || (() => inputBox.isConnected);
+  const saveDraft = options.saveDraft || (() => saveFloatingInputDraft(sessionId, inputBox));
   const { openSessionPicker, showForkToast } = require('./groupchat-fork-ui.js');
   const { buildReferenceText } = require('../core/session-reference.js');
   const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
@@ -4223,21 +4225,23 @@ async function referenceSessionIntoInput(sessionId, inputBox, button) {
     alertError('读取会话清单失败：' + error.message);
     return;
   }
+  if (!isCurrent()) return;
   openSessionPicker({
     document,
     rows: Array.isArray(rows) ? rows : [],
     title: '引用会话',
-    hint: '把所选会话的聊天记录路径插入输入框，当前 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
+    hint: '把所选会话的聊天记录路径插入输入框，接收消息的 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
     emptyLabel: '没有其他会话可引用。',
     onPick: async (row) => {
+      if (!isCurrent()) return;
       if (button) { button.disabled = true; button.textContent = '引用中…'; }
       try {
         const result = await ipcRenderer.invoke('session-reference:resolve', { sessionId: row.id });
         if (!result?.ok) { alertError('引用失败：' + (result?.message || result?.error || '未知原因')); return; }
-        if (!inputBox.isConnected) return;
+        if (!inputBox.isConnected || !isCurrent()) return;
         const line = buildReferenceText({ title: row.title || result.title, kind: row.kind, path: result.path });
         appendToContenteditable(inputBox, `${line}\n`);
-        saveFloatingInputDraft(sessionId, inputBox);
+        saveDraft();
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
         showForkToast(document, result.fresh

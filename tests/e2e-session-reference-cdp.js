@@ -275,4 +275,6 @@ async function main() {
   }
 }
 
-main().catch(error => { console.error(error); process.exit(1); });
+if (require.main === module) main().catch(error => { console.error(error); process.exit(1); });
+module.exports = { writeFakeCli, writeFixtures, reservePort, DATA_DIR, WORK_DIR, FAKE_BIN_DIR,
+  CODEX_HOME, CLAUDE_ROOT, CODEX_ROOT, TEMP_ROOT, SOURCE_HUB_ID, SOURCE_TITLE };

@@ -865,3 +865,5 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
 .mr-file-actions button:focus-visible { outline: 2px solid var(--brand, #6d8dff); outline-offset: 3px; }
 .mr-file-actions button.stop { color: var(--status-danger, #f18e85); }
 .mr-file-actions button:disabled { opacity: .5; cursor: wait; }
+
+.mr-group-composer.drop-active { outline: 2px dashed var(--brand, #6d8dff); outline-offset: -3px; }

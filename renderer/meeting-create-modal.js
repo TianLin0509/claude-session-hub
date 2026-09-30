@@ -4,14 +4,14 @@
 const { ipcRenderer } = require('electron');
 const { checkDevWorkspace } = require('./dev-workspace-guard.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
-const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND, modelOptionsFor } = require('../core/model-options.js');
+const { MODEL_OPTIONS_BY_KIND, modelOptionsFor } = require('../core/model-options.js');
 
 const MODEL_KINDS = new Set(Object.keys(MODEL_OPTIONS_BY_KIND));
 
 const DEFAULT_SLOTS = [
-  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-  { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-  { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+  { kind: 'claude' },
+  { kind: 'codex' },
+  { kind: 'deepseek' },
 ];
 const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek', 'qwen', 'deepseek-acp', 'glm'];
 // Claude + Codex are the durable default pair. DeepSeek is an explicit third
@@ -218,9 +218,11 @@ function _selectOptions(entries, selected) {
 
 function _normalizeSlotSpec(spec = {}) {
   const kind = MODEL_KINDS.has(spec.kind) ? spec.kind : 'claude';
-  const tuning = window.WorkspaceController.resolveSessionTuning(kind, spec.model, spec);
+  const followDefault = spec.followDefault ?? !spec.model;
+  const tuning = window.WorkspaceController.resolveSessionTuning(kind, followDefault ? undefined : spec.model, spec);
   return {
     kind,
+    followDefault,
     model: tuning.model,
     effort: tuning.effort,
     mcpProfile: tuning.mcpProfile,
@@ -348,6 +350,7 @@ function _readSlotSpec(el, i, { strict = true } = {}) {
   const spec = {
     kind: aiSelect.value === 'deepseek' ? (el.querySelector('.mcm-deepseek-route')?.value || 'deepseek') : aiSelect.value,
     model: modelSelect ? modelSelect.value : '',
+    followDefault: _groupSlots[i]?.followDefault ?? !_groupSlots[i]?.model,
   };
   const effort = el.querySelector('.mcm-effort-select');
   const mcp = el.querySelector('.mcm-mcp-select');
@@ -387,17 +390,18 @@ function _renderSlots() {
       const i = Number(slotEl.getAttribute('data-slot'));
       const selected = slotEl.querySelector('.mcm-ai-select').value;
       const kind = selected;
-      _groupSlots[i] = _normalizeSlotSpec({ kind, model: DEFAULT_MODEL_BY_KIND[kind] });
+      _groupSlots[i] = _normalizeSlotSpec({ kind });
       _renderSlots();
     });
     slotEl.querySelector('.mcm-model-select').addEventListener('change', () => {
+      _groupSlots[Number(slotEl.dataset.slot)].followDefault = false;
       _syncGroupSlotsFromDom();
       // Codex 的 effort / Fast 选项跟模型目录走，切模型后要重新生成这一张卡。
       _renderSlots();
     });
     slotEl.querySelector('.mcm-deepseek-route')?.addEventListener('change', event => {
       const kind = event.target.value;
-      _groupSlots[Number(slotEl.getAttribute('data-slot'))] = _normalizeSlotSpec({kind, model:DEFAULT_MODEL_BY_KIND[kind]});
+      _groupSlots[Number(slotEl.getAttribute('data-slot'))] = _normalizeSlotSpec({ kind });
       _renderSlots();
     });
     slotEl.querySelectorAll('.mcm-effort-select, .mcm-mcp-select, .mcm-fast-checkbox, .mcm-codex-tier-select')
@@ -483,7 +487,7 @@ function _bindEvents() {
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
     const nextKind = _nextGroupMemberKind();
-    _groupSlots.push(_normalizeSlotSpec({ kind: nextKind, model: DEFAULT_MODEL_BY_KIND[nextKind] }));
+    _groupSlots.push(_normalizeSlotSpec({ kind: nextKind }));
     _renderSlots();
   });
   _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
@@ -541,7 +545,7 @@ async function _onCreate() {
   try {
     // 即使用户在模型目录异步返回前立刻点创建，也要先用真实目录重新归一化。
     // 否则 gpt-5.5 可能把 fallback 里的 max 带进 CLI（该模型真实只支持到 xhigh）。
-    await window.WorkspaceController.loadPrimaryModelCatalogs();
+    await window.WorkspaceController.loadSessionDefaults();
     _syncGroupSlotsFromDom({ strict: true });
     _renderSlots();
     // 读取 DOM 也必须在 try 内。历史状态或第三方样式脚本一旦留下残缺 slot / 未选
@@ -737,7 +741,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   _modalEl.style.display = 'flex';
   // 单会话与群聊共用 codex-cli 的模型目录。目录异步返回后保留用户已选值重绘，
   // 让 gpt-5.6 的 ultra / Fast 与旧模型的较短枚举始终准确。
-  void window.WorkspaceController.loadPrimaryModelCatalogs().then(() => {
+  void window.WorkspaceController.loadSessionDefaults().then(() => {
     if (!_modalEl || _modalEl.style.display === 'none') return;
     _syncGroupSlotsFromDom();
     _renderSlots();

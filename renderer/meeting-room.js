@@ -5283,8 +5283,18 @@ if (typeof document !== 'undefined') (function () {
           finally { button.disabled = false; button.textContent = '拉取'; }
         });
         // @community-else
-        // tuning.innerHTML = '<div class="mr-input-tuning-members"></div>';
+        // tuning.innerHTML = '<div class="fi-bridge-toolbar"></div><div class="mr-input-tuning-members"></div>';
         // @community-end
+        require('./group-composer-tools').mountGroupComposerTools({
+          toolbar: tuning.querySelector('.fi-bridge-toolbar'), input: inputBox,
+          getMeeting: () => meetingData[activeMeetingId],
+          referenceSession: referenceSessionIntoInput,
+          appendText: appendToContenteditable, droppedFilePath,
+          formatFilePaths: formatPastedFilePaths,
+          onDraft: id => _setInputDraft(id, inputBox.innerText || ''),
+          onHistory: button => _togglePromptHistoryMenu(button, meetingData[activeMeetingId]),
+          onExpand: () => _openLongInputEditor(meetingData[activeMeetingId]),
+        });
         row.appendChild(tuning);
       }
       _updateInputTuning(meeting);
@@ -5660,7 +5670,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _handlePromptHistoryOutside(ev) {
-    const btn = document.getElementById('mr-input-history-btn');
+    const btn = document.querySelector('.mr-composer-history') || document.getElementById('mr-input-history-btn');
     if (_inputHistoryMenuEl && !_inputHistoryMenuEl.contains(ev.target) && ev.target !== btn) {
       _closePromptHistoryMenu();
     }
@@ -6040,6 +6050,8 @@ if (typeof document !== 'undefined') (function () {
 
   function openMeeting(meetingId, meeting, opts = {}) {
     if (activeMeetingId !== meetingId) {
+      _closePromptHistoryMenu();
+      document.querySelector('#mr-input-editor-overlay [data-action="apply"]')?.click();
       _inputModelUi?.closeModelPicker();
       _taskFilesMeetingId = null;
     }
@@ -6112,6 +6124,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
+    _closePromptHistoryMenu();
+    document.querySelector('#mr-input-editor-overlay [data-action="apply"]')?.click();
     memberSplit?.close();
     _inputModelUi?.closeModelPicker();
     _taskFilesMeetingId = null;
@@ -6507,15 +6521,20 @@ if (typeof document !== 'undefined') (function () {
       const item = document.createElement('button');
       item.className = 'mr-quote-menu-item';
       item.textContent = label;
+      item.dataset.addKind = kind;
       item.addEventListener('click', async () => {
         menu.remove();
         try {
-          const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind });
+          _showGcEscapeNotice('正在添加成员…');
+          await window.WorkspaceController.loadSessionDefaults();
+          const opts = window.WorkspaceController.buildSessionTuningOpts(kind);
+          const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind, opts });
           if (!result || !result.meeting) throw new Error('新成员会话创建失败');
           if (result.session && typeof sessions !== 'undefined' && sessions) {
             sessions.set(result.session.id, result.session);
           }
           meetingData[meetingId] = result.meeting;
+          if (activeMeetingId !== meetingId) return;
           renderHeader(result.meeting);
           renderTerminals(result.meeting);
           renderToolbar(result.meeting);

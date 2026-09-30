@@ -1214,7 +1214,7 @@
     // 当前清单里时就会这样），判据直接落空、用户设的默认值被丢掉；反过来，用户
     // 手选的模型若恰好等于出厂默认，又会被这次回读悄悄改掉。
     void loadHubDefaultModels().then(async () => {
-      if (selectedKind === 'codex') await loadCodexTuningCatalog();
+      await loadModelCatalog(selectedKind);
       if (!modelTouchedByUser && selectedKind !== 'chatgpt') {
         selectedModel = resolveDefaultModel(
           selectedKind,
@@ -1577,6 +1577,7 @@
     loadCodexTuningCatalog,
     loadModelCatalog,
     loadPrimaryModelCatalogs,
+    loadSessionDefaults: () => Promise.all([loadHubDefaultModels(), loadPrimaryModelCatalogs()]),
     workspaceTierLabel,
   };
 
