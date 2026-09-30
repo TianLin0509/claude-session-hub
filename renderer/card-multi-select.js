@@ -23,7 +23,7 @@ function formatSelectedMessages(entries) {
   if (!list.length) return { text: '', copiedCount: 0 };
 
   const blocks = list.map((entry, index) => {
-    const who = entry.role === 'user' ? '我' : assistantSender(entry);
+    const who = entry.sender || (entry.role === 'user' ? '我' : assistantSender(entry));
     const time = String(entry.time || '').trim();
     return `【${index + 1}】${who}${time ? ` · ${time}` : ''}\n${entry.text}`;
   });
@@ -59,6 +59,8 @@ function createCardMultiSelectController(options = {}) {
       return { ok: true, source: 'navigator-fallback' };
     };
 
+  const cardSelector = options.cardSelector || '.turn-card';
+  const cardId = options.getCardId || (card => String(card.dataset.turnId || ''));
   const selected = new Set();
   let active = false;
   let modeSessionId = null;
@@ -79,6 +81,7 @@ function createCardMultiSelectController(options = {}) {
   function cardsInOrder() {
     const root = overlay();
     if (!root || typeof root.querySelectorAll !== 'function') return [];
+    if (options.getCards) return options.getCards(root);
     const activeSessionId = String(getActiveSessionId() || '');
     return Array.from(root.querySelectorAll(':scope > .turn-card[data-turn-id]'))
       .filter(card => {
@@ -96,8 +99,9 @@ function createCardMultiSelectController(options = {}) {
 
   function collectSelectedEntries() {
     return cardsInOrder()
-      .filter(card => selected.has(String(card.dataset.turnId)))
+      .filter(card => selected.has(cardId(card)))
       .map(card => {
+        if (options.getEntry) return options.getEntry(card);
         // 乐观 user 卡片（pending-user-*，用户刚按下回车、transcript 还没落盘）
         // 压根不进 _sessionTurns。以前这里直接 return null 丢掉它 ——
         // 结果是操作条写着「已选 2 条」、剪贴板里只有 1 条，静默少一条。
@@ -170,7 +174,7 @@ function createCardMultiSelectController(options = {}) {
     const cards = cardsInOrder();
     let presentSelected = 0;
     for (const card of cards) {
-      const turnId = String(card.dataset.turnId || '');
+      const turnId = cardId(card);
       const checked = active && selected.has(turnId);
       if (checked) presentSelected += 1;
       if (card.classList) card.classList.toggle('multi-selected', checked);
@@ -257,7 +261,7 @@ function createCardMultiSelectController(options = {}) {
 
   function selectAll() {
     if (!active) return 0;
-    for (const card of cardsInOrder()) selected.add(String(card.dataset.turnId || ''));
+    for (const card of cardsInOrder()) selected.add(cardId(card));
     selected.delete('');
     syncDom();
     return selected.size;
@@ -295,9 +299,9 @@ function createCardMultiSelectController(options = {}) {
     if (typeof event.preventDefault === 'function') event.preventDefault();
     if (typeof event.stopPropagation === 'function') event.stopPropagation();
     const target = event.target;
-    const card = target && typeof target.closest === 'function' ? target.closest('.turn-card') : null;
-    if (!card || !card.dataset || !card.dataset.turnId) return;
-    toggle(card.dataset.turnId);
+    const card = target && typeof target.closest === 'function' ? target.closest(cardSelector) : null;
+    if (!card || !cardsInOrder().includes(card) || !cardId(card)) return;
+    toggle(cardId(card));
   }
 
   // Esc 是全 app 最挤的一个键。这里挂的是 document 捕获阶段，抢在所有人前面，

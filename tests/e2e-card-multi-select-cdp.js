@@ -142,6 +142,7 @@ async function main() {
       out.circle = { width: circle.width, height: circle.height, borderRadius: circle.borderRadius, content: circle.content };
       // 用户气泡整行是 row-reverse：不给 order 的话圆圈会跑到最右边，不在「卡片前面」。
       out.userCircleOrder = getComputedStyle(cards()[0], '::before').order;
+      out.userRowDirection = getComputedStyle(cards()[0]).flexDirection;
       out.aiCircleOrder = getComputedStyle(cards()[1], '::before').order;
       out.actionsHidden = getComputedStyle(cards()[0].querySelector('.turn-actions')).display === 'none';
 
@@ -217,7 +218,8 @@ async function main() {
     assert.equal(r.circle.borderRadius, '50%', JSON.stringify(r.circle));
     // 勾的字形一旦写错（比如 CSS 转义没写对）会静默变成别的字符，肉眼在 18px 上看不出来。
     assert.match(r.circle.content, /✓/, `圆圈里的勾字形不对：${r.circle.content}`);
-    assert.equal(r.userCircleOrder, '1', '用户气泡（row-reverse）的圆圈必须靠 order 挪到最左');
+    assert.equal(r.userRowDirection, 'row', '普通 E2 用户卡片与回答统一左对齐');
+    assert.equal(r.userCircleOrder, '0', '左对齐卡片的勾选圆圈保持首位');
     assert.equal(r.aiCircleOrder, '0', JSON.stringify(r));
     assert.equal(r.actionsHidden, true, '多选态下卡片原有操作按钮要让位');
     assert.equal(r.countAfterSecond, '已选 2 条', '点卡片正文应该是勾选，不是触发正文里的行为');
