@@ -173,7 +173,7 @@ class BrowserTool {
           try { guard.recordChallenge(root, { identity, site, kind: 'reported', source: this.binding.id }); } catch {}
         }
         return result;
-      }, { downloads: /waitForEvent\s*\(\s*['"]download['"]/.test(source) });
+      }, { downloads: /\bwaitForEvent\s*\(\s*['"]download['"]/.test(source) });
     }
     throw Error('Unsupported Hub browser command: ' + command);
   }

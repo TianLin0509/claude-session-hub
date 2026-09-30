@@ -93,3 +93,14 @@ test('the per-step entry prints the handoff and challenge categories', async t =
   try { out = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } }); } catch (e) { out = e.stdout; }
   assert.deepEqual(JSON.parse(out), { isError: true, error: 'Human handoff' });
 });
+test('download scripts take the passive relay and ordinary scripts attach without focus defaults', async t => {
+  const binding = fixture(t), seen = [];
+  const tool = new BrowserTool(binding, { env: {}, hub: { endpoint: async () => null } });
+  tool.withPage = async (fn, options) => { seen.push(!!options?.downloads); return null; };
+  const download = path.join(binding.root, 'download.js'), plain = path.join(binding.root, 'plain.js');
+  fs.writeFileSync(download, "async page => { const d = page.waitForEvent('download'); return null; }");
+  fs.writeFileSync(plain, 'async page => ({ ok: true })');
+  await tool.execute(['run-code', '--filename', download]);
+  await tool.execute(['run-code', '--filename', plain]);
+  assert.deepEqual(seen, [true, false]);
+});
