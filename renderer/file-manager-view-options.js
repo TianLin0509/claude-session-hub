@@ -30,20 +30,23 @@ function createPrefs(w) {
 }
 
 function createViewOptions({ document: d, window: w, anchor, prefs, onChange, report }) {
-  // 默认按修改时间降序；只有 localStorage 里已有用户选择时才沿用保存值。
+  // 默认按修改时间降序。旧版每次存任何偏好都会连带写入 sort:'name'，分不清是不是用户选的，
+  // 所以只沿用新版里用户亲手选过（sortChosen）的排序。
   const view = { mode: 'tree', sort: 'mtime', descending: true, type: 'all', showHidden: true, thumbnails: false };
   const saved = prefs.load();
-  if (SORT_LABELS[saved.sort]) { view.sort = saved.sort; view.descending = !!saved.descending; }
+  let sortChosen = saved.sortChosen === true && !!SORT_LABELS[saved.sort];
+  if (sortChosen) { view.sort = saved.sort; view.descending = !!saved.descending; }
   if (saved.type === 'all' || TYPE_GROUPS[saved.type]) view.type = saved.type;
   view.showHidden = saved.showHidden !== false;
   view.thumbnails = !!saved.thumbnails;
 
   function persist() {
-    try { prefs.save({ sort: view.sort, descending: view.descending, type: view.type, showHidden: view.showHidden, thumbnails: view.thumbnails }); }
+    try { prefs.save({ sort: view.sort, descending: view.descending, sortChosen, type: view.type, showHidden: view.showHidden, thumbnails: view.thumbnails }); }
     catch (error) { report(new Error(`偏好未保存：${error.message}`)); }
   }
   function set(patch) {
     const before = { ...view };
+    if ('sort' in patch || 'descending' in patch) sortChosen = true;
     Object.assign(view, patch);
     if (patch.mode === 'recent') { view.sort = 'mtime'; view.descending = true; }
     persist();

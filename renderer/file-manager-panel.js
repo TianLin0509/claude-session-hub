@@ -330,7 +330,11 @@ function createFileManagerPanel(options = {}) {
     elements.tree.appendChild(makeSectionHeader({ key: 'changes', label: '本会话改动', count: list.length, note }));
     if (state.collapsedSections.has('changes')) return;
     if (result.error) { elements.tree.appendChild(makeMessageRow(`改动扫描失败：${result.error}`, 0, 'error')); return; }
-    if (!list.length) { elements.tree.appendChild(makeMessageRow(query ? '没有匹配的改动' : '会话启动后还没有文件改动', 0)); return; }
+    if (!list.length) {
+      if (result.truncated) elements.tree.appendChild(makeMessageRow('扫描达到上限，未找到改动，但可能有遗漏', 0, 'warning'));
+      else elements.tree.appendChild(makeMessageRow(query ? '没有匹配的改动' : '会话启动后还没有文件改动', 0));
+      return;
+    }
     const key = groupStateKey(state.root, 'changes');
     const [plan] = planDirectoryGroups(list, {
       limit: query ? Infinity : DEFAULT_GROUP_LIMIT,

@@ -375,10 +375,12 @@ function createFileManagerFeatures(o) {
       nodes.jobs.append(row);
     }
   }
+  // 焦点行优先：方向键只移焦点不改选中，沿用旧选中会把别的文件加进草稿。
+  // 焦点行本身在多选集合里时，才按整组多选处理。
   function focusedPaths() {
-    if (selected.size) return [...selected];
-    const focused = d.activeElement?.closest('[data-fm-node]');
-    return focused ? [focused.dataset.path] : [];
+    const focused = d.activeElement?.closest('[data-fm-node]')?.dataset.path;
+    if (focused) return selected.size > 1 && selected.has(focused) ? [...selected] : [focused];
+    return [...selected];
   }
   function init() {
     viewOptions = createViewOptions({

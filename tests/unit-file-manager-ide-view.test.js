@@ -7,7 +7,7 @@ const path = require('path');
 const { formatRelativeTime, isFresh } = require('../renderer/file-manager-time');
 const { planDirectoryGroups, isNoiseFolder } = require('../renderer/file-manager-grouping');
 const { selectSessionChanges, createSessionChangesTracker } = require('../renderer/file-manager-session-changes');
-const { createPrefs } = require('../renderer/file-manager-view-options');
+const { createPrefs, createViewOptions } = require('../renderer/file-manager-view-options');
 const { registerFileManagerIpc } = require('../main/ipc/file-manager-handlers');
 
 const at = (y, mo, d, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
@@ -104,4 +104,20 @@ test('prefs store merges fields so view options, favorites and width do not over
   assert.deepEqual(prefs.load(), { sort: 'name', descending: false, favorites: [{ path: 'C:\\x', type: 'directory' }], width: '420px' });
   store.set('hub-file-manager-v2', '{broken');
   assert.deepEqual(prefs.load(), {}, 'corrupt prefs fall back to defaults');
+});
+
+test('legacy saved name sort does not override the mtime default; an explicit choice does', () => {
+  const store = new Map();
+  const w = { localStorage: { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) } };
+  const anchor = { classList: { toggle() {} }, addEventListener() {} };
+  const make = () => createViewOptions({ document: {}, window: w, anchor, prefs: createPrefs(w), onChange() {}, report(e) { throw e; } });
+  store.set('hub-file-manager-v2', JSON.stringify({ sort: 'name', descending: false, width: '400px' }));
+  let options = make();
+  assert.equal(options.view.sort, 'mtime');
+  assert.equal(options.view.descending, true);
+  options.setSort('name');
+  assert.equal(JSON.parse(store.get('hub-file-manager-v2')).sortChosen, true);
+  options = make();
+  assert.equal(options.view.sort, 'name');
+  assert.equal(options.view.descending, false);
 });

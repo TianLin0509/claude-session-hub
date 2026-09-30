@@ -270,8 +270,11 @@ async function main() {
     await cdp.eval(`(() => { const box = document.querySelector('.floating-input-box'); box.textContent=''; box.dispatchEvent(new Event('input',{bubbles:true})); })()`);
     await cdp.eval(`${row('tools')}.querySelector('.fm-node-button').focus()`);
     await key('ArrowDown', 'ArrowDown', 40);
+    const focusedPath = await cdp.eval(`document.activeElement.closest('[data-fm-node]')?.dataset.path || ''`);
+    assert.ok(focusedPath && focusedPath !== path.join(workspace, 'tools'), 'ArrowDown moved focus off the clicked row');
     await key('Enter', 'Enter', 13, { modifiers: 2, text: String.fromCharCode(13) });
-    await until(`${composer}.includes(${JSON.stringify(path.join(workspace, 'tools'))})`, 'ctrl+enter adds focused path');
+    await until(`${composer}.includes(${JSON.stringify(focusedPath)})`, 'ctrl+enter adds focused path');
+    assert.equal(await cdp.eval(`${composer}.split(${JSON.stringify(focusedPath)}).join('').includes(${JSON.stringify(path.join(workspace, 'tools'))})`), false, 'previously clicked row is not added');
     check(`Ctrl+Enter adds the focused row (${focused}) to the draft`);
     await cdp.eval(`${row('report.md')}.querySelector('.fm-node-button').focus()`);
     await key('Enter', 'Enter', 13, { text: String.fromCharCode(13) });
