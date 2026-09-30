@@ -50,7 +50,7 @@ const CHALLENGE_PROBE = `(() => {
   if (frame('iframe[src*="recaptcha"][src*="bframe"]')) return { challenge: true, kind: 'recaptcha' };
   if (frame('.geetest_panel,.geetest_holder,#nc_1_wrapper,#aliyunCaptcha-window-popup,.captcha_verify_container,#captcha_container'))
     return { challenge: true, kind: 'slider' };
-  if (/(请完成安全验证|人机验证|拖动滑块|滑动验证|Verify you are human)/.test(text)) return { challenge: true, kind: 'text' };
+  if (text.length < 600 && /(请完成安全验证|人机验证|拖动滑块|滑动验证|Verify you are human)/.test(text)) return { challenge: true, kind: 'text' };
   return { challenge: false };
 })()`;
 
@@ -89,9 +89,11 @@ function recordChallenge(root, { identity, site, kind = 'unknown', source = '', 
   return update(root, state => {
     const prev = state.sites[key(identity, site)] || {};
     // A challenge within a day of the last one escalates, also right after a person cleared it.
-    const strikes = (now - (prev.at || 0) < STRIKE_MEMORY_MS ? prev.strikes || 0 : 0) + 1;
+    // Several lanes can meet the same incident at once: while paused it is one strike. A new
+    // challenge after the pause ended (or a person released it) within a day escalates.
+    const strikes = prev.until > now ? prev.strikes || 1 : (now - (prev.at || 0) < STRIKE_MEMORY_MS ? prev.strikes || 0 : 0) + 1;
     const entry = { identity, site, kind, source, since: prev.until > now ? prev.since : now, at: now, strikes,
-      until: now + BACKOFF_MS[Math.min(strikes, BACKOFF_MS.length) - 1] };
+      until: prev.until > now ? prev.until : now + BACKOFF_MS[Math.min(strikes, BACKOFF_MS.length) - 1] };
     state.sites[key(identity, site)] = entry;
     return entry;
   });
@@ -137,12 +139,13 @@ async function inspectAndLeave(root, { identity, page, cdp, url, source }) {
   } catch { return null; }
   if (!probe?.challenge) return null;
   const site = siteOf(url || (page ? page.url() : '')) || 'unknown';
-  const entry = recordChallenge(root, { identity, site, kind: probe.kind, source });
+  // Leave first: a failed record must never keep the page retrying the check.
   try {
     if (page) await page.goto('about:blank');
     else await cdp.call('Page.navigate', { url: 'about:blank' });
   } catch {}
-  return entry;
+  try { return recordChallenge(root, { identity, site, kind: probe.kind, source }); }
+  catch { return { identity, site, kind: probe.kind, unrecorded: true }; }
 }
 
 // Delete challenge-state cookies of one identity's site (partitioned ones included). Runs
@@ -153,8 +156,12 @@ async function resetChallengeCookies(hub, identity, site) {
   try {
     const marker = await hub.marker(identity, cdp);
     const { cookies } = await cdp.call('Storage.getCookies', { browserContextId: marker.browserContextId });
-    const doomed = cookies.filter(c => CHALLENGE_COOKIE.test(c.name)
-      && (!hosts.length || hosts.some(h => c.domain.replace(/^\./, '') === h || c.domain.replace(/^\./, '').endsWith('.' + h) || c.domain.endsWith('cloudflare.com'))));
+    const ofSite = host => hosts.some(h => host === h || host.endsWith('.' + h));
+    const partitionHost = c => { try { return new URL(c.partitionKey?.topLevelSite || '').hostname; } catch { return ''; } };
+    // Only this site's check state: its own cookies, and Cloudflare's challenge cookies that are
+    // partitioned under this site. Another site's check state and every login cookie stay.
+    const doomed = cookies.filter(c => CHALLENGE_COOKIE.test(c.name) && hosts.length
+      && (ofSite(c.domain.replace(/^\./, '')) || (c.domain.replace(/^\./, '').endsWith('cloudflare.com') && ofSite(partitionHost(c)))));
     if (!doomed.length) return 0;
     const page = await hub.page(marker.targetId);
     try {
@@ -166,11 +173,11 @@ async function resetChallengeCookies(hub, identity, site) {
 
 // Give the person the browser: lease first (automation steps now refuse), reset challenge
 // state for that site, then a visible window on screen with no debugger attached to it.
-async function openForHuman(hub, { identity, url, by = '' }) {
+async function openForHuman(hub, { identity, url, by = '', reset = true }) {
   const root = hub.root, site = siteOf(url);
   const lease = startHandoff(root, { identity, site, url, by });
   let cleared = 0;
-  try { if (site) cleared = await resetChallengeCookies(hub, identity, site); } catch {}
+  try { if (site && reset) cleared = await resetChallengeCookies(hub, identity, site); } catch {}
   let opened;
   try { opened = await hub._openVisible(identity, url); }
   catch (e) { endHandoff(root, lease.id); throw e; }
@@ -183,8 +190,10 @@ async function openForHuman(hub, { identity, url, by = '' }) {
 async function settleHandoff(hub) {
   const lease = handoff(hub.root);
   if (!lease?.targetId) return lease || null;
+  // Only a successful listing without the person's page ends the handoff. An unreadable
+  // endpoint (busy port file, slow Chrome) is unknown; the lease expiry still bounds it.
   const ep = await hub.endpoint();
-  if (!ep) { endHandoff(hub.root, lease.id); return null; }
+  if (!ep) return lease;
   const { CDP } = require('./web-roundtable/cdp');
   const cdp = await CDP.connect(ep.ws, ep.port);
   try {

@@ -168,8 +168,9 @@ class BrowserTool {
         // Tool code that reports a human check (the image tool's login state does) gets the
         // same treatment as a navigation that met one: record it and leave the page.
         if (result && typeof result === 'object' && result.challenge === true) {
-          guard.recordChallenge(root, { identity, site: guard.siteOf(page.url()) || 'unknown', kind: 'reported', source: this.binding.id });
-          await page.goto('about:blank').catch(() => {});
+          const site = guard.siteOf(page.url()) || 'unknown';
+          await page.goto('about:blank').catch(() => {});  // leave first; recording may fail
+          try { guard.recordChallenge(root, { identity, site, kind: 'reported', source: this.binding.id }); } catch {}
         }
         return result;
       }, { downloads: /waitForEvent\s*\(\s*['"]download['"]/.test(source) });
@@ -181,7 +182,8 @@ async function main(binding, argv = process.argv.slice(2)) {
   try { const result = await new BrowserTool(binding).execute(argv); process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n'); }
   catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
-    const category = /^Human handoff/.test(e.message) ? 'Human handoff'
+    const category = /^Unsupported Hub browser command/.test(e.message) ? 'Unsupported command'
+      : /^Human handoff/.test(e.message) ? 'Human handoff'
       : /^Site challenged/.test(e.message) ? 'Site challenged'
       : /No browser session/.test(e.message) ? 'No browser session'
       : /IMAGE_TOOL_UNAVAILABLE/.test(e.message) ? 'IMAGE_TOOL_UNAVAILABLE'

@@ -19,6 +19,7 @@ async function main() {
   // The observed incident: the secondary ChatGPT login challenged automation twice, and a
   // person currently has the browser to complete the check.
   guard.recordChallenge(chromeRoot, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
+  guard.releaseSite(chromeRoot, 'alt', 'chatgpt');  // a person cleared it, then automation met it again
   guard.recordChallenge(chromeRoot, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
   const lease = guard.startHandoff(chromeRoot, { identity: 'alt', site: 'chatgpt', by: 'e2e' });
   const fixture = path.join(root, 'accounts-fixture.json');

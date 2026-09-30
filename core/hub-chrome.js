@@ -523,8 +523,14 @@ class HubChrome {
       // The person gets the browser to themselves: every automation transport pauses and
       // detaches, stale challenge counters are reset, and the window has no debugger on it.
       if (ep) {
-        const { lease, cleared } = await require('./web-risk-guard').openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
-        return { targetId: lease.targetId, handoff: true, until: lease.until, cleared };
+        const guard = require('./web-risk-guard');
+        // A site paused by a challenge needs the whole browser (去验证). An ordinary visit only
+        // needs a window with no debugger on it; the tools keep working.
+        if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
+          const { lease, cleared } = await guard.openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
+          return { targetId: lease.targetId, handoff: true, until: lease.until, cleared };
+        }
+        return this._openVisible(identityId, site.url);
       }
       return this._openLogin(identityId, [siteKey]);
     });

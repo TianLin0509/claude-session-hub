@@ -153,6 +153,7 @@ test('paused sites and a person handoff reach the account page and turn the row 
   const { root, acc } = setup(t);
   const guard = require('../core/web-risk-guard');
   guard.recordChallenge(root, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
+  guard.releaseSite(root, 'alt', 'chatgpt');  // a person cleared it, then automation met it again
   guard.recordChallenge(root, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
   const lease = guard.startHandoff(root, { identity: 'alt', site: 'chatgpt' });
   const state = await acc.passiveState();
