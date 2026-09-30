@@ -1397,6 +1397,7 @@ function disposeCachedTerminal(sessionId) {
   if (cached._surfaceRecoveryRaf) cancelAnimationFrame(cached._surfaceRecoveryRaf);
   if (cached._codexBottomPinRaf) cancelAnimationFrame(cached._codexBottomPinRaf);
   if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+  if (cached._codexAnswerAccent) { cached._codexAnswerAccent.dispose(); cached._codexAnswerAccent = null; }
   if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
   if (cached._localPathLinkProvider) {
@@ -1432,8 +1433,10 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
-    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3 : 1.12,
+    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3
+      : isCodexKind(sessions.get(sessionId)?.kind) ? 1.18 : 1.12,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+    fontWeight: isCodexKind(sessions.get(sessionId)?.kind) ? '500' : 'normal',
     cursorBlink: true,
     scrollback: 10000,
     allowProposedApi: true,
@@ -2117,6 +2120,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
   loadGpuRenderer(cached);
+  if (isCodexKind(session.kind) && !isNativeAgent(session)) {
+    cached._codexAnswerAccent ||= require('./codex-answer-accent').mountCodexAnswerAccent(cached.terminal, document);
+    cached._codexAnswerAccent.refresh();
+  }
   setupCodexViewportScrollTracker(sessionId, cached);
 
   if (!embedded) {

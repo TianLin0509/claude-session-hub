@@ -115,7 +115,7 @@ async function run() {
       await until(`(${terminalText(sid)}).match(${spec.ready})`, spec.kind + ' real TUI', 120000);
       record.ready = true;
       const prompt = process.env.HUB_CLI_RICH_PREVIEW === '1'
-        ? `请先写 ${spec.marker}，然后用简短中文给出一个 JavaScript 代码块（包含函数名、字符串与注释）和一个 diff 代码块（各有新增、删除一行）。这是终端色彩预览，不调用工具、不修改文件。`
+        ? `请先写 ${spec.marker}。然后用简短中文写一个小标题、一段两句的正文和两条列表建议；最后给出一个 JavaScript 代码块（包含函数名、字符串与注释）和一个 diff 代码块（各有新增、删除一行）。这是终端色彩预览，不调用工具、不修改文件。`
         : `请用两行回复。第一行只写 ${spec.marker}。第二行写“界面可用”。不要调用工具。`;
       await c.eval('document.querySelector(".floating-input-box").focus()');
       await c.send('Input.insertText', { text: prompt });
@@ -133,6 +133,16 @@ async function run() {
       record.terminalTail = (await c.eval(terminalText(sid))).split('\n').filter(Boolean).slice(-22).join('\n');
       record.screenshot = await screenshot(spec.kind + '-terminal');
       assert.equal(await c.eval('!!document.querySelector(".fi-stuck")'), false);
+      if (spec.kind === 'codex') {
+        record.answerAccent = await c.eval(`(() => {
+          const layer = terminalCache.get(${q}).terminal.element.querySelector('.codex-answer-accent-layer');
+          return { bands: layer?.querySelectorAll('.codex-answer-accent-band').length || 0,
+            tintedRows: Number(layer?.dataset.tintedRows || 0),
+            pointerEvents: layer ? getComputedStyle(layer).pointerEvents : null };
+        })()`);
+        assert.ok(record.answerAccent.bands > 0 && record.answerAccent.tintedRows > 0
+          && record.answerAccent.pointerEvents === 'none');
+      }
       if (spec.kind === 'codex' && process.env.HUB_CLI_CAPTURE_WARNINGS === '1') {
         await click('.xterm-screen');
         for (const type of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', {
