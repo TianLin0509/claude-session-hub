@@ -19,15 +19,17 @@ function searchDirs(command, env, platform) {
   if (platform === 'win32') {
     if (env.APPDATA) dirs.push(path.join(env.APPDATA, 'npm'));
     dirs.push(path.join(env.USERPROFILE || os.homedir(), '.local', 'bin'));
-    if (command === 'codex') {
-      if (env.CODEX_INSTALL_DIR) dirs.push(env.CODEX_INSTALL_DIR);
-      if (env.LOCALAPPDATA) dirs.push(path.join(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin'));
-    }
   }
   return dirs;
 }
 
 function findCommand(command, env = process.env, platform = process.platform) {
+  // Codex: the same lookup that actually starts it (account check, login, sessions, App Server),
+  // so the first-run panel can never report an install the Hub then fails to launch.
+  if (command === 'codex' && platform === 'win32') {
+    const found = require('../main/codex-windows-command').locateWindowsCodex(env);
+    return found ? (found.command || found.shim) : null;
+  }
   const extensions = platform === 'win32' ? ['.exe', '.cmd', '.bat'] : [''];
   for (const dir of searchDirs(command, env, platform)) for (const extension of extensions) {
     const candidate = path.join(dir.replace(/^"|"$/g, ''), command + extension);

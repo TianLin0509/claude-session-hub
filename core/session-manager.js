@@ -1596,6 +1596,11 @@ class SessionManager extends EventEmitter {
     this._claimNativeOpenIdentity(id, kind, opts, sessionEnv);
     let codexEditorInput = null;
     if (isCodexRuntime && !isNativeCodex && !isAcp) {
+      // 只装了官方原生 Codex、它的目录还没进入本进程 PATH 时，给这个会话补上，终端里输入 codex 才找得到。
+      if (process.platform === 'win32') {
+        try { require('../main/codex-windows-command').ensureCodexOnSessionPath(sessionEnv); }
+        catch (error) { console.warn('[codex-path] could not check the Codex install folder:', error.message); }
+      }
       try {
         codexEditorInput = require('./codex-editor-input').configureCodexEditorInput(sessionEnv,
           { dataDir: getHubDataDir(), cwd: spawnCwd });

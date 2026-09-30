@@ -64,3 +64,32 @@ test('public audit runs from a source ZIP without Git and rejects account files'
   assert.ok(failures.some(f => f.file === 'auth.json'));
   assert.ok(failures.some(f => f.file === 'notes.md' && f.rule === 'machine user path'));
 });
+
+test('native-only installs: detection, account check and login all start the same executables', async t => {
+  const { root, env } = environment(t);
+  // Official native installers: Codex in its default folder, Claude in ~/.local/bin. No npm shims.
+  const codex = path.join(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  const claude = path.join(root, '.local', 'bin', 'claude.exe');
+  for (const file of [codex, claude]) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'fixture'); }
+  assert.equal(fs.existsSync(path.join(env.APPDATA, 'npm', 'codex.cmd')), false);
+  const setup = inspectSetup({ root, env, platform: 'win32', packaged: true });
+  assert.ok(setup.providers.find(p => p.id === 'codex').installed);
+  assert.equal(requireCommand('codex', env), codex);
+
+  const calls = [];
+  const adapters = require('../core/account-adapters').createAccountAdapters({ dataDir: root, homeDir: root, env,
+    runImpl: async (command, args) => { calls.push({ command, args }); return { code: 0, stdout: args.includes('auth') ? '{"loggedIn":false}' : 'Not logged in', stderr: '' }; },
+    terminal: async (command, args) => { calls.push({ command, args }); return {}; } });
+  const codexRow = { provider: 'codex', home: path.join(root, '.codex') };
+  const claudeRow = { provider: 'claude', home: path.join(root, '.claude') };
+  assert.equal((await adapters.check(codexRow)).state, 'login_required');
+  await adapters.login(codexRow);
+  assert.equal((await adapters.check(claudeRow)).state, 'login_required');
+  await adapters.login(claudeRow);
+  assert.deepEqual(calls, [
+    { command: codex, args: ['login', 'status'] },
+    { command: codex, args: ['login'] },
+    { command: claude, args: ['auth', 'status', '--json'] },
+    { command: claude, args: ['auth', 'login'] },
+  ]);
+});

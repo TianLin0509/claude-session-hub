@@ -127,6 +127,11 @@ function resolveCodexAppServerCommand(opts = {}) {
       const launch = require('../codex-windows-command').resolveWindowsCodex(opts.env || process.env, { shim: npmCmd });
       return { ...launch, args: ['app-server', '--listen', 'stdio://'] };
     }
+    if (!opts.codexCommand) {
+      // No npm shim: an official native codex.exe (same lookup as every other Codex entry point).
+      const found = require('../codex-windows-command').locateWindowsCodex(opts.env || process.env);
+      if (found && found.kind === 'native') return { command: found.command, args: ['app-server', '--listen', 'stdio://'] };
+    }
     const codexCommand = opts.codexCommand || (npmCmd && fs.existsSync(npmCmd) ? npmCmd : 'codex');
     return {
       command: opts.comSpec || process.env.ComSpec || 'cmd.exe',
