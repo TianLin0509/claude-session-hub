@@ -77,6 +77,8 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
   const requestedAgentLeagueDir = extraEnv.CHUXIN_AGENT_LEAGUE_DIR;
   const requestedStudyDir = extraEnv.AGENT_STUDY_DIR;
+  const requestedWritingRoot = extraEnv.CLAUDE_HUB_WRITING_ROOT;
+  const requestedWritingSkills = extraEnv.CLAUDE_HUB_WRITING_SKILLS_DIR || extraEnv.CLAUDE_HUB_VOICE_DIR;
   const requestedCodexHome = extraEnv.CODEX_HOME;
   const requestedClaudeConfigDir = extraEnv.CLAUDE_CONFIG_DIR;
   const requestedKey = extraEnv.DEEPSEEK_API_KEY;
@@ -96,6 +98,12 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     }
     if (requestedStudyDir && !_isPathInside(testRoot, requestedStudyDir)) {
       throw new Error('isolated Hub requires AGENT_STUDY_DIR inside the test root');
+    }
+    if (requestedWritingRoot && !_isPathInside(testRoot, requestedWritingRoot)) {
+      throw new Error('isolated Hub requires CLAUDE_HUB_WRITING_ROOT inside the test root');
+    }
+    if (requestedWritingSkills && !_isPathInside(testRoot, requestedWritingSkills)) {
+      throw new Error('isolated Hub requires writing skill dirs inside the test root');
     }
     if (requestedCodexHome && !_isPathInside(testRoot, requestedCodexHome)) {
       throw new Error('isolated Hub requires CODEX_HOME inside the test root');
@@ -122,6 +130,10 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     // 2026-09-08：学习任务的产物目录也必须隔离。合并位撞到过 —— 测试 Hub 起来后
     // 自动开了学习任务，真的往 C:\Vibe\AIgent-study 写了新文件。
     AGENT_STUDY_DIR: requestedStudyDir || path.join(resolvedDataDir, 'agent-study'),
+    // 2026-09-30：写作 Tab 会在写作根目录新建篇目、在文风 skill 里写回确认。
+    // 默认写作根指向用户真实的写作工坊，测试实例必须圈进临时目录；
+    // 文风 skill 默认跟 CLAUDE_HUB_HOME_DIR 走，上面已经隔离。
+    CLAUDE_HUB_WRITING_ROOT: requestedWritingRoot || path.join(resolvedDataDir, 'writing'),
     DEEPSEEK_API_KEY: allowExternalState && requestedKey ? requestedKey : '',
     CLAUDE_HUB_E2E_WINDOW_MODE: windowMode,
   };

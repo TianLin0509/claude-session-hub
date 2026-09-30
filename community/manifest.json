@@ -50,7 +50,12 @@
     "renderer/study*",
     "renderer/committee-ui*",
     "renderer/agent-league*",
-    "renderer/chatgpt-bridge-controller.js"
+    "renderer/chatgpt-bridge-controller.js",
+    "core/writing/**",
+    "main/ipc/writing-handlers.js",
+    "renderer/writing*",
+    "tests/unit-writing-tab.test.js",
+    "tests/e2e-writing-tab-cdp.js"
   ],
   "scrub": [
     {
