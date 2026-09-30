@@ -48,6 +48,7 @@ async function main(){
     check('full-text disclosure is above the answer, aligned to its left edge',await c.eval(`(()=>{const a=document.querySelector(${j(first)}),b=a.querySelector('.gc-journal-expand').getBoundingClientRect(),t=a.querySelector('.gc-journal-text').getBoundingClientRect();return b.bottom<=t.top && Math.abs(b.left-t.left)<2;})()`));
     check('copy and more use ordinary-session wording',await c.eval(`document.querySelector(${j(first+' .mr-gc-copy-btn')}).textContent==='复制' && document.querySelector(${j(first+' .gc-journal-menu > summary')}).textContent==='更多'`));
     check('short user prompt body aligns with its header',await c.eval(`(()=>{const card=document.querySelector('.mr-gc-msg.mine'),body=card.querySelector('.mr-gc-bubble').getBoundingClientRect(),head=card.querySelector('.mr-gc-name').getBoundingClientRect();return Math.abs(body.left-head.left)<2;})()`));
+    check('user card does not retain the old right-side bubble arrow',await c.eval(`getComputedStyle(document.querySelector('.mr-gc-msg.mine .mr-gc-bubble'),'::after').display==='none'`));
     await c.eval(`document.querySelector('.mr-gc-messages').scrollTop=0`);
     await shot('dark-collapsed');await click(first+' .gc-journal-expand');
     check('expand complete answer',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first+' .gc-journal-text')}).clientHeight>300`));

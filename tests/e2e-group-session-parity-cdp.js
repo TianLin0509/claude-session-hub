@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 // Real isolated Electron UI + real config/export/create IPC. CLI execution uses
 // fixture commands; no cloud answer quality or provider acceptance is claimed.
 const assert = require('node:assert/strict');
@@ -178,4 +178,3 @@ async function main() {
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
-
