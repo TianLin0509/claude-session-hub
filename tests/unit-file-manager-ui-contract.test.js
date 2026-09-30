@@ -69,4 +69,15 @@ assert.equal(isPreviewableFile('external-demo.zip'), false);
 assert.equal(fileVisualKind('plot.png'), 'image');
 assert.equal(fileVisualKind('src', 'directory'), 'folder');
 
+const viewOptions = read('renderer/file-manager-view-options.js');
+assert.match(viewOptions, /const view = \{ mode: 'tree', sort: 'mtime', descending: true,/,
+  'without a saved preference the tree defaults to newest-first');
+assert.match(html, /id="file-manager-view-menu"/, 'sort / type / hidden / thumbnails live in one filter menu');
+assert.match(panel, /Ctrl\+P 聚焦筛选框：只在焦点位于文件面板内时生效/,
+  'Ctrl+P must not be stolen from the terminal or CLI composer');
+assert.match(panel, /planDirectoryGroups\(/,
+  'tree levels split into files-first groups with a top-N cut');
+assert.match(panel, /features\.refresh\(\{ force: true \}\)/,
+  'the manual refresh button must force a subtree activity rescan');
+
 console.log('file manager UI contract ok');

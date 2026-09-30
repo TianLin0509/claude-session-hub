@@ -2101,7 +2101,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   mountTarget.append(metricsOverlay, termContainer);
   if (!embedded && fileManagerPanel) {
-    void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel });
+    void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel, sessionStartedAt: Number(session.spawnedAt) || 0 });
   }
   if (!embedded) emptyStateEl.style.display = 'none';
 
@@ -6081,7 +6081,12 @@ function getActiveFileManagerContext() {
   const focusedId = getFocusedSessionId();
   if (focusedId) {
     const session = sessions.get(focusedId);
-    return session ? { cwd: session.cwd || '', label: session.workspaceLabel || '' } : null;
+    // sessionStartedAt 供文件面板「本会话改动」使用；取不到时为 0，面板不显示该区。
+    return session ? {
+      cwd: session.cwd || '',
+      label: session.workspaceLabel || '',
+      sessionStartedAt: Number(session.spawnedAt) || 0,
+    } : null;
   }
   const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
   if (!meeting) return null;
@@ -7160,7 +7165,7 @@ const CRUMB_ARCHIVE_HINT_TITLE = '这个任务还在临时区 · 点击归档到
 
 function openSessionFilePanel(session) {
   if (!session || !fileManagerPanel) return;
-  void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel });
+  void fileManagerPanel.toggle({ cwd: session.cwd, label: session.workspaceLabel, sessionStartedAt: Number(session.spawnedAt) || 0 });
 }
 
 function crumbWorkspaceLabel(session) {

@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const crypto = require('crypto');
 const { checkedPath, walkFiles, fileOperation } = require('../../core/file-manager-service');
+const { createFolderActivityService } = require('../../core/file-manager-activity');
 // @community-strip 中转工具
 const { runChatgptBridge, resolveChatgptBridgeRuntime, parseBridgeOutput } = require('./chatgpt-bridge-handlers');
 // @community-else
@@ -34,9 +35,17 @@ function registerFileManagerIpc(ipcMain, deps = {}) {
   }
   handle('scan', async p => {
     const result = await walkFiles(p.root, { query: String(p.query || '') });
+    // since：只回传该时刻之后修改的文件（「本会话改动」），避免把整棵树搬过 IPC。
+    if (Number.isFinite(p.since) && p.since > 0) result.entries = result.entries.filter(entry => entry.mtimeMs >= p.since);
     if (p.recent) result.entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (Number.isInteger(p.limit) && p.limit > 0 && result.entries.length > p.limit) {
+      result.entries = result.entries.slice(0, p.limit);
+      result.truncated = true;
+    }
     return result;
   });
+  const folderActivity = deps.folderActivity || createFolderActivityService();
+  handle('folder-activity', p => folderActivity.lookup(p));
   handle('operation', p => fileOperation(p, electron.shell));
   handle('copy', async p => {
     const paths = await pathsFrom(p);
