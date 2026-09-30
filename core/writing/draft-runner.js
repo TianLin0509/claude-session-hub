@@ -1,7 +1,7 @@
 'use strict';
 // core/writing/draft-runner.js
 //
-// 起草、审阅、访谈提问用到的模型调用。核心原则（2026-09-26 盲测结论）：
+// 后台直接调用模型（目前用于写完一篇后的文风自动优化）。核心原则（2026-09-26 盲测结论）：
 // 起草时只带「起草指南 + 田哥文风 + 范文」，不带工程规则、工具、记忆与 skill 列表，
 // 否则 AI 腔和层层免责就回来了。三家的干净配方都在盲测中实测过：
 //
@@ -18,12 +18,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-
-const ANGLES = [
-  { key: 'scene', label: '从场景起笔', text: '用一个具体的场景或此刻正在发生的事起笔，第一句就把读者带到现场。' },
-  { key: 'question', label: '从问题起笔', text: '用读者心里正在犯嘀咕的一个问题起笔，替读者问出来，再自问自答往前推。' },
-  { key: 'surprise', label: '从反直觉起笔', text: '用一个反直觉的现象或结论起笔，先让读者吃一惊，再讲清为什么。' },
-];
 
 const SCRUB_PREFIXES = ['CLAUDE_CODE_', 'CLAUDE_HUB_', 'ANTHROPIC_'];
 const SCRUB_EXACT = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME'];
@@ -310,100 +304,11 @@ async function runModel(provider, opts) {
   return runDeepseek({ ...opts, model: opts.model || status.model });
 }
 
-/* ─────────────── 提示词 ─────────────── */
-
-function readText(file) { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } }
-
-function draftSystemPrompt({ paths, voice, angle }) {
-  const guide = readText(paths.draftGuide);
-  const { core, exemplars } = voice.draftContext();
-  return [
-    '你在替田哥起草一篇中文技术文章中的一节。田哥是作者，你写的是初稿，田哥会亲手改定。',
-    '',
-    '# 起草指南',
-    guide,
-    '',
-    '# 田哥的文风',
-    core,
-    '',
-    '# 田哥的范文（照着节奏和口吻写，不照搬内容）',
-    exemplars,
-    '',
-    '# 这一份稿的切入方式',
-    angle ? `${angle.label}：${angle.text}` : '按你认为最合适的方式起笔。',
-    '',
-    '# 输出',
-    '直接输出 Markdown 正文。不要写前言、不要写写作说明、不要列出你遵循了哪些规则。',
-  ].join('\n');
-}
-
-function draftUserPrompt(meta, briefText) {
-  const b = meta.brief || {};
-  return [
-    briefText,
-    '',
-    `请写「${b.section || meta.title}」这一节，约 ${b.length || '1500-2500'} 字。`,
-  ].join('\n');
-}
-
-function reviewSystemPrompt({ paths, voice }) {
-  const guide = readText(paths.reviewGuide);
-  const { core } = voice.draftContext({ groups: [] });
-  return [
-    '你是这篇文章的审阅者。只写批注，不改正文，不重写段落。',
-    '',
-    guide,
-    '',
-    '# 田哥的文风（用来判断哪里不像田哥）',
-    core,
-    '',
-    '# 输出格式',
-    '只输出一个 JSON 数组，不要任何别的文字。每个元素：',
-    '{"anchor": "正文中的原句片段，10 到 20 个字，必须能在正文里逐字找到", "problem": "一句话说清问题", "basis": "依据", "suggestion": "改进方向或一句示范", "level": "必改|建议|可选", "category": "事实|论证|数学|读者体验|人味"}',
-    '按严重程度排序，最多 12 条。',
-  ].join('\n');
-}
-
-function parseReviewItems(text) {
-  const s = String(text || '');
-  const a = s.indexOf('[');
-  const b = s.lastIndexOf(']');
-  if (a < 0 || b <= a) return [];
-  try {
-    const arr = JSON.parse(s.slice(a, b + 1));
-    return Array.isArray(arr) ? arr.filter((x) => x && x.problem).map((x, i) => ({ id: `r${i + 1}`, status: 'open', ...x })) : [];
-  } catch { return []; }
-}
-
-function interviewPrompt(meta, briefText) {
-  return {
-    system: '你在帮田哥写文章前做访谈。目的是挖出只有田哥才有的东西：卡住过的地方、意外的发现、不同意的流行说法、只有田哥想得到的例子。只输出一个 JSON 字符串数组，3 到 5 个问题，每个问题一句话、具体、好回答。',
-    user: `这是目前的 brief：\n\n${briefText}\n\n请提出问题。`,
-  };
-}
-
-function parseQuestions(text) {
-  const s = String(text || '');
-  const a = s.indexOf('[');
-  const b = s.lastIndexOf(']');
-  if (a >= 0 && b > a) {
-    try { const arr = JSON.parse(s.slice(a, b + 1)); if (Array.isArray(arr)) return arr.map(String).filter(Boolean).slice(0, 6); } catch { /* 退回按行切 */ }
-  }
-  return s.split(/\r?\n/).map((l) => l.replace(/^[-*\d.、\s]+/, '').trim()).filter((l) => l.length > 4).slice(0, 5);
-}
-
 module.exports = {
-  ANGLES,
   cleanEnv,
   findCodexSubscription,
   resolveCodexJs,
   providerStatus,
   runModel,
-  draftSystemPrompt,
-  draftUserPrompt,
-  reviewSystemPrompt,
-  parseReviewItems,
-  interviewPrompt,
-  parseQuestions,
   codexConfigToml,
 };

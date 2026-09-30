@@ -1,35 +1,27 @@
 'use strict';
 // core/writing/piece-store.js
 //
-// 写作台的单篇文章：<写作台根>/<系列>/<YYYYMMDD-篇名>/ 一篇一个目录，全是普通文件，
-// 不开 Hub 也能看、能改：
-//   piece.json    阶段与元数据（Hub 维护）
-//   brief.md      访谈后的 brief（每次保存时由 piece.json 重新生成）
-//   drafts/*.md   各份草稿
-//   review.md     审阅批注（人可读版本；结构化批注在 piece.json）
-//   final.md      定稿
-//   diff.md       定稿与胜出稿的改动对比
+// 写作台的文章：<写作台根>/<YYYYMMDD-HHmmss>/ 一篇一个目录，也是这篇文章写作群聊的工作目录。
+// 2026-09-30 田哥体验后简化：不要系列、不要标题（标题由 AI 在群聊里提出，从稿件第一行读）。
+//
+//   piece.json    群聊 id、创建时间、文风自动优化的状态（Hub 维护）
+//   drafts/*.md   群里每位 AI 的稿（AI 按写作群规则自己保存）
+//   final.md      汇总改定的定稿
+//   .vibe-root    让 Codex 把文章目录当项目根，不再往上读工作根的工程规则
 
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_SERIES = ['当无线通信遇上 Agent', '控制变量', '随笔'];
-const STAGES = ['interview', 'draft', 'blind', 'review', 'final', 'reflow'];
-const STAGE_LABEL = { interview: '访谈', draft: '起草', blind: '盲选', review: '审阅', final: '定稿', reflow: '回流' };
-
-function safeName(s) {
-  return String(s || '').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || '未命名';
-}
-
-// 系列名直接做目录名：只去掉 Windows 不允许的字符，保留空格（「当无线通信遇上 Agent」不该变成带横杠的另一个系列）
-function safeSeries(s) {
-  return String(s || '').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 40) || DEFAULT_SERIES[0];
-}
-
-function today() {
-  const d = new Date();
+function stamp(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function readText(file) { try { return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'); } catch { return ''; } }
+
+function titleOf(markdown) {
+  const m = String(markdown || '').match(/^#\s+(.+)$/m);
+  return m ? m[1].trim().replace(/^《|》$/g, '') : '';
 }
 
 class PieceStore {
@@ -41,52 +33,17 @@ class PieceStore {
   resolve(dir) {
     const full = path.resolve(dir);
     const root = path.resolve(this.root);
-    if (!full.startsWith(root + path.sep)) throw new Error('篇目目录不在写作台根下');
+    if (!full.startsWith(root + path.sep)) throw new Error('文章目录不在写作台根下');
     return full;
   }
 
-  listSeries() {
-    let dirs = [];
-    try { dirs = fs.readdirSync(this.root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { /* 还没建 */ }
-    return Array.from(new Set([...DEFAULT_SERIES, ...dirs]));
-  }
-
-  listPieces(series) {
-    const dir = path.join(this.root, safeSeries(series));
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return []; }
-    return entries.map((e) => {
-      const full = path.join(dir, e.name);
-      const meta = this.readMeta(full);
-      return meta ? { dir: full, title: meta.title, stage: meta.stage, updatedAt: meta.updatedAt } : null;
-    }).filter(Boolean).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  }
-
-  create({ series, title }) {
-    const s = safeSeries(series);
-    const t = String(title || '').trim();
-    if (!t) throw new Error('标题不能为空');
-    let dir = path.join(this.root, s, `${today()}-${safeName(t)}`);
-    for (let i = 2; fs.existsSync(dir); i++) dir = path.join(this.root, s, `${today()}-${safeName(t)}-${i}`);
+  create() {
+    let dir = path.join(this.root, stamp());
+    for (let i = 2; fs.existsSync(dir); i++) dir = path.join(this.root, `${stamp()}-${i}`);
     fs.mkdirSync(path.join(dir, 'drafts'), { recursive: true });
-    const now = new Date().toISOString();
-    const meta = {
-      title: t,
-      series: s,
-      stage: 'interview',
-      createdAt: now,
-      updatedAt: now,
-      brief: { reader: '', question: '', thesis: '', notes: '', section: '', length: '1500-2500' },
-      qa: [],
-      quotes: [],
-      drafts: [],
-      blind: { layout: 'three', scores: {}, marks: {}, picks: {}, winner: null, revealed: false, stitched: null },
-      review: { provider: null, status: 'idle', items: [] },
-      final: { savedAt: null },
-      reflow: { ratio: null, diffFile: null },
-    };
-    this.writeMeta(dir, meta);
-    return { dir, meta };
+    fs.writeFileSync(path.join(dir, '.vibe-root'), '', 'utf8');
+    this.writeMeta(dir, { createdAt: new Date().toISOString(), meetingId: null, voice: null });
+    return dir;
   }
 
   readMeta(dir) {
@@ -94,75 +51,57 @@ class PieceStore {
   }
 
   writeMeta(dir, meta) {
-    meta.updatedAt = new Date().toISOString();
     fs.writeFileSync(path.join(dir, 'piece.json'), JSON.stringify(meta, null, 2), 'utf8');
-    fs.writeFileSync(path.join(dir, 'brief.md'), renderBrief(meta), 'utf8');
-  }
-
-  get(dir) {
-    const full = this.resolve(dir);
-    const meta = this.readMeta(full);
-    if (!meta) throw new Error('篇目不存在或 piece.json 损坏');
-    const drafts = (meta.drafts || []).map((d) => ({ ...d, text: d.file ? this.readFile(full, d.file) : '' }));
-    return { dir: full, meta: { ...meta, drafts }, final: this.readFile(full, 'final.md') };
-  }
-
-  // 浅合并顶层字段；drafts 等数组整体替换
-  update(dir, patch) {
-    const full = this.resolve(dir);
-    const meta = this.readMeta(full);
-    if (!meta) throw new Error('篇目不存在');
-    const next = { ...meta, ...patch };
-    this.writeMeta(full, next);
-    return next;
   }
 
   mutate(dir, fn) {
     const full = this.resolve(dir);
-    const meta = this.readMeta(full);
-    if (!meta) throw new Error('篇目不存在');
+    const meta = this.readMeta(full) || {};
     fn(meta);
     this.writeMeta(full, meta);
     return meta;
   }
 
-  readFile(dir, rel) {
-    try { return fs.readFileSync(path.join(this.resolve(dir), rel), 'utf8'); } catch { return ''; }
+  drafts(dir) {
+    const d = path.join(dir, 'drafts');
+    let files = [];
+    try { files = fs.readdirSync(d).filter((f) => f.endsWith('.md')); } catch { /* 还没有稿 */ }
+    return files.map((f) => {
+      const full = path.join(d, f);
+      const text = readText(full);
+      return { name: f.replace(/\.md$/, ''), file: full, text, mtime: fs.statSync(full).mtimeMs };
+    }).sort((a, b) => a.mtime - b.mtime);
   }
 
-  writeFile(dir, rel, text) {
-    const full = path.join(this.resolve(dir), rel);
-    fs.mkdirSync(path.dirname(full), { recursive: true });
-    fs.writeFileSync(full, text, 'utf8');
-    return full;
+  summary(dir) {
+    const full = this.resolve(dir);
+    const meta = this.readMeta(full) || {};
+    const drafts = this.drafts(full);
+    const finalFile = path.join(full, 'final.md');
+    const final = readText(finalFile);
+    const finalMtime = final ? fs.statSync(finalFile).mtimeMs : 0;
+    const title = titleOf(final) || titleOf((drafts[drafts.length - 1] || {}).text) || '';
+    return {
+      dir: full,
+      name: path.basename(full),
+      createdAt: meta.createdAt,
+      meetingId: meta.meetingId || null,
+      title,
+      drafts: drafts.map((d) => ({ name: d.name, title: titleOf(d.text), chars: (d.text.match(/[一-鿿]/g) || []).length })),
+      hasFinal: !!final.trim(),
+      finalMtime,
+      voice: meta.voice || null,
+    };
   }
+
+  list() {
+    let dirs = [];
+    try { dirs = fs.readdirSync(this.root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(this.root, d.name)); } catch { return []; }
+    return dirs.filter((d) => fs.existsSync(path.join(d, 'piece.json'))).map((d) => this.summary(d))
+      .sort((a, b) => String(b.name).localeCompare(String(a.name)));
+  }
+
+  readFinal(dir) { return readText(path.join(this.resolve(dir), 'final.md')); }
 }
 
-function renderBrief(meta) {
-  const b = meta.brief || {};
-  const lines = [
-    `# ${meta.title}`,
-    '',
-    `- 系列：${meta.series}`,
-    `- 读者：${b.reader || '（未填）'}`,
-    `- 要回答的主问题：${b.question || '（未填）'}`,
-    `- 一句话核心判断：${b.thesis || '（未填）'}`,
-    `- 这次写哪一节：${b.section || '整篇'}`,
-    `- 目标长度：约 ${b.length || '1500-2500'} 字`,
-    '',
-    '## 要点与素材',
-    '',
-    b.notes || '（未填）',
-  ];
-  if ((meta.quotes || []).length) {
-    lines.push('', '## 摘句（可以用，不必全用）', '', ...meta.quotes.map((q) => `> ${q.text}\n\n（${q.source}）\n`));
-  }
-  const answered = (meta.qa || []).filter((x) => String(x.a || '').trim());
-  if (answered.length) {
-    lines.push('', '## 访谈', '');
-    for (const x of answered) lines.push(`**问：${x.q}**`, '', x.a, '');
-  }
-  return lines.join('\n') + '\n';
-}
-
-module.exports = { PieceStore, STAGES, STAGE_LABEL, DEFAULT_SERIES, renderBrief, safeName, safeSeries };
+module.exports = { PieceStore, titleOf, stamp };

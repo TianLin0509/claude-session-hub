@@ -892,7 +892,8 @@ class HubMemoryService {
   }
   async withWorkspaceRules(sid,prompt,kind,options,send) {
     const s=this.sessionManager.getSession(sid);
-    if(!s?.cwd || s.purpose==='memory-dream' || String(prompt).trimStart().startsWith('/') || !isAiKind(String(kind).replace(/-resume$/,'')))return send(prompt);
+    // 写作群成员（purpose=writing）不追加共享工作区规则：产物命名之类的工程规则会把 AI 腔带进文章
+    if(!s?.cwd || s.purpose==='memory-dream' || s.purpose==='writing' || String(prompt).trimStart().startsWith('/') || !isAiKind(String(kind).replace(/-resume$/,'')))return send(prompt);
     const receiptFile=path.join(this.root,'context',hash(sid+':workspace')+'.json');
     const history=readJSON(receiptFile,[]),submissionId=options.clientSubmissionId||options.submissionReceipt?.clientSubmissionId;
     const id='workspace-'+(submissionId||randomUUID());

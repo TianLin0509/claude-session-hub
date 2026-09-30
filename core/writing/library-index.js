@@ -110,43 +110,40 @@ function walkMarkdown(dir, out = []) {
   return out;
 }
 
-// 写作台的新作：每篇一个目录，有 final.md 才算作品；元数据来自 piece.json。
+// 写作台的新作：<写作台根>/<日期时间>/ 一篇一个目录；有 final.md 才进作品库，标题取定稿第一行。
 function scanPieces(piecesRoot) {
   const items = [];
-  let seriesDirs = [];
-  try { seriesDirs = fs.readdirSync(piecesRoot, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return items; }
-  for (const s of seriesDirs) {
-    let pieces = [];
-    try { pieces = fs.readdirSync(path.join(piecesRoot, s.name), { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { continue; }
-    for (const p of pieces) {
-      const dir = path.join(piecesRoot, s.name, p.name);
-      let meta = {};
-      try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')); } catch { continue; }
-      const finalFile = path.join(dir, 'final.md');
-      const hasFinal = fs.existsSync(finalFile);
-      const body = hasFinal ? fs.readFileSync(finalFile, 'utf8').replace(/\r\n/g, '\n') : '';
-      const cjk = cjkCount(body);
-      const date = String(meta.createdAt || '').slice(0, 10);
-      items.push({
-        id: `写作台/${s.name}/${p.name}`,
-        title: meta.title || p.name,
-        source: '新作',
-        series: s.name,
-        date,
-        year: date.slice(0, 4) || '未知',
-        type: '新作',
-        original: true,
-        url: '',
-        cjk,
-        lengthKey: lengthBucket(cjk),
-        stem: p.name,
-        excerpt: excerptOf(body) || '（尚未定稿）',
-        topics: guessTopics(meta.title || '', body),
-        status: meta.finalizedAt ? '定稿' : '草稿',
-        body,
-        pieceDir: dir,
-      });
-    }
+  let dirs = [];
+  try { dirs = fs.readdirSync(piecesRoot, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return items; }
+  for (const p of dirs) {
+    const dir = path.join(piecesRoot, p.name);
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')); } catch { continue; }
+    const finalFile = path.join(dir, 'final.md');
+    if (!fs.existsSync(finalFile)) continue;
+    const body = fs.readFileSync(finalFile, 'utf8').replace(/\r\n/g, '\n');
+    const titleLine = body.match(/^#\s+(.+)$/m);
+    const title = titleLine ? titleLine[1].trim() : '未命名新作';
+    const cjk = cjkCount(body);
+    const date = String(meta.createdAt || '').slice(0, 10);
+    items.push({
+      id: `写作台/${p.name}`,
+      title,
+      source: '新作',
+      date,
+      year: date.slice(0, 4) || '未知',
+      type: '新作',
+      original: true,
+      url: '',
+      cjk,
+      lengthKey: lengthBucket(cjk),
+      stem: p.name,
+      excerpt: excerptOf(body.replace(/^#\s+.+$/m, '')),
+      topics: guessTopics(title, body),
+      status: '定稿',
+      body,
+      pieceDir: dir,
+    });
   }
   return items;
 }
@@ -207,15 +204,6 @@ class LibraryIndex {
   get(id) {
     const it = this.ensure().find((x) => x.id === id);
     return it ? { ...it } : null;
-  }
-
-  setTopics(id, topics) {
-    const overrides = this.readOverrides();
-    overrides[id] = { ...(overrides[id] || {}), topics };
-    fs.mkdirSync(this.paths.stateDir, { recursive: true });
-    fs.writeFileSync(this.overridesFile(), JSON.stringify(overrides, null, 2), 'utf8');
-    const it = (this.items || []).find((x) => x.id === id);
-    if (it) it.topics = topics;
   }
 }
 

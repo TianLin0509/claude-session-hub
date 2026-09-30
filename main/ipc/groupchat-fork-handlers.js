@@ -329,7 +329,7 @@ function registerGroupChatForkIpc(ipcMain, deps) {
     const branchIndex = meetingTitleBranchIndex(baseTitle, meetingManager.getAllMeetings());
     const forked = meetingManager.createMeeting({
       groupChat: true,
-      mode: ['general', 'research', 'dev'].includes(meeting.scene) ? meeting.scene : 'general',
+      mode: ['general', 'research', 'dev', 'writing'].includes(meeting.scene) ? meeting.scene : 'general',
       title: hasTitle ? title.trim() : `${baseTitle}（分支${branchIndex}）`,
       userRenamed: true,
       autoTitlePending: false,
