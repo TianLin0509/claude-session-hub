@@ -27,7 +27,7 @@ const SITES = {
   // Keys match the account page (hub-chrome.js SITES): Gemini is the 'google' site there.
   chatgpt: ['chatgpt.com', 'openai.com'], google: ['google.com'],
   claude: ['claude.ai'], doubao: ['doubao.com'], deepseek: ['deepseek.com'], kimi: ['kimi.com', 'moonshot.cn'],
-  qwen: ['qianwen.com', 'tongyi.com', 'qwen.ai', 'aliyun.com'], github: ['github.com'], yuque: ['yuque.com'],
+  qwen: ['qianwen.com', 'tongyi.com', 'qwen.ai', 'aliyun.com'], github: ['github.com'],
 };
 
 function siteOf(url) {
