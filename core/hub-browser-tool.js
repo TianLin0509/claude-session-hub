@@ -58,7 +58,11 @@ class BrowserTool {
     this.file = path.join(binding.root, 'tool-pages', binding.id + '.json');
   }
   async target() {
-    const record = read(this.file), ep = await this.hub.endpoint();
+    const record = read(this.file);
+    if (!record) return null;
+    // A busy local CDP endpoint can miss its short health deadline while Chrome
+    // and the owned tab still exist. Recheck once before declaring the page gone.
+    const ep = await this.hub.endpoint() || await this.hub.endpoint();
     if (!record || !ep || record.browserWs !== ep.ws || record.identity !== this.binding.identity) return null;
     const { CDP } = require('./web-roundtable/cdp');
     const cdp = await CDP.connect(ep.ws, ep.port);
@@ -73,17 +77,22 @@ class BrowserTool {
     const existing = await this.target();
     if (existing) return { targetId: existing.targetId, reused: true };
     const tab = await this.hub.openTab(this.binding.identity, url);
-    const ep = await this.hub.endpoint();
+    const ep = await this.hub.endpoint() || await this.hub.endpoint();
     try { save(this.file, { targetId: tab.targetId, browserWs: ep.ws, identity: this.binding.identity }); }
     catch (e) { await this.hub.closeTab(tab.targetId); throw e; }
     return { targetId: tab.targetId, reused: false };
   }
-  async withPage(fn) {
+  async withPage(fn, { downloads = false } = {}) {
     const target = await this.target();
     if (!target) throw Error('No browser session: owned Hub page is not open');
     const chromium = this.chromium || require(this.binding.playwright).chromium;
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${target.ep.port}`);
+    // Attaching must not simulate focus in every user/tool tab. ChatGPT refetches
+    // on focus, so a short-lived connection per queue poll otherwise causes a
+    // browser-wide request burst (and HTTP 429) unrelated to this owned page.
+    const relay = downloads ? await require('./passive-cdp-connection').passiveDownloadConnection(target.ep) : null;
+    let browser;
     try {
+      browser = await chromium.connectOverCDP(relay?.endpoint || `http://127.0.0.1:${target.ep.port}`, { noDefaults: !downloads });
       for (const context of browser.contexts()) for (const page of context.pages()) {
         const cdp = await context.newCDPSession(page);
         let info;
@@ -93,7 +102,7 @@ class BrowserTool {
       throw Error('No browser session: owned Hub page is not visible to the runtime');
     } finally {
       // For a CDP connection Playwright close disconnects its transport, not Chrome.
-      await browser.close();
+      try { await browser?.close(); } finally { await relay?.close(); }
     }
   }
   async execute(argv) {
@@ -124,7 +133,7 @@ class BrowserTool {
       const source = require('./chatgpt-selector-compat').adaptSource(fs.readFileSync(args[at + 1], 'utf8'));
       // Trusted local tool code, identical authority to the original Playwright CLI.
       const fn = new Function('return (' + source + '\n)')();
-      return this.withPage(fn);
+      return this.withPage(fn, { downloads: /\bwaitForEvent\s*\(\s*['"]download['"]/.test(source) });
     }
     throw Error('Unsupported Hub browser command: ' + command);
   }
