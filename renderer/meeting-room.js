@@ -2514,13 +2514,13 @@ if (typeof document !== 'undefined') (function () {
     const prompt = message.sourcePrompt ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt">查看本轮输入</button>` : '';
     const time = _formatGroupChatTime(answer?.at || message.createdAt);
     const kindCls = slot && slot.kind ? ` ai-name-${slot.kind}` : '';
+    const unread = !!text.trim() && answer?.state !== 'draft';
     return `
-      <article ${journal.attributes(meeting, message, escapeHtml)} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-source-sid="${escapeHtml(message.sid || '')}" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
+      <article ${journal.attributes(meeting, message, escapeHtml)} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-user-question="false" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${unread}" data-phase="message" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
         ${_renderGroupAvatar(slot, false)}
         <div class="mr-gc-msg-body">
-          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, attempt: '', resync: '', retry: '', submit: '' })}</div>
-          <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-text">${body}</div></div></div>
-          ${journal.footer()}
+          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, minimize: true })}</div>
+          <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-reading">${journal.disclosure()}<div class="gc-journal-text">${body}</div></div></div></div>
         </div>
       </article>`;
   }
