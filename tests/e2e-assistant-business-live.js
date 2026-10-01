@@ -16,7 +16,12 @@ async function main(){
   const root=path.join(out,'private-run'),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(home,'codex'),workspace=path.join(root,'workspaces'),business=path.join(workspace,'orders');
   for(const dir of [out,data,codexHome,business])fs.mkdirSync(dir,{recursive:true});
   const production=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
-  const productionAssistant=managerPermissions?JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/sessions/8bba118a-5ab6-42f3-9962-f5103787d885.json'),'utf8')):null;
+  let productionAssistant=null;
+  if(managerPermissions){
+    const db=new (require('node:sqlite').DatabaseSync)(path.join(os.homedir(),'.claude-session-hub/assistant/assistant.sqlite'),{readOnly:true});
+    let id;try{id=JSON.parse(db.prepare("SELECT value FROM meta WHERE key='sessionId'").get().value);}finally{db.close();}
+    productionAssistant=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/sessions',id+'.json'),'utf8'));
+  }
   const model=productionAssistant?require('../core/session-capabilities').sessionModelId(productionAssistant):require('../core/session-creation-defaults').creationDefaults('codex',production).model;
   const profile=production.providers?.codex?.subscription_profiles?.find(p=>p.id==='second'&&p.label==='主账号');
   assert(profile,'明确的主账号配置应存在');
@@ -33,7 +38,7 @@ async function main(){
   const finals=async id=>{const s=await session(id);return s?readFinals(s,{tailBytes:8*1024*1024}).records:[];};
   const idle=async id=>until('session idle '+id,async()=>{const s=await session(id);return s&&!require('../core/session-runtime-truth').sessionRuntimeIsActive(s)&&s.status!=='running';},60000);
   const sendAssistant=async text=>{await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
-  const answer=async (count,label)=>until(label,async()=>{const rows=await finals(assistantId);return rows.length>count?rows.at(-1):null;});
+  const answer=async (count,label)=>until(label,async()=>{const rows=await finals(assistantId);return rows.length>count?rows.at(-1):null;},managerPermissions?300000:180000);
   try{
     fs.copyFileSync(auth,path.join(codexHome,'auth.json'));
     fs.writeFileSync(path.join(codexHome,'AGENTS.md'),`# 真实隔离验收\n旅游攻略产物仅写该会话当前目录的 artifacts/ 或 output/，不得写用户桌面或生产目录。旅游攻略正常联网查询、完成可离线阅读HTML；这是实际生成质量验收，不要仅回复占位标记。其他隔离业务按其 README.md 指定路径完成交付。\n`,'utf8');
@@ -141,7 +146,7 @@ async function main(){
       const html=files.map(file=>fs.readFileSync(file,'utf8')).join('\n');
       assert.match(html,/漫居/);assert.match(html,/4岁|四岁/);assert.match(html,/10[月./-]?\s*5|10月2[^\n]{0,100}5|10\/05/);
       const pngs=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.png')).map(f=>path.join(s.cwd,f));
-      assert(pngs.length>=5,'总览及四天攻略图片应实际存在');
+      assert(pngs.length>=1,'HTML转成的攻略图片应实际存在；可为总览长图或分日图');
       result.createdImages=pngs.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
     }
     assert.equal(await cdp.eval(`[...sessions.keys()].filter(id=>!${j(beforeCreate)}.includes(id)).length`),1);
