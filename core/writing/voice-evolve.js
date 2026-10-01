@@ -31,7 +31,7 @@ function userMessagesOf(hubDataDir, meetingId) {
   const { isUserSpeech } = require('../group-chat-transcript.js');
   return messages
     .filter((m) => isUserSpeech(m) && String(m.content || '').trim())
-    .map((m) => String(m.content).trim());
+    .map((m) => String(m.content).replace(/\n*（写作 Tab：[^）]*）\s*$/, '').trim());
 }
 
 function runDiffRatio(script, before, after) {

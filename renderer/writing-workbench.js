@@ -27,9 +27,9 @@ function createWorkbench(ctx) {
 
   /* ─────────── 点评篮：按文章存在本机，切走再回来还在 ─────────── */
 
-  const basketKey = () => `writing-basket:${S.dir}`;
-  function basket() { try { return JSON.parse(localStorage.getItem(basketKey()) || '{"items":[],"free":""}'); } catch { return { items: [], free: '' }; } }
-  function saveBasket(b) { try { localStorage.setItem(basketKey(), JSON.stringify(b)); } catch { /* 存不下就只留在内存 */ } }
+  const basketKey = (dir = S.dir) => `writing-basket:${dir}`;
+  function basket(dir) { try { return JSON.parse(localStorage.getItem(basketKey(dir)) || '{"items":[],"free":""}'); } catch { return { items: [], free: '' }; } }
+  function saveBasket(b, dir) { try { localStorage.setItem(basketKey(dir), JSON.stringify(b)); } catch { /* 存不下就只留在内存 */ } }
 
   /* ─────────── 发进群聊 ─────────── */
 
@@ -56,17 +56,32 @@ function createWorkbench(ctx) {
     // groupchat:turn 在整轮结束时才返回；被拒通常立刻返回。等一小会儿：被拒就报错，否则当作已发出。
     const early = await Promise.race([turn.then((r) => ({ r })), new Promise((res) => setTimeout(() => res(null), 2500))]);
     if (early && early.r && early.r.status !== 'completed') throw new Error(`没有发出：${early.r.reason || early.r.status || '未知原因'}`);
+    const FAILED = ['absent', 'errored', 'send_exception', 'error', 'failed'];
+    const results = early && early.r && Array.isArray(early.r.results) ? early.r.results : [];
+    if (results.length && results.every((x) => FAILED.includes(x && x.status))) {
+      throw new Error(`没有发出：${results.map((x) => `${x.label || '成员'}${x.reason ? `（${x.reason}）` : ''}`).join('、')} 都没收到`);
+    }
     turn.then((r) => { if (r && r.status !== 'completed' && r.status !== 'error') return; if (r && r.status === 'error') toast(`这一轮没有跑完：${r.reason || '未知原因'}`, true); }).catch(() => {});
     setTimeout(refresh, 600);
   }
 
+  let armedAt = 0;
   async function sendWith(label, text, opts, onSent) {
     if (S.sending) return;
+    const v = S.view;
+    const busy = v && (v.columns || []).filter((c) => c.status === 'working').map((c) => c.name);
+    if (busy && busy.length && Date.now() - armedAt > 6000) {
+      armedAt = Date.now();
+      toast(`${busy.join('、')} 还在写，现在发出会打断它们这一轮。确实要发，6 秒内再点一次`, true);
+      return;
+    }
+    armedAt = 0;
     S.sending = true;
     renderBasket(true);
     try {
+      const dir = S.dir;
       await sendToGroup(text, opts);
-      if (onSent) onSent();
+      if (onSent) onSent(dir);
       toast(`${label}，AI 正在写`);
     } catch (e) {
       toast(e.message || String(e), true);
@@ -90,7 +105,7 @@ function createWorkbench(ctx) {
     const lines = commentLines(b);
     if (!lines.length) { toast('先划线点评或写几句意见', true); return; }
     const text = ['我的点评：', ...lines, '', '请各自按点评改一版，交完整的新版本（回答末尾附交稿卡）。'].join('\n');
-    sendWith('点评已发出', text, {}, () => saveBasket({ items: [], free: '' }));
+    sendWith('点评已发出', text, {}, (dir) => saveBasket({ items: [], free: '' }, dir));
   }
 
   function sendFinalize(col) {
@@ -98,7 +113,7 @@ function createWorkbench(ctx) {
     const lines = commentLines(b);
     const text = [`请 ${col.name} 汇总定稿：读完群里所有稿和我的全部点评，取各稿之长改定，交定稿卡。其他人这一轮不用写。`,
       ...(lines.length ? ['', '定稿前再看这几条点评：', ...lines] : [])].join('\n');
-    sendWith(`已请 ${col.name} 汇总定稿`, text, { recipientSids: [col.sid] }, () => saveBasket({ items: [], free: '' }));
+    sendWith(`已请 ${col.name} 汇总定稿`, text, { recipientSids: [col.sid] }, (dir) => saveBasket({ items: [], free: '' }, dir));
   }
 
   function sendAnswers(qs) {
@@ -211,10 +226,31 @@ function createWorkbench(ctx) {
       v.idea ? h('details', { class: 'wb-idea' }, h('summary', { text: `${/^中心思想[:：]/.test(v.idea) ? '' : '中心思想：'}${v.idea.length > 90 ? v.idea.slice(0, 90) + '…' : v.idea}` }), h('div', { class: 'wb-idea-full', text: v.idea })) : null);
   }
 
+  const ideaKey = (dir) => `writing-idea:${dir}`;
+  function renderIdeaBox(el) {
+    const v = S.view;
+    el.hidden = false;
+    const ta = h('textarea', { class: 'wr-input wb-free', rows: '4', placeholder: '这篇想写什么？' });
+    try { ta.value = localStorage.getItem(ideaKey(v.dir)) || ''; } catch { /* 没存过 */ }
+    ta.addEventListener('input', () => { try { localStorage.setItem(ideaKey(v.dir), ta.value); } catch { /* 存不下 */ } });
+    put(el,
+      h('div', { class: 'wb-q-head' }, h('b', { text: '中心思想还没发出去' }), h('span', { class: 'wr-muted', text: '写作群建好了，但第一条消息没送到。改好后点发出' })),
+      ta,
+      h('div', { class: 'wb-row' }, h('button', { class: 'wr-btn primary', disabled: S.sending, text: S.sending ? '正在发…' : '发给大家', onclick: () => {
+        const text = ta.value.trim();
+        if (!text) { ta.focus(); return; }
+        sendWith('中心思想已发出', `${text}\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）`, {}, (dir) => { try { localStorage.removeItem(ideaKey(dir)); } catch { /* 无 */ } });
+      } })));
+  }
+
   function renderQuestions(force) {
     const v = S.view;
     const el = section('questions');
     if (!el) return;
+    if (!v.idea && v.meetingId && !(v.columns || []).some((c) => c.items.length || c.status === 'working')) {
+      if (force || changed('questions', ['idea-box', S.sending])) renderIdeaBox(el);
+      return;
+    }
     if (!force && !changed('questions', [v.questions, S.sending])) return;
     if (force) S.sigs.questions = JSON.stringify([v.questions, S.sending]);
     const qs = v.questions || [];
@@ -287,8 +323,12 @@ function createWorkbench(ctx) {
     } else {
       body = [h('div', { class: 'wb-empty-col' }, h('span', { class: 'wr-muted', text: col.status === 'dormant' ? '成员休眠中，下次发消息时自动唤醒' : '还没有交稿' }))];
     }
+    const stale = col.turn && S.view && col.turn < S.view.latestTurn;
     const errBar = (col.status === 'error' || col.status === 'stopped') && col.sid
-      ? h('div', { class: 'wb-errbar' }, h('span', { text: col.error || (col.status === 'error' ? '这一轮出错了' : '这一轮被停止了') }), h('button', { class: 'wr-btn small', text: '重试', onclick: () => retry(col) }), h('button', { class: 'wr-btn small', text: '在群聊里看', onclick: () => openMeeting(S.view.meetingId) }))
+      ? h('div', { class: 'wb-errbar' },
+        h('span', { text: stale ? `第 ${col.turn} 轮${col.status === 'error' ? '出错' : '被停止'}了；下次发点评或回答时会一起收到` : col.error || (col.status === 'error' ? '这一轮出错了' : '这一轮被停止了') }),
+        stale ? null : h('button', { class: 'wr-btn small', text: '重试', onclick: () => retry(col) }),
+        h('button', { class: 'wr-btn small', text: '在群聊里看', onclick: () => openMeeting(S.view.meetingId) }))
       : null;
     return h('div', { class: `wb-col ${col.status}`, 'data-col': key }, head, it ? errBar : null, h('div', { class: 'wb-col-body' }, ...(it ? body : [errBar, ...body])));
   }
@@ -352,7 +392,7 @@ function createWorkbench(ctx) {
     const b = basket();
     const cols = (v.columns || []).filter((c) => c.sid);
     // 自由意见框不进签名：田哥正在打字时，轮询不能把输入框换掉
-    const sig = [b.items, S.sending, cols.map((c) => [c.sid, c.name, c.items.length])];
+    const sig = [b.items, S.sending, cols.map((c) => [c.sid, c.name])];
     if (!force && !changed('basket', sig)) return;
     if (force) S.sigs.basket = JSON.stringify(sig);
     const free = h('textarea', { class: 'wr-input wb-free', rows: '2', placeholder: '再说点什么……（总体意见、想补充的例子、语气上的要求）', oninput: (e) => { const nb = basket(); nb.free = e.target.value; saveBasket(nb); } });
@@ -385,14 +425,19 @@ function createWorkbench(ctx) {
     if (!S.dir || !S.visible) return;
     const dir = S.dir;
     let r;
-    try { r = await call('writing:article-view', { dir }); } catch (e) { if (S.dir === dir) toast(e.message || String(e), true); return; }
+    try { r = await call('writing:article-view', { dir }); } catch (e) { if (S.dir === dir) once(e.message || String(e)); return; }
     if (S.dir !== dir || !S.root) return;
+    if (r.view.writeError) once(r.view.writeError); else lastError = '';
     const prevSig = S.view && JSON.stringify([S.view.title, S.view.steps, S.view.final ? 1 : 0, S.view.columns.map((c) => c.items.length)]);
     S.view = r.view;
     render();
     const nextSig = JSON.stringify([S.view.title, S.view.steps, S.view.final ? 1 : 0, S.view.columns.map((c) => c.items.length)]);
     if (prevSig && prevSig !== nextSig && onChanged) onChanged();
   }
+
+  // 3 秒一轮的轮询：同一个错误只弹一次，好了再出错才再弹
+  let lastError = '';
+  function once(msg) { if (msg !== lastError) { lastError = msg; toast(msg, true); } }
 
   function syncTimer() {
     const need = S.visible && S.dir;

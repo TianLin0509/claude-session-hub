@@ -329,9 +329,9 @@ function groupState() {
   return {
     currentTurn: 2,
     messages: [
-      { id: 'u1', role: 'user', turnNum: 1, content: '中心思想：多模型互审不等于分集增益', origin: 'user' },
+      { id: 'u1', role: 'user', turnNum: 1, content: '中心思想：多模型互审不等于分集增益\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）', origin: 'user' },
       { id: 'a1-m1', role: 'assistant', sid: A, speaker: 'Claude 1', turnNum: 1, status: 'completed', content: DRAFT_BODY + card({ type: 'questions', items: [{ q: '写给谁？', recommend: '算法工程师' }] }, { type: 'draft', title: '分身不是分集', note: '先讲反例' }) },
-      { id: 'a1-m2', role: 'assistant', sid: B, speaker: 'Codex 2', turnNum: 1, status: 'completed', content: '# 没按格式的稿\n\n' + '这是一段没有附卡片的回答。'.repeat(30) },
+      { id: 'a1-m2', role: 'assistant', sid: B, speaker: 'Codex 2', turnNum: 1, status: 'completed', content: '田哥，我建议这篇先帮读者选产品。' + '这是一段没有附卡片、也不像稿件的回答。'.repeat(20) },
       { id: 'a1-m3', role: 'assistant', sid: C, speaker: 'DeepSeek 3', turnNum: 1, status: 'errored', content: '' },
       { id: 'h2', role: 'user', turnNum: 2, content: '[Hub 派工卡片]', origin: 'hub' },
       { id: 'u2', role: 'user', turnNum: 2, content: '我的点评：开头再狠一点', origin: 'user' },
@@ -363,6 +363,16 @@ test('工作台：每位一栏、版本递增；没卡片的回答原样显示�
   assert.strictEqual(v.running, true);
 });
 
+test('工作台：忘了附卡片但明显是一份稿（# 标题开头、有篇幅），照样按稿件收下并编版本', () => {
+  const st = { currentTurn: 1, messages: [
+    { id: 'u1', role: 'user', origin: 'user', turnNum: 1, content: '中心思想' },
+    { id: 'a1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 1, status: 'completed', content: '# 多分身不等于分集\n\n' + '同一个模型的分身错误高度相关。'.repeat(15) },
+  ], attempts: {} };
+  const it = wb.buildView({ state: st, members: MEMBERS.slice(0, 1) }).columns[0].items[0];
+  assert.deepStrictEqual([it.kind, it.version, it.title, it.implicit], ['draft', 1, '多分身不等于分集', true]);
+  assert.ok(it.note.includes('没附交稿卡'));
+});
+
 test('工作台：定稿卡置顶；文章目录里 Hub 没写过的稿件文件按名字归到成员，内容重复的不列', () => {
   const st = groupState();
   st.messages.push({ id: 'a3-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 3, status: 'completed', content: '# 定稿标题\n\n定稿正文。' + card({ type: 'final', title: '定稿标题', note: '合了两稿' }) });
@@ -388,14 +398,24 @@ test('工作台落盘：交稿存成 drafts/<成员>-v<n>.md、定稿存成 fina
   const st = groupState();
   st.messages.push({ id: 'a3-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 3, status: 'completed', content: '# 定稿标题\n\n定稿正文。' + card({ type: 'final', title: '定稿标题' }) });
   const v = wb.buildView({ state: st, members: MEMBERS, files: [] });
-  const written = wb.materialize(dir, v, []);
-  assert.deepStrictEqual(written, ['Claude-1-v1.md', 'Claude-1-v2.md', 'Claude-1-v3.md']);
+  const first = wb.materialize(dir, v, {});
+  assert.deepStrictEqual(first.written, ['Claude-1-v1.md', 'Claude-1-v2.md'], '定稿不另存进 drafts/（否则文风优化算出的改动比例永远是 0%）');
   assert.ok(fs.readFileSync(path.join(dir, 'drafts', 'Claude-1-v1.md'), 'utf8').startsWith('# 分身不是分集'));
   assert.ok(fs.readFileSync(path.join(dir, 'final.md'), 'utf8').startsWith('# 定稿标题'));
-  const mtime = fs.statSync(path.join(dir, 'final.md')).mtimeMs;
-  wb.materialize(dir, wb.buildView({ state: st, members: MEMBERS, files: [] }), written);
-  assert.strictEqual(fs.statSync(path.join(dir, 'final.md')).mtimeMs, mtime, '内容没变就不重写（否则会反复触发文风优化）');
   assert.strictEqual(pieces.summary(dir).hasFinal, true, '作品库与文风优化照旧读 final.md');
+  // 田哥直接改了 final.md：同一张定稿卡再读多少次，都不把他的改动改回去
+  fs.writeFileSync(path.join(dir, 'final.md'), '# 定稿标题\n\n田哥亲手改过的定稿。\n');
+  const again = wb.materialize(dir, wb.buildView({ state: st, members: MEMBERS, files: [] }), first);
+  assert.ok(fs.readFileSync(path.join(dir, 'final.md'), 'utf8').includes('田哥亲手改过'));
+  assert.strictEqual(again.finalHash, first.finalHash);
+  // 群里出了新的定稿卡（田哥又请人改定），才覆盖
+  st.messages.push({ id: 'a4-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 4, status: 'completed', content: '# 第二版定稿\n\n再改过。' + card({ type: 'final', title: '第二版定稿' }) });
+  wb.materialize(dir, wb.buildView({ state: st, members: MEMBERS, files: [] }), again);
+  assert.ok(fs.readFileSync(path.join(dir, 'final.md'), 'utf8').startsWith('# 第二版定稿'));
+  // 只附卡片没有正文：不当稿、不落空文件
+  st.messages.push({ id: 'a5-m2', role: 'assistant', sid: 'sid-b', speaker: 'Codex 2', turnNum: 5, status: 'completed', content: card({ type: 'draft', title: '空的' }).trim() });
+  const v5 = wb.buildView({ state: st, members: MEMBERS, files: [] });
+  assert.strictEqual(v5.columns[1].items.pop().kind, 'reply');
 });
 
 test('工作台 IPC：按文章目录读群聊记录与成员，交稿落盘并记进 piece.json', async () => {

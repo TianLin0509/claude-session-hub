@@ -22,6 +22,7 @@ const { evolveVoiceFromPiece } = require('../../core/writing/voice-evolve.js');
 const workbench = require('../../core/writing/workbench.js');
 
 const SAFE_ID = /^[a-zA-Z0-9_-]{1,255}$/;
+const KIND_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi' };
 
 // 写作群默认成员：三家各出一份稿。CLAUDE_HUB_WRITING_MEMBERS 可改（如 E2E 用 "claude:haiku"）
 function defaultMembers(env = process.env) {
@@ -100,7 +101,9 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell, mee
     return (meeting.subSessions || []).map((sid, i) => {
       const s = sessionManager && typeof sessionManager.getSession === 'function' ? sessionManager.getSession(sid) : null;
       const spec = specs[i] || {};
-      return { sid, memberId: spec.memberId || `m${i + 1}`, name: (s && s.title) || '', kind: (s && s.kind) || spec.kind || '', dormant: !s || s.status === 'dormant' };
+      const kind = (s && s.kind) || spec.kind || '';
+      // 会话还没起来时没有标题：先用 CLI 名占位（群聊里交过稿后会换成发言名，如「Claude 1」）
+      return { sid, memberId: spec.memberId || `m${i + 1}`, name: (s && s.title) || KIND_NAMES[kind.replace(/-.*$/, '')] || kind || `AI ${i + 1}`, named: !!(s && s.title), kind, dormant: !s || s.status === 'dormant' };
     });
   }
 
@@ -112,9 +115,19 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell, mee
       .map((d) => ({ name: path.basename(d.file), text: d.text, mtime: d.mtime }))
       .filter((f) => !written.includes(f.name));
     const view = workbench.buildView({ state: readGroupState(meta.meetingId), members: membersOf(meta.meetingId), files, final: pieces.readFinal(full) });
-    const next = workbench.materialize(full, view, written);
-    if (next.join('|') !== written.join('|')) pieces.mutate(full, (m) => { m.written = next; });
-    return { ...view, dir: full, name: path.basename(full), meetingId: meta.meetingId || null, voice: meta.voice || null };
+    let writeError = '';
+    try {
+      const next = workbench.materialize(full, view, { written, finalHash: meta.finalHash || '' });
+      if (next.written.join('|') !== written.join('|') || next.finalHash !== (meta.finalHash || '')) {
+        pieces.mutate(full, (m) => { m.written = next.written; m.finalHash = next.finalHash; });
+      }
+    } catch (err) {
+      writeError = `稿件没能存进文章目录：${err && err.message ? err.message : err}`; // 照样把工作台给田哥看
+    }
+    // 定稿以文件为准：田哥在文件里直接改过的，工作台上看到的就是改后的版本
+    const finalFile = pieces.readFinal(full).trim();
+    if (view.final && finalFile) view.final = { ...view.final, text: finalFile };
+    return { ...view, dir: full, name: path.basename(full), meetingId: meta.meetingId || null, voice: meta.voice || null, writeError };
   }
 
   /* ─────────── 文风自动优化队列（一次只跑一篇） ─────────── */

@@ -76,7 +76,15 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     await until(btnExpr(scope, text), 'button ' + text, ms);
     await cdp.eval(`${btnExpr(scope, text)}.click()`);
   };
-  const snap = async (name) => { await sleep(500); const b64 = await cdp.eval('ipcRenderer.invoke("test:writing-capture")'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(b64, 'base64')); };
+  // 截图只是留证据：后台窗口偶发 UnknownVizError（2026-10-01 实测），截不到就记一笔，不让功能断言跟着失败
+  const snap = async (name) => {
+    await sleep(500);
+    try { const b64 = await cdp.eval('ipcRenderer.invoke("test:writing-capture")'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(b64, 'base64')); return; }
+    catch (e) { (result.snapErrors = result.snapErrors || []).push(`${name}: ${String(e.message || e).slice(0, 120)}`); }
+    // 主进程截图不行时退到 CDP 自己的截图（清瓷白 E2E 用的就是这条）
+    try { const s = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(s.data, 'base64')); }
+    catch (e) { console.log(`    （截图 ${name} 没截到：${String(e.message || e).slice(0, 80)}）`); }
+  };
   // 真实键盘输入：聚焦、全选，再插入文字
   const typeInto = async (selector, text) => {
     await until(`document.querySelector(${JSON.stringify(selector)})`, 'input ' + selector);
@@ -127,20 +135,34 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     await until('document.querySelector(".wb-col .wb-col-body .wr-paper")', 'draft column', 300000);
     const v1File = await untilFs(() => fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v1.md')) && 'Claude-1-v1.md', 'draft materialized', 30000);
     const draftText = fs.readFileSync(path.join(dir, 'drafts', v1File), 'utf8');
-    check('AI 按卡片格式交稿，Hub 存成 drafts/Claude-1-v1.md', /^#\s+\S/.test(draftText) && !draftText.includes('hub-writing'), draftText.split('\n')[0]);
+    const usedCard = await cdp.eval('!/没附交稿卡/.test(document.querySelector(".wb-col").innerText)');
+    result.cardFollowed = { v1: usedCard };
+    check('交稿存成 drafts/Claude-1-v1.md，正文里不带卡片', /^#\s+\S/.test(draftText) && !draftText.includes('hub-writing'), `${draftText.split('\n')[0]}（${usedCard ? '附了交稿卡' : '没附卡片，按稿件收下'}）`);
     check('稿件栏显示排版好的正文，不是「没按格式」的原样回复', await cdp.eval('!document.querySelector(".wb-col .wb-note.warn")'));
     check('稿件里没有标签腔', !/【(推断|坐实|工程推断)】/.test(draftText));
-    await until('document.querySelectorAll(".wb-questions .wb-q").length>0', 'question card', 30000);
-    check('问题卡出现，带推荐答案', await cdp.eval('document.querySelector(".wb-q-input").value.trim().length>0'), await cdp.eval('document.querySelector(".wb-q-text").textContent'));
-    await snap('02-初稿与问题卡');
+    // 问不问问题是模型自己的判断：有问题卡走回答，没有就走总评点评，两条路都要能改出 v2
+    const asked = await until('document.querySelectorAll(".wb-questions .wb-q").length>0', 'question card', 30000).then(() => true, () => false);
+    await snap('02-初稿');
 
-    // ③ 回答问题 → 各自改一版
-    await typeInto('.wb-q-input', '写给做调度算法的工程师，多用调度里的例子');
-    await clickText('把回答发给大家');
-    await untilFs(() => userSaid(meeting.id).some((t) => t.includes('回答你们的问题') && t.includes('调度算法')), 'answers sent', 60000);
-    check('回答整理成一条消息发进群', true);
+    if (asked) {
+      // ③a 回答问题 → 各自改一版
+      check('问题卡出现，带推荐答案', await cdp.eval('document.querySelector(".wb-q-input").value.trim().length>0'), await cdp.eval('document.querySelector(".wb-q-text").textContent'));
+      await typeInto('.wb-q-input', '写给做调度算法的工程师，多用调度里的例子');
+      await clickText('把回答发给大家');
+      await untilFs(() => userSaid(meeting.id).some((t) => t.includes('回答你们的问题') && t.includes('调度算法')), 'answers sent', 60000);
+      check('回答整理成一条消息发进群', true);
+    } else {
+      // ③b 没有问题卡：点「总评」写一句 → 发出点评，各自改一版
+      console.log('    （这次 AI 没出问题卡，改走总评点评）');
+      await clickText('总评', '.wb-col');
+      await typeInto('.wb-pop-input', '写给做调度算法的工程师，多用调度里的例子');
+      await clickText('放进点评篮（Ctrl+Enter）', '.wb-pop');
+      await clickText('发出点评，各自改一版', '.wb-basket');
+      await untilFs(() => userSaid(meeting.id).some((t) => t.includes('我的点评') && t.includes('调度算法')), 'comments sent', 60000);
+      check('总评整理成一条点评消息发进群', true);
+    }
     await until('[...document.querySelectorAll(".wb-col .wb-ver")].some(b=>b.textContent==="v2")', 'v2 draft', 300000);
-    check('按回答改出 v2，可在 v1 / v2 之间切换', fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v2.md')));
+    check('按回答 / 点评改出 v2，可在 v1 / v2 之间切换', fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v2.md')));
     await snap('03-改稿v2');
 
     // ④ 鼠标划一段 → 点评这段 → 点评篮
@@ -164,7 +186,9 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     await clickText('汇总定稿', '.wb-basket');
     await untilFs(() => userSaid(meeting.id).some((t) => t.includes('汇总定稿') && t.includes('开头太像讲义') && t.includes(quote.slice(0, 6))), 'finalize sent', 60000);
     check('「汇总定稿」连同点评篮里的意见一起发出', true);
-    check('点评篮发出后清空', await cdp.eval('document.querySelectorAll(".wb-basket .wb-chip").length===0'));
+    // Tab 要确认派发没被拒（约 2.5 秒）才清点评篮：失败时点评要留着
+    await until('document.querySelectorAll(".wb-basket .wb-chip").length===0', 'basket cleared', 15000);
+    check('点评篮确认发出后清空', true);
     await until('document.querySelector(".wb-final:not([hidden]) .wr-paper")', 'final view', 300000);
     check('定稿置顶显示，各家的稿收起在下面', await cdp.eval('!!document.querySelector(".wb-drafts-fold")'));
     await untilFs(() => fs.existsSync(path.join(dir, 'final.md')) && fs.statSync(path.join(dir, 'final.md')).size > 200, 'final.md', 30000);

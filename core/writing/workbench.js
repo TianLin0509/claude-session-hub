@@ -99,7 +99,7 @@ function buildView({ state, members = [], files = [], final = '' }) {
     if (!m || m.role !== 'assistant' || !m.sid) continue;
     if (!bySid.has(m.sid)) bySid.set(m.sid, { sid: m.sid, memberId: m.memberId || '', name: m.speaker || 'AI', kind: '', order: 1000 + bySid.size, items: [] });
     const mem = bySid.get(m.sid);
-    if (m.speaker && (!mem.name || mem.name === mem.kind)) mem.name = m.speaker;
+    if (m.speaker && (!mem.name || mem.name === mem.kind || mem.named === false)) mem.name = m.speaker;
   }
 
   const questions = [];
@@ -117,12 +117,18 @@ function buildView({ state, members = [], files = [], final = '' }) {
     for (const c of cards.filter((x) => x.type === 'questions')) {
       c.items.forEach((it, i) => questions.push({ ...it, from: mem.name, sid: m.sid, turn, key: `${m.id || turn}:${i}` }));
     }
-    if (finalCard) {
+    if ((finalCard || draftCard) && !body.trim()) {
+      // 只有卡片没有正文（AI 把稿存到别处了）：不当稿件，免得落盘成空文件
+      mem.items.push({ ...base, kind: 'reply', title: '', note: '这条回答只附了卡片，没有正文', text: content.trim(), chars: 0 });
+    } else if (finalCard) {
       const item = { ...base, kind: 'final', title: finalCard.title || titleOf(body), note: finalCard.note, text: body, chars: cjk(body) };
       mem.items.push(item);
       if (!finalItem || item.turn >= finalItem.turn) finalItem = { ...item, from: mem.name };
     } else if (draftCard) {
       mem.items.push({ ...base, kind: 'draft', title: draftCard.title || titleOf(body), note: draftCard.note, text: body, chars: cjk(body) });
+    } else if (!cards.length && /^#\s+\S/.test(body) && cjk(body) >= 150) {
+      // 忘了附卡片、但明显是一份稿（「# 标题」开头、有篇幅）：照样按稿件收下，记一句说明
+      mem.items.push({ ...base, kind: 'draft', implicit: true, title: titleOf(body), note: errors.length ? `卡片没读懂（${errors[0]}），按稿件收下` : '没附交稿卡，Hub 按稿件收下', text: body, chars: cjk(body) });
     } else if (!cards.length || cjk(body) >= 200) {
       // 没按格式交稿：整条回答原样给田哥看，不丢
       mem.items.push({ ...base, kind: 'reply', title: titleOf(body), note: errors.length ? `卡片没读懂：${errors[0]}` : '', text: body || content.trim(), chars: cjk(body || content) });
@@ -169,7 +175,9 @@ function buildView({ state, members = [], files = [], final = '' }) {
 
   const allItems = columns.flatMap((c) => c.items);
   const drafts = allItems.filter((it) => it.kind !== 'reply' || it.chars >= 300);
-  const firstDraftAt = drafts.length ? Math.min(...drafts.map((it) => it.turn || 0)) : Infinity;
+  // 「你点评」只看群里交的稿之后田哥有没有再说话；文章目录里的散文件（turn 0）不算
+  const inGroup = drafts.filter((it) => it.turn > 0);
+  const firstDraftAt = inGroup.length ? Math.min(...inGroup.map((it) => it.turn)) : Infinity;
   const steps = {
     idea: userMsgs.length > 0,
     draft: drafts.length > 0,
@@ -185,7 +193,8 @@ function buildView({ state, members = [], files = [], final = '' }) {
   const latestDraft = allItems.filter((it) => it.kind === 'draft' && it.title).sort(byRecent)[0]
     || allItems.filter((it) => it.title).sort(byRecent)[0];
   return {
-    idea: userMsgs.length ? String(userMsgs[0].content).trim() : '',
+    // 写作 Tab 发中心思想时附的格式提醒不算田哥的想法
+    idea: userMsgs.length ? String(userMsgs[0].content).replace(/\n*（写作 Tab：[^）]*）\s*$/, '').trim() : '',
     title: (finalView && finalView.title) || (latestDraft && latestDraft.title) || '',
     latestTurn,
     running: columns.some((c) => c.status === 'working'),
@@ -197,17 +206,19 @@ function buildView({ state, members = [], files = [], final = '' }) {
 }
 
 /**
- * 把交稿 / 定稿落成文章目录里的文件。只写内容有变化的；返回 Hub 写过的稿件文件名清单（存进 piece.json，
- * 下次列「其他稿件文件」时排除）。定稿文件已存在且内容不同（AI 或田哥直接改过）时以卡片为准覆盖——
- * 定稿卡总是群里最新的定稿。
+ * 把交稿落成 drafts/<成员>-v<n>.md、定稿落成 final.md。只写内容有变化的。
+ *   written    Hub 写过的稿件文件名（存进 piece.json，下次列「其他稿件文件」时排除）
+ *   finalHash  上次落盘的定稿卡正文指纹：只有群里出了新的定稿卡才写 final.md。田哥直接改过 final.md，
+ *              下一轮轮询不会把它改回去——他改的正是文风优化要学的东西。
+ * 定稿不再另存一份到 drafts/：文风优化拿 final.md 和 drafts/ 比改动比例，存了就永远是 0%。
  */
-function materialize(dir, view, written = []) {
+function materialize(dir, view, { written = [], finalHash = '' } = {}) {
   const draftsDir = path.join(dir, 'drafts');
   const names = new Set(written);
   for (const col of view.columns) {
     if (!col.sid) continue;
     for (const it of col.items) {
-      if (it.kind !== 'draft' && it.kind !== 'final') continue;
+      if (it.kind !== 'draft' || !it.text.trim()) continue;
       const name = `${slugOf(col.name)}-v${it.version}.md`;
       const file = path.join(draftsDir, name);
       const text = `${it.text.trim()}\n`;
@@ -216,12 +227,14 @@ function materialize(dir, view, written = []) {
       it.file = name;
     }
   }
-  if (view.final && view.final.from) {
-    const file = path.join(dir, 'final.md');
+  let hash = finalHash;
+  if (view.final && view.final.from && view.final.text.trim()) {
     const text = `${view.final.text.trim()}\n`;
-    if (readText(file) !== text) fs.writeFileSync(file, text, 'utf8');
+    const next = require('crypto').createHash('sha1').update(text).digest('hex');
+    const file = path.join(dir, 'final.md');
+    if (next !== finalHash || !readText(file).trim()) { fs.writeFileSync(file, text, 'utf8'); hash = next; }
   }
-  return [...names].sort();
+  return { written: [...names].sort(), finalHash: hash };
 }
 
 module.exports = { parseCards, buildView, materialize, slugOf, titleOf, statusOf };

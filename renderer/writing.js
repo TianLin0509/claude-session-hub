@@ -200,7 +200,11 @@
       S.studio.current = dir;
       S.studio.composing = false;
       S.studio.draft = '';
-      await workbench.sendToGroup(idea, { meeting });
+      // 万一发送失败，工作台会出补发框，里面预填这段话
+      try { localStorage.setItem(`writing-idea:${dir}`, idea); } catch { /* 存不下就只能重写 */ }
+      // 写作群规则只在首轮注入一次，模型偶尔会忘了卡片（2026-10-01 E2E 里 haiku 就漏过）：Tab 替田哥发话时顺带提醒一句
+      await workbench.sendToGroup(`${idea}\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）`, { meeting });
+      try { localStorage.removeItem(`writing-idea:${dir}`); } catch { /* 无 */ }
       toast('写作群已建好，AI 正在写初稿');
     } catch (e) {
       toast(`新文章没有建成：${e.message || e}`, true);
