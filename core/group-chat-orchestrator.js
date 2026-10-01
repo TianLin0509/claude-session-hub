@@ -273,6 +273,11 @@ function artifactsInstruction(workspace) {
 
 function buildSystemPromptText(displayName, scene, opts = {}) {
   const name = displayName || 'AI';
+  // @community-strip 写作场景：群规则整体换成写作规则（稿件进消息正文，不写 HTML 产物）
+  if (scene === 'writing') {
+    try { return require('./writing/scene-prompt.js').buildWritingScenePrompt(name, opts); } catch (e) { /* 写作模块缺失时退回通用规则 */ }
+  }
+  // @community-end
   const parts = [
     '## 规则',
     `- 这里是AI群聊，你是${name}。可赞同、反对、追问、反问用户及其他群聊队友或另起话题。`,

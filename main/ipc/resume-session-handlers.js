@@ -126,6 +126,11 @@ function createResumeSessionHandler(deps) {
       if (meeting && meeting.groupChat && isCodexRuntime && codexMcpEnabled && scenes.buildAiTeamMcpEntryForCodex) {
         addCodexMcpEntry(resumeOpts, scenes.buildAiTeamMcpEntryForCodex(meta.meetingId, meta.kind || 'codex'));
       }
+      // @community-strip 写作场景成员：休眠唤醒后同样不加载工程规则（与新建时一致）
+      if (meeting && meeting.groupChat && meeting.scene === 'writing') {
+        resumeOpts = require('../../core/writing/member-opts.js').withWritingMemberOpts(meta.kind || '', resumeOpts);
+      }
+      // @community-end
       // @community-strip 投研场景工具
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
         const hubDataDir = getHubDataDir();

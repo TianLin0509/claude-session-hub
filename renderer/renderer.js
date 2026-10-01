@@ -1234,6 +1234,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
+  if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
@@ -1758,6 +1759,7 @@ const APP_TOOLBAR_VIEWS = [
   { id: 'chuxin-panel', label: '投研' },
   { id: 'study-panel', label: '学习' },
   { id: 'ran-panel', label: '开发' },
+  { id: 'writing-panel', label: '写作' },
   { id: 'meeting-room-panel', label: '群聊' },
 ];
 
@@ -5492,6 +5494,7 @@ async function selectSession(id, opts = {}) {
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
+  if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
   const mrp = document.getElementById('meeting-room-panel');
@@ -8212,6 +8215,7 @@ const shellController = createShellController({
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
+  if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (fileManagerPanel) fileManagerPanel.close();
   shellController.escapeToHome();
@@ -8453,6 +8457,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // 2026-09-02：session-created 会直接亮出终端面板，但此前只隐藏了群聊面板。
   // 主区是 flex 容器，学习面板若还开着就会和终端并排各占一半。
   if (window.__studyHide) window.__studyHide();
+  if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
@@ -9736,6 +9741,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           currentView = 'card';
           _cardHistoryHydratedSid = sessionId;
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
+          if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
           terminalPanelEl.style.display = '';
           terminalPanelEl.classList.remove('home-active');
