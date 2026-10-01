@@ -65,7 +65,7 @@ function createTurnCardRenderer(options = {}) {
     const presentation = buildTurnPresentation(presentationTurn, {
       cwd: session && session.cwd || opts.cwd || null,
     });
-    return { ...presentationTurn, presentation };
+    return { ...presentationTurn, presentation, assistantIdentity: session?.purpose === 'hub-assistant' };
   }
 
   function publishTurnPresentation(sessionId, turn) {
@@ -505,9 +505,9 @@ function renderTurnCard(turn) {
   if (isUser) {
     avatarHtml = `<span class="turn-avatar av-letter">你</span>`;
   } else {
-    const logo = aiLogoSrc(turn.kind);
+    const logo = turn.assistantIdentity ? 'assets/assistant/penguin.png' : aiLogoSrc(turn.kind);
     avatarHtml = logo
-      ? `<span class="turn-avatar av-logo"><img src="${logo}" alt="${escapeHtml(turn.kind || 'AI')}"></span>`
+      ? `<span class="turn-avatar av-logo"><img src="${logo}" alt="${turn.assistantIdentity ? '企鹅助理' : escapeHtml(turn.kind || 'AI')}"></span>`
       : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
   }
 

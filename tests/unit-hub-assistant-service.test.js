@@ -9,6 +9,14 @@ test('unknown outcome is durable and is never automatically resent',async t=>{co
 test('a busy target cannot be mistaken for an approval prompt',async t=>{const x=setup(t);x.sessions.set('target',{id:'target',status:'waiting'});await assert.rejects(x.service.execute({requestId:'request-125',type:'send',targetSessionId:'target',text:'继续研究'}),/等待输入/);assert.equal(x.count().sent,0);});
 test('missing historical assistant is not silently recreated',async t=>{const x=setup(t);x.service.store.set('sessionId','historical');assert.equal((await x.service.ensureSession()).ok,false);assert.equal(x.count().created,0);});
 test('a progress-only turn cannot invoke mutation tools',async t=>{const x=setup(t);x.service.preparePrompt({text:'最近有什么进展',clientSubmissionId:'read-request'});await assert.rejects(x.service.invokeTool({name:'create_session',arguments:{title:'test',text:'do',operationKey:'one',requestToken:x.service.currentRequest.token}}),/未明确委托/);});
+test('the reported spoken request creates and submits once through the bound tool',async t=>{
+  const x=setup(t);
+  x.service.preparePrompt({text:'在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。',clientSubmissionId:'spoken-create'});
+  const args={title:'南通旅游攻略',text:'制作南通旅游攻略',operationKey:'trip',requestToken:x.service.currentRequest.token};
+  const first=await x.service.invokeTool({name:'create_session',arguments:args});
+  const retry=await x.service.invokeTool({name:'create_session',arguments:{...args,operationKey:'trip-retry'}});
+  assert.equal(first.state,'acknowledged');assert.equal(retry.duplicate,true);assert.deepEqual(x.count(),{created:1,sent:1});
+});
 test('host grant rejects targets outside isolated scope',async t=>{const x=setup(t);x.sessions.set('production',{id:'production',title:'生产任务'});x.service.deps.authorizeAction=()=>false;x.service.preparePrompt({text:'请让生产任务继续研究',clientSubmissionId:'write-request'});await assert.rejects(x.service.invokeTool({name:'send_session',arguments:{sessionId:'production',text:'do',operationKey:'one',requestToken:x.service.currentRequest.token}}),/授权范围/);});
 test('slash commands retain their native input contract',t=>{const x=setup(t),request={text:'/status'};assert.equal(x.service.preparePrompt(request),request);});
 test('action records survive reopening the ledger',t=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-ledger-'));const a=new AssistantStore(dir);a.begin('durable-001',{text:'x'});a.close();const b=new AssistantStore(dir);assert.equal(b.begin('durable-001',{text:'x'}).duplicate,true);b.close();});

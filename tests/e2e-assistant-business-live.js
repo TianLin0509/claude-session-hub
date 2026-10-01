@@ -28,10 +28,11 @@ async function main(){
   const session=async id=>cdp.eval(`JSON.parse(JSON.stringify(sessions.get(${j(id)}) || null))`);
   const finals=async id=>{const s=await session(id);return s?readFinals(s,{tailBytes:8*1024*1024}).records:[];};
   const idle=async id=>until('session idle '+id,async()=>{const s=await session(id);return s&&!require('../core/session-runtime-truth').sessionRuntimeIsActive(s)&&s.status!=='running';},60000);
-  const sendAssistant=async text=>{await click('#assistant-input');await cdp.send('Input.insertText',{text});await click('[data-assistant-send]');};
+  const sendAssistant=async text=>{await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
   const answer=async (count,label)=>until(label,async()=>{const rows=await finals(assistantId);return rows.length>count?rows.at(-1):null;});
   try{
     fs.copyFileSync(auth,path.join(codexHome,'auth.json'));
+    fs.writeFileSync(path.join(codexHome,'AGENTS.md'),`# 真实隔离验收\n旅游攻略产物仅写该会话当前目录的 artifacts/ 或 output/，不得写用户桌面或生产目录。旅游攻略正常联网查询、完成可离线阅读HTML；这是实际生成质量验收，不要仅回复占位标记。其他隔离业务按其 README.md 指定路径完成交付。\n`,'utf8');
     fs.writeFileSync(path.join(codexHome,'config.toml'),`model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n[projects.'${path.resolve(workspace).toLowerCase()}']\ntrust_level = "trusted"\n[projects.'${path.resolve(business).toLowerCase()}']\ntrust_level = "trusted"\n`,'utf8');
     fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6-astra'}},providers:{codex:{backend:'subscription',subscription_profile:'second',subscription_profiles:[{id:'second',label:'主账号',home:codexHome}]}}}),'utf8');
     hub=await launchIsolatedHub({dataDir:data,port:await port(),label:'assistant-business-live',windowMode:'background',allowExternalState:true,extraEnv:{
@@ -52,12 +53,12 @@ async function main(){
     await until('rail pin visible',()=>cdp.eval('(()=>{const e=document.querySelector("#rail-pin"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),30000);
     await click('#rail-pin');await until('rail pinned',()=>cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'),10000);
     await until('assistant navigation visible',()=>cdp.eval('(()=>{const e=document.querySelector("#btn-assistant"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),10000);
-    await click('#btn-assistant');await sendAssistant('现在订单同步的最新进展是什么？还需要我决定什么？只依据实际记录，限120字。');
+    await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));await sendAssistant('现在订单同步的最新进展是什么？还需要我决定什么？只依据实际记录，限120字。');
     assistantId=await until('assistant identity',()=>cdp.eval('ipcRenderer.invoke("assistant:get-overview").then(r=>r.sessionId)'));result.assistantId=assistantId;
     const first=await answer(0,'first progress answer');result.firstAnswer=first;
     assert.match(first.text,/7|七/);assert.match(first.text,/保留|天数/);assert.match(first.text,/\[E[a-zA-Z0-9_-]+\]/);
-    await until('first answer on A page',()=>cdp.eval(`document.querySelector('.assistant-messages')?.textContent.includes(${j(first.text.slice(0,18))})`),30000);
-    assert.equal(await cdp.eval('document.getElementById("assistant-page").hidden'),false);
+    await until('first answer in normal cards',()=>cdp.eval(`document.querySelector('#msg-overlay')?.textContent.includes(${j(first.text.slice(0,18))})`),30000);
+    assert.equal(await cdp.eval('activeSessionId'),assistantId);
     await shot('01-accurate-progress');result.steps.push('空历史索引下，助理页真实问答读到原会话7/8进展与待确认事项');
     await idle(assistantId);const count=(await finals(assistantId)).length;
     await sendAssistant('请推进「订单同步」业务：我确认保留30天。请让原会话按它的 README.md 完成剩余工作，更新 status.json 并写 delivery.md，告诉我实际结果。原会话有新回复后第一时间提醒我。');
@@ -65,20 +66,42 @@ async function main(){
     const delivered=await until('target changed real artifact',async()=>{const s=JSON.parse(fs.readFileSync(path.join(business,'status.json'),'utf8'));return s.completed===8&&s.retentionDays===30&&fs.existsSync(path.join(business,'delivery.md'))?s:null;});result.businessAfter=delivered;
     assert.equal((await session(targetId)).codexSid,result.targetNativeId,'必须推进同一个原生会话');
     const notice=await until('real reply notification',async()=>{const r=await cdp.eval('ipcRenderer.invoke("assistant:notifications")');return r.notifications?.find(n=>n.sessionId===targetId)||null;});result.notification=notice;
-    await until('notification visible',()=>cdp.eval(`document.querySelector('.assistant-right-rail')?.textContent.includes(${j(notice.text.slice(0,18))})`),30000);
-    assert.equal(await cdp.eval('document.getElementById("assistant-page").hidden'),false,'派工后不应抢走助理页面');
+    await click('.assistant-notifications summary');
+    await until('notification visible',()=>cdp.eval(`document.querySelector('.assistant-notice-list')?.textContent.includes(${j(notice.text.slice(0,18))})`),30000);
+    assert.equal(await cdp.eval('activeSessionId'),assistantId,'派工后不应抢走助理会话');
     const actions=await until('dispatch ledger acknowledged',async()=>{const r=await cdp.eval('ipcRenderer.invoke("assistant:actions")');return r.actions?.some(a=>a.state==='acknowledged'&&a.result?.sessionId===targetId)?r.actions:null;});result.actions=actions;
     assert.equal(actions.filter(a=>a.result?.sessionId===targetId).length,1);
-    await shot('02-original-session-progress-and-notice');result.steps.push('按业务简称定位原会话，代发确认30天，真实文件更新至8/8，原生新回复触发提醒且未抢页');
+    await shot('02-original-session-progress-and-notice');await click('.assistant-notifications summary');result.steps.push('按业务简称定位原会话，代发确认30天，真实文件更新至8/8，原生新回复触发提醒且未抢页');
     await idle(assistantId);const beforeThird=(await finals(assistantId)).length;
     await sendAssistant('现在再查订单同步最新结果。刚才需要我确认的事情是否已经解决？限120字，引用原会话最新答复，业务是否验收请分清。');
     const latest=await answer(beforeThird,'updated progress answer');result.latestAnswer=latest;
     assert.match(latest.text,/30|三十/);assert.match(latest.text,/8|八|完成|归档/);
     assert.match(latest.text,/\[E[a-zA-Z0-9_-]+\]/);
-    await until('latest reply visible',()=>cdp.eval(`document.querySelector('.assistant-messages')?.textContent.includes(${j(latest.text.slice(0,18))})`),30000);
+    await until('latest reply visible',()=>cdp.eval(`document.querySelector('#msg-overlay')?.textContent.includes(${j(latest.text.slice(0,18))})`),30000);
     const allNotices=await cdp.eval('ipcRenderer.invoke("assistant:notifications")');assert.equal(allNotices.notifications.filter(n=>n.id===notice.id).length,1);
     await shot('03-latest-progress');result.steps.push('不依赖搜索索引刷新，追问读到刚产生的30天/归档新结果；提醒无重复');
     result.workbenchPath=path.join(data,'assistant/workbench/CURRENT.md');assert(fs.readFileSync(result.workbenchPath,'utf8').includes(targetId));
+    await idle(assistantId);
+    const beforeCreate=await cdp.eval('[...sessions.keys()]');
+    const originalUserText='在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。';
+    result.spokenRequest=originalUserText;
+    await sendAssistant(originalUserText);
+    const created=await until('spoken request creates target through model tool',()=>cdp.eval(`([...sessions.values()].find(s=>!${j(beforeCreate)}.includes(s.id))) || null`));
+    result.createdTargetId=created.id;
+    const createdActions=await until('created task confirmed',async()=>{const r=await cdp.eval('ipcRenderer.invoke("assistant:actions")');return r.actions?.find(a=>a.state==='acknowledged'&&a.result?.sessionId===created.id)||null;});
+    result.createdAction=createdActions;
+    const trip=await until('created tourism session actually answers',async()=>{const rows=await finals(created.id);return rows.length?rows.at(-1):null;},360000);
+    result.createdTargetAnswer=trip;
+    assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
+    const s=await session(created.id);result.createdNativeId=s.codexSid;
+    assert.equal(s.codexProfile,'second');assert.equal(s.model,'gpt-6-astra');
+    const files=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.html')).map(f=>path.join(s.cwd,f));
+    assert(files.length>0,'目标必须实际生成攻略HTML');
+    result.createdArtifacts=files.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
+    assert(files.some(file=>fs.readFileSync(file,'utf8').includes('南通')));
+    assert.equal(await cdp.eval(`[...sessions.keys()].filter(id=>!${j(beforeCreate)}.includes(id)).length`),1);
+    assert.equal(await cdp.eval('activeSessionId'),assistantId,'新建业务不抢助理页');
+    await shot('04-spoken-create-real-trip');result.steps.push('逐字原口语经普通输入→真实模型create_session→唯一新目标→原生confirmed→目标真实南通攻略及HTML');
     result.passed=true;
   }catch(error){result.error=error.stack;process.exitCode=1;if(cdp)await shot('failure').catch(()=>{});}
   finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'),'utf8');result.exit=await gracefulQuit(hub,{timeoutMs:60000});}fs.rmSync(path.join(codexHome,'auth.json'),{force:true});result.authUnchanged=fileHash(auth)===before;if(!result.authUnchanged){result.passed=false;process.exitCode=1;}fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({passed:result.passed,out,steps:result.steps,error:result.error}));}
