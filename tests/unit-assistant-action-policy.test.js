@@ -25,6 +25,35 @@ test('explicit polite action commands remain usable', () => {
   assert.equal(actionIntent('让桌宠研究继续之前先读最新交付', 'send'), true);
 });
 
+test('spoken creation requests include a direct delegation rather than requiring a command template', () => {
+  for (const text of [
+    '在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。',
+    '我想新开一个 Codex session，帮我制作南通旅游攻略。',
+    '新开一个 Codex Session，帮我制作明天的南通旅游攻略。',
+    '帮我开一个 Codex session 制作旅游攻略。',
+    '我明天去南通旅游，你帮我新建一个 Codex session 来做攻略。',
+    '明天去南通旅游，请帮我创建一个会话做攻略。',
+    '新建一个 Codex 会话写攻略，不要改我的文件。',
+    '帮我新建一个会话分析必要性。',
+  ]) assert.equal(actionIntent(text, 'create'), true, text);
+  for (const text of [
+    '在想新开一个codex session 做旅游攻略是否合适？',
+    '我明天去南通旅游，要不要新开一个 Codex session？',
+    '我想了解新开一个 Codex session 的流程。',
+    '你帮我看看新开一个 Codex session 有什么风险？',
+    '先不要新开一个 Codex session，帮我先写任务说明。',
+    '昨天我说“新开一个 Codex session，帮我做攻略”，执行了吗？',
+    '我昨天说过，帮我新建一个会话做攻略，今天只是回顾一下。',
+    '举个例子，帮我创建一个会话做攻略。',
+    '我在想新开一个session，你帮我用文字分析必要性。',
+    '我在想新开一个session，你帮我用现有会话先分析一下。',
+    '暂时不要新开一个codex session，让我想想。',
+    '请举个例子，帮我创建一个会话做攻略。',
+    '请帮我回顾：昨天说过，帮我新建一个会话做攻略。',
+  ]) assert.equal(actionIntent(text, 'create'), false, text);
+  assert.equal(actionIntent('继续订单同步，先不要继续了。','send'),false);
+});
+
 test('prerequisite and advisability questions cannot dispatch even with an exact target', () => {
   const sessions = [{ id: 'id-alpha', title: '桌宠研究' }];
   const questions = [

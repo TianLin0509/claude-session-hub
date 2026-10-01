@@ -1788,6 +1788,7 @@ function panelIsVisible(el) {
 // 非会话视图：面包屑只写视图名，动作区整块收起来 —— 文件 / 记忆 / ⋯ / 关闭会话
 // 这四个动作全都是对「某一个会话」做的，主页上没有会话可做。
 function paintAppToolbarForView(label) {
+  window.__assistantHide?.();
   if (!toolbarCrumbEl || !toolbarActionsEl) return;
   toolbarCrumbEl.dataset.mode = 'view';
   toolbarCrumbEl.title = '';
@@ -1938,6 +1939,7 @@ function paintAppToolbarForSession(sessionId, session, cached) {
   filesBtn.addEventListener('click', () => openSessionFilePanel(session));
 
   headerActions.append(filesBtn, overflowWrap, closeBtn);
+  window.__assistantSync?.(session);
 }
 
 function currentAppToolbarView() {
@@ -3529,12 +3531,12 @@ const _cardOverlayFollowBottomBySession = new Map();
 // 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
 // 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
 const cardViewSessions = readCardViewSessions(localStorage);
-// Older members skipped the ordinary-session card initialization. Initialize
-// their first standalone opening once, then preserve explicit card/PTY choices.
+// Members and the dedicated assistant start with the ordinary card surface
+// once, then preserve the user's explicit card/PTY choices.
 const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
 const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
 function selectionViewModeForSession(sessionId, session) {
-  if (session?.meetingId && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
+  if ((session?.meetingId || session?.purpose === 'hub-assistant') && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
     rememberViewModeForSession(sessionId, 'card');
     memberCardDefaults.add(sessionId);
     writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
@@ -8283,40 +8285,35 @@ window.hubWorkspaces = require('./hub-workspaces').createHubWorkspaces({
 });
 const assistantPanel = require('./assistant-panel').createAssistantPanel({
   document, ipcRenderer,
-  closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+  closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
   getSession: sessionId => sessions.get(sessionId),
-  attachSession: (sessionId, session) => { if (session) sessions.set(sessionId, session); scheduleSessionListRender(); },
-  renderMarkdown: text => DOMPurify.sanitize(marked.parse(text, { async:false }), { FORBID_TAGS:['img','video','audio','iframe'] }),
-  mountTerminal: (sessionId, host) => {
-    const cached = getOrCreateTerminal(sessionId), previous = cached.container.parentNode, next = cached.container.nextSibling;
-    host.appendChild(cached.container); cached.container.style.display = 'block';
-    if (!cached.opened) { cached.terminal.open(cached.container); cached.opened = true; setupImageHover(cached.terminal,cached.container); void hydrateTerminalFromSnapshot(sessionId,cached); }
-    const resize = () => scheduleFitAndResizeTerminal(sessionId,cached);
-    const observer = new ResizeObserver(resize); observer.observe(host); resize();
-    return { dispose() { observer.disconnect(); cached.container.style.display = 'none'; if (previous?.isConnected) previous.insertBefore(cached.container,next?.parentNode === previous ? next : null); else cached.container.remove(); } };
-  },
-  openSession: async (sessionId, session, draft) => {
+  getActiveSessionId: () => activeSessionId,
+  showMessage: message => showToast(message),
+  openSession: async (sessionId, session) => {
     if (!sessions.has(sessionId)) {
       const current = session || (await ipcRenderer.invoke('get-sessions')).find(item => item.id === sessionId);
       if (!current) throw new Error('助理会话暂未出现在当前 Hub，请刷新后重试');
       sessions.set(sessionId, current); renderSessionList();
     }
-    await selectSession(sessionId, { forceScrollBottom: true });
-    if (draft) {
-      const input = [...document.querySelectorAll('.floating-input-bar')].find(bar => bar.dataset.sessionId === sessionId)?.querySelector('.floating-input-box');
-      if (input) {
-        const current = readContenteditablePlainText(input);
-        restoreComposerText(sessionId, input, current ? current + '\n\n' + draft : draft);
-        saveFloatingInputDraft(sessionId, input); input.focus();
-      } else {
-        const current = floatingInputDrafts.get(sessionId);
-        floatingInputDrafts.set(sessionId, current ? current + '\n\n' + draft : draft);
-        showToast('问题已存为助理草稿，打开输入框即可发送');
+    // Carry a draft from the retired assistant composer into the ordinary one.
+    // Persist the combined text before dropping its old key.
+    try {
+      const old = localStorage.getItem('hub.assistant.chat-draft');
+      if (old) {
+        const current = floatingInputDrafts.get(sessionId) || localStorage.getItem('codex-native-draft:'+sessionId) || '';
+        const combined = current === old || current.endsWith('\n\n' + old) ? current : current ? current + '\n\n' + old : old;
+        localStorage.setItem('codex-native-draft:'+sessionId, combined);
+        floatingInputDrafts.set(sessionId, combined);
+        localStorage.removeItem('hub.assistant.chat-draft');
       }
+    } catch (error) {
+      showToast('旧助理草稿尚未迁移，原内容已保留：' + error.message);
     }
+    await selectSession(sessionId, { forceScrollBottom: true, splitBypass: true });
   },
 });
 window.__assistantHide = () => assistantPanel.close();
+window.__assistantSync = session => assistantPanel.syncSession(session);
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 document.addEventListener('hub-config-saved', () => {

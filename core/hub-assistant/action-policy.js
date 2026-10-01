@@ -4,21 +4,39 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 
 // A narrow action-command recognizer, not a general natural-language authority
 // model or an OS sandbox. Ambiguous/read-only wording stays read-only.
-function actionIntent(text, type) {
-  const original = String(text || '').trim();
-  if (/(发送过什么|发送过哪些|创建过什么|创建过哪些|做过什么|做过哪些|要多久|需要多久|是什么意思|有什么区别|有何区别|有哪些步骤|有什么风险|安全吗|靠谱吗|可行吗|了吗|了么|了没|过吗)[？?。\s]*$/.test(original)) return false;
-  // An action mentioned inside a prerequisite/advisability question is still
-  // discussion, even when its opening words look like an imperative.
-  if (/(?:之前|以前|前)[，,\s]*(?:还)?(?:有什么|有哪些|需要确认什么|需要注意什么|需要哪些|要确认什么|要注意什么)/.test(original)) return false;
-  if (/(?:(?:是否|是不是|会不会)(?:更|不|有必要|太)?(?:合适|妥当|合理|可行|安全|可靠|必要|值得)|(?:合适|妥当|合理|必要|值得)(?:吗|么)|(?:好不好|该不该|应不应该|要不要))[？?。\s]*$/.test(original)) return false;
-  let command = original;
+function commandText(text) {
+  let command = String(text).trim();
   for (let i = 0; i < 10; i++) {
     const next = command.replace(/^(?:田哥[，,\s]*|我想让你|我希望你|我需要你|你能不能|你能否|你帮我|请你|能不能|可不可以|可以|能否|请|麻烦你|麻烦|帮我|帮忙|替我|现在|立刻|马上|先|我想要|我希望|我需要|我想)\s*/, '');
     if (next === command) break;
     command = next;
   }
-  if (/(不要|别|禁止|不必|无需|不想|不需要|不允许|不能|暂不|先不|暂停|停止)/.test(command)) return false;
-  if (type === 'create') return /^(新建|创建|启动|开一个|开个).{0,30}(会话|session|任务)/i.test(command);
+  return command;
+}
+function actionIntent(text, type) {
+  const original = String(text || '').trim();
+  const command = commandText(original);
+  if (/^(?:举个例子|例如|比如说|假设|假如|如果|回顾|复述|举例|讨论|我(?:昨天|之前|以前|上次)说过)/.test(command)) return false;
+  if (/(?:只是|仅仅|只是在)(?:回顾|复述|举例|讨论)/.test(original)) return false;
+  if (/(发送过什么|发送过哪些|创建过什么|创建过哪些|做过什么|做过哪些|要多久|需要多久|是什么意思|有什么区别|有何区别|有哪些步骤|有什么风险|安全吗|靠谱吗|可行吗|了吗|了么|了没|过吗)[？?。\s]*$/.test(original)) return false;
+  // An action mentioned inside a prerequisite/advisability question is still
+  // discussion, even when its opening words look like an imperative.
+  if (/(?:之前|以前|前)[，,\s]*(?:还)?(?:有什么|有哪些|需要确认什么|需要注意什么|需要哪些|要确认什么|要注意什么)/.test(original)) return false;
+  if (/(?:(?:是否|是不是|会不会)(?:更|不|有必要|太)?(?:合适|妥当|合理|可行|安全|可靠|必要|值得)|(?:合适|妥当|合理|必要|值得)(?:吗|么)|(?:好不好|该不该|应不应该|要不要))[？?。\s]*$/.test(original)) return false;
+  if (/(?:不要|别|禁止|不必|无需|不想|不需要|不允许|不能|暂不|先不|暂停|停止)\s*(?:再|你|帮我|替我|去|给我|继续|现在|立刻|马上|先)*\s*(?:新建|创建|新开|开个|开一个|启动|让|发送|转交|派发|下达|推进|恢复|继续|这个任务|该任务)/.test(command)) return false;
+  if (type === 'create') {
+    const create = /^(?:新建|创建|启动|新开|开一个|开个).{0,30}(?:会话|session|任务)/i;
+    if (create.test(command)) return true;
+    // Spoken requests may give the travel/business background first. Only a
+    // direct delegation clause can grant creation; merely discussing a new
+    // session does not. The original negation/question checks still apply.
+    const clauses = command.split(/[，,。！？?!；;\n]/).map(s => s.trim());
+    const delegated = /^(?:对\s*)?(?:你帮我|请你|帮我|请|麻烦你|替我)\s*/;
+    if (clauses.some(clause => delegated.test(clause) && create.test(commandText(clause.replace(/^对\s*/, ''))))) return true;
+    return /^(?:我)?在想\s*(?:新建|创建|新开|开一个|开个).{0,30}(?:会话|session)/i.test(command)
+      && clauses.some(clause => delegated.test(clause)
+        && /^(?:通过|用)\s*(?:那个|这个|新(?:的)?)\s*(?:codex\s*)?(?:session|会话)\s*(?:(?:让他|让它)\s*)?(?:帮我\s*)?(?:制作|完成|执行|研究|整理|编写|生成)/i.test(commandText(clause.replace(/^对\s*/, ''))));
+  }
   return /^(发送|转交|派发|下达)\s*\S|^让.{1,100}(继续|恢复|开始|执行|完成)|^(继续|恢复|推进)\s*\S|^把.{1,150}(发给|发送给|转交给|派发给)/i.test(command);
 }
 
