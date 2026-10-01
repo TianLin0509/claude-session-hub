@@ -550,7 +550,8 @@ function renderTurnCard(turn) {
     ? require('./conversation-message-view').renderMessageSequence(progressMessages,
       { escapeHtml, renderMarkdown: renderMarkdownPreservingLocalPaths, foldLong: true }) : '';
   const processCount = progressMessages.length + Number(presentation.activityCount || 0);
-  const processFailures = (presentation.activities || []).filter(a => a.status === 'failed' || a.isError === true).length;
+  // The activity preview shows only the latest items; warnings count the full reply.
+  const processFailures = (turn.toolCalls || []).map(normalizeToolActivity).filter(a => a.status === 'failed' || a.isError === true).length;
   const processHtml = isSimple && (progressHtml || thinkingHtml || toolHtml || (!isUser && _renderMetaPills(turn)))
     ? `<details class="chat-process" data-copy-exclude><summary>查看过程${processCount ? ` · ${processCount} 条` : ''}${processFailures ? `<span class="chat-process-warning"> · ${processFailures} 项失败</span>` : ''}</summary><div class="chat-process-body">${progressHtml}${thinkingHtml}${toolHtml}${_renderMetaPills(turn)}</div></details>` : '';
 

@@ -13,7 +13,7 @@ const ASSISTANT_AVATAR_SRC = 'assets/assistant/penguin.png';
 function chatAvatarSrc(kind, { assistant = false } = {}) {
   if (assistant) return ASSISTANT_AVATAR_SRC;
   const family = canonicalAiKind(String(kind || '').toLowerCase().replace(/-resume$/, ''));
-  const name = ARTWORK[family];
+  const name = Object.hasOwn(ARTWORK, family) ? ARTWORK[family] : null;
   return name ? `assets/ai-avatars/v1/${name}.png` : null;
 }
 
