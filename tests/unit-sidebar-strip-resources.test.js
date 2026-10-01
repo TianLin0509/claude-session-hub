@@ -29,7 +29,7 @@ const sessions = new Map([
   ['hidden-research', { id: 'hidden-research', status: 'idle', purpose: 'chuxin-research' }],
   ['history', { id: 'history', status: 'dormant' }],
 ]);
-let resourceUsage = { cpuPct: 23.4, memoryPct: 67.8 };
+let resourceUsage = { cpuPct: 23.4, memoryPct: 67.8, disk: { root: 'C:\\', usagePct: 89, totalBytes: 1000 * 1024 ** 3 } };
 let proxyInfo = null;
 
 const document = {
@@ -69,6 +69,8 @@ assert.match(stripEl.innerHTML, /title="内存 68%"/);
 assert.match(stripEl.innerHTML, /width:68%/);
 assert.match(stripEl.innerHTML, /CPU<b>23%<\/b>/);
 assert.match(stripEl.innerHTML, /内存<b>68%<\/b>/);
+assert.match(stripEl.innerHTML, /硬盘<b>89%<\/b>/);
+assert.match(stripEl.innerHTML, /C:\\ 已用 89%/);
 assert.ok(!stripEl.innerHTML.includes('等你'));
 assert.ok(!stripEl.innerHTML.includes('ctx'));
 assert.ok(!stripEl.innerHTML.includes('%/h'));
@@ -78,12 +80,13 @@ resourceUsage = { cpuPct: 91, memoryPct: 86 };
 renderer.renderSidebarStrip();
 assert.strictEqual((stripEl.innerHTML.match(/strip-resource-high/g) || []).length, 2);
 
-proxyInfo = { proxy: 'http://127.0.0.1:9', egress: {
+proxyInfo = { proxy: 'http://127.0.0.1:9', clashDelay: { status: 'ok', delayMs: 150, nodeName: '节点 A', measuredAt: Date.now() }, egress: {
   foreign: { ok: true, ip: '203.0.113.10', countryZh: '美国', cityZh: '洛杉矶', locationLabel: '美国·洛杉矶' },
   domestic: { ok: true, countryZh: '中国', cityZh: '北京' },
 } };
 renderer.renderSidebarStrip();
 assert.match(stripEl.innerHTML, /美国 洛杉矶/);
+assert.match(stripEl.innerHTML, /150 ms/);
 assert.match(stripEl.innerHTML, /国内正常/);
 assert.doesNotMatch(stripEl.innerHTML, /203\.0\.113\.10/);
 proxyInfo.egress.foreign.cityZh = '';

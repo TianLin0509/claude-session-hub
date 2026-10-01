@@ -3,6 +3,7 @@
 const systemOs = require('os');
 const { createSystemTelemetry } = require('../../core/system-telemetry.js');
 const { createLiveResourceTelemetry } = require('../../core/live-resource-telemetry.js');
+const { createClashVergeDelayReader } = require('../../core/clash-verge-delay.js');
 
 function readCpuTotals(osApi) {
   const cpus = osApi.cpus();
@@ -81,6 +82,7 @@ function saveClipboardImage(deps) {
 function registerAppUtilityIpc(ipcMain, deps) {
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
   const systemTelemetry = deps.systemTelemetry || createSystemTelemetry();
+  const clashDelay = deps.clashDelay || createClashVergeDelayReader();
   const liveTelemetry = deps.liveTelemetry || createLiveResourceTelemetry();
   ipcMain.handle('get-network-transfer-usage', () => liveTelemetry.sampleNetwork());
   ipcMain.handle('get-resource-top-processes', () => liveTelemetry.sampleProcesses());
@@ -101,9 +103,11 @@ function registerAppUtilityIpc(ipcMain, deps) {
 
   ipcMain.handle('get-system-resource-usage', async (_event, options = {}) => {
     const coreUsage = sampleSystemResourceUsage();
-    // The permanent sidebar uses CPU/memory only. Do not spawn nvidia-smi
-    // or query disks for values no visible UI consumes.
-    if (options.extended === false) return coreUsage;
+    // The sidebar samples disk from the 60 s cache, without spawning nvidia-smi.
+    if (options.extended === false) {
+      try { return { ...coreUsage, disk: await systemTelemetry.sampleDisk() }; }
+      catch { return { ...coreUsage, disk: null }; }
+    }
     try {
       const extended = await systemTelemetry.sample({ force: options && options.force === true });
       return { ...coreUsage, ...extended };
@@ -111,6 +115,8 @@ function registerAppUtilityIpc(ipcMain, deps) {
       return coreUsage;
     }
   });
+
+  ipcMain.handle('get-clash-proxy-delay', () => clashDelay.sample());
 
   ipcMain.handle('get-network-egress-status', (_event, options = {}) => {
     if (typeof deps.getNetworkEgressStatus !== 'function') {

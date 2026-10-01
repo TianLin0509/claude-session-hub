@@ -1115,16 +1115,18 @@ async function refreshSystemResourceUsage(force = false) {
 async function refreshHubProxyInfo(options = {}) {
   if (document.hidden && options.force !== true) return;
   try {
-    const [configResult, egressResult, notificationHealthResult] = await Promise.allSettled([
+    const [configResult, egressResult, notificationHealthResult, delayResult] = await Promise.allSettled([
       ipcRenderer.invoke('get-hub-config-raw'),
       ipcRenderer.invoke('get-network-egress-status', { force: options.force === true }),
       ipcRenderer.invoke('get-completion-notification-health'),
+      ipcRenderer.invoke('get-clash-proxy-delay'),
     ]);
     const cfg = configResult.status === 'fulfilled' ? configResult.value : null;
     const egress = egressResult.status === 'fulfilled' ? egressResult.value : null;
     const notificationHealth = notificationHealthResult.status === 'fulfilled'
       ? notificationHealthResult.value
       : null;
+    const clashDelay = delayResult.status === 'fulfilled' ? delayResult.value : { status: 'unavailable' };
     const next = {
       proxy: (cfg && cfg.proxy) || (hubProxyInfo && hubProxyInfo.proxy) || (egress && egress.proxyEndpoint) || '',
       notificationConfigured: cfg
@@ -1135,11 +1137,14 @@ async function refreshHubProxyInfo(options = {}) {
         : !!(hubProxyInfo && hubProxyInfo.deepseekApiKeySet),
       egress: egress || (hubProxyInfo && hubProxyInfo.egress) || null,
       notificationHealth: notificationHealth || (hubProxyInfo && hubProxyInfo.notificationHealth) || null,
+      clashDelay,
     };
     if (hubProxyInfo
         && hubProxyInfo.proxy === next.proxy
         && hubProxyInfo.notificationConfigured === next.notificationConfigured
         && hubProxyInfo.deepseekApiKeySet === next.deepseekApiKeySet
+        && String(hubProxyInfo.clashDelay?.delayMs ?? '') === String(next.clashDelay?.delayMs ?? '')
+        && hubProxyInfo.clashDelay?.status === next.clashDelay?.status
         && Number(hubProxyInfo.egress && hubProxyInfo.egress.checkedAt) === Number(next.egress && next.egress.checkedAt)
         && String(hubProxyInfo.egress && hubProxyInfo.egress.alert && hubProxyInfo.egress.alert.type || '')
           === String(next.egress && next.egress.alert && next.egress.alert.type || '')
@@ -4796,8 +4801,11 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     stopBtn.title = quotaCancel ? '取消额度恢复后自动继续' : '中断当前 AI';
     stopBtn.setAttribute('aria-label', stopBtn.title);
     stopBtn.disabled = !quotaCancel && session.nativeRuntime?.cancellation?.status === 'pending';
-    sendBtn.hidden = canStop && session.runtimeBackend !== 'acp';
-    sendBtn.title = canStop && session.runtimeBackend === 'acp' ? '加入待发送队列 · 当前轮结束后发送' : '发送 (Enter) · Shift+Enter 换行';
+    sendBtn.hidden = false;
+    sendBtn.title = canStop && session.runtimeBackend === 'acp'
+      ? '加入待发送队列 · 当前轮结束后发送'
+      : canStop ? '补充消息 (Enter) · 工作中也可发送' : '发送 (Enter) · Shift+Enter 换行';
+    sendBtn.setAttribute('aria-label', canStop ? '补充消息' : '发送');
 
     const rail = buildComposerRailModel(session, {
       supportedEfforts: composerSupportedEfforts(session),
@@ -4907,6 +4915,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     if (isNativeAgent(session)) inputBox.focus();
     else terminal.focus();
     const kind = session && session.kind ? session.kind : null;
+    const wasRunning = session && getSessionRuntimeTruth(session).state === RUNTIME_RUNNING;
     const clientSubmissionId = require('node:crypto').randomUUID();
     // PTY 会话里的斜杠命令（/compact、/model…）是 CLI 本地命令，不一定开新的一轮，
     // 也就没有完成信号来收尾。乐观地标「运行中」会一直挂着（2026-09-25 真机：Codex /compact
@@ -4914,12 +4923,12 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     const ptyCommand = !nativeCommand && session?.agentRuntime === 'pty' && text.trimStart().startsWith('/');
     if (!nativeCommand && !ptyCommand) {
       clearSessionWaitingState(sessionId);
-      armPtyBurstFallback(sessionId);
+      if (!wasRunning) armPtyBurstFallback(sessionId);
     }
-    if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (!nativeCommand && !ptyCommand && isTranscriptCliKind(kind) && !wasRunning) markCodexCardWorking(sessionId, 'floating_input');
     // PTY Claude 与 Codex 对齐：点下发送就显示「开始」。首条消息要先等 CLI 就绪才粘贴，
     // 这段时间不能看起来毫无反应；STARTING 有 15s TTL，没有 hook 确认会自行过期。
-    else if (!nativeCommand && !ptyCommand && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
+    else if (!nativeCommand && !ptyCommand && !wasRunning && session?.agentRuntime === 'pty' && isClaudeRuntimeSession(session)) {
       const submittedAt = Date.now();
       notePtyTurnBoundary(session);
       observeSessionRuntime(session, { state: RUNTIME_STARTING, source: 'pty-local-submit',
