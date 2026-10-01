@@ -58,7 +58,7 @@ test('new assistant and delegated targets wait for CLI readiness without changin
   watcher.sendToPty=async(_id,_text,_kind,opts)=>{options.push(opts.requireReady);return{ok:true,sendStatus:'ok'};};
   const registration=registerPromptSubmitIpc({handle(){}},{sessionManager:manager});
   try{
-    await registration.submitPrompt(null,{sessionId:'assistant',text:'question',assistantPage:true});
+    await registration.submitPrompt(null,{sessionId:'assistant',text:'question'});
     await registration.submitPrompt(null,{sessionId:'target',text:'delegation',waitForCliReady:true});
     await registration.submitPrompt(null,{sessionId:'ordinary',text:'ordinary'});
     assert.deepEqual(options,[true,true,false]);

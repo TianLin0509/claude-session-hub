@@ -100,7 +100,7 @@
       <div class="rail-drawer-head"><strong>功能</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="固定功能导航" aria-pressed="false" title="固定功能导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-2.5 1.2-2 4.4L18 16l-2 2-5-5-6 7 2-9-4-4 2-2 2.4 1.5 4.4-2L13 2z"/></svg></button></div>
       <div class="rail-navigation">
       <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V10Z"/><path d="M9 21v-8h6v8"/></svg></span><span class="btn-label">工作台</span></button>
-      <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-expanded="false" aria-controls="assistant-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4h8l4 5v8l-4 4H8l-4-4V9l4-5Z"/><path d="M9 10v2m6-2v2M9 16h6M12 1v3"/></svg></span><span class="btn-label">助理</span></button>
+      <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-controls="terminal-panel"><span class="btn-icon" aria-hidden="true"><img src="assets/assistant/penguin.png" alt="" /></span><span class="btn-label">助理</span></button>
       <!-- @community-strip 投研、学习入口 -->
       <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 16l5-5 4 3 5-7"/><path d="M16 7h3v3"/></svg></span><span class="btn-label">投研</span></button>
       <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6C9 4 6 4 3 5v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1ZM12 6v14"/></svg></span><span class="btn-label">学习</span></button>
@@ -598,7 +598,6 @@
   <script src="floating-input-history.js"></script>
   <script src="workspace-controller.js"></script>
   <script src="meeting-create-modal.js"></script>
-  <section id="assistant-page" class="assistant-page" hidden aria-label="AI Hub 助理"><header class="assistant-toolbar"><span>助理 · Codex</span><button type="button" data-assistant-close>返回会话</button></header><div class="assistant-status" role="status" aria-live="polite" hidden></div><div class="assistant-content"></div></section>
   <section id="account-page" class="ac-page" hidden aria-label="账号">
       <header class="ac-head"><div><h1>账号</h1><p>统一打开账号，记录最近使用。</p></div><div class="ac-head-actions"><input class="ac-search" type="search" placeholder="搜索平台或账号" aria-label="搜索当前分类的平台或账号"><button class="ac-btn" data-ac="back" hidden>← 返回账号</button><button class="ac-btn" data-ac="close">返回会话</button></div></header>
       <nav class="ac-tabs" role="tablist" aria-label="账号分类"></nav>
