@@ -197,20 +197,33 @@ async function resetChallengeCookies(hub, identity, site) {
 // state for that site, then a visible window on screen with no debugger attached to it.
 async function openForHuman(hub, { identity, url, by = '', reset = true }) {
   const root = hub.root, site = siteOf(url);
+  // Do not reset cookies, pause another task, or close a page with a draft when busy.
+  await hub.assertOrdinaryAvailable();
   const lease = startHandoff(root, { identity, site, url, by });
   let cleared = 0;
   try { if (site && reset) cleared = await resetChallengeCookies(hub, identity, site); } catch {}
   let opened;
-  try { opened = await hub._openVisible(identity, url); }
+  try { opened = await hub._openOrdinary(identity, url); }
   catch (e) { endHandoff(root, lease.id); throw e; }
-  update(root, state => { if (state.handoff?.id === lease.id) state.handoff.targetId = opened.targetId; });
-  return { lease: { ...lease, targetId: opened.targetId }, cleared, site };
+  update(root, state => { if (state.handoff?.id === lease.id) Object.assign(state.handoff, { mode: opened.mode, browserPid: opened.pid }); });
+  return { lease: { ...lease, mode: opened.mode, browserPid: opened.pid }, cleared, site };
 }
 
-// The person closed the window we gave them: they are done, automation may resume. Uses only
-// browser-level target listing, never attaches to their page.
+// The person closed the window we gave them: they are done, automation may resume. Check the
+// ordinary process/profile lock, or list targets for older leases; never attach to their page.
 async function settleHandoff(hub) {
-  const lease = handoff(hub.root);
+  const stored = read(hub.root).handoff;
+  const lease = stored?.mode === 'ordinary' ? stored : handoff(hub.root);
+  if (lease?.mode === 'ordinary') {
+    // The spawned process exists before it takes the profile lock. That startup gap
+    // must not be mistaken for the person having closed their window.
+    if (Number.isInteger(lease.browserPid) && require('./web-roundtable/store').alive(lease.browserPid)) return lease;
+    // Ordinary Chrome has no CDP target. Its profile lock is the completion signal;
+    // expiry alone must never let a tool take over a person's open browser.
+    if (await hub.endpoint() || hub.profileHeld()) return lease;
+    if (endHandoff(hub.root, lease.id) && lease.site) releaseSite(hub.root, lease.identity, lease.site);
+    return null;
+  }
   if (!lease?.targetId) return lease || null;
   // Only a successful listing without the person's page ends the handoff. An unreadable
   // endpoint (busy port file, slow Chrome) is unknown; the lease expiry still bounds it.

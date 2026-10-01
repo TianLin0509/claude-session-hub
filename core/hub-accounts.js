@@ -102,7 +102,7 @@ class HubAccounts {
   // handoff runs, a browser-level target listing ends it once the person closed the window.
   riskState() {
     const guard = require('./web-risk-guard'), now = this.now(), risk = guard.read(this.chrome.root);
-    if (guard.handoff(this.chrome.root, now)) guard.settleHandoff(this.chrome).catch(() => {});
+    if (risk.handoff) guard.settleHandoff(this.chrome).catch(() => {});
     return { handoff: guard.handoff(this.chrome.root, now),
       sites: Object.fromEntries(Object.entries(risk.sites).filter(([, e]) => e.until > now).map(([k, e]) => [k, { until: e.until, strikes: e.strikes, kind: e.kind }])) };
   }
