@@ -223,7 +223,10 @@ function createDeliveryEngine({meetingManager,sessionManager,getHubDataDir,getDi
     if(step.deliveries[memberId])throw new Error('该成员已交付，无需跳过');
     const who=getMembers(meeting(id)).find(n=>n.memberId===memberId)?.displayName || memberId;
     if(r.kind==='file' && step.members[0]===memberId){
-      r.controlRevision=(r.controlRevision || 0)+1;r.status='cancelled';r.error=`已跳过 ${who}：本次任务结束，未合并`;save(id,r);return status(id);
+      cancel(id);
+      const cancelled=read(id);
+      cancelled.error=`已跳过 ${who}：本次任务结束，已请求停止成员执行；已开始的合并请核对仓库状态`;
+      save(id,cancelled);return status(id);
     }
     step.deliveries[memberId]={memberId,outcome:'skipped',path:null,hash:null,acceptedAt:Date.now()};
     save(id,r);await advance(id);return status(id);

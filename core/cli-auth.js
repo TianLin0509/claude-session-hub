@@ -28,7 +28,7 @@ function cliAuthStatus({ env = process.env, config = {}, now = Date.now() } = {}
     out.push({
       id: 'codex:' + p.id, kind: 'codex', profileId: p.id, name: 'Codex CLI', label: p.label || p.id, site: 'chatgpt', account,
       isDefault: p.id === (config.codexSubscriptionProfile || 'default'),
-      state: auth?.__unreadable ? 'unreadable' : tokens && (tokens.refresh_token || tokens.access_token) ? 'authorized' : auth?.OPENAI_API_KEY ? 'api_key' : 'missing',
+      state: auth?.__unreadable ? 'unreadable' : require('./codex-auth-validation').invalidApiCredential(auth) ? 'invalid' : tokens && (tokens.refresh_token || tokens.access_token) ? 'authorized' : auth?.OPENAI_API_KEY ? 'api_key' : 'missing',
     });
   }
   const claudeDir = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');

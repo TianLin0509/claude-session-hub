@@ -5,9 +5,11 @@ const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher'),{connec
 const ROOT=fs.mkdtempSync(path.join(os.tmpdir(),'hub-delivery-live-')),DATA=path.join(ROOT,'data'),ART=path.resolve('artifacts/delivery-live');fs.mkdirSync(ART,{recursive:true});
 const secrets=[],delay=ms=>new Promise(r=>setTimeout(r,ms));
 function profiles(){const env={CLAUDE_HUB_AGENT_RUNTIME:'pty',CLAUDE_HUB_HOME_DIR:path.join(ROOT,'home'),AI_HUB_WORKSPACE_ROOT:ROOT,DEEPSEEK_API_KEY:''};
+ const accounts=require('../core/codex-global-account');
+ const codexSource=accounts.resolveAccount(accounts.currentConfig()).home;
  for(const [key,source,names] of [['CODEX_HOME','.codex',['auth.json','config.toml','models_cache.json']],['CLAUDE_CONFIG_DIR','.claude',['.credentials.json','settings.json']]]){
   const dest=path.join(ROOT,source.slice(1));fs.mkdirSync(dest,{recursive:true});env[key]=dest;
-  for(const name of names){const original=path.join(os.homedir(),source,name),target=path.join(dest,name);if(fs.existsSync(original)){fs.copyFileSync(original,target);secrets.push(target);}}
+  for(const name of names){const original=path.join(key==='CODEX_HOME'?codexSource:path.join(os.homedir(),source),name),target=path.join(dest,name);if(fs.existsSync(original)){fs.copyFileSync(original,target);secrets.push(target);}}
  }
  const state=path.join(os.homedir(),'.claude.json');if(fs.existsSync(state)){const dest=path.join(env.CLAUDE_CONFIG_DIR,'.claude.json');fs.copyFileSync(state,dest);secrets.push(dest);}
  // Isolated hooks are deployed by Hub; never retain user notification hooks.

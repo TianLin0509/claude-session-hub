@@ -63,6 +63,18 @@ function cardsOnlyShowFiles() {
     fs.writeFileSync(e.ready, '再次更正的结论', 'utf8');
     assert.equal(A.reconcile(orch), true);
     assert(orch.buildDelta('peer', '下一问').includes('再次更正的结论'), 'changed answer reaches peers in their next delta');
+    fs.writeFileSync(e.ready, '', 'utf8');
+    assert.equal(A.reconcile(orch), true, 'clearing the file clears its card');
+    assert.equal(msg().content, '');
+    assert.equal(orch.state.turns.find(t => t.n === turnNum).by.s1, '');
+    assert.equal(msg().answer.state, 'missing');
+    fs.writeFileSync(e.ready, '恢复的结论', 'utf8'); A.reconcile(orch);
+    fs.unlinkSync(e.ready); A.reconcile(orch);
+    assert.equal(msg().content, '', 'deleting the file clears its card');
+    assert.equal(A.reconcile(orch), false, 'missing file does not cause repeated writes');
+    assert(orch.applyAnswerFile(turnNum, 's1', { state: 'delivered', outcome: 'ready', text: '同一正文', hash: 'same' }));
+    assert(orch.applyAnswerFile(turnNum, 's1', { state: 'delivered', outcome: 'rework', text: '同一正文', hash: 'same' }));
+    assert.equal(msg().answer.outcome, 'rework', 'changing only the delivery outcome updates the card');
     // Rolled-back turns drop their registration, so a reused turn number never shows stale files.
     orch.rollbackTurn(turnNum); assert.equal(orch.answerFileFor(turnNum, 's1'), null);
     const again0 = orch.beginTurn('重来'); assert.equal(again0.turnNum, turnNum);
@@ -73,6 +85,32 @@ function cardsOnlyShowFiles() {
     // Members without a registered file (legacy rooms) keep transcript behaviour.
     orch.patchTurnResult(turnNum, 's2', { text: '旧协议文字', status: 'completed', memberId: 'm2' });
     assert.equal(orch.state.messages.find(m => m.sid === 's2').content, '旧协议文字');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function acceptedCardsKeepTheirVersion() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'answers-pinned-'));
+  try {
+    const run = { id: 'run1', goal: 'goal', stages: [{ members: ['m1'], after: 'end' }], steps: [] };
+    run.steps.push(D.newStep(run, 0));
+    const base = D.directory(dir, 'room'), step = run.steps[0]; D.prepare(base, run, step);
+    const record = path.join(base, 'run.json'), save = () => fs.writeFileSync(record, JSON.stringify(run)); save();
+    const orch = getOrchestrator(dir, 'room'), { turnNum } = orch.beginTurn('任务');
+    const entry = A.entryFor({ dataDir: dir, meetingId: 'room', turnNum, memberId: 'm1', workflowRun: { kind: 'delivery', runId: run.id, stepIndex: 0 } });
+    orch.registerAnswerFile(turnNum, 's1', entry);
+    const text = D.header(run, step, 'm1') + '\n固定交付';
+    fs.writeFileSync(entry.ready, text); step.deliveries.m1 = D.readDelivery(base, run, step, 'm1'); save();
+    assert(A.reconcile(orch));
+    const card = () => orch.state.messages.find(m => m.sid === 's1');
+    fs.writeFileSync(entry.ready, '未接纳的新版本');
+    assert.equal(A.reconcile(orch), false); assert.equal(card().content, '固定交付');
+    fs.unlinkSync(entry.ready); assert.equal(A.reconcile(orch), false); assert.equal(card().content, '固定交付');
+    fs.writeFileSync(entry.rework, text); assert.equal(A.reconcile(orch), false, 'outcome cannot change after acceptance');
+    fs.renameSync(entry.rework, entry.ready);
+    fs.writeFileSync(path.join(base, run.id, '已结束运行.json'), JSON.stringify(run));
+    fs.writeFileSync(record, JSON.stringify({ id: 'run2', steps: [] }));
+    fs.writeFileSync(entry.ready, '旧任务的未接纳修改');
+    A.reconcile(orch); assert.equal(card().content, '固定交付', 'archived runs stay pinned too');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -107,12 +145,14 @@ async function deliveryOwnerSkipEnds() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'answers-skip-owner-'));
   const people = ['a', 'b'].map(memberId => ({ memberId, displayName: memberId.toUpperCase() }));
   const m = { id: 'dev', groupChat: true, subSessions: ['sa', 'sb'], slotSpecs: people, serialWorkflow: S.createDeliveryConfig('development', people) };
+  const interrupts = [];
   const e = createDeliveryEngine({ meetingManager: { getMeeting: () => m, setParticipants() {} }, sessionManager: { getSession: () => ({ status: 'idle' }) }, getHubDataDir: () => dir, getMembers: () => people,
-    ensureMemberReady: async () => {}, logger: { error() {}, warn() {} }, getDispatcher: () => ({ dispatchGroupChatTurn: () => new Promise(() => {}), interruptMeetingTurn() {} }) });
+    ensureMemberReady: async () => {}, logger: { error() {}, warn() {} }, getDispatcher: () => ({ dispatchGroupChatTurn: () => new Promise(() => {}), interruptMeetingTurn(...args) { interrupts.push(args); } }) });
   try {
     await e.start(m.id, 'goal');
     const st = await e.skip(m.id, 'a');
-    assert.equal(st.finished, true); assert.equal(st.done, false, 'ends, not a pass'); assert.match(st.error, /本次任务结束，未合并/);
+    assert.equal(st.finished, true); assert.equal(st.done, false, 'ends, not a pass'); assert.match(st.error, /已请求停止/);
+    assert.deepEqual(interrupts, [[m.id, { reason: 'user_interrupt', targetSids: m.subSessions }]]);
   } finally { e.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -135,5 +175,5 @@ function answerCardRendering() {
 }
 
 (async () => {
-  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, answerCardRendering, deliverySkip, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
+  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, acceptedCardsKeepTheirVersion, answerCardRendering, deliverySkip, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

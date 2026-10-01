@@ -17,7 +17,7 @@ function siteChip(site, now = Date.now(), running = false) {
     default: return { tone: 'idle', text: `${site.name} · 未确认`, action: 'check' };
   }
 }
-const CLI_STATE = { authorized: ' · 已配置', missing: ' · 未授权', expired: ' · 需重新授权', unreadable: ' · 凭据不可读', api_key: ' · 使用 API Key' };
+const CLI_STATE = { authorized: ' · 已配置', missing: ' · 未授权', expired: ' · 需重新授权', unreadable: ' · 凭据不可读', invalid: ' · 凭据格式错误，需重新授权', api_key: ' · 使用 API Key' };
 function cliChip(cli) {
   const name = cli.kind === 'codex' ? `${cli.name}（${cli.label}）` : cli.name;
   const tone = cli.state === 'authorized' || cli.state === 'api_key' ? 'idle' : 'warn';

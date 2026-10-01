@@ -70,7 +70,7 @@ function aiHtml(state, query, esc, now = Date.now()) {
 }
 function cliHtml(state, query, esc) {
   const rows = (state.clis || []).filter(c => matches([c.name, c.label, c.account], query));
-  return rows.map(c => `<article class="ac-account ac-standalone"><div class="ac-account-title"><strong>${esc(c.name)}</strong><span class="ac-account-name">${esc(c.account || c.label || '默认账号')}</span></div><div class="ac-usage ${cliChip(c).tone}">${esc(({ authorized: '已有授权记录', missing: '尚未授权', expired: '需要重新授权', unreadable: '授权记录不可读', api_key: '使用 API Key' })[c.state] || '授权待确认')}</div><div class="ac-row-actions"><button class="ac-open" data-ac="authorize" data-id="${esc(c.id)}">授权 ↗</button><button class="ac-text-btn" data-ac="config" data-id="${esc(c.kind)}">配置</button></div></article>`).join('') || '<p class="ac-empty">没有匹配的命令行账号</p>';
+  return rows.map(c => `<article class="ac-account ac-standalone"><div class="ac-account-title"><strong>${esc(c.name)}</strong><span class="ac-account-name">${esc(c.account || c.label || '默认账号')}</span></div><div class="ac-usage ${cliChip(c).tone}">${esc(({ authorized: '已有授权记录', missing: '尚未授权', expired: '需要重新授权', unreadable: '授权记录不可读', invalid: '凭据格式错误，需重新授权', api_key: '使用 API Key' })[c.state] || '授权待确认')}</div><div class="ac-row-actions"><button class="ac-open" data-ac="authorize" data-id="${esc(c.id)}">授权 ↗</button><button class="ac-text-btn" data-ac="config" data-id="${esc(c.kind)}">配置</button></div></article>`).join('') || '<p class="ac-empty">没有匹配的命令行账号</p>';
 }
 function serviceHtml(service, state, esc, now) {
   const value = usage(state.activity?.entries?.['main:' + service.id], now);

@@ -1364,10 +1364,14 @@ function createGroupChatDispatcher(deps) {
           const attempts=Object.values(historyOrch.state.attempts || {});
           return targetMembers.filter(member=>{
             const session=sessionManager.getSession(member.sid);
-            if (!isNativeSession(session)) return receipts.some(r=>r.sid===member.sid && r.handedOffAt && !r.sourceCompletedAt);
             // Only the latest dispatched attempt can occupy this seat. Older
             // receipts remain collectable without becoming extra send gates.
             const attempt=attempts.filter(a=>a.sid===member.sid).at(-1);
+            if (!isNativeSession(session)) {
+              const receipt=attempt ? receipts.find(r=>r.sid===member.sid && r.attemptId===attempt.attemptId)
+                : receipts.filter(r=>r.sid===member.sid).at(-1);
+              return !!(receipt?.handedOffAt && !receipt.sourceCompletedAt);
+            }
             if (!attempt || !(attempt.status==='handed_off' || receipts.some(r=>r.attemptId===attempt.attemptId && r.handedOffAt))) return false;
             const native=(sessionManager.getNativeSession?.(member.sid) || sessionManager.getNativeCodex?.(member.sid));
             if (!native) return true;

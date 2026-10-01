@@ -70,6 +70,23 @@ function signature(entry) {
     try { const st = fs.statSync(entry[k]); return `${st.size}:${st.mtimeMs}`; } catch { return '0'; }
   }).join('|');
 }
+// Accepted workflow files are pinned inputs. Do not replace their card with a
+// later, unaccepted edit (the workflow reports that conflict separately).
+// Derive identity from the stable path so registrations saved by older Hubs
+// get the same protection. Completed runs are archived before the next run.
+function acceptedDelivery(entry) {
+  if (entry.kind !== 'delivery') return null;
+  const stepDir = path.dirname(entry.dir), runDir = path.dirname(stepDir), base = path.dirname(runDir);
+  const runId = path.basename(runDir), number = Number(path.basename(stepDir).replace(/^step-/, ''));
+  const current = JSON.parse(fs.readFileSync(path.join(base, 'run.json'), 'utf8'));
+  const run = current.id === runId ? current : JSON.parse(fs.readFileSync(path.join(runDir, '已结束运行.json'), 'utf8'));
+  const step = run.steps.find(s => s.number === number), member = entry.memberId || path.basename(entry.dir);
+  const accepted = step?.deliveries?.[member];
+  if (!accepted || accepted.outcome === 'skipped') return accepted || null;
+  const found = require('./delivery-workflow').readDelivery(base, run, step, member);
+  if (!found || found.hash !== accepted.hash || found.outcome !== accepted.outcome || found.path !== accepted.path) throw new Error('已接纳的交付已变化');
+  return accepted;
+}
 /** Applies changed answer files of recent turns to the orchestrator. Returns true if anything changed. */
 function reconcile(orch) {
   const byTurn = orch.state.answerFiles;
@@ -78,11 +95,16 @@ function reconcile(orch) {
   const turns = Object.keys(byTurn).map(Number).sort((a, b) => b - a).slice(0, RECENT_TURNS);
   for (const turnNum of turns) {
     for (const [sid, entry] of Object.entries(byTurn[turnNum] || {})) {
+      try {
+        const accepted = acceptedDelivery(entry);
+        if (accepted?.outcome === 'skipped') continue;
+      } catch { continue; } // Retry on the next scan; never cache a failed read.
       // Skip unchanged files cheaply: size + mtime of every candidate path.
       const sig = signature(entry);
       if (sig === entry.sig) continue;
       const got = read(entry);
       if (got && orch.applyAnswerFile(turnNum, sid, got)) changed = true;
+      else if (!got && entry.hash && orch.applyAnswerFile(turnNum, sid, { state: 'missing', outcome: null, text: '', hash: null })) changed = true;
       entry.sig = sig;
     }
   }
