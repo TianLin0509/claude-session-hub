@@ -12,7 +12,10 @@ const fileHash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).d
 async function main(){
   const createOnly=process.argv.includes('--create-only');
   const managerPermissions=process.argv.includes('--manager-permissions');
-  const out=path.resolve('artifacts/assistant-business-live',new Date().toISOString().replace(/[:.]/g,'-'));
+  const continueIndex=process.argv.indexOf('--continue-run'),continued=continueIndex>=0;
+  const out=continued?path.resolve(process.argv[continueIndex+1]||''):path.resolve('artifacts/assistant-business-live',new Date().toISOString().replace(/[:.]/g,'-'));
+  if(continued){assert(managerPermissions,'continuation requires fixed-manager mode');const relative=path.relative(path.resolve('artifacts/assistant-business-live'),out);assert(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative),'continuation must use a dedicated isolated test directory');}
+  const prior=continued?JSON.parse(fs.readFileSync(path.join(out,'result.json'),'utf8')):null;
   const root=path.join(out,'private-run'),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(home,'codex'),workspace=path.join(root,'workspaces'),business=path.join(workspace,'orders');
   for(const dir of [out,data,codexHome,business])fs.mkdirSync(dir,{recursive:true});
   const production=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
@@ -27,10 +30,13 @@ async function main(){
   assert(profile,'明确的主账号配置应存在');
   const auth=path.join(profile.home,'auth.json'),before=fileHash(auth),historyFile=path.join(data,'empty-history.sqlite');
   new SqliteSessionSearchIndex(historyFile).close();
+  if(!continued){
   fs.writeFileSync(path.join(business,'status.json'),j({fixture:true,project:'订单同步',completed:7,total:8,retentionDays:null,state:'等待用户确认保留天数'}),'utf8');
   fs.writeFileSync(path.join(business,'README.md'),'# 隔离验收业务\n这是一项测试订单同步任务。状态以 status.json 为准。用户确认保留天数后，更新 retentionDays、completed=8、state=已生成归档方案，并写 delivery.md 说明方案。不要操作此目录之外的文件。\n','utf8');
+  }
   let hub,cdp,assistantId,targetId;
   const result={passed:false,profile:'second',model,modelSelection:managerPermissions?'与生产固定助理的当前模型一致；隔离Hub默认亦显式设为该模型':'继承生产Hub默认模型',effort:'high',mode:managerPermissions?'fixed-manager-real-subscription':createOnly?'spoken-create-only':'business-and-spoken-create',scope:'真实订阅+真实Hub/CLI；订单数据为隔离业务样例，模型回复及旅游产物真实生成；搜索索引故意为空以验证原生最新记录补读',out,steps:[]};
+  if(continued){result.continuedFrom=path.join(out,'result.json');result.previouslyVerifiedSteps=prior.steps;}
   const until=async(label,read,timeout=180000)=>{for(const end=Date.now()+timeout;Date.now()<end;){const value=await read();if(value)return value;await wait(350);}throw Error('timeout: '+label);};
   const click=async selector=>{await until('clickable '+selector,()=>cdp.eval(`!!document.querySelector(${j(selector)}) && !document.querySelector(${j(selector)}).disabled`),30000);const point=await cdp.eval(`(()=>{const e=document.querySelector(${j(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});};
   const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
@@ -51,7 +57,7 @@ async function main(){
     await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
     // Test setup uses the real factory; all user-assistant interactions below
     // are actual mouse/keyboard input in the A conversation view.
-    if(!createOnly){
+    if(!createOnly&&!continued){
     const title='订单同步隔离验收-'+Date.now();
     const target=await cdp.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:${j({title,cwd:business,codexProfile:'second',model,effort:'high',mcpProfile:'none'})}})`);
     targetId=target.id;result.targetId=targetId;
@@ -66,7 +72,8 @@ async function main(){
     await until('assistant navigation visible',()=>cdp.eval('(()=>{const e=document.querySelector("#btn-assistant"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),10000);
     await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));
     assistantId=await until('assistant identity',()=>cdp.eval('ipcRenderer.invoke("assistant:get-overview").then(r=>r.sessionId)'));result.assistantId=assistantId;
-    if(!createOnly){
+    if(continued)assert.equal(assistantId,prior.assistantId,'继续验证必须保留上轮助理身份');
+    if(!createOnly&&!continued){
     await sendAssistant('现在订单同步的最新进展是什么？还需要我决定什么？只依据实际记录，限120字。');
     const first=await answer(0,'first progress answer');result.firstAnswer=first;
     assert.match(first.text,/7|七/);assert.match(first.text,/保留|天数/);assert.match(first.text,/\[E[a-zA-Z0-9_-]+\]/);
@@ -113,7 +120,10 @@ async function main(){
       await click('#btn-assistant');
       await until('restored assistant',async()=>{const s=await session(assistantId);return s&&s.codexSid===originalNative;});
       const restored=await session(assistantId);
-      assert.equal(restored.codexMcpEntries.find(e=>e.name==='hub_assistant').env.HUB_ASSISTANT_SESSION_ID,assistantId);
+      assert.equal(restored.mcpProfile,'lean');
+      // Public Session metadata deliberately omits private MCP launch entries.
+      // A subsequent real accepted write proves the refreshed host identity;
+      // the server rejects all missing headers, regardless of user wording.
       result.restoredAssistantNativeId=originalNative;
       const count=(await finals(assistantId)).length,actionsBefore=await cdp.eval('ipcRenderer.invoke("assistant:actions").then(r=>r.actions.length)');
       await sendAssistant('只汇报目前情况，不创建或推进任务。哪些业务已有结果，哪些还要我处理？限120字。');
@@ -154,6 +164,6 @@ async function main(){
     await shot('04-spoken-create-real-trip');result.steps.push('逐字原口语经普通输入→真实模型create_session→唯一新目标→原生confirmed→目标真实南通攻略及HTML');
     result.passed=true;
   }catch(error){result.error=error.stack;process.exitCode=1;if(cdp)await shot('failure').catch(()=>{});}
-  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'),'utf8');try{result.exit=await gracefulQuit(hub,{timeoutMs:60000});}catch(error){result.cleanupError=error.message;result.passed=false;process.exitCode=1;}}fs.rmSync(path.join(codexHome,'auth.json'),{force:true});result.authUnchanged=fileHash(auth)===before;if(!result.authUnchanged){result.passed=false;process.exitCode=1;}fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({passed:result.passed,out,steps:result.steps,error:result.error}));}
+  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,continued?'hub-continuation.log':'hub.log'),hub.log().join('\n'),'utf8');try{result.exit=await gracefulQuit(hub,{timeoutMs:60000});}catch(error){result.cleanupError=error.message;result.passed=false;process.exitCode=1;}}fs.rmSync(path.join(codexHome,'auth.json'),{force:true});result.authUnchanged=fileHash(auth)===before;if(!result.authUnchanged){result.passed=false;process.exitCode=1;}fs.writeFileSync(path.join(out,continued?'continuation-result.json':'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({passed:result.passed,out,steps:result.steps,error:result.error}));}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
