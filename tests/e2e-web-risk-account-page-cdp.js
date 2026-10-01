@@ -22,6 +22,11 @@ async function main() {
   guard.releaseSite(chromeRoot, 'alt', 'chatgpt');  // a person cleared it, then automation met it again
   guard.recordChallenge(chromeRoot, { identity: 'alt', site: 'chatgpt', kind: 'cloudflare' });
   const lease = guard.startHandoff(chromeRoot, { identity: 'alt', site: 'chatgpt', by: 'e2e' });
+  // The company bridge's last steps as hub-browser-tool.js records them: blocked by a check on
+  // the main login 12 minutes ago, fine on the secondary one 5 minutes ago.
+  const at = Date.now();
+  write(path.join(chromeRoot, 'account-activity', 'main-chatgpt-bridge.json'), { identity: 'main', site: 'chatgpt', source: 'bridge', outcome: 'verification_required', at: at - 12 * 60000, lastSuccessAt: at - 3600000 });
+  write(path.join(chromeRoot, 'account-activity', 'alt-chatgpt-bridge.json'), { identity: 'alt', site: 'chatgpt', source: 'bridge', outcome: 'success', at: at - 5 * 60000, lastSuccessAt: at - 5 * 60000 });
   const fixture = path.join(root, 'accounts-fixture.json');
   write(fixture, { recordOpens: true });
   const out = path.resolve('artifacts/web-risk-account-page'); fs.mkdirSync(out, { recursive: true });
@@ -50,8 +55,13 @@ async function main() {
     assert.match(await text(alt), /第 2 次/);
     assert.match(await text(alt + ' [data-ac="open"]'), /去验证/);
     assert.equal(await cdp.eval(`document.querySelectorAll('.ac-company[data-site="chatgpt"] .ac-account[data-identity="main"] .ac-risk').length`), 0, 'the other login is untouched');
+    const main = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="main"]';
+    assert.match(await text(main + ' .ac-tools'), /^中转 1[23] 分钟前需验证$/);
+    assert.match(await text(alt + ' .ac-tools'), /^中转 [56] 分钟前正常$/);
+    assert.match(await text(main + ' [data-ac="open"]'), /去验证/, 'a tool blocked by a check offers a clean window, not a new sign-in');
     await snap('01-paused-and-handoff');
     result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「自动化已暂停到」「第 2 次」和「去验证」；主号不受影响');
+    result.checks.push('账号行显示使用它的网页工具及最近结果：主号「中转 12 分钟前需验证」，副号「中转 5 分钟前正常」');
 
     guard.endHandoff(chromeRoot, lease.id);
     await until('!document.querySelector(".ac-handoff")', 'banner gone after handoff ends', 20000);

@@ -15,7 +15,7 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
     tabs.querySelector('[aria-selected="true"]')?.focus();
   }
   function footerHtml() {
-    return `<footer class="ac-footnote"><span>网页共用 AI Hub 专属 Chrome · 打开网页只记录打开时间</span><details class="ac-connections" data-details="connections"><summary>工具连接</summary>${toolConnections(toolAccounts, esc)}${toolAccountsError ? `<p class="ac-item-error">${esc(toolAccountsError)}</p>` : ''}${toolsHtml()}</details></footer>`;
+    return `<footer class="ac-footnote"><span>网页共用 AI Hub 专属 Chrome · 打开网页只记录打开时间</span><details class="ac-connections" data-details="connections"><summary>工具连接</summary>${toolConnections(toolAccounts, esc, state?.activity)}${toolAccountsError ? `<p class="ac-item-error">${esc(toolAccountsError)}</p>` : ''}${toolsHtml()}</details></footer>`;
   }
   async function call(action, args) {
     const r = await ipcRenderer.invoke('hub-accounts:' + action, args);

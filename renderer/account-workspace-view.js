@@ -33,19 +33,29 @@ function usage(activity, now) {
   return { text: (relativeTime(activity.at, now) + ' · ' + (labels[activity.outcome] || '使用过')).trim(),
     tone: unresolved ? 'warn' : activity.outcome === 'success' ? 'ok' : ['failed', 'login_required', 'verification_required', 'rate_limited'].includes(activity.outcome) ? 'warn' : 'idle',
     login: !!unresolved || ['login_required', 'verification_required'].includes(activity.outcome),
+    // A check is passed in a clean window (a handoff when the site is paused), not by signing in again.
+    verify: (unresolved || activity.outcome) === 'verification_required',
     note: unresolved && unresolved !== activity.outcome ? '最近调用' + labels[unresolved] : activity.lastSuccessAt && activity.outcome !== 'success' ? '上次成功：' + relativeTime(activity.lastSuccessAt, now) : '',
     title: ({ images: '生图 MCP', roundtable: '网页圆桌', website: '网页入口', history: '专属 Chrome 访问记录；不代表当前仍已登录' }[activity.source] || '使用记录') + ' · ' + new Date(activity.at).toLocaleString('zh-CN') };
 }
+// Which tools use this login and how their last step went (hub-account-activity.js sources).
+const TOOL_NAMES = { images: '生图', bridge: '中转', roundtable: '圆桌' };
+const TOOL_OUTCOMES = { success: '正常', verification_required: '需验证', login_required: '需登录', rate_limited: '限流', failed: '未完成', using: '进行中' };
+function toolsNote(entry, now = Date.now()) {
+  return Object.entries(entry?.sources || {}).filter(([source]) => TOOL_NAMES[source]).sort((a, b) => b[1].at - a[1].at)
+    .map(([source, v]) => TOOL_NAMES[source] + ' ' + relativeTime(v.at, now) + (TOOL_OUTCOMES[v.outcome] || '')).join(' · ');
+}
+const toolsHtmlLine = (note, esc) => note ? `<small class="ac-tools" title="使用这个账号的网页工具及其最近一次结果">${esc(note)}</small>` : '';
 const matches = (values, query) => !query || values.join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-function usageHtml(value, esc) {
-  return `<div class="ac-usage ${value.tone}" title="${esc(value.title || '')}"><span>${esc(value.text)}</span>${value.note ? `<small>${esc(value.note)}</small>` : ''}</div>`;
+function usageHtml(value, esc, tools = '') {
+  return `<div class="ac-usage ${value.tone}" title="${esc(value.title || '')}"><span>${esc(value.text)}</span>${value.note ? `<small>${esc(value.note)}</small>` : ''}${toolsHtmlLine(tools, esc)}</div>`;
 }
 // A site that challenged automation is paused (core/web-risk-guard.js); a person's handoff
 // pauses every web tool. Both are shown so nobody wonders why a tool is waiting.
-function riskHtml(entry, esc) {
+function riskHtml(entry, esc, tools = '') {
   if (!entry) return '';
   const until = new Date(entry.until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return `<div class="ac-usage warn ac-risk" title="网站要求人机验证，自动化不再重试，避免累积失败次数"><span>${esc('自动化已暂停到 ' + until)}</span><small>${esc('网站要求人机验证' + (entry.strikes > 1 ? '（第 ' + entry.strikes + ' 次）' : '') + '，点「去验证」')}</small></div>`;
+  return `<div class="ac-usage warn ac-risk" title="网站要求人机验证，自动化不再重试，避免累积失败次数"><span>${esc('自动化已暂停到 ' + until)}</span><small>${esc('网站要求人机验证' + (entry.strikes > 1 ? '（第 ' + entry.strikes + ' 次）' : '') + '，点「去验证」')}</small>${toolsHtmlLine(tools, esc)}</div>`;
 }
 function handoffHtml(risk, esc) {
   const lease = risk?.handoff;
@@ -59,11 +69,12 @@ function aiHtml(state, query, esc, now = Date.now()) {
     if (!accounts.length) return '';
     return `<article class="ac-company" data-site="${card.site}"><header>${brandIcon(card, esc)}<h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>
       ${accounts.map(a => {
-        const activity = usage(state.activity?.entries?.[a.identity + ':' + card.site], now);
+        const entry = state.activity?.entries?.[a.identity + ':' + card.site];
+        const activity = usage(entry, now), tools = toolsNote(entry, now);
         const paused = state.risk?.sites?.[a.identity + ':' + card.site];
         if (paused) activity.login = true;
         return `<div class="ac-account" data-identity="${a.identity}"><div class="ac-account-title">${brandIcon(card, esc, true)}<strong>${esc(card.product)}</strong><span class="ac-account-name">${esc(a.account === '账号待确认' ? a.label : a.account)}</span>${a.preferred ? '<span class="ac-default">默认</span>' : ''}</div>
-          ${paused ? riskHtml(paused, esc) : usageHtml(activity, esc)}<div class="ac-row-actions"><button class="ac-open" data-ac="${paused ? 'open' : activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${paused ? '去验证' : activity.login ? '去登录' : '打开'} ↗</button>
+          ${paused ? riskHtml(paused, esc, tools) : usageHtml(activity, esc, tools)}<div class="ac-row-actions"><button class="ac-open" data-ac="${paused || activity.verify ? 'open' : activity.login ? 'login' : 'open'}" data-site="${card.site}" data-identity="${a.identity}" aria-label="打开 ${esc(card.product)} ${esc(a.label)}">${paused || activity.verify ? '去验证' : activity.login ? '去登录' : '打开'} ↗</button>
           <details class="ac-more" data-details="account-${card.site}-${a.identity}"><summary aria-label="${esc(card.product)} ${esc(a.label)}更多操作">···</summary><div>${!a.preferred ? `<button data-ac="preferred" data-site="${card.site}" data-identity="${a.identity}">设为默认账号</button>` : '<span>当前默认账号</span>'}${card.accounts.length < 2 ? `<button data-ac="add" data-site="${card.site}" data-identity="alt">添加第二个账号</button>` : ''}</div></details></div></div>`;
       }).join('')}</article>`;
   }).join('') || '<p class="ac-empty">没有匹配的账号</p>');
@@ -87,8 +98,13 @@ function servicesHtml(data, tab, query, state, esc, error, now = Date.now()) {
   const services = data.services.filter(s => !['images', 'bridge', 'roundtable'].includes(s.id) && (GROUP[s.id] || 'api') === tab && matches([s.name, ...(s.consumers || []).map(c => c.name)], query));
   return services.map(s => serviceHtml(s, state, esc, now)).join('') || '<p class="ac-empty">没有匹配的账号</p>';
 }
-function toolConnections(data, esc) {
-  if (!data) return '';
-  return data.services.filter(s => ['images', 'bridge', 'roundtable'].includes(s.id)).map(s => `<div class="ac-connection"><span>${esc(s.name)}</span><span>${esc(BINDING[s.status])}</span><small>${s.identities.map(i => (i.identity === 'main' ? '账号 1' : '账号 2')).join('、')}</small></div>`).join('');
+// A tool's latest step on any login it uses, for the connection list.
+function lastToolStep(activity, tool, now) {
+  const steps = Object.values(activity?.entries || {}).map(e => e.sources?.[tool]).filter(Boolean).sort((a, b) => b.at - a.at);
+  return steps.length ? '最近：' + relativeTime(steps[0].at, now) + (TOOL_OUTCOMES[steps[0].outcome] || '') : '';
 }
-module.exports = { TABS, relativeTime, usage, aiHtml, cliHtml, servicesHtml, toolConnections };
+function toolConnections(data, esc, activity, now = Date.now()) {
+  if (!data) return '';
+  return data.services.filter(s => ['images', 'bridge', 'roundtable'].includes(s.id)).map(s => `<div class="ac-connection"><span>${esc(s.name)}</span><span>${esc(BINDING[s.status])}</span><small>${s.identities.map(i => (i.identity === 'main' ? '账号 1' : '账号 2')).join('、')}${lastToolStep(activity, s.id, now) ? ' · ' + esc(lastToolStep(activity, s.id, now)) : ''}</small></div>`).join('');
+}
+module.exports = { TABS, relativeTime, usage, toolsNote, aiHtml, cliHtml, servicesHtml, toolConnections };
