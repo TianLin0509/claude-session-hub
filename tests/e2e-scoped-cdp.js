@@ -79,6 +79,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     fs.writeFileSync(script, 'async page => { await page.locator("#go").click({ timeout: 5000 }); return { visibility: await page.evaluate(() => document.visibilityState), clicked: await page.evaluate(() => window.clicked === true) }; }');
     assert.deepEqual((await run(tool, ['run-code', '--filename', script])).result, { visibility: 'visible', clicked: true });
 
+    // The image tool focuses its own page through a session it opens itself (menus close on blur).
+    fs.writeFileSync(script, 'async page => { const s = await page.context().newCDPSession(page); await s.send("Emulation.setFocusEmulationEnabled", { enabled: true }); const focused = await page.evaluate(() => document.hasFocus()); await s.send("Emulation.setFocusEmulationEnabled", { enabled: false }); await s.detach(); return { focused }; }');
+    assert.deepEqual((await run(tool, ['run-code', '--filename', script])).result, { focused: true });
+
     // Downloads keep working through the scoped connection. The tool clicks from the page as the
     // image tool does: an off-screen page gets no animation frames, and synthetic focus stays off.
     const saved = path.join(root, 'saved.bin');

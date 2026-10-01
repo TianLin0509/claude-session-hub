@@ -13,13 +13,14 @@ async function fakeBrowser(t) {
   const server = new WebSocket.Server({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
   const received = [], peers = [];
+  let attached = 0;
   server.on('connection', ws => {
     peers.push(ws);
     ws.on('message', bytes => {
       const m = JSON.parse(bytes); received.push(m);
       const reply = result => ws.send(JSON.stringify({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), result }));
       if (m.method === 'Target.getTargetInfo' && m.params?.targetId === 'OWN') reply({ targetInfo: { targetId: 'OWN', type: 'page', url: 'https://chatgpt.com/', browserContextId: 'C', attached: false } });
-      else if (m.method === 'Target.attachToTarget') reply({ sessionId: 'S1' });
+      else if (m.method === 'Target.attachToTarget') reply({ sessionId: 'S' + ++attached });
       else reply({ echo: m.method });
     });
   });
@@ -109,4 +110,20 @@ test('accepts only the verified local browser endpoint and at least one owned pa
   await assert.rejects(scopedConnection({ port: 9222, ws: 'ws://example.com:9222/browser' }, ['OWN']), /Invalid local/);
   await assert.rejects(scopedConnection({ port: 9222, ws: 'ws://127.0.0.1:9223/browser' }, ['OWN']), /Invalid local/);
   await assert.rejects(scopedConnection({ port: 9222, ws: 'ws://127.0.0.1:9222/browser' }, []), /no owned page/);
+});
+
+test('a session the tool opens itself (newCDPSession) reaches owned pages only and may focus them', async t => {
+  const chrome = await fakeBrowser(t);
+  const { call } = await client(t, await scopedConnection(chrome.ep, ['OWN']));
+  const browser = (await call('Target.attachToBrowserTarget')).result.sessionId;
+  assert.match(browser, /^scoped-browser-/);
+  assert.equal(chrome.received.some(m => m.method === 'Target.attachToBrowserTarget'), false, 'never a real browser session');
+  assert.match((await call('Target.attachToTarget', { targetId: 'OTHER', flatten: true }, browser)).error.message, /scoped/);
+  assert.match((await call('Target.getTargets', {}, browser)).error.message, /scoped/);
+  const own = (await call('Target.attachToTarget', { targetId: 'OWN', flatten: true }, browser)).result.sessionId;
+  assert.equal(own, 'S2');
+  assert.equal((await call('Emulation.setFocusEmulationEnabled', { enabled: true }, own)).result.echo, 'Emulation.setFocusEmulationEnabled', 'the tool asked for focus on its own page');
+  assert.deepEqual((await call('Emulation.setFocusEmulationEnabled', { enabled: true }, 'S1')).result, {}, 'the automatic session still gets no focus');
+  assert.deepEqual((await call('Target.detachFromTarget', { sessionId: own }, browser)).result, {});
+  assert.match((await call('Runtime.evaluate', {}, own)).error.message, /Unknown session/);
 });

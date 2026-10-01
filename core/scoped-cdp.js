@@ -10,7 +10,9 @@
 // - the browser-level auto-attach is answered with the owned pages only;
 // - a page's own auto-attach (its frames and workers) is answered without attaching;
 // - browser commands are limited to the ones a page tool needs; others are refused;
-// - synthetic focus is not emulated (ChatGPT refetches on focus).
+// - synthetic focus is not emulated (ChatGPT refetches on focus), except on a session the tool
+//   opens itself with page.context().newCDPSession(page): the image tool focuses its own page
+//   that way while it uses a menu, which closes on blur. Such a session reaches owned pages only.
 // Page traffic, cookies and download bytes pass unchanged and are never logged.
 const http = require('http');
 const crypto = require('crypto');
@@ -45,6 +47,7 @@ async function scopedConnection(ep, targetIds, { onRefused } = {}) {
     const upstream = new WebSocket(endpoint, { handshakeTimeout: 5000, perMessageDeflate: false });
     sockets.add(client); sockets.add(upstream);
     const pending = new Map(), sessions = new Map();   // sessionId -> targetInfo
+    const browserSessions = new Set(), explicit = new Set();   // newCDPSession: browser stand-in, page sessions
     let nextId = RELAY_ID, ready = false, queued = [];
     const stop = () => {
       queued = [];
@@ -73,13 +76,34 @@ async function scopedConnection(ep, targetIds, { onRefused } = {}) {
           return;
         }
         if (method === 'Target.setDiscoverTargets') { answer(msg, {}); return; }
+        // Playwright's newCDPSession goes through a browser session; a stand-in that can attach
+        // to owned pages and nothing else.
+        if (method === 'Target.attachToBrowserTarget') {
+          const id = 'scoped-browser-' + crypto.randomUUID();
+          browserSessions.add(id); answer(msg, { sessionId: id }); return;
+        }
         const ownedTarget = ROOT_FOR_OWNED.has(method) && (method === 'Target.getTargetInfo' && !params.targetId || owned.has(params.targetId));
         if (!ROOT_ALLOWED.has(method) && !ownedTarget) { refuse(msg, 'Not available through the scoped Hub connection: ' + method); return; }
+      } else if (browserSessions.has(sessionId)) {
+        if (method === 'Target.attachToTarget' && owned.has(params.targetId)) {
+          call('Target.attachToTarget', { targetId: params.targetId, flatten: true }).then(async ({ sessionId: id }) => {
+            sessions.set(id, (await call('Target.getTargetInfo', { targetId: params.targetId })).targetInfo); explicit.add(id);
+            answer(msg, { sessionId: id });
+          }, e => refuse(msg, e.message));
+          return;
+        }
+        if (method === 'Target.detachFromTarget' && explicit.has(params.sessionId)) {
+          call('Target.detachFromTarget', { sessionId: params.sessionId }).then(() => {
+            sessions.delete(params.sessionId); explicit.delete(params.sessionId); answer(msg, {});
+          }, e => refuse(msg, e.message));
+          return;
+        }
+        refuse(msg, 'Not available through the scoped Hub connection: ' + method); return;
       } else {
         if (!sessions.has(sessionId)) { refuse(msg, 'Unknown session'); return; }
         // The page's frames and workers stay unattached: the challenge frame lives there.
         if (method === 'Target.setAutoAttach') { answer(msg, {}); return; }
-        if (method === 'Emulation.setFocusEmulationEnabled' && params.enabled === true) { answer(msg, {}); return; }
+        if (method === 'Emulation.setFocusEmulationEnabled' && params.enabled === true && !explicit.has(sessionId)) { answer(msg, {}); return; }
         if (method.startsWith('Target.') && method !== 'Target.getTargetInfo') { refuse(msg, 'Not available through the scoped Hub connection: ' + method); return; }
       }
       upstream.send(JSON.stringify(msg));
