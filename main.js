@@ -1878,8 +1878,9 @@ registerTranscriptIpc(ipcMain, {
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
 const resumeSession = createResumeSessionHandler({
-  async prepareAssistantResume() {
+  async prepareAssistantResume(meta) {
     if (!assistantService) throw new Error('助理服务尚未就绪');
+    assistantService.requireAssistantResume(meta);
     await assistantService.connectBridge();
     return { mcpProfile: 'lean', codexMcpEntries: [assistantService.getMcpEntry()] };
   },
@@ -1941,6 +1942,7 @@ const promptOperations = registerPromptSubmitIpc(ipcMain, {
   preparePrompt(request, session) {
     if (session?.purpose !== 'hub-assistant') return request;
     if (!assistantService) throw new Error('助理服务尚未就绪，消息未发送');
+    if (session.id !== request.sessionId || !assistantService.isAssistantSession(session.id)) throw new Error('请求不是固定助理会话，消息未发送');
     return assistantService.preparePrompt(request);
   },
 });

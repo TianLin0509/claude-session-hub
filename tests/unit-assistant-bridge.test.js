@@ -28,7 +28,7 @@ test('bridge preserves task text when a UTF-8 character spans HTTP chunks', asyn
     client.end(bytes.subarray(split));
     const result = await response;
     assert.equal(result.status, 200);
-    assert.deepEqual(observed, request);
+    assert.deepEqual(observed, {...request,callerSessionId:''});
     assert.equal(result.body.ok, true);
   } finally { bridge.close(); }
 });
