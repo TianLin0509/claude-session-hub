@@ -8266,7 +8266,7 @@ const accountCenterPanel = require('./account-center-panel').createAccountCenter
 });
 window.hubWorkspaces = require('./hub-workspaces').createHubWorkspaces({
   document, window, memory: memoryPanel, capabilities: capabilityPanel, memo: memoPanel,
-  beforeOpen: () => accountCenterPanel.close(),
+  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); },
   search: { open: pastSessionModals.openSearchModal, close: pastSessionModals.closeSearchModal },
 });
 const openConfigModal = configModal.open;

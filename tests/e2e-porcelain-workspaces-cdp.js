@@ -48,7 +48,15 @@ async function port() { const s=net.createServer(); await new Promise(r=>s.liste
     await click('[data-view="library"]');await until('document.querySelectorAll(".wr-item").length===1','final enters library');await click('.wr-item');await until('document.querySelector(".wr-reader .wr-paper")','reader');
     await check('document.querySelectorAll(".wr-filters input[type=checkbox]").length>=5','all library filters retained');await shot('02-library');
     await click('[data-view="voice"]');await until('document.querySelector(".wr-lines")','voice source');await textButton('#wr-view-voice','编辑');await until('document.querySelector(".wr-voice-editor")','voice editor');await click('.wr-voice-editor');await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'End',code:'End',modifiers:2,windowsVirtualKeyCode:35});await cdp.send('Input.insertText',{text:'\n界面回归：保留原有行为。\n'});await textButton('#wr-view-voice','保存（Ctrl+S）');await until('!document.querySelector(".wr-voice-editor")','save done');assert(fs.readFileSync(path.join(voice,'SKILL.md'),'utf8').includes('界面回归'));result.checks.push('voice saves real isolated file');await shot('03-voice');
+    const hasAssistant=await cdp.eval('!!document.getElementById("btn-assistant")');
+    if(hasAssistant){await click('#btn-assistant');await until('document.body.classList.contains("assistant-open")','assistant open');}
     await click('#btn-rail-capabilities');await until('document.querySelector("#hub-workspace[data-area=resources]") && document.querySelector("#capability-page.hw-embedded")','resources');await shot('04-tools');
+    if(hasAssistant){
+      await check('!document.body.classList.contains("assistant-open")','assistant closes on resource navigation');
+      await click('#btn-assistant');await check('document.getElementById("hub-workspace").hidden','resources close on assistant navigation');
+      await click('#btn-rail-memo');await check('!document.body.classList.contains("assistant-open")','assistant closes on review navigation');
+      await click('#btn-rail-capabilities');
+    }
     await click('[data-cp-tab="coverage"]');await until('document.querySelector(".cp-matrix")','coverage matrix');await check('document.querySelectorAll(".cp-matrix th").length>=5','AI coverage columns retained');
     await click('[data-hw-tab="memory"]');await until('document.querySelector("#memory-page.hw-embedded .mp-content")','memory');await check('document.querySelector("[data-tab=library]").getAttribute("aria-selected")==="true"','memory defaults to library');await shot('05-memory');
     await click('#memory-page [data-tab="dream"]');await until('document.querySelector("#memory-page [data-tab=dream]").getAttribute("aria-selected")==="true"','dream');result.checks.push('dream remains reachable');
