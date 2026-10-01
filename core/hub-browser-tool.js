@@ -64,6 +64,9 @@ class BrowserTool {
     // A busy local CDP endpoint can miss its short health deadline while Chrome
     // and the owned tab still exist. Recheck once before declaring the page gone.
     const ep = await this.hub.endpoint() || await this.hub.endpoint();
+    // A missing health response is not proof that Chrome or the old task is gone.
+    // Keep its binding while the profile is held; opening again would orphan that task.
+    if (!ep && this.hub.profileHeld()) throw Error('Timeout: Hub browser endpoint unavailable; existing page preserved');
     if (!record || !ep || record.browserWs !== ep.ws || record.identity !== this.binding.identity) return null;
     const { CDP } = require('./web-roundtable/cdp');
     const cdp = await CDP.connect(ep.ws, ep.port);
@@ -86,30 +89,20 @@ class BrowserTool {
   async withPage(fn, { downloads = false } = {}) {
     const target = await this.target();
     if (!target) throw Error('No browser session: owned Hub page is not open');
-    // This attach reaches every page of the browser; a person verifying must have it alone.
     guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity });
-    const chromium = this.chromium || require(this.binding.playwright).chromium;
-    // Attaching must not simulate focus in every user/tool tab. ChatGPT refetches
-    // on focus, so a short-lived connection per queue poll otherwise causes a
-    // browser-wide request burst (and HTTP 429) unrelated to this owned page.
-    const relay = downloads ? await require('./passive-cdp-connection').passiveDownloadConnection(target.ep) : null;
-    let browser;
+    // Attached to the owned page only: never the person's windows, other tools' tabs or the
+    // challenge frame inside a page (see scoped-cdp.js).
+    const connection = await this.connectPage(target, { downloads });
     try {
-      browser = await chromium.connectOverCDP(relay?.endpoint || `http://127.0.0.1:${target.ep.port}`, { noDefaults: !downloads });
-      for (const context of browser.contexts()) for (const page of context.pages()) {
-        const cdp = await context.newCDPSession(page);
-        let info;
-        try { info = await cdp.send('Target.getTargetInfo'); } finally { await cdp.detach(); }
-        if (info.targetInfo.targetId === target.targetId) {
-          guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: page.url() });
-          return await fn(page);
-        }
-      }
-      throw Error('No browser session: owned Hub page is not visible to the runtime');
-    } finally {
-      // For a CDP connection Playwright close disconnects its transport, not Chrome.
-      try { await browser?.close(); } finally { await relay?.close(); }
-    }
+      guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: connection.page.url() });
+      return await guard.runProtected(this.binding.root, {
+        identity: this.binding.identity, page: connection.page, source: this.binding.id,
+      }, () => fn(connection.page));
+    } finally { await connection.close(); }
+  }
+  async connectPage(target, { downloads = false } = {}) {
+    const chromium = this.chromium || require(this.binding.playwright).chromium;
+    return require('./scoped-cdp').connectPage(chromium, target.ep, target.targetId, { downloads });
   }
   async execute(argv) {
     const [command, ...args] = argumentsOf(argv);
@@ -178,9 +171,19 @@ class BrowserTool {
     throw Error('Unsupported Hub browser command: ' + command);
   }
 }
+// The account page shows how the company bridge's last step on its login went. Image
+// results come from the image queue itself (hub-account-activity.js).
+function noteActivity(binding, argv, outcome) {
+  const [command] = argumentsOf(argv);
+  if (binding.tool !== 'bridge' || !['goto', 'run-code'].includes(command) || !outcome) return;
+  try { require('./hub-account-activity').recordActivity(binding.root, { identity: binding.identity, site: 'chatgpt', source: 'bridge', outcome }); } catch {}
+}
 async function main(binding, argv = process.argv.slice(2)) {
-  try { const result = await new BrowserTool(binding).execute(argv); process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n'); }
-  catch (e) {
+  try {
+    const result = await new BrowserTool(binding).execute(argv);
+    noteActivity(binding, argv, result?.challenge === true ? 'verification_required' : 'success');
+    process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n');
+  } catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
     const category = /^Unsupported Hub browser command/.test(e.message) ? 'Unsupported command'
       : /^Human handoff/.test(e.message) ? 'Human handoff'
@@ -190,7 +193,9 @@ async function main(binding, argv = process.argv.slice(2)) {
       : /strict mode violation/.test(e.message) ? 'strict mode violation'
       : /Target.*closed/.test(e.message) ? 'Target closed'
       : /Timeout|timeout/.test(e.message) ? 'Timeout' : 'Hub browser operation failed';
+    // A person holding the browser is not a failure of the tool.
+    noteActivity(binding, argv, category === 'Site challenged' ? 'verification_required' : category === 'Human handoff' ? null : 'failed');
     process.stdout.write(JSON.stringify({ isError: true, error: category }) + '\n'); process.exitCode = 1;
   }
 }
-module.exports = { BrowserTool, main, argumentsOf, validateBinding, save, read, integrationStatus };
+module.exports = { BrowserTool, main, noteActivity, argumentsOf, validateBinding, save, read, integrationStatus };

@@ -126,3 +126,18 @@ test('categories stay separate and all account metadata is escaped', () => {
   assert.match(servicesHtml({ services }, 'api', '', {}, esc), /&lt;unsafe>/);
   assert.doesNotMatch(aiHtml({ identities: [], clis: [] }, '', esc), /data-ac="check"|已登录/);
 });
+test('each tool keeps its own latest result; the bridge writes an unchanged outcome once a minute', t => {
+  const { root, env } = fixture(t);
+  recordActivity(root, { site: 'chatgpt', source: 'bridge', outcome: 'success', at: 10000 });
+  recordActivity(root, { site: 'chatgpt', source: 'bridge', outcome: 'success', at: 20000 });
+  let entry = readActivity(root, env).entries['main:chatgpt'];
+  assert.equal(entry.sources.bridge.at, 10000, 'an unchanged step within a minute is not rewritten');
+  recordActivity(root, { site: 'chatgpt', source: 'bridge', outcome: 'verification_required', at: 30000 });
+  recordActivity(root, { site: 'chatgpt', source: 'roundtable', outcome: 'success', at: 40000 });
+  recordActivity(root, { site: 'chatgpt', outcome: 'opened', at: 50000 });
+  entry = readActivity(root, env).entries['main:chatgpt'];
+  assert.deepEqual(entry.sources.bridge, { outcome: 'verification_required', at: 30000, lastSuccessAt: 10000 });
+  assert.equal(entry.sources.roundtable.outcome, 'success');
+  assert.equal(entry.sources.website, undefined, 'a person opening the site is not a tool');
+  assert.equal(entry.outcome, 'opened');
+});

@@ -3,6 +3,9 @@ const fs=require('fs'),path=require('path');
 const {spawn}=require('child_process');
 const store=require('./store');
 const adapters=require('./providers');
+// An answer still growing is waited for: only this long without new text ends the wait, up to
+// the hard cap (long reasoning answers took more than the former fixed three minutes).
+const ANSWER_IDLE_MS=180000,ANSWER_MAX_MS=15*60000;
 const terminal=new Set(['succeeded','failed','needs_attention','cancelled','interrupted','partial']);
 function text(value,name='prompt',max=40000){if(typeof value!=='string'||!value.trim()||value.length>max)throw Error(`${name} must contain 1..${max} characters (no truncation is performed)`);return value;}
 function status(id){const j=store.read(id);if(!terminal.has(j.state)&&((j.pid&&!store.alive(j.pid))||(!j.pid&&Date.now()-Date.parse(j.updatedAt)>30000)))return {...j,state:'interrupted',error:'Worker exited or failed to start. Resume roundtable, or collect the provider reply without resending.'};return j;}
@@ -70,10 +73,14 @@ async function runWeb(job,save,mode,runtime={}){
     }
     browser=await open(provider,url);
     save({browser:{headless:browser.headless,owned:browser.owned,pid:browser.browserPid}});
+    const checkQuota=snap=>{if(snap.quotaMessage)throw Object.assign(Error('网站提示额度已用完，请等待额度恢复，或在网站自行调整套餐：'+snap.quotaMessage),{attention:true,errorCode:'quota_exhausted'});};
+    // Kimi hydrates its quota banner after its composer and account label. Let
+    // that state settle before editing; seeing an editor alone is not readiness.
     let snap,readyEnd=Date.now()+45000,readyCount=0,loginCount=0;
+    const readySamples=provider==='kimi'?12:3;
     const challenged=()=>guard&&guard.recordChallenge(hubRoot,{identity:'main',site:guard.siteOf(p.url),kind:'probe',source:'roundtable-'+provider});
-    do{checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);loginCount=snap.login?loginCount+1:0;if(snap.challenge)challenged();if(snap.challenge||loginCount>=4)throw Object.assign(Error('请从 Hub 权限页打开此网站，完成登录或人机验证后再处理任务'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});readyCount=snap.ready&&!snap.login&&(!parent||snap.answers.at(-1)?.done)?readyCount+1:0;if(readyCount>=3)break;await adapters.dismissPromo(browser.page,provider);await store.sleep(300);}while(Date.now()<readyEnd);
-    if(readyCount<3)throw Error('Official composer not ready; website layout or network needs attention');
+    do{checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);checkQuota(snap);loginCount=snap.login?loginCount+1:0;if(snap.challenge)challenged();if(snap.challenge||loginCount>=4)throw Object.assign(Error('请从 Hub 权限页打开此网站，完成登录或人机验证后再处理任务'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});readyCount=snap.ready&&!snap.login&&(!parent||snap.answers.at(-1)?.done)?readyCount+1:0;if(readyCount>=readySamples)break;await adapters.dismissPromo(browser.page,provider);await store.sleep(300);}while(Date.now()<readyEnd);
+    if(readyCount<readySamples)throw Error('Official composer not ready; website layout or network needs attention');
     if(mode!=='collect'){
       if(parent&&snap.answers.at(-1)?.text!==parent.answer)throw Error('Conversation changed since reply_to; refusing to send into another branch');
       if(snap.answers.length&&!parent)throw Error('New conversation unexpectedly contains messages');
@@ -86,14 +93,17 @@ async function runWeb(job,save,mode,runtime={}){
       await adapters.send(browser.page,provider);
     }
     save({state:'waiting',error:null});
-    const end=Date.now()+180000;let last='',stable=0;loginCount=0;
+    const hardEnd=Date.now()+ANSWER_MAX_MS;let end=Date.now()+ANSWER_IDLE_MS,last='',stable=0,progress='';loginCount=0;
     do{
       checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);
+      checkQuota(snap);
       if(adapters.validUrl(provider,snap.url)&&snap.url!==job.url)save({url:snap.url});
       loginCount=snap.login?loginCount+1:0;
       if(snap.challenge)challenged();
       if(loginCount>=4||snap.challenge)throw Object.assign(Error('Official website requires login or human verification after submission; not resending'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});
       const answer=snap.answers.at(-1),baseline=job.baseline;
+      const seen=snap.answers.length+'|'+(answer?.text||'');
+      if(seen!==progress){progress=seen;end=Math.min(hardEnd,Date.now()+ANSWER_IDLE_MS);}
       const changed=answer&& (snap.answers.length>baseline.count || (answer.key&&answer.key!==baseline.last?.key));
       const receipt=snap.echo>baseline.echo;
       if(receipt&&!job.promptEchoSeen)save({promptEchoSeen:true});
@@ -102,7 +112,7 @@ async function runWeb(job,save,mode,runtime={}){
       await store.sleep(700);
     }while(Date.now()<end);
     throw Object.assign(Error('No verified complete answer before deadline. Use web_collect on the same task; never resend blindly.'),{attention:true});
-  }catch(e){save({state:e.cancelled?'cancelled':job.submissionAttempted||e.attention?'needs_attention':'failed',error:e.message,...(e.recovery?{recovery:{reason:e.recovery,accountId:'web-'+provider,instruction:'在 AI Hub 账号页打开此账号，完成验证后让原工具继续此任务；原任务 ID 保留，已发送问题只补收。'}}:{}),...(browser?.page.networkErrors?.length?{networkErrors:browser.page.networkErrors}:{})});}
+  }catch(e){save({state:e.cancelled?'cancelled':job.submissionAttempted||e.attention?'needs_attention':'failed',error:e.message,...(e.errorCode?{errorCode:e.errorCode}:{}),...(e.recovery?{recovery:{reason:e.recovery,accountId:'web-'+provider,instruction:'在 AI Hub 账号页打开此账号，完成验证后让原工具继续此任务；原任务 ID 保留，已发送问题只补收。'}}:{}),...(browser?.page.networkErrors?.length?{networkErrors:browser.page.networkErrors}:{})});}
   finally{if(browser)try{await browser.close();}catch(e){save({cleanupError:e.message});}if(release)release();}
 }
 module.exports={terminal,text,status,create,ask,collect,resumeWeb,spawnWorker,runWeb,schedule};

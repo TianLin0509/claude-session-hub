@@ -172,3 +172,13 @@ test('paused sites and a person handoff reach the account page and turn the row 
   guard.endHandoff(root, lease.id); guard.clearSite(root, 'alt', 'chatgpt');
   assert.doesNotMatch(aiHtml(await acc.passiveState(), '', esc), /自动化已暂停|网页工具已暂停/);
 });
+test('account rows name the tools on that login and how their last step went', () => {
+  const { toolsNote, toolConnections } = require('../renderer/account-workspace-view');
+  const now = 10 * 3600000, esc = s => String(s);
+  const entry = { sources: { images: { outcome: 'success', at: now - 2 * 3600000 }, bridge: { outcome: 'verification_required', at: now - 10 * 60000 }, website: { outcome: 'opened', at: now } } };
+  assert.equal(toolsNote(entry, now), '中转 10 分钟前需验证 · 生图 2 小时前正常');
+  assert.equal(toolsNote({}, now), '');
+  const data = { services: [{ id: 'bridge', name: '公司中转', status: 'bound', identities: [{ identity: 'main' }] }] };
+  assert.match(toolConnections(data, esc, { entries: { 'main:chatgpt': entry } }, now), /公司中转.*已连接.*账号 1 · 最近：10 分钟前需验证/);
+  assert.doesNotMatch(toolConnections(data, esc, null, now), /最近/);
+});

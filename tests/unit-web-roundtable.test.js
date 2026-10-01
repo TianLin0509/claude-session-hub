@@ -130,6 +130,17 @@ test('a composer visible at the readiness deadline does not permit premature sub
   });}finally{Date.now=now;}
   assert.equal(focused,0);assert.equal(job.submissionAttempted,undefined);assert.match(job.error,/not ready/);
 });
+test('visible quota exhaustion stops before editing or sending and preserves the website reason',async()=>{
+  let edits=0,closed=0;
+  const job={id:'quota-exhausted',input:{provider:'kimi',prompt:'test'}};
+  await jobs.runWeb(job,p=>Object.assign(job,p),'run',{
+    open:async()=>({page:{},close:async()=>{closed++;}}),
+    adapters:{get:()=>({url:'https://www.kimi.com/'}),snapshot:async()=>({quotaMessage:'Your free quota is used up. Refreshes at 10-19.',ready:true,answers:[],echo:0}),focus:async()=>{edits++;},send:async()=>{edits++;}}
+  });
+  assert.equal(job.state,'needs_attention');assert.equal(job.errorCode,'quota_exhausted');
+  assert.equal(job.submissionAttempted,undefined);assert.equal(job.recovery,undefined);
+  assert.equal(edits,0);assert.equal(closed,1);assert.match(job.error,/10-19/);
+});
 test('an abandoned reaper marker fails explicitly without stealing its lock',()=>{
   const dir=path.join(store.root(),'abandoned-reaper.lock'),reap=dir+'.reap';
   fs.mkdirSync(dir);fs.writeFileSync(reap,'');const old=new Date(Date.now()-60000);fs.utimesSync(reap,old,old);
@@ -156,4 +167,33 @@ test('a task waits while a person has the Hub browser and runs after the handoff
   const started=Date.now();
   await jobs.runWeb(job,p=>Object.assign(job,p),'run',{hubRoot,open:async()=>{opened=Date.now();throw Error('opened');}});
   assert.ok(opened-started>=1000,'no page was opened during the handoff');assert.match(job.error,/opened/);
+});
+test('an answer that keeps growing is waited for beyond three minutes; a silent one is not',async()=>{
+  const now=Date.now;let elapsed=0;Date.now=()=>now()+elapsed;
+  const run=async(id,grows)=>{
+    let phase='ready',n=0;const job={id,input:{provider:'deepseek',prompt:'q'}};
+    await jobs.runWeb(job,p=>Object.assign(job,p),'run',{
+      open:async()=>({page:{call:async()=>({})},close:async()=>{}}),
+      adapters:{get:()=>({url:'https://chat.deepseek.com/'}),validUrl:()=>false,dismissPromo:async()=>{},
+        focus:async()=>{phase='typed';},send:async()=>{phase='answer';},
+        snapshot:async()=>{
+          if(phase==='ready')return {ready:true,login:false,answers:[],echo:0,composerText:'',url:'https://chat.deepseek.com/'};
+          if(phase==='typed')return {ready:true,login:false,answers:[],echo:0,composerText:'q',url:'https://chat.deepseek.com/'};
+          elapsed+=60000;n++;
+          // A long reasoning answer: new text every minute for eight minutes, then final.
+          const text=grows?'x'.repeat(Math.min(n,8)):'';
+          return {ready:true,login:false,echo:1,composerText:'',url:'https://chat.deepseek.com/',answers:text?[{key:'a1',text,done:n>=8}]:[]};
+        }}
+    });
+    return job;
+  };
+  try{
+    const long=await run('long-growing-answer',true);
+    assert.equal(long.state,'succeeded');assert.equal(long.answer,'xxxxxxxx');
+    assert.ok(elapsed>8*60000,'waited past the former three-minute limit');
+    elapsed=0;
+    const silent=await run('silent-answer',false);
+    assert.equal(silent.state,'needs_attention');assert.match(silent.error,/No verified complete answer/);
+    assert.ok(elapsed<=4*60000,'no new text for three minutes still ends the wait');
+  }finally{Date.now=now;}
 });
