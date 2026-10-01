@@ -12,7 +12,11 @@ class AssistantBridge {
       req.setEncoding('utf8');
       let body='';
       req.on('data',chunk=>{body+=chunk;if(body.length>100000)req.destroy();});
-      req.on('end',async()=>{try{const result=await this.invoke(JSON.parse(body));res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,result}));}catch(error){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:false,error:error.message}));}});
+      req.on('end',async()=>{try{const request=JSON.parse(body);
+        // Always supply an identity, including the empty value. Network calls
+        // cannot enter the legacy internal path or spoof identity in the body.
+        request.callerSessionId=String(req.headers['x-hub-assistant-session']||'');
+        const result=await this.invoke(request);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true,result}));}catch(error){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({ok:false,error:error.message}));}});
     });
     await new Promise((resolve,reject)=>{this.server.once('error',reject);this.server.listen(0,'127.0.0.1',resolve);});
     this.server.unref();this.url=`http://127.0.0.1:${this.server.address().port}/tool`;return this;

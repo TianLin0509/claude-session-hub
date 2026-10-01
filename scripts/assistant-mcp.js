@@ -20,7 +20,7 @@ async function handle(request){
   if(request.method==='tools/call'){
     if(!tools.some(t=>t.name===request.params?.name))throw new Error('未知工具');
     const endpoint=JSON.parse(fs.readFileSync(process.env.HUB_ASSISTANT_ENDPOINT_FILE,'utf8'));
-    const response=await fetch(endpoint.url,{method:'POST',headers:{Authorization:'Bearer '+endpoint.token,'Content-Type':'application/json'},body:JSON.stringify(request.params),signal:AbortSignal.timeout(120000)});
+    const response=await fetch(endpoint.url,{method:'POST',headers:{Authorization:'Bearer '+endpoint.token,'Content-Type':'application/json','X-Hub-Assistant-Session':process.env.HUB_ASSISTANT_SESSION_ID||''},body:JSON.stringify(request.params),signal:AbortSignal.timeout(120000)});
     const data=await response.json();return{content:[{type:'text',text:JSON.stringify(data.ok?data.result:{error:data.error})}],isError:!data.ok};
   }
   throw new Error('未知方法');
