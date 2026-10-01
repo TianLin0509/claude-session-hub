@@ -295,7 +295,7 @@ test('自动优化：模型第一次输出不是合法 JSON，提醒转义后再
   const dir = pieces.create();
   fs.writeFileSync(path.join(dir, 'final.md'), '# 重试\n\n正文。');
   const systems = [];
-  const flaky = async ({ system }) => { systems.push(system); return { text: systems.length === 1 ? '{"changed": true, "skill_md": "坏的\n没转义"' : '{"changed": false, "summary": "没有新依据"}' }; };
+  const flaky = async (_kind, { system }) => { systems.push(system); return { text: systems.length === 1 ? '{"changed": true, "skill_md": "坏的\n没转义"' : '{"changed": false, "summary": "没有新依据"}' }; };
   const r = await evolve.evolveVoiceFromPiece({ dir, pieces, voice, paths: p, hubDataDir: tmp('hub'), model: 'x', runner: flaky });
   assert.strictEqual(r.status, 'done');
   assert.strictEqual(systems.length, 2);
