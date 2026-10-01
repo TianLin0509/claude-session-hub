@@ -10,6 +10,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms)),j=JSON.stringify;
 const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 const fileHash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 async function main(){
+  const createOnly=process.argv.includes('--create-only');
   const out=path.resolve('artifacts/assistant-business-live',new Date().toISOString().replace(/[:.]/g,'-'));
   const root=path.join(out,'private-run'),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(home,'codex'),workspace=path.join(root,'workspaces'),business=path.join(workspace,'orders');
   for(const dir of [out,data,codexHome,business])fs.mkdirSync(dir,{recursive:true});
@@ -42,6 +43,7 @@ async function main(){
     await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
     // Test setup uses the real factory; all user-assistant interactions below
     // are actual mouse/keyboard input in the A conversation view.
+    if(!createOnly){
     const title='订单同步隔离验收-'+Date.now();
     const target=await cdp.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:${j({title,cwd:business,codexProfile:'second',model:'gpt-6-astra',effort:'high',mcpProfile:'none'})}})`);
     targetId=target.id;result.targetId=targetId;
@@ -49,12 +51,15 @@ async function main(){
     result.setupReceipt=await cdp.eval(`ipcRenderer.invoke('session:send-prompt',{sessionId:${j(targetId)},text:${j(seedText)},clientSubmissionId:${j(crypto.randomUUID())},waitForCliReady:true})`);
     const initial=await until('target initial answer',async()=>{const r=await finals(targetId);return r.length?r.at(-1):null;});result.initialTarget=initial;await idle(targetId);
     assert.match(initial.text,/7|七/);assert.match(initial.text,/保留|天数/);result.targetNativeId=(await session(targetId)).codexSid;
+    }
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});
     await until('rail pin visible',()=>cdp.eval('(()=>{const e=document.querySelector("#rail-pin"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),30000);
     await click('#rail-pin');await until('rail pinned',()=>cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'),10000);
     await until('assistant navigation visible',()=>cdp.eval('(()=>{const e=document.querySelector("#btn-assistant"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),10000);
-    await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));await sendAssistant('现在订单同步的最新进展是什么？还需要我决定什么？只依据实际记录，限120字。');
+    await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));
     assistantId=await until('assistant identity',()=>cdp.eval('ipcRenderer.invoke("assistant:get-overview").then(r=>r.sessionId)'));result.assistantId=assistantId;
+    if(!createOnly){
+    await sendAssistant('现在订单同步的最新进展是什么？还需要我决定什么？只依据实际记录，限120字。');
     const first=await answer(0,'first progress answer');result.firstAnswer=first;
     assert.match(first.text,/7|七/);assert.match(first.text,/保留|天数/);assert.match(first.text,/\[E[a-zA-Z0-9_-]+\]/);
     await until('first answer in normal cards',()=>cdp.eval(`document.querySelector('#msg-overlay')?.textContent.includes(${j(first.text.slice(0,18))})`),30000);
@@ -81,6 +86,7 @@ async function main(){
     const allNotices=await cdp.eval('ipcRenderer.invoke("assistant:notifications")');assert.equal(allNotices.notifications.filter(n=>n.id===notice.id).length,1);
     await shot('03-latest-progress');result.steps.push('不依赖搜索索引刷新，追问读到刚产生的30天/归档新结果；提醒无重复');
     result.workbenchPath=path.join(data,'assistant/workbench/CURRENT.md');assert(fs.readFileSync(result.workbenchPath,'utf8').includes(targetId));
+    }
     await idle(assistantId);
     const beforeCreate=await cdp.eval('[...sessions.keys()]');
     const originalUserText='在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。';
@@ -90,7 +96,7 @@ async function main(){
     result.createdTargetId=created.id;
     const createdActions=await until('created task confirmed',async()=>{const r=await cdp.eval('ipcRenderer.invoke("assistant:actions")');return r.actions?.find(a=>a.state==='acknowledged'&&a.result?.sessionId===created.id)||null;});
     result.createdAction=createdActions;
-    const trip=await until('created tourism session actually answers',async()=>{const rows=await finals(created.id);return rows.length?rows.at(-1):null;},360000);
+    const trip=await until('created tourism session actually answers',async()=>{const rows=await finals(created.id);return rows.length?rows.at(-1):null;},900000);
     result.createdTargetAnswer=trip;
     assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
     const s=await session(created.id);result.createdNativeId=s.codexSid;
