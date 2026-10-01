@@ -5,7 +5,7 @@ test('foreign AI uses Hub proxy; domestic endpoints, assets and auth bypass it',
  const proxy='http://127.0.0.1:7890',p=r.policy(proxy);
  assert.ok(p.args.includes('--proxy-server='+proxy));
  for(const host of ['chatgpt.com','auth.openai.com','claude.ai','gemini.google.com','accounts.google.com','www.gstatic.com','challenges.cloudflare.com','deepseek.com.evil.test'])assert.equal(r.route('https://'+host,proxy),'hub_proxy',host);
- for(const host of ['chat.deepseek.com','www.kimi.com','kimi.moonshot.cn','statics.moonshot.cn','www.qianwen.com','g.alicdn.com','www.doubao.com']){
+ for(const host of ['chat.deepseek.com','www.kimi.com','kimi.moonshot.cn','statics.moonshot.cn','cn-fp.apitd.net','www.qianwen.com','g.alicdn.com','www.doubao.com']){
   assert.equal(r.route('https://'+host,proxy),'direct',host);
  }
  assert.ok(p.bypass.includes('deepseek.com;*.deepseek.com'));assert.ok(!p.bypass.includes('*deepseek.com;'));

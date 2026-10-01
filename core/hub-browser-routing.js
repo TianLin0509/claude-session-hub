@@ -7,7 +7,7 @@ const DIRECT_DOMAINS=Object.freeze([
   'deepseek.com','kimi.com','kimi.ai','moonshot.cn','moonshot.ai',
   'qianwen.com','tongyi.com','aliyun.com','aliyuncs.com','alicdn.com','alipay.com','mmstat.com',
   'doubao.com','bytedance.com','byteimg.com','ibyteimg.com','bytecdn.cn','volccdn.com','volces.com','pstatp.com','snssdk.com',
-  'geetest.com','geevisit.com','ishumei.com',
+  'geetest.com','geevisit.com','ishumei.com','cn-fp.apitd.net',
   // Observed subresources of the four domestic AI pages (2026-10-01).
   'qq.com','fengkongcloud.cn','portal101.cn','trustdecision.com','effirst.com',
   'taobao.com','alibaba.com','aliapp.org','ibytedapm.com','bytetcc.com','99uri.com','bytednsdoc.com','zijieapi.com','yhgfb-cn-static.com',
