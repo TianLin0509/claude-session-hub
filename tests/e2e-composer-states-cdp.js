@@ -202,7 +202,7 @@ async function descendantPids(rootPid) {
       report.synthetic[name] = probe;
     }
     assert.equal(report.synthetic.working.stopVisible, true, '工作中必须露出停止键');
-    assert.equal(report.synthetic.working.sendHidden, true, '工作中发送键必须让位给停止键');
+    assert.equal(report.synthetic.working.sendHidden, false, '工作中仍须能补充发送');
     assert.equal(report.synthetic.ready.stopVisible, false, '就绪不该有停止键');
     assert.deepEqual(report.synthetic.waiting.quickReplies, ['是，继续', '先看 diff', '换个方案']);
     assert.equal(report.synthetic.ready.ctxLevel, 'ok');
@@ -223,7 +223,7 @@ async function descendantPids(rootPid) {
       };
     })()`);
     assert.equal(report.rail.model, 'GPT-5.6 Sol');
-    assert.equal(report.rail.thinking, 'xhigh');
+    assert.match(report.rail.thinking, /极高/);
     assert.equal(report.rail.thinkingInteractive, '1');
 
     const geminiChip = await client.eval(`(() => {

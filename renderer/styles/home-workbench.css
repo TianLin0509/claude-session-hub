@@ -1,75 +1,99 @@
-/* 欢迎主页 B：跟随 Hub 主题，只作用于主页主区域。 */
+/* 欢迎页 C：深蓝双卡，只作用于主区。 */
 .home-workbench {
-  --welcome-accent: #9eaff1;
-  flex: 1; min-width: 0; min-height: 0;
-  display: flex; align-items: stretch; justify-content: flex-start;
+  flex: 1; min-width: 0; min-height: 0; display: flex; align-items: stretch;
   padding: 0; overflow: auto; container-type: inline-size;
-  color: var(--text-primary); background: var(--bg-primary);
+  color: #f3f7fa; background: #0b2134;
 }
-:root:is([data-theme='claude'], [data-theme='codex'], [data-theme='hub'], [data-theme='slate']) .home-workbench { --welcome-accent: #5167b0; }
 .home-welcome {
   width: 100%; min-height: 100%; display: flex; flex-direction: column;
-  position: relative; isolation: isolate;
-  background: radial-gradient(ellipse at 100% 45%, rgba(var(--rgb-info), .045), transparent 60%);
+  background: #0b2134;
 }
-.home-welcome-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 28px 36px; }
-.home-welcome-brand { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 500; letter-spacing: 1px; }
+.home-welcome-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 16px; padding: 28px 36px;
+}
+.home-welcome-brand {
+  display: flex; align-items: center; gap: 9px; color: #f3f7fa;
+  font-size: 15px; font-weight: 600; letter-spacing: .3px;
+}
 .home-welcome-brand > span { color: var(--accent-orange); font-size: 24px; line-height: 1; }
 .home-welcome-tools { display: flex; align-items: center; gap: 12px; }
-.home-welcome-greeting { padding: 3px 9px; border: 1px solid rgba(var(--rgb-overlay), .09); border-radius: 20px; color: var(--text-muted); font-size: 11px; }
+.home-welcome-greeting { display: none; }
 .home-notification-slot { display: inline-flex; align-items: center; }
-.home-notification-slot .completion-notification-toggle { position: static; inset: auto; min-height: 27px; padding: 3px 9px; font-size: 11px; }
+.home-notification-slot .completion-notification-toggle {
+  position: static; inset: auto; min-height: 27px; padding: 3px 9px;
+  border: 1px solid #456074; color: #e0edf5; background: #10283a; font-size: 11px;
+}
 .terminal-panel.home-active > .view-toggle { display: none; }
 .home-welcome-body {
-  flex: 1; display: grid; grid-template-columns: 1.15fr 1fr; align-items: center;
-  gap: clamp(30px, 5cqw, 90px); padding: 40px clamp(30px, 5cqw, 86px) 65px;
-  width: 100%; max-width: 1450px; margin: auto;
+  flex: 1; width: min(790px, calc(100% - 80px));
+  display: flex; flex-direction: column; justify-content: center;
+  margin: 0 auto; padding: 32px 0 72px;
 }
-.home-welcome-intro { min-width: 0; }
-.home-welcome-eyebrow { margin: 0 0 24px; font-size: 11px; letter-spacing: 3px; color: var(--welcome-accent); }
-.home-welcome h1 { margin: 0; font-size: clamp(38px, 5cqw, 66px); font-weight: 500; line-height: 1.35; letter-spacing: -2px; color: var(--text-primary); }
-.home-welcome h1 span { color: var(--welcome-accent); }
-.home-welcome-subtitle { margin: 22px 0 0; color: var(--text-secondary); font-size: 14px; line-height: 1.9; }
-.home-welcome-line { width: 50px; height: 1px; background: var(--welcome-accent); margin-top: 33px; }
-.home-welcome-portals { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.home-welcome-eyebrow {
+  margin: 0 0 20px; color: #83abc2; font-size: 11px;
+  font-weight: 600; letter-spacing: 2.6px;
+}
+.home-welcome h1 {
+  margin: 0 0 36px; color: #f3f7fa;
+  font-size: clamp(38px, 5cqw, 51px); font-weight: 600;
+  line-height: 1.2; letter-spacing: -1.5px;
+}
+.home-welcome-portals {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+}
 .home-welcome-portal {
-  position: relative; width: 100%; text-align: left; color: var(--text-primary);
-  border: 1px solid rgba(var(--rgb-overlay), .1);
-  background: linear-gradient(125deg, rgba(var(--rgb-info), .105), rgba(var(--rgb-info), .03));
-  border-radius: 16px; padding: clamp(24px, 3cqw, 34px); cursor: pointer; font: inherit;
-  transition: transform .18s, border-color .18s, background .18s;
+  position: relative; min-height: 235px; display: flex; flex-direction: column;
+  align-items: flex-start; width: 100%; padding: 25px;
+  border: 1px solid #456074; border-radius: 8px;
+  color: #f7fbfe; background: #142d41; text-align: left;
+  cursor: pointer; font: inherit;
+  transition: border-color .18s, background .18s, transform .18s;
 }
-.home-welcome-portal:hover { transform: translateX(4px); border-color: var(--welcome-accent); }
-.home-welcome-portal:focus-visible { outline: 2px solid var(--welcome-accent); outline-offset: 4px; }
+.home-welcome-portal.secondary { background: #10283a; }
+.home-welcome-portal:hover {
+  border-color: #e5b286; background: #1b3850; transform: translateY(-2px);
+}
+.home-welcome-portal:focus-visible { outline: 2px solid #e5b286; outline-offset: 3px; }
 .home-welcome-portal:disabled { opacity: .6; cursor: wait; }
-.home-welcome-portal.secondary { background: linear-gradient(125deg, rgba(var(--rgb-overlay), .035), rgba(var(--rgb-overlay), .015)); }
-.home-welcome-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: rgba(var(--rgb-info), .1); color: var(--welcome-accent); margin-bottom: 23px; }
-.secondary .home-welcome-icon { background: rgba(var(--rgb-overlay), .04); color: var(--text-secondary); }
-.home-welcome svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.home-welcome-arrow { position: absolute; top: 30px; right: 27px; color: var(--welcome-accent); }
-.home-welcome-portal strong { display: block; font-size: 20px; line-height: 1.5; font-weight: 500; margin-bottom: 6px; }
-.home-welcome-description { display: block; font-size: 12px; line-height: 1.8; color: var(--text-secondary); }
-.home-welcome-foot { width: 100%; max-width: 1450px; margin: auto; padding: 24px clamp(30px, 5cqw, 86px); font-size: 11px; letter-spacing: .5px; color: var(--text-muted); }
-.home-welcome-foot span { margin: 0 14px; opacity: .5; }
-.home-welcome-error { margin: 0; color: var(--accent-red); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-@container (max-width: 680px) {
-  .home-welcome-body { grid-template-columns: 1fr; gap: 30px; padding: 25px 28px; }
-  .home-welcome-head { padding: 24px 28px; }
-  .home-welcome h1 { font-size: 40px; }
-  .home-welcome-eyebrow { margin-bottom: 16px; }
-  .home-welcome-subtitle { margin-top: 15px; font-size: 13px; }
-  .home-welcome-line { display: none; }
-  .home-welcome-portal { padding: 22px 24px; }
-  .home-welcome-icon { width: 36px; height: 36px; margin-bottom: 15px; }
-  .home-welcome-portal strong { font-size: 18px; }
-  .home-welcome-foot { padding: 24px 28px; }
+.home-welcome-icon {
+  display: grid; place-items: center; width: 38px; height: 38px;
+  margin-bottom: auto; border-radius: 9px;
+  color: #e5b286; background: #23435a;
 }
-@container (max-width: 360px) {
+.home-welcome svg {
+  width: 21px; height: 21px; fill: none; stroke: currentColor;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.home-welcome-portal strong {
+  display: block; margin-top: 28px; font-size: 22px;
+  line-height: 1.4; font-weight: 600;
+}
+.home-welcome-description {
+  display: block; margin-top: 3px; padding-right: 18px;
+  color: #c9dbe6; font-size: 12px; line-height: 1.6;
+}
+.home-welcome-arrow {
+  position: absolute; right: 25px; bottom: 25px; color: #f3f7fa;
+}
+.home-welcome-error {
+  grid-column: 1 / -1; margin: 0; color: #ffb5a7;
+  font-size: 12px; line-height: 1.7; overflow-wrap: anywhere;
+}
+@container (max-width: 720px) {
+  .home-welcome-body { width: calc(100% - 56px); padding-bottom: 44px; }
+  .home-welcome h1 { font-size: 40px; }
+  .home-welcome-portal { min-height: 205px; padding: 20px; }
+  .home-welcome-portal strong { font-size: 18px; }
+  .home-welcome-description { font-size: 11px; }
+}
+@container (max-width: 480px) {
   .home-welcome-head { padding: 20px; }
-  .home-welcome-greeting { display: none; }
-  .home-welcome-body, .home-welcome-foot { padding-left: 20px; padding-right: 20px; }
-  .home-welcome h1 { font-size: 34px; letter-spacing: -1px; }
-  .home-welcome-eyebrow { letter-spacing: 2px; font-size: 10px; }
+  .home-welcome-body { width: calc(100% - 40px); }
+  .home-welcome h1 { font-size: 34px; }
+  .home-welcome-portals { grid-template-columns: 1fr; }
+  .home-welcome-portal { min-height: 145px; }
+  .home-welcome-portal strong { margin-top: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .home-welcome-portal { transition: none; }

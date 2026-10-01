@@ -357,7 +357,7 @@
   white-space: nowrap;
 }
 
-/* 发送 / 停止：32px 方钮，两者互斥出现。 */
+/* 发送 / 停止：32px 方钮；运行中并列，便于补充消息。 */
 .composer-rail .floating-input-send {
   flex: 0 0 auto;
   display: grid;
