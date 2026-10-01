@@ -83,6 +83,30 @@ async function one(label, entryPath) {
     await waitFor(cdp,'!!window.__hubE2E?.cardQuestionNavigator && !!window.WorkspaceController','renderer');
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1600,height:950,deviceScaleFactor:1,mobile:false});
     await cdp.eval(`document.documentElement.dataset.theme='dark'`);
+    if(label==='candidate') {
+      await waitFor(cdp,`document.querySelector('#session-list .session-sec-header') && document.querySelector('#empty-state').dataset.homeReady==='true'`,'home startup');
+      report.startup=await cdp.eval(`({home:document.querySelector('#terminal-panel').classList.contains('home-active'),
+        visible:getComputedStyle(document.querySelector('#empty-state')).display!=='none',
+        nav:document.querySelector('#btn-home').getAttribute('aria-current')})`);
+      assert.deepEqual(report.startup,{home:true,visible:true,nav:'page'});
+      await cdp.eval(`(()=>{sessions.set('layout-width-fixture',{id:'layout-width-fixture',kind:'codex',
+        title:'跨平台协作项目进度追踪版',status:'idle',createdAt:Date.now(),lastMessageTime:Date.now()});
+        renderSessionList()})()`);
+      await waitFor(cdp,`!![...document.querySelectorAll('#session-list .sl-title')].find(e=>e.textContent==='跨平台协作项目进度追踪版')`,'twelve-character session title');
+      report.title=await cdp.eval(`(()=>{const e=[...document.querySelectorAll('#session-list .sl-title')].find(e=>e.textContent==='跨平台协作项目进度追踪版');
+        const range=document.createRange();range.selectNodeContents(e);
+        return {characters:[...e.textContent].length,available:e.clientWidth,needed:Math.ceil(range.getBoundingClientRect().width),
+          rowWidth:e.closest('.session-item').getBoundingClientRect().width}})()`);
+      assert.equal(report.title.characters,12);
+      assert(report.title.available>=report.title.needed,JSON.stringify(report.title));
+      await shot(cdp,'candidate-home-and-session-width');
+      await cdp.eval(`document.documentElement.dataset.theme='light'`);
+      report.lightLaunch=await cdp.eval(`({width:Math.round(document.querySelector('#btn-new').getBoundingClientRect().width),
+        label:getComputedStyle(document.querySelector('#btn-new .btn-label')).display})`);
+      assert(report.lightLaunch.width>=85&&report.lightLaunch.label==='block',JSON.stringify(report.lightLaunch));
+      await shot(cdp,'candidate-home-light');
+      await cdp.eval(`document.documentElement.dataset.theme='dark'`);
+    }
     if(label==='candidate')await cdp.eval(`localStorage.setItem('hub.questionDirectory.session-first-comparison','expanded')`);
     await cdp.eval(`window.__hubE2E.cardQuestionNavigator.mountFixture({sessionId:'session-first-comparison',count:3,clear:true})`);
     await waitFor(cdp,`document.querySelectorAll('#card-question-nav .card-question-nav-item').length===3`,'three card questions');
@@ -91,8 +115,10 @@ async function one(label, entryPath) {
     await shot(cdp,label+'-default');
     if(label==='candidate') {
       assert.equal(report.default.rail.width,14);
-      assert.equal(report.default.sidebar.width,226);
-      assert.equal(report.default.main.x,240);
+      assert.equal(report.default.sidebar.width,320);
+      assert.equal(report.default.main.x,334);
+      assert(report.default.launchButton.width>=85,JSON.stringify(report.default));
+      assert.equal(await cdp.eval(`getComputedStyle(document.querySelector('#btn-new .btn-label')).display`),'block');
       assert.equal(report.default.visibleHubMarks,1);
       assert.equal(report.default.directoryCollapsed,true);
       assert.equal(report.default.directorySpace,'54px');
@@ -142,10 +168,10 @@ async function one(label, entryPath) {
           rail:Math.round(rect('#scene-rail').width),sidebar:Math.round(rect('#session-sidebar').width),
           mainX:Math.round(rect('#terminal-panel').x),mainRight:Math.round(rect('#terminal-panel').right),
           directory:Math.round(rect('#card-question-nav').width),
-          launchVisible:(()=>{const r=rect('#btn-new');return r.width>=28&&r.x>=0&&r.right<=innerWidth})()
+          launchVisible:(()=>{const r=rect('#btn-new');return r.width>=85&&r.x>=0&&r.right<=innerWidth})()
         }})()`);
         assert.equal(state.rail,14,JSON.stringify(state));
-        assert.equal(state.mainX,240,JSON.stringify(state));
+        assert.equal(state.mainX,334,JSON.stringify(state));
         assert(state.mainRight<=width+1&&state.documentWidth<=width+1&&state.launchVisible,JSON.stringify(state));
         report.responsive.push(state);
         if(width===900&&height===600)await shot(cdp,'candidate-900x600');
@@ -154,7 +180,7 @@ async function one(label, entryPath) {
       await cdp.eval(`require('electron').webFrame.setZoomFactor(1.25)`);
       await _waitMs(250);
       report.zoom125=await cdp.eval(`({viewport:[innerWidth,innerHeight],documentWidth:document.documentElement.scrollWidth,sidebar:Math.round(document.querySelector('#session-sidebar').getBoundingClientRect().width),launchWidth:Math.round(document.querySelector('#btn-new').getBoundingClientRect().width)})`);
-      assert(report.zoom125.documentWidth<=report.zoom125.viewport[0]+1&&report.zoom125.launchWidth>=28,JSON.stringify(report.zoom125));
+      assert(report.zoom125.documentWidth<=report.zoom125.viewport[0]+1&&report.zoom125.launchWidth>=85,JSON.stringify(report.zoom125));
       await shot(cdp,'candidate-zoom125');
       await cdp.eval(`require('electron').webFrame.setZoomFactor(1)`);
       await cdp.send('Emulation.setDeviceMetricsOverride',{width:1600,height:950,deviceScaleFactor:1,mobile:false});
@@ -183,7 +209,7 @@ async function one(label, entryPath) {
     sidebarTotalBeforePx:baseline.default.main.x,sidebarTotalAfterPx:candidate.default.main.x,
     directoryReservedBeforePx:parseInt(baseline.default.directorySpace,10),
     directoryReservedAfterPx:parseInt(candidate.default.directorySpace,10)}:null;
-  if(delta)assert(delta.mainGainedPx>200,JSON.stringify(delta));
+  if(delta)assert(delta.mainGainedPx>100,JSON.stringify(delta));
   const report={baseline,candidate,delta};
   fs.writeFileSync(path.join(OUT,'comparison.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));

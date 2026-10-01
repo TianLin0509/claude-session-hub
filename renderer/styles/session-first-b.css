@@ -3,7 +3,7 @@
 :root {
   --hub-rail-slot: 14px;
   --hub-rail-open: 80px;
-  --hub-session-width: 226px;
+  --hub-session-width: 320px;
 }
 
 #app-body {
@@ -223,7 +223,7 @@
 :root body #session-sidebar .sidebar-header {
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 55px;
+  grid-template-columns: minmax(0, 1fr) 120px;
   align-items: center;
   gap: 7px 4px;
   padding: 10px 8px 9px;
@@ -231,20 +231,22 @@
 #session-sidebar .session-heading { min-width: 0; display: flex; align-items: baseline; gap: 6px; }
 #session-sidebar .session-heading strong { font-size: 14px; color: var(--fg-strong); }
 #session-sidebar .session-heading span { font-size: 10px; color: var(--fg-muted); white-space: nowrap; }
-:root body #session-sidebar .new-session-wrapper { width: 55px; min-width: 0; }
+:root body #session-sidebar .new-session-wrapper { width: 120px; min-width: 0; }
 :root body #new-session-wrapper .launch-split {
   box-sizing: border-box;
-  width: 55px;
-  height: 30px;
+  width: 120px;
+  height: 38px;
   display: flex;
   border-radius: 8px;
-  box-shadow: none;
 }
 :root body #new-session-wrapper .launch-split #btn-new,
-:root body #new-session-wrapper .launch-split #btn-new-more { box-sizing: border-box; height: 28px; min-height: 28px; padding: 0; }
-:root body #new-session-wrapper .launch-split #btn-new { flex: 0 0 31px; width: 31px; justify-content: center; }
-:root body #new-session-wrapper .launch-split #btn-new-more { flex: 0 0 22px; width: 22px; }
-:root body #new-session-wrapper .launch-split #btn-new .btn-label { display: none; }
+:root body #new-session-wrapper .launch-split #btn-new-more { box-sizing: border-box; height: 36px; min-height: 36px; }
+:root[data-theme='dark'] body #new-session-wrapper .launch-split #btn-new,
+:root[data-theme='dark'] body #new-session-wrapper .launch-split #btn-new-more { height: 40px; min-height: 40px; }
+:root body #new-session-wrapper .launch-split #btn-new { flex: 1 1 auto; width: auto; min-width: 0; justify-content: center; }
+:root body #new-session-wrapper .launch-split #btn-new-more,
+:root[data-theme='dark'] body #new-session-wrapper .launch-split #btn-new-more { flex: 0 0 30px; width: 30px; }
+:root body #new-session-wrapper .launch-split #btn-new .btn-label { display: block; }
 :root body #session-sidebar .global-search-launcher { grid-column: 1 / -1; min-height: 32px; margin: 0; }
 :root body #session-sidebar .global-search-launcher kbd { display: none; }
 :root body #session-sidebar .session-detail-bar {
