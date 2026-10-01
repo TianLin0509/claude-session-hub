@@ -7657,13 +7657,13 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const isActive = hubSessionId === activeSessionId;
   const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
   const seenByUser = isActive && focusOk;
+  // A group member can be prompted directly in its CLI without a dispatcher
+  // round. Membership alone is not proof that its reply was read. Meeting
+  // badges union member IDs, so the later dispatcher event cannot double it.
   const transition = applyReplyCompleted(session, {
     completedAt,
     turnId,
     text: preview,
-    // A group member can be prompted directly in its CLI without a dispatcher
-    // round. Membership alone is not proof that its reply was read. Meeting
-    // badges union member IDs, so the later dispatcher event cannot double it.
     seenByUser: backgroundActive || seenByUser,
     incrementUnread: !backgroundActive,
     keepRunning: backgroundActive,
