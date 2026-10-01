@@ -11,7 +11,9 @@ const DIRECT_DOMAINS=Object.freeze([
   // Observed subresources of the four domestic AI pages (2026-10-01).
   'qq.com','fengkongcloud.cn','portal101.cn','trustdecision.com','effirst.com',
   'taobao.com','alibaba.com','aliapp.org','ibytedapm.com','bytetcc.com','99uri.com','bytednsdoc.com','zijieapi.com','yhgfb-cn-static.com',
+  // @community-strip 私人工具与投研网站
   'yuque.com','yuquecdn.com','xueqiu.com','jiuyangongshe.com','iwencai.com','10jqka.com.cn',
+  // @community-end
 ]);
 const LOCAL_BYPASS=['<local>','localhost','127.0.0.1','[::1]','10.0.0.0/8','172.16.0.0/12','192.168.0.0/16'];
 function normalizeProxy(value){

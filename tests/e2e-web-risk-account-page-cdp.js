@@ -46,6 +46,9 @@ async function main() {
     result.pid = hub.pid; cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
+    // Session-first B keeps the directory behind the left hover strip.
+    await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved',x:6,y:240 });
+    await until('document.querySelector("#scene-rail").getBoundingClientRect().width > 70', 'navigation drawer expanded');
     await click('#btn-rail-accounts');
     await until('document.querySelector(".ac-handoff")', 'handoff banner');
     await until('document.querySelector(".ac-network")', 'network route banner');
