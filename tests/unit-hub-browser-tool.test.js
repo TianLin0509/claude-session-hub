@@ -117,3 +117,31 @@ test('the company bridge reports its page steps to the account page; images and 
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).outcome, 'success');
   assert.deepEqual(fs.readdirSync(path.dirname(file)), ['main-chatgpt-bridge.json']);
 });
+
+test('an unreadable endpoint with a held profile does not replace an existing task page', async t => {
+  const binding = fixture(t);let opened = 0;
+  const tool = new BrowserTool(binding,{env:{},hub:{endpoint:async()=>null,profileHeld:()=>true,closeTab:async()=>{},openTab:async()=>{opened++;return {targetId:'NEW'};}}});
+  fs.mkdirSync(path.dirname(tool.file),{recursive:true});
+  const record={targetId:'OLD',browserWs:'ws://127.0.0.1:9000/old',identity:'main'};
+  fs.writeFileSync(tool.file,JSON.stringify(record));
+  const error=await tool.open().then(()=>null,e=>e);
+  assert.equal(opened,0,'unknown browser state must not create a second task page');
+  assert.match(error?.message||'',/endpoint unavailable/i);
+  assert.deepEqual(JSON.parse(fs.readFileSync(tool.file,'utf8')),record);
+});
+
+test('a challenge reached during a navigation timeout is left and classified as a human check', async t => {
+  const binding=fixture(t),visited=[];
+  const tool=pageTool(binding,{url:()=> 'https://chatgpt.com/',evaluate:async()=>({challenge:true,kind:'cloudflare'}),goto:async u=>{visited.push(u);if(u!=='about:blank')throw Error('Timeout waiting for DOMContentLoaded');}});
+  await assert.rejects(tool.execute(['goto','https://chatgpt.com/']),/Site challenged/);
+  assert.deepEqual(visited,['https://chatgpt.com/','about:blank']);
+  assert.ok(guard.blocked(binding.root,'main','chatgpt'));
+});
+
+test('a failed step without a challenge preserves its original error and does not navigate', async t => {
+  const binding=fixture(t),visited=[],file=path.join(binding.root,'step.js');
+  fs.writeFileSync(file,'async page => { throw Error("receipt unavailable after send"); }');
+  const tool=pageTool(binding,{url:()=> 'https://chatgpt.com/',evaluate:async()=>({challenge:false}),goto:async u=>visited.push(u)});
+  await assert.rejects(tool.execute(['run-code','--filename',file]),/receipt unavailable after send/);
+  assert.deepEqual(visited,[]);
+});

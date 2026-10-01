@@ -3,9 +3,10 @@
 //
 // Observed 2026-09-29 on the secondary ChatGPT login: automated tabs that met a Cloudflare
 // check could not pass it, the check page reloaded itself about every 85 s, and each failure
-// raised Cloudflare's partitioned retry counter (cf_chl_rc_*). Once high enough, even the
-// person in a normal window looped on "Verifying". A clean Chrome, and an incognito window
-// of the same Hub Chrome, passed on the same IP. The rules here follow from that:
+// changed Cloudflare's partitioned retry cookies (cf_chl_rc_*). A person in the affected
+// profile also looped on "Verifying", while clean/incognito contexts passed on the same IP.
+// That narrows the incident to stored browser state, without proving Cloudflare's scoring
+// or whether debugger attachment caused it. The conservative recovery rules are:
 //   1. an automated page that meets a challenge leaves it at once and the identity+site is
 //      paused with growing backoff; nothing retries against a challenge;
 //   2. a person verifying or signing in gets the browser to themselves: a handoff lease that
@@ -41,16 +42,22 @@ function siteOf(url) {
 const CHALLENGE_PROBE = `(() => {
   const title = document.title || '', url = location.href, text = (document.body && document.body.innerText || '').slice(0, 4000);
   const frame = sel => !!document.querySelector(sel);
+  const conversation = frame('article,[data-message-author-role],textarea,[contenteditable="true"]');
+  const visible = sel => [...document.querySelectorAll(sel)].some(e => {
+    const style = getComputedStyle(e);
+    return e.getClientRects().length > 0 && style.visibility !== 'hidden' && style.visibility !== 'collapse' && style.display !== 'none';
+  });
   // Title alone is not proof (account-browser.js keeps the same rule): it needs Cloudflare's own script too.
   const cf = typeof window._cf_chl_opt === 'object' || frame('script[src*="/cdn-cgi/challenge-platform/"]');
-  if ((/^(Just a moment|请稍候|請稍候|Attention Required)/i.test(title) && cf) || frame('iframe[src*="challenges.cloudflare.com"]') || frame('#challenge-running,#challenge-stage,#cf-challenge-running'))
+  if ((/^(Just a moment|请稍候|請稍候|Attention Required)/i.test(title) && cf) || visible('iframe[src*="challenges.cloudflare.com"]') || visible('#challenge-running,#challenge-stage,#cf-challenge-running'))
     return { challenge: true, kind: 'cloudflare' };
-  if (/google\\.[a-z.]+\\/sorry\\//.test(url) || /unusual traffic from your computer/i.test(text)) return { challenge: true, kind: 'google_unusual_traffic' };
-  if (frame('iframe[src*="hcaptcha.com"]')) return { challenge: true, kind: 'hcaptcha' };
-  if (frame('iframe[src*="recaptcha"][src*="bframe"]')) return { challenge: true, kind: 'recaptcha' };
-  if (frame('.geetest_panel,.geetest_holder,#nc_1_wrapper,#aliyunCaptcha-window-popup,.captcha_verify_container,#captcha_container'))
+  if (/google\\.[a-z.]+\\/sorry\\//.test(url) || (!conversation && text.length < 600 && /^Our systems have detected unusual traffic from your computer/i.test(text.trim()))) return { challenge: true, kind: 'google_unusual_traffic' };
+  if (visible('iframe[src*="hcaptcha.com"]')) return { challenge: true, kind: 'hcaptcha' };
+  if (visible('iframe[src*="recaptcha"][src*="bframe"]')) return { challenge: true, kind: 'recaptcha' };
+  if (visible('.geetest_panel,.geetest_holder,#nc_1_wrapper,#aliyunCaptcha-window-popup,.captcha_verify_container,#captcha_container,.ds-shumei-captcha-modal'))
     return { challenge: true, kind: 'slider' };
-  if (text.length < 600 && /(请完成安全验证|人机验证|拖动滑块|滑动验证|Verify you are human)/.test(text)) return { challenge: true, kind: 'text' };
+  if (text.length < 600 && !conversation
+    && /^(请完成安全验证|人机验证|拖动滑块|滑动验证|Verify you are human)/i.test(text.trim())) return { challenge: true, kind: 'text' };
   return { challenge: false };
 })()`;
 
@@ -131,21 +138,36 @@ function assertAutomationAllowed(root, { identity, url, now = Date.now() } = {})
 
 // Page-level check after a navigation or a failed step. `page` is a Playwright page or a raw
 // CDP session with call(). A challenged page is sent to about:blank so it stops retrying.
-async function inspectAndLeave(root, { identity, page, cdp, url, source }) {
-  let probe;
+async function inspectAndLeave(root, { identity, page, cdp, url, source, probeTimeoutMs = 2000 }) {
+  let probe, timer;
   try {
-    probe = page ? await page.evaluate(CHALLENGE_PROBE)
-      : (await cdp.call('Runtime.evaluate', { expression: CHALLENGE_PROBE, returnByValue: true })).result?.value;
+    const pending = page ? page.evaluate(CHALLENGE_PROBE)
+      : cdp.call('Runtime.evaluate', { expression: CHALLENGE_PROBE, returnByValue: true }).then(r => r.result?.value);
+    probe = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => resolve(null), probeTimeoutMs); })]);
   } catch { return null; }
+  finally { clearTimeout(timer); }
   if (!probe?.challenge) return null;
   const site = siteOf(url || (page ? page.url() : '')) || 'unknown';
   // Leave first: a failed record must never keep the page retrying the check.
   try {
-    if (page) await page.goto('about:blank');
+    if (page) await page.goto('about:blank', { waitUntil: 'commit', timeout: 5000 });
     else await cdp.call('Page.navigate', { url: 'about:blank' });
   } catch {}
   try { return recordChallenge(root, { identity, site, kind: probe.kind, source }); }
   catch { return { identity, site, kind: probe.kind, unrecorded: true }; }
+}
+
+// Shared by one-shot bridge calls and persistent image lanes. Inspect failures once;
+// never replay the operation, whose send/download outcome may already be uncertain.
+async function runProtected(root, options, fn) {
+  try { return await fn(); }
+  catch (error) {
+    if (!/^(Site challenged|Human handoff)/.test(error?.message || '') && !handoff(root)
+      && await inspectAndLeave(root, options)) {
+      throw Object.assign(Error('Site challenged: the page asked for human verification; left it and paused this site'), { cause: error });
+    }
+    throw error;
+  }
 }
 
 // Delete challenge-state cookies of one identity's site (partitioned ones included). Runs
@@ -205,5 +227,5 @@ async function settleHandoff(hub) {
   return null;
 }
 
-module.exports = { siteOf, CHALLENGE_PROBE, CHALLENGE_COOKIE, BACKOFF_MS, HANDOFF_MS, read, recordChallenge, clearSite, releaseSite, blocked,
+module.exports = { siteOf, CHALLENGE_PROBE, CHALLENGE_COOKIE, BACKOFF_MS, HANDOFF_MS, read, recordChallenge, clearSite, releaseSite, blocked, runProtected,
   handoff, startHandoff, endHandoff, assertAutomationAllowed, inspectAndLeave, resetChallengeCookies, openForHuman, settleHandoff };

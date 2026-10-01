@@ -80,11 +80,19 @@ test('a challenged page is recorded and sent to about:blank', async t => {
   assert.equal(visited.length, 1);
 });
 
+test('a hung renderer does not turn failure inspection into an unbounded wait', async t => {
+  const dir=root(t),start=Date.now();let navigated=false;
+  assert.equal(await guard.inspectAndLeave(dir,{identity:'main',probeTimeoutMs:30,page:{evaluate:()=>new Promise(()=>{}),goto:async()=>{navigated=true;}}}),null);
+  assert.ok(Date.now()-start<1000);
+  assert.equal(navigated,false);
+  assert.deepEqual(guard.read(dir).sites,{});
+});
+
 test('the probe recognises the observed Cloudflare page and leaves ordinary pages alone', () => {
   const vm = require('vm');
   const run = ({ title = '', html = '', url = 'https://chatgpt.com/', text = '', cf = false }) => vm.runInNewContext(guard.CHALLENGE_PROBE, {
     window: cf ? { _cf_chl_opt: {} } : {},
-    document: { title, body: { innerText: text }, querySelector: sel => (html && sel.split(',').some(s => html.includes(s.replace(/[\[\]"*=]/g, '').split(/[#.]/).pop()))) ? {} : null },
+    document: { title, body: { innerText: text }, querySelectorAll: () => [], querySelector: sel => (html && sel.split(',').some(s => html.includes(s.replace(/[\[\]"*=]/g, '').split(/[#.]/).pop()))) ? {} : null },
     location: { href: url },
   });
   assert.deepEqual({ ...run({ title: 'Just a moment...', cf: true }) }, { challenge: true, kind: 'cloudflare' });

@@ -3,8 +3,9 @@
 //
 // Playwright's connectOverCDP attaches to every target of the browser: the person's own
 // windows, other tools' tabs and the cross-origin frames inside them, Cloudflare's challenge
-// frame included. Observed 2026-09-29: with such a connection alive a person could not pass
-// ChatGPT's check, and one tool's attach made every ChatGPT tab refetch at once. Through this
+// frame included. In the 2026-09-29 incident the check loop also persisted after detachment;
+// attachment alone was not established as its cause. Whole-browser focus emulation did
+// trigger refetches in unrelated ChatGPT tabs. Through this
 // relay the tool attaches to its own pages and nothing else (the extension relay of
 // Playwright MCP serves a single tab the same way):
 // - the browser-level auto-attach is answered with the owned pages only;
@@ -30,7 +31,7 @@ function localEndpoint(ep) {
 }
 
 // ep: { port, ws } of the local browser; targetIds: the pages the tool owns.
-async function scopedConnection(ep, targetIds, { onRefused } = {}) {
+async function scopedConnection(ep, targetIds, { onRefused, commandTimeoutMs = 15000 } = {}) {
   const endpoint = localEndpoint(ep);
   const owned = new Set(targetIds);
   if (!owned.size) throw Error('No browser session: no owned page');
@@ -51,13 +52,15 @@ async function scopedConnection(ep, targetIds, { onRefused } = {}) {
     let nextId = RELAY_ID, ready = false, queued = [];
     const stop = () => {
       queued = [];
-      for (const { reject } of pending.values()) reject(Error('Hub browser connection closed'));
+      for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(Error('Hub browser connection closed')); }
       pending.clear();
       for (const ws of [client, upstream]) { sockets.delete(ws); if (ws.readyState !== WebSocket.CLOSED) ws.terminate(); }
     };
     const call = (method, params = {}) => new Promise((resolve, reject) => {
+      if (upstream.readyState !== WebSocket.OPEN) return reject(Error('Hub browser connection closed'));
       const id = nextId++;
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => { pending.delete(id); reject(Error('CDP timeout: ' + method)); }, commandTimeoutMs);
+      pending.set(id, { resolve, reject, timer });
       upstream.send(JSON.stringify({ id, method, params }));
     });
     const send = message => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(message)); };
@@ -86,10 +89,15 @@ async function scopedConnection(ep, targetIds, { onRefused } = {}) {
         if (!ROOT_ALLOWED.has(method) && !ownedTarget) { refuse(msg, 'Not available through the scoped Hub connection: ' + method); return; }
       } else if (browserSessions.has(sessionId)) {
         if (method === 'Target.attachToTarget' && owned.has(params.targetId)) {
+          let attached;
           call('Target.attachToTarget', { targetId: params.targetId, flatten: true }).then(async ({ sessionId: id }) => {
+            attached = id;
             sessions.set(id, (await call('Target.getTargetInfo', { targetId: params.targetId })).targetInfo); explicit.add(id);
             answer(msg, { sessionId: id });
-          }, e => refuse(msg, e.message));
+          }).catch(async e => {
+            if (attached) await call('Target.detachFromTarget', { sessionId: attached }).catch(() => {});
+            refuse(msg, e.message);
+          });
           return;
         }
         if (method === 'Target.detachFromTarget' && explicit.has(params.sessionId)) {
@@ -114,6 +122,7 @@ async function scopedConnection(ep, targetIds, { onRefused } = {}) {
         const waiter = pending.get(msg.id);
         pending.delete(msg.id);
         if (!waiter) return;
+        clearTimeout(waiter.timer);
         if (msg.error) waiter.reject(Error(msg.error.message)); else waiter.resolve(msg.result);
         return;
       }

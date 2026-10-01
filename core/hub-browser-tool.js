@@ -64,6 +64,9 @@ class BrowserTool {
     // A busy local CDP endpoint can miss its short health deadline while Chrome
     // and the owned tab still exist. Recheck once before declaring the page gone.
     const ep = await this.hub.endpoint() || await this.hub.endpoint();
+    // A missing health response is not proof that Chrome or the old task is gone.
+    // Keep its binding while the profile is held; opening again would orphan that task.
+    if (!ep && this.hub.profileHeld()) throw Error('Timeout: Hub browser endpoint unavailable; existing page preserved');
     if (!record || !ep || record.browserWs !== ep.ws || record.identity !== this.binding.identity) return null;
     const { CDP } = require('./web-roundtable/cdp');
     const cdp = await CDP.connect(ep.ws, ep.port);
@@ -92,7 +95,9 @@ class BrowserTool {
     const connection = await this.connectPage(target, { downloads });
     try {
       guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: connection.page.url() });
-      return await fn(connection.page);
+      return await guard.runProtected(this.binding.root, {
+        identity: this.binding.identity, page: connection.page, source: this.binding.id,
+      }, () => fn(connection.page));
     } finally { await connection.close(); }
   }
   async connectPage(target, { downloads = false } = {}) {

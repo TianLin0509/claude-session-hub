@@ -9,7 +9,7 @@ const once = (ws, event) => new Promise((resolve, reject) => {
 });
 
 // A fake browser: one owned page OWN, attachable as session S1; it records what reaches it.
-async function fakeBrowser(t) {
+async function fakeBrowser(t, intercept = () => false) {
   const server = new WebSocket.Server({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
   const received = [], peers = [];
@@ -18,6 +18,7 @@ async function fakeBrowser(t) {
     peers.push(ws);
     ws.on('message', bytes => {
       const m = JSON.parse(bytes); received.push(m);
+      if (intercept(m, ws)) return;
       const reply = result => ws.send(JSON.stringify({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), result }));
       if (m.method === 'Target.getTargetInfo' && m.params?.targetId === 'OWN') reply({ targetInfo: { targetId: 'OWN', type: 'page', url: 'https://chatgpt.com/', browserContextId: 'C', attached: false } });
       else if (m.method === 'Target.attachToTarget') reply({ sessionId: 'S' + ++attached });
@@ -126,4 +127,28 @@ test('a session the tool opens itself (newCDPSession) reaches owned pages only a
   assert.deepEqual((await call('Emulation.setFocusEmulationEnabled', { enabled: true }, 'S1')).result, {}, 'the automatic session still gets no focus');
   assert.deepEqual((await call('Target.detachFromTarget', { sessionId: own }, browser)).result, {});
   assert.match((await call('Runtime.evaluate', {}, own)).error.message, /Unknown session/);
+});
+
+test('a page disappearing between explicit attach and inspection returns an error, not an unhandled rejection', async t => {
+  let reads=0;
+  const chrome=await fakeBrowser(t,(m,ws)=>{
+    if(m.method==='Target.getTargetInfo' && ++reads===2){ws.send(JSON.stringify({id:m.id,error:{code:-32000,message:'No target with given id'}}));return true;}
+    return false;
+  });
+  const {call}=await client(t,await scopedConnection(chrome.ep,['OWN']));
+  const browser=(await call('Target.attachToBrowserTarget')).result.sessionId;
+  const result=await call('Target.attachToTarget',{targetId:'OWN'},browser);
+  assert.match(result.error.message,/No target/);
+  assert.ok(chrome.received.some(m=>m.method==='Target.detachFromTarget' && m.params.sessionId==='S2'),'failed explicit attachment is released');
+});
+
+test('a silent browser reply during explicit attach has a bounded timeout', async t => {
+  let reads=0;
+  const chrome=await fakeBrowser(t,m=>m.method==='Target.getTargetInfo' && ++reads===2);
+  const {call}=await client(t,await scopedConnection(chrome.ep,['OWN'],{commandTimeoutMs:80}));
+  const browser=(await call('Target.attachToBrowserTarget')).result.sessionId;
+  const start=Date.now();
+  const result=await call('Target.attachToTarget',{targetId:'OWN'},browser);
+  assert.match(result.error.message,/CDP timeout/);
+  assert.ok(Date.now()-start<2000);
 });
