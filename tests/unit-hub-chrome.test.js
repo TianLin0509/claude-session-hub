@@ -111,8 +111,8 @@ test('a login window is always placed on screen, never left to the position Chro
   assert.ok(!login.some(a => a.startsWith('--remote-debugging')), 'and no debugging port, or Google refuses the login');
   assert.ok(hub.launchArgs('main').includes('--window-position=-32000,-32000'), 'work windows stay off screen');
   assert.ok(new HubChrome({ root: hub.root, proxy: 'http://127.0.0.1:7890' }).launchArgs('main').includes('--proxy-server=http://127.0.0.1:7890'), 'the Hub proxy reaches Chrome');
-  assert.equal(new HubChrome({ root: hub.root, proxy: '' }).launchArgs('main').some(a => a.startsWith('--proxy-server')), false, 'no Hub proxy: the system proxy applies');
-  assert.equal(new HubChrome({ root: hub.root, proxy: 'not a url; --flag' }).launchArgs('main').some(a => a.startsWith('--proxy-server')), false, 'a malformed setting is never passed');
+  assert.ok(new HubChrome({ root: hub.root, proxy: '' }).launchArgs('main').includes('--no-proxy-server'), 'no Hub proxy: explicit direct route, without inheriting the system proxy');
+  assert.throws(() => new HubChrome({ root: hub.root, proxy: 'not a url; --flag' }).launchArgs('main'), /代理地址无效/, 'malformed settings cannot silently change the route');
   for (const flag of ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'])
     assert.ok(hub.launchArgs('main').includes(flag), 'an off-screen tool tab stays a visible, unthrottled page: ' + flag);
 });
