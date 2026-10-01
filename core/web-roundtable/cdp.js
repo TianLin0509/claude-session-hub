@@ -33,6 +33,10 @@ async function open(provider, url, options={}) {
   let page;
   try {
     page=await hub.page(targetId);
+    // Off-screen windows may report hidden even though the tab is selected. Keep
+    // this owned page rendering and accepting keyboard input without taking focus
+    // from the person using the desktop. The override ends with this CDP session.
+    await page.call('Emulation.setFocusEmulationEnabled',{enabled:true});
     await page.call('Page.enable');await page.call('Network.enable');await page.call('Page.navigate',{url});
     return {page,targetId,owned:false,browserPid:null,headless:false,async close(){page.close();await hub.closeTab(targetId);}};
   } catch(e){page?.close();await hub.closeTab(targetId);throw e;}

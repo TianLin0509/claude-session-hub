@@ -130,6 +130,17 @@ test('a composer visible at the readiness deadline does not permit premature sub
   });}finally{Date.now=now;}
   assert.equal(focused,0);assert.equal(job.submissionAttempted,undefined);assert.match(job.error,/not ready/);
 });
+test('visible quota exhaustion stops before editing or sending and preserves the website reason',async()=>{
+  let edits=0,closed=0;
+  const job={id:'quota-exhausted',input:{provider:'kimi',prompt:'test'}};
+  await jobs.runWeb(job,p=>Object.assign(job,p),'run',{
+    open:async()=>({page:{},close:async()=>{closed++;}}),
+    adapters:{get:()=>({url:'https://www.kimi.com/'}),snapshot:async()=>({quotaMessage:'Your free quota is used up. Refreshes at 10-19.',ready:true,answers:[],echo:0}),focus:async()=>{edits++;},send:async()=>{edits++;}}
+  });
+  assert.equal(job.state,'needs_attention');assert.equal(job.errorCode,'quota_exhausted');
+  assert.equal(job.submissionAttempted,undefined);assert.equal(job.recovery,undefined);
+  assert.equal(edits,0);assert.equal(closed,1);assert.match(job.error,/10-19/);
+});
 test('an abandoned reaper marker fails explicitly without stealing its lock',()=>{
   const dir=path.join(store.root(),'abandoned-reaper.lock'),reap=dir+'.reap';
   fs.mkdirSync(dir);fs.writeFileSync(reap,'');const old=new Date(Date.now()-60000);fs.utimesSync(reap,old,old);
