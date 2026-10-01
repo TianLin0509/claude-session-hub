@@ -198,7 +198,14 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
 
     // ⑥ 文风自动优化，结果显示在文章列表
     await until('/文风已根据这篇更新|这篇没有需要改的地方|没通过检查|文风优化失败/.test(document.querySelector("#wr-view-studio .wr-studio-list").innerText)', 'voice evolution finished', 300000);
-    const vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    let vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    if (vstat.status === 'failed') {
+      // 真人会怎么做：看到「文风优化失败」就点「重新优化文风」
+      console.log(`    （文风优化第一次失败：${vstat.error}；点「重新优化文风」再来一次）`);
+      await clickText('重新优化文风', '#wr-view-studio');
+      await until('/文风已根据这篇更新|这篇没有需要改的地方|没通过检查/.test(document.querySelector("#wr-view-studio .wr-studio-list").innerText)', 'voice evolution retried', 300000);
+      vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    }
     check('定稿后自动优化文风（结果写进文章记录）', ['done', 'rejected'].includes(vstat.status), `${vstat.status}：${vstat.summary || vstat.error || ''}`);
     check('变更日志记下了这次自动优化', /AI (根据|读完|对)《/.test(fs.readFileSync(path.join(voiceDir, 'CHANGELOG.md'), 'utf8')));
     await snap('06-文风已优化');

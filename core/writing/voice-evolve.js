@@ -150,8 +150,13 @@ async function evolveVoiceFromPiece({ dir, pieces, voice, paths, hubDataDir, mod
   const skill = voice.read('SKILL.md');
   const learned = voice.read('learned-from-edits.md');
   const { system, user } = buildPrompt({ skill, learned, userMessages, drafts, final, title: summaryInfo.title, usedCount });
-  const r = await runner('claude', { system, user, model, hubDataDir });
-  const out = parseResult(r.text);
+  let r = await runner('claude', { system, user, model, hubDataDir });
+  let out = parseResult(r.text);
+  if (!out) {
+    // 整份 SKILL.md 塞进 JSON 字符串，模型偶尔漏转义（2026-10-01 E2E 里 haiku 出过）：提醒一句再试一次
+    r = await runner('claude', { system: `${system}\n\n上一次输出不是合法 JSON。这次只输出一个 JSON 对象：字符串里的换行写成 \\n，双引号写成 \\"，不要用代码块包起来。`, user, model, hubDataDir });
+    out = parseResult(r.text);
+  }
   if (!out) return { status: 'failed', ratio, error: '模型输出不是可解析的 JSON' };
   const userCount = userMessages.length;
   if (!out.changed) {

@@ -102,6 +102,12 @@ function buildView({ state, members = [], files = [], final = '' }) {
     if (m.speaker && (!mem.name || mem.name === mem.kind || mem.named === false)) mem.name = m.speaker;
   }
 
+  // 田哥在 Tab 里点名「请 X 汇总定稿」的那一轮：X 这一轮交的稿就是定稿，忘了附定稿卡也认
+  const finalizeBy = new Map();
+  for (const m of userMsgs) {
+    const hit = String(m.content).match(/^请 (.+?) 汇总定稿/);
+    if (hit) finalizeBy.set(Number(m.turnNum) || 0, hit[1]);
+  }
   const questions = [];
   let finalItem = null;
   for (const m of messages) {
@@ -120,8 +126,10 @@ function buildView({ state, members = [], files = [], final = '' }) {
     if ((finalCard || draftCard) && !body.trim()) {
       // 只有卡片没有正文（AI 把稿存到别处了）：不当稿件，免得落盘成空文件
       mem.items.push({ ...base, kind: 'reply', title: '', note: '这条回答只附了卡片，没有正文', text: content.trim(), chars: 0 });
-    } else if (finalCard) {
-      const item = { ...base, kind: 'final', title: finalCard.title || titleOf(body), note: finalCard.note, text: body, chars: cjk(body) };
+    } else if (finalCard || (finalizeBy.get(turn) === mem.name && /^#\s+\S/.test(body) && cjk(body) >= 150)) {
+      const item = finalCard
+        ? { ...base, kind: 'final', title: finalCard.title || titleOf(body), note: finalCard.note, text: body, chars: cjk(body) }
+        : { ...base, kind: 'final', implicit: true, title: (draftCard && draftCard.title) || titleOf(body), note: '这一轮点名汇总定稿，没附定稿卡，Hub 按定稿收下', text: body, chars: cjk(body) };
       mem.items.push(item);
       if (!finalItem || item.turn >= finalItem.turn) finalItem = { ...item, from: mem.name };
     } else if (draftCard) {

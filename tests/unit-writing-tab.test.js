@@ -288,6 +288,20 @@ test('自动优化：模型运行期间田哥手动改了文件，就不拿旧�
   assert.strictEqual(voice.read('learned-from-edits.md'), longLearned);
 });
 
+test('自动优化：模型第一次输出不是合法 JSON，提醒转义后再试一次', async () => {
+  const p = fixturePaths();
+  const voice = new VoiceStore(p);
+  const pieces = new PieceStore(p);
+  const dir = pieces.create();
+  fs.writeFileSync(path.join(dir, 'final.md'), '# 重试\n\n正文。');
+  const systems = [];
+  const flaky = async ({ system }) => { systems.push(system); return { text: systems.length === 1 ? '{"changed": true, "skill_md": "坏的\n没转义"' : '{"changed": false, "summary": "没有新依据"}' }; };
+  const r = await evolve.evolveVoiceFromPiece({ dir, pieces, voice, paths: p, hubDataDir: tmp('hub'), model: 'x', runner: flaky });
+  assert.strictEqual(r.status, 'done');
+  assert.strictEqual(systems.length, 2);
+  assert.ok(systems[1].includes('上一次输出不是合法 JSON'));
+});
+
 test('自动优化：同一篇定稿再改，群里没有新点评就不再跑模型', async () => {
   const p = fixturePaths();
   const voice = new VoiceStore(p);
@@ -371,6 +385,17 @@ test('工作台：忘了附卡片但明显是一份稿（# 标题开头、有篇
   const it = wb.buildView({ state: st, members: MEMBERS.slice(0, 1) }).columns[0].items[0];
   assert.deepStrictEqual([it.kind, it.version, it.title, it.implicit], ['draft', 1, '多分身不等于分集', true]);
   assert.ok(it.note.includes('没附交稿卡'));
+});
+
+test('工作台：Tab 点名「请 X 汇总定稿」的那一轮，X 交的稿忘了附定稿卡也按定稿收下', () => {
+  const st = groupState();
+  st.messages.push({ id: 'u3', role: 'user', origin: 'user', turnNum: 3, content: '请 Claude 1 汇总定稿：读完群里所有稿和我的全部点评，取各稿之长改定，交定稿卡。' });
+  st.messages.push({ id: 'a3-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 3, status: 'completed', content: '# 汇总后的定稿\n\n' + '取两稿之长改定的正文。'.repeat(20) });
+  st.currentTurn = 3;
+  const v = wb.buildView({ state: st, members: MEMBERS });
+  assert.strictEqual(v.final && v.final.title, '汇总后的定稿');
+  assert.strictEqual(v.steps.final, true);
+  assert.ok(v.columns[0].items.pop().implicit);
 });
 
 test('工作台：定稿卡置顶；文章目录里 Hub 没写过的稿件文件按名字归到成员，内容重复的不列', () => {
