@@ -1221,6 +1221,7 @@ const wakeDormantMeetingMembers = require('./meeting-member-wake.js').createMeet
 });
 
 async function selectMeeting(meetingId, opts = {}) {
+  window.hubWorkspaces?.close();
   void savePreviewState({ nonBlocking: true });
   activeSessionId = null;
   suspendInactiveTerminalRenderers(null);
@@ -5475,6 +5476,7 @@ ipcRenderer.on('session-persistence-error', (_event, error) => {
   require('./ui-feedback').showHubAlert('会话信息未保存：' + error.message);
 });
 async function selectSession(id, opts = {}) {
+  window.hubWorkspaces?.close();
   if (!opts.splitBypass && sessionSplit?.routesSelection()) return sessionSplit.route(id, undefined, opts);
   sessionSplit?.usePrimary();
   const intent = ++sessionOpenIntent;
@@ -8225,6 +8227,7 @@ const shellController = createShellController({
   suspendTerminalRenderer: (cached) => unloadGpuRenderer(cached),
 });
 function escapeToHome() {
+  window.hubWorkspaces?.close();
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
   if (window.__assistantHide) window.__assistantHide();
@@ -8262,7 +8265,12 @@ const configModal = createConfigModalController({
   getNotificationTarget: getActiveCompletionNotificationTarget,
 });
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
-  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); },
+  document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { window.hubWorkspaces?.close(); memoryPanel.close(); capabilityPanel.close(); },
+});
+window.hubWorkspaces = require('./hub-workspaces').createHubWorkspaces({
+  document, window, memory: memoryPanel, capabilities: capabilityPanel, memo: memoPanel,
+  beforeOpen: () => { accountCenterPanel.close(); window.__assistantHide?.(); },
+  search: { open: pastSessionModals.openSearchModal, close: pastSessionModals.closeSearchModal },
 });
 const assistantPanel = require('./assistant-panel').createAssistantPanel({
   document, ipcRenderer,

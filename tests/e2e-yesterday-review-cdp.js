@@ -55,7 +55,8 @@ function fixture() {
     await until(c,'!!window.__hubE2E?.globalSessionSearch && sessions.size===61','catalogue');
     await c.eval(`window.__reviewErrors=[];addEventListener('error',e=>__reviewErrors.push(e.message));addEventListener('unhandledrejection',e=>__reviewErrors.push(String(e.reason)));require('electron').clipboard.writeText=text=>{window.__reviewCopied=text;};`);
     await c.eval(`require('electron').ipcRenderer.invoke('refresh-session-search',{force:true})`);
-    await click(c,'#btn-global-search');await query(c,'REVIEW_PAGED');
+    await c.eval('window.__writingShow()');
+    await key(c,'F',70,10);await query(c,'REVIEW_PAGED');
     await until(c,"document.querySelectorAll('.session-search-result').length===50",'first result page');
     await click(c,'.session-search-load-more');await until(c,"document.querySelectorAll('.session-search-result').length===60",'second result page');
     assert.equal(await c.eval(`new Set([...document.querySelectorAll('.session-search-result-title')].map(e=>e.textContent)).size`),60);report.checks.push('result pagination 50 -> 60 without duplicates');
@@ -80,6 +81,7 @@ function fixture() {
     await click(c,'[data-preview-mode="artifacts"]');await until(c,`!!document.querySelector('.session-search-artifact')`,'artifact detected');
     await click(c,'.session-search-artifact');
     await until(c,`!window.__hubE2E.globalSessionSearch.state().open && document.getElementById('preview-panel').style.display!=='none'`,'artifact actually visible above search');report.checks.push('open artifact into visible Hub preview');
+    assert.equal(await c.eval('document.body.classList.contains("writing-open")'),false,'artifact reveals preview from writing');
     await until(c,`(async()=>{const view=document.querySelector('#preview-body webview');if(!view)return false;try{return (await view.executeJavaScript('document.body.textContent')).includes('REVIEW_ARTIFACT_OK');}catch{return false;}})()`,'artifact HTML content rendered');
     await click(c,'#btn-global-search');await query(c,'REVIEW_BODY');await key(c,'Enter',13);
     await until(c,`!!document.querySelector('.session-search-preview-context .turn-body')`,'reader reopened after artifact');

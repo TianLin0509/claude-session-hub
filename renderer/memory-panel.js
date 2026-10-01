@@ -406,14 +406,16 @@ function createMemoryPanel({
       }
     });
   }
-  async function open() {
+  async function open(options = {}) {
     build();
     page.hidden = false;
     document.body.classList.add("memory-open");
     document
       .getElementById("btn-rail-memory")
       ?.setAttribute("aria-expanded", "true");
-    tab = getActiveSessionInfo()?.id ? "context" : "library";
+    tab = ['context', 'library', 'dream'].includes(options.tab) ? options.tab
+      : options.preserve ? (tab === 'context' ? 'library' : tab)
+      : getActiveSessionInfo()?.id ? "context" : "library";
     resetPreview(); data = null;
     render();
     clearInterval(timer);
@@ -433,12 +435,14 @@ function createMemoryPanel({
     document
       .getElementById("btn-rail-memory")
       ?.setAttribute("aria-expanded", "false");
+    window.hubWorkspaces?.panelClosed('memory');
   }
   document.addEventListener("click", (e) => {
     if (e.target.closest('[data-action="open-memory"]')) {
+      if (window.hubWorkspaces) { window.hubWorkspaces.open('resources', 'memory'); return; }
       if (page && !page.hidden) close();
       else void open().catch(fail);
-    } else if (e.target.closest("#scene-rail button") && page && !page.hidden)
+    } else if (e.target.closest("#scene-rail button") && page && !page.hidden && !page.classList.contains('hw-embedded'))
       close();
   });
   document.addEventListener("keydown", (e) => {

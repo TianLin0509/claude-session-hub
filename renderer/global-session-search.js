@@ -699,7 +699,12 @@ function createGlobalSessionSearch(options) {
     if(result?.ok===false) throw new Error(result.error || '无法打开文件');
     // Hub previews and file manager live underneath this modal. Reveal them
     // only after a successful navigation; a failed open keeps the reader here.
-    if(sequence===previewSequence && isOpen() && ['preview','file-manager'].includes(result?.type)) close({restoreFocus:false});
+    if(sequence===previewSequence && isOpen() && ['preview','file-manager'].includes(result?.type)) {
+      // Search can now be entered from the full-width writing workspace.
+      // Reveal the existing preview only after its navigation succeeds.
+      window.__writingHide?.();
+      close({restoreFocus:false});
+    }
   }
 
   function renderPreview(hit, preview) {
@@ -886,7 +891,8 @@ function createGlobalSessionSearch(options) {
 
   // 2026-08-27：允许带查询词打开——工作台的「常用搜索」点一下要直接搜，
   // 不能只把面板弹出来让人重敲一遍。
-  function open({ query, scope } = {}) {
+  function open({ query, scope, embedded = false } = {}) {
+    if (!embedded && window.hubWorkspaces) return window.hubWorkspaces.open('review', 'history', { query, scope });
     if (!overlay) return;
     searchSequence += 1;
     previewSequence += 1;
@@ -933,6 +939,7 @@ function createGlobalSessionSearch(options) {
       window.requestAnimationFrame(() => focusTarget.focus());
     }
     returnFocusElement = null;
+    window.hubWorkspaces?.panelClosed('search');
   }
 
   queryInput.addEventListener('input', scheduleSearch);
@@ -1001,7 +1008,7 @@ function createGlobalSessionSearch(options) {
       else close();
       return;
     }
-    if (event.key === 'Tab' && isOpen()) {
+    if (event.key === 'Tab' && isOpen() && (!overlay.classList.contains('hw-embedded') || !reader.hidden)) {
       const focusable = [...(reader.hidden?overlay:reader).querySelectorAll(
         'button:not([disabled]):not([hidden]), input:not([disabled]), select:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])',
       )].filter(element => element.offsetParent !== null && element.tabIndex >= 0);
