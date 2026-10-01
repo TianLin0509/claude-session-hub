@@ -10,6 +10,8 @@
 .card-question-nav::before { display: none; }
 .card-question-nav[hidden] { display: none; }
 .question-directory-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.question-directory-head .question-directory-toggle { position: absolute; top: 10px; right: 4px; }
+.question-directory-head strong { padding-right: 30px; }
 .question-directory-head strong { flex: 1; min-width: 0; white-space: nowrap; font-size: 12px; font-weight: 600; padding-left: 3px; }
 .question-directory-count { margin-left: 6px; font-size: 10px; color: var(--fg-muted); font-weight: 400; }
 .question-directory-toggle, .question-directory-actions button {
@@ -43,6 +45,21 @@
 .card-question-nav-tooltip-index { font-size: 10px; font-weight: 500; color: var(--fg-muted); margin-bottom: 5px; }
 .card-question-nav-tooltip-summary { font-size: 12px; line-height: 1.7; font-weight: 400; overflow-wrap: anywhere; }
 .card-question-nav.directory-collapsed { width: 38px; padding: 5px 3px; background: transparent; border-color: transparent; }
+.card-question-nav.directory-collapsed::after {
+  content: '问题目录';
+  position: absolute;
+  top: 72px;
+  right: 11px;
+  writing-mode: vertical-rl;
+  letter-spacing: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+.card-question-nav { transition: width 150ms ease, background-color 150ms ease, box-shadow 150ms ease; }
+.card-question-nav.directory-hover-open { box-shadow: -10px 8px 28px #0004; }
+.card-question-nav.directory-pinned .question-directory-toggle { color: var(--brand); border-color: var(--brand-tint-border); }
 .directory-collapsed .question-directory-head strong,
 .directory-collapsed .card-question-nav-track { display: none; }
 .directory-collapsed .question-directory-actions { flex-direction: column; margin-top: auto; }

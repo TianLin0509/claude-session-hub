@@ -60,6 +60,7 @@ function createCardQuestionNavigator(options = {}) {
   let highlightTimer = null;
   let disposed = false;
   let resizeObserver = null, narrow = false, narrowOverride = null, preferenceKey = '';
+  let hovered = false, hoverSuppressed = false, reservedExpanded = null;
   let layoutWidth = null, navigationAnchor = null, anchorFrame = null;
   const layout = options.layoutElement || overlay?.parentElement;
   function rememberNavigation(card) {
@@ -81,36 +82,51 @@ function createCardQuestionNavigator(options = {}) {
       updateActive();
     });
   }
-  function storedCollapsed() {
-    try { return win.localStorage.getItem(preferenceKey) === 'collapsed'; }
+  function storedExpanded() {
+    try { return win.localStorage.getItem(preferenceKey) === 'expanded'; }
     catch { return false; }
   }
   function updateLayout() {
     if (!root || !overlay || !layout) return;
-    const key = 'hub.questionDirectory.' + String(getActiveSessionId() || '');
+    // The old key stored an open-by-default preference; start the pin mode cleanly.
+    const key = 'hub.questionDirectoryPinned.v2.' + String(getActiveSessionId() || '');
     const nextNarrow = layout.clientWidth < 820;
     if (key !== preferenceKey || narrow !== nextNarrow) narrowOverride = null;
     preferenceKey = key; narrow = nextNarrow;
-    const collapsed = narrow ? (narrowOverride ?? true) : storedCollapsed();
-    const reflow = layoutWidth !== layout.clientWidth || root.classList.contains('directory-collapsed') !== collapsed;
+    const pinnedExpanded = narrow ? (narrowOverride ?? false) : storedExpanded();
+    const collapsed = !(pinnedExpanded || hovered);
+    const reflow = layoutWidth !== layout.clientWidth || reservedExpanded !== pinnedExpanded;
     layoutWidth = layout.clientWidth;
+    reservedExpanded = pinnedExpanded;
     root.classList.toggle('directory-collapsed', collapsed);
-    root.classList.toggle('directory-auto-collapsed', narrow && narrowOverride === null);
-    overlay.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
-    if (options.layoutElement) layout.style.setProperty('--question-directory-space', collapsed ? '54px' : '252px');
+    root.classList.toggle('directory-pinned', pinnedExpanded);
+    root.classList.toggle('directory-hover-open', hovered && !pinnedExpanded);
+    root.classList.toggle('directory-auto-collapsed', !pinnedExpanded && !hovered);
+    overlay.style.setProperty('--question-directory-space', pinnedExpanded ? '252px' : '54px');
+    if (options.layoutElement) layout.style.setProperty('--question-directory-space', pinnedExpanded ? '252px' : '54px');
     const toggle = root.querySelector('.question-directory-toggle');
     toggle.setAttribute('aria-expanded', String(!collapsed));
-    toggle.setAttribute('aria-label', collapsed ? '展开问题目录' : '折叠问题目录');
-    toggle.title = collapsed ? (narrow ? '展开问题目录（窗口较窄，已自动收起）' : '展开问题目录') : '折叠问题目录';
+    toggle.setAttribute('aria-pressed', String(pinnedExpanded));
+    toggle.setAttribute('aria-label', pinnedExpanded ? '取消固定问题目录' : '固定展开问题目录');
+    toggle.title = pinnedExpanded ? '取消固定问题目录' : '固定展开问题目录';
     toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16m${collapsed ? '-6-11-3 3 3 3' : '-6-11 3 3-3 3'}"/></svg>`;
-    overlay._cardFollowController?.request();
-    if (reflow) restoreNavigationAfterLayout();
+    if (reflow) { overlay._cardFollowController?.request(); restoreNavigationAfterLayout(); }
   }
   function toggleDirectory() {
-    const collapsed = !root.classList.contains('directory-collapsed');
-    if (narrow) narrowOverride = collapsed;
-    else { try { win.localStorage.setItem(preferenceKey, collapsed ? 'collapsed' : 'expanded'); } catch (e) { console.warn('[question-directory] preference could not be saved:', e.message); } }
+    const pinnedExpanded = !root.classList.contains('directory-pinned');
+    if (narrow) narrowOverride = pinnedExpanded;
+    else { try { win.localStorage.setItem(preferenceKey, pinnedExpanded ? 'expanded' : 'collapsed'); } catch (e) { console.warn('[question-directory] preference could not be saved:', e.message); } }
+    if (!pinnedExpanded) { hovered = false; hoverSuppressed = true; }
     hideTooltip(); updateLayout();
+  }
+  function onMouseEnter() {
+    if (!hoverSuppressed && !root.classList.contains('directory-pinned')) { hovered = true; updateLayout(); }
+  }
+  function onMouseLeave() {
+    hovered = false;
+    hoverSuppressed = false;
+    hideTooltip();
+    updateLayout();
   }
   function navigate(action) {
     hideTooltip();
@@ -180,7 +196,7 @@ function createCardQuestionNavigator(options = {}) {
     if (!root || !overlay) return;
     root.hidden = !visible;
     overlay.classList.toggle('question-nav-visible', visible);
-    if (!visible) hideTooltip();
+    if (!visible) { hovered = false; hoverSuppressed = false; hideTooltip(); }
     updateLayout();
   }
 
@@ -369,6 +385,8 @@ function createCardQuestionNavigator(options = {}) {
       observer.observe(overlay, { childList: true, subtree: !!options.getEntries });
     }
     root.querySelector('.question-directory-toggle').addEventListener('click', toggleDirectory);
+    root.addEventListener('mouseenter', onMouseEnter);
+    root.addEventListener('mouseleave', onMouseLeave);
     root.querySelectorAll('[data-directory-action]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.directoryAction)));
     if (typeof win.ResizeObserver === 'function' && layout) { resizeObserver = new win.ResizeObserver(updateLayout); resizeObserver.observe(layout); }
     scheduleRefresh();
@@ -382,6 +400,8 @@ function createCardQuestionNavigator(options = {}) {
     if (anchorFrame !== null) cancelRaf(anchorFrame);
     if (highlightTimer) clearTimeout(highlightTimer);
     observer?.disconnect(); resizeObserver?.disconnect();
+    root?.removeEventListener('mouseenter', onMouseEnter);
+    root?.removeEventListener('mouseleave', onMouseLeave);
     overlay?.removeEventListener('scroll', onScroll);
     for (const type of ['wheel','touchstart','pointerdown','keydown']) overlay?.removeEventListener(type, clearNavigationAnchor);
     if (highlightedCard) highlightedCard.classList.remove('question-jump-highlight');

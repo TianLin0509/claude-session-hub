@@ -63,7 +63,8 @@ function createMemoryPanel({
   function position() {
     const r = document.getElementById("scene-rail")?.getBoundingClientRect();
     if (page && r) {
-      page.style.left = r.right + "px";
+      const sessionEdge = document.getElementById("session-sidebar")?.getBoundingClientRect().left;
+      page.style.left = (sessionEdge ?? r.right) + "px";
       page.style.top = r.top + "px";
     }
   }
