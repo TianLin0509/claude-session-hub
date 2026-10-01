@@ -41,8 +41,9 @@ test('integration badges require matching actual tool configuration, not just a 
 const guard = require('../core/web-risk-guard');
 function pageTool(binding, page) {
   const hub = { endpoint: async () => ({ port: 1, ws: 'ws://x' }), markerUrl: () => 'file:///m', lifecycle: fn => fn() };
-  const tool = new BrowserTool(binding, { env: {}, hub, chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page], newCDPSession: async () => ({ send: async () => ({ targetInfo: { targetId: 'T' } }), detach: async () => {} }) }], close: async () => {} }) } });
+  const tool = new BrowserTool(binding, { env: {}, hub });
   tool.target = async () => ({ targetId: 'T', ep: { port: 1 } });
+  tool.connectPage = async target => { assert.equal(target.targetId, 'T'); return { page, close: async () => {} }; };
   return tool;
 }
 test('steps are refused while a person has the browser, with a category tools can map', async t => {

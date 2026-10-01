@@ -86,30 +86,18 @@ class BrowserTool {
   async withPage(fn, { downloads = false } = {}) {
     const target = await this.target();
     if (!target) throw Error('No browser session: owned Hub page is not open');
-    // This attach reaches every page of the browser; a person verifying must have it alone.
     guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity });
-    const chromium = this.chromium || require(this.binding.playwright).chromium;
-    // Attaching must not simulate focus in every user/tool tab. ChatGPT refetches
-    // on focus, so a short-lived connection per queue poll otherwise causes a
-    // browser-wide request burst (and HTTP 429) unrelated to this owned page.
-    const relay = downloads ? await require('./passive-cdp-connection').passiveDownloadConnection(target.ep) : null;
-    let browser;
+    // Attached to the owned page only: never the person's windows, other tools' tabs or the
+    // challenge frame inside a page (see scoped-cdp.js).
+    const connection = await this.connectPage(target, { downloads });
     try {
-      browser = await chromium.connectOverCDP(relay?.endpoint || `http://127.0.0.1:${target.ep.port}`, { noDefaults: !downloads });
-      for (const context of browser.contexts()) for (const page of context.pages()) {
-        const cdp = await context.newCDPSession(page);
-        let info;
-        try { info = await cdp.send('Target.getTargetInfo'); } finally { await cdp.detach(); }
-        if (info.targetInfo.targetId === target.targetId) {
-          guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: page.url() });
-          return await fn(page);
-        }
-      }
-      throw Error('No browser session: owned Hub page is not visible to the runtime');
-    } finally {
-      // For a CDP connection Playwright close disconnects its transport, not Chrome.
-      try { await browser?.close(); } finally { await relay?.close(); }
-    }
+      guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity, url: connection.page.url() });
+      return await fn(connection.page);
+    } finally { await connection.close(); }
+  }
+  async connectPage(target, { downloads = false } = {}) {
+    const chromium = this.chromium || require(this.binding.playwright).chromium;
+    return require('./scoped-cdp').connectPage(chromium, target.ep, target.targetId, { downloads });
   }
   async execute(argv) {
     const [command, ...args] = argumentsOf(argv);
