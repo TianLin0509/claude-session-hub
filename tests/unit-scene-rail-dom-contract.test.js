@@ -20,7 +20,7 @@ const ROOT = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const railCss = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'rail.css'), 'utf8');
 const stylesManifest = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
-const sessionFirstCss = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'session-first-b.css'), 'utf8');
+const sessionFirstCss = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'coldwhite-workspace.css'), 'utf8');
 
 let failed = 0;
 function test(name, fn) {
@@ -127,21 +127,20 @@ test('账户余量迁到侧栏底部且只保留一个控制器挂载点', () =>
   assert.ok(sidebar.indexOf('id="sidebar-strip"') > sidebar.indexOf('id="rail-usage"'));
 });
 
-test('旧 rail 样式仍在，B 方案保留悬浮导航并给会话标题足够宽度', () => {
+test('共用导航占独立列，会话侧栏与各页面共用尺寸变量', () => {
   assert.match(stylesManifest, /@import url\('\.\/styles\/rail\.css'\);/);
   assert.match(stylesManifest, /@import url\('\.\/styles\/sidebar-v2\.css'\);/);
-  assert.match(html, /styles\/session-first-b\.css/);
-  assert.match(sessionFirstCss, /--hub-rail-slot:\s*14px/);
-  assert.match(sessionFirstCss, /--hub-rail-open:\s*80px/);
-  assert.match(sessionFirstCss, /--hub-session-width:\s*320px/);
-  assert.match(sessionFirstCss, /#btn-new \.btn-label \{ display: block; \}/);
+  assert.match(html, /styles\/coldwhite-workspace\.css/);
+  assert.match(sessionFirstCss, /--hub-rail-slot:\s*162px/);
+  assert.match(sessionFirstCss, /--hub-session-width:\s*224px/);
+  assert.match(sessionFirstCss, /#btn-new \.btn-label \{ display:\s*block; \}/);
 });
 
 test('折叠只作用在侧栏：rail 没有任何 sidebar-collapsed 的隐藏规则', () => {
   assert.ok(!/sidebar-collapsed[^{]*\.scene-rail/.test(railCss),
     'rail 不该跟着侧栏一起折叠');
-  assert.match(sessionFirstCss, /\.app-container\.sidebar-collapsed #session-sidebar/);
-  assert.match(sessionFirstCss, /#scene-rail:is\(:hover, :has\(:focus-visible\)\)/);
+  assert.match(sessionFirstCss, /\.app-container\.workspace-active #session-sidebar/);
+  assert.match(sessionFirstCss, /#scene-rail:is\(:hover,:has\(:focus-visible\)\)/);
 });
 
 console.log('Running scene rail DOM contract tests...');

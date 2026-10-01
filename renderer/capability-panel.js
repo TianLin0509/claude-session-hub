@@ -71,6 +71,7 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
     const inactive=t=>tab==='runtime'?0:all.filter(r=>r.type===t&&!isActive(r)).length;
     const oldScroll=page.querySelector('.cp-scroll')?.scrollTop || 0;
     const oldMatrixScroll=page.querySelector('.cp-matrix-wrap')?.scrollLeft || 0;
+    const filtersOpen=page.querySelector('.cp-filter-disclosure')?.open || false;
     page.innerHTML=`<header class="cp-header"><div><div class="cp-eyebrow">AI HUB / CAPABILITIES</div><h1>技能与工具 <span>找到能力，看清每个 AI 的准备情况</span></h1></div><div class="cp-actions">${button('补齐共享技能','data-cp-action="share-preview" '+(shareBusy?'disabled':''))}${button(busy?'读取中…':'刷新','data-cp-action="refresh" '+(busy?'disabled':''))}${button('返回','data-cp-action="close"')}</div></header>
       <div class="cp-scroll"><div class="cp-summary"><div class="cp-summary-intro"><span class="cp-summary-symbol">${svg('plugin')}</span><div><strong>能力中心</strong><p>公共资源，各有专长。<br>从安装来源到会话回执，都有据可查。</p></div></div>${[['skill',counts('skill'),'工作流与专业知识'],['mcp',counts('mcp'),'连接工具与外部服务'],['plugin',counts('plugin'),'成套扩展与集成']].map(([t,n,sub])=>`<button type="button" class="cp-stat" data-cp-type="${t}"><span>${svg(t)}${TYPE_LABEL[t]}</span><strong>${n}</strong><small>${inactive(t)?`${sub} · 另有 ${inactive(t)} 项已停用`:sub}</small></button>`).join('')}</div>
       <nav class="cp-tabs" aria-label="能力视图">${[['catalog','能力库'],['coverage','AI 覆盖对比'],['runtime','当前会话']].map(([id,name])=>button(name,`data-cp-tab="${id}" aria-pressed="${tab===id}"`,tab===id?'selected':'')).join('')}<span>${catalog?`扫描于 ${esc(new Date(catalog.generatedAt).toLocaleTimeString())}`:'尚未扫描'}</span></nav>
@@ -86,6 +87,13 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
       ${(tab==='runtime'?runtime?.warnings:catalog?.warnings)?.length?`<details class="cp-warnings"><summary>部分信息未能读取 · ${(tab==='runtime'?runtime.warnings:catalog.warnings).length} 项</summary>${(tab==='runtime'?runtime.warnings:catalog.warnings).map(w=>`<p>${esc(w)}</p>`).join('')}</details>`:''}
       ${tab==='coverage'?matrix(visible):''}<div class="cp-content ${tab==='coverage'?'cp-coverage-detail':''}">${tab==='coverage'?'':`<div class="cp-list" aria-label="能力列表">${visible.length?visible.map(r=>`<button type="button" class="cp-row ${r.id===active?.id?'selected':''}" data-cp-row="${esc(r.id)}" aria-pressed="${r.id===active?.id}"><span class="cp-glyph ${r.type}">${svg(r.type)}</span><span class="cp-row-copy"><span class="cp-row-title"><strong>${esc(r.displayName||r.name)}</strong>${originBadge(r)}</span><small class="cp-row-summary">${esc(r.summary || '尚无用途说明')}</small></span><span class="cp-row-meta">${status(r)}${r.conflict?badge('同名差异','warn'):''}<small>${tab==='runtime'?esc(TYPE_LABEL[r.type]):r.agents.map(a=>esc(label(a))).join(' · ')}</small></span></button>`).join(''):`<div class="cp-empty">${svg('skill')}<h3>${busy?'正在发现能力':'这里还没有匹配的能力'}</h3><p>${query?'试试更短的关键词，或切换筛选条件。':tab==='runtime'?'本地登记请在能力库查看；本类会话状态可能未报告。':'此客户端暂未发现对应入口；加载状态仍以会话回执为准。'}</p></div>`}</div>`}<aside class="cp-detail" aria-label="能力详情">${detail(active)}</aside></div>
       <details class="cp-help"><summary>技能、连接和插件有什么区别？</summary><p>技能是完成任务的方法和辅助文件；MCP 是 AI 调用工具和服务的连接；插件把相关技能和连接打包在一起。</p><p>能力库展示本机配置，AI 覆盖对比展示入口差异，当前会话展示原生客户端的回执。App 账号技能、云端连接器与本机 CLI 配置不一定同步。安装、启用、连接成功和实际使用是不同状态。</p></details><footer class="cp-footer">本机目录与已打开项目的配置 · 不包含完整云端市场 · 已登记不等于当前会话可用</footer></div>`;
+    const advanced=[page.querySelector('.cp-agents'),page.querySelector('.cp-origins')].filter(Boolean);
+    if(advanced.length){
+      const filters=document.createElement('details');filters.className='cp-filter-disclosure';filters.open=filtersOpen;
+      const summary=document.createElement('summary');
+      summary.textContent=`筛选 · ${agent==='all'?'全部 AI':label(agent)} · ${origin==='all'?'全部来源':ORIGINS[origin] || origin}`;
+      filters.append(summary,...advanced);page.querySelector('.cp-toolbar').after(filters);
+    }
     page.querySelector('.cp-scroll').scrollTop=oldScroll;
     if(page.querySelector('.cp-matrix-wrap'))page.querySelector('.cp-matrix-wrap').scrollLeft=oldMatrixScroll;
     position();

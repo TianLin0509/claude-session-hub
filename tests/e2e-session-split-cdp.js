@@ -140,7 +140,7 @@ async function main() {
     checks.push('right native stream grows while left focused; scrolling up remains stable through final response');
     await click(c, '.split-secondary .floating-input-box'); await c.send('Input.insertText', { text: 'fixture:approval' });
     await click(c, '.split-secondary .floating-input-send');
-    await until('right approval', () => c.eval("!!document.querySelector('.split-secondary .codex-native-controls button')"));
+    await until('right approval', () => c.eval("Array.from(document.querySelectorAll('.split-secondary .codex-native-controls button')).some(b=>b.textContent.includes('拒绝'))"));
     const rejectIndex = await c.eval("Array.from(document.querySelectorAll('.split-secondary .codex-native-controls button')).findIndex(b=>b.textContent.includes('拒绝'))");
     assert(rejectIndex >= 0);
     const rejectRect = await c.eval(`(()=>{const r=document.querySelectorAll('.split-secondary .codex-native-controls button')[${rejectIndex}].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);

@@ -77,13 +77,14 @@ async function main() {
     const wide = await cdp.eval(`(() => { const card = document.querySelector('${final}');
       const body = card.querySelector('.turn-primary-copy').getBoundingClientRect();
       const aside = card.querySelector('.turn-result-glance').getBoundingClientRect();
-      return { cardWidth: card.getBoundingClientRect().width, bodyRight: body.right, asideLeft: aside.left,
+      return { cardWidth: card.getBoundingClientRect().width, bodyRight: body.right, asideLeft: aside.left, bodyBottom: body.bottom, asideTop: aside.top,
         glance: card.querySelector('.turn-result-glance').innerText,
         deliveryOpen: card.querySelector('.turn-delivery-summary').open }; })()`);
-    assert(wide.cardWidth > 650 && wide.asideLeft > wide.bodyRight, j(wide));
+    assert(wide.cardWidth > 650 && wide.asideTop >= wide.bodyBottom, j(wide));
     assert.match(wide.glance, /2\s*文件记录/);
     assert.match(wide.glance, /27\s*验证记录/);
     assert.match(wide.glance, /1\s*交付产物/);
+    assert.match(wide.glance, /1\s*失败记录/);
     assert.equal(wide.deliveryOpen, false);
     await cdp.eval(`document.querySelector('${final}').scrollIntoView({ block: 'center', behavior: 'instant' })`);
     evidence.wide = wide;

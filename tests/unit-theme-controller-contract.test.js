@@ -98,7 +98,7 @@ async function main() {
   // --- 皮肤清单 ---
   assert.deepStrictEqual(THEME_IDS.slice(), ['dark', 'frost', 'claude', 'codex', 'hub', 'slate']);
   // 冷杉是新装默认。已存过皮肤的用户读回自己那套，不受这条影响。
-  assert.strictEqual(DEFAULT_THEME, 'dark');
+  assert.strictEqual(DEFAULT_THEME, 'codex');
   assert.ok(THEME_IDS.includes('frost'), '冷杉必须在皮肤清单里');
   assert.strictEqual(getTheme('frost').label, '冷杉');
   assert.deepStrictEqual(DARK_THEME_IDS.slice(), ['dark', 'frost']);
@@ -144,9 +144,9 @@ async function main() {
   // --- 默认：没存过就是冷杉 ---
   {
     const h = makeHarness();
-    assert.strictEqual(h.controller.getTheme(), 'dark');
-    assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'dark');
-    assert.strictEqual(h.terminal.options.theme, XTERM_THEMES.dark);
+    assert.strictEqual(h.controller.getTheme(), DEFAULT_THEME);
+    assert.strictEqual(h.documentElement.getAttribute('data-theme'), DEFAULT_THEME);
+    assert.strictEqual(h.terminal.options.theme, XTERM_THEMES[DEFAULT_THEME]);
     assert.ok(h.elements.get('options-theme-picker').innerHTML.includes('data-theme-id="codex"'));
   }
 
@@ -192,7 +192,7 @@ async function main() {
   // 这条断言守着那个 workaround：display 被写成 none 再还原，中间读过 offsetHeight
   // 强制 flush。删掉 forceStyleRecalc 会让这条挂掉。
   {
-    const h = makeHarness();
+    const h = makeHarness({ stored: 'dark' });
     h.documentElement._displayWrites.length = 0;
     h.documentElement._flushed = 0;
     h.controller.setTheme('codex');

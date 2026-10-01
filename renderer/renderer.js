@@ -70,6 +70,7 @@ const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { installSessionFirstNavigation } = require('./session-first-navigation.js');
 installSessionFirstNavigation();
+require('./coldwhite-shell.js').installColdwhiteShell();
 const { createTerminalSearch } = require('./terminal-search.js');
 const { mountTerminalPresentation } = require('./terminal-presentation.js');
 const {
@@ -1098,7 +1099,6 @@ async function refreshNetworkTransferUsage() {
   }
 }
 async function refreshSystemResourceUsage(force = false) {
-  if (sidebarInsights.isCollapsed()) return;
   if (document.hidden && force !== true) return;
   void refreshNetworkTransferUsage();
   try {
