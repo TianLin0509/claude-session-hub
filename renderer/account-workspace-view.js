@@ -64,7 +64,9 @@ function handoffHtml(risk, esc) {
   return `<p class="ac-connection-notice ac-handoff" role="status">${esc('网页工具已暂停并断开，你正在专属 Chrome 里验证或登录；关掉那个窗口即恢复（最迟 ' + until + '）')}</p>`;
 }
 function aiHtml(state, query, esc, now = Date.now()) {
-  return handoffHtml(state.risk, esc) + (companyCards(state).map(card => {
+  const network=state.chrome?.network;
+  const networkHtml=network?`<p class="ac-connection-notice ac-network" role="status">${esc(network.message)}</p>`:'';
+  return networkHtml + handoffHtml(state.risk, esc) + (companyCards(state).map(card => {
     const accounts = card.accounts.filter(a => matches([card.company, card.product, a.label, a.account], query));
     if (!accounts.length) return '';
     return `<article class="ac-company" data-site="${card.site}"><header>${brandIcon(card, esc)}<h2>${esc(card.company)}</h2><span class="ac-count">${card.accounts.length} 个账号</span><kbd title="账号页内打开默认账号">Alt+${card.shortcut}</kbd></header>

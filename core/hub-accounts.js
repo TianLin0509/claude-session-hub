@@ -8,7 +8,7 @@ const ROUNDTABLE_PROVIDER = { chatgpt: 'chatgpt', google: 'gemini', deepseek: 'd
 
 class HubAccounts {
   constructor({ hubChrome, getConfig = () => require('./hub-config').getConfig(), env = process.env, recovery, now = Date.now, inspect = inspectAccounts, getToolCatalog } = {}) {
-    this.chrome = hubChrome || new HubChrome({ env });
+    this.chrome = hubChrome || new HubChrome({ env, proxy: () => getConfig().proxy });
     Object.assign(this, { getConfig, env, recovery, now, inspect, getToolCatalog });
     this.checking = null; this.progress = null; this.lastState = null;
     this.setup = new (require('./hub-browser-setup').HubBrowserSetup)({ root: this.chrome.root, env });
@@ -129,7 +129,8 @@ class HubAccounts {
       identities.push({ id: identity.id, label: identity.label, account, accountStale: !status.account && !!account, sites });
     }
     const clis = cliAuthStatus({ env: this.env, config: this.getConfig(), now: this.now() }).map(cli => ({ ...cli, identity: this.owner(cli, identities) }));
-    return { chrome: { running, loginOpen: passive ? null : !running && this.chrome.profileHeld(), root: this.chrome.root }, identities, clis, preferences,
+    let network;try{network=this.chrome.routingStatus?.();}catch(e){network={state:'invalid',message:e.message};}
+    return { chrome: { running, loginOpen: passive ? null : !running && this.chrome.profileHeld(), root: this.chrome.root, network }, identities, clis, preferences,
       tools: require('./hub-browser-tool').integrationStatus(this.chrome.root), checkedAt: cache.checkedAt || 0 };
   }
   async startCheck({ identity, site } = {}) {
