@@ -46,8 +46,13 @@ async function main() {
     result.pid = hub.pid; cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
+    // Session-first B keeps the directory behind the left hover strip.
+    await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved',x:6,y:240 });
+    await until('document.querySelector("#scene-rail").getBoundingClientRect().width > 70', 'navigation drawer expanded');
     await click('#btn-rail-accounts');
     await until('document.querySelector(".ac-handoff")', 'handoff banner');
+    await until('document.querySelector(".ac-network")', 'network route banner');
+    assert.match(await text('.ac-network'), /国外 AI 使用 Hub 代理，国内 AI 直连/);
     assert.match(await text('.ac-handoff'), /网页工具已暂停并断开/);
     const alt = '.ac-company[data-site="chatgpt"] .ac-account[data-identity="alt"]';
     await until(`document.querySelector('${alt} .ac-risk')`, 'paused row');
@@ -62,6 +67,7 @@ async function main() {
     await snap('01-paused-and-handoff');
     result.checks.push('账号页显示接管横幅；副号 ChatGPT 显示「自动化已暂停到」「第 2 次」和「去验证」；主号不受影响');
     result.checks.push('账号行显示使用它的网页工具及最近结果：主号「中转 12 分钟前需验证」，副号「中转 5 分钟前正常」');
+    result.checks.push('账号页显示国外 AI 使用 Hub 代理、国内 AI 直连');
 
     guard.endHandoff(chromeRoot, lease.id);
     await until('!document.querySelector(".ac-handoff")', 'banner gone after handoff ends', 20000);

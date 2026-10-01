@@ -54,6 +54,7 @@
   <link rel="stylesheet" href="styles/d4-workspace.css">
   <link rel="stylesheet" href="styles/card-view-e2.css">
   <link rel="stylesheet" href="styles/group-card-parity.css">
+  <link rel="stylesheet" href="styles/session-first-b.css">
   <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
        而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
        用独立 <link> 而不是 styles.css 里的 @import —— @import 进来的表排在
@@ -94,7 +95,8 @@
     <!-- 场景 rail（冷杉 v2 T0）：四个场景按钮是从 .sidebar-header 原样搬过来的节点，
          id / data-* / 事件接线一律不变；label 常驻显示，tooltip 补充完整用途。 -->
     <nav class="scene-rail" id="scene-rail" aria-label="场景">
-      <div class="rail-logo" aria-hidden="true"><svg class="legacy-h-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 5v14M18 9v10M6 12h12"/><circle cx="18" cy="5" r="2" fill="currentColor" stroke="none"/></svg><img src="../claude-wx.ico" alt="" width="28" height="28"></div>
+      <button type="button" class="rail-edge-trigger" id="rail-edge-trigger" aria-label="展开功能导航" aria-controls="scene-rail" title="悬停展开功能导航"><span aria-hidden="true"></span></button>
+      <div class="rail-drawer-head"><strong>功能</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="固定功能导航" aria-pressed="false" title="固定功能导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-2.5 1.2-2 4.4L18 16l-2 2-5-5-6 7 2-9-4-4 2-2 2.4 1.5 4.4-2L13 2z"/></svg></button></div>
       <div class="rail-navigation">
       <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V10Z"/><path d="M9 21v-8h6v8"/></svg></span><span class="btn-label">工作台</span></button>
       <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-expanded="false" aria-controls="assistant-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4h8l4 5v8l-4 4H8l-4-4V9l4-5Z"/><path d="M9 10v2m6-2v2M9 16h6M12 1v3"/></svg></span><span class="btn-label">助理</span></button>
@@ -139,9 +141,10 @@
     <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
+        <div class="session-heading"><strong>会话</strong><span>当前工作区</span></div>
         <div class="new-session-wrapper" id="new-session-wrapper">
           <div class="launch-split">
-            <button type="button" class="btn-new-session" id="btn-new" title="打开启动中心 (Ctrl+N)" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
+            <button type="button" class="btn-new-session" id="btn-new" title="启动新会话 (Ctrl+N)" aria-label="启动新会话" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
             <button type="button" id="btn-new-more" title="打开启动中心 (Ctrl+N)" aria-label="打开启动中心" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button>
           </div>
           <div class="new-session-menu" id="new-session-menu" role="dialog" aria-modal="true" aria-labelledby="launch-center-title" style="display:none">

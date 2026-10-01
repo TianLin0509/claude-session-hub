@@ -12,6 +12,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const routing = require('./hub-browser-routing');
 
 // `cookie`: the cookie that carries the login; readable offline because Chrome does not
 // encrypt cookie names or expiry. Sites without one keep their login in localStorage, which
@@ -309,15 +310,15 @@ class HubChrome {
   // system proxy, which the proxy client may switch off; then ChatGPT never loads (measured
   // 2026-09-30: navigating to chatgpt.com timed out, with the Hub proxy it loaded at once).
   proxyServer() {
-    if (this.proxy === undefined) {
-      try { this.proxy = require('./hub-config').getConfig().proxy || ''; } catch { this.proxy = ''; }
-    }
-    try { return ['http:', 'https:', 'socks4:', 'socks5:'].includes(new URL(this.proxy).protocol) ? this.proxy : ''; } catch { return ''; }
+    // Read on every launch: saving Hub settings must not leave this instance
+    // permanently bound to the first proxy it saw.
+    const value=typeof this.proxy==='function'?this.proxy():this.proxy===undefined?require('./hub-config').getConfig().proxy:this.proxy;
+    return routing.normalizeProxy(value);
   }
+  routingStatus() { return routing.status(this.root,routing.policy(this.proxyServer()),this.profileHeld()); }
   launchArgs(identityId, { debug = true, visible = false, headless = false, url, urls } = {}) {
-    const proxy = this.proxyServer();
     return [
-      ...(proxy ? ['--proxy-server=' + proxy] : []),
+      ...routing.policy(this.proxyServer()).args,
       '--user-data-dir=' + this.root,
       '--profile-directory=' + identityId,
       ...(debug ? ['--remote-debugging-port=0'] : []),
@@ -337,11 +338,15 @@ class HubChrome {
     ];
   }
   launch(identityId, options) {
+    const plan=routing.policy(this.proxyServer()),held=this.profileHeld();
+    routing.assertCurrent(this.root,plan,held);
     this.writeMarker(identityId);
     return new Promise((resolve, reject) => {
       const child = this.spawn(this.executable(), this.launchArgs(identityId, options), { env: this.env, detached: true, stdio: 'ignore', windowsHide: !options?.visible });
       child.once('error', reject);
-      child.once('spawn', () => { this.lastLaunchPid = child.pid; child.unref(); resolve(); });
+      child.once('spawn', () => { this.lastLaunchPid = child.pid; child.unref();
+        try { if(!held)routing.record(this.root,plan,child.pid);resolve(); }catch(e){reject(e);}
+      });
     });
   }
   // Chrome holds <profile>/lockfile exclusively for as long as it runs, so a failed open
@@ -372,6 +377,7 @@ class HubChrome {
     this.assertAvailable();
     const existing = await this.endpoint();
     if (existing) {
+      routing.assertCurrent(this.root,routing.policy(this.proxyServer()),this.profileHeld());
       if (headless && !existing.headless) throw Error('专属 Chrome 正在使用中，请关闭网页窗口后检查');
       return existing;
     }
@@ -535,8 +541,13 @@ class HubChrome {
     return this.lifecycle(async () => {
       this.assertAvailable();
       this.identity(identityId);
-      const site = this.site(siteKey), ep = await this.endpoint();
+      const site = this.site(siteKey);let ep = await this.endpoint();
       if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
+      // This explicit account-page action owns the lifecycle lock. A browser
+      // containing only Hub markers has no website or draft to interrupt.
+      if(ep&&this.routingStatus().state==='restart_required'&&!require('./web-risk-guard').handoff(this.root)&&!(await this.workTabs())){
+        await this.close();ep=null;
+      }
       // The person gets the browser to themselves: every automation transport pauses and
       // detaches, stale challenge counters are reset, and the window has no debugger on it.
       if (ep) {
