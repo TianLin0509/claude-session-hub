@@ -68,6 +68,8 @@ marked.use({
 });
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
+const { installSessionFirstNavigation } = require('./session-first-navigation.js');
+installSessionFirstNavigation();
 const { createTerminalSearch } = require('./terminal-search.js');
 const { mountTerminalPresentation } = require('./terminal-presentation.js');
 const {

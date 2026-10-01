@@ -72,7 +72,11 @@ function createAccountCenterPanel({ document, ipcRenderer, escapeHtml: esc, conf
   }
   function position() {
     const rail = document.getElementById('scene-rail')?.getBoundingClientRect();
-    if (rail) { page.style.left = rail.right + 'px'; page.style.top = rail.top + 'px'; }
+    if (rail) {
+      const sessionEdge = document.getElementById('session-sidebar')?.getBoundingClientRect().left;
+      page.style.left = (sessionEdge ?? rail.right) + 'px';
+      page.style.top = rail.top + 'px';
+    }
   }
   function schedule() {
     clearTimeout(timer);

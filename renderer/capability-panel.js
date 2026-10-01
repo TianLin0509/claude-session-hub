@@ -15,7 +15,7 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
   const label=id=>getKindLabel(id) || id;
   const button=(text,attrs,cls='')=>`<button type="button" class="cp-button ${cls}" ${attrs}>${text}</button>`;
   const badge=(text,cls='')=>`<span class="cp-badge ${cls}">${esc(text)}</span>`;
-  function position(){const rail=document.getElementById('scene-rail')?.getBoundingClientRect();if(page&&rail){page.style.left=rail.right+'px';page.style.top=rail.top+'px';}}
+  function position(){const rail=document.getElementById('scene-rail')?.getBoundingClientRect();if(page&&rail){const sessionEdge=document.getElementById('session-sidebar')?.getBoundingClientRect().left;page.style.left=(sessionEdge??rail.right)+'px';page.style.top=rail.top+'px';}}
   const inScope=r=>scope==='all'||scope==='active'&&isActive(r)||scope==='shared'&&r.shared||scope==='conflict'&&r.conflict||scope==='disabled'&&r.sources.some(s=>s.enabled===false||s.missing);
   function rows(){
     let result=tab==='runtime'?(runtime?.rows || []):(catalog?.rows || []);

@@ -20,6 +20,7 @@ const ROOT = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf8');
 const railCss = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'rail.css'), 'utf8');
 const stylesManifest = fs.readFileSync(path.join(ROOT, 'renderer', 'styles.css'), 'utf8');
+const sessionFirstCss = fs.readFileSync(path.join(ROOT, 'renderer', 'styles', 'session-first-b.css'), 'utf8');
 
 let failed = 0;
 function test(name, fn) {
@@ -105,9 +106,11 @@ test('搬家保留了 data-* 入口与可访问名', () => {
   assert.match(rail, /id="btn-home"[^>]*title="/);
 });
 
-test('rail 的排布顺序：logo → 四场景 → 弹性空位 → 用量占位 → 主题 → 选项', () => {
+test('唯一 Hub logo 在标题栏；rail 的入口和工具顺序保持', () => {
   const rail = railInner();
-  const order = ['rail-logo', 'btn-home', 'btn-research', 'btn-study', 'btn-ran',
+  assert.ok(html.includes('id="hub-identity"'));
+  assert.ok(!rail.includes('rail-logo'), '导航抽屉不重复放 Hub logo');
+  const order = ['rail-edge-trigger', 'rail-drawer-head', 'btn-home', 'btn-research', 'btn-study', 'btn-ran',
     'rail-spacer', 'btn-theme', 'btn-options'];
   let cursor = -1;
   for (const token of order) {
@@ -124,18 +127,20 @@ test('账户余量迁到侧栏底部且只保留一个控制器挂载点', () =>
   assert.ok(sidebar.indexOf('id="sidebar-strip"') > sidebar.indexOf('id="rail-usage"'));
 });
 
-test('rail 样式表已经挂进清单，且 rail 是 100px / 工具基础尺寸 34px', () => {
+test('旧 rail 样式仍在，B 方案样式最后覆盖为 14px 收起 / 80px 展开', () => {
   assert.match(stylesManifest, /@import url\('\.\/styles\/rail\.css'\);/);
   assert.match(stylesManifest, /@import url\('\.\/styles\/sidebar-v2\.css'\);/);
-  assert.match(railCss, /\.scene-rail\s*\{[^}]*width:\s*100px/);
-  assert.match(railCss, /width:\s*34px;\s*\n\s*height:\s*34px/);
+  assert.match(html, /styles\/session-first-b\.css/);
+  assert.match(sessionFirstCss, /--hub-rail-slot:\s*14px/);
+  assert.match(sessionFirstCss, /--hub-rail-open:\s*80px/);
+  assert.match(sessionFirstCss, /--hub-session-width:\s*226px/);
 });
 
 test('折叠只作用在侧栏：rail 没有任何 sidebar-collapsed 的隐藏规则', () => {
   assert.ok(!/sidebar-collapsed[^{]*\.scene-rail/.test(railCss),
     'rail 不该跟着侧栏一起折叠');
-  // 展开按钮要让开 rail（原来贴在 app-body 左边 8px，正压在 logo 上）
-  assert.match(railCss, /#app-body > \.btn-expand-sidebar\s*\{[^}]*left:\s*108px/);
+  assert.match(sessionFirstCss, /\.app-container\.sidebar-collapsed #session-sidebar/);
+  assert.match(sessionFirstCss, /#scene-rail:is\(:hover, :has\(:focus-visible\)\)/);
 });
 
 console.log('Running scene rail DOM contract tests...');
