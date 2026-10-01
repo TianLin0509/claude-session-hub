@@ -11,6 +11,7 @@ const { readGroupHistory }=require('./group-history');
 const { requireAuthorizedTarget,requireBoundTarget,bindOperation }=require('./action-policy');
 const {LiveHistory,nativeId}=require('./live-history');
 const {AssistantWatches,reminderIntent}=require('./watches');
+const {isAssistantSession,requireManagerCaller}=require('./permissions');
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
@@ -64,7 +65,9 @@ class AssistantService {
     this.store.confirmAssistant(id);return{ok:true,sessionId:id,session};
   }
   async connectBridge(){await this.bridge.start();const temporary=this.endpointFile+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,JSON.stringify({url:this.bridge.url,token:this.bridge.secret}),{mode:0o600});fs.renameSync(temporary,this.endpointFile);}
-  getMcpEntry(){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
+  getMcpEntry(){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile,HUB_ASSISTANT_SESSION_ID:this.store.get('sessionId')||''},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
+  isAssistantSession(sessionId){return isAssistantSession(this.store,sessionId,this.deps.getSession(sessionId));}
+  requireAssistantResume(meta){if(!meta?.hubId||meta.hubId!==this.store.get('sessionId'))throw new Error('恢复实体不是固定助理，未授予专属工具');}
   context(request={}) {
     const sessionId=this.store.get('sessionId'),session=this.deps.getSession(sessionId);
     const board=this.refreshDossier();
@@ -95,10 +98,11 @@ class AssistantService {
     const envelope=require('../assistant-context-display').assistantContextDisplay(request.text,'hub-assistant');
     if(envelope)request={...request,text:envelope.userText};
     const active=this.deps.getSession(this.store.get('sessionId'));
+    if(request.sessionId!==undefined&&!this.isAssistantSession(request.sessionId))throw new Error('请求不是固定助理会话，消息未发送');
     if(active&&(require('../session-runtime-truth').sessionRuntimeIsActive(active)||active.status==='running'))throw new Error('助理正在处理上一条请求，请等本轮结束后发送；草稿已保留');
     const context=this.context({...resolveTimeRange(request.text,{hours:request.hours,timeZone:this.deps.timeZone}),query:request.historyQuery||''});
     const id=request.clientSubmissionId||request.requestId||randomUUID();
-    this.currentRequest={id,text:request.text,token:randomUUID(),createdAt:Date.now()};
+    this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
     const text=buildBootstrapPrompt(request.text,manifest,this.sessions().length);
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
@@ -113,7 +117,11 @@ class AssistantService {
     const receipt=await this.deps.sendPrompt(ensured.sessionId,request.text,request.requestId||randomUUID());
     return{ok:receipt?.ok!==false,sessionId:ensured.sessionId,receipt,contextSummary:this.store.get('lastContext')};
   }
-  async invokeTool({name,arguments:args={}}) {
+  async invokeTool({name,arguments:args={},callerSessionId}) {
+    // No caller is a conservative internal compatibility path only. The HTTP
+    // bridge always supplies its host identity and never falls back to it.
+    const hasCaller=callerSessionId!==undefined;
+    if(hasCaller&&!this.isAssistantSession(callerSessionId))throw new Error('调用方不是固定助理会话，未授予专属工具');
     if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,nativeSessionId:nativeId(s)}));
     if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
@@ -130,13 +138,14 @@ class AssistantService {
     const current=this.currentRequest;
     if(!current||Date.now()-current.createdAt>30*60000)throw new Error('本轮用户委托已过期，请重新发送任务');
     if(args.requestToken!==current.token)throw new Error('工具调用不属于当前用户委托');
+    const manager=hasCaller&&requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
     if(name==='watch_session'){
-      if(!reminderIntent(current.text))throw new Error('本轮没有明确要求新回复后提醒');
-      requireBoundTarget(current,{targetSessionId:args.sessionId},this.sessions());
+      if(!manager){if(!reminderIntent(current.text))throw new Error('本轮没有明确要求新回复后提醒');
+        requireBoundTarget(current,{targetSessionId:args.sessionId},this.sessions());}
       return this.followTask({sessionId:args.sessionId});
     }
     const action={type:name==='create_session'?'create':'send',targetSessionId:args.sessionId,title:args.title,text:args.text};
-    requireAuthorizedTarget(current,action,this.sessions());
+    if(!manager)requireAuthorizedTarget(current,action,this.sessions());
     if(typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
     if(this.deps.authorizeAction&&!await this.deps.authorizeAction(action,current))throw new Error('目标不在本轮授权范围内');
     const requestId=bindOperation(this.store,current,args.operationKey,action);

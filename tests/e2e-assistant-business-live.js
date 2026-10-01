@@ -11,11 +11,13 @@ const port=()=>new Promise(resolve=>{const s=net.createServer();s.listen(0,'127.
 const fileHash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 async function main(){
   const createOnly=process.argv.includes('--create-only');
+  const managerPermissions=process.argv.includes('--manager-permissions');
   const out=path.resolve('artifacts/assistant-business-live',new Date().toISOString().replace(/[:.]/g,'-'));
   const root=path.join(out,'private-run'),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(home,'codex'),workspace=path.join(root,'workspaces'),business=path.join(workspace,'orders');
   for(const dir of [out,data,codexHome,business])fs.mkdirSync(dir,{recursive:true});
   const production=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
-  const model=require('../core/session-creation-defaults').creationDefaults('codex',production).model;
+  const productionAssistant=managerPermissions?JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/sessions/8bba118a-5ab6-42f3-9962-f5103787d885.json'),'utf8')):null;
+  const model=productionAssistant?require('../core/session-capabilities').sessionModelId(productionAssistant):require('../core/session-creation-defaults').creationDefaults('codex',production).model;
   const profile=production.providers?.codex?.subscription_profiles?.find(p=>p.id==='second'&&p.label==='主账号');
   assert(profile,'明确的主账号配置应存在');
   const auth=path.join(profile.home,'auth.json'),before=fileHash(auth),historyFile=path.join(data,'empty-history.sqlite');
@@ -23,7 +25,7 @@ async function main(){
   fs.writeFileSync(path.join(business,'status.json'),j({fixture:true,project:'订单同步',completed:7,total:8,retentionDays:null,state:'等待用户确认保留天数'}),'utf8');
   fs.writeFileSync(path.join(business,'README.md'),'# 隔离验收业务\n这是一项测试订单同步任务。状态以 status.json 为准。用户确认保留天数后，更新 retentionDays、completed=8、state=已生成归档方案，并写 delivery.md 说明方案。不要操作此目录之外的文件。\n','utf8');
   let hub,cdp,assistantId,targetId;
-  const result={passed:false,profile:'second',model,effort:'high',mode:createOnly?'spoken-create-only':'business-and-spoken-create',scope:'真实订阅+真实Hub/CLI；业务内容为隔离测试夹具；搜索索引故意为空以验证原生最新记录补读',out,steps:[]};
+  const result={passed:false,profile:'second',model,modelSelection:managerPermissions?'与生产固定助理的当前模型一致；隔离Hub默认亦显式设为该模型':'继承生产Hub默认模型',effort:'high',mode:managerPermissions?'fixed-manager-real-subscription':createOnly?'spoken-create-only':'business-and-spoken-create',scope:'真实订阅+真实Hub/CLI；订单数据为隔离业务样例，模型回复及旅游产物真实生成；搜索索引故意为空以验证原生最新记录补读',out,steps:[]};
   const until=async(label,read,timeout=180000)=>{for(const end=Date.now()+timeout;Date.now()<end;){const value=await read();if(value)return value;await wait(350);}throw Error('timeout: '+label);};
   const click=async selector=>{await until('clickable '+selector,()=>cdp.eval(`!!document.querySelector(${j(selector)}) && !document.querySelector(${j(selector)}).disabled`),30000);const point=await cdp.eval(`(()=>{const e=document.querySelector(${j(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});};
   const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
@@ -37,9 +39,9 @@ async function main(){
     fs.writeFileSync(path.join(codexHome,'AGENTS.md'),`# 真实隔离验收\n旅游攻略产物仅写该会话当前目录的 artifacts/ 或 output/，不得写用户桌面或生产目录。旅游攻略正常联网查询、完成可离线阅读HTML；这是实际生成质量验收，不要仅回复占位标记。其他隔离业务按其 README.md 指定路径完成交付。\n`,'utf8');
     fs.writeFileSync(path.join(codexHome,'config.toml'),`model = ${j(model)}\nmodel_reasoning_effort = "high"\n[projects.'${path.resolve(workspace).toLowerCase()}']\ntrust_level = "trusted"\n[projects.'${path.resolve(business).toLowerCase()}']\ntrust_level = "trusted"\n`,'utf8');
     fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:model}},providers:{codex:{backend:'subscription',subscription_profile:'second',subscription_profiles:[{id:'second',label:'主账号',home:codexHome}]}}}),'utf8');
-    hub=await launchIsolatedHub({dataDir:data,port:await port(),label:'assistant-business-live',windowMode:'background',allowExternalState:true,extraEnv:{
+    const launch=async()=>launchIsolatedHub({dataDir:data,port:await port(),label:'assistant-business-live',windowMode:'background',allowExternalState:true,extraEnv:{
       CLAUDE_HUB_E2E:'1',CLAUDE_HUB_ASSISTANT_HISTORY_DB:historyFile,CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:path.join(home,'claude'),CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',HUB_CODEX_PROFILE:'',HUB_CODEX_BACKEND:'subscription',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_EDITOR_INPUT:'1',CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:'',CLAUDE_HUB_NATIVE_FIXTURE_STORE:'',CLAUDE_HUB_NATIVE_FIXTURE_TRACE:'',OPENAI_API_KEY:'',CODEX_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),
-    }});result.pid=hub.pid;cdp=await connectFirstPage(hub);
+    }});hub=await launch();result.pid=hub.pid;cdp=await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
     await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
     // Test setup uses the real factory; all user-assistant interactions below
@@ -89,31 +91,64 @@ async function main(){
     result.workbenchPath=path.join(data,'assistant/workbench/CURRENT.md');assert(fs.readFileSync(result.workbenchPath,'utf8').includes(targetId));
     }
     await idle(assistantId);
+    if(managerPermissions){
+      // Exercise an actual saved assistant from before caller identity existed.
+      const originalNative=(await session(assistantId)).codexSid;
+      cdp.close();cdp=null;await gracefulQuit(hub,{timeoutMs:60000});
+      fs.writeFileSync(path.join(out,'hub-before-resume.log'),hub.log().join('\n'),'utf8');hub=null;
+      const savedFile=path.join(data,'sessions',assistantId+'.json'),saved=JSON.parse(fs.readFileSync(savedFile,'utf8'));
+      for(const entry of saved.codexMcpEntries||[])if(entry.env)delete entry.env.HUB_ASSISTANT_SESSION_ID;
+      fs.writeFileSync(savedFile,j(saved),'utf8');
+      hub=await launch();result.resumedPid=hub.pid;cdp=await connectFirstPage(hub);
+      await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+      await until('restored renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
+      // The ordinary assistant tab restores the same entity and refreshes MCP.
+      await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});
+      if(!await cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'))await click('#rail-pin');
+      await click('#btn-assistant');
+      await until('restored assistant',async()=>{const s=await session(assistantId);return s&&s.codexSid===originalNative;});
+      const restored=await session(assistantId);
+      assert.equal(restored.codexMcpEntries.find(e=>e.name==='hub_assistant').env.HUB_ASSISTANT_SESSION_ID,assistantId);
+      result.restoredAssistantNativeId=originalNative;
+      const count=(await finals(assistantId)).length,actionsBefore=await cdp.eval('ipcRenderer.invoke("assistant:actions").then(r=>r.actions.length)');
+      await sendAssistant('只汇报目前情况，不创建或推进任务。哪些业务已有结果，哪些还要我处理？限120字。');
+      result.readOnlyAnswer=await answer(count,'restored assistant read-only answer');await idle(assistantId);
+      assert.equal(await cdp.eval('ipcRenderer.invoke("assistant:actions").then(r=>r.actions.length)'),actionsBefore);
+      result.steps.push('真实重启隔离Hub，旧助理原Hub/native编号保持，补入新身份配置；只读提问未派工');console.log(result.steps.at(-1));
+    }
     const beforeCreate=await cdp.eval('[...sessions.keys()]');
-    const originalUserText='在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。';
+    const originalUserText=managerPermissions?'新建一个Codex，为我设计一个10月2日到10月5日在南通周边进行旅游的，然后我和我老婆带着一个4岁女儿的一个比较好的旅游行程，然后我们住的呢是南通。呃，市中心的一家酒店已经订了4天。是南通中央商务区的漫居酒店，你帮我们规划一下行程，我们估计是10月2日中午出发，然后你看一下比如说有没有什么特色之类的写成一份。嗯HTML然后转成图片攻略吧，简介洁明了的，然后发':'在想新开一个codex session，然后因为我明天去南通旅游，对你帮我通过那个codex session让他帮我制作一个南通旅游的攻略。';
     result.spokenRequest=originalUserText;
     await sendAssistant(originalUserText);
     const created=await until('spoken request creates target through model tool',()=>cdp.eval(`([...sessions.values()].find(s=>!${j(beforeCreate)}.includes(s.id))) || null`));
     result.createdTargetId=created.id;
     const createdActions=await until('created task confirmed',async()=>{const r=await cdp.eval('ipcRenderer.invoke("assistant:actions")');return r.actions?.find(a=>a.state==='acknowledged'&&a.result?.sessionId===created.id)||null;});
     result.createdAction=createdActions;
-    const trip=await until('created tourism session actually answers',async()=>{const rows=await finals(created.id);return rows.length?rows.at(-1):null;},900000);
+    console.log('真实模型已新建目标且原生提交确认：'+created.id);
+    const trip=await until('created tourism session actually answers',async()=>{const rows=await finals(created.id);return rows.length?rows.at(-1):null;},managerPermissions?1800000:900000);
     result.createdTargetAnswer=trip;
-    assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
+    assert.match(trip.text,/HTML|html/);
     const s=await session(created.id);result.createdNativeId=s.codexSid;
     assert.equal(s.codexProfile,'second');assert.equal(require('../core/session-capabilities').sessionModelId(s),model);
-    const nativeRows=fs.readFileSync(trip.transcriptPath,'utf8').trim().split('\n').map(JSON.parse);
+    const nativeRows=fs.readFileSync(trip.transcriptPath,'utf8').split('\n').flatMap(line=>{try{return[JSON.parse(line)];}catch{return[];}});
     const nativeModel=nativeRows.filter(row=>row.type==='turn_context').at(-1)?.payload?.model;
     assert.equal(nativeModel,model,'实际原生模型应与继承的默认模型一致');result.createdNativeModel=nativeModel;
     const files=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.html')).map(f=>path.join(s.cwd,f));
     assert(files.length>0,'目标必须实际生成攻略HTML');
     result.createdArtifacts=files.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
     assert(files.some(file=>fs.readFileSync(file,'utf8').includes('南通')));
+    if(managerPermissions){
+      const html=files.map(file=>fs.readFileSync(file,'utf8')).join('\n');
+      assert.match(html,/漫居/);assert.match(html,/4岁|四岁/);assert.match(html,/10[月./-]?\s*5|10月2[^\n]{0,100}5|10\/05/);
+      const pngs=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.png')).map(f=>path.join(s.cwd,f));
+      assert(pngs.length>=5,'总览及四天攻略图片应实际存在');
+      result.createdImages=pngs.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
+    }
     assert.equal(await cdp.eval(`[...sessions.keys()].filter(id=>!${j(beforeCreate)}.includes(id)).length`),1);
     assert.equal(await cdp.eval('activeSessionId'),assistantId,'新建业务不抢助理页');
     await shot('04-spoken-create-real-trip');result.steps.push('逐字原口语经普通输入→真实模型create_session→唯一新目标→原生confirmed→目标真实南通攻略及HTML');
     result.passed=true;
   }catch(error){result.error=error.stack;process.exitCode=1;if(cdp)await shot('failure').catch(()=>{});}
-  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'),'utf8');result.exit=await gracefulQuit(hub,{timeoutMs:60000});}fs.rmSync(path.join(codexHome,'auth.json'),{force:true});result.authUnchanged=fileHash(auth)===before;if(!result.authUnchanged){result.passed=false;process.exitCode=1;}fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({passed:result.passed,out,steps:result.steps,error:result.error}));}
+  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'),'utf8');try{result.exit=await gracefulQuit(hub,{timeoutMs:60000});}catch(error){result.cleanupError=error.message;result.passed=false;process.exitCode=1;}}fs.rmSync(path.join(codexHome,'auth.json'),{force:true});result.authUnchanged=fileHash(auth)===before;if(!result.authUnchanged){result.passed=false;process.exitCode=1;}fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2),'utf8');console.log(JSON.stringify({passed:result.passed,out,steps:result.steps,error:result.error}));}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
