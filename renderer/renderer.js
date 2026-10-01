@@ -2430,6 +2430,7 @@ const turnCardRenderer = createTurnCardRenderer({
   document,
   window,
   navigator,
+  copyText: (text, options) => clipboardController.copyText(text, options),
   CSS,
   marked,
   DOMPurify,
@@ -3401,11 +3402,21 @@ document.addEventListener('click', async (e) => {
     // 复制用户实际看到的回答正文，不复制 markdown 围栏、toolCalls 原始块，
     // 也不把 hover 出来的 Copy/Bash/展开按钮混进剪贴板。
     const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
-    navigator.clipboard.writeText(visibleText).then(() => {
-      const orig = btn.textContent;
-      btn.textContent = '✓';
+    if (btn.disabled) return;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '复制中…';
+    try {
+      const result = await clipboardController.copyText(visibleText, { source: 'card', silent: true });
+      btn.textContent = result.ok ? '✓' : '复制失败';
+      if (!result.ok) clipboardController.showFeedback(result);
+    } catch (error) {
+      btn.textContent = '复制失败';
+      clipboardController.showFeedback({ ok: false, reason: error.message, source: 'card' });
+    } finally {
+      btn.disabled = false;
       setTimeout(() => { btn.textContent = orig; }, 1500);
-    }).catch(() => {});
+    }
     return;
   }
 
@@ -9172,6 +9183,7 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
     document, window, sessionId, panel,
     rendererOptions: {
       navigator, CSS, marked, DOMPurify, formatAbsoluteTime, normalizeMarkdownPathBreaks, escapeHtml,
+      copyText: (text, options) => clipboardController.copyText(text, options),
       wrapPathLinksInElement, getSessionContext: id => sessions.get(id),
       openAttachment: (target, opts) => openPathInHub(target, opts),
       readToolResult: reference => ipcRenderer.invoke(reference.source === 'claude-stream-json' ? 'claude-native:tool-result' : reference.source === 'codex-app-server' ? 'codex-native:tool-result' : 'acp:tool-result', reference),

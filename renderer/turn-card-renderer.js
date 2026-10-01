@@ -22,7 +22,14 @@ function createTurnCardRenderer(options = {}) {
   function listen(type, handler) { root.addEventListener(type, handler); listeners.push([type, handler]); }
   const overlay = () => options.container || doc.getElementById('msg-overlay');
   const nav = options.navigator || (win && win.navigator) || {};
-  const clipboardApi = nav.clipboard || { writeText: () => Promise.reject(new Error('剪贴板不可用')) };
+  // All live Hub card surfaces share the native writer, verification and retries.
+  // The browser fallback only serves standalone renderers without Hub services.
+  const clipboardApi = typeof options.copyText === 'function' ? {
+    async writeText(text) {
+      const result = await options.copyText(text, { source: 'card-detail', silent: true });
+      if (result && result.ok === false) throw new Error(result.reason || '复制失败');
+    },
+  } : nav.clipboard || { writeText: () => Promise.reject(new Error('剪贴板不可用')) };
   const cssApi = options.CSS || (win && win.CSS) || {};
   const cssEscape = typeof cssApi.escape === 'function'
     ? (value) => cssApi.escape(String(value))
@@ -1155,10 +1162,10 @@ listen('click', (e) => {
   if (copyBtn) {
     const code = copyBtn.parentElement.querySelector('pre code');
     if (code) {
-      clipboardApi.writeText(code.textContent).then(() => {
+      Promise.resolve(clipboardApi.writeText(code.textContent)).then(() => {
         copyBtn.textContent = '✓ Copied';
         setTimeout(() => copyBtn.textContent = '📋 Copy', 1500);
-      });
+      }).catch(error => { copyBtn.textContent = '复制失败'; console.warn('[code-copy]', error); });
     }
     return;
   }
