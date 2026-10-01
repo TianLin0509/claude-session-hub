@@ -94,6 +94,7 @@ async function main() {
     await shot('01-pty-ready'); result.checks.push('真实界面启用主账号 Codex，运行模式确认 PTY，普通输入框可用');
     await cdp.eval(`window.__assistantLiveReceipts=[];window.__assistantReceiptEvents=[];ipcRenderer.on('session:prompt-receipt',(_event,receipt)=>window.__assistantReceiptEvents.push({at:Date.now(),receipt}));const originalInvoke=ipcRenderer.invoke.bind(ipcRenderer);ipcRenderer.invoke=(channel,...args)=>{const operation=originalInvoke(channel,...args);if(channel==='session:send-prompt')operation.then(receipt=>window.__assistantLiveReceipts.push(receipt),error=>window.__assistantLiveReceipts.push({error:error.message}));return operation;};`);
     const question = '请根据本轮提供的近期工作记录，用白话汇报最近24小时最重要的两项变化，以及我现在需要做什么。每项给出材料引用，限180字。';
+    const submissionStartedAt = Date.now();
     await send(question);
     const first = await until('native final answer', async () => { const s = await session(); const record = nativeRecord(codexHome, s.codexSid); return record?.finals.length ? { s, record } : null; }, 180000);
     result.nativeId = first.s.codexSid; result.transcriptPath = first.record.file;
@@ -112,10 +113,17 @@ async function main() {
     assert.equal(text, exactPrepared, '原生用户正文必须与宿主本轮短请求逐字相同');
     await until('ordinary UI submit receipt', () => cdp.eval('window.__assistantLiveReceipts.length>0'), 30000);
     result.submitReceipt = await cdp.eval('window.__assistantLiveReceipts[0]');
+    await until('final ordinary UI delivery confirmed', () => cdp.eval(`floatingPromptDeliveries.get(${j(assistantId)})?.status==='confirmed'`), 30000);
     result.receiptEvents = await cdp.eval('window.__assistantReceiptEvents');
     result.finalUiDelivery = await cdp.eval(`JSON.parse(JSON.stringify(floatingPromptDeliveries.get(${j(assistantId)}) || null))`);
-    assert.equal(result.submitReceipt?.ok, true); assert.equal(result.submitReceipt?.receipt?.status, 'confirmed');
-    assert.equal(await cdp.eval(`document.querySelector(${j('.floating-input-bar[data-session-id="' + assistantId + '"]')})?.classList.contains('fi-stuck') || false`), false);
+    assert.equal(result.submitReceipt?.ok, true); assert.equal(result.finalUiDelivery?.status, 'confirmed');
+    assert.equal(result.finalUiDelivery.clientSubmissionId, result.submitReceipt.receipt.clientSubmissionId);
+    const confirmedEvent = result.receiptEvents.find(event => event.receipt.clientSubmissionId === result.finalUiDelivery.clientSubmissionId && event.receipt.status === 'confirmed');
+    assert.ok(confirmedEvent, '必须观察到本次提交的确定回执广播');
+    result.confirmationLatencyMs = confirmedEvent.at - submissionStartedAt;
+    result.initialRpcStatus = result.submitReceipt.receipt.status;
+    result.initialUnknownDurationMs = result.receiptEvents.some(event => event.receipt.status === 'unconfirmed') ? confirmedEvent.at - result.receiptEvents.find(event => event.receipt.status === 'unconfirmed').at : 0;
+    assert.equal(await cdp.eval(`!!document.querySelector(${j('.floating-input-bar[data-session-id="' + assistantId + '"] .fi-stuck')})`), false);
     const nativeTools = frozenSnapshotOutputs(first.record.records, envelope.history.requestToken);
     result.deliveryAudit = { bootstrapChars: text.length, frozenSources: frozen.packet.sources.length, frozenChars: frozen.packet.selectedChars, completeNativeToolOutputs: nativeTools.length, packetHash: frozen.packetHash };
     assert.equal(envelope.history.packetHash, frozen.packetHash);
