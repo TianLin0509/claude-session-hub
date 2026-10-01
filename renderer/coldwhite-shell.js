@@ -5,7 +5,10 @@ function installColdwhiteShell(doc = globalThis.document) {
   const app = doc?.getElementById('app-container');
   if (!app || doc.getElementById('hub-system-footer')) return;
   const badge = doc.getElementById('coldwhite-preview-label');
-  if (badge && globalThis.process?.env?.CLAUDE_HUB_UI_PREVIEW === 'coldwhite') badge.hidden = false;
+  if (badge && globalThis.process?.env?.CLAUDE_HUB_UI_PREVIEW === 'coldwhite') {
+    badge.hidden = false;
+    badge.textContent = '冷白预览 0.2';
+  }
   const footer = doc.createElement('footer');
   footer.id = 'hub-system-footer';
   footer.setAttribute('aria-label', '系统与网络状态');

@@ -42,8 +42,9 @@ const geometry = () => cdp.eval(`(()=>{const r=id=>{const b=document.getElementB
     const initial=await geometry();report.initial=initial;
     check(await cdp.eval('document.documentElement.dataset.theme === "codex"'),'冷白为新用户默认主题');
     check(initial.rail.width===162 && initial.sidebar.width===224 && initial.main.x===386,'独立导航列与会话列参与布局');
-    const icons=await cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation .btn-shell-nav:not([hidden]) .btn-icon svg')].map(e=>({fill:getComputedStyle(e).fill,stroke:getComputedStyle(e).stroke,width:e.getBoundingClientRect().width}))`);
-    check(icons.length===9 && icons.every(e=>e.fill==='none' && e.stroke!=='none' && e.width===20),'九主入口统一线性 SVG');
+    await until('document.documentElement.classList.contains("navigation-artwork-ready")');
+    const icons=await cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation .btn-shell-nav:not([hidden]) .nav-artwork')].map(e=>({display:getComputedStyle(e).display,width:e.getBoundingClientRect().width,image:getComputedStyle(e).backgroundImage}))`);
+    check(icons.length===9 && icons.every(e=>e.display==='block' && e.width===28 && e.image.includes('coldwhite-enamel-v1.png')),'九主入口使用同套生成图标');
     await screenshot('01-home');
     const routes=[['btn-assistant','assistant-page'],['btn-research','chuxin-panel'],['btn-study','study-panel'],['btn-ran','ran-panel'],['btn-rail-memo','hub-workspace'],['btn-rail-capabilities','hub-workspace'],['btn-rail-accounts','account-page'],['btn-writing','writing-panel']];
     for(const [button,panel] of routes){
@@ -103,6 +104,7 @@ const geometry = () => cdp.eval(`(()=>{const r=id=>{const b=document.getElementB
     for(const theme of ['dark','claude','codex']){
       await cdp.eval(`themeController.setTheme('${theme}')`);await _waitMs(160);
       check(await cdp.eval(`document.documentElement.dataset.theme === '${theme}'`),'主题切换 '+theme);
+      if(theme==='dark')check(await cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation .btn-icon svg')].every(e=>getComputedStyle(e).display!=='none') && [...document.querySelectorAll('.nav-artwork')].every(e=>getComputedStyle(e).display==='none')`),'深色保留 SVG 与原有配色');
     }
     await click('#rail-pin');
     await cdp.send('Page.reload');

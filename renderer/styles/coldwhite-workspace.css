@@ -1,4 +1,4 @@
-/* One layout and palette for the whole Hub. Native CLI retains its ANSI palette. */
+/* One layout and palette for the whole Hub. CLI surfaces use coldwhite-cli.css. */
 :root { --hub-rail-slot:162px; --hub-rail-open:162px; --hub-session-width:224px; --hub-footer-height:34px; }
 :root:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:56px; }
 :root[data-theme='codex'] {

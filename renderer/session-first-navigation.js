@@ -6,7 +6,8 @@ function installSessionFirstNavigation(doc = globalThis.document) {
   const pin = doc?.getElementById('rail-pin');
   if (!app || !trigger || !pin) return;
 
-  // Use the existing SVG icon family and reserve a real navigation column.
+  require('./navigation-artwork').installNavigationArtwork(doc);
+  // Reserve a real navigation column and preserve the user's display choice.
   const storage = doc.defaultView?.localStorage;
   const key = 'hub.navigationExpanded';
   const setPinned = (pinned, persist = true) => {

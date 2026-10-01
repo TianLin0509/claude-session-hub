@@ -360,7 +360,7 @@ function buildClaudePtyLaunch(id, kind, opts, cwd, env, cv) {
   if (fast) settings.push(resolveAsarUnpacked('claude-subscription-fast-settings.json'));
   const { buildClaudeNativeArgs, prepareClaudeSettingsOverlay } = require('./claude-native-launch');
   let cliTheme = null;
-  try { cliTheme = require('./cli-warm-gold-theme').ensureClaudeWarmGoldTheme(env); }
+  try { cliTheme = require('./cli-coldwhite-theme').ensureClaudeTheme(env, opts.hubUiTheme); }
   catch (error) { console.warn('[CLI theme] Claude:', error.message); }
   const settingsFile = prepareClaudeSettingsOverlay(settings, {
     directory: path.join(hubDataDir, 'native-agent-settings'), sessionId: id + '-' + require('crypto').randomUUID(),
@@ -1181,6 +1181,11 @@ class SessionManager extends EventEmitter {
 
   constructor() {
     super();
+    this.presentationTheme = require('./theme-config').DEFAULT_THEME;
+  }
+
+  setPresentationTheme(theme) {
+    if (require('./theme-config').THEME_IDS.includes(theme)) this.presentationTheme = theme;
   }
 
   // Callbacks
@@ -1262,7 +1267,7 @@ class SessionManager extends EventEmitter {
       // @community-else
       // require('./community-provider').assertProviderAvailable(kind);
       // @community-end
-      return this._createSession(kind, {...opts, id});
+      return this._createSession(kind, {...opts, id, hubUiTheme: this.presentationTheme});
     }
     catch (error) {
       if (!this.sessions.has(id)) this._releaseOpenSession(id);
@@ -2182,7 +2187,7 @@ class SessionManager extends EventEmitter {
         info.hookIntegrationWarning = hookResult.errors.length ? hookResult.errors.join('；') : null;
         cmd += ` -c features.hooks=true`;
         try {
-          const cliTheme = require('./cli-warm-gold-theme').ensureCodexWarmGoldTheme(sessionEnv);
+          const cliTheme = require('./cli-coldwhite-theme').ensureCodexTheme(sessionEnv, opts.hubUiTheme);
           cmd += ` -c tui.theme=${cliTheme}`;
         } catch (error) { console.warn('[CLI theme] Codex:', error.message); }
       }

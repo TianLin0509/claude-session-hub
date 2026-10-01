@@ -91,7 +91,7 @@ const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.j
 //   showStatus: (message, tone) => showToast(message, tone),
 // });
 // @community-end
-const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
+const { resolveXtermOptions, createThemeController } = require('./theme-controller.js');
 const {
   forgetViewMode,
   readCardViewSessions,
@@ -1441,7 +1441,7 @@ function getOrCreateTerminal(sessionId) {
   }
   const terminal = new Terminal({
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
-    theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
+    ...resolveXtermOptions(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
     lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3
       : isCodexKind(sessions.get(sessionId)?.kind) ? 1.18 : 1.12,
@@ -8341,6 +8341,7 @@ const themeController = createThemeController({
   localStorage,
   terminalCache,
   openConfigModal,
+  onThemeApplied: theme => ipcRenderer.send('hub:ui-theme', theme),
 });
 
 const suspendIdleItem = document.getElementById('options-suspend-idle');

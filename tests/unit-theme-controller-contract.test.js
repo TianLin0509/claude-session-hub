@@ -4,6 +4,7 @@ const path = require('path');
 const {
   XTERM_THEMES,
   resolveXtermTheme,
+  resolveXtermOptions,
   forceStyleRecalc,
   buildPickerMarkup,
   createThemeController,
@@ -131,9 +132,12 @@ async function main() {
 
   // --- T1：终端都保持深色。D4 默认主题单独采用深海底色与暖色光标。 ---
   assert.deepStrictEqual(Object.keys(XTERM_THEMES), THEME_IDS.slice());
-  for (const id of THEME_IDS.filter(id => id !== 'dark')) assert.strictEqual(XTERM_THEMES[id], XTERM_THEMES.frost);
+  for (const id of THEME_IDS.filter(id => !['dark','codex'].includes(id))) assert.strictEqual(XTERM_THEMES[id], XTERM_THEMES.frost);
   assert.notStrictEqual(XTERM_THEMES.dark, XTERM_THEMES.frost);
-  assert.strictEqual(resolveXtermTheme('codex'), XTERM_THEMES.frost);
+  assert.notStrictEqual(resolveXtermTheme('codex'), XTERM_THEMES.frost);
+  assert.strictEqual(resolveXtermOptions('codex').minimumContrastRatio, 4.5);
+  assert.strictEqual(resolveXtermOptions('dark').minimumContrastRatio, 1);
+  assert.strictEqual(resolveXtermTheme('codex').background, '#fbfcfd');
   assert.strictEqual(resolveXtermTheme('banana'), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(resolveXtermTheme(null), XTERM_THEMES[DEFAULT_THEME]);
   assert.strictEqual(XTERM_THEMES.dark.background, '#081420');
