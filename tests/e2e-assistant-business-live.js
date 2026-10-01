@@ -68,7 +68,8 @@ async function main(){
     }
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});
     await until('rail pin visible',()=>cdp.eval('(()=>{const e=document.querySelector("#rail-pin"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),30000);
-    await click('#rail-pin');await until('rail pinned',()=>cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'),10000);
+    if(!await cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'))await click('#rail-pin');
+    await until('rail pinned',()=>cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'),10000);
     await until('assistant navigation visible',()=>cdp.eval('(()=>{const e=document.querySelector("#btn-assistant"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),10000);
     await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));
     assistantId=await until('assistant identity',()=>cdp.eval('ipcRenderer.invoke("assistant:get-overview").then(r=>r.sessionId)'));result.assistantId=assistantId;
