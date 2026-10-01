@@ -127,13 +127,14 @@ test('账户余量迁到侧栏底部且只保留一个控制器挂载点', () =>
   assert.ok(sidebar.indexOf('id="sidebar-strip"') > sidebar.indexOf('id="rail-usage"'));
 });
 
-test('旧 rail 样式仍在，B 方案样式最后覆盖为 14px 收起 / 80px 展开', () => {
+test('旧 rail 样式仍在，B 方案保留悬浮导航并给会话标题足够宽度', () => {
   assert.match(stylesManifest, /@import url\('\.\/styles\/rail\.css'\);/);
   assert.match(stylesManifest, /@import url\('\.\/styles\/sidebar-v2\.css'\);/);
   assert.match(html, /styles\/session-first-b\.css/);
   assert.match(sessionFirstCss, /--hub-rail-slot:\s*14px/);
   assert.match(sessionFirstCss, /--hub-rail-open:\s*80px/);
-  assert.match(sessionFirstCss, /--hub-session-width:\s*226px/);
+  assert.match(sessionFirstCss, /--hub-session-width:\s*320px/);
+  assert.match(sessionFirstCss, /#btn-new \.btn-label \{ display: block; \}/);
 });
 
 test('折叠只作用在侧栏：rail 没有任何 sidebar-collapsed 的隐藏规则', () => {
