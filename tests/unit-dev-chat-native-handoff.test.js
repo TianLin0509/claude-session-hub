@@ -110,3 +110,14 @@ test('PTY seat proceeds after the bounded wait when the closing signal never arr
   assert.notEqual(result.reason, '等待上一轮 CLI 收尾超时；请查看原文，确认后继续');
   assert(c.orch.state.messages.some(m => m.systemNote && /已等待 90 秒，按已交付文件继续派发/.test(m.content)), 'leaves a visible note');
 });
+
+test('old PTY receipt cannot hold a later completed dispatch', async t => {
+  const c = setup(t);
+  c.session.runtimeBackend = undefined; c.session.kind = 'claude'; delete c.session.nativeRuntime;
+  const latest = c.oldAttempt('later prompt', 'later-turn');
+  latest.receipt.sourceCompletedAt = Date.now();
+  await c.dispatch();
+  assert.equal(c.sent.length, 1);
+  assert(!c.orch.state.messages.some(m => m.systemNote && /等待.*收尾|已等待 90 秒/.test(m.content)), 'no wait for an obsolete receipt');
+  assert.equal(c.receipt.sourceCompletedAt, undefined, 'old receipt remains collectible');
+});

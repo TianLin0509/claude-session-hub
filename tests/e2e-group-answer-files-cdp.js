@@ -71,6 +71,11 @@ async function run() {
     fs.writeFileSync(answerPath(by.m2), 'm2 补交的结论', 'utf8');
     await wait('m2 rescued card', async () => (await card(1, 'm2', sids[1]))?.text.includes('m2 补交的结论'));
     ok('CLI 已结束后补写文件，卡片自动更新', true);
+    fs.writeFileSync(answerPath(by.m2), '', 'utf8');
+    await wait('cleared answer disappears', async () => (await card(1, 'm2', sids[1]))?.text.includes('还没交'));
+    ok('清空回答文件后卡片不保留旧答案', true);
+    fs.writeFileSync(answerPath(by.m2), 'm2 补交的结论', 'utf8');
+    await wait('answer restored', async () => (await card(1, 'm2', sids[1]))?.text.includes('m2 补交的结论'));
     fs.writeFileSync(answerPath(by.m3), 'm3 的结论', 'utf8');
     await wait('m3 card while running', async () => (await card(1, 'm3', sids[2]))?.text.includes('m3 的结论'));
     ok('仍在运行时写好文件，卡片即时显示', true);

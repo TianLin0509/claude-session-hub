@@ -43,6 +43,7 @@ function withGlobalAccount(existing, config, id, env = process.env) {
 // native config and future new threads follow the selected global account.
 function prepareLaunch(opts, config, env = process.env) {
   const account = resolveAccount(config,env);
+  require('./codex-auth-validation').assertUsableCredential(account.home);
   const oldProfile = config.codexSubscriptionProfiles.find(p => p.id === opts.codexProfile);
   const sid = opts.codexSid || opts.codexForkSid;
   if (opts.codexProfile && !oldProfile && !(sid && opts.codexSessionsRoot)) throw new Error('Codex 账号配置不存在');

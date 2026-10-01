@@ -1618,7 +1618,7 @@ class GroupChatOrchestrator {
   answerFileFor(turnNum, sid) { return this.state.answerFiles?.[String(Number(turnNum))]?.[sid] || null; }
   applyAnswerFile(turnNum, sid, { state, outcome = null, text, hash }) {
     const entry = this.answerFileFor(turnNum, sid);
-    if (!entry || (entry.hash === hash && entry.state === state)) return false;
+    if (!entry || (entry.hash === hash && entry.state === state && entry.outcome === outcome)) return false;
     Object.assign(entry, { hash, state, outcome, appliedAt: Date.now() });
     let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum)
       && m.role === 'assistant' && m.sid === sid && !m.supplementReply && !isProgressUpdateMessage(m));
