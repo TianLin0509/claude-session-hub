@@ -1803,7 +1803,7 @@ try {
 // 写作 Tab：作品库、文风、写作台（与学习 Tab 同在上方的社区版剥离区内）。文章与文风 skill 都是用户目录里的普通文件，
 // Hub 只做界面；路径见 core/writing/config.js（隔离测试用环境变量改到临时目录）。
 try {
-  require('./main/ipc/writing-handlers.js').registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell });
+  require('./main/ipc/writing-handlers.js').registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell, meetingManager, sessionManager });
 } catch (e) {
   console.warn('[writing] 写作 Tab 初始化失败：', e && e.message);
 }

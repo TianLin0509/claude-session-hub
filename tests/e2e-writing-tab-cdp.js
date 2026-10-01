@@ -1,9 +1,12 @@
 'use strict';
 /**
- * 写作 Tab 真机 E2E：隔离 Hub + 模拟真人操作，走完新版写作流程。
+ * 写作 Tab 真机 E2E：隔离 Hub + 模拟真人操作，全程只在写作 Tab 里写一篇文章，不打开群聊（2026-10-01 版）。
  *
- *   写作台  点「新文章」→ 建写作场景群聊并打开 → 在群聊输入框里说中心思想（真实调用 Claude haiku）
- *           → AI 把稿存进文章目录 → 让它汇总改定 → 写作台显示「已定稿」→ 后台自动优化文风
+ *   写作台  没有文章时直接是「新文章」输入框 → 写中心思想、点「开始写」（后台建写作群并发出，真实调用 Claude haiku）
+ *           → 稿件出现在工作台的稿件栏（AI 按卡片格式交稿，Hub 存成 drafts/Claude-1-v1.md）
+ *           → 问题卡：改答案、发给大家 → 出现 v2
+ *           → 在稿里用鼠标划一段、点「点评这段」写意见 → 点评篮 → 「汇总定稿」→ 定稿置顶、存成 final.md
+ *           → 后台自动优化文风；「在群聊里看过程」能打开后台群聊
  *   文风    带行号展示源文件；手动编辑保存；变更记录里看得到 AI 自动优化与手动修改
  *   作品库  定稿以「新作」出现；只读
  *
@@ -68,21 +71,32 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     throw new Error('timeout: ' + label);
   };
   const untilFs = async (fn, label, ms) => { const end = Date.now() + ms; while (Date.now() < end) { const v = fn(); if (v) return v; await sleep(1000); } throw new Error('timeout: ' + label); };
-  const clickText = async (text, scope = '#writing-panel') => {
-    await until(`[...document.querySelectorAll(${JSON.stringify(scope + ' button')})].some(b=>b.textContent.trim()===${JSON.stringify(text)}&&!b.disabled)`, 'button ' + text);
-    await cdp.eval(`[...document.querySelectorAll(${JSON.stringify(scope + ' button')})].find(b=>b.textContent.trim()===${JSON.stringify(text)}&&!b.disabled).click()`);
+  const btnExpr = (scope, text) => `[...document.querySelectorAll(${JSON.stringify(scope + ' button')})].find(b=>b.textContent.trim()===${JSON.stringify(text)}&&!b.disabled&&b.offsetParent)`;
+  const clickText = async (text, scope = '#writing-panel', ms) => {
+    await until(btnExpr(scope, text), 'button ' + text, ms);
+    await cdp.eval(`${btnExpr(scope, text)}.click()`);
   };
-  const snap = async (name) => { const b64 = await cdp.eval('ipcRenderer.invoke("test:writing-capture")'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(b64, 'base64')); };
-  // 真实键盘输入：聚焦输入框，全选后插入文字（与群聊 E2E 的做法一致），再点发送
-  const sendInGroup = async (text) => {
-    await until('document.querySelector("#mr-input-box") && !document.querySelector("#mr-send-btn").disabled', 'group input ready', 90000);
-    await cdp.eval('document.querySelector("#mr-input-box").focus()');
+  // 截图只是留证据：后台窗口偶发 UnknownVizError（2026-10-01 实测），截不到就记一笔，不让功能断言跟着失败
+  const snap = async (name) => {
+    await sleep(500);
+    try { const b64 = await cdp.eval('ipcRenderer.invoke("test:writing-capture")'); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(b64, 'base64')); return; }
+    catch (e) { (result.snapErrors = result.snapErrors || []).push(`${name}: ${String(e.message || e).slice(0, 120)}`); }
+    // 主进程截图不行时退到 CDP 自己的截图（清瓷白 E2E 用的就是这条）
+    try { const s = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(s.data, 'base64')); }
+    catch (e) { console.log(`    （截图 ${name} 没截到：${String(e.message || e).slice(0, 80)}）`); }
+  };
+  // 真实键盘输入：聚焦、全选，再插入文字
+  const typeInto = async (selector, text) => {
+    await until(`document.querySelector(${JSON.stringify(selector)})`, 'input ' + selector);
+    await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).focus()`);
     for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', { type, key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 });
     await cdp.send('Input.insertText', { text });
-    await sleep(300);
-    await cdp.eval('document.querySelector("#mr-send-btn").click()');
+    await sleep(200);
   };
+  const meetingPanelHidden = () => cdp.eval('(()=>{const p=document.getElementById("meeting-room-panel");return !p||getComputedStyle(p).display==="none";})()');
   const pieceDir = () => { try { return fs.readdirSync(piecesRoot).map((n) => path.join(piecesRoot, n)).find((d) => fs.existsSync(path.join(d, 'piece.json'))); } catch { return null; } };
+  const groupState = (id) => { try { return JSON.parse(fs.readFileSync(path.join(data, 'arena-prompts', `${id}-groupchat.json`), 'utf8')); } catch { return null; } };
+  const userSaid = (id) => ((groupState(id) || {}).messages || []).filter((m) => m.role === 'user' && m.origin === 'user').map((m) => String(m.content));
 
   try {
     hub = await launchIsolatedHub({
@@ -99,55 +113,116 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     await until('typeof window.__writingShow === "function"', 'writing.js loaded');
     check('左侧导航：写作紧挨在账号下方', await cdp.eval('document.getElementById("btn-rail-accounts").nextElementSibling.id') === 'btn-writing');
 
-    // ① 写作台：新文章 → 写作群聊
+    // ① 新文章：在 Tab 里写中心思想，点「开始写」
     await cdp.eval('document.getElementById("btn-writing").click()');
-    await until('document.querySelector("#wr-view-studio.active")', 'studio view');
-    check('打开写作 Tab 默认就是写作台', true);
-    await snap('01-写作台-空');
-    await clickText('＋ 新文章');
-    await until('document.getElementById("writing-panel").style.display==="none" && document.getElementById("meeting-room-panel") && getComputedStyle(document.getElementById("meeting-room-panel")).display!=="none"', 'meeting room opened', 90000);
+    await until('document.querySelector("#wr-view-studio.active .wb-compose-text")', 'composer', 30000);
+    check('还没有文章时，写作台直接是新文章输入框', true);
+    await typeInto('.wb-compose-text', '中心思想：同一个模型多开几个分身互相审稿，并不能像多根独立天线那样带来分集增益，因为它们的错误高度相关。读者是懂 AI、不懂无线的算法工程师。请写一篇 300 字左右的短文。（这次是测试：请务必附一张问题卡，问我一个问题。）');
+    await snap('01-新文章');
+    await clickText('开始写');
+    await until('document.querySelector(".wb .wb-title")', 'workbench mounted', 90000);
     const meeting = await cdp.eval('ipcRenderer.invoke("get-meetings").then(ms=>ms.find(m=>m.scene==="writing"))');
-    check('新文章直接建成写作场景群聊并打开', !!meeting && meeting.scene === 'writing', meeting && meeting.title);
+    check('后台建好写作场景群聊', !!meeting && meeting.scene === 'writing', meeting && meeting.id);
+    check('不跳到群聊：群聊面板没打开，写作 Tab 还在', await meetingPanelHidden() && await cdp.eval('document.getElementById("writing-panel").style.display!=="none"'));
     const dir = pieceDir();
-    check('群聊工作目录就是这篇文章的目录', dir && path.resolve(meeting.workspace || '') === path.resolve(dir), meeting.workspace);
-    check('文章目录里有 .vibe-root，并记下了群聊 id', fs.existsSync(path.join(dir, '.vibe-root')) && JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).meetingId === meeting.id);
+    check('群聊工作目录就是这篇文章的目录，并记下了群聊 id', dir && path.resolve(meeting.workspace || '') === path.resolve(dir) && JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).meetingId === meeting.id);
     const members = await cdp.eval(`ipcRenderer.invoke("get-sessions").then(ss=>ss.filter(s=>s.meetingId===${JSON.stringify(meeting.id)}).map(s=>({kind:s.kind,purpose:s.purpose})))`);
     check('写作群成员标记为 purpose=writing', members.length === 1 && members.every((m) => m.purpose === 'writing'), JSON.stringify(members));
+    await untilFs(() => userSaid(meeting.id).some((t) => t.includes('分集增益')), 'idea sent to group', 60000);
+    check('中心思想由 Tab 替你发进了群', true);
 
-    // ② 在群里说中心思想（真实调用 Claude haiku）
-    await sendInGroup('中心思想：同一个模型多开几个分身互相审稿，并不能像多根独立天线那样带来分集增益，因为它们的错误高度相关。读者是懂 AI、不懂无线的算法工程师。信息已经够了，不用问我问题，请直接写一篇 300 字左右的短文，并按群规则保存稿件。');
-    await snap('02-群聊-已发送');
-    const draft = await untilFs(() => { try { const f = fs.readdirSync(path.join(dir, 'drafts')).find((n) => n.endsWith('.md')); return f && fs.statSync(path.join(dir, 'drafts', f)).size > 200 ? f : null; } catch { return null; } }, 'draft saved by AI', 300000);
-    const draftText = fs.readFileSync(path.join(dir, 'drafts', draft), 'utf8');
-    check('AI 按写作群规则把稿存进文章目录，并用 # 标题开头', /^#\s+\S/m.test(draftText), `${draft}：${draftText.split('\n')[0]}`);
+    // ② 初稿出现在稿件栏（真实调用 Claude haiku）
+    await until('document.querySelector(".wb-col .wb-col-body .wr-paper")', 'draft column', 300000);
+    const v1File = await untilFs(() => fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v1.md')) && 'Claude-1-v1.md', 'draft materialized', 30000);
+    const draftText = fs.readFileSync(path.join(dir, 'drafts', v1File), 'utf8');
+    const usedCard = await cdp.eval('!/没附交稿卡/.test(document.querySelector(".wb-col").innerText)');
+    result.cardFollowed = { v1: usedCard };
+    check('交稿存成 drafts/Claude-1-v1.md，正文里不带卡片', /^#\s+\S/.test(draftText) && !draftText.includes('hub-writing'), `${draftText.split('\n')[0]}（${usedCard ? '附了交稿卡' : '没附卡片，按稿件收下'}）`);
+    check('稿件栏显示排版好的正文，不是「没按格式」的原样回复', await cdp.eval('!document.querySelector(".wb-col .wb-note.warn")'));
     check('稿件里没有标签腔', !/【(推断|坐实|工程推断)】/.test(draftText));
-    await until('document.querySelectorAll("#meeting-room-panel .gc-bubble, #meeting-room-panel [data-role=assistant], #meeting-room-panel .mr-gc-msg").length>0 || /分集|天线/.test(document.getElementById("meeting-room-panel").innerText)', 'reply visible in group chat', 120000);
-    check('稿件也出现在群聊消息里', await cdp.eval('/分集|天线/.test(document.getElementById("meeting-room-panel").innerText)'));
-    await snap('03-群聊-稿件');
+    // 问不问问题是模型自己的判断：有问题卡走回答，没有就走总评点评，两条路都要能改出 v2
+    const asked = await until('document.querySelectorAll(".wb-questions .wb-q").length>0', 'question card', 30000).then(() => true, () => false);
+    await snap('02-初稿');
 
-    // ③ 点评并让它汇总改定
-    await sendInGroup('开头太像讲义，改成从一个具体场景起笔；其余保留。请你汇总改定，按群规则保存为 final.md。');
-    await untilFs(() => fs.existsSync(path.join(dir, 'final.md')) && fs.statSync(path.join(dir, 'final.md')).size > 200, 'final.md saved', 300000);
-    check('按点评汇总改定，定稿存为 final.md', true);
+    if (asked) {
+      // ③a 回答问题 → 各自改一版
+      check('问题卡出现，带推荐答案', await cdp.eval('document.querySelector(".wb-q-input").value.trim().length>0'), await cdp.eval('document.querySelector(".wb-q-text").textContent'));
+      await typeInto('.wb-q-input', '写给做调度算法的工程师，多用调度里的例子');
+      await clickText('把回答发给大家');
+      await untilFs(() => userSaid(meeting.id).some((t) => t.includes('回答你们的问题') && t.includes('调度算法')), 'answers sent', 60000);
+      check('回答整理成一条消息发进群', true);
+    } else {
+      // ③b 没有问题卡：点「总评」写一句 → 发出点评，各自改一版
+      console.log('    （这次 AI 没出问题卡，改走总评点评）');
+      await clickText('总评', '.wb-col');
+      await typeInto('.wb-pop-input', '写给做调度算法的工程师，多用调度里的例子');
+      await clickText('放进点评篮（Ctrl+Enter）', '.wb-pop');
+      await clickText('发出点评，各自改一版', '.wb-basket');
+      await untilFs(() => userSaid(meeting.id).some((t) => t.includes('我的点评') && t.includes('调度算法')), 'comments sent', 60000);
+      check('总评整理成一条点评消息发进群', true);
+    }
+    await until('[...document.querySelectorAll(".wb-col .wb-ver")].some(b=>b.textContent==="v2")', 'v2 draft', 300000);
+    check('按回答 / 点评改出 v2，可在 v1 / v2 之间切换', fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v2.md')));
+    await snap('03-改稿v2');
 
-    // ④ 回到写作台：已定稿 + 文风自动优化
-    await cdp.eval('document.getElementById("btn-writing").click()');
-    await until('/已定稿/.test(document.getElementById("wr-view-studio").innerText)', 'studio shows final', 30000);
-    check('写作台显示已定稿', true);
-    await until('/文风已根据这篇更新|这篇没有需要改的地方|没通过检查|文风优化失败/.test(document.getElementById("wr-view-studio").innerText)', 'voice evolution finished', 300000);
-    const vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    // ④ 鼠标划一段 → 点评这段 → 点评篮
+    await until('!document.querySelector(".wb-col.working")', 'column settled', 120000); // 真人也是读完再划
+    const rect = await cdp.eval(`(()=>{const p=[...document.querySelectorAll(".wb-col .wb-col-body .wr-paper p")].find(x=>x.textContent.trim().length>20);const t=document.createTreeWalker(p,NodeFilter.SHOW_TEXT).nextNode();const r=document.createRange();r.setStart(t,0);r.setEnd(t,Math.min(14,t.length));const a=r.getClientRects();const s=a[0],e=a[a.length-1];p.scrollIntoView({block:'center'});const a2=r.getClientRects();return {x1:a2[0].left+1,y:(a2[0].top+a2[0].bottom)/2,x2:a2[a2.length-1].right-1,y2:(a2[a2.length-1].top+a2[a2.length-1].bottom)/2};})()`);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x1, y: rect.y, button: 'left', clickCount: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (rect.x1 + rect.x2) / 2, y: rect.y2, button: 'left', buttons: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x2, y: rect.y2, button: 'left', buttons: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x2, y: rect.y2, button: 'left', clickCount: 1 });
+    await until('document.querySelector(".wb-sel-btn")', 'selection button', 5000);
+    const quote = await cdp.eval('window.getSelection().toString().trim()');
+    check('鼠标划选一段后浮出「点评这段」', quote.length >= 2, quote);
+    await cdp.eval('document.querySelector(".wb-sel-btn").click()');
+    await typeInto('.wb-pop-input', '开头太像讲义，改成从一个具体场景起笔');
+    await clickText('放进点评篮（Ctrl+Enter）', '.wb-pop');
+    await until('document.querySelectorAll(".wb-basket .wb-chip").length===1', 'basket chip');
+    check('点评进了点评篮，带被划的原文', await cdp.eval(`document.querySelector(".wb-basket .wb-chip").textContent.includes(${JSON.stringify(quote.slice(0, 10))})`));
+    await snap('04-划线点评');
+
+    // ⑤ 点名汇总定稿
+    await clickText('汇总定稿', '.wb-basket');
+    await untilFs(() => userSaid(meeting.id).some((t) => t.includes('汇总定稿') && t.includes('开头太像讲义') && t.includes(quote.slice(0, 6))), 'finalize sent', 60000);
+    check('「汇总定稿」连同点评篮里的意见一起发出', true);
+    // Tab 要确认派发没被拒（约 2.5 秒）才清点评篮：失败时点评要留着
+    await until('document.querySelectorAll(".wb-basket .wb-chip").length===0', 'basket cleared', 15000);
+    check('点评篮确认发出后清空', true);
+    await until('document.querySelector(".wb-final:not([hidden]) .wr-paper")', 'final view', 300000);
+    check('定稿置顶显示，各家的稿收起在下面', await cdp.eval('!!document.querySelector(".wb-drafts-fold")'));
+    await untilFs(() => fs.existsSync(path.join(dir, 'final.md')) && fs.statSync(path.join(dir, 'final.md')).size > 200, 'final.md', 30000);
+    check('定稿存成 final.md', /^#\s+\S/.test(fs.readFileSync(path.join(dir, 'final.md'), 'utf8')));
+    check('全程没有打开群聊', await meetingPanelHidden());
+    await snap('05-定稿');
+
+    // ⑥ 文风自动优化，结果显示在文章列表
+    await until('/文风已根据这篇更新|这篇没有需要改的地方|没通过检查|文风优化失败/.test(document.querySelector("#wr-view-studio .wr-studio-list").innerText)', 'voice evolution finished', 300000);
+    let vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    if (vstat.status === 'failed') {
+      // 真人会怎么做：看到「文风优化失败」就点「重新优化文风」
+      console.log(`    （文风优化第一次失败：${vstat.error}；点「重新优化文风」再来一次）`);
+      await clickText('重新优化文风', '#wr-view-studio');
+      await until('/文风已根据这篇更新|这篇没有需要改的地方|没通过检查/.test(document.querySelector("#wr-view-studio .wr-studio-list").innerText)', 'voice evolution retried', 300000);
+      vstat = JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).voice;
+    }
     check('定稿后自动优化文风（结果写进文章记录）', ['done', 'rejected'].includes(vstat.status), `${vstat.status}：${vstat.summary || vstat.error || ''}`);
-    const log = fs.readFileSync(path.join(voiceDir, 'CHANGELOG.md'), 'utf8');
-    check('变更日志记下了这次自动优化', /AI (根据|读完|对)《/.test(log));
-    await snap('04-写作台-已定稿');
+    check('变更日志记下了这次自动优化', /AI (根据|读完|对)《/.test(fs.readFileSync(path.join(voiceDir, 'CHANGELOG.md'), 'utf8')));
+    await snap('06-文风已优化');
 
-    // ⑤ 文风：带行号的源文件、手动编辑、变更记录
+    // ⑦ 后台群聊仍然可看
+    await clickText('在群聊里看过程');
+    await until('(()=>{const p=document.getElementById("meeting-room-panel");return p&&getComputedStyle(p).display!=="none";})()', 'meeting opened', 30000);
+    check('「在群聊里看过程」打开这篇的后台群聊', await cdp.eval('document.getElementById("writing-panel").style.display==="none"'));
+    await cdp.eval('document.getElementById("btn-writing").click()');
+    await until('document.querySelector(".wb .wb-title")', 'back to workbench');
+
+    // ⑧ 文风：带行号的源文件、手动编辑、变更记录
     await clickText('文风', '.wr-tabs');
     await until('document.querySelectorAll("#wr-view-voice .wr-line").length>20', 'voice lines');
     check('文风页带行号展示源文件', await cdp.eval('document.querySelector("#wr-view-voice .wr-line .ln").textContent') === '1');
     check('变更记录里看得到 AI 自动优化', await cdp.eval('document.querySelectorAll("#wr-view-voice .wr-changelog li.ai").length>0'));
-    await sleep(800); // 后台窗口偶尔还没把新视图画上去就截图，拿到空白帧
-    await snap('05-文风');
+    await snap('07-文风');
     await clickText('编辑');
     await until('document.querySelector("#wr-view-voice textarea.wr-voice-editor")', 'editor');
     await cdp.eval('(()=>{const t=document.querySelector("#wr-view-voice textarea.wr-voice-editor");t.value=t.value+"\\n<!-- E2E 手动修改 -->\\n";})()');
@@ -156,12 +231,12 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     check('手动编辑保存写回 SKILL.md（临时副本）', fs.readFileSync(path.join(voiceDir, 'SKILL.md'), 'utf8').includes('E2E 手动修改'));
     check('变更记录里出现手动修改', await cdp.eval('document.querySelectorAll("#wr-view-voice .wr-changelog li.me").length>0'));
 
-    // ⑥ 作品库：只读，新作出现
+    // ⑨ 作品库：只读，新作出现
     await clickText('作品库', '.wr-tabs');
     await until('document.querySelectorAll("#wr-view-library .wr-item").length>0', 'library', 60000);
     check('作品库加载全部旧作和这篇新作', await cdp.eval('Number(document.querySelector("#wr-view-library .wr-total b").textContent)') === 593);
     check('作品库只读：没有设范文、摘句、改题材', await cdp.eval('!/设为范文|摘句|改题材/.test(document.getElementById("wr-view-library").innerText)'));
-    await snap('06-作品库');
+    await snap('08-作品库');
 
     // 互斥：回到工作台，写作面板收起
     await cdp.eval('document.getElementById("btn-home").click()');
@@ -171,8 +246,8 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
   } catch (err) {
     try {
       await snap('zz-失败现场');
-      result.failure = { message: err.message, panel: await cdp.eval('(document.getElementById("writing-panel")||{}).innerText?.slice(0,1200)'), toasts: await cdp.eval('[...document.querySelectorAll(".wr-toast")].map(t=>t.textContent)') };
-      console.log('失败现场：', JSON.stringify(result.failure, null, 2).slice(0, 2500));
+      result.failure = { message: err.message, panel: await cdp.eval('(document.getElementById("writing-panel")||{}).innerText?.slice(0,1500)'), toasts: await cdp.eval('[...document.querySelectorAll(".wr-toast")].map(t=>t.textContent)') };
+      console.log('失败现场：', JSON.stringify(result.failure, null, 2).slice(0, 3000));
     } catch (e2) { console.log('记录失败现场也失败了：', e2.message); }
     throw err;
   } finally {

@@ -4,8 +4,8 @@
  *
  * 2026-09-30 田哥体验后改版：少让人动手，多自动化，但让人看得见做了什么。
  *   作品库  只读：旧作 592 篇 + 写作台定稿的新作
- *   写作台  「新文章」= 一个写作场景的 AI 群聊。田哥在群里说中心思想、点评，AI 自己推进；
- *           这里只列文章与进度，点一下进群聊
+ *   写作台  「新文章」= 一个写作场景的 AI 群聊（后台）。2026-10-01 起写作在这里完成：左边文章列表，
+ *           右边文章工作台（renderer/writing-workbench.js）——各家稿件并排、回答问题、划线点评、点名定稿
  *   文风    直接展示文风 skill 源文件（带行号，可直接改）+ AI 每次写完自动优化的记录
  *
  * 数据都在主进程 main/ipc/writing-handlers.js；群聊本身复用 Hub 的 meeting-room。
@@ -22,7 +22,7 @@
     view: 'studio',
     lib: { filters: { sources: [], years: [], topics: [], lengths: [], exemplarOnly: false, query: '', sort: 'date' }, data: null, currentId: null, limit: 150, rebuiltAt: 0 },
     voice: { file: 'SKILL.md', data: null, editing: false },
-    studio: { articles: [], creating: false, finalOf: null },
+    studio: { articles: [], creating: false, current: null, composing: false, draft: '' },
   };
 
   let root = null;
@@ -135,11 +135,13 @@
   async function loadStudio() {
     await guarded(async () => {
       const r = await call('writing:article-list');
-      // 8 秒一轮的轮询：列表没变就不重画，免得正在看的定稿被刷回「加载定稿…」、滚动位置丢掉
+      // 8 秒一轮的轮询：列表没变就不重画（右侧工作台自己 3 秒刷新，互不打扰）
       const sig = JSON.stringify([r.articles, r.articles.map((a) => meetingExists(a.meetingId))]);
+      S.studio.articles = r.articles;
+      if (!S.studio.current && !S.studio.composing && r.articles.length) S.studio.current = r.articles[0].dir;
+      if (!S.studio.current && !r.articles.length) S.studio.composing = true;
       if (sig === S.studio.sig && document.querySelector('#wr-view-studio .wr-articles')) return;
       S.studio.sig = sig;
-      S.studio.articles = r.articles;
       renderStudio();
     });
   }
@@ -154,13 +156,25 @@
     fn(id);
   }
 
-  async function newArticle() {
+  function voiceLabel(v) {
+    return v.status === 'done' && v.changed === false ? '文风：这篇没有需要改的地方' : VOICE_STATUS[v.status] || v.status;
+  }
+
+  // 文章工作台（renderer/writing-workbench.js）：右侧整块
+  const { createWorkbench, kindLabel } = require('./writing-workbench.js');
+  const workbench = createWorkbench({
+    h, call, toast, guarded, paper, ipcRenderer, openMeeting, voiceLabel,
+    onChanged: () => { S.studio.sig = null; if (S.opened && S.view === 'studio' && !S.studio.creating) loadStudio(); },
+  });
+
+  // 新文章：在 Tab 里写中心思想、勾成员；后台建写作群并替田哥发出第一条消息，不跳到群聊
+  async function startArticle(idea, members) {
     if (S.studio.creating) return;
     S.studio.creating = true;
     renderStudio();
+    let dir = null;
     try {
-      const { dir } = await call('writing:article-create');
-      const { members } = await call('writing:article-defaults');
+      ({ dir } = await call('writing:article-create'));
       const wc = window.WorkspaceController;
       const slots = members.map((m, i) => {
         let tuning = m.model ? { model: m.model } : {};
@@ -183,62 +197,77 @@
       });
       if (!meeting || !meeting.id) throw new Error('写作群聊没有创建成功');
       await call('writing:article-bind', { dir, meetingId: meeting.id });
-      const fn = typeof selectMeeting === 'function' ? selectMeeting : window.selectMeeting;
-      if (typeof fn === 'function') fn(meeting.id);
-      toast('写作群已建好：在输入框里说说这篇的中心思想');
+      S.studio.current = dir;
+      S.studio.composing = false;
+      S.studio.draft = '';
+      // 万一发送失败，工作台会出补发框，里面预填这段话
+      try { localStorage.setItem(`writing-idea:${dir}`, idea); } catch { /* 存不下就只能重写 */ }
+      // 写作群规则只在首轮注入一次，模型偶尔会忘了卡片（2026-10-01 E2E 里 haiku 就漏过）：Tab 替田哥发话时顺带提醒一句
+      await workbench.sendToGroup(`${idea}\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）`, { meeting });
+      try { localStorage.removeItem(`writing-idea:${dir}`); } catch { /* 无 */ }
+      toast('写作群已建好，AI 正在写初稿');
     } catch (e) {
       toast(`新文章没有建成：${e.message || e}`, true);
     } finally {
       S.studio.creating = false;
-      S.studio.sig = null; // 建失败时列表没变，也要把按钮从「正在建…」画回来
+      S.studio.sig = null;
       if (S.opened) loadStudio();
     }
   }
 
-  function voiceBadge(v) {
-    if (!v || !v.status) return null;
-    const cls = v.status === 'done' ? 'ok' : v.status === 'failed' || v.status === 'rejected' ? 'bad' : 'brand';
-    const label = v.status === 'done' && v.changed === false ? '文风：这篇没有需要改的地方' : VOICE_STATUS[v.status] || v.status;
-    return h('span', { class: `wr-pill ${cls}`, text: label, title: [v.summary, v.error].filter(Boolean).join('\n') });
+  async function renderComposer(box) {
+    let members = [];
+    try { members = (await call('writing:article-defaults')).members; } catch { /* 下面按钮会灰掉 */ }
+    const picked = new Set(members.map((_, i) => i));
+    const ta = h('textarea', { class: 'wr-input wb-compose-text', rows: '8', placeholder: '这篇想写什么？说说中心思想、写给谁、想表达的观点。想到哪写到哪，AI 会补问。' });
+    ta.value = S.studio.draft || '';
+    const go = h('button', { class: 'wr-btn primary big', text: S.studio.creating ? '正在建写作群…' : '开始写',
+      onclick: () => startArticle(ta.value.trim(), members.filter((_, i) => picked.has(i))) });
+    const sync = () => { go.disabled = !ta.value.trim() || !picked.size || S.studio.creating; };
+    ta.addEventListener('input', () => { S.studio.draft = ta.value; sync(); });
+    sync();
+    box.replaceChildren(h('div', { class: 'wr-card wb-compose' },
+      h('h2', { class: 'wb-title', text: '新文章' }),
+      ta,
+      h('div', { class: 'wb-row' },
+        h('span', { class: 'wr-muted', text: '请这几位一起写：' }),
+        ...members.map((m, i) => h('label', { class: 'wb-member' },
+          h('input', { type: 'checkbox', checked: true, onchange: (e) => { if (e.target.checked) picked.add(i); else picked.delete(i); sync(); } }),
+          `${kindLabel(m.kind)}${m.model ? ` · ${m.model}` : ''}`))),
+      h('div', { class: 'wr-muted', text: '点「开始写」后，Hub 在后台建一个写作群，把这段话发给大家。各家的稿会出现在这里，你在这里回答问题、点评、定稿；群聊只在想看过程时打开。' }),
+      h('div', { class: 'wb-row' }, go, S.studio.articles.length ? h('button', { class: 'wr-btn', text: '取消', onclick: () => { S.studio.composing = false; S.studio.sig = null; renderStudio(); } }) : null)));
+    setTimeout(() => ta.focus(), 0);
   }
 
   function renderStudio() {
     const view = document.getElementById('wr-view-studio');
     if (!view) return;
     const st = S.studio;
-    const head = h('div', { class: 'wr-card wr-studio-intro' },
-      h('div', { class: 'wr-row' },
-        h('button', { class: 'wr-btn primary big', disabled: st.creating, text: st.creating ? '正在建写作群…' : '＋ 新文章', onclick: newArticle }),
-        h('details', { style: { flex: 1 } }, h('summary', { text: '创作流程' }), '新文章会开一个写作群聊（Claude、Codex、DeepSeek）。在群里说说中心思想就行：AI 会自己决定先问你几个问题还是直接动笔，各出一份稿；你用大白话点评，最后点名一位汇总改定。定稿之后，AI 会自动读这次的写作过程，优化「文风」。')));
-    const cards = st.articles.map((a) => {
+    const list = st.articles.map((a) => {
       const status = a.hasFinal ? h('span', { class: 'wr-pill ok', text: '已定稿' })
         : a.drafts.length ? h('span', { class: 'wr-pill brand', text: `${a.drafts.length} 份稿` })
-          : h('span', { class: 'wr-pill', text: '等你开口' });
-      const exists = meetingExists(a.meetingId);
-      return h('div', { class: 'wr-article' },
-        h('div', { class: 'wr-article-main', onclick: () => openMeeting(a.meetingId), title: '打开这篇的写作群聊' },
-          h('div', { class: 't' }, a.title || '新文章', ' ', status),
-          h('div', { class: 'm', text: [when(a.createdAt), exists ? '' : '（群聊已不在）'].filter(Boolean).join(' · ') }),
-          a.drafts.length ? h('div', { class: 'd' }, ...a.drafts.map((d) => h('span', { class: 'wr-pill', text: `${d.name}${d.chars ? ` · ${d.chars} 字` : ''}`, title: d.title || '' }))) : null,
-          a.voice ? h('div', { class: 'v' }, voiceBadge(a.voice), a.voice.summary ? h('span', { class: 'wr-muted', text: a.voice.summary }) : null, a.voice.error ? h('span', { class: 'wr-muted', text: a.voice.error }) : null)
-            : a.hasFinal ? h('div', { class: 'v' }, h('span', { class: 'wr-pill', text: '定稿停笔两分钟后，AI 自动据此优化文风' })) : null),
-        h('div', { class: 'wr-article-actions' },
-          h('button', { class: 'wr-btn small', disabled: !exists, text: '打开群聊', onclick: () => openMeeting(a.meetingId) }),
-          a.hasFinal ? h('button', { class: 'wr-btn small', text: st.finalOf === a.dir ? '收起定稿' : '看定稿', onclick: () => { st.finalOf = st.finalOf === a.dir ? null : a.dir; renderStudio(); } }) : null,
-          a.hasFinal && a.voice && ['failed', 'rejected'].includes(a.voice.status) ? h('button', { class: 'wr-btn small', text: '重新优化文风', onclick: () => guarded(async () => { await call('writing:voice-evolve', { dir: a.dir }); loadStudio(); }) }) : null,
-          h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: a.dir }) })));
+          : h('span', { class: 'wr-pill', text: '写作中' });
+      const v = a.voice;
+      return h('div', { class: 'wr-article' + (!st.composing && st.current === a.dir ? ' on' : ''), title: '在右侧打开这篇', onclick: () => { st.current = a.dir; st.composing = false; st.sig = null; renderStudio(); } },
+        h('div', { class: 't', text: a.title || '新文章' }),
+        h('div', { class: 'm' }, status, h('span', { text: [when(a.createdAt), meetingExists(a.meetingId) ? '' : '群聊已不在'].filter(Boolean).join(' · ') })),
+        v && v.status ? h('div', { class: 'v' },
+          h('span', { class: `wr-pill ${v.status === 'done' ? 'ok' : ['failed', 'rejected'].includes(v.status) ? 'bad' : 'brand'}`, text: voiceLabel(v), title: [v.summary, v.error].filter(Boolean).join('\n') }),
+          ['failed', 'rejected'].includes(v.status) ? h('button', { class: 'wr-btn small', text: '重新优化文风', onclick: (e) => { e.stopPropagation(); guarded(async () => { await call('writing:voice-evolve', { dir: a.dir }); st.sig = null; loadStudio(); }); } }) : null) : null);
     });
-    const finalArticle = st.articles.find(a => a.dir === st.finalOf);
-    const preview = h('section', { class: 'wr-studio-preview wr-card', 'aria-label': '定稿预览' },
-      h('div', { class: 'wr-section-title', text: finalArticle ? finalArticle.title || '定稿预览' : '定稿预览' }),
-      finalArticle ? h('div', { class: 'wr-article-final', id: `wr-final-${finalArticle.name}` }, h('div', { class: 'wr-muted', text: '加载定稿…' }))
-        : h('div', { class: 'wr-empty', text: '选一篇已定稿的文章，点击「看定稿」在这里阅读。创作与点评仍在文章的写作群里进行。' }));
-    view.replaceChildren(head, h('div', { class: 'wr-studio-layout' },
-      h('div', { class: 'wr-articles' }, ...(cards.length ? cards : [h('div', { class: 'wr-empty', text: '还没有文章。点上面的「＋ 新文章」开始。' })])), preview));
-    if (st.finalOf) {
-      const a = st.articles.find((x) => x.dir === st.finalOf);
-      if (a) call('writing:article-final', { dir: a.dir }).then((r) => { const box = document.getElementById(`wr-final-${a.name}`); if (box) box.replaceChildren(paper(r.text)); }).catch(() => {});
-    }
+    const side = h('aside', { class: 'wr-studio-list' },
+      h('button', { class: 'wr-btn primary big wb-new', disabled: st.creating, text: st.creating ? '正在建写作群…' : '＋ 新文章', onclick: () => { st.composing = true; st.sig = null; renderStudio(); } }),
+      h('div', { class: 'wr-articles' }, ...(list.length ? list : [h('div', { class: 'wr-empty', text: '还没有文章。' })])));
+    // 左边列表每次重画；右边只在换文章（或新建状态变化）时重建，工作台里的滚动、划线、输入都不受列表刷新影响
+    let split = view.querySelector(':scope > .wr-studio-split');
+    if (!split) { split = h('div', { class: 'wr-studio-split' }, h('aside'), h('section', { class: 'wr-studio-main' })); view.replaceChildren(split); }
+    split.firstElementChild.replaceWith(side);
+    const main = split.querySelector('.wr-studio-main');
+    const mode = st.composing || !st.current ? `compose:${st.creating}` : `article:${st.current}`;
+    if (main.dataset.mode === mode && main.firstElementChild) return;
+    main.dataset.mode = mode;
+    if (st.composing || !st.current) { workbench.setVisible(false); renderComposer(main); }
+    else { workbench.mount(main, st.current); workbench.setVisible(S.opened && S.view === 'studio'); }
   }
 
   /* ─────────────── 作品库（只读） ─────────────── */
@@ -419,7 +448,7 @@
   ipcRenderer.on('writing-event', (_e, p) => {
     if (!p || !S.opened) return;
     if (p.type === 'voice-evolve') {
-      if (S.view === 'studio') loadStudio();
+      if (S.view === 'studio') { S.studio.sig = null; loadStudio(); workbench.refresh(); }
       if (S.view === 'voice' && !S.voice.editing && ['done', 'rejected', 'failed'].includes(p.status)) loadVoice();
     }
   });
@@ -427,6 +456,7 @@
   // 写作台列表里的稿件数、定稿是 AI 在群里写出来的文件，打开写作台时每 8 秒刷新一次
   function syncPolling() {
     const need = S.opened && S.view === 'studio';
+    workbench.setVisible(need && !S.studio.composing && !!S.studio.current);
     if (need && !pollTimer) pollTimer = setInterval(() => { if (!S.studio.creating) loadStudio(); }, 8000);
     else if (!need && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }

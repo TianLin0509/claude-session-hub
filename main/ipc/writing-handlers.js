@@ -6,6 +6,8 @@
 //   作品库  writing:library-*   只读：旧作 + 写作台定稿的新作
 //   文风    writing:voice-*     直接展示 / 编辑文风 skill 源文件；看 AI 自动优化的变更记录
 //   写作台  writing:article-*   新文章 = 新目录 + 写作场景群聊（群聊由渲染层用 create-meeting 创建）
+//           2026-10-01 起写作在 Tab 里完成：writing:article-view 把群聊记录读成「文章工作台」
+//           （各家稿件、问题、成员状态、定稿，见 core/writing/workbench.js），并把交稿落成文章目录里的文件
 //
 // 文风自动优化：文章一有定稿（final.md），就在后台排队交给 Claude 读这次的写作过程，
 // 小步修改文风 skill（core/writing/voice-evolve.js）。结果写进 piece.json 和 CHANGELOG，
@@ -17,6 +19,10 @@ const { LibraryIndex, isExemplar } = require('../../core/writing/library-index.j
 const { VoiceStore } = require('../../core/writing/voice-store.js');
 const { PieceStore } = require('../../core/writing/piece-store.js');
 const { evolveVoiceFromPiece } = require('../../core/writing/voice-evolve.js');
+const workbench = require('../../core/writing/workbench.js');
+
+const SAFE_ID = /^[a-zA-Z0-9_-]{1,255}$/;
+const KIND_NAMES = { claude: 'Claude', codex: 'Codex', deepseek: 'DeepSeek', gemini: 'Gemini', kimi: 'Kimi' };
 
 // 写作群默认成员：三家各出一份稿。CLAUDE_HUB_WRITING_MEMBERS 可改（如 E2E 用 "claude:haiku"）
 function defaultMembers(env = process.env) {
@@ -27,7 +33,7 @@ function defaultMembers(env = process.env) {
   });
 }
 
-function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = {}) {
+function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell, meetingManager, sessionManager } = {}) {
   const paths = writingPaths();
   const library = new LibraryIndex(paths);
   const voice = new VoiceStore(paths);
@@ -76,8 +82,53 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = 
     return { articles: list };
   });
   handle('writing:article-final', async ({ dir }) => ({ text: pieces.readFinal(dir) }));
+  handle('writing:article-view', async ({ dir }) => ({ view: refreshPiece(pieces.resolve(dir)) }));
   handle('writing:article-open-dir', async ({ dir }) => { if (shell && shell.openPath) await shell.openPath(pieces.resolve(dir)); return {}; });
   handle('writing:voice-evolve', async ({ dir }) => { enqueue(pieces.resolve(dir), true); return {}; });
+
+  /* ─────────── 文章工作台：群聊记录 → 稿件、问题、成员状态 ─────────── */
+
+  function readGroupState(meetingId) {
+    if (!meetingId || !SAFE_ID.test(String(meetingId))) return null;
+    try { return JSON.parse(require('fs').readFileSync(path.join(hubDataDir(), 'arena-prompts', `${meetingId}-groupchat.json`), 'utf8')); } catch { return null; }
+  }
+
+  // 群成员：按群里的顺序；名字与群聊里一致（会话标题，如「Claude 1」）
+  function membersOf(meetingId) {
+    const meeting = meetingId && meetingManager && typeof meetingManager.getMeeting === 'function' ? meetingManager.getMeeting(meetingId) : null;
+    if (!meeting) return [];
+    const specs = Array.isArray(meeting.slotSpecs) ? meeting.slotSpecs : [];
+    return (meeting.subSessions || []).map((sid, i) => {
+      const s = sessionManager && typeof sessionManager.getSession === 'function' ? sessionManager.getSession(sid) : null;
+      const spec = specs[i] || {};
+      const kind = (s && s.kind) || spec.kind || '';
+      // 会话还没起来时没有标题：先用 CLI 名占位（群聊里交过稿后会换成发言名，如「Claude 1」）
+      return { sid, memberId: spec.memberId || `m${i + 1}`, name: (s && s.title) || KIND_NAMES[kind.replace(/-.*$/, '')] || kind || `AI ${i + 1}`, named: !!(s && s.title), kind, dormant: !s || s.status === 'dormant' };
+    });
+  }
+
+  // 读一篇文章的工作台视图；顺手把群里交的稿、定稿落成文章目录里的文件
+  function refreshPiece(full) {
+    const meta = pieces.readMeta(full) || {};
+    const written = Array.isArray(meta.written) ? meta.written : [];
+    const files = pieces.drafts(full)
+      .map((d) => ({ name: path.basename(d.file), text: d.text, mtime: d.mtime }))
+      .filter((f) => !written.includes(f.name));
+    const view = workbench.buildView({ state: readGroupState(meta.meetingId), members: membersOf(meta.meetingId), files, final: pieces.readFinal(full) });
+    let writeError = '';
+    try {
+      const next = workbench.materialize(full, view, { written, finalHash: meta.finalHash || '' });
+      if (next.written.join('|') !== written.join('|') || next.finalHash !== (meta.finalHash || '')) {
+        pieces.mutate(full, (m) => { m.written = next.written; m.finalHash = next.finalHash; });
+      }
+    } catch (err) {
+      writeError = `稿件没能存进文章目录：${err && err.message ? err.message : err}`; // 照样把工作台给田哥看
+    }
+    // 定稿以文件为准：田哥在文件里直接改过的，工作台上看到的就是改后的版本
+    const finalFile = pieces.readFinal(full).trim();
+    if (view.final && finalFile) view.final = { ...view.final, text: finalFile };
+    return { ...view, dir: full, name: path.basename(full), meetingId: meta.meetingId || null, voice: meta.voice || null, writeError };
+  }
 
   /* ─────────── 文风自动优化队列（一次只跑一篇） ─────────── */
 
@@ -148,6 +199,8 @@ function registerWritingIpc(ipcMain, { getHubDataDir, sendToRenderer, shell } = 
 
   // 不打开写作 Tab 也要能自动优化：主进程每分钟看一眼有没有新定稿
   const scanTimer = setInterval(() => {
+    // 先把群里交的定稿落成 final.md（不打开写作 Tab 也要落），再看有没有要优化文风的
+    try { for (const a of pieces.list()) if (a.meetingId) { try { refreshPiece(a.dir); } catch { /* 这篇读不了，下一篇 */ } } } catch { /* 写作目录暂时读不到 */ }
     try { scheduleEvolution(pieces.list()); } catch { /* 写作目录暂时读不到 */ }
   }, 60 * 1000);
   if (scanTimer.unref) scanTimer.unref();
