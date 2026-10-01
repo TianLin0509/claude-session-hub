@@ -45,6 +45,6 @@ public class OwnedChromeCloser { public delegate bool Callback(IntPtr h,IntPtr l
   const owned=await tool.target();const page=await hub.page(owned.targetId);try{const c=await page.call('Network.getCookies',{urls:[url]});assert.equal(c.cookies.find(x=>x.name==='login_fixture').value,'main-login');}finally{page.close();}
   evidence.loginCookieRetainedAfterModeChanges=true;evidence.passed=true;
  }catch(e){evidence.error=e.message;process.exitCode=1;}
- finally{if(ordinaryPid)try{verifyAndClose();}catch(e){evidence.cleanupError=e.message;}await hub.close().catch(()=>{});origin.closeAllConnections();await new Promise(r=>origin.close(r));fs.writeFileSync(path.join(out,'20261001-evidence-codex1.json'),JSON.stringify(evidence,null,2));}
+ finally{if(!ordinaryPid&&hub.profileHeld()&&!await hub.endpoint())ordinaryPid=hub.lastLaunchPid;if(ordinaryPid)try{verifyAndClose();}catch(e){evidence.cleanupError=e.message;}await hub.close().catch(()=>{});origin.closeAllConnections();await new Promise(r=>origin.close(r));fs.writeFileSync(path.join(out,'20261001-evidence-codex1.json'),JSON.stringify(evidence,null,2));}
  console.log(JSON.stringify(evidence,null,2));
 })().catch(e=>{console.error(e.message);process.exitCode=1;});
