@@ -34,7 +34,7 @@ const geometry = () => cdp.eval(`(()=>{const r=id=>{const b=document.getElementB
   const temp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-coldwhite-ui-'));
   const workspace=path.join(temp,'work');fs.mkdirSync(workspace);
   try {
-    hub=await launchIsolatedHub({dataDir:path.join(temp,'data'),port:await reservePort(),label:'coldwhite-ui',extraEnv:{AI_HUB_WORKSPACE_ROOT:workspace,CLAUDE_HUB_E2E:'1'}});
+    hub=await launchIsolatedHub({dataDir:path.join(temp,'data'),port:await reservePort(),label:'coldwhite-ui',extraEnv:{AI_HUB_WORKSPACE_ROOT:workspace,CLAUDE_HUB_E2E:'1',CODEX_HOME:path.join(temp,'codex'),CLAUDE_CONFIG_DIR:path.join(temp,'claude'),CLAUDE_HUB_AGENT_RUNTIME:'native',CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(repo,'tests/fixtures/codex-app-server.js')}});
     cdp=await connectFirstPage(hub);
     await until('!!window.hubWorkspaces && !!window.__hubE2E?.cardQuestionNavigator');
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
@@ -46,15 +46,15 @@ const geometry = () => cdp.eval(`(()=>{const r=id=>{const b=document.getElementB
     const icons=await cdp.eval(`[...document.querySelectorAll('#scene-rail .rail-navigation .btn-shell-nav:not([hidden]) .nav-artwork')].map(e=>({display:getComputedStyle(e).display,width:e.getBoundingClientRect().width,image:getComputedStyle(e).backgroundImage}))`);
     check(icons.length===9 && icons.every(e=>e.display==='block' && e.width===28 && e.image.includes('coldwhite-enamel-v1.png')),'九主入口使用同套生成图标');
     await screenshot('01-home');
-    const routes=[['btn-assistant','assistant-page'],['btn-research','chuxin-panel'],['btn-study','study-panel'],['btn-ran','ran-panel'],['btn-rail-memo','hub-workspace'],['btn-rail-capabilities','hub-workspace'],['btn-rail-accounts','account-page'],['btn-writing','writing-panel']];
+    const routes=[['btn-assistant','terminal-panel'],['btn-research','chuxin-panel'],['btn-study','study-panel'],['btn-ran','ran-panel'],['btn-rail-memo','hub-workspace'],['btn-rail-capabilities','hub-workspace'],['btn-rail-accounts','account-page'],['btn-writing','writing-panel']];
     for(const [button,panel] of routes){
       await click('#'+button);
       await until(`document.querySelector('#${button}').classList.contains('cw-current')`);
       const g=await geometry();
       check(g.current.length===1 && g.current[0]===button,button+' 选中唯一且正确');
-      check(g.sidebar.width===0,'工具页释放会话栏 '+button);
+      check(g.sidebar.width===(button==='btn-assistant'?224:0),button==='btn-assistant'?'助理沿用普通会话栏':'工具页释放会话栏 '+button);
       const rect=await cdp.eval(`(()=>{const e=document.getElementById('${panel}'),r=e.getBoundingClientRect();return {x:r.x,right:r.right,bottom:r.bottom,display:getComputedStyle(e).display}})()`);
-      check(rect.x===g.rail.right && rect.right<=1441 && rect.bottom<=g.footer.bottom-g.footer.height+1,'页面与导航及底栏无覆盖 '+button);
+      check(rect.x===g.rail.right+g.sidebar.width && rect.right<=1441 && rect.bottom<=g.footer.bottom-g.footer.height+1,'页面与导航及底栏无覆盖 '+button);
       check(await cdp.eval('getComputedStyle(document.querySelector("#sidebar-strip")).display !== "none"'),'系统底栏在 '+button+' 可见');
       await screenshot('page-'+button);
     }

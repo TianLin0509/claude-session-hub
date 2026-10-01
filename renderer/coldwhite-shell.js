@@ -15,7 +15,7 @@ function installColdwhiteShell(doc = globalThis.document) {
   const strip = doc.getElementById('sidebar-strip');
   if (strip) footer.append(strip);
   app.append(footer);
-  const panelIds = ['hub-workspace', 'writing-panel', 'account-page', 'assistant-page', 'chuxin-panel', 'study-panel', 'ran-panel'];
+  const panelIds = ['hub-workspace', 'writing-panel', 'account-page', 'chuxin-panel', 'study-panel', 'ran-panel'];
   const watched = new Set();
   const navigation = ['btn-home','btn-assistant','btn-research','btn-study','btn-ran','btn-rail-memo','btn-rail-capabilities','btn-rail-accounts','btn-writing'];
   let scheduled = false;
@@ -34,9 +34,10 @@ function installColdwhiteShell(doc = globalThis.document) {
     if (isVisible('hub-workspace')) {
       current = doc.getElementById('hub-workspace').dataset.area === 'review' ? 'btn-rail-memo' : 'btn-rail-capabilities';
     } else {
-      for (const [panel, button] of [['account-page','btn-rail-accounts'],['assistant-page','btn-assistant'],['writing-panel','btn-writing'],['chuxin-panel','btn-research'],['study-panel','btn-study'],['ran-panel','btn-ran']]) {
+      for (const [panel, button] of [['account-page','btn-rail-accounts'],['writing-panel','btn-writing'],['chuxin-panel','btn-research'],['study-panel','btn-study'],['ran-panel','btn-ran']]) {
         if (isVisible(panel)) { current = button; break; }
       }
+      if (current === 'btn-home' && doc.body.classList.contains('assistant-session-active')) current = 'btn-assistant';
     }
     for (const id of navigation) {
       const button = doc.getElementById(id);
@@ -50,6 +51,7 @@ function installColdwhiteShell(doc = globalThis.document) {
     if (!scheduled) { scheduled = true; doc.defaultView.requestAnimationFrame(sync); }
   };
   const observer = new doc.defaultView.MutationObserver(schedule);
+  observer.observe(doc.body, { attributes: true, attributeFilter: ['class'] });
   const discover = () => {
     for (const id of panelIds) {
       const panel = doc.getElementById(id);

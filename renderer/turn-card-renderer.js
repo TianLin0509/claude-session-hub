@@ -11,6 +11,7 @@ const {
   normalizeToolActivity,
 } = require('../core/turn-presentation.js');
 const { renderImageAttachments, createCardDetailControls } = require('./card-detail-controls.js');
+const { chatAvatarSrc, USER_AVATAR_SRC } = require('./chat-avatar');
 
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
@@ -45,7 +46,7 @@ function createTurnCardRenderer(options = {}) {
     if (turn?.role === 'user') {
       const feedback = require('../core/native-feedback');
       const receiptAuthoritative = feedback.hasNativeReceipt(turn);
-      return { ...turn, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
+      return { ...turn, simpleChat: true, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
         assistantContext: require('../core/assistant-context-display').assistantContextDisplay(turn.text, session?.purpose),
         receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId,
           {authoritative: receiptAuthoritative, deliveryStatus: turn.deliveryStatus}) };
@@ -65,7 +66,7 @@ function createTurnCardRenderer(options = {}) {
     const presentation = buildTurnPresentation(presentationTurn, {
       cwd: session && session.cwd || opts.cwd || null,
     });
-    return { ...presentationTurn, presentation, assistantIdentity: session?.purpose === 'hub-assistant' };
+    return { ...presentationTurn, simpleChat: true, presentation, assistantIdentity: session?.purpose === 'hub-assistant' };
   }
 
   function publishTurnPresentation(sessionId, turn) {
@@ -199,6 +200,7 @@ function _disclosureKey(element, index) {
   if (!element) return `details:${index}`;
   if (element.dataset && element.dataset.activityId) return `activity:${element.dataset.activityId}`;
   if (element.classList && element.classList.contains('turn-thinking')) return 'thinking';
+  if (element.classList && element.classList.contains('chat-process')) return 'chat-process';
   if (element.classList && element.classList.contains('turn-delivery-summary')) return 'delivery';
   if (element.classList && element.classList.contains('tc-cluster')) return `cluster:${element.dataset.turn || ''}`;
   return `details:${index}:${element.className || ''}`;
@@ -383,21 +385,6 @@ function rerenderTurn(turnId) {
   }
 }
 
-// === Spec 1 v0.9.0 · D4 头像 ===
-function sanitizeAssetName(name) {
-  // 仅允许字母数字+横线下划线,防止路径遍历
-  return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '');
-}
-function aiLogoSrc(kind) {
-  // 已有 logos: claude / codex / 等。其它 kind fallback 到字母。
-  // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
-  // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
-  const known = ['claude','codex','gemini','deepseek','kimi','qwen','glm'];
-  let k = (kind || '').toLowerCase().replace(/-resume$/, '');
-  if (k === 'deepseek-acp') k = 'deepseek';
-  if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
-  return null;
-}
 function aiLetterFallback(kind) {
   const k = (kind || '?').toUpperCase();
   return k.length >= 2 ? k.slice(0, 2) : k + '?';
@@ -494,6 +481,7 @@ function confirmCardResend({ text, sessionLabel }) {
 function renderTurnCard(turn) {
   // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, toolCalls? }
   const isUser = turn.role === 'user';
+  const isSimple = turn.simpleChat === true;
   const isProgress = !isUser && turn.phase === 'commentary';
   // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
   const cls = (isUser ? 'turn-card user' : 'turn-card assistant') + (turn.inherited ? ' inherited' : '');
@@ -503,11 +491,11 @@ function renderTurnCard(turn) {
   // 头像分支
   let avatarHtml;
   if (isUser) {
-    avatarHtml = `<span class="turn-avatar av-letter">你</span>`;
+    avatarHtml = `<span class="turn-avatar av-logo av-user"><img src="${USER_AVATAR_SRC}" alt="你 · AI Hub"></span>`;
   } else {
-    const logo = turn.assistantIdentity ? 'assets/assistant/penguin.png' : aiLogoSrc(turn.kind);
+    const logo = chatAvatarSrc(turn.kind, { assistant: turn.assistantIdentity });
     avatarHtml = logo
-      ? `<span class="turn-avatar av-logo"><img src="${logo}" alt="${turn.assistantIdentity ? '企鹅助理' : escapeHtml(turn.kind || 'AI')}"></span>`
+      ? `<span class="turn-avatar av-logo ${turn.assistantIdentity ? 'av-assistant' : 'av-character'}"><img src="${logo}" alt="${turn.assistantIdentity ? '企鹅助理' : escapeHtml(turn.kind || 'AI')}"></span>`
       : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
   }
 
@@ -517,7 +505,7 @@ function renderTurnCard(turn) {
   // body reads like every other answer, matching Codex's card density.
   const nativeChip = turn.nativeActivity && !isProgress
     ? `<span class="turn-branch-chip turn-native-chip" title="Claude 自行发起的回合${turn.nativeOrigin?.kind ? '：' + escapeHtml(turn.nativeOrigin.kind) : ''}">后台</span>` : '';
-  const body = (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
+  const body = (isProgress && !isSimple ? require('./conversation-message-view').renderProgressRow(turn,
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
     : require('./conversation-message-view').renderMessageBody(turn.assistantContext?.userText ?? turn.text,
@@ -529,8 +517,8 @@ function renderTurnCard(turn) {
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', _fullActivityTurns.has(turn.id) ? turn.toolCalls : presentation.activities, presentation.activityCount);
   const deliveryHtml = !isUser && turn.phase !== 'commentary' && turn.phase !== 'activity' ? renderDeliverySummary(presentation.delivery) : '';
-  const glanceHtml = deliveryHtml ? renderDeliveryGlance(presentation.delivery) : '';
-  const bodyHtml = `<div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
+  const glanceHtml = deliveryHtml && !isSimple ? renderDeliveryGlance(presentation.delivery) : '';
+  const bodyHtml = `<div class="turn-body${isProgress && !isSimple ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${attachments}
       ${assistantContext}
       ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}`;
@@ -557,24 +545,29 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}"${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}" data-delivery-status="${escapeHtml(turn.deliveryStatus || '')}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
+  const progressMessages = turn.chatProcessMessages || [];
+  const progressHtml = isSimple && progressMessages.length
+    ? require('./conversation-message-view').renderMessageSequence(progressMessages,
+      { escapeHtml, renderMarkdown: renderMarkdownPreservingLocalPaths, foldLong: true }) : '';
+  const processCount = progressMessages.length + Number(presentation.activityCount || 0);
+  const processFailures = (presentation.activities || []).filter(a => a.status === 'failed' || a.isError === true).length;
+  const processHtml = isSimple && (progressHtml || thinkingHtml || toolHtml || (!isUser && _renderMetaPills(turn)))
+    ? `<details class="chat-process" data-copy-exclude><summary>查看过程${processCount ? ` · ${processCount} 条` : ''}${processFailures ? `<span class="chat-process-warning"> · ${processFailures} 项失败</span>` : ''}</summary><div class="chat-process-body">${progressHtml}${thinkingHtml}${toolHtml}${_renderMetaPills(turn)}</div></details>` : '';
+
+  return `<div class="${cls}"${isSimple ? ' data-chat-style="message"' : ''}${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}" data-delivery-status="${escapeHtml(turn.deliveryStatus || '')}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         ${!isUser && turn.phase ? `<span class="conversation-phase">${turn.phase === 'final_answer' ? '结果' : turn.phase === 'commentary' ? '进展' : turn.phase === 'activity' ? '活动记录' : '消息'}</span>` : ''}
-        ${!isUser ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
+        ${!isUser && !isSimple ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}${nativeChip}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
-          ${isProgress ? '<button class="conversation-response-copy" data-action="conversation-response-copy" title="复制本轮当前已收到的完整回复">复制本轮</button>' : renderCardActions(turn)}
+          ${isProgress && !isSimple ? '<button class="conversation-response-copy" data-action="conversation-response-copy" title="复制本轮当前已收到的完整回复">复制本轮</button>' : renderCardActions(turn)}
         </div>
       </div>
-      ${thinkingHtml}
-      ${primaryHtml}
-      ${deliveryHtml}
-      ${toolHtml}
-      ${_renderMetaPills(turn)}
+      ${isSimple ? `<div class="chat-message-bubble">${primaryHtml}${deliveryHtml}${processHtml}${isUser ? _renderMetaPills(turn) : ''}</div>` : `${thinkingHtml}${primaryHtml}${deliveryHtml}${toolHtml}${_renderMetaPills(turn)}`}
     </div>
   </div>`;
   // 2026-06-28 道雪 · 深空灰气泡皮肤：气泡背景挂在 .turn-body 上，故把工具簇与 meta-pills
@@ -946,6 +939,7 @@ function turnRenderSignature(turn) {
     toolCalls: Array.isArray(turn.toolCalls) ? turn.toolCalls : [],
     usage: turn.usage || null,
     promptReceipt: turn.promptReceipt || '',
+    chatProcessMessages: turn.chatProcessMessages || null,
   });
   let hash = 2166136261;
   for (let i = 0; i < raw.length; i++) {
@@ -958,7 +952,7 @@ function turnRenderSignature(turn) {
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   if (turn && Array.isArray(turn.displayMessages)) {
     let last = null;
-    for (const message of require('../core/conversation-display').displayTurns([turn])) {
+    for (const message of require('./simple-chat-display').displayChatTurns([turn])) {
       last = mountSessionTurnCard(sessionId, message, opts) || last;
     }
     return last;

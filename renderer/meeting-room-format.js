@@ -1,12 +1,6 @@
 // Shared presentation helpers for meeting-room.js.
 
-const KIND_AVATAR_SRC = {
-  claude: 'assets/ai-logos/claude.svg',
-  gemini: 'assets/ai-logos/gemini.svg',
-  codex: 'assets/ai-logos/codex.svg',
-  deepseek: 'assets/ai-logos/deepseek.svg',
-  kimi: 'assets/ai-logos/kimi.svg',
-};
+const { chatAvatarSrc } = require('./chat-avatar');
 
 const KIND_AVATAR_FALLBACK = {
   claude: 'CL',
@@ -60,7 +54,7 @@ function formatThinkTime(seconds) {
 }
 
 function avatarSrcFor(kind) {
-  return KIND_AVATAR_SRC[kind] || '';
+  return chatAvatarSrc(kind) || '';
 }
 
 function avatarFallbackFor(kind) {

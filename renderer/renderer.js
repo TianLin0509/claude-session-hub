@@ -2756,7 +2756,7 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     });
   }
 
-  let turns = require('../core/conversation-display').displayTurns(
+  let turns = require('./simple-chat-display').displayChatTurns(
     (result && Array.isArray(result.turns)) ? result.turns : []);
   let nextPageState=null;
   if (paged && !result?.error) {
@@ -2766,7 +2766,7 @@ async function loadSessionHistoryToOverlayUnserialized(sessionId, opts = {}) {
     turns = turns.slice(-pageLimit);
   }
   if(result?.refreshedTurns?.length) {
-    const refreshed=require('../core/conversation-display').displayTurns(result.refreshedTurns);
+    const refreshed=require('./simple-chat-display').displayChatTurns(result.refreshedTurns);
     const latestIds=new Set(turns.map(turn=>turn.id));
     turns=refreshed.filter(turn=>!latestIds.has(turn.id)).concat(turns);
   }

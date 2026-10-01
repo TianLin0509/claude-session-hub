@@ -4,10 +4,17 @@
   background:#fbfcfd; box-shadow:none; border-color:var(--border-subtle);
 }
 :root[data-theme='codex'] .pty-output-heading {
-  background:#f1f4f7; color:var(--fg-muted); border-color:var(--border-subtle);
+  background:#fbfcfd; color:var(--fg-muted); border-color:var(--border-subtle);
 }
+/* CLI 2: one uninterrupted canvas; no added terminal output or dimension hooks. */
+:root[data-theme='codex'] .terminal-container.pty-surface { border:0; border-radius:0; box-shadow:none; }
+:root[data-theme='codex'] .pty-output-heading::after { display:none; }
+:root[data-theme='codex'] .pty-output-mode { background:transparent; border-color:transparent; }
+:root[data-theme='codex'] .cb-toolbar { background:#fbfcfd; min-height:38px; }
+:root[data-theme='codex'] .cb-tabs button[aria-pressed='true'] { background:transparent; box-shadow:inset 0 -2px var(--brand); border-radius:0; }
+:root[data-theme='codex'] .cb-entry:not(.cb-failed) { border-left-color:transparent; }
 :root[data-theme='codex'] :is(.pty-output-symbol,.pty-welcome-mark,.pty-welcome-compose span) { color:var(--brand); }
-:root[data-theme='codex'] .pty-output-mode { color:var(--fg-muted); border-color:var(--border-mid); }
+:root[data-theme='codex'] .pty-output-mode { color:var(--fg-muted); }
 :root[data-theme='codex'] .pty-welcome { background:#fbfcfd; color:var(--fg-strong); }
 :root[data-theme='codex'] .pty-welcome-mark { background:var(--brand-tint); border-color:var(--brand-tint-border); box-shadow:none; }
 :root[data-theme='codex'] :is(.pty-welcome-eyebrow,.pty-welcome p,.pty-welcome-hint) { color:var(--fg-muted); }
@@ -23,7 +30,7 @@
 :root[data-theme='codex'] :is(.cb-heading,.cb-tool:not([open]) .cb-title::after,.cb-prose .cb-meta,.cb-length,.cb-raw-source,.cb-empty,.cb-notice,.cb-detail-dialog footer span) { color:var(--fg-muted); }
 :root[data-theme='codex'] :is(.codex-backstage button,.codex-backstage select,.cb-detail-dialog button) { color:var(--fg-default); }
 :root[data-theme='codex'] :is(.codex-backstage button:hover,.cb-detail-dialog button:hover) { background:var(--surface-hover); color:var(--fg-strong); }
-:root[data-theme='codex'] .cb-tabs button[aria-pressed='true'] { background:var(--brand-tint); color:var(--brand); }
+:root[data-theme='codex'] .cb-tabs button[aria-pressed='true'] { color:var(--brand); }
 :root[data-theme='codex'] .codex-backstage select { background:var(--surface-raised); border-color:var(--border-mid); }
 :root[data-theme='codex'] :is(.cb-viewport,.cb-output) { scrollbar-color:#b0bccd transparent; }
 :root[data-theme='codex'] :is(.cb-title,.cb-command,.cb-output,.cb-raw-text,.cb-prose .cb-output,.cb-empty h2) { color:var(--fg-default); }
