@@ -9367,6 +9367,10 @@ sessionSplit = require('./session-split').createSessionSplit({
   // 启动兜底默认。必须 remember:false —— 此刻可能已恢复上次的 active 会话，
   // 写记忆会把它自己记住的卡片视图抹掉。
   applyViewMode('pty', { remember: false });
+  // 普通启动从工作台进入。初始化期间若用户已经亲手切到别处，不用默认值抢回焦点；
+  // 显式的「重启并继续任务」随后仍可恢复原视图。
+  const startupView = currentAppToolbarView();
+  if (sessionOpenIntent === 0 && !activeMeetingId && (!startupView || startupView === '主页')) escapeToHome();
   await restartController.restore();
 })();
 
