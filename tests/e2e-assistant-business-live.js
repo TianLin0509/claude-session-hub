@@ -15,6 +15,7 @@ async function main(){
   const root=path.join(out,'private-run'),data=path.join(root,'data'),home=path.join(root,'home'),codexHome=path.join(home,'codex'),workspace=path.join(root,'workspaces'),business=path.join(workspace,'orders');
   for(const dir of [out,data,codexHome,business])fs.mkdirSync(dir,{recursive:true});
   const production=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.claude-session-hub/config.json'),'utf8'));
+  const model=require('../core/session-creation-defaults').creationDefaults('codex',production).model;
   const profile=production.providers?.codex?.subscription_profiles?.find(p=>p.id==='second'&&p.label==='主账号');
   assert(profile,'明确的主账号配置应存在');
   const auth=path.join(profile.home,'auth.json'),before=fileHash(auth),historyFile=path.join(data,'empty-history.sqlite');
@@ -22,7 +23,7 @@ async function main(){
   fs.writeFileSync(path.join(business,'status.json'),j({fixture:true,project:'订单同步',completed:7,total:8,retentionDays:null,state:'等待用户确认保留天数'}),'utf8');
   fs.writeFileSync(path.join(business,'README.md'),'# 隔离验收业务\n这是一项测试订单同步任务。状态以 status.json 为准。用户确认保留天数后，更新 retentionDays、completed=8、state=已生成归档方案，并写 delivery.md 说明方案。不要操作此目录之外的文件。\n','utf8');
   let hub,cdp,assistantId,targetId;
-  const result={passed:false,profile:'second',model:'gpt-6-astra',effort:'high',scope:'真实订阅+真实Hub/CLI；业务内容为隔离测试夹具；搜索索引故意为空以验证原生最新记录补读',out,steps:[]};
+  const result={passed:false,profile:'second',model,effort:'high',mode:createOnly?'spoken-create-only':'business-and-spoken-create',scope:'真实订阅+真实Hub/CLI；业务内容为隔离测试夹具；搜索索引故意为空以验证原生最新记录补读',out,steps:[]};
   const until=async(label,read,timeout=180000)=>{for(const end=Date.now()+timeout;Date.now()<end;){const value=await read();if(value)return value;await wait(350);}throw Error('timeout: '+label);};
   const click=async selector=>{await until('clickable '+selector,()=>cdp.eval(`!!document.querySelector(${j(selector)}) && !document.querySelector(${j(selector)}).disabled`),30000);const point=await cdp.eval(`(()=>{const e=document.querySelector(${j(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});};
   const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
@@ -34,8 +35,8 @@ async function main(){
   try{
     fs.copyFileSync(auth,path.join(codexHome,'auth.json'));
     fs.writeFileSync(path.join(codexHome,'AGENTS.md'),`# 真实隔离验收\n旅游攻略产物仅写该会话当前目录的 artifacts/ 或 output/，不得写用户桌面或生产目录。旅游攻略正常联网查询、完成可离线阅读HTML；这是实际生成质量验收，不要仅回复占位标记。其他隔离业务按其 README.md 指定路径完成交付。\n`,'utf8');
-    fs.writeFileSync(path.join(codexHome,'config.toml'),`model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n[projects.'${path.resolve(workspace).toLowerCase()}']\ntrust_level = "trusted"\n[projects.'${path.resolve(business).toLowerCase()}']\ntrust_level = "trusted"\n`,'utf8');
-    fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6-astra'}},providers:{codex:{backend:'subscription',subscription_profile:'second',subscription_profiles:[{id:'second',label:'主账号',home:codexHome}]}}}),'utf8');
+    fs.writeFileSync(path.join(codexHome,'config.toml'),`model = ${j(model)}\nmodel_reasoning_effort = "high"\n[projects.'${path.resolve(workspace).toLowerCase()}']\ntrust_level = "trusted"\n[projects.'${path.resolve(business).toLowerCase()}']\ntrust_level = "trusted"\n`,'utf8');
+    fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:model}},providers:{codex:{backend:'subscription',subscription_profile:'second',subscription_profiles:[{id:'second',label:'主账号',home:codexHome}]}}}),'utf8');
     hub=await launchIsolatedHub({dataDir:data,port:await port(),label:'assistant-business-live',windowMode:'background',allowExternalState:true,extraEnv:{
       CLAUDE_HUB_E2E:'1',CLAUDE_HUB_ASSISTANT_HISTORY_DB:historyFile,CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:path.join(home,'claude'),CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',HUB_CODEX_PROFILE:'',HUB_CODEX_BACKEND:'subscription',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_EDITOR_INPUT:'1',CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:'',CLAUDE_HUB_NATIVE_FIXTURE_STORE:'',CLAUDE_HUB_NATIVE_FIXTURE_TRACE:'',OPENAI_API_KEY:'',CODEX_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),
     }});result.pid=hub.pid;cdp=await connectFirstPage(hub);
@@ -45,7 +46,7 @@ async function main(){
     // are actual mouse/keyboard input in the A conversation view.
     if(!createOnly){
     const title='订单同步隔离验收-'+Date.now();
-    const target=await cdp.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:${j({title,cwd:business,codexProfile:'second',model:'gpt-6-astra',effort:'high',mcpProfile:'none'})}})`);
+    const target=await cdp.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:${j({title,cwd:business,codexProfile:'second',model,effort:'high',mcpProfile:'none'})}})`);
     targetId=target.id;result.targetId=targetId;
     const seedText='这是隔离验收任务。请读取当前目录 status.json 和 README.md，只汇报当前订单同步进展及需要用户确认什么，限80字，保持文件原样。';
     result.setupReceipt=await cdp.eval(`ipcRenderer.invoke('session:send-prompt',{sessionId:${j(targetId)},text:${j(seedText)},clientSubmissionId:${j(crypto.randomUUID())},waitForCliReady:true})`);
@@ -100,7 +101,7 @@ async function main(){
     result.createdTargetAnswer=trip;
     assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
     const s=await session(created.id);result.createdNativeId=s.codexSid;
-    assert.equal(s.codexProfile,'second');assert.equal(s.model,'gpt-6-astra');
+    assert.equal(s.codexProfile,'second');assert.equal(s.model,model);
     const files=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.html')).map(f=>path.join(s.cwd,f));
     assert(files.length>0,'目标必须实际生成攻略HTML');
     result.createdArtifacts=files.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
