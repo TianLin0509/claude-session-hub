@@ -152,6 +152,21 @@ function migration() {
   } finally { fs.rmSync(data, { recursive: true, force: true }); }
 }
 
+// Weak-model protocol slips seen in live runs must not stall a run.
+function tolerantDeliveryReading() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-tolerant-'));
+  try {
+    const draft = S.createPreset('development', [{ memberId: 'a' }, { memberId: 'b' }]);
+    const run = { id: 'run1', goal: 'g', stages: draft.rounds, steps: [] };
+    const step = D.newStep(run, 0); run.steps.push(step); D.prepare(dir, run, step);
+    const p = D.paths(dir, run, step, 'a');
+    fs.writeFileSync(p.ready, '整份重写、丢了文件头的交付', 'utf8');
+    assert.equal(D.readDelivery(dir, run, step, 'a').outcome, 'ready', 'leftover draft + dropped ticket still accepted');
+    fs.writeFileSync(p.blocked, D.header(run, step, 'a') + '\n\n阻塞', 'utf8');
+    assert.throws(() => D.readDelivery(dir, run, step, 'a'), /多个交付状态/, 'conflicting final states are still an error');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
 // Composer submission: no avatar requirement to start; typed "继续" resumes and
 // never drops the words after it.
 async function composerSubmit() {
@@ -176,5 +191,5 @@ async function composerSubmit() {
 }
 
 (async () => {
-  for (const fn of [guidance, candidateParsing, gateFlow, gateStreak, gateSkippedWithoutCandidate, migration, composerSubmit]) { await fn(); console.log('PASS ' + fn.name); }
+  for (const fn of [guidance, candidateParsing, gateFlow, gateStreak, gateSkippedWithoutCandidate, migration, tolerantDeliveryReading, composerSubmit]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -25,10 +25,12 @@ function ticket(run, step, member) { return hash(JSON.stringify([run.id, step.id
 function header(run, step, member) { return `<!-- hub-delivery:${ticket(run,step,member)} -->`; }
 function readDelivery(base, run, step, member) {
   const p = paths(base,run,step,member);
-  const entries = ['draft','ready','rework','blocked'].filter(k=>fs.existsSync(p[k]));
-  if (!entries.length || (entries.length===1 && entries[0]==='draft')) return null;
-  if (entries.length!==1) throw new Error(`${member} 同时存在草稿或多个交付状态，请核对任务文件`);
-  const outcome=entries[0], file=p[outcome], stat=fs.lstatSync(file);
+  // A leftover draft next to a final state is ignored (agents sometimes copy
+  // instead of rename); only two conflicting final states are an error.
+  const finals = ['ready','rework','blocked'].filter(k=>fs.existsSync(p[k]));
+  if (!finals.length) return null;
+  if (finals.length!==1) throw new Error(`${member} 同时存在多个交付状态（${finals.join('、')}），请核对任务文件`);
+  const outcome=finals[0], file=p[outcome], stat=fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size>MAX_BYTES) throw new Error(`${member} 交付文件类型或大小无效`);
   // Reject redirected member/run directories, not just a final-file symlink.
   const realBase=fs.realpathSync(base), realFile=fs.realpathSync(file);
@@ -36,8 +38,12 @@ function readDelivery(base, run, step, member) {
   if (relative.startsWith('..') || path.isAbsolute(relative) || path.resolve(realFile).toLowerCase()!==path.resolve(file).toLowerCase()) throw new Error('交付路径被重定向');
   const text=fs.readFileSync(file,'utf8');
   const mark=header(run,step,member);
-  if (!text.startsWith(mark+'\n') && !text.startsWith(mark+'\r\n')) throw new Error(`${member} 交付不属于本轮；保留文件头后重新核对`);
-  if (!text.slice(mark.length).trim() || text.includes('\uFFFD')) throw new Error(`${member} 交付正文为空或编码无效`);
+  // The exact run/step/member path already identifies the delivery; the ticket
+  // line is a second check. Agents sometimes drop it when rewriting the file,
+  // so a missing ticket is accepted and only a ticket of another round rejects.
+  const tickets=[...text.matchAll(/<!-- hub-delivery:([0-9a-f]+) -->/g)].map(m=>m[1]);
+  if (tickets.some(t=>t!==ticket(run,step,member))) throw new Error(`${member} 交付文件头属于其他轮次；请核对是否抄错了文件`);
+  if (!text.split(mark).join('').trim() || text.includes('\uFFFD')) throw new Error(`${member} 交付正文为空或编码无效`);
   if (outcome==='rework' && run.stages[step.index].after!=='review') throw new Error('此步骤未配置返工接续，请交付结果或记录阻塞');
   return {memberId:member,outcome,path:file,hash:hash(text),acceptedAt:Date.now()};
 }

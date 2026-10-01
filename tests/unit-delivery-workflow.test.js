@@ -50,8 +50,13 @@ async function pauseAndRestart() {
 }
 async function malformedAndEditedDeliveries() {
   const f=fixture();try{
-    await f.e.start(f.m.id,'goal');const p=f.deliver('a');fs.writeFileSync(p.ready,'wrong task','utf8');await f.advance();
-    assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/不属于本轮/);assert.equal(f.calls.length,1);
+    // A ticket of another round is rejected; a dropped ticket alone is not (the path identifies the delivery).
+    await f.e.start(f.m.id,'goal');const p=f.deliver('a');fs.writeFileSync(p.ready,'<!-- hub-delivery:'+'0'.repeat(64)+' -->\n\ncopied from elsewhere','utf8');await f.advance();
+    assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/属于其他轮次/);assert.equal(f.calls.length,1);
+  }finally{f.close();}
+  const h=fixture();try{
+    await h.e.start(h.m.id,'goal');const p=h.deliver('a');fs.writeFileSync(p.ready,'rewrote the whole file without the ticket line','utf8');await h.advance();
+    assert.equal(h.e.status(h.m.id).paused,false,'missing ticket alone is accepted');assert.equal(h.read().steps[0].deliveries.a.outcome,'ready');
   }finally{f.close();}
   const g=fixture();try{
     await g.e.start(g.m.id,'goal');const p=g.deliver('a');await g.advance();fs.appendFileSync(p.ready,'edited');g.deliver('b');await g.advance();
