@@ -295,7 +295,7 @@ function createCardQuestionNavigator(options = {}) {
   function questionTextForCard(card) {
     const turnId = card.dataset.turnId || '';
     const turn = turnId ? getTurnById(turnId) : null;
-    if (turn && typeof turn.text === 'string') return turn.text;
+    if (turn && typeof turn.text === 'string') return turn.assistantContext?.userText ?? turn.text;
     return card.querySelector('.turn-body')?.innerText || '';
   }
 

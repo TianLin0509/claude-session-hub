@@ -152,14 +152,18 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   const receipts = new PromptSubmissionReceipts(payload => {
     try { sendToRenderer('session:prompt-receipt', payload); }
     catch (error) { logger.warn('[prompt-submit] receipt broadcast failed:', error && error.message); }
+    try { deps.onPromptReceipt?.(payload); }
+    catch (error) { logger.warn('[prompt-submit] receipt observer failed:', error && error.message); }
   });
   const onTranscriptPrompt = event => receipts.observe(event);
-  const onClaudePrompt = event => {
-    if (event?.signalSource !== 'claude-user-prompt-submit') return;
+  const onProviderPrompt = event => {
+    // Native UserPromptSubmit carries the actual body. Codex can write its
+    // matching rollout UserMessage much later than the bounded submit wait.
+    if (!['claude-user-prompt-submit', 'codex-user-prompt-submit'].includes(event?.signalSource)) return;
     receipts.observe({ ...event, text: event.prompt });
   };
   transcriptTap?.on('prompt-submitted', onTranscriptPrompt);
-  sessionManager.on?.('agent-turn-started', onClaudePrompt);
+  sessionManager.on?.('agent-turn-started', onProviderPrompt);
 
   // sessionManager 没有 close/exit 事件（只 emit output / session-updated /
   //   agent-turn-started / managed-launch），所以不挂监听，改成每次发送时顺手扫一遍：
@@ -191,10 +195,23 @@ function registerPromptSubmitIpc(ipcMain, deps) {
 
   const sendPrompt = async (_event, request = {}) => {
     const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
-    const text = typeof request.text === 'string' ? request.text : '';
+    let text = typeof request.text === 'string' ? request.text : '';
     if (!sessionId || !text) return { ok: false, error: 'bad-request' };
     const kind = resolveKind(sessionId);
     if (!kind) return { ok: false, error: 'no-session' };
+    // Host-provided context preparation happens before receipt fingerprints and
+    // before the first PTY write, for both the UI and assistant tool callers.
+    // Local commands retain their native meaning and do not receive context.
+    if (typeof deps.preparePrompt === 'function' && !text.trimStart().startsWith('/')) {
+      try {
+        const prepared = await deps.preparePrompt(request, sessionManager.getSession(sessionId));
+        if (prepared) request = { ...request, ...prepared, sessionId };
+        text = request.text;
+        if (typeof text !== 'string' || !text.trim()) throw new Error('准备后的消息为空');
+      } catch (error) {
+        return { ok: false, notSent: true, error: 'prompt-context-failed', message: error.message };
+      }
+    }
 
     if (sessionManager.getNativeClaude?.(sessionId)) {
       return enqueue(sessionId, async () => {
@@ -251,7 +268,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
         const result = await sendWithMemory(request, sessionId, text, kind, {
-          requireReady: false, submissionReceipt: receipt,
+          requireReady: request.waitForCliReady === true || (request.assistantPage === true && sessionManager.getSession(sessionId)?.purpose === 'hub-assistant'), submissionReceipt: receipt,
           clientSubmissionId, attachments:request.attachments,
           ...(clearObserver ? { localCommandObserver: clearObserver } : {}),
         });
@@ -315,13 +332,23 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     }, 0));
   }
 
-  ipcMain.handle('session:send-prompt', async (event, request = {}) => {
+  const assistantSubmissions = new Set();
+  const submitPrompt = async (event, request = {}) => {
     const session = sessionManager.getSession(request.sessionId);
     const native = session && (['codex-app-server', 'claude-stream-json', 'acp'].includes(session.runtimeBackend)
       || sessionManager.getNativeSession?.(request.sessionId) || sessionManager.getNativeCodex?.(request.sessionId)
       || sessionManager.getNativeClaude?.(request.sessionId));
     const aiSession = native || (session && isPasteSensitive(session.transcriptKind || session.kind));
-    if (!aiSession || typeof request.text !== 'string' || !request.text.trimStart().startsWith('/')) return sendPrompt(event, request);
+    if (!aiSession || typeof request.text !== 'string' || !request.text.trimStart().startsWith('/')) {
+      if (session?.purpose !== 'hub-assistant') return sendPrompt(event, request);
+      // Reserve before any async context work. A second submit must not replace
+      // the first request's tool authority while its PTY receipt is pending.
+      if (assistantSubmissions.has(request.sessionId)) return { ok: false, notSent: true,
+        error: 'assistant-submission-pending', message: '助理正在提交上一条消息，草稿已保留' };
+      assistantSubmissions.add(request.sessionId);
+      try { return await sendPrompt(event, request); }
+      finally { assistantSubmissions.delete(request.sessionId); }
+    }
     const id = typeof request.clientSubmissionId === 'string' && request.clientSubmissionId
       ? request.clientSubmissionId.slice(0,160) : require('crypto').randomUUID();
     let store;
@@ -342,7 +369,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     catch (error) { result = { ...result, ok: false, message: '命令已提交，但结果保存失败；请核对后再操作：' + error.message }; }
     notify();
     return result;
-  });
+  };
+  ipcMain.handle('session:send-prompt', submitPrompt);
 
   // 「⚠ 未提交 · 补发」按钮。复用群聊那条手动补发路径：它会先用 prompt 首行指纹
   //   判断原文是否还留在输入框里 —— 在 → 只补回车；不在 → 整条重写再提交。
@@ -391,13 +419,15 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   });
 
   return {
+    submitPrompt,
     dispose() {
       nativeDraftStore?.close();
       transcriptTap?.removeListener('prompt-submitted', onTranscriptPrompt);
-      sessionManager.removeListener?.('agent-turn-started', onClaudePrompt);
+      sessionManager.removeListener?.('agent-turn-started', onProviderPrompt);
       receipts.prune(() => false);
       lastPromptBySid.clear();
       latestRequestBySid.clear();
+      assistantSubmissions.clear();
     },
     _test: { lastPromptBySid, firstLine, enqueue, pruneClosedSessions },
   };

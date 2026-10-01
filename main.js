@@ -1878,6 +1878,11 @@ registerTranscriptIpc(ipcMain, {
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
 const resumeSession = createResumeSessionHandler({
+  async prepareAssistantResume() {
+    if (!assistantService) throw new Error('助理服务尚未就绪');
+    await assistantService.connectBridge();
+    return { mcpProfile: 'lean', codexMcpEntries: [assistantService.getMcpEntry()] };
+  },
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
   findTranscriptByCCSessionId,
@@ -1916,7 +1921,7 @@ const resumeSession = createResumeSessionHandler({
   slotIds: SLOT_IDS,
 });
 
-registerSessionIpc(ipcMain, {
+const sessionOperations = registerSessionIpc(ipcMain, {
   getPersistedSessions: () => lastPersistedSessions,
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   meetingManager,
@@ -1929,7 +1934,51 @@ registerSessionIpc(ipcMain, {
 
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
-registerPromptSubmitIpc(ipcMain, { sessionManager, transcriptTap, sendToRenderer });
+let assistantService = null;
+const promptOperations = registerPromptSubmitIpc(ipcMain, {
+  sessionManager, transcriptTap, sendToRenderer,
+  onPromptReceipt: receipt => assistantService?.observePromptReceipt?.(receipt),
+  preparePrompt(request, session) {
+    if (session?.purpose !== 'hub-assistant') return request;
+    if (!assistantService) throw new Error('助理服务尚未就绪，消息未发送');
+    return assistantService.preparePrompt(request);
+  },
+});
+try {
+  assistantService = require('./main/ipc/assistant-handlers').registerAssistantIpc(ipcMain, {
+    dataDir: getHubDataDir(),
+    historyDatabasePath: (() => {
+      const file = process.env.CLAUDE_HUB_ASSISTANT_HISTORY_DB;
+      if (!file || process.env.CLAUDE_HUB_E2E !== '1') return undefined;
+      const base = path.resolve(getHubDataDir()), target = path.resolve(file);
+      if (!process.env.CLAUDE_HUB_DATA_DIR || base === path.resolve(require('node:os').homedir(), '.claude-session-hub')) throw new Error('助理验收必须使用独立数据目录');
+      const relative = path.relative(base, target);
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('助理验收历史必须位于隔离数据目录内');
+      return target;
+    })(),
+    createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
+    sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    getSession: id => sessionManager.getSession(id),
+    getAllSessions: () => sessionManager.getAllSessions(),
+    getSessionMetadata: id => {
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
+      const live = sessionManager.getSession(id);
+      if (live) return live;
+      const saved = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return saved ? { ...saved, id: saved.hubId || id } : null;
+    },
+    listKnownSessions: () => lastPersistedSessions.map(meta => ({ ...meta, id: meta.hubId || meta.id })),
+    onAssistantNotification: notification => sendToRenderer('assistant:notification', notification),
+    openPath: file => shell.openPath(file),
+    getMeetings: () => meetingManager.getAllMeetings(),
+    getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
+    resumeSession: async id => {
+      const meta = require('./core/session-store').loadSessionFile(id, { strict: true });
+      return meta ? resumeSession({ ...meta, hubId: id }) : null;
+    },
+  });
+  assistantService.startWatching();
+} catch (error) { console.error('[assistant] service unavailable:', error.message); }
 // 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
 claudeQuotaResume.start();
 registerClaudeQuotaIpc(ipcMain, claudeQuotaResume);
@@ -3488,6 +3537,7 @@ async function runFinalShutdownCleanup() {
   windowsShellWatchdog = null;
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   capture('dev-workbench', () => devWorkbench?.dispose());
+  capture('hub-assistant', () => assistantService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
   const workerResults = await Promise.allSettled([
     transcriptParserService.close(),

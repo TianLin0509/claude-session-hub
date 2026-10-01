@@ -1012,6 +1012,9 @@ function buildCodexEphemeralMcpArgs(entries) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
       add(`mcp_servers.${name}.env.${key}=${literal(env[key])}`);
     }
+    for (const [tool, policy] of require('./codex-mcp-tool-policy').toolPolicyEntries(entry)) {
+      for (const [key, value] of Object.entries(policy)) add(`mcp_servers.${name}.tools.${tool}.${key}=${typeof value === 'number' ? value : literal(value)}`);
+    }
   }
   return out.join('');
 }
@@ -1064,6 +1067,10 @@ function ensureCodexMcpEntries(configDir, entries, managedNames = []) {
           block.push(`${key} = ${tomlString(env[key])}`);
         }
       }
+      for (const [tool, policy] of require('./codex-mcp-tool-policy').toolPolicyEntries(entry)) {
+        block.push('', `[mcp_servers.${name}.tools.${tool}]`);
+        for (const [key, value] of Object.entries(policy)) block.push(`${key} = ${typeof value === 'number' ? value : tomlString(value)}`);
+      }
       cfg += (cfg ? '\n' : '') + block.join('\n') + '\n';
     }
     fs.writeFileSync(cfgPath, cfg, 'utf8');
@@ -1102,6 +1109,9 @@ function buildNativeCodexOptions(info, opts, env) {
     for (const [key,value] of Object.entries(entry.env || {})) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('Codex MCP 环境字段无效');
       config['mcp_servers.' + entry.name + '.env.' + key] = String(value);
+    }
+    for (const [tool, policy] of require('./codex-mcp-tool-policy').toolPolicyEntries(entry)) {
+      for (const [key, value] of Object.entries(policy)) config['mcp_servers.' + entry.name + '.tools.' + tool + '.' + key] = value;
     }
   }
   const tier = info.codexSpeedTier;

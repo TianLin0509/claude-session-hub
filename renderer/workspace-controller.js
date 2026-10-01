@@ -13,6 +13,8 @@
     resolveDefaultModel,
   } = require('../core/default-model-preference.js');
   const { defaultCodexContextWindow } = require('../core/codex-context-window.js');
+  const { DEFAULT_EFFORT, DEFAULT_EFFORT_BY_KIND, DEFAULT_MCP_BY_KIND,
+    DEFAULT_CODEX_SPEED_BY_KIND, defaultEffortFor } = require('../core/session-creation-defaults.js');
 
   const KIND_LABELS = {
     ...require('../core/acp-profiles').LABELS,
@@ -47,10 +49,8 @@
   // Codex 也有 fast —— 是 service_tier（priority 通道，1.5× 速度、用量更高），
   // 跟 Claude 的 fastMode 完全两套机制，所以两个 kind 走两个不同控件。
   const CODEX_TIER_KINDS = new Set(['codex', 'deepseek']);
-  const DEFAULT_EFFORT = 'max';
   // 2026-09-05：Claude / Codex 两家默认降到 high。max 在日常任务上只是更慢更贵，
   // 需要时用户仍可在弹窗里手动往上调。DeepSeek 未被点名，保持原来的 max。
-  const DEFAULT_EFFORT_BY_KIND = { claude: 'high', codex: 'high' };
   const CLAUDE_EFFORT_OPTIONS = [
     ['max', 'max · 最强'],
     ['xhigh', 'xhigh'],
@@ -105,10 +105,8 @@
       ['full', 'Full · 全部全局 MCP'],
     ],
   };
-  const DEFAULT_MCP_BY_KIND = { claude: 'none', codex: 'none', deepseek: 'none' };
   // 2026-09-05：Codex 的 fast（service_tier=priority）默认关掉 —— 用户要的是
   // 深思而不是抢通道，1.5× 速度换来的用量代价在长任务上不划算。
-  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'standard', deepseek: 'inherit' };
   const EFFORT_LABEL_BY_KIND = {
     claude: '思考强度 (--effort)',
     codex: '思考强度 (reasoning effort)',
@@ -125,7 +123,6 @@
   };
 
   function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
-  function defaultEffortFor(kind) { return DEFAULT_EFFORT_BY_KIND[kind] || DEFAULT_EFFORT; }
   function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
   function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'none'; }
   function defaultCodexSpeedFor(kind, modelId) {

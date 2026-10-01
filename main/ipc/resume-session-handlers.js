@@ -73,6 +73,12 @@ function createResumeSessionHandler(deps) {
     const isAgentLeague = meta.purpose === 'agent-league' || meta.purpose === 'agent-league-virtual';
 
     let resumeOpts = {};
+    if (meta.purpose === 'hub-assistant') {
+      if (!isCodexRuntime || typeof deps.prepareAssistantResume !== 'function') {
+        throw new Error('助理恢复配置不可用，未启动替代会话');
+      }
+      resumeOpts = await deps.prepareAssistantResume(meta);
+    }
     if (isAgentLeague) {
       const agentId = path.basename(String(meta.cwd || '')).toLowerCase();
       const scopePrefix = meta.purpose === 'agent-league-virtual' ? 'agent-league-virtual-' : 'agent-league-';
