@@ -101,7 +101,7 @@ async function main(){
     result.createdTargetAnswer=trip;
     assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
     const s=await session(created.id);result.createdNativeId=s.codexSid;
-    assert.equal(s.codexProfile,'second');assert.equal(require('../core/model-options').sessionModelId(s),model);
+    assert.equal(s.codexProfile,'second');assert.equal(require('../core/session-capabilities').sessionModelId(s),model);
     const nativeRows=fs.readFileSync(trip.transcriptPath,'utf8').trim().split('\n').map(JSON.parse);
     const nativeModel=nativeRows.filter(row=>row.type==='turn_context').at(-1)?.payload?.model;
     assert.equal(nativeModel,model,'实际原生模型应与继承的默认模型一致');result.createdNativeModel=nativeModel;
