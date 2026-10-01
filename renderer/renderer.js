@@ -1615,6 +1615,11 @@ function getOrCreateTerminal(sessionId) {
     ownsTranscript: () => isCodexOwnedTranscript(sessions.get(sessionId), terminal),
     WheelEvent: window.WheelEvent,
   });
+  require('./codex-transcript-touch').attachCodexTranscriptTouch({
+    container, terminal,
+    ownsTranscript: () => isCodexOwnedTranscript(sessions.get(sessionId), terminal),
+    WheelEvent: window.WheelEvent,
+  });
   terminal.attachCustomWheelEventHandler((event) => {
     if (routeCodexTranscriptWheel(event)) return false;
     if (!isNativeAgent(sessions.get(sessionId)) || event.ctrlKey || event.metaKey) return true;
@@ -7656,8 +7661,11 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     completedAt,
     turnId,
     text: preview,
-    seenByUser: !!meetingId || backgroundActive || seenByUser,
-    incrementUnread: !meetingId && !backgroundActive,
+    // A group member can be prompted directly in its CLI without a dispatcher
+    // round. Membership alone is not proof that its reply was read. Meeting
+    // badges union member IDs, so the later dispatcher event cannot double it.
+    seenByUser: backgroundActive || seenByUser,
+    incrementUnread: !backgroundActive,
     keepRunning: backgroundActive,
   });
   if (!transition.applied) return;

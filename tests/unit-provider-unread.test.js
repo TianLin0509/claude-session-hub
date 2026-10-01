@@ -36,7 +36,7 @@ function harness(kind, runtimeBackend) {
   return { session, c, prompt, complete };
 }
 for (const [kind, backend] of [['claude', 'claude-stream-json'], ['claude-resume', 'claude-stream-json'],
-  ['codex', 'codex-app-server'], ['deepseek', undefined], ['gemini', undefined], ['kimi', undefined],
+  ['codex', 'codex-app-server'], ['codex', undefined], ['deepseek', undefined], ['gemini', undefined], ['kimi', undefined],
   ['qwen', 'acp'], ['deepseek-acp', 'acp'], ['glm', 'acp']]) {
   test(kind + ': completion unread, duplicate/stale protection, foreground and group ownership', () => {
     const { session, c, prompt, complete } = harness(kind, backend);
@@ -54,6 +54,12 @@ for (const [kind, backend] of [['claude', 'claude-stream-json'], ['claude-resume
     c.activeSessionId = 's'; prompt('three', 6); complete('three', 7);
     assert.equal(session.unreadCount, 0, 'focused visible answer is read');
     c.activeSessionId = 'other'; prompt('group', 8); complete('group', 9, { meetingId: 'group' });
-    assert.equal(session.unreadCount, 0, 'meeting owns member unread aggregation');
+    assert.equal(session.unreadCount, 1, 'a direct CLI reply in a group member remains unread even without dispatcher events');
+    const meeting = { subSessions: ['s'], unreadAnswered: new Set(['s']) };
+    const meetingUnread = require('../renderer/meeting-unread');
+    assert.equal(meetingUnread.getMeetingUnreadMemberIds(meeting, new Map([['s', session]])).size, 1,
+      'dispatcher and transcript completion count the same member once');
+    meetingUnread.readMeetingMember(meeting, 's', new Map([['s', session]]));
+    assert.equal(session.unreadCount, 0, 'reading the member also clears transcript attention');
   });
 }

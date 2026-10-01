@@ -135,6 +135,10 @@ function registerGroupChatForkIpc(ipcMain, deps) {
       try { plan.opts.acpFork = await native.fork(); }
       catch (error) { return { ok: false, error: 'acp-fork-failed', message: error.message }; }
     }
+    if (plan.kind === 'codex' && plan.opts.codexForkSid && sessionManager.prepareCodexFork) {
+      try { plan.opts = await sessionManager.prepareCodexFork(plan.opts); }
+      catch (error) { return { ok: false, error: 'codex-fork-failed', message: error.message }; }
+    }
     let result;
     try { result = await addMeetingSubInternal(meetingId, plan.kind, plan.opts); }
     catch (error) { return { ok: false, error: 'member-create-failed', message: error.message }; }
