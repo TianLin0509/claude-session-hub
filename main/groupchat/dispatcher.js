@@ -1397,11 +1397,18 @@ function createGroupChatDispatcher(deps) {
         // lets the CLI finish its closing words. If the transcript/hook signal
         // never arrives (binding hiccup), proceed after a bounded wait instead of
         // stalling the workflow — the TUI queues a prompt sent while it is busy.
+        // Native sessions report their turn state authoritatively and allow one
+        // writer only, so they keep the strict wait; the bounded bypass is for
+        // PTY seats whose signal comes from transcript binding.
         const SEAT_WAIT_MS=Math.min(Number(turnTimeoutMs) || 90_000,90_000);
         while(waiting().length) {
           if(interruptedSinceStart() || (shouldDispatch && !shouldDispatch()))
             return {status:'error',reason:'文件进度已变化或用户已停止',turnNum:null};
-          if(Date.now()-waitStart > SEAT_WAIT_MS) {
+          const nativeWaiting=waiting().some(member=>isNativeSession(sessionManager.getSession(member.sid)));
+          if(nativeWaiting) {
+            if(Date.now()-waitStart > (Number(turnTimeoutMs) || 30*60_000))
+              return {status:'error',reason:'等待上一轮 CLI 收尾超时；请查看原文，确认后继续',turnNum:null};
+          } else if(Date.now()-waitStart > SEAT_WAIT_MS) {
             historyOrch.appendSystemNote(historyOrch.state.currentTurn,'未收到该席位上一轮 CLI 的收尾信号，已等待 90 秒，按已交付文件继续派发。');
             emitGroupChat('dev-workbench:progress',{meetingId,revision:historyOrch.state.revision});
             break;
