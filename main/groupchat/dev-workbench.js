@@ -98,7 +98,7 @@ function createDevWorkbench(deps) {
         project: projectNameOf(m.workspace, Feed.clean), createdAt: m.createdAt, activityAt: m.lastMessageTime || m.createdAt,
         pinned: !!m.pinned, bottomed: !!m.bottomed, goal: '', progress: error || file?.label || '',
         stage: { key: file?.done ? 'passed' : file?.phase || 'unavailable',
-          label: `${file?.label || '文件状态不可用'}${file?.paused ? ' · 已暂停，输入“继续”接续' : ''}`,
+          label: `${file?.label || '文件状态不可用'}${file?.paused ? ' · 已暂停，在群聊点「继续」接续' : ''}`,
           tone: error ? 'bad' : file?.done ? 'good' : file?.paused ? 'warn' : file?.running ? 'run' : 'idle', running: !!file?.running },
         flow: { configured: true, phase: file?.phase, round: file?.round, status: file?.paused ? 'paused' : '', currentStep: file?.phase },
         attention: error ? { kind: 'error', label: '执行需处理', text: error } : null,

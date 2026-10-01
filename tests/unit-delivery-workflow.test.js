@@ -50,8 +50,13 @@ async function pauseAndRestart() {
 }
 async function malformedAndEditedDeliveries() {
   const f=fixture();try{
-    await f.e.start(f.m.id,'goal');const p=f.deliver('a');fs.writeFileSync(p.ready,'wrong task','utf8');await f.advance();
-    assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/不属于本轮/);assert.equal(f.calls.length,1);
+    // A ticket of another round is rejected; a dropped ticket alone is not (the path identifies the delivery).
+    await f.e.start(f.m.id,'goal');const p=f.deliver('a');fs.writeFileSync(p.ready,'<!-- hub-delivery:'+'0'.repeat(64)+' -->\n\ncopied from elsewhere','utf8');await f.advance();
+    assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/属于其他轮次/);assert.equal(f.calls.length,1);
+  }finally{f.close();}
+  const h=fixture();try{
+    await h.e.start(h.m.id,'goal');const p=h.deliver('a');fs.writeFileSync(p.ready,'rewrote the whole file without the ticket line','utf8');await h.advance();
+    assert.equal(h.e.status(h.m.id).paused,false,'missing ticket alone is accepted');assert.equal(h.read().steps[0].deliveries.a.outcome,'ready');
   }finally{f.close();}
   const g=fixture();try{
     await g.e.start(g.m.id,'goal');const p=g.deliver('a');await g.advance();fs.appendFileSync(p.ready,'edited');g.deliver('b');await g.advance();
@@ -62,9 +67,13 @@ async function developmentBudget() {
   const f=fixture('development');try{
     await f.e.start(f.m.id,'goal');f.deliver('a');await f.advance();
     for(let n=0;n<2;n++){f.deliver('a');await f.advance();f.deliver('b','rework');await f.advance();}
-    assert.equal(f.calls.length,6);f.deliver('a');await f.advance();assert.equal(f.calls.length,6);assert.equal(f.e.status(f.m.id).paused,true);
-    await f.e.continueWork(f.m.id,'继续');assert.equal(f.calls.length,7,'continuation advances once, never dispatches new step twice');
-    assert.deepEqual(f.calls[6].targetMemberIds,['b']);f.deliver('b');await f.advance();assert(f.e.status(f.m.id).done);
+    // Kickoff and builds are free: the third build is still reviewed.
+    assert.equal(f.calls.length,6);f.deliver('a');await f.advance();assert.equal(f.calls.length,7,'third build gets its review');
+    assert.deepEqual(f.calls[6].targetMemberIds,['b']);f.deliver('b','rework');await f.advance();
+    assert.equal(f.calls.length,7);assert.equal(f.e.status(f.m.id).paused,true);assert.match(f.e.status(f.m.id).error,/3 轮审查/);
+    await f.e.continueWork(f.m.id,'继续');assert.equal(f.calls.length,8,'continuation advances once, never dispatches new step twice');
+    assert.deepEqual(f.calls[7].targetMemberIds,['a']);f.deliver('a');await f.advance();assert.equal(f.calls.length,9);
+    assert.deepEqual(f.calls[8].targetMemberIds,['b']);f.deliver('b');await f.advance();assert(f.e.status(f.m.id).done);
   }finally{f.close();}
 }
 async function unknownAndWakeRace() {

@@ -1811,10 +1811,18 @@ try {
 // const chuxinBridge = null;
 // @community-end
 
+// Group chat cards come from members' Markdown answer files (2026-09-30).
+const answerFileMonitor = require('./main/groupchat/answer-file-monitor').createAnswerFileMonitor({
+  getHubDataDir, meetingManager, sendToRenderer, logger: console,
+  getOrchestrator: id => groupchat.getOrchestrator(getHubDataDir(), id),
+});
+answerFileMonitor.start();
+
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
   groupchat,
   transcriptTap,
+  reconcileAnswers: id => answerFileMonitor.reconcile(id),
 });
 
 registerGroupchatRecoveryIpc(ipcMain, {
@@ -2039,6 +2047,10 @@ let lastPersistedMeetings = bootMeetings;
 for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
+// 2026-09-28: one workflow engine. Idle legacy rooms move to the delivery
+// engine once; rooms with a recent unfinished legacy task stay until it ends.
+try { require('./core/delivery-migration').migrateAll({ meetingManager, dataDir: getHubDataDir(), logger: console }); }
+catch (error) { console.error('[workflow-migration] failed:', error); }
 
 registerMeetingTimelineIpc(ipcMain, {
   meetingManager,

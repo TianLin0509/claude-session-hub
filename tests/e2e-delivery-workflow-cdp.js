@@ -41,7 +41,8 @@ const release=m=>fs.writeFileSync(path.join(GATES,m.uuid+'.json'),JSON.stringify
   await click('[data-delivery=stop]');await wait('paused',async()=>(await state()).paused);deliver('m3');await delay(2500);assert.equal(received().length,3);evidence.checks.push('user pause survives late delivery');
   await shot('paused');
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:850,height:1100,deviceScaleFactor:1,mobile:false});
-  assert(await cdp.eval("[...document.querySelectorAll('[data-delivery]')].every(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.x>=0&&r.right<=innerWidth+1;})"),'delivery controls remain visible at narrow width');await shot('narrow');
+  const hidden=await cdp.eval("JSON.stringify([...document.querySelectorAll('[data-delivery]')].filter(e=>!e.closest('[hidden]')).map(e=>{const r=e.getBoundingClientRect();return {c:e.dataset.delivery,x:Math.round(r.x),right:Math.round(r.right),w:Math.round(r.width),iw:innerWidth};}).filter(r=>!(r.w>0&&r.x>=0&&r.right<=r.iw+1)))");
+  assert.equal(hidden,'[]','delivery controls remain visible at narrow width');await shot('narrow');
   assert(await cdp.eval("(()=>{const head=document.querySelector('#mr-composer-head').getBoundingClientRect(),row=document.querySelector('#mr-input-row').getBoundingClientRect();return head.y>=row.y&&head.bottom<=row.bottom;})()"),'progress remains inside composer without overlapping chat');
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await click('[data-delivery=resume]');await wait('third round',()=>received().length===4);assert.equal((await state()).round,3);

@@ -64,10 +64,12 @@ async function run() {
     await invoke('groupchat:turn', { meetingId: id, userInput: '现在进展如何' });
     ok('进度询问不恢复', (await state()).paused);
     await cdp.eval("document.getElementById('mr-input-box').textContent='继续'; document.getElementById('mr-input-box').dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true, cancelable:true}))");
-    await wait(() => calls().some(x => x.userInput === '继续'), 'manual continue');
-    ok('继续原样转交，不改收件人、不重新派工', !(await state()).paused && JSON.stringify((await getMeeting()).participants) === '[1]' && !calls().some(x => x.workflowRun?.stepIndex === 3));
+    await wait(() => calls().some(x => x.userInput.startsWith('继续') && x.userInput.includes('实现手册-轮次2.md')), 'manual continue');
+    // 2026-09-28: continue is Hub-routed by task files; the lit avatar (reviewer) does not decide.
+    const resumed = calls().find(x => x.userInput.startsWith('继续') && x.userInput.includes('实现手册-轮次2.md'));
+    ok('继续由 Hub 按任务文件派给返工实现位', !(await state()).paused && JSON.stringify(resumed.targetMemberIds) === '["m1"]' && resumed.recipientSids === undefined && JSON.stringify((await getMeeting()).participants) === '[0]');
     const afterContinue = calls().length;
-    await sleep(1300); ok('继续后不自动追加阶段提示词', calls().length === afterContinue);
+    await sleep(1300); ok('继续只派一次，不重复追加阶段提示词', calls().length === afterContinue);
     await wait(() => cdp.eval("document.querySelector('.mr-file-detail')?.innerText.includes('第 2 轮')"), 'UI phase sync');
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(ROOT, 'fileflow-ui.png'), Buffer.from(shot.data, 'base64'));

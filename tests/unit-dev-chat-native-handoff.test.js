@@ -97,3 +97,16 @@ test('stop cancels native handoff wait; late completion never resumes it',async 
   const result=await pending;assert.equal(result.status,'error');assert.equal(c.sent.length,0);
   await sleep(150);assert.equal(c.sent.length,0);
 });
+
+// PTY seats: the closing signal comes from transcript binding and can be lost.
+// The delivered file already proves the stage is done, so dispatch proceeds
+// after the bounded wait instead of stalling (native seats above stay strict).
+test('PTY seat proceeds after the bounded wait when the closing signal never arrives', async t => {
+  const c = setup(t);
+  c.session.runtimeBackend = undefined; c.session.kind = 'claude'; delete c.session.nativeRuntime;
+  c.native.runtime = null;
+  const result = await c.dispatch();
+  assert.equal(c.sent.length, 1, 'PTY seat is dispatched once the bounded wait expires');
+  assert.notEqual(result.reason, '等待上一轮 CLI 收尾超时；请查看原文，确认后继续');
+  assert(c.orch.state.messages.some(m => m.systemNote && /已等待 90 秒，按已交付文件继续派发/.test(m.content)), 'leaves a visible note');
+});

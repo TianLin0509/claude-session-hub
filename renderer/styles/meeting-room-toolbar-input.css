@@ -87,7 +87,8 @@
 .mr-composer-head .mr-delivery-flow .mr-file-detail { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .mr-composer-head .mr-delivery-flow .mr-file-detail small,
 .mr-composer-head .mr-delivery-flow .mr-file-detail span { display: block; margin: 3px 0 0; }
-.mr-composer-head .mr-delivery-flow .mr-file-actions { flex-wrap: wrap; }
+/* The action group may shrink and wrap, so narrow panes never push buttons out of view. */
+.mr-composer-head .mr-delivery-flow .mr-file-actions { flex: 0 1 auto; min-width: 0; max-width: 100%; flex-wrap: wrap; }
 .mr-composer-head .mr-delivery-flow > .mr-file-detail { flex: 1 1 160px; }
 .mr-composer-head .mr-delivery-flow > .mr-file-error,
 .mr-delivery-recipients, .mr-delivery-details { flex-basis: 100%; min-width: 0; }
@@ -864,6 +865,10 @@ body:has(#meeting-room-panel[style*="display: flex"] .mr-group-composer) #chatgp
 .mr-file-actions button:not(:disabled):hover { border-color: var(--brand, #6d8dff); background: var(--surface-active, #253044); color: var(--fg-strong, #fff); }
 .mr-file-actions button:focus-visible { outline: 2px solid var(--brand, #6d8dff); outline-offset: 3px; }
 .mr-file-actions button.stop { color: var(--status-danger, #f18e85); }
+/* Continue: the Hub picks the next owner; the small line names who gets it. Same emphasis as kickoff. */
+.mr-file-actions button.continue { display: inline-flex; align-items: baseline; gap: 6px; color: var(--brand-text, #c9d5ff); background: var(--brand-tint, #202c48); border-color: var(--brand, #6d8dff); }
+.mr-file-actions button.continue small { font-size: 11px; font-weight: 500; opacity: .8; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mr-file-actions button.continue.is-busy { opacity: .6; cursor: progress; }
 .mr-file-actions button:disabled { opacity: .5; cursor: wait; }
 
 .mr-group-composer.drop-active { outline: 2px dashed var(--brand, #6d8dff); outline-offset: -3px; }

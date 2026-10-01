@@ -60,6 +60,7 @@ if (typeof document !== 'undefined') (function () {
   // 开发群聊「先讨论再开工」的阶段判断与收敛文本，和主进程 dispatcher 共用同一份。
   const DevDiscuss = require('../core/dev-discuss.js');
   const DevFile = require('../core/dev-file-workflow.js');
+  const GroupAnswers = require('../core/group-answer-files.js');
   const Delivery = require('../core/delivery-workflow.js');
   const DeliveryControls = require('./delivery-workflow-controls.js');
   const Recipients = require('../core/groupchat-recipients.js');
@@ -2494,10 +2495,43 @@ if (typeof document !== 'undefined') (function () {
     return r.length > 60 ? r.slice(0, 60) + '…' : r;
   }
 
+  // Markdown answers (core/group-answer-files.js): a member's card shows the file
+  // it wrote, or that it has not handed one in yet. No transcript states here —
+  // problems show on the member's session in the sidebar.
+  function _renderAnswerCard(message, meeting, memberBySid) {
+    const slot = memberBySid[message.sid];
+    const session = typeof sessions !== 'undefined' && sessions.get(message.sid);
+    // Unregistered messages (history before the switch, legacy fallbacks) keep their stored text;
+    // registered members only ever get content from their file.
+    const answer = message.answer || null, text = String(message.content || '');
+    const badge = !answer ? '' : answer.state === 'draft' ? '草稿' : answer.outcome === 'rework' ? '需返工' : answer.outcome === 'blocked' ? '阻塞' : '';
+    const body = text.trim()
+      ? `<div class="mr-gc-md">${require('./conversation-message-view').renderMessageBody(text, { isUser: false, escapeHtml,
+        renderMarkdown: t => _renderMarkdown(t, session?.cwd || meeting.workspace || _activeMeetingCwd()), foldLong: false })}</div>`
+      : '<div class="mr-gc-md mr-gc-empty-placeholder">还没交</div>';
+    const journal = require('./groupchat-journal');
+    const copy = text.trim() ? '<button type="button" class="mr-gc-copy-btn" data-gc-copy-message="1" title="复制此条消息" aria-label="复制此条消息">📋</button>' : '';
+    const prompt = message.sourcePrompt ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt">查看本轮输入</button>` : '';
+    const time = _formatGroupChatTime(answer?.at || message.createdAt);
+    const kindCls = slot && slot.kind ? ` ai-name-${slot.kind}` : '';
+    const unread = !!text.trim() && answer?.state !== 'draft';
+    return `
+      <article ${journal.attributes(meeting, message, escapeHtml)} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-user-question="false" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${unread}" data-phase="message" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
+        ${_renderGroupAvatar(slot, false)}
+        <div class="mr-gc-msg-body">
+          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, minimize: true })}</div>
+          <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-reading">${journal.disclosure()}<div class="gc-journal-text">${body}</div></div></div></div>
+        </div>
+      </article>`;
+  }
+
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
     const sourceSession = typeof sessions !== 'undefined' && sessions.get(message.sid);
     const renderMarkdown = text => _renderMarkdown(text, sourceSession?.cwd || meeting.workspace || _activeMeetingCwd());
     if (!message) return '';
+    if (message.role === 'assistant' && !message.systemNote && !message.supplementReply && !message.committeeAct && GroupAnswers.enabled(meeting)) {
+      return _renderAnswerCard(message, meeting, memberBySid);
+    }
     // 系统提示（循环自愈的每一次动作都会留一行）：不是谁的发言，不给气泡也不给重发按钮，
     // 只在时间线上留一条居中的细线 —— 但必须看得见，静默重试才是真正的损失。
     if (message.systemNote) {
@@ -2696,9 +2730,11 @@ if (typeof document !== 'undefined') (function () {
     const partialBy = state && state._partialBy ? state._partialBy : {};
     const slots = _getGcSlots(meeting).filter(Boolean);
     const currentTurn = Number(state && state.currentTurn) || 0;
+    const answerMode = GroupAnswers.enabled(meeting);
     const persistedSids = new Set((state && Array.isArray(state.messages) ? state.messages : [])
       .filter(m => m && m.role === 'assistant' && Number(m.turnNum) === currentTurn
-        && (m.status === 'completed' || m.status === 'manual_extracted' || _isGcSettledStatus(m.status)))
+        && (answerMode ? !m.sourceMessage && m.status !== 'progress_update' && !m.supplementReply
+          : (m.status === 'completed' || m.status === 'manual_extracted' || _isGcSettledStatus(m.status))))
       .map(m => m.sid));
     const parts = [];
     for (const slot of slots) {
@@ -2754,7 +2790,18 @@ if (typeof document !== 'undefined') (function () {
     const sideCollapsed = _getGroupSideCollapsed();
     // The source collector may recover an old canonical placeholder's final
     // answer after its progress cards. Render that source final once in order.
-    const renderMessages = meeting.scene === 'dev' || Delivery.enabled(meeting)
+    // Markdown answers: one card per member per turn; transcript progress stays in the session.
+    const answerCardKeys = new Set();
+    const renderMessages = GroupAnswers.enabled(meeting)
+      ? messages.filter(m => {
+        if (m.role !== 'assistant' || m.systemNote || m.supplementReply || m.committeeAct) return true;
+        if (m.sourceMessage || m.status === 'progress_update' || m.phase === 'commentary') return false;
+        const key = `${m.turnNum}:${m.sid}`;
+        if (answerCardKeys.has(key)) return false;
+        answerCardKeys.add(key);
+        return true;
+      })
+      : meeting.scene === 'dev' || Delivery.enabled(meeting)
       ? messages.filter(m => m.sourceMessage || m.status === 'progress_update' ? !state.displayMessagesByAttempt?.[m.attemptId]?.length : m.role !== 'assistant'
         || m.displayMessages?.length
         || !SourceFinal.matches(messages,m,state.attempts))
@@ -4945,6 +4992,15 @@ if (typeof document !== 'undefined') (function () {
     _restoreGroupChatScroll(panel,scroll);
   });
 
+  // A member's answer file changed (main/groupchat/answer-file-monitor.js).
+  ipcRenderer.on('groupchat:answer-file', (_e, payload = {}) => {
+    if (!_acceptGcPush(payload)) return;
+    const meeting = meetingData[payload.meetingId];
+    if (meeting && payload.meetingId === activeMeetingId) {
+      refreshGroupChatPanel(meeting).catch(error => console.warn('[answer-files] refresh failed:', error.message));
+    }
+  });
+
   ipcRenderer.on('dev-workbench:progress', (_e, payload = {}) => {
     if (!_acceptGcPush(payload)) return;
     const meeting = meetingData[payload.meetingId];
@@ -5419,7 +5475,11 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     const s = state || { phase: 'discuss', label: '读取文件进度…' };
-    if (s.limitReached && !s.done && !s.running) s.label = '已达 6 轮上限 · 保留现场，尚未完成';
+    if (s.limitReached && !s.done && !s.running) s.label = `已完成 ${s.reviewLimit || 3} 轮审查仍需返工 · 现场已保留`;
+    // Hub decides the next owner from the task files; the button only asks it to continue.
+    const canContinue = !!s.paused && !s.running && !s.done && !s.error && !!s.next && !s.next.error;
+    const continueTitle = s.next?.error ? `无法继续：${s.next.error}`
+      : s.next ? `交给 ${s.next.label}${s.limitReached ? `；再给 ${s.reviewLimit || 3} 轮审查额度` : ''}。已交付的不重做` : '';
     const solo = DevFile.isSolo(current);
     const phases = solo ? [] : [['discuss', '讨论'], ['kickoff', '开题'], ['build', '施工'], ['merge', '合并']];
     const selected = _getGcSlots(current).filter(slot => slot && (!Array.isArray(current.participants) || current.participants.includes(slot.slotIndex)));
@@ -5427,11 +5487,12 @@ if (typeof document !== 'undefined') (function () {
     const running = !!s.running || _isGroupTurnRunning(current);
     row.innerHTML = `<div class="mr-file-flow" data-file-phase="${escapeHtml(s.phase || '')}">
       <div class="mr-file-steps">${phases.map(([key, label], i) => `<span class="${s.phase === key ? 'active' : ''}"><b>${i + 1}</b>${label}</span>`).join('<i>›</i>')}</div>
-      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，输入“继续”接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停，输入“继续”接续' : s.done ? ' · 本任务已完成' : ''}
+      <div class="mr-file-detail" title="${escapeHtml([s.label || '文件状态未知', s.paused ? '已暂停，点「继续」由 Hub 接续' : s.done ? '本任务已完成' : '', s.error || s.dispatchError || ''].filter(Boolean).join(' · '))}"><strong>${escapeHtml(s.label || '文件状态未知')}</strong>${s.paused ? ' · 已暂停' : s.done ? ' · 本任务已完成' : ''}
         ${s.error || s.dispatchError ? `<span class="mr-file-error">${escapeHtml(s.error || s.dispatchError)}</span>` : ''}</div>
       <div class="mr-file-actions">
         ${['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-prep title="把项目接入提示词填入输入框；检查后自行发送">立项</button>' : ''}
         ${!solo && ['discuss', 'kickoff'].includes(s.phase) && !s.error ? '<button type="button" data-file-kickoff title="把开题提示词追加到输入框，并选择负责开题的成员；检查后按 Enter 发送">开题</button>' : ''}
+        ${canContinue ? `<button type="button" class="continue" data-file-continue title="${escapeHtml(continueTitle)}">继续<small>${escapeHtml(s.next.label)}</small></button>` : ''}
         <button type="button" data-file-docs>任务文件</button>
         ${running || (!s.paused && s.phase !== 'discuss' && !s.done) ? '<button type="button" class="stop" data-file-stop>停止</button>' : ''}
       </div><small class="mr-file-recipients">${escapeHtml(names ? `发送给 ${names}` : '请点亮至少一位成员')}</small></div>`;
@@ -5459,6 +5520,17 @@ if (typeof document !== 'undefined') (function () {
       } catch (error) { _showGcEscapeNotice('打开任务文件失败：' + error.message, 'error'); }
     });
     row.querySelector('[data-file-stop]')?.addEventListener('click', () => { void _handleGcStopTurn(current); });
+    row.querySelector('[data-file-continue]')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.classList.add('is-busy');
+      try {
+        const result = await ipcRenderer.invoke('dev-file:continue', { meetingId: current.id });
+        if (!result?.ok) throw new Error(result?.error || '继续失败');
+        if (result.status) _devFileStates[current.id] = result.status;
+      } catch (error) { _showGcEscapeNotice('继续失败：' + error.message, 'error'); }
+      finally { if (activeMeetingId === current.id) _updateInputPreflight(meetingData[current.id]); }
+    });
     row.querySelector('[data-file-kickoff]')?.addEventListener('click', async event => {
       const button = event.currentTarget;
       button.disabled = true;
@@ -7165,11 +7237,11 @@ if (typeof document !== 'undefined') (function () {
     if (DevFile.enabled(meeting)) {
       inputBox.dataset.placeholder = DevFile.isSolo(meeting)
         ? '输入任务；点“独立开工”填入提示词，检查后 Enter 发送。'
-        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。停止后输入“继续”接续。';
+        : '输入任务或补充；点“开题”填入提示词，检查后 Enter 发送。暂停后点上方「继续」接续。';
     } else if (DevDiscuss.isDiscussing(meeting)) {
       inputBox.dataset.placeholder = '讨论阶段：先把需求聊清楚（不改代码）；想收口就点上方「收敛」，定了就点「开工」';
     }
-    if(Delivery.enabled(meeting))inputBox.dataset.placeholder='发送给点亮头像的成员；任务运行中可直接补充要求';
+    if(Delivery.enabled(meeting))inputBox.dataset.placeholder='输入任务，Hub 按工作流安排各步骤成员推进；运行中可补充要求，暂停后点上方「继续」';
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');

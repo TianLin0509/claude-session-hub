@@ -91,7 +91,7 @@ function makeHarness(tmpDir) {
     for (const sid of sids) sessions[sid] = { kind: 'gemini', status: 'active', title: sid.toUpperCase() };
     meetings.set(meetingId, {
       id: meetingId,
-      groupChat: true,
+      groupChat: true, answerSource: 'transcript', // tests the transcript pipeline
       subSessions: sids.slice(),
       slotSpecs: sids.map(() => ({ kind: 'gemini' })),
       participants: sids.map((_s, i) => i),
@@ -279,7 +279,7 @@ async function testInterruptWithNothingRunning(tmpDir) {
 async function testSerialWorkflowSemantics() {
   const meeting = {
     id: 'mtg-loop',
-    groupChat: true,
+    groupChat: true, answerSource: 'transcript', // tests the transcript pipeline
     subSessions: ['w1', 'w2'],
     serialWorkflow: {
       enabled: true,

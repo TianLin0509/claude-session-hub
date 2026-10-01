@@ -13,9 +13,12 @@ function registerGroupchatQueryIpc(ipcMain, deps) {
     getHubDataDir,
     groupchat,
     transcriptTap,
+    reconcileAnswers = () => false,
   } = deps;
 
   ipcMain.handle('groupchat:get-state', (_e, { meetingId }) => {
+    // Pick up answer files written while nobody was watching (e.g. Hub restart).
+    try { reconcileAnswers(meetingId); } catch {}
     const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
     return orch.getState();
   });
