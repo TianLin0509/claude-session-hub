@@ -101,4 +101,3 @@ async function main(){
  finally{if(c)await c.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));await gracefulQuit(hub)}fs.unlinkSync(path.join(a,'auth.json'));fs.writeFileSync(path.join(out,'evidence.json'),j(result));console.log(j(result))}
 }
 main().catch(e=>{console.error(e);process.exitCode=1});
-
