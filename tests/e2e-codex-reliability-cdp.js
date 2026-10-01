@@ -66,6 +66,8 @@ async function main(){
  await c.eval(`if(!document.querySelector('.session-item[data-session-id="${id}"]')){const m=document.querySelector('[data-meeting-id="${mid}"]');m?.querySelector('.meeting-toggle,.sl-expand,.meeting-chevron')?.click();}`);
  // Opening the member through its documented renderer entry also covers collapsed groups.
  await c.eval(`selectSession('${id}')`);
+ await c.eval("if(currentView!=='pty')document.querySelector('#btn-backstage').click()");
+ await until("currentView==='pty'");
  await until(`(${text(id)}).includes('SCROLL_LINE_090')`);
  result.checks.push('real CLI resumes account-B history using current account A');
  const before=await c.eval(text(id));
