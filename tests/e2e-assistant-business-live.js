@@ -39,7 +39,7 @@ async function main(){
   if(continued){result.continuedFrom=path.join(out,'result.json');result.previouslyVerifiedSteps=prior.steps;}
   const until=async(label,read,timeout=180000)=>{for(const end=Date.now()+timeout;Date.now()<end;){const value=await read();if(value)return value;await wait(350);}throw Error('timeout: '+label);};
   const click=async selector=>{await until('clickable '+selector,()=>cdp.eval(`!!document.querySelector(${j(selector)}) && !document.querySelector(${j(selector)}).disabled`),30000);const point=await cdp.eval(`(()=>{const e=document.querySelector(${j(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...point,button:'left',clickCount:1});};
-  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
+  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,(continued?'continuation-':'')+name+'.png'),Buffer.from(r.data,'base64'));};
   const session=async id=>cdp.eval(`JSON.parse(JSON.stringify(sessions.get(${j(id)}) || null))`);
   const finals=async id=>{const s=await session(id);return s?readFinals(s,{tailBytes:8*1024*1024}).records:[];};
   const idle=async id=>until('session idle '+id,async()=>{const s=await session(id);return s&&!require('../core/session-runtime-truth').sessionRuntimeIsActive(s)&&s.status!=='running';},60000);
@@ -107,7 +107,7 @@ async function main(){
       // Exercise an actual saved assistant from before caller identity existed.
       const originalNative=(await session(assistantId)).codexSid;
       cdp.close();cdp=null;await gracefulQuit(hub,{timeoutMs:60000});
-      fs.writeFileSync(path.join(out,'hub-before-resume.log'),hub.log().join('\n'),'utf8');hub=null;
+      fs.writeFileSync(path.join(out,continued?'hub-continuation-before-resume.log':'hub-before-resume.log'),hub.log().join('\n'),'utf8');hub=null;
       const savedFile=path.join(data,'sessions',assistantId+'.json'),saved=JSON.parse(fs.readFileSync(savedFile,'utf8'));
       for(const entry of saved.codexMcpEntries||[])if(entry.env)delete entry.env.HUB_ASSISTANT_SESSION_ID;
       fs.writeFileSync(savedFile,j(saved),'utf8');
