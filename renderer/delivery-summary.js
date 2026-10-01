@@ -16,11 +16,12 @@ function renderDeliveryGlance(delivery, escapeHtml) {
     files.length && { count: files.length, label: files.some(item => item.status !== 'completed' || item.failedAttempts) ? '文件记录' : '变更文件' },
     checks.length && { count: checks.length, label: '验证记录' },
     artifacts.length && { count: artifacts.length, label: '交付产物' },
+    checks.some(item => item.status === 'failed') && { count: checks.filter(item => item.status === 'failed').length, label: '失败记录', failed: true },
   ].filter(Boolean);
   if (!rows.length) return '';
   return `<aside class="turn-result-glance" aria-label="本轮结果概览">
     <span class="turn-result-glance-title">本轮结果</span>
-    ${rows.map(row => `<div class="turn-result-glance-row"><strong>${escapeHtml(row.count)}</strong><span>${escapeHtml(row.label)}</span></div>`).join('')}
+    ${rows.map(row => `<div class="turn-result-glance-row${row.failed ? ' status-failed' : ''}"><strong>${escapeHtml(row.count)}</strong><span>${escapeHtml(row.label)}</span></div>`).join('')}
   </aside>`;
 }
 

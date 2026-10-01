@@ -49,6 +49,7 @@ function registerSessionIpc(ipcMain, deps) {
     getPersistedSessions = () => [],
   } = deps;
   require('./codex-backstage-handlers').registerCodexBackstageIpc(ipcMain, { sessionManager });
+  ipcMain.on('hub:ui-theme', (_event, theme) => sessionManager.setPresentationTheme?.(theme));
 
   const lastResizeBySid = new Map();
   ipcMain.handle('hub:feedback-ping', () => ({ok:true}));

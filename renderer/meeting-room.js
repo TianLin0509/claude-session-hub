@@ -2299,7 +2299,7 @@ if (typeof document !== 'undefined') (function () {
       : '等你抛话题';
 
     // D1 Phase 4(2026-05-05 道雪): AI 群聊角色 PNG 头像 stack(与卡片头像一致)
-    //   groupChat uses company logos instead of slot-bound Pokemon avatars.
+    // Brand character artwork is shared with ordinary chat cards.
     const slots = _getGcSlots(meeting);
     const avatarsHtml = sids.map((sid, idx) => {
       const slot = slots[idx] || {};
@@ -2446,9 +2446,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _groupLogoSrc(kind) {
-    // *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
-    const base = String(kind || 'claude').replace(/-resume$/, '');
-    return `assets/ai-logos/${escapeHtml(['deepseek-acp','deepseek-legacy'].includes(base) ? 'deepseek' : base)}.svg`;
+    return _avatarSrcFor(kind) || '';
   }
 
   function _formatGroupChatTime(ts) {
@@ -2456,7 +2454,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupAvatar(slot, isUser) {
-    if (isUser) return '<div class="mr-gc-avatar mr-gc-avatar-user">我</div>';
+    if (isUser) return `<div class="mr-gc-avatar mr-gc-avatar-user"><img src="${require('./chat-avatar').USER_AVATAR_SRC}" alt="你 · AI Hub" /></div>`;
     if (!slot) return '<div class="mr-gc-avatar mr-gc-avatar-fallback">AI</div>';
     const label = slot.displayLabel || slot.label || slot.kind || 'AI';
     const title = `打开 ${label} 的 CLI 会话`;

@@ -45,10 +45,10 @@ const CODEX_THEME = `<?xml version="1.0" encoding="UTF-8"?>
 </array></dict></plist>
 `;
 
-function ensureThemeFile(home, extension, contents) {
+function ensureThemeFile(home, extension, contents, slug = THEME_SLUG) {
   if (!path.isAbsolute(home)) throw new Error('CLI theme home must be absolute');
   const directory = path.join(home, 'themes');
-  const file = path.join(directory, THEME_SLUG + extension);
+  const file = path.join(directory, slug + extension);
   fs.mkdirSync(directory, { recursive: true });
   if (fs.existsSync(file)) {
     if (fs.readFileSync(file, 'utf8') !== contents) throw new Error('Existing CLI theme differs: ' + file);
@@ -75,4 +75,4 @@ function ensureCodexWarmGoldTheme(env = process.env) {
   return THEME_SLUG;
 }
 
-module.exports = { THEME_SLUG, CLAUDE_THEME, CODEX_THEME, ensureClaudeWarmGoldTheme, ensureCodexWarmGoldTheme };
+module.exports = { THEME_SLUG, CLAUDE_THEME, CODEX_THEME, ensureThemeFile, ensureClaudeWarmGoldTheme, ensureCodexWarmGoldTheme };
