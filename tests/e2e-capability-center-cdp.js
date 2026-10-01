@@ -30,10 +30,11 @@ async function main(){
   const shot=async(name)=>{const s=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));};
   try{
     hub=await launchIsolatedHub({dataDir:data,port:await freePort(),windowMode:'visible',label:'capabilities',extraEnv:{
-      CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
+      CLAUDE_HUB_AGENT_RUNTIME:'native',CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,
       HUB_SESSION_SEARCH_CODEX_ROOTS:empty,HUB_SESSION_SEARCH_CLAUDE_ROOTS:empty,HUB_SESSION_SEARCH_KIMI_ROOTS:empty,HUB_SESSION_SEARCH_GEMINI_ROOTS:empty,
       CLAUDE_HUB_ACCOUNT_FIXTURE:path.resolve('tests/fixtures/account-center-cli.js'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl')}});
     result.pid=hub.pid;cdp=await connectFirstPage(hub);await until('typeof ipcRenderer!=="undefined" && typeof sessions!=="undefined"','renderer ready');
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await pause(350);
     await click('#btn-rail-capabilities');await until('document.querySelectorAll("#capability-page .cp-row").length>10','catalog');
     assert.equal(await cdp.eval('document.querySelectorAll("#scene-rail [data-action=open-capabilities]").length'),1);
     assert.equal(await cdp.eval('getComputedStyle(document.getElementById("session-sidebar")).visibility'),'hidden');
@@ -84,21 +85,24 @@ async function main(){
     await cdp.eval('document.getElementById("cp-search").value="";document.getElementById("cp-search").dispatchEvent(new Event("input",{bubbles:true}))');
     await cdp.eval('document.getElementById("cp-scope").value="conflict";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
     assert.equal(await cdp.eval('document.querySelectorAll(".cp-row").length'),1);await shot('03-conflict');
-    await click('[data-cp-tab="runtime"]');await until('document.querySelector(".cp-notice")?.innerText.includes("选择")','no session runtime');
+    await click('[data-hw-tab="context"]');await click('[data-hw-context="capabilities"]');await until('document.querySelector(".cp-notice")?.innerText.includes("选择")','no session runtime');
     assert.equal(await cdp.eval('document.querySelectorAll(".cp-row").length'),0);result.checks.push('没有原生回执时不把磁盘技能标为已加载');
-    await click('[data-cp-action="close"]');
+    await click('[data-hw-close]');
     const s=await cdp.eval('ipcRenderer.invoke("create-session",'+JSON.stringify({kind:'codex',opts:{cwd,model:'gpt-6-astra',effort:'medium',mcpProfile:'none'}})+')');assert.ok(s.id,JSON.stringify(s));
     await until(`sessions.get(${JSON.stringify(s.id)})?.nativeRuntime?.state==="idle"`,'native ready');
-    await click('#btn-rail-capabilities');await click('[data-cp-tab="runtime"]');
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await pause(350);
+    await click('#btn-rail-capabilities');await click('[data-hw-tab="context"]');await click('[data-hw-context="capabilities"]');
     await until('document.querySelector("#capability-page").innerText.includes("fixture-mcp")','native discovery');
     assert.ok((await cdp.eval('document.querySelector("#capability-page").innerText')).includes('原生已发现'));await shot('04-native-runtime');
     assert.ok((await cdp.eval('document.querySelector("#capability-page").innerText')).includes('插件会话状态未确认'));
     assert.equal(fs.readFileSync(path.join(root,'trace.jsonl'),'utf8').includes('"method":"plugin/list"'),false);
     result.checks.push('真实 Hub → IPC → 当前原生协议子进程，技能与 MCP 查询成功（协议夹具，未调用模型）');
-    await click('#btn-rail-memory');await until('!document.getElementById("memory-page").hidden','memory open');assert.equal(await cdp.eval('document.getElementById("capability-page").hidden'),true);
-    await click('#btn-rail-capabilities');await until('document.getElementById("memory-page").hidden','memory closes');
+    await click('[data-hw-tab="memory"]');await until('!document.getElementById("memory-page").hidden','memory open');assert.equal(await cdp.eval('document.getElementById("capability-page").hidden'),true);
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await pause(350);
+    await click('[data-hw-tab="tools"]');await until('document.getElementById("memory-page").hidden','memory closes');
     await click('#btn-rail-accounts');await until('!document.getElementById("account-page").hidden','accounts opens');
     assert.equal(await cdp.eval('document.getElementById("capability-page").hidden'),true);
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await pause(350);
     await click('#btn-rail-capabilities');await until('document.getElementById("account-page").hidden','accounts closes');
     await click('[data-cp-tab="catalog"]');await cdp.eval('document.getElementById("cp-scope").value="all";document.getElementById("cp-scope").dispatchEvent(new Event("change",{bubbles:true}))');
     await cdp.send('Emulation.setDeviceMetricsOverride',{width:860,height:800,deviceScaleFactor:1,mobile:false});await shot('05-compact');
@@ -114,7 +118,7 @@ async function main(){
     result.checks.push('权限与技能页互斥，600px 对比表内部滚动，浅色主题截图');
     write('.agents/skills/newly-shared/SKILL.md','---\nname: newly-shared\ndescription: refresh detects newly installed skill\n---');
     await click('[data-cp-action="refresh"]');await until('document.querySelector("#capability-page").innerText.includes("newly-shared")','refresh new entry');
-    await click('[data-cp-tab="runtime"]');await until('document.querySelector("#capability-page").innerText.includes("fixture-mcp")','runtime before close');
+    await click('[data-hw-tab="context"]');await click('[data-hw-context="capabilities"]');await until('document.querySelector("#capability-page").innerText.includes("fixture-mcp")','runtime before close');
     const closed=await cdp.eval('ipcRenderer.invoke("close-session",'+JSON.stringify(s.id)+')');assert.ok(closed.ok,JSON.stringify(closed));
     await until('!document.querySelector("#capability-page").innerText.includes("fixture-mcp")','closed connection invalidates rows');
     result.checks.push('会话关闭后立即移除过期的原生加载回执');

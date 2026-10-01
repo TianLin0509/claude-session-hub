@@ -73,7 +73,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 
 ## 记忆与昨日之我
 
-- 记忆页是左侧第六个功能按钮，三个 tab：当前上下文、记忆文件库、造梦。只有「当前上下文」跟随聚焦 session（群聊先打开成员 session）；文件库与造梦是全局入口。
+- 记忆与工具统一从左侧「资源」进入：工具含能力库与 AI 覆盖对比，记忆含记忆文件库与造梦，当前会话含上下文与工具回执。「回顾」含备忘与昨日之我；原备忘仍可从速记抽屉操作。页面容器在 `renderer/hub-workspaces.js`，A 清瓷白样式在 `renderer/styles/porcelain-workspaces.css`，数据与操作仍归原模块管理。只有「当前上下文」跟随聚焦 session（群聊先打开成员 session）；文件库与造梦是全局入口。
 - 加载证据要分清：磁盘存在、预计加载、已发送、正文已读取不能混称，没有原生证据就标未知。Claude `InstructionsLoaded` 只证明加载路径，没有正文快照，磁盘预览须标注「当前磁盘内容，非当时快照」。Codex 注入由 `core/memory-native-context.js` worker 从绑定 rollout 提取 AGENTS 指令和 developer Memory 块。
 - 临时目录不自动复制 AGENTS.md、不默认 git init；工作区祖先规则随真实消息发送并留回执。文件库折叠未改动的旧副本，手改和未知的保留；全局规则有差异只提示不覆盖。只读清单：`scripts/audit-memory-rules.js`。
 - 造梦由普通实体 session 执行，素材来自昨日之我 SQLite 正文导出的任务快照；原生 `MEMORY.md` 和规则文件只读，产物只写 Hub 数据目录的 `DREAM_INDEX.md` 与 `topics/*.md`，校验后原子发布，成功才推进整理游标。

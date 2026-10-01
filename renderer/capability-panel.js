@@ -133,8 +133,11 @@ function createCapabilityPanel({document,ipcRenderer,escapeHtml:esc,getActiveSes
     }catch(e){error=e.message;sharing=null;}
     finally{shareBusy=false;if(!page.hidden)render();}
   }
-  function close(){if(!page)return;page.hidden=true;epoch++;busy=false;document.body.classList.remove('capabilities-open');document.getElementById('btn-rail-capabilities')?.setAttribute('aria-expanded','false');}
-  async function open(){
+  function close(){if(!page)return;page.hidden=true;epoch++;busy=false;document.body.classList.remove('capabilities-open');document.getElementById('btn-rail-capabilities')?.setAttribute('aria-expanded','false');window.hubWorkspaces?.panelClosed('capabilities');}
+  async function open(options = {}){
+    if (options.tab === 'runtime' || options.tab === 'catalog' || options.tab === 'coverage') {
+      tab = options.tab; runtime = null; sessionId = getActiveSessionId() || ''; selected = '';
+    } else if (tab === 'runtime') { tab = 'catalog'; runtime = null; }
     if(!page){
       page=document.createElement('section');page.id='capability-page';page.className='cp-page';page.setAttribute('aria-label','技能与工具');document.body.appendChild(page);
       page.addEventListener('click',e=>{

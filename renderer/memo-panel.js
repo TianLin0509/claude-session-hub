@@ -51,8 +51,8 @@ function createMemoPanel(deps) {
       <div class="memo-item-body">
         <span class="memo-item-text">${escapeMemoHtml(item.text)}</span>
         <span class="memo-item-actions">
-          <button class="memo-item-btn memo-copy-btn" title="复制">📋</button>
-          <button class="memo-item-btn memo-del-btn" title="删除">🗑</button>
+          <button class="memo-item-btn memo-copy-btn" title="复制">复制</button>
+          <button class="memo-item-btn memo-del-btn" title="删除">删除</button>
         </span>
       </div>
     </div>
@@ -114,6 +114,16 @@ function createMemoPanel(deps) {
     syncToggleButtons(open);
     if (open) renderList();
     refitActiveTerminal();
+    if (!open) document.defaultView?.hubWorkspaces?.panelClosed('memo');
+  }
+
+  function open() {
+    const panel = document.getElementById('memo-panel');
+    if (!panel) return;
+    panel.style.display = 'flex';
+    localStorage.setItem(MEMO_OPEN_KEY, 'true');
+    syncToggleButtons(true);
+    renderList();
   }
 
   function close() {
@@ -123,6 +133,7 @@ function createMemoPanel(deps) {
     localStorage.setItem(MEMO_OPEN_KEY, 'false');
     syncToggleButtons(false);
     refitActiveTerminal();
+    document.defaultView?.hubWorkspaces?.panelClosed('memo');
     return true;
   }
 
@@ -168,7 +179,7 @@ function createMemoPanel(deps) {
         const text = item.querySelector('.memo-item-text').textContent;
         clipboard.writeText(text);
         copyBtn.textContent = '✓';
-        setTimeout(() => { copyBtn.textContent = '📋'; }, 1200);
+        setTimeout(() => { copyBtn.textContent = '复制'; }, 1200);
         return;
       }
       const delBtn = e.target.closest('.memo-del-btn');
@@ -189,6 +200,7 @@ function createMemoPanel(deps) {
   }
 
   return {
+    open,
     addItem,
     clearAll,
     close,

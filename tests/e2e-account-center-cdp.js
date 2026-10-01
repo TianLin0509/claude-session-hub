@@ -73,7 +73,7 @@ async function main() {
   const text = sel => cdp.eval(`document.querySelector(${JSON.stringify(sel)})?.innerText||''`);
   const chrome = new HubChrome({ root: chromeRoot });
   try {
-    hub = await launchIsolatedHub({ dataDir: data, port: await port(), windowMode: 'background', label: 'accounts-center', extraEnv: { CLAUDE_HUB_HOME_DIR: home, HUB_ACCOUNTS_FIXTURE: fixture, DEEPSEEK_API_KEY: '', CODEX_SQLITE_HOME: '', CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'), AI_HUB_WORKSPACE_ROOT: root,
+    hub = await launchIsolatedHub({ dataDir: data, port: await port(), windowMode: 'background', label: 'accounts-center', extraEnv: { CLAUDE_HUB_AGENT_RUNTIME: 'native', CLAUDE_HUB_HOME_DIR: home, HUB_ACCOUNTS_FIXTURE: fixture, DEEPSEEK_API_KEY: '', CODEX_SQLITE_HOME: '', CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'), AI_HUB_WORKSPACE_ROOT: root,
       CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE: path.resolve('tests/fixtures/codex-app-server.js'), CLAUDE_HUB_NATIVE_FIXTURE_STORE: path.join(root, 'threads.json'),
       CLAUDE_HUB_ACCOUNT_FIXTURE: path.resolve('tests/fixtures/account-center-cli.js'),
       HUB_SESSION_SEARCH_CODEX_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_CLAUDE_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_KIMI_ROOTS: path.join(root, 'empty'), HUB_SESSION_SEARCH_GEMINI_ROOTS: path.join(root, 'empty') } });
@@ -81,19 +81,20 @@ async function main() {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     await until('typeof accountCenterPanel!=="undefined"', 'renderer initialized');
 
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await sleep(350);
     await click('#btn-rail-accounts'); await until('document.querySelectorAll(".ac-company").length===7', 'seven companies');
     assert.equal(await chrome.running(), false, 'opening the page is passive');
     const main = '.ac-company[data-site="chatgpt"]';
     assert.match(await text(main), /main@example\.com/);
     assert.match(await text(main), /访问过网页/);
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-tabs [role=tab]").length'), 6);
-    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(251, 252, 255)');
+    assert.equal(await cdp.eval('getComputedStyle(document.querySelector("#account-page")).backgroundColor'), 'rgb(249, 251, 254)');
     assert.equal(await cdp.eval('document.querySelectorAll("[data-ac=check],[data-ac=cancel],.ac-progress").length'), 0);
     assert.equal(await cdp.eval('document.querySelectorAll(".ac-company[data-site=chatgpt] .ac-account").length'), 2);
     await snap('01-clear-white');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 2560, height: 960, deviceScaleFactor: 1, mobile: false });
     const wide = await cdp.eval('(()=>{const page=document.querySelector("#account-page").getBoundingClientRect(), card=document.querySelector(".ac-company").getBoundingClientRect(), rail=document.querySelector("#scene-rail").getBoundingClientRect();return {pageWidth:page.width,cardWidth:card.width,left:card.left-page.left,right:page.right-card.right,railWidth:rail.width,pageLeft:page.left,railRight:rail.right}})()');
-    assert.ok(wide.pageWidth > 2000 && wide.cardWidth <= 1290 && Math.abs(wide.left - wide.right) < 40 && wide.railWidth >= 180 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
+    assert.ok(wide.pageWidth > 2000 && wide.cardWidth > wide.pageWidth - 100 && Math.abs(wide.left - wide.right) < 40 && wide.railWidth === 72 && Math.abs(wide.pageLeft - wide.railRight) < 2, JSON.stringify(wide));
     await snap('01-clear-white-wide');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
     result.checks.push('白色六分类界面、七家公司和双 ChatGPT；进入页面不启动浏览器，无主动检查入口');
@@ -172,6 +173,7 @@ async function main() {
     await click('.ac-connections>summary');
     await click('[data-ac="close"]');
     assert.equal(await cdp.eval('document.querySelector("#account-page").hidden'), true);
+    await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await sleep(350);
     await click('#btn-rail-accounts');
     await until('!!document.querySelector(".ac-company")', 'reopen preserves workspace');
     const publicState = JSON.stringify(await cdp.eval('ipcRenderer.invoke("hub-accounts:state")'));

@@ -68,17 +68,19 @@ test('a stale preview with session metadata still shows the backend error',()=>{
 });
 
 test('reader file navigation reveals successful Hub previews and preserves failed or superseded reads',async()=>{
-  const vm=require('node:vm');let closed=0;
-  const context=vm.createContext({previewSequence:1,isOpen:()=>true,close:()=>closed++,openPath:async()=>({ok:true,type:'preview'})});
+  const vm=require('node:vm');let closed=0,writingHidden=0;
+  const context=vm.createContext({previewSequence:1,isOpen:()=>true,close:()=>closed++,openPath:async()=>({ok:true,type:'preview'}),window:{__writingHide:()=>writingHidden++}});
   const start=SEARCH_SOURCE.indexOf('  async function openReaderPath('),end=SEARCH_SOURCE.indexOf('  function renderPreview(',start);
   vm.runInContext(SEARCH_SOURCE.slice(start,end),context);
-  await context.openReaderPath('report.html','C:/work');assert.equal(closed,1);
+  await context.openReaderPath('report.html','C:/work');assert.equal(closed,1);assert.equal(writingHidden,1);
   context.openPath=async()=>({ok:false,error:'missing'});
   await assert.rejects(context.openReaderPath('missing.html'),/missing/);assert.equal(closed,1);
   context.openPath=async()=>({ok:true,type:'external'});await context.openReaderPath('slides.pptx');assert.equal(closed,1);
   let complete;context.openPath=()=>new Promise(resolve=>{complete=resolve;});
   const pending=context.openReaderPath('slow.html');context.previewSequence++;
   complete({ok:true,type:'preview'});await pending;assert.equal(closed,1);
+  assert.equal(writingHidden,1,'failed, external and superseded opens preserve writing');
+  context.openPath=async()=>({ok:true,type:'file-manager'});await context.openReaderPath('output');assert.equal(writingHidden,2);
 });
 
 test('an indexed result upgrades a selected provisional title preview',()=>{

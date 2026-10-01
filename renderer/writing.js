@@ -209,7 +209,7 @@
     const head = h('div', { class: 'wr-card wr-studio-intro' },
       h('div', { class: 'wr-row' },
         h('button', { class: 'wr-btn primary big', disabled: st.creating, text: st.creating ? '正在建写作群…' : '＋ 新文章', onclick: newArticle }),
-        h('div', { class: 'wr-muted', style: { flex: 1 } }, '新文章会开一个写作群聊（Claude、Codex、DeepSeek）。在群里说说中心思想就行：AI 会自己决定先问你几个问题还是直接动笔，各出一份稿；你用大白话点评，最后点名一位汇总改定。定稿之后，AI 会自动读这次的写作过程，优化「文风」。')));
+        h('details', { style: { flex: 1 } }, h('summary', { text: '创作流程' }), '新文章会开一个写作群聊（Claude、Codex、DeepSeek）。在群里说说中心思想就行：AI 会自己决定先问你几个问题还是直接动笔，各出一份稿；你用大白话点评，最后点名一位汇总改定。定稿之后，AI 会自动读这次的写作过程，优化「文风」。')));
     const cards = st.articles.map((a) => {
       const status = a.hasFinal ? h('span', { class: 'wr-pill ok', text: '已定稿' })
         : a.drafts.length ? h('span', { class: 'wr-pill brand', text: `${a.drafts.length} 份稿` })
@@ -226,10 +226,15 @@
           h('button', { class: 'wr-btn small', disabled: !exists, text: '打开群聊', onclick: () => openMeeting(a.meetingId) }),
           a.hasFinal ? h('button', { class: 'wr-btn small', text: st.finalOf === a.dir ? '收起定稿' : '看定稿', onclick: () => { st.finalOf = st.finalOf === a.dir ? null : a.dir; renderStudio(); } }) : null,
           a.hasFinal && a.voice && ['failed', 'rejected'].includes(a.voice.status) ? h('button', { class: 'wr-btn small', text: '重新优化文风', onclick: () => guarded(async () => { await call('writing:voice-evolve', { dir: a.dir }); loadStudio(); }) }) : null,
-          h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: a.dir }) })),
-        st.finalOf === a.dir ? h('div', { class: 'wr-article-final', id: `wr-final-${a.name}` }, h('div', { class: 'wr-muted', text: '加载定稿…' })) : null);
+          h('button', { class: 'wr-btn small', text: '文件夹', onclick: () => call('writing:article-open-dir', { dir: a.dir }) })));
     });
-    view.replaceChildren(head, h('div', { class: 'wr-articles' }, ...(cards.length ? cards : [h('div', { class: 'wr-empty', text: '还没有文章。点上面的「＋ 新文章」开始。' })])));
+    const finalArticle = st.articles.find(a => a.dir === st.finalOf);
+    const preview = h('section', { class: 'wr-studio-preview wr-card', 'aria-label': '定稿预览' },
+      h('div', { class: 'wr-section-title', text: finalArticle ? finalArticle.title || '定稿预览' : '定稿预览' }),
+      finalArticle ? h('div', { class: 'wr-article-final', id: `wr-final-${finalArticle.name}` }, h('div', { class: 'wr-muted', text: '加载定稿…' }))
+        : h('div', { class: 'wr-empty', text: '选一篇已定稿的文章，点击「看定稿」在这里阅读。创作与点评仍在文章的写作群里进行。' }));
+    view.replaceChildren(head, h('div', { class: 'wr-studio-layout' },
+      h('div', { class: 'wr-articles' }, ...(cards.length ? cards : [h('div', { class: 'wr-empty', text: '还没有文章。点上面的「＋ 新文章」开始。' })])), preview));
     if (st.finalOf) {
       const a = st.articles.find((x) => x.dir === st.finalOf);
       if (a) call('writing:article-final', { dir: a.dir }).then((r) => { const box = document.getElementById(`wr-final-${a.name}`); if (box) box.replaceChildren(paper(r.text)); }).catch(() => {});
@@ -430,6 +435,8 @@
     buildSkeleton();
     if (!root) return;
     S.opened = visible;
+    document.body.classList.toggle('writing-open', visible);
+    if (visible) window.hubWorkspaces?.close();
     const btn = document.getElementById('btn-writing');
     root.style.display = visible ? 'flex' : 'none';
     if (btn) {
