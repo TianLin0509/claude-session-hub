@@ -22,6 +22,7 @@
   <!-- @community-strip 初心投研、学习 -->
   <link rel="stylesheet" href="chuxin.css">
   <link rel="stylesheet" href="study.css">
+  <link rel="stylesheet" href="writing.css">
   <!-- @community-end -->
   <link rel="stylesheet" href="dev-workbench.css">
   <!-- @community-strip 投资联赛 -->
@@ -105,6 +106,10 @@
       <button type="button" class="btn-shell-nav" id="btn-rail-memory" data-action="open-memory" title="记忆" aria-label="记忆" aria-expanded="false"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4ZM4 7l8 4 8-4M12 11v10"/></svg></span><span class="btn-label">记忆</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-capabilities" data-action="open-capabilities" title="技能与工具" aria-label="技能与工具" aria-expanded="false" aria-controls="capability-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2 4 6v6l8 4 8-4V6l-8-4ZM4 12v6l8 4 8-4v-6M12 16v6"/></svg></span><span class="btn-label">工具</span></button>
       <button type="button" class="btn-shell-nav" id="btn-rail-accounts" title="账号 · 登录状态与接入配置" aria-label="账号" aria-expanded="false" aria-controls="account-page"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2H4Z"/></svg></span><span class="btn-label">账号</span><b id="accounts-attention" hidden></b></button>
+      <!-- @community-strip 写作 Tab 依赖私人文章库与文风 skill -->
+      <!-- 写作 Tab（2026-09-30）：作品库 / 写作台 / 文风。按田哥要求放在「账号」正下方。 -->
+      <button type="button" class="btn-shell-nav" id="btn-writing" data-writing-entry title="写作 · 作品库、写作台与文风" aria-label="写作"><span class="btn-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></span><span class="btn-label">写作</span></button>
+      <!-- @community-end -->
       </div>
       <div class="rail-spacer"></div>
       <div class="rail-utilities">
@@ -371,6 +376,8 @@
     <div class="chuxin-panel" id="chuxin-panel" style="display:none"></div>
     <!-- 学习面板：Hub 第四主区视图。骨架由 renderer/study.js 自构建。 -->
     <div id="study-panel"></div>
+    <!-- 写作面板：Hub 主区视图，骨架由 renderer/writing.js 自构建。 -->
+    <div id="writing-panel"></div>
     <!-- @community-end -->
     <!-- 开发看板：Hub 第五主区视图。一个群聊=一个任务，数据全部推导自 Hub 自己的会议列表，骨架由 renderer/ran.js 自构建。 -->
     <div id="ran-panel"></div>
@@ -762,6 +769,7 @@
   <!-- @community-strip 初心投研、学习 -->
   <script src="chuxin.js"></script>
   <script src="study.js"></script>
+  <script src="writing.js"></script>
   <!-- @community-else -->
   <!-- <script src="community-welcome.js"></script> -->
   <!-- @community-end -->

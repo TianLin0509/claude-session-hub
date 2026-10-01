@@ -3,7 +3,8 @@ const meetingStore = require('./meeting-store');
 
 // scene 白名单 (与 core/group-chat-scenes.js SCENE_REGISTRY keys 同步)
 //   2026-05-04 道雪: 'dev' 加入 (plan-dev-scenario.md MVP)
-const MEETING_MODES = ['general', 'research', 'dev'];
+//   2026-09-30 'writing' 加入：写作 Tab 的「新文章」一键创建写作群聊
+const MEETING_MODES = ['general', 'research', 'dev', 'writing'];
 
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
@@ -14,6 +15,7 @@ const MODE_TITLE_PREFIX = {
   general: '通用',
   research: '投研',
   dev: '开发',
+  writing: '写作',
 };
 
 function cloneSerialWorkflow(workflow) {
@@ -47,7 +49,7 @@ class MeetingRoomManager {
   constructor() {
     this.meetings = new Map();
     // 各模式独立计数,跨模式不共享
-    this._counters = { general: 0, research: 0, dev: 0 };
+    this._counters = { general: 0, research: 0, dev: 0, writing: 0 };
   }
 
   createMeeting(opts = {}) {

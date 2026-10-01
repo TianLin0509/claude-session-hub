@@ -361,6 +361,7 @@
       if (homeButton) { homeButton.classList.remove('active'); homeButton.removeAttribute('aria-current'); }
       if (window.__chuxinHide) window.__chuxinHide();
       if (window.__ranHide) window.__ranHide();
+      if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
       if (tp) tp.style.display = 'none';
       if (mrp) mrp.style.display = 'none';
       refresh();

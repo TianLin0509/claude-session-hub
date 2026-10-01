@@ -100,6 +100,9 @@ function createMeetingSubAdder(deps) {
     const meeting = meetingManager.getMeeting(meetingId);
     let sessionOpts = { ...(opts || {}), meetingId };
     if (opts && opts.model) sessionOpts.model = opts.model;
+    // @community-strip 写作场景成员：少带工程规则
+    if (meeting && meeting.scene === 'writing') sessionOpts = require('../../core/writing/member-opts.js').withWritingMemberOpts(kind, sessionOpts);
+    // @community-end
 
     let slotId = null;
     if (meeting) {
