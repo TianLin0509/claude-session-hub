@@ -2514,12 +2514,14 @@ if (typeof document !== 'undefined') (function () {
     const prompt = message.sourcePrompt ? `<button type="button" class="mr-gc-prompt-btn" data-gc-view-prompt="${escapeHtml(message.id || '')}" title="查看本轮发给该 AI 的 prompt">查看本轮输入</button>` : '';
     const time = _formatGroupChatTime(answer?.at || message.createdAt);
     const kindCls = slot && slot.kind ? ` ai-name-${slot.kind}` : '';
+    // Resend this turn's question to this member only: visible while nothing is handed in, in 更多 otherwise.
+    const resend = message.sid ? `<button type="button" class="mr-gc-retry-btn${text.trim() ? '' : ' is-failure'}" data-gc-resend-member="${escapeHtml(message.sid)}" data-gc-retry-turn="${escapeHtml(message.turnNum || '')}" title="把本轮问题重新发给这位成员；它写好回答文件后卡片自动更新">重新发送</button>` : '';
     const unread = !!text.trim() && answer?.state !== 'draft';
     return `
       <article ${journal.attributes(meeting, message, escapeHtml)} class="mr-gc-msg ai${slot ? ` slot-${(slot.slotIndex || 0) + 1}` : ''}${text.trim() ? '' : ' answer-missing'}" data-gc-msg-id="${escapeHtml(message.id || '')}" data-user-question="false" data-source-sid="${escapeHtml(message.sid || '')}" data-read-turn="${escapeHtml(message.turnNum || '')}" data-unread-answer="${unread}" data-phase="message" data-answer-state="${escapeHtml(answer ? answer.state : 'none')}">
         ${_renderGroupAvatar(slot, false)}
         <div class="mr-gc-msg-body">
-          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, minimize: true })}</div>
+          <div class="mr-gc-meta"><span class="mr-gc-name${kindCls}">${escapeHtml(message.speaker || (slot && slot.displayLabel) || 'AI')}</span>${badge ? `<span class="mr-gc-to-badge">${escapeHtml(badge)}</span>` : ''}${time ? `<span>${escapeHtml(time)}</span>` : ''}${journal.actions({ copy, prompt, retry: text.trim() ? resend : '', submit: text.trim() ? '' : resend, minimize: true })}</div>
           <div class="mr-gc-bubble-row"><div class="mr-gc-bubble"><div class="gc-journal-reading">${journal.disclosure()}<div class="gc-journal-text">${body}</div></div></div></div>
         </div>
       </article>`;
@@ -3689,6 +3691,33 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
+  // Markdown-answer rooms: resend this turn to one member. Workflow rooms go
+  // through the delivery engine, which re-prompts members that have not delivered.
+  async function _handleGcResendMember(btn, meeting) {
+    if (btn.disabled) return;
+    const sid = btn.getAttribute('data-gc-resend-member');
+    const turnNum = parseInt(btn.getAttribute('data-gc-retry-turn') || '', 10);
+    btn.disabled = true;
+    try {
+      let result;
+      if (Delivery.enabled(meeting) && meeting.serialWorkflow.enabled) {
+        result = await ipcRenderer.invoke('delivery:continue', { meetingId: meeting.id });
+        if (!result?.ok) throw new Error(result?.error || '补发失败');
+      } else {
+        const args = { meetingId: meeting.id, sid, turnNum: Number.isFinite(turnNum) ? turnNum : undefined };
+        result = await ipcRenderer.invoke('groupchat:resend-member', args);
+        if (result?.reason === 'member_busy') {
+          if (!window.confirm('这位成员仍在运行或等待确认，再发一次可能让它重复做。确定重新发送本轮问题吗？')) return;
+          result = await ipcRenderer.invoke('groupchat:resend-member', { ...args, force: true });
+        }
+        if (!result?.ok) throw new Error(result?.reason || '重新发送失败');
+      }
+      _showGcEscapeNotice('已重新发送；它写好回答文件后卡片会自动更新', 'info');
+    } catch (error) {
+      _showGcEscapeNotice('重新发送失败：' + (error && error.message ? error.message : String(error)), 'error');
+    } finally { btn.disabled = false; }
+  }
+
   async function _handleGcRetryParticipant(btn, meeting) {
     if (btn.disabled) return;
     const sid = btn.getAttribute('data-gc-retry-answer');
@@ -4008,6 +4037,13 @@ if (typeof document !== 'undefined') (function () {
       return;
     }
 
+    const resendMemberBtn = _closestInPanel(ev.target, '[data-gc-resend-member]', panel);
+    if (resendMemberBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      await _handleGcResendMember(resendMemberBtn, meeting);
+      return;
+    }
     const retryAnswerBtn = _closestInPanel(ev.target, '[data-gc-retry-answer]', panel);
     if (retryAnswerBtn) {
       ev.preventDefault();

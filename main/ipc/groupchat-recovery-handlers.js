@@ -351,6 +351,34 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     return { ok: true };
   });
 
+  // Markdown-answer rooms (core/group-answer-files.js): resend this turn's
+  // question to one member. It reuses the same turn and answer file, returns
+  // once dispatched (the card updates when the file appears), and does not
+  // wait for other members. A member that still looks busy needs force.
+  ipcMain.handle('groupchat:resend-member', async (_e, { meetingId, sid, turnNum: requestedTurnNum, force = false } = {}) => {
+    if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    if (!require('../../core/group-answer-files').enabled(meeting)) return { ok: false, reason: 'not_answer_file_room' };
+    const memberIndex = Array.isArray(meeting.subSessions) ? meeting.subSessions.indexOf(sid) : -1;
+    if (memberIndex < 0) return { ok: false, reason: 'participant_not_in_meeting' };
+    const session = sessionManager.getSession(sid);
+    const state = session ? require('../../core/session-runtime-truth').getSessionRuntimeTruth(session).state : 'unknown';
+    if (!force && ['starting', 'running', 'waiting'].includes(state)) return { ok: false, reason: 'member_busy', state };
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    const parsed = Number(requestedTurnNum);
+    const turnNum = Number.isInteger(parsed) && parsed > 0 ? parsed : orch.state.currentTurn;
+    const userMsg = (orch.state.messages || []).find(m => m && m.role === 'user' && Number(m.turnNum) === Number(turnNum));
+    if (!userMsg || !String(userMsg.content || '').trim()) return { ok: false, reason: 'no_user_input' };
+    const memberId = (meeting.slotSpecs?.[memberIndex]?.memberId) || `m${memberIndex + 1}`;
+    const task = dispatchGroupChatTurn(meetingId, {
+      userInput: userMsg.content, targetMemberIds: [memberId], reuseTurnNum: turnNum,
+      appendUserMessage: false, dispatchMode: 'retry', turnTimeoutMs: 30 * 60 * 1000,
+    });
+    Promise.resolve(task).catch(err => logger.error('[groupchat:resend-member] dispatch failed:', err));
+    return { ok: true, turnNum, memberId };
+  });
+
   ipcMain.handle('groupchat-resend-participant', async (_e, { meetingId, sid, turnNum: requestedTurnNum } = {}) => {
     if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
     if (typeof dispatchGroupChatTurn !== 'function') return { ok: false, reason: 'retry_unavailable' };

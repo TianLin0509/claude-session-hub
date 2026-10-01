@@ -172,8 +172,34 @@ function answerCardRendering() {
   assert(missing.includes('还没交') && !missing.includes('undefined'));
   const draft = render({ id: 'a3-m1', sid: 's', role: 'assistant', content: '写了一半', answer: { state: 'draft' } }, meeting, members);
   assert(draft.includes('草稿') && draft.includes('写了一半'));
+  // Resend: a visible button while nothing is handed in, tucked into 更多 once it is.
+  const menuOf = html => (html.match(/<details class="gc-journal-menu">[\s\S]*?<\/details>/) || [''])[0];
+  assert(missing.includes('data-gc-resend-member="s"') && !menuOf(missing).includes('data-gc-resend-member'), 'visible on a missing card');
+  const done = render({ id: 'a4-m1', sid: 's', role: 'assistant', turnNum: 4, content: '结论', answer: { state: 'delivered' } }, meeting, members);
+  assert(menuOf(done).includes('data-gc-resend-member="s"'), 'in 更多 on a delivered card');
+}
+
+async function resendMemberIpc() {
+  const handlers = {}, sent = [];
+  let state = 'idle';
+  const meeting = { id: 'room', groupChat: true, subSessions: ['s1', 's2'], slotSpecs: [{ memberId: 'm1' }, { memberId: 'm2' }] };
+  const orch = { state: { currentTurn: 3, currentMode: 'group', messages: [{ role: 'user', turnNum: 3, content: '原问题' }] } };
+  require('../main/ipc/groupchat-recovery-handlers').registerGroupchatRecoveryIpc({ handle: (n, fn) => { handlers[n] = fn; } }, {
+    dispatchGroupChatTurn: (_id, args) => { sent.push(args); return new Promise(() => {}); },
+    getHubDataDir: () => '', getActiveWatchers: () => new Map(), groupchat: { getOrchestrator: () => orch },
+    meetingManager: { getMeeting: () => meeting }, logger: { error() {}, log() {}, warn() {} }, sendToRenderer() {},
+    sessionManager: { getSession: () => ({ agentRuntime: 'pty', status: 'running', cliRuntime: { state, connection: 'connected' } }) }, transcriptTap: {} });
+  const call = args => handlers['groupchat:resend-member'](null, { meetingId: 'room', sid: 's2', ...args });
+  state = 'running';
+  assert.equal((await call()).reason, 'member_busy', 'a busy member needs confirmation'); assert.equal(sent.length, 0);
+  const forced = await call({ force: true });
+  assert.equal(forced.ok, true, 'returns without waiting for the answer, even while the turn is still running');
+  assert.deepEqual({ target: sent[0].targetMemberIds, turn: sent[0].reuseTurnNum, input: sent[0].userInput, append: sent[0].appendUserMessage },
+    { target: ['m2'], turn: 3, input: '原问题', append: false }, 'same turn, same question, only this member');
+  state = 'idle'; assert.equal((await call({ turnNum: 3 })).ok, true);
+  meeting.answerSource = 'transcript'; assert.equal((await call()).reason, 'not_answer_file_room', 'legacy rooms keep their own retry');
 }
 
 (async () => {
-  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, acceptedCardsKeepTheirVersion, answerCardRendering, deliverySkip, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
+  for (const fn of [modeRules, readStates, cardsOnlyShowFiles, acceptedCardsKeepTheirVersion, answerCardRendering, resendMemberIpc, deliverySkip, deliveryOwnerSkipEnds]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
