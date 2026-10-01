@@ -46,7 +46,8 @@ async function main(){
   await until('normal row',`!!document.querySelector('[data-session-id="${ordinary.id}"]')`);await click(`[data-session-id="${ordinary.id}"]`);await until('normal selected',`activeSessionId===${j(ordinary.id)}`);
   assert.equal(await cdp.eval('document.getElementById("terminal-panel").classList.contains("assistant-session")'),false);
   await click('.floating-input-box');await cdp.send('Input.insertText',{text:'普通会话独立草稿'});await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});await click('#btn-assistant');await until('assistant returns',`activeSessionId===${j(id)}`);
-  assert.match(await cdp.eval('document.querySelector(".floating-input-box").textContent'),/助理下一轮的草稿/);assert.doesNotMatch(await cdp.eval('document.querySelector(".floating-input-box").textContent'),/普通会话独立草稿/);assert.equal(trace().filter(r=>r.method==='thread/start').length,2);
+  assert.match(await cdp.eval('document.querySelector(".floating-input-box").textContent'),/助理下一轮的草稿/);assert.doesNotMatch(await cdp.eval('document.querySelector(".floating-input-box").textContent'),/普通会话独立草稿/);
+  await until('ordinary native binding',`sessions.get(${j(ordinary.id)})?.nativeRuntime?.connection==="connected"`);assert.equal(trace().filter(r=>r.method==='thread/start').length,2);
   result.checks.push('普通会话样式正常，返回同一助理实体；双方草稿独立');
   await click('.assistant-notifications summary');await until('folded notices','document.querySelector(".assistant-notifications").open');await click('.assistant-notifications summary');result.checks.push('新回复入口折叠在普通工具栏，无第二个聊天页');
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1050,height:800,deviceScaleFactor:1,mobile:false});await wait(250);await shot('05-final-compact');assert.equal(await cdp.eval('document.documentElement.scrollWidth>innerWidth'),false);result.checks.push('较窄窗口无页面横向溢出');result.passed=true;
