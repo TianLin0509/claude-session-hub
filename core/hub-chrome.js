@@ -71,13 +71,14 @@ function hostMatches(hostKey, host) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 class HubChrome {
-  constructor({ root, env = process.env, spawnImpl = spawn, identities = DEFAULT_IDENTITIES, executable, now = Date.now } = {}) {
+  constructor({ root, env = process.env, spawnImpl = spawn, identities = DEFAULT_IDENTITIES, executable, now = Date.now, proxy } = {}) {
     this.root = root || defaultRoot(env);
     this.env = env;
     this.spawn = spawnImpl;
     this.identities = identities;
     this.executable = executable || (() => chromeExecutable(env));
     this.now = now;
+    this.proxy = proxy;
     this.starting = null;
     this.contexts = new Map();
   }
@@ -304,8 +305,19 @@ class HubChrome {
       + `Hub 的网页工具都在这里工作，请不要关闭这个窗口。</body>`;
     if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== html) fs.writeFileSync(file, html, 'utf8');
   }
+  // The Hub's proxy (hub-config.js) for every launch. Without it Chrome follows the Windows
+  // system proxy, which the proxy client may switch off; then ChatGPT never loads (measured
+  // 2026-09-30: navigating to chatgpt.com timed out, with the Hub proxy it loaded at once).
+  proxyServer() {
+    if (this.proxy === undefined) {
+      try { this.proxy = require('./hub-config').getConfig().proxy || ''; } catch { this.proxy = ''; }
+    }
+    try { return ['http:', 'https:', 'socks4:', 'socks5:'].includes(new URL(this.proxy).protocol) ? this.proxy : ''; } catch { return ''; }
+  }
   launchArgs(identityId, { debug = true, visible = false, headless = false, url, urls } = {}) {
+    const proxy = this.proxyServer();
     return [
+      ...(proxy ? ['--proxy-server=' + proxy] : []),
       '--user-data-dir=' + this.root,
       '--profile-directory=' + identityId,
       ...(debug ? ['--remote-debugging-port=0'] : []),
