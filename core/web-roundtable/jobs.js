@@ -3,6 +3,9 @@ const fs=require('fs'),path=require('path');
 const {spawn}=require('child_process');
 const store=require('./store');
 const adapters=require('./providers');
+// An answer still growing is waited for: only this long without new text ends the wait, up to
+// the hard cap (long reasoning answers took more than the former fixed three minutes).
+const ANSWER_IDLE_MS=180000,ANSWER_MAX_MS=15*60000;
 const terminal=new Set(['succeeded','failed','needs_attention','cancelled','interrupted','partial']);
 function text(value,name='prompt',max=40000){if(typeof value!=='string'||!value.trim()||value.length>max)throw Error(`${name} must contain 1..${max} characters (no truncation is performed)`);return value;}
 function status(id){const j=store.read(id);if(!terminal.has(j.state)&&((j.pid&&!store.alive(j.pid))||(!j.pid&&Date.now()-Date.parse(j.updatedAt)>30000)))return {...j,state:'interrupted',error:'Worker exited or failed to start. Resume roundtable, or collect the provider reply without resending.'};return j;}
@@ -86,7 +89,7 @@ async function runWeb(job,save,mode,runtime={}){
       await adapters.send(browser.page,provider);
     }
     save({state:'waiting',error:null});
-    const end=Date.now()+180000;let last='',stable=0;loginCount=0;
+    const hardEnd=Date.now()+ANSWER_MAX_MS;let end=Date.now()+ANSWER_IDLE_MS,last='',stable=0,progress='';loginCount=0;
     do{
       checkCancel();snap=await adapters.snapshot(browser.page,provider,job.input.prompt);
       if(adapters.validUrl(provider,snap.url)&&snap.url!==job.url)save({url:snap.url});
@@ -94,6 +97,8 @@ async function runWeb(job,save,mode,runtime={}){
       if(snap.challenge)challenged();
       if(loginCount>=4||snap.challenge)throw Object.assign(Error('Official website requires login or human verification after submission; not resending'),{attention:true,recovery:snap.challenge?'human_verification':'login_required'});
       const answer=snap.answers.at(-1),baseline=job.baseline;
+      const seen=snap.answers.length+'|'+(answer?.text||'');
+      if(seen!==progress){progress=seen;end=Math.min(hardEnd,Date.now()+ANSWER_IDLE_MS);}
       const changed=answer&& (snap.answers.length>baseline.count || (answer.key&&answer.key!==baseline.last?.key));
       const receipt=snap.echo>baseline.echo;
       if(receipt&&!job.promptEchoSeen)save({promptEchoSeen:true});
