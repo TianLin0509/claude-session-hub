@@ -168,6 +168,16 @@ test('a task waits while a person has the Hub browser and runs after the handoff
   await jobs.runWeb(job,p=>Object.assign(job,p),'run',{hubRoot,open:async()=>{opened=Date.now();throw Error('opened');}});
   assert.ok(opened-started>=1000,'no page was opened during the handoff');assert.match(job.error,/opened/);
 });
+test('a closed ordinary handoff resumes a roundtable without account-page polling',async()=>{
+  const guard=require('../core/web-risk-guard'),hubRoot=process.env.HUB_CHROME_ROOT;
+  guard.recordChallenge(hubRoot,{identity:'main',site:'deepseek'});
+  guard.startHandoff(hubRoot,{identity:'main',site:'deepseek'});
+  const state=guard.read(hubRoot);state.handoff.mode='ordinary';fs.writeFileSync(path.join(hubRoot,'web-risk.json'),JSON.stringify(state));
+  const job={id:'ordinary-handoff-closed',input:{provider:'deepseek',prompt:'q'}};let opened=false;
+  await jobs.runWeb(job,p=>Object.assign(job,p),'run',{hubRoot,open:async()=>{opened=true;throw Error('opened after close');}});
+  assert.equal(opened,true);assert.equal(guard.read(hubRoot).handoff,null);assert.equal(guard.blocked(hubRoot,'main','deepseek'),null);
+  guard.clearSite(hubRoot,'main','deepseek');
+});
 test('an answer that keeps growing is waited for beyond three minutes; a silent one is not',async()=>{
   const now=Date.now;let elapsed=0;Date.now=()=>now()+elapsed;
   const run=async(id,grows)=>{
