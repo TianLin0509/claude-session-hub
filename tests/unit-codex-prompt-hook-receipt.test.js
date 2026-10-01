@@ -6,12 +6,12 @@ const {createCodexPtyHookHandler}=require('../main/codex-pty-hook');
 const {PromptSubmissionReceipts}=require('../core/prompt-submission-receipts');
 
 test('Codex prompt hook confirms exact submitted text before a delayed transcript and never needs a retry',async()=>{
-  const manager=new EventEmitter(),tap=new EventEmitter(),handlers=new Map(),updates=[];
+  const manager=new EventEmitter(),tap=new EventEmitter(),handlers=new Map(),updates=[],observed=[];
   const session={id:'hub',kind:'codex',agentRuntime:'pty',codexSid:'native-thread',transcriptPath:'rollout'};
   manager.getSession=id=>id===session.id?session:null;
   manager.noteAgentTurnStarted=(sessionId,event)=>manager.emit('agent-turn-started',{...event,sessionId,observedAt:event.startedAt});
   tap.bindCodexFromHook=async()=>true;tap.notePrompt=()=>{};
-  const registration=registerPromptSubmitIpc({handle:(name,handler)=>handlers.set(name,handler)},{sessionManager:manager,transcriptTap:tap,sendToRenderer:(channel,payload)=>updates.push({channel,payload})});
+  const registration=registerPromptSubmitIpc({handle:(name,handler)=>handlers.set(name,handler)},{sessionManager:manager,transcriptTap:tap,sendToRenderer:(channel,payload)=>updates.push({channel,payload}),onPromptReceipt:payload=>observed.push(payload)});
   const hook=createCodexPtyHookHandler({sessionManager:manager,transcriptTap:tap,sendToRenderer:()=>{},readCodexRolloutMeta:()=>({id:'native-thread'}),isCodexTopLevelRolloutMeta:()=>true});
   const original=watcher.sendToPty;let submittedAt;
   watcher.sendToPty=async(sid,text,kind,options)=>{
@@ -26,6 +26,7 @@ test('Codex prompt hook confirms exact submitted text before a delayed transcrip
     assert.equal(result.receipt.acknowledgementSource,'codex-user-prompt-submit');
     tap.emit('prompt-submitted',{hubSessionId:'hub',text:'本轮请求正文',submittedAt:submittedAt+22000,turnId:'turn-a',signalSource:'item_completed_user_message'});
     assert.equal(updates.filter(x=>x.channel==='session:prompt-receipt'&&x.payload.status==='confirmed').length,1);
+    assert.equal(observed.filter(x=>x.status==='confirmed'&&x.clientSubmissionId==='request-a'&&x.sessionId==='hub').length,1);
   }finally{watcher.sendToPty=original;registration.dispose?.();}
 });
 

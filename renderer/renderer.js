@@ -8267,6 +8267,17 @@ const accountCenterPanel = require('./account-center-panel').createAccountCenter
 const assistantPanel = require('./assistant-panel').createAssistantPanel({
   document, ipcRenderer,
   closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+  getSession: sessionId => sessions.get(sessionId),
+  attachSession: (sessionId, session) => { if (session) sessions.set(sessionId, session); scheduleSessionListRender(); },
+  renderMarkdown: text => DOMPurify.sanitize(marked.parse(text, { async:false }), { FORBID_TAGS:['img','video','audio','iframe'] }),
+  mountTerminal: (sessionId, host) => {
+    const cached = getOrCreateTerminal(sessionId), previous = cached.container.parentNode, next = cached.container.nextSibling;
+    host.appendChild(cached.container); cached.container.style.display = 'block';
+    if (!cached.opened) { cached.terminal.open(cached.container); cached.opened = true; setupImageHover(cached.terminal,cached.container); void hydrateTerminalFromSnapshot(sessionId,cached); }
+    const resize = () => scheduleFitAndResizeTerminal(sessionId,cached);
+    const observer = new ResizeObserver(resize); observer.observe(host); resize();
+    return { dispose() { observer.disconnect(); cached.container.style.display = 'none'; if (previous?.isConnected) previous.insertBefore(cached.container,next?.parentNode === previous ? next : null); else cached.container.remove(); } };
+  },
   openSession: async (sessionId, session, draft) => {
     if (!sessions.has(sessionId)) {
       const current = session || (await ipcRenderer.invoke('get-sessions')).find(item => item.id === sessionId);
@@ -8466,6 +8477,13 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   }
   if (session.purpose === 'hub-assistant') {
     scheduleSessionListRender();
+    return;
+  }
+  // Delegated work must not replace the conversation or the draft currently
+  // being written in the assistant. Users open the target explicitly.
+  if (assistantPanel.isOpen()) {
+    scheduleSessionListRender();
+    void assistantPanel.refresh();
     return;
   }
   if (session.purpose === 'memory-dream' && !wasDormant) {

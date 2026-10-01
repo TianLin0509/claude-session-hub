@@ -1,11 +1,18 @@
 'use strict';
 const {AssistantService}=require('../../core/hub-assistant/service');
+const fs=require('node:fs'),path=require('node:path');
 function registerAssistantIpc(ipcMain,deps){
   const service=new AssistantService(deps);
   for(const [name,handler] of Object.entries({
     'get-overview':()=>service.overview(),status:()=>service.overview(),
     'ensure-session':()=>service.ensureSession(),context:request=>service.context(request),
     send:request=>service.send(request),actions:()=>({ok:true,actions:service.store.list()}),
+    notifications:request=>service.notifications(request),
+    'mark-notification-read':request=>service.watches.markRead(request.id),
+    'follow-task':request=>service.followTask(request),
+    'unfollow-task':request=>service.watches.unfollow(request.sessionId),
+    'followed-tasks':()=>({ok:true,tasks:service.followedTasks()}),
+    'open-workbench':async()=>{const id=service.store.get('sessionId'),closed=id&&!deps.getSession(id);const file=closed?path.join(deps.dataDir,'assistant','workbench','CURRENT.md'):service.refreshDossier().markdownPath;if(!file||!fs.existsSync(file)||!deps.openPath)return{ok:false,error:'工作档案暂不可打开'};const error=await deps.openPath(file);return error?{ok:false,error}:{ok:true,path:file};},
   }))ipcMain.handle('assistant:'+name,async(_event,request={})=>{try{return await handler(request);}catch(error){return{ok:false,error:error.message};}});
   return service;
 }

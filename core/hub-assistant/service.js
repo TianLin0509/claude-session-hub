@@ -8,7 +8,9 @@ const { AssistantBridge }=require('./bridge');
 const { buildBootstrapPrompt,resolveTimeRange }=require('./context');
 const {AssistantSnapshots}=require('./snapshots');
 const { readGroupHistory }=require('./group-history');
-const { requireAuthorizedTarget,bindOperation }=require('./action-policy');
+const { requireAuthorizedTarget,requireBoundTarget,bindOperation }=require('./action-policy');
+const {LiveHistory,nativeId}=require('./live-history');
+const {AssistantWatches,reminderIntent}=require('./watches');
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
@@ -16,9 +18,28 @@ class AssistantService {
     this.bridge=new AssistantBridge(request=>this.invokeTool(request)); this.currentRequest=null;
     this.endpointFile=path.join(deps.dataDir,'assistant','bridge-endpoint.json');
     this.snapshots=new AssistantSnapshots(deps.dataDir,this.store);
+    this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
+    this.liveHistory=new LiveHistory();
+    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
-  sessions() {return (this.deps.getAllSessions?.()||[]).filter(s=>s.id!==this.store.get('sessionId'));}
-  overview() {const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');return{ok:true,sessionId,available:!!session,status:session?.status||'not-created',summary:'',connectionSummary:session?'助理已连接；可以问进展、定位会话并转交任务。':'首次启用后，助理会作为一个独立 Codex 会话运行，并连接 Hub 助理工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list()};}
+  sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
+  sessions() {const all=new Map();for(const s of this.deps.listKnownSessions?.()||[]){const id=s.id||s.hubId;if(id)all.set(id,{...s,id,isOpen:false,status:'closed'});}for(const s of this.deps.getAllSessions?.()||[])all.set(s.id,{...all.get(s.id),...s,isOpen:true});return [...all.values()].filter(s=>s.id!==this.store.get('sessionId'));}
+  liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
+  readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
+  startWatching({intervalMs=2000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();}
+  pollWatches(){const result=this.watches.poll();if(this.store.get('sessionId'))this.refreshDossier?.();return result;}
+  notifications(request){return this.watches.notifications(request);}
+  followedTasks(){return this.watches.list().map(({cursor,seen,...watch})=>watch);}
+  observePromptReceipt(snapshot){
+    if(snapshot?.status!=='confirmed'||snapshot.notSent||snapshot.contentMismatch||!snapshot.clientSubmissionId||!snapshot.sessionId)return false;
+    const row=this.store.db.prepare('SELECT state,result FROM actions WHERE id=?').get(snapshot.clientSubmissionId);
+    if(!row||row.state!=='unknown'||!row.result)return false;
+    const result=JSON.parse(row.result);if(result.sessionId!==snapshot.sessionId)return false;
+    this.store.finish(snapshot.clientSubmissionId,'acknowledged',{...result,originalReceipt:result.receipt,lateReceipt:snapshot,
+      receipt:{...result.receipt,ok:true,lateReconciled:true,receipt:{...result.receipt?.receipt,...snapshot,status:'confirmed'}}});return true;
+  }
+  followTask({sessionId}){if(sessionId===this.store.get('sessionId'))throw new Error('助理不能关注自身回复');return{ok:true,watch:this.watches.follow(sessionId)};}
+  overview() {const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');return{ok:true,sessionId,available:!!session,status:session?.status||'not-created',summary:'',connectionSummary:session?'助理已连接；可以问进展、定位会话并转交任务。':'首次启用后，助理会作为一个独立 Codex 会话运行，并连接 Hub 助理工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};}
   async ensureSession() {
     if(this.creating)return this.creating;
     this.creating=this._ensureSession();try{return await this.creating;}finally{this.creating=null;}
@@ -43,21 +64,32 @@ class AssistantService {
     this.store.confirmAssistant(id);return{ok:true,sessionId:id,session};
   }
   async connectBridge(){await this.bridge.start();const temporary=this.endpointFile+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,JSON.stringify({url:this.bridge.url,token:this.bridge.secret}),{mode:0o600});fs.renameSync(temporary,this.endpointFile);}
-  getMcpEntry(){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile},toolApprovalModes:{list_sessions:'approve',history_context:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000}};}
+  getMcpEntry(){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
   context(request={}) {
     const sessionId=this.store.get('sessionId'),session=this.deps.getSession(sessionId);
-    const totalBudget=Math.max(2000,Math.min(48000,Number(request.maxChars)||24000));
-    const naturalBudget=Math.floor(totalBudget*.75);
+    const board=this.refreshDossier();
+    // Retrieval budgets limit supplemental historical excerpts, never which
+    // current sessions the assistant can see or manage.
+    const naturalBudget=Number(request.maxChars)||Math.max(6000,board.activeCount*1200);
     const natural=this.history.context({...request,maxChars:naturalBudget,excludeSessionId:sessionId,excludeNativeSessionId:session?.codexSid});
     const groups=readGroupHistory({dataDir:this.deps.dataDir,since:request.query?undefined:(natural.since??request.from??((request.now||Date.now())-(request.hours||3)*3600000)),until:natural.until||natural.asOf,
-      query:request.query||'',maxChars:totalBudget-naturalBudget,maxFiles:30,meetings:this.deps.getMeetings?.()});
+      query:request.query||'',maxChars:Math.max(6000,board.activeCount*400),maxFiles:30,meetings:this.deps.getMeetings?.()});
     const {sources:groupSources,...groupCoverage}=groups;
     const groupChars=groupSources.reduce((n,s)=>n+s.text.length,0);
-    return {...natural,available:natural.available||groups.sources.length>0,sources:[...natural.sources,...groups.sources],
-      selectedChars:(natural.selectedChars||0)+groupChars,groupSelectedChars:groupChars,
-      truncated:natural.truncated||groups.truncated,coverage:{singleSessions:natural.coverage,groups:groups.coverage,
+    const sources=[...board.sources.map(source=>({...source,timeScope:'当前原生最终答复快照；以该条timestamp为准，不代表它发生在历史检索窗口内'})),...natural.sources.filter(source=>!board.sources.some(live=>live.sessionId===source.sessionId&&source.role==='assistant'&&live.text===source.text)),...groups.sources];
+    return {...natural,asOf:Date.now(),available:natural.available||sources.length>0,sources,
+      selectedChars:sources.reduce((n,source)=>n+source.text.length,0),groupSelectedChars:groupChars,
+      workbench:{revision:board.revision,mode:board.mode,markdownPath:board.markdownPath,markdown:board.markdown,
+        inventory:board.activeInventory,activeCount:board.activeCount,knownCount:board.knownCount,timeMeaning:'这是当前工作台状态；历史变化请结合每条来源时间及请求窗口，不能把旧最终答复说成刚发生的变化。',
+        catalogPath:path.join(this.dossier.directory,'ALL-SESSIONS.md'),allActiveSessionsIncluded:true,
+        revisions:Object.fromEntries(board.activeInventory.map(row=>[row.id,row.revision])),
+        changedSessionIds:board.changedSessionIds.filter(id=>board.activeInventory.some(row=>row.id===id)),removedSessionIds:board.removedSessionIds,
+        baselineMeaning:board.baselineMeaning,fullReplyChars:board.fullReplyChars},
+      truncated:natural.truncated||groups.truncated||board.sources.some(source=>source.truncated),coverage:{singleSessions:natural.coverage,groups:groups.coverage,
+        currentSessions:`当前已打开的 ${board.activeCount} 个其他会话全部列出。最新原生答复变化优先提供；长正文可按来源读取，历史片段预算不会排除受管理会话。`,
         groupTimeMeaning:'群聊材料的文件修改时间只证明文件被观察到变化，不证明任务在该时刻完成。'},groupFileCoverage:groupCoverage};
   }
+  refreshDossier(){const id=this.store.get('sessionId'),assistant=this.deps.getSession(id);if(id&&!assistant)throw new Error('助理原会话尚未在本窗口打开，工作档案保留原版本');return this.dossier.publish(this.liveInventory(),`${id||''}:${assistant?.codexSid||''}:${assistant?.codexProfile||''}`);}
   preparePrompt(request) {
     if(!request||String(request.text||'').trimStart().startsWith('/'))return request;
     const envelope=require('../assistant-context-display').assistantContextDisplay(request.text,'hub-assistant');
@@ -70,6 +102,7 @@ class AssistantService {
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
     const text=buildBootstrapPrompt(request.text,manifest,this.sessions().length);
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
+      workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
       requestToken:this.currentRequest.token,packetHash:manifest.packetHash,snapshotRead:false,snapshotReadAt:null,bootstrapChars:text.length,
       inputTransportNote:text.length>=2048?'用户原话较长，仍可能触发普通 Codex 编辑器输入通道':'短请求正文；完整资料通过本轮工具读取'});
     return{...request,text,clientSubmissionId:id};
@@ -81,26 +114,36 @@ class AssistantService {
     return{ok:receipt?.ok!==false,sessionId:ensured.sessionId,receipt,contextSummary:this.store.get('lastContext')};
   }
   async invokeTool({name,arguments:args={}}) {
-    if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status}));
+    if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,nativeSessionId:nativeId(s)}));
+    if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
       if(args.requestToken){
         if(args.requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
         const response=this.snapshots.read(args.requestToken),last=this.store.get('lastContext');
+        this.dossier.noteServed(response.packet.workbench);
         if(last?.requestToken===args.requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
         return response;
       }
       return this.context(args);
     }
-    if(!['send_session','create_session'].includes(name))throw new Error('未知工具');
+    if(!['send_session','create_session','watch_session'].includes(name))throw new Error('未知工具');
     const current=this.currentRequest;
     if(!current||Date.now()-current.createdAt>30*60000)throw new Error('本轮用户委托已过期，请重新发送任务');
     if(args.requestToken!==current.token)throw new Error('工具调用不属于当前用户委托');
+    if(name==='watch_session'){
+      if(!reminderIntent(current.text))throw new Error('本轮没有明确要求新回复后提醒');
+      requireBoundTarget(current,{targetSessionId:args.sessionId},this.sessions());
+      return this.followTask({sessionId:args.sessionId});
+    }
     const action={type:name==='create_session'?'create':'send',targetSessionId:args.sessionId,title:args.title,text:args.text};
     requireAuthorizedTarget(current,action,this.sessions());
     if(typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
     if(this.deps.authorizeAction&&!await this.deps.authorizeAction(action,current))throw new Error('目标不在本轮授权范围内');
     const requestId=bindOperation(this.store,current,args.operationKey,action);
-    return this.execute({...action,requestId});
+    const followed=action.type==='send'&&reminderIntent(current.text);
+    if(followed)this.followTask({sessionId:action.targetSessionId});
+    const result=await this.execute({...action,requestId});
+    return followed?{...result,followed:true,notificationMethod:'Hub监视原生最终回复并在助理页通知'}:result;
   }
   async execute(action) {
     if(!['send','create'].includes(action.type)||typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
@@ -109,16 +152,27 @@ class AssistantService {
       const record=this.store.begin(requestId,payload);
       return{ok:record.state==='acknowledged',duplicate:true,state:record.state,result:record.result,needsReconciliation:record.state==='dispatching'||record.state==='unknown'};
     }
+    let resumeMeta=null;
     if(action.type==='send'){
       if(action.targetSessionId===this.store.get('sessionId'))throw new Error('助理不能向自身循环派发');
-      const target=this.deps.getSession(action.targetSessionId);if(!target)throw new Error('目标会话未打开；未自动创建替代会话');
+      const target=this.deps.getSession(action.targetSessionId);
+      if(!target){
+        const stored=this.deps.getSessionMetadata?.(action.targetSessionId);
+        if(!stored||!nativeId(stored)||!this.deps.resumeSession)throw new Error('原目标未打开或缺少原生身份；未创建替代会话');
+        resumeMeta=stored;
+      }
       const truth=require('../session-runtime-truth');
-      if(truth.sessionRuntimeIsActive(target)||['running','waiting'].includes(target.status))throw new Error('目标会话正在运行或等待输入，请先明确处理当前任务');
+      if(target&&(truth.sessionRuntimeIsActive(target)||['running','waiting'].includes(target.status)))throw new Error('目标会话正在运行或等待输入，请先明确处理当前任务');
     }
     const record=this.store.begin(requestId,payload);
     if(record.duplicate)return{ok:record.state==='acknowledged',duplicate:true,state:record.state,result:record.result,needsReconciliation:record.state==='dispatching'||record.state==='unknown'};
     let sessionId=action.targetSessionId;
     try {
+      if(resumeMeta){
+        await this.deps.resumeSession(sessionId);const target=this.deps.getSession(sessionId);
+        if(!target||target.id!==sessionId||nativeId(target)!==nativeId(resumeMeta))throw new Error('原目标恢复身份未确认，未发送任务');
+        if(require('../session-runtime-truth').sessionRuntimeIsActive(target)||['running','waiting'].includes(target.status))throw new Error('原目标恢复后仍在运行或等待输入，未发送任务');
+      }
       if(action.type==='create'){
         const defaults=await this.deps.getDefaults?.('codex')||{};
         const desiredId=randomUUID();this.store.set('reserved:'+requestId,desiredId);
@@ -130,6 +184,6 @@ class AssistantService {
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }
-  close(){this.bridge.close();this.store.close();}
+  close(){clearInterval(this.watchTimer);this.bridge.close();this.store.close();}
 }
 module.exports={AssistantService};

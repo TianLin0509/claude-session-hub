@@ -8,7 +8,7 @@ function fixture(t){
   const dataDir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-snapshot-'));
   const service=new AssistantService({dataDir,getSession:()=>null,getAllSessions:()=>[]});
   let packet={asOf:123,since:100,until:123,range:'rolling-window',sources:[{ref:'E1234567890123456',text:'材料'.repeat(12000)}],selectedChars:24000,truncated:false};
-  service.context=()=>packet;t.after(()=>service.close());
+  service.context=()=>({...packet,workbench:{markdownPath:path.join(dataDir,'CURRENT.md'),revision:'fixture',activeCount:0,mode:'checkpoint',revisions:{}}});t.after(()=>service.close());
   return{service,replace:value=>{packet=value;}};
 }
 test('large materials stay in immutable snapshot and normal bootstrap stays below 2048 chars',async t=>{

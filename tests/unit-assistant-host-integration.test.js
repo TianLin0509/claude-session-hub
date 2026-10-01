@@ -52,3 +52,15 @@ test('assistant work creation keeps saved model/profile and ordinary tuning defa
   assert.equal(opts.model,'gpt-6-astra');assert.equal(opts.codexProfile,'chosen');assert.equal(opts.effort,'high');assert.equal(opts.codexSpeedTier,'standard');assert.equal(opts.mcpProfile,'none');
   assert.equal(creationDefaults('claude').effort,'high');assert.equal(creationDefaults('deepseek').effort,'max');
 });
+test('new assistant and delegated targets wait for CLI readiness without changing ordinary sends',async()=>{
+  const watcher=require('../core/group-chat-watcher'),old=watcher.sendToPty;
+  const manager=new EventEmitter(),options=[];manager.getSession=id=>({id,kind:'codex',...(id==='assistant'?{purpose:'hub-assistant'}:{})});
+  watcher.sendToPty=async(_id,_text,_kind,opts)=>{options.push(opts.requireReady);return{ok:true,sendStatus:'ok'};};
+  const registration=registerPromptSubmitIpc({handle(){}},{sessionManager:manager});
+  try{
+    await registration.submitPrompt(null,{sessionId:'assistant',text:'question',assistantPage:true});
+    await registration.submitPrompt(null,{sessionId:'target',text:'delegation',waitForCliReady:true});
+    await registration.submitPrompt(null,{sessionId:'ordinary',text:'ordinary'});
+    assert.deepEqual(options,[true,true,false]);
+  }finally{watcher.sendToPty=old;registration.dispose();}
+});

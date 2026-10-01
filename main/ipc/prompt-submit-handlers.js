@@ -152,6 +152,8 @@ function registerPromptSubmitIpc(ipcMain, deps) {
   const receipts = new PromptSubmissionReceipts(payload => {
     try { sendToRenderer('session:prompt-receipt', payload); }
     catch (error) { logger.warn('[prompt-submit] receipt broadcast failed:', error && error.message); }
+    try { deps.onPromptReceipt?.(payload); }
+    catch (error) { logger.warn('[prompt-submit] receipt observer failed:', error && error.message); }
   });
   const onTranscriptPrompt = event => receipts.observe(event);
   const onProviderPrompt = event => {
@@ -266,7 +268,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
         // requireReady:false —— 输入框就摆在用户面前，CLI 已经在跑；
         //   再走一次 60s 冷启动 ready 轮询会把「打完字立刻发」变成有时干等几十秒。
         const result = await sendWithMemory(request, sessionId, text, kind, {
-          requireReady: false, submissionReceipt: receipt,
+          requireReady: request.waitForCliReady === true || (request.assistantPage === true && sessionManager.getSession(sessionId)?.purpose === 'hub-assistant'), submissionReceipt: receipt,
           clientSubmissionId, attachments:request.attachments,
           ...(clearObserver ? { localCommandObserver: clearObserver } : {}),
         });

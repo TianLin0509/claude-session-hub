@@ -7,3 +7,16 @@ test('context omits tools, preview echoes, group transcript cards and the assist
 test('keyword evidence surrounds its actual hit instead of the newest unrelated messages',t=>{const {index,history}=fixture(t);index.replaceSource(source('long-thread',Array.from({length:30},(_,i)=>({text:i===2?'独角鲸检索锚点':'其他自然对话'+i,timestamp:i<3?1000:100000}))));const result=history.context({query:'独角鲸检索锚点',now:100000,hours:1});assert.equal(result.range,'all-indexed-history');assert.equal('since' in result,false);assert.ok(result.sources.some(s=>s.text.includes('独角鲸检索锚点')));});
 test('selected text obeys the budget and declares omitted context',t=>{const {index,history}=fixture(t);index.replaceSource(source('large',Array.from({length:20},()=>({text:'内容'.repeat(3000)}))));const result=history.context({now:110000,hours:1,maxChars:3000});assert.ok(result.selectedChars<=3000);assert.equal(result.truncated,true);assert.ok(result.sources[0].text.includes('[中段省略]'));});
 test('calendar range excludes records beyond its end rather than using capture time',t=>{const {index,history}=fixture(t);index.replaceSource(source('range',[{text:'昨天结果',timestamp:50000},{text:'今天结果',timestamp:100000}]));const result=history.context({now:110000,from:40000,to:60000,rangeKind:'calendar-yesterday'});assert.deepEqual(result.sources.map(s=>s.text),['昨天结果']);assert.equal(result.until,60000);});
+test('current native evidence never erases that session historical window or keyword matches',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-window-')),file=path.join(dir,'search.sqlite');
+  const index=new SqliteSessionSearchIndex(file);index.replaceSource(source('orders',[{text:'昨天订单暂停等待确认',timestamp:50000},{text:'独角鲸旧业务决定',timestamp:40000}]));
+  const {AssistantService}=require('../core/hub-assistant/service');
+  const service=new AssistantService({dataDir:dir,historyDatabasePath:file,getSession:()=>null,getAllSessions:()=>[]});
+  t.after(()=>{service.close();index.close();});
+  service.liveInventory=()=>[{id:'hub-orders',title:'订单同步',kind:'codex',isOpen:true,status:'idle',latestFinal:{ref:'Enew',text:'今天用户确认后已完成',timestamp:100000,sessionId:'hub-orders'}}];
+  const yesterday=service.context({now:110000,from:45000,to:60000,rangeKind:'calendar-yesterday'});
+  assert(yesterday.sources.some(s=>s.text==='昨天订单暂停等待确认'));
+  assert(yesterday.sources.find(s=>s.ref==='Enew').timeScope.includes('不代表'));
+  const queried=service.context({now:110000,query:'独角鲸旧业务决定'});
+  assert(queried.sources.some(s=>s.text==='独角鲸旧业务决定'));
+});

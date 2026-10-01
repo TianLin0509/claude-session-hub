@@ -62,11 +62,18 @@ async function main() {
   const result = { passed: false, root, out, runtime: 'real Codex PTY', inputTransport: pasteFallback ? 'explicit HUB_CODEX_EDITOR_INPUT=0 standard PTY paste fallback' : 'default Codex editor-input', profile: profile.id, model: 'gpt-6-astra', checks: [], history: snapshotHistory(historyFile) };
   let hub, cdp, assistantId;
   const until = async (label, read, ms = 120000) => { for (const end = Date.now() + ms; Date.now() < end;) { const value = await read(); if (value) return value; await wait(350); } throw Error('timeout: ' + label); };
-  const click = async selector => { await until('clickable ' + selector, () => cdp.eval(`document.querySelector(${j(selector)}) && !document.querySelector(${j(selector)}).disabled`), 30000); const point = await cdp.eval(`(()=>{const el=document.querySelector(${j(selector)});el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`); for (const type of ['mousePressed','mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 }); };
+  const click = async selector => {
+    await until('clickable ' + selector, () => cdp.eval(`(()=>{const el=document.querySelector(${j(selector)});if(!el||el.disabled)return false;el.scrollIntoView({block:'center'});const r=el.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return r.width>0&&r.height>0&&(hit===el||el.contains(hit));})()`), 30000);
+    const point = await cdp.eval(`(()=>{const r=document.querySelector(${j(selector)}).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+    for (const type of ['mousePressed','mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+  };
   const shot = async name => { const value = await cdp.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(value.data, 'base64')); };
   const session = async () => cdp.eval(`JSON.parse(JSON.stringify(sessions.get(${j(assistantId)})))`);
   const terminalText = sid => cdp.eval(`(()=>{const t=terminalCache.get(${j(sid)})?.terminal;if(!t)return '';const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||'').join(String.fromCharCode(10));})()`);
-  const send = async text => { const selector = `.floating-input-bar[data-session-id="${assistantId}"]`; await click(selector + ' .floating-input-box'); await cdp.send('Input.insertText', { text }); await click(selector + ' .floating-input-send'); };
+  const send = async text => {
+    assert.equal(await cdp.eval('document.querySelector("#assistant-input").value'),'', '上一轮草稿必须已清除');
+    await click('#assistant-input'); await cdp.send('Input.insertText', { text }); await click('[data-assistant-send]');
+  };
   try {
     fs.copyFileSync(sourceAuth, path.join(codexHome, 'auth.json'));
     fs.writeFileSync(path.join(codexHome, 'config.toml'), `model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n[projects.'${path.resolve(workspace).toLowerCase()}']\ntrust_level = "trusted"\n[projects.'${path.resolve('.').toLowerCase()}']\ntrust_level = "trusted"\n`, 'utf8');
@@ -85,13 +92,18 @@ async function main() {
     result.pid = hub.pid; cdp = await connectFirstPage(hub);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await until('renderer ready', () => cdp.eval('typeof assistantPanel!=="undefined"'));
-    await click('#btn-assistant'); await click('[data-assistant-action="open"]');
-    assistantId = await until('ordinary assistant input', () => cdp.eval('activeSessionId && document.querySelector(".floating-input-box") && activeSessionId'));
+    await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved', x:5, y:90 });
+    await click('#rail-pin');
+    await until('navigation pinned', () => cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'));
+    await click('#btn-assistant'); await click('[data-assistant-action="enable"]');
+    assistantId = await until('assistant chat bound to ordinary entity', () => cdp.eval('([...sessions.values()].find(s=>s.purpose==="hub-assistant"))?.id || null'));
     result.assistantId = assistantId;
     const initial = await session(); result.runtimeObserved = initial.agentRuntime; result.effort = initial.effort;
     assert.equal(initial.agentRuntime, 'pty'); assert.equal(initial.purpose, 'hub-assistant'); assert.equal(initial.codexProfile, 'second');
+    await click('.assistant-cli summary');
     await until('Codex TUI ready', async () => { const text = await terminalText(assistantId); return /OpenAI Codex \(v/.test(text) && /Ask Codex to do anything/.test(text) && !/Folder access|Trust this folder|Do you trust/i.test(text); }, 90000);
-    await shot('01-pty-ready'); result.checks.push('真实界面启用主账号 Codex，运行模式确认 PTY，普通输入框可用');
+    await shot('01-pty-ready'); await click('.assistant-cli summary');
+    result.checks.push('A 页启用主账号 Codex，同一实体的 PTY 终端已就绪，页内输入可用');
     await cdp.eval(`window.__assistantLiveReceipts=[];window.__assistantReceiptEvents=[];ipcRenderer.on('session:prompt-receipt',(_event,receipt)=>window.__assistantReceiptEvents.push({at:Date.now(),receipt}));const originalInvoke=ipcRenderer.invoke.bind(ipcRenderer);ipcRenderer.invoke=(channel,...args)=>{const operation=originalInvoke(channel,...args);if(channel==='session:send-prompt')operation.then(receipt=>window.__assistantLiveReceipts.push(receipt),error=>window.__assistantLiveReceipts.push({error:error.message}));return operation;};`);
     const question = '请根据本轮提供的近期工作记录，用白话汇报最近24小时最重要的两项变化，以及我现在需要做什么。每项给出材料引用，限180字。';
     const submissionStartedAt = Date.now();
@@ -111,19 +123,21 @@ async function main() {
     let manifest; try { manifest = JSON.parse(db.prepare('SELECT value FROM meta WHERE key=?').get('snapshot:' + envelope.history.requestToken).value).manifest; } finally { db.close(); }
     const exactPrepared = require('../core/hub-assistant/context').buildBootstrapPrompt(question, manifest, 0);
     assert.equal(text, exactPrepared, '原生用户正文必须与宿主本轮短请求逐字相同');
-    await until('ordinary UI submit receipt', () => cdp.eval('window.__assistantLiveReceipts.length>0'), 30000);
+    await until('assistant page submit receipt', () => cdp.eval('window.__assistantLiveReceipts.length>0'), 30000);
     result.submitReceipt = await cdp.eval('window.__assistantLiveReceipts[0]');
-    await until('final ordinary UI delivery confirmed', () => cdp.eval(`floatingPromptDeliveries.get(${j(assistantId)})?.status==='confirmed'`), 30000);
+    assert.equal(result.submitReceipt?.ok, true);
+    const submissionId=result.submitReceipt.receipt.clientSubmissionId;
+    await until('final assistant submission receipt confirmed', () => cdp.eval(`window.__assistantReceiptEvents.some(e=>e.receipt.sessionId===${j(assistantId)}&&e.receipt.clientSubmissionId===${j(submissionId)}&&e.receipt.status==='confirmed')`), 30000);
+    await until('assistant page reflects confirmed delivery', () => cdp.eval('!document.querySelector(".assistant-delivery").classList.contains("is-error") && /已同步原生会话记录|助理正在处理|消息已送达/.test(document.querySelector(".assistant-delivery").textContent)'),30000);
     result.receiptEvents = await cdp.eval('window.__assistantReceiptEvents');
-    result.finalUiDelivery = await cdp.eval(`JSON.parse(JSON.stringify(floatingPromptDeliveries.get(${j(assistantId)}) || null))`);
-    assert.equal(result.submitReceipt?.ok, true); assert.equal(result.finalUiDelivery?.status, 'confirmed');
-    assert.equal(result.finalUiDelivery.clientSubmissionId, result.submitReceipt.receipt.clientSubmissionId);
-    const confirmedEvent = result.receiptEvents.find(event => event.receipt.clientSubmissionId === result.finalUiDelivery.clientSubmissionId && event.receipt.status === 'confirmed');
+    const confirmedEvent = result.receiptEvents.find(event => event.receipt.sessionId===assistantId && event.receipt.clientSubmissionId === submissionId && event.receipt.status === 'confirmed');
     assert.ok(confirmedEvent, '必须观察到本次提交的确定回执广播');
+    result.finalUiDelivery = { receipt:confirmedEvent.receipt, visibleStatus:await cdp.eval('document.querySelector(".assistant-delivery").textContent') };
     result.confirmationLatencyMs = confirmedEvent.at - submissionStartedAt;
     result.initialRpcStatus = result.submitReceipt.receipt.status;
     result.initialUnknownDurationMs = result.receiptEvents.some(event => event.receipt.status === 'unconfirmed') ? confirmedEvent.at - result.receiptEvents.find(event => event.receipt.status === 'unconfirmed').at : 0;
-    assert.equal(await cdp.eval(`!!document.querySelector(${j('.floating-input-bar[data-session-id="' + assistantId + '"] .fi-stuck')})`), false);
+    assert.equal(await cdp.eval('!!document.querySelector(".assistant-delivery.is-error")'), false);
+    assert.doesNotMatch(result.finalUiDelivery.visibleStatus,/请勿重复发送|正文.*差异|尚未完成/);
     const nativeTools = frozenSnapshotOutputs(first.record.records, envelope.history.requestToken);
     result.deliveryAudit = { bootstrapChars: text.length, frozenSources: frozen.packet.sources.length, frozenChars: frozen.packet.selectedChars, completeNativeToolOutputs: nativeTools.length, packetHash: frozen.packetHash };
     assert.equal(envelope.history.packetHash, frozen.packetHash);
@@ -144,10 +158,11 @@ async function main() {
     result.deliveryAudit.completeDelivery = true;
     result.audit = auditCitations(answer, completeNativeTools.at(-1).packet); result.answerChars = answer.length;
     assert.ok(result.audit.cited.length > 0); assert.equal(result.audit.invalid.length, 0);
-    if (await cdp.eval('document.getElementById("btn-backstage")?.getAttribute("aria-pressed")==="true"')) await click('#btn-backstage');
-    await until('answer visible', () => cdp.eval('document.querySelectorAll(".turn-card.assistant").length>0'), 30000);
-    assert.ok(await cdp.eval(`document.querySelector('.msg-overlay')?.textContent.includes(${j(answer.slice(0, 20))})`), '原生回答正文在普通卡片可见');
-    await shot('02-real-answer'); result.checks.push('短请求完整落盘，MCP 冻结资料原生返回与宿主逐字一致；真实回答卡片可见且引用有效');
+    await until('answer visible on assistant page', () => cdp.eval('document.querySelectorAll(".assistant-message.is-assistant").length>0'), 30000);
+    assert.equal(await cdp.eval('document.getElementById("assistant-page").hidden'),false);
+    assert.ok(await cdp.eval(`document.querySelector('.assistant-messages')?.textContent.includes(${j(answer.slice(0, 20))})`), '原生回答正文在助理聊天页可见');
+    assert.equal(await cdp.eval('document.querySelector(".assistant-message.is-user .assistant-user-text").textContent'),question);
+    await shot('02-real-answer'); result.checks.push('短请求完整落盘，MCP 冻结资料原生返回与宿主逐字一致；A 页真实回答可见且引用有效');
     result.readOnlyPassed = true;
     if (!process.argv.includes('--read-only')) {
       await until('first turn complete hook', async () => { const s = await session(); return s.status !== 'running' && !require('../core/session-runtime-truth').sessionRuntimeIsActive(s); }, 30000);

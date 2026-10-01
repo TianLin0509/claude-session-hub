@@ -19,19 +19,43 @@ function actionIntent(text, type) {
   }
   if (/(不要|别|禁止|不必|无需|不想|不需要|不允许|不能|暂不|先不|暂停|停止)/.test(command)) return false;
   if (type === 'create') return /^(新建|创建|启动|开一个|开个).{0,30}(会话|session|任务)/i.test(command);
-  return /^(发送|转交|派发|下达)\s*\S|^让.{1,100}(继续|恢复|开始|执行|完成)|^(继续|恢复)\s*\S|^把.{1,150}(发给|发送给|转交给|派发给)/i.test(command);
+  return /^(发送|转交|派发|下达)\s*\S|^让.{1,100}(继续|恢复|开始|执行|完成)|^(继续|恢复|推进)\s*\S|^把.{1,150}(发给|发送给|转交给|派发给)/i.test(command);
+}
+
+// A business shorthand is accepted only when the user's target phrase matches
+// exactly one known title. The model cannot nominate its own aliases.
+function businessTargetPhrase(text) {
+  const value = String(text || '');
+  const quoted = value.match(/(?:让|推进|继续|恢复|转交给|发给)\s*[「“"《]([^」”"》]{2,100})[」”"》]/);
+  if (quoted) return quoted[1].trim();
+  const match = value.match(/让\s*(.{2,100}?)\s*(?:这个(?:会话|session)|(?:会话|session))?\s*(?:继续|恢复|开始|执行|完成)/i)
+    || value.match(/(?:推进|继续|恢复|转交给|发给)\s*([^，,。！？?!：:\n]{2,100})/i);
+  if (!match) return null;
+  const phrase = match[1].trim().replace(/^(?:昨天的|之前的|那个|这个)/, '').replace(/(?:这个|的)?(?:业务|项目|会话|session|任务)\s*$/i, '').trim();
+  return phrase.length >= 2 ? phrase : null;
 }
 
 function requireAuthorizedTarget(current, action, sessions) {
   if (!actionIntent(current.text, action.type)) throw new Error('本轮未明确委托执行此操作；回顾、提问及否定要求只读取');
   if (action.type !== 'send') return;
+  return requireBoundTarget(current,action,sessions);
+}
+function requireBoundTarget(current, action, sessions) {
   const target = sessions.find(s => s.id === action.targetSessionId);
-  if (!target) throw new Error('目标会话未打开，请先定位目标');
+  if (!target) throw new Error('目标会话不存在，请先定位目标');
   // Explicit stable ID removes title ambiguity; a same-name session does not.
   if (String(current.text).includes(target.id)) return;
   const title = String(target.title || target.name || '');
-  if (title.length < 2 || !String(current.text).includes(title)) throw new Error('本轮委托未绑定这个目标，请使用会话完整标题或 ID');
-  if (sessions.filter(s => String(s.title || s.name || '') === title).length !== 1) throw new Error('存在同名会话，请使用准确会话 ID 指定目标');
+  if (title.length >= 2 && String(current.text).includes(title)) {
+    if (sessions.filter(s => String(s.title || s.name || '') === title).length !== 1) throw new Error('存在同名会话，请使用准确会话 ID 指定目标');
+    return;
+  }
+  const reminderPhrase=String(current.text).match(/(?:^|[，,。])\s*(?:请|帮我|关注)?\s*(.{2,100}?)\s*(?:有|一有|出现)(?:新的?)?(?:回复|答复|回答|结果)/)?.[1]?.trim();
+  const watchPhrase=String(current.text).trim().match(/^(?:请|帮我)?关注\s*(.{2,100}?)\s*[。！!]?$/)?.[1]?.trim();
+  const phrase = businessTargetPhrase(current.text)||reminderPhrase||watchPhrase;
+  const candidates = phrase ? sessions.filter(s => String(s.title || s.name || '').toLowerCase().includes(phrase.toLowerCase())) : [];
+  if (candidates.length > 1) throw new Error('业务名称匹配多个会话，请明确要推进哪个原会话');
+  if (candidates.length !== 1 || candidates[0].id !== target.id) throw new Error('本轮委托未绑定这个目标，请使用明确业务名称、会话标题或 ID');
 }
 
 function bindOperation(store, current, operationKey, action) {
@@ -58,4 +82,4 @@ function bindOperation(store, current, operationKey, action) {
     return old?.intentId || intentId;
   } catch (error) { store.db.exec('ROLLBACK'); throw error; }
 }
-module.exports = { actionIntent, requireAuthorizedTarget, bindOperation };
+module.exports = { actionIntent, requireAuthorizedTarget,requireBoundTarget, bindOperation, businessTargetPhrase };

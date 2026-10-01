@@ -59,6 +59,17 @@ test('one operation key cannot change payload, target, or action type', t => {
     assert.throws(() => bindOperation(store, current, 'one', changed), /operationKey.*不同/);
   }
 });
+test('business shorthand dispatches only to a unique host-verified title', () => {
+  const sessions = [{ id:'orders', title:'订单同步验收-1001' }, { id:'customers', title:'客户回访-1001' }];
+  const action = { type:'send', targetSessionId:'orders', text:'推进' };
+  for (const text of ['请推进「订单同步」业务，完成后提醒我', '请推进订单同步业务：读取需求继续完成', '请让订单同步继续处理', '推进昨天的订单同步']) {
+    assert.doesNotThrow(() => requireAuthorizedTarget({text}, action, sessions), text);
+    assert.throws(() => requireAuthorizedTarget({text}, {...action,targetSessionId:'customers'}, sessions), /未绑定/);
+  }
+  assert.throws(() => requireAuthorizedTarget({text:'推进订单同步'}, action, [...sessions,{id:'other',title:'订单同步旧版本'}]), /多个会话/);
+  assert.throws(() => requireAuthorizedTarget({text:'订单同步推进到哪里了？'}, action, sessions), /未明确委托/);
+  assert.throws(() => requireAuthorizedTarget({text:'推进订单同步是否合适？'}, action, sessions), /未明确委托/);
+});
 test('different operation keys for same payload share the same durable intent', t => {
   const store = setup(t), current = { id: 'request-two' }, action = { type: 'send', targetSessionId: 'a', text: '做设计' };
   assert.equal(bindOperation(store, current, 'one', action), bindOperation(store, current, 'retry-other-key', action));
