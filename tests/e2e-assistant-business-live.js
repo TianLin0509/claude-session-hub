@@ -101,7 +101,10 @@ async function main(){
     result.createdTargetAnswer=trip;
     assert.match(trip.text,/南通/);assert.match(trip.text,/HTML|html/);
     const s=await session(created.id);result.createdNativeId=s.codexSid;
-    assert.equal(s.codexProfile,'second');assert.equal(s.model,model);
+    assert.equal(s.codexProfile,'second');assert.equal(require('../core/model-options').sessionModelId(s),model);
+    const nativeRows=fs.readFileSync(trip.transcriptPath,'utf8').trim().split('\n').map(JSON.parse);
+    const nativeModel=nativeRows.filter(row=>row.type==='turn_context').at(-1)?.payload?.model;
+    assert.equal(nativeModel,model,'实际原生模型应与继承的默认模型一致');result.createdNativeModel=nativeModel;
     const files=fs.readdirSync(s.cwd,{recursive:true}).filter(f=>f.endsWith('.html')).map(f=>path.join(s.cwd,f));
     assert(files.length>0,'目标必须实际生成攻略HTML');
     result.createdArtifacts=files.map(file=>({file,sha256:fileHash(file),bytes:fs.statSync(file).size}));
