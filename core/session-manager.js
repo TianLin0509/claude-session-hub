@@ -2896,6 +2896,12 @@ class SessionManager extends EventEmitter {
     return payload;
   }
 
+  prepareCodexFork(opts) {
+    return require('./codex-cross-account-fork').prepareCrossAccountCodexFork(opts, {
+      config: require('./codex-global-account').currentConfig(),
+    });
+  }
+
   noteAgentTurnFinished(sessionId, event = {}) {
     const s = this.sessions.get(sessionId);
     if (!s || !s.agentTurnActive) return false;
