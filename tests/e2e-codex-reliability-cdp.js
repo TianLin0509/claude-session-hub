@@ -88,6 +88,7 @@ async function main(){
  assert(!/Failed to fork|must be in Codex home/.test(await c.eval(text(child))));
  await send(child,'只回复前文约定的 codeword。');
  await until(`(async()=>{const r=await ipcRenderer.invoke('parse-session-transcript',{hubSessionId:'${child}',opts:{limit:3,fromTail:true}});return(r.turns||[]).some(t=>t.role==='assistant'&&t.text?.trim()==='ORCHID_7391')})()`);
+ await until(`['completed','idle'].includes(getSessionRuntimeTruth(sessions.get('${child}')).state)`);
  result.checks.push('UI fork across accounts creates independent child; real model recalls inherited codeword');await shot('fork-reply');
  await c.eval(`selectSession('${id}')`);await until(`activeSessionId==='${id}'&&!!document.querySelector('.floating-input-bar[data-session-id="${id}"]')`);
  await send(id,'只回复 GROUP_DIRECT_DONE。');await c.eval("document.querySelector('#btn-home').click()");
