@@ -202,8 +202,8 @@ function registerSessionIpc(ipcMain, deps) {
     if (!plan.ok) return plan;
 
     const { kind, opts } = plan;
-    const createFork = () => {
-      const session = sessionManager.createSession(kind, opts);
+    const createFork = (preparedOpts = opts) => {
+      const session = sessionManager.createSession(kind, preparedOpts);
       registerSessionForTap(session);
       sendToRenderer('session-created', { session });
       return { ok: true, session };
@@ -212,6 +212,10 @@ function registerSessionIpc(ipcMain, deps) {
       return sessionManager.getNativeSession(source.id).fork()
         .then(fork => { opts.acpFork = fork; return createFork(); })
         .catch(error => ({ ok: false, error: 'acp-fork-failed', message: error.message }));
+    }
+    if (kind === 'codex' && opts.codexForkSid && sessionManager.prepareCodexFork) {
+      return sessionManager.prepareCodexFork(opts).then(createFork)
+        .catch(error => ({ ok: false, error: 'codex-fork-failed', message: error.message }));
     }
     return createFork();
   });
