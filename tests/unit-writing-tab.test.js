@@ -168,14 +168,16 @@ test('群聊：新增 writing 场景（房名留给自动命名），分支也�
   assert.ok(fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'groupchat-fork-handlers.js'), 'utf8').includes("'writing'].includes(meeting.scene)"));
 });
 
-test('群规则：写作场景换成写作规则，稿件进消息正文，不写 HTML 产物', () => {
+test('群规则：写作场景换成写作规则——回答即稿件，末尾附 hub-writing 卡片；文风给文件路径', () => {
   const p = fixturePaths();
   const env = { CLAUDE_HUB_WRITING_ROOT: p.root, CLAUDE_HUB_VOICE_DIR: p.voiceDir, CLAUDE_HUB_WRITING_SKILLS_DIR: path.dirname(p.voiceDir) };
   const text = buildWritingScenePrompt('Claude 1', { workspace: 'C:\\x\\文章1' }, env);
   assert.ok(text.includes('这是写作群聊'));
-  assert.ok(text.includes('先问 2 到 4 个关键问题'));
-  assert.ok(text.includes('C:\\x\\文章1\\drafts\\Claude-1.md'));
-  assert.ok(text.includes('第一句就是现场'), '注入了文风');
+  assert.ok(text.includes('hub-writing'), '讲清卡片格式');
+  for (const type of ['"type":"draft"', '"type":"final"', '"type":"questions"']) assert.ok(text.includes(type), type);
+  assert.ok(text.includes('稿里先按推荐答案写，不等他回答'), '有问题也先写一版（田哥 2026-10-01 拍板）');
+  assert.ok(text.includes(path.join(p.voiceDir, 'SKILL.md')), '文风给文件路径让 AI 自己读');
+  assert.ok(text.length < 1600, `群规则要短，首条消息才不容易卡在 Codex 长文本通道（现在 ${text.length} 字）`);
   assert.ok(!/HTML 三段式|artifacts\\/.test(text), '不再要求写 HTML 产物');
   const { buildSystemPromptText } = require('../core/group-chat-orchestrator.js');
   if (typeof buildSystemPromptText === 'function') {
@@ -302,6 +304,130 @@ test('自动优化：同一篇定稿再改，群里没有新点评就不再跑�
   assert.strictEqual(r.status, 'done');
   assert.strictEqual(r.changed, false);
   assert.strictEqual(calls, 0);
+});
+
+/* ── 文章工作台：群聊记录 → 稿件、问题、成员状态 ── */
+
+const wb = require('../core/writing/workbench.js');
+const FENCE = '```';
+const card = (...objs) => `\n\n${FENCE}hub-writing\n${objs.map((o) => JSON.stringify(o)).join('\n')}\n${FENCE}\n`;
+const DRAFT_BODY = `# 分身不是分集\n\n正文第一段。\n\n${FENCE}python\nprint("稿里的代码块不能把卡片解析截断")\n${FENCE}\n\n结尾。`;
+
+test('卡片：交稿与问题写在同一个代码块里也认；稿里的代码块原样保留；坏卡片不吞正文', () => {
+  const r = wb.parseCards(DRAFT_BODY + card({ type: 'questions', items: [{ q: '写给谁？', recommend: '算法工程师' }] }, { type: 'draft', title: '分身不是分集', note: '先讲反例' }));
+  assert.deepStrictEqual(r.cards.map((c) => c.type), ['questions', 'draft']);
+  assert.strictEqual(r.cards[0].items[0].recommend, '算法工程师');
+  assert.ok(r.body.includes('print("稿里的代码块'), '正文代码块还在');
+  assert.ok(!r.body.includes('hub-writing'));
+  const bad = wb.parseCards(`# 稿\n\n正文${card('x').replace('"x"', '{坏的')}`);
+  assert.strictEqual(bad.cards.length, 0);
+  assert.ok(bad.errors.length && bad.body.includes('正文'));
+});
+
+function groupState() {
+  const A = 'sid-a'; const B = 'sid-b'; const C = 'sid-c';
+  return {
+    currentTurn: 2,
+    messages: [
+      { id: 'u1', role: 'user', turnNum: 1, content: '中心思想：多模型互审不等于分集增益', origin: 'user' },
+      { id: 'a1-m1', role: 'assistant', sid: A, speaker: 'Claude 1', turnNum: 1, status: 'completed', content: DRAFT_BODY + card({ type: 'questions', items: [{ q: '写给谁？', recommend: '算法工程师' }] }, { type: 'draft', title: '分身不是分集', note: '先讲反例' }) },
+      { id: 'a1-m2', role: 'assistant', sid: B, speaker: 'Codex 2', turnNum: 1, status: 'completed', content: '# 没按格式的稿\n\n' + '这是一段没有附卡片的回答。'.repeat(30) },
+      { id: 'a1-m3', role: 'assistant', sid: C, speaker: 'DeepSeek 3', turnNum: 1, status: 'errored', content: '' },
+      { id: 'h2', role: 'user', turnNum: 2, content: '[Hub 派工卡片]', origin: 'hub' },
+      { id: 'u2', role: 'user', turnNum: 2, content: '我的点评：开头再狠一点', origin: 'user' },
+      { id: 'a2-m1', role: 'assistant', sid: A, speaker: 'Claude 1', turnNum: 2, status: 'completed', content: '# 分身不是分集（改）\n\n改过的正文。' + card({ type: 'draft', title: '分身不是分集（改）', note: '按点评改了开头' }, { type: 'questions', items: [{ q: '要不要放公式？', recommend: '放一个' }] }) },
+    ],
+    attempts: {
+      x1: { sid: A, memberId: 'm1', kind: 'claude', turnNum: 2, status: 'completed', updatedAt: 5 },
+      x2: { sid: B, memberId: 'm2', kind: 'codex', turnNum: 2, status: 'running', updatedAt: 5 },
+      x3: { sid: C, memberId: 'm3', kind: 'deepseek', turnNum: 1, status: 'failed', updatedAt: 3, failure: { detail: '未确认 Codex 已接收长文本并恢复输入，未发回车；请重开此会话后重试' } },
+    },
+  };
+}
+const MEMBERS = [{ sid: 'sid-a', memberId: 'm1', name: 'Claude 1', kind: 'claude' }, { sid: 'sid-b', memberId: 'm2', name: 'Codex 2', kind: 'codex' }, { sid: 'sid-c', memberId: 'm3', name: 'DeepSeek 3', kind: 'deepseek' }];
+
+test('工作台：每位一栏、版本递增；没卡片的回答原样显示；出错与在写看得见；问题只留最新一轮', () => {
+  const v = wb.buildView({ state: groupState(), members: MEMBERS, files: [] });
+  assert.strictEqual(v.idea, '中心思想：多模型互审不等于分集增益', 'Hub 派工卡片不算田哥的话');
+  assert.deepStrictEqual(v.columns.map((c) => c.name), ['Claude 1', 'Codex 2', 'DeepSeek 3']);
+  const [a, b, c] = v.columns;
+  assert.deepStrictEqual(a.items.map((it) => [it.kind, it.version, it.title]), [['draft', 1, '分身不是分集'], ['draft', 2, '分身不是分集（改）']]);
+  assert.ok(!a.items[0].text.includes('hub-writing') && a.items[0].text.includes('print('), '正文去掉卡片、保留代码块');
+  assert.strictEqual(b.items[0].kind, 'reply');
+  assert.strictEqual(b.status, 'working');
+  assert.strictEqual(c.status, 'error');
+  assert.ok(c.error.includes('重开此会话'));
+  assert.deepStrictEqual(v.questions.map((q) => q.q), ['要不要放公式？'], '第 1 轮的问题田哥开口后就收起');
+  assert.strictEqual(v.title, '分身不是分集（改）');
+  assert.deepStrictEqual(v.steps, { idea: true, draft: true, review: true, revise: true, final: false });
+  assert.strictEqual(v.running, true);
+});
+
+test('工作台：定稿卡置顶；文章目录里 Hub 没写过的稿件文件按名字归到成员，内容重复的不列', () => {
+  const st = groupState();
+  st.messages.push({ id: 'a3-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 3, status: 'completed', content: '# 定稿标题\n\n定稿正文。' + card({ type: 'final', title: '定稿标题', note: '合了两稿' }) });
+  st.currentTurn = 3;
+  const files = [
+    { name: 'Codex-2.md', text: '# Codex 自己存的稿\n\n另一份内容。', mtime: 1 },
+    { name: 'Claude-1.md', text: '# 分身不是分集（改）\n\n改过的正文。', mtime: 1 },
+    { name: '随手.md', text: '# 没主的稿\n\n内容。', mtime: 1 },
+  ];
+  const v = wb.buildView({ state: st, members: MEMBERS, files });
+  assert.strictEqual(v.final.title, '定稿标题');
+  assert.strictEqual(v.final.from, 'Claude 1');
+  assert.strictEqual(v.steps.final, true);
+  assert.ok(v.columns[1].items.some((it) => it.kind === 'file' && it.file === 'Codex-2.md'));
+  assert.ok(!v.columns[0].items.some((it) => it.kind === 'file'), '与群里那份相同的文件不重复列');
+  assert.strictEqual(v.columns[3].name, '其他稿件文件');
+});
+
+test('工作台落盘：交稿存成 drafts/<成员>-v<n>.md、定稿存成 final.md；再读时不当成「其他文件」', () => {
+  const p = fixturePaths();
+  const pieces = new PieceStore(p);
+  const dir = pieces.create();
+  const st = groupState();
+  st.messages.push({ id: 'a3-m1', role: 'assistant', sid: 'sid-a', speaker: 'Claude 1', turnNum: 3, status: 'completed', content: '# 定稿标题\n\n定稿正文。' + card({ type: 'final', title: '定稿标题' }) });
+  const v = wb.buildView({ state: st, members: MEMBERS, files: [] });
+  const written = wb.materialize(dir, v, []);
+  assert.deepStrictEqual(written, ['Claude-1-v1.md', 'Claude-1-v2.md', 'Claude-1-v3.md']);
+  assert.ok(fs.readFileSync(path.join(dir, 'drafts', 'Claude-1-v1.md'), 'utf8').startsWith('# 分身不是分集'));
+  assert.ok(fs.readFileSync(path.join(dir, 'final.md'), 'utf8').startsWith('# 定稿标题'));
+  const mtime = fs.statSync(path.join(dir, 'final.md')).mtimeMs;
+  wb.materialize(dir, wb.buildView({ state: st, members: MEMBERS, files: [] }), written);
+  assert.strictEqual(fs.statSync(path.join(dir, 'final.md')).mtimeMs, mtime, '内容没变就不重写（否则会反复触发文风优化）');
+  assert.strictEqual(pieces.summary(dir).hasFinal, true, '作品库与文风优化照旧读 final.md');
+});
+
+test('工作台 IPC：按文章目录读群聊记录与成员，交稿落盘并记进 piece.json', async () => {
+  const p = fixturePaths();
+  const hub = tmp('hub');
+  fs.mkdirSync(path.join(hub, 'arena-prompts'), { recursive: true });
+  fs.writeFileSync(path.join(hub, 'arena-prompts', 'meet-1-groupchat.json'), JSON.stringify(groupState()));
+  const saved = { ...process.env };
+  Object.assign(process.env, { CLAUDE_HUB_WRITING_ROOT: p.root, CLAUDE_HUB_VOICE_DIR: p.voiceDir });
+  try {
+    const handlers = new Map();
+    const { registerWritingIpc } = require('../main/ipc/writing-handlers.js');
+    registerWritingIpc({ handle: (k, fn) => handlers.set(k, fn) }, {
+      getHubDataDir: () => hub,
+      meetingManager: { getMeeting: (id) => (id === 'meet-1' ? { id, subSessions: ['sid-a', 'sid-b', 'sid-c'], slotSpecs: [] } : null) },
+      sessionManager: { getSession: (sid) => ({ 'sid-a': { title: 'Claude 1', kind: 'claude', status: 'idle' }, 'sid-b': { title: 'Codex 2', kind: 'codex', status: 'idle' } })[sid] || null },
+    });
+    const pieces = new PieceStore(p);
+    const dir = pieces.create();
+    await handlers.get('writing:article-bind')({}, { dir, meetingId: 'meet-1' });
+    const r = await handlers.get('writing:article-view')({}, { dir });
+    assert.strictEqual(r.ok, true, r.message);
+    assert.deepStrictEqual(r.view.columns.map((c) => c.name), ['Claude 1', 'Codex 2', 'DeepSeek 3']);
+    assert.strictEqual(r.view.columns[2].status, 'error');
+    assert.deepStrictEqual(pieces.readMeta(dir).written, ['Claude-1-v1.md', 'Claude-1-v2.md']);
+    const again = await handlers.get('writing:article-view')({}, { dir });
+    assert.ok(!again.view.columns.some((c) => c.name === '其他稿件文件'), 'Hub 自己写的稿件文件不重复列');
+    const outside = await handlers.get('writing:article-view')({}, { dir: path.join(p.root, '..') });
+    assert.strictEqual(outside.ok, false, '文章目录必须在写作台根下');
+  } finally {
+    for (const k of ['CLAUDE_HUB_WRITING_ROOT', 'CLAUDE_HUB_VOICE_DIR']) { if (saved[k] == null) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
 });
 
 /* ── 起草配方（文风优化用的后台调用） ── */
