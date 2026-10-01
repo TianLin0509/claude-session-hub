@@ -39,4 +39,4 @@ function status(root,plan,held){
   return {state,proxy:plan.proxy,domestic:'direct',foreign:plan.proxy?'hub_proxy':'direct',message:state==='restart_required'?'专属 Chrome 仍在使用旧网络设置；请先保存并关闭其中的网站标签页，再打开账号网页，登录记录会保留。':plan.proxy?'国外 AI 使用 Hub 代理，国内 AI 直连':'Hub 未配置代理，专属 Chrome 全部直连'};
 }
 function assertCurrent(root,plan,held){const s=status(root,plan,held);if(s.state==='restart_required')throw Object.assign(Error(s.message),{code:'HUB_BROWSER_ROUTE_CHANGED'});}
-module.exports={DIRECT_DOMAINS,normalizeProxy,policy,route,record,status,assertCurrent};
+module.exports={DIRECT_DOMAINS,normalizeProxy,policy,route,read,record,status,assertCurrent};

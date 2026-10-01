@@ -150,17 +150,18 @@ test('a failed record still takes the page off the check', async t => {
   assert.equal(entry.unrecorded, true);
 });
 
-test('the account page opens an ordinary visit without pausing tools, and a paused site with a handoff', async t => {
+test('the account page opens ordinary Chrome, and a paused site with a handoff', async t => {
   const { HubChrome } = require('../core/hub-chrome');
   const dir = root(t), hub = new HubChrome({ root: dir, env: {} }), calls = [];
   hub.lifecycle = fn => fn(); hub.assertAvailable = () => {}; hub.endpoint = async () => ({ port: 1, ws: 'ws://x' });
-  hub._openVisible = async (identity, url) => { calls.push(['visible', identity, url]); return { targetId: 'P' }; };
+  hub.workTabs = async () => 0;
+  hub._openOrdinary = async (identity, url) => { calls.push(['ordinary', identity, url]); return { mode: 'ordinary' }; };
   hub.browser = async () => { throw Error('no cookie reset in this unit'); };
   await hub.openWebsite('main', 'claude');
-  assert.deepEqual(calls, [['visible', 'main', 'https://claude.ai/']]);
+  assert.deepEqual(calls, [['ordinary', 'main', 'https://claude.ai/']]);
   assert.equal(guard.handoff(dir), null, 'an ordinary visit pauses nothing');
   guard.recordChallenge(dir, { identity: 'alt', site: 'chatgpt' });
   const r = await hub.openWebsite('alt', 'chatgpt');
   assert.equal(r.handoff, true);
-  assert.equal(guard.handoff(dir).targetId, 'P');
+  assert.equal(guard.handoff(dir).mode, 'ordinary');
 });

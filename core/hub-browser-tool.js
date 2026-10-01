@@ -74,7 +74,7 @@ class BrowserTool {
       const { targetInfos } = await cdp.call('Target.getTargets');
       const marker = targetInfos.find(t => t.url === this.hub.markerUrl(this.binding.identity));
       const target = targetInfos.find(t => t.targetId === record.targetId && t.type === 'page');
-      return marker && target && target.browserContextId === marker.browserContextId ? { ...record, ep } : null;
+      return marker && target && target.browserContextId === marker.browserContextId ? { ...record, ep, url: target.url } : null;
     } finally { cdp.close(); }
   }
   async open(url = 'about:blank') {
@@ -87,6 +87,7 @@ class BrowserTool {
     return { targetId: tab.targetId, reused: false };
   }
   async withPage(fn, { downloads = false } = {}) {
+    guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity });
     const target = await this.target();
     if (!target) throw Error('No browser session: owned Hub page is not open');
     guard.assertAutomationAllowed(this.binding.root, { identity: this.binding.identity });
@@ -107,11 +108,20 @@ class BrowserTool {
   async execute(argv) {
     const [command, ...args] = argumentsOf(argv);
     const root = this.binding.root, identity = this.binding.identity;
-    if (guard.handoff(root)) await guard.settleHandoff(this.hub).catch(() => {});
+    if (guard.read(root).handoff) await guard.settleHandoff(this.hub).catch(() => {});
     // A person asked to verify or sign in: the browser is theirs until they finish or 15 min pass.
     if (command === 'human-open') {
       const url = args.find(a => !a.startsWith('--')) || 'https://chatgpt.com/';
-      const { lease, cleared, site } = await this.hub.lifecycle(() => guard.openForHuman(this.hub, { identity, url, by: this.binding.id }));
+      const { lease, cleared, site } = await this.hub.lifecycle(async () => {
+        // The guard has already parked a challenged task at about:blank. Close only
+        // this tool's verified, empty page so it cannot block an ordinary handoff.
+        const owned = await this.target();
+        if (owned?.url === 'about:blank') {
+          await this.hub.closeTab(owned.targetId);
+          fs.rmSync(this.file, { force: true });
+        }
+        return guard.openForHuman(this.hub, { identity, url, by: this.binding.id });
+      });
       return { handoff: true, until: lease.until, site, cleared };
     }
     if (command === 'human-done') {

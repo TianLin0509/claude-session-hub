@@ -548,20 +548,36 @@ class HubChrome {
       if(ep&&this.routingStatus().state==='restart_required'&&!require('./web-risk-guard').handoff(this.root)&&!(await this.workTabs())){
         await this.close();ep=null;
       }
-      // The person gets the browser to themselves: every automation transport pauses and
-      // detaches, stale challenge counters are reset, and the window has no debugger on it.
-      if (ep) {
-        const guard = require('./web-risk-guard');
-        // A site paused by a challenge needs the whole browser (去验证). An ordinary visit only
-        // needs a window with no debugger on it; the tools keep working.
-        if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
-          const { lease, cleared } = await guard.openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
-          return { targetId: lease.targetId, handoff: true, until: lease.until, cleared };
-        }
-        return this._openVisible(identityId, site.url);
+      const guard = require('./web-risk-guard');
+      if (guard.blocked(this.root, identityId, guard.siteOf(site.url))) {
+        const { lease, cleared } = await guard.openForHuman(this, { identity: identityId, url: site.url, by: 'account-tab' });
+        return { mode: 'ordinary', handoff: true, until: lease.until, cleared };
       }
-      return this._openLogin(identityId, [siteKey]);
+      // A visible page in a debugging process still has the debugging port. Account-page
+      // visits use the same ordinary Chrome as login, with the same profile and proxy.
+      return this._openOrdinary(identityId, site.url);
     });
+  }
+  async assertOrdinaryAvailable() {
+    this.assertAvailable();
+    const ep = await this.endpoint();
+    if (ep?.headless) throw Error('正在后台检查登录，请等待结束或取消检查');
+    if (ep) {
+      const busy = await this.workTabs();
+      if (busy > 0) throw Object.assign(Error(`专属 Chrome 中还有 ${busy} 个网页或任务；请先保存并关闭这些标签页，再打开账号网站或去验证，登录记录会保留`), { code: 'HUB_BROWSER_BUSY' });
+    }
+    return ep;
+  }
+  async _openOrdinary(identityId, urls) {
+    this.identity(identityId);
+    const ep = await this.assertOrdinaryAvailable();
+    if (ep) {
+      await this.close();
+      for (let i = 0; i < 40 && (await this.owners()).length; i++) await sleep(250);
+      if ((await this.owners()).length) throw new Error('Hub 浏览器没能及时退出，请稍后再打开');
+    }
+    await this.launch(identityId, { debug: false, visible: true, urls: [].concat(urls) });
+    return { identity: identityId, mode: 'ordinary', pid: routing.read(this.root)?.pid || this.lastLaunchPid };
   }
   async _openLogin(identityId, siteKeys) {
     this.assertAvailable();
@@ -569,15 +585,7 @@ class HubChrome {
     const keys = [].concat(siteKeys || identity.sites).filter(Boolean);
     for (const k of keys) if (!identity.sites.includes(k) && !Object.hasOwn(require('./external-accounts').EXTERNAL_SITES, k)) throw new Error(`身份「${identity.label}」不负责 ${this.site(k).name}`);
     const urls = keys.map(k => this.site(k).url);
-    if ((await this.owners()).some(o => o.automated)) {
-      const busy = await this.workTabs();
-      if (busy > 0) throw new Error(`有 ${busy} 个网页任务正在用 Hub 浏览器，等它们结束再登录（Google 不允许在被程序控制的浏览器里登录）`);
-      await this.close();
-      for (let i = 0; i < 40 && (await this.owners()).length; i++) await sleep(250);
-      if ((await this.owners()).length) throw new Error('Hub 浏览器没能及时退出，请稍后再点登录');
-    }
-    await this.launch(identityId, { debug: false, visible: true, urls });
-    return { identity: identity.id, sites: keys, mode: 'ordinary' };
+    return { ...await this._openOrdinary(identity.id, urls), sites: keys };
   }
   // Any non-marker page may still belong to a task or the user, irrespective of placement.
   async workTabs() {

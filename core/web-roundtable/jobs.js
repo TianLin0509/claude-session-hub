@@ -64,6 +64,8 @@ async function runWeb(job,save,mode,runtime={}){
     // whatever root a caller names together with its own opener.
     const hubRoot=runtime.hubRoot||(runtime.open?null:require('../hub-chrome').defaultRoot(process.env)),guard=hubRoot&&(runtime.guard||require('../web-risk-guard'));
     for(;guard;){
+      if(typeof guard.read==='function'&&typeof guard.settleHandoff==='function'&&guard.read(hubRoot).handoff)
+        await guard.settleHandoff(new (require('../hub-chrome').HubChrome)({root:hubRoot})).catch(()=>{});
       try{guard.assertAutomationAllowed(hubRoot,{identity:'main',url});break;}
       catch(e){
         if(e.code==='HUB_SITE_CHALLENGED')throw Object.assign(Error('此网站刚遇到人机验证，自动化已暂停；请从 Hub 账号页打开此网站完成验证后再处理任务'),{attention:true,recovery:'human_verification'});
