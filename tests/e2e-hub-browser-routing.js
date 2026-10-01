@@ -16,6 +16,8 @@ try{
  origin=https.createServer({key:fs.readFileSync(key),cert:fs.readFileSync(cert)},(req,res)=>{res.setHeader('content-type','text/html');res.end('<body>ROUTE_OK '+req.headers.host+'</body>');});const port=await listen(origin);
  proxy=http.createServer((req,res)=>{res.writeHead(502);res.end();});
  proxy.on('connect',(req,socket,head)=>{
+  // Chrome may cancel a speculative CONNECT after receiving our 502 response.
+  socket.on('error',()=>socket.destroy());
   const u=new URL('https://'+req.url);if(Number(u.port)!==port){socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');return;}
   seen.push(u.hostname);const upstream=net.connect(port,'127.0.0.1',()=>{socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head.length)upstream.write(head);socket.pipe(upstream);upstream.pipe(socket);});
   for(const s of [socket,upstream]){tunnels.add(s);s.on('close',()=>tunnels.delete(s));s.on('error',()=>{socket.destroy();upstream.destroy();});}
