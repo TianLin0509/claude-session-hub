@@ -94,7 +94,7 @@ test('the per-step entry prints the handoff and challenge categories', async t =
   try { out = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } }); } catch (e) { out = e.stdout; }
   assert.deepEqual(JSON.parse(out), { isError: true, error: 'Human handoff' });
 });
-test('download scripts take the passive relay and ordinary scripts attach without focus defaults', async t => {
+test('download scripts ask for Playwright download handling; ordinary scripts attach without defaults', async t => {
   const binding = fixture(t), seen = [];
   const tool = new BrowserTool(binding, { env: {}, hub: { endpoint: async () => null } });
   tool.withPage = async (fn, options) => { seen.push(!!options?.downloads); return null; };
@@ -104,4 +104,16 @@ test('download scripts take the passive relay and ordinary scripts attach withou
   await tool.execute(['run-code', '--filename', download]);
   await tool.execute(['run-code', '--filename', plain]);
   assert.deepEqual(seen, [true, false]);
+});
+test('the company bridge reports its page steps to the account page; images and a person holding the browser do not', t => {
+  const { noteActivity } = require('../core/hub-browser-tool');
+  const binding = { ...fixture(t), id: 'company-bridge', tool: 'bridge' };
+  const file = path.join(binding.root, 'account-activity', 'main-chatgpt-bridge.json');
+  noteActivity(binding, ['--session', 'chatgpt-bridge', '--json', 'run-code', '--filename', 'x.js'], 'success');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).outcome, 'success');
+  noteActivity(binding, ['goto', 'https://chatgpt.com/'], null);
+  noteActivity(binding, ['close'], 'failed');
+  noteActivity({ ...binding, tool: 'images' }, ['run-code', '--filename', 'x.js'], 'failed');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).outcome, 'success');
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['main-chatgpt-bridge.json']);
 });

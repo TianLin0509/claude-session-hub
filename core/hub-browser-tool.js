@@ -166,9 +166,19 @@ class BrowserTool {
     throw Error('Unsupported Hub browser command: ' + command);
   }
 }
+// The account page shows how the company bridge's last step on its login went. Image
+// results come from the image queue itself (hub-account-activity.js).
+function noteActivity(binding, argv, outcome) {
+  const [command] = argumentsOf(argv);
+  if (binding.tool !== 'bridge' || !['goto', 'run-code'].includes(command) || !outcome) return;
+  try { require('./hub-account-activity').recordActivity(binding.root, { identity: binding.identity, site: 'chatgpt', source: 'bridge', outcome }); } catch {}
+}
 async function main(binding, argv = process.argv.slice(2)) {
-  try { const result = await new BrowserTool(binding).execute(argv); process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n'); }
-  catch (e) {
+  try {
+    const result = await new BrowserTool(binding).execute(argv);
+    noteActivity(binding, argv, result?.challenge === true ? 'verification_required' : 'success');
+    process.stdout.write(JSON.stringify({ result: result ?? null }) + '\n');
+  } catch (e) {
     // Native tools classify these categories; never print evaluated code or page contents.
     const category = /^Unsupported Hub browser command/.test(e.message) ? 'Unsupported command'
       : /^Human handoff/.test(e.message) ? 'Human handoff'
@@ -178,7 +188,9 @@ async function main(binding, argv = process.argv.slice(2)) {
       : /strict mode violation/.test(e.message) ? 'strict mode violation'
       : /Target.*closed/.test(e.message) ? 'Target closed'
       : /Timeout|timeout/.test(e.message) ? 'Timeout' : 'Hub browser operation failed';
+    // A person holding the browser is not a failure of the tool.
+    noteActivity(binding, argv, category === 'Site challenged' ? 'verification_required' : category === 'Human handoff' ? null : 'failed');
     process.stdout.write(JSON.stringify({ isError: true, error: category }) + '\n'); process.exitCode = 1;
   }
 }
-module.exports = { BrowserTool, main, argumentsOf, validateBinding, save, read, integrationStatus };
+module.exports = { BrowserTool, main, noteActivity, argumentsOf, validateBinding, save, read, integrationStatus };
