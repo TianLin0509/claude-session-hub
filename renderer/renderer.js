@@ -1234,6 +1234,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
+  if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
@@ -3419,7 +3420,7 @@ document.addEventListener('click', async (e) => {
     // Resend = same user prompt; regen = find prior user prompt then resend
     let promptText = null;
     if (action === 'resend') {
-      promptText = turn.text;
+      promptText = turn.assistantContext?.userText ?? turn.text;
     } else {
       // regen: walk DOM up looking for prior user .turn-card
       const owner = getCardSessionId(card);
@@ -3429,7 +3430,7 @@ document.addEventListener('click', async (e) => {
       for (let i = myIdx - 1; i >= 0; i--) {
         if (cards[i].classList.contains('user')) {
           const userTurn = getTurnFromCard(cards[i]);
-          if (userTurn) promptText = userTurn.text;
+          if (userTurn) promptText = userTurn.assistantContext?.userText ?? userTurn.text;
           break;
         }
       }
@@ -3493,7 +3494,7 @@ document.addEventListener('click', async (e) => {
       const group = groupMember ? MeetingRoom.getMeetingData(MeetingRoom.getActiveMeetingId()) : null;
       const memberIndex = group?.subSessions.indexOf(cardSid);
       const mention = group ? '@' + (group.slotSpecs?.[memberIndex]?.memberId || 'm' + (memberIndex + 1)) + ' ' : '';
-      inputEl.textContent = mention + (turn.text || '');
+      inputEl.textContent = mention + (turn.assistantContext?.userText ?? turn.text ?? '');
       inputEl.dispatchEvent(new Event('input', { bubbles:true }));
       inputEl.focus();
       // Place cursor at end (contenteditable doesn't have setSelectionRange)
@@ -5499,6 +5500,7 @@ async function selectSession(id, opts = {}) {
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
+  if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   setShellNavActive(null);
@@ -8223,6 +8225,7 @@ const shellController = createShellController({
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
   if (window.__studyHide) window.__studyHide();
+  if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (fileManagerPanel) fileManagerPanel.close();
@@ -8259,6 +8262,31 @@ const configModal = createConfigModalController({
 const accountCenterPanel = require('./account-center-panel').createAccountCenterPanel({
   document, ipcRenderer, escapeHtml, configModal, closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); },
 });
+const assistantPanel = require('./assistant-panel').createAssistantPanel({
+  document, ipcRenderer,
+  closeOtherPanels: () => { memoryPanel.close(); capabilityPanel.close(); accountCenterPanel.close(); },
+  openSession: async (sessionId, session, draft) => {
+    if (!sessions.has(sessionId)) {
+      const current = session || (await ipcRenderer.invoke('get-sessions')).find(item => item.id === sessionId);
+      if (!current) throw new Error('助理会话暂未出现在当前 Hub，请刷新后重试');
+      sessions.set(sessionId, current); renderSessionList();
+    }
+    await selectSession(sessionId, { forceScrollBottom: true });
+    if (draft) {
+      const input = [...document.querySelectorAll('.floating-input-bar')].find(bar => bar.dataset.sessionId === sessionId)?.querySelector('.floating-input-box');
+      if (input) {
+        const current = readContenteditablePlainText(input);
+        restoreComposerText(sessionId, input, current ? current + '\n\n' + draft : draft);
+        saveFloatingInputDraft(sessionId, input); input.focus();
+      } else {
+        const current = floatingInputDrafts.get(sessionId);
+        floatingInputDrafts.set(sessionId, current ? current + '\n\n' + draft : draft);
+        showToast('问题已存为助理草稿，打开输入框即可发送');
+      }
+    }
+  },
+});
+window.__assistantHide = () => assistantPanel.close();
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 document.addEventListener('hub-config-saved', () => {
@@ -8434,6 +8462,10 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
     window.dispatchEvent(new CustomEvent('chuxin-session-created', { detail: session }));
     return;
   }
+  if (session.purpose === 'hub-assistant') {
+    scheduleSessionListRender();
+    return;
+  }
   if (session.purpose === 'memory-dream' && !wasDormant) {
     scheduleSessionListRender();
     void savePreviewState({ nonBlocking: true });
@@ -8465,6 +8497,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // 2026-09-02：session-created 会直接亮出终端面板，但此前只隐藏了群聊面板。
   // 主区是 flex 容器，学习面板若还开着就会和终端并排各占一半。
   if (window.__studyHide) window.__studyHide();
+  if (window.__assistantHide) window.__assistantHide();
   if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
   if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
   if (terminalPanelEl) terminalPanelEl.style.display = '';
@@ -9749,6 +9782,7 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
           currentView = 'card';
           _cardHistoryHydratedSid = sessionId;
           if (window.__studyHide) window.__studyHide();   // 同上：别和学习面板并排
+          if (window.__assistantHide) window.__assistantHide();
           if (window.__writingHide) window.__writingHide(); // 2026-09-30 写作面板互斥
           if (window.__ranHide) window.__ranHide(); // 2026-09-04 RAN 工作台面板互斥
           terminalPanelEl.style.display = '';

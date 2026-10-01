@@ -78,6 +78,26 @@ function test(name, fn) {
 
 console.log('Running resume session IPC contract tests...');
 
+test('assistant resume restores scoped tools while keeping the native session identity', async () => {
+  const ipc = createFakeIpc();
+  const entry = { name: 'hub_assistant', command: 'node', args: ['assistant-mcp.js'], toolApprovalModes: { create_session: 'approve' } };
+  const deps = createBaseDeps({ prepareAssistantResume: async () => ({ mcpProfile: 'lean', codexMcpEntries: [entry] }) });
+  registerResumeSessionIpc(ipc, deps);
+  const session = await ipc.handlers.get('resume-session')(null, { hubId: 'assistant-resume-test', kind: 'codex', purpose: 'hub-assistant', codexSid: 'native-assistant-test', lastCompletedAt: 123, cwd: 'C:\\project', mcpProfile: 'none' });
+  assert.equal(session.opts.id, 'assistant-resume-test');
+  assert.equal(session.opts.codexSid, 'native-assistant-test');
+  assert.equal(session.opts.mcpProfile, 'lean');
+  assert.deepEqual(session.opts.codexMcpEntries, [entry]);
+});
+
+test('assistant resume fails closed without its scoped integration', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+  await assert.rejects(ipc.handlers.get('resume-session')(null, { hubId: 'assistant-unavailable-test', kind: 'codex', purpose: 'hub-assistant' }), /助理恢复配置不可用/);
+  assert.equal(deps.calls.filter(c => c[0] === 'createSession').length, 0);
+});
+
 test('an unstarted development seat restores configuration without a history picker', async () => {
   const ipc=createFakeIpc();
   const runtime=new (require('../core/codex-native-session').CodexNativeSession)({id:'lazy-seat',lazyStart:true}).runtime;

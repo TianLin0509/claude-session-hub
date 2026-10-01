@@ -127,7 +127,7 @@ function registerSessionIpc(ipcMain, deps) {
   const web = require('../../core/chatgpt-web-integration');
   ipcMain.handle('chatgpt-web:status', () => web.webStatus());
   ipcMain.handle('chatgpt-web:settings', () => web.openWebSettings());
-  ipcMain.handle('create-session', (_e, arg) => {
+  const createSession = (arg) => {
     // Back-compat: legacy callers pass just a kind string; newer callers pass { kind, opts }.
     let kind;
     let opts;
@@ -152,7 +152,8 @@ function registerSessionIpc(ipcMain, deps) {
       });
     }
     return createResolvedSession(kind, opts);
-  });
+  };
+  ipcMain.handle('create-session', (_e, arg) => createSession(arg));
 
   function createResolvedSession(kind, opts) {
     const isResumePicker = typeof kind === 'string' && kind.endsWith('-resume');
@@ -582,7 +583,7 @@ function registerSessionIpc(ipcMain, deps) {
     return fresh;
   });
 
-  return { lastResizeBySid };
+  return { lastResizeBySid, createSession };
 }
 
 module.exports = {

@@ -12,6 +12,7 @@ const { WorkspaceService } = require('../core/workspace-service.js');
 
 const SESSION_MANAGER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
 const CONTROLLER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'workspace-controller.js'), 'utf8');
+const CREATION_DEFAULTS_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-creation-defaults.js'), 'utf8');
 const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 const SUMMARY_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-status-summary.js'), 'utf8');
 const INDEX_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
@@ -213,7 +214,7 @@ test('only flags the selected CLI understands are sent', () => {
   // 默认档位不能漂。2026-08-29 起三家统一 None：用户要求「只有我提到的时候才
   // 加载 superRAN」，而 superran 每个进程恒定提交 2.66 GB，默认加载是内存杀手。
   assert.match(
-    CONTROLLER_SRC,
+    CREATION_DEFAULTS_SRC,
     /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none' \}/,
     '三家默认都必须是 None（不加载任何 MCP）',
   );
@@ -221,7 +222,7 @@ test('only flags the selected CLI understands are sent', () => {
   // Codex 这一侧就是 service_tier=standard（显式关 Fast），不是 inherit ——
   // inherit 会跟着 ~/.codex/config.toml 走，那份配置里可能还开着 priority。
   assert.match(
-    CONTROLLER_SRC,
+    CREATION_DEFAULTS_SRC,
     /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'standard', deepseek: 'inherit' \}/,
     'Codex 默认必须显式关 Fast，且不能改变 DeepSeek 的继承语义',
   );
@@ -233,17 +234,17 @@ test('only flags the selected CLI understands are sent', () => {
   // 2026-09-05：Claude / Codex 默认思考强度从 max 降到 high。DeepSeek 没被点名，
   // 必须继续落在通用 DEFAULT_EFFORT('max')，所以这里同时守"没有 deepseek 键"。
   assert.match(
-    CONTROLLER_SRC,
+    CREATION_DEFAULTS_SRC,
     /const DEFAULT_EFFORT_BY_KIND = \{ claude: 'high', codex: 'high' \}/,
     'Claude 与 Codex 的默认思考强度必须是 high',
   );
   assert.match(
-    CONTROLLER_SRC,
+    CREATION_DEFAULTS_SRC,
     /const DEFAULT_EFFORT = 'max';/,
     '未点名的 kind 仍回落到通用默认 max',
   );
   assert.match(
-    CONTROLLER_SRC,
+    CREATION_DEFAULTS_SRC,
     /function defaultEffortFor\(kind\) \{ return DEFAULT_EFFORT_BY_KIND\[kind\] \|\| DEFAULT_EFFORT; \}/,
     '默认强度必须按 kind 取，不能再有裸 DEFAULT_EFFORT 分支',
   );

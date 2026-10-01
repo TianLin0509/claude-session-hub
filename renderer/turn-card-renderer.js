@@ -46,6 +46,7 @@ function createTurnCardRenderer(options = {}) {
       const feedback = require('../core/native-feedback');
       const receiptAuthoritative = feedback.hasNativeReceipt(turn);
       return { ...turn, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
+        assistantContext: require('../core/assistant-context-display').assistantContextDisplay(turn.text, session?.purpose),
         receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId,
           {authoritative: receiptAuthoritative, deliveryStatus: turn.deliveryStatus}) };
     }
@@ -432,7 +433,7 @@ function _renderMetaPills(turn) {
   if (turn.phase === 'commentary') return '';
   const isUser = turn.role === 'user';
   if (isUser) {
-    const n = (turn.text || '').length;
+    const n = (turn.assistantContext?.userText ?? turn.text ?? '').length;
     if (!n) return '';
     return `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
   }
@@ -519,9 +520,11 @@ function renderTurnCard(turn) {
   const body = (isProgress ? require('./conversation-message-view').renderProgressRow(turn,
     {escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths,actions:renderCardActions(turn)})
     : emptyNative ? `<span class="turn-native-outcome">${escapeHtml(emptyNative)}</span>`
-    : require('./conversation-message-view').renderMessageBody(turn.text,
+    : require('./conversation-message-view').renderMessageBody(turn.assistantContext?.userText ?? turn.text,
       {isUser,escapeHtml,renderMarkdown:renderMarkdownPreservingLocalPaths}));
   const attachments = isUser ? renderImageAttachments(turn.attachments, { escapeHtml, cwd: turn.attachmentCwd }) : '';
+  const assistantContext = isUser && turn.assistantContext
+    ? `<details class="assistant-turn-context"><summary>本轮请求 · 查看原生提交内容</summary><pre>${escapeHtml(turn.assistantContext.rawText)}</pre></details>` : '';
   const presentation = turn.presentation || buildTurnPresentation(turn);
   // 活动轨保留原 tc-cluster class 兼容现有交互/样式，同时增加显式 lifecycle。
   const toolHtml = renderToolCluster(turn.id || '', _fullActivityTurns.has(turn.id) ? turn.toolCalls : presentation.activities, presentation.activityCount);
@@ -529,6 +532,7 @@ function renderTurnCard(turn) {
   const glanceHtml = deliveryHtml ? renderDeliveryGlance(presentation.delivery) : '';
   const bodyHtml = `<div class="turn-body${isProgress ? ' conversation-progress-row' : ''}${turn.text || emptyNative ? '' : ' turn-body-empty'}">${body}</div>
       ${attachments}
+      ${assistantContext}
       ${isUser && turn.promptReceipt ? `<div class="turn-prompt-receipt" role="status">${escapeHtml(turn.promptReceipt)}</div>` : ''}`;
   const primaryHtml = !isUser && !isProgress && turn.phase !== 'activity'
     ? `<div class="turn-primary${glanceHtml ? ' has-glance' : ''}"><div class="turn-primary-copy">${bodyHtml}</div>${glanceHtml}</div>`
