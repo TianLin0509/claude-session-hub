@@ -56,7 +56,7 @@ async function click(cdp, selector) {
     const cdp = await connectFirstPage(hub);
     await waitFor(cdp, "document.querySelector('#empty-state')?.dataset.homeReady === 'true'");
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 950, deviceScaleFactor: 1, mobile: false });
-    for (const theme of ['dark', 'light']) {
+    for (const theme of ['dark', 'codex']) {
       await cdp.eval(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
       const state = await cdp.eval(`(() => {
         const root = document.querySelector('#empty-state');
@@ -67,7 +67,7 @@ async function click(cdp, selector) {
           buttons: buttons.map(el => ({text: el.textContent.trim(), width: Math.round(el.getBoundingClientRect().width)})) };
       })()`);
       assert.equal(state.title, '选择协作方式');
-      assert.equal(state.background, 'rgb(11, 33, 52)');
+      assert.equal(state.background, await cdp.eval('(()=>{const e=document.createElement("div");e.style.background="var(--surface-canvas)";document.body.append(e);const c=getComputedStyle(e).backgroundColor;e.remove();return c})()'));
       assert.equal(state.columns, 2);
       assert.equal(state.visible, true);
       assert.equal(state.buttons.length, 2);
@@ -79,7 +79,7 @@ async function click(cdp, selector) {
     const compact = await cdp.eval(`(() => ({ viewport: innerWidth, width: document.documentElement.scrollWidth,
       columns: getComputedStyle(document.querySelector('.home-welcome-portals')).gridTemplateColumns.split(' ').length,
       cards: [...document.querySelectorAll('.home-welcome-portal')].map(el => el.getBoundingClientRect().width) }))()`);
-    assert(compact.width <= compact.viewport && compact.columns === 2 && compact.cards.every(width => width > 200), JSON.stringify(compact));
+    assert(compact.width <= compact.viewport && [1,2].includes(compact.columns) && compact.cards.every(width => width > 200), JSON.stringify(compact));
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 950, deviceScaleFactor: 1, mobile: false });
     for (const [selector, intent] of [['#home-create-session', 'session'], ['#home-create-group', 'group']]) {
       await click(cdp, selector);

@@ -43,7 +43,7 @@ async function port() { const s=net.createServer(); await new Promise(r=>s.liste
     await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:250});await sleep(400);
     await click('#btn-writing');await until('document.querySelectorAll(".wr-article").length===2','two articles');
     await check('getComputedStyle(document.querySelector("#session-sidebar")).visibility==="hidden"','writing hides session sidebar');
-    await check('document.getElementById("writing-panel").getBoundingClientRect().left===72','writing uses full content width');
+    await check('document.getElementById("writing-panel").getBoundingClientRect().left===document.getElementById("scene-rail").getBoundingClientRect().right','writing uses full content width');
     await textButton('#wr-view-studio','看定稿');await until('document.querySelector(".wr-studio-preview .wr-paper")?.textContent.includes("先明确条件")','real final text');await shot('01-writing');
     await click('[data-view="library"]');await until('document.querySelectorAll(".wr-item").length===1','final enters library');await click('.wr-item');await until('document.querySelector(".wr-reader .wr-paper")','reader');
     await check('document.querySelectorAll(".wr-filters input[type=checkbox]").length>=5','all library filters retained');await shot('02-library');
