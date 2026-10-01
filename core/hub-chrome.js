@@ -311,6 +311,11 @@ class HubChrome {
       ...(debug ? ['--remote-debugging-port=0'] : []),
       ...(headless ? ['--headless=new'] : []),
       '--no-first-run', '--no-default-browser-check',
+      // Tool tabs live in windows parked off screen. Without these Chrome reports them hidden:
+      // timers are throttled and no animation frame runs, so a Playwright click waits forever
+      // for the element to be stable (measured 2026-09-30 on the bridge's send button). Chrome
+      // launched by Playwright carries the same three switches.
+      '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
       // Set an explicit visible state instead of restoring a parked off-screen window.
       // Measured on Windows Chrome: --window-position overrides --start-maximized,
       // for both the first launch and a new window in an already running browser.

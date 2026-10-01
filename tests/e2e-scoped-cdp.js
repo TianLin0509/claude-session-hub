@@ -39,7 +39,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       if (req.url === '/file') { res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="fixture.bin"' }); res.end(Buffer.alloc(2048, 7)); return; }
       res.writeHead(200, { 'content-type': 'text/html' });
       // localhost and 127.0.0.1 are different sites, so Chrome puts the frame in its own process.
-      res.end(`<a id=dl href="/file">download</a><iframe src="http://localhost:${framePort}/frame"></iframe>`);
+      res.end(`<a id=dl href="/file">download</a><button id=go onclick="window.clicked=true">go</button><iframe src="http://localhost:${framePort}/frame"></iframe>`);
     });
     const pageUrl = `http://127.0.0.1:${pageServer.address().port}/`;
     await hub.ensure();
@@ -73,6 +73,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const result = await step;
     assert.deepEqual(during, { own: true, other: false, frame: false }, 'scoped attach: own page only');
     assert.equal(result.result.url, pageUrl);
+
+    // A tool tab parked off screen is a visible page, so Playwright's own click works (it waits
+    // for animation frames, which hidden pages do not get). No clipboard is touched here.
+    fs.writeFileSync(script, 'async page => { await page.locator("#go").click({ timeout: 5000 }); return { visibility: await page.evaluate(() => document.visibilityState), clicked: await page.evaluate(() => window.clicked === true) }; }');
+    assert.deepEqual((await run(tool, ['run-code', '--filename', script])).result, { visibility: 'visible', clicked: true });
 
     // Downloads keep working through the scoped connection. The tool clicks from the page as the
     // image tool does: an off-screen page gets no animation frames, and synthetic focus stays off.

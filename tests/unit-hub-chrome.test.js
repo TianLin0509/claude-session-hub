@@ -110,4 +110,6 @@ test('a login window is always placed on screen, never left to the position Chro
   assert.ok(!login.some(a => a.startsWith('--window-size=')), 'a fixed size must not override maximization');
   assert.ok(!login.some(a => a.startsWith('--remote-debugging')), 'and no debugging port, or Google refuses the login');
   assert.ok(hub.launchArgs('main').includes('--window-position=-32000,-32000'), 'work windows stay off screen');
+  for (const flag of ['--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling'])
+    assert.ok(hub.launchArgs('main').includes(flag), 'an off-screen tool tab stays a visible, unthrottled page: ' + flag);
 });

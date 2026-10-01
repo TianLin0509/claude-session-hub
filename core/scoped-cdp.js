@@ -18,7 +18,7 @@ const WebSocket = require('ws');
 
 const RELAY_ID = 1e9;   // ids of the relay's own upstream calls; Playwright counts up from 1
 // Browser-level commands a page tool needs. Anything else could reach pages it does not own.
-const ROOT_ALLOWED = new Set(['Browser.getVersion', 'Browser.setDownloadBehavior', 'Browser.cancelDownload', 'Storage.getCookies']);
+const ROOT_ALLOWED = new Set(['Browser.getVersion', 'Browser.setDownloadBehavior', 'Browser.cancelDownload', 'Browser.grantPermissions', 'Storage.getCookies']);
 const ROOT_FOR_OWNED = new Set(['Target.getTargetInfo', 'Target.activateTarget', 'Target.closeTarget']);
 
 function localEndpoint(ep) {
