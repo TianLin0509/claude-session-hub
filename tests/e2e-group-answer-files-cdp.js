@@ -69,6 +69,16 @@ async function run() {
     ok('群聊 AI 头像使用原创女生且原图加载成功', await cdp.eval(`[...document.querySelectorAll('article[data-gc-msg-id] .mr-gc-avatar img')].filter(e=>e.src.includes('ai-avatars')).every(e=>e.naturalWidth>0) && !!document.querySelector('.mr-gc-avatar img[src="assets/ai-avatars/v1/claude.png"]')`));
     ok('群聊用户头像使用 Hub 橙色图标', await cdp.eval(`document.querySelector('.mr-gc-avatar-user img')?.getAttribute('src')==='../claude-wx.ico' && document.querySelector('.mr-gc-avatar-user img').naturalWidth>0`));
     await shot('01-files-and-missing');
+    // Resend: a real click on m2's visible 重新发送; it reaches m2 only, same turn and answer file.
+    const beforeResend = received().length;
+    const btn = await cdp.eval(`(()=>{const b=document.querySelector('article[data-gc-msg-id="a1-m2"] [data-gc-resend-member]');if(!b)return null;b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,text:b.innerText};})()`);
+    ok('还没交的卡片上直接有「重新发送」', btn && btn.text.includes('重新发送'));
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: btn.x, y: btn.y, button: 'left', clickCount: 1 });
+    await wait('resend reaches m2', () => received().length > beforeResend, 30000);
+    await sleep(800);
+    const resent = received().slice(beforeResend);
+    ok('重新发送只发给这位成员，沿用第 1 轮同一个回答文件', resent.length === 1 && memberOf(resent[0]) === 'm2' && answerPath(resent[0]) === answerPath(by.m2));
+    release(resent[0], 'm2 重新收到后仍只在聊天里回答');
     // Rescue: the user asks m2 in its own session; it writes the file afterwards.
     fs.writeFileSync(answerPath(by.m2), 'm2 补交的结论', 'utf8');
     await wait('m2 rescued card', async () => (await card(1, 'm2', sids[1]))?.text.includes('m2 补交的结论'));
@@ -85,9 +95,10 @@ async function run() {
     await shot('02-rescued');
     // Next turn: other members see file answers as group context.
     await wait('composer again', () => cdp.eval("!!document.querySelector('#mr-input-box')"));
+    const secondBase = received().length;
     await send('互相看看对方的结论。');
-    await wait('second prompts', () => received().length >= 6, 90000);
-    const second = received().slice(3), toM1 = second.find(r => memberOf(r) === 'm1');
+    await wait('second prompts', () => received().length >= secondBase + 3, 90000);
+    const second = received().slice(secondBase), toM1 = second.find(r => memberOf(r) === 'm1');
     ok('下一轮上下文来自文件：m1 看到 m2 补交的结论', toM1 && toM1.text.includes('m2 补交的结论') && !toM1.text.includes('只在聊天里'));
     ok('第二轮使用新的回答文件', answerPath(toM1).includes('turn-2'));
     second.forEach(r => release(r, 'done'));
