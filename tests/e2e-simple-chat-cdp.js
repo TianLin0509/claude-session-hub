@@ -80,7 +80,7 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
     const card='#verified-result';
     await until(`document.querySelector('${card} .turn-delivery-summary')`);
     check(await cdp.eval(`!document.querySelector('${card} .turn-result-glance') && !document.querySelector('${card} .turn-delivery-summary').open`),'结果不再使用统计面板，交付明细默认收起');
-    check(await cdp.eval(`document.querySelector('${card} .chat-process-warning').textContent.includes('失败')`),'失败记录在折叠状态仍有提示');
+    check(await cdp.eval(`document.querySelector('${card} .chat-process-warning').textContent.includes('2 项失败')`),'失败计数覆盖本轮全部活动，含最近 24 项之前的记录');
     await cdp.eval(`document.querySelector('${card}').scrollIntoView({block:'center',behavior:'instant'})`);
     evidence.chatScreenshot=await shot('simple-chat');
     await click(card+' .turn-delivery-summary > summary');

@@ -65,6 +65,8 @@ test('all supported AI runtimes and resume aliases use existing original artwork
   assert.equal(chatAvatarSrc('deepseek-acp'), chatAvatarSrc('deepseek-legacy-resume'));
   assert.equal(chatAvatarSrc('codex'), chatAvatarSrc('gpt'));
   assert.equal(chatAvatarSrc('../../claude'), null);
+  assert.equal(chatAvatarSrc('constructor'), null);
+  assert.equal(chatAvatarSrc('__proto__'), null);
   assert(fs.existsSync(path.resolve(__dirname, '../renderer', USER_AVATAR_SRC)));
   const dir = path.resolve(__dirname, '../renderer/assets/ai-avatars/v1');
   for (const asset of JSON.parse(fs.readFileSync(path.join(dir, 'provenance.json'), 'utf8'))) {
