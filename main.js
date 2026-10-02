@@ -2978,6 +2978,7 @@ require('./main/ipc/hub-accounts-handlers').registerHubAccountsIpc(ipcMain, hubA
 require('./main/ipc/voice-input-handlers').registerVoiceInputIpc(ipcMain, {
   app, safeStorage: require('electron').safeStorage,
 });
+require('./main/ipc/prompt-polish-handlers').registerPromptPolishIpc(ipcMain, { getConfig: getHubConfig });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
 // 保留旧 IPC 兼容入口，但不再启动向原生规则写入的旧沉淀调度器。
