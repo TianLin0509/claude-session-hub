@@ -39,3 +39,10 @@ test('原生 CRLF 或边界换行被规范化仍只解析完整 JSON', () => {
   }
   assert.equal(assistantContextDisplay(raw.replace('"userText":"原话",', '"userText":'), 'hub-assistant'), null);
 });
+test('助理原生粘贴保留唯一提交编号供卡片确认，普通会话不投影',()=>{
+  const {buildBootstrapPrompt}=require('../core/hub-assistant/context');
+  const text=buildBootstrapPrompt('继续任务',{clientSubmissionId:'request-123456'},0,'claude');
+  const native='<pasted_content id="1234">\n'+text+'\n</pasted_content id="1234">';
+  assert.equal(assistantContextDisplay(native,'hub-assistant').clientSubmissionId,'request-123456');
+  assert.equal(assistantContextDisplay(native,'ordinary'),null);
+});

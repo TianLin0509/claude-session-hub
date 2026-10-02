@@ -26,7 +26,9 @@ function assistantContextDisplay(text, purpose) {
     if (!data || typeof data.userText !== 'string' || typeof data.role !== 'string'
       || !data.sessions || !Array.isArray(data.sessions.sessions)
       || !data.history || typeof data.history !== 'object' || Array.isArray(data.history)) return null;
-    return { userText: data.userText, rawText };
+    const id=data.history.clientSubmissionId;
+    return { userText: data.userText, rawText,
+      ...(typeof id==='string'&&id.length>=8&&id.length<=160?{clientSubmissionId:id}:{}) };
   } catch { return null; }
 }
 

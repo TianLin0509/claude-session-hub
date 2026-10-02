@@ -131,7 +131,7 @@ class AssistantService {
     this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
     if(request.sessionId)this.continuity.add({id:'user:'+id,sessionId:request.sessionId,provider:active?.kind||'codex',role:'user',deliveryState:'prepared',timestamp:this.currentRequest.createdAt,text:request.text});
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
-    const text=buildBootstrapPrompt(request.text,manifest,this.sessions().length,active?.kind||'codex');
+    const text=buildBootstrapPrompt(request.text,{...manifest,clientSubmissionId:id},this.sessions().length,active?.kind||'codex');
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
       workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,openedSessions:context.workbench.openedCount,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
       requestToken:this.currentRequest.token,packetHash:manifest.packetHash,snapshotRead:false,snapshotReadAt:null,bootstrapChars:text.length,
