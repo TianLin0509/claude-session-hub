@@ -65,6 +65,7 @@
   <link rel="stylesheet" href="styles/simple-chat.css">
   <link rel="stylesheet" href="styles/light-surfaces.css">
   <link rel="stylesheet" href="styles/group-card-parity.css">
+  <link rel="stylesheet" href="styles/compact-status-shell.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -102,7 +103,7 @@
          id / data-* / 事件接线一律不变；label 常驻显示，tooltip 补充完整用途。 -->
     <nav class="scene-rail" id="scene-rail" aria-label="场景">
       <button type="button" class="rail-edge-trigger" id="rail-edge-trigger" aria-label="展开功能导航" aria-controls="scene-rail" title="展开功能导航"><span aria-hidden="true"></span></button>
-      <div class="rail-drawer-head"><strong>工作空间</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="收起功能导航" aria-pressed="true" title="收起功能导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>
+      <div class="rail-drawer-head"><strong>导航</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="收起功能导航" aria-pressed="true" title="收起功能导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>
       <div class="rail-navigation">
       <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/home.png" alt="" aria-hidden="true" /></span><span class="btn-label">工作台</span></button>
       <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-controls="terminal-panel"><span class="btn-icon" aria-hidden="true"><img src="assets/assistant/penguin.png" alt="" /></span><span class="btn-label">助理</span></button>
@@ -124,9 +125,9 @@
       <div class="rail-spacer"></div>
       <div class="rail-utilities">
       <button type="button" class="btn-shell-nav btn-memo-toggle" id="btn-quick-memo" data-action="open-memo" title="快速备忘" aria-label="快速备忘" aria-expanded="false" aria-controls="memo-panel"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/memo.png" alt="" aria-hidden="true" /></span><span class="btn-label">速记</span></button>
-      <button type="button" class="btn-rail-theme" id="btn-hub-restart" title="重启并继续任务：保存现场，中断当前任务，启动新版后自动恢复并续作" aria-label="重启并继续任务"><img class="rail-artwork" src="assets/navigation/sticker-v2/restart.png" alt="" aria-hidden="true" /></button>
+      <button type="button" class="btn-rail-theme" id="btn-hub-restart" title="重启并继续任务：保存现场，中断当前任务，启动新版后自动恢复并续作" aria-label="重启并继续任务"><img class="rail-artwork" src="assets/navigation/sticker-v2/restart.png" alt="" aria-hidden="true" /><span class="rail-utility-label">重启</span></button>
       <div class="rail-theme-wrapper">
-        <button type="button" class="btn-rail-theme" id="btn-theme" title="主题皮肤" aria-haspopup="true" aria-expanded="false"><img class="rail-artwork" src="assets/navigation/sticker-v2/theme.png" alt="" aria-hidden="true" /></button>
+        <button type="button" class="btn-rail-theme" id="btn-theme" title="主题皮肤" aria-haspopup="true" aria-expanded="false"><img class="rail-artwork" src="assets/navigation/sticker-v2/theme.png" alt="" aria-hidden="true" /><span class="rail-utility-label">主题</span></button>
         <div class="theme-menu" id="theme-menu" role="menu" aria-labelledby="btn-theme" style="display:none">
           <div class="options-section-label">主题</div>
           <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
@@ -135,7 +136,7 @@
         </div>
       </div>
       <div class="options-wrapper">
-        <button class="btn-options" id="btn-options" title="选项"><img class="rail-artwork" src="assets/navigation/sticker-v2/settings.png" alt="" aria-hidden="true" /></button>
+        <button class="btn-options" id="btn-options" title="选项"><img class="rail-artwork" src="assets/navigation/sticker-v2/settings.png" alt="" aria-hidden="true" /><span class="rail-utility-label">设置</span></button>
         <div class="options-menu" id="options-menu" style="display:none">
           <div class="options-item" id="options-suspend-idle" title="后台每 5 分钟巡检；连续 5 小时无输入输出则自动休眠">💤 自动休眠 · 5 小时（立即扫描）</div>
           <div class="options-divider"></div>
@@ -254,7 +255,7 @@
         </button>
         <div class="sidebar-insights-content" id="sidebar-insights-content">
           <div class="sidebar-insights-inner">
-            <div class="sidebar-account-usage" id="rail-usage"></div>
+            <div class="sidebar-account-usage" id="rail-usage" data-presentation="footer" aria-label="账户剩余额度"></div>
             <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
           </div>
         </div>

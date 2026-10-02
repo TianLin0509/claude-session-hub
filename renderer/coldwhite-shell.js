@@ -11,9 +11,12 @@ function installColdwhiteShell(doc = globalThis.document) {
   }
   const footer = doc.createElement('footer');
   footer.id = 'hub-system-footer';
-  footer.setAttribute('aria-label', '系统与网络状态');
+  footer.setAttribute('aria-label', '系统、账户用量与网络状态；窄窗口可横向滚动');
+  footer.tabIndex = 0;
   const strip = doc.getElementById('sidebar-strip');
   if (strip) footer.append(strip);
+  const usage = doc.getElementById('rail-usage');
+  if (usage) footer.append(usage);
   app.append(footer);
   const panelIds = ['hub-workspace', 'writing-panel', 'account-page', 'chuxin-panel', 'study-panel', 'ran-panel'];
   const watched = new Set();
