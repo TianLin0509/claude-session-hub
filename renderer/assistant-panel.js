@@ -5,7 +5,7 @@
 function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSessionId,
   openSession, closeOtherPanels = () => {}, showMessage }) {
   const nav = document.getElementById('btn-assistant');
-  let epoch = 0, opening = null, overview = null, sequence = 0;
+  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false;
   const setClass = (element, name, value) => { if (element.classList.contains(name) !== value) element.classList.toggle(name, value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const isOpen = () => document.body.classList.contains('assistant-session-active')
@@ -41,6 +41,16 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     setClass(nav, 'active', active);
     if (active) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current');
     const tools = document.getElementById('toolbar-actions');
+    let picker = tools?.querySelector('.assistant-backend');
+    if (active && tools && !picker) {
+      picker = document.createElement('select'); picker.className = 'assistant-backend';
+      picker.setAttribute('aria-label', '助理 AI 后端');
+      picker.title = '切换助理后端；各自历史分别保留，共用工作档案和交接记录';
+      picker.innerHTML = '<option value="codex">Codex</option><option value="claude">Claude</option>';
+      picker.addEventListener('change', () => { void switchBackend(picker.value); });
+      tools.prepend(picker);
+    }
+    if (picker && active) { picker.value = session.kind; picker.disabled = switching; }
     if (!active || !tools || tools.querySelector('.assistant-notifications')) return;
     const notices = document.createElement('details'); notices.className = 'assistant-notifications';
     notices.innerHTML = '<summary>关注回复</summary><div class="assistant-notice-list"></div>';
@@ -60,7 +70,26 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     setClass(document.getElementById('terminal-panel'), 'assistant-session', false);
     setClass(nav, 'active', false); nav.removeAttribute('aria-current');
   }
+  async function switchBackend(kind) {
+    if (opening || switching) return;
+    const ticket = ++epoch;
+    switching = true;
+    const picker = document.querySelector('.assistant-backend');
+    if (picker) { picker.disabled = true; picker.setAttribute('aria-busy','true'); }
+    const label = nav.querySelector('.btn-label'); label.textContent = '切换中…';
+    try {
+      const result = await call('assistant:switch-backend', {kind});
+      if (ticket !== epoch) return;
+      closeOtherPanels(); await openSession(result.sessionId, result.session); await refresh();
+    } catch (error) { showMessage?.(`助理后端未切换：${error.message}`); }
+    finally {
+      switching = false; label.textContent = '助理';
+      if (picker) picker.removeAttribute('aria-busy');
+      syncSession(getSession(getActiveSessionId()));
+    }
+  }
   async function open() {
+    if (switching) return;
     if (opening) return opening;
     const ticket = ++epoch;
     nav.disabled = true; nav.setAttribute('aria-busy', 'true');
@@ -84,6 +113,6 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);
     if (isOpen()) void refresh();
   });
-  return { open, close, refresh, syncSession, isOpen };
+  return { open, close, refresh, syncSession, isOpen, switchBackend };
 }
 module.exports = { createAssistantPanel };

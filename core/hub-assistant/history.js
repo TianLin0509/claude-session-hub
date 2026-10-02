@@ -8,7 +8,7 @@ const { SearchCursorStore } = require('../session-search-query');
 // mutates the production index. Evidence ids bind to content, not recyclable row ids.
 class AssistantHistory {
   constructor(databasePath) { this.databasePath = databasePath; }
-  context({ query = '', hours = 3, now = Date.now(), from, to, rangeKind, timeZone, maxChars = 24000, excludeSessionId, excludeNativeSessionId } = {}) {
+  context({ query = '', hours = 3, now = Date.now(), from, to, rangeKind, timeZone, maxChars = 24000, excludeSessionId, excludeNativeSessionId, excludeSessionIds=[], excludeNativeSessionIds=[] } = {}) {
     if (!fs.existsSync(this.databasePath)) return { available: false, sources: [], coverage: '历史索引尚未建立', asOf: now };
     hours = Math.max(1, Math.min(168, Number(hours) || 3));
     maxChars = Math.max(2000, Math.min(48000, Number(maxChars) || 24000));
@@ -19,9 +19,13 @@ class AssistantHistory {
       const since = Number.isFinite(from)?from:now-hours*3600000;
       const until = Number.isFinite(to)?Math.min(to,now):now;
       const filterArgs=[excludeSessionId||'__none__',excludeNativeSessionId||'__none__'];
+      const hubIds=[...new Set(excludeSessionIds)],nativeIds=[...new Set(excludeNativeSessionIds)];
+      filterArgs.push(...hubIds,...nativeIds);
       const base = `FROM docs d JOIN sessions s ON s.key=d.session_key JOIN sources z ON z.key=s.source_key
         WHERE d.scope IN ('user','assistant') AND d.event_id <> 'last-output-preview'
-        AND z.searchable=1 AND z.stale=0 AND s.provider<>'meeting' AND COALESCE(s.hub_session_id,'')<>? AND COALESCE(s.native_session_id,'')<>?`;
+        AND z.searchable=1 AND z.stale=0 AND s.provider<>'meeting' AND COALESCE(s.hub_session_id,'')<>? AND COALESCE(s.native_session_id,'')<>?
+        ${hubIds.length?'AND COALESCE(s.hub_session_id,\'\') NOT IN ('+hubIds.map(()=>'?').join(',')+')':''}
+        ${nativeIds.length?'AND COALESCE(s.native_session_id,\'\') NOT IN ('+nativeIds.map(()=>'?').join(',')+')':''}`;
       const total = db.prepare(`SELECT count(*) count ${base} AND d.timestamp>=? AND d.timestamp<=?`).get(...filterArgs, since, until).count;
       let rows;
       let searchPartial = false;

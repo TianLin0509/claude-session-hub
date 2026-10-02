@@ -1882,7 +1882,7 @@ const resumeSession = createResumeSessionHandler({
     if (!assistantService) throw new Error('助理服务尚未就绪');
     assistantService.requireAssistantResume(meta);
     await assistantService.connectBridge();
-    return { mcpProfile: 'lean', codexMcpEntries: [assistantService.getMcpEntry()] };
+    return assistantService.getLaunchOptions(meta.kind, meta.hubId);
   },
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
