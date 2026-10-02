@@ -7857,6 +7857,12 @@ if (typeof document !== 'undefined') (function () {
     getTarget: () => ({ id: activeMeetingId, project: meetingData[activeMeetingId]?.workspace || '' }),
     isActive: target => activeMeetingId === target.id && voiceBox.getClientRects().length > 0,
   });
+  if (voiceBox && voiceRail) require('./prompt-polish').attachPromptPolish({
+    input: voiceBox, rail: voiceRail, before: document.getElementById('mr-send-btn'), ipcRenderer,
+    getTarget: () => ({ id: activeMeetingId }),
+    isActive: id => activeMeetingId === id && voiceBox.getClientRects().length > 0,
+    writeText: text => _setMeetingInputText(activeMeetingId, text),
+  });
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     // 走真实 handleMeetingSend，但**不 await** —— e2e 要量的正是「按下发送那一刻
     // 到看见自己那张气泡」的间隔，await 会把这个间隔藏起来。

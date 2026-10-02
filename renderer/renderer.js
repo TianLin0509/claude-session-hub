@@ -4681,6 +4681,16 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
     isActive: () => (sessionSplit?.focusedId() || activeSessionId) === sessionId,
   });
+  const promptPolish = require('./prompt-polish').attachPromptPolish({
+    input: inputBox, rail: composerRail, before: sendBtn, ipcRenderer,
+    getTarget: () => ({ id: sessionId }),
+    isActive: () => (sessionSplit?.focusedId() || activeSessionId) === sessionId && inputBox.getClientRects().length > 0,
+    writeText: text => {
+      restoreComposerText(sessionId, inputBox, text);
+      saveFloatingInputDraft(sessionId, inputBox);
+      placeCaretAtContenteditableEnd(inputBox);
+    },
+  });
 
   // 拖拽落区：拖进来的文件按绝对路径写进文本框。走的是粘贴文件那条
   // formatPastedFilePaths（多文件换行分隔 —— 路径里可以有空格，空格分隔会被 CLI 拆断）。
@@ -5157,6 +5167,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       // DIV/BR line breaks. Input events already saved the visible draft.
       if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       voiceInput.dispose();
+      promptPolish.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
       if (panel && bar.parentNode === panel) panel.style.setProperty('--fi-bar-h', '0px');
