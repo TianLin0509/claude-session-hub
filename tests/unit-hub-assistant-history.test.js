@@ -7,6 +7,15 @@ test('context omits tools, preview echoes, group transcript cards and the assist
 test('keyword evidence surrounds its actual hit instead of the newest unrelated messages',t=>{const {index,history}=fixture(t);index.replaceSource(source('long-thread',Array.from({length:30},(_,i)=>({text:i===2?'独角鲸检索锚点':'其他自然对话'+i,timestamp:i<3?1000:100000}))));const result=history.context({query:'独角鲸检索锚点',now:100000,hours:1});assert.equal(result.range,'all-indexed-history');assert.equal('since' in result,false);assert.ok(result.sources.some(s=>s.text.includes('独角鲸检索锚点')));});
 test('selected text obeys the budget and declares omitted context',t=>{const {index,history}=fixture(t);index.replaceSource(source('large',Array.from({length:20},()=>({text:'内容'.repeat(3000)}))));const result=history.context({now:110000,hours:1,maxChars:3000});assert.ok(result.selectedChars<=3000);assert.equal(result.truncated,true);assert.ok(result.sources[0].text.includes('[中段省略]'));});
 test('calendar range excludes records beyond its end rather than using capture time',t=>{const {index,history}=fixture(t);index.replaceSource(source('range',[{text:'昨天结果',timestamp:50000},{text:'今天结果',timestamp:100000}]));const result=history.context({now:110000,from:40000,to:60000,rangeKind:'calendar-yesterday'});assert.deepEqual(result.sources.map(s=>s.text),['昨天结果']);assert.equal(result.until,60000);});
+test('all assistant backend identities are excluded from rolling and keyword business history',t=>{
+  const {index,history}=fixture(t);
+  index.replaceSource(source('codex-assistant',[{text:'交接关键词旧助理'}]));
+  index.replaceSource(source('claude-assistant',[{text:'交接关键词另一助理'}],{hubSessionId:null}));
+  index.replaceSource(source('business',[{text:'交接关键词业务'}]));
+  const exclude={excludeSessionIds:['hub-codex-assistant'],excludeNativeSessionIds:['native-claude-assistant'],now:110000,hours:1};
+  assert.deepEqual(history.context(exclude).sources.map(s=>s.text),['交接关键词业务']);
+  assert.deepEqual(history.context({...exclude,query:'交接关键词'}).sources.map(s=>s.text),['交接关键词业务']);
+});
 test('current native evidence never erases that session historical window or keyword matches',t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-window-')),file=path.join(dir,'search.sqlite');
   const index=new SqliteSessionSearchIndex(file);index.replaceSource(source('orders',[{text:'昨天订单暂停等待确认',timestamp:50000},{text:'独角鲸旧业务决定',timestamp:40000}]));

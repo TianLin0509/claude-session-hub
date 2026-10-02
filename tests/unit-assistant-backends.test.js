@@ -60,3 +60,16 @@ test('legacy singleton migrates without replacement and registered inactive resu
   assert.throws(()=>x.service.requireAssistantResume({hubId:'other',kind:'claude'}),/未授予/);
   assert.equal(x.service.getLaunchOptions('codex','legacy-codex').codexMcpEntries[0].env.HUB_ASSISTANT_SESSION_ID,'legacy-codex');
 });
+test('closed provider restores its registered entity with provider-specific tools',async t=>{
+  const x=setup(t),codex=await x.service.ensureSession(),claude=await x.service.switchBackend({kind:'claude'});
+  await x.service.switchBackend({kind:'codex'});const saved=x.sessions.get(claude.sessionId);x.sessions.delete(claude.sessionId);
+  x.deps.resumeSession=async(id,options)=>{assert.equal(id,claude.sessionId);assert(options.mcpConfigFile);x.sessions.set(id,saved);return saved;};
+  assert.equal((await x.service.switchBackend({kind:'claude'})).sessionId,claude.sessionId);assert.equal(x.created.length,2);
+});
+test('unknown failed provider switch never replaces the working backend or creates on retry',async t=>{
+  const x=setup(t),codex=await x.service.ensureSession();let attempts=0;
+  x.deps.createSession=async()=>{attempts++;throw Error('launch outcome unknown');};
+  await assert.rejects(x.service.switchBackend({kind:'claude'}),/unknown/);
+  const result=await x.service.switchBackend({kind:'claude'});assert.equal(result.ok,false);assert.equal(result.needsReconciliation,true);
+  assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.equal(attempts,1);
+});
