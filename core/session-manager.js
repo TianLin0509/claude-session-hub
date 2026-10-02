@@ -3023,7 +3023,7 @@ class SessionManager extends EventEmitter {
         const fast = shouldUseClaudeFastSettings(cv, {fastMode:s.info.fastMode,autonomous});
         const settingsFile = require('./claude-native-launch').prepareClaudeSettingsOverlay(
           [ensureGroupChatSettings(getHubDataDir()),resolveAsarUnpacked(fast?'claude-subscription-fast-settings.json':'claude-subscription-standard-settings.json')],
-          {directory:path.join(getHubDataDir(),'native-agent-settings'),sessionId:id+'-'+require('crypto').randomUUID(),overrides:{skipDangerousModePermissionPrompt:true}});
+          {directory:path.join(getHubDataDir(),'native-agent-settings'),sessionId:sessionId+'-'+require('crypto').randomUUID(),overrides:{skipDangerousModePermissionPrompt:true}});
         fastFlag = ` --settings "${settingsFile.replace(/\\/g, '\\\\')}"`;
       }
       // 单人和群聊都沿用自己的 MCP 档位；群聊与 autonomous 额外恢复 research config。

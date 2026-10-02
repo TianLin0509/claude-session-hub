@@ -31,6 +31,8 @@ async function main(){
  try{
   fs.copyFileSync(codexAuth,path.join(codexHome,'auth.json'));fs.copyFileSync(claudeAuth,path.join(claudeHome,'.credentials.json'));
   fs.writeFileSync(path.join(claudeHome,'.claude.json'),j({hasCompletedOnboarding:true,theme:'light',skipDangerousModePermissionPrompt:true,projects:{}}));
+  const hooks=require('../core/claude-hook-integration').ensureClaudeHookIntegration({claudeDir:claudeHome,sourceScriptsDir:path.resolve('scripts'),logger:{log(){},warn(){}}});
+  assert.equal(hooks.errors.length,0,'真实 Claude 测试配置必须部署 Hub 生命周期 hook');
   fs.writeFileSync(path.join(codexHome,'config.toml'),'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "low"\n'+[workspace,path.resolve('.')].map(p=>"[projects.'"+p.toLowerCase()+"']\ntrust_level = \"trusted\"").join('\n')+'\n');
   fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6.1-sol',claude:'claude-haiku-4-5-20251001'}},providers:{codex:{backend:'subscription',subscription_profile:profile.id,subscription_profiles:[{id:profile.id,label:profile.label,home:codexHome}]}}}));
   const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
