@@ -10,11 +10,11 @@ function speedMessages(text) {
 // TUI updates may replace only "default" with "priority". Parse the rendered
 // screen, never concatenate stripped ANSI chunks and infer a confirmation.
 async function observeCodexFastCommand(manager,sid) {
-  const queued=[]; let terminal=null, disposed=false, chain=Promise.resolve(), baseline=[];
+  const queued=[]; let terminal=null, replayed=false, disposed=false, chain=Promise.resolve(), baseline=[], acknowledgement=null;
   const write = text => new Promise(resolve=>terminal.write(text,resolve));
   const listener = event => {
     if(event.sessionId !== sid || disposed)return;
-    if(!terminal)queued.push(event);
+    if(!replayed)queued.push(event);
     else chain=chain.then(()=>write(event.data));
   };
   manager.on('output',listener);
@@ -27,6 +27,7 @@ async function observeCodexFastCommand(manager,sid) {
       else if(operation.type==='write')await write(operation.data);
     }
     for(const event of queued)if(!event.seq||event.seq>snapshot.seq)await write(event.data);
+    replayed=true;
   } catch(error) {disposed=true;manager.removeListener('output',listener);terminal?.dispose();throw error;}
   const text = () => {
     const buffer=terminal.buffer.active,lines=[];
@@ -40,14 +41,15 @@ async function observeCodexFastCommand(manager,sid) {
       for(let i=buffer.baseY;i<buffer.baseY+terminal.rows;i++)lines.push(buffer.getLine(i)?.translateToString(true).trim()||'');
       return /^›\s*Ask Codex to do anything\s*$/i.test(lines.filter(line=>line.startsWith('›')).at(-1)||'');
     },
-    async arm(){await chain;baseline=speedMessages(text());},
+    get confirmation(){return acknowledgement;},
+    async arm(){await chain;baseline=speedMessages(text());acknowledgement=null;},
     async wait(timeoutMs=12000){
       const deadline=Date.now()+timeoutMs;
       while(Date.now()<deadline&&!disposed){
         await chain;
         const messages=speedMessages(text());
         const tier=messages.at(-1);
-        if(tier&&(messages.length>baseline.length||tier!==baseline.at(-1)))return {ok:true,tier};
+        if(tier&&(messages.length>baseline.length||tier!==baseline.at(-1))){acknowledgement={ok:true,tier};return acknowledgement;}
         await new Promise(resolve=>setTimeout(resolve,60));
       }
       return {ok:false,message:'未收到 Codex 的速度确认，请查看终端；速度标签未改为成功'};
@@ -98,8 +100,7 @@ function registerCodexSpeedIpc(ipcMain,{sessionManager,sendToRenderer}) {
           attempted=true;
           const result=await require('./group-chat-watcher').sendToPty(sessionId,'/fast',session.kind,{requireReady:false,localCommandObserver:observer});
           if(!result?.ok)return {ok:false,message:result?.message||'Codex 未确认速度切换'};
-          const acknowledgement=await observer.wait(1);
-          confirmed=acknowledgement.tier;
+          confirmed=observer.confirmation?.tier;
           if(confirmed===tier)break;
         }
         if(confirmed!==tier)return {ok:false,message:'Codex 确认的速度与选择不一致，请查看终端'};

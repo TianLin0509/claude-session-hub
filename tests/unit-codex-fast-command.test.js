@@ -43,7 +43,9 @@ test('Codex IPC reaches requested tier after native toggles and keeps model, eff
     assert.equal(prompt,'/fast');calls++;actual=actual==='fast'?'standard':'fast';
     fs.writeFileSync(file,`service_tier='${actual==='fast'?'fast':'default'}'\nmodel='gpt-6-sol'\n`);
     manager.emit('output',{sessionId:sid,data:`\x1b[3;23H${actual==='fast'?'priority':'default'}\x1b[K`});
-    return options.localCommandObserver.wait(100);
+    const acknowledgement=await options.localCommandObserver.wait(100);
+    await new Promise(resolve=>setTimeout(resolve,10));
+    return acknowledgement;
   };
   try{
     const choose=tier=>handlers.get('codex:set-speed')({}, {sessionId:'test',tier});

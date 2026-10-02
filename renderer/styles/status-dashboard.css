@@ -1,6 +1,6 @@
 /* One footer row: equipment, remaining quota + reset, and network routes.
    Preserve every reading and action; narrow windows scroll only this row. */
-:root { --hub-footer-height:44px; }
+:root { --hub-footer-height:34px; }
 :root body #hub-system-footer {
   gap:14px; padding:0 14px; color:var(--fg-default);
   background:var(--surface-raised); border-top:1px solid var(--border-subtle);
@@ -10,49 +10,46 @@
   gap:6px; align-items:center;
 }
 :root body #hub-system-footer #sidebar-strip .strip-resource {
-  display:flex; flex-direction:column; justify-content:center; align-items:flex-start;
-  box-sizing:border-box; min-width:46px; height:34px; gap:0; padding:2px 5px;
-  font-size:10px; line-height:14px; border-radius:6px; color:var(--fg-muted);
+  display:inline-flex; flex-direction:row; justify-content:center; align-items:center;
+  box-sizing:border-box; height:24px; gap:4px; padding:0;
+  font-size:10px; line-height:16px; border-radius:6px; color:var(--fg-muted);
 }
 :root body #hub-system-footer #sidebar-strip .strip-resource b {
-  font-size:12px; line-height:16px; font-weight:650;
+  font-size:11px; line-height:16px; font-weight:650;
 }
 :root body #hub-system-footer #rail-usage {
-  padding:0 14px; align-items:center; height:32px;
+  padding:0 10px; align-items:center; height:24px;
 }
-#hub-system-footer #rail-usage .sidebar-quota { gap:12px; }
+#hub-system-footer #rail-usage .sidebar-quota { gap:10px; }
 #hub-system-footer #rail-usage .sidebar-quota::before {
-  content:'余量\A刷新'; white-space:pre; line-height:15px; color:var(--fg-muted); font-size:10px;
+  content:'余量'; white-space:nowrap; line-height:16px; color:var(--fg-muted); font-size:10px;
 }
 #hub-system-footer #rail-usage .sidebar-quota-provider {
-  height:36px; padding:3px 6px; gap:6px; border-radius:7px;
+  height:26px; padding:0 3px; gap:5px; border-radius:5px;
   box-sizing:border-box; transition:background-color .15s;
 }
 #hub-system-footer #rail-usage .sidebar-quota-provider:hover {
   background:var(--brand-tint);
 }
 #hub-system-footer #rail-usage .sidebar-quota-icon {
-  display:inline-block; flex:0 0 14px; width:14px; height:14px;
+  display:inline-block; flex:0 0 12px; width:12px; height:12px;
   border-radius:3px; opacity:.85; margin-right:0;
 }
 #hub-system-footer #rail-usage .token-plan-icon {
-  text-align:center; font:600 10px/14px var(--font-sans); color:var(--brand); background:var(--brand-tint);
+  text-align:center; font:600 9px/12px var(--font-sans); color:var(--brand); background:var(--brand-tint);
 }
 #hub-system-footer #rail-usage .sidebar-quota-name {
   font-size:11px; line-height:16px; font-weight:500; color:var(--fg-muted);
 }
 #hub-system-footer #rail-usage .sidebar-quota-metrics { gap:10px; }
 #hub-system-footer #rail-usage .sidebar-quota-reading {
-  display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:0;
+  display:inline-flex; flex-direction:row; align-items:baseline; justify-content:center; gap:4px; flex-wrap:nowrap;
 }
 #hub-system-footer #rail-usage .sidebar-quota-value {
-  font-size:12px; line-height:16px; font-weight:650;
+  font-size:11px; line-height:16px; font-weight:650;
 }
 #hub-system-footer #rail-usage .sidebar-quota-period {
-  font-size:10px; line-height:14px; font-weight:400; color:var(--fg-muted);
-}
-#hub-system-footer #rail-usage .sidebar-quota-metric:not([data-window='balance']) {
-  min-width:48px;
+  font-size:10px; line-height:16px; font-weight:400; color:var(--fg-muted);
 }
 #hub-system-footer #rail-usage .sidebar-quota-metric[data-reset-state='due'] .sidebar-quota-period {
   color:var(--status-warning);
@@ -64,16 +61,16 @@
   color:var(--status-warning);
 }
 #hub-system-footer #rail-usage .rail-usage-button {
-  width:24px; height:28px; border-radius:6px; border:0; margin-left:0;
+  width:20px; height:24px; border-radius:5px; border:0; margin-left:0;
 }
 :root body #hub-system-footer #sidebar-strip .strip-network {
   align-items:center; justify-content:flex-start; gap:12px; border:0;
 }
 :root body #hub-system-footer #sidebar-strip .strip-route-row {
-  gap:5px; height:30px; border-radius:6px; font-size:11px;
+  gap:4px; height:24px; border-radius:5px; font-size:11px;
 }
 :root body #hub-system-footer #sidebar-strip .strip-route-foreign {
-  padding:0 5px; min-height:30px;
+  padding:0 3px; min-height:24px;
 }
 :root body #hub-system-footer #sidebar-strip .strip-route-foreign:hover {
   background:var(--surface-hover);
@@ -88,7 +85,6 @@
 :root body #hub-system-footer #sidebar-strip .strip-transfer {
   margin-left:auto; gap:8px; font-size:11px;
 }
-:root body #hub-system-footer #sidebar-strip .strip-route-domestic { order:-1; }
 @media(max-width:1100px) {
   :root body #hub-system-footer { gap:8px; padding-inline:8px; }
   :root body #hub-system-footer #rail-usage { padding-inline:8px; }
