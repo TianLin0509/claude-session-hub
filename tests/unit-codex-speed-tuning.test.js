@@ -1,8 +1,8 @@
 'use strict';
 
 // Codex 的两个速度旋钮 —— Fast/service_tier 与 model_reasoning_effort。
-// 模型档位来自本地模型目录；Standard/Fast 的会话覆盖遵循 Codex CLI 0.147
-// 的 features.fast_mode 官方配置语义。
+// 模型档位来自本地模型目录；CLI 0.159.3 标准档保留 /fast 能力，
+// 实际速度通过 service_tier="default" 控制。
 //   * ~/.codex/models_cache.json 给出每个模型的 supported_reasoning_levels
 //     （gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh）与 additional_speed_tiers=["fast"]；
 //     service_tiers=[{id:"priority", name:"Fast", description:"1.5x speed, increased usage"}]
@@ -88,11 +88,11 @@ test('速度档位默认 Fast，inherit 仍表示完全不覆盖', () => {
   assert.equal(normalizeCodexSpeedTier('banana'), 'fast');
 });
 
-test('Fast 是默认启动覆盖，Standard 显式关闭，inherit 才完全不干预', () => {
+test('Fast 是默认启动覆盖，Standard 保留切换能力但请求默认通道，inherit 才完全不干预', () => {
   assert.equal(buildCodexSpeedTierArg('inherit'), '');
   assert.equal(buildCodexSpeedTierArg(undefined), ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`);
   assert.equal(buildCodexSpeedTierArg('banana'), ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`);
-  assert.equal(buildCodexSpeedTierArg('standard'), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
+  assert.equal(buildCodexSpeedTierArg('standard'), ` -c 'features.fast_mode=true' -c 'service_tier="default"'`);
 });
 
 test('fast / flex 同时覆盖 feature 与 service tier，避免继承冲突', () => {

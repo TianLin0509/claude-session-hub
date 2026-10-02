@@ -1,0 +1,22 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {loadPresets,STORAGE_KEY}=require('../renderer/display-presets');
+test('display migration preserves desktop adjustments and gives phone an independent baseline',()=>{
+  const data=new Map(),storage={getItem:key=>data.get(key)};
+  const state=loadPresets(storage,{fontSize:21,zoomLevel:2});
+  assert.equal(state.desktop.fontSize,21);assert.equal(state.desktop.zoomLevel,2);
+  assert.equal(state.desktop.sessionWidth,null,'existing responsive desktop widths stay in charge');
+  assert.equal(state.phone.fontSize,18);assert.equal(state.phone.sessionWidth,176);
+  state.mode='phone';state.phone.fontSize=20;state.phone.sessionWidth=192;
+  data.set(STORAGE_KEY,JSON.stringify(state));
+  const reloaded=loadPresets(storage,{fontSize:13,zoomLevel:0});
+  assert.equal(reloaded.mode,'phone');assert.equal(reloaded.phone.fontSize,20);
+  assert.equal(reloaded.phone.sessionWidth,192);assert.equal(reloaded.desktop.fontSize,21);
+});
+test('damaged saved preferences recover locally without changing the other profile',()=>{
+  const storage={getItem:()=>JSON.stringify({mode:'bad',desktop:{fontSize:19},phone:{fontSize:999,sessionWidth:'bad',inputHeight:-1}})};
+  const result=loadPresets(storage,{fontSize:16});
+  assert.equal(result.mode,'desktop');assert.equal(result.desktop.fontSize,19);
+  assert.equal(result.phone.fontSize,28);assert.equal(result.phone.sessionWidth,176);assert.equal(result.phone.inputHeight,40);
+  assert.equal(loadPresets({getItem:()=>'{broken'}).phone.fontSize,18);
+});

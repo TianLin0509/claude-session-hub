@@ -1,0 +1,39 @@
+/* A keeps the same workspaces and operations; only display geometry changes. */
+#display-preset-switch { position:relative; display:flex; align-items:center; flex:none; gap:2px; padding:2px; border:1px solid var(--border-subtle); border-radius:7px; -webkit-app-region:no-drag; }
+#display-preset-switch > button { height:25px; padding:0 7px; border:0; border-radius:5px; background:transparent; color:var(--fg-muted); font:12px var(--font-sans); cursor:pointer; white-space:nowrap; }
+#display-preset-switch > button[aria-pressed='true'] { color:var(--brand-text); background:var(--brand-tint); }
+#display-preset-switch > button:hover { background:var(--surface-hover); }
+#display-preset-switch > button:focus-visible { outline:2px solid var(--brand); }
+#display-preset-settings { position:fixed; right:16px; top:48px; z-index:5000; width:min(300px,calc(100vw - 32px)); padding:15px; background:var(--surface-overlay); color:var(--fg-default); border:1px solid var(--border-mid); border-radius:10px; box-shadow:0 8px 30px #0002; -webkit-app-region:no-drag; }
+#display-preset-settings[hidden] { display:none; }
+#display-preset-settings strong { font-size:13px; }
+#display-preset-settings p { margin:10px 0 0; color:var(--fg-muted); font-size:11px; }
+.display-preset-fields label { display:grid; grid-template-columns:100px 1fr 35px; align-items:center; gap:8px; margin-top:12px; font-size:12px; }
+.display-preset-fields input { width:100%; min-width:0; accent-color:var(--brand); }
+.display-preset-fields output { text-align:right; font-variant-numeric:tabular-nums; }
+:root[data-display-mode] { --hub-rail-slot:var(--display-rail-width,88px); --hub-rail-open:var(--display-rail-width,88px); }
+:root[data-display-mode='desktop']:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:var(--display-rail-width,64px); }
+:root[data-display-mode]:has(.app-container.rail-hidden) { --hub-rail-slot:0px; }
+:root[data-display-mode] body #session-sidebar { width:var(--display-session-width,var(--hub-session-width)); min-width:var(--display-session-width,var(--hub-session-width)); }
+:root[data-display-mode] body .app-container.workspace-active #session-sidebar { width:0; min-width:0; }
+:root[data-display-mode] body .app-container.sidebar-collapsed #session-sidebar { width:0; min-width:0; border-right:0; }
+:root[data-display-mode] body .terminal-panel .composer .floating-input-box { height:var(--display-input-height,calc(2lh + 18px)); min-height:var(--display-input-height,calc(2lh + 18px)); max-height:var(--display-input-height,calc(2lh + 18px)); font-size:var(--display-ui-font,13px); }
+:root[data-display-mode='phone'] body .terminal-panel .floating-input-bar.visible { --fi-layout-h:calc(var(--display-input-height,52px) + 84px); flex-basis:var(--fi-layout-h); height:var(--fi-layout-h); min-height:var(--fi-layout-h); max-height:var(--fi-layout-h); }
+:root[data-display-mode] body .terminal-panel .composer .composer-chip { font-size:var(--display-ui-font,12px); }
+:root[data-display-mode='phone'] body #scene-rail .btn-shell-nav { height:46px; min-height:46px; gap:2px; }
+:root[data-display-mode='phone'] body #scene-rail .rail-drawer-head { height:32px; }
+:root[data-display-mode='phone'] body #scene-rail .rail-utilities { gap:4px; padding:6px 2px; }
+:root[data-display-mode='phone'] body #session-sidebar .sidebar-header { padding:10px 8px 8px; gap:8px; }
+:root[data-display-mode='phone'] body #session-sidebar .session-detail-bar { padding:6px 8px; }
+:root[data-display-mode='phone'] body #session-list { padding:4px; }
+:root[data-display-mode='phone'] body #session-list .session-item.slim { padding:8px 6px; }
+:root[data-display-mode] body #session-list :is(.sl-title,.session-name) { font-size:var(--display-ui-font,13px); }
+:root[data-display-mode='phone'] .session-range-tabs { padding:4px 8px 6px; }
+:root[data-display-mode='phone'] .session-range-tabs button { padding:5px 10px; }
+:root[data-display-mode='phone'] body .msg-overlay { padding:12px 14px; }
+:root[data-display-mode='phone'] body .msg-overlay .turn-card[data-chat-style='message'] { gap:9px; margin-bottom:18px; }
+:root[data-display-mode='phone'] body :is(.msg-overlay .turn-body,.mr-gc-messages .mr-gc-text,.assistant-message .assistant-bubble) { font-size:var(--display-reading-font,18px); }
+:root[data-display-mode='phone'] body .msg-overlay .chat-message-bubble { padding:10px 12px; }
+:root[data-display-mode='phone'] body .composer-rail { gap:4px; }
+:root[data-display-mode='phone'] body .terminal-panel .composer .composer-chip { padding-inline:5px; }
+/* Footer remains the existing single 34px row, including every provider and VPN. */

@@ -874,6 +874,7 @@ const updateActiveModelChip = modelUi.updateActiveModelChip;
 const FONT_SIZE_KEY = 'claude-hub-font-size';
 const FONT_SIZE_MIN = 10;
 const FONT_SIZE_MAX = 28;
+let displayPresets = null;
 let currentFontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY), 10);
 if (!currentFontSize || isNaN(currentFontSize)) currentFontSize = 16;
 
@@ -881,7 +882,8 @@ function setFontSize(size) {
   size = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
   if (size === currentFontSize) return;
   currentFontSize = size;
-  localStorage.setItem(FONT_SIZE_KEY, String(size));
+  if (!displayPresets || displayPresets.mode === 'desktop') localStorage.setItem(FONT_SIZE_KEY, String(size));
+  displayPresets?.record('fontSize',size);
   // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / AI 群聊 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
   // 写到 :root（documentElement），让 AI 群聊（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
@@ -911,7 +913,8 @@ function applyZoom(level) {
   level = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level));
   currentZoom = level;
   webFrame.setZoomLevel(level);
-  localStorage.setItem(ZOOM_KEY, String(level));
+  if (!displayPresets || displayPresets.mode === 'desktop') localStorage.setItem(ZOOM_KEY, String(level));
+  displayPresets?.record('zoomLevel',level);
   // Re-fit the active xterm so terminal cols/rows match the new render size.
   const active = activeSessionId && terminalCache.get(activeSessionId);
   if (active && active.opened) {
@@ -921,6 +924,15 @@ function applyZoom(level) {
 
 // Restore persisted zoom on boot.
 applyZoom(currentZoom);
+
+displayPresets = require('./display-presets').createDisplayPresets({
+  document,storage:localStorage,fontSize:currentFontSize,zoomLevel:currentZoom,
+  applyFont:setFontSize,applyZoom,
+  onLayoutChange:()=>{
+    for (const [sid,c] of terminalCache) if (c.opened) scheduleFitAndResizeTerminal(sid,c,{force:true});
+  },
+});
+displayPresets.init();
 
 // --- Global Memo Panel ---
 const memoPanel = createMemoPanel({
@@ -4860,7 +4872,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     speedChip.textContent = '速度 · ' + speed.label;
     speedChip.setAttribute('aria-label',`速度：${speed.label}`);
     speedChip.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-    speedChip.title = speed.reason || '选择标准 / Fast；Fast 会增加用量或费用';
+    speedChip.title = speed.reason || '选择标准 / 快速；快速会增加用量或费用';
 
     contextBudget.update(rail.context);
 
