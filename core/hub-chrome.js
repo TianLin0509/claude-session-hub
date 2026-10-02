@@ -316,7 +316,7 @@ class HubChrome {
     return routing.normalizeProxy(value);
   }
   routingStatus() { return routing.status(this.root,routing.policy(this.proxyServer()),this.profileHeld()); }
-  launchArgs(identityId, { debug = true, visible = false, headless = false, url, urls } = {}) {
+  launchArgs(identityId, { debug = true, visible = false, headless = false, newWindow = true, url, urls } = {}) {
     return [
       ...routing.policy(this.proxyServer()).args,
       '--user-data-dir=' + this.root,
@@ -334,7 +334,7 @@ class HubChrome {
       // for both the first launch and a new window in an already running browser.
       ...(visible ? ['--start-maximized']
         : ['--window-position=-32000,-32000', '--window-size=1280,900']),
-      '--new-window', ...(urls && urls.length ? urls : [url || this.markerUrl(identityId)]),
+      ...(newWindow ? ['--new-window'] : []), ...(urls && urls.length ? urls : [url || this.markerUrl(identityId)]),
     ];
   }
   launch(identityId, options) {
@@ -576,7 +576,10 @@ class HubChrome {
       for (let i = 0; i < 40 && (await this.owners()).length; i++) await sleep(250);
       if ((await this.owners()).length) throw new Error('Hub 浏览器没能及时退出，请稍后再打开');
     }
-    await this.launch(identityId, { debug: false, visible: true, urls: [].concat(urls) });
+    // Chrome creates a window if this profile has none, otherwise appends tabs.
+    // Let its process singleton handle even clicks during initial startup;
+    // --new-window would force a second window before the profile lock appears.
+    await this.launch(identityId, { debug: false, visible: true, newWindow: false, urls: [].concat(urls) });
     return { identity: identityId, mode: 'ordinary', pid: routing.read(this.root)?.pid || this.lastLaunchPid };
   }
   async _openLogin(identityId, siteKeys) {
