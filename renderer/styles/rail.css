@@ -260,8 +260,7 @@
   .scene-rail .btn-rail-theme { transition: none; }
 }
 
-/* Approved C / soft ceramic. The original generated sheet is sampled in CSS,
-   preserving the approved artwork without a font/icon dependency or remote load. */
+/* Selected line-sticker navigation: independent functional artwork, local assets. */
 .rail-logo { width: 38px; height: 38px; margin-bottom: 8px; border-radius: 12px; background: #6869ef; box-shadow: none; }
 .rail-logo svg { width: 25px; height: 25px; }
 .rail-navigation {
@@ -283,19 +282,8 @@
   height: 37px;
   flex: none;
   border-radius: 9px;
-  background-image: url('../assets/navigation/ceramic-navigation.png');
-  background-repeat: no-repeat;
-  background-size: 307.2px 204.8px;
-  background-position: var(--ceramic-x) -62.9px;
+  display: flex; align-items: center; justify-content: center;
 }
-#btn-home { --ceramic-x: -41.5px; }
-#btn-research { --ceramic-x: -73.5px; }
-#btn-study { --ceramic-x: -105.5px; }
-#btn-ran { --ceramic-x: -137.5px; }
-#btn-rail-memo { --ceramic-x: -169.5px; }
-#btn-rail-memory { --ceramic-x: -201.5px; }
-#btn-rail-capabilities { --ceramic-x: -233.5px; }
-#btn-rail-accounts { --ceramic-x: -265.5px; }
 .scene-rail .btn-label { font-weight: 600; }
 .scene-rail #btn-rail-capabilities { color: var(--fg-muted); }
 .scene-rail .btn-shell-nav.active { color: var(--fg-default); background: var(--brand-tint); }
@@ -316,3 +304,6 @@
   .scene-rail .btn-label { font-size: 11px; }
   .scene-rail #btn-rail-accounts > #accounts-attention { right: 0; top: 0; }
 }
+
+.scene-rail .rail-artwork { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: 9px; }
+.scene-rail .rail-utilities .rail-artwork { width: 22px; height: 22px; flex: none; border-radius: 5px; }

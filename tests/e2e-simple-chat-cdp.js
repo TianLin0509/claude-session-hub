@@ -9,7 +9,7 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
 
 (async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-simple-chat-'));
-  const out = path.join(root, 'artifacts/20261001-simple-chat-codex1', 'gui-' + Date.now());
+  const out = path.join(root, 'artifacts/20261002-cel-sticker-chat-codex1', 'gui-' + Date.now());
   const home = path.join(temp, 'codex'), cwd = path.join(temp, 'workspace');
   for (const dir of [out, home, cwd]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(home, 'config.toml'), 'model = "gpt-6-astra"\nmodel_reasoning_effort = "low"\n');
@@ -56,6 +56,7 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
     check(await cdp.eval('document.querySelectorAll("#msg-overlay .turn-card.assistant").length===1 && document.querySelectorAll("#msg-overlay .turn-card.user").length===1'),'完成后你一条、AI 一条');
     check(await cdp.eval(`window.__replyHost===document.querySelector('${final}')`),'过程中同一消息节点持续更新到最终回复');
     check(await cdp.eval(`!document.querySelector('${final} .chat-process').open`),'过程默认收起');
+    check(await cdp.eval(`document.querySelector('${final} .turn-head .chat-process') && document.querySelector('#msg-overlay .turn-card.user .turn-head .chat-word-count') && !document.querySelector('#msg-overlay .turn-card.user .chat-message-bubble .turn-meta-pills')`),'字数与过程合入信息行，不再占用正文底部');
     check(await cdp.eval(`document.querySelector('${final} .chat-process-body').textContent.includes('已定位问题')`),'原过程消息保留可展开');
     const copy=await cdp.eval(`require('./visible-card-text').extractVisibleCardText(document.querySelector('${final} .turn-body'))`);
     check((copy.match(/这是同一条长回答/g)||[]).length===36 && !copy.includes('已定位问题') && !copy.includes('展开全文'),'复制完整最终回复且不混过程与控件');
@@ -69,7 +70,10 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
     await send(prompt);
     await until('document.querySelectorAll("#msg-overlay .turn-card[data-phase=final_answer]").length===2');
     check(await cdp.eval('document.querySelectorAll("#msg-overlay .turn-card.user").length===2'),'有意重复发送的第二条消息完整保留');
-    await cdp.send('Page.reload'); await until(`typeof sessions!=='undefined' && sessions.has(${sid})`);
+    await cdp.send('Page.reload');
+    await _waitMs(500);
+    await cdp.close(); cdp=await connectFirstPage(hub);
+    await until(`typeof sessions!=='undefined' && sessions.has(${sid})`);
     await click(`.session-item[data-session-id="${session.id}"]`);
     await until('document.querySelectorAll("#msg-overlay .turn-card[data-phase=final_answer]").length===2');
     check(await cdp.eval('document.querySelectorAll("#msg-overlay .turn-card.assistant").length===2'),'重载历史仍每轮一张 AI 消息');
@@ -106,8 +110,9 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
       const entries=[...kinds.map(k=>[k,a.chatAvatarSrc(k)]),['你',a.USER_AVATAR_SRC],['助理',a.ASSISTANT_AVATAR_SRC]];
       return Promise.all(entries.map(([kind,src])=>new Promise(resolve=>{const img=new Image();img.onload=()=>resolve({kind,src,width:img.naturalWidth});img.onerror=()=>resolve({kind,src,width:0});img.src=src;})));})()`);
     check(evidence.avatars.every(a=>a.width>0),'全部 AI 头像、橙色用户头像与企鹅原图在实际窗口加载');
+    check(evidence.avatars.filter(a=>!['你','助理'].includes(a.kind)).every(a=>a.src.includes('/cel-v2/')),'所有 AI 与恢复别名统一为日系精灵');
     const assistantHTML=await cdp.eval(`(()=>{const container=document.createElement('div');return turnCardRenderer.mountSessionTurnCard(${sid},{id:'assistant-avatar',role:'assistant',kind:'codex',text:'助理消息'},{session:{purpose:'hub-assistant'},container}).outerHTML})()`);
-    check(assistantHTML.includes('assets/assistant/penguin.png') && !assistantHTML.includes('ai-avatars/v1/codex'),'助理身份优先使用企鹅');
+    check(assistantHTML.includes('assets/assistant/penguin.png') && !assistantHTML.includes('ai-avatars/cel-v2/codex'),'助理身份优先使用企鹅');
     const fresh=await cdp.eval(`ipcRenderer.invoke('create-session',${j({kind:'codex',opts:{cwd,model:'gpt-6-astra',effort:'low',mcpProfile:'none'}})})`);
     await until(`sessions.get(${j(fresh.id)})?.nativeRuntime?.state==='idle'`);
     await click(`.session-item[data-session-id="${fresh.id}"]`);

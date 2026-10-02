@@ -30,6 +30,11 @@
     "tests/helpers/cdp-client.js"
   ],
   "drop": [
+    "renderer/assets/navigation/sticker-v2/research.png",
+    "renderer/assets/navigation/sticker-v2/study.png",
+    "renderer/assets/navigation/sticker-v2/writing.png",
+    "renderer/assets/20261002-selected-artwork.json",
+    "renderer/assets/20261002-selected-artwork.md",
     "core/chuxin*",
     "core/lindang-bridge.js",
     "core/research-mcp-server.js",

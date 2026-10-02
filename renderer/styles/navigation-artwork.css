@@ -1,8 +1,4 @@
-.nav-artwork { display:none; pointer-events:none; }
-:root[data-theme='codex'].navigation-artwork-ready body #scene-rail .btn-shell-nav .btn-icon:has(.nav-artwork) { width:28px; height:28px; }
-:root[data-theme='codex'].navigation-artwork-ready body #scene-rail .btn-shell-nav .btn-icon:has(.nav-artwork) svg { display:none!important; }
-:root[data-theme='codex'].navigation-artwork-ready body #scene-rail .nav-artwork {
-  display:block; width:28px; height:28px;
-  background-image:url('../assets/navigation/coldwhite-enamel-v1.png');
-  background-repeat:no-repeat; mix-blend-mode:multiply;
-}
+/* The selected artwork is shared across themes and survives rail collapse. */
+:root body #scene-rail .btn-shell-nav .btn-icon { width: 28px; height: 28px; background: none; }
+:root body #scene-rail .rail-artwork { display: block; pointer-events: none; object-fit: contain; }
+:root[data-theme='codex'] body #scene-rail .rail-artwork { mix-blend-mode: multiply; }

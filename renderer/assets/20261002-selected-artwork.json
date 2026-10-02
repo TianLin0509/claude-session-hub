@@ -1,0 +1,173 @@
+[
+    {
+        "key":  "codex",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/codex.png",
+        "sha256":  "60a64066f2a79e51ffa38199f4f11686ba5a2f1790e7edb1388e8e2edbcf28b2",
+        "job_id":  "20261001-29750ad4b574",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "claude",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/claude.png",
+        "sha256":  "0fa88264e8fa51857e72e5be6f286456878826f152497ce25d38cbfbc2700507",
+        "job_id":  "20261001-4b913b6a7f76",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "gemini",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/gemini.png",
+        "sha256":  "08e3014a4ce12e5744e574561c46d85aed471966f42231f9296ecf24e36c11d6",
+        "job_id":  "20261001-a2e4121ac74e",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "deepseek",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/deepseek.png",
+        "sha256":  "95db8b4758e88a8263ed4b1939dff68db614af23f4f059538af64ec3fe333ba1",
+        "job_id":  "20261001-9e6805078404",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "kimi",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/kimi.png",
+        "sha256":  "578a5de46f3bcf32a8e8f4509d0fc57999195351bc4ce712aa6abc2de576eb87",
+        "job_id":  "20261001-9359725d97fb",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "qwen",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/qwen.png",
+        "sha256":  "5a451630bb14ed15fa2fc53a1af804f52ca631289036deed0b16b3da418a254a",
+        "job_id":  "20261001-c5fc9742249c",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "glm",
+        "category":  "avatar",
+        "series":  "日系精灵",
+        "file":  "renderer/assets/ai-avatars/cel-v2/glm.png",
+        "sha256":  "e7ed19ec4ef6d3df6acce35d037eb76fc459063ebb2529656d228c3dc65b8d1a",
+        "job_id":  "20261001-0ae338e3c045",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "home",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/home.png",
+        "sha256":  "116ac0d1d985f890e7ef35f154cfbe9ebc8381d549e067f9794eaba8a0189b3e",
+        "job_id":  "20261001-d8e354efe9d3",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "research",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/research.png",
+        "sha256":  "96a02d1af3b497e45ff02268e8358fef838916015220384b31ac66ac12053817",
+        "job_id":  "20261001-9ed5213134ef",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "study",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/study.png",
+        "sha256":  "40cf87e1724b5b810baa16973860193428da1d1e26a89777b1df008f5de9d472",
+        "job_id":  "20261001-1aa505498717",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "dev",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/dev.png",
+        "sha256":  "c3578144d77134d7775c889041ca5b34e052f6d013d2a14880c9731eec31a3ce",
+        "job_id":  "20261001-c970ecde4428",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "review",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/review.png",
+        "sha256":  "6817a700ebfb09dff53cf2232934a0affe97c51c9818e62cb5c67cc3440f99d7",
+        "job_id":  "20261001-87fac2b48636",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "resources",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/resources.png",
+        "sha256":  "330d2ddd17ddccb9a9414cc6c6e59414c98f7d6ea452150ee2df85c05fb2e6b3",
+        "job_id":  "20261001-c771f6b4d7d2",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "accounts",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/accounts.png",
+        "sha256":  "9f661342bd3c6744912489cd64001074dbabe32bc91743b1c85ad516188b8c92",
+        "job_id":  "20261001-939eafd88990",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "writing",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/writing.png",
+        "sha256":  "cecacbd2c816c7351a3cec739b0c7730372bf9f8d7f5dfd49465cb05ef85c654",
+        "job_id":  "20261001-54cb0566ed26",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "memo",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/memo.png",
+        "sha256":  "0965ad8f0e7590098103cbe29f79dd45b360c1a348d5549289b7ccabdc39dc4c",
+        "job_id":  "20261001-b7c1b0c97f18",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "restart",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/restart.png",
+        "sha256":  "ed71d57f339545d0211bff99afb8f9203562370f78a9aa77451397f6444073ff",
+        "job_id":  "20261001-9f1f4ac8c41f",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "theme",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/theme.png",
+        "sha256":  "83cbd267ada99954530d711744b2553007369bd0fec799ec9953fa921d23771b",
+        "job_id":  "20261001-ee3dd3f72b2e",
+        "provider":  "codex-imagegen"
+    },
+    {
+        "key":  "settings",
+        "category":  "nav",
+        "series":  "线描贴纸",
+        "file":  "renderer/assets/navigation/sticker-v2/settings.png",
+        "sha256":  "037c038112e1b1fd29d661ba6ce67bca3526a75d07d3a3166f7921908f832a27",
+        "job_id":  "20261001-1919ed51481e",
+        "provider":  "codex-imagegen"
+    }
+]

@@ -14,7 +14,7 @@ function chatAvatarSrc(kind, { assistant = false } = {}) {
   if (assistant) return ASSISTANT_AVATAR_SRC;
   const family = canonicalAiKind(String(kind || '').toLowerCase().replace(/-resume$/, ''));
   const name = Object.hasOwn(ARTWORK, family) ? ARTWORK[family] : null;
-  return name ? `assets/ai-avatars/v1/${name}.png` : null;
+  return name ? `assets/ai-avatars/cel-v2/${name}.png` : null;
 }
 
 module.exports = { chatAvatarSrc, USER_AVATAR_SRC, ASSISTANT_AVATAR_SRC };
