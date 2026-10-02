@@ -95,6 +95,9 @@ const port = () => new Promise(resolve => { const s = net.createServer(); s.list
     const longRow=card+' [data-activity-id^="long-"]';
     await click(longRow+' > summary'); await click(longRow+' [data-action="tc-open-full-result"]');
     await until('document.querySelector(".card-detail-dialog[open] pre")');
+    check(await cdp.eval('getComputedStyle(document.querySelector(".card-detail-dialog pre")).backgroundColor.match(/\\d+/g).slice(0,3).every(n=>Number(n)>200)'), '浅色工具详情使用协调的浅色结果区');
+    check(await cdp.eval('(()=>{const r=document.querySelector(".card-detail-dialog").getBoundingClientRect();return Math.abs((r.left+r.right)/2-innerWidth/2)<2 && Math.abs((r.top+r.bottom)/2-innerHeight/2)<2;})()'), '工具详情居中呈现');
+    evidence.toolDetailScreenshot=await shot('tool-detail-light');
     check(await cdp.eval('document.querySelector(".card-detail-dialog pre").textContent.length===50000'),'工具全文按需读取第一段');
     await click('.card-detail-dialog-tools button:nth-of-type(2)');
     check(await cdp.eval('document.querySelector(".card-detail-dialog pre").textContent.endsWith("END-OF-FULL-OUTPUT")'),'工具完整结果末尾仍可追溯');

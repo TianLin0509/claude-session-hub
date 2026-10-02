@@ -116,13 +116,6 @@ body.writing-open:not(.hub-workspace-open) #memo-panel:not(.hw-embedded) { botto
 .msg-overlay .turn-card[data-phase='final_answer'] .turn-body { border-left:0; padding-left:0; }
 .msg-overlay .turn-card .turn-head { margin-bottom:12px; }
 .msg-overlay .turn-card .turn-primary-copy { width:100%; }
-.mr-gc-messages .mr-gc-msg,.mr-gc-messages .mr-gc-msg[data-journal-key] {
-  width:min(100%,900px); padding:18px 8px; border:0; border-radius:0; background:transparent; box-shadow:none;
-}
-.mr-gc-messages .mr-gc-msg.mine { background:var(--surface-sunken); padding:18px; border-radius:8px; }
-.mr-gc-messages .mr-gc-msg[data-journal-key]:not(.mine) { border-left:2px solid var(--journal-member); padding-left:16px; }
-.mr-gc-messages .mr-gc-msg>.mr-gc-avatar,.mr-gc-messages .mr-gc-msg[data-journal-key]>.mr-gc-avatar { width:28px; height:28px; min-width:28px; border-radius:7px; }
-.mr-gc-messages .mr-gc-msg .mr-gc-msg-body { max-width:calc(100% - 46px); }
 :root body #ran-panel {
   --devb-bg:var(--surface-canvas); --devb-fg:var(--fg-default); --devb-muted:var(--fg-muted);
   --devb-line:var(--border-subtle); --devb-hover:var(--surface-sunken); --devb-blue:var(--brand);
