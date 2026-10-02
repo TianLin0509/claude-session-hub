@@ -2,9 +2,9 @@
 
 /**
  * Codex 的速度通道与 model_reasoning_effort 是两套独立设置。
- * Codex CLI 0.147 的官方配置把 Fast 同时表示为 features.fast_mode=true 与
- * service_tier="fast"；因此 Hub 要同时覆盖 feature 与 service tier，才能在用户
- * 全局配置为 Fast 时可靠地回到 Standard，而不必改写 ~/.codex/config.toml。
+ * Codex CLI 0.159.3 实测：features.fast_mode 决定 /fast 命令是否可用，
+ * service_tier 才决定请求速度。标准档保留该功能，覆盖 service_tier="default"，
+ * 这样可以在会话内再次选择快速，不必改写全局配置或重建会话。
  */
 
 const fs = require('fs');
@@ -29,7 +29,7 @@ function normalizeCodexSpeedTier(value) {
 function buildCodexSpeedTierArg(value) {
   const tier = normalizeCodexSpeedTier(value);
   if (tier === 'inherit') return '';
-  if (tier === 'standard') return ` -c 'features.fast_mode=false' -c 'service_tier="default"'`;
+  if (tier === 'standard') return ` -c 'features.fast_mode=true' -c 'service_tier="default"'`;
   if (tier === 'fast') return ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`;
   return ` -c 'features.fast_mode=false' -c 'service_tier="flex"'`;
 }

@@ -803,7 +803,7 @@ function createModelUiController({
       const session = sessions.get(sessionId);
       const tuning = document.defaultView?.WorkspaceController?.codexModelTuning(session?.currentModel?.id);
       const control = speedControl(session,tuning);
-      for (const [tier,label] of [['standard','标准'],['fast','Fast · 增加用量 / 费用']]) {
+      for (const [tier,label] of [['standard','标准'],['fast','快速 · 增加用量 / 费用']]) {
         const button = document.createElement('button');
         button.type = 'button'; button.className = 'model-picker-item'; button.dataset.speed = tier;
         button.textContent = `${control.tier === tier ? '✓ ' : ''}${label}`;
@@ -824,22 +824,23 @@ function createModelUiController({
       try {
         if (isSessionBusy(session)) throw new Error('请等当前回答结束后再切换速度');
         const native = session.runtimeBackend === 'codex-app-server';
+        const codexPty = String(session.kind).replace(/-resume$/,'') === 'codex' && !native;
         // Native Claude answers over the protocol; there is no terminal prompt
         // to inspect, and the old screen check would reject every switch.
         const nativeClaude = session.runtimeBackend === 'claude-stream-json';
-        if (!native && !nativeClaude && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),'claude-inline')) {
-          throw new Error('Claude 终端输入框有草稿或不在主提示符，请先处理后再切换');
+        if (!native && !nativeClaude && !terminalAcceptsModelCommand(getTerminalScreenText(sessionId),codexPty ? 'codex-picker' : 'claude-inline')) {
+          throw new Error('终端输入框有草稿或不在主提示符，请先处理后再切换');
         }
-        const response = await ipcRenderer.invoke(native ? 'codex:native-action' : 'session:set-fast', native
+        const response = await ipcRenderer.invoke(native ? 'codex:native-action' : codexPty ? 'codex:set-speed' : 'session:set-fast', native
           ? {sessionId,action:'configure',codexSpeedTier:tier}
-          : {sessionId,enabled:tier === 'fast'});
+          : codexPty ? {sessionId,tier} : {sessionId,enabled:tier === 'fast'});
         if (!response?.ok) throw new Error(response?.message || '未收到速度切换确认');
-        if (native) session.codexSpeedTier = response.result.codexSpeedTier;
+        if (native || codexPty) session.codexSpeedTier = response.result.codexSpeedTier;
         else session.fastMode = response.result.fastMode;
         delete session._modelSwitchPending;
         updateActiveModelChip();
         if (openModelPicker?.el === menu) paint(native ? '✓ 已选择，下次发送生效'
-          : response.warning ? '✓ 已切换 · ' + response.warning : '✓ Claude 已确认速度设置','success');
+          : response.warning ? '✓ 已切换 · ' + response.warning : `✓ ${codexPty ? 'Codex' : 'Claude'} 已确认速度设置`,'success');
         await sleep(650);
         if (openModelPicker?.el === menu) closeModelPicker();
       } catch (error) {

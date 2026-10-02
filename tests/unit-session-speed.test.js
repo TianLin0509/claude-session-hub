@@ -29,7 +29,7 @@ test('native Claude speed follows the engine state, not the model table',()=>{
   const base={kind:'claude',runtimeBackend:'claude-stream-json',currentModel:{id:'claude-opus-5'}};
   // A connected engine that serves Fast wins over a stale session preference.
   assert.deepEqual(speedControl({...base,fastMode:false,nativeRuntime:{fastMode:true}},null),
-    {visible:true,label:'Fast',tier:'fast',kind:'claude',interactive:true});
+    {visible:true,label:'快速',tier:'fast',kind:'claude',interactive:true});
   assert.equal(speedControl({...base,nativeRuntime:{fastMode:false}},null).label,'标准');
   // The SDK opt-in is exactly what this switch does, so it must stay clickable.
   const optIn=speedControl({...base,nativeRuntime:{fastMode:false,fastModeBlocked:'sdk_opt_in_required'}},null);

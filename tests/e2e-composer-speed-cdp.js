@@ -28,7 +28,7 @@ async function main(){
  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(art,name+'.png'),Buffer.from(r.data,'base64'));};
  try{
   hub=await launchIsolatedHub({dataDir:data,port:await port(),windowMode:'hidden',extraEnv:{AI_HUB_WORKSPACE_ROOT:work,CODEX_HOME:path.join(root,'codex'),CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:trace}});
-  cdp=await connectFirstPage(hub);await cdp.send('Page.bringToFront');
+  cdp=await connectFirstPage(hub);
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1450,height:950,deviceScaleFactor:1,mobile:false});
   await wait('!!window.WorkspaceController && !!window.MeetingRoom');
   const session=await invoke('create-session',{kind:'codex',opts:{cwd:work,model:'gpt-6-astra',effort:'high',mcpProfile:'none',codexSpeedTier:'fast'}});

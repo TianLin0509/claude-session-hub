@@ -67,6 +67,7 @@
   <link rel="stylesheet" href="styles/group-card-parity.css">
   <link rel="stylesheet" href="styles/compact-status-shell.css">
   <link rel="stylesheet" href="styles/editor-workspace.css">
+  <link rel="stylesheet" href="styles/display-presets.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -88,6 +89,12 @@
         <strong>AI Hub</strong><span id="coldwhite-preview-label" hidden>冷白预览 0.1</span><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>
+      <div id="display-preset-switch" role="group" aria-label="显示预设">
+        <button type="button" data-display-mode="desktop" aria-pressed="true" title="电脑显示预设">电脑</button>
+        <button type="button" data-display-mode="phone" aria-pressed="false" title="手机显示预设 · A 均衡清晰">手机</button>
+        <button type="button" id="btn-display-settings" aria-expanded="false" aria-controls="display-preset-settings" title="调整当前预设的显示参数" aria-label="显示参数">⚙</button>
+      </div>
+      <aside id="display-preset-settings" hidden aria-label="显示参数"><strong>电脑显示参数</strong><div class="display-preset-fields"></div><p>两套参数分别保存；切换不改变会话和草稿。</p></aside>
       <button class="conversation-filter" data-conversation-filter="all" aria-pressed="false" title="显示全部消息，或暂时隐藏进展与活动记录">全部消息</button>
       <button type="button" class="backstage-toggle" id="btn-backstage" aria-pressed="false" title="查看后台输出" hidden>后台</button>
       <div class="session-layout-buttons" id="session-layout-buttons" role="group" aria-label="会话布局" hidden>

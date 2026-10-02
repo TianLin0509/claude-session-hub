@@ -5342,7 +5342,7 @@ if (typeof document !== 'undefined') (function () {
       speedButton.textContent = '速度 · ' + speed.label;
       speedButton.setAttribute('aria-label',`${slot.displayLabel} · 速度：${speed.label}`);
       speedButton.setAttribute('aria-pressed',String(speed.tier === 'fast'));
-      speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / Fast；Fast 会增加用量或费用'}`;
+      speedButton.title = `${slot.displayLabel} · ${speed.reason || '标准 / 快速；快速会增加用量或费用'}`;
       pair._contextBudget.update(model.context, slot.displayLabel);
     }
   }

@@ -23,7 +23,7 @@ const CLAUDE_FAST_BLOCKED_REASONS = {
 
 function speedControl(session, tuning) {
   const kind = String(session?.kind || '').replace(/-resume$/, '');
-  const native = kind === 'codex' && session.runtimeBackend === 'codex-app-server';
+  const native = kind === 'codex';
   const nativeClaude = session?.runtimeBackend === 'claude-stream-json';
   const runtime = (nativeClaude && session.nativeRuntime) || {};
   // The native engine states its own fast-mode truth; the model table is only
@@ -37,7 +37,7 @@ function speedControl(session, tuning) {
   const tier = native ? session.codexSpeedTier
     : nativeClaude && typeof runtime.fastMode === 'boolean' ? (runtime.fastMode ? 'fast' : 'standard')
     : session?.fastMode === false ? 'standard' : 'fast';
-  const label = {fast:'Fast',standard:'标准',inherit:'跟随配置',flex:'Flex'}[tier] || '速度';
+  const label = {fast:'快速',standard:'标准',inherit:'跟随配置',flex:'Flex'}[tier] || '速度';
   return {visible, label, tier, kind, interactive:!!((supported || claude) && !blocked), ...(blocked ? {reason:blocked} : {})};
 }
 module.exports = {claudeSupportsFast, speedControl, pendingSpeedSwitches};
