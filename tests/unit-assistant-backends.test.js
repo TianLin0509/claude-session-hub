@@ -28,6 +28,10 @@ test('busy assistant blocks switching without changing identity or request',asyn
   const x=setup(t),codex=await x.service.ensureSession();x.sessions.get(codex.sessionId).status='running';
   await assert.rejects(x.service.switchBackend({kind:'claude'}),/先结束/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.deepEqual(x.created,['codex']);
 });
+test('pending submit receipt blocks switching even after a native final arrived',async t=>{
+  const x=setup(t),codex=await x.service.ensureSession();x.deps.hasPendingPrompt=()=>true;
+  await assert.rejects(x.service.switchBackend({kind:'claude'}),/提交仍在核对/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.equal(x.created.length,1);
+});
 test('lost switch receipt retains old backend and reconciles reserved new id',async t=>{
   const x=setup(t),codex=await x.service.ensureSession(),original=x.deps.createSession;
   x.deps.createSession=async(...args)=>{await original(...args);throw Error('lost launch response');};

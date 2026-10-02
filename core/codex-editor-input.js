@@ -61,9 +61,9 @@ class CodexEditorInput {
     p.carry = last >= 0 && /^\x1b(?:\[\??[\d;]*)?$/.test(text.slice(last)) ? text.slice(last) : '';
   }
 
-  async load(text, write, { timeoutMs = 8000, attachments = [] } = {}) {
+  async load(text, write, { timeoutMs = 8000, attachments = [], preservePunctuation = false } = {}) {
     text = String(text || '');
-    if (text.length < MIN_LENGTH || /^\s*\//.test(text) || attachments.length) return false;
+    if ((!preservePunctuation && text.length < MIN_LENGTH) || /^\s*\//.test(text) || attachments.length) return false;
     if (this.closed || this.failed) throw inputError('长文本输入通道未就绪，请重开此会话后重试；正文未提交');
     if (this.pending) throw inputError('此会话正在接收另一条长文本，请稍后重试');
     const id = crypto.randomUUID(), digest = hash(text), start = Date.now();

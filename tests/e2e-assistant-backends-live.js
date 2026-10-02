@@ -27,7 +27,7 @@ async function main(){
  const send=async text=>{assert.equal(await cdp.eval('document.querySelector(".floating-input-box").textContent'),'');await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
  const final=async(id,previous=0)=>until('native final '+id,async()=>{const r=readFinals(await meta(id)).records;return r.length>previous?r.at(-1):null;});
- const settled=async id=>until('settled '+id,async()=>{const m=await meta(id);return !['running','waiting'].includes(m.status)&&!['running','submitting'].includes(m.cliRuntime?.state);});
+ const settled=async id=>until('settled '+id,async()=>{const m=await meta(id),o=await invoke('assistant:get-overview',{});return !(o.sessionId===id&&o.submissionPending)&&!['running','waiting'].includes(m.status)&&!['running','submitting'].includes(m.cliRuntime?.state);});
  try{
   fs.copyFileSync(codexAuth,path.join(codexHome,'auth.json'));fs.copyFileSync(claudeAuth,path.join(claudeHome,'.credentials.json'));
   fs.writeFileSync(path.join(claudeHome,'.claude.json'),j({hasCompletedOnboarding:true,theme:'light',skipDangerousModePermissionPrompt:true,projects:{}}));

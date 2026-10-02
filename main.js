@@ -1960,6 +1960,7 @@ try {
     })(),
     createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
     sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    hasPendingPrompt:sessionId=>promptOperations.isAssistantSubmissionPending(sessionId),
     getSession: id => sessionManager.getSession(id),
     getAllSessions: () => sessionManager.getAllSessions(),
     getSessionMetadata: id => {

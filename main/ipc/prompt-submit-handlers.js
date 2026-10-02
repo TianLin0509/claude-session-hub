@@ -155,12 +155,17 @@ function registerPromptSubmitIpc(ipcMain, deps) {
     try { deps.onPromptReceipt?.(payload); }
     catch (error) { logger.warn('[prompt-submit] receipt observer failed:', error && error.message); }
   });
-  const onTranscriptPrompt = event => receipts.observe(event);
+  const normalizeAssistantReceipt = event => {
+    const session=sessionManager.getSession(event.sessionId||event.hubSessionId);
+    if(session?.kind!=='claude'||session.purpose!=='hub-assistant')return event;
+    return {...event,text:require('../../core/assistant-context-display').assistantSubmissionText(event.text,session.purpose)};
+  };
+  const onTranscriptPrompt = event => receipts.observe(normalizeAssistantReceipt(event));
   const onProviderPrompt = event => {
     // Native UserPromptSubmit carries the actual body. Codex can write its
     // matching rollout UserMessage much later than the bounded submit wait.
     if (!['claude-user-prompt-submit', 'codex-user-prompt-submit'].includes(event?.signalSource)) return;
-    receipts.observe({ ...event, text: event.prompt });
+    receipts.observe(normalizeAssistantReceipt({ ...event, text: event.prompt }));
   };
   transcriptTap?.on('prompt-submitted', onTranscriptPrompt);
   sessionManager.on?.('agent-turn-started', onProviderPrompt);
@@ -420,6 +425,7 @@ function registerPromptSubmitIpc(ipcMain, deps) {
 
   return {
     submitPrompt,
+    isAssistantSubmissionPending:sessionId=>assistantSubmissions.has(sessionId),
     dispose() {
       nativeDraftStore?.close();
       transcriptTap?.removeListener('prompt-submitted', onTranscriptPrompt);

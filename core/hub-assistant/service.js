@@ -53,7 +53,7 @@ class AssistantService {
       receipt:{...result.receipt,ok:true,lateReconciled:true,receipt:{...result.receipt?.receipt,...snapshot,status:'confirmed'}}});return true;
   }
   followTask({sessionId}){if(this.assistantIds().includes(sessionId)||this.sessionMetadata(sessionId)?.purpose==='hub-assistant')throw new Error('助理不能关注自身回复');return{ok:true,watch:this.watches.follow(sessionId)};}
-  overview() {const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,status:session?.status||'not-created',summary:'',connectionSummary:session?'助理已连接；可以问进展、定位会话并转交任务。':'首次启用后，助理会作为一个独立助理会话运行，可选择 Codex 或 Claude，并连接 Hub 助理工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};}
+  overview() {const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:session?'助理已连接；可以问进展、定位会话并转交任务。':'首次启用后，助理会作为一个独立助理会话运行，可选择 Codex 或 Claude，并连接 Hub 助理工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};}
   async ensureSession() {
     if(this.switching)throw new Error('助理正在切换后端，请稍候');
     if(this.creating)return this.creating;
@@ -63,6 +63,7 @@ class AssistantService {
     backends.backendKind(kind);
     if(this.switching||this.creating)throw new Error('助理正在连接或切换，请稍候');
     const current=this.deps.getSession(this.store.get('sessionId'));
+    if(current&&this.deps.hasPendingPrompt?.(current.id))throw new Error('助理上一条消息的提交仍在核对，请稍候切换；原会话和草稿已保留');
     if(current&&(require('../session-runtime-truth').sessionRuntimeIsActive(current)||['running','waiting'].includes(current.status)))throw new Error('助理正在处理请求或等待响应，请先结束当前回合；原会话和草稿已保留');
     this.captureContinuity();
     this.switching=this._ensureSession(kind);

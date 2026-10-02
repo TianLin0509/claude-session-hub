@@ -2792,7 +2792,7 @@ class SessionManager extends EventEmitter {
     return entry.codexEditorInput.load(text, data => {
       if (this.sessions.get(sessionId) !== entry) throw Object.assign(new Error('会话已变化，未提交'), {notSent:true});
       this.writeToSession(sessionId, data);
-    }, options);
+    }, {...options,preservePunctuation:entry.info.purpose==='hub-assistant'&&/[‘’“”]/.test(String(text))});
   }
 
   getNativeCodex(sessionId) {

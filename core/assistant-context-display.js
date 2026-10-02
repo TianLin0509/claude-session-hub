@@ -1,6 +1,10 @@
 'use strict';
 const OPEN = '[AI_HUB_ASSISTANT_CONTEXT_V1]';
 const CLOSE = '[/AI_HUB_ASSISTANT_CONTEXT_V1]';
+function unwrapNativePaste(text) {
+  const pasted=text.match(/^\s*<pasted_content(?:\s+id="([^"<>]*)")?>\s*([\s\S]*?)\s*<\/pasted_content(?:\s+id="([^"<>]*)")?>\s*$/);
+  return pasted&&(!pasted[3]||pasted[3]===pasted[1])?pasted[2]:text;
+}
 
 // Display projection only. Native text, receipt identity and stored records stay intact.
 function assistantContextDisplay(text, purpose) {
@@ -8,8 +12,7 @@ function assistantContextDisplay(text, purpose) {
   const rawText=text;
   // Claude's real PTY transcript wraps long bracketed pastes. Only unwrap one
   // complete native wrapper; surrounding user prose remains visible intact.
-  const pasted=text.match(/^\s*<pasted_content(?:\s+id="[^"<>]*")?>\s*([\s\S]*?)\s*<\/pasted_content>\s*$/);
-  if(pasted)text=pasted[1];
+  text=unwrapNativePaste(text);
   if(!text.startsWith(OPEN))return null;
   const end = text.lastIndexOf(CLOSE);
   if (end < 0) return null;
@@ -27,4 +30,9 @@ function assistantContextDisplay(text, purpose) {
   } catch { return null; }
 }
 
-module.exports = { assistantContextDisplay };
+function assistantSubmissionText(text,purpose) {
+  if(typeof text!=='string'||purpose!=='hub-assistant')return text;
+  const inner=unwrapNativePaste(text);
+  return inner!==text&&assistantContextDisplay(inner,purpose)?inner:text;
+}
+module.exports = { assistantContextDisplay,assistantSubmissionText };
