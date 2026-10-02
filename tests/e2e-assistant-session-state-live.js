@@ -85,6 +85,9 @@ async function main(){
   assert.equal(received.hubState.unreadCount,(await meta(targetId)).unreadCount);
   assert.match(answer.text,/未读/);assert.match(answer.text,/完成|结束|不.*运行/);assert.match(answer.text,/不需要|无需|没有.*问题|不用|不.*回答/);
   result.modelReceivedState=received.hubState;result.checks.push('真实 gpt-6.1-sol low 读取冻结状态资料并用白话正确回答');
+  const finalLine=answer.text.trim().split('\n').at(-1);
+  await until('ordinary assistant card shows final answer',()=>cdp.eval('document.querySelector("#msg-overlay")?.textContent.includes('+j(finalLine)+')'),60000);
+  result.visibleAnswerLatencyMs=Date.now()-started;result.checks.push('普通助理卡片实际显示最终回答，非仅原生记录已落盘');
   await shot('03-real-assistant-answer');
   await click('[data-session-id="'+targetId+'"]');
   await until('read parity',async()=>{const p=await invoke('assistant:context',{}),r=p.workbench.inventory.find(s=>s.id===targetId),v=await sidebar(targetId);return r.hubState.hasUnread===false&&v?.unread===false;});
