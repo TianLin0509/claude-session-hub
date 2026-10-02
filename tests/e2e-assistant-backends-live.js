@@ -77,6 +77,6 @@ async function main(){
   result.checks.push('隔离 Hub 正常退出重开：两种固定身份、交接文件、Claude 工具权限均恢复');await shot('04-claude-after-restart');
   assert.equal(hash(codexAuth),before.codex);assert.equal(hash(claudeAuth),before.claude);result.productionCredentialsUnchanged=true;result.passed=true;
  }catch(e){result.error=e.stack;process.exitCode=1;if(cdp){result.sessionDiagnostics=await cdp.eval('[...sessions.values()].map(s=>({id:s.id,kind:s.kind,status:s.status,purpose:s.purpose,cliRuntime:s.cliRuntime,transcriptPath:s.transcriptPath}))').catch(()=>null);for(const m of result.sessionDiagnostics||[])result[m.kind+'Screen']=await screen(m.id).catch(()=>null);await shot('failure').catch(()=>{});}}
- finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));result.exit=await gracefulQuit(hub);}for(const file of [path.join(codexHome,'auth.json'),path.join(claudeHome,'.credentials.json')])if(fs.existsSync(file))fs.unlinkSync(file);fs.writeFileSync(path.join(out,'result.json'),j(result));console.log(j(result));}
+ finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));try{result.exit=await gracefulQuit(hub);}catch(e){result.cleanupError=e.message;result.passed=false;process.exitCode=1;}}for(const file of [path.join(codexHome,'auth.json'),path.join(claudeHome,'.credentials.json')])if(fs.existsSync(file))fs.unlinkSync(file);fs.writeFileSync(path.join(out,'result.json'),j(result));console.log(j(result));}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
