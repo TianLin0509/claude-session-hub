@@ -156,14 +156,14 @@ test('群聊父项优先显示等待和运行，不会被部分完成未读覆�
   waitingCase.sessions.get('sid-claude').attentionState = 'needs-input';
   waitingCase.sessions.get('sid-claude').waitingText = 'Allow PowerShell?';
   const waitingHtml = render(waitingCase);
-  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '未读');
+  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '活跃');
   assert.match(waitingHtml, /sl-group-icon wait/);
 
   const runningCase = groupChat(['running', 'idle', 'idle'], {
     meeting: { unreadAnswered: new Set(['sid-codex']) },
   });
   const runningHtml = render(runningCase);
-  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '未读');
+  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '活跃');
   assert.match(runningHtml, /sl-group-icon run/);
   assert.doesNotMatch(runningHtml, /sl-group-icon unread/);
 });

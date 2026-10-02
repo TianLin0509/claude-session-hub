@@ -32,12 +32,16 @@ const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringi
   check(await c.eval('[...document.querySelectorAll(".sidebar-quota-track,.strip-mini-track")].every(e=>getComputedStyle(e).display==="none")'),'底栏仅显示数字，无占用柱子');
   check(await c.eval('document.querySelector("[data-provider=claude] .sidebar-quota-period").textContent==="5h" && document.querySelector("[data-provider=tokenPlan] .sidebar-quota-metric").title.includes("距离额度重置")'),'时间窗口常显，重置时间保留在提示中');
   for(let i=0;i<2;i++){
-   if(i===1)await click(c,'#rail-pin');
+   if(i===1){
+    await click(c,'#rail-pin');
+    check(await c.eval('document.querySelector("#scene-rail").getBoundingClientRect().width===0'),'导航完全隐藏后释放空间');
+    await click(c,'#btn-toggle-navigation');
+   }
    const labels=await c.eval(`[...document.querySelectorAll('#scene-rail .btn-shell-nav:not([hidden])')].map(e=>{const a=e.querySelector('.btn-icon').getBoundingClientRect(),l=e.querySelector('.btn-label'),r=l.getBoundingClientRect(),b=e.getBoundingClientRect();return {text:l.textContent,display:getComputedStyle(l).display,visible:r.width>0&&r.height>0,below:r.top>=a.bottom-1,fits:r.left>=b.left-1&&r.right<=b.right+1};})`);
-   check(labels.every(l=>l.text.length<=4&&l.visible&&l.display!=='none'&&l.below&&l.fits),'图标下短标签在'+(i?'窄':'宽')+'导航均常显');
+   check(labels.every(l=>l.text.length<=4&&l.visible&&l.display!=='none'&&l.below&&l.fits),'图标下短标签在'+(i?'恢复后的':'默认')+'导航均常显');
   }
-  await shot('compact-rail');await click(c,'#rail-pin');
-  check(await c.eval('[...document.querySelectorAll(".rail-utility-label")].every(e=>e.getBoundingClientRect().height>0)'),'重启、主题、设置图标均有短标签');
+  await shot('compact-rail');
+  check(await c.eval('!document.querySelector("#btn-hub-restart") && [...document.querySelectorAll(".rail-utility-label")].every(e=>e.getBoundingClientRect().height>0)'),'主题、设置保留短标签，重启入口已移除');
   await click(c,'.sidebar-quota-provider[data-provider="codex"]');
   await waitFor(c,'!!accountUsageController.getSnapshot().refresh.providers.codex.result');
   await waitFor(c,'accountUsageController.getSnapshot().codex?.source==="app-server"');
