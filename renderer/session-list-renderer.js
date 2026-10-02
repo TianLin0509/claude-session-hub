@@ -354,7 +354,8 @@ function _sessionWarningText(session) {
     const memoryPct = Number.isFinite(usage.memoryPct) ? Math.round(usage.memoryPct) : null;
     const diskPct = Number.isFinite(usage.disk?.usagePct) ? Math.round(usage.disk.usagePct) : null;
     const diskRoot = usage.disk?.root || '本机磁盘';
-    const metricClass = value => value != null && value >= 85 ? ' strip-resource-high' : '';
+    const metricClass = value => value != null && value >= 90 ? ' strip-resource-high strip-resource-critical'
+      : value != null && value >= 85 ? ' strip-resource-high' : '';
     const proxy = typeof getProxyInfo === 'function' ? getProxyInfo() : null;
     const proxyShort = _shortProxy(proxy && proxy.proxy);
     const egress = proxy && proxy.egress;

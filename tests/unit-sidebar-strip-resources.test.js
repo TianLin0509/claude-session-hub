@@ -79,6 +79,10 @@ assert.strictEqual(stripEl.title, '');
 resourceUsage = { cpuPct: 91, memoryPct: 86 };
 renderer.renderSidebarStrip();
 assert.strictEqual((stripEl.innerHTML.match(/strip-resource-high/g) || []).length, 2);
+assert.strictEqual((stripEl.innerHTML.match(/strip-resource-critical/g) || []).length, 1);
+resourceUsage = { cpuPct: 89, memoryPct: 90, disk: { usagePct: 100 } };
+renderer.renderSidebarStrip();
+assert.strictEqual((stripEl.innerHTML.match(/strip-resource-critical/g) || []).length, 2);
 
 proxyInfo = { proxy: 'http://127.0.0.1:9', clashDelay: { status: 'ok', delayMs: 150, nodeName: '节点 A', measuredAt: Date.now() }, egress: {
   foreign: { ok: true, ip: '203.0.113.10', countryZh: '美国', cityZh: '洛杉矶', locationLabel: '美国·洛杉矶' },
@@ -103,4 +107,5 @@ resourceUsage = {};
 renderer.renderSidebarStrip();
 assert.match(stripEl.innerHTML, /CPU<b>—<\/b>/);
 assert.match(stripEl.innerHTML, /内存<b>—<\/b>/);
+assert.doesNotMatch(stripEl.innerHTML, /strip-resource-critical/);
 console.log('unit-sidebar-strip-resources OK');

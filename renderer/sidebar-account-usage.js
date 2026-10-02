@@ -93,10 +93,11 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
               : (provider === 'tokenPlan' ? pct.toFixed(2) : Math.round(pct)) + '%';
             cell.fill.style.width = (pct ?? 0) + '%';
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
-            cell.period.textContent = formatResetCountdown(observation?.resetsAt, nowFn());
+            const countdown = formatResetCountdown(observation?.resetsAt, nowFn());
+            cell.period.textContent = root.dataset?.presentation === 'footer' ? windowLabel : countdown;
             const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : 0;
             cell.cell.title = windowLabel + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
-              + (reset && reset <= nowFn() ? ' · 上次记录，等待刷新' : reset ? ' · 距离额度重置 ' + cell.period.textContent : ' · 重置时间未知')
+              + (reset && reset <= nowFn() ? ' · 上次记录，等待刷新' : reset ? ' · 距离额度重置 ' + countdown : ' · 重置时间未知')
               + ' · 点击刷新 ' + NAMES[provider] + (status ? ' · ' + status : '');
           }
         }
