@@ -68,8 +68,11 @@ test('all supported AI runtimes and resume aliases use existing original artwork
   assert.equal(chatAvatarSrc('constructor'), null);
   assert.equal(chatAvatarSrc('__proto__'), null);
   assert(fs.existsSync(path.resolve(__dirname, '../renderer', USER_AVATAR_SRC)));
-  const dir = path.resolve(__dirname, '../renderer/assets/ai-avatars/v1');
-  for (const asset of JSON.parse(fs.readFileSync(path.join(dir, 'provenance.json'), 'utf8'))) {
-    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, asset.file))).digest('hex'), asset.sha256);
+  const root = path.resolve(__dirname, '..');
+  const selected = JSON.parse(fs.readFileSync(path.join(root, 'renderer/assets/20261002-selected-artwork.json'), 'utf8'));
+  assert.equal(selected.filter(a => a.category === 'avatar').length, 7);
+  assert.equal(selected.filter(a => a.category === 'nav').length, 12);
+  for (const asset of selected) {
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, asset.file))).digest('hex'), asset.sha256);
   }
 });

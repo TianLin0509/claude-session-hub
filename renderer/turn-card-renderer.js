@@ -414,7 +414,7 @@ function _fmtDuration(ms) {
   if (s >= 60) return (s / 60).toFixed(1) + 'min';
   return s.toFixed(1) + 's';
 }
-function _renderMetaPills(turn) {
+function _renderMetaPills(turn, compact = false) {
   // Item timestamps inherit the logical turn end; repeating that elapsed time
   // on every progress item is both noisy and misleading.
   if (turn.phase === 'commentary') return '';
@@ -422,7 +422,8 @@ function _renderMetaPills(turn) {
   if (isUser) {
     const n = (turn.assistantContext?.userText ?? turn.text ?? '').length;
     if (!n) return '';
-    return `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
+    return compact ? `<span class="turn-meta chat-word-count" title="消息字数">${n} 字</span>`
+      : `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
   }
   const pills = [];
   // Activity count moved into the richer lifecycle rail. Keeping the legacy
@@ -553,7 +554,7 @@ function renderTurnCard(turn) {
   // The activity preview shows only the latest items; warnings count the full reply.
   const processFailures = (turn.toolCalls || []).map(normalizeToolActivity).filter(a => a.status === 'failed' || a.isError === true).length;
   const processHtml = isSimple && (progressHtml || thinkingHtml || toolHtml || (!isUser && _renderMetaPills(turn)))
-    ? `<details class="chat-process" data-copy-exclude><summary>查看过程${processCount ? ` · ${processCount} 条` : ''}${processFailures ? `<span class="chat-process-warning"> · ${processFailures} 项失败</span>` : ''}</summary><div class="chat-process-body">${progressHtml}${thinkingHtml}${toolHtml}${_renderMetaPills(turn)}</div></details>` : '';
+    ? `<details class="chat-process" data-copy-exclude><summary title="展开本轮完整过程、工具结果与用量">过程${processCount ? ` ${processCount} 条` : ''}${processFailures ? `<span class="chat-process-warning"> · ${processFailures} 项失败</span>` : ''}</summary><div class="chat-process-body">${progressHtml}${thinkingHtml}${toolHtml}${_renderMetaPills(turn)}</div></details>` : '';
 
   return `<div class="${cls}"${isSimple ? ' data-chat-style="message"' : ''}${isUser && turn.promptReceipt ? ` data-submission-id="${escapeHtml(turn.clientSubmissionId)}" data-receipt-authoritative="${turn.receiptAuthoritative === true}" data-delivery-status="${escapeHtml(turn.deliveryStatus || '')}"` : ''} data-turn-id="${escapeHtml(turn.id || '')}" data-response-id="${escapeHtml(turn.logicalTurnId || '')}" data-response-agent="${escapeHtml(turn.kind || '')}" data-phase="${escapeHtml(turn.phase || 'message')}" data-presentation-source="${escapeHtml(presentation.source || 'deterministic')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
@@ -564,11 +565,13 @@ function renderTurnCard(turn) {
         ${!isUser && !isSimple ? require('./conversation-header-activity').renderHeaderActivity('', '', true) : ''}
         ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}${nativeChip}
         <span class="turn-meta">${escapeHtml(ts)}</span>
+        ${isSimple && isUser ? _renderMetaPills(turn, true) : ''}
+        ${processHtml}
         <div class="turn-actions">
           ${isProgress && !isSimple ? '<button class="conversation-response-copy" data-action="conversation-response-copy" title="复制本轮当前已收到的完整回复">复制本轮</button>' : renderCardActions(turn)}
         </div>
       </div>
-      ${isSimple ? `<div class="chat-message-bubble">${primaryHtml}${deliveryHtml}${processHtml}${isUser ? _renderMetaPills(turn) : ''}</div>` : `${thinkingHtml}${primaryHtml}${deliveryHtml}${toolHtml}${_renderMetaPills(turn)}`}
+      ${isSimple ? `<div class="chat-message-bubble">${primaryHtml}${deliveryHtml}</div>` : `${thinkingHtml}${primaryHtml}${deliveryHtml}${toolHtml}${_renderMetaPills(turn)}`}
     </div>
   </div>`;
   // 2026-06-28 道雪 · 深空灰气泡皮肤：气泡背景挂在 .turn-body 上，故把工具簇与 meta-pills
