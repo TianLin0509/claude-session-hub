@@ -8,6 +8,7 @@ const {
 } = require('../core/session-attention-state.js');
 const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
+const { buildSidebarView } = require('./session-list-view-policy');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -166,21 +167,35 @@ function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
-  const sectionKeys = ['sec-failed', 'sec-pinned', 'sec-unread', 'sec-active', 'sec-today', 'sec-dormant'];
+  const sectionKeys = ['sec-failed', 'sec-active', 'sec-today'];
   let collapsedSections = new Set();
-  let dormantDays = 1;
+  let recentDays = 1;
   let modelFilter = 'all';
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
-    const days = Number(storage.getItem('hubSidebarDormantDays'));
-    if ([1, 3, 7].includes(days)) dormantDays = days;
+    const days = Number(storage.getItem('hubSidebarRecentDays'));
+    if ([1, 3].includes(days)) recentDays = days;
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
   function savePreference(key, value) {
     try { storage.setItem(key, value); }
     catch (error) { console.warn('[sidebar] preference could not be saved:', error.message); }
+  }
+  const rangeControls = [...(doc.querySelectorAll?.('[data-session-days]') || [])];
+  function syncRangeControls() {
+    for (const button of rangeControls) button.setAttribute('aria-pressed', String(Number(button.dataset.sessionDays) === recentDays));
+  }
+  syncRangeControls();
+  for (const button of rangeControls) button.addEventListener('click', () => {
+    recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
+    savePreference('hubSidebarRecentDays', String(recentDays));
+    syncRangeControls(); renderSessionList();
+  });
+  function sidebarView(items, sessionMap = getSessions(), days = recentDays) {
+    const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    return buildSidebarView(parts, { days, sessionMap, hasUnread: sidebarItemHasUnread });
   }
   const modelControl = doc.getElementById?.('session-model-filter');
   if (modelControl) {
@@ -633,7 +648,7 @@ sessionListEl.addEventListener('keydown', event => {
   sidebarSources.set(doc, () => {
     const sessionMap = getSessions();
     const items = collectSidebarItems(sessionMap);
-    const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+    const parts = sidebarView(items, sessionMap);
     const archived = new Set(parts.archive.map(s => s.id));
     return items.map(s => ({ ...s,
       key: (s._isMeeting ? 'live-meeting:' : 'live-session:') + s.id,
@@ -667,8 +682,12 @@ sessionListEl.addEventListener('keydown', event => {
       _expandedMeetings.add(id);
       _persistExpandedMeetings();
     }
-    const parts = partitionSidebarSessions([item], { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    const key = parts.failed.length ? 'sec-failed' : parts.pinned.length ? 'sec-pinned' : parts.unread.length ? 'sec-unread' : parts.active.length ? 'sec-active' : parts.archive.length ? 'sec-dormant' : 'sec-today';
+    if (Date.now() - latestActivityTime(item) >= recentDays * 86400000) {
+      recentDays = 3;
+      savePreference('hubSidebarRecentDays', '3'); syncRangeControls();
+    }
+    const parts = sidebarView([item]);
+    const key = parts.failed.length ? 'sec-failed' : parts.active.length ? 'sec-active' : 'sec-today';
     collapsedSections.delete(key);
     savePreference('hubSidebarCollapsedSections', JSON.stringify([...collapsedSections]));
     renderSessionList();
@@ -684,8 +703,8 @@ sessionListEl.addEventListener('keydown', event => {
     const failures = [];
     try {
       const ipc = options.ipcRenderer || require('electron').ipcRenderer;
-      const current = partitionSidebarSessions(filteredSidebarItems(), { sessionMap: getSessions(), activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-      for (const item of current.today) {
+      const current = sidebarView(filteredSidebarItems());
+      for (const item of current.today.filter(item => !item.pinned && !sidebarItemHasUnread(item, getSessions()))) {
         try {
           const members = item._isMeeting ? (item._meeting.subSessions || []) : [item.id];
           for (const id of members) {
@@ -716,7 +735,7 @@ sessionListEl.addEventListener('keydown', event => {
     sessionListEl.style?.setProperty('--sidebar-work-phase', `${-(Date.now() % 24000)}ms`);
     const sessionMap = getSessions();
   const visible = filteredSidebarItems(sessionMap);
-  const sections = partitionSidebarSessions(visible, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
+  const sections = sidebarView(visible, sessionMap);
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
@@ -1003,31 +1022,16 @@ sessionListEl.addEventListener('keydown', event => {
       event.preventDefault(); event.stopPropagation();
       return onAction?.();
     });
-    if (cls === 'sec-dormant') {
-      const range = doc.createElement('select');
-      range.className = 'sec-dormant-range';
-      range.dataset.sidebarControl = 'dormant-range';
-      range.setAttribute?.('aria-label', '休眠显示范围');
-      range.innerHTML = '<option value="1">最近24小时</option><option value="3">最近3天</option><option value="7">最近7天</option>';
-      range.value = String(dormantDays);
-      range.addEventListener('change', () => {
-        const days = Number(range.value);
-        if (![1, 3, 7].includes(days)) return;
-        dormantDays = days;
-        savePreference('hubSidebarDormantDays', String(days));
-        renderSessionList();
-      });
-      h.appendChild(range);
-    }
     renderTarget.appendChild(h);
     if (!collapsed) for (const item of items) appendItem(item);
   }
   if (sections.failed.length) appendSecHeader('异常', sections.failed, 'sec-failed');
-  appendSecHeader('置顶', sections.pinned, 'sec-pinned', '管理', () => openSearch({ scope: 'pinned' }));
-  appendSecHeader('未读', sections.unread, 'sec-unread', markAllSessionsRead ? '全部已读' : '', markAllSessionsRead);
-  appendSecHeader('活跃', sections.active, 'sec-active');
-  appendSecHeader('今天', sections.today, 'sec-today', sections.today.length ? '归档全部' : '', archiveToday);
-  appendSecHeader('休眠', sections.archive.filter(item => Date.now() - latestActivityTime(item) < dormantDays * 86400000), 'sec-dormant');
+  if (sections.active.length) appendSecHeader('活跃', sections.active, 'sec-active');
+  appendSecHeader(recentDays === 3 ? '3 天内' : '今天', sections.today, 'sec-today', sections.today.length ? '休眠' : '', archiveToday);
+  if (markAllSessionsRead && visible.some(item => sidebarItemHasUnread(item, sessionMap))) {
+    const read = doc.createElement('button'); read.type = 'button'; read.className = 'sidebar-mark-read';
+    read.textContent = '全部已读'; read.addEventListener('click', markAllSessionsRead); renderTarget.appendChild(read);
+  }
   const archive = doc.createElement('button');
   archive.type = 'button';
   archive.className = 'session-archive-entry';

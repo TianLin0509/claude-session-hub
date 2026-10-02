@@ -19,8 +19,9 @@ function element() {
 function harness({ items = [], meetings = {}, active = null, store = new Map(), extra = {} } = {}) {
   const list = element();
   const sessions = new Map(items.map(s => [s.id, s]));
+  const ranges = [1,3].map(days => { const button=element();button.dataset.sessionDays=String(days);return button; });
   const renderer = createSessionListRenderer({
-    document: { createElement: element, getElementById: () => null, head: element() },
+    document: { createElement: element, getElementById: () => null, querySelectorAll:()=>ranges, head: element() },
     localStorage: { getItem: k => store.get(k) || null, setItem: (k, v) => store.set(k, v) },
     sessionListEl: list, getSessions: () => sessions, getMeetings: () => meetings,
     getActiveSessionId: () => active, getActiveMeetingId: () => active,
@@ -40,7 +41,7 @@ function harness({ items = [], meetings = {}, active = null, store = new Map(), 
     }
     return null;
   };
-  return { ...renderer, list, row, section, sessions, store };
+  return { ...renderer, list, row, section, sessions, store, ranges };
 }
 const now = Date.now();
 const dormant = (id, extra = {}) => ({ id, title: id, kind: 'codex', status: 'dormant', lastMessageTime: now, ...extra });
@@ -49,30 +50,30 @@ function meetingFixture(unread = false) {
     participants: [0], lastMessageTime: now, unreadAnswered: new Set(unread ? ['child'] : []) };
 }
 
-test('最近休眠挂载到独立分组，旧休眠保留归档入口，置顶和未读保持优先', () => {
+test('近期休眠、置顶和未读合到今天，旧会话从归档查找', () => {
   let opened;
   const h = harness({ items: [dormant('new'), dormant('old', { lastMessageTime: now - 8 * 86400000 }),
     dormant('pin', { pinned: true }), dormant('fresh', { unreadCount: 1 })], extra: { openSearch: o => { opened = o; } } });
-  assert.match(h.section('new'), /休眠/); assert.equal(h.row('old'), undefined);
-  assert.match(h.section('pin'), /置顶/); assert.match(h.section('fresh'), /未读/);
+  assert.match(h.section('new'), /今天/); assert.equal(h.row('old'), undefined);
+  assert.match(h.section('pin'), /今天/); assert.match(h.section('fresh'), /今天/);
   const entry = h.list.children.find(e => e.className === 'session-archive-entry');
-  assert.match(entry.innerHTML, /archive-count">2</);
+  assert.match(entry.innerHTML, /archive-count">1</);
   entry.listeners.click(); assert.deepEqual(opened, { scope: 'dormant' });
-  assert.equal(h.list.children.filter(e => e.className.startsWith('session-sec-header')).length, 5);
+  assert.equal(h.list.children.filter(e => e.className.startsWith('session-sec-header')).length, 1);
 });
 test('旧休眠未读仍可见，唤醒在活跃，休眠不因旧断连快照误报异常', () => {
   const h = harness({ items: [dormant('old', { unreadCount: 1, lastMessageTime: now - 8 * 86400000 }),
     dormant('wake', { _resumePending: true }), dormant('fresh', { unreadCount: 1 }),
     dormant('error', { connectionIssue: { type: 'stream-disconnected', message: 'lost' } })] });
-  assert.match(h.section('old'), /未读/); assert.match(h.section('fresh'), /未读/);
-  assert.match(h.section('wake'), /活跃/); assert.match(h.section('error'), /休眠/);
+  assert.match(h.section('old'), /今天/); assert.match(h.section('fresh'), /今天/);
+  assert.match(h.section('wake'), /活跃/); assert.match(h.section('error'), /今天/);
   assert.match(h.row('fresh').innerHTML, /sl-dot unread/);
   assert.match(h.row('wake').innerHTML, /sl-dot start/);
   assert.match(h.row('error').innerHTML, /sl-dot dorm/);
 });
-test('休眠群聊未读进入未读组，已读进入休眠，成员归属和上下文保留', () => {
+test('群聊未读保留醒目标记，已读留在时间组，成员归属和上下文保留', () => {
   const h = harness({ items: [dormant('child', { meetingId: 'group', contextPct: 38 })], meetings: { group: meetingFixture(true) } });
-  assert.match(h.section('group'), /未读/);
+  assert.match(h.section('group'), /今天/);
   assert.match(h.row('group').innerHTML, /sl-group-icon unread/);
   assert.doesNotMatch(h.row('group').innerHTML, /session-mini-jumps/);
   assert.match(h.row('child').className, /child/);
@@ -80,15 +81,15 @@ test('休眠群聊未读进入未读组，已读进入休眠，成员归属和�
   assert.equal(h.row('child').title, undefined);
   assert.doesNotMatch(h.row('group').innerHTML, /🌙|💬|📌/);
   const read = harness({ items: [dormant('child', { meetingId: 'group' })], meetings: { group: meetingFixture() } });
-  assert.match(read.section('group'), /休眠/);
+  assert.match(read.section('group'), /今天/);
 });
-test('未读段全部已读只由动作按钮触发', () => {
+test('全部已读是独立动作，不创建未读栏目', () => {
   let calls = 0;
   const h = harness({ items: [dormant('fresh', { unreadCount: 1 })], extra: { markAllSessionsRead: () => calls++ } });
-  const header = h.list.children.find(e => /sec-unread/.test(e.className));
+  const header = h.list.children.find(e => /sec-today/.test(e.className));
   const event = className => ({ target: { className }, preventDefault() {}, stopPropagation() {} });
   header.listeners.click(event('sl-title')); assert.equal(calls, 0);
-  header.listeners.click(event('sec-mark-all-read')); assert.equal(calls, 1);
+  h.list.children.find(e => e.className==='sidebar-mark-read').listeners.click(); assert.equal(calls, 1);
 });
 test('已废弃筛选偏好不影响新控件的默认显示', () => {
   const h = harness({ items: [dormant('sleep'), { id: 'study', title: '学习', purpose: 'study-companion', kind: 'codex', status: 'idle', lastMessageTime: now }],
@@ -111,24 +112,22 @@ test('归档全部走休眠 IPC，群聊成员成功后才保存休眠，拒绝�
     } });
   const header = h.list.children.find(e => /sec-today/.test(e.className));
   await header.listeners.click({ target: { className: 'sec-action' }, preventDefault() {}, stopPropagation() {} });
-  assert.match(h.section('normal'), /休眠/); assert.match(h.section('group'), /休眠/); assert.match(h.section('blocked'), /今天/);
+  assert.match(h.row('normal').className, /dormant/); assert.match(h.row('group').className, /dormant/); assert.match(h.section('blocked'), /今天/);
   assert.equal(calls.filter(c => c[0] === 'suspend-session').length, 3);
   assert.equal(calls.at(-1)[0], 'update-meeting-sync');
   assert.match(notices[0], /blocked.*native-session-id-missing/);
   assert.ok(calls.every(c => !/close|delete/.test(c[0])));
 });
 
-test('休眠时间范围为回溯窗口，包含群聊，切换后持久化', () => {
+test('两枚时间页签使用24和72小时窗口，切换后持久化', () => {
   const day = 86400000;
   const h = harness({ items: [dormant('recent'), dormant('two', { lastMessageTime: now - 2 * day }),
     dormant('six', { lastMessageTime: now - 6 * day }), dormant('eight', { lastMessageTime: now - 8 * day })] });
-  const range = () => h.list.children.find(e => /sec-dormant/.test(e.className)).children[0];
   assert.ok(h.row('recent')); assert.equal(h.row('two'), undefined);
-  range().value = '3'; range().listeners.change();
+  h.ranges[1].listeners.click();
   assert.ok(h.row('two')); assert.equal(h.row('six'), undefined);
-  range().value = '7'; range().listeners.change();
-  assert.ok(h.row('six')); assert.equal(h.row('eight'), undefined);
-  assert.equal(h.store.get('hubSidebarDormantDays'), '7');
+  assert.equal(h.ranges.length,2); assert.equal(h.row('eight'), undefined);
+  assert.equal(h.store.get('hubSidebarRecentDays'), '3');
 });
 
 test('组头可独立折叠，动作不误触发，重新创建保留选择', () => {
@@ -136,13 +135,12 @@ test('组头可独立折叠，动作不误触发，重新创建保留选择', ()
     dormant('today', { status: 'idle' })];
   const h = harness({ items });
   const toggle = cls => h.list.children.find(e => e.className.includes(cls)).listeners.click({ target: { className: 'sec-collapse' }, preventDefault() {}, stopPropagation() {} });
-  for (const [cls, id] of [['sec-pinned','pin'], ['sec-unread','unread'], ['sec-today','today'], ['sec-dormant','sleep']]) {
-    assert.ok(h.row(id)); toggle(cls); assert.equal(h.row(id), undefined);
-  }
+  for(const id of ['pin','unread','today','sleep'])assert.ok(h.row(id));
+  toggle('sec-today');for(const id of ['pin','unread','today','sleep'])assert.equal(h.row(id),undefined);
   const restored = harness({ items, store: h.store });
   assert.equal(restored.row('pin'), undefined);
   restored.revealSearchItem('pin'); assert.ok(restored.row('pin'));
-  assert.equal(restored.row('sleep'), undefined);
+  assert.ok(restored.row('sleep'));
 });
 
 test('模型过滤普通行及群聊成员，打开被过滤会话会恢复入口', () => {

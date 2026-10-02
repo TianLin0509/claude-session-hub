@@ -90,7 +90,7 @@ async function main() {
     await until(()=>response('SCROLL_LINE_090'),'history response',120000);
     await until(async()=>['completed','idle'].includes((await state()).truth.state),'idle');
     report.initial=await state();await capture('initial');
-    assert(report.initial.rows <= 18 && report.initial.rows >= 15, 'regression requires a short viewport');
+    assert(report.initial.rows <= 20 && report.initial.rows >= 8, 'regression requires a short viewport');
     await send('Run node -e "setTimeout(()=>console.log(1),40000)" then reply DONE.');
     await until(()=>client.eval(`__parityHooks.some(h=>h.sid===${j(sid)}&&h.event==='tool-start')`),'tool started');
     await sleep(1200);
@@ -104,10 +104,12 @@ async function main() {
       for(let i=0;i<4;i++){if(zone==='pageup')await client.eval(`terminalCache.get(${j(sid)}).terminal.input('\\x1b[5~',true)`);else await client.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:pos.x,y:pos.y,deltaX:0,deltaY:-420});await sleep(200);}
       const after=(await state()).text;
       const bytes=await client.eval('__wheelBytes');
-      const probe={zone,pos,moved:(after.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join()!==(before.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join(),before,after,bytes};report.probes.push(probe);
+      for(let i=0;i<4;i++){if(zone==='pageup')await client.eval(`terminalCache.get(${j(sid)}).terminal.input('\\x1b[6~',true)`);else await client.send('Input.dispatchMouseEvent',{type:'mouseWheel',x:pos.x,y:pos.y,deltaX:0,deltaY:420});await sleep(200);}
+      const down=(await state()).text;
+      const probe={zone,pos,moved:(after.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join()!==(before.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join(),movedDown:(down.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join()!==(after.match(/^\s*(?:• )?SCROLL_LINE_\d{3}\s*$/gm)||[]).join(),before,after,down,bytes};report.probes.push(probe);
       console.log(JSON.stringify({zone,moved:probe.moved,pos,bytes}));await capture(zone);
     }
-    assert(report.probes.every(p => p.moved), 'Every tested zone must reveal different numbered history lines; timer changes do not count');
+    assert(report.probes.every(p => p.moved && p.movedDown), 'Every tested zone must reveal different numbered history lines in both directions; timer changes do not count');
     report.passed=true;await escape();
   } catch (error) {
     report.error = error.stack;

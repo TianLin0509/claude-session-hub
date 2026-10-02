@@ -123,7 +123,7 @@ function createHubWorkspaces({ document, window, memory, capabilities, memo, sea
       event.preventDefault(); event.stopImmediatePropagation();
       const targetArea = button.id === 'btn-rail-memo' ? 'review' : 'resources';
       open(targetArea, button.id === 'btn-rail-memory' ? 'memory' : undefined);
-    } else if (!['rail-pin', 'rail-edge-trigger'].includes(button.id)) close();
+    } else if (!['rail-pin', 'rail-edge-trigger', 'nav-edit-done'].includes(button.id)) close();
   }, true);
   document.addEventListener('keydown', event => {
     // Search owns Escape while reading history; dialogs and editors keep their
