@@ -60,6 +60,10 @@ test('PTY Claude launch fixes its identity before the CLI starts', t => {
 
   const spaced = buildClaudePtyLaunch('hub-4', 'claude', { model: 'm', appendSystemPromptFile: "C:\\a b\\it's.md" }, cwd, env, cv);
   assert.ok(spaced.cmd.includes("'C:\\a b\\it''s.md'"), 'paths are passed as PowerShell literals');
+  const assistant=buildClaudePtyLaunch('hub-assistant-launch','claude',{model:'m',purpose:'hub-assistant',autonomous:true},cwd,env,cv);
+  const settingsOf=launch=>JSON.parse(fs.readFileSync(launch.cmd.match(/--settings\s+([^\s]+)/)[1],'utf8'));
+  assert.equal(settingsOf(assistant).skipDangerousModePermissionPrompt,true,'explicit assistant grant stays in its launch overlay');
+  assert.notEqual(settingsOf(fresh).skipDangerousModePermissionPrompt,true,'ordinary session permissions remain unchanged');
 });
 
 test('PTY agent sessions open in the terminal and remember an explicit card choice', () => {

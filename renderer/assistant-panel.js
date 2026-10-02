@@ -55,6 +55,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
         const rect=picker.getBoundingClientRect();menu.style.left=rect.left+'px';menu.style.top=rect.bottom+6+'px';
         menu.addEventListener('click', event=>{const choice=event.target.closest('[data-assistant-backend]');if(choice){menu.remove();void switchBackend(choice.dataset.assistantBackend);}});
         document.body.append(menu);
+        menu.querySelector('button')?.focus();
       });
       tools.prepend(picker);
     }
@@ -93,7 +94,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     finally {
       switching = false; label.textContent = '助理';
       if (picker) picker.removeAttribute('aria-busy');
-      syncSession(getSession(getActiveSessionId()));
+      if (ticket === epoch) syncSession(getSession(getActiveSessionId()));
     }
   }
   async function open() {

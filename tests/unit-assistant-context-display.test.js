@@ -22,6 +22,12 @@ test('合法本轮委托尾部保留在可展开原文', () => {
   const raw = frame('继续任务') + '\n\n本轮工具委托 requestToken：12345678-abcd';
   assert.equal(assistantContextDisplay(raw, 'hub-assistant').rawText, raw);
 });
+test('Claude 真实长粘贴包装只投影内部助理原话，包装外用户正文仍保留',()=>{
+  const raw='<pasted_content id="2e75">\n'+frame('读取交接暗号')+'\n</pasted_content>';
+  assert.deepEqual(assistantContextDisplay(raw,'hub-assistant'),{userText:'读取交接暗号',rawText:raw});
+  assert.equal(assistantContextDisplay('其他用户正文\n'+raw,'hub-assistant'),null);
+  assert.equal(assistantContextDisplay(raw+'\n其他用户正文','hub-assistant'),null);
+});
 test('原生 CRLF 或边界换行被规范化仍只解析完整 JSON', () => {
   const raw = frame('原话');
   for (const text of [raw.replace(/\n/g, '\r\n'), raw.replace(/\n/g, '')]) {
