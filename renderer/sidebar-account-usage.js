@@ -33,6 +33,9 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
     const row = el('button', 'sidebar-quota-provider', provider === 'claude' ? claudeRow : provider === 'tokenPlan' ? quota : pair);
     row.type = 'button';
     row.dataset.provider = provider;
+    const icon = el('span', 'sidebar-quota-icon ' + (provider === 'tokenPlan' ? 'token-plan-icon' : 'ai-logo logo-' + provider), row,
+      provider === 'tokenPlan' ? 'T' : '');
+    icon.setAttribute('aria-hidden', 'true');
     el('span', 'sidebar-quota-name', row, NAMES[provider]);
     const metrics = el('span', 'sidebar-quota-metrics', row);
     const windows = provider === 'claude' ? ['5h', '7d'] : ['codex', 'tokenPlan'].includes(provider) ? ['7d'] : ['balance'];
@@ -40,8 +43,8 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
     for (const window of windows) {
       const cell = el('span', 'sidebar-quota-metric', metrics); cell.dataset.window = window;
       const line = el('span', 'sidebar-quota-reading', cell);
-      const period = el('span', 'sidebar-quota-period', line, window === 'balance' ? '' : '—');
       const value = el('b', 'sidebar-quota-value', line, '—');
+      const period = el('span', 'sidebar-quota-period', line, window === 'balance' ? '' : '刷新未知');
       const track = window !== 'balance' ? el('span', 'sidebar-quota-track', cell) : null;
       const fill = track ? el('i', '', track) : null;
       if (track) track.setAttribute('aria-hidden', 'true');
@@ -58,15 +61,17 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
   return {
     detailsHost: claudeRow,
     render(snapshot, states) {
+      const now = nowFn();
       for (const provider of Object.keys(entries)) {
         const { row, cells, button } = entries[provider];
         const data = snapshot[provider] || {};
         const state = states[provider] || {};
         row.dataset.freshness = provider === 'tokenPlan' && data.lastSeen
-          ? (Date.now() - data.lastSeen > 600000 || state.error ? 'stale' : 'fresh') : freshness(data.lastSeen);
+          ? (now - data.lastSeen > 600000 || state.error ? 'stale' : 'fresh') : freshness(data.lastSeen);
         const age = formatAge(data.lastSeen);
         const tokenReset = provider === 'tokenPlan' && (data.usage7d || data.usage30d)?.resetsAt;
-        const resetTip = tokenReset ? '重置：' + new Date(tokenReset).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 北京时间' : '';
+        const resetTip = tokenReset && Number.isFinite(new Date(tokenReset).getTime())
+          ? '重置：' + new Date(tokenReset).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 北京时间' : '';
         const status = state.inFlight ? '刷新中…' : state.error ? '刷新失败：' + state.error
           : state.result ? state.result.fresh ? '已取得新数据' : '未取得新数据，保留旧值' : '';
         row.title = [NAMES[provider], data.profileLabel, age, status, resetTip].filter(Boolean).join(' · ');
@@ -88,19 +93,28 @@ function createSidebarAccountUsage({ document, root, refresh, formatAge, formatB
               ? (data.usage7d || data.usage30d || null) : data['usage' + window];
             const windowLabel = provider === 'tokenPlan'
               ? (data.usage7d ? '7d' : data.usage30d ? '30d' : window) : window;
+            cell.cell.dataset.period = windowLabel;
             const pct = remainingPercent(observation);
             cell.value.textContent = pct === null ? (provider === 'tokenPlan' && data.needsLogin ? '需登录' : '—')
               : (provider === 'tokenPlan' ? pct.toFixed(2) : Math.round(pct)) + '%';
             cell.fill.style.width = (pct ?? 0) + '%';
             cell.cell.dataset.level = pct !== null && pct < 15 ? 'danger' : pct !== null && pct <= 40 ? 'warn' : 'normal';
-            const countdown = formatResetCountdown(observation?.resetsAt, nowFn());
-            cell.period.textContent = root.dataset?.presentation === 'footer' ? windowLabel : countdown;
-            const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : 0;
+            const countdown = formatResetCountdown(observation?.resetsAt, now);
+            const reset = observation?.resetsAt ? new Date(observation.resetsAt).getTime() : NaN;
+            const knownReset = Number.isFinite(reset);
+            const expired = knownReset && reset <= now;
+            cell.period.textContent = !knownReset ? '刷新未知' : expired ? '待刷新'
+              : '↻' + countdown.replace('d', '天').replace('h', '时').replace('m', '分');
+            cell.cell.dataset.resetState = !knownReset ? 'unknown' : expired ? 'due' : 'countdown';
             cell.cell.title = windowLabel + ' 剩余额度 · ' + formatAge(observation?.observedAt || data.lastSeen)
-              + (reset && reset <= nowFn() ? ' · 上次记录，等待刷新' : reset ? ' · 距离额度重置 ' + countdown : ' · 重置时间未知')
+              + (expired ? ' · 上次记录，等待刷新' : knownReset ? ' · 距离额度重置 ' + countdown : ' · 重置时间未知')
+              + (knownReset ? ' · 重置：' + new Date(reset).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) + ' 北京时间' : '')
               + ' · 点击刷新 ' + NAMES[provider] + (status ? ' · ' + status : '');
           }
         }
+        button.setAttribute('aria-label', NAMES[provider] + ' · ' + Object.entries(cells).map(([window, cell]) =>
+          (window === 'balance' ? '余额 ' : cell.cell.dataset.period + ' 剩余 ') + cell.value.textContent + ' ' + cell.period.textContent
+        ).join(' · ') + ' · 点击刷新' + (status ? ' · ' + status : ''));
       }
     },
   };

@@ -104,9 +104,10 @@ async function main() {
       addEventListener(k,fn) { this.listeners[k] = fn; } }; nodes.push(node); return node;
   } };
   const root = doc.createElement('div');
+  let clockNow = now;
   const view = createSidebarAccountUsage({ document: doc, root, refresh: async () => {},
     formatAge: ts => String(ts || 0), formatBalance: data => data.totalBalance == null ? '—' : '¥' + data.totalBalance.toFixed(2),
-    freshness: ts => ts === 200 ? 'fresh' : 'stale' });
+    freshness: ts => ts === 200 ? 'fresh' : 'stale', nowFn: () => clockNow });
   const buttons = nodes.filter(n => n.tag === 'button');
   assert.strictEqual(buttons.length, 4);
   view.render({ ...cache, deepseek: { ...cache.deepseek, lastSeen: 200 } }, {});
@@ -116,6 +117,27 @@ async function main() {
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '54.67%');
   view.render({ tokenPlan: { usage30d: { pct: 10, resetsAt: 1791820800000 }, lastSeen: 200 } }, {});
   assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '90.00%');
+  // Footer must show reset countdowns rather than quota window names. Unknown
+  // and elapsed resets keep the old percentage and explain its limits.
+  root.dataset.presentation = 'footer';
+  const periods = () => nodes.filter(n => n.className === 'sidebar-quota-period').map(n => n.textContent);
+  view.render({ claude: { usage5h: { pct: 20, resetsAt: now + 80*60000 }, usage7d: { pct: 30, resetsAt: now + 76*3600000 } },
+    codex: { usage7d: { pct: 40, resetsAt: 'invalid' } }, tokenPlan: { usage30d: { pct: 10, resetsAt: now - 1 } } }, {});
+  assert.deepStrictEqual(periods(), ['↻1时20分', '↻3天4时', '刷新未知', '', '待刷新']);
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value').at(-1).textContent, '90.00%');
+  assert.match(buttons[0].attrs['aria-label'], /5h 剩余 80% ↻1时20分/);
+  assert.match(nodes.filter(n => n.className === 'sidebar-quota-metric')[0].title, /北京时间/);
+  assert.match(buttons[3].attrs['aria-label'], /30d 剩余 90.00% 待刷新/);
+  const countdownSample = { claude: { usage5h: { pct: 20, resetsAt: now + 80*60000 } } };
+  clockNow += 60000; view.render(countdownSample, {});
+  assert.strictEqual(periods()[0], '↻1时19分', 'countdown decreases without a new provider observation');
+  clockNow += 80*60000; view.render(countdownSample, {});
+  assert.strictEqual(periods()[0], '待刷新');
+  assert.strictEqual(nodes.filter(n => n.className === 'sidebar-quota-value')[0].textContent, '80%', 'elapsed time must not invent restored quota');
+  clockNow = now;
+  view.render({ tokenPlan: { usage7d: { pct: 10, resetsAt: now + 86400000 }, lastSeen: now } }, {});
+  assert.strictEqual(periods().at(-1), '↻1天');
+  assert.strictEqual(buttons[3].dataset.freshness, 'fresh');
   view.render(cache, { codex: { inFlight: true }, deepseek: { error: 'offline' } });
   assert.strictEqual(nodes.filter(n => n.tag === 'button')[1], buttons[1]);
   assert.strictEqual(buttons[1].attrs['aria-disabled'], 'true');
