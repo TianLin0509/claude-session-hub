@@ -43,14 +43,22 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     const tools = document.getElementById('toolbar-actions');
     let picker = tools?.querySelector('.assistant-backend');
     if (active && tools && !picker) {
-      picker = document.createElement('select'); picker.className = 'assistant-backend';
+      picker = document.createElement('button'); picker.type='button'; picker.className = 'assistant-backend';
       picker.setAttribute('aria-label', '助理 AI 后端');
       picker.title = '切换助理后端；各自历史分别保留，共用工作档案和交接记录';
-      picker.innerHTML = '<option value="codex">Codex</option><option value="claude">Claude</option>';
-      picker.addEventListener('change', () => { void switchBackend(picker.value); });
+      picker.addEventListener('click', event => {
+        event.stopPropagation();
+        const old=document.querySelector('.assistant-backend-menu');if(old){old.remove();return;}
+        const menu=document.createElement('div');menu.className='assistant-backend-menu';
+        menu.setAttribute('role','menu');
+        menu.innerHTML='<button type="button" data-assistant-backend="codex">Codex</button><button type="button" data-assistant-backend="claude">Claude</button>';
+        const rect=picker.getBoundingClientRect();menu.style.left=rect.left+'px';menu.style.top=rect.bottom+6+'px';
+        menu.addEventListener('click', event=>{const choice=event.target.closest('[data-assistant-backend]');if(choice){menu.remove();void switchBackend(choice.dataset.assistantBackend);}});
+        document.body.append(menu);
+      });
       tools.prepend(picker);
     }
-    if (picker && active) { picker.value = session.kind; picker.disabled = switching; }
+    if (picker && active) { picker.dataset.kind = session.kind; picker.textContent = (session.kind==='claude'?'Claude':'Codex')+' ▾'; picker.disabled = switching; }
     if (!active || !tools || tools.querySelector('.assistant-notifications')) return;
     const notices = document.createElement('details'); notices.className = 'assistant-notifications';
     notices.innerHTML = '<summary>关注回复</summary><div class="assistant-notice-list"></div>';
@@ -65,7 +73,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     tools.prepend(notices, dossier); paintNotices();
   }
   function close() {
-    epoch++;
+    epoch++; document.querySelector('.assistant-backend-menu')?.remove();
     setClass(document.body, 'assistant-session-active', false);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', false);
     setClass(nav, 'active', false); nav.removeAttribute('aria-current');
@@ -107,7 +115,8 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     return opening;
   }
   nav.addEventListener('click', () => { void open(); });
-  document.addEventListener('click', event => { if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
+  document.addEventListener('click', event => { if(!event.target.closest('.assistant-backend-menu,.assistant-backend'))document.querySelector('.assistant-backend-menu')?.remove();if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelector('.assistant-backend-menu')?.remove();});
   ipcRenderer.on('assistant:notification', (_event, notice) => {
     nav.classList.add('assistant-has-unread'); nav.title = '助理 · 关注任务有新回复';
     if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);

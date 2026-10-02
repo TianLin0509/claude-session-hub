@@ -45,7 +45,7 @@ class AssistantService {
   followedTasks(){return this.watches.list().map(({cursor,seen,...watch})=>watch);}
   observePromptReceipt(snapshot){
     if(snapshot?.status!=='confirmed'||snapshot.notSent||snapshot.contentMismatch||!snapshot.clientSubmissionId||!snapshot.sessionId)return false;
-    if(snapshot.sessionId===this.currentRequest?.sessionId&&snapshot.clientSubmissionId===this.currentRequest.id)this.continuity.add({id:'user:'+snapshot.clientSubmissionId,sessionId:snapshot.sessionId,provider:this.store.get('backendKind')||'codex',role:'user',timestamp:this.currentRequest.createdAt,text:this.currentRequest.text});
+    if(snapshot.sessionId===this.currentRequest?.sessionId&&snapshot.clientSubmissionId===this.currentRequest.id)this.continuity.add({id:'user:'+snapshot.clientSubmissionId,sessionId:snapshot.sessionId,provider:this.store.get('backendKind')||'codex',role:'user',deliveryState:'confirmed',timestamp:this.currentRequest.createdAt,text:this.currentRequest.text});
     const row=this.store.db.prepare('SELECT state,result FROM actions WHERE id=?').get(snapshot.clientSubmissionId);
     if(!row||row.state!=='unknown'||!row.result)return false;
     const result=JSON.parse(row.result);if(result.sessionId!==snapshot.sessionId)return false;
@@ -128,6 +128,7 @@ class AssistantService {
     const context=this.context({...resolveTimeRange(request.text,{hours:request.hours,timeZone:this.deps.timeZone}),query:request.historyQuery||''});
     const id=request.clientSubmissionId||request.requestId||randomUUID();
     this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
+    if(request.sessionId)this.continuity.add({id:'user:'+id,sessionId:request.sessionId,provider:active?.kind||'codex',role:'user',deliveryState:'prepared',timestamp:this.currentRequest.createdAt,text:request.text});
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
     const text=buildBootstrapPrompt(request.text,manifest,this.sessions().length,active?.kind||'codex');
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
