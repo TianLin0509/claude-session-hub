@@ -66,7 +66,7 @@ async function run() {
     ok('答完但没写文件：显示「还没交」', c2 && c2.text.includes('还没交') && !c2.text.includes('只在聊天里'));
     ok('还在干活且没文件：同样只显示「还没交」', c3 && c3.text.includes('还没交') && !/思考中|正在发言/.test(c3.text));
     ok('卡片上没有「同步」按钮', !c1.sync && !c2.sync && !c3.sync);
-    ok('群聊 AI 头像使用原创女生且原图加载成功', await cdp.eval(`[...document.querySelectorAll('article[data-gc-msg-id] .mr-gc-avatar img')].filter(e=>e.src.includes('ai-avatars')).every(e=>e.naturalWidth>0) && !!document.querySelector('.mr-gc-avatar img[src="assets/ai-avatars/v1/claude.png"]')`));
+    ok('群聊 AI 头像使用原创女生且原图加载成功', await cdp.eval(`[...document.querySelectorAll('article[data-gc-msg-id] .mr-gc-avatar img')].filter(e=>e.src.includes('ai-avatars')).every(e=>e.naturalWidth>0) && !!document.querySelector('.mr-gc-avatar img[src="assets/ai-avatars/cel-v2/claude.png"]')`));
     ok('群聊用户头像使用 Hub 橙色图标', await cdp.eval(`document.querySelector('.mr-gc-avatar-user img')?.getAttribute('src')==='../claude-wx.ico' && document.querySelector('.mr-gc-avatar-user img').naturalWidth>0`));
     await shot('01-files-and-missing');
     // Resend: a real click on m2's visible 重新发送; it reaches m2 only, same turn and answer file.

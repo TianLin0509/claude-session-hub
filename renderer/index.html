@@ -54,7 +54,6 @@
   <link rel="stylesheet" href="styles/fixed-session-layout.css">
   <link rel="stylesheet" href="styles/d4-workspace.css">
   <link rel="stylesheet" href="styles/card-view-e2.css">
-  <link rel="stylesheet" href="styles/group-card-parity.css">
   <link rel="stylesheet" href="styles/porcelain-workspaces.css">
   <!-- 控件状态层必须是最后一张样式表：它统一 focus / active / disabled，
        而 memory-panel.css、file-manager-panel.css 等也各自写了同名状态规则。
@@ -64,6 +63,8 @@
   <link rel="stylesheet" href="styles/coldwhite-cli.css">
   <link rel="stylesheet" href="styles/navigation-artwork.css">
   <link rel="stylesheet" href="styles/simple-chat.css">
+  <link rel="stylesheet" href="styles/light-surfaces.css">
+  <link rel="stylesheet" href="styles/group-card-parity.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -80,7 +81,7 @@
       <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
       <div class="terminal-crumb" id="toolbar-crumb"></div>
       <div class="hub-identity" id="hub-identity" aria-label="AI Hub 运行实例">
-        <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M14 17.5h7m-3.5-3.5v7"/></svg></button>
+        <button type="button" class="hub-new-instance" id="btn-new-hub" title="新建 AI Hub 实例" aria-label="新建 AI Hub 实例"><img src="../claude-wx.ico" alt="AI Hub" /></button>
         <strong>AI Hub</strong><span id="coldwhite-preview-label" hidden>冷白预览 0.1</span><span id="hub-version"></span><span class="hub-pid" id="hub-pid"></span>
       </div>
       <div class="terminal-header-actions" id="toolbar-actions"></div>

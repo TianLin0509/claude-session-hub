@@ -1,5 +1,6 @@
 'use strict';
-// Real isolated Hub + native stdio fixture. No production data or paid AI calls.
+// Real isolated Hub + native stdio fixture + actual authoritative answer files.
+// The test writer delivers the fixture reply to the requested file, like an agent.
 const fs=require('fs'),path=require('path'),os=require('os'),net=require('net'),assert=require('assert/strict');
 const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
@@ -11,6 +12,21 @@ async function main(){
   const port=await new Promise((res,rej)=>{const s=net.createServer();s.on('error',rej);s.listen(0,'127.0.0.1',()=>{const n=s.address().port;s.close(()=>res(n));});});
   let hub,c,clipboard;const evidence={checks:[],passed:false};
   const until=async(expr,label)=>{const end=Date.now()+60000;while(Date.now()<end){if(await c.eval(expr))return;await pause(150);}throw Error('timeout: '+label);};
+  const deliver=async(room,turn,indices=[0,1])=>{
+    await until(`(async()=>{const room=(await ipcRenderer.invoke('get-meetings')).find(m=>m.id===${j(room.id)});return room?.subSessions.length===2&&${j(indices)}.every(i=>sessions.get(room.subSessions[i])?.nativeRuntime?.threadId);})()`,'target native threads initialized');
+    const members=await c.eval(`(async()=>{const room=(await ipcRenderer.invoke('get-meetings')).find(m=>m.id===${j(room.id)});return ${j(indices)}.map(i=>({thread:sessions.get(room.subSessions[i]).nativeRuntime.threadId,member:'m'+(i+1)}));})()`);
+    const end=Date.now()+30000; let entries;
+    while(Date.now()<end){
+      entries=members.map(member=>{
+        const storeFile=path.join(root,'native-store',member.thread+'.json');
+        const thread=fs.existsSync(storeFile)?JSON.parse(fs.readFileSync(storeFile,'utf8')):null;
+        return {...member,text:thread?.turns[turn-1]?.items.filter(item=>item.type==='agentMessage' && item.phase==='final_answer').map(item=>item.text).join('\n\n')};
+      });
+      if(entries.every(entry=>entry.text))break; await pause(150);
+    }
+    assert(entries?.every(entry=>entry.text),'fixture final replies available');
+    for(const entry of entries){const dir=path.join(root,'data','task-docs',room.id,'answers','turn-'+turn,entry.member);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'回答.md'),entry.text,'utf8');}
+  };
   const click=async selector=>{
     await c.eval(`document.querySelector(${j(selector)}).scrollIntoView({block:'center',behavior:'instant'})`);
     await until(`(()=>{const e=document.querySelector(${j(selector)});if(!e)return false;const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`,'clickable '+selector);
@@ -30,24 +46,25 @@ async function main(){
     check(label+' identity row and avatar scroll with answer instead of covering it',delta>150&&['header','avatar','body'].every(key=>Math.abs(after[key]-before[key]+delta)<3),{before,after,delta});
   };
   try{
-    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'background',label:'groupchat-journal',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
+    hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port,windowMode:'background',label:'groupchat-journal',extraEnv:{CODEX_HOME:home,CLAUDE_CONFIG_DIR:path.join(root,'claude'),CLAUDE_HUB_AGENT_RUNTIME:'native',CLAUDE_HUB_NATIVE_FIXTURE_STORE_DIR:path.join(root,'native-store'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(__dirname,'fixtures/codex-app-server.js')}});
     evidence.pid=hub.pid;c=await connectFirstPage(hub);await c.send('Page.enable');await until('typeof sessions!=="undefined" && !!window.MeetingRoom','renderer');
     clipboard=await c.eval('require("electron").clipboard.readText()');
+    await c.eval('themeController.setTheme("dark")');
     await c.eval('require("electron").webFrame.setZoomFactor(1)');await c.send('Emulation.setDeviceMetricsOverride',{width:1550,height:1080,deviceScaleFactor:1,mobile:false});
     const opts={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none',codexSpeedTier:'standard'};
     const group=await c.eval(`ipcRenderer.invoke('create-meeting',${j({title:'线性手记 · 群聊阅读验证',groupChat:true,scene:'general',workspace:cwd,slots:[opts,opts]})})`);evidence.group=group.id;
     const open=async()=>{await until(`!!document.querySelector('[data-meeting-id="${group.id}"]')`,'sidebar group');await click(`[data-meeting-id="${group.id}"]`);await until('!!document.getElementById("mr-input-box")','group composer');};
-    await open();await send('fixture:conversation\n请用完整长回答核对群聊折叠与成员身份。');
-    await until('document.querySelectorAll(".mr-gc-messages .mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]").length===2','two complete native answers');
+    await open();await send('fixture:conversation\n请用完整长回答核对群聊折叠与成员身份。');await deliver(group,1);
+    await until('document.querySelectorAll(".mr-gc-messages .mr-gc-msg.ai[data-answer-state=delivered] .gc-journal-text").length===2','two complete native answers');
     await until('document.querySelectorAll(".mr-gc-messages .gc-journal-long").length===2','long answer measurement');
     const ids=await c.eval('[...document.querySelectorAll(".mr-gc-msg.ai")].map(e=>e.dataset.gcMsgId)');
     const first=`[data-gc-msg-id="${ids[0]}"]`;
-    const initial=await c.eval(`(()=>{const a=[...document.querySelectorAll('.mr-gc-msg.ai')];return a.map(e=>({color:e.dataset.journalColor,bg:getComputedStyle(e).borderLeftColor,height:e.querySelector('.gc-journal-text').clientHeight,full:e.querySelector('.gc-journal-text').scrollHeight,nested:e.querySelectorAll('.conversation-long-message').length}));})()`);
-    check('same-provider members have distinct identity borders; complete source is clipped once',new Set(initial.map(x=>x.bg)).size===2&&initial.every(x=>x.height<=240&&x.full>300&&x.nested===0),initial);
+    const initial=await c.eval(`(()=>{const a=[...document.querySelectorAll('.mr-gc-msg.ai')];return a.map(e=>({color:e.dataset.journalColor,bg:getComputedStyle(e.querySelector('.mr-gc-avatar')).borderColor,height:e.querySelector('.gc-journal-text').clientHeight,full:e.querySelector('.gc-journal-text').scrollHeight,nested:e.querySelectorAll('.conversation-long-message').length}));})()`);
+    check('same-provider members retain distinct avatar rings; complete source is clipped once',new Set(initial.map(x=>x.bg)).size===2&&initial.every(x=>x.height<=240&&x.full>300&&x.nested===0),initial);
     check('actions are in the header; inert raw-index button removed',await c.eval(`!document.querySelector('.mr-gc-anchor') && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-bubble-row > button').length===0 && document.querySelectorAll('.mr-gc-msg.ai .mr-gc-meta .mr-gc-copy-btn').length===2`));
     check('full-text disclosure is above the answer, aligned to its left edge',await c.eval(`(()=>{const a=document.querySelector(${j(first)}),b=a.querySelector('.gc-journal-expand').getBoundingClientRect(),t=a.querySelector('.gc-journal-text').getBoundingClientRect();return b.bottom<=t.top && Math.abs(b.left-t.left)<2;})()`));
     check('copy and more use ordinary-session wording',await c.eval(`document.querySelector(${j(first+' .mr-gc-copy-btn')}).textContent==='复制' && document.querySelector(${j(first+' .gc-journal-menu > summary')}).textContent==='更多'`));
-    check('short user prompt body aligns with its header',await c.eval(`(()=>{const card=document.querySelector('.mr-gc-msg.mine'),body=card.querySelector('.mr-gc-bubble').getBoundingClientRect(),head=card.querySelector('.mr-gc-name').getBoundingClientRect();return Math.abs(body.left-head.left)<2;})()`));
+    check('compact user bubble is right aligned with its avatar',await c.eval(`(()=>{const card=document.querySelector('.mr-gc-msg.mine'),body=card.querySelector('.mr-gc-bubble').getBoundingClientRect(),avatar=card.querySelector('.mr-gc-avatar').getBoundingClientRect();return body.right<avatar.left && getComputedStyle(card).paddingTop==='0px';})()`));
     check('user card does not retain the old right-side bubble arrow',await c.eval(`getComputedStyle(document.querySelector('.mr-gc-msg.mine .mr-gc-bubble'),'::after').display==='none'`));
     await c.eval(`document.querySelector('.mr-gc-messages').scrollTop=0`);
     await shot('dark-collapsed');await click(first+' .gc-journal-expand');
@@ -74,7 +91,8 @@ async function main(){
     for(const type of ['keyDown','keyUp'])await c.send('Input.dispatchKeyEvent',{type,key:'Home',code:'Home',windowsVirtualKeyCode:36});
     await until('document.querySelector(".mr-gc-messages").scrollTop<3 && !document.querySelector(".mr-gc-messages")._cardFollowController.isFollowing()','user reads history with Home');
     const oldTop=await c.eval('document.querySelector(".mr-gc-messages").scrollTop');
-    await until('document.querySelectorAll(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]").length===4','second real round complete');
+    await deliver(group,2);
+    await until('document.querySelectorAll(".mr-gc-msg.ai[data-answer-state=delivered] .gc-journal-text").length===4','second real round complete');
     const finalTop=await c.eval('document.querySelector(".mr-gc-messages").scrollTop');
     check('stream updates preserve old disclosure and reading position',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true'`)&&Math.abs(finalTop-oldTop)<5,{oldTop,finalTop});
     // Multiple complete answers: same-provider seats must retain distinct names.
@@ -94,8 +112,8 @@ async function main(){
     check('selected passage quote keeps the historical round',quote&&quote.includes('第1轮'));
     // A refresh replaces child DOM, not the independent selected message IDs.
     await click(first+' .gc-journal-menu > summary');await click(first+' [data-gc-multi-select]');
-    await send('fixture:compact-progress\n刷新时保留已选择的历史卡片。');
-    await until('document.querySelectorAll(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]").length===6','third round');
+    await send('fixture:compact-progress\n刷新时保留已选择的历史卡片。');await deliver(group,3);
+    await until('document.querySelectorAll(".mr-gc-msg.ai[data-answer-state=delivered] .gc-journal-text").length===6','third round');
     check('stream refresh preserves the selected historical card',await c.eval(`document.querySelector(${j(first)}).classList.contains('multi-selected') && document.querySelector('.gc-multi-select-bar .cms-count').textContent==='已选 1 条'`));
     await click('.gc-multi-select-bar [data-multi-exit]');
     const latestId=await c.eval(`[...document.querySelectorAll('.mr-gc-msg.ai')].at(-1).dataset.gcMsgId`);
@@ -106,7 +124,7 @@ async function main(){
     const archivedPrompt=await c.eval(`require('electron').clipboard.readText()`);
     check('long selected passage reaches the archived dispatched prompt without truncation',selectedText.length>500&&archivedPrompt.includes(selectedText),{characters:selectedText.length});
     await click('.mr-gc-prompt-modal-close');
-    await c.send('Page.reload');await until('typeof window.MeetingRoom!=="undefined"','reload');await open();
+    await c.send('Page.reload');await pause(500);await c.close();c=await connectFirstPage(hub);await until('typeof window.MeetingRoom!=="undefined"','reload');await open();
     await until(`!!document.querySelector(${j(first)})`,'durable answers');
     check('reload retains expansion and member identity',await c.eval(`document.querySelector(${j(first)}).dataset.journalExpanded==='true' && document.querySelector(${j(first)}).dataset.journalColor===${j(initial[0].color)}`));
     await c.send('Emulation.setDeviceMetricsOverride',{width:1050,height:800,deviceScaleFactor:1,mobile:false});await shot('narrow');
@@ -121,10 +139,10 @@ async function main(){
     check('ordinary member view remains separate',await c.eval('document.querySelectorAll("#msg-overlay [data-journal-key]").length===0'));
     const dev=await c.eval(`ipcRenderer.invoke('create-meeting',${j({title:'线性手记 · 开发群聊',groupChat:true,mode:'dev',workspace:cwd,slots:[opts,opts]})})`);
     check('development group created with the real dev scene',dev.scene==='dev',dev.scene);
-    await until(`!!document.querySelector('[data-meeting-id="${dev.id}"]')`,'dev sidebar');await click(`[data-meeting-id="${dev.id}"]`);await send('fixture:compact-progress\n核对开发群聊的整卡折叠。');
+    await until(`!!document.querySelector('[data-meeting-id="${dev.id}"]')`,'dev sidebar');await click(`[data-meeting-id="${dev.id}"]`);await send('fixture:compact-progress\n核对开发群聊的整卡折叠。');await deliver(dev,1,[0]);
     check('another group does not inherit selection state',await c.eval(`document.querySelector('.gc-multi-select-bar').hidden && !document.querySelector('.mr-gc-msg.multi-selected')`));
-    await until('!!document.querySelector(".mr-gc-msg.ai:not(.pending) .gc-journal-text [data-phase=final_answer]")','dev final');await shot('dev-journal');
-    check('development group uses journal without exposing forbidden retry',await c.eval('!!document.querySelector(".gc-journal-long") && !document.querySelector("[data-gc-retry-answer]")'));
+    await until('!!document.querySelector(".mr-gc-msg.ai[data-answer-state=delivered] .gc-journal-text")','dev final');await shot('dev-journal');
+    check('development group keeps compact card controls without exposing forbidden retry',await c.eval('!!document.querySelector(".gc-journal-minimize") && !document.querySelector("[data-gc-retry-answer]")'));
     evidence.passed=true;
   }catch(error){evidence.error=error.stack;throw error;}
   finally{if(c){try{await shot('last');if(clipboard!==undefined)await c.eval(`require('electron').clipboard.writeText(${j(clipboard)})`);}catch(error){evidence.captureError=error.message;}await c.close();}if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));evidence.exit=await gracefulQuit(hub);}fs.writeFileSync(path.join(out,'evidence.json'),j(evidence));console.log(j(evidence));}

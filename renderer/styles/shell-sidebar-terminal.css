@@ -1523,11 +1523,7 @@
   margin: 0 4px;
 }
 
-/* —— Hover 时遮罩稍稍变深，让用户感知"点这里就关" —— */
-.new-session-menu:hover::before,
-.options-menu:hover::before {
-  background: rgba(var(--rgb-scrim), 0.6);
-}
+/* Keep the hit area transparent on hover too; dimming belongs outside the panel. */
 
 
 /* =========================================================================
