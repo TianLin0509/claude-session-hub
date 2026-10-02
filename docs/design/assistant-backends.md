@@ -8,7 +8,9 @@
 
 Codex 继续使用原有临时 MCP 配置。Claude 使用同一 stdio MCP server 的专属配置文件，沿用 Hub 的自动实体启动/恢复通道。HTTP 调用的宿主身份及当前用户回合 token 必须同时匹配；旧后端失去专属工具权限。全部助理实体排除于业务清单、业务历史与自身派工、关注目标。
 
-运行中或等待响应的助理不允许切换。切换期间拒绝新输入与旧工具请求；成功后清空旧回合授权。弹出菜单挂在页面上，避免原生工具栏刷新导致选择控件失焦。导航离开会收起菜单。
+运行中、等待响应或上一条提交仍在核对的助理不允许切换。切换期间拒绝新输入与旧工具请求；成功后清空旧回合授权。弹出菜单挂在页面上，避免原生工具栏刷新导致选择控件失焦。导航离开会收起菜单。
+
+Claude 助理专用启动叠加文件承接已授予的自动执行权限，启动和恢复不再停在首次权限确认页面。真实 CLI 会给长粘贴套上带 ID 的 `pasted_content` 包装；助理回执仅在包装完整、ID 一致、内部为合法助理上下文时解包核对，原生记录不改写。界面仍只显示用户原话，原文可展开。Codex 助理含中文弯引号时使用既有的文件输入通道，保留原字符并等待真实回执；普通会话输入策略保持原样。
 
 ## 跨后端的交接
 
@@ -16,4 +18,4 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 
 这些文件帮助新后端接续工作；各厂商的内部对话历史仍分别保存。旧交接中的指令只作历史证据，不能授予本轮派工权限。既有会话在首次切换时补入可读取的近期助理最终答复；切换功能启用前的全部用户原话尚未追溯迁入交接文件。
 
-验证：`node --test tests/unit-assistant-backends.test.js tests/unit-hub-assistant-history.test.js`；`node tests/e2e-assistant-backends-live.js` 使用真实隔离 Codex、Claude PTY 验证交接、草稿往返、原生身份、Claude 派工与新回复提醒；状态一致性由 `node tests/e2e-assistant-session-state-live.js` 验证。
+验证：`node --test tests/unit-assistant-backends.test.js tests/unit-hub-assistant-history.test.js`；`node tests/e2e-assistant-backends-live.js` 使用真实隔离 Codex、Claude PTY 验证交接、草稿往返、原生身份、Claude 派工、新回复提醒及正常退出后恢复；状态一致性由 `node tests/e2e-assistant-session-state-live.js` 验证。
