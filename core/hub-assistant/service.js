@@ -12,9 +12,10 @@ const { requireAuthorizedTarget,requireBoundTarget,bindOperation }=require('./ac
 const {LiveHistory,nativeId}=require('./live-history');
 const {AssistantWatches,reminderIntent}=require('./watches');
 const {isAssistantSession,requireManagerCaller}=require('./permissions');
+const {projectSessionStates}=require('./session-state');
 class AssistantService {
   constructor(deps) {
-    this.deps=deps; this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
+    this.deps=deps; this.sessionViews=new Map(); this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
     this.history=new AssistantHistory(deps.historyDatabasePath||path.join(deps.dataDir,'cache','session-search-v3.sqlite'));
     this.bridge=new AssistantBridge(request=>this.invokeTool(request)); this.currentRequest=null;
     this.endpointFile=path.join(deps.dataDir,'assistant','bridge-endpoint.json');
@@ -24,7 +25,14 @@ class AssistantService {
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
-  sessions() {const all=new Map();for(const s of this.deps.listKnownSessions?.()||[]){const id=s.id||s.hubId;if(id)all.set(id,{...s,id,isOpen:false,status:'closed'});}for(const s of this.deps.getAllSessions?.()||[])all.set(s.id,{...all.get(s.id),...s,isOpen:true});return [...all.values()].filter(s=>s.id!==this.store.get('sessionId'));}
+  setSessionViews({changed=[],removed=[]}={}){
+    for(const id of removed)this.sessionViews.delete(id);
+    for(const row of changed){
+      if(!this.deps.getSession(row.id)||!row.hubState||!['run','wait','error','unread','dorm','idle','unknown'].includes(row.hubState.state))continue;
+      this.sessionViews.set(row.id,row);
+    }
+  }
+  sessions() {const all=new Map();for(const s of this.deps.listKnownSessions?.()||[]){const id=s.id||s.hubId;if(id)all.set(id,{...s,id,isOpen:false,status:'closed'});}for(const s of this.deps.getAllSessions?.()||[])all.set(s.id,{...all.get(s.id),...s,isOpen:true,sidebarView:this.sessionViews.get(s.id)});return projectSessionStates([...all.values()].filter(s=>s.id!==this.store.get('sessionId')));}
   liveInventory(){return this.sessions().map(s=>{const result=s.isOpen?this.liveHistory.read(s):null;return{...s,nativeSessionId:nativeId(s),latestFinal:result?.records.at(-1)||null,liveIssue:result?.issue||null};});}
   readLiveFinal(sessionId){const meta=this.sessionMetadata(sessionId);if(!meta)throw new Error('找不到原会话');const result=this.liveHistory.read(meta);return{sessionId,title:meta.title,...result};}
   startWatching({intervalMs=2000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();}
@@ -73,23 +81,23 @@ class AssistantService {
     const board=this.refreshDossier();
     // Retrieval budgets limit supplemental historical excerpts, never which
     // current sessions the assistant can see or manage.
-    const naturalBudget=Number(request.maxChars)||Math.max(6000,board.activeCount*1200);
+    const naturalBudget=Number(request.maxChars)||Math.max(6000,board.openedCount*1200);
     const natural=this.history.context({...request,maxChars:naturalBudget,excludeSessionId:sessionId,excludeNativeSessionId:session?.codexSid});
     const groups=readGroupHistory({dataDir:this.deps.dataDir,since:request.query?undefined:(natural.since??request.from??((request.now||Date.now())-(request.hours||3)*3600000)),until:natural.until||natural.asOf,
-      query:request.query||'',maxChars:Math.max(6000,board.activeCount*400),maxFiles:30,meetings:this.deps.getMeetings?.()});
+      query:request.query||'',maxChars:Math.max(6000,board.openedCount*400),maxFiles:30,meetings:this.deps.getMeetings?.()});
     const {sources:groupSources,...groupCoverage}=groups;
     const groupChars=groupSources.reduce((n,s)=>n+s.text.length,0);
     const sources=[...board.sources.map(source=>({...source,timeScope:'当前原生最终答复快照；以该条timestamp为准，不代表它发生在历史检索窗口内'})),...natural.sources.filter(source=>!board.sources.some(live=>live.sessionId===source.sessionId&&source.role==='assistant'&&live.text===source.text)),...groups.sources];
     return {...natural,asOf:Date.now(),available:natural.available||sources.length>0,sources,
       selectedChars:sources.reduce((n,source)=>n+source.text.length,0),groupSelectedChars:groupChars,
       workbench:{revision:board.revision,mode:board.mode,markdownPath:board.markdownPath,markdown:board.markdown,
-        inventory:board.activeInventory,activeCount:board.activeCount,knownCount:board.knownCount,timeMeaning:'这是当前工作台状态；历史变化请结合每条来源时间及请求窗口，不能把旧最终答复说成刚发生的变化。',
+        inventory:board.openedInventory,activeCount:board.activeCount,openedCount:board.openedCount,unreadCount:board.unreadCount,needsInputCount:board.needsInputCount,knownCount:board.knownCount,timeMeaning:'这是当前工作台状态；历史变化请结合每条来源时间及请求窗口，不能把旧最终答复说成刚发生的变化。',
         catalogPath:path.join(this.dossier.directory,'ALL-SESSIONS.md'),allActiveSessionsIncluded:true,
-        revisions:Object.fromEntries(board.activeInventory.map(row=>[row.id,row.revision])),
-        changedSessionIds:board.changedSessionIds.filter(id=>board.activeInventory.some(row=>row.id===id)),removedSessionIds:board.removedSessionIds,
+        revisions:Object.fromEntries(board.openedInventory.map(row=>[row.id,row.revision])),
+        changedSessionIds:board.changedSessionIds.filter(id=>board.openedInventory.some(row=>row.id===id)),removedSessionIds:board.removedSessionIds,
         baselineMeaning:board.baselineMeaning,fullReplyChars:board.fullReplyChars},
       truncated:natural.truncated||groups.truncated||board.sources.some(source=>source.truncated),coverage:{singleSessions:natural.coverage,groups:groups.coverage,
-        currentSessions:`当前已打开的 ${board.activeCount} 个其他会话全部列出。最新原生答复变化优先提供；长正文可按来源读取，历史片段预算不会排除受管理会话。`,
+        currentSessions:`当前已打开的 ${board.openedCount} 个其他会话全部列出，其中活跃 ${board.activeCount} 个。最新原生答复变化优先提供；长正文可按来源读取，历史片段预算不会排除受管理会话。`,
         groupTimeMeaning:'群聊材料的文件修改时间只证明文件被观察到变化，不证明任务在该时刻完成。'},groupFileCoverage:groupCoverage};
   }
   refreshDossier(){const id=this.store.get('sessionId'),assistant=this.deps.getSession(id);if(id&&!assistant)throw new Error('助理原会话尚未在本窗口打开，工作档案保留原版本');return this.dossier.publish(this.liveInventory(),`${id||''}:${assistant?.codexSid||''}:${assistant?.codexProfile||''}`);}
@@ -106,7 +114,7 @@ class AssistantService {
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
     const text=buildBootstrapPrompt(request.text,manifest,this.sessions().length);
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
-      workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
+      workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,openedSessions:context.workbench.openedCount,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
       requestToken:this.currentRequest.token,packetHash:manifest.packetHash,snapshotRead:false,snapshotReadAt:null,bootstrapChars:text.length,
       inputTransportNote:text.length>=2048?'用户原话较长，仍可能触发普通 Codex 编辑器输入通道':'短请求正文；完整资料通过本轮工具读取'});
     return{...request,text,clientSubmissionId:id};
@@ -122,7 +130,7 @@ class AssistantService {
     // bridge always supplies its host identity and never falls back to it.
     const hasCaller=callerSessionId!==undefined;
     if(hasCaller&&!this.isAssistantSession(callerSessionId))throw new Error('调用方不是固定助理会话，未授予专属工具');
-    if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,nativeSessionId:nativeId(s)}));
+    if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,hubState:s.hubState,nativeSessionId:nativeId(s)}));
     if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
       if(args.requestToken){

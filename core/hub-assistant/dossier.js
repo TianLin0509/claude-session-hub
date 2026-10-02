@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
+const {projectSessionStates}=require('./session-state');
+const stateLine=row=>row.hubState ? `${row.hubState.label}；${row.hubState.isActive===null?'活跃未知':row.hubState.isActive?'活跃分组':'非活跃'}；${row.hubState.hasUnread===null?'未读未知':row.hubState.hasUnread?'有未读 '+row.hubState.unreadCount+' 条':'无未读'}` : row.status;
 const safeLine = value => String(value ?? '').replace(/[\r\n|]/g, ' ');
 
 function preview(text, chars = 1800) {
@@ -35,13 +37,13 @@ class AssistantDossier {
   }
   publish(inventory, identity = '') {
     if (identity !== this.identity) { this.identity = identity; this.baseline = null; }
-    const entries = inventory.map(session => {
+    const entries = projectSessionStates(inventory).map(session => {
       const final = session.latestFinal;
       const previous=this.archived.get(session.id);
       const archivedDocument=previous?.latestRef&&previous?.document&&path.resolve(previous.document).startsWith(path.resolve(this.directory,'sessions')+path.sep)&&fs.existsSync(previous.document)?previous.document:null;
       const row = {
         id: session.id, title: session.title || session.name || session.id, kind: session.kind,
-        isOpen: !!session.isOpen, status: session.status || 'unknown', nativeSessionId: session.nativeSessionId || null,
+        isOpen: !!session.isOpen, status: session.status || 'unknown', hubState:session.hubState, nativeSessionId: session.nativeSessionId || null,
         latestRef: final?.ref || (archivedDocument?previous.latestRef:null), latestAt: final?.timestamp || (archivedDocument?previous.latestAt:null), issue: session.liveIssue || null,
         lastKnownOnly:!final&&!!archivedDocument,
       };
@@ -50,39 +52,40 @@ class AssistantDossier {
       if ((session.isOpen || final)&&!row.lastKnownOnly) {
         const relative = 'sessions/' + hash(session.id).slice(0, 24) + '/' + row.revision + '.md';
         row.document = path.join(this.directory, relative);
-        this.write(relative, `# ${safeLine(row.title)}\n\n会话：${safeLine(row.id)}\n版本：${row.revision}\n状态：${safeLine(row.status)}${row.isOpen ? '（当前已打开）' : '（未打开）'}\n原生会话：${safeLine(row.nativeSessionId || '尚未绑定')}\n\n## 最近的原生最终回复\n\n${final ? `[${final.ref}] · ${safeLine(final.timestamp)}\n\n${final.text}\n\n来源：${safeLine(final.transcriptPath || '')}\n\n这证明目标写出了上述答复，不自动证明业务成果已经验收。` : `暂无已核对的最终回复。${safeLine(row.issue || '')}`}\n`);
+        this.write(relative, `# ${safeLine(row.title)}\n\n会话：${safeLine(row.id)}\n版本：${row.revision}\n状态：${safeLine(stateLine(row))}${row.isOpen ? '（当前已打开）' : '（未打开）'}\n原生会话：${safeLine(row.nativeSessionId || '尚未绑定')}\n\n## 最近的原生最终回复\n\n${final ? `[${final.ref}] · ${safeLine(final.timestamp)}\n\n${final.text}\n\n来源：${safeLine(final.transcriptPath || '')}\n\n这证明目标写出了上述答复，不自动证明业务成果已经验收。` : `暂无已核对的最终回复。${safeLine(row.issue || '')}`}\n`);
       }
       return { row, final };
     }).sort((a, b) => a.row.id.localeCompare(b.row.id));
     const all = entries.map(entry => entry.row);
-    const active = all.filter(row => row.isOpen);
+    const opened = all.filter(row => row.isOpen);
+    const active=opened.filter(row=>row.hubState.isActive);
     const revisions = Object.fromEntries(entries.map(({ row }) => [row.id, row.revision]));
     const revision = hash(all);
     const changed = entries.filter(({ row }) => !this.baseline || this.baseline[row.id] !== row.revision);
     const removed = this.baseline ? Object.keys(this.baseline).filter(id => !revisions[id]) : [];
     const markdown = [
       '# AI Hub 当前工作台', '', `版本：${revision}`, '',
-      `当前已打开 ${active.length} 个会话，以下全部列出；已知会话共 ${all.length} 个，完整目录见 ALL-SESSIONS.md。`,
-      '状态来自 Hub 当前运行记录；“运行中”不等于任务完成。最终回复另按原生记录核对。', '',
+      `当前已打开 ${opened.length} 个会话，其中活跃 ${active.length} 个、有未读 ${opened.filter(row=>row.hubState.hasUnread).length} 个、等你响应 ${opened.filter(row=>row.hubState.needsUserInput).length} 个。以下全部列出；已知会话共 ${all.length} 个，完整目录见 ALL-SESSIONS.md。`,
+      '状态和未读直接复用 Hub 侧栏规则。已打开不等于活跃；未读不等于等你响应；运行中不等于任务完成。普通会话按本身状态，群聊成员按成员自身状态。最终回复另按原生记录核对。', '',
       '| 会话 | 当前状态 | 最近答复来源 | 工作档案 |', '| --- | --- | --- | --- |',
-      ...active.map(row => `| ${safeLine(row.title)} · ${row.id} | ${safeLine(row.status)} | ${row.latestRef ? '[' + row.latestRef + ']'+(row.lastKnownOnly?'（上次档案，最新未核实）':'') : safeLine(row.issue || '暂无最终回复')} | ${row.document} |`),
+      ...opened.map(row => `| ${safeLine(row.title)} · ${row.id} | ${safeLine(stateLine(row))} | ${row.latestRef ? '[' + row.latestRef + ']'+(row.lastKnownOnly?'（上次档案，最新未核实）':'') : safeLine(row.issue || '暂无最终回复')} | ${row.document} |`),
       '', '每轮有完整的当前会话清单；详细正文按变化提供，缺少先前内容时应读取相应工作档案或调用 session_evidence。',
       '本目录由 Hub 从运行状态和原生答复生成。请在对话中提出修正；修改这些投影文件不会改变真实会话，也不会授予派工权限。', '',
     ].join('\n');
     this.write('CURRENT.md', markdown);
-    this.write('ALL-SESSIONS.md', '# AI Hub 完整会话目录\n\n' + all.map(row => `- ${safeLine(row.title)} · ${row.id} · ${row.isOpen ? safeLine(row.status) : '未打开，运行状态未知'}`).join('\n') + '\n');
+    this.write('ALL-SESSIONS.md', '# AI Hub 完整会话目录\n\n' + all.map(row => `- ${safeLine(row.title)} · ${row.id} · ${row.isOpen ? safeLine(stateLine(row)) : '未打开，运行状态未知'}`).join('\n') + '\n');
     this.write('manifest.json', JSON.stringify({ schemaVersion: 1, revision, inventory: all }, null, 2));
     this.archived=new Map(all.map(row=>[row.id,row]));
     const sources = changed.filter(({ row, final }) => row.isOpen && final).map(({ row, final }) => ({
       ...final, sessionId: row.id, title: row.title, role: 'assistant', text: preview(final.text), originalChars: final.text.length,
       truncated: final.text.length > 1800, document: row.document, evidenceMeaning: '原生最终回复，属于助手自述；业务成果仍需核验',
     }));
-    this.last = { revision, inventory: all, activeInventory: active, revisions,
+    this.last = { revision, inventory: all, openedInventory: opened, activeInventory: active, revisions,
       markdownPath: path.join(this.directory, 'CURRENT.md'), markdown,
       mode: this.baseline ? 'delta-with-complete-inventory' : 'checkpoint',
       baselineMeaning: '相对于本进程上次通过工具返回的版本；不等于模型仍记得，缺少内容时重新读取来源',
       changedSessionIds: changed.map(entry => entry.row.id), removedSessionIds: removed,
-      allActiveSessionsIncluded: true, activeCount: active.length, knownCount: all.length,
+      allActiveSessionsIncluded: true, activeCount: active.length, openedCount:opened.length, unreadCount:opened.filter(row=>row.hubState.hasUnread).length, needsInputCount:opened.filter(row=>row.hubState.needsUserInput).length, knownCount: all.length,
       sources, fullReplyChars: entries.filter(entry => entry.row.isOpen).reduce((n, entry) => n + (entry.final?.text.length || 0), 0),
     };
     return this.last;

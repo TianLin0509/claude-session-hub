@@ -8,7 +8,8 @@ const {
 } = require('../core/session-attention-state.js');
 const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
-const { buildSidebarView } = require('./session-list-view-policy');
+const {compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
+const {createSessionViewPublisher}=require('../core/hub-assistant/session-state');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -31,20 +32,6 @@ function partitionSessionsByAge(items, now) {
     else old.push(s);
   }
   return { recent, mid, old };
-}
-
-function isPinnedToBottom(item) {
-  return !!(item && item.bottomed && !item.pinned);
-}
-
-function compareSidebarPlacement(left, right) {
-  const leftPinned = !!(left && left.pinned);
-  const rightPinned = !!(right && right.pinned);
-  if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
-  const leftBottomed = isPinnedToBottom(left);
-  const rightBottomed = isPinnedToBottom(right);
-  if (leftBottomed !== rightBottomed) return leftBottomed ? 1 : -1;
-  return compareLatestActivityDesc(left, right);
 }
 
 // --- 侧栏 AI 家族筛选 ---
@@ -110,63 +97,14 @@ function getSidebarSearchEntries(doc) {
   return sidebarSources.get(doc)?.() || [];
 }
 
-function sidebarItemHasUnread(item, sessionMap) {
-  if (!item._isMeeting) return sessionHasCompletedUnread(item);
-  return getMeetingUnreadMemberIds(item._meeting, sessionMap).size > 0 || item.unreadAnsweredSize > 0;
-}
-
-function isSidebarMemberWorking(session, now = Date.now()) {
-  return getSessionRuntimeTruth(session, { now }).state !== RUNTIME_WAITING
-    && (sessionRuntimeIsActive(session, { now }) || isGroupChatMemberRunning(session, now));
-}
-
-function partitionSidebarSessions(items, { now = Date.now(), sessionMap = new Map(), activeSessionId = null, activeMeetingId = null, groupMemberIds = new Set() } = {}) {
-  const pinned = [], respond = [], failed = [], running = [], completed = [], today = [], archive = [], older = [];
-  const states = new Map();
-  for (const s of [...(items || [])].sort(compareSidebarPlacement)) {
-    const truth = s._isMeeting ? null : getSessionRuntimeTruth(s, { now });
-    const meeting = s._isMeeting ? _meetingRuntimeAggregate(s._meeting, sessionMap, now) : null;
-    const dormant = s._isMeeting ? s.status === 'dormant' : truth.state === RUNTIME_DORMANT;
-    const fresh = now - latestActivityTime(s, now) < 86400000;
-    const waiting = meeting ? meeting.waiting : truth.state === RUNTIME_WAITING;
-    const error = meeting ? meeting.failed : !!sessionRuntimeIssue(s, truth);
-    const working = s._resumePending || (meeting ? meeting.running
-      : (s.meetingId || groupMemberIds.has(s.id)) ? isSidebarMemberWorking(s, now) : sessionRuntimeIsActive(s, { now }));
-    const unread = sidebarItemHasUnread(s, sessionMap);
-    states.set(s.id, error ? 'error' : meeting && working ? 'run' : waiting ? 'wait' : working ? 'run' : unread ? 'unread' : dormant ? 'dorm' : truth?.state === RUNTIME_UNKNOWN ? 'unknown' : 'idle');
-    if (error) failed.push(s);
-    else if (s.pinned && (waiting || working)) (waiting ? respond : running).push(s);
-    else if (unread) completed.push(s);
-    else if (waiting) respond.push(s);
-    else if (working) running.push(s);
-    else if (s.pinned) pinned.push(s);
-    else if (dormant) archive.push(s);
-    else if (fresh) today.push(s);
-    else older.push(s);
-  }
-  return { pinned, unread: completed, failed, active: [...respond, ...running], today, archive, older, archiveCount: archive.length, states };
-}
-
-function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
-  const truths = ((meeting && meeting.subSessions) || [])
-    .map(id => sessionMap.get(id))
-    .filter(Boolean)
-    .map(session => ({ session, truth: getSessionRuntimeTruth(session, { now }) }));
-  return {
-    waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
-    running: meeting && !meeting.groupChat && meeting.status === 'running'
-      || truths.some(item => isSidebarMemberWorking(item.session, now)),
-    disconnected: truths.some(item => sessionRuntimeIssue(item.session, item.truth)?.label === '连接异常'),
-    failed: truths.some(item => !!sessionRuntimeIssue(item.session, item.truth)),
-    truths,
-  };
-}
-
-
 function createSessionListRenderer(options = {}) {
   const { detailsHtml } = require('./session-details.js');
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
+  const publishSessionViews=createSessionViewPublisher(packet=>{
+    const ipc=options.ipcRenderer || (typeof process!=='undefined'&&process.type==='renderer'?require('electron').ipcRenderer:null);
+    ipc?.send?.('assistant:session-view',packet);
+  });
   const sectionKeys = ['sec-failed', 'sec-active', 'sec-today'];
   let collapsedSections = new Set();
   let recentDays = 1;
@@ -729,6 +667,7 @@ sessionListEl.addEventListener('keydown', event => {
   }
 
   function renderSessionList() {
+  publishSessionViews([...getSessions().values()]);
     const renderStartedAt = nowMs();
     // Rebuilt rows join the same clock instead of restarting their pulse on
     // every runtime delta (which can otherwise make a busy logo look static).
