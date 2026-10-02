@@ -4,10 +4,7 @@ const { sessionHasCompletedUnread, clearSessionCompletedUnread } = require('../c
 
 // Attention belongs to this renderer window. Never infer it from running/idle,
 // selected rows or round progress: those can all change before a reply is read.
-function getMeetingUnreadMemberIds(meeting, sessions = new Map()) {
-  return new Set((meeting?.subSessions || []).filter(sid =>
-    (meeting.unreadAnswered instanceof Set && meeting.unreadAnswered.has(sid)) || sessionHasCompletedUnread(sessions.get(sid))));
-}
+const {getMeetingUnreadMemberIds}=require('../core/session-sidebar-state');
 
 function recordMeetingAnswer(meeting, payload, { seenByUser = false } = {}) {
   const { sid, status, turnNum, runId } = payload;

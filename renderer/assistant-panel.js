@@ -5,7 +5,7 @@
 function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSessionId,
   openSession, closeOtherPanels = () => {}, showMessage }) {
   const nav = document.getElementById('btn-assistant');
-  let epoch = 0, opening = null, overview = null, sequence = 0;
+  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false;
   const setClass = (element, name, value) => { if (element.classList.contains(name) !== value) element.classList.toggle(name, value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const isOpen = () => document.body.classList.contains('assistant-session-active')
@@ -41,6 +41,25 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     setClass(nav, 'active', active);
     if (active) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current');
     const tools = document.getElementById('toolbar-actions');
+    let picker = tools?.querySelector('.assistant-backend');
+    if (active && tools && !picker) {
+      picker = document.createElement('button'); picker.type='button'; picker.className = 'assistant-backend';
+      picker.setAttribute('aria-label', '助理 AI 后端');
+      picker.title = '切换助理后端；各自历史分别保留，共用工作档案和交接记录';
+      picker.addEventListener('click', event => {
+        event.stopPropagation();
+        const old=document.querySelector('.assistant-backend-menu');if(old){old.remove();return;}
+        const menu=document.createElement('div');menu.className='assistant-backend-menu';
+        menu.setAttribute('role','menu');
+        menu.innerHTML='<button type="button" data-assistant-backend="codex">Codex</button><button type="button" data-assistant-backend="claude">Claude</button>';
+        const rect=picker.getBoundingClientRect();menu.style.left=rect.left+'px';menu.style.top=rect.bottom+6+'px';
+        menu.addEventListener('click', event=>{const choice=event.target.closest('[data-assistant-backend]');if(choice){menu.remove();void switchBackend(choice.dataset.assistantBackend);}});
+        document.body.append(menu);
+        menu.querySelector('button')?.focus();
+      });
+      tools.prepend(picker);
+    }
+    if (picker && active) { picker.dataset.kind = session.kind; picker.textContent = (session.kind==='claude'?'Claude':'Codex')+' ▾'; picker.disabled = switching; }
     if (!active || !tools || tools.querySelector('.assistant-notifications')) return;
     const notices = document.createElement('details'); notices.className = 'assistant-notifications';
     notices.innerHTML = '<summary>关注回复</summary><div class="assistant-notice-list"></div>';
@@ -55,12 +74,35 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     tools.prepend(notices, dossier); paintNotices();
   }
   function close() {
-    epoch++;
+    epoch++; document.querySelector('.assistant-backend-menu')?.remove();
     setClass(document.body, 'assistant-session-active', false);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', false);
     setClass(nav, 'active', false); nav.removeAttribute('aria-current');
   }
+  async function switchBackend(kind) {
+    if (opening || switching) return;
+    const ticket = ++epoch;
+    switching = true;
+    const picker = document.querySelector('.assistant-backend');
+    if (picker) { picker.disabled = true; picker.setAttribute('aria-busy','true'); }
+    const label = nav.querySelector('.btn-label'); label.textContent = '切换中…';
+    try {
+      const result = await call('assistant:switch-backend', {kind});
+      if (ticket !== epoch) return;
+      closeOtherPanels(); await openSession(result.sessionId, result.session); await refresh();
+    } catch (error) { showMessage?.(`助理后端未切换：${error.message}`); }
+    finally {
+      switching = false; label.textContent = '助理';
+      if (picker) picker.removeAttribute('aria-busy');
+      const displayed = document.querySelector('.assistant-backend');
+      if (displayed) { displayed.disabled=false; displayed.removeAttribute('aria-busy'); }
+      // Native selectSession also advances the navigation epoch. Refresh only
+      // when the assistant surface is still visible, using the new toolbar.
+      if (isOpen()) syncSession(getSession(getActiveSessionId()));
+    }
+  }
   async function open() {
+    if (switching) return;
     if (opening) return opening;
     const ticket = ++epoch;
     nav.disabled = true; nav.setAttribute('aria-busy', 'true');
@@ -78,12 +120,13 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     return opening;
   }
   nav.addEventListener('click', () => { void open(); });
-  document.addEventListener('click', event => { if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
+  document.addEventListener('click', event => { if(!event.target.closest('.assistant-backend-menu,.assistant-backend'))document.querySelector('.assistant-backend-menu')?.remove();if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelector('.assistant-backend-menu')?.remove();});
   ipcRenderer.on('assistant:notification', (_event, notice) => {
     nav.classList.add('assistant-has-unread'); nav.title = '助理 · 关注任务有新回复';
     if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);
     if (isOpen()) void refresh();
   });
-  return { open, close, refresh, syncSession, isOpen };
+  return { open, close, refresh, syncSession, isOpen, switchBackend };
 }
 module.exports = { createAssistantPanel };

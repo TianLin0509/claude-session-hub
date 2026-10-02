@@ -44,10 +44,12 @@ function createTurnCardRenderer(options = {}) {
   function prepareTurnForRender(sessionId, turn, opts = {}) {
     const session = opts.session || getSessionContext(sessionId) || null;
     if (turn?.role === 'user') {
+      const assistantContext=require('../core/assistant-context-display').assistantContextDisplay(turn.text,session?.purpose);
+      if(!turn.clientSubmissionId&&assistantContext?.clientSubmissionId)turn={...turn,clientSubmissionId:assistantContext.clientSubmissionId};
       const feedback = require('../core/native-feedback');
       const receiptAuthoritative = feedback.hasNativeReceipt(turn);
       return { ...turn, simpleChat: true, attachmentCwd: session?.cwd || opts.cwd || turn.attachmentCwd,
-        assistantContext: require('../core/assistant-context-display').assistantContextDisplay(turn.text, session?.purpose),
+        assistantContext,
         receiptAuthoritative, promptReceipt: feedback.promptReceipt(session, turn.clientSubmissionId,
           {authoritative: receiptAuthoritative, deliveryStatus: turn.deliveryStatus}) };
     }

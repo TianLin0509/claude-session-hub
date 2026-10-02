@@ -1,0 +1,53 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const BACKENDS = ['codex', 'claude'];
+function backendKind(kind) {
+  if (!BACKENDS.includes(kind)) throw new Error('助理后端仅支持 Codex 或 Claude');
+  return kind;
+}
+function bindings(store) {
+  const saved = store.get('backendSessions') || {};
+  const old = store.get('sessionId');
+  if (old && !Object.values(saved).includes(old)) saved[store.get('backendKind') || 'codex'] = old;
+  return saved;
+}
+function reserve(store, kind, id) {
+  store.db.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = bindings(store);
+    if (rows[kind] && rows[kind] !== id) throw new Error('助理创建已由另一请求预留，请重新读取助理状态');
+    rows[kind] = id;
+    store.set('backendSessions', rows);
+    store.set('backendCreation:' + kind, {id, state:'reserved', createdAt:Date.now()});
+    // Preserve the first-use reservation contract. A failed switch leaves the
+    // previously active identity untouched; retries reconcile the new id only.
+    if (!store.get('sessionId')) {
+      store.set('sessionId', id); store.set('backendKind', kind);
+      store.set('assistantCreation', {id, state:'reserved', createdAt:Date.now()});
+    }
+    store.db.exec('COMMIT');
+  } catch (error) { store.db.exec('ROLLBACK'); throw error; }
+}
+function activate(store, kind, id) {
+  store.db.exec('BEGIN IMMEDIATE');
+  try {
+    if (bindings(store)[kind] !== id) throw new Error('助理后端身份未预留');
+    store.confirmAssistant(id);
+    store.set('backendCreation:' + kind, {id, state:'confirmed', confirmedAt:Date.now()});
+    store.set('backendKind', kind); store.set('sessionId', id);
+    store.db.exec('COMMIT');
+  } catch (error) { store.db.exec('ROLLBACK'); throw error; }
+}
+function launchOptions(service, kind, id) {
+  const entry = service.getMcpEntry(id);
+  if (kind === 'codex') return {mcpProfile:'lean', codexMcpEntries:[entry]};
+  const file = path.join(service.deps.dataDir, 'assistant', 'claude-' + id + '-mcp.json');
+  const {command, args, env} = entry;
+  fs.writeFileSync(file + '.tmp', JSON.stringify({mcpServers:{hub_assistant:{command,args,env}}}), {mode:0o600});
+  fs.renameSync(file + '.tmp', file);
+  // Dedicated assistant only. Hub still checks host identity and the current
+  // user-request token on every management operation.
+  return {mcpProfile:'lean', mcpConfigFile:file, autonomous:true};
+}
+module.exports = {BACKENDS, backendKind, bindings, reserve, activate, launchOptions};

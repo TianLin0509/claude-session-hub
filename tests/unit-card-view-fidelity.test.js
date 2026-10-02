@@ -20,6 +20,7 @@ const LIST_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session
 const CLAUDE_PARSER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'claude-transcript-parser.js'), 'utf8');
 const CODEX_PARSER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'codex-transcript-parser.js'), 'utf8');
 const RUNNING_STATE_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'groupchat-running-state.js'), 'utf8');
+const SIDEBAR_STATE_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-sidebar-state.js'), 'utf8');
 
 function test(name, fn) {
   try {
@@ -127,9 +128,9 @@ test('idle 只压过过期 watcher，新鲜 watcher 可覆盖 PTY 的短暂空�
     'watcher 必须有明确过期窗口，不能恢复成永久 gcWorking');
   assert.match(LIST_SRC, /if \(_subIsRunning\(sub\)\) statusCls = 'mini-st-thinking';/,
     '成员点必须走同一判定');
-  assert.match(LIST_SRC, /truths\.some\(item => isSidebarMemberWorking\(item\.session, now\)\)/,
+  assert.match(SIDEBAR_STATE_SRC, /truths\.some\(item => isSidebarMemberWorking\(item\.session, now\)\)/,
     '群聊父项聚合采用工作状态投影，等待输入不冒充运行');
-  assert.match(LIST_SRC, /function isSidebarMemberWorking[\s\S]*?isGroupChatMemberRunning\(session, now\)/,
+  assert.match(SIDEBAR_STATE_SRC, /function isSidebarMemberWorking[\s\S]*?isGroupChatMemberRunning\(session, now\)/,
     '侧栏投影仍保留共享的新鲜度判定');
 });
 

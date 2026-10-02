@@ -15,6 +15,12 @@
 #terminal-panel.assistant-session .session-welcome-mark{background:transparent;border:0;box-shadow:none}
 #terminal-panel.assistant-session .session-welcome-mark img{width:72px;height:84px;object-fit:contain}
 .assistant-workbench.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
+.assistant-backend{display:none;-webkit-app-region:no-drag;max-width:100px;padding:6px 8px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#315acb;font-size:12px;flex-shrink:0}
+body.assistant-session-active .assistant-backend{display:block}
+.assistant-backend:disabled{opacity:.55}
+.assistant-backend-menu{position:fixed;z-index:2500;padding:5px;background:#fff;color:#1b2942;border:1px solid #dfe6f1;border-radius:10px;box-shadow:0 6px 22px #172f5120;-webkit-app-region:no-drag;min-width:125px}
+.assistant-backend-menu button{display:block;width:100%;padding:8px 16px;border:0;border-radius:6px;text-align:left;background:transparent;color:inherit;cursor:pointer}
+.assistant-backend-menu button:hover,.assistant-backend-menu button:focus{background:#edf4ff}
 #terminal-panel.assistant-session .assistant-notifications{flex-shrink:0;white-space:nowrap}
 #terminal-panel.assistant-session .turn-body a{color:#315acb}
 #terminal-panel.assistant-session .turn-body{background:transparent}

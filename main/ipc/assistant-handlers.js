@@ -3,9 +3,11 @@ const {AssistantService}=require('../../core/hub-assistant/service');
 const fs=require('node:fs'),path=require('node:path');
 function registerAssistantIpc(ipcMain,deps){
   const service=new AssistantService(deps);
+  ipcMain.on('assistant:session-view',(_event,packet)=>service.setSessionViews(packet));
   for(const [name,handler] of Object.entries({
     'get-overview':()=>service.overview(),status:()=>service.overview(),
     'ensure-session':()=>service.ensureSession(),context:request=>service.context(request),
+    'switch-backend':request=>service.switchBackend(request),
     send:request=>service.send(request),actions:()=>({ok:true,actions:service.store.list()}),
     notifications:request=>service.notifications(request),
     'mark-notification-read':request=>service.watches.markRead(request.id),

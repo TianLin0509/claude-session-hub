@@ -74,7 +74,7 @@ function createResumeSessionHandler(deps) {
 
     let resumeOpts = {};
     if (meta.purpose === 'hub-assistant') {
-      if (!isCodexRuntime || typeof deps.prepareAssistantResume !== 'function') {
+      if ((!isCodexRuntime && !isClaudeCliResumable) || typeof deps.prepareAssistantResume !== 'function') {
         throw new Error('助理恢复配置不可用，未启动替代会话');
       }
       resumeOpts = await deps.prepareAssistantResume(meta);

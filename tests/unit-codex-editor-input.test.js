@@ -43,6 +43,11 @@ test('short messages, slash commands and explicit attachments retain the existin
     assert.equal(await f.bridge.load(text, unexpected, options), false);
   }
 });
+test('assistant punctuation route preserves short quoted text without altering its body',async t=>{
+  const f=fixture(t),text='记住“青桥企鹅”，保留‘原话’。';
+  const loading=f.bridge.load(text,()=>{},{preservePunctuation:true});
+  await run(f.dir,f.target);frame(f.bridge);assert.equal(await loading,true);assert.equal(fs.readFileSync(f.target,'utf8'),text);
+});
 
 test('expired handoffs reject late helpers, preserve the draft, and cannot load a later request', async t => {
   const f = fixture(t);

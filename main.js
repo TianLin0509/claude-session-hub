@@ -1882,7 +1882,7 @@ const resumeSession = createResumeSessionHandler({
     if (!assistantService) throw new Error('助理服务尚未就绪');
     assistantService.requireAssistantResume(meta);
     await assistantService.connectBridge();
-    return { mcpProfile: 'lean', codexMcpEntries: [assistantService.getMcpEntry()] };
+    return assistantService.getLaunchOptions(meta.kind, meta.hubId);
   },
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
@@ -1960,6 +1960,7 @@ try {
     })(),
     createSession: (kind, opts) => sessionOperations.createSession({ kind, opts }),
     sendPrompt: (sessionId, text, clientSubmissionId) => promptOperations.submitPrompt(null, { sessionId, text, clientSubmissionId, waitForCliReady: true }),
+    hasPendingPrompt:sessionId=>promptOperations.isAssistantSubmissionPending(sessionId),
     getSession: id => sessionManager.getSession(id),
     getAllSessions: () => sessionManager.getAllSessions(),
     getSessionMetadata: id => {

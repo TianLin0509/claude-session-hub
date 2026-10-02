@@ -11,6 +11,7 @@ const read = relative => fs.readFileSync(path.join(ROOT, relative), 'utf8');
 const main = read('main.js');
 const renderer = read('renderer/renderer.js');
 const sidebar = read('renderer/session-list-renderer.js');
+const sidebarState = read('core/session-sidebar-state.js');
 const home = read('renderer/home-workbench.js');
 const hookIntegration = read('core/claude-hook-integration.js');
 
@@ -50,9 +51,10 @@ test('Codex, Claude and PTY producers all publish RuntimeTruth observations', ()
 });
 
 test('sidebar, card header and home workbench consume the shared truth', () => {
-  assert.match(sidebar, /getSessionRuntimeTruth\(s/);
-  assert.match(sidebar, /sessionRuntimeIsActive\(s/);
-  assert.doesNotMatch(sidebar,
+  assert.match(sidebar, /require\('\.\.\/core\/session-sidebar-state'\)/);
+  assert.match(sidebarState, /getSessionRuntimeTruth\(s/);
+  assert.match(sidebarState, /sessionRuntimeIsActive\(s/);
+  assert.doesNotMatch(sidebarState,
     /else if \(s\.status === 'running'\) running\.push\(s\)/,
     'sidebar running lane must not regress to raw session.status');
   assert.match(home, /getSessionRuntimeTruth\(session/);
@@ -62,7 +64,8 @@ test('sidebar, card header and home workbench consume the shared truth', () => {
 
 test('unknown is retained as an honest state when evidence expires', () => {
   assert.match(renderer, /state: RUNTIME_UNKNOWN,[\s\S]{0,180}observation-expired/);
-  assert.match(sidebar, /truth\?\.state === RUNTIME_UNKNOWN/);
+  assert.match(sidebar, /require\('\.\.\/core\/session-sidebar-state'\)/);
+  assert.match(sidebarState, /truth\?\.state === RUNTIME_UNKNOWN/);
 });
 
 // 返工 R4（2026-09-25）：Stop hook 的运行帧曾把已被 transcript 结束的一轮重新打开，
