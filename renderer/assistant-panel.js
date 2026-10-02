@@ -94,7 +94,11 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     finally {
       switching = false; label.textContent = '助理';
       if (picker) picker.removeAttribute('aria-busy');
-      if (ticket === epoch) syncSession(getSession(getActiveSessionId()));
+      const displayed = document.querySelector('.assistant-backend');
+      if (displayed) { displayed.disabled=false; displayed.removeAttribute('aria-busy'); }
+      // Native selectSession also advances the navigation epoch. Refresh only
+      // when the assistant surface is still visible, using the new toolbar.
+      if (isOpen()) syncSession(getSession(getActiveSessionId()));
     }
   }
   async function open() {
