@@ -42,3 +42,14 @@ test('a starting ordinary process retains its handoff before the profile lock ap
  hub.endpoint=async()=>null;hub.profileHeld=()=>false;
  assert.ok(await guard.settleHandoff(hub));assert.ok(guard.handoff(hub.root));
 });
+
+test('subsequent ordinary account visits keep the requested profile and reuse its window',async t=>{
+ const hub=fixture(t),launches=[];hub.endpoint=async()=>null;hub.profileHeld=()=>true;
+ hub.launch=async(identity,options)=>{launches.push({identity,options});hub.lastLaunchPid=process.pid;};
+ await hub.openWebsite('main','chatgpt');await hub.openWebsite('main','claude');await hub.openWebsite('alt','chatgpt');
+ assert.deepEqual(launches.map(l=>l.identity),['main','main','alt']);
+ assert.ok(launches.every(l=>l.options.debug===false&&l.options.newWindow===false));
+ for(const l of launches)assert.ok(!hub.launchArgs(l.identity,l.options).includes('--new-window'));
+ hub.profileHeld=()=>false;await hub.openWebsite('main','claude');
+ assert.equal(launches.at(-1).options.newWindow,false,'Chrome creates the first window naturally, including clicks during startup');
+});

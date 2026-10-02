@@ -27,13 +27,31 @@ public class OwnedChromeCloser { public delegate bool Callback(IntPtr h,IntPtr l
 [OwnedChromeCloser]::EnumWindows({param($h,$l) $taskPid=0; [OwnedChromeCloser]::GetWindowThreadProcessId($h,[ref]$taskPid)|Out-Null; $taskClass=New-Object Text.StringBuilder 100;[OwnedChromeCloser]::GetClassName($h,$taskClass,100)|Out-Null;if($taskPid -eq ${ordinaryPid} -and $taskClass.ToString() -eq 'Chrome_WidgetWin_1'){[OwnedChromeCloser]::PostMessage($h,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)|Out-Null};$true},[IntPtr]::Zero)|Out-Null; if(-not $p.WaitForExit(15000)){throw 'Owned Chrome did not exit'}; 'ordinary-process-verified-and-closed'`;
   const proof=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',ps],{windowsHide:true,encoding:'utf8',timeout:20000}).trim();ordinaryPid=null;return proof;
  };
- const waitRequest=async from=>{for(let i=0;i<100;i++){if(requests.slice(from).some(r=>r.url==='/account'&&r.cookie.includes('login_fixture=main-login')))return;await sleep(100);}throw Error('Ordinary browser did not send retained login cookie');};
+ const waitRequest=async(from,expected='/account',cookie='login_fixture=main-login')=>{for(let i=0;i<100;i++){const row=requests.slice(from).find(r=>r.url===expected&&(!cookie||r.cookie.includes(cookie)));if(row)return row;await sleep(100);}throw Error('Ordinary browser did not send the expected account request');};
+ const windows=()=>{
+  const escaped=root.replace(/'/g,"''");
+  const ps=`$c=Get-CimInstance Win32_Process -Filter 'ProcessId = ${ordinaryPid}';if($c.Name -ne 'chrome.exe' -or -not $c.CommandLine.Contains('${escaped}') -or $c.CommandLine -match 'remote-debugging-port'){throw 'Unexpected browser identity'};
+Add-Type -AssemblyName UIAutomationClient
+Add-Type @'
+using System;using System.Text;using System.Runtime.InteropServices;
+public class OwnedWindowReader { public delegate bool Callback(IntPtr h,IntPtr l); [DllImport("user32.dll")]public static extern bool EnumWindows(Callback c,IntPtr l); [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p); [DllImport("user32.dll")]public static extern int GetClassName(IntPtr h,StringBuilder s,int n); [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h); }
+'@
+$rows=New-Object Collections.Generic.List[object];[OwnedWindowReader]::EnumWindows({param($h,$l) $owner=0;[OwnedWindowReader]::GetWindowThreadProcessId($h,[ref]$owner)|Out-Null;$cls=New-Object Text.StringBuilder 100;[OwnedWindowReader]::GetClassName($h,$cls,100)|Out-Null;if($owner -eq ${ordinaryPid} -and $cls.ToString() -eq 'Chrome_WidgetWin_1' -and [OwnedWindowReader]::IsWindowVisible($h)){$w=[Windows.Automation.AutomationElement]::FromHandle($h);$cond=New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::TabItem);$tabs=$w.FindAll([Windows.Automation.TreeScope]::Descendants,$cond);$rows.Add([pscustomobject]@{tabs=$tabs.Count})};$true},[IntPtr]::Zero)|Out-Null;ConvertTo-Json -InputObject @($rows.ToArray()) -Compress`;
+  return JSON.parse(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',ps],{windowsHide:true,encoding:'utf8',timeout:20000}).trim());
+ };
  try{
   await hub.ensure();const {cdp}=await hub.browser();const mark=await hub.marker('main',cdp);cdp.close();
   const p=await hub.page(mark.targetId);try{assert.equal((await p.call('Network.setCookie',{name:'login_fixture',value:'main-login',url,httpOnly:true,expires:Date.now()/1000+3600})).success,true);}finally{p.close();}
   hub.site=()=>({name:'Local account fixture',url});
   const visit=await hub.openWebsite('main','claude');ordinaryPid=hub.lastLaunchPid;assert.equal(visit.mode,'ordinary');await waitRequest(0);
-  assert.equal(await hub.endpoint(),null);assert.equal(hub.profileHeld(),true);evidence.accountVisitNoCDP=true;evidence.loginCookieSentByOrdinaryChrome=true;evidence.accountProcessProof=verifyAndClose();
+  assert.equal(await hub.endpoint(),null);assert.equal(hub.profileHeld(),true);evidence.accountVisitNoCDP=true;evidence.loginCookieSentByOrdinaryChrome=true;
+  let from=requests.length;hub.site=()=>({name:'Local account fixture',url:url+'/second'});
+  const second=await hub.openWebsite('main','chatgpt');await waitRequest(from,'/account/second');assert.equal(second.pid,ordinaryPid,'Keep tracking the persistent browser, not the short-lived tab launcher');
+  let rows=windows();assert.equal(rows.length,1);assert.equal(rows[0].tabs,2);evidence.sameAccountOneWindowTwoTabs=true;
+  from=requests.length;hub.site=()=>({name:'Local account fixture',url:url+'/alt'});await hub.openWebsite('alt','chatgpt');
+  const alt=await waitRequest(from,'/account/alt',null);assert.ok(!alt.cookie.includes('login_fixture=main-login'),'Another identity must not inherit the main login');
+  rows=windows();assert.equal(rows.length,2);assert.deepEqual(rows.map(r=>r.tabs).sort(),[1,2]);evidence.identitiesKeepSeparateWindows=true;evidence.mainCookieNotSentByAlt=true;
+  hub.site=()=>({name:'Local account fixture',url});evidence.accountProcessProof=verifyAndClose();
   await tool.open('about:blank');await tool.execute(['goto',url]);
   await assert.rejects(tool.execute(['human-open',url]),{code:'HUB_BROWSER_BUSY'});assert.ok(await tool.target());assert.equal(guard.handoff(root),null);evidence.busyPagePreserved=true;
   await tool.execute(['goto','about:blank']);
