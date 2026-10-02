@@ -177,12 +177,12 @@ class AssistantService {
     if(typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
     if(this.deps.authorizeAction&&!await this.deps.authorizeAction(action,current))throw new Error('目标不在本轮授权范围内');
     const requestId=bindOperation(this.store,current,args.operationKey,action);
-    const followed=action.type==='send'&&reminderIntent(current.text);
-    if(followed)this.followTask({sessionId:action.targetSessionId});
-    const result=await this.execute({...action,requestId});
+    const followed=reminderIntent(current.text);
+    if(followed&&action.type==='send')this.followTask({sessionId:action.targetSessionId});
+    const result=await this.execute({...action,requestId},{followNewReply:followed});
     return followed?{...result,followed:true,notificationMethod:'Hub监视原生最终回复并在助理页通知'}:result;
   }
-  async execute(action) {
+  async execute(action,{followNewReply=false}={}) {
     if(!['send','create'].includes(action.type)||typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
     const {requestId,...payload}=action;
     if(this.store.has(requestId)){
@@ -214,6 +214,9 @@ class AssistantService {
         const defaults=await this.deps.getDefaults?.('codex')||{};
         const desiredId=randomUUID();this.store.set('reserved:'+requestId,desiredId);
         const session=await this.deps.createSession('codex',{...defaults,id:desiredId,title:String(action.title||'助理委托任务').slice(0,100)});sessionId=session.id;
+        // Follow before submission: a fast target can reply before the manager
+        // receives create_session's result and gets a chance to call watch.
+        if(followNewReply)this.followTask({sessionId});
       }
       const receipt=await this.deps.sendPrompt(sessionId,action.text,requestId);
       const confirmed=receipt?.ok===true&&receipt?.receipt?.status==='confirmed'&&!receipt.notSent&&!receipt.contentMismatch;

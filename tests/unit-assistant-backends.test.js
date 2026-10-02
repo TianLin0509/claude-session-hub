@@ -32,6 +32,13 @@ test('pending submit receipt blocks switching even after a native final arrived'
   const x=setup(t),codex=await x.service.ensureSession();x.deps.hasPendingPrompt=()=>true;
   await assert.rejects(x.service.switchBackend({kind:'claude'}),/提交仍在核对/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.equal(x.created.length,1);
 });
+test('new task reminder is registered before the target can answer',async t=>{
+  const x=setup(t),assistant=await x.service.ensureSession();let watchedAtSend=false;
+  x.deps.sendPrompt=async id=>{watchedAtSend=x.service.followedTasks().some(w=>w.sessionId===id);return{ok:true,receipt:{status:'confirmed'}};};
+  x.service.preparePrompt({sessionId:assistant.sessionId,text:'新建任务，有新回复时提醒我'});
+  const r=await x.service.invokeTool({name:'create_session',callerSessionId:assistant.sessionId,arguments:{title:'快速回复',text:'回复完成',operationKey:'quick-one',requestToken:x.service.currentRequest.token}});
+  assert.equal(r.ok,true);assert.equal(r.followed,true);assert.equal(watchedAtSend,true);
+});
 test('lost switch receipt retains old backend and reconciles reserved new id',async t=>{
   const x=setup(t),codex=await x.service.ensureSession(),original=x.deps.createSession;
   x.deps.createSession=async(...args)=>{await original(...args);throw Error('lost launch response');};
