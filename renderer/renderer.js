@@ -4970,10 +4970,12 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     //   凡是卡片视图能渲染的 kind 都该立刻出卡，判据统一走这两个 helper。
     const cardCapableKind = !!kind && (isClaudeFamily(kind) || isTranscriptCliKind(kind));
     const acpQueueing = session?.runtimeBackend === 'acp' && ['running','waiting'].includes(session.nativeRuntime?.state);
+    const optimisticReceipt = isNativeAgent(session) || (session?.purpose === 'hub-assistant' && !nativeCommand && !ptyCommand)
+      ? { clientSubmissionId } : {};
     if ((pane.isCard ? pane.isCard() : currentView === 'card') && cardCapableKind && !acpQueueing && typeof mountOptimisticUserCard === 'function') {
       try {
-        if (pane.optimistic) pane.optimistic(text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
-        else mountOptimisticUserCard(sessionId, text, kind, isNativeAgent(session) ? { clientSubmissionId } : {});
+        if (pane.optimistic) pane.optimistic(text, kind, optimisticReceipt);
+        else mountOptimisticUserCard(sessionId, text, kind, optimisticReceipt);
       } catch (err) {
         console.warn('[optimistic user-card] mount failed:', err);
       }
