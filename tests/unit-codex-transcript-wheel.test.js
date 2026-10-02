@@ -25,6 +25,17 @@ test('short running viewport redirects its center/status to transcript row 2', (
   assert.deepEqual(transcriptWheelTarget(terminal, { ...event, deltaY: 420 }), { clientX: 790, clientY: 130 });
 });
 
+test('0.159.3 bullet-prefixed Working and detached history footer still redirect', () => {
+  const {terminal,lines,event}=fixture();
+  lines[9]='• Working (1m 02s • esc to interrupt) · 1 background terminal running';
+  lines[11]='                                ↓ Back to bottom · esc';
+  lines[16]='enter/esc latest · ? shortcuts       ⚠ 1 warning · f2 to view';
+  for(const deltaY of [-420,420])assert.deepEqual(transcriptWheelTarget(terminal,{...event,deltaY}),{clientX:790,clientY:130});
+  // With a 13-row current TUI, the center itself belongs to the status area.
+  lines.splice(0,4);terminal.rows=13;
+  assert.deepEqual(transcriptWheelTarget(terminal,{...event,clientY:270}),{clientX:790,clientY:100+340/13*1.5});
+});
+
 test('real transcript coordinates stay untouched; heading and footer can scroll', () => {
   const { terminal, event } = fixture();
   for (const clientY of [130, 170, 230]) assert.equal(transcriptWheelTarget(terminal, { ...event, clientY }), null);

@@ -19,8 +19,8 @@ function transcriptWheelTarget(terminal, event) {
   if (composer < 4 || !/^\s*›\s*(?:Ask Codex to do anything)?\s*$/.test(lines[composer])) return null;
   let footer = composer - 1;
   for (let row = 1; row < composer; row++) {
-    if (/^\s*(?:Working|Thinking|Waiting)\s*\(.*esc to interrupt/.test(lines[row])
-        || /^\s*New activity\s*·.*Back to bottom/.test(lines[row])) {
+    if (/^\s*(?:[^\w\s]\s*)?(?:Working|Thinking|Waiting)\s*\(.*esc to interrupt/.test(lines[row])
+        || /^\s*(?:New activity\s*·|↓)\s*.*Back to bottom/.test(lines[row])) {
       footer = Math.min(footer, row - 1);
     }
   }

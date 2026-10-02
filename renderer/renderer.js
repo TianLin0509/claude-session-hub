@@ -4676,6 +4676,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
     composer.classList.add('has-backend-update-notice');
   }
   composer.append(statusRow, quickReplyRow, composerRow, composerRail);
+  const composerTools = require('./composer-tools-menu').mountComposerToolsMenu({composer, tuningControls, bridgeToolbar});
   const voiceInput = require('./voice-input').attachVoiceInput({
     input: inputBox, rail: composerRail, getStatusHost: () => statusRow,
     getTarget: () => ({ id: sessionId, project: sessions.get(sessionId)?.cwd || '' }),
@@ -5167,6 +5168,7 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
       // DIV/BR line breaks. Input events already saved the visible draft.
       if (inputBox.getClientRects().length) saveFloatingInputDraft(sessionId, inputBox);
       voiceInput.dispose();
+      composerTools.dispose();
       promptPolish.dispose();
       if (chromeObserver) chromeObserver.disconnect();
       // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
