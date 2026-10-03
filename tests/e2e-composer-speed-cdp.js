@@ -62,6 +62,7 @@ async function main(){
   await wait(`document.querySelectorAll('#mr-input-tuning .composer-speed').length===2`);
   await wait(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning')).every(e=>sessions.get(e.dataset.sid)?.nativeRuntime?.connection==='unstarted')`);
   const ids=await cdp.eval(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning'),e=>e.dataset.sid)`);
+  ok('two member models remain visible in the footer without a separate row',await cdp.eval(`(()=>{const chips=[...document.querySelectorAll('.mr-group-model-chip')],rail=document.querySelector('#mr-input-tuning');return chips.length===2&&!rail.classList.contains('models-on-own-row')&&chips.every(e=>e.getBoundingClientRect().width>60)&&rail.scrollWidth<=rail.clientWidth+1})()`));
   const before=(await invoke('get-sessions')).find(s=>s.id===ids[1]).codexSpeedTier;
   await click('[data-group-menu="members"]');
   await click(`#mr-input-tuning [data-sid="${ids[0]}"] .composer-speed`);
