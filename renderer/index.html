@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="codex">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-src 'self' http://127.0.0.1:* http://localhost:*;">
@@ -69,6 +69,7 @@
   <link rel="stylesheet" href="styles/status-dashboard.css">
   <link rel="stylesheet" href="styles/editor-workspace.css">
   <link rel="stylesheet" href="styles/display-presets.css">
+  <link rel="stylesheet" href="styles/navigation-hover.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -112,8 +113,7 @@
     <!-- 场景 rail（冷杉 v2 T0）：四个场景按钮是从 .sidebar-header 原样搬过来的节点，
          id / data-* / 事件接线一律不变；label 常驻显示，tooltip 补充完整用途。 -->
     <nav class="scene-rail" id="scene-rail" aria-label="场景">
-      <button type="button" class="rail-edge-trigger" id="rail-edge-trigger" aria-label="展开功能导航" aria-controls="scene-rail" title="展开功能导航"><span aria-hidden="true"></span></button>
-      <div class="rail-drawer-head"><strong>导航</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="收起功能导航" aria-pressed="true" title="收起功能导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button></div>
+      <div class="rail-drawer-head"><strong>导航</strong><button type="button" id="rail-pin" class="rail-pin" aria-label="取消固定并收起导航" aria-pressed="true" title="取消固定并收起导航"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6ZM12 14v7"/></svg></button></div>
       <div class="rail-navigation">
       <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><span class="btn-icon" aria-hidden="true"><img class="rail-artwork" src="assets/navigation/sticker-v2/home.png" alt="" aria-hidden="true" /></span><span class="btn-label">工作台</span></button>
       <button type="button" class="btn-shell-nav" id="btn-assistant" title="助理 · 进展与下一步" aria-label="助理" aria-controls="terminal-panel"><span class="btn-icon" aria-hidden="true"><img src="assets/assistant/penguin.png" alt="" /></span><span class="btn-label">助理</span></button>
@@ -141,7 +141,7 @@
           <div class="options-section-label">主题</div>
           <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
           <div class="options-theme-picker" id="options-theme-picker" role="radiogroup" aria-label="选择主题"></div>
-          <div class="options-theme-note">终端、代码块与工具输出在所有主题下都保持深色</div>
+          <div class="options-theme-note">默认冷白工作室；CLI 终端随冷白主题适配浅色。手动选择会保存。</div>
         </div>
       </div>
       <div class="options-wrapper">
@@ -154,6 +154,7 @@
       </div>
       </div>
     </nav>
+    <button type="button" class="rail-edge-trigger" id="rail-edge-trigger" aria-label="展开功能导航" aria-controls="scene-rail" title="悬停展开导航 · 点击固定"><span aria-hidden="true"></span></button>
     <!-- 等你响应浮动条：主区右下角，任意视图可见 -->
     <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">

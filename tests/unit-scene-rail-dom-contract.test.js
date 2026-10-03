@@ -110,7 +110,9 @@ test('唯一 Hub logo 在标题栏；rail 的入口和工具顺序保持', () =>
   const rail = railInner();
   assert.ok(html.includes('id="hub-identity"'));
   assert.ok(!rail.includes('rail-logo'), '导航抽屉不重复放 Hub logo');
-  const order = ['rail-edge-trigger', 'rail-drawer-head', 'btn-home', 'btn-research', 'btn-study', 'btn-ran',
+  assert.ok(html.indexOf('id="rail-edge-trigger"') > html.indexOf('</nav>'), '隐藏导航时边缘入口必须留在导航外');
+  assert.ok(!rail.includes('id="rail-edge-trigger"'));
+  const order = ['rail-drawer-head', 'btn-home', 'btn-research', 'btn-study', 'btn-ran',
     'rail-spacer', 'btn-theme', 'btn-options'];
   let cursor = -1;
   for (const token of order) {

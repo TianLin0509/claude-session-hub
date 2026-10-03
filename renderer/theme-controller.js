@@ -5,6 +5,8 @@ const {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
   THEME_ATTRIBUTE,
+  THEME_PREFERENCE_KEY,
+  readInitialTheme,
   normalizeTheme,
   nextTheme,
 } = require('../core/theme-config.js');
@@ -108,7 +110,7 @@ function createThemeController({ document, localStorage, terminalCache, openConf
   function readStoredTheme() {
     if (!store || typeof store.getItem !== 'function') return DEFAULT_THEME;
     try {
-      return normalizeTheme(store.getItem(THEME_STORAGE_KEY));
+      return readInitialTheme(store);
     } catch {
       return DEFAULT_THEME;
     }
@@ -118,6 +120,7 @@ function createThemeController({ document, localStorage, terminalCache, openConf
     if (!store || typeof store.setItem !== 'function') return;
     try {
       store.setItem(THEME_STORAGE_KEY, theme);
+      store.setItem(THEME_PREFERENCE_KEY, '1');
     } catch {
       // 存不下只影响下次启动的默认值，不该拦住这次切换。
     }
