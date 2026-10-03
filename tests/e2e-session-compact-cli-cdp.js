@@ -36,7 +36,7 @@ const state = () => c.eval(`(() => {const t=terminalCache.get(${JSON.stringify(s
     await click(c, `.session-item[data-session-id="${sid}"]`);
     await waitFor(c, `terminalCache.get(${JSON.stringify(sid)})?._hydrated===true`);
     await click(c, '#btn-backstage');
-    for (let i = 0; i < 180; i++) { if (/for shortcuts|Ask Codex|Improve|gpt-6\.1-sol/i.test((await state()).text)) break; if (i === 179) throw new Error('Actual Codex TUI did not initialize'); await sleep(150); }
+    for (let i = 0; i < 180; i++) { if (/for shortcuts/i.test((await state()).text)) break; if (i === 179) throw new Error('Actual Codex TUI did not initialize'); await sleep(150); }
     const compact = await state();
     assert.match(compact.text, /for shortcuts/);
     assert.equal(compact.lineHeight, 1.04);
