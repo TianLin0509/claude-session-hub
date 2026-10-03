@@ -57,6 +57,16 @@ async function main(){
     const answer=await final(id,previous);assert.match(answer.text,/杉树企鹅/);row.answer=answer.text;row.elapsedMs=Date.now()-started;await settled(id);
     assert.equal((await invoke('assistant:get-overview')).contextCoverage.snapshotRead,true);
     row.nativeId=nativeId(await meta(id));row.model=(await meta(id)).currentModel;await shot(kind+'-handoff');
+    if(kind==='qwen'&&process.env.HUB_ASSISTANT_MODEL_SWITCHES==='1'){
+      await click('.composer-model');await click('.model-picker-item[data-model-id="qwen3.7-plus"]');
+      await until('qwen model change',async()=>{const m=await meta(id);return m.currentModel?.id==='qwen3.7-plus'&&!m._modelSwitchPending;},30000);
+      const beforeModelAnswer=(await finals(id)).length;
+      await send('请读取本轮资料，用一句话说出刚才的验收暗号。');
+      assert.match((await final(id,beforeModelAnswer)).text,/杉树企鹅/);await settled(id);
+      assert.equal(nativeId(await meta(id)),row.nativeId);assert.equal((await meta(id)).currentModel.id,'qwen3.7-plus');
+      row.modelAfterSwitch=(await meta(id)).currentModel;await shot(kind+'-model-change');
+      result.checks.push('千问普通模型菜单真实切换到 qwen3.7-plus，同一原生会话继续读取资料并回答');
+    }
     row.passed=true;first=false;result.checks.push(kind+' 真实资料读取、跨后端交接与最终回答');
    }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if(kind==='codex')fs.writeFileSync(path.join(out,'codex-raw-buffer.txt'),await cdp.eval('ipcRenderer.invoke("debug:get-session-buffer",'+j(row.id)+')'));if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
    console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs}));
