@@ -866,7 +866,6 @@ const modelUi = createModelUiController({
   // 头部徽章 T2 删了，模型名只剩 composer 底栏那个 chip。模型切换的每一步
   // （发起 / 确认 / 超时回滚）都要让它重画一次，否则会停在切换前的名字上。
   repaintActiveComposer: () => updateFloatingBarState(),
-  restoreSessionSurface: id => selectSession(id, { splitBypass: true }),
 });
 const attachModelPickerHandler = modelUi.attachModelPickerHandler;
 const updateActiveModelChip = modelUi.updateActiveModelChip;
