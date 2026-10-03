@@ -1,8 +1,8 @@
 'use strict';
 
 const STORAGE_KEY = 'hub.displayPresets.v1';
-const LIMITS = Object.freeze({fontSize:[10,28],terminalFontSize:[10,28],zoomLevel:[-3,5],railWidth:[56,112],sessionWidth:[152,320],uiFontSize:[11,16],inputHeight:[40,120]});
-const PHONE = Object.freeze({fontSize:18,terminalFontSize:14,zoomLevel:0,railWidth:64,sessionWidth:200,uiFontSize:13,inputHeight:52});
+const LIMITS = Object.freeze({fontSize:[10,28],terminalFontSize:[10,28],zoomLevel:[-3,5],railWidth:[36,112],sessionWidth:[152,320],uiFontSize:[11,16],inputHeight:[40,120]});
+const PHONE = Object.freeze({fontSize:18,terminalFontSize:14,zoomLevel:0,railWidth:44,sessionWidth:200,uiFontSize:13,inputHeight:52});
 const FIELDS = {fontSize:'卡片正文字号',terminalFontSize:'CLI 终端字号',zoomLevel:'整体缩放',railWidth:'导航栏宽',sessionWidth:'会话栏宽',uiFontSize:'界面字号',inputHeight:'输入框高度'};
 
 function normalizeProfile(value, fallback) {
@@ -22,8 +22,13 @@ function loadPresets(storage, legacy = {}) {
   const phone = normalizeProfile(saved?.phone,PHONE);
   // Only migrate the former default once; keep custom widths and later choices.
   if (!saved?.singleLineSidebar && phone.sessionWidth === 176) phone.sessionWidth = PHONE.sessionWidth;
-  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop', singleLineSidebar: true,
-    desktop:normalizeProfile(saved?.desktop,desktop),phone};
+  const desktopProfile = normalizeProfile(saved?.desktop,desktop);
+  if (!saved?.compactRail) {
+    if (desktopProfile.railWidth === 88) desktopProfile.railWidth = 44;
+    if (phone.railWidth === 64) phone.railWidth = 44;
+  }
+  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop', singleLineSidebar: true, compactRail: true,
+    desktop:desktopProfile,phone};
 }
 
 function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,applyTerminalFont,applyZoom,onLayoutChange}) {
@@ -45,7 +50,7 @@ function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,app
     for (const button of switcher.querySelectorAll('[data-display-mode]')) button.setAttribute('aria-pressed',String(button.dataset.displayMode === state.mode));
     for (const input of panel.querySelectorAll('[data-display-field]')) {
       const key = input.dataset.displayField;
-      input.value = profile[key] ?? {railWidth:88,sessionWidth:224,uiFontSize:13,inputHeight:48}[key];
+      input.value = profile[key] ?? {railWidth:44,sessionWidth:224,uiFontSize:13,inputHeight:48}[key];
       input.nextElementSibling.textContent = key === 'zoomLevel' ? Math.round(100*Math.pow(1.2,Number(input.value)))+'%' : input.value;
     }
     panel.querySelector('strong').textContent = (state.mode === 'phone' ? '手机' : '电脑')+'显示参数';
