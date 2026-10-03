@@ -178,6 +178,7 @@ function modelOptionsFor(kind) {
 const MODEL_SWITCH_STRATEGY_BY_KIND = Object.freeze({
   claude: 'claude-inline',
   codex: 'codex-picker',
+  deepseek: 'codex-picker',
   qwen: 'acp-native',
   'deepseek-acp': 'acp-native',
   glm: 'acp-native',

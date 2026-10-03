@@ -95,7 +95,7 @@ function parseCodexModelPicker(screen) {
   if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
   const rows = pickerRows(screen);
   const entries = rows.map(row => {
-    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
+    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*|deepseek-v4-(?:pro|flash)))\b/i);
     return match ? { ...row, value: match[1] } : null;
   }).filter(Boolean);
   if (!entries.length) return null;

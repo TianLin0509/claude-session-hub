@@ -7,7 +7,7 @@ function modelCommandType(kind, prompt) {
 }
 function modelCommandAcknowledged(type, screen, freshOutput) {
   if (type === 'codex-picker') return /Select Model and Effort/i.test(screen)
-    && /^\s*[›>]?\s*\d+\.\s+(?:gpt-|o\d)/im.test(screen);
+    && /^\s*[›>]?\s*\d+\.\s+(?:gpt-|o\d|deepseek-v4-)/im.test(screen);
   return type === 'claude-inline' && (/(?:set model to|model changed|model switched|now using)/i.test(freshOutput)
     || !!parseClaudeModelSwitchConfirmation(screen)||!!parseClaudeModelSwitchConfirmation(freshOutput));
 }
