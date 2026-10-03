@@ -10,6 +10,7 @@ const {
   formatPreviewReference,
 } = require('./preview-outline.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
+const { createPreviewImmersiveController } = require('./preview-immersive.js');
 
 // webview 挂掉时 Chromium 只给一个 reason 码。2026-08-29 用户报「预览打不开」，
 // 屏幕上只有 `预览进程异常退出：launch-failed` —— 这句话既不说明发生了什么，也不
@@ -112,6 +113,11 @@ function createPreviewPanelController({
   const previewFind = createPreviewFindController({
     document,
     previewBody: previewBodyEl,
+  });
+  const immersive = createPreviewImmersiveController({
+    document, ipcRenderer,
+    onError: message => showPreviewNotice(message, 'error'),
+    onExit: () => { syncPreviewLayoutControls(); refitActiveTerminal(); },
   });
 
   let currentContextKey = null;
@@ -433,6 +439,7 @@ function createPreviewPanelController({
   }
 
   function clearPreviewUI() {
+    immersive.exit();
     closeQuickOpen({ restoreFocus: false });
     previewFind.close({ restoreFocus: false, keepQuery: false });
     clearOutlineUI();
@@ -535,6 +542,7 @@ function createPreviewPanelController({
       if (action === 'find') previewFind.open();
       else if (action === 'open-path') openQuickOpen();
       else if (action === 'find-next' && previewFind.isOpen()) previewFind.next(Number(event.args && event.args[1]) < 0 ? -1 : 1);
+      else if (action === 'escape' && immersive.isActive()) immersive.exit();
       else if (action === 'escape' && previewFind.isOpen()) previewFind.close();
     });
     try {
@@ -1137,6 +1145,7 @@ function createPreviewPanelController({
   }
 
   function setPreviewLayout(isFullscreen) {
+    immersive.exit();
     if (!getContextState()) return false;
     return applyPreviewLayout(!!isFullscreen);
   }
@@ -1437,6 +1446,7 @@ function createPreviewPanelController({
   }
 
   function closePreviewPanel() {
+    immersive.exit();
     const wasOpen = previewPanelEl.style.display !== 'none' && !!currentContextKey;
     clearPreviewNotice();
     previewFind.close({ restoreFocus: false, keepQuery: false });
@@ -2139,6 +2149,12 @@ function createPreviewPanelController({
   }
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && immersive.isActive()) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      immersive.exit();
+      return;
+    }
     if (isBlockingModalOpen(document, { exceptIds: ['preview-quick-open'] })) return;
     if (quickOpenEl && quickOpenEl.style.display === 'flex') {
       if (event.key === 'Tab') {
