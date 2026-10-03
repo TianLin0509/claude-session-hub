@@ -223,10 +223,6 @@
   border-radius: 2px;
 }
 .codex-answer-line-tint { position: absolute; left: 0; right: 0; }
-:root[data-theme='dark'] .pty-output-heading { height: 44px; padding-inline: 24px; background: linear-gradient(180deg, #14273b, #0e1e30); border-bottom-color: #3a5068; color: #d7e3ef; font-size: 13px; }
-:root[data-theme='dark'] .pty-output-heading::after { content: ''; position: absolute; left: 24px; bottom: -1px; width: 106px; height: 2px; border-radius: 2px; background: #e8bd7e; box-shadow: 0 0 12px #dfb77955; }
-:root[data-theme='dark'] .pty-output-symbol { color: #efc78f; }
-:root[data-theme='dark'] .pty-output-mode { color: #c3d1df; border-color: #486078; background: #1a2d41; }
 :root[data-theme='dark'] .pty-surface .prompt-nav-btn { border-color: #465a70; background: linear-gradient(180deg, #1c3045, #142538); color: #c6d3e0; }
 :root[data-theme='dark'] .pty-surface .prompt-nav-btn:hover { border-color: #b48e5d; color: #f2d0a3; }
 :root[data-theme='dark'] .codex-backstage {

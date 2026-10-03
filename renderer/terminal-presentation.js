@@ -19,11 +19,6 @@ function classifyOpeningOutput(terminal, openingBanner = OPENING_BANNER) {
 function mountTerminalPresentation({ document, host, cached, native, readOnly, focusComposer, openingBanner, engine = 'Codex' }) {
   host.classList.add('pty-surface');
   cached.container.classList.add('terminal-output-host');
-  const chrome = document.createElement('div');
-  chrome.className = 'pty-presentation pty-output-heading';
-  chrome.innerHTML = '<span class="pty-output-symbol" aria-hidden="true">›_</span><span>输出记录</span>'
-    + `<span class="pty-output-mode">${native || readOnly ? '只读' : '终端'}</span>`;
-  host.appendChild(chrome);
 
   let welcome = null;
   let subscription = null;
@@ -64,7 +59,6 @@ function mountTerminalPresentation({ document, host, cached, native, readOnly, f
     dispose() {
       subscription?.dispose();
       subscription = null;
-      chrome.remove();
       welcome?.remove();
       host.classList.remove('pty-awaiting-output', 'pty-surface');
     },

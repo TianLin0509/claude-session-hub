@@ -1,0 +1,47 @@
+body.session-immersive-active .terminal-panel.session-immersive {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  z-index: 2147483000 !important;
+  background: var(--bg-primary);
+  -webkit-app-region: no-drag;
+}
+body.session-immersive-active #app-toolbar { visibility: hidden; }
+.session-immersive-exit-zone {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 180px;
+  height: 54px;
+  z-index: 10001;
+}
+.session-immersive-exit {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  opacity: 0;
+  border: 1px solid #ffffff50;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #202630e8;
+  color: #fff;
+  box-shadow: 0 3px 14px #0003;
+  cursor: pointer;
+  font-size: 13px;
+  transition: opacity .15s;
+}
+.session-immersive-exit-zone:hover .session-immersive-exit,
+.session-immersive-exit-zone:focus-within .session-immersive-exit { opacity: 1; }
+
+/* Keep session actions clear of native window controls on narrow windows.
+   PID remains in the native title; the visible version is retained here. */
+@media (max-width: 900px) {
+  #app-toolbar { gap: 4px; }
+  #app-toolbar #hub-pid { display: none; }
+}

@@ -239,7 +239,7 @@ function mountMinimap(sessionId, termContainer, terminal) {
   };
 }
 
-// Floating ▲▼ buttons in the terminal's top-right corner. Shares lifecycle
+// Floating ▲▼ buttons at the terminal's lower-right edge. Shares lifecycle
 // with mountMinimap: created by attachTerminalToPanel after mountMinimap,
 // disposed when the terminalCache entry's _minimap is disposed (we attach
 // our dispose to the same chain via the returned object).

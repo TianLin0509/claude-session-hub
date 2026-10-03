@@ -80,6 +80,7 @@ function createPreviewPanelController({
   refitActiveTerminal,
   onReturnToConversation,
   onCopyFeedback,
+  onBeforeOpen,
 }) {
   const previewPanelEl = document.getElementById('preview-panel');
   const previewTitleEl = document.getElementById('preview-title');
@@ -1346,6 +1347,8 @@ function createPreviewPanelController({
     const target = cleanPreviewTarget(filePath);
     if (!target) return null;
     const operation = ++navigationToken;
+    await onBeforeOpen?.();
+    if (operation !== navigationToken) return null;
     const key = getActiveContextKey();
     const previousState = getContextState();
     if (currentContextKey === key && previousState) {

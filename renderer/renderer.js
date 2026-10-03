@@ -1462,8 +1462,7 @@ function getOrCreateTerminal(sessionId) {
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     ...resolveXtermOptions(document.documentElement.getAttribute('data-theme')),
     fontSize: currentTerminalFontSize,
-    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3
-      : isCodexKind(sessions.get(sessionId)?.kind) ? 1.18 : 1.12,
+    lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.16 : 1.04,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     fontWeight: isCodexKind(sessions.get(sessionId)?.kind) ? '500' : 'normal',
     cursorBlink: true,
@@ -1777,7 +1776,9 @@ function getOrCreateTerminal(sessionId) {
 const toolbarCrumbEl = document.getElementById('toolbar-crumb');
 const toolbarActionsEl = document.getElementById('toolbar-actions');
 const backstageButton = document.getElementById('btn-backstage');
+let sessionImmersive = null;
 function syncBackstageButton(visible = !currentAppToolbarView() && !!activeSessionId) {
+  sessionImmersive?.sync(visible);
   if (!backstageButton) return;
   const mode = sessionSplit?.isSecondaryFocused() ? sessionSplit.secondary().mode() : currentView;
   backstageButton.hidden = !visible;
@@ -2128,18 +2129,19 @@ function showTerminal(sessionId, opts = { focus: true }) {
   // 嵌入模式（初心投研把同一套 xterm 挂到别的容器里）没有工具栏可填，跳过。
   if (!embedded) paintAppToolbarForSession(sessionId, session, cached);
 
-  // 实时量（ctx% · N tok · ⏱）仍然是终端卡右上角的 10px 覆盖层。
-  // 挂在 mountTarget 上而不是 .terminal-container 里，因为卡片视图的
-  // #msg-overlay 会整片盖住终端体 —— 挂进去等于卡片视图下永远看不见。
-  const metricsOverlay = document.createElement('div');
-  metricsOverlay.className = 'terminal-metrics';
-  renderMetricsRow(metricsOverlay, session);
+  // 普通 Session 的用量归 composer；嵌入式投研仍保留自己的指标。
+  if (embedded) {
+    const metricsOverlay = document.createElement('div');
+    metricsOverlay.className = 'terminal-metrics';
+    renderMetricsRow(metricsOverlay, session);
+    mountTarget.append(metricsOverlay);
+  }
 
   const termContainer = document.createElement('div');
   termContainer.className = 'terminal-container';
   termContainer.addEventListener('click', () => cached.terminal.focus());
 
-  mountTarget.append(metricsOverlay, termContainer);
+  mountTarget.append(termContainer);
   if (!embedded && fileManagerPanel) {
     void fileManagerPanel.syncContext({ cwd: session.cwd, label: session.workspaceLabel, sessionStartedAt: Number(session.spawnedAt) || 0 });
   }
@@ -6092,6 +6094,7 @@ const previewClipboard = process.env.CLAUDE_HUB_E2E === '1'
   : clipboard;
 const previewPanel = createPreviewPanelController({
   document,
+  onBeforeOpen: () => sessionImmersive?.exit(),
   ipcRenderer,
   shell,
   clipboard: previewClipboard,
@@ -9286,6 +9289,13 @@ sessionSplit = require('./session-split').createSessionSplit({
 });
 
 // --- Init ---
+sessionImmersive = require('./session-immersive').createSessionImmersiveController({
+  document, ipcRenderer,
+  getSurface: () => sessionSplit.isSecondaryFocused() ? document.querySelector('.split-secondary') : terminalPanelEl,
+  getSessionId: getFocusedSessionId,
+  refit: () => { refitActiveTerminalFromPreview(); sessionSplit.secondary()?.resize(); },
+  onError: message => showToast(`沉浸模式切换失败：${message}`, 'error'),
+});
 (async () => {
   traceRendererStartup('init ipc start');
   const [existing, persisted, dormantMeetings] = await Promise.all([

@@ -328,10 +328,9 @@
 }
 .terminal-metrics[hidden] { display: none; }
 
-/* 问题导航条从头部下方 10px 起跳，正好和覆盖层重叠。让它再让开一行，
-   两者都在卡片右上角，谁也不该盖住谁。 */
+/* 普通会话不再显示重复用量覆盖层，问题目录贴近内容顶部。 */
 .terminal-panel.card-view-active .card-question-nav {
-  top: calc(var(--term-header-h, 0px) + 26px);
+  top: calc(var(--term-header-h, 0px) + 10px);
 }
 
 @media (max-width: 900px) {
