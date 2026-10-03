@@ -92,7 +92,7 @@ test('Codex task_started emits a running lifecycle event without user_message', 
   }
 });
 
-test('Codex 0.147 final_answer item emits turn-complete', async () => {
+test('Codex final_answer is readable progress and task_complete emits turn-complete', async () => {
   const tempRoot = path.join(os.tmpdir(), `hub-codex-final-answer-${process.pid}-${Date.now()}`);
   const sessionsRoot = path.join(tempRoot, 'sessions');
   const cwd = path.join(tempRoot, 'workspace');
@@ -150,12 +150,19 @@ test('Codex 0.147 final_answer item emits turn-complete', async () => {
       },
     });
 
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(completed.length, 0, 'final_answer is not a terminal task receipt');
+    await rollout.writeRaw({
+      timestamp: new Date(at.getTime() + 1800).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: turnId, last_agent_message: '最终完成', duration_ms: 1800 },
+    });
     await waitFor(() => completed.length === 1);
     assert.equal(completed[0].hubSessionId, hubSessionId);
     assert.equal(completed[0].text, '最终完成');
     assert.equal(completed[0].turnId, turnId);
-    assert.equal(completed[0].durationMs, 300);
-    assert.equal(completed[0].signalSource, 'item_completed_agent_message_final_answer');
+    assert.equal(completed[0].durationMs, 1800);
+    assert.equal(completed[0].signalSource, 'task_complete');
   } finally {
     tap.unregisterSession(hubSessionId);
     await rollout.close();

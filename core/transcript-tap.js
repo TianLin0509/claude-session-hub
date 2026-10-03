@@ -11,7 +11,7 @@
 //
 // 完成信号：
 //   Claude:  transcript stop_reason 主路径 + Stop hook 快路径
-//   Codex:   legacy task_complete or 0.147 AgentMessage(final_answer)
+//   Codex:   task_complete (final_answer is a message, not a task receipt)
 //   Gemini:  JSONL 新增 type:"gemini" 行且 tokens.total != null（非流式中间态）
 //
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
@@ -1439,6 +1439,7 @@ class CodexTap extends EventEmitter {
         entry2._pendingCompletedAt = null;
         entry2._pendingTurnId = null;
         entry2._pendingSignalSource = null;
+        entry2._answerCandidate = null;
         const turnId = codexTurnIdFromPayload(obj.payload) || entry2._currentTurnId || null;
         const rawCompletedAt = Number(obj.payload.completed_at);
         const payloadCompletedAt = Number.isFinite(rawCompletedAt) && rawCompletedAt > 0
@@ -1479,6 +1480,7 @@ class CodexTap extends EventEmitter {
         entry._pendingCompletedAt = null;
         entry._pendingTurnId = null;
         entry._pendingSignalSource = null;
+        entry._answerCandidate = null;
         if (entry._lastErrorOccurrenceId !== taskError.occurrenceId) {
           entry._lastErrorOccurrenceId = taskError.occurrenceId;
           this.emit('turn-error', {
@@ -1553,6 +1555,7 @@ class CodexTap extends EventEmitter {
         entry._pendingCompletedAt = null;
         entry._pendingTurnId = null;
         entry._pendingSignalSource = null;
+        entry._answerCandidate = null;
 
         // Codex goal continuation / automatic follow-up turns can start with
         // task_started directly and have no ordinary user_message record. The
@@ -1575,6 +1578,14 @@ class CodexTap extends EventEmitter {
       }
 
       let completedAgent = codexAgentMessageEventFromRecord(obj);
+      if (completedAgent && eventType !== 'task_complete' && completedAgent.phase === 'final_answer') {
+        // Store text for an empty task receipt, but do not close the live turn.
+        // Async questions can emit final_answer and then continue using tools.
+        const turnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
+        if (!entry._currentTurnId || !turnId || turnId === entry._currentTurnId) {
+          entry._answerCandidate = { text: completedAgent.text, turnId };
+        }
+      }
       // /compact 等没有回答的任务：task_complete 的 last_agent_message 为空，解析器返回 null。
       // 仍然要收尾这一轮，否则状态永远停在运行中（2026-09-25 真机 Codex /compact）。
       if (!completedAgent && eventType === 'task_complete') {
@@ -1588,7 +1599,7 @@ class CodexTap extends EventEmitter {
         if (liveTags.length) { const liveTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
           for (const item of liveTags) this.emit('progress-update', { hubSessionId, tag: item.tag, text: item.text, at: completedAgent.completedAt, turnId: liveTurnId }); }
       }
-      if (completedAgent && completedAgent.completed) {
+      if (completedAgent && completedAgent.completed && eventType === 'task_complete') {
         // JsonlTail hydrates an existing rollout suffix when a dormant Codex
         // session resumes. A historical task_complete/final_answer is history,
         // not the completion of the prompt that is about to be submitted by
@@ -1601,9 +1612,10 @@ class CodexTap extends EventEmitter {
         const completedTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
         // 同一轮先到的 final_answer 正文不能被随后 last_agent_message 为空的 task_complete 冲掉。
         const text = completedAgent.text
+          || (entry._answerCandidate?.turnId === completedTurnId ? entry._answerCandidate?.text : null)
           || (entry._pendingTurnId && entry._pendingTurnId === completedTurnId ? entry._pendingText : null);
-        // Legacy task_complete and 0.147 final_answer share one debounce path.
-        // If several terminal records arrive, the last authoritative text wins.
+        // Only task receipts schedule completion. Multiple receipts share the
+        // existing debounce; message phase alone must never end a live turn.
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingText = text;
         entry._pendingDurationMs = completedAgent.durationMs;
@@ -1665,6 +1677,7 @@ class CodexTap extends EventEmitter {
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
       _pendingSignalSource: null,
+      _answerCandidate: null,
       _lastPromptSig: null, _lastStartSig: null, _lastAbortSig: null,
       _lastErrorOccurrenceId: null, _liveBoundaryAt: liveBoundaryAt,
     });

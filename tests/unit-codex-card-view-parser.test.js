@@ -246,11 +246,19 @@ async function main() {
         completed_at_ms: Date.parse('2026-08-20T03:46:02.000Z'),
       },
     });
+    const unfinished147 = parseCodexRolloutToTurns(fr147.rolloutPath);
+    assert.equal(unfinished147[1].text, '0.147 最终回答');
+    assert.equal(unfinished147[1].stopReason, 'partial_commentary');
+    assert.equal(unfinished147[1].nativeOutcome, null);
+    await fr147.writeRaw({
+      timestamp: '2026-08-20T03:46:02.500Z', type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: 'turn-goal-0147', last_agent_message: '0.147 最终回答', duration_ms: 1500 },
+    });
     await fr147.close();
     const final147 = parseCodexRolloutToTurns(fr147.rolloutPath);
     assert.deepStrictEqual(final147.map(t => t.text), [goalObjective, '0.147 最终回答']);
     assert.equal(final147[1].stopReason, 'task_complete');
-    assert.equal(final147[1].durationMs, 500);
+    assert.equal(final147[1].durationMs, 1500);
 
     const activityTurnId = '019fffff-0000-7000-8000-000000000001';
     const activityTurns = parseCodexRolloutText([

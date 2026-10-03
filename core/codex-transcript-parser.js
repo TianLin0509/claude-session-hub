@@ -345,6 +345,7 @@ function parseCodexRolloutEntries(entries) {
         tsEnd: null,
         text: '',
         finalText: '',
+        completed: false,
         durationMs: null,
         agentMessages: [],
         displayMessages: [],
@@ -359,7 +360,7 @@ function parseCodexRolloutEntries(entries) {
     if (!pendingAssistant) return;
     const text = (pendingAssistant.finalText || pendingAssistant.agentMessages.join('\n\n') || '').trim();
     if (text || pendingAssistant.toolCalls.length) {
-      if (pendingAssistant.finalText) {
+      if (pendingAssistant.completed) {
         pendingAssistant.toolCalls = pendingAssistant.toolCalls.map(tool => (
           tool.status === 'running' || tool.status === 'pending'
             ? { ...tool, status: 'completed', inferred: true }
@@ -372,13 +373,13 @@ function parseCodexRolloutEntries(entries) {
         text,
         ts: pendingAssistant.ts,
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
-        stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
+        stopReason: pendingAssistant.completed ? 'task_complete' : 'partial_commentary',
         // 与原生卡片同一字段：卡片据此显示「本轮已完成 / 已中断」。仍在进行的一轮留空。
-        nativeOutcome: pendingAssistant.finalText ? 'completed' : pendingAssistant.aborted ? 'interrupted' : null,
+        nativeOutcome: pendingAssistant.aborted ? 'interrupted' : pendingAssistant.completed ? 'completed' : null,
         durationMs: pendingAssistant.durationMs || undefined,
         toolCalls: pendingAssistant.toolCalls,
         displayMessages: pendingAssistant.displayMessages,
-        source: pendingAssistant.finalText ? 'codex_rollout' : 'codex_rollout_streaming',
+        source: pendingAssistant.completed ? 'codex_rollout' : 'codex_rollout_streaming',
         sourceIndex: pendingAssistant.sourceIndex,
         sourceEndIndex: pendingAssistant.sourceEndIndex,
       });
@@ -472,6 +473,12 @@ function parseCodexRolloutEntries(entries) {
         if (pendingAssistant) pendingAssistant.aborted = true;
         return;
       }
+      if (eventType === 'task_complete' && pendingAssistant && !payload.error) {
+        // Empty receipts still close the task and retain its last answer.
+        pendingAssistant.completed = true;
+        pendingAssistant.tsEnd = toMs(obj.timestamp);
+        if (Number.isFinite(Number(payload.duration_ms))) pendingAssistant.durationMs = Number(payload.duration_ms);
+      }
       const agentEvent = codexAgentMessageEventFromRecord(obj);
       if (agentEvent) {
         const pending = ensurePendingAssistant(index);
@@ -489,7 +496,8 @@ function parseCodexRolloutEntries(entries) {
         const found = pending.displayMessages.findIndex(m=>m.id===id);
         if(found < 0) pending.displayMessages.push(message);
         else pending.displayMessages[found] = {...message,ts:pending.displayMessages[found].ts};
-        if (agentEvent.completed) pending.finalText = agentEvent.text;
+        if (agentEvent.completed && payload.type === 'task_complete') pending.completed = true;
+        if (agentEvent.phase === 'final_answer') pending.finalText = agentEvent.text;
         else pending.agentMessages.push(agentEvent.text);
         if (Number.isFinite(agentEvent.durationMs)) pending.durationMs = agentEvent.durationMs;
         return;

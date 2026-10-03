@@ -111,7 +111,7 @@ Codex 的 Stop 不转发给 renderer。完成事件由 rollout 的 `task_complet
 - **权威完成与中断以"收到时刻"作为观察时刻**。完成事件要经过 400ms 防抖才送到，期间终端输出会记下时间更晚的"运行"观察，按事件时刻比较会把它判成过期丢掉。旧的轮次仍由 attention 的轮次与时间校验挡住。
 - **没有正文的 `task_complete` 也要收尾**，例如 `/compact`。收尾走 turn-aborted：不出卡，不加未读。
 - **Claude 的 Esc 中断没有 Stop hook**，唯一证据是 transcript 里的 `[Request interrupted by user…`。
-- **Codex 同一轮会先后写 final_answer 和 task_complete**，完成与未读都只能算一次。
+- **Codex 消息写完不等于整轮结束**。2026-10-03 的 0.159.3 实例在 `final_answer` 中询问设备型号，之后同一 turn 继续执行工具超过 17 分钟，没有 `task_complete`。`final_answer` 仅决定消息展示；运行状态、卡片终态、自动提取和完成未读都以 `task_complete` 为准。空正文的结束凭证保留同轮最后一条回答，不能提前把消息完成当作任务完成。
 - **Stop hook 的状态行不能重开已结束的一轮**（第 3 轮 R4）。Claude 执行 Stop hook 时，屏幕会显示「running Stop hook」，而 Hub 自己的 Stop hook 就在这批 hook 里，所以 Stop 到达时这行几乎必然在屏幕上。
   - transcript 已权威结束这一轮时，Stop 不再凭画面保留运行（`ptyTurnClosedAuthoritatively`，与屏幕观察共用同一条规则）。
   - Stop 先于 transcript 到达、hook 确实在跑时，保留运行，但每秒复查一次：画面不再有运行标记连续两次就收尾；运行状态行文字 30 秒纹丝不动（真在跑时秒数每秒都会变）就判为停住的旧帧并收尾。遇到新一轮边界立即退场。
