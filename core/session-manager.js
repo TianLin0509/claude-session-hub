@@ -1586,7 +1586,7 @@ class SessionManager extends EventEmitter {
     if (contextKind) {
       const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
         : contextKind === 'claude' ? sessionEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
-        : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : sessionEnv.GEMINI_CLI_HOME || path.join(os.homedir(),'.gemini');
+        : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(sessionEnv.GEMINI_CLI_HOME || os.homedir(),'.gemini');
       require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
     }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
