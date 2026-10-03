@@ -82,7 +82,7 @@ async function main(){
       await click('.composer-model');await click('.model-picker-item[data-model-id="deepseek-v4-pro"]');
       await until('DeepSeek Pro native selection',async()=>{const m=await meta(id);return m.currentModel?.id==='deepseek-v4-pro'&&!m._modelSwitchPending;},30000);
       const beforeModelAnswer=(await finals(id)).length;
-      const modelStarted=Date.now();await send('请先读取本轮资料，用一句话说出刚才的验收暗号。');row.modelSwitchAnswer=(await final(id,beforeModelAnswer)).text;assert.match(row.modelSwitchAnswer,/杉树企鹅/);await settled(id);
+      const modelStarted=Date.now();await send('当前有哪些会话、什么进展？请实际读取本轮资料并核对 packetHash，然后用一句话说明当前会话数量和验收暗号。');row.modelSwitchAnswer=(await final(id,beforeModelAnswer)).text;assert.match(row.modelSwitchAnswer,/杉树企鹅/);await settled(id);
       row.modelReplyElapsedMs=Date.now()-modelStarted;
       assert.equal((await invoke('assistant:get-overview')).contextCoverage.snapshotRead,true,'changed model must read this turn instead of only remembering the code word');
       assert.equal(nativeId(await meta(id)),row.nativeId);assert.equal((await meta(id)).currentModel.id,'deepseek-v4-pro');row.modelAfterSwitch=(await meta(id)).currentModel;
