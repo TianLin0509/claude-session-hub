@@ -29,6 +29,14 @@ test('busy assistant blocks switching without changing identity or request',asyn
   await assert.rejects(x.service.switchBackend({kind:'claude'}),/先结束/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.deepEqual(x.created,['codex']);
 });
 
+test('an existing assistant entity is not described as a connected provider',async t=>{
+  const x=setup(t),manager=await x.service.ensureSession();
+  assert.doesNotMatch(x.service.overview().connectionSummary,/已连接/);
+  x.sessions.get(manager.sessionId).cliRuntime={connection:'disconnected',reason:'套餐无访问权限'};
+  const overview=x.service.overview();assert.equal(overview.available,true);
+  assert.match(overview.connectionSummary,/未连接.*套餐无访问权限/);assert.deepEqual(overview.needsAttention,['套餐无访问权限']);
+});
+
 test('current manager without retrieval arguments reads its frozen packet, explicit lookup remains dynamic',async t=>{
   const x=setup(t),manager=await x.service.ensureSession();
   x.service.preparePrompt({sessionId:manager.sessionId,text:'查进展'});
