@@ -15,6 +15,7 @@ test('Codex native quote normalization preserves the exact decoded assistant req
     assert.ok(wire.length<2048);
   }
   assert.equal(assistantContextDisplay(buildBootstrapPrompt(user,{},0,'claude'),'hub-assistant').userText,user);
+  assert.doesNotMatch(buildBootstrapPrompt(user,{},0,'deepseek'),/functions\.exec/,'DeepSeek tools follow its native listing rather than OpenAI-only orchestration');
 });
 test('仅助理消息投影，原始正文保持完整', () => {
   const raw = frame('我现在需要做什么？');
