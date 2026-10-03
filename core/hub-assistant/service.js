@@ -224,7 +224,8 @@ class AssistantService {
         // receives create_session's result and gets a chance to call watch.
         if(followNewReply)this.followTask({sessionId});
       }
-      const receipt=await this.deps.sendPrompt(sessionId,action.text,requestId);
+      const wireText=require('./delegated-prompt').encodeDelegatedPrompt(action.text,this.deps.getSession(sessionId)?.kind);
+      const receipt=await this.deps.sendPrompt(sessionId,wireText,requestId);
       const confirmed=receipt?.ok===true&&receipt?.receipt?.status==='confirmed'&&!receipt.notSent&&!receipt.contentMismatch;
       const result={sessionId,receipt};this.store.finish(requestId,confirmed?'acknowledged':'unknown',result);
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};

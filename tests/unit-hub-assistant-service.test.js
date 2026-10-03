@@ -2,6 +2,16 @@
 const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');
 const {AssistantService}=require('../core/hub-assistant/service');const {AssistantStore}=require('../core/hub-assistant/store');
 function setup(t,send){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'hub-assistant-'));const sessions=new Map();let created=0,sent=0;const service=new AssistantService({dataDir:dir,getSession:id=>sessions.get(id),getAllSessions:()=>[...sessions.values()],getDefaults:()=>({model:'test-model',cwd:dir}),createSession:async(kind,opts)=>{created++;const s={...opts,kind,status:'idle'};sessions.set(s.id,s);return s;},sendPrompt:async(...args)=>{sent++;return send?send(...args):{ok:true,receipt:{status:'confirmed'}};}});t.after(()=>service.close());return{service,sessions,count:()=>({created,sent})};}
+test('delegation retains the original ledger task, protected wire text and duplicate identity',async t=>{
+  let submitted;
+  const x=setup(t,async(id,text)=>{submitted=text;return{ok:true,receipt:{status:'confirmed'}};});
+  const action={type:'create',title:'原文派工',text:'只回复“业务验收完成”，无需读写任何文件。',requestId:'fidelity-task-001'};
+  assert.equal((await x.service.execute(action)).state,'acknowledged');
+  assert.equal(require('../core/hub-assistant/delegated-prompt').delegatedPromptDisplay(submitted).userText,action.text);
+  assert.equal(JSON.parse(x.service.store.db.prepare('SELECT payload FROM actions WHERE id=?').get(action.requestId).payload).text,action.text);
+  assert.equal((await x.service.execute(action)).duplicate,true);
+  assert.deepEqual(x.count(),{created:1,sent:1});
+});
 test('opening overview does not create a session or consume a turn',t=>{const x=setup(t);assert.equal(x.service.overview().available,false);assert.deepEqual(x.count(),{created:0,sent:0});});
 test('concurrent activation creates exactly one ordinary Codex entity',async t=>{const x=setup(t);const [a,b]=await Promise.all([x.service.ensureSession(),x.service.ensureSession()]);assert.equal(a.sessionId,b.sessionId);assert.equal(a.session.kind,'codex');assert.equal(a.session.purpose,'hub-assistant');assert.equal(a.session.codexMcpEntries[0].name,'hub_assistant');assert.deepEqual(x.count(),{created:1,sent:0});});
 test('same operation does not dispatch twice; changed payload is rejected',async t=>{const x=setup(t);x.sessions.set('target',{id:'target',status:'idle'});const action={requestId:'request-123',type:'send',targetSessionId:'target',text:'继续研究'};assert.equal((await x.service.execute(action)).ok,true);assert.equal((await x.service.execute(action)).duplicate,true);assert.equal(x.count().sent,1);await assert.rejects(x.service.execute({...action,text:'改变任务'}),/不同任务/);});

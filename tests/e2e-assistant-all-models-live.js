@@ -89,11 +89,23 @@ async function main(){
     }
     if(process.env.HUB_ASSISTANT_DISPATCH==='1'){
       const beforeDispatch=(await finals(id)).length,title='验收业务-'+kind,oldActions=new Set((await invoke('assistant:actions')).actions.map(a=>a.id));
-      await send('新建一个 Codex Session，标题为'+title+'，任务是只回复业务验收完成，无需读写文件。提交确认后立即简短答复我，有新回复时提醒我。');
+      const exactTask='只回复“业务验收完成”，无需读写任何文件。';
+      await send('新建一个 Codex Session，标题为'+title+'，任务 prompt 请原样下达：'+exactTask+' 提交确认后立即简短答复我，有新回复时提醒我。');
       row.delegationAnswer=(await final(id,beforeDispatch)).text;await settled(id);
       const action=await until('confirmed '+kind+' dispatch',async()=>{const r=await invoke('assistant:actions');return r.actions.find(a=>a.state==='acknowledged'&&!oldActions.has(a.id));},60000);
       const target=action.result.sessionId;row.targetId=target;assert.equal((await meta(target)).title,title);
       assert.match((await final(target)).text,/业务验收完成/);
+      const {DatabaseSync}=require('node:sqlite'),ledger=new DatabaseSync(path.join(data,'assistant','assistant.sqlite'),{readOnly:true});
+      const taskPayload=JSON.parse(ledger.prepare('SELECT payload FROM actions WHERE id=?').get(action.id).payload);ledger.close();
+      assert.equal(taskPayload.text,exactTask,'the manager must submit the requested original task');
+      const targetRollout=fs.readFileSync((await meta(target)).transcriptPath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+      const original=require('../core/hub-assistant/delegated-prompt');
+      const wire=targetRollout.filter(item=>item.payload?.type==='message'&&item.payload.role==='user').map(item=>item.payload.content?.map(block=>block.text||'').join('')).find(text=>original.delegatedPromptDisplay(text)?.userText===exactTask);
+      assert.ok(wire,'the native record must retain the exact delegated task after decoding');row.delegatedOriginalMatched=true;
+      await click('[data-session-id="'+target+'"]');
+      await until('original delegated task card',()=>cdp.eval('(()=>{const e=document.querySelector("#msg-overlay");return !!e&&e.innerText.includes('+j(exactTask)+')})()'),30000);
+      row.delegatedCardMatched=true;
+      await click('#btn-assistant');await until('assistant reselected',async()=>await active()===id);
       row.notification=await until('new reply notice '+kind,async()=>{const r=await invoke('assistant:notifications');return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});
       await shot(kind+'-dispatch');result.checks.push(kind+' 真实创建 Codex 业务会话、确认派工、收到新回复提醒');
     }
