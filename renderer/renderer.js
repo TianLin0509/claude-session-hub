@@ -144,7 +144,6 @@ const {
   clearSessionCompletedUnread,
   markSessionNeedsUserInput,
   normalizeEventTime,
-  sessionHasCompletedUnread,
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
 const {
@@ -1003,7 +1002,7 @@ const sessionListRenderer = createSessionListRenderer({
   // The sidebar DOM was just rebuilt; painting the composer here read layout
   // (panelIsVisible) and forced a full synchronous relayout after every
   // sidebar render. In the next frame that layout is shared with the paint.
-  afterRender: () => { scheduleFloatingBarState(); updateRespondPill(); },
+  afterRender: () => { scheduleFloatingBarState(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
@@ -4156,7 +4155,7 @@ function tailAboveCliPrompt(lines) {
 
 // 「等你回答」的第二个证据来源。
 //
-// 会话级的 attention 信号（sessionNeedsUserInput / respond-pill 读的那个）目前
+// 会话级的 attention 信号（sessionNeedsUserInput 读取）目前
 // **只有 Claude 的回合结束路径会点亮**：onReplyCompleteFromHook 里跑一次
 // isWaitingForUser。Codex 那条 transcript 完成路径不调用它，所以 Codex 真的问了
 // 「你选择 A 还是 B？」时，会话状态只是「已完成未读」，composer 只能说「已就绪」
@@ -4166,7 +4165,7 @@ function tailAboveCliPrompt(lines) {
 // 这里在 composer 自己这一层，对**当前终端画面**跑同一个现成检测器
 // （terminal-activity-monitor 的 isWaitingForUser，认 y/N 确认、编号选择题、
 // 问号结尾三种），只影响 composer 显示，不改会话的全局 attention 状态。
-// 侧栏与 respond-pill 因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
+// 侧栏因此仍不会为 Codex 的提问亮灯 —— 那是另一张卡的事。
 function detectComposerLiveQuestion(session, runtime) {
   if (isNativeAgent(session)) return null;
   if (!session || !runtime) return null;
@@ -5375,49 +5374,6 @@ function sweepStaleRunning() {
 setInterval(sweepStaleRunning, 60 * 1000);
 // Even fully idle sessions age across minute/day and dormant-window boundaries.
 setInterval(scheduleSessionListRender, 60 * 1000);
-function updateRespondPill() {
-  const pill = document.getElementById('respond-pill');
-  if (!pill) return;
-  // The home workbench already owns a full "等你输入 / 完成未读" surface.
-  // Keeping the floating pill there duplicates the same signal and can cover
-  // the model trend card at shorter window heights.
-  if (terminalPanelEl && terminalPanelEl.classList.contains('home-active')) {
-    pill.style.display = 'none';
-    return;
-  }
-  const items = [];
-  for (const s of sessions.values()) {
-    if (s.meetingId || s.id === activeSessionId || s.status === 'dormant'
-        || s.hiddenFromSidebar || s.purpose === 'chuxin-research') continue;
-    if (sessionNeedsUserInput(s)) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
-    else if (sessionHasCompletedUnread(s)) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
-  }
-  for (const m of Object.values(meetings || {})) {
-    const n = meetingUnread.getMeetingUnreadMemberIds(m, sessions).size;
-    if (n > 0) items.push({ id: m.id, meeting: true, wait: false, t: m.lastMessageTime || 0 });
-  }
-  if (!items.length) { pill.style.display = 'none'; return; }
-  const waitN = items.filter(i => i.wait).length;
-  const unreadN = items.length - waitN;
-  let txt = '';
-  if (waitN && unreadN) {
-    txt = `⏸ <b>${items.length}</b> 个待处理（${waitN} 等你输入 · <span class="rp-unread">${unreadN} 完成未读</span>）`;
-  } else if (waitN) {
-    txt = `⏸ <b>${waitN}</b> 个会话等你响应`;
-  } else {
-    txt = `✓ <b>${unreadN}</b> 个会话已完成未读`;
-  }
-  txt += ' · 点击跳转 →';
-  pill.innerHTML = txt;
-  pill.style.display = 'flex';
-  pill.onclick = () => {
-    items.sort((a, b) => b.t - a.t);
-    const top = items[0];
-    if (top.meeting) selectMeeting(top.id, { forceScrollBottom: true });
-    else selectSession(top.id, { forceScrollBottom: true });
-  };
-}
-
 function flashPromptLine(terminal, lineNumber) {
   const container = terminal.element && terminal.element.closest('.terminal-container');
   if (!container) return;
