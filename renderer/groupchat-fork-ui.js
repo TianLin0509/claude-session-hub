@@ -155,7 +155,7 @@ function openSessionPicker({ document, rows, title, hint, onPick, emptyLabel }) 
       ).filter(Boolean).join(' · ');
       const main = document.createElement('div');
       main.className = 'modal-row-main';
-      main.textContent = row.title || '（未命名会话）';
+      main.textContent = row.title || (row.kind === 'meeting' ? '（未命名群聊）' : '（未命名会话）');
       const metaEl = document.createElement('div');
       metaEl.className = 'modal-row-meta';
       metaEl.textContent = meta;

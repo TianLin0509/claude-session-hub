@@ -125,7 +125,8 @@ function registerSessionReferenceIpc(ipcMain, deps = {}) {
     let state = null;
     try {
       const statePath = path.join(getHubDataDir(), 'arena-prompts', `${meetingId}-groupchat.json`);
-      if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      // 大群聊的状态文件可达几十 MB：异步读，别让主进程卡在磁盘上。
+      if (fs.existsSync(statePath)) state = JSON.parse(await fs.promises.readFile(statePath, 'utf8'));
     } catch (error) {
       return { ok: false, error: 'group-state-unreadable', message: `读取群聊记录失败：${error && error.message}` };
     }
