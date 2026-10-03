@@ -108,12 +108,14 @@ function createSessionListRenderer(options = {}) {
   const sectionKeys = ['sec-failed', 'sec-active', 'sec-today'];
   let collapsedSections = new Set();
   let recentDays = 1;
+  let pinnedOnly = false;
   let modelFilter = 'all';
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
     const days = Number(storage.getItem('hubSidebarRecentDays'));
     if ([1, 3].includes(days)) recentDays = days;
+    pinnedOnly = storage.getItem('hubSidebarRange') === 'pinned';
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
@@ -123,17 +125,19 @@ function createSessionListRenderer(options = {}) {
   }
   const rangeControls = [...(doc.querySelectorAll?.('[data-session-days]') || [])];
   function syncRangeControls() {
-    for (const button of rangeControls) button.setAttribute('aria-pressed', String(Number(button.dataset.sessionDays) === recentDays));
+    for (const button of rangeControls) button.setAttribute('aria-pressed', String(pinnedOnly ? button.dataset.sessionDays === 'pinned' : Number(button.dataset.sessionDays) === recentDays));
   }
   syncRangeControls();
   for (const button of rangeControls) button.addEventListener('click', () => {
-    recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
+    pinnedOnly = button.dataset.sessionDays === 'pinned';
+    if (!pinnedOnly) recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
+    savePreference('hubSidebarRange',pinnedOnly ? 'pinned' : String(recentDays));
     savePreference('hubSidebarRecentDays', String(recentDays));
     syncRangeControls(); renderSessionList();
   });
   function sidebarView(items, sessionMap = getSessions(), days = recentDays) {
     const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    return buildSidebarView(parts, { days, sessionMap, hasUnread: sidebarItemHasUnread });
+    return buildSidebarView(parts, { days, pinnedOnly, sessionMap, hasUnread: sidebarItemHasUnread });
   }
   const modelControl = doc.getElementById?.('session-model-filter');
   if (modelControl) {
@@ -608,6 +612,10 @@ sessionListEl.addEventListener('keydown', event => {
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
+    if (pinnedOnly && !item.pinned) {
+      pinnedOnly = false;
+      savePreference('hubSidebarRange',String(recentDays)); syncRangeControls();
+    }
     projectFilter.reveal(item);
     const member = memberId && item._meeting?.subSessions?.includes(memberId) ? getSessions().get(memberId) : null;
     if (modelFilter !== 'all' && !(member ? sessionFamilies(member, getSessions()) : sessionFamilies(item, getSessions())).has(modelFilter)) {
@@ -966,7 +974,7 @@ sessionListEl.addEventListener('keydown', event => {
   }
   if (sections.failed.length) appendSecHeader('异常', sections.failed, 'sec-failed');
   if (sections.active.length) appendSecHeader('活跃', sections.active, 'sec-active');
-  appendSecHeader(recentDays === 3 ? '3 天内' : '今天', sections.today, 'sec-today', sections.today.length ? '休眠' : '', archiveToday);
+  appendSecHeader(pinnedOnly ? '置顶' : recentDays === 3 ? '3 天内' : '今天', sections.today, 'sec-today', !pinnedOnly && sections.today.length ? '休眠' : '', archiveToday);
   if (markAllSessionsRead && visible.some(item => sidebarItemHasUnread(item, sessionMap))) {
     const read = doc.createElement('button'); read.type = 'button'; read.className = 'sidebar-mark-read';
     read.textContent = '全部已读'; read.addEventListener('click', markAllSessionsRead); renderTarget.appendChild(read);
