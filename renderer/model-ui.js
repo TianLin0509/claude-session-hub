@@ -200,6 +200,7 @@ function createModelUiController({
   switchTimeoutMs = 7000,
   setTimeoutFn = setTimeout,
   repaintActiveComposer = () => {},
+  restoreSessionSurface = async () => {},
 }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
@@ -571,11 +572,12 @@ function createModelUiController({
   }
 
   async function switchModel(sessionId, option, menu, badgeEl) {
-    const session = sessions.get(sessionId);
+    let session = sessions.get(sessionId);
     if (!session || !option || session._modelSwitchPending) return null;
     const strategy = modelSwitchStrategy(session.kind);
     if (!strategy) return null;
     const previousModel=session.currentModel?.id;
+    const wasActive=getActiveSessionId()===sessionId;
     session._modelSwitchPending = { id: option.id, label: option.label };
     updateActiveModelChip();
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
@@ -615,6 +617,12 @@ function createModelUiController({
         const restored=await ipcRenderer.invoke('restart-session',sessionId);
         if(!restored||restored.ok===false||restored.id!==sessionId||restored.codexSid!==session.codexSid)
           throw new Error(restored?.message||'模型已切换，但原会话工具恢复未确认，请从该会话恢复');
+        // Resume replaces the renderer object. Clear the copied pending state
+        // on that live object, and remount only if the user has not navigated.
+        delete session._modelSwitchPending;
+        session=sessions.get(sessionId)||restored;
+        delete session._modelSwitchPending;
+        if(wasActive&&!getActiveSessionId())await restoreSessionSurface(sessionId);
       }
       const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
       session.currentModel = { id: model.id || switched.modelId, displayName: model.displayName || switched.displayName };
