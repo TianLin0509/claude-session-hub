@@ -3549,28 +3549,17 @@ document.addEventListener('click', async (e) => {
 });
 
 // === Spec 1 v0.9.0 · 视图切换 ===
-// 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
-let currentView = 'pty'; // 'card' | 'pty'
+// AI 会话默认卡片；后台仅由当前查看期间的显式操作打开。
+let currentView = 'card'; // 'card' | 'pty'
 let _cardViewBottomRestoreRaf = null;
 const _cardOverlayFollowBottomBySession = new Map();
 
-// 2026-08-27：卡片/PTY 原来只有 currentView 这一个全局值，selectSession 又从不
-// 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
-// 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
+// Legacy view choices remain compatible with explicit tools; ordinary navigation
+// always starts with cards, independently of the underlying CLI runtime.
 const cardViewSessions = readCardViewSessions(localStorage);
-// Members and the dedicated assistant start with the ordinary card surface
-// once, then preserve the user's explicit card/PTY choices.
-const MEMBER_VIEW_DEFAULTS_KEY = 'hub.memberCardDefaults';
-const memberCardDefaults = readCardViewSessions(localStorage, MEMBER_VIEW_DEFAULTS_KEY);
 function selectionViewModeForSession(sessionId, session) {
-  if ((session?.meetingId || session?.purpose === 'hub-assistant') && session.kind !== 'powershell' && !memberCardDefaults.has(sessionId)) {
-    rememberViewModeForSession(sessionId, 'card');
-    memberCardDefaults.add(sessionId);
-    writeCardViewSessions(localStorage, memberCardDefaults, MEMBER_VIEW_DEFAULTS_KEY);
-  }
   const cardCapable = !!session && session.kind !== 'powershell';
-  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable,
-    rememberChoice: session?.agentRuntime === 'pty' });
+  return selectionViewModeFor(cardViewSessions, sessionId, { cardCapable });
 }
 function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
