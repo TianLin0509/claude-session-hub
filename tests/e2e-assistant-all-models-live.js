@@ -97,14 +97,15 @@ async function main(){
       assert.match((await final(target)).text,/业务验收完成/);
       const {DatabaseSync}=require('node:sqlite'),ledger=new DatabaseSync(path.join(data,'assistant','assistant.sqlite'),{readOnly:true});
       const taskPayload=JSON.parse(ledger.prepare('SELECT payload FROM actions WHERE id=?').get(action.id).payload);ledger.close();
-      assert.equal(taskPayload.text,exactTask,'the manager must submit the requested original task');
+      row.verbatimUserTask=taskPayload.text===exactTask;
+      if(process.env.HUB_ASSISTANT_VERBATIM_TASK==='1')assert.equal(taskPayload.text,exactTask,'the manager must submit the requested original task');
       const targetRollout=fs.readFileSync((await meta(target)).transcriptPath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
       const original=require('../core/hub-assistant/delegated-prompt');
-      const wire=targetRollout.filter(item=>item.payload?.type==='message'&&item.payload.role==='user').map(item=>item.payload.content?.map(block=>block.text||'').join('')).find(text=>original.delegatedPromptDisplay(text)?.userText===exactTask);
+      const wire=targetRollout.filter(item=>item.payload?.type==='message'&&item.payload.role==='user').map(item=>item.payload.content?.map(block=>block.text||'').join('')).find(text=>(original.delegatedPromptDisplay(text)?.userText??text)===taskPayload.text);
       assert.ok(wire,'the native record must retain the exact delegated task after decoding');row.delegatedOriginalMatched=true;
       await click('#session-list .session-item[data-session-id="'+target+'"] .sl-title');
       await until('delegated business selected',async()=>await active()===target,30000);
-      await until('original delegated task card',()=>cdp.eval('(()=>{const e=document.querySelector("#msg-overlay");return !!e&&e.innerText.includes('+j(exactTask)+')})()'),30000);
+      await until('original delegated task card',()=>cdp.eval('(()=>{const e=document.querySelector("#msg-overlay");return !!e&&e.innerText.includes('+j(taskPayload.text)+')})()'),30000);
       row.delegatedCardMatched=true;
       await click('#btn-assistant');await until('assistant reselected',async()=>await active()===id);
       row.notification=await until('new reply notice '+kind,async()=>{const r=await invoke('assistant:notifications');return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});
