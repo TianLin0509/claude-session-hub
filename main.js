@@ -97,6 +97,7 @@ const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js')
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { createDesktopNotificationController } = require('./main/desktop-notification-controller.js');
 const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
+const { registerMemoryReleaseIpc } = require('./main/ipc/memory-release-handlers.js');
 const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
@@ -2265,6 +2266,15 @@ registerAppUtilityIpc(ipcMain, {
 registerProcessReclaimIpc(ipcMain, {
   getSessionManager: () => sessionManager,
   getDataDir: () => getHubDataDir(),
+  logger: console,
+});
+
+// 底部状态条 CPU/内存/硬盘区点开的「释放内存」面板：按会话认领进程，结束残留或休眠空闲会话。
+registerMemoryReleaseIpc(ipcMain, {
+  app,
+  appVersion: app.getVersion(),
+  dataDir: getHubDataDir(),
+  getSessionManager: () => sessionManager,
   logger: console,
 });
 

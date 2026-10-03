@@ -70,6 +70,19 @@ const RING_BUFFER_BYTES = 1024 * 1024;
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_MCP_PROFILES = new Set(['none', 'lean', 'browser', 'wireless', 'full']);
 const DEFAULT_IDLE_SUSPEND_MS = 5 * 60 * 60 * 1000;
+// 「释放内存」面板休眠会话的闸门：正在回答、10 分钟内有活动、当前聚焦、群聊成员都不动。
+// 群聊成员由群聊整体休眠管理，单独休眠一个成员会打断群聊派发。
+// E2E 不能真等 10 分钟：仅在 CLAUDE_HUB_E2E=1 时允许用环境变量缩短（至少 1 ms，保留「正在回答不休眠」）。
+const MEMORY_RELEASE_MIN_IDLE_MS = process.env.CLAUDE_HUB_E2E === '1'
+  && Number.isFinite(Number(process.env.CLAUDE_HUB_E2E_MEMORY_RELEASE_IDLE_MS))
+  ? Math.max(1, Number(process.env.CLAUDE_HUB_E2E_MEMORY_RELEASE_IDLE_MS))
+  : 10 * 60 * 1000;
+const MEMORY_RELEASE_SUSPEND_OPTIONS = Object.freeze({
+  reason: 'memory-release',
+  minIdleMs: MEMORY_RELEASE_MIN_IDLE_MS,
+  excludeFocused: true,
+  excludeMeeting: true,
+});
 // One default for ordinary/group Codex sessions and every new/resume/fork/relaunch path.
 const CODEX_REASONING_EFFORT = 'max';
 // Codex 的思考深度档位。2026-08-16 查 ~/.codex/models_cache.json 实测：
@@ -2528,6 +2541,40 @@ class SessionManager extends EventEmitter {
     };
   }
 
+  // 「释放内存」面板用：每个活会话的终端进程 PID、身份与能否休眠。
+  // 能否休眠直接走 _evaluateSuspendEligibility，和真执行用同一套判据。
+  describeSessionsForMemory(options = {}) {
+    const now = Number(options.now) || Date.now();
+    const suspendOptions = { ...MEMORY_RELEASE_SUSPEND_OPTIONS, now };
+    const rows = [];
+    for (const [sessionId, session] of this.sessions) {
+      const info = session.info || {};
+      const verdict = this._evaluateSuspendEligibility(sessionId, suspendOptions);
+      const lastActivityAt = Math.max(
+        Number(session.startedAt) || 0, Number(session.lastInputAt) || 0, Number(session.lastOutputAt) || 0,
+      );
+      const ptyPid = Number(session.pty && session.pty.pid);
+      rows.push({
+        id: sessionId,
+        title: info.title || '',
+        kind: info.kind || '',
+        meetingId: info.meetingId || null,
+        pinned: info.pinned === true,
+        focused: this.focusedSessionId === sessionId,
+        running: session.agentTurnActive === true || info.status === 'running',
+        status: info.status || '',
+        nativeId: getSessionResumeIdentity(info) || null,
+        ptyPid: Number.isFinite(ptyPid) && ptyPid > 0 ? ptyPid : null,
+        lastActivityAt,
+        idleMs: Math.max(0, now - lastActivityAt),
+        suspendable: verdict.ok === true,
+        blockReason: verdict.ok ? null : (verdict.error || 'unknown'),
+        blockMessage: verdict.ok ? null : (verdict.message || ''),
+      });
+    }
+    return rows;
+  }
+
   suspendSession(sessionId, options = {}) {
     const verdict = this._evaluateSuspendEligibility(sessionId, options);
     if (!verdict.ok) return { ok: false, error: verdict.error, message: verdict.message };
@@ -3489,6 +3536,7 @@ async function readTranscriptTail(kind, sourcePath, n = 10, opts = {}) {
 
 module.exports = {
   SessionManager,
+  MEMORY_RELEASE_SUSPEND_OPTIONS,
   readTranscriptTail,
   dismissCodexUpdatePrompt,
   dismissCodexRateLimitDialog,

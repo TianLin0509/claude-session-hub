@@ -46,6 +46,8 @@ function attachResourceProcessTooltip({ document: doc, request, escapeHtml }) {
   }
   function show(target) {
     if (!target || anchor === target) return;
+    // 「释放内存」弹层打开时不再叠一层悬停提示。
+    if (doc.body.classList.contains('memory-release-open')) return;
     hide(); anchor = target;
     const token = epoch;
     timer = setTimeout(() => {
