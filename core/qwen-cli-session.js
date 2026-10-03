@@ -160,6 +160,7 @@ class QwenCliSession extends EventEmitter {
   async send(text,options={}){
     await this.start();
     if(this.closed||this.runtime.connection!=='connected')throw Object.assign(new Error('千问 CLI 未连接，消息未发送'),{notSent:true});
+    if(this.configurePending&&!options.configurationCommand)throw Object.assign(new Error('千问正在确认模型切换，请稍候'),{notSent:true});
     if(this.pending||['running','waiting'].includes(this.runtime.state))throw Object.assign(new Error('千问仍在执行，请在终端处理或等待完成'),{notSent:true});
     if(options.attachments?.length)throw Object.assign(new Error('请在千问终端中添加附件'),{notSent:true});
     if(text.trimStart().startsWith('/')){
@@ -188,7 +189,33 @@ class QwenCliSession extends EventEmitter {
   }
   blocks(){return this.readTranscript().filter(c=>c.role==='assistant').slice(-1).map(c=>({type:'text',text:c.text||''}));}
   finalText(){return this.blocks().map(b=>b.text).join('\n');}
-  async configure(){throw new Error('请在千问 CLI 中使用 /model 或 /settings；卡片会从原生回答同步实际模型');}
+  async configure({model,effort}={}, {timeoutMs=10000}={}){
+    await this.start();
+    if(effort!==undefined)throw new Error('千问思考设置请在原生 /settings 中调整');
+    if(this.configurePending||this.pending||['running','waiting'].includes(this.runtime.state))throw new Error('请等当前轮结束后再切换模型');
+    const file=path.join(this.options.home,'.qwen/settings.json');
+    const settings=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(typeof model!=='string'||!settings.modelProviders?.openai?.some(m=>m.id===model))throw new Error('该模型不在当前千问配置中');
+    if(this.currentModel===model)return{modelId:model,displayName:model};
+    const revision=fs.statSync(file,{bigint:true}).mtimeNs;
+    this.configurePending=true;
+    try{
+      await this.send('/model '+model,{configurationCommand:true});
+      // Native Qwen persists model.name only after config.switchModel succeeds.
+      // A pre-existing value is not a receipt for this command.
+      for(const end=Date.now()+timeoutMs;Date.now()<end;){
+        if(this.closed||this.runtime.connection!=='connected')throw new Error('千问连接已中断，模型切换未确认');
+        const updated=fs.statSync(file,{bigint:true}).mtimeNs;
+        if(updated!==revision&&JSON.parse(fs.readFileSync(file,'utf8')).model?.name===model){
+          this.currentModel=model;this.options.model=model;
+          this.emit('bound',{threadId:this.threadId,model});
+          return{modelId:model,displayName:model,appliesOn:'next-turn',confirmationSource:'native-settings-write'};
+        }
+        await new Promise(resolve=>setTimeout(resolve,50));
+      }
+      throw new Error('千问未确认模型切换，请查看终端；Hub 未更新模型');
+    }finally{this.configurePending=false;}
+  }
   async reconcile(){if(this.runtime.connection!=='connected')throw new Error('请先恢复 CLI 连接');return this.runtime;}
   async readOutcome(turnId){return this.lastOutcome?.turnId===turnId?this.lastOutcome:null;}
   async interrupt(){if(!['running','waiting'].includes(this.runtime.state)||this.interruptAt&&Date.now()-this.interruptAt<1500)return;
