@@ -68,11 +68,11 @@ async function main(){
       result.checks.push('千问普通模型菜单真实切换到 qwen3.7-plus，同一原生会话继续读取资料并回答');
     }
     if(process.env.HUB_ASSISTANT_DISPATCH==='1'){
-      const beforeDispatch=(await finals(id)).length,title='验收业务-'+kind;
+      const beforeDispatch=(await finals(id)).length,title='验收业务-'+kind,oldActions=new Set((await invoke('assistant:actions')).actions.map(a=>a.id));
       await send('新建一个 Codex Session，标题为'+title+'，任务是只回复业务验收完成，无需读写文件。提交确认后立即简短答复我，有新回复时提醒我。');
       row.delegationAnswer=(await final(id,beforeDispatch)).text;await settled(id);
-      const action=await until('confirmed '+kind+' dispatch',async()=>{const r=await invoke('assistant:actions');return r.actions.find(a=>a.state==='acknowledged'&&a.payload?.title===title);},60000);
-      const target=action.result.sessionId;row.targetId=target;
+      const action=await until('confirmed '+kind+' dispatch',async()=>{const r=await invoke('assistant:actions');return r.actions.find(a=>a.state==='acknowledged'&&!oldActions.has(a.id));},60000);
+      const target=action.result.sessionId;row.targetId=target;assert.equal((await meta(target)).title,title);
       assert.match((await final(target)).text,/业务验收完成/);
       row.notification=await until('new reply notice '+kind,async()=>{const r=await invoke('assistant:notifications');return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});
       await shot(kind+'-dispatch');result.checks.push(kind+' 真实创建 Codex 业务会话、确认派工、收到新回复提醒');
