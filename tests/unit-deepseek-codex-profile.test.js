@@ -54,6 +54,8 @@ test('isolated profile uses Responses API, an env key, and the Pro/Flash catalog
       assert.strictEqual(model.minimal_client_version, '0.144.0');
       assert.strictEqual(model.context_window, 1048576);
       assert.strictEqual(model.supported_in_api, true);
+      assert.strictEqual(model.tool_mode, 'direct');
+      assert.strictEqual(model.supports_search_tool, false);
     }
     assert.strictEqual(catalog.models[0].display_name, 'DeepSeek-V4-Pro');
   } finally {
