@@ -4247,7 +4247,7 @@ async function reconnectSession(sessionId) {
   }
 }
 
-// 「引用会话」：选会话 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
+// 「引用会话」：选会话或群聊 → 主进程返回它的聊天记录 md（落后于原始记录才先刷新）→ 在输入框末尾追加一行引用。
 // 失败走 showHubAlert 挡住人，不能静默；成功只给轻提示，且绝不替用户按发送。
 async function referenceSessionIntoInput(sessionId, inputBox, button, options = {}) {
   const isCurrent = options.isCurrent || (() => inputBox.isConnected);
@@ -4257,7 +4257,10 @@ async function referenceSessionIntoInput(sessionId, inputBox, button, options = 
   const alertError = message => require('./ui-feedback').showHubAlert(message, { document });
   let rows;
   try {
-    rows = await ipcRenderer.invoke('session-reference:list', { excludeSessionId: sessionId });
+    rows = await ipcRenderer.invoke('session-reference:list', {
+      excludeSessionId: sessionId,
+      excludeMeetingId: options.excludeMeetingId || '',
+    });
   } catch (error) {
     alertError('读取会话清单失败：' + error.message);
     return;
@@ -4266,14 +4269,16 @@ async function referenceSessionIntoInput(sessionId, inputBox, button, options = 
   openSessionPicker({
     document,
     rows: Array.isArray(rows) ? rows : [],
-    title: '引用会话',
-    hint: '把所选会话的聊天记录路径插入输入框，接收消息的 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
-    emptyLabel: '没有其他会话可引用。',
+    title: '引用会话 / 群聊',
+    hint: '把所选会话或群聊的聊天记录路径插入输入框，接收消息的 AI 会自己去读；可跨 Claude / Codex，不会自动发送。',
+    emptyLabel: '没有其他会话或群聊可引用。',
     onPick: async (row) => {
       if (!isCurrent()) return;
       if (button) { button.disabled = true; button.textContent = '引用中…'; }
       try {
-        const result = await ipcRenderer.invoke('session-reference:resolve', { sessionId: row.id });
+        const result = await ipcRenderer.invoke('session-reference:resolve', row.kind === 'meeting'
+          ? { meetingId: row.meetingId }
+          : { sessionId: row.id });
         if (!result?.ok) { alertError('引用失败：' + (result?.message || result?.error || '未知原因')); return; }
         if (!inputBox.isConnected || !isCurrent()) return;
         const line = buildReferenceText({ title: row.title || result.title, kind: row.kind, path: result.path });
@@ -4282,7 +4287,7 @@ async function referenceSessionIntoInput(sessionId, inputBox, button, options = 
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.focus();
         showForkToast(document, result.fresh
-          ? `已引用「${row.title || result.title || '未命名会话'}」，补充你的要求后发送`
+          ? `已引用「${row.title || result.title || (row.kind === 'meeting' ? '未命名群聊' : '未命名会话')}」，补充你的要求后发送`
           : '已引用；源会话最新的内容可能还没写进记录（例如正在回答中）');
       } catch (error) {
         alertError('引用失败：' + error.message);
@@ -4465,8 +4470,8 @@ function mountFloatingInput(sessionId, termContainer, terminal, pane = {}) {
   referenceBtn.type = 'button';
   referenceBtn.className = 'fi-bridge-reference';
   referenceBtn.textContent = '引用会话';
-  referenceBtn.title = '选一个会话，把它的聊天记录路径插入输入框，让当前 AI 读取其上下文（可跨 Claude / Codex）';
-  referenceBtn.setAttribute('aria-label', '引用其他会话的上下文');
+  referenceBtn.title = '选一个会话或群聊，把它的聊天记录路径插入输入框，让当前 AI 读取其上下文（可跨 Claude / Codex）';
+  referenceBtn.setAttribute('aria-label', '引用其他会话或群聊的上下文');
   referenceBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     void referenceSessionIntoInput(sessionId, inputBox, referenceBtn);

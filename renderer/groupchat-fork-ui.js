@@ -126,6 +126,7 @@ function openSessionPicker({ document, rows, title, hint, onPick, emptyLabel }) 
     const matched = rows.filter(row => !needle
       || String(row.title || '').toLowerCase().includes(needle)
       || String(row.kind || '').toLowerCase().includes(needle)
+      || (row.kind === 'meeting' && '群聊'.includes(needle))
       || String(row.cwd || '').toLowerCase().includes(needle));
     body.textContent = '';
     if (!matched.length) {
@@ -148,11 +149,13 @@ function openSessionPicker({ document, rows, title, hint, onPick, emptyLabel }) 
       const item = document.createElement('div');
       item.className = 'modal-row';
       item.dataset.gcPickerRow = row.id;
-      const meta = [_shortKind(row.kind), row.meetingTitle ? `群聊：${row.meetingTitle}` : '独立会话',
-        _relativeTime(row.lastMessageTime)].filter(Boolean).join(' · ');
+      const meta = (row.kind === 'meeting'
+        ? ['群聊', row.memberCount ? `${row.memberCount} 位成员` : '', _relativeTime(row.lastMessageTime)]
+        : [_shortKind(row.kind), row.meetingTitle ? `群聊：${row.meetingTitle}` : '独立会话', _relativeTime(row.lastMessageTime)]
+      ).filter(Boolean).join(' · ');
       const main = document.createElement('div');
       main.className = 'modal-row-main';
-      main.textContent = row.title || '（未命名会话）';
+      main.textContent = row.title || (row.kind === 'meeting' ? '（未命名群聊）' : '（未命名会话）');
       const metaEl = document.createElement('div');
       metaEl.className = 'modal-row-meta';
       metaEl.textContent = meta;

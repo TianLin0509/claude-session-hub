@@ -21,10 +21,11 @@ function mountGroupComposerTools({ toolbar, input, getMeeting, referenceSession,
     toolbar.appendChild(button);
     return button;
   };
-  add('fi-bridge-reference', '引用会话', '引用其他会话的上下文', button => {
+  add('fi-bridge-reference', '引用会话', '引用其他会话或群聊的上下文', button => {
     const meeting = getMeeting();
     if (!meeting) return;
     void referenceSession(null, input, button, {
+      excludeMeetingId: meeting.id,
       isCurrent: () => getMeeting()?.id === meeting.id && input.isConnected,
       saveDraft: () => onDraft(meeting.id),
     });
