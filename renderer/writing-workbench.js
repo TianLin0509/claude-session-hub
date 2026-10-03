@@ -414,7 +414,8 @@ function createWorkbench(ctx) {
     if (cur) S.seen[cur] = (tabs.find((t) => t.key === cur) || {}).count || 0;
     for (const t of tabs) if (S.seen[t.key] == null) S.seen[t.key] = t.count; // 打开文章时已有的稿不算「新」
     const shown = compare ? cols : cols.filter((c) => keyOf(c) === cur);
-    const sigOf = (c) => JSON.stringify([c, S.versionOf[keyOf(c)] ?? null]);
+    // 出错栏的「重试」按钮要看这一轮过没过去，所以最新轮次也算进出错栏的签名
+    const sigOf = (c) => JSON.stringify([c, S.versionOf[keyOf(c)] ?? null, c.status === 'error' || c.status === 'stopped' ? v.latestTurn : 0]);
     const contentSig = compare ? cols.map(sigOf) : cur === FINAL_KEY ? [JSON.stringify([v.final, v.voice])] : shown.map(sigOf);
     // 别的 AI 交稿 / 状态变化只换标签栏，不动正在读的那份稿（划线、滚动都保留）
     const layout = JSON.stringify([compare, cur, canCompare, compare ? cols.map(keyOf) : 0]);
