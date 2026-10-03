@@ -6,8 +6,10 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { buildReferenceText, kindLabel, referenceableRows } = require('../core/session-reference.js');
-const { mdIsCurrent, registerSessionReferenceIpc } = require('../main/ipc/session-reference-handlers.js');
+const {
+  buildReferenceText, kindLabel, mergeReferenceRows, referenceableMeetingRows, referenceableRows,
+} = require('../core/session-reference.js');
+const { groupReferencePath, mdIsCurrent, registerSessionReferenceIpc } = require('../main/ipc/session-reference-handlers.js');
 
 function fakeIpc() {
   return { handlers: new Map(), handle(channel, fn) { this.handlers.set(channel, fn); } };
@@ -131,6 +133,101 @@ async function main() {
   assert.ok(result.message.includes('child down'));
 
   assert.strictEqual((await resolve(null, {})).error, 'missing-session');
+
+  // ── 引用群聊（2026-10-03）
+  const meetingRows = referenceableMeetingRows([
+    { id: 'g-self', title: '本群', subSessions: ['a'], lastMessageTime: 500 },
+    { id: 'g1', title: '投委会', subSessions: ['a', 'b', 'c'], lastMessageTime: 40 },
+    { id: 'g1', title: '重复', lastMessageTime: 41 },
+    { id: 'g2', title: '', createdAt: 5 },
+    null,
+  ], { excludeMeetingId: 'g-self' });
+  assert.deepStrictEqual(meetingRows.map(r => r.id), ['meeting:g1', 'meeting:g2']);
+  assert.strictEqual(meetingRows[0].meetingId, 'g1');
+  assert.strictEqual(meetingRows[0].kind, 'meeting');
+  assert.strictEqual(meetingRows[0].memberCount, 3);
+  assert.strictEqual(meetingRows[1].lastMessageTime, 5);
+  assert.deepStrictEqual(mergeReferenceRows([{ id: 's', lastMessageTime: 30 }], meetingRows).map(r => r.id),
+    ['meeting:g1', 's', 'meeting:g2']);
+  const groupText = buildReferenceText({ title: ' 投委\n会 ', kind: 'meeting', path: MD_A });
+  assert.ok(groupText.startsWith(`【引用群聊】群聊「投委 会」的聊天记录：${MD_A}\n`), groupText);
+  assert.ok(groupText.includes('不要重新执行'));
+  assert.ok(buildReferenceText({ title: '', kind: 'meeting', path: 'p' }).includes('「未命名群聊」'));
+  assert.strictEqual(kindLabel('meeting'), '群聊');
+
+  const groupTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-group-reference-unit-'));
+  try {
+    const dataDir = path.join(groupTmp, 'data');
+    const transcriptDir = path.join(dataDir, 'transcripts');
+    fs.mkdirSync(path.join(dataDir, 'arena-prompts'), { recursive: true });
+    const writeState = (id, messages) => fs.writeFileSync(
+      path.join(dataDir, 'arena-prompts', `${id}-groupchat.json`),
+      JSON.stringify({ meetingId: id, nextMessageSeq: messages.length + 1, messages }), 'utf8');
+    writeState('g1', [
+      { seq: 1, role: 'user', origin: 'user', content: '比较两种调度算法', createdAt: 1 },
+      { seq: 2, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: '进度：在读代码', status: 'progress_update', createdAt: 2 },
+      { seq: 3, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: 'PF 更公平，RR 更简单。', createdAt: 3 },
+    ]);
+    writeState('g-empty', [{ seq: 1, role: 'user', origin: 'hub', dispatch: {}, content: '派工卡片', createdAt: 1 }]);
+    const legacyMd = path.join(groupTmp, 'legacy.md');
+    fs.writeFileSync(legacyMd, '# 老会议室\n', 'utf8');
+    const lookups = [];
+    const groupIpc = fakeIpc();
+    registerSessionReferenceIpc(groupIpc, {
+      searchService: {
+        transcriptFor: async (req) => {
+          lookups.push(req);
+          return req.key === 'meeting:g-legacy' ? { path: legacyMd, title: '老会议室', exists: true } : null;
+        },
+      },
+      getSearchSnapshot: () => ({
+        sessions: [{ hubId: 'a', kind: 'codex', title: 'A', lastMessageTime: 10 }],
+        meetings: [{ id: 'g1', title: '投委会', subSessions: ['a'], lastMessageTime: 20 }, { id: 'g-here', title: '本群' }],
+      }),
+      getMeeting: id => (id === 'g1' ? { title: '投委会' } : null),
+      getHubDataDir: () => dataDir,
+      getTranscriptDir: () => transcriptDir,
+      mdIsCurrent: () => true,
+      logger: quietLogger,
+    });
+    const groupList = await groupIpc.handlers.get('session-reference:list')(null, { excludeMeetingId: 'g-here' });
+    assert.deepStrictEqual(groupList.map(r => r.id), ['meeting:g1', 'a']);
+    const groupResolve = groupIpc.handlers.get('session-reference:resolve');
+
+    // 有群聊状态：现场生成到 transcripts 目录（Claude 已对该目录 --add-dir），内容是正式发言
+    const resolved = await groupResolve(null, { meetingId: 'g1' });
+    assert.deepStrictEqual(resolved, { ok: true, path: groupReferencePath(transcriptDir, 'g1'), title: '投委会', fresh: true });
+    assert.strictEqual(path.dirname(resolved.path), transcriptDir);
+    const md = fs.readFileSync(resolved.path, 'utf8');
+    assert.ok(md.includes('# 群聊记录：投委会'), md);
+    assert.ok(md.includes('比较两种调度算法') && md.includes('PF 更公平，RR 更简单。'));
+    assert.ok(!md.includes('进度：在读代码'), 'progress updates are not part of the record');
+    assert.deepStrictEqual(lookups, [], 'group state is authoritative; search index is not consulted');
+
+    // 状态更新后再次引用：拿到的是新内容
+    writeState('g1', [
+      { seq: 1, role: 'user', origin: 'user', content: '比较两种调度算法', createdAt: 1 },
+      { seq: 2, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: '补充：PF 吞吐更高。', createdAt: 4 },
+    ]);
+    await groupResolve(null, { meetingId: 'g1' });
+    assert.ok(fs.readFileSync(resolved.path, 'utf8').includes('补充：PF 吞吐更高。'));
+
+    // 只有 Hub 派工、没有真正发言：如实拒绝
+    const empty = await groupResolve(null, { meetingId: 'g-empty' });
+    assert.strictEqual(empty.ok, false);
+    assert.ok(empty.message.includes('还没有发言'), empty.message);
+
+    // 没有群聊状态的老式会议室：退回搜索索引的会议记录
+    const legacy = await groupResolve(null, { meetingId: 'g-legacy' });
+    assert.deepStrictEqual(legacy, { ok: true, path: legacyMd, title: '老会议室', fresh: true });
+    assert.deepStrictEqual(lookups.splice(0), [{ key: 'meeting:g-legacy' }]);
+
+    const missing = await groupResolve(null, { meetingId: 'g-none' });
+    assert.strictEqual(missing.error, 'transcript-missing');
+    assert.strictEqual((await groupResolve(null, { meetingId: '../evil' })).error, 'bad-meeting');
+  } finally {
+    fs.rmSync(groupTmp, { recursive: true, force: true });
+  }
   const bare = fakeIpc();
   registerSessionReferenceIpc(bare, { logger: quietLogger });
   assert.strictEqual((await bare.handlers.get('session-reference:resolve')(null, { sessionId: 'a' })).error, 'search-unavailable');
@@ -150,6 +247,10 @@ async function main() {
   assert.ok(!/send-prompt|terminal-input|sendBtn\.click/.test(fnBody), 'reference must never auto-send');
   assert.ok(!/showToast\(/.test(fnBody), 'showToast is not defined in renderer; failures must use showHubAlert');
   assert.match(fnBody, /showHubAlert/);
+  // 群聊行按 meetingId 解析；群聊输入框里打开时排除本群
+  assert.match(fnBody, /row\.kind === 'meeting'\s*\n?\s*\? \{ meetingId: row\.meetingId \}/);
+  assert.match(fnBody, /excludeMeetingId: options\.excludeMeetingId/);
+  assert.match(readSource('renderer', 'group-composer-tools.js'), /excludeMeetingId: meeting\.id/);
   const mainSource = readSource('main.js');
   assert.match(mainSource, /registerSessionReferenceIpc\(ipcMain, \{/);
   // 被引用的 md 在工作目录之外：Claude 默认权限模式下必须把它加进 --add-dir，否则每次引用都弹 Read 审批

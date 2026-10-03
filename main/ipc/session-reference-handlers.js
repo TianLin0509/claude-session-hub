@@ -1,10 +1,16 @@
 'use strict';
 
-// 「引用会话」的两个 IPC：列出可引用的会话、把选中会话解析成聊天记录 md 路径。
+// 「引用会话」的两个 IPC：列出可引用的会话与群聊、把选中项解析成聊天记录 md 路径。
 // 设计说明见 core/session-reference.js。
 
 const fs = require('node:fs');
-const { referenceableRows } = require('../../core/session-reference.js');
+const path = require('node:path');
+const {
+  mergeReferenceRows,
+  referenceableMeetingRows,
+  referenceableRows,
+} = require('../../core/session-reference.js');
+const groupTranscript = require('../../core/group-chat-transcript.js');
 
 // md 在每次提交/每轮结束后由索引自动重写，绝大多数时候已是最新，直接用、零等待。
 // 只有原始记录比 md 新（源会话正在回答，或索引还没跟上）才显式刷新一次；
@@ -31,6 +37,31 @@ function mdIsCurrent(mdPath) {
   }
 }
 
+// 群聊记录在引用那一刻从群聊状态文件现场生成：状态文件是权威（成员回答文件已归并进去），
+// 群聊自己的 arena-prompts md 只在状态保存时刷新，老群聊根本没有。
+// 写进 transcripts 目录而不是 arena-prompts：Claude 会话只给 transcripts 目录加了
+// --add-dir，放在别处每次引用都会弹读取审批。
+function groupReferencePath(transcriptDir, meetingId) {
+  return path.join(transcriptDir, `group-${meetingId}.md`);
+}
+
+function writeUtf8Atomic(filePath, text) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+function hasGroupSpeech(state) {
+  const messages = Array.isArray(state && state.messages) ? state.messages : [];
+  return messages.some(m => !groupTranscript.isProgressUpdateMessage(m)
+    && (groupTranscript.isUserSpeech(m) || groupTranscript.isAssistantSpeech(m)));
+}
+
 function registerSessionReferenceIpc(ipcMain, deps = {}) {
   const searchService = deps.searchService || null;
   const getSearchSnapshot = typeof deps.getSearchSnapshot === 'function'
@@ -40,6 +71,12 @@ function registerSessionReferenceIpc(ipcMain, deps = {}) {
   const isCurrent = typeof deps.mdIsCurrent === 'function' ? deps.mdIsCurrent : mdIsCurrent;
   const refreshTimeoutMs = Number(deps.refreshTimeoutMs) || DEFAULT_REFRESH_TIMEOUT_MS;
   const logger = deps.logger || console;
+  const getHubDataDir = typeof deps.getHubDataDir === 'function'
+    ? deps.getHubDataDir
+    : () => require('../../core/data-dir.js').getHubDataDir();
+  const getTranscriptDir = typeof deps.getTranscriptDir === 'function'
+    ? deps.getTranscriptDir
+    : () => require('../../core/data-dir.js').getHubTranscriptDir();
 
   async function refreshWithin() {
     let timer = null;
@@ -57,18 +94,64 @@ function registerSessionReferenceIpc(ipcMain, deps = {}) {
     }
   }
 
-  ipcMain.handle('session-reference:list', (_e, { excludeSessionId = '' } = {}) => {
+  ipcMain.handle('session-reference:list', (_e, { excludeSessionId = '', excludeMeetingId = '' } = {}) => {
     const snapshot = getSearchSnapshot() || {};
-    return referenceableRows(snapshot.sessions, {
+    const sessionRows = referenceableRows(snapshot.sessions, {
       excludeId: excludeSessionId,
       meetingTitleOf: meetingId => {
         const meeting = getMeeting(meetingId);
         return meeting ? meeting.title : null;
       },
     });
+    return mergeReferenceRows(sessionRows, referenceableMeetingRows(snapshot.meetings, { excludeMeetingId }));
   });
 
-  ipcMain.handle('session-reference:resolve', async (_e, { sessionId = '' } = {}) => {
+  // 没有群聊状态文件的老式会议室：退回搜索索引那份（它的内容来自会议时间线，对老协议是对的）。
+  async function resolveLegacyMeeting(meetingId, title) {
+    if (!searchService || typeof searchService.transcriptFor !== 'function') return null;
+    try {
+      const found = await searchService.transcriptFor({ key: `meeting:${meetingId}` });
+      if (!found || !found.path || !found.exists) return null;
+      return { ok: true, path: found.path, title: title || found.title || '', fresh: isCurrent(found.path) };
+    } catch (error) {
+      logger.warn('[session-reference] legacy meeting lookup failed:', error && error.message);
+      return null;
+    }
+  }
+
+  async function resolveMeeting(meetingId) {
+    const meeting = getMeeting(meetingId);
+    const title = (meeting && meeting.title) || '';
+    let state = null;
+    try {
+      const statePath = path.join(getHubDataDir(), 'arena-prompts', `${meetingId}-groupchat.json`);
+      if (fs.existsSync(statePath)) state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (error) {
+      return { ok: false, error: 'group-state-unreadable', message: `读取群聊记录失败：${error && error.message}` };
+    }
+    if (!state) {
+      const legacy = await resolveLegacyMeeting(meetingId, title);
+      if (legacy) return legacy;
+      return { ok: false, error: 'transcript-missing', message: '这个群聊还没有可读取的记录：至少要有一轮发言' };
+    }
+    if (!hasGroupSpeech(state)) {
+      return { ok: false, error: 'transcript-missing', message: '这个群聊还没有发言，暂时没有可引用的内容' };
+    }
+    const filePath = groupReferencePath(getTranscriptDir(), meetingId);
+    try {
+      writeUtf8Atomic(filePath, groupTranscript.renderTranscriptMarkdown({ ...state, meetingId }, { title }));
+    } catch (error) {
+      return { ok: false, error: 'transcript-write-failed', message: `生成群聊记录失败：${error && error.message}` };
+    }
+    return { ok: true, path: filePath, title, fresh: true };
+  }
+
+  ipcMain.handle('session-reference:resolve', async (_e, { sessionId = '', meetingId = '' } = {}) => {
+    if (meetingId) {
+      // id 会拼进文件路径，只接受 uuid 这类字符。
+      if (!/^[\w-]+$/.test(String(meetingId))) return { ok: false, error: 'bad-meeting', message: '群聊 ID 不合法' };
+      return resolveMeeting(String(meetingId));
+    }
     const id = String(sessionId || '');
     if (!id) return { ok: false, error: 'missing-session', message: '没有指定要引用的会话' };
     if (!searchService || typeof searchService.transcriptFor !== 'function') {
@@ -103,4 +186,4 @@ function registerSessionReferenceIpc(ipcMain, deps = {}) {
   });
 }
 
-module.exports = { mdIsCurrent, registerSessionReferenceIpc };
+module.exports = { groupReferencePath, mdIsCurrent, registerSessionReferenceIpc };

@@ -33,6 +33,11 @@ const SOURCE_HUB_ID = 'hub-codex-reference-source';
 const SOURCE_TITLE = 'Codex 调度算法讨论';
 const QUESTION_MARKER = 'REFERENCE_QUESTION_MARKER 链路自适应的 BLER 目标怎么定？';
 const ANSWER_MARKER = 'REFERENCE_ANSWER_MARKER 建议按业务类型分档，eMBB 取 10%。';
+const GROUP_ID = 'e2e-reference-group-0001';
+const GROUP_TITLE = '调度算法评审群';
+const GROUP_QUESTION_MARKER = 'GROUP_QUESTION_MARKER 比例公平和轮询哪个更适合高负载？';
+const GROUP_ANSWER_MARKER = 'GROUP_ANSWER_MARKER 高负载下比例公平吞吐更高，轮询只适合做对照。';
+const GROUP_PROGRESS_MARKER = 'GROUP_PROGRESS_MARKER 正在读代码';
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -139,10 +144,24 @@ function writeFixtures() {
         codexSid: CODEX_SID, codexSessionsRoot: CODEX_ROOT, transcriptPath: codexPath,
         lastMessageTime: Date.parse('2026-09-25T09:00:03Z'), updatedAt: Date.parse('2026-09-25T09:00:03Z') },
     ],
-    meetings: [],
+    meetings: [
+      { id: GROUP_ID, type: 'meeting', title: GROUP_TITLE, subSessions: [], groupChat: true, scene: 'general',
+        createdAt: Date.parse('2026-09-25T08:00:00Z'), lastMessageTime: Date.parse('2026-09-25T11:00:00Z') },
+    ],
     immersiveByMeeting: {},
   };
   fs.writeFileSync(path.join(DATA_DIR, 'state.json'), JSON.stringify(state, null, 2), 'utf8');
+
+  // 群聊的权威记录：成员回答文件已归并进来的群聊状态。过程汇报不该出现在引用里。
+  fs.mkdirSync(path.join(DATA_DIR, 'arena-prompts'), { recursive: true });
+  fs.writeFileSync(path.join(DATA_DIR, 'arena-prompts', `${GROUP_ID}-groupchat.json`), JSON.stringify({
+    meetingId: GROUP_ID, nextMessageSeq: 4,
+    messages: [
+      { seq: 1, role: 'user', origin: 'user', content: GROUP_QUESTION_MARKER, createdAt: Date.parse('2026-09-25T10:59:00Z') },
+      { seq: 2, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: GROUP_PROGRESS_MARKER, status: 'progress_update', createdAt: Date.parse('2026-09-25T10:59:30Z') },
+      { seq: 3, role: 'assistant', sid: 'm1', speaker: 'Codex 1', content: GROUP_ANSWER_MARKER, createdAt: Date.parse('2026-09-25T11:00:00Z') },
+    ],
+  }, null, 2), 'utf8');
 }
 
 async function main() {
@@ -251,6 +270,41 @@ async function main() {
     result.stillInInput = await client.eval(`document.querySelector('.floating-input-box').innerText.includes('【引用会话】')`);
     assert.equal(result.stillInInput, true);
     result.toast = await client.eval(`(document.getElementById('gc-fork-toast') || {}).textContent || ''`);
+
+    // ── 引用群聊：同一个按钮，清单里出现群聊；选中后插入【引用群聊】行，md 含正式发言
+    console.log('[step] click 引用会话 again, pick group chat');
+    const buttonAgain = await waitFor('reference button idle', async () => {
+      const b = await locate(client, "document.querySelector('.fi-bridge-reference')");
+      return b && b.text === '引用会话' ? b : null;
+    });
+    await clickPoint(client, buttonAgain.x, buttonAgain.y);
+    const groupRow = await waitFor('group row in picker', () => locate(client,
+      `Array.from(document.querySelectorAll('#gc-fork-picker [data-gc-picker-row]')).find(el => el.dataset.gcPickerRow === ${JSON.stringify('meeting:' + GROUP_ID)})`));
+    result.groupPickerRows = await client.eval(`Array.from(document.querySelectorAll('#gc-fork-picker [data-gc-picker-row]')).map(el => el.dataset.gcPickerRow + ' | ' + el.textContent.trim())`);
+    result.pickerTitle = await client.eval(`document.querySelector('#gc-fork-picker .modal-title').textContent`);
+    assert.equal(result.pickerTitle, '引用会话 / 群聊');
+    assert.ok(groupRow.text.includes(GROUP_TITLE) && groupRow.text.includes('群聊'), groupRow.text);
+    assert.equal(groupRow.topmost, true, 'group row must be clickable');
+    const groupPickerShot = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(SCREENSHOT_PATH.replace('.png', '-group-picker.png'), Buffer.from(groupPickerShot.data, 'base64'));
+    await clickPoint(client, groupRow.x, groupRow.y);
+    const groupInserted = await waitFor('group reference line in input', () => client.eval(`(() => {
+      const box = document.querySelector('.floating-input-box');
+      const text = box ? box.innerText : '';
+      return text.includes('【引用群聊】') ? text : null;
+    })()`), 30000);
+    assert.ok(groupInserted.includes(`群聊「${GROUP_TITLE}」`), groupInserted);
+    assert.ok(groupInserted.includes('【引用会话】'), 'earlier session reference must be kept');
+    const groupMdPath = (groupInserted.match(/【引用群聊】[^\n]*聊天记录：(.+?\.md)/) || [])[1];
+    assert.ok(groupMdPath, 'group reference line must contain a .md path');
+    result.groupMdPath = groupMdPath;
+    assert.equal(path.dirname(path.resolve(groupMdPath)), path.join(path.resolve(DATA_DIR), 'transcripts'),
+      'group md must live in the transcripts dir that Claude sessions can read');
+    const groupMd = fs.readFileSync(groupMdPath, 'utf8');
+    assert.ok(groupMd.includes('GROUP_QUESTION_MARKER') && groupMd.includes('GROUP_ANSWER_MARKER'), groupMd);
+    assert.ok(!groupMd.includes('GROUP_PROGRESS_MARKER'), 'progress updates must not be quoted');
+    result.groupMdHead = groupMd.slice(0, 600);
+    result.groupToast = await client.eval(`(document.getElementById('gc-fork-toast') || {}).textContent || ''`);
     const shot = await client.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(SCREENSHOT_PATH, Buffer.from(shot.data, 'base64'));
     result.screenshot = SCREENSHOT_PATH;
