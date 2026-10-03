@@ -93,7 +93,7 @@ async function main(){
       assert.deepEqual(row.modelToolErrors,[],'native tool calls must work without a shell/HTTP fallback');
       const readCall=modelTurn.find(item=>item.payload?.type==='function_call'&&['history_context','mcp__hub_assistant__history_context'].includes(item.payload.name));
       assert.ok(readCall,'changed model must use its registered assistant tool');
-      assert.ok(modelTurn.some(item=>item.payload?.type==='function_call_output'&&item.payload.call_id===readCall.payload.call_id&&String(item.payload.output).includes('snapshotReceipt')),'registered tool must return the current snapshot receipt');
+      assert.ok(modelTurn.some(item=>item.payload?.type==='function_call_output'&&item.payload.call_id===readCall.payload.call_id&&JSON.stringify(item.payload.output).includes('snapshotReceipt')),'registered tool must return the current snapshot receipt');
       assert.equal(nativeId(await meta(id)),row.nativeId);assert.equal((await meta(id)).currentModel.id,'deepseek-v4-pro');row.modelAfterSwitch=(await meta(id)).currentModel;
       await shot(kind+'-model-change');result.checks.push('DeepSeek 普通模型菜单真实切换到 V4 Pro，同一原生会话继续读取资料并回答');
     }
