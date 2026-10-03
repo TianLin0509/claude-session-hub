@@ -39,10 +39,11 @@ async function main(){
   const end=Date.now()+3*3600000;let oldCount=-1;
   while(!stop&&Date.now()<end&&!fs.existsSync(path.join(privateDir,'stop-hub'))){
    const meta=await cdp.eval('JSON.parse(JSON.stringify(sessions.get('+J(o.sessionId)+')))');
+   const raw=await cdp.eval('ipcRenderer.invoke("debug:get-session-buffer",'+J(o.sessionId)+')');fs.writeFileSync(path.join(privateDir,'codex-raw.txt'),String(raw||''));fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));
    if(meta){const finals=readFinals(meta).records;fs.writeFileSync(path.join(out,'native-final-evidence.json'),J(finals));if(finals.length!==oldCount){oldCount=finals.length;console.log(J({event:'native-finals',count:finals.length,turnIds:finals.map(x=>x.turnId)}));}}
    fs.writeFileSync(path.join(out,'phone-status.json'),J(await cdp.eval('ipcRenderer.invoke("assistant:phone-status")')));await sleep(1000);
   }
-  result.productionAuthUnchanged=crypto.createHash('sha256').update(fs.readFileSync(auth)).digest('hex')===before;result.passed=result.productionAuthUnchanged;
+  result.productionAuthUnchanged=crypto.createHash('sha256').update(fs.readFileSync(auth)).digest('hex')===before;result.fixtureClosedSafely=result.productionAuthUnchanged;result.passed=false;
  }catch(e){result.error=e.stack;process.exitCode=1;}
  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));result.exit=await gracefulQuit(hub)}for(const file of[path.join(codex,'auth.json'),path.join(data,'voice-input.json')])if(fs.existsSync(file))fs.unlinkSync(file);fs.writeFileSync(path.join(out,'hub-runtime-result.json'),J(result));console.log(J({event:'isolated-hub-ended',passed:result.passed,exit:result.exit,error:result.error}));}
 }
