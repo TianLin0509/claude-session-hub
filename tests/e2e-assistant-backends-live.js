@@ -31,6 +31,7 @@ async function main(){
  const settled=async id=>until('settled '+id,async()=>{const m=await meta(id),o=await invoke('assistant:get-overview',{});return !(o.sessionId===id&&o.submissionPending)&&!['running','waiting'].includes(m.status)&&!['running','submitting'].includes(m.cliRuntime?.state);});
  try{
   fs.copyFileSync(codexAuth,path.join(codexHome,'auth.json'));fs.copyFileSync(claudeAuth,path.join(claudeHome,'.credentials.json'));
+  const accountModels=path.join(path.dirname(codexAuth),'models_cache.json');if(fs.existsSync(accountModels))fs.copyFileSync(accountModels,path.join(codexHome,'models_cache.json'));
   fs.writeFileSync(path.join(claudeHome,'.claude.json'),j({hasCompletedOnboarding:true,theme:'light',skipDangerousModePermissionPrompt:true,projects:{}}));
   const hooks=require('../core/claude-hook-integration').ensureClaudeHookIntegration({claudeDir:claudeHome,sourceScriptsDir:path.resolve('scripts'),logger:{log(){},warn(){}}});
   assert.equal(hooks.errors.length,0,'真实 Claude 测试配置必须部署 Hub 生命周期 hook');

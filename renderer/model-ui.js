@@ -443,6 +443,7 @@ function createModelUiController({
   }
 
   async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
+    if(session.deepseekLegacyClaude)throw new Error('这个旧 DeepSeek 会话使用 Claude 引擎，不能切换为 Codex 模型');
     if (session.runtimeBackend === 'codex-app-server') {
       const response = await ipcRenderer.invoke('codex:native-action', {
         sessionId, action:'configure', model:option.id, effort:effortOverride || require('../core/chatgpt-web-models').chatgptWebRoute(option.id)?.effort || session.effort,

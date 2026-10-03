@@ -29,6 +29,7 @@ async function main(){
  const kinds=(process.env.HUB_ASSISTANT_TEST_KINDS||'codex,claude,gemini,kimi,qwen,deepseek-acp,glm,deepseek').split(',');
  try{
   copy(path.join(profile.home||path.join(os.homedir(),'.codex'),'auth.json'),path.join(codexHome,'auth.json'));
+  copy(path.join(profile.home||path.join(os.homedir(),'.codex'),'models_cache.json'),path.join(codexHome,'models_cache.json'));
   copy(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),'.claude'),'.credentials.json'),path.join(claudeHome,'.credentials.json'));
   fs.writeFileSync(path.join(claudeHome,'.claude.json'),j({hasCompletedOnboarding:true,theme:'light',skipDangerousModePermissionPrompt:true,projects:{}}));
   assert.equal(require('../core/claude-hook-integration').ensureClaudeHookIntegration({claudeDir:claudeHome,sourceScriptsDir:path.resolve('scripts'),logger:{log(){},warn(){}}}).errors.length,0);
