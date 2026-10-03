@@ -51,6 +51,7 @@ async function main(){
    try{
     const id=(await invoke('assistant:get-overview')).backendKind===kind?await active():await change(kind);row.id=id;
     await until('ready '+kind,async()=>cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return false;const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(" ").match(/Ask Codex|Claude Code|Type your|Kimi|Qwen|DeepSeek|ZCode|❯|>>>/)})()'),120000);
+    if(kind==='codex'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('low effort',async()=>{const m=await meta(id);return m.effort==='low'&&!m._modelSwitchPending;});}
     const previous=(await finals(id)).length,started=Date.now();
     await send(first?'请先读取本轮资料。记住验收暗号“杉树企鹅”，仅用一句话确认。':'请读取本轮资料中的 assistantContinuity。刚刚我告诉上一位助理的验收暗号是什么？仅用一句话回答。');
     const answer=await final(id,previous);assert.match(answer.text,/杉树企鹅/);row.answer=answer.text;row.elapsedMs=Date.now()-started;await settled(id);
