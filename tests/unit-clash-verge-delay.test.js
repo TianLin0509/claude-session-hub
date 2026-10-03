@@ -58,3 +58,33 @@ test('does not connect to a non-local controller', async () => {
   });
   assert.deepEqual(await reader.sample(), { status: 'unavailable' });
 });
+
+test('falls back to the live verge-mihomo pipe when the config names a stale one', async () => {
+  const tried = [];
+  const http = { request(options, onResponse) {
+    tried.push(options.socketPath);
+    const request = new EventEmitter();
+    request.end = () => {
+      if (options.socketPath.endsWith('sidecar-old')) { process.nextTick(() => request.emit('error', new Error('ENOENT'))); return; }
+      const response = new EventEmitter();
+      response.statusCode = 200;
+      onResponse(response);
+      process.nextTick(() => { response.emit('data', JSON.stringify({ proxies })); response.emit('end'); });
+    };
+    return request;
+  } };
+  const reader = createClashVergeDelayReader({
+    readFile: async () => 'external-controller-pipe: \\\\.\\pipe\\verge-mihomo-sidecar-old\n',
+    listPipes: () => ['\\\\.\\pipe\\verge-mihomo-production-new'],
+    http, now: () => measuredAt + 1_000,
+  });
+  const value = await reader.sample();
+  assert.equal(value.delayMs, 150);
+  assert.deepEqual(tried, ['\\\\.\\pipe\\verge-mihomo-sidecar-old', '\\\\.\\pipe\\verge-mihomo-production-new']);
+});
+
+test('pipe candidates only include local verge-mihomo pipes', () => {
+  const { controllerPipeCandidates } = require('../core/clash-verge-delay');
+  assert.deepEqual(controllerPipeCandidates('external-controller-pipe: http://example.test\n', () => ['\\\\.\\pipe\\verge-mihomo-a']),
+    ['\\\\.\\pipe\\verge-mihomo-a']);
+});

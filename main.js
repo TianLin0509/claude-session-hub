@@ -2253,6 +2253,8 @@ registerAppUtilityIpc(ipcMain, {
   acknowledgeNetworkEgressChange: () => networkEgressMonitor.acknowledgeForeignChange(),
   imageDir,
   path,
+  app,
+  vpnTrafficDir: path.join(getHubDataDir(), 'traffic'),
 });
 
 // 全机残留回收。多个 Hub 实例共用同一个数据目录，所以任何一个实例打开这张卡片

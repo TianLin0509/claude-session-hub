@@ -152,7 +152,10 @@ async function main() {
     fs.writeFileSync(shot, Buffer.from(png.data, 'base64'));
 
     if (!LIVE && SCENARIO === 'changed') {
+      // 确认入口在 VPN 流量弹层里：先点 VPN 行打开弹层，再点「确认当前节点」。
       await client.eval(`document.querySelector('.strip-route-foreign[data-egress-ack="true"]')?.click()`);
+      await waitFor('vpn traffic panel ack button', () => client.eval(`!!document.querySelector('#vpn-traffic-panel:not([hidden]) [data-vpn-ack]')`), 15000);
+      await client.eval(`document.querySelector('#vpn-traffic-panel [data-vpn-ack]').click()`);
       await waitFor('acknowledge changed VPN node', async () => client.eval(`(() => {
         const row = document.querySelector('.strip-route-foreign');
         return !!row && !row.querySelector('.strip-route-dot').classList.contains('warning') && !row.dataset.egressAck;
