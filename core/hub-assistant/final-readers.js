@@ -3,15 +3,16 @@ const fs=require('node:fs'),path=require('node:path'),{createHash}=require('node
 const {LiveHistory,nativeId,readFinals}=require('./live-history');
 const digest=value=>createHash('sha256').update(value).digest('hex');
 function projectFinals(meta,turns,sourceType) {
-  const identity=nativeId(meta),records=[];
+  const identity=nativeId(meta),records=[];let clientSubmissionId=null;
   for(const turn of turns) {
+    if(turn.role==='user')clientSubmissionId=require('../assistant-context-display').assistantContextDisplay(turn.text,'hub-assistant')?.clientSubmissionId||null;
     if(turn.role!=='assistant'||turn.nativeOutcome!=='completed'||!turn.text?.trim())continue;
     const messages=(turn.displayMessages||[]).filter(m=>m.phase==='final_answer'&&m.text?.trim());
     const text=messages.length?messages.map(m=>m.text).join('\n\n'):turn.text.trim();
     const turnId=turn.providerTurnId||turn.id,key=digest(JSON.stringify([identity,turnId,text]));
     records.push({id:key,ref:'E'+key.slice(0,16),notificationKey:digest(JSON.stringify([identity,turnId])),
       sessionId:meta.id||meta.hubId,title:meta.title||meta.name,provider:meta.kind,nativeSessionId:identity,
-      role:'assistant',turnId,messageId:turn.id,text,timestamp:turn.tsEnd||turn.ts||null,
+      role:'assistant',turnId,clientSubmissionId,messageId:turn.id,text,timestamp:turn.tsEnd||turn.ts||null,
       transcriptPath:meta.transcriptPath||null,sourceType,recordType:sourceType,
       evidenceMeaning:'目标助手原生完成回合的最终自述，业务是否验收需另行核实'});
   }
