@@ -19,7 +19,7 @@ function element() {
 function harness({ items = [], meetings = {}, active = null, store = new Map(), extra = {} } = {}) {
   const list = element();
   const sessions = new Map(items.map(s => [s.id, s]));
-  const ranges = [1,3].map(days => { const button=element();button.dataset.sessionDays=String(days);return button; });
+  const ranges = ['pinned',1,3].map(days => { const button=element();button.dataset.sessionDays=String(days);return button; });
   const renderer = createSessionListRenderer({
     document: { createElement: element, getElementById: () => null, querySelectorAll:()=>ranges, head: element() },
     localStorage: { getItem: k => store.get(k) || null, setItem: (k, v) => store.set(k, v) },
@@ -50,12 +50,12 @@ function meetingFixture(unread = false) {
     participants: [0], lastMessageTime: now, unreadAnswered: new Set(unread ? ['child'] : []) };
 }
 
-test('近期休眠、置顶和未读合到今天，旧会话从归档查找', () => {
+test('近期休眠和未读保留在今天，置顶独立收纳，旧会话从归档查找', () => {
   let opened;
   const h = harness({ items: [dormant('new'), dormant('old', { lastMessageTime: now - 8 * 86400000 }),
     dormant('pin', { pinned: true }), dormant('fresh', { unreadCount: 1 })], extra: { openSearch: o => { opened = o; } } });
   assert.match(h.section('new'), /今天/); assert.equal(h.row('old'), undefined);
-  assert.match(h.section('pin'), /今天/); assert.match(h.section('fresh'), /今天/);
+  assert.equal(h.row('pin'), undefined); assert.match(h.section('fresh'), /今天/);
   const entry = h.list.children.find(e => e.className === 'session-archive-entry');
   assert.match(entry.innerHTML, /archive-count">1</);
   entry.listeners.click(); assert.deepEqual(opened, { scope: 'dormant' });
@@ -67,14 +67,14 @@ test('旧休眠未读仍可见，唤醒在活跃，休眠不因旧断连快照�
     dormant('error', { connectionIssue: { type: 'stream-disconnected', message: 'lost' } })] });
   assert.match(h.section('old'), /今天/); assert.match(h.section('fresh'), /今天/);
   assert.match(h.section('wake'), /活跃/); assert.match(h.section('error'), /今天/);
-  assert.match(h.row('fresh').innerHTML, /sl-dot unread/);
-  assert.match(h.row('wake').innerHTML, /sl-dot start/);
-  assert.match(h.row('error').innerHTML, /sl-dot dorm/);
+  assert.match(h.row('fresh').innerHTML, /sl-time has-unread/);
+  assert.match(h.row('wake').innerHTML, /data-state="start"/);
+  assert.match(h.row('error').innerHTML, /data-state="dorm"/);
 });
 test('群聊未读保留醒目标记，已读留在时间组，成员归属和上下文保留', () => {
   const h = harness({ items: [dormant('child', { meetingId: 'group', contextPct: 38 })], meetings: { group: meetingFixture(true) } });
   assert.match(h.section('group'), /今天/);
-  assert.match(h.row('group').innerHTML, /sl-group-icon unread/);
+  assert.match(h.row('group').innerHTML, /sl-time has-unread/);
   assert.doesNotMatch(h.row('group').innerHTML, /session-mini-jumps/);
   assert.match(h.row('child').className, /child/);
   assert.match(h.row('child')._attrs['aria-label'], /Ctx 38%/);
@@ -119,14 +119,14 @@ test('归档全部走休眠 IPC，群聊成员成功后才保存休眠，拒绝�
   assert.ok(calls.every(c => !/close|delete/.test(c[0])));
 });
 
-test('两枚时间页签使用24和72小时窗口，切换后持久化', () => {
+test('三个范围页签使用置顶、24和72小时窗口，切换后持久化', () => {
   const day = 86400000;
   const h = harness({ items: [dormant('recent'), dormant('two', { lastMessageTime: now - 2 * day }),
     dormant('six', { lastMessageTime: now - 6 * day }), dormant('eight', { lastMessageTime: now - 8 * day })] });
   assert.ok(h.row('recent')); assert.equal(h.row('two'), undefined);
-  h.ranges[1].listeners.click();
+  h.ranges[2].listeners.click();
   assert.ok(h.row('two')); assert.equal(h.row('six'), undefined);
-  assert.equal(h.ranges.length,2); assert.equal(h.row('eight'), undefined);
+  assert.equal(h.ranges.length,3); assert.equal(h.row('eight'), undefined);
   assert.equal(h.store.get('hubSidebarRecentDays'), '3');
 });
 
@@ -135,12 +135,14 @@ test('组头可独立折叠，动作不误触发，重新创建保留选择', ()
     dormant('today', { status: 'idle' })];
   const h = harness({ items });
   const toggle = cls => h.list.children.find(e => e.className.includes(cls)).listeners.click({ target: { className: 'sec-collapse' }, preventDefault() {}, stopPropagation() {} });
-  for(const id of ['pin','unread','today','sleep'])assert.ok(h.row(id));
-  toggle('sec-today');for(const id of ['pin','unread','today','sleep'])assert.equal(h.row(id),undefined);
+  for(const id of ['unread','today','sleep'])assert.ok(h.row(id));
+  toggle('sec-today');for(const id of ['unread','today','sleep'])assert.equal(h.row(id),undefined);
   const restored = harness({ items, store: h.store });
   assert.equal(restored.row('pin'), undefined);
   restored.revealSearchItem('pin'); assert.ok(restored.row('pin'));
-  assert.ok(restored.row('sleep'));
+  assert.equal(restored.row('sleep'), undefined);
+  restored.revealSearchItem('sleep'); assert.ok(restored.row('sleep'));
+  assert.equal(restored.row('pin'), undefined);
 });
 
 test('模型过滤普通行及群聊成员，打开被过滤会话会恢复入口', () => {
@@ -160,4 +162,13 @@ test('模型过滤普通行及群聊成员，打开被过滤会话会恢复入�
   assert.ok(h.row('other')); assert.equal(h.row('mixed'), undefined);
   h.revealSearchItem('codex');
   assert.equal(control.value, 'all'); assert.ok(h.row('codex'));
+});
+
+
+test('search reveal switches both ways between pinned and recent scopes',()=>{
+ const h=harness({items:[dormant('pin',{pinned:true,lastMessageTime:now-10*86400000}),dormant('plain')]});
+ assert.equal(h.row('pin'),undefined);h.revealSearchItem('pin');assert.ok(h.row('pin'));assert.equal(h.row('plain'),undefined);
+ assert.equal(h.store.get('hubSidebarRange'),'pinned');h.revealSearchItem('plain');assert.ok(h.row('plain'));assert.equal(h.row('pin'),undefined);
+ assert.equal(h.store.get('hubSidebarRange'),'1');
+ assert.equal(h.store.get('hubSidebarRecentDays'),undefined,'old pinned hits do not change the recent range preference');
 });

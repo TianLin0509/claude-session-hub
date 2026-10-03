@@ -160,7 +160,6 @@
     <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
-        <div class="session-heading"><strong>会话</strong><span>当前工作区</span></div>
         <div class="new-session-wrapper" id="new-session-wrapper">
           <div class="launch-split">
             <button type="button" class="btn-new-session" id="btn-new" title="启动新会话 (Ctrl+N)" aria-label="启动新会话" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
@@ -258,7 +257,7 @@
         </button>
       </div>
       <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息</button><label class="session-model-filter"><select id="session-model-filter" aria-label="侧栏模型" title="按模型筛选"><option value="all">模型</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="other">其他</option></select></label><label class="session-project-filter"><select id="session-project-filter" aria-label="侧栏项目" title="按项目筛选"><option value="random">随机</option><option value="all" selected>项目</option></select></label></div><div id="session-project-filter-note" class="session-project-filter-note" role="status" hidden></div>
-      <div class="session-range-tabs" role="group" aria-label="会话范围"><button type="button" data-session-days="pinned" aria-pressed="false" title="只显示置顶的会话与群聊">置顶</button><button type="button" data-session-days="1" aria-pressed="true" title="最近24小时；置顶、未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="最近72小时；置顶、未读和活跃会话始终显示">3 天</button></div>
+      <div class="session-range-tabs" role="group" aria-label="会话范围"><button type="button" data-session-days="pinned" aria-pressed="false" title="只显示置顶的会话与群聊">置顶</button><button type="button" data-session-days="1" aria-pressed="true" title="未置顶的最近24小时会话；未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="未置顶的最近72小时会话；未读和活跃会话始终显示">3 天</button></div>
       <div class="session-list" id="session-list"></div>
       <section class="sidebar-insights" id="sidebar-insights" aria-label="用量与系统状态">
         <button type="button" class="sidebar-insights-toggle" id="sidebar-insights-toggle" aria-label="展开或收起用量与系统状态" aria-expanded="true" aria-controls="sidebar-insights-content" title="向下收起用量与系统状态">

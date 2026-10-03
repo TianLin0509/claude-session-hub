@@ -68,6 +68,7 @@ Codex / Kimi 等直接读本文件，Claude 经 `CLAUDE.md` 的 `@AGENTS.md` 导
 
 ## UI 与终端风险区
 
+- AI 会话的默认展示是卡片（2026-10-02 用户确认）：普通会话、群聊及成员每次进入都从卡片开始，只有用户主动点击后台才打开 CLI；旧后台偏好不决定下一次进入的展示。底层仍按 CLI / PTY 核心架构运行，PowerShell 继续直接显示终端。
 - 主 UI 在 `renderer/index.html`；普通 session 的终端、侧栏、preview、resize 在 `renderer/renderer.js` 与 `renderer/styles.css`；meeting room 在 `renderer/meeting-room.js` / `.css`。
 - 输出链路保持单写入：PTY data → main → renderer → xterm。看到「重复回答」先查 TUI 整屏重绘、resize/reflow、terminal reopen，不急于认定模型重复输出。
 - resize 相关改动格外谨慎：`ResizeObserver`、侧栏折叠、preview splitter、zoom、show terminal 都会触发重绘。

@@ -27,7 +27,7 @@ async function reload(){await c.send('Page.reload');await sleep(400);await c.clo
   const desktop=await geometry();report.desktop=desktop;
   await click(c,'[data-display-mode="phone"]');await sleep(400);
   const phone=await geometry();report.phone=phone;
-  check(phone.mode==='phone'&&Math.abs(phone.rail-64)<0.1&&Math.abs(phone.sidebar-176)<0.1&&phone.font===18&&phone.zoom===0,'A 手机预设：64 / 176 栏宽、18 字号与独立缩放');
+  check(phone.mode==='phone'&&Math.abs(phone.rail-64)<0.1&&Math.abs(phone.sidebar-200)<0.1&&phone.font===18&&phone.zoom===0,'A 手机预设：64 / 200 栏宽、18 字号与独立缩放');
   check(phone.selected===desktop.selected&&phone.draft===desktop.draft,'切换保留聚焦会话与输入草稿');
   check(await c.eval(`sessions.get(${sid}).currentModel.id==='gpt-6-astra'&&sessions.get(${sid}).effort==='high'&&sessions.get(${sid}).codexSpeedTier==='standard'`),'显示切换保留模型、推理与速度');
   check(await c.eval("document.querySelector('.composer-thinking').nextElementSibling?.classList.contains('composer-speed')"),'速度选择就在推理选择旁边');
@@ -40,7 +40,7 @@ async function reload(){await c.send('Page.reload');await sleep(400);await c.clo
   await click(c,'[data-display-mode="desktop"]');check((await geometry()).rail===0,'预设切换不展开用户已经隐藏的导航');
   await click(c,'[data-display-mode="phone"]');await click(c,'#btn-toggle-navigation');
   await click(c,'#btn-expand-sidebar');await sleep(250);check((await geometry()).sidebar===0,'手机预设仍能隐藏会话栏');
-  await click(c,'#btn-expand-sidebar');await sleep(250);check(Math.abs((await geometry()).sidebar-176)<0.1,'会话栏恢复原手机宽度');
+  await click(c,'#btn-expand-sidebar');await sleep(250);check(Math.abs((await geometry()).sidebar-200)<0.1,'会话栏恢复原手机宽度');
   await click(c,'#btn-display-settings');await rangeKey('fontSize','ArrowRight','ArrowRight',39);
   const edited=await geometry();check(edited.font!==18,'键盘可调整手机字号');
   await key(c,'Escape','Escape',27);await click(c,'[data-display-mode="desktop"]');await sleep(300);

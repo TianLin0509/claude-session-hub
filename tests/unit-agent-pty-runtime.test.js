@@ -66,10 +66,12 @@ test('PTY Claude launch fixes its identity before the CLI starts', t => {
   assert.notEqual(settingsOf(fresh).skipDangerousModePermissionPrompt,true,'ordinary session permissions remain unchanged');
 });
 
-test('PTY agent sessions open in the terminal and remember an explicit card choice', () => {
+test('PTY agents start with cards independently of legacy view preferences', () => {
   const { selectionViewModeFor, rememberViewMode } = require('../core/session-view-mode');
   const set = new Set();
-  assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true, rememberChoice: true }), 'pty');
+  assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true, rememberChoice: true }), 'card');
+  rememberViewMode(set, 's1', 'pty');
+  assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true, rememberChoice: true }), 'card');
   rememberViewMode(set, 's1', 'card');
   assert.equal(selectionViewModeFor(set, 's1', { cardCapable: true, rememberChoice: true }), 'card');
   // 其他会话（原生回退、Kimi 等）保持现有的卡片默认。

@@ -7,6 +7,14 @@ const source = fs.readFileSync(require.resolve('../renderer/renderer.js'), 'utf8
 const start = source.indexOf('function formatTime(ts) {');
 const end = source.indexOf('\nfunction escapeHtml', start);
 const now = 1800000000000;
+const {sidebarRelativeTime}=require('../renderer/sidebar-relative-time');
+
+test('compact sidebar labels keep minute/hour/day boundaries and reject invalid times',()=>{
+  for(const [age,label] of [[0,'NOW'],[59999,'NOW'],[60000,'1M'],[120000,'2M'],[3600000,'1H'],[9*3600000,'9H'],[86400000,'1D'],[2*86400000,'2D'],[-1000,'NOW']]) {
+    assert.equal(sidebarRelativeTime(now-age,now),label);
+  }
+  for(const ts of [undefined,NaN,Infinity,'bad',0,null]) assert.equal(sidebarRelativeTime(ts,now),'—');
+});
 const context = vm.createContext({ Date: { now: () => now }, formatBeijingClock: () => '08:47' });
 vm.runInContext(source.slice(start, end), context);
 

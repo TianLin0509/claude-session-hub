@@ -2,7 +2,7 @@
 
 const STORAGE_KEY = 'hub.displayPresets.v1';
 const LIMITS = Object.freeze({fontSize:[10,28],terminalFontSize:[10,28],zoomLevel:[-3,5],railWidth:[56,112],sessionWidth:[152,320],uiFontSize:[11,16],inputHeight:[40,120]});
-const PHONE = Object.freeze({fontSize:18,terminalFontSize:14,zoomLevel:0,railWidth:64,sessionWidth:176,uiFontSize:13,inputHeight:52});
+const PHONE = Object.freeze({fontSize:18,terminalFontSize:14,zoomLevel:0,railWidth:64,sessionWidth:200,uiFontSize:13,inputHeight:52});
 const FIELDS = {fontSize:'卡片正文字号',terminalFontSize:'CLI 终端字号',zoomLevel:'整体缩放',railWidth:'导航栏宽',sessionWidth:'会话栏宽',uiFontSize:'界面字号',inputHeight:'输入框高度'};
 
 function normalizeProfile(value, fallback) {
@@ -19,8 +19,11 @@ function loadPresets(storage, legacy = {}) {
   let saved;
   try { saved = JSON.parse(storage.getItem(STORAGE_KEY)); } catch (_) {}
   desktop.terminalFontSize = normalizeProfile(saved?.desktop,desktop).fontSize;
-  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop',
-    desktop:normalizeProfile(saved?.desktop,desktop),phone:normalizeProfile(saved?.phone,PHONE)};
+  const phone = normalizeProfile(saved?.phone,PHONE);
+  // Only migrate the former default once; keep custom widths and later choices.
+  if (!saved?.singleLineSidebar && phone.sessionWidth === 176) phone.sessionWidth = PHONE.sessionWidth;
+  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop', singleLineSidebar: true,
+    desktop:normalizeProfile(saved?.desktop,desktop),phone};
 }
 
 function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,applyTerminalFont,applyZoom,onLayoutChange}) {

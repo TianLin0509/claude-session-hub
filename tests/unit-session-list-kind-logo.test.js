@@ -3,7 +3,7 @@
 //
 // 改动：renderer/session-list-renderer.js 的普通 session 行，时间左边那一列从
 //   <span class="sl-model">Opus 5</span> 换成 <span class="sl-kind ai-logo logo-claude">；
-//   同时时间列不再拼 "休眠 · " 前缀（休眠改由 .dormant 底色 + 灰状态点表达）。
+//   同时时间列不再拼 "休眠 · " 前缀（休眠改由 .dormant 底色 + 灰色图标表达）。
 //
 // 这里锁三件容易被"顺手改回去"的事：
 //   1. 每种 kind 都能拿到正确的 logo class（含 *-resume / deepseek-legacy 归一）
@@ -103,7 +103,7 @@ test('claude 会话在时间左边渲染 .sl-kind.logo-claude，不再渲染模�
   assert.ok(/class="sl-kind ai-logo logo-claude"/.test(html), '应渲染 .sl-kind.ai-logo.logo-claude');
   assert.ok(!/class="sl-model"/.test(html), '模型文字列应已被 logo 取代');
   assert.ok(!/>Opus 5</.test(html), '"Opus 5" 不应作为可见文本出现在行内');
-  assert.ok(/title="Claude · Opus 5"/.test(html), '型号降级到 logo 的 tooltip，信息不丢');
+  assert.ok(/title="Claude · Opus 5 ·/.test(html), '型号降级到 logo 的 tooltip，信息不丢');
 });
 
 // ---------------- 用例 2：codex 会话用 logo-codex（一眼分家的核心诉求） ----------------
@@ -138,15 +138,15 @@ test('未知 kind 回落到 .sl-model 文字列', () => {
 test('最近休眠会话在时间组中保留休眠状态，更旧会话进入归档', () => {
   const { rows, html } = renderRows(oneSession({ id: 'd1', kind: 'codex', status: 'dormant' }));
   assert.ok(rows.some(r => r.dataset.sessionId === 'd1'));
-  assert.match(html, /sl-dot dorm/);
+  assert.match(html, /data-state="dorm"/);
   assert.match(html, /archive-count">0</);
   const old = renderRows(oneSession({ id: 'old', status: 'dormant', createdAt: Date.now() - 4 * 86400000, lastMessageTime: Date.now() - 4 * 86400000 }));
   assert.ok(!old.rows.some(r => r.dataset.sessionId === 'old'));
   assert.match(old.html, /archive-count">1</);
 });
-test('断连使用红色圆点，原因保留在 tooltip', () => {
+test('断连使用图标警示状态，原因保留在无障碍标签', () => {
   const { html } = renderRows(oneSession({ id: 'dc', kind: 'codex', status: 'idle', connectionIssue: { type: 'stream-disconnected', message: 'ECONNRESET' } }));
-  assert.match(html, /sl-dot error/);
+  assert.match(html, /data-state="error"/);
   assert.match(html, /ECONNRESET/);
 });
 

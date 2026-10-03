@@ -42,6 +42,9 @@ async function composerPaste(text){
   const session=await c.eval(`ipcRenderer.invoke('create-session',{kind:'codex',opts:{cwd:${j(cwd)},model:'gpt-6-astra',effort:'low',mcpProfile:'none'}})`);sid=session.id;assert(sid);
   await waitFor(c,`!!document.querySelector('.session-item[data-session-id="${sid}"]')`);await click(c,`.session-item[data-session-id="${sid}"]`);
   await waitFor(c,`terminalCache.get(${j(sid)})?._hydrated===true`);
+  check(await c.eval(`currentView==='card'&&document.querySelector('#btn-backstage').getAttribute('aria-pressed')==='false'`),'真实 Codex 初次进入默认卡片');
+  await click(c,'#btn-backstage');
+  check(await c.eval(`currentView==='pty'&&document.querySelector('#btn-backstage').getAttribute('aria-pressed')==='true'`),'只有手动点击后台才显示真实 CLI');
   await c.eval(`window.__pasteBytes=[];terminalCache.get(${j(sid)}).terminal.onData(data=>__pasteBytes.push(data))`);
   for(let n=0;n<200;n++){if(/for shortcuts|Ask Codex to do anything/.test((await state())?.text||''))break;if(n===199)throw new Error('Codex TUI not ready');await sleep(150);}
   await click(c,'[data-display-mode="phone"]');await sleep(350);
@@ -58,7 +61,7 @@ async function composerPaste(text){
   check((await state()).font===15&&(await state()).card===18,'CLI 焦点下字号快捷键只调整终端');
   await controlKey('-','Minus',189);await sleep(180);
   await c.eval(`sessions.get(${j(sid)}).title='手机端中文标题与后台编码可读性测试';renderSessionList()`);
-  check(await c.eval(`(()=>{const e=document.querySelector('.session-item[data-session-id="${sid}"] .sl-title'),s=getComputedStyle(e);return s.whiteSpace==='normal'&&s.webkitLineClamp==='2'&&e.getBoundingClientRect().width>120})()`),'长会话标题两行阅读，不与时间争抢宽度');
+  check(await c.eval(`(()=>{const e=document.querySelector('.session-item[data-session-id="${sid}"] .sl-title'),s=getComputedStyle(e);return s.whiteSpace==='nowrap'&&e.getBoundingClientRect().height<20&&e.getBoundingClientRect().width>120})()`),'长会话标题保持单行，时间缩写给标题让出宽度');
   check(await c.eval(`(()=>{const ids=['btn-session-details','session-model-filter','session-project-filter'],r=ids.map(id=>document.getElementById(id).getBoundingClientRect());return Math.max(...r.map(x=>x.top))-Math.min(...r.map(x=>x.top))<5&&document.querySelector('#session-model-filter option[value="all"]').textContent==='模型'&&document.querySelector('#session-project-filter option[value="all"]').textContent==='项目'&&!document.querySelector('#btn-session-details span')})()`),'详细信息、模型、项目同一行，去掉重复标签和三横图标');
   await click(c,'#session-model-filter');await key(c,'ArrowDown','ArrowDown',40);await key(c,'ArrowDown','ArrowDown',40);await key(c,'Enter','Enter',13);
   check(await c.eval("document.querySelector('#session-model-filter').value==='codex'"),'模型筛选可用');
