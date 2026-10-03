@@ -153,11 +153,13 @@ class AssistantService {
     if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,hubState:s.hubState,nativeSessionId:nativeId(s)}));
     if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
-      if(args.requestToken){
-        if(args.requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
-        const response=this.snapshots.read(args.requestToken),last=this.store.get('lastContext');
+      const implicitCurrent=hasCaller&&callerSessionId===this.currentRequest?.sessionId&&Object.keys(args).length===0;
+      const requestToken=args.requestToken||(implicitCurrent?this.currentRequest.token:null);
+      if(requestToken){
+        if(requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
+        const response=this.snapshots.read(requestToken),last=this.store.get('lastContext');
         this.dossier.noteServed(response.packet.workbench);
-        if(last?.requestToken===args.requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
+        if(last?.requestToken===requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
         return response;
       }
       return this.context(args);
