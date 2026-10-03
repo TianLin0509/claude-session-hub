@@ -63,6 +63,7 @@ async function main(){
   await wait(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning')).every(e=>sessions.get(e.dataset.sid)?.nativeRuntime?.connection==='unstarted')`);
   const ids=await cdp.eval(`Array.from(document.querySelectorAll('#mr-input-tuning .mr-input-member-tuning'),e=>e.dataset.sid)`);
   const before=(await invoke('get-sessions')).find(s=>s.id===ids[1]).codexSpeedTier;
+  await click('[data-group-menu="members"]');
   await click(`#mr-input-tuning [data-sid="${ids[0]}"] .composer-speed`);
   await click('.speed-picker-menu [data-speed="fast"]');
   await wait(`sessions.get(${JSON.stringify(ids[0])})?.codexSpeedTier==='fast' && !sessions.get(${JSON.stringify(ids[0])})?._modelSwitchPending`);
@@ -72,6 +73,7 @@ async function main(){
   await shot('group-fast');await wait("!document.querySelector('.speed-picker-menu')");await click('#mr-input-box');
   for(const width of [1000,760]) {
    await cdp.send('Emulation.setDeviceMetricsOverride',{width,height:950,deviceScaleFactor:1,mobile:false});
+   if(await cdp.eval("document.querySelector('#mr-composer-menu-members').hidden"))await click('[data-group-menu="members"]');
    await click(`#mr-input-tuning [data-sid="${ids[1]}"] .composer-speed`);
    await wait("!!document.querySelector('.speed-picker-menu [data-speed=fast]:not(:disabled)')");
    ok('speed menu fits '+width,await cdp.eval(`(()=>{const r=document.querySelector('.speed-picker-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;})()`));

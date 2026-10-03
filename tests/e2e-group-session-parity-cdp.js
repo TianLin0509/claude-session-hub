@@ -42,6 +42,7 @@ async function main() {
       throw Error('Timeout: ' + label);
     };
     const click = async selector => {
+      await require('./helpers/group-composer-menu').revealGroupComposerControl(c, selector, click);
       const point = await c.eval(`(() => {const e=document.querySelector(${JSON.stringify(selector)});
         if(!e)throw Error('Missing element');e.scrollIntoView({block:'nearest',inline:'nearest'});
         const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;
