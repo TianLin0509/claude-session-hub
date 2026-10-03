@@ -51,14 +51,14 @@ async function main(){
    try{
     const id=(await invoke('assistant:get-overview')).backendKind===kind?await active():await change(kind);row.id=id;
     await until('ready '+kind,async()=>{if(['qwen','deepseek-acp','glm'].includes(kind)){const m=await meta(id),runtime=m.cliRuntime||m.nativeRuntime;if(runtime?.connection==='disconnected')throw Error('provider connection failed: '+runtime.reason);return runtime?.connection==='connected'&&!!m.acpSid;}const text=await cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return "";const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(" ")})()');if(/client is no longer supported|OAuth login expired|No active session|requires login/.test(text))throw Error('provider authentication unavailable: '+text.match(/(?:Failed to sign in\.|OAuth login expired|No active session|requires login).{0,260}/)?.[0]);return /Ask Codex|Claude Code|Type your|context:|❯|>>>/.test(text);},120000);
-    if(kind==='codex'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('low effort',async()=>{const m=await meta(id);return m.effort==='low'&&!m._modelSwitchPending;});}
+    if(kind==='codex'&&process.env.HUB_ASSISTANT_KEEP_EFFORT!=='1'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('low effort',async()=>{const m=await meta(id);return m.effort==='low'&&!m._modelSwitchPending;});}
     const previous=(await finals(id)).length,started=Date.now();
     await send(first?'请先读取本轮资料。记住验收暗号“杉树企鹅”，仅用一句话确认。':'请读取本轮资料中的 assistantContinuity。刚刚我告诉上一位助理的验收暗号是什么？仅用一句话回答。');
     const answer=await final(id,previous);assert.match(answer.text,/杉树企鹅/);row.answer=answer.text;row.elapsedMs=Date.now()-started;await settled(id);
     assert.equal((await invoke('assistant:get-overview')).contextCoverage.snapshotRead,true);
     row.nativeId=nativeId(await meta(id));row.model=(await meta(id)).currentModel;await shot(kind+'-handoff');
     row.passed=true;first=false;result.checks.push(kind+' 真实资料读取、跨后端交接与最终回答');
-   }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
+   }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if(kind==='codex')fs.writeFileSync(path.join(out,'codex-raw-buffer.txt'),await cdp.eval('ipcRenderer.invoke("debug:get-session-buffer",'+j(row.id)+')'));if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
    console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs}));
   }
   result.passed=result.backends.every(row=>row.passed);if(!result.passed)process.exitCode=1;

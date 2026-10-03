@@ -90,6 +90,9 @@ class QwenCliSession extends EventEmitter {
     if(event.session_id!==this.threadId)return;
     if(name==='UserPromptSubmit') {
       const at=Date.parse(event.timestamp)||Date.now(),text=event.submitted_prompt||event.prompt||'';
+      // Native Qwen emits empty UserPromptSubmit hooks when continuing after a
+      // tool result. They belong to the current user turn, not a new submission.
+      if(!text.trim())return;
       this.hookTurn={id:randomUUID(),at,text,submissionId:this.pending?.text===text?this.pending.id:null};
       this.hookTurns.push(this.hookTurn);
       this.bindRecord(this.records.at(-1));
