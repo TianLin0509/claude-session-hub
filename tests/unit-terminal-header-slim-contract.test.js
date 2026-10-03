@@ -37,7 +37,7 @@ assert.doesNotMatch(modelUi, /terminal-model-badge/,
 assert.doesNotMatch(renderer, /'terminal-status'|terminal-status-label|terminal-status-meta/,
   '头部状态药丸已删：文案归 composer 状态行，头部只留一个状态点');
 assert.doesNotMatch(renderer, /metric-cwd|terminal-metrics-row/,
-  '目录 chip 与整条 metrics 行已删：工作目录归面包屑，实时量归终端卡覆盖层');
+  '目录 chip 与整条 metrics 行已删：工作目录归面包屑，普通会话实时量归 composer');
 assert.doesNotMatch(renderer, /terminal-title-row|terminal-title-section/,
   '头部压成单行后不再有 title-row / title-section 两层包裹');
 
@@ -71,11 +71,14 @@ assert.match(paintBody, /terminal-crumb-dot \$\{runtime\.state\}/,
 assert.doesNotMatch(paintBody, /createElement/,
   '状态点没有子节点可造 —— 药丸的四个 span 全删了');
 
-// ── 实时量覆盖层 ───────────────────────────────────────────────────────
-assert.match(renderer, /metricsOverlay\.className = 'terminal-metrics'/, '实时量覆盖层必须存在');
-assert.match(renderer, /mountTarget\.append\(metricsOverlay, termContainer\)/,
-  '覆盖层挂在面板上而不是终端体里 —— 挂进去卡片视图会被 msg-overlay 整片盖住；'
-  + 'T6 之后舞台里只剩这两样，头部已经上移到工具栏');
+// ── 嵌入式投研保留实时量，普通 Session 不重复 composer 指标 ────────────
+const showStart = renderer.indexOf('function showTerminal(');
+const showBody = renderer.slice(showStart, renderer.indexOf('\n}', showStart));
+assert.match(showBody, /if \(embedded\) \{\s*const metricsOverlay = document\.createElement\('div'\);[\s\S]*?mountTarget\.append\(metricsOverlay\);\s*\}/,
+  '没有普通 composer 的嵌入式投研仍保留实时量覆盖层');
+assert.doesNotMatch(showBody, /mountTarget\.append\(metricsOverlay, termContainer\)/,
+  '普通会话不得再无条件挂载重复指标覆盖层');
+assert.match(showBody, /mountTarget\.append\(termContainer\)/, '普通会话仍然挂载原有终端');
 const metricsStart = renderer.indexOf('function renderMetricsRow(');
 const metricsBody = renderer.slice(metricsStart, renderer.indexOf('\n}', metricsStart));
 assert.match(metricsBody, /ctx \$\{pct\}%/, '覆盖层要有 ctx%');
