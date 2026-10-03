@@ -26,6 +26,11 @@ const status=async props=>{await c.eval(`require('electron').ipcRenderer.emit('d
   const g=await geometry();report.measurements.push({mode,width,...g});console.log(JSON.stringify(g));
   check(g.headHeight<=36,mode+'/'+width+'：头像与工作流状态只占一行');
   check(g.railScroll<=g.railWidth+1&&g.overflow==='visible',mode+'/'+width+'：操作栏无横向溢出或滚动条');
+  check(await c.eval(`(()=>{const chips=[...document.querySelectorAll('.mr-group-model-chip')],row=document.querySelector('#mr-input-row').getBoundingClientRect();return chips.length===6&&chips.every(e=>{const r=e.getBoundingClientRect();return r.width>55&&r.height>0&&r.left>=row.left&&r.right<=row.right&&/GPT-6.1|Opus 5.5/.test(e.textContent)})})()`),mode+'/'+width+'：六位成员的模型名称常显且保留版本号');
+  check(await c.eval(`(()=>{const models=document.querySelector('.mr-group-models').getBoundingClientRect();return [...document.querySelectorAll('#mr-input-row .voice-mic,#mr-input-row .prompt-polish-tools')].every(e=>e.getBoundingClientRect().top>=models.bottom-1)})()`),mode+'/'+width+'：语音与润色按钮不覆盖模型标签');
+  await click(c,'.mr-group-model-chip:last-child');
+  check(await c.eval(`!document.querySelector('#mr-composer-menu-members').hidden&&document.activeElement.closest('.mr-input-member-tuning')?.dataset.sid==='compact-member-5'`),mode+'/'+width+'：点击模型标签定位对应成员设置');
+  await c.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
   check(await c.eval(`(()=>{const p=document.querySelector('#mr-free-avatars-row').getBoundingClientRect();return Array.from(document.querySelectorAll('.mr-free-avatar-chk')).every(e=>e.getBoundingClientRect().right<=p.right+1)})()`),mode+'/'+width+'：所有成员头像均可见');
   await click(c,'[data-group-menu="members"]');
   check(await c.eval(`(()=>{const p=document.querySelector('#mr-composer-menu-members'),r=p.getBoundingClientRect();return !p.hidden&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&document.querySelectorAll('.mr-input-member-tuning').length===6})()`),mode+'/'+width+'：统一设置面板在屏内，六位 AI 各有独立设置');
@@ -57,6 +62,8 @@ const status=async props=>{await c.eval(`require('electron').ipcRenderer.emit('d
  check(await c.eval(`document.querySelector('#mr-composer-menu-members').hidden&&document.querySelector('#mr-composer-menu-tools').hidden`),'切换群聊收起旧设置面板');
  await click(c,'.session-item[data-meeting-id="compact-group"]');
  check(await c.eval(`document.querySelector('#mr-input-box').innerText.includes('保留群聊草稿')`),'切回群聊仍保留原草稿');
+ await c.eval(`sessions.get('compact-member-0').currentModel={id:'gpt-6.1-astra',displayName:'GPT-6.1 Astra'};window.MeetingRoom.refreshSessionMetrics('compact-member-0')`);
+ check(await c.eval(`document.querySelector('.mr-group-model-chip[data-sid="compact-member-0"]').textContent.includes('Astra')`),'模型标签跟随成员当前模型更新');
  await click(c,'#btn-theme');await click(c,'[data-theme-id="dark"]');
  await click(c,'#btn-theme');
  await click(c,'[data-group-menu="members"]');
