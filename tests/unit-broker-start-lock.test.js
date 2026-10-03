@@ -8,8 +8,14 @@ test('caller timeouts retain the live child startup lock; only child death permi
   const fakeProcess=Object.create(process);
   fakeProcess.kill=pid=>{if(!alive.has(pid))throw Object.assign(Error('dead'),{code:'ESRCH'});};
   const module={exports:{}};
+  // The fake child never connects. Advance its caller deadlines with a
+  // controlled clock: a real 350 ms window can expire between deleting a
+  // stale lock and the next poll when the host is busy.
+  let now=0;
+  class Clock extends Date {static now(){return now;}}
+  const tick=(fn,ms)=>{queueMicrotask(()=>{now+=ms;fn();});return{unref(){}};};
   const wrapper=vm.runInNewContext('(function(require,module,exports,__dirname,process){'+fs.readFileSync(file,'utf8')+'\n})',{
-    console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval,URL});
+    console,Buffer,Date:Clock,setTimeout:tick,clearTimeout(){},setInterval,clearInterval,URL});
   wrapper(name=>name==='child_process'?{spawn(){const child=new EventEmitter();child.pid=700000+(++starts);alive.add(child.pid);child.unref=()=>{};return child;}}:nativeRequire(name),
     module,module.exports,path.dirname(file),fakeProcess);
   await assert.rejects(module.exports.connectBroker({dataDir:dir,timeoutMs:120}));
