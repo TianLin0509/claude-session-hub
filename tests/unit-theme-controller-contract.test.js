@@ -14,6 +14,7 @@ const {
   THEME_IDS,
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
+  THEME_PREFERENCE_KEY,
   DARK_THEME_IDS,
   normalizeTheme,
   nextTheme,
@@ -77,7 +78,7 @@ function makeHarness({ stored } = {}) {
     configurable: true,
   });
   const terminal = { options: {} };
-  const localStorage = makeLocalStorage(stored ? { [THEME_STORAGE_KEY]: stored } : {});
+  const localStorage = makeLocalStorage(stored ? { [THEME_STORAGE_KEY]: stored, [THEME_PREFERENCE_KEY]: '1' } : {});
   let settingsOpened = 0;
 
   const controller = createThemeController({

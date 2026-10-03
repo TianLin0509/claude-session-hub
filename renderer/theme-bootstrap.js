@@ -8,26 +8,19 @@
  * 因此不会出现"先深后浅"的闪烁。
  *
  * 这里刻意不依赖 renderer.js 的任何东西：整段包在 try/catch 里，任何一步失败都
- * 只是退回没有 data-theme 的状态，base.css 段②的 :root 会兜住深色。
+ * 只是退回 index.html 的冷白 data-theme，不改变会话启动。
  */
 
 (function bootstrapTheme() {
   try {
     const {
-      DEFAULT_THEME,
-      THEME_STORAGE_KEY,
       THEME_ATTRIBUTE,
-      normalizeTheme,
+      readInitialTheme,
     } = require('../core/theme-config.js');
 
-    let stored = null;
-    try {
-      stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    } catch {
-      stored = null;
-    }
-
-    const theme = normalizeTheme(stored || DEFAULT_THEME);
+    let storage;
+    try { storage = window.localStorage; } catch {}
+    const theme = readInitialTheme(storage);
     document.documentElement.setAttribute(THEME_ATTRIBUTE, theme);
   } catch (err) {
     // 主题只是观感，任何异常都不该拦住 Hub 启动。

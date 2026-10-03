@@ -12,7 +12,6 @@
 .display-preset-fields input { width:100%; min-width:0; accent-color:var(--brand); }
 .display-preset-fields output { text-align:right; font-variant-numeric:tabular-nums; }
 :root[data-display-mode] { --hub-rail-slot:var(--display-rail-width,88px); --hub-rail-open:var(--display-rail-width,88px); }
-:root[data-display-mode='desktop']:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:var(--display-rail-width,64px); }
 :root[data-display-mode]:has(.app-container.rail-hidden) { --hub-rail-slot:0px; }
 :root[data-display-mode] body #session-sidebar { width:var(--display-session-width,var(--hub-session-width)); min-width:var(--display-session-width,var(--hub-session-width)); }
 :root[data-display-mode] body .app-container.workspace-active #session-sidebar { width:0; min-width:0; }

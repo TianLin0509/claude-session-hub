@@ -57,6 +57,19 @@ const DARK_THEME_IDS = Object.freeze(['dark', 'frost']);
 const DEFAULT_THEME = 'codex';
 const THEME_STORAGE_KEY = 'hub.theme';
 const THEME_ATTRIBUTE = 'data-theme';
+const THEME_PREFERENCE_KEY = 'hub.themePreference.v2';
+
+// Establish the user's light starting point once; later manual choices survive restarts.
+function readInitialTheme(storage) {
+  try {
+    if (storage?.getItem(THEME_PREFERENCE_KEY) !== '1') {
+      storage?.setItem(THEME_STORAGE_KEY, DEFAULT_THEME);
+      storage?.setItem(THEME_PREFERENCE_KEY, '1');
+      return DEFAULT_THEME;
+    }
+    return normalizeTheme(storage?.getItem(THEME_STORAGE_KEY));
+  } catch { return DEFAULT_THEME; }
+}
 
 function normalizeTheme(value) {
   const id = String(value || '').trim().toLowerCase();
@@ -85,6 +98,8 @@ module.exports = {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
   THEME_ATTRIBUTE,
+  THEME_PREFERENCE_KEY,
+  readInitialTheme,
   normalizeTheme,
   getTheme,
   nextTheme,

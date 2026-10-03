@@ -11,13 +11,14 @@ function installColdwhiteShell(doc = globalThis.document) {
   }
   const footer = doc.createElement('footer');
   footer.id = 'hub-system-footer';
-  footer.setAttribute('aria-label', '系统、账户用量与网络状态；窄窗口可横向滚动');
+  footer.setAttribute('aria-label', '系统、账户用量与网络状态；点击详情查看全部读数');
   footer.tabIndex = 0;
   const strip = doc.getElementById('sidebar-strip');
   if (strip) footer.append(strip);
   const usage = doc.getElementById('rail-usage');
   if (usage) footer.append(usage);
   app.append(footer);
+  require('./status-footer-layout').installStatusFooterLayout(doc);
   const panelIds = ['hub-workspace', 'writing-panel', 'account-page', 'chuxin-panel', 'study-panel', 'ran-panel'];
   const watched = new Set();
   const navigation = ['btn-home','btn-assistant','btn-research','btn-study','btn-ran','btn-rail-memo','btn-rail-capabilities','btn-rail-accounts','btn-writing'];

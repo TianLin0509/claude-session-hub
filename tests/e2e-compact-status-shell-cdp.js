@@ -18,7 +18,7 @@ let hub,c;
 const check=(ok,label)=>{assert(ok,label);result.checks.push(label);console.log('PASS '+label);};
 const shot=async name=>{const s=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));};
 const footerShot=async name=>{const clip=await c.eval('(()=>{const r=document.querySelector("#hub-system-footer").getBoundingClientRect();return {x:0,y:r.top,width:innerWidth,height:r.height,scale:2};})()');const s=await c.send('Page.captureScreenshot',{format:'png',clip});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));};
-const geometry=()=>c.eval(`(()=>{const f=document.querySelector('#hub-system-footer'),r=f.getBoundingClientRect(),boxes=[...f.querySelectorAll('.strip-resources,.sidebar-quota-provider,.strip-network')].map(e=>{const b=e.getBoundingClientRect();return {class:e.className,x:b.left,right:b.right,top:b.top,bottom:b.bottom,height:b.height};});return {footer:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height,scroll:f.scrollWidth,width:f.clientWidth},boxes,bodyWidth:document.documentElement.scrollWidth,viewport:innerWidth};})()`);
+const geometry=()=>c.eval(`(()=>{const f=document.querySelector('#hub-system-footer'),r=f.getBoundingClientRect(),boxes=[...f.querySelectorAll('.strip-resources,.sidebar-quota-provider,.strip-network')].map(e=>{const b=e.getBoundingClientRect();return {class:e.className,x:b.left,right:b.right,top:b.top,bottom:b.bottom,height:b.height};}).filter(b=>b.height>0);return {footer:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height,scroll:f.scrollWidth,width:f.clientWidth},boxes,bodyWidth:document.documentElement.scrollWidth,viewport:innerWidth};})()`);
 const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'nearest',inline:'nearest'})`);const p=await c.eval(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);await c.send('Input.dispatchMouseEvent',{type:'mouseMoved',...p});};
 (async()=>{
  try{
@@ -75,7 +75,8 @@ const hover=async selector=>{await c.eval(`document.querySelector(${JSON.stringi
    const g=await geometry();result.geometry.push({width,height,zoom,...g});
    check(g.bodyWidth<=g.viewport+1&&g.boxes.every(b=>b.height>0&&b.top>=g.footer.top-1&&b.bottom<=g.footer.bottom+1),'底栏所有读数保持单行且页面不溢出 '+width+'/'+zoom);
    if(width===1440&&zoom===1)check(g.footer.scroll<=g.footer.width+1,'1440px 全部读数一屏放下');
-   if(width===390){await c.eval('document.querySelector("#hub-system-footer").scrollLeft=9999');await shot('footer-narrow');check(await c.eval('document.querySelector("#hub-system-footer").scrollLeft>0'),'窄屏可横向查看所有状态');}
+   check(g.footer.scroll<=g.footer.width+1,'底栏压缩信息后一屏放下 '+width+'/'+zoom);
+   if(width===390){await shot('footer-narrow');check(await c.eval('document.querySelector("#hub-system-footer").dataset.density==="summary" && document.querySelector("#footer-status-details").getBoundingClientRect().width>0'),'窄屏保留关键摘要与全部状态详情入口');}
   }
   await c.eval('require("electron").webFrame.setZoomFactor(1)');await c.send('Emulation.setDeviceMetricsOverride',{width:1440,height:960,deviceScaleFactor:1,mobile:false});
   await click(c,'#btn-rail-accounts');await waitFor(c,'document.body.classList.contains("accounts-open")');
