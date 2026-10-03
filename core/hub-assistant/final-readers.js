@@ -20,6 +20,7 @@ function projectFinals(meta,turns,sourceType) {
 class AssistantFinalReaders {
   constructor(deps) {this.deps=deps;this.files=new LiveHistory();}
   read(meta,options={}) {
+    if(typeof meta?.kind==='string'&&meta.kind.endsWith('-resume'))meta={...meta,kind:meta.kind.slice(0,-7)};
     const identity=nativeId(meta),empty={available:false,identity,records:[]};
     if(!identity)return {...empty,issue:'原生会话身份尚未就绪'};
     if(['codex','claude'].includes(meta.kind))return Object.hasOwn(options,'cursor')?readFinals(meta,options):this.files.read(meta);

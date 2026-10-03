@@ -8,7 +8,7 @@ const {isUsableCodexRolloutPath}=require('../codex-transcript-parser');
 const {codexAgentMessageEventFromRecord}=require('../transcript-payload-utils');
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function nativeId(meta){
-  const kind=meta?.kind;
+  const kind=String(meta?.kind||'').replace(/-resume$/,'');
   if(require('../ai-kinds').isCodexCliKind(kind))return meta.codexSid||meta.ccSessionId||null;
   if(require('../ai-kinds').isClaudeFamily(kind))return meta.ccSessionId||null;
   if(kind==='gemini')return meta.geminiChatId||null;

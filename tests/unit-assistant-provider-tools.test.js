@@ -50,4 +50,19 @@ test('Gemini disk evidence checks full native identity and finality',t=>{
   const reader=new AssistantFinalReaders({dataDir:dir}),meta={id:'g',kind:'gemini',geminiChatId:'gemini-exact',transcriptPath:file};
   assert.deepEqual(reader.read(meta).records.map(r=>r.text),['工作已交付']);
   assert.equal(reader.read({...meta,geminiChatId:'another'}).available,false);
+  assert.deepEqual(reader.read({...meta,kind:'gemini-resume'}).records.map(r=>r.text),['工作已交付']);
+});
+test('historical Claude Resume cards retain exact bound final evidence',t=>{
+  const dir=temp(t),file=path.join(dir,'claude.jsonl'),id='claude-original';
+  fs.writeFileSync(file,JSON.stringify({type:'assistant',uuid:'answer1',timestamp:new Date().toISOString(),sessionId:id,message:{id:'m1',stop_reason:'end_turn',content:[{type:'text',text:'原会话最终答复'}]}})+'\n');
+  const reader=new AssistantFinalReaders({dataDir:dir}),meta={id:'old-card',kind:'claude-resume',ccSessionId:id,transcriptPath:file};
+  assert.deepEqual(reader.read(meta).records.map(r=>r.text),['原会话最终答复']);
+  assert.equal(reader.read({...meta,ccSessionId:'another'}).available,false);
+});
+test('resume aliases preserve original native identities for all provider families',()=>{
+  const {nativeId}=require('../core/hub-assistant/live-history');
+  for(const [kind,key] of [['codex','codexSid'],['claude','ccSessionId'],['deepseek','codexSid'],['gemini','geminiChatId'],['kimi','kimiSid'],['qwen','acpSid'],['glm','acpSid'],['deepseek-acp','acpSid']]){
+    assert.equal(nativeId({kind:kind+'-resume',[key]:'original-thread'}),'original-thread');
+    assert.equal(nativeId({kind:kind+'-resume'}),null);
+  }
 });
