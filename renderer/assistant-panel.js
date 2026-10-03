@@ -71,7 +71,9 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     const dossier = document.createElement('button'); dossier.type = 'button'; dossier.className = 'btn-zoom assistant-workbench';
     dossier.textContent = '工作档案'; dossier.title = '打开助理的 Markdown 工作档案';
     dossier.addEventListener('click', () => { void call('assistant:open-workbench').catch(error => showMessage?.(error.message)); });
-    tools.prepend(notices, dossier); paintNotices();
+    const phone = document.createElement('button'); phone.type='button'; phone.className='btn-zoom assistant-phone'; phone.textContent='手机连接'; phone.title='文字、图片和语音消息';
+    phone.addEventListener('click',()=>require('./assistant-phone').openPhone({document,ipcRenderer}));
+    tools.prepend(notices, dossier, phone); paintNotices();
   }
   function close() {
     epoch++; document.querySelector('.assistant-backend-menu')?.remove();

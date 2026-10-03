@@ -69,6 +69,10 @@ const STALEABLE_BLOCKERS = {
 // 直接在原始字节上找 "manual mode on" 这类多词标记永远找不到。先还原成可读文字。
 function terminalText(buf) {
   return String(buf || '')
+    // Codex 0.159.3 paints its input at ESC[33;1H without a line feed.
+    // Preserve that row boundary before stripping ANSI, so the input marker
+    // cannot become attached to the preceding splash-screen artwork.
+    .replace(/\x1b\[(?:\d+;)?1[Hf]/g, '\n')
     .replace(/\x1b\[(\d*)C/g, (_m, n) => ' '.repeat(Math.min(Number(n) || 1, 200)))
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')

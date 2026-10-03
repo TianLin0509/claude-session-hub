@@ -8,6 +8,18 @@ const ready = require('../core/group-chat-cli-ready-detector');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const E = '\x1b';
 
+test('Codex 0.159.3 absolute-position input is ready without newline bytes', async () => {
+  const sid='codex-absolute-input';ready.cleanup(sid);
+  const raw='x'.repeat(700)+`${E}[26;62H⠈⠙⠛⠿⠿⠿${E}[22m${E}[1m${E}[33;1H›${E}[22m${E}[2m${E}[1CAsk Codex to do anything${E}[22m${E}[1m${E}[36;3H?${E}[22m${E}[1Cfor${E}[1Cshortcuts`;
+  assert.match(ready.terminalText(raw),/\n› Ask Codex/);
+  assert.equal(ready.isReady(sid,'codex',raw),false);
+  await sleep(ready.STABLE_MS+100);
+  assert.equal(ready.isReady(sid,'codex',raw),true);
+  ready.cleanup(sid);
+  const dialog=raw+`${E}[33;1H›${E}[1C1. Try new model\nUse ↑/↓ to move, press enter to confirm`;
+  assert.equal(ready.isReady(sid,'codex',dialog),false);
+});
+
 test('multi-word markers match through ConPTY cursor-forward spacing', () => {
   const raw = `${E}[38;5;244m⏸${E}[1Cmanual${E}[1Cmode${E}[1Con${E}[1C·${E}[1C←${E}[1Cfor${E}[1Cagents${E}[m`;
   assert.match(ready.terminalText(raw), /manual mode on · ← for agents/);

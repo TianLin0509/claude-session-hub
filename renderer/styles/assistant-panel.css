@@ -14,7 +14,7 @@
 #terminal-panel.assistant-session .session-welcome{color:#1b2942;background:transparent}
 #terminal-panel.assistant-session .session-welcome-mark{background:transparent;border:0;box-shadow:none}
 #terminal-panel.assistant-session .session-welcome-mark img{width:72px;height:84px;object-fit:contain}
-.assistant-workbench.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
+.assistant-workbench.btn-zoom,.assistant-phone.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
 .assistant-backend{display:none;-webkit-app-region:no-drag;max-width:100px;padding:6px 8px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#315acb;font-size:12px;flex-shrink:0}
 body.assistant-session-active .assistant-backend{display:block}
 .assistant-backend:disabled{opacity:.55}
