@@ -187,9 +187,6 @@ function createSessionListRenderer(options = {}) {
   const pctClass = options.pctClass;
   const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
   const getProxyInfo = typeof options.getProxyInfo === 'function' ? options.getProxyInfo : () => null;
-  const acknowledgeNetworkChange = typeof options.acknowledgeNetworkChange === 'function'
-    ? options.acknowledgeNetworkChange
-    : null;
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
@@ -326,7 +323,7 @@ function _sessionWarningText(session) {
       displayRoute && displayRoute.ok ? `出口地区：${displayRoute.locationLabel || '未知地区'}` : `状态：${displayRoute && displayRoute.error || '检测中'}`,
       clashDelay ? `Clash 节点健康检查：${clashDelay.nodeName} · ${clashDelay.delayMs} ms（${new Date(clashDelay.measuredAt).toLocaleString('zh-CN')}）；这是探测请求延时，不能代表下载速度或 AI 网页加载耗时` : '',
       alert ? `${alert.title || '节点异常'}：${alert.message || ''}` : '',
-      alert && alert.acknowledgeable ? '点击此行确认当前节点' : '',
+      alert && alert.acknowledgeable ? '点击打开流量详情，在里面确认当前节点' : '点击查看 VPN 流量：哪个程序、哪个网站用得最多',
     ].filter(Boolean).join('\n');
     const domesticTitle = [
       'Kimi / DeepSeek：清空 HTTP(S)_PROXY 后直连',
@@ -383,15 +380,7 @@ function _sessionWarningText(session) {
     } else stripEl.innerHTML = markup;
     stripEl.title = '';
     stripEl.style.display = 'flex';
-
-    const acknowledgeRow = stripEl.querySelector('[data-egress-ack="true"]');
-    if (acknowledgeRow && acknowledgeNetworkChange) {
-      acknowledgeRow.addEventListener('click', async () => {
-        if (acknowledgeRow.classList.contains('acknowledging')) return;
-        acknowledgeRow.classList.add('acknowledging');
-        try { await acknowledgeNetworkChange(); } finally { acknowledgeRow.classList.remove('acknowledging'); }
-      });
-    }
+    // 点击 VPN 行打开流量详情（renderer/vpn-traffic-panel.js），节点变化的确认在弹层里完成。
   }
 
   // Session rows are rebuilt wholesale whenever status/recency changes. With

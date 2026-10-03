@@ -5,6 +5,7 @@ const { registerPreviewImmersiveIpc } = require('./preview-immersive-handlers.js
 const { createSystemTelemetry } = require('../../core/system-telemetry.js');
 const { createLiveResourceTelemetry } = require('../../core/live-resource-telemetry.js');
 const { createClashVergeDelayReader } = require('../../core/clash-verge-delay.js');
+const { createVpnTrafficRecorder } = require('../../core/vpn-traffic-recorder.js');
 
 function readCpuTotals(osApi) {
   const cpus = osApi.cpus();
@@ -119,6 +120,18 @@ function registerAppUtilityIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('get-clash-proxy-delay', () => clashDelay.sample());
+
+  // VPN 流量账本：只有传入数据目录时才启动（单测注册 IPC 时不起后台轮询）。
+  const vpnTraffic = deps.vpnTraffic
+    || (deps.vpnTrafficDir ? createVpnTrafficRecorder({ dir: deps.vpnTrafficDir }) : null);
+  if (vpnTraffic && !deps.vpnTraffic) {
+    vpnTraffic.start();
+    deps.app?.on?.('will-quit', () => vpnTraffic.stop());
+  }
+  ipcMain.handle('get-vpn-traffic-report', (_event, options = {}) => {
+    if (!vpnTraffic) return { status: { recording: false, holder: 'none', error: 'recorder-disabled' } };
+    return vpnTraffic.report(options && options.range);
+  });
 
   ipcMain.handle('get-network-egress-status', (_event, options = {}) => {
     if (typeof deps.getNetworkEgressStatus !== 'function') {

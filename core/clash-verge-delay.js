@@ -9,6 +9,24 @@ function yamlScalar(source, key) {
   return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : '';
 }
 
+const PIPE_ROOT = '\\\\.\\pipe\\';
+
+// Clash Verge 换内核运行方式（sidecar / service）后，clash-verge.yaml 里的管道名可能是旧的，
+// 所以除了配置里的名字，再补上本机实际存在的 verge-mihomo* 管道。只接受这一类本地管道。
+function listVergeMihomoPipes(readdir = fs.readdirSync) {
+  try {
+    return readdir(PIPE_ROOT).filter(name => /^verge-mihomo/.test(name)).map(name => PIPE_ROOT + name);
+  } catch { return []; }
+}
+
+function controllerPipeCandidates(config, listPipes = listVergeMihomoPipes) {
+  const candidates = [];
+  const fromConfig = yamlScalar(config, 'external-controller-pipe');
+  if (fromConfig.startsWith(`${PIPE_ROOT}verge-mihomo`)) candidates.push(fromConfig);
+  for (const pipe of listPipes()) if (!candidates.includes(pipe)) candidates.push(pipe);
+  return candidates;
+}
+
 function selectedNode(proxies) {
   const groups = Object.entries(proxies || {});
   const group = groups.find(([name, value]) => value?.type === 'Selector' && /节点选择/.test(name))
@@ -67,6 +85,7 @@ function createClashVergeDelayReader(options = {}) {
   const httpApi = options.http || http;
   const now = options.now || Date.now;
   const configPath = options.configPath || path.join(process.env.APPDATA || '', 'io.github.clash-verge-rev.clash-verge-rev', 'clash-verge.yaml');
+  const listPipes = options.listPipes || listVergeMihomoPipes;
   const ttlMs = Math.max(5_000, Number(options.ttlMs) || 30_000);
   let cached = null;
   let pending = null;
@@ -77,12 +96,13 @@ function createClashVergeDelayReader(options = {}) {
       let value = { status: 'unavailable' };
       try {
         const config = await readFile(configPath);
-        const socketPath = yamlScalar(config, 'external-controller-pipe');
         // Never connect to an arbitrary address from a configuration file.
-        if (socketPath.startsWith('\\\\.\\pipe\\verge-mihomo')) {
-          const proxies = await readProxies(httpApi, socketPath, yamlScalar(config, 'secret'));
+        for (const socketPath of controllerPipeCandidates(config, listPipes)) {
+          let proxies;
+          try { proxies = await readProxies(httpApi, socketPath, yamlScalar(config, 'secret')); } catch { continue; }
           const measurement = latestDelay(selectedNode(proxies), now());
           if (measurement) value = { status: 'ok', ...measurement };
+          break;
         }
       } catch { /* Clash may be closed or expose no controller. */ }
       cached = { at: now(), value };
@@ -93,4 +113,6 @@ function createClashVergeDelayReader(options = {}) {
   return { sample };
 }
 
-module.exports = { createClashVergeDelayReader, selectedNode, latestDelay, yamlScalar };
+module.exports = {
+  createClashVergeDelayReader, selectedNode, latestDelay, yamlScalar, controllerPipeCandidates, listVergeMihomoPipes,
+};

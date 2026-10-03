@@ -995,19 +995,6 @@ const sessionListRenderer = createSessionListRenderer({
   pctClass: (pct) => pctClass(pct),
   getResourceUsage: () => systemResourceUsage,
   getProxyInfo: () => hubProxyInfo,
-  acknowledgeNetworkChange: async () => {
-    try {
-      const result = await ipcRenderer.invoke('acknowledge-network-egress-change');
-      if (result && result.status) {
-        hubProxyInfo = { ...(hubProxyInfo || {}), egress: result.status };
-        renderSidebarStrip();
-        if (homeWorkbench) homeWorkbench.render();
-      }
-      return result;
-    } catch {
-      return { ok: false };
-    }
-  },
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
@@ -1027,6 +1014,20 @@ const sidebarInsights = require('./sidebar-insights').createSidebarInsights({
 require('./resource-process-tooltip').attachResourceProcessTooltip({
   document, escapeHtml,
   request: () => ipcRenderer.invoke('get-resource-top-processes'),
+});
+require('./vpn-traffic-panel').attachVpnTrafficPanel({
+  document, escapeHtml,
+  request: range => ipcRenderer.invoke('get-vpn-traffic-report', { range }),
+  getAlert: () => hubProxyInfo?.egress?.alert || null,
+  acknowledge: async () => {
+    const result = await ipcRenderer.invoke('acknowledge-network-egress-change').catch(() => null);
+    if (result && result.status) {
+      hubProxyInfo = { ...(hubProxyInfo || {}), egress: result.status };
+      renderSidebarStrip();
+      if (homeWorkbench) homeWorkbench.render();
+    }
+    return result;
+  },
 });
 
 // 「已完成未读」组头上的「全部已读」：一次把所有会话和群聊的"答完了还没看"清掉。
