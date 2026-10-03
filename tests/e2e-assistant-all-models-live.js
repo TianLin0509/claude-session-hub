@@ -50,7 +50,7 @@ async function main(){
    const row={kind,passed:false};result.backends.push(row);console.log(j({event:'backend-start',kind}));
    try{
     const id=(await invoke('assistant:get-overview')).backendKind===kind?await active():await change(kind);row.id=id;
-    await until('ready '+kind,async()=>cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return false;const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(" ").match(/Ask Codex|Claude Code|Type your|Kimi|Qwen|DeepSeek|ZCode|❯|>>>/)})()'),120000);
+    await until('ready '+kind,async()=>{if(['qwen','deepseek-acp','glm'].includes(kind))return (await meta(id)).nativeRuntime?.connection==='connected';const text=await cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return "";const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(" ")})()');if(/client is no longer supported|OAuth login expired|No active session|requires login/.test(text))throw Error('provider authentication unavailable: '+text.match(/(?:Failed to sign in\.|OAuth login expired|No active session|requires login).{0,260}/)?.[0]);return /Ask Codex|Claude Code|Type your|context:|❯|>>>/.test(text);},120000);
     if(kind==='codex'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('low effort',async()=>{const m=await meta(id);return m.effort==='low'&&!m._modelSwitchPending;});}
     const previous=(await finals(id)).length,started=Date.now();
     await send(first?'请先读取本轮资料。记住验收暗号“杉树企鹅”，仅用一句话确认。':'请读取本轮资料中的 assistantContinuity。刚刚我告诉上一位助理的验收暗号是什么？仅用一句话回答。');
@@ -58,10 +58,10 @@ async function main(){
     assert.equal((await invoke('assistant:get-overview')).contextCoverage.snapshotRead,true);
     row.nativeId=nativeId(await meta(id));row.model=(await meta(id)).currentModel;await shot(kind+'-handoff');
     row.passed=true;first=false;result.checks.push(kind+' 真实资料读取、跨后端交接与最终回答');
-   }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});result.blockedAt=kind;throw error;}
+   }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
    console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs}));
   }
-  result.passed=true;
+  result.passed=result.backends.every(row=>row.passed);if(!result.passed)process.exitCode=1;
  }catch(e){result.error=e.stack;process.exitCode=1;if(cdp){result.sessionDiagnostics=await cdp.eval('[...sessions.values()].map(s=>({id:s.id,kind:s.kind,status:s.status,purpose:s.purpose,cliRuntime:s.cliRuntime,transcriptPath:s.transcriptPath}))').catch(()=>null);await shot('failure').catch(()=>{});}}
  finally{if(cdp)cdp.close();if(hub){fs.writeFileSync(path.join(out,'hub.log'),hub.log().join('\n'));try{result.exit=await gracefulQuit(hub);}catch(e){result.cleanupError=e.message;result.passed=false;process.exitCode=1;}}
   for(const file of [path.join(codexHome,'auth.json'),path.join(claudeHome,'.credentials.json'),path.join(geminiHome,'oauth_creds.json'),path.join(geminiHome,'google_accounts.json'),path.join(kimiHome,'config.toml'),path.join(data,'config.json')])if(fs.existsSync(file))fs.unlinkSync(file);
