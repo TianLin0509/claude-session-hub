@@ -41,6 +41,10 @@ function activate(store, kind, id) {
   } catch (error) { store.db.exec('ROLLBACK'); throw error; }
 }
 function launchOptions(service, kind, id) {
+  return { ...providerLaunchOptions(service, kind, id), noInheritCursor: true };
+}
+// 助理常在没有界面终端的情况下由手机驱动（含按新模型重启后），ConPTY 不能等界面回应光标查询。
+function providerLaunchOptions(service, kind, id) {
   const entry = service.getMcpEntry(id);
   if (isCodexCliKind(kind)) return {mcpProfile:'lean', codexMcpEntries:[entry]};
   if (require('../acp-profiles').isAcpKind(kind)) return {mcpProfile:'lean', assistantMcpServers:[{

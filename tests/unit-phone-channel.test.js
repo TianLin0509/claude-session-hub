@@ -23,3 +23,42 @@ test('all Hub backends use one phone pairing; native request identity resolves a
   const reply=h.s.outbox.find(r=>r.id==='answer-'+id);assert.equal(open(h.c.key,h.c.channel,reply.id,'hub',reply.payload).text,'current');
  }
 });
+
+const packets=(h,prefix)=>h.s.outbox.filter(r=>r.id.startsWith(prefix)).map(r=>open(h.c.key,h.c.channel,r.id,'hub',r.payload));
+test('voice_message is transcribed once and handed straight to the assistant as voice input',async()=>{
+ const h=harness(),id=crypto.randomUUID();let transcribed=0;h.channel.transcribe=async()=>{transcribed++;return' 仿真跑完了没有 ';};
+ h.assistant.overview=()=>({status:'running'});h.incoming(id,{type:'voice_message',pcm:'AQI=',durationMs:1200});await h.channel.tick();
+ const [t]=packets(h,'transcript-');assert.equal(t.text,'仿真跑完了没有');assert.equal(t.auto,true);assert.equal(t.requestId,id);
+ assert.equal(h.calls.length,0,'busy assistant: transcript shown, dispatch waits');assert.equal(h.s.inbox[0].pcm,undefined);
+ h.assistant.overview=()=>({status:'idle'});await h.channel.tick();
+ assert.equal(transcribed,1);assert.equal(h.calls.length,1);assert.deepEqual(h.calls[0],{text:'仿真跑完了没有',requestId:id,inputMode:'voice'});
+ assert.equal(h.s.inbox[0].state,'waiting');assert.equal(packets(h,'transcript-').length,1);
+});
+test('voice_message that cannot be recognised is rejected visibly and never dispatched',async()=>{
+ const h=harness(),id=crypto.randomUUID();h.channel.transcribe=async()=>{throw Error('语音连接失败');};
+ h.incoming(id,{type:'voice_message',pcm:'AQI='});await h.channel.tick();
+ assert.equal(h.calls.length,0);assert.equal(h.s.inbox[0].state,'rejected');
+ const [e]=packets(h,'voiceerror-');assert.equal(e.state,'rejected');assert.match(e.text,/识别失败.*语音连接失败/);
+});
+test('profile packets only go to phones that announced the capability; set_profile switches and answers',async()=>{
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});let current={kind:'claude',model:'claude-sonnet-5-5',effort:'low',label:'Sonnet 5.5 · 低'};const set=[];
+ h.assistant.currentProfile=()=>current;h.assistant.phoneProfile=async()=>({current,kinds:[{kind:'claude',label:'Claude',models:[{id:'claude-sonnet-5-5',label:'Sonnet 5.5'}],efforts:['low'],defaultModel:'claude-sonnet-5-5',defaultEffort:'low'}]});
+ h.assistant.setProfile=async r=>{set.push(r);current={...current,model:r.model,effort:r.effort,label:'Opus 5.5 · 中'};return{ok:true,profile:current};};
+ await h.channel.tick();assert.equal(packets(h,'profile-').length,0,'old App never receives unknown packet types');
+ const hello=crypto.randomUUID();h.incoming(hello,{type:'hello',app:'1.1.0',caps:['profile','voice_message']});await h.channel.tick();
+ const [p]=packets(h,'profile-');assert.equal(p.type,'profile');assert.equal(p.requestId,hello);assert.equal(p.current.model,'claude-sonnet-5-5');assert.equal(p.kinds[0].kind,'claude');
+ assert.equal(h.calls.length,0);await h.channel.tick();assert.equal(packets(h,'profile-').length,1,'unchanged profile is not resent');
+ const req=crypto.randomUUID();h.incoming(req,{type:'set_profile',kind:'claude',model:'claude-opus-5-5',effort:'medium'});await h.channel.tick();
+ assert.deepEqual(set,[{kind:'claude',model:'claude-opus-5-5',effort:'medium'}]);
+ const answer=packets(h,'profile-').find(x=>x.requestId===req);assert.equal(answer.current.model,'claude-opus-5-5');assert.equal(h.calls.length,0);
+ h.assistant.setProfile=async()=>({ok:false,error:'助理正在处理请求'});const bad=crypto.randomUUID();h.incoming(bad,{type:'set_profile',kind:'claude',model:'x'});await h.channel.tick();
+ const [err]=packets(h,'profileerror-');assert.equal(err.requestId,bad);assert.match(err.text,/未切换.*正在处理/);
+});
+test('an assistant that cannot start does not block the phone queue forever',async()=>{
+ const h=harness();let seq=0;h.incoming=(id,value)=>h.remote.push({seq:++seq,id,payload:seal(h.c.key,h.c.channel,id,'phone',value)});
+ h.assistant.ensureSession=async()=>({ok:false,error:'助理原会话未打开'});const first=crypto.randomUUID();h.incoming(first,{type:'text',text:'查进展'});
+ for(let i=0;i<3;i++)await h.channel.tick();
+ assert.equal(h.s.inbox[0].state,'rejected');assert.match(packets(h,'rejected-')[0].text,/暂时无法接收/);
+ h.assistant.ensureSession=async()=>({ok:true,sessionId:'fixed-assistant'});const second=crypto.randomUUID();h.incoming(second,{type:'text',text:'再查'});await h.channel.tick();
+ assert.equal(h.calls.length,1);assert.equal(h.calls[0].requestId,second);
+});

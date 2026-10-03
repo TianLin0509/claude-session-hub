@@ -8,6 +8,7 @@ function registerAssistantIpc(ipcMain,deps){
     'get-overview':()=>service.overview(),status:()=>service.overview(),
     'ensure-session':()=>service.ensureSession(),context:request=>service.context(request),
     'switch-backend':request=>service.switchBackend(request),
+    'set-profile':request=>service.setProfile(request),'phone-profile':()=>service.phoneProfile(),
     send:request=>service.send(request),actions:()=>({ok:true,actions:service.store.list()}),
     notifications:request=>service.notifications(request),
     'mark-notification-read':request=>service.watches.markRead(request.id),

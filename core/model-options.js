@@ -16,6 +16,9 @@ const MODEL_OPTIONS_BY_KIND = {
   'deepseek-acp': require('./acp-model-catalog').acpModelOptions('deepseek-acp'),
   glm: require('./acp-model-catalog').acpModelOptions('glm'),
   claude: [
+    { id: 'claude-opus-5-5[1m]', label: 'Opus 5.5 (1M context)' },
+    { id: 'claude-opus-5-5',     label: 'Opus 5.5' },
+    { id: 'claude-sonnet-5-5',   label: 'Sonnet 5.5' },
     { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
     { id: 'claude-fable-5-1[1m]', label: 'Fable 5.1 (1M context)' },
     { id: 'claude-fable-5-1',     label: 'Fable 5.1' },
@@ -46,6 +49,9 @@ const MODEL_OPTIONS_BY_KIND = {
   ],
   codex: [
     { id: 'gpt-6-astra',   label: 'GPT-6 Astra' },
+    { id: 'gpt-6.1-sol',   label: 'GPT-6.1 Sol' },
+    { id: 'gpt-6-sol',     label: 'GPT-6 Sol' },
+    { id: 'gpt-6-luna',    label: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol · 1M 请求' },
     { id: 'gpt-5.5',       label: 'GPT-5.5' },
     { id: 'gpt-5.4',       label: 'GPT-5.4' },
