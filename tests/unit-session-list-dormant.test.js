@@ -166,8 +166,9 @@ test('模型过滤普通行及群聊成员，打开被过滤会话会恢复入�
 
 
 test('search reveal switches both ways between pinned and recent scopes',()=>{
- const h=harness({items:[dormant('pin',{pinned:true}),dormant('plain')]});
+ const h=harness({items:[dormant('pin',{pinned:true,lastMessageTime:now-10*86400000}),dormant('plain')]});
  assert.equal(h.row('pin'),undefined);h.revealSearchItem('pin');assert.ok(h.row('pin'));assert.equal(h.row('plain'),undefined);
  assert.equal(h.store.get('hubSidebarRange'),'pinned');h.revealSearchItem('plain');assert.ok(h.row('plain'));assert.equal(h.row('pin'),undefined);
  assert.equal(h.store.get('hubSidebarRange'),'1');
+ assert.equal(h.store.get('hubSidebarRecentDays'),undefined,'old pinned hits do not change the recent range preference');
 });
