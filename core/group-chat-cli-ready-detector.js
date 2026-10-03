@@ -28,7 +28,9 @@ const MARKERS = {
   // ready before the TUI input box exists.
   // 0.153 新会话的底栏不再有 "Context N% left"（首轮之后才出现），输入行是
   // `› <占位建议>`。选项菜单也用 `› 1. …`，所以提示符后面跟「数字.」的不算。
-  codex: ['Context ', /(?:^|\n)\s*›\s+(?!\d+\.\s)\S/],
+  // 0.159.3 may position the first input row with cursor moves and no LF.
+  // This native placeholder survives ConPTY stripping; launch args never contain it.
+  codex: ['Context ', 'Ask Codex to do anything', /(?:^|\n)\s*›\s+(?!\d+\.\s)\S/],
   deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
   // Kimi Code 官方 TUI 状态栏稳定显示小写 `context:`。不能设为强 marker：
   // 未登录启动也会短暂渲染状态栏，随后才显示 OAuth login expired。

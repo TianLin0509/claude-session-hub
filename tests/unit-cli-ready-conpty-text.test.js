@@ -49,3 +49,13 @@ test('Claude startup prompts that end in something other than "Esc to cancel" st
   const { classifyTerminalRuntime } = require('../core/terminal-runtime-state');
   assert.equal(classifyTerminalRuntime('claude', dialog.split('\n')).state, 'waiting');
 });
+
+test('Codex first input row positioned without a newline becomes ready after stabilization',async()=>{
+  const sid='codex-0159-cursor-row';ready.cleanup(sid);
+  const frame='x'.repeat(600)+`${E}[HWelcome. There’s no dress code, just code.${E}[22;1H›${E}[2m Ask Codex to do anything${E}[0m${E}[24;1HGPT-6.1-Sol high · workspace`;
+  assert.equal(ready.isReady(sid,'codex',frame),false);
+  await sleep(ready.STABLE_MS+100);
+  assert.equal(ready.isReady(sid,'codex',frame),true);
+  ready.cleanup(sid);
+  assert.equal(ready.isReady(sid,'codex',frame+'\nUse ↑/↓ to move, press enter to confirm'),false,'later choices still block');
+});
