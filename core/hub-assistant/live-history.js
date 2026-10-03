@@ -7,7 +7,15 @@ const {codexLineFilter,inspectCodexEnvelope}=require('../codex-rollout-reader');
 const {isUsableCodexRolloutPath}=require('../codex-transcript-parser');
 const {codexAgentMessageEventFromRecord}=require('../transcript-payload-utils');
 const hash=value=>createHash('sha256').update(value).digest('hex');
-function nativeId(meta){return meta?.kind==='codex'?meta.codexSid:meta?.kind==='claude'?meta.ccSessionId:null;}
+function nativeId(meta){
+  const kind=meta?.kind;
+  if(require('../ai-kinds').isCodexCliKind(kind))return meta.codexSid||meta.ccSessionId||null;
+  if(require('../ai-kinds').isClaudeFamily(kind))return meta.ccSessionId||null;
+  if(kind==='gemini')return meta.geminiChatId||null;
+  if(kind==='kimi')return meta.kimiSid||null;
+  if(require('../acp-profiles').isAcpKind(kind))return meta.acpSid||null;
+  return null;
+}
 function finalLineFilter(prefix,context){const e=inspectCodexEnvelope(prefix);if(e.recordType==='response_item'){if(!e.payloadType)return context.final?false:null;if(e.payloadType!=='message')return false;if(!e.role)return context.final?false:null;return e.role==='assistant';}return codexLineFilter(prefix,context,'turns');}
 function claudeHeaderMatches(file,identity){const fd=fs.openSync(file,'r');try{const buffer=Buffer.alloc(1024*1024),n=fs.readSync(fd,buffer,0,buffer.length,0);for(const line of buffer.subarray(0,n).toString('utf8').split('\n')){try{const row=JSON.parse(line);if(row.sessionId)return row.sessionId===identity;}catch{}}return false;}finally{fs.closeSync(fd);}}
 function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*1024,startOffset}={}){

@@ -9,7 +9,7 @@ const { buildBootstrapPrompt,resolveTimeRange }=require('./context');
 const {AssistantSnapshots}=require('./snapshots');
 const { readGroupHistory }=require('./group-history');
 const { requireAuthorizedTarget,requireBoundTarget,bindOperation }=require('./action-policy');
-const {LiveHistory,nativeId}=require('./live-history');
+const {nativeId}=require('./live-history');
 const {AssistantWatches,reminderIntent}=require('./watches');
 const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
@@ -22,9 +22,9 @@ class AssistantService {
     this.endpointFile=path.join(deps.dataDir,'assistant','bridge-endpoint.json');
     this.snapshots=new AssistantSnapshots(deps.dataDir,this.store);
     this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
-    this.liveHistory=new LiveHistory();
+    this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
-    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
+    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
   setSessionViews({changed=[],removed=[]}={}){
@@ -85,7 +85,7 @@ class AssistantService {
     const defaults=await this.deps.getDefaults?.(kind)||{};
     const id=randomUUID();backends.reserve(this.store,kind,id);
     await this.connectBridge();
-    const session=await this.deps.createSession(kind,{...defaults,id,title:'AI Hub 助理 · '+(kind==='codex'?'Codex':'Claude'),name:'AI Hub 助理',purpose:'hub-assistant',...this.getLaunchOptions(kind,id)});
+    const session=await this.deps.createSession(kind,{...defaults,id,title:'AI Hub 助理 · '+backends.getKindLabel(kind),name:'AI Hub 助理',purpose:'hub-assistant',...this.getLaunchOptions(kind,id)});
     return finish(session,id);
   }
   getLaunchOptions(kind,id){return backends.launchOptions(this,backends.backendKind(kind),id);}

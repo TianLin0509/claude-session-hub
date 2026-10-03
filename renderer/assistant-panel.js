@@ -51,7 +51,8 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
         const old=document.querySelector('.assistant-backend-menu');if(old){old.remove();return;}
         const menu=document.createElement('div');menu.className='assistant-backend-menu';
         menu.setAttribute('role','menu');
-        menu.innerHTML='<button type="button" data-assistant-backend="codex">Codex</button><button type="button" data-assistant-backend="claude">Claude</button>';
+        const {BACKENDS,getKindLabel}=require('../core/hub-assistant/backends');
+        menu.innerHTML=BACKENDS.map(kind=>`<button type="button" data-assistant-backend="${esc(kind)}">${esc(getKindLabel(kind))}</button>`).join('');
         const rect=picker.getBoundingClientRect();menu.style.left=rect.left+'px';menu.style.top=rect.bottom+6+'px';
         menu.addEventListener('click', event=>{const choice=event.target.closest('[data-assistant-backend]');if(choice){menu.remove();void switchBackend(choice.dataset.assistantBackend);}});
         document.body.append(menu);
@@ -59,7 +60,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
       });
       tools.prepend(picker);
     }
-    if (picker && active) { picker.dataset.kind = session.kind; picker.textContent = (session.kind==='claude'?'Claude':'Codex')+' ▾'; picker.disabled = switching; }
+    if (picker && active) { picker.dataset.kind = session.kind; picker.textContent = require('../core/ai-kinds').getKindLabel(session.kind)+' ▾'; picker.disabled = switching; }
     if (!active || !tools || tools.querySelector('.assistant-notifications')) return;
     const notices = document.createElement('details'); notices.className = 'assistant-notifications';
     notices.innerHTML = '<summary>关注回复</summary><div class="assistant-notice-list"></div>';

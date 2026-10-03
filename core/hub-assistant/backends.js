@@ -1,9 +1,10 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const BACKENDS = ['codex', 'claude'];
+const { ALL_AI_KINDS, isCodexCliKind, getKindLabel } = require('../ai-kinds');
+const BACKENDS = [...ALL_AI_KINDS];
 function backendKind(kind) {
-  if (!BACKENDS.includes(kind)) throw new Error('助理后端仅支持 Codex 或 Claude');
+  if (!BACKENDS.includes(kind)) throw new Error('请选择 Hub 支持的 AI 会话后端');
   return kind;
 }
 function bindings(store) {
@@ -41,7 +42,12 @@ function activate(store, kind, id) {
 }
 function launchOptions(service, kind, id) {
   const entry = service.getMcpEntry(id);
-  if (kind === 'codex') return {mcpProfile:'lean', codexMcpEntries:[entry]};
+  if (isCodexCliKind(kind)) return {mcpProfile:'lean', codexMcpEntries:[entry]};
+  if (require('../acp-profiles').isAcpKind(kind)) return {mcpProfile:'lean', assistantMcpServers:[{
+    name:entry.name,command:entry.command,args:entry.args,
+    env:Object.entries(entry.env).map(([name,value])=>({name,value}))
+  }]};
+  if (kind === 'gemini' || kind === 'kimi') return {mcpProfile:'lean', assistantMcpEntry:entry};
   const file = path.join(service.deps.dataDir, 'assistant', 'claude-' + id + '-mcp.json');
   const {command, args, env} = entry;
   fs.writeFileSync(file + '.tmp', JSON.stringify({mcpServers:{hub_assistant:{command,args,env}}}), {mode:0o600});
@@ -50,4 +56,4 @@ function launchOptions(service, kind, id) {
   // user-request token on every management operation.
   return {mcpProfile:'lean', mcpConfigFile:file, autonomous:true};
 }
-module.exports = {BACKENDS, backendKind, bindings, reserve, activate, launchOptions};
+module.exports = {BACKENDS, backendKind, bindings, reserve, activate, launchOptions, getKindLabel};
