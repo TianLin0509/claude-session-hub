@@ -54,7 +54,6 @@ async function clickPoint(client, selector) {
   assert.equal(point.found, true, `${selector} should exist`);
   assert.equal(point.visible, true, `${selector} should be visible`);
   assert.equal(point.topmost, true, `${selector} should be topmost; hit=${point.hit}`);
-  await client.send('Page.bringToFront');
   await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
   await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
@@ -84,6 +83,8 @@ function seedProject(dir, cfg, { linked = false, gitTime = null } = {}) {
 async function main() {
   const baseline=process.argv.includes('--baseline');
   for(const dir of [DATA_DIR,WORKSPACE_ROOT,ARTIFACT_DIR])fs.mkdirSync(dir,{recursive:true});
+  const codexHome=path.join(DATA_DIR,'codex-fixture-home');fs.mkdirSync(codexHome);
+  fs.writeFileSync(path.join(DATA_DIR,'config.json'),JSON.stringify({providers:{codex:{backend:'subscription',subscription_profile:'default',subscription_profiles:[{id:'default',label:'隔离测试账号',home:codexHome}]}}}));
   fs.writeFileSync(path.join(WORKSPACE_ROOT,'.aiwork-root'),'');
   const project=path.join(WORKSPACE_ROOT,'alpha'),second=path.join(WORKSPACE_ROOT,'beta'),random=path.join(WORKSPACE_ROOT,'alpha-other');
   seedProject(project,{name:'项目甲',trunk:'master'});seedProject(second,{name:'项目乙',trunk:'master'});fs.mkdirSync(random);
@@ -102,7 +103,7 @@ async function main() {
   const visible=()=>client.eval(`Array.from(document.querySelectorAll('#session-list .session-item')).filter(e=>e.getBoundingClientRect().height>0).map(e=>e.dataset.meetingId||e.dataset.sessionId)`);
   const model={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none'};
   try {
-    hub=await launchIsolatedHub({dataDir:DATA_DIR,port:await reservePort(),label:'sidebar-project-filter',windowMode:'hidden',extraEnv:{AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
+    hub=await launchIsolatedHub({dataDir:DATA_DIR,port:await reservePort(),label:'sidebar-project-filter',windowMode:'hidden',extraEnv:{CODEX_HOME:codexHome,AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
     client=await connectFirstPage(hub);await size(1500);
     await waitFor('ready',()=>client.eval('!!window.MeetingRoom && !!window.LaunchCenter'));
     const group=await invoke('create-meeting',{title:'项目甲群聊',scene:'general',workspace:project,slots:[model]});

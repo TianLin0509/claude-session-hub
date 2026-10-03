@@ -1,4 +1,5 @@
 'use strict';
+const {inspectPasteText,choosePasteText} = require('./paste-text-encoding');
 
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
 
@@ -77,28 +78,36 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
   // pastes, because Chromium's native Ctrl+V on xterm's hidden helper textarea
   // does NOT fire a paste event in Electron — if we let xterm handle the default,
   // nothing happens. So we read the clipboard ourselves and call terminal.paste().
-  async function handlePasteForSession(sessionId) {
+  async function handlePasteForSession(sessionId, {beforePaste} = {}) {
     const cached = terminalCache.get(sessionId);
     if (!cached) return;
+    const paste = text => {
+      if (!text || terminalCache.get(sessionId) !== cached) return;
+      beforePaste?.();
+      cached.terminal.paste(text);
+    };
 
     // 复制自资源管理器的文件 → 直接粘绝对路径（任意类型，不限图片）。
     // 必须排在图片之前：图片文件既是 FileNameW 又可能被 Chromium 合成成位图，
     // 先判图片会把用户手上那份文件另存成一张新截图，路径就对不上了。
     const nativeFilePath = clipboardFilePathFromNative(clipboard);
     if (nativeFilePath) {
-      cached.terminal.paste(nativeFilePath);
+      paste(nativeFilePath);
       return;
     }
 
     const img = clipboard.readImage();
     if (!img.isEmpty()) {
       const filePath = await ipcRenderer.invoke('save-clipboard-image');
-      if (filePath) cached.terminal.paste(filePath);
+      paste(filePath);
       return;
     }
 
     const text = clipboard.readText();
-    if (text) cached.terminal.paste(text);
+    if (text) {
+      const safeText = inspectPasteText(text) ? await choosePasteText(text,{document,window}) : text;
+      paste(safeText);
+    }
   }
   
   // 卡片优化（2026-05-03 道雪）：自定义输入框（contenteditable div）粘贴图片支持。
@@ -165,9 +174,19 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
       }
 
       // Text wins over image so copied HTML selections become plain prompts.
-      const plainText = getPastePlainText(e);
+      let plainText = getPastePlainText(e);
       if (plainText) {
         e.preventDefault();
+        if (inspectPasteText(plainText)) {
+          const selection = window?.getSelection?.();
+          const range = selection?.rangeCount && inputEl.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null;
+          plainText = await choosePasteText(plainText,{document,window});
+          if (!plainText || !inputEl.isConnected || inputEl.getAttribute('contenteditable') === 'false') return;
+          inputEl.focus({preventScroll:true});
+          if (range && inputEl.contains(range.startContainer) && inputEl.contains(range.endContainer)) {
+            selection.removeAllRanges(); selection.addRange(range);
+          } else if (range) return; // The draft changed while the decision was open.
+        }
         const chips = collapseLongText ? require('./composer-paste-chips.js') : null;
         if (chips && chips.shouldCollapsePaste(plainText)) {
           chips.insertPasteChip(inputEl, plainText.replace(/\r\n?/g, '\n'), { document, window });

@@ -7,11 +7,20 @@ test('display migration preserves desktop adjustments and gives phone an indepen
   assert.equal(state.desktop.fontSize,21);assert.equal(state.desktop.zoomLevel,2);
   assert.equal(state.desktop.sessionWidth,null,'existing responsive desktop widths stay in charge');
   assert.equal(state.phone.fontSize,18);assert.equal(state.phone.sessionWidth,176);
+  assert.equal(state.phone.terminalFontSize,14);assert.equal(state.desktop.terminalFontSize,21);
   state.mode='phone';state.phone.fontSize=20;state.phone.sessionWidth=192;
   data.set(STORAGE_KEY,JSON.stringify(state));
   const reloaded=loadPresets(storage,{fontSize:13,zoomLevel:0});
   assert.equal(reloaded.mode,'phone');assert.equal(reloaded.phone.fontSize,20);
   assert.equal(reloaded.phone.sessionWidth,192);assert.equal(reloaded.desktop.fontSize,21);
+});
+test('old saved modes preserve desktop CLI size and migrate phone CLI independently',()=>{
+  const storage={getItem:()=>JSON.stringify({mode:'phone',desktop:{fontSize:23},phone:{fontSize:20,sessionWidth:192}})};
+  const result=loadPresets(storage,{fontSize:16});
+  assert.equal(result.desktop.terminalFontSize,23);assert.equal(result.phone.terminalFontSize,14);
+  assert.equal(result.phone.fontSize,20);assert.equal(result.phone.sessionWidth,192);
+  const manual=loadPresets({getItem:()=>JSON.stringify({...result,phone:{...result.phone,terminalFontSize:15}})});
+  assert.equal(manual.phone.terminalFontSize,15);
 });
 test('damaged saved preferences recover locally without changing the other profile',()=>{
   const storage={getItem:()=>JSON.stringify({mode:'bad',desktop:{fontSize:19},phone:{fontSize:999,sessionWidth:'bad',inputHeight:-1}})};
