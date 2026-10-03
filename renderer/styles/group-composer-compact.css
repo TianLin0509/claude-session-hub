@@ -21,6 +21,17 @@
 :root body .mr-delivery-details { max-height: 30vh; overflow-y: auto; }
 :root body .mr-composer-head .mr-delivery-flow > .mr-file-error { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
 :root body .mr-group-composer #mr-input-tuning { height: 32px; gap: 6px; overflow: visible; flex-wrap: nowrap; }
+.mr-group-models { display: flex; align-items: center; gap: 4px; flex: 1 1 0; min-width: 0; }
+:root body .mr-group-models .mr-group-model-chip {
+  flex: 1 1 0; min-width: 0; max-width: 150px; padding: 3px 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
+  background: var(--surface-hover); border: 1px solid var(--border-subtle); border-radius: 5px;
+}
+:root body .mr-group-composer:has(#mr-input-tuning.models-on-own-row) { grid-template-rows: auto auto 26px 32px; }
+:root body .mr-group-composer > .mr-group-models { grid-column: 1 / -1; grid-row: 3; }
+:root body .mr-group-composer #mr-input-tuning.models-on-own-row,
+:root body .mr-group-composer:has(#mr-input-tuning.models-on-own-row) :is(.mr-workflow-btn,.mr-send-btn,.voice-mic,.prompt-polish-tools) { grid-row: 4; }
+.mr-input-row:not(.mr-group-composer) > .mr-group-models { display: none; }
 .mr-composer-menu[hidden] { display: none; }
 .mr-composer-menu {
   position: fixed; z-index: 1100; box-sizing: border-box; overflow-y: auto; overflow-x: hidden;
