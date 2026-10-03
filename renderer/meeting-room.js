@@ -5295,6 +5295,7 @@ if (typeof document !== 'undefined') (function () {
     const members = rail.querySelector('.mr-input-tuning-members');
     const slots = _getGcSlots(meeting).filter(Boolean);
     const key = JSON.stringify([meeting.id, slots.map(slot => slot.sid)]);
+    rail._compactMenus?.update(meeting.id, slots.length);
     if (members.dataset.key !== key) {
       _inputModelUi?.closeModelPicker();
       members.dataset.key = key;
@@ -5404,6 +5405,7 @@ if (typeof document !== 'undefined') (function () {
           onExpand: () => _openLongInputEditor(meetingData[activeMeetingId]),
         });
         row.appendChild(tuning);
+        tuning._compactMenus = require('./group-composer-popovers').mountGroupComposerPopovers(tuning);
       }
       _updateInputTuning(meeting);
       return;
