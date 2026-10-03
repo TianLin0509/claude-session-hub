@@ -102,7 +102,8 @@ async function main(){
       const original=require('../core/hub-assistant/delegated-prompt');
       const wire=targetRollout.filter(item=>item.payload?.type==='message'&&item.payload.role==='user').map(item=>item.payload.content?.map(block=>block.text||'').join('')).find(text=>original.delegatedPromptDisplay(text)?.userText===exactTask);
       assert.ok(wire,'the native record must retain the exact delegated task after decoding');row.delegatedOriginalMatched=true;
-      await click('[data-session-id="'+target+'"]');
+      await click('#session-list .session-item[data-session-id="'+target+'"] .sl-title');
+      await until('delegated business selected',async()=>await active()===target,30000);
       await until('original delegated task card',()=>cdp.eval('(()=>{const e=document.querySelector("#msg-overlay");return !!e&&e.innerText.includes('+j(exactTask)+')})()'),30000);
       row.delegatedCardMatched=true;
       await click('#btn-assistant');await until('assistant reselected',async()=>await active()===id);
@@ -111,7 +112,7 @@ async function main(){
     }
     row.passed=true;first=false;result.checks.push(kind+' 真实资料读取、跨后端交接与最终回答');
    }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if(kind==='codex')fs.writeFileSync(path.join(out,'codex-raw-buffer.txt'),await cdp.eval('ipcRenderer.invoke("debug:get-session-buffer",'+j(row.id)+')'));if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
-   console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs}));
+   console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs,error:row.error}));
   }
   result.passed=result.backends.every(row=>row.passed);if(!result.passed)process.exitCode=1;
  }catch(e){result.error=e.stack;process.exitCode=1;if(cdp){result.sessionDiagnostics=await cdp.eval('[...sessions.values()].map(s=>({id:s.id,kind:s.kind,status:s.status,purpose:s.purpose,cliRuntime:s.cliRuntime,transcriptPath:s.transcriptPath}))').catch(()=>null);await shot('failure').catch(()=>{});}}
