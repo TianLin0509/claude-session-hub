@@ -1,6 +1,6 @@
 # 助理后端切换
 
-助理页复用普通会话。工具栏后端菜单读取 `ALL_AI_KINDS`，覆盖 Claude、Codex、Gemini、Kimi、千问、GLM、DeepSeek API 与 DeepSeek Harness；模型、思考强度、语音输入仍由普通会话管理。首次使用目标后端沿用该后端的 Hub 创建默认值。切回时保留各自历史、模型设置与草稿。菜单支持不代表账号、客户端及上游服务可用。
+助理页复用普通会话。工具栏后端菜单读取 `ALL_AI_KINDS`，覆盖 Claude、Codex、Gemini、Kimi、千问、GLM、DeepSeek API 与 DeepSeek Harness；模型、思考强度、语音输入仍由普通会话管理。首次使用目标后端按助理档位创建（见下节），其余参数沿用该后端的 Hub 创建默认值。切回时保留各自历史、模型设置与草稿。菜单支持不代表账号、客户端及上游服务可用。
 
 ## 一个助理，每种后端一份原生会话
 
@@ -29,3 +29,11 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 这些文件帮助新后端接续工作；各厂商的内部对话历史仍分别保存。旧交接中的指令只作历史证据，不能授予本轮派工权限。既有会话在首次切换时补入可读取的近期助理最终答复；切换功能启用前的全部用户原话尚未追溯迁入交接文件。
 
 验证入口：`node --test tests/unit-assistant-backends.test.js tests/unit-assistant-provider-tools.test.js tests/unit-hub-assistant-snapshots.test.js`；`node tests/e2e-assistant-backends-live.js` 使用真实隔离 Codex、Claude PTY 验证交接、草稿往返、原生身份、派工、新回复提醒及正常退出后恢复；设 `HUB_ASSISTANT_MODEL_SWITCHES=1` 验证模型切换，`HUB_ASSISTANT_KEEP_EFFORT=1` 保留首次创建的默认强度。`node tests/e2e-assistant-all-models-live.js` 验证各提供方实际资料读取与交接；`HUB_ASSISTANT_DISPATCH=1` 扩展真实派工与通知。真实账号能力缓存只读复制到隔离 home，原生回答与提交回执才决定通过。账号拒绝、套餐缺失或上游启动失败分别保留，不转成模拟通过。项目全量闸门仍是 `node scripts/run_unit_tests.js`。
+
+## 助理档位与任务分派（2026-10-03）
+
+助理是快速前台：默认 Claude Sonnet 5.5 · 低思考，备选 Codex GPT-6 Luna · 低思考（`core/hub-assistant/profiles.js` 的 `ASSISTANT_DEFAULTS`）。旧数据在首次就绪时迁移一次到该默认（`assistantDefaultsVersion=2`），之后完全按用户选择。手机与电脑共用一份设置：`setProfile` 先保存，助理空闲时用 `restartSession(id,{model,effort})` 按新模型重启同一原生会话（保留历史），忙时标记 `profilePending`，下次就绪再生效；休眠中的助理直接按新模型恢复。
+
+助理分派任务用 `create_session` 的 `tier`：fast（Sonnet 5.5 / GPT-6 Luna · 低）、standard（GPT-6.1 Sol / Opus 5.5 · 中）、deep（Hub 新建会话的默认配置，省略即 deep）。用户点名的 `kind`、`model`、`effort` 优先，其余由档位补齐；点名的型号或深度不合法时在占用本轮新建名额前报错。返回 `route.label` 供助理告诉用户交给了谁。型号只写在档位表里，助理不记具体型号。
+
+手机语音（App 1.1 起）是 `voice_message`：Hub 识别后把转写回传手机仅作显示，同时直接交给助理，并在上下文里标注 `userInputMode: voice`，由助理结合上下文理解；只有确实无法判断时才追问。识别不再按说话节奏回放（实测 7.6 秒语音 7.8→2.1 秒、26 秒语音 25→4.9 秒，文字相同，`scripts/phone-voice-speed-probe.js`）。旧 App 的 `voice`（识别后填入输入框）保留兼容；`profile` 等新类型只发给发过 `hello` 并声明能力的 App。

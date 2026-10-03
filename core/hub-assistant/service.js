@@ -14,11 +14,12 @@ const {AssistantWatches,reminderIntent}=require('./watches');
 const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
 const backends=require('./backends');
+const profiles=require('./profiles');
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.sessionViews=new Map(); this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
     this.history=new AssistantHistory(deps.historyDatabasePath||path.join(deps.dataDir,'cache','session-search-v3.sqlite'));
-    this.bridge=new AssistantBridge(request=>this.invokeTool(request)); this.currentRequest=null;
+    this.bridge=new AssistantBridge(request=>this.invokeTool(request)); this.currentRequest=null; this.inputModes=new Map();
     this.endpointFile=path.join(deps.dataDir,'assistant','bridge-endpoint.json');
     this.snapshots=new AssistantSnapshots(deps.dataDir,this.store);
     this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
@@ -56,16 +57,86 @@ class AssistantService {
   overview() {
     const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');
     const runtime=session?.cliRuntime||session?.nativeRuntime,issue=runtime?.connection==='disconnected'?runtime.reason||'原生后端连接中断':null;
-    return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:issue?'助理后端未连接：'+issue:session?'助理会话已打开；账号可用性和执行结果以原生回执为准。':'首次启用后，助理作为独立会话运行，可选择 Hub 支持的后端并连接专属工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:issue?[issue]:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};
+    return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',profile:this.currentProfile(),backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:issue?'助理后端未连接：'+issue:session?'助理会话已打开；账号可用性和执行结果以原生回执为准。':'首次启用后，助理作为独立会话运行，可选择 Hub 支持的后端并连接专属工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:issue?[issue]:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};
   }
   async ensureSession() {
-    if(this.switching)throw new Error('助理正在切换后端，请稍候');
     if(this.creating)return this.creating;
-    this.creating=this._ensureSession(this.store.get('backendKind')||'codex');try{return await this.creating;}finally{this.creating=null;}
+    if(this.switching)throw new Error('助理正在切换后端，请稍候');
+    // 迁移与创建放在同一个 creating 里串行，并发的就绪请求只会得到同一个助理。
+    this.creating=(async()=>{
+      if(this.store.get('assistantDefaultsVersion')!==2){const migrated=await this.migrateDefaults();if(migrated)return migrated;}
+      return this._ensureSession(this.activeKind());
+    })();
+    try{return await this.creating;}finally{this.creating=null;}
+  }
+  activeKind(){return this.store.get('backendKind')||profiles.ASSISTANT_DEFAULT_KIND;}
+  // 2026-10-03：助理默认改为快速档（Sonnet 5.5 · 低思考）。旧数据只迁移一次，之后完全按用户选择。
+  // 老用户走正规的后端切换：助理忙时推迟到下次空闲；切换失败就留在原后端并不再重试。
+  async migrateDefaults(){
+    const kind=profiles.ASSISTANT_DEFAULT_KIND,previous=this.store.get('backendKind'),currentId=this.store.get('sessionId');
+    const markProfile=()=>{this.store.set('profile:'+kind,profiles.ASSISTANT_DEFAULTS[kind]);this.store.set('profilePending:'+kind,true);};
+    if(!currentId||previous===kind||!previous){markProfile();this.store.set('backendKind',kind);this.store.set('assistantDefaultsVersion',2);return null;}
+    const current=this.deps.getSession(currentId);
+    if(current&&(require('../session-runtime-truth').sessionRuntimeIsActive(current)||['running','waiting'].includes(current.status)||this.deps.hasPendingPrompt?.(currentId)))return null;
+    const before={profile:this.store.get('profile:'+kind),pending:!!this.store.get('profilePending:'+kind)};
+    markProfile();this.store.set('assistantDefaultsVersion',2);
+    try{const result=await this.switchUnguarded(kind);if(result.ok)return result;}catch(error){console.warn('[assistant] default migration kept',previous,error.message);}
+    this.store.set('profile:'+kind,before.profile);this.store.set('profilePending:'+kind,before.pending);
+    return null;
+  }
+  currentProfile(){
+    const kind=this.activeKind();
+    const id=backends.bindings(this.store)[kind],live=id?this.deps.getSession(id):null,saved=this.store.get('profile:'+kind)||profiles.ASSISTANT_DEFAULTS[kind]||{};
+    const {sessionModelId}=require('../session-capabilities');
+    const pending=!!this.store.get('profilePending:'+kind);
+    const model=(!pending&&live&&sessionModelId(live))||saved.model||sessionModelId(live)||null;
+    return{...profiles.describe(kind,model,(!pending&&live?.effort)||saved.effort||null),pending};
+  }
+  // 切换助理的后端、模型或思考深度。设置先保存；助理空闲时立即按新模型重启原会话（保留历史），忙时等下一次就绪再生效。
+  async setProfile({kind,model,effort}={}){
+    backends.backendKind(kind);
+    const defaults=await this.deps.getDefaults?.(kind)||{};
+    const picked=profiles.pick(kind,{model,effort},{...defaults,...(profiles.ASSISTANT_DEFAULTS[kind]||{})});
+    this.store.set('assistantDefaultsVersion',2); // 用户亲自选择后不再做默认迁移
+    const previous={profile:this.store.get('profile:'+kind),pending:!!this.store.get('profilePending:'+kind)};
+    const restore=()=>{this.store.set('profile:'+kind,previous.profile);this.store.set('profilePending:'+kind,previous.pending);};
+    this.store.set('profile:'+kind,picked);this.store.set('profilePending:'+kind,true);this.profileError=null;
+    // 换后端失败（例如助理正在回答）时撤回本次设置，避免之后悄悄生效。
+    let result;try{result=kind!==this.store.get('backendKind')?await this.switchBackend({kind}):await this.ensureSession();}catch(error){restore();throw error;}
+    if(!result.ok){restore();return result;}
+    if(this.profileError){const error=this.profileError;this.profileError=null;return{ok:false,error,profile:this.currentProfile()};}
+    return{ok:true,profile:this.currentProfile()};
+  }
+  // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
+  async phoneProfile(){
+    const defaults={};for(const kind of backends.BACKENDS)defaults[kind]=await this.deps.getDefaults?.(kind)||{};
+    return{current:this.currentProfile(),kinds:profiles.phoneCatalog(backends.BACKENDS,kind=>defaults[kind])};
+  }
+  async applyProfile(kind,id){
+    if(!this.store.get('profilePending:'+kind))return;
+    const want=this.store.get('profile:'+kind),session=this.deps.getSession(id);
+    if(!want||!session)return;
+    const {sessionModelId}=require('../session-capabilities');
+    if(sessionModelId(session)===want.model&&(session.effort||null)===(want.effort||null)){this.store.set('profilePending:'+kind,false);return;}
+    const busy=require('../session-runtime-truth').sessionRuntimeIsActive(session)||['running','waiting'].includes(session.status)||this.deps.hasPendingPrompt?.(id);
+    if(busy||!this.deps.restartSession){console.log('[assistant] profile deferred',kind,id,JSON.stringify({status:session.status,runtimeActive:require('../session-runtime-truth').sessionRuntimeIsActive(session),pendingPrompt:!!this.deps.hasPendingPrompt?.(id),cliRuntime:session.cliRuntime?.state,restart:!!this.deps.restartSession}));return;}
+    console.log('[assistant] profile restart',kind,id,sessionModelId(session),'->',want.model,want.effort);
+    const defaults=await this.deps.getDefaults?.(kind)||{};
+    const opts=profiles.withModel(kind,{...defaults,model:sessionModelId(session)},want);
+    const result=await this.deps.restartSession(id,{model:want.model,effort:want.effort||null,...(typeof opts.contextMax==='number'?{contextMax:opts.contextMax}:{})});
+    // 重启失败不能卡住后续消息：记录原因、把设置还原为实际在跑的型号，由 setProfile 如实回报。
+    if(!result||result.ok===false){
+      this.store.set('profile:'+kind,{model:sessionModelId(session),effort:session.effort||null});
+      this.profileError='助理按新模型重启失败：'+(result?.message||'未知原因')+'；原会话和历史已保留';
+    }
+    this.store.set('profilePending:'+kind,false);
   }
   async switchBackend({kind}={}) {
     backends.backendKind(kind);
     if(this.switching||this.creating)throw new Error('助理正在连接或切换，请稍候');
+    return this.switchUnguarded(kind);
+  }
+  async switchUnguarded(kind){
     const current=this.deps.getSession(this.store.get('sessionId'));
     if(current&&this.deps.hasPendingPrompt?.(current.id))throw new Error('助理上一条消息的提交仍在核对，请稍候切换；原会话和草稿已保留');
     if(current&&(require('../session-runtime-truth').sessionRuntimeIsActive(current)||['running','waiting'].includes(current.status)))throw new Error('助理正在处理请求或等待响应，请先结束当前回合；原会话和草稿已保留');
@@ -78,17 +149,21 @@ class AssistantService {
     const old=backends.bindings(this.store)[kind];
     const finish=async(session,id)=>{
       if(session.id!==id||session.purpose!=='hub-assistant'||session.kind!==kind)throw new Error('助理返回的会话编号或后端与预留身份不一致，需核对创建结果');
-      await this.connectBridge();backends.activate(this.store,kind,id);return{ok:true,sessionId:id,backendKind:kind,session};
+      await this.connectBridge();backends.activate(this.store,kind,id);
+      await this.applyProfile(kind,id);
+      return{ok:true,sessionId:id,backendKind:kind,session:this.deps.getSession(id)||session};
     };
     if(old){const session=this.deps.getSession(old);if(session)return finish(session,old);
       // A reserved launch can have succeeded even when its receipt was lost.
-      if(this.deps.resumeSession){const session=await this.deps.resumeSession(old,this.getLaunchOptions(kind,old));if(session)return finish(session,old);}
+      if(this.deps.resumeSession){const want=this.store.get('profilePending:'+kind)&&this.store.get('profile:'+kind);const session=await this.deps.resumeSession(old,this.getLaunchOptions(kind,old),want?{model:want.model,effort:want.effort||null}:undefined);if(session)return finish(session,old);}
       const pending=(this.store.get('backendCreation:'+kind)||this.store.get('assistantCreation'))?.state==='reserved';
       return{ok:false,sessionId:old,needsReconciliation:pending,error:pending?'上次助理创建结果未确认；已保留原编号，需核对该实体后恢复。':'助理原会话未打开，请从历史恢复该会话。'};
     }
-    const defaults=await this.deps.getDefaults?.(kind)||{};
+    const hubDefaults=await this.deps.getDefaults?.(kind)||{};
+    const defaults=profiles.withModel(kind,hubDefaults,profiles.assistantProfile(kind,this.store.get('profile:'+kind),hubDefaults));
     const id=randomUUID();backends.reserve(this.store,kind,id);
     await this.connectBridge();
+    this.store.set('profilePending:'+kind,false);
     const session=await this.deps.createSession(kind,{...defaults,id,title:'AI Hub 助理 · '+backends.getKindLabel(kind),name:'AI Hub 助理',purpose:'hub-assistant',...this.getLaunchOptions(kind,id)});
     return finish(session,id);
   }
@@ -135,7 +210,7 @@ class AssistantService {
     this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
     if(request.sessionId)this.continuity.add({id:'user:'+id,sessionId:request.sessionId,provider:active?.kind||'codex',role:'user',deliveryState:'prepared',timestamp:this.currentRequest.createdAt,text:request.text});
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
-    const text=buildBootstrapPrompt(request.text,{...manifest,clientSubmissionId:id},this.sessions().length,active?.kind||'codex');
+    const text=buildBootstrapPrompt(request.text,{...manifest,clientSubmissionId:id},this.sessions().length,active?.kind||'codex',{inputMode:this.inputModes.get(id)||'text'});
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
       workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,openedSessions:context.workbench.openedCount,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
       requestToken:this.currentRequest.token,packetHash:manifest.packetHash,snapshotRead:false,snapshotReadAt:null,bootstrapChars:text.length,
@@ -145,7 +220,9 @@ class AssistantService {
   async send(request) {
     if(typeof request.text!=='string'||!request.text.trim()||request.text.length>50000)throw new Error('请输入有效任务');
     const ensured=await this.ensureSession();if(!ensured.ok)return ensured;
-    const receipt=await this.deps.sendPrompt(ensured.sessionId,request.text,request.requestId||randomUUID());
+    const requestId=request.requestId||randomUUID();
+    if(request.inputMode==='voice')this.inputModes.set(requestId,'voice');
+    let receipt;try{receipt=await this.deps.sendPrompt(ensured.sessionId,request.text,requestId);}finally{this.inputModes.delete(requestId);}
     return{ok:receipt?.ok!==false,sessionId:ensured.sessionId,receipt,contextSummary:this.store.get('lastContext')};
   }
   async invokeTool({name,arguments:args={},callerSessionId}) {
@@ -178,12 +255,16 @@ class AssistantService {
         requireBoundTarget(current,{targetSessionId:args.sessionId},this.sessions());}
       return this.followTask({sessionId:args.sessionId});
     }
-    const action={type:name==='create_session'?'create':'send',targetSessionId:args.sessionId,title:args.title,text:args.text};
+    const action={type:name==='create_session'?'create':'send',targetSessionId:args.sessionId,title:args.title,text:args.text,
+      ...(name==='create_session'?Object.fromEntries(['tier','kind','model','effort'].filter(key=>args[key]).map(key=>[key,args[key]])):{})};
     if(!manager)requireAuthorizedTarget(current,action,this.sessions());
+    // 型号或深度写错时在占用本轮名额前报错，助理改正后可在同一轮重试。
+    if(action.type==='create'){const kind=profiles.taskKind(action);backends.backendKind(kind);profiles.resolveTask(action,await this.deps.getDefaults?.(kind)||{});}
     if(typeof action.text!=='string'||!action.text.trim()||action.text.length>50000)throw new Error('任务无效');
     if(this.deps.authorizeAction&&!await this.deps.authorizeAction(action,current))throw new Error('目标不在本轮授权范围内');
     const requestId=bindOperation(this.store,current,args.operationKey,action);
-    const followed=reminderIntent(current.text);
+    // 助理新建的任务总是关注：路由的承诺是把结果带回来（手机与助理页都会收到提醒）。
+    const followed=reminderIntent(current.text)||action.type==='create';
     if(followed&&action.type==='send')this.followTask({sessionId:action.targetSessionId});
     const result=await this.execute({...action,requestId},{followNewReply:followed});
     return followed?{...result,followed:true,notificationMethod:'Hub监视原生最终回复并在助理页通知'}:result;
@@ -195,7 +276,12 @@ class AssistantService {
       const record=this.store.begin(requestId,payload);
       return{ok:record.state==='acknowledged',duplicate:true,state:record.state,result:record.result,needsReconciliation:record.state==='dispatching'||record.state==='unknown'};
     }
-    let resumeMeta=null;
+    let resumeMeta=null,route=null;
+    if(action.type==='create'){
+      // 档位解析失败（型号不存在、深度不支持）在落账前报错，助理可以换个说法重试。
+      const kind=profiles.taskKind(action);backends.backendKind(kind);
+      route=profiles.resolveTask(action,await this.deps.getDefaults?.(kind)||{});
+    }
     if(action.type==='send'){
       if(this.assistantIds().includes(action.targetSessionId)||this.sessionMetadata(action.targetSessionId)?.purpose==='hub-assistant')throw new Error('助理不能向自身循环派发');
       const target=this.deps.getSession(action.targetSessionId);
@@ -217,9 +303,9 @@ class AssistantService {
         if(require('../session-runtime-truth').sessionRuntimeIsActive(target)||['running','waiting'].includes(target.status))throw new Error('原目标恢复后仍在运行或等待输入，未发送任务');
       }
       if(action.type==='create'){
-        const defaults=await this.deps.getDefaults?.('codex')||{};
         const desiredId=randomUUID();this.store.set('reserved:'+requestId,desiredId);
-        const session=await this.deps.createSession('codex',{...defaults,id:desiredId,title:String(action.title||'助理委托任务').slice(0,100)});sessionId=session.id;
+        // 助理新建的是后台会话，没有界面终端回应光标查询；与群聊成员一样关闭 ConPTY 继承光标，否则 Claude 会卡在启动。
+        const session=await this.deps.createSession(route.kind,{...route.opts,id:desiredId,title:String(action.title||'助理委托任务').slice(0,100),noInheritCursor:true});sessionId=session.id;
         // Follow before submission: a fast target can reply before the manager
         // receives create_session's result and gets a chance to call watch.
         if(followNewReply)this.followTask({sessionId});
@@ -227,7 +313,7 @@ class AssistantService {
       const wireText=require('./delegated-prompt').encodeDelegatedPrompt(action.text,this.deps.getSession(sessionId)?.kind);
       const receipt=await this.deps.sendPrompt(sessionId,wireText,requestId);
       const confirmed=receipt?.ok===true&&receipt?.receipt?.status==='confirmed'&&!receipt.notSent&&!receipt.contentMismatch;
-      const result={sessionId,receipt};this.store.finish(requestId,confirmed?'acknowledged':'unknown',result);
+      const result={sessionId,receipt,...(route?{route:{tier:route.tier,kind:route.kind,model:route.model,effort:route.effort,label:route.label}}:{})};this.store.finish(requestId,confirmed?'acknowledged':'unknown',result);
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};
     } catch(error) {this.store.finish(requestId,'unknown',{sessionId,error:error.message});return{ok:false,state:'unknown',sessionId,error:error.message};}
   }

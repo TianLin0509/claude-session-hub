@@ -5,11 +5,13 @@ function setup(t){
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-backends-')),sessions=new Map(),created=[];
   const deps={dataDir:dir,getSession:id=>sessions.get(id),getSessionMetadata:id=>sessions.get(id),getAllSessions:()=>[...sessions.values()],getDefaults:kind=>({model:kind+'-chosen-model',cwd:dir}),
     createSession:async(kind,opts)=>{created.push(kind);const session={...opts,kind,status:'idle'};sessions.set(opts.id,session);return session;},sendPrompt:async()=>({ok:true,receipt:{status:'confirmed'}})};
-  const service=new AssistantService(deps);t.after(()=>{if(service.store.db.isOpen)service.close();});return{service,deps,sessions,created};
+  const service=new AssistantService(deps);
+  // 这些用例验证切换身份；按「已完成快速档迁移、当前选 Codex」的老用户状态起步。默认档位见 unit-assistant-profiles。
+  service.store.set('assistantDefaultsVersion',2);service.store.set('backendKind','codex');t.after(()=>{if(service.store.db.isOpen)service.close();});return{service,deps,sessions,created};
 }
 test('switch round trip retains two native identities and provider defaults',async t=>{
   const x=setup(t),codex=await x.service.ensureSession(),claude=await x.service.switchBackend({kind:'claude'});
-  assert.notEqual(claude.sessionId,codex.sessionId);assert.equal(claude.session.model,'claude-chosen-model');assert.equal(claude.session.autonomous,true);
+  assert.notEqual(claude.sessionId,codex.sessionId);assert.equal(claude.session.model,'claude-sonnet-5-5');assert.equal(claude.session.effort,'low');assert.equal(claude.session.autonomous,true);
   const config=JSON.parse(fs.readFileSync(claude.session.mcpConfigFile,'utf8'));
   assert.equal(config.mcpServers.hub_assistant.env.HUB_ASSISTANT_SESSION_ID,claude.sessionId);
   assert.equal((await x.service.switchBackend({kind:'codex'})).sessionId,codex.sessionId);

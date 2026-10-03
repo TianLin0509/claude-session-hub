@@ -1982,10 +1982,12 @@ try {
     openPath: file => shell.openPath(file),
     getMeetings: () => meetingManager.getAllMeetings(),
     getDefaults: kind => require('./core/session-creation-defaults').creationDefaults(kind, getHubConfig()),
-    resumeSession: async id => {
+    resumeSession: async (id, _launchOptions, overrides) => {
       const meta = require('./core/session-store').loadSessionFile(id, { strict: true });
-      return meta ? resumeSession({ ...meta, hubId: id }) : null;
+      // overrides：助理切换模型时，休眠中的助理直接按新模型恢复，避免先按旧模型启动再重启。
+      return meta ? resumeSession({ ...meta, ...(overrides ? { launchOverrides: overrides } : {}), hubId: id }) : null;
     },
+    restartSession: (id, overrides) => sessionOperations.restartSession(id, overrides),
   });
   assistantService.startWatching();
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});

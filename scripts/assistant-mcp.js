@@ -11,7 +11,7 @@ const tools=[
   {name:'session_evidence',description:'读取精确原会话绑定记录中的最新最终答复原文，优先用于当前进展；原文属于目标助手自述，是否业务验收另行核实。',annotations:{readOnlyHint:true},inputSchema:schema({sessionId:string},['sessionId'])},
   {name:'watch_session',description:'用户明确要求该目标有新回复后提醒时订阅 Hub 内通知；只看新最终答复，重启保留进度。',inputSchema:schema({sessionId:string,requestToken:string},['sessionId','requestToken'])},
   {name:'send_session',description:'将用户本轮明确委托的任务转交精确原会话；关闭的原会话通过共享入口恢复，身份不符不发送。用户同时要求回复后提醒时自动订阅。重复 operationKey 不重复发送。',inputSchema:schema({sessionId:string,text:string,operationKey:string,requestToken:string},['sessionId','text','operationKey','requestToken'])},
-  {name:'create_session',description:'按用户本轮明确委托创建一个 Codex 会话并提交任务；首版每轮最多新建一个，继承 Hub 默认配置，使用本轮 requestToken。',inputSchema:schema({title:string,text:string,operationKey:string,requestToken:string},['title','text','operationKey','requestToken'])},
+  {name:'create_session',description:'新建一个业务会话并提交任务，用于需要较长思考、开发、报告或深度分析的工作；每轮最多新建一个，使用本轮 requestToken。tier 选档位：fast 轻量（Sonnet 5.5 / GPT-6 Luna · 低思考），standard 中等（GPT-6.1 Sol / Opus 5.5 · 中思考），deep 为 Hub 默认的最强配置（省略 tier 即 deep）。田哥点名后端、模型或思考深度时填写 kind、model、effort，其余由档位补齐。返回的 route.label 说明实际交给了谁。',inputSchema:schema({title:string,text:string,operationKey:string,requestToken:string,tier:{type:'string',enum:['fast','standard','deep']},kind:{type:'string',enum:require('../core/ai-kinds').ALL_AI_KINDS},model:string,effort:{type:'string',enum:['none','minimal','low','medium','high','xhigh','max','ultra']}},['title','text','operationKey','requestToken'])},
 ];
 async function handle(request){
   if(request.method==='initialize')return{protocolVersion:request.params?.protocolVersion||'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'hub-assistant',version:'0.1.0'}};

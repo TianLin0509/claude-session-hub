@@ -502,13 +502,19 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('debug:get-terminal-output-batch-stats', () => getTerminalOutputBatchStats());
 
-  ipcMain.handle('restart-session', (_e, sessionId) => {
+  ipcMain.handle('restart-session', (_e, sessionId) => restartSession(sessionId));
+
+  // overrides 只用于 PTY 原生会话的「按新模型/深度重启并接着原会话历史」（助理切换模型）。
+  function restartSession(sessionId, overrides = null) {
     const old = sessionManager.getSession(sessionId);
     if (!old) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
     }
     const nativeCodex = sessionManager.getNativeSession?.(sessionId) || sessionManager.getNativeCodex?.(sessionId);
     // PTY 跑的 Codex 与 Claude 一样按原生会话 id 恢复；只有 App Server 会话在这里重连。
+    if (overrides && (old.runtimeBackend === 'codex-app-server' || old.runtimeBackend === 'claude-stream-json' || (nativeCodex && !nativeCodex.isCliProvider) || sessionManager.getNativeClaude?.(sessionId))) {
+      return { ok: false, error: 'restart-overrides-unsupported', message: '原生后端会话不支持按新模型重启' };
+    }
     if (old.purpose !== 'chuxin-research' && (old.runtimeBackend === 'codex-app-server' || (nativeCodex && !nativeCodex.isCliProvider))) {
       const native = nativeCodex;
       if (!native) return {ok:false,error:'unmanaged-codex',message:'旧 Codex 进程尚未接管；请先在原会话结束工作并关闭，再恢复'};
@@ -537,7 +543,7 @@ function registerSessionIpc(ipcMain, deps) {
         return { ok: false, error: 'resume-handler-unavailable', message: '会话恢复服务尚未就绪' };
       }
 
-      const resumeMeta = buildSessionResumeMeta(old);
+      const resumeMeta = buildSessionResumeMeta(old, overrides ? { launchOverrides: overrides } : {});
       lastResizeBySid.delete(sessionId);
       // 2026-09-26：kill 只是发信号，旧 PTY 的收尾（保存记录、停 writer、释放归属）在
       // 退出回调里。以前 close 后立刻 resume，撞上「该会话已在本 Hub 打开」而失败；
@@ -560,6 +566,7 @@ function registerSessionIpc(ipcMain, deps) {
       }));
     }
 
+    if (overrides) return { ok: false, error: 'restart-overrides-unsupported', message: '该会话没有可恢复的原生历史，不能按新模型重启' };
     // PowerShell has no provider-native thread.  Restarting it intentionally
     // creates a fresh shell while retaining the Hub card's UX metadata.
     sessionManager.closeSession(sessionId);
@@ -585,9 +592,9 @@ function registerSessionIpc(ipcMain, deps) {
     registerSessionForTap(fresh);
     sendToRenderer('session-created', { session: fresh });
     return fresh;
-  });
+  }
 
-  return { lastResizeBySid, createSession };
+  return { lastResizeBySid, createSession, restartSession };
 }
 
 module.exports = {
