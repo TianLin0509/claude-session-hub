@@ -1,0 +1,66 @@
+'use strict';
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict');
+const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
+const {connectFirstPage}=require('./helpers/cdp-client');
+const {getFreePort,click,waitFor}=require('./helpers/usage-refresh-fixture');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-compact-group-'));
+const out=path.resolve('artifacts','20261003-compact-group-composer-codex1-'+Date.now());fs.mkdirSync(out,{recursive:true});
+const report={passed:false,checks:[],measurements:[],out,boundary:'隔离 Electron 真实鼠标与键盘；成员、交付状态为受控样例，不调用模型'};
+let hub,c;const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const check=(value,label)=>{assert(value,label);report.checks.push(label);console.log('PASS '+label);};
+const shot=async name=>{const r=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
+const geometry=()=>c.eval(`(()=>{const row=document.querySelector('#mr-input-row'),head=document.querySelector('#mr-composer-head'),rail=document.querySelector('#mr-input-tuning'),s=document.querySelector('#mr-input-box');return {height:row.getBoundingClientRect().height,headHeight:head.getBoundingClientRect().height,railWidth:rail.clientWidth,railScroll:rail.scrollWidth,inputHeight:s.getBoundingClientRect().height,overflow:getComputedStyle(rail).overflowX}})()`);
+const status=async props=>{await c.eval(`require('electron').ipcRenderer.emit('delivery:changed',{},${JSON.stringify({meetingId:'compact-group',ok:true,finished:true,status:'done',label:'全部步骤已交付',stageNames:['分析','核对'],...props})})`);await sleep(80);};
+(async()=>{try{
+ hub=await launchIsolatedHub({dataDir:path.join(root,'data'),port:await getFreePort(),extraEnv:{CLAUDE_HUB_E2E:'1'}});
+ c=await connectFirstPage(hub);await waitFor(c,'!!window.__hubE2E');await sleep(1000);
+ if(await c.eval(`document.querySelector('#new-session-close').getBoundingClientRect().width>0`))await click(c,'#new-session-close');
+ await c.eval(`window.__hubE2E.addFakeSessions(Array.from({length:6},(_,i)=>({id:'compact-member-'+i,kind:i%2?'claude':'codex',title:(i%2?'Claude ':'Codex ')+(i+1),meetingId:'compact-group',status:'idle',currentModel:{id:i%2?'claude-opus-5-5[1m]':'gpt-6.1-sol',label:i%2?'Opus 5.5':'GPT-6.1-SOL'},effort:'high'})));meetings['compact-group']={id:'compact-group',title:'紧凑群聊验收',scene:'general',mode:'free',groupChat:true,status:'idle',subSessions:Array.from({length:6},(_,i)=>'compact-member-'+i),participants:[0,1,2,3,4,5],slotSpecs:Array.from({length:6},(_,i)=>({kind:i%2?'claude':'codex',memberId:'m'+i,title:(i%2?'Claude ':'Codex ')+(i+1)})),turns:[],log:[],serialWorkflow:{enabled:true,deliveryVersion:1,deliveryStages:[{name:'分析'},{name:'核对'}]},lastMessageTime:Date.now()};renderSessionList();`);
+ await click(c,'.session-item[data-meeting-id="compact-group"]');
+ await waitFor(c,`!!document.querySelector('[data-group-menu="members"]')`);
+ // This layout fixture invokes the same renderer used by real workflow events.
+ await c.eval(`require('./delivery-workflow-controls').render(document.querySelector('#mr-input-preflight'),meetings['compact-group'],()=>require('./delivery-workflow-controls').render(document.querySelector('#mr-input-preflight'),meetings['compact-group'],()=>{},()=>{}),()=>{})`);
+ for(const [mode,width] of [['desktop',1440],['desktop',960],['phone',850],['phone',760]]) {
+  await c.send('Emulation.setDeviceMetricsOverride',{width,height:820,deviceScaleFactor:1,mobile:false});
+  await click(c,'[data-display-mode="'+mode+'"]');await status({});await sleep(100);
+  const g=await geometry();report.measurements.push({mode,width,...g});console.log(JSON.stringify(g));
+  check(g.headHeight<=36,mode+'/'+width+'：头像与工作流状态只占一行');
+  check(g.railScroll<=g.railWidth+1&&g.overflow==='visible',mode+'/'+width+'：操作栏无横向溢出或滚动条');
+  check(await c.eval(`(()=>{const p=document.querySelector('#mr-free-avatars-row').getBoundingClientRect();return Array.from(document.querySelectorAll('.mr-free-avatar-chk')).every(e=>e.getBoundingClientRect().right<=p.right+1)})()`),mode+'/'+width+'：所有成员头像均可见');
+  await click(c,'[data-group-menu="members"]');
+  check(await c.eval(`(()=>{const p=document.querySelector('#mr-composer-menu-members'),r=p.getBoundingClientRect();return !p.hidden&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&document.querySelectorAll('.mr-input-member-tuning').length===6})()`),mode+'/'+width+'：统一设置面板在屏内，六位 AI 各有独立设置');
+  check(await c.eval(`Array.from(document.querySelectorAll('.mr-input-member-tuning')).every(p=>p.querySelector('.composer-model')&&p.querySelector('.composer-thinking')&&p.querySelector('.composer-speed')&&p.dataset.sid)`),mode+'/'+width+'：模型、推理和速度控件保留');
+  await shot(mode+'-'+width+'-settings');
+  await c.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  check(await c.eval(`document.querySelector('#mr-composer-menu-members').hidden`),mode+'/'+width+'：Escape 收起设置');
+  await click(c,'[data-group-menu="tools"]');
+  check(await c.eval(`!document.querySelector('#mr-composer-menu-tools').hidden&&document.querySelector('#mr-composer-menu-members').hidden&&document.querySelector('#mr-composer-menu-tools .mr-composer-history')&&document.querySelector('#mr-composer-menu-tools .fi-bridge-reference')`),mode+'/'+width+'：工具保留引用、最近输入和展开编辑');
+  await click(c,'#mr-composer-menu-tools .mr-composer-expand');
+  check(await c.eval(`document.querySelector('#mr-input-editor-overlay').getBoundingClientRect().height>0`),mode+'/'+width+'：长消息编辑器可真实打开');
+  await c.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await sleep(100);
+  await click(c,'#mr-input-box');await c.send('Input.insertText',{text:'保留群聊草稿'});
+  check(await c.eval(`document.querySelector('#mr-composer-menu-tools').hidden&&document.querySelector('#mr-input-box').innerText.includes('保留群聊草稿')`),mode+'/'+width+'：点击输入框收起工具且正常输入');
+  await click(c,'[data-delivery-details]');
+  check(await c.eval(`!document.querySelector('#mr-delivery-details').hidden&&document.querySelector('#mr-delivery-details').textContent.includes('发送给')`),mode+'/'+width+'：完整进度和发送对象可展开查看');
+  await click(c,'[data-delivery-details]');await shot(mode+'-'+width+'-compact');
+ }
+ await status({runId:'running',finished:false,status:'running',name:'交叉核对',delivered:1,total:6,round:2});
+ check(await c.eval(`!!document.querySelector('[data-delivery="stop"]')&&document.querySelector('.mr-file-detail strong').textContent.includes('1/6')`),'运行时进度和暂停入口保持可见');
+ await status({runId:'paused',finished:false,paused:true,status:'paused',name:'交叉核对',delivered:1,total:6,round:2});
+ check(await c.eval(`!!document.querySelector('[data-delivery="resume"]')&&document.querySelector('.mr-file-detail strong').textContent.includes('已暂停')`),'暂停时继续入口保持可见');
+ await status({runId:null,finished:false,error:'成员连接失败，请检查账号',status:'error',label:'状态读取失败'});
+ check(await c.eval(`document.querySelector('.mr-file-error').getBoundingClientRect().height>0&&!!document.querySelector('[data-delivery="refresh"]')`),'错误说明和重试入口保持可见');
+ await status({});await shot('final-phone');
+ await click(c,'[data-group-menu="members"]');
+ await c.eval(`window.__hubE2E.addFakeSessions([{id:'other-member',kind:'claude',meetingId:'other-compact-group',title:'另一个群聊成员'}]);meetings['other-compact-group']={...meetings['compact-group'],id:'other-compact-group',title:'另一个群聊',subSessions:['other-member'],participants:[0]};renderSessionList();`);
+ await click(c,'.session-item[data-meeting-id="other-compact-group"]');
+ check(await c.eval(`document.querySelector('#mr-composer-menu-members').hidden&&document.querySelector('#mr-composer-menu-tools').hidden`),'切换群聊收起旧设置面板');
+ await click(c,'.session-item[data-meeting-id="compact-group"]');
+ check(await c.eval(`document.querySelector('#mr-input-box').innerText.includes('保留群聊草稿')`),'切回群聊仍保留原草稿');
+ await click(c,'#btn-theme');await click(c,'[data-theme-id="dark"]');
+ await click(c,'#btn-theme');
+ await click(c,'[data-group-menu="members"]');
+ check(await c.eval(`!document.querySelector('#mr-composer-menu-members').hidden&&document.documentElement.dataset.theme==='dark'`),'深色主题也能使用紧凑设置面板');
+ await shot('dark-settings');report.passed=true;
+}catch(error){report.error=error.stack;process.exitCode=1;if(c)await shot('failure').catch(()=>{});}
+finally{if(c)await c.close();if(hub)await gracefulQuit(hub);fs.writeFileSync(path.join(out,'evidence.json'),JSON.stringify(report,null,2));console.log('REPORT',out,report.passed?'PASS':report.error);}})();

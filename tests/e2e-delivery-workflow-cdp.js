@@ -6,7 +6,7 @@ const {launchIsolatedHub,gracefulQuit}=require('./helpers/hub-launcher');
 const {connectFirstPage}=require('./helpers/cdp-client');
 const D=require('../core/delivery-workflow');
 const ROOT=fs.mkdtempSync(path.join(os.tmpdir(),'hub-delivery-gui-')),DATA=path.join(ROOT,'data'),GATES=path.join(ROOT,'gates');
-const ART=path.resolve('artifacts/delivery-workflow');fs.mkdirSync(ART,{recursive:true});fs.mkdirSync(GATES,{recursive:true});
+const ART=path.resolve('artifacts','20261003-delivery-workflow-codex1-'+Date.now());fs.mkdirSync(ART,{recursive:true});fs.mkdirSync(GATES,{recursive:true});
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const port=()=>new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
 const received=()=>{const p=path.join(GATES,'received.jsonl');return fs.existsSync(p)?fs.readFileSync(p,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];};

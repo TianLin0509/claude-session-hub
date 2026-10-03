@@ -18,11 +18,12 @@ function render(row,meeting,onRefresh,onError) {
   const primary=active?(paused?'<button type="button" class="continue" data-delivery="resume" title="由 Hub 核对已交付文件，判断下一步交给谁；不重复派发已确认任务">继续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
   const status=s?.runId&&!s.finished?(s.gate==='running'?`Hub 正在跑测试闸门 · 第 ${s.round} 轮`:`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`):s?.finished?'记录和交付文件已保留':'输入任务，Hub 按工作流安排成员推进';
   row.innerHTML=`<section class="mr-file-flow mr-delivery-flow" aria-label="工作流进度" data-delivery-status="${esc(s?.status || 'loading')}" aria-busy="${busy.has(id)}">
-    <div class="mr-file-detail"><strong>${esc(title)}</strong><small>${esc(status)}</small></div>
+    <div class="mr-file-detail" title="${esc([title,status,recipients.length?'发送给 '+recipients.join('、'):'请点亮至少一位成员头像'].join(' · '))}"><strong>${esc(active?title+' · '+status:title)}</strong><small>${esc(status)}</small></div>
     <div class="mr-file-actions">${primary}${s?.error&&!s.runId?'<button type="button" data-delivery="refresh">重试读取</button>':''}<button type="button" data-delivery="files">交付文件</button>
       <button type="button" data-delivery-details aria-expanded="${expanded.has(id)}" aria-controls="mr-delivery-details">${expanded.has(id)?'收起详情':'流程详情'}</button></div>
     ${s?.error?`<div class="mr-file-error" role="status">${esc(s.error)}</div>`:''}
     <div id="mr-delivery-details" class="mr-delivery-details" ${expanded.has(id)?'':'hidden'}>
+      <p>${esc(status)} · ${esc(recipients.length?'发送给 '+recipients.join('、'):'请点亮至少一位成员头像')}</p>
       <ol class="mr-delivery-stages">${(s?.stageNames || meeting.serialWorkflow.deliveryStages.map(stage=>stage.name)).map((name,i)=>`<li ${active&&s.stageIndex===i?'aria-current="step"':''}>${esc(name)}</li>`).join('')}</ol>
       <p>${s?.missing?.length?'待交付：'+esc(s.missing.join('、')):'每位成员交付结果后接续；聊天结束不会提前交棒'}</p>
       ${active && s.missingIds?.length ? `<div class="mr-file-actions">${s.missingIds.map((mid,i)=>{const ends=s.kind==='file' && mid===s.ownerId;
