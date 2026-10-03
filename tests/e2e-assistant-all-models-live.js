@@ -67,6 +67,16 @@ async function main(){
       row.modelAfterSwitch=(await meta(id)).currentModel;await shot(kind+'-model-change');
       result.checks.push('千问普通模型菜单真实切换到 qwen3.7-plus，同一原生会话继续读取资料并回答');
     }
+    if(process.env.HUB_ASSISTANT_DISPATCH==='1'){
+      const beforeDispatch=(await finals(id)).length,title='验收业务-'+kind;
+      await send('新建一个 Codex Session，标题为'+title+'，任务是只回复业务验收完成，无需读写文件。提交确认后立即简短答复我，有新回复时提醒我。');
+      row.delegationAnswer=(await final(id,beforeDispatch)).text;await settled(id);
+      const action=await until('confirmed '+kind+' dispatch',async()=>{const r=await invoke('assistant:actions');return r.actions.find(a=>a.state==='acknowledged'&&a.payload?.title===title);},60000);
+      const target=action.result.sessionId;row.targetId=target;
+      assert.match((await final(target)).text,/业务验收完成/);
+      row.notification=await until('new reply notice '+kind,async()=>{const r=await invoke('assistant:notifications');return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});
+      await shot(kind+'-dispatch');result.checks.push(kind+' 真实创建 Codex 业务会话、确认派工、收到新回复提醒');
+    }
     row.passed=true;first=false;result.checks.push(kind+' 真实资料读取、跨后端交接与最终回答');
    }catch(error){row.error=error.message;await shot(kind+'-failure').catch(()=>{});if(kind==='codex')fs.writeFileSync(path.join(out,'codex-raw-buffer.txt'),await cdp.eval('ipcRenderer.invoke("debug:get-session-buffer",'+j(row.id)+')'));if((await invoke('assistant:get-overview')).submissionPending){result.blockedAt=kind;throw error;}}
    console.log(j({event:'backend-result',kind,passed:row.passed,elapsedMs:row.elapsedMs}));
