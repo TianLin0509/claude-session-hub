@@ -152,6 +152,10 @@ rl.on('line', async line => {
         await frame({ type: 'system', subtype: 'api_retry', attempt, max_retries: Math.max(10, retries), retry_delay_ms: gap,
           error_status: 529, error: 'overloaded', session_id: sessionId, uuid: randomUUID() });
       }
+      const releaseFile = process.env.CLAUDE_HUB_FIXTURE_RELEASE_FILE;
+      while (releaseFile && !fs.existsSync(releaseFile)) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
       await new Promise(resolve => setTimeout(resolve, gap));
       await frame({ ...m, session_id: sessionId });
       return complete();

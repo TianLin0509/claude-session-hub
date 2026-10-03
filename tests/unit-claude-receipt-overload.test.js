@@ -18,18 +18,20 @@ const { registerPromptSubmitIpc } = require('../main/ipc/prompt-submit-handlers'
 const watcher = require('../core/group-chat-watcher');
 const fixture = path.join(__dirname, 'fixtures', 'claude-stream.js');
 
-function overloaded(t, { transcript = 'on', retries = 5, gapMs = 100, timeoutMs = 200 } = {}) {
+function overloaded(t, { transcript = 'on', retries = 5, gapMs = 100, timeoutMs = 200, holdEcho = false } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-overload-'));
   const env = { ...process.env, CLAUDE_CONFIG_DIR: directory, CLAUDE_HUB_DATA_DIR: directory,
     CLAUDE_HUB_FIXTURE_TRANSCRIPT: transcript, CLAUDE_HUB_FIXTURE_RETRIES: String(retries),
-    CLAUDE_HUB_FIXTURE_RETRY_MS: String(gapMs) };
+    CLAUDE_HUB_FIXTURE_RETRY_MS: String(gapMs),
+    CLAUDE_HUB_FIXTURE_RELEASE_FILE: holdEcho ? path.join(directory, 'release-echo') : '' };
   const session = new ClaudeNativeSession({ id: 'hub', executable: process.execPath, cwd: directory, env,
     commandArgs: [fixture, '--fixture=overloaded'], submissionTimeoutMs: timeoutMs });
   t.after(async () => { await session.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   const retryLines = []; const accepted = [];
   session.on('state', runtime => { const line = claudeApiRetrySummary(runtime); if (line) retryLines.push(line); });
   session.on('lifecycle', event => { if (event.type === 'submission-accepted') accepted.push(event.clientSubmissionId); });
-  return { session, directory, retryLines, accepted };
+  return { session, directory, retryLines, accepted,
+    releaseEcho: () => fs.writeFileSync(path.join(directory, 'release-echo'), 'release') };
 }
 
 async function until(predicate, ms = 5000) {
@@ -50,18 +52,18 @@ function ipcFor(native) {
 }
 
 test('a prompt the engine recorded is confirmed from its transcript while the API keeps answering 529', async t => {
-  const { session, retryLines, accepted } = overloaded(t, { retries: 5, gapMs: 100, timeoutMs: 200 });
+  const { session, retryLines, accepted, releaseEcho } = overloaded(t, { retries: 5, gapMs: 100, timeoutMs: 200, holdEcho: true });
   const states = [];
   session.on('state', runtime => states.push(runtime.state));
   const send = ipcFor(session);
   const receipt = await send({}, { sessionId: 'hub', text: '过载也不许说成失败', clientSubmissionId: 'A' });
-  // Confirmed from the transcript, i.e. before the echo (≈600 ms): had the echo
-  // come first the source would read 'echo'. No wall-clock bound -- under the
-  // 16-way merge gate the first probe alone measured 268 ms; whichever of the
-  // frame probe or the deadline probe lands it, the input never turns unknown.
+  // Hold the model echo until the transcript receipt is inspected. A fixed
+  // 600 ms delay does not establish event order when the host is busy.
   const record = session.records.get('A');
   assert.equal(receipt.ok, true); assert.equal(record.status, 'accepted');
   assert.equal(record.receiptSource, 'history');
+  await until(() => retryLines.includes('Claude 服务繁忙（529），引擎自动重试第 5/10 次'));
+  releaseEcho();
   const done = await createClaudeNativeWatcher(session, { sid: 'hub', submissionId: 'A' }).wait();
   assert.equal(done.status, 'completed');
   assert.equal(session.unreconciled, false);
