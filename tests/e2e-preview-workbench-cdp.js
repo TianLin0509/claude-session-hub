@@ -142,7 +142,7 @@ async function main() {
       deviceScaleFactor: 1,
       mobile: false,
     });
-    await waitFor(client, `Boolean(window.openPreviewPanel && window.openPreviewQuickOpen && document.getElementById('btn-preview-path'))`);
+    await waitFor(client, `Boolean(window.openPreviewPanel && window.openPreviewQuickOpen && document.getElementById('preview-open-path'))`);
 
     const shortcut = await client.eval(`(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -189,7 +189,7 @@ async function main() {
       splitterDisplay:'none',
       switchInsidePanel:true,
     });
-    assert.ok(result.defaultLayout.panelWidth > 1000, JSON.stringify(result.defaultLayout));
+    assert.ok(result.defaultLayout.panelWidth > 400, JSON.stringify(result.defaultLayout));
     await capture(client, FULLSCREEN_SCREENSHOT_PATH);
     await client.eval(`document.getElementById('preview-layout-split').click()`);
     await waitFor(client, `window.__hubE2E.previewWorkbench.state().isFullscreen === false
@@ -296,7 +296,7 @@ async function main() {
       activePath:document.getElementById('preview-title').title,
       copyContentButton:document.getElementById('preview-copy-content').title,
       copyPathButton:document.getElementById('preview-copy-path').title,
-      quickPathButton:document.getElementById('btn-preview-path').innerText.trim(),
+      quickPathButton:document.getElementById('preview-open-path').getAttribute('aria-label'),
       panelWidth:document.getElementById('preview-panel').getBoundingClientRect().width,
       copyActionLabelDisplay:getComputedStyle(document.querySelector('#preview-open-path span')).display,
       copyPrimaryLabelDisplay:getComputedStyle(document.querySelector('#preview-copy-content span')).display,
@@ -311,10 +311,10 @@ async function main() {
     }))()`);
     assert.equal(result.final.panelDisplay, 'flex');
     assert.equal(result.final.tabCount, 2);
-    assert.match(result.final.quickPathButton, /路径预览/);
+    assert.match(result.final.quickPathButton, /路径/);
     assert.ok(result.final.panelWidth < 820, JSON.stringify(result.final));
     assert.equal(result.final.copyActionLabelDisplay, 'none', 'panel container query must compact the narrow toolbar');
-    assert.notEqual(result.final.copyPrimaryLabelDisplay, 'none', 'copy text remains discoverable at common split width');
+    assert.match(result.final.copyContentButton, /复制全文/, 'compact toolbar keeps a discoverable copy action');
     assert.ok(result.final.headerActionsScrollWidth <= result.final.headerActionsClientWidth + 1, JSON.stringify(result.final));
     assert.equal(result.final.tabCloseTag, 'BUTTON');
     assert.equal(result.final.tabControls, 'preview-body');

@@ -49,7 +49,13 @@ async function main() {
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url));
     await client.send('Page.enable');
     await waitFor('!!window.openPreviewPanel');
-    await client.eval(`window.openPreviewPanel(${JSON.stringify(md)})`);
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'o', code: 'KeyO', modifiers: 2, windowsVirtualKeyCode: 79 });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'o', code: 'KeyO', modifiers: 2, windowsVirtualKeyCode: 79 });
+    await waitFor(`document.activeElement?.id === 'preview-quick-open-input'`);
+    await client.send('Input.insertText', { text: md });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await waitFor(`document.getElementById('preview-panel').style.display === 'flex' && document.getElementById('preview-quick-open').style.display === 'none'`);
     await click('preview-layout-split');
     await client.eval(`document.getElementById('preview-body').scrollTop=600`);
     const scroll = await client.eval(`document.getElementById('preview-body').scrollTop`);
@@ -75,14 +81,13 @@ async function main() {
     await client.eval(`window.openPreviewPanel(${JSON.stringify(html)})`);
     await waitFor(`!!document.querySelector('#preview-body webview')?.getWebContentsId()`);
     await _waitMs(300);
-    await client.eval(`window.__guestEscapeProbe=[]; document.querySelector('#preview-body webview').addEventListener('ipc-message', e=>window.__guestEscapeProbe.push({channel:e.channel,args:e.args}));document.querySelector('#preview-body webview').executeJavaScript("window.__escapeProbe=[];window.addEventListener('keydown',e=>window.__escapeProbe.push({key:e.key,trusted:e.isTrusted}));true")`);
     await client.eval(`document.querySelector('#preview-body webview').executeJavaScript("document.getElementById('draft').value='保留输入';window.scrollTo(0,300);true")`);
     const guestId = await client.eval(`document.querySelector('#preview-body webview').getWebContentsId()`);
     await enter();
     await capture('html-immersive');
     // Focus and press Escape inside the actual guest, not the host document.
     await client.eval(`document.querySelector('#preview-body webview').focus();document.querySelector('#preview-body webview').executeJavaScript("document.getElementById('draft').focus();true")`);
-    try { await escape(); } catch(error) { console.log('guest escape diagnosis', await client.eval(`(async()=>({hostMessages:window.__guestEscapeProbe,guestKeys:await document.querySelector('#preview-body webview').executeJavaScript('window.__escapeProbe')}))()`)); throw error; }
+    await escape();
     assert.equal(await client.eval(`document.querySelector('#preview-body webview').getWebContentsId()`), guestId);
     assert.equal(await client.eval(`document.querySelector('#preview-body webview').executeJavaScript("document.getElementById('draft').value")`), '保留输入');
     checks.push('HTML guest focused Esc exits; guest process and form input survive');
