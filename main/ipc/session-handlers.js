@@ -407,6 +407,8 @@ function registerSessionIpc(ipcMain, deps) {
       ? isCodexConversationModelId(modelId)
       : kind === 'claude'
         ? isClaudeModelSelection(modelId)
+        : kind==='deepseek'&&!session.deepseekLegacyClaude
+          ? require('../../core/deepseek-codex-profile').DEEPSEEK_CODEX_MODELS.includes(modelId)
         : false;
     if (!valid) return { ok: false, error: 'invalid-model', message: '该模型不属于当前 CLI 的会话模型目录' };
     if (kind === 'codex') modelId = require('../../core/model-options').normalizeCodexSessionModel(modelId);
@@ -417,7 +419,7 @@ function registerSessionIpc(ipcMain, deps) {
       .slice(0, 120) || modelId;
     const fields = { currentModel: { id: modelId, displayName } };
     const effort = String(payload.effort || '').toLowerCase();
-    if (kind === 'codex' && CODEX_MODEL_EFFORTS.has(effort)) fields.effort = effort;
+    if (['codex','deepseek'].includes(kind) && CODEX_MODEL_EFFORTS.has(effort)) fields.effort = effort;
     const updated = sessionManager.updateSessionMeta(sessionId, fields);
     if (!updated) {
       if (kind === 'claude') await restoreClaudePreferenceGuard(sessionId);

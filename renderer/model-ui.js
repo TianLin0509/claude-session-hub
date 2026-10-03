@@ -95,7 +95,7 @@ function parseCodexModelPicker(screen) {
   if (!/Select Model and Effort/i.test(String(screen || ''))) return null;
   const rows = pickerRows(screen);
   const entries = rows.map(row => {
-    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*))\b/i);
+    const match = row.text.match(/^((?:gpt-[\w.-]+|o\d[\w.-]*|deepseek-v4-(?:pro|flash)))\b/i);
     return match ? { ...row, value: match[1] } : null;
   }).filter(Boolean);
   if (!entries.length) return null;
@@ -443,6 +443,7 @@ function createModelUiController({
   }
 
   async function switchCodexModel(sessionId, session, option, { effortOverride = null } = {}) {
+    if(session.deepseekLegacyClaude)throw new Error('这个旧 DeepSeek 会话使用 Claude 引擎，不能切换为 Codex 模型');
     if (session.runtimeBackend === 'codex-app-server') {
       const response = await ipcRenderer.invoke('codex:native-action', {
         sessionId, action:'configure', model:option.id, effort:effortOverride || require('../core/chatgpt-web-models').chatgptWebRoute(option.id)?.effort || session.effort,
@@ -527,7 +528,14 @@ function createModelUiController({
       throw new Error('Claude 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
     }
     await submitSlashCommand(sessionId, `/model ${option.id}`, 'claude-inline');
+    let acceptedConfirmation=false;
     const confirmation = await waitForScreen(sessionId, screen => {
+      const dialog=require('../core/cli-model-command').parseClaudeModelSwitchConfirmation(screen,option.id);
+      if(dialog&&!acceptedConfirmation){
+        acceptedConfirmation=true;
+        writeTerminal(sessionId,pickerNavigationInput(dialog.cursor,dialog.number)+'\r');
+        return null;
+      }
       const current = sessions.get(sessionId);
       if (current && current.currentModel && modelSelectionMatches(current.currentModel.id, option.id)) {
         return { modelId: current.currentModel.id, displayName: current.currentModel.displayName || option.label };

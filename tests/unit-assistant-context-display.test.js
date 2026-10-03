@@ -3,6 +3,20 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const { assistantContextDisplay } = require('../core/assistant-context-display');
 const { buildPrompt } = require('../core/hub-assistant/context');
 const frame = text => buildPrompt(text, { sources: [], asOf: 123 }, []);
+
+test('Codex native quote normalization preserves the exact decoded assistant request',()=>{
+  const {buildBootstrapPrompt}=require('../core/hub-assistant/context');
+  const user='保留“杉树企鹅”、‘单引号’、\\u201c字面转义、"ASCII"、😀\n下一行。';
+  for(const kind of ['codex','deepseek']){
+    const wire=buildBootstrapPrompt(user,{requestToken:'current-request'},0,kind);
+    assert.doesNotMatch(wire,/[‘’“”]/);
+    const normalized=wire.replace(/[“”]/g,'"').replace(/[‘’]/g,"'");
+    assert.equal(assistantContextDisplay(normalized,'hub-assistant').userText,user);
+    assert.ok(wire.length<2048);
+  }
+  assert.equal(assistantContextDisplay(buildBootstrapPrompt(user,{},0,'claude'),'hub-assistant').userText,user);
+  assert.doesNotMatch(buildBootstrapPrompt(user,{},0,'deepseek'),/functions\.exec/,'DeepSeek tools follow its native listing rather than OpenAI-only orchestration');
+});
 test('仅助理消息投影，原始正文保持完整', () => {
   const raw = frame('我现在需要做什么？');
   assert.equal(assistantContextDisplay(raw, 'ordinary'), null);

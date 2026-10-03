@@ -1,7 +1,7 @@
 'use strict';
 const {readFinals,nativeId}=require('./live-history');
 class AssistantWatches{
-  constructor(store,{getSession,getOpenSession=getSession,onNotification=()=>{}}){this.store=store;this.getSession=getSession;this.getOpenSession=getOpenSession;this.onNotification=onNotification;
+  constructor(store,{getSession,getOpenSession=getSession,onNotification=()=>{},readFinal=readFinals}){this.store=store;this.getSession=getSession;this.getOpenSession=getOpenSession;this.onNotification=onNotification;this.readFinal=readFinal;
     store.db.exec('CREATE TABLE IF NOT EXISTS assistant_watches(session_id TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS assistant_notifications(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,value TEXT NOT NULL,created_at INTEGER NOT NULL,read_at INTEGER);');
   }
   list(){return this.store.db.prepare('SELECT value FROM assistant_watches').all().map(r=>JSON.parse(r.value));}
@@ -9,7 +9,7 @@ class AssistantWatches{
   follow(sessionId){
     const old=this.list().find(w=>w.sessionId===sessionId);if(old)return old;
     const meta=this.getSession(sessionId);if(!meta)throw new Error('找不到这个原会话');
-    const now=Date.now(),result=readFinals(meta);
+    const now=Date.now(),result=this.readFinal(meta);
     const watch={id:sessionId,sessionId,title:meta.title||meta.name||'未命名会话',createdAt:now,updatedAt:now,nativeSessionId:nativeId(meta),cursor:result.cursor,seen:result.records.map(r=>r.notificationKey||r.id),state:!this.getOpenSession(sessionId)?'paused-closed':result.available?'watching':'waiting-binding',lastError:result.available?null:result.issue};
     this.save(watch);return watch;
   }
@@ -25,7 +25,7 @@ class AssistantWatches{
         const meta=this.getOpenSession(watch.sessionId);
         if(!meta){if(watch.state!=='paused-closed')this.save({...watch,state:'paused-closed',lastError:null,updatedAt:Date.now()});continue;}
         if(watch.nativeSessionId&&nativeId(meta)!==watch.nativeSessionId)throw new Error('原生会话身份发生变化，已暂停关注');
-        const result=readFinals(meta,{cursor:watch.cursor});if(!result.available)throw new Error(result.issue);
+        const result=this.readFinal(meta,{cursor:watch.cursor});if(!result.available)throw new Error(result.issue);
         const seen=new Set(watch.seen),newRecords=result.records.filter(r=>!seen.has(r.notificationKey||r.id)&&(!watch.cursor?!!r.timestamp&&r.timestamp>=watch.createdAt:true));
         const notices=[];this.store.db.exec('BEGIN IMMEDIATE');
         try{

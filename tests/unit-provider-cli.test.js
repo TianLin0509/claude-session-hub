@@ -40,11 +40,16 @@ test('Qwen native history renders text and tools; only matching root hooks finis
     s.observe({hook_event_name:'SessionStart',session_id:'thread',cwd:root,transcript_path:file});
     await s.transcriptTail._drain();await new Promise(r=>setTimeout(r,30));
     s.observe({hook_event_name:'UserPromptSubmit',session_id:'thread',cwd:root,prompt:'hello',timestamp:new Date(1000).toISOString()});
+    const submittedTurn=s.runtime.turnId;
+    s.observe({hook_event_name:'UserPromptSubmit',session_id:'thread',cwd:root,prompt:'',submitted_prompt:'',timestamp:new Date(1500).toISOString()});
+    assert.equal(s.runtime.turnId,submittedTurn,'tool continuation keeps the same user turn');
+    assert.equal(events.filter(e=>e.type==='prompt-submitted').length,1,'empty continuation must not count as another submission');
     s.observe({hook_event_name:'Stop',session_id:'other',cwd:root,last_assistant_message:'wrong'});
     s.observe({hook_event_name:'Stop',session_id:'thread',agent_id:'nested',cwd:root,last_assistant_message:'wrong'});
     assert.equal(s.runtime.state,'running');
     s.observe({hook_event_name:'Stop',session_id:'thread',cwd:root,last_assistant_message:'answer',timestamp:new Date(2000).toISOString()});
     const cards=s.readTranscript({turnId:s.runtime.turnId});assert.equal(cards.length,2);
+    assert.equal(cards[1].nativeOutcome,'completed','Stop settles the original turn after tool continuation');
     assert.equal(cards[1].text,'answer');assert.equal(cards[1].toolCalls[0].status,'completed');assert.equal(cards[1].providerTurnId,s.runtime.turnId);
     assert.equal(cards[1].displayMessages[0].providerTurnId,s.runtime.turnId);
     assert.equal(cards[1].toolCalls[0].providerTurnId,s.runtime.turnId);

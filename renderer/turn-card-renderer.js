@@ -51,7 +51,8 @@ function createTurnCardRenderer(options = {}) {
   function prepareTurnForRender(sessionId, turn, opts = {}) {
     const session = opts.session || getSessionContext(sessionId) || null;
     if (turn?.role === 'user') {
-      const assistantContext=require('../core/assistant-context-display').assistantContextDisplay(turn.text,session?.purpose);
+      const assistantContext=require('../core/assistant-context-display').assistantContextDisplay(turn.text,session?.purpose)
+        ||require('../core/hub-assistant/delegated-prompt').delegatedPromptDisplay(turn.text);
       if(!turn.clientSubmissionId&&assistantContext?.clientSubmissionId)turn={...turn,clientSubmissionId:assistantContext.clientSubmissionId};
       const feedback = require('../core/native-feedback');
       const receiptAuthoritative = feedback.hasNativeReceipt(turn);

@@ -12,6 +12,13 @@ const {
   terminalAcceptsModelCommand,
 } = require('../renderer/model-ui.js');
 
+test('DeepSeek Responses models use their Codex-owned picker and receipt',()=>{
+  const screen='Select Model and Effort\n› 1. deepseek-v4-flash (current)\n  2. deepseek-v4-pro\n';
+  assert.equal(require('../core/model-options').modelSwitchStrategy('deepseek'),'codex-picker');
+  assert.deepEqual(parseCodexModelPicker(screen).entries.map(e=>e.value),['deepseek-v4-flash','deepseek-v4-pro']);
+  assert.equal(require('../core/cli-model-command').modelCommandAcknowledged('codex-picker',screen,''),true);
+});
+
 test('Codex model picker parser finds provider-owned row numbers and current selection', () => {
   const parsed = parseCodexModelPicker(`
   Select Model and Effort

@@ -9,7 +9,7 @@ const { buildBootstrapPrompt,resolveTimeRange }=require('./context');
 const {AssistantSnapshots}=require('./snapshots');
 const { readGroupHistory }=require('./group-history');
 const { requireAuthorizedTarget,requireBoundTarget,bindOperation }=require('./action-policy');
-const {LiveHistory,nativeId}=require('./live-history');
+const {nativeId}=require('./live-history');
 const {AssistantWatches,reminderIntent}=require('./watches');
 const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
@@ -22,9 +22,9 @@ class AssistantService {
     this.endpointFile=path.join(deps.dataDir,'assistant','bridge-endpoint.json');
     this.snapshots=new AssistantSnapshots(deps.dataDir,this.store);
     this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
-    this.liveHistory=new LiveHistory();
+    this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
-    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
+    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
   setSessionViews({changed=[],removed=[]}={}){
@@ -53,7 +53,11 @@ class AssistantService {
       receipt:{...result.receipt,ok:true,lateReconciled:true,receipt:{...result.receipt?.receipt,...snapshot,status:'confirmed'}}});return true;
   }
   followTask({sessionId}){if(this.assistantIds().includes(sessionId)||this.sessionMetadata(sessionId)?.purpose==='hub-assistant')throw new Error('助理不能关注自身回复');return{ok:true,watch:this.watches.follow(sessionId)};}
-  overview() {const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:session?'助理已连接；可以问进展、定位会话并转交任务。':'首次启用后，助理会作为一个独立助理会话运行，可选择 Codex 或 Claude，并连接 Hub 助理工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};}
+  overview() {
+    const sessionId=this.store.get('sessionId'),session=sessionId?this.deps.getSession(sessionId):null,lastContext=this.store.get('lastContext');
+    const runtime=session?.cliRuntime||session?.nativeRuntime,issue=runtime?.connection==='disconnected'?runtime.reason||'原生后端连接中断':null;
+    return{ok:true,sessionId,backendKind:this.store.get('backendKind')||'codex',backends:backends.BACKENDS,backendSessions:backends.bindings(this.store),available:!!session,submissionPending:!!this.deps.hasPendingPrompt?.(sessionId),status:session?.status||'not-created',summary:'',connectionSummary:issue?'助理后端未连接：'+issue:session?'助理会话已打开；账号可用性和执行结果以原生回执为准。':'首次启用后，助理作为独立会话运行，可选择 Hub 支持的后端并连接专属工具。',toolConfiguration:'助理专用 lean 配置，连接 Hub 助理工具；普通会话配置保持不变。',needsAttention:issue?[issue]:[],updatedAt:lastContext?.asOf||null,contextCoverage:lastContext,actions:this.store.list(),followedTasks:this.followedTasks(),watchableSessions:this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen})),...this.notifications({limit:10})};
+  }
   async ensureSession() {
     if(this.switching)throw new Error('助理正在切换后端，请稍候');
     if(this.creating)return this.creating;
@@ -85,7 +89,7 @@ class AssistantService {
     const defaults=await this.deps.getDefaults?.(kind)||{};
     const id=randomUUID();backends.reserve(this.store,kind,id);
     await this.connectBridge();
-    const session=await this.deps.createSession(kind,{...defaults,id,title:'AI Hub 助理 · '+(kind==='codex'?'Codex':'Claude'),name:'AI Hub 助理',purpose:'hub-assistant',...this.getLaunchOptions(kind,id)});
+    const session=await this.deps.createSession(kind,{...defaults,id,title:'AI Hub 助理 · '+backends.getKindLabel(kind),name:'AI Hub 助理',purpose:'hub-assistant',...this.getLaunchOptions(kind,id)});
     return finish(session,id);
   }
   getLaunchOptions(kind,id){return backends.launchOptions(this,backends.backendKind(kind),id);}
@@ -153,11 +157,13 @@ class AssistantService {
     if(name==='list_sessions')return this.sessions().map(s=>({id:s.id,title:s.title||s.name,kind:s.kind,status:s.status,isOpen:s.isOpen,hubState:s.hubState,nativeSessionId:nativeId(s)}));
     if(name==='session_evidence')return this.readLiveFinal(args.sessionId);
     if(name==='history_context'){
-      if(args.requestToken){
-        if(args.requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
-        const response=this.snapshots.read(args.requestToken),last=this.store.get('lastContext');
+      const implicitCurrent=hasCaller&&callerSessionId===this.currentRequest?.sessionId&&Object.keys(args).length===0;
+      const requestToken=args.requestToken||(implicitCurrent?this.currentRequest.token:null);
+      if(requestToken){
+        if(requestToken!==this.currentRequest?.token)throw new Error('资料请求不属于当前用户回合');
+        const response=this.snapshots.read(requestToken),last=this.store.get('lastContext');
         this.dossier.noteServed(response.packet.workbench);
-        if(last?.requestToken===args.requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
+        if(last?.requestToken===requestToken)this.store.set('lastContext',{...last,snapshotRead:true,snapshotReadAt:response.snapshotReceipt.readAt,snapshotReadReceipt:response.snapshotReceipt});
         return response;
       }
       return this.context(args);
@@ -218,7 +224,8 @@ class AssistantService {
         // receives create_session's result and gets a chance to call watch.
         if(followNewReply)this.followTask({sessionId});
       }
-      const receipt=await this.deps.sendPrompt(sessionId,action.text,requestId);
+      const wireText=require('./delegated-prompt').encodeDelegatedPrompt(action.text,this.deps.getSession(sessionId)?.kind);
+      const receipt=await this.deps.sendPrompt(sessionId,wireText,requestId);
       const confirmed=receipt?.ok===true&&receipt?.receipt?.status==='confirmed'&&!receipt.notSent&&!receipt.contentMismatch;
       const result={sessionId,receipt};this.store.finish(requestId,confirmed?'acknowledged':'unknown',result);
       return{ok:confirmed,state:confirmed?'acknowledged':'unknown',...result};

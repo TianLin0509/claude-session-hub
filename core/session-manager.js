@@ -1582,10 +1582,11 @@ class SessionManager extends EventEmitter {
     const isNativeClaude = (isClaude && nativeAgentRuntime) || isDeepSeekLegacy;
     // 个人规则同步与运行时无关：PTY 与原生的 Claude 都读同一个 CLAUDE_CONFIG_DIR。
     const contextKind = isCodexRuntime ? 'codex' : (isClaude || isDeepSeekLegacy) ? 'claude' : isKimi ? 'kimi' : isGemini ? 'gemini' : null;
+    if(opts.assistantMcpEntry) require('./hub-assistant/project-tools').configureProjectTools(kind,{...opts,id},spawnCwd);
     if (contextKind) {
       const contextHome = contextKind === 'codex' ? sessionEnv.CODEX_HOME || path.join(os.homedir(),'.codex')
         : contextKind === 'claude' ? sessionEnv.CLAUDE_CONFIG_DIR || path.join(os.homedir(),'.claude')
-        : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(os.homedir(),'.gemini');
+        : contextKind === 'kimi' ? sessionEnv.KIMI_CODE_HOME || path.join(os.homedir(),'.kimi-code') : path.join(sessionEnv.GEMINI_CLI_HOME || os.homedir(),'.gemini');
       require('./agent-user-context').syncNativeUserContext({kind:contextKind,nativeHome:contextHome,env:sessionEnv,dataDir:getHubDataDir()});
     }
     if (followsGlobalAccount) codexSessionsRoot = opts.codexSessionsRoot;
@@ -2088,6 +2089,7 @@ class SessionManager extends EventEmitter {
 
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
+      if(opts.purpose==='hub-assistant')cmd+=' --skip-trust --allowed-mcp-server-names hub_assistant';
       cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
       if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {
         // Level 1: precise resume by full UUID.  The native id wins even when
@@ -2999,7 +3001,7 @@ class SessionManager extends EventEmitter {
       });
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
-      cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
+      cmd = ` gemini --approval-mode yolo${s.info.purpose==='hub-assistant'?' --skip-trust --allowed-mcp-server-names hub_assistant':''} --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
       // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关），但会话显式
       // 选过档位时必须沿用，不能在 CLI 原地重拉后静默回到 max。

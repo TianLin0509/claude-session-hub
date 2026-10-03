@@ -7,7 +7,15 @@ const {codexLineFilter,inspectCodexEnvelope}=require('../codex-rollout-reader');
 const {isUsableCodexRolloutPath}=require('../codex-transcript-parser');
 const {codexAgentMessageEventFromRecord}=require('../transcript-payload-utils');
 const hash=value=>createHash('sha256').update(value).digest('hex');
-function nativeId(meta){return meta?.kind==='codex'?meta.codexSid:meta?.kind==='claude'?meta.ccSessionId:null;}
+function nativeId(meta){
+  const kind=String(meta?.kind||'').replace(/-resume$/,'');
+  if(require('../ai-kinds').isCodexCliKind(kind))return meta.codexSid||meta.ccSessionId||null;
+  if(require('../ai-kinds').isClaudeFamily(kind))return meta.ccSessionId||null;
+  if(kind==='gemini')return meta.geminiChatId||null;
+  if(kind==='kimi')return meta.kimiSid||null;
+  if(require('../acp-profiles').isAcpKind(kind))return meta.acpSid||null;
+  return null;
+}
 function finalLineFilter(prefix,context){const e=inspectCodexEnvelope(prefix);if(e.recordType==='response_item'){if(!e.payloadType)return context.final?false:null;if(e.payloadType!=='message')return false;if(!e.role)return context.final?false:null;return e.role==='assistant';}return codexLineFilter(prefix,context,'turns');}
 function claudeHeaderMatches(file,identity){const fd=fs.openSync(file,'r');try{const buffer=Buffer.alloc(1024*1024),n=fs.readSync(fd,buffer,0,buffer.length,0);for(const line of buffer.subarray(0,n).toString('utf8').split('\n')){try{const row=JSON.parse(line);if(row.sessionId)return row.sessionId===identity;}catch{}}return false;}finally{fs.closeSync(fd);}}
 function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*1024,startOffset}={}){
@@ -20,7 +28,7 @@ function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*10
   const stat=fs.statSync(file);
   if(cursor&&(cursor.identity!==identity||cursor.path!==file||cursor.offset>stat.size))return{...empty,issue:'绑定或文件发生变化，关注游标需核对'};
   const start=cursor?.offset??startOffset??Math.max(0,stat.size-tailBytes),end=Math.min(stat.size,start+maxReadBytes);
-  let turnId=cursor?.turnId||null,claudeIdentitySeen=false,lastFilter=null;const finals=[];
+  let turnId=cursor?.turnId||null,clientSubmissionId=cursor?.clientSubmissionId||null,claudeIdentitySeen=false,lastFilter=null;const finals=[];
   const scanner=new JsonlByteScanner(row=>{
     const p=row.payload||{};
     if(meta.kind==='codex'){
@@ -36,9 +44,17 @@ function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*10
       }
     }else{
       if(row.sessionId===identity)claudeIdentitySeen=true;
+      if(row.sessionId===identity&&row.type==='user'&&!row.isSidechain){
+        const body=row.message?.content;
+        const blocks=Array.isArray(body)?body:[];
+        if(typeof body==='string'||blocks.some(c=>c.type==='text')&&!blocks.some(c=>c.type==='tool_result')){
+          const text=typeof body==='string'?body:blocks.filter(c=>c.type==='text').map(c=>c.text||'').join('\n');
+          clientSubmissionId=require('../assistant-context-display').assistantContextDisplay(text,'hub-assistant')?.clientSubmissionId||null;
+        }
+      }
       if(row.sessionId!==identity||row.type!=='assistant'||row.isSidechain||row.message?.stop_reason!=='end_turn')return;
       const text=(row.message.content||[]).filter(c=>c.type==='text').map(c=>c.text||'').join('\n').trim();
-      if(text)finals.push({turnId:row.message.id||row.uuid,messageId:row.uuid||row.message.id,text,timestamp:Date.parse(row.timestamp)||null,recordType:'assistant_end_turn'});
+      if(text)finals.push({turnId:row.message.id||row.uuid,messageId:row.uuid||row.message.id,text,timestamp:Date.parse(row.timestamp)||null,recordType:'assistant_end_turn',clientSubmissionId});
     }
   },{startOffset:start,discardLeadingPartialLine:cursor?.skipPartial||!cursor&&startOffset==null&&start>0,lineFilter:meta.kind==='codex'?(prefix,ctx)=>{const decision=finalLineFilter(prefix,ctx);lastFilter={index:ctx.lineIndex,decision};return decision;}:undefined});
   const fd=fs.openSync(file,'r');try{const buffer=Buffer.alloc(65536);for(let at=start;at<end;){const n=fs.readSync(fd,buffer,0,Math.min(buffer.length,end-at),at);if(!n)break;scanner.push(buffer.subarray(0,n));at+=n;}}finally{fs.closeSync(fd);}
@@ -52,7 +68,7 @@ function readFinals(meta,{cursor=null,tailBytes=1024*1024,maxReadBytes=8*1024*10
   for(const entry of finals){const key=hash(JSON.stringify([identity,entry.turnId||entry.messageId,entry.text]));if(seen.has(key))continue;seen.add(key);
     records.push({...entry,ref:'E'+key.slice(0,16),id:key,notificationKey:hash(JSON.stringify([identity,entry.turnId||entry.messageId])),sessionId:meta.id||meta.hubId,title:meta.title||meta.name||'未命名会话',provider:meta.kind,nativeSessionId:identity,transcriptPath:file,role:'assistant',sourceType:'bound-native-final',evidenceMeaning:'目标助手的最新原文自述，业务结果是否验收需另行核实'});
   }
-  return{available:true,identity,records,cursor:{identity,path:file,offset:skipPartial?end:stats.safeOffset,turnId,skipPartial},truncated:start>0&&!cursor||end<stat.size,backlog:end<stat.size,observedAt:Date.now()};
+  return{available:true,identity,records,cursor:{identity,path:file,offset:skipPartial?end:stats.safeOffset,turnId,clientSubmissionId,skipPartial},truncated:start>0&&!cursor||end<stat.size,backlog:end<stat.size,observedAt:Date.now()};
 }
 // Locate complete record boundaries backwards using fixed byte blocks. Large
 // tool bodies are not decoded: only their JSON prefix is inspected. Once the
@@ -64,7 +80,15 @@ function coldFinalStart(meta,size){
     const prefix=Buffer.alloc(Math.min(65536,end-start));fs.readSync(fd,prefix,0,prefix.length,start);const text=prefix.toString('utf8');
     const envelope=meta.kind==='codex'?inspectCodexEnvelope(text):null;
     if(found!=null&&envelope?.recordType==='event_msg'&&envelope.payloadType==='task_started')return start;
-    if(found!=null)return null;
+    if(found!=null){
+      if(meta.kind==='claude'&&/"type"\s*:\s*"user"/.test(text)){
+        const bytes=Buffer.alloc(end-start);fs.readSync(fd,bytes,0,bytes.length,start);
+        try{const row=JSON.parse(bytes.toString('utf8')),c=row.message?.content;
+          if(row.sessionId===nativeId(meta)&&!row.isSidechain&&(typeof c==='string'||Array.isArray(c)&&c.some(b=>b.type==='text')&&!c.some(b=>b.type==='tool_result')))return start;
+        }catch{}
+      }
+      return null;
+    }
     const candidate=meta.kind==='codex'
       ?envelope?.recordType==='response_item'&&envelope.payloadType==='message'&&envelope.role==='assistant'||envelope?.recordType==='event_msg'&&envelope.payloadType==='item_completed'&&/agentmessage/i.test(String(envelope.itemType||'').replace(/_/g,''))
       :/"type"\s*:\s*"assistant"/.test(text);
@@ -73,7 +97,7 @@ function coldFinalStart(meta,size){
     const p=row.payload||{};const final=meta.kind==='codex'
       ?p.role==='assistant'&&(p.phase==='final_answer'||p.channel==='final')||codexAgentMessageEventFromRecord(row)?.completed===true
       :row.type==='assistant'&&row.sessionId===nativeId(meta)&&row.message?.stop_reason==='end_turn';
-    if(final){found=start;if(meta.kind==='claude')return start;}
+    if(final)found=start;
     return null;
   };
   try{
@@ -93,7 +117,7 @@ class LiveHistory{
     const incremental=cursor&&cursor.path===file&&cursor.identity===nativeId(meta)&&cursor.offset<=stat.size&&(stat.size>old.size||old.result.backlog);
     let result=readFinals(meta,incremental?{cursor}:{});
     if(result.available&&incremental){const records=new Map([...old.result.records,...result.records].map(r=>[r.id,r]));result={...result,records:[...records.values()].slice(-40)};}
-    if(result.available&&!incremental&&!result.records.length&&result.truncated){
+    if(result.available&&!incremental&&result.truncated&&(!result.records.length||meta.kind==='claude'&&!result.records.at(-1)?.clientSubmissionId)){
       const start=coldFinalStart(meta,stat.size);if(start!=null)result=readFinals(meta,{startOffset:start,maxReadBytes:stat.size-start});
     }
     if(result.backlog)result.issue='原生新增记录仍在分批读取，当前仅为已核对到的最近答复';
