@@ -527,7 +527,14 @@ function createModelUiController({
       throw new Error('Claude 输入框有未发送内容或当前不在主提示符；请先处理后再切换模型');
     }
     await submitSlashCommand(sessionId, `/model ${option.id}`, 'claude-inline');
+    let acceptedConfirmation=false;
     const confirmation = await waitForScreen(sessionId, screen => {
+      const dialog=require('../core/cli-model-command').parseClaudeModelSwitchConfirmation(screen,option.id);
+      if(dialog&&!acceptedConfirmation){
+        acceptedConfirmation=true;
+        writeTerminal(sessionId,pickerNavigationInput(dialog.cursor,dialog.number)+'\r');
+        return null;
+      }
       const current = sessions.get(sessionId);
       if (current && current.currentModel && modelSelectionMatches(current.currentModel.id, option.id)) {
         return { modelId: current.currentModel.id, displayName: current.currentModel.displayName || option.label };
