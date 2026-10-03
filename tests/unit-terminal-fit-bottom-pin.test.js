@@ -44,7 +44,7 @@ test('bottom state is sampled before the fit, not after', () => {
 function resize(session, { atBottom = true, follow = true } = {}) {
   const frames = [], calls = [];
   const cached = { opened: true, container: { offsetWidth: 800, getBoundingClientRect: () => ({width:800,height:600}) },
-    terminal: { cols: 80, rows: 24 }, fitAddon: { fit() { calls.push('fit'); atBottom = false; } } };
+    terminal: { cols: 80, rows: 24, options: {fontSize:14} }, fitAddon: { fit() { calls.push('fit'); atBottom = false; } } };
   const native = s => ['codex-app-server','claude-stream-json','acp'].includes(s?.runtimeBackend);
   const codex = kind => /^codex(?:-resume)?$/.test(kind || '');
   vm.runInNewContext(fitBody() + '\nfitAndResizeTerminal("session", cached, {force:true});', {

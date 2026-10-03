@@ -1,6 +1,7 @@
 'use strict';
 
 const systemOs = require('os');
+const { registerPreviewImmersiveIpc } = require('./preview-immersive-handlers.js');
 const { createSystemTelemetry } = require('../../core/system-telemetry.js');
 const { createLiveResourceTelemetry } = require('../../core/live-resource-telemetry.js');
 const { createClashVergeDelayReader } = require('../../core/clash-verge-delay.js');
@@ -80,6 +81,7 @@ function saveClipboardImage(deps) {
 }
 
 function registerAppUtilityIpc(ipcMain, deps) {
+  registerPreviewImmersiveIpc(ipcMain, deps);
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
   const systemTelemetry = deps.systemTelemetry || createSystemTelemetry();
   const clashDelay = deps.clashDelay || createClashVergeDelayReader();

@@ -66,10 +66,13 @@
 :root body #new-session-wrapper .launch-split #btn-new .btn-label { display:block; }
 :root body #session-sidebar .global-search-launcher { margin:0; min-height:32px; }
 #session-sidebar .global-search-launcher kbd { display:none; }
-:root body #session-sidebar .session-detail-bar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:5px 6px; padding:8px 12px; }
-#session-sidebar .session-detail-bar #btn-session-details { grid-column:1/-1; justify-self:start; }
-#session-sidebar .session-detail-bar :is(.session-model-filter,.session-project-filter) { display:grid; grid-template-columns:auto minmax(0,1fr); min-width:0; gap:3px; }
-#session-sidebar .session-detail-bar select { width:100%; min-width:0; max-width:none; padding-inline:3px; }
+:root body #session-sidebar .session-detail-bar { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(0,1fr); align-items:center; gap:4px; padding:6px 8px; }
+#session-sidebar .session-detail-bar #btn-session-details { grid-column:auto; justify-self:stretch; white-space:nowrap; padding:4px 3px; font-size:11px; }
+#session-sidebar .session-detail-bar :is(.session-model-filter,.session-project-filter) { display:block; min-width:0; }
+:root body #session-sidebar .session-detail-bar select { width:100%; min-width:0; max-width:none; height:26px; font-size:11px; padding:3px 1px; }
+#session-sidebar .session-detail-bar label { position:relative; }
+#session-sidebar .session-detail-bar label::after { content:''; position:absolute; right:4px; top:11px; border:3px solid transparent; border-top-color:var(--fg-muted); pointer-events:none; }
+:root body #session-sidebar .session-detail-bar select { appearance:none; padding:3px 10px 3px 3px; }
 :root body #session-list { padding:4px 8px; }
 :root body #session-list .session-item.slim { padding:10px 8px; border-radius:7px; }
 .app-toolbar { background:var(--surface-raised); box-shadow:none; border-bottom:1px solid var(--border-subtle); }

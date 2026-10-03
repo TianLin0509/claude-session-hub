@@ -70,6 +70,7 @@
   <link rel="stylesheet" href="styles/editor-workspace.css">
   <link rel="stylesheet" href="styles/display-presets.css">
   <link rel="stylesheet" href="styles/navigation-hover.css">
+  <link rel="stylesheet" href="styles/preview-immersive.css">
   <link rel="stylesheet" href="styles/controls.css" id="controls-layer">
 </head>
 <body>
@@ -159,7 +160,6 @@
     <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
-        <div class="session-heading"><strong>会话</strong><span>当前工作区</span></div>
         <div class="new-session-wrapper" id="new-session-wrapper">
           <div class="launch-split">
             <button type="button" class="btn-new-session" id="btn-new" title="启动新会话 (Ctrl+N)" aria-label="启动新会话" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
@@ -256,8 +256,8 @@
           <kbd>Ctrl Shift F</kbd>
         </button>
       </div>
-      <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息 <span aria-hidden="true">≡</span></button><label class="session-model-filter">模型 <select id="session-model-filter" aria-label="侧栏模型"><option value="all">全部</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="other">其他</option></select></label><label class="session-project-filter">项目 <select id="session-project-filter" aria-label="侧栏项目"><option value="random">随机</option><option value="all" selected>全部</option></select></label></div><div id="session-project-filter-note" class="session-project-filter-note" role="status" hidden></div>
-      <div class="session-range-tabs" role="group" aria-label="会话时间范围"><button type="button" data-session-days="1" aria-pressed="true" title="最近24小时；置顶、未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="最近72小时；置顶、未读和活跃会话始终显示">3 天</button></div>
+      <div class="session-detail-bar"><button type="button" id="btn-session-details" aria-pressed="false">详细信息</button><label class="session-model-filter"><select id="session-model-filter" aria-label="侧栏模型" title="按模型筛选"><option value="all">模型</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="other">其他</option></select></label><label class="session-project-filter"><select id="session-project-filter" aria-label="侧栏项目" title="按项目筛选"><option value="random">随机</option><option value="all" selected>项目</option></select></label></div><div id="session-project-filter-note" class="session-project-filter-note" role="status" hidden></div>
+      <div class="session-range-tabs" role="group" aria-label="会话范围"><button type="button" data-session-days="pinned" aria-pressed="false" title="只显示置顶的会话与群聊">置顶</button><button type="button" data-session-days="1" aria-pressed="true" title="未置顶的最近24小时会话；未读和活跃会话始终显示">今天</button><button type="button" data-session-days="3" aria-pressed="false" title="未置顶的最近72小时会话；未读和活跃会话始终显示">3 天</button></div>
       <div class="session-list" id="session-list"></div>
       <section class="sidebar-insights" id="sidebar-insights" aria-label="用量与系统状态">
         <button type="button" class="sidebar-insights-toggle" id="sidebar-insights-toggle" aria-label="展开或收起用量与系统状态" aria-expanded="true" aria-controls="sidebar-insights-content" title="向下收起用量与系统状态">
@@ -408,11 +408,13 @@
            两种模式预览统一在右侧。挪之前群聊模式预览跑在左边，与普通 session 不一致。 -->
     <div class="preview-splitter" id="preview-splitter" style="display:none" role="separator" aria-label="调整预览分栏" aria-orientation="vertical" aria-valuemin="10" aria-valuemax="90" aria-valuenow="50" aria-valuetext="左侧 50%，预览 50%" tabindex="0"></div>
     <div class="preview-panel" id="preview-panel" style="display:none">
+      <div class="preview-immersive-exit-zone"><button id="preview-immersive-exit" type="button" aria-label="退出沉浸模式" title="退出沉浸模式 (Esc)" hidden>退出沉浸 · Esc</button></div>
       <div class="preview-tabs-row">
         <div class="preview-tabs" id="preview-tabs" role="tablist" aria-label="预览文件" aria-orientation="horizontal"></div>
         <div class="preview-layout-switch" role="group" aria-label="预览布局">
           <button class="preview-layout-option" id="preview-layout-split" type="button" title="半窗预览 (Split)：同时显示会话与文件" aria-label="半窗预览，同时显示会话与文件" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg><span>半窗</span></button>
           <button class="preview-layout-option active" id="preview-layout-full" type="button" title="全屏预览 (Full)：预览占满工作区" aria-label="全屏预览，预览占满工作区" aria-pressed="true"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg><span>全屏</span></button>
+          <button class="preview-layout-option" id="preview-layout-immersive" type="button" title="沉浸预览：占满电脑屏幕，Esc 退出" aria-label="沉浸预览，占满电脑屏幕" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 3v5H3m13-5v5h5M8 21v-5H3m13 5v-5h5"/></svg><span>沉浸</span></button>
         </div>
         <button class="preview-tab-tool" id="preview-outline-toggle" type="button" title="文档大纲 / 行号跳转 (Ctrl+Shift+O)" aria-label="打开文档大纲或行号跳转" aria-controls="preview-outline" aria-expanded="false" disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg></button>
         <button class="preview-new-tab" id="preview-new-tab" type="button" title="输入路径或搜索文件 (Ctrl+O)" aria-label="打开新的预览">＋</button>

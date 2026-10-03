@@ -1,17 +1,9 @@
 'use strict';
 
 const { clipboard, ipcRenderer } = require('electron');
-const { createClipboardController } = require('./clipboard-controller.js');
-
-const clipboardController = createClipboardController({
-  document,
-  window,
-  clipboard,
-  renderFeedback: false,
-  onFeedback: feedback => ipcRenderer.sendToHost('preview-copy-feedback', feedback),
-});
-clipboardController.init();
-
+// Register navigation shortcuts before optional clipboard setup. Sandboxed
+// guests cannot load local CommonJS modules; clipboard failure must not disable
+// the fullscreen escape route.
 window.addEventListener('keydown', (event) => {
   if (!event.isTrusted) return;
   const key = String(event.key || '').toLowerCase();
@@ -32,3 +24,17 @@ window.addEventListener('keydown', (event) => {
   event.stopImmediatePropagation();
   ipcRenderer.sendToHost('preview-shortcut', action);
 }, true);
+
+try {
+  const { createClipboardController } = require('./clipboard-controller.js');
+  const clipboardController = createClipboardController({
+    document,
+    window,
+    clipboard,
+    renderFeedback: false,
+    onFeedback: feedback => ipcRenderer.sendToHost('preview-copy-feedback', feedback),
+  });
+  clipboardController.init();
+} catch (error) {
+  console.debug('[preview] clipboard controller unavailable:', error.message);
+}

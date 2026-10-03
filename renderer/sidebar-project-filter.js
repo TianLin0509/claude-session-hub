@@ -14,7 +14,7 @@ function createSidebarProjectFilter({ document: doc, storage, ipcRenderer, onCha
     catch (error) { console.warn('[sidebar] project preference could not be saved:', error.message); }
   }
   function renderOptions() {
-    const entries = [['random', '随机', '不属于任何项目库项目的会话和群聊'], ['all', '全部', '所有项目和随机会话']];
+    const entries = [['random', '随机', '不属于任何项目库项目的会话和群聊'], ['all', '项目', '所有项目和随机会话']];
     for (const project of projects) {
       const duplicate = projects.some(other => other !== project && other.name === project.name);
       entries.push([projectPathKey(project.path), duplicate ? `${project.name} · ${project.path}` : project.name, project.path]);

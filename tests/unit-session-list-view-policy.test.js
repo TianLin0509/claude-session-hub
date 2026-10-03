@@ -7,6 +7,20 @@ const now=Date.now(),day=86400000;
 const row=(id,extra={})=>Object.freeze({id,kind:'codex',status:'idle',lastMessageTime:now,...extra});
 const ids=rows=>rows.map(e=>e.id);
 function view(rows,days=1,sessionMap=new Map()){const parts=partitionSidebarSessions(rows,{now,sessionMap});return buildSidebarView(parts,{now,days,sessionMap,hasUnread:(e,map)=>!!e.unreadCount||!!e.unreadAnsweredSize||e._meeting?.subSessions.some(id=>map.get(id)?.unreadCount)});}
+
+test('recent scopes exclude pinned sessions across every runtime state without mutating input',()=>{
+ const rows=Object.freeze([row('plain'),row('two-days',{lastMessageTime:now-2*day}),
+  ...['idle','running','failed','dormant'].map(status=>row('pin-'+status,{pinned:true,status,unreadCount:1}))]);
+ const parts=partitionSidebarSessions(rows,{now});
+ for(const days of [1,3]) {
+  const v=buildSidebarView(parts,{now,days,excludePinned:true,hasUnread:e=>!!e.unreadCount});
+  assert.deepEqual(ids(v.today),days===1?['plain']:['plain','two-days']);assert.equal(v.active.length,0);assert.equal(v.failed.length,0);
+  assert.equal(v.archiveCount,days===1?1:0);
+ }
+ const pinned=buildSidebarView(parts,{now,pinnedOnly:true});
+ assert.equal(pinned.today.length+pinned.active.length+pinned.failed.length,4);
+ assert.equal(rows[2].pinned,true);assert.equal(rows[2].unreadCount,1);
+});
 test('置顶及未读提升到时间分组顶部，保留置底，输入状态不变',()=>{
  const rows=Object.freeze([row('normal'),row('read',{unreadCount:1,lastMessageTime:now-8*day}),row('pin',{pinned:true,lastMessageTime:now-10*day}),row('bottom',{bottomed:true})]);
  assert.deepEqual(ids(view(rows).today),['pin','read','normal','bottom']);
@@ -21,4 +35,16 @@ test('24与72小时严格回溯；运行、等待、异常和有未读的老群�
 test('新功能与删除功能合并到旧自定义顺序，不接受重复及未知节点',()=>{
  assert.deepEqual(normalizeNavigationOrder(['assistant','home','assistant','gone'],['home','assistant','accounts']),['assistant','home','accounts']);
  assert.deepEqual(normalizeNavigationOrder({bad:true},['home','assistant']),['home','assistant']);
+});
+test('置顶筛选只展示置顶会话和群聊，运行及异常仍各归原分组',()=>{
+ const member=row('member',{status:'running'}),sessionMap=new Map([['member',member]]);
+ const rows=[row('old-pin',{pinned:true,lastMessageTime:now-20*day}),row('run-pin',{pinned:true,status:'running'}),
+  row('bad-pin',{pinned:true,status:'failed'}),row('group-pin',{pinned:true,_isMeeting:true,_meeting:{subSessions:['member'],groupChat:true}}),
+  row('plain'),row('unread',{unreadCount:1}),row('unpinned-run',{status:'running'})];
+ const parts=partitionSidebarSessions(rows,{now,sessionMap});
+ const result=buildSidebarView(parts,{now,pinnedOnly:true,sessionMap});
+ assert.deepEqual(ids(result.today),['old-pin']);assert.deepEqual(ids(result.failed),['bad-pin']);
+ assert.deepEqual(ids(result.active).sort(),['group-pin','run-pin']);assert.equal(result.archiveCount,0);
+ assert.equal(rows[5].unreadCount,1);assert.equal(member.status,'running');
+ assert.equal(buildSidebarView(partitionSidebarSessions([row('plain')],{now}),{now,pinnedOnly:true}).today.length,0);
 });

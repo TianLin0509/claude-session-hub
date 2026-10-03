@@ -9,6 +9,7 @@ const {
 const { sessionRuntimeIssue } = require('../core/session-runtime-issue.js');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
 const {compareSidebarPlacement,isPinnedToBottom,sidebarItemHasUnread,isSidebarMemberWorking,partitionSidebarSessions,_meetingRuntimeAggregate,buildSidebarView}=require('../core/session-sidebar-state');
+const {sidebarRelativeTime}=require('./sidebar-relative-time');
 const {createSessionViewPublisher}=require('../core/hub-assistant/session-state');
 const {
   RUNTIME_STARTING,
@@ -108,12 +109,14 @@ function createSessionListRenderer(options = {}) {
   const sectionKeys = ['sec-failed', 'sec-active', 'sec-today'];
   let collapsedSections = new Set();
   let recentDays = 1;
+  let pinnedOnly = false;
   let modelFilter = 'all';
   try {
     const saved = JSON.parse(storage.getItem('hubSidebarCollapsedSections') || '[]');
     if (Array.isArray(saved)) collapsedSections = new Set(saved.filter(key => sectionKeys.includes(key)));
     const days = Number(storage.getItem('hubSidebarRecentDays'));
     if ([1, 3].includes(days)) recentDays = days;
+    pinnedOnly = storage.getItem('hubSidebarRange') === 'pinned';
     const model = storage.getItem('hubSidebarModelFilter');
     if (SESSION_FAMILY_KEYS.includes(model)) modelFilter = model;
   } catch (error) { console.warn('[sidebar] preferences could not be read:', error.message); }
@@ -123,17 +126,19 @@ function createSessionListRenderer(options = {}) {
   }
   const rangeControls = [...(doc.querySelectorAll?.('[data-session-days]') || [])];
   function syncRangeControls() {
-    for (const button of rangeControls) button.setAttribute('aria-pressed', String(Number(button.dataset.sessionDays) === recentDays));
+    for (const button of rangeControls) button.setAttribute('aria-pressed', String(pinnedOnly ? button.dataset.sessionDays === 'pinned' : Number(button.dataset.sessionDays) === recentDays));
   }
   syncRangeControls();
   for (const button of rangeControls) button.addEventListener('click', () => {
-    recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
+    pinnedOnly = button.dataset.sessionDays === 'pinned';
+    if (!pinnedOnly) recentDays = Number(button.dataset.sessionDays) === 3 ? 3 : 1;
+    savePreference('hubSidebarRange',pinnedOnly ? 'pinned' : String(recentDays));
     savePreference('hubSidebarRecentDays', String(recentDays));
     syncRangeControls(); renderSessionList();
   });
   function sidebarView(items, sessionMap = getSessions(), days = recentDays) {
     const parts = partitionSidebarSessions(items, { sessionMap, activeSessionId: getActiveSessionId(), activeMeetingId: getActiveMeetingId() });
-    return buildSidebarView(parts, { days, sessionMap, hasUnread: sidebarItemHasUnread });
+    return buildSidebarView(parts, { days, pinnedOnly, excludePinned: !pinnedOnly, sessionMap, hasUnread: sidebarItemHasUnread });
   }
   const modelControl = doc.getElementById?.('session-model-filter');
   if (modelControl) {
@@ -172,9 +177,13 @@ function createSessionListRenderer(options = {}) {
   const getActiveMeetingId = typeof options.getActiveMeetingId === 'function' ? options.getActiveMeetingId : () => null;
   const isAiKind = options.isAiKind;
   const modelShort = options.modelShort;
-  const modelClass = options.modelClass;
   const escapeHtml = options.escapeHtml;
   const formatTime = options.formatTime;
+  function timeHtml(session, unreadCount = 0) {
+    const ts = latestActivityTime(session);
+    const full = [formatTime?.(ts), Number(ts) > 0 ? new Date(Number(ts)).toLocaleString('zh-CN') : '', unreadCount ? `${unreadCount} 条未读` : ''].filter(Boolean).join(' · ');
+    return `<span class="sl-time${unreadCount ? ' has-unread' : ''}" title="${escapeHtml(full)}" aria-label="${escapeHtml(full)}">${sidebarRelativeTime(ts)}</span>`;
+  }
   const pctClass = options.pctClass;
   const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
   const getProxyInfo = typeof options.getProxyInfo === 'function' ? options.getProxyInfo : () => null;
@@ -235,30 +244,22 @@ function _logoKind(kind) {
 
 // AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
 // classes already defined in styles.css for the toolbar dropdown.
-function _aiLogoHtml(kind) {
-  const k = _logoKind(kind);
-  return k ? `<span class="ai-logo logo-${k}" aria-hidden="true"></span>` : '';
-}
-
 // 2026-09-01 · 侧栏瘦身：时间左边的「Opus 5 / gpt-5.6-sol」字串换成一枚品牌小图标。
 //   扫列表时真正要一眼分辨的只是"哪家 CLI"，具体型号是二级信息 → 退到 tooltip
 //   （会话行的无障碍标签也包含完整 displayName）。
 //   拿不到图标的 kind 回落成原来的文字列，避免这一列直接消失。
-function _sessionKindHtml(kind, modelTxt) {
+function _sessionKindHtml(kind, modelTxt, state = 'idle', stateTip = '') {
   const k = _logoKind(kind);
   if (!k) return `<span class="sl-model">${escapeHtml(modelTxt || '')}</span>`;
   const label = String(modelTxt || '').startsWith('ChatGPT') ? 'ChatGPT' : (KIND_LABELS[k] || k);
   const tip = label === 'ChatGPT' ? modelTxt : modelTxt ? `${label} · ${modelTxt}` : label;
-  return `<span class="sl-kind ai-logo logo-${k}" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(tip)}"></span>`;
+  const status = stateTip || STATUS_LABELS[state] || STATUS_LABELS.idle;
+  return `<span class="sl-kind ai-logo logo-${k}" data-state="${state}" role="img" aria-label="${escapeHtml(label + ' · ' + status)}" title="${escapeHtml(tip + ' · ' + status)}"></span>`;
 }
 
-const PIN_SVG = '<svg class="sl-pin" viewBox="0 0 24 24" aria-label="置顶"><path d="m8 3 8 0-1 7 4 4H5l4-4-1-7Zm4 11v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+const STATUS_LABELS = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
 function _warningHtml(message) {
   return message ? `<svg class="sl-warning" viewBox="0 0 24 24" role="img" aria-label="${escapeHtml(message)}"><title>${escapeHtml(message)}</title><path d="M12 3 2 21h20L12 3Zm0 6v5m0 3v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>` : '';
-}
-function _ringHtml(ctxPct, dotCls) {
-  const labels = { wait: '等你响应', error: '运行异常', run: '运行中', start: '唤醒中', unread: '未读', dorm: '休眠', idle: '就绪', unknown: '状态未知' };
-  return '<span class="sl-dot ' + dotCls + '" role="img" aria-label="' + (labels[dotCls] || '就绪') + '"></span>';
 }
 
 function _subIsRunning(sub) {
@@ -608,6 +609,10 @@ sessionListEl.addEventListener('keydown', event => {
   function revealSearchItem(id, memberId = null) {
     const item = collectSidebarItems().find(entry => entry.id === id);
     if (!item) return;
+    if (pinnedOnly !== !!item.pinned) {
+      pinnedOnly = !!item.pinned;
+      savePreference('hubSidebarRange',pinnedOnly ? 'pinned' : String(recentDays)); syncRangeControls();
+    }
     projectFilter.reveal(item);
     const member = memberId && item._meeting?.subSessions?.includes(memberId) ? getSessions().get(memberId) : null;
     if (modelFilter !== 'all' && !(member ? sessionFamilies(member, getSessions()) : sessionFamilies(item, getSessions())).has(modelFilter)) {
@@ -620,7 +625,7 @@ sessionListEl.addEventListener('keydown', event => {
       _expandedMeetings.add(id);
       _persistExpandedMeetings();
     }
-    if (Date.now() - latestActivityTime(item) >= recentDays * 86400000) {
+    if (!pinnedOnly && Date.now() - latestActivityTime(item) >= recentDays * 86400000) {
       recentDays = 3;
       savePreference('hubSidebarRecentDays', '3'); syncRangeControls();
     }
@@ -790,7 +795,14 @@ sessionListEl.addEventListener('keydown', event => {
       }).join('');
       // 异常先提醒；其他成员的实际运行状态仍由各成员行展示。
       const dotCls = sections.states.get(s.id) || 'idle';
-      const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => _aiLogoHtml(sessionMap.get(id)?.kind)).join('');
+      div.dataset.state = dotCls;
+      const logos = (s._meeting.subSessions || []).slice(0, 2).map(id => {
+        const member = sessionMap.get(id);
+        if (!member) return '';
+        let state = partitionSidebarSessions([member], { sessionMap, groupMemberIds: new Set([id]) }).states.get(id) || 'idle';
+        if (getSessionRuntimeTruth(member).state === RUNTIME_DORMANT && !member._resumePending && state !== 'error') state = 'dorm';
+        return _sessionKindHtml(member.kind, member.currentModel ? modelShort(member.currentModel) : '', state);
+      }).join('');
       const answered = s._meeting.answeredThisTurn?.size || 0;
       const progress = memberTotal ? Math.min(100, answered / memberTotal * 100) : 0;
       const unreadChips = isGroupChat && hasUnread ? (s._meeting.subSessions || []).map(sid => {
@@ -804,12 +816,11 @@ sessionListEl.addEventListener('keydown', event => {
       div.innerHTML = [
         '<div class="sl-line1' + (canExpand ? ' with-arrow' : '') + '">',
         canExpand ? '<span class="expand-arrow" data-action="toggle-expand" title="展开成员">▸</span>' : '',
-        isGroupChat ? `<svg class="sl-group-icon ${dotCls}" viewBox="0 0 24 24" aria-label="群聊"><path d="M15 11a3 3 0 1 0 0-6m2 15v-2a4 4 0 0 0-2-3.5M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>` : _ringHtml(null, dotCls),
-        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + (s.pinned ? PIN_SVG : '') + (anySubFailed ? '<span class="sl-disconnect-label">异常</span>' : '') + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
-        '<span class="sl-group-logos" aria-label="群聊">' + logos + '</span>',
-        (hasUnread ? '<span class="sl-unread-badge">' + unreadMembers.size + ' 位未读</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>') + '</div>',
-        unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '',
-        hasUnread && markMeetingRead ? '<button type="button" class="sl-meeting-read" data-action="mark-meeting-read" data-sidebar-control="read-' + escapeHtml(s.id) + '">整组已读</button>' : '',
+        '<span class="sl-title" aria-label="' + escapeHtml([s.title, meetingWarning, unreadMembers.size + ' 位未读'].filter(Boolean).join(' · ')) + '">' + _warningHtml(meetingWarning) + escapeHtml(s.title) + '</span>',
+        '<span class="sl-group-logos" data-state="' + dotCls + '" aria-label="群聊 · ' + STATUS_LABELS[dotCls] + '">' + (logos || `<svg class="sl-kind sl-group-icon" data-state="${dotCls}" role="img" aria-label="群聊 · ${STATUS_LABELS[dotCls]}" viewBox="0 0 24 24"><path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2M16 5a3 3 0 0 1 0 6m1 3a4 4 0 0 1 4 4v2"/></svg>`) + '</span>',
+        timeHtml(s, hasUnread ? unreadMembers.size : 0) + '</div>',
+        hasUnread ? '<div class="sl-group-actions">' + (unreadChips ? '<div class="sl-unread-members">' + unreadChips + '</div>' : '')
+          + (markMeetingRead ? '<button type="button" class="sl-meeting-read" data-action="mark-meeting-read" data-sidebar-control="read-' + escapeHtml(s.id) + '">整组已读</button>' : '') + '</div>' : '',
         isGroupChat ? '' : '<div class="session-mini-jumps">' + miniJumpsHtml + '<span class="sl-members-hint">' + memberSelected + '/' + memberTotal + ' 已选</span></div>',
         isGroupChat ? '<span class="sl-group-progress" title="本轮已答 ' + answered + '/' + memberTotal + '"><i style="width:' + progress + '%"></i></span>' : '',
       ].join('');
@@ -833,55 +844,20 @@ sessionListEl.addEventListener('keydown', event => {
         return;
       }
 
-      // Render child sub-sessions if expanded (clicking goes straight to shell view).
+      // Expanded members use the same compact row and default-card navigation.
       if (isExpanded) {
         for (const subId of s._meeting.subSessions) {
           const sub = sessionMap.get(subId);
           if (!sub) continue;
           if (modelFilter !== 'all' && familyOfKind(sub.kind) !== modelFilter) continue;
-          if (detailsEnabled) { appendItem(sub, true, target); continue; }
-          const childDiv = doc.createElement('div');
-          const isChildActive = subId === getActiveSessionId();
-          const childRuntime = getSessionRuntimeTruth(sub);
-          const childResumePending = sub._resumePending === true;
-          const childDormantCls = childRuntime.state === RUNTIME_DORMANT ? ' dormant' : '';
-          const childIssue = sessionRuntimeIssue(sub, childRuntime);
-          const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
-          const childShowUnread = !isChildActive && childUnreadCount > 0;
-          childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
-            + (childShowUnread ? ' need-unread' : '') + childDormantCls
-            + (childResumePending ? ' resuming' : '')
-            + (childIssue ? ' runtime-error' : '');
-          childDiv.tabIndex = 0;
-          childDiv.dataset.sessionId = subId;
-          childDiv.dataset.runtimeState = childRuntime.state;
-          const modelLabel = sub.currentModel
-            ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
-            : '';
-          const childWarning = _sessionWarningText(sub);
-          const childStateTip = childResumePending
-            ? '正在唤醒原生 CLI 与历史上下文'
-            : childRuntime.state === RUNTIME_DORMANT
-            ? `${sub.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${childShowUnread ? `，有 ${childUnreadCount} 条未读` : ''}，点击唤醒`
-            : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
-          childDiv.innerHTML = `
-            ${_aiLogoHtml(sub.kind)}
-            <span class="child-title" aria-label="${escapeHtml([sub.title, childWarning, childStateTip].filter(Boolean).join(' · '))}">${childIssue ? '<span class="sl-disconnect-label">异常</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
-            ${modelLabel}
-          `;
-          // Use the existing selectSession path: it hides meeting-room-panel,
-          // shows terminal-panel, and mounts the cached xterm container.
-          // This is exactly the "single-viewer strict switch" the spec calls for.
-          childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
-          target.appendChild(childDiv);
+          appendItem(sub, true, target);
         }
       }
       return;
     }
 
-    // 2026-07-19 道雪 · 方案C：普通 session 单行密排（状态点/标题/模型/ctx/时间）。
-    //   badge pill（等你/模型/Ctx/burn）全部移除：等待与未读改行底色+状态点，
-    //   burn 聚合到侧栏底部 strip，模型与 ctx 变等宽小字列。
+    // Compact rows: title, stateful provider logo, and abbreviated activity time.
+    // Runtime/context/unread details remain available through accessible labels.
     const isActive = s.id === getActiveSessionId();
     const runtimeTruth = getSessionRuntimeTruth(s, { now: Date.now() });
     const div = doc.createElement('div');
@@ -928,10 +904,9 @@ sessionListEl.addEventListener('keydown', event => {
         : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
     div.setAttribute('aria-label', accessibleSummary);
-    div.innerHTML = _ringHtml(ctxPct, dotCls)
-      + '<span class="sl-title">' + (s.pinned ? PIN_SVG : '') + (issue ? '<span class="sl-disconnect-label">异常</span>' : '') + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
-      + _sessionKindHtml(s.kind, modelTxt)
-      + (showUnread ? '<span class="sl-unread-badge">新回复</span>' : '<span class="sl-time">' + formatTime(latestActivityTime(s)) + '</span>');
+    div.innerHTML = '<span class="sl-title">' + _warningHtml(anyWarning) + escapeHtml(s.title) + '</span>'
+      + _sessionKindHtml(s.kind, modelTxt, isDormant && !isResumePending && !issue ? 'dorm' : dotCls, dormantStateTip || runtimeTruthSummary(runtimeTruth))
+      + timeHtml(s, showUnread ? Math.max(1, unreadCount) : 0);
     if (child) div.className += ' child';
     if (detailsEnabled) {
       div.className += ' has-details';
@@ -966,7 +941,7 @@ sessionListEl.addEventListener('keydown', event => {
   }
   if (sections.failed.length) appendSecHeader('异常', sections.failed, 'sec-failed');
   if (sections.active.length) appendSecHeader('活跃', sections.active, 'sec-active');
-  appendSecHeader(recentDays === 3 ? '3 天内' : '今天', sections.today, 'sec-today', sections.today.length ? '休眠' : '', archiveToday);
+  appendSecHeader(pinnedOnly ? '置顶' : recentDays === 3 ? '3 天内' : '今天', sections.today, 'sec-today', !pinnedOnly && sections.today.length ? '休眠' : '', archiveToday);
   if (markAllSessionsRead && visible.some(item => sidebarItemHasUnread(item, sessionMap))) {
     const read = doc.createElement('button'); read.type = 'button'; read.className = 'sidebar-mark-read';
     read.textContent = '全部已读'; read.addEventListener('click', markAllSessionsRead); renderTarget.appendChild(read);

@@ -1133,6 +1133,7 @@ function createWindow() {
     },
   });
   mainWindow._hubNativeTitleBar = nativeTitleBar;
+  require('./main/ipc/preview-immersive-handlers.js').bindPreviewImmersiveWindow(mainWindow);
   // 工具栏要知道窗口是不是最大化：Windows 最大化一个隐藏标题栏的窗口时，
   // 窗口会比屏幕大出一圈边框，顶部那几像素会被切掉。渲染层拿这个状态决定
   // 要不要补那一圈，而不是靠猜。

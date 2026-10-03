@@ -156,7 +156,7 @@ test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "已答 N"', () => {
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: null });
   renderSessionList();
   const html = treeHtml(sessionListEl);
-  assert.ok(/sl-group-icon unread/.test(html), '群聊图标保留父项未读状态');
+  assert.ok(/sl-time has-unread/.test(html), '群聊图标保留父项未读状态');
 });
 
 // ---------------- 用例 5：active 时不显示 badge（即便 unreadAnswered 非空） ----------------
@@ -174,7 +174,7 @@ test('meeting 当前 active 时仍保留未读 badge', () => {
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: 'm1' });
   renderSessionList();
   const html = treeHtml(sessionListEl);
-  assert.ok(/sl-unread-badge[^>]*>1 位未读/.test(html), '选中群聊不应清除成员未读');
+  assert.ok(/sl-time has-unread[^>]*title="[^"]*1 条未读/.test(html), '选中群聊不应清除成员未读');
 });
 
 test('自动休眠会话保留未读红点、数量和唤醒提示', () => {
@@ -191,7 +191,7 @@ test('自动休眠会话保留未读红点、数量和唤醒提示', () => {
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings: {} });
   renderSessionList();
   const html = treeHtml(sessionListEl);
-  assert.ok(/sl-dot unread/.test(html), '休眠态有未读时应显示红色未读状态点');
+  assert.ok(/sl-time has-unread/.test(html), '休眠态有未读时应显示红色未读状态点');
   const row = sessionListEl.children.find(el => el.dataset.sessionId === 'sleeping');
   const label = row._attrs['aria-label'];
   assert.ok(/有 3 条未读/.test(label), '无障碍标签应保留未读数量');

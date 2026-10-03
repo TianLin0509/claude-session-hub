@@ -79,7 +79,7 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
 
 // Presentation policy only; runtime truth and unread accounting remain owned
 // by the existing classifier. Attention flags promote rows, not sections.
-function buildSidebarView(parts, { now = Date.now(), days = 1, sessionMap = new Map(), hasUnread = () => false } = {}) {
+function buildSidebarView(parts, { now = Date.now(), days = 1, pinnedOnly = false, excludePinned = false, sessionMap = new Map(), hasUnread = () => false } = {}) {
   const items = [...new Map(['failed', 'active', 'pinned', 'unread', 'today', 'archive', 'older']
     .flatMap(key => parts[key] || []).map(item => [item.id, item])).values()];
   const failed = [], active = [], today = [], archive = [];
@@ -90,6 +90,7 @@ function buildSidebarView(parts, { now = Date.now(), days = 1, sessionMap = new 
     return compareLatestActivityDesc(a, b);
   };
   for (const item of items) {
+    if ((pinnedOnly && !item.pinned) || (excludePinned && item.pinned)) continue;
     const state = parts.states.get(item.id);
     if (state === 'error') failed.push(item);
     else if (state === 'run' || state === 'wait') active.push(item);

@@ -1,9 +1,9 @@
 'use strict';
 
 const STORAGE_KEY = 'hub.displayPresets.v1';
-const LIMITS = Object.freeze({fontSize:[10,28],zoomLevel:[-3,5],railWidth:[56,112],sessionWidth:[152,320],uiFontSize:[11,16],inputHeight:[40,120]});
-const PHONE = Object.freeze({fontSize:18,zoomLevel:0,railWidth:64,sessionWidth:176,uiFontSize:13,inputHeight:52});
-const FIELDS = {fontSize:'正文 / 终端字号',zoomLevel:'整体缩放',railWidth:'导航栏宽',sessionWidth:'会话栏宽',uiFontSize:'界面字号',inputHeight:'输入框高度'};
+const LIMITS = Object.freeze({fontSize:[10,28],terminalFontSize:[10,28],zoomLevel:[-3,5],railWidth:[56,112],sessionWidth:[152,320],uiFontSize:[11,16],inputHeight:[40,120]});
+const PHONE = Object.freeze({fontSize:18,terminalFontSize:14,zoomLevel:0,railWidth:64,sessionWidth:200,uiFontSize:13,inputHeight:52});
+const FIELDS = {fontSize:'卡片正文字号',terminalFontSize:'CLI 终端字号',zoomLevel:'整体缩放',railWidth:'导航栏宽',sessionWidth:'会话栏宽',uiFontSize:'界面字号',inputHeight:'输入框高度'};
 
 function normalizeProfile(value, fallback) {
   const result = {};
@@ -18,11 +18,15 @@ function loadPresets(storage, legacy = {}) {
   const desktop = {fontSize:legacy.fontSize || 16,zoomLevel:legacy.zoomLevel || 0,railWidth:null,sessionWidth:null,uiFontSize:null,inputHeight:null};
   let saved;
   try { saved = JSON.parse(storage.getItem(STORAGE_KEY)); } catch (_) {}
-  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop',
-    desktop:normalizeProfile(saved?.desktop,desktop),phone:normalizeProfile(saved?.phone,PHONE)};
+  desktop.terminalFontSize = normalizeProfile(saved?.desktop,desktop).fontSize;
+  const phone = normalizeProfile(saved?.phone,PHONE);
+  // Only migrate the former default once; keep custom widths and later choices.
+  if (!saved?.singleLineSidebar && phone.sessionWidth === 176) phone.sessionWidth = PHONE.sessionWidth;
+  return {mode:saved?.mode === 'phone' ? 'phone' : 'desktop', singleLineSidebar: true,
+    desktop:normalizeProfile(saved?.desktop,desktop),phone};
 }
 
-function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,applyZoom,onLayoutChange}) {
+function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,applyTerminalFont,applyZoom,onLayoutChange}) {
   const state = loadPresets(storage,{fontSize,zoomLevel});
   const root = document.documentElement;
   const switcher = document.getElementById('display-preset-switch');
@@ -37,6 +41,7 @@ function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,app
       else root.style.setProperty(css,profile[key]+'px');
     }
     root.style.setProperty('--display-reading-font',profile.fontSize+'px');
+    root.style.setProperty('--display-cli-font',profile.terminalFontSize+'px');
     for (const button of switcher.querySelectorAll('[data-display-mode]')) button.setAttribute('aria-pressed',String(button.dataset.displayMode === state.mode));
     for (const input of panel.querySelectorAll('[data-display-field]')) {
       const key = input.dataset.displayField;
@@ -45,7 +50,7 @@ function createDisplayPresets({document,storage,fontSize,zoomLevel,applyFont,app
     }
     panel.querySelector('strong').textContent = (state.mode === 'phone' ? '手机' : '电脑')+'显示参数';
   };
-  const apply = () => { paint(); applyFont(state[state.mode].fontSize); applyZoom(state[state.mode].zoomLevel); save(); onLayoutChange(); };
+  const apply = () => { paint(); applyFont(state[state.mode].fontSize); applyTerminalFont?.(state[state.mode].terminalFontSize); applyZoom(state[state.mode].zoomLevel); save(); onLayoutChange(); };
   const setMode = mode => {
     if (!['desktop','phone'].includes(mode)) return;
     state.mode = mode; apply();
