@@ -94,7 +94,7 @@ async function main(){
   const model={kind:'codex',model:'gpt-6-astra',effort:'high',mcpProfile:'none'};
   const view=()=>client.eval('currentView');
   try{
-    hub=await launchIsolatedHub({dataDir:DATA_DIR,port:await reservePort(),label:'header-backstage',windowMode:'hidden',extraEnv:{AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT,CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
+    hub=await launchIsolatedHub({dataDir:DATA_DIR,port:await reservePort(),label:'header-backstage',windowMode:'hidden',extraEnv:{AI_HUB_WORKSPACE_ROOT:WORKSPACE_ROOT,CODEX_HOME:path.join(TEMP_ROOT,'codex'),CLAUDE_CONFIG_DIR:path.join(TEMP_ROOT,'claude'),CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.join(ROOT,'tests/fixtures/codex-app-server.js')}});
     client=await connectFirstPage(hub);await size(1500);
     await waitFor('identity',()=>client.eval('!!document.querySelector("#hub-pid").textContent && !!window.LaunchCenter'));
     result.identity=await client.eval('({version:document.querySelector("#hub-version").textContent,pid:document.querySelector("#hub-pid").textContent,image:document.querySelector("#hub-identity img").naturalWidth})');
@@ -109,7 +109,7 @@ async function main(){
     for(const width of [1500,1000,760]){
       await size(width);
       result.layouts[width]=await client.eval(`(()=>{const r=s=>{const b=document.querySelector(s).getBoundingClientRect();return {x:b.x,right:b.right,y:b.y,width:b.width}};return {brand:r('#hub-identity'),crumb:r('#toolbar-crumb'),actions:r('#toolbar-actions'),filter:r('.conversation-filter'),button:r('#btn-backstage'),controls:r('#toolbar-window-controls')}})()`);
-      const l=result.layouts[width];assert(l.crumb.right<=l.brand.x+1);assert(l.brand.right<=l.actions.x+1);assert(l.filter.right<=l.button.x+1);assert(l.button.right<=l.controls.x+1);assert(l.controls.right<=width+1);
+      const l=result.layouts[width];if(l.crumb.width){assert(l.brand.right<=l.crumb.x+1);assert(l.crumb.right<=l.actions.x+1);}assert(l.brand.right<=l.actions.x+1);assert(l.filter.right<=l.button.x+1);assert(l.button.right<=l.controls.x+1);assert(l.controls.right<=width+1);
       await shot('header-'+width);
     }
     await size(1500);await clickPoint(client,'#btn-backstage');assert.equal(await view(),'pty');assert.equal(await client.eval('document.querySelector("#btn-backstage").getAttribute("aria-pressed")'),'true');
@@ -117,7 +117,8 @@ async function main(){
     result.checks.push('标题图标加载、版本/PID 与真实主进程一致；1500/1000/760px 无遮挡；后台按钮双向切换');
     await prompt('/help');
     await waitFor('help feedback',()=>client.eval('document.querySelector(".codex-command-feedback:not([hidden]) pre")?.textContent.includes("codex logout") === true'));
-    assert.equal(await view(),'card');assert.equal(await client.eval('document.querySelectorAll(".turn-card").length'),0);
+    assert.equal(await view(),'card');assert.equal(await client.eval('document.querySelectorAll(".turn-card.assistant").length'),0);
+    assert.equal(await client.eval('document.querySelector(".turn-card.user")?.textContent.includes("/help")'),true);
     await shot('help');
     await prompt('/logout');
     await waitFor('logout explained',()=>client.eval('document.querySelector(".codex-command-feedback.failed pre")?.textContent.includes("CODEX_HOME") === true'));
@@ -126,9 +127,9 @@ async function main(){
     await shot('logout');
     await prompt('/status');await waitFor('status result',()=>client.eval('document.querySelector(".codex-command-feedback pre")?.textContent.includes("connected") === true'));
     await clickPoint(client,'#btn-backstage');await prompt('/help');await waitFor('background help',()=>client.eval('document.querySelector(".codex-command-feedback pre")?.textContent.includes("codex logout") === true'));
-    await clickPoint(client,'#btn-backstage');await prompt('fixture:terminal-design');await waitFor('normal answer',()=>client.eval('document.querySelectorAll(".turn-card").length>1'));
+    await clickPoint(client,'#btn-backstage');await prompt('fixture:terminal-design');await waitFor('normal answer',()=>client.eval('document.querySelectorAll(".turn-card.assistant").length>0'));
     assert.equal(await client.eval('document.querySelector(".codex-command-feedback").hidden'),true);
-    result.checks.push('卡片/后台均能显示命令结果；logout 明确未执行且无模型轮次；命令不留假消息卡片，后续正常回答');
+    result.checks.push('卡片/后台均能显示命令结果；logout 明确未执行且无模型轮次；命令原文保留且不生成假回答，后续正常回答');
     await waitFor('ordinary turn complete',()=>client.eval('sessions.get('+JSON.stringify(session.id)+').nativeRuntime.state==="completed"'));
     await prompt('fixture:hold');await waitFor('held turn running',()=>client.eval('sessions.get('+JSON.stringify(session.id)+').nativeRuntime.state==="running"'));
     await client.eval('window.__receiptBeforeCommand=floatingPromptDeliveries.get('+JSON.stringify(session.id)+')');
