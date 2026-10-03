@@ -22,3 +22,15 @@ test('新功能与删除功能合并到旧自定义顺序，不接受重复及�
  assert.deepEqual(normalizeNavigationOrder(['assistant','home','assistant','gone'],['home','assistant','accounts']),['assistant','home','accounts']);
  assert.deepEqual(normalizeNavigationOrder({bad:true},['home','assistant']),['home','assistant']);
 });
+test('置顶筛选只展示置顶会话和群聊，运行及异常仍各归原分组',()=>{
+ const member=row('member',{status:'running'}),sessionMap=new Map([['member',member]]);
+ const rows=[row('old-pin',{pinned:true,lastMessageTime:now-20*day}),row('run-pin',{pinned:true,status:'running'}),
+  row('bad-pin',{pinned:true,status:'failed'}),row('group-pin',{pinned:true,_isMeeting:true,_meeting:{subSessions:['member'],groupChat:true}}),
+  row('plain'),row('unread',{unreadCount:1}),row('unpinned-run',{status:'running'})];
+ const parts=partitionSidebarSessions(rows,{now,sessionMap});
+ const result=buildSidebarView(parts,{now,pinnedOnly:true,sessionMap});
+ assert.deepEqual(ids(result.today),['old-pin']);assert.deepEqual(ids(result.failed),['bad-pin']);
+ assert.deepEqual(ids(result.active).sort(),['group-pin','run-pin']);assert.equal(result.archiveCount,0);
+ assert.equal(rows[5].unreadCount,1);assert.equal(member.status,'running');
+ assert.equal(buildSidebarView(partitionSidebarSessions([row('plain')],{now}),{now,pinnedOnly:true}).today.length,0);
+});

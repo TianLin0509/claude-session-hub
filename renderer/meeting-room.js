@@ -27,6 +27,10 @@ function groupInputTuningFrame(screen) {
 }
 
 if (typeof document !== 'undefined') (function () {
+  async function copyGroupText(text) {
+    const result = await clipboardController.copyText(text,{source:'group-card',silent:true});
+    if (!result.ok) throw new Error(result.reason || '复制失败');
+  }
   const { ipcRenderer } = require('electron');
   const { speedControl } = require('../core/session-speed.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
@@ -1449,11 +1453,12 @@ if (typeof document !== 'undefined') (function () {
     overlay.querySelector('.mr-gc-prompt-modal-close').addEventListener('click', close);
     overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
     overlay.querySelector('.mr-gc-prompt-modal-copy').addEventListener('click', async (ev) => {
+      const button = ev.currentTarget;
       try {
-        await navigator.clipboard.writeText(prompt);
-        ev.currentTarget.textContent = '已复制';
+        await copyGroupText(prompt);
+        button.textContent = '已复制';
       } catch {
-        ev.currentTarget.textContent = '复制失败';
+        button.textContent = '复制失败';
       }
     });
     document.addEventListener('keydown', onKeydown);
@@ -2180,8 +2185,9 @@ if (typeof document !== 'undefined') (function () {
         }
       }
       if (parts.length && typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(parts.join('\n\n---\n\n'));
-        try { _showGcEscapeNotice('已复制本轮 ' + parts.length + ' 家回答到剪贴板', 'info'); } catch {}
+        copyGroupText(parts.join('\n\n---\n\n')).then(()=>{
+          _showGcEscapeNotice('已复制本轮 ' + parts.length + ' 家回答到剪贴板', 'info');
+        }).catch(()=>_showGcEscapeNotice('复制失败，请重试', 'error'));
       }
     }
   }
@@ -3464,7 +3470,7 @@ if (typeof document !== 'undefined') (function () {
         return;
       }
       try {
-        await navigator.clipboard.writeText(previewText);
+        await copyGroupText(previewText);
         const oldT = btn.textContent;
         btn.textContent = '✓';
         btn.style.background = '#2da44e';
@@ -3917,10 +3923,10 @@ if (typeof document !== 'undefined') (function () {
       const pre = codeCopyBtn.closest('pre');
       const code = pre && pre.querySelector('code');
       if (code && typeof navigator !== 'undefined' && navigator.clipboard) {
-        navigator.clipboard.writeText(code.textContent || '');
         const old = codeCopyBtn.textContent;
-        codeCopyBtn.textContent = '已复制 ✓';
-        setTimeout(() => { try { codeCopyBtn.textContent = old; } catch {} }, 1500);
+        copyGroupText(code.textContent || '').then(()=>{codeCopyBtn.textContent = '已复制 ✓';})
+          .catch(()=>{codeCopyBtn.textContent = '复制失败';})
+          .finally(()=>setTimeout(() => { try { codeCopyBtn.textContent = old; } catch {} }, 1500));
       }
       return;
     }
