@@ -85,6 +85,13 @@ async function main(){
       const modelStarted=Date.now();await send('当前有哪些会话、什么进展？请实际读取本轮资料并核对 packetHash，然后用一句话说明当前会话数量和验收暗号。');row.modelSwitchAnswer=(await final(id,beforeModelAnswer)).text;assert.match(row.modelSwitchAnswer,/杉树企鹅/);await settled(id);
       row.modelReplyElapsedMs=Date.now()-modelStarted;
       assert.equal((await invoke('assistant:get-overview')).contextCoverage.snapshotRead,true,'changed model must read this turn instead of only remembering the code word');
+      const rollout=fs.readFileSync((await meta(id)).transcriptPath,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+      const turnStart=rollout.findLastIndex(item=>item.type==='turn_context');
+      const modelTurn=rollout.slice(turnStart);
+      row.modelToolCalls=modelTurn.filter(item=>item.payload?.type==='function_call').map(item=>item.payload.name);
+      row.modelToolErrors=modelTurn.filter(item=>item.payload?.type==='function_call_output'&&String(item.payload.output).startsWith('unsupported call:')).map(item=>item.payload.output);
+      assert.deepEqual(row.modelToolErrors,[],'native tool calls must work without a shell/HTTP fallback');
+      assert.ok(row.modelToolCalls.some(name=>name==='mcp__hub_assistant__history_context'),'changed model must use its registered assistant tool');
       assert.equal(nativeId(await meta(id)),row.nativeId);assert.equal((await meta(id)).currentModel.id,'deepseek-v4-pro');row.modelAfterSwitch=(await meta(id)).currentModel;
       await shot(kind+'-model-change');result.checks.push('DeepSeek 普通模型菜单真实切换到 V4 Pro，同一原生会话继续读取资料并回答');
     }
