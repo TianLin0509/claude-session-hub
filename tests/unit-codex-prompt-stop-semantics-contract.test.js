@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+const sidebarSrc = fs.readFileSync(path.join(root, 'renderer', 'session-list-renderer.js'), 'utf8');
 const activitySrc = fs.readFileSync(path.join(root, 'renderer', 'terminal-activity-monitor.js'), 'utf8');
 
 assert.ok(
@@ -93,7 +94,7 @@ assert.ok(
   'the Claude bypass must return before the reducer, not after it',
 );
 assert.ok(
-  rendererSrc.includes('sessionNeedsUserInput') && rendererSrc.includes('sessionHasCompletedUnread'),
+  rendererSrc.includes('sessionNeedsUserInput') && /const showUnread = sessionHasCompletedUnread\(s\)/.test(sidebarSrc),
   'ordinary completed-unread and real needs-input states must remain distinct',
 );
 
