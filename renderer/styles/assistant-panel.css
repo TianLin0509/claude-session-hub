@@ -16,6 +16,15 @@
 #terminal-panel.assistant-session .session-welcome-mark img{width:72px;height:84px;object-fit:contain}
 .assistant-workbench.btn-zoom,.assistant-phone.btn-zoom{width:auto;flex-shrink:0;white-space:nowrap;padding:0 8px}
 .app-toolbar .terminal-header-actions .assistant-phone.btn-zoom{width:auto;min-width:72px;flex-shrink:0;white-space:nowrap;padding:0 8px}
+dialog.assistant-phone-dialog{margin:auto;font:14px/1.7 var(--font-ui,system-ui,sans-serif);box-shadow:0 20px 70px #172f5126;-webkit-app-region:no-drag}
+.assistant-phone-dialog::backdrop{background:#15233a45}
+.assistant-phone-dialog h2{font-size:22px;line-height:1.4;margin-bottom:14px}
+.assistant-phone-dialog p{margin:12px 0}
+.assistant-phone-dialog a{color:#315acb}
+.assistant-phone-dialog button{padding:8px 12px;border:1px solid #dfe6f1;border-radius:8px;background:#f6f9ff;color:#1b2942;font:inherit;cursor:pointer}
+.assistant-phone-dialog button:hover{background:#edf4ff}
+.assistant-phone-dialog button:disabled{opacity:.55;cursor:wait}
+.assistant-phone-dialog .phone-code{padding:10px;border:1px solid #dfe6f1;border-radius:8px;background:#f6f9ff;color:#1b2942}
 .assistant-backend{display:none;-webkit-app-region:no-drag;max-width:100px;padding:6px 8px;border:1px solid #dfe6f1;border-radius:8px;background:#fff;color:#315acb;font-size:12px;flex-shrink:0}
 body.assistant-session-active .assistant-backend{display:block}
 .assistant-backend:disabled{opacity:.55}
