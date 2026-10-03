@@ -85,6 +85,7 @@ async function main(){
     await waitFor(cdp,`${JSON.stringify(group.subSessions)}.every(id=>sessions.get(id)?.nativeRuntime?.state==='idle')`);
     await cdp.eval(`window.MeetingRoom.openMeeting(${JSON.stringify(group.id)},${JSON.stringify(group)})`);
     await waitFor(cdp,`document.querySelectorAll('#mr-input-tuning .composer-thinking:not([hidden])').length===3`);
+    await click(cdp,'[data-group-menu="members"]');
     for(const sid of group.subSessions) {
       const selector=`#mr-input-tuning [data-sid="${sid}"] .composer-thinking`;
       await click(cdp,selector);
