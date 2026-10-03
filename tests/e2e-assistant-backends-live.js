@@ -84,7 +84,11 @@ async function main(){
   await settled(codex);await change('claude');assert.equal(await active(),claude);assert.equal((await meta(claude)).ccSessionId,result.claudeNativeId);
   const beforeRestartAnswer=readFinals(await meta(claude)).records.length;
   await send('请读取最新资料，并告诉我验收暗号是什么。仅用一句话回答。');const restored=await final(claude,beforeRestartAnswer);assert.match(restored.text,/青桥企鹅/);await settled(claude);
-  const restoredPacket=await invoke('assistant:context',{});assert(restoredPacket.assistantContinuity.records.some(r=>r.role==='user'&&r.deliveryState==='confirmed'&&r.text.includes('青桥企鹅')));
+  const restoredPacket=await invoke('assistant:context',{});
+  const fullContinuity=JSON.parse(fs.readFileSync(path.join(data,'assistant','conversation.json'),'utf8'));
+  assert(fullContinuity.some(r=>r.role==='user'&&r.deliveryState==='confirmed'&&r.text.includes('青桥企鹅')));
+  assert.match(fs.readFileSync(restoredPacket.assistantContinuity.markdownPath,'utf8'),/青桥企鹅/);
+  assert.equal(restoredPacket.assistantContinuity.records.length,Math.min(12,fullContinuity.length));
   await until('one restored user bubble',()=>cdp.eval('[...document.querySelectorAll("#msg-overlay .turn-card.user")].filter(e=>e.querySelector(".turn-body")?.textContent.trim()==="请读取最新资料，并告诉我验收暗号是什么。仅用一句话回答。").length===1'));
   result.checks.push('隔离 Hub 正常退出重开：两种固定身份、交接文件、Claude 工具权限均恢复');await shot('04-claude-after-restart');
   assert.equal(hash(codexAuth),before.codex);assert.equal(hash(claudeAuth),before.claude);result.productionCredentialsUnchanged=true;result.passed=true;
