@@ -36,3 +36,31 @@
 :root[data-display-mode='phone'] body .composer-rail { gap:4px; }
 :root[data-display-mode='phone'] body .terminal-panel .composer .composer-chip { padding-inline:5px; }
 /* Footer remains the existing single 34px row, including every provider and VPN. */
+
+/* Titles use the available width; status and time get a compact second row. */
+:root[data-display-mode='phone'] body #session-list .session-item.slim:not(.meeting):not(.has-details),
+:root[data-display-mode='phone'] body #session-list .session-item.slim .sl-line1 {
+  display:grid; grid-template-columns:14px minmax(0,1fr); gap:3px 5px;
+  height:auto; min-height:34px; max-height:none; padding:5px 6px;
+}
+:root[data-display-mode='phone'] body #session-list .session-item.slim:is(.meeting,.has-details) { height:auto; max-height:none; padding:0; }
+:root[data-display-mode='phone'] body #session-list .sl-title {
+  grid-column:2/-1; grid-row:1; white-space:normal; overflow-wrap:anywhere;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+  line-height:1.3; text-overflow:ellipsis;
+}
+:root[data-display-mode='phone'] body #session-list :is(.sl-dot,.sl-ctx-ring) { grid-column:1; grid-row:1; align-self:start; margin-top:4px; }
+:root[data-display-mode='phone'] body #session-list .sl-group-icon { grid-column:1; grid-row:1; align-self:start; width:14px; height:14px; }
+:root[data-display-mode='phone'] body #session-list :is(.sl-kind,.sl-group-logos) { grid-column:1; grid-row:2; width:14px; padding:0; }
+:root[data-display-mode='phone'] body #session-list .sl-group-logos { grid-column:1/-1; width:auto; justify-self:start; }
+:root[data-display-mode='phone'] body #session-list :is(.sl-time,.sl-unread-badge) { grid-column:2/-1; grid-row:2; justify-self:end; font-size:10px; }
+:root[data-display-mode='phone'] body #session-list .sl-line1.with-arrow { grid-template-columns:10px 14px minmax(0,1fr); }
+:root[data-display-mode='phone'] body #session-list .sl-line1.with-arrow .expand-arrow { grid-column:1; grid-row:1; }
+:root[data-display-mode='phone'] body #session-list .sl-line1.with-arrow .sl-title { grid-column:3/-1; }
+:root[data-display-mode='phone'] body #session-list .sl-line1.with-arrow :is(.sl-dot,.sl-ctx-ring,.sl-group-logos) { grid-column:2; }
+:root[data-display-mode='phone'] body #session-list .sl-line1.with-arrow :is(.sl-time,.sl-unread-badge) { grid-column:3/-1; }
+:root[data-display-mode] body .codex-backstage .cb-output { font-size:var(--display-cli-font,16px); }
+.paste-encoding-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:32vh; overflow:auto; font:13px/1.55 var(--font-sans); }
+.paste-encoding-dialog .paste-encoding-preview { padding:12px; background:var(--surface-sunken); border-radius:8px; }
+.paste-encoding-dialog details { color:var(--fg-muted); font-size:12px; }
+.paste-encoding-dialog .hub-dialog-actions { flex-wrap:wrap; }

@@ -699,7 +699,7 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   const boxSig = [
     Math.round(rect.width),
     Math.round(rect.height),
-    currentFontSize,
+    cached.terminal.options.fontSize,
     currentZoom,
   ].join('x');
   if (!opts.force && cached._lastFitBoxSig === boxSig) return false;
@@ -877,6 +877,7 @@ const FONT_SIZE_MAX = 28;
 let displayPresets = null;
 let currentFontSize = parseInt(localStorage.getItem(FONT_SIZE_KEY), 10);
 if (!currentFontSize || isNaN(currentFontSize)) currentFontSize = 16;
+let currentTerminalFontSize = currentFontSize;
 
 function setFontSize(size) {
   size = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
@@ -887,6 +888,12 @@ function setFontSize(size) {
   // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / AI 群聊 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
   // 写到 :root（documentElement），让 AI 群聊（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
+}
+
+function setTerminalFontSize(size) {
+  size = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, size));
+  currentTerminalFontSize = size;
+  displayPresets?.record('terminalFontSize',size);
   for (const [sid, c] of terminalCache) {
     c.terminal.options.fontSize = size;
     if (c.opened) {
@@ -927,7 +934,7 @@ applyZoom(currentZoom);
 
 displayPresets = require('./display-presets').createDisplayPresets({
   document,storage:localStorage,fontSize:currentFontSize,zoomLevel:currentZoom,
-  applyFont:setFontSize,applyZoom,
+  applyFont:setFontSize,applyTerminalFont:setTerminalFontSize,applyZoom,
   onLayoutChange:()=>{
     for (const [sid,c] of terminalCache) if (c.opened) scheduleFitAndResizeTerminal(sid,c,{force:true});
   },
@@ -1454,7 +1461,7 @@ function getOrCreateTerminal(sessionId) {
   const terminal = new Terminal({
     // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
     ...resolveXtermOptions(document.documentElement.getAttribute('data-theme')),
-    fontSize: currentFontSize,
+    fontSize: currentTerminalFontSize,
     lineHeight: isNativeAgent(sessions.get(sessionId)) ? 1.3
       : isCodexKind(sessions.get(sessionId)?.kind) ? 1.18 : 1.12,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
@@ -1557,14 +1564,14 @@ function getOrCreateTerminal(sessionId) {
         }
         if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'x' || e.key === 'X')) {
           e.preventDefault();
-          clipboard.writeText(inputSel.text);
-          deleteInputSelection(terminal, sessionId);
+          void clipboardController.copyText(inputSel.text,{source:'terminal-cut'}).then(result=>{
+            if (result.ok && getInputLineSelection(terminal)?.text === inputSel.text) deleteInputSelection(terminal, sessionId);
+          });
           return false;
         }
         if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
           e.preventDefault();
-          deleteInputSelection(terminal, sessionId);
-          handlePasteForSession(sessionId);
+          handlePasteForSession(sessionId,{beforePaste:()=>deleteInputSelection(terminal,sessionId)});
           return false;
         }
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -1688,7 +1695,7 @@ function getOrCreateTerminal(sessionId) {
       return;
     }
     const delta = e.deltaY < 0 ? 1 : -1;
-    setFontSize(currentFontSize + delta);
+    setTerminalFontSize(currentTerminalFontSize + delta);
   }, { passive: true });
 
   container.addEventListener('pointerdown', () => {
@@ -2430,6 +2437,7 @@ const turnCardRenderer = createTurnCardRenderer({
   document,
   window,
   navigator,
+  copyText: (text, options) => clipboardController.copyText(text, options),
   CSS,
   marked,
   DOMPurify,
@@ -2511,11 +2519,8 @@ async function copyRecentTurnsForSession(sessionId, count = 3) {
     : [];
   const formatted = formatRecentConversation(entries, count);
   if (!formatted.text) return formatted;
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    await navigator.clipboard.writeText(formatted.text);
-  } else {
-    clipboard.writeText(formatted.text);
-  }
+  const copied = await clipboardController.copyText(formatted.text,{source:'recent-conversation',silent:true});
+  if (!copied.ok) throw new Error(copied.reason || '复制失败');
   return formatted;
 }
 
@@ -3401,11 +3406,21 @@ document.addEventListener('click', async (e) => {
     // 复制用户实际看到的回答正文，不复制 markdown 围栏、toolCalls 原始块，
     // 也不把 hover 出来的 Copy/Bash/展开按钮混进剪贴板。
     const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
-    navigator.clipboard.writeText(visibleText).then(() => {
-      const orig = btn.textContent;
-      btn.textContent = '✓';
+    if (btn.disabled) return;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '复制中…';
+    try {
+      const result = await clipboardController.copyText(visibleText, { source: 'card', silent: true });
+      btn.textContent = result.ok ? '✓' : '复制失败';
+      if (!result.ok) clipboardController.showFeedback(result);
+    } catch (error) {
+      btn.textContent = '复制失败';
+      clipboardController.showFeedback({ ok: false, reason: error.message, source: 'card' });
+    } finally {
+      btn.disabled = false;
       setTimeout(() => { btn.textContent = orig; }, 1500);
-    }).catch(() => {});
+    }
     return;
   }
 
@@ -8104,6 +8119,7 @@ function onClaudeNotification(sessionId, observedAt = Date.now(), options = {}) 
 }
 
 // --- Keyboard shortcuts ---
+const terminalFontShortcutActive = () => !!document.activeElement?.closest('.xterm,.codex-backstage');
 const keyboardShortcuts = createKeyboardShortcuts({
   document,
   ipcRenderer,
@@ -8111,13 +8127,13 @@ const keyboardShortcuts = createKeyboardShortcuts({
   sessions,
   terminalCache,
   getActiveSessionId: () => sessionSplit?.focusedId() || activeSessionId,
-  getCurrentFontSize: () => currentFontSize,
+  getCurrentFontSize: () => terminalFontShortcutActive() ? currentTerminalFontSize : currentFontSize,
   selectSession,
   escapeToHome,
   toggleSidebar,
   openTerminalSearch: () => openTerminalSearch(),
   openPreviewQuickOpen: () => openPreviewQuickOpen(),
-  setFontSize,
+  setFontSize: size => terminalFontShortcutActive() ? setTerminalFontSize(size) : setFontSize(size),
   closeSession: closeSessionAsSleep,
   createWorkspaceSession: (kind) => launchCenter.open('session', { kind }),
   copyText: text => clipboardController.copyText(text, { source: 'terminal-shortcut' }),
@@ -9172,6 +9188,7 @@ function createSecondarySessionView(sessionId, panel, options = {}) {
     document, window, sessionId, panel,
     rendererOptions: {
       navigator, CSS, marked, DOMPurify, formatAbsoluteTime, normalizeMarkdownPathBreaks, escapeHtml,
+      copyText: (text, options) => clipboardController.copyText(text, options),
       wrapPathLinksInElement, getSessionContext: id => sessions.get(id),
       openAttachment: (target, opts) => openPathInHub(target, opts),
       readToolResult: reference => ipcRenderer.invoke(reference.source === 'claude-stream-json' ? 'claude-native:tool-result' : reference.source === 'codex-app-server' ? 'codex-native:tool-result' : 'acp:tool-result', reference),
