@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { CodexEditorInput, configureCodexEditorInput, atomicJson, readJson } = require('../core/codex-editor-input');
+const { CodexEditorInput, configureCodexEditorInput, atomicJson, readJson, editorShortcutKey } = require('../core/codex-editor-input');
 const { run } = require('../core/codex-editor-helper');
 
 function fixture(t) {
@@ -11,10 +11,16 @@ function fixture(t) {
   const dir = path.join(root, 'bridge'); fs.mkdirSync(dir);
   atomicJson(path.join(dir, 'session.json'), {});
   const target = path.join(root, 'native.md'); fs.writeFileSync(target, 'existing draft');
-  return { root, dir, target, bridge: new CodexEditorInput(dir) };
+  return { root, dir, target, bridge: new CodexEditorInput(dir, { platform: 'linux' }) };
 }
 const payload = ('中文🙂 first line\nsecond line\n').repeat(300) + 'END';
 const frame = bridge => bridge.onOutput('\x1b[?2004l\x1b[?2004h\x1b[?2026hframe\x1b[?2026l');
+
+test('Windows editor shortcut retains Ctrl and virtual G key without a submit event',()=>{
+  assert.equal(editorShortcutKey('win32'),'\x1b[71;34;7;1;8;1_\x1b[71;34;7;0;8;1_');
+  assert.equal(editorShortcutKey('linux'),'\x07');
+  assert(!/[\r\n]/.test(editorShortcutKey('win32')));
+});
 
 test('complete Unicode body is loaded once and requires both the receipt and resumed native frame', async t => {
   const f = fixture(t), keys = []; let done = false;

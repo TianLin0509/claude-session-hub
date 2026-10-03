@@ -6,6 +6,10 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 
 const MIN_LENGTH = 2048;
+// ConPTY's native console reader needs the virtual key and Ctrl modifier.
+// A bare BEL may arrive as a character with no Ctrl key state.
+const editorShortcutKey = platform => platform === 'win32'
+  ? '\x1b[71;34;7;1;8;1_\x1b[71;34;7;0;8;1_' : '\x07';
 const hash = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function atomicJson(file, value) {
@@ -34,8 +38,9 @@ function hasCustomKeymap(home, cwd) {
 }
 
 class CodexEditorInput {
-  constructor(directory) {
+  constructor(directory, { platform = process.platform } = {}) {
     this.directory = directory;
+    this.platform = platform;
     this.pending = null;
     this.closed = false;
     this.failed = false;
@@ -73,7 +78,7 @@ class CodexEditorInput {
     this.pending = p;
     try {
       atomicJson(request, { id, text, digest, expiresAt: start + timeoutMs });
-      write('\x07');
+      write(editorShortcutKey(this.platform));
       while (Date.now() - start < timeoutMs) {
         if (this.closed) throw inputError('会话已关闭，长文本未提交');
         const ack = readJson(receipt);
@@ -142,7 +147,7 @@ function configureCodexEditorInput(env, { dataDir, cwd, platform = process.platf
     HUB_CODEX_EDITOR_SCRIPT: path.join(__dirname, 'codex-editor-helper.js'),
     HUB_CODEX_EDITOR_DIR: directory,
   });
-  return new CodexEditorInput(directory);
+  return new CodexEditorInput(directory, { platform });
 }
 
-module.exports = { CodexEditorInput, configureCodexEditorInput, hasCustomKeymap, atomicJson, readJson, hash, MIN_LENGTH };
+module.exports = { CodexEditorInput, configureCodexEditorInput, hasCustomKeymap, atomicJson, readJson, hash, MIN_LENGTH, editorShortcutKey };
