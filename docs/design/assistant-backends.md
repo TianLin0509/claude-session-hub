@@ -37,3 +37,9 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 助理分派任务用 `create_session` 的 `tier`：fast（Sonnet 5.5 / GPT-6 Luna · 低）、standard（GPT-6.1 Sol / Opus 5.5 · 中）、deep（Hub 新建会话的默认配置，省略即 deep）。用户点名的 `kind`、`model`、`effort` 优先，其余由档位补齐；点名的型号或深度不合法时在占用本轮新建名额前报错。返回 `route.label` 供助理告诉用户交给了谁。型号只写在档位表里，助理不记具体型号。
 
 手机语音（App 1.1 起）是 `voice_message`：Hub 识别后把转写回传手机仅作显示，同时直接交给助理，并在上下文里标注 `userInputMode: voice`，由助理结合上下文理解；只有确实无法判断时才追问。识别不再按说话节奏回放（实测 7.6 秒语音 7.8→2.1 秒、26 秒语音 25→4.9 秒，文字相同，`scripts/phone-voice-speed-probe.js`）。旧 App 的 `voice`（识别后填入输入框）保留兼容；`profile` 等新类型只发给发过 `hello` 并声明能力的 App。
+
+### 自答优先与换班（2026-10-03 第二轮）
+
+助理的首要指标是保证质量下尽快答复：几步内能答完、不需大量阅读的事由助理直接回答；要长时间思考、写代码、做报告、深度分析或大量读写文件的才新建会话（一般 standard，开发与深度分析 deep，fast 只在用户要求单独开会话做简单事时用），让大段内容留在那个会话的上下文里。自己处理几步仍无结论就交出去。
+
+助理是长寿会话，每轮读入的资料会累积（实测两轮短对话后上下文已约 4.3 万 token），回答随之变慢、旧内容也会干扰判断。Hub 从 CLI 原生记录的每轮 usage 算出上下文量（Claude：input+cache_read+cache_creation；Codex：input 已含缓存），超过 15 万 token 标记待换班；下一次就绪（打开助理页或手机来消息）且助理空闲时，同后端同档位新开会话，靠 assistantContinuity 与工作档案接续，旧会话改名「（已换班）」并休眠，可打开查看但不再有会话管理权限。忙时绝不换班；新建失败则恢复旧绑定。`HUB_ASSISTANT_ROTATE_TOKENS` 仅供实测压低阈值，`ROUTER_ROTATE=1 node tests/e2e-assistant-router-live.js` 验证自答与换班。

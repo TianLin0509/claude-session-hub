@@ -125,6 +125,8 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
   nav.addEventListener('click', () => { void open(); });
   document.addEventListener('click', event => { if(!event.target.closest('.assistant-backend-menu,.assistant-backend'))document.querySelector('.assistant-backend-menu')?.remove();if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
   document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelector('.assistant-backend-menu')?.remove();});
+  // 助理换班后（上下文用满后新开会话接续），若正停在助理页就切到新会话。
+  ipcRenderer.on('assistant:rotated', () => { if (isOpen()) void open(); else void refresh(); });
   ipcRenderer.on('assistant:notification', (_event, notice) => {
     nav.classList.add('assistant-has-unread'); nav.title = '助理 · 关注任务有新回复';
     if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);

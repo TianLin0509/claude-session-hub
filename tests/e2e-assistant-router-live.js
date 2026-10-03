@@ -58,7 +58,7 @@ async function main(){
   // Hub 默认（deep 档）在测试里用低成本型号；三档映射本身由单测覆盖。
   fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6-luna',claude:'claude-sonnet-5-5'}},providers:{codex:{backend:'subscription',subscription_profile:profile.id,subscription_profiles:[{id:profile.id,label:profile.label,home:codexHome}]}}}));
   const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
-  hub=await launchIsolatedHub({dataDir:data,port,windowMode:'background',label:'assistant-router-live',allowExternalState:true,extraEnv:{CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:claudeHome,CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_BACKEND:'subscription',HUB_CODEX_PROFILE:'',CLAUDE_HUB_NO_FAST:'1',CLAUDE_HUB_E2E:'1',OPENAI_API_KEY:'',CODEX_API_KEY:'',ANTHROPIC_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty')}});
+  hub=await launchIsolatedHub({dataDir:data,port,windowMode:'background',label:'assistant-router-live',allowExternalState:true,extraEnv:{CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:claudeHome,CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_BACKEND:'subscription',HUB_CODEX_PROFILE:'',CLAUDE_HUB_NO_FAST:'1',CLAUDE_HUB_E2E:'1',OPENAI_API_KEY:'',CODEX_API_KEY:'',ANTHROPIC_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),...(process.env.ROUTER_ROTATE==='1'?{HUB_ASSISTANT_ROTATE_TOKENS:'1'}:{})}});
   result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
@@ -70,6 +70,24 @@ async function main(){
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(assistant)));
   result.checks.push('默认助理为 Claude Sonnet 5.5 · 低思考');
 
+  // 自答与换班：常识问题由助理直接答、不新建会话；上下文超阈值后（实测把阈值压到 1）下一条手机消息触发换班，新助理靠交接记录记得前文。
+  if(process.env.ROUTER_ROTATE==='1'){
+   let k=(await finals(assistant)).length,t0=Date.now();
+   await send('用一句话解释什么是比例公平调度。');const own=await final(assistant,k);result.selfAnswer=own.text;result.timings.selfAnswerMs=Date.now()-t0;await settled(assistant);
+   assert.equal((await invoke('assistant:actions',{})).actions.filter(a=>a.result?.route).length,0,'常识问题应由助理直接回答');
+   result.checks.push(`常识问题助理直接回答（${result.timings.selfAnswerMs} ms），未新建会话`);
+   k=(await finals(assistant)).length;await send('请记住验收暗号「青桥企鹅」，只用一句话确认。');await final(assistant,k);await settled(assistant);
+   await click('.assistant-phone');await click('[data-phone="pair"]');
+   const code2=await until('relay code',()=>cdp.eval('document.querySelector(".phone-code")?.value||null'));await click('[data-phone="close"]');
+   const phone2=phoneClient(code2);t0=Date.now();
+   const ask=await phone2.send({type:'text',text:'刚才让你记住的验收暗号是什么？只用一句话回答。'});
+   const recall=await until('recall after rotation',async()=>(await phone2.poll()).find(p=>p.type==='answer'&&p.requestId===ask),300000);
+   result.rotationRecall=recall.text;result.timings.rotationAnswerMs=Date.now()-t0;
+   const o=await invoke('assistant:get-overview',{});assert.notEqual(o.sessionId,assistant,'应已换班到新助理会话');
+   assert.match(recall.text,/青桥企鹅/);const old=await meta(assistant);result.retiredTitle=old?.title||null;
+   result.checks.push(`上下文超阈值后换班：新助理会话 ${o.sessionId.slice(0,8)} 接续交接记录，答出暗号（${result.timings.rotationAnswerMs} ms）`);await shot('rotate-01');
+   result.passed=true;return;
+  }
   const onlySwitch=process.env.ROUTER_ONLY_SWITCH==='1';
   let n,t;
   if(!onlySwitch){
