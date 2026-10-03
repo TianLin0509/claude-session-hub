@@ -1,8 +1,9 @@
 /* Short labels stay visible at both navigation widths. Telemetry has one row. */
-:root { --hub-rail-slot:88px; --hub-rail-open:88px; }
-:root:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:64px; }
+:root { --hub-rail-slot:44px; --hub-rail-open:44px; }
+:root:has(.app-container:not(.rail-pinned)) { --hub-rail-slot:44px; }
 :root body #scene-rail .rail-drawer-head { height:40px; padding:0 8px; }
-:root body #scene-rail .rail-navigation { padding:0 6px; gap:3px; }
+:root body #scene-rail .rail-navigation { padding:0 2px; gap:3px; scrollbar-width:auto; }
+:root body #scene-rail .rail-navigation::-webkit-scrollbar { width:3px; }
 :root body #scene-rail .btn-shell-nav,
 :root body .app-container:not(.rail-pinned) #scene-rail .btn-shell-nav {
   flex-direction:column; align-items:center; justify-content:center;

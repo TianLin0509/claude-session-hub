@@ -14,7 +14,7 @@
 #session-list .sidebar-group .session-item.slim.child { margin-left: 18px; padding-left: 8px; border-left: 1px solid var(--border-color); border-radius: 0 5px 5px 0; grid-template-columns: 8px minmax(0, 1fr) auto auto; }
 .sidebar-group.compact-group:not(.hover-open):not(.has-active-member):not(:focus-within) > .sidebar-group-children { display: none; }
 #session-list .sidebar-group .session-item.slim.meeting.gc { padding-top: 0; padding-bottom: 0; }
-#session-list .sidebar-group .session-item.slim.meeting.gc .sl-line1:not(.with-arrow) { grid-template-columns: 15px minmax(0, 1fr) auto auto; }
+#session-list .sidebar-group .session-item.slim.meeting.gc .sl-line1:not(.with-arrow) { grid-template-columns: minmax(0, 1fr) auto auto; }
 #session-list .sidebar-group .session-item.slim.meeting.gc .sl-group-progress { display: none; }
 .sl-group-icon { width: 15px; height: 15px; stroke: var(--text-muted); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; fill: none; }
 .sl-group-icon.idle { stroke: #3b82f6; }
@@ -23,7 +23,7 @@
 @media (prefers-reduced-motion: reduce) { .sl-group-icon.run { animation: none; } }
 .sl-group-icon.wait { stroke: var(--accent-orange); }
 .sl-group-icon.error, .sl-group-icon.unread { stroke: var(--accent-red); }
-#session-list .session-item.slim.meeting.has-session-details .sl-line1.with-arrow { grid-template-columns: 10px 15px minmax(0, 1fr) auto auto; }
+#session-list .session-item.slim.meeting.has-session-details .sl-line1.with-arrow { grid-template-columns: 10px minmax(0, 1fr) auto auto; }
 #session-list .session-item.slim.meeting.has-session-details .sl-line1.with-arrow .expand-arrow { display: inline-block; transform: rotate(0); }
 #session-list .session-item.slim.meeting.has-session-details.expanded .sl-line1.with-arrow .expand-arrow { transform: rotate(90deg); }
 

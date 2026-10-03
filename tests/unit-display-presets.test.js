@@ -1,6 +1,16 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {loadPresets,STORAGE_KEY}=require('../renderer/display-presets');
+test('compact rail migrates the former defaults once while keeping custom choices',()=>{
+ const load=data=>loadPresets({getItem:()=>JSON.stringify(data)});
+ const old=load({desktop:{railWidth:88,fontSize:20},phone:{railWidth:64,sessionWidth:220}});
+ assert.equal(old.desktop.railWidth,44);assert.equal(old.phone.railWidth,44);
+ assert.equal(old.desktop.fontSize,20);assert.equal(old.phone.sessionWidth,220);
+ assert.equal(load({desktop:{railWidth:72},phone:{railWidth:48}}).desktop.railWidth,72);
+ assert.equal(load({desktop:{railWidth:72},phone:{railWidth:48}}).phone.railWidth,48);
+ assert.equal(load({...old,phone:{...old.phone,railWidth:64}}).phone.railWidth,64);
+ assert.equal(load({...old,desktop:{...old.desktop,railWidth:88}}).desktop.railWidth,88);
+});
 test('display migration preserves desktop adjustments and gives phone an independent baseline',()=>{
   const data=new Map(),storage={getItem:key=>data.get(key)};
   const state=loadPresets(storage,{fontSize:21,zoomLevel:2});

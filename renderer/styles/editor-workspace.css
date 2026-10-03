@@ -5,9 +5,10 @@
 .btn-toggle-navigation:hover { background:var(--surface-hover); color:var(--fg-strong); }
 #scene-rail .rail-separator { display:none; }
 :root body #scene-rail .rail-navigation #btn-quick-memo { flex:0 0 54px; }
-:root body #scene-rail .rail-utilities { flex-wrap:nowrap; gap:12px; padding:8px 6px; }
-:root body #scene-rail .rail-utilities :is(#btn-theme,#btn-options) { width:30px; }
-#nav-edit-done { font:11px var(--font-sans); border:1px solid var(--brand-tint-border); border-radius:6px; color:var(--brand-text); background:var(--brand-tint); padding:5px 10px; cursor:pointer; }
+:root body #scene-rail .rail-utilities { flex-direction:column; flex-wrap:nowrap; gap:4px; padding:4px 2px; }
+:root body #scene-rail .rail-utilities :is(.rail-theme-wrapper,.options-wrapper) { width:100%; }
+:root body #scene-rail .rail-utilities :is(#btn-theme,#btn-options) { width:100%; height:44px; min-height:44px; }
+#nav-edit-done { font:11px var(--font-sans); border:1px solid var(--brand-tint-border); border-radius:6px; color:var(--brand-text); background:var(--brand-tint); padding:5px 3px; cursor:pointer; }
 #nav-edit-done[hidden] { display:none; }
 #scene-rail.rail-editing .rail-drawer-head { justify-content:center; }
 #scene-rail.rail-editing .rail-drawer-head :is(strong,#rail-pin) { display:none; }

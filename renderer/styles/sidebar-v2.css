@@ -93,10 +93,10 @@
 #session-list .sl-dot.unread { background: var(--brand); }
 #session-list .session-item.slim.meeting { display: block; }
 #session-list .session-item.slim.meeting .sl-line1 {
-  display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
   height: 27px; align-items: center; gap: 6px;
 }
-#session-list .session-item.slim.meeting .sl-line1.with-arrow { grid-template-columns: auto 8px minmax(0, 1fr) auto auto; }
+#session-list .session-item.slim.meeting .sl-line1.with-arrow { grid-template-columns: auto minmax(0, 1fr) auto auto; }
 #session-list .sl-group-logos { display: flex; padding-left: 5px; }
 #session-list .sl-group-logos .ai-logo + .ai-logo { margin-left: -5px; box-shadow: 0 0 0 1px var(--surface-canvas); }
 #session-list .sl-group-progress { position: absolute; height: 2px; left: 20px; right: 6px; bottom: 0; background: var(--border-subtle); }
