@@ -591,6 +591,7 @@ sessionManager.on('native-agent-lifecycle', event => {
 // meeting's timeline (if the sub-session belongs to a meeting).
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
+  try { assistantService?.observeUsage?.(hubSessionId, ev && ev.usage); } catch (error) { console.warn('[assistant] usage', error.message); }
   sessionManager.noteAgentTurnFinished(hubSessionId, ev || {});
   const completionAt = normalizeEventTime(completedAt, Date.now());
   let session = sessionManager.getSession(hubSessionId);
@@ -1988,6 +1989,15 @@ try {
       return meta ? resumeSession({ ...meta, ...(overrides ? { launchOverrides: overrides } : {}), hubId: id }) : null;
     },
     restartSession: (id, overrides) => sessionOperations.restartSession(id, overrides),
+    retireSession: async id => {
+      const session = sessionManager.getSession(id);
+      if (!session) return;
+      const title = String(session.title || 'AI Hub 助理').replace(/（已换班）$/, '') + '（已换班）';
+      const updated = sessionManager.updateSessionMeta(id, { title });
+      if (updated) sessionStore.markDirty(id, updated);
+      return sessionManager.closeSessionRecoverably(id, { reason: 'assistant-rotated' });
+    },
+    onAssistantRotated: event => sendToRenderer('assistant:rotated', event),
   });
   assistantService.startWatching();
   phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});

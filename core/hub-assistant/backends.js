@@ -30,6 +30,25 @@ function reserve(store, kind, id) {
     store.db.exec('COMMIT');
   } catch (error) { store.db.exec('ROLLBACK'); throw error; }
 }
+// 换班：解除该后端与旧助理会话的绑定，下一次就绪时按同一档位新建；旧会话记入 retiredAssistants 以便查阅。
+function retire(store, kind, id) {
+  store.db.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = bindings(store);
+    if (rows[kind] !== id) throw new Error('助理换班时绑定已变化，未换班');
+    delete rows[kind];
+    store.set('backendSessions', rows);
+    if (store.get('sessionId') === id) store.set('sessionId', null);
+    store.set('retiredAssistants', [...(store.get('retiredAssistants') || []), {kind, id, retiredAt: Date.now()}].slice(-50));
+    store.db.exec('COMMIT');
+  } catch (error) { store.db.exec('ROLLBACK'); throw error; }
+}
+function unretire(store, kind, id) {
+  const rows = bindings(store);
+  rows[kind] = id; store.set('backendSessions', rows);
+  store.set('sessionId', id); store.set('backendKind', kind);
+  store.set('retiredAssistants', (store.get('retiredAssistants') || []).filter(row => row.id !== id));
+}
 function activate(store, kind, id) {
   store.db.exec('BEGIN IMMEDIATE');
   try {
@@ -60,4 +79,4 @@ function providerLaunchOptions(service, kind, id) {
   // user-request token on every management operation.
   return {mcpProfile:'lean', mcpConfigFile:file, autonomous:true};
 }
-module.exports = {BACKENDS, backendKind, bindings, reserve, activate, launchOptions, getKindLabel};
+module.exports = {BACKENDS, backendKind, bindings, reserve, activate, retire, unretire, launchOptions, getKindLabel};

@@ -15,6 +15,8 @@ const {isAssistantSession,requireManagerCaller}=require('./permissions');
 const {projectSessionStates}=require('./session-state');
 const backends=require('./backends');
 const profiles=require('./profiles');
+// 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢。上下文超过这个量就在下次空闲时换班。
+const ROTATE_AT_TOKENS=Number(process.env.HUB_ASSISTANT_ROTATE_TOKENS)||150000; // 环境变量仅供实测压低阈值
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.sessionViews=new Map(); this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
@@ -65,11 +67,38 @@ class AssistantService {
     // 迁移与创建放在同一个 creating 里串行，并发的就绪请求只会得到同一个助理。
     this.creating=(async()=>{
       if(this.store.get('assistantDefaultsVersion')!==2){const migrated=await this.migrateDefaults();if(migrated)return migrated;}
-      return this._ensureSession(this.activeKind());
+      const kind=this.activeKind(),due=this.store.get('rotateDue:'+kind);
+      if(due&&due===backends.bindings(this.store)[kind]){const rotated=await this.rotate(kind,due);if(rotated)return rotated;}
+      return this._ensureSession(kind);
     })();
     try{return await this.creating;}finally{this.creating=null;}
   }
   activeKind(){return this.store.get('backendKind')||profiles.ASSISTANT_DEFAULT_KIND;}
+  // 每轮结束时记下助理上下文用量（来自 CLI 原生记录的 usage）；超过阈值标记待换班。
+  observeUsage(sessionId,usage){
+    if(!usage||!this.assistantIds().includes(sessionId))return null;
+    const kind=this.sessionMetadata(sessionId)?.kind;
+    const tokens=require('../ai-kinds').isCodexCliKind(kind)?Number(usage.input_tokens)||0
+      :(Number(usage.input_tokens)||0)+(Number(usage.cache_read_input_tokens)||0)+(Number(usage.cache_creation_input_tokens)||0);
+    this.store.set('contextTokens:'+sessionId,tokens);
+    if(tokens>=ROTATE_AT_TOKENS&&backends.bindings(this.store)[kind]===sessionId)this.store.set('rotateDue:'+kind,sessionId);
+    return tokens;
+  }
+  // 换班：同一后端、同一档位新开助理会话，靠交接记录（assistantContinuity 与工作档案）接续；旧会话休眠保留可查。
+  async rotate(kind,oldId){
+    const old=this.deps.getSession(oldId);
+    if(old&&(require('../session-runtime-truth').sessionRuntimeIsActive(old)||['running','waiting'].includes(old.status)||this.deps.hasPendingPrompt?.(oldId)))return null;
+    this.captureContinuity();
+    backends.retire(this.store,kind,oldId);this.store.set('rotateDue:'+kind,null);
+    let result;
+    try{result=await this._ensureSession(kind);}catch(error){backends.unretire(this.store,kind,oldId);throw error;}
+    if(!result.ok){backends.unretire(this.store,kind,oldId);return null;}
+    this.currentRequest=null;this.store.set('lastContext',null);
+    console.log('[assistant] rotated',kind,oldId,'->',result.sessionId,'context',this.store.get('contextTokens:'+oldId));
+    try{await this.deps.retireSession?.(oldId);}catch(error){console.warn('[assistant] retire old session',error.message);}
+    this.deps.onAssistantRotated?.({kind,oldId,sessionId:result.sessionId});
+    return result;
+  }
   // 2026-10-03：助理默认改为快速档（Sonnet 5.5 · 低思考）。旧数据只迁移一次，之后完全按用户选择。
   // 老用户走正规的后端切换：助理忙时推迟到下次空闲；切换失败就留在原后端并不再重试。
   async migrateDefaults(){
@@ -171,7 +200,8 @@ class AssistantService {
   async connectBridge(){await this.bridge.start();const temporary=this.endpointFile+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,JSON.stringify({url:this.bridge.url,token:this.bridge.secret}),{mode:0o600});fs.renameSync(temporary,this.endpointFile);}
   getMcpEntry(sessionId=this.store.get('sessionId')){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile,HUB_ASSISTANT_SESSION_ID:sessionId||''},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
   isAssistantSession(sessionId){return isAssistantSession(this.store,sessionId,this.deps.getSession(sessionId));}
-  requireAssistantResume(meta){if(!meta?.hubId||!this.assistantIds().includes(meta.hubId)||(meta.kind&&backends.bindings(this.store)[meta.kind]!==meta.hubId))throw new Error('恢复实体不是固定助理，未授予专属工具');}
+  // 已换班的旧助理可以打开查看历史；它不再是固定助理，会话管理工具在每次调用时都会被拒绝。
+  requireAssistantResume(meta){if(meta?.hubId&&(this.store.get('retiredAssistants')||[]).some(r=>r.id===meta.hubId&&r.kind===meta.kind))return;if(!meta?.hubId||!this.assistantIds().includes(meta.hubId)||(meta.kind&&backends.bindings(this.store)[meta.kind]!==meta.hubId))throw new Error('恢复实体不是固定助理，未授予专属工具');}
   context(request={}) {
     const sessionId=this.store.get('sessionId'),session=this.deps.getSession(sessionId);
     const board=this.refreshDossier();

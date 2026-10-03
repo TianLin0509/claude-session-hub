@@ -65,7 +65,7 @@ test('voice requests tell the assistant the text is a transcript; typed requests
   assert.match(frame,/"userInputMode":"voice"/);assert.match(frame,/语音转写/);
   await x.service.send({text:'仿真跑完没有',requestId:'typed-request-1'});
   assert.doesNotMatch(frame,/userInputMode/);assert.doesNotMatch(frame,/语音转写/);
-  assert.match(frame,/create_session/);assert.match(frame,/tier=fast/);
+  assert.match(frame,/create_session/);assert.match(frame,/tier=standard/);
 });
 test('phone catalog lists every backend with models from the Hub, not from the phone',()=>{
   const kinds=profiles.phoneCatalog(require('../core/ai-kinds').ALL_AI_KINDS,k=>HUB_DEFAULTS[k]||{});
@@ -99,4 +99,33 @@ test('default migration of a live Codex assistant waits while it is busy, then s
 test('an explicit phone choice made before migration is never overridden by the default',async t=>{
   const x=setup(t,{legacy:true});const r=await x.service.setProfile({kind:'codex',model:'gpt-6-luna',effort:'low'});
   assert.equal(r.ok,true);assert.equal((await x.service.ensureSession()).backendKind,'codex');
+});
+test('a long-lived assistant rotates to a fresh session at the next idle moment once its context is large',async t=>{
+  const x=setup(t),retired=[],rotated=[];x.deps.retireSession=async id=>retired.push(id);x.deps.onAssistantRotated=e=>rotated.push(e);
+  const a=await x.service.ensureSession();
+  assert.equal(x.service.observeUsage(a.sessionId,{input_tokens:2000,cache_read_input_tokens:90000,cache_creation_input_tokens:1000}),93000);
+  assert.equal(x.service.store.get('rotateDue:claude'),null);
+  x.service.observeUsage(a.sessionId,{input_tokens:3000,cache_read_input_tokens:150000});
+  x.sessions.get(a.sessionId).status='running';
+  assert.equal((await x.service.ensureSession()).sessionId,a.sessionId,'busy: never rotate mid-turn');
+  x.sessions.get(a.sessionId).status='idle';
+  const b=await x.service.ensureSession();
+  assert.notEqual(b.sessionId,a.sessionId);assert.equal(b.session.model,'claude-sonnet-5-5');assert.equal(b.session.effort,'low');
+  assert.deepEqual(retired,[a.sessionId]);assert.equal(rotated[0].sessionId,b.sessionId);
+  assert.equal(x.service.isAssistantSession(a.sessionId),false);assert.equal(x.service.isAssistantSession(b.sessionId),true);
+  assert.doesNotThrow(()=>x.service.requireAssistantResume({hubId:a.sessionId,kind:'claude'}),'retired history can be opened');
+  assert.equal((await x.service.ensureSession()).sessionId,b.sessionId,'rotates once');
+  assert.equal(x.service.observeUsage('not-an-assistant',{input_tokens:999999}),null);
+});
+test('codex usage counts cached tokens once; a failed rotation keeps the old assistant bound',async t=>{
+  const x=setup(t);x.service.store.set('assistantDefaultsVersion',2);x.service.store.set('backendKind','codex');
+  const a=await x.service.ensureSession();
+  assert.equal(x.service.observeUsage(a.sessionId,{input_tokens:160000,cache_read_input_tokens:150000}),160000);
+  x.deps.createSession=async()=>{throw new Error('CLI 未登录');};
+  await assert.rejects(x.service.ensureSession(),/未登录/);
+  assert.equal(x.service.store.get('sessionId'),a.sessionId);assert.equal(x.service.isAssistantSession(a.sessionId),true);
+});
+test('assistant instructions put fast self-answers first and keep bulky reading out of its context',()=>{
+  const frame=require('../core/hub-assistant/context').buildBootstrapPrompt('今天天气怎么样',{},0,'claude');
+  assert.match(frame,/尽快答复/);assert.match(frame,/直接完成/);assert.match(frame,/大量文件和长文/);assert.match(frame,/fast 只在田哥要求单独开会话/);assert.match(frame,/闲聊、常识/);
 });
