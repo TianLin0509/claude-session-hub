@@ -1937,9 +1937,10 @@ const sessionOperations = registerSessionIpc(ipcMain, {
 // 普通会话输入框的闭环发送。必须排在 registerSessionIpc 之后：它复用
 //   group-chat-watcher 的 sendToPty，而那份 _deps 由群聊 dispatcher 的 init 注入。
 let assistantService = null;
+let phoneService = null;
 const promptOperations = registerPromptSubmitIpc(ipcMain, {
   sessionManager, transcriptTap, sendToRenderer,
-  onPromptReceipt: receipt => assistantService?.observePromptReceipt?.(receipt),
+  onPromptReceipt: receipt => { assistantService?.observePromptReceipt?.(receipt); phoneService?.observeReceipt(receipt); },
   preparePrompt(request, session) {
     if (session?.purpose !== 'hub-assistant') return request;
     if (!assistantService) throw new Error('助理服务尚未就绪，消息未发送');
@@ -1982,6 +1983,7 @@ try {
     },
   });
   assistantService.startWatching();
+  phoneService = require('./main/ipc/phone-handlers').registerPhoneIpc(ipcMain, assistantService, {dataDir:getHubDataDir(),electron:require('electron')});
 } catch (error) { console.error('[assistant] service unavailable:', error.message); }
 // 原生 Claude 额度看门狗。同样依赖 sendToPty 的 _deps，所以排在这之后。
 claudeQuotaResume.start();
@@ -3543,6 +3545,7 @@ async function runFinalShutdownCleanup() {
   capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   capture('dev-workbench', () => devWorkbench?.dispose());
   capture('hub-assistant', () => assistantService?.close());
+  capture('hub-phone', () => phoneService?.close());
   clearTimeout(sessionSearchPrewarmTimer);
   const workerResults = await Promise.allSettled([
     transcriptParserService.close(),
