@@ -4,18 +4,24 @@
 // 写作 Tab 的「文章工作台」读取器（2026-10-01 田哥要求：写作在 Tab 里完成，群聊退到后台）。
 //
 // 写作群里每位 AI 的回答就是一份 Markdown 回答文件（core/group-answer-files.js），群聊记录里的
-// assistant 消息正文即文件内容。写作群规则要求回答末尾附一张卡片：
+// assistant 消息正文即文件内容。写作群规则（core/writing/scene-prompt.js）要求回答分成两部分：
 //
+//   <!-- 文章开始 -->            定稿时是 <!-- 定稿开始 --> / <!-- 定稿结束 -->
+//   # 标题 + 正文
+//   <!-- 文章结束 -->
+//   ## 给田哥                    一两句：切入、取舍、拿不准的事实
+//   ## 想问田哥                  1. 问题 / 推荐：推荐答案
+//
+// 2026-10-01 版的 hub-writing JSON 卡片照样认（旧群聊记录里有）：
 //   ```hub-writing
-//   {"type":"draft","title":"…","note":"…"}        交稿：回答正文就是这份稿
-//   {"type":"final","title":"…","note":"…"}        定稿：回答正文就是定稿
-//   {"type":"questions","items":[{"q":"…","recommend":"…"}]}   想先问田哥的问题
+//   {"type":"draft"|"final","title":"…","note":"…"}  /  {"type":"questions","items":[{"q":"…","recommend":"…"}]}
 //   ```
 //
 // 本模块把群聊记录、成员会话状态、文章目录合成一份「这篇文章现在什么样」交给渲染层，
 // 并把交稿 / 定稿落成文章目录里的文件（drafts/<成员>-v<n>.md、final.md），作品库与文风优化照旧读文件。
 //
-// 不按格式来的回答不丢：没有卡片的回答整条显示成「AI 的回复」；文章目录里 Hub 没写过的稿件文件
+// 不按格式来的回答不丢：没加标记但像一篇稿（有「# 标题」、有篇幅）的照样按稿收下，标题前的寒暄、
+// 末尾的写作说明挪到「给田哥」；真不像稿的整条显示成「AI 的回复」。文章目录里 Hub 没写过的稿件文件
 // （旧文章、AI 自己存的）照样列出来。
 
 const fs = require('fs');
@@ -60,6 +66,139 @@ function parseCards(text) {
     return '';
   }).trim();
   return { cards, body, errors };
+}
+
+const MARK = /<!--\s*(文章|定稿|article|final)\s*(开始|结束|start|end)\s*-->/gi;
+const SECTION = /^#{2,3}\s*(给田哥|想问田哥)\s*[:：]?\s*$/;
+// 稿件开头 / 末尾常见的「写给田哥的话」：挪出正文，放进「给田哥」
+const META_PARA = /^[*_]{0,2}(本稿|这份稿|这一稿|此稿|这版|这一版|以上|待田哥|待确认|田哥[，,：:]|说明[:：]|写作说明|注[:：])/;
+
+// 两行标记切出文章。只有开始标记时，文章到「## 给田哥 / ## 想问田哥」或全文结束
+function splitMarked(text) {
+  const marks = [];
+  MARK.lastIndex = 0;
+  let m;
+  while ((m = MARK.exec(text))) {
+    marks.push({ at: m.index, end: m.index + m[0].length, final: /定稿|final/i.test(m[1]), open: /开始|start/i.test(m[2]) });
+  }
+  const start = marks.find((x) => x.open);
+  if (!start) return null;
+  const close = marks.find((x) => !x.open && x.at > start.at);
+  let stop = close ? close.at : text.length;
+  if (!close) {
+    let off = start.end;
+    for (const line of text.slice(start.end).split('\n')) {
+      if (SECTION.test(line.trim())) { stop = off; break; }
+      off += line.length + 1;
+    }
+  }
+  const article = text.slice(start.end, stop).trim();
+  const rest = `${text.slice(0, start.at)}\n${text.slice(close ? close.end : stop)}`.replace(MARK, '').trim();
+  return { article, kind: start.final ? 'final' : 'draft', rest };
+}
+
+// 「## 给田哥」「## 想问田哥」两节拿出来，其余原样返回。一节到下一个一、二级标题为止
+function takeSections(text) {
+  const keep = [];
+  const buf = { 给田哥: [], 想问田哥: [] };
+  let cur = null;
+  for (const line of String(text || '').split('\n')) {
+    const hit = line.trim().match(SECTION);
+    if (hit) { cur = hit[1]; continue; }
+    if (cur && /^#{1,2}\s/.test(line)) cur = null;
+    (cur ? buf[cur] : keep).push(line);
+  }
+  return { note: buf.给田哥.join('\n').trim(), questions: parseQuestionList(buf.想问田哥.join('\n')), rest: keep.join('\n').trim() };
+}
+
+// 「1. 问题 / 推荐：答案」；也认「- 问题」和同一行末尾的「（推荐：…）」
+function parseQuestionList(text) {
+  const items = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const rec = line.match(/^(?:[-*]\s*)?(?:\*\*)?(?:推荐答案|推荐|建议)(?:\*\*)?\s*[:：]\s*(.+)$/);
+    if (rec && items.length) { items[items.length - 1].recommend = clip(rec[1], 300); continue; }
+    const item = line.match(/^(?:\d+[.、)）]|[-*])\s*(.+)$/);
+    if (item) {
+      const inline = item[1].match(/^(.*?)[（(]\s*(?:推荐|建议)\s*[:：]\s*(.+?)[)）]\s*$/);
+      items.push(inline ? { q: clip(inline[1], 300), recommend: clip(inline[2], 300) } : { q: clip(item[1], 300), recommend: '' });
+    } else if (items.length && !items[items.length - 1].recommend) {
+      items[items.length - 1].q = clip(`${items[items.length - 1].q} ${line}`, 300);
+    }
+  }
+  // 问题里常带 Markdown 加粗，问题卡是纯文字，去掉星号
+  const plain = (t) => t.replace(/\*\*(.+?)\*\*/g, '$1').replace(/^\*+|\*+$/g, '').trim();
+  return items.map((it) => ({ q: plain(it.q), recommend: plain(it.recommend) })).filter((it) => it.q).slice(0, MAX_QUESTIONS);
+}
+
+// 没加标记：从「# 标题」起算文章，标题前的寒暄、末尾的写作说明挪到「给田哥」。
+// 标题后第一段就在跟田哥说话（「田哥，我建议……」）的，是在商量，不是稿。
+function guessArticle(text) {
+  const src = String(text || '').trim();
+  const h1 = src.match(/^#\s+\S.*$/m);
+  if (!h1) return null;
+  const pre = src.slice(0, h1.index).trim();
+  if (cjk(pre) > 200) return null;
+  const paras = src.slice(h1.index).split(/\n{2,}/);
+  const firstBody = paras.slice(1).find((p) => p.trim());
+  if (firstBody && /^田哥[，,]/.test(firstBody.trim())) return null;
+  const tail = [];
+  while (paras.length > 1) {
+    const last = paras[paras.length - 1].trim();
+    if (!last || /^(-{3,}|\*{3,}|_{3,})$/.test(last)) { paras.pop(); continue; }
+    if (META_PARA.test(last)) { tail.unshift(paras.pop().trim()); continue; }
+    break;
+  }
+  const article = paras.join('\n\n').trim();
+  if (cjk(article) < 150) return null;
+  return { article, meta: [pre, ...tail].filter(Boolean).join('\n\n') };
+}
+
+/**
+ * 一条回答 → 文章 + 写给田哥的话 + 问题。
+ *   article  文章 Markdown（没有就是空串）；kind 'draft' | 'final'
+ *   note     AI 写给田哥的话；hint 是 Hub 自己的说明（如「没加文章标记，按稿收下」）
+ *   rest     不是稿时剩下的话（整条显示它）；hadCard 有交稿卡 / 文章标记
+ */
+function extractAnswer(content) {
+  const { cards, body, errors } = parseCards(content);
+  const card = cards.find((c) => c.type === 'final') || cards.find((c) => c.type === 'draft') || null;
+  const questions = cards.filter((c) => c.type === 'questions').flatMap((c) => c.items);
+  const marked = splitMarked(body);
+  const sec = takeSections(marked ? marked.rest : body);
+  questions.push(...sec.questions.filter((q) => !questions.some((x) => x.q === q.q)));
+  const notes = [card && card.note, sec.note];
+  let article = '';
+  let kind = '';
+  let hint = '';
+  let rest = '';
+  if (marked) {
+    article = marked.article;
+    kind = card && card.type === 'final' ? 'final' : marked.kind;
+    if (!article) { hint = '这条回答有文章标记，但标记之间是空的'; rest = sec.rest; } else notes.unshift(sec.rest);
+  } else if (card) {
+    article = sec.rest;
+    kind = card.type;
+    if (!article) hint = '这条回答只附了卡片，没有正文';
+  } else {
+    const g = guessArticle(sec.rest);
+    if (g) {
+      article = g.article;
+      kind = 'draft';
+      notes.push(g.meta);
+      hint = errors.length ? `卡片没读懂（${errors[0]}），按稿件收下` : '没加文章标记，Hub 按稿件收下';
+    } else {
+      rest = sec.rest;
+      if (errors.length) hint = `卡片没读懂：${errors[0]}`;
+    }
+  }
+  return {
+    article, kind, hint, rest, questions,
+    title: (card && card.title) || titleOf(article),
+    note: clip(notes.filter(Boolean).join('\n\n'), 1200),
+    hadCard: !!(marked || card),
+  };
 }
 
 // 群聊里一位成员这一轮的状态：以派发记录（attempt）为准
@@ -115,31 +254,25 @@ function buildView({ state, members = [], files = [], final = '' }) {
     const content = String(m.content || '');
     if (!content.trim()) continue;
     const mem = bySid.get(m.sid);
-    const { cards, body, errors } = parseCards(content);
+    const a = extractAnswer(content);
     const turn = Number(m.turnNum) || 0;
     const base = { sid: m.sid, turn, at: Number(m.updatedAt || m.createdAt) || 0, messageId: m.id || '' };
-    const draftCard = cards.find((c) => c.type === 'draft');
-    const finalCard = cards.find((c) => c.type === 'final');
-    for (const c of cards.filter((x) => x.type === 'questions')) {
-      c.items.forEach((it, i) => questions.push({ ...it, from: mem.name, sid: m.sid, turn, key: `${m.id || turn}:${i}` }));
-    }
-    if ((finalCard || draftCard) && !body.trim()) {
-      // 只有卡片没有正文（AI 把稿存到别处了）：不当稿件，免得落盘成空文件
-      mem.items.push({ ...base, kind: 'reply', title: '', note: '这条回答只附了卡片，没有正文', text: content.trim(), chars: 0 });
-    } else if (finalCard || (finalizeBy.get(turn) === mem.name && /^#\s+\S/.test(body) && cjk(body) >= 150)) {
-      const item = finalCard
-        ? { ...base, kind: 'final', title: finalCard.title || titleOf(body), note: finalCard.note, text: body, chars: cjk(body) }
-        : { ...base, kind: 'final', implicit: true, title: (draftCard && draftCard.title) || titleOf(body), note: '这一轮点名汇总定稿，没附定稿卡，Hub 按定稿收下', text: body, chars: cjk(body) };
+    a.questions.forEach((it, i) => questions.push({ ...it, from: mem.name, sid: m.sid, turn, key: `${m.id || turn}:${i}` }));
+    const article = a.article.trim();
+    if (article && (a.kind === 'final' || (finalizeBy.get(turn) === mem.name && cjk(article) >= 150))) {
+      const item = { ...base, kind: 'final', implicit: a.kind !== 'final', title: a.title, note: a.note,
+        hint: a.kind === 'final' ? a.hint : '这一轮点名汇总定稿，没用定稿标记，Hub 按定稿收下', text: article, chars: cjk(article) };
       mem.items.push(item);
       if (!finalItem || item.turn >= finalItem.turn) finalItem = { ...item, from: mem.name };
-    } else if (draftCard) {
-      mem.items.push({ ...base, kind: 'draft', title: draftCard.title || titleOf(body), note: draftCard.note, text: body, chars: cjk(body) });
-    } else if (!cards.length && /^#\s+\S/.test(body) && cjk(body) >= 150) {
-      // 忘了附卡片、但明显是一份稿（「# 标题」开头、有篇幅）：照样按稿件收下，记一句说明
-      mem.items.push({ ...base, kind: 'draft', implicit: true, title: titleOf(body), note: errors.length ? `卡片没读懂（${errors[0]}），按稿件收下` : '没附交稿卡，Hub 按稿件收下', text: body, chars: cjk(body) });
-    } else if (!cards.length || cjk(body) >= 200) {
-      // 没按格式交稿：整条回答原样给田哥看，不丢
-      mem.items.push({ ...base, kind: 'reply', title: titleOf(body), note: errors.length ? `卡片没读懂：${errors[0]}` : '', text: body || content.trim(), chars: cjk(body || content) });
+    } else if (article) {
+      mem.items.push({ ...base, kind: 'draft', implicit: !!a.hint, title: a.title, note: a.note, hint: a.hint, text: article, chars: cjk(article) });
+    } else if (a.hadCard) {
+      // 只有卡片 / 标记、没有正文（AI 把稿存到别处了）：不当稿件，免得落盘成空文件
+      mem.items.push({ ...base, kind: 'reply', title: '', note: '', hint: a.hint, text: a.rest || a.note || content.trim(), chars: 0 });
+    } else if (a.rest || a.note) {
+      // 没按格式交稿：剩下的话原样给田哥看，不丢（只提了问题的，问题卡里已经有了）
+      const text = a.rest || a.note;
+      mem.items.push({ ...base, kind: 'reply', title: titleOf(text), note: a.rest ? a.note : '', hint: a.hint, text, chars: cjk(text) });
     }
   }
 
@@ -245,4 +378,4 @@ function materialize(dir, view, { written = [], finalHash = '' } = {}) {
   return { written: [...names].sort(), finalHash: hash };
 }
 
-module.exports = { parseCards, buildView, materialize, slugOf, titleOf, statusOf };
+module.exports = { parseCards, extractAnswer, splitMarked, takeSections, parseQuestionList, guessArticle, buildView, materialize, slugOf, titleOf, statusOf };

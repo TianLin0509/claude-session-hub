@@ -140,7 +140,7 @@ function createResumeSessionHandler(deps) {
       }
       // @community-strip 写作场景成员：休眠唤醒后同样不加载工程规则（与新建时一致）
       if (meeting && meeting.groupChat && meeting.scene === 'writing') {
-        resumeOpts = require('../../core/writing/member-opts.js').withWritingMemberOpts(meta.kind || '', resumeOpts);
+        resumeOpts = require('../../core/writing/member-opts.js').withWritingMemberOpts(meta.kind || '', resumeOpts, { dir: meeting.workspace });
       }
       // @community-end
       // @community-strip 投研场景工具

@@ -5,7 +5,7 @@
  * 2026-09-30 田哥体验后改版：少让人动手，多自动化，但让人看得见做了什么。
  *   作品库  只读：旧作 592 篇 + 写作台定稿的新作
  *   写作台  「新文章」= 一个写作场景的 AI 群聊（后台）。2026-10-01 起写作在这里完成：左边文章列表，
- *           右边文章工作台（renderer/writing-workbench.js）——各家稿件并排、回答问题、划线点评、点名定稿
+ *           右边文章工作台（renderer/writing-workbench.js）——各家稿件分标签页、回答问题、划线点评、点名定稿
  *   文风    直接展示文风 skill 源文件（带行号，可直接改）+ AI 每次写完自动优化的记录
  *
  * 数据都在主进程 main/ipc/writing-handlers.js；群聊本身复用 Hub 的 meeting-room。
@@ -202,8 +202,8 @@
       S.studio.draft = '';
       // 万一发送失败，工作台会出补发框，里面预填这段话
       try { localStorage.setItem(`writing-idea:${dir}`, idea); } catch { /* 存不下就只能重写 */ }
-      // 写作群规则只在首轮注入一次，模型偶尔会忘了卡片（2026-10-01 E2E 里 haiku 就漏过）：Tab 替田哥发话时顺带提醒一句
-      await workbench.sendToGroup(`${idea}\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）`, { meeting });
+      // 写作群规则只在首轮注入一次，模型偶尔会忘了交稿格式（2026-10-01 E2E 里 haiku 就漏过）：Tab 替田哥发话时顺带提醒一句
+      await workbench.sendToGroup(`${idea}\n\n（写作 Tab：请按写作群规则交稿，文章放在两行文章标记之间。）`, { meeting });
       try { localStorage.removeItem(`writing-idea:${dir}`); } catch { /* 无 */ }
       toast('写作群已建好，AI 正在写初稿');
     } catch (e) {

@@ -1,16 +1,18 @@
 'use strict';
 /**
- * 写作 Tab 真机 E2E：隔离 Hub + 模拟真人操作，全程只在写作 Tab 里写一篇文章，不打开群聊（2026-10-01 版）。
+ * 写作 Tab 真机 E2E：隔离 Hub + 模拟真人操作，全程只在写作 Tab 里写一篇文章，不打开群聊（2026-10-03 版）。
  *
- *   写作台  没有文章时直接是「新文章」输入框 → 写中心思想、点「开始写」（后台建写作群并发出，真实调用 Claude haiku）
- *           → 稿件出现在工作台的稿件栏（AI 按卡片格式交稿，Hub 存成 drafts/Claude-1-v1.md）
+ *   写作台  没有文章时直接是「新文章」输入框 → 写中心思想、点「开始写」（后台建写作群并发出，真实调用两位 Claude haiku）
+ *           → 文风作为常驻指令装进成员（文章目录 AGENTS.md，Claude 带 --append-system-prompt-file）
+ *           → 每位 AI 一个标签页，文章排版显示（文章放在两行标记之间，Hub 存成 drafts/Claude-1-v1.md）；
+ *             切标签、切「并排对比」再切回
  *           → 问题卡：改答案、发给大家 → 出现 v2
  *           → 在稿里用鼠标划一段、点「点评这段」写意见 → 点评篮 → 「汇总定稿」→ 定稿置顶、存成 final.md
  *           → 后台自动优化文风；「在群聊里看过程」能打开后台群聊
  *   文风    带行号展示源文件；手动编辑保存；变更记录里看得到 AI 自动优化与手动修改
  *   作品库  定稿以「新作」出现；只读
  *
- * 数据：文章库与文风 skill 复制到临时目录再测，不碰真实文件。写作群只放一位 Claude（haiku）省额度。
+ * 数据：文章库与文风 skill 复制到临时目录再测，不碰真实文件。写作群放两位 Claude（haiku）：标签页要有得切，又省额度。
  * 用法：node tests/e2e-writing-tab-cdp.js [--out <截图目录>]
  */
 const fs = require('node:fs');
@@ -18,6 +20,7 @@ const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
 const { connectFirstPage } = require('./helpers/cdp-client');
 
@@ -103,7 +106,7 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
       dataDir: data, port: await freePort(), windowMode: 'hidden', entryPath: entry, label: 'writing-tab',
       extraEnv: {
         CLAUDE_HUB_HOME_DIR: home, CLAUDE_HUB_WRITING_ROOT: writingRoot,
-        CLAUDE_HUB_WRITING_MEMBERS: 'claude:haiku', CLAUDE_HUB_WRITING_EVOLVE_MODEL: 'haiku', CLAUDE_HUB_WRITING_CLAUDE_MODEL: 'haiku',
+        CLAUDE_HUB_WRITING_MEMBERS: 'claude:haiku,claude:haiku', CLAUDE_HUB_WRITING_EVOLVE_MODEL: 'haiku', CLAUDE_HUB_WRITING_CLAUDE_MODEL: 'haiku',
         CLAUDE_HUB_WRITING_EVOLVE_SETTLE_MS: '0', // 真实使用时定稿稳定两分钟才优化，测试不等
       },
     });
@@ -117,7 +120,7 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     await cdp.eval('document.getElementById("btn-writing").click()');
     await until('document.querySelector("#wr-view-studio.active .wb-compose-text")', 'composer', 30000);
     check('还没有文章时，写作台直接是新文章输入框', true);
-    await typeInto('.wb-compose-text', '中心思想：同一个模型多开几个分身互相审稿，并不能像多根独立天线那样带来分集增益，因为它们的错误高度相关。读者是懂 AI、不懂无线的算法工程师。请写一篇 300 字左右的短文。（这次是测试：请务必附一张问题卡，问我一个问题。）');
+    await typeInto('.wb-compose-text', '中心思想：同一个模型多开几个分身互相审稿，并不能像多根独立天线那样带来分集增益，因为它们的错误高度相关。读者是懂 AI、不懂无线的算法工程师。请写一篇 300 字左右的短文。（这次是测试：请务必在「想问田哥」里问我一个问题。）');
     await snap('01-新文章');
     await clickText('开始写');
     await until('document.querySelector(".wb .wb-title")', 'workbench mounted', 90000);
@@ -127,18 +130,45 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     const dir = pieceDir();
     check('群聊工作目录就是这篇文章的目录，并记下了群聊 id', dir && path.resolve(meeting.workspace || '') === path.resolve(dir) && JSON.parse(fs.readFileSync(path.join(dir, 'piece.json'), 'utf8')).meetingId === meeting.id);
     const members = await cdp.eval(`ipcRenderer.invoke("get-sessions").then(ss=>ss.filter(s=>s.meetingId===${JSON.stringify(meeting.id)}).map(s=>({kind:s.kind,purpose:s.purpose})))`);
-    check('写作群成员标记为 purpose=writing', members.length === 1 && members.every((m) => m.purpose === 'writing'), JSON.stringify(members));
+    check('写作群成员标记为 purpose=writing', members.length === 2 && members.every((m) => m.purpose === 'writing'), JSON.stringify(members));
+    const pack = path.join(dir, 'AGENTS.md');
+    check('文风写成文章目录的 AGENTS.md（Codex 自动加载）', fs.existsSync(pack) && fs.readFileSync(pack, 'utf8').includes('田哥文风') && fs.readFileSync(pack, 'utf8').includes('起草指南'));
+    // Claude 成员的真实启动命令行里要带上这份文件
+    const cmdlines = await untilFs(() => {
+      try {
+        const outp = execFileSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name like 'claude%' or Name like 'node%'\" | ForEach-Object { $_.CommandLine }"], { encoding: 'utf8', windowsHide: true });
+        const hits = outp.split(/\r?\n/).filter((l) => l.includes('--append-system-prompt-file') && l.includes(path.basename(dir)));
+        return hits.length >= 2 ? hits : null;
+      } catch { return null; }
+    }, 'claude cmdline with voice pack', 60000).catch(() => []);
+    check('两位 Claude 启动时都带 --append-system-prompt-file 指向文风包', cmdlines.length >= 2, `${cmdlines.length} 个进程`);
     await untilFs(() => userSaid(meeting.id).some((t) => t.includes('分集增益')), 'idea sent to group', 60000);
     check('中心思想由 Tab 替你发进了群', true);
 
-    // ② 初稿出现在稿件栏（真实调用 Claude haiku）
-    await until('document.querySelector(".wb-col .wb-col-body .wr-paper")', 'draft column', 300000);
+    // ② 初稿出现在标签页里（真实调用 Claude haiku）
+    await until('document.querySelectorAll(".wb-tabbar .wb-tab").length===2', 'two tabs', 60000);
+    check('每位 AI 一个标签页', JSON.stringify(await cdp.eval('[...document.querySelectorAll(".wb-tab .wb-tab-name")].map(x=>x.textContent)')) === JSON.stringify(['Claude 1', 'Claude 2']));
+    await until('document.querySelector(".wb-panel .wb-panel-body .wr-paper")', 'draft panel', 300000);
     const v1File = await untilFs(() => fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v1.md')) && 'Claude-1-v1.md', 'draft materialized', 30000);
     const draftText = fs.readFileSync(path.join(dir, 'drafts', v1File), 'utf8');
-    const usedCard = await cdp.eval('!/没附交稿卡/.test(document.querySelector(".wb-col").innerText)');
-    result.cardFollowed = { v1: usedCard };
-    check('交稿存成 drafts/Claude-1-v1.md，正文里不带卡片', /^#\s+\S/.test(draftText) && !draftText.includes('hub-writing'), `${draftText.split('\n')[0]}（${usedCard ? '附了交稿卡' : '没附卡片，按稿件收下'}）`);
-    check('稿件栏显示排版好的正文，不是「没按格式」的原样回复', await cdp.eval('!document.querySelector(".wb-col .wb-note.warn")'));
+    const marked = /文章开始/.test((groupState(meeting.id).messages || []).filter((m) => m.role === 'assistant' && m.speaker === 'Claude 1').map((m) => m.content).join('\n'));
+    result.formatFollowed = { v1: marked };
+    check('交稿存成 drafts/Claude-1-v1.md，只有文章本身', /^#\s+\S/.test(draftText) && !/文章开始|文章结束|## 给田哥|## 想问田哥/.test(draftText), `${draftText.split('\n')[0]}（${marked ? '用了文章标记' : '没加标记，按稿件收下'}）`);
+    check('标签页显示排版好的文章，不是「没找到文章」的原样回复', await cdp.eval('!document.querySelector(".wb-panel .wb-hint.warn") && !!document.querySelector(".wb-panel .wr-paper h1")'));
+    // 切到第二位、并排对比、再切回
+    await until('document.querySelectorAll(".wb-tab .wb-tab-sub")[1] && /字/.test(document.querySelectorAll(".wb-tab .wb-tab-sub")[1].textContent)', 'second draft', 300000);
+    await cdp.eval('document.querySelectorAll(".wb-tabbar .wb-tab")[1].click()');
+    await until('document.querySelector(".wb-tab.on .wb-tab-name").textContent==="Claude 2" && document.querySelector(".wb-panel[data-col] .wr-paper")', 'switch tab');
+    check('点标签切到另一位 AI 的稿', await cdp.eval('document.querySelector(".wb-panel").dataset.col') !== '');
+    await snap('02b-第二位');
+    await clickText('并排对比', '.wb-tabbar');
+    await until('document.querySelectorAll(".wb-cols .wb-col").length===2', 'compare mode');
+    check('「并排对比」把两份稿左右并排', true);
+    await snap('02c-并排对比');
+    await clickText('回到标签页', '.wb-tabbar');
+    await until('document.querySelector(".wb-panel")', 'back to tabs');
+    await cdp.eval('document.querySelectorAll(".wb-tabbar .wb-tab")[0].click()');
+    await until('document.querySelector(".wb-tab.on .wb-tab-name").textContent==="Claude 1"', 'back to first tab');
     check('稿件里没有标签腔', !/【(推断|坐实|工程推断)】/.test(draftText));
     // 问不问问题是模型自己的判断：有问题卡走回答，没有就走总评点评，两条路都要能改出 v2
     const asked = await until('document.querySelectorAll(".wb-questions .wb-q").length>0', 'question card', 30000).then(() => true, () => false);
@@ -154,20 +184,20 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     } else {
       // ③b 没有问题卡：点「总评」写一句 → 发出点评，各自改一版
       console.log('    （这次 AI 没出问题卡，改走总评点评）');
-      await clickText('总评', '.wb-col');
+      await clickText('总评', '.wb-panel');
       await typeInto('.wb-pop-input', '写给做调度算法的工程师，多用调度里的例子');
       await clickText('放进点评篮（Ctrl+Enter）', '.wb-pop');
       await clickText('发出点评，各自改一版', '.wb-basket');
       await untilFs(() => userSaid(meeting.id).some((t) => t.includes('我的点评') && t.includes('调度算法')), 'comments sent', 60000);
       check('总评整理成一条点评消息发进群', true);
     }
-    await until('[...document.querySelectorAll(".wb-col .wb-ver")].some(b=>b.textContent==="v2")', 'v2 draft', 300000);
+    await until('[...document.querySelectorAll(".wb-panel .wb-ver")].some(b=>b.textContent==="v2")', 'v2 draft', 300000);
     check('按回答 / 点评改出 v2，可在 v1 / v2 之间切换', fs.existsSync(path.join(dir, 'drafts', 'Claude-1-v2.md')));
     await snap('03-改稿v2');
 
     // ④ 鼠标划一段 → 点评这段 → 点评篮
-    await until('!document.querySelector(".wb-col.working")', 'column settled', 120000); // 真人也是读完再划
-    const rect = await cdp.eval(`(()=>{const p=[...document.querySelectorAll(".wb-col .wb-col-body .wr-paper p")].find(x=>x.textContent.trim().length>20);const t=document.createTreeWalker(p,NodeFilter.SHOW_TEXT).nextNode();const r=document.createRange();r.setStart(t,0);r.setEnd(t,Math.min(14,t.length));const a=r.getClientRects();const s=a[0],e=a[a.length-1];p.scrollIntoView({block:'center'});const a2=r.getClientRects();return {x1:a2[0].left+1,y:(a2[0].top+a2[0].bottom)/2,x2:a2[a2.length-1].right-1,y2:(a2[a2.length-1].top+a2[a2.length-1].bottom)/2};})()`);
+    await until('!document.querySelector(".wb-panel.working")', 'panel settled', 120000); // 真人也是读完再划
+    const rect = await cdp.eval(`(()=>{const p=[...document.querySelectorAll(".wb-panel .wb-panel-body .wr-paper p")].find(x=>x.textContent.trim().length>20);const t=document.createTreeWalker(p,NodeFilter.SHOW_TEXT).nextNode();const r=document.createRange();r.setStart(t,0);r.setEnd(t,Math.min(14,t.length));const a=r.getClientRects();const s=a[0],e=a[a.length-1];p.scrollIntoView({block:'center'});const a2=r.getClientRects();return {x1:a2[0].left+1,y:(a2[0].top+a2[0].bottom)/2,x2:a2[a2.length-1].right-1,y2:(a2[a2.length-1].top+a2[a2.length-1].bottom)/2};})()`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x1, y: rect.y, button: 'left', clickCount: 1 });
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: (rect.x1 + rect.x2) / 2, y: rect.y2, button: 'left', buttons: 1 });
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x2, y: rect.y2, button: 'left', buttons: 1 });
@@ -189,8 +219,8 @@ ipcMain.handle('test:writing-capture',async e=>{await e.sender.executeJavaScript
     // Tab 要确认派发没被拒（约 2.5 秒）才清点评篮：失败时点评要留着
     await until('document.querySelectorAll(".wb-basket .wb-chip").length===0', 'basket cleared', 15000);
     check('点评篮确认发出后清空', true);
-    await until('document.querySelector(".wb-final:not([hidden]) .wr-paper")', 'final view', 300000);
-    check('定稿置顶显示，各家的稿收起在下面', await cdp.eval('!!document.querySelector(".wb-drafts-fold")'));
+    await until('document.querySelector(".wb-final .wr-paper")', 'final view', 300000);
+    check('定稿出现后成为第一个标签并自动打开，各家的稿仍在后面的标签里', await cdp.eval('document.querySelector(".wb-tab .wb-tab-name").textContent==="定稿" && document.querySelector(".wb-tab.on .wb-tab-name").textContent==="定稿" && document.querySelectorAll(".wb-tab").length===3'));
     await untilFs(() => fs.existsSync(path.join(dir, 'final.md')) && fs.statSync(path.join(dir, 'final.md')).size > 200, 'final.md', 30000);
     check('定稿存成 final.md', /^#\s+\S/.test(fs.readFileSync(path.join(dir, 'final.md'), 'utf8')));
     check('全程没有打开群聊', await meetingPanelHidden());

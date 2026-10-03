@@ -5,9 +5,9 @@
  * 一篇文章一个写作群。这里把群聊读成（主进程 writing:article-view，见 core/writing/workbench.js）：
  *   文章头    标题、中心思想、进度（说想法 → 初稿 → 你点评 → 改稿 → 定稿）
  *   问题卡    AI 想问田哥的问题，带推荐答案，回答后一次发进群
- *   稿件栏    每位 AI 一栏，排版好的 Markdown；版本可切；出错、在写都看得见，出错可就地重试
+ *   文章区    每位 AI 一个标签页（2026-10-03 田哥要求），排版好的 Markdown 文章 + 写给田哥的话分开放；
+ *             版本可切；出错、在写、有新稿都标在标签上；有定稿时「定稿」排第一个；宽屏可切「并排对比」
  *   点评篮    在稿里划线点评、写总评，攒好一次发出：「各自改一版」或「请某位汇总定稿」
- *   定稿      定稿出来后置顶大幅阅读
  * 田哥在这里说的话，都通过群聊自己的发送入口（meeting-append-user-turn + groupchat:turn）发进群，
  * 与群聊输入框走同一条派发链路；不经过群聊界面层，不会动到正打开的那个群。
  */
@@ -21,8 +21,9 @@ const NARROW_PX = 980;
 function createWorkbench(ctx) {
   const { h, call, toast, guarded, paper, ipcRenderer, openMeeting, onChanged } = ctx;
   const S = {
-    dir: null, view: null, sigs: {}, answers: {}, versionOf: {}, focusSid: null, narrowSid: null,
-    draftsOpen: null, colSigs: {}, sending: false, timer: null, visible: false, root: null, resize: null, narrow: false,
+    dir: null, view: null, sigs: {}, answers: {}, versionOf: {}, tab: null, seen: {}, hadFinal: false,
+    compare: (() => { try { return localStorage.getItem('writing-compare') === '1'; } catch { return false; } })(),
+    colSigs: [], sending: false, timer: null, visible: false, root: null, resize: null, narrow: false,
   };
 
   /* ─────────── 点评篮：按文章存在本机，切走再回来还在 ─────────── */
@@ -104,21 +105,21 @@ function createWorkbench(ctx) {
     const b = basket();
     const lines = commentLines(b);
     if (!lines.length) { toast('先划线点评或写几句意见', true); return; }
-    const text = ['我的点评：', ...lines, '', '请各自按点评改一版，交完整的新版本（回答末尾附交稿卡）。'].join('\n');
+    const text = ['我的点评：', ...lines, '', '请各自按点评改一版，交完整的新版本（文章放在两行文章标记之间）。'].join('\n');
     sendWith('点评已发出', text, {}, (dir) => saveBasket({ items: [], free: '' }, dir));
   }
 
   function sendFinalize(col) {
     const b = basket();
     const lines = commentLines(b);
-    const text = [`请 ${col.name} 汇总定稿：读完群里所有稿和我的全部点评，取各稿之长改定，交定稿卡。其他人这一轮不用写。`,
+    const text = [`请 ${col.name} 汇总定稿：读完群里所有稿和我的全部点评，取各稿之长改定，用定稿标记交稿。其他人这一轮不用写。`,
       ...(lines.length ? ['', '定稿前再看这几条点评：', ...lines] : [])].join('\n');
     sendWith(`已请 ${col.name} 汇总定稿`, text, { recipientSids: [col.sid] }, (dir) => saveBasket({ items: [], free: '' }, dir));
   }
 
   function sendAnswers(qs) {
     const lines = qs.map((q, i) => `${i + 1}. ${q.q}\n   → ${(S.answers[q.key] ?? q.recommend ?? '').trim() || '按你的推荐来'}`);
-    const text = ['回答你们的问题：', ...lines, '', '请按这些回答修改，交完整的新版本（回答末尾附交稿卡）。'].join('\n');
+    const text = ['回答你们的问题：', ...lines, '', '请按这些回答修改，交完整的新版本（文章放在两行文章标记之间）。'].join('\n');
     sendWith('回答已发出', text, {}, () => { for (const q of qs) delete S.answers[q.key]; });
   }
 
@@ -193,7 +194,7 @@ function createWorkbench(ctx) {
   /* ─────────── 渲染：分区，各自只在内容变了时重画（不打断划线、不丢滚动） ─────────── */
 
   let pointerDownIn = null;
-  document.addEventListener('mousedown', (e) => { pointerDownIn = e.target && e.target.closest ? e.target.closest('.wb-col') : null; }, true);
+  document.addEventListener('mousedown', (e) => { pointerDownIn = e.target && e.target.closest ? e.target.closest('.wb-col, .wb-panel') : null; }, true);
   document.addEventListener('mouseup', () => { setTimeout(() => { pointerDownIn = null; }, 0); }, true);
   function busyIn(node) {
     if (pointerDownIn === node || pop || selBtn) return pointerDownIn === node || (pop && pop.dataset.col === node.dataset.col) || (selBtn && selBtn.dataset.col === node.dataset.col);
@@ -239,7 +240,7 @@ function createWorkbench(ctx) {
       h('div', { class: 'wb-row' }, h('button', { class: 'wr-btn primary', disabled: S.sending, text: S.sending ? '正在发…' : '发给大家', onclick: () => {
         const text = ta.value.trim();
         if (!text) { ta.focus(); return; }
-        sendWith('中心思想已发出', `${text}\n\n（写作 Tab：请按写作群规则交稿，回答末尾附 hub-writing 卡片。）`, {}, (dir) => { try { localStorage.removeItem(ideaKey(dir)); } catch { /* 无 */ } });
+        sendWith('中心思想已发出', `${text}\n\n（写作 Tab：请按写作群规则交稿，文章放在两行文章标记之间。）`, {}, (dir) => { try { localStorage.removeItem(ideaKey(dir)); } catch { /* 无 */ } });
       } })));
   }
 
@@ -268,23 +269,10 @@ function createWorkbench(ctx) {
         h('span', { class: 'wr-muted', text: '推荐答案已填好，可以直接发，也可以改' })));
   }
 
-  function renderFinal() {
-    const v = S.view;
-    const el = section('final');
-    if (!el || !changed('final', [v.final, v.voice])) return;
-    if (!v.final) { el.replaceChildren(); el.hidden = true; return; }
-    el.hidden = false;
-    const f = v.final;
-    const voice = v.voice && v.voice.status ? h('span', { class: 'wr-pill', text: ctx.voiceLabel(v.voice), title: [v.voice.summary, v.voice.error].filter(Boolean).join('\n') })
-      : h('span', { class: 'wr-pill', text: '定稿停笔两分钟后，AI 自动据此优化文风' });
-    put(el,
-      h('div', { class: 'wb-final-head' },
-        h('b', { text: '定稿' }), f.from ? h('span', { class: 'wr-muted', text: `${f.from} 汇总 · ${f.chars} 字` }) : h('span', { class: 'wr-muted', text: `${f.chars} 字` }),
-        voice, h('span', { class: 'wr-spacer' }),
-        h('button', { class: 'wr-btn small', text: '复制 Markdown', onclick: () => guarded(async () => { await navigator.clipboard.writeText(f.text); toast('定稿已复制'); }) })),
-      f.note ? h('div', { class: 'wb-note', text: f.note }) : null,
-      paper(f.text));
-  }
+  /* ─────────── 文章区：每位 AI 一个标签页，有定稿时「定稿」排第一；宽屏可切「并排对比」 ─────────── */
+
+  const FINAL_KEY = '__final';
+  const keyOf = (c) => c.sid || c.name;
 
   function itemLabel(it) {
     if (it.kind === 'final') return '定稿';
@@ -292,97 +280,183 @@ function createWorkbench(ctx) {
     if (it.kind === 'file') return '文件';
     return '回复';
   }
+  const kindWord = (it) => ({ reply: '回复', file: '文件', final: '定稿' }[it.kind] || '稿');
 
-  function renderColumn(col) {
+  function currentItem(col) {
     const items = col.items || [];
-    const key = col.sid || col.name;
-    const idx = Math.min(S.versionOf[key] ?? items.length - 1, items.length - 1);
-    const it = items[idx];
+    const idx = Math.min(S.versionOf[keyOf(col)] ?? items.length - 1, items.length - 1);
+    return { items, idx, it: items[idx] };
+  }
+
+  // 标签上的小字：在写 / 出错 / 最新一版的版本与字数
+  function tabSub(col) {
+    const { items } = currentItem(col);
+    const last = items[items.length - 1];
+    if (col.status === 'working') return items.length ? '正在改…' : '正在写…';
+    if (col.status === 'error') return '出错';
+    if (col.status === 'stopped') return '已停止';
+    if (!last) return col.status === 'dormant' ? '休眠中' : '还没交稿';
+    return `${itemLabel(last)} · ${last.chars} 字`;
+  }
+
+  function tabList(v) {
+    const tabs = [];
+    if (v.final) tabs.push({ key: FINAL_KEY, label: '定稿', sub: `${v.final.from ? `${v.final.from} 汇总 · ` : ''}${v.final.chars} 字`, status: 'final', count: 1 });
+    for (const c of v.columns || []) tabs.push({ key: keyOf(c), label: c.name, sub: tabSub(c), status: c.status, count: (c.items || []).length, col: c });
+    return tabs;
+  }
+
+  // 默认打开：定稿 > 第一份已交的稿 > 第一位。定稿第一次出现时自动跳过去
+  function pickTab(tabs, v) {
+    if (v.final && !S.hadFinal) { S.hadFinal = true; S.tab = FINAL_KEY; }
+    if (!v.final) S.hadFinal = false;
+    if (S.tab && tabs.some((t) => t.key === S.tab)) return S.tab;
+    const first = tabs.find((t) => t.key === FINAL_KEY) || tabs.find((t) => t.count) || tabs[0];
+    S.tab = first ? first.key : null;
+    return S.tab;
+  }
+
+  function copyBtn(text, label) {
+    return h('button', { class: 'wr-btn small', text: '复制', title: '复制这份稿的 Markdown', onclick: () => guarded(async () => { await navigator.clipboard.writeText(text); toast(`${label}已复制`); }) });
+  }
+
+  // AI 写给田哥的话（切入、取舍、拿不准的事实）与 Hub 自己的说明，放在正文上方，和文章分开
+  function asideOf(it) {
+    return [
+      it.note ? h('div', { class: 'wb-aside' }, h('div', { class: 'wb-aside-label', text: '写给你的话' }), h('div', { class: 'wb-aside-text', text: it.note })) : null,
+      it.hint ? h('div', { class: 'wb-hint', text: it.hint }) : null,
+      it.kind === 'reply' ? h('div', { class: 'wb-hint warn', text: '这条回答里没有找到文章，原样显示' }) : null,
+    ];
+  }
+
+  function errBarOf(col, hasItem) {
+    if (!(col.status === 'error' || col.status === 'stopped') || !col.sid) return null;
+    const stale = col.turn && S.view && col.turn < S.view.latestTurn;
+    return h('div', { class: 'wb-errbar' },
+      h('span', { text: stale ? `第 ${col.turn} 轮${col.status === 'error' ? '出错' : '被停止'}了；下次发点评或回答时会一起收到` : col.error || (col.status === 'error' ? '这一轮出错了' : '这一轮被停止了') }),
+      stale ? null : h('button', { class: 'wr-btn small', text: hasItem ? '重试这一轮' : '重试', onclick: () => retry(col) }),
+      h('button', { class: 'wr-btn small', text: '在群聊里看', onclick: () => openMeeting(S.view.meetingId) }));
+  }
+
+  function emptyOf(col) {
+    if (col.status === 'error' || col.status === 'stopped') return h('div', { class: 'wb-empty-col bad' }, h('b', { text: col.status === 'error' ? '这一轮没有拿到稿' : '这一轮被停止了' }), col.error ? h('div', { class: 'wr-muted', text: col.error }) : null);
+    if (col.status === 'working') return h('div', { class: 'wb-empty-col' }, h('span', { class: 'wb-spin' }), h('span', { text: `${col.name} 正在写，写完会出现在这里` }));
+    return h('div', { class: 'wb-empty-col' }, h('span', { class: 'wr-muted', text: col.status === 'dormant' ? '成员休眠中，下次发消息时自动唤醒' : '还没有交稿' }));
+  }
+
+  function versionPills(col, items, idx, rerender) {
+    if (items.length < 2) return null;
+    return h('span', { class: 'wb-vers' }, ...items.map((x, i) => h('button', { class: 'wb-ver' + (i === idx ? ' on' : ''), text: itemLabel(x), title: x.title || '', onclick: () => { S.versionOf[keyOf(col)] = i; rerender(); } })));
+  }
+
+  function articlePaper(col, it) {
+    const p = paper(it.text);
+    p.addEventListener('mouseup', (e) => { if (col.sid) onPaperMouseUp(e, col); });
+    return p;
+  }
+
+  // 标签页模式下的一位 AI：工具条（版本、字数、状态、总评、复制）+ 写给你的话 + 排版好的文章
+  function renderPanel(col) {
+    const { items, idx, it } = currentItem(col);
+    const key = keyOf(col);
+    const status = STATUS_LABEL[col.status] ? h('span', { class: `wb-status ${col.status}`, text: col.status === 'working' && items.length ? '正在改…' : STATUS_LABEL[col.status] }) : null;
+    const bar = h('div', { class: 'wb-panel-bar' },
+      versionPills(col, items, idx, () => renderArticles(true)),
+      it ? h('span', { class: 'wr-muted', text: `${kindWord(it)} · ${it.chars} 字${it.turn ? ` · 第 ${it.turn} 轮` : ''}` }) : null,
+      status,
+      h('span', { class: 'wr-spacer' }),
+      it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null,
+      it && it.kind !== 'reply' ? copyBtn(it.text, `${col.name} 的稿`) : null);
+    const body = it
+      ? [errBarOf(col, true), ...asideOf(it), articlePaper(col, it)]
+      : [errBarOf(col, false), emptyOf(col)];
+    return h('div', { class: `wb-panel ${col.status}`, 'data-col': key }, bar, h('div', { class: 'wb-panel-body' }, ...body.flat().filter(Boolean)));
+  }
+
+  function renderFinalPanel() {
+    const v = S.view;
+    const f = v.final;
+    const voice = v.voice && v.voice.status ? h('span', { class: 'wr-pill', text: ctx.voiceLabel(v.voice), title: [v.voice.summary, v.voice.error].filter(Boolean).join('\n') })
+      : h('span', { class: 'wr-pill', text: '定稿停笔两分钟后，AI 自动据此优化文风' });
+    return h('div', { class: 'wb-panel wb-final', 'data-col': FINAL_KEY },
+      h('div', { class: 'wb-panel-bar' },
+        h('b', { text: '定稿' }), h('span', { class: 'wr-muted', text: `${f.from ? `${f.from} 汇总 · ` : ''}${f.chars} 字` }),
+        voice, h('span', { class: 'wr-spacer' }), copyBtn(f.text, '定稿')),
+      h('div', { class: 'wb-panel-body' }, ...asideOf({ note: f.note }).filter(Boolean), paper(f.text)));
+  }
+
+  // 并排对比模式下的一栏（宽屏、两位以上时可选）
+  function renderColumn(col) {
+    const { items, idx, it } = currentItem(col);
     const status = STATUS_LABEL[col.status] ? h('span', { class: `wb-status ${col.status}`, text: col.status === 'working' && items.length ? '正在改…' : STATUS_LABEL[col.status] }) : null;
     const head = h('div', { class: 'wb-col-head' },
       h('b', { text: col.name }),
-      it ? h('span', { class: 'wr-muted', text: `${it.kind === 'reply' ? '回复' : it.kind === 'file' ? '文件' : it.kind === 'final' ? '定稿' : '稿'} · ${it.chars} 字` }) : null,
+      it ? h('span', { class: 'wr-muted', text: `${kindWord(it)} · ${it.chars} 字` }) : null,
       status,
       h('span', { class: 'wr-spacer' }),
-      items.length > 1 ? h('span', { class: 'wb-vers' }, ...items.map((x, i) => h('button', { class: 'wb-ver' + (i === idx ? ' on' : ''), text: itemLabel(x), title: x.title || '', onclick: () => { S.versionOf[key] = i; renderColumns(); } }))) : null,
-      it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null,
-      S.narrow ? null : h('button', { class: 'wr-btn small', text: S.focusSid === key ? '还原并排' : '放大', onclick: () => { S.focusSid = S.focusSid === key ? null : key; renderColumns(); } }));
-    let body;
-    if (it) {
-      const p = paper(it.text);
-      p.addEventListener('mouseup', (e) => { if (col.sid) onPaperMouseUp(e, col); });
-      body = [
-        it.note ? h('div', { class: 'wb-note', text: it.note }) : null,
-        it.kind === 'reply' ? h('div', { class: 'wb-note warn', text: '这条回答没有按写作格式交稿，原样显示' }) : null,
-        p,
-      ];
-    } else if (col.status === 'error' || col.status === 'stopped') {
-      body = [h('div', { class: 'wb-empty-col bad' }, h('b', { text: col.status === 'error' ? '这一轮没有拿到稿' : '这一轮被停止了' }), col.error ? h('div', { class: 'wr-muted', text: col.error }) : null)];
-    } else if (col.status === 'working') {
-      body = [h('div', { class: 'wb-empty-col' }, h('span', { class: 'wb-spin' }), h('span', { text: '正在写，稿子写完会出现在这里' }))];
-    } else {
-      body = [h('div', { class: 'wb-empty-col' }, h('span', { class: 'wr-muted', text: col.status === 'dormant' ? '成员休眠中，下次发消息时自动唤醒' : '还没有交稿' }))];
-    }
-    const stale = col.turn && S.view && col.turn < S.view.latestTurn;
-    const errBar = (col.status === 'error' || col.status === 'stopped') && col.sid
-      ? h('div', { class: 'wb-errbar' },
-        h('span', { text: stale ? `第 ${col.turn} 轮${col.status === 'error' ? '出错' : '被停止'}了；下次发点评或回答时会一起收到` : col.error || (col.status === 'error' ? '这一轮出错了' : '这一轮被停止了') }),
-        stale ? null : h('button', { class: 'wr-btn small', text: '重试', onclick: () => retry(col) }),
-        h('button', { class: 'wr-btn small', text: '在群聊里看', onclick: () => openMeeting(S.view.meetingId) }))
-      : null;
-    return h('div', { class: `wb-col ${col.status}`, 'data-col': key }, head, it ? errBar : null, h('div', { class: 'wb-col-body' }, ...(it ? body : [errBar, ...body])));
+      versionPills(col, items, idx, () => renderArticles(true)),
+      it && col.sid ? h('button', { class: 'wr-btn small', text: '总评', title: '对这份稿写一句总体意见，放进点评篮', onclick: (e) => askComment({ x: e.clientX - 160, y: e.clientY + 12, col }) }) : null);
+    const body = it ? [errBarOf(col, true), ...asideOf(it), articlePaper(col, it)] : [errBarOf(col, false), emptyOf(col)];
+    return h('div', { class: `wb-col ${col.status}`, 'data-col': keyOf(col) }, head, h('div', { class: 'wb-col-body' }, ...body.flat().filter(Boolean)));
   }
 
-  // 稿件栏：栏位布局（成员、放大、窄屏、有无定稿）变了才整体重画；否则只换内容变了的那一栏，
-  // 别的栏里正在划的线、滚到的位置都不动
-  function renderColumns(force) {
+  // 布局（标签、选中、模式）变了才整体重画；否则只换内容变了的那一块，正在划的线、滚到的位置都不动
+  function renderArticles(force) {
     const v = S.view;
     const el = section('drafts');
     if (!el) return;
     const cols = v.columns || [];
-    const keyOf = (c) => c.sid || c.name;
-    const colSig = (c) => JSON.stringify([c, S.versionOf[keyOf(c)] ?? null, S.focusSid === keyOf(c)]);
-    const layout = JSON.stringify([cols.map(keyOf), S.focusSid, S.narrow, S.narrowSid, !!v.final, S.narrow ? cols.map((c) => [c.name, c.status]) : 0]);
-    const grid0 = el.querySelector('.wb-cols');
-    if (!force && grid0 && layout === S.sigs.draftsLayout) {
-      for (const c of cols) {
-        const node = grid0.querySelector(`[data-col="${CSS.escape(keyOf(c))}"]`);
-        if (!node) continue;
-        const sig = colSig(c);
-        if (S.colSigs[keyOf(c)] === sig || busyIn(node)) continue; // 正在划选 / 写点评：下一轮再换
-        S.colSigs[keyOf(c)] = sig;
-        node.replaceWith(renderColumn(c));
-      }
-      const sum = el.querySelector('.wb-drafts-fold > summary');
-      if (sum) sum.textContent = `各家的稿（${cols.reduce((n, c) => n + c.items.length, 0)} 份）`;
+    if (!cols.length && !v.final) { el.replaceChildren(h('div', { class: 'wr-empty', text: '写作群还没有成员。' })); S.sigs.articles = null; return; }
+    const tabs = tabList(v);
+    const canCompare = !S.narrow && cols.length > 1;
+    const compare = canCompare && S.compare;
+    const cur = compare ? null : pickTab(tabs, v);
+    if (cur) S.seen[cur] = (tabs.find((t) => t.key === cur) || {}).count || 0;
+    for (const t of tabs) if (S.seen[t.key] == null) S.seen[t.key] = t.count; // 打开文章时已有的稿不算「新」
+    const shown = compare ? cols : cols.filter((c) => keyOf(c) === cur);
+    const sigOf = (c) => JSON.stringify([c, S.versionOf[keyOf(c)] ?? null]);
+    const contentSig = compare ? cols.map(sigOf) : cur === FINAL_KEY ? [JSON.stringify([v.final, v.voice])] : shown.map(sigOf);
+    // 别的 AI 交稿 / 状态变化只换标签栏，不动正在读的那份稿（划线、滚动都保留）
+    const layout = JSON.stringify([compare, cur, canCompare, compare ? cols.map(keyOf) : 0]);
+    const barSig = JSON.stringify(tabs.map((t) => [t.key, t.label, t.sub, t.status, t.count > (S.seen[t.key] || 0)]));
+
+    const host0 = el.querySelector('.wb-articles-body');
+    if (!force && host0 && layout === S.sigs.articles) {
+      if (barSig !== S.sigs.articlesBar) { S.sigs.articlesBar = barSig; el.querySelector('.wb-tabbar').replaceWith(tabBar(tabs, cur, compare, canCompare, cols)); }
+      const blocks = [...host0.querySelectorAll('[data-col]')];
+      contentSig.forEach((sig, i) => {
+        const node = blocks[i];
+        if (!node || S.colSigs[i] === sig || busyIn(node)) return; // 正在划选 / 写点评：下一轮再换
+        S.colSigs[i] = sig;
+        node.replaceWith(compare ? renderColumn(cols[i]) : cur === FINAL_KEY ? renderFinalPanel() : renderPanel(shown[0]));
+      });
       return;
     }
-    S.sigs.draftsLayout = layout;
-    S.colSigs = {};
-    if (!cols.length) { el.replaceChildren(h('div', { class: 'wr-empty', text: '写作群还没有成员。' })); return; }
-    let shown = cols;
-    let tabs = null;
-    if (S.narrow) {
-      const cur = cols.find((c) => keyOf(c) === S.narrowSid) || cols[0];
-      S.narrowSid = keyOf(cur);
-      shown = [cur];
-      tabs = h('div', { class: 'wb-tabs' }, ...cols.map((c) => h('button', { class: 'wb-tab' + (keyOf(c) === S.narrowSid ? ' on' : ''), text: `${c.name}${STATUS_LABEL[c.status] ? ` · ${STATUS_LABEL[c.status]}` : ''}`, onclick: () => { S.narrowSid = keyOf(c); renderColumns(true); } })));
-    } else if (S.focusSid) {
-      shown = cols.filter((c) => keyOf(c) === S.focusSid);
-      if (!shown.length) { S.focusSid = null; shown = cols; }
-    }
-    for (const c of shown) S.colSigs[keyOf(c)] = colSig(c);
-    const grid = h('div', { class: 'wb-cols', style: { gridTemplateColumns: `repeat(${shown.length}, minmax(0, 1fr))` } }, ...shown.map(renderColumn));
-    const count = cols.reduce((n, c) => n + c.items.length, 0);
-    if (v.final) {
-      // 有定稿后，各家的稿收起来放在定稿下面；展开状态记住
-      const det = h('details', { class: 'wb-drafts-fold' }, h('summary', { text: `各家的稿（${count} 份）` }), tabs, grid);
-      if (S.draftsOpen) det.open = true;
-      det.addEventListener('toggle', () => { S.draftsOpen = det.open; });
-      el.replaceChildren(det);
-    } else {
-      el.replaceChildren(...[tabs, grid].filter(Boolean));
-    }
+    S.sigs.articles = layout;
+    S.sigs.articlesBar = barSig;
+    S.colSigs = contentSig.slice();
+    const body = compare
+      ? h('div', { class: 'wb-articles-body wb-cols', style: { gridTemplateColumns: `repeat(${cols.length}, minmax(0, 1fr))` } }, ...cols.map(renderColumn))
+      : h('div', { class: 'wb-articles-body' }, cur === FINAL_KEY ? renderFinalPanel() : renderPanel(shown[0]));
+    el.replaceChildren(tabBar(tabs, cur, compare, canCompare, cols), body);
+  }
+
+  function tabBar(tabs, cur, compare, canCompare, cols) {
+    const tabBtns = compare
+      ? [h('span', { class: 'wb-compare-title', text: `并排对比 · ${cols.length} 位` })]
+      : tabs.map((t) => h('button', {
+        class: `wb-tab ${t.status || ''}` + (t.key === cur ? ' on' : ''),
+        title: t.key === FINAL_KEY ? '汇总改定的定稿' : `${t.label} 的稿`,
+        onclick: () => { S.tab = t.key; renderArticles(true); },
+      },
+      h('span', { class: 'wb-tab-dot' }),
+      h('span', { class: 'wb-tab-name', text: t.label }),
+      h('span', { class: 'wb-tab-sub', text: t.sub }),
+      t.key !== cur && t.count > (S.seen[t.key] || 0) ? h('span', { class: 'wb-tab-new', text: '新' }) : null));
+    return h('div', { class: 'wb-tabbar' },
+      ...tabBtns,
+      h('span', { class: 'wr-spacer' }),
+      canCompare ? h('button', { class: 'wr-btn small' + (compare ? ' on' : ''), text: compare ? '回到标签页' : '并排对比', title: '几份稿左右并排，方便对照', onclick: () => { S.compare = !compare; try { localStorage.setItem('writing-compare', S.compare ? '1' : ''); } catch { /* 记不住就算了 */ } renderArticles(true); } }) : null);
   }
 
   function renderBasket(force) {
@@ -416,7 +490,7 @@ function createWorkbench(ctx) {
 
   function render() {
     if (!S.root || !S.view) return;
-    renderHead(); renderQuestions(); renderFinal(); renderColumns(); renderBasket();
+    renderHead(); renderQuestions(); renderArticles(); renderBasket();
   }
 
   /* ─────────── 数据：选中文章时每 3 秒读一次 ─────────── */
@@ -447,13 +521,12 @@ function createWorkbench(ctx) {
 
   function mount(container, dir) {
     if (S.resize) { S.resize.disconnect(); S.resize = null; }
-    if (S.dir !== dir) { S.view = null; S.versionOf = {}; S.focusSid = null; S.narrowSid = null; S.draftsOpen = null; }
+    if (S.dir !== dir) { S.view = null; S.versionOf = {}; S.tab = null; S.seen = {}; S.hadFinal = false; }
     S.dir = dir;
     S.sigs = {};
     S.root = h('div', { class: 'wb' },
       h('div', { 'data-wb': 'head', class: 'wb-head' }),
       h('div', { 'data-wb': 'questions', class: 'wb-questions', hidden: true }),
-      h('div', { 'data-wb': 'final', class: 'wb-final', hidden: true }),
       h('div', { 'data-wb': 'drafts', class: 'wb-drafts' }),
       h('div', { 'data-wb': 'basket', class: 'wb-basket' }));
     container.replaceChildren(S.root);
@@ -461,7 +534,7 @@ function createWorkbench(ctx) {
     else render();
     S.resize = new ResizeObserver(() => {
       const narrow = S.root && S.root.clientWidth > 0 && S.root.clientWidth < NARROW_PX;
-      if (narrow !== S.narrow) { S.narrow = narrow; if (S.view) renderColumns(true); }
+      if (narrow !== S.narrow) { S.narrow = narrow; if (S.view) renderArticles(true); }
     });
     S.resize.observe(S.root);
     syncTimer();
