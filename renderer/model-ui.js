@@ -575,7 +575,6 @@ function createModelUiController({
     if (!session || !option || session._modelSwitchPending) return null;
     const strategy = modelSwitchStrategy(session.kind);
     if (!strategy) return null;
-    const previousModel=session.currentModel?.id;
     session._modelSwitchPending = { id: option.id, label: option.label };
     updateActiveModelChip();
     renderModelPicker(menu, badgeEl, sessionId, { text: `正在切换到 ${option.label}…`, state: 'pending' });
@@ -607,15 +606,6 @@ function createModelUiController({
         ? await switchCodexModel(sessionId, session, option)
         : await switchClaudeModel(sessionId, session, option);
       const confirmed = await confirmSwitch(sessionId, switched);
-      // The real DeepSeek/Codex switch returned "unsupported call" for its
-      // previously working MCP tool. Reload the same native thread through
-      // Hub's existing ownership-safe restart path to rebuild its tool registry.
-      if(session.kind==='deepseek'&&session.purpose==='hub-assistant'&&session.agentRuntime==='pty'&&option.id!==previousModel){
-        renderModelPicker(menu,badgeEl,sessionId,{text:'正在恢复同一会话的助理工具…',state:'pending'});
-        const restored=await ipcRenderer.invoke('restart-session',sessionId);
-        if(!restored||restored.ok===false||restored.id!==sessionId||restored.codexSid!==session.codexSid)
-          throw new Error(restored?.message||'模型已切换，但原会话工具恢复未确认，请从该会话恢复');
-      }
       const model = confirmed.model || { id: switched.modelId, displayName: switched.displayName };
       session.currentModel = { id: model.id || switched.modelId, displayName: model.displayName || switched.displayName };
       if (switched.effort) session.effort = switched.effort;
