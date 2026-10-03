@@ -45,3 +45,12 @@ test('provider mismatch cannot rewrite model metadata', async () => {
   assert.equal(result.error, 'invalid-model');
   assert.equal(fixture.session.currentModel, undefined);
 });
+
+test('DeepSeek Codex confirms only its provider models and preserves the native effort',async()=>{
+  const f=setup({id:'ds',kind:'deepseek',effort:'max'});
+  assert.equal((await f.handler({},{sessionId:'ds',modelId:'deepseek-v4-pro',effort:'high'})).ok,true);
+  assert.equal(f.session.currentModel.id,'deepseek-v4-pro');assert.equal(f.session.effort,'high');
+  assert.equal((await f.handler({},{sessionId:'ds',modelId:'gpt-6-luna'})).ok,false);
+  f.session.deepseekLegacyClaude=true;
+  assert.equal((await f.handler({},{sessionId:'ds',modelId:'deepseek-v4-flash'})).ok,false);
+});

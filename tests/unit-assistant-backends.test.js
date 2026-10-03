@@ -28,6 +28,28 @@ test('busy assistant blocks switching without changing identity or request',asyn
   const x=setup(t),codex=await x.service.ensureSession();x.sessions.get(codex.sessionId).status='running';
   await assert.rejects(x.service.switchBackend({kind:'claude'}),/先结束/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.deepEqual(x.created,['codex']);
 });
+
+test('an existing assistant entity is not described as a connected provider',async t=>{
+  const x=setup(t),manager=await x.service.ensureSession();
+  assert.doesNotMatch(x.service.overview().connectionSummary,/已连接/);
+  x.sessions.get(manager.sessionId).cliRuntime={connection:'disconnected',reason:'套餐无访问权限'};
+  const overview=x.service.overview();assert.equal(overview.available,true);
+  assert.match(overview.connectionSummary,/未连接.*套餐无访问权限/);assert.deepEqual(overview.needsAttention,['套餐无访问权限']);
+});
+
+test('current manager without retrieval arguments reads its frozen packet, explicit lookup remains dynamic',async t=>{
+  const x=setup(t),manager=await x.service.ensureSession();
+  x.service.preparePrompt({sessionId:manager.sessionId,text:'查进展'});
+  const firstToken=x.service.currentRequest.token;
+  const frozen=await x.service.invokeTool({name:'history_context',callerSessionId:manager.sessionId});
+  assert.equal(frozen.snapshotReceipt.requestToken,firstToken);
+  assert.equal(x.service.overview().contextCoverage.snapshotRead,true);
+  x.service.preparePrompt({sessionId:manager.sessionId,text:'下一轮进展'});
+  const dynamic=await x.service.invokeTool({name:'history_context',callerSessionId:manager.sessionId,arguments:{hours:3}});
+  assert.equal(dynamic.snapshotReceipt,undefined);
+  assert.equal(x.service.overview().contextCoverage.snapshotRead,false);
+  await assert.rejects(x.service.invokeTool({name:'history_context',callerSessionId:manager.sessionId,arguments:{requestToken:firstToken}}),/不属于当前/);
+});
 test('pending submit receipt blocks switching even after a native final arrived',async t=>{
   const x=setup(t),codex=await x.service.ensureSession();x.deps.hasPendingPrompt=()=>true;
   await assert.rejects(x.service.switchBackend({kind:'claude'}),/提交仍在核对/);assert.equal(x.service.store.get('sessionId'),codex.sessionId);assert.equal(x.created.length,1);

@@ -1,16 +1,26 @@
 # 助理后端切换
 
-助理页复用普通会话。工具栏的 Codex / Claude 菜单选择助理后端；模型、思考强度、语音输入仍由原生会话管理。首次使用目标后端沿用该后端的 Hub 创建默认值。切回时保留各自历史、模型设置与草稿。
+助理页复用普通会话。工具栏后端菜单读取 `ALL_AI_KINDS`，覆盖 Claude、Codex、Gemini、Kimi、千问、GLM、DeepSeek API 与 DeepSeek Harness；模型、思考强度、语音输入仍由普通会话管理。首次使用目标后端沿用该后端的 Hub 创建默认值。切回时保留各自历史、模型设置与草稿。菜单支持不代表账号、客户端及上游服务可用。
 
-## 一个助理，两份原生会话
+## 一个助理，每种后端一份原生会话
 
 `assistant.sqlite` 的 `backendSessions` 为每种后端保存一个固定 Hub ID，`sessionId` 指向当前拥有管理权限的实体。旧单一 Codex ID 原位迁移。先事务预留目标 ID，再创建或恢复；返回身份确认后才切换活动指针。未确认的创建不重发、不新建替代实体。切换失败保留原助理。
 
-Codex 继续使用原有临时 MCP 配置。Claude 使用同一 stdio MCP server 的专属配置文件，沿用 Hub 的自动实体启动/恢复通道。HTTP 调用的宿主身份及当前用户回合 token 必须同时匹配；旧后端失去专属工具权限。全部助理实体排除于业务清单、业务历史与自身派工、关注目标。
+Codex / DeepSeek API 使用原有临时 MCP 配置，Claude 使用专属叠加文件，Gemini / Kimi 使用助理工作目录里的原生工具配置，千问 / GLM / DeepSeek Harness 使用原生驱动的专属工具参数。普通会话、全局配置与其他项目工具保持原样。HTTP 调用的宿主身份及写入操作的当前用户回合 token 必须同时匹配；旧后端失去专属工具权限。当前固定助理无参数读取资料时默认返回其本轮冻结包，明确历史检索仍走动态查询，旧 token 拒绝。全部助理实体排除于业务清单、业务历史与自身派工、关注目标。
 
 运行中、等待响应或上一条提交仍在核对的助理不允许切换。切换期间拒绝新输入与旧工具请求；成功后清空旧回合授权。弹出菜单挂在页面上，避免原生工具栏刷新导致选择控件失焦。导航离开会收起菜单。
 
-Claude 助理专用启动叠加文件承接已授予的自动执行权限，启动和恢复不再停在首次权限确认页面。真实 CLI 会给长粘贴套上带 ID 的 `pasted_content` 包装；助理回执仅在包装完整、ID 一致、内部为合法助理上下文时解包核对，原生记录不改写。界面仍只显示用户原话，原文可展开。Codex 助理含中文弯引号时使用既有的文件输入通道，保留原字符并等待真实回执；普通会话输入策略保持原样。
+Claude 助理专用启动叠加文件承接已授予的自动执行权限，启动和恢复不再停在首次权限确认页面。真实 CLI 会给长粘贴套上带 ID 的 `pasted_content` 包装；助理回执仅在包装完整、ID 一致、内部为合法助理上下文时解包核对，原生记录不改写。界面仍只显示用户原话，原文可展开。Codex 助理的中文弯引号使用 JSON Unicode 转义，解码后原文完全一致，短消息使用普通粘贴闭环；超过 2048 字符的请求仍走原有编辑器通道，首次长文本的可靠性尚未通过本轮验收。普通会话输入策略保持原样。
+
+模型切换同样以原生确认作准：Claude 新版的缓存切换弹窗须核对目标后才确认；千问通过原生 `/model` 与切换后的设置写入确认，随后真实回答再次核对实际模型；DeepSeek API 的模型与推理面板复用其 Codex 引擎，仅允许 DeepSeek 目录里的模型，旧 Claude 引擎的 DeepSeek 会话不会改接 Codex。千问工具续轮产生的空 `UserPromptSubmit` 不算新的用户回合。
+
+最终回答读取由 `final-readers.js` 按提供方选择，核对 Hub ID、原生 ID、绑定文件或驱动。最终答复是目标助手的自述，任务验收仍须另核成果。无法取得绑定原文时明确标未知，不从终端动画猜完成。
+
+DeepSeek 的 Codex 模型目录明确使用原生 direct 工具模式，并关闭延迟工具搜索声明。真实 V4 Pro 切换曾返回 unsupported call，随后通过 shell/HTTP 绕行取得资料；这种绕行不能算工具验收通过。真实检查须同时核对原生工具调用、同一次调用的资料回执、本轮 snapshotRead 与不变的原生 ID。自动恢复会话未解决工具错误，已撤回，模型切换不额外重启会话。
+
+委派给 Codex 系列的任务如果包含中文弯引号，使用可逆 JSON 传输保护原文；业务会话的用户卡片投影回原话，原生提交正文仍可展开核对。动作账本、幂等身份和重复检查基于原始业务文本，送达回执核对实际传输正文。传输只包含业务任务及解码说明，不授予目标助理管理权限。其他提供方和普通无弯引号任务沿用现有通道。长文本仍由原有输入机制负责。
+
+这里的原文是助理工具提交的业务任务，不是承诺语言模型逐字转发用户请求。真实千问与 GLM 会改写用户给出的引号，任务结果仍正确；逐字转发属于单独验收项。`HUB_ASSISTANT_VERBATIM_TASK=1` 严格检查用户给定任务与工具参数相等；默认真实派工检查工具参数、原生收到的正文和业务卡片一致，两种结论分别保留。
 
 ## 跨后端的交接
 
@@ -18,4 +28,4 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 
 这些文件帮助新后端接续工作；各厂商的内部对话历史仍分别保存。旧交接中的指令只作历史证据，不能授予本轮派工权限。既有会话在首次切换时补入可读取的近期助理最终答复；切换功能启用前的全部用户原话尚未追溯迁入交接文件。
 
-验证：`node --test tests/unit-assistant-backends.test.js tests/unit-hub-assistant-history.test.js`；`node tests/e2e-assistant-backends-live.js` 使用真实隔离 Codex、Claude PTY 验证交接、草稿往返、原生身份、Claude 派工、新回复提醒及正常退出后恢复；状态一致性由 `node tests/e2e-assistant-session-state-live.js` 验证。
+验证入口：`node --test tests/unit-assistant-backends.test.js tests/unit-assistant-provider-tools.test.js tests/unit-hub-assistant-snapshots.test.js`；`node tests/e2e-assistant-backends-live.js` 使用真实隔离 Codex、Claude PTY 验证交接、草稿往返、原生身份、派工、新回复提醒及正常退出后恢复；设 `HUB_ASSISTANT_MODEL_SWITCHES=1` 验证模型切换，`HUB_ASSISTANT_KEEP_EFFORT=1` 保留首次创建的默认强度。`node tests/e2e-assistant-all-models-live.js` 验证各提供方实际资料读取与交接；`HUB_ASSISTANT_DISPATCH=1` 扩展真实派工与通知。真实账号能力缓存只读复制到隔离 home，原生回答与提交回执才决定通过。账号拒绝、套餐缺失或上游启动失败分别保留，不转成模拟通过。项目全量闸门仍是 `node scripts/run_unit_tests.js`。

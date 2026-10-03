@@ -24,12 +24,14 @@ async function main(){
  const click=async selector=>{await until('clickable '+selector,()=>cdp.eval('(()=>{const e=document.querySelector('+j(selector)+');if(!e||e.disabled)return false;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return r.width>0&&r.height>0&&(h===e||e.contains(h))})()'),60000);const p=await cdp.eval('(()=>{const r=document.querySelector('+j(selector)+').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});};
  const key=async(key,code,virtualKey,modifiers=0)=>{for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key,code,windowsVirtualKeyCode:virtualKey,modifiers});};
  const change=async kind=>{await click('.assistant-backend');await click('[data-assistant-backend="'+kind+'"]');await until('backend '+kind,async()=>{const r=await invoke('assistant:get-overview',{});return r.backendKind===kind&&(await active())===r.sessionId&&!await cdp.eval('document.querySelector(".assistant-backend")?.disabled')?r.sessionId:null;});};
+ const chooseModel=async(id,modelId)=>{await click('.composer-model');await click('.model-picker-item[data-model-id="'+modelId+'"]');await until('model '+modelId,async()=>{const m=await meta(id);return m.currentModel?.id===modelId&&!m._modelSwitchPending;});};
  const send=async text=>{assert.equal((await cdp.eval('document.querySelector(".floating-input-box").textContent')).trim(),'');await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
  const final=async(id,previous=0)=>until('native final '+id,async()=>{const r=readFinals(await meta(id)).records;return r.length>previous?r.at(-1):null;});
  const settled=async id=>until('settled '+id,async()=>{const m=await meta(id),o=await invoke('assistant:get-overview',{});return !(o.sessionId===id&&o.submissionPending)&&!['running','waiting'].includes(m.status)&&!['running','submitting'].includes(m.cliRuntime?.state);});
  try{
   fs.copyFileSync(codexAuth,path.join(codexHome,'auth.json'));fs.copyFileSync(claudeAuth,path.join(claudeHome,'.credentials.json'));
+  const accountModels=path.join(path.dirname(codexAuth),'models_cache.json');if(fs.existsSync(accountModels))fs.copyFileSync(accountModels,path.join(codexHome,'models_cache.json'));
   fs.writeFileSync(path.join(claudeHome,'.claude.json'),j({hasCompletedOnboarding:true,theme:'light',skipDangerousModePermissionPrompt:true,projects:{}}));
   const hooks=require('../core/claude-hook-integration').ensureClaudeHookIntegration({claudeDir:claudeHome,sourceScriptsDir:path.resolve('scripts'),logger:{log(){},warn(){}}});
   assert.equal(hooks.errors.length,0,'真实 Claude 测试配置必须部署 Hub 生命周期 hook');
@@ -42,9 +44,14 @@ async function main(){
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
   await click('#btn-assistant');const codex=await until('codex active',async()=>{const r=await invoke('assistant:get-overview',{});return r.available?r.sessionId:null;});result.codexId=codex;
   await until('codex ready',async()=>/Ask Codex to do anything/.test(await screen(codex)));
-  await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('effort low',async()=>{const m=await meta(codex);return m.effort==='low'&&!m._modelSwitchPending;});
+  if(process.env.HUB_ASSISTANT_KEEP_EFFORT!=='1'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('effort low',async()=>{const m=await meta(codex);return m.effort==='low'&&!m._modelSwitchPending;});}
   await send('请先读取本轮资料。记住验收暗号“青桥企鹅”，仅用一句话确认。');const codexAnswer=await final(codex);assert.match(codexAnswer.text,/青桥企鹅/);await settled(codex);result.checks.push('Codex 真实读取 Hub 资料并回答');
   result.codexNativeId=(await meta(codex)).codexSid;
+  if(process.env.HUB_ASSISTANT_MODEL_SWITCHES==='1'){
+   await chooseModel(codex,'gpt-6-luna');await send('请先读取本轮资料，用一句话说出刚才的验收暗号。');
+   assert.match((await final(codex,1)).text,/青桥企鹅/);await settled(codex);
+   assert.equal((await meta(codex)).codexSid,result.codexNativeId);result.checks.push('Codex 同一原生会话从 GPT-6.1-Sol 切至 GPT-6-Luna，并真实读取资料回答');
+  }
   await click('.floating-input-box');await cdp.send('Input.insertText',{text:'待发草稿不要发送'});
   await change('claude');const claude=await active();result.claudeId=claude;assert.notEqual(codex,claude);
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(claude)));
@@ -52,6 +59,11 @@ async function main(){
   await send('请读取本轮资料中的 assistantContinuity。刚刚我告诉上一位助理的验收暗号是什么？仅用一句话回答。');const claudeAnswer=await final(claude);assert.match(claudeAnswer.text,/青桥企鹅/);await settled(claude);
   await until('visible claude final',()=>cdp.eval('document.querySelector("#msg-overlay")?.textContent.includes("青桥企鹅")'));
   const context=await invoke('assistant:get-overview',{});assert.equal(context.contextCoverage.snapshotRead,true);result.checks.push('Claude 真实 MCP 读取冻结资料，接续 Codex 交接记录，普通卡片显示回答');result.claudeNativeId=(await meta(claude)).ccSessionId;await shot('01-claude-handoff');
+  if(process.env.HUB_ASSISTANT_MODEL_SWITCHES==='1'){
+   await chooseModel(claude,'claude-sonnet-4-5');const beforeModelAnswer=readFinals(await meta(claude)).records.length;
+   await send('请先读取本轮资料，用一句话说出刚才的验收暗号。');assert.match((await final(claude,beforeModelAnswer)).text,/青桥企鹅/);await settled(claude);
+   assert.equal((await meta(claude)).ccSessionId,result.claudeNativeId);result.checks.push('Claude 同一原生会话从 Haiku 4.5 切至 Sonnet 4.5，并真实读取资料回答');
+  }
   await change('codex');assert.equal(await active(),codex);assert.equal((await meta(codex)).codexSid,result.codexNativeId);assert.equal(await cdp.eval('document.querySelector(".floating-input-box").textContent'),'待发草稿不要发送');
   await click('.floating-input-box');await key('a','KeyA',65,2);await key('Backspace','Backspace',8);result.checks.push('返回 Codex 恢复同一原生会话和未发送草稿');
   await change('claude');assert.equal(await active(),claude);assert.equal((await meta(claude)).ccSessionId,result.claudeNativeId);
@@ -62,7 +74,7 @@ async function main(){
   const target=action.result.sessionId;assert(target);result.targetId=target;
   await final(target);const notices=await until('watch notification',async()=>{const r=await invoke('assistant:notifications',{});return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});result.notification=notices;result.checks.push('Claude 助理实际创建 Codex 业务会话、提交确认、关注并收到真实新回复通知');await shot('02-claude-delegation');
   const packet=await invoke('assistant:context',{});assert(!packet.workbench.inventory.some(s=>[codex,claude].includes(s.id)));assert.equal(packet.workbench.inventory.find(s=>s.id===target).hubState.isActive,false);assert(packet.assistantContinuity.records.some(r=>r.text.includes('青桥企鹅')));
-  await change('codex');await send('请查最新资料：“后端切换业务验收”是否已经回复？用一句白话告诉我。');const answered=await final(codex,1);assert.match(answered.text,/业务验收完成|已.*回复|已.*完成/);await until('visible codex final',()=>cdp.eval('document.querySelector("#msg-overlay")?.textContent.includes('+j(answered.text.trim().split('\n').at(-1))+')'));result.finalAnswer=answered.text;await shot('03-codex-return');result.checks.push('切回 Codex 仍可查业务进展，两种助理均不被计为业务会话');
+  await change('codex');const beforeReturnAnswer=readFinals(await meta(codex)).records.length;await send('请查最新资料：“后端切换业务验收”是否已经回复？用一句白话告诉我。');const answered=await final(codex,beforeReturnAnswer);assert.match(answered.text,/业务验收完成|已.*回复|已.*完成/);await until('visible codex final',()=>cdp.eval('document.querySelector("#msg-overlay")?.textContent.includes('+j(answered.text.trim().split('\n').at(-1))+')'));result.finalAnswer=answered.text;await shot('03-codex-return');result.checks.push('切回 Codex 仍可查业务进展，两种助理均不被计为业务会话');
   cdp.close();cdp=null;fs.writeFileSync(path.join(out,'hub-before-restart.log'),hub.log().join('\n'));
   result.restartExit=await gracefulQuit(hub);hub=null;assert.equal(result.restartExit.forced,false);
   hub=await launchIsolatedHub(launchOptions);cdp=await connectFirstPage(hub);
@@ -73,7 +85,11 @@ async function main(){
   await settled(codex);await change('claude');assert.equal(await active(),claude);assert.equal((await meta(claude)).ccSessionId,result.claudeNativeId);
   const beforeRestartAnswer=readFinals(await meta(claude)).records.length;
   await send('请读取最新资料，并告诉我验收暗号是什么。仅用一句话回答。');const restored=await final(claude,beforeRestartAnswer);assert.match(restored.text,/青桥企鹅/);await settled(claude);
-  const restoredPacket=await invoke('assistant:context',{});assert(restoredPacket.assistantContinuity.records.some(r=>r.role==='user'&&r.deliveryState==='confirmed'&&r.text.includes('青桥企鹅')));
+  const restoredPacket=await invoke('assistant:context',{});
+  const fullContinuity=JSON.parse(fs.readFileSync(path.join(data,'assistant','conversation.json'),'utf8'));
+  assert(fullContinuity.some(r=>r.role==='user'&&r.deliveryState==='confirmed'&&r.text.includes('青桥企鹅')));
+  assert.match(fs.readFileSync(restoredPacket.assistantContinuity.markdownPath,'utf8'),/青桥企鹅/);
+  assert.equal(restoredPacket.assistantContinuity.records.length,Math.min(12,fullContinuity.length));
   await until('one restored user bubble',()=>cdp.eval('[...document.querySelectorAll("#msg-overlay .turn-card.user")].filter(e=>e.querySelector(".turn-body")?.textContent.trim()==="请读取最新资料，并告诉我验收暗号是什么。仅用一句话回答。").length===1'));
   result.checks.push('隔离 Hub 正常退出重开：两种固定身份、交接文件、Claude 工具权限均恢复');await shot('04-claude-after-restart');
   assert.equal(hash(codexAuth),before.codex);assert.equal(hash(claudeAuth),before.claude);result.productionCredentialsUnchanged=true;result.passed=true;

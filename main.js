@@ -1965,6 +1965,11 @@ try {
     hasPendingPrompt:sessionId=>promptOperations.isAssistantSubmissionPending(sessionId),
     getSession: id => sessionManager.getSession(id),
     getAllSessions: () => sessionManager.getAllSessions(),
+    readNativeTurns: id => {
+      const native=sessionManager.getNativeSession(id);
+      if(!native?.readTranscript)return null;
+      return {identity:native.threadId,turns:native.readTranscript({limit:80})};
+    },
     getSessionMetadata: id => {
       if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) return null;
       const live = sessionManager.getSession(id);

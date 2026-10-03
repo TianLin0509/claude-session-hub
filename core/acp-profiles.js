@@ -26,7 +26,14 @@ function buildAcpOptions(kind, opts, config, dataDir, baseEnv = process.env) {
   const models = require('./acp-model-catalog').acpModelOptions(kind, model);
   if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model))throw new Error('请填写套餐模型 ID，不可切到其他供应商命名空间');
   let mcpServers=[];
-  if(entry.mcpConfigPath) {
+  if(opts.assistantMcpServers) {
+    if(opts.purpose!=='hub-assistant'||!Array.isArray(opts.assistantMcpServers)
+      ||opts.assistantMcpServers.length!==1||opts.assistantMcpServers[0]?.name!=='hub_assistant'
+      ||!opts.assistantMcpServers[0].env?.some(e=>e.name==='HUB_ASSISTANT_SESSION_ID'&&e.value===opts.id))
+      throw new Error('助理 MCP 配置身份不一致');
+    mcpServers=opts.assistantMcpServers;
+  }
+  if(entry.mcpConfigPath && !opts.assistantMcpServers) {
     if(!path.isAbsolute(entry.mcpConfigPath))throw new Error('MCP 配置文件必须使用绝对路径');
     mcpServers=JSON.parse(fs.readFileSync(entry.mcpConfigPath,'utf8').replace(/^\uFEFF/,''));
     if(!Array.isArray(mcpServers))throw new Error('MCP 配置应为 ACP server 数组');
