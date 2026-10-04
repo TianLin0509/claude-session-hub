@@ -41,7 +41,7 @@ function installColdwhiteShell(doc = globalThis.document) {
       for (const [panel, button] of [['account-page','btn-rail-accounts'],['writing-panel','btn-writing'],['chuxin-panel','btn-research'],['study-panel','btn-study'],['ran-panel','btn-ran']]) {
         if (isVisible(panel)) { current = button; break; }
       }
-      if (current === 'btn-home' && doc.body.classList.contains('assistant-session-active')) current = 'btn-assistant';
+      if (current === 'btn-home' && (doc.body.classList.contains('assistant-session-active') || doc.body.classList.contains('assistant-page-open'))) current = 'btn-assistant';
     }
     for (const id of navigation) {
       const button = doc.getElementById(id);

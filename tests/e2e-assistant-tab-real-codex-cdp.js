@@ -95,7 +95,7 @@ async function main() {
     await cdp.send('Input.dispatchMouseEvent', { type:'mouseMoved', x:5, y:90 });
     await click('#rail-pin');
     await until('navigation pinned', () => cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'));
-    await click('#btn-assistant');
+    await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');
     assistantId = await until('assistant chat bound to ordinary entity', () => cdp.eval('([...sessions.values()].find(s=>s.purpose==="hub-assistant"))?.id || null'));
     result.assistantId = assistantId;
     const initial = await session(); result.runtimeObserved = initial.agentRuntime; result.effort = initial.effort;

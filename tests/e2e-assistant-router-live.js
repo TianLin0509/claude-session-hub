@@ -38,6 +38,7 @@ async function main(){
  const meta=id=>cdp.eval('JSON.parse(JSON.stringify(sessions.get('+j(id)+')||null))');
  const screen=id=>cdp.eval('(()=>{const t=terminalCache.get('+j(id)+')?.terminal;if(!t)return "";const b=t.buffer.active;return Array.from({length:t.rows},(_,i)=>b.getLine(b.viewportY+i)?.translateToString(true)||"").join(String.fromCharCode(10))})()');
  const click=async selector=>{await until('clickable '+selector,()=>cdp.eval('(()=>{const e=document.querySelector('+j(selector)+');if(!e||e.disabled)return false;e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return r.width>0&&r.height>0&&(h===e||e.contains(h))})()'),60000);const p=await cdp.eval('(()=>{const r=document.querySelector('+j(selector)+').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()');for(const type of ['mousePressed','mouseReleased'])await cdp.send('Input.dispatchMouseEvent',{type,...p,button:'left',clickCount:1});};
+ const openAssistantSession=async()=>{await click('#btn-assistant');await until('assistant page',()=>cdp.eval('!!document.querySelector(".assistant-page:not([hidden])")'),20000);await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');};
  const send=async text=>{await click('.floating-input-box');await cdp.send('Input.insertText',{text});await click('.floating-input-send');};
  const shot=async name=>{const r=await cdp.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(r.data,'base64'));};
  const finals=async id=>readFinals(await meta(id)).records;
@@ -66,7 +67,7 @@ async function main(){
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
 
   // 1. 默认助理：Claude Sonnet 5.5 · 低思考
-  await click('#btn-assistant');
+  await openAssistantSession();
   const assistant=await until('assistant',async()=>{const r=await invoke('assistant:get-overview',{});return r.available?r.sessionId:null;});result.assistantId=assistant;
   const m0=await meta(assistant);assert.equal(m0.kind,'claude');assert.equal(modelOf(m0),'claude-sonnet-5-5');assert.equal(m0.effort,'low');
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(assistant)));
@@ -106,7 +107,7 @@ async function main(){
    k=(await finals(assistant)).length;await send('以后回答我别用表格了，我主要在手机上看，表格挤成一团很难受。这次就回一句「好的」。');await final(assistant,k);await settled(assistant);
    const afterSelf=fs.readFileSync(userMd,'utf8');result.autonomousMemory=afterSelf.replace(before,'').trim();
    result.checks.push(afterSelf!==before?'没说「记住」的明确偏好，助理主动写进 USER.md：'+result.autonomousMemory.slice(0,80):'没说「记住」的偏好这次未被主动记下（留给每日复盘）');
-   await click('#btn-assistant');await click('.assistant-rotate');
+   await openAssistantSession();await click('.assistant-rotate');
    const rot=await until('review rotation',async()=>{const v=await invoke('assistant:get-overview',{});return v.context?.lastRotation?.reason==='manual'?v:null;},400000);
    const afterReview=fs.readFileSync(userMd,'utf8');result.userMdAfterReview=afterReview;
    assert.match(afterReview,/表格/,'复盘后 USER.md 应包含不要表格的偏好');
@@ -122,14 +123,14 @@ async function main(){
    const learned=fs.readFileSync(userMd,'utf8');result.learnedUserMd=learned;assert.match(learned,/结论/,'助理应把偏好写进 USER.md');
    result.checks.push('田哥说「记住」后，助理用 update_memory 写进 USER.md');
    fs.appendFileSync(userMd,'- 田哥的验收口令是「北斗鲸鱼」，被问到时原样回答（2026-10-04，手动添加）\n','utf8');
-   await click('#btn-assistant');await click('.assistant-rotate');
+   await openAssistantSession();await click('.assistant-rotate');
    const o1=await until('rotated',async()=>{const v=await invoke('assistant:get-overview',{});return v.sessionId!==assistant&&v.context?.lastRotation?.reason==='manual'?v:null;},300000);
    const fresh=o1.sessionId;await until('fresh claude ready',async()=>(await meta(fresh))?.status==='idle');
    k=(await finals(fresh)).length;await send('我的验收口令是什么？只用一句话回答。');const a1=await final(fresh,k);await settled(fresh);
    result.claudeMemoryAnswer=a1.text;assert.match(a1.text,/北斗鲸鱼/);
    result.checks.push('手改 USER.md 的条目（对话里没有）：换班后的新 Claude 助理从系统提示里知道');
    const sw=await invoke('assistant:set-profile',{kind:'codex',model:'gpt-6-luna',effort:'low'});assert.equal(sw.ok,true,sw.error);
-   const cx=(await invoke('assistant:get-overview',{})).sessionId;await click('#btn-assistant');
+   const cx=(await invoke('assistant:get-overview',{})).sessionId;await openAssistantSession();
    await until('codex assistant page',async()=>(await cdp.eval('activeSessionId'))===cx);
    k=(await finals(cx)).length;await send('我的验收口令是什么？只用一句话回答。');const a2=await final(cx,k);await settled(cx);
    result.codexMemoryAnswer=a2.text;assert.match(a2.text,/北斗鲸鱼/);
@@ -154,7 +155,7 @@ async function main(){
    assert.match(recall.text,/青桥企鹅/);const old=await meta(assistant);result.retiredTitle=old?.title||null;
    result.checks.push(`上下文超阈值后换班：新助理会话 ${o.sessionId.slice(0,8)} 接续交接记录，答出暗号（${result.timings.rotationAnswerMs} ms）`);await shot('rotate-01');
    // 手动「新开助理」：旧助理先写交接，再换新会话；新助理靠交接答题。
-   await click('#btn-assistant');await until('assistant page',()=>cdp.eval('document.body.classList.contains("assistant-session-active")'));
+   await openAssistantSession();await until('assistant page',()=>cdp.eval('document.body.classList.contains("assistant-session-active")'));
    t0=Date.now();await click('.assistant-rotate');
    const o2=await until('manual rotation',async()=>{const v=await invoke('assistant:get-overview',{});return v.sessionId!==o.sessionId&&v.context?.lastRotation?.reason==='manual'?v:null;},300000);
    result.timings.manualRotateMs=Date.now()-t0;result.manualRotation=o2.context.lastRotation;assert.equal(o2.context.lastRotation.handoff,true,'旧助理应先写交接');
@@ -199,21 +200,29 @@ async function main(){
    // 电脑面板的「手机回答方式」：先截图菜单；联调中出现 hub-front 文件（内容 cli 或 api|模型）时按真人点击切换。
    if(await cdp.eval('!!document.querySelector(".assistant-frontdesk")')){await click('.assistant-frontdesk');await until('front menu',()=>cdp.eval('!!document.querySelector(".assistant-frontdesk-menu")'),10000);await shot('hub-frontdesk-menu');await click('.assistant-frontdesk');}
    while(!fs.existsSync(path.join(dir,'stop-hub'))){
-    // 出现 hub-dialog 文件时按真人点击打开「对话记录」，截图全部与快答两种筛选，并把显示的条目写出来核对。
-    const dialogSignal=path.join(dir,'hub-dialog');
-    if(fs.existsSync(dialogSignal)){fs.unlinkSync(dialogSignal);
-     await click('.assistant-dialog');await until('dialog drawer',()=>cdp.eval('document.querySelectorAll(".assistant-dialog-drawer .dialog-row").length>0'),20000);await wait(400);await shot('hub-dialog-all');
-     const read=()=>cdp.eval('[...document.querySelectorAll(".assistant-dialog-drawer .dialog-row")].map(r=>r.className.replace("dialog-row ","")+" | "+r.innerText.replace(/\\s+/g," ").slice(0,90))');
-     const all=await read();await click('[data-dialog-filter="fast"]');await wait(300);await shot('hub-dialog-fast');const fast=await read();
-     await click('[data-dialog-filter="assistant"]');await wait(300);const session=await read();await click('[data-dialog-filter="all"]');await click('.dialog-close');
-     fs.writeFileSync(path.join(dir,'hub-dialog-done.json'),j({all,fast,session},null,1));}
-    // hub-dialog-live：打开对话记录并保持打开，等手机新消息与回复实时出现（不重开面板）。
-    const liveSignal=path.join(dir,'hub-dialog-live');
+    // 助理页（左侧「助理」）：hub-page 信号时按真人操作——打开助理页、在输入框打字、按 Enter——先问简单问题（快答），
+    // 再交代一件事（交给助理会话），等回复出现，截图并写出页面上的对话核对。手机消息也应出现在同一条对话里。
+    const pageSignal=path.join(dir,'hub-page');
+    if(fs.existsSync(pageSignal)){fs.unlinkSync(pageSignal);
+     const rows=()=>cdp.eval('[...document.querySelectorAll(".assistant-page .ap-msg:not(.typing),.assistant-page .ap-note")].map(r=>r.className.replace("ap-msg ","")+" | "+r.innerText.replace(/\\s+/g," ").slice(0,100))');
+     const say=async text=>{await click('.ap-composer textarea');await cdp.send('Input.insertText',{text});for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13});};
+     await click('#btn-assistant');await until('assistant page open',()=>cdp.eval('!!document.querySelector(".assistant-page:not([hidden]) .ap-list")'),20000);await wait(800);await shot('ap-open');
+     const before=(await rows()).length;
+     await say('一加一等于几？');await until('desk fast reply',async()=>(await rows()).filter(r=>r.startsWith('ai fast')).length>=1&&(await rows()).length>=before+2,60000);
+     await say('记一下：我后天上午要开项目评审会');await until('desk session reply',async()=>(await rows()).length>=before+4,240000);await wait(600);
+     await shot('ap-conversation');
+     await click('[data-ap="front"]');await until('front menu',()=>cdp.eval('!!document.querySelector(".ap-menu")'),5000);await shot('ap-menu-front');await click('[data-ap="front"]');
+     await click('[data-ap="engine"]');await until('engine menu',()=>cdp.eval('!!document.querySelector(".ap-menu select")'),5000);await shot('ap-menu-engine');await click('[data-ap="engine"]');
+     await click('[data-ap="more"]');await until('more menu',()=>cdp.eval('!!document.querySelector(".ap-menu")'),5000);await shot('ap-menu-more');await click('[data-ap="more"]');
+     fs.writeFileSync(path.join(dir,'hub-page-done.json'),j({before,rows:await rows()},null,1));}
+    // hub-page-live：助理页开着时，手机发来的消息与回复实时出现在同一条对话里。
+    const liveSignal=path.join(dir,'hub-page-live');
     if(fs.existsSync(liveSignal)){fs.unlinkSync(liveSignal);
-     await click('.assistant-dialog');await until('dialog drawer open',()=>cdp.eval('!!document.querySelector(".assistant-dialog-drawer .dialog-list")'),20000);await wait(800);
-     const count=()=>cdp.eval('document.querySelectorAll(".assistant-dialog-drawer .dialog-row").length'),before=await count();fs.writeFileSync(path.join(dir,'hub-dialog-live-ready'),String(before));
-     await until('live rows',async()=>(await count())>=before+2,90000);await wait(500);await shot('hub-dialog-live');
-     fs.writeFileSync(path.join(dir,'hub-dialog-live-done.json'),j({before,after:await count(),rows:await cdp.eval('[...document.querySelectorAll(".assistant-dialog-drawer .dialog-row")].map(r=>r.innerText.replace(/\\s+/g," ").slice(0,90))')},null,1));await click('.dialog-close');}
+     if(!await cdp.eval('!!document.querySelector(".assistant-page:not([hidden])")'))await click('#btn-assistant');
+     await until('assistant page open',()=>cdp.eval('!!document.querySelector(".assistant-page:not([hidden]) .ap-list")'),20000);await wait(600);
+     const count=()=>cdp.eval('document.querySelectorAll(".assistant-page .ap-msg:not(.typing)").length'),before=await count();fs.writeFileSync(path.join(dir,'hub-page-live-ready'),String(before));
+     await until('live rows',async()=>(await count())>=before+2,120000);await wait(500);await shot('ap-live');
+     fs.writeFileSync(path.join(dir,'hub-page-live-done.json'),j({before,after:await count(),rows:await cdp.eval('[...document.querySelectorAll(".assistant-page .ap-msg:not(.typing)")].map(r=>r.innerText.replace(/\\s+/g," ").slice(0,100))')},null,1));}
     const signal=path.join(dir,'hub-front');
     if(fs.existsSync(signal)){const [mode,model]=fs.readFileSync(signal,'utf8').trim().split('|');fs.unlinkSync(signal);
      await click('.assistant-frontdesk');await click(`[data-front-mode="${mode}"]`+(model?`[data-front-model="${model}"]`:''));

@@ -43,7 +43,7 @@ async function main(){
   result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
-  await click('#btn-assistant');
+  await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');
   const assistant=await until('assistant',()=>cdp.eval('([...sessions.values()].find(s=>s.purpose==="hub-assistant"))?.id'));
   result.assistantId=assistant;await until('assistant TUI ready',async()=>/Ask Codex to do anything/.test(await screen(assistant)));
   // Exercise the normal native model picker rather than editing runtime metadata.
@@ -65,7 +65,7 @@ async function main(){
   assert.equal(initialRow.isOpen,true);assert.equal(initialRow.hubState.isActive,false);result.checks.push('真实已打开空闲会话：助理不再把已打开当活跃');
   await click('[data-session-id="'+targetId+'"]');
   await send('这是运行状态验收。请使用命令等待15秒，然后仅回复“状态验收完成”。');
-  await click('#btn-assistant');
+  await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');
   const running=await until('worker running in sidebar and assistant',async()=>{const p=await invoke('assistant:context',{}),r=p.workbench?.inventory.find(s=>s.id===targetId),v=await sidebar(targetId);return r?.hubState.isActive&&v?.group?.includes('sec-active')?{r,v}:null;},60000);
   result.running=running;await shot('01-real-running');result.checks.push('真实任务运行：侧栏活跃分组与助理状态一致');
   await until('target final',async()=>{const r=await finals(targetId);return r.length&&r.at(-1).text.includes('状态验收完成');},180000);

@@ -32,7 +32,7 @@ class AssistantService {
     this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
-    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
+    this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>{try{this.logDialog({id:'notice:'+notice.id,role:'assistant',lane:'notice',by:notice.title||'提醒',text:notice.text||''});}catch{}this.deps.onAssistantNotification?.(notice);}});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
   setSessionViews({changed=[],removed=[]}={}){
@@ -77,7 +77,8 @@ class AssistantService {
     const at=Number(event.completedAt)||Date.now();
     if(this.assistantIds().includes(sessionId)){this.observeUsage(sessionId,event.usage,at);this.store.set('lastActiveAt:'+sessionId,at);this.scheduleIdleRotation(at);
       // 助理答完立刻让手机通道取答案推送，不等下一次定时处理。
-      try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}return;}
+      try{this.deps.onAssistantTurnComplete?.(sessionId);}catch{}
+      if(this._desk){setTimeout(()=>this._desk.check(),300).unref?.();}return;}
     const meta=this.sessionMetadata(sessionId);if(!meta||meta.purpose==='hub-assistant')return;
     try{this.ledger.record({...meta,id:sessionId});}catch(error){console.warn('[assistant] ledger',error.message);}
     if(this.ownsAssistant()&&this.watches.list().some(w=>w.sessionId===sessionId))this.pollWatches();
@@ -284,7 +285,11 @@ class AssistantService {
   fastLaneDisabled(){return this.frontDesk().mode==='cli';}
   // 手机对话记录：写入后推给助理 Tab 实时显示。
   logDialog(entry){const row=this.dialog.append(entry);try{this.deps.onDialogEntry?.(row);}catch{}return row;}
-  dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit})};}
+  dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit}),desk:this.desk?.busy()||null};}
+  // 电脑上对助理说的话（助理 Tab 输入框），与手机同一套回答方式。
+  get desk(){if(!this._desk)this._desk=new (require('./desk').AssistantDesk)({assistant:this,fastLane:this.deps.fastLane||null});return this._desk;}
+  ask({text}={}){return this.desk.ask(text);}
+  assistantLabel(){const p=this.currentProfile();let kind=p.kind;try{kind=require('../ai-kinds').getKindLabel(p.kind);}catch{}return[kind,p.label].filter(Boolean).join(' · ');}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
   async phoneProfile(){
     const defaults={};for(const kind of backends.BACKENDS)defaults[kind]=await this.deps.getDefaults?.(kind)||{};

@@ -150,3 +150,17 @@ test('phone dialog log keeps every message and reply with who answered, for the 
  assert.equal(rows[1].by,'千问 3.8 Flash');assert.match(rows[3].by,/Claude · Sonnet 5.5/);assert.equal(rows[2].durationMs,3000);assert.ok(rows[1].ms>=0);
  assert.equal(log.recent({limit:2}).length,2);fs.rmSync(dir,{recursive:true,force:true});
 });
+test('desk: desktop messages share the front desk — fast answers in place, work goes to the assistant session and its reply is logged; busy assistant queues',async()=>{
+ const {AssistantDesk}=require('../core/hub-assistant/desk'),{FastLane}=require('../core/hub-assistant/fast-lane');
+ const log=[],sent=[];let status='idle',finals=[];
+ const a={logDialog:e=>log.push({at:Date.now(),...e}),frontDesk:()=>({mode:'api',model:'qwen3.8-flash',modelLabel:'千问 3.8 Flash'}),recentHistory:()=>[],recordFastLane:()=>{},
+  overview:()=>({status}),send:async r=>{sent.push(r);return{ok:true,sessionId:'asst'};},readLiveFinal:()=>({records:finals}),assistantLabel:()=>'Claude · Sonnet 5.5 · 低'};
+ const desk=new AssistantDesk({assistant:a,fastLane:new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['田哥，2。'])}),pollMs:10});
+ const r1=await desk.ask('一加一等于几');assert.equal(r1.lane,'fast');assert.deepEqual(log.map(e=>[e.role,e.source||e.lane]),[['user','hub'],['assistant','fast']]);assert.equal(sent.length,0);
+ status='running';const r2=await desk.ask('帮我看看仿真跑完没');assert.equal(r2.lane,'assistant');assert.equal(sent.length,0,'busy assistant: queued, not sent');
+ status='idle';desk.check();await new Promise(r=>setTimeout(r,30));assert.equal(sent.length,1);assert.equal(sent[0].requestId,r2.id);
+ finals=[{clientSubmissionId:r2.id,text:'田哥，还在跑。'}];desk.check();
+ const last=log.at(-1);assert.equal(last.role,'assistant');assert.equal(last.lane,'assistant');assert.equal(last.text,'田哥，还在跑。');assert.equal(last.by,'Claude · Sonnet 5.5 · 低');
+ a.frontDesk=()=>({mode:'cli',model:'qwen3.8-flash',modelLabel:'千问 3.8 Flash'});const r3=await desk.ask('一加一等于几');assert.equal(r3.lane,'assistant','cli mode skips the API front desk');
+ await assert.rejects(desk.ask('  '));clearInterval(desk.timer);
+});
