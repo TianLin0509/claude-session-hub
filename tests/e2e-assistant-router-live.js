@@ -70,6 +70,30 @@ async function main(){
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(assistant)));
   result.checks.push('默认助理为 Claude Sonnet 5.5 · 低思考');
 
+  // 工作账本与自主记忆：业务会话答完即记账；会话关掉后再问也能答；不说「记住」的明确偏好助理也会记；当天首次换班做复盘。
+  if(process.env.ROUTER_LEDGER==='1'){
+   const ledgerFile=path.join(data,'assistant','ledger','ledger.jsonl'),userMd=path.join(data,'assistant','memory','USER.md');
+   let k=(await finals(assistant)).length;
+   await send('新开一个会话，用 Codex 快速档，让它只回答一句：「狼山海拔约 107 米」。派出后简短告诉我。');await final(assistant,k);await settled(assistant);
+   const act=await until('dispatched',async()=>(await invoke('assistant:actions',{})).actions.find(a=>a.result?.sessionId&&a.state==='acknowledged'),120000);
+   const target=act.result.sessionId;await final(target,0);
+   const recorded=await until('ledger entry',async()=>{try{return fs.readFileSync(ledgerFile,'utf8').split('\n').filter(Boolean).map(JSON.parse).find(e=>e.sessionId===target);}catch{return null;}},60000);
+   result.ledgerEntry=recorded.text;result.checks.push('业务会话答完一轮，完成事件即时记进工作账本');
+   await invoke('close-session',target);await until('target closed',async()=>!(await meta(target))||(await meta(target)).status==='dormant',60000).catch(()=>null);
+   k=(await finals(assistant)).length;await send('刚才派出去的那个会话最后回答了什么？只用一句话。');const recall=await final(assistant,k);await settled(assistant);
+   result.ledgerRecall=recall.text;assert.match(recall.text,/107/);result.checks.push('业务会话关掉后再问，助理从账本答出它的回答');
+   const before=fs.readFileSync(userMd,'utf8');
+   k=(await finals(assistant)).length;await send('以后回答我别用表格了，我主要在手机上看，表格挤成一团很难受。这次就回一句「好的」。');await final(assistant,k);await settled(assistant);
+   const afterSelf=fs.readFileSync(userMd,'utf8');result.autonomousMemory=afterSelf.replace(before,'').trim();
+   result.checks.push(afterSelf!==before?'没说「记住」的明确偏好，助理主动写进 USER.md：'+result.autonomousMemory.slice(0,80):'没说「记住」的偏好这次未被主动记下（留给每日复盘）');
+   await click('#btn-assistant');await click('.assistant-rotate');
+   const rot=await until('review rotation',async()=>{const v=await invoke('assistant:get-overview',{});return v.context?.lastRotation?.reason==='manual'?v:null;},400000);
+   const afterReview=fs.readFileSync(userMd,'utf8');result.userMdAfterReview=afterReview;
+   assert.match(afterReview,/表格/,'复盘后 USER.md 应包含不要表格的偏好');
+   const notices=(await invoke('assistant:notifications',{})).notifications||[];result.memoryNotices=notices.filter(n=>n.kind==='memory-update').map(n=>n.text);
+   result.checks.push(`当天首次换班做复盘：USER.md 含「不用表格」偏好；自动记忆提醒 ${result.memoryNotices.length} 条`);await shot('ledger-01');
+   result.passed=true;return;
+  }
   // 成长记忆：对话里「记住」由助理写进 USER.md；手改 USER.md 的条目（对话里没有）换班后 Claude 从系统提示知道，换 Codex 后新会话第一轮读到。
   if(process.env.ROUTER_MEMORY==='1'){
    const memDir=path.join(data,'assistant','memory'),userMd=path.join(memDir,'USER.md');
