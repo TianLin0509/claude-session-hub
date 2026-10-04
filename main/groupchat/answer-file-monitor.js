@@ -11,7 +11,7 @@ function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManage
   const hot = new Map();
   let subscription = null, timer = null;
   // touch=false for the sweep, so an idle room ages out of the hot set.
-  function reconcile(meetingId, touch = true) {
+  function reconcile(meetingId, touch = true, changedPaths = null) {
     if (!meetingId) { for (const id of hot.keys()) reconcile(id, false); return false; }
     const meeting = meetingManager.getMeeting(meetingId);
     if (!Answers.enabled(meeting)) return false;
@@ -19,7 +19,7 @@ function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManage
       const orch = getOrchestrator(meetingId);
       if (!orch.state.answerFiles) return false;
       if (touch || !hot.has(meetingId)) hot.set(meetingId, Date.now());
-      const changed = Answers.reconcile(orch);
+      const changed = Answers.reconcile(orch,{changedPaths});
       if (changed) sendToRenderer('groupchat:answer-file', { meetingId, revision: orch.state.revision });
       return changed;
     } catch (error) { logger.warn?.('[answer-files] reconcile failed:', meetingId, error.message); return false; }
@@ -33,7 +33,7 @@ function createAnswerFileMonitor({ getHubDataDir, getOrchestrator, meetingManage
     reconcile,
     start() {
       if (timer) return;
-      subscription = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), id => reconcile(id), logger);
+      subscription = require('../../core/task-directory-events').subscribeTaskDirectory(getHubDataDir(), (id,paths) => reconcile(id,true,paths), logger);
       timer = setInterval(sweep, SWEEP_MS); timer.unref?.();
     },
     dispose() { clearInterval(timer); timer = null; subscription?.dispose(); subscription = null; hot.clear(); },

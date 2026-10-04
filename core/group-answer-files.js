@@ -88,13 +88,22 @@ function acceptedDelivery(entry) {
   return accepted;
 }
 /** Applies changed answer files of recent turns to the orchestrator. Returns true if anything changed. */
-function reconcile(orch) {
+function reconcile(orch,{changedPaths=null}={}) {
   const byTurn = orch.state.answerFiles;
   if (!byTurn) return false;
   let changed = false;
+  const normalize=file=>process.platform==='win32'?path.resolve(file).toLowerCase():path.resolve(file);
+  const changedFiles=changedPaths?.length?new Set(changedPaths.map(normalize)):null;
+  const affectsPlainEntry=entry=>!changedFiles||['ready','rework','blocked','draft'].some(key=>entry[key]&&[...changedFiles].some(file=>{
+    const target=normalize(entry[key]);return target===file||target.startsWith(file+path.sep);
+  }));
   const turns = Object.keys(byTurn).map(Number).sort((a, b) => b - a).slice(0, RECENT_TURNS);
   for (const turnNum of turns) {
     for (const [sid, entry] of Object.entries(byTurn[turnNum] || {})) {
+      // File notifications check only matching plain answers. Workflow
+      // metadata may affect acceptance, so delivery entries keep a full check.
+      // The periodic/open-room reconciliation also always checks every entry.
+      if(entry.kind==='plain'&&!affectsPlainEntry(entry))continue;
       try {
         const accepted = acceptedDelivery(entry);
         if (accepted?.outcome === 'skipped') continue;

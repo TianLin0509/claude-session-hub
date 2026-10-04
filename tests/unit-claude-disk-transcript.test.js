@@ -95,3 +95,27 @@ test('tail limit keeps whole question/answer pairs', () => {
   const turns = parseClaudeTranscriptToNativeTurns(transcript(entries), { limit: 2, fromTail: true });
   assert.deepEqual(turns.map(t => t.text), ['q4', 'a4']);
 });
+
+test('Claude scheduled wakeups retain the human result and have separate activity cards', () => {
+  const entries=[user('讲清楚六个专题',0),assistant('final', [{type:'text',text:'完整的正式结果'}], 'end_turn', 1)];
+  for(let n=0;n<2;n++)entries.push(
+    {type:'system',subtype:'scheduled_task_fire',uuid:'fire-'+n,timestamp:new Date(1700000000000+(n+2)*1000).toISOString()},
+    user('检查任务进度',n+3,{isMeta:true,parentUuid:'fire-'+n}),
+    assistant('recap-'+n,[{type:'text',text:'定时检查 '+n}], 'end_turn', n+4));
+  const turns=parseClaudeTranscriptToNativeTurns(transcript(entries));
+  assert.deepEqual(turns.map(t=>t.text),['讲清楚六个专题','完整的正式结果','定时检查 0','定时检查 1']);
+  assert.equal(turns[1].nativeActivity,false);
+  assert.equal(turns[2].nativeOrigin.kind,'scheduled-task');
+  assert.equal(turns[3].nativeActivity,true);
+  assert.equal(turns[1].displayMessages.filter(m=>m.phase==='final_answer').at(-1).text,'完整的正式结果');
+  assert.notEqual(turns[1].id,turns[2].id);
+  assert.equal(turns.filter(t=>t.role==='user').length,1,'internal scheduler prompt is not a user question');
+});
+
+test('a pending scheduled wakeup never reopens or overwrites the already settled human answer', () => {
+  const records=claudeDiskRecords([user('q',0),assistant('a',[{type:'text',text:'正式结果'}],'end_turn',1),
+    {type:'system',subtype:'scheduled_task_fire',uuid:'fire'},user('检查',2,{isMeta:true,parentUuid:'fire'}),
+    assistant('thinking',[{type:'thinking',thinking:'检查进度'}],null,3)]);
+  assert.equal(records[0].status,'completed');assert.equal(records[0].finalText,'正式结果');
+  assert.equal(records[1].status,'running');assert.equal(records[1].origin.kind,'scheduled-task');
+});

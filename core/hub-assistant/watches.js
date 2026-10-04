@@ -6,6 +6,11 @@ class AssistantWatches{
   }
   list(){return this.store.db.prepare('SELECT value FROM assistant_watches').all().map(r=>JSON.parse(r.value));}
   save(watch){this.store.db.prepare('INSERT INTO assistant_watches VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET value=excluded.value').run(watch.sessionId,JSON.stringify(watch));}
+  saveChanged(previous,next){
+    const {updatedAt:_old,...before}=previous,{updatedAt:_next,...after}=next;
+    if(JSON.stringify(before)===JSON.stringify(after))return false;
+    this.save({...next,updatedAt:Date.now()});return true;
+  }
   follow(sessionId){
     const old=this.list().find(w=>w.sessionId===sessionId);if(old)return old;
     const meta=this.getSession(sessionId);if(!meta)throw new Error('找不到这个原会话');
@@ -27,6 +32,10 @@ class AssistantWatches{
         if(watch.nativeSessionId&&nativeId(meta)!==watch.nativeSessionId)throw new Error('原生会话身份发生变化，已暂停关注');
         const result=this.readFinal(meta,{cursor:watch.cursor});if(!result.available)throw new Error(result.issue);
         const seen=new Set(watch.seen),newRecords=result.records.filter(r=>!seen.has(r.notificationKey||r.id)&&(!watch.cursor?!!r.timestamp&&r.timestamp>=watch.createdAt:true));
+        const next={...watch,nativeSessionId:result.identity,cursor:result.cursor,seen:[...seen,...result.records.map(r=>r.notificationKey||r.id)].slice(-500),state:'watching',lastError:null};
+        // Keep reading at the existing cadence. Only disk writes are skipped;
+        // cursor advances without a final reply must still be persisted.
+        if(!newRecords.length){this.saveChanged(watch,next);continue;}
         const notices=[];this.store.db.exec('BEGIN IMMEDIATE');
         try{
           for(const source of newRecords){
@@ -35,11 +44,11 @@ class AssistantWatches{
             const changed=this.store.db.prepare('INSERT OR IGNORE INTO assistant_notifications VALUES(?,?,?,?,NULL)').run(id,watch.sessionId,JSON.stringify(notice),notice.createdAt).changes;
             if(changed)notices.push(notice);
           }
-          this.save({...watch,nativeSessionId:result.identity,cursor:result.cursor,seen:[...seen,...result.records.map(r=>r.notificationKey||r.id)].slice(-500),updatedAt:Date.now(),state:'watching',lastError:null});
+          this.saveChanged(watch,next);
           this.store.db.exec('COMMIT');
         }catch(error){this.store.db.exec('ROLLBACK');throw error;}
         for(const notice of notices){try{this.onNotification(notice);}catch{}}
-      }catch(error){this.save({...watch,state:'error',lastError:error.message,updatedAt:Date.now()});}
+      }catch(error){this.saveChanged(watch,{...watch,state:'error',lastError:error.message});}
     }
     return this.notifications();
   }

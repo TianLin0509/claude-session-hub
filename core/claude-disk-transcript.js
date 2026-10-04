@@ -48,7 +48,7 @@ function assistantText(message) {
     .filter(block => block && block.type === 'text').map(block => block.text || '').join('\n\n');
 }
 
-function newRecord(entry, text, nativeActivity) {
+function newRecord(entry, text, nativeActivity, origin = null) {
   const at = toMs(entry.timestamp) || 0;
   const content = Array.isArray(entry.message?.content) ? entry.message.content : [{ type: 'text', text }];
   return {
@@ -63,7 +63,7 @@ function newRecord(entry, text, nativeActivity) {
     messages: new Map(),
     streams: new Map(),
     nativeActivity,
-    origin: nativeActivity ? { kind: 'task-notification' } : null,
+    origin: origin || (nativeActivity ? { kind: 'task-notification' } : null),
     lastAt: at,
   };
 }
@@ -76,10 +76,20 @@ function settle(record, status) {
 
 function claudeDiskRecords(entries) {
   const records = [];
+  const scheduledFires = new Set();
   let current = null;
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || entry.isSidechain) continue;
     const at = toMs(entry.timestamp);
+    // A native scheduled wakeup starts an independent background turn. Its
+    // meta prompt is not a human question, but its answer must not overwrite
+    // the previous human turn's final result.
+    if (entry.type === 'system' && entry.subtype === 'scheduled_task_fire') {
+      if (entry.uuid) scheduledFires.add(entry.uuid);
+      if (current) settle(current, current.finalText ? 'completed' : 'interrupted');
+      current = null;
+      continue;
+    }
     if (entry.type === 'user' && !isToolResultEntry(entry)) {
       const text = userText(entry.message);
       if (isInterruptMarker(text)) {
@@ -87,10 +97,12 @@ function claudeDiskRecords(entries) {
         continue;
       }
       const notification = isTaskNotification(entry, text);
-      if (!notification && isSyntheticUserEntry(entry, text)) continue;
+      const scheduled = entry.isMeta === true && scheduledFires.has(entry.parentUuid);
+      if (!notification && !scheduled && isSyntheticUserEntry(entry, text)) continue;
       if (!notification && !text.trim() && !(entry.message?.content || []).some?.(b => b && b.type === 'image')) continue;
       if (current) settle(current, current.finalText ? 'completed' : 'interrupted');
-      current = newRecord(entry, text, notification);
+      current = newRecord(entry, text, notification || scheduled,
+        scheduled ? { kind: 'scheduled-task', triggerId: entry.parentUuid } : null);
       records.push(current);
       continue;
     }
