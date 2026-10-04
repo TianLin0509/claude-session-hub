@@ -11,7 +11,7 @@ const { inside } = require('../core/disk-release-policy');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-disk-release-e2e-'));
 const dataDir = path.join(root, 'data');
 const cleanupRoot = path.join(root, 'cleanup');
-const output = path.join(__dirname, '..', 'artifacts', '20261004-disk-release-codex2');
+const output = path.join(__dirname, '..', 'artifacts', '20261004-disk-scope-codex2');
 function fixture(name, size, old = true) {
   const file = path.join(cleanupRoot, name, 'data', 'cache', 'session-search-v3.sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, Buffer.alloc(size, 7));
@@ -64,6 +64,8 @@ async function screenshot(client, name) {
   const changed = fixture('hub-writing-changed', 1024 ** 2);
   const recent = fixture('hub-writing-recent', 1024, false);
   const linked = fixture('hub-writing-linked', 1024);
+  const personal = path.join(cleanupRoot, 'personal', 'family.jpg');
+  fs.mkdirSync(path.dirname(personal)); fs.writeFileSync(personal, 'family photo stays');
   const outside = path.join(root, 'outside'); fs.mkdirSync(outside);
   const sentinel = path.join(outside, 'important.txt'); fs.writeFileSync(sentinel, 'outside remains intact');
   const link = path.join(path.dirname(path.dirname(path.dirname(linked))), 'external-link');
@@ -101,6 +103,36 @@ async function screenshot(client, name) {
       `only the two old safe fixtures should be selected: ${await client.eval("document.querySelector('#disk-release-panel').textContent")}`);
     assert.equal(await client.eval(`(() => {const r=document.querySelector('#disk-release-panel').getBoundingClientRect();return r.top>=0 && r.left>=0 && r.bottom<=innerHeight && r.right<=innerWidth;})()`), true);
     assert.match(await client.eval(`document.querySelector('#disk-release-panel').textContent`), /5\.0 MB/);
+    await click(client, '[data-dr-tab="usage"]');
+    await waitFor(client, `document.querySelector('#disk-release-panel .dr-busy')`);
+    await click(client, '[data-dr-close]');
+    await click(client, '#sidebar-strip .strip-disk');
+    await waitFor(client, `!document.querySelector('#disk-release-panel .dr-busy') && document.querySelector('[data-dr-tab="usage"][aria-pressed="true"]')`);
+    assert.match(await client.eval(`document.querySelector('#disk-release-panel').textContent`), /取消/);
+    await click(client, '[data-dr-rescan]');
+    await waitFor(client, `document.querySelector('#disk-release-panel .dr-usage-item')`);
+    assert.equal(await client.eval(`document.querySelectorAll('#disk-release-panel input[data-dr-key]').length`), 0);
+    assert.match(await client.eval(`document.querySelector('#disk-release-panel').textContent`), /仅分析|仅查看/);
+    assert.match(await client.eval(`document.querySelector('#disk-release-panel').textContent`), /personal/);
+    assert.equal(fs.readFileSync(personal, 'utf8'), 'family photo stays');
+    captures.push(await screenshot(client, '20261004-disk-scope-usage-codex2.png'));
+    console.log('PASS real mouse usage analysis reports physical allocation without cleanup controls; personal file retained');
+    await click(client, '[data-dr-rescan]');
+    await waitFor(client, `document.querySelector('#disk-release-panel .dr-busy')`);
+    await click(client, '[data-dr-close]');
+    await waitFor(client, `document.querySelector('#disk-release-panel').hidden`);
+    const cancelDeadline = Date.now() + 60000;
+    while ((await client.eval(`ipcRenderer.invoke('get-disk-release-status')`)).busy) {
+      if (Date.now() > cancelDeadline) throw new Error('Usage cancel did not finish');
+      await _waitMs(200);
+    }
+    await click(client, '#sidebar-strip .strip-disk');
+    await waitFor(client, `document.querySelector('#disk-release-panel .dr-usage-item')`);
+    console.log('PASS closing the usage scan cancels it and keeps the cached result and cleanup plan');
+    await click(client, '[data-dr-tab="cleanup"]');
+    await waitFor(client, `document.querySelector('#disk-release-panel [data-dr-review]')`);
+    assert.equal(await client.eval(`document.querySelectorAll('#disk-release-panel input[data-dr-key]:checked').length`), 2,
+      'analysis must preserve the current cleanup selection');
     captures.push(await screenshot(client, '20261004-disk-release-list-codex2.png'));
     console.log('PASS disk click opens correct panel, physical sizes visible, recent and linked data protected');
 
@@ -115,6 +147,7 @@ async function screenshot(client, name) {
     assert.equal(fs.existsSync(recent), true, 'recent data stays intact');
     assert.equal(fs.existsSync(linked), true, 'linked directory stays intact');
     assert.equal(fs.readFileSync(sentinel, 'utf8'), 'outside remains intact');
+    assert.equal(fs.readFileSync(personal, 'utf8'), 'family photo stays');
     assert.match(await client.eval(`document.querySelector('#disk-release-panel').textContent`), /已处理 1\/2 项/);
     captures.push(await screenshot(client, '20261004-disk-release-result-codex2.png'));
     console.log('PASS real mouse selection/review/confirm deletes approved files, changed and external files remain');
@@ -137,7 +170,7 @@ async function screenshot(client, name) {
 
     const forged = await client.eval(`ipcRenderer.invoke('execute-disk-release', {scanId:'forged', keys:['${sentinel.replaceAll('\\','\\\\')}'], confirmed:true})`);
     assert.equal(forged.ok, false); assert.equal(fs.existsSync(sentinel), true);
-    const evidence = { ok: true, fixtureData: true, screenshots: captures, protected: ['recent files', 'changed files', 'directory links', 'outside sentinel'], realDeletion: true, backgroundHubPid: hub.pid };
+    const evidence = { ok: true, fixtureData: true, usageAnalysis: true, readOnlyPersonalData: true, screenshots: captures, protected: ['recent files', 'changed files', 'directory links', 'outside sentinel', 'personal photo'], realDeletion: true, backgroundHubPid: hub.pid };
     fs.writeFileSync(path.join(output, '20261004-disk-release-e2e-codex2.json'), JSON.stringify(evidence, null, 2), 'utf8');
     console.log('E2E PASS', JSON.stringify(evidence));
   } finally {

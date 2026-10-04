@@ -4,7 +4,7 @@ const { Worker } = require('worker_threads');
 
 function createDiskReleaseService(options = {}) {
   let worker = null; let sequence = 0; let busy = false; let kind = null;
-  let status = { phase: 'idle', message: '' }; let lastResult = null;
+  let status = { phase: 'idle', message: '' }; let lastResult = null; let lastUsage = null;
   const pending = new Map();
   function reset(error) {
     for (const request of pending.values()) request.reject(error);
@@ -29,6 +29,7 @@ function createDiskReleaseService(options = {}) {
       } else {
         status = { phase: 'idle', message: '', kind };
         if (kind === 'execute') lastResult = message.result;
+        if (kind === 'usage') lastUsage = message.result;
         request.resolve(message.result);
       }
       kind = null;
@@ -44,8 +45,9 @@ function createDiskReleaseService(options = {}) {
   }
   return {
     scan: () => run('scan'), execute: request => run('execute', request),
-    status: () => ({ ...status, busy, kind, lastResult }),
-    cancelScan: () => { if (busy && kind === 'scan') worker?.postMessage({ method: 'cancel' }); },
+    analyzeUsage: () => run('usage'),
+    status: () => ({ ...status, busy, kind, completedKind: busy ? null : status.kind, lastResult, lastUsage }),
+    cancelScan: () => { if (busy && ['scan', 'usage'].includes(kind)) worker?.postMessage({ method: 'cancel' }); },
     stop: () => { const owned = worker; worker = null; reset(new Error('Hub 已退出')); return owned?.terminate(); },
   };
 }

@@ -7,17 +7,18 @@ function formatBytes(bytes) {
   return `${Math.round(value / 1024)} KB`;
 }
 
-function attachDiskReleasePanel({ document: doc, request, execute, getStatus, cancelScan, subscribeProgress, escapeHtml, onOpen, onComplete }) {
+function attachDiskReleasePanel({ document: doc, request, execute, analyzeUsage, getStatus, cancelScan, subscribeProgress, escapeHtml, onOpen, onComplete }) {
   const strip = doc.getElementById('sidebar-strip');
   if (!strip) return null;
   const esc = escapeHtml;
   const panel = doc.createElement('div');
   panel.id = 'disk-release-panel'; panel.className = 'disk-release-panel'; panel.hidden = true;
-  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '硬盘释放');
+  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '硬盘管理');
   doc.body.appendChild(panel);
   let plan = null; let result = null; let view = 'list'; let busy = false; let busyKind = null;
   let anchor = null; let epoch = 0; let poll = null; let selected = new Set(); let message = '';
   let statusPending = false;
+  let usage = null;
 
   const chosen = () => (plan?.items || []).filter(item => selected.has(item.key) && item.tier !== 'info');
   const chosenBytes = () => chosen().reduce((sum, item) => sum + item.bytes, 0);
@@ -28,9 +29,11 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
     panel.style.bottom = `${Math.max(8, doc.documentElement.clientHeight - rect.top + 8)}px`;
   }
   function head() {
-    return '<div class="dr-head"><strong>硬盘释放</strong><span>'
-      + `<button type="button" class="dr-link" data-dr-rescan${busy ? ' disabled' : ''}>重新扫描</button>`
-      + '<button type="button" class="dr-close" data-dr-close aria-label="关闭">×</button></span></div>';
+    return '<div class="dr-head"><strong>硬盘管理</strong><span>'
+      + `<button type="button" class="dr-link" data-dr-rescan${busy ? ' disabled' : ''}>${view === 'usage' ? '重新分析' : '重新扫描'}</button>`
+      + '<button type="button" class="dr-close" data-dr-close aria-label="关闭">×</button></span></div>'
+      + `<div class="dr-tabs" role="group" aria-label="硬盘管理功能"><button type="button" data-dr-tab="cleanup" aria-pressed="${view !== 'usage'}"${busy ? ' disabled' : ''}>清理数据</button>`
+      + `<button type="button" data-dr-tab="usage" aria-pressed="${view === 'usage'}"${busy ? ' disabled' : ''}>查看大目录占用</button></div>`;
   }
   function diskHtml(disk) {
     const pct = disk?.usedPct;
@@ -61,7 +64,7 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
       + section('manual', 'Android 测试设备 · 自行选择', '设备与登录状态会一并删除，确认以后不再需要才勾选。')
       + `<details class="dr-protected"><summary>已保留 ${plan.totals?.protectedItems || 0} 项正在使用或无法确认的数据</summary>`
       + (plan.items || []).filter(item => item.tier === 'info').map(itemHtml).join('') + '</details>'
-      + '<p class="dr-note">扫描已知缓存和临时测试位置。正式聊天记录、源码和系统文件保留。预计大小已核对文件占用，最终以清理后的可用空间为准。</p></div>'
+      + '<p class="dr-note">范围：npm、pip、uv、Yarn、Gradle、Chrome / Edge / VibeData 浏览器缓存，以及临时 Hub 测试和 Android 测试设备。浏览器登录、正式聊天记录、源码和系统文件保留。共享文件与正在使用的缓存保留。</p></div>'
       + `<div class="dr-footer"><span data-dr-count>已勾选 ${chosen().length} 项</span><button type="button" class="dr-primary" data-dr-review${chosen().length ? '' : ' disabled'}>预计释放 ${formatBytes(chosenBytes())}</button></div>`;
   }
   function renderConfirm() {
@@ -82,6 +85,17 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
       + '<p class="dr-note">空间变化按执行前后的磁盘可用空间计算，期间其他程序的写入也会影响这个数字。</p>' + receipt + '</div>'
       + '<div class="dr-footer"><span>清理结果已核对</span><button type="button" class="dr-primary" data-dr-rescan>重新扫描</button></div>';
   }
+  function renderUsage() {
+    const items = usage?.items || [];
+    panel.innerHTML = `${head()}<div class="dr-scroll"><p class="dr-lead">查看微信、桌面、聊天历史、模型、环境和项目占用；这里仅分析，不提供删除操作。</p>`
+      + (usage ? `<p class="dr-note">核对时间 ${esc(new Date(usage.scannedAt).toLocaleString('zh-CN'))}。按已核对大小排序；≥ 表示部分结果，实际可能更大。目录之间可能有共享文件，不相加为磁盘总占用。</p>` : '')
+      + (items.length ? items.map(item => `<section class="dr-usage-item"><div class="dr-usage-title"><strong>${esc(item.title)}</strong><b>${item.partial ? '≥ ' : ''}${formatBytes(item.bytes)}</b></div>`
+        + `<p>${esc(item.note || '')}</p>${item.partial ? `<p class="dr-usage-partial">${esc(item.reason || '部分文件未能核对')}</p>` : ''}`
+        + `<details class="dr-location"><summary>位置与子目录占用</summary><code>${esc(item.path)}</code>`
+        + (item.children || []).map(child => `<div class="dr-usage-child"><span>${esc(child.title)}</span><b>${formatBytes(child.bytes)}</b></div>`).join('') + '</details></section>').join('')
+        : `<div class="dr-empty">${esc(message || '没有发现可读取的目录')}</div>`)
+      + '</div><div class="dr-footer"><span>占用大小不等于可释放空间</span><button type="button" class="dr-primary" data-dr-rescan>重新分析</button></div>';
+  }
   function showBusy(text) {
     panel.innerHTML = `${head()}<div class="dr-busy" role="status"><span class="dr-spinner"></span><span data-dr-progress>${esc(text)}</span></div>`
       + `<p class="dr-note dr-busy-note">${busyKind === 'execute' ? '关闭面板后仍会继续；再次点击硬盘可查看进度和结果。' : '正在后台检查，文件较多时需要一点时间。'}</p>`;
@@ -90,6 +104,7 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
   function render() {
     if (panel.hidden) return;
     if (busy) showBusy(message);
+    else if (view === 'usage') renderUsage();
     else if (view === 'result' && result) renderResult();
     else if (view === 'confirm') renderConfirm();
     else if (plan) renderList();
@@ -99,7 +114,7 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
   async function scan() {
     if (busy) return;
     const token = ++epoch;
-    busy = true; busyKind = 'scan'; plan = null; selected.clear(); view = 'list';
+    busy = true; busyKind = 'scan'; plan = null; result = null; selected.clear(); view = 'list';
     message = '正在检查可清理的数据…'; render();
     let next;
     try { next = await request(); } catch (error) { next = { error: error.message }; }
@@ -119,6 +134,18 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
     else { view = 'list'; plan = null; message = result?.error || '清理失败，请重新扫描'; }
     render();
   }
+  async function inspectUsage() {
+    if (busy || !analyzeUsage) return;
+    const token = ++epoch;
+    view = 'usage'; busy = true; busyKind = 'usage'; message = '正在后台分析常用大目录的占用…'; render();
+    let next;
+    try { next = await analyzeUsage(); } catch (error) { next = { error: error.message }; }
+    if (token !== epoch) return;
+    busy = false; busyKind = null;
+    if (next?.ok) { usage = next; message = ''; }
+    else { usage = null; message = next?.error || '占用分析失败，请重试'; }
+    render();
+  }
   async function refreshStatus() {
     if (statusPending || panel.hidden || !busy || !getStatus) return;
     statusPending = true;
@@ -130,7 +157,9 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
         if (target) target.textContent = message;
       } else if (busyKind === 'external') {
         busy = false; busyKind = null;
-        if (status.lastResult) { result = status.lastResult; view = 'result'; }
+        if (status.phase === 'error') message = status.message || '检查失败，请重试';
+        else if (status.completedKind === 'usage' && status.lastUsage) { usage = status.lastUsage; view = 'usage'; }
+        else if (status.completedKind === 'execute' && status.lastResult) { result = status.lastResult; view = 'result'; }
         else message = '检查已结束，点「重新扫描」查看清单';
         render();
       }
@@ -140,11 +169,12 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
     anchor = target || strip.querySelector('.strip-disk');
     onOpen?.(); panel.hidden = false; doc.body.classList.add('disk-release-open');
     anchor?.setAttribute('aria-expanded', 'true');
-    if (busy || view === 'result') render();
+    if (busy || view === 'result' || (view === 'usage' && usage)) render();
     else {
       const status = getStatus ? await getStatus().catch(() => null) : null;
       if (panel.hidden) return;
       if (status?.busy) { busy = true; busyKind = 'external'; message = status.message || '正在后台处理…'; render(); }
+      else if (view === 'usage') render();
       else void scan();
     }
     clearInterval(poll); poll = setInterval(refreshStatus, 1000);
@@ -152,7 +182,7 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
   function close() {
     panel.hidden = true; doc.body.classList.remove('disk-release-open');
     anchor?.setAttribute('aria-expanded', 'false'); clearInterval(poll);
-    if (busyKind === 'scan') {
+    if (['scan', 'usage'].includes(busyKind)) {
       ++epoch; busy = false; busyKind = null; message = '扫描已取消';
       void cancelScan?.();
     }
@@ -181,8 +211,16 @@ function attachDiskReleasePanel({ document: doc, request, execute, getStatus, ca
   });
   panel.addEventListener('click', event => {
     if (event.target.closest('[data-dr-close]')) { close(); return; }
-    if (event.target.closest('[data-dr-rescan]')) { void scan(); return; }
+    if (event.target.closest('[data-dr-rescan]')) { if (view === 'usage') void inspectUsage(); else void scan(); return; }
     if (busy) return;
+    const tab = event.target.closest('[data-dr-tab]');
+    if (tab) {
+      if (tab.dataset.drTab === 'usage') { if (usage) { view = 'usage'; render(); } else void inspectUsage(); }
+      else if (result) { view = 'result'; render(); }
+      else if (plan) { view = 'list'; render(); }
+      else void scan();
+      return;
+    }
     if (event.target.closest('[data-dr-review]') && chosen().length) { view = 'confirm'; render(); }
     else if (event.target.closest('[data-dr-back]')) { view = 'list'; render(); }
     else if (event.target.closest('[data-dr-confirm]')) void run();

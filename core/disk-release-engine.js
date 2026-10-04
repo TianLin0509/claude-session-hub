@@ -40,7 +40,13 @@ function createDiskReleaseEngine(options = {}) {
   }
   function installing(rows) {
     return rows.some(row => /\b(?:install|ci|add|sync)\b/i.test(row.cmd || '')
-      && /(?:npm-cli\.js|\b(?:pip|uv|pnpm)(?:\.exe)?\b)/i.test(row.cmd || ''));
+      && /(?:npm-cli\.js|\b(?:pip|uv|pnpm|yarn)(?:\.exe)?\b)/i.test(row.cmd || ''));
+  }
+  function assertInactive(candidate, rows) {
+    if (references(candidate.path, rows).length || unknownDevelopmentProcesses(rows)) throw new Error('活动程序仍在使用，或无法确认活动状态，已保留');
+    if (candidate.activeNames?.some(name => rows.some(row => String(row.name).toLowerCase() === name))) throw new Error('相关程序正在运行，缓存已保留');
+    if (candidate.mode === 'cache' && installing(rows)) throw new Error('有依赖安装正在进行，缓存已保留');
+    if (candidate.mode === 'emulators' && rows.some(row => /qemu|emulator/i.test(row.name))) throw new Error('有 Android 模拟器正在运行，设备已保留');
   }
   function protectedTarget(target) {
     return protectedPaths.some(root => inside(root, target, true) || inside(target, root, true));
@@ -65,7 +71,7 @@ function createDiskReleaseEngine(options = {}) {
     return { root: path.parse(path.resolve(root)).root, totalBytes, freeBytes,
       usedPct: totalBytes ? Math.round((1 - freeBytes / totalBytes) * 1000) / 10 : null };
   }
-  async function inspectTree(root, { allowRecent = false } = {}) {
+  async function inspectTree(root, { allowRecent = false, retainHardLinks = false } = {}) {
     const files = []; const dirs = []; let newest = 0;
     const stack = [root];
     while (stack.length) {
@@ -82,6 +88,7 @@ function createDiskReleaseEngine(options = {}) {
         if (stat.isSymbolicLink()) throw new Error('包含目录链接，已保留');
         if (stat.isDirectory()) { stack.push(target); continue; }
         if (!stat.isFile()) throw new Error('包含无法确认的文件类型，已保留');
+        if (retainHardLinks && stat.nlink > 1) throw new Error('缓存与已安装环境共享文件，已保留');
         newest = Math.max(newest, stat.mtimeMs);
         if (!allowRecent && stat.mtimeMs > now() - AGE_MS) throw new Error('最近两天仍有更新，已保留');
         files.push({ path: target, size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino });
@@ -104,6 +111,33 @@ function createDiskReleaseEngine(options = {}) {
       try {
         await assertPlainPath(scope.root, path.dirname(scope.root), false, scope.mode === 'cache');
         if (scope.mode === 'cache') { found.push({ ...scope, path: scope.root, tier: 'safe' }); continue; }
+        if (scope.mode === 'browserCaches') {
+          // Search only profile roots and their immediate children. Never select a profile itself.
+          const parents = [scope.root];
+          for (const entry of await fs.readdir(scope.root, { withFileTypes: true })) {
+            if (entry.isDirectory() && !entry.isSymbolicLink()) parents.push(path.join(scope.root, entry.name));
+          }
+          const profiles = [...parents];
+          for (const parent of parents.slice(1)) {
+            for (const entry of await fs.readdir(parent, { withFileTypes: true })) {
+              if (entry.isDirectory() && !entry.isSymbolicLink() && /^(Default|Profile \d+)$/.test(entry.name)) profiles.push(path.join(parent, entry.name));
+            }
+          }
+          for (const profile of profiles) {
+            for (const name of ['Cache', 'Code Cache', 'GPUCache']) {
+              const target = path.join(profile, name);
+              try {
+                const stat = await fs.lstat(target);
+                if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+                // A cache folder must belong to a Chromium profile with its Preferences file.
+                const marker = await fs.lstat(path.join(profile, 'Preferences'));
+                if (!marker.isFile() || marker.isSymbolicLink()) continue;
+                found.push({ ...scope, root: target, path: target, mode: 'cache', tier: 'safe', label: `${scope.label} · ${name}` });
+              } catch (error) { if (error.code !== 'ENOENT') throw error; }
+            }
+          }
+          continue;
+        }
         for (const entry of await fs.readdir(scope.root, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
           const target = path.join(scope.root, entry.name);
@@ -135,11 +169,9 @@ function createDiskReleaseEngine(options = {}) {
       progress('scanning', `正在检查 ${index + 1}/${candidates.length} 项…`, { current: index + 1, total: candidates.length }, true);
       try {
         if (item.tier === 'info') throw new Error(item.reason);
-        if (references(candidate.path, rows).length || unknownDevelopmentProcesses(rows)) throw new Error('活动程序仍在使用，或无法确认活动状态，已保留');
-        if (candidate.mode === 'cache' && installing(rows)) throw new Error('有依赖安装正在进行，缓存已保留');
-        if (candidate.mode === 'emulators' && rows.some(row => /qemu|emulator/i.test(row.name))) throw new Error('有 Android 模拟器正在运行，设备已保留');
+        assertInactive(candidate, rows);
         await assertPlainPath(candidate.path, candidate.root, candidate.mode === 'cache');
-        const tree = await inspectTree(candidate.path, { allowRecent: candidate.mode === 'cache' });
+        const tree = await inspectTree(candidate.path, { allowRecent: candidate.mode === 'cache', retainHardLinks: candidate.mode === 'cache' });
         if (tree.files.length === 0) continue;
         progress('scanning', '正在核对实际磁盘占用…', {}, true);
         const sizes = await measure(tree.files);
@@ -186,11 +218,9 @@ function createDiskReleaseEngine(options = {}) {
         const result = { key: item.key, title: item.title, path: item.path, ok: false, deletedFiles: 0, deletedLogicalBytes: 0 };
         progress('executing', `正在清理 ${++index}/${chosen.length} 项…`, { current: index, total: chosen.length }, true);
         try {
-          if (references(candidate.path, rows).length || unknownDevelopmentProcesses(rows)) throw new Error('现在仍在使用，已跳过');
-          if (candidate.mode === 'cache' && installing(rows)) throw new Error('现在有依赖安装，已跳过');
-          if (candidate.mode === 'emulators' && rows.some(row => /qemu|emulator/i.test(row.name))) throw new Error('模拟器现在正在运行，已跳过');
+          assertInactive(candidate, rows);
           await assertPlainPath(candidate.path, candidate.root, candidate.mode === 'cache');
-          const fresh = await inspectTree(candidate.path, { allowRecent: candidate.mode === 'cache' });
+          const fresh = await inspectTree(candidate.path, { allowRecent: candidate.mode === 'cache', retainHardLinks: candidate.mode === 'cache' });
           const known = new Map(tree.files.map(file => [file.path, file]));
           if (fresh.files.length !== tree.files.length || fresh.files.some(file => {
             const old = known.get(file.path);
