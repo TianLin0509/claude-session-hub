@@ -219,6 +219,12 @@ async function main(){
      await click('[data-ap="engine"]');await until('engine menu',()=>cdp.eval('!!document.querySelector(".ap-menu select")'),5000);await shot('ap-menu-engine');await click('[data-ap="engine"]');
      await click('[data-ap="more"]');await until('more menu',()=>cdp.eval('!!document.querySelector(".ap-menu")'),5000);await shot('ap-menu-more');await click('[data-ap="more"]');
      fs.writeFileSync(path.join(dir,'hub-page-done.json'),j({before,rows:await rows()},null,1));}
+    // hub-page-shot：打开助理页截图，并写出 Markdown 渲染情况（表格、加粗是否成型、是否残留星号）。
+    const shotSignal=path.join(dir,'hub-page-shot');
+    if(fs.existsSync(shotSignal)){fs.unlinkSync(shotSignal);
+     if(!await cdp.eval('!!document.querySelector(".assistant-page:not([hidden])")'))await click('#btn-assistant');
+     await until('assistant page open',()=>cdp.eval('!!document.querySelector(".assistant-page:not([hidden]) .ap-list")'),20000);await wait(800);await shot('ap-markdown');
+     fs.writeFileSync(path.join(dir,'hub-page-shot.json'),j(await cdp.eval('({tables:document.querySelectorAll(".assistant-page .ap-md table").length,strong:document.querySelectorAll(".assistant-page .ap-md strong").length,stars:[...document.querySelectorAll(".assistant-page .ap-md")].filter(e=>/\\*\\*/.test(e.innerText)).length})'),null,1));}
     // hub-page-live：助理页开着时，手机发来的消息与回复实时出现在同一条对话里。
     const liveSignal=path.join(dir,'hub-page-live');
     if(fs.existsSync(liveSignal)){fs.unlinkSync(liveSignal);
