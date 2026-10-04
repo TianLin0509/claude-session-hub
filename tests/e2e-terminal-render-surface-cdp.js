@@ -56,12 +56,16 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     const result = await client.eval(`(async () => {
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const api = window.__hubE2E;
+      // This pixel probe counts bright text against black. Use the dark
+      // terminal palette explicitly; a light background would count as ink.
+      themeController.setTheme('dark');
       const electronIpc = require('electron').ipcRenderer;
       const now = Date.now();
       api.addFakeSession({ id: 'surface-a', kind: 'claude', title: 'Surface A', status: 'idle', createdAt: now, lastMessageTime: now });
       api.addFakeSession({ id: 'surface-b', kind: 'claude', title: 'Surface B', status: 'idle', createdAt: now + 1, lastMessageTime: now + 1 });
 
       await api.selectSession('surface-a');
+      applyViewMode('pty');
       await wait(350);
       const first = terminalCache.get('surface-a');
       const lines = Array.from({ length: Math.max(12, Math.min(30, first.terminal.rows - 2)) }, (_, i) =>
@@ -101,9 +105,11 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       }
       const cleared = canvasInk(first);
 
-      showTerminal('surface-b', { focus: false });
+      await api.selectSession('surface-b');
+      applyViewMode('pty');
       await wait(180);
-      showTerminal('surface-a', { focus: false });
+      await api.selectSession('surface-a');
+      applyViewMode('pty');
       await wait(350);
 
       const restored = terminalCache.get('surface-a');
