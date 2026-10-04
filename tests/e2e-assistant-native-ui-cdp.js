@@ -18,11 +18,11 @@ async function main(){
   hub=await launchIsolatedHub({dataDir,port:await port(),label:'assistant-native-ui',windowMode:'background',extraEnv:{CLAUDE_HUB_HOME_DIR:home,CODEX_HOME:path.join(home,'.codex'),CODEX_SQLITE_HOME:'',CLAUDE_CONFIG_DIR:path.join(home,'.claude'),AI_HUB_WORKSPACE_ROOT:root,CLAUDE_HUB_AGENT_RUNTIME:'native',CLAUDE_HUB_CODEX_APP_SERVER_FIXTURE:path.resolve('tests/fixtures/codex-app-server.js'),CLAUDE_HUB_NATIVE_FIXTURE_STORE:path.join(root,'threads.json'),CLAUDE_HUB_NATIVE_FIXTURE_TRACE:path.join(root,'trace.jsonl'),CLAUDE_HUB_FIXTURE_CONFIG_DIR:path.join(root,'launch-config'),HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),DEEPSEEK_API_KEY:''}});
   cdp=await connectFirstPage(hub);result.pid=hub.pid;await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer','typeof assistantPanel!=="undefined"');await cdp.eval('localStorage.setItem("hub.assistant.chat-draft","旧助理尚未发送的草稿")');
-  await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});await click('#rail-pin');await click('#btn-assistant');
+  await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});await click('#rail-pin');await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');
   await until('ordinary surface','document.body.classList.contains("assistant-session-active") && !!document.querySelector("#terminal-panel .floating-input-box")');
   const id=await cdp.eval('activeSessionId');result.sessionId=id;
   assert.equal(await cdp.eval('sessions.get(activeSessionId).purpose'),'hub-assistant');assert.equal(await cdp.eval('currentView'),'card');
-  assert.equal(await cdp.eval('document.querySelectorAll(".floating-input-bar").length'),1);assert.equal(await cdp.eval('!!document.getElementById("assistant-page")'),false);
+  assert.equal(await cdp.eval('document.querySelectorAll(".floating-input-bar").length'),1);assert.equal(await cdp.eval('!!document.querySelector("#assistant-page:not([hidden])")'),false,'打开助理会话后助理页收起');
   assert.match(await cdp.eval('document.querySelector(".floating-input-box").textContent'),/旧助理尚未发送的草稿/);assert.equal(await cdp.eval('localStorage.getItem("hub.assistant.chat-draft")'),null);
   await until('native binding','sessions.get(activeSessionId)?.nativeRuntime?.connection==="connected"');
   assert.equal(trace().filter(r=>r.method==='thread/start').length,1);assert.equal(trace().filter(r=>r.method==='turn/start').length,0);

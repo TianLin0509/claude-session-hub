@@ -45,7 +45,7 @@ async function main(){
   hub=await launchIsolatedHub(launchOptions);result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
-  await click('#btn-assistant');await until('initial assistant',async()=>{const r=await invoke('assistant:get-overview');return r.available;});
+  await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');await until('initial assistant',async()=>{const r=await invoke('assistant:get-overview');return r.available;});
   let first=true;
   for(const kind of kinds){
    const row={kind,passed:false};result.backends.push(row);console.log(j({event:'backend-start',kind}));
@@ -107,7 +107,7 @@ async function main(){
       await until('delegated business selected',async()=>await active()===target,30000);
       await until('original delegated task card',()=>cdp.eval('(()=>{const e=document.querySelector("#msg-overlay");return !!e&&e.innerText.includes('+j(taskPayload.text)+')})()'),30000);
       row.delegatedCardMatched=true;
-      await click('#btn-assistant');await until('assistant reselected',async()=>await active()===id);
+      await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');await until('assistant reselected',async()=>await active()===id);
       row.notification=await until('new reply notice '+kind,async()=>{const r=await invoke('assistant:notifications');return r.notifications?.find(n=>n.sessionId===target||n.source?.sessionId===target);});
       await shot(kind+'-dispatch');result.checks.push(kind+' 真实创建 Codex 业务会话、确认派工、收到新回复提醒');
     }

@@ -71,7 +71,7 @@ async function main(){
     if(!await cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'))await click('#rail-pin');
     await until('rail pinned',()=>cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'),10000);
     await until('assistant navigation visible',()=>cdp.eval('(()=>{const e=document.querySelector("#btn-assistant"),r=e.getBoundingClientRect(),h=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return h===e||e.contains(h)})()'),10000);
-    await click('#btn-assistant');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));
+    await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');await until('ordinary assistant composer',()=>cdp.eval('document.body.classList.contains("assistant-session-active") && !!document.querySelector(".floating-input-box")'));
     assistantId=await until('assistant identity',()=>cdp.eval('ipcRenderer.invoke("assistant:get-overview").then(r=>r.sessionId)'));result.assistantId=assistantId;
     if(continued)assert.equal(assistantId,prior.assistantId,'继续验证必须保留上轮助理身份');
     if(!createOnly&&!continued){
@@ -118,7 +118,7 @@ async function main(){
       // The ordinary assistant tab restores the same entity and refreshes MCP.
       await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:5,y:90});
       if(!await cdp.eval('document.getElementById("app-container").classList.contains("rail-pinned")'))await click('#rail-pin');
-      await click('#btn-assistant');
+      await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');
       await until('restored assistant',async()=>{const s=await session(assistantId);return s&&s.codexSid===originalNative;});
       const restored=await session(assistantId);
       assert.equal(restored.mcpProfile,'lean');

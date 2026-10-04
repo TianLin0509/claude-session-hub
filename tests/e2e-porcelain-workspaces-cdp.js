@@ -51,7 +51,7 @@ async function port() { const s=net.createServer(); await new Promise(r=>s.liste
     await check('document.querySelectorAll(".wr-filters input[type=checkbox]").length>=5','all library filters retained');await shot('02-library');
     await click('[data-view="voice"]');await until('document.querySelector(".wr-lines")','voice source');await textButton('#wr-view-voice','编辑');await until('document.querySelector(".wr-voice-editor")','voice editor');await click('.wr-voice-editor');await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'End',code:'End',modifiers:2,windowsVirtualKeyCode:35});await cdp.send('Input.insertText',{text:'\n界面回归：保留原有行为。\n'});await textButton('#wr-view-voice','保存（Ctrl+S）');await until('!document.querySelector(".wr-voice-editor")','save done');assert(fs.readFileSync(path.join(voice,'SKILL.md'),'utf8').includes('界面回归'));result.checks.push('voice saves real isolated file');await shot('03-voice');
     const hasAssistant=await cdp.eval('!!document.getElementById("btn-assistant")');
-    if(hasAssistant){await click('#btn-assistant');await until('document.body.classList.contains("assistant-open")','assistant open');}
+    if(hasAssistant){await click('#btn-assistant');await until('!!document.querySelector("#assistant-page:not([hidden])")','assistant open');}
     await click('#btn-rail-capabilities');await until('document.querySelector("#hub-workspace[data-area=resources]") && document.querySelector("#capability-page.hw-embedded")','resources');await shot('04-tools');
     if(hasAssistant){
       await check('!document.body.classList.contains("assistant-open")','assistant closes on resource navigation');

@@ -5,7 +5,11 @@
 function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSessionId,
   openSession, closeOtherPanels = () => {}, showMessage }) {
   const nav = document.getElementById('btn-assistant');
-  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false, dialogDrawer = null;
+  let epoch = 0, opening = null, overview = null, sequence = 0, switching = false;
+  // 左侧「助理」打开助理页（田哥与助理的对话）；助理会话本身是工作台里的普通会话，从助理页「打开助理会话」进入。
+  const page = require('./assistant-page').createAssistantPage({ document, window: document.defaultView, ipcRenderer, showMessage, closeOtherPanels,
+    openSession: () => open(),
+    onOpenChange: on => { if (on) document.defaultView.setShellNavActive?.('assistant'); setClass(nav, 'active', on || document.body.classList.contains('assistant-session-active')); if (on) nav.setAttribute('aria-current', 'page'); else if (!document.body.classList.contains('assistant-session-active')) nav.removeAttribute('aria-current'); } });
   const setClass = (element, name, value) => { if (element.classList.contains(name) !== value) element.classList.toggle(name, value); };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const isOpen = () => document.body.classList.contains('assistant-session-active')
@@ -70,11 +74,12 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
   }
   function syncSession(session) {
     const active = session?.purpose === 'hub-assistant';
-    if (!active) dialogDrawer?.close();
     setClass(document.body, 'assistant-session-active', active);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', active);
-    setClass(nav, 'active', active);
-    if (active) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current');
+    // 助理页开着时「助理」保持选中（后台预热助理会话会触发这里）。
+    const selected = active || page.isOpen();
+    setClass(nav, 'active', selected);
+    if (selected) nav.setAttribute('aria-current', 'page'); else nav.removeAttribute('aria-current');
     const tools = document.getElementById('toolbar-actions');
     let picker = tools?.querySelector('.assistant-backend');
     if (active && tools && !picker) {
@@ -117,14 +122,10 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     const memory = document.createElement('button'); memory.type='button'; memory.className='btn-zoom assistant-memory'; memory.textContent='助理记忆';
     memory.title='打开助理积累的偏好（USER.md）；同目录的 MEMORY.md 是长期记忆，CHANGES.md 是每次修改记录。可以直接编辑。';
     memory.addEventListener('click',()=>{void call('assistant:open-memory').catch(error=>showMessage?.(error.message));});
-    // 对话记录：手机消息与回复（快答走 API 不进助理会话，只能在这里看）。
-    const dialogLog = document.createElement('button'); dialogLog.type='button'; dialogLog.className='btn-zoom assistant-dialog';
-    dialogLog.textContent='对话记录'; dialogLog.title='手机发来的消息与回复：快答（千问 / DeepSeek）和助理会话的回答都在这里';
-    dialogLog.addEventListener('click',()=>{dialogDrawer||(dialogDrawer=require('./assistant-dialog').createDialogDrawer({document,ipcRenderer}));void dialogDrawer.open();});
-    tools.prepend(notices, dialogLog, dossier, memory, phone, fresh); paintNotices();
+    tools.prepend(notices, dossier, memory, phone, fresh); paintNotices();
   }
   function close() {
-    epoch++; document.querySelector('.assistant-backend-menu')?.remove(); dialogDrawer?.close();
+    epoch++; document.querySelector('.assistant-backend-menu')?.remove(); page.close();
     setClass(document.body, 'assistant-session-active', false);
     setClass(document.getElementById('terminal-panel'), 'assistant-session', false);
     setClass(nav, 'active', false); nav.removeAttribute('aria-current');
@@ -169,7 +170,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     })();
     return opening;
   }
-  nav.addEventListener('click', () => { void open(); });
+  nav.addEventListener('click', () => { void page.open(); });
   document.addEventListener('click', event => { if(!event.target.closest('.assistant-backend-menu,.assistant-backend'))document.querySelector('.assistant-backend-menu')?.remove();if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
   document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelector('.assistant-backend-menu')?.remove();});
   // 助理换班后（上下文用满后新开会话接续），若正停在助理页就切到新会话。
@@ -180,6 +181,6 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     if (notice?.text) showMessage?.(`${notice.title || '关注任务'}有新回复，可在助理的“关注回复”查看。`);
     if (isOpen()) void refresh();
   });
-  return { open, close, refresh, syncSession, isOpen, switchBackend };
+  return { open, close, refresh, syncSession, isOpen, switchBackend, openPage: () => page.open(), isPageOpen: () => page.isOpen() };
 }
 module.exports = { createAssistantPanel };

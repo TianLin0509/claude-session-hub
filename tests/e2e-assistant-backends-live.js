@@ -42,7 +42,7 @@ async function main(){
   result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
-  await click('#btn-assistant');const codex=await until('codex active',async()=>{const r=await invoke('assistant:get-overview',{});return r.available?r.sessionId:null;});result.codexId=codex;
+  await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');const codex=await until('codex active',async()=>{const r=await invoke('assistant:get-overview',{});return r.available?r.sessionId:null;});result.codexId=codex;
   await until('codex ready',async()=>/Ask Codex to do anything/.test(await screen(codex)));
   if(process.env.HUB_ASSISTANT_KEEP_EFFORT!=='1'){await click('.composer-thinking');await click('.effort-picker-menu [data-effort="low"]');await until('effort low',async()=>{const m=await meta(codex);return m.effort==='low'&&!m._modelSwitchPending;});}
   await send('请先读取本轮资料。记住验收暗号“青桥企鹅”，仅用一句话确认。');const codexAnswer=await final(codex);assert.match(codexAnswer.text,/青桥企鹅/);await settled(codex);result.checks.push('Codex 真实读取 Hub 资料并回答');
@@ -81,7 +81,7 @@ async function main(){
   await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('restart renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
-  await click('#btn-assistant');await until('same codex after restart',async()=>await active()===codex);
+  await click('#btn-assistant');await click('[data-ap="more"]');await click('.ap-menu [data-pick="session"]');await until('same codex after restart',async()=>await active()===codex);
   await settled(codex);await change('claude');assert.equal(await active(),claude);assert.equal((await meta(claude)).ccSessionId,result.claudeNativeId);
   const beforeRestartAnswer=readFinals(await meta(claude)).records.length;
   await send('请读取最新资料，并告诉我验收暗号是什么。仅用一句话回答。');const restored=await final(claude,beforeRestartAnswer);assert.match(restored.text,/青桥企鹅/);await settled(claude);
