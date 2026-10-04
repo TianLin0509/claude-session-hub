@@ -17,7 +17,7 @@ const backends=require('./backends');
 const profiles=require('./profiles');
 // 助理是长寿会话，每轮读入的资料会越积越多、回答随之变慢；何时换班见 rotation.js。
 const rotation=require('./rotation');
-const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接和 Hub 记录。请用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
+const HANDOFF_PROMPT='【换班交接】你即将换班，接班的是同一位助理的新会话，它只能看到你写的交接、成长记忆和 Hub 记录。先把这一班里发现的田哥稳定偏好或长期约定用 update_memory 记下来（已记过的不重复）。然后用不超过 300 字写交接，只写对接班有用的内容：1. 还没办完或在等结果的事；2. 田哥最近定下的决定和偏好；3. 正在关注的任务及当前状态。不派工、不新建会话，只输出交接正文。';
 class AssistantService {
   constructor(deps) {
     this.deps=deps; this.sessionViews=new Map(); this.store=new AssistantStore(path.join(deps.dataDir,'assistant'));
@@ -28,6 +28,7 @@ class AssistantService {
     this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
     this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
+    this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
   }
   sessionMetadata(id){const persisted=this.deps.getSessionMetadata?.(id),live=this.deps.getSession(id);return persisted||live?{...persisted,...live,id}:null;}
@@ -46,7 +47,9 @@ class AssistantService {
   startWatching({intervalMs=2000,rotationCheckMs=60000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();
     // 后台换班：你不在用时到点就写交接、换新会话，回来直接用干净的助理，不用等。
     this.rotationTimer=setInterval(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,rotationCheckMs));this.rotationTimer.unref?.();}
-  pollWatches(){const result=this.watches.poll();if(this.store.get('sessionId'))this.refreshDossier?.();return result;}
+  // 定时器只检查「关注的任务有没有新回复」（结果推到手机和助理页靠它）。工作台按需刷新：
+  // 你每问一次、助理按需查资料或打开工作档案时才重建，平时不读写文件（2026-10-04 田哥要求）。
+  pollWatches(){return this.watches.poll();}
   notifications(request){return this.watches.notifications(request);}
   followedTasks(){return this.watches.list().map(({cursor,seen,...watch})=>watch);}
   observePromptReceipt(snapshot){
@@ -251,7 +254,7 @@ class AssistantService {
   }
   getLaunchOptions(kind,id){return backends.launchOptions(this,backends.backendKind(kind),id);}
   async connectBridge(){await this.bridge.start();const temporary=this.endpointFile+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,JSON.stringify({url:this.bridge.url,token:this.bridge.secret}),{mode:0o600});fs.renameSync(temporary,this.endpointFile);}
-  getMcpEntry(sessionId=this.store.get('sessionId')){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile,HUB_ASSISTANT_SESSION_ID:sessionId||''},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
+  getMcpEntry(sessionId=this.store.get('sessionId')){return{name:'hub_assistant',command:this.deps.nodeExecutable||'node',args:[path.resolve(__dirname,'../../scripts/assistant-mcp.js')],env:{HUB_ASSISTANT_ENDPOINT_FILE:this.endpointFile,HUB_ASSISTANT_SESSION_ID:sessionId||''},toolApprovalModes:{list_sessions:'approve',history_context:'approve',session_evidence:'approve',watch_session:'approve',send_session:'approve',create_session:'approve',update_memory:'approve'},toolOutputTokenLimits:{history_context:50000,session_evidence:50000}};}
   isAssistantSession(sessionId){return isAssistantSession(this.store,sessionId,this.deps.getSession(sessionId));}
   // 已换班的旧助理可以打开查看历史；它不再是固定助理，会话管理工具在每次调用时都会被拒绝。
   requireAssistantResume(meta){if(meta?.hubId&&(this.store.get('retiredAssistants')||[]).some(r=>r.id===meta.hubId&&r.kind===meta.kind))return;if(!meta?.hubId||!this.assistantIds().includes(meta.hubId)||(meta.kind&&backends.bindings(this.store)[meta.kind]!==meta.hubId))throw new Error('恢复实体不是固定助理，未授予专属工具');}
@@ -267,7 +270,7 @@ class AssistantService {
     const {sources:groupSources,...groupCoverage}=groups;
     const groupChars=groupSources.reduce((n,s)=>n+s.text.length,0);
     const sources=[...board.sources.map(source=>({...source,timeScope:'当前原生最终答复快照；以该条timestamp为准，不代表它发生在历史检索窗口内'})),...natural.sources.filter(source=>!board.sources.some(live=>live.sessionId===source.sessionId&&source.role==='assistant'&&live.text===source.text)),...groups.sources];
-    return {...natural,assistantContinuity:this.continuity.packet(),asOf:Date.now(),available:natural.available||sources.length>0,sources,
+    return {...natural,assistantContinuity:this.continuity.packet(),assistantMemory:this.memory.packet(),asOf:Date.now(),available:natural.available||sources.length>0,sources,
       selectedChars:sources.reduce((n,source)=>n+source.text.length,0),groupSelectedChars:groupChars,
       workbench:{revision:board.revision,mode:board.mode,markdownPath:board.markdownPath,markdown:board.markdown,
         inventory:board.openedInventory,activeCount:board.activeCount,openedCount:board.openedCount,unreadCount:board.unreadCount,needsInputCount:board.needsInputCount,knownCount:board.knownCount,timeMeaning:'这是当前工作台状态；历史变化请结合每条来源时间及请求窗口，不能把旧最终答复说成刚发生的变化。',
@@ -293,7 +296,9 @@ class AssistantService {
     this.currentRequest={id,sessionId:request.sessionId,text:request.text,token:randomUUID(),createdAt:Date.now()};
     if(request.sessionId)this.continuity.add({id:'user:'+id,sessionId:request.sessionId,provider:active?.kind||'codex',role:'user',deliveryState:'prepared',timestamp:this.currentRequest.createdAt,text:request.text});
     const manifest=this.snapshots.save({requestId:id,requestToken:this.currentRequest.token,packet:context});
-    const text=buildBootstrapPrompt(request.text,{...manifest,clientSubmissionId:id},this.sessions().length,active?.kind||'codex',{inputMode:this.inputModes.get(id)||'text'});
+    // Claude 的成长记忆在系统提示里；其他后端在新会话第一轮读一次资料包里的 assistantMemory，之后全程遵守。
+    const turns=(this.store.get('turns:'+request.sessionId)||0);if(request.sessionId)this.store.set('turns:'+request.sessionId,turns+1);
+    const text=buildBootstrapPrompt(request.text,{...manifest,clientSubmissionId:id},this.sessions().length,active?.kind||'codex',{inputMode:this.inputModes.get(id)||'text',readMemory:turns===0&&(active?.kind||'codex')!=='claude'});
     this.store.set('lastContext',{asOf:context.asOf,selectedChars:context.selectedChars,sources:context.sources.length,truncated:context.truncated,
       workbenchPath:context.workbench.markdownPath,workbenchRevision:context.workbench.revision,openedSessions:context.workbench.openedCount,activeSessions:context.workbench.activeCount,allActiveSessionsIncluded:true,contextMode:context.workbench.mode,
       requestToken:this.currentRequest.token,packetHash:manifest.packetHash,snapshotRead:false,snapshotReadAt:null,bootstrapChars:text.length,
@@ -327,6 +332,13 @@ class AssistantService {
         return response;
       }
       return this.context(args);
+    }
+    if(name==='update_memory'){
+      // 只有本轮绑定的固定助理能改成长记忆；写入由 Hub 校验长度、拦截密钥并备份。
+      const current=this.currentRequest;
+      if(!hasCaller||!current||args.requestToken!==current.token)throw new Error('记忆写入不属于当前用户回合');
+      requireManagerCaller(this.store,current,callerSessionId,this.deps.getSession(callerSessionId));
+      return this.memory.update({file:args.file,action:args.action,text:args.text,reason:args.reason});
     }
     if(!['send_session','create_session','watch_session'].includes(name))throw new Error('未知工具');
     const current=this.currentRequest;

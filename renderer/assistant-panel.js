@@ -78,7 +78,10 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     const fresh = document.createElement('button'); fresh.type='button'; fresh.className='btn-zoom assistant-rotate'; fresh.textContent='新开助理';
     fresh.title='让助理写好交接后换一个新会话：回答更快，旧会话保留可查。平时在你空闲约 2 小时或上下文过长时自动进行。';
     fresh.addEventListener('click',async()=>{fresh.disabled=true;fresh.textContent='交接中…';try{const r=await call('assistant:rotate-now');if(r&&r.ok===false)throw new Error(r.error||'未能新开');showMessage?.('已换成新的助理会话，旧会话保留为「已换班」。');}catch(error){showMessage?.(`新开助理未完成：${error.message}`);}finally{fresh.disabled=false;fresh.textContent='新开助理';}});
-    tools.prepend(notices, dossier, phone, fresh); paintNotices();
+    const memory = document.createElement('button'); memory.type='button'; memory.className='btn-zoom assistant-memory'; memory.textContent='助理记忆';
+    memory.title='打开助理积累的偏好（USER.md）；同目录的 MEMORY.md 是长期记忆，CHANGES.md 是每次修改记录。可以直接编辑。';
+    memory.addEventListener('click',()=>{void call('assistant:open-memory').catch(error=>showMessage?.(error.message));});
+    tools.prepend(notices, dossier, memory, phone, fresh); paintNotices();
   }
   function close() {
     epoch++; document.querySelector('.assistant-backend-menu')?.remove();

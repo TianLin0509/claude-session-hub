@@ -49,3 +49,9 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 - 就绪时到点（例如 Hub 刚启动、后台还没轮到）直接换班，不写交接以免让这条消息多等，只靠原始交接记录接续。忙时绝不换班；新建失败恢复旧绑定。
 - 手动：助理页「新开助理」按钮，同样先写交接再换班。
 - 校准：每轮在 `assistant/turn-metrics.jsonl` 记「上下文 token、本轮用时、模型」，攒数据后再调上限。`HUB_ASSISTANT_ROTATE_TOKENS` 仅供实测压低上限，`ROUTER_ROTATE=1 node tests/e2e-assistant-router-live.js` 验证自答、换班与交接。
+
+### 成长记忆与按需刷新（2026-10-04）
+
+助理有两份由 Hub 保管、各后端共用的成长记忆（`assistant/memory/`）：`USER.md` 记田哥的偏好与习惯，`MEMORY.md` 记长期事实、约定与常用资料入口。写入只走 `update_memory` 工具（add 一句话 / remove 原文片段 / rewrite 整理），Hub 加本地日期与来源、限长（3000 / 6000 字，超了要求先合并）、拦截疑似密钥、每次改动备份到 `history/` 并记 `CHANGES.md`。成长时机：田哥说「记住」时当场写；换班交接前旧助理先把这一班发现的稳定偏好写进去；用户也可直接编辑（助理页「助理记忆」按钮）。读取：Claude 通过 `--append-system-prompt-file`（`assistant-system-prompt.md`）每轮生效，不占每轮 2048 字；Codex 等在新会话第一轮按提示读资料包里的 `assistantMemory`，之后全程遵守。为什么不只靠 CLAUDE.md / AGENTS.md：那是全局规则、所有会话共用、手工维护，交接记录又只带最近 12 条，长期偏好会在换班中丢失。
+
+工作台按需刷新：2 秒定时器只检查关注任务的新回复（手机与助理页提醒靠它）；工作台在用户提问、助理按需查资料或打开工作档案时才重建。会话正文存档每会话只留最近 3 版，每轮资料包保留 7 天。

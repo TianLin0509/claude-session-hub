@@ -73,6 +73,7 @@ class AssistantDossier {
       '本目录由 Hub 从运行状态和原生答复生成。请在对话中提出修正；修改这些投影文件不会改变真实会话，也不会授予派工权限。', '',
     ].join('\n');
     this.write('CURRENT.md', markdown);
+    this.prune(entries.map(entry=>entry.row));
     this.write('ALL-SESSIONS.md', '# AI Hub 完整会话目录\n\n' + all.map(row => `- ${safeLine(row.title)} · ${row.id} · ${row.isOpen ? safeLine(stateLine(row)) : '未打开，运行状态未知'}`).join('\n') + '\n');
     this.write('manifest.json', JSON.stringify({ schemaVersion: 1, revision, inventory: all }, null, 2));
     this.archived=new Map(all.map(row=>[row.id,row]));
@@ -89,6 +90,20 @@ class AssistantDossier {
       sources, fullReplyChars: entries.filter(entry => entry.row.isOpen).reduce((n, entry) => n + (entry.final?.text.length || 0), 0),
     };
     return this.last;
+  }
+  // 每个会话只留最近几版正文存档，旧版删除（状态一变就会多一版，长期只增不删会越积越大）。
+  prune(rows, keep = 3) {
+    const root = path.join(this.directory, 'sessions');
+    let dirs = [];
+    try { dirs = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { return; }
+    const current = new Set(rows.map(row => row.document).filter(Boolean).map(file => path.resolve(file)));
+    for (const dir of dirs) {
+      const folder = path.join(root, dir);
+      const files = fs.readdirSync(folder).filter(name => name.endsWith('.md')).map(name => {
+        const file = path.join(folder, name); return { file, mtime: fs.statSync(file).mtimeMs };
+      }).sort((a, b) => b.mtime - a.mtime);
+      for (const { file } of files.slice(keep)) if (!current.has(path.resolve(file))) { try { fs.unlinkSync(file); } catch {} }
+    }
   }
   noteServed(workbench) {
     if (workbench?.revisions) this.baseline = { ...workbench.revisions };

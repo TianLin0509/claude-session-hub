@@ -158,3 +158,44 @@ test('background rotation lets the old assistant write a handoff first; manual r
   const last=x.service.overview().context.lastRotation;assert.equal(last.reason,'idle');assert.equal(last.handoff,true);
   x.sessions.get(b.sessionId).status='running';assert.throws(()=>x.service.rotateNow(),/正在回答/);
 });
+test('the background timer only checks followed tasks; the workbench is rebuilt on demand and old archives are pruned',async t=>{
+  const x=setup(t);await x.service.ensureSession();
+  const workbench=path.join(x.deps.dataDir,'assistant','workbench','CURRENT.md');
+  x.service.pollWatches();assert.equal(fs.existsSync(workbench),false,'polling must not rebuild the workbench');
+  x.service.context({hours:3});assert.equal(fs.existsSync(workbench),true,'asking rebuilds it');
+  const folder=path.join(x.deps.dataDir,'assistant','workbench','sessions','abc');fs.mkdirSync(folder,{recursive:true});
+  for(let i=0;i<6;i++){const f=path.join(folder,'v'+i+'.md');fs.writeFileSync(f,'x');fs.utimesSync(f,new Date(Date.now()-i*1000),new Date(Date.now()-i*1000));}
+  x.service.context({hours:3});assert.deepEqual(fs.readdirSync(folder).sort(),['v0.md','v1.md','v2.md']);
+  const snaps=path.join(x.deps.dataDir,'assistant','snapshots');fs.mkdirSync(snaps,{recursive:true});const old=path.join(snaps,'old.json');fs.writeFileSync(old,'{}');fs.utimesSync(old,new Date(Date.now()-8*86400000),new Date(Date.now()-8*86400000));
+  x.service.snapshots.prune();assert.equal(fs.existsSync(old),false);
+});
+test('growth memory: dated entries, no duplicates, consolidation, caps, no secrets, every change backed up',()=>{
+  const {AssistantMemory}=require('../core/hub-assistant/memory'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'assistant-memory-')),m=new AssistantMemory(dir),now=Date.parse('2026-10-04T08:00:00Z');
+  assert.equal(m.update({file:'user',action:'add',text:'汇报进展先给结论，再列待田哥处理的事',reason:'田哥明说',now}).ok,true);
+  assert.match(m.read().user,/- 汇报进展先给结论，再列待田哥处理的事（2026-10-0[34]，田哥明说）/);
+  assert.equal(m.update({file:'user',action:'add',text:'汇报进展先给结论，再列待田哥处理的事',now}).unchanged,true);
+  m.update({file:'memory',action:'add',text:'仿真项目在 C:/AIWork/SuperRAN',now});
+  assert.throws(()=>m.update({file:'memory',action:'add',text:'api_key: sk-abcdefghijklmnopqrstuvwxyz',now}),/密钥/);
+  assert.throws(()=>m.update({file:'user',action:'add',text:'第一行\n第二行',now}),/一句话/);
+  assert.throws(()=>m.update({file:'user',action:'remove',text:'不存在的条目',now}),/没有找到/);
+  m.update({file:'user',action:'remove',text:'先给结论',now});assert.doesNotMatch(m.read().user,/先给结论/);
+  assert.throws(()=>m.update({file:'user',action:'rewrite',text:'- 很长'.repeat(1200),now}),/上限/);
+  m.update({file:'user',action:'rewrite',text:'- 简单问答只用一句话（2026-10-04）',now});assert.match(m.read().user,/# 田哥的偏好与习惯/);
+  assert.ok(fs.readdirSync(path.join(dir,'history')).length>=4);assert.match(fs.readFileSync(path.join(dir,'CHANGES.md'),'utf8'),/USER.md · rewrite/);
+  assert.match(fs.readFileSync(m.promptPath,'utf8'),/简单问答只用一句话[\s\S]*仿真项目在/);
+});
+test('only the bound assistant writes memory; Claude loads it as a system prompt, others read it on a new session first turn',async t=>{
+  const x=setup(t),a=await x.service.ensureSession();
+  assert.match(a.session.appendSystemPromptFile,/assistant-system-prompt\.md$/);
+  x.service.preparePrompt({sessionId:a.sessionId,text:'记住：简单问答只用一句话',clientSubmissionId:'remember-1'});
+  const token=x.service.currentRequest.token;
+  await assert.rejects(x.service.invokeTool({name:'update_memory',callerSessionId:'someone-else',arguments:{file:'user',action:'add',text:'x',requestToken:token}}),/不是/);
+  await assert.rejects(x.service.invokeTool({name:'update_memory',callerSessionId:a.sessionId,arguments:{file:'user',action:'add',text:'x',requestToken:'stale'}}),/当前用户回合/);
+  const r=await x.service.invokeTool({name:'update_memory',callerSessionId:a.sessionId,arguments:{file:'user',action:'add',text:'简单问答只用一句话',reason:'田哥明说',requestToken:token}});
+  assert.equal(r.ok,true);assert.match(fs.readFileSync(a.session.appendSystemPromptFile,'utf8'),/简单问答只用一句话/);
+  assert.match(x.service.context({hours:3}).assistantMemory.user,/简单问答只用一句话/);
+  const claudeFirst=x.service.preparePrompt({sessionId:a.sessionId,text:'你好',clientSubmissionId:'c2'}).text;assert.doesNotMatch(claudeFirst,/新会话第一轮/);
+  const codex=await x.service.setProfile({kind:'codex'});const cid=(await x.service.ensureSession()).sessionId;assert.equal(codex.ok,true);
+  assert.match(x.service.preparePrompt({sessionId:cid,text:'你好',clientSubmissionId:'k1'}).text,/新会话第一轮/);
+  assert.doesNotMatch(x.service.preparePrompt({sessionId:cid,text:'再问',clientSubmissionId:'k2'}).text,/新会话第一轮/);
+});

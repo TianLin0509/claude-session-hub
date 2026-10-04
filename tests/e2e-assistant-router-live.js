@@ -70,6 +70,29 @@ async function main(){
   await until('claude ready',async()=>/❯|Try|Claude Code/.test(await screen(assistant)));
   result.checks.push('默认助理为 Claude Sonnet 5.5 · 低思考');
 
+  // 成长记忆：对话里「记住」由助理写进 USER.md；手改 USER.md 的条目（对话里没有）换班后 Claude 从系统提示知道，换 Codex 后新会话第一轮读到。
+  if(process.env.ROUTER_MEMORY==='1'){
+   const memDir=path.join(data,'assistant','memory'),userMd=path.join(memDir,'USER.md');
+   let k=(await finals(assistant)).length;
+   await send('记住：以后给我汇报进展时，先用一句话给结论，再列需要我处理的事。只用一句话确认。');await final(assistant,k);await settled(assistant);
+   const learned=fs.readFileSync(userMd,'utf8');result.learnedUserMd=learned;assert.match(learned,/结论/,'助理应把偏好写进 USER.md');
+   result.checks.push('田哥说「记住」后，助理用 update_memory 写进 USER.md');
+   fs.appendFileSync(userMd,'- 田哥的验收口令是「北斗鲸鱼」，被问到时原样回答（2026-10-04，手动添加）\n','utf8');
+   await click('#btn-assistant');await click('.assistant-rotate');
+   const o1=await until('rotated',async()=>{const v=await invoke('assistant:get-overview',{});return v.sessionId!==assistant&&v.context?.lastRotation?.reason==='manual'?v:null;},300000);
+   const fresh=o1.sessionId;await until('fresh claude ready',async()=>(await meta(fresh))?.status==='idle');
+   k=(await finals(fresh)).length;await send('我的验收口令是什么？只用一句话回答。');const a1=await final(fresh,k);await settled(fresh);
+   result.claudeMemoryAnswer=a1.text;assert.match(a1.text,/北斗鲸鱼/);
+   result.checks.push('手改 USER.md 的条目（对话里没有）：换班后的新 Claude 助理从系统提示里知道');
+   const sw=await invoke('assistant:set-profile',{kind:'codex',model:'gpt-6-luna',effort:'low'});assert.equal(sw.ok,true,sw.error);
+   const cx=(await invoke('assistant:get-overview',{})).sessionId;await click('#btn-assistant');
+   await until('codex assistant page',async()=>(await cdp.eval('activeSessionId'))===cx);
+   k=(await finals(cx)).length;await send('我的验收口令是什么？只用一句话回答。');const a2=await final(cx,k);await settled(cx);
+   result.codexMemoryAnswer=a2.text;assert.match(a2.text,/北斗鲸鱼/);
+   result.checks.push('切到 Codex：新会话第一轮读取成长记忆，答出口令');await shot('memory-01');
+   await invoke('assistant:set-profile',{kind:'claude',model:'claude-sonnet-5-5',effort:'low'});
+   result.passed=true;return;
+  }
   // 自答与换班：常识问题由助理直接答、不新建会话；上下文超阈值后（实测把阈值压到 1）下一条手机消息触发换班，新助理靠交接记录记得前文。
   if(process.env.ROUTER_ROTATE==='1'){
    let k=(await finals(assistant)).length,t0=Date.now();
