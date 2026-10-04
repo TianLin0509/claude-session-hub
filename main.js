@@ -2000,6 +2000,7 @@ try {
     },
     onAssistantRotated: event => sendToRenderer('assistant:rotated', event),
     onFrontDeskChanged: frontDesk => { sendToRenderer('assistant:front-desk', frontDesk); phoneService?.kick?.(); },
+    onDialogEntry: entry => sendToRenderer('assistant:dialog', entry),
     onAssistantTurnComplete: () => { phoneService?.kick?.(); setTimeout(() => phoneService?.kick?.(), 1200); },
   });
   assistantService.startWatching();

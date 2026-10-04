@@ -29,6 +29,7 @@ class AssistantService {
     this.dossier=new (require('./dossier').AssistantDossier)(deps.dataDir);
     this.liveHistory=new (require('./final-readers').AssistantFinalReaders)(deps);
     this.continuity=new (require('./continuity').AssistantContinuity)(path.join(deps.dataDir,'assistant'));
+    this.dialog=new (require('./dialog-log').DialogLog)(path.join(deps.dataDir,'assistant'));
     this.memory=new (require('./memory').AssistantMemory)(path.join(deps.dataDir,'assistant','memory'));
     this.ledger=new (require('./ledger').AssistantLedger)(path.join(deps.dataDir,'assistant','ledger'),{read:(meta,options)=>this.liveHistory.read(meta,options)});
     this.watches=new AssistantWatches(this.store,{getSession:id=>this.sessionMetadata(id),getOpenSession:id=>this.deps.getSession(id)?this.sessionMetadata(id):null,readFinal:(meta,options)=>this.liveHistory.read(meta,options),onNotification:notice=>this.deps.onAssistantNotification?.(notice)});
@@ -281,6 +282,9 @@ class AssistantService {
     return{ok:true,frontDesk:after};
   }
   fastLaneDisabled(){return this.frontDesk().mode==='cli';}
+  // 手机对话记录：写入后推给助理 Tab 实时显示。
+  logDialog(entry){const row=this.dialog.append(entry);try{this.deps.onDialogEntry?.(row);}catch{}return row;}
+  dialogLog({limit}={}){return{ok:true,entries:this.dialog.recent({limit})};}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
   async phoneProfile(){
     const defaults={};for(const kind of backends.BACKENDS)defaults[kind]=await this.deps.getDefaults?.(kind)||{};

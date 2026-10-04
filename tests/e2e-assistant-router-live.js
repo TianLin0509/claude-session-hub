@@ -199,6 +199,21 @@ async function main(){
    // 电脑面板的「手机回答方式」：先截图菜单；联调中出现 hub-front 文件（内容 cli 或 api|模型）时按真人点击切换。
    if(await cdp.eval('!!document.querySelector(".assistant-frontdesk")')){await click('.assistant-frontdesk');await until('front menu',()=>cdp.eval('!!document.querySelector(".assistant-frontdesk-menu")'),10000);await shot('hub-frontdesk-menu');await click('.assistant-frontdesk');}
    while(!fs.existsSync(path.join(dir,'stop-hub'))){
+    // 出现 hub-dialog 文件时按真人点击打开「对话记录」，截图全部与快答两种筛选，并把显示的条目写出来核对。
+    const dialogSignal=path.join(dir,'hub-dialog');
+    if(fs.existsSync(dialogSignal)){fs.unlinkSync(dialogSignal);
+     await click('.assistant-dialog');await until('dialog drawer',()=>cdp.eval('document.querySelectorAll(".assistant-dialog-drawer .dialog-row").length>0'),20000);await wait(400);await shot('hub-dialog-all');
+     const read=()=>cdp.eval('[...document.querySelectorAll(".assistant-dialog-drawer .dialog-row")].map(r=>r.className.replace("dialog-row ","")+" | "+r.innerText.replace(/\\s+/g," ").slice(0,90))');
+     const all=await read();await click('[data-dialog-filter="fast"]');await wait(300);await shot('hub-dialog-fast');const fast=await read();
+     await click('[data-dialog-filter="assistant"]');await wait(300);const session=await read();await click('[data-dialog-filter="all"]');await click('.dialog-close');
+     fs.writeFileSync(path.join(dir,'hub-dialog-done.json'),j({all,fast,session},null,1));}
+    // hub-dialog-live：打开对话记录并保持打开，等手机新消息与回复实时出现（不重开面板）。
+    const liveSignal=path.join(dir,'hub-dialog-live');
+    if(fs.existsSync(liveSignal)){fs.unlinkSync(liveSignal);
+     await click('.assistant-dialog');await until('dialog drawer open',()=>cdp.eval('!!document.querySelector(".assistant-dialog-drawer .dialog-list")'),20000);await wait(800);
+     const count=()=>cdp.eval('document.querySelectorAll(".assistant-dialog-drawer .dialog-row").length'),before=await count();fs.writeFileSync(path.join(dir,'hub-dialog-live-ready'),String(before));
+     await until('live rows',async()=>(await count())>=before+2,90000);await wait(500);await shot('hub-dialog-live');
+     fs.writeFileSync(path.join(dir,'hub-dialog-live-done.json'),j({before,after:await count(),rows:await cdp.eval('[...document.querySelectorAll(".assistant-dialog-drawer .dialog-row")].map(r=>r.innerText.replace(/\\s+/g," ").slice(0,90))')},null,1));await click('.dialog-close');}
     const signal=path.join(dir,'hub-front');
     if(fs.existsSync(signal)){const [mode,model]=fs.readFileSync(signal,'utf8').trim().split('|');fs.unlinkSync(signal);
      await click('.assistant-frontdesk');await click(`[data-front-mode="${mode}"]`+(model?`[data-front-model="${model}"]`:''));

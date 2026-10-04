@@ -74,3 +74,4 @@ Hub 当前状态、Markdown 工作档案、派工回执、关注任务共用。`
 - 田哥确认：手机消息默认「快速回答」——API 前台（千问 3.8 Flash 或 DeepSeek V4.1 Flash）当场答简单问题；工作、Hub 状态、难题和「交给助理」的话转给专属助理会话。也可切到「助理会话」：每条都直接交给专属助理会话（默认 Claude Code Sonnet），由它自己研究或在 Hub 里新建会话。前台交出去的始终是这一个固定助理会话，不另起会话。
 - 设置存在助理 store 的 `frontDesk`（`core/hub-assistant/front-desk.js` 负责选项、默认值与校验；旧的 `fastLaneDisabled` 视为 cli）。手机 `profile` 包带 `frontDesk` 选项表，手机发 `set_front_desk`（不排队，助理忙时也立即生效）；电脑助理工具栏有同一设置的下拉框，任一端修改都会重发 profile，两端同步。
 - 手机 App 1.1.3「助理设置」：上为回答方式两张卡片与快答模型，下为助理会话的引擎、模型、思考深度，「保存」固定在底部。
+- 对话记录（v1.6.326）：快答走 API、不进任何 CLI 会话，所以另记一份手机对话记录 `assistant/dialog/YYYY-MM.jsonl`（`core/hub-assistant/dialog-log.js`）：手机的每条文字/语音（转写后）、每条回复（快答标模型、助理会话标后端与模型、耗时）、识别或交接失败。助理 Tab 工具栏「对话记录」打开右侧抽屉（`renderer/assistant-dialog.js`），按北京时间分天、可筛选全部/快答/助理会话，新条目实时追加。
