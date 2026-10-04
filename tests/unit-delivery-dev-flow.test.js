@@ -152,6 +152,23 @@ function migration() {
   } finally { fs.rmSync(data, { recursive: true, force: true }); }
 }
 
+// After a task ends the room falls back to plain group chat; 开新任务 arms the next message.
+async function taskModeAfterEnd() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-armed-'));
+  const people = ['a', 'b'].map(memberId => ({ memberId, displayName: memberId }));
+  const m = { id: 'room', groupChat: true, subSessions: ['sa', 'sb'], slotSpecs: people, serialWorkflow: S.createDeliveryConfig('development', people) };
+  const e = createDeliveryEngine({ meetingManager: { getMeeting: () => m, setParticipants() {}, updateMeeting: (_id, f) => Object.assign(m, f) },
+    sessionManager: { getSession: () => ({ status: 'idle' }) }, getHubDataDir: () => dir, getMembers: () => people, ensureMemberReady: async () => {},
+    logger: { error() {}, warn() {} }, getDispatcher: () => ({ dispatchGroupChatTurn: () => new Promise(() => {}), interruptMeetingTurn() {} }) });
+  try {
+    assert.equal(e.status(m.id).armed, true, 'fresh room: first message starts a task');
+    await e.start(m.id, 'goal'); e.cancel(m.id);
+    assert.equal(e.status(m.id).armed, false, 'ended task: plain group chat');
+    assert.equal(e.setArmed(m.id, true).armed, true, '开新任务 arms the next message');
+    assert.equal(e.setArmed(m.id, false).armed, false, 'and can switch back');
+  } finally { e.dispose(); fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
 // Weak-model protocol slips seen in live runs must not stall a run.
 function tolerantDeliveryReading() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-tolerant-'));
@@ -171,7 +188,7 @@ function tolerantDeliveryReading() {
 // never drops the words after it.
 async function composerSubmit() {
   const Module = require('node:module'), realLoad = Module._load, sent = [];
-  let state = { ok: true };
+  let state = { ok: true, armed: true };
   const ipcRenderer = { on() {}, invoke: async (channel, args) => { sent.push([channel, args]); return channel === 'delivery:status' ? state : { ok: true }; } };
   Module._load = function (request, ...rest) { return request === 'electron' ? { ipcRenderer } : realLoad.call(this, request, ...rest); };
   const modPath = require.resolve('../renderer/delivery-workflow-controls');
@@ -180,6 +197,12 @@ async function composerSubmit() {
     const C = require(modPath), meeting = { id: 'r', subSessions: ['s1', 's2'], participants: [], slotSpecs: [{ memberId: 'm1' }, { memberId: 'm2' }], serialWorkflow: { deliveryStages: [{ members: ['m1'] }] } };
     await C.submit(meeting, '做一个功能', []);
     assert.deepEqual(sent.at(-1), ['delivery:start', { meetingId: 'r', userInput: '做一个功能' }], 'starts with no avatar lit');
+    // After a task ends the room is a plain group chat until the user arms 开新任务.
+    state = { ok: true, runId: 'x', finished: true, done: true, armed: false }; sent.length = 0;
+    assert.deepEqual(await C.submit(meeting, '现在什么进展', []), { plain: true }, 'ended task: ordinary message');
+    assert.deepEqual(sent.map(s => s[0]), ['delivery:status'], 'no new task is started');
+    state = { ok: true, runId: 'x', finished: true, armed: true }; sent.length = 0;
+    await C.submit(meeting, '做下一件事', []); assert.equal(sent.at(-1)[0], 'delivery:start', 'armed: next message starts a task');
     state = { ok: true, runId: 'x', paused: true, finished: false }; sent.length = 0;
     const bare = await C.submit({ ...meeting, participants: [1] }, '继续', ['s2']);
     assert.equal(bare.resumed, true); assert.deepEqual(sent.map(s => s[0]), ['delivery:status', 'delivery:resume']);
@@ -191,5 +214,5 @@ async function composerSubmit() {
 }
 
 (async () => {
-  for (const fn of [guidance, candidateParsing, gateFlow, gateStreak, gateSkippedWithoutCandidate, migration, tolerantDeliveryReading, composerSubmit]) { await fn(); console.log('PASS ' + fn.name); }
+  for (const fn of [guidance, candidateParsing, gateFlow, gateStreak, gateSkippedWithoutCandidate, migration, tolerantDeliveryReading, taskModeAfterEnd, composerSubmit]) { await fn(); console.log('PASS ' + fn.name); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

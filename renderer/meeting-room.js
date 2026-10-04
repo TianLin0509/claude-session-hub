@@ -7414,6 +7414,7 @@ if (typeof document !== 'undefined') (function () {
       // 循环工作流（评审 gate + 自动重来）→ main 进程驱动（崩溃续跑）；串行 → renderer 驱动；否则普通群聊单轮
       if (Delivery.enabled(m) && m.serialWorkflow.enabled) {
         void DeliveryControls.submit(m,finalText,recipientSids).then(result=>{
+          if(result.plain)return handleMeetingSend(finalText, m, { heroIdBySid, recipientSids });
           if(result.supplement)return _presentUserSupplement(m,result);
         }).catch(error=>{
           _restoreQuestionAndPreserveDraft(m.id,finalText);
