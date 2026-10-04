@@ -74,7 +74,11 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
     dossier.addEventListener('click', () => { void call('assistant:open-workbench').catch(error => showMessage?.(error.message)); });
     const phone = document.createElement('button'); phone.type='button'; phone.className='btn-zoom assistant-phone'; phone.textContent='手机连接'; phone.title='文字、图片和语音消息';
     phone.addEventListener('click',()=>require('./assistant-phone').openPhone({document,ipcRenderer}));
-    tools.prepend(notices, dossier, phone); paintNotices();
+    // 手动换班：让当前助理写交接，再换一个干净的新会话（平时由 Hub 在你空闲时自动进行）。
+    const fresh = document.createElement('button'); fresh.type='button'; fresh.className='btn-zoom assistant-rotate'; fresh.textContent='新开助理';
+    fresh.title='让助理写好交接后换一个新会话：回答更快，旧会话保留可查。平时在你空闲约 2 小时或上下文过长时自动进行。';
+    fresh.addEventListener('click',async()=>{fresh.disabled=true;fresh.textContent='交接中…';try{const r=await call('assistant:rotate-now');if(r&&r.ok===false)throw new Error(r.error||'未能新开');showMessage?.('已换成新的助理会话，旧会话保留为「已换班」。');}catch(error){showMessage?.(`新开助理未完成：${error.message}`);}finally{fresh.disabled=false;fresh.textContent='新开助理';}});
+    tools.prepend(notices, dossier, phone, fresh); paintNotices();
   }
   function close() {
     epoch++; document.querySelector('.assistant-backend-menu')?.remove();

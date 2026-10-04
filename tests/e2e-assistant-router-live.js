@@ -86,6 +86,16 @@ async function main(){
    const o=await invoke('assistant:get-overview',{});assert.notEqual(o.sessionId,assistant,'应已换班到新助理会话');
    assert.match(recall.text,/青桥企鹅/);const old=await meta(assistant);result.retiredTitle=old?.title||null;
    result.checks.push(`上下文超阈值后换班：新助理会话 ${o.sessionId.slice(0,8)} 接续交接记录，答出暗号（${result.timings.rotationAnswerMs} ms）`);await shot('rotate-01');
+   // 手动「新开助理」：旧助理先写交接，再换新会话；新助理靠交接答题。
+   await click('#btn-assistant');await until('assistant page',()=>cdp.eval('document.body.classList.contains("assistant-session-active")'));
+   t0=Date.now();await click('.assistant-rotate');
+   const o2=await until('manual rotation',async()=>{const v=await invoke('assistant:get-overview',{});return v.sessionId!==o.sessionId&&v.context?.lastRotation?.reason==='manual'?v:null;},300000);
+   result.timings.manualRotateMs=Date.now()-t0;result.manualRotation=o2.context.lastRotation;assert.equal(o2.context.lastRotation.handoff,true,'旧助理应先写交接');
+   const handoffMd=fs.readFileSync(path.join(data,'assistant','CONVERSATION.md'),'utf8');result.handoffExcerpt=(handoffMd.match(/【上一班交接】.*/)||[''])[0].slice(0,300);assert.ok(result.handoffExcerpt);
+   const ask2=await phone2.send({type:'text',text:'根据上一班的交接，验收暗号是什么？只用一句话回答。'});
+   const recall2=await until('recall after manual rotation',async()=>(await phone2.poll()).find(p=>p.type==='answer'&&p.requestId===ask2),300000);
+   result.manualRecall=recall2.text;assert.match(recall2.text,/青桥企鹅/);
+   result.checks.push(`手动新开助理：旧助理写好交接后换班（${result.timings.manualRotateMs} ms），新助理据交接答出暗号`);await shot('rotate-02-manual');
    result.passed=true;return;
   }
   const onlySwitch=process.env.ROUTER_ONLY_SWITCH==='1';

@@ -129,3 +129,32 @@ test('assistant instructions put fast self-answers first and keep bulky reading 
   const frame=require('../core/hub-assistant/context').buildBootstrapPrompt('今天天气怎么样',{},0,'claude');
   assert.match(frame,/尽快答复/);assert.match(frame,/直接完成/);assert.match(frame,/大量文件和长文/);assert.match(frame,/fast 只在田哥要求单独开会话/);assert.match(frame,/闲聊、常识/);
 });
+test('rotation policy: idle or a new day rotates a used assistant, size caps differ by backend',()=>{
+  const r=require('../core/hub-assistant/rotation'),now=new Date(2026,9,3,10,0,0).getTime(),h=3600000;
+  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:now-1*h,now,kind:'claude'}),null);
+  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:now-2.5*h,now,kind:'claude'}),'idle');
+  assert.equal(r.rotationReason({tokens:10000,lastActiveAt:now-5*h,now,kind:'claude'}),null,'nearly empty sessions are kept');
+  const early=new Date(2026,9,3,4,30,0).getTime();
+  assert.equal(r.rotationReason({tokens:40000,lastActiveAt:early-1*h,now:early,kind:'claude'}),'daily');
+  assert.equal(r.rotationReason({tokens:150000,lastActiveAt:now,now,kind:'claude'}),'size');
+  assert.equal(r.rotationReason({tokens:120000,lastActiveAt:now,now,kind:'claude'}),null);
+  assert.equal(r.rotationReason({tokens:120000,lastActiveAt:now,now,kind:'codex'}),'size');
+  assert.equal(r.capFor('claude',200000),100000,'never above half of a small window');
+});
+test('background rotation lets the old assistant write a handoff first; manual rotation refuses while busy; turns are logged',async t=>{
+  const x=setup(t),retired=[];x.deps.retireSession=async id=>retired.push(id);
+  const a=await x.service.ensureSession();
+  x.service.preparePrompt({sessionId:a.sessionId,text:'查进展',clientSubmissionId:'metric-turn'});
+  x.service.observeUsage(a.sessionId,{input_tokens:1000,cache_read_input_tokens:44000},Date.now());
+  const metrics=fs.readFileSync(path.join(x.deps.dataDir,'assistant','turn-metrics.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(metrics.at(-1).tokens,45000);assert.equal(typeof metrics.at(-1).ms,'number');
+  assert.equal(await x.service.maybeRotateInBackground(),null,'recently active: no rotation');
+  x.service.store.set('lastActiveAt:'+a.sessionId,Date.now()-3*3600000);
+  let handoffId=null;x.deps.sendPrompt=async(id,text,requestId)=>{assert.equal(id,a.sessionId);assert.match(text,/换班交接/);handoffId=requestId;return{ok:true,receipt:{status:'confirmed'}};};
+  x.service.liveHistory={read:()=>({records:handoffId?[{clientSubmissionId:handoffId,text:'还在等调度报告；田哥要求汇报只讲结果。'}]:[]})};
+  const b=await x.service.maybeRotateInBackground();
+  assert.notEqual(b.sessionId,a.sessionId);assert.deepEqual(retired,[a.sessionId]);
+  assert.ok(x.service.continuity.packet().records.some(row=>row.text.startsWith('【上一班交接】还在等调度报告')));
+  const last=x.service.overview().context.lastRotation;assert.equal(last.reason,'idle');assert.equal(last.handoff,true);
+  x.sessions.get(b.sessionId).status='running';assert.throws(()=>x.service.rotateNow(),/正在回答/);
+});
