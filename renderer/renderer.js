@@ -1014,6 +1014,11 @@ require('./resource-process-tooltip').attachResourceProcessTooltip({
   document, escapeHtml,
   request: () => ipcRenderer.invoke('get-resource-top-processes'),
 });
+require('./memory-release-panel').attachMemoryReleasePanel({
+  document, escapeHtml,
+  request: () => ipcRenderer.invoke('get-memory-release-plan'),
+  execute: keys => ipcRenderer.invoke('execute-memory-release', { keys }),
+});
 require('./vpn-traffic-panel').attachVpnTrafficPanel({
   document, escapeHtml,
   request: range => ipcRenderer.invoke('get-vpn-traffic-report', { range }),
