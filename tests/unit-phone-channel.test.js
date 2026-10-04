@@ -68,7 +68,7 @@ test('fast lane answers simple questions in place, hands work back, and falls ba
  const {FastLane}=require('../core/hub-assistant/fast-lane');
  const fetchImpl=sseFetch(['田哥，','今天南通小雨，18～22℃。']);const lane=new FastLane({credentials:()=>({key:'k',base:'https://x'}),fetchImpl});
  const r=await lane.answer('今天南通天气怎么样？',{userPrefs:'- 回答不用表格'});assert.equal(r.text,'田哥，今天南通小雨，18～22℃。');
- const body=fetchImpl.calls[0];assert.equal(body.search_options.forced_search,true);assert.match(body.messages[0].content,/回答不用表格/);
+ const body=fetchImpl.calls[0];assert.equal(body.search_options.forced_search,true);assert.equal(body.model,'qwen3.8-flash');assert.equal(body.enable_thinking,false);assert.match(body.messages[0].content,/回答不用表格/);
  assert.equal((await new FastLane({credentials:()=>({key:'k',base:'b'}),fetchImpl:sseFetch(['【交给','助理】'])}).answer('明天提醒我开会')).handoff,true);
  assert.equal(lane.eligible('仿真那个会话跑完没'),false);assert.equal(lane.eligible('一加一等于几'),true);
  // 通道：简单问题不进完整助理；助理忙时也照答
