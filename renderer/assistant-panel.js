@@ -34,6 +34,40 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
       overview = result; badge(); paintNotices();
     } catch (error) { if (isOpen()) showMessage?.(`助理动态暂未同步：${error.message}`); }
   }
+  // 手机消息的回答方式：快速回答（API 前台，默认）或全部交给助理会话（CLI）。与手机端同一份设置。
+  function paintFrontDesk(button, current) {
+    if (!button || !current) return;
+    button.dataset.mode = current.mode; button.dataset.model = current.model;
+    button.textContent = current.label + ' ▾';
+  }
+  function frontDeskPicker() {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'assistant-backend assistant-frontdesk';
+    button.setAttribute('aria-label', '手机消息回答方式');
+    button.title = '手机消息怎么回答：快速回答由 API 前台当场答，难题自动交给助理会话；也可以全部交给助理会话';
+    void ipcRenderer.invoke('assistant:front-desk').then(r => paintFrontDesk(button, r?.current)).catch(() => {});
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      const old = document.querySelector('.assistant-backend-menu'); if (old) { old.remove(); if (old.classList.contains('assistant-frontdesk-menu')) return; }
+      const info = await ipcRenderer.invoke('assistant:front-desk'); if (!info?.current) return;
+      const {current, modes, models} = info, mark = on => on ? ' ✓' : '';
+      const api = modes.find(m => m.id === 'api'), cli = modes.find(m => m.id === 'cli');
+      const menu = document.createElement('div'); menu.className = 'assistant-backend-menu assistant-frontdesk-menu'; menu.setAttribute('role', 'menu');
+      menu.innerHTML = `<div class="assistant-menu-title">手机消息怎么回答</div><div class="assistant-menu-caption">${esc(api.label)}</div>`
+        + models.map(m => `<button type="button" data-front-mode="api" data-front-model="${esc(m.id)}">${esc(m.label)}${mark(current.mode === 'api' && current.model === m.id)}</button>`).join('')
+        + `<div class="assistant-menu-caption">${esc(cli.label)}</div>`
+        + `<button type="button" data-front-mode="cli">全部交给助理会话${mark(current.mode === 'cli')}</button>`
+        + `<p class="assistant-menu-hint">${esc(current.mode === 'cli' ? cli.hint : api.hint)}</p>`;
+      const rect = button.getBoundingClientRect(); menu.style.left = rect.left + 'px'; menu.style.top = rect.bottom + 6 + 'px';
+      menu.addEventListener('click', async e => {
+        const choice = e.target.closest('[data-front-mode]'); if (!choice) return;
+        menu.remove();
+        const r = await ipcRenderer.invoke('assistant:set-front-desk', {mode: choice.dataset.frontMode, ...(choice.dataset.frontModel ? {model: choice.dataset.frontModel} : {})});
+        if (r?.ok) paintFrontDesk(button, r.frontDesk); else showMessage?.(r?.error || '回答方式未切换');
+      });
+      document.body.append(menu); menu.querySelector('button')?.focus();
+    });
+    return button;
+  }
   function syncSession(session) {
     const active = session?.purpose === 'hub-assistant';
     setClass(document.body, 'assistant-session-active', active);
@@ -61,6 +95,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
       tools.prepend(picker);
     }
     if (picker && active) { picker.dataset.kind = session.kind; picker.textContent = require('../core/ai-kinds').getKindLabel(session.kind)+' ▾'; picker.disabled = switching; }
+    if (active && tools && !tools.querySelector('.assistant-frontdesk')) tools.prepend(frontDeskPicker());
     if (!active || !tools || tools.querySelector('.assistant-notifications')) return;
     const notices = document.createElement('details'); notices.className = 'assistant-notifications';
     notices.innerHTML = '<summary>关注回复</summary><div class="assistant-notice-list"></div>';
@@ -133,6 +168,7 @@ function createAssistantPanel({ document, ipcRenderer, getSession, getActiveSess
   document.addEventListener('click', event => { if(!event.target.closest('.assistant-backend-menu,.assistant-backend'))document.querySelector('.assistant-backend-menu')?.remove();if (event.target.closest('#scene-rail button:not(#btn-assistant)')) close(); });
   document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelector('.assistant-backend-menu')?.remove();});
   // 助理换班后（上下文用满后新开会话接续），若正停在助理页就切到新会话。
+  ipcRenderer.on('assistant:front-desk', (_event, current) => paintFrontDesk(document.querySelector('.assistant-frontdesk'), current));
   ipcRenderer.on('assistant:rotated', () => { if (isOpen()) void open(); else void refresh(); });
   ipcRenderer.on('assistant:notification', (_event, notice) => {
     nav.classList.add('assistant-has-unread'); nav.title = '助理 · 关注任务有新回复';

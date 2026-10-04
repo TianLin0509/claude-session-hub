@@ -272,11 +272,19 @@ class AssistantService {
     this.continuity.add({id:'user:'+id,sessionId:'fast-lane',provider:'fast-lane',role:'user',deliveryState:'confirmed',timestamp:at-1,text:question});
     this.continuity.add({id:'fast:'+id,sessionId:'fast-lane',provider:'fast-lane:'+(model||''),role:'assistant',timestamp:at,text:answer});
   }
-  fastLaneDisabled(){return this.store.get('fastLaneDisabled')===true;}
+  // 手机消息的回答方式：api＝前台快答（默认），cli＝每条交给助理会话。设置保存后立即生效，手机与电脑面板同步。
+  frontDesk(){return require('./front-desk').describe(this.store.get('frontDesk'),{legacyDisabled:this.store.get('fastLaneDisabled')===true});}
+  setFrontDesk(input={}){
+    const fd=require('./front-desk'),picked=fd.validate(input),before=this.frontDesk();
+    this.store.set('frontDesk',{mode:picked.mode,model:picked.model||before.model});
+    const after=this.frontDesk();try{this.deps.onFrontDeskChanged?.(after);}catch{}
+    return{ok:true,frontDesk:after};
+  }
+  fastLaneDisabled(){return this.frontDesk().mode==='cli';}
   // 手机端选择面板的数据：当前助理设置 + 各后端可选型号与深度（手机不内置型号表）。
   async phoneProfile(){
     const defaults={};for(const kind of backends.BACKENDS)defaults[kind]=await this.deps.getDefaults?.(kind)||{};
-    return{current:this.currentProfile(),kinds:profiles.phoneCatalog(backends.BACKENDS,kind=>defaults[kind])};
+    return{current:this.currentProfile(),kinds:profiles.phoneCatalog(backends.BACKENDS,kind=>defaults[kind]),frontDesk:require('./front-desk').catalog(this.frontDesk())};
   }
   async applyProfile(kind,id){
     if(!this.store.get('profilePending:'+kind))return;

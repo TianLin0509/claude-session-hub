@@ -196,9 +196,15 @@ async function main(){
     cdp=await connectFirstPage(hub);await until('renderer after restart',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
     result.restartedPid=hub.pid;console.log(j({event:'device-hub-restarted',pid:hub.pid}));fs.writeFileSync(path.join(dir,'hub-restarted'),String(Date.now()));
    }
+   // 电脑面板的「手机回答方式」：先截图菜单；联调中出现 hub-front 文件（内容 cli 或 api|模型）时按真人点击切换。
+   if(await cdp.eval('!!document.querySelector(".assistant-frontdesk")')){await click('.assistant-frontdesk');await until('front menu',()=>cdp.eval('!!document.querySelector(".assistant-frontdesk-menu")'),10000);await shot('hub-frontdesk-menu');await click('.assistant-frontdesk');}
    while(!fs.existsSync(path.join(dir,'stop-hub'))){
+    const signal=path.join(dir,'hub-front');
+    if(fs.existsSync(signal)){const [mode,model]=fs.readFileSync(signal,'utf8').trim().split('|');fs.unlinkSync(signal);
+     await click('.assistant-frontdesk');await click(`[data-front-mode="${mode}"]`+(model?`[data-front-model="${model}"]`:''));
+     await until('hub front label',async()=>(await cdp.eval('document.querySelector(".assistant-frontdesk")?.dataset.mode'))===mode,10000);await shot('hub-frontdesk-'+mode);fs.writeFileSync(path.join(dir,'hub-front-done'),mode);}
     const o=await invoke('assistant:get-overview',{}),live=await meta(o.sessionId);
-    fs.writeFileSync(path.join(dir,'hub-state.json'),j({profile:o.profile,assistant:o.sessionId,model:modelOf(live),effort:live?.effort,actions:(await invoke('assistant:actions',{})).actions.map(a=>({state:a.state,route:a.result?.route,sessionId:a.result?.sessionId})),phone:restart?'（重启验收中不查询，避免顺带拉起手机连接）':await invoke('assistant:phone-status',{}),finals:(await finals(o.sessionId)).slice(-6).map(r=>r.text)},null,1));
+    fs.writeFileSync(path.join(dir,'hub-state.json'),j({profile:o.profile,frontDesk:(await invoke('assistant:front-desk',{}))?.current,assistant:o.sessionId,model:modelOf(live),effort:live?.effort,actions:(await invoke('assistant:actions',{})).actions.map(a=>({state:a.state,route:a.result?.route,sessionId:a.result?.sessionId})),phone:restart?'（重启验收中不查询，避免顺带拉起手机连接）':await invoke('assistant:phone-status',{}),finals:(await finals(o.sessionId)).slice(-6).map(r=>r.text)},null,1));
     await wait(2000);
    }
    await shot('device-final');result.passed=true;return;

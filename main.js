@@ -1999,6 +1999,7 @@ try {
       return sessionManager.closeSessionRecoverably(id, { reason: 'assistant-rotated' });
     },
     onAssistantRotated: event => sendToRenderer('assistant:rotated', event),
+    onFrontDeskChanged: frontDesk => { sendToRenderer('assistant:front-desk', frontDesk); phoneService?.kick?.(); },
     onAssistantTurnComplete: () => { phoneService?.kick?.(); setTimeout(() => phoneService?.kick?.(), 1200); },
   });
   assistantService.startWatching();
