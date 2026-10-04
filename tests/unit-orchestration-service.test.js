@@ -247,3 +247,26 @@ test('ending orchestration pauses the workflow and stops notices; resuming resto
   assert.equal(x.dispatches.length, before);
   assert.equal((await x.service.userAction('mt1', 'resume')).status, 'running');
 });
+
+test('a member whose turn ended without a delivery is reported to the orchestrator after a short grace', async t => {
+  const x = fixture(t, { settings: { requireConfirm: false } });
+  await x.call('orch_add_member', { role: '调研位', kind: 'claude', tier: 'fast' });
+  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  await x.call('orch_start_workflow', { name: '调研', preset: 'research', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
+  const stages = x.meetingObj.serialWorkflow.deliveryStages;
+  x.writeRun({ id: 'run-1', kind: 'serial', status: 'running', stages, steps: [{ id: 'st1', index: 0, members: ['m2', 'm3'], createdAt: 1,
+    dispatches: [{ state: 'settled', chatStatus: 'completed' }], deliveries: { m2: { memberId: 'm2', outcome: 'ready', path: '/r/m2/已交付.md' } } }] });
+  x.busy.add('s-3');
+  x.service.tickMeeting('mt1');
+  x.advance(120000);
+  x.service.tickMeeting('mt1');
+  assert.ok(!x.service.ledgerFor('mt1').notices.some(n => /没有交付文件/.test(n.text)), 'a member still working is not reported');
+  x.busy.delete('s-3');
+  x.service.tickMeeting('mt1');
+  x.advance(91000);
+  x.service.tickMeeting('mt1');
+  await wait(10);
+  await x.service.deliver('mt1');
+  const said = [...x.dispatches.map(a => a.userInput), ...x.service.ledgerFor('mt1').notices.map(n => n.text)].join('\n');
+  assert.match(said, /m3（审核位）.*没有交付文件/, 'the idle member is reported once the grace passes');
+});

@@ -37,6 +37,8 @@ function createOrchestrationService(deps) {
   const inflight = new Map();          // meetingId → { ids, at }
   const lastUserAt = new Map();
   const lastTimeSave = new Map();
+  const idleSince = new Map();          // `${stepId}:${memberId}` → 首次看到「回合已结束仍未交付」的时间
+  const IDLE_GRACE_MS = 90000;
   const reconcileTimers = new Map();
   let bridge = null, timer = null, endpointFile = '';
 
@@ -304,6 +306,17 @@ function createOrchestrationService(deps) {
         seg.stuckNotified = step.id;
         Ledger.enqueue(ledger, `stuck:${step.id}`, `工作段「${seg.name}」的「${run.stages?.[step.index]?.name || '当前步骤'}」已超过 ${ledger.settings.stuckMin} 分钟没有交付（待交付：${missing.join('、')}），成员可能卡住。可以 orch_control_workflow(remind) 提醒，或向田哥说明。`, now());
         dirty = true;
+      }
+    }
+    // 成员这一轮已经结束、空闲一段时间仍没交付：不等「卡住」上限，尽快告诉编排员去提醒。
+    if (seg && step && seg.runId === run.id && (step.dispatches || []).length && step.dispatches.every(d => d.state === 'settled')) {
+      const roster = members(meetingId);
+      for (const memberId of (step.members || []).filter(m => !step.deliveries?.[m])) {
+        const key = `${step.id}:${memberId}`;
+        const member = roster.find(x => x.memberId === memberId);
+        if (!member || sessionManager.isAgentTurnActive(member.sid)) { idleSince.delete(key); continue; }
+        if (!idleSince.has(key)) idleSince.set(key, now());
+        if (now() - idleSince.get(key) >= IDLE_GRACE_MS && Ledger.enqueue(ledger, `idle:${key}`, `${memberId}（${member.role || member.name}）在「${run.stages?.[step.index]?.name || '当前步骤'}」这一轮已经结束，但没有交付文件（仍是草稿）。可以用 orch_control_workflow(remind) 提醒它补交，必要时带上 note 说明它这一步该交什么。`, now())) dirty = true;
       }
     }
     for (const ask of ledger.asks.filter(a => a.status === 'pending' && !a.stuckNotified && now() - a.at > stuckMs)) {
