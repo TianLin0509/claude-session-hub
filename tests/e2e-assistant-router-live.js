@@ -211,6 +211,10 @@ async function main(){
      await say('一加一等于几？');await until('desk fast reply',async()=>(await rows()).filter(r=>r.startsWith('ai fast')).length>=1&&(await rows()).length>=before+2,60000);
      await say('记一下：我后天上午要开项目评审会');await until('desk session reply',async()=>(await rows()).length>=before+4,240000);await wait(600);
      await shot('ap-conversation');
+     // 快答不满意：点「让助理会话再答」，同一问题交给助理会话；再用输入框开关指定「交给助理会话」发一条。
+     const n1=(await rows()).length;await click('.ap-again');await until('again reply',async()=>(await rows()).length>=n1+2,240000);
+     await click('[data-ap="route"]');await say('三加三等于几？');await until('forced reply',async()=>(await rows()).length>=n1+4,240000);await wait(600);
+     await click('[data-ap="status"]');await until('status panel',()=>cdp.eval('!!document.querySelector(".ap-status:not([hidden]) section")'),10000);await wait(800);await shot('ap-status');await click('[data-ap="status"]');
      await click('[data-ap="front"]');await until('front menu',()=>cdp.eval('!!document.querySelector(".ap-menu")'),5000);await shot('ap-menu-front');await click('[data-ap="front"]');
      await click('[data-ap="engine"]');await until('engine menu',()=>cdp.eval('!!document.querySelector(".ap-menu select")'),5000);await shot('ap-menu-engine');await click('[data-ap="engine"]');
      await click('[data-ap="more"]');await until('more menu',()=>cdp.eval('!!document.querySelector(".ap-menu")'),5000);await shot('ap-menu-more');await click('[data-ap="more"]');
