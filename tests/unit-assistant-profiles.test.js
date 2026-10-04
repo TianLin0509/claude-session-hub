@@ -158,3 +158,14 @@ test('background rotation lets the old assistant write a handoff first; manual r
   const last=x.service.overview().context.lastRotation;assert.equal(last.reason,'idle');assert.equal(last.handoff,true);
   x.sessions.get(b.sessionId).status='running';assert.throws(()=>x.service.rotateNow(),/正在回答/);
 });
+test('the background timer only checks followed tasks; the workbench is rebuilt on demand and old archives are pruned',async t=>{
+  const x=setup(t);await x.service.ensureSession();
+  const workbench=path.join(x.deps.dataDir,'assistant','workbench','CURRENT.md');
+  x.service.pollWatches();assert.equal(fs.existsSync(workbench),false,'polling must not rebuild the workbench');
+  x.service.context({hours:3});assert.equal(fs.existsSync(workbench),true,'asking rebuilds it');
+  const folder=path.join(x.deps.dataDir,'assistant','workbench','sessions','abc');fs.mkdirSync(folder,{recursive:true});
+  for(let i=0;i<6;i++){const f=path.join(folder,'v'+i+'.md');fs.writeFileSync(f,'x');fs.utimesSync(f,new Date(Date.now()-i*1000),new Date(Date.now()-i*1000));}
+  x.service.context({hours:3});assert.deepEqual(fs.readdirSync(folder).sort(),['v0.md','v1.md','v2.md']);
+  const snaps=path.join(x.deps.dataDir,'assistant','snapshots');fs.mkdirSync(snaps,{recursive:true});const old=path.join(snaps,'old.json');fs.writeFileSync(old,'{}');fs.utimesSync(old,new Date(Date.now()-8*86400000),new Date(Date.now()-8*86400000));
+  x.service.snapshots.prune();assert.equal(fs.existsSync(old),false);
+});

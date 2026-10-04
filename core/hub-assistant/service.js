@@ -46,7 +46,9 @@ class AssistantService {
   startWatching({intervalMs=2000,rotationCheckMs=60000}={}){if(this.watchTimer)return;this.watchTimer=setInterval(()=>{try{const id=this.store.get('sessionId');if(id&&this.deps.getSession(id))this.pollWatches();}catch{}},Math.max(500,intervalMs));this.watchTimer.unref?.();
     // 后台换班：你不在用时到点就写交接、换新会话，回来直接用干净的助理，不用等。
     this.rotationTimer=setInterval(()=>{void this.maybeRotateInBackground().catch(error=>console.warn('[assistant] background rotation',error.message));},Math.max(1000,rotationCheckMs));this.rotationTimer.unref?.();}
-  pollWatches(){const result=this.watches.poll();if(this.store.get('sessionId'))this.refreshDossier?.();return result;}
+  // 定时器只检查「关注的任务有没有新回复」（结果推到手机和助理页靠它）。工作台按需刷新：
+  // 你每问一次、助理按需查资料或打开工作档案时才重建，平时不读写文件（2026-10-04 田哥要求）。
+  pollWatches(){return this.watches.poll();}
   notifications(request){return this.watches.notifications(request);}
   followedTasks(){return this.watches.list().map(({cursor,seen,...watch})=>watch);}
   observePromptReceipt(snapshot){
