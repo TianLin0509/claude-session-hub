@@ -57,9 +57,10 @@ async function main(){
   const hooks=require('../core/claude-hook-integration').ensureClaudeHookIntegration({claudeDir:claudeHome,sourceScriptsDir:path.resolve('scripts'),logger:{log(){},warn(){}}});assert.equal(hooks.errors.length,0);
   fs.writeFileSync(path.join(codexHome,'config.toml'),'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n'+[workspace,path.resolve('.')].map(p=>"[projects.'"+p.toLowerCase()+"']\ntrust_level = \"trusted\"").join('\n')+'\n');
   // Hub 默认（deep 档）在测试里用低成本型号；三档映射本身由单测覆盖。
-  fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6-luna',claude:'claude-sonnet-5-5'}},providers:{codex:{backend:'subscription',subscription_profile:profile.id,subscription_profiles:[{id:profile.id,label:profile.label,home:codexHome}]}}}));
+  fs.writeFileSync(path.join(data,'config.json'),j({models:{defaults:{codex:'gpt-6-luna',claude:'claude-sonnet-5-5'}},providers:{codex:{backend:'subscription',subscription_profile:profile.id,subscription_profiles:[{id:profile.id,label:profile.label,home:codexHome}]}},...(cfg.acp?.apiKey?{acp:{apiKey:cfg.acp.apiKey,baseURL:cfg.acp.baseURL}}:{})}));
   const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
-  hub=await launchIsolatedHub({dataDir:data,port,windowMode:'background',label:'assistant-router-live',allowExternalState:true,extraEnv:{CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:claudeHome,CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_BACKEND:'subscription',HUB_CODEX_PROFILE:'',CLAUDE_HUB_NO_FAST:'1',CLAUDE_HUB_E2E:'1',OPENAI_API_KEY:'',CODEX_API_KEY:'',ANTHROPIC_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),...(process.env.ROUTER_ROTATE==='1'?{HUB_ASSISTANT_ROTATE_TOKENS:'1'}:{})}});
+  const launchArgs={dataDir:data,port,windowMode:'background',label:'assistant-router-live',allowExternalState:true,extraEnv:{CLAUDE_HUB_HOME_DIR:home,CLAUDE_CONFIG_DIR:claudeHome,CODEX_HOME:codexHome,CODEX_SQLITE_HOME:'',CLAUDE_HUB_AGENT_RUNTIME:'pty',HUB_CODEX_BACKEND:'subscription',HUB_CODEX_PROFILE:'',CLAUDE_HUB_NO_FAST:'1',CLAUDE_HUB_E2E:'1',OPENAI_API_KEY:'',CODEX_API_KEY:'',ANTHROPIC_API_KEY:'',DEEPSEEK_API_KEY:'',AI_HUB_WORKSPACE_ROOT:workspace,HUB_SESSION_SEARCH_CODEX_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_CLAUDE_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_KIMI_ROOTS:path.join(root,'empty'),HUB_SESSION_SEARCH_GEMINI_ROOTS:path.join(root,'empty'),...(process.env.ROUTER_ROTATE==='1'?{HUB_ASSISTANT_ROTATE_TOKENS:'1'}:{})}};
+  hub=await launchIsolatedHub(launchArgs);
   result.pid=hub.pid;cdp=await connectFirstPage(hub);await cdp.send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   await until('renderer',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
   if(await cdp.eval('document.getElementById("app-container").classList.contains("rail-hidden")'))await click('#btn-toggle-navigation');
@@ -181,9 +182,21 @@ async function main(){
   if(process.env.ROUTER_DEVICE_HOLD){
    const dir=process.env.ROUTER_DEVICE_HOLD;fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'connect.txt'),code,{mode:0o600});
    console.log(j({event:'device-hub-ready',assistant,pid:hub.pid}));result.deviceHold=true;
+   // 重启验收（2026-10-04 田哥报告重开 Hub 后手机显示没在线）：设备配对后关掉 Hub，等中继判离线，
+   // 再用同一数据目录重开，且不碰手机面板、不调任何手机接口，由设备验证 App 自己恢复在线并能对话。
+   const restart=process.env.ROUTER_DEVICE_RESTART==='1';
+   if(restart){
+    while(!fs.existsSync(path.join(dir,'restart-hub'))&&!fs.existsSync(path.join(dir,'stop-hub')))await wait(1000);
+    cdp.close();cdp=null;fs.writeFileSync(path.join(out,'hub-before-restart.log'),hub.log().join('\n'));await gracefulQuit(hub);hub=null;
+    console.log(j({event:'device-hub-stopped'}));fs.writeFileSync(path.join(dir,'hub-stopped'),String(Date.now()));
+    await wait(50000);
+    hub=await launchIsolatedHub({...launchArgs,port:await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});})});
+    cdp=await connectFirstPage(hub);await until('renderer after restart',()=>cdp.eval('typeof assistantPanel!=="undefined"'));
+    result.restartedPid=hub.pid;console.log(j({event:'device-hub-restarted',pid:hub.pid}));fs.writeFileSync(path.join(dir,'hub-restarted'),String(Date.now()));
+   }
    while(!fs.existsSync(path.join(dir,'stop-hub'))){
     const o=await invoke('assistant:get-overview',{}),live=await meta(o.sessionId);
-    fs.writeFileSync(path.join(dir,'hub-state.json'),j({profile:o.profile,assistant:o.sessionId,model:modelOf(live),effort:live?.effort,actions:(await invoke('assistant:actions',{})).actions.map(a=>({state:a.state,route:a.result?.route,sessionId:a.result?.sessionId})),phone:await invoke('assistant:phone-status',{}),finals:(await finals(o.sessionId)).slice(-6).map(r=>r.text)},null,1));
+    fs.writeFileSync(path.join(dir,'hub-state.json'),j({profile:o.profile,assistant:o.sessionId,model:modelOf(live),effort:live?.effort,actions:(await invoke('assistant:actions',{})).actions.map(a=>({state:a.state,route:a.result?.route,sessionId:a.result?.sessionId})),phone:restart?'（重启验收中不查询，避免顺带拉起手机连接）':await invoke('assistant:phone-status',{}),finals:(await finals(o.sessionId)).slice(-6).map(r=>r.text)},null,1));
     await wait(2000);
    }
    await shot('device-final');result.passed=true;return;

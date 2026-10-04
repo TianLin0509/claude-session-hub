@@ -9,7 +9,9 @@ function registerPhoneIpc(ipcMain,assistant,{dataDir,electron}){
   if(channel.journal.state.enabled)channel.start();return channel;
  };
  for(const [name,fn]of Object.entries({status:()=>ensure().status(),pair:()=>ensure().pair(),pause:()=>ensure().pause(),resume:()=>{const c=ensure();c.journal.change(s=>{s.enabled=true;});c.start();return c.status();}}))ipcMain.handle('assistant:phone-'+name,async()=>{try{return await fn();}catch(e){return{ok:false,error:e.message};}});
- if(fs.existsSync(path.join(dir,'channel.bin')))try{ensure();}catch(e){console.warn('[phone] unavailable:',e.message);}
+ // 已配对过就自动恢复连接。注册发生在 app ready 之前，而 Windows 的 safeStorage 要到 ready 后才可用，
+ // 提前恢复会静默失败、手机一直显示电脑不在线（2026-10-04），所以等 ready 再恢复。
+ if(fs.existsSync(path.join(dir,'channel.bin')))electron.app.whenReady().then(()=>{try{ensure();console.log('[phone] channel restored');}catch(e){console.warn('[phone] unavailable:',e.message);}});
  return{observeReceipt:r=>channel?.observeReceipt(r),kick:()=>channel?.kick?.(),close:()=>channel?.close()};
 }
 module.exports={registerPhoneIpc};
