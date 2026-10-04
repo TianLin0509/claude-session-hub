@@ -14,9 +14,16 @@ function render(row,meeting,onRefresh,onError) {
   }).catch(e=>{if(version===(versions.get(id)||0))states.set(id,{error:e.message,label:'状态读取失败'});}).finally(()=>{pending.delete(id);onRefresh(id);});}
   row.dataset.deliveryMeeting=id;
   const active=!!s?.runId && !s.finished,paused=s?.paused || s?.recoveryPending;
-  const title=!s?'读取交付进度…':s.error && !s.runId?'状态读取失败':s.finished?s.label:!s.runId?'工作流已就绪':`${paused?'已暂停 · ':''}${s.name}`;
-  const primary=active?(paused?'<button type="button" class="continue" data-delivery="resume" title="由 Hub 核对已交付文件，判断下一步交给谁；不重复派发已确认任务">继续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
-  const status=s?.runId&&!s.finished?(s.gate==='running'?`Hub 正在跑测试闸门 · 第 ${s.round} 轮`:`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`):s?.finished?'记录和交付文件已保留':'输入任务，Hub 按工作流安排成员推进';
+  // Idle room: either the next message starts a workflow task (armed) or it is
+  // an ordinary group-chat message to the lit avatars (after a task ends).
+  const idle=!!s && !s.error && !active, armed=idle && s.armed;
+  const title=!s?'读取交付进度…':s.error && !s.runId?'状态读取失败':armed?'工作流已就绪':idle?'普通群聊':`${paused?'已暂停 · ':''}${s.name}`;
+  const box=row.ownerDocument?.getElementById('mr-input-box');
+  if(box && idle)box.dataset.placeholder=armed?'输入任务，下一条消息按工作流开工；只想聊天就点上方「改为普通群聊」':'普通群聊：消息直接发给点亮头像的成员；要按工作流做新任务，点上方「开新任务」';
+  const primary=idle?(armed?'<button type="button" data-delivery="disarm" title="下一条消息不开工，直接发给点亮头像的成员">改为普通群聊</button>'
+      :'<button type="button" class="continue" data-delivery="arm" title="下一条消息按工作流开始新任务">开新任务</button>'):active?(paused?'<button type="button" class="continue" data-delivery="resume" title="由 Hub 核对已交付文件，判断下一步交给谁；不重复派发已确认任务">继续</button>':'<button type="button" data-delivery="stop" title="暂停自动接续，并中断当前成员">暂停</button>'):'';
+  const status=s?.runId&&!s.finished?(s.gate==='running'?`Hub 正在跑测试闸门 · 第 ${s.round} 轮`:`${s.delivered}/${s.total} 位已交付${s.round?` · 第 ${s.round} 轮`:''}`)
+    :armed?'下一条消息按工作流开始任务':idle?(s.finished?`上个任务${s.done?'已完成':'已结束'}，记录已保留；消息直接发给点亮的成员`:'消息直接发给点亮的成员'):'输入任务，Hub 按工作流安排成员推进';
   row.innerHTML=`<section class="mr-file-flow mr-delivery-flow" aria-label="工作流进度" data-delivery-status="${esc(s?.status || 'loading')}" aria-busy="${busy.has(id)}">
     <div class="mr-file-detail" title="${esc([title,status,recipients.length?'发送给 '+recipients.join('、'):'请点亮至少一位成员头像'].join(' · '))}"><strong>${esc(active?title+' · '+status:title)}</strong><small>${esc(status)}</small></div>
     <div class="mr-file-actions">${primary}${s?.error&&!s.runId?'<button type="button" data-delivery="refresh">重试读取</button>':''}<button type="button" data-delivery="files">交付文件</button>
@@ -25,7 +32,7 @@ function render(row,meeting,onRefresh,onError) {
     <div id="mr-delivery-details" class="mr-delivery-details" ${expanded.has(id)?'':'hidden'}>
       <p>${esc(status)} · ${esc(recipients.length?'发送给 '+recipients.join('、'):'请点亮至少一位成员头像')}</p>
       <ol class="mr-delivery-stages">${(s?.stageNames || meeting.serialWorkflow.deliveryStages.map(stage=>stage.name)).map((name,i)=>`<li ${active&&s.stageIndex===i?'aria-current="step"':''}>${esc(name)}</li>`).join('')}</ol>
-      <p>${s?.missing?.length?'待交付：'+esc(s.missing.join('、')):'每位成员交付结果后接续；聊天结束不会提前交棒'}</p>
+      <p>${active&&s.missing?.length?'待交付：'+esc(s.missing.join('、')):'每位成员交付结果后接续；聊天结束不会提前交棒'}</p>
       ${active && s.missingIds?.length ? `<div class="mr-file-actions">${s.missingIds.map((mid,i)=>{const ends=s.kind==='file' && mid===s.ownerId;
         return `<button type="button" data-delivery-skip="${esc(mid)}" data-skip-ends="${ends}" title="${ends?'这位是本步负责人：跳过后本次任务结束，不合并':'跳过这位成员，其他成员的交付照常接续'}">${ends?'跳过并结束任务':'跳过'} ${esc(s.missing[i])}</button>`;}).join('')}</div>` : ''}
       ${active?`<div class="mr-file-actions">${!paused?'<button type="button" data-delivery="resume" title="只核对交付，不重复发送任务">重新核对交付</button><button type="button" data-delivery="continue" title="只向尚未交付且已空闲的成员补发继续指令">提醒未交付成员</button>':''}<button type="button" data-delivery="cancel" title="保留记录，结束本次任务后才能启动新目标">结束任务</button></div>`:''}
@@ -72,6 +79,8 @@ async function submit(meeting,text,recipientSids) {
     const r=await ipcRenderer.invoke('delivery:resume',{meetingId:meeting.id});if(!r.ok)throw new Error(r.error);
     if(BARE_CONTINUE.test(String(text).trim()))return {...r,resumed:true};
   }
+  // Not armed and no task running: an ordinary group-chat message.
+  if((!s.runId || s.finished) && !s.armed)return {plain:true};
   if(s.runId && !s.finished){
     const targets=Recipients.resolveRecipients(meeting,recipientSids);
     const r=await ipcRenderer.invoke('groupchat:user-supplement',{meetingId:meeting.id,text,recipientSids:targets});
