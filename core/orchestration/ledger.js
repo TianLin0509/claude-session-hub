@@ -52,7 +52,8 @@ function bump(ledger) { ledger.progressSeq += 1; ledger.wakesWithoutProgress = 0
 // ---- 计划 ----
 const text = (value, max) => String(value == null ? '' : value).trim().slice(0, max);
 function proposePlan(ledger, input = {}, now = Date.now()) {
-  if (['finished', 'ended'].includes(ledger.status)) throw new Error('编排已结束，田哥恢复编排后才能提交计划');
+  if (ledger.status === 'ended') throw new Error('编排已结束，田哥恢复编排后才能提交计划');
+  if (ledger.status === 'finished') ledger.status = 'running';
   const summary = text(input.summary, 4000);
   if (!summary) throw new Error('计划需要 summary：一段白话说明目标、队伍和步骤');
   const team = (Array.isArray(input.team) ? input.team : []).map(t => ({
@@ -167,13 +168,14 @@ function applyRun(ledger, run, now = Date.now()) {
   else if (run.status === 'running') status = verdict?.outcome === 'rework' && run.kind === 'file' && seg.rounds > 0 ? 'rework' : 'running';
   seg.error = run.status === 'paused' ? text(run.error, 600) : '';
   const prevStatus = seg.status;
+  if (status === 'paused' && prevStatus !== 'paused') seg.pauses = (seg.pauses || 0) + 1;
   seg.status = status;
   if (['passed', 'completed', 'cancelled'].includes(status) && !seg.endedAt) seg.endedAt = now;
   ledger.budget.roundsUsed = ledger.segments.reduce((sum, s) => sum + (s.rounds || 0), 0);
   const after = JSON.stringify([seg.status, seg.rounds, seg.steps, seg.error, seg.verdict?.outcome, seg.verdictPath]);
   if (before === after) return notices;
   bump(ledger);
-  const key = `${seg.id}:${seg.rounds}:${status}:${seg.verdict?.outcome || ''}:${status === 'paused' ? seg.steps + ':' + seg.error.slice(0, 40) : ''}`;
+  const key = `${seg.id}:${seg.rounds}:${status}:${seg.verdict?.outcome || ''}:${status === 'paused' ? 'p' + (seg.pauses || 0) : ''}`;
   if (status !== prevStatus || (status === 'rework' && seg.rounds !== prevRounds)) {
     if (status === 'passed') notices.push({ key, text: `工作段「${seg.name}」审核通过。审核结论：${seg.verdictPath}` });
     else if (status === 'completed') notices.push({ key, text: `工作段「${seg.name}」已完成。最后交付：${seg.verdictPath}` });
@@ -232,8 +234,13 @@ function markSending(ledger, ids, now = Date.now()) {
 function markSent(ledger, ids) {
   ledger.notices = ledger.notices.filter(n => !ids.includes(n.id));
 }
-function markRetry(ledger, ids) {
+function markRetry(ledger, ids, now = Date.now()) {
   for (const n of ledger.notices) if (ids.includes(n.id)) n.state = n.attempts >= 3 ? 'failed' : 'queued';
+  const failed = ledger.notices.filter(n => n.state === 'failed');
+  if (failed.length) {
+    event(ledger, `有 ${failed.length} 条通知连续 3 次没送达编排员，已放弃：` + failed.map(n => n.text.slice(0, 60)).join('；'), now);
+    ledger.notices = ledger.notices.filter(n => n.state !== 'failed');
+  }
 }
 // Hub 重启后，发送中但没有回执的通知可能已送达：不静默重发，标注后随下一批说明。
 function recoverAfterRestart(ledger) {

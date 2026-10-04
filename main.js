@@ -3707,6 +3707,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
 
   shutdownDrainState = 'draining';
   global.__deliveryEngine?.freeze();
+  global.__orchestrationService?.freeze();
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
   // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
   // Active tasks remain durable/orphan-recoverable and the phase lease is only
@@ -3723,7 +3724,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
         shutdownDrainPromise = null;
         console.error('[shutdown] PTY drain did not reach a safe state; close was cancelled and may be retried', result);
         restoreWindowAfterFailedShutdown();
-        global.__deliveryEngine?.startWatching();
+        global.__deliveryEngine?.startWatching(); global.__orchestrationService?.unfreeze();
         return result;
       }
       closeHookServerForShutdown();
@@ -3747,7 +3748,7 @@ function beginGracefulHubShutdown(reason, { beforeQuit } = {}) {
       shutdownDrainPromise = null;
       console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
       restoreWindowAfterFailedShutdown();
-      global.__deliveryEngine?.startWatching();
+      global.__deliveryEngine?.startWatching(); global.__orchestrationService?.unfreeze();
       return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
     });
   return shutdownDrainPromise;

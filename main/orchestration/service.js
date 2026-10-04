@@ -40,7 +40,10 @@ function createOrchestrationService(deps) {
   const idleSince = new Map();          // `${stepId}:${memberId}` → 首次看到「回合已结束仍未交付」的时间
   const IDLE_GRACE_MS = 90000;
   const reconcileTimers = new Map();
-  let bridge = null, timer = null, endpointFile = '';
+  let bridge = null, timer = null, frozen = false;
+  // 构造时就定好：start() 之前创建/恢复的编排员会话也拿到正确的工具地址。
+  const endpointFile = path.join(getHubDataDir(), 'orchestration', 'bridge-endpoint.json');
+  const lastEmitted = new Map();
 
   const dataDir = () => getHubDataDir();
   const meeting = id => meetingManager.getMeeting(id);
@@ -61,7 +64,12 @@ function createOrchestrationService(deps) {
     if (!ledger) return;
     Store.save(dataDir(), ledger, now());
     lastTimeSave.set(meetingId, now());
-    sendToRenderer('orchestration:changed', { meetingId, view: viewFor(meetingId, ledger) });
+    const view = viewFor(meetingId, ledger);
+    const { updatedAt, ...shape } = view || {};
+    const signature = JSON.stringify(shape);
+    if (lastEmitted.get(meetingId) === signature) return;   // 只有内容变了才让界面重绘
+    lastEmitted.set(meetingId, signature);
+    sendToRenderer('orchestration:changed', { meetingId, view });
   }
   function viewFor(meetingId, ledger = ledgerFor(meetingId)) {
     const v = Ledger.view(ledger);
@@ -166,6 +174,7 @@ function createOrchestrationService(deps) {
     return added;
   }
   async function deliver(meetingId) {
+    if (frozen) return false;
     const ledger = ledgerFor(meetingId);
     const orch = orchestratorOf(meetingId);
     if (!ledger || !orch || ledger.status === 'ended') return false;
@@ -174,7 +183,8 @@ function createOrchestrationService(deps) {
     const session = sessionManager.getSession(orch.sessionId);
     if (!session) return false;
     let items = Ledger.pendingNotices(ledger);
-    const stalls = Ledger.noteWake(ledger);
+    // 只有带新内容的投递才算一次「唤醒」；失败重试不计入「没进展」。
+    const stalls = items.some(n => !n.attempts) ? Ledger.noteWake(ledger) : ledger.wakesWithoutProgress;
     let halted = ledger.status === 'halted' ? (ledger.halt && Ledger.HALT_LABELS[ledger.halt.reason]) : null;
     if (stalls >= 2 && ledger.status === 'running') {
       haltRun(meetingId, ledger, 'no_progress', '连续两次唤醒都没有新进展');
@@ -328,6 +338,7 @@ function createOrchestrationService(deps) {
     void deliver(meetingId);
   }
   function tickAll() {
+    if (frozen) return;
     for (const m of meetingManager.getAllMeetings()) {
       if (!enabled(m) || m.status === 'closed') continue;
       try { tickMeeting(m.id); } catch (error) { logger.warn?.('[orchestration] tick failed:', m.id, error.message); }
@@ -470,22 +481,28 @@ function createOrchestrationService(deps) {
     if (ledger.asks.length > 60) ledger.asks.splice(0, ledger.asks.length - 60);
     Ledger.event(ledger, `编排员单独问 ${memberId}`, now());
     persist(meetingId, ledger);
-    await ensureMemberReady(meeting(meetingId), memberId);
-    const promise = dispatcher().dispatchGroupChatTurn(meetingId, {
-      userInput: Prompt.askText({ question, askId: ask.id }), targetMemberIds: [memberId], appendUserMessage: false,
-      workflowRun: { kind: 'orchestration', runId: ask.id, stepIndex: 0, attempt: 1 }, fileHandoff: true, turnTimeoutMs: 0,
-    });
-    Promise.resolve(promise).then(result => {
+    // 发送失败时把提问标为失败：不留挂起记录，不再计入在途工作与时长。
+    const fail = (reason, notify) => {
       const l = ledgerFor(meetingId);
       const a = l?.asks.find(x => x.id === ask.id);
-      if (!a) return;
-      if (result?.turnNum) a.turnNum = result.turnNum;
-      if (!result || ['error', 'no_sent', 'no_subs'].includes(result.status)) {
-        a.status = 'failed'; a.error = String(result?.reason || result?.status || '发送失败');
-        Ledger.enqueue(l, `ask-failed:${a.id}`, `单独提问 ${a.id} 没有送达 ${a.memberId}：${a.error}`, now());
-        persist(meetingId, l);
-      }
-    }, error => logger.warn?.('[orchestration] ask dispatch failed:', error.message));
+      if (!a || a.status !== 'pending') return;
+      a.status = 'failed'; a.error = String(reason || '发送失败').slice(0, 300);
+      if (notify) Ledger.enqueue(l, `ask-failed:${a.id}`, `单独提问 ${a.id} 没有送达 ${a.memberId}：${a.error}`, now());
+      persist(meetingId, l);
+    };
+    let promise;
+    try {
+      await ensureMemberReady(meeting(meetingId), memberId);
+      promise = dispatcher().dispatchGroupChatTurn(meetingId, {
+        userInput: Prompt.askText({ question, askId: ask.id }), targetMemberIds: [memberId], appendUserMessage: false,
+        workflowRun: { kind: 'orchestration', runId: ask.id, stepIndex: 0, attempt: 1 }, fileHandoff: true, turnTimeoutMs: 0,
+      });
+    } catch (error) { fail(error.message, false); throw new Error(`没能把问题发给 ${memberId}：${error.message}`); }
+    Promise.resolve(promise).then(result => {
+      const a = ledgerFor(meetingId)?.asks.find(x => x.id === ask.id);
+      if (a && result?.turnNum) a.turnNum = result.turnNum;
+      if (!result || ['error', 'no_sent', 'no_subs'].includes(result.status)) fail(result?.reason || result?.status, true);
+    }, error => fail(error.message, true));
     return { askId: ask.id, note: '成员回答后 Hub 会通知你，并给出回答文件路径。' };
   }
   function report(meetingId, ledger, args) {
@@ -528,6 +545,14 @@ function createOrchestrationService(deps) {
     }
   }
 
+  // 结束编排后房间回到普通群聊：关掉工作流的消息路由（配置保留），恢复编排时再打开。
+  function setWorkflowEnabled(meetingId, on) {
+    const sw = meeting(meetingId)?.serialWorkflow;
+    if (!sw || sw.deliveryVersion !== 1 || !!sw.enabled === on) return;
+    meetingManager.updateMeeting(meetingId, { serialWorkflow: { ...sw, enabled: on } });
+    sendToRenderer('meeting-updated', { meeting: meeting(meetingId) });
+  }
+
   // ---- 田哥的操作 ----
   async function userAction(meetingId, action, payload = {}) {
     const ledger = ledgerFor(meetingId);
@@ -555,6 +580,7 @@ function createOrchestrationService(deps) {
           Ledger.resume(ledger, now());
           Ledger.enqueue(ledger, `resume:${ledger.progressSeq}`, '田哥恢复了编排，可以继续推进（工作流若仍暂停，用 orch_control_workflow(continue) 续跑）。', now());
         } else if (ledger.status === 'ended') {
+          setWorkflowEnabled(meetingId, true);
           ledger.status = ledger.plan && ledger.plan.confirmedVersion ? 'running' : (ledger.settings.requireConfirm ? 'planning' : 'running');
           Ledger.event(ledger, '田哥恢复编排', now());
         }
@@ -565,6 +591,7 @@ function createOrchestrationService(deps) {
         if (run && run.status === 'running') { try { await engine().stop(meetingId); } catch (error) { logger.warn?.('[orchestration] stop on end failed:', error.message); } }
         ledger.status = 'ended';
         ledger.halt = null;
+        setWorkflowEnabled(meetingId, false);
         Ledger.event(ledger, '田哥结束编排，回到普通群聊', now());
         break;
       }
@@ -581,6 +608,8 @@ function createOrchestrationService(deps) {
     lastUserAt.set(meetingId, now());
     Ledger.noteUserMessage(ledger);
     if (ledger.status === 'awaiting_confirm' && CONFIRM_WORDS.test(String(text))) Ledger.confirmPlan(ledger, now());
+    // 结项后田哥提出新要求：重新开放编排（新计划仍需确认）。
+    if (ledger.status === 'finished' && !direct.length) { ledger.status = 'running'; Ledger.event(ledger, '田哥在结项后提出新要求，重新开放编排', now()); }
     if (ledger.status === 'halted' && ['need_decision', 'no_progress', 'user_pause'].includes(ledger.halt?.reason) && !direct.length) {
       Ledger.resume(ledger, now());
     }
@@ -595,9 +624,7 @@ function createOrchestrationService(deps) {
   async function start() {
     bridge = new AssistantBridge(request => invokeTool(request), { identityHeader: 'x-hub-orchestrator-session' });
     await bridge.start();
-    const dir = path.join(dataDir(), 'orchestration');
-    fs.mkdirSync(dir, { recursive: true });
-    endpointFile = path.join(dir, 'bridge-endpoint.json');
+    fs.mkdirSync(path.dirname(endpointFile), { recursive: true });
     const tmp = `${endpointFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify({ url: bridge.url, token: bridge.secret }), { mode: 0o600 });
     fs.renameSync(tmp, endpointFile);
@@ -606,9 +633,12 @@ function createOrchestrationService(deps) {
     return { endpointFile };
   }
   function stop() { clearInterval(timer); timer = null; bridge?.close(); bridge = null; }
+  // 关机排空期间不再唤醒编排员、不再派活；关机取消时恢复。
+  function freeze() { frozen = true; }
+  function unfreeze() { frozen = false; }
 
   return {
-    start, stop, enabled, launchOptions, resumeOptions, onMeetingCreated, onDeliveryStatus, onAnswersChanged,
+    start, stop, freeze, unfreeze, enabled, launchOptions, resumeOptions, onMeetingCreated, onDeliveryStatus, onAnswersChanged,
     invokeTool, userAction, userMessage, view: id => viewFor(id), statusResult, reconcile, tickMeeting, deliver,
     ledgerFor, members, PURPOSE,
   };

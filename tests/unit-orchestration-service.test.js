@@ -270,3 +270,47 @@ test('a member whose turn ended without a delivery is reported to the orchestrat
   const said = [...x.dispatches.map(a => a.userInput), ...x.service.ledgerFor('mt1').notices.map(n => n.text)].join('\n');
   assert.match(said, /m3（审核位）.*没有交付文件/, 'the idle member is reported once the grace passes');
 });
+
+test('review fixes: failed asks are released, finished rooms reopen, repeated pauses still notify, ending restores plain routing', async t => {
+  const x = fixture(t, { settings: { requireConfirm: false } });
+  await x.call('orch_add_member', { role: '开发位', kind: 'codex', tier: 'fast' });
+  await x.call('orch_add_member', { role: '审核位', kind: 'claude', tier: 'fast' });
+  // 1. 发送失败的单独提问不留挂起记录
+  x.setDispatchResult({ status: 'no_sent', reason: '会话不可用' });
+  await x.call('orch_ask_member', { memberId: 'm3', question: '在吗？' });
+  await wait(10);
+  const asked = x.service.ledgerFor('mt1').asks.at(-1);
+  assert.equal(asked.status, 'failed');
+  x.setDispatchResult({ status: 'completed', turnNum: 2, results: [{ status: 'completed' }] });
+  await x.call('orch_ask_member', { memberId: 'm3', question: '再问一次' });
+  // 2. 同一原因第二次暂停仍会通知编排员
+  await x.call('orch_start_workflow', { name: 'PF', preset: 'development', goal: 'g', acceptance: 'a', members: ['m2', 'm3'] });
+  const L = require('../core/orchestration/ledger');
+  const stages = x.meetingObj.serialWorkflow.deliveryStages;
+  const run = status => ({ id: 'run-1', kind: 'file', status, error: status === 'paused' ? '成员报告阻塞' : '', stages, steps: [{ id: 'a', index: 0, members: ['m2'], deliveries: {} }] });
+  x.writeRun(run('paused')); x.service.reconcile('mt1');
+  x.writeRun(run('running')); x.service.reconcile('mt1');
+  x.writeRun(run('paused')); x.service.reconcile('mt1');
+  const pausedKeys = x.service.ledgerFor('mt1').seen.filter(k => /:paused:/.test(k));
+  assert.equal(new Set(pausedKeys).size, 2, 'each pause has its own notice');
+  // 3. 结束编排：工作流消息路由关闭；恢复后打开
+  await x.service.userAction('mt1', 'end');
+  assert.equal(x.meetingObj.serialWorkflow.enabled, false);
+  await x.service.userAction('mt1', 'resume');
+  assert.equal(x.meetingObj.serialWorkflow.enabled, true);
+  // 4. 结项后田哥提出新要求，编排重新开放，编排员可以提交新计划
+  const ledger = x.service.ledgerFor('mt1');
+  ledger.status = 'finished';
+  x.service.userMessage('mt1', { text: '再加一个 RR 与 PF 的对比图' });
+  assert.equal(ledger.status, 'running');
+  ledger.status = 'finished';
+  const plan = await x.call('orch_propose_plan', { summary: '补一张对比图', segments: [{ name: '对比图', preset: 'custom', acceptance: '图里有两条曲线' }] });
+  assert.equal(plan.version, 1);
+  assert.equal(L.canDispatch(ledger).ok, true);
+});
+
+test('the tool endpoint path is known before the bridge starts', t => {
+  const x = fixture(t);
+  const opts = x.service.launchOptions('codex', 'sid-early');
+  assert.match(opts.codexMcpEntries[0].env.HUB_ORCH_ENDPOINT_FILE, /orchestration[\\/]bridge-endpoint\.json$/);
+});
